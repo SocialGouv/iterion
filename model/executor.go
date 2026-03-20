@@ -3,7 +3,10 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
+	"math/rand/v2"
 	"strings"
 	"time"
 
@@ -13,13 +16,74 @@ import (
 	"github.com/iterion-ai/iterion/ir"
 )
 
+// ---------------------------------------------------------------------------
+// Retry policy
+// ---------------------------------------------------------------------------
+
+// DefaultMaxAttempts is the default number of LLM call attempts (initial + retries).
+const DefaultMaxAttempts = 3
+
+// DefaultBackoffBase is the base duration for exponential backoff.
+const DefaultBackoffBase = time.Second
+
+// RetryPolicy controls automatic retry on transient LLM errors.
+type RetryPolicy struct {
+	// MaxAttempts is the total number of attempts (1 = no retry). Default: 3.
+	MaxAttempts int
+	// BackoffBase is the base delay for exponential backoff. Default: 1s.
+	BackoffBase time.Duration
+}
+
+func (rp RetryPolicy) maxAttempts() int {
+	if rp.MaxAttempts <= 0 {
+		return DefaultMaxAttempts
+	}
+	return rp.MaxAttempts
+}
+
+func (rp RetryPolicy) backoffBase() time.Duration {
+	if rp.BackoffBase <= 0 {
+		return DefaultBackoffBase
+	}
+	return rp.BackoffBase
+}
+
+// backoff returns the delay for attempt n (0-indexed) with jitter.
+func (rp RetryPolicy) backoff(attempt int) time.Duration {
+	base := float64(rp.backoffBase()) * math.Pow(2, float64(attempt))
+	maxDelay := float64(60 * time.Second)
+	if base > maxDelay {
+		base = maxDelay
+	}
+	// Jitter: 0.5x to 1.5x.
+	jitter := 0.5 + rand.Float64()
+	return time.Duration(base * jitter)
+}
+
+// RetryInfo describes a retry attempt, passed to the OnLLMRetry hook.
+type RetryInfo struct {
+	Attempt    int           // 1-based retry number (attempt 1 = first retry)
+	Error      error         // the error that triggered this retry
+	StatusCode int           // HTTP status code if available
+	Delay      time.Duration // backoff delay before this retry
+}
+
+// ---------------------------------------------------------------------------
+// Event hooks
+// ---------------------------------------------------------------------------
+
 // EventHooks allows the executor to emit observability events back to the caller.
 type EventHooks struct {
 	OnLLMRequest    func(nodeID string, info goai.RequestInfo)
 	OnLLMResponse   func(nodeID string, info goai.ResponseInfo)
+	OnLLMRetry      func(nodeID string, info RetryInfo)
 	OnLLMStepFinish func(nodeID string, step goai.StepResult)
 	OnToolCall      func(nodeID string, info goai.ToolCallInfo)
 }
+
+// ---------------------------------------------------------------------------
+// Executor
+// ---------------------------------------------------------------------------
 
 // GoaiExecutor implements runtime.NodeExecutor by delegating LLM calls
 // to goai's GenerateText and GenerateObject APIs.
@@ -30,6 +94,7 @@ type GoaiExecutor struct {
 	vars     map[string]interface{}
 	tools    map[string]goai.Tool // registered tool implementations
 	hooks    EventHooks
+	retry    RetryPolicy
 }
 
 // GoaiExecutorOption configures a GoaiExecutor.
@@ -43,6 +108,11 @@ func WithEventHooks(h EventHooks) GoaiExecutorOption {
 // WithToolImplementations registers tool implementations by name.
 func WithToolImplementations(tools map[string]goai.Tool) GoaiExecutorOption {
 	return func(e *GoaiExecutor) { e.tools = tools }
+}
+
+// WithRetryPolicy sets the retry policy for transient LLM errors.
+func WithRetryPolicy(rp RetryPolicy) GoaiExecutorOption {
+	return func(e *GoaiExecutor) { e.retry = rp }
 }
 
 // NewGoaiExecutor creates a GoaiExecutor for a given workflow.
@@ -91,6 +161,10 @@ func (e *GoaiExecutor) executeLLM(ctx context.Context, node *ir.Node, input map[
 	// Build goai options.
 	var opts []goai.Option
 
+	// Disable goai's internal retry — we handle retries ourselves for
+	// per-attempt event emission.
+	opts = append(opts, goai.WithMaxRetries(0))
+
 	// System prompt.
 	if node.SystemPrompt != "" {
 		if p, ok := e.prompts[node.SystemPrompt]; ok {
@@ -123,7 +197,8 @@ func (e *GoaiExecutor) executeLLM(ctx context.Context, node *ir.Node, input map[
 		}
 	}
 
-	// Observability hooks.
+	// Observability hooks — OnRequest, OnResponse, OnStepFinish, OnToolCall
+	// are wired as goai callbacks. Retry hooks are handled by our retry loop.
 	nodeID := node.ID
 	if e.hooks.OnLLMRequest != nil {
 		fn := e.hooks.OnLLMRequest
@@ -150,14 +225,89 @@ func (e *GoaiExecutor) executeLLM(ctx context.Context, node *ir.Node, input map[
 		}))
 	}
 
-	// Structured output (output schema present).
+	// Dispatch to structured or text generation with retry.
 	if node.OutputSchema != "" {
-		return e.generateStructured(ctx, m, node, opts)
+		return e.generateStructuredWithRetry(ctx, m, node, opts)
 	}
-
-	// Text generation.
-	return e.generateText(ctx, m, node, opts)
+	return e.generateTextWithRetry(ctx, m, node, opts)
 }
+
+// ---------------------------------------------------------------------------
+// Retry wrapper
+// ---------------------------------------------------------------------------
+
+// isRetryable returns true if err is a transient goai error that should be retried.
+func isRetryable(err error) bool {
+	var apiErr *goai.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.IsRetryable
+	}
+	return false
+}
+
+// statusCodeOf extracts the HTTP status code from an APIError, or 0.
+func statusCodeOf(err error) int {
+	var apiErr *goai.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode
+	}
+	return 0
+}
+
+// retryLoop runs fn up to maxAttempts times, emitting llm_retry events
+// and applying exponential backoff for retryable errors.
+func (e *GoaiExecutor) retryLoop(ctx context.Context, nodeID string, fn func() (map[string]interface{}, error)) (map[string]interface{}, error) {
+	maxAttempts := e.retry.maxAttempts()
+
+	result, err := fn()
+	for attempt := 1; err != nil && isRetryable(err) && attempt < maxAttempts; attempt++ {
+		delay := e.retry.backoff(attempt - 1)
+
+		// Emit retry event.
+		if e.hooks.OnLLMRetry != nil {
+			e.hooks.OnLLMRetry(nodeID, RetryInfo{
+				Attempt:    attempt,
+				Error:      err,
+				StatusCode: statusCodeOf(err),
+				Delay:      delay,
+			})
+		}
+
+		// Backoff.
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		}
+
+		result, err = fn()
+	}
+	return result, err
+}
+
+// ---------------------------------------------------------------------------
+// Generation with retry
+// ---------------------------------------------------------------------------
+
+// generateTextWithRetry wraps generateText in the retry loop.
+func (e *GoaiExecutor) generateTextWithRetry(ctx context.Context, m provider.LanguageModel, node *ir.Node, opts []goai.Option) (map[string]interface{}, error) {
+	return e.retryLoop(ctx, node.ID, func() (map[string]interface{}, error) {
+		return e.generateText(ctx, m, node, opts)
+	})
+}
+
+// generateStructuredWithRetry wraps generateStructured in the retry loop.
+func (e *GoaiExecutor) generateStructuredWithRetry(ctx context.Context, m provider.LanguageModel, node *ir.Node, opts []goai.Option) (map[string]interface{}, error) {
+	return e.retryLoop(ctx, node.ID, func() (map[string]interface{}, error) {
+		return e.generateStructured(ctx, m, node, opts)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Core generation
+// ---------------------------------------------------------------------------
 
 // generateStructured uses goai.GenerateObject with an explicit JSON schema.
 func (e *GoaiExecutor) generateStructured(ctx context.Context, m provider.LanguageModel, node *ir.Node, opts []goai.Option) (map[string]interface{}, error) {
@@ -183,6 +333,12 @@ func (e *GoaiExecutor) generateStructured(ctx context.Context, m provider.Langua
 		output = make(map[string]interface{})
 	}
 
+	// Strict validation: every required field must be present.
+	// No hidden JSON repair — fail explicitly on schema mismatch.
+	if err := ValidateOutput(output, schema); err != nil {
+		return nil, fmt.Errorf("model: node %q: structured output invalid: %w", node.ID, err)
+	}
+
 	// Attach usage metadata.
 	output["_tokens"] = result.Usage.InputTokens + result.Usage.OutputTokens
 	output["_model"] = m.ModelID()
@@ -205,6 +361,10 @@ func (e *GoaiExecutor) generateText(ctx context.Context, m provider.LanguageMode
 
 	return output, nil
 }
+
+// ---------------------------------------------------------------------------
+// Tool node execution
+// ---------------------------------------------------------------------------
 
 // executeToolNode runs a tool node (direct command, no LLM).
 func (e *GoaiExecutor) executeToolNode(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
@@ -241,6 +401,10 @@ func (e *GoaiExecutor) executeToolNode(ctx context.Context, node *ir.Node, input
 
 	return output, nil
 }
+
+// ---------------------------------------------------------------------------
+// Template resolution
+// ---------------------------------------------------------------------------
 
 // buildUserMessage constructs the user message for an LLM call.
 func (e *GoaiExecutor) buildUserMessage(node *ir.Node, input map[string]interface{}) string {

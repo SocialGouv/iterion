@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"testing"
+	"time"
 
 	goai "github.com/zendev-sh/goai"
 	"github.com/zendev-sh/goai/provider"
@@ -33,6 +35,64 @@ func (m *mockModel) DoGenerate(_ context.Context, _ provider.GenerateParams) (*p
 }
 
 func (m *mockModel) DoStream(_ context.Context, _ provider.GenerateParams) (*provider.StreamResult, error) {
+	return nil, fmt.Errorf("streaming not implemented in mock")
+}
+
+// failThenSucceedModel fails the first N calls with a retryable error,
+// then succeeds with the given response.
+type failThenSucceedModel struct {
+	id       string
+	response *provider.GenerateResult
+	failures int // how many times to fail before succeeding
+	mu       sync.Mutex
+	calls    int
+}
+
+func (m *failThenSucceedModel) ModelID() string { return m.id }
+
+func (m *failThenSucceedModel) DoGenerate(_ context.Context, _ provider.GenerateParams) (*provider.GenerateResult, error) {
+	m.mu.Lock()
+	m.calls++
+	call := m.calls
+	m.mu.Unlock()
+
+	if call <= m.failures {
+		return nil, &goai.APIError{
+			Message:     "rate limited",
+			StatusCode:  429,
+			IsRetryable: true,
+		}
+	}
+	return m.response, nil
+}
+
+func (m *failThenSucceedModel) DoStream(_ context.Context, _ provider.GenerateParams) (*provider.StreamResult, error) {
+	return nil, fmt.Errorf("streaming not implemented in mock")
+}
+
+// alwaysFailModel always fails with a retryable error.
+type alwaysFailModel struct {
+	id         string
+	statusCode int
+	mu         sync.Mutex
+	calls      int
+}
+
+func (m *alwaysFailModel) ModelID() string { return m.id }
+
+func (m *alwaysFailModel) DoGenerate(_ context.Context, _ provider.GenerateParams) (*provider.GenerateResult, error) {
+	m.mu.Lock()
+	m.calls++
+	m.mu.Unlock()
+
+	return nil, &goai.APIError{
+		Message:     fmt.Sprintf("server error %d", m.statusCode),
+		StatusCode:  m.statusCode,
+		IsRetryable: true,
+	}
+}
+
+func (m *alwaysFailModel) DoStream(_ context.Context, _ provider.GenerateParams) (*provider.StreamResult, error) {
 	return nil, fmt.Errorf("streaming not implemented in mock")
 }
 
@@ -476,6 +536,488 @@ func TestExecutorUnknownModel(t *testing.T) {
 	_, err := exec.Execute(context.Background(), node, map[string]interface{}{})
 	if err == nil {
 		t.Fatal("expected error for unknown model")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Retry tests
+// ---------------------------------------------------------------------------
+
+func TestRetryOnTransientError(t *testing.T) {
+	reg := NewRegistry()
+	mock := &failThenSucceedModel{
+		id: "test-model",
+		response: &provider.GenerateResult{
+			Text:         "success after retry",
+			FinishReason: provider.FinishStop,
+			Usage:        provider.Usage{InputTokens: 10, OutputTokens: 5},
+		},
+		failures: 2, // fail twice, succeed on 3rd attempt
+	}
+	reg.Register("test", func(modelID string) (provider.LanguageModel, error) {
+		return mock, nil
+	})
+
+	var retries []RetryInfo
+	wf := &ir.Workflow{
+		Prompts: map[string]*ir.Prompt{},
+		Schemas: map[string]*ir.Schema{},
+	}
+
+	exec := NewGoaiExecutor(reg, wf,
+		WithRetryPolicy(RetryPolicy{MaxAttempts: 3, BackoffBase: time.Millisecond}),
+		WithEventHooks(EventHooks{
+			OnLLMRetry: func(nodeID string, info RetryInfo) {
+				retries = append(retries, info)
+			},
+		}),
+	)
+
+	node := &ir.Node{
+		ID:    "agent1",
+		Kind:  ir.NodeAgent,
+		Model: "test/test-model",
+	}
+
+	output, err := exec.Execute(context.Background(), node, map[string]interface{}{"prompt": "hello"})
+	if err != nil {
+		t.Fatalf("expected success after retries, got error: %v", err)
+	}
+	if output["text"] != "success after retry" {
+		t.Errorf("got text %q, want %q", output["text"], "success after retry")
+	}
+
+	// Should have 2 retry events.
+	if len(retries) != 2 {
+		t.Fatalf("expected 2 retry events, got %d", len(retries))
+	}
+	if retries[0].Attempt != 1 {
+		t.Errorf("retry[0].Attempt = %d, want 1", retries[0].Attempt)
+	}
+	if retries[0].StatusCode != 429 {
+		t.Errorf("retry[0].StatusCode = %d, want 429", retries[0].StatusCode)
+	}
+	if retries[1].Attempt != 2 {
+		t.Errorf("retry[1].Attempt = %d, want 2", retries[1].Attempt)
+	}
+}
+
+func TestRetryExhausted(t *testing.T) {
+	reg := NewRegistry()
+	mock := &alwaysFailModel{id: "test-model", statusCode: 500}
+	reg.Register("test", func(modelID string) (provider.LanguageModel, error) {
+		return mock, nil
+	})
+
+	var retries []RetryInfo
+	wf := &ir.Workflow{
+		Prompts: map[string]*ir.Prompt{},
+		Schemas: map[string]*ir.Schema{},
+	}
+
+	exec := NewGoaiExecutor(reg, wf,
+		WithRetryPolicy(RetryPolicy{MaxAttempts: 3, BackoffBase: time.Millisecond}),
+		WithEventHooks(EventHooks{
+			OnLLMRetry: func(nodeID string, info RetryInfo) {
+				retries = append(retries, info)
+			},
+		}),
+	)
+
+	node := &ir.Node{
+		ID:    "agent1",
+		Kind:  ir.NodeAgent,
+		Model: "test/test-model",
+	}
+
+	_, err := exec.Execute(context.Background(), node, map[string]interface{}{"prompt": "hello"})
+	if err == nil {
+		t.Fatal("expected error after retries exhausted")
+	}
+
+	// 3 attempts = 2 retries.
+	if len(retries) != 2 {
+		t.Fatalf("expected 2 retry events, got %d", len(retries))
+	}
+
+	// Total calls should be 3.
+	mock.mu.Lock()
+	calls := mock.calls
+	mock.mu.Unlock()
+	if calls != 3 {
+		t.Errorf("expected 3 total calls, got %d", calls)
+	}
+}
+
+func TestNoRetryOnNonRetryableError(t *testing.T) {
+	reg := NewRegistry()
+	mock := &mockModel{
+		id:  "test-model",
+		err: fmt.Errorf("non-retryable error"),
+	}
+	reg.Register("test", func(modelID string) (provider.LanguageModel, error) {
+		return mock, nil
+	})
+
+	var retries []RetryInfo
+	wf := &ir.Workflow{
+		Prompts: map[string]*ir.Prompt{},
+		Schemas: map[string]*ir.Schema{},
+	}
+
+	exec := NewGoaiExecutor(reg, wf,
+		WithRetryPolicy(RetryPolicy{MaxAttempts: 3, BackoffBase: time.Millisecond}),
+		WithEventHooks(EventHooks{
+			OnLLMRetry: func(nodeID string, info RetryInfo) {
+				retries = append(retries, info)
+			},
+		}),
+	)
+
+	node := &ir.Node{
+		ID:    "agent1",
+		Kind:  ir.NodeAgent,
+		Model: "test/test-model",
+	}
+
+	_, err := exec.Execute(context.Background(), node, map[string]interface{}{"prompt": "hello"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	// No retries for non-retryable errors.
+	if len(retries) != 0 {
+		t.Errorf("expected 0 retry events, got %d", len(retries))
+	}
+}
+
+func TestRetryOnStructuredOutput(t *testing.T) {
+	reg := NewRegistry()
+	mock := &failThenSucceedModel{
+		id: "test-model",
+		response: &provider.GenerateResult{
+			Text:         `{"verdict":true,"reason":"OK"}`,
+			FinishReason: provider.FinishStop,
+			Usage:        provider.Usage{InputTokens: 50, OutputTokens: 20},
+		},
+		failures: 1,
+	}
+	reg.Register("test", func(modelID string) (provider.LanguageModel, error) {
+		return mock, nil
+	})
+
+	var retryCount int
+	wf := &ir.Workflow{
+		Prompts: map[string]*ir.Prompt{},
+		Schemas: map[string]*ir.Schema{
+			"verdict_schema": {
+				Name: "verdict_schema",
+				Fields: []*ir.SchemaField{
+					{Name: "verdict", Type: ir.FieldTypeBool},
+					{Name: "reason", Type: ir.FieldTypeString},
+				},
+			},
+		},
+	}
+
+	exec := NewGoaiExecutor(reg, wf,
+		WithRetryPolicy(RetryPolicy{MaxAttempts: 3, BackoffBase: time.Millisecond}),
+		WithEventHooks(EventHooks{
+			OnLLMRetry: func(nodeID string, info RetryInfo) {
+				retryCount++
+			},
+		}),
+	)
+
+	node := &ir.Node{
+		ID:           "judge",
+		Kind:         ir.NodeJudge,
+		Model:        "test/test-model",
+		OutputSchema: "verdict_schema",
+	}
+
+	output, err := exec.Execute(context.Background(), node, map[string]interface{}{
+		"review": "code",
+	})
+	if err != nil {
+		t.Fatalf("expected success after retry, got error: %v", err)
+	}
+	if output["verdict"] != true {
+		t.Errorf("got verdict %v, want true", output["verdict"])
+	}
+	if retryCount != 1 {
+		t.Errorf("expected 1 retry, got %d", retryCount)
+	}
+}
+
+func TestRetryContextCancellation(t *testing.T) {
+	reg := NewRegistry()
+	mock := &alwaysFailModel{id: "test-model", statusCode: 429}
+	reg.Register("test", func(modelID string) (provider.LanguageModel, error) {
+		return mock, nil
+	})
+
+	wf := &ir.Workflow{
+		Prompts: map[string]*ir.Prompt{},
+		Schemas: map[string]*ir.Schema{},
+	}
+
+	exec := NewGoaiExecutor(reg, wf,
+		WithRetryPolicy(RetryPolicy{MaxAttempts: 10, BackoffBase: time.Second}),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel immediately to abort the retry backoff.
+	cancel()
+
+	node := &ir.Node{
+		ID:    "agent1",
+		Kind:  ir.NodeAgent,
+		Model: "test/test-model",
+	}
+
+	_, err := exec.Execute(ctx, node, map[string]interface{}{"prompt": "hello"})
+	if err == nil {
+		t.Fatal("expected error on cancelled context")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Structured output validation tests
+// ---------------------------------------------------------------------------
+
+func TestStructuredOutputMissingField(t *testing.T) {
+	reg := NewRegistry()
+	// Response missing the "reason" field.
+	mock := &mockModel{
+		id: "test-model",
+		response: &provider.GenerateResult{
+			Text:         `{"verdict":true}`,
+			FinishReason: provider.FinishStop,
+			Usage:        provider.Usage{InputTokens: 50, OutputTokens: 20},
+		},
+	}
+	reg.Register("test", func(modelID string) (provider.LanguageModel, error) {
+		return mock, nil
+	})
+
+	wf := &ir.Workflow{
+		Prompts: map[string]*ir.Prompt{},
+		Schemas: map[string]*ir.Schema{
+			"verdict_schema": {
+				Name: "verdict_schema",
+				Fields: []*ir.SchemaField{
+					{Name: "verdict", Type: ir.FieldTypeBool},
+					{Name: "reason", Type: ir.FieldTypeString},
+				},
+			},
+		},
+	}
+
+	exec := NewGoaiExecutor(reg, wf)
+
+	node := &ir.Node{
+		ID:           "judge",
+		Kind:         ir.NodeJudge,
+		Model:        "test/test-model",
+		OutputSchema: "verdict_schema",
+	}
+
+	_, err := exec.Execute(context.Background(), node, map[string]interface{}{
+		"review": "code",
+	})
+	if err == nil {
+		t.Fatal("expected error for missing required field")
+	}
+	if !contains([]string{err.Error()}, "") {
+		// Just verify the error mentions the issue.
+		t.Logf("got expected error: %v", err)
+	}
+}
+
+func TestStructuredOutputWrongType(t *testing.T) {
+	reg := NewRegistry()
+	// Return a string where a bool is expected.
+	mock := &mockModel{
+		id: "test-model",
+		response: &provider.GenerateResult{
+			Text:         `{"verdict":"yes","reason":"OK"}`,
+			FinishReason: provider.FinishStop,
+			Usage:        provider.Usage{InputTokens: 50, OutputTokens: 20},
+		},
+	}
+	reg.Register("test", func(modelID string) (provider.LanguageModel, error) {
+		return mock, nil
+	})
+
+	wf := &ir.Workflow{
+		Prompts: map[string]*ir.Prompt{},
+		Schemas: map[string]*ir.Schema{
+			"verdict_schema": {
+				Name: "verdict_schema",
+				Fields: []*ir.SchemaField{
+					{Name: "verdict", Type: ir.FieldTypeBool},
+					{Name: "reason", Type: ir.FieldTypeString},
+				},
+			},
+		},
+	}
+
+	exec := NewGoaiExecutor(reg, wf)
+
+	node := &ir.Node{
+		ID:           "judge",
+		Kind:         ir.NodeJudge,
+		Model:        "test/test-model",
+		OutputSchema: "verdict_schema",
+	}
+
+	_, err := exec.Execute(context.Background(), node, map[string]interface{}{
+		"review": "code",
+	})
+	if err == nil {
+		t.Fatal("expected error for wrong field type")
+	}
+	t.Logf("got expected error: %v", err)
+}
+
+func TestStructuredOutputInvalidEnum(t *testing.T) {
+	reg := NewRegistry()
+	mock := &mockModel{
+		id: "test-model",
+		response: &provider.GenerateResult{
+			Text:         `{"status":"maybe"}`,
+			FinishReason: provider.FinishStop,
+			Usage:        provider.Usage{InputTokens: 50, OutputTokens: 20},
+		},
+	}
+	reg.Register("test", func(modelID string) (provider.LanguageModel, error) {
+		return mock, nil
+	})
+
+	wf := &ir.Workflow{
+		Prompts: map[string]*ir.Prompt{},
+		Schemas: map[string]*ir.Schema{
+			"status_schema": {
+				Name: "status_schema",
+				Fields: []*ir.SchemaField{
+					{Name: "status", Type: ir.FieldTypeString, EnumValues: []string{"pass", "fail"}},
+				},
+			},
+		},
+	}
+
+	exec := NewGoaiExecutor(reg, wf)
+
+	node := &ir.Node{
+		ID:           "judge",
+		Kind:         ir.NodeJudge,
+		Model:        "test/test-model",
+		OutputSchema: "status_schema",
+	}
+
+	_, err := exec.Execute(context.Background(), node, map[string]interface{}{})
+	if err == nil {
+		t.Fatal("expected error for invalid enum value")
+	}
+	t.Logf("got expected error: %v", err)
+}
+
+// ---------------------------------------------------------------------------
+// Validate output unit tests
+// ---------------------------------------------------------------------------
+
+func TestValidateOutputValid(t *testing.T) {
+	schema := &ir.Schema{
+		Name: "test",
+		Fields: []*ir.SchemaField{
+			{Name: "text", Type: ir.FieldTypeString},
+			{Name: "ok", Type: ir.FieldTypeBool},
+			{Name: "count", Type: ir.FieldTypeInt},
+			{Name: "score", Type: ir.FieldTypeFloat},
+			{Name: "tags", Type: ir.FieldTypeStringArray},
+			{Name: "meta", Type: ir.FieldTypeJSON},
+		},
+	}
+
+	output := map[string]interface{}{
+		"text":  "hello",
+		"ok":    true,
+		"count": float64(42),
+		"score": 3.14,
+		"tags":  []interface{}{"a", "b"},
+		"meta":  map[string]interface{}{"key": "value"},
+	}
+
+	if err := ValidateOutput(output, schema); err != nil {
+		t.Errorf("expected valid output, got: %v", err)
+	}
+}
+
+func TestValidateOutputMissingField(t *testing.T) {
+	schema := &ir.Schema{
+		Name:   "test",
+		Fields: []*ir.SchemaField{{Name: "required_field", Type: ir.FieldTypeString}},
+	}
+
+	err := ValidateOutput(map[string]interface{}{}, schema)
+	if err == nil {
+		t.Fatal("expected error for missing field")
+	}
+}
+
+func TestValidateOutputNullField(t *testing.T) {
+	schema := &ir.Schema{
+		Name:   "test",
+		Fields: []*ir.SchemaField{{Name: "val", Type: ir.FieldTypeString}},
+	}
+
+	err := ValidateOutput(map[string]interface{}{"val": nil}, schema)
+	if err == nil {
+		t.Fatal("expected error for null field")
+	}
+}
+
+func TestValidateOutputEnumViolation(t *testing.T) {
+	schema := &ir.Schema{
+		Name: "test",
+		Fields: []*ir.SchemaField{
+			{Name: "status", Type: ir.FieldTypeString, EnumValues: []string{"pass", "fail"}},
+		},
+	}
+
+	err := ValidateOutput(map[string]interface{}{"status": "maybe"}, schema)
+	if err == nil {
+		t.Fatal("expected error for invalid enum")
+	}
+}
+
+func TestValidateOutputIntegerCheck(t *testing.T) {
+	schema := &ir.Schema{
+		Name:   "test",
+		Fields: []*ir.SchemaField{{Name: "count", Type: ir.FieldTypeInt}},
+	}
+
+	// Whole float is OK.
+	if err := ValidateOutput(map[string]interface{}{"count": float64(42)}, schema); err != nil {
+		t.Errorf("expected 42.0 to be valid integer, got: %v", err)
+	}
+
+	// Non-whole float is not.
+	if err := ValidateOutput(map[string]interface{}{"count": 3.14}, schema); err == nil {
+		t.Error("expected error for non-integer float")
+	}
+}
+
+func TestValidateOutputStringArrayBadElement(t *testing.T) {
+	schema := &ir.Schema{
+		Name:   "test",
+		Fields: []*ir.SchemaField{{Name: "tags", Type: ir.FieldTypeStringArray}},
+	}
+
+	err := ValidateOutput(map[string]interface{}{"tags": []interface{}{"ok", 42}}, schema)
+	if err == nil {
+		t.Fatal("expected error for non-string array element")
 	}
 }
 
