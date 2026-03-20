@@ -4,21 +4,23 @@ Workflow orchestration engine with a custom DSL (`.iter` files).
 
 ## Build & Test
 
+All commands must be run through `devbox run` (Go and tooling are managed by devbox):
+
 ```bash
-task build          # Build binary → ./iterion
-task test           # Run unit tests
-task test:e2e       # Run end-to-end tests
-task test:race      # Tests with race detector
-task lint           # go fmt + go vet
-task check          # lint + test
-task clean          # Remove build artifacts
+devbox run -- task build          # Build binary → ./iterion
+devbox run -- task test           # Run unit tests
+devbox run -- task test:e2e       # Run end-to-end tests
+devbox run -- task test:race      # Tests with race detector
+devbox run -- task lint           # go fmt + go vet
+devbox run -- task check          # lint + test
+devbox run -- task clean          # Remove build artifacts
 ```
 
 Or directly with Go:
 
 ```bash
-go build -o iterion ./cmd/iterion
-go test ./...
+devbox run -- go build -o iterion ./cmd/iterion
+devbox run -- go test ./...
 ```
 
 ## Project Structure
