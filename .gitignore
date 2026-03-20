@@ -1,0 +1,16 @@
+# Build output
+iterion
+*.exe
+
+# Store data
+.iterion/
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
