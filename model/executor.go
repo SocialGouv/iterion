@@ -14,6 +14,7 @@ import (
 	"github.com/zendev-sh/goai/provider"
 
 	"github.com/iterion-ai/iterion/ir"
+	"github.com/iterion-ai/iterion/tool"
 )
 
 // ---------------------------------------------------------------------------
@@ -88,13 +89,14 @@ type EventHooks struct {
 // GoaiExecutor implements runtime.NodeExecutor by delegating LLM calls
 // to goai's GenerateText and GenerateObject APIs.
 type GoaiExecutor struct {
-	registry *Registry
-	prompts  map[string]*ir.Prompt
-	schemas  map[string]*ir.Schema
-	vars     map[string]interface{}
-	tools    map[string]goai.Tool // registered tool implementations
-	hooks    EventHooks
-	retry    RetryPolicy
+	registry     *Registry
+	toolRegistry *tool.Registry       // unified tool registry (preferred)
+	prompts      map[string]*ir.Prompt
+	schemas      map[string]*ir.Schema
+	vars         map[string]interface{}
+	tools        map[string]goai.Tool // legacy: direct tool implementations
+	hooks        EventHooks
+	retry        RetryPolicy
 }
 
 // GoaiExecutorOption configures a GoaiExecutor.
@@ -106,8 +108,16 @@ func WithEventHooks(h EventHooks) GoaiExecutorOption {
 }
 
 // WithToolImplementations registers tool implementations by name.
+// Deprecated: prefer WithToolRegistry for unified built-in/MCP resolution.
 func WithToolImplementations(tools map[string]goai.Tool) GoaiExecutorOption {
 	return func(e *GoaiExecutor) { e.tools = tools }
+}
+
+// WithToolRegistry sets the unified tool registry on the executor.
+// When set, tool references in nodes are resolved through the registry
+// instead of the legacy tools map.
+func WithToolRegistry(tr *tool.Registry) GoaiExecutorOption {
+	return func(e *GoaiExecutor) { e.toolRegistry = tr }
 }
 
 // WithRetryPolicy sets the retry policy for transient LLM errors.
@@ -181,11 +191,9 @@ func (e *GoaiExecutor) executeLLM(ctx context.Context, node *ir.Node, input map[
 
 	// Tools.
 	if len(node.Tools) > 0 {
-		var tools []goai.Tool
-		for _, toolName := range node.Tools {
-			if t, ok := e.tools[toolName]; ok {
-				tools = append(tools, t)
-			}
+		tools, err := e.resolveTools(node.Tools)
+		if err != nil {
+			return nil, fmt.Errorf("model: node %q: %w", node.ID, err)
 		}
 		if len(tools) > 0 {
 			opts = append(opts, goai.WithTools(tools...))
@@ -369,7 +377,10 @@ func (e *GoaiExecutor) generateText(ctx context.Context, m provider.LanguageMode
 // executeToolNode runs a tool node (direct command, no LLM).
 func (e *GoaiExecutor) executeToolNode(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
 	toolName := node.Command
-	tool, ok := e.tools[toolName]
+	tool, ok, err := e.resolveSingleTool(toolName)
+	if err != nil {
+		return nil, fmt.Errorf("model: tool node %q: %w", node.ID, err)
+	}
 	if !ok {
 		return nil, fmt.Errorf("model: tool node %q references unregistered tool %q", node.ID, toolName)
 	}
@@ -487,6 +498,41 @@ func (e *GoaiExecutor) resolveTemplateRef(ref string, input map[string]interface
 	}
 
 	return "", false
+}
+
+// ---------------------------------------------------------------------------
+// Tool resolution helpers
+// ---------------------------------------------------------------------------
+
+// resolveTools resolves a list of tool names to goai.Tool instances.
+// Uses the tool registry if available, otherwise falls back to the legacy map.
+func (e *GoaiExecutor) resolveTools(names []string) ([]goai.Tool, error) {
+	if e.toolRegistry != nil {
+		return e.toolRegistry.ResolveAll(names)
+	}
+	// Legacy path: direct lookup.
+	var tools []goai.Tool
+	for _, name := range names {
+		if t, ok := e.tools[name]; ok {
+			tools = append(tools, t)
+		}
+	}
+	return tools, nil
+}
+
+// resolveSingleTool resolves one tool name. Returns the goai.Tool, whether
+// it was found, and any resolution error (e.g. ambiguity).
+func (e *GoaiExecutor) resolveSingleTool(name string) (goai.Tool, bool, error) {
+	if e.toolRegistry != nil {
+		td, err := e.toolRegistry.Resolve(name)
+		if err != nil {
+			return goai.Tool{}, false, err
+		}
+		return td.ToGoaiTool(), true, nil
+	}
+	// Legacy path.
+	t, ok := e.tools[name]
+	return t, ok, nil
 }
 
 // formatValue converts an interface value to a string for template substitution.
