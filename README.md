@@ -474,8 +474,25 @@ iterion/
 
 ### Prerequisites
 
-- Go 1.23.8+
-- [goai](https://github.com/zendev-sh/goai) — LLM provider abstraction
+- [Devbox](https://www.jetify.com/devbox) — portable dev environment (installs Go, Task, Node)
+- [direnv](https://direnv.net/) — auto-activates the Devbox shell when you `cd` into the repo
+- [goai](https://github.com/zendev-sh/goai) — LLM provider abstraction (local dependency at `~/goai`)
+
+**Setup:**
+
+```bash
+# Install direnv (if not already installed)
+# macOS: brew install direnv
+# Ubuntu: sudo apt install direnv
+
+# Hook direnv into your shell (~/.bashrc, ~/.zshrc, etc.)
+eval "$(direnv hook bash)"   # or: eval "$(direnv hook zsh)"
+
+# Allow the .envrc in this repo
+direnv allow
+```
+
+After `direnv allow`, the Devbox environment (Go 1.23, Task, Node) activates automatically whenever you enter the project directory.
 
 ### Building
 
