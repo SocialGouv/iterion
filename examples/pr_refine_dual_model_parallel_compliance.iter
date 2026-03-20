@@ -332,6 +332,7 @@ agent context_builder:
   model: "${CONTEXT_MODEL}"
   input: repo_context_request
   output: pr_context
+  publish: pr_context
   system: context_builder_system
   user: context_builder_user
   session: fresh
@@ -414,6 +415,7 @@ agent final_plan_merge:
   model: "${FINAL_MERGE_MODEL}"
   input: synthesis_bundle
   output: remediation_plan
+  publish: final_merged_plan
   system: final_plan_merge_system
   user: final_plan_merge_user
   session: fresh
@@ -437,6 +439,7 @@ judge technical_decision_gate:
 human technical_decision_human_checkpoint:
   input: technical_decision_assessment
   output: human_answers
+  publish: human_decisions
   instructions: human_clarification_instructions
   mode: pause_until_answers
   min_answers: 1
@@ -493,6 +496,7 @@ agent act_on_plan:
   model: "${ACT_MODEL}"
   input: act_request
   output: act_result
+  publish: act_report
   system: act_system
   user: act_user
   session: fresh
@@ -531,6 +535,7 @@ judge final_pr_compliance_check:
   model: "${FINAL_JUDGE_MODEL}"
   input: final_reviews_bundle
   output: compliance_verdict
+  publish: final_verdict
   system: final_compliance_system
   user: final_compliance_user
   session: fresh

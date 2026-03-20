@@ -1,5 +1,42 @@
 # Plan raffiné — iterion V1 ambitieuse, multi-modèles, parallèle, alignée sur goai
 
+## Glossaire unifié
+
+Ce glossaire fige la terminologie V1 à travers toutes les couches (DSL, IR, runtime, store, recipes).
+
+| Terme | Définition | Couche(s) |
+|---|---|---|
+| **workflow** | Graphe orienté de nœuds et d'edges décrivant un processus d'orchestration LLM. Écrit en DSL, compilé en IR, exécuté par le runtime. | DSL, IR, runtime |
+| **node** | Unité d'exécution dans un workflow. Types V1 : `agent`, `judge`, `router`, `tool`, `human`, `join`, `done`, `fail`. | DSL, IR, runtime |
+| **edge** | Transition orientée entre deux nœuds, optionnellement conditionnelle (`when`), optionnellement porteuse de données (`with`), optionnellement comptabilisée dans une boucle (`as <loop>(N)`). | DSL, IR, runtime |
+| **step** | Une visite d'un nœud lors d'un run, qualifiée par `run_id`, `branch_id`, `loop_iteration`. Unité d'exécution atomique du runtime iterion. | runtime, store |
+| **llm_step** | Une itération interne de `goai.GenerateText` pendant une boucle d'outils. Ce n'est **pas** un step iterion. | runtime |
+| **run** | Une invocation d'un workflow compilé ou d'une recette, avec ses inputs, budgets et policies. Identifié par un `run_id` unique. | runtime, store |
+| **branch** | Sous-exécution d'un run, créée par un `router mode: fan_out_all`. Partage le budget global du run. | runtime, store |
+| **session** | Contexte conversationnel LLM d'un nœud. Modes : `fresh`, `inherit`, `artifacts_only`. | DSL, IR, runtime |
+| **artifact** | Sortie structurée nommée d'un nœud, persistée dans le store. Référençable par `outputs.<node>`. Versionné automatiquement en boucle. | runtime, store |
+| **persistent artifact** | Artefact marqué `publish: <name>` dans le DSL. Survit aux reloops globaux. Référençable par `artifacts.<name>`. | DSL, IR, runtime, store |
+| **output** | Le résultat structuré produit par un nœud lors d'un step. Validé contre le `output` schema du nœud. Accessible via `outputs.<node>` (dernière version) ou `outputs.<node>.history` (toutes les versions en boucle). | DSL, IR, runtime |
+| **input** | Données entrantes d'un nœud, construites par le `with` de l'edge entrante. Validées contre le `input` schema du nœud. | DSL, IR, runtime |
+| **with** | Bloc de mapping de données sur une edge. Construit l'`input` du nœud cible à partir de `vars`, `input`, `outputs`, `artifacts`. | DSL, IR |
+| **vars** | Variables du workflow, déclarées au niveau `workflow`, injectables via CLI ou presets de recette. | DSL, IR, runtime |
+| **recipe** | Un workflow + presets de variables + prompt packs + budgets + politique d'évaluation. Unité de comparaison pour le benchmark. | recipes |
+| **prompt** | Bloc de texte nommé, paramétrable via `{{...}}`, utilisé comme `system` ou `user` d'un nœud `agent`/`judge`. | DSL, IR |
+| **schema** | Définition structurée des champs d'un `input` ou `output` de nœud. Types V1 : `string`, `bool`, `int`, `float`, `string[]`, `json`. | DSL, IR |
+| **IR** | Intermediate Representation. Forme canonique compilée du workflow, seule source de vérité d'exécution. Produite par le compilateur. | IR |
+| **store** | Couche de persistance des runs, events, artifacts et interactions. File-backed en V1. | store |
+| **event** | Fait horodaté émis par le runtime et persisté dans le store (`events.jsonl`). Types : voir section "Événements minimum à persister". | runtime, store |
+| **budget** | Limites d'exécution : `max_iterations`, `max_parallel_branches`, `max_tokens` (total input+output sur tous les appels LLM du run), `max_cost_usd`, `max_duration`. | DSL, IR, runtime |
+| **loop** | Boucle nommée et bornée dans le workflow. Compteur incrémenté à chaque traversée d'une edge portant `as <loop_name>(N)`. | DSL, IR, runtime |
+| **join** | Nœud d'agrégation qui attend la complétion de branches parallèles. Stratégies : `wait_all`, `best_effort`. | DSL, IR, runtime |
+| **router** | Nœud de routage déterministe (pas d'appel LLM). Modes : `fan_out_all`, `condition`. | DSL, IR, runtime |
+| **tool** (nœud) | Nœud qui invoque un outil directement sans appel LLM. Produit un artefact. | DSL, IR, runtime |
+| **tool** (capacité) | Outil invocable par un nœud `agent`/`judge` dans sa tool loop. Built-in ou MCP. | DSL, IR, runtime |
+| **human** | Nœud de pause/reprise pour clarification humaine. Met le run en `paused_waiting_human`. | DSL, IR, runtime |
+| **done** / **fail** | Nœuds terminaux. `done` = succès, `fail` = échec. Portent le statut final du run. | DSL, IR, runtime |
+| **policy** | Règles de sécurité et de contrôle d'exécution : allowlist commandes, tools autorisés, mutation workspace. Injectée par config/CLI, pas dans le DSL. | runtime |
+| **reloop global** | Rebouclage du workflow complet (ex: `final -> context_builder`). Réinitialise les `outputs`, conserve les `artifacts` persistants, incrémente le compteur global, remet à zéro les compteurs locaux. | runtime |
+
 ## Résumé
 - La V1 doit assumer dès le départ l’objectif produit complet : orchestrer des recettes de raffinage de PR et de code review multi-modèles, avec phases parallèles, merges, boucles de conformité et benchmarking de recettes.
 - Le développement restera découpé en phases promptables, mais le cahier des charges initial doit déjà intégrer tous les concepts structurants nécessaires à cette cible V1.
@@ -244,7 +281,7 @@
 - Sessions explicites par nœud :
   - `fresh` pour repartir sans historique de messages
   - `inherit` pour continuer la conversation du nœud parent direct (le prédécesseur immédiat dans le graphe). Seul l’historique de messages du parent direct est transmis — pas la branche entière.
-  - `artifacts_only` pour reconstruire un contexte propre à partir d’artefacts entrants via `with`
+  - `artifacts_only` pour reconstruire un contexte propre à partir d’artefacts entrants via `with`. Différence avec `fresh` : un nœud `fresh` reçoit aussi ses données via `with`, mais `artifacts_only` signale l’intention que le nœud ne produit pas d’appel LLM conversationnel et reconstruit son contexte exclusivement à partir de données structurées. En pratique pour la V1, `fresh` et `artifacts_only` ont le même comportement runtime (pas d’historique hérité, contexte construit par `with`) ; la distinction est sémantique et documentaire, elle guide le lecteur du workflow et pourra être exploitée dans de futures optimisations
   - **Contrainte de compilation** : `session: inherit` est interdit sur un nœud situé immédiatement après un `join`. Après un join, seuls `fresh` ou `artifacts_only` sont autorisés, car il n’existe pas de conversation unique à hériter depuis plusieurs branches.
 - Human-in-the-loop explicite :
   - détection LLM configurable du besoin d’arbitrage humain
@@ -271,9 +308,9 @@
 - Budgets et politiques de stop dès la V1 :
   - `max_iterations`
   - `max_parallel_branches`
-  - `max_tokens`
-  - `max_cost_usd`
-  - `max_duration`
+  - `max_tokens` (total input + output cumulés sur tous les appels LLM du run)
+  - `max_cost_usd` (coût monétaire total du run, en dollars US)
+  - `max_duration` (durée wall-clock totale du run, hors temps de pause humaine)
 - Comparaison de recettes dès la V1 :
   - une recette = workflow + presets + policies + métriques attendues
   - la comparaison peut rester CLI/file-based en V1, mais son modèle doit être prévu dès maintenant
@@ -301,7 +338,8 @@
   - propriétés spécifiques par type de nœud, par exemple `mode`, `strategy`, `require`, `instructions`, `min_answers`
 - Rendre le passage de données explicite :
   - `with` construit l’input du nœud suivant
-  - `with` peut référencer `vars`, `input`, `outputs`, `artifacts`, `branch_outputs`
+  - `with` peut référencer `vars`, `input`, `outputs`, `artifacts`
+  - `branch_outputs` n’existe pas en V1 ; l’agrégation de branches passe toujours par un `join` explicite dont l’output est un schema nommé
   - pas de langage d’expression libre en V1
 - Ajouter des nœuds ou capacités explicites pour :
   - `agent`
@@ -328,8 +366,9 @@
   - un nœud standard n’agrège pas implicitement plusieurs entrées
   - l’agrégation passe par un `join` ou un `merge agent` explicite
 - Déclarer explicitement la publication d’artefacts persistants :
-  - le DSL doit offrir un mécanisme pour publier un output comme artefact persistant nommé
-  - le choix exact de syntaxe peut être tranché en phase 0, mais `artifacts.<name>` ne doit pas dépendre d’une convention implicite du runtime
+  - le DSL offre le mot-clé `publish: <artifact_name>` sur un nœud pour publier son output comme artefact persistant nommé
+  - un nœud portant `publish: run_summary` rend son output accessible via `artifacts.run_summary` dans tout le workflow, y compris après un reloop global
+  - `artifacts.<name>` ne dépend d’aucune convention implicite du runtime ; seul un `publish` explicite crée un artefact persistant
 - Ajouter une policy explicite pour les side effects :
   - lecture/écriture workspace autorisées par défaut
   - `run_command` contrôlé par allowlist configurable, avec wildcard `*` possible
@@ -433,7 +472,7 @@
   - une recette de benchmark doit disposer de son propre workspace isolé pour éviter toute interférence entre runs
 - Les sessions sont isolées par défaut sur les nœuds de synthèse et de merge, afin de permettre des “nouvelles sessions” propres pour comparer deux plans.
 - Les nœuds `human` mettent le run dans un statut suspendu explicite, par exemple `paused_waiting_human`.
-- Un run repris repart du nœud humain ou du nœud immédiatement suivant selon le design interne retenu, mais sans rejouer les nœuds déjà validés en amont.
+- Un run repris repart **au nœud immédiatement suivant le nœud `human`** dans le graphe. Le nœud `human` lui-même est considéré comme terminé dès que les réponses sont enregistrées. Les nœuds en amont ne sont pas rejoués.
 - Les réponses humaines sont persistées comme artefacts et référencées par l’IR/runtime comme de nouvelles entrées structurées.
 - Le temps passé en pause humaine ne consomme pas de budget modèle ni de budget tools, mais doit rester mesuré séparément pour l’observabilité du run.
 - Les compteurs de boucle sont incrémentés au moment où une edge portant `LoopName` est traversée.
@@ -580,8 +619,27 @@
   - `ci_fix_until_green`
   - rebouclage global après compliance non atteinte
 
+## Non-objectifs V1
+
+Les éléments suivants sont explicitement **hors périmètre** de la V1. Ils pourront être abordés dans des versions ultérieures.
+
+1. **Parallélisme distribué ou non borné** — pas de scheduler distribué, pas de worker pools, pas de parallélisme implicite. Le fan-out V1 est explicite, borné, et local.
+2. **Store distant** — la persistance V1 est exclusivement file-backed locale. Pas de base de données, pas de store réseau, pas de réplication.
+3. **Langage d'expression riche sur les edges** — les conditions V1 sont limitées à `when <bool_field>` / `when not_<bool_field>` sur le output structuré du nœud source. Pas de comparaisons, pas d'opérateurs logiques composés.
+4. **Réparation implicite de schéma** — si `goai.GenerateObject` échoue à valider, le nœud échoue. Le runtime ne tente pas de corriger ou re-prompter automatiquement. La stratégie de correction doit être modélisée dans le workflow.
+5. **Routage LLM dans un `router`** — le nœud `router` est strictement déterministe. Le routage nécessitant un LLM passe par un nœud `agent` suivi d'edges conditionnelles.
+6. **Types Go générés pour les outputs** — les outputs structurés sont stockés en `json.RawMessage` et manipulés en `map[string]any`.
+7. **Service réseau** — la V1 est un CLI et une bibliothèque Go. Pas de serveur HTTP, pas d'API REST, pas de gRPC. L'architecture doit rester compatible service mais ce n'est pas un livrable V1.
+8. **UI graphique** — pas d'interface web ou desktop. La visualisation se fait via Mermaid et le CLI.
+9. **Streaming d'outputs** — les outputs sont produits une fois le nœud terminé. Pas de streaming token-par-token vers l'extérieur en V1.
+10. **Gestion d'identité et d'authentification** — pas de multi-tenant, pas de gestion d'utilisateurs. L'humain-dans-la-boucle est un mécanisme local (fichier de réponses).
+11. **Rollback automatique** — si la phase `act` échoue ou si la PR finale n'est pas conforme, le runtime ne tente pas de `git revert` automatiquement. Le reloop global repart sur l'état courant du workspace.
+12. **Score de qualité implicite** — le runtime ne calcule pas de score de qualité magique. La qualité est définie par l'`EvaluationPolicy` de chaque recette via des métriques explicites.
+13. **Héritage de session multi-parent** — `session: inherit` ne transmet que l'historique du parent direct. Pas de merge d'historiques de conversation.
+14. **Variables dynamiques ou computed** — les `vars` sont statiques, injectées au lancement. Pas de variables calculées à partir d'outputs de nœuds.
+
 ## Hypothèses et lignes rouges
-- Nom du document : `plans/plan-iterion-v3-platform-ready.md`.
+- Nom du document : `plans/plan-iterion-v4-platform-ready.md`.
 - Tous les objectifs décrits ci-dessus font partie de la V1 cible, même si leur livraison sera échelonnée.
 - La V1 n’est pas “minimaliste” sur les capacités ; elle est ambitieuse, mais bornée par des choix de runtime stricts et auditables.
 - Les outputs structurés du DSL sont stockés en `json.RawMessage` et manipulés en `map[string]any`, pas en types Go générés.
@@ -603,3 +661,16 @@
 - La comparaison de recettes en V1 repose sur le verdict final et des métriques objectives minimales : coût, durée et nombre d’itérations.
 - Le store V1 est uniquement file-backed ; la compatibilité future service reste un objectif d’architecture, pas un livrable V1.
 - La règle “une seule branche mutante par workspace” est validée comme contrainte produit V1, afin de garder un runtime déterministe et sûr.
+
+## Décisions prises lors du verrouillage du contrat (P0-01)
+
+1. **Glossaire unifié ajouté** — un glossaire canonique fige la terminologie à travers DSL, IR, runtime, store et recipes. Chaque terme a une définition unique et des couches d’appartenance explicites.
+2. **`publish: <name>` pour les artefacts persistants** — syntaxe DSL verrouillée. Un nœud portant `publish: X` rend son output accessible via `artifacts.X`, y compris après un reloop global. Sans `publish`, l’output n’est accessible que via `outputs.<node>` et est réinitialisé au reloop.
+3. **Reprise humaine : au nœud suivant** — un run repris après pause humaine repart au nœud immédiatement suivant le nœud `human`. Le nœud `human` est considéré terminé dès enregistrement des réponses. Pas de replay des nœuds amont.
+4. **`max_tokens` = total input + output** — le budget `max_tokens` compte le cumul de tous les tokens (input et output) de tous les appels LLM du run.
+5. **`max_duration` exclut le temps de pause humaine** — le chronomètre de durée s’arrête pendant `paused_waiting_human` et reprend à `run_resumed`.
+6. **`artifacts_only` ≈ `fresh` en V1** — les deux modes n’héritent aucun historique de messages. La distinction est sémantique : `artifacts_only` documente l’intention de construire le contexte uniquement à partir de données structurées. Le runtime V1 les traite identiquement.
+7. **`branch_outputs` supprimé** — cette référence n’existe pas en V1. L’agrégation de branches passe toujours par un `join` explicite. Les `with` peuvent référencer `vars`, `input`, `outputs`, `artifacts`.
+8. **Non-objectifs V1 explicités** — 14 non-objectifs documentés couvrant : parallélisme distribué, store distant, expressions riches, réparation de schéma, routage LLM, types Go générés, service réseau, UI, streaming, auth, rollback, score implicite, héritage multi-parent, variables dynamiques.
+9. **Nom du document corrigé** — la référence `plan-iterion-v3` dans les hypothèses était obsolète, corrigée en `plan-iterion-v4`.
+10. **Fixture DSL mise à jour** — `publish:` ajouté sur `context_builder`, `final_plan_merge`, `technical_decision_human_checkpoint`, `act_on_plan` et `final_pr_compliance_check` dans `examples/pr_refine_dual_model_parallel_compliance.iter`.
