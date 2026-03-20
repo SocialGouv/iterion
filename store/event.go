@@ -35,6 +35,7 @@ const (
 	EventNodeFinished         EventType = "node_finished"
 	EventEdgeSelected         EventType = "edge_selected"
 	EventBudgetWarning        EventType = "budget_warning"
+	EventBudgetExceeded       EventType = "budget_exceeded"
 	EventRunFinished          EventType = "run_finished"
 	EventRunFailed            EventType = "run_failed"
 )

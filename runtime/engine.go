@@ -51,6 +51,7 @@ type runState struct {
 	outputs          map[string]map[string]interface{}
 	loopCounters     map[string]int
 	artifactVersions map[string]int
+	budget           *SharedBudget // shared across branches, nil if no budget
 }
 
 // branchResult holds the outcome of a single parallel branch.
@@ -83,6 +84,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 		outputs:          make(map[string]map[string]interface{}),
 		loopCounters:     make(map[string]int),
 		artifactVersions: make(map[string]int),
+		budget:           newSharedBudget(e.workflow.Budget),
 	}
 
 	return e.execLoop(ctx, rs, e.workflow.Entry)
@@ -181,6 +183,7 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]in
 		outputs:          outputs,
 		loopCounters:     loopCounters,
 		artifactVersions: artifactVersions,
+		budget:           newSharedBudget(e.workflow.Budget),
 	}
 
 	return e.execLoop(ctx, rs, nextNodeID)
@@ -253,6 +256,11 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 			return err
 		}
 
+		// --- Check budget before execution ---
+		if err := e.checkBudgetBeforeExec(rs, currentNodeID); err != nil {
+			return err
+		}
+
 		// --- Build node input from edge mappings ---
 		nodeInput := e.buildNodeInput(currentNodeID, rs.vars, rs.outputs, rs.runInputs)
 
@@ -264,6 +272,11 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 
 		// Store output.
 		rs.outputs[currentNodeID] = output
+
+		// Record budget usage and check limits.
+		if err := e.recordAndCheckBudget(rs, currentNodeID, output); err != nil {
+			return err
+		}
 
 		// Persist artifact if node has publish.
 		if node.Publish != "" {
@@ -336,6 +349,11 @@ func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID stri
 		return "", fmt.Errorf("fan_out_all router %q has no outgoing edges", routerNodeID)
 	}
 
+	// Validate workspace safety: at most one mutating branch in parallel.
+	if err := e.validateWorkspaceSafety(fanEdges); err != nil {
+		return "", err
+	}
+
 	// Determine concurrency limit from budget.
 	maxParallel := len(fanEdges)
 	if e.workflow.Budget != nil && e.workflow.Budget.MaxParallelBranches > 0 && e.workflow.Budget.MaxParallelBranches < maxParallel {
@@ -359,7 +377,7 @@ func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID stri
 			sem <- struct{}{}        // acquire semaphore slot
 			defer func() { <-sem }() // release
 
-			result := e.execBranch(ctx, rs.runID, branchID, edge, parentOutputs, rs.vars, rs.runInputs)
+			result := e.execBranch(ctx, rs, branchID, edge, parentOutputs)
 			resultsCh <- result
 		}(edge, branchID)
 	}
@@ -398,12 +416,16 @@ func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID stri
 // execBranch runs a single parallel branch starting from the target of
 // the given edge. It executes nodes sequentially until it reaches a join
 // node, a terminal node, or encounters an error.
-func (e *Engine) execBranch(ctx context.Context, runID, branchID string, startEdge *ir.Edge, parentOutputs map[string]map[string]interface{}, vars map[string]interface{}, runInputs map[string]interface{}) *branchResult {
+func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, startEdge *ir.Edge, parentOutputs map[string]map[string]interface{}) *branchResult {
 	result := &branchResult{
 		branchID:         branchID,
 		outputs:          make(map[string]map[string]interface{}),
 		artifactVersions: make(map[string]int),
 	}
+
+	runID := rs.runID
+	vars := rs.vars
+	runInputs := rs.runInputs
 
 	// Emit branch_started.
 	_ = e.emitBranch(runID, branchID, store.EventBranchStarted, startEdge.To, nil)
@@ -438,6 +460,20 @@ func (e *Engine) execBranch(ctx context.Context, runID, branchID string, startEd
 			return result
 		}
 
+		// Check budget before execution (duration check).
+		if rs.budget != nil {
+			checks := rs.budget.Check()
+			if exc := findExceeded(checks); exc != nil {
+				_ = e.emitBranch(runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]interface{}{
+					"dimension": exc.dimension,
+					"used":      exc.used,
+					"limit":     exc.limit,
+				})
+				result.err = fmt.Errorf("%w: %s (%.0f/%.0f)", ErrBudgetExceeded, exc.dimension, exc.used, exc.limit)
+				return result
+			}
+		}
+
 		// Emit node_started.
 		_ = e.emitBranch(runID, branchID, store.EventNodeStarted, currentNodeID, map[string]interface{}{
 			"kind": node.Kind.String(),
@@ -459,6 +495,32 @@ func (e *Engine) execBranch(ctx context.Context, runID, branchID string, startEd
 		}
 
 		result.outputs[currentNodeID] = output
+
+		// Record budget usage and check limits.
+		if rs.budget != nil {
+			tokens, costUSD := extractUsage(output)
+			checks := rs.budget.RecordUsage(tokens, costUSD)
+
+			// Emit warnings.
+			for _, w := range findWarnings(checks) {
+				_ = e.emitBranch(runID, branchID, store.EventBudgetWarning, currentNodeID, map[string]interface{}{
+					"dimension": w.dimension,
+					"used":      w.used,
+					"limit":     w.limit,
+				})
+			}
+
+			// Fail on exceeded.
+			if exc := findExceeded(checks); exc != nil {
+				_ = e.emitBranch(runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]interface{}{
+					"dimension": exc.dimension,
+					"used":      exc.used,
+					"limit":     exc.limit,
+				})
+				result.err = fmt.Errorf("%w: %s (%.0f/%.0f)", ErrBudgetExceeded, exc.dimension, exc.used, exc.limit)
+				return result
+			}
+		}
 
 		// Persist artifact if node has publish.
 		if node.Publish != "" {
@@ -958,5 +1020,152 @@ func (e *Engine) failRun(runID, nodeID, reason string) error {
 		"error": reason,
 	})
 	return fmt.Errorf("runtime: %s", reason)
+}
+
+// ---------------------------------------------------------------------------
+// Budget helpers
+// ---------------------------------------------------------------------------
+
+// checkBudgetBeforeExec checks time-based budget limits before a node runs.
+func (e *Engine) checkBudgetBeforeExec(rs *runState, nodeID string) error {
+	if rs.budget == nil {
+		return nil
+	}
+	checks := rs.budget.Check()
+	if exc := findExceeded(checks); exc != nil {
+		_ = e.emit(rs.runID, store.EventBudgetExceeded, nodeID, map[string]interface{}{
+			"dimension": exc.dimension,
+			"used":      exc.used,
+			"limit":     exc.limit,
+		})
+		return e.failRun(rs.runID, nodeID,
+			fmt.Sprintf("budget exceeded: %s (%.0f/%.0f)", exc.dimension, exc.used, exc.limit))
+	}
+	return nil
+}
+
+// recordAndCheckBudget records usage from a node execution and emits
+// budget_warning / budget_exceeded events as needed.
+func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[string]interface{}) error {
+	if rs.budget == nil {
+		return nil
+	}
+
+	tokens, costUSD := extractUsage(output)
+	checks := rs.budget.RecordUsage(tokens, costUSD)
+
+	// Emit warnings.
+	for _, w := range findWarnings(checks) {
+		_ = e.emit(rs.runID, store.EventBudgetWarning, nodeID, map[string]interface{}{
+			"dimension": w.dimension,
+			"used":      w.used,
+			"limit":     w.limit,
+		})
+	}
+
+	// Fail on exceeded.
+	if exc := findExceeded(checks); exc != nil {
+		_ = e.emit(rs.runID, store.EventBudgetExceeded, nodeID, map[string]interface{}{
+			"dimension": exc.dimension,
+			"used":      exc.used,
+			"limit":     exc.limit,
+		})
+		return e.failRun(rs.runID, nodeID,
+			fmt.Sprintf("budget exceeded: %s (%.0f/%.0f)", exc.dimension, exc.used, exc.limit))
+	}
+
+	return nil
+}
+
+// extractUsage reads conventional _tokens and _cost_usd keys from a node
+// output. Returns zeros if absent.
+func extractUsage(output map[string]interface{}) (tokens int, costUSD float64) {
+	if v, ok := output["_tokens"]; ok {
+		switch t := v.(type) {
+		case int:
+			tokens = t
+		case float64:
+			tokens = int(t)
+		case int64:
+			tokens = int(t)
+		}
+	}
+	if v, ok := output["_cost_usd"]; ok {
+		switch t := v.(type) {
+		case float64:
+			costUSD = t
+		case int:
+			costUSD = float64(t)
+		}
+	}
+	return
+}
+
+// ---------------------------------------------------------------------------
+// Workspace mutation safety
+// ---------------------------------------------------------------------------
+
+// isMutatingNode returns true if the node may modify the workspace.
+// Tool nodes are always mutating. Agent/judge nodes with tools are
+// potentially mutating.
+func isMutatingNode(node *ir.Node) bool {
+	if node.Kind == ir.NodeTool {
+		return true
+	}
+	if (node.Kind == ir.NodeAgent || node.Kind == ir.NodeJudge) && len(node.Tools) > 0 {
+		return true
+	}
+	return false
+}
+
+// branchContainsMutation walks from startNodeID to a join/terminal node
+// and returns true if any node along the path may mutate the workspace.
+func (e *Engine) branchContainsMutation(startNodeID string) bool {
+	visited := map[string]bool{}
+	queue := []string{startNodeID}
+	for len(queue) > 0 {
+		nodeID := queue[0]
+		queue = queue[1:]
+		if visited[nodeID] {
+			continue
+		}
+		visited[nodeID] = true
+
+		node, ok := e.workflow.Nodes[nodeID]
+		if !ok {
+			continue
+		}
+		// Stop walking at join or terminal nodes.
+		if node.Kind == ir.NodeJoin || node.Kind == ir.NodeDone || node.Kind == ir.NodeFail {
+			continue
+		}
+		if isMutatingNode(node) {
+			return true
+		}
+		for _, edge := range e.workflow.Edges {
+			if edge.From == nodeID {
+				queue = append(queue, edge.To)
+			}
+		}
+	}
+	return false
+}
+
+// validateWorkspaceSafety checks that at most one branch in a fan-out
+// contains mutating nodes. Returns an error if the topology is unsafe.
+func (e *Engine) validateWorkspaceSafety(fanEdges []*ir.Edge) error {
+	mutatingCount := 0
+	var mutatingBranches []string
+	for _, edge := range fanEdges {
+		if e.branchContainsMutation(edge.To) {
+			mutatingCount++
+			mutatingBranches = append(mutatingBranches, edge.To)
+		}
+	}
+	if mutatingCount > 1 {
+		return fmt.Errorf("workspace safety violation: %d branches contain mutating nodes %v; "+
+			"at most 1 mutating branch is allowed in parallel on the same workspace", mutatingCount, mutatingBranches)
+	}
+	return nil
 }
 

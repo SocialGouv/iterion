@@ -197,6 +197,7 @@ func TestAllEventTypesPersistable(t *testing.T) {
 		EventNodeFinished,
 		EventEdgeSelected,
 		EventBudgetWarning,
+		EventBudgetExceeded,
 		EventRunFinished,
 		EventRunFailed,
 	}
