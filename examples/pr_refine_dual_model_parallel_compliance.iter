@@ -1,0 +1,734 @@
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+prompt context_builder_system:
+  Tu prépares un contexte de PR exploitable par plusieurs agents.
+  Tu dois normaliser l'entrée, utiliser les tools si nécessaire, et produire
+  un contexte compact mais suffisant pour review, planning, act et verification.
+
+prompt context_builder_user:
+  Construis un contexte de PR normalise a partir des inputs.
+  Inclus le titre, la description, la branche source, la branche cible,
+  le diff utile, la liste des fichiers modifies, un resume du repository
+  et les informations importantes pour la review et l'implementation.
+
+prompt pr_review_system:
+  Tu es un reviewer de pull request tres exigeant.
+  Applique strictement les regles de review et de compliance fournies.
+  Produis une review structuree, concrete, actionnable et sans complaisance.
+
+prompt pr_review_user:
+  Review cette pull request en utilisant les regles suivantes :
+  {{input.review_rules}}
+
+  Contexte PR :
+  {{input.pr_context}}
+
+prompt plan_generation_system:
+  Tu es un architecte et un engineer senior.
+  Transforme une review de PR en plan de correction ordonne, concret, testable
+  et executable par un agent d'action.
+
+prompt plan_generation_user:
+  A partir de la review et du contexte PR, produis un plan de correction.
+
+  Review :
+  {{input.review}}
+
+  Contexte PR :
+  {{input.pr_context}}
+
+prompt plan_synthesis_system:
+  Tu compares deux reviews et deux plans issus de modeles differents.
+  Tu dois identifier les convergences, divergences, oublis, risques et produire
+  une synthese fusionnee plus forte que chacun des plans d'origine.
+
+prompt plan_synthesis_user:
+  Compare les deux reviews et les deux plans.
+  Produis une synthese fusionnee, priorisee et exploitable.
+
+  Claude review :
+  {{input.claude_review}}
+
+  GPT review :
+  {{input.gpt_review}}
+
+  Claude plan :
+  {{input.claude_plan}}
+
+  GPT plan :
+  {{input.gpt_plan}}
+
+prompt final_plan_merge_system:
+  Tu es l'arbitre final entre deux syntheses de plans.
+  Tu dois fusionner sans perdre les points importants, supprimer les doublons
+  et produire le meilleur plan final de remediation.
+
+prompt final_plan_merge_user:
+  Fusionne ces deux syntheses de plans en un plan final unique.
+
+  Claude synthesis :
+  {{input.claude_plan_synthesis}}
+
+  GPT synthesis :
+  {{input.gpt_plan_synthesis}}
+
+prompt plan_compliance_system:
+  Tu es le juge de compliance du plan.
+  Tu ne proposes pas d'implementation, tu juges seulement si le plan est
+  suffisamment complet, correct, conforme et executable.
+
+prompt plan_compliance_user:
+  Evalue ce plan a partir des regles suivantes :
+  {{input.compliance_rules}}
+
+  Plan :
+  {{input.plan}}
+
+  Contexte PR :
+  {{input.pr_context}}
+
+prompt technical_decision_arbitration_system:
+  Tu determines si le plan comporte des decisions techniques structurantes
+  qui doivent etre arbitrees ou clarifiees par un humain avant execution.
+  Tu ne demandes un humain que si l'incertitude est importante, bloquante
+  ou risquee, et que le repository ou les artefacts disponibles ne suffisent pas.
+
+prompt technical_decision_arbitration_user:
+  Evalue si un humain doit etre sollicite avant la phase act.
+
+  Regles d'arbitrage :
+  {{input.arbitration_rules}}
+
+  Plan :
+  {{input.plan}}
+
+  Verdict de compliance :
+  {{input.compliance_verdict}}
+
+  Contexte PR :
+  {{input.pr_context}}
+
+prompt human_clarification_instructions:
+  Des decisions techniques structurantes doivent etre clarifiees avant execution.
+  Reponds a chaque question de facon concrete, courte et exploitable.
+  Si une decision impose des contraintes ou des interdits, formule-les explicitement.
+
+prompt human_clarification_merge_system:
+  Tu integres des clarifications humaines dans un plan de remediation.
+  Tu dois mettre a jour le plan sans perdre les contraintes de compliance
+  ni les points importants deja valides.
+
+prompt human_clarification_merge_user:
+  Integre les reponses humaines dans le plan.
+
+  Plan courant :
+  {{input.plan}}
+
+  Evaluation des decisions techniques :
+  {{input.decision_assessment}}
+
+  Reponses humaines :
+  {{input.human_answers}}
+
+  Contexte PR :
+  {{input.pr_context}}
+
+prompt plan_refinement_system:
+  Tu raffines un plan deja existant a partir d'un verdict de compliance.
+  Tu dois corriger les lacunes et produire une nouvelle version du plan.
+
+prompt plan_refinement_user:
+  Raffine ce plan selon le verdict de compliance.
+
+  Plan courant :
+  {{input.plan}}
+
+  Verdict :
+  {{input.verdict}}
+
+  Contexte PR :
+  {{input.pr_context}}
+
+prompt act_system:
+  Tu es un agent d'execution de plan.
+  Tu dois appliquer le plan au workspace avec prudence, utiliser les tools
+  necessaires, verifier les changements et produire un rapport d'action structure.
+
+prompt act_user:
+  Applique ce plan de correction sur le repository.
+
+  Plan approuve :
+  {{input.approved_plan}}
+
+  Contexte PR :
+  {{input.pr_context}}
+
+prompt final_review_system:
+  Tu es un reviewer final de PR apres remediation.
+  Tu reevalues la pull request corrigee selon les memes standards de review
+  et les memes regles de compliance que l'analyse initiale.
+
+prompt final_review_user:
+  Review a nouveau la PR corrigee en utilisant ces regles :
+  {{input.review_rules}}
+
+  Contexte PR :
+  {{input.pr_context}}
+
+  Resultat de la phase act :
+  {{input.act_result}}
+
+prompt final_compliance_system:
+  Tu es le juge final de la recette.
+  Tu determines si la PR corrigee est suffisamment conforme pour terminer le run
+  ou s'il faut recommencer un cycle complet review -> plan -> act -> verify.
+
+prompt final_compliance_user:
+  Evalue la PR corrigee a partir des reviews finales et des regles suivantes :
+  {{input.final_review_rules}}
+
+  Claude final review :
+  {{input.claude_final_review}}
+
+  GPT final review :
+  {{input.gpt_final_review}}
+
+  Resultat de la phase act :
+  {{input.act_result}}
+
+  Contexte PR :
+  {{input.pr_context}}
+
+schema repo_context_request:
+  pr_title: string
+  pr_description: string
+  base_ref: string
+  head_ref: string
+
+schema pr_context:
+  pr_title: string
+  pr_description: string
+  base_ref: string
+  head_ref: string
+  diff: string
+  changed_files: string[]
+  repository_summary: string
+  implementation_notes: string[]
+  risky_areas: string[]
+
+schema review_request:
+  pr_context: json
+  review_rules: string
+
+schema review_result:
+  approved: bool
+  summary: string
+  issues: string[]
+  blockers: string[]
+  compliance_gaps: string[]
+  recommendations: string[]
+  confidence: string [enum: "low", "medium", "high"]
+
+schema plan_request:
+  pr_context: json
+  review: json
+
+schema remediation_plan:
+  summary: string
+  goals: string[]
+  ordered_steps: string[]
+  validation_steps: string[]
+  risks: string[]
+  addressed_issues: string[]
+
+schema dual_plan_bundle:
+  claude_review: json
+  gpt_review: json
+  claude_plan: json
+  gpt_plan: json
+
+schema plan_synthesis:
+  merged_summary: string
+  agreements: string[]
+  disagreements: string[]
+  missing_items: string[]
+  final_steps: string[]
+  risk_notes: string[]
+
+schema synthesis_bundle:
+  claude_plan_synthesis: json
+  gpt_plan_synthesis: json
+
+schema plan_compliance_request:
+  pr_context: json
+  plan: json
+  compliance_rules: string
+
+schema technical_decision_gate_request:
+  pr_context: json
+  plan: json
+  compliance_verdict: json
+  arbitration_rules: string
+
+schema technical_decision_assessment:
+  needs_human_input: bool
+  summary: string
+  decision_areas: string[]
+  questions: string[]
+  rationales: string[]
+  expected_decisions: string[]
+
+schema compliance_verdict:
+  approved: bool
+  issues: string[]
+  blocking_reasons: string[]
+  recommended_fixes: string[]
+  confidence: string [enum: "low", "medium", "high"]
+
+schema plan_refinement_request:
+  pr_context: json
+  plan: json
+  verdict: json
+
+schema human_answers:
+  answered: bool
+  questions: string[]
+  answers: string[]
+  responder: string
+  notes: string
+
+schema human_clarification_request:
+  pr_context: json
+  plan: json
+  decision_assessment: json
+  human_answers: json
+
+schema act_request:
+  pr_context: json
+  approved_plan: json
+
+schema act_result:
+  applied: bool
+  summary: string
+  files_changed: string[]
+  commands_run: string[]
+  tests_run: string[]
+  remaining_risks: string[]
+
+schema final_review_request:
+  pr_context: json
+  act_result: json
+  review_rules: string
+
+schema final_reviews_bundle:
+  pr_context: json
+  act_result: json
+  claude_final_review: json
+  gpt_final_review: json
+  final_review_rules: string
+
+agent context_builder:
+  model: "${CONTEXT_MODEL}"
+  input: repo_context_request
+  output: pr_context
+  system: context_builder_system
+  user: context_builder_user
+  session: fresh
+  tools: [git_diff, git_status, read_file, list_files, search_codebase, tree]
+  tool_max_steps: 8
+
+router initial_review_fanout:
+  mode: fan_out_all
+
+agent claude_review:
+  model: "${CLAUDE_MODEL}"
+  input: review_request
+  output: review_result
+  system: pr_review_system
+  user: pr_review_user
+  session: fresh
+  tools: [git_diff, read_file, list_files, search_codebase, tree]
+  tool_max_steps: 10
+
+agent gpt_review:
+  model: "${GPT_MODEL}"
+  input: review_request
+  output: review_result
+  system: pr_review_system
+  user: pr_review_user
+  session: fresh
+  tools: [git_diff, read_file, list_files, search_codebase, tree]
+  tool_max_steps: 10
+
+agent claude_plan:
+  model: "${CLAUDE_MODEL}"
+  input: plan_request
+  output: remediation_plan
+  system: plan_generation_system
+  user: plan_generation_user
+  session: inherit
+  tools: [read_file, search_codebase, git_diff]
+  tool_max_steps: 6
+
+agent gpt_plan:
+  model: "${GPT_MODEL}"
+  input: plan_request
+  output: remediation_plan
+  system: plan_generation_system
+  user: plan_generation_user
+  session: inherit
+  tools: [read_file, search_codebase, git_diff]
+  tool_max_steps: 6
+
+join initial_plans_join:
+  strategy: wait_all
+  require: [claude_plan, gpt_plan]
+  output: dual_plan_bundle
+
+router plan_synthesis_fanout:
+  mode: fan_out_all
+
+agent claude_plan_synthesis:
+  model: "${CLAUDE_MODEL}"
+  input: dual_plan_bundle
+  output: plan_synthesis
+  system: plan_synthesis_system
+  user: plan_synthesis_user
+  session: fresh
+
+agent gpt_plan_synthesis:
+  model: "${GPT_MODEL}"
+  input: dual_plan_bundle
+  output: plan_synthesis
+  system: plan_synthesis_system
+  user: plan_synthesis_user
+  session: fresh
+
+join plan_syntheses_join:
+  strategy: wait_all
+  require: [claude_plan_synthesis, gpt_plan_synthesis]
+  output: synthesis_bundle
+
+agent final_plan_merge:
+  model: "${FINAL_MERGE_MODEL}"
+  input: synthesis_bundle
+  output: remediation_plan
+  system: final_plan_merge_system
+  user: final_plan_merge_user
+  session: fresh
+
+judge plan_compliance_check_initial:
+  model: "${PLAN_JUDGE_MODEL}"
+  input: plan_compliance_request
+  output: compliance_verdict
+  system: plan_compliance_system
+  user: plan_compliance_user
+  session: fresh
+
+judge technical_decision_gate:
+  model: "${HUMAN_GATE_MODEL}"
+  input: technical_decision_gate_request
+  output: technical_decision_assessment
+  system: technical_decision_arbitration_system
+  user: technical_decision_arbitration_user
+  session: fresh
+
+human technical_decision_human_checkpoint:
+  input: technical_decision_assessment
+  output: human_answers
+  instructions: human_clarification_instructions
+  mode: pause_until_answers
+  min_answers: 1
+
+agent integrate_human_clarifications:
+  model: "${HUMAN_GATE_MODEL}"
+  input: human_clarification_request
+  output: remediation_plan
+  system: human_clarification_merge_system
+  user: human_clarification_merge_user
+  session: fresh
+
+judge plan_compliance_check_post_human:
+  model: "${PLAN_JUDGE_MODEL}"
+  input: plan_compliance_request
+  output: compliance_verdict
+  system: plan_compliance_system
+  user: plan_compliance_user
+  session: fresh
+
+agent refine_plan_claude:
+  model: "${CLAUDE_MODEL}"
+  input: plan_refinement_request
+  output: remediation_plan
+  system: plan_refinement_system
+  user: plan_refinement_user
+  session: fresh
+
+judge plan_compliance_check_after_claude:
+  model: "${PLAN_JUDGE_MODEL}"
+  input: plan_compliance_request
+  output: compliance_verdict
+  system: plan_compliance_system
+  user: plan_compliance_user
+  session: fresh
+
+agent refine_plan_gpt:
+  model: "${GPT_MODEL}"
+  input: plan_refinement_request
+  output: remediation_plan
+  system: plan_refinement_system
+  user: plan_refinement_user
+  session: fresh
+
+judge plan_compliance_check_after_gpt:
+  model: "${PLAN_JUDGE_MODEL}"
+  input: plan_compliance_request
+  output: compliance_verdict
+  system: plan_compliance_system
+  user: plan_compliance_user
+  session: fresh
+
+agent act_on_plan:
+  model: "${ACT_MODEL}"
+  input: act_request
+  output: act_result
+  system: act_system
+  user: act_user
+  session: fresh
+  tools: [read_file, write_file, patch, list_files, search_codebase, git_diff, git_status, run_command]
+  tool_max_steps: 20
+
+router final_review_fanout:
+  mode: fan_out_all
+
+agent claude_final_review:
+  model: "${CLAUDE_MODEL}"
+  input: final_review_request
+  output: review_result
+  system: final_review_system
+  user: final_review_user
+  session: fresh
+  tools: [git_diff, read_file, list_files, search_codebase, tree]
+  tool_max_steps: 10
+
+agent gpt_final_review:
+  model: "${GPT_MODEL}"
+  input: final_review_request
+  output: review_result
+  system: final_review_system
+  user: final_review_user
+  session: fresh
+  tools: [git_diff, read_file, list_files, search_codebase, tree]
+  tool_max_steps: 10
+
+join final_reviews_join:
+  strategy: wait_all
+  require: [claude_final_review, gpt_final_review]
+  output: final_reviews_bundle
+
+judge final_pr_compliance_check:
+  model: "${FINAL_JUDGE_MODEL}"
+  input: final_reviews_bundle
+  output: compliance_verdict
+  system: final_compliance_system
+  user: final_compliance_user
+  session: fresh
+
+workflow pr_refine_dual_model_parallel_compliance:
+  vars:
+    pr_title: string
+    pr_description: string = ""
+    base_ref: string = "origin/main"
+    head_ref: string = "HEAD"
+    review_rules: string
+    plan_compliance_rules: string
+    human_arbitration_rules: string
+    final_review_rules: string
+
+  entry: context_builder
+
+  budget:
+    max_parallel_branches: 4
+    max_duration: "60m"
+    max_cost_usd: 30
+    max_tokens: 800000
+
+  context_builder -> initial_review_fanout with {
+    pr_context: "{{outputs.context_builder}}"
+  }
+
+  initial_review_fanout -> claude_review with {
+    pr_context: "{{input.pr_context}}",
+    review_rules: "{{vars.review_rules}}"
+  }
+
+  initial_review_fanout -> gpt_review with {
+    pr_context: "{{input.pr_context}}",
+    review_rules: "{{vars.review_rules}}"
+  }
+
+  claude_review -> claude_plan with {
+    pr_context: "{{outputs.context_builder}}",
+    review: "{{outputs.claude_review}}"
+  }
+
+  gpt_review -> gpt_plan with {
+    pr_context: "{{outputs.context_builder}}",
+    review: "{{outputs.gpt_review}}"
+  }
+
+  claude_plan -> initial_plans_join
+  gpt_plan -> initial_plans_join
+
+  initial_plans_join -> plan_synthesis_fanout with {
+    claude_review: "{{outputs.claude_review}}",
+    gpt_review: "{{outputs.gpt_review}}",
+    claude_plan: "{{outputs.claude_plan}}",
+    gpt_plan: "{{outputs.gpt_plan}}"
+  }
+
+  plan_synthesis_fanout -> claude_plan_synthesis with {
+    claude_review: "{{input.claude_review}}",
+    gpt_review: "{{input.gpt_review}}",
+    claude_plan: "{{input.claude_plan}}",
+    gpt_plan: "{{input.gpt_plan}}"
+  }
+
+  plan_synthesis_fanout -> gpt_plan_synthesis with {
+    claude_review: "{{input.claude_review}}",
+    gpt_review: "{{input.gpt_review}}",
+    claude_plan: "{{input.claude_plan}}",
+    gpt_plan: "{{input.gpt_plan}}"
+  }
+
+  claude_plan_synthesis -> plan_syntheses_join
+  gpt_plan_synthesis -> plan_syntheses_join
+
+  plan_syntheses_join -> final_plan_merge with {
+    claude_plan_synthesis: "{{outputs.claude_plan_synthesis}}",
+    gpt_plan_synthesis: "{{outputs.gpt_plan_synthesis}}"
+  }
+
+  final_plan_merge -> plan_compliance_check_initial with {
+    pr_context: "{{outputs.context_builder}}",
+    plan: "{{outputs.final_plan_merge}}",
+    compliance_rules: "{{vars.plan_compliance_rules}}"
+  }
+
+  plan_compliance_check_initial -> technical_decision_gate when approved with {
+    pr_context: "{{outputs.context_builder}}",
+    plan: "{{outputs.final_plan_merge}}",
+    compliance_verdict: "{{outputs.plan_compliance_check_initial}}",
+    arbitration_rules: "{{vars.human_arbitration_rules}}"
+  }
+
+  plan_compliance_check_initial -> refine_plan_claude when not_approved as plan_refine_loop(6) with {
+    pr_context: "{{outputs.context_builder}}",
+    plan: "{{outputs.final_plan_merge}}",
+    verdict: "{{outputs.plan_compliance_check_initial}}"
+  }
+
+  technical_decision_gate -> technical_decision_human_checkpoint when needs_human_input with {
+    needs_human_input: "{{outputs.technical_decision_gate.needs_human_input}}",
+    summary: "{{outputs.technical_decision_gate.summary}}",
+    decision_areas: "{{outputs.technical_decision_gate.decision_areas}}",
+    questions: "{{outputs.technical_decision_gate.questions}}",
+    rationales: "{{outputs.technical_decision_gate.rationales}}",
+    expected_decisions: "{{outputs.technical_decision_gate.expected_decisions}}"
+  }
+
+  technical_decision_gate -> act_on_plan with {
+    pr_context: "{{outputs.context_builder}}",
+    approved_plan: "{{outputs.final_plan_merge}}"
+  }
+
+  technical_decision_human_checkpoint -> integrate_human_clarifications with {
+    pr_context: "{{outputs.context_builder}}",
+    plan: "{{outputs.final_plan_merge}}",
+    decision_assessment: "{{outputs.technical_decision_gate}}",
+    human_answers: "{{outputs.technical_decision_human_checkpoint}}"
+  }
+
+  integrate_human_clarifications -> plan_compliance_check_post_human with {
+    pr_context: "{{outputs.context_builder}}",
+    plan: "{{outputs.integrate_human_clarifications}}",
+    compliance_rules: "{{vars.plan_compliance_rules}}"
+  }
+
+  plan_compliance_check_post_human -> act_on_plan when approved with {
+    pr_context: "{{outputs.context_builder}}",
+    approved_plan: "{{outputs.integrate_human_clarifications}}"
+  }
+
+  plan_compliance_check_post_human -> refine_plan_claude when not_approved as plan_refine_loop(6) with {
+    pr_context: "{{outputs.context_builder}}",
+    plan: "{{outputs.integrate_human_clarifications}}",
+    verdict: "{{outputs.plan_compliance_check_post_human}}"
+  }
+
+  refine_plan_claude -> plan_compliance_check_after_claude with {
+    pr_context: "{{outputs.context_builder}}",
+    plan: "{{outputs.refine_plan_claude}}",
+    compliance_rules: "{{vars.plan_compliance_rules}}"
+  }
+
+  plan_compliance_check_after_claude -> act_on_plan when approved with {
+    pr_context: "{{outputs.context_builder}}",
+    approved_plan: "{{outputs.refine_plan_claude}}"
+  }
+
+  plan_compliance_check_after_claude -> refine_plan_gpt when not_approved as plan_refine_loop(6) with {
+    pr_context: "{{outputs.context_builder}}",
+    plan: "{{outputs.refine_plan_claude}}",
+    verdict: "{{outputs.plan_compliance_check_after_claude}}"
+  }
+
+  refine_plan_gpt -> plan_compliance_check_after_gpt with {
+    pr_context: "{{outputs.context_builder}}",
+    plan: "{{outputs.refine_plan_gpt}}",
+    compliance_rules: "{{vars.plan_compliance_rules}}"
+  }
+
+  plan_compliance_check_after_gpt -> act_on_plan when approved with {
+    pr_context: "{{outputs.context_builder}}",
+    approved_plan: "{{outputs.refine_plan_gpt}}"
+  }
+
+  plan_compliance_check_after_gpt -> refine_plan_claude when not_approved as plan_refine_loop(6) with {
+    pr_context: "{{outputs.context_builder}}",
+    plan: "{{outputs.refine_plan_gpt}}",
+    verdict: "{{outputs.plan_compliance_check_after_gpt}}"
+  }
+
+  act_on_plan -> final_review_fanout with {
+    pr_context: "{{outputs.context_builder}}",
+    act_result: "{{outputs.act_on_plan}}",
+    review_rules: "{{vars.final_review_rules}}"
+  }
+
+  final_review_fanout -> claude_final_review with {
+    pr_context: "{{input.pr_context}}",
+    act_result: "{{input.act_result}}",
+    review_rules: "{{input.review_rules}}"
+  }
+
+  final_review_fanout -> gpt_final_review with {
+    pr_context: "{{input.pr_context}}",
+    act_result: "{{input.act_result}}",
+    review_rules: "{{input.review_rules}}"
+  }
+
+  claude_final_review -> final_reviews_join
+  gpt_final_review -> final_reviews_join
+
+  final_reviews_join -> final_pr_compliance_check with {
+    pr_context: "{{outputs.context_builder}}",
+    act_result: "{{outputs.act_on_plan}}",
+    claude_final_review: "{{outputs.claude_final_review}}",
+    gpt_final_review: "{{outputs.gpt_final_review}}",
+    final_review_rules: "{{vars.final_review_rules}}"
+  }
+
+  final_pr_compliance_check -> done when approved
+  final_pr_compliance_check -> context_builder when not_approved as full_recipe_loop(3)

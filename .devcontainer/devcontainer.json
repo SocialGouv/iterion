@@ -1,0 +1,20 @@
+{
+  "name": "Claude Code Sandbox",
+  "image": "jetpackio/devbox:latest",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1.6.1": {
+      "version": "lts"
+    }
+  },
+  "runArgs": ["--security-opt=no-new-privileges=false"],
+  "mounts": [
+    "source=${localEnv:HOME}/.claude,target=/home/devbox/.claude,type=bind,consistency=cached"
+  ],
+  "containerEnv": {
+    "CLAUDE_CONFIG_DIR": "/home/devbox/.claude",
+    "HOST_WORKSPACE": "${localWorkspaceFolder}"
+  },
+  "initializeCommand": "mkdir -p ${localEnv:HOME}/.claude",
+  "postCreateCommand": "npm install -g @anthropic-ai/claude-code && HOST_KEY=$(echo \"$HOST_WORKSPACE\" | tr '/' '-'); CONTAINER_KEY=$(echo \"$PWD\" | tr '/' '-'); if [ \"$HOST_KEY\" != \"$CONTAINER_KEY\" ] && [ -d \"$HOME/.claude/projects/$HOST_KEY\" ]; then ln -sfn \"$HOME/.claude/projects/$HOST_KEY\" \"$HOME/.claude/projects/$CONTAINER_KEY\"; fi",
+  "remoteUser": "devbox"
+}
