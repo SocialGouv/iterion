@@ -11,6 +11,7 @@ Ce document décrit le rôle de chaque fixture de référence, leur relation et 
 | `pr_refine_dual_model_parallel_compliance` | **Workflow phare V1** | 2+ | oui (fan-out) | oui | refine(6) + recipe(3) |
 | `recipe_benchmark` | Comparaison de recettes | N | oui (fan-out) | non | aucune |
 | `ci_fix_until_green` | Fix CI itératif | 1 | non | non | fix(5) |
+| `pr_refine_dual_model_parallel_mcp` | Variante MCP (delegation) | 2 | oui (fan-out) | non | recipe(3) |
 
 ## Détail des fixtures
 
@@ -42,6 +43,12 @@ Exerce **toutes les primitives V1** : agent, judge, router, join, human, done, f
 
 Exécute deux recettes en parallèle sur la même PR, agrège les résultats, compare via un judge. Sert à **comparer coût, qualité, itérations et latence** entre recettes. Extensible à N recettes.
 
+### `pr_refine_dual_model_parallel_mcp`
+
+**Chemin nominal :** identique a `pr_refine_dual_model_parallel`.
+
+Variante MCP du workflow dual-model parallele. Au lieu d'appeler les APIs LLM directement (`model:`), chaque noeud delegue son travail a un agent CLI externe (`delegate:`). Les noeuds Claude utilisent `claude_code` (claude-code CLI), les noeuds GPT utilisent `codex` (OpenAI Codex CLI). Le graphe, schemas, prompts et edges sont identiques a la version API. Exerce la primitive `delegate` en plus de router, join, publish, boucle. Voir `docs/mcp_delegation.md` pour la comparaison detaillee API vs delegation.
+
 ### `ci_fix_until_green`
 
 **Chemin nominal :** diagnose → plan → act → run_ci → verify → done ou reboucle.
@@ -54,6 +61,8 @@ Pattern itératif de correction CI. Diagnostique l'échec, planifie un fix, appl
 pr_refine_single_model          ← baseline simple, 1 modèle
     ↓ (ajouter parallélisme)
 pr_refine_dual_model_parallel   ← dual-model, pas de gate
+    ↓ (delegation MCP)
+pr_refine_dual_model_parallel_mcp        ← variante delegation (claude-code + codex)
     ↓ (ajouter compliance + human)
 pr_refine_dual_model_parallel_compliance  ← workflow phare complet
     ↓ (benchmarker)

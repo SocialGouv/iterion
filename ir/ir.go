@@ -71,6 +71,7 @@ type Node struct {
 
 	// --- Agent / Judge fields ---
 	Model        string      // model identifier (env refs already noted)
+	Delegate     string      // delegation backend name (empty = direct LLM call)
 	InputSchema  string      // schema reference name (empty if not set)
 	OutputSchema string      // schema reference name (empty if not set)
 	Publish      string      // persistent artifact name (empty if not set)

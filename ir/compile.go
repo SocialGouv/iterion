@@ -14,14 +14,15 @@ import (
 type DiagCode string
 
 const (
-	DiagUnknownNode      DiagCode = "C001" // edge references unknown node
-	DiagUnknownSchema    DiagCode = "C002" // node references unknown schema
-	DiagUnknownPrompt    DiagCode = "C003" // node references unknown prompt
-	DiagBadTemplateRef   DiagCode = "C004" // malformed template reference
-	DiagDuplicateLoop    DiagCode = "C005" // conflicting loop definitions
-	DiagNoWorkflow       DiagCode = "C006" // no workflow found in file
-	DiagMultipleWorkflow DiagCode = "C007" // multiple workflows (unsupported in V1)
-	DiagMissingEntry     DiagCode = "C008" // entry node not found
+	DiagUnknownNode            DiagCode = "C001" // edge references unknown node
+	DiagUnknownSchema          DiagCode = "C002" // node references unknown schema
+	DiagUnknownPrompt          DiagCode = "C003" // node references unknown prompt
+	DiagBadTemplateRef         DiagCode = "C004" // malformed template reference
+	DiagDuplicateLoop          DiagCode = "C005" // conflicting loop definitions
+	DiagNoWorkflow             DiagCode = "C006" // no workflow found in file
+	DiagMultipleWorkflow       DiagCode = "C007" // multiple workflows (unsupported in V1)
+	DiagMissingEntry           DiagCode = "C008" // entry node not found
+	DiagMissingModelOrDelegate DiagCode = "C018" // agent/judge has neither model nor delegate
 )
 
 // Severity indicates the severity of a diagnostic.
@@ -246,11 +247,15 @@ func (c *compiler) compileAgents() {
 		c.validateSchemaRef(a.Name, "output", a.Output)
 		c.validatePromptRef(a.Name, "system", a.System)
 		c.validatePromptRef(a.Name, "user", a.User)
+		if a.Model == "" && a.Delegate == "" {
+			c.errorf(DiagMissingModelOrDelegate, "agent %q must set either 'model' or 'delegate'", a.Name)
+		}
 
 		c.nodes[a.Name] = &Node{
 			ID:           a.Name,
 			Kind:         NodeAgent,
 			Model:        a.Model,
+			Delegate:     a.Delegate,
 			InputSchema:  a.Input,
 			OutputSchema: a.Output,
 			Publish:      a.Publish,
@@ -273,11 +278,15 @@ func (c *compiler) compileJudges() {
 		c.validateSchemaRef(j.Name, "output", j.Output)
 		c.validatePromptRef(j.Name, "system", j.System)
 		c.validatePromptRef(j.Name, "user", j.User)
+		if j.Model == "" && j.Delegate == "" {
+			c.errorf(DiagMissingModelOrDelegate, "judge %q must set either 'model' or 'delegate'", j.Name)
+		}
 
 		c.nodes[j.Name] = &Node{
 			ID:           j.Name,
 			Kind:         NodeJudge,
 			Model:        j.Model,
+			Delegate:     j.Delegate,
 			InputSchema:  j.Input,
 			OutputSchema: j.Output,
 			Publish:      j.Publish,

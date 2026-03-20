@@ -538,10 +538,13 @@ func (p *parser) parseAgentProp(ad *ast.AgentDecl, propTok Token) {
 		ad.Session = p.parseSessionMode()
 	case TokenTools:
 		p.expect(TokenColon)
-		ad.Tools = p.parseIdentList()
+		ad.Tools = p.parseToolList()
 	case TokenToolMaxSteps:
 		p.expect(TokenColon)
 		ad.ToolMaxSteps = p.expectInt()
+	case TokenDelegate:
+		p.expect(TokenColon)
+		ad.Delegate = p.expectString()
 	default:
 		p.addError(DiagUnknownProperty, propTok, "unknown agent property '"+propTok.Value+"'")
 		p.skipToNewline()
@@ -611,10 +614,13 @@ func (p *parser) parseJudgeProp(jd *ast.JudgeDecl, propTok Token) {
 		jd.Session = p.parseSessionMode()
 	case TokenTools:
 		p.expect(TokenColon)
-		jd.Tools = p.parseIdentList()
+		jd.Tools = p.parseToolList()
 	case TokenToolMaxSteps:
 		p.expect(TokenColon)
 		jd.ToolMaxSteps = p.expectInt()
+	case TokenDelegate:
+		p.expect(TokenColon)
+		jd.Delegate = p.expectString()
 	default:
 		p.addError(DiagUnknownProperty, propTok, "unknown judge property '"+propTok.Value+"'")
 		p.skipToNewline()
@@ -1168,6 +1174,45 @@ func (p *parser) parseIdentList() []string {
 	return names
 }
 
+// parseToolList parses a bracketed list of tool references that may contain
+// dotted qualified names (e.g. [git_diff, mcp.claude_code.delegate]).
+func (p *parser) parseToolList() []string {
+	p.expect(TokenLBrack)
+	var names []string
+	name := p.parseToolRef()
+	if name != "" {
+		names = append(names, name)
+	}
+	for p.peek().Type == TokenComma {
+		p.next() // consume ,
+		name = p.parseToolRef()
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	p.expect(TokenRBrack)
+	return names
+}
+
+// parseToolRef parses a single tool reference: IDENT { "." IDENT }.
+func (p *parser) parseToolRef() string {
+	t := p.next()
+	id := tokenAsIdent(t)
+	if id == "" {
+		return ""
+	}
+	for p.peek().Type == TokenDot {
+		p.next() // consume .
+		t = p.next()
+		part := tokenAsIdent(t)
+		if part == "" {
+			break
+		}
+		id += "." + part
+	}
+	return id
+}
+
 func (p *parser) expectString() string {
 	t := p.next()
 	if t.Type == TokenString {
@@ -1242,7 +1287,7 @@ func isKeywordToken(tt TokenType) bool {
 		TokenEntry, TokenBudget, TokenModel, TokenInput, TokenOutput,
 		TokenPublish, TokenSystem, TokenUser, TokenSession, TokenTools,
 		TokenToolMaxSteps, TokenMode, TokenStrategy, TokenRequire,
-		TokenInstructions, TokenCommand, TokenWhen, TokenNot, TokenAs,
+		TokenInstructions, TokenCommand, TokenDelegate, TokenWhen, TokenNot, TokenAs,
 		TokenWith, TokenEnum, TokenFresh, TokenInherit, TokenArtifactsOnly,
 		TokenFanOutAll, TokenCondition, TokenWaitAll, TokenBestEffort,
 		TokenPauseUntilAnswers, TokenTrue, TokenFalse,

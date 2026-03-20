@@ -1416,6 +1416,7 @@ func TestAllFixturesCompile(t *testing.T) {
 		"pr_refine_single_model.iter",
 		"pr_refine_dual_model_parallel.iter",
 		"pr_refine_dual_model_parallel_compliance.iter",
+		"pr_refine_dual_model_parallel_mcp.iter",
 		"ci_fix_until_green.iter",
 		"recipe_benchmark.iter",
 	}

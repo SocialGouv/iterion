@@ -138,6 +138,7 @@ func (sm SessionMode) String() string {
 type AgentDecl struct {
 	Name         string
 	Model        string      // string literal, may contain ${...} env refs
+	Delegate     string      // delegation backend name (e.g. "claude_code"); when set, bypasses LLM API
 	Input        string      // schema reference name
 	Output       string      // schema reference name
 	Publish      string      // persistent artifact name (empty if not set)
@@ -159,6 +160,7 @@ type AgentDecl struct {
 type JudgeDecl struct {
 	Name         string
 	Model        string
+	Delegate     string // delegation backend name; when set, bypasses LLM API
 	Input        string
 	Output       string
 	Publish      string

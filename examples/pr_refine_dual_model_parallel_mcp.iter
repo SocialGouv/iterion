@@ -1,0 +1,468 @@
+## Fixture de reference : pr_refine_dual_model_parallel_mcp
+## Objectif : Variante MCP du workflow dual-model parallele.
+## Au lieu d'appeler les APIs LLM directement (via goai), chaque noeud
+## delegue son travail a un agent CLI externe :
+##   - Noeuds Claude  -> claude-code (delegate: "claude_code")
+##   - Noeuds GPT     -> codex       (delegate: "codex")
+## Le graphe, les schemas, les prompts et les edges sont identiques
+## a pr_refine_dual_model_parallel.iter.
+## Voir docs/mcp_delegation.md pour la comparaison API vs delegation.
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+prompt context_builder_system:
+  Tu prepares un contexte de PR exploitable par plusieurs agents.
+
+prompt context_builder_user:
+  Construis un contexte de PR normalise a partir des inputs.
+
+prompt pr_review_system:
+  Tu es un reviewer de pull request exigeant.
+  Applique strictement les regles de review fournies.
+
+prompt pr_review_user:
+  Review cette pull request.
+  {{input.review_rules}}
+
+  Contexte PR :
+  {{input.pr_context}}
+
+prompt plan_generation_system:
+  Tu es un architecte senior.
+  Transforme une review en plan de correction.
+
+prompt plan_generation_user:
+  Produis un plan de correction.
+
+  Review :
+  {{input.review}}
+
+  Contexte PR :
+  {{input.pr_context}}
+
+prompt plan_synthesis_system:
+  Tu compares deux reviews et deux plans issus de modeles differents.
+  Produis une synthese fusionnee.
+
+prompt plan_synthesis_user:
+  Compare et fusionne les deux plans.
+
+  Claude review :
+  {{input.claude_review}}
+
+  GPT review :
+  {{input.gpt_review}}
+
+  Claude plan :
+  {{input.claude_plan}}
+
+  GPT plan :
+  {{input.gpt_plan}}
+
+prompt final_plan_merge_system:
+  Tu fusionnes deux syntheses de plans en un plan final unique.
+
+prompt final_plan_merge_user:
+  Fusionne ces deux syntheses.
+
+  Claude synthesis :
+  {{input.claude_plan_synthesis}}
+
+  GPT synthesis :
+  {{input.gpt_plan_synthesis}}
+
+prompt act_system:
+  Tu es un agent d'execution de plan.
+  Applique le plan au workspace.
+
+prompt act_user:
+  Applique ce plan de correction.
+
+  Plan approuve :
+  {{input.approved_plan}}
+
+  Contexte PR :
+  {{input.pr_context}}
+
+prompt final_review_system:
+  Tu es un reviewer final apres remediation.
+
+prompt final_review_user:
+  Review la PR corrigee.
+  {{input.review_rules}}
+
+  Contexte PR :
+  {{input.pr_context}}
+
+  Resultat act :
+  {{input.act_result}}
+
+prompt final_compliance_system:
+  Tu determines si la PR corrigee est conforme.
+
+prompt final_compliance_user:
+  Evalue la PR corrigee.
+  {{input.final_review_rules}}
+
+  Claude final review :
+  {{input.claude_final_review}}
+
+  GPT final review :
+  {{input.gpt_final_review}}
+
+  Resultat act :
+  {{input.act_result}}
+
+  Contexte PR :
+  {{input.pr_context}}
+
+schema repo_context_request:
+  pr_title: string
+  pr_description: string
+  base_ref: string
+  head_ref: string
+
+schema pr_context:
+  pr_title: string
+  pr_description: string
+  base_ref: string
+  head_ref: string
+  diff: string
+  changed_files: string[]
+  repository_summary: string
+  implementation_notes: string[]
+  risky_areas: string[]
+
+schema review_request:
+  pr_context: json
+  review_rules: string
+
+schema review_result:
+  approved: bool
+  summary: string
+  issues: string[]
+  blockers: string[]
+  compliance_gaps: string[]
+  recommendations: string[]
+  confidence: string [enum: "low", "medium", "high"]
+
+schema plan_request:
+  pr_context: json
+  review: json
+
+schema remediation_plan:
+  summary: string
+  goals: string[]
+  ordered_steps: string[]
+  validation_steps: string[]
+  risks: string[]
+  addressed_issues: string[]
+
+schema dual_plan_bundle:
+  claude_review: json
+  gpt_review: json
+  claude_plan: json
+  gpt_plan: json
+
+schema plan_synthesis:
+  merged_summary: string
+  agreements: string[]
+  disagreements: string[]
+  missing_items: string[]
+  final_steps: string[]
+  risk_notes: string[]
+
+schema synthesis_bundle:
+  claude_plan_synthesis: json
+  gpt_plan_synthesis: json
+
+schema act_request:
+  pr_context: json
+  approved_plan: json
+
+schema act_result:
+  applied: bool
+  summary: string
+  files_changed: string[]
+  commands_run: string[]
+  tests_run: string[]
+  remaining_risks: string[]
+
+schema final_review_request:
+  pr_context: json
+  act_result: json
+  review_rules: string
+
+schema final_reviews_bundle:
+  pr_context: json
+  act_result: json
+  claude_final_review: json
+  gpt_final_review: json
+  final_review_rules: string
+
+schema compliance_verdict:
+  approved: bool
+  issues: string[]
+  blocking_reasons: string[]
+  recommended_fixes: string[]
+  confidence: string [enum: "low", "medium", "high"]
+
+## --- Nodes: delegate instead of model ---
+
+agent context_builder:
+  delegate: "claude_code"
+  input: repo_context_request
+  output: pr_context
+  publish: pr_context
+  system: context_builder_system
+  user: context_builder_user
+  session: fresh
+  tools: [git_diff, git_status, read_file, list_files, search_codebase, tree]
+  tool_max_steps: 8
+
+router review_fanout:
+  mode: fan_out_all
+
+agent claude_review:
+  delegate: "claude_code"
+  input: review_request
+  output: review_result
+  system: pr_review_system
+  user: pr_review_user
+  session: fresh
+  tools: [git_diff, read_file, list_files, search_codebase, tree]
+  tool_max_steps: 10
+
+agent gpt_review:
+  delegate: "codex"
+  input: review_request
+  output: review_result
+  system: pr_review_system
+  user: pr_review_user
+  session: fresh
+  tools: [git_diff, read_file, list_files, search_codebase, tree]
+  tool_max_steps: 10
+
+agent claude_plan:
+  delegate: "claude_code"
+  input: plan_request
+  output: remediation_plan
+  system: plan_generation_system
+  user: plan_generation_user
+  session: inherit
+  tools: [read_file, search_codebase, git_diff]
+  tool_max_steps: 6
+
+agent gpt_plan:
+  delegate: "codex"
+  input: plan_request
+  output: remediation_plan
+  system: plan_generation_system
+  user: plan_generation_user
+  session: inherit
+  tools: [read_file, search_codebase, git_diff]
+  tool_max_steps: 6
+
+join plans_join:
+  strategy: wait_all
+  require: [claude_plan, gpt_plan]
+  output: dual_plan_bundle
+
+router synthesis_fanout:
+  mode: fan_out_all
+
+agent claude_plan_synthesis:
+  delegate: "claude_code"
+  input: dual_plan_bundle
+  output: plan_synthesis
+  system: plan_synthesis_system
+  user: plan_synthesis_user
+  session: fresh
+
+agent gpt_plan_synthesis:
+  delegate: "codex"
+  input: dual_plan_bundle
+  output: plan_synthesis
+  system: plan_synthesis_system
+  user: plan_synthesis_user
+  session: fresh
+
+join syntheses_join:
+  strategy: wait_all
+  require: [claude_plan_synthesis, gpt_plan_synthesis]
+  output: synthesis_bundle
+
+agent final_plan_merge:
+  delegate: "claude_code"
+  input: synthesis_bundle
+  output: remediation_plan
+  publish: final_merged_plan
+  system: final_plan_merge_system
+  user: final_plan_merge_user
+  session: fresh
+
+agent act_on_plan:
+  delegate: "claude_code"
+  input: act_request
+  output: act_result
+  publish: act_report
+  system: act_system
+  user: act_user
+  session: fresh
+  tools: [read_file, write_file, patch, list_files, search_codebase, git_diff, git_status, run_command]
+  tool_max_steps: 20
+
+router final_review_fanout:
+  mode: fan_out_all
+
+agent claude_final_review:
+  delegate: "claude_code"
+  input: final_review_request
+  output: review_result
+  system: final_review_system
+  user: final_review_user
+  session: fresh
+  tools: [git_diff, read_file, list_files, search_codebase, tree]
+  tool_max_steps: 10
+
+agent gpt_final_review:
+  delegate: "codex"
+  input: final_review_request
+  output: review_result
+  system: final_review_system
+  user: final_review_user
+  session: fresh
+  tools: [git_diff, read_file, list_files, search_codebase, tree]
+  tool_max_steps: 10
+
+join final_reviews_join:
+  strategy: wait_all
+  require: [claude_final_review, gpt_final_review]
+  output: final_reviews_bundle
+
+judge final_compliance_check:
+  delegate: "claude_code"
+  input: final_reviews_bundle
+  output: compliance_verdict
+  publish: final_verdict
+  system: final_compliance_system
+  user: final_compliance_user
+  session: fresh
+
+workflow pr_refine_dual_model_parallel_mcp:
+  vars:
+    pr_title: string
+    pr_description: string = ""
+    base_ref: string = "origin/main"
+    head_ref: string = "HEAD"
+    review_rules: string
+    final_review_rules: string
+
+  entry: context_builder
+
+  budget:
+    max_parallel_branches: 4
+    max_duration: "60m"
+    max_cost_usd: 30
+    max_tokens: 800000
+
+  ## 1. Contexte
+  context_builder -> review_fanout with {
+    pr_context: "{{outputs.context_builder}}"
+  }
+
+  ## 2. Reviews paralleles
+  review_fanout -> claude_review with {
+    pr_context: "{{input.pr_context}}",
+    review_rules: "{{vars.review_rules}}"
+  }
+
+  review_fanout -> gpt_review with {
+    pr_context: "{{input.pr_context}}",
+    review_rules: "{{vars.review_rules}}"
+  }
+
+  ## 3. Plans paralleles (session inherit de la review)
+  claude_review -> claude_plan with {
+    pr_context: "{{outputs.context_builder}}",
+    review: "{{outputs.claude_review}}"
+  }
+
+  gpt_review -> gpt_plan with {
+    pr_context: "{{outputs.context_builder}}",
+    review: "{{outputs.gpt_review}}"
+  }
+
+  claude_plan -> plans_join
+  gpt_plan -> plans_join
+
+  ## 4. Syntheses croisees paralleles
+  plans_join -> synthesis_fanout with {
+    claude_review: "{{outputs.claude_review}}",
+    gpt_review: "{{outputs.gpt_review}}",
+    claude_plan: "{{outputs.claude_plan}}",
+    gpt_plan: "{{outputs.gpt_plan}}"
+  }
+
+  synthesis_fanout -> claude_plan_synthesis with {
+    claude_review: "{{input.claude_review}}",
+    gpt_review: "{{input.gpt_review}}",
+    claude_plan: "{{input.claude_plan}}",
+    gpt_plan: "{{input.gpt_plan}}"
+  }
+
+  synthesis_fanout -> gpt_plan_synthesis with {
+    claude_review: "{{input.claude_review}}",
+    gpt_review: "{{input.gpt_review}}",
+    claude_plan: "{{input.claude_plan}}",
+    gpt_plan: "{{input.gpt_plan}}"
+  }
+
+  claude_plan_synthesis -> syntheses_join
+  gpt_plan_synthesis -> syntheses_join
+
+  ## 5. Merge final -> act directement (pas de compliance gate)
+  syntheses_join -> final_plan_merge with {
+    claude_plan_synthesis: "{{outputs.claude_plan_synthesis}}",
+    gpt_plan_synthesis: "{{outputs.gpt_plan_synthesis}}"
+  }
+
+  final_plan_merge -> act_on_plan with {
+    pr_context: "{{outputs.context_builder}}",
+    approved_plan: "{{outputs.final_plan_merge}}"
+  }
+
+  ## 6. Reviews finales paralleles
+  act_on_plan -> final_review_fanout with {
+    pr_context: "{{outputs.context_builder}}",
+    act_result: "{{outputs.act_on_plan}}",
+    review_rules: "{{vars.final_review_rules}}"
+  }
+
+  final_review_fanout -> claude_final_review with {
+    pr_context: "{{input.pr_context}}",
+    act_result: "{{input.act_result}}",
+    review_rules: "{{input.review_rules}}"
+  }
+
+  final_review_fanout -> gpt_final_review with {
+    pr_context: "{{input.pr_context}}",
+    act_result: "{{input.act_result}}",
+    review_rules: "{{input.review_rules}}"
+  }
+
+  claude_final_review -> final_reviews_join
+  gpt_final_review -> final_reviews_join
+
+  ## 7. Verdict final
+  final_reviews_join -> final_compliance_check with {
+    pr_context: "{{outputs.context_builder}}",
+    act_result: "{{outputs.act_on_plan}}",
+    claude_final_review: "{{outputs.claude_final_review}}",
+    gpt_final_review: "{{outputs.gpt_final_review}}",
+    final_review_rules: "{{vars.final_review_rules}}"
+  }
+
+  final_compliance_check -> done when approved
+  final_compliance_check -> context_builder when not approved as full_recipe_loop(3)

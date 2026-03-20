@@ -13,6 +13,7 @@ import (
 	goai "github.com/zendev-sh/goai"
 	"github.com/zendev-sh/goai/provider"
 
+	"github.com/iterion-ai/iterion/delegate"
 	"github.com/iterion-ai/iterion/ir"
 	"github.com/iterion-ai/iterion/tool"
 )
@@ -89,15 +90,16 @@ type EventHooks struct {
 // GoaiExecutor implements runtime.NodeExecutor by delegating LLM calls
 // to goai's GenerateText and GenerateObject APIs.
 type GoaiExecutor struct {
-	registry     *Registry
-	toolRegistry *tool.Registry // unified tool registry (preferred)
-	toolPolicy   *tool.Policy   // allowlist policy for tool execution (nil = open)
-	prompts      map[string]*ir.Prompt
-	schemas      map[string]*ir.Schema
-	vars         map[string]interface{}
-	tools        map[string]goai.Tool // legacy: direct tool implementations
-	hooks        EventHooks
-	retry        RetryPolicy
+	registry         *Registry
+	delegateRegistry *delegate.Registry // delegation backends (claude_code, codex)
+	toolRegistry     *tool.Registry     // unified tool registry (preferred)
+	toolPolicy       *tool.Policy       // allowlist policy for tool execution (nil = open)
+	prompts          map[string]*ir.Prompt
+	schemas          map[string]*ir.Schema
+	vars             map[string]interface{}
+	tools            map[string]goai.Tool // legacy: direct tool implementations
+	hooks            EventHooks
+	retry            RetryPolicy
 }
 
 // GoaiExecutorOption configures a GoaiExecutor.
@@ -133,6 +135,13 @@ func WithRetryPolicy(rp RetryPolicy) GoaiExecutorOption {
 	return func(e *GoaiExecutor) { e.retry = rp }
 }
 
+// WithDelegateRegistry sets the delegation backend registry on the executor.
+// When set, nodes with a `delegate` property are executed via the named
+// backend instead of calling the LLM API.
+func WithDelegateRegistry(dr *delegate.Registry) GoaiExecutorOption {
+	return func(e *GoaiExecutor) { e.delegateRegistry = dr }
+}
+
 // NewGoaiExecutor creates a GoaiExecutor for a given workflow.
 func NewGoaiExecutor(registry *Registry, wf *ir.Workflow, opts ...GoaiExecutorOption) *GoaiExecutor {
 	e := &GoaiExecutor{
@@ -157,6 +166,9 @@ func (e *GoaiExecutor) SetVars(vars map[string]interface{}) {
 func (e *GoaiExecutor) Execute(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
 	switch node.Kind {
 	case ir.NodeAgent, ir.NodeJudge:
+		if node.Delegate != "" {
+			return e.executeDelegation(ctx, node, input)
+		}
 		return e.executeLLM(ctx, node, input)
 	case ir.NodeRouter:
 		// Routers are deterministic pass-throughs handled by the engine.
@@ -376,6 +388,60 @@ func (e *GoaiExecutor) generateText(ctx context.Context, m provider.LanguageMode
 	}
 
 	return output, nil
+}
+
+// ---------------------------------------------------------------------------
+// Delegation execution
+// ---------------------------------------------------------------------------
+
+// executeDelegation handles agent/judge nodes that delegate to an external
+// CLI agent (e.g. claude-code, codex) instead of calling the LLM API.
+func (e *GoaiExecutor) executeDelegation(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+	if e.delegateRegistry == nil {
+		return nil, fmt.Errorf("model: node %q uses delegate %q but no delegate registry configured", node.ID, node.Delegate)
+	}
+
+	backend, err := e.delegateRegistry.Resolve(node.Delegate)
+	if err != nil {
+		return nil, fmt.Errorf("model: node %q: %w", node.ID, err)
+	}
+
+	// Build system prompt.
+	var systemText string
+	if node.SystemPrompt != "" {
+		if p, ok := e.prompts[node.SystemPrompt]; ok {
+			systemText = e.resolveTemplate(p.Body, input)
+		}
+	}
+
+	// Build user message.
+	userText := e.buildUserMessage(node, input)
+
+	// Build output schema JSON if structured output is expected.
+	var outputSchema json.RawMessage
+	if node.OutputSchema != "" {
+		if schema, ok := e.schemas[node.OutputSchema]; ok {
+			outputSchema, _ = SchemaToJSON(schema)
+		}
+	}
+
+	task := delegate.Task{
+		SystemPrompt: systemText,
+		UserPrompt:   userText,
+		AllowedTools: node.Tools,
+		OutputSchema: outputSchema,
+	}
+
+	result, err := backend.Execute(ctx, task)
+	if err != nil {
+		return nil, fmt.Errorf("model: node %q: delegation to %q failed: %w", node.ID, node.Delegate, err)
+	}
+
+	// Attach metadata.
+	result.Output["_tokens"] = result.Tokens
+	result.Output["_delegate"] = node.Delegate
+
+	return result.Output, nil
 }
 
 // ---------------------------------------------------------------------------

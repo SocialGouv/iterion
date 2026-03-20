@@ -30,6 +30,7 @@ const (
 	TokenRBrace  // }
 	TokenLParen  // (
 	TokenRParen  // )
+	TokenDot     // .
 	TokenNewline // logical newline (non-blank)
 
 	// Comment
@@ -62,6 +63,7 @@ const (
 	TokenRequire
 	TokenInstructions
 	TokenCommand
+	TokenDelegate
 	TokenWhen
 	TokenNot
 	TokenAs
@@ -122,6 +124,7 @@ var tokenNames = map[TokenType]string{
 	TokenRBrace:  "}",
 	TokenLParen:  "(",
 	TokenRParen:  ")",
+	TokenDot:     ".",
 	TokenNewline: "Newline",
 	TokenComment: "Comment",
 
@@ -151,6 +154,7 @@ var tokenNames = map[TokenType]string{
 	TokenRequire:           "require",
 	TokenInstructions:      "instructions",
 	TokenCommand:           "command",
+	TokenDelegate:          "delegate",
 	TokenWhen:              "when",
 	TokenNot:               "not",
 	TokenAs:                "as",
@@ -219,6 +223,7 @@ var keywords = map[string]TokenType{
 	"require":               TokenRequire,
 	"instructions":          TokenInstructions,
 	"command":               TokenCommand,
+	"delegate":              TokenDelegate,
 	"when":                  TokenWhen,
 	"not":                   TokenNot,
 	"as":                    TokenAs,

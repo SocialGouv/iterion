@@ -293,6 +293,10 @@ func (l *Lexer) scanToken() {
 		l.advance()
 		l.emit(TokenRParen, ")", startLine, startCol)
 
+	case ch == '.':
+		l.advance()
+		l.emit(TokenDot, ".", startLine, startCol)
+
 	case ch == '"':
 		l.scanString(startLine, startCol)
 

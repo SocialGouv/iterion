@@ -7,6 +7,21 @@
       ],
       "command": "falcon",
       "type": "stdio"
+    },
+    "claude_code": {
+      "command": "claude",
+      "args": [
+        "mcp",
+        "serve"
+      ],
+      "type": "stdio"
+    },
+    "codex": {
+      "command": "codex",
+      "args": [
+        "--mcp"
+      ],
+      "type": "stdio"
     }
   }
 }

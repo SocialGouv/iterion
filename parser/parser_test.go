@@ -803,3 +803,65 @@ func TestFixtureStability(t *testing.T) {
 		})
 	}
 }
+
+func TestAgentDelegate(t *testing.T) {
+	src := `agent worker:
+  delegate: "claude_code"
+  input: in_s
+  output: out_s
+  system: sys
+  user: usr
+  session: fresh
+  tools: [read_file, write_file]
+  tool_max_steps: 10
+`
+	res := parser.Parse("test.iter", src)
+	assertNoDiags(t, res)
+
+	a := res.File.Agents[0]
+	assertEq(t, "Delegate", a.Delegate, "claude_code")
+	assertEq(t, "Model", a.Model, "")
+	if len(a.Tools) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(a.Tools))
+	}
+}
+
+func TestJudgeDelegate(t *testing.T) {
+	src := `judge verdict:
+  delegate: "codex"
+  input: in_s
+  output: out_s
+  system: sys
+  user: usr
+  session: fresh
+`
+	res := parser.Parse("test.iter", src)
+	assertNoDiags(t, res)
+
+	j := res.File.Judges[0]
+	assertEq(t, "Delegate", j.Delegate, "codex")
+	assertEq(t, "Model", j.Model, "")
+}
+
+func TestDottedToolNames(t *testing.T) {
+	src := `agent worker:
+  model: "claude-4"
+  input: in_s
+  output: out_s
+  system: sys
+  user: usr
+  session: fresh
+  tools: [git_diff, mcp.claude_code.search, mcp.falcon.lookup]
+  tool_max_steps: 5
+`
+	res := parser.Parse("test.iter", src)
+	assertNoDiags(t, res)
+
+	a := res.File.Agents[0]
+	if len(a.Tools) != 3 {
+		t.Fatalf("expected 3 tools, got %d", len(a.Tools))
+	}
+	assertEq(t, "Tools[0]", a.Tools[0], "git_diff")
+	assertEq(t, "Tools[1]", a.Tools[1], "mcp.claude_code.search")
+	assertEq(t, "Tools[2]", a.Tools[2], "mcp.falcon.lookup")
+}

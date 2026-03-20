@@ -70,11 +70,14 @@ agent_prop = "model"          ":" STRING_LIT     NEWLINE
            | "user"           ":" IDENT           NEWLINE
            | "session"        ":" session_mode     NEWLINE
            | "tools"          ":" tool_list        NEWLINE
-           | "tool_max_steps" ":" INT_LIT          NEWLINE ;
+           | "tool_max_steps" ":" INT_LIT          NEWLINE
+           | "delegate"       ":" STRING_LIT       NEWLINE ;
 
 session_mode = "fresh" | "inherit" | "artifacts_only" ;
 
-tool_list = "[" IDENT { "," IDENT } "]" ;
+tool_list = "[" tool_ref { "," tool_ref } "]" ;
+
+tool_ref = IDENT { "." IDENT } ;
 
 (* ---- Nœuds : judge ---- *)
 (* Identique à agent mais avec le mot-clé "judge".
@@ -90,7 +93,8 @@ judge_prop = "model"          ":" STRING_LIT     NEWLINE
            | "user"           ":" IDENT           NEWLINE
            | "session"        ":" session_mode     NEWLINE
            | "tools"          ":" tool_list        NEWLINE
-           | "tool_max_steps" ":" INT_LIT          NEWLINE ;
+           | "tool_max_steps" ":" INT_LIT          NEWLINE
+           | "delegate"       ":" STRING_LIT       NEWLINE ;
 
 (* ---- Nœuds : router ---- *)
 
