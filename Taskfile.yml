@@ -3,6 +3,11 @@ version: "3"
 vars:
   BINARY: iterion
   CMD: ./cmd/iterion
+  VERSION:
+    sh: node -p "require('./package.json').version" 2>/dev/null || echo "dev"
+  COMMIT:
+    sh: git rev-parse --short HEAD 2>/dev/null || echo ""
+  LDFLAGS: -X github.com/iterion-ai/iterion/internal/appinfo.Version=v{{.VERSION}} -X github.com/iterion-ai/iterion/internal/appinfo.Commit={{.COMMIT}}
 
 tasks:
   default:
@@ -13,7 +18,7 @@ tasks:
   build:
     desc: Build the iterion binary
     cmds:
-      - go build -o {{.BINARY}} {{.CMD}}
+      - go build -ldflags "{{.LDFLAGS}}" -o {{.BINARY}} {{.CMD}}
     sources:
       - "**/*.go"
       - go.mod

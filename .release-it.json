@@ -10,6 +10,9 @@
     "release": true,
     "releaseName": "v${version}"
   },
+  "hooks": {
+    "after:bump": "task build"
+  },
   "plugins": {
     "@release-it/conventional-changelog": {
       "preset": "conventionalcommits",
