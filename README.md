@@ -7,8 +7,10 @@ Iterion lets you author complex, multi-agent LLM workflows as readable `.iter` f
 ## Table of Contents
 
 - [Features](#features)
-- [Quick Start](#quick-start)
-- [Installation](#installation)
+- [Quickstart](#quickstart)
+  - [Install](#install)
+  - [Your first workflow](#your-first-workflow)
+  - [Going further](#going-further)
 - [The `.iter` DSL](#the-iter-dsl)
   - [Top-Level Declarations](#top-level-declarations)
   - [Node Types](#node-types)
@@ -26,12 +28,13 @@ Iterion lets you author complex, multi-agent LLM workflows as readable `.iter` f
   - [Runtime Engine](#runtime-engine)
   - [Persistence Layer](#persistence-layer)
 - [Recipes](#recipes)
-- [Project Structure](#project-structure)
+- [Examples](#examples)
 - [Development](#development)
   - [Prerequisites](#prerequisites)
+  - [Dev Container](#dev-container)
   - [Building](#building)
   - [Testing](#testing)
-- [Examples](#examples)
+  - [Project Structure](#project-structure)
 - [License](#license)
 
 ---
@@ -55,55 +58,127 @@ Iterion lets you author complex, multi-agent LLM workflows as readable `.iter` f
 
 ---
 
-## Quick Start
+## Quickstart
+
+### Install
+
+Install the latest binary:
 
 ```bash
-# Build the binary
-go build -o iterion ./cmd/iterion
-
-# Validate a workflow
-./iterion validate examples/pr_refine_single_model.iter
-
-# Run a workflow
-./iterion run examples/pr_refine_single_model.iter \
-  --var pr_title="Fix auth bug" \
-  --var review_rules="No SQL injection" \
-  --var compliance_rules="OWASP top 10"
-
-# Inspect run results
-./iterion inspect --run-id run_1234567890 --events
-
-# Generate a Mermaid diagram
-./iterion diagram examples/pr_refine_single_model.iter --detailed
+curl -fsSL https://iterion-ai.github.io/iterion/install.sh | sh
 ```
 
----
-
-## Installation
-
-### From Source
+Or install to a custom directory (no sudo):
 
 ```bash
-git clone https://github.com/iterion-ai/iterion.git
-cd iterion
-go build -o iterion ./cmd/iterion
+INSTALL_DIR=. curl -fsSL https://iterion-ai.github.io/iterion/install.sh | sh
 ```
 
-**Requirements:**
-- Go 1.23.8+
-- [goai](https://github.com/zendev-sh/goai) — LLM provider abstraction layer
+**Windows** (PowerShell):
 
-### Dev Container
-
-The repository includes a `.devcontainer/` configuration for VS Code / GitHub Codespaces:
-
-```jsonc
-// .devcontainer/devcontainer.json
-{
-  "image": "jetpackio/devbox:latest",
-  "features": { "ghcr.io/devcontainers/features/node:1": { "version": "lts" } }
-}
+```powershell
+Invoke-WebRequest -Uri "https://github.com/iterion-ai/iterion/releases/latest/download/iterion-windows-amd64.exe" -OutFile iterion.exe
 ```
+
+You can also download binaries manually from the [latest release page](https://github.com/iterion-ai/iterion/releases/latest).
+
+### Your first workflow
+
+The reference example is [`examples/pr_refine_single_model.iter`](examples/pr_refine_single_model.iter) — a complete PR refinement workflow that reviews code, plans fixes, checks compliance, applies changes, and verifies the result in a loop.
+
+Here's the flow:
+
+```
+context_builder ──▶ reviewer ──▶ planner ──▶ compliance_check
+                                                │
+                                   approved ◀───┤───▶ not approved
+                                      │                    │
+                                      ▼               refine_plan ◀─╮
+                                  act_on_plan              │        │
+                                      │         compliance_check_after_refine
+                                      ▼                    │        │
+                                 final_verify     approved/rejected─╯
+                                   │       │
+                              approved   not approved
+                                 │         │
+                                done    (restart from context_builder, max 3×)
+```
+
+**Step 1 — Visualize the workflow:**
+
+```bash
+iterion diagram examples/pr_refine_single_model.iter --detailed
+```
+
+This outputs a Mermaid diagram you can paste into any compatible renderer (GitHub Markdown, [Mermaid Live Editor](https://mermaid.live), etc.).
+
+**Step 2 — Validate the workflow:**
+
+```bash
+iterion validate examples/pr_refine_single_model.iter
+```
+
+```
+── Validate: examples/pr_refine_single_model.iter ──
+  Workflow:        pr_refine_single_model
+  Nodes:           10
+  Edges:           11
+
+  result: OK
+```
+
+This parses, compiles, and runs static checks (reachability, edge routing, loop bounds) without executing anything.
+
+**Step 3 — Run the workflow:**
+
+```bash
+iterion run examples/pr_refine_single_model.iter \
+  --var pr_title="Fix auth middleware session handling" \
+  --var review_rules="No SQL injection, no hardcoded secrets, all errors handled" \
+  --var compliance_rules="OWASP top 10, no sensitive data in logs"
+```
+
+The workflow will:
+
+1. **context_builder** — Gathers PR context (diff, changed files, repo structure) using tools like `git_diff`, `read_file`, `search_codebase`
+2. **reviewer** — Produces a structured review with issues, blockers, and recommendations
+3. **planner** — Turns the review into an ordered remediation plan (inherits the reviewer's session)
+4. **compliance_check** — Judge evaluates whether the plan meets compliance rules
+   - If **approved** → proceeds to act
+   - If **not approved** → enters a refinement loop (up to 4 iterations) where `refine_plan` adjusts the plan and `compliance_check_after_refine` re-evaluates
+5. **act_on_plan** — Applies the approved plan to the codebase using tools (`write_file`, `patch`, `run_command`, etc.)
+6. **final_verify** — Judge evaluates the corrected PR
+   - If **approved** → `done`
+   - If **not approved** → restarts the entire flow (up to 3 outer loops)
+
+**Step 4 — Inspect the results:**
+
+```bash
+# List all runs
+iterion inspect
+
+# View a specific run with its event log
+iterion inspect --run-id <run_id> --events
+
+# Show full artifact contents
+iterion inspect --run-id <run_id> --full
+```
+
+Run artifacts are stored in `.iterion/runs/<run_id>/` — including the event log (`events.jsonl`), node outputs, and any published artifacts.
+
+### Going further
+
+The [`examples/`](examples/) directory contains workflows of increasing complexity:
+
+| File | What it adds |
+|------|-------------|
+| [`pr_refine_single_model.iter`](examples/pr_refine_single_model.iter) | **Start here** — Single model, review→plan→act→verify loop |
+| [`pr_refine_dual_model_parallel.iter`](examples/pr_refine_dual_model_parallel.iter) | Router + Join for parallel dual-model review |
+| [`pr_refine_dual_model_parallel_compliance.iter`](examples/pr_refine_dual_model_parallel_compliance.iter) | Human approval gate + compliance routing |
+| [`ci_fix_until_green.iter`](examples/ci_fix_until_green.iter) | Tool nodes, outer retry loops, CI integration |
+| [`recipe_benchmark.iter`](examples/recipe_benchmark.iter) | Recipe system for model/prompt benchmarking |
+
+See [`examples/FIXTURES.md`](examples/FIXTURES.md) for detailed documentation on each fixture.
 
 ---
 
@@ -278,8 +353,8 @@ All commands support the `--json` flag for machine-readable output.
 Parse, compile, and validate a workflow file without executing it:
 
 ```bash
-./iterion validate <file.iter>
-./iterion validate examples/pr_refine_single_model.iter --json
+iterion validate <file.iter>
+iterion validate examples/pr_refine_single_model.iter --json
 ```
 
 Reports errors and warnings with diagnostic codes, file positions, and descriptions.
@@ -289,7 +364,7 @@ Reports errors and warnings with diagnostic codes, file positions, and descripti
 Execute a workflow:
 
 ```bash
-./iterion run <file.iter> [flags]
+iterion run <file.iter> [flags]
 ```
 
 | Flag | Description |
@@ -305,7 +380,7 @@ Execute a workflow:
 Inspect run state and history:
 
 ```bash
-./iterion inspect [flags]
+iterion inspect [flags]
 ```
 
 | Flag | Description |
@@ -322,7 +397,7 @@ Without `--run-id`, lists all runs in the store.
 Resume a paused workflow run:
 
 ```bash
-./iterion resume --run-id <id> --file <file.iter> [flags]
+iterion resume --run-id <id> --file <file.iter> [flags]
 ```
 
 | Flag | Description |
@@ -336,7 +411,7 @@ Resume a paused workflow run:
 Generate a Mermaid diagram from a workflow file:
 
 ```bash
-./iterion diagram <file.iter> [--detailed]
+iterion diagram <file.iter> [--detailed]
 ```
 
 Output can be pasted into any Mermaid-compatible renderer (GitHub Markdown, Mermaid Live Editor, etc.).
@@ -442,11 +517,87 @@ Recipes bundle a workflow with preset configurations for comparison and benchmar
 }
 ```
 
-Use with `./iterion run --recipe recipe.json <file.iter>`.
+Use with `iterion run --recipe recipe.json <file.iter>`.
 
 ---
 
-## Project Structure
+## Examples
+
+The [`examples/`](examples/) directory contains reference workflows of increasing complexity:
+
+| File | Description | Primitives |
+|------|-------------|------------|
+| [`pr_refine_single_model.iter`](examples/pr_refine_single_model.iter) | PR refinement with a single model in a review→plan→act→verify loop | agent, judge, human, done, fail, bounded loops, publish, session modes, tools |
+| [`pr_refine_dual_model_parallel.iter`](examples/pr_refine_dual_model_parallel.iter) | Dual-model parallel PR review with router/join | All above + router (fan_out_all), join (wait_all), parallel branches |
+| [`pr_refine_dual_model_parallel_compliance.iter`](examples/pr_refine_dual_model_parallel_compliance.iter) | Adds a compliance gate and human approval to the parallel workflow | All above + human node, conditional routing |
+| [`ci_fix_until_green.iter`](examples/ci_fix_until_green.iter) | Iterative CI fix loop: run tests → diagnose → fix → rerun | Tool nodes, outer loops, tool_max_steps |
+| [`recipe_benchmark.iter`](examples/recipe_benchmark.iter) | Benchmark harness for comparing model/prompt configurations | Recipes, evaluation policies, preset vars |
+
+See [`examples/FIXTURES.md`](examples/FIXTURES.md) for detailed documentation on each fixture.
+
+---
+
+## Development
+
+This section is for contributors working on the iterion codebase itself.
+
+### Prerequisites
+
+- [Devbox](https://www.jetify.com/devbox) — portable dev environment (installs Go, Task, Node)
+- [direnv](https://direnv.net/) — auto-activates the Devbox shell when you `cd` into the repo
+- [goai](https://github.com/zendev-sh/goai) — LLM provider abstraction (local dependency at `~/goai`)
+
+**Setup:**
+
+```bash
+# Hook direnv into your shell (~/.bashrc, ~/.zshrc, etc.)
+eval "$(direnv hook bash)"   # or: eval "$(direnv hook zsh)"
+
+# Allow the .envrc in this repo
+direnv allow
+```
+
+After `direnv allow`, the Devbox environment (Go 1.23, Task, Node) activates automatically whenever you enter the project directory.
+
+### Dev Container
+
+The repository includes a `.devcontainer/` configuration for VS Code / GitHub Codespaces:
+
+```jsonc
+// .devcontainer/devcontainer.json
+{
+  "image": "jetpackio/devbox:latest",
+  "features": { "ghcr.io/devcontainers/features/node:1": { "version": "lts" } }
+}
+```
+
+### Building
+
+```bash
+task build          # → ./iterion
+
+# or directly:
+go build -o iterion ./cmd/iterion
+```
+
+### Testing
+
+```bash
+task test           # Unit tests
+task test:e2e       # End-to-end tests
+task test:race      # Tests with race detector
+task lint           # go fmt + go vet
+task check          # lint + test
+task clean          # Remove build artifacts
+
+# or directly:
+go test ./...
+go test -v ./parser ./ir ./runtime ./store ./cli ./model ./e2e
+```
+
+The test suite includes unit tests across all packages plus end-to-end scenarios in `e2e/`. See [`e2e/SCENARIOS.md`](e2e/SCENARIOS.md) for the full test coverage matrix.
+
+### Project Structure
 
 ```
 iterion/
@@ -467,75 +618,6 @@ iterion/
 ├── docs/              # On-disk format specification
 └── plans/             # Development roadmap and phase prompts
 ```
-
----
-
-## Development
-
-### Prerequisites
-
-- [Devbox](https://www.jetify.com/devbox) — portable dev environment (installs Go, Task, Node)
-- [direnv](https://direnv.net/) — auto-activates the Devbox shell when you `cd` into the repo
-- [goai](https://github.com/zendev-sh/goai) — LLM provider abstraction (local dependency at `~/goai`)
-
-**Setup:**
-
-```bash
-# Install direnv (if not already installed)
-# macOS: brew install direnv
-# Ubuntu: sudo apt install direnv
-
-# Hook direnv into your shell (~/.bashrc, ~/.zshrc, etc.)
-eval "$(direnv hook bash)"   # or: eval "$(direnv hook zsh)"
-
-# Allow the .envrc in this repo
-direnv allow
-```
-
-After `direnv allow`, the Devbox environment (Go 1.23, Task, Node) activates automatically whenever you enter the project directory.
-
-### Building
-
-```bash
-go build -o iterion ./cmd/iterion
-```
-
-### Testing
-
-```bash
-# Run all tests
-go test ./...
-
-# Run tests for a specific package
-go test ./parser
-go test ./ir
-go test ./runtime
-go test ./store
-go test ./cli
-go test ./model
-go test ./e2e
-
-# Verbose output
-go test -v ./...
-```
-
-The test suite includes unit tests across all packages plus end-to-end scenarios in `e2e/`. See [`e2e/SCENARIOS.md`](e2e/SCENARIOS.md) for the full test coverage matrix.
-
----
-
-## Examples
-
-The [`examples/`](examples/) directory contains reference workflows of increasing complexity:
-
-| File | Description | Primitives |
-|------|-------------|------------|
-| [`pr_refine_single_model.iter`](examples/pr_refine_single_model.iter) | PR refinement with a single model in a review→plan→act→verify loop | agent, judge, human, done, fail, bounded loops, publish, session modes, tools |
-| [`pr_refine_dual_model_parallel.iter`](examples/pr_refine_dual_model_parallel.iter) | Dual-model parallel PR review with router/join | All above + router (fan_out_all), join (wait_all), parallel branches |
-| [`pr_refine_dual_model_parallel_compliance.iter`](examples/pr_refine_dual_model_parallel_compliance.iter) | Adds a compliance gate and human approval to the parallel workflow | All above + human node, conditional routing |
-| [`ci_fix_until_green.iter`](examples/ci_fix_until_green.iter) | Iterative CI fix loop: run tests → diagnose → fix → rerun | Tool nodes, outer loops, tool_max_steps |
-| [`recipe_benchmark.iter`](examples/recipe_benchmark.iter) | Benchmark harness for comparing model/prompt configurations | Recipes, evaluation policies, preset vars |
-
-See [`examples/FIXTURES.md`](examples/FIXTURES.md) for detailed documentation on each fixture.
 
 ---
 
