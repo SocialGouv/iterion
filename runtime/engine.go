@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/iterion-ai/iterion/ir"
+	"github.com/iterion-ai/iterion/recipe"
 	"github.com/iterion-ai/iterion/store"
 )
 
@@ -38,9 +39,20 @@ type Engine struct {
 	executor NodeExecutor
 }
 
-// New creates a new Engine.
+// New creates a new Engine for a raw workflow.
 func New(wf *ir.Workflow, s *store.RunStore, exec NodeExecutor) *Engine {
 	return &Engine{workflow: wf, store: s, executor: exec}
+}
+
+// NewFromRecipe creates a new Engine by applying a recipe's presets onto
+// the given workflow. The recipe merges preset variables, prompt overrides,
+// and budget limits, producing a self-contained execution unit.
+func NewFromRecipe(r *recipe.RecipeSpec, wf *ir.Workflow, s *store.RunStore, exec NodeExecutor) (*Engine, error) {
+	applied, err := r.Apply(wf)
+	if err != nil {
+		return nil, fmt.Errorf("runtime: apply recipe %q: %w", r.Name, err)
+	}
+	return &Engine{workflow: applied, store: s, executor: exec}, nil
 }
 
 // runState holds the mutable runtime state passed through the execution loop.
