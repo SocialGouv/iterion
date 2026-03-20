@@ -1,0 +1,84 @@
+version: "3"
+
+vars:
+  BINARY: iterion
+  CMD: ./cmd/iterion
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list-all
+
+  build:
+    desc: Build the iterion binary
+    cmds:
+      - go build -o {{.BINARY}} {{.CMD}}
+    sources:
+      - "**/*.go"
+      - go.mod
+    generates:
+      - "{{.BINARY}}"
+
+  test:
+    desc: Run all unit tests
+    cmds:
+      - go test ./...
+
+  test:verbose:
+    desc: Run all unit tests with verbose output
+    cmds:
+      - go test -v ./...
+
+  test:race:
+    desc: Run tests with race detector
+    cmds:
+      - go test -race ./...
+
+  test:e2e:
+    desc: Run end-to-end tests
+    cmds:
+      - go test -v -timeout 120s ./e2e/...
+
+  fmt:
+    desc: Format Go source files
+    cmds:
+      - go fmt ./...
+
+  vet:
+    desc: Run go vet
+    cmds:
+      - go vet ./...
+
+  lint:
+    desc: Run fmt and vet
+    deps: [fmt, vet]
+
+  run:
+    desc: Build and run iterion (pass args after --)
+    deps: [build]
+    cmds:
+      - ./{{.BINARY}} {{.CLI_ARGS}}
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - rm -f {{.BINARY}}
+
+  validate:
+    desc: Validate an .iter file (pass file after --)
+    deps: [build]
+    cmds:
+      - ./{{.BINARY}} validate {{.CLI_ARGS}}
+
+  diagram:
+    desc: Generate Mermaid diagram from an .iter file (pass file after --)
+    deps: [build]
+    cmds:
+      - ./{{.BINARY}} diagram {{.CLI_ARGS}}
+
+  check:
+    desc: Run all checks (lint + test)
+    cmds:
+      - task: lint
+      - task: test

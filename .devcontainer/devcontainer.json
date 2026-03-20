@@ -15,6 +15,6 @@
     "HOST_WORKSPACE": "${localWorkspaceFolder}"
   },
   "initializeCommand": "mkdir -p ${localEnv:HOME}/.claude",
-  "postCreateCommand": "npm install -g @anthropic-ai/claude-code && HOST_KEY=$(echo \"$HOST_WORKSPACE\" | tr '/' '-'); CONTAINER_KEY=$(echo \"$PWD\" | tr '/' '-'); if [ \"$HOST_KEY\" != \"$CONTAINER_KEY\" ] && [ -d \"$HOME/.claude/projects/$HOST_KEY\" ]; then ln -sfn \"$HOME/.claude/projects/$HOST_KEY\" \"$HOME/.claude/projects/$CONTAINER_KEY\"; fi",
+  "postCreateCommand": "devbox install && npm install -g @anthropic-ai/claude-code && HOST_KEY=$(echo \"$HOST_WORKSPACE\" | tr '/' '-'); CONTAINER_KEY=$(echo \"$PWD\" | tr '/' '-'); if [ \"$HOST_KEY\" != \"$CONTAINER_KEY\" ] && [ -d \"$HOME/.claude/projects/$HOST_KEY\" ]; then ln -sfn \"$HOME/.claude/projects/$HOST_KEY\" \"$HOME/.claude/projects/$CONTAINER_KEY\"; fi",
   "remoteUser": "devbox"
 }
