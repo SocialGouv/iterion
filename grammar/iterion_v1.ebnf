@@ -1,0 +1,211 @@
+(* ============================================================
+   Grammaire EBNF — iterion DSL V1
+   ============================================================
+   Convention :
+     - MAJUSCULES       = terminaux / tokens
+     - minuscules       = non-terminaux
+     - (* ... *)        = commentaire
+     - { x }            = 0..N répétitions
+     - [ x ]            = optionnel
+     - ( x | y )        = alternative
+     - "..."            = littéral
+   ============================================================ *)
+
+(* ---- Fichier source ---- *)
+
+file = { top_level_decl } ;
+
+top_level_decl = vars_decl
+               | prompt_decl
+               | schema_decl
+               | agent_decl
+               | judge_decl
+               | router_decl
+               | join_decl
+               | human_decl
+               | tool_node_decl
+               | workflow_decl
+               | comment ;
+
+(* ---- Commentaires ---- *)
+(* Les commentaires commencent par ## et s'étendent jusqu'à la fin de la ligne.
+   Ils sont autorisés partout où un top_level_decl ou un edge est attendu. *)
+
+comment = "##" REST_OF_LINE ;
+
+(* ---- Variables globales (top-level) ---- *)
+
+vars_decl = "vars" ":" NEWLINE INDENT { var_field } DEDENT ;
+
+var_field = IDENT ":" type_expr [ "=" literal ] NEWLINE ;
+
+(* ---- Prompts ---- *)
+
+prompt_decl = "prompt" IDENT ":" NEWLINE INDENT prompt_body DEDENT ;
+
+prompt_body = { PROMPT_TEXT_LINE } ;
+
+(* Un PROMPT_TEXT_LINE est toute ligne indentée sous le prompt.
+   Peut contenir des interpolations {{...}} qui seront résolues à l'exécution. *)
+
+(* ---- Schemas ---- *)
+
+schema_decl = "schema" IDENT ":" NEWLINE INDENT { schema_field } DEDENT ;
+
+schema_field = IDENT ":" field_type [ enum_constraint ] NEWLINE ;
+
+field_type = "string" | "bool" | "int" | "float" | "json" | "string[]" ;
+
+enum_constraint = "[" "enum" ":" STRING_LIT { "," STRING_LIT } "]" ;
+
+(* ---- Nœuds : agent ---- *)
+
+agent_decl = "agent" IDENT ":" NEWLINE INDENT { agent_prop } DEDENT ;
+
+agent_prop = "model"          ":" STRING_LIT     NEWLINE
+           | "input"          ":" IDENT           NEWLINE
+           | "output"         ":" IDENT           NEWLINE
+           | "publish"        ":" IDENT           NEWLINE
+           | "system"         ":" IDENT           NEWLINE
+           | "user"           ":" IDENT           NEWLINE
+           | "session"        ":" session_mode     NEWLINE
+           | "tools"          ":" tool_list        NEWLINE
+           | "tool_max_steps" ":" INT_LIT          NEWLINE ;
+
+session_mode = "fresh" | "inherit" | "artifacts_only" ;
+
+tool_list = "[" IDENT { "," IDENT } "]" ;
+
+(* ---- Nœuds : judge ---- *)
+(* Identique à agent mais avec le mot-clé "judge".
+   Sémantiquement, un judge n'appelle pas de tools et produit un verdict. *)
+
+judge_decl = "judge" IDENT ":" NEWLINE INDENT { judge_prop } DEDENT ;
+
+judge_prop = "model"          ":" STRING_LIT     NEWLINE
+           | "input"          ":" IDENT           NEWLINE
+           | "output"         ":" IDENT           NEWLINE
+           | "publish"        ":" IDENT           NEWLINE
+           | "system"         ":" IDENT           NEWLINE
+           | "user"           ":" IDENT           NEWLINE
+           | "session"        ":" session_mode     NEWLINE
+           | "tools"          ":" tool_list        NEWLINE
+           | "tool_max_steps" ":" INT_LIT          NEWLINE ;
+
+(* ---- Nœuds : router ---- *)
+
+router_decl = "router" IDENT ":" NEWLINE INDENT { router_prop } DEDENT ;
+
+router_prop = "mode" ":" router_mode NEWLINE ;
+
+router_mode = "fan_out_all" | "condition" ;
+
+(* ---- Nœuds : join ---- *)
+
+join_decl = "join" IDENT ":" NEWLINE INDENT { join_prop } DEDENT ;
+
+join_prop = "strategy" ":" join_strategy NEWLINE
+          | "require"  ":" ident_list     NEWLINE
+          | "output"   ":" IDENT          NEWLINE ;
+
+join_strategy = "wait_all" | "best_effort" ;
+
+ident_list = "[" IDENT { "," IDENT } "]" ;
+
+(* ---- Nœuds : human ---- *)
+
+human_decl = "human" IDENT ":" NEWLINE INDENT { human_prop } DEDENT ;
+
+human_prop = "input"        ":" IDENT            NEWLINE
+           | "output"       ":" IDENT            NEWLINE
+           | "publish"      ":" IDENT            NEWLINE
+           | "instructions" ":" IDENT            NEWLINE
+           | "mode"         ":" human_mode        NEWLINE
+           | "min_answers"  ":" INT_LIT           NEWLINE ;
+
+human_mode = "pause_until_answers" ;
+
+(* ---- Nœuds : tool (exécution directe) ---- *)
+
+tool_node_decl = "tool" IDENT ":" NEWLINE INDENT { tool_node_prop } DEDENT ;
+
+tool_node_prop = "command" ":" STRING_LIT NEWLINE
+               | "output"  ":" IDENT     NEWLINE ;
+
+(* ---- Nœuds terminaux ---- *)
+(* "done" et "fail" ne sont pas déclarés ; ils sont des identifiants réservés
+   utilisables comme cible d'une edge dans le workflow. *)
+
+(* ---- Workflow ---- *)
+
+workflow_decl = "workflow" IDENT ":" NEWLINE INDENT
+                  [ workflow_vars ]
+                  workflow_entry
+                  [ workflow_budget ]
+                  { edge | comment }
+                DEDENT ;
+
+workflow_vars = "vars" ":" NEWLINE INDENT { var_field } DEDENT ;
+
+workflow_entry = "entry" ":" IDENT NEWLINE ;
+
+workflow_budget = "budget" ":" NEWLINE INDENT { budget_prop } DEDENT ;
+
+budget_prop = "max_parallel_branches" ":" INT_LIT    NEWLINE
+            | "max_duration"          ":" STRING_LIT NEWLINE
+            | "max_cost_usd"          ":" NUMBER_LIT NEWLINE
+            | "max_tokens"            ":" INT_LIT    NEWLINE
+            | "max_iterations"        ":" INT_LIT    NEWLINE ;
+
+(* ---- Edges (dans workflow) ---- *)
+
+edge = IDENT "->" IDENT [ when_clause ] [ loop_clause ] [ with_block ] NEWLINE ;
+
+when_clause = "when" [ "not" ] IDENT ;
+
+loop_clause = "as" IDENT "(" INT_LIT ")" ;
+
+with_block = "with" "{" NEWLINE { with_mapping } "}" ;
+
+with_mapping = IDENT ":" STRING_LIT NEWLINE ;
+
+(* ---- Expressions de template ---- *)
+(* À l'intérieur de STRING_LIT dans les with_blocks et prompt_body,
+   les interpolations suivantes sont reconnues : *)
+
+template_expr = "{{" template_ref "}}" ;
+
+template_ref = "vars"      "." IDENT
+             | "input"     "." IDENT
+             | "outputs"   "." IDENT [ "." IDENT ]
+             | "artifacts" "." IDENT ;
+
+(* ---- Types ---- *)
+
+type_expr = "string" | "bool" | "int" | "float" | "json" | "string[]" ;
+
+literal = STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT ;
+
+(* ---- Tokens terminaux ---- *)
+
+IDENT        = LETTER { LETTER | DIGIT | "_" } ;
+STRING_LIT   = '"' { CHAR } '"' ;
+INT_LIT      = DIGIT { DIGIT } ;
+FLOAT_LIT    = DIGIT { DIGIT } "." DIGIT { DIGIT } ;
+NUMBER_LIT   = INT_LIT | FLOAT_LIT ;
+BOOL_LIT     = "true" | "false" ;
+LETTER       = "a".."z" | "A".."Z" | "_" ;
+DIGIT        = "0".."9" ;
+CHAR         = (* tout caractère sauf '"' non-échappé *) ;
+PROMPT_TEXT_LINE = (* ligne indentée quelconque, potentiellement avec {{...}} *) ;
+REST_OF_LINE = (* tout jusqu'au NEWLINE *) ;
+NEWLINE      = "\n" ;
+
+(* ---- Indentation ---- *)
+(* Le langage utilise l'indentation significative (style YAML/Python).
+   INDENT et DEDENT sont des tokens virtuels émis par le lexer
+   lorsque le niveau d'indentation augmente ou diminue.
+   La convention est 2 espaces par niveau. *)
+
+INDENT = (* augmentation du niveau d'indentation *) ;
+DEDENT = (* diminution du niveau d'indentation *) ;
