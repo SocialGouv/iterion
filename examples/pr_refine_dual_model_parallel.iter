@@ -463,4 +463,4 @@ workflow pr_refine_dual_model_parallel:
   }
 
   final_compliance_check -> done when approved
-  final_compliance_check -> context_builder when not_approved as full_recipe_loop(3)
+  final_compliance_check -> context_builder when not approved as full_recipe_loop(3)

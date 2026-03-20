@@ -176,8 +176,14 @@ tool t1:
   output: tool_out
 
 workflow all_nodes:
-  entry: a1
-  a1 -> done
+  entry: r1
+  r1 -> a1
+  r1 -> j1
+  a1 -> jn1
+  j1 -> jn1
+  jn1 -> h1
+  h1 -> t1
+  t1 -> done
 `
 
 func TestCompileAllNodeKinds(t *testing.T) {
@@ -284,7 +290,7 @@ agent refine:
 workflow edge_test:
   entry: check
   check -> done when approved
-  check -> refine when not_approved as refine_loop(5) with {
+  check -> refine when not approved as refine_loop(5) with {
     plan: "{{outputs.check}}",
     context: "{{vars.review_rules}}"
   }
@@ -307,14 +313,13 @@ func TestCompileEdges(t *testing.T) {
 		t.Errorf("edge 0: expected condition=approved negated=false, got %q/%v", e0.Condition, e0.Negated)
 	}
 
-	// Edge 1: check -> refine when not_approved as refine_loop(5) with {...}
+	// Edge 1: check -> refine when not approved as refine_loop(5) with {...}
 	e1 := w.Edges[1]
-	// "not_approved" is a single identifier, not "not" + "approved"
-	if e1.Condition != "not_approved" {
-		t.Errorf("edge 1: expected condition=not_approved, got %q", e1.Condition)
+	if e1.Condition != "approved" {
+		t.Errorf("edge 1: expected condition=approved, got %q", e1.Condition)
 	}
-	if e1.Negated {
-		t.Error("edge 1: expected negated=false (not_approved is a single identifier)")
+	if !e1.Negated {
+		t.Error("edge 1: expected negated=true")
 	}
 	if e1.LoopName != "refine_loop" {
 		t.Errorf("edge 1: expected loop refine_loop, got %q", e1.LoopName)

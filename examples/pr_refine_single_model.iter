@@ -271,7 +271,7 @@ workflow pr_refine_single_model:
   }
 
   ## 4b. Plan non conforme -> boucle de raffinage (max 4 itérations)
-  compliance_check -> refine_plan when not_approved as refine_loop(4) with {
+  compliance_check -> refine_plan when not approved as refine_loop(4) with {
     pr_context: "{{outputs.context_builder}}",
     plan: "{{outputs.planner}}",
     verdict: "{{outputs.compliance_check}}"
@@ -288,7 +288,7 @@ workflow pr_refine_single_model:
     approved_plan: "{{outputs.refine_plan}}"
   }
 
-  compliance_check_after_refine -> refine_plan when not_approved as refine_loop(4) with {
+  compliance_check_after_refine -> refine_plan when not approved as refine_loop(4) with {
     pr_context: "{{outputs.context_builder}}",
     plan: "{{outputs.refine_plan}}",
     verdict: "{{outputs.compliance_check_after_refine}}"
@@ -303,4 +303,4 @@ workflow pr_refine_single_model:
 
   ## 6. Verdict final
   final_verify -> done when approved
-  final_verify -> context_builder when not_approved as full_recipe_loop(3)
+  final_verify -> context_builder when not approved as full_recipe_loop(3)

@@ -628,7 +628,7 @@ workflow pr_refine_dual_model_parallel_compliance:
     arbitration_rules: "{{vars.human_arbitration_rules}}"
   }
 
-  plan_compliance_check_initial -> refine_plan_claude when not_approved as plan_refine_loop(6) with {
+  plan_compliance_check_initial -> refine_plan_claude when not approved as plan_refine_loop(6) with {
     pr_context: "{{outputs.context_builder}}",
     plan: "{{outputs.final_plan_merge}}",
     verdict: "{{outputs.plan_compliance_check_initial}}"
@@ -666,7 +666,7 @@ workflow pr_refine_dual_model_parallel_compliance:
     approved_plan: "{{outputs.integrate_human_clarifications}}"
   }
 
-  plan_compliance_check_post_human -> refine_plan_claude when not_approved as plan_refine_loop(6) with {
+  plan_compliance_check_post_human -> refine_plan_claude when not approved as plan_refine_loop(6) with {
     pr_context: "{{outputs.context_builder}}",
     plan: "{{outputs.integrate_human_clarifications}}",
     verdict: "{{outputs.plan_compliance_check_post_human}}"
@@ -683,7 +683,7 @@ workflow pr_refine_dual_model_parallel_compliance:
     approved_plan: "{{outputs.refine_plan_claude}}"
   }
 
-  plan_compliance_check_after_claude -> refine_plan_gpt when not_approved as plan_refine_loop(6) with {
+  plan_compliance_check_after_claude -> refine_plan_gpt when not approved as plan_refine_loop(6) with {
     pr_context: "{{outputs.context_builder}}",
     plan: "{{outputs.refine_plan_claude}}",
     verdict: "{{outputs.plan_compliance_check_after_claude}}"
@@ -700,7 +700,7 @@ workflow pr_refine_dual_model_parallel_compliance:
     approved_plan: "{{outputs.refine_plan_gpt}}"
   }
 
-  plan_compliance_check_after_gpt -> refine_plan_claude when not_approved as plan_refine_loop(6) with {
+  plan_compliance_check_after_gpt -> refine_plan_claude when not approved as plan_refine_loop(6) with {
     pr_context: "{{outputs.context_builder}}",
     plan: "{{outputs.refine_plan_gpt}}",
     verdict: "{{outputs.plan_compliance_check_after_gpt}}"
@@ -736,4 +736,4 @@ workflow pr_refine_dual_model_parallel_compliance:
   }
 
   final_pr_compliance_check -> done when approved
-  final_pr_compliance_check -> context_builder when not_approved as full_recipe_loop(3)
+  final_pr_compliance_check -> context_builder when not approved as full_recipe_loop(3)

@@ -160,7 +160,7 @@ func (c *compiler) compile() *Workflow {
 		budget = c.compileBudget(wf.Budget)
 	}
 
-	return &Workflow{
+	w := &Workflow{
 		Name:    wf.Name,
 		Entry:   wf.Entry,
 		Nodes:   c.nodes,
@@ -171,6 +171,11 @@ func (c *compiler) compile() *Workflow {
 		Loops:   loops,
 		Budget:  budget,
 	}
+
+	// Static validation pass (P2-02).
+	c.validate(w)
+
+	return w
 }
 
 // ---------------------------------------------------------------------------
