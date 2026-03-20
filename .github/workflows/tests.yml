@@ -1,0 +1,44 @@
+name: 🧪 Tests
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: gofmt (check)
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=$(find . -name '*.go' -not -path './vendor/*' -print)
+          if [[ -n "${files}" ]]; then
+            unformatted=$(gofmt -l ${files})
+            if [[ -n "${unformatted}" ]]; then
+              echo "gofmt needed on:"
+              echo "${unformatted}"
+              exit 1
+            fi
+          fi
+
+      - name: go vet
+        run: go vet -mod=vendor ./...
+
+      - name: Unit tests
+        run: go test -mod=vendor ./...
+
+      - name: E2E tests
+        run: go test -mod=vendor -v -timeout 120s ./e2e/...

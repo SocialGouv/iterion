@@ -1,0 +1,5 @@
+# github.com/zendev-sh/goai v0.0.0 => /home/devbox/goai
+## explicit; go 1.23.8
+github.com/zendev-sh/goai
+github.com/zendev-sh/goai/provider
+# github.com/zendev-sh/goai => /home/devbox/goai

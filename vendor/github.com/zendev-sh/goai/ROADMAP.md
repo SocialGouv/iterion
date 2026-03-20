@@ -1,0 +1,89 @@
+# GoAI Roadmap
+
+> Last updated: 2026-03-16
+
+## v0.4.0 - Current release
+
+### Core functions
+
+- **GenerateText** / **StreamText** - Text generation with streaming (token-by-token, text-only, or blocking)
+- **GenerateObject[T]** / **StreamObject[T]** - Type-safe structured output with auto JSON Schema from Go structs
+- **Embed** / **EmbedMany** - Single and batch embeddings with auto-chunking + parallel execution
+- **GenerateImage** - Text-to-image generation (OpenAI DALL-E, Google Imagen)
+
+### Providers (20+)
+
+| Category | Providers |
+|----------|-----------|
+| Flagship | OpenAI, Anthropic, Google (Gemini + Imagen) |
+| Cloud platforms | AWS Bedrock (SigV4), Azure OpenAI, Google Vertex AI |
+| Fast inference | Groq, Cerebras, Fireworks, Together, DeepInfra |
+| Specialized | Mistral, xAI, DeepSeek, Cohere, Perplexity |
+| Aggregators | OpenRouter |
+| Local | Ollama, vLLM |
+| Bring your own | `compat.New()` for any OpenAI-compatible endpoint |
+
+### SDK features
+
+- **Tool system** - Define tools with JSON Schema, auto tool loop with `WithMaxSteps`
+- **TokenSource** - Static keys, OAuth-refreshed, cached credentials (lock-free network fetch, TTL-based)
+- **WithHTTPClient** - Custom transport for proxies, auth middleware, Codex/Copilot patterns
+- **Prompt caching** - `WithPromptCaching()` automatic `cache_control` on system messages (immutable, no input mutation)
+- **Retry/backoff** - Exponential backoff on 429/5xx, retry-on-401 with token refresh
+- **Thread-safe** - All providers safe for concurrent use; Bedrock fallback uses RWMutex for cross-region retry
+- **Telemetry hooks** - `WithOnRequest`, `WithOnResponse`, `WithOnToolCall`, `WithOnStepFinish`
+- **SchemaFrom[T]** - Reflection-based JSON Schema generation, OpenAI strict mode compatible
+- **Azure multi-model** - Auto-routing: OpenAI models use Responses API, Claude uses Anthropic endpoint, others use Chat Completions
+- **Array content** - Handles response content as string or `[{type:"text",text:"..."}]` (Mistral magistral models)
+- **Provider-defined tools** - 20 tools across 5 providers: Anthropic (10), OpenAI (4), Google (3), xAI (2), Groq (1). E2E validated: 18 PASS, 12 SKIP (no credits/blocked), 0 FAIL.
+- **E2E validated** - 96 models across 8 providers tested with real API calls (94 generate PASS, 96 stream PASS, 0 FAIL)
+- **Benchmarks** - Go wins 5/6 categories vs Vercel AI SDK: streaming 1.13x, TTFC 1.26x, cold start 24.5x, memory 3.5x, GenerateText 1.41x
+- **Documentation** - Full docs site, 20 provider pages, 16 runnable examples, API reference
+
+---
+
+## Planned
+
+### v0.5.0 - Extended output + observability
+
+| Feature | Description |
+|---------|-------------|
+| Output.array | Stream validated array elements incrementally |
+| Output.choice | Convenience enum selection wrapper |
+| `goai/otel` | Pre-built OpenTelemetry integration (optional import) |
+| xAI Responses API | Enable xAI provider-defined tools (web_search, x_search) via `/v1/responses` endpoint |
+| New providers | Based on community requests |
+
+### v1.0.0 - Stable API
+
+GoAI reaches v1.0 when the API is complete enough that most Go+AI applications can be built without workarounds:
+
+- **Stable interfaces** - `LanguageModel`, `EmbeddingModel`, `ImageModel` finalized with no planned breaking changes
+- **Full provider coverage** - Every major AI provider works out of the box, including auth flows and regional endpoints
+- **Production observability** - First-class OpenTelemetry integration, structured logging hooks, usage tracking
+- **Comprehensive documentation** - Every exported type and function documented with examples, migration guides for common patterns
+
+### Future
+
+| Feature | Description |
+|---------|-------------|
+| Agent | Multi-step agent abstraction with built-in tool loop and memory |
+| MCP client | Connect to MCP servers, auto-convert tools to GoAI tools |
+| Reranking | `goai.Rerank()` for search and retrieval pipelines |
+| Speech | Server-side audio generation and transcription |
+
+---
+
+## Design principles
+
+1. **Go-native API** - Functional options, interfaces, composition. No TypeScript transliterations.
+2. **Zero required dependencies** - Core GoAI depends only on stdlib. Providers import only what they need.
+3. **Provider-agnostic** - Same code works across all providers. Switch models by changing one line.
+4. **Consumer flexibility** - `WithHTTPClient` + `TokenSource` let consumers handle auth, proxies, and custom endpoints without GoAI needing to know.
+5. **No middleware, no registry** - Go's interface composition is sufficient. We don't add abstractions until proven necessary.
+
+---
+
+## Contributing
+
+Have a feature request? Open an issue on [GitHub](https://github.com/zendev-sh/goai/issues). PRs welcome, see [CONTRIBUTING.md](CONTRIBUTING.md).
