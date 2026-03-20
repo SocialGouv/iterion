@@ -65,6 +65,11 @@ tasks:
     cmds:
       - ./{{.BINARY}} {{.CLI_ARGS}}
 
+  install:
+    desc: Build and install iterion to $GOPATH/bin
+    cmds:
+      - go install -ldflags "{{.LDFLAGS}}" {{.CMD}}
+
   clean:
     desc: Remove build artifacts
     cmds:
