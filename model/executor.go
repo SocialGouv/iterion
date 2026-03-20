@@ -90,8 +90,8 @@ type EventHooks struct {
 // to goai's GenerateText and GenerateObject APIs.
 type GoaiExecutor struct {
 	registry     *Registry
-	toolRegistry *tool.Registry       // unified tool registry (preferred)
-	toolPolicy   *tool.Policy         // allowlist policy for tool execution (nil = open)
+	toolRegistry *tool.Registry // unified tool registry (preferred)
+	toolPolicy   *tool.Policy   // allowlist policy for tool execution (nil = open)
 	prompts      map[string]*ir.Prompt
 	schemas      map[string]*ir.Schema
 	vars         map[string]interface{}

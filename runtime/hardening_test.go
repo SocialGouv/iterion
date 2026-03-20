@@ -187,7 +187,7 @@ func TestCancelDuringParallelBranches(t *testing.T) {
 		Name:  "cancel_parallel_test",
 		Entry: "router",
 		Nodes: map[string]*ir.Node{
-			"router":  {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
+			"router":   {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
 			"branch_a": {ID: "branch_a", Kind: ir.NodeAgent},
 			"branch_b": {ID: "branch_b", Kind: ir.NodeAgent},
 			"join":     {ID: "join", Kind: ir.NodeJoin, JoinStrategy: ir.JoinBestEffort, Require: []string{"branch_a", "branch_b"}},

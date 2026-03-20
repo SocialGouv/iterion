@@ -7,15 +7,15 @@ import "fmt"
 // ---------------------------------------------------------------------------
 
 const (
-	DiagInheritAfterJoin     DiagCode = "C009" // session: inherit on node immediately after join
-	DiagMultipleDefaultEdges DiagCode = "C010" // multiple unconditional edges from non-fan_out_all source
-	DiagAmbiguousCondition   DiagCode = "C011" // ambiguous conditional edges from same source
-	DiagMissingFallback      DiagCode = "C012" // conditional edges with no default fallback
-	DiagConditionNotBool     DiagCode = "C013" // when field is not boolean in output schema
+	DiagInheritAfterJoin       DiagCode = "C009" // session: inherit on node immediately after join
+	DiagMultipleDefaultEdges   DiagCode = "C010" // multiple unconditional edges from non-fan_out_all source
+	DiagAmbiguousCondition     DiagCode = "C011" // ambiguous conditional edges from same source
+	DiagMissingFallback        DiagCode = "C012" // conditional edges with no default fallback
+	DiagConditionNotBool       DiagCode = "C013" // when field is not boolean in output schema
 	DiagConditionFieldNotFound DiagCode = "C014" // when field not found in source output schema
-	DiagJoinRequireUnknown   DiagCode = "C015" // join require references unknown node
-	DiagUnreachableNode      DiagCode = "C016" // node unreachable from entry
-	DiagHistoryRefNotInLoop  DiagCode = "C017" // outputs.<node>.history but node not in a loop
+	DiagJoinRequireUnknown     DiagCode = "C015" // join require references unknown node
+	DiagUnreachableNode        DiagCode = "C016" // node unreachable from entry
+	DiagHistoryRefNotInLoop    DiagCode = "C017" // outputs.<node>.history but node not in a loop
 )
 
 // validate performs static validation on a compiled workflow.

@@ -342,12 +342,12 @@ func TestFullWorkflowCoverage(t *testing.T) {
 	// Verify edge variety
 	wf := file.Workflows[0]
 	var (
-		hasSimple    bool
-		hasWhen      bool
-		hasNegated   bool
-		hasLoop      bool
-		hasWith      bool
-		hasTerminal  bool
+		hasSimple   bool
+		hasWhen     bool
+		hasNegated  bool
+		hasLoop     bool
+		hasWith     bool
+		hasTerminal bool
 	)
 	for _, e := range wf.Edges {
 		if e.With != nil && len(e.With) > 0 {
@@ -371,11 +371,11 @@ func TestFullWorkflowCoverage(t *testing.T) {
 	}
 
 	checks := map[string]bool{
-		"simple edge":    hasSimple,
-		"when clause":    hasWhen,
-		"negated when":   hasNegated,
-		"loop clause":    hasLoop,
-		"with block":     hasWith,
+		"simple edge":     hasSimple,
+		"when clause":     hasWhen,
+		"negated when":    hasNegated,
+		"loop clause":     hasLoop,
+		"with block":      hasWith,
 		"terminal (done)": hasTerminal,
 	}
 	for desc, ok := range checks {

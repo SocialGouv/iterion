@@ -112,7 +112,7 @@ func TestLinearPath(t *testing.T) {
 
 	expectedTypes := []store.EventType{
 		store.EventRunStarted,
-		store.EventNodeStarted,  // analyze
+		store.EventNodeStarted, // analyze
 		store.EventArtifactWritten,
 		store.EventNodeFinished, // analyze
 		store.EventEdgeSelected, // analyze -> run_cmd
@@ -449,11 +449,11 @@ func humanWorkflow() *ir.Workflow {
 		Name:  "human_pause_test",
 		Entry: "analyze",
 		Nodes: map[string]*ir.Node{
-			"analyze":  {ID: "analyze", Kind: ir.NodeAgent, Publish: "analysis"},
-			"review":   {ID: "review", Kind: ir.NodeHuman, HumanMode: ir.HumanPauseUntilAnswers, Publish: "human_decisions"},
+			"analyze":   {ID: "analyze", Kind: ir.NodeAgent, Publish: "analysis"},
+			"review":    {ID: "review", Kind: ir.NodeHuman, HumanMode: ir.HumanPauseUntilAnswers, Publish: "human_decisions"},
 			"integrate": {ID: "integrate", Kind: ir.NodeAgent},
-			"done":     {ID: "done", Kind: ir.NodeDone},
-			"fail":     {ID: "fail", Kind: ir.NodeFail},
+			"done":      {ID: "done", Kind: ir.NodeDone},
+			"fail":      {ID: "fail", Kind: ir.NodeFail},
 		},
 		Edges: []*ir.Edge{
 			{From: "analyze", To: "review", With: []*ir.DataMapping{
@@ -531,7 +531,7 @@ func TestHumanPause(t *testing.T) {
 
 	expectedTypes := []store.EventType{
 		store.EventRunStarted,
-		store.EventNodeStarted,        // analyze
+		store.EventNodeStarted,         // analyze
 		store.EventArtifactWritten,     // analyze publish
 		store.EventNodeFinished,        // analyze
 		store.EventEdgeSelected,        // analyze -> review
@@ -650,24 +650,24 @@ func TestHumanPauseAndResume(t *testing.T) {
 	expectedTypes := []store.EventType{
 		// Phase 1: Run until pause
 		store.EventRunStarted,
-		store.EventNodeStarted,        // analyze
-		store.EventArtifactWritten,     // analyze publish
-		store.EventNodeFinished,        // analyze
-		store.EventEdgeSelected,        // analyze -> review
-		store.EventNodeStarted,         // review (human)
+		store.EventNodeStarted,     // analyze
+		store.EventArtifactWritten, // analyze publish
+		store.EventNodeFinished,    // analyze
+		store.EventEdgeSelected,    // analyze -> review
+		store.EventNodeStarted,     // review (human)
 		store.EventHumanInputRequested,
 		store.EventRunPaused,
 		// Phase 2: Resume
 		store.EventHumanAnswersRecorded,
-		store.EventArtifactWritten,     // human publish
-		store.EventNodeFinished,        // review
+		store.EventArtifactWritten, // human publish
+		store.EventNodeFinished,    // review
 		store.EventRunResumed,
-		store.EventEdgeSelected,        // review -> integrate
-		store.EventNodeStarted,         // integrate
-		store.EventNodeFinished,        // integrate
-		store.EventEdgeSelected,        // integrate -> done
-		store.EventNodeStarted,         // done
-		store.EventNodeFinished,        // done
+		store.EventEdgeSelected, // review -> integrate
+		store.EventNodeStarted,  // integrate
+		store.EventNodeFinished, // integrate
+		store.EventEdgeSelected, // integrate -> done
+		store.EventNodeStarted,  // done
+		store.EventNodeFinished, // done
 		store.EventRunFinished,
 	}
 	if len(events) != len(expectedTypes) {

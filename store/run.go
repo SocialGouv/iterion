@@ -42,12 +42,12 @@ type Run struct {
 // Checkpoint captures the runtime state at a human pause point,
 // enabling exact resume without replaying upstream nodes.
 type Checkpoint struct {
-	NodeID           string                            `json:"node_id"`            // the human node where we paused
-	InteractionID    string                            `json:"interaction_id"`     // pending interaction ID
-	Outputs          map[string]map[string]interface{} `json:"outputs"`            // per-node outputs accumulated so far
-	LoopCounters     map[string]int                    `json:"loop_counters"`      // current loop iteration counts
-	ArtifactVersions map[string]int                    `json:"artifact_versions"`  // next artifact version per node
-	Vars             map[string]interface{}             `json:"vars"`              // resolved workflow variables
+	NodeID           string                            `json:"node_id"`           // the human node where we paused
+	InteractionID    string                            `json:"interaction_id"`    // pending interaction ID
+	Outputs          map[string]map[string]interface{} `json:"outputs"`           // per-node outputs accumulated so far
+	LoopCounters     map[string]int                    `json:"loop_counters"`     // current loop iteration counts
+	ArtifactVersions map[string]int                    `json:"artifact_versions"` // next artifact version per node
+	Vars             map[string]interface{}            `json:"vars"`              // resolved workflow variables
 }
 
 // ---------------------------------------------------------------------------
@@ -56,11 +56,11 @@ type Checkpoint struct {
 
 // Artifact is a versioned output persisted under artifacts/<node>/<version>.json.
 type Artifact struct {
-	RunID    string                 `json:"run_id"`
-	NodeID   string                 `json:"node_id"`
-	Version  int                    `json:"version"`
-	Data     map[string]interface{} `json:"data"`
-	WrittenAt time.Time             `json:"written_at"`
+	RunID     string                 `json:"run_id"`
+	NodeID    string                 `json:"node_id"`
+	Version   int                    `json:"version"`
+	Data      map[string]interface{} `json:"data"`
+	WrittenAt time.Time              `json:"written_at"`
 }
 
 // ---------------------------------------------------------------------------

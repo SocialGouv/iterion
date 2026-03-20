@@ -1278,4 +1278,3 @@ func (e *Engine) validateWorkspaceSafety(fanEdges []*ir.Edge) error {
 	}
 	return nil
 }
-

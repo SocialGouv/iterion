@@ -413,14 +413,14 @@ func TestCollectMetrics(t *testing.T) {
 		{Type: store.EventLLMRetry, NodeID: "analyze"},
 		{Type: store.EventLLMRequest, NodeID: "analyze"},
 		{Type: store.EventNodeFinished, NodeID: "analyze", Data: map[string]interface{}{
-			"output": map[string]interface{}{"text": "ok"},
+			"output":  map[string]interface{}{"text": "ok"},
 			"_tokens": float64(200), "_cost_usd": 0.01,
 		}},
 		{Type: store.EventNodeStarted, NodeID: "judge"},
 		{Type: store.EventLLMRequest, NodeID: "judge"},
 		{Type: store.EventNodeFinished, NodeID: "judge", Data: map[string]interface{}{
-			"output":   map[string]interface{}{"approved": true},
-			"_tokens":  float64(100),
+			"output":    map[string]interface{}{"approved": true},
+			"_tokens":   float64(100),
 			"_cost_usd": 0.005,
 		}},
 		{Type: store.EventRunFinished},

@@ -13,24 +13,24 @@ const (
 	TokenDedent           // virtual: indentation decrease
 
 	// Literals
-	TokenIdent     // identifier
-	TokenString    // "..." string literal
-	TokenInt       // integer literal
-	TokenFloat     // float literal
+	TokenIdent      // identifier
+	TokenString     // "..." string literal
+	TokenInt        // integer literal
+	TokenFloat      // float literal
 	TokenPromptLine // raw prompt body line
 
 	// Punctuation
-	TokenColon    // :
-	TokenArrow    // ->
-	TokenEquals   // =
-	TokenComma    // ,
-	TokenLBrack   // [
-	TokenRBrack   // ]
-	TokenLBrace   // {
-	TokenRBrace   // }
-	TokenLParen   // (
-	TokenRParen   // )
-	TokenNewline  // logical newline (non-blank)
+	TokenColon   // :
+	TokenArrow   // ->
+	TokenEquals  // =
+	TokenComma   // ,
+	TokenLBrack  // [
+	TokenRBrack  // ]
+	TokenLBrace  // {
+	TokenRBrace  // }
+	TokenLParen  // (
+	TokenRParen  // )
+	TokenNewline // logical newline (non-blank)
 
 	// Comment
 	TokenComment // ## ...

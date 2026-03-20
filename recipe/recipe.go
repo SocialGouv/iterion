@@ -25,7 +25,7 @@ type RecipeSpec struct {
 
 // WorkflowRef identifies the workflow to execute.
 type WorkflowRef struct {
-	Name string `json:"name"`          // workflow name (must match ir.Workflow.Name)
+	Name string `json:"name"`           // workflow name (must match ir.Workflow.Name)
 	Path string `json:"path,omitempty"` // optional path to .iter file
 }
 

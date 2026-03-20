@@ -28,7 +28,7 @@ const (
 type Severity int
 
 const (
-	SeverityError   Severity = iota
+	SeverityError Severity = iota
 	SeverityWarning
 )
 
@@ -76,9 +76,9 @@ func (r *CompileResult) HasErrors() bool {
 
 // compiler holds state during compilation.
 type compiler struct {
-	file   *ast.File
-	diags  []Diagnostic
-	nodes  map[string]*Node
+	file    *ast.File
+	diags   []Diagnostic
+	nodes   map[string]*Node
 	schemas map[string]*Schema
 	prompts map[string]*Prompt
 }

@@ -6,17 +6,17 @@ package ast
 
 // File is the root AST node representing an entire .iter source file.
 type File struct {
-	Vars      *VarsBlock       // top-level vars (optional, at most one)
-	Prompts   []*PromptDecl    // prompt declarations
-	Schemas   []*SchemaDecl    // schema declarations
-	Agents    []*AgentDecl     // agent node declarations
-	Judges    []*JudgeDecl     // judge node declarations
-	Routers   []*RouterDecl    // router node declarations
-	Joins     []*JoinDecl      // join node declarations
-	Humans    []*HumanDecl     // human node declarations
-	Tools     []*ToolNodeDecl  // tool node declarations (direct execution, no LLM)
-	Workflows []*WorkflowDecl  // workflow declarations
-	Comments  []*Comment       // top-level comments (## ...)
+	Vars      *VarsBlock      // top-level vars (optional, at most one)
+	Prompts   []*PromptDecl   // prompt declarations
+	Schemas   []*SchemaDecl   // schema declarations
+	Agents    []*AgentDecl    // agent node declarations
+	Judges    []*JudgeDecl    // judge node declarations
+	Routers   []*RouterDecl   // router node declarations
+	Joins     []*JoinDecl     // join node declarations
+	Humans    []*HumanDecl    // human node declarations
+	Tools     []*ToolNodeDecl // tool node declarations (direct execution, no LLM)
+	Workflows []*WorkflowDecl // workflow declarations
+	Comments  []*Comment      // top-level comments (## ...)
 	Span      Span
 }
 
@@ -315,12 +315,12 @@ type BudgetBlock struct {
 
 // Edge represents a directed transition: `src -> dst [when ...] [as ...] [with {...}]`.
 type Edge struct {
-	From     string       // source node name
-	To       string       // target node name (can be "done" or "fail")
-	When     *WhenClause  // optional condition
-	Loop     *LoopClause  // optional loop tracking
-	With     []*WithEntry // optional data mappings
-	Span     Span
+	From string       // source node name
+	To   string       // target node name (can be "done" or "fail")
+	When *WhenClause  // optional condition
+	Loop *LoopClause  // optional loop tracking
+	With []*WithEntry // optional data mappings
+	Span Span
 }
 
 // WhenClause represents a `when [not] <condition>` on an edge.

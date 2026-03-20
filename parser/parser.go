@@ -25,16 +25,16 @@ func Parse(filename, src string) *ParseResult {
 
 // parser is the recursive-descent parser state.
 type parser struct {
-	lex  *Lexer
-	file string
+	lex   *Lexer
+	file  string
 	diags []Diagnostic
 }
 
 // ---- helpers ----
 
-func (p *parser) peek() Token   { return p.lex.Peek() }
-func (p *parser) next() Token   { return p.lex.Next() }
-func (p *parser) backup()       { p.lex.Backup() }
+func (p *parser) peek() Token { return p.lex.Peek() }
+func (p *parser) next() Token { return p.lex.Next() }
+func (p *parser) backup()     { p.lex.Backup() }
 
 func (p *parser) pos(t Token) ast.Pos {
 	return ast.Pos{File: p.file, Line: t.Line, Column: t.Column}

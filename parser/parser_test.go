@@ -625,13 +625,13 @@ func TestLexerBasic(t *testing.T) {
 
 	expected := []parser.TokenType{
 		parser.TokenAgent,
-		parser.TokenIdent,    // foo
+		parser.TokenIdent, // foo
 		parser.TokenColon,
 		parser.TokenNewline,
 		parser.TokenIndent,
 		parser.TokenModel,
 		parser.TokenColon,
-		parser.TokenString,   // gpt-4
+		parser.TokenString, // gpt-4
 		parser.TokenNewline,
 		parser.TokenDedent,
 		parser.TokenEOF,

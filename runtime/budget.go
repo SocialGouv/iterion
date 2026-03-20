@@ -68,7 +68,7 @@ func newSharedBudget(b *ir.Budget) *SharedBudget {
 type budgetCheckResult struct {
 	exceeded  bool
 	warning   bool
-	dimension string  // "tokens", "cost_usd", "iterations", "duration"
+	dimension string // "tokens", "cost_usd", "iterations", "duration"
 	used      float64
 	limit     float64
 }

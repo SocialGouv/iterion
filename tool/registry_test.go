@@ -538,11 +538,11 @@ func TestWorkflowToolResolution(t *testing.T) {
 
 	// A workflow node might reference tools like this:
 	refs := []string{
-		"git_diff",                  // builtin exact
-		"run_tests",                 // builtin exact
-		"mcp.github.create_issue",   // MCP exact
-		"mcp.github.list_prs",       // MCP exact
-		"send_message",              // MCP shorthand (only one server has it)
+		"git_diff",                // builtin exact
+		"run_tests",               // builtin exact
+		"mcp.github.create_issue", // MCP exact
+		"mcp.github.list_prs",     // MCP exact
+		"send_message",            // MCP shorthand (only one server has it)
 	}
 
 	tools, err := r.ResolveAll(refs)

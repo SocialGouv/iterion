@@ -30,8 +30,8 @@ func fanOutWorkflow(joinStrategy ir.JoinStrategy) *ir.Workflow {
 		Name:  "fanout_test",
 		Entry: "entry",
 		Nodes: map[string]*ir.Node{
-			"entry":  {ID: "entry", Kind: ir.NodeAgent},
-			"router": {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
+			"entry":   {ID: "entry", Kind: ir.NodeAgent},
+			"router":  {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
 			"agent_a": {ID: "agent_a", Kind: ir.NodeAgent},
 			"agent_b": {ID: "agent_b", Kind: ir.NodeAgent},
 			"merge": {

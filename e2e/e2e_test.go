@@ -159,7 +159,8 @@ func eventNodeIDs(events []*store.Event, t store.EventType) []string {
 
 // TestSingleModel_HappyPath — all checks pass first try.
 // Expected path: context_builder → reviewer → planner → compliance_check(approved)
-//   → act_on_plan → final_verify(approved) → done
+//
+//	→ act_on_plan → final_verify(approved) → done
 func TestSingleModel_HappyPath(t *testing.T) {
 	wf := compileFixture(t, "pr_refine_single_model.iter")
 	exec := newScenarioExecutor()

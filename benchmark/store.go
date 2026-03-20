@@ -11,9 +11,9 @@ import (
 
 // BenchmarkReport is a persisted comparison of multiple recipe runs.
 type BenchmarkReport struct {
-	ID        string       `json:"id"`
-	CreatedAt time.Time    `json:"created_at"`
-	CaseLabel string       `json:"case_label"`
+	ID        string        `json:"id"`
+	CreatedAt time.Time     `json:"created_at"`
+	CaseLabel string        `json:"case_label"`
 	Results   []*RunMetrics `json:"results"`
 }
 

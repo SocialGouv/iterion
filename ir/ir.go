@@ -13,14 +13,14 @@ package ir
 // loops and budget.
 type Workflow struct {
 	Name    string
-	Entry   string              // entry node ID
-	Nodes   map[string]*Node    // node ID → node
-	Edges   []*Edge             // ordered list of edges
-	Schemas map[string]*Schema  // schema name → resolved schema
-	Prompts map[string]*Prompt  // prompt name → resolved prompt
-	Vars    map[string]*Var     // var name → resolved variable
-	Loops   map[string]*Loop    // loop name → loop definition
-	Budget  *Budget             // workflow budget (nil if not set)
+	Entry   string             // entry node ID
+	Nodes   map[string]*Node   // node ID → node
+	Edges   []*Edge            // ordered list of edges
+	Schemas map[string]*Schema // schema name → resolved schema
+	Prompts map[string]*Prompt // prompt name → resolved prompt
+	Vars    map[string]*Var    // var name → resolved variable
+	Loops   map[string]*Loop   // loop name → loop definition
+	Budget  *Budget            // workflow budget (nil if not set)
 }
 
 // ---------------------------------------------------------------------------
@@ -66,7 +66,7 @@ func (k NodeKind) String() string {
 
 // Node is the unified IR node. Fields are populated according to Kind.
 type Node struct {
-	ID   string   // unique identifier (= DSL name)
+	ID   string // unique identifier (= DSL name)
 	Kind NodeKind
 
 	// --- Agent / Judge fields ---
@@ -104,7 +104,7 @@ type Node struct {
 type SessionMode int
 
 const (
-	SessionFresh         SessionMode = iota
+	SessionFresh SessionMode = iota
 	SessionInherit
 	SessionArtifactsOnly
 )
@@ -143,7 +143,7 @@ func (rm RouterMode) String() string {
 type JoinStrategy int
 
 const (
-	JoinWaitAll    JoinStrategy = iota
+	JoinWaitAll JoinStrategy = iota
 	JoinBestEffort
 )
 
@@ -212,9 +212,9 @@ type RefKind int
 
 const (
 	RefVars      RefKind = iota // {{vars.x}}
-	RefInput                   // {{input.field}}
-	RefOutputs                 // {{outputs.node}} or {{outputs.node.field}}
-	RefArtifacts               // {{artifacts.name}}
+	RefInput                    // {{input.field}}
+	RefOutputs                  // {{outputs.node}} or {{outputs.node.field}}
+	RefArtifacts                // {{artifacts.name}}
 )
 
 func (rk RefKind) String() string {
@@ -367,7 +367,7 @@ type Loop struct {
 // Budget defines execution limits for a workflow.
 type Budget struct {
 	MaxParallelBranches int
-	MaxDuration         string  // e.g. "60m"
+	MaxDuration         string // e.g. "60m"
 	MaxCostUSD          float64
 	MaxTokens           int
 	MaxIterations       int
