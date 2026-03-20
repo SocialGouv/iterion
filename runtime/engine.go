@@ -310,8 +310,9 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 			})
 		}
 
-		// --- Emit node_finished ---
-		if err := e.emit(rs.runID, store.EventNodeFinished, currentNodeID, nil); err != nil {
+		// --- Emit node_finished with usage data ---
+		nodeFinishedData := buildNodeFinishedData(output)
+		if err := e.emit(rs.runID, store.EventNodeFinished, currentNodeID, nodeFinishedData); err != nil {
 			return err
 		}
 
@@ -551,8 +552,8 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 			})
 		}
 
-		// Emit node_finished.
-		_ = e.emitBranch(runID, branchID, store.EventNodeFinished, currentNodeID, nil)
+		// Emit node_finished with usage data.
+		_ = e.emitBranch(runID, branchID, store.EventNodeFinished, currentNodeID, buildNodeFinishedData(output))
 
 		// Select next edge (branch-local, no loop counters needed in branches).
 		merged = mergeOutputs(parentOutputs, result.outputs)
@@ -1111,6 +1112,24 @@ func extractUsage(output map[string]interface{}) (tokens int, costUSD float64) {
 		}
 	}
 	return
+}
+
+// buildNodeFinishedData builds the data payload for a node_finished event,
+// including usage metrics (_tokens, _cost_usd) and a snapshot of the output.
+func buildNodeFinishedData(output map[string]interface{}) map[string]interface{} {
+	if output == nil {
+		return nil
+	}
+	data := map[string]interface{}{
+		"output": output,
+	}
+	if v, ok := output["_tokens"]; ok {
+		data["_tokens"] = v
+	}
+	if v, ok := output["_cost_usd"]; ok {
+		data["_cost_usd"] = v
+	}
+	return data
 }
 
 // ---------------------------------------------------------------------------
