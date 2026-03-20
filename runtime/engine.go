@@ -1,7 +1,8 @@
-// Package runtime implements the sequential workflow execution engine.
+// Package runtime implements the workflow execution engine.
 // It walks the compiled IR graph node by node, persists outputs and
 // artifacts via the store, evaluates edge conditions and loop counters,
-// and emits lifecycle events.
+// and emits lifecycle events. It supports both sequential execution and
+// parallel fan-out/join patterns via a bounded branch scheduler.
 package runtime
 
 import (
@@ -29,15 +30,15 @@ type NodeExecutor interface {
 	Execute(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error)
 }
 
-// Engine is the sequential runtime. It executes one node at a time,
-// following edges until a terminal node is reached.
+// Engine executes workflows. It supports sequential execution and
+// parallel fan-out via bounded branch scheduling.
 type Engine struct {
 	workflow *ir.Workflow
 	store    *store.RunStore
 	executor NodeExecutor
 }
 
-// New creates a new sequential Engine.
+// New creates a new Engine.
 func New(wf *ir.Workflow, s *store.RunStore, exec NodeExecutor) *Engine {
 	return &Engine{workflow: wf, store: s, executor: exec}
 }
@@ -52,9 +53,18 @@ type runState struct {
 	artifactVersions map[string]int
 }
 
-// Run executes the workflow sequentially. It creates a run, walks the
-// graph from the entry node, and returns when a terminal node is reached,
-// a human pause is hit (ErrRunPaused), or an error occurs.
+// branchResult holds the outcome of a single parallel branch.
+type branchResult struct {
+	branchID         string
+	outputs          map[string]map[string]interface{}
+	artifactVersions map[string]int
+	joinNodeID       string // the join node this branch converged to (empty if terminal)
+	err              error
+}
+
+// Run executes the workflow. It creates a run, walks the graph from the
+// entry node, and returns when a terminal node is reached, a human pause
+// is hit (ErrRunPaused), or an error occurs.
 func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interface{}) error {
 	// Create run in store.
 	if _, err := e.store.CreateRun(runID, e.workflow.Name, inputs); err != nil {
@@ -226,6 +236,16 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 			return e.pauseAtHuman(rs, currentNodeID, node)
 		}
 
+		// --- Fan-out router: spawn parallel branches ---
+		if node.Kind == ir.NodeRouter && node.RouterMode == ir.RouterFanOutAll {
+			nextNodeID, err := e.execFanOut(ctx, rs, currentNodeID)
+			if err != nil {
+				return e.failRun(rs.runID, currentNodeID, err.Error())
+			}
+			currentNodeID = nextNodeID
+			continue
+		}
+
 		// --- Emit node_started ---
 		if err := e.emit(rs.runID, store.EventNodeStarted, currentNodeID, map[string]interface{}{
 			"kind": node.Kind.String(),
@@ -279,6 +299,373 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 		currentNodeID = nextNodeID
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Fan-out / Join — parallel branch scheduler
+// ---------------------------------------------------------------------------
+
+// execFanOut handles a fan_out_all router node by spawning parallel
+// branches for each outgoing edge, bounded by MaxParallelBranches.
+// It returns the next node ID to continue from (after the join).
+func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID string) (string, error) {
+	// Emit router node_started.
+	if err := e.emit(rs.runID, store.EventNodeStarted, routerNodeID, map[string]interface{}{
+		"kind": "router",
+		"mode": "fan_out_all",
+	}); err != nil {
+		return "", err
+	}
+
+	// Router is a pass-through: its output = its input from incoming edges.
+	routerInput := e.buildNodeInput(routerNodeID, rs.vars, rs.outputs, rs.runInputs)
+	rs.outputs[routerNodeID] = routerInput
+
+	// Emit router node_finished.
+	if err := e.emit(rs.runID, store.EventNodeFinished, routerNodeID, nil); err != nil {
+		return "", err
+	}
+
+	// Collect all outgoing edges from the router.
+	var fanEdges []*ir.Edge
+	for _, edge := range e.workflow.Edges {
+		if edge.From == routerNodeID {
+			fanEdges = append(fanEdges, edge)
+		}
+	}
+	if len(fanEdges) == 0 {
+		return "", fmt.Errorf("fan_out_all router %q has no outgoing edges", routerNodeID)
+	}
+
+	// Determine concurrency limit from budget.
+	maxParallel := len(fanEdges)
+	if e.workflow.Budget != nil && e.workflow.Budget.MaxParallelBranches > 0 && e.workflow.Budget.MaxParallelBranches < maxParallel {
+		maxParallel = e.workflow.Budget.MaxParallelBranches
+	}
+
+	// Snapshot parent outputs (branches read from this, write to their own map).
+	parentOutputs := make(map[string]map[string]interface{})
+	for k, v := range rs.outputs {
+		parentOutputs[k] = v
+	}
+
+	// Launch branches with bounded concurrency.
+	sem := make(chan struct{}, maxParallel)
+	resultsCh := make(chan *branchResult, len(fanEdges))
+
+	for _, edge := range fanEdges {
+		branchID := fmt.Sprintf("branch_%s_%s", routerNodeID, edge.To)
+
+		go func(edge *ir.Edge, branchID string) {
+			sem <- struct{}{}        // acquire semaphore slot
+			defer func() { <-sem }() // release
+
+			result := e.execBranch(ctx, rs.runID, branchID, edge, parentOutputs, rs.vars, rs.runInputs)
+			resultsCh <- result
+		}(edge, branchID)
+	}
+
+	// Collect all results.
+	results := make([]*branchResult, 0, len(fanEdges))
+	for range fanEdges {
+		results = append(results, <-resultsCh)
+	}
+
+	// Determine join node. Prefer the one reported by successful branches;
+	// if all branches failed, discover it from the graph topology.
+	joinNodeID := ""
+	for _, r := range results {
+		if r.joinNodeID != "" {
+			if joinNodeID == "" {
+				joinNodeID = r.joinNodeID
+			} else if joinNodeID != r.joinNodeID {
+				return "", fmt.Errorf("branches converge to different join nodes: %s vs %s", joinNodeID, r.joinNodeID)
+			}
+		}
+	}
+	if joinNodeID == "" {
+		// All branches failed before reaching a join. Walk the graph
+		// from each fan-out target to find the downstream join node.
+		joinNodeID = e.findJoinForRouter(routerNodeID, fanEdges)
+		if joinNodeID == "" {
+			return "", fmt.Errorf("no join node found after fan_out from %s", routerNodeID)
+		}
+	}
+
+	// Process the join.
+	return e.processJoin(rs, joinNodeID, results)
+}
+
+// execBranch runs a single parallel branch starting from the target of
+// the given edge. It executes nodes sequentially until it reaches a join
+// node, a terminal node, or encounters an error.
+func (e *Engine) execBranch(ctx context.Context, runID, branchID string, startEdge *ir.Edge, parentOutputs map[string]map[string]interface{}, vars map[string]interface{}, runInputs map[string]interface{}) *branchResult {
+	result := &branchResult{
+		branchID:         branchID,
+		outputs:          make(map[string]map[string]interface{}),
+		artifactVersions: make(map[string]int),
+	}
+
+	// Emit branch_started.
+	_ = e.emitBranch(runID, branchID, store.EventBranchStarted, startEdge.To, nil)
+
+	currentNodeID := startEdge.To
+
+	for {
+		select {
+		case <-ctx.Done():
+			result.err = ctx.Err()
+			return result
+		default:
+		}
+
+		node, ok := e.workflow.Nodes[currentNodeID]
+		if !ok {
+			result.err = fmt.Errorf("node %q not found in branch %s", currentNodeID, branchID)
+			return result
+		}
+
+		// Stop at join node — the branch has converged.
+		if node.Kind == ir.NodeJoin {
+			result.joinNodeID = currentNodeID
+			return result
+		}
+
+		// Stop at terminal nodes within a branch.
+		if node.Kind == ir.NodeDone || node.Kind == ir.NodeFail {
+			if node.Kind == ir.NodeFail {
+				result.err = fmt.Errorf("branch %s reached fail node %q", branchID, currentNodeID)
+			}
+			return result
+		}
+
+		// Emit node_started.
+		_ = e.emitBranch(runID, branchID, store.EventNodeStarted, currentNodeID, map[string]interface{}{
+			"kind": node.Kind.String(),
+		})
+
+		// Build input: merge parent outputs with branch-local outputs so
+		// refs to upstream nodes (before the router) still resolve.
+		merged := mergeOutputs(parentOutputs, result.outputs)
+		nodeInput := e.buildNodeInput(currentNodeID, vars, merged, runInputs)
+
+		// Execute.
+		output, err := e.executor.Execute(ctx, node, nodeInput)
+		if err != nil {
+			result.err = fmt.Errorf("node %q in branch %s: %w", currentNodeID, branchID, err)
+			_ = e.emitBranch(runID, branchID, store.EventNodeFinished, currentNodeID, map[string]interface{}{
+				"error": err.Error(),
+			})
+			return result
+		}
+
+		result.outputs[currentNodeID] = output
+
+		// Persist artifact if node has publish.
+		if node.Publish != "" {
+			version := result.artifactVersions[currentNodeID]
+			artifact := &store.Artifact{
+				RunID:   runID,
+				NodeID:  currentNodeID,
+				Version: version,
+				Data:    output,
+			}
+			_ = e.store.WriteArtifact(artifact)
+			result.artifactVersions[currentNodeID] = version + 1
+			_ = e.emitBranch(runID, branchID, store.EventArtifactWritten, currentNodeID, map[string]interface{}{
+				"publish": node.Publish,
+				"version": version,
+			})
+		}
+
+		// Emit node_finished.
+		_ = e.emitBranch(runID, branchID, store.EventNodeFinished, currentNodeID, nil)
+
+		// Select next edge (branch-local, no loop counters needed in branches).
+		merged = mergeOutputs(parentOutputs, result.outputs)
+		nextNodeID, err := e.selectEdgeBranch(runID, branchID, currentNodeID, output)
+		if err != nil {
+			result.err = err
+			return result
+		}
+
+		currentNodeID = nextNodeID
+	}
+}
+
+// selectEdgeBranch picks the next node for a branch. It is simpler than
+// selectEdge: no loop counter enforcement, events carry a branch ID.
+func (e *Engine) selectEdgeBranch(runID, branchID, fromNodeID string, output map[string]interface{}) (string, error) {
+	var unconditional *ir.Edge
+	var selected *ir.Edge
+
+	for _, edge := range e.workflow.Edges {
+		if edge.From != fromNodeID {
+			continue
+		}
+		if edge.Condition == "" {
+			if unconditional == nil {
+				unconditional = edge
+			}
+			continue
+		}
+		val, ok := output[edge.Condition]
+		if !ok {
+			continue
+		}
+		boolVal, isBool := val.(bool)
+		if !isBool {
+			continue
+		}
+		if edge.Negated {
+			boolVal = !boolVal
+		}
+		if boolVal {
+			selected = edge
+			break
+		}
+	}
+
+	if selected == nil {
+		selected = unconditional
+	}
+	if selected == nil {
+		return "", fmt.Errorf("no outgoing edge from node %q in branch %s", fromNodeID, branchID)
+	}
+
+	_ = e.emitBranch(runID, branchID, store.EventEdgeSelected, "", map[string]interface{}{
+		"from": selected.From,
+		"to":   selected.To,
+	})
+
+	return selected.To, nil
+}
+
+// processJoin aggregates branch results according to the join node's
+// strategy, merges outputs into the run state, and returns the next
+// node ID to continue execution from.
+func (e *Engine) processJoin(rs *runState, joinNodeID string, results []*branchResult) (string, error) {
+	joinNode, ok := e.workflow.Nodes[joinNodeID]
+	if !ok {
+		return "", fmt.Errorf("join node %q not found", joinNodeID)
+	}
+
+	// Emit join node_started.
+	if err := e.emit(rs.runID, store.EventNodeStarted, joinNodeID, map[string]interface{}{
+		"kind":     "join",
+		"strategy": joinNode.JoinStrategy.String(),
+	}); err != nil {
+		return "", err
+	}
+
+	// Collect failed branches metadata.
+	var failedBranches []map[string]interface{}
+	for _, r := range results {
+		if r.err != nil {
+			failedBranches = append(failedBranches, map[string]interface{}{
+				"branch_id": r.branchID,
+				"error":     r.err.Error(),
+			})
+		}
+	}
+
+	// Apply join strategy.
+	switch joinNode.JoinStrategy {
+	case ir.JoinWaitAll:
+		// All required branches must have succeeded.
+		if len(failedBranches) > 0 {
+			return "", fmt.Errorf("join %s (wait_all): %d branch(es) failed: %v",
+				joinNodeID, len(failedBranches), failedBranches[0]["error"])
+		}
+	case ir.JoinBestEffort:
+		// Proceed even with failures — failed branch metadata is exposed.
+	}
+
+	// Merge successful branch outputs into the run state.
+	for _, r := range results {
+		if r.err != nil {
+			continue
+		}
+		for nodeID, output := range r.outputs {
+			rs.outputs[nodeID] = output
+		}
+		for nodeID, version := range r.artifactVersions {
+			rs.artifactVersions[nodeID] = version
+		}
+	}
+
+	// Build join output: one entry per required node + failed branches metadata.
+	joinOutput := make(map[string]interface{})
+	for _, reqNodeID := range joinNode.Require {
+		if output, ok := rs.outputs[reqNodeID]; ok {
+			joinOutput[reqNodeID] = output
+		}
+	}
+	if len(failedBranches) > 0 {
+		joinOutput["_failed_branches"] = failedBranches
+	}
+	rs.outputs[joinNodeID] = joinOutput
+
+	// Emit join_ready.
+	joinData := map[string]interface{}{
+		"strategy": joinNode.JoinStrategy.String(),
+		"required": joinNode.Require,
+	}
+	if len(failedBranches) > 0 {
+		joinData["failed_branches"] = failedBranches
+	}
+	_ = e.emit(rs.runID, store.EventJoinReady, joinNodeID, joinData)
+
+	// Emit join node_finished.
+	if err := e.emit(rs.runID, store.EventNodeFinished, joinNodeID, nil); err != nil {
+		return "", err
+	}
+
+	// Select next edge from the join.
+	nextNodeID, err := e.selectEdge(rs.runID, joinNodeID, joinOutput, rs.loopCounters)
+	if err != nil {
+		return "", err
+	}
+
+	return nextNodeID, nil
+}
+
+// findJoinForRouter walks outgoing edges from the router's targets to
+// find a downstream join node. This is used when all branches failed
+// before reaching the join, so we can still process the join.
+func (e *Engine) findJoinForRouter(routerNodeID string, fanEdges []*ir.Edge) string {
+	// BFS from each fan-out target to find a join node.
+	for _, startEdge := range fanEdges {
+		visited := map[string]bool{}
+		queue := []string{startEdge.To}
+		for len(queue) > 0 {
+			nodeID := queue[0]
+			queue = queue[1:]
+			if visited[nodeID] {
+				continue
+			}
+			visited[nodeID] = true
+
+			node, ok := e.workflow.Nodes[nodeID]
+			if !ok {
+				continue
+			}
+			if node.Kind == ir.NodeJoin {
+				return nodeID
+			}
+			// Follow outgoing edges.
+			for _, edge := range e.workflow.Edges {
+				if edge.From == nodeID {
+					queue = append(queue, edge.To)
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// ---------------------------------------------------------------------------
+// Human pause
+// ---------------------------------------------------------------------------
 
 // pauseAtHuman suspends the run at a human node: persists an interaction,
 // saves checkpoint state, and returns ErrRunPaused.
@@ -339,6 +726,10 @@ func (e *Engine) pauseAtHuman(rs *runState, nodeID string, node *ir.Node) error 
 
 	return ErrRunPaused
 }
+
+// ---------------------------------------------------------------------------
+// Edge selection
+// ---------------------------------------------------------------------------
 
 // selectEdge picks the next node by evaluating outgoing edges from the
 // current node. Conditional edges are checked first; the first matching
@@ -416,6 +807,10 @@ func (e *Engine) selectEdge(runID, fromNodeID string, output map[string]interfac
 	return selected.To, nil
 }
 
+// ---------------------------------------------------------------------------
+// Input resolution
+// ---------------------------------------------------------------------------
+
 // buildNodeInput constructs the input map for a node by looking at the
 // edge `with` mappings that target this node. If no mappings exist, the
 // run-level inputs are used as a starting point for the entry node.
@@ -423,7 +818,6 @@ func (e *Engine) buildNodeInput(nodeID string, vars map[string]interface{}, outp
 	result := make(map[string]interface{})
 
 	// Find the edge that targets this node and has `with` mappings.
-	// In a sequential run there is at most one incoming edge per step.
 	for _, edge := range e.workflow.Edges {
 		if edge.To != nodeID || len(edge.With) == 0 {
 			continue
@@ -513,6 +907,23 @@ func (e *Engine) resolveVars(inputs map[string]interface{}) map[string]interface
 	return vars
 }
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// mergeOutputs creates a merged view of parent and branch outputs.
+// Branch outputs take precedence over parent outputs.
+func mergeOutputs(parent, branch map[string]map[string]interface{}) map[string]map[string]interface{} {
+	merged := make(map[string]map[string]interface{}, len(parent)+len(branch))
+	for k, v := range parent {
+		merged[k] = v
+	}
+	for k, v := range branch {
+		merged[k] = v
+	}
+	return merged
+}
+
 // emit is a convenience wrapper for appending an event.
 func (e *Engine) emit(runID string, typ store.EventType, nodeID string, data map[string]interface{}) error {
 	_, err := e.store.AppendEvent(runID, store.Event{
@@ -526,6 +937,20 @@ func (e *Engine) emit(runID string, typ store.EventType, nodeID string, data map
 	return nil
 }
 
+// emitBranch appends an event with a branch ID.
+func (e *Engine) emitBranch(runID, branchID string, typ store.EventType, nodeID string, data map[string]interface{}) error {
+	_, err := e.store.AppendEvent(runID, store.Event{
+		Type:     typ,
+		BranchID: branchID,
+		NodeID:   nodeID,
+		Data:     data,
+	})
+	if err != nil {
+		return fmt.Errorf("runtime: emit %s (branch %s): %w", typ, branchID, err)
+	}
+	return nil
+}
+
 // failRun marks a run as failed and emits the run_failed event.
 func (e *Engine) failRun(runID, nodeID, reason string) error {
 	_ = e.store.UpdateRunStatus(runID, store.RunStatusFailed, reason)
@@ -534,3 +959,4 @@ func (e *Engine) failRun(runID, nodeID, reason string) error {
 	})
 	return fmt.Errorf("runtime: %s", reason)
 }
+
