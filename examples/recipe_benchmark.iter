@@ -1,0 +1,194 @@
+## Fixture de référence : recipe_benchmark
+## Objectif : Exécuter plusieurs recettes sur la même PR et comparer coût, qualité, itérations et latence.
+## Cas d'usage : évaluation comparative de recettes pour optimiser le rapport coût/qualité.
+## Primitives exercées : router fan_out_all, join wait_all, agent, judge, done, publish, session fresh.
+## Note : chaque branche exécute un workflow complet isolé ; le join agrège les métriques.
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+prompt benchmark_orchestrator_system:
+  Tu prepares le contexte de benchmark a partir de la PR et des recettes a comparer.
+
+prompt benchmark_orchestrator_user:
+  Construis le contexte de benchmark normalise.
+
+prompt recipe_runner_system:
+  Tu executes une recette de raffinage de PR de bout en bout.
+  Tu dois produire un rapport structure avec le verdict, le cout,
+  le nombre d'iterations et un resume des actions.
+
+prompt recipe_runner_user:
+  Execute cette recette sur la PR.
+
+  Recette :
+  {{input.recipe_config}}
+
+  Contexte PR :
+  {{input.pr_context}}
+
+prompt benchmark_judge_system:
+  Tu es le juge comparatif du benchmark.
+  Tu compares les resultats de plusieurs recettes et produis un classement
+  argumente avec metriques et recommandations.
+
+prompt benchmark_judge_user:
+  Compare les resultats des recettes executees.
+
+  Resultats :
+  {{input.recipe_results}}
+
+  Criteres de comparaison :
+  {{input.comparison_criteria}}
+
+schema benchmark_context:
+  pr_title: string
+  pr_description: string
+  base_ref: string
+  head_ref: string
+  recipes: json
+
+schema pr_context:
+  pr_title: string
+  pr_description: string
+  base_ref: string
+  head_ref: string
+  diff: string
+  changed_files: string[]
+  repository_summary: string
+
+schema recipe_config:
+  recipe_name: string
+  model: string
+  budget_usd: float
+  max_iterations: int
+  prompt_pack: string
+
+schema recipe_run_input:
+  pr_context: json
+  recipe_config: json
+
+schema recipe_run_result:
+  recipe_name: string
+  verdict: string
+  approved: bool
+  total_cost_usd: float
+  total_tokens: int
+  iterations: int
+  duration_seconds: int
+  summary: string
+  issues_found: string[]
+  issues_fixed: string[]
+
+schema benchmark_results_bundle:
+  recipe_a_result: json
+  recipe_b_result: json
+
+schema benchmark_comparison_request:
+  recipe_results: json
+  comparison_criteria: string
+
+schema benchmark_verdict:
+  winner: string
+  ranking: string[]
+  cost_comparison: string
+  quality_comparison: string
+  speed_comparison: string
+  recommendation: string
+  detailed_notes: string[]
+
+agent benchmark_orchestrator:
+  model: "${CONTEXT_MODEL}"
+  input: benchmark_context
+  output: pr_context
+  publish: pr_context
+  system: benchmark_orchestrator_system
+  user: benchmark_orchestrator_user
+  session: fresh
+  tools: [git_diff, git_status, read_file, list_files, tree]
+  tool_max_steps: 8
+
+router recipe_fanout:
+  mode: fan_out_all
+
+agent recipe_a_runner:
+  model: "${RECIPE_A_MODEL}"
+  input: recipe_run_input
+  output: recipe_run_result
+  publish: recipe_a_report
+  system: recipe_runner_system
+  user: recipe_runner_user
+  session: fresh
+  tools: [git_diff, read_file, write_file, patch, list_files, search_codebase, run_command]
+  tool_max_steps: 30
+
+agent recipe_b_runner:
+  model: "${RECIPE_B_MODEL}"
+  input: recipe_run_input
+  output: recipe_run_result
+  publish: recipe_b_report
+  system: recipe_runner_system
+  user: recipe_runner_user
+  session: fresh
+  tools: [git_diff, read_file, write_file, patch, list_files, search_codebase, run_command]
+  tool_max_steps: 30
+
+join recipes_join:
+  strategy: wait_all
+  require: [recipe_a_runner, recipe_b_runner]
+  output: benchmark_results_bundle
+
+judge benchmark_judge:
+  model: "${JUDGE_MODEL}"
+  input: benchmark_comparison_request
+  output: benchmark_verdict
+  publish: benchmark_verdict
+  system: benchmark_judge_system
+  user: benchmark_judge_user
+  session: fresh
+
+workflow recipe_benchmark:
+  vars:
+    pr_title: string
+    pr_description: string = ""
+    base_ref: string = "origin/main"
+    head_ref: string = "HEAD"
+    recipe_a_config: json
+    recipe_b_config: json
+    comparison_criteria: string
+
+  entry: benchmark_orchestrator
+
+  budget:
+    max_parallel_branches: 2
+    max_duration: "120m"
+    max_cost_usd: 60
+    max_tokens: 1600000
+
+  ## 1. Préparer le contexte commun
+  benchmark_orchestrator -> recipe_fanout with {
+    pr_context: "{{outputs.benchmark_orchestrator}}"
+  }
+
+  ## 2. Exécuter les recettes en parallèle
+  recipe_fanout -> recipe_a_runner with {
+    pr_context: "{{input.pr_context}}",
+    recipe_config: "{{vars.recipe_a_config}}"
+  }
+
+  recipe_fanout -> recipe_b_runner with {
+    pr_context: "{{input.pr_context}}",
+    recipe_config: "{{vars.recipe_b_config}}"
+  }
+
+  ## 3. Agréger les résultats
+  recipe_a_runner -> recipes_join
+  recipe_b_runner -> recipes_join
+
+  ## 4. Comparer et juger
+  recipes_join -> benchmark_judge with {
+    recipe_results: "{{outputs.recipes_join}}",
+    comparison_criteria: "{{vars.comparison_criteria}}"
+  }
+
+  benchmark_judge -> done

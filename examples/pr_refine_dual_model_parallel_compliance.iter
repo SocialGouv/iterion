@@ -643,7 +643,7 @@ workflow pr_refine_dual_model_parallel_compliance:
     expected_decisions: "{{outputs.technical_decision_gate.expected_decisions}}"
   }
 
-  technical_decision_gate -> act_on_plan with {
+  technical_decision_gate -> act_on_plan when not needs_human_input with {
     pr_context: "{{outputs.context_builder}}",
     approved_plan: "{{outputs.final_plan_merge}}"
   }

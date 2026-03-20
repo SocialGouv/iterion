@@ -1,0 +1,210 @@
+## Fixture de référence : ci_fix_until_green
+## Objectif : Diagnostiquer un échec CI, planifier et appliquer un correctif, puis reboucler jusqu'à CI vert.
+## Cas d'usage : correction automatique d'échecs CI avec boucle bornée.
+## Primitives exercées : agent, judge, tool, done, fail, boucle bornée, publish, session fresh/inherit, tools.
+## Chemin nominal : diagnose -> plan -> act -> run_ci -> verify -> done ou reboucle.
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+prompt diagnose_system:
+  Tu es un expert en diagnostic d'echecs CI.
+  Analyse les logs CI, identifie la cause racine et produis un diagnostic structure.
+
+prompt diagnose_user:
+  Analyse cet echec CI et produis un diagnostic.
+
+  Logs CI :
+  {{input.ci_logs}}
+
+  Contexte repo :
+  {{input.repo_context}}
+
+  Historique des tentatives :
+  {{input.previous_attempts}}
+
+prompt plan_fix_system:
+  Tu es un engineer senior.
+  Transforme un diagnostic CI en plan de correction minimal et cible.
+
+prompt plan_fix_user:
+  Produis un plan de correction pour cet echec CI.
+
+  Diagnostic :
+  {{input.diagnosis}}
+
+  Contexte repo :
+  {{input.repo_context}}
+
+prompt act_system:
+  Tu appliques un plan de correction CI.
+  Sois minimal et precis. Ne modifie que ce qui est necessaire.
+
+prompt act_user:
+  Applique ce plan de correction.
+
+  Plan :
+  {{input.plan}}
+
+  Contexte repo :
+  {{input.repo_context}}
+
+prompt verify_system:
+  Tu determines si les resultats CI sont verts apres correction.
+  Si des echecs persistent, identifie clairement ce qui reste a corriger.
+
+prompt verify_user:
+  Evalue les resultats CI apres correction.
+
+  Resultats CI :
+  {{input.ci_results}}
+
+  Diagnostic initial :
+  {{input.diagnosis}}
+
+  Actions effectuees :
+  {{input.act_result}}
+
+schema ci_context:
+  branch: string
+  ci_command: string
+  ci_logs: string
+  repo_context: string
+  previous_attempts: string
+
+schema diagnosis:
+  root_cause: string
+  affected_files: string[]
+  error_type: string
+  confidence: string [enum: "low", "medium", "high"]
+  suggested_approach: string
+  details: string[]
+
+schema fix_plan:
+  summary: string
+  ordered_steps: string[]
+  files_to_modify: string[]
+  expected_outcome: string
+  risks: string[]
+
+schema fix_plan_request:
+  diagnosis: json
+  repo_context: string
+
+schema act_request:
+  plan: json
+  repo_context: string
+
+schema act_result:
+  applied: bool
+  summary: string
+  files_changed: string[]
+  commands_run: string[]
+
+schema ci_run_result:
+  passed: bool
+  exit_code: int
+  logs: string
+  failed_tests: string[]
+
+schema verify_request:
+  ci_results: json
+  diagnosis: json
+  act_result: json
+
+schema ci_verdict:
+  green: bool
+  remaining_failures: string[]
+  summary: string
+  confidence: string [enum: "low", "medium", "high"]
+
+agent diagnose:
+  model: "${MODEL}"
+  input: ci_context
+  output: diagnosis
+  publish: diagnosis
+  system: diagnose_system
+  user: diagnose_user
+  session: fresh
+  tools: [read_file, list_files, search_codebase, git_diff, git_status, tree]
+  tool_max_steps: 10
+
+agent plan_fix:
+  model: "${MODEL}"
+  input: fix_plan_request
+  output: fix_plan
+  system: plan_fix_system
+  user: plan_fix_user
+  session: inherit
+  tools: [read_file, search_codebase]
+  tool_max_steps: 6
+
+agent act_fix:
+  model: "${MODEL}"
+  input: act_request
+  output: act_result
+  publish: fix_report
+  system: act_system
+  user: act_user
+  session: fresh
+  tools: [read_file, write_file, patch, list_files, git_diff, git_status, run_command]
+  tool_max_steps: 15
+
+tool run_ci:
+  command: "${CI_COMMAND}"
+  output: ci_run_result
+
+judge verify_ci:
+  model: "${MODEL}"
+  input: verify_request
+  output: ci_verdict
+  publish: ci_verdict
+  system: verify_system
+  user: verify_user
+  session: fresh
+
+workflow ci_fix_until_green:
+  vars:
+    branch: string
+    ci_command: string = "make test"
+    repo_context: string = ""
+
+  entry: diagnose
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "30m"
+    max_cost_usd: 15
+    max_tokens: 400000
+
+  ## 1. Diagnostiquer l'échec CI
+  diagnose -> plan_fix with {
+    diagnosis: "{{outputs.diagnose}}",
+    repo_context: "{{vars.repo_context}}"
+  }
+
+  ## 2. Planifier le correctif
+  plan_fix -> act_fix with {
+    plan: "{{outputs.plan_fix}}",
+    repo_context: "{{vars.repo_context}}"
+  }
+
+  ## 3. Appliquer le correctif
+  act_fix -> run_ci
+
+  ## 4. Relancer la CI
+  run_ci -> verify_ci with {
+    ci_results: "{{outputs.run_ci}}",
+    diagnosis: "{{outputs.diagnose}}",
+    act_result: "{{outputs.act_fix}}"
+  }
+
+  ## 5. Verdict : vert -> done, rouge -> reboucle
+  verify_ci -> done when green
+  verify_ci -> diagnose when not green as fix_loop(5) with {
+    branch: "{{vars.branch}}",
+    ci_command: "{{vars.ci_command}}",
+    ci_logs: "{{outputs.run_ci.logs}}",
+    repo_context: "{{vars.repo_context}}",
+    previous_attempts: "{{outputs.verify_ci.summary}}"
+  }

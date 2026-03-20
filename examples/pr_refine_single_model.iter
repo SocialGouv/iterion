@@ -1,0 +1,306 @@
+## Fixture de référence : pr_refine_single_model
+## Objectif : Raffiner une PR avec un seul modèle, en boucle review -> plan -> act -> verify.
+## Cas d'usage : baseline de performance, comparaison coût/qualité avec les variantes multi-modèles.
+## Primitives exercées : agent, judge, human, done, fail, boucle bornée, publish, session fresh/inherit, tools.
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+prompt review_system:
+  Tu es un reviewer de pull request exigeant.
+  Applique strictement les regles de review et de compliance fournies.
+  Produis une review structuree, concrete, actionnable et sans complaisance.
+
+prompt review_user:
+  Review cette pull request en utilisant les regles suivantes :
+  {{input.review_rules}}
+
+  Contexte PR :
+  {{input.pr_context}}
+
+prompt plan_system:
+  Tu es un architecte senior.
+  Transforme une review de PR en plan de correction ordonne, concret, testable
+  et executable par un agent d'action.
+
+prompt plan_user:
+  A partir de la review et du contexte PR, produis un plan de correction.
+
+  Review :
+  {{input.review}}
+
+  Contexte PR :
+  {{input.pr_context}}
+
+prompt compliance_system:
+  Tu es le juge de compliance du plan.
+  Tu juges seulement si le plan est suffisamment complet, correct et conforme.
+
+prompt compliance_user:
+  Evalue ce plan a partir des regles suivantes :
+  {{input.compliance_rules}}
+
+  Plan :
+  {{input.plan}}
+
+  Contexte PR :
+  {{input.pr_context}}
+
+prompt act_system:
+  Tu es un agent d'execution de plan.
+  Applique le plan au workspace avec prudence, utilise les tools necessaires,
+  verifie les changements et produis un rapport d'action structure.
+
+prompt act_user:
+  Applique ce plan de correction sur le repository.
+
+  Plan approuve :
+  {{input.approved_plan}}
+
+  Contexte PR :
+  {{input.pr_context}}
+
+prompt verify_system:
+  Tu es le juge final.
+  Tu determines si la PR corrigee est conforme pour terminer le run
+  ou s'il faut recommencer un cycle.
+
+prompt verify_user:
+  Evalue la PR corrigee.
+  {{input.review_rules}}
+
+  Contexte PR :
+  {{input.pr_context}}
+
+  Resultat de la phase act :
+  {{input.act_result}}
+
+prompt context_builder_system:
+  Tu prepares un contexte de PR exploitable par un agent de review.
+
+prompt context_builder_user:
+  Construis un contexte de PR normalise a partir des inputs.
+
+schema repo_context_request:
+  pr_title: string
+  pr_description: string
+  base_ref: string
+  head_ref: string
+
+schema pr_context:
+  pr_title: string
+  pr_description: string
+  base_ref: string
+  head_ref: string
+  diff: string
+  changed_files: string[]
+  repository_summary: string
+  implementation_notes: string[]
+  risky_areas: string[]
+
+schema review_request:
+  pr_context: json
+  review_rules: string
+
+schema review_result:
+  approved: bool
+  summary: string
+  issues: string[]
+  blockers: string[]
+  compliance_gaps: string[]
+  recommendations: string[]
+  confidence: string [enum: "low", "medium", "high"]
+
+schema remediation_plan:
+  summary: string
+  goals: string[]
+  ordered_steps: string[]
+  validation_steps: string[]
+  risks: string[]
+  addressed_issues: string[]
+
+schema compliance_verdict:
+  approved: bool
+  issues: string[]
+  blocking_reasons: string[]
+  recommended_fixes: string[]
+  confidence: string [enum: "low", "medium", "high"]
+
+schema plan_compliance_request:
+  pr_context: json
+  plan: json
+  compliance_rules: string
+
+schema plan_refinement_request:
+  pr_context: json
+  plan: json
+  verdict: json
+
+schema act_request:
+  pr_context: json
+  approved_plan: json
+
+schema act_result:
+  applied: bool
+  summary: string
+  files_changed: string[]
+  commands_run: string[]
+  tests_run: string[]
+  remaining_risks: string[]
+
+schema verify_request:
+  pr_context: json
+  act_result: json
+  review_rules: string
+
+agent context_builder:
+  model: "${MODEL}"
+  input: repo_context_request
+  output: pr_context
+  publish: pr_context
+  system: context_builder_system
+  user: context_builder_user
+  session: fresh
+  tools: [git_diff, git_status, read_file, list_files, search_codebase, tree]
+  tool_max_steps: 8
+
+agent reviewer:
+  model: "${MODEL}"
+  input: review_request
+  output: review_result
+  system: review_system
+  user: review_user
+  session: fresh
+  tools: [git_diff, read_file, list_files, search_codebase, tree]
+  tool_max_steps: 10
+
+agent planner:
+  model: "${MODEL}"
+  input: plan_compliance_request
+  output: remediation_plan
+  system: plan_system
+  user: plan_user
+  session: inherit
+  tools: [read_file, search_codebase, git_diff]
+  tool_max_steps: 6
+
+judge compliance_check:
+  model: "${MODEL}"
+  input: plan_compliance_request
+  output: compliance_verdict
+  system: compliance_system
+  user: compliance_user
+  session: fresh
+
+agent refine_plan:
+  model: "${MODEL}"
+  input: plan_refinement_request
+  output: remediation_plan
+  system: plan_system
+  user: plan_user
+  session: fresh
+
+judge compliance_check_after_refine:
+  model: "${MODEL}"
+  input: plan_compliance_request
+  output: compliance_verdict
+  system: compliance_system
+  user: compliance_user
+  session: fresh
+
+agent act_on_plan:
+  model: "${MODEL}"
+  input: act_request
+  output: act_result
+  publish: act_report
+  system: act_system
+  user: act_user
+  session: fresh
+  tools: [read_file, write_file, patch, list_files, search_codebase, git_diff, git_status, run_command]
+  tool_max_steps: 20
+
+judge final_verify:
+  model: "${MODEL}"
+  input: verify_request
+  output: compliance_verdict
+  publish: final_verdict
+  system: verify_system
+  user: verify_user
+  session: fresh
+
+workflow pr_refine_single_model:
+  vars:
+    pr_title: string
+    pr_description: string = ""
+    base_ref: string = "origin/main"
+    head_ref: string = "HEAD"
+    review_rules: string
+    compliance_rules: string
+
+  entry: context_builder
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "30m"
+    max_cost_usd: 10
+    max_tokens: 400000
+
+  ## 1. Préparer le contexte PR
+  context_builder -> reviewer with {
+    pr_context: "{{outputs.context_builder}}",
+    review_rules: "{{vars.review_rules}}"
+  }
+
+  ## 2. Review
+  reviewer -> planner with {
+    pr_context: "{{outputs.context_builder}}",
+    review: "{{outputs.reviewer}}"
+  }
+
+  ## 3. Plan -> compliance check
+  planner -> compliance_check with {
+    pr_context: "{{outputs.context_builder}}",
+    plan: "{{outputs.planner}}",
+    compliance_rules: "{{vars.compliance_rules}}"
+  }
+
+  ## 4a. Plan approuvé -> act
+  compliance_check -> act_on_plan when approved with {
+    pr_context: "{{outputs.context_builder}}",
+    approved_plan: "{{outputs.planner}}"
+  }
+
+  ## 4b. Plan non conforme -> boucle de raffinage (max 4 itérations)
+  compliance_check -> refine_plan when not_approved as refine_loop(4) with {
+    pr_context: "{{outputs.context_builder}}",
+    plan: "{{outputs.planner}}",
+    verdict: "{{outputs.compliance_check}}"
+  }
+
+  refine_plan -> compliance_check_after_refine with {
+    pr_context: "{{outputs.context_builder}}",
+    plan: "{{outputs.refine_plan}}",
+    compliance_rules: "{{vars.compliance_rules}}"
+  }
+
+  compliance_check_after_refine -> act_on_plan when approved with {
+    pr_context: "{{outputs.context_builder}}",
+    approved_plan: "{{outputs.refine_plan}}"
+  }
+
+  compliance_check_after_refine -> refine_plan when not_approved as refine_loop(4) with {
+    pr_context: "{{outputs.context_builder}}",
+    plan: "{{outputs.refine_plan}}",
+    verdict: "{{outputs.compliance_check_after_refine}}"
+  }
+
+  ## 5. Act -> verify
+  act_on_plan -> final_verify with {
+    pr_context: "{{outputs.context_builder}}",
+    act_result: "{{outputs.act_on_plan}}",
+    review_rules: "{{vars.review_rules}}"
+  }
+
+  ## 6. Verdict final
+  final_verify -> done when approved
+  final_verify -> context_builder when not_approved as full_recipe_loop(3)
