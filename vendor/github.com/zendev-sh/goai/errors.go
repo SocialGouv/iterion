@@ -1,3 +1,7 @@
+// Package goai provides a unified SDK for interacting with AI language models.
+//
+// This file defines error types returned by GoAI functions.
+// They live in the root package so users can type-assert without importing internals.
 package goai
 
 import (

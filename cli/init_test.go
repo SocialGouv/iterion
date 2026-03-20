@@ -20,14 +20,14 @@ func TestRunInit_CreatesFiles(t *testing.T) {
 	}
 
 	// Verify workflow file exists and is non-empty.
-	data, err := os.ReadFile(filepath.Join(dir, "pr_refine_single_model.iter"))
+	data, err := os.ReadFile(filepath.Join(dir, "pr_refine_single_model_mcp.iter"))
 	if err != nil {
 		t.Fatal("workflow file not created:", err)
 	}
 	if len(data) == 0 {
 		t.Fatal("workflow file is empty")
 	}
-	if !strings.Contains(string(data), "workflow pr_refine_single_model") {
+	if !strings.Contains(string(data), "workflow pr_refine_single_model_mcp") {
 		t.Error("workflow file missing expected content")
 	}
 
@@ -36,8 +36,8 @@ func TestRunInit_CreatesFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(".env.example not created:", err)
 	}
-	if !strings.Contains(string(data), "ANTHROPIC_API_KEY") {
-		t.Error(".env.example missing ANTHROPIC_API_KEY")
+	if !strings.Contains(string(data), "claude login") {
+		t.Error(".env.example missing claude login instructions")
 	}
 
 	// Verify .gitignore exists with expected entries.
@@ -64,7 +64,7 @@ func TestRunInit_Idempotent(t *testing.T) {
 	}
 
 	// Record contents.
-	wf1, _ := os.ReadFile(filepath.Join(dir, "pr_refine_single_model.iter"))
+	wf1, _ := os.ReadFile(filepath.Join(dir, "pr_refine_single_model_mcp.iter"))
 	env1, _ := os.ReadFile(filepath.Join(dir, ".env.example"))
 
 	// Second run should skip everything.
@@ -80,7 +80,7 @@ func TestRunInit_Idempotent(t *testing.T) {
 	}
 
 	// Verify contents unchanged.
-	wf2, _ := os.ReadFile(filepath.Join(dir, "pr_refine_single_model.iter"))
+	wf2, _ := os.ReadFile(filepath.Join(dir, "pr_refine_single_model_mcp.iter"))
 	env2, _ := os.ReadFile(filepath.Join(dir, ".env.example"))
 
 	if !bytes.Equal(wf1, wf2) {
@@ -125,7 +125,7 @@ func TestRunInit_CreatesSubdir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := os.Stat(filepath.Join(dir, "pr_refine_single_model.iter")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, "pr_refine_single_model_mcp.iter")); err != nil {
 		t.Error("workflow file not created in subdirectory:", err)
 	}
 }

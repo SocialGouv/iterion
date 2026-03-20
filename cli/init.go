@@ -8,18 +8,21 @@ import (
 	"strings"
 )
 
-//go:embed templates/pr_refine_single_model.iter
+//go:embed templates/pr_refine_single_model_mcp.iter
 var defaultWorkflow []byte
 
-const workflowFileName = "pr_refine_single_model.iter"
+const workflowFileName = "pr_refine_single_model_mcp.iter"
 
 const envExample = `# Iterion environment configuration
-# Copy this file to .env and fill in your API keys.
+# Copy this file to .env and fill in optional settings.
 
-# ── LLM Provider API Keys ──────────────────────────────────
-# Set at least one. The example workflow uses Anthropic by default.
-ANTHROPIC_API_KEY=
-OPENAI_API_KEY=
+# ── Delegation ────────────────────────────────────────────
+# The example workflow delegates to claude-code.
+# Authenticate with: claude login
+# No API key is needed here — the claude CLI manages its own auth.
+
+# Optional: override the workspace directory.
+# PROJECT_DIR=.
 `
 
 var gitignoreEntries = []string{".iterion/", ".env"}
@@ -99,11 +102,11 @@ func RunInit(opts InitOptions, p *Printer) error {
 
 	p.Blank()
 	p.Line("  Next steps:")
-	p.Line("    1. cp .env.example .env")
-	p.Line("    2. Edit .env — set your ANTHROPIC_API_KEY (or OPENAI_API_KEY)")
-	p.Line("    3. Source it:")
-	p.Line("         source .env && export ANTHROPIC_API_KEY")
-	p.Line("    4. Run the example workflow:")
+	p.Line("    1. Install Claude Code CLI (if not already):")
+	p.Line("         npm install -g @anthropic-ai/claude-code")
+	p.Line("    2. Authenticate:")
+	p.Line("         claude login")
+	p.Line("    3. Run the example workflow:")
 	p.Line("         iterion run %s \\", workflowFileName)
 	p.Line("           --var pr_title=\"Fix auth middleware\" \\")
 	p.Line("           --var review_rules=\"No SQL injection, all errors handled\" \\")

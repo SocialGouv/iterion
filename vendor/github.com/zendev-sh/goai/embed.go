@@ -112,10 +112,7 @@ func EmbedMany(ctx context.Context, model provider.EmbeddingModel, values []stri
 	var wg sync.WaitGroup
 
 	for i, chunk := range chunks {
-		i, chunk := i, chunk
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			// Use select to avoid blocking forever if ctx is cancelled
 			// while waiting for the semaphore.
 			select {
@@ -130,7 +127,7 @@ func EmbedMany(ctx context.Context, model provider.EmbeddingModel, values []stri
 				return model.DoEmbed(ctx, chunk, embedParams)
 			})
 			results[i] = chunkResult{result: r, err: err}
-		}()
+		})
 	}
 	wg.Wait()
 

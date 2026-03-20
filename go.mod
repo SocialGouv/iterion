@@ -1,7 +1,5 @@
 module github.com/iterion-ai/iterion
 
-go 1.23.8
+go 1.25.0
 
-require github.com/zendev-sh/goai v0.0.0
-
-replace github.com/zendev-sh/goai => /home/devbox/goai
+require github.com/zendev-sh/goai v0.4.0

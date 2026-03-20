@@ -137,7 +137,7 @@ func collectFields(t reflect.Type, properties map[string]any, required *[]string
 }
 
 func parseSchemaTag(tag string, prop map[string]any) {
-	for _, part := range strings.Split(tag, ",") {
+	for part := range strings.SplitSeq(tag, ",") {
 		k, v, ok := strings.Cut(part, "=")
 		if !ok {
 			continue

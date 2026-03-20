@@ -8,14 +8,6 @@
 <p align="center">Go SDK for building AI applications. One SDK, 20 providers.</p>
 
 <p align="center">
-  <a href="bench/RESULTS.md"><img src="https://img.shields.io/badge/streaming-1.1x_faster-brightgreen" alt="Streaming"></a>
-  <a href="bench/RESULTS.md"><img src="https://img.shields.io/badge/cold_start-24x_faster-brightgreen" alt="Cold Start"></a>
-  <a href="bench/RESULTS.md"><img src="https://img.shields.io/badge/memory-3x_less-brightgreen" alt="Memory"></a>
-</p>
-
-<p align="center"><strong>1.1x faster streaming</strong>, <strong>24x faster cold start</strong>, <strong>3x less memory</strong> vs Vercel AI SDK (<a href="bench/RESULTS.md">benchmarks</a>)</p>
-
-<p align="center">
   <a href="https://goai.sh">Website</a> &middot;
   <a href="https://goai.sh/getting-started/installation">Docs</a> &middot;
   <a href="https://goai.sh/providers/">Providers</a> &middot;
@@ -43,17 +35,6 @@ Inspired by the [Vercel AI SDK](https://sdk.vercel.ai). The same clean abstracti
 - **Telemetry hooks**: `OnRequest`, `OnResponse`, `OnStepFinish`, `OnToolCall` callbacks
 - **Retry/backoff**: Automatic retry with exponential backoff on 429/5xx errors
 - **Minimal dependencies**: Core uses only stdlib; Vertex adds `golang.org/x/oauth2` for ADC
-
-## Performance vs Vercel AI SDK
-
-| Metric | GoAI | Vercel AI SDK | Improvement |
-|--------|------|---------------|-------------|
-| Streaming throughput | 1.46ms | 1.62ms | 1.1x faster |
-| Cold start | 569us | 13.9ms | 24x faster |
-| Memory (1 stream) | 220KB | 676KB | 3x less |
-| GenerateText | 56us | 79us | 1.4x faster |
-
-> Mock HTTP server, identical SSE fixtures, Apple M2. [Full report](bench/RESULTS.md)
 
 ## Install
 

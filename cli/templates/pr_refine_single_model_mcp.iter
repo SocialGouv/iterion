@@ -1,0 +1,307 @@
+## PR Refine Single Model (MCP Delegation) — Getting Started Example
+## Objective: Refine a PR using claude-code delegation instead of direct API calls.
+## Each agent/judge delegates to claude-code which manages its own model and tool loop.
+## Prerequisites: `claude` CLI installed and authenticated (`claude login`).
+## Primitives exercised: agent, judge, delegate, done, fail, bounded loop, publish, tools.
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+prompt review_system:
+  You are a demanding pull request reviewer.
+  Strictly apply the review and compliance rules provided.
+  Produce a structured, concrete, actionable, and uncompromising review.
+
+prompt review_user:
+  Review this pull request using the following rules:
+  {{input.review_rules}}
+
+  PR context:
+  {{input.pr_context}}
+
+prompt plan_system:
+  You are a senior architect.
+  Transform a PR review into an ordered, concrete, testable,
+  and executable correction plan for an action agent.
+
+prompt plan_user:
+  From the review and the PR context, produce a correction plan.
+
+  Review:
+  {{input.review}}
+
+  PR context:
+  {{input.pr_context}}
+
+prompt compliance_system:
+  You are the compliance judge for the plan.
+  You only judge whether the plan is sufficiently complete, correct, and compliant.
+
+prompt compliance_user:
+  Evaluate this plan against the following rules:
+  {{input.compliance_rules}}
+
+  Plan:
+  {{input.plan}}
+
+  PR context:
+  {{input.pr_context}}
+
+prompt act_system:
+  You are a plan execution agent.
+  Apply the plan to the workspace carefully, use the necessary tools,
+  verify the changes, and produce a structured action report.
+
+prompt act_user:
+  Apply this correction plan to the repository.
+
+  Approved plan:
+  {{input.approved_plan}}
+
+  PR context:
+  {{input.pr_context}}
+
+prompt verify_system:
+  You are the final judge.
+  You determine whether the corrected PR is compliant to finish the run
+  or if another cycle is needed.
+
+prompt verify_user:
+  Evaluate the corrected PR.
+  {{input.review_rules}}
+
+  PR context:
+  {{input.pr_context}}
+
+  Act phase result:
+  {{input.act_result}}
+
+prompt context_builder_system:
+  You prepare an exploitable PR context for a review agent.
+
+prompt context_builder_user:
+  Build a normalized PR context from the inputs.
+
+schema repo_context_request:
+  pr_title: string
+  pr_description: string
+  base_ref: string
+  head_ref: string
+
+schema pr_context:
+  pr_title: string
+  pr_description: string
+  base_ref: string
+  head_ref: string
+  diff: string
+  changed_files: string[]
+  repository_summary: string
+  implementation_notes: string[]
+  risky_areas: string[]
+
+schema review_request:
+  pr_context: json
+  review_rules: string
+
+schema review_result:
+  approved: bool
+  summary: string
+  issues: string[]
+  blockers: string[]
+  compliance_gaps: string[]
+  recommendations: string[]
+  confidence: string [enum: "low", "medium", "high"]
+
+schema remediation_plan:
+  summary: string
+  goals: string[]
+  ordered_steps: string[]
+  validation_steps: string[]
+  risks: string[]
+  addressed_issues: string[]
+
+schema compliance_verdict:
+  approved: bool
+  issues: string[]
+  blocking_reasons: string[]
+  recommended_fixes: string[]
+  confidence: string [enum: "low", "medium", "high"]
+
+schema plan_compliance_request:
+  pr_context: json
+  plan: json
+  compliance_rules: string
+
+schema plan_refinement_request:
+  pr_context: json
+  plan: json
+  verdict: json
+
+schema act_request:
+  pr_context: json
+  approved_plan: json
+
+schema act_result:
+  applied: bool
+  summary: string
+  files_changed: string[]
+  commands_run: string[]
+  tests_run: string[]
+  remaining_risks: string[]
+
+schema verify_request:
+  pr_context: json
+  act_result: json
+  review_rules: string
+
+agent context_builder:
+  delegate: "claude_code"
+  input: repo_context_request
+  output: pr_context
+  publish: pr_context
+  system: context_builder_system
+  user: context_builder_user
+  session: fresh
+  tools: [git_diff, git_status, read_file, list_files, search_codebase, tree]
+  tool_max_steps: 8
+
+agent reviewer:
+  delegate: "claude_code"
+  input: review_request
+  output: review_result
+  system: review_system
+  user: review_user
+  session: fresh
+  tools: [git_diff, read_file, list_files, search_codebase, tree]
+  tool_max_steps: 10
+
+agent planner:
+  delegate: "claude_code"
+  input: plan_compliance_request
+  output: remediation_plan
+  system: plan_system
+  user: plan_user
+  session: inherit
+  tools: [read_file, search_codebase, git_diff]
+  tool_max_steps: 6
+
+judge compliance_check:
+  delegate: "claude_code"
+  input: plan_compliance_request
+  output: compliance_verdict
+  system: compliance_system
+  user: compliance_user
+  session: fresh
+
+agent refine_plan:
+  delegate: "claude_code"
+  input: plan_refinement_request
+  output: remediation_plan
+  system: plan_system
+  user: plan_user
+  session: fresh
+
+judge compliance_check_after_refine:
+  delegate: "claude_code"
+  input: plan_compliance_request
+  output: compliance_verdict
+  system: compliance_system
+  user: compliance_user
+  session: fresh
+
+agent act_on_plan:
+  delegate: "claude_code"
+  input: act_request
+  output: act_result
+  publish: act_report
+  system: act_system
+  user: act_user
+  session: fresh
+  tools: [read_file, write_file, patch, list_files, search_codebase, git_diff, git_status, run_command]
+  tool_max_steps: 20
+
+judge final_verify:
+  delegate: "claude_code"
+  input: verify_request
+  output: compliance_verdict
+  publish: final_verdict
+  system: verify_system
+  user: verify_user
+  session: fresh
+
+workflow pr_refine_single_model_mcp:
+  vars:
+    pr_title: string
+    pr_description: string = ""
+    base_ref: string = "origin/main"
+    head_ref: string = "HEAD"
+    review_rules: string
+    compliance_rules: string
+
+  entry: context_builder
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "45m"
+    max_cost_usd: 10
+    max_tokens: 400000
+
+  ## 1. Build PR context
+  context_builder -> reviewer with {
+    pr_context: "{{outputs.context_builder}}",
+    review_rules: "{{vars.review_rules}}"
+  }
+
+  ## 2. Review
+  reviewer -> planner with {
+    pr_context: "{{outputs.context_builder}}",
+    review: "{{outputs.reviewer}}"
+  }
+
+  ## 3. Plan -> compliance check
+  planner -> compliance_check with {
+    pr_context: "{{outputs.context_builder}}",
+    plan: "{{outputs.planner}}",
+    compliance_rules: "{{vars.compliance_rules}}"
+  }
+
+  ## 4a. Plan approved -> act
+  compliance_check -> act_on_plan when approved with {
+    pr_context: "{{outputs.context_builder}}",
+    approved_plan: "{{outputs.planner}}"
+  }
+
+  ## 4b. Plan not compliant -> refinement loop (max 4 iterations)
+  compliance_check -> refine_plan when not approved as refine_loop(4) with {
+    pr_context: "{{outputs.context_builder}}",
+    plan: "{{outputs.planner}}",
+    verdict: "{{outputs.compliance_check}}"
+  }
+
+  refine_plan -> compliance_check_after_refine with {
+    pr_context: "{{outputs.context_builder}}",
+    plan: "{{outputs.refine_plan}}",
+    compliance_rules: "{{vars.compliance_rules}}"
+  }
+
+  compliance_check_after_refine -> act_on_plan when approved with {
+    pr_context: "{{outputs.context_builder}}",
+    approved_plan: "{{outputs.refine_plan}}"
+  }
+
+  compliance_check_after_refine -> refine_plan when not approved as refine_loop(4) with {
+    pr_context: "{{outputs.context_builder}}",
+    plan: "{{outputs.refine_plan}}",
+    verdict: "{{outputs.compliance_check_after_refine}}"
+  }
+
+  ## 5. Act -> verify
+  act_on_plan -> final_verify with {
+    pr_context: "{{outputs.context_builder}}",
+    act_result: "{{outputs.act_on_plan}}",
+    review_rules: "{{vars.review_rules}}"
+  }
+
+  ## 6. Final verdict
+  final_verify -> done when approved
+  final_verify -> context_builder when not approved as full_recipe_loop(3)
