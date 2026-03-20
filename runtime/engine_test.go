@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -435,5 +436,446 @@ func TestDataMappingWithVars(t *testing.T) {
 	}
 	if capturedInput["context"] != "my-repo" {
 		t.Errorf("expected context='my-repo', got %v", capturedInput["context"])
+	}
+}
+
+// ===========================================================================
+// P3-03: Human pause/resume tests
+// ===========================================================================
+
+// humanWorkflow builds a workflow: agent -> human -> agent -> done
+func humanWorkflow() *ir.Workflow {
+	return &ir.Workflow{
+		Name:  "human_pause_test",
+		Entry: "analyze",
+		Nodes: map[string]*ir.Node{
+			"analyze":  {ID: "analyze", Kind: ir.NodeAgent, Publish: "analysis"},
+			"review":   {ID: "review", Kind: ir.NodeHuman, HumanMode: ir.HumanPauseUntilAnswers, Publish: "human_decisions"},
+			"integrate": {ID: "integrate", Kind: ir.NodeAgent},
+			"done":     {ID: "done", Kind: ir.NodeDone},
+			"fail":     {ID: "fail", Kind: ir.NodeFail},
+		},
+		Edges: []*ir.Edge{
+			{From: "analyze", To: "review", With: []*ir.DataMapping{
+				{Key: "summary", Refs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"analyze", "summary"}}}, Raw: "{{outputs.analyze.summary}}"},
+			}},
+			{From: "review", To: "integrate", With: []*ir.DataMapping{
+				{Key: "decisions", Refs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"review"}}}, Raw: "{{outputs.review}}"},
+			}},
+			{From: "integrate", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: human node pauses the run
+// ---------------------------------------------------------------------------
+
+func TestHumanPause(t *testing.T) {
+	wf := humanWorkflow()
+	exec := newStubExecutor()
+	exec.on("analyze", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"summary": "needs review"}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "run-human", nil)
+	if !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("expected ErrRunPaused, got: %v", err)
+	}
+
+	// Verify run status is paused.
+	r, err := s.LoadRun("run-human")
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if r.Status != store.RunStatusPausedWaitingHuman {
+		t.Errorf("expected status paused_waiting_human, got %s", r.Status)
+	}
+
+	// Verify checkpoint exists.
+	if r.Checkpoint == nil {
+		t.Fatal("expected checkpoint to be set")
+	}
+	if r.Checkpoint.NodeID != "review" {
+		t.Errorf("checkpoint node = %q, want review", r.Checkpoint.NodeID)
+	}
+
+	// Verify interaction was created.
+	interaction, err := s.LoadInteraction("run-human", r.Checkpoint.InteractionID)
+	if err != nil {
+		t.Fatalf("load interaction: %v", err)
+	}
+	if interaction.NodeID != "review" {
+		t.Errorf("interaction node = %q, want review", interaction.NodeID)
+	}
+	if interaction.AnsweredAt != nil {
+		t.Error("interaction should not be answered yet")
+	}
+	// Questions should contain the mapped input from the edge.
+	if interaction.Questions["summary"] != "needs review" {
+		t.Errorf("questions[summary] = %v, want 'needs review'", interaction.Questions["summary"])
+	}
+
+	// Verify events.
+	events, err := s.LoadEvents("run-human")
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+
+	expectedTypes := []store.EventType{
+		store.EventRunStarted,
+		store.EventNodeStarted,        // analyze
+		store.EventArtifactWritten,     // analyze publish
+		store.EventNodeFinished,        // analyze
+		store.EventEdgeSelected,        // analyze -> review
+		store.EventNodeStarted,         // review (human)
+		store.EventHumanInputRequested, // human questions
+		store.EventRunPaused,           // run paused
+	}
+	if len(events) != len(expectedTypes) {
+		t.Fatalf("expected %d events, got %d", len(expectedTypes), len(events))
+	}
+	for i, et := range expectedTypes {
+		if events[i].Type != et {
+			t.Errorf("event[%d]: expected %s, got %s", i, et, events[i].Type)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: human pause then resume completes the run
+// ---------------------------------------------------------------------------
+
+func TestHumanPauseAndResume(t *testing.T) {
+	wf := humanWorkflow()
+
+	var capturedIntegrateInput map[string]interface{}
+	exec := newStubExecutor()
+	exec.on("analyze", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"summary": "needs review"}, nil
+	})
+	exec.on("integrate", func(input map[string]interface{}) (map[string]interface{}, error) {
+		capturedIntegrateInput = input
+		return map[string]interface{}{"result": "integrated"}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	// Phase 1: Run until pause.
+	err := eng.Run(context.Background(), "run-resume", nil)
+	if !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("expected ErrRunPaused, got: %v", err)
+	}
+
+	// Phase 2: Resume with answers.
+	answers := map[string]interface{}{
+		"approve": true,
+		"comment": "Ship it!",
+	}
+	err = eng.Resume(context.Background(), "run-resume", answers)
+	if err != nil {
+		t.Fatalf("resume failed: %v", err)
+	}
+
+	// Verify run finished.
+	r, err := s.LoadRun("run-resume")
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if r.Status != store.RunStatusFinished {
+		t.Errorf("expected status finished, got %s", r.Status)
+	}
+	// Checkpoint should be cleared after resume.
+	if r.Checkpoint != nil {
+		t.Error("checkpoint should be nil after run finishes")
+	}
+
+	// Verify human answers were passed to the integrate node.
+	if capturedIntegrateInput == nil {
+		t.Fatal("integrate node was never called")
+	}
+	decisions, ok := capturedIntegrateInput["decisions"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected decisions map, got %T: %v", capturedIntegrateInput["decisions"], capturedIntegrateInput["decisions"])
+	}
+	if decisions["approve"] != true {
+		t.Errorf("decisions[approve] = %v, want true", decisions["approve"])
+	}
+	if decisions["comment"] != "Ship it!" {
+		t.Errorf("decisions[comment] = %v, want 'Ship it!'", decisions["comment"])
+	}
+
+	// Verify interaction was answered.
+	ids, err := s.ListInteractions("run-resume")
+	if err != nil {
+		t.Fatalf("list interactions: %v", err)
+	}
+	if len(ids) != 1 {
+		t.Fatalf("expected 1 interaction, got %d", len(ids))
+	}
+	interaction, err := s.LoadInteraction("run-resume", ids[0])
+	if err != nil {
+		t.Fatalf("load interaction: %v", err)
+	}
+	if interaction.AnsweredAt == nil {
+		t.Error("interaction should be answered")
+	}
+	if interaction.Answers["approve"] != true {
+		t.Errorf("interaction answer approve = %v", interaction.Answers["approve"])
+	}
+
+	// Verify human artifact was persisted (review has publish: human_decisions).
+	art, err := s.LoadArtifact("run-resume", "review", 0)
+	if err != nil {
+		t.Fatalf("load human artifact: %v", err)
+	}
+	if art.Data["approve"] != true {
+		t.Errorf("human artifact approve = %v", art.Data["approve"])
+	}
+
+	// Verify full event sequence.
+	events, err := s.LoadEvents("run-resume")
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+
+	expectedTypes := []store.EventType{
+		// Phase 1: Run until pause
+		store.EventRunStarted,
+		store.EventNodeStarted,        // analyze
+		store.EventArtifactWritten,     // analyze publish
+		store.EventNodeFinished,        // analyze
+		store.EventEdgeSelected,        // analyze -> review
+		store.EventNodeStarted,         // review (human)
+		store.EventHumanInputRequested,
+		store.EventRunPaused,
+		// Phase 2: Resume
+		store.EventHumanAnswersRecorded,
+		store.EventArtifactWritten,     // human publish
+		store.EventNodeFinished,        // review
+		store.EventRunResumed,
+		store.EventEdgeSelected,        // review -> integrate
+		store.EventNodeStarted,         // integrate
+		store.EventNodeFinished,        // integrate
+		store.EventEdgeSelected,        // integrate -> done
+		store.EventNodeStarted,         // done
+		store.EventNodeFinished,        // done
+		store.EventRunFinished,
+	}
+	if len(events) != len(expectedTypes) {
+		t.Fatalf("expected %d events, got %d", len(expectedTypes), len(events))
+	}
+	for i, et := range expectedTypes {
+		if events[i].Type != et {
+			t.Errorf("event[%d]: expected %s, got %s", i, et, events[i].Type)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: resume on non-paused run returns error
+// ---------------------------------------------------------------------------
+
+func TestResumeNonPausedRun(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "simple",
+		Entry: "step",
+		Nodes: map[string]*ir.Node{
+			"step": {ID: "step", Kind: ir.NodeAgent},
+			"done": {ID: "done", Kind: ir.NodeDone},
+		},
+		Edges: []*ir.Edge{
+			{From: "step", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+
+	exec := newStubExecutor()
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	// Run to completion.
+	if err := eng.Run(context.Background(), "run-done", nil); err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	// Try to resume a finished run.
+	err := eng.Resume(context.Background(), "run-done", map[string]interface{}{"x": 1})
+	if err == nil {
+		t.Fatal("expected error when resuming finished run")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: upstream nodes are NOT replayed on resume
+// ---------------------------------------------------------------------------
+
+func TestResumeDoesNotReplayUpstream(t *testing.T) {
+	wf := humanWorkflow()
+
+	analyzeCallCount := 0
+	exec := newStubExecutor()
+	exec.on("analyze", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		analyzeCallCount++
+		return map[string]interface{}{"summary": "done"}, nil
+	})
+	exec.on("integrate", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	// Run until pause.
+	err := eng.Run(context.Background(), "run-noreplay", nil)
+	if !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("expected ErrRunPaused, got: %v", err)
+	}
+	if analyzeCallCount != 1 {
+		t.Fatalf("analyze should have been called once, got %d", analyzeCallCount)
+	}
+
+	// Resume.
+	err = eng.Resume(context.Background(), "run-noreplay", map[string]interface{}{"ok": true})
+	if err != nil {
+		t.Fatalf("resume failed: %v", err)
+	}
+
+	// Analyze should NOT have been called again.
+	if analyzeCallCount != 1 {
+		t.Errorf("analyze was replayed on resume: called %d times", analyzeCallCount)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: human node with upstream outputs preserved in checkpoint
+// ---------------------------------------------------------------------------
+
+func TestCheckpointPreservesUpstreamOutputs(t *testing.T) {
+	wf := humanWorkflow()
+
+	exec := newStubExecutor()
+	exec.on("analyze", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"summary": "analysis result"}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "run-cp", nil)
+	if !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("expected ErrRunPaused, got: %v", err)
+	}
+
+	r, err := s.LoadRun("run-cp")
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+
+	// Checkpoint should contain analyze's output.
+	if r.Checkpoint.Outputs["analyze"] == nil {
+		t.Fatal("checkpoint should contain analyze output")
+	}
+	if r.Checkpoint.Outputs["analyze"]["summary"] != "analysis result" {
+		t.Errorf("checkpoint outputs[analyze][summary] = %v", r.Checkpoint.Outputs["analyze"]["summary"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: human pause in a workflow with loop counters preserves them
+// ---------------------------------------------------------------------------
+
+func TestHumanPausePreservesLoopCounters(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "loop_human_test",
+		Entry: "fix",
+		Nodes: map[string]*ir.Node{
+			"fix":    {ID: "fix", Kind: ir.NodeAgent},
+			"judge":  {ID: "judge", Kind: ir.NodeJudge},
+			"review": {ID: "review", Kind: ir.NodeHuman, HumanMode: ir.HumanPauseUntilAnswers},
+			"done":   {ID: "done", Kind: ir.NodeDone},
+			"fail":   {ID: "fail", Kind: ir.NodeFail},
+		},
+		Edges: []*ir.Edge{
+			{From: "fix", To: "judge"},
+			{From: "judge", To: "review", Condition: "needs_human"},
+			{From: "judge", To: "fix", Condition: "needs_human", Negated: true, LoopName: "retry"},
+			{From: "review", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops: map[string]*ir.Loop{
+			"retry": {Name: "retry", MaxIterations: 5},
+		},
+	}
+
+	fixCount := 0
+	exec := newStubExecutor()
+	exec.on("fix", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		fixCount++
+		return map[string]interface{}{"attempt": fixCount}, nil
+	})
+	exec.on("judge", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		// First two: loop back; third: needs human.
+		needsHuman := fixCount >= 3
+		return map[string]interface{}{"needs_human": needsHuman}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "run-loop-human", nil)
+	if !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("expected ErrRunPaused, got: %v", err)
+	}
+
+	// Fix should have been called 3 times (2 loops + 1 final).
+	if fixCount != 3 {
+		t.Errorf("expected 3 fix calls, got %d", fixCount)
+	}
+
+	// Checkpoint should preserve loop counters.
+	r, _ := s.LoadRun("run-loop-human")
+	if r.Checkpoint.LoopCounters["retry"] != 2 {
+		t.Errorf("expected loop counter retry=2, got %d", r.Checkpoint.LoopCounters["retry"])
+	}
+
+	// Resume and finish.
+	err = eng.Resume(context.Background(), "run-loop-human", map[string]interface{}{"approved": true})
+	if err != nil {
+		t.Fatalf("resume failed: %v", err)
+	}
+
+	r, _ = s.LoadRun("run-loop-human")
+	if r.Status != store.RunStatusFinished {
+		t.Errorf("expected finished, got %s", r.Status)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: resume with non-existent run returns error
+// ---------------------------------------------------------------------------
+
+func TestResumeNonExistentRun(t *testing.T) {
+	wf := humanWorkflow()
+	exec := newStubExecutor()
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Resume(context.Background(), "no-such-run", map[string]interface{}{})
+	if err == nil {
+		t.Fatal("expected error when resuming non-existent run")
 	}
 }

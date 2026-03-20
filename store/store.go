@@ -90,6 +90,21 @@ func (s *RunStore) UpdateRunStatus(id string, status RunStatus, runErr string) e
 		t := r.UpdatedAt
 		r.FinishedAt = &t
 	}
+	// Clear checkpoint when leaving paused state.
+	if status == RunStatusRunning || status == RunStatusFinished || status == RunStatusFailed {
+		r.Checkpoint = nil
+	}
+	return s.writeRun(r)
+}
+
+// SaveCheckpoint persists a checkpoint on a paused run.
+func (s *RunStore) SaveCheckpoint(id string, cp *Checkpoint) error {
+	r, err := s.LoadRun(id)
+	if err != nil {
+		return err
+	}
+	r.Checkpoint = cp
+	r.UpdatedAt = time.Now().UTC()
 	return s.writeRun(r)
 }
 
