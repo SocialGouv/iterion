@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "falcon": {
+      "args": [
+        "mcp",
+        "serve"
+      ],
+      "command": "falcon",
+      "type": "stdio"
+    }
+  }
+}
