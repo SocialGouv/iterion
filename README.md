@@ -18,6 +18,7 @@ Iterion lets you author complex, multi-agent LLM workflows as readable `.iter` f
   - [Edges and Control Flow](#edges-and-control-flow)
   - [Template Expressions](#template-expressions)
 - [CLI Reference](#cli-reference)
+  - [init](#init)
   - [validate](#validate)
   - [run](#run)
   - [inspect](#inspect)
@@ -84,7 +85,49 @@ You can also download binaries manually from the [latest release page](https://g
 
 ### Your first workflow
 
-The reference example is [`examples/pr_refine_single_model.iter`](examples/pr_refine_single_model.iter) — a complete PR refinement workflow that reviews code, plans fixes, checks compliance, applies changes, and verifies the result in a loop.
+The fastest way to get started is `iterion init`:
+
+```bash
+mkdir my-project && cd my-project
+iterion init
+```
+
+This creates:
+- `pr_refine_single_model.iter` — a complete PR refinement workflow (review → plan → act → verify loop)
+- `.env.example` — API key template
+- `.gitignore` — excludes `.iterion/` run data and `.env`
+
+**Step 1 — Configure your API keys:**
+
+```bash
+cp .env.example .env
+# Edit .env and set your ANTHROPIC_API_KEY (or OPENAI_API_KEY)
+source .env && export ANTHROPIC_API_KEY
+```
+
+**Step 2 — Validate the workflow:**
+
+```bash
+iterion validate pr_refine_single_model.iter
+```
+
+```
+── Validate: pr_refine_single_model.iter ──
+  Workflow:        pr_refine_single_model
+  Nodes:           10
+  Edges:           11
+
+  result: OK
+```
+
+**Step 3 — Run the workflow:**
+
+```bash
+iterion run pr_refine_single_model.iter \
+  --var pr_title="Fix auth middleware session handling" \
+  --var review_rules="No SQL injection, no hardcoded secrets, all errors handled" \
+  --var compliance_rules="OWASP top 10, no sensitive data in logs"
+```
 
 Here's the flow:
 
@@ -102,40 +145,6 @@ context_builder ──▶ reviewer ──▶ planner ──▶ compliance_check
                               approved   not approved
                                  │         │
                                 done    (restart from context_builder, max 3×)
-```
-
-**Step 1 — Visualize the workflow:**
-
-```bash
-iterion diagram examples/pr_refine_single_model.iter --detailed
-```
-
-This outputs a Mermaid diagram you can paste into any compatible renderer (GitHub Markdown, [Mermaid Live Editor](https://mermaid.live), etc.).
-
-**Step 2 — Validate the workflow:**
-
-```bash
-iterion validate examples/pr_refine_single_model.iter
-```
-
-```
-── Validate: examples/pr_refine_single_model.iter ──
-  Workflow:        pr_refine_single_model
-  Nodes:           10
-  Edges:           11
-
-  result: OK
-```
-
-This parses, compiles, and runs static checks (reachability, edge routing, loop bounds) without executing anything.
-
-**Step 3 — Run the workflow:**
-
-```bash
-iterion run examples/pr_refine_single_model.iter \
-  --var pr_title="Fix auth middleware session handling" \
-  --var review_rules="No SQL injection, no hardcoded secrets, all errors handled" \
-  --var compliance_rules="OWASP top 10, no sensitive data in logs"
 ```
 
 The workflow will:
@@ -165,6 +174,14 @@ iterion inspect --run-id <run_id> --full
 ```
 
 Run artifacts are stored in `.iterion/runs/<run_id>/` — including the event log (`events.jsonl`), node outputs, and any published artifacts.
+
+**Visualize the workflow (optional):**
+
+```bash
+iterion diagram pr_refine_single_model.iter --detailed
+```
+
+This outputs a Mermaid diagram you can paste into any compatible renderer (GitHub Markdown, [Mermaid Live Editor](https://mermaid.live), etc.).
 
 ### Going further
 
@@ -347,6 +364,18 @@ Supported types: `string`, `bool`, `int`, `float`, `json`, `string[]`.
 ## CLI Reference
 
 All commands support the `--json` flag for machine-readable output.
+
+### init
+
+Initialize a new project with an example workflow and environment configuration:
+
+```bash
+iterion init              # Initialize current directory
+iterion init my-project   # Initialize a new directory
+iterion init --json       # JSON output
+```
+
+Creates `pr_refine_single_model.iter`, `.env.example`, and `.gitignore`. Idempotent — will not overwrite existing files.
 
 ### validate
 

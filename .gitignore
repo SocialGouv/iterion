@@ -17,3 +17,4 @@ Thumbs.db
 node_modules
 .pnpm-store
 .falcon/
+.env

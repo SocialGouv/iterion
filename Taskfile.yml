@@ -45,6 +45,11 @@ tasks:
     cmds:
       - go test -v -timeout 120s ./e2e/...
 
+  test:live:
+    desc: Run live e2e tests (requires API keys in .env)
+    cmds:
+      - go test -v -run TestLive -timeout 15m ./e2e/...
+
   fmt:
     desc: Format Go source files
     cmds:
