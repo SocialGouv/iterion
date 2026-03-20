@@ -14,23 +14,29 @@ const (
 	RunStatusPausedWaitingHuman RunStatus = "paused_waiting_human"
 	RunStatusFinished           RunStatus = "finished"
 	RunStatusFailed             RunStatus = "failed"
+	RunStatusCancelled          RunStatus = "cancelled"
 )
 
 // ---------------------------------------------------------------------------
 // Run — top-level run metadata persisted in run.json
 // ---------------------------------------------------------------------------
 
+// RunFormatVersion is the current version of the persisted run.json format.
+// Bump this when making breaking changes to the Run struct.
+const RunFormatVersion = 1
+
 // Run is the top-level metadata for a single workflow invocation.
 type Run struct {
-	ID           string                 `json:"id"`
-	WorkflowName string                 `json:"workflow_name"`
-	Status       RunStatus              `json:"status"`
-	Inputs       map[string]interface{} `json:"inputs,omitempty"`
-	CreatedAt    time.Time              `json:"created_at"`
-	UpdatedAt    time.Time              `json:"updated_at"`
-	FinishedAt   *time.Time             `json:"finished_at,omitempty"`
-	Error        string                 `json:"error,omitempty"`
-	Checkpoint   *Checkpoint            `json:"checkpoint,omitempty"`
+	FormatVersion int                    `json:"format_version"`
+	ID            string                 `json:"id"`
+	WorkflowName  string                 `json:"workflow_name"`
+	Status        RunStatus              `json:"status"`
+	Inputs        map[string]interface{} `json:"inputs,omitempty"`
+	CreatedAt     time.Time              `json:"created_at"`
+	UpdatedAt     time.Time              `json:"updated_at"`
+	FinishedAt    *time.Time             `json:"finished_at,omitempty"`
+	Error         string                 `json:"error,omitempty"`
+	Checkpoint    *Checkpoint            `json:"checkpoint,omitempty"`
 }
 
 // Checkpoint captures the runtime state at a human pause point,

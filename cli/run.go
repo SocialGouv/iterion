@@ -22,6 +22,7 @@ type RunOptions struct {
 	Vars     map[string]string // --var key=value overrides
 	RunID    string            // explicit run ID (auto-generated if empty)
 	StoreDir string            // store directory (default: .iterion)
+	Timeout  time.Duration     // maximum run duration (0 = no limit)
 	Executor runtime.NodeExecutor // pluggable executor (nil = stub)
 }
 
@@ -103,11 +104,21 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		inputs[k] = v
 	}
 
+	// Apply timeout to context if specified.
+	if opts.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
+		defer cancel()
+	}
+
 	// Execute.
 	if p.Format == OutputHuman {
 		p.Header("Run: " + workflowName)
 		p.KV("Run ID", runID)
 		p.KV("Store", storeDir)
+		if opts.Timeout > 0 {
+			p.KV("Timeout", FormatDuration(opts.Timeout))
+		}
 		p.Blank()
 	}
 
@@ -131,6 +142,16 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 			}
 			return nil
 		}
+		if errors.Is(err, runtime.ErrRunCancelled) {
+			runResult["status"] = "cancelled"
+			if p.Format == OutputJSON {
+				p.JSON(runResult)
+			} else {
+				p.Line("  Status: CANCELLED")
+				p.Line("  Detail: %s", err.Error())
+			}
+			return err
+		}
 		runResult["status"] = "failed"
 		runResult["error"] = err.Error()
 		if p.Format == OutputJSON {
@@ -138,6 +159,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		} else {
 			p.Line("  Status: FAILED")
 			p.Line("  Error:  %s", err.Error())
+			p.Line("  Hint:   use 'iterion inspect --run-id %s --events' for details", runID)
 		}
 		return err
 	}

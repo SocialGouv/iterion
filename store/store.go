@@ -50,12 +50,13 @@ func (s *RunStore) Root() string { return s.root }
 func (s *RunStore) CreateRun(id, workflowName string, inputs map[string]interface{}) (*Run, error) {
 	now := time.Now().UTC()
 	r := &Run{
-		ID:           id,
-		WorkflowName: workflowName,
-		Status:       RunStatusRunning,
-		Inputs:       inputs,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		FormatVersion: RunFormatVersion,
+		ID:            id,
+		WorkflowName:  workflowName,
+		Status:        RunStatusRunning,
+		Inputs:        inputs,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 	if err := s.writeRun(r); err != nil {
 		return nil, err
@@ -86,12 +87,12 @@ func (s *RunStore) UpdateRunStatus(id string, status RunStatus, runErr string) e
 	r.Status = status
 	r.UpdatedAt = time.Now().UTC()
 	r.Error = runErr
-	if status == RunStatusFinished || status == RunStatusFailed {
+	if status == RunStatusFinished || status == RunStatusFailed || status == RunStatusCancelled {
 		t := r.UpdatedAt
 		r.FinishedAt = &t
 	}
 	// Clear checkpoint when leaving paused state.
-	if status == RunStatusRunning || status == RunStatusFinished || status == RunStatusFailed {
+	if status == RunStatusRunning || status == RunStatusFinished || status == RunStatusFailed || status == RunStatusCancelled {
 		r.Checkpoint = nil
 	}
 	return s.writeRun(r)

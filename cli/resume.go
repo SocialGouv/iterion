@@ -162,6 +162,16 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 			}
 			return nil
 		}
+		if errors.Is(err, runtime.ErrRunCancelled) {
+			result["status"] = "cancelled"
+			if p.Format == OutputJSON {
+				p.JSON(result)
+			} else {
+				p.Line("  Status: CANCELLED")
+				p.Line("  Detail: %s", err.Error())
+			}
+			return err
+		}
 		result["status"] = "failed"
 		result["error"] = err.Error()
 		if p.Format == OutputJSON {
@@ -169,6 +179,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		} else {
 			p.Line("  Status: FAILED")
 			p.Line("  Error:  %s", err.Error())
+			p.Line("  Hint:   use 'iterion inspect --run-id %s --events' for details", opts.RunID)
 		}
 		return err
 	}

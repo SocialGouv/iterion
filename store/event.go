@@ -38,6 +38,7 @@ const (
 	EventBudgetExceeded       EventType = "budget_exceeded"
 	EventRunFinished          EventType = "run_finished"
 	EventRunFailed            EventType = "run_failed"
+	EventRunCancelled         EventType = "run_cancelled"
 )
 
 // Event is a single timestamped fact persisted in events.jsonl.

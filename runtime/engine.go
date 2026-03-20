@@ -21,6 +21,11 @@ import (
 // Engine.Resume.
 var ErrRunPaused = errors.New("runtime: run paused waiting for human input")
 
+// ErrRunCancelled is returned when a run is interrupted by context
+// cancellation (e.g. SIGINT). Distinguished from failures so callers
+// can handle cancellation gracefully.
+var ErrRunCancelled = errors.New("runtime: run cancelled")
+
 // NodeExecutor is the abstraction called by the engine to actually run a
 // node (LLM call, tool invocation, etc.). The runtime itself is agnostic
 // to the concrete implementation — tests supply stubs, production code
@@ -185,7 +190,7 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]in
 	loopCounters := cp.LoopCounters
 	nextNodeID, err := e.selectEdge(runID, humanNodeID, answers, loopCounters)
 	if err != nil {
-		return e.failRun(runID, humanNodeID, err.Error())
+		return e.failRunErr(runID, humanNodeID, err)
 	}
 
 	rs := &runState{
@@ -210,17 +215,16 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 	for {
 		select {
 		case <-ctx.Done():
-			_ = e.store.UpdateRunStatus(rs.runID, store.RunStatusFailed, ctx.Err().Error())
-			_ = e.emit(rs.runID, store.EventRunFailed, currentNodeID, map[string]interface{}{
-				"error": ctx.Err().Error(),
-			})
-			return ctx.Err()
+			return e.handleContextDone(rs.runID, currentNodeID, ctx.Err())
 		default:
 		}
 
 		node, ok := e.workflow.Nodes[currentNodeID]
 		if !ok {
-			return e.failRun(rs.runID, currentNodeID, fmt.Sprintf("node %q not found", currentNodeID))
+			return e.failRunWithCode(rs.runID, currentNodeID,
+				fmt.Sprintf("node %q not found", currentNodeID),
+				ErrCodeNodeNotFound,
+				"check that the workflow graph is valid with 'iterion validate'")
 		}
 
 		// --- Terminal nodes ---
@@ -255,7 +259,7 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 		if node.Kind == ir.NodeRouter && node.RouterMode == ir.RouterFanOutAll {
 			nextNodeID, err := e.execFanOut(ctx, rs, currentNodeID)
 			if err != nil {
-				return e.failRun(rs.runID, currentNodeID, err.Error())
+				return e.failRunErr(rs.runID, currentNodeID, err)
 			}
 			currentNodeID = nextNodeID
 			continue
@@ -319,7 +323,7 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 		// --- Select outgoing edge ---
 		nextNodeID, err := e.selectEdge(rs.runID, currentNodeID, output, rs.loopCounters)
 		if err != nil {
-			return e.failRun(rs.runID, currentNodeID, err.Error())
+			return e.failRunErr(rs.runID, currentNodeID, err)
 		}
 
 		currentNodeID = nextNodeID
@@ -448,7 +452,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 	for {
 		select {
 		case <-ctx.Done():
-			result.err = ctx.Err()
+			result.err = e.wrapContextErr(ctx.Err())
 			return result
 		default:
 		}
@@ -848,7 +852,12 @@ func (e *Engine) selectEdge(runID, fromNodeID string, output map[string]interfac
 		selected = unconditional
 	}
 	if selected == nil {
-		return "", fmt.Errorf("no outgoing edge from node %q", fromNodeID)
+		return "", &RuntimeError{
+			Code:    ErrCodeNoOutgoingEdge,
+			Message: fmt.Sprintf("no outgoing edge from node %q", fromNodeID),
+			NodeID:  fromNodeID,
+			Hint:    "ensure the node's output matches at least one edge condition, or add an unconditional fallback edge",
+		}
 	}
 
 	// Enforce loop counter.
@@ -859,7 +868,12 @@ func (e *Engine) selectEdge(runID, fromNodeID string, output map[string]interfac
 		}
 		count := loopCounters[selected.LoopName]
 		if count >= loop.MaxIterations {
-			return "", fmt.Errorf("loop %q exceeded max iterations (%d)", selected.LoopName, loop.MaxIterations)
+			return "", &RuntimeError{
+				Code:    ErrCodeLoopExhausted,
+				Message: fmt.Sprintf("loop %q exceeded max iterations (%d)", selected.LoopName, loop.MaxIterations),
+				NodeID:  fromNodeID,
+				Hint:    fmt.Sprintf("increase max_iterations for loop %q or review the loop exit condition", selected.LoopName),
+			}
 		}
 		loopCounters[selected.LoopName] = count + 1
 	}
@@ -1027,12 +1041,70 @@ func (e *Engine) emitBranch(runID, branchID string, typ store.EventType, nodeID 
 }
 
 // failRun marks a run as failed and emits the run_failed event.
+// If reason is already a RuntimeError it preserves the code and hint.
 func (e *Engine) failRun(runID, nodeID, reason string) error {
+	return e.failRunWithCode(runID, nodeID, reason, ErrCodeExecutionFailed, "")
+}
+
+// failRunErr marks a run as failed, preserving a structured error if present.
+func (e *Engine) failRunErr(runID, nodeID string, origErr error) error {
+	var rtErr *RuntimeError
+	if errors.As(origErr, &rtErr) {
+		// Preserve the structured error; just persist the failure in the store.
+		_ = e.store.UpdateRunStatus(runID, store.RunStatusFailed, rtErr.Message)
+		_ = e.emit(runID, store.EventRunFailed, nodeID, map[string]interface{}{
+			"error": rtErr.Message,
+			"code":  string(rtErr.Code),
+		})
+		if rtErr.NodeID == "" {
+			rtErr.NodeID = nodeID
+		}
+		return rtErr
+	}
+	return e.failRun(runID, nodeID, origErr.Error())
+}
+
+// failRunWithCode marks a run as failed and returns a structured RuntimeError.
+func (e *Engine) failRunWithCode(runID, nodeID, reason string, code ErrorCode, hint string) error {
+	_ = e.store.UpdateRunStatus(runID, store.RunStatusFailed, reason)
+	_ = e.emit(runID, store.EventRunFailed, nodeID, map[string]interface{}{
+		"error": reason,
+		"code":  string(code),
+	})
+	return &RuntimeError{
+		Code:    code,
+		Message: reason,
+		NodeID:  nodeID,
+		Hint:    hint,
+	}
+}
+
+// handleContextDone handles context cancellation or deadline exceeded at
+// the top-level execution loop. It distinguishes user cancellation
+// (SIGINT / context.Canceled) from timeouts (context.DeadlineExceeded).
+func (e *Engine) handleContextDone(runID, nodeID string, ctxErr error) error {
+	if errors.Is(ctxErr, context.Canceled) {
+		_ = e.store.UpdateRunStatus(runID, store.RunStatusCancelled, "run cancelled")
+		_ = e.emit(runID, store.EventRunCancelled, nodeID, map[string]interface{}{
+			"reason": "context cancelled",
+		})
+		return fmt.Errorf("%w: interrupted at node %s", ErrRunCancelled, nodeID)
+	}
+	// context.DeadlineExceeded → treat as a timeout failure.
+	reason := fmt.Sprintf("timeout: %s", ctxErr.Error())
 	_ = e.store.UpdateRunStatus(runID, store.RunStatusFailed, reason)
 	_ = e.emit(runID, store.EventRunFailed, nodeID, map[string]interface{}{
 		"error": reason,
 	})
-	return fmt.Errorf("runtime: %s", reason)
+	return fmt.Errorf("runtime: %s at node %s", reason, nodeID)
+}
+
+// wrapContextErr wraps a context error for branch-level reporting.
+func (e *Engine) wrapContextErr(ctxErr error) error {
+	if errors.Is(ctxErr, context.Canceled) {
+		return fmt.Errorf("%w: %v", ErrRunCancelled, ctxErr)
+	}
+	return ctxErr
 }
 
 // ---------------------------------------------------------------------------
@@ -1051,8 +1123,10 @@ func (e *Engine) checkBudgetBeforeExec(rs *runState, nodeID string) error {
 			"used":      exc.used,
 			"limit":     exc.limit,
 		})
-		return e.failRun(rs.runID, nodeID,
-			fmt.Sprintf("budget exceeded: %s (%.0f/%.0f)", exc.dimension, exc.used, exc.limit))
+		return e.failRunWithCode(rs.runID, nodeID,
+			fmt.Sprintf("budget exceeded: %s (%.0f/%.0f)", exc.dimension, exc.used, exc.limit),
+			ErrCodeBudgetExceeded,
+			fmt.Sprintf("increase the %s budget or optimize the workflow", exc.dimension))
 	}
 	return nil
 }
@@ -1083,8 +1157,10 @@ func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[st
 			"used":      exc.used,
 			"limit":     exc.limit,
 		})
-		return e.failRun(rs.runID, nodeID,
-			fmt.Sprintf("budget exceeded: %s (%.0f/%.0f)", exc.dimension, exc.used, exc.limit))
+		return e.failRunWithCode(rs.runID, nodeID,
+			fmt.Sprintf("budget exceeded: %s (%.0f/%.0f)", exc.dimension, exc.used, exc.limit),
+			ErrCodeBudgetExceeded,
+			fmt.Sprintf("increase the %s budget or optimize the workflow", exc.dimension))
 	}
 
 	return nil
@@ -1194,8 +1270,11 @@ func (e *Engine) validateWorkspaceSafety(fanEdges []*ir.Edge) error {
 		}
 	}
 	if mutatingCount > 1 {
-		return fmt.Errorf("workspace safety violation: %d branches contain mutating nodes %v; "+
-			"at most 1 mutating branch is allowed in parallel on the same workspace", mutatingCount, mutatingBranches)
+		return &RuntimeError{
+			Code:    ErrCodeWorkspaceSafety,
+			Message: fmt.Sprintf("workspace safety violation: %d branches contain mutating nodes %v", mutatingCount, mutatingBranches),
+			Hint:    "at most 1 mutating branch is allowed in parallel on the same workspace; move tool nodes to separate sequential steps",
+		}
 	}
 	return nil
 }

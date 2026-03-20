@@ -3,11 +3,14 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/iterion-ai/iterion/runtime"
 )
 
 // OutputFormat controls how results are rendered.
@@ -131,6 +134,23 @@ func FormatDuration(d time.Duration) string {
 }
 
 // StatusIcon returns a human-friendly icon for a run status.
+// PrintError writes a structured error message to w. If the error is a
+// RuntimeError it includes the error code, node, and hint.
+func PrintError(w io.Writer, err error) {
+	var rtErr *runtime.RuntimeError
+	if errors.As(err, &rtErr) {
+		fmt.Fprintf(w, "error [%s]: %s\n", rtErr.Code, rtErr.Message)
+		if rtErr.NodeID != "" {
+			fmt.Fprintf(w, "  node: %s\n", rtErr.NodeID)
+		}
+		if rtErr.Hint != "" {
+			fmt.Fprintf(w, "  hint: %s\n", rtErr.Hint)
+		}
+		return
+	}
+	fmt.Fprintf(w, "error: %v\n", err)
+}
+
 func StatusIcon(status string) string {
 	switch status {
 	case "running":
@@ -141,6 +161,8 @@ func StatusIcon(status string) string {
 		return "[done]"
 	case "failed":
 		return "[FAIL]"
+	case "cancelled":
+		return "[CANCEL]"
 	default:
 		return "[" + status + "]"
 	}
