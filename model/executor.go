@@ -91,6 +91,7 @@ type EventHooks struct {
 type GoaiExecutor struct {
 	registry     *Registry
 	toolRegistry *tool.Registry       // unified tool registry (preferred)
+	toolPolicy   *tool.Policy         // allowlist policy for tool execution (nil = open)
 	prompts      map[string]*ir.Prompt
 	schemas      map[string]*ir.Schema
 	vars         map[string]interface{}
@@ -118,6 +119,13 @@ func WithToolImplementations(tools map[string]goai.Tool) GoaiExecutorOption {
 // instead of the legacy tools map.
 func WithToolRegistry(tr *tool.Registry) GoaiExecutorOption {
 	return func(e *GoaiExecutor) { e.toolRegistry = tr }
+}
+
+// WithToolPolicy sets the tool execution policy on the executor.
+// When set, every tool call is checked against the allowlist before
+// execution. A denied tool produces an explicit error.
+func WithToolPolicy(p *tool.Policy) GoaiExecutorOption {
+	return func(e *GoaiExecutor) { e.toolPolicy = p }
 }
 
 // WithRetryPolicy sets the retry policy for transient LLM errors.
@@ -375,9 +383,25 @@ func (e *GoaiExecutor) generateText(ctx context.Context, m provider.LanguageMode
 // ---------------------------------------------------------------------------
 
 // executeToolNode runs a tool node (direct command, no LLM).
+// The tool policy is checked before execution; denied tools produce an
+// explicit error with the tool_called hook fired (Error != nil).
 func (e *GoaiExecutor) executeToolNode(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
 	toolName := node.Command
-	tool, ok, err := e.resolveSingleTool(toolName)
+
+	// Policy check before resolution — fail fast on denied tools.
+	if e.toolPolicy != nil {
+		if err := e.toolPolicy.Check(toolName); err != nil {
+			if e.hooks.OnToolCall != nil {
+				e.hooks.OnToolCall(node.ID, goai.ToolCallInfo{
+					ToolName: toolName,
+					Error:    err,
+				})
+			}
+			return nil, fmt.Errorf("model: tool node %q: %w", node.ID, err)
+		}
+	}
+
+	resolved, ok, err := e.resolveSingleTool(toolName)
 	if err != nil {
 		return nil, fmt.Errorf("model: tool node %q: %w", node.ID, err)
 	}
@@ -391,7 +415,7 @@ func (e *GoaiExecutor) executeToolNode(ctx context.Context, node *ir.Node, input
 	}
 
 	start := time.Now()
-	outputStr, err := tool.Execute(ctx, inputJSON)
+	outputStr, err := resolved.Execute(ctx, inputJSON)
 	if e.hooks.OnToolCall != nil {
 		e.hooks.OnToolCall(node.ID, goai.ToolCallInfo{
 			ToolName:  toolName,
@@ -506,14 +530,28 @@ func (e *GoaiExecutor) resolveTemplateRef(ref string, input map[string]interface
 
 // resolveTools resolves a list of tool names to goai.Tool instances.
 // Uses the tool registry if available, otherwise falls back to the legacy map.
+// When a tool policy is set, each tool's Execute function is wrapped with
+// a guard that checks the allowlist before invocation.
 func (e *GoaiExecutor) resolveTools(names []string) ([]goai.Tool, error) {
 	if e.toolRegistry != nil {
-		return e.toolRegistry.ResolveAll(names)
+		tools, err := e.toolRegistry.ResolveAll(names)
+		if err != nil {
+			return nil, err
+		}
+		if e.toolPolicy != nil {
+			for i := range tools {
+				tools[i] = e.guardTool(tools[i])
+			}
+		}
+		return tools, nil
 	}
 	// Legacy path: direct lookup.
 	var tools []goai.Tool
 	for _, name := range names {
 		if t, ok := e.tools[name]; ok {
+			if e.toolPolicy != nil {
+				t = e.guardTool(t)
+			}
 			tools = append(tools, t)
 		}
 	}
@@ -533,6 +571,26 @@ func (e *GoaiExecutor) resolveSingleTool(name string) (goai.Tool, bool, error) {
 	// Legacy path.
 	t, ok := e.tools[name]
 	return t, ok, nil
+}
+
+// ---------------------------------------------------------------------------
+// Policy guard
+// ---------------------------------------------------------------------------
+
+// guardTool wraps a goai.Tool's Execute function with a policy check.
+// If the tool is denied, Execute returns an ErrToolDenied error without
+// invoking the underlying implementation.
+func (e *GoaiExecutor) guardTool(t goai.Tool) goai.Tool {
+	original := t.Execute
+	name := t.Name
+	policy := e.toolPolicy
+	t.Execute = func(ctx context.Context, input json.RawMessage) (string, error) {
+		if err := policy.Check(name); err != nil {
+			return "", err
+		}
+		return original(ctx, input)
+	}
+	return t
 }
 
 // formatValue converts an interface value to a string for template substitution.
