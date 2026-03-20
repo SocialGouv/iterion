@@ -591,3 +591,75 @@ func TestReloadFromDisk(t *testing.T) {
 		t.Errorf("fresh store seq = %d, want 0", evt.Seq)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Path traversal rejection
+// ---------------------------------------------------------------------------
+
+func TestPathTraversalRejected(t *testing.T) {
+	s := tmpStore(t)
+
+	// CreateRun with traversal in ID.
+	_, err := s.CreateRun("../../etc", "wf", nil)
+	if err == nil {
+		t.Fatal("expected error for path traversal in run ID")
+	}
+
+	// WriteArtifact with traversal in NodeID.
+	s.CreateRun("safe-run", "wf", nil)
+	err = s.WriteArtifact(&Artifact{
+		RunID:  "safe-run",
+		NodeID: "../../../etc",
+		Data:   map[string]interface{}{},
+	})
+	if err == nil {
+		t.Fatal("expected error for path traversal in node ID")
+	}
+
+	// WriteInteraction with slash in ID.
+	err = s.WriteInteraction(&Interaction{
+		ID:    "foo/bar",
+		RunID: "safe-run",
+	})
+	if err == nil {
+		t.Fatal("expected error for path separator in interaction ID")
+	}
+
+	// LoadArtifact with traversal.
+	_, err = s.LoadArtifact("safe-run", "../../secret", 0)
+	if err == nil {
+		t.Fatal("expected error for path traversal in LoadArtifact")
+	}
+
+	// LoadInteraction with traversal.
+	_, err = s.LoadInteraction("safe-run", "../../../etc/passwd")
+	if err == nil {
+		t.Fatal("expected error for path traversal in LoadInteraction")
+	}
+}
+
+func TestSanitizePathComponent(t *testing.T) {
+	tests := []struct {
+		input string
+		ok    bool
+	}{
+		{"valid_id", true},
+		{"run-001", true},
+		{"run_with_underscores", true},
+		{"", false},
+		{"..", false},
+		{"foo/../bar", false},
+		{"foo/bar", false},
+		{"foo\\bar", false},
+		{"foo\x00bar", false},
+	}
+	for _, tt := range tests {
+		err := sanitizePathComponent("test", tt.input)
+		if tt.ok && err != nil {
+			t.Errorf("sanitize(%q) = %v, want nil", tt.input, err)
+		}
+		if !tt.ok && err == nil {
+			t.Errorf("sanitize(%q) = nil, want error", tt.input)
+		}
+	}
+}

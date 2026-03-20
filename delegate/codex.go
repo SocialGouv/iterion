@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os/exec"
 )
 
@@ -43,16 +44,39 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 
 	cmd := exec.CommandContext(ctx, b.command(), args...)
 	if task.WorkDir != "" {
+		if err := validateWorkDir(task.WorkDir, task.BaseDir); err != nil {
+			return Result{}, err
+		}
 		cmd.Dir = task.WorkDir
 	}
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return Result{}, fmt.Errorf("delegate: codex stdout pipe: %w", err)
+	}
+
+	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Start(); err != nil {
+		return Result{}, fmt.Errorf("delegate: codex failed to start: %w", err)
+	}
+
+	limited := io.LimitReader(stdoutPipe, maxOutputSize+1)
+	output, err := io.ReadAll(limited)
+	if err != nil {
+		return Result{}, fmt.Errorf("delegate: codex reading stdout: %w", err)
+	}
+
+	if len(output) > maxOutputSize {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return Result{}, fmt.Errorf("delegate: codex output exceeded limit of %d bytes", maxOutputSize)
+	}
+
+	if err := cmd.Wait(); err != nil {
 		return Result{}, fmt.Errorf("delegate: codex failed: %w\nstderr: %s", err, stderr.String())
 	}
 
-	return parseJSONOutput(stdout.Bytes())
+	return parseJSONOutput(output)
 }

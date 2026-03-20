@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/iterion-ai/iterion/ir"
@@ -308,10 +309,12 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 			}
 			rs.artifactVersions[currentNodeID] = version + 1
 
-			_ = e.emit(rs.runID, store.EventArtifactWritten, currentNodeID, map[string]interface{}{
+			if err := e.emit(rs.runID, store.EventArtifactWritten, currentNodeID, map[string]interface{}{
 				"publish": node.Publish,
 				"version": version,
-			})
+			}); err != nil {
+				log.Printf("runtime: failed to emit artifact_written: %v", err)
+			}
 		}
 
 		// --- Emit node_finished with usage data ---
@@ -444,8 +447,10 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 	vars := rs.vars
 	runInputs := rs.runInputs
 
-	// Emit branch_started.
-	_ = e.emitBranch(runID, branchID, store.EventBranchStarted, startEdge.To, nil)
+	// Emit branch_started (best-effort — branch can proceed without the event).
+	if err := e.emitBranch(runID, branchID, store.EventBranchStarted, startEdge.To, nil); err != nil {
+		log.Printf("runtime: branch %s: failed to emit branch_started: %v", branchID, err)
+	}
 
 	currentNodeID := startEdge.To
 
@@ -481,20 +486,24 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		if rs.budget != nil {
 			checks := rs.budget.Check()
 			if exc := findExceeded(checks); exc != nil {
-				_ = e.emitBranch(runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]interface{}{
+				if err := e.emitBranch(runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]interface{}{
 					"dimension": exc.dimension,
 					"used":      exc.used,
 					"limit":     exc.limit,
-				})
+				}); err != nil {
+					log.Printf("runtime: branch %s: failed to emit budget_exceeded: %v", branchID, err)
+				}
 				result.err = fmt.Errorf("%w: %s (%.0f/%.0f)", ErrBudgetExceeded, exc.dimension, exc.used, exc.limit)
 				return result
 			}
 		}
 
 		// Emit node_started.
-		_ = e.emitBranch(runID, branchID, store.EventNodeStarted, currentNodeID, map[string]interface{}{
+		if err := e.emitBranch(runID, branchID, store.EventNodeStarted, currentNodeID, map[string]interface{}{
 			"kind": node.Kind.String(),
-		})
+		}); err != nil {
+			log.Printf("runtime: branch %s: failed to emit node_started: %v", branchID, err)
+		}
 
 		// Build input: merge parent outputs with branch-local outputs so
 		// refs to upstream nodes (before the router) still resolve.
@@ -505,9 +514,11 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		output, err := e.executor.Execute(ctx, node, nodeInput)
 		if err != nil {
 			result.err = fmt.Errorf("node %q in branch %s: %w", currentNodeID, branchID, err)
-			_ = e.emitBranch(runID, branchID, store.EventNodeFinished, currentNodeID, map[string]interface{}{
+			if emitErr := e.emitBranch(runID, branchID, store.EventNodeFinished, currentNodeID, map[string]interface{}{
 				"error": err.Error(),
-			})
+			}); emitErr != nil {
+				log.Printf("runtime: branch %s: failed to emit node_finished: %v", branchID, emitErr)
+			}
 			return result
 		}
 
@@ -520,20 +531,24 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 
 			// Emit warnings.
 			for _, w := range findWarnings(checks) {
-				_ = e.emitBranch(runID, branchID, store.EventBudgetWarning, currentNodeID, map[string]interface{}{
+				if err := e.emitBranch(runID, branchID, store.EventBudgetWarning, currentNodeID, map[string]interface{}{
 					"dimension": w.dimension,
 					"used":      w.used,
 					"limit":     w.limit,
-				})
+				}); err != nil {
+					log.Printf("runtime: branch %s: failed to emit budget_warning: %v", branchID, err)
+				}
 			}
 
 			// Fail on exceeded.
 			if exc := findExceeded(checks); exc != nil {
-				_ = e.emitBranch(runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]interface{}{
+				if err := e.emitBranch(runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]interface{}{
 					"dimension": exc.dimension,
 					"used":      exc.used,
 					"limit":     exc.limit,
-				})
+				}); err != nil {
+					log.Printf("runtime: branch %s: failed to emit budget_exceeded: %v", branchID, err)
+				}
 				result.err = fmt.Errorf("%w: %s (%.0f/%.0f)", ErrBudgetExceeded, exc.dimension, exc.used, exc.limit)
 				return result
 			}
@@ -548,16 +563,23 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 				Version: version,
 				Data:    output,
 			}
-			_ = e.store.WriteArtifact(artifact)
+			if err := e.store.WriteArtifact(artifact); err != nil {
+				result.err = fmt.Errorf("node %q in branch %s: write artifact: %w", currentNodeID, branchID, err)
+				return result
+			}
 			result.artifactVersions[currentNodeID] = version + 1
-			_ = e.emitBranch(runID, branchID, store.EventArtifactWritten, currentNodeID, map[string]interface{}{
+			if err := e.emitBranch(runID, branchID, store.EventArtifactWritten, currentNodeID, map[string]interface{}{
 				"publish": node.Publish,
 				"version": version,
-			})
+			}); err != nil {
+				log.Printf("runtime: branch %s: failed to emit artifact_written: %v", branchID, err)
+			}
 		}
 
 		// Emit node_finished with usage data.
-		_ = e.emitBranch(runID, branchID, store.EventNodeFinished, currentNodeID, buildNodeFinishedData(output))
+		if err := e.emitBranch(runID, branchID, store.EventNodeFinished, currentNodeID, buildNodeFinishedData(output)); err != nil {
+			log.Printf("runtime: branch %s: failed to emit node_finished: %v", branchID, err)
+		}
 
 		// Select next edge (branch-local, no loop counters needed in branches).
 		merged = mergeOutputs(parentOutputs, result.outputs)
@@ -593,6 +615,8 @@ func (e *Engine) selectEdgeBranch(runID, branchID, fromNodeID string, output map
 		}
 		boolVal, isBool := val.(bool)
 		if !isBool {
+			log.Printf("runtime: branch %s: node %q: condition field %q is %T, expected bool — edge to %q skipped",
+				branchID, fromNodeID, edge.Condition, val, edge.To)
 			continue
 		}
 		if edge.Negated {
@@ -611,10 +635,12 @@ func (e *Engine) selectEdgeBranch(runID, branchID, fromNodeID string, output map
 		return "", fmt.Errorf("no outgoing edge from node %q in branch %s", fromNodeID, branchID)
 	}
 
-	_ = e.emitBranch(runID, branchID, store.EventEdgeSelected, "", map[string]interface{}{
+	if err := e.emitBranch(runID, branchID, store.EventEdgeSelected, "", map[string]interface{}{
 		"from": selected.From,
 		"to":   selected.To,
-	})
+	}); err != nil {
+		log.Printf("runtime: branch %s: failed to emit edge_selected: %v", branchID, err)
+	}
 
 	return selected.To, nil
 }
@@ -692,7 +718,9 @@ func (e *Engine) processJoin(rs *runState, joinNodeID string, results []*branchR
 	if len(failedBranches) > 0 {
 		joinData["failed_branches"] = failedBranches
 	}
-	_ = e.emit(rs.runID, store.EventJoinReady, joinNodeID, joinData)
+	if err := e.emit(rs.runID, store.EventJoinReady, joinNodeID, joinData); err != nil {
+		log.Printf("runtime: failed to emit join_ready: %v", err)
+	}
 
 	// Emit join node_finished.
 	if err := e.emit(rs.runID, store.EventNodeFinished, joinNodeID, nil); err != nil {
@@ -837,6 +865,8 @@ func (e *Engine) selectEdge(runID, fromNodeID string, output map[string]interfac
 		}
 		boolVal, isBool := val.(bool)
 		if !isBool {
+			log.Printf("runtime: node %q: condition field %q is %T, expected bool — edge to %q skipped",
+				fromNodeID, edge.Condition, val, edge.To)
 			continue
 		}
 		if edge.Negated {
@@ -891,7 +921,9 @@ func (e *Engine) selectEdge(runID, fromNodeID string, output map[string]interfac
 		data["loop"] = selected.LoopName
 		data["iteration"] = loopCounters[selected.LoopName]
 	}
-	_ = e.emit(runID, store.EventEdgeSelected, "", data)
+	if err := e.emit(runID, store.EventEdgeSelected, "", data); err != nil {
+		log.Printf("runtime: failed to emit edge_selected: %v", err)
+	}
 
 	return selected.To, nil
 }
@@ -1050,12 +1082,16 @@ func (e *Engine) failRun(runID, nodeID, reason string) error {
 func (e *Engine) failRunErr(runID, nodeID string, origErr error) error {
 	var rtErr *RuntimeError
 	if errors.As(origErr, &rtErr) {
-		// Preserve the structured error; just persist the failure in the store.
-		_ = e.store.UpdateRunStatus(runID, store.RunStatusFailed, rtErr.Message)
-		_ = e.emit(runID, store.EventRunFailed, nodeID, map[string]interface{}{
+		// Preserve the structured error; persist failure in store (best-effort).
+		if err := e.store.UpdateRunStatus(runID, store.RunStatusFailed, rtErr.Message); err != nil {
+			log.Printf("runtime: failed to persist run failure status: %v", err)
+		}
+		if err := e.emit(runID, store.EventRunFailed, nodeID, map[string]interface{}{
 			"error": rtErr.Message,
 			"code":  string(rtErr.Code),
-		})
+		}); err != nil {
+			log.Printf("runtime: failed to emit run_failed event: %v", err)
+		}
 		if rtErr.NodeID == "" {
 			rtErr.NodeID = nodeID
 		}
@@ -1066,11 +1102,15 @@ func (e *Engine) failRunErr(runID, nodeID string, origErr error) error {
 
 // failRunWithCode marks a run as failed and returns a structured RuntimeError.
 func (e *Engine) failRunWithCode(runID, nodeID, reason string, code ErrorCode, hint string) error {
-	_ = e.store.UpdateRunStatus(runID, store.RunStatusFailed, reason)
-	_ = e.emit(runID, store.EventRunFailed, nodeID, map[string]interface{}{
+	if err := e.store.UpdateRunStatus(runID, store.RunStatusFailed, reason); err != nil {
+		log.Printf("runtime: failed to persist run failure status: %v", err)
+	}
+	if err := e.emit(runID, store.EventRunFailed, nodeID, map[string]interface{}{
 		"error": reason,
 		"code":  string(code),
-	})
+	}); err != nil {
+		log.Printf("runtime: failed to emit run_failed event: %v", err)
+	}
 	return &RuntimeError{
 		Code:    code,
 		Message: reason,
@@ -1084,18 +1124,26 @@ func (e *Engine) failRunWithCode(runID, nodeID, reason string, code ErrorCode, h
 // (SIGINT / context.Canceled) from timeouts (context.DeadlineExceeded).
 func (e *Engine) handleContextDone(runID, nodeID string, ctxErr error) error {
 	if errors.Is(ctxErr, context.Canceled) {
-		_ = e.store.UpdateRunStatus(runID, store.RunStatusCancelled, "run cancelled")
-		_ = e.emit(runID, store.EventRunCancelled, nodeID, map[string]interface{}{
+		if err := e.store.UpdateRunStatus(runID, store.RunStatusCancelled, "run cancelled"); err != nil {
+			log.Printf("runtime: failed to persist cancellation status: %v", err)
+		}
+		if err := e.emit(runID, store.EventRunCancelled, nodeID, map[string]interface{}{
 			"reason": "context cancelled",
-		})
+		}); err != nil {
+			log.Printf("runtime: failed to emit run_cancelled event: %v", err)
+		}
 		return fmt.Errorf("%w: interrupted at node %s", ErrRunCancelled, nodeID)
 	}
 	// context.DeadlineExceeded → treat as a timeout failure.
 	reason := fmt.Sprintf("timeout: %s", ctxErr.Error())
-	_ = e.store.UpdateRunStatus(runID, store.RunStatusFailed, reason)
-	_ = e.emit(runID, store.EventRunFailed, nodeID, map[string]interface{}{
+	if err := e.store.UpdateRunStatus(runID, store.RunStatusFailed, reason); err != nil {
+		log.Printf("runtime: failed to persist timeout failure status: %v", err)
+	}
+	if err := e.emit(runID, store.EventRunFailed, nodeID, map[string]interface{}{
 		"error": reason,
-	})
+	}); err != nil {
+		log.Printf("runtime: failed to emit run_failed event: %v", err)
+	}
 	return fmt.Errorf("runtime: %s at node %s", reason, nodeID)
 }
 

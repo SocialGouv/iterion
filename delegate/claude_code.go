@@ -5,9 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
+
+// maxOutputSize is the maximum allowed stdout size from a delegate subprocess (50 MB).
+const maxOutputSize = 50 * 1024 * 1024
 
 // ClaudeCodeBackend delegates work to the `claude` CLI (claude-code).
 // It spawns a subprocess with the task prompt and collects structured output.
@@ -48,18 +53,69 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 
 	cmd := exec.CommandContext(ctx, b.command(), args...)
 	if task.WorkDir != "" {
+		if err := validateWorkDir(task.WorkDir, task.BaseDir); err != nil {
+			return Result{}, err
+		}
 		cmd.Dir = task.WorkDir
 	}
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return Result{}, fmt.Errorf("delegate: claude-code stdout pipe: %w", err)
+	}
+
+	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Start(); err != nil {
+		return Result{}, fmt.Errorf("delegate: claude-code failed to start: %w", err)
+	}
+
+	limited := io.LimitReader(stdoutPipe, maxOutputSize+1)
+	output, err := io.ReadAll(limited)
+	if err != nil {
+		return Result{}, fmt.Errorf("delegate: claude-code reading stdout: %w", err)
+	}
+
+	if len(output) > maxOutputSize {
+		// Kill the process since we're not going to use the output.
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return Result{}, fmt.Errorf("delegate: claude-code output exceeded limit of %d bytes", maxOutputSize)
+	}
+
+	if err := cmd.Wait(); err != nil {
 		return Result{}, fmt.Errorf("delegate: claude-code failed: %w\nstderr: %s", err, stderr.String())
 	}
 
-	return parseJSONOutput(stdout.Bytes())
+	return parseJSONOutput(output)
+}
+
+// validateWorkDir checks that workDir resolves to a path within baseDir.
+// If baseDir is empty, no validation is performed.
+func validateWorkDir(workDir, baseDir string) error {
+	if baseDir == "" {
+		return nil
+	}
+
+	absWork, err := filepath.Abs(workDir)
+	if err != nil {
+		return fmt.Errorf("delegate: invalid WorkDir %q: %w", workDir, err)
+	}
+	absWork = filepath.Clean(absWork)
+
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return fmt.Errorf("delegate: invalid BaseDir %q: %w", baseDir, err)
+	}
+	absBase = filepath.Clean(absBase)
+
+	// Ensure absWork is within absBase by checking the prefix with a trailing separator.
+	if absWork != absBase && !strings.HasPrefix(absWork, absBase+string(filepath.Separator)) {
+		return fmt.Errorf("delegate: WorkDir %q is outside allowed BaseDir %q", workDir, baseDir)
+	}
+
+	return nil
 }
 
 // parseJSONOutput tries to parse the CLI output as a JSON object.

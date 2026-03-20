@@ -528,6 +528,10 @@ func (e *GoaiExecutor) buildUserMessage(node *ir.Node, input map[string]interfac
 	return string(b)
 }
 
+// maxTemplateExpansionSize is the maximum allowed size of a resolved template.
+// Prevents OOM from extremely large input values injected into prompts.
+const maxTemplateExpansionSize = 5 * 1024 * 1024 // 5 MB
+
 // resolveTemplate substitutes {{...}} references in a prompt body.
 func (e *GoaiExecutor) resolveTemplate(body string, input map[string]interface{}) string {
 	var b strings.Builder
@@ -558,6 +562,12 @@ func (e *GoaiExecutor) resolveTemplate(body string, input map[string]interface{}
 		}
 
 		remaining = remaining[end:]
+
+		// Guard against excessive expansion from large input values.
+		if b.Len() > maxTemplateExpansionSize {
+			b.WriteString(remaining)
+			break
+		}
 	}
 
 	return b.String()

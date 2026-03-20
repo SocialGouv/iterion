@@ -35,6 +35,10 @@ type Task struct {
 
 	// WorkDir is the working directory for the CLI subprocess.
 	WorkDir string
+
+	// BaseDir is the allowed base directory for WorkDir validation.
+	// If set, WorkDir must resolve to a path within BaseDir.
+	BaseDir string
 }
 
 // Result contains the output from a delegation backend.

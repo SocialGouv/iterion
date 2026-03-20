@@ -13,6 +13,35 @@ import (
 	"time"
 )
 
+// maxEventLineSize is the maximum size of a single event JSON line.
+// Events with large LLM outputs can exceed the default 64KB scanner buffer.
+const maxEventLineSize = 10 * 1024 * 1024 // 10 MB
+
+// File and directory permissions for store data.
+// Restrictive by default — artifacts and interactions may contain sensitive data.
+const (
+	dirPerm  os.FileMode = 0o700
+	filePerm os.FileMode = 0o600
+)
+
+// sanitizePathComponent validates that a path component (RunID, NodeID,
+// InteractionID) does not contain path traversal sequences or separators.
+func sanitizePathComponent(name, component string) error {
+	if component == "" {
+		return fmt.Errorf("store: %s must not be empty", name)
+	}
+	if strings.Contains(component, "..") {
+		return fmt.Errorf("store: %s %q contains path traversal", name, component)
+	}
+	if strings.ContainsAny(component, "/\\") {
+		return fmt.Errorf("store: %s %q contains path separator", name, component)
+	}
+	if strings.ContainsRune(component, 0) {
+		return fmt.Errorf("store: %s %q contains null byte", name, component)
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // RunStore — file-backed persistence for runs
 // ---------------------------------------------------------------------------
@@ -33,7 +62,7 @@ type RunStore struct {
 // New creates a RunStore rooted at the given directory.
 // The directory is created if it does not exist.
 func New(root string) (*RunStore, error) {
-	if err := os.MkdirAll(filepath.Join(root, "runs"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "runs"), dirPerm); err != nil {
 		return nil, fmt.Errorf("store: create root: %w", err)
 	}
 	return &RunStore{root: root, seq: make(map[string]int64)}, nil
@@ -48,6 +77,9 @@ func (s *RunStore) Root() string { return s.root }
 
 // CreateRun persists a new run with status "running".
 func (s *RunStore) CreateRun(id, workflowName string, inputs map[string]interface{}) (*Run, error) {
+	if err := sanitizePathComponent("run ID", id); err != nil {
+		return nil, err
+	}
 	now := time.Now().UTC()
 	r := &Run{
 		FormatVersion: RunFormatVersion,
@@ -79,7 +111,11 @@ func (s *RunStore) LoadRun(id string) (*Run, error) {
 }
 
 // UpdateRunStatus updates the status (and optional error) of a run.
+// Protected by mu to prevent concurrent read-modify-write races.
 func (s *RunStore) UpdateRunStatus(id string, status RunStatus, runErr string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	r, err := s.LoadRun(id)
 	if err != nil {
 		return err
@@ -99,7 +135,11 @@ func (s *RunStore) UpdateRunStatus(id string, status RunStatus, runErr string) e
 }
 
 // SaveCheckpoint persists a checkpoint on a paused run.
+// Protected by mu to prevent concurrent read-modify-write races.
 func (s *RunStore) SaveCheckpoint(id string, cp *Checkpoint) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	r, err := s.LoadRun(id)
 	if err != nil {
 		return err
@@ -132,29 +172,41 @@ func (s *RunStore) ListRuns() ([]string, error) {
 
 // AppendEvent appends an event to the run's events.jsonl.
 // Seq and Timestamp are set automatically.
+// The entire operation is serialized under mu to prevent interleaved writes
+// from concurrent branches.
 func (s *RunStore) AppendEvent(runID string, evt Event) (*Event, error) {
-	s.mu.Lock()
-	evt.Seq = s.seq[runID]
-	s.seq[runID]++
-	s.mu.Unlock()
-
 	evt.RunID = runID
 	if evt.Timestamp.IsZero() {
 		evt.Timestamp = time.Now().UTC()
 	}
 
-	p := s.eventsPath(runID)
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return nil, fmt.Errorf("store: mkdir events: %w", err)
-	}
-
+	// Marshal outside the lock to minimize hold time, but the actual
+	// seq assignment and file write must be atomic.
 	line, err := json.Marshal(evt)
 	if err != nil {
 		return nil, fmt.Errorf("store: marshal event: %w", err)
 	}
 	line = append(line, '\n')
 
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	evt.Seq = s.seq[runID]
+	s.seq[runID]++
+
+	// Re-marshal with the assigned seq number.
+	line, err = json.Marshal(evt)
+	if err != nil {
+		return nil, fmt.Errorf("store: marshal event: %w", err)
+	}
+	line = append(line, '\n')
+
+	p := s.eventsPath(runID)
+	if err := os.MkdirAll(filepath.Dir(p), dirPerm); err != nil {
+		return nil, fmt.Errorf("store: mkdir events: %w", err)
+	}
+
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, filePerm)
 	if err != nil {
 		return nil, fmt.Errorf("store: open events: %w", err)
 	}
@@ -180,6 +232,7 @@ func (s *RunStore) LoadEvents(runID string) ([]*Event, error) {
 
 	var events []*Event
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxEventLineSize)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -203,11 +256,17 @@ func (s *RunStore) LoadEvents(runID string) ([]*Event, error) {
 
 // WriteArtifact persists an artifact for a node at the given version.
 func (s *RunStore) WriteArtifact(a *Artifact) error {
+	if err := sanitizePathComponent("run ID", a.RunID); err != nil {
+		return err
+	}
+	if err := sanitizePathComponent("node ID", a.NodeID); err != nil {
+		return err
+	}
 	if a.WrittenAt.IsZero() {
 		a.WrittenAt = time.Now().UTC()
 	}
 	dir := filepath.Join(s.root, "runs", a.RunID, "artifacts", a.NodeID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, dirPerm); err != nil {
 		return fmt.Errorf("store: mkdir artifact: %w", err)
 	}
 	p := filepath.Join(dir, fmt.Sprintf("%d.json", a.Version))
@@ -215,11 +274,17 @@ func (s *RunStore) WriteArtifact(a *Artifact) error {
 	if err != nil {
 		return fmt.Errorf("store: marshal artifact: %w", err)
 	}
-	return os.WriteFile(p, data, 0o644)
+	return os.WriteFile(p, data, filePerm)
 }
 
 // LoadArtifact reads a specific artifact version.
 func (s *RunStore) LoadArtifact(runID, nodeID string, version int) (*Artifact, error) {
+	if err := sanitizePathComponent("run ID", runID); err != nil {
+		return nil, err
+	}
+	if err := sanitizePathComponent("node ID", nodeID); err != nil {
+		return nil, err
+	}
 	p := filepath.Join(s.root, "runs", runID, "artifacts", nodeID, fmt.Sprintf("%d.json", version))
 	data, err := os.ReadFile(p)
 	if err != nil {
@@ -234,6 +299,12 @@ func (s *RunStore) LoadArtifact(runID, nodeID string, version int) (*Artifact, e
 
 // LoadLatestArtifact returns the artifact with the highest version for a node.
 func (s *RunStore) LoadLatestArtifact(runID, nodeID string) (*Artifact, error) {
+	if err := sanitizePathComponent("run ID", runID); err != nil {
+		return nil, err
+	}
+	if err := sanitizePathComponent("node ID", nodeID); err != nil {
+		return nil, err
+	}
 	dir := filepath.Join(s.root, "runs", runID, "artifacts", nodeID)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -266,8 +337,14 @@ func (s *RunStore) LoadLatestArtifact(runID, nodeID string) (*Artifact, error) {
 
 // WriteInteraction persists a human interaction.
 func (s *RunStore) WriteInteraction(i *Interaction) error {
+	if err := sanitizePathComponent("run ID", i.RunID); err != nil {
+		return err
+	}
+	if err := sanitizePathComponent("interaction ID", i.ID); err != nil {
+		return err
+	}
 	dir := filepath.Join(s.root, "runs", i.RunID, "interactions")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, dirPerm); err != nil {
 		return fmt.Errorf("store: mkdir interaction: %w", err)
 	}
 	p := filepath.Join(dir, i.ID+".json")
@@ -275,11 +352,17 @@ func (s *RunStore) WriteInteraction(i *Interaction) error {
 	if err != nil {
 		return fmt.Errorf("store: marshal interaction: %w", err)
 	}
-	return os.WriteFile(p, data, 0o644)
+	return os.WriteFile(p, data, filePerm)
 }
 
 // LoadInteraction reads a specific interaction by ID.
 func (s *RunStore) LoadInteraction(runID, interactionID string) (*Interaction, error) {
+	if err := sanitizePathComponent("run ID", runID); err != nil {
+		return nil, err
+	}
+	if err := sanitizePathComponent("interaction ID", interactionID); err != nil {
+		return nil, err
+	}
 	p := filepath.Join(s.root, "runs", runID, "interactions", interactionID+".json")
 	data, err := os.ReadFile(p)
 	if err != nil {
@@ -331,12 +414,12 @@ func (s *RunStore) eventsPath(runID string) string {
 
 func (s *RunStore) writeRun(r *Run) error {
 	dir := s.runDir(r.ID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, dirPerm); err != nil {
 		return fmt.Errorf("store: mkdir run: %w", err)
 	}
 	data, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return fmt.Errorf("store: marshal run: %w", err)
 	}
-	return os.WriteFile(s.runJSONPath(r.ID), data, 0o644)
+	return os.WriteFile(s.runJSONPath(r.ID), data, filePerm)
 }

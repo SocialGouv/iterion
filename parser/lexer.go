@@ -1,8 +1,15 @@
 package parser
 
 import (
+	"fmt"
 	"strings"
 	"unicode"
+)
+
+// Safety limits to prevent DoS from malicious .iter files.
+const (
+	maxSourceSize   = 10 * 1024 * 1024 // 10 MB max file size
+	maxNestingDepth = 100              // max indentation nesting levels
 )
 
 // Lexer tokenizes an iterion DSL source file with indent-sensitive INDENT/DEDENT tokens.
@@ -27,6 +34,11 @@ type Lexer struct {
 
 // NewLexer creates a new Lexer for the given source.
 func NewLexer(filename, src string) *Lexer {
+	if len(src) > maxSourceSize {
+		l := &Lexer{file: filename, line: 1, col: 1}
+		l.tokens = []Token{{Type: TokenError, Value: fmt.Sprintf("source file exceeds maximum size (%d bytes > %d)", len(src), maxSourceSize), Line: 1, Column: 1}}
+		return l
+	}
 	l := &Lexer{
 		src:         []rune(src),
 		file:        filename,
@@ -141,6 +153,10 @@ func (l *Lexer) handleLineStart() {
 	// Emit INDENT/DEDENT based on indentation change
 	currentLevel := l.indentStack[len(l.indentStack)-1]
 	if spaces > currentLevel {
+		if len(l.indentStack) >= maxNestingDepth {
+			l.emit(TokenError, fmt.Sprintf("maximum nesting depth exceeded (%d levels)", maxNestingDepth), startLine, 1)
+			return
+		}
 		l.indentStack = append(l.indentStack, spaces)
 		l.emit(TokenIndent, "", startLine, 1)
 		// Check if we just entered a prompt body
