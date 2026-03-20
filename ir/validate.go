@@ -16,6 +16,7 @@ const (
 	DiagJoinRequireUnknown     DiagCode = "C015" // join require references unknown node
 	DiagUnreachableNode        DiagCode = "C016" // node unreachable from entry
 	DiagHistoryRefNotInLoop    DiagCode = "C017" // outputs.<node>.history but node not in a loop
+	DiagUndeclaredCycle        DiagCode = "C019" // cycle without a declared loop (infinite loop risk)
 )
 
 // validate performs static validation on a compiled workflow.
@@ -31,6 +32,7 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateJoinRequire(w)
 	c.validateReachability(w)
 	c.validateHistoryRefs(w)
+	c.validateUndeclaredCycles(w)
 }
 
 // ---------------------------------------------------------------------------
@@ -348,4 +350,64 @@ func (c *compiler) validateHistoryRefs(w *Workflow) {
 			}
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// C019 — undeclared cycles (back-edges without a loop declaration)
+// ---------------------------------------------------------------------------
+
+// validateUndeclaredCycles uses DFS to detect cycles that have no declared
+// loop on any of their edges. Such cycles would cause infinite execution
+// if no budget is set.
+func (c *compiler) validateUndeclaredCycles(w *Workflow) {
+	if w.Entry == "" {
+		return
+	}
+
+	// Build set of nodes that participate in a declared loop.
+	// A cycle is considered bounded if ANY edge in the cycle carries a
+	// LoopName — the runtime enforces max_iterations on that edge.
+	loopNodes := make(map[string]bool)
+	for _, e := range w.Edges {
+		if e.LoopName != "" {
+			loopNodes[e.From] = true
+			loopNodes[e.To] = true
+		}
+	}
+
+	// Build adjacency list.
+	adj := make(map[string][]string)
+	for _, e := range w.Edges {
+		adj[e.From] = append(adj[e.From], e.To)
+	}
+
+	// DFS with three-color marking: white (unseen), gray (in stack), black (done).
+	const (
+		white = 0
+		gray  = 1
+		black = 2
+	)
+	color := make(map[string]int) // default white
+
+	var dfs func(node string)
+	dfs = func(node string) {
+		color[node] = gray
+		for _, to := range adj[node] {
+			switch color[to] {
+			case gray:
+				// Back-edge found — cycle. Only report if neither endpoint
+				// participates in a declared loop (which bounds the cycle).
+				if !loopNodes[node] && !loopNodes[to] {
+					c.errorf(DiagUndeclaredCycle,
+						"cycle detected: edge %s -> %s forms a cycle without a declared loop; add a loop with max_iterations to bound it",
+						node, to)
+				}
+			case white:
+				dfs(to)
+			}
+		}
+		color[node] = black
+	}
+
+	dfs(w.Entry)
 }

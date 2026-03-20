@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"math/rand/v2"
 	"strings"
@@ -564,8 +565,9 @@ func (e *GoaiExecutor) resolveTemplate(body string, input map[string]interface{}
 		remaining = remaining[end:]
 
 		// Guard against excessive expansion from large input values.
+		// Truncate at the limit rather than appending the remaining template.
 		if b.Len() > maxTemplateExpansionSize {
-			b.WriteString(remaining)
+			log.Printf("model: template expansion exceeded %d bytes, truncating", maxTemplateExpansionSize)
 			break
 		}
 	}

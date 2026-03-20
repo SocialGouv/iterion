@@ -149,6 +149,23 @@ func (s *RunStore) SaveCheckpoint(id string, cp *Checkpoint) error {
 	return s.writeRun(r)
 }
 
+// PauseRun atomically sets the checkpoint and updates the status to paused
+// in a single write, preventing inconsistency if one of two separate
+// operations were to fail.
+func (s *RunStore) PauseRun(id string, cp *Checkpoint) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.LoadRun(id)
+	if err != nil {
+		return err
+	}
+	r.Checkpoint = cp
+	r.Status = RunStatusPausedWaitingHuman
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
+}
+
 // ListRuns returns the IDs of all persisted runs.
 func (s *RunStore) ListRuns() ([]string, error) {
 	runsDir := filepath.Join(s.root, "runs")
@@ -173,29 +190,22 @@ func (s *RunStore) ListRuns() ([]string, error) {
 // AppendEvent appends an event to the run's events.jsonl.
 // Seq and Timestamp are set automatically.
 // The entire operation is serialized under mu to prevent interleaved writes
-// from concurrent branches.
+// from concurrent branches. The sequence counter is only incremented after
+// a successful write to avoid gaps in the event stream.
 func (s *RunStore) AppendEvent(runID string, evt Event) (*Event, error) {
 	evt.RunID = runID
 	if evt.Timestamp.IsZero() {
 		evt.Timestamp = time.Now().UTC()
 	}
 
-	// Marshal outside the lock to minimize hold time, but the actual
-	// seq assignment and file write must be atomic.
-	line, err := json.Marshal(evt)
-	if err != nil {
-		return nil, fmt.Errorf("store: marshal event: %w", err)
-	}
-	line = append(line, '\n')
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Assign seq but don't increment the counter yet — only advance on
+	// successful write to prevent gaps from failed marshals or I/O.
 	evt.Seq = s.seq[runID]
-	s.seq[runID]++
 
-	// Re-marshal with the assigned seq number.
-	line, err = json.Marshal(evt)
+	line, err := json.Marshal(evt)
 	if err != nil {
 		return nil, fmt.Errorf("store: marshal event: %w", err)
 	}
@@ -215,6 +225,10 @@ func (s *RunStore) AppendEvent(runID string, evt Event) (*Event, error) {
 	if _, err := f.Write(line); err != nil {
 		return nil, fmt.Errorf("store: write event: %w", err)
 	}
+
+	// Only increment after successful write — no sequence gaps on failure.
+	s.seq[runID] = evt.Seq + 1
+
 	return &evt, nil
 }
 

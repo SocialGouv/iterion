@@ -455,7 +455,7 @@ func TestNewMCPDef(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// MustResolve
+// mustResolve (unexported — test-only helper)
 // ---------------------------------------------------------------------------
 
 func TestMustResolvePanics(t *testing.T) {
@@ -465,13 +465,13 @@ func TestMustResolvePanics(t *testing.T) {
 			t.Fatal("expected panic")
 		}
 	}()
-	r.MustResolve("nonexistent")
+	r.mustResolve("nonexistent")
 }
 
 func TestMustResolveSucceeds(t *testing.T) {
 	r := NewRegistry()
 	_ = r.RegisterBuiltin("git_diff", "diff", nil, noop)
-	td := r.MustResolve("git_diff")
+	td := r.mustResolve("git_diff")
 	if td.QualifiedName != "git_diff" {
 		t.Errorf("unexpected name: %q", td.QualifiedName)
 	}

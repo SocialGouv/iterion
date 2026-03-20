@@ -193,8 +193,8 @@ func (r *Registry) Resolve(ref string) (*ToolDef, error) {
 	return nil, fmt.Errorf("tool: unknown tool %q", ref)
 }
 
-// MustResolve is like Resolve but panics on error. Intended for tests.
-func (r *Registry) MustResolve(ref string) *ToolDef {
+// mustResolve is like Resolve but panics on error. For use in tests only.
+func (r *Registry) mustResolve(ref string) *ToolDef {
 	td, err := r.Resolve(ref)
 	if err != nil {
 		panic(err)

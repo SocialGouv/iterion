@@ -313,7 +313,7 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 				"publish": node.Publish,
 				"version": version,
 			}); err != nil {
-				log.Printf("runtime: failed to emit artifact_written: %v", err)
+				return fmt.Errorf("runtime: artifact written but event emission failed (state inconsistency): %w", err)
 			}
 		}
 
@@ -787,8 +787,12 @@ func (e *Engine) pauseAtHuman(rs *runState, nodeID string, node *ir.Node) error 
 	// Build questions from the node's input (edge mappings into this node).
 	questions := e.buildNodeInput(nodeID, rs.vars, rs.outputs, nil)
 
-	// Create interaction.
+	// Create interaction. Include loop iteration in the ID so that
+	// human nodes inside loops produce unique interactions per iteration.
 	interactionID := fmt.Sprintf("%s_%s", rs.runID, nodeID)
+	if loopIter := e.currentLoopIteration(nodeID, rs.loopCounters); loopIter > 0 {
+		interactionID = fmt.Sprintf("%s_%s_%d", rs.runID, nodeID, loopIter)
+	}
 	interaction := &store.Interaction{
 		ID:          interactionID,
 		RunID:       rs.runID,
@@ -813,7 +817,7 @@ func (e *Engine) pauseAtHuman(rs *runState, nodeID string, node *ir.Node) error 
 		return err
 	}
 
-	// Save checkpoint.
+	// Atomically save checkpoint and set status to paused in a single write.
 	cp := &store.Checkpoint{
 		NodeID:           nodeID,
 		InteractionID:    interactionID,
@@ -822,13 +826,8 @@ func (e *Engine) pauseAtHuman(rs *runState, nodeID string, node *ir.Node) error 
 		ArtifactVersions: rs.artifactVersions,
 		Vars:             rs.vars,
 	}
-	if err := e.store.SaveCheckpoint(rs.runID, cp); err != nil {
-		return fmt.Errorf("runtime: save checkpoint: %w", err)
-	}
-
-	// Update status to paused.
-	if err := e.store.UpdateRunStatus(rs.runID, store.RunStatusPausedWaitingHuman, ""); err != nil {
-		return fmt.Errorf("runtime: update status paused: %w", err)
+	if err := e.store.PauseRun(rs.runID, cp); err != nil {
+		return fmt.Errorf("runtime: pause run: %w", err)
 	}
 
 	return ErrRunPaused
@@ -1079,12 +1078,13 @@ func (e *Engine) failRun(runID, nodeID, reason string) error {
 }
 
 // failRunErr marks a run as failed, preserving a structured error if present.
+// Store/event errors are propagated so callers know whether the failure was persisted.
 func (e *Engine) failRunErr(runID, nodeID string, origErr error) error {
 	var rtErr *RuntimeError
 	if errors.As(origErr, &rtErr) {
-		// Preserve the structured error; persist failure in store (best-effort).
-		if err := e.store.UpdateRunStatus(runID, store.RunStatusFailed, rtErr.Message); err != nil {
-			log.Printf("runtime: failed to persist run failure status: %v", err)
+		if storeErr := e.store.UpdateRunStatus(runID, store.RunStatusFailed, rtErr.Message); storeErr != nil {
+			log.Printf("runtime: failed to persist run failure status: %v", storeErr)
+			return fmt.Errorf("runtime: node %q failed (%s) and could not persist failure: %w", nodeID, rtErr.Message, storeErr)
 		}
 		if err := e.emit(runID, store.EventRunFailed, nodeID, map[string]interface{}{
 			"error": rtErr.Message,
@@ -1101,9 +1101,12 @@ func (e *Engine) failRunErr(runID, nodeID string, origErr error) error {
 }
 
 // failRunWithCode marks a run as failed and returns a structured RuntimeError.
+// If the store update fails, the store error is returned instead of the runtime
+// error so callers know the failure state was not persisted.
 func (e *Engine) failRunWithCode(runID, nodeID, reason string, code ErrorCode, hint string) error {
-	if err := e.store.UpdateRunStatus(runID, store.RunStatusFailed, reason); err != nil {
-		log.Printf("runtime: failed to persist run failure status: %v", err)
+	if storeErr := e.store.UpdateRunStatus(runID, store.RunStatusFailed, reason); storeErr != nil {
+		log.Printf("runtime: failed to persist run failure status: %v", storeErr)
+		return fmt.Errorf("runtime: node %q failed (%s) and could not persist failure: %w", nodeID, reason, storeErr)
 	}
 	if err := e.emit(runID, store.EventRunFailed, nodeID, map[string]interface{}{
 		"error": reason,
@@ -1145,6 +1148,25 @@ func (e *Engine) handleContextDone(runID, nodeID string, ctxErr error) error {
 		log.Printf("runtime: failed to emit run_failed event: %v", err)
 	}
 	return fmt.Errorf("runtime: %s at node %s", reason, nodeID)
+}
+
+// currentLoopIteration returns the current loop iteration for a node.
+// If the node participates in multiple loops, returns the max counter.
+// Returns 0 if the node is not in any loop.
+func (e *Engine) currentLoopIteration(nodeID string, loopCounters map[string]int) int {
+	maxIter := 0
+	for _, edge := range e.workflow.Edges {
+		if edge.LoopName == "" {
+			continue
+		}
+		// Check if this node is on a loop-bearing edge.
+		if edge.From == nodeID || edge.To == nodeID {
+			if count, ok := loopCounters[edge.LoopName]; ok && count > maxIter {
+				maxIter = count
+			}
+		}
+	}
+	return maxIter
 }
 
 // wrapContextErr wraps a context error for branch-level reporting.

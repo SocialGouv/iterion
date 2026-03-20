@@ -1,79 +1,79 @@
-# Fixtures de référence iterion V1
+# Iterion V1 Reference Fixtures
 
-Ce document décrit le rôle de chaque fixture de référence, leur relation et les primitives V1 qu'elles exercent.
+This document describes the role of each reference fixture, their relationships, and the V1 primitives they exercise.
 
-## Vue d'ensemble
+## Overview
 
-| Fixture | Objectif | Modèles | Parallélisme | Human | Boucles |
+| Fixture | Purpose | Models | Parallelism | Human | Loops |
 |---|---|---|---|---|---|
-| `pr_refine_single_model` | Baseline single-model | 1 | non | non | refine(4) + recipe(3) |
-| `pr_refine_dual_model_parallel` | Dual-model sans compliance gate | 2 | oui (fan-out) | non | recipe(3) |
-| `pr_refine_dual_model_parallel_compliance` | **Workflow phare V1** | 2+ | oui (fan-out) | oui | refine(6) + recipe(3) |
-| `recipe_benchmark` | Comparaison de recettes | N | oui (fan-out) | non | aucune |
-| `ci_fix_until_green` | Fix CI itératif | 1 | non | non | fix(5) |
-| `pr_refine_dual_model_parallel_mcp` | Variante MCP (delegation) | 2 | oui (fan-out) | non | recipe(3) |
+| `pr_refine_single_model` | Single-model baseline | 1 | no | no | refine(4) + recipe(3) |
+| `pr_refine_dual_model_parallel` | Dual-model without compliance gate | 2 | yes (fan-out) | no | recipe(3) |
+| `pr_refine_dual_model_parallel_compliance` | **V1 flagship workflow** | 2+ | yes (fan-out) | yes | refine(6) + recipe(3) |
+| `recipe_benchmark` | Recipe comparison | N | yes (fan-out) | no | none |
+| `ci_fix_until_green` | Iterative CI fix | 1 | no | no | fix(5) |
+| `pr_refine_dual_model_parallel_mcp` | MCP variant (delegation) | 2 | yes (fan-out) | no | recipe(3) |
 
-## Détail des fixtures
+## Fixture Details
 
 ### `pr_refine_single_model`
 
-**Chemin nominal :** context → review → plan → compliance → act → verify → done/reboucle.
+**Nominal path:** context → review → plan → compliance → act → verify → done/reloop.
 
-Un seul modèle parcourt tout le workflow. Sert de **baseline de coût et de qualité** pour comparer avec les variantes multi-modèles. Exerce les primitives fondamentales : agent, judge, boucle bornée, publish, session fresh et inherit.
+A single model traverses the entire workflow. Serves as a **cost and quality baseline** for comparison with multi-model variants. Exercises fundamental primitives: agent, judge, bounded loop, publish, session fresh and inherit.
 
 ### `pr_refine_dual_model_parallel`
 
-**Chemin nominal :** context → [claude_review | gpt_review] → [claude_plan | gpt_plan] → join → [claude_synthesis | gpt_synthesis] → join → merge → act → [claude_final | gpt_final] → join → verdict → done/reboucle.
+**Nominal path:** context → [claude_review | gpt_review] → [claude_plan | gpt_plan] → join → [claude_synthesis | gpt_synthesis] → join → merge → act → [claude_final | gpt_final] → join → verdict → done/reloop.
 
-Variante allégée du workflow phare. Deux modèles en parallèle, synthèse croisée, merge, act, review finale parallèle. **Pas de compliance gate intermédiaire ni de gate humain.** Exerce : router fan_out_all, join wait_all, multi-modèles.
+Lightweight variant of the flagship workflow. Two models in parallel, cross-synthesis, merge, act, parallel final review. **No intermediate compliance gate or human gate.** Exercises: router fan_out_all, join wait_all, multi-models.
 
 ### `pr_refine_dual_model_parallel_compliance`
 
-**Workflow phare de la V1.** Chemin nominal identique à `pr_refine_dual_model_parallel` mais avec :
-- Judge de compliance après le merge du plan
-- Gate humain optionnel pour arbitrage technique
-- Boucle de raffinage alternée Claude/GPT (max 6 itérations)
-- Recheck compliance après intégration des clarifications humaines
+**V1 flagship workflow.** Nominal path identical to `pr_refine_dual_model_parallel` but with:
+- Compliance judge after plan merge
+- Optional human gate for technical arbitration
+- Alternating Claude/GPT refinement loop (max 6 iterations)
+- Compliance recheck after integrating human clarifications
 
-Exerce **toutes les primitives V1** : agent, judge, router, join, human, done, fail, boucle locale, reloop global, publish, session fresh/inherit/artifacts_only, multi-modèles, tools, budgets.
+Exercises **all V1 primitives**: agent, judge, router, join, human, done, fail, local loop, global reloop, publish, session fresh/inherit/artifacts_only, multi-models, tools, budgets.
 
 ### `recipe_benchmark`
 
-**Chemin nominal :** orchestrator → [recipe_a | recipe_b] → join → judge → done.
+**Nominal path:** orchestrator → [recipe_a | recipe_b] → join → judge → done.
 
-Exécute deux recettes en parallèle sur la même PR, agrège les résultats, compare via un judge. Sert à **comparer coût, qualité, itérations et latence** entre recettes. Extensible à N recettes.
+Executes two recipes in parallel on the same PR, aggregates results, compares via a judge. Used to **compare cost, quality, iterations and latency** between recipes. Extensible to N recipes.
 
 ### `pr_refine_dual_model_parallel_mcp`
 
-**Chemin nominal :** identique a `pr_refine_dual_model_parallel`.
+**Nominal path:** identical to `pr_refine_dual_model_parallel`.
 
-Variante MCP du workflow dual-model parallele. Au lieu d'appeler les APIs LLM directement (`model:`), chaque noeud delegue son travail a un agent CLI externe (`delegate:`). Les noeuds Claude utilisent `claude_code` (claude-code CLI), les noeuds GPT utilisent `codex` (OpenAI Codex CLI). Le graphe, schemas, prompts et edges sont identiques a la version API. Exerce la primitive `delegate` en plus de router, join, publish, boucle. Voir `docs/mcp_delegation.md` pour la comparaison detaillee API vs delegation.
+MCP variant of the parallel dual-model workflow. Instead of calling LLM APIs directly (`model:`), each node delegates its work to an external CLI agent (`delegate:`). Claude nodes use `claude_code` (claude-code CLI), GPT nodes use `codex` (OpenAI Codex CLI). The graph, schemas, prompts and edges are identical to the API version. Exercises the `delegate` primitive in addition to router, join, publish, loop. See `docs/mcp_delegation.md` for a detailed API vs delegation comparison.
 
 ### `ci_fix_until_green`
 
-**Chemin nominal :** diagnose → plan → act → run_ci → verify → done ou reboucle.
+**Nominal path:** diagnose → plan → act → run_ci → verify → done or reloop.
 
-Pattern itératif de correction CI. Diagnostique l'échec, planifie un fix, applique, relance la CI, vérifie. Reboucle jusqu'à CI vert (max 5 itérations). Exerce le nœud `tool` (exécution directe de commande sans LLM) et les boucles sur l'intégralité du workflow.
+Iterative CI fix pattern. Diagnoses the failure, plans a fix, applies it, reruns CI, verifies. Reloops until CI is green (max 5 iterations). Exercises the `tool` node (direct command execution without LLM) and workflow-wide loops.
 
-## Relations entre fixtures
+## Relationships Between Fixtures
 
 ```
-pr_refine_single_model          ← baseline simple, 1 modèle
-    ↓ (ajouter parallélisme)
-pr_refine_dual_model_parallel   ← dual-model, pas de gate
-    ↓ (delegation MCP)
-pr_refine_dual_model_parallel_mcp        ← variante delegation (claude-code + codex)
-    ↓ (ajouter compliance + human)
-pr_refine_dual_model_parallel_compliance  ← workflow phare complet
-    ↓ (benchmarker)
-recipe_benchmark                ← comparer des variantes
+pr_refine_single_model          ← simple baseline, 1 model
+    ↓ (add parallelism)
+pr_refine_dual_model_parallel   ← dual-model, no gate
+    ↓ (MCP delegation)
+pr_refine_dual_model_parallel_mcp        ← delegation variant (claude-code + codex)
+    ↓ (add compliance + human)
+pr_refine_dual_model_parallel_compliance  ← complete flagship workflow
+    ↓ (benchmark)
+recipe_benchmark                ← compare variants
 
-ci_fix_until_green              ← pattern indépendant (CI, pas PR)
+ci_fix_until_green              ← independent pattern (CI, not PR)
 ```
 
 ## Usage
 
-Chaque fixture est conçue pour être exploitable dans trois contextes :
-1. **Tests** — parseable et compilable vers IR, sert de cas de test pour parser (P1), compilateur (P2) et runtime (P3+).
-2. **Documentation produit** — lisible comme spécification, avec commentaires inline décrivant le chemin nominal.
-3. **Rendu Mermaid** — compilable vers un diagramme de workflow pour visualisation (P8-02).
+Each fixture is designed to be usable in three contexts:
+1. **Tests** — parseable and compilable to IR, serves as test cases for parser (P1), compiler (P2) and runtime (P3+).
+2. **Product documentation** — readable as a specification, with inline comments describing the nominal path.
+3. **Mermaid rendering** — compilable to a workflow diagram for visualization.
