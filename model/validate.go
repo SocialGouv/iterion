@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/iterion-ai/iterion/ir"
+	"github.com/SocialGouv/iterion/ir"
 )
 
 // ValidateOutput checks that output contains all required fields from the

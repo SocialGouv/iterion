@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/iterion-ai/iterion/ast"
-	"github.com/iterion-ai/iterion/parser"
+	"github.com/SocialGouv/iterion/ast"
+	"github.com/SocialGouv/iterion/parser"
 )
 
 // ---------------------------------------------------------------------------

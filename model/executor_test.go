@@ -11,7 +11,7 @@ import (
 	goai "github.com/zendev-sh/goai"
 	"github.com/zendev-sh/goai/provider"
 
-	"github.com/iterion-ai/iterion/ir"
+	"github.com/SocialGouv/iterion/ir"
 )
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-module github.com/iterion-ai/iterion
+module github.com/SocialGouv/iterion
 
 go 1.25.0
 

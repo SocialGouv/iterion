@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/iterion-ai/iterion/ir"
+	"github.com/SocialGouv/iterion/ir"
 )
 
 // RecipeSpec is the top-level recipe definition. It wraps a workflow with

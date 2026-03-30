@@ -3,7 +3,7 @@ package cli
 import (
 	"fmt"
 
-	"github.com/iterion-ai/iterion/store"
+	"github.com/SocialGouv/iterion/store"
 )
 
 // InspectOptions holds the configuration for the inspect command.

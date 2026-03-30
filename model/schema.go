@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/iterion-ai/iterion/ir"
+	"github.com/SocialGouv/iterion/ir"
 )
 
 // SchemaToJSON converts an IR Schema to a JSON Schema (json.RawMessage)

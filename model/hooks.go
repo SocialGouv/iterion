@@ -3,7 +3,7 @@ package model
 import (
 	goai "github.com/zendev-sh/goai"
 
-	"github.com/iterion-ai/iterion/store"
+	"github.com/SocialGouv/iterion/store"
 )
 
 // EventEmitter is the subset of store.RunStore used by the event bridge.

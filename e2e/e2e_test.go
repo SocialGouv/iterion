@@ -18,11 +18,11 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/iterion-ai/iterion/benchmark"
-	"github.com/iterion-ai/iterion/ir"
-	"github.com/iterion-ai/iterion/parser"
-	"github.com/iterion-ai/iterion/runtime"
-	"github.com/iterion-ai/iterion/store"
+	"github.com/SocialGouv/iterion/benchmark"
+	"github.com/SocialGouv/iterion/ir"
+	"github.com/SocialGouv/iterion/parser"
+	"github.com/SocialGouv/iterion/runtime"
+	"github.com/SocialGouv/iterion/store"
 )
 
 // ---------------------------------------------------------------------------

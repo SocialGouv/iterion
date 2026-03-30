@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/iterion-ai/iterion/ir"
-	"github.com/iterion-ai/iterion/parser"
+	"github.com/SocialGouv/iterion/ir"
+	"github.com/SocialGouv/iterion/parser"
 )
 
 // ValidateResult holds the outcome of a validate command.

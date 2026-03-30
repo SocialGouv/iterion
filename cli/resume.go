@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/iterion-ai/iterion/runtime"
-	"github.com/iterion-ai/iterion/store"
+	"github.com/SocialGouv/iterion/runtime"
+	"github.com/SocialGouv/iterion/store"
 )
 
 // ResumeOptions holds the configuration for the resume command.

@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/iterion-ai/iterion/benchmark"
-	"github.com/iterion-ai/iterion/delegate"
-	"github.com/iterion-ai/iterion/model"
-	"github.com/iterion-ai/iterion/runtime"
-	"github.com/iterion-ai/iterion/store"
+	"github.com/SocialGouv/iterion/benchmark"
+	"github.com/SocialGouv/iterion/delegate"
+	"github.com/SocialGouv/iterion/model"
+	"github.com/SocialGouv/iterion/runtime"
+	"github.com/SocialGouv/iterion/store"
 )
 
 // ---------------------------------------------------------------------------

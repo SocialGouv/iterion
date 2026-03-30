@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/iterion-ai/iterion/ir"
-	"github.com/iterion-ai/iterion/parser"
+	"github.com/SocialGouv/iterion/ir"
+	"github.com/SocialGouv/iterion/parser"
 )
 
 // compileTestWorkflow parses and compiles an inline workflow DSL string.

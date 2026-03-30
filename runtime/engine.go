@@ -12,9 +12,9 @@ import (
 	"log"
 	"time"
 
-	"github.com/iterion-ai/iterion/ir"
-	"github.com/iterion-ai/iterion/recipe"
-	"github.com/iterion-ai/iterion/store"
+	"github.com/SocialGouv/iterion/ir"
+	"github.com/SocialGouv/iterion/recipe"
+	"github.com/SocialGouv/iterion/store"
 )
 
 // ErrRunPaused is returned by Run or Resume when execution is suspended

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/iterion-ai/iterion/ir"
+	"github.com/SocialGouv/iterion/ir"
 )
 
 // ---------------------------------------------------------------------------

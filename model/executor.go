@@ -14,9 +14,9 @@ import (
 	goai "github.com/zendev-sh/goai"
 	"github.com/zendev-sh/goai/provider"
 
-	"github.com/iterion-ai/iterion/delegate"
-	"github.com/iterion-ai/iterion/ir"
-	"github.com/iterion-ai/iterion/tool"
+	"github.com/SocialGouv/iterion/delegate"
+	"github.com/SocialGouv/iterion/ir"
+	"github.com/SocialGouv/iterion/tool"
 )
 
 // ---------------------------------------------------------------------------

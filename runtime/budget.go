@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/iterion-ai/iterion/ir"
+	"github.com/SocialGouv/iterion/ir"
 )
 
 // ErrBudgetExceeded is returned when a budget limit has been reached.

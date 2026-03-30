@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/iterion-ai/iterion/ir"
-	"github.com/iterion-ai/iterion/store"
+	"github.com/SocialGouv/iterion/ir"
+	"github.com/SocialGouv/iterion/store"
 )
 
 // ---------------------------------------------------------------------------

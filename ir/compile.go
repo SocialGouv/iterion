@@ -3,7 +3,7 @@ package ir
 import (
 	"fmt"
 
-	"github.com/iterion-ai/iterion/ast"
+	"github.com/SocialGouv/iterion/ast"
 )
 
 // ---------------------------------------------------------------------------

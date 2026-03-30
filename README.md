@@ -66,22 +66,22 @@ Iterion lets you author complex, multi-agent LLM workflows as readable `.iter` f
 Install the latest binary:
 
 ```bash
-curl -fsSL https://iterion-ai.github.io/iterion/install.sh | sh
+curl -fsSL https://socialgouv.github.io/iterion/install.sh | sh
 ```
 
 Or install to a custom directory (no sudo):
 
 ```bash
-INSTALL_DIR=. curl -fsSL https://iterion-ai.github.io/iterion/install.sh | sh
+INSTALL_DIR=. curl -fsSL https://socialgouv.github.io/iterion/install.sh | sh
 ```
 
 **Windows** (PowerShell):
 
 ```powershell
-Invoke-WebRequest -Uri "https://github.com/iterion-ai/iterion/releases/latest/download/iterion-windows-amd64.exe" -OutFile iterion.exe
+Invoke-WebRequest -Uri "https://github.com/socialgouv/iterion/releases/latest/download/iterion-windows-amd64.exe" -OutFile iterion.exe
 ```
 
-You can also download binaries manually from the [latest release page](https://github.com/iterion-ai/iterion/releases/latest).
+You can also download binaries manually from the [latest release page](https://github.com/socialgouv/iterion/releases/latest).
 
 ### Your first workflow
 

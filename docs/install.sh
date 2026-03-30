@@ -1,9 +1,9 @@
 #!/bin/sh
 # Iterion installer
-# Usage: curl -fsSL https://iterion-ai.github.io/iterion/install.sh | sh
+# Usage: curl -fsSL https://socialgouv.github.io/iterion/install.sh | sh
 set -eu
 
-REPO="iterion-ai/iterion"
+REPO="SocialGouv/iterion"
 BINARY_NAME="iterion"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 

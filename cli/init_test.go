@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/iterion-ai/iterion/cli"
+	"github.com/SocialGouv/iterion/cli"
 )
 
 func TestRunInit_CreatesFiles(t *testing.T) {

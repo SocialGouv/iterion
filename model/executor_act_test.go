@@ -8,8 +8,8 @@ import (
 
 	goai "github.com/zendev-sh/goai"
 
-	"github.com/iterion-ai/iterion/ir"
-	"github.com/iterion-ai/iterion/tool"
+	"github.com/SocialGouv/iterion/ir"
+	"github.com/SocialGouv/iterion/tool"
 )
 
 // ---------------------------------------------------------------------------

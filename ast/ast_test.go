@@ -3,7 +3,7 @@ package ast_test
 import (
 	"testing"
 
-	"github.com/iterion-ai/iterion/ast"
+	"github.com/SocialGouv/iterion/ast"
 )
 
 // TestMinimalWorkflow verifies that the AST can represent a minimal

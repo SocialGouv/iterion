@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/iterion-ai/iterion/ast"
+	"github.com/SocialGouv/iterion/ast"
 )
 
 // ParseResult is the output of Parse.

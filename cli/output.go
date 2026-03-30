@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/iterion-ai/iterion/runtime"
+	"github.com/SocialGouv/iterion/runtime"
 )
 
 // OutputFormat controls how results are rendered.

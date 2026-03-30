@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/iterion-ai/iterion/ir"
-	"github.com/iterion-ai/iterion/recipe"
-	"github.com/iterion-ai/iterion/store"
+	"github.com/SocialGouv/iterion/ir"
+	"github.com/SocialGouv/iterion/recipe"
+	"github.com/SocialGouv/iterion/store"
 )
 
 // ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@ package cli
 import (
 	"fmt"
 
-	"github.com/iterion-ai/iterion/ir"
+	"github.com/SocialGouv/iterion/ir"
 )
 
 // DiagramOptions holds options for the diagram command.
