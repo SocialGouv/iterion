@@ -71,17 +71,17 @@ func compactShape(n *Node) string {
 
 	switch n.Kind {
 	case NodeDone:
-		return fmt.Sprintf("([%s])", label)
+		return fmt.Sprintf(`(["%s"])`, label)
 	case NodeFail:
-		return fmt.Sprintf("([%s])", label)
+		return fmt.Sprintf(`(["%s"])`, label)
 	case NodeRouter:
-		return fmt.Sprintf("{%s}", label)
+		return fmt.Sprintf(`{"%s"}`, label)
 	case NodeJoin:
-		return fmt.Sprintf("[[%s]]", label)
+		return fmt.Sprintf(`[["%s"]]`, label)
 	case NodeHuman:
-		return fmt.Sprintf(">%s]", label)
+		return fmt.Sprintf(`>"%s"]`, label)
 	default:
-		return fmt.Sprintf("[%s]", label)
+		return fmt.Sprintf(`["%s"]`, label)
 	}
 }
 
@@ -131,15 +131,15 @@ func detailedShape(n *Node) string {
 
 	switch n.Kind {
 	case NodeDone, NodeFail:
-		return fmt.Sprintf("([%s])", label)
+		return fmt.Sprintf(`(["%s"])`, label)
 	case NodeRouter:
-		return fmt.Sprintf("{%s}", label)
+		return fmt.Sprintf(`{"%s"}`, label)
 	case NodeJoin:
-		return fmt.Sprintf("[[%s]]", label)
+		return fmt.Sprintf(`[["%s"]]`, label)
 	case NodeHuman:
-		return fmt.Sprintf(">%s]", label)
+		return fmt.Sprintf(`>"%s"]`, label)
 	default:
-		return fmt.Sprintf("[%s]", label)
+		return fmt.Sprintf(`["%s"]`, label)
 	}
 }
 
@@ -152,7 +152,7 @@ func edgeDecl(e *Edge, w *Workflow, view MermaidView) string {
 	if label == "" {
 		return fmt.Sprintf("%s --> %s", from, to)
 	}
-	return fmt.Sprintf("%s -->|%s| %s", from, label, to)
+	return fmt.Sprintf(`%s -->|"%s"| %s`, from, label, to)
 }
 
 // edgeLabel builds the label for an edge.
