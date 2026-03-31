@@ -8,8 +8,8 @@ import (
 
 // DiagramOptions holds options for the diagram command.
 type DiagramOptions struct {
-	File     string // .iter file path
-	Detailed bool   // use detailed view (default: compact)
+	File string // .iter file path
+	View string // "compact" (default), "detailed", or "full"
 }
 
 // DiagramResult holds the output of a diagram command.
@@ -31,11 +31,15 @@ func RunDiagram(opts DiagramOptions, p *Printer) error {
 		return err
 	}
 
-	view := ir.MermaidCompact
-	viewName := "compact"
-	if opts.Detailed {
+	var view ir.MermaidView
+	switch opts.View {
+	case "detailed":
 		view = ir.MermaidDetailed
-		viewName = "detailed"
+	case "full":
+		view = ir.MermaidFull
+	default:
+		view = ir.MermaidCompact
+		opts.View = "compact"
 	}
 
 	mermaid := wf.ToMermaid(view)
@@ -43,7 +47,7 @@ func RunDiagram(opts DiagramOptions, p *Printer) error {
 	result := &DiagramResult{
 		File:         opts.File,
 		WorkflowName: wf.Name,
-		View:         viewName,
+		View:         opts.View,
 		Mermaid:      mermaid,
 	}
 
@@ -52,7 +56,7 @@ func RunDiagram(opts DiagramOptions, p *Printer) error {
 	} else {
 		p.Header("Diagram: " + opts.File)
 		p.KV("Workflow", wf.Name)
-		p.KV("View", viewName)
+		p.KV("View", opts.View)
 		p.Blank()
 		fmt.Fprint(p.W, mermaid)
 	}
