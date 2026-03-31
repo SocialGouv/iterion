@@ -243,12 +243,18 @@ type HumanMode int
 
 const (
 	HumanPauseUntilAnswers HumanMode = iota
+	HumanAutoAnswer
+	HumanAutoOrPause
 )
 
 func (hm HumanMode) String() string {
 	switch hm {
 	case HumanPauseUntilAnswers:
 		return "pause_until_answers"
+	case HumanAutoAnswer:
+		return "auto_answer"
+	case HumanAutoOrPause:
+		return "auto_or_pause"
 	default:
 		return "unknown"
 	}
@@ -262,7 +268,9 @@ type HumanDecl struct {
 	Publish      string // persistent artifact name
 	Instructions string // prompt reference name
 	Mode         HumanMode
-	MinAnswers   int // minimum human answers required
+	MinAnswers   int    // minimum human answers required
+	Model        string // model identifier (required for auto_answer / auto_or_pause)
+	System       string // prompt reference for LLM system prompt
 	Span         Span
 }
 

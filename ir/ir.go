@@ -163,12 +163,18 @@ type HumanMode int
 
 const (
 	HumanPauseUntilAnswers HumanMode = iota
+	HumanAutoAnswer
+	HumanAutoOrPause
 )
 
 func (hm HumanMode) String() string {
 	switch hm {
 	case HumanPauseUntilAnswers:
 		return "pause_until_answers"
+	case HumanAutoAnswer:
+		return "auto_answer"
+	case HumanAutoOrPause:
+		return "auto_or_pause"
 	default:
 		return "unknown"
 	}

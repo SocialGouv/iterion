@@ -125,9 +125,15 @@ human_prop = "input"        ":" IDENT            NEWLINE
            | "publish"      ":" IDENT            NEWLINE
            | "instructions" ":" IDENT            NEWLINE
            | "mode"         ":" human_mode        NEWLINE
+           | "model"        ":" STRING_LIT        NEWLINE
+           | "system"       ":" IDENT             NEWLINE
            | "min_answers"  ":" INT_LIT           NEWLINE ;
 
-human_mode = "pause_until_answers" ;
+human_mode = "pause_until_answers" | "auto_answer" | "auto_or_pause" ;
+(* pause_until_answers : always pauses for human input (default).
+   auto_answer         : LLM generates answers — never pauses. Requires model + output.
+   auto_or_pause       : LLM decides whether to pause or auto-answer via a
+                         needs_human_input boolean. Requires model + output. *)
 
 (* ---- Nœuds : tool (exécution directe) ---- *)
 

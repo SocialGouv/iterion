@@ -44,7 +44,7 @@ Iterion lets you author complex, multi-agent LLM workflows as readable `.iter` f
 
 - **Declarative DSL** — Human-readable `.iter` files with indentation-based syntax (YAML/Python-style)
 - **Multi-agent orchestration** — Chain agents, judges, routers, and joins into complex workflows
-- **Human-in-the-loop** — Pause execution for human input, resume with answers
+- **Human-in-the-loop** — Pause for human input, auto-answer via LLM, or let the LLM decide when to ask
 - **Parallel branching** — Fan-out via routers, converge with join nodes (wait_all / best_effort)
 - **Bounded loops** — Retry and refinement cycles with configurable iteration limits
 - **Budget enforcement** — Caps on tokens, cost (USD), duration, and iterations
@@ -214,7 +214,7 @@ Iterion workflows are written in a declarative, indentation-significant DSL. The
 | `judge <name>` | LLM judge node — evaluates and produces verdicts (no tools by default) |
 | `router <name>` | Branching node — `fan_out_all` or `condition` mode |
 | `join <name>` | Convergence node — `wait_all` or `best_effort` strategy |
-| `human <name>` | Human interaction node — pauses for external input |
+| `human <name>` | Human interaction node — pauses, auto-answers, or conditionally pauses |
 | `tool <name>` | Direct tool/command execution node |
 | `workflow <name>` | Workflow graph definition with entry point, budget, and edges |
 
@@ -262,16 +262,40 @@ join merge:
   output: merged_result
 ```
 
-**Human** — Pauses the workflow for human input:
+**Human** — Human interaction node with three modes:
 
 ```
+## Always pause for human input (default)
 human approval:
   input: approval_request
   output: approval_response
   instructions: approval_prompt
   mode: pause_until_answers
   min_answers: 1
+
+## LLM auto-answers — never pauses
+human auto_review:
+  input: review_input
+  output: review_decision
+  mode: auto_answer
+  model: "claude-sonnet-4-20250514"
+  system: auto_review_prompt
+
+## LLM decides whether to pause or auto-answer
+human conditional_review:
+  input: review_input
+  output: review_decision
+  mode: auto_or_pause
+  model: "claude-sonnet-4-20250514"
+  system: decision_guidance
+  instructions: review_questions
 ```
+
+| Mode | Behavior | Requires |
+|------|----------|----------|
+| `pause_until_answers` | Always pauses for human input (default) | `instructions` |
+| `auto_answer` | LLM generates answers matching the output schema | `model`, `output` |
+| `auto_or_pause` | LLM decides: returns `needs_human_input: bool` + answers | `model`, `output` |
 
 **Tool** — Executes a command directly:
 
@@ -488,7 +512,8 @@ The engine (`runtime/engine.go`) walks the IR graph, executing nodes according t
 │                                                  │
 │  ┌──────┐   ┌───────┐   ┌────────┐   ┌──────┐  │
 │  │Human │   │ Tool  │   │  Done  │   │ Fail │  │
-│  │pause │   │ exec  │   │terminal│   │error │  │
+│  │pause/│   │ exec  │   │terminal│   │error │  │
+│  │ auto │   │       │   │        │   │      │  │
 │  └──────┘   └───────┘   └────────┘   └──────┘  │
 │                                                  │
 │  Budget Tracker │ Event Emitter │ Artifact Store │

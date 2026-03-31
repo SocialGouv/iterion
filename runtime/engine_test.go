@@ -879,3 +879,200 @@ func TestResumeNonExistentRun(t *testing.T) {
 		t.Fatal("expected error when resuming non-existent run")
 	}
 }
+
+// ===========================================================================
+// Human auto_answer mode tests
+// ===========================================================================
+
+// humanModeWorkflow builds: agent -> human(mode) -> agent -> done
+func humanModeWorkflow(mode ir.HumanMode) *ir.Workflow {
+	return &ir.Workflow{
+		Name:  "human_mode_test",
+		Entry: "analyze",
+		Nodes: map[string]*ir.Node{
+			"analyze":   {ID: "analyze", Kind: ir.NodeAgent},
+			"review":    {ID: "review", Kind: ir.NodeHuman, HumanMode: mode, Model: "test-model", OutputSchema: "review_output"},
+			"integrate": {ID: "integrate", Kind: ir.NodeAgent},
+			"done":      {ID: "done", Kind: ir.NodeDone},
+		},
+		Edges: []*ir.Edge{
+			{From: "analyze", To: "review"},
+			{From: "review", To: "integrate"},
+			{From: "integrate", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{
+			"review_output": {Name: "review_output", Fields: []*ir.SchemaField{
+				{Name: "approved", Type: ir.FieldTypeBool},
+				{Name: "reason", Type: ir.FieldTypeString},
+			}},
+		},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+}
+
+func TestHumanAutoAnswer(t *testing.T) {
+	wf := humanModeWorkflow(ir.HumanAutoAnswer)
+	exec := newStubExecutor()
+	exec.on("analyze", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"summary": "all good"}, nil
+	})
+	exec.on("review", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"approved": true, "reason": "auto-approved"}, nil
+	})
+	exec.on("integrate", func(input map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"done": true}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "run-auto", nil)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	// Run should complete without pausing.
+	r, err := s.LoadRun("run-auto")
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if r.Status != store.RunStatusFinished {
+		t.Errorf("expected status finished, got %s", r.Status)
+	}
+}
+
+func TestHumanAutoAnswerPublishArtifact(t *testing.T) {
+	wf := humanModeWorkflow(ir.HumanAutoAnswer)
+	wf.Nodes["review"].Publish = "review_artifact"
+
+	exec := newStubExecutor()
+	exec.on("analyze", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"summary": "all good"}, nil
+	})
+	exec.on("review", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"approved": true, "reason": "auto-approved"}, nil
+	})
+	exec.on("integrate", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"done": true}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "run-auto-pub", nil)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	// Verify artifact was persisted.
+	art, err := s.LoadArtifact("run-auto-pub", "review", 0)
+	if err != nil {
+		t.Fatalf("load artifact: %v", err)
+	}
+	if art.Data["approved"] != true {
+		t.Errorf("expected approved=true in artifact, got %v", art.Data["approved"])
+	}
+}
+
+// ===========================================================================
+// Human auto_or_pause mode tests
+// ===========================================================================
+
+func TestHumanAutoOrPause_Proceeds(t *testing.T) {
+	wf := humanModeWorkflow(ir.HumanAutoOrPause)
+	exec := newStubExecutor()
+	exec.on("analyze", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"summary": "straightforward"}, nil
+	})
+	exec.on("review", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{
+			"needs_human_input": false,
+			"approved":          true,
+			"reason":            "auto-decided",
+		}, nil
+	})
+	exec.on("integrate", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"done": true}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "run-aop-proceed", nil)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	r, err := s.LoadRun("run-aop-proceed")
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if r.Status != store.RunStatusFinished {
+		t.Errorf("expected status finished, got %s", r.Status)
+	}
+
+	// Verify needs_human_input was stripped from output.
+	events, err := s.LoadEvents("run-aop-proceed")
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	// Should not find any pause events.
+	for _, ev := range events {
+		if ev.Type == store.EventRunPaused {
+			t.Error("unexpected run_paused event")
+		}
+	}
+}
+
+func TestHumanAutoOrPause_Pauses(t *testing.T) {
+	wf := humanModeWorkflow(ir.HumanAutoOrPause)
+	exec := newStubExecutor()
+	exec.on("analyze", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"summary": "complex change"}, nil
+	})
+	exec.on("review", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{
+			"needs_human_input": true,
+			"approved":          false,
+			"reason":            "too complex for auto",
+		}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "run-aop-pause", nil)
+	if !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("expected ErrRunPaused, got: %v", err)
+	}
+
+	// Verify run is paused.
+	r, err := s.LoadRun("run-aop-pause")
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if r.Status != store.RunStatusPausedWaitingHuman {
+		t.Errorf("expected status paused_waiting_human, got %s", r.Status)
+	}
+
+	// Now resume with human answers.
+	exec.on("integrate", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"done": true}, nil
+	})
+
+	answers := map[string]interface{}{"approved": true, "reason": "human approved"}
+	err = eng.Resume(context.Background(), "run-aop-pause", answers)
+	if err != nil {
+		t.Fatalf("resume failed: %v", err)
+	}
+
+	r, err = s.LoadRun("run-aop-pause")
+	if err != nil {
+		t.Fatalf("load run after resume: %v", err)
+	}
+	if r.Status != store.RunStatusFinished {
+		t.Errorf("expected status finished after resume, got %s", r.Status)
+	}
+}

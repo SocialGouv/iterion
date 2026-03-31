@@ -81,6 +81,8 @@ const (
 	TokenBestEffort
 	// Human modes
 	TokenPauseUntilAnswers
+	TokenAutoAnswer
+	TokenAutoOrPause
 	// Booleans
 	TokenTrue
 	TokenFalse
@@ -168,6 +170,8 @@ var tokenNames = map[TokenType]string{
 	TokenWaitAll:           "wait_all",
 	TokenBestEffort:        "best_effort",
 	TokenPauseUntilAnswers: "pause_until_answers",
+	TokenAutoAnswer:        "auto_answer",
+	TokenAutoOrPause:       "auto_or_pause",
 	TokenTrue:              "true",
 	TokenFalse:             "false",
 	TokenTypeString:        "string",
@@ -237,6 +241,8 @@ var keywords = map[string]TokenType{
 	"wait_all":              TokenWaitAll,
 	"best_effort":           TokenBestEffort,
 	"pause_until_answers":   TokenPauseUntilAnswers,
+	"auto_answer":           TokenAutoAnswer,
+	"auto_or_pause":         TokenAutoOrPause,
 	"true":                  TokenTrue,
 	"false":                 TokenFalse,
 	"string":                TokenTypeString,

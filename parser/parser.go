@@ -808,6 +808,12 @@ func (p *parser) parseHumanProp(hd *ast.HumanDecl, propTok Token) {
 	case TokenMode:
 		p.expect(TokenColon)
 		hd.Mode = p.parseHumanMode()
+	case TokenModel:
+		p.expect(TokenColon)
+		hd.Model = p.expectString()
+	case TokenSystem:
+		p.expect(TokenColon)
+		hd.System = p.expectIdent()
 	case TokenIdent:
 		if propTok.Value == "min_answers" {
 			p.expect(TokenColon)
@@ -828,8 +834,12 @@ func (p *parser) parseHumanMode() ast.HumanMode {
 	switch t.Type {
 	case TokenPauseUntilAnswers:
 		return ast.HumanPauseUntilAnswers
+	case TokenAutoAnswer:
+		return ast.HumanAutoAnswer
+	case TokenAutoOrPause:
+		return ast.HumanAutoOrPause
 	default:
-		p.addError(DiagInvalidValue, t, "expected human mode (pause_until_answers), got '"+t.Value+"'")
+		p.addError(DiagInvalidValue, t, "expected human mode (pause_until_answers, auto_answer, auto_or_pause), got '"+t.Value+"'")
 		return ast.HumanPauseUntilAnswers
 	}
 }

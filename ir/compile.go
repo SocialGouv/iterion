@@ -341,16 +341,34 @@ func (c *compiler) compileHumans() {
 		c.validateSchemaRef(h.Name, "output", h.Output)
 		c.validatePromptRef(h.Name, "instructions", h.Instructions)
 
-		c.nodes[h.Name] = &Node{
+		mode := convertHumanMode(h.Mode)
+		node := &Node{
 			ID:           h.Name,
 			Kind:         NodeHuman,
 			InputSchema:  h.Input,
 			OutputSchema: h.Output,
 			Publish:      h.Publish,
-			HumanMode:    convertHumanMode(h.Mode),
+			HumanMode:    mode,
 			MinAnswers:   h.MinAnswers,
 			Instructions: h.Instructions,
 		}
+
+		// Auto modes require a model and output schema for LLM execution.
+		if mode == HumanAutoAnswer || mode == HumanAutoOrPause {
+			if h.Model == "" {
+				c.errorf(DiagMissingModelOrDelegate, "human %q with mode %s must set 'model'", h.Name, mode)
+			}
+			if h.Output == "" {
+				c.errorf(DiagMissingModelOrDelegate, "human %q with mode %s must set 'output'", h.Name, mode)
+			}
+			node.Model = h.Model
+			if h.System != "" {
+				c.validatePromptRef(h.Name, "system", h.System)
+				node.SystemPrompt = h.System
+			}
+		}
+
+		c.nodes[h.Name] = node
 	}
 }
 
@@ -551,6 +569,10 @@ func convertJoinStrategy(js ast.JoinStrategy) JoinStrategy {
 
 func convertHumanMode(hm ast.HumanMode) HumanMode {
 	switch hm {
+	case ast.HumanAutoAnswer:
+		return HumanAutoAnswer
+	case ast.HumanAutoOrPause:
+		return HumanAutoOrPause
 	default:
 		return HumanPauseUntilAnswers
 	}

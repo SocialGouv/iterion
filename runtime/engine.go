@@ -251,9 +251,33 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 			return e.failRun(rs.runID, currentNodeID, "workflow reached fail node")
 		}
 
-		// --- Human pause node ---
+		// --- Human node ---
 		if node.Kind == ir.NodeHuman {
-			return e.pauseAtHuman(rs, currentNodeID, node)
+			switch node.HumanMode {
+			case ir.HumanAutoAnswer:
+				// Intentional fall-through: auto_answer human nodes are
+				// executed via the standard node path below (emit started →
+				// budget check → executor.Execute → store output → emit
+				// finished → select edge). The executor dispatches to
+				// executeHumanLLM which handles model resolution and schema.
+			case ir.HumanAutoOrPause:
+				paused, err := e.execAutoOrPauseHuman(ctx, rs, currentNodeID, node)
+				if err != nil {
+					return err
+				}
+				if paused {
+					return ErrRunPaused
+				}
+				// LLM decided no human needed — continue to edge selection.
+				nextNodeID, err := e.selectEdge(rs.runID, currentNodeID, rs.outputs[currentNodeID], rs.loopCounters)
+				if err != nil {
+					return e.failRunErr(rs.runID, currentNodeID, err)
+				}
+				currentNodeID = nextNodeID
+				continue
+			default:
+				return e.pauseAtHuman(rs, currentNodeID, node)
+			}
 		}
 
 		// --- Fan-out router: spawn parallel branches ---
@@ -771,6 +795,87 @@ func (e *Engine) findJoinForRouter(routerNodeID string, fanEdges []*ir.Edge) str
 }
 
 // ---------------------------------------------------------------------------
+// Human node execution
+// ---------------------------------------------------------------------------
+
+// execAutoOrPauseHuman handles a human node in auto_or_pause mode.
+// It calls the executor (LLM) to produce answers plus a needs_human_input flag.
+// Returns (true, nil) if the run was paused, (false, nil) if the LLM answered.
+func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID string, node *ir.Node) (bool, error) {
+	// Emit node_started.
+	if err := e.emit(rs.runID, store.EventNodeStarted, nodeID, map[string]interface{}{
+		"kind": node.Kind.String(),
+	}); err != nil {
+		return false, err
+	}
+
+	// Check budget.
+	if err := e.checkBudgetBeforeExec(rs, nodeID); err != nil {
+		return false, err
+	}
+
+	// Build input and execute LLM.
+	nodeInput := e.buildNodeInput(nodeID, rs.vars, rs.outputs, rs.runInputs)
+	output, err := e.executor.Execute(ctx, node, nodeInput)
+	if err != nil {
+		return false, e.failRun(rs.runID, nodeID, fmt.Sprintf("human node %q auto_or_pause execution failed: %v", nodeID, err))
+	}
+
+	// Record budget usage.
+	if err := e.recordAndCheckBudget(rs, nodeID, output); err != nil {
+		return false, err
+	}
+
+	// Inspect the needs_human_input flag.
+	needsHuman := false
+	if v, ok := output["needs_human_input"]; ok {
+		if b, ok := v.(bool); ok {
+			needsHuman = b
+		}
+	}
+
+	// Strip the wrapper field from the output.
+	delete(output, "needs_human_input")
+
+	if needsHuman {
+		if err := e.persistPause(rs, nodeID); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
+	// LLM decided no human input needed — store output and continue.
+	rs.outputs[nodeID] = output
+
+	// Persist artifact if node has publish.
+	if node.Publish != "" {
+		version := rs.artifactVersions[nodeID]
+		artifact := &store.Artifact{
+			RunID:   rs.runID,
+			NodeID:  nodeID,
+			Version: version,
+			Data:    output,
+		}
+		if err := e.store.WriteArtifact(artifact); err != nil {
+			return false, fmt.Errorf("runtime: write artifact: %w", err)
+		}
+		rs.artifactVersions[nodeID] = version + 1
+		_ = e.emit(rs.runID, store.EventArtifactWritten, nodeID, map[string]interface{}{
+			"publish": node.Publish,
+			"version": version,
+		})
+	}
+
+	// Emit node_finished.
+	nodeFinishedData := buildNodeFinishedData(output)
+	if err := e.emit(rs.runID, store.EventNodeFinished, nodeID, nodeFinishedData); err != nil {
+		return false, err
+	}
+
+	return false, nil
+}
+
+// ---------------------------------------------------------------------------
 // Human pause
 // ---------------------------------------------------------------------------
 
@@ -784,6 +889,18 @@ func (e *Engine) pauseAtHuman(rs *runState, nodeID string, node *ir.Node) error 
 		return err
 	}
 
+	if err := e.persistPause(rs, nodeID); err != nil {
+		return err
+	}
+
+	return ErrRunPaused
+}
+
+// persistPause writes the interaction, emits pause events, and saves the
+// checkpoint. It contains the shared logic used by both pauseAtHuman and
+// execAutoOrPauseHuman. The caller is responsible for emitting node_started
+// before calling this method.
+func (e *Engine) persistPause(rs *runState, nodeID string) error {
 	// Build questions from the node's input (edge mappings into this node).
 	questions := e.buildNodeInput(nodeID, rs.vars, rs.outputs, nil)
 
@@ -830,7 +947,7 @@ func (e *Engine) pauseAtHuman(rs *runState, nodeID string, node *ir.Node) error 
 		return fmt.Errorf("runtime: pause run: %w", err)
 	}
 
-	return ErrRunPaused
+	return nil
 }
 
 // ---------------------------------------------------------------------------

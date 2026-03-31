@@ -171,6 +171,8 @@ func (e *GoaiExecutor) Execute(ctx context.Context, node *ir.Node, input map[str
 			return e.executeDelegation(ctx, node, input)
 		}
 		return e.executeLLM(ctx, node, input)
+	case ir.NodeHuman:
+		return e.executeHumanLLM(ctx, node, input)
 	case ir.NodeRouter:
 		// Routers are deterministic pass-throughs handled by the engine.
 		return input, nil
@@ -259,6 +261,102 @@ func (e *GoaiExecutor) executeLLM(ctx context.Context, node *ir.Node, input map[
 		return e.generateStructuredWithRetry(ctx, m, node, opts)
 	}
 	return e.generateTextWithRetry(ctx, m, node, opts)
+}
+
+// executeHumanLLM handles human nodes in auto_answer or auto_or_pause mode.
+// It reuses the same LLM call patterns as executeLLM but with mode-specific
+// schema handling for auto_or_pause (wrapper schema with needs_human_input).
+func (e *GoaiExecutor) executeHumanLLM(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+	if node.HumanMode == ir.HumanPauseUntilAnswers {
+		return nil, fmt.Errorf("model: human node %q in pause_until_answers mode should not be executed by the model layer", node.ID)
+	}
+
+	// Resolve model.
+	m, err := e.registry.Resolve(node.Model)
+	if err != nil {
+		return nil, fmt.Errorf("model: human node %q: %w", node.ID, err)
+	}
+
+	// Build goai options.
+	var opts []goai.Option
+	opts = append(opts, goai.WithMaxRetries(0))
+
+	// System prompt.
+	if node.SystemPrompt != "" {
+		if p, ok := e.prompts[node.SystemPrompt]; ok {
+			systemText := e.resolveTemplate(p.Body, input)
+			opts = append(opts, goai.WithSystem(systemText))
+		}
+	}
+
+	// User message from input.
+	userText := e.buildUserMessage(node, input)
+	if userText != "" {
+		opts = append(opts, goai.WithMessages(goai.UserMessage(userText)))
+	}
+
+	// Observability hooks.
+	nodeID := node.ID
+	if e.hooks.OnLLMRequest != nil {
+		fn := e.hooks.OnLLMRequest
+		opts = append(opts, goai.WithOnRequest(func(info goai.RequestInfo) {
+			fn(nodeID, info)
+		}))
+	}
+	if e.hooks.OnLLMResponse != nil {
+		fn := e.hooks.OnLLMResponse
+		opts = append(opts, goai.WithOnResponse(func(info goai.ResponseInfo) {
+			fn(nodeID, info)
+		}))
+	}
+
+	// Determine the schema to use.
+	schema, ok := e.schemas[node.OutputSchema]
+	if !ok {
+		return nil, fmt.Errorf("model: human node %q references unknown schema %q", node.ID, node.OutputSchema)
+	}
+
+	// For auto_or_pause, wrap the schema with needs_human_input field.
+	if node.HumanMode == ir.HumanAutoOrPause {
+		schema = wrapSchemaWithHumanFlag(schema)
+	}
+
+	jsonSchema, err := SchemaToJSON(schema)
+	if err != nil {
+		return nil, fmt.Errorf("model: human node %q: schema conversion: %w", node.ID, err)
+	}
+	opts = append(opts, goai.WithExplicitSchema(jsonSchema))
+
+	result, err := goai.GenerateObject[map[string]interface{}](ctx, m, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("model: human node %q: structured generation: %w", node.ID, err)
+	}
+
+	output := result.Object
+	if output == nil {
+		output = make(map[string]interface{})
+	}
+
+	// Attach usage metadata.
+	output["_tokens"] = result.Usage.InputTokens + result.Usage.OutputTokens
+	output["_model"] = m.ModelID()
+
+	return output, nil
+}
+
+// wrapSchemaWithHumanFlag creates a copy of the schema with an additional
+// needs_human_input boolean field for auto_or_pause mode.
+func wrapSchemaWithHumanFlag(schema *ir.Schema) *ir.Schema {
+	fields := make([]*ir.SchemaField, len(schema.Fields), len(schema.Fields)+1)
+	copy(fields, schema.Fields)
+	fields = append(fields, &ir.SchemaField{
+		Name: "needs_human_input",
+		Type: ir.FieldTypeBool,
+	})
+	return &ir.Schema{
+		Name:   schema.Name + "_auto_or_pause",
+		Fields: fields,
+	}
 }
 
 // ---------------------------------------------------------------------------
