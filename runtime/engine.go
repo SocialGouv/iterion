@@ -1399,15 +1399,30 @@ func buildNodeFinishedData(output map[string]interface{}) map[string]interface{}
 // Workspace mutation safety
 // ---------------------------------------------------------------------------
 
+// readOnlyTools is the set of built-in tool names that are guaranteed to
+// never modify the workspace. These are safe for parallel execution.
+var readOnlyTools = map[string]bool{
+	"git_diff":        true,
+	"git_status":      true,
+	"read_file":       true,
+	"list_files":      true,
+	"search_codebase": true,
+	"tree":            true,
+}
+
 // isMutatingNode returns true if the node may modify the workspace.
-// Tool nodes are always mutating. Agent/judge nodes with tools are
-// potentially mutating.
+// Tool nodes are always mutating. Agent/judge nodes are mutating only
+// if they have at least one tool that is not in the read-only set.
 func isMutatingNode(node *ir.Node) bool {
 	if node.Kind == ir.NodeTool {
 		return true
 	}
-	if (node.Kind == ir.NodeAgent || node.Kind == ir.NodeJudge) && len(node.Tools) > 0 {
-		return true
+	if node.Kind == ir.NodeAgent || node.Kind == ir.NodeJudge {
+		for _, t := range node.Tools {
+			if !readOnlyTools[t] {
+				return true
+			}
+		}
 	}
 	return false
 }

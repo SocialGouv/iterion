@@ -727,6 +727,185 @@ func TestWorkspaceSafetyAgentWithToolsIsMutating(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Test: parallel branches with only read-only tools are allowed
+// ---------------------------------------------------------------------------
+
+func TestWorkspaceSafetyAllowsParallelReadonlyTools(t *testing.T) {
+	// Both branches have agents with read-only tools → neither is mutating → allowed.
+	wf := &ir.Workflow{
+		Name:  "readonly_tools_parallel_test",
+		Entry: "entry",
+		Nodes: map[string]*ir.Node{
+			"entry":  {ID: "entry", Kind: ir.NodeAgent},
+			"router": {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
+			"a":      {ID: "a", Kind: ir.NodeAgent, Tools: []string{"read_file", "git_diff"}},
+			"b":      {ID: "b", Kind: ir.NodeAgent, Tools: []string{"git_status", "search_codebase", "tree"}},
+			"join": {
+				ID:           "join",
+				Kind:         ir.NodeJoin,
+				JoinStrategy: ir.JoinWaitAll,
+				Require:      []string{"a", "b"},
+			},
+			"done": {ID: "done", Kind: ir.NodeDone},
+			"fail": {ID: "fail", Kind: ir.NodeFail},
+		},
+		Edges: []*ir.Edge{
+			{From: "entry", To: "router"},
+			{From: "router", To: "a"},
+			{From: "router", To: "b"},
+			{From: "a", To: "join"},
+			{From: "b", To: "join"},
+			{From: "join", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+
+	exec := newStubExecutor()
+	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{}, nil
+	})
+	exec.on("a", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"review": "A"}, nil
+	})
+	exec.on("b", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"review": "B"}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "run-readonly-tools", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r, _ := s.LoadRun("run-readonly-tools")
+	if r.Status != store.RunStatusFinished {
+		t.Errorf("expected finished, got %s", r.Status)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: one mutating branch + one read-only-tools branch is allowed
+// ---------------------------------------------------------------------------
+
+func TestWorkspaceSafetyOneMutatingOneReadonlyTools(t *testing.T) {
+	// Branch A has a write tool (mutating), branch B has only read-only tools.
+	// Exactly 1 mutating branch → allowed.
+	wf := &ir.Workflow{
+		Name:  "one_mutating_one_readonly_test",
+		Entry: "entry",
+		Nodes: map[string]*ir.Node{
+			"entry":  {ID: "entry", Kind: ir.NodeAgent},
+			"router": {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
+			"a":      {ID: "a", Kind: ir.NodeAgent, Tools: []string{"write_file"}},
+			"b":      {ID: "b", Kind: ir.NodeAgent, Tools: []string{"read_file", "git_status"}},
+			"join": {
+				ID:           "join",
+				Kind:         ir.NodeJoin,
+				JoinStrategy: ir.JoinWaitAll,
+				Require:      []string{"a", "b"},
+			},
+			"done": {ID: "done", Kind: ir.NodeDone},
+			"fail": {ID: "fail", Kind: ir.NodeFail},
+		},
+		Edges: []*ir.Edge{
+			{From: "entry", To: "router"},
+			{From: "router", To: "a"},
+			{From: "router", To: "b"},
+			{From: "a", To: "join"},
+			{From: "b", To: "join"},
+			{From: "join", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+
+	exec := newStubExecutor()
+	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{}, nil
+	})
+	exec.on("a", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"result": "wrote"}, nil
+	})
+	exec.on("b", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"review": "looks good"}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "run-one-mutating-one-readonly", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	r, _ := s.LoadRun("run-one-mutating-one-readonly")
+	if r.Status != store.RunStatusFinished {
+		t.Errorf("expected finished, got %s", r.Status)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: agent with mixed tools (read-only + write) is mutating
+// ---------------------------------------------------------------------------
+
+func TestWorkspaceSafetyMixedToolsIsMutating(t *testing.T) {
+	// Both branches have agents with mixed tools (read + write) → both mutating → rejected.
+	wf := &ir.Workflow{
+		Name:  "mixed_tools_mutation_test",
+		Entry: "entry",
+		Nodes: map[string]*ir.Node{
+			"entry":  {ID: "entry", Kind: ir.NodeAgent},
+			"router": {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
+			"a":      {ID: "a", Kind: ir.NodeAgent, Tools: []string{"read_file", "write_file"}},
+			"b":      {ID: "b", Kind: ir.NodeAgent, Tools: []string{"git_diff", "run_command"}},
+			"join": {
+				ID:           "join",
+				Kind:         ir.NodeJoin,
+				JoinStrategy: ir.JoinWaitAll,
+				Require:      []string{"a", "b"},
+			},
+			"done": {ID: "done", Kind: ir.NodeDone},
+			"fail": {ID: "fail", Kind: ir.NodeFail},
+		},
+		Edges: []*ir.Edge{
+			{From: "entry", To: "router"},
+			{From: "router", To: "a"},
+			{From: "router", To: "b"},
+			{From: "a", To: "join"},
+			{From: "b", To: "join"},
+			{From: "join", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+
+	exec := newStubExecutor()
+	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "run-mixed-tools", nil)
+	if err == nil {
+		t.Fatal("expected workspace safety error")
+	}
+	if !strings.Contains(err.Error(), "workspace safety") {
+		t.Errorf("expected workspace safety error, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Test: budget exceeded in parallel branch (best_effort continues)
 // ---------------------------------------------------------------------------
 

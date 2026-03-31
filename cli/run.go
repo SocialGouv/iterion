@@ -9,7 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/delegate"
 	"github.com/SocialGouv/iterion/ir"
+	"github.com/SocialGouv/iterion/model"
 	"github.com/SocialGouv/iterion/recipe"
 	"github.com/SocialGouv/iterion/runtime"
 	"github.com/SocialGouv/iterion/store"
@@ -71,7 +73,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 
 		executor := opts.Executor
 		if executor == nil {
-			executor = &stubExecutor{}
+			executor = newDefaultExecutor(wf, opts.Vars)
 		}
 
 		eng, err = runtime.NewFromRecipe(spec, wf, s, executor)
@@ -91,7 +93,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 
 		executor := opts.Executor
 		if executor == nil {
-			executor = &stubExecutor{}
+			executor = newDefaultExecutor(wf, opts.Vars)
 		}
 
 		eng = runtime.New(wf, s, executor)
@@ -171,6 +173,27 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		p.Line("  Status: FINISHED")
 	}
 	return nil
+}
+
+// newDefaultExecutor creates a GoaiExecutor with the default delegate registry.
+// This is the production executor used when no explicit executor is provided.
+func newDefaultExecutor(wf *ir.Workflow, vars map[string]string) *model.GoaiExecutor {
+	reg := model.NewRegistry()
+	delegateReg := delegate.DefaultRegistry()
+
+	executor := model.NewGoaiExecutor(reg, wf,
+		model.WithDelegateRegistry(delegateReg),
+	)
+
+	if len(vars) > 0 {
+		v := make(map[string]interface{}, len(vars))
+		for k, val := range vars {
+			v[k] = val
+		}
+		executor.SetVars(v)
+	}
+
+	return executor
 }
 
 // stubExecutor is a no-op executor used when no real executor is provided.
