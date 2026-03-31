@@ -17,6 +17,8 @@ tasks:
 
   build:
     desc: Build the iterion binary
+    env:
+      CGO_ENABLED: "0"
     cmds:
       - go build -ldflags "{{.LDFLAGS}}" -o {{.BINARY}} {{.CMD}}
     sources:
@@ -72,6 +74,8 @@ tasks:
 
   install:
     desc: Build and install iterion to $GOPATH/bin
+    env:
+      CGO_ENABLED: "0"
     cmds:
       - go install -ldflags "{{.LDFLAGS}}" {{.CMD}}
 
