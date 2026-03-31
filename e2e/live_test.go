@@ -379,3 +379,228 @@ func TestLive_TodoApp_DualModel_MCP(t *testing.T) {
 		t.Error("Expected at least one iteration")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Live E2E test — Full Todo App with dual-model cross-review & double judge
+// ---------------------------------------------------------------------------
+
+// TestLive_TodoApp_Full_DualModel_MCP executes the todo_app_full_dual_model_mcp
+// workflow which features:
+//   - Design phase (Claude) + Challenge (Codex)
+//   - Alternating implement/review pairs with cross-review
+//   - Double judge validation: both models must agree before completion
+//   - Strict acceptance criteria to force multiple iterations
+//
+// The generated workspace directory is NOT cleaned up so the user can manually
+// inspect the resulting index.html in a browser.
+func TestLive_TodoApp_Full_DualModel_MCP(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live test in short mode")
+	}
+	loadDotEnv(t)
+	requireCLI(t, "claude")
+	requireCLI(t, "codex")
+
+	wf := compileFixture(t, "todo_app_full_dual_model_mcp.iter")
+
+	// Create a persistent workspace directory.
+	workspaceDir, err := os.MkdirTemp("", "iterion-todo-app-full-*")
+	if err != nil {
+		t.Fatalf("Failed to create workspace dir: %v", err)
+	}
+	t.Logf("Workspace directory (persists after test): %s", workspaceDir)
+
+	gitInit := exec.Command("git", "init", workspaceDir)
+	if out, gitErr := gitInit.CombinedOutput(); gitErr != nil {
+		t.Fatalf("git init failed: %v\n%s", gitErr, out)
+	}
+
+	reg := model.NewRegistry()
+	delegateReg := delegate.DefaultRegistry()
+	executor := model.NewGoaiExecutor(reg, wf,
+		model.WithDelegateRegistry(delegateReg),
+		model.WithWorkDir(workspaceDir),
+	)
+
+	appDescription := "A feature-rich single-page todo application in one index.html file. " +
+		"Must include: add/toggle/delete todos, filters, inline editing on double-click, " +
+		"dark/light theme toggle, clear completed button, smooth animations, " +
+		"localStorage persistence with error handling, and full keyboard accessibility. " +
+		"Use vanilla HTML, CSS, and JavaScript (no frameworks)."
+
+	acceptanceCriteria := "1. Single index.html file with embedded CSS and JS\n" +
+		"2. Add new todo items via text input and button, plus Enter key\n" +
+		"3. Toggle todo completion with a real <input type=\"checkbox\"> (accessible)\n" +
+		"4. Delete individual todo items\n" +
+		"5. Filter view: All, Active, Completed with item count displayed\n" +
+		"6. Double-click on a todo to edit it inline (press Enter to save, Escape to cancel)\n" +
+		"7. 'Clear completed' button to remove all completed todos\n" +
+		"8. Dark/light theme toggle button with choice persisted in localStorage\n" +
+		"9. Smooth CSS transitions/animations for add, delete, and toggle\n" +
+		"10. Responsive design that works on mobile\n" +
+		"11. Items persisted in localStorage with try/catch around JSON.parse\n" +
+		"12. Accessibility: aria-labels on interactive elements, visible focus styles, keyboard navigation"
+
+	executor.SetVars(map[string]interface{}{
+		"app_description":    appDescription,
+		"acceptance_criteria": acceptanceCriteria,
+	})
+
+	storeDir := filepath.Join(workspaceDir, ".iterion")
+	s, storeErr := store.New(storeDir)
+	if storeErr != nil {
+		t.Fatalf("Failed to create store: %v", storeErr)
+	}
+
+	eng := runtime.New(wf, s, executor)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	runID := "live-todo-app-full-dual-mcp"
+	inputs := map[string]interface{}{
+		"app_description":    appDescription,
+		"acceptance_criteria": acceptanceCriteria,
+	}
+
+	t.Log("Starting live todo app FULL dual-model MCP workflow run...")
+	start := time.Now()
+	runErr := eng.Run(ctx, runID, inputs)
+	elapsed := time.Since(start)
+	t.Logf("Run completed in %s", elapsed.Round(time.Second))
+
+	// Accept finished, budget-exceeded, and timeout-killed outcomes.
+	// This is a long-running live test — infrastructure errors are acceptable
+	// as long as we can inspect the partial results.
+	if runErr != nil {
+		acceptable := false
+		if errors.Is(runErr, runtime.ErrBudgetExceeded) {
+			acceptable = true
+		}
+		var rtErr *runtime.RuntimeError
+		if errors.As(runErr, &rtErr) {
+			switch rtErr.Code {
+			case runtime.ErrCodeBudgetExceeded, runtime.ErrCodeLoopExhausted:
+				acceptable = true
+			case runtime.ErrCodeExecutionFailed:
+				// Context deadline exceeded kills delegate subprocesses.
+				acceptable = true
+			}
+		}
+		if acceptable {
+			t.Logf("Run ended with acceptable error: %v", runErr)
+		} else {
+			t.Fatalf("Unexpected run error: %v", runErr)
+		}
+	}
+
+	// Load run metadata.
+	r, loadErr := s.LoadRun(runID)
+	if loadErr != nil {
+		t.Fatalf("Failed to load run: %v", loadErr)
+	}
+	t.Logf("Run status: %s", r.Status)
+
+	if r.Status != store.RunStatusFinished && r.Status != store.RunStatusFailed {
+		t.Errorf("Unexpected run status: %s (expected finished or failed)", r.Status)
+	}
+
+	// Load events.
+	events, evtErr := s.LoadEvents(runID)
+	if evtErr != nil {
+		t.Fatalf("Failed to load events: %v", evtErr)
+	}
+
+	if !hasEvent(events, store.EventRunStarted) {
+		t.Error("Missing run_started event")
+	}
+
+	// Log all finished nodes for traceability.
+	finishedNodes := eventNodeIDs(events, store.EventNodeFinished)
+	t.Logf("Finished nodes: %v", finishedNodes)
+
+	// Verify both delegation backends were invoked.
+	claudeCalled := false
+	codexCalled := false
+	for _, id := range finishedNodes {
+		if strings.Contains(id, "claude") {
+			claudeCalled = true
+		}
+		if strings.Contains(id, "codex") {
+			codexCalled = true
+		}
+	}
+	if !claudeCalled {
+		t.Error("No claude_* node finished — claude-code delegation may have failed")
+	}
+	if !codexCalled {
+		t.Error("No codex_* node finished — codex delegation may have failed")
+	}
+
+	// Verify design and challenge phases executed.
+	nodeSet := make(map[string]bool)
+	for _, id := range finishedNodes {
+		nodeSet[id] = true
+	}
+	for _, expected := range []string{"claude_design", "codex_challenge"} {
+		if !nodeSet[expected] {
+			t.Errorf("Expected node %q to have finished", expected)
+		}
+	}
+
+	// Count how many times each implement node ran.
+	claudeImplCount := 0
+	codexImplCount := 0
+	for _, id := range finishedNodes {
+		if id == "claude_implement" {
+			claudeImplCount++
+		}
+		if id == "codex_implement" {
+			codexImplCount++
+		}
+	}
+	t.Logf("Implementation iterations: claude_implement=%d codex_implement=%d", claudeImplCount, codexImplCount)
+
+	totalImplCount := claudeImplCount + codexImplCount
+	if totalImplCount < 2 {
+		t.Logf("WARNING: only %d implementation iteration(s) — expected >=2 for cross-review", totalImplCount)
+	}
+
+	// Verify loop edge events exist.
+	loopEdges := 0
+	for _, evt := range events {
+		if evt.Type == store.EventEdgeSelected && evt.Data != nil {
+			if _, ok := evt.Data["loop"]; ok {
+				loopEdges++
+			}
+		}
+	}
+	t.Logf("Loop edge events: %d", loopEdges)
+
+	// Verify artifact versioning: act_report should have multiple versions.
+	latestArt, artErr := s.LoadLatestArtifact(runID, "act_report")
+	if artErr != nil {
+		t.Logf("Could not load act_report artifact: %v", artErr)
+	} else {
+		t.Logf("act_report latest version: %d", latestArt.Version)
+	}
+
+	// Check that index.html was generated.
+	htmlPath := filepath.Join(workspaceDir, "index.html")
+	if info, statErr := os.Stat(htmlPath); statErr != nil {
+		t.Logf("WARNING: index.html not found at %s", htmlPath)
+	} else {
+		t.Logf("SUCCESS: index.html exists (%d bytes) at %s", info.Size(), htmlPath)
+		t.Logf("Open in browser: file://%s", htmlPath)
+	}
+
+	// Collect and log metrics.
+	metrics, mErr := benchmark.CollectMetrics(s, runID, "live-todo-app-full-dual-mcp", "")
+	if mErr != nil {
+		t.Fatalf("Failed to collect metrics: %v", mErr)
+	}
+
+	t.Logf("Metrics: tokens=%d cost=$%.4f model_calls=%d iterations=%d duration=%s",
+		metrics.TotalTokens, metrics.TotalCostUSD, metrics.ModelCalls,
+		metrics.Iterations, metrics.DurationStr)
+}

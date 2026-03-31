@@ -55,7 +55,12 @@ tasks:
   test:live:todo:
     desc: Run the todo app live e2e test (requires claude + codex CLIs)
     cmds:
-      - go test -v -count=1 -run TestLive_TodoApp_DualModel_MCP -timeout 35m ./e2e/...
+      - go test -v -count=1 -run TestLive_TodoApp_DualModel_MCP$ -timeout 35m ./e2e/...
+
+  test:live:todo-full:
+    desc: Run the full todo app e2e test with cross-review and double judge (requires claude + codex CLIs)
+    cmds:
+      - go test -v -count=1 -run TestLive_TodoApp_Full_DualModel_MCP -timeout 35m ./e2e/...
 
   fmt:
     desc: Format Go source files
