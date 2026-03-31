@@ -50,7 +50,12 @@ tasks:
   test:live:
     desc: Run live e2e tests via MCP delegation (requires claude + codex CLIs)
     cmds:
-      - go test -v -run TestLive -timeout 20m ./e2e/...
+      - go test -v -run TestLive -timeout 35m ./e2e/...
+
+  test:live:todo:
+    desc: Run the todo app live e2e test (requires claude + codex CLIs)
+    cmds:
+      - go test -v -count=1 -run TestLive_TodoApp_DualModel_MCP -timeout 35m ./e2e/...
 
   fmt:
     desc: Format Go source files

@@ -33,6 +33,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 	args := []string{
 		"--print",
 		"--output-format", "json",
+		"--dangerously-skip-permissions",
 	}
 
 	if task.SystemPrompt != "" {
@@ -43,13 +44,16 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		args = append(args, "--allowedTools", strings.Join(task.AllowedTools, ","))
 	}
 
-	// Build the user prompt; if an output schema is provided, append instructions.
+	// Build the user prompt; if an output schema is provided, embed the schema
+	// in the prompt text. Note: --json-schema disables tool use in claude CLI,
+	// so we pass the schema as instructions instead.
 	prompt := task.UserPrompt
 	if len(task.OutputSchema) > 0 {
-		prompt += "\n\nYou MUST respond with a JSON object matching this schema:\n" + string(task.OutputSchema)
+		prompt += "\n\nAfter completing all actions, you MUST respond with a JSON object matching this schema:\n" + string(task.OutputSchema)
 	}
 
-	args = append(args, "--prompt", prompt)
+	// The prompt is a positional argument (not a flag).
+	args = append(args, prompt)
 
 	cmd := exec.CommandContext(ctx, b.command(), args...)
 	if task.WorkDir != "" {
@@ -88,7 +92,57 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		return Result{}, fmt.Errorf("delegate: claude-code failed: %w\nstderr: %s", err, stderr.String())
 	}
 
-	return parseJSONOutput(output)
+	return parseClaudeResult(output)
+}
+
+// parseClaudeResult parses the JSON output from `claude --print --output-format json`.
+// The output is a single JSON object with fields:
+//
+//	{type: "result", result: "<text or JSON string>", usage: {input_tokens, output_tokens, ...}}
+//
+// The actual content is in the "result" field as a string (which may itself be JSON).
+func parseClaudeResult(data []byte) (Result, error) {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return Result{Output: map[string]interface{}{}}, nil
+	}
+
+	// Parse the envelope.
+	var envelope struct {
+		Type   string                 `json:"type"`
+		Result string                 `json:"result"`
+		Usage  map[string]interface{} `json:"usage"`
+	}
+	if err := json.Unmarshal(data, &envelope); err == nil && envelope.Type == "result" {
+		tokens := 0
+		if envelope.Usage != nil {
+			input, _ := envelope.Usage["input_tokens"].(float64)
+			output, _ := envelope.Usage["output_tokens"].(float64)
+			tokens = int(input + output)
+		}
+
+		// Try parsing the result string as a JSON object.
+		var obj map[string]interface{}
+		if err := json.Unmarshal([]byte(envelope.Result), &obj); err == nil {
+			return Result{Output: obj, Tokens: tokens}, nil
+		}
+
+		// Try extracting JSON from markdown code blocks (```json ... ```).
+		if extracted := extractJSONFromMarkdown(envelope.Result); extracted != "" {
+			if err := json.Unmarshal([]byte(extracted), &obj); err == nil {
+				return Result{Output: obj, Tokens: tokens}, nil
+			}
+		}
+
+		// Result is plain text.
+		return Result{
+			Output: map[string]interface{}{"text": envelope.Result},
+			Tokens: tokens,
+		}, nil
+	}
+
+	// Fallback to generic JSON parsing for backwards compatibility.
+	return parseJSONOutput(data)
 }
 
 // validateWorkDir checks that workDir resolves to a path within baseDir.
@@ -188,4 +242,35 @@ func extractTokens(obj map[string]interface{}) int {
 		return int(input + output)
 	}
 	return 0
+}
+
+// extractJSONFromMarkdown extracts the last JSON object from markdown code blocks.
+// It looks for ```json ... ``` or ``` ... ``` blocks and returns the last one
+// that contains valid JSON.
+func extractJSONFromMarkdown(text string) string {
+	const fence = "```"
+	result := ""
+	for {
+		start := strings.Index(text, fence)
+		if start == -1 {
+			break
+		}
+		// Skip the opening fence and optional language tag.
+		inner := text[start+len(fence):]
+		// Skip language tag (e.g., "json").
+		if nl := strings.IndexByte(inner, '\n'); nl != -1 {
+			inner = inner[nl+1:]
+		}
+		end := strings.Index(inner, fence)
+		if end == -1 {
+			break
+		}
+		block := strings.TrimSpace(inner[:end])
+		// Check if it looks like a JSON object.
+		if len(block) > 0 && block[0] == '{' {
+			result = block
+		}
+		text = inner[end+len(fence):]
+	}
+	return result
 }

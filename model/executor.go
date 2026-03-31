@@ -101,6 +101,7 @@ type GoaiExecutor struct {
 	tools            map[string]goai.Tool // legacy: direct tool implementations
 	hooks            EventHooks
 	retry            RetryPolicy
+	workDir          string // working directory for delegate subprocesses
 }
 
 // GoaiExecutorOption configures a GoaiExecutor.
@@ -141,6 +142,12 @@ func WithRetryPolicy(rp RetryPolicy) GoaiExecutorOption {
 // backend instead of calling the LLM API.
 func WithDelegateRegistry(dr *delegate.Registry) GoaiExecutorOption {
 	return func(e *GoaiExecutor) { e.delegateRegistry = dr }
+}
+
+// WithWorkDir sets the working directory for delegate subprocesses.
+// When set, delegated nodes will run their CLI in this directory.
+func WithWorkDir(dir string) GoaiExecutorOption {
+	return func(e *GoaiExecutor) { e.workDir = dir }
 }
 
 // NewGoaiExecutor creates a GoaiExecutor for a given workflow.
@@ -529,6 +536,7 @@ func (e *GoaiExecutor) executeDelegation(ctx context.Context, node *ir.Node, inp
 		UserPrompt:   userText,
 		AllowedTools: node.Tools,
 		OutputSchema: outputSchema,
+		WorkDir:      e.workDir,
 	}
 
 	result, err := backend.Execute(ctx, task)
