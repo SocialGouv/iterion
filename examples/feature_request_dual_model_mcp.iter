@@ -1,0 +1,448 @@
+## Fixture : feature_request_dual_model_mcp
+## Objectif : Workflow de feature request orchestrant deux agents IA
+## via delegation MCP :
+##   - Claude Opus 4.6  -> claude-code (delegate: "claude_code")
+##   - GPT 5.4          -> codex       (delegate: "codex")
+##
+## Phases :
+##   1. Analyse du contexte feature (Claude)
+##   2. Discussion plan d'implementation (3 rounds Claude <-> GPT)
+##   3. Cycle alternant act/review avec cross-review :
+##      act(claude) -> review(gpt) -> act(gpt) -> review(claude) -> ...
+##      jusqu'a verdict "production ready"
+##
+## Tous les prompts se concentrent sur la feature elle-meme.
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+## ─── Prompts ────────────────────────────────────────────────────
+
+prompt feature_spec_system:
+  Tu es un architecte logiciel expert en analyse de feature requests.
+  Tu dois explorer le codebase, comprendre l'architecture existante
+  et produire un contexte de feature complet et exploitable.
+  Concentre-toi exclusivement sur la feature demandee.
+
+prompt feature_spec_user:
+  Analyse cette demande de feature et le codebase associe.
+  Produis un contexte normalise incluant les fichiers pertinents,
+  les patterns existants, les dependances et les contraintes.
+
+  Titre : {{input.feature_title}}
+  Description : {{input.feature_description}}
+  Criteres d'acceptation : {{input.acceptance_criteria}}
+  Zone cible : {{input.target_area}}
+
+prompt discuss_claude_system:
+  Tu es Claude, un architecte senior.
+  Tu analyses la feature demandee et proposes des solutions concretes.
+  Sois precis, pragmatique et identifie les risques potentiels.
+  Concentre-toi uniquement sur la feature et son implementation.
+
+prompt discuss_claude_user:
+  Continue la discussion sur cette feature.
+  Analyse les propositions precedentes, identifie les lacunes
+  et propose des ameliorations concretes au plan d'implementation.
+
+  Contexte feature :
+  {{input.feature_context}}
+
+  Discussion precedente :
+  {{input.previous_discussion}}
+
+prompt discuss_gpt_system:
+  Tu es GPT, un ingenieur senior avec une perspective differente.
+  Tu challenges les propositions, identifies les alternatives
+  et enrichis le plan d'implementation de la feature.
+  Concentre-toi uniquement sur la feature et son implementation.
+
+prompt discuss_gpt_user:
+  Continue la discussion sur cette feature.
+  Challenge les propositions precedentes, propose des alternatives
+  et affine le plan d'implementation.
+
+  Contexte feature :
+  {{input.feature_context}}
+
+  Discussion precedente :
+  {{input.previous_discussion}}
+
+prompt discuss_final_system:
+  Tu cristallises la discussion en un plan d'implementation final.
+  Le plan doit etre concret, ordonne, testable et executable.
+  Concentre-toi uniquement sur la feature demandee.
+
+prompt discuss_final_user:
+  A partir de toute la discussion precedente, produis le plan
+  d'implementation final de la feature.
+
+  Contexte feature :
+  {{input.feature_context}}
+
+  Discussion precedente :
+  {{input.previous_discussion}}
+
+prompt act_feature_system:
+  Tu es un agent d'implementation de feature.
+  Tu appliques le plan d'implementation au workspace avec rigueur.
+  Ecris du code propre, teste et documente.
+  Concentre-toi exclusivement sur la feature demandee,
+  ne modifie rien qui ne soit pas directement lie a la feature.
+
+prompt act_feature_user:
+  Implemente cette partie de la feature selon le plan.
+
+  Contexte feature :
+  {{input.feature_context}}
+
+  Plan d'implementation :
+  {{input.feature_plan}}
+
+  Retour precedent :
+  {{input.previous_feedback}}
+
+prompt review_feature_system:
+  Tu es un reviewer de code exigeant.
+  Evalue l'implementation de la feature selon les criteres d'acceptation.
+  Identifie les problemes, les manques et les ameliorations necessaires.
+  Concentre-toi uniquement sur la feature implementee.
+
+prompt review_feature_user:
+  Review l'implementation de cette feature.
+
+  Contexte feature :
+  {{input.feature_context}}
+
+  Resultat de l'implementation :
+  {{input.act_result}}
+
+  Criteres d'acceptation :
+  {{input.acceptance_criteria}}
+
+prompt readiness_system:
+  Tu determines si la feature est prete pour la production.
+  Tu evalues la completude, la qualite du code, la couverture de tests
+  et le respect des criteres d'acceptation.
+  Concentre-toi uniquement sur la feature elle-meme.
+
+prompt readiness_user:
+  Evalue si cette feature est prete pour la production.
+
+  Contexte feature :
+  {{input.feature_context}}
+
+  Resultat de l'implementation :
+  {{input.act_result}}
+
+  Review :
+  {{input.review}}
+
+  Criteres d'acceptation :
+  {{input.acceptance_criteria}}
+
+## ─── Schemas ────────────────────────────────────────────────────
+
+schema feature_request_input:
+  feature_title: string
+  feature_description: string
+  acceptance_criteria: string
+  target_area: string
+
+schema feature_context:
+  feature_title: string
+  feature_description: string
+  acceptance_criteria: string
+  target_area: string
+  codebase_summary: string
+  relevant_files: string[]
+  existing_patterns: string[]
+  dependencies: string[]
+  constraints: string[]
+
+schema discussion_input:
+  feature_context: json
+  previous_discussion: string
+
+schema discussion_output:
+  analysis: string
+  proposals: string[]
+  open_questions: string[]
+  risks: string[]
+  implementation_notes: string
+
+schema feature_plan:
+  summary: string
+  goals: string[]
+  ordered_steps: string[]
+  files_to_create: string[]
+  files_to_modify: string[]
+  test_plan: string[]
+  risks: string[]
+
+schema act_input:
+  feature_context: json
+  feature_plan: json
+  previous_feedback: string
+
+schema act_output:
+  applied: bool
+  summary: string
+  files_changed: string[]
+  commands_run: string[]
+  tests_run: string[]
+  remaining_work: string[]
+
+schema review_input:
+  feature_context: json
+  act_result: json
+  acceptance_criteria: string
+
+schema review_output:
+  summary: string
+  issues: string[]
+  strengths: string[]
+  missing_requirements: string[]
+  recommendations: string[]
+
+schema readiness_input:
+  feature_context: json
+  act_result: json
+  review: json
+  acceptance_criteria: string
+
+schema readiness_verdict:
+  ready: bool
+  remaining_issues: string[]
+  completion_percentage: string
+  blocking_reasons: string[]
+  confidence: string [enum: "low", "medium", "high"]
+
+## ─── Nodes : Phase 1 — Contexte Feature ─────────────────────────
+
+agent feature_spec:
+  delegate: "claude_code"
+  input: feature_request_input
+  output: feature_context
+  publish: feature_context
+  system: feature_spec_system
+  user: feature_spec_user
+  session: fresh
+  tools: [read_file, list_files, search_codebase, tree, git_status]
+  tool_max_steps: 10
+
+## ─── Nodes : Phase 2 — Discussion (3 rounds) ────────────────────
+
+agent claude_discuss_1:
+  delegate: "claude_code"
+  input: discussion_input
+  output: discussion_output
+  system: discuss_claude_system
+  user: discuss_claude_user
+  session: fresh
+
+agent gpt_discuss_1:
+  delegate: "codex"
+  input: discussion_input
+  output: discussion_output
+  system: discuss_gpt_system
+  user: discuss_gpt_user
+  session: fresh
+
+agent claude_discuss_2:
+  delegate: "claude_code"
+  input: discussion_input
+  output: discussion_output
+  system: discuss_claude_system
+  user: discuss_claude_user
+  session: fresh
+
+agent gpt_discuss_2:
+  delegate: "codex"
+  input: discussion_input
+  output: discussion_output
+  system: discuss_gpt_system
+  user: discuss_gpt_user
+  session: fresh
+
+agent claude_discuss_3:
+  delegate: "claude_code"
+  input: discussion_input
+  output: discussion_output
+  system: discuss_claude_system
+  user: discuss_claude_user
+  session: fresh
+
+agent gpt_discuss_3:
+  delegate: "codex"
+  input: discussion_input
+  output: feature_plan
+  publish: final_plan
+  system: discuss_final_system
+  user: discuss_final_user
+  session: fresh
+
+## ─── Nodes : Phase 3 — Cycle Act/Review avec cross-review ───────
+
+## Paire 1 : Claude agit, GPT review
+agent claude_act:
+  delegate: "claude_code"
+  input: act_input
+  output: act_output
+  publish: act_report
+  system: act_feature_system
+  user: act_feature_user
+  session: fresh
+  tools: [read_file, write_file, patch, list_files, search_codebase, git_diff, git_status, run_command]
+  tool_max_steps: 20
+
+agent gpt_review:
+  delegate: "codex"
+  input: review_input
+  output: review_output
+  system: review_feature_system
+  user: review_feature_user
+  session: fresh
+  tools: [read_file, list_files, search_codebase, git_diff, tree]
+  tool_max_steps: 10
+
+judge readiness_judge_after_gpt_review:
+  delegate: "claude_code"
+  input: readiness_input
+  output: readiness_verdict
+  system: readiness_system
+  user: readiness_user
+  session: fresh
+
+## Paire 2 : GPT agit, Claude review
+agent gpt_act:
+  delegate: "codex"
+  input: act_input
+  output: act_output
+  publish: act_report
+  system: act_feature_system
+  user: act_feature_user
+  session: fresh
+  tools: [read_file, write_file, patch, list_files, search_codebase, git_diff, git_status, run_command]
+  tool_max_steps: 20
+
+agent claude_review:
+  delegate: "claude_code"
+  input: review_input
+  output: review_output
+  system: review_feature_system
+  user: review_feature_user
+  session: fresh
+  tools: [read_file, list_files, search_codebase, git_diff, tree]
+  tool_max_steps: 10
+
+judge readiness_judge_after_claude_review:
+  delegate: "claude_code"
+  input: readiness_input
+  output: readiness_verdict
+  publish: final_verdict
+  system: readiness_system
+  user: readiness_user
+  session: fresh
+
+## ─── Workflow ────────────────────────────────────────────────────
+
+workflow feature_request_dual_model_mcp:
+  vars:
+    feature_title: string
+    feature_description: string
+    acceptance_criteria: string
+    target_area: string = ""
+
+  entry: feature_spec
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "90m"
+    max_cost_usd: 50
+    max_tokens: 1200000
+
+  ## 1. Analyse du contexte feature
+  feature_spec -> claude_discuss_1 with {
+    feature_context: "{{outputs.feature_spec}}",
+    previous_discussion: ""
+  }
+
+  ## 2. Discussion round 1
+  claude_discuss_1 -> gpt_discuss_1 with {
+    feature_context: "{{artifacts.feature_context}}",
+    previous_discussion: "{{outputs.claude_discuss_1.analysis}}"
+  }
+
+  ## 3. Discussion round 2
+  gpt_discuss_1 -> claude_discuss_2 with {
+    feature_context: "{{artifacts.feature_context}}",
+    previous_discussion: "{{outputs.gpt_discuss_1.analysis}}"
+  }
+
+  claude_discuss_2 -> gpt_discuss_2 with {
+    feature_context: "{{artifacts.feature_context}}",
+    previous_discussion: "{{outputs.claude_discuss_2.analysis}}"
+  }
+
+  ## 4. Discussion round 3 — cristallisation du plan
+  gpt_discuss_2 -> claude_discuss_3 with {
+    feature_context: "{{artifacts.feature_context}}",
+    previous_discussion: "{{outputs.gpt_discuss_2.analysis}}"
+  }
+
+  claude_discuss_3 -> gpt_discuss_3 with {
+    feature_context: "{{artifacts.feature_context}}",
+    previous_discussion: "{{outputs.claude_discuss_3.analysis}}"
+  }
+
+  ## 5. Paire 1 : Claude agit, GPT review
+  gpt_discuss_3 -> claude_act with {
+    feature_context: "{{artifacts.feature_context}}",
+    feature_plan: "{{outputs.gpt_discuss_3}}",
+    previous_feedback: ""
+  }
+
+  claude_act -> gpt_review with {
+    feature_context: "{{artifacts.feature_context}}",
+    act_result: "{{outputs.claude_act}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  gpt_review -> readiness_judge_after_gpt_review with {
+    feature_context: "{{artifacts.feature_context}}",
+    act_result: "{{outputs.claude_act}}",
+    review: "{{outputs.gpt_review}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  readiness_judge_after_gpt_review -> done when ready
+
+  ## 6. Paire 2 : GPT agit, Claude review
+  readiness_judge_after_gpt_review -> gpt_act when not ready as impl_loop(6) with {
+    feature_context: "{{artifacts.feature_context}}",
+    feature_plan: "{{artifacts.final_plan}}",
+    previous_feedback: "{{outputs.gpt_review.summary}}"
+  }
+
+  gpt_act -> claude_review with {
+    feature_context: "{{artifacts.feature_context}}",
+    act_result: "{{outputs.gpt_act}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  claude_review -> readiness_judge_after_claude_review with {
+    feature_context: "{{artifacts.feature_context}}",
+    act_result: "{{outputs.gpt_act}}",
+    review: "{{outputs.claude_review}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  readiness_judge_after_claude_review -> done when ready
+
+  ## 7. Rebouclage vers paire 1 si toujours pas pret
+  readiness_judge_after_claude_review -> claude_act when not ready as impl_loop(6) with {
+    feature_context: "{{artifacts.feature_context}}",
+    feature_plan: "{{artifacts.final_plan}}",
+    previous_feedback: "{{outputs.claude_review.summary}}"
+  }
