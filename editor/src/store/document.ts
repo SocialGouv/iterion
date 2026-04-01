@@ -89,7 +89,7 @@ interface DocumentState {
 
   // Edge mutations
   addEdge: (workflowName: string, edge: Edge) => void;
-  removeEdge: (workflowName: string, edgeIndex: number) => void;
+  removeEdge: (workflowName: string, edgeIndex: number, fromHint?: string, toHint?: string) => void;
   updateEdge: (workflowName: string, edgeIndex: number, updates: Partial<Edge>) => void;
 
   // Schema mutations
@@ -322,15 +322,30 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       };
     }),
 
-  removeEdge: (workflowName, edgeIndex) =>
+  removeEdge: (workflowName, edgeIndex, fromHint?, toHint?) =>
     set((s) => {
       if (!s.document) return s;
       return {
         document: {
           ...s.document,
-          workflows: s.document.workflows.map((w) =>
-            w.name === workflowName ? { ...w, edges: w.edges.filter((_, i) => i !== edgeIndex) } : w,
-          ),
+          workflows: s.document.workflows.map((w) => {
+            if (w.name !== workflowName) return w;
+            // Prefer index match; if stale, fall back to from+to identity match
+            if (w.edges[edgeIndex] &&
+              (!fromHint || w.edges[edgeIndex].from === fromHint) &&
+              (!toHint || w.edges[edgeIndex].to === toHint)) {
+              return { ...w, edges: w.edges.filter((_, i) => i !== edgeIndex) };
+            }
+            // Fallback: remove first edge matching from+to
+            if (fromHint && toHint) {
+              let found = false;
+              return { ...w, edges: w.edges.filter((e) => {
+                if (!found && e.from === fromHint && e.to === toHint) { found = true; return false; }
+                return true;
+              })};
+            }
+            return { ...w, edges: w.edges.filter((_, i) => i !== edgeIndex) };
+          }),
         },
         ...pushHistory(s),
       };

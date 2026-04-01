@@ -28,10 +28,14 @@ export default function WorkflowNode({ data }: NodeProps) {
   const diagnostics = useDocumentStore((s) => s.diagnostics);
   const isEntry = activeWorkflow?.entry === label;
 
-  // Check if any diagnostic mentions this node (word-boundary match to avoid false positives)
+  // Check if any diagnostic mentions this node (boundary match to avoid false positives)
   const hasError = diagnostics.some((d) => {
-    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp(`\\b${escaped}\\b`, 'i').test(d);
+    const idx = d.indexOf(label);
+    if (idx === -1) return false;
+    const before = idx > 0 ? d.charAt(idx - 1) : " ";
+    const after = idx + label.length < d.length ? d.charAt(idx + label.length) : " ";
+    const isWordChar = (c: string) => /\w/.test(c);
+    return !isWordChar(before) && !isWordChar(after);
   });
 
   // Extract subtitle info from declaration
@@ -86,6 +90,11 @@ export default function WorkflowNode({ data }: NodeProps) {
     else if (d?.session === "artifacts_only") sessionIndicator = "\u{1F4E6}"; // package
   }
 
+  // Check if node participates in a loop
+  const hasLoop = activeWorkflow?.edges?.some(
+    (e) => e.loop && (e.from === label || e.to === label),
+  ) ?? false;
+
   const isTerminal = kind === "done" || kind === "fail";
 
   return (
@@ -125,6 +134,7 @@ export default function WorkflowNode({ data }: NodeProps) {
         </div>
       )}
       {isEntry && <div className="text-[9px] text-amber-400 mt-0.5">entry</div>}
+      {hasLoop && <div className="text-[9px] text-amber-300 mt-0.5">{"\u{1F504}"} loop</div>}
       {hasError && <div className="text-[9px] text-red-400 mt-0.5">has errors</div>}
       {!isTerminal && edgeCount > 0 && (
         <div className="text-[8px] text-gray-600 mt-0.5">{edgeCount} edge{edgeCount !== 1 ? "s" : ""}</div>

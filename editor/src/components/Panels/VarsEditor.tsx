@@ -17,9 +17,10 @@ function rawToLiteral(type: TypeExpr, raw: string): Literal | undefined {
   if (raw === "") return undefined;
   switch (type) {
     case "string":
+      return { kind: "string" as LiteralKind, raw: `"${raw}"`, str_val: raw };
     case "json":
     case "string[]":
-      return { kind: "string" as LiteralKind, raw: `"${raw}"`, str_val: raw };
+      return { kind: "string" as LiteralKind, raw, str_val: raw };
     case "int":
       return { kind: "int" as LiteralKind, raw, int_val: parseInt(raw, 10) || 0 };
     case "float":

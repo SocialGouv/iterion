@@ -23,24 +23,25 @@ export function makeEdgeId(workflowName: string, index: number): string {
   return `${workflowName}:edge:${index}`;
 }
 
-/** Returns a key that changes only when the graph topology changes (nodes added/removed, edges added/removed). */
+/** Returns a key that changes only when the graph topology changes (nodes added/removed, edges added/removed).
+ *  Uses counts and edge signatures instead of node names, so renaming a node does not trigger relayout. */
 export function getTopologyKey(doc: IterDocument, activeWorkflowName?: string): string {
-  const names: string[] = [];
-  for (const a of doc.agents ?? []) names.push(a.name);
-  for (const j of doc.judges ?? []) names.push(j.name);
-  for (const r of doc.routers ?? []) names.push(r.name);
-  for (const j of doc.joins ?? []) names.push(j.name);
-  for (const h of doc.humans ?? []) names.push(h.name);
-  for (const t of doc.tools ?? []) names.push(t.name);
-  names.sort();
-  const edgeSigs: string[] = [];
+  const counts = [
+    (doc.agents ?? []).length,
+    (doc.judges ?? []).length,
+    (doc.routers ?? []).length,
+    (doc.joins ?? []).length,
+    (doc.humans ?? []).length,
+    (doc.tools ?? []).length,
+  ].join(",");
   const targetWorkflows = activeWorkflowName
     ? (doc.workflows ?? []).filter(w => w.name === activeWorkflowName)
     : doc.workflows ?? [];
+  const edgeSigs: string[] = [];
   for (const wf of targetWorkflows) {
     for (const e of wf.edges ?? []) edgeSigs.push(`${e.from}->${e.to}`);
   }
-  return `${activeWorkflowName ?? ""}|${names.join(",")}|${edgeSigs.join(",")}`;
+  return `${activeWorkflowName ?? ""}|${counts}|${edgeSigs.join(",")}`;
 }
 
 export function documentToGraph(doc: IterDocument, activeWorkflowName?: string): { nodes: Node<NodeData>[]; edges: FlowEdge[] } {
@@ -97,6 +98,9 @@ export function documentToGraph(doc: IterDocument, activeWorkflowName?: string):
       }
       if (edge.loop) {
         label += `${label ? " " : ""}loop:${edge.loop.name}(${edge.loop.max_iterations})`;
+      }
+      if (edge.with && edge.with.length > 0) {
+        label += `${label ? " " : ""}[${edge.with.length} mapping${edge.with.length > 1 ? "s" : ""}]`;
       }
       edges.push({
         id: makeEdgeId(wf.name, i),

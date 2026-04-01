@@ -1,5 +1,7 @@
+import { useMemo } from "react";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
+import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import type { RouterDecl, RouterMode } from "@/api/types";
 import { getAllNodeNames } from "@/lib/defaults";
 import { CommittedTextField, SelectField } from "./FormField";
@@ -13,6 +15,12 @@ export default function RouterForm({ decl }: Props) {
   const updateRouter = useDocumentStore((s) => s.updateRouter);
   const renameNode = useDocumentStore((s) => s.renameNode);
   const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
+  const activeWorkflow = useActiveWorkflow();
+
+  const outgoingEdges = useMemo(() => {
+    if (!activeWorkflow) return [];
+    return activeWorkflow.edges.filter((e) => e.from === decl.name);
+  }, [activeWorkflow, decl.name]);
 
   return (
     <div className="space-y-1">
@@ -45,7 +53,36 @@ export default function RouterForm({ decl }: Props) {
           { value: "fan_out_all", label: "fan_out_all" },
           { value: "condition", label: "condition" },
         ]}
+        help="fan_out_all = send input to all targets in parallel; condition = route based on 'when' clauses on outgoing edges."
       />
+      {decl.mode === "condition" && (
+        <div className="mt-2 p-2 bg-gray-800 rounded border border-gray-700">
+          <p className="text-[10px] text-gray-400 mb-2">
+            In condition mode, routing is controlled by &quot;when&quot; clauses on outgoing edges. Click an edge to add conditions.
+          </p>
+          {outgoingEdges.length === 0 && (
+            <p className="text-[10px] text-yellow-400">No outgoing edges yet. Connect this router to target nodes.</p>
+          )}
+          {outgoingEdges.map((e, i) => (
+            <div key={i} className="text-xs text-gray-300 flex items-center gap-1 py-0.5">
+              <span className="text-gray-500">&rarr;</span>
+              <span>{e.to}</span>
+              {e.when ? (
+                <span className="text-amber-400 text-[10px]">
+                  (when{e.when.negated ? " not" : ""} {e.when.condition})
+                </span>
+              ) : (
+                <span className="text-gray-500 text-[10px]">(no condition)</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {decl.mode === "fan_out_all" && outgoingEdges.length > 0 && (
+        <p className="text-[10px] text-gray-500 mt-1">
+          Sends input to {outgoingEdges.length} target{outgoingEdges.length !== 1 ? "s" : ""} in parallel.
+        </p>
+      )}
     </div>
   );
 }

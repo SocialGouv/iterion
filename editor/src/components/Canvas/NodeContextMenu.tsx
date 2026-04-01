@@ -46,7 +46,10 @@ export default function NodeContextMenu({
     <div
       ref={ref}
       className="fixed bg-gray-800 border border-gray-600 rounded-lg shadow-xl z-50 py-1 min-w-[160px]"
-      style={{ left: x, top: y }}
+      style={{
+        left: Math.min(x, window.innerWidth - 180),
+        top: Math.min(y, window.innerHeight - 200),
+      }}
     >
       <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wider">
         {nodeId}

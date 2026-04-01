@@ -86,6 +86,7 @@ export default function HumanForm({ decl }: Props) {
         value={decl.publish ?? ""}
         onChange={(v) => updateHuman(decl.name, { publish: v || undefined })}
         placeholder="Artifact name"
+        help="Publish this node's output as a persistent artifact, accessible downstream via {{artifacts.name}}."
       />
       <SelectFieldWithCreate
         label="Instructions Prompt"
@@ -105,6 +106,7 @@ export default function HumanForm({ decl }: Props) {
           { value: "auto_answer", label: "auto_answer" },
           { value: "auto_or_pause", label: "auto_or_pause" },
         ]}
+        help="pause_until_answers = always wait for human input; auto_answer = LLM generates answer (requires model); auto_or_pause = LLM decides whether to answer or pause."
       />
       <NumberField
         label="Min Answers"
@@ -115,42 +117,23 @@ export default function HumanForm({ decl }: Props) {
       {needsModel && (
         <div className="border-t border-gray-700 pt-2 mt-2">
           <p className="text-[10px] text-yellow-400 mb-1">Required for {decl.mode} mode</p>
-          <TextField
-            label="Model"
-            value={decl.model ?? ""}
-            onChange={(v) => updateHuman(decl.name, { model: v || undefined })}
-            placeholder="e.g. ${ANTHROPIC_MODEL}"
-          />
-          <SelectFieldWithCreate
-            label="System Prompt"
-            value={decl.system ?? ""}
-            onChange={(v) => updateHuman(decl.name, { system: v || undefined })}
-            options={promptOptions}
-            allowEmpty
-            emptyLabel="-- select prompt --"
-            onCreate={createPrompt}
-          />
         </div>
       )}
-      {!needsModel && (
-        <>
-          <TextField
-            label="Model"
-            value={decl.model ?? ""}
-            onChange={(v) => updateHuman(decl.name, { model: v || undefined })}
-            placeholder="Optional model override"
-          />
-          <SelectFieldWithCreate
-            label="System Prompt"
-            value={decl.system ?? ""}
-            onChange={(v) => updateHuman(decl.name, { system: v || undefined })}
-            options={promptOptions}
-            allowEmpty
-            emptyLabel="-- select prompt --"
-            onCreate={createPrompt}
-          />
-        </>
-      )}
+      <TextField
+        label="Model"
+        value={decl.model ?? ""}
+        onChange={(v) => updateHuman(decl.name, { model: v || undefined })}
+        placeholder={needsModel ? "e.g. ${ANTHROPIC_MODEL}" : "Optional model override"}
+      />
+      <SelectFieldWithCreate
+        label="System Prompt"
+        value={decl.system ?? ""}
+        onChange={(v) => updateHuman(decl.name, { system: v || undefined })}
+        options={promptOptions}
+        allowEmpty
+        emptyLabel="-- select prompt --"
+        onCreate={createPrompt}
+      />
     </div>
   );
 }

@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import Canvas from "./components/Canvas/Canvas";
 import SidebarTabs from "./components/Panels/SidebarTabs";
@@ -7,11 +8,23 @@ import NodePalette from "./components/Palette/NodePalette";
 import SourceView from "./components/SourceView/SourceView";
 import ToastContainer from "./components/shared/Toast";
 import { useUIStore } from "./store/ui";
+import { useDocumentStore } from "./store/document";
 import { useAutoValidation } from "./hooks/useAutoValidation";
 
 export default function App() {
   const sourceViewOpen = useUIStore((s) => s.sourceViewOpen);
   useAutoValidation();
+
+  // Warn before closing with unsaved changes
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (useDocumentStore.getState().isDirty()) {
+        e.preventDefault();
+      }
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, []);
 
   return (
     <ReactFlowProvider>

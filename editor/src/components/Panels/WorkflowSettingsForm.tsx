@@ -16,7 +16,7 @@ export default function WorkflowSettingsForm() {
     return <p className="p-3 text-gray-500 text-xs">No workflow defined.</p>;
   }
 
-  const nodeNames = document ? Array.from(getAllNodeNames(document)) : [];
+  const nodeNames = document ? Array.from(getAllNodeNames(document)).filter((n) => n !== "done" && n !== "fail") : [];
   const nodeOptions = nodeNames.map((n) => ({ value: n, label: n }));
   const budget = workflow.budget ?? {};
 

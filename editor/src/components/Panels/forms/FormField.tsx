@@ -4,6 +4,17 @@ const labelClass = "block text-xs text-gray-400 mb-1";
 const inputClass = "w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:border-blue-500 focus:outline-none";
 const selectClass = inputClass;
 
+function FieldLabel({ label, help }: { label: string; help?: string }) {
+  return (
+    <label className={labelClass}>
+      {label}
+      {help && (
+        <span className="text-gray-600 hover:text-gray-300 cursor-help ml-1" title={help}>?</span>
+      )}
+    </label>
+  );
+}
+
 interface TextFieldProps {
   label: string;
   value: string;
@@ -11,12 +22,13 @@ interface TextFieldProps {
   placeholder?: string;
   multiline?: boolean;
   rows?: number;
+  help?: string;
 }
 
-export function TextField({ label, value, onChange, placeholder, multiline, rows = 3 }: TextFieldProps) {
+export function TextField({ label, value, onChange, placeholder, multiline, rows = 3, help }: TextFieldProps) {
   return (
     <div className="mb-2">
-      <label className={labelClass}>{label}</label>
+      <FieldLabel label={label} help={help} />
       {multiline ? (
         <textarea
           className={inputClass + " resize-y"}
@@ -45,10 +57,11 @@ interface CommittedTextFieldProps {
   onCommit?: (newValue: string) => void;
   validate?: (v: string) => string | null;
   placeholder?: string;
+  help?: string;
 }
 
 /** TextField that only commits on blur or Enter, not on every keystroke. Used for name/rename fields. */
-export function CommittedTextField({ label, value, onChange, onCommit, validate, placeholder }: CommittedTextFieldProps) {
+export function CommittedTextField({ label, value, onChange, onCommit, validate, placeholder, help }: CommittedTextFieldProps) {
   const [draft, setDraft] = useState(value);
   const [error, setError] = useState<string | null>(null);
   const focusedRef = useRef(false);
@@ -101,7 +114,7 @@ export function CommittedTextField({ label, value, onChange, onCommit, validate,
 
   return (
     <div className="mb-2">
-      <label className={labelClass}>{label}</label>
+      <FieldLabel label={label} help={help} />
       <input
         className={`${inputClass}${error ? " ring-1 ring-red-500 border-red-500" : ""}`}
         type="text"
@@ -124,12 +137,13 @@ interface NumberFieldProps {
   onChange: (v: number | undefined) => void;
   placeholder?: string;
   min?: number;
+  help?: string;
 }
 
-export function NumberField({ label, value, onChange, placeholder, min }: NumberFieldProps) {
+export function NumberField({ label, value, onChange, placeholder, min, help }: NumberFieldProps) {
   return (
     <div className="mb-2">
-      <label className={labelClass}>{label}</label>
+      <FieldLabel label={label} help={help} />
       <input
         className={inputClass}
         type="number"
@@ -149,12 +163,13 @@ interface SelectFieldProps {
   options: { value: string; label: string }[];
   allowEmpty?: boolean;
   emptyLabel?: string;
+  help?: string;
 }
 
-export function SelectField({ label, value, onChange, options, allowEmpty, emptyLabel = "-- none --" }: SelectFieldProps) {
+export function SelectField({ label, value, onChange, options, allowEmpty, emptyLabel = "-- none --", help }: SelectFieldProps) {
   return (
     <div className="mb-2">
-      <label className={labelClass}>{label}</label>
+      <FieldLabel label={label} help={help} />
       <select className={selectClass} value={value} onChange={(e) => onChange(e.target.value)}>
         {allowEmpty && <option value="">{emptyLabel}</option>}
         {options.map((o) => (
@@ -171,10 +186,10 @@ interface SelectFieldWithCreateProps extends SelectFieldProps {
   onCreate: () => string; // returns the new name
 }
 
-export function SelectFieldWithCreate({ label, value, onChange, options, allowEmpty, emptyLabel, onCreate }: SelectFieldWithCreateProps) {
+export function SelectFieldWithCreate({ label, value, onChange, options, allowEmpty, emptyLabel, onCreate, help }: SelectFieldWithCreateProps) {
   return (
     <div className="mb-2">
-      <label className={labelClass}>{label}</label>
+      <FieldLabel label={label} help={help} />
       <div className="flex gap-1">
         <select className={selectClass + " flex-1"} value={value} onChange={(e) => onChange(e.target.value)}>
           {allowEmpty && <option value="">{emptyLabel ?? "-- none --"}</option>}
@@ -203,9 +218,10 @@ interface CheckboxFieldProps {
   label: string;
   checked: boolean;
   onChange: (v: boolean) => void;
+  help?: string;
 }
 
-export function CheckboxField({ label, checked, onChange }: CheckboxFieldProps) {
+export function CheckboxField({ label, checked, onChange, help }: CheckboxFieldProps) {
   return (
     <div className="mb-2 flex items-center gap-2">
       <input
@@ -214,7 +230,12 @@ export function CheckboxField({ label, checked, onChange }: CheckboxFieldProps) 
         onChange={(e) => onChange(e.target.checked)}
         className="rounded border-gray-600 bg-gray-800"
       />
-      <label className="text-xs text-gray-400">{label}</label>
+      <label className="text-xs text-gray-400">
+        {label}
+        {help && (
+          <span className="text-gray-600 hover:text-gray-300 cursor-help ml-1" title={help}>?</span>
+        )}
+      </label>
     </div>
   );
 }

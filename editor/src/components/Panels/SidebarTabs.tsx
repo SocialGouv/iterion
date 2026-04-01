@@ -23,12 +23,15 @@ export default function SidebarTabs() {
   const selectedNodeId = useSelectionStore((s) => s.selectedNodeId);
   const selectedEdgeId = useSelectionStore((s) => s.selectedEdgeId);
 
-  // Auto-switch to Properties tab when a node or edge is selected
+  // Auto-switch to Properties tab when a node or edge is selected,
+  // but only from passive tabs to avoid disrupting active editing
   useEffect(() => {
-    if (selectedNodeId || selectedEdgeId) {
+    if ((selectedNodeId || selectedEdgeId) && (activeTab === "workflow" || activeTab === "comments")) {
       setActiveTab("properties");
     }
-  }, [selectedNodeId, selectedEdgeId, setActiveTab]);
+  }, [selectedNodeId, selectedEdgeId, activeTab, setActiveTab]);
+
+  const hasSelection = !!(selectedNodeId || selectedEdgeId);
 
   return (
     <div className="h-full flex flex-col">
@@ -44,6 +47,9 @@ export default function SidebarTabs() {
             onClick={() => setActiveTab(tab.id)}
           >
             {tab.label}
+            {tab.id === "properties" && hasSelection && activeTab !== "properties" && (
+              <span className="w-1.5 h-1.5 bg-blue-500 rounded-full inline-block ml-1" />
+            )}
           </button>
         ))}
       </div>

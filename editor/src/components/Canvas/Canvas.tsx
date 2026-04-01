@@ -500,7 +500,10 @@ export default function Canvas() {
       {quickAddMenu && (
         <div
           className="fixed bg-gray-800 border border-gray-600 rounded-lg shadow-xl z-50 py-1 min-w-[140px]"
-          style={{ left: quickAddMenu.x, top: quickAddMenu.y }}
+          style={{
+            left: Math.min(quickAddMenu.x, window.innerWidth - 160),
+            top: Math.min(quickAddMenu.y, window.innerHeight - 340),
+          }}
         >
           <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wider">Add node</div>
           {QUICK_ADD_TYPES.map(({ kind, icon, label }) => (
@@ -513,6 +516,32 @@ export default function Canvas() {
               {label}
             </button>
           ))}
+          <div className="border-t border-gray-700 my-1" />
+          <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wider">Connect to</div>
+          <button
+            className="w-full text-left px-3 py-1.5 hover:bg-gray-700 text-xs text-white flex items-center gap-2"
+            onClick={() => {
+              if (activeWorkflow) {
+                addEdge(activeWorkflow.name, { from: quickAddMenu.sourceId, to: "done" });
+                setQuickAddMenu(null);
+              }
+            }}
+          >
+            <span>{"\u{2705}"}</span>
+            done
+          </button>
+          <button
+            className="w-full text-left px-3 py-1.5 hover:bg-gray-700 text-xs text-white flex items-center gap-2"
+            onClick={() => {
+              if (activeWorkflow) {
+                addEdge(activeWorkflow.name, { from: quickAddMenu.sourceId, to: "fail" });
+                setQuickAddMenu(null);
+              }
+            }}
+          >
+            <span>{"\u{274C}"}</span>
+            fail
+          </button>
           <div className="border-t border-gray-700 my-1" />
           <button
             className="w-full text-left px-3 py-1.5 hover:bg-gray-700 text-xs text-gray-400 flex items-center gap-2"

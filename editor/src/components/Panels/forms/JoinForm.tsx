@@ -59,6 +59,7 @@ export default function JoinForm({ decl }: Props) {
           { value: "wait_all", label: "wait_all" },
           { value: "best_effort", label: "best_effort" },
         ]}
+        help="wait_all = wait for all required branches to complete; best_effort = continue when available results are ready."
       />
       <MultiSelectField
         label="Require"

@@ -80,12 +80,14 @@ export default function AgentForm({ decl, kind }: Props) {
         value={decl.model}
         onChange={(v) => update({ model: v })}
         placeholder="e.g. ${ANTHROPIC_MODEL}"
+        help="LLM model identifier. Use ${ENV_VAR} for environment variable substitution. Required unless delegate is set."
       />
       <TextField
         label="Delegate"
         value={decl.delegate ?? ""}
         onChange={(v) => update({ delegate: v || undefined })}
         placeholder="e.g. claude_code"
+        help="Delegate execution to an external backend (e.g. claude_code, codex) instead of calling the model API directly."
       />
       <SelectFieldWithCreate
         label="Input Schema"
@@ -110,6 +112,7 @@ export default function AgentForm({ decl, kind }: Props) {
         value={decl.publish ?? ""}
         onChange={(v) => update({ publish: v || undefined })}
         placeholder="Artifact name"
+        help="Publish this node's output as a persistent artifact, accessible downstream via {{artifacts.name}}."
       />
       <SelectFieldWithCreate
         label="System Prompt"
@@ -138,6 +141,7 @@ export default function AgentForm({ decl, kind }: Props) {
           { value: "inherit", label: "inherit" },
           { value: "artifacts_only", label: "artifacts_only" },
         ]}
+        help="fresh = new context; inherit = reuse parent conversation; artifacts_only = share published artifacts only. Cannot use inherit after a join node."
       />
       <TagListField
         label="Tools"
@@ -150,6 +154,7 @@ export default function AgentForm({ decl, kind }: Props) {
         value={decl.tool_max_steps}
         onChange={(v) => update({ tool_max_steps: v })}
         min={1}
+        help="Maximum number of tool-use iterations the agent can perform before returning."
       />
     </div>
   );
