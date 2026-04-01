@@ -1422,6 +1422,8 @@ func TestAllFixturesCompile(t *testing.T) {
 		"feature_request_dual_model_mcp.iter",
 		"todo_app_dual_model_mcp.iter",
 		"todo_app_full_dual_model_mcp.iter",
+		"dual_model_plan_implement_review.iter",
+		"dual_model_plan_implement_review_before_round_robin_feature.iter",
 	}
 
 	for _, name := range fixtures {

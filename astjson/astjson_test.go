@@ -228,12 +228,12 @@ func TestEnumsSerializeAsStrings(t *testing.T) {
 
 	// Verify string enum values appear in JSON
 	expectations := []string{
-		`"string[]"`,      // TypeStringArray
-		`"json"`,          // FieldTypeJSON
+		`"string[]"`,       // TypeStringArray
+		`"json"`,           // FieldTypeJSON
 		`"artifacts_only"`, // SessionArtifactsOnly
-		`"condition"`,     // RouterCondition
-		`"best_effort"`,   // JoinBestEffort
-		`"auto_or_pause"`, // HumanAutoOrPause
+		`"condition"`,      // RouterCondition
+		`"best_effort"`,    // JoinBestEffort
+		`"auto_or_pause"`,  // HumanAutoOrPause
 	}
 
 	for _, exp := range expectations {

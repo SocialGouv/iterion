@@ -180,8 +180,9 @@ type JudgeDecl struct {
 type RouterMode int
 
 const (
-	RouterFanOutAll RouterMode = iota // fan out to all targets
-	RouterCondition                   // conditional routing
+	RouterFanOutAll  RouterMode = iota // fan out to all targets
+	RouterCondition                    // conditional routing
+	RouterRoundRobin                   // round-robin: cycle through targets one at a time
 )
 
 func (rm RouterMode) String() string {
@@ -190,6 +191,8 @@ func (rm RouterMode) String() string {
 		return "fan_out_all"
 	case RouterCondition:
 		return "condition"
+	case RouterRoundRobin:
+		return "round_robin"
 	default:
 		return "unknown"
 	}

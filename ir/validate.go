@@ -17,6 +17,7 @@ const (
 	DiagUnreachableNode        DiagCode = "C016" // node unreachable from entry
 	DiagHistoryRefNotInLoop    DiagCode = "C017" // outputs.<node>.history but node not in a loop
 	DiagUndeclaredCycle        DiagCode = "C019" // cycle without a declared loop (infinite loop risk)
+	DiagRoundRobinTooFewEdges  DiagCode = "C020" // round_robin router with fewer than 2 outgoing edges
 )
 
 // validate performs static validation on a compiled workflow.
@@ -28,6 +29,7 @@ func (c *compiler) validate(w *Workflow) {
 
 	c.validateInheritAfterJoin(w)
 	c.validateEdgeRouting(w)
+	c.validateRoundRobinEdges(w)
 	c.validateConditionFields(w)
 	c.validateJoinRequire(w)
 	c.validateReachability(w)
@@ -95,8 +97,8 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 			continue
 		}
 
-		// Router fan_out_all is allowed multiple unconditional edges.
-		if node.Kind == NodeRouter && node.RouterMode == RouterFanOutAll {
+		// Router fan_out_all and round_robin are allowed multiple unconditional edges.
+		if node.Kind == NodeRouter && (node.RouterMode == RouterFanOutAll || node.RouterMode == RouterRoundRobin) {
 			continue
 		}
 
@@ -128,6 +130,29 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 
 		// C011: ambiguous conditions — same field appears twice with same polarity.
 		c.checkAmbiguousConditions(nodeID, g.conditional)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// C020 — round_robin router must have at least 2 outgoing edges
+// ---------------------------------------------------------------------------
+
+func (c *compiler) validateRoundRobinEdges(w *Workflow) {
+	for _, node := range w.Nodes {
+		if node.Kind != NodeRouter || node.RouterMode != RouterRoundRobin {
+			continue
+		}
+		count := 0
+		for _, e := range w.Edges {
+			if e.From == node.ID && e.Condition == "" {
+				count++
+			}
+		}
+		if count < 2 {
+			c.errorf(DiagRoundRobinTooFewEdges,
+				"round_robin router %q has %d unconditional outgoing edge(s); at least 2 are needed for alternation",
+				node.ID, count)
+		}
 	}
 }
 

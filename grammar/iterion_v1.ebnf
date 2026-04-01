@@ -102,7 +102,7 @@ router_decl = "router" IDENT ":" NEWLINE INDENT { router_prop } DEDENT ;
 
 router_prop = "mode" ":" router_mode NEWLINE ;
 
-router_mode = "fan_out_all" | "condition" ;
+router_mode = "fan_out_all" | "condition" | "round_robin" ;
 
 (* ---- Nœuds : join ---- *)
 

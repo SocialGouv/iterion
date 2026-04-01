@@ -81,13 +81,14 @@ func NewFromRecipe(r *recipe.RecipeSpec, wf *ir.Workflow, s *store.RunStore, exe
 
 // runState holds the mutable runtime state passed through the execution loop.
 type runState struct {
-	runID            string
-	runInputs        map[string]interface{}
-	vars             map[string]interface{}
-	outputs          map[string]map[string]interface{}
-	loopCounters     map[string]int
-	artifactVersions map[string]int
-	budget           *SharedBudget // shared across branches, nil if no budget
+	runID              string
+	runInputs          map[string]interface{}
+	vars               map[string]interface{}
+	outputs            map[string]map[string]interface{}
+	loopCounters       map[string]int
+	roundRobinCounters map[string]int
+	artifactVersions   map[string]int
+	budget             *SharedBudget // shared across branches, nil if no budget
 }
 
 // branchResult holds the outcome of a single parallel branch.
@@ -114,13 +115,14 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 	}
 
 	rs := &runState{
-		runID:            runID,
-		runInputs:        inputs,
-		vars:             e.resolveVars(inputs),
-		outputs:          make(map[string]map[string]interface{}),
-		loopCounters:     make(map[string]int),
-		artifactVersions: make(map[string]int),
-		budget:           newSharedBudget(e.workflow.Budget),
+		runID:              runID,
+		runInputs:          inputs,
+		vars:               e.resolveVars(inputs),
+		outputs:            make(map[string]map[string]interface{}),
+		loopCounters:       make(map[string]int),
+		roundRobinCounters: make(map[string]int),
+		artifactVersions:   make(map[string]int),
+		budget:             newSharedBudget(e.workflow.Budget),
 	}
 
 	return e.execLoop(ctx, rs, e.workflow.Entry)
@@ -212,14 +214,20 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]in
 		return e.failRunErr(runID, humanNodeID, err)
 	}
 
+	roundRobinCounters := cp.RoundRobinCounters
+	if roundRobinCounters == nil {
+		roundRobinCounters = make(map[string]int)
+	}
+
 	rs := &runState{
-		runID:            runID,
-		runInputs:        r.Inputs,
-		vars:             cp.Vars,
-		outputs:          outputs,
-		loopCounters:     loopCounters,
-		artifactVersions: artifactVersions,
-		budget:           newSharedBudget(e.workflow.Budget),
+		runID:              runID,
+		runInputs:          r.Inputs,
+		vars:               cp.Vars,
+		outputs:            outputs,
+		loopCounters:       loopCounters,
+		roundRobinCounters: roundRobinCounters,
+		artifactVersions:   artifactVersions,
+		budget:             newSharedBudget(e.workflow.Budget),
 	}
 
 	return e.execLoop(ctx, rs, nextNodeID)
@@ -301,6 +309,16 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 		// --- Fan-out router: spawn parallel branches ---
 		if node.Kind == ir.NodeRouter && node.RouterMode == ir.RouterFanOutAll {
 			nextNodeID, err := e.execFanOut(ctx, rs, currentNodeID)
+			if err != nil {
+				return e.failRunErr(rs.runID, currentNodeID, err)
+			}
+			currentNodeID = nextNodeID
+			continue
+		}
+
+		// --- Round-robin router: select one edge cyclically ---
+		if node.Kind == ir.NodeRouter && node.RouterMode == ir.RouterRoundRobin {
+			nextNodeID, err := e.execRoundRobin(ctx, rs, currentNodeID)
 			if err != nil {
 				return e.failRunErr(rs.runID, currentNodeID, err)
 			}
@@ -473,6 +491,49 @@ func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID stri
 
 	// Process the join.
 	return e.processJoin(rs, joinNodeID, results)
+}
+
+// execRoundRobin handles a round_robin router node by selecting a single
+// outgoing edge based on a cyclical counter. Unlike fan_out_all, it does
+// not spawn parallel branches — it picks one target and returns to the
+// main execution loop.
+func (e *Engine) execRoundRobin(ctx context.Context, rs *runState, routerNodeID string) (string, error) {
+	// Collect unconditional outgoing edges from the router.
+	var edges []*ir.Edge
+	for _, edge := range e.workflow.Edges {
+		if edge.From == routerNodeID && edge.Condition == "" {
+			edges = append(edges, edge)
+		}
+	}
+	if len(edges) == 0 {
+		return "", fmt.Errorf("round_robin router %q has no outgoing edges", routerNodeID)
+	}
+
+	// Cyclical selection: counter % len(edges).
+	counter := rs.roundRobinCounters[routerNodeID]
+	selected := edges[counter%len(edges)]
+	rs.roundRobinCounters[routerNodeID] = counter + 1
+
+	// Emit router node_started with round-robin metadata.
+	if err := e.emit(rs.runID, store.EventNodeStarted, routerNodeID, map[string]interface{}{
+		"kind":              "router",
+		"mode":              "round_robin",
+		"round_robin_index": counter,
+		"selected_target":   selected.To,
+	}); err != nil {
+		return "", err
+	}
+
+	// Router is a pass-through: its output = its input from incoming edges.
+	routerInput := e.buildNodeInput(routerNodeID, rs.vars, rs.outputs, rs.runInputs)
+	rs.outputs[routerNodeID] = routerInput
+
+	// Emit router node_finished.
+	if err := e.emit(rs.runID, store.EventNodeFinished, routerNodeID, nil); err != nil {
+		return "", err
+	}
+
+	return selected.To, nil
 }
 
 // execBranch runs a single parallel branch starting from the target of
@@ -954,12 +1015,13 @@ func (e *Engine) persistPause(rs *runState, nodeID string) error {
 
 	// Atomically save checkpoint and set status to paused in a single write.
 	cp := &store.Checkpoint{
-		NodeID:           nodeID,
-		InteractionID:    interactionID,
-		Outputs:          rs.outputs,
-		LoopCounters:     rs.loopCounters,
-		ArtifactVersions: rs.artifactVersions,
-		Vars:             rs.vars,
+		NodeID:             nodeID,
+		InteractionID:      interactionID,
+		Outputs:            rs.outputs,
+		LoopCounters:       rs.loopCounters,
+		RoundRobinCounters: rs.roundRobinCounters,
+		ArtifactVersions:   rs.artifactVersions,
+		Vars:               rs.vars,
 	}
 	if err := e.store.PauseRun(rs.runID, cp); err != nil {
 		return fmt.Errorf("runtime: pause run: %w", err)

@@ -76,6 +76,7 @@ const (
 	// Router modes
 	TokenFanOutAll
 	TokenCondition
+	TokenRoundRobin
 	// Join strategies
 	TokenWaitAll
 	TokenBestEffort
@@ -167,6 +168,7 @@ var tokenNames = map[TokenType]string{
 	TokenArtifactsOnly:     "artifacts_only",
 	TokenFanOutAll:         "fan_out_all",
 	TokenCondition:         "condition",
+	TokenRoundRobin:        "round_robin",
 	TokenWaitAll:           "wait_all",
 	TokenBestEffort:        "best_effort",
 	TokenPauseUntilAnswers: "pause_until_answers",
@@ -238,6 +240,7 @@ var keywords = map[string]TokenType{
 	"artifacts_only":        TokenArtifactsOnly,
 	"fan_out_all":           TokenFanOutAll,
 	"condition":             TokenCondition,
+	"round_robin":           TokenRoundRobin,
 	"wait_all":              TokenWaitAll,
 	"best_effort":           TokenBestEffort,
 	"pause_until_answers":   TokenPauseUntilAnswers,

@@ -262,7 +262,7 @@ func TestLive_TodoApp_DualModel_MCP(t *testing.T) {
 		"7. Items persist in localStorage"
 
 	executor.SetVars(map[string]interface{}{
-		"app_description":    appDescription,
+		"app_description":     appDescription,
 		"acceptance_criteria": acceptanceCriteria,
 	})
 
@@ -281,9 +281,9 @@ func TestLive_TodoApp_DualModel_MCP(t *testing.T) {
 
 	runID := "live-todo-app-dual-mcp"
 	inputs := map[string]interface{}{
-		"app_description":    appDescription,
+		"app_description":     appDescription,
 		"acceptance_criteria": acceptanceCriteria,
-		"previous_review":    "",
+		"previous_review":     "",
 	}
 
 	t.Log("Starting live todo app dual-model MCP workflow run...")
@@ -442,7 +442,7 @@ func TestLive_TodoApp_Full_DualModel_MCP(t *testing.T) {
 		"12. Accessibility: aria-labels on interactive elements, visible focus styles, keyboard navigation"
 
 	executor.SetVars(map[string]interface{}{
-		"app_description":    appDescription,
+		"app_description":     appDescription,
 		"acceptance_criteria": acceptanceCriteria,
 	})
 
@@ -459,7 +459,7 @@ func TestLive_TodoApp_Full_DualModel_MCP(t *testing.T) {
 
 	runID := "live-todo-app-full-dual-mcp"
 	inputs := map[string]interface{}{
-		"app_description":    appDescription,
+		"app_description":     appDescription,
 		"acceptance_criteria": acceptanceCriteria,
 	}
 

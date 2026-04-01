@@ -128,6 +128,7 @@ type RouterMode int
 const (
 	RouterFanOutAll RouterMode = iota
 	RouterCondition
+	RouterRoundRobin
 )
 
 func (rm RouterMode) String() string {
@@ -136,6 +137,8 @@ func (rm RouterMode) String() string {
 		return "fan_out_all"
 	case RouterCondition:
 		return "condition"
+	case RouterRoundRobin:
+		return "round_robin"
 	default:
 		return "unknown"
 	}

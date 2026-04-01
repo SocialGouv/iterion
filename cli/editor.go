@@ -14,9 +14,9 @@ import (
 
 // EditorOptions holds options for the editor command.
 type EditorOptions struct {
-	Port        int
-	Dir         string // working directory (for examples)
-	NoBrowser   bool   // skip opening browser
+	Port      int
+	Dir       string // working directory (for examples)
+	NoBrowser bool   // skip opening browser
 }
 
 // RunEditor starts the editor HTTP server.

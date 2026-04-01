@@ -680,8 +680,10 @@ func (p *parser) parseRouterMode() ast.RouterMode {
 		return ast.RouterFanOutAll
 	case TokenCondition:
 		return ast.RouterCondition
+	case TokenRoundRobin:
+		return ast.RouterRoundRobin
 	default:
-		p.addError(DiagInvalidValue, t, "expected router mode (fan_out_all, condition), got '"+t.Value+"'")
+		p.addError(DiagInvalidValue, t, "expected router mode (fan_out_all, condition, round_robin), got '"+t.Value+"'")
 		return ast.RouterFanOutAll
 	}
 }

@@ -9,7 +9,7 @@
 | Schemas | `schema <name>:` | `SchemaDecl`, `SchemaField` | Types: string, bool, int, float, json, string[]; enum constraint |
 | Agent | `agent <name>:` | `AgentDecl` | model, input, output, publish, system, user, session, tools, tool_max_steps |
 | Judge | `judge <name>:` | `JudgeDecl` | Structurally identical to agent |
-| Router | `router <name>:` | `RouterDecl` | Modes: fan_out_all, condition |
+| Router | `router <name>:` | `RouterDecl` | Modes: fan_out_all, condition, round_robin |
 | Join | `join <name>:` | `JoinDecl` | Strategies: wait_all, best_effort; require, output |
 | Human | `human <name>:` | `HumanDecl` | input, output, publish, instructions, mode, model, system, min_answers. Modes: pause_until_answers (default), auto_answer, auto_or_pause |
 | Tool (node) | `tool <name>:` | `ToolNodeDecl` | command, output (direct execution without LLM) |

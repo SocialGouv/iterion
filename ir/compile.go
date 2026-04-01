@@ -553,6 +553,8 @@ func convertRouterMode(rm ast.RouterMode) RouterMode {
 	switch rm {
 	case ast.RouterCondition:
 		return RouterCondition
+	case ast.RouterRoundRobin:
+		return RouterRoundRobin
 	default:
 		return RouterFanOutAll
 	}

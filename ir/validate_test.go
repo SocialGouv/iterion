@@ -223,6 +223,75 @@ workflow test:
 	expectNoDiag(t, r, DiagMultipleDefaultEdges)
 }
 
+func TestValidateMultipleDefaultEdges_RouterRoundRobinAllowed(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent a1:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+agent a2:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+router r1:
+  mode: round_robin
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> done
+  a2 -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagMultipleDefaultEdges)
+}
+
+func TestValidateRoundRobinTooFewEdges(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent a1:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+router r1:
+  mode: round_robin
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  a1 -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagRoundRobinTooFewEdges)
+}
+
 // ---------------------------------------------------------------------------
 // C011 — ambiguous conditions
 // ---------------------------------------------------------------------------

@@ -363,6 +363,18 @@ func TestRouterDecl(t *testing.T) {
 	assertEq(t, "Mode", r.Mode, ast.RouterCondition)
 }
 
+func TestRouterDeclRoundRobin(t *testing.T) {
+	src := `router selector:
+  mode: round_robin
+`
+	res := parser.Parse("test.iter", src)
+	assertNoDiags(t, res)
+
+	r := res.File.Routers[0]
+	assertEq(t, "Name", r.Name, "selector")
+	assertEq(t, "Mode", r.Mode, ast.RouterRoundRobin)
+}
+
 func TestHumanDecl(t *testing.T) {
 	src := `human review:
   input: review_in
