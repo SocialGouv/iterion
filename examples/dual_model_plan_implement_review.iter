@@ -1,0 +1,979 @@
+## Fixture : dual_model_plan_implement_review
+## Objectif : Workflow de planification et implementation orchestrant
+## deux agents IA via delegation MCP avec double validation croisee
+## et alternance structurelle des roles.
+##
+##   - Claude  -> claude-code (delegate: "claude_code")
+##   - Codex   -> codex       (delegate: "codex")
+##
+## Phases :
+##   1. Planification parallele (Claude + Codex)
+##   2. Fusion des plans (Claude)
+##   3. Validation parallele (Claude + Codex)
+##   4. Boucle de raffinage avec alternance claude/codex
+##   5. Implementation (alternance claude/codex a chaque cycle)
+##   6. Review parallele (Claude + Codex)
+##   7. Si rejet -> retour a Phase 1 avec reviews en contexte
+##
+## Pattern d'alternance : cross-pair structurel
+##   - Paire externe 1 : Claude implemente
+##   - Paire externe 2 : Codex implemente
+##   - Sous-paire de raffinage A : codex raffine (Pair 1) / claude raffine (Pair 2)
+##   - Sous-paire de raffinage B : claude raffine (Pair 1) / codex raffine (Pair 2)
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+## ─── Prompts ────────────────────────────────────────────────────
+
+prompt plan_system:
+  Tu es un architecte logiciel senior expert en planification.
+  Tu analyses les exigences et produis un plan d'implementation
+  detaille, ordonne, testable et executable.
+  Sois precis et pragmatique. Identifie les risques potentiels.
+
+prompt plan_user:
+  Produis un plan d'implementation detaille pour cette tache.
+
+  Description de la tache :
+  {{input.task_description}}
+
+  Criteres d'acceptation :
+  {{input.acceptance_criteria}}
+
+  Reviews de l'iteration precedente (si applicable) :
+  Claude : {{input.previous_claude_review}}
+  Codex : {{input.previous_codex_review}}
+
+  Produis un plan incluant :
+  - Un resume de l'approche
+  - Les objectifs principaux
+  - Les etapes ordonnees d'implementation
+  - Les risques identifies
+  - Le plan de test
+
+prompt merge_plan_system:
+  Tu es un architecte senior specialise en synthese.
+  Tu fusionnes deux plans d'implementation issus de modeles differents
+  en un plan unique, coherent et complet.
+  Conserve les meilleures idees de chaque plan, resous les contradictions
+  et produis un plan actionable.
+
+prompt merge_plan_user:
+  Fusionne ces deux plans d'implementation en un plan unique.
+
+  Plan Claude :
+  {{input.claude_plan}}
+
+  Plan Codex :
+  {{input.codex_plan}}
+
+  Criteres d'acceptation :
+  {{input.acceptance_criteria}}
+
+  Produis un plan fusionne qui :
+  - Integre les meilleures idees des deux plans
+  - Resout les contradictions
+  - Est complet, ordonne et actionable
+  - Couvre tous les criteres d'acceptation
+
+prompt validate_plan_system:
+  Tu es un evaluateur de plans d'implementation exigeant.
+  Tu verifies qu'un plan couvre tous les criteres d'acceptation,
+  qu'il est realiste, complet et actionable.
+  Sois strict : un critere partiellement couvert compte comme non couvert.
+
+prompt validate_plan_user:
+  Evalue ce plan d'implementation.
+
+  Plan fusionne :
+  {{input.merged_plan}}
+
+  Criteres d'acceptation :
+  {{input.acceptance_criteria}}
+
+  Verifie chaque critere individuellement.
+  Identifie les lacunes, les risques non couverts
+  et les etapes manquantes.
+
+prompt plan_acceptance_system:
+  Tu es un juge technique exigeant.
+  Tu evalues si un plan d'implementation satisfait TOUS les criteres
+  d'acceptation en te basant sur deux evaluations independantes.
+  Ne marque ready=true que si les DEUX evaluations sont favorables
+  et que chaque critere est pleinement couvert.
+
+prompt plan_acceptance_user:
+  Evalue si ce plan est pret pour l'implementation.
+
+  Plan fusionne :
+  {{input.merged_plan}}
+
+  Evaluation Claude :
+  {{input.claude_validation}}
+
+  Evaluation Codex :
+  {{input.codex_validation}}
+
+  Criteres d'acceptation :
+  {{input.acceptance_criteria}}
+
+  Ne marque ready=true que si TOUS les criteres sont couverts
+  selon les DEUX evaluations.
+
+prompt refine_plan_system:
+  Tu es un expert en raffinage de plans d'implementation.
+  Tu prends un plan existant et les rapports de validation
+  pour produire une version amelioree qui corrige les lacunes identifiees.
+  Sois methodique : traite chaque probleme signale un par un.
+
+prompt refine_plan_user:
+  Raffine ce plan d'implementation en corrigeant les problemes identifies.
+
+  Plan actuel :
+  {{input.merged_plan}}
+
+  Rapport de validation Claude :
+  {{input.claude_report}}
+
+  Rapport de validation Codex :
+  {{input.codex_report}}
+
+  Criteres d'acceptation :
+  {{input.acceptance_criteria}}
+
+  Produis un plan ameliore qui corrige chaque lacune identifiee.
+
+prompt implement_system:
+  Tu es un developpeur expert en implementation.
+  Tu appliques un plan d'implementation au workspace avec rigueur.
+  Ecris du code propre, teste et documente.
+  Corrige les problemes identifies par les reviewers precedents si applicable.
+
+prompt implement_user:
+  Implemente la tache selon ce plan valide.
+
+  Plan valide :
+  {{input.validated_plan}}
+
+  Criteres d'acceptation :
+  {{input.acceptance_criteria}}
+
+  Retour precedent :
+  {{input.previous_feedback}}
+
+  Applique le plan etape par etape.
+  Assure-toi que TOUS les criteres sont satisfaits.
+
+prompt review_impl_system:
+  Tu es un reviewer de code exigeant.
+  Tu evalues une implementation selon les criteres d'acceptation.
+  Verifie la qualite du code, la completude, les tests
+  et le respect des bonnes pratiques.
+  Sois strict mais constructif.
+
+prompt review_impl_user:
+  Review cette implementation.
+
+  Resultat de l'implementation :
+  {{input.implementation}}
+
+  Criteres d'acceptation :
+  {{input.acceptance_criteria}}
+
+  Evalue chaque critere un par un.
+  Identifie les manques et les ameliorations necessaires.
+
+prompt impl_verdict_system:
+  Tu es un juge technique final.
+  Tu evalues si une implementation est prete pour la production
+  en te basant sur deux reviews independantes.
+  Ne marque approved=true que si les DEUX reviews sont favorables
+  et que chaque critere d'acceptation est pleinement satisfait.
+
+prompt impl_verdict_user:
+  Evalue si cette implementation est prete.
+
+  Resultat de l'implementation :
+  {{input.implementation}}
+
+  Review Claude :
+  {{input.claude_review}}
+
+  Review Codex :
+  {{input.codex_review}}
+
+  Criteres d'acceptation :
+  {{input.acceptance_criteria}}
+
+  Ne marque approved=true que si TOUS les criteres sont satisfaits
+  selon les DEUX reviews.
+
+## ─── Schemas ────────────────────────────────────────────────────
+
+schema workflow_input:
+  task_description: string
+  acceptance_criteria: string
+
+schema plan_input:
+  task_description: string
+  acceptance_criteria: string
+  previous_claude_review: string
+  previous_codex_review: string
+
+schema plan_output:
+  summary: string
+  goals: string[]
+  ordered_steps: string[]
+  risks: string[]
+  test_plan: string[]
+
+schema dual_plan_bundle:
+  claude_plan: json
+  codex_plan: json
+
+schema merge_input:
+  claude_plan: json
+  codex_plan: json
+  acceptance_criteria: string
+
+schema validate_input:
+  merged_plan: json
+  acceptance_criteria: string
+
+schema validate_output:
+  approved: bool
+  issues: string[]
+  strengths: string[]
+  missing_requirements: string[]
+
+schema dual_validation_bundle:
+  claude_validation: json
+  codex_validation: json
+
+schema plan_acceptance_input:
+  claude_validation: json
+  codex_validation: json
+  merged_plan: json
+  acceptance_criteria: string
+
+schema plan_acceptance_verdict:
+  ready: bool
+  remaining_issues: string[]
+  confidence: string [enum: "low", "medium", "high"]
+
+schema refine_input:
+  merged_plan: json
+  claude_report: json
+  codex_report: json
+  acceptance_criteria: string
+
+schema impl_input:
+  validated_plan: json
+  acceptance_criteria: string
+  previous_feedback: string
+
+schema impl_output:
+  applied: bool
+  summary: string
+  files_changed: string[]
+
+schema review_input:
+  implementation: json
+  acceptance_criteria: string
+
+schema review_output:
+  summary: string
+  issues: string[]
+  strengths: string[]
+  missing_requirements: string[]
+
+schema dual_review_bundle:
+  claude_review: json
+  codex_review: json
+  implementation: json
+  acceptance_criteria: string
+
+schema impl_verdict_input:
+  implementation: json
+  claude_review: json
+  codex_review: json
+  acceptance_criteria: string
+
+schema impl_verdict:
+  approved: bool
+  remaining_issues: string[]
+  confidence: string [enum: "low", "medium", "high"]
+
+## ─── Paire Externe 1 — Nodes : Planification ───────────────────
+
+router plan_fanout_1:
+  mode: fan_out_all
+
+agent claude_plan_1:
+  delegate: "claude_code"
+  input: plan_input
+  output: plan_output
+  system: plan_system
+  user: plan_user
+  session: fresh
+
+agent codex_plan_1:
+  delegate: "codex"
+  input: plan_input
+  output: plan_output
+  system: plan_system
+  user: plan_user
+  session: fresh
+
+join plans_join_1:
+  strategy: wait_all
+  require: [claude_plan_1, codex_plan_1]
+  output: dual_plan_bundle
+
+agent merge_plans_1:
+  delegate: "claude_code"
+  input: merge_input
+  output: plan_output
+  publish: merged_plan
+  system: merge_plan_system
+  user: merge_plan_user
+  session: fresh
+
+## ─── Paire Externe 1 — Nodes : Validation Sous-Paire A ─────────
+
+router val_fanout_1a:
+  mode: fan_out_all
+
+agent claude_val_1a:
+  delegate: "claude_code"
+  input: validate_input
+  output: validate_output
+  system: validate_plan_system
+  user: validate_plan_user
+  session: fresh
+
+agent codex_val_1a:
+  delegate: "codex"
+  input: validate_input
+  output: validate_output
+  system: validate_plan_system
+  user: validate_plan_user
+  session: fresh
+
+join val_join_1a:
+  strategy: wait_all
+  require: [claude_val_1a, codex_val_1a]
+  output: dual_validation_bundle
+
+judge val_judge_1a:
+  delegate: "claude_code"
+  input: plan_acceptance_input
+  output: plan_acceptance_verdict
+  system: plan_acceptance_system
+  user: plan_acceptance_user
+  session: fresh
+
+## ─── Paire Externe 1 — Nodes : Raffineur A (Codex) ─────────────
+
+agent refine_1_codex:
+  delegate: "codex"
+  input: refine_input
+  output: plan_output
+  publish: merged_plan
+  system: refine_plan_system
+  user: refine_plan_user
+  session: fresh
+
+## ─── Paire Externe 1 — Nodes : Validation Sous-Paire B ─────────
+
+router val_fanout_1b:
+  mode: fan_out_all
+
+agent claude_val_1b:
+  delegate: "claude_code"
+  input: validate_input
+  output: validate_output
+  system: validate_plan_system
+  user: validate_plan_user
+  session: fresh
+
+agent codex_val_1b:
+  delegate: "codex"
+  input: validate_input
+  output: validate_output
+  system: validate_plan_system
+  user: validate_plan_user
+  session: fresh
+
+join val_join_1b:
+  strategy: wait_all
+  require: [claude_val_1b, codex_val_1b]
+  output: dual_validation_bundle
+
+judge val_judge_1b:
+  delegate: "codex"
+  input: plan_acceptance_input
+  output: plan_acceptance_verdict
+  system: plan_acceptance_system
+  user: plan_acceptance_user
+  session: fresh
+
+## ─── Paire Externe 1 — Nodes : Raffineur B (Claude) ────────────
+
+agent refine_1_claude:
+  delegate: "claude_code"
+  input: refine_input
+  output: plan_output
+  publish: merged_plan
+  system: refine_plan_system
+  user: refine_plan_user
+  session: fresh
+
+## ─── Paire Externe 1 — Nodes : Implementation + Review ─────────
+
+agent claude_implement:
+  delegate: "claude_code"
+  input: impl_input
+  output: impl_output
+  publish: implementation
+  system: implement_system
+  user: implement_user
+  session: fresh
+  tools: [read_file, write_file, patch, list_files, search_codebase, git_diff, git_status, run_command]
+  tool_max_steps: 20
+
+router review_fanout_1:
+  mode: fan_out_all
+
+agent claude_review_1:
+  delegate: "claude_code"
+  input: review_input
+  output: review_output
+  system: review_impl_system
+  user: review_impl_user
+  session: fresh
+  tools: [read_file, list_files, search_codebase, git_diff, tree]
+  tool_max_steps: 10
+
+agent codex_review_1:
+  delegate: "codex"
+  input: review_input
+  output: review_output
+  system: review_impl_system
+  user: review_impl_user
+  session: fresh
+  tools: [read_file, list_files, search_codebase, git_diff, tree]
+  tool_max_steps: 10
+
+join review_join_1:
+  strategy: wait_all
+  require: [claude_review_1, codex_review_1]
+  output: dual_review_bundle
+
+judge review_judge_1:
+  delegate: "claude_code"
+  input: impl_verdict_input
+  output: impl_verdict
+  system: impl_verdict_system
+  user: impl_verdict_user
+  session: fresh
+
+## ─── Paire Externe 2 — Nodes : Planification ───────────────────
+
+router plan_fanout_2:
+  mode: fan_out_all
+
+agent claude_plan_2:
+  delegate: "claude_code"
+  input: plan_input
+  output: plan_output
+  system: plan_system
+  user: plan_user
+  session: fresh
+
+agent codex_plan_2:
+  delegate: "codex"
+  input: plan_input
+  output: plan_output
+  system: plan_system
+  user: plan_user
+  session: fresh
+
+join plans_join_2:
+  strategy: wait_all
+  require: [claude_plan_2, codex_plan_2]
+  output: dual_plan_bundle
+
+agent merge_plans_2:
+  delegate: "claude_code"
+  input: merge_input
+  output: plan_output
+  publish: merged_plan
+  system: merge_plan_system
+  user: merge_plan_user
+  session: fresh
+
+## ─── Paire Externe 2 — Nodes : Validation Sous-Paire A ─────────
+
+router val_fanout_2a:
+  mode: fan_out_all
+
+agent claude_val_2a:
+  delegate: "claude_code"
+  input: validate_input
+  output: validate_output
+  system: validate_plan_system
+  user: validate_plan_user
+  session: fresh
+
+agent codex_val_2a:
+  delegate: "codex"
+  input: validate_input
+  output: validate_output
+  system: validate_plan_system
+  user: validate_plan_user
+  session: fresh
+
+join val_join_2a:
+  strategy: wait_all
+  require: [claude_val_2a, codex_val_2a]
+  output: dual_validation_bundle
+
+judge val_judge_2a:
+  delegate: "codex"
+  input: plan_acceptance_input
+  output: plan_acceptance_verdict
+  system: plan_acceptance_system
+  user: plan_acceptance_user
+  session: fresh
+
+## ─── Paire Externe 2 — Nodes : Raffineur A (Claude) ────────────
+
+agent refine_2_claude:
+  delegate: "claude_code"
+  input: refine_input
+  output: plan_output
+  publish: merged_plan
+  system: refine_plan_system
+  user: refine_plan_user
+  session: fresh
+
+## ─── Paire Externe 2 — Nodes : Validation Sous-Paire B ─────────
+
+router val_fanout_2b:
+  mode: fan_out_all
+
+agent claude_val_2b:
+  delegate: "claude_code"
+  input: validate_input
+  output: validate_output
+  system: validate_plan_system
+  user: validate_plan_user
+  session: fresh
+
+agent codex_val_2b:
+  delegate: "codex"
+  input: validate_input
+  output: validate_output
+  system: validate_plan_system
+  user: validate_plan_user
+  session: fresh
+
+join val_join_2b:
+  strategy: wait_all
+  require: [claude_val_2b, codex_val_2b]
+  output: dual_validation_bundle
+
+judge val_judge_2b:
+  delegate: "claude_code"
+  input: plan_acceptance_input
+  output: plan_acceptance_verdict
+  system: plan_acceptance_system
+  user: plan_acceptance_user
+  session: fresh
+
+## ─── Paire Externe 2 — Nodes : Raffineur B (Codex) ─────────────
+
+agent refine_2_codex:
+  delegate: "codex"
+  input: refine_input
+  output: plan_output
+  publish: merged_plan
+  system: refine_plan_system
+  user: refine_plan_user
+  session: fresh
+
+## ─── Paire Externe 2 — Nodes : Implementation + Review ─────────
+
+agent codex_implement:
+  delegate: "codex"
+  input: impl_input
+  output: impl_output
+  publish: implementation
+  system: implement_system
+  user: implement_user
+  session: fresh
+  tools: [read_file, write_file, patch, list_files, search_codebase, git_diff, git_status, run_command]
+  tool_max_steps: 20
+
+router review_fanout_2:
+  mode: fan_out_all
+
+agent claude_review_2:
+  delegate: "claude_code"
+  input: review_input
+  output: review_output
+  system: review_impl_system
+  user: review_impl_user
+  session: fresh
+  tools: [read_file, list_files, search_codebase, git_diff, tree]
+  tool_max_steps: 10
+
+agent codex_review_2:
+  delegate: "codex"
+  input: review_input
+  output: review_output
+  system: review_impl_system
+  user: review_impl_user
+  session: fresh
+  tools: [read_file, list_files, search_codebase, git_diff, tree]
+  tool_max_steps: 10
+
+join review_join_2:
+  strategy: wait_all
+  require: [claude_review_2, codex_review_2]
+  output: dual_review_bundle
+
+judge review_judge_2:
+  delegate: "codex"
+  input: impl_verdict_input
+  output: impl_verdict
+  system: impl_verdict_system
+  user: impl_verdict_user
+  session: fresh
+
+## ─── Workflow ────────────────────────────────────────────────────
+
+workflow dual_model_plan_implement_review:
+  vars:
+    task_description: string
+    acceptance_criteria: string
+
+  entry: plan_fanout_1
+
+  budget:
+    max_parallel_branches: 4
+    max_duration: "4h"
+    max_cost_usd: 100
+    max_tokens: 10000000
+
+  ## ═══════════════════════════════════════════════════════════════
+  ## PAIRE EXTERNE 1 — Claude implemente
+  ## ═══════════════════════════════════════════════════════════════
+
+  ## 1.1 Planification parallele
+  plan_fanout_1 -> claude_plan_1 with {
+    task_description: "{{vars.task_description}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}",
+    previous_claude_review: "",
+    previous_codex_review: ""
+  }
+
+  plan_fanout_1 -> codex_plan_1 with {
+    task_description: "{{vars.task_description}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}",
+    previous_claude_review: "",
+    previous_codex_review: ""
+  }
+
+  claude_plan_1 -> plans_join_1
+  codex_plan_1 -> plans_join_1
+
+  ## 1.2 Fusion des plans (Claude)
+  plans_join_1 -> merge_plans_1 with {
+    claude_plan: "{{outputs.claude_plan_1}}",
+    codex_plan: "{{outputs.codex_plan_1}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## 1.3 Validation parallele — Sous-Paire A
+  merge_plans_1 -> val_fanout_1a with {
+    merged_plan: "{{outputs.merge_plans_1}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  val_fanout_1a -> claude_val_1a with {
+    merged_plan: "{{input.merged_plan}}",
+    acceptance_criteria: "{{input.acceptance_criteria}}"
+  }
+
+  val_fanout_1a -> codex_val_1a with {
+    merged_plan: "{{input.merged_plan}}",
+    acceptance_criteria: "{{input.acceptance_criteria}}"
+  }
+
+  claude_val_1a -> val_join_1a
+  codex_val_1a -> val_join_1a
+
+  val_join_1a -> val_judge_1a with {
+    claude_validation: "{{outputs.claude_val_1a}}",
+    codex_validation: "{{outputs.codex_val_1a}}",
+    merged_plan: "{{artifacts.merged_plan}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## 1.4 Si plan OK -> Claude implemente
+  val_judge_1a -> claude_implement when ready with {
+    validated_plan: "{{artifacts.merged_plan}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}",
+    previous_feedback: ""
+  }
+
+  ## 1.5 Si plan KO -> Codex raffine (Sous-Paire A -> B)
+  val_judge_1a -> refine_1_codex when not ready as refine_loop_1(4) with {
+    merged_plan: "{{artifacts.merged_plan}}",
+    claude_report: "{{outputs.claude_val_1a}}",
+    codex_report: "{{outputs.codex_val_1a}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## 1.6 Codex raffine -> Revalidation Sous-Paire B
+  refine_1_codex -> val_fanout_1b with {
+    merged_plan: "{{outputs.refine_1_codex}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  val_fanout_1b -> claude_val_1b with {
+    merged_plan: "{{input.merged_plan}}",
+    acceptance_criteria: "{{input.acceptance_criteria}}"
+  }
+
+  val_fanout_1b -> codex_val_1b with {
+    merged_plan: "{{input.merged_plan}}",
+    acceptance_criteria: "{{input.acceptance_criteria}}"
+  }
+
+  claude_val_1b -> val_join_1b
+  codex_val_1b -> val_join_1b
+
+  val_join_1b -> val_judge_1b with {
+    claude_validation: "{{outputs.claude_val_1b}}",
+    codex_validation: "{{outputs.codex_val_1b}}",
+    merged_plan: "{{artifacts.merged_plan}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## 1.7 Si plan OK -> Claude implemente
+  val_judge_1b -> claude_implement when ready with {
+    validated_plan: "{{artifacts.merged_plan}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}",
+    previous_feedback: ""
+  }
+
+  ## 1.8 Si plan KO -> Claude raffine (Sous-Paire B -> A, boucle interne)
+  val_judge_1b -> refine_1_claude when not ready as refine_loop_1(4) with {
+    merged_plan: "{{artifacts.merged_plan}}",
+    claude_report: "{{outputs.claude_val_1b}}",
+    codex_report: "{{outputs.codex_val_1b}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## 1.9 Claude raffine -> Retour a Sous-Paire A (fermeture boucle interne)
+  refine_1_claude -> val_fanout_1a with {
+    merged_plan: "{{outputs.refine_1_claude}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## 1.10 Implementation Claude
+  claude_implement -> review_fanout_1 with {
+    implementation: "{{outputs.claude_implement}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## 1.11 Review parallele
+  review_fanout_1 -> claude_review_1 with {
+    implementation: "{{input.implementation}}",
+    acceptance_criteria: "{{input.acceptance_criteria}}"
+  }
+
+  review_fanout_1 -> codex_review_1 with {
+    implementation: "{{input.implementation}}",
+    acceptance_criteria: "{{input.acceptance_criteria}}"
+  }
+
+  claude_review_1 -> review_join_1
+  codex_review_1 -> review_join_1
+
+  review_join_1 -> review_judge_1 with {
+    implementation: "{{outputs.claude_implement}}",
+    claude_review: "{{outputs.claude_review_1}}",
+    codex_review: "{{outputs.codex_review_1}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## 1.12 Si implementation OK -> done
+  review_judge_1 -> done when approved
+
+  ## 1.13 Si implementation KO -> Paire Externe 2 (Codex implemente)
+  review_judge_1 -> plan_fanout_2 when not approved as outer_loop(3) with {
+    task_description: "{{vars.task_description}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}",
+    previous_claude_review: "{{outputs.claude_review_1}}",
+    previous_codex_review: "{{outputs.codex_review_1}}"
+  }
+
+  ## ═══════════════════════════════════════════════════════════════
+  ## PAIRE EXTERNE 2 — Codex implemente
+  ## ═══════════════════════════════════════════════════════════════
+
+  ## 2.1 Planification parallele
+  plan_fanout_2 -> claude_plan_2 with {
+    task_description: "{{input.task_description}}",
+    acceptance_criteria: "{{input.acceptance_criteria}}",
+    previous_claude_review: "{{input.previous_claude_review}}",
+    previous_codex_review: "{{input.previous_codex_review}}"
+  }
+
+  plan_fanout_2 -> codex_plan_2 with {
+    task_description: "{{input.task_description}}",
+    acceptance_criteria: "{{input.acceptance_criteria}}",
+    previous_claude_review: "{{input.previous_claude_review}}",
+    previous_codex_review: "{{input.previous_codex_review}}"
+  }
+
+  claude_plan_2 -> plans_join_2
+  codex_plan_2 -> plans_join_2
+
+  ## 2.2 Fusion des plans (Claude)
+  plans_join_2 -> merge_plans_2 with {
+    claude_plan: "{{outputs.claude_plan_2}}",
+    codex_plan: "{{outputs.codex_plan_2}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## 2.3 Validation parallele — Sous-Paire A
+  merge_plans_2 -> val_fanout_2a with {
+    merged_plan: "{{outputs.merge_plans_2}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  val_fanout_2a -> claude_val_2a with {
+    merged_plan: "{{input.merged_plan}}",
+    acceptance_criteria: "{{input.acceptance_criteria}}"
+  }
+
+  val_fanout_2a -> codex_val_2a with {
+    merged_plan: "{{input.merged_plan}}",
+    acceptance_criteria: "{{input.acceptance_criteria}}"
+  }
+
+  claude_val_2a -> val_join_2a
+  codex_val_2a -> val_join_2a
+
+  val_join_2a -> val_judge_2a with {
+    claude_validation: "{{outputs.claude_val_2a}}",
+    codex_validation: "{{outputs.codex_val_2a}}",
+    merged_plan: "{{artifacts.merged_plan}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## 2.4 Si plan OK -> Codex implemente
+  val_judge_2a -> codex_implement when ready with {
+    validated_plan: "{{artifacts.merged_plan}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}",
+    previous_feedback: ""
+  }
+
+  ## 2.5 Si plan KO -> Claude raffine (Sous-Paire A -> B)
+  val_judge_2a -> refine_2_claude when not ready as refine_loop_2(4) with {
+    merged_plan: "{{artifacts.merged_plan}}",
+    claude_report: "{{outputs.claude_val_2a}}",
+    codex_report: "{{outputs.codex_val_2a}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## 2.6 Claude raffine -> Revalidation Sous-Paire B
+  refine_2_claude -> val_fanout_2b with {
+    merged_plan: "{{outputs.refine_2_claude}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  val_fanout_2b -> claude_val_2b with {
+    merged_plan: "{{input.merged_plan}}",
+    acceptance_criteria: "{{input.acceptance_criteria}}"
+  }
+
+  val_fanout_2b -> codex_val_2b with {
+    merged_plan: "{{input.merged_plan}}",
+    acceptance_criteria: "{{input.acceptance_criteria}}"
+  }
+
+  claude_val_2b -> val_join_2b
+  codex_val_2b -> val_join_2b
+
+  val_join_2b -> val_judge_2b with {
+    claude_validation: "{{outputs.claude_val_2b}}",
+    codex_validation: "{{outputs.codex_val_2b}}",
+    merged_plan: "{{artifacts.merged_plan}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## 2.7 Si plan OK -> Codex implemente
+  val_judge_2b -> codex_implement when ready with {
+    validated_plan: "{{artifacts.merged_plan}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}",
+    previous_feedback: ""
+  }
+
+  ## 2.8 Si plan KO -> Codex raffine (Sous-Paire B -> A, boucle interne)
+  val_judge_2b -> refine_2_codex when not ready as refine_loop_2(4) with {
+    merged_plan: "{{artifacts.merged_plan}}",
+    claude_report: "{{outputs.claude_val_2b}}",
+    codex_report: "{{outputs.codex_val_2b}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## 2.9 Codex raffine -> Retour a Sous-Paire A (fermeture boucle interne)
+  refine_2_codex -> val_fanout_2a with {
+    merged_plan: "{{outputs.refine_2_codex}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## 2.10 Implementation Codex
+  codex_implement -> review_fanout_2 with {
+    implementation: "{{outputs.codex_implement}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## 2.11 Review parallele
+  review_fanout_2 -> claude_review_2 with {
+    implementation: "{{input.implementation}}",
+    acceptance_criteria: "{{input.acceptance_criteria}}"
+  }
+
+  review_fanout_2 -> codex_review_2 with {
+    implementation: "{{input.implementation}}",
+    acceptance_criteria: "{{input.acceptance_criteria}}"
+  }
+
+  claude_review_2 -> review_join_2
+  codex_review_2 -> review_join_2
+
+  review_join_2 -> review_judge_2 with {
+    implementation: "{{outputs.codex_implement}}",
+    claude_review: "{{outputs.claude_review_2}}",
+    codex_review: "{{outputs.codex_review_2}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## 2.12 Si implementation OK -> done
+  review_judge_2 -> done when approved
+
+  ## 2.13 Si implementation KO -> Paire Externe 1 (Claude implemente)
+  review_judge_2 -> plan_fanout_1 when not approved as outer_loop(3) with {
+    task_description: "{{vars.task_description}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}",
+    previous_claude_review: "{{outputs.claude_review_2}}",
+    previous_codex_review: "{{outputs.codex_review_2}}"
+  }
