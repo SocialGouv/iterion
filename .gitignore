@@ -18,3 +18,12 @@ node_modules
 .pnpm-store
 .falcon/
 .env
+editor/dist/
+editor/node_modules/
+server/static/assets/
+server/static/index.html
+!server/static/.gitkeep
+
+.task/
+
+*.tsbuildinfo

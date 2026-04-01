@@ -3,7 +3,8 @@
   "packages": [
     "go@1.23",
     "go-task@latest",
-    "nodejs_22@latest"
+    "nodejs_22@latest",
+    "watchexec@latest"
   ],
   "shell": {
     "init_hook": [],

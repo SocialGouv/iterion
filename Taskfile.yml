@@ -111,3 +111,35 @@ tasks:
     cmds:
       - task: lint
       - task: test
+
+  editor:build:
+    desc: Build the editor frontend
+    dir: editor
+    cmds:
+      - npm install --prefer-offline --no-audit
+      - npx vite build
+      - rm -rf ../server/static/assets ../server/static/index.html
+      - cp -r dist/* ../server/static/
+
+  editor:dev:
+    desc: Start editor in dev mode (Vite HMR + Go backend with auto-restart)
+    deps: [editor:dev:backend, editor:dev:frontend]
+
+  editor:dev:backend:
+    desc: Run Go editor backend with auto-restart on changes
+    cmds:
+      - watchexec -r -e go -w cmd -w cli -w server -w astjson -w unparse -w parser -w ast -w ir -- go run {{.CMD}} editor --no-browser --port 4891
+    interactive: true
+
+  editor:dev:frontend:
+    desc: Run Vite dev server for editor frontend
+    dir: editor
+    cmds:
+      - npm install --prefer-offline --no-audit 2>/dev/null; npx vite --port 5173 --open
+    interactive: true
+
+  editor:
+    desc: Build and run the editor (production mode)
+    deps: [build, editor:build]
+    cmds:
+      - ./{{.BINARY}} editor {{.CLI_ARGS}}
