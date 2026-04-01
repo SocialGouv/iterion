@@ -15,6 +15,7 @@ import (
 
 	"github.com/SocialGouv/iterion/benchmark"
 	"github.com/SocialGouv/iterion/delegate"
+	iterlog "github.com/SocialGouv/iterion/log"
 	"github.com/SocialGouv/iterion/model"
 	"github.com/SocialGouv/iterion/runtime"
 	"github.com/SocialGouv/iterion/store"
@@ -86,14 +87,17 @@ func TestLive_DualParallel_MCPDelegation(t *testing.T) {
 
 	// No model resolution needed — delegated nodes use delegate: instead of model:.
 
-	// Create executor with delegate registry.
-	// A model registry is still needed for the executor constructor, but no
-	// providers need to be registered since all nodes use delegation.
+	// Create executor with delegate registry and event hooks for conversation logging.
 	reg := model.NewRegistry()
 	delegateReg := delegate.DefaultRegistry()
+	s := tmpStore(t)
+	runID := "live-dual-parallel-mcp"
+	logger := iterlog.New(iterlog.LevelDebug, os.Stderr)
+	hooks := model.NewStoreEventHooks(s, runID, logger)
 
 	executor := model.NewGoaiExecutor(reg, wf,
 		model.WithDelegateRegistry(delegateReg),
+		model.WithEventHooks(hooks),
 	)
 
 	// Set workflow variables for prompt template resolution.
@@ -106,15 +110,12 @@ func TestLive_DualParallel_MCPDelegation(t *testing.T) {
 		"final_review_rules": "Verify all review findings have been addressed. Check that no regressions were introduced.",
 	})
 
-	// Create store and engine.
-	s := tmpStore(t)
+	// Create engine.
 	eng := runtime.New(wf, s, executor)
 
 	// Run with a generous timeout (delegation via CLI is slower than direct API).
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
-
-	runID := "live-dual-parallel-mcp"
 	inputs := map[string]interface{}{
 		"pr_title":           "test: add unit tests for auth middleware",
 		"pr_description":     "This PR adds comprehensive unit tests for the authentication middleware including token validation, session management, and error handling.",
@@ -239,14 +240,25 @@ func TestLive_TodoApp_DualModel_MCP(t *testing.T) {
 		t.Fatalf("git init failed: %v\n%s", gitErr, out)
 	}
 
-	// Create executor with delegate registry (no model providers needed — all
-	// nodes use delegation). WorkDir ensures CLI subprocesses run in the
-	// workspace directory.
+	// Create store inside the workspace for easy post-run inspection.
+	storeDir := filepath.Join(workspaceDir, ".iterion")
+	s, storeErr := store.New(storeDir)
+	if storeErr != nil {
+		t.Fatalf("Failed to create store: %v", storeErr)
+	}
+
+	runID := "live-todo-app-dual-mcp"
+
+	// Create executor with delegate registry, event hooks, and WorkDir.
 	reg := model.NewRegistry()
 	delegateReg := delegate.DefaultRegistry()
+	logger := iterlog.New(iterlog.LevelDebug, os.Stderr)
+	hooks := model.NewStoreEventHooks(s, runID, logger)
+
 	executor := model.NewGoaiExecutor(reg, wf,
 		model.WithDelegateRegistry(delegateReg),
 		model.WithWorkDir(workspaceDir),
+		model.WithEventHooks(hooks),
 	)
 
 	appDescription := "A single-page todo application in one index.html file. " +
@@ -268,20 +280,11 @@ func TestLive_TodoApp_DualModel_MCP(t *testing.T) {
 		"acceptance_criteria": acceptanceCriteria,
 	})
 
-	// Create store inside the workspace for easy post-run inspection.
-	storeDir := filepath.Join(workspaceDir, ".iterion")
-	s, storeErr := store.New(storeDir)
-	if storeErr != nil {
-		t.Fatalf("Failed to create store: %v", storeErr)
-	}
-
 	eng := runtime.New(wf, s, executor)
 
 	// Generous timeout — delegation via CLI is slower than direct API.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-
-	runID := "live-todo-app-dual-mcp"
 	inputs := map[string]interface{}{
 		"app_description":     appDescription,
 		"acceptance_criteria": acceptanceCriteria,
@@ -417,11 +420,23 @@ func TestLive_TodoApp_Full_DualModel_MCP(t *testing.T) {
 		t.Fatalf("git init failed: %v\n%s", gitErr, out)
 	}
 
+	storeDir := filepath.Join(workspaceDir, ".iterion")
+	s, storeErr := store.New(storeDir)
+	if storeErr != nil {
+		t.Fatalf("Failed to create store: %v", storeErr)
+	}
+
+	runID := "live-todo-app-full-dual-mcp"
+
 	reg := model.NewRegistry()
 	delegateReg := delegate.DefaultRegistry()
+	logger := iterlog.New(iterlog.LevelDebug, os.Stderr)
+	hooks := model.NewStoreEventHooks(s, runID, logger)
+
 	executor := model.NewGoaiExecutor(reg, wf,
 		model.WithDelegateRegistry(delegateReg),
 		model.WithWorkDir(workspaceDir),
+		model.WithEventHooks(hooks),
 	)
 
 	appDescription := "A feature-rich single-page todo application in one index.html file. " +
@@ -448,18 +463,10 @@ func TestLive_TodoApp_Full_DualModel_MCP(t *testing.T) {
 		"acceptance_criteria": acceptanceCriteria,
 	})
 
-	storeDir := filepath.Join(workspaceDir, ".iterion")
-	s, storeErr := store.New(storeDir)
-	if storeErr != nil {
-		t.Fatalf("Failed to create store: %v", storeErr)
-	}
-
 	eng := runtime.New(wf, s, executor)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Hour)
 	defer cancel()
-
-	runID := "live-todo-app-full-dual-mcp"
 	inputs := map[string]interface{}{
 		"app_description":     appDescription,
 		"acceptance_criteria": acceptanceCriteria,
@@ -678,12 +685,25 @@ func TestLive_DualModel_PlanImplementReview(t *testing.T) {
 		t.Fatalf("git init failed: %v\n%s", gitErr, out)
 	}
 
-	// Create executor with delegate registry.
+	// Create store inside the workspace for easy post-run inspection.
+	storeDir := filepath.Join(workspaceDir, ".iterion")
+	s, storeErr := store.New(storeDir)
+	if storeErr != nil {
+		t.Fatalf("Failed to create store: %v", storeErr)
+	}
+
+	runID := "live-plan-impl-review"
+
+	// Create executor with delegate registry and event hooks for conversation logging.
 	reg := model.NewRegistry()
 	delegateReg := delegate.DefaultRegistry()
+	logger := iterlog.New(iterlog.LevelDebug, os.Stderr)
+	hooks := model.NewStoreEventHooks(s, runID, logger)
+
 	executor := model.NewGoaiExecutor(reg, wf,
 		model.WithDelegateRegistry(delegateReg),
 		model.WithWorkDir(workspaceDir),
+		model.WithEventHooks(hooks),
 	)
 
 	taskDescription := "Create a counter application in a single index.html file. " +
@@ -700,20 +720,11 @@ func TestLive_DualModel_PlanImplementReview(t *testing.T) {
 		"workspace_dir": workspaceDir,
 	})
 
-	// Create store inside the workspace for easy post-run inspection.
-	storeDir := filepath.Join(workspaceDir, ".iterion")
-	s, storeErr := store.New(storeDir)
-	if storeErr != nil {
-		t.Fatalf("Failed to create store: %v", storeErr)
-	}
-
 	eng := runtime.New(wf, s, executor)
 
 	// 1-hour timeout — planning + validation + implementation + review phases.
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Hour)
 	defer cancel()
-
-	runID := "live-plan-impl-review"
 	inputs := map[string]interface{}{
 		"task_description":    taskDescription,
 		"acceptance_criteria": acceptanceCriteria,
