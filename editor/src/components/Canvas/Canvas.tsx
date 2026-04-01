@@ -406,6 +406,16 @@ export default function Canvas() {
     [searchQuery, layoutNodes, setSelectedNode],
   );
 
+  const handleArrange = useCallback(() => {
+    autoLayout(graphNodes, graphEdges)
+      .then((laid) => {
+        setLayoutNodes(laid);
+        prevTopologyRef.current = "";
+        setTimeout(() => fitView({ padding: 0.2 }), 50);
+      })
+      .catch(() => {});
+  }, [graphNodes, graphEdges, fitView]);
+
   const handleFitView = useCallback(() => {
     fitView({ padding: 0.2 });
   }, [fitView]);
@@ -435,6 +445,13 @@ export default function Canvas() {
 
       {/* Fit view / Focus buttons */}
       <div className="absolute top-2 right-2 z-40 flex gap-1">
+        <button
+          className="bg-gray-800/90 hover:bg-gray-700 border border-gray-600 text-xs px-2 py-1 rounded text-gray-300"
+          onClick={handleArrange}
+          title="Auto-arrange nodes chronologically"
+        >
+          Arrange
+        </button>
         <button
           className="bg-gray-800/90 hover:bg-gray-700 border border-gray-600 text-xs px-2 py-1 rounded text-gray-300"
           onClick={handleFitView}

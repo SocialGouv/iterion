@@ -19,6 +19,8 @@ export async function autoLayout(
       "elk.direction": "DOWN",
       "elk.spacing.nodeNode": "80",
       "elk.layered.spacing.nodeNodeBetweenLayers": "100",
+      "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",
+      "elk.layered.nodePlacement.strategy": "BRANDES_KOEPF",
     },
     children: nodes.map((n) => ({
       id: n.id,
