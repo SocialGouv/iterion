@@ -594,6 +594,14 @@ func (e *GoaiExecutor) executeDelegation(ctx context.Context, node *ir.Node, inp
 	// Build user message.
 	userText := e.buildUserMessage(node, input)
 
+	// Debug: log input keys and prompt lengths for delegate nodes.
+	inputKeys := make([]string, 0, len(input))
+	for k := range input {
+		inputKeys = append(inputKeys, k)
+	}
+	log.Printf("model: delegate %q: input keys=%v, systemLen=%d, userLen=%d, userPrompt=%q",
+		node.ID, inputKeys, len(systemText), len(userText), node.UserPrompt)
+
 	// Emit prompt content for observability.
 	if e.hooks.OnLLMPrompt != nil {
 		e.hooks.OnLLMPrompt(node.ID, systemText, userText)

@@ -85,6 +85,7 @@ type runState struct {
 	runInputs          map[string]interface{}
 	vars               map[string]interface{}
 	outputs            map[string]map[string]interface{}
+	artifacts          map[string]map[string]interface{} // publish name → output
 	loopCounters       map[string]int
 	roundRobinCounters map[string]int
 	artifactVersions   map[string]int
@@ -95,6 +96,7 @@ type runState struct {
 type branchResult struct {
 	branchID         string
 	outputs          map[string]map[string]interface{}
+	artifacts        map[string]map[string]interface{} // publish name → output
 	artifactVersions map[string]int
 	joinNodeID       string // the join node this branch converged to (empty if terminal)
 	err              error
@@ -119,6 +121,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 		runInputs:          inputs,
 		vars:               e.resolveVars(inputs),
 		outputs:            make(map[string]map[string]interface{}),
+		artifacts:          make(map[string]map[string]interface{}),
 		loopCounters:       make(map[string]int),
 		roundRobinCounters: make(map[string]int),
 		artifactVersions:   make(map[string]int),
@@ -219,11 +222,20 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]in
 		roundRobinCounters = make(map[string]int)
 	}
 
+	// Rebuild artifacts map from outputs for nodes that have publish.
+	resumeArtifacts := make(map[string]map[string]interface{})
+	for nodeID, output := range outputs {
+		if n, ok := e.workflow.Nodes[nodeID]; ok && n.Publish != "" {
+			resumeArtifacts[n.Publish] = output
+		}
+	}
+
 	rs := &runState{
 		runID:              runID,
 		runInputs:          r.Inputs,
 		vars:               cp.Vars,
 		outputs:            outputs,
+		artifacts:          resumeArtifacts,
 		loopCounters:       loopCounters,
 		roundRobinCounters: roundRobinCounters,
 		artifactVersions:   artifactVersions,
@@ -339,7 +351,7 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 		}
 
 		// --- Build node input from edge mappings ---
-		nodeInput := e.buildNodeInput(currentNodeID, rs.vars, rs.outputs, rs.runInputs)
+		nodeInput := e.buildNodeInput(currentNodeID, rs.vars, rs.outputs, rs.runInputs, rs.artifacts)
 
 		// --- Execute node ---
 		output, err := e.executor.Execute(ctx, node, nodeInput)
@@ -368,6 +380,7 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 				return fmt.Errorf("runtime: write artifact: %w", err)
 			}
 			rs.artifactVersions[currentNodeID] = version + 1
+			rs.artifacts[node.Publish] = output
 
 			if err := e.emit(rs.runID, store.EventArtifactWritten, currentNodeID, map[string]interface{}{
 				"publish": node.Publish,
@@ -410,7 +423,7 @@ func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID stri
 	}
 
 	// Router is a pass-through: its output = its input from incoming edges.
-	routerInput := e.buildNodeInput(routerNodeID, rs.vars, rs.outputs, rs.runInputs)
+	routerInput := e.buildNodeInput(routerNodeID, rs.vars, rs.outputs, rs.runInputs, rs.artifacts)
 	rs.outputs[routerNodeID] = routerInput
 
 	// Emit router node_finished.
@@ -440,10 +453,14 @@ func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID stri
 		maxParallel = e.workflow.Budget.MaxParallelBranches
 	}
 
-	// Snapshot parent outputs (branches read from this, write to their own map).
+	// Snapshot parent outputs and artifacts (branches read from this, write to their own map).
 	parentOutputs := make(map[string]map[string]interface{})
 	for k, v := range rs.outputs {
 		parentOutputs[k] = v
+	}
+	parentArtifacts := make(map[string]map[string]interface{})
+	for k, v := range rs.artifacts {
+		parentArtifacts[k] = v
 	}
 
 	// Launch branches with bounded concurrency.
@@ -457,7 +474,7 @@ func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID stri
 			sem <- struct{}{}        // acquire semaphore slot
 			defer func() { <-sem }() // release
 
-			result := e.execBranch(ctx, rs, branchID, edge, parentOutputs)
+			result := e.execBranch(ctx, rs, branchID, edge, parentOutputs, parentArtifacts)
 			resultsCh <- result
 		}(edge, branchID)
 	}
@@ -525,7 +542,7 @@ func (e *Engine) execRoundRobin(ctx context.Context, rs *runState, routerNodeID 
 	}
 
 	// Router is a pass-through: its output = its input from incoming edges.
-	routerInput := e.buildNodeInput(routerNodeID, rs.vars, rs.outputs, rs.runInputs)
+	routerInput := e.buildNodeInput(routerNodeID, rs.vars, rs.outputs, rs.runInputs, rs.artifacts)
 	rs.outputs[routerNodeID] = routerInput
 
 	// Emit router node_finished.
@@ -539,10 +556,11 @@ func (e *Engine) execRoundRobin(ctx context.Context, rs *runState, routerNodeID 
 // execBranch runs a single parallel branch starting from the target of
 // the given edge. It executes nodes sequentially until it reaches a join
 // node, a terminal node, or encounters an error.
-func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, startEdge *ir.Edge, parentOutputs map[string]map[string]interface{}) *branchResult {
+func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, startEdge *ir.Edge, parentOutputs map[string]map[string]interface{}, parentArtifacts map[string]map[string]interface{}) *branchResult {
 	result := &branchResult{
 		branchID:         branchID,
 		outputs:          make(map[string]map[string]interface{}),
+		artifacts:        make(map[string]map[string]interface{}),
 		artifactVersions: make(map[string]int),
 	}
 
@@ -611,7 +629,8 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		// Build input: merge parent outputs with branch-local outputs so
 		// refs to upstream nodes (before the router) still resolve.
 		merged := mergeOutputs(parentOutputs, result.outputs)
-		nodeInput := e.buildNodeInput(currentNodeID, vars, merged, runInputs)
+		mergedArt := mergeOutputs(parentArtifacts, result.artifacts)
+		nodeInput := e.buildNodeInput(currentNodeID, vars, merged, runInputs, mergedArt)
 
 		// Execute.
 		output, err := e.executor.Execute(ctx, node, nodeInput)
@@ -671,6 +690,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 				return result
 			}
 			result.artifactVersions[currentNodeID] = version + 1
+			result.artifacts[node.Publish] = output
 			if err := e.emitBranch(runID, branchID, store.EventArtifactWritten, currentNodeID, map[string]interface{}{
 				"publish": node.Publish,
 				"version": version,
@@ -796,6 +816,9 @@ func (e *Engine) processJoin(rs *runState, joinNodeID string, results []*branchR
 		for nodeID, output := range r.outputs {
 			rs.outputs[nodeID] = output
 		}
+		for name, output := range r.artifacts {
+			rs.artifacts[name] = output
+		}
 		for nodeID, version := range r.artifactVersions {
 			rs.artifactVersions[nodeID] = version
 		}
@@ -894,7 +917,7 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 	}
 
 	// Build input and execute LLM.
-	nodeInput := e.buildNodeInput(nodeID, rs.vars, rs.outputs, rs.runInputs)
+	nodeInput := e.buildNodeInput(nodeID, rs.vars, rs.outputs, rs.runInputs, rs.artifacts)
 	output, err := e.executor.Execute(ctx, node, nodeInput)
 	if err != nil {
 		return false, e.failRun(rs.runID, nodeID, fmt.Sprintf("human node %q auto_or_pause execution failed: %v", nodeID, err))
@@ -939,6 +962,7 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 			return false, fmt.Errorf("runtime: write artifact: %w", err)
 		}
 		rs.artifactVersions[nodeID] = version + 1
+		rs.artifacts[node.Publish] = output
 		_ = e.emit(rs.runID, store.EventArtifactWritten, nodeID, map[string]interface{}{
 			"publish": node.Publish,
 			"version": version,
@@ -981,7 +1005,7 @@ func (e *Engine) pauseAtHuman(rs *runState, nodeID string, node *ir.Node) error 
 // before calling this method.
 func (e *Engine) persistPause(rs *runState, nodeID string) error {
 	// Build questions from the node's input (edge mappings into this node).
-	questions := e.buildNodeInput(nodeID, rs.vars, rs.outputs, nil)
+	questions := e.buildNodeInput(nodeID, rs.vars, rs.outputs, nil, rs.artifacts)
 
 	// Create interaction. Include loop iteration in the ID so that
 	// human nodes inside loops produce unique interactions per iteration.
@@ -1131,7 +1155,7 @@ func (e *Engine) selectEdge(runID, fromNodeID string, output map[string]interfac
 // buildNodeInput constructs the input map for a node by looking at the
 // edge `with` mappings that target this node. If no mappings exist, the
 // run-level inputs are used as a starting point for the entry node.
-func (e *Engine) buildNodeInput(nodeID string, vars map[string]interface{}, outputs map[string]map[string]interface{}, runInputs map[string]interface{}) map[string]interface{} {
+func (e *Engine) buildNodeInput(nodeID string, vars map[string]interface{}, outputs map[string]map[string]interface{}, runInputs map[string]interface{}, artifacts map[string]map[string]interface{}) map[string]interface{} {
 	result := make(map[string]interface{})
 
 	// Find the edge that targets this node and has `with` mappings.
@@ -1143,8 +1167,23 @@ func (e *Engine) buildNodeInput(nodeID string, vars map[string]interface{}, outp
 		if _, ok := outputs[edge.From]; !ok && edge.From != "" {
 			continue
 		}
+
+		// Build effective input context: {{input.X}} in with-mappings should
+		// resolve from the edge source's output (e.g. a router's pass-through
+		// input) with run-level inputs as fallback.
+		effectiveInputs := runInputs
+		if sourceOut := outputs[edge.From]; sourceOut != nil {
+			effectiveInputs = make(map[string]interface{}, len(runInputs)+len(sourceOut))
+			for k, v := range runInputs {
+				effectiveInputs[k] = v
+			}
+			for k, v := range sourceOut {
+				effectiveInputs[k] = v
+			}
+		}
+
 		for _, dm := range edge.With {
-			val := e.resolveMapping(dm, vars, outputs, runInputs)
+			val := e.resolveMapping(dm, vars, outputs, effectiveInputs, artifacts)
 			if val != nil {
 				result[dm.Key] = val
 			}
@@ -1167,16 +1206,16 @@ func (e *Engine) buildNodeInput(nodeID string, vars map[string]interface{}, outp
 // resolveMapping resolves a DataMapping's references to concrete values.
 // For simplicity in the minimal runtime, if there is exactly one ref we
 // return the resolved value directly; otherwise we return the raw template.
-func (e *Engine) resolveMapping(dm *ir.DataMapping, vars map[string]interface{}, outputs map[string]map[string]interface{}, runInputs map[string]interface{}) interface{} {
+func (e *Engine) resolveMapping(dm *ir.DataMapping, vars map[string]interface{}, outputs map[string]map[string]interface{}, runInputs map[string]interface{}, artifacts map[string]map[string]interface{}) interface{} {
 	if len(dm.Refs) == 1 {
-		return e.resolveRef(dm.Refs[0], vars, outputs, runInputs)
+		return e.resolveRef(dm.Refs[0], vars, outputs, runInputs, artifacts)
 	}
 	// Multiple refs or no refs: return raw template as-is.
 	return dm.Raw
 }
 
 // resolveRef resolves a single Ref to a concrete value.
-func (e *Engine) resolveRef(ref *ir.Ref, vars map[string]interface{}, outputs map[string]map[string]interface{}, runInputs map[string]interface{}) interface{} {
+func (e *Engine) resolveRef(ref *ir.Ref, vars map[string]interface{}, outputs map[string]map[string]interface{}, runInputs map[string]interface{}, artifacts map[string]map[string]interface{}) interface{} {
 	switch ref.Kind {
 	case ir.RefVars:
 		if len(ref.Path) > 0 {
@@ -1199,9 +1238,8 @@ func (e *Engine) resolveRef(ref *ir.Ref, vars map[string]interface{}, outputs ma
 		}
 		return nodeOut[ref.Path[1]]
 	case ir.RefArtifacts:
-		// Artifacts are resolved via the same outputs map for now.
 		if len(ref.Path) > 0 {
-			return outputs[ref.Path[0]]
+			return artifacts[ref.Path[0]]
 		}
 	}
 	return nil

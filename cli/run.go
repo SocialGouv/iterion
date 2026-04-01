@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,16 +19,27 @@ import (
 	"github.com/SocialGouv/iterion/store"
 )
 
+// sortedKeys returns the keys of a map sorted alphabetically.
+func sortedKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // RunOptions holds the configuration for the run command.
 type RunOptions struct {
-	File     string               // .iter file path
-	Recipe   string               // recipe JSON file path (alternative to File)
-	Vars     map[string]string    // --var key=value overrides
-	RunID    string               // explicit run ID (auto-generated if empty)
-	StoreDir string               // store directory (default: .iterion)
-	Timeout  time.Duration        // maximum run duration (0 = no limit)
-	LogLevel string               // log level (default: "info", env: ITERION_LOG_LEVEL)
-	Executor runtime.NodeExecutor // pluggable executor (nil = stub)
+	File           string               // .iter file path
+	Recipe         string               // recipe JSON file path (alternative to File)
+	Vars           map[string]string    // --var key=value overrides
+	RunID          string               // explicit run ID (auto-generated if empty)
+	StoreDir       string               // store directory (default: .iterion)
+	Timeout        time.Duration        // maximum run duration (0 = no limit)
+	LogLevel       string               // log level (default: "info", env: ITERION_LOG_LEVEL)
+	NoInteractive  bool                 // disable interactive TTY prompting on human pause
+	Executor       runtime.NodeExecutor // pluggable executor (nil = stub)
 }
 
 // RunRun executes a workflow or recipe and reports the outcome.
@@ -136,6 +148,25 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 
 	err = eng.Run(ctx, runID, inputs)
 
+	// Interactive TTY loop: when paused at a human node and stdin is a terminal,
+	// prompt the user for answers and resume in the same process.
+	for errors.Is(err, runtime.ErrRunPaused) && !opts.NoInteractive && IsTTY() {
+		r, loadErr := s.LoadRun(runID)
+		if loadErr != nil || r.Checkpoint == nil {
+			break
+		}
+		interaction, loadErr := s.LoadInteraction(runID, r.Checkpoint.InteractionID)
+		if loadErr != nil {
+			break
+		}
+
+		answers, promptErr := PromptHumanAnswers(interaction)
+		if promptErr != nil {
+			break
+		}
+		err = eng.Resume(ctx, runID, answers)
+	}
+
 	// Build result.
 	runResult := map[string]interface{}{
 		"run_id":   runID,
@@ -146,10 +177,16 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	if err != nil {
 		if errors.Is(err, runtime.ErrRunPaused) {
 			runResult["status"] = "paused_waiting_human"
+			if opts.File != "" {
+				runResult["file"] = opts.File
+			}
+			enrichPausedResult(s, runID, runResult)
+
 			if p.Format == OutputJSON {
 				p.JSON(runResult)
 			} else {
 				p.Line("  Status: PAUSED (waiting for human input)")
+				printPausedQuestions(p, runResult)
 				p.Line("  Resume: iterion resume --run-id %s --store-dir %s --answers-file <file>", runID, storeDir)
 			}
 			return nil
@@ -225,6 +262,34 @@ func (s *stubExecutor) Execute(_ context.Context, node *ir.Node, input map[strin
 		output["compliant"] = true
 	}
 	return output, nil
+}
+
+// enrichPausedResult loads checkpoint and interaction details from the store
+// and populates the result map with interaction_id, node_id, and questions.
+// It is used by both run and resume to enrich paused-output for CI consumers.
+func enrichPausedResult(s *store.RunStore, runID string, result map[string]interface{}) {
+	r, err := s.LoadRun(runID)
+	if err != nil || r.Checkpoint == nil {
+		return
+	}
+	result["interaction_id"] = r.Checkpoint.InteractionID
+	result["node_id"] = r.Checkpoint.NodeID
+	if interaction, err := s.LoadInteraction(runID, r.Checkpoint.InteractionID); err == nil {
+		result["questions"] = interaction.Questions
+	}
+}
+
+// printPausedQuestions prints human-readable question details from the result map.
+func printPausedQuestions(p *Printer, result map[string]interface{}) {
+	q, ok := result["questions"].(map[string]interface{})
+	if !ok || len(q) == 0 {
+		return
+	}
+	keys := sortedKeys(q)
+	p.Line("  Questions:")
+	for _, k := range keys {
+		p.Line("    %s: %v", k, q[k])
+	}
 }
 
 // ParseVarFlags parses a slice of "key=value" strings into a map.

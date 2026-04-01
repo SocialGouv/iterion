@@ -166,10 +166,13 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	if err != nil {
 		if errors.Is(err, runtime.ErrRunPaused) {
 			result["status"] = "paused_waiting_human"
+			enrichPausedResult(s, opts.RunID, result)
+
 			if p.Format == OutputJSON {
 				p.JSON(result)
 			} else {
 				p.Line("  Status: PAUSED (waiting for human input again)")
+				printPausedQuestions(p, result)
 			}
 			return nil
 		}

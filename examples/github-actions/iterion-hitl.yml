@@ -1,0 +1,234 @@
+# Reference GitHub Action: Human-in-the-Loop via PR Comments
+#
+# This workflow demonstrates how to integrate iterion's human pause/resume
+# with GitHub PR comments for CI-based human-in-the-loop workflows.
+#
+# Flow:
+#   1. PR opened/updated -> run iterion workflow
+#   2. If workflow pauses at human node -> post PR comment with questions
+#   3. User replies with "/iterion-answer" comment -> parse answers, resume workflow
+#   4. Post result as new comment
+#
+# Customize: Replace workflow.iter with your actual workflow file path.
+
+name: Iterion HITL
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────
+  # Job 1: Run workflow on PR events
+  # ─────────────────────────────────────────────────────────────────────
+  run-workflow:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install iterion
+        run: |
+          # Replace with your preferred installation method:
+          # curl -fsSL https://github.com/SocialGouv/iterion/releases/latest/download/iterion-linux-amd64 -o /usr/local/bin/iterion
+          # chmod +x /usr/local/bin/iterion
+          go build -o /usr/local/bin/iterion ./cmd/iterion
+
+      - name: Run workflow
+        id: run
+        run: |
+          result=$(iterion run workflow.iter \
+            --json \
+            --no-interactive \
+            --var pr_number=${{ github.event.pull_request.number }} \
+            --var repo=${{ github.repository }} \
+            --store-dir .iterion 2>/dev/null || true)
+
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+
+          status=$(echo "$result" | jq -r '.status // "unknown"')
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+
+      - name: Post questions on PR (if paused)
+        if: fromJSON(steps.run.outputs.result).status == 'paused_waiting_human'
+        uses: actions/github-script@v7
+        env:
+          ITERION_RESULT: ${{ steps.run.outputs.result }}
+        with:
+          script: |
+            const result = JSON.parse(process.env.ITERION_RESULT);
+            const questions = result.questions || {};
+            const runId = result.run_id;
+            const nodeId = result.node_id || 'unknown';
+            const interactionId = result.interaction_id || '';
+
+            // Format questions as a list.
+            let questionList = Object.entries(questions)
+              .map(([key, value]) => `- **${key}**: ${value}`)
+              .join('\n');
+
+            if (!questionList) {
+              questionList = '- *(no structured questions — provide free-form answer)*';
+            }
+
+            const body = [
+              `## Iterion: Human Input Required`,
+              ``,
+              `Workflow paused at node **\`${nodeId}\`** and needs your input.`,
+              ``,
+              `### Questions`,
+              questionList,
+              ``,
+              `### How to respond`,
+              `Reply to this PR with a comment starting with \`/iterion-answer\`, followed by your answers:`,
+              ``,
+              '```',
+              `/iterion-answer`,
+              ...Object.keys(questions).map(k => `${k}: your answer here`),
+              '```',
+              ``,
+              `<!-- iterion:run_id=${runId} file=${result.file || 'workflow.iter'} store=.iterion interaction_id=${interactionId} -->`,
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ github.event.pull_request.number }},
+              body: body,
+            });
+
+      - name: Upload store artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iterion-store
+          path: .iterion/
+          retention-days: 7
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Job 2: Resume workflow from PR comment answers
+  # ─────────────────────────────────────────────────────────────────────
+  resume-workflow:
+    if: |
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/iterion-answer')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install iterion
+        run: |
+          go build -o /usr/local/bin/iterion ./cmd/iterion
+
+      - name: Find bot comment with metadata
+        id: meta
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Find the most recent bot comment with iterion metadata.
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.data
+              .reverse()
+              .find(c => c.body.includes('<!-- iterion:'));
+
+            if (!botComment) {
+              core.setFailed('No iterion metadata comment found');
+              return;
+            }
+
+            // Parse metadata from HTML comment.
+            const metaMatch = botComment.body.match(
+              /<!-- iterion:run_id=(\S+) file=(\S+) store=(\S+)/
+            );
+            if (!metaMatch) {
+              core.setFailed('Cannot parse iterion metadata');
+              return;
+            }
+
+            core.setOutput('run_id', metaMatch[1]);
+            core.setOutput('file', metaMatch[2]);
+            core.setOutput('store', metaMatch[3]);
+
+      - name: Download store artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: iterion-store
+          path: .iterion/
+
+      - name: Parse answers from comment
+        id: answers
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.comment.body;
+            const lines = body.split('\n').slice(1); // Skip "/iterion-answer" line
+
+            const answerFlags = [];
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed) continue;
+              const colonIdx = trimmed.indexOf(':');
+              if (colonIdx > 0) {
+                const key = trimmed.substring(0, colonIdx).trim();
+                const value = trimmed.substring(colonIdx + 1).trim();
+                if (key && value) {
+                  answerFlags.push(`${key}=${value}`);
+                }
+              }
+            }
+
+            core.setOutput('flags', answerFlags.map(f => `--answer "${f}"`).join(' '));
+
+      - name: Resume workflow
+        id: resume
+        run: |
+          result=$(iterion resume \
+            --run-id "${{ steps.meta.outputs.run_id }}" \
+            --file "${{ steps.meta.outputs.file }}" \
+            --store-dir "${{ steps.meta.outputs.store }}" \
+            ${{ steps.answers.outputs.flags }} \
+            --json 2>/dev/null || true)
+
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+          status=$(echo "$result" | jq -r '.status // "unknown"')
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+
+      - name: Post result
+        uses: actions/github-script@v7
+        env:
+          ITERION_RESULT: ${{ steps.resume.outputs.result }}
+        with:
+          script: |
+            const result = JSON.parse(process.env.ITERION_RESULT || '{}');
+            const status = result.status || 'unknown';
+
+            let emoji = status === 'finished' ? ':white_check_mark:' : ':x:';
+            if (status === 'paused_waiting_human') emoji = ':hourglass:';
+
+            let body = `## Iterion: Resume Result\n\n${emoji} **Status: ${status}**`;
+
+            if (result.error) {
+              body += `\n\nError: \`${result.error}\``;
+            }
+            if (status === 'paused_waiting_human') {
+              body += `\n\nWorkflow paused again at another human node. Check the new questions above.`;
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body,
+            });
