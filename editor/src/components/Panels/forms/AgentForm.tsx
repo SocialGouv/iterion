@@ -1,7 +1,8 @@
 import { useCallback } from "react";
 import { useDocumentStore } from "@/store/document";
 import type { AgentDecl, JudgeDecl } from "@/api/types";
-import { TextField, NumberField, SelectField, TagListField } from "./FormField";
+import { defaultSchema, defaultPrompt } from "@/lib/defaults";
+import { TextField, NumberField, SelectField, SelectFieldWithCreate, TagListField } from "./FormField";
 
 interface Props {
   decl: AgentDecl | JudgeDecl;
@@ -13,6 +14,8 @@ export default function AgentForm({ decl, kind }: Props) {
   const updateAgent = useDocumentStore((s) => s.updateAgent);
   const updateJudge = useDocumentStore((s) => s.updateJudge);
   const renameNode = useDocumentStore((s) => s.renameNode);
+  const addSchema = useDocumentStore((s) => s.addSchema);
+  const addPrompt = useDocumentStore((s) => s.addPrompt);
 
   const update = useCallback(
     (updates: Partial<AgentDecl>) => {
@@ -24,6 +27,24 @@ export default function AgentForm({ decl, kind }: Props) {
 
   const schemaOptions = (document?.schemas ?? []).map((s) => ({ value: s.name, label: s.name }));
   const promptOptions = (document?.prompts ?? []).map((p) => ({ value: p.name, label: p.name }));
+
+  const createSchema = useCallback(() => {
+    const existing = new Set((document?.schemas ?? []).map((s) => s.name));
+    let i = 1;
+    while (existing.has(`schema_${i}`)) i++;
+    const name = `schema_${i}`;
+    addSchema(defaultSchema(name));
+    return name;
+  }, [document, addSchema]);
+
+  const createPrompt = useCallback(() => {
+    const existing = new Set((document?.prompts ?? []).map((p) => p.name));
+    let i = 1;
+    while (existing.has(`prompt_${i}`)) i++;
+    const name = `prompt_${i}`;
+    addPrompt(defaultPrompt(name));
+    return name;
+  }, [document, addPrompt]);
 
   const headerColor = kind === "agent" ? "#4A90D9" : "#7B68EE";
   const headerIcon = kind === "agent" ? "\u{1F916}" : "\u{2696}\u{FE0F}";
@@ -55,21 +76,23 @@ export default function AgentForm({ decl, kind }: Props) {
         onChange={(v) => update({ delegate: v || undefined })}
         placeholder="e.g. claude_code"
       />
-      <SelectField
+      <SelectFieldWithCreate
         label="Input Schema"
         value={decl.input}
         onChange={(v) => update({ input: v })}
         options={schemaOptions}
         allowEmpty
         emptyLabel="-- select schema --"
+        onCreate={createSchema}
       />
-      <SelectField
+      <SelectFieldWithCreate
         label="Output Schema"
         value={decl.output}
         onChange={(v) => update({ output: v })}
         options={schemaOptions}
         allowEmpty
         emptyLabel="-- select schema --"
+        onCreate={createSchema}
       />
       <TextField
         label="Publish"
@@ -77,21 +100,23 @@ export default function AgentForm({ decl, kind }: Props) {
         onChange={(v) => update({ publish: v || undefined })}
         placeholder="Artifact name"
       />
-      <SelectField
+      <SelectFieldWithCreate
         label="System Prompt"
         value={decl.system}
         onChange={(v) => update({ system: v })}
         options={promptOptions}
         allowEmpty
         emptyLabel="-- select prompt --"
+        onCreate={createPrompt}
       />
-      <SelectField
+      <SelectFieldWithCreate
         label="User Prompt"
         value={decl.user}
         onChange={(v) => update({ user: v })}
         options={promptOptions}
         allowEmpty
         emptyLabel="-- select prompt --"
+        onCreate={createPrompt}
       />
       <SelectField
         label="Session"

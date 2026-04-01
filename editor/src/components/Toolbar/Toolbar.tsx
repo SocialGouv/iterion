@@ -3,6 +3,8 @@ import { useDocumentStore } from "@/store/document";
 import { useUIStore } from "@/store/ui";
 import { createEmptyDocument } from "@/lib/defaults";
 import * as api from "@/api/client";
+import ConfirmDialog from "../shared/ConfirmDialog";
+import ShortcutsHelp from "../shared/ShortcutsHelp";
 import type { FileEntry } from "@/api/types";
 
 export default function Toolbar() {
@@ -15,6 +17,8 @@ export default function Toolbar() {
   const redo = useDocumentStore((s) => s.redo);
   const canUndo = useDocumentStore((s) => s.canUndo);
   const canRedo = useDocumentStore((s) => s.canRedo);
+  const markSaved = useDocumentStore((s) => s.markSaved);
+  const isDirty = useDocumentStore((s) => s.isDirty);
   const addWorkflow = useDocumentStore((s) => s.addWorkflow);
   const removeWorkflow = useDocumentStore((s) => s.removeWorkflow);
   const sourceViewOpen = useUIStore((s) => s.sourceViewOpen);
@@ -30,6 +34,8 @@ export default function Toolbar() {
   const [showOpenMenu, setShowOpenMenu] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const openMenuRef = useRef<HTMLDivElement>(null);
+  const [confirmRemoveWorkflow, setConfirmRemoveWorkflow] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
 
   useEffect(() => {
     api.listExamples().then(setExamples).catch(console.error);
@@ -48,29 +54,12 @@ export default function Toolbar() {
     return () => window.document.removeEventListener("mousedown", handler);
   }, [showOpenMenu]);
 
-  // Keyboard shortcuts
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
-        e.preventDefault();
-        undo();
-      } else if ((e.ctrlKey || e.metaKey) && (e.key === "y" || (e.key === "z" && e.shiftKey))) {
-        e.preventDefault();
-        redo();
-      } else if ((e.ctrlKey || e.metaKey) && e.key === "s") {
-        e.preventDefault();
-        handleSave();
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [undo, redo, document, currentFilePath]);
-
   const handleNew = useCallback(() => {
     setDocument(createEmptyDocument());
     setDiagnostics([], []);
     setCurrentFilePath(null);
-  }, [setDocument, setDiagnostics, setCurrentFilePath]);
+    markSaved();
+  }, [setDocument, setDiagnostics, setCurrentFilePath, markSaved]);
 
   const loadExample = useCallback(
     async (name: string) => {
@@ -81,13 +70,14 @@ export default function Toolbar() {
         setDocument(result.document);
         setDiagnostics(result.diagnostics);
         setCurrentFilePath(null);
+        markSaved();
       } catch (err) {
         console.error("Failed to load example:", err);
       } finally {
         setLoading(false);
       }
     },
-    [setDocument, setDiagnostics, setCurrentFilePath],
+    [setDocument, setDiagnostics, setCurrentFilePath, markSaved],
   );
 
   const handleOpenFile = useCallback(
@@ -99,13 +89,14 @@ export default function Toolbar() {
         setDocument(result.document);
         setDiagnostics(result.diagnostics);
         setCurrentFilePath(result.path);
+        markSaved();
       } catch (err) {
         console.error("Failed to open file:", err);
       } finally {
         setLoading(false);
       }
     },
-    [setDocument, setDiagnostics, setCurrentFilePath],
+    [setDocument, setDiagnostics, setCurrentFilePath, markSaved],
   );
 
   const handleImport = useCallback(
@@ -143,6 +134,7 @@ export default function Toolbar() {
       // Save to existing file
       try {
         await api.saveFile(currentFilePath, document);
+        markSaved();
         // Refresh file list
         api.listFiles().then(setFiles).catch(() => {});
       } catch (err) {
@@ -154,7 +146,7 @@ export default function Toolbar() {
       setSaveFileName(`${name}.iter`);
       setShowSaveDialog(true);
     }
-  }, [document, currentFilePath]);
+  }, [document, currentFilePath, markSaved]);
 
   const handleSaveAs = useCallback(async () => {
     if (!document || !saveFileName) return;
@@ -162,6 +154,7 @@ export default function Toolbar() {
     try {
       const result = await api.saveFile(fileName, document);
       setCurrentFilePath(result.path);
+      markSaved();
       setShowSaveDialog(false);
       // Refresh file list
       api.listFiles().then(setFiles).catch(() => {});
@@ -169,6 +162,27 @@ export default function Toolbar() {
       console.error("Save failed:", err);
     }
   }, [document, saveFileName, setCurrentFilePath]);
+
+  // Keyboard shortcuts (must be after handleSave is defined)
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === "y" || (e.key === "z" && e.shiftKey))) {
+        e.preventDefault();
+        redo();
+      } else if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+        e.preventDefault();
+        handleSave();
+      } else if (e.key === "?" && !(e.target as HTMLElement).matches("input, textarea, select")) {
+        e.preventDefault();
+        setShowShortcuts(true);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [undo, redo, handleSave]);
 
   const handleDownload = useCallback(async () => {
     if (!document) return;
@@ -350,6 +364,14 @@ export default function Toolbar() {
         Source
       </button>
 
+      <button
+        className="bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded text-xs"
+        onClick={() => setShowShortcuts(true)}
+        title="Keyboard shortcuts (?)"
+      >
+        ?
+      </button>
+
       <div className="h-4 w-px bg-gray-600" />
 
       {/* Workflow selector */}
@@ -376,7 +398,7 @@ export default function Toolbar() {
           {workflows.length > 1 && (
             <button
               className="bg-red-900 hover:bg-red-800 px-1.5 py-1 rounded text-xs"
-              onClick={handleRemoveWorkflow}
+              onClick={() => setConfirmRemoveWorkflow(true)}
               title="Remove current workflow"
             >
               -
@@ -388,11 +410,25 @@ export default function Toolbar() {
       {/* File path indicator */}
       {currentFilePath && (
         <span className="text-[10px] text-gray-500 ml-2 truncate max-w-[200px]" title={currentFilePath}>
+          {isDirty() && <span className="text-yellow-400">* </span>}
           {currentFilePath}
         </span>
       )}
+      {!currentFilePath && document && isDirty() && (
+        <span className="text-[10px] text-yellow-400 ml-2">* unsaved</span>
+      )}
 
       {loading && <span className="text-xs text-gray-400">Loading...</span>}
+
+      <ConfirmDialog
+        open={confirmRemoveWorkflow}
+        title="Remove Workflow"
+        message={`Remove workflow "${activeWorkflowName}"? This cannot be undone.`}
+        confirmLabel="Remove"
+        confirmVariant="danger"
+        onConfirm={() => { handleRemoveWorkflow(); setConfirmRemoveWorkflow(false); }}
+        onCancel={() => setConfirmRemoveWorkflow(false)}
+      />
 
       {/* Save dialog */}
       {showSaveDialog && (
@@ -424,6 +460,8 @@ export default function Toolbar() {
           </div>
         </div>
       )}
+
+      <ShortcutsHelp open={showShortcuts} onClose={() => setShowShortcuts(false)} />
     </div>
   );
 }

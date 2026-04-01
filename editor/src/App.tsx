@@ -14,7 +14,7 @@ export default function App() {
 
   return (
     <ReactFlowProvider>
-      <div className="h-screen w-screen grid grid-rows-[48px_1fr_160px] grid-cols-[48px_1fr_320px] bg-gray-900 text-white">
+      <div className="h-screen w-screen grid grid-rows-[48px_1fr_160px] grid-cols-[64px_1fr_320px] bg-gray-900 text-white">
         {/* Toolbar spans full width */}
         <div className="col-span-3 border-b border-gray-700">
           <Toolbar />

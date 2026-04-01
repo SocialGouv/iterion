@@ -33,12 +33,12 @@ export default function NodePalette() {
           key={kind}
           draggable
           onDragStart={(e) => onDragStart(e, kind)}
-          className="w-10 h-10 flex flex-col items-center justify-center rounded cursor-grab hover:brightness-125 transition-all border border-gray-600"
+          className="w-12 h-12 flex flex-col items-center justify-center rounded cursor-grab hover:brightness-125 transition-all border border-gray-600"
           style={{ backgroundColor: COLORS[kind] + "33", borderColor: COLORS[kind] }}
           title={label}
         >
-          <span className="text-sm">{icon}</span>
-          <span className="text-[8px] text-gray-300">{label}</span>
+          <span className="text-base">{icon}</span>
+          <span className="text-[9px] text-gray-300">{label}</span>
         </div>
       ))}
     </div>

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type SidebarTab = "properties" | "schemas" | "prompts" | "vars" | "workflow";
+export type SidebarTab = "properties" | "schemas" | "prompts" | "vars" | "workflow" | "comments";
 
 interface UIState {
   activeTab: SidebarTab;

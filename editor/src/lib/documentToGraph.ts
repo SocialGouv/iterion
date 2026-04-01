@@ -19,12 +19,12 @@ export interface NodeData extends Record<string, unknown> {
   decl: unknown;
 }
 
-export function makeEdgeId(from: string, to: string, condition: string, negated: boolean, index: number): string {
-  return `${from}->${to}:${condition}:${negated ? "neg" : ""}:${index}`;
+export function makeEdgeId(workflowName: string, index: number): string {
+  return `${workflowName}:edge:${index}`;
 }
 
 /** Returns a key that changes only when the graph topology changes (nodes added/removed, edges added/removed). */
-export function getTopologyKey(doc: IterDocument): string {
+export function getTopologyKey(doc: IterDocument, activeWorkflowName?: string): string {
   const names: string[] = [];
   for (const a of doc.agents ?? []) names.push(a.name);
   for (const j of doc.judges ?? []) names.push(j.name);
@@ -34,13 +34,16 @@ export function getTopologyKey(doc: IterDocument): string {
   for (const t of doc.tools ?? []) names.push(t.name);
   names.sort();
   const edgeSigs: string[] = [];
-  for (const wf of doc.workflows ?? []) {
+  const targetWorkflows = activeWorkflowName
+    ? (doc.workflows ?? []).filter(w => w.name === activeWorkflowName)
+    : doc.workflows ?? [];
+  for (const wf of targetWorkflows) {
     for (const e of wf.edges ?? []) edgeSigs.push(`${e.from}->${e.to}`);
   }
-  return `${names.join(",")}|${edgeSigs.join(",")}`;
+  return `${activeWorkflowName ?? ""}|${names.join(",")}|${edgeSigs.join(",")}`;
 }
 
-export function documentToGraph(doc: IterDocument): { nodes: Node<NodeData>[]; edges: FlowEdge[] } {
+export function documentToGraph(doc: IterDocument, activeWorkflowName?: string): { nodes: Node<NodeData>[]; edges: FlowEdge[] } {
   const nodeMap = new Map<string, { kind: NodeKind; decl: unknown }>();
 
   for (const a of doc.agents ?? []) nodeMap.set(a.name, { kind: "agent", decl: a });
@@ -81,7 +84,10 @@ export function documentToGraph(doc: IterDocument): { nodes: Node<NodeData>[]; e
   });
 
   const edges: FlowEdge[] = [];
-  for (const wf of doc.workflows ?? []) {
+  const targetWorkflows = activeWorkflowName
+    ? (doc.workflows ?? []).filter(w => w.name === activeWorkflowName)
+    : doc.workflows ?? [];
+  for (const wf of targetWorkflows) {
     const wfEdges = wf.edges ?? [];
     for (let i = 0; i < wfEdges.length; i++) {
       const edge = wfEdges[i]!;
@@ -93,7 +99,7 @@ export function documentToGraph(doc: IterDocument): { nodes: Node<NodeData>[]; e
         label += `${label ? " " : ""}loop:${edge.loop.name}(${edge.loop.max_iterations})`;
       }
       edges.push({
-        id: makeEdgeId(edge.from, edge.to, edge.when?.condition ?? "", edge.when?.negated ?? false, i),
+        id: makeEdgeId(wf.name, i),
         source: edge.from,
         target: edge.to,
         type: label ? "conditionalEdge" : "default",

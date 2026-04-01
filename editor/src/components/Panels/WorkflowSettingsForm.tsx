@@ -1,4 +1,5 @@
 import { useDocumentStore } from "@/store/document";
+import { useUIStore } from "@/store/ui";
 import type { BudgetBlock } from "@/api/types";
 import { getAllNodeNames } from "@/lib/defaults";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
@@ -8,6 +9,7 @@ export default function WorkflowSettingsForm() {
   const document = useDocumentStore((s) => s.document);
   const updateWorkflow = useDocumentStore((s) => s.updateWorkflow);
   const updateWorkflowBudget = useDocumentStore((s) => s.updateWorkflowBudget);
+  const setActiveWorkflowName = useUIStore((s) => s.setActiveWorkflowName);
 
   const workflow = useActiveWorkflow();
   if (!workflow) {
@@ -32,7 +34,7 @@ export default function WorkflowSettingsForm() {
       <TextField
         label="Workflow Name"
         value={workflow.name}
-        onChange={(v) => updateWorkflow(workflow.name, { name: v })}
+        onChange={(v) => { updateWorkflow(workflow.name, { name: v }); setActiveWorkflowName(v); }}
       />
 
       <SelectField

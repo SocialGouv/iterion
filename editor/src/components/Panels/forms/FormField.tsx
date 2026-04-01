@@ -87,6 +87,38 @@ export function SelectField({ label, value, onChange, options, allowEmpty, empty
   );
 }
 
+interface SelectFieldWithCreateProps extends SelectFieldProps {
+  onCreate: () => string; // returns the new name
+}
+
+export function SelectFieldWithCreate({ label, value, onChange, options, allowEmpty, emptyLabel, onCreate }: SelectFieldWithCreateProps) {
+  return (
+    <div className="mb-2">
+      <label className={labelClass}>{label}</label>
+      <div className="flex gap-1">
+        <select className={selectClass + " flex-1"} value={value} onChange={(e) => onChange(e.target.value)}>
+          {allowEmpty && <option value="">{emptyLabel ?? "-- none --"}</option>}
+          {options.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+        <button
+          className="bg-green-700 hover:bg-green-600 text-xs px-1.5 rounded shrink-0"
+          onClick={() => {
+            const newName = onCreate();
+            onChange(newName);
+          }}
+          title={`Create new ${label.toLowerCase()}`}
+        >
+          +
+        </button>
+      </div>
+    </div>
+  );
+}
+
 interface CheckboxFieldProps {
   label: string;
   checked: boolean;

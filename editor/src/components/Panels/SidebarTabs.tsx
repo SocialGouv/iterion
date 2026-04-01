@@ -4,6 +4,7 @@ import SchemaEditor from "./SchemaEditor";
 import PromptEditor from "./PromptEditor";
 import VarsEditor from "./VarsEditor";
 import WorkflowSettingsForm from "./WorkflowSettingsForm";
+import CommentsEditor from "./CommentsEditor";
 
 const TABS: { id: SidebarTab; label: string }[] = [
   { id: "properties", label: "Props" },
@@ -11,6 +12,7 @@ const TABS: { id: SidebarTab; label: string }[] = [
   { id: "prompts", label: "Prompts" },
   { id: "vars", label: "Vars" },
   { id: "workflow", label: "Workflow" },
+  { id: "comments", label: "##" },
 ];
 
 export default function SidebarTabs() {
@@ -40,6 +42,7 @@ export default function SidebarTabs() {
         {activeTab === "prompts" && <PromptEditor />}
         {activeTab === "vars" && <VarsEditor />}
         {activeTab === "workflow" && <WorkflowSettingsForm />}
+        {activeTab === "comments" && <CommentsEditor />}
       </div>
     </div>
   );

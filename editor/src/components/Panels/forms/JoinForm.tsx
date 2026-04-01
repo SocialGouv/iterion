@@ -1,6 +1,8 @@
+import { useCallback } from "react";
 import { useDocumentStore } from "@/store/document";
 import type { JoinDecl, JoinStrategy } from "@/api/types";
-import { TextField, SelectField, MultiSelectField } from "./FormField";
+import { defaultSchema } from "@/lib/defaults";
+import { TextField, SelectField, SelectFieldWithCreate, MultiSelectField } from "./FormField";
 import { getAllNodeNames } from "@/lib/defaults";
 
 interface Props {
@@ -11,9 +13,19 @@ export default function JoinForm({ decl }: Props) {
   const document = useDocumentStore((s) => s.document);
   const updateJoin = useDocumentStore((s) => s.updateJoin);
   const renameNode = useDocumentStore((s) => s.renameNode);
+  const addSchema = useDocumentStore((s) => s.addSchema);
 
   const nodeNames = document ? Array.from(getAllNodeNames(document)).filter((n) => n !== decl.name) : [];
   const schemaOptions = (document?.schemas ?? []).map((s) => ({ value: s.name, label: s.name }));
+
+  const createSchema = useCallback(() => {
+    const existing = new Set((document?.schemas ?? []).map((s) => s.name));
+    let i = 1;
+    while (existing.has(`schema_${i}`)) i++;
+    const name = `schema_${i}`;
+    addSchema(defaultSchema(name));
+    return name;
+  }, [document, addSchema]);
 
   return (
     <div className="space-y-1">
@@ -44,13 +56,14 @@ export default function JoinForm({ decl }: Props) {
         onChange={(v) => updateJoin(decl.name, { require: v })}
         options={nodeNames}
       />
-      <SelectField
+      <SelectFieldWithCreate
         label="Output Schema"
         value={decl.output}
         onChange={(v) => updateJoin(decl.name, { output: v })}
         options={schemaOptions}
         allowEmpty
         emptyLabel="-- select schema --"
+        onCreate={createSchema}
       />
     </div>
   );

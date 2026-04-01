@@ -43,6 +43,7 @@ interface DocumentState {
   diagnostics: string[];
   warnings: string[];
   currentFilePath: string | null;
+  _savedSnapshot: string | null;
 
   // Undo/redo
   _history: IterDocument[];
@@ -52,6 +53,8 @@ interface DocumentState {
   setDocument: (doc: IterDocument) => void;
   setDiagnostics: (d: string[], w?: string[]) => void;
   setCurrentFilePath: (path: string | null) => void;
+  markSaved: () => void;
+  isDirty: () => boolean;
 
   // Undo/redo
   undo: () => void;
@@ -77,6 +80,7 @@ interface DocumentState {
   addTool: (decl: ToolNodeDecl) => void;
   removeNode: (name: string) => void;
   renameNode: (oldName: string, newName: string) => void;
+  duplicateNode: (name: string) => string | null;
 
   // Workflow management
   addWorkflow: (decl: WorkflowDecl) => void;
@@ -91,11 +95,13 @@ interface DocumentState {
   addSchema: (decl: SchemaDecl) => void;
   removeSchema: (name: string) => void;
   updateSchema: (name: string, updates: Partial<SchemaDecl>) => void;
+  renameSchema: (oldName: string, newName: string) => void;
 
   // Prompt mutations
   addPrompt: (decl: PromptDecl) => void;
   removePrompt: (name: string) => void;
   updatePrompt: (name: string, updates: Partial<PromptDecl>) => void;
+  renamePrompt: (oldName: string, newName: string) => void;
 
   // Vars mutations
   setVars: (vars: VarsBlock | undefined) => void;
@@ -146,6 +152,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   diagnostics: [],
   warnings: [],
   currentFilePath: null,
+  _savedSnapshot: null,
   _history: [],
   _future: [],
 
@@ -155,6 +162,13 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   })),
   setDiagnostics: (diagnostics, warnings = []) => set({ diagnostics: diagnostics ?? [], warnings: warnings ?? [] }),
   setCurrentFilePath: (currentFilePath) => set({ currentFilePath }),
+  markSaved: () => set((s) => ({ _savedSnapshot: s.document ? JSON.stringify(s.document) : null })),
+  isDirty: () => {
+    const s = get();
+    if (!s.document) return false;
+    if (!s._savedSnapshot) return true;
+    return JSON.stringify(s.document) !== s._savedSnapshot;
+  },
 
   // Undo/redo
   undo: () => set((s) => {
@@ -249,6 +263,39 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       };
     }),
 
+  // Duplicate node — deep-clones with unique name, returns new name
+  duplicateNode: (name) => {
+    const s = get();
+    if (!s.document) return null;
+    const doc = s.document;
+    // Collect all existing names
+    const allNames = new Set<string>();
+    for (const a of doc.agents) allNames.add(a.name);
+    for (const j of doc.judges) allNames.add(j.name);
+    for (const r of doc.routers) allNames.add(r.name);
+    for (const j of doc.joins) allNames.add(j.name);
+    for (const h of doc.humans) allNames.add(h.name);
+    for (const t of doc.tools) allNames.add(t.name);
+    // Generate unique name
+    let i = 1;
+    let newName = `${name}_copy`;
+    while (allNames.has(newName)) { newName = `${name}_copy_${i}`; i++; }
+    // Find and clone
+    const cloneAgent = doc.agents.find((a) => a.name === name);
+    if (cloneAgent) { set((st) => ({ document: { ...st.document!, agents: [...st.document!.agents, { ...cloneAgent, name: newName }] }, ...pushHistory(st) })); return newName; }
+    const cloneJudge = doc.judges.find((j) => j.name === name);
+    if (cloneJudge) { set((st) => ({ document: { ...st.document!, judges: [...st.document!.judges, { ...cloneJudge, name: newName }] }, ...pushHistory(st) })); return newName; }
+    const cloneRouter = doc.routers.find((r) => r.name === name);
+    if (cloneRouter) { set((st) => ({ document: { ...st.document!, routers: [...st.document!.routers, { ...cloneRouter, name: newName }] }, ...pushHistory(st) })); return newName; }
+    const cloneJoinDecl = doc.joins.find((j) => j.name === name);
+    if (cloneJoinDecl) { set((st) => ({ document: { ...st.document!, joins: [...st.document!.joins, { ...cloneJoinDecl, require: [...cloneJoinDecl.require], name: newName }] }, ...pushHistory(st) })); return newName; }
+    const cloneHuman = doc.humans.find((h) => h.name === name);
+    if (cloneHuman) { set((st) => ({ document: { ...st.document!, humans: [...st.document!.humans, { ...cloneHuman, name: newName }] }, ...pushHistory(st) })); return newName; }
+    const cloneTool = doc.tools.find((t) => t.name === name);
+    if (cloneTool) { set((st) => ({ document: { ...st.document!, tools: [...st.document!.tools, { ...cloneTool, name: newName }] }, ...pushHistory(st) })); return newName; }
+    return null;
+  },
+
   // Workflow management
   addWorkflow: (decl) =>
     set((s) => (s.document ? { document: { ...s.document, workflows: [...s.document.workflows, decl] }, ...pushHistory(s) } : s)),
@@ -307,6 +354,24 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     set((s) => (s.document ? { document: { ...s.document, schemas: s.document.schemas.filter((d) => d.name !== name) }, ...pushHistory(s) } : s)),
   updateSchema: (name, updates) =>
     set((s) => (s.document ? { document: { ...s.document, schemas: updateInArray(s.document.schemas, name, updates) }, ...pushHistory(s) } : s)),
+  renameSchema: (oldName, newName) =>
+    set((s) => {
+      if (!s.document || oldName === newName) return s;
+      const doc = s.document;
+      const r = (v: string) => (v === oldName ? newName : v);
+      return {
+        document: {
+          ...doc,
+          schemas: doc.schemas.map((sc) => (sc.name === oldName ? { ...sc, name: newName } : sc)),
+          agents: doc.agents.map((a) => ({ ...a, input: r(a.input), output: r(a.output) })),
+          judges: doc.judges.map((j) => ({ ...j, input: r(j.input), output: r(j.output) })),
+          joins: doc.joins.map((j) => ({ ...j, output: r(j.output) })),
+          humans: doc.humans.map((h) => ({ ...h, input: r(h.input), output: r(h.output) })),
+          tools: doc.tools.map((t) => ({ ...t, output: r(t.output) })),
+        },
+        ...pushHistory(s),
+      };
+    }),
 
   // Prompt mutations
   addPrompt: (decl) =>
@@ -315,6 +380,23 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     set((s) => (s.document ? { document: { ...s.document, prompts: s.document.prompts.filter((d) => d.name !== name) }, ...pushHistory(s) } : s)),
   updatePrompt: (name, updates) =>
     set((s) => (s.document ? { document: { ...s.document, prompts: updateInArray(s.document.prompts, name, updates) }, ...pushHistory(s) } : s)),
+  renamePrompt: (oldName, newName) =>
+    set((s) => {
+      if (!s.document || oldName === newName) return s;
+      const doc = s.document;
+      const r = (v: string) => (v === oldName ? newName : v);
+      const ro = (v?: string) => (v === oldName ? newName : v);
+      return {
+        document: {
+          ...doc,
+          prompts: doc.prompts.map((p) => (p.name === oldName ? { ...p, name: newName } : p)),
+          agents: doc.agents.map((a) => ({ ...a, system: r(a.system), user: r(a.user) })),
+          judges: doc.judges.map((j) => ({ ...j, system: r(j.system), user: r(j.user) })),
+          humans: doc.humans.map((h) => ({ ...h, instructions: r(h.instructions), system: ro(h.system) })),
+        },
+        ...pushHistory(s),
+      };
+    }),
 
   // Vars mutations
   setVars: (vars) =>

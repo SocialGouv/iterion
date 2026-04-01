@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { makeEdgeId } from "@/lib/documentToGraph";
@@ -9,6 +9,7 @@ import JoinForm from "./forms/JoinForm";
 import HumanForm from "./forms/HumanForm";
 import ToolForm from "./forms/ToolForm";
 import EdgeForm from "./forms/EdgeForm";
+import ConfirmDialog from "../shared/ConfirmDialog";
 
 interface NodeMatch {
   kind: NodeKind;
@@ -27,6 +28,7 @@ export default function PropertiesPanel() {
   const selectedEdgeId = useSelectionStore((s) => s.selectedEdgeId);
   const removeNode = useDocumentStore((s) => s.removeNode);
   const clearSelection = useSelectionStore((s) => s.clearSelection);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const nodeMatch = useMemo<NodeMatch | null>(() => {
     if (!document || !selectedNodeId) return null;
@@ -46,7 +48,7 @@ export default function PropertiesPanel() {
       for (let i = 0; i < wfEdges.length; i++) {
         const e = wfEdges[i];
         if (!e) continue;
-        const id = makeEdgeId(e.from, e.to, e.when?.condition ?? "", e.when?.negated ?? false, i);
+        const id = makeEdgeId(wf.name, i);
         if (id === selectedEdgeId) return { edge: e, edgeIndex: i, workflowName: wf.name };
       }
     }
@@ -57,6 +59,7 @@ export default function PropertiesPanel() {
     if (selectedNodeId) {
       removeNode(selectedNodeId);
       clearSelection();
+      setConfirmDelete(false);
     }
   };
 
@@ -71,7 +74,7 @@ export default function PropertiesPanel() {
               <div className="mt-4 pt-2 border-t border-gray-700">
                 <button
                   className="w-full bg-red-900 hover:bg-red-800 text-red-200 text-xs py-1 rounded"
-                  onClick={handleDelete}
+                  onClick={() => setConfirmDelete(true)}
                 >
                   Delete Node
                 </button>
@@ -88,6 +91,15 @@ export default function PropertiesPanel() {
           <p className="text-gray-500 text-xs">Select a node or edge to view its properties.</p>
         )}
       </div>
+      <ConfirmDialog
+        open={confirmDelete}
+        title="Delete Node"
+        message={`Delete "${selectedNodeId}"? This will also remove all edges connected to it.`}
+        confirmLabel="Delete"
+        confirmVariant="danger"
+        onConfirm={handleDelete}
+        onCancel={() => setConfirmDelete(false)}
+      />
     </div>
   );
 }
@@ -110,4 +122,3 @@ function NodeForm({ match }: { match: NodeMatch }) {
       return <p className="text-gray-500 text-xs">Terminal node (no editable properties)</p>;
   }
 }
-

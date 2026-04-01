@@ -1,6 +1,8 @@
+import { useCallback } from "react";
 import { useDocumentStore } from "@/store/document";
 import type { ToolNodeDecl } from "@/api/types";
-import { TextField, SelectField } from "./FormField";
+import { defaultSchema } from "@/lib/defaults";
+import { TextField, SelectFieldWithCreate } from "./FormField";
 
 interface Props {
   decl: ToolNodeDecl;
@@ -10,8 +12,18 @@ export default function ToolForm({ decl }: Props) {
   const document = useDocumentStore((s) => s.document);
   const updateTool = useDocumentStore((s) => s.updateTool);
   const renameNode = useDocumentStore((s) => s.renameNode);
+  const addSchema = useDocumentStore((s) => s.addSchema);
 
   const schemaOptions = (document?.schemas ?? []).map((s) => ({ value: s.name, label: s.name }));
+
+  const createSchema = useCallback(() => {
+    const existing = new Set((document?.schemas ?? []).map((s) => s.name));
+    let i = 1;
+    while (existing.has(`schema_${i}`)) i++;
+    const name = `schema_${i}`;
+    addSchema(defaultSchema(name));
+    return name;
+  }, [document, addSchema]);
 
   return (
     <div className="space-y-1">
@@ -33,13 +45,14 @@ export default function ToolForm({ decl }: Props) {
         onChange={(v) => updateTool(decl.name, { command: v })}
         placeholder="Shell command (e.g. ${CMD})"
       />
-      <SelectField
+      <SelectFieldWithCreate
         label="Output Schema"
         value={decl.output}
         onChange={(v) => updateTool(decl.name, { output: v })}
         options={schemaOptions}
         allowEmpty
         emptyLabel="-- select schema --"
+        onCreate={createSchema}
       />
     </div>
   );

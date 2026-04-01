@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { ReactFlow, Background, Controls, MiniMap, useReactFlow } from "@xyflow/react";
-import type { NodeMouseHandler, EdgeMouseHandler, Connection, Node, NodeChange, EdgeChange } from "@xyflow/react";
+import type { NodeMouseHandler, EdgeMouseHandler, Connection, Node, NodeChange, EdgeChange, Edge as FlowEdge } from "@xyflow/react";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
@@ -10,6 +10,7 @@ import { generateUniqueName, getAllNodeNames, defaultAgent, defaultJudge, defaul
 import type { NodeKind } from "@/api/types";
 import WorkflowNode from "./WorkflowNode";
 import ConditionalEdge from "./ConditionalEdge";
+import NodeContextMenu from "./NodeContextMenu";
 
 const nodeTypes = { workflowNode: WorkflowNode };
 const edgeTypes = { conditionalEdge: ConditionalEdge };
@@ -25,6 +26,8 @@ export default function Canvas() {
   const addEdge = useDocumentStore((s) => s.addEdge);
   const removeNode = useDocumentStore((s) => s.removeNode);
   const removeEdge = useDocumentStore((s) => s.removeEdge);
+  const duplicateNode = useDocumentStore((s) => s.duplicateNode);
+  const updateWorkflow = useDocumentStore((s) => s.updateWorkflow);
   const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
   const setSelectedEdge = useSelectionStore((s) => s.setSelectedEdge);
   const clearSelection = useSelectionStore((s) => s.clearSelection);
@@ -34,10 +37,19 @@ export default function Canvas() {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition } = useReactFlow();
 
+  // Context menu state
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
+
+  // Search state
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  const activeWorkflowName = activeWorkflow?.name;
   const { nodes: graphNodes, edges: graphEdges } = useMemo(() => {
     if (!document) return { nodes: [], edges: [] };
-    return documentToGraph(document);
-  }, [document]);
+    return documentToGraph(document, activeWorkflowName);
+  }, [document, activeWorkflowName]);
 
   // Manage node positions with local state (allows dragging)
   const [layoutNodes, setLayoutNodes] = useState<Node[]>([]);
@@ -53,7 +65,7 @@ export default function Canvas() {
       prevTopologyRef.current = "";
       return;
     }
-    const topoKey = document ? getTopologyKey(document) : "";
+    const topoKey = document ? getTopologyKey(document, activeWorkflowName) : "";
     if (prevTopologyRef.current !== topoKey) {
       prevTopologyRef.current = topoKey;
       autoLayout(graphNodes, graphEdges)
@@ -73,7 +85,7 @@ export default function Canvas() {
         })
         .catch(() => setLayoutNodes(graphNodes));
     }
-  }, [document, graphNodes, graphEdges]);
+  }, [document, graphNodes, graphEdges, activeWorkflowName]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
@@ -110,16 +122,42 @@ export default function Canvas() {
 
   const onPaneClick = useCallback(() => {
     clearSelection();
+    setContextMenu(null);
   }, [clearSelection]);
+
+  const onNodeContextMenu = useCallback(
+    (event: ReactMouseEvent, node: Node) => {
+      event.preventDefault();
+      setContextMenu({ x: event.clientX, y: event.clientY, nodeId: node.id });
+    },
+    [],
+  );
+
+  const isValidConnection = useCallback(
+    (connection: FlowEdge | Connection) => {
+      if (!connection.source || !connection.target) return false;
+      if (connection.source === connection.target) return false;
+      if (connection.source === "done" || connection.source === "fail") return false;
+      if (activeWorkflow) {
+        const dup = activeWorkflow.edges.some(
+          (e) => e.from === connection.source && e.to === connection.target,
+        );
+        if (dup) return false;
+      }
+      return true;
+    },
+    [activeWorkflow],
+  );
 
   const onConnect = useCallback(
     (connection: Connection) => {
       if (!document || !connection.source || !connection.target) return;
       const workflowName = activeWorkflow?.name;
       if (!workflowName) return;
+      if (!isValidConnection(connection)) return;
       addEdge(workflowName, { from: connection.source, to: connection.target });
     },
-    [document, activeWorkflow, addEdge],
+    [document, activeWorkflow, addEdge, isValidConnection],
   );
 
   const onDragOver = useCallback((e: DragEvent) => {
@@ -158,9 +196,22 @@ export default function Canvas() {
 
   const onKeyDown = useCallback(
     (e: KeyboardEvent) => {
+      const isInput = (e.target as HTMLElement).matches("input, textarea, select");
+
+      if (e.key === "/" && !isInput) {
+        e.preventDefault();
+        setSearchOpen(true);
+        setTimeout(() => searchInputRef.current?.focus(), 0);
+        return;
+      }
+      if (e.key === "Escape") {
+        if (searchOpen) { setSearchOpen(false); setSearchQuery(""); return; }
+        clearSelection();
+        setContextMenu(null);
+        return;
+      }
       if (e.key === "Delete" || e.key === "Backspace") {
-        // Don't handle if user is typing in an input
-        if ((e.target as HTMLElement).tagName === "INPUT" || (e.target as HTMLElement).tagName === "TEXTAREA") return;
+        if (isInput) return;
 
         if (selectedNodeId && selectedNodeId !== "done" && selectedNodeId !== "fail") {
           removeNode(selectedNodeId);
@@ -169,8 +220,7 @@ export default function Canvas() {
           for (const wf of document.workflows) {
             const wfEdges = wf.edges ?? [];
             for (let i = 0; i < wfEdges.length; i++) {
-              const e = wfEdges[i]!;
-              const id = makeEdgeId(e.from, e.to, e.when?.condition ?? "", e.when?.negated ?? false, i);
+              const id = makeEdgeId(wf.name, i);
               if (id === selectedEdgeId) {
                 removeEdge(wf.name, i);
                 clearSelection();
@@ -181,13 +231,69 @@ export default function Canvas() {
         }
       }
     },
-    [selectedNodeId, selectedEdgeId, document, removeNode, removeEdge, clearSelection],
+    [selectedNodeId, selectedEdgeId, document, removeNode, removeEdge, clearSelection, searchOpen],
+  );
+
+  // Apply search filter: dim non-matching nodes
+  const displayNodes = useMemo(() => {
+    if (!searchOpen || !searchQuery.trim()) return layoutNodes;
+    const q = searchQuery.trim().toLowerCase();
+    return layoutNodes.map((n) => {
+      const data = n.data as { label: string; kind: string } | undefined;
+      const matches =
+        n.id.toLowerCase().includes(q) ||
+        (data?.label ?? "").toLowerCase().includes(q) ||
+        (data?.kind ?? "").toLowerCase().includes(q);
+      return matches ? n : { ...n, style: { ...n.style, opacity: 0.25 } };
+    });
+  }, [layoutNodes, searchOpen, searchQuery]);
+
+  const handleSearchKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setSearchOpen(false);
+        setSearchQuery("");
+      } else if (e.key === "Enter") {
+        // Select first matching node
+        const q = searchQuery.trim().toLowerCase();
+        if (q) {
+          const match = layoutNodes.find((n) => {
+            const data = n.data as { label: string; kind: string } | undefined;
+            return (
+              n.id.toLowerCase().includes(q) ||
+              (data?.label ?? "").toLowerCase().includes(q) ||
+              (data?.kind ?? "").toLowerCase().includes(q)
+            );
+          });
+          if (match) {
+            setSelectedNode(match.id);
+            setSearchOpen(false);
+            setSearchQuery("");
+          }
+        }
+      }
+    },
+    [searchQuery, layoutNodes, setSelectedNode],
   );
 
   return (
-    <div className="h-full w-full" ref={reactFlowWrapper} onKeyDown={onKeyDown} tabIndex={0}>
+    <div className="h-full w-full relative" ref={reactFlowWrapper} onKeyDown={onKeyDown} tabIndex={0}>
+      {/* Search overlay */}
+      {searchOpen && (
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 z-50">
+          <input
+            ref={searchInputRef}
+            className="bg-gray-800 border border-gray-500 rounded-lg px-3 py-1.5 text-sm text-white w-64 focus:border-blue-500 focus:outline-none shadow-lg"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={handleSearchKeyDown}
+            placeholder="Search nodes... (Enter to select, Esc to close)"
+            autoFocus
+          />
+        </div>
+      )}
       <ReactFlow
-        nodes={layoutNodes}
+        nodes={displayNodes}
         edges={graphEdges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
@@ -196,7 +302,9 @@ export default function Canvas() {
         onNodeClick={onNodeClick}
         onEdgeClick={onEdgeClick}
         onPaneClick={onPaneClick}
+        onNodeContextMenu={onNodeContextMenu}
         onConnect={onConnect}
+        isValidConnection={isValidConnection}
         onDragOver={onDragOver}
         onDrop={onDrop}
         fitView
@@ -206,6 +314,27 @@ export default function Canvas() {
         <Controls />
         <MiniMap />
       </ReactFlow>
+      {contextMenu && (
+        <NodeContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          nodeId={contextMenu.nodeId}
+          isTerminal={contextMenu.nodeId === "done" || contextMenu.nodeId === "fail"}
+          isEntry={activeWorkflow?.entry === contextMenu.nodeId}
+          onSetEntry={() => {
+            if (activeWorkflow) updateWorkflow(activeWorkflow.name, { entry: contextMenu.nodeId });
+          }}
+          onDuplicate={() => {
+            const newName = duplicateNode(contextMenu.nodeId);
+            if (newName) setSelectedNode(newName);
+          }}
+          onDelete={() => {
+            removeNode(contextMenu.nodeId);
+            clearSelection();
+          }}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
     </div>
   );
 }

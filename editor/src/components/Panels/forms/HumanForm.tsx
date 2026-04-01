@@ -1,6 +1,8 @@
+import { useCallback } from "react";
 import { useDocumentStore } from "@/store/document";
 import type { HumanDecl, HumanMode } from "@/api/types";
-import { TextField, NumberField, SelectField } from "./FormField";
+import { defaultSchema, defaultPrompt } from "@/lib/defaults";
+import { TextField, NumberField, SelectField, SelectFieldWithCreate } from "./FormField";
 
 interface Props {
   decl: HumanDecl;
@@ -10,9 +12,29 @@ export default function HumanForm({ decl }: Props) {
   const document = useDocumentStore((s) => s.document);
   const updateHuman = useDocumentStore((s) => s.updateHuman);
   const renameNode = useDocumentStore((s) => s.renameNode);
+  const addSchema = useDocumentStore((s) => s.addSchema);
+  const addPrompt = useDocumentStore((s) => s.addPrompt);
 
   const schemaOptions = (document?.schemas ?? []).map((s) => ({ value: s.name, label: s.name }));
   const promptOptions = (document?.prompts ?? []).map((p) => ({ value: p.name, label: p.name }));
+
+  const createSchema = useCallback(() => {
+    const existing = new Set((document?.schemas ?? []).map((s) => s.name));
+    let i = 1;
+    while (existing.has(`schema_${i}`)) i++;
+    const name = `schema_${i}`;
+    addSchema(defaultSchema(name));
+    return name;
+  }, [document, addSchema]);
+
+  const createPrompt = useCallback(() => {
+    const existing = new Set((document?.prompts ?? []).map((p) => p.name));
+    let i = 1;
+    while (existing.has(`prompt_${i}`)) i++;
+    const name = `prompt_${i}`;
+    addPrompt(defaultPrompt(name));
+    return name;
+  }, [document, addPrompt]);
 
   const needsModel = decl.mode === "auto_answer" || decl.mode === "auto_or_pause";
 
@@ -30,21 +52,23 @@ export default function HumanForm({ decl }: Props) {
         value={decl.name}
         onChange={(v) => renameNode(decl.name, v)}
       />
-      <SelectField
+      <SelectFieldWithCreate
         label="Input Schema"
         value={decl.input}
         onChange={(v) => updateHuman(decl.name, { input: v })}
         options={schemaOptions}
         allowEmpty
         emptyLabel="-- select schema --"
+        onCreate={createSchema}
       />
-      <SelectField
+      <SelectFieldWithCreate
         label="Output Schema"
         value={decl.output}
         onChange={(v) => updateHuman(decl.name, { output: v })}
         options={schemaOptions}
         allowEmpty
         emptyLabel="-- select schema --"
+        onCreate={createSchema}
       />
       <TextField
         label="Publish"
@@ -52,13 +76,14 @@ export default function HumanForm({ decl }: Props) {
         onChange={(v) => updateHuman(decl.name, { publish: v || undefined })}
         placeholder="Artifact name"
       />
-      <SelectField
+      <SelectFieldWithCreate
         label="Instructions Prompt"
         value={decl.instructions}
         onChange={(v) => updateHuman(decl.name, { instructions: v })}
         options={promptOptions}
         allowEmpty
         emptyLabel="-- select prompt --"
+        onCreate={createPrompt}
       />
       <SelectField
         label="Mode"
@@ -85,13 +110,14 @@ export default function HumanForm({ decl }: Props) {
             onChange={(v) => updateHuman(decl.name, { model: v || undefined })}
             placeholder="e.g. ${ANTHROPIC_MODEL}"
           />
-          <SelectField
+          <SelectFieldWithCreate
             label="System Prompt"
             value={decl.system ?? ""}
             onChange={(v) => updateHuman(decl.name, { system: v || undefined })}
             options={promptOptions}
             allowEmpty
             emptyLabel="-- select prompt --"
+            onCreate={createPrompt}
           />
         </div>
       )}
@@ -103,13 +129,14 @@ export default function HumanForm({ decl }: Props) {
             onChange={(v) => updateHuman(decl.name, { model: v || undefined })}
             placeholder="Optional model override"
           />
-          <SelectField
+          <SelectFieldWithCreate
             label="System Prompt"
             value={decl.system ?? ""}
             onChange={(v) => updateHuman(decl.name, { system: v || undefined })}
             options={promptOptions}
             allowEmpty
             emptyLabel="-- select prompt --"
+            onCreate={createPrompt}
           />
         </>
       )}
