@@ -39,6 +39,7 @@ func RunEditor(ctx context.Context, opts EditorOptions, p *Printer) error {
 	cfg := server.Config{
 		Port:        opts.Port,
 		ExamplesDir: examplesDir,
+		WorkDir:     dir,
 		OpenBrowser: !opts.NoBrowser,
 	}
 

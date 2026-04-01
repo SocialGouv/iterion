@@ -17,6 +17,13 @@ export default function JoinForm({ decl }: Props) {
 
   return (
     <div className="space-y-1">
+      <div
+        className="flex items-center gap-2 px-2 py-1.5 rounded mb-2 -mx-1"
+        style={{ backgroundColor: "#2ECC7122", borderLeft: "3px solid #2ECC71" }}
+      >
+        <span className="text-base">{"\u{1F91D}"}</span>
+        <span className="text-xs font-bold uppercase tracking-wide" style={{ color: "#2ECC71" }}>Join</span>
+      </div>
       <TextField
         label="Name"
         value={decl.name}

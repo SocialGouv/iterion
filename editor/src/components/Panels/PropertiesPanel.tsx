@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
+import { makeEdgeId } from "@/lib/documentToGraph";
 import type { AgentDecl, JudgeDecl, RouterDecl, JoinDecl, HumanDecl, ToolNodeDecl, NodeKind, Edge } from "@/api/types";
 import AgentForm from "./forms/AgentForm";
 import RouterForm from "./forms/RouterForm";
@@ -45,7 +46,7 @@ export default function PropertiesPanel() {
       for (let i = 0; i < wfEdges.length; i++) {
         const e = wfEdges[i];
         if (!e) continue;
-        const id = edgeId(e, i);
+        const id = makeEdgeId(e.from, e.to, e.when?.condition ?? "", e.when?.negated ?? false, i);
         if (id === selectedEdgeId) return { edge: e, edgeIndex: i, workflowName: wf.name };
       }
     }
@@ -110,8 +111,3 @@ function NodeForm({ match }: { match: NodeMatch }) {
   }
 }
 
-export function edgeId(e: Edge, index: number): string {
-  const cond = e.when?.condition ?? "";
-  const neg = e.when?.negated ? "neg" : "";
-  return `${e.from}->${e.to}:${cond}:${neg}:${index}`;
-}

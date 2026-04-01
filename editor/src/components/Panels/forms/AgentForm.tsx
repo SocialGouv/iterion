@@ -25,8 +25,19 @@ export default function AgentForm({ decl, kind }: Props) {
   const schemaOptions = (document?.schemas ?? []).map((s) => ({ value: s.name, label: s.name }));
   const promptOptions = (document?.prompts ?? []).map((p) => ({ value: p.name, label: p.name }));
 
+  const headerColor = kind === "agent" ? "#4A90D9" : "#7B68EE";
+  const headerIcon = kind === "agent" ? "\u{1F916}" : "\u{2696}\u{FE0F}";
+  const headerLabel = kind === "agent" ? "Agent" : "Judge";
+
   return (
     <div className="space-y-1">
+      <div
+        className="flex items-center gap-2 px-2 py-1.5 rounded mb-2 -mx-1"
+        style={{ backgroundColor: headerColor + "22", borderLeft: `3px solid ${headerColor}` }}
+      >
+        <span className="text-base">{headerIcon}</span>
+        <span className="text-xs font-bold uppercase tracking-wide" style={{ color: headerColor }}>{headerLabel}</span>
+      </div>
       <TextField
         label="Name"
         value={decl.name}

@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import { useDocumentStore } from "@/store/document";
+import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import type { VarField, TypeExpr, VarsBlock } from "@/api/types";
 import { TextField, SelectField } from "./forms/FormField";
 
@@ -18,8 +19,8 @@ export default function VarsEditor() {
   const setWorkflowVars = useDocumentStore((s) => s.setWorkflowVars);
 
   const topLevelVars = document?.vars;
-  const workflow = document?.workflows?.[0];
-  const workflowVars = workflow?.vars;
+  const activeWorkflow = useActiveWorkflow();
+  const workflowVars = activeWorkflow?.vars;
 
   return (
     <div className="p-3 text-sm">
@@ -32,11 +33,11 @@ export default function VarsEditor() {
         disabled={!document}
       />
 
-      {workflow && (
+      {activeWorkflow && (
         <VarsSection
-          title={`Workflow "${workflow.name}" Vars`}
+          title={`Workflow "${activeWorkflow.name}" Vars`}
           vars={workflowVars}
-          onChange={(v) => setWorkflowVars(workflow.name, v)}
+          onChange={(v) => setWorkflowVars(activeWorkflow.name, v)}
           disabled={!document}
         />
       )}

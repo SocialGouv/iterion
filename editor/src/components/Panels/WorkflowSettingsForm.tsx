@@ -1,6 +1,7 @@
 import { useDocumentStore } from "@/store/document";
 import type { BudgetBlock } from "@/api/types";
 import { getAllNodeNames } from "@/lib/defaults";
+import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { TextField, NumberField, SelectField } from "./forms/FormField";
 
 export default function WorkflowSettingsForm() {
@@ -8,7 +9,7 @@ export default function WorkflowSettingsForm() {
   const updateWorkflow = useDocumentStore((s) => s.updateWorkflow);
   const updateWorkflowBudget = useDocumentStore((s) => s.updateWorkflowBudget);
 
-  const workflow = document?.workflows?.[0];
+  const workflow = useActiveWorkflow();
   if (!workflow) {
     return <p className="p-3 text-gray-500 text-xs">No workflow defined.</p>;
   }

@@ -15,6 +15,13 @@ export default function ToolForm({ decl }: Props) {
 
   return (
     <div className="space-y-1">
+      <div
+        className="flex items-center gap-2 px-2 py-1.5 rounded mb-2 -mx-1"
+        style={{ backgroundColor: "#8B691422", borderLeft: "3px solid #8B6914" }}
+      >
+        <span className="text-base">{"\u{1F527}"}</span>
+        <span className="text-xs font-bold uppercase tracking-wide" style={{ color: "#8B6914" }}>Tool</span>
+      </div>
       <TextField
         label="Name"
         value={decl.name}
@@ -24,7 +31,7 @@ export default function ToolForm({ decl }: Props) {
         label="Command"
         value={decl.command}
         onChange={(v) => updateTool(decl.name, { command: v })}
-        placeholder="Shell command"
+        placeholder="Shell command (e.g. ${CMD})"
       />
       <SelectField
         label="Output Schema"

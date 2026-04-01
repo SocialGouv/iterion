@@ -76,7 +76,7 @@ export default function SourceView() {
       <div className="flex-1 min-h-0">
         <Editor
           height="100%"
-          language="yaml"
+          language="plaintext"
           theme="vs-dark"
           value={source}
           onChange={(v) => {

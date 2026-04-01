@@ -3,7 +3,8 @@ import { ReactFlow, Background, Controls, MiniMap, useReactFlow } from "@xyflow/
 import type { NodeMouseHandler, EdgeMouseHandler, Connection, Node, NodeChange, EdgeChange } from "@xyflow/react";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
-import { documentToGraph } from "@/lib/documentToGraph";
+import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
+import { documentToGraph, getTopologyKey, makeEdgeId } from "@/lib/documentToGraph";
 import { autoLayout } from "@/lib/autoLayout";
 import { generateUniqueName, getAllNodeNames, defaultAgent, defaultJudge, defaultRouter, defaultJoin, defaultHuman, defaultTool } from "@/lib/defaults";
 import type { NodeKind } from "@/api/types";
@@ -29,6 +30,7 @@ export default function Canvas() {
   const clearSelection = useSelectionStore((s) => s.clearSelection);
   const selectedNodeId = useSelectionStore((s) => s.selectedNodeId);
   const selectedEdgeId = useSelectionStore((s) => s.selectedEdgeId);
+  const activeWorkflow = useActiveWorkflow();
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition } = useReactFlow();
 
@@ -39,18 +41,37 @@ export default function Canvas() {
 
   // Manage node positions with local state (allows dragging)
   const [layoutNodes, setLayoutNodes] = useState<Node[]>([]);
-  const prevDocRef = useRef<typeof document>(null);
+  const prevTopologyRef = useRef<string>("");
 
-  // Auto-layout when document changes structurally
+  // Pending drop positions: nodes dropped before layout runs get placed here
+  const pendingPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
+
+  // Auto-layout only when topology changes (nodes/edges added/removed), not on property edits
   useEffect(() => {
     if (graphNodes.length === 0) {
       setLayoutNodes([]);
+      prevTopologyRef.current = "";
       return;
     }
-    // Only re-layout when document reference changes (not on drag)
-    if (prevDocRef.current !== document) {
-      prevDocRef.current = document;
-      autoLayout(graphNodes, graphEdges).then(setLayoutNodes).catch(() => setLayoutNodes(graphNodes));
+    const topoKey = document ? getTopologyKey(document) : "";
+    if (prevTopologyRef.current !== topoKey) {
+      prevTopologyRef.current = topoKey;
+      autoLayout(graphNodes, graphEdges)
+        .then((laid) => {
+          // Apply any pending drop positions
+          const pending = pendingPositionsRef.current;
+          if (pending.size > 0) {
+            const result = laid.map((n) => {
+              const pos = pending.get(n.id);
+              return pos ? { ...n, position: pos } : n;
+            });
+            pending.clear();
+            setLayoutNodes(result);
+          } else {
+            setLayoutNodes(laid);
+          }
+        })
+        .catch(() => setLayoutNodes(graphNodes));
     }
   }, [document, graphNodes, graphEdges]);
 
@@ -94,11 +115,11 @@ export default function Canvas() {
   const onConnect = useCallback(
     (connection: Connection) => {
       if (!document || !connection.source || !connection.target) return;
-      const workflowName = document.workflows[0]?.name;
+      const workflowName = activeWorkflow?.name;
       if (!workflowName) return;
       addEdge(workflowName, { from: connection.source, to: connection.target });
     },
-    [document, addEdge],
+    [document, activeWorkflow, addEdge],
   );
 
   const onDragOver = useCallback((e: DragEvent) => {
@@ -112,11 +133,15 @@ export default function Canvas() {
       const kind = e.dataTransfer.getData("application/iterion-node") as NodeKind;
       if (!kind || !document) return;
 
+      // done/fail are virtual terminal nodes, not draggable
+      if (kind === "done" || kind === "fail") return;
+
       const existingNames = getAllNodeNames(document);
       const name = generateUniqueName(kind, existingNames);
 
-      // Position could be used for initial placement if we had a layout store
-      screenToFlowPosition({ x: e.clientX, y: e.clientY });
+      // Store the drop position so the next layout applies it
+      const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+      pendingPositionsRef.current.set(name, position);
 
       switch (kind) {
         case "agent": addAgent(defaultAgent(name)); break;
@@ -145,7 +170,7 @@ export default function Canvas() {
             const wfEdges = wf.edges ?? [];
             for (let i = 0; i < wfEdges.length; i++) {
               const e = wfEdges[i]!;
-              const id = `${e.from}->${e.to}:${e.when?.condition ?? ""}:${e.when?.negated ? "neg" : ""}:${i}`;
+              const id = makeEdgeId(e.from, e.to, e.when?.condition ?? "", e.when?.negated ?? false, i);
               if (id === selectedEdgeId) {
                 removeEdge(wf.name, i);
                 clearSelection();

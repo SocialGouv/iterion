@@ -32,6 +32,7 @@ var staticFS embed.FS
 type Config struct {
 	Port        int    // HTTP port (default 4891)
 	ExamplesDir string // path to examples directory
+	WorkDir     string // root directory for file operations
 	OpenBrowser bool   // open browser on start
 }
 
@@ -73,11 +74,24 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) routes() {
+	// CORS preflight handler
+	s.mux.HandleFunc("OPTIONS /api/", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	s.mux.HandleFunc("POST /api/parse", s.handleParse)
 	s.mux.HandleFunc("POST /api/unparse", s.handleUnparse)
 	s.mux.HandleFunc("POST /api/validate", s.handleValidate)
 	s.mux.HandleFunc("GET /api/examples", s.handleListExamples)
 	s.mux.HandleFunc("GET /api/examples/{name...}", s.handleLoadExample)
+
+	// File management endpoints
+	s.mux.HandleFunc("GET /api/files", s.handleListFiles)
+	s.mux.HandleFunc("POST /api/files/open", s.handleOpenFile)
+	s.mux.HandleFunc("POST /api/files/save", s.handleSaveFile)
 
 	// Serve static frontend files.
 	staticSub, err := fs.Sub(staticFS, "static")
@@ -117,6 +131,31 @@ type validateResponse struct {
 	Valid       bool     `json:"valid"`
 	NodeCount   int      `json:"node_count,omitempty"`
 	EdgeCount   int      `json:"edge_count,omitempty"`
+}
+
+// --- File management types ---
+
+type listFilesResponse struct {
+	Files []fileEntry `json:"files"`
+}
+
+type fileEntry struct {
+	Name string `json:"name"`
+	Size int64  `json:"size"`
+}
+
+type openFileRequest struct {
+	Path string `json:"path"`
+}
+
+type saveFileRequest struct {
+	Path     string          `json:"path"`
+	Document json.RawMessage `json:"document"`
+}
+
+type saveFileResponse struct {
+	Path   string `json:"path"`
+	Source string `json:"source"`
 }
 
 // --- Handlers ---
@@ -308,4 +347,131 @@ func httpError(w http.ResponseWriter, code int, format string, args ...interface
 	w.WriteHeader(code)
 	msg := fmt.Sprintf(format, args...)
 	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// safePath resolves relPath against WorkDir and ensures the result stays within WorkDir.
+func (s *Server) safePath(relPath string) (string, error) {
+	if s.cfg.WorkDir == "" {
+		return "", fmt.Errorf("no working directory configured")
+	}
+	abs := filepath.Join(s.cfg.WorkDir, filepath.Clean("/"+relPath))
+	abs, err := filepath.Abs(abs)
+	if err != nil {
+		return "", err
+	}
+	base, _ := filepath.Abs(s.cfg.WorkDir)
+	if !strings.HasPrefix(abs, base+string(filepath.Separator)) && abs != base {
+		return "", fmt.Errorf("path escapes working directory")
+	}
+	return abs, nil
+}
+
+// --- File management handlers ---
+
+func (s *Server) handleListFiles(w http.ResponseWriter, _ *http.Request) {
+	if s.cfg.WorkDir == "" {
+		writeJSON(w, listFilesResponse{Files: []fileEntry{}})
+		return
+	}
+	var files []fileEntry
+	filepath.WalkDir(s.cfg.WorkDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if strings.HasPrefix(d.Name(), ".") || d.Name() == "node_modules" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), ".iter") {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(s.cfg.WorkDir, path)
+		files = append(files, fileEntry{Name: rel, Size: info.Size()})
+		return nil
+	})
+	if files == nil {
+		files = []fileEntry{}
+	}
+	writeJSON(w, listFilesResponse{Files: files})
+}
+
+func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
+	var req openFileRequest
+	if err := readJSON(r, &req); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid request: %v", err)
+		return
+	}
+	absPath, err := s.safePath(req.Path)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "invalid path: %v", err)
+		return
+	}
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		httpError(w, http.StatusNotFound, "file not found: %s", req.Path)
+		return
+	}
+	pr := parser.Parse(req.Path, string(data))
+	var diags []string
+	for _, d := range pr.Diagnostics {
+		diags = append(diags, d.Error())
+	}
+	if pr.File == nil {
+		writeJSON(w, parseResponse{Diagnostics: diags})
+		return
+	}
+	docJSON, err := astjson.Marshal(pr.File)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "marshal error: %v", err)
+		return
+	}
+	writeJSON(w, struct {
+		Source      string          `json:"source"`
+		Document    json.RawMessage `json:"document"`
+		Diagnostics []string        `json:"diagnostics,omitempty"`
+		Path        string          `json:"path"`
+	}{
+		Source:      string(data),
+		Document:    json.RawMessage(docJSON),
+		Diagnostics: diags,
+		Path:        req.Path,
+	})
+}
+
+func (s *Server) handleSaveFile(w http.ResponseWriter, r *http.Request) {
+	var req saveFileRequest
+	if err := readJSON(r, &req); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid request: %v", err)
+		return
+	}
+	if !strings.HasSuffix(req.Path, ".iter") {
+		httpError(w, http.StatusBadRequest, "filename must end in .iter")
+		return
+	}
+	absPath, err := s.safePath(req.Path)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "invalid path: %v", err)
+		return
+	}
+	f, err := astjson.Unmarshal(req.Document)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "invalid document: %v", err)
+		return
+	}
+	source := unparse.Unparse(f)
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+		httpError(w, http.StatusInternalServerError, "cannot create directory: %v", err)
+		return
+	}
+	if err := os.WriteFile(absPath, []byte(source), 0o644); err != nil {
+		httpError(w, http.StatusInternalServerError, "write error: %v", err)
+		return
+	}
+	writeJSON(w, saveFileResponse{Path: req.Path, Source: source})
 }

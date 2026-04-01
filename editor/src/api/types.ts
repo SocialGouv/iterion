@@ -72,3 +72,18 @@ export interface WithEntry { key: string; value: string; }
 
 // Node kind for the visual editor
 export type NodeKind = "agent" | "judge" | "router" | "join" | "human" | "tool" | "done" | "fail";
+
+// File management types
+export interface FileEntry {
+  name: string;
+  size: number;
+}
+
+export interface ListFilesResponse {
+  files: FileEntry[];
+}
+
+export interface SaveFileResponse {
+  path: string;
+  source: string;
+}

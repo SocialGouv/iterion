@@ -1,4 +1,4 @@
-import type { IterDocument } from "./types";
+import type { IterDocument, FileEntry, ListFilesResponse, SaveFileResponse } from "./types";
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? "/api";
 
@@ -47,4 +47,30 @@ export async function loadExample(
   name: string,
 ): Promise<{ source: string; document: IterDocument; diagnostics: string[] }> {
   return request(`/examples/${encodeURIComponent(name)}`);
+}
+
+// File management
+
+export async function listFiles(): Promise<FileEntry[]> {
+  const res = await request<ListFilesResponse>("/files");
+  return res.files;
+}
+
+export async function openFile(
+  path: string,
+): Promise<{ source: string; document: IterDocument; diagnostics: string[]; path: string }> {
+  return request("/files/open", {
+    method: "POST",
+    body: JSON.stringify({ path }),
+  });
+}
+
+export async function saveFile(
+  path: string,
+  document: IterDocument,
+): Promise<SaveFileResponse> {
+  return request("/files/save", {
+    method: "POST",
+    body: JSON.stringify({ path, document }),
+  });
 }

@@ -13,6 +13,7 @@ import type {
   VarsBlock,
   BudgetBlock,
   Edge,
+  Comment,
 } from "@/api/types";
 
 // Normalize a document from JSON (omitempty may leave arrays as undefined).
@@ -35,14 +36,28 @@ function normalize(doc: IterDocument): IterDocument {
   };
 }
 
+const MAX_HISTORY = 50;
+
 interface DocumentState {
   document: IterDocument | null;
   diagnostics: string[];
   warnings: string[];
+  currentFilePath: string | null;
+
+  // Undo/redo
+  _history: IterDocument[];
+  _future: IterDocument[];
 
   // Document lifecycle
   setDocument: (doc: IterDocument) => void;
   setDiagnostics: (d: string[], w?: string[]) => void;
+  setCurrentFilePath: (path: string | null) => void;
+
+  // Undo/redo
+  undo: () => void;
+  redo: () => void;
+  canUndo: () => boolean;
+  canRedo: () => boolean;
 
   // Node updates
   updateAgent: (name: string, updates: Partial<AgentDecl>) => void;
@@ -62,6 +77,10 @@ interface DocumentState {
   addTool: (decl: ToolNodeDecl) => void;
   removeNode: (name: string) => void;
   renameNode: (oldName: string, newName: string) => void;
+
+  // Workflow management
+  addWorkflow: (decl: WorkflowDecl) => void;
+  removeWorkflow: (name: string) => void;
 
   // Edge mutations
   addEdge: (workflowName: string, edge: Edge) => void;
@@ -84,6 +103,11 @@ interface DocumentState {
 
   // Budget mutations
   updateWorkflowBudget: (workflowName: string, budget: BudgetBlock | undefined) => void;
+
+  // Comment mutations
+  addComment: (comment: Comment) => void;
+  removeComment: (index: number) => void;
+  updateComment: (index: number, text: string) => void;
 }
 
 function updateInArray<T extends { name: string }>(arr: T[], name: string, updates: Partial<T>): T[] {
@@ -110,43 +134,73 @@ function removeNodeEdges(doc: IterDocument, name: string): WorkflowDecl[] {
   }));
 }
 
-export const useDocumentStore = create<DocumentState>((set) => ({
+/** Push current document onto history before making a change. */
+function pushHistory(s: DocumentState): { _history: IterDocument[]; _future: IterDocument[] } {
+  if (!s.document) return { _history: s._history, _future: [] };
+  const history = [...s._history, s.document].slice(-MAX_HISTORY);
+  return { _history: history, _future: [] };
+}
+
+export const useDocumentStore = create<DocumentState>((set, get) => ({
   document: null,
   diagnostics: [],
   warnings: [],
+  currentFilePath: null,
+  _history: [],
+  _future: [],
 
-  setDocument: (document) => set({ document: normalize(document) }),
+  setDocument: (document) => set((s) => ({
+    document: normalize(document),
+    ...pushHistory(s),
+  })),
   setDiagnostics: (diagnostics, warnings = []) => set({ diagnostics: diagnostics ?? [], warnings: warnings ?? [] }),
+  setCurrentFilePath: (currentFilePath) => set({ currentFilePath }),
+
+  // Undo/redo
+  undo: () => set((s) => {
+    if (s._history.length === 0 || !s.document) return s;
+    const history = [...s._history];
+    const prev = history.pop()!;
+    return { document: prev, _history: history, _future: [s.document, ...s._future].slice(0, MAX_HISTORY) };
+  }),
+  redo: () => set((s) => {
+    if (s._future.length === 0 || !s.document) return s;
+    const future = [...s._future];
+    const next = future.shift()!;
+    return { document: next, _history: [...s._history, s.document].slice(-MAX_HISTORY), _future: future };
+  }),
+  canUndo: () => get()._history.length > 0,
+  canRedo: () => get()._future.length > 0,
 
   // Node updates
   updateAgent: (name, updates) =>
-    set((s) => (s.document ? { document: { ...s.document, agents: updateInArray(s.document.agents, name, updates) } } : s)),
+    set((s) => (s.document ? { document: { ...s.document, agents: updateInArray(s.document.agents, name, updates) }, ...pushHistory(s) } : s)),
   updateJudge: (name, updates) =>
-    set((s) => (s.document ? { document: { ...s.document, judges: updateInArray(s.document.judges, name, updates) } } : s)),
+    set((s) => (s.document ? { document: { ...s.document, judges: updateInArray(s.document.judges, name, updates) }, ...pushHistory(s) } : s)),
   updateRouter: (name, updates) =>
-    set((s) => (s.document ? { document: { ...s.document, routers: updateInArray(s.document.routers, name, updates) } } : s)),
+    set((s) => (s.document ? { document: { ...s.document, routers: updateInArray(s.document.routers, name, updates) }, ...pushHistory(s) } : s)),
   updateJoin: (name, updates) =>
-    set((s) => (s.document ? { document: { ...s.document, joins: updateInArray(s.document.joins, name, updates) } } : s)),
+    set((s) => (s.document ? { document: { ...s.document, joins: updateInArray(s.document.joins, name, updates) }, ...pushHistory(s) } : s)),
   updateHuman: (name, updates) =>
-    set((s) => (s.document ? { document: { ...s.document, humans: updateInArray(s.document.humans, name, updates) } } : s)),
+    set((s) => (s.document ? { document: { ...s.document, humans: updateInArray(s.document.humans, name, updates) }, ...pushHistory(s) } : s)),
   updateTool: (name, updates) =>
-    set((s) => (s.document ? { document: { ...s.document, tools: updateInArray(s.document.tools, name, updates) } } : s)),
+    set((s) => (s.document ? { document: { ...s.document, tools: updateInArray(s.document.tools, name, updates) }, ...pushHistory(s) } : s)),
   updateWorkflow: (name, updates) =>
-    set((s) => (s.document ? { document: { ...s.document, workflows: updateInArray(s.document.workflows, name, updates) } } : s)),
+    set((s) => (s.document ? { document: { ...s.document, workflows: updateInArray(s.document.workflows, name, updates) }, ...pushHistory(s) } : s)),
 
   // Node add
   addAgent: (decl) =>
-    set((s) => (s.document ? { document: { ...s.document, agents: [...s.document.agents, decl] } } : s)),
+    set((s) => (s.document ? { document: { ...s.document, agents: [...s.document.agents, decl] }, ...pushHistory(s) } : s)),
   addJudge: (decl) =>
-    set((s) => (s.document ? { document: { ...s.document, judges: [...s.document.judges, decl] } } : s)),
+    set((s) => (s.document ? { document: { ...s.document, judges: [...s.document.judges, decl] }, ...pushHistory(s) } : s)),
   addRouter: (decl) =>
-    set((s) => (s.document ? { document: { ...s.document, routers: [...s.document.routers, decl] } } : s)),
+    set((s) => (s.document ? { document: { ...s.document, routers: [...s.document.routers, decl] }, ...pushHistory(s) } : s)),
   addJoin: (decl) =>
-    set((s) => (s.document ? { document: { ...s.document, joins: [...s.document.joins, decl] } } : s)),
+    set((s) => (s.document ? { document: { ...s.document, joins: [...s.document.joins, decl] }, ...pushHistory(s) } : s)),
   addHuman: (decl) =>
-    set((s) => (s.document ? { document: { ...s.document, humans: [...s.document.humans, decl] } } : s)),
+    set((s) => (s.document ? { document: { ...s.document, humans: [...s.document.humans, decl] }, ...pushHistory(s) } : s)),
   addTool: (decl) =>
-    set((s) => (s.document ? { document: { ...s.document, tools: [...s.document.tools, decl] } } : s)),
+    set((s) => (s.document ? { document: { ...s.document, tools: [...s.document.tools, decl] }, ...pushHistory(s) } : s)),
 
   // Node remove — removes declaration + cleans up all edges referencing it + cleans join.require[]
   removeNode: (name) =>
@@ -166,6 +220,7 @@ export const useDocumentStore = create<DocumentState>((set) => ({
           tools: doc.tools.filter((t) => t.name !== name),
           workflows: removeNodeEdges(doc, name),
         },
+        ...pushHistory(s),
       };
     }),
 
@@ -190,8 +245,15 @@ export const useDocumentStore = create<DocumentState>((set) => ({
           tools: renameIn(doc.tools),
           workflows: updateWorkflowsEdges(doc, oldName, newName),
         },
+        ...pushHistory(s),
       };
     }),
+
+  // Workflow management
+  addWorkflow: (decl) =>
+    set((s) => (s.document ? { document: { ...s.document, workflows: [...s.document.workflows, decl] }, ...pushHistory(s) } : s)),
+  removeWorkflow: (name) =>
+    set((s) => (s.document ? { document: { ...s.document, workflows: s.document.workflows.filter((w) => w.name !== name) }, ...pushHistory(s) } : s)),
 
   // Edge mutations
   addEdge: (workflowName, edge) =>
@@ -204,6 +266,7 @@ export const useDocumentStore = create<DocumentState>((set) => ({
             w.name === workflowName ? { ...w, edges: [...w.edges, edge] } : w,
           ),
         },
+        ...pushHistory(s),
       };
     }),
 
@@ -217,6 +280,7 @@ export const useDocumentStore = create<DocumentState>((set) => ({
             w.name === workflowName ? { ...w, edges: w.edges.filter((_, i) => i !== edgeIndex) } : w,
           ),
         },
+        ...pushHistory(s),
       };
     }),
 
@@ -232,28 +296,29 @@ export const useDocumentStore = create<DocumentState>((set) => ({
               : w,
           ),
         },
+        ...pushHistory(s),
       };
     }),
 
   // Schema mutations
   addSchema: (decl) =>
-    set((s) => (s.document ? { document: { ...s.document, schemas: [...s.document.schemas, decl] } } : s)),
+    set((s) => (s.document ? { document: { ...s.document, schemas: [...s.document.schemas, decl] }, ...pushHistory(s) } : s)),
   removeSchema: (name) =>
-    set((s) => (s.document ? { document: { ...s.document, schemas: s.document.schemas.filter((d) => d.name !== name) } } : s)),
+    set((s) => (s.document ? { document: { ...s.document, schemas: s.document.schemas.filter((d) => d.name !== name) }, ...pushHistory(s) } : s)),
   updateSchema: (name, updates) =>
-    set((s) => (s.document ? { document: { ...s.document, schemas: updateInArray(s.document.schemas, name, updates) } } : s)),
+    set((s) => (s.document ? { document: { ...s.document, schemas: updateInArray(s.document.schemas, name, updates) }, ...pushHistory(s) } : s)),
 
   // Prompt mutations
   addPrompt: (decl) =>
-    set((s) => (s.document ? { document: { ...s.document, prompts: [...s.document.prompts, decl] } } : s)),
+    set((s) => (s.document ? { document: { ...s.document, prompts: [...s.document.prompts, decl] }, ...pushHistory(s) } : s)),
   removePrompt: (name) =>
-    set((s) => (s.document ? { document: { ...s.document, prompts: s.document.prompts.filter((d) => d.name !== name) } } : s)),
+    set((s) => (s.document ? { document: { ...s.document, prompts: s.document.prompts.filter((d) => d.name !== name) }, ...pushHistory(s) } : s)),
   updatePrompt: (name, updates) =>
-    set((s) => (s.document ? { document: { ...s.document, prompts: updateInArray(s.document.prompts, name, updates) } } : s)),
+    set((s) => (s.document ? { document: { ...s.document, prompts: updateInArray(s.document.prompts, name, updates) }, ...pushHistory(s) } : s)),
 
   // Vars mutations
   setVars: (vars) =>
-    set((s) => (s.document ? { document: { ...s.document, vars } } : s)),
+    set((s) => (s.document ? { document: { ...s.document, vars }, ...pushHistory(s) } : s)),
   setWorkflowVars: (workflowName, vars) =>
     set((s) => {
       if (!s.document) return s;
@@ -262,6 +327,7 @@ export const useDocumentStore = create<DocumentState>((set) => ({
           ...s.document,
           workflows: s.document.workflows.map((w) => (w.name === workflowName ? { ...w, vars } : w)),
         },
+        ...pushHistory(s),
       };
     }),
 
@@ -274,6 +340,15 @@ export const useDocumentStore = create<DocumentState>((set) => ({
           ...s.document,
           workflows: s.document.workflows.map((w) => (w.name === workflowName ? { ...w, budget } : w)),
         },
+        ...pushHistory(s),
       };
     }),
+
+  // Comment mutations
+  addComment: (comment) =>
+    set((s) => (s.document ? { document: { ...s.document, comments: [...s.document.comments, comment] }, ...pushHistory(s) } : s)),
+  removeComment: (index) =>
+    set((s) => (s.document ? { document: { ...s.document, comments: s.document.comments.filter((_, i) => i !== index) }, ...pushHistory(s) } : s)),
+  updateComment: (index, text) =>
+    set((s) => (s.document ? { document: { ...s.document, comments: s.document.comments.map((c, i) => i === index ? { ...c, text } : c) }, ...pushHistory(s) } : s)),
 }));

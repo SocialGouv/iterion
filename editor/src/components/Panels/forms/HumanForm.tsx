@@ -14,8 +14,17 @@ export default function HumanForm({ decl }: Props) {
   const schemaOptions = (document?.schemas ?? []).map((s) => ({ value: s.name, label: s.name }));
   const promptOptions = (document?.prompts ?? []).map((p) => ({ value: p.name, label: p.name }));
 
+  const needsModel = decl.mode === "auto_answer" || decl.mode === "auto_or_pause";
+
   return (
     <div className="space-y-1">
+      <div
+        className="flex items-center gap-2 px-2 py-1.5 rounded mb-2 -mx-1"
+        style={{ backgroundColor: "#E74C3C22", borderLeft: "3px solid #E74C3C" }}
+      >
+        <span className="text-base">{"\u{1F464}"}</span>
+        <span className="text-xs font-bold uppercase tracking-wide" style={{ color: "#E74C3C" }}>Human</span>
+      </div>
       <TextField
         label="Name"
         value={decl.name}
@@ -67,20 +76,43 @@ export default function HumanForm({ decl }: Props) {
         onChange={(v) => updateHuman(decl.name, { min_answers: v })}
         min={1}
       />
-      <TextField
-        label="Model"
-        value={decl.model ?? ""}
-        onChange={(v) => updateHuman(decl.name, { model: v || undefined })}
-        placeholder="Optional model override"
-      />
-      <SelectField
-        label="System Prompt"
-        value={decl.system ?? ""}
-        onChange={(v) => updateHuman(decl.name, { system: v || undefined })}
-        options={promptOptions}
-        allowEmpty
-        emptyLabel="-- select prompt --"
-      />
+      {needsModel && (
+        <div className="border-t border-gray-700 pt-2 mt-2">
+          <p className="text-[10px] text-yellow-400 mb-1">Required for {decl.mode} mode</p>
+          <TextField
+            label="Model"
+            value={decl.model ?? ""}
+            onChange={(v) => updateHuman(decl.name, { model: v || undefined })}
+            placeholder="e.g. ${ANTHROPIC_MODEL}"
+          />
+          <SelectField
+            label="System Prompt"
+            value={decl.system ?? ""}
+            onChange={(v) => updateHuman(decl.name, { system: v || undefined })}
+            options={promptOptions}
+            allowEmpty
+            emptyLabel="-- select prompt --"
+          />
+        </div>
+      )}
+      {!needsModel && (
+        <>
+          <TextField
+            label="Model"
+            value={decl.model ?? ""}
+            onChange={(v) => updateHuman(decl.name, { model: v || undefined })}
+            placeholder="Optional model override"
+          />
+          <SelectField
+            label="System Prompt"
+            value={decl.system ?? ""}
+            onChange={(v) => updateHuman(decl.name, { system: v || undefined })}
+            options={promptOptions}
+            allowEmpty
+            emptyLabel="-- select prompt --"
+          />
+        </>
+      )}
     </div>
   );
 }

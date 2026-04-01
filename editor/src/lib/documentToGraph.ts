@@ -23,6 +23,23 @@ export function makeEdgeId(from: string, to: string, condition: string, negated:
   return `${from}->${to}:${condition}:${negated ? "neg" : ""}:${index}`;
 }
 
+/** Returns a key that changes only when the graph topology changes (nodes added/removed, edges added/removed). */
+export function getTopologyKey(doc: IterDocument): string {
+  const names: string[] = [];
+  for (const a of doc.agents ?? []) names.push(a.name);
+  for (const j of doc.judges ?? []) names.push(j.name);
+  for (const r of doc.routers ?? []) names.push(r.name);
+  for (const j of doc.joins ?? []) names.push(j.name);
+  for (const h of doc.humans ?? []) names.push(h.name);
+  for (const t of doc.tools ?? []) names.push(t.name);
+  names.sort();
+  const edgeSigs: string[] = [];
+  for (const wf of doc.workflows ?? []) {
+    for (const e of wf.edges ?? []) edgeSigs.push(`${e.from}->${e.to}`);
+  }
+  return `${names.join(",")}|${edgeSigs.join(",")}`;
+}
+
 export function documentToGraph(doc: IterDocument): { nodes: Node<NodeData>[]; edges: FlowEdge[] } {
   const nodeMap = new Map<string, { kind: NodeKind; decl: unknown }>();
 
@@ -33,18 +50,10 @@ export function documentToGraph(doc: IterDocument): { nodes: Node<NodeData>[]; e
   for (const h of doc.humans ?? []) nodeMap.set(h.name, { kind: "human", decl: h });
   for (const t of doc.tools ?? []) nodeMap.set(t.name, { kind: "tool", decl: t });
 
-  // Add done/fail if referenced in edges
-  for (const wf of doc.workflows ?? []) {
-    for (const edge of wf.edges ?? []) {
-      for (const name of [edge.from, edge.to]) {
-        if (name === "done" && !nodeMap.has("done")) {
-          nodeMap.set("done", { kind: "done", decl: null });
-        }
-        if (name === "fail" && !nodeMap.has("fail")) {
-          nodeMap.set("fail", { kind: "fail", decl: null });
-        }
-      }
-    }
+  // Always show done/fail terminal nodes when a workflow exists
+  if ((doc.workflows ?? []).length > 0) {
+    if (!nodeMap.has("done")) nodeMap.set("done", { kind: "done", decl: null });
+    if (!nodeMap.has("fail")) nodeMap.set("fail", { kind: "fail", decl: null });
   }
 
   // Position nodes in a grid

@@ -90,45 +90,40 @@ function SchemaCard({
       </div>
       <div className="space-y-2">
         {schema.fields.map((field, i) => (
-          <div key={i} className="flex gap-1 items-end">
-            <div className="flex-1">
-              <TextField
-                label="Field"
-                value={field.name}
-                onChange={(v) => updateField(i, { name: v })}
-                placeholder="field_name"
-              />
+          <div key={i}>
+            <div className="flex gap-1 items-end">
+              <div className="flex-1">
+                <TextField
+                  label="Field"
+                  value={field.name}
+                  onChange={(v) => updateField(i, { name: v })}
+                  placeholder="field_name"
+                />
+              </div>
+              <div className="w-24">
+                <SelectField
+                  label="Type"
+                  value={field.type}
+                  onChange={(v) => updateField(i, { type: v as FieldType, enum_values: v === "string" ? field.enum_values : undefined })}
+                  options={FIELD_TYPES}
+                />
+              </div>
+              <button className="text-red-400 hover:text-red-300 text-xs pb-2" onClick={() => removeField(i)}>
+                x
+              </button>
             </div>
-            <div className="w-24">
-              <SelectField
-                label="Type"
-                value={field.type}
-                onChange={(v) => updateField(i, { type: v as FieldType })}
-                options={FIELD_TYPES}
-              />
-            </div>
-            <button className="text-red-400 hover:text-red-300 text-xs pb-2" onClick={() => removeField(i)}>
-              x
-            </button>
-          </div>
-        ))}
-        {schema.fields.some((f) => f.type === "string") && (
-          <div className="mt-1">
-            {schema.fields.map(
-              (field, i) =>
-                field.type === "string" &&
-                (field.enum_values?.length ?? 0) > 0 && (
-                  <TagListField
-                    key={i}
-                    label={`${field.name} enum values`}
-                    values={field.enum_values ?? []}
-                    onChange={(v) => updateField(i, { enum_values: v.length > 0 ? v : undefined })}
-                    placeholder="Add enum value..."
-                  />
-                ),
+            {field.type === "string" && (
+              <div className="ml-2 mt-1">
+                <TagListField
+                  label={`${field.name || "field"} enum values`}
+                  values={field.enum_values ?? []}
+                  onChange={(v) => updateField(i, { enum_values: v.length > 0 ? v : undefined })}
+                  placeholder="Add enum value..."
+                />
+              </div>
             )}
           </div>
-        )}
+        ))}
       </div>
       <button className="text-blue-400 hover:text-blue-300 text-xs mt-1" onClick={addField}>
         + Add Field
