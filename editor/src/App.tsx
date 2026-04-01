@@ -13,6 +13,8 @@ import { useAutoValidation } from "./hooks/useAutoValidation";
 
 export default function App() {
   const sourceViewOpen = useUIStore((s) => s.sourceViewOpen);
+  const diagnosticsPanelOpen = useUIStore((s) => s.diagnosticsPanelOpen);
+  const expanded = useUIStore((s) => s.expanded);
   useAutoValidation();
 
   // Warn before closing with unsaved changes
@@ -28,23 +30,33 @@ export default function App() {
 
   return (
     <ReactFlowProvider>
-      <div className="h-screen w-screen grid grid-rows-[48px_1fr_160px] grid-cols-[64px_1fr_320px] bg-gray-900 text-white">
+      <div className={`h-screen w-screen grid bg-gray-900 text-white ${
+        expanded
+          ? "grid-rows-[1fr] grid-cols-[1fr]"
+          : `grid-cols-[64px_1fr_320px] ${
+              diagnosticsPanelOpen ? "grid-rows-[48px_1fr_160px]" : "grid-rows-[48px_1fr_0px]"
+            }`
+      }`}>
         {/* Toolbar spans full width */}
-        <div className="col-span-3 border-b border-gray-700">
-          <Toolbar />
-        </div>
+        {!expanded && (
+          <div className="col-span-3 border-b border-gray-700">
+            <Toolbar />
+          </div>
+        )}
 
         {/* Left palette */}
-        <div className="border-r border-gray-700 overflow-y-auto">
-          <NodePalette />
-        </div>
+        {!expanded && (
+          <div className="border-r border-gray-700 overflow-y-auto">
+            <NodePalette />
+          </div>
+        )}
 
         {/* Center: canvas + optional source view */}
         <div className="min-h-0 flex">
-          <div className={sourceViewOpen ? "w-1/2 h-full" : "w-full h-full"}>
+          <div className={sourceViewOpen && !expanded ? "w-1/2 h-full" : "w-full h-full"}>
             <Canvas />
           </div>
-          {sourceViewOpen && (
+          {sourceViewOpen && !expanded && (
             <div className="w-1/2 h-full border-l border-gray-700">
               <SourceView />
             </div>
@@ -52,14 +64,18 @@ export default function App() {
         </div>
 
         {/* Right sidebar: tabbed panels */}
-        <div className="border-l border-gray-700 overflow-y-auto">
-          <SidebarTabs />
-        </div>
+        {!expanded && (
+          <div className="border-l border-gray-700 overflow-y-auto">
+            <SidebarTabs />
+          </div>
+        )}
 
         {/* Bottom diagnostics spans full width */}
-        <div className="col-span-3 border-t border-gray-700 overflow-y-auto">
-          <DiagnosticsPanel />
-        </div>
+        {!expanded && (
+          <div className={`col-span-3 border-t border-gray-700 ${diagnosticsPanelOpen ? "overflow-y-auto" : "overflow-hidden"}`}>
+            <DiagnosticsPanel />
+          </div>
+        )}
       </div>
       <ToastContainer />
     </ReactFlowProvider>

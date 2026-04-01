@@ -23,6 +23,8 @@ export default function Toolbar() {
   const removeWorkflow = useDocumentStore((s) => s.removeWorkflow);
   const sourceViewOpen = useUIStore((s) => s.sourceViewOpen);
   const toggleSourceView = useUIStore((s) => s.toggleSourceView);
+  const diagnosticsPanelOpen = useUIStore((s) => s.diagnosticsPanelOpen);
+  const toggleDiagnosticsPanel = useUIStore((s) => s.toggleDiagnosticsPanel);
   const activeWorkflowName = useUIStore((s) => s.activeWorkflowName);
   const setActiveWorkflowName = useUIStore((s) => s.setActiveWorkflowName);
   const addToast = useUIStore((s) => s.addToast);
@@ -383,6 +385,16 @@ export default function Toolbar() {
         onClick={toggleSourceView}
       >
         Source
+      </button>
+
+      {/* Diagnostics panel toggle */}
+      <button
+        className={`px-2.5 py-1 rounded ${
+          diagnosticsPanelOpen ? "bg-orange-600 hover:bg-orange-700" : "bg-gray-700 hover:bg-gray-600"
+        }`}
+        onClick={toggleDiagnosticsPanel}
+      >
+        Diagnostics
       </button>
 
       <button

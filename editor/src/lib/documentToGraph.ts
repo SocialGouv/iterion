@@ -85,6 +85,9 @@ export function documentToGraph(doc: IterDocument, activeWorkflowName?: string):
         x: (i % COLS) * X_GAP + 50,
         y: Math.floor(i / COLS) * Y_GAP + 50,
       },
+      // initialWidth/initialHeight ensure the MiniMap can render nodes before DOM measurement
+      initialWidth: 140,
+      initialHeight: 60,
       data: {
         label: name,
         kind: entry.kind,

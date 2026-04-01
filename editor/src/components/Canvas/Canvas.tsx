@@ -46,6 +46,10 @@ export default function Canvas() {
   const copiedNodeId = useSelectionStore((s) => s.copiedNodeId);
   const setCopiedNode = useSelectionStore((s) => s.setCopiedNode);
   const addToast = useUIStore((s) => s.addToast);
+  const expanded = useUIStore((s) => s.expanded);
+  const toggleExpanded = useUIStore((s) => s.toggleExpanded);
+  const browserFullscreen = useUIStore((s) => s.browserFullscreen);
+  const setBrowserFullscreen = useUIStore((s) => s.setBrowserFullscreen);
   const activeWorkflow = useActiveWorkflow();
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition, fitView } = useReactFlow();
@@ -304,6 +308,7 @@ export default function Canvas() {
         return;
       }
       if (e.key === "Escape") {
+        if (expanded) { toggleExpanded(); return; }
         if (searchOpen) { setSearchOpen(false); setSearchQuery(""); return; }
         if (quickAddMenu) { setQuickAddMenu(null); return; }
         clearSelection();
@@ -351,8 +356,23 @@ export default function Canvas() {
         }
       }
     },
-    [selectedNodeId, selectedEdgeId, document, removeNode, removeEdge, clearSelection, searchOpen, quickAddMenu, copiedNodeId, duplicateNode, setCopiedNode, setSelectedNode, addToast],
+    [selectedNodeId, selectedEdgeId, document, removeNode, removeEdge, clearSelection, searchOpen, quickAddMenu, copiedNodeId, duplicateNode, setCopiedNode, setSelectedNode, addToast, expanded, toggleExpanded],
   );
+
+  // Sync browser fullscreen state
+  useEffect(() => {
+    const handler = () => setBrowserFullscreen(!!window.document.fullscreenElement);
+    window.document.addEventListener("fullscreenchange", handler);
+    return () => window.document.removeEventListener("fullscreenchange", handler);
+  }, [setBrowserFullscreen]);
+
+  const handleBrowserFullscreen = useCallback(() => {
+    if (window.document.fullscreenElement) {
+      window.document.exitFullscreen();
+    } else {
+      window.document.documentElement.requestFullscreen();
+    }
+  }, []);
 
   // Fit view when switching workflows
   const prevWorkflowRef = useRef<string | undefined>(activeWorkflowName);
@@ -443,7 +463,7 @@ export default function Canvas() {
         </div>
       )}
 
-      {/* Fit view / Focus buttons */}
+      {/* Fit view / Focus / Fullscreen buttons */}
       <div className="absolute top-2 right-2 z-40 flex gap-1">
         <button
           className="bg-gray-800/90 hover:bg-gray-700 border border-gray-600 text-xs px-2 py-1 rounded text-gray-300"
@@ -468,6 +488,28 @@ export default function Canvas() {
             Focus
           </button>
         )}
+        <button
+          className={`border text-xs px-2 py-1 rounded ${
+            expanded
+              ? "bg-blue-600 hover:bg-blue-700 border-blue-500 text-white"
+              : "bg-gray-800/90 hover:bg-gray-700 border-gray-600 text-gray-300"
+          }`}
+          onClick={() => { toggleExpanded(); setTimeout(() => fitView({ padding: 0.2 }), 100); }}
+          title={expanded ? "Collapse canvas (Esc)" : "Expand canvas (hide chrome)"}
+        >
+          {expanded ? "Collapse" : "Expand"}
+        </button>
+        <button
+          className={`border text-xs px-2 py-1 rounded ${
+            browserFullscreen
+              ? "bg-blue-600 hover:bg-blue-700 border-blue-500 text-white"
+              : "bg-gray-800/90 hover:bg-gray-700 border-gray-600 text-gray-300"
+          }`}
+          onClick={() => { handleBrowserFullscreen(); setTimeout(() => fitView({ padding: 0.2 }), 100); }}
+          title={browserFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+        >
+          {browserFullscreen ? "Exit FS" : "Fullscreen"}
+        </button>
       </div>
 
       {/* Connection error feedback */}
@@ -499,20 +541,25 @@ export default function Canvas() {
       >
         <Background />
         <Controls />
-        <MiniMap nodeColor={(node) => {
-          const kind = (node.data as { kind?: string })?.kind;
-          switch (kind) {
-            case "agent": return "#4A90D9";
-            case "judge": return "#7B68EE";
-            case "router": return "#E67E22";
-            case "join": return "#2ECC71";
-            case "human": return "#E74C3C";
-            case "tool": return "#8B6914";
-            case "done": return "#22C55E";
-            case "fail": return "#EF4444";
-            default: return "#6B7280";
-          }
-        }} />
+        <MiniMap
+          style={{ width: 200, height: 150 }}
+          zoomable
+          pannable
+          nodeColor={(node) => {
+            const kind = (node.data as { kind?: string })?.kind;
+            switch (kind) {
+              case "agent": return "#4A90D9";
+              case "judge": return "#7B68EE";
+              case "router": return "#E67E22";
+              case "join": return "#2ECC71";
+              case "human": return "#E74C3C";
+              case "tool": return "#8B6914";
+              case "done": return "#22C55E";
+              case "fail": return "#EF4444";
+              default: return "#6B7280";
+            }
+          }}
+        />
       </ReactFlow>
 
       {/* Context menu */}

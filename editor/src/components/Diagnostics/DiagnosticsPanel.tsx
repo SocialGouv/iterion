@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
+import { useUIStore } from "@/store/ui";
 import { getAllNodeNames } from "@/lib/defaults";
 
 export default function DiagnosticsPanel() {
@@ -8,6 +9,7 @@ export default function DiagnosticsPanel() {
   const diagnostics = useDocumentStore((s) => s.diagnostics);
   const warnings = useDocumentStore((s) => s.warnings);
   const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
+  const toggleDiagnosticsPanel = useUIStore((s) => s.toggleDiagnosticsPanel);
 
   const errorCount = diagnostics.length;
   const warningCount = warnings.length;
@@ -47,6 +49,13 @@ export default function DiagnosticsPanel() {
             )}
           </div>
         )}
+        <button
+          className="ml-auto text-gray-500 hover:text-gray-300 text-sm leading-none"
+          onClick={toggleDiagnosticsPanel}
+          title="Hide diagnostics panel"
+        >
+          &#x2715;
+        </button>
       </div>
       {!hasIssues && (
         <p className="text-green-500/70 font-sans">No issues found.</p>

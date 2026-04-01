@@ -13,10 +13,16 @@ let toastIdCounter = 0;
 interface UIState {
   activeTab: SidebarTab;
   sourceViewOpen: boolean;
+  diagnosticsPanelOpen: boolean;
+  expanded: boolean;
+  browserFullscreen: boolean;
   activeWorkflowName: string | null;
   toasts: Toast[];
   setActiveTab: (tab: SidebarTab) => void;
   toggleSourceView: () => void;
+  toggleDiagnosticsPanel: () => void;
+  toggleExpanded: () => void;
+  setBrowserFullscreen: (value: boolean) => void;
   setActiveWorkflowName: (name: string | null) => void;
   addToast: (message: string, type: Toast["type"]) => void;
   removeToast: (id: number) => void;
@@ -25,10 +31,16 @@ interface UIState {
 export const useUIStore = create<UIState>((set) => ({
   activeTab: "properties",
   sourceViewOpen: false,
+  diagnosticsPanelOpen: true,
+  expanded: false,
+  browserFullscreen: false,
   activeWorkflowName: null,
   toasts: [],
   setActiveTab: (activeTab) => set({ activeTab }),
   toggleSourceView: () => set((s) => ({ sourceViewOpen: !s.sourceViewOpen })),
+  toggleDiagnosticsPanel: () => set((s) => ({ diagnosticsPanelOpen: !s.diagnosticsPanelOpen })),
+  toggleExpanded: () => set((s) => ({ expanded: !s.expanded })),
+  setBrowserFullscreen: (value) => set({ browserFullscreen: value }),
   setActiveWorkflowName: (activeWorkflowName) => set({ activeWorkflowName }),
   addToast: (message, type) => {
     const id = ++toastIdCounter;
