@@ -78,10 +78,14 @@ type RetryInfo struct {
 // EventHooks allows the executor to emit observability events back to the caller.
 type EventHooks struct {
 	OnLLMRequest    func(nodeID string, info goai.RequestInfo)
+	OnLLMPrompt     func(nodeID string, systemPrompt string, userMessage string)
 	OnLLMResponse   func(nodeID string, info goai.ResponseInfo)
 	OnLLMRetry      func(nodeID string, info RetryInfo)
 	OnLLMStepFinish func(nodeID string, step goai.StepResult)
 	OnToolCall      func(nodeID string, info goai.ToolCallInfo)
+	// OnToolNodeResult is called for direct tool nodes (not LLM tool loops)
+	// with full input/output content for detailed logging.
+	OnToolNodeResult func(nodeID string, toolName string, input []byte, output string, elapsed time.Duration, err error)
 }
 
 // ---------------------------------------------------------------------------
@@ -206,9 +210,10 @@ func (e *GoaiExecutor) executeLLM(ctx context.Context, node *ir.Node, input map[
 	opts = append(opts, goai.WithMaxRetries(0))
 
 	// System prompt.
+	var systemText string
 	if node.SystemPrompt != "" {
 		if p, ok := e.prompts[node.SystemPrompt]; ok {
-			systemText := e.resolveTemplate(p.Body, input)
+			systemText = e.resolveTemplate(p.Body, input)
 			opts = append(opts, goai.WithSystem(systemText))
 		}
 	}
@@ -217,6 +222,11 @@ func (e *GoaiExecutor) executeLLM(ctx context.Context, node *ir.Node, input map[
 	userText := e.buildUserMessage(node, input)
 	if userText != "" {
 		opts = append(opts, goai.WithMessages(goai.UserMessage(userText)))
+	}
+
+	// Emit prompt content for observability.
+	if e.hooks.OnLLMPrompt != nil {
+		e.hooks.OnLLMPrompt(node.ID, systemText, userText)
 	}
 
 	// Tools.
@@ -289,9 +299,10 @@ func (e *GoaiExecutor) executeHumanLLM(ctx context.Context, node *ir.Node, input
 	opts = append(opts, goai.WithMaxRetries(0))
 
 	// System prompt.
+	var systemText string
 	if node.SystemPrompt != "" {
 		if p, ok := e.prompts[node.SystemPrompt]; ok {
-			systemText := e.resolveTemplate(p.Body, input)
+			systemText = e.resolveTemplate(p.Body, input)
 			opts = append(opts, goai.WithSystem(systemText))
 		}
 	}
@@ -300,6 +311,11 @@ func (e *GoaiExecutor) executeHumanLLM(ctx context.Context, node *ir.Node, input
 	userText := e.buildUserMessage(node, input)
 	if userText != "" {
 		opts = append(opts, goai.WithMessages(goai.UserMessage(userText)))
+	}
+
+	// Emit prompt content for observability.
+	if e.hooks.OnLLMPrompt != nil {
+		e.hooks.OnLLMPrompt(node.ID, systemText, userText)
 	}
 
 	// Observability hooks.
@@ -578,6 +594,11 @@ func (e *GoaiExecutor) executeDelegation(ctx context.Context, node *ir.Node, inp
 	// Build user message.
 	userText := e.buildUserMessage(node, input)
 
+	// Emit prompt content for observability.
+	if e.hooks.OnLLMPrompt != nil {
+		e.hooks.OnLLMPrompt(node.ID, systemText, userText)
+	}
+
 	// Build output schema JSON if structured output is expected.
 	var outputSchema json.RawMessage
 	if node.OutputSchema != "" {
@@ -646,13 +667,18 @@ func (e *GoaiExecutor) executeToolNode(ctx context.Context, node *ir.Node, input
 
 	start := time.Now()
 	outputStr, err := resolved.Execute(ctx, inputJSON)
+	duration := time.Since(start)
 	if e.hooks.OnToolCall != nil {
 		e.hooks.OnToolCall(node.ID, goai.ToolCallInfo{
 			ToolName:  toolName,
 			InputSize: len(inputJSON),
-			Duration:  time.Since(start),
+			Duration:  duration,
 			Error:     err,
 		})
+	}
+	// Emit detailed tool I/O via the prompt hook (reused for tool node logging).
+	if e.hooks.OnToolNodeResult != nil {
+		e.hooks.OnToolNodeResult(node.ID, toolName, inputJSON, outputStr, duration, err)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("model: tool node %q: execute: %w", node.ID, err)

@@ -22,6 +22,7 @@ const (
 	EventBranchStarted        EventType = "branch_started"
 	EventNodeStarted          EventType = "node_started"
 	EventLLMRequest           EventType = "llm_request"
+	EventLLMPrompt            EventType = "llm_prompt"
 	EventLLMRetry             EventType = "llm_retry"
 	EventLLMStepFinished      EventType = "llm_step_finished"
 	EventToolCalled           EventType = "tool_called"

@@ -184,6 +184,7 @@ func TestAllEventTypesPersistable(t *testing.T) {
 		EventBranchStarted,
 		EventNodeStarted,
 		EventLLMRequest,
+		EventLLMPrompt,
 		EventLLMRetry,
 		EventLLMStepFinished,
 		EventToolCalled,
@@ -200,6 +201,7 @@ func TestAllEventTypesPersistable(t *testing.T) {
 		EventBudgetExceeded,
 		EventRunFinished,
 		EventRunFailed,
+		EventRunCancelled,
 	}
 
 	for _, typ := range allTypes {

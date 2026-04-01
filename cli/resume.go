@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
+	iterlog "github.com/SocialGouv/iterion/log"
 	"github.com/SocialGouv/iterion/runtime"
 	"github.com/SocialGouv/iterion/store"
 )
@@ -16,6 +18,7 @@ type ResumeOptions struct {
 	StoreDir    string
 	AnswersFile string            // path to JSON answers file
 	Answers     map[string]string // --answer key=value overrides
+	LogLevel    string            // log level (default: "info", env: ITERION_LOG_LEVEL)
 	Executor    runtime.NodeExecutor
 }
 
@@ -131,17 +134,25 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		return err
 	}
 
+	// Resolve log level.
+	level, err := iterlog.ResolveLevel(opts.LogLevel, "ITERION_LOG_LEVEL")
+	if err != nil {
+		return err
+	}
+	logger := iterlog.New(level, os.Stderr)
+
 	executor := opts.Executor
 	if executor == nil {
-		executor = &stubExecutor{}
+		executor = newDefaultExecutor(wf, nil, s, opts.RunID, logger)
 	}
 
-	eng := runtime.New(wf, s, executor)
+	eng := runtime.New(wf, s, executor, runtime.WithLogger(logger))
 
 	if p.Format == OutputHuman {
 		p.Header("Resume: " + opts.RunID)
 		p.KV("Workflow", wf.Name)
 		p.KV("Node", r.Checkpoint.NodeID)
+		p.KV("Log Level", level.String())
 		p.Blank()
 	}
 

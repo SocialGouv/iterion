@@ -11,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/iterion/delegate"
 	"github.com/SocialGouv/iterion/ir"
+	iterlog "github.com/SocialGouv/iterion/log"
 	"github.com/SocialGouv/iterion/model"
 	"github.com/SocialGouv/iterion/recipe"
 	"github.com/SocialGouv/iterion/runtime"
@@ -25,6 +26,7 @@ type RunOptions struct {
 	RunID    string               // explicit run ID (auto-generated if empty)
 	StoreDir string               // store directory (default: .iterion)
 	Timeout  time.Duration        // maximum run duration (0 = no limit)
+	LogLevel string               // log level (default: "info", env: ITERION_LOG_LEVEL)
 	Executor runtime.NodeExecutor // pluggable executor (nil = stub)
 }
 
@@ -45,6 +47,13 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	if runID == "" {
 		runID = fmt.Sprintf("run_%d", time.Now().UnixMilli())
 	}
+
+	// Resolve log level.
+	level, err := iterlog.ResolveLevel(opts.LogLevel, "ITERION_LOG_LEVEL")
+	if err != nil {
+		return err
+	}
+	logger := iterlog.New(level, os.Stderr)
 
 	// Build engine: either from recipe or raw workflow.
 	var eng *runtime.Engine
@@ -73,10 +82,10 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 
 		executor := opts.Executor
 		if executor == nil {
-			executor = newDefaultExecutor(wf, opts.Vars)
+			executor = newDefaultExecutor(wf, opts.Vars, s, runID, logger)
 		}
 
-		eng, err = runtime.NewFromRecipe(spec, wf, s, executor)
+		eng, err = runtime.NewFromRecipe(spec, wf, s, executor, runtime.WithLogger(logger))
 		if err != nil {
 			return err
 		}
@@ -93,10 +102,10 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 
 		executor := opts.Executor
 		if executor == nil {
-			executor = newDefaultExecutor(wf, opts.Vars)
+			executor = newDefaultExecutor(wf, opts.Vars, s, runID, logger)
 		}
 
-		eng = runtime.New(wf, s, executor)
+		eng = runtime.New(wf, s, executor, runtime.WithLogger(logger))
 		workflowName = wf.Name
 	}
 
@@ -118,6 +127,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		p.Header("Run: " + workflowName)
 		p.KV("Run ID", runID)
 		p.KV("Store", storeDir)
+		p.KV("Log Level", level.String())
 		if opts.Timeout > 0 {
 			p.KV("Timeout", FormatDuration(opts.Timeout))
 		}
@@ -175,14 +185,17 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	return nil
 }
 
-// newDefaultExecutor creates a GoaiExecutor with the default delegate registry.
-// This is the production executor used when no explicit executor is provided.
-func newDefaultExecutor(wf *ir.Workflow, vars map[string]string) *model.GoaiExecutor {
+// newDefaultExecutor creates a GoaiExecutor with the default delegate registry
+// and event hooks wired to the store for observability.
+func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunStore, runID string, logger *iterlog.Logger) *model.GoaiExecutor {
 	reg := model.NewRegistry()
 	delegateReg := delegate.DefaultRegistry()
 
+	hooks := model.NewStoreEventHooks(s, runID, logger)
+
 	executor := model.NewGoaiExecutor(reg, wf,
 		model.WithDelegateRegistry(delegateReg),
+		model.WithEventHooks(hooks),
 	)
 
 	if len(vars) > 0 {

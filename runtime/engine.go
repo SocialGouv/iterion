@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/ir"
+	iterlog "github.com/SocialGouv/iterion/log"
 	"github.com/SocialGouv/iterion/recipe"
 	"github.com/SocialGouv/iterion/store"
 )
@@ -43,22 +44,39 @@ type Engine struct {
 	workflow *ir.Workflow
 	store    *store.RunStore
 	executor NodeExecutor
+	logger   *iterlog.Logger
+}
+
+// EngineOption configures an Engine.
+type EngineOption func(*Engine)
+
+// WithLogger sets a leveled logger for console output during execution.
+func WithLogger(l *iterlog.Logger) EngineOption {
+	return func(e *Engine) { e.logger = l }
 }
 
 // New creates a new Engine for a raw workflow.
-func New(wf *ir.Workflow, s *store.RunStore, exec NodeExecutor) *Engine {
-	return &Engine{workflow: wf, store: s, executor: exec}
+func New(wf *ir.Workflow, s *store.RunStore, exec NodeExecutor, opts ...EngineOption) *Engine {
+	e := &Engine{workflow: wf, store: s, executor: exec}
+	for _, opt := range opts {
+		opt(e)
+	}
+	return e
 }
 
 // NewFromRecipe creates a new Engine by applying a recipe's presets onto
 // the given workflow. The recipe merges preset variables, prompt overrides,
 // and budget limits, producing a self-contained execution unit.
-func NewFromRecipe(r *recipe.RecipeSpec, wf *ir.Workflow, s *store.RunStore, exec NodeExecutor) (*Engine, error) {
+func NewFromRecipe(r *recipe.RecipeSpec, wf *ir.Workflow, s *store.RunStore, exec NodeExecutor, opts ...EngineOption) (*Engine, error) {
 	applied, err := r.Apply(wf)
 	if err != nil {
 		return nil, fmt.Errorf("runtime: apply recipe %q: %w", r.Name, err)
 	}
-	return &Engine{workflow: applied, store: s, executor: exec}, nil
+	e := &Engine{workflow: applied, store: s, executor: exec}
+	for _, opt := range opts {
+		opt(e)
+	}
+	return e, nil
 }
 
 // runState holds the mutable runtime state passed through the execution loop.
@@ -1171,6 +1189,7 @@ func (e *Engine) emit(runID string, typ store.EventType, nodeID string, data map
 	if err != nil {
 		return fmt.Errorf("runtime: emit %s: %w", typ, err)
 	}
+	e.logEvent(typ, nodeID, "", data)
 	return nil
 }
 
@@ -1185,7 +1204,88 @@ func (e *Engine) emitBranch(runID, branchID string, typ store.EventType, nodeID 
 	if err != nil {
 		return fmt.Errorf("runtime: emit %s (branch %s): %w", typ, branchID, err)
 	}
+	e.logEvent(typ, nodeID, branchID, data)
 	return nil
+}
+
+// logEvent writes a human-friendly console log for a given event type.
+func (e *Engine) logEvent(typ store.EventType, nodeID, branchID string, data map[string]interface{}) {
+	l := e.logger
+	if l == nil {
+		return
+	}
+
+	prefix := nodeID
+	if branchID != "" {
+		prefix = branchID + "/" + nodeID
+	}
+
+	switch typ {
+	case store.EventRunStarted:
+		l.Logf(iterlog.LevelInfo, "🚀", "Run started: %s", e.workflow.Name)
+	case store.EventRunFinished:
+		l.Logf(iterlog.LevelInfo, "✅", "Run finished")
+	case store.EventRunFailed:
+		reason := ""
+		if data != nil {
+			if r, ok := data["error"].(string); ok {
+				reason = r
+			}
+		}
+		l.Error("Run failed: %s", reason)
+	case store.EventRunCancelled:
+		l.Error("Run cancelled")
+	case store.EventNodeStarted:
+		kind := ""
+		if data != nil {
+			if k, ok := data["kind"].(string); ok {
+				kind = k
+			}
+		}
+		l.Logf(iterlog.LevelInfo, "📍", "Node started: %s [%s]", prefix, kind)
+	case store.EventNodeFinished:
+		tokens := ""
+		if data != nil {
+			if t, ok := data["_tokens"]; ok {
+				tokens = fmt.Sprintf(" (%v tokens)", t)
+			}
+		}
+		l.Logf(iterlog.LevelInfo, "✅", "Node finished: %s%s", prefix, tokens)
+	case store.EventEdgeSelected:
+		to := ""
+		cond := ""
+		if data != nil {
+			if t, ok := data["to"].(string); ok {
+				to = t
+			}
+			if c, ok := data["condition"].(string); ok {
+				cond = c
+			}
+		}
+		if cond != "" {
+			l.Logf(iterlog.LevelInfo, "➡️ ", "Edge: %s → %s (condition: %s)", nodeID, to, cond)
+		} else {
+			l.Logf(iterlog.LevelInfo, "➡️ ", "Edge: %s → %s", nodeID, to)
+		}
+	case store.EventBranchStarted:
+		l.Logf(iterlog.LevelInfo, "🔀", "Branch started: %s", branchID)
+	case store.EventJoinReady:
+		l.Logf(iterlog.LevelInfo, "🔗", "Join ready: %s", nodeID)
+	case store.EventArtifactWritten:
+		l.Logf(iterlog.LevelInfo, "💾", "Artifact written: %s", nodeID)
+	case store.EventHumanInputRequested:
+		l.Logf(iterlog.LevelInfo, "👤", "Human input requested: %s", nodeID)
+	case store.EventRunPaused:
+		l.Logf(iterlog.LevelInfo, "⏸️ ", "Run paused (waiting for human input)")
+	case store.EventRunResumed:
+		l.Logf(iterlog.LevelInfo, "▶️ ", "Run resumed")
+	case store.EventHumanAnswersRecorded:
+		l.Logf(iterlog.LevelInfo, "📝", "Human answers recorded: %s", nodeID)
+	case store.EventBudgetWarning:
+		l.Warn("Budget warning: %s", nodeID)
+	case store.EventBudgetExceeded:
+		l.Warn("Budget exceeded: %s", nodeID)
+	}
 }
 
 // failRun marks a run as failed and emits the run_failed event.
