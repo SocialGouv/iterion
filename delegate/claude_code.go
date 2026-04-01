@@ -52,10 +52,11 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		prompt += "\n\nAfter completing all actions, you MUST respond with a JSON object matching this schema:\n" + string(task.OutputSchema)
 	}
 
-	// The prompt is a positional argument (not a flag).
-	args = append(args, prompt)
-
+	// Pass prompt via stdin to avoid OS argument length limits (ARG_MAX).
+	// The claude CLI reads from stdin when no positional argument is provided
+	// and stdin is not a terminal.
 	cmd := exec.CommandContext(ctx, b.command(), args...)
+	cmd.Stdin = strings.NewReader(prompt)
 	if task.WorkDir != "" {
 		if err := validateWorkDir(task.WorkDir, task.BaseDir); err != nil {
 			return Result{}, err
