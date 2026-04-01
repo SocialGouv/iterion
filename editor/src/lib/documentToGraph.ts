@@ -54,11 +54,21 @@ export function documentToGraph(doc: IterDocument, activeWorkflowName?: string):
   for (const h of doc.humans ?? []) nodeMap.set(h.name, { kind: "human", decl: h });
   for (const t of doc.tools ?? []) nodeMap.set(t.name, { kind: "tool", decl: t });
 
-  // Always show done/fail terminal nodes when a workflow exists
-  if ((doc.workflows ?? []).length > 0) {
-    if (!nodeMap.has("done")) nodeMap.set("done", { kind: "done", decl: null });
-    if (!nodeMap.has("fail")) nodeMap.set("fail", { kind: "fail", decl: null });
+  // Resolve target workflows early so we can check edge references
+  const targetWorkflows = activeWorkflowName
+    ? (doc.workflows ?? []).filter(w => w.name === activeWorkflowName)
+    : doc.workflows ?? [];
+
+  // Only show done/fail terminal nodes when actually referenced by an edge
+  const referencedNodes = new Set<string>();
+  for (const wf of targetWorkflows) {
+    for (const e of wf.edges ?? []) {
+      referencedNodes.add(e.from);
+      referencedNodes.add(e.to);
+    }
   }
+  if (!nodeMap.has("done") && referencedNodes.has("done")) nodeMap.set("done", { kind: "done", decl: null });
+  if (!nodeMap.has("fail") && referencedNodes.has("fail")) nodeMap.set("fail", { kind: "fail", decl: null });
 
   // Position nodes in a grid
   const COLS = 4;
@@ -85,9 +95,6 @@ export function documentToGraph(doc: IterDocument, activeWorkflowName?: string):
   });
 
   const edges: FlowEdge[] = [];
-  const targetWorkflows = activeWorkflowName
-    ? (doc.workflows ?? []).filter(w => w.name === activeWorkflowName)
-    : doc.workflows ?? [];
   for (const wf of targetWorkflows) {
     const wfEdges = wf.edges ?? [];
     for (let i = 0; i < wfEdges.length; i++) {
