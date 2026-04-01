@@ -2,7 +2,7 @@ import { useCallback, useState } from "react";
 import { useDocumentStore } from "@/store/document";
 import type { SchemaDecl, SchemaField, FieldType } from "@/api/types";
 import { defaultSchema } from "@/lib/defaults";
-import { TextField, SelectField, TagListField } from "./forms/FormField";
+import { TextField, CommittedTextField, SelectField, TagListField } from "./forms/FormField";
 import ConfirmDialog from "../shared/ConfirmDialog";
 
 const FIELD_TYPES: { value: FieldType; label: string }[] = [
@@ -44,7 +44,7 @@ export default function SchemaEditor() {
       </div>
       {schemas.length === 0 && <p className="text-gray-500 text-xs">No schemas defined.</p>}
       {schemas.map((schema) => (
-        <SchemaCard key={schema.name} schema={schema} onUpdate={updateSchema} onRemove={removeSchema} onRename={renameSchema} />
+        <SchemaCard key={schema.name} schema={schema} allSchemas={schemas} onUpdate={updateSchema} onRemove={removeSchema} onRename={renameSchema} />
       ))}
     </div>
   );
@@ -52,11 +52,13 @@ export default function SchemaEditor() {
 
 function SchemaCard({
   schema,
+  allSchemas,
   onUpdate,
   onRemove,
   onRename,
 }: {
   schema: SchemaDecl;
+  allSchemas: SchemaDecl[];
   onUpdate: (name: string, updates: Partial<SchemaDecl>) => void;
   onRemove: (name: string) => void;
   onRename: (oldName: string, newName: string) => void;
@@ -85,10 +87,17 @@ function SchemaCard({
   return (
     <div className="mb-4 p-2 bg-gray-800 rounded border border-gray-700">
       <div className="flex items-center justify-between mb-2">
-        <TextField
+        <CommittedTextField
           label="Schema Name"
           value={schema.name}
           onChange={(v) => onRename(schema.name, v)}
+          validate={(v) => {
+            if (!v.trim()) return "Name cannot be empty";
+            const names = new Set(allSchemas.map((s) => s.name));
+            names.delete(schema.name);
+            if (names.has(v)) return "Schema name already exists";
+            return null;
+          }}
         />
         <button className="text-red-400 hover:text-red-300 text-xs ml-2" onClick={() => setConfirmDelete(true)}>
           Delete

@@ -1,4 +1,6 @@
+import { useEffect } from "react";
 import { useUIStore, type SidebarTab } from "@/store/ui";
+import { useSelectionStore } from "@/store/selection";
 import PropertiesPanel from "./PropertiesPanel";
 import SchemaEditor from "./SchemaEditor";
 import PromptEditor from "./PromptEditor";
@@ -18,6 +20,15 @@ const TABS: { id: SidebarTab; label: string }[] = [
 export default function SidebarTabs() {
   const activeTab = useUIStore((s) => s.activeTab);
   const setActiveTab = useUIStore((s) => s.setActiveTab);
+  const selectedNodeId = useSelectionStore((s) => s.selectedNodeId);
+  const selectedEdgeId = useSelectionStore((s) => s.selectedEdgeId);
+
+  // Auto-switch to Properties tab when a node or edge is selected
+  useEffect(() => {
+    if (selectedNodeId || selectedEdgeId) {
+      setActiveTab("properties");
+    }
+  }, [selectedNodeId, selectedEdgeId, setActiveTab]);
 
   return (
     <div className="h-full flex flex-col">

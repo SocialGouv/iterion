@@ -1,12 +1,33 @@
+import { useCallback } from "react";
 import { useDocumentStore } from "@/store/document";
+import { useSelectionStore } from "@/store/selection";
+import { getAllNodeNames } from "@/lib/defaults";
 
 export default function DiagnosticsPanel() {
+  const document = useDocumentStore((s) => s.document);
   const diagnostics = useDocumentStore((s) => s.diagnostics);
   const warnings = useDocumentStore((s) => s.warnings);
+  const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
 
   const errorCount = diagnostics.length;
   const warningCount = warnings.length;
   const hasIssues = errorCount > 0 || warningCount > 0;
+
+  const handleDiagnosticClick = useCallback(
+    (diagnostic: string) => {
+      if (!document) return;
+      const allNames = getAllNodeNames(document);
+      // Find which node name appears in this diagnostic (word-boundary match)
+      for (const name of allNames) {
+        const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        if (new RegExp(`\\b${escaped}\\b`, "i").test(diagnostic)) {
+          setSelectedNode(name);
+          return;
+        }
+      }
+    },
+    [document, setSelectedNode],
+  );
 
   return (
     <div className="p-3 text-xs font-mono h-full overflow-y-auto">
@@ -31,13 +52,21 @@ export default function DiagnosticsPanel() {
         <p className="text-green-500/70 font-sans">No issues found.</p>
       )}
       {diagnostics.map((d, i) => (
-        <div key={`e-${i}`} className="text-red-400 py-0.5 flex items-start gap-1.5">
+        <div
+          key={`e-${i}`}
+          className="text-red-400 py-0.5 flex items-start gap-1.5 cursor-pointer hover:bg-red-900/20 rounded px-1 -mx-1"
+          onClick={() => handleDiagnosticClick(d)}
+        >
           <span className="text-red-600 shrink-0">&#x2716;</span>
           <span>{d}</span>
         </div>
       ))}
       {warnings.map((w, i) => (
-        <div key={`w-${i}`} className="text-yellow-400 py-0.5 flex items-start gap-1.5">
+        <div
+          key={`w-${i}`}
+          className="text-yellow-400 py-0.5 flex items-start gap-1.5 cursor-pointer hover:bg-yellow-900/20 rounded px-1 -mx-1"
+          onClick={() => handleDiagnosticClick(w)}
+        >
           <span className="text-yellow-600 shrink-0">&#x26A0;</span>
           <span>{w}</span>
         </div>

@@ -3,6 +3,7 @@ import { ReactFlow, Background, Controls, MiniMap, useReactFlow } from "@xyflow/
 import type { NodeMouseHandler, EdgeMouseHandler, Connection, Node, NodeChange, EdgeChange, Edge as FlowEdge } from "@xyflow/react";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
+import { useUIStore } from "@/store/ui";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { documentToGraph, getTopologyKey, makeEdgeId } from "@/lib/documentToGraph";
 import { autoLayout } from "@/lib/autoLayout";
@@ -14,6 +15,15 @@ import NodeContextMenu from "./NodeContextMenu";
 
 const nodeTypes = { workflowNode: WorkflowNode };
 const edgeTypes = { conditionalEdge: ConditionalEdge };
+
+const QUICK_ADD_TYPES: { kind: NodeKind; icon: string; label: string }[] = [
+  { kind: "agent", icon: "\u{1F916}", label: "Agent" },
+  { kind: "judge", icon: "\u{2696}\u{FE0F}", label: "Judge" },
+  { kind: "router", icon: "\u{1F504}", label: "Router" },
+  { kind: "join", icon: "\u{1F91D}", label: "Join" },
+  { kind: "human", icon: "\u{1F464}", label: "Human" },
+  { kind: "tool", icon: "\u{1F527}", label: "Tool" },
+];
 
 export default function Canvas() {
   const document = useDocumentStore((s) => s.document);
@@ -33,9 +43,12 @@ export default function Canvas() {
   const clearSelection = useSelectionStore((s) => s.clearSelection);
   const selectedNodeId = useSelectionStore((s) => s.selectedNodeId);
   const selectedEdgeId = useSelectionStore((s) => s.selectedEdgeId);
+  const copiedNodeId = useSelectionStore((s) => s.copiedNodeId);
+  const setCopiedNode = useSelectionStore((s) => s.setCopiedNode);
+  const addToast = useUIStore((s) => s.addToast);
   const activeWorkflow = useActiveWorkflow();
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
-  const { screenToFlowPosition } = useReactFlow();
+  const { screenToFlowPosition, fitView } = useReactFlow();
 
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
@@ -44,6 +57,15 @@ export default function Canvas() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Connection error feedback
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const connectionErrorTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  // Quick-add menu state (shown when dragging from handle to empty canvas)
+  const [quickAddMenu, setQuickAddMenu] = useState<{ x: number; y: number; sourceId: string } | null>(null);
+  const pendingConnectSourceRef = useRef<string | null>(null);
+  const edgeCountBeforeConnectRef = useRef<number>(0);
 
   const activeWorkflowName = activeWorkflow?.name;
   const { nodes: graphNodes, edges: graphEdges } = useMemo(() => {
@@ -109,6 +131,7 @@ export default function Canvas() {
   const onNodeClick: NodeMouseHandler = useCallback(
     (_event, node) => {
       setSelectedNode(node.id);
+      setQuickAddMenu(null);
     },
     [setSelectedNode],
   );
@@ -116,6 +139,7 @@ export default function Canvas() {
   const onEdgeClick: EdgeMouseHandler = useCallback(
     (_event, edge) => {
       setSelectedEdge(edge.id);
+      setQuickAddMenu(null);
     },
     [setSelectedEdge],
   );
@@ -123,6 +147,7 @@ export default function Canvas() {
   const onPaneClick = useCallback(() => {
     clearSelection();
     setContextMenu(null);
+    setQuickAddMenu(null);
   }, [clearSelection]);
 
   const onNodeContextMenu = useCallback(
@@ -133,20 +158,25 @@ export default function Canvas() {
     [],
   );
 
-  const isValidConnection = useCallback(
-    (connection: FlowEdge | Connection) => {
-      if (!connection.source || !connection.target) return false;
-      if (connection.source === connection.target) return false;
-      if (connection.source === "done" || connection.source === "fail") return false;
+  const getConnectionError = useCallback(
+    (connection: FlowEdge | Connection): string | null => {
+      if (!connection.source || !connection.target) return "Invalid connection";
+      if (connection.source === connection.target) return "Cannot connect a node to itself";
+      if (connection.source === "done" || connection.source === "fail") return "Cannot connect from a terminal node";
       if (activeWorkflow) {
         const dup = activeWorkflow.edges.some(
           (e) => e.from === connection.source && e.to === connection.target,
         );
-        if (dup) return false;
+        if (dup) return "This connection already exists";
       }
-      return true;
+      return null;
     },
     [activeWorkflow],
+  );
+
+  const isValidConnection = useCallback(
+    (connection: FlowEdge | Connection) => getConnectionError(connection) === null,
+    [getConnectionError],
   );
 
   const onConnect = useCallback(
@@ -154,10 +184,77 @@ export default function Canvas() {
       if (!document || !connection.source || !connection.target) return;
       const workflowName = activeWorkflow?.name;
       if (!workflowName) return;
-      if (!isValidConnection(connection)) return;
+      const error = getConnectionError(connection);
+      if (error) {
+        setConnectionError(error);
+        clearTimeout(connectionErrorTimer.current);
+        connectionErrorTimer.current = setTimeout(() => setConnectionError(null), 2000);
+        return;
+      }
       addEdge(workflowName, { from: connection.source, to: connection.target });
     },
-    [document, activeWorkflow, addEdge, isValidConnection],
+    [document, activeWorkflow, addEdge, getConnectionError],
+  );
+
+  const onConnectStart = useCallback(
+    (_event: unknown, params: { nodeId: string | null }) => {
+      setConnectionError(null);
+      pendingConnectSourceRef.current = params.nodeId;
+      edgeCountBeforeConnectRef.current = activeWorkflow?.edges?.length ?? 0;
+    },
+    [activeWorkflow],
+  );
+
+  const onConnectEnd = useCallback(
+    (event: MouseEvent | TouchEvent) => {
+      const source = pendingConnectSourceRef.current;
+      pendingConnectSourceRef.current = null;
+
+      if (!source || !document || !activeWorkflow) return;
+
+      // Check if an edge was actually created (count changed)
+      const currentEdgeCount = activeWorkflow.edges?.length ?? 0;
+      if (currentEdgeCount > edgeCountBeforeConnectRef.current) return;
+
+      // No edge created — show quick-add menu at the drop position
+      const clientX = "clientX" in event ? event.clientX : event.changedTouches?.[0]?.clientX ?? 0;
+      const clientY = "clientY" in event ? event.clientY : event.changedTouches?.[0]?.clientY ?? 0;
+
+      // Only show if drop was on the canvas (not on a node)
+      const target = event.target as HTMLElement;
+      if (target.closest(".react-flow__node")) return;
+
+      setQuickAddMenu({ x: clientX, y: clientY, sourceId: source });
+    },
+    [document, activeWorkflow],
+  );
+
+  const handleQuickAdd = useCallback(
+    (kind: NodeKind) => {
+      if (!quickAddMenu || !document || !activeWorkflow) return;
+
+      const existingNames = getAllNodeNames(document);
+      const name = generateUniqueName(kind, existingNames);
+
+      // Place at the drop position
+      const position = screenToFlowPosition({ x: quickAddMenu.x, y: quickAddMenu.y });
+      pendingPositionsRef.current.set(name, position);
+
+      switch (kind) {
+        case "agent": addAgent(defaultAgent(name)); break;
+        case "judge": addJudge(defaultJudge(name)); break;
+        case "router": addRouter(defaultRouter(name)); break;
+        case "join": addJoin(defaultJoin(name)); break;
+        case "human": addHuman(defaultHuman(name)); break;
+        case "tool": addTool(defaultTool(name)); break;
+      }
+
+      // Create edge from source to new node
+      addEdge(activeWorkflow.name, { from: quickAddMenu.sourceId, to: name });
+      setSelectedNode(name);
+      setQuickAddMenu(null);
+    },
+    [quickAddMenu, document, activeWorkflow, addAgent, addJudge, addRouter, addJoin, addHuman, addTool, addEdge, setSelectedNode, screenToFlowPosition],
   );
 
   const onDragOver = useCallback((e: DragEvent) => {
@@ -206,10 +303,31 @@ export default function Canvas() {
       }
       if (e.key === "Escape") {
         if (searchOpen) { setSearchOpen(false); setSearchQuery(""); return; }
+        if (quickAddMenu) { setQuickAddMenu(null); return; }
         clearSelection();
         setContextMenu(null);
         return;
       }
+
+      // Copy/Paste
+      if ((e.ctrlKey || e.metaKey) && e.key === "c" && !isInput) {
+        if (selectedNodeId && selectedNodeId !== "done" && selectedNodeId !== "fail") {
+          setCopiedNode(selectedNodeId);
+          addToast("Node copied", "info");
+        }
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === "v" && !isInput) {
+        if (copiedNodeId) {
+          const newName = duplicateNode(copiedNodeId);
+          if (newName) {
+            setSelectedNode(newName);
+            addToast(`Pasted as ${newName}`, "success");
+          }
+        }
+        return;
+      }
+
       if (e.key === "Delete" || e.key === "Backspace") {
         if (isInput) return;
 
@@ -231,7 +349,7 @@ export default function Canvas() {
         }
       }
     },
-    [selectedNodeId, selectedEdgeId, document, removeNode, removeEdge, clearSelection, searchOpen],
+    [selectedNodeId, selectedEdgeId, document, removeNode, removeEdge, clearSelection, searchOpen, quickAddMenu, copiedNodeId, duplicateNode, setCopiedNode, setSelectedNode, addToast],
   );
 
   // Apply search filter: dim non-matching nodes
@@ -276,6 +394,16 @@ export default function Canvas() {
     [searchQuery, layoutNodes, setSelectedNode],
   );
 
+  const handleFitView = useCallback(() => {
+    fitView({ padding: 0.2 });
+  }, [fitView]);
+
+  const handleFocusNode = useCallback(() => {
+    if (selectedNodeId) {
+      fitView({ nodes: [{ id: selectedNodeId }], padding: 0.5 });
+    }
+  }, [selectedNodeId, fitView]);
+
   return (
     <div className="h-full w-full relative" ref={reactFlowWrapper} onKeyDown={onKeyDown} tabIndex={0}>
       {/* Search overlay */}
@@ -292,6 +420,34 @@ export default function Canvas() {
           />
         </div>
       )}
+
+      {/* Fit view / Focus buttons */}
+      <div className="absolute top-2 right-2 z-40 flex gap-1">
+        <button
+          className="bg-gray-800/90 hover:bg-gray-700 border border-gray-600 text-xs px-2 py-1 rounded text-gray-300"
+          onClick={handleFitView}
+          title="Fit all nodes in view"
+        >
+          Fit
+        </button>
+        {selectedNodeId && (
+          <button
+            className="bg-gray-800/90 hover:bg-gray-700 border border-gray-600 text-xs px-2 py-1 rounded text-gray-300"
+            onClick={handleFocusNode}
+            title="Zoom to selected node"
+          >
+            Focus
+          </button>
+        )}
+      </div>
+
+      {/* Connection error feedback */}
+      {connectionError && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-50 bg-red-900/90 text-red-200 text-xs px-3 py-1.5 rounded-lg shadow-lg border border-red-700">
+          {connectionError}
+        </div>
+      )}
+
       <ReactFlow
         nodes={displayNodes}
         edges={graphEdges}
@@ -304,6 +460,8 @@ export default function Canvas() {
         onPaneClick={onPaneClick}
         onNodeContextMenu={onNodeContextMenu}
         onConnect={onConnect}
+        onConnectStart={onConnectStart}
+        onConnectEnd={onConnectEnd}
         isValidConnection={isValidConnection}
         onDragOver={onDragOver}
         onDrop={onDrop}
@@ -314,6 +472,8 @@ export default function Canvas() {
         <Controls />
         <MiniMap />
       </ReactFlow>
+
+      {/* Context menu */}
       {contextMenu && (
         <NodeContextMenu
           x={contextMenu.x}
@@ -334,6 +494,33 @@ export default function Canvas() {
           }}
           onClose={() => setContextMenu(null)}
         />
+      )}
+
+      {/* Quick-add node menu (shown when dragging from handle to empty canvas) */}
+      {quickAddMenu && (
+        <div
+          className="fixed bg-gray-800 border border-gray-600 rounded-lg shadow-xl z-50 py-1 min-w-[140px]"
+          style={{ left: quickAddMenu.x, top: quickAddMenu.y }}
+        >
+          <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wider">Add node</div>
+          {QUICK_ADD_TYPES.map(({ kind, icon, label }) => (
+            <button
+              key={kind}
+              className="w-full text-left px-3 py-1.5 hover:bg-gray-700 text-xs text-white flex items-center gap-2"
+              onClick={() => handleQuickAdd(kind)}
+            >
+              <span>{icon}</span>
+              {label}
+            </button>
+          ))}
+          <div className="border-t border-gray-700 my-1" />
+          <button
+            className="w-full text-left px-3 py-1.5 hover:bg-gray-700 text-xs text-gray-400 flex items-center gap-2"
+            onClick={() => setQuickAddMenu(null)}
+          >
+            Cancel
+          </button>
+        </div>
       )}
     </div>
   );

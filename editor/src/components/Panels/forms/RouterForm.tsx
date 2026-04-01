@@ -1,14 +1,18 @@
 import { useDocumentStore } from "@/store/document";
+import { useSelectionStore } from "@/store/selection";
 import type { RouterDecl, RouterMode } from "@/api/types";
-import { TextField, SelectField } from "./FormField";
+import { getAllNodeNames } from "@/lib/defaults";
+import { CommittedTextField, SelectField } from "./FormField";
 
 interface Props {
   decl: RouterDecl;
 }
 
 export default function RouterForm({ decl }: Props) {
+  const document = useDocumentStore((s) => s.document);
   const updateRouter = useDocumentStore((s) => s.updateRouter);
   const renameNode = useDocumentStore((s) => s.renameNode);
+  const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
 
   return (
     <div className="space-y-1">
@@ -19,10 +23,19 @@ export default function RouterForm({ decl }: Props) {
         <span className="text-base">{"\u{1F504}"}</span>
         <span className="text-xs font-bold uppercase tracking-wide" style={{ color: "#E67E22" }}>Router</span>
       </div>
-      <TextField
+      <CommittedTextField
         label="Name"
         value={decl.name}
         onChange={(v) => renameNode(decl.name, v)}
+        onCommit={(v) => setSelectedNode(v)}
+        validate={(v) => {
+          if (!v.trim()) return "Name cannot be empty";
+          if (/\s/.test(v)) return "Name cannot contain spaces";
+          const names = getAllNodeNames(document!);
+          names.delete(decl.name);
+          if (names.has(v)) return "Name already exists";
+          return null;
+        }}
       />
       <SelectField
         label="Mode"

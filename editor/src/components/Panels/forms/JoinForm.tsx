@@ -1,9 +1,9 @@
 import { useCallback } from "react";
 import { useDocumentStore } from "@/store/document";
+import { useSelectionStore } from "@/store/selection";
 import type { JoinDecl, JoinStrategy } from "@/api/types";
-import { defaultSchema } from "@/lib/defaults";
-import { TextField, SelectField, SelectFieldWithCreate, MultiSelectField } from "./FormField";
-import { getAllNodeNames } from "@/lib/defaults";
+import { defaultSchema, getAllNodeNames } from "@/lib/defaults";
+import { CommittedTextField, SelectField, SelectFieldWithCreate, MultiSelectField } from "./FormField";
 
 interface Props {
   decl: JoinDecl;
@@ -14,6 +14,7 @@ export default function JoinForm({ decl }: Props) {
   const updateJoin = useDocumentStore((s) => s.updateJoin);
   const renameNode = useDocumentStore((s) => s.renameNode);
   const addSchema = useDocumentStore((s) => s.addSchema);
+  const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
 
   const nodeNames = document ? Array.from(getAllNodeNames(document)).filter((n) => n !== decl.name) : [];
   const schemaOptions = (document?.schemas ?? []).map((s) => ({ value: s.name, label: s.name }));
@@ -36,10 +37,19 @@ export default function JoinForm({ decl }: Props) {
         <span className="text-base">{"\u{1F91D}"}</span>
         <span className="text-xs font-bold uppercase tracking-wide" style={{ color: "#2ECC71" }}>Join</span>
       </div>
-      <TextField
+      <CommittedTextField
         label="Name"
         value={decl.name}
         onChange={(v) => renameNode(decl.name, v)}
+        onCommit={(v) => setSelectedNode(v)}
+        validate={(v) => {
+          if (!v.trim()) return "Name cannot be empty";
+          if (/\s/.test(v)) return "Name cannot contain spaces";
+          const names = getAllNodeNames(document!);
+          names.delete(decl.name);
+          if (names.has(v)) return "Name already exists";
+          return null;
+        }}
       />
       <SelectField
         label="Strategy"

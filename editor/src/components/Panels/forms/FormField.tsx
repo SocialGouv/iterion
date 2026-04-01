@@ -1,4 +1,4 @@
-import { useCallback, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 
 const labelClass = "block text-xs text-gray-400 mb-1";
 const inputClass = "w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:border-blue-500 focus:outline-none";
@@ -34,6 +34,86 @@ export function TextField({ label, value, onChange, placeholder, multiline, rows
           placeholder={placeholder}
         />
       )}
+    </div>
+  );
+}
+
+interface CommittedTextFieldProps {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  onCommit?: (newValue: string) => void;
+  validate?: (v: string) => string | null;
+  placeholder?: string;
+}
+
+/** TextField that only commits on blur or Enter, not on every keystroke. Used for name/rename fields. */
+export function CommittedTextField({ label, value, onChange, onCommit, validate, placeholder }: CommittedTextFieldProps) {
+  const [draft, setDraft] = useState(value);
+  const [error, setError] = useState<string | null>(null);
+  const focusedRef = useRef(false);
+
+  // Sync draft from prop when not focused
+  useEffect(() => {
+    if (!focusedRef.current) {
+      setDraft(value);
+      setError(null);
+    }
+  }, [value]);
+
+  const commit = useCallback(() => {
+    const trimmed = draft.trim();
+    if (trimmed === value) {
+      setError(null);
+      return;
+    }
+    if (validate) {
+      const err = validate(trimmed);
+      if (err) {
+        setError(err);
+        setDraft(value);
+        return;
+      }
+    }
+    setError(null);
+    onChange(trimmed);
+    onCommit?.(trimmed);
+  }, [draft, value, validate, onChange, onCommit]);
+
+  const handleBlur = useCallback(() => {
+    focusedRef.current = false;
+    commit();
+  }, [commit]);
+
+  const handleKeyDown = useCallback(
+    (e: KeyboardEvent) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        (e.target as HTMLInputElement).blur();
+      } else if (e.key === "Escape") {
+        setDraft(value);
+        setError(null);
+        (e.target as HTMLInputElement).blur();
+      }
+    },
+    [value],
+  );
+
+  return (
+    <div className="mb-2">
+      <label className={labelClass}>{label}</label>
+      <input
+        className={`${inputClass}${error ? " ring-1 ring-red-500 border-red-500" : ""}`}
+        type="text"
+        value={draft}
+        onChange={(e) => { setDraft(e.target.value); setError(null); }}
+        onFocus={() => { focusedRef.current = true; }}
+        onBlur={handleBlur}
+        onKeyDown={handleKeyDown}
+        placeholder={placeholder}
+        title={error ?? undefined}
+      />
+      {error && <p className="text-[10px] text-red-400 mt-0.5">{error}</p>}
     </div>
   );
 }

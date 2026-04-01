@@ -5,6 +5,7 @@ import Toolbar from "./components/Toolbar/Toolbar";
 import DiagnosticsPanel from "./components/Diagnostics/DiagnosticsPanel";
 import NodePalette from "./components/Palette/NodePalette";
 import SourceView from "./components/SourceView/SourceView";
+import ToastContainer from "./components/shared/Toast";
 import { useUIStore } from "./store/ui";
 import { useAutoValidation } from "./hooks/useAutoValidation";
 
@@ -47,6 +48,7 @@ export default function App() {
           <DiagnosticsPanel />
         </div>
       </div>
+      <ToastContainer />
     </ReactFlowProvider>
   );
 }

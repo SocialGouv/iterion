@@ -1,8 +1,9 @@
 import { useCallback } from "react";
 import { useDocumentStore } from "@/store/document";
+import { useSelectionStore } from "@/store/selection";
 import type { HumanDecl, HumanMode } from "@/api/types";
-import { defaultSchema, defaultPrompt } from "@/lib/defaults";
-import { TextField, NumberField, SelectField, SelectFieldWithCreate } from "./FormField";
+import { defaultSchema, defaultPrompt, getAllNodeNames } from "@/lib/defaults";
+import { TextField, CommittedTextField, NumberField, SelectField, SelectFieldWithCreate } from "./FormField";
 
 interface Props {
   decl: HumanDecl;
@@ -14,6 +15,7 @@ export default function HumanForm({ decl }: Props) {
   const renameNode = useDocumentStore((s) => s.renameNode);
   const addSchema = useDocumentStore((s) => s.addSchema);
   const addPrompt = useDocumentStore((s) => s.addPrompt);
+  const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
 
   const schemaOptions = (document?.schemas ?? []).map((s) => ({ value: s.name, label: s.name }));
   const promptOptions = (document?.prompts ?? []).map((p) => ({ value: p.name, label: p.name }));
@@ -47,10 +49,19 @@ export default function HumanForm({ decl }: Props) {
         <span className="text-base">{"\u{1F464}"}</span>
         <span className="text-xs font-bold uppercase tracking-wide" style={{ color: "#E74C3C" }}>Human</span>
       </div>
-      <TextField
+      <CommittedTextField
         label="Name"
         value={decl.name}
         onChange={(v) => renameNode(decl.name, v)}
+        onCommit={(v) => setSelectedNode(v)}
+        validate={(v) => {
+          if (!v.trim()) return "Name cannot be empty";
+          if (/\s/.test(v)) return "Name cannot contain spaces";
+          const names = getAllNodeNames(document!);
+          names.delete(decl.name);
+          if (names.has(v)) return "Name already exists";
+          return null;
+        }}
       />
       <SelectFieldWithCreate
         label="Input Schema"

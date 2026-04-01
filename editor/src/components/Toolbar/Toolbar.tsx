@@ -25,6 +25,7 @@ export default function Toolbar() {
   const toggleSourceView = useUIStore((s) => s.toggleSourceView);
   const activeWorkflowName = useUIStore((s) => s.activeWorkflowName);
   const setActiveWorkflowName = useUIStore((s) => s.setActiveWorkflowName);
+  const addToast = useUIStore((s) => s.addToast);
 
   const [examples, setExamples] = useState<string[]>([]);
   const [files, setFiles] = useState<FileEntry[]>([]);
@@ -123,10 +124,18 @@ export default function Toolbar() {
     try {
       const result = await api.validate(document);
       setDiagnostics(result.diagnostics, result.warnings);
+      const errorCount = (result.diagnostics ?? []).length;
+      const warnCount = (result.warnings ?? []).length;
+      if (errorCount === 0 && warnCount === 0) {
+        addToast("No issues found", "success");
+      } else {
+        addToast(`${errorCount} error${errorCount !== 1 ? "s" : ""}, ${warnCount} warning${warnCount !== 1 ? "s" : ""}`, "error");
+      }
     } catch (err) {
       console.error("Validation failed:", err);
+      addToast("Validation failed", "error");
     }
-  }, [document, setDiagnostics]);
+  }, [document, setDiagnostics, addToast]);
 
   const handleSave = useCallback(async () => {
     if (!document) return;
@@ -135,10 +144,12 @@ export default function Toolbar() {
       try {
         await api.saveFile(currentFilePath, document);
         markSaved();
+        addToast("Saved successfully", "success");
         // Refresh file list
         api.listFiles().then(setFiles).catch(() => {});
       } catch (err) {
         console.error("Save failed:", err);
+        addToast("Save failed", "error");
       }
     } else {
       // Show save dialog for new file
@@ -146,7 +157,7 @@ export default function Toolbar() {
       setSaveFileName(`${name}.iter`);
       setShowSaveDialog(true);
     }
-  }, [document, currentFilePath, markSaved]);
+  }, [document, currentFilePath, markSaved, addToast]);
 
   const handleSaveAs = useCallback(async () => {
     if (!document || !saveFileName) return;
@@ -155,6 +166,7 @@ export default function Toolbar() {
       const result = await api.saveFile(fileName, document);
       setCurrentFilePath(result.path);
       markSaved();
+      addToast("Saved successfully", "success");
       setShowSaveDialog(false);
       // Refresh file list
       api.listFiles().then(setFiles).catch(() => {});
@@ -206,10 +218,12 @@ export default function Toolbar() {
     try {
       const source = await api.unparse(document);
       await navigator.clipboard.writeText(source);
+      addToast("Source copied to clipboard", "success");
     } catch (err) {
       console.error("Copy failed:", err);
+      addToast("Copy failed", "error");
     }
-  }, [document]);
+  }, [document, addToast]);
 
   const handleAddWorkflow = useCallback(() => {
     if (!document) return;

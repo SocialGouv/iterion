@@ -12,15 +12,21 @@ import type {
 
 export function createEmptyDocument(): IterDocument {
   return {
-    prompts: [],
-    schemas: [],
-    agents: [],
+    prompts: [{ name: "system_prompt", body: "You are a helpful assistant." }],
+    schemas: [
+      { name: "input", fields: [{ name: "query", type: "string" as const }] },
+      { name: "output", fields: [{ name: "response", type: "string" as const }] },
+    ],
+    agents: [{
+      name: "agent_1", model: "${ANTHROPIC_MODEL}", input: "input", output: "output",
+      system: "system_prompt", user: "", session: "fresh",
+    }],
     judges: [],
     routers: [],
     joins: [],
     humans: [],
     tools: [],
-    workflows: [{ name: "main", entry: "", edges: [] }],
+    workflows: [{ name: "main", entry: "agent_1", edges: [{ from: "agent_1", to: "done" }] }],
     comments: [],
   };
 }
@@ -55,6 +61,14 @@ export function defaultSchema(name: string): SchemaDecl {
 
 export function defaultPrompt(name: string): PromptDecl {
   return { name, body: "" };
+}
+
+export function getAllSchemaNames(doc: IterDocument): Set<string> {
+  return new Set((doc.schemas ?? []).map((s) => s.name));
+}
+
+export function getAllPromptNames(doc: IterDocument): Set<string> {
+  return new Set((doc.prompts ?? []).map((p) => p.name));
 }
 
 export function generateUniqueName(base: string, existingNames: Set<string>): string {

@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import { useDocumentStore } from "@/store/document";
 import { defaultPrompt } from "@/lib/defaults";
-import { TextField } from "./forms/FormField";
+import { TextField, CommittedTextField } from "./forms/FormField";
 import ConfirmDialog from "../shared/ConfirmDialog";
 
 export default function PromptEditor() {
@@ -38,6 +38,7 @@ export default function PromptEditor() {
           key={prompt.name}
           name={prompt.name}
           body={prompt.body}
+          allPromptNames={prompts.map((p) => p.name)}
           onRename={(v) => renamePrompt(prompt.name, v)}
           onUpdateBody={(v) => updatePrompt(prompt.name, { body: v })}
           onRemove={() => removePrompt(prompt.name)}
@@ -50,12 +51,14 @@ export default function PromptEditor() {
 function PromptCard({
   name,
   body,
+  allPromptNames,
   onRename,
   onUpdateBody,
   onRemove,
 }: {
   name: string;
   body: string;
+  allPromptNames: string[];
   onRename: (v: string) => void;
   onUpdateBody: (v: string) => void;
   onRemove: () => void;
@@ -65,10 +68,17 @@ function PromptCard({
   return (
     <div className="mb-4 p-2 bg-gray-800 rounded border border-gray-700">
       <div className="flex items-center justify-between mb-1">
-        <TextField
+        <CommittedTextField
           label="Prompt Name"
           value={name}
           onChange={onRename}
+          validate={(v) => {
+            if (!v.trim()) return "Name cannot be empty";
+            const others = new Set(allPromptNames);
+            others.delete(name);
+            if (others.has(v)) return "Prompt name already exists";
+            return null;
+          }}
         />
         <button className="text-red-400 hover:text-red-300 text-xs ml-2" onClick={() => setConfirmDelete(true)}>
           Delete

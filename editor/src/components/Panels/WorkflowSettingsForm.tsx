@@ -3,7 +3,7 @@ import { useUIStore } from "@/store/ui";
 import type { BudgetBlock } from "@/api/types";
 import { getAllNodeNames } from "@/lib/defaults";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
-import { TextField, NumberField, SelectField } from "./forms/FormField";
+import { TextField, CommittedTextField, NumberField, SelectField } from "./forms/FormField";
 
 export default function WorkflowSettingsForm() {
   const document = useDocumentStore((s) => s.document);
@@ -31,10 +31,17 @@ export default function WorkflowSettingsForm() {
     <div className="p-3 text-sm">
       <h2 className="font-bold text-gray-300 mb-3">Workflow Settings</h2>
 
-      <TextField
+      <CommittedTextField
         label="Workflow Name"
         value={workflow.name}
         onChange={(v) => { updateWorkflow(workflow.name, { name: v }); setActiveWorkflowName(v); }}
+        validate={(v) => {
+          if (!v.trim()) return "Name cannot be empty";
+          const existing = new Set((document?.workflows ?? []).map((w) => w.name));
+          existing.delete(workflow.name);
+          if (existing.has(v)) return "Workflow name already exists";
+          return null;
+        }}
       />
 
       <SelectField

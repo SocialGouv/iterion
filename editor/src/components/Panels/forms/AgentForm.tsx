@@ -1,8 +1,9 @@
 import { useCallback } from "react";
 import { useDocumentStore } from "@/store/document";
+import { useSelectionStore } from "@/store/selection";
 import type { AgentDecl, JudgeDecl } from "@/api/types";
-import { defaultSchema, defaultPrompt } from "@/lib/defaults";
-import { TextField, NumberField, SelectField, SelectFieldWithCreate, TagListField } from "./FormField";
+import { defaultSchema, defaultPrompt, getAllNodeNames } from "@/lib/defaults";
+import { TextField, CommittedTextField, NumberField, SelectField, SelectFieldWithCreate, TagListField } from "./FormField";
 
 interface Props {
   decl: AgentDecl | JudgeDecl;
@@ -16,6 +17,7 @@ export default function AgentForm({ decl, kind }: Props) {
   const renameNode = useDocumentStore((s) => s.renameNode);
   const addSchema = useDocumentStore((s) => s.addSchema);
   const addPrompt = useDocumentStore((s) => s.addPrompt);
+  const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
 
   const update = useCallback(
     (updates: Partial<AgentDecl>) => {
@@ -59,10 +61,19 @@ export default function AgentForm({ decl, kind }: Props) {
         <span className="text-base">{headerIcon}</span>
         <span className="text-xs font-bold uppercase tracking-wide" style={{ color: headerColor }}>{headerLabel}</span>
       </div>
-      <TextField
+      <CommittedTextField
         label="Name"
         value={decl.name}
         onChange={(v) => renameNode(decl.name, v)}
+        onCommit={(v) => setSelectedNode(v)}
+        validate={(v) => {
+          if (!v.trim()) return "Name cannot be empty";
+          if (/\s/.test(v)) return "Name cannot contain spaces";
+          const names = getAllNodeNames(document!);
+          names.delete(decl.name);
+          if (names.has(v)) return "Name already exists";
+          return null;
+        }}
       />
       <TextField
         label="Model"

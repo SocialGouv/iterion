@@ -6,14 +6,21 @@ export function useAutoValidation() {
   const document = useDocumentStore((s) => s.document);
   const setDiagnostics = useDocumentStore((s) => s.setDiagnostics);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const abortRef = useRef<AbortController>(undefined);
 
   useEffect(() => {
     if (!document) return;
     clearTimeout(timerRef.current);
     timerRef.current = setTimeout(async () => {
+      // Abort any in-flight validation to prevent stale results
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
       try {
         const result = await api.validate(document);
-        setDiagnostics(result.diagnostics, result.warnings);
+        if (!controller.signal.aborted) {
+          setDiagnostics(result.diagnostics, result.warnings);
+        }
       } catch {
         // silently ignore validation errors during auto-validation
       }

@@ -15,6 +15,7 @@ import type {
   Edge,
   Comment,
 } from "@/api/types";
+import { getAllNodeNames, getAllSchemaNames, getAllPromptNames } from "@/lib/defaults";
 
 // Normalize a document from JSON (omitempty may leave arrays as undefined).
 function normalize(doc: IterDocument): IterDocument {
@@ -241,8 +242,12 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   // Node rename — updates all references
   renameNode: (oldName, newName) =>
     set((s) => {
-      if (!s.document || oldName === newName) return s;
+      if (!s.document || oldName === newName || !newName.trim()) return s;
       const doc = s.document;
+      // Guard: reject duplicate names
+      const existing = getAllNodeNames(doc);
+      existing.delete(oldName);
+      if (existing.has(newName)) return s;
       const renameIn = <T extends { name: string }>(arr: T[]) =>
         arr.map((item) => (item.name === oldName ? { ...item, name: newName } : item));
       return {
@@ -356,8 +361,12 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     set((s) => (s.document ? { document: { ...s.document, schemas: updateInArray(s.document.schemas, name, updates) }, ...pushHistory(s) } : s)),
   renameSchema: (oldName, newName) =>
     set((s) => {
-      if (!s.document || oldName === newName) return s;
+      if (!s.document || oldName === newName || !newName.trim()) return s;
       const doc = s.document;
+      // Guard: reject duplicate names
+      const existingSchemas = getAllSchemaNames(doc);
+      existingSchemas.delete(oldName);
+      if (existingSchemas.has(newName)) return s;
       const r = (v: string) => (v === oldName ? newName : v);
       return {
         document: {
@@ -382,8 +391,12 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     set((s) => (s.document ? { document: { ...s.document, prompts: updateInArray(s.document.prompts, name, updates) }, ...pushHistory(s) } : s)),
   renamePrompt: (oldName, newName) =>
     set((s) => {
-      if (!s.document || oldName === newName) return s;
+      if (!s.document || oldName === newName || !newName.trim()) return s;
       const doc = s.document;
+      // Guard: reject duplicate names
+      const existingPrompts = getAllPromptNames(doc);
+      existingPrompts.delete(oldName);
+      if (existingPrompts.has(newName)) return s;
       const r = (v: string) => (v === oldName ? newName : v);
       const ro = (v?: string) => (v === oldName ? newName : v);
       return {

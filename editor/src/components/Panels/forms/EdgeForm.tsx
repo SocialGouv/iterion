@@ -1,7 +1,7 @@
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import { useDocumentStore } from "@/store/document";
 import type { Edge, WhenClause, LoopClause, WithEntry } from "@/api/types";
-import { TextField, NumberField, CheckboxField } from "./FormField";
+import { TextField, NumberField, CheckboxField, SelectField, CommittedTextField } from "./FormField";
 
 interface Props {
   edge: Edge;
@@ -10,6 +10,7 @@ interface Props {
 }
 
 export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
+  const document = useDocumentStore((s) => s.document);
   const updateEdge = useDocumentStore((s) => s.updateEdge);
   const removeEdge = useDocumentStore((s) => s.removeEdge);
 
@@ -27,6 +28,26 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
     (withEntries: WithEntry[] | undefined) => updateEdge(workflowName, edgeIndex, { with: withEntries }),
     [workflowName, edgeIndex, updateEdge],
   );
+
+  // Get boolean fields from source node's output schema for condition suggestions
+  const boolFieldOptions = useMemo(() => {
+    if (!document) return [];
+    const sourceNode = edge.from;
+    // Find the source node's output schema
+    let outputSchemaName = "";
+    for (const a of document.agents) { if (a.name === sourceNode) { outputSchemaName = a.output; break; } }
+    if (!outputSchemaName) for (const j of document.judges) { if (j.name === sourceNode) { outputSchemaName = j.output; break; } }
+    if (!outputSchemaName) for (const h of document.humans) { if (h.name === sourceNode) { outputSchemaName = h.output; break; } }
+    if (!outputSchemaName) for (const t of document.tools) { if (t.name === sourceNode) { outputSchemaName = t.output; break; } }
+    if (!outputSchemaName) for (const j of document.joins) { if (j.name === sourceNode) { outputSchemaName = j.output; break; } }
+    if (!outputSchemaName) return [];
+    // Find the schema and filter bool fields
+    const schema = document.schemas.find((s) => s.name === outputSchemaName);
+    if (!schema) return [];
+    return schema.fields
+      .filter((f) => f.type === "bool")
+      .map((f) => ({ value: f.name, label: f.name }));
+  }, [document, edge.from]);
 
   const when = edge.when;
   const loop = edge.loop;
@@ -63,12 +84,23 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
         </div>
         {when && (
           <>
-            <TextField
-              label="Condition"
-              value={when.condition}
-              onChange={(v) => setWhen({ ...when, condition: v })}
-              placeholder="e.g. approved"
-            />
+            {boolFieldOptions.length > 0 ? (
+              <SelectField
+                label="Condition (bool field)"
+                value={when.condition}
+                onChange={(v) => setWhen({ ...when, condition: v })}
+                options={boolFieldOptions}
+                allowEmpty
+                emptyLabel="-- select field --"
+              />
+            ) : (
+              <TextField
+                label="Condition"
+                value={when.condition}
+                onChange={(v) => setWhen({ ...when, condition: v })}
+                placeholder="e.g. approved"
+              />
+            )}
             <CheckboxField
               label="Negated (when not)"
               checked={when.negated}
@@ -130,7 +162,7 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
         {withEntries.map((entry, i) => (
           <div key={i} className="flex gap-1 mb-1 items-end">
             <div className="flex-1">
-              <TextField
+              <CommittedTextField
                 label="Key"
                 value={entry.key}
                 onChange={(v) => {
@@ -139,6 +171,7 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
                   setWith(next.length > 0 ? next : undefined);
                 }}
                 placeholder="target_field"
+                validate={(v) => (!v.trim() ? "Key cannot be empty" : null)}
               />
             </div>
             <div className="flex-1">
