@@ -338,6 +338,16 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 			continue
 		}
 
+		// --- LLM router: ask the LLM which edge(s) to take ---
+		if node.Kind == ir.NodeRouter && node.RouterMode == ir.RouterLLM {
+			nextNodeID, err := e.execLLMRouter(ctx, rs, currentNodeID)
+			if err != nil {
+				return e.failRunErr(rs.runID, currentNodeID, err)
+			}
+			currentNodeID = nextNodeID
+			continue
+		}
+
 		// --- Emit node_started ---
 		if err := e.emit(rs.runID, store.EventNodeStarted, currentNodeID, map[string]interface{}{
 			"kind": node.Kind.String(),
@@ -552,6 +562,287 @@ func (e *Engine) execRoundRobin(ctx context.Context, rs *runState, routerNodeID 
 
 	return selected.To, nil
 }
+
+// ---------------------------------------------------------------------------
+// LLM Router — LLM-based route selection
+// ---------------------------------------------------------------------------
+
+// execLLMRouter handles an LLM router node by calling the LLM to decide
+// which outgoing edge(s) to take. For single mode, it picks one target;
+// for multi mode, it fans out to the selected subset.
+func (e *Engine) execLLMRouter(ctx context.Context, rs *runState, routerNodeID string) (string, error) {
+	node := e.workflow.Nodes[routerNodeID]
+
+	// Emit node_started.
+	if err := e.emit(rs.runID, store.EventNodeStarted, routerNodeID, map[string]interface{}{
+		"kind": "router",
+		"mode": "llm",
+	}); err != nil {
+		return "", err
+	}
+
+	// Build router input.
+	routerInput := e.buildNodeInput(routerNodeID, rs.vars, rs.outputs, rs.runInputs, rs.artifacts)
+
+	// Collect outgoing edge targets as candidates.
+	// NOTE: order follows edge declaration order in the .iter file, which the
+	// LLM sees in its prompt. This is deterministic but may introduce ordering
+	// bias in the LLM's selection.
+	var candidates []string
+	for _, edge := range e.workflow.Edges {
+		if edge.From == routerNodeID {
+			candidates = append(candidates, edge.To)
+		}
+	}
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("llm router %q has no outgoing edges", routerNodeID)
+	}
+
+	// Inject candidates into input for the executor.
+	routerInput["_route_candidates"] = candidates
+
+	// Check budget before LLM call.
+	if err := e.checkBudgetBeforeExec(rs, routerNodeID); err != nil {
+		return "", err
+	}
+
+	// Execute LLM call via the executor.
+	output, err := e.executor.Execute(ctx, node, routerInput)
+	if err != nil {
+		return "", fmt.Errorf("llm router %q: %w", routerNodeID, err)
+	}
+
+	rs.outputs[routerNodeID] = output
+
+	// Record budget usage and check limits.
+	if err := e.recordAndCheckBudget(rs, routerNodeID, output); err != nil {
+		return "", err
+	}
+
+	// Dispatch based on single/multi mode.
+	if node.RouterMulti {
+		return e.execLLMRouterMulti(ctx, rs, routerNodeID, output, candidates)
+	}
+	return e.execLLMRouterSingle(rs, routerNodeID, output, candidates)
+}
+
+// execLLMRouterSingle handles single-route LLM selection.
+func (e *Engine) execLLMRouterSingle(rs *runState, routerNodeID string, output map[string]interface{}, candidates []string) (string, error) {
+	selected, ok := output["selected_route"].(string)
+	if !ok || selected == "" {
+		return "", &RuntimeError{
+			Code:    ErrCodeExecutionFailed,
+			Message: fmt.Sprintf("llm router %q did not produce a valid selected_route", routerNodeID),
+			NodeID:  routerNodeID,
+		}
+	}
+
+	// Validate selection is a valid candidate.
+	valid := false
+	for _, c := range candidates {
+		if c == selected {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		return "", &RuntimeError{
+			Code:    ErrCodeExecutionFailed,
+			Message: fmt.Sprintf("llm router %q selected %q which is not a valid target (candidates: %v)", routerNodeID, selected, candidates),
+			NodeID:  routerNodeID,
+		}
+	}
+
+	reasoning, _ := output["reasoning"].(string)
+
+	// Emit node_finished.
+	if err := e.emit(rs.runID, store.EventNodeFinished, routerNodeID, map[string]interface{}{
+		"selected_route": selected,
+		"reasoning":      reasoning,
+	}); err != nil {
+		return "", err
+	}
+
+	// Emit edge_selected.
+	if err := e.emit(rs.runID, store.EventEdgeSelected, routerNodeID, map[string]interface{}{
+		"from": routerNodeID,
+		"to":   selected,
+	}); err != nil {
+		return "", err
+	}
+
+	return selected, nil
+}
+
+// execLLMRouterMulti handles multi-route LLM selection by fanning out
+// to the LLM-selected subset of outgoing edges.
+func (e *Engine) execLLMRouterMulti(ctx context.Context, rs *runState, routerNodeID string, output map[string]interface{}, candidates []string) (string, error) {
+	selectedRaw, ok := output["selected_routes"]
+	if !ok {
+		return "", &RuntimeError{
+			Code:    ErrCodeExecutionFailed,
+			Message: fmt.Sprintf("llm router %q did not produce selected_routes", routerNodeID),
+			NodeID:  routerNodeID,
+		}
+	}
+
+	// Parse selected routes from the output.
+	var selected []string
+	switch v := selectedRaw.(type) {
+	case []interface{}:
+		for _, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				return "", &RuntimeError{
+					Code:    ErrCodeExecutionFailed,
+					Message: fmt.Sprintf("llm router %q: selected_routes contains non-string element", routerNodeID),
+					NodeID:  routerNodeID,
+				}
+			}
+			selected = append(selected, s)
+		}
+	case []string:
+		selected = v
+	default:
+		return "", &RuntimeError{
+			Code:    ErrCodeExecutionFailed,
+			Message: fmt.Sprintf("llm router %q: selected_routes is %T, expected array", routerNodeID, selectedRaw),
+			NodeID:  routerNodeID,
+		}
+	}
+
+	if len(selected) == 0 {
+		return "", &RuntimeError{
+			Code:    ErrCodeExecutionFailed,
+			Message: fmt.Sprintf("llm router %q selected zero routes", routerNodeID),
+			NodeID:  routerNodeID,
+		}
+	}
+
+	// Validate all selections are valid candidates.
+	candidateSet := make(map[string]bool, len(candidates))
+	for _, c := range candidates {
+		candidateSet[c] = true
+	}
+	for _, s := range selected {
+		if !candidateSet[s] {
+			return "", &RuntimeError{
+				Code:    ErrCodeExecutionFailed,
+				Message: fmt.Sprintf("llm router %q selected %q which is not a valid target (candidates: %v)", routerNodeID, s, candidates),
+				NodeID:  routerNodeID,
+			}
+		}
+	}
+
+	reasoning, _ := output["reasoning"].(string)
+
+	// Emit node_finished.
+	if err := e.emit(rs.runID, store.EventNodeFinished, routerNodeID, map[string]interface{}{
+		"selected_routes": selected,
+		"reasoning":       reasoning,
+	}); err != nil {
+		return "", err
+	}
+
+	// Filter workflow edges to only the LLM-selected targets.
+	selectedSet := make(map[string]bool, len(selected))
+	for _, s := range selected {
+		selectedSet[s] = true
+	}
+	var fanEdges []*ir.Edge
+	for _, edge := range e.workflow.Edges {
+		if edge.From == routerNodeID && selectedSet[edge.To] {
+			fanEdges = append(fanEdges, edge)
+		}
+	}
+
+	// Pre-validate: if the downstream join has Require, ensure all required
+	// nodes are reachable from the selected fan-out edges. This catches the
+	// case where the LLM selects a subset that cannot satisfy a wait_all join.
+	if joinID := e.findJoinForRouter(routerNodeID, fanEdges); joinID != "" {
+		if joinNode, ok := e.workflow.Nodes[joinID]; ok && joinNode.JoinStrategy == ir.JoinWaitAll && len(joinNode.Require) > 0 {
+			reachable := make(map[string]bool)
+			for _, edge := range fanEdges {
+				reachable[edge.To] = true
+			}
+			for _, req := range joinNode.Require {
+				if !reachable[req] {
+					return "", &RuntimeError{
+						Code:    ErrCodeExecutionFailed,
+						Message: fmt.Sprintf("llm router %q selected routes %v but join %q requires %v (missing %q)", routerNodeID, selected, joinID, joinNode.Require, req),
+						NodeID:  routerNodeID,
+					}
+				}
+			}
+		}
+	}
+
+	// Validate workspace safety.
+	if err := e.validateWorkspaceSafety(fanEdges); err != nil {
+		return "", err
+	}
+
+	// Determine concurrency limit from budget.
+	maxParallel := len(fanEdges)
+	if e.workflow.Budget != nil && e.workflow.Budget.MaxParallelBranches > 0 && e.workflow.Budget.MaxParallelBranches < maxParallel {
+		maxParallel = e.workflow.Budget.MaxParallelBranches
+	}
+
+	// Snapshot parent outputs and artifacts.
+	parentOutputs := make(map[string]map[string]interface{})
+	for k, v := range rs.outputs {
+		parentOutputs[k] = v
+	}
+	parentArtifacts := make(map[string]map[string]interface{})
+	for k, v := range rs.artifacts {
+		parentArtifacts[k] = v
+	}
+
+	// Launch branches with bounded concurrency.
+	sem := make(chan struct{}, maxParallel)
+	resultsCh := make(chan *branchResult, len(fanEdges))
+
+	for _, edge := range fanEdges {
+		branchID := fmt.Sprintf("branch_%s_%s", routerNodeID, edge.To)
+
+		go func(edge *ir.Edge, branchID string) {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			result := e.execBranch(ctx, rs, branchID, edge, parentOutputs, parentArtifacts)
+			resultsCh <- result
+		}(edge, branchID)
+	}
+
+	// Collect all results.
+	results := make([]*branchResult, 0, len(fanEdges))
+	for range fanEdges {
+		results = append(results, <-resultsCh)
+	}
+
+	// Determine join node.
+	joinNodeID := ""
+	for _, r := range results {
+		if r.joinNodeID != "" {
+			if joinNodeID == "" {
+				joinNodeID = r.joinNodeID
+			} else if joinNodeID != r.joinNodeID {
+				return "", fmt.Errorf("branches converge to different join nodes: %s vs %s", joinNodeID, r.joinNodeID)
+			}
+		}
+	}
+	if joinNodeID == "" {
+		joinNodeID = e.findJoinForRouter(routerNodeID, fanEdges)
+		if joinNodeID == "" {
+			return "", fmt.Errorf("no join node found after llm router fan-out from %s", routerNodeID)
+		}
+	}
+
+	return e.processJoin(rs, joinNodeID, results)
+}
+
+// ---------------------------------------------------------------------------
+// Branch execution
+// ---------------------------------------------------------------------------
 
 // execBranch runs a single parallel branch starting from the target of
 // the given edge. It executes nodes sequentially until it reaches a join

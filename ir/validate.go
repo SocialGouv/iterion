@@ -18,6 +18,9 @@ const (
 	DiagHistoryRefNotInLoop    DiagCode = "C017" // outputs.<node>.history but node not in a loop
 	DiagUndeclaredCycle        DiagCode = "C019" // cycle without a declared loop (infinite loop risk)
 	DiagRoundRobinTooFewEdges  DiagCode = "C020" // round_robin router with fewer than 2 outgoing edges
+	DiagLLMRouterTooFewEdges   DiagCode = "C021" // llm router with fewer than 2 outgoing edges
+	DiagLLMRouterConditionEdge DiagCode = "C022" // llm router edge has a 'when' condition
+	DiagRouterLLMOnlyProperty  DiagCode = "C023" // LLM-only property on non-llm router
 )
 
 // validate performs static validation on a compiled workflow.
@@ -30,6 +33,7 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateInheritAfterJoin(w)
 	c.validateEdgeRouting(w)
 	c.validateRoundRobinEdges(w)
+	c.validateLLMRouterEdges(w)
 	c.validateConditionFields(w)
 	c.validateJoinRequire(w)
 	c.validateReachability(w)
@@ -97,8 +101,8 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 			continue
 		}
 
-		// Router fan_out_all and round_robin are allowed multiple unconditional edges.
-		if node.Kind == NodeRouter && (node.RouterMode == RouterFanOutAll || node.RouterMode == RouterRoundRobin) {
+		// Router fan_out_all, round_robin, and llm are allowed multiple unconditional edges.
+		if node.Kind == NodeRouter && (node.RouterMode == RouterFanOutAll || node.RouterMode == RouterRoundRobin || node.RouterMode == RouterLLM) {
 			continue
 		}
 
@@ -151,6 +155,34 @@ func (c *compiler) validateRoundRobinEdges(w *Workflow) {
 		if count < 2 {
 			c.errorf(DiagRoundRobinTooFewEdges,
 				"round_robin router %q has %d unconditional outgoing edge(s); at least 2 are needed for alternation",
+				node.ID, count)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// C021, C022 — llm router validation
+// ---------------------------------------------------------------------------
+
+func (c *compiler) validateLLMRouterEdges(w *Workflow) {
+	for _, node := range w.Nodes {
+		if node.Kind != NodeRouter || node.RouterMode != RouterLLM {
+			continue
+		}
+		count := 0
+		for _, e := range w.Edges {
+			if e.From == node.ID {
+				count++
+				if e.Condition != "" {
+					c.errorf(DiagLLMRouterConditionEdge,
+						"llm router %q edge to %q has a 'when' condition; LLM routers select targets directly",
+						node.ID, e.To)
+				}
+			}
+		}
+		if count < 2 {
+			c.errorf(DiagLLMRouterTooFewEdges,
+				"llm router %q has %d outgoing edge(s); at least 2 are needed",
 				node.ID, count)
 		}
 	}

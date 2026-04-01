@@ -90,6 +90,20 @@ func Unparse(f *ast.File) string {
 		blankLine()
 		fmt.Fprintf(&b, "router %s:\n", r.Name)
 		writeProp(&b, "mode", r.Mode.String())
+		if r.Mode == ast.RouterLLM {
+			if r.Model != "" {
+				writeQuotedProp(&b, "model", r.Model)
+			}
+			if r.System != "" {
+				writeProp(&b, "system", r.System)
+			}
+			if r.User != "" {
+				writeProp(&b, "user", r.User)
+			}
+			if r.Multi {
+				writeProp(&b, "multi", "true")
+			}
+		}
 	}
 
 	// --- Joins ---

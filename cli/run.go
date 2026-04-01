@@ -31,15 +31,15 @@ func sortedKeys(m map[string]interface{}) []string {
 
 // RunOptions holds the configuration for the run command.
 type RunOptions struct {
-	File           string               // .iter file path
-	Recipe         string               // recipe JSON file path (alternative to File)
-	Vars           map[string]string    // --var key=value overrides
-	RunID          string               // explicit run ID (auto-generated if empty)
-	StoreDir       string               // store directory (default: .iterion)
-	Timeout        time.Duration        // maximum run duration (0 = no limit)
-	LogLevel       string               // log level (default: "info", env: ITERION_LOG_LEVEL)
-	NoInteractive  bool                 // disable interactive TTY prompting on human pause
-	Executor       runtime.NodeExecutor // pluggable executor (nil = stub)
+	File          string               // .iter file path
+	Recipe        string               // recipe JSON file path (alternative to File)
+	Vars          map[string]string    // --var key=value overrides
+	RunID         string               // explicit run ID (auto-generated if empty)
+	StoreDir      string               // store directory (default: .iterion)
+	Timeout       time.Duration        // maximum run duration (0 = no limit)
+	LogLevel      string               // log level (default: "info", env: ITERION_LOG_LEVEL)
+	NoInteractive bool                 // disable interactive TTY prompting on human pause
+	Executor      runtime.NodeExecutor // pluggable executor (nil = stub)
 }
 
 // RunRun executes a workflow or recipe and reports the outcome.

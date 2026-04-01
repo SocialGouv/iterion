@@ -183,6 +183,7 @@ const (
 	RouterFanOutAll  RouterMode = iota // fan out to all targets
 	RouterCondition                    // conditional routing
 	RouterRoundRobin                   // round-robin: cycle through targets one at a time
+	RouterLLM                          // LLM-based routing decision
 )
 
 func (rm RouterMode) String() string {
@@ -193,6 +194,8 @@ func (rm RouterMode) String() string {
 		return "condition"
 	case RouterRoundRobin:
 		return "round_robin"
+	case RouterLLM:
+		return "llm"
 	default:
 		return "unknown"
 	}
@@ -200,9 +203,13 @@ func (rm RouterMode) String() string {
 
 // RouterDecl represents a `router <name>:` node declaration.
 type RouterDecl struct {
-	Name string
-	Mode RouterMode
-	Span Span
+	Name   string
+	Mode   RouterMode
+	Model  string // only for mode: llm
+	System string // prompt ref, only for mode: llm
+	User   string // prompt ref, only for mode: llm
+	Multi  bool   // multi-route selection, only for mode: llm
+	Span   Span
 }
 
 // ---------------------------------------------------------------------------

@@ -49,7 +49,15 @@ func fieldToJSONSchema(f *ir.SchemaField) map[string]interface{} {
 		prop["type"] = "object"
 	case ir.FieldTypeStringArray:
 		prop["type"] = "array"
-		prop["items"] = map[string]interface{}{"type": "string"}
+		items := map[string]interface{}{"type": "string"}
+		if len(f.EnumValues) > 0 {
+			items["enum"] = f.EnumValues
+		}
+		prop["items"] = items
+		// Early return: for string arrays, enum constraints belong on the items
+		// schema, not the array itself. The general enum block below would
+		// incorrectly place enum on the array type.
+		return prop
 	}
 
 	if len(f.EnumValues) > 0 {

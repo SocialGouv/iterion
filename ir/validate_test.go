@@ -836,6 +836,257 @@ func TestValidateReferenceFixturesClean(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// C021 — llm router with fewer than 2 outgoing edges
+// ---------------------------------------------------------------------------
+
+func TestValidateLLMRouterTooFewEdges(t *testing.T) {
+	src := `
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+schema s:
+  ok: bool
+
+agent a1:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+router r1:
+  mode: llm
+  model: "test-model"
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  a1 -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagLLMRouterTooFewEdges)
+}
+
+// ---------------------------------------------------------------------------
+// C022 — llm router edge has when condition
+// ---------------------------------------------------------------------------
+
+func TestValidateLLMRouterConditionEdge(t *testing.T) {
+	src := `
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+schema s:
+  ok: bool
+
+agent a1:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+agent a2:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+router r1:
+  mode: llm
+  model: "test-model"
+
+workflow test:
+  entry: r1
+  r1 -> a1 when ok
+  r1 -> a2
+  a1 -> done
+  a2 -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagLLMRouterConditionEdge)
+}
+
+// ---------------------------------------------------------------------------
+// LLM router — valid configuration (no diagnostics)
+// ---------------------------------------------------------------------------
+
+func TestValidateLLMRouterValid(t *testing.T) {
+	src := `
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+prompt route_sys:
+  Route wisely.
+
+schema s:
+  ok: bool
+
+agent a1:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+agent a2:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+router r1:
+  mode: llm
+  model: "test-model"
+  system: route_sys
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> done
+  a2 -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagLLMRouterTooFewEdges)
+	expectNoDiag(t, r, DiagLLMRouterConditionEdge)
+
+	// Verify the compiled node has the right fields.
+	if r.Workflow == nil {
+		t.Fatal("expected non-nil workflow")
+	}
+	node := r.Workflow.Nodes["r1"]
+	if node == nil {
+		t.Fatal("expected node r1")
+	}
+	if node.RouterMode != RouterLLM {
+		t.Errorf("expected RouterLLM, got %v", node.RouterMode)
+	}
+	if node.Model != "test-model" {
+		t.Errorf("expected model test-model, got %s", node.Model)
+	}
+	if node.SystemPrompt != "route_sys" {
+		t.Errorf("expected system prompt route_sys, got %s", node.SystemPrompt)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// LLM router — property order independence (model before mode)
+// ---------------------------------------------------------------------------
+
+func TestValidateLLMRouterPropertyOrderIndependence(t *testing.T) {
+	// model: appears before mode: — must still compile correctly as an LLM router.
+	src := `
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+schema s:
+  ok: bool
+
+agent a1:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+agent a2:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+router r1:
+  model: "test-model"
+  mode: llm
+  system: sys
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> done
+  a2 -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagLLMRouterTooFewEdges)
+	expectNoDiag(t, r, DiagRouterLLMOnlyProperty)
+
+	if r.Workflow == nil {
+		t.Fatal("expected non-nil workflow")
+	}
+	node := r.Workflow.Nodes["r1"]
+	if node == nil {
+		t.Fatal("expected node r1")
+	}
+	if node.RouterMode != RouterLLM {
+		t.Errorf("expected RouterLLM, got %v", node.RouterMode)
+	}
+	if node.Model != "test-model" {
+		t.Errorf("expected model test-model, got %s", node.Model)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// C023 — LLM-only property on non-llm router
+// ---------------------------------------------------------------------------
+
+func TestValidateRouterLLMOnlyProperty(t *testing.T) {
+	src := `
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+schema s:
+  ok: bool
+
+agent a1:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+agent a2:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+router r1:
+  mode: fan_out_all
+  model: "some-model"
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> done
+  a2 -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagRouterLLMOnlyProperty)
+}
+
 func readFixture(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)

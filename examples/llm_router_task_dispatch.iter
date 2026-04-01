@@ -1,0 +1,72 @@
+## Fixture: LLM Router — Task Dispatch
+## Demonstrates an LLM-based router that decides which agent to use
+## based on the complexity and type of the incoming task.
+## Primitives: agent, router (mode: llm), done, fail.
+
+vars:
+  default_model: string = "${CLAUDE_MODEL}"
+
+prompt classify_system:
+  You are a task classifier. Based on the task description,
+  decide which agent is best suited to handle it.
+  - simple_agent: for straightforward, well-defined tasks
+  - complex_agent: for tasks requiring deep analysis or multi-step reasoning
+
+prompt entry_system:
+  Analyze the incoming task and prepare it for routing.
+
+prompt entry_user:
+  Task: {{input.task}}
+
+prompt simple_system:
+  Handle this simple task efficiently and directly.
+
+prompt simple_user:
+  Task: {{input.task}}
+
+prompt complex_system:
+  This task requires careful analysis. Break it down step by step.
+
+prompt complex_user:
+  Task: {{input.task}}
+
+schema task_input:
+  task: string
+
+schema task_output:
+  result: string
+
+agent entry_agent:
+  model: "{{vars.default_model}}"
+  input: task_input
+  output: task_output
+  system: entry_system
+  user: entry_user
+
+router task_router:
+  mode: llm
+  model: "{{vars.default_model}}"
+  system: classify_system
+
+agent simple_agent:
+  model: "{{vars.default_model}}"
+  input: task_input
+  output: task_output
+  system: simple_system
+  user: simple_user
+
+agent complex_agent:
+  model: "{{vars.default_model}}"
+  input: task_input
+  output: task_output
+  system: complex_system
+  user: complex_user
+
+workflow task_dispatch:
+  entry: entry_agent
+
+  entry_agent -> task_router
+  task_router -> simple_agent
+  task_router -> complex_agent
+  simple_agent -> done
+  complex_agent -> done

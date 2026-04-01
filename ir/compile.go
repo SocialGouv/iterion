@@ -305,11 +305,42 @@ func (c *compiler) compileJudges() {
 
 func (c *compiler) compileRouters() {
 	for _, r := range c.file.Routers {
-		c.nodes[r.Name] = &Node{
+		mode := convertRouterMode(r.Mode)
+		node := &Node{
 			ID:         r.Name,
 			Kind:       NodeRouter,
-			RouterMode: convertRouterMode(r.Mode),
+			RouterMode: mode,
 		}
+		if mode != RouterLLM {
+			if r.Model != "" {
+				c.errorf(DiagRouterLLMOnlyProperty, "router %q property 'model' is only valid with mode: llm", r.Name)
+			}
+			if r.System != "" {
+				c.errorf(DiagRouterLLMOnlyProperty, "router %q property 'system' is only valid with mode: llm", r.Name)
+			}
+			if r.User != "" {
+				c.errorf(DiagRouterLLMOnlyProperty, "router %q property 'user' is only valid with mode: llm", r.Name)
+			}
+			if r.Multi {
+				c.errorf(DiagRouterLLMOnlyProperty, "router %q property 'multi' is only valid with mode: llm", r.Name)
+			}
+		}
+		if mode == RouterLLM {
+			if r.Model == "" {
+				c.errorf(DiagMissingModelOrDelegate, "router %q with mode llm must set 'model'", r.Name)
+			}
+			node.Model = r.Model
+			if r.System != "" {
+				c.validatePromptRef(r.Name, "system", r.System)
+				node.SystemPrompt = r.System
+			}
+			if r.User != "" {
+				c.validatePromptRef(r.Name, "user", r.User)
+				node.UserPrompt = r.User
+			}
+			node.RouterMulti = r.Multi
+		}
+		c.nodes[r.Name] = node
 	}
 }
 
@@ -555,6 +586,8 @@ func convertRouterMode(rm ast.RouterMode) RouterMode {
 		return RouterCondition
 	case ast.RouterRoundRobin:
 		return RouterRoundRobin
+	case ast.RouterLLM:
+		return RouterLLM
 	default:
 		return RouterFanOutAll
 	}

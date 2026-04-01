@@ -659,16 +659,38 @@ func (p *parser) parseRouterDecl() *ast.RouterDecl {
 			}
 			break
 		}
-		if t.Type == TokenMode {
+		switch t.Type {
+		case TokenMode:
 			p.next()
 			p.expect(TokenColon)
 			rd.Mode = p.parseRouterMode()
-			p.skipNewlines()
-		} else {
+		case TokenModel:
+			p.next()
+			p.expect(TokenColon)
+			rd.Model = p.expectString()
+		case TokenSystem:
+			p.next()
+			p.expect(TokenColon)
+			rd.System = p.expectIdent()
+		case TokenUser:
+			p.next()
+			p.expect(TokenColon)
+			rd.User = p.expectIdent()
+		case TokenMulti:
+			p.next()
+			p.expect(TokenColon)
+			bt := p.next()
+			if bt.Type == TokenTrue {
+				rd.Multi = true
+			} else if bt.Type != TokenFalse {
+				p.addError(DiagInvalidValue, bt, "expected true or false for 'multi'")
+			}
+		default:
 			p.addError(DiagUnknownProperty, t, "unknown router property '"+t.Value+"'")
 			p.next()
 			p.skipToNewline()
 		}
+		p.skipNewlines()
 	}
 	return rd
 }
@@ -682,8 +704,10 @@ func (p *parser) parseRouterMode() ast.RouterMode {
 		return ast.RouterCondition
 	case TokenRoundRobin:
 		return ast.RouterRoundRobin
+	case TokenLLM:
+		return ast.RouterLLM
 	default:
-		p.addError(DiagInvalidValue, t, "expected router mode (fan_out_all, condition, round_robin), got '"+t.Value+"'")
+		p.addError(DiagInvalidValue, t, "expected router mode (fan_out_all, condition, round_robin, llm), got '"+t.Value+"'")
 		return ast.RouterFanOutAll
 	}
 }

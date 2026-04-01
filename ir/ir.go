@@ -82,7 +82,8 @@ type Node struct {
 	ToolMaxSteps int         // max tool-use iterations (0 = not set)
 
 	// --- Router fields ---
-	RouterMode RouterMode // fan_out_all or condition
+	RouterMode  RouterMode // fan_out_all, condition, round_robin, or llm
+	RouterMulti bool       // LLM router: select multiple targets (default: one)
 
 	// --- Join fields ---
 	JoinStrategy JoinStrategy // wait_all or best_effort
@@ -129,6 +130,7 @@ const (
 	RouterFanOutAll RouterMode = iota
 	RouterCondition
 	RouterRoundRobin
+	RouterLLM
 )
 
 func (rm RouterMode) String() string {
@@ -139,6 +141,8 @@ func (rm RouterMode) String() string {
 		return "condition"
 	case RouterRoundRobin:
 		return "round_robin"
+	case RouterLLM:
+		return "llm"
 	default:
 		return "unknown"
 	}

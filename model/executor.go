@@ -185,7 +185,11 @@ func (e *GoaiExecutor) Execute(ctx context.Context, node *ir.Node, input map[str
 	case ir.NodeHuman:
 		return e.executeHumanLLM(ctx, node, input)
 	case ir.NodeRouter:
-		// Routers are deterministic pass-throughs handled by the engine.
+		if node.Model != "" {
+			// LLM router: generate structured output to select route(s).
+			return e.executeLLMRouter(ctx, node, input)
+		}
+		// Deterministic routers are pass-throughs handled by the engine.
 		return input, nil
 	case ir.NodeTool:
 		return e.executeToolNode(ctx, node, input)
@@ -691,6 +695,149 @@ func (e *GoaiExecutor) executeToolNode(ctx context.Context, node *ir.Node, input
 	}
 
 	return output, nil
+}
+
+// ---------------------------------------------------------------------------
+// LLM router execution
+// ---------------------------------------------------------------------------
+
+// executeLLMRouter handles router nodes with mode: llm by calling the LLM to
+// decide which route(s) to take. The engine injects _route_candidates into the
+// input before calling this method.
+func (e *GoaiExecutor) executeLLMRouter(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+	// Extract candidate routes injected by the engine.
+	// Handle both []string (direct) and []interface{} (after JSON round-trip).
+	candidatesRaw, ok := input["_route_candidates"]
+	if !ok {
+		return nil, fmt.Errorf("model: llm router %q: no _route_candidates in input", node.ID)
+	}
+	var candidates []string
+	switch v := candidatesRaw.(type) {
+	case []string:
+		candidates = v
+	case []interface{}:
+		for _, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("model: llm router %q: _route_candidates contains non-string element", node.ID)
+			}
+			candidates = append(candidates, s)
+		}
+	default:
+		return nil, fmt.Errorf("model: llm router %q: _route_candidates is %T, expected []string", node.ID, candidatesRaw)
+	}
+
+	// Build clean input (without internal keys) for the LLM prompt.
+	cleanInput := make(map[string]interface{})
+	for k, v := range input {
+		if !strings.HasPrefix(k, "_") {
+			cleanInput[k] = v
+		}
+	}
+
+	// Resolve model.
+	m, err := e.registry.Resolve(node.Model)
+	if err != nil {
+		return nil, fmt.Errorf("model: llm router %q: %w", node.ID, err)
+	}
+
+	// Build goai options.
+	var opts []goai.Option
+	opts = append(opts, goai.WithMaxRetries(0))
+
+	// System prompt: resolve user-provided prompt if set, then append routing instruction.
+	var systemText string
+	if node.SystemPrompt != "" {
+		if p, ok := e.prompts[node.SystemPrompt]; ok {
+			systemText = e.resolveTemplate(p.Body, cleanInput)
+		}
+	}
+	routingInstruction := fmt.Sprintf(
+		"\n\nYou are a routing decision maker. Based on the input context, select the most appropriate route(s) from the available options: %v.\nRespond with your selection using the required output format.",
+		candidates,
+	)
+	systemText += routingInstruction
+	opts = append(opts, goai.WithSystem(systemText))
+
+	// User message.
+	userText := e.buildUserMessage(node, cleanInput)
+	if userText != "" {
+		opts = append(opts, goai.WithMessages(goai.UserMessage(userText)))
+	}
+
+	// Emit prompt content for observability.
+	if e.hooks.OnLLMPrompt != nil {
+		e.hooks.OnLLMPrompt(node.ID, systemText, userText)
+	}
+
+	// Observability hooks.
+	nodeID := node.ID
+	if e.hooks.OnLLMRequest != nil {
+		fn := e.hooks.OnLLMRequest
+		opts = append(opts, goai.WithOnRequest(func(info goai.RequestInfo) {
+			fn(nodeID, info)
+		}))
+	}
+	if e.hooks.OnLLMResponse != nil {
+		fn := e.hooks.OnLLMResponse
+		opts = append(opts, goai.WithOnResponse(func(info goai.ResponseInfo) {
+			fn(nodeID, info)
+		}))
+	}
+
+	// Auto-generate schema from candidates.
+	schema := buildRouterSchema(node, candidates)
+	jsonSchema, err := SchemaToJSON(schema)
+	if err != nil {
+		return nil, fmt.Errorf("model: llm router %q: schema: %w", node.ID, err)
+	}
+	opts = append(opts, goai.WithExplicitSchema(jsonSchema))
+
+	// Generate structured output with retry.
+	return e.retryLoop(ctx, node.ID, func() (map[string]interface{}, error) {
+		result, err := goai.GenerateObject[map[string]interface{}](ctx, m, opts...)
+		if err != nil {
+			return nil, fmt.Errorf("model: llm router %q: structured generation: %w", node.ID, err)
+		}
+
+		output := result.Object
+		if output == nil {
+			output = make(map[string]interface{})
+		}
+
+		// Strict validation.
+		if err := ValidateOutput(output, schema); err != nil {
+			return nil, fmt.Errorf("model: llm router %q: output invalid: %w", node.ID, err)
+		}
+
+		// Attach usage metadata.
+		output["_tokens"] = result.Usage.InputTokens + result.Usage.OutputTokens
+		output["_model"] = m.ModelID()
+
+		return output, nil
+	})
+}
+
+// buildRouterSchema creates an auto-generated schema for LLM routers.
+// Single mode: {selected_route: string(enum), reasoning: string}
+// Multi mode:  {selected_routes: string[](enum), reasoning: string}
+func buildRouterSchema(node *ir.Node, candidates []string) *ir.Schema {
+	if node.RouterMulti {
+		return &ir.Schema{
+			Name: node.ID + "_route_selection",
+			Fields: []*ir.SchemaField{
+				{Name: "selected_routes", Type: ir.FieldTypeStringArray, EnumValues: candidates},
+				{Name: "reasoning", Type: ir.FieldTypeString},
+			},
+		}
+	}
+	return &ir.Schema{
+		Name: node.ID + "_route_selection",
+		Fields: []*ir.SchemaField{
+			{Name: "selected_route", Type: ir.FieldTypeString, EnumValues: candidates},
+			{Name: "reasoning", Type: ir.FieldTypeString},
+		},
+	}
 }
 
 // ---------------------------------------------------------------------------

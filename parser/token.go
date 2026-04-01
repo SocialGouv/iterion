@@ -77,6 +77,9 @@ const (
 	TokenFanOutAll
 	TokenCondition
 	TokenRoundRobin
+	TokenLLM
+	// Router properties
+	TokenMulti
 	// Join strategies
 	TokenWaitAll
 	TokenBestEffort
@@ -169,6 +172,8 @@ var tokenNames = map[TokenType]string{
 	TokenFanOutAll:         "fan_out_all",
 	TokenCondition:         "condition",
 	TokenRoundRobin:        "round_robin",
+	TokenLLM:               "llm",
+	TokenMulti:             "multi",
 	TokenWaitAll:           "wait_all",
 	TokenBestEffort:        "best_effort",
 	TokenPauseUntilAnswers: "pause_until_answers",
@@ -241,6 +246,8 @@ var keywords = map[string]TokenType{
 	"fan_out_all":           TokenFanOutAll,
 	"condition":             TokenCondition,
 	"round_robin":           TokenRoundRobin,
+	"llm":                   TokenLLM,
+	"multi":                 TokenMulti,
 	"wait_all":              TokenWaitAll,
 	"best_effort":           TokenBestEffort,
 	"pause_until_answers":   TokenPauseUntilAnswers,
