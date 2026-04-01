@@ -52,10 +52,47 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
 
   const activeWorkflow = useActiveWorkflow();
 
+  // Build enum hints for target node's input schema fields
+  const targetEnumMap = useMemo(() => {
+    if (!document) return new Map<string, string[]>();
+    const map = new Map<string, string[]>();
+    const targetNode = edge.to;
+    let inputSchemaName = "";
+    for (const a of document.agents) { if (a.name === targetNode) { inputSchemaName = a.input; break; } }
+    if (!inputSchemaName) for (const j of document.judges) { if (j.name === targetNode) { inputSchemaName = j.input; break; } }
+    if (!inputSchemaName) for (const h of document.humans) { if (h.name === targetNode) { inputSchemaName = h.input; break; } }
+    if (inputSchemaName) {
+      const schema = document.schemas.find((s) => s.name === inputSchemaName);
+      if (schema) {
+        for (const f of schema.fields) {
+          if (f.enum_values && f.enum_values.length > 0) {
+            map.set(f.name, f.enum_values);
+          }
+        }
+      }
+    }
+    return map;
+  }, [document, edge.to]);
+
   // Build template reference suggestions for With value fields
   const templateRefs = useMemo(() => {
     if (!document) return [];
     const refs: { label: string; value: string; group: string }[] = [];
+
+    // {{input.*}} from target node's input schema
+    const targetNode = edge.to;
+    let targetInputSchemaName = "";
+    for (const a of document.agents) { if (a.name === targetNode) { targetInputSchemaName = a.input; break; } }
+    if (!targetInputSchemaName) for (const j of document.judges) { if (j.name === targetNode) { targetInputSchemaName = j.input; break; } }
+    if (!targetInputSchemaName) for (const h of document.humans) { if (h.name === targetNode) { targetInputSchemaName = h.input; break; } }
+    if (targetInputSchemaName) {
+      const schema = document.schemas.find((s) => s.name === targetInputSchemaName);
+      if (schema) {
+        for (const f of schema.fields) {
+          if (f.name) refs.push({ label: f.name, value: `{{input.${f.name}}}`, group: "input" });
+        }
+      }
+    }
 
     // {{vars.*}} from top-level and workflow vars
     const varFields = document.vars?.fields ?? [];
@@ -216,6 +253,7 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
             withEntries={withEntries}
             setWith={setWith}
             templateRefs={templateRefs}
+            enumValues={targetEnumMap.get(entry.key)}
           />
         ))}
       </div>
@@ -240,12 +278,14 @@ function WithEntryRow({
   withEntries,
   setWith,
   templateRefs,
+  enumValues,
 }: {
   entry: WithEntry;
   index: number;
   withEntries: WithEntry[];
   setWith: (w: WithEntry[] | undefined) => void;
   templateRefs: { label: string; value: string; group: string }[];
+  enumValues?: string[];
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
 
@@ -322,7 +362,7 @@ function WithEntryRow({
                       key={ref.value}
                       className="w-full text-left px-2 py-1 hover:bg-gray-700 text-[11px] text-gray-300 truncate"
                       onClick={() => {
-                        updateValue(ref.value);
+                        updateValue(entry.value ? `${entry.value} ${ref.value}` : ref.value);
                         setPickerOpen(false);
                       }}
                       title={ref.value}
@@ -339,6 +379,23 @@ function WithEntryRow({
           )}
         </div>
       </div>
+      {enumValues && enumValues.length > 0 && (
+        <div className="mt-0.5">
+          <span className="text-[9px] text-gray-500">Allowed values: </span>
+          <div className="flex flex-wrap gap-1 mt-0.5">
+            {enumValues.map((v) => (
+              <button
+                key={v}
+                className="text-[10px] bg-gray-700 hover:bg-gray-600 text-amber-300 px-1.5 py-0.5 rounded cursor-pointer"
+                onClick={() => updateValue(`"${v}"`)}
+                title={`Set value to "${v}"`}
+              >
+                {v}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

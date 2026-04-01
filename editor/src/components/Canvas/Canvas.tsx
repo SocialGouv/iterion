@@ -212,8 +212,10 @@ export default function Canvas() {
 
       if (!source || !document || !activeWorkflow) return;
 
-      // Check if an edge was actually created (count changed)
-      const currentEdgeCount = activeWorkflow.edges?.length ?? 0;
+      // Read fresh state to avoid stale closure after addEdge in onConnect
+      const freshDoc = useDocumentStore.getState().document;
+      const freshWorkflow = freshDoc?.workflows.find((w) => w.name === activeWorkflow.name);
+      const currentEdgeCount = freshWorkflow?.edges?.length ?? 0;
       if (currentEdgeCount > edgeCountBeforeConnectRef.current) return;
 
       // No edge created — show quick-add menu at the drop position
@@ -352,6 +354,16 @@ export default function Canvas() {
     [selectedNodeId, selectedEdgeId, document, removeNode, removeEdge, clearSelection, searchOpen, quickAddMenu, copiedNodeId, duplicateNode, setCopiedNode, setSelectedNode, addToast],
   );
 
+  // Fit view when switching workflows
+  const prevWorkflowRef = useRef<string | undefined>(activeWorkflowName);
+  useEffect(() => {
+    if (prevWorkflowRef.current !== activeWorkflowName && activeWorkflowName) {
+      prevWorkflowRef.current = activeWorkflowName;
+      // Delay to let layout settle
+      setTimeout(() => fitView({ padding: 0.2 }), 300);
+    }
+  }, [activeWorkflowName, fitView]);
+
   // Apply search filter: dim non-matching nodes
   const displayNodes = useMemo(() => {
     if (!searchOpen || !searchQuery.trim()) return layoutNodes;
@@ -470,7 +482,20 @@ export default function Canvas() {
       >
         <Background />
         <Controls />
-        <MiniMap />
+        <MiniMap nodeColor={(node) => {
+          const kind = (node.data as { kind?: string })?.kind;
+          switch (kind) {
+            case "agent": return "#4A90D9";
+            case "judge": return "#7B68EE";
+            case "router": return "#E67E22";
+            case "join": return "#2ECC71";
+            case "human": return "#E74C3C";
+            case "tool": return "#8B6914";
+            case "done": return "#22C55E";
+            case "fail": return "#EF4444";
+            default: return "#6B7280";
+          }
+        }} />
       </ReactFlow>
 
       {/* Context menu */}

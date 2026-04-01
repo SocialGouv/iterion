@@ -1,6 +1,7 @@
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
+import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import type { JoinDecl, JoinStrategy } from "@/api/types";
 import { defaultSchema, getAllNodeNames } from "@/lib/defaults";
 import { CommittedTextField, SelectField, SelectFieldWithCreate, MultiSelectField } from "./FormField";
@@ -15,8 +16,23 @@ export default function JoinForm({ decl }: Props) {
   const renameNode = useDocumentStore((s) => s.renameNode);
   const addSchema = useDocumentStore((s) => s.addSchema);
   const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
+  const activeWorkflow = useActiveWorkflow();
 
-  const nodeNames = document ? Array.from(getAllNodeNames(document)).filter((n) => n !== decl.name) : [];
+  // Show only nodes that have edges leading to this join (actual predecessors)
+  const nodeNames = useMemo(() => {
+    if (!activeWorkflow) return document ? Array.from(getAllNodeNames(document)).filter((n) => n !== decl.name) : [];
+    const predecessors = new Set<string>();
+    for (const e of activeWorkflow.edges) {
+      if (e.to === decl.name && e.from !== "done" && e.from !== "fail") {
+        predecessors.add(e.from);
+      }
+    }
+    // If no direct predecessors found, fall back to all node names
+    if (predecessors.size === 0 && document) {
+      return Array.from(getAllNodeNames(document)).filter((n) => n !== decl.name);
+    }
+    return Array.from(predecessors);
+  }, [activeWorkflow, document, decl.name]);
   const schemaOptions = (document?.schemas ?? []).map((s) => ({ value: s.name, label: s.name }));
 
   const createSchema = useCallback(() => {

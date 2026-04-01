@@ -285,15 +285,15 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     let i = 1;
     let newName = `${name}_copy`;
     while (allNames.has(newName)) { newName = `${name}_copy_${i}`; i++; }
-    // Find and clone
+    // Find and deep-clone (copy nested arrays/objects to avoid shared references)
     const cloneAgent = doc.agents.find((a) => a.name === name);
-    if (cloneAgent) { set((st) => ({ document: { ...st.document!, agents: [...st.document!.agents, { ...cloneAgent, name: newName }] }, ...pushHistory(st) })); return newName; }
+    if (cloneAgent) { set((st) => ({ document: { ...st.document!, agents: [...st.document!.agents, { ...cloneAgent, name: newName, tools: cloneAgent.tools ? [...cloneAgent.tools] : undefined }] }, ...pushHistory(st) })); return newName; }
     const cloneJudge = doc.judges.find((j) => j.name === name);
-    if (cloneJudge) { set((st) => ({ document: { ...st.document!, judges: [...st.document!.judges, { ...cloneJudge, name: newName }] }, ...pushHistory(st) })); return newName; }
+    if (cloneJudge) { set((st) => ({ document: { ...st.document!, judges: [...st.document!.judges, { ...cloneJudge, name: newName, tools: cloneJudge.tools ? [...cloneJudge.tools] : undefined }] }, ...pushHistory(st) })); return newName; }
     const cloneRouter = doc.routers.find((r) => r.name === name);
     if (cloneRouter) { set((st) => ({ document: { ...st.document!, routers: [...st.document!.routers, { ...cloneRouter, name: newName }] }, ...pushHistory(st) })); return newName; }
     const cloneJoinDecl = doc.joins.find((j) => j.name === name);
-    if (cloneJoinDecl) { set((st) => ({ document: { ...st.document!, joins: [...st.document!.joins, { ...cloneJoinDecl, require: [...cloneJoinDecl.require], name: newName }] }, ...pushHistory(st) })); return newName; }
+    if (cloneJoinDecl) { set((st) => ({ document: { ...st.document!, joins: [...st.document!.joins, { ...cloneJoinDecl, name: newName, require: [...cloneJoinDecl.require] }] }, ...pushHistory(st) })); return newName; }
     const cloneHuman = doc.humans.find((h) => h.name === name);
     if (cloneHuman) { set((st) => ({ document: { ...st.document!, humans: [...st.document!.humans, { ...cloneHuman, name: newName }] }, ...pushHistory(st) })); return newName; }
     const cloneTool = doc.tools.find((t) => t.name === name);
@@ -305,7 +305,35 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   addWorkflow: (decl) =>
     set((s) => (s.document ? { document: { ...s.document, workflows: [...s.document.workflows, decl] }, ...pushHistory(s) } : s)),
   removeWorkflow: (name) =>
-    set((s) => (s.document ? { document: { ...s.document, workflows: s.document.workflows.filter((w) => w.name !== name) }, ...pushHistory(s) } : s)),
+    set((s) => {
+      if (!s.document) return s;
+      const doc = s.document;
+      const remainingWorkflows = doc.workflows.filter((w) => w.name !== name);
+      // Collect node names still referenced by remaining workflows
+      const referencedNodes = new Set<string>();
+      for (const wf of remainingWorkflows) {
+        if (wf.entry) referencedNodes.add(wf.entry);
+        for (const e of wf.edges) {
+          referencedNodes.add(e.from);
+          referencedNodes.add(e.to);
+        }
+      }
+      // Remove orphan nodes (not referenced by any remaining workflow)
+      const isReferenced = (nodeName: string) => remainingWorkflows.length === 0 || referencedNodes.has(nodeName);
+      return {
+        document: {
+          ...doc,
+          workflows: remainingWorkflows,
+          agents: doc.agents.filter((a) => isReferenced(a.name)),
+          judges: doc.judges.filter((j) => isReferenced(j.name)),
+          routers: doc.routers.filter((r) => isReferenced(r.name)),
+          joins: doc.joins.filter((j) => isReferenced(j.name)),
+          humans: doc.humans.filter((h) => isReferenced(h.name)),
+          tools: doc.tools.filter((t) => isReferenced(t.name)),
+        },
+        ...pushHistory(s),
+      };
+    }),
 
   // Edge mutations
   addEdge: (workflowName, edge) =>

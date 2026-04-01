@@ -56,15 +56,17 @@ export default function Toolbar() {
   }, [showOpenMenu]);
 
   const handleNew = useCallback(() => {
+    if (isDirty() && !window.confirm("You have unsaved changes. Discard them?")) return;
     setDocument(createEmptyDocument());
     setDiagnostics([], []);
     setCurrentFilePath(null);
     markSaved();
-  }, [setDocument, setDiagnostics, setCurrentFilePath, markSaved]);
+  }, [setDocument, setDiagnostics, setCurrentFilePath, markSaved, isDirty]);
 
   const loadExample = useCallback(
     async (name: string) => {
       if (!name) return;
+      if (isDirty() && !window.confirm("You have unsaved changes. Discard them?")) return;
       setLoading(true);
       try {
         const result = await api.loadExample(name);
@@ -78,11 +80,12 @@ export default function Toolbar() {
         setLoading(false);
       }
     },
-    [setDocument, setDiagnostics, setCurrentFilePath, markSaved],
+    [setDocument, setDiagnostics, setCurrentFilePath, markSaved, isDirty],
   );
 
   const handleOpenFile = useCallback(
     async (path: string) => {
+      if (isDirty() && !window.confirm("You have unsaved changes. Discard them?")) return;
       setLoading(true);
       setShowOpenMenu(false);
       try {
@@ -97,13 +100,17 @@ export default function Toolbar() {
         setLoading(false);
       }
     },
-    [setDocument, setDiagnostics, setCurrentFilePath, markSaved],
+    [setDocument, setDiagnostics, setCurrentFilePath, markSaved, isDirty],
   );
 
   const handleImport = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
+      if (isDirty() && !window.confirm("You have unsaved changes. Discard them?")) {
+        e.target.value = "";
+        return;
+      }
       const text = await file.text();
       try {
         const result = await api.parseSource(text);
@@ -116,7 +123,7 @@ export default function Toolbar() {
       // Reset input so the same file can be re-imported
       e.target.value = "";
     },
-    [setDocument, setDiagnostics, setCurrentFilePath],
+    [setDocument, setDiagnostics, setCurrentFilePath, isDirty],
   );
 
   const handleValidate = useCallback(async () => {

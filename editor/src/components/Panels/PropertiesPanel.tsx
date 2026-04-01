@@ -67,19 +67,25 @@ export default function PropertiesPanel() {
     <div className="p-3 text-sm h-full flex flex-col">
       <h2 className="font-bold text-gray-300 mb-2">Properties</h2>
       <div className="flex-1 overflow-y-auto">
-        {nodeMatch ? (
+        {selectedNodeId === "done" || selectedNodeId === "fail" ? (
+          <div className="flex items-center gap-2 px-2 py-3 rounded bg-gray-800/50 border border-gray-700">
+            <span className="text-base">{selectedNodeId === "done" ? "\u{2705}" : "\u{274C}"}</span>
+            <div>
+              <p className="text-sm font-bold text-white">{selectedNodeId}</p>
+              <p className="text-xs text-gray-500">Terminal node — no editable properties.</p>
+            </div>
+          </div>
+        ) : nodeMatch ? (
           <>
             <NodeForm match={nodeMatch} />
-            {nodeMatch.kind !== "done" && nodeMatch.kind !== "fail" && (
-              <div className="mt-4 pt-2 border-t border-gray-700">
-                <button
-                  className="w-full bg-red-900 hover:bg-red-800 text-red-200 text-xs py-1 rounded"
-                  onClick={() => setConfirmDelete(true)}
-                >
-                  Delete Node
-                </button>
-              </div>
-            )}
+            <div className="mt-4 pt-2 border-t border-gray-700">
+              <button
+                className="w-full bg-red-900 hover:bg-red-800 text-red-200 text-xs py-1 rounded"
+                onClick={() => setConfirmDelete(true)}
+              >
+                Delete Node
+              </button>
+            </div>
           </>
         ) : edgeMatch ? (
           <EdgeForm

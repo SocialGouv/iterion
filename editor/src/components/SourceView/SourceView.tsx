@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import Editor from "@monaco-editor/react";
+import Editor, { type Monaco } from "@monaco-editor/react";
 import { useDocumentStore } from "@/store/document";
 import * as api from "@/api/client";
+import { ITER_LANGUAGE_ID, iterLanguageConfig, iterTokensProvider } from "@/lib/iterLanguage";
 
 export default function SourceView() {
   const document = useDocumentStore((s) => s.document);
@@ -40,6 +41,14 @@ export default function SourceView() {
     }
   }, [source, setDocument, setDiagnostics]);
 
+  const handleEditorWillMount = useCallback((monaco: Monaco) => {
+    if (!monaco.languages.getLanguages().some((l: { id: string }) => l.id === ITER_LANGUAGE_ID)) {
+      monaco.languages.register({ id: ITER_LANGUAGE_ID });
+      monaco.languages.setLanguageConfiguration(ITER_LANGUAGE_ID, iterLanguageConfig);
+      monaco.languages.setMonarchTokensProvider(ITER_LANGUAGE_ID, iterTokensProvider);
+    }
+  }, []);
+
   return (
     <div className="h-full flex flex-col">
       <div className="flex items-center justify-between px-2 py-1 bg-gray-800 border-b border-gray-700 shrink-0">
@@ -76,8 +85,9 @@ export default function SourceView() {
       <div className="flex-1 min-h-0">
         <Editor
           height="100%"
-          language="plaintext"
+          language={ITER_LANGUAGE_ID}
           theme="vs-dark"
+          beforeMount={handleEditorWillMount}
           value={source}
           onChange={(v) => {
             if (editing) setSource(v ?? "");

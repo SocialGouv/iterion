@@ -17,7 +17,7 @@ export function useAutoValidation() {
       const controller = new AbortController();
       abortRef.current = controller;
       try {
-        const result = await api.validate(document);
+        const result = await api.validate(document, controller.signal);
         if (!controller.signal.aborted) {
           setDiagnostics(result.diagnostics, result.warnings);
         }

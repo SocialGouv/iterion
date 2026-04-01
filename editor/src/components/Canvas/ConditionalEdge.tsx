@@ -2,7 +2,7 @@ import { BaseEdge, EdgeLabelRenderer, getBezierPath, getSmoothStepPath } from "@
 import type { EdgeProps } from "@xyflow/react";
 
 export default function ConditionalEdge(props: EdgeProps) {
-  const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, label, data } = props;
+  const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, label, data, selected } = props;
 
   const hasLoop = !!(data as Record<string, unknown>)?.loop;
 
@@ -26,8 +26,9 @@ export default function ConditionalEdge(props: EdgeProps) {
         targetPosition,
       });
 
-  const strokeColor = hasLoop ? "#F59E0B" : "#888";
+  const strokeColor = selected ? "#60A5FA" : hasLoop ? "#F59E0B" : "#888";
   const strokeDasharray = hasLoop ? "8 4" : undefined;
+  const strokeWidth = selected ? 3 : hasLoop ? 2.5 : 1;
 
   return (
     <>
@@ -36,7 +37,8 @@ export default function ConditionalEdge(props: EdgeProps) {
         style={{
           stroke: strokeColor,
           strokeDasharray,
-          strokeWidth: hasLoop ? 2.5 : 1,
+          strokeWidth,
+          filter: selected ? "drop-shadow(0 0 4px rgba(96, 165, 250, 0.6))" : undefined,
           animation: hasLoop ? "dash-flow 1s linear infinite" : undefined,
         }}
       />

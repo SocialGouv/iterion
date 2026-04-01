@@ -32,10 +32,12 @@ export async function unparse(document: IterDocument): Promise<string> {
 
 export async function validate(
   document: IterDocument,
+  signal?: AbortSignal,
 ): Promise<{ diagnostics: string[]; warnings: string[] }> {
   return request("/validate", {
     method: "POST",
     body: JSON.stringify({ document }),
+    signal,
   });
 }
 
