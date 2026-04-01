@@ -454,7 +454,7 @@ func TestLive_TodoApp_Full_DualModel_MCP(t *testing.T) {
 
 	eng := runtime.New(wf, s, executor)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Hour)
 	defer cancel()
 
 	runID := "live-todo-app-full-dual-mcp"
@@ -577,12 +577,14 @@ func TestLive_TodoApp_Full_DualModel_MCP(t *testing.T) {
 	}
 	t.Logf("Loop edge events: %d", loopEdges)
 
-	// Verify artifact versioning: act_report should have multiple versions.
-	latestArt, artErr := s.LoadLatestArtifact(runID, "act_report")
-	if artErr != nil {
-		t.Logf("Could not load act_report artifact: %v", artErr)
-	} else {
-		t.Logf("act_report latest version: %d", latestArt.Version)
+	// Verify artifact versioning: implement nodes should have multiple versions.
+	for _, implNode := range []string{"claude_implement", "codex_implement"} {
+		latestArt, artErr := s.LoadLatestArtifact(runID, implNode)
+		if artErr != nil {
+			t.Logf("Could not load %s artifact: %v", implNode, artErr)
+		} else {
+			t.Logf("%s latest version: %d", implNode, latestArt.Version)
+		}
 	}
 
 	// Check that index.html was generated.
@@ -603,4 +605,28 @@ func TestLive_TodoApp_Full_DualModel_MCP(t *testing.T) {
 	t.Logf("Metrics: tokens=%d cost=$%.4f model_calls=%d iterations=%d duration=%s",
 		metrics.TotalTokens, metrics.TotalCostUSD, metrics.ModelCalls,
 		metrics.Iterations, metrics.DurationStr)
+
+	// If the workflow completed (not failed), verify the final verdict.
+	if r.Status == store.RunStatusFinished {
+		// The final verdict is published by counter_judge_claude or
+		// counter_judge_codex (whichever terminates the workflow).
+		var verdictFound bool
+		for _, judgeNode := range []string{"counter_judge_claude", "counter_judge_codex"} {
+			verdict, vErr := s.LoadLatestArtifact(runID, judgeNode)
+			if vErr != nil {
+				continue
+			}
+			verdictFound = true
+			if ready, ok := verdict.Data["ready"].(bool); !ok || !ready {
+				t.Errorf("Workflow finished but %s verdict ready=%v (expected true)", judgeNode, verdict.Data["ready"])
+			} else {
+				t.Logf("VERDICT (%s): ready=true, confidence=%v", judgeNode, verdict.Data["confidence"])
+			}
+		}
+		if !verdictFound {
+			t.Error("Workflow finished but no counter-judge verdict artifact found")
+		}
+	} else {
+		t.Logf("Workflow did not complete (status=%s) — partial results available for inspection", r.Status)
+	}
 }

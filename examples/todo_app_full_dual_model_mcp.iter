@@ -301,9 +301,9 @@ workflow todo_app_full_dual_model_mcp:
 
   budget:
     max_parallel_branches: 1
-    max_duration: "30m"
-    max_cost_usd: 50
-    max_tokens: 5000000
+    max_duration: "4h"
+    max_cost_usd: 100
+    max_tokens: 10000000
 
   ## 1. Design -> Challenge
   claude_design -> codex_challenge with {

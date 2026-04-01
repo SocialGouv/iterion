@@ -422,6 +422,61 @@ func (e *GoaiExecutor) retryLoop(ctx context.Context, nodeID string, fn func() (
 }
 
 // ---------------------------------------------------------------------------
+// Delegate retry
+// ---------------------------------------------------------------------------
+
+// isDelegateRetryable determines whether a delegation error is transient
+// and worth retrying. Subprocess crashes and signals are retried; parsing
+// errors are not.
+func isDelegateRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	// Subprocess killed by signal (OOM, timeout, etc.).
+	if strings.Contains(msg, "signal:") {
+		return true
+	}
+	// Generic subprocess failure (crash, transient error).
+	if strings.Contains(msg, "exit status") {
+		return true
+	}
+	// Process could not start (resource exhaustion).
+	if strings.Contains(msg, "failed to start") {
+		return true
+	}
+	// Stdout reading failure (broken pipe, etc.).
+	if strings.Contains(msg, "reading stdout") {
+		return true
+	}
+	return false
+}
+
+// retryDelegateLoop retries a delegation call with exponential backoff.
+func (e *GoaiExecutor) retryDelegateLoop(ctx context.Context, nodeID string, fn func() (delegate.Result, error)) (delegate.Result, error) {
+	maxAttempts := e.retry.maxAttempts()
+
+	result, err := fn()
+	for attempt := 1; err != nil && isDelegateRetryable(err) && attempt < maxAttempts; attempt++ {
+		delay := e.retry.backoff(attempt - 1)
+
+		log.Printf("model: node %q: delegate retry %d/%d after error: %v (backoff %s)",
+			nodeID, attempt, maxAttempts-1, err, delay.Round(time.Millisecond))
+
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return delegate.Result{}, ctx.Err()
+		}
+
+		result, err = fn()
+	}
+	return result, err
+}
+
+// ---------------------------------------------------------------------------
 // Generation with retry
 // ---------------------------------------------------------------------------
 
@@ -539,7 +594,9 @@ func (e *GoaiExecutor) executeDelegation(ctx context.Context, node *ir.Node, inp
 		WorkDir:      e.workDir,
 	}
 
-	result, err := backend.Execute(ctx, task)
+	result, err := e.retryDelegateLoop(ctx, node.ID, func() (delegate.Result, error) {
+		return backend.Execute(ctx, task)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("model: node %q: delegation to %q failed: %w", node.ID, node.Delegate, err)
 	}
