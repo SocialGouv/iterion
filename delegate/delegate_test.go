@@ -98,6 +98,99 @@ func TestParseJSONOutput_ClaudeArray(t *testing.T) {
 	}
 }
 
+func TestParseClaudeResult_ParseFallbackDetection(t *testing.T) {
+	// When the result is plain text, the output has only a "text" key.
+	data := []byte(`{"type":"result","result":"just plain text","usage":{"input_tokens":10,"output_tokens":5}}`)
+	result, err := parseClaudeResult(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Output["text"] != "just plain text" {
+		t.Errorf("expected text fallback, got %v", result.Output)
+	}
+	// Parse functions don't set ParseFallback — that's the backend's job
+	// based on whether OutputSchema was set.
+	if result.ParseFallback {
+		t.Error("parse function should not set ParseFallback")
+	}
+	if len(result.Output) != 1 {
+		t.Errorf("expected exactly 1 key in text fallback output, got %d", len(result.Output))
+	}
+}
+
+func TestParseClaudeResult_StructuredOutput(t *testing.T) {
+	data := []byte(`{"type":"result","result":"{\"approved\":true}","usage":{"input_tokens":10,"output_tokens":5}}`)
+	result, err := parseClaudeResult(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Output["approved"] != true {
+		t.Errorf("expected approved=true, got %v", result.Output)
+	}
+	if result.Tokens != 15 {
+		t.Errorf("expected 15 tokens, got %d", result.Tokens)
+	}
+}
+
+func TestParseCodexJSONL_ParseFallbackDetection(t *testing.T) {
+	// Codex JSONL with plain text agent message.
+	data := []byte(`{"type":"item.completed","item":{"type":"agent_message","text":"just plain text"}}
+{"type":"turn.completed","usage":{"input_tokens":20,"output_tokens":10}}`)
+	result, err := parseCodexJSONL(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Output["text"] != "just plain text" {
+		t.Errorf("expected text fallback, got %v", result.Output)
+	}
+	if result.ParseFallback {
+		t.Error("parse function should not set ParseFallback")
+	}
+	if result.Tokens != 30 {
+		t.Errorf("expected 30 tokens, got %d", result.Tokens)
+	}
+}
+
+func TestParseCodexJSONL_StructuredOutput(t *testing.T) {
+	data := []byte(`{"type":"item.completed","item":{"type":"agent_message","text":"{\"verdict\":\"pass\"}"}}
+{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":3}}`)
+	result, err := parseCodexJSONL(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Output["verdict"] != "pass" {
+		t.Errorf("expected verdict=pass, got %v", result.Output)
+	}
+}
+
+func TestResult_NewFieldsZeroFromParse(t *testing.T) {
+	// Verify that parse functions return zero-valued metadata fields
+	// (backends populate them in Execute, not in parse).
+	data := []byte(`{"approved": true}`)
+	result, err := parseJSONOutput(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Duration != 0 {
+		t.Error("Duration should be zero from parse function")
+	}
+	if result.ExitCode != 0 {
+		t.Error("ExitCode should be zero from parse function")
+	}
+	if result.Stderr != "" {
+		t.Error("Stderr should be empty from parse function")
+	}
+	if result.BackendName != "" {
+		t.Error("BackendName should be empty from parse function")
+	}
+	if result.RawOutputLen != 0 {
+		t.Error("RawOutputLen should be zero from parse function")
+	}
+	if result.ParseFallback {
+		t.Error("ParseFallback should be false from parse function")
+	}
+}
+
 // mockBackend implements Backend for testing.
 type mockBackend struct {
 	response Result

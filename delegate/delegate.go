@@ -8,6 +8,7 @@ package delegate
 import (
 	"context"
 	"encoding/json"
+	"time"
 )
 
 // Backend is the interface for delegation execution. Each backend wraps
@@ -48,4 +49,23 @@ type Result struct {
 
 	// Tokens is an estimate of total tokens consumed (if available from CLI metadata).
 	Tokens int
+
+	// Duration is the wall-clock time of the subprocess execution.
+	Duration time.Duration
+
+	// ExitCode is the process exit code (0 on success).
+	ExitCode int
+
+	// Stderr contains captured stderr output (warnings, progress info).
+	Stderr string
+
+	// BackendName identifies which backend produced this result (e.g. "claude_code", "codex").
+	BackendName string
+
+	// RawOutputLen is the byte length of raw stdout before parsing.
+	RawOutputLen int
+
+	// ParseFallback is true when structured output was expected (OutputSchema set)
+	// but JSON parsing fell back to wrapping plain text as {"text": "..."}.
+	ParseFallback bool
 }

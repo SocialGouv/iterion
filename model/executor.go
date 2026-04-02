@@ -71,6 +71,20 @@ type RetryInfo struct {
 	Delay      time.Duration // backoff delay before this retry
 }
 
+// DelegateInfo describes a delegation attempt, passed to delegation hooks.
+type DelegateInfo struct {
+	BackendName   string        // e.g. "claude_code", "codex"
+	Duration      time.Duration // subprocess wall-clock time
+	Tokens        int           // estimated total tokens consumed
+	ExitCode      int           // process exit code
+	Stderr        string        // captured stderr output
+	RawOutputLen  int           // byte length of raw stdout
+	ParseFallback bool          // true if structured output fell back to text wrapper
+	Error         error         // non-nil for OnDelegateError
+	Attempt       int           // 1-based retry number (for OnDelegateRetry)
+	Delay         time.Duration // backoff delay (for OnDelegateRetry)
+}
+
 // ---------------------------------------------------------------------------
 // Event hooks
 // ---------------------------------------------------------------------------
@@ -86,6 +100,12 @@ type EventHooks struct {
 	// OnToolNodeResult is called for direct tool nodes (not LLM tool loops)
 	// with full input/output content for detailed logging.
 	OnToolNodeResult func(nodeID string, toolName string, input []byte, output string, elapsed time.Duration, err error)
+
+	// Delegation lifecycle hooks.
+	OnDelegateStarted  func(nodeID string, backendName string)
+	OnDelegateFinished func(nodeID string, info DelegateInfo)
+	OnDelegateError    func(nodeID string, info DelegateInfo)
+	OnDelegateRetry    func(nodeID string, info DelegateInfo)
 }
 
 // ---------------------------------------------------------------------------
@@ -473,7 +493,7 @@ func isDelegateRetryable(err error) bool {
 }
 
 // retryDelegateLoop retries a delegation call with exponential backoff.
-func (e *GoaiExecutor) retryDelegateLoop(ctx context.Context, nodeID string, fn func() (delegate.Result, error)) (delegate.Result, error) {
+func (e *GoaiExecutor) retryDelegateLoop(ctx context.Context, nodeID string, backendName string, fn func() (delegate.Result, error)) (delegate.Result, error) {
 	maxAttempts := e.retry.maxAttempts()
 
 	result, err := fn()
@@ -482,6 +502,15 @@ func (e *GoaiExecutor) retryDelegateLoop(ctx context.Context, nodeID string, fn 
 
 		log.Printf("model: node %q: delegate retry %d/%d after error: %v (backoff %s)",
 			nodeID, attempt, maxAttempts-1, err, delay.Round(time.Millisecond))
+
+		if e.hooks.OnDelegateRetry != nil {
+			e.hooks.OnDelegateRetry(nodeID, DelegateInfo{
+				BackendName: backendName,
+				Attempt:     attempt,
+				Error:       err,
+				Delay:       delay,
+			})
+		}
 
 		timer := time.NewTimer(delay)
 		select {
@@ -619,11 +648,41 @@ func (e *GoaiExecutor) executeDelegation(ctx context.Context, node *ir.Node, inp
 		WorkDir:      e.workDir,
 	}
 
-	result, err := e.retryDelegateLoop(ctx, node.ID, func() (delegate.Result, error) {
+	// Emit delegation started event.
+	if e.hooks.OnDelegateStarted != nil {
+		e.hooks.OnDelegateStarted(node.ID, node.Delegate)
+	}
+
+	result, err := e.retryDelegateLoop(ctx, node.ID, node.Delegate, func() (delegate.Result, error) {
 		return backend.Execute(ctx, task)
 	})
 	if err != nil {
+		if e.hooks.OnDelegateError != nil {
+			e.hooks.OnDelegateError(node.ID, DelegateInfo{
+				BackendName: node.Delegate,
+				Error:       err,
+			})
+		}
 		return nil, fmt.Errorf("model: node %q: delegation to %q failed: %w", node.ID, node.Delegate, err)
+	}
+
+	// Emit delegation finished event.
+	if e.hooks.OnDelegateFinished != nil {
+		e.hooks.OnDelegateFinished(node.ID, DelegateInfo{
+			BackendName:   result.BackendName,
+			Duration:      result.Duration,
+			Tokens:        result.Tokens,
+			ExitCode:      result.ExitCode,
+			Stderr:        result.Stderr,
+			RawOutputLen:  result.RawOutputLen,
+			ParseFallback: result.ParseFallback,
+		})
+	}
+
+	// Warn if structured output parsing fell back to text wrapper.
+	if result.ParseFallback {
+		result.Output["_parse_fallback"] = true
+		log.Printf("model: node %q: delegation output fell back to text wrapping (structured output was expected)", node.ID)
 	}
 
 	// Attach metadata.

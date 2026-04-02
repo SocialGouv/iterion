@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
+	"time"
 )
 
 // CodexBackend delegates work to the `codex` CLI (OpenAI Codex).
@@ -60,6 +62,8 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
+	startTime := time.Now()
+
 	if err := cmd.Start(); err != nil {
 		return Result{}, fmt.Errorf("delegate: codex failed to start: %w", err)
 	}
@@ -77,10 +81,38 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	}
 
 	if err := cmd.Wait(); err != nil {
-		return Result{}, fmt.Errorf("delegate: codex failed: %w\nstderr: %s", err, stderr.String())
+		exitCode := -1
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		}
+		return Result{
+			Duration:    time.Since(startTime),
+			ExitCode:    exitCode,
+			Stderr:      stderr.String(),
+			BackendName: "codex",
+		}, fmt.Errorf("delegate: codex failed: %w\nstderr: %s", err, stderr.String())
 	}
 
-	return parseCodexJSONL(output)
+	result, parseErr := parseCodexJSONL(output)
+	if parseErr != nil {
+		return Result{}, parseErr
+	}
+	result.Duration = time.Since(startTime)
+	result.ExitCode = 0
+	result.Stderr = stderr.String()
+	result.BackendName = "codex"
+	result.RawOutputLen = len(output)
+
+	// Detect parse fallback: structured output was expected but parsing
+	// fell back to wrapping plain text as {"text": "..."}.
+	if len(task.OutputSchema) > 0 {
+		if _, hasText := result.Output["text"]; hasText && len(result.Output) == 1 {
+			result.ParseFallback = true
+		}
+	}
+
+	return result, nil
 }
 
 // parseCodexJSONL parses the JSONL output from `codex exec --json`.

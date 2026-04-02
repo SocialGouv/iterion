@@ -41,10 +41,11 @@ type NodeExecutor interface {
 // Engine executes workflows. It supports sequential execution and
 // parallel fan-out via bounded branch scheduling.
 type Engine struct {
-	workflow *ir.Workflow
-	store    *store.RunStore
-	executor NodeExecutor
-	logger   *iterlog.Logger
+	workflow       *ir.Workflow
+	store          *store.RunStore
+	executor       NodeExecutor
+	logger         *iterlog.Logger
+	onNodeFinished func(nodeID string, output map[string]interface{})
 }
 
 // EngineOption configures an Engine.
@@ -53,6 +54,12 @@ type EngineOption func(*Engine)
 // WithLogger sets a leveled logger for console output during execution.
 func WithLogger(l *iterlog.Logger) EngineOption {
 	return func(e *Engine) { e.logger = l }
+}
+
+// WithOnNodeFinished registers a callback invoked after each node finishes
+// with the node's ID and output. The callback must be safe for concurrent use.
+func WithOnNodeFinished(fn func(nodeID string, output map[string]interface{})) EngineOption {
+	return func(e *Engine) { e.onNodeFinished = fn }
 }
 
 // New creates a new Engine for a raw workflow.
@@ -404,6 +411,9 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 		nodeFinishedData := buildNodeFinishedData(output)
 		if err := e.emit(rs.runID, store.EventNodeFinished, currentNodeID, nodeFinishedData); err != nil {
 			return err
+		}
+		if e.onNodeFinished != nil {
+			e.onNodeFinished(currentNodeID, output)
 		}
 
 		// --- Select outgoing edge ---
@@ -994,6 +1004,9 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		if err := e.emitBranch(runID, branchID, store.EventNodeFinished, currentNodeID, buildNodeFinishedData(output)); err != nil {
 			log.Printf("runtime: branch %s: failed to emit node_finished: %v", branchID, err)
 		}
+		if e.onNodeFinished != nil {
+			e.onNodeFinished(currentNodeID, output)
+		}
 
 		// Select next edge (branch-local, no loop counters needed in branches).
 		merged = mergeOutputs(parentOutputs, result.outputs)
@@ -1264,6 +1277,9 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 	nodeFinishedData := buildNodeFinishedData(output)
 	if err := e.emit(rs.runID, store.EventNodeFinished, nodeID, nodeFinishedData); err != nil {
 		return false, err
+	}
+	if e.onNodeFinished != nil {
+		e.onNodeFinished(nodeID, output)
 	}
 
 	return false, nil

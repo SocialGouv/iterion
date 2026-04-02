@@ -170,6 +170,90 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 			}
 		},
 
+		OnDelegateStarted: func(nodeID string, backendName string) {
+			_, _ = emitter.AppendEvent(runID, store.Event{
+				Type:   store.EventDelegateStarted,
+				RunID:  runID,
+				NodeID: nodeID,
+				Data:   map[string]interface{}{"backend": backendName},
+			})
+			logger.Logf(iterlog.LevelDebug, "🚀", "Delegation started [%s]: backend=%s", nodeID, backendName)
+		},
+
+		OnDelegateFinished: func(nodeID string, info DelegateInfo) {
+			data := map[string]interface{}{
+				"backend":        info.BackendName,
+				"duration_ms":    info.Duration.Milliseconds(),
+				"tokens":         info.Tokens,
+				"exit_code":      info.ExitCode,
+				"raw_output_len": info.RawOutputLen,
+				"parse_fallback": info.ParseFallback,
+			}
+			if logger.IsEnabled(iterlog.LevelTrace) && info.Stderr != "" {
+				data["stderr"] = iterlog.Truncate(info.Stderr, maxFieldSize)
+			}
+			_, _ = emitter.AppendEvent(runID, store.Event{
+				Type:   store.EventDelegateFinished,
+				RunID:  runID,
+				NodeID: nodeID,
+				Data:   data,
+			})
+
+			logger.Logf(iterlog.LevelDebug, "✅", "Delegation finished [%s]: %s (%dms, %d tokens)",
+				nodeID, info.BackendName, info.Duration.Milliseconds(), info.Tokens)
+			if info.ParseFallback {
+				logger.Warn("Delegation [%s]: structured output parsing fell back to text wrapper", nodeID)
+			}
+			if info.Stderr != "" {
+				logger.Logf(iterlog.LevelTrace, "⚠️", "Delegation stderr [%s]: %s", nodeID, preview(info.Stderr, 500))
+			}
+		},
+
+		OnDelegateError: func(nodeID string, info DelegateInfo) {
+			data := map[string]interface{}{
+				"backend": info.BackendName,
+			}
+			if info.Error != nil {
+				data["error"] = info.Error.Error()
+			}
+			_, _ = emitter.AppendEvent(runID, store.Event{
+				Type:   store.EventDelegateError,
+				RunID:  runID,
+				NodeID: nodeID,
+				Data:   data,
+			})
+
+			errMsg := ""
+			if info.Error != nil {
+				errMsg = info.Error.Error()
+			}
+			logger.Error("Delegation failed [%s]: %s — %s", nodeID, info.BackendName, errMsg)
+		},
+
+		OnDelegateRetry: func(nodeID string, info DelegateInfo) {
+			data := map[string]interface{}{
+				"backend":  info.BackendName,
+				"attempt":  info.Attempt,
+				"delay_ms": info.Delay.Milliseconds(),
+			}
+			if info.Error != nil {
+				data["error"] = info.Error.Error()
+			}
+			_, _ = emitter.AppendEvent(runID, store.Event{
+				Type:   store.EventDelegateRetry,
+				RunID:  runID,
+				NodeID: nodeID,
+				Data:   data,
+			})
+
+			errMsg := ""
+			if info.Error != nil {
+				errMsg = info.Error.Error()
+			}
+			logger.Warn("Delegation retry [%s]: %s attempt %d, delay %dms: %s",
+				nodeID, info.BackendName, info.Attempt, info.Delay.Milliseconds(), errMsg)
+		},
+
 		// OnToolNodeResult handles direct tool nodes with full I/O content.
 		OnToolNodeResult: func(nodeID string, toolName string, input []byte, output string, elapsed time.Duration, err error) {
 			data := map[string]interface{}{

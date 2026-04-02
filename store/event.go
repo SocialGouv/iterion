@@ -40,6 +40,10 @@ const (
 	EventRunFinished          EventType = "run_finished"
 	EventRunFailed            EventType = "run_failed"
 	EventRunCancelled         EventType = "run_cancelled"
+	EventDelegateStarted      EventType = "delegate_started"
+	EventDelegateFinished     EventType = "delegate_finished"
+	EventDelegateError        EventType = "delegate_error"
+	EventDelegateRetry        EventType = "delegate_retry"
 )
 
 // Event is a single timestamped fact persisted in events.jsonl.

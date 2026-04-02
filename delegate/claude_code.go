@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // maxOutputSize is the maximum allowed stdout size from a delegate subprocess (50 MB).
@@ -72,6 +74,8 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
+	startTime := time.Now()
+
 	if err := cmd.Start(); err != nil {
 		return Result{}, fmt.Errorf("delegate: claude-code failed to start: %w", err)
 	}
@@ -90,10 +94,38 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 	}
 
 	if err := cmd.Wait(); err != nil {
-		return Result{}, fmt.Errorf("delegate: claude-code failed: %w\nstderr: %s", err, stderr.String())
+		exitCode := -1
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		}
+		return Result{
+			Duration:    time.Since(startTime),
+			ExitCode:    exitCode,
+			Stderr:      stderr.String(),
+			BackendName: "claude_code",
+		}, fmt.Errorf("delegate: claude-code failed: %w\nstderr: %s", err, stderr.String())
 	}
 
-	return parseClaudeResult(output)
+	result, parseErr := parseClaudeResult(output)
+	if parseErr != nil {
+		return Result{}, parseErr
+	}
+	result.Duration = time.Since(startTime)
+	result.ExitCode = 0
+	result.Stderr = stderr.String()
+	result.BackendName = "claude_code"
+	result.RawOutputLen = len(output)
+
+	// Detect parse fallback: structured output was expected but parsing
+	// fell back to wrapping plain text as {"text": "..."}.
+	if len(task.OutputSchema) > 0 {
+		if _, hasText := result.Output["text"]; hasText && len(result.Output) == 1 {
+			result.ParseFallback = true
+		}
+	}
+
+	return result, nil
 }
 
 // parseClaudeResult parses the JSON output from `claude --print --output-format json`.
