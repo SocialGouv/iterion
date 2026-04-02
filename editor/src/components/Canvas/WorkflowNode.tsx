@@ -2,6 +2,7 @@ import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 import type { NodeKind, AgentDecl, ToolNodeDecl, HumanDecl, JoinDecl, RouterDecl } from "@/api/types";
 import { useDocumentStore } from "@/store/document";
+import { useUIStore } from "@/store/ui";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { ProviderIcon } from "@/components/icons/ProviderIcon";
 
@@ -103,6 +104,10 @@ export default function WorkflowNode({ data }: NodeProps) {
     (e) => e.loop && (e.from === label || e.to === label),
   ) ?? false;
 
+  const layoutDirection = useUIStore((s) => s.layoutDirection);
+  const targetPos = layoutDirection === "RIGHT" ? Position.Left : Position.Top;
+  const sourcePos = layoutDirection === "RIGHT" ? Position.Right : Position.Bottom;
+
   const isTerminal = kind === "done" || kind === "fail";
   const isStart = kind === "start";
 
@@ -119,7 +124,7 @@ export default function WorkflowNode({ data }: NodeProps) {
             : undefined,
       }}
     >
-      {!isStart && <Handle type="target" position={Position.Top} className="!bg-gray-400" />}
+      {!isStart && <Handle type="target" position={targetPos} className="!bg-gray-400" />}
       <div className="flex items-center justify-center gap-1">
         <span className="text-lg">{KIND_ICONS[kind]}</span>
         {sessionIndicator && <span className="text-xs" title={`session: ${(decl as AgentDecl)?.session}`}>{sessionIndicator}</span>}
@@ -153,7 +158,7 @@ export default function WorkflowNode({ data }: NodeProps) {
       {!isTerminal && !isStart && edgeCount > 0 && (
         <div className="text-[8px] text-gray-600 mt-0.5">{edgeCount} edge{edgeCount !== 1 ? "s" : ""}</div>
       )}
-      {!isTerminal && <Handle type="source" position={Position.Bottom} className="!bg-gray-400" />}
+      {!isTerminal && <Handle type="source" position={sourcePos} className="!bg-gray-400" />}
     </div>
   );
 }

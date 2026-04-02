@@ -9,6 +9,7 @@ const NODE_HEIGHT = 80;
 export async function autoLayout(
   nodes: Node[],
   edges: FlowEdge[],
+  direction: "DOWN" | "RIGHT" = "DOWN",
 ): Promise<Node[]> {
   if (nodes.length === 0) return nodes;
 
@@ -16,7 +17,7 @@ export async function autoLayout(
     id: "root",
     layoutOptions: {
       "elk.algorithm": "layered",
-      "elk.direction": "DOWN",
+      "elk.direction": direction,
       "elk.spacing.nodeNode": "80",
       "elk.layered.spacing.nodeNodeBetweenLayers": "100",
       "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",

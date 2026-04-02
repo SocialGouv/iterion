@@ -50,6 +50,8 @@ export default function Canvas() {
   const toggleExpanded = useUIStore((s) => s.toggleExpanded);
   const browserFullscreen = useUIStore((s) => s.browserFullscreen);
   const setBrowserFullscreen = useUIStore((s) => s.setBrowserFullscreen);
+  const layoutDirection = useUIStore((s) => s.layoutDirection);
+  const toggleLayoutDirection = useUIStore((s) => s.toggleLayoutDirection);
   const activeWorkflow = useActiveWorkflow();
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition, fitView } = useReactFlow();
@@ -91,10 +93,10 @@ export default function Canvas() {
       prevTopologyRef.current = "";
       return;
     }
-    const topoKey = document ? getTopologyKey(document, activeWorkflowName) : "";
+    const topoKey = document ? getTopologyKey(document, activeWorkflowName) + "|" + layoutDirection : "";
     if (prevTopologyRef.current !== topoKey) {
       prevTopologyRef.current = topoKey;
-      autoLayout(graphNodes, graphEdges)
+      autoLayout(graphNodes, graphEdges, layoutDirection)
         .then((laid) => {
           // Apply any pending drop positions
           const pending = pendingPositionsRef.current;
@@ -111,7 +113,7 @@ export default function Canvas() {
         })
         .catch(() => setLayoutNodes(graphNodes));
     }
-  }, [document, graphNodes, graphEdges, activeWorkflowName]);
+  }, [document, graphNodes, graphEdges, activeWorkflowName, layoutDirection]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
@@ -428,14 +430,14 @@ export default function Canvas() {
   );
 
   const handleArrange = useCallback(() => {
-    autoLayout(graphNodes, graphEdges)
+    autoLayout(graphNodes, graphEdges, layoutDirection)
       .then((laid) => {
         setLayoutNodes(laid);
         prevTopologyRef.current = "";
         setTimeout(() => fitView({ padding: 0.2 }), 50);
       })
       .catch(() => {});
-  }, [graphNodes, graphEdges, fitView]);
+  }, [graphNodes, graphEdges, layoutDirection, fitView]);
 
   const handleFitView = useCallback(() => {
     fitView({ padding: 0.2 });
@@ -466,6 +468,20 @@ export default function Canvas() {
 
       {/* Fit view / Focus / Fullscreen buttons */}
       <div className="absolute top-2 right-2 z-40 flex gap-1">
+        <button
+          className={`border text-xs px-2 py-1 rounded ${
+            layoutDirection === "RIGHT"
+              ? "bg-blue-600 hover:bg-blue-700 border-blue-500 text-white"
+              : "bg-gray-800/90 hover:bg-gray-700 border-gray-600 text-gray-300"
+          }`}
+          onClick={() => {
+            toggleLayoutDirection();
+            setTimeout(() => fitView({ padding: 0.2 }), 150);
+          }}
+          title={layoutDirection === "DOWN" ? "Switch to horizontal layout (left\u2192right)" : "Switch to vertical layout (top\u2192bottom)"}
+        >
+          {layoutDirection === "DOWN" ? "\u2194 Horizontal" : "\u2195 Vertical"}
+        </button>
         <button
           className="bg-gray-800/90 hover:bg-gray-700 border border-gray-600 text-xs px-2 py-1 rounded text-gray-300"
           onClick={handleArrange}

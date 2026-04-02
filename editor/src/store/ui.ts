@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 export type SidebarTab = "properties" | "schemas" | "prompts" | "vars" | "workflow" | "comments";
+export type LayoutDirection = "DOWN" | "RIGHT";
 
 export interface Toast {
   id: number;
@@ -17,6 +18,7 @@ interface UIState {
   expanded: boolean;
   browserFullscreen: boolean;
   activeWorkflowName: string | null;
+  layoutDirection: LayoutDirection;
   toasts: Toast[];
   setActiveTab: (tab: SidebarTab) => void;
   toggleSourceView: () => void;
@@ -24,6 +26,8 @@ interface UIState {
   toggleExpanded: () => void;
   setBrowserFullscreen: (value: boolean) => void;
   setActiveWorkflowName: (name: string | null) => void;
+  setLayoutDirection: (dir: LayoutDirection) => void;
+  toggleLayoutDirection: () => void;
   addToast: (message: string, type: Toast["type"]) => void;
   removeToast: (id: number) => void;
 }
@@ -35,6 +39,7 @@ export const useUIStore = create<UIState>((set) => ({
   expanded: false,
   browserFullscreen: false,
   activeWorkflowName: null,
+  layoutDirection: "DOWN",
   toasts: [],
   setActiveTab: (activeTab) => set({ activeTab }),
   toggleSourceView: () => set((s) => ({ sourceViewOpen: !s.sourceViewOpen })),
@@ -42,6 +47,8 @@ export const useUIStore = create<UIState>((set) => ({
   toggleExpanded: () => set((s) => ({ expanded: !s.expanded })),
   setBrowserFullscreen: (value) => set({ browserFullscreen: value }),
   setActiveWorkflowName: (activeWorkflowName) => set({ activeWorkflowName }),
+  setLayoutDirection: (layoutDirection) => set({ layoutDirection }),
+  toggleLayoutDirection: () => set((s) => ({ layoutDirection: s.layoutDirection === "DOWN" ? "RIGHT" : "DOWN" })),
   addToast: (message, type) => {
     const id = ++toastIdCounter;
     set((s) => ({ toasts: [...s.toasts, { id, message, type }] }));
