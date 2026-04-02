@@ -95,7 +95,7 @@ func Unparse(f *ast.File) string {
 			writeMCPConfigBlock(&b, a.MCP, "  ")
 		}
 		writeAgentFields(&b, a.Model, a.Delegate, a.Input, a.Output, a.Publish,
-			a.System, a.User, a.Session, a.Tools, a.ToolMaxSteps, a.ReasoningEffort)
+			a.System, a.User, a.Session, a.Tools, a.ToolMaxSteps, a.ReasoningEffort, a.Readonly)
 	}
 
 	// --- Judges ---
@@ -106,7 +106,7 @@ func Unparse(f *ast.File) string {
 			writeMCPConfigBlock(&b, j.MCP, "  ")
 		}
 		writeAgentFields(&b, j.Model, j.Delegate, j.Input, j.Output, j.Publish,
-			j.System, j.User, j.Session, j.Tools, j.ToolMaxSteps, j.ReasoningEffort)
+			j.System, j.User, j.Session, j.Tools, j.ToolMaxSteps, j.ReasoningEffort, j.Readonly)
 	}
 
 	// --- Routers ---
@@ -280,7 +280,7 @@ func quoteList(vals []string) string {
 	return strings.Join(quoted, ", ")
 }
 
-func writeAgentFields(b *strings.Builder, model, delegate, input, output, publish, system, user string, session ast.SessionMode, tools []string, toolMaxSteps int, reasoningEffort string) {
+func writeAgentFields(b *strings.Builder, model, delegate, input, output, publish, system, user string, session ast.SessionMode, tools []string, toolMaxSteps int, reasoningEffort string, readonly bool) {
 	if model != "" {
 		writeQuotedProp(b, "model", model)
 	}
@@ -317,6 +317,9 @@ func writeAgentFields(b *strings.Builder, model, delegate, input, output, publis
 	}
 	if reasoningEffort != "" {
 		writeProp(b, "reasoning_effort", reasoningEffort)
+	}
+	if readonly {
+		writeProp(b, "readonly", "true")
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -354,7 +355,10 @@ func GenerateText(ctx context.Context, model provider.LanguageModel, opts ...Opt
 		}
 
 		// Execute tools and build continuation messages.
-		toolMessages := executeTools(ctx, result.ToolCalls, toolMap, o.OnToolCall)
+		toolMessages, fatalErr := executeTools(ctx, result.ToolCalls, toolMap, o.OnToolCall)
+		if fatalErr != nil {
+			return nil, fatalErr
+		}
 
 		// Append assistant message with tool calls + tool result messages.
 		params.Messages = appendToolRoundTrip(params.Messages, result, toolMessages)
@@ -382,7 +386,15 @@ func buildToolMap(tools []Tool) map[string]Tool {
 }
 
 // executeTools runs each tool call and returns the tool result messages.
-func executeTools(ctx context.Context, calls []provider.ToolCall, toolMap map[string]Tool, onToolCall func(ToolCallInfo)) []provider.Message {
+// FatalToolError is a sentinel interface for tool errors that should stop the
+// generation loop immediately rather than being passed back to the model.
+// Implement this interface on your error type and return true from IsFatal().
+type FatalToolError interface {
+	error
+	IsFatal() bool
+}
+
+func executeTools(ctx context.Context, calls []provider.ToolCall, toolMap map[string]Tool, onToolCall func(ToolCallInfo)) ([]provider.Message, error) {
 	var msgs []provider.Message
 	for _, tc := range calls {
 		tool, ok := toolMap[tc.Name]
@@ -399,12 +411,17 @@ func executeTools(ctx context.Context, calls []provider.ToolCall, toolMap map[st
 			onToolCall(ToolCallInfo{ToolName: tc.Name, InputSize: len(tc.Input), Duration: time.Since(start), Error: err})
 		}
 		if err != nil {
+			// Check if this is a fatal tool error that should stop the loop.
+			var fte FatalToolError
+			if errors.As(err, &fte) && fte.IsFatal() {
+				return nil, fmt.Errorf("goai: fatal tool error from %q: %w", tc.Name, err)
+			}
 			msgs = append(msgs, ToolMessage(tc.ID, tc.Name, "error: "+err.Error()))
 			continue
 		}
 		msgs = append(msgs, ToolMessage(tc.ID, tc.Name, output))
 	}
-	return msgs
+	return msgs, nil
 }
 
 // appendToolRoundTrip appends an assistant message (with tool_use parts) and tool result messages.

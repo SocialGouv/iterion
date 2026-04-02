@@ -363,6 +363,7 @@ func (c *compiler) compileAgents() {
 			Tools:           a.Tools,
 			ToolMaxSteps:    a.ToolMaxSteps,
 			ReasoningEffort: a.ReasoningEffort,
+			Readonly:        a.Readonly,
 		}
 	}
 }
@@ -397,6 +398,7 @@ func (c *compiler) compileJudges() {
 			Tools:           j.Tools,
 			ToolMaxSteps:    j.ToolMaxSteps,
 			ReasoningEffort: j.ReasoningEffort,
+			Readonly:        j.Readonly,
 		}
 	}
 }

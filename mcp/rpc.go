@@ -161,6 +161,9 @@ func (c *stdioClient) ensureStarted(ctx context.Context) error {
 
 func (c *stdioClient) start(ctx context.Context) error {
 	cmd := exec.Command(c.cfg.Command, c.cfg.Args...)
+	if c.cfg.WorkDir != "" {
+		cmd.Dir = c.cfg.WorkDir
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("mcp: stdio stdin pipe for %q: %w", c.cfg.Name, err)

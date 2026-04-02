@@ -232,6 +232,20 @@ func (r *Registry) ListByOrigin(kind OriginKind) []*ToolDef {
 	return result
 }
 
+// ListByServer returns tools from a specific MCP server.
+func (r *Registry) ListByServer(server string) []*ToolDef {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var result []*ToolDef
+	for _, td := range r.tools {
+		if td.Origin.Kind == OriginMCP && td.Origin.Server == server {
+			result = append(result, td)
+		}
+	}
+	return result
+}
+
 // Len returns the number of registered tools.
 func (r *Registry) Len() int {
 	r.mu.RLock()
@@ -261,4 +275,25 @@ func ParseMCPName(qualified string) (server, toolName string, err error) {
 func IsMCPName(name string) bool {
 	_, _, err := ParseMCPName(name)
 	return err == nil
+}
+
+// IsMCPWildcard returns true if name matches the MCP server wildcard pattern
+// "mcp.<server>.*".
+func IsMCPWildcard(name string) bool {
+	_, err := ParseMCPWildcard(name)
+	return err == nil
+}
+
+// ParseMCPWildcard extracts the server name from a wildcard pattern
+// "mcp.<server>.*". Returns an error if the format is invalid.
+func ParseMCPWildcard(name string) (server string, err error) {
+	// Minimum valid: "mcp.X.*" = 7 chars.
+	if len(name) < 7 || !strings.HasPrefix(name, "mcp.") || !strings.HasSuffix(name, ".*") {
+		return "", fmt.Errorf("tool: %q is not an MCP wildcard (expected \"mcp.<server>.*\")", name)
+	}
+	server = name[4 : len(name)-2] // strip "mcp." prefix and ".*" suffix
+	if server == "" || strings.Contains(server, ".") {
+		return "", fmt.Errorf("tool: invalid MCP wildcard %q (server name must be non-empty and contain no dots)", name)
+	}
+	return server, nil
 }

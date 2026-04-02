@@ -91,6 +91,7 @@ type Node struct {
 	Tools            []string    // tool capability names
 	ToolMaxSteps     int         // max tool-use iterations (0 = not set)
 	ReasoningEffort  string      // reasoning effort level: "low", "medium", "high", "extra_high"
+	Readonly         bool        // when true, node is not considered mutating for workspace safety
 
 	// --- Router fields ---
 	RouterMode  RouterMode // fan_out_all, condition, round_robin, or llm

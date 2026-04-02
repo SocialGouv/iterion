@@ -684,6 +684,11 @@ func (p *parser) parseAgentProp(ad *ast.AgentDecl, propTok Token) {
 		ad.ToolMaxSteps = p.expectInt()
 	case TokenReasoningEffort:
 		ad.ReasoningEffort = p.parseReasoningEffort()
+	case TokenReadonly:
+		p.expect(TokenColon)
+		if v := p.parseBool(); v != nil {
+			ad.Readonly = *v
+		}
 	case TokenMCP:
 		p.backup()
 		ad.MCP = p.parseMCPConfigBlock()
@@ -765,6 +770,11 @@ func (p *parser) parseJudgeProp(jd *ast.JudgeDecl, propTok Token) {
 		jd.ToolMaxSteps = p.expectInt()
 	case TokenReasoningEffort:
 		jd.ReasoningEffort = p.parseReasoningEffort()
+	case TokenReadonly:
+		p.expect(TokenColon)
+		if v := p.parseBool(); v != nil {
+			jd.Readonly = *v
+		}
 	case TokenMCP:
 		p.backup()
 		jd.MCP = p.parseMCPConfigBlock()
@@ -1412,7 +1422,8 @@ func (p *parser) parseToolList() []string {
 	return names
 }
 
-// parseToolRef parses a single tool reference: IDENT { "." IDENT }.
+// parseToolRef parses a single tool reference: IDENT { "." IDENT } or
+// IDENT { "." IDENT } "." "*" for MCP server wildcards (e.g. mcp.claude_code.*).
 func (p *parser) parseToolRef() string {
 	t := p.next()
 	id := tokenAsIdent(t)
@@ -1421,6 +1432,11 @@ func (p *parser) parseToolRef() string {
 	}
 	for p.peek().Type == TokenDot {
 		p.next() // consume .
+		if p.peek().Type == TokenStar {
+			p.next() // consume *
+			id += ".*"
+			break
+		}
 		t = p.next()
 		part := tokenAsIdent(t)
 		if part == "" {

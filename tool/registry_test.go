@@ -309,6 +309,70 @@ func TestIsMCPName(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// ListByServer
+// ---------------------------------------------------------------------------
+
+func TestListByServer(t *testing.T) {
+	r := NewRegistry()
+	_ = r.RegisterMCP("github", "create_issue", "issue", nil, noop)
+	_ = r.RegisterMCP("github", "list_repos", "repos", nil, noop)
+	_ = r.RegisterMCP("gitlab", "list_repos", "repos", nil, noop)
+
+	gh := r.ListByServer("github")
+	if len(gh) != 2 {
+		t.Fatalf("expected 2 github tools, got %d", len(gh))
+	}
+	gl := r.ListByServer("gitlab")
+	if len(gl) != 1 {
+		t.Fatalf("expected 1 gitlab tool, got %d", len(gl))
+	}
+	none := r.ListByServer("unknown")
+	if len(none) != 0 {
+		t.Fatalf("expected 0 tools for unknown server, got %d", len(none))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MCP Wildcard
+// ---------------------------------------------------------------------------
+
+func TestIsMCPWildcard(t *testing.T) {
+	if !IsMCPWildcard("mcp.claude_code.*") {
+		t.Error("expected true for mcp.claude_code.*")
+	}
+	if !IsMCPWildcard("mcp.codex.*") {
+		t.Error("expected true for mcp.codex.*")
+	}
+	if IsMCPWildcard("mcp.github.create_issue") {
+		t.Error("expected false for non-wildcard MCP name")
+	}
+	if IsMCPWildcard("git_diff") {
+		t.Error("expected false for builtin name")
+	}
+	if IsMCPWildcard("mcp..*") {
+		t.Error("expected false for empty server")
+	}
+}
+
+func TestParseMCPWildcard(t *testing.T) {
+	server, err := ParseMCPWildcard("mcp.claude_code.*")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if server != "claude_code" {
+		t.Errorf("expected 'claude_code', got %q", server)
+	}
+
+	// Invalid cases.
+	for _, c := range []string{"mcp.github.tool", "git_diff", "mcp.*", "mcp..*", "mcp.a.b.*"} {
+		_, err := ParseMCPWildcard(c)
+		if err == nil {
+			t.Errorf("expected error for %q", c)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Adapter — ToGoaiTool
 // ---------------------------------------------------------------------------
 
@@ -326,8 +390,8 @@ func TestToGoaiTool(t *testing.T) {
 	}
 
 	gt := td.ToGoaiTool()
-	if gt.Name != "mcp.github.create_issue" {
-		t.Errorf("expected qualified name, got %q", gt.Name)
+	if gt.Name != "mcp_github_create_issue" {
+		t.Errorf("expected sanitized name, got %q", gt.Name)
 	}
 	if gt.Description != "Create a GitHub issue" {
 		t.Errorf("unexpected description: %q", gt.Description)
@@ -406,8 +470,8 @@ func TestResolveAllShorthand(t *testing.T) {
 	if len(tools) != 1 {
 		t.Fatalf("expected 1 tool, got %d", len(tools))
 	}
-	if tools[0].Name != "mcp.github.create_issue" {
-		t.Errorf("expected qualified name, got %q", tools[0].Name)
+	if tools[0].Name != "mcp_github_create_issue" {
+		t.Errorf("expected sanitized name, got %q", tools[0].Name)
 	}
 }
 
@@ -562,9 +626,9 @@ func TestWorkflowToolResolution(t *testing.T) {
 
 	expected := []string{
 		"git_diff",
-		"mcp.github.create_issue",
-		"mcp.github.list_prs",
-		"mcp.slack.send_message",
+		"mcp_github_create_issue",
+		"mcp_github_list_prs",
+		"mcp_slack_send_message",
 		"run_tests",
 	}
 	for i, name := range expected {

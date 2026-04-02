@@ -197,6 +197,7 @@ type AgentDecl struct {
 	Tools        []string    // tool capability names
 	ToolMaxSteps    int    // max tool-use iterations (0 = not set)
 	ReasoningEffort string // reasoning effort level: "low", "medium", "high", "extra_high"
+	Readonly        bool   // when true, node is not considered mutating for workspace safety
 	Span            Span
 }
 
@@ -221,6 +222,7 @@ type JudgeDecl struct {
 	Tools           []string // usually empty for judges, but allowed
 	ToolMaxSteps    int
 	ReasoningEffort string // reasoning effort level: "low", "medium", "high", "extra_high"
+	Readonly        bool   // when true, node is not considered mutating for workspace safety
 	Span            Span
 }
 

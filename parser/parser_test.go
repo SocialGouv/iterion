@@ -919,6 +919,28 @@ func TestDottedToolNames(t *testing.T) {
 	assertEq(t, "Tools[2]", a.Tools[2], "mcp.falcon.lookup")
 }
 
+func TestWildcardToolRef(t *testing.T) {
+	src := `agent worker:
+  model: "claude-4"
+  input: in_s
+  output: out_s
+  system: sys
+  user: usr
+  session: fresh
+  tools: [mcp.claude_code.*, git_diff, mcp.codex.*]
+`
+	res := parser.Parse("test.iter", src)
+	assertNoDiags(t, res)
+
+	a := res.File.Agents[0]
+	if len(a.Tools) != 3 {
+		t.Fatalf("expected 3 tools, got %d", len(a.Tools))
+	}
+	assertEq(t, "Tools[0]", a.Tools[0], "mcp.claude_code.*")
+	assertEq(t, "Tools[1]", a.Tools[1], "git_diff")
+	assertEq(t, "Tools[2]", a.Tools[2], "mcp.codex.*")
+}
+
 func TestMCPServerDecl(t *testing.T) {
 	src := `mcp_server github:
   transport: http

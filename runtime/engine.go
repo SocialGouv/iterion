@@ -1920,7 +1920,11 @@ var readOnlyTools = map[string]bool{
 // isMutatingNode returns true if the node may modify the workspace.
 // Tool nodes are always mutating. Agent/judge nodes are mutating only
 // if they have at least one tool that is not in the read-only set.
+// Nodes with Readonly=true are never considered mutating.
 func isMutatingNode(node *ir.Node) bool {
+	if node.Readonly {
+		return false
+	}
 	if node.Kind == ir.NodeTool {
 		return true
 	}

@@ -31,6 +31,7 @@ const (
 	TokenLParen  // (
 	TokenRParen  // )
 	TokenDot     // .
+	TokenStar    // *
 	TokenNewline // logical newline (non-blank)
 
 	// Comment
@@ -72,6 +73,7 @@ const (
 	TokenCommand
 	TokenArgs
 	TokenURL
+	TokenReadonly
 	TokenDelegate
 	TokenWhen
 	TokenNot
@@ -140,6 +142,7 @@ var tokenNames = map[TokenType]string{
 	TokenLParen:  "(",
 	TokenRParen:  ")",
 	TokenDot:     ".",
+	TokenStar:    "*",
 	TokenNewline: "Newline",
 	TokenComment: "Comment",
 
@@ -178,6 +181,7 @@ var tokenNames = map[TokenType]string{
 	TokenCommand:           "command",
 	TokenArgs:              "args",
 	TokenURL:               "url",
+	TokenReadonly:           "readonly",
 	TokenDelegate:          "delegate",
 	TokenWhen:              "when",
 	TokenNot:               "not",
@@ -261,6 +265,7 @@ var keywords = map[string]TokenType{
 	"command":               TokenCommand,
 	"args":                  TokenArgs,
 	"url":                   TokenURL,
+	"readonly":              TokenReadonly,
 	"delegate":              TokenDelegate,
 	"when":                  TokenWhen,
 	"not":                   TokenNot,

@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	goai "github.com/zendev-sh/goai"
 )
@@ -11,12 +12,19 @@ import (
 // GoaiAdapter — bridge between ToolDef and goai.Tool
 // ---------------------------------------------------------------------------
 
+// SanitizedName returns the qualified name with dots replaced by underscores,
+// safe for LLM APIs that restrict tool names to ^[a-zA-Z0-9_-]+$.
+func (td *ToolDef) SanitizedName() string {
+	return strings.ReplaceAll(td.QualifiedName, ".", "_")
+}
+
 // ToGoaiTool converts a ToolDef into a goai.Tool, which is the execution
 // contract consumed by the GoaiExecutor. Both built-in and MCP tools
-// produce the exact same goai.Tool shape.
+// produce the exact same goai.Tool shape. Tool names are sanitized
+// (dots → underscores) for API compatibility.
 func (td *ToolDef) ToGoaiTool() goai.Tool {
 	return goai.Tool{
-		Name:        td.QualifiedName,
+		Name:        td.SanitizedName(),
 		Description: td.Description,
 		InputSchema: td.InputSchema,
 		Execute:     td.Execute,

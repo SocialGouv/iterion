@@ -33,6 +33,7 @@ type ServerConfig struct {
 	Args      []string
 	URL       string
 	Headers   map[string]string
+	WorkDir   string // working directory for stdio server processes
 }
 
 // PrepareWorkflow resolves the final MCP catalog and active server sets for a
@@ -99,7 +100,10 @@ func NativePresets() map[string]*ServerConfig {
 			Name:      "codex",
 			Transport: TransportStdio,
 			Command:   "codex",
-			Args:      []string{"mcp-server"},
+			Args: []string{
+				"mcp-server",
+				"-c", `sandbox_permissions=["disk-full-read-access","disk-write-cwd"]`,
+			},
 		},
 	}
 }
@@ -332,6 +336,7 @@ func cloneServerConfig(cfg *ServerConfig) *ServerConfig {
 		Args:      append([]string(nil), cfg.Args...),
 		URL:       cfg.URL,
 		Headers:   cloneStringMap(cfg.Headers),
+		WorkDir:   cfg.WorkDir,
 	}
 }
 

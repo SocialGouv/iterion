@@ -321,8 +321,16 @@ func (e *GoaiExecutor) executeLLM(ctx context.Context, node *ir.Node, input map[
 	}
 
 	// Dispatch to structured or text generation with retry.
-	if node.OutputSchema != "" {
+	// When both tools AND output schema are present, use text generation
+	// with the tool loop (GenerateText supports MaxSteps), then parse the
+	// structured output from the final text. GenerateObject does NOT
+	// support multi-step tool use.
+	hasTools := len(node.Tools) > 0
+	if node.OutputSchema != "" && !hasTools {
 		return e.generateStructuredWithRetry(ctx, m, node, opts)
+	}
+	if node.OutputSchema != "" && hasTools {
+		return e.generateTextWithToolsAndSchemaRetry(ctx, m, node, opts)
 	}
 	return e.generateTextWithRetry(ctx, m, node, opts)
 }
@@ -610,6 +618,82 @@ func (e *GoaiExecutor) generateStructured(ctx context.Context, m provider.Langua
 	output["_model"] = m.ModelID()
 
 	return output, nil
+}
+
+// generateTextWithToolsAndSchema uses GenerateText (which supports the
+// multi-step tool loop) but expects the final response to contain a JSON
+// object matching the output schema. The schema is injected into the prompt
+// so the model knows the expected format.
+func (e *GoaiExecutor) generateTextWithToolsAndSchema(ctx context.Context, m provider.LanguageModel, node *ir.Node, opts []goai.Option) (map[string]interface{}, error) {
+	schema, ok := e.schemas[node.OutputSchema]
+	if !ok {
+		return nil, fmt.Errorf("model: node %q references unknown schema %q", node.ID, node.OutputSchema)
+	}
+
+	jsonSchema, err := SchemaToJSON(schema)
+	if err != nil {
+		return nil, fmt.Errorf("model: node %q: schema conversion: %w", node.ID, err)
+	}
+
+	// Inject schema instructions into the system prompt so the model knows the
+	// expected output format without polluting the user message.
+	schemaJSON, _ := json.MarshalIndent(jsonSchema, "", "  ")
+	schemaInstruction := fmt.Sprintf(
+		"\n\nOUTPUT FORMAT: After completing all tool operations, you MUST respond with a JSON object matching this exact schema:\n%s\nRespond ONLY with the raw JSON object. No markdown fences, no commentary.",
+		string(schemaJSON),
+	)
+	opts = append(opts, goai.WithSystem(schemaInstruction))
+
+	result, err := goai.GenerateText(ctx, m, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("model: node %q: text+tools generation: %w", node.ID, err)
+	}
+
+	// Parse the final text as JSON matching the schema.
+	text := strings.TrimSpace(result.Text)
+
+	// Strip markdown code fences if present.
+	if strings.HasPrefix(text, "```json") {
+		text = strings.TrimPrefix(text, "```json")
+		text = strings.TrimSuffix(strings.TrimSpace(text), "```")
+		text = strings.TrimSpace(text)
+	} else if strings.HasPrefix(text, "```") {
+		text = strings.TrimPrefix(text, "```")
+		text = strings.TrimSuffix(strings.TrimSpace(text), "```")
+		text = strings.TrimSpace(text)
+	}
+
+	if text == "" {
+		return nil, fmt.Errorf("model: node %q: text+tools generation produced empty response after tool loop", node.ID)
+	}
+
+	var output map[string]interface{}
+	if err := json.Unmarshal([]byte(text), &output); err != nil {
+		// Fallback: wrap the raw text as a summary.
+		log.Printf("model: node %q: could not parse structured output from text, using fallback (err: %v)", node.ID, err)
+		output = map[string]interface{}{
+			"text":            text,
+			"_parse_fallback": true,
+		}
+	} else {
+		// Validate against schema.
+		if err := ValidateOutput(output, schema); err != nil {
+			log.Printf("model: node %q: structured output validation warning: %v", node.ID, err)
+		}
+	}
+
+	// Attach usage metadata.
+	output["_tokens"] = result.TotalUsage.InputTokens + result.TotalUsage.OutputTokens
+	output["_model"] = m.ModelID()
+
+	return output, nil
+}
+
+// generateTextWithToolsAndSchemaRetry wraps generateTextWithToolsAndSchema in the retry loop.
+func (e *GoaiExecutor) generateTextWithToolsAndSchemaRetry(ctx context.Context, m provider.LanguageModel, node *ir.Node, opts []goai.Option) (map[string]interface{}, error) {
+	return e.retryLoop(ctx, node.ID, func() (map[string]interface{}, error) {
+		return e.generateTextWithToolsAndSchema(ctx, m, node, opts)
+	})
 }
 
 // generateText uses goai.GenerateText for free-form text output.
@@ -1071,14 +1155,21 @@ func (e *GoaiExecutor) resolveTemplateRef(ref string, input map[string]interface
 
 // resolveToolsForNode resolves a list of tool names to goai.Tool instances for
 // a specific node, ensuring that only tools from the node's active MCP servers
-// are exposed.
+// are exposed. Wildcard entries like "mcp.<server>.*" are expanded to all tools
+// discovered from that server.
 func (e *GoaiExecutor) resolveToolsForNode(ctx context.Context, node *ir.Node, names []string) ([]goai.Tool, error) {
-	if err := e.ensureMCPServers(ctx, node, names); err != nil {
+	// Expand wildcards (e.g. mcp.claude_code.*) into concrete tool names.
+	expanded, err := e.expandWildcards(ctx, node, names)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := e.ensureMCPServers(ctx, node, expanded); err != nil {
 		return nil, err
 	}
 
 	var tools []goai.Tool
-	for _, name := range names {
+	for _, name := range expanded {
 		t, ok, err := e.resolveSingleToolForNode(ctx, node, name)
 		if err != nil {
 			return nil, err
@@ -1092,6 +1183,39 @@ func (e *GoaiExecutor) resolveToolsForNode(ctx context.Context, node *ir.Node, n
 		tools = append(tools, t)
 	}
 	return tools, nil
+}
+
+// expandWildcards replaces wildcard entries ("mcp.<server>.*") with the
+// concrete tool names discovered from that MCP server.
+func (e *GoaiExecutor) expandWildcards(ctx context.Context, node *ir.Node, names []string) ([]string, error) {
+	var expanded []string
+	for _, name := range names {
+		if !tool.IsMCPWildcard(name) {
+			expanded = append(expanded, name)
+			continue
+		}
+		server, err := tool.ParseMCPWildcard(name)
+		if err != nil {
+			return nil, fmt.Errorf("model: invalid wildcard %q: %w", name, err)
+		}
+		// Ensure the server is connected so its tools are in the registry.
+		if e.mcpManager != nil && e.toolRegistry != nil {
+			if err := e.mcpManager.EnsureServers(ctx, e.toolRegistry, []string{server}); err != nil {
+				return nil, fmt.Errorf("model: ensure MCP server %q for wildcard: %w", server, err)
+			}
+		}
+		if e.toolRegistry == nil {
+			return nil, fmt.Errorf("model: wildcard %q requires a tool registry", name)
+		}
+		serverTools := e.toolRegistry.ListByServer(server)
+		if len(serverTools) == 0 {
+			log.Printf("model: warning: wildcard %q matched no tools (server %q may not be started or has no tools)", name, server)
+		}
+		for _, td := range serverTools {
+			expanded = append(expanded, td.QualifiedName)
+		}
+	}
+	return expanded, nil
 }
 
 // resolveSingleToolForNode resolves one tool name in the context of a node.
@@ -1145,9 +1269,20 @@ func activeMCPServersForNames(node *ir.Node, names []string) []string {
 	seen := make(map[string]struct{})
 	var servers []string
 	for _, name := range names {
-		server, _, err := tool.ParseMCPName(name)
-		if err != nil {
-			continue
+		var server string
+		// Support wildcard patterns like "mcp.claude_code.*".
+		if tool.IsMCPWildcard(name) {
+			s, err := tool.ParseMCPWildcard(name)
+			if err != nil {
+				continue
+			}
+			server = s
+		} else {
+			s, _, err := tool.ParseMCPName(name)
+			if err != nil {
+				continue
+			}
+			server = s
 		}
 		if _, ok := active[server]; !ok {
 			continue

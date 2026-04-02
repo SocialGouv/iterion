@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -196,6 +197,53 @@ func (m *Manager) clientForState(state *serverState) (protocolClient, error) {
 	return state.client, nil
 }
 
+// FatalToolError wraps MCP tool errors that should not be retried or
+// absorbed by the LLM tool loop (e.g. rate limits, credit exhaustion).
+// Implements goai.FatalToolError so goai stops the generation loop.
+type FatalToolError struct {
+	Message string
+}
+
+func (e *FatalToolError) Error() string {
+	return e.Message
+}
+
+// IsFatal implements the goai.FatalToolError interface.
+func (e *FatalToolError) IsFatal() bool {
+	return true
+}
+
+// IsFatalToolError returns true if the error is a fatal MCP tool error.
+func IsFatalToolError(err error) bool {
+	var fte *FatalToolError
+	return errors.As(err, &fte)
+}
+
+// fatalPatterns are substrings that indicate an MCP tool error is fatal and
+// should stop the node rather than being passed back to the model.
+var fatalPatterns = []string{
+	"usage_limit",
+	"rate_limit",
+	"rate limit",
+	"hit your usage limit",
+	"quota exceeded",
+	"credit",
+	"billing",
+	"authentication",
+	"unauthorized",
+	"forbidden",
+}
+
+func isFatalMCPError(msg string) bool {
+	lower := strings.ToLower(msg)
+	for _, pattern := range fatalPatterns {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
 func formatToolResult(result *ToolCallResult) (string, error) {
 	if result == nil {
 		return "", nil
@@ -208,6 +256,10 @@ func formatToolResult(result *ToolCallResult) (string, error) {
 		}
 		if msg == "" {
 			msg = "tool returned an MCP error"
+		}
+		// Check for fatal errors that should stop the node immediately.
+		if isFatalMCPError(msg) {
+			return "", &FatalToolError{Message: fmt.Sprintf("mcp: FATAL: %s", msg)}
 		}
 		return "", fmt.Errorf("mcp: %s", msg)
 	}
