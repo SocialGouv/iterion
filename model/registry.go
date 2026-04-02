@@ -8,6 +8,8 @@ import (
 	"sync"
 
 	"github.com/zendev-sh/goai/provider"
+	"github.com/zendev-sh/goai/provider/anthropic"
+	"github.com/zendev-sh/goai/provider/openai"
 )
 
 // ProviderFactory creates a LanguageModel for a given model ID.
@@ -22,11 +24,23 @@ type Registry struct {
 	cache     map[string]provider.LanguageModel
 }
 
-// NewRegistry creates an empty model registry.
+// NewRegistry creates a model registry pre-loaded with built-in providers.
 func NewRegistry() *Registry {
-	return &Registry{
+	r := &Registry{
 		providers: make(map[string]ProviderFactory),
 		cache:     make(map[string]provider.LanguageModel),
+	}
+	r.registerDefaults()
+	return r
+}
+
+// registerDefaults registers the built-in provider factories.
+func (r *Registry) registerDefaults() {
+	r.providers["anthropic"] = func(modelID string) (provider.LanguageModel, error) {
+		return anthropic.Chat(modelID), nil
+	}
+	r.providers["openai"] = func(modelID string) (provider.LanguageModel, error) {
+		return openai.Chat(modelID), nil
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"math/rand/v2"
+	"os"
 	"strings"
 	"time"
 
@@ -236,8 +237,9 @@ func (e *GoaiExecutor) Execute(ctx context.Context, node *ir.Node, input map[str
 
 // executeLLM handles agent and judge nodes by calling goai.
 func (e *GoaiExecutor) executeLLM(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
-	// Resolve model.
-	m, err := e.registry.Resolve(node.Model)
+	// Resolve model (expand env var references like "${CLAUDE_MODEL}").
+	modelSpec := os.ExpandEnv(node.Model)
+	m, err := e.registry.Resolve(modelSpec)
 	if err != nil {
 		return nil, fmt.Errorf("model: node %q: %w", node.ID, err)
 	}
@@ -328,8 +330,8 @@ func (e *GoaiExecutor) executeHumanLLM(ctx context.Context, node *ir.Node, input
 		return nil, fmt.Errorf("model: human node %q in pause_until_answers mode should not be executed by the model layer", node.ID)
 	}
 
-	// Resolve model.
-	m, err := e.registry.Resolve(node.Model)
+	// Resolve model (expand env var references).
+	m, err := e.registry.Resolve(os.ExpandEnv(node.Model))
 	if err != nil {
 		return nil, fmt.Errorf("model: human node %q: %w", node.ID, err)
 	}
@@ -810,8 +812,8 @@ func (e *GoaiExecutor) executeLLMRouter(ctx context.Context, node *ir.Node, inpu
 		}
 	}
 
-	// Resolve model.
-	m, err := e.registry.Resolve(node.Model)
+	// Resolve model (expand env var references).
+	m, err := e.registry.Resolve(os.ExpandEnv(node.Model))
 	if err != nil {
 		return nil, fmt.Errorf("model: llm router %q: %w", node.ID, err)
 	}

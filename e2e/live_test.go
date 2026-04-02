@@ -18,9 +18,11 @@ import (
 	"github.com/SocialGouv/iterion/cli"
 	"github.com/SocialGouv/iterion/delegate"
 	iterlog "github.com/SocialGouv/iterion/log"
+	"github.com/SocialGouv/iterion/mcp"
 	"github.com/SocialGouv/iterion/model"
 	"github.com/SocialGouv/iterion/runtime"
 	"github.com/SocialGouv/iterion/store"
+	"github.com/SocialGouv/iterion/tool"
 )
 
 // ---------------------------------------------------------------------------
@@ -671,6 +673,11 @@ func TestLive_DualModel_PlanImplementReview(t *testing.T) {
 	requireCLI(t, "claude")
 	requireCLI(t, "codex")
 
+	// Default model if not set via .env or environment.
+	if os.Getenv("CLAUDE_MODEL") == "" {
+		t.Setenv("CLAUDE_MODEL", "openai/gpt-5.4")
+	}
+
 	// Compile the fixture.
 	wf := compileFixture(t, "dual_model_plan_implement_review.iter")
 
@@ -696,36 +703,75 @@ func TestLive_DualModel_PlanImplementReview(t *testing.T) {
 
 	runID := "live-plan-impl-review"
 
-	// Create executor with delegate registry and event hooks for conversation logging.
+	// Prepare MCP server catalog from the workflow's resolved servers.
+	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+		t.Fatalf("mcp.PrepareWorkflow: %v", err)
+	}
+
 	reg := model.NewRegistry()
-	delegateReg := delegate.DefaultRegistry()
 	logger := iterlog.New(iterlog.LevelDebug, os.Stderr)
 	hooks := model.NewStoreEventHooks(s, runID, logger)
 
-	executor := model.NewGoaiExecutor(reg, wf,
-		model.WithDelegateRegistry(delegateReg),
+	// Build executor options: MCP manager + tool registry for MCP tools mode,
+	// plus delegate registry as fallback for any remaining delegate nodes.
+	execOpts := []model.GoaiExecutorOption{
+		model.WithDelegateRegistry(delegate.DefaultRegistry()),
 		model.WithWorkDir(workspaceDir),
 		model.WithEventHooks(hooks),
-	)
+	}
+	if len(wf.ResolvedMCPServers) > 0 {
+		catalog := make(map[string]*mcp.ServerConfig, len(wf.ResolvedMCPServers))
+		for name, server := range wf.ResolvedMCPServers {
+			catalog[name] = &mcp.ServerConfig{
+				Name:      server.Name,
+				Transport: mcp.Transport(server.Transport.String()),
+				Command:   server.Command,
+				Args:      append([]string(nil), server.Args...),
+				URL:       server.URL,
+				Headers:   server.Headers,
+			}
+		}
+		tr := tool.NewRegistry()
+		mcpMgr := mcp.NewManager(catalog)
+		defer mcpMgr.Close()
+		execOpts = append(execOpts,
+			model.WithToolRegistry(tr),
+			model.WithMCPManager(mcpMgr),
+		)
+	}
 
-	taskDescription := "An interactive night sky constellation observatory in a single index.html file. " +
-		"Use vanilla HTML, CSS, and JavaScript (no frameworks). " +
-		"The app displays an SVG star map on a dark background with at least 8 constellations. " +
-		"Users can click a constellation to reveal its name, main stars, and a short mythology " +
-		"story from different cultures (Greek, Aboriginal, Inuit, or other). " +
-		"A season selector rotates the visible sky. Stars render at different sizes based on " +
-		"their magnitude. The app includes a search function to find constellations by name."
+	executor := model.NewGoaiExecutor(reg, wf, execOpts...)
+	defer executor.Close()
 
-	acceptanceCriteria := "1. Single index.html file with embedded CSS and JS\n" +
-		"2. SVG-based star map on a dark background with stars displayed as small circles\n" +
-		"3. At least 8 constellations with lines connecting their stars\n" +
-		"4. Click a constellation to show an info panel with: name, main stars, and a mythology story\n" +
-		"5. Each constellation includes mythology from at least 2 different cultures\n" +
-		"6. Season selector (4 buttons) that rotates the star map view\n" +
-		"7. Stars rendered at different sizes based on brightness\n" +
-		"8. Search input to find and highlight a constellation by name\n" +
-		"9. CSS transitions for panel open/close\n" +
-		"10. Responsive layout that adapts to mobile screens"
+	taskDescription := "An interactive astronomical observatory and night sky simulator in a single index.html file. " +
+		"Use vanilla HTML, CSS, and JavaScript (no frameworks or CDNs). " +
+		"The app renders an astronomically accurate SVG star map with real constellation data, " +
+		"advanced interactivity, and educational features that make it a compelling learning tool."
+
+	acceptanceCriteria := "=== Layer 1 - Foundation ===\n" +
+		"1. Single index.html file with all CSS and JS embedded, no external dependencies\n" +
+		"2. SVG-based star map on a realistic dark gradient background simulating the night sky\n" +
+		"3. At least 12 constellations with accurate relative star positions and connecting lines\n" +
+		"4. Stars rendered as circles with 4 distinct size classes based on apparent magnitude (mag 1-2, 2-3, 3-4, 4-5)\n" +
+		"5. Click a constellation to show an info panel with: name, main stars, and a mythology story\n" +
+		"\n=== Layer 2 - Interactivity ===\n" +
+		"6. Season selector (4 buttons: Spring, Summer, Autumn, Winter) that smoothly rotates the visible sky with CSS transition (rotation animation over 0.5s)\n" +
+		"7. Search input that filters constellations by name with real-time highlighting (matching constellation glows)\n" +
+		"8. Hover over any star to show a tooltip with the star's name (at least 20 named stars like Sirius, Betelgeuse, Polaris, etc.)\n" +
+		"9. A draggable/pannable star map: click-and-drag to pan the view, mouse wheel to zoom in/out\n" +
+		"10. Responsive layout that works on both desktop (side panel) and mobile (bottom sheet panel) with a CSS media query breakpoint at 768px\n" +
+		"\n=== Layer 3 - Visual Polish ===\n" +
+		"11. Stars twinkle with a subtle CSS animation (opacity oscillation, each star with a slightly different animation delay)\n" +
+		"12. Constellation lines fade in with a drawing animation when a constellation is selected\n" +
+		"13. A magnitude slider (range input) that filters visible stars by brightness threshold in real-time\n" +
+		"14. The Milky Way rendered as a semi-transparent gradient band across the sky\n" +
+		"15. A compass rose indicator showing N/S/E/W orientation that updates as the map is panned\n" +
+		"\n=== Layer 4 - Educational Depth ===\n" +
+		"16. Each constellation includes mythology from at least 3 different cultures (Greek, Chinese, and one indigenous culture: Aboriginal, Inuit, Polynesian, or other)\n" +
+		"17. A constellation quiz mode: the app highlights stars and the user must identify the constellation from 4 multiple-choice options, with score tracking\n" +
+		"18. A time-of-night slider (8pm to 4am) that adjusts star brightness and sky gradient to simulate the darkening sky\n" +
+		"19. Keyboard accessibility: arrow keys to pan, +/- to zoom, Escape to close panels, Tab to navigate constellations\n" +
+		"20. A 'tonight sky' button that calculates the approximate visible constellations based on the current month (using JavaScript Date)"
 
 	executor.SetVars(map[string]interface{}{
 		"workspace_dir": workspaceDir,
@@ -762,8 +808,8 @@ func TestLive_DualModel_PlanImplementReview(t *testing.T) {
 
 	eng := runtime.New(wf, s, executor, runtime.WithOnNodeFinished(onFinished))
 
-	// 1-hour timeout — planning + validation + implementation + review phases.
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Hour)
+	// 5-hour timeout — planning + validation + implementation + review phases (ambitious criteria).
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Hour)
 	defer cancel()
 	inputs := map[string]interface{}{
 		"task_description":    taskDescription,
@@ -824,22 +870,22 @@ func TestLive_DualModel_PlanImplementReview(t *testing.T) {
 	finishedNodes := eventNodeIDs(events, store.EventNodeFinished)
 	t.Logf("Finished nodes: %v", finishedNodes)
 
-	// Verify both delegation backends were invoked.
-	claudeCalled := false
-	codexCalled := false
+	// Verify both agent perspectives were invoked (same model, different sessions).
+	claudeNodeCalled := false
+	codexNodeCalled := false
 	for _, id := range finishedNodes {
 		if strings.Contains(id, "claude") {
-			claudeCalled = true
+			claudeNodeCalled = true
 		}
 		if strings.Contains(id, "codex") {
-			codexCalled = true
+			codexNodeCalled = true
 		}
 	}
-	if !claudeCalled {
-		t.Error("No claude_* node finished — claude-code delegation may have failed")
+	if !claudeNodeCalled {
+		t.Error("No claude_* node finished — agent A perspective may have failed")
 	}
-	if !codexCalled {
-		t.Error("No codex_* node finished — codex delegation may have failed")
+	if !codexNodeCalled {
+		t.Error("No codex_* node finished — agent B perspective may have failed")
 	}
 
 	// Verify key planning nodes executed.

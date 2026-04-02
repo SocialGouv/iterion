@@ -62,6 +62,11 @@ tasks:
     cmds:
       - go test -v -count=1 -run TestLive_TodoApp_Full_DualModel_MCP -timeout 5h ./e2e/...
 
+  test:live:star-chart:
+    desc: Run the star chart plan/implement/review live e2e test (requires claude CLI)
+    cmds:
+      - go test -v -count=1 -run TestLive_DualModel_PlanImplementReview -timeout 5h ./e2e/...
+
   fmt:
     desc: Format Go source files
     cmds:
@@ -116,8 +121,8 @@ tasks:
     desc: Build the editor frontend
     dir: editor
     cmds:
-      - npm install --prefer-offline --no-audit
-      - npx vite build
+      - pnpm install --prefer-offline
+      - pnpm exec vite build
       - rm -rf ../server/static/assets ../server/static/index.html
       - cp -r dist/* ../server/static/
 
@@ -135,7 +140,7 @@ tasks:
     desc: Run Vite dev server for editor frontend
     dir: editor
     cmds:
-      - npm install --prefer-offline --no-audit 2>/dev/null; npx vite --port 5173 --open
+      - pnpm install --prefer-offline 2>/dev/null; pnpm exec vite --port 5173 --open
     interactive: true
 
   editor:

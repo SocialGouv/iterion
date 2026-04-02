@@ -1,2 +1,4 @@
+cloud.google.com/go/compute/metadata v0.3.0/go.mod h1:zFmK7XCadkQkj6TtorcaGlCW1hT1fIilQDwofLpJ20k=
 github.com/zendev-sh/goai v0.4.0 h1:F/5cb0GaawumqMxI0A//htkrvFLkEnKfzeYvPeXK2Lg=
 github.com/zendev-sh/goai v0.4.0/go.mod h1:GpLcQJyVSxIj5IouOjWnBWnVR2Y501cYAij/DmZTISk=
+golang.org/x/oauth2 v0.36.0/go.mod h1:YDBUJMTkDnJS+A4BP4eZBjCqtokkg1hODuPjwiGPO7Q=

@@ -1,18 +1,19 @@
 ## Fixture : dual_model_plan_implement_review
 ## Objectif : Workflow de planification et implementation orchestrant
-## deux agents IA via delegation MCP avec double validation croisee
+## deux agents IA (Claude Code + Codex) avec double validation croisee
 ## et alternance round-robin des roles.
 ##
-##   - Claude  -> claude-code (delegate: "claude_code")
+##   - Claude  -> claude_code (delegate: "claude_code")
 ##   - Codex   -> codex       (delegate: "codex")
+##   - Orchestration (merge, judges) -> model: "${CLAUDE_MODEL}"
 ##
 ## Phases :
-##   1. Planification parallele (Claude + Codex)
-##   2. Fusion des plans (Claude)
-##   3. Validation parallele (Claude + Codex)
-##   4. Boucle de raffinage avec alternance round-robin claude/codex
-##   5. Implementation (alternance round-robin claude/codex)
-##   6. Review parallele (Claude + Codex)
+##   1. Planification parallele (Agent A + Agent B)
+##   2. Fusion des plans (Agent)
+##   3. Validation parallele (Agent A + Agent B)
+##   4. Boucle de raffinage avec alternance round-robin
+##   5. Implementation (alternance round-robin)
+##   6. Review parallele (Agent A + Agent B)
 ##   7. Si rejet -> retour a Phase 1 avec reviews en contexte
 ##
 ## Pattern d'alternance : round_robin router
@@ -52,7 +53,7 @@ prompt plan_user:
 
 prompt merge_plan_system:
   Tu es un architecte senior specialise en synthese.
-  Tu fusionnes deux plans d'implementation issus de modeles differents
+  Tu fusionnes deux plans d'implementation issus de sessions independantes
   en un plan unique, coherent et complet.
   Conserve les meilleures idees de chaque plan, resous les contradictions
   et produis un plan actionable.
@@ -60,10 +61,10 @@ prompt merge_plan_system:
 prompt merge_plan_user:
   Fusionne ces deux plans d'implementation en un plan unique.
 
-  Plan Claude :
+  Plan A :
   {{input.claude_plan}}
 
-  Plan Codex :
+  Plan B :
   {{input.codex_plan}}
 
   Criteres d'acceptation :
@@ -108,10 +109,10 @@ prompt plan_acceptance_user:
   Plan fusionne :
   {{input.merged_plan}}
 
-  Evaluation Claude :
+  Evaluation A :
   {{input.claude_validation}}
 
-  Evaluation Codex :
+  Evaluation B :
   {{input.codex_validation}}
 
   Criteres d'acceptation :
@@ -132,10 +133,10 @@ prompt refine_plan_user:
   Plan actuel :
   {{input.merged_plan}}
 
-  Rapport de validation Claude :
+  Rapport de validation A :
   {{input.claude_report}}
 
-  Rapport de validation Codex :
+  Rapport de validation B :
   {{input.codex_report}}
 
   Criteres d'acceptation :
@@ -146,8 +147,10 @@ prompt refine_plan_user:
 prompt implement_system:
   Tu es un developpeur expert en implementation.
   Tu appliques un plan d'implementation au workspace avec rigueur.
+  Si un fichier index.html existe deja, AMELIORE-LE en corrigeant les
+  problemes identifies plutot que de le reecrire entierement.
+  Lis d'abord le fichier existant, identifie les manques, puis corrige-les.
   Ecris du code propre, teste et documente.
-  Corrige les problemes identifies par les reviewers precedents si applicable.
 
 prompt implement_user:
   Implemente la tache selon ce plan valide.
@@ -155,24 +158,28 @@ prompt implement_user:
   Plan valide :
   {{input.validated_plan}}
 
-  Criteres d'acceptation :
+  Criteres d'acceptation (20 criteres en 4 layers) :
   {{input.acceptance_criteria}}
 
-  Retour precedent :
+  Retour precedent (criteres FAIL de la derniere review) :
   {{input.previous_feedback}}
 
-  Applique le plan etape par etape.
-  Assure-toi que TOUS les criteres sont satisfaits.
+  INSTRUCTIONS :
+  1. Si index.html existe deja, lis-le d'abord et identifie les criteres manquants
+  2. Corrige les problemes du retour precedent en priorite
+  3. Assure-toi que TOUS les 20 criteres sont satisfaits
+  4. Verifie ton travail en relisant le fichier final
 
 prompt review_impl_system:
-  Tu es un reviewer de code exigeant.
+  Tu es un reviewer de code TRES exigeant et methodique.
   Tu evalues une implementation selon les criteres d'acceptation.
-  Verifie la qualite du code, la completude, les tests
-  et le respect des bonnes pratiques.
-  Sois strict mais constructif.
+  Tu DOIS lire le code source du fichier index.html dans le workspace
+  et verifier CHAQUE critere factuellement en citant les lignes de code.
+  Ne te fie pas uniquement au resume de l'implementation, verifie le code reel.
+  Sois strict : un critere partiellement implemente est un FAIL.
 
 prompt review_impl_user:
-  Review cette implementation.
+  Review cette implementation en lisant le code source.
 
   Resultat de l'implementation :
   {{input.implementation}}
@@ -180,16 +187,23 @@ prompt review_impl_user:
   Criteres d'acceptation :
   {{input.acceptance_criteria}}
 
-  Evalue chaque critere un par un.
-  Identifie les manques et les ameliorations necessaires.
+  INSTRUCTIONS :
+  1. Lis le fichier index.html dans le workspace
+  2. Pour CHAQUE critere (1 a 20), verifie factuellement dans le code :
+     - Est-il implemente ? Cite la ligne/section
+     - Est-il conforme a la specification exacte ?
+  3. Marque chaque critere PASS ou FAIL avec justification
+  4. Liste les issues precises dans le champ issues
 
 prompt impl_verdict_system:
-  Tu es un juge technique pragmatique.
-  Tu evalues si une implementation satisfait les criteres d'acceptation
+  Tu es un juge technique TRES exigeant.
+  Tu evalues si une implementation satisfait TOUS les criteres d'acceptation
   en te basant sur deux reviews independantes.
-  Marque approved=true si la majorite des criteres sont satisfaits
-  et qu'il n'y a pas de bug bloquant.
-  Des suggestions mineures d'amelioration ne doivent PAS bloquer l'approbation.
+  Tu comptes le nombre de criteres satisfaits sur le total de 20.
+  Marque approved=true UNIQUEMENT si au moins 17 criteres sur 20 sont
+  pleinement satisfaits ET qu'aucun critere des Layers 1-2 n'est manquant.
+  Si moins de 17 criteres sont remplis, marque approved=false avec la liste
+  precise des criteres non satisfaits pour guider la prochaine iteration.
 
 prompt impl_verdict_user:
   Evalue si cette implementation est prete.
@@ -197,17 +211,20 @@ prompt impl_verdict_user:
   Resultat de l'implementation :
   {{input.implementation}}
 
-  Review Claude :
+  Review A :
   {{input.claude_review}}
 
-  Review Codex :
+  Review B :
   {{input.codex_review}}
 
   Criteres d'acceptation :
   {{input.acceptance_criteria}}
 
-  Marque approved=true si les criteres principaux sont remplis.
-  Seuls les bugs bloquants ou criteres majeurs manquants justifient approved=false.
+  INSTRUCTIONS STRICTES :
+  1. Evalue chaque critere numerote (1 a 20) individuellement : PASS ou FAIL
+  2. Compte le nombre total de PASS
+  3. Marque approved=true UNIQUEMENT si >= 17/20 PASS et tous les criteres Layer 1 et Layer 2 sont PASS
+  4. Sinon marque approved=false et liste dans remaining_issues les criteres FAIL avec explication
 
 ## ─── Schemas ────────────────────────────────────────────────────
 
@@ -415,8 +432,6 @@ agent claude_implement:
   system: implement_system
   user: implement_user
   session: fresh
-  tools: [read_file, write_file, patch, list_files, search_codebase, git_diff, git_status, run_command]
-  tool_max_steps: 20
 
 agent codex_implement:
   delegate: "codex"
@@ -426,8 +441,6 @@ agent codex_implement:
   system: implement_system
   user: implement_user
   session: fresh
-  tools: [read_file, write_file, patch, list_files, search_codebase, git_diff, git_status, run_command]
-  tool_max_steps: 20
 
 ## ─── Nodes : Review ────────────────────────────────────────────
 
@@ -442,8 +455,6 @@ agent claude_review:
   system: review_impl_system
   user: review_impl_user
   session: fresh
-  tools: [read_file, list_files, search_codebase, git_diff, tree]
-  tool_max_steps: 10
 
 agent codex_review:
   delegate: "codex"
@@ -453,8 +464,6 @@ agent codex_review:
   system: review_impl_system
   user: review_impl_user
   session: fresh
-  tools: [read_file, list_files, search_codebase, git_diff, tree]
-  tool_max_steps: 10
 
 join review_join:
   strategy: wait_all
@@ -479,11 +488,14 @@ workflow dual_model_plan_implement_review:
 
   entry: plan_fanout
 
+  mcp:
+    servers: [claude_code]
+
   budget:
     max_parallel_branches: 4
-    max_duration: "4h"
-    max_cost_usd: 100
-    max_tokens: 10000000
+    max_duration: "5h"
+    max_cost_usd: 150
+    max_tokens: 15000000
 
   ## ═══ Phase 1 : Planification parallele ═════════════════════════
 
@@ -577,13 +589,13 @@ workflow dual_model_plan_implement_review:
   impl_selector -> claude_implement with {
     validated_plan: "{{artifacts.merged_plan}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}",
-    previous_feedback: ""
+    previous_feedback: "{{artifacts.review_verdict}}"
   }
 
   impl_selector -> codex_implement with {
     validated_plan: "{{artifacts.merged_plan}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}",
-    previous_feedback: ""
+    previous_feedback: "{{artifacts.review_verdict}}"
   }
 
   ## ═══ Phase 6 : Review parallele ════════════════════════════════
