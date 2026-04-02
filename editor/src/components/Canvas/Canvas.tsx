@@ -167,6 +167,7 @@ export default function Canvas() {
       if (!connection.source || !connection.target) return "Invalid connection";
       if (connection.source === connection.target) return "Cannot connect a node to itself";
       if (connection.source === "done" || connection.source === "fail") return "Cannot connect from a terminal node";
+      if (connection.source === "__start__" || connection.target === "__start__") return "Cannot connect to the start node";
       if (activeWorkflow) {
         const dup = activeWorkflow.edges.some(
           (e) => e.from === connection.source && e.to === connection.target,
@@ -318,7 +319,7 @@ export default function Canvas() {
 
       // Copy/Paste
       if ((e.ctrlKey || e.metaKey) && e.key === "c" && !isInput) {
-        if (selectedNodeId && selectedNodeId !== "done" && selectedNodeId !== "fail") {
+        if (selectedNodeId && selectedNodeId !== "done" && selectedNodeId !== "fail" && selectedNodeId !== "__start__") {
           setCopiedNode(selectedNodeId);
           addToast("Node copied", "info");
         }
@@ -338,7 +339,7 @@ export default function Canvas() {
       if (e.key === "Delete" || e.key === "Backspace") {
         if (isInput) return;
 
-        if (selectedNodeId && selectedNodeId !== "done" && selectedNodeId !== "fail") {
+        if (selectedNodeId && selectedNodeId !== "done" && selectedNodeId !== "fail" && selectedNodeId !== "__start__") {
           removeNode(selectedNodeId);
           clearSelection();
         } else if (selectedEdgeId && document) {
@@ -556,6 +557,7 @@ export default function Canvas() {
               case "tool": return "#8B6914";
               case "done": return "#22C55E";
               case "fail": return "#EF4444";
+              case "start": return "#10B981";
               default: return "#6B7280";
             }
           }}
@@ -568,7 +570,7 @@ export default function Canvas() {
           x={contextMenu.x}
           y={contextMenu.y}
           nodeId={contextMenu.nodeId}
-          isTerminal={contextMenu.nodeId === "done" || contextMenu.nodeId === "fail"}
+          isTerminal={contextMenu.nodeId === "done" || contextMenu.nodeId === "fail" || contextMenu.nodeId === "__start__"}
           isEntry={activeWorkflow?.entry === contextMenu.nodeId}
           onSetEntry={() => {
             if (activeWorkflow) updateWorkflow(activeWorkflow.name, { entry: contextMenu.nodeId });

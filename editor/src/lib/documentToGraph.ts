@@ -10,6 +10,7 @@ export const NODE_COLORS: Record<NodeKind, string> = {
   tool: "#8B6914",
   done: "#2ECC71",
   fail: "#E74C3C",
+  start: "#10B981",
 };
 
 export interface NodeData extends Record<string, unknown> {
@@ -38,10 +39,12 @@ export function getTopologyKey(doc: IterDocument, activeWorkflowName?: string): 
     ? (doc.workflows ?? []).filter(w => w.name === activeWorkflowName)
     : doc.workflows ?? [];
   const edgeSigs: string[] = [];
+  let entry = "";
   for (const wf of targetWorkflows) {
     for (const e of wf.edges ?? []) edgeSigs.push(`${e.from}->${e.to}`);
+    if (wf.entry) entry = wf.entry;
   }
-  return `${activeWorkflowName ?? ""}|${counts}|${edgeSigs.join(",")}`;
+  return `${activeWorkflowName ?? ""}|${counts}|${entry}|${edgeSigs.join(",")}`;
 }
 
 export function documentToGraph(doc: IterDocument, activeWorkflowName?: string): { nodes: Node<NodeData>[]; edges: FlowEdge[] } {
@@ -69,6 +72,12 @@ export function documentToGraph(doc: IterDocument, activeWorkflowName?: string):
   }
   if (!nodeMap.has("done") && referencedNodes.has("done")) nodeMap.set("done", { kind: "done", decl: null });
   if (!nodeMap.has("fail") && referencedNodes.has("fail")) nodeMap.set("fail", { kind: "fail", decl: null });
+
+  // Add virtual start node pointing to the workflow entry
+  const entryNode = targetWorkflows.length > 0 ? targetWorkflows[0]!.entry : undefined;
+  if (entryNode && nodeMap.has(entryNode)) {
+    nodeMap.set("__start__", { kind: "start", decl: null });
+  }
 
   // Position nodes in a grid
   const COLS = 4;
@@ -121,6 +130,16 @@ export function documentToGraph(doc: IterDocument, activeWorkflowName?: string):
         data: { when: edge.when, loop: edge.loop, with: edge.with, edgeIndex: i, workflowName: wf.name },
       });
     }
+  }
+
+  // Add edge from virtual start node to the entry node
+  if (entryNode && nodeMap.has("__start__")) {
+    edges.push({
+      id: "__start__:entry",
+      source: "__start__",
+      target: entryNode,
+      type: "default",
+    });
   }
 
   return { nodes, edges };

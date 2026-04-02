@@ -67,7 +67,15 @@ export default function PropertiesPanel() {
     <div className="p-3 text-sm h-full flex flex-col">
       <h2 className="font-bold text-gray-300 mb-2">Properties</h2>
       <div className="flex-1 overflow-y-auto">
-        {selectedNodeId === "done" || selectedNodeId === "fail" ? (
+        {selectedNodeId === "__start__" ? (
+          <div className="flex items-center gap-2 px-2 py-3 rounded bg-gray-800/50 border border-gray-700">
+            <span className="text-base">{"\u{25B6}\u{FE0F}"}</span>
+            <div>
+              <p className="text-sm font-bold text-white">Start</p>
+              <p className="text-xs text-gray-500">Marks the workflow entry point.</p>
+            </div>
+          </div>
+        ) : selectedNodeId === "done" || selectedNodeId === "fail" ? (
           <div className="flex items-center gap-2 px-2 py-3 rounded bg-gray-800/50 border border-gray-700">
             <span className="text-base">{selectedNodeId === "done" ? "\u{2705}" : "\u{274C}"}</span>
             <div>

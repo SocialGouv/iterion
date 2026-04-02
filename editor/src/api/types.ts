@@ -74,7 +74,7 @@ export interface LoopClause { name: string; max_iterations: number; }
 export interface WithEntry { key: string; value: string; }
 
 // Node kind for the visual editor
-export type NodeKind = "agent" | "judge" | "router" | "join" | "human" | "tool" | "done" | "fail";
+export type NodeKind = "agent" | "judge" | "router" | "join" | "human" | "tool" | "done" | "fail" | "start";
 
 // File management types
 export interface FileEntry {

@@ -14,6 +14,7 @@ const KIND_ICONS: Record<NodeKind, string> = {
   tool: "\u{1F527}",
   done: "\u{2705}",
   fail: "\u{274C}",
+  start: "\u{25B6}\u{FE0F}",
 };
 
 interface WorkflowNodeData extends Record<string, unknown> {
@@ -103,10 +104,11 @@ export default function WorkflowNode({ data }: NodeProps) {
   ) ?? false;
 
   const isTerminal = kind === "done" || kind === "fail";
+  const isStart = kind === "start";
 
   return (
     <div
-      className={`rounded-lg border-2 px-4 py-2 min-w-[140px] text-center shadow-lg ${isTerminal ? "opacity-80" : ""}`}
+      className={`rounded-lg border-2 px-4 py-2 min-w-[140px] text-center shadow-lg ${isTerminal || isStart ? "opacity-80" : ""}`}
       style={{
         borderColor: hasError ? "#EF4444" : isEntry ? "#F59E0B" : color,
         background: `${color}22`,
@@ -117,13 +119,13 @@ export default function WorkflowNode({ data }: NodeProps) {
             : undefined,
       }}
     >
-      <Handle type="target" position={Position.Top} className="!bg-gray-400" />
+      {!isStart && <Handle type="target" position={Position.Top} className="!bg-gray-400" />}
       <div className="flex items-center justify-center gap-1">
         <span className="text-lg">{KIND_ICONS[kind]}</span>
         {sessionIndicator && <span className="text-xs" title={`session: ${(decl as AgentDecl)?.session}`}>{sessionIndicator}</span>}
       </div>
-      <div className="font-semibold text-sm text-white">{label}</div>
-      <div className="text-xs text-gray-300">{kind}</div>
+      <div className="font-semibold text-sm text-white">{isStart ? "Start" : label}</div>
+      {!isStart && <div className="text-xs text-gray-300">{kind}</div>}
       {subtitle && (
         <div className="text-[10px] text-gray-500 mt-0.5 max-w-[140px] flex items-center justify-center gap-1">
           <ProviderIcon model={providerModel} delegate={providerDelegate} size={10} className="shrink-0 opacity-70" />
@@ -148,7 +150,7 @@ export default function WorkflowNode({ data }: NodeProps) {
       {isEntry && <div className="text-[9px] text-amber-400 mt-0.5">entry</div>}
       {hasLoop && <div className="text-[9px] text-amber-300 mt-0.5">{"\u{1F504}"} loop</div>}
       {hasError && <div className="text-[9px] text-red-400 mt-0.5">has errors</div>}
-      {!isTerminal && edgeCount > 0 && (
+      {!isTerminal && !isStart && edgeCount > 0 && (
         <div className="text-[8px] text-gray-600 mt-0.5">{edgeCount} edge{edgeCount !== 1 ? "s" : ""}</div>
       )}
       {!isTerminal && <Handle type="source" position={Position.Bottom} className="!bg-gray-400" />}
