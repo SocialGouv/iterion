@@ -143,6 +143,7 @@ func (m *Manager) ensureServer(ctx context.Context, registry *tool.Registry, ser
 					return "", fmt.Errorf("mcp: decode input for %s.%s: %w", serverName, toolName, err)
 				}
 			}
+			sanitizeToolArgs(toolName, args)
 			result, err := client.CallTool(callCtx, toolName, args)
 			if err != nil {
 				return "", err
@@ -298,4 +299,36 @@ func stringsFromContent(content []ToolContent) string {
 
 func joinLines(lines []string) string {
 	return strings.Join(lines, "\n")
+}
+
+// ---------------------------------------------------------------------------
+// Tool argument sanitization
+// ---------------------------------------------------------------------------
+
+// sanitizeToolArgs fixes common mistakes made by LLMs when calling MCP tools:
+//   - Removes empty string values for optional parameters (e.g. pages: "")
+//   - Adds default limit for Read when reading large files without offset/limit
+func sanitizeToolArgs(toolName string, args map[string]interface{}) {
+	if args == nil {
+		return
+	}
+
+	// Remove empty-string optional parameters. LLMs often send pages: ""
+	// or other optional fields as empty strings which MCP servers reject.
+	for key, val := range args {
+		if s, ok := val.(string); ok && s == "" {
+			delete(args, key)
+		}
+	}
+
+	// For Read tool: if no limit is set and no offset, add a reasonable
+	// default limit to avoid "file too large" errors on big files.
+	if toolName == "Read" {
+		_, hasLimit := args["limit"]
+		_, hasOffset := args["offset"]
+		_, hasPages := args["pages"]
+		if !hasLimit && !hasOffset && !hasPages {
+			args["limit"] = float64(2000)
+		}
+	}
 }

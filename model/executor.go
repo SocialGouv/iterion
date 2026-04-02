@@ -267,6 +267,25 @@ func (e *GoaiExecutor) executeLLM(ctx context.Context, node *ir.Node, input map[
 
 	// User message from user prompt or input.
 	userText := e.buildUserMessage(node, input)
+
+	// When both tools AND output schema are present, we use GenerateText
+	// (which has the tool loop) instead of GenerateObject (which doesn't).
+	// Inject the schema format instruction into the user text so the model
+	// knows what JSON to produce after tool use. We do this here because
+	// goai's WithSystem/WithMessages use last-wins semantics (not append).
+	hasTools := len(node.Tools) > 0
+	if node.OutputSchema != "" && hasTools {
+		if schema, ok := e.schemas[node.OutputSchema]; ok {
+			if jsonSchema, schemaErr := SchemaToJSON(schema); schemaErr == nil {
+				schemaJSON, _ := json.MarshalIndent(jsonSchema, "", "  ")
+				userText += fmt.Sprintf(
+					"\n\nOUTPUT FORMAT: After completing all tool operations, your final message MUST be a raw JSON object matching this schema:\n%s\nNo markdown fences, no extra text — ONLY the JSON object.",
+					string(schemaJSON),
+				)
+			}
+		}
+	}
+
 	if userText != "" {
 		opts = append(opts, goai.WithMessages(goai.UserMessage(userText)))
 	}
@@ -325,7 +344,6 @@ func (e *GoaiExecutor) executeLLM(ctx context.Context, node *ir.Node, input map[
 	// with the tool loop (GenerateText supports MaxSteps), then parse the
 	// structured output from the final text. GenerateObject does NOT
 	// support multi-step tool use.
-	hasTools := len(node.Tools) > 0
 	if node.OutputSchema != "" && !hasTools {
 		return e.generateStructuredWithRetry(ctx, m, node, opts)
 	}
@@ -630,20 +648,8 @@ func (e *GoaiExecutor) generateTextWithToolsAndSchema(ctx context.Context, m pro
 		return nil, fmt.Errorf("model: node %q references unknown schema %q", node.ID, node.OutputSchema)
 	}
 
-	jsonSchema, err := SchemaToJSON(schema)
-	if err != nil {
-		return nil, fmt.Errorf("model: node %q: schema conversion: %w", node.ID, err)
-	}
-
-	// Inject schema instructions into the system prompt so the model knows the
-	// expected output format without polluting the user message.
-	schemaJSON, _ := json.MarshalIndent(jsonSchema, "", "  ")
-	schemaInstruction := fmt.Sprintf(
-		"\n\nOUTPUT FORMAT: After completing all tool operations, you MUST respond with a JSON object matching this exact schema:\n%s\nRespond ONLY with the raw JSON object. No markdown fences, no commentary.",
-		string(schemaJSON),
-	)
-	opts = append(opts, goai.WithSystem(schemaInstruction))
-
+	// Schema instruction is already injected into userText by executeLLM.
+	// Just call GenerateText with the tool loop.
 	result, err := goai.GenerateText(ctx, m, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("model: node %q: text+tools generation: %w", node.ID, err)
@@ -651,17 +657,7 @@ func (e *GoaiExecutor) generateTextWithToolsAndSchema(ctx context.Context, m pro
 
 	// Parse the final text as JSON matching the schema.
 	text := strings.TrimSpace(result.Text)
-
-	// Strip markdown code fences if present.
-	if strings.HasPrefix(text, "```json") {
-		text = strings.TrimPrefix(text, "```json")
-		text = strings.TrimSuffix(strings.TrimSpace(text), "```")
-		text = strings.TrimSpace(text)
-	} else if strings.HasPrefix(text, "```") {
-		text = strings.TrimPrefix(text, "```")
-		text = strings.TrimSuffix(strings.TrimSpace(text), "```")
-		text = strings.TrimSpace(text)
-	}
+	text = extractJSON(text)
 
 	if text == "" {
 		return nil, fmt.Errorf("model: node %q: text+tools generation produced empty response after tool loop", node.ID)
@@ -687,6 +683,49 @@ func (e *GoaiExecutor) generateTextWithToolsAndSchema(ctx context.Context, m pro
 	output["_model"] = m.ModelID()
 
 	return output, nil
+}
+
+// extractJSON extracts a JSON object from text that may contain markdown
+// fences or surrounding commentary. Returns the raw JSON string.
+func extractJSON(text string) string {
+	text = strings.TrimSpace(text)
+
+	// Strip markdown code fences.
+	if strings.HasPrefix(text, "```json") {
+		text = strings.TrimPrefix(text, "```json")
+		text = strings.TrimSuffix(strings.TrimSpace(text), "```")
+		return strings.TrimSpace(text)
+	}
+	if strings.HasPrefix(text, "```") {
+		text = strings.TrimPrefix(text, "```")
+		text = strings.TrimSuffix(strings.TrimSpace(text), "```")
+		return strings.TrimSpace(text)
+	}
+
+	// If text starts with {, it's already JSON.
+	if strings.HasPrefix(text, "{") {
+		return text
+	}
+
+	// Try to find embedded JSON object in the text.
+	start := strings.Index(text, "{")
+	if start >= 0 {
+		// Find the matching closing brace.
+		depth := 0
+		for i := start; i < len(text); i++ {
+			switch text[i] {
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					return text[start : i+1]
+				}
+			}
+		}
+	}
+
+	return text
 }
 
 // generateTextWithToolsAndSchemaRetry wraps generateTextWithToolsAndSchema in the retry loop.

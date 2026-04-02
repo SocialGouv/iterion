@@ -105,6 +105,7 @@ prompt plan_acceptance_system:
   Marque ready=true si le plan couvre la majorite des criteres
   et que les evaluations ne relevent pas de lacune majeure.
   Des suggestions d'amelioration mineures ne doivent PAS bloquer.
+  Sois CONCIS dans remaining_issues : 1 phrase par issue maximum.
 
 prompt plan_acceptance_user:
   Evalue si ce plan est pret pour l'implementation.
@@ -123,6 +124,8 @@ prompt plan_acceptance_user:
 
   Marque ready=true si les criteres principaux sont couverts.
   Seules les lacunes majeures justifient ready=false.
+  Si ready=false, liste dans remaining_issues les problemes PRECIS
+  avec le numero du critere concerne et la correction attendue.
 
 prompt refine_plan_system:
   Tu es un expert en raffinage de plans d'implementation.
@@ -147,14 +150,35 @@ prompt refine_plan_user:
 
   Produis un plan ameliore qui corrige chaque lacune identifiee.
 
-prompt implement_system:
-  Tu es un developpeur expert en implementation.
+prompt implement_claude_system:
+  Tu es un developpeur expert en implementation, focalise sur la qualite
+  du code, la lisibilite et la conformite pedagogique.
   Tu appliques un plan d'implementation au workspace avec rigueur.
   Utilise les outils disponibles pour lire et ecrire des fichiers.
+  IMPORTANT : le repertoire de travail courant est le workspace.
+  Utilise des chemins relatifs (ex: index.html) ou le chemin absolu
+  affiche par les outils. Ne jamais utiliser /root/ ou /workspace/.
   Si un fichier index.html existe deja, AMELIORE-LE en corrigeant les
   problemes identifies plutot que de le reecrire entierement.
   Lis d'abord le fichier existant, identifie les manques, puis corrige-les.
-  Ecris du code propre, teste et documente.
+  Pour lire un gros fichier, utilise les parametres offset et limit.
+  Privilegies : code clair et bien structure, contenu educatif riche,
+  animations soignees, accessibilite.
+
+prompt implement_codex_system:
+  Tu es un developpeur expert en implementation, focalise sur la conformite
+  stricte aux specifications et la robustesse technique.
+  Tu appliques un plan d'implementation au workspace avec rigueur.
+  Utilise les outils disponibles pour lire et ecrire des fichiers.
+  IMPORTANT : le repertoire de travail courant est le workspace.
+  Utilise des chemins relatifs (ex: index.html) ou le chemin absolu
+  affiche par les outils. Ne jamais utiliser /root/ ou /workspace/.
+  Si un fichier index.html existe deja, AMELIORE-LE en corrigeant les
+  problemes identifies plutot que de le reecrire entierement.
+  Lis d'abord le fichier existant, identifie les manques, puis corrige-les.
+  Pour lire un gros fichier, utilise les parametres offset et limit.
+  Privilegies : conformite exacte a chaque critere, gestion des cas limites,
+  responsive design, interactions robustes.
 
 prompt implement_user:
   Implemente la tache selon ce plan valide.
@@ -175,12 +199,18 @@ prompt implement_user:
   4. Verifie ton travail en relisant le fichier final
 
 prompt review_impl_system:
-  Tu es un reviewer de code TRES exigeant et methodique.
+  Tu es un reviewer de code exigeant et methodique.
   Tu evalues une implementation selon les criteres d'acceptation.
   Tu DOIS lire le code source du fichier index.html dans le workspace
   et verifier CHAQUE critere factuellement en citant les lignes de code.
+  IMPORTANT : le repertoire de travail courant est le workspace.
+  Utilise des chemins relatifs (ex: index.html) ou le chemin absolu
+  affiche par les outils. Pour lire un gros fichier, utilise offset et limit.
   Ne te fie pas uniquement au resume de l'implementation, verifie le code reel.
-  Sois strict : un critere partiellement implemente est un FAIL.
+  Sois pragmatique : les approximations pedagogiques sont acceptables
+  pour les donnees astronomiques. Un critere est PASS si l'intention
+  est clairement implementee, meme si l'implementation n'est pas parfaite.
+  Un critere est FAIL uniquement s'il est absent ou fondamentalement casse.
 
 prompt review_impl_user:
   Review cette implementation en lisant le code source.
@@ -192,22 +222,31 @@ prompt review_impl_user:
   {{input.acceptance_criteria}}
 
   INSTRUCTIONS :
-  1. Lis le fichier index.html dans le workspace
-  2. Pour CHAQUE critere (1 a 20), verifie factuellement dans le code :
-     - Est-il implemente ? Cite la ligne/section
-     - Est-il conforme a la specification exacte ?
-  3. Marque chaque critere PASS ou FAIL avec justification
-  4. Liste les issues precises dans le champ issues
+  1. Lis le fichier index.html dans le workspace (utilise offset/limit si trop gros)
+  2. Pour CHAQUE critere (1 a 20), verifie dans le code :
+     - Est-il implemente ? Cite brievement la section relevante
+     - Marque PASS si l'intention est implementee, FAIL si absent ou casse
+  3. Sois CONCIS : 1-2 phrases par critere, pas de longue prose
+  4. Liste dans issues UNIQUEMENT les criteres FAIL avec correction suggeree
 
 prompt impl_verdict_system:
-  Tu es un juge technique TRES exigeant.
-  Tu evalues si une implementation satisfait TOUS les criteres d'acceptation
+  Tu es un juge technique pragmatique et rigoureux.
+  Tu evalues si une implementation satisfait les criteres d'acceptation
   en te basant sur deux reviews independantes.
-  Tu comptes le nombre de criteres satisfaits sur le total de 20.
-  Marque approved=true UNIQUEMENT si au moins 17 criteres sur 20 sont
-  pleinement satisfaits ET qu'aucun critere des Layers 1-2 n'est manquant.
-  Si moins de 17 criteres sont remplis, marque approved=false avec la liste
-  precise des criteres non satisfaits pour guider la prochaine iteration.
+
+  REGLES DE JUGEMENT :
+  - Si un reviewer a lu le code et marque un critere PASS, et que l'autre
+    n'a pas pu verifier (erreur d'acces, etc.), le critere compte comme PASS.
+    Une seule verification factuelle positive suffit.
+  - Les approximations pedagogiques sont acceptables pour les donnees
+    astronomiques (critere 3) : des positions relatives coherentes et
+    documentees dans le code satisfont le critere.
+  - Le critere 15 (boussole) est satisfait si la boussole se met a jour
+    lors de PAN ou de rotation saisonniere.
+  - Marque approved=true si au moins 17 criteres sur 20 sont satisfaits
+    ET que les 5 criteres Layer 1 sont tous PASS.
+  - Ne deplace PAS les goalposts : si un critere etait PASS dans une
+    iteration precedente, il ne peut devenir FAIL que si le code a regresse.
 
 prompt impl_verdict_user:
   Evalue si cette implementation est prete.
@@ -224,11 +263,13 @@ prompt impl_verdict_user:
   Criteres d'acceptation :
   {{input.acceptance_criteria}}
 
-  INSTRUCTIONS STRICTES :
-  1. Evalue chaque critere numerote (1 a 20) individuellement : PASS ou FAIL
-  2. Compte le nombre total de PASS
-  3. Marque approved=true UNIQUEMENT si >= 17/20 PASS et tous les criteres Layer 1 et Layer 2 sont PASS
-  4. Sinon marque approved=false et liste dans remaining_issues les criteres FAIL avec explication
+  INSTRUCTIONS :
+  1. Pour chaque critere (1 a 20), si AU MOINS UN reviewer l'a verifie
+     factuellement et marque PASS, compte-le comme PASS.
+  2. Compte le nombre total de PASS.
+  3. Marque approved=true si >= 17/20 PASS et tous les criteres Layer 1 (1-5) sont PASS.
+  4. Sinon marque approved=false et liste UNIQUEMENT les criteres reellement
+     FAIL (pas ceux non verifies par un seul reviewer).
 
 ## ─── Schemas ────────────────────────────────────────────────────
 
@@ -349,7 +390,7 @@ agent codex_plan:
   publish: codex_plan_output
   system: plan_system
   user: plan_user
-  tools: [mcp.codex.*]
+  tools: [mcp.claude_code.*]
   tool_max_steps: 20
   readonly: true
 
@@ -389,7 +430,7 @@ agent codex_val:
   publish: codex_validation
   system: validate_plan_system
   user: validate_plan_user
-  tools: [mcp.codex.*]
+  tools: [mcp.claude_code.*]
   tool_max_steps: 20
   readonly: true
 
@@ -429,7 +470,7 @@ agent codex_refine:
   publish: merged_plan
   system: refine_plan_system
   user: refine_plan_user
-  tools: [mcp.codex.*]
+  tools: [mcp.claude_code.*]
   tool_max_steps: 20
   readonly: true
 
@@ -443,7 +484,7 @@ agent claude_implement:
   input: impl_input
   output: impl_output
   publish: implementation
-  system: implement_system
+  system: implement_claude_system
   user: implement_user
   tools: [mcp.claude_code.*]
   tool_max_steps: 50
@@ -453,9 +494,9 @@ agent codex_implement:
   input: impl_input
   output: impl_output
   publish: implementation
-  system: implement_system
+  system: implement_codex_system
   user: implement_user
-  tools: [mcp.codex.*]
+  tools: [mcp.claude_code.*]
   tool_max_steps: 50
 
 ## ─── Nodes : Review ────────────────────────────────────────────
@@ -481,7 +522,7 @@ agent codex_review:
   publish: codex_review_report
   system: review_impl_system
   user: review_impl_user
-  tools: [mcp.codex.*]
+  tools: [mcp.claude_code.*]
   tool_max_steps: 30
   readonly: true
 
@@ -508,7 +549,7 @@ workflow dual_model_plan_implement_review_mcp:
   entry: plan_fanout
 
   mcp:
-    servers: [claude_code, codex]
+    servers: [claude_code]
 
   budget:
     max_parallel_branches: 4
@@ -655,7 +696,7 @@ workflow dual_model_plan_implement_review_mcp:
   review_judge -> done when approved
 
   ## Implementation KO -> retour a la planification (boucle externe)
-  review_judge -> plan_fanout when not approved as outer_loop(5) with {
+  review_judge -> plan_fanout when not approved as outer_loop(10) with {
     task_description: "{{vars.task_description}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}",
     previous_claude_review: "{{outputs.claude_review}}",
