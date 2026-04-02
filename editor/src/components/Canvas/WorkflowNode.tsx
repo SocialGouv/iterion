@@ -3,6 +3,7 @@ import type { NodeProps } from "@xyflow/react";
 import type { NodeKind, AgentDecl, ToolNodeDecl, HumanDecl, JoinDecl, RouterDecl } from "@/api/types";
 import { useDocumentStore } from "@/store/document";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
+import { ProviderIcon } from "@/components/icons/ProviderIcon";
 
 const KIND_ICONS: Record<NodeKind, string> = {
   agent: "\u{1F916}",
@@ -40,8 +41,12 @@ export default function WorkflowNode({ data }: NodeProps) {
 
   // Extract subtitle info from declaration
   let subtitle = "";
+  let providerModel: string | undefined;
+  let providerDelegate: string | undefined;
   if (kind === "agent" || kind === "judge") {
     const d = decl as AgentDecl | undefined;
+    providerModel = d?.model;
+    providerDelegate = d?.delegate;
     if (d?.delegate) subtitle = d.delegate;
     else if (d?.model) subtitle = d.model.replace(/\$\{.*?\}/g, "env");
   } else if (kind === "tool") {
@@ -52,6 +57,7 @@ export default function WorkflowNode({ data }: NodeProps) {
     if (d?.mode) subtitle = d.mode;
   } else if (kind === "router") {
     const d = decl as RouterDecl | undefined;
+    providerModel = d?.model;
     if (d?.mode === "llm" && d?.model) subtitle = d.model.replace(/\$\{.*?\}/g, "env");
     else if (d?.mode) subtitle = d.mode;
   } else if (kind === "join") {
@@ -118,7 +124,12 @@ export default function WorkflowNode({ data }: NodeProps) {
       </div>
       <div className="font-semibold text-sm text-white">{label}</div>
       <div className="text-xs text-gray-300">{kind}</div>
-      {subtitle && <div className="text-[10px] text-gray-500 mt-0.5 truncate max-w-[140px]">{subtitle}</div>}
+      {subtitle && (
+        <div className="text-[10px] text-gray-500 mt-0.5 max-w-[140px] flex items-center justify-center gap-1">
+          <ProviderIcon model={providerModel} delegate={providerDelegate} size={10} className="shrink-0 opacity-70" />
+          <span className="truncate">{subtitle}</span>
+        </div>
+      )}
       {/* Schema badges */}
       {(inputSchema || outputSchema) && (
         <div className="flex items-center justify-center gap-1 mt-1">

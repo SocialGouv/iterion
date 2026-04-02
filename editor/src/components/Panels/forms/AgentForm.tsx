@@ -4,6 +4,8 @@ import { useSelectionStore } from "@/store/selection";
 import type { AgentDecl, JudgeDecl } from "@/api/types";
 import { defaultSchema, defaultPrompt, getAllNodeNames } from "@/lib/defaults";
 import { TextField, CommittedTextField, NumberField, SelectField, SelectFieldWithCreate, TagListField } from "./FormField";
+import { ProviderIcon, ProviderLabel } from "@/components/icons/ProviderIcon";
+import { detectProvider } from "@/components/icons/providerDetect";
 
 interface Props {
   decl: AgentDecl | JudgeDecl;
@@ -75,6 +77,12 @@ export default function AgentForm({ decl, kind }: Props) {
           return null;
         }}
       />
+      {detectProvider(decl.model, decl.delegate) && (
+        <div className="flex items-center gap-1.5 px-2 py-1 mb-1 bg-gray-800/50 rounded text-[10px] text-gray-400">
+          <ProviderIcon model={decl.model} delegate={decl.delegate} size={14} />
+          <span><ProviderLabel model={decl.model} delegate={decl.delegate} /></span>
+        </div>
+      )}
       <TextField
         label="Model"
         value={decl.model}

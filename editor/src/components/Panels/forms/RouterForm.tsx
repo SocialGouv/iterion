@@ -5,6 +5,8 @@ import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import type { RouterDecl, RouterMode } from "@/api/types";
 import { getAllNodeNames, defaultPrompt } from "@/lib/defaults";
 import { CommittedTextField, SelectField, SelectFieldWithCreate, TextField, CheckboxField } from "./FormField";
+import { ProviderIcon, ProviderLabel } from "@/components/icons/ProviderIcon";
+import { detectProvider } from "@/components/icons/providerDetect";
 
 interface Props {
   decl: RouterDecl;
@@ -71,6 +73,12 @@ export default function RouterForm({ decl }: Props) {
       />
       {decl.mode === "llm" && (
         <div className="mt-2 space-y-1">
+          {detectProvider(decl.model) && (
+            <div className="flex items-center gap-1.5 px-2 py-1 mb-1 bg-gray-800/50 rounded text-[10px] text-gray-400">
+              <ProviderIcon model={decl.model} size={14} />
+              <span><ProviderLabel model={decl.model} /></span>
+            </div>
+          )}
           <TextField
             label="Model"
             value={decl.model ?? ""}
