@@ -175,6 +175,21 @@ iterion inspect --run-id <run_id> --full
 
 Run artifacts are stored in `.iterion/runs/<run_id>/` — including the event log (`events.jsonl`), node outputs, and any published artifacts.
 
+**Generate a run report:**
+
+```bash
+# Generate a chronological markdown report for a run
+iterion report --run-id <run_id>
+
+# Save to a custom location
+iterion report --run-id <run_id> --output report.md
+
+# JSON output
+iterion report --run-id <run_id> --json
+```
+
+The report includes a summary table (tokens, cost, duration, model calls), a list of all published artifacts with versions, and a detailed chronological timeline showing every node execution, edge selection, branch lifecycle, and verdict.
+
 **Visualize the workflow (optional):**
 
 ```bash
@@ -468,6 +483,27 @@ iterion diagram <file.iter> [--detailed]
 ```
 
 Output can be pasted into any Mermaid-compatible renderer (GitHub Markdown, Mermaid Live Editor, etc.).
+
+### report
+
+Generate a detailed chronological report for a completed run:
+
+```bash
+iterion report --run-id <id> [flags]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--run-id <id>` | Run to report on (required) |
+| `--store-dir <dir>` | Run store directory |
+| `--output <file>` | Output file path (default: `<store>/runs/<id>/report.md`) |
+
+The report is a Markdown document containing:
+- **Summary table** — workflow name, status, duration, total tokens, cost, model calls, loop edges
+- **Artifacts table** — all published artifacts with version numbers and summaries
+- **Timeline** — chronological reconstruction of every step: node starts/finishes, edge selections, branch lifecycle, join synchronization, artifact writes, budget warnings, and verdicts
+
+Use `--json` for structured JSON output instead of Markdown.
 
 ---
 

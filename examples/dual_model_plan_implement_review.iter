@@ -95,11 +95,12 @@ prompt validate_plan_user:
   et les etapes manquantes.
 
 prompt plan_acceptance_system:
-  Tu es un juge technique exigeant.
-  Tu evalues si un plan d'implementation satisfait TOUS les criteres
+  Tu es un juge technique pragmatique.
+  Tu evalues si un plan d'implementation couvre les criteres
   d'acceptation en te basant sur deux evaluations independantes.
-  Ne marque ready=true que si les DEUX evaluations sont favorables
-  et que chaque critere est pleinement couvert.
+  Marque ready=true si le plan couvre la majorite des criteres
+  et que les evaluations ne relevent pas de lacune majeure.
+  Des suggestions d'amelioration mineures ne doivent PAS bloquer.
 
 prompt plan_acceptance_user:
   Evalue si ce plan est pret pour l'implementation.
@@ -116,8 +117,8 @@ prompt plan_acceptance_user:
   Criteres d'acceptation :
   {{input.acceptance_criteria}}
 
-  Ne marque ready=true que si TOUS les criteres sont couverts
-  selon les DEUX evaluations.
+  Marque ready=true si les criteres principaux sont couverts.
+  Seules les lacunes majeures justifient ready=false.
 
 prompt refine_plan_system:
   Tu es un expert en raffinage de plans d'implementation.
@@ -183,11 +184,12 @@ prompt review_impl_user:
   Identifie les manques et les ameliorations necessaires.
 
 prompt impl_verdict_system:
-  Tu es un juge technique final.
-  Tu evalues si une implementation est prete pour la production
+  Tu es un juge technique pragmatique.
+  Tu evalues si une implementation satisfait les criteres d'acceptation
   en te basant sur deux reviews independantes.
-  Ne marque approved=true que si les DEUX reviews sont favorables
-  et que chaque critere d'acceptation est pleinement satisfait.
+  Marque approved=true si la majorite des criteres sont satisfaits
+  et qu'il n'y a pas de bug bloquant.
+  Des suggestions mineures d'amelioration ne doivent PAS bloquer l'approbation.
 
 prompt impl_verdict_user:
   Evalue si cette implementation est prete.
@@ -204,8 +206,8 @@ prompt impl_verdict_user:
   Criteres d'acceptation :
   {{input.acceptance_criteria}}
 
-  Ne marque approved=true que si TOUS les criteres sont satisfaits
-  selon les DEUX reviews.
+  Marque approved=true si les criteres principaux sont remplis.
+  Seuls les bugs bloquants ou criteres majeurs manquants justifient approved=false.
 
 ## ─── Schemas ────────────────────────────────────────────────────
 
@@ -312,6 +314,7 @@ agent claude_plan:
   delegate: "claude_code"
   input: plan_input
   output: plan_output
+  publish: claude_plan_output
   system: plan_system
   user: plan_user
   session: fresh
@@ -320,6 +323,7 @@ agent codex_plan:
   delegate: "codex"
   input: plan_input
   output: plan_output
+  publish: codex_plan_output
   system: plan_system
   user: plan_user
   session: fresh
@@ -347,6 +351,7 @@ agent claude_val:
   delegate: "claude_code"
   input: validate_input
   output: validate_output
+  publish: claude_validation
   system: validate_plan_system
   user: validate_plan_user
   session: fresh
@@ -355,6 +360,7 @@ agent codex_val:
   delegate: "codex"
   input: validate_input
   output: validate_output
+  publish: codex_validation
   system: validate_plan_system
   user: validate_plan_user
   session: fresh
@@ -368,6 +374,7 @@ judge val_judge:
   delegate: "claude_code"
   input: plan_acceptance_input
   output: plan_acceptance_verdict
+  publish: validation_verdict
   system: plan_acceptance_system
   user: plan_acceptance_user
   session: fresh
@@ -431,6 +438,7 @@ agent claude_review:
   delegate: "claude_code"
   input: review_input
   output: review_output
+  publish: claude_review_report
   system: review_impl_system
   user: review_impl_user
   session: fresh
@@ -441,6 +449,7 @@ agent codex_review:
   delegate: "codex"
   input: review_input
   output: review_output
+  publish: codex_review_report
   system: review_impl_system
   user: review_impl_user
   session: fresh
@@ -453,9 +462,10 @@ join review_join:
   output: dual_review_bundle
 
 judge review_judge:
-  delegate: "codex"
+  delegate: "claude_code"
   input: impl_verdict_input
   output: impl_verdict
+  publish: review_verdict
   system: impl_verdict_system
   user: impl_verdict_user
   session: fresh
@@ -535,7 +545,7 @@ workflow dual_model_plan_implement_review:
 
   ## ═══ Phase 4b : Si plan KO -> raffinage round-robin ════════════
 
-  val_judge -> refine_selector when not ready as refine_loop(4)
+  val_judge -> refine_selector when not ready as refine_loop(6)
 
   refine_selector -> claude_refine with {
     merged_plan: "{{artifacts.merged_plan}}",
@@ -552,12 +562,12 @@ workflow dual_model_plan_implement_review:
   }
 
   ## Retour a la validation apres raffinage
-  claude_refine -> val_fanout as refine_loop(4) with {
+  claude_refine -> val_fanout as refine_loop(6) with {
     merged_plan: "{{outputs.claude_refine}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}"
   }
 
-  codex_refine -> val_fanout as refine_loop(4) with {
+  codex_refine -> val_fanout as refine_loop(6) with {
     merged_plan: "{{outputs.codex_refine}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}"
   }
@@ -614,7 +624,7 @@ workflow dual_model_plan_implement_review:
   review_judge -> done when approved
 
   ## Implementation KO -> retour a la planification (boucle externe)
-  review_judge -> plan_fanout when not approved as outer_loop(3) with {
+  review_judge -> plan_fanout when not approved as outer_loop(5) with {
     task_description: "{{vars.task_description}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}",
     previous_claude_review: "{{outputs.claude_review}}",
