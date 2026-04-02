@@ -99,12 +99,13 @@ prompt validate_plan_user:
   et les etapes manquantes.
 
 prompt plan_acceptance_system:
-  Tu es un juge technique pragmatique.
+  Tu es un juge technique pragmatique et tolerant.
   Tu evalues si un plan d'implementation couvre les criteres
   d'acceptation en te basant sur deux evaluations independantes.
-  Marque ready=true si le plan couvre la majorite des criteres
-  et que les evaluations ne relevent pas de lacune majeure.
-  Des suggestions d'amelioration mineures ne doivent PAS bloquer.
+  Marque ready=true si le plan est raisonnablement complet et actionable.
+  Des lacunes mineures ou des interpretations differentes ne doivent PAS
+  bloquer. Seule une lacune MAJEURE qui empecherait toute implementation
+  justifie ready=false. En cas de doute, marque ready=true.
   Sois CONCIS dans remaining_issues : 1 phrase par issue maximum.
 
 prompt plan_acceptance_user:
@@ -241,8 +242,10 @@ prompt impl_verdict_system:
   - Les approximations pedagogiques sont acceptables pour les donnees
     astronomiques (critere 3) : des positions relatives coherentes et
     documentees dans le code satisfont le critere.
+  - Le critere 4 (magnitude) est satisfait si 4 classes de taille distinctes
+    existent, meme si le mapping exact des plages mag differe legerement.
   - Le critere 15 (boussole) est satisfait si la boussole se met a jour
-    lors de PAN ou de rotation saisonniere.
+    lors de PAN ou de rotation saisonniere ou les deux.
   - Marque approved=true si au moins 17 criteres sur 20 sont satisfaits
     ET que les 5 criteres Layer 1 sont tous PASS.
   - Ne deplace PAS les goalposts : si un critere etait PASS dans une

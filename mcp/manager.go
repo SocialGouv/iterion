@@ -321,14 +321,18 @@ func sanitizeToolArgs(toolName string, args map[string]interface{}) {
 		}
 	}
 
-	// For Read tool: if no limit is set and no offset, add a reasonable
-	// default limit to avoid "file too large" errors on big files.
+	// For Read tool: always ensure a limit is set to avoid "file too large"
+	// errors. The Claude Code MCP server rejects reads over 10K tokens.
 	if toolName == "Read" {
-		_, hasLimit := args["limit"]
-		_, hasOffset := args["offset"]
 		_, hasPages := args["pages"]
-		if !hasLimit && !hasOffset && !hasPages {
-			args["limit"] = float64(2000)
+		if !hasPages {
+			limit, hasLimit := args["limit"]
+			if !hasLimit {
+				args["limit"] = float64(2000)
+			} else if limitF, ok := limit.(float64); ok && limitF > 3000 {
+				// Cap excessive limits that would exceed the token limit.
+				args["limit"] = float64(3000)
+			}
 		}
 	}
 }
