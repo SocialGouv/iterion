@@ -20,19 +20,34 @@ export async function autoLayout(
       "elk.direction": direction,
       "elk.spacing.nodeNode": "80",
       "elk.layered.spacing.nodeNodeBetweenLayers": "100",
+      "elk.layered.cycleBreaking.strategy": "DEPTH_FIRST",
       "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",
       "elk.layered.nodePlacement.strategy": "BRANDES_KOEPF",
     },
-    children: nodes.map((n) => ({
-      id: n.id,
-      width: NODE_WIDTH,
-      height: NODE_HEIGHT,
-    })),
-    edges: edges.map((e) => ({
-      id: e.id,
-      sources: [e.source],
-      targets: [e.target],
-    })),
+    children: nodes.map((n) => {
+      const kind = (n.data as Record<string, unknown>)?.kind as string | undefined;
+      const layoutOptions: Record<string, string> = {};
+      if (n.id === "__start__" || kind === "start") {
+        layoutOptions["elk.layered.layering.layerConstraint"] = "FIRST";
+      } else if (kind === "done" || kind === "fail") {
+        layoutOptions["elk.layered.layering.layerConstraint"] = "LAST";
+      }
+      return {
+        id: n.id,
+        width: NODE_WIDTH,
+        height: NODE_HEIGHT,
+        ...(Object.keys(layoutOptions).length > 0 && { layoutOptions }),
+      };
+    }),
+    edges: edges.map((e) => {
+      const isLoop = !!(e.data as Record<string, unknown>)?.loop;
+      return {
+        id: e.id,
+        sources: [e.source],
+        targets: [e.target],
+        ...(isLoop && { layoutOptions: { "elk.layered.priority.direction": "0" } }),
+      };
+    }),
   };
 
   const layout = await elk.layout(graph);
