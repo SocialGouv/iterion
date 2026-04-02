@@ -33,8 +33,10 @@ var sessionModeToStr = map[ast.SessionMode]string{
 var strToSessionMode = reverseMap(sessionModeToStr)
 
 var routerModeToStr = map[ast.RouterMode]string{
-	ast.RouterFanOutAll: "fan_out_all",
-	ast.RouterCondition: "condition",
+	ast.RouterFanOutAll:  "fan_out_all",
+	ast.RouterCondition:  "condition",
+	ast.RouterRoundRobin: "round_robin",
+	ast.RouterLLM:        "llm",
 }
 
 var strToRouterMode = reverseMap(routerModeToStr)
@@ -168,8 +170,12 @@ type jsonJudgeDecl struct {
 }
 
 type jsonRouterDecl struct {
-	Name string `json:"name,omitempty"`
-	Mode string `json:"mode,omitempty"`
+	Name   string `json:"name,omitempty"`
+	Mode   string `json:"mode,omitempty"`
+	Model  string `json:"model,omitempty"`
+	System string `json:"system,omitempty"`
+	User   string `json:"user,omitempty"`
+	Multi  bool   `json:"multi,omitempty"`
 }
 
 type jsonJoinDecl struct {
@@ -271,8 +277,12 @@ func toJSON(f *ast.File) *jsonFile {
 	}
 	for _, r := range f.Routers {
 		jf.Routers = append(jf.Routers, &jsonRouterDecl{
-			Name: r.Name,
-			Mode: routerModeToStr[r.Mode],
+			Name:   r.Name,
+			Mode:   routerModeToStr[r.Mode],
+			Model:  r.Model,
+			System: r.System,
+			User:   r.User,
+			Multi:  r.Multi,
 		})
 	}
 	for _, j := range f.Joins {
@@ -493,7 +503,14 @@ func fromJSON(jf *jsonFile) (*ast.File, error) {
 		if !ok {
 			return nil, fmt.Errorf("astjson: unknown router mode %q", jr.Mode)
 		}
-		f.Routers = append(f.Routers, &ast.RouterDecl{Name: jr.Name, Mode: mode})
+		f.Routers = append(f.Routers, &ast.RouterDecl{
+			Name:   jr.Name,
+			Mode:   mode,
+			Model:  jr.Model,
+			System: jr.System,
+			User:   jr.User,
+			Multi:  jr.Multi,
+		})
 	}
 
 	for _, jj := range jf.Joins {

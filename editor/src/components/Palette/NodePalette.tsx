@@ -4,7 +4,7 @@ import type { NodeKind } from "@/api/types";
 const NODE_TYPES: { kind: NodeKind; icon: string; label: string; desc: string }[] = [
   { kind: "agent", icon: "\u{1F916}", label: "Agent", desc: "LLM-powered agent with model, prompts, tools, and schemas" },
   { kind: "judge", icon: "\u{2696}\u{FE0F}", label: "Judge", desc: "Evaluator agent that assesses outputs and makes decisions" },
-  { kind: "router", icon: "\u{1F504}", label: "Router", desc: "Splits flow to multiple branches (fan_out_all or condition)" },
+  { kind: "router", icon: "\u{1F504}", label: "Router", desc: "Splits flow to multiple branches (fan_out_all, condition, round_robin, or llm)" },
   { kind: "join", icon: "\u{1F91D}", label: "Join", desc: "Merges parallel branches back together (wait_all or best_effort)" },
   { kind: "human", icon: "\u{1F464}", label: "Human", desc: "Human-in-the-loop step for manual input or review" },
   { kind: "tool", icon: "\u{1F527}", label: "Tool", desc: "Executes a shell command and captures structured output" },

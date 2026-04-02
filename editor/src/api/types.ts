@@ -39,8 +39,11 @@ export interface JudgeDecl {
   tools?: string[]; tool_max_steps?: number;
 }
 
-export type RouterMode = "fan_out_all" | "condition";
-export interface RouterDecl { name: string; mode: RouterMode; }
+export type RouterMode = "fan_out_all" | "condition" | "round_robin" | "llm";
+export interface RouterDecl {
+  name: string; mode: RouterMode;
+  model?: string; system?: string; user?: string; multi?: boolean;
+}
 
 export type JoinStrategy = "wait_all" | "best_effort";
 export interface JoinDecl { name: string; strategy: JoinStrategy; require: string[]; output: string; }

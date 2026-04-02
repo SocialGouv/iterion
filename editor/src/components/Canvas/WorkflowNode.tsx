@@ -52,7 +52,8 @@ export default function WorkflowNode({ data }: NodeProps) {
     if (d?.mode) subtitle = d.mode;
   } else if (kind === "router") {
     const d = decl as RouterDecl | undefined;
-    if (d?.mode) subtitle = d.mode;
+    if (d?.mode === "llm" && d?.model) subtitle = d.model.replace(/\$\{.*?\}/g, "env");
+    else if (d?.mode) subtitle = d.mode;
   } else if (kind === "join") {
     const d = decl as JoinDecl | undefined;
     if (d?.strategy) subtitle = d.strategy;

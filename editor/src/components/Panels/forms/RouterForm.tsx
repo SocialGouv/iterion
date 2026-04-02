@@ -1,10 +1,10 @@
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import type { RouterDecl, RouterMode } from "@/api/types";
-import { getAllNodeNames } from "@/lib/defaults";
-import { CommittedTextField, SelectField } from "./FormField";
+import { getAllNodeNames, defaultPrompt } from "@/lib/defaults";
+import { CommittedTextField, SelectField, SelectFieldWithCreate, TextField, CheckboxField } from "./FormField";
 
 interface Props {
   decl: RouterDecl;
@@ -14,6 +14,7 @@ export default function RouterForm({ decl }: Props) {
   const document = useDocumentStore((s) => s.document);
   const updateRouter = useDocumentStore((s) => s.updateRouter);
   const renameNode = useDocumentStore((s) => s.renameNode);
+  const addPrompt = useDocumentStore((s) => s.addPrompt);
   const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
   const activeWorkflow = useActiveWorkflow();
 
@@ -21,6 +22,17 @@ export default function RouterForm({ decl }: Props) {
     if (!activeWorkflow) return [];
     return activeWorkflow.edges.filter((e) => e.from === decl.name);
   }, [activeWorkflow, decl.name]);
+
+  const promptOptions = (document?.prompts ?? []).map((p) => ({ value: p.name, label: p.name }));
+
+  const createPrompt = useCallback(() => {
+    const existing = new Set((document?.prompts ?? []).map((p) => p.name));
+    let i = 1;
+    while (existing.has(`prompt_${i}`)) i++;
+    const name = `prompt_${i}`;
+    addPrompt(defaultPrompt(name));
+    return name;
+  }, [document, addPrompt]);
 
   return (
     <div className="space-y-1">
@@ -52,9 +64,48 @@ export default function RouterForm({ decl }: Props) {
         options={[
           { value: "fan_out_all", label: "fan_out_all" },
           { value: "condition", label: "condition" },
+          { value: "round_robin", label: "round_robin" },
+          { value: "llm", label: "llm" },
         ]}
-        help="fan_out_all = send input to all targets in parallel; condition = route based on 'when' clauses on outgoing edges."
+        help="fan_out_all = send to all targets in parallel; condition = route on 'when' clauses; round_robin = cycle through targets; llm = LLM selects route(s)."
       />
+      {decl.mode === "llm" && (
+        <div className="mt-2 space-y-1">
+          <TextField
+            label="Model"
+            value={decl.model ?? ""}
+            onChange={(v) => updateRouter(decl.name, { model: v })}
+            placeholder='e.g. ${ANTHROPIC_MODEL}'
+            help="The LLM model to use for routing decisions (required)."
+          />
+          <SelectFieldWithCreate
+            label="System Prompt"
+            value={decl.system ?? ""}
+            onChange={(v) => updateRouter(decl.name, { system: v })}
+            options={promptOptions}
+            allowEmpty
+            emptyLabel="-- select prompt --"
+            onCreate={createPrompt}
+            help="Optional system prompt guiding the LLM's routing behavior."
+          />
+          <SelectFieldWithCreate
+            label="User Prompt"
+            value={decl.user ?? ""}
+            onChange={(v) => updateRouter(decl.name, { user: v })}
+            options={promptOptions}
+            allowEmpty
+            emptyLabel="-- select prompt --"
+            onCreate={createPrompt}
+            help="Optional user prompt template for the routing query."
+          />
+          <CheckboxField
+            label="Multi (select multiple routes)"
+            checked={decl.multi ?? false}
+            onChange={(v) => updateRouter(decl.name, { multi: v })}
+            help="When enabled, the LLM can select multiple routes for parallel execution."
+          />
+        </div>
+      )}
       {decl.mode === "condition" && (
         <div className="mt-2 p-2 bg-gray-800 rounded border border-gray-700">
           <p className="text-[10px] text-gray-400 mb-2">
@@ -81,6 +132,11 @@ export default function RouterForm({ decl }: Props) {
       {decl.mode === "fan_out_all" && outgoingEdges.length > 0 && (
         <p className="text-[10px] text-gray-500 mt-1">
           Sends input to {outgoingEdges.length} target{outgoingEdges.length !== 1 ? "s" : ""} in parallel.
+        </p>
+      )}
+      {decl.mode === "round_robin" && outgoingEdges.length > 0 && (
+        <p className="text-[10px] text-gray-500 mt-1">
+          Cycles through {outgoingEdges.length} target{outgoingEdges.length !== 1 ? "s" : ""} one at a time.
         </p>
       )}
     </div>
