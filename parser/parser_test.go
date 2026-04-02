@@ -413,6 +413,47 @@ func TestAgentWithTools(t *testing.T) {
 	assertEq(t, "ToolMaxSteps", a.ToolMaxSteps, 15)
 }
 
+func TestAgentReasoningEffort(t *testing.T) {
+	src := `agent planner:
+  model: "claude-4"
+  reasoning_effort: high
+`
+	res := parser.Parse("test.iter", src)
+	assertNoDiags(t, res)
+	assertEq(t, "ReasoningEffort", res.File.Agents[0].ReasoningEffort, "high")
+}
+
+func TestAgentReasoningEffortExtraHigh(t *testing.T) {
+	src := `agent planner:
+  model: "claude-4"
+  reasoning_effort: extra_high
+`
+	res := parser.Parse("test.iter", src)
+	assertNoDiags(t, res)
+	assertEq(t, "ReasoningEffort", res.File.Agents[0].ReasoningEffort, "extra_high")
+}
+
+func TestJudgeReasoningEffort(t *testing.T) {
+	src := `judge reviewer:
+  model: "claude-4"
+  reasoning_effort: low
+`
+	res := parser.Parse("test.iter", src)
+	assertNoDiags(t, res)
+	assertEq(t, "ReasoningEffort", res.File.Judges[0].ReasoningEffort, "low")
+}
+
+func TestReasoningEffortInvalid(t *testing.T) {
+	src := `agent planner:
+  model: "claude-4"
+  reasoning_effort: ultra
+`
+	res := parser.Parse("test.iter", src)
+	if len(res.Diagnostics) == 0 {
+		t.Fatal("expected diagnostic for invalid reasoning_effort")
+	}
+}
+
 func TestComments(t *testing.T) {
 	src := `## Top-level comment
 agent x:

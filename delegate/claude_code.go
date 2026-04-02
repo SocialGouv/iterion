@@ -42,6 +42,10 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		args = append(args, "--system-prompt", task.SystemPrompt)
 	}
 
+	if task.ReasoningEffort != "" {
+		args = append(args, "--reasoning-effort", task.ReasoningEffort)
+	}
+
 	if len(task.AllowedTools) > 0 {
 		args = append(args, "--allowedTools", strings.Join(task.AllowedTools, ","))
 	}

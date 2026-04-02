@@ -21,6 +21,7 @@ const (
 	DiagLLMRouterTooFewEdges   DiagCode = "C021" // llm router with fewer than 2 outgoing edges
 	DiagLLMRouterConditionEdge DiagCode = "C022" // llm router edge has a 'when' condition
 	DiagRouterLLMOnlyProperty  DiagCode = "C023" // LLM-only property on non-llm router
+	DiagInvalidReasoningEffort DiagCode = "C024" // invalid reasoning_effort value
 )
 
 // validate performs static validation on a compiled workflow.
@@ -39,6 +40,7 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateReachability(w)
 	c.validateHistoryRefs(w)
 	c.validateUndeclaredCycles(w)
+	c.validateReasoningEffort(w)
 }
 
 // ---------------------------------------------------------------------------
@@ -467,4 +469,29 @@ func (c *compiler) validateUndeclaredCycles(w *Workflow) {
 	}
 
 	dfs(w.Entry)
+}
+
+// ---------------------------------------------------------------------------
+// C024 — invalid reasoning_effort value
+// ---------------------------------------------------------------------------
+
+// ValidReasoningEfforts is the set of accepted reasoning effort levels.
+var ValidReasoningEfforts = map[string]bool{
+	"low":        true,
+	"medium":     true,
+	"high":       true,
+	"extra_high": true,
+}
+
+func (c *compiler) validateReasoningEffort(w *Workflow) {
+	for _, node := range w.Nodes {
+		if node.ReasoningEffort == "" {
+			continue
+		}
+		if !ValidReasoningEfforts[node.ReasoningEffort] {
+			c.errorf(DiagInvalidReasoningEffort,
+				"node %q has invalid reasoning_effort %q; valid values are low, medium, high, extra_high",
+				node.ID, node.ReasoningEffort)
+		}
+	}
 }

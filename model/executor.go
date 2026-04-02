@@ -251,6 +251,11 @@ func (e *GoaiExecutor) executeLLM(ctx context.Context, node *ir.Node, input map[
 	// per-attempt event emission.
 	opts = append(opts, goai.WithMaxRetries(0))
 
+	// Reasoning effort (dynamic override from input, then static node property).
+	if popts := providerOptsForNode(resolveReasoningEffort(node, input)); popts != nil {
+		opts = append(opts, goai.WithProviderOptions(popts))
+	}
+
 	// System prompt.
 	var systemText string
 	if node.SystemPrompt != "" {
@@ -339,6 +344,11 @@ func (e *GoaiExecutor) executeHumanLLM(ctx context.Context, node *ir.Node, input
 	// Build goai options.
 	var opts []goai.Option
 	opts = append(opts, goai.WithMaxRetries(0))
+
+	// Reasoning effort (dynamic override from input, then static node property).
+	if popts := providerOptsForNode(resolveReasoningEffort(node, input)); popts != nil {
+		opts = append(opts, goai.WithProviderOptions(popts))
+	}
 
 	// System prompt.
 	var systemText string
@@ -659,11 +669,12 @@ func (e *GoaiExecutor) executeDelegation(ctx context.Context, node *ir.Node, inp
 	}
 
 	task := delegate.Task{
-		SystemPrompt: systemText,
-		UserPrompt:   userText,
-		AllowedTools: node.Tools,
-		OutputSchema: outputSchema,
-		WorkDir:      e.workDir,
+		SystemPrompt:    systemText,
+		UserPrompt:      userText,
+		AllowedTools:    node.Tools,
+		OutputSchema:    outputSchema,
+		WorkDir:         e.workDir,
+		ReasoningEffort: resolveReasoningEffort(node, input),
 	}
 
 	// Emit delegation started event.
@@ -822,6 +833,11 @@ func (e *GoaiExecutor) executeLLMRouter(ctx context.Context, node *ir.Node, inpu
 	var opts []goai.Option
 	opts = append(opts, goai.WithMaxRetries(0))
 
+	// Reasoning effort (dynamic override from input, then static node property).
+	if popts := providerOptsForNode(resolveReasoningEffort(node, input)); popts != nil {
+		opts = append(opts, goai.WithProviderOptions(popts))
+	}
+
 	// System prompt: resolve user-provided prompt if set, then append routing instruction.
 	var systemText string
 	if node.SystemPrompt != "" {
@@ -915,6 +931,40 @@ func buildRouterSchema(node *ir.Node, candidates []string) *ir.Schema {
 			{Name: "reasoning", Type: ir.FieldTypeString},
 		},
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Reasoning effort resolution
+// ---------------------------------------------------------------------------
+
+// resolveReasoningEffort determines the effective reasoning effort for a node.
+// It checks for a dynamic override in the input map via the reserved key
+// "_reasoning_effort", then falls back to the static node property.
+//
+// The "_reasoning_effort" key uses an underscore prefix to distinguish it from
+// user-defined schema fields. It allows upstream nodes to dynamically control
+// the reasoning effort of downstream nodes via edge with-mappings, e.g.:
+//
+//	router -> agent with {_reasoning_effort: "high"}
+//
+// Valid values are defined in ir.ValidReasoningEfforts: low, medium, high, extra_high.
+// Invalid dynamic values are silently ignored (falls back to the static property).
+func resolveReasoningEffort(node *ir.Node, input map[string]interface{}) string {
+	if v, ok := input["_reasoning_effort"]; ok {
+		if s, ok := v.(string); ok && ir.ValidReasoningEfforts[s] {
+			return s
+		}
+	}
+	return node.ReasoningEffort
+}
+
+// providerOptsForNode builds the goai ProviderOptions map from the resolved
+// reasoning effort. Returns nil if no provider options are needed.
+func providerOptsForNode(effort string) map[string]any {
+	if effort == "" {
+		return nil
+	}
+	return map[string]any{"reasoning_effort": effort}
 }
 
 // ---------------------------------------------------------------------------

@@ -62,18 +62,21 @@ enum_constraint = "[" "enum" ":" STRING_LIT { "," STRING_LIT } "]" ;
 
 agent_decl = "agent" IDENT ":" NEWLINE INDENT { agent_prop } DEDENT ;
 
-agent_prop = "model"          ":" STRING_LIT     NEWLINE
-           | "input"          ":" IDENT           NEWLINE
-           | "output"         ":" IDENT           NEWLINE
-           | "publish"        ":" IDENT           NEWLINE
-           | "system"         ":" IDENT           NEWLINE
-           | "user"           ":" IDENT           NEWLINE
-           | "session"        ":" session_mode     NEWLINE
-           | "tools"          ":" tool_list        NEWLINE
-           | "tool_max_steps" ":" INT_LIT          NEWLINE
-           | "delegate"       ":" STRING_LIT       NEWLINE ;
+agent_prop = "model"            ":" STRING_LIT              NEWLINE
+           | "input"            ":" IDENT                  NEWLINE
+           | "output"           ":" IDENT                  NEWLINE
+           | "publish"          ":" IDENT                  NEWLINE
+           | "system"           ":" IDENT                  NEWLINE
+           | "user"             ":" IDENT                  NEWLINE
+           | "session"          ":" session_mode            NEWLINE
+           | "tools"            ":" tool_list               NEWLINE
+           | "tool_max_steps"   ":" INT_LIT                NEWLINE
+           | "delegate"         ":" STRING_LIT              NEWLINE
+           | "reasoning_effort" ":" reasoning_effort_value  NEWLINE ;
 
 session_mode = "fresh" | "inherit" | "artifacts_only" ;
+
+reasoning_effort_value = "low" | "medium" | "high" | "extra_high" ;
 
 tool_list = "[" tool_ref { "," tool_ref } "]" ;
 
@@ -85,16 +88,17 @@ tool_ref = IDENT { "." IDENT } ;
 
 judge_decl = "judge" IDENT ":" NEWLINE INDENT { judge_prop } DEDENT ;
 
-judge_prop = "model"          ":" STRING_LIT     NEWLINE
-           | "input"          ":" IDENT           NEWLINE
-           | "output"         ":" IDENT           NEWLINE
-           | "publish"        ":" IDENT           NEWLINE
-           | "system"         ":" IDENT           NEWLINE
-           | "user"           ":" IDENT           NEWLINE
-           | "session"        ":" session_mode     NEWLINE
-           | "tools"          ":" tool_list        NEWLINE
-           | "tool_max_steps" ":" INT_LIT          NEWLINE
-           | "delegate"       ":" STRING_LIT       NEWLINE ;
+judge_prop = "model"            ":" STRING_LIT              NEWLINE
+           | "input"            ":" IDENT                  NEWLINE
+           | "output"           ":" IDENT                  NEWLINE
+           | "publish"          ":" IDENT                  NEWLINE
+           | "system"           ":" IDENT                  NEWLINE
+           | "user"             ":" IDENT                  NEWLINE
+           | "session"          ":" session_mode            NEWLINE
+           | "tools"            ":" tool_list               NEWLINE
+           | "tool_max_steps"   ":" INT_LIT                NEWLINE
+           | "delegate"         ":" STRING_LIT              NEWLINE
+           | "reasoning_effort" ":" reasoning_effort_value  NEWLINE ;
 
 (* ---- Nœuds : router ---- *)
 

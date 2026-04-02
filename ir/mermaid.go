@@ -285,6 +285,9 @@ func fullShape(n *Node, w *Workflow) string {
 		if n.ToolMaxSteps > 0 {
 			lines = append(lines, fmt.Sprintf("tool_max_steps: %d", n.ToolMaxSteps))
 		}
+		if n.ReasoningEffort != "" {
+			lines = append(lines, "reasoning_effort: "+n.ReasoningEffort)
+		}
 	case NodeRouter:
 		lines = append(lines, "mode: "+n.RouterMode.String())
 	case NodeJoin:

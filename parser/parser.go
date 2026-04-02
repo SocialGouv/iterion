@@ -682,6 +682,8 @@ func (p *parser) parseAgentProp(ad *ast.AgentDecl, propTok Token) {
 	case TokenToolMaxSteps:
 		p.expect(TokenColon)
 		ad.ToolMaxSteps = p.expectInt()
+	case TokenReasoningEffort:
+		ad.ReasoningEffort = p.parseReasoningEffort()
 	case TokenMCP:
 		p.backup()
 		ad.MCP = p.parseMCPConfigBlock()
@@ -761,6 +763,8 @@ func (p *parser) parseJudgeProp(jd *ast.JudgeDecl, propTok Token) {
 	case TokenToolMaxSteps:
 		p.expect(TokenColon)
 		jd.ToolMaxSteps = p.expectInt()
+	case TokenReasoningEffort:
+		jd.ReasoningEffort = p.parseReasoningEffort()
 	case TokenMCP:
 		p.backup()
 		jd.MCP = p.parseMCPConfigBlock()
@@ -1324,6 +1328,19 @@ func (p *parser) parseWithEntry() *ast.WithEntry {
 
 // ---- shared helpers ----
 
+func (p *parser) parseReasoningEffort() string {
+	p.expect(TokenColon)
+	t := p.next()
+	value := tokenAsIdent(t)
+	switch value {
+	case "low", "medium", "high", "extra_high":
+		return value
+	default:
+		p.addError(DiagInvalidValue, t, "expected reasoning effort (low, medium, high, extra_high), got '"+t.Value+"'")
+		return ""
+	}
+}
+
 func (p *parser) parseSessionMode() ast.SessionMode {
 	t := p.next()
 	switch t.Type {
@@ -1488,7 +1505,7 @@ func isKeywordToken(tt TokenType) bool {
 		TokenEntry, TokenMCP, TokenBudget, TokenTransport, TokenServers,
 		TokenDisable, TokenAutoloadProject, TokenModel, TokenInput, TokenOutput,
 		TokenPublish, TokenSystem, TokenUser, TokenSession, TokenTools,
-		TokenToolMaxSteps, TokenMode, TokenStrategy, TokenRequire,
+		TokenToolMaxSteps, TokenReasoningEffort, TokenMode, TokenStrategy, TokenRequire,
 		TokenInstructions, TokenCommand, TokenArgs, TokenURL, TokenDelegate, TokenWhen, TokenNot, TokenAs,
 		TokenWith, TokenEnum, TokenFresh, TokenInherit, TokenArtifactsOnly,
 		TokenFanOutAll, TokenCondition, TokenWaitAll, TokenBestEffort,

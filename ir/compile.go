@@ -349,19 +349,20 @@ func (c *compiler) compileAgents() {
 		}
 
 		c.nodes[a.Name] = &Node{
-			ID:           a.Name,
-			Kind:         NodeAgent,
-			Model:        model,
-			Delegate:     a.Delegate,
-			MCP:          convertMCPConfig(a.MCP),
-			InputSchema:  a.Input,
-			OutputSchema: a.Output,
-			Publish:      a.Publish,
-			SystemPrompt: a.System,
-			UserPrompt:   a.User,
-			Session:      convertSessionMode(a.Session),
-			Tools:        a.Tools,
-			ToolMaxSteps: a.ToolMaxSteps,
+			ID:              a.Name,
+			Kind:            NodeAgent,
+			Model:           model,
+			Delegate:        a.Delegate,
+			MCP:             convertMCPConfig(a.MCP),
+			InputSchema:     a.Input,
+			OutputSchema:    a.Output,
+			Publish:         a.Publish,
+			SystemPrompt:    a.System,
+			UserPrompt:      a.User,
+			Session:         convertSessionMode(a.Session),
+			Tools:           a.Tools,
+			ToolMaxSteps:    a.ToolMaxSteps,
+			ReasoningEffort: a.ReasoningEffort,
 		}
 	}
 }
@@ -382,19 +383,20 @@ func (c *compiler) compileJudges() {
 		}
 
 		c.nodes[j.Name] = &Node{
-			ID:           j.Name,
-			Kind:         NodeJudge,
-			Model:        model,
-			Delegate:     j.Delegate,
-			MCP:          convertMCPConfig(j.MCP),
-			InputSchema:  j.Input,
-			OutputSchema: j.Output,
-			Publish:      j.Publish,
-			SystemPrompt: j.System,
-			UserPrompt:   j.User,
-			Session:      convertSessionMode(j.Session),
-			Tools:        j.Tools,
-			ToolMaxSteps: j.ToolMaxSteps,
+			ID:              j.Name,
+			Kind:            NodeJudge,
+			Model:           model,
+			Delegate:        j.Delegate,
+			MCP:             convertMCPConfig(j.MCP),
+			InputSchema:     j.Input,
+			OutputSchema:    j.Output,
+			Publish:         j.Publish,
+			SystemPrompt:    j.System,
+			UserPrompt:      j.User,
+			Session:         convertSessionMode(j.Session),
+			Tools:           j.Tools,
+			ToolMaxSteps:    j.ToolMaxSteps,
+			ReasoningEffort: j.ReasoningEffort,
 		}
 	}
 }

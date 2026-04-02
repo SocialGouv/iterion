@@ -40,6 +40,10 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		args = append(args, "-C", task.WorkDir)
 	}
 
+	if task.ReasoningEffort != "" {
+		args = append(args, "-c", "model_reasoning_effort="+task.ReasoningEffort)
+	}
+
 	// Build the full prompt combining system and user messages.
 	prompt := task.UserPrompt
 	if task.SystemPrompt != "" {

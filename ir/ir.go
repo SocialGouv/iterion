@@ -90,6 +90,7 @@ type Node struct {
 	Session          SessionMode // session strategy
 	Tools            []string    // tool capability names
 	ToolMaxSteps     int         // max tool-use iterations (0 = not set)
+	ReasoningEffort  string      // reasoning effort level: "low", "medium", "high", "extra_high"
 
 	// --- Router fields ---
 	RouterMode  RouterMode // fan_out_all, condition, round_robin, or llm

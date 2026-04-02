@@ -195,8 +195,9 @@ type AgentDecl struct {
 	User         string      // prompt reference name
 	Session      SessionMode // defaults to SessionFresh
 	Tools        []string    // tool capability names
-	ToolMaxSteps int         // max tool-use iterations (0 = not set)
-	Span         Span
+	ToolMaxSteps    int    // max tool-use iterations (0 = not set)
+	ReasoningEffort string // reasoning effort level: "low", "medium", "high", "extra_high"
+	Span            Span
 }
 
 // ---------------------------------------------------------------------------
@@ -217,9 +218,10 @@ type JudgeDecl struct {
 	System       string
 	User         string
 	Session      SessionMode
-	Tools        []string // usually empty for judges, but allowed
-	ToolMaxSteps int
-	Span         Span
+	Tools           []string // usually empty for judges, but allowed
+	ToolMaxSteps    int
+	ReasoningEffort string // reasoning effort level: "low", "medium", "high", "extra_high"
+	Span            Span
 }
 
 // ---------------------------------------------------------------------------

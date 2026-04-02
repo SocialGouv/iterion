@@ -1087,6 +1087,76 @@ workflow test:
 	expectDiag(t, r, DiagRouterLLMOnlyProperty)
 }
 
+// ---------------------------------------------------------------------------
+// C024 — invalid reasoning_effort value
+// ---------------------------------------------------------------------------
+
+func TestValidateReasoningEffort_Invalid(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent a1:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a1
+  a1 -> done
+`
+	r := compileFile(t, src)
+	// Inject an invalid reasoning effort after compilation to test the IR validator.
+	r.Workflow.Nodes["a1"].ReasoningEffort = "ultra"
+	// Re-run validation.
+	c := &compiler{}
+	c.validateReasoningEffort(r.Workflow)
+	found := false
+	for _, d := range c.diags {
+		if d.Code == DiagInvalidReasoningEffort {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected diagnostic C024 for invalid reasoning_effort")
+	}
+}
+
+func TestValidateReasoningEffort_Valid(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent a1:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+  reasoning_effort: high
+
+workflow test:
+  entry: a1
+  a1 -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagInvalidReasoningEffort)
+}
+
 func readFixture(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)

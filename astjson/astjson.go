@@ -151,8 +151,9 @@ type jsonAgentDecl struct {
 	System       string   `json:"system,omitempty"`
 	User         string   `json:"user,omitempty"`
 	Session      string   `json:"session,omitempty"`
-	Tools        []string `json:"tools,omitempty"`
-	ToolMaxSteps int      `json:"tool_max_steps,omitempty"`
+	Tools           []string `json:"tools,omitempty"`
+	ToolMaxSteps    int      `json:"tool_max_steps,omitempty"`
+	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
 }
 
 type jsonJudgeDecl struct {
@@ -165,8 +166,9 @@ type jsonJudgeDecl struct {
 	System       string   `json:"system,omitempty"`
 	User         string   `json:"user,omitempty"`
 	Session      string   `json:"session,omitempty"`
-	Tools        []string `json:"tools,omitempty"`
-	ToolMaxSteps int      `json:"tool_max_steps,omitempty"`
+	Tools           []string `json:"tools,omitempty"`
+	ToolMaxSteps    int      `json:"tool_max_steps,omitempty"`
+	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
 }
 
 type jsonRouterDecl struct {
@@ -353,33 +355,35 @@ func schemaToJSON(s *ast.SchemaDecl) *jsonSchemaDecl {
 
 func agentToJSON(a *ast.AgentDecl) *jsonAgentDecl {
 	return &jsonAgentDecl{
-		Name:         a.Name,
-		Model:        a.Model,
-		Delegate:     a.Delegate,
-		Input:        a.Input,
-		Output:       a.Output,
-		Publish:      a.Publish,
-		System:       a.System,
-		User:         a.User,
-		Session:      sessionModeToStr[a.Session],
-		Tools:        a.Tools,
-		ToolMaxSteps: a.ToolMaxSteps,
+		Name:            a.Name,
+		Model:           a.Model,
+		Delegate:        a.Delegate,
+		Input:           a.Input,
+		Output:          a.Output,
+		Publish:         a.Publish,
+		System:          a.System,
+		User:            a.User,
+		Session:         sessionModeToStr[a.Session],
+		Tools:           a.Tools,
+		ToolMaxSteps:    a.ToolMaxSteps,
+		ReasoningEffort: a.ReasoningEffort,
 	}
 }
 
 func judgeToJSON(j *ast.JudgeDecl) *jsonJudgeDecl {
 	return &jsonJudgeDecl{
-		Name:         j.Name,
-		Model:        j.Model,
-		Delegate:     j.Delegate,
-		Input:        j.Input,
-		Output:       j.Output,
-		Publish:      j.Publish,
-		System:       j.System,
-		User:         j.User,
-		Session:      sessionModeToStr[j.Session],
-		Tools:        j.Tools,
-		ToolMaxSteps: j.ToolMaxSteps,
+		Name:            j.Name,
+		Model:           j.Model,
+		Delegate:        j.Delegate,
+		Input:           j.Input,
+		Output:          j.Output,
+		Publish:         j.Publish,
+		System:          j.System,
+		User:            j.User,
+		Session:         sessionModeToStr[j.Session],
+		Tools:           j.Tools,
+		ToolMaxSteps:    j.ToolMaxSteps,
+		ReasoningEffort: j.ReasoningEffort,
 	}
 }
 
@@ -614,17 +618,18 @@ func agentFromJSON(ja *jsonAgentDecl) (*ast.AgentDecl, error) {
 		return nil, fmt.Errorf("astjson: unknown session mode %q", ja.Session)
 	}
 	return &ast.AgentDecl{
-		Name:         ja.Name,
-		Model:        ja.Model,
-		Delegate:     ja.Delegate,
-		Input:        ja.Input,
-		Output:       ja.Output,
-		Publish:      ja.Publish,
-		System:       ja.System,
-		User:         ja.User,
-		Session:      sess,
-		Tools:        ja.Tools,
-		ToolMaxSteps: ja.ToolMaxSteps,
+		Name:            ja.Name,
+		Model:           ja.Model,
+		Delegate:        ja.Delegate,
+		Input:           ja.Input,
+		Output:          ja.Output,
+		Publish:         ja.Publish,
+		System:          ja.System,
+		User:            ja.User,
+		Session:         sess,
+		Tools:           ja.Tools,
+		ToolMaxSteps:    ja.ToolMaxSteps,
+		ReasoningEffort: ja.ReasoningEffort,
 	}, nil
 }
 
@@ -634,17 +639,18 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*ast.JudgeDecl, error) {
 		return nil, fmt.Errorf("astjson: unknown session mode %q", jj.Session)
 	}
 	return &ast.JudgeDecl{
-		Name:         jj.Name,
-		Model:        jj.Model,
-		Delegate:     jj.Delegate,
-		Input:        jj.Input,
-		Output:       jj.Output,
-		Publish:      jj.Publish,
-		System:       jj.System,
-		User:         jj.User,
-		Session:      sess,
-		Tools:        jj.Tools,
-		ToolMaxSteps: jj.ToolMaxSteps,
+		Name:            jj.Name,
+		Model:           jj.Model,
+		Delegate:        jj.Delegate,
+		Input:           jj.Input,
+		Output:          jj.Output,
+		Publish:         jj.Publish,
+		System:          jj.System,
+		User:            jj.User,
+		Session:         sess,
+		Tools:           jj.Tools,
+		ToolMaxSteps:    jj.ToolMaxSteps,
+		ReasoningEffort: jj.ReasoningEffort,
 	}, nil
 }
 

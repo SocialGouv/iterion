@@ -1076,3 +1076,76 @@ func TestSetVars(t *testing.T) {
 		t.Errorf("SetVars did not set vars correctly")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Reasoning effort resolution
+// ---------------------------------------------------------------------------
+
+func TestResolveReasoningEffort(t *testing.T) {
+	tests := []struct {
+		name     string
+		node     *ir.Node
+		input    map[string]interface{}
+		expected string
+	}{
+		{
+			name:     "static only",
+			node:     &ir.Node{ReasoningEffort: "high"},
+			input:    map[string]interface{}{},
+			expected: "high",
+		},
+		{
+			name:     "dynamic override",
+			node:     &ir.Node{ReasoningEffort: "medium"},
+			input:    map[string]interface{}{"_reasoning_effort": "low"},
+			expected: "low",
+		},
+		{
+			name:     "dynamic extra_high",
+			node:     &ir.Node{ReasoningEffort: "low"},
+			input:    map[string]interface{}{"_reasoning_effort": "extra_high"},
+			expected: "extra_high",
+		},
+		{
+			name:     "invalid dynamic falls back to static",
+			node:     &ir.Node{ReasoningEffort: "high"},
+			input:    map[string]interface{}{"_reasoning_effort": "ultra"},
+			expected: "high",
+		},
+		{
+			name:     "no value set",
+			node:     &ir.Node{},
+			input:    map[string]interface{}{},
+			expected: "",
+		},
+		{
+			name:     "dynamic non-string ignored",
+			node:     &ir.Node{ReasoningEffort: "medium"},
+			input:    map[string]interface{}{"_reasoning_effort": 42},
+			expected: "medium",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveReasoningEffort(tt.node, tt.input)
+			if got != tt.expected {
+				t.Errorf("resolveReasoningEffort() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestProviderOptsForNode(t *testing.T) {
+	if opts := providerOptsForNode(""); opts != nil {
+		t.Errorf("expected nil for empty effort, got %v", opts)
+	}
+
+	opts := providerOptsForNode("high")
+	if opts == nil {
+		t.Fatal("expected non-nil opts for effort 'high'")
+	}
+	if opts["reasoning_effort"] != "high" {
+		t.Errorf("expected reasoning_effort 'high', got %v", opts["reasoning_effort"])
+	}
+}

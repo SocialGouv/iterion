@@ -40,6 +40,10 @@ type Task struct {
 	// BaseDir is the allowed base directory for WorkDir validation.
 	// If set, WorkDir must resolve to a path within BaseDir.
 	BaseDir string
+
+	// ReasoningEffort is the reasoning effort level for the CLI agent.
+	// Valid values: "low", "medium", "high", "extra_high".
+	ReasoningEffort string
 }
 
 // Result contains the output from a delegation backend.
