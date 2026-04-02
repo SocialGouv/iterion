@@ -16,6 +16,7 @@ import (
 
 	"github.com/SocialGouv/iterion/delegate"
 	"github.com/SocialGouv/iterion/ir"
+	"github.com/SocialGouv/iterion/mcp"
 	"github.com/SocialGouv/iterion/tool"
 )
 
@@ -118,6 +119,7 @@ type GoaiExecutor struct {
 	registry         *Registry
 	delegateRegistry *delegate.Registry // delegation backends (claude_code, codex)
 	toolRegistry     *tool.Registry     // unified tool registry (preferred)
+	mcpManager       *mcp.Manager       // generic MCP discovery/call bridge
 	toolPolicy       *tool.Policy       // allowlist policy for tool execution (nil = open)
 	prompts          map[string]*ir.Prompt
 	schemas          map[string]*ir.Schema
@@ -147,6 +149,11 @@ func WithToolImplementations(tools map[string]goai.Tool) GoaiExecutorOption {
 // instead of the legacy tools map.
 func WithToolRegistry(tr *tool.Registry) GoaiExecutorOption {
 	return func(e *GoaiExecutor) { e.toolRegistry = tr }
+}
+
+// WithMCPManager sets the generic MCP manager used to lazily discover MCP tools.
+func WithMCPManager(m *mcp.Manager) GoaiExecutorOption {
+	return func(e *GoaiExecutor) { e.mcpManager = m }
 }
 
 // WithToolPolicy sets the tool execution policy on the executor.
@@ -186,6 +193,15 @@ func NewGoaiExecutor(registry *Registry, wf *ir.Workflow, opts ...GoaiExecutorOp
 		opt(e)
 	}
 	return e
+}
+
+// Close releases resources held by the executor, including MCP server
+// connections. It should be called when the executor is no longer needed.
+func (e *GoaiExecutor) Close() error {
+	if e.mcpManager != nil {
+		return e.mcpManager.Close()
+	}
+	return nil
 }
 
 // SetVars sets the workflow variables for the current run.
@@ -255,7 +271,7 @@ func (e *GoaiExecutor) executeLLM(ctx context.Context, node *ir.Node, input map[
 
 	// Tools.
 	if len(node.Tools) > 0 {
-		tools, err := e.resolveTools(node.Tools)
+		tools, err := e.resolveToolsForNode(ctx, node, node.Tools)
 		if err != nil {
 			return nil, fmt.Errorf("model: node %q: %w", node.ID, err)
 		}
@@ -715,7 +731,7 @@ func (e *GoaiExecutor) executeToolNode(ctx context.Context, node *ir.Node, input
 		}
 	}
 
-	resolved, ok, err := e.resolveSingleTool(toolName)
+	resolved, ok, err := e.resolveSingleToolForNode(ctx, node, toolName)
 	if err != nil {
 		return nil, fmt.Errorf("model: tool node %q: %w", node.ID, err)
 	}
@@ -1001,49 +1017,115 @@ func (e *GoaiExecutor) resolveTemplateRef(ref string, input map[string]interface
 // Tool resolution helpers
 // ---------------------------------------------------------------------------
 
-// resolveTools resolves a list of tool names to goai.Tool instances.
-// Uses the tool registry if available, otherwise falls back to the legacy map.
-// When a tool policy is set, each tool's Execute function is wrapped with
-// a guard that checks the allowlist before invocation.
-func (e *GoaiExecutor) resolveTools(names []string) ([]goai.Tool, error) {
-	if e.toolRegistry != nil {
-		tools, err := e.toolRegistry.ResolveAll(names)
+// resolveToolsForNode resolves a list of tool names to goai.Tool instances for
+// a specific node, ensuring that only tools from the node's active MCP servers
+// are exposed.
+func (e *GoaiExecutor) resolveToolsForNode(ctx context.Context, node *ir.Node, names []string) ([]goai.Tool, error) {
+	if err := e.ensureMCPServers(ctx, node, names); err != nil {
+		return nil, err
+	}
+
+	var tools []goai.Tool
+	for _, name := range names {
+		t, ok, err := e.resolveSingleToolForNode(ctx, node, name)
 		if err != nil {
 			return nil, err
 		}
+		if !ok {
+			continue
+		}
 		if e.toolPolicy != nil {
-			for i := range tools {
-				tools[i] = e.guardTool(tools[i])
-			}
+			t = e.guardTool(t)
 		}
-		return tools, nil
-	}
-	// Legacy path: direct lookup.
-	var tools []goai.Tool
-	for _, name := range names {
-		if t, ok := e.tools[name]; ok {
-			if e.toolPolicy != nil {
-				t = e.guardTool(t)
-			}
-			tools = append(tools, t)
-		}
+		tools = append(tools, t)
 	}
 	return tools, nil
 }
 
-// resolveSingleTool resolves one tool name. Returns the goai.Tool, whether
-// it was found, and any resolution error (e.g. ambiguity).
-func (e *GoaiExecutor) resolveSingleTool(name string) (goai.Tool, bool, error) {
+// resolveSingleToolForNode resolves one tool name in the context of a node.
+func (e *GoaiExecutor) resolveSingleToolForNode(ctx context.Context, node *ir.Node, name string) (goai.Tool, bool, error) {
+	if err := e.ensureMCPServers(ctx, node, []string{name}); err != nil {
+		return goai.Tool{}, false, err
+	}
+
 	if e.toolRegistry != nil {
 		td, err := e.toolRegistry.Resolve(name)
 		if err != nil {
+			// Fall back to the legacy tool map when the registry does not know the tool.
+			if t, ok := e.tools[name]; ok {
+				return t, true, nil
+			}
+			return goai.Tool{}, false, err
+		}
+		if err := e.checkNodeToolAccess(node, td.QualifiedName); err != nil {
 			return goai.Tool{}, false, err
 		}
 		return td.ToGoaiTool(), true, nil
 	}
-	// Legacy path.
+
+	if err := e.checkNodeToolAccess(node, name); err != nil {
+		return goai.Tool{}, false, err
+	}
 	t, ok := e.tools[name]
 	return t, ok, nil
+}
+
+func (e *GoaiExecutor) ensureMCPServers(ctx context.Context, node *ir.Node, names []string) error {
+	if e.mcpManager == nil || e.toolRegistry == nil {
+		return nil
+	}
+	servers := activeMCPServersForNames(node, names)
+	if len(servers) == 0 {
+		return nil
+	}
+	return e.mcpManager.EnsureServers(ctx, e.toolRegistry, servers)
+}
+
+func activeMCPServersForNames(node *ir.Node, names []string) []string {
+	if node == nil || len(node.ActiveMCPServers) == 0 {
+		return nil
+	}
+	active := make(map[string]struct{}, len(node.ActiveMCPServers))
+	for _, server := range node.ActiveMCPServers {
+		active[server] = struct{}{}
+	}
+
+	seen := make(map[string]struct{})
+	var servers []string
+	for _, name := range names {
+		server, _, err := tool.ParseMCPName(name)
+		if err != nil {
+			continue
+		}
+		if _, ok := active[server]; !ok {
+			continue
+		}
+		if _, ok := seen[server]; ok {
+			continue
+		}
+		seen[server] = struct{}{}
+		servers = append(servers, server)
+	}
+	return servers
+}
+
+func (e *GoaiExecutor) checkNodeToolAccess(node *ir.Node, qualified string) error {
+	server, _, err := tool.ParseMCPName(qualified)
+	if err != nil {
+		return nil
+	}
+	if node == nil {
+		return fmt.Errorf("model: MCP tool %q requires a node context", qualified)
+	}
+	if len(node.ActiveMCPServers) == 0 {
+		return nil
+	}
+	for _, active := range node.ActiveMCPServers {
+		if active == server {
+			return nil
+		}
+	}
+	return fmt.Errorf("model: node %q cannot access MCP tool %q because server %q is not active", node.ID, qualified, server)
 }
 
 // ---------------------------------------------------------------------------

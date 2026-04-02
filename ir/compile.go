@@ -2,6 +2,7 @@ package ir
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/SocialGouv/iterion/ast"
 )
@@ -23,6 +24,8 @@ const (
 	DiagMultipleWorkflow       DiagCode = "C007" // multiple workflows (unsupported in V1)
 	DiagMissingEntry           DiagCode = "C008" // entry node not found
 	DiagMissingModelOrDelegate DiagCode = "C018" // agent/judge has neither model nor delegate
+	DiagDuplicateMCPServer     DiagCode = "C024" // duplicate top-level mcp_server name
+	DiagInvalidMCPServer       DiagCode = "C025" // invalid MCP server config
 )
 
 // Severity indicates the severity of a diagnostic.
@@ -82,6 +85,7 @@ type compiler struct {
 	nodes   map[string]*Node
 	schemas map[string]*Schema
 	prompts map[string]*Prompt
+	mcp     map[string]*MCPServer
 }
 
 func (c *compiler) errorf(code DiagCode, format string, args ...interface{}) {
@@ -108,6 +112,7 @@ func Compile(file *ast.File) *CompileResult {
 		nodes:   make(map[string]*Node),
 		schemas: make(map[string]*Schema),
 		prompts: make(map[string]*Prompt),
+		mcp:     make(map[string]*MCPServer),
 	}
 	w := c.compile()
 	return &CompileResult{
@@ -127,6 +132,7 @@ func (c *compiler) compile() *Workflow {
 	}
 
 	// Compile shared declarations.
+	c.compileMCPServers()
 	c.compileSchemas()
 	c.compilePrompts()
 
@@ -162,21 +168,71 @@ func (c *compiler) compile() *Workflow {
 	}
 
 	w := &Workflow{
-		Name:    wf.Name,
-		Entry:   wf.Entry,
-		Nodes:   c.nodes,
-		Edges:   edges,
-		Schemas: c.schemas,
-		Prompts: c.prompts,
-		Vars:    vars,
-		Loops:   loops,
-		Budget:  budget,
+		Name:       wf.Name,
+		Entry:      wf.Entry,
+		Nodes:      c.nodes,
+		Edges:      edges,
+		Schemas:    c.schemas,
+		Prompts:    c.prompts,
+		Vars:       vars,
+		Loops:      loops,
+		Budget:     budget,
+		MCP:        convertMCPConfig(wf.MCP),
+		MCPServers: c.mcp,
 	}
 
 	// Static validation pass (P2-02).
 	c.validate(w)
 
 	return w
+}
+
+// ---------------------------------------------------------------------------
+// MCP servers
+// ---------------------------------------------------------------------------
+
+func (c *compiler) compileMCPServers() {
+	for _, s := range c.file.MCPServers {
+		if _, exists := c.mcp[s.Name]; exists {
+			c.errorf(DiagDuplicateMCPServer, "mcp_server %q declared more than once", s.Name)
+			continue
+		}
+		server := &MCPServer{
+			Name:      s.Name,
+			Transport: convertMCPTransport(s.Transport),
+			Command:   s.Command,
+			Args:      append([]string(nil), s.Args...),
+			URL:       s.URL,
+		}
+		c.validateMCPServer(server)
+		c.mcp[s.Name] = server
+	}
+}
+
+func (c *compiler) validateMCPServer(s *MCPServer) {
+	switch s.Transport {
+	case MCPTransportStdio:
+		if s.Command == "" {
+			c.errorf(DiagInvalidMCPServer, "mcp_server %q with transport stdio must set 'command'", s.Name)
+		}
+		if s.URL != "" {
+			c.errorf(DiagInvalidMCPServer, "mcp_server %q with transport stdio cannot set 'url'", s.Name)
+		}
+	case MCPTransportHTTP:
+		if s.URL == "" {
+			c.errorf(DiagInvalidMCPServer, "mcp_server %q with transport http must set 'url'", s.Name)
+		}
+		if s.Command != "" {
+			c.errorf(DiagInvalidMCPServer, "mcp_server %q with transport http cannot set 'command'", s.Name)
+		}
+		if len(s.Args) > 0 {
+			c.errorf(DiagInvalidMCPServer, "mcp_server %q with transport http cannot set 'args'", s.Name)
+		}
+	case MCPTransportSSE:
+		c.errorf(DiagInvalidMCPServer, "mcp_server %q uses transport sse, which is not supported in v1", s.Name)
+	case MCPTransportUnknown:
+		c.errorf(DiagInvalidMCPServer, "mcp_server %q must set a supported 'transport'", s.Name)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -219,6 +275,46 @@ func convertFieldType(ft ast.FieldType) FieldType {
 	}
 }
 
+func convertMCPTransport(mt ast.MCPTransport) MCPTransport {
+	switch mt {
+	case ast.MCPTransportStdio:
+		return MCPTransportStdio
+	case ast.MCPTransportHTTP:
+		return MCPTransportHTTP
+	case ast.MCPTransportSSE:
+		return MCPTransportSSE
+	default:
+		return MCPTransportUnknown
+	}
+}
+
+func convertMCPConfig(cfg *ast.MCPConfigDecl) *MCPConfig {
+	if cfg == nil {
+		return nil
+	}
+	return &MCPConfig{
+		AutoloadProject: cloneBool(cfg.AutoloadProject),
+		Inherit:         cloneBool(cfg.Inherit),
+		Servers:         append([]string(nil), cfg.Servers...),
+		Disable:         append([]string(nil), cfg.Disable...),
+	}
+}
+
+func cloneBool(v *bool) *bool {
+	if v == nil {
+		return nil
+	}
+	out := *v
+	return &out
+}
+
+func resolveSupervisorModel(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	return os.Getenv("ITERION_DEFAULT_SUPERVISOR_MODEL")
+}
+
 // ---------------------------------------------------------------------------
 // Prompts
 // ---------------------------------------------------------------------------
@@ -247,15 +343,17 @@ func (c *compiler) compileAgents() {
 		c.validateSchemaRef(a.Name, "output", a.Output)
 		c.validatePromptRef(a.Name, "system", a.System)
 		c.validatePromptRef(a.Name, "user", a.User)
-		if a.Model == "" && a.Delegate == "" {
-			c.errorf(DiagMissingModelOrDelegate, "agent %q must set either 'model' or 'delegate'", a.Name)
+		model := resolveSupervisorModel(a.Model)
+		if model == "" && a.Delegate == "" {
+			c.errorf(DiagMissingModelOrDelegate, "agent %q must set 'model' or 'delegate', or define ITERION_DEFAULT_SUPERVISOR_MODEL", a.Name)
 		}
 
 		c.nodes[a.Name] = &Node{
 			ID:           a.Name,
 			Kind:         NodeAgent,
-			Model:        a.Model,
+			Model:        model,
 			Delegate:     a.Delegate,
+			MCP:          convertMCPConfig(a.MCP),
 			InputSchema:  a.Input,
 			OutputSchema: a.Output,
 			Publish:      a.Publish,
@@ -278,15 +376,17 @@ func (c *compiler) compileJudges() {
 		c.validateSchemaRef(j.Name, "output", j.Output)
 		c.validatePromptRef(j.Name, "system", j.System)
 		c.validatePromptRef(j.Name, "user", j.User)
-		if j.Model == "" && j.Delegate == "" {
-			c.errorf(DiagMissingModelOrDelegate, "judge %q must set either 'model' or 'delegate'", j.Name)
+		model := resolveSupervisorModel(j.Model)
+		if model == "" && j.Delegate == "" {
+			c.errorf(DiagMissingModelOrDelegate, "judge %q must set 'model' or 'delegate', or define ITERION_DEFAULT_SUPERVISOR_MODEL", j.Name)
 		}
 
 		c.nodes[j.Name] = &Node{
 			ID:           j.Name,
 			Kind:         NodeJudge,
-			Model:        j.Model,
+			Model:        model,
 			Delegate:     j.Delegate,
+			MCP:          convertMCPConfig(j.MCP),
 			InputSchema:  j.Input,
 			OutputSchema: j.Output,
 			Publish:      j.Publish,

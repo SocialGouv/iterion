@@ -877,3 +877,90 @@ func TestDottedToolNames(t *testing.T) {
 	assertEq(t, "Tools[1]", a.Tools[1], "mcp.claude_code.search")
 	assertEq(t, "Tools[2]", a.Tools[2], "mcp.falcon.lookup")
 }
+
+func TestMCPServerDecl(t *testing.T) {
+	src := `mcp_server github:
+  transport: http
+  url: "https://api.githubcopilot.com/mcp"
+`
+	res := parser.Parse("test.iter", src)
+	assertNoDiags(t, res)
+
+	if len(res.File.MCPServers) != 1 {
+		t.Fatalf("expected 1 mcp_server, got %d", len(res.File.MCPServers))
+	}
+	server := res.File.MCPServers[0]
+	assertEq(t, "Name", server.Name, "github")
+	assertEq(t, "Transport", server.Transport, ast.MCPTransportHTTP)
+	assertEq(t, "URL", server.URL, "https://api.githubcopilot.com/mcp")
+}
+
+func TestWorkflowAndNodeMCPBlocks(t *testing.T) {
+	src := `mcp_server github:
+  transport: http
+  url: "https://example.com/mcp"
+
+agent implement:
+  model: "anthropic/claude-sonnet-4-6"
+  mcp:
+    inherit: true
+    servers: [github]
+    disable: [codex]
+  input: in_s
+  output: out_s
+  system: sys
+  user: usr
+
+judge review:
+  model: "openai/gpt-5"
+  mcp:
+    inherit: false
+    servers: [claude_code]
+  input: in_s
+  output: out_s
+  system: sys
+  user: usr
+
+workflow flow:
+  entry: implement
+  mcp:
+    autoload_project: true
+    servers: [claude_code, github]
+    disable: [falcon]
+  implement -> review
+  review -> done
+`
+	res := parser.Parse("test.iter", src)
+	assertNoDiags(t, res)
+
+	wf := res.File.Workflows[0]
+	if wf.MCP == nil {
+		t.Fatal("expected workflow mcp block")
+	}
+	if wf.MCP.AutoloadProject == nil || !*wf.MCP.AutoloadProject {
+		t.Fatal("expected autoload_project: true")
+	}
+	if len(wf.MCP.Servers) != 2 {
+		t.Fatalf("expected 2 workflow mcp servers, got %d", len(wf.MCP.Servers))
+	}
+	assertEq(t, "workflow disable", wf.MCP.Disable[0], "falcon")
+
+	agent := res.File.Agents[0]
+	if agent.MCP == nil {
+		t.Fatal("expected agent mcp block")
+	}
+	if agent.MCP.Inherit == nil || !*agent.MCP.Inherit {
+		t.Fatal("expected inherit: true")
+	}
+	assertEq(t, "agent server", agent.MCP.Servers[0], "github")
+	assertEq(t, "agent disable", agent.MCP.Disable[0], "codex")
+
+	judge := res.File.Judges[0]
+	if judge.MCP == nil {
+		t.Fatal("expected judge mcp block")
+	}
+	if judge.MCP.Inherit == nil || *judge.MCP.Inherit {
+		t.Fatal("expected inherit: false")
+	}
+	assertEq(t, "judge server", judge.MCP.Servers[0], "claude_code")
+}

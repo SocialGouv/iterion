@@ -35,6 +35,24 @@ func Unparse(f *ast.File) string {
 		writeVarsBlock(&b, f.Vars, "")
 	}
 
+	// --- MCP servers ---
+	for _, s := range f.MCPServers {
+		blankLine()
+		fmt.Fprintf(&b, "mcp_server %s:\n", s.Name)
+		if s.Transport != ast.MCPTransportUnknown {
+			writeProp(&b, "transport", s.Transport.String())
+		}
+		if s.Command != "" {
+			writeQuotedProp(&b, "command", s.Command)
+		}
+		if len(s.Args) > 0 {
+			fmt.Fprintf(&b, "  args: [%s]\n", quoteList(s.Args))
+		}
+		if s.URL != "" {
+			writeQuotedProp(&b, "url", s.URL)
+		}
+	}
+
 	// --- Prompts ---
 	for _, p := range f.Prompts {
 		blankLine()
@@ -73,6 +91,9 @@ func Unparse(f *ast.File) string {
 	for _, a := range f.Agents {
 		blankLine()
 		fmt.Fprintf(&b, "agent %s:\n", a.Name)
+		if a.MCP != nil {
+			writeMCPConfigBlock(&b, a.MCP, "  ")
+		}
 		writeAgentFields(&b, a.Model, a.Delegate, a.Input, a.Output, a.Publish,
 			a.System, a.User, a.Session, a.Tools, a.ToolMaxSteps)
 	}
@@ -81,6 +102,9 @@ func Unparse(f *ast.File) string {
 	for _, j := range f.Judges {
 		blankLine()
 		fmt.Fprintf(&b, "judge %s:\n", j.Name)
+		if j.MCP != nil {
+			writeMCPConfigBlock(&b, j.MCP, "  ")
+		}
 		writeAgentFields(&b, j.Model, j.Delegate, j.Input, j.Output, j.Publish,
 			j.System, j.User, j.Session, j.Tools, j.ToolMaxSteps)
 	}
@@ -167,6 +191,9 @@ func Unparse(f *ast.File) string {
 		if w.Vars != nil && len(w.Vars.Fields) > 0 {
 			writeVarsBlock(&b, w.Vars, "  ")
 		}
+		if w.MCP != nil {
+			writeMCPConfigBlock(&b, w.MCP, "  ")
+		}
 
 		if w.Entry != "" {
 			b.WriteString("\n")
@@ -227,6 +254,30 @@ func writeLiteral(b *strings.Builder, lit *ast.Literal) {
 	default:
 		b.WriteString(lit.Raw)
 	}
+}
+
+func writeMCPConfigBlock(b *strings.Builder, cfg *ast.MCPConfigDecl, indent string) {
+	fmt.Fprintf(b, "%smcp:\n", indent)
+	if cfg.AutoloadProject != nil {
+		fmt.Fprintf(b, "%s  autoload_project: %t\n", indent, *cfg.AutoloadProject)
+	}
+	if cfg.Inherit != nil {
+		fmt.Fprintf(b, "%s  inherit: %t\n", indent, *cfg.Inherit)
+	}
+	if len(cfg.Servers) > 0 {
+		fmt.Fprintf(b, "%s  servers: [%s]\n", indent, strings.Join(cfg.Servers, ", "))
+	}
+	if len(cfg.Disable) > 0 {
+		fmt.Fprintf(b, "%s  disable: [%s]\n", indent, strings.Join(cfg.Disable, ", "))
+	}
+}
+
+func quoteList(vals []string) string {
+	quoted := make([]string, len(vals))
+	for i, v := range vals {
+		quoted[i] = fmt.Sprintf("%q", v)
+	}
+	return strings.Join(quoted, ", ")
 }
 
 func writeAgentFields(b *strings.Builder, model, delegate, input, output, publish, system, user string, session ast.SessionMode, tools []string, toolMaxSteps int) {

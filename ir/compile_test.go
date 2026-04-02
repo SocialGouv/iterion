@@ -563,6 +563,297 @@ workflow test:
 	}
 }
 
+func TestCompileMCPServerAndBlocks(t *testing.T) {
+	src := `
+mcp_server github:
+  transport: http
+  url: "https://example.com/mcp"
+
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent implement:
+  model: "anthropic/claude-sonnet-4-6"
+  mcp:
+    inherit: true
+    servers: [github]
+    disable: [codex]
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+workflow flow:
+  entry: implement
+  mcp:
+    autoload_project: true
+    servers: [claude_code, github]
+    disable: [falcon]
+  implement -> done
+`
+	w := mustCompile(t, src)
+
+	if w.MCP == nil {
+		t.Fatal("expected workflow MCP config")
+	}
+	if w.MCP.AutoloadProject == nil || !*w.MCP.AutoloadProject {
+		t.Fatal("expected autoload_project=true")
+	}
+	if len(w.MCPServers) != 1 {
+		t.Fatalf("expected 1 top-level MCP server, got %d", len(w.MCPServers))
+	}
+	server := w.MCPServers["github"]
+	if server == nil {
+		t.Fatal("expected github server in workflow MCPServers")
+	}
+	if server.Transport != MCPTransportHTTP {
+		t.Fatalf("expected HTTP transport, got %v", server.Transport)
+	}
+	node := w.Nodes["implement"]
+	if node.MCP == nil {
+		t.Fatal("expected node MCP config")
+	}
+	if node.MCP.Inherit == nil || !*node.MCP.Inherit {
+		t.Fatal("expected inherit=true on node")
+	}
+}
+
+func TestCompileDuplicateMCPServer(t *testing.T) {
+	src := `
+mcp_server github:
+  transport: http
+  url: "https://example.com/one"
+
+mcp_server github:
+  transport: http
+  url: "https://example.com/two"
+
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent a:
+  model: "anthropic/claude-sonnet-4-6"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a
+  a -> done
+`
+	r := compileFile(t, src)
+	if !r.HasErrors() {
+		t.Fatal("expected duplicate mcp_server error")
+	}
+	found := false
+	for _, d := range r.Diagnostics {
+		if d.Code == DiagDuplicateMCPServer {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected DiagDuplicateMCPServer diagnostic")
+	}
+}
+
+func TestCompileInvalidMCPServerTransportConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{
+			name: "stdio_missing_command",
+			src: `
+mcp_server bad:
+  transport: stdio
+
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent a:
+  model: "anthropic/claude-sonnet-4-6"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a
+  a -> done
+`,
+		},
+		{
+			name: "http_missing_url",
+			src: `
+mcp_server bad:
+  transport: http
+
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent a:
+  model: "anthropic/claude-sonnet-4-6"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a
+  a -> done
+`,
+		},
+		{
+			name: "sse_out_of_scope",
+			src: `
+mcp_server bad:
+  transport: sse
+  url: "https://example.com/events"
+
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent a:
+  model: "anthropic/claude-sonnet-4-6"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a
+  a -> done
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := compileFile(t, tt.src)
+			if !r.HasErrors() {
+				t.Fatal("expected invalid mcp_server diagnostic")
+			}
+			found := false
+			for _, d := range r.Diagnostics {
+				if d.Code == DiagInvalidMCPServer {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("expected DiagInvalidMCPServer diagnostic")
+			}
+		})
+	}
+}
+
+func TestCompileSupervisorModelFallbackFromEnv(t *testing.T) {
+	t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "anthropic/claude-sonnet-4-6")
+
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent a:
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+judge j:
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a
+  a -> j
+  j -> done
+`
+	w := mustCompile(t, src)
+	if got := w.Nodes["a"].Model; got != "anthropic/claude-sonnet-4-6" {
+		t.Fatalf("agent model fallback: got %q", got)
+	}
+	if got := w.Nodes["j"].Model; got != "anthropic/claude-sonnet-4-6" {
+		t.Fatalf("judge model fallback: got %q", got)
+	}
+}
+
+func TestCompileSupervisorModelFallbackMissing(t *testing.T) {
+	t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "")
+
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent a:
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a
+  a -> done
+`
+	r := compileFile(t, src)
+	if !r.HasErrors() {
+		t.Fatal("expected missing supervisor model diagnostic")
+	}
+	found := false
+	for _, d := range r.Diagnostics {
+		if d.Code == DiagMissingModelOrDelegate {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected DiagMissingModelOrDelegate diagnostic")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Prompt template refs
 // ---------------------------------------------------------------------------

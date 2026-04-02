@@ -6,18 +6,19 @@ package ast
 
 // File is the root AST node representing an entire .iter source file.
 type File struct {
-	Vars      *VarsBlock      // top-level vars (optional, at most one)
-	Prompts   []*PromptDecl   // prompt declarations
-	Schemas   []*SchemaDecl   // schema declarations
-	Agents    []*AgentDecl    // agent node declarations
-	Judges    []*JudgeDecl    // judge node declarations
-	Routers   []*RouterDecl   // router node declarations
-	Joins     []*JoinDecl     // join node declarations
-	Humans    []*HumanDecl    // human node declarations
-	Tools     []*ToolNodeDecl // tool node declarations (direct execution, no LLM)
-	Workflows []*WorkflowDecl // workflow declarations
-	Comments  []*Comment      // top-level comments (## ...)
-	Span      Span
+	Vars       *VarsBlock       // top-level vars (optional, at most one)
+	MCPServers []*MCPServerDecl // top-level reusable MCP server declarations
+	Prompts    []*PromptDecl    // prompt declarations
+	Schemas    []*SchemaDecl    // schema declarations
+	Agents     []*AgentDecl     // agent node declarations
+	Judges     []*JudgeDecl     // judge node declarations
+	Routers    []*RouterDecl    // router node declarations
+	Joins      []*JoinDecl      // join node declarations
+	Humans     []*HumanDecl     // human node declarations
+	Tools      []*ToolNodeDecl  // tool node declarations (direct execution, no LLM)
+	Workflows  []*WorkflowDecl  // workflow declarations
+	Comments   []*Comment       // top-level comments (## ...)
+	Span       Span
 }
 
 // ---------------------------------------------------------------------------
@@ -27,6 +28,53 @@ type File struct {
 type Comment struct {
 	Text string
 	Span Span
+}
+
+// ---------------------------------------------------------------------------
+// MCP
+// ---------------------------------------------------------------------------
+
+// MCPTransport identifies the transport used by an MCP server.
+type MCPTransport int
+
+const (
+	MCPTransportUnknown MCPTransport = iota
+	MCPTransportStdio
+	MCPTransportHTTP
+	MCPTransportSSE
+)
+
+func (mt MCPTransport) String() string {
+	switch mt {
+	case MCPTransportStdio:
+		return "stdio"
+	case MCPTransportHTTP:
+		return "http"
+	case MCPTransportSSE:
+		return "sse"
+	default:
+		return "unknown"
+	}
+}
+
+// MCPServerDecl represents a top-level `mcp_server <name>:` declaration.
+type MCPServerDecl struct {
+	Name      string
+	Transport MCPTransport
+	Command   string
+	Args      []string
+	URL       string
+	Span      Span
+}
+
+// MCPConfigDecl represents a workflow-level or node-level `mcp:` block.
+// Workflow blocks use AutoloadProject; node blocks use Inherit.
+type MCPConfigDecl struct {
+	AutoloadProject *bool
+	Inherit         *bool
+	Servers         []string
+	Disable         []string
+	Span            Span
 }
 
 // ---------------------------------------------------------------------------
@@ -137,8 +185,9 @@ func (sm SessionMode) String() string {
 // AgentDecl represents an `agent <name>:` node declaration.
 type AgentDecl struct {
 	Name         string
-	Model        string      // string literal, may contain ${...} env refs
-	Delegate     string      // delegation backend name (e.g. "claude_code"); when set, bypasses LLM API
+	Model        string // string literal, may contain ${...} env refs
+	Delegate     string // delegation backend name (e.g. "claude_code"); when set, bypasses LLM API
+	MCP          *MCPConfigDecl
 	Input        string      // schema reference name
 	Output       string      // schema reference name
 	Publish      string      // persistent artifact name (empty if not set)
@@ -161,6 +210,7 @@ type JudgeDecl struct {
 	Name         string
 	Model        string
 	Delegate     string // delegation backend name; when set, bypasses LLM API
+	MCP          *MCPConfigDecl
 	Input        string
 	Output       string
 	Publish      string
@@ -312,10 +362,11 @@ type ToolNodeDecl struct {
 // WorkflowDecl represents a `workflow <name>:` declaration.
 type WorkflowDecl struct {
 	Name   string
-	Vars   *VarsBlock   // workflow-level variable declarations
-	Entry  string       // entry node name
-	Budget *BudgetBlock // execution limits (optional)
-	Edges  []*Edge      // directed edges between nodes
+	Vars   *VarsBlock     // workflow-level variable declarations
+	Entry  string         // entry node name
+	MCP    *MCPConfigDecl // workflow-level MCP activation/filtering
+	Budget *BudgetBlock   // execution limits (optional)
+	Edges  []*Edge        // directed edges between nodes
 	Span   Span
 }
 

@@ -3,8 +3,10 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/SocialGouv/iterion/ir"
+	"github.com/SocialGouv/iterion/mcp"
 	"github.com/SocialGouv/iterion/parser"
 )
 
@@ -61,6 +63,10 @@ func RunValidate(path string, p *Printer) error {
 	}
 
 	if cr.Workflow != nil {
+		if err := mcp.PrepareWorkflow(cr.Workflow, filepath.Dir(path)); err != nil {
+			result.CompileDiagnostics = append(result.CompileDiagnostics, err.Error())
+			result.Valid = false
+		}
 		result.WorkflowName = cr.Workflow.Name
 		result.NodeCount = len(cr.Workflow.Nodes)
 		result.EdgeCount = len(cr.Workflow.Edges)
@@ -123,6 +129,9 @@ func compileWorkflow(path string) (*ir.Workflow, error) {
 				return nil, fmt.Errorf("compile error: %s", d.Error())
 			}
 		}
+	}
+	if err := mcp.PrepareWorkflow(cr.Workflow, filepath.Dir(path)); err != nil {
+		return nil, err
 	}
 
 	return cr.Workflow, nil

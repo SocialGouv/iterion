@@ -38,6 +38,7 @@ const (
 
 	// Keywords (contextual — also valid as identifiers in some positions)
 	TokenVars
+	TokenMCPServer
 	TokenPrompt
 	TokenSchema
 	TokenAgent
@@ -48,7 +49,12 @@ const (
 	TokenTool
 	TokenWorkflow
 	TokenEntry
+	TokenMCP
 	TokenBudget
+	TokenTransport
+	TokenServers
+	TokenDisable
+	TokenAutoloadProject
 	TokenModel
 	TokenInput
 	TokenOutput
@@ -63,6 +69,8 @@ const (
 	TokenRequire
 	TokenInstructions
 	TokenCommand
+	TokenArgs
+	TokenURL
 	TokenDelegate
 	TokenWhen
 	TokenNot
@@ -135,6 +143,7 @@ var tokenNames = map[TokenType]string{
 	TokenComment: "Comment",
 
 	TokenVars:              "vars",
+	TokenMCPServer:         "mcp_server",
 	TokenPrompt:            "prompt",
 	TokenSchema:            "schema",
 	TokenAgent:             "agent",
@@ -145,7 +154,12 @@ var tokenNames = map[TokenType]string{
 	TokenTool:              "tool",
 	TokenWorkflow:          "workflow",
 	TokenEntry:             "entry",
+	TokenMCP:               "mcp",
 	TokenBudget:            "budget",
+	TokenTransport:         "transport",
+	TokenServers:           "servers",
+	TokenDisable:           "disable",
+	TokenAutoloadProject:   "autoload_project",
 	TokenModel:             "model",
 	TokenInput:             "input",
 	TokenOutput:            "output",
@@ -160,6 +174,8 @@ var tokenNames = map[TokenType]string{
 	TokenRequire:           "require",
 	TokenInstructions:      "instructions",
 	TokenCommand:           "command",
+	TokenArgs:              "args",
+	TokenURL:               "url",
 	TokenDelegate:          "delegate",
 	TokenWhen:              "when",
 	TokenNot:               "not",
@@ -209,6 +225,7 @@ func (t TokenType) String() string {
 // The lexer uses this to distinguish keywords from plain identifiers.
 var keywords = map[string]TokenType{
 	"vars":                  TokenVars,
+	"mcp_server":            TokenMCPServer,
 	"prompt":                TokenPrompt,
 	"schema":                TokenSchema,
 	"agent":                 TokenAgent,
@@ -219,7 +236,12 @@ var keywords = map[string]TokenType{
 	"tool":                  TokenTool,
 	"workflow":              TokenWorkflow,
 	"entry":                 TokenEntry,
+	"mcp":                   TokenMCP,
 	"budget":                TokenBudget,
+	"transport":             TokenTransport,
+	"servers":               TokenServers,
+	"disable":               TokenDisable,
+	"autoload_project":      TokenAutoloadProject,
 	"model":                 TokenModel,
 	"input":                 TokenInput,
 	"output":                TokenOutput,
@@ -234,6 +256,8 @@ var keywords = map[string]TokenType{
 	"require":               TokenRequire,
 	"instructions":          TokenInstructions,
 	"command":               TokenCommand,
+	"args":                  TokenArgs,
+	"url":                   TokenURL,
 	"delegate":              TokenDelegate,
 	"when":                  TokenWhen,
 	"not":                   TokenNot,

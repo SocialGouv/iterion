@@ -1,0 +1,249 @@
+package mcp
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"sync"
+
+	"github.com/SocialGouv/iterion/internal/appinfo"
+	"github.com/SocialGouv/iterion/tool"
+)
+
+// DefaultProtocolVersion is the MCP version advertised by Iterion.
+const DefaultProtocolVersion = "2025-06-18"
+
+// ToolInfo is the MCP tool description returned by tools/list.
+type ToolInfo struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	InputSchema json.RawMessage `json:"inputSchema,omitempty"`
+}
+
+// ToolCallResult is the MCP result returned by tools/call.
+type ToolCallResult struct {
+	Content           []ToolContent `json:"content,omitempty"`
+	StructuredContent interface{}   `json:"structuredContent,omitempty"`
+	IsError           bool          `json:"isError,omitempty"`
+}
+
+// ToolContent is one MCP content item.
+type ToolContent struct {
+	Type string `json:"type,omitempty"`
+	Text string `json:"text,omitempty"`
+}
+
+type clientInfo struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+type protocolClient interface {
+	ListTools(ctx context.Context) ([]ToolInfo, error)
+	CallTool(ctx context.Context, toolName string, args map[string]interface{}) (*ToolCallResult, error)
+	Close() error
+}
+
+// Manager lazily connects to MCP servers, caches clients and tool discovery,
+// and bridges discovered tools into a tool.Registry.
+type Manager struct {
+	mu      sync.Mutex
+	catalog map[string]*ServerConfig
+	states  map[string]*serverState
+}
+
+type serverState struct {
+	cfg *ServerConfig
+
+	mu         sync.Mutex
+	client     protocolClient
+	discovered bool
+}
+
+// NewManager creates an MCP manager from a resolved server catalog.
+func NewManager(catalog map[string]*ServerConfig) *Manager {
+	cloned := make(map[string]*ServerConfig, len(catalog))
+	for name, cfg := range catalog {
+		cloned[name] = cloneServerConfig(cfg)
+	}
+	return &Manager{
+		catalog: cloned,
+		states:  make(map[string]*serverState, len(cloned)),
+	}
+}
+
+// EnsureServers discovers tools for the given servers and registers them into
+// the provided registry. Connections and tool catalogs are opened lazily and
+// cached for the lifetime of the manager.
+func (m *Manager) EnsureServers(ctx context.Context, registry *tool.Registry, servers []string) error {
+	for _, server := range servers {
+		if err := m.ensureServer(ctx, registry, server); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Close closes any open MCP clients held by the manager.
+func (m *Manager) Close() error {
+	m.mu.Lock()
+	states := make([]*serverState, 0, len(m.states))
+	for _, state := range m.states {
+		states = append(states, state)
+	}
+	m.mu.Unlock()
+
+	var firstErr error
+	for _, state := range states {
+		state.mu.Lock()
+		client := state.client
+		state.mu.Unlock()
+		if client == nil {
+			continue
+		}
+		if err := client.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (m *Manager) ensureServer(ctx context.Context, registry *tool.Registry, server string) error {
+	state, err := m.state(server)
+	if err != nil {
+		return err
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	if state.discovered {
+		return nil
+	}
+
+	client, err := m.clientForState(state)
+	if err != nil {
+		return err
+	}
+
+	toolsList, err := client.ListTools(ctx)
+	if err != nil {
+		return fmt.Errorf("mcp: discover tools for %q: %w", server, err)
+	}
+
+	for _, info := range toolsList {
+		serverName := server
+		toolName := info.Name
+		if err := registry.RegisterMCP(serverName, toolName, info.Description, info.InputSchema, func(callCtx context.Context, input json.RawMessage) (string, error) {
+			var args map[string]interface{}
+			if len(input) > 0 && string(input) != "null" {
+				if err := json.Unmarshal(input, &args); err != nil {
+					return "", fmt.Errorf("mcp: decode input for %s.%s: %w", serverName, toolName, err)
+				}
+			}
+			result, err := client.CallTool(callCtx, toolName, args)
+			if err != nil {
+				return "", err
+			}
+			return formatToolResult(result)
+		}); err != nil {
+			return fmt.Errorf("mcp: register %s.%s: %w", server, info.Name, err)
+		}
+	}
+
+	state.discovered = true
+	return nil
+}
+
+func (m *Manager) state(server string) (*serverState, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if state, ok := m.states[server]; ok {
+		return state, nil
+	}
+	cfg, ok := m.catalog[server]
+	if !ok {
+		return nil, fmt.Errorf("mcp: unknown server %q", server)
+	}
+	state := &serverState{cfg: cloneServerConfig(cfg)}
+	m.states[server] = state
+	return state, nil
+}
+
+func (m *Manager) clientForState(state *serverState) (protocolClient, error) {
+	if state.client != nil {
+		return state.client, nil
+	}
+
+	info := clientInfo{
+		Name:    appinfo.Name,
+		Version: appinfo.FullVersion(),
+	}
+
+	var client protocolClient
+	switch state.cfg.Transport {
+	case TransportStdio:
+		client = newStdioClient(state.cfg, info)
+	case TransportHTTP:
+		client = newHTTPClient(state.cfg, info)
+	default:
+		return nil, fmt.Errorf("mcp: unsupported transport %q for %s", state.cfg.Transport, state.cfg.Name)
+	}
+
+	state.client = client
+	return state.client, nil
+}
+
+func formatToolResult(result *ToolCallResult) (string, error) {
+	if result == nil {
+		return "", nil
+	}
+	if result.IsError {
+		msg := stringsFromContent(result.Content)
+		if msg == "" && result.StructuredContent != nil {
+			data, _ := json.Marshal(result.StructuredContent)
+			msg = string(data)
+		}
+		if msg == "" {
+			msg = "tool returned an MCP error"
+		}
+		return "", fmt.Errorf("mcp: %s", msg)
+	}
+	if result.StructuredContent != nil && len(result.Content) == 0 {
+		data, err := json.Marshal(result.StructuredContent)
+		if err != nil {
+			return "", fmt.Errorf("mcp: marshal structured result: %w", err)
+		}
+		return string(data), nil
+	}
+	text := stringsFromContent(result.Content)
+	if text != "" {
+		return text, nil
+	}
+	if result.StructuredContent != nil {
+		data, err := json.Marshal(result.StructuredContent)
+		if err != nil {
+			return "", fmt.Errorf("mcp: marshal structured result: %w", err)
+		}
+		return string(data), nil
+	}
+	return "", nil
+}
+
+func stringsFromContent(content []ToolContent) string {
+	out := make([]string, 0, len(content))
+	for _, item := range content {
+		if item.Type == "" || item.Type == "text" {
+			if item.Text != "" {
+				out = append(out, item.Text)
+			}
+		}
+	}
+	return joinLines(out)
+}
+
+func joinLines(lines []string) string {
+	return strings.Join(lines, "\n")
+}

@@ -43,6 +43,15 @@ func (f *File) AllPromptNames() []string {
 	return names
 }
 
+// AllMCPServerNames returns the names of all top-level MCP server declarations.
+func (f *File) AllMCPServerNames() []string {
+	names := make([]string, len(f.MCPServers))
+	for i, s := range f.MCPServers {
+		names[i] = s.Name
+	}
+	return names
+}
+
 // ReservedTargets are node names that cannot be declared — they are
 // implicit terminal nodes used as edge targets.
 var ReservedTargets = map[string]bool{

@@ -21,6 +21,13 @@ type Workflow struct {
 	Vars    map[string]*Var    // var name → resolved variable
 	Loops   map[string]*Loop   // loop name → loop definition
 	Budget  *Budget            // workflow budget (nil if not set)
+	MCP     *MCPConfig         // workflow-level MCP activation/filtering
+	// MCPServers contains the explicit top-level declarations from the .iter file.
+	MCPServers map[string]*MCPServer
+	// ActiveMCPServers and ResolvedMCPServers are populated after project config
+	// resolution, not by the compiler itself.
+	ActiveMCPServers   []string
+	ResolvedMCPServers map[string]*MCPServer
 }
 
 // ---------------------------------------------------------------------------
@@ -70,16 +77,19 @@ type Node struct {
 	Kind NodeKind
 
 	// --- Agent / Judge fields ---
-	Model        string      // model identifier (env refs already noted)
-	Delegate     string      // delegation backend name (empty = direct LLM call)
-	InputSchema  string      // schema reference name (empty if not set)
-	OutputSchema string      // schema reference name (empty if not set)
-	Publish      string      // persistent artifact name (empty if not set)
-	SystemPrompt string      // prompt reference name
-	UserPrompt   string      // prompt reference name
-	Session      SessionMode // session strategy
-	Tools        []string    // tool capability names
-	ToolMaxSteps int         // max tool-use iterations (0 = not set)
+	Model    string     // model identifier (env refs already noted)
+	Delegate string     // delegation backend name (empty = direct LLM call)
+	MCP      *MCPConfig // node-level MCP activation/filtering
+	// ActiveMCPServers is populated after project config resolution.
+	ActiveMCPServers []string
+	InputSchema      string      // schema reference name (empty if not set)
+	OutputSchema     string      // schema reference name (empty if not set)
+	Publish          string      // persistent artifact name (empty if not set)
+	SystemPrompt     string      // prompt reference name
+	UserPrompt       string      // prompt reference name
+	Session          SessionMode // session strategy
+	Tools            []string    // tool capability names
+	ToolMaxSteps     int         // max tool-use iterations (0 = not set)
 
 	// --- Router fields ---
 	RouterMode  RouterMode // fan_out_all, condition, round_robin, or llm
@@ -185,6 +195,51 @@ func (hm HumanMode) String() string {
 	default:
 		return "unknown"
 	}
+}
+
+// ---------------------------------------------------------------------------
+// MCP
+// ---------------------------------------------------------------------------
+
+// MCPTransport identifies the transport used by an MCP server.
+type MCPTransport int
+
+const (
+	MCPTransportUnknown MCPTransport = iota
+	MCPTransportStdio
+	MCPTransportHTTP
+	MCPTransportSSE
+)
+
+func (mt MCPTransport) String() string {
+	switch mt {
+	case MCPTransportStdio:
+		return "stdio"
+	case MCPTransportHTTP:
+		return "http"
+	case MCPTransportSSE:
+		return "sse"
+	default:
+		return "unknown"
+	}
+}
+
+// MCPServer is a reusable MCP server declaration or resolved catalog entry.
+type MCPServer struct {
+	Name      string
+	Transport MCPTransport
+	Command   string
+	Args      []string
+	URL       string
+	Headers   map[string]string
+}
+
+// MCPConfig represents workflow-level or node-level MCP activation/filtering.
+type MCPConfig struct {
+	AutoloadProject *bool
+	Inherit         *bool
+	Servers         []string
+	Disable         []string
 }
 
 // ---------------------------------------------------------------------------

@@ -80,7 +80,7 @@ func (p *parser) skipToNextTopLevel() {
 		switch t.Type {
 		case TokenEOF:
 			return
-		case TokenVars, TokenPrompt, TokenSchema, TokenAgent, TokenJudge,
+		case TokenVars, TokenMCPServer, TokenPrompt, TokenSchema, TokenAgent, TokenJudge,
 			TokenRouter, TokenJoin, TokenHuman, TokenTool, TokenWorkflow:
 			return
 		case TokenDedent:
@@ -145,6 +145,12 @@ func (p *parser) parseFile() *ast.File {
 			vb := p.parseVarsBlock()
 			if vb != nil {
 				f.Vars = vb
+			}
+
+		case TokenMCPServer:
+			md := p.parseMCPServerDecl()
+			if md != nil {
+				f.MCPServers = append(f.MCPServers, md)
 			}
 
 		case TokenPrompt:
@@ -226,6 +232,21 @@ func (p *parser) parseFile() *ast.File {
 }
 
 // ---- vars ----
+
+func (p *parser) parseBool() *bool {
+	t := p.next()
+	switch t.Type {
+	case TokenTrue:
+		v := true
+		return &v
+	case TokenFalse:
+		v := false
+		return &v
+	default:
+		p.addError(DiagInvalidValue, t, "expected true or false, got '"+t.Value+"'")
+		return nil
+	}
+}
 
 func (p *parser) parseVarsBlock() *ast.VarsBlock {
 	start := p.next() // consume "vars"
@@ -476,6 +497,125 @@ func (p *parser) parseEnumConstraint() []string {
 	return vals
 }
 
+// ---- mcp_server ----
+
+func (p *parser) parseMCPServerDecl() *ast.MCPServerDecl {
+	start := p.next() // consume "mcp_server"
+	nameT := p.next()
+	name := tokenAsIdent(nameT)
+	if name == "" {
+		p.addError(DiagExpectedToken, nameT, "expected mcp_server name")
+		p.skipToNextTopLevel()
+		return nil
+	}
+	p.expect(TokenColon)
+	p.skipNewlines()
+	if _, ok := p.expect(TokenIndent); !ok {
+		return nil
+	}
+
+	md := &ast.MCPServerDecl{
+		Name: name,
+		Span: ast.Span{Start: p.pos(start)},
+	}
+
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		p.parseMCPServerProp(md, t)
+	}
+	return md
+}
+
+func (p *parser) parseMCPServerProp(md *ast.MCPServerDecl, propTok Token) {
+	p.next()
+	switch propTok.Type {
+	case TokenTransport:
+		p.expect(TokenColon)
+		md.Transport = p.parseMCPTransport()
+	case TokenCommand:
+		p.expect(TokenColon)
+		md.Command = p.expectString()
+	case TokenArgs:
+		p.expect(TokenColon)
+		md.Args = p.parseStringList()
+	case TokenURL:
+		p.expect(TokenColon)
+		md.URL = p.expectString()
+	default:
+		p.addError(DiagUnknownProperty, propTok, "unknown mcp_server property '"+propTok.Value+"'")
+		p.skipToNewline()
+	}
+	p.skipNewlines()
+}
+
+func (p *parser) parseMCPTransport() ast.MCPTransport {
+	t := p.next()
+	value := tokenAsIdent(t)
+	switch value {
+	case "stdio":
+		return ast.MCPTransportStdio
+	case "http":
+		return ast.MCPTransportHTTP
+	case "sse":
+		return ast.MCPTransportSSE
+	default:
+		p.addError(DiagInvalidValue, t, "expected MCP transport (stdio, http, sse), got '"+t.Value+"'")
+		return ast.MCPTransportUnknown
+	}
+}
+
+func (p *parser) parseMCPConfigBlock() *ast.MCPConfigDecl {
+	start := p.next() // consume "mcp"
+	p.expect(TokenColon)
+	p.skipNewlines()
+	if _, ok := p.expect(TokenIndent); !ok {
+		return nil
+	}
+
+	cfg := &ast.MCPConfigDecl{Span: ast.Span{Start: p.pos(start)}}
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		p.parseMCPConfigProp(cfg, t)
+	}
+	return cfg
+}
+
+func (p *parser) parseMCPConfigProp(cfg *ast.MCPConfigDecl, propTok Token) {
+	p.next()
+	switch propTok.Type {
+	case TokenAutoloadProject:
+		p.expect(TokenColon)
+		cfg.AutoloadProject = p.parseBool()
+	case TokenInherit:
+		p.expect(TokenColon)
+		cfg.Inherit = p.parseBool()
+	case TokenServers:
+		p.expect(TokenColon)
+		cfg.Servers = p.parseIdentList()
+	case TokenDisable:
+		p.expect(TokenColon)
+		cfg.Disable = p.parseIdentList()
+	default:
+		p.addError(DiagUnknownProperty, propTok, "unknown mcp property '"+propTok.Value+"'")
+		p.skipToNewline()
+	}
+	p.skipNewlines()
+}
+
 // ---- agent ----
 
 func (p *parser) parseAgentDecl() *ast.AgentDecl {
@@ -542,6 +682,9 @@ func (p *parser) parseAgentProp(ad *ast.AgentDecl, propTok Token) {
 	case TokenToolMaxSteps:
 		p.expect(TokenColon)
 		ad.ToolMaxSteps = p.expectInt()
+	case TokenMCP:
+		p.backup()
+		ad.MCP = p.parseMCPConfigBlock()
 	case TokenDelegate:
 		p.expect(TokenColon)
 		ad.Delegate = p.expectString()
@@ -618,6 +761,9 @@ func (p *parser) parseJudgeProp(jd *ast.JudgeDecl, propTok Token) {
 	case TokenToolMaxSteps:
 		p.expect(TokenColon)
 		jd.ToolMaxSteps = p.expectInt()
+	case TokenMCP:
+		p.backup()
+		jd.MCP = p.parseMCPConfigBlock()
 	case TokenDelegate:
 		p.expect(TokenColon)
 		jd.Delegate = p.expectString()
@@ -958,6 +1104,9 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 		case TokenVars:
 			wd.Vars = p.parseVarsBlock()
 
+		case TokenMCP:
+			wd.MCP = p.parseMCPConfigBlock()
+
 		case TokenEntry:
 			p.next() // consume "entry"
 			p.expect(TokenColon)
@@ -1210,6 +1359,22 @@ func (p *parser) parseIdentList() []string {
 	return names
 }
 
+func (p *parser) parseStringList() []string {
+	p.expect(TokenLBrack)
+	var vals []string
+	if p.peek().Type == TokenRBrack {
+		p.next()
+		return vals
+	}
+	vals = append(vals, p.expectString())
+	for p.peek().Type == TokenComma {
+		p.next()
+		vals = append(vals, p.expectString())
+	}
+	p.expect(TokenRBrack)
+	return vals
+}
+
 // parseToolList parses a bracketed list of tool references that may contain
 // dotted qualified names (e.g. [git_diff, mcp.claude_code.delegate]).
 func (p *parser) parseToolList() []string {
@@ -1318,12 +1483,13 @@ func tokenAsIdent(t Token) string {
 
 func isKeywordToken(tt TokenType) bool {
 	switch tt {
-	case TokenVars, TokenPrompt, TokenSchema, TokenAgent, TokenJudge,
+	case TokenVars, TokenMCPServer, TokenPrompt, TokenSchema, TokenAgent, TokenJudge,
 		TokenRouter, TokenJoin, TokenHuman, TokenTool, TokenWorkflow,
-		TokenEntry, TokenBudget, TokenModel, TokenInput, TokenOutput,
+		TokenEntry, TokenMCP, TokenBudget, TokenTransport, TokenServers,
+		TokenDisable, TokenAutoloadProject, TokenModel, TokenInput, TokenOutput,
 		TokenPublish, TokenSystem, TokenUser, TokenSession, TokenTools,
 		TokenToolMaxSteps, TokenMode, TokenStrategy, TokenRequire,
-		TokenInstructions, TokenCommand, TokenDelegate, TokenWhen, TokenNot, TokenAs,
+		TokenInstructions, TokenCommand, TokenArgs, TokenURL, TokenDelegate, TokenWhen, TokenNot, TokenAs,
 		TokenWith, TokenEnum, TokenFresh, TokenInherit, TokenArtifactsOnly,
 		TokenFanOutAll, TokenCondition, TokenWaitAll, TokenBestEffort,
 		TokenPauseUntilAnswers, TokenTrue, TokenFalse,

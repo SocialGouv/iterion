@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -13,10 +14,12 @@ import (
 	"github.com/SocialGouv/iterion/delegate"
 	"github.com/SocialGouv/iterion/ir"
 	iterlog "github.com/SocialGouv/iterion/log"
+	"github.com/SocialGouv/iterion/mcp"
 	"github.com/SocialGouv/iterion/model"
 	"github.com/SocialGouv/iterion/recipe"
 	"github.com/SocialGouv/iterion/runtime"
 	"github.com/SocialGouv/iterion/store"
+	"github.com/SocialGouv/iterion/tool"
 )
 
 // sortedKeys returns the keys of a map sorted alphabetically.
@@ -96,6 +99,9 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		if executor == nil {
 			executor = newDefaultExecutor(wf, opts.Vars, s, runID, logger)
 		}
+		if c, ok := executor.(io.Closer); ok {
+			defer c.Close()
+		}
 
 		eng, err = runtime.NewFromRecipe(spec, wf, s, executor, runtime.WithLogger(logger))
 		if err != nil {
@@ -115,6 +121,9 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		executor := opts.Executor
 		if executor == nil {
 			executor = newDefaultExecutor(wf, opts.Vars, s, runID, logger)
+		}
+		if c, ok := executor.(io.Closer); ok {
+			defer c.Close()
 		}
 
 		eng = runtime.New(wf, s, executor, runtime.WithLogger(logger))
@@ -230,10 +239,29 @@ func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunSto
 
 	hooks := model.NewStoreEventHooks(s, runID, logger)
 
-	executor := model.NewGoaiExecutor(reg, wf,
+	opts := []model.GoaiExecutorOption{
 		model.WithDelegateRegistry(delegateReg),
 		model.WithEventHooks(hooks),
-	)
+	}
+	if len(wf.ResolvedMCPServers) > 0 {
+		catalog := make(map[string]*mcp.ServerConfig, len(wf.ResolvedMCPServers))
+		for name, server := range wf.ResolvedMCPServers {
+			catalog[name] = &mcp.ServerConfig{
+				Name:      server.Name,
+				Transport: mcp.Transport(server.Transport.String()),
+				Command:   server.Command,
+				Args:      append([]string(nil), server.Args...),
+				URL:       server.URL,
+				Headers:   server.Headers,
+			}
+		}
+		opts = append(opts,
+			model.WithToolRegistry(tool.NewRegistry()),
+			model.WithMCPManager(mcp.NewManager(catalog)),
+		)
+	}
+
+	executor := model.NewGoaiExecutor(reg, wf, opts...)
 
 	if len(vars) > 0 {
 		v := make(map[string]interface{}, len(vars))
