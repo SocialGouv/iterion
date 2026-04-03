@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"sort"
 	"strings"
@@ -100,7 +101,11 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 			executor = newDefaultExecutor(wf, opts.Vars, s, runID, logger)
 		}
 		if c, ok := executor.(io.Closer); ok {
-			defer c.Close()
+			defer func() {
+				if cerr := c.Close(); cerr != nil {
+					log.Printf("cli: warning: executor close: %v", cerr)
+				}
+			}()
 		}
 
 		eng, err = runtime.NewFromRecipe(spec, wf, s, executor, runtime.WithLogger(logger), runtime.WithWorkflowHash(wfHash))
@@ -123,7 +128,11 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 			executor = newDefaultExecutor(wf, opts.Vars, s, runID, logger)
 		}
 		if c, ok := executor.(io.Closer); ok {
-			defer c.Close()
+			defer func() {
+				if cerr := c.Close(); cerr != nil {
+					log.Printf("cli: warning: executor close: %v", cerr)
+				}
+			}()
 		}
 
 		eng = runtime.New(wf, s, executor, runtime.WithLogger(logger), runtime.WithWorkflowHash(wfHash))

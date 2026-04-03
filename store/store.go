@@ -257,6 +257,7 @@ func (s *RunStore) LoadEvents(runID string) ([]*Event, error) {
 	defer f.Close()
 
 	var events []*Event
+	var skipped int
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxEventLineSize)
 	for scanner.Scan() {
@@ -268,13 +269,16 @@ func (s *RunStore) LoadEvents(runID string) ([]*Event, error) {
 		if err := json.Unmarshal(line, &evt); err != nil {
 			// Skip corrupt lines rather than aborting — partial corruption
 			// should not prevent reading subsequent valid events.
-			log.Printf("store: skipping corrupt event line: %v", err)
+			skipped++
 			continue
 		}
 		events = append(events, &evt)
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("store: scan events: %w", err)
+	}
+	if skipped > 0 {
+		log.Printf("store: warning: skipped %d corrupt event line(s) in run %s", skipped, runID)
 	}
 	return events, nil
 }

@@ -98,10 +98,11 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 
 	<-stderrDone
 
-	if err := cmd.Wait(); err != nil {
+	waitErr := waitWithTimeout(cmd, 10*time.Second)
+	if waitErr != nil {
 		exitCode := -1
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if errors.As(waitErr, &exitErr) {
 			exitCode = exitErr.ExitCode()
 		}
 		return Result{
@@ -109,7 +110,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 			ExitCode:    exitCode,
 			Stderr:      stderr.String(),
 			BackendName: "codex",
-		}, fmt.Errorf("delegate: codex failed: %w\nstderr: %s", err, stderr.String())
+		}, fmt.Errorf("delegate: codex failed: %w\nstderr: %s", waitErr, stderr.String())
 	}
 
 	result, parseErr := parseCodexJSONL(output)

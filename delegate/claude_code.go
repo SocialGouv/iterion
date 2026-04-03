@@ -111,10 +111,14 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 
 	<-stderrDone
 
-	if err := cmd.Wait(); err != nil {
+	// Wait for subprocess with a safety timeout. exec.CommandContext sends
+	// SIGKILL on context cancellation, but cmd.Wait() can still block if
+	// process cleanup is slow. Use a bounded wait to avoid indefinite blocking.
+	waitErr := waitWithTimeout(cmd, 10*time.Second)
+	if waitErr != nil {
 		exitCode := -1
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if errors.As(waitErr, &exitErr) {
 			exitCode = exitErr.ExitCode()
 		}
 		return Result{
@@ -122,7 +126,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 			ExitCode:    exitCode,
 			Stderr:      stderr.String(),
 			BackendName: "claude_code",
-		}, fmt.Errorf("delegate: claude-code failed: %w\nstderr: %s", err, stderr.String())
+		}, fmt.Errorf("delegate: claude-code failed: %w\nstderr: %s", waitErr, stderr.String())
 	}
 
 	result, parseErr := parseClaudeResult(output)
@@ -196,9 +200,33 @@ func parseClaudeResult(data []byte) (Result, error) {
 	return parseJSONOutput(data)
 }
 
+// waitWithTimeout waits for a command to finish with a bounded timeout.
+// If cmd.Wait() doesn't return within the timeout, the process is killed
+// and a timeout error is returned.
+func waitWithTimeout(cmd *exec.Cmd, timeout time.Duration) error {
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(timeout):
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		<-done // drain to avoid goroutine leak
+		return fmt.Errorf("delegate: process did not exit within %s after context cancellation", timeout)
+	}
+}
+
 // validateWorkDir checks that workDir resolves to a path within baseDir.
 // If baseDir is empty, no validation is performed.
 // Symlinks are resolved to prevent directory traversal bypasses.
+//
+// LIMITATION: This check is subject to a TOCTOU race — the path is validated
+// here but used later when the subprocess starts. A symlink could be swapped
+// between validation and use. For trusted environments this is acceptable;
+// for untrusted workDir sources, additional OS-level protections are needed.
 func validateWorkDir(workDir, baseDir string) error {
 	if baseDir == "" {
 		return nil

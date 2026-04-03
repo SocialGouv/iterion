@@ -76,14 +76,16 @@ func NewManager(catalog map[string]*ServerConfig) *Manager {
 
 // EnsureServers discovers tools for the given servers and registers them into
 // the provided registry. Connections and tool catalogs are opened lazily and
-// cached for the lifetime of the manager.
+// cached for the lifetime of the manager. If some servers fail, discovery
+// continues for the remaining servers and a combined error is returned.
 func (m *Manager) EnsureServers(ctx context.Context, registry *tool.Registry, servers []string) error {
+	var errs []error
 	for _, server := range servers {
 		if err := m.ensureServer(ctx, registry, server); err != nil {
-			return err
+			errs = append(errs, err)
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // Close closes any open MCP clients held by the manager.
@@ -148,7 +150,17 @@ func (m *Manager) ensureServer(ctx context.Context, registry *tool.Registry, ser
 			if err != nil {
 				return "", err
 			}
-			return formatToolResult(result)
+			text, fmtErr := formatToolResult(result)
+			// Auto-retry Read with a smaller limit on "exceeds maximum tokens".
+			if fmtErr != nil && toolName == "Read" && strings.Contains(fmtErr.Error(), "exceeds maximum allowed tokens") {
+				args["limit"] = float64(300)
+				retryResult, retryErr := client.CallTool(callCtx, toolName, args)
+				if retryErr != nil {
+					return "", retryErr
+				}
+				return formatToolResult(retryResult)
+			}
+			return text, fmtErr
 		}); err != nil {
 			return fmt.Errorf("mcp: register %s.%s: %w", server, info.Name, err)
 		}
@@ -323,15 +335,17 @@ func sanitizeToolArgs(toolName string, args map[string]interface{}) {
 
 	// For Read tool: always ensure a limit is set to avoid "file too large"
 	// errors. The Claude Code MCP server rejects reads over 10K tokens.
+	// A single-file HTML app of ~80KB can be ~28K tokens, so we cap
+	// aggressively. The auto-retry in the tool callback handles cases
+	// where even the capped limit is too large.
 	if toolName == "Read" {
 		_, hasPages := args["pages"]
 		if !hasPages {
 			limit, hasLimit := args["limit"]
 			if !hasLimit {
-				args["limit"] = float64(2000)
-			} else if limitF, ok := limit.(float64); ok && limitF > 3000 {
-				// Cap excessive limits that would exceed the token limit.
-				args["limit"] = float64(3000)
+				args["limit"] = float64(500)
+			} else if limitF, ok := limit.(float64); ok && limitF > 500 {
+				args["limit"] = float64(500)
 			}
 		}
 	}

@@ -103,7 +103,7 @@ func NativePresets() map[string]*ServerConfig {
 			Command:   "codex",
 			Args: []string{
 				"mcp-server",
-				"--dangerously-bypass-approvals-and-sandbox",
+				"-c", `sandbox="danger-full-access"`,
 			},
 		},
 	}

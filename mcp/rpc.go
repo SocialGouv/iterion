@@ -70,6 +70,7 @@ type stdioClient struct {
 	closed  bool
 	cmd     *exec.Cmd
 	stdin   io.WriteCloser
+	stdout  io.ReadCloser
 	pending map[int]chan rpcReply
 	nextID  int
 	readErr error
@@ -118,10 +119,17 @@ func (c *stdioClient) Close() error {
 	c.closed = true
 	cmd := c.cmd
 	stdin := c.stdin
+	stdout := c.stdout
 	c.stateMu.Unlock()
 
 	if stdin != nil {
 		_ = stdin.Close()
+	}
+	// Close stdout explicitly to unblock readLoop's scanner.Scan() call.
+	// Without this, readLoop may hang indefinitely if the subprocess does
+	// not close its stdout (e.g., it is stuck or buffering).
+	if stdout != nil {
+		_ = stdout.Close()
 	}
 	if cmd == nil || cmd.Process == nil {
 		return nil
@@ -187,6 +195,7 @@ func (c *stdioClient) start(ctx context.Context) error {
 	c.stateMu.Lock()
 	c.cmd = cmd
 	c.stdin = stdin
+	c.stdout = stdout
 	c.pending = make(map[int]chan rpcReply)
 	c.stateMu.Unlock()
 
@@ -401,7 +410,10 @@ func newHTTPClient(cfg *ServerConfig, info clientInfo) *httpClient {
 		cfg:  cloneServerConfig(cfg),
 		info: info,
 		http: &http.Client{
-			Timeout: 5 * time.Minute,
+			// Safety timeout for requests without a context deadline.
+			// Individual requests use context for cancellation; this is
+			// a backstop to prevent indefinite blocking.
+			Timeout: 60 * time.Second,
 		},
 		protocolVersion: DefaultProtocolVersion,
 	}

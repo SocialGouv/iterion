@@ -171,9 +171,9 @@ func TestDelegation_EmitsErrorOnFailure(t *testing.T) {
 }
 
 func TestDelegation_EmitsRetryOnTransientError(t *testing.T) {
-	// First call fails with retryable error, second succeeds.
+	// First call fails with retryable error (signal-based exit), second succeeds.
 	backend := &stubBackend{
-		errors: []error{fmt.Errorf("delegate: exit status 1")},
+		errors: []error{fmt.Errorf("delegate: exit status 137")},
 		results: []delegate.Result{
 			{}, // placeholder for first call (error)
 			{

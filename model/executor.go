@@ -520,8 +520,10 @@ func (e *GoaiExecutor) retryLoop(ctx context.Context, nodeID string, fn func() (
 // ---------------------------------------------------------------------------
 
 // isDelegateRetryable determines whether a delegation error is transient
-// and worth retrying. Subprocess crashes and signals are retried; parsing
-// errors are not.
+// and worth retrying. Only signal-based kills (exit codes 128+, indicating
+// OOM, SIGTERM, etc.) and I/O errors are retried. Permanent failures like
+// exit 1 (application error), exit 2 (misuse), or exit 127 (command not
+// found) are not retried.
 func isDelegateRetryable(err error) bool {
 	if err == nil {
 		return false
@@ -531,9 +533,13 @@ func isDelegateRetryable(err error) bool {
 	if strings.Contains(msg, "signal:") {
 		return true
 	}
-	// Generic subprocess failure (crash, transient error).
+	// Exit status: only retry signal-based exits (128+). Lower exit codes
+	// indicate permanent failures that retrying won't fix.
 	if strings.Contains(msg, "exit status") {
-		return true
+		code := extractExitCode(msg)
+		// exit 128+ means the process was killed by a signal (128+N).
+		// These are typically transient (OOM killer, timeout, etc.).
+		return code >= 128
 	}
 	// Process could not start (resource exhaustion).
 	if strings.Contains(msg, "failed to start") {
@@ -544,6 +550,32 @@ func isDelegateRetryable(err error) bool {
 		return true
 	}
 	return false
+}
+
+// extractExitCode parses an exit code from an error message containing
+// "exit status N". Returns -1 if no valid code is found.
+func extractExitCode(msg string) int {
+	const prefix = "exit status "
+	idx := strings.Index(msg, prefix)
+	if idx < 0 {
+		return -1
+	}
+	rest := msg[idx+len(prefix):]
+	// Parse the integer, stopping at first non-digit.
+	n := 0
+	found := false
+	for _, c := range rest {
+		if c >= '0' && c <= '9' {
+			n = n*10 + int(c-'0')
+			found = true
+		} else {
+			break
+		}
+	}
+	if !found {
+		return -1
+	}
+	return n
 }
 
 // retryDelegateLoop retries a delegation call with exponential backoff.
@@ -1268,6 +1300,11 @@ func (e *GoaiExecutor) resolveSingleToolForNode(ctx context.Context, node *ir.No
 		if err != nil {
 			// Fall back to the legacy tool map when the registry does not know the tool.
 			if t, ok := e.tools[name]; ok {
+				// Apply policy guard to legacy tools — without this, the
+				// legacy path bypasses tool policy enforcement.
+				if e.toolPolicy != nil {
+					t = e.guardTool(t)
+				}
 				return t, true, nil
 			}
 			return goai.Tool{}, false, err

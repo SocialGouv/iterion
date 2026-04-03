@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -82,6 +83,10 @@ type budgetCheckResult struct {
 // RecordUsage records resource consumption from a node execution and returns
 // check results. tokens and costUSD may be zero if the executor does not
 // report them.
+//
+// Because budget enforcement is soft (pre-check and post-record are not
+// atomic), concurrent branches may push usage past the limit. When overage
+// exceeds 20% of the limit, a warning is logged to aid debugging.
 func (b *SharedBudget) RecordUsage(tokens int, costUSD float64) []budgetCheckResult {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -90,7 +95,20 @@ func (b *SharedBudget) RecordUsage(tokens int, costUSD float64) []budgetCheckRes
 	b.tokensUsed += tokens
 	b.costUsed += costUSD
 
-	return b.checkLocked()
+	checks := b.checkLocked()
+
+	// Log a warning when soft enforcement allows significant overage.
+	for _, c := range checks {
+		if c.exceeded && c.limit > 0 {
+			overage := (c.used - c.limit) / c.limit
+			if overage > 0.2 {
+				log.Printf("runtime: budget %s exceeded by %.0f%% (%.0f/%.0f) — concurrent branches may have passed pre-check simultaneously",
+					c.dimension, overage*100, c.used, c.limit)
+			}
+		}
+	}
+
+	return checks
 }
 
 // Check checks current budget status without recording usage.

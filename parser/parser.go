@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -1469,7 +1470,11 @@ func (p *parser) expectIdent() string {
 func (p *parser) expectInt() int {
 	t := p.next()
 	if t.Type == TokenInt {
-		v, _ := strconv.Atoi(t.Value)
+		v, err := strconv.Atoi(t.Value)
+		if err != nil {
+			p.addError(DiagExpectedToken, t, fmt.Sprintf("invalid integer %q: %v", t.Value, err))
+			return 0
+		}
 		return v
 	}
 	p.addError(DiagExpectedToken, t, "expected integer, got "+t.Type.String())
@@ -1479,11 +1484,12 @@ func (p *parser) expectInt() int {
 func (p *parser) expectNumber() float64 {
 	t := p.next()
 	switch t.Type {
-	case TokenInt:
-		v, _ := strconv.ParseFloat(t.Value, 64)
-		return v
-	case TokenFloat:
-		v, _ := strconv.ParseFloat(t.Value, 64)
+	case TokenInt, TokenFloat:
+		v, err := strconv.ParseFloat(t.Value, 64)
+		if err != nil {
+			p.addError(DiagExpectedToken, t, fmt.Sprintf("invalid number %q: %v", t.Value, err))
+			return 0
+		}
 		return v
 	default:
 		p.addError(DiagExpectedToken, t, "expected number, got "+t.Type.String())

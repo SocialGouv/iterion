@@ -22,6 +22,7 @@ const (
 	DiagLLMRouterConditionEdge DiagCode = "C022" // llm router edge has a 'when' condition
 	DiagRouterLLMOnlyProperty  DiagCode = "C023" // LLM-only property on non-llm router
 	DiagInvalidReasoningEffort DiagCode = "C024" // invalid reasoning_effort value
+	DiagInvalidLoopIterations  DiagCode = "C026" // loop max_iterations must be >= 1
 )
 
 // validate performs static validation on a compiled workflow.
@@ -40,6 +41,7 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateReachability(w)
 	c.validateHistoryRefs(w)
 	c.validateUndeclaredCycles(w)
+	c.validateLoopIterations(w)
 	c.validateReasoningEffort(w)
 }
 
@@ -469,6 +471,20 @@ func (c *compiler) validateUndeclaredCycles(w *Workflow) {
 	}
 
 	dfs(w.Entry)
+}
+
+// ---------------------------------------------------------------------------
+// C026 — loop max_iterations must be >= 1
+// ---------------------------------------------------------------------------
+
+func (c *compiler) validateLoopIterations(w *Workflow) {
+	for _, loop := range w.Loops {
+		if loop.MaxIterations < 1 {
+			c.errorf(DiagInvalidLoopIterations,
+				"loop %q has max_iterations=%d; must be >= 1",
+				loop.Name, loop.MaxIterations)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -114,6 +114,7 @@ type branchResult struct {
 	artifactVersions map[string]int
 	joinNodeID       string // the join node this branch converged to (empty if terminal)
 	err              error
+	eventErrors      int // count of event emission failures (best-effort events)
 }
 
 // Run executes the workflow. It creates a run, walks the graph from the
@@ -901,6 +902,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 	// Emit branch_started (best-effort — branch can proceed without the event).
 	if err := e.emitBranch(runID, branchID, store.EventBranchStarted, startEdge.To, nil); err != nil {
 		log.Printf("runtime: branch %s: failed to emit branch_started: %v", branchID, err)
+		result.eventErrors++
 	}
 
 	currentNodeID := startEdge.To
@@ -943,6 +945,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 					"limit":     exc.limit,
 				}); err != nil {
 					log.Printf("runtime: branch %s: failed to emit budget_exceeded: %v", branchID, err)
+					result.eventErrors++
 				}
 				result.err = fmt.Errorf("%w: %s (%.0f/%.0f)", ErrBudgetExceeded, exc.dimension, exc.used, exc.limit)
 				return result
@@ -954,6 +957,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 			"kind": node.Kind.String(),
 		}); err != nil {
 			log.Printf("runtime: branch %s: failed to emit node_started: %v", branchID, err)
+			result.eventErrors++
 		}
 
 		// Build input: merge parent outputs with branch-local outputs so
@@ -970,6 +974,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 				"error": err.Error(),
 			}); emitErr != nil {
 				log.Printf("runtime: branch %s: failed to emit node_finished: %v", branchID, emitErr)
+				result.eventErrors++
 			}
 			return result
 		}
@@ -989,6 +994,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 					"limit":     w.limit,
 				}); err != nil {
 					log.Printf("runtime: branch %s: failed to emit budget_warning: %v", branchID, err)
+					result.eventErrors++
 				}
 			}
 
@@ -1000,6 +1006,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 					"limit":     exc.limit,
 				}); err != nil {
 					log.Printf("runtime: branch %s: failed to emit budget_exceeded: %v", branchID, err)
+					result.eventErrors++
 				}
 				result.err = fmt.Errorf("%w: %s (%.0f/%.0f)", ErrBudgetExceeded, exc.dimension, exc.used, exc.limit)
 				return result
@@ -1026,12 +1033,14 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 				"version": version,
 			}); err != nil {
 				log.Printf("runtime: branch %s: failed to emit artifact_written: %v", branchID, err)
+				result.eventErrors++
 			}
 		}
 
 		// Emit node_finished with usage data.
 		if err := e.emitBranch(runID, branchID, store.EventNodeFinished, currentNodeID, buildNodeFinishedData(output)); err != nil {
 			log.Printf("runtime: branch %s: failed to emit node_finished: %v", branchID, err)
+			result.eventErrors++
 		}
 		if e.onNodeFinished != nil {
 			e.onNodeFinished(currentNodeID, output)
