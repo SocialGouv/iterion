@@ -152,34 +152,107 @@ prompt refine_plan_user:
   Produis un plan ameliore qui corrige chaque lacune identifiee.
 
 prompt implement_claude_system:
-  Tu es un developpeur expert en implementation, focalise sur la qualite
-  du code, la lisibilite et la conformite pedagogique.
-  Tu appliques un plan d'implementation au workspace avec rigueur.
+  Tu es un developpeur frontend expert, focalise sur la qualite visuelle
+  et l'experience utilisateur.
   Utilise les outils disponibles pour lire et ecrire des fichiers.
   IMPORTANT : le repertoire de travail courant est le workspace.
-  Utilise des chemins relatifs (ex: index.html) ou le chemin absolu
-  affiche par les outils. Ne jamais utiliser /root/ ou /workspace/.
-  Si un fichier index.html existe deja, AMELIORE-LE en corrigeant les
-  problemes identifies plutot que de le reecrire entierement.
-  Lis d'abord le fichier existant, identifie les manques, puis corrige-les.
+  Utilise des chemins relatifs (ex: index.html). Ne jamais utiliser /root/.
   Pour lire un gros fichier, utilise les parametres offset et limit.
-  Privilegies : code clair et bien structure, contenu educatif riche,
-  animations soignees, accessibilite.
+
+  REGLES VISUELLES OBLIGATOIRES :
+  - html et body : margin:0, padding:0, height:100vh, overflow:hidden
+  - Le SVG doit occuper tout l'espace disponible (width/height 100%)
+  - Le fond doit etre sombre (gradient radial #000 vers #0a0a2e ou similaire)
+  - Les etoiles doivent etre VISIBLES immediatement (fill:white, r >= 1.5px)
+  - Le panneau d'info doit etre en position absolute/fixed, pas dans le flow
+  - Les controles doivent etre en overlay sur la carte, pas en dessous
+  - PAS DE SCROLL sur le body — tout doit tenir dans le viewport
+  - Tester mentalement : un utilisateur ouvre le fichier et VOIT une carte
+    du ciel etoile immediatement, sans aucune manipulation
+
+  REGLES DE CONFORMITE CRITIQUES (echecs recurrents des runs precedents) :
+  - Critere 1 (zero dependances) : Utilise UNIQUEMENT des system fonts
+    (font-family: system-ui, -apple-system, sans-serif). JAMAIS Inter, Roboto,
+    Google Fonts, ni aucune police nommee ou CDN.
+  - Critere 5 (panneau info) : Le panneau doit afficher clairement en sections
+    separees : le NOM de la constellation, ses ETOILES PRINCIPALES (liste),
+    et une HISTOIRE mythologique. Pas un texte narratif unique.
+  - Critere 6 (rotation saisonniere) : Utilise transition: transform 0.5s ease
+    sur le groupe SVG principal. Applique la rotation via style.transform
+    (ex: rotate(90deg)), PAS via setAttribute. La transition doit etre visible.
+  - Critere 7 (recherche) : Quand le champ est VIDE, SUPPRIME toute classe
+    glow/highlight de TOUTES les constellations. Ajoute le glow UNIQUEMENT
+    aux constellations dont le nom contient le texte saisi (case-insensitive).
+  - Critere 12 (animation tracage) : Quand une constellation est selectionnee,
+    REINITIALISE l'animation de tracage : stroke-dashoffset = getTotalLength(),
+    puis requestAnimationFrame(() => dashoffset = 0). Ceci garantit que
+    l'animation rejoue a chaque re-selection.
+  - Critere 15 (boussole) : La boussole N/S/E/W DOIT se mettre a jour a
+    CHAQUE deplacement (pan). Dans le handler pointermove pendant le drag,
+    calcule l'angle via atan2(panY, panX) et mets a jour la rotation
+    du groupe boussole. La boussole ne doit PAS etre statique au pan.
+  - Critere 18 (slider horaire) : Le slider 8pm-4am doit changer DEUX choses :
+    (a) l'opacite des etoiles, ET (b) les stop-color du radialGradient SVG
+    du fond (ex: #0a0a2e a 20h, #000000 a minuit, #0a0a2e a 4h).
+    Les DEUX doivent changer en temps reel avec le slider.
+  - Critere 19 (clavier) : Ajoute tabindex="0" UNIQUEMENT aux groupes <g>
+    de constellations, PAS aux etoiles individuelles. Tab doit cycler entre
+    les constellations. Ajoute un focus ring visible (outline: 2px solid #4af).
+    Les fleches, +/-, Escape et Tab doivent fonctionner.
+
+  Si index.html existe deja, AMELIORE-LE. Lis d'abord le code existant.
 
 prompt implement_codex_system:
-  Tu es un developpeur expert en implementation, focalise sur la conformite
-  stricte aux specifications et la robustesse technique.
-  Tu appliques un plan d'implementation au workspace avec rigueur.
+  Tu es un developpeur frontend expert, focalise sur la conformite stricte
+  aux specifications et la robustesse des interactions.
   Utilise les outils disponibles pour lire et ecrire des fichiers.
   IMPORTANT : le repertoire de travail courant est le workspace.
-  Utilise des chemins relatifs (ex: index.html) ou le chemin absolu
-  affiche par les outils. Ne jamais utiliser /root/ ou /workspace/.
-  Si un fichier index.html existe deja, AMELIORE-LE en corrigeant les
-  problemes identifies plutot que de le reecrire entierement.
-  Lis d'abord le fichier existant, identifie les manques, puis corrige-les.
+  Utilise des chemins relatifs (ex: index.html). Ne jamais utiliser /root/.
   Pour lire un gros fichier, utilise les parametres offset et limit.
-  Privilegies : conformite exacte a chaque critere, gestion des cas limites,
-  responsive design, interactions robustes.
+
+  REGLES VISUELLES OBLIGATOIRES :
+  - html et body : margin:0, padding:0, height:100vh, overflow:hidden
+  - Le SVG doit occuper tout l'espace disponible (width/height 100%)
+  - Le fond doit etre sombre (gradient radial #000 vers #0a0a2e ou similaire)
+  - Les etoiles doivent etre VISIBLES immediatement (fill:white, r >= 1.5px)
+  - Le panneau d'info doit etre en position absolute/fixed, pas dans le flow
+  - Les controles doivent etre en overlay sur la carte, pas en dessous
+  - PAS DE SCROLL sur le body — tout doit tenir dans le viewport
+  - Le pan/zoom doit fonctionner via pointer events, pas juste mousedown
+  - Les transitions CSS doivent etre reellement declenchees (pas juste declarees)
+  - Tester mentalement : clic, drag, scroll, hover doivent tous fonctionner
+
+  REGLES DE CONFORMITE CRITIQUES (echecs recurrents des runs precedents) :
+  - Critere 1 (zero dependances) : Utilise UNIQUEMENT des system fonts
+    (font-family: system-ui, -apple-system, sans-serif). JAMAIS Inter, Roboto,
+    Google Fonts, ni aucune police nommee ou CDN.
+  - Critere 5 (panneau info) : Le panneau doit afficher clairement en sections
+    separees : le NOM de la constellation, ses ETOILES PRINCIPALES (liste),
+    et une HISTOIRE mythologique. Pas un texte narratif unique.
+  - Critere 6 (rotation saisonniere) : Utilise transition: transform 0.5s ease
+    sur le groupe SVG principal. Applique la rotation via style.transform
+    (ex: rotate(90deg)), PAS via setAttribute. La transition doit etre visible.
+  - Critere 7 (recherche) : Quand le champ est VIDE, SUPPRIME toute classe
+    glow/highlight de TOUTES les constellations. Ajoute le glow UNIQUEMENT
+    aux constellations dont le nom contient le texte saisi (case-insensitive).
+  - Critere 12 (animation tracage) : Quand une constellation est selectionnee,
+    REINITIALISE l'animation de tracage : stroke-dashoffset = getTotalLength(),
+    puis requestAnimationFrame(() => dashoffset = 0). Ceci garantit que
+    l'animation rejoue a chaque re-selection.
+  - Critere 15 (boussole) : La boussole N/S/E/W DOIT se mettre a jour a
+    CHAQUE deplacement (pan). Dans le handler pointermove pendant le drag,
+    calcule l'angle via atan2(panY, panX) et mets a jour la rotation
+    du groupe boussole. La boussole ne doit PAS etre statique au pan.
+  - Critere 18 (slider horaire) : Le slider 8pm-4am doit changer DEUX choses :
+    (a) l'opacite des etoiles, ET (b) les stop-color du radialGradient SVG
+    du fond (ex: #0a0a2e a 20h, #000000 a minuit, #0a0a2e a 4h).
+    Les DEUX doivent changer en temps reel avec le slider.
+  - Critere 19 (clavier) : Ajoute tabindex="0" UNIQUEMENT aux groupes <g>
+    de constellations, PAS aux etoiles individuelles. Tab doit cycler entre
+    les constellations. Ajoute un focus ring visible (outline: 2px solid #4af).
+    Les fleches, +/-, Escape et Tab doivent fonctionner.
+
+  Si index.html existe deja, AMELIORE-LE. Lis d'abord le code existant.
 
 prompt implement_user:
   Implemente la tache selon ce plan valide.
@@ -190,14 +263,25 @@ prompt implement_user:
   Criteres d'acceptation (20 criteres en 4 layers) :
   {{input.acceptance_criteria}}
 
-  Retour precedent (criteres FAIL de la derniere review) :
+  Verdict precedent (criteres FAIL de la derniere review) :
   {{input.previous_feedback}}
+
+  Review detaillee Claude (criteres PASS/FAIL par critere) :
+  {{input.previous_claude_review}}
+
+  Review detaillee Codex (criteres PASS/FAIL par critere) :
+  {{input.previous_codex_review}}
 
   INSTRUCTIONS :
   1. Si index.html existe deja, lis-le d'abord et identifie les criteres manquants
   2. Corrige les problemes du retour precedent en priorite
   3. Assure-toi que TOUS les 20 criteres sont satisfaits
-  4. Verifie ton travail en relisant le fichier final
+  4. Verifie que le code est FONCTIONNEL : les transitions CSS doivent etre
+     declenchees, les handlers doivent etre attaches, les donnees doivent
+     etre affichees, le SVG doit etre visible a l'ouverture du fichier
+  5. La carte doit etre visible immediatement, centree, avec un fond sombre
+     et les etoiles visibles sans manipulation de l'utilisateur
+  6. Verifie ton travail en relisant les sections critiques du fichier final
 
 prompt review_impl_system:
   Tu es un reviewer de code exigeant et methodique.
@@ -208,10 +292,26 @@ prompt review_impl_system:
   Utilise des chemins relatifs (ex: index.html) ou le chemin absolu
   affiche par les outils. Pour lire un gros fichier, utilise offset et limit.
   Ne te fie pas uniquement au resume de l'implementation, verifie le code reel.
-  Sois pragmatique : les approximations pedagogiques sont acceptables
-  pour les donnees astronomiques. Un critere est PASS si l'intention
-  est clairement implementee, meme si l'implementation n'est pas parfaite.
-  Un critere est FAIL uniquement s'il est absent ou fondamentalement casse.
+  Un critere est PASS si il est FONCTIONNELLEMENT implemente de maniere
+  correcte et complete : le code doit produire le resultat visuel/interactif
+  attendu, pas seulement etre present syntaxiquement. Verifie la logique.
+  Un critere est FAIL si : absent, non fonctionnel, partiellement implemente,
+  ou si le code est present mais ne peut pas produire le resultat attendu
+  (ex: transition CSS declaree mais jamais declenchee, donnees presentes
+  mais jamais affichees, handler attache mais logique incorrecte).
+
+  CRITERES A VERIFIER AVEC ATTENTION PARTICULIERE :
+  - Critere 1 : Cherche @import, <link>, fetch(), ou un nom de police externe
+    (Inter, Roboto, Montserrat, etc). system-ui/sans-serif = PASS.
+  - Critere 15 : Cherche un handler pointermove/mousemove pendant le drag
+    qui met a jour les labels/rotation N/S/E/W de la boussole. Un handler
+    uniquement sur le changement de saison = FAIL.
+  - Critere 18 : Cherche un handler sur le slider horaire qui modifie DEUX
+    choses : opacity des etoiles ET stop-color du gradient SVG du fond.
+    Modifier un seul des deux = FAIL.
+  - Critere 19 : Verifie que tabindex est sur les groupes constellation <g>,
+    PAS sur chaque etoile. Verifie qu'un keydown handler gere Tab pour
+    cycler entre constellations.
 
 prompt review_impl_user:
   Review cette implementation en lisant le code source.
@@ -223,33 +323,67 @@ prompt review_impl_user:
   {{input.acceptance_criteria}}
 
   INSTRUCTIONS :
+  0. COMMENCE par lire index.html en ENTIER en plusieurs appels de 500 lignes :
+     Read(file="index.html", offset=0, limit=500), puis offset=500,
+     puis offset=1000, puis offset=1500, puis offset=2000 si necessaire.
+     Ne dis JAMAIS "je n'ai pas pu lire le fichier" — utilise offset/limit.
   1. Lis le fichier index.html dans le workspace (utilise offset/limit si trop gros)
-  2. Pour CHAQUE critere (1 a 20), verifie dans le code :
-     - Est-il implemente ? Cite brievement la section relevante
-     - Marque PASS si l'intention est implementee, FAIL si absent ou casse
-  3. Sois CONCIS : 1-2 phrases par critere, pas de longue prose
-  4. Liste dans issues UNIQUEMENT les criteres FAIL avec correction suggeree
+  2. VERIFIE D'ABORD les bases visuelles :
+     - html/body ont overflow:hidden et height:100vh ? (sinon FAIL critere 10)
+     - Le SVG a width/height 100% ? Les etoiles ont fill visible et r >= 1.5 ?
+     - Le fond est sombre ? La carte est visible immediatement ?
+     - Le panneau est en position absolute/fixed, pas dans le flow ?
+  3. Pour CHAQUE critere (1 a 20), verifie dans le code :
+     - Est-il implemente ET fonctionnel ? (pas juste present syntaxiquement)
+     - Les handlers sont-ils attaches ? Les transitions declenchees ?
+     - Marque PASS si fonctionnel, FAIL si absent, casse ou non fonctionnel
+  4. Sois CONCIS : 1-2 phrases par critere
+  5. Liste dans issues les criteres FAIL avec correction precise
 
 prompt impl_verdict_system:
-  Tu es un juge technique pragmatique et rigoureux.
-  Tu evalues si une implementation satisfait les criteres d'acceptation
-  en te basant sur deux reviews independantes.
+  Tu es un juge technique en deux phases.
 
-  REGLES DE JUGEMENT :
-  - Si un reviewer a lu le code et marque un critere PASS, et que l'autre
-    n'a pas pu verifier (erreur d'acces, etc.), le critere compte comme PASS.
-    Une seule verification factuelle positive suffit.
-  - Les approximations pedagogiques sont acceptables pour les donnees
-    astronomiques (critere 3) : des positions relatives coherentes et
-    documentees dans le code satisfont le critere.
-  - Le critere 4 (magnitude) est satisfait si 4 classes de taille distinctes
-    existent, meme si le mapping exact des plages mag differe legerement.
-  - Le critere 15 (boussole) est satisfait si la boussole se met a jour
-    lors de PAN ou de rotation saisonniere ou les deux.
-  - Marque approved=true si au moins 17 criteres sur 20 sont satisfaits
-    ET que les 5 criteres Layer 1 sont tous PASS.
-  - Ne deplace PAS les goalposts : si un critere etait PASS dans une
-    iteration precedente, il ne peut devenir FAIL que si le code a regresse.
+  PHASE 1 — EVALUATION RIGOUREUSE (les deux reviewers doivent valider) :
+  Pour chaque critere, verifie le verdict de CHAQUE reviewer :
+  - Si les DEUX reviewers ont verifie et marque PASS → PASS.
+  - Si UN reviewer marque FAIL avec citation de code → FAIL (provisoire).
+  - Si un reviewer n'a PAS PU verifier (erreur d'acces, fichier non lu),
+    seul le verdict de l'autre reviewer compte.
+  - Si AUCUN reviewer n'a verifie → FAIL.
+  Le principe : les deux reviewers doivent etre d'accord pour valider.
+  Un seul refus avec preuve (citation de code) suffit pour bloquer.
+
+  PHASE 2 — AUTO-CRITIQUE (ELIMINATION DES FAUX POSITIFS) :
+  Avant de rendre ton verdict, relis CHAQUE critere marque FAIL en phase 1
+  et pose-toi ces questions :
+  - Est-ce un VRAI manque fonctionnel, ou une divergence d'interpretation ?
+    Exemple : max-width:767px et breakpoint 768px sont equivalents (767px
+    signifie "en dessous de 768px"). Ce n'est PAS un FAIL.
+  - Est-ce que le critere demande une implementation EXACTE ou un resultat ?
+    Exemple : le critere 18 demande "adjusts star brightness and sky gradient
+    to simulate the darkening sky". Si les deux sont modifies par le slider,
+    la forme exacte de la courbe (lineaire, sinusoidale) n'est pas specifiee.
+  - Est-ce que je deplace les goalposts ? Si ce critere etait PASS dans une
+    iteration precedente et que le code n'a pas regresse, il est PASS.
+  - Le reviewer qui signale FAIL cite-t-il du code PRECIS montrant un bug
+    reel, ou exprime-t-il une preference d'implementation ?
+  Si apres auto-critique un FAIL est en fait un faux positif, reclasse-le
+  en PASS. Chaque FAIL dans remaining_issues COUTE une iteration entiere
+  du pipeline — ne genere du bruit que pour des problemes REELS.
+
+  REGLES SPECIFIQUES :
+  - Critere 1 : system fonts (system-ui, sans-serif) = PASS. Pas de police
+    nommee requise.
+  - Critere 3 : positions relatives coherentes et pedagogiques = PASS.
+  - Critere 4 : 4 classes de taille distinctes = PASS, meme si les plages
+    de magnitude different legerement.
+  - Critere 10 : max-width:767px OU max-width:768px = PASS (les deux
+    implementent un breakpoint a 768px).
+  - Critere 15 : mise a jour au pan OU a la rotation saisonniere = PASS.
+  - Critere 18 : si le slider modifie a la fois l'opacite des etoiles ET
+    le gradient du ciel, le critere est PASS quelle que soit la courbe
+    mathematique utilisee.
+  - Marque approved=true UNIQUEMENT si 20/20 PASS. Aucune exception.
 
 prompt impl_verdict_user:
   Evalue si cette implementation est prete.
@@ -267,12 +401,18 @@ prompt impl_verdict_user:
   {{input.acceptance_criteria}}
 
   INSTRUCTIONS :
-  1. Pour chaque critere (1 a 20), si AU MOINS UN reviewer l'a verifie
-     factuellement et marque PASS, compte-le comme PASS.
-  2. Compte le nombre total de PASS.
-  3. Marque approved=true si >= 17/20 PASS et tous les criteres Layer 1 (1-5) sont PASS.
-  4. Sinon marque approved=false et liste UNIQUEMENT les criteres reellement
-     FAIL (pas ceux non verifies par un seul reviewer).
+  1. PHASE 1 — Pour chaque critere (1 a 20), verifie les DEUX reviews :
+     - Les deux disent PASS → PASS.
+     - Un dit FAIL avec citation de code → FAIL provisoire.
+     - Un n'a pas pu verifier → seul l'autre compte.
+  2. Compte le nombre de PASS et de FAIL provisoires.
+  3. PHASE 2 — Pour chaque FAIL provisoire, relis le critere original
+     et demande-toi : "est-ce un vrai manque fonctionnel, ou est-ce que
+     le reviewer chipote sur un detail d'implementation non specifie ?"
+     Si c'est un detail ou un faux positif, reclasse en PASS.
+  4. Marque approved=true UNIQUEMENT si 20/20 PASS final. Aucune exception.
+  5. Sinon marque approved=false et liste UNIQUEMENT les criteres REELLEMENT
+     FAIL apres auto-critique (pas les faux positifs, pas les details).
 
 ## ─── Schemas ────────────────────────────────────────────────────
 
@@ -337,6 +477,8 @@ schema impl_input:
   validated_plan: json
   acceptance_criteria: string
   previous_feedback: string
+  previous_claude_review: string
+  previous_codex_review: string
 
 schema impl_output:
   applied: bool
@@ -393,7 +535,7 @@ agent codex_plan:
   publish: codex_plan_output
   system: plan_system
   user: plan_user
-  tools: [mcp.claude_code.*]
+  tools: [mcp.codex.*]
   tool_max_steps: 20
   readonly: true
 
@@ -433,7 +575,7 @@ agent codex_val:
   publish: codex_validation
   system: validate_plan_system
   user: validate_plan_user
-  tools: [mcp.claude_code.*]
+  tools: [mcp.codex.*]
   tool_max_steps: 20
   readonly: true
 
@@ -473,7 +615,7 @@ agent codex_refine:
   publish: merged_plan
   system: refine_plan_system
   user: refine_plan_user
-  tools: [mcp.claude_code.*]
+  tools: [mcp.codex.*]
   tool_max_steps: 20
   readonly: true
 
@@ -499,7 +641,7 @@ agent codex_implement:
   publish: implementation
   system: implement_codex_system
   user: implement_user
-  tools: [mcp.claude_code.*]
+  tools: [mcp.codex.*]
   tool_max_steps: 50
 
 ## ─── Nodes : Review ────────────────────────────────────────────
@@ -515,7 +657,7 @@ agent claude_review:
   system: review_impl_system
   user: review_impl_user
   tools: [mcp.claude_code.*]
-  tool_max_steps: 30
+  tool_max_steps: 40
   readonly: true
 
 agent codex_review:
@@ -525,8 +667,8 @@ agent codex_review:
   publish: codex_review_report
   system: review_impl_system
   user: review_impl_user
-  tools: [mcp.claude_code.*]
-  tool_max_steps: 30
+  tools: [mcp.codex.*]
+  tool_max_steps: 40
   readonly: true
 
 join review_join:
@@ -552,7 +694,7 @@ workflow dual_model_plan_implement_review_mcp:
   entry: plan_fanout
 
   mcp:
-    servers: [claude_code]
+    servers: [claude_code, codex]
 
   budget:
     max_parallel_branches: 4
@@ -652,13 +794,17 @@ workflow dual_model_plan_implement_review_mcp:
   impl_selector -> claude_implement with {
     validated_plan: "{{artifacts.merged_plan}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}",
-    previous_feedback: "{{artifacts.review_verdict}}"
+    previous_feedback: "{{artifacts.review_verdict}}",
+    previous_claude_review: "{{artifacts.claude_review_report}}",
+    previous_codex_review: "{{artifacts.codex_review_report}}"
   }
 
   impl_selector -> codex_implement with {
     validated_plan: "{{artifacts.merged_plan}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}",
-    previous_feedback: "{{artifacts.review_verdict}}"
+    previous_feedback: "{{artifacts.review_verdict}}",
+    previous_claude_review: "{{artifacts.claude_review_report}}",
+    previous_codex_review: "{{artifacts.codex_review_report}}"
   }
 
   ## ═══ Phase 6 : Review parallele ════════════════════════════════
