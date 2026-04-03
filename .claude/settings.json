@@ -4,8 +4,8 @@
       {
         "hooks": [
           {
-            "async": true,
-            "command": "falcon sync --agents none",
+            "async": false,
+            "command": "npx -y repo-falcon sync --agents none",
             "timeout": 300,
             "type": "command"
           }

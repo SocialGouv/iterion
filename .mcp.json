@@ -1,26 +1,28 @@
 {
   "mcpServers": {
-    "falcon": {
-      "args": [
-        "mcp",
-        "serve"
-      ],
-      "command": "falcon",
-      "type": "stdio"
-    },
     "claude_code": {
-      "command": "claude",
       "args": [
         "mcp",
         "serve"
       ],
+      "command": "claude",
       "type": "stdio"
     },
     "codex": {
-      "command": "codex",
       "args": [
         "--mcp"
       ],
+      "command": "codex",
+      "type": "stdio"
+    },
+    "falcon": {
+      "args": [
+        "-y",
+        "repo-falcon",
+        "mcp",
+        "serve"
+      ],
+      "command": "npx",
       "type": "stdio"
     }
   }
