@@ -1,0 +1,2532 @@
+<!DOCTYPE html>
+<html lang="fr" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kanban Board</title>
+<style>
+/* ============================================================
+   SECTION CSS — Custom Properties & Theming
+   ============================================================ */
+:root {
+  --bg-primary: #f0f2f5;
+  --bg-secondary: #ffffff;
+  --bg-column: #ebecf0;
+  --bg-card: #ffffff;
+  --bg-header: #ffffff;
+  --bg-modal-overlay: rgba(0,0,0,0.5);
+  --bg-input: #ffffff;
+  --text-primary: #172b4d;
+  --text-secondary: #5e6c84;
+  --text-muted: #97a0af;
+  --border-color: #dfe1e6;
+  --border-focus: #0079bf;
+  --color-accent: #0079bf;
+  --color-accent-hover: #0067a3;
+  --color-danger: #eb5a46;
+  --color-danger-hover: #cf513d;
+  --color-success: #61bd4f;
+  --shadow-card: 0 1px 3px rgba(9,30,66,0.13);
+  --shadow-card-hover: 0 4px 12px rgba(9,30,66,0.15);
+  --shadow-ghost: 0 8px 24px rgba(0,0,0,0.2);
+  --shadow-modal: 0 12px 40px rgba(0,0,0,0.25);
+  --radius: 8px;
+  --radius-sm: 4px;
+  --transition-speed: 0.3s;
+}
+
+[data-theme="dark"] {
+  --bg-primary: #1a1a2e;
+  --bg-secondary: #16213e;
+  --bg-column: #1e2a45;
+  --bg-card: #253352;
+  --bg-header: #16213e;
+  --bg-modal-overlay: rgba(0,0,0,0.7);
+  --bg-input: #1e2a45;
+  --text-primary: #e2e8f0;
+  --text-secondary: #a0aec0;
+  --text-muted: #718096;
+  --border-color: #2d3748;
+  --border-focus: #63b3ed;
+  --color-accent: #63b3ed;
+  --color-accent-hover: #4299e1;
+  --color-danger: #fc8181;
+  --color-danger-hover: #f56565;
+  --color-success: #68d391;
+  --shadow-card: 0 1px 3px rgba(0,0,0,0.3);
+  --shadow-card-hover: 0 4px 12px rgba(0,0,0,0.4);
+  --shadow-ghost: 0 8px 24px rgba(0,0,0,0.5);
+  --shadow-modal: 0 12px 40px rgba(0,0,0,0.5);
+}
+
+/* ============================================================
+   SECTION CSS — Base Reset & Typography
+   ============================================================ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  transition: background-color var(--transition-speed) ease, color var(--transition-speed) ease;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+button { cursor: pointer; font-family: inherit; border: none; background: none; color: inherit; }
+input, select, textarea { font-family: inherit; color: var(--text-primary); }
+
+/* ============================================================
+   SECTION CSS — Header
+   ============================================================ */
+.header {
+  background: var(--bg-header);
+  border-bottom: 1px solid var(--border-color);
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  z-index: 100;
+  transition: background-color var(--transition-speed) ease, border-color var(--transition-speed) ease;
+}
+
+.header-title {
+  font-size: 1.2rem;
+  font-weight: 700;
+  margin-right: 8px;
+  white-space: nowrap;
+}
+
+.search-input {
+  padding: 6px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  font-size: 0.85rem;
+  width: 180px;
+  transition: border-color var(--transition-speed) ease, background-color var(--transition-speed) ease;
+}
+.search-input:focus { outline: none; border-color: var(--border-focus); }
+
+.tag-filters {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.tag-filter-chip {
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+  border: 2px solid transparent;
+  color: #fff;
+}
+.tag-filter-chip.active { opacity: 1; border-color: var(--text-primary); }
+.tag-filter-chip:hover { opacity: 0.9; }
+
+.header-actions {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+
+.btn {
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  font-weight: 600;
+  transition: background-color 0.2s, opacity 0.2s;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-primary { background: var(--color-accent); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--color-accent-hover); }
+.btn-danger { background: var(--color-danger); color: #fff; }
+.btn-danger:hover:not(:disabled) { background: var(--color-danger-hover); }
+.btn-ghost { background: transparent; }
+.btn-ghost:hover { background: var(--bg-column); }
+.btn-icon { padding: 6px; font-size: 1rem; min-width: 32px; justify-content: center; }
+
+.clear-filters-btn {
+  padding: 2px 6px;
+  border-radius: 12px;
+  font-size: 0.65rem;
+  background: var(--color-danger);
+  color: #fff;
+  cursor: pointer;
+}
+
+/* ============================================================
+   SECTION CSS — Board Layout
+   ============================================================ */
+.board {
+  flex: 1;
+  display: flex;
+  gap: 16px;
+  padding: 16px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  align-items: flex-start;
+}
+
+.add-column-btn {
+  min-width: 260px;
+  padding: 16px;
+  background: var(--bg-column);
+  border-radius: var(--radius);
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  transition: background-color var(--transition-speed) ease;
+  text-align: center;
+  flex-shrink: 0;
+}
+.add-column-btn:hover { background: var(--border-color); }
+
+/* ============================================================
+   SECTION CSS — Columns
+   ============================================================ */
+.column {
+  min-width: 280px;
+  max-width: 320px;
+  width: 280px;
+  background: var(--bg-column);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 120px);
+  flex-shrink: 0;
+  transition: background-color var(--transition-speed) ease, border-color var(--transition-speed) ease;
+}
+
+.column.drag-over-column {
+  outline: 2px dashed var(--color-accent);
+  outline-offset: -2px;
+}
+
+.column-header {
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  font-size: 0.85rem;
+}
+
+.column-grip {
+  cursor: grab;
+  font-size: 1rem;
+  color: var(--text-muted);
+  user-select: none;
+  padding: 2px;
+}
+.column-grip:active { cursor: grabbing; }
+
+.column-title {
+  flex: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.column-title:hover { background: rgba(0,0,0,0.05); }
+
+.column-title-input {
+  flex: 1;
+  padding: 2px 4px;
+  border: 2px solid var(--border-focus);
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+  font-weight: 700;
+  background: var(--bg-input);
+}
+
+.column-count {
+  background: var(--bg-card);
+  border-radius: 10px;
+  padding: 1px 8px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  min-width: 24px;
+  text-align: center;
+  transition: background-color var(--transition-speed) ease;
+}
+
+.column-delete-btn {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+}
+.column-delete-btn:hover { color: var(--color-danger); background: rgba(235,90,70,0.1); }
+
+.column-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 8px 8px;
+  min-height: 40px;
+}
+
+.column-body.drag-over {
+  background: rgba(0,121,191,0.08);
+  border-radius: 0 0 var(--radius) var(--radius);
+}
+
+.drop-indicator {
+  height: 3px;
+  background: var(--color-accent);
+  border-radius: 2px;
+  margin: 2px 0;
+  transition: opacity 0.15s;
+}
+
+.add-task-btn {
+  margin: 4px 8px 8px;
+  padding: 6px;
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  text-align: left;
+}
+.add-task-btn:hover { background: rgba(0,0,0,0.06); color: var(--text-primary); }
+
+/* ============================================================
+   SECTION CSS — Task Cards
+   ============================================================ */
+.task-card {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  box-shadow: var(--shadow-card);
+  cursor: pointer;
+  transition: box-shadow 0.2s, background-color var(--transition-speed) ease, border-color var(--transition-speed) ease;
+  position: relative;
+  border: 2px solid transparent;
+}
+.task-card:hover { box-shadow: var(--shadow-card-hover); }
+.task-card.selected { border-color: var(--color-accent); }
+.task-card.overdue { border-color: var(--color-danger) !important; }
+.task-card.dragging { opacity: 0.4; }
+.task-card.hidden { display: none; }
+
+.task-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.task-bulk-checkbox {
+  margin-top: 2px;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--color-accent);
+}
+
+.task-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  word-break: break-word;
+  flex: 1;
+}
+
+.task-description {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-top: 4px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.task-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 6px;
+}
+
+.task-tag {
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: #fff;
+}
+
+.task-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+}
+
+.task-due { display: inline-flex; align-items: center; gap: 2px; }
+.task-due.overdue-text { color: var(--color-danger); font-weight: 700; }
+
+.task-subtask-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.subtask-bar {
+  width: 40px;
+  height: 4px;
+  background: var(--border-color);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.subtask-bar-fill {
+  height: 100%;
+  background: var(--color-success);
+  border-radius: 2px;
+  transition: width 0.2s;
+}
+
+.task-timer-display {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: 'Courier New', monospace;
+  font-size: 0.7rem;
+}
+.task-timer-display.running { color: var(--color-success); font-weight: 700; }
+
+.timer-btn {
+  font-size: 0.8rem;
+  padding: 0 2px;
+  cursor: pointer;
+  border: none;
+  background: none;
+}
+
+/* ============================================================
+   SECTION CSS — Modal
+   ============================================================ */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: var(--bg-modal-overlay);
+  z-index: 1000;
+  justify-content: center;
+  align-items: center;
+  padding: 20px;
+}
+.modal-overlay.active { display: flex; }
+
+.modal {
+  background: var(--bg-secondary);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-modal);
+  width: 100%;
+  max-width: 500px;
+  max-height: 90vh;
+  overflow-y: auto;
+  padding: 24px;
+  transition: background-color var(--transition-speed) ease;
+}
+
+.modal-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin-bottom: 16px;
+}
+
+.form-group {
+  margin-bottom: 12px;
+}
+
+.form-label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.form-input, .form-textarea, .form-date {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+  background: var(--bg-input);
+  transition: border-color 0.2s, background-color var(--transition-speed) ease;
+}
+.form-input:focus, .form-textarea:focus, .form-date:focus { outline: none; border-color: var(--border-focus); }
+.form-textarea { resize: vertical; min-height: 60px; }
+.form-input.error { border-color: var(--color-danger); }
+
+.tag-palette {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.tag-palette-item {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 8px;
+  border-radius: 12px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #fff;
+  cursor: pointer;
+  opacity: 0.5;
+  transition: opacity 0.2s;
+  border: 2px solid transparent;
+}
+.tag-palette-item.active { opacity: 1; border-color: var(--text-primary); }
+.tag-palette-item:hover { opacity: 0.8; }
+
+.new-tag-row {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+  align-items: center;
+}
+
+.new-tag-input {
+  flex: 1;
+  padding: 4px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  background: var(--bg-input);
+}
+
+.color-select {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid var(--border-color);
+  cursor: pointer;
+  padding: 0;
+}
+
+.subtask-list { list-style: none; margin-top: 4px; }
+.subtask-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  font-size: 0.8rem;
+}
+.subtask-item input[type="checkbox"] { accent-color: var(--color-accent); }
+.subtask-item .subtask-text { flex: 1; }
+.subtask-item .subtask-remove {
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.75rem;
+}
+.subtask-item .subtask-remove:hover { color: var(--color-danger); }
+
+.add-subtask-row {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+/* ============================================================
+   SECTION CSS — Confirmation Modal
+   ============================================================ */
+.confirm-text {
+  font-size: 0.9rem;
+  margin-bottom: 16px;
+  line-height: 1.5;
+}
+
+.confirm-select {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+  background: var(--bg-input);
+  margin-bottom: 12px;
+}
+
+/* ============================================================
+   SECTION CSS — Bulk Bar
+   ============================================================ */
+.bulk-bar {
+  display: none;
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--bg-header);
+  border-top: 2px solid var(--color-accent);
+  padding: 8px 16px;
+  z-index: 500;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  transition: background-color var(--transition-speed) ease, border-color var(--transition-speed) ease;
+  box-shadow: 0 -4px 12px rgba(0,0,0,0.1);
+}
+.bulk-bar.active { display: flex; }
+
+.bulk-bar-info {
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-right: 8px;
+}
+
+.bulk-select {
+  padding: 4px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  background: var(--bg-input);
+}
+
+/* ============================================================
+   SECTION CSS — Stats Panel
+   ============================================================ */
+.stats-panel {
+  display: none;
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 360px;
+  height: 100%;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border-color);
+  z-index: 800;
+  overflow-y: auto;
+  padding: 20px;
+  box-shadow: -4px 0 20px rgba(0,0,0,0.1);
+  transition: background-color var(--transition-speed) ease, border-color var(--transition-speed) ease;
+}
+.stats-panel.active { display: block; }
+
+.stats-title {
+  font-size: 1rem;
+  font-weight: 700;
+  margin-bottom: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.stats-section {
+  margin-bottom: 20px;
+}
+
+.stats-section h3 {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.stat-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--color-accent);
+}
+
+.stat-label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.time-stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  font-size: 0.8rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+/* ============================================================
+   SECTION CSS — Toast / Notification
+   ============================================================ */
+.toast {
+  position: fixed;
+  bottom: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--text-primary);
+  color: var(--bg-primary);
+  padding: 10px 20px;
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  z-index: 2000;
+  opacity: 0;
+  transition: opacity 0.3s;
+  pointer-events: none;
+}
+.toast.visible { opacity: 1; }
+
+/* ============================================================
+   SECTION CSS — Ghost Container
+   ============================================================ */
+#ghost-container {
+  position: fixed;
+  top: -9999px;
+  left: -9999px;
+  z-index: -1;
+  pointer-events: none;
+}
+
+/* ============================================================
+   SECTION CSS — Footer
+   ============================================================ */
+.footer {
+  background: var(--bg-header);
+  border-top: 1px solid var(--border-color);
+  padding: 4px 16px;
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  text-align: center;
+  transition: background-color var(--transition-speed) ease, border-color var(--transition-speed) ease;
+}
+
+.footer kbd {
+  background: var(--bg-column);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 0.6rem;
+  border: 1px solid var(--border-color);
+}
+
+/* ============================================================
+   SECTION CSS — Responsive < 768px
+   ============================================================ */
+@media (max-width: 768px) {
+  .board {
+    flex-direction: column;
+    overflow-x: hidden;
+    overflow-y: auto;
+    align-items: stretch;
+  }
+  .column {
+    min-width: 100%;
+    max-width: 100%;
+    width: 100%;
+    max-height: none;
+  }
+  .add-column-btn { min-width: 100%; }
+  .modal { max-width: 100%; max-height: 100vh; border-radius: 0; }
+  .modal-overlay { padding: 0; }
+  .stats-panel { width: 100%; }
+  .header { gap: 6px; }
+  .search-input { width: 100%; order: 10; }
+  .header-actions { width: 100%; order: 11; justify-content: center; }
+  .tag-filters { width: 100%; order: 12; }
+}
+
+/* ============================================================
+   SECTION CSS — Scrollbar
+   ============================================================ */
+.column-body::-webkit-scrollbar { width: 6px; }
+.column-body::-webkit-scrollbar-thumb { background: var(--text-muted); border-radius: 3px; }
+.column-body::-webkit-scrollbar-track { background: transparent; }
+
+/* ============================================================
+   SECTION CSS — SVG Charts
+   ============================================================ */
+.chart-svg { width: 100%; }
+.chart-bar { transition: height 0.3s, y 0.3s; }
+.chart-label { font-size: 10px; fill: var(--text-secondary); }
+.chart-value { font-size: 11px; fill: var(--text-primary); font-weight: 600; }
+.completion-text { font-size: 22px; font-weight: 700; fill: var(--text-primary); }
+.completion-label { font-size: 10px; fill: var(--text-secondary); }
+</style>
+</head>
+<body>
+
+<!-- ============================================================
+     SECTION HTML — Header
+     ============================================================ -->
+<header class="header" role="banner">
+  <span class="header-title">📋 Kanban</span>
+  <input type="text" class="search-input" id="search-input" placeholder="Rechercher…" aria-label="Rechercher des tâches">
+  <div class="tag-filters" id="tag-filters"></div>
+  <div class="header-actions">
+    <button class="btn btn-icon btn-ghost" id="btn-undo" title="Undo (Ctrl+Z)" disabled aria-label="Annuler">↩</button>
+    <button class="btn btn-icon btn-ghost" id="btn-redo" title="Redo (Ctrl+Shift+Z)" disabled aria-label="Rétablir">↪</button>
+    <button class="btn btn-icon btn-ghost" id="btn-theme" title="Thème" aria-label="Basculer le thème">☀️</button>
+    <button class="btn btn-ghost" id="btn-stats" title="Statistiques" aria-label="Statistiques">📊</button>
+    <button class="btn btn-ghost" id="btn-bulk" title="Mode sélection" aria-label="Mode sélection multiple">☑️</button>
+    <button class="btn btn-ghost" id="btn-export" title="Exporter JSON" aria-label="Exporter">📤</button>
+    <button class="btn btn-ghost" id="btn-import-trigger" title="Importer JSON" aria-label="Importer">📥</button>
+    <input type="file" id="import-input" accept=".json" style="display:none" aria-hidden="true">
+  </div>
+</header>
+
+<!-- ============================================================
+     SECTION HTML — Main Board
+     ============================================================ -->
+<main class="board" id="board" role="main"></main>
+
+<!-- ============================================================
+     SECTION HTML — Modal Overlay
+     ============================================================ -->
+<div class="modal-overlay" id="modal-overlay" role="dialog" aria-modal="true">
+  <div class="modal" id="modal-content"></div>
+</div>
+
+<!-- ============================================================
+     SECTION HTML — Stats Panel
+     ============================================================ -->
+<div class="stats-panel" id="stats-panel" role="complementary" aria-label="Statistiques">
+  <div class="stats-title">
+    <span>📊 Statistiques</span>
+    <button class="btn btn-icon btn-ghost" id="stats-close" aria-label="Fermer les statistiques">✕</button>
+  </div>
+  <div id="stats-content"></div>
+</div>
+
+<!-- ============================================================
+     SECTION HTML — Bulk Bar
+     ============================================================ -->
+<div class="bulk-bar" id="bulk-bar" role="toolbar" aria-label="Opérations en masse">
+  <span class="bulk-bar-info" id="bulk-info">0 sélectionnée(s)</span>
+  <select class="bulk-select" id="bulk-move-select" aria-label="Déplacer vers">
+    <option value="">Déplacer vers…</option>
+  </select>
+  <button class="btn btn-primary" id="bulk-move-btn">Déplacer</button>
+  <button class="btn btn-danger" id="bulk-delete-btn">Supprimer</button>
+  <button class="btn btn-ghost" id="bulk-tag-btn">+ Tag</button>
+  <button class="btn btn-ghost" id="bulk-select-all">Tout sélect.</button>
+  <button class="btn btn-ghost" id="bulk-deselect-all">Désélect.</button>
+  <button class="btn btn-ghost" id="bulk-cancel">Quitter</button>
+</div>
+
+<!-- ============================================================
+     SECTION HTML — Ghost Container
+     ============================================================ -->
+<div id="ghost-container"></div>
+
+<!-- ============================================================
+     SECTION HTML — Toast
+     ============================================================ -->
+<div class="toast" id="toast"></div>
+
+<!-- ============================================================
+     SECTION HTML — Footer
+     ============================================================ -->
+<footer class="footer" role="contentinfo">
+  Raccourcis : <kbd>N</kbd> Nouvelle tâche · <kbd>Del</kbd> Supprimer · <kbd>Esc</kbd> Fermer · <kbd>↑↓←→</kbd> Naviguer · <kbd>Ctrl+Z</kbd> Undo · <kbd>Ctrl+Shift+Z</kbd> Redo
+</footer>
+
+<!-- ============================================================
+     SECTION JS — Application Logic
+     ============================================================ -->
+<script>
+(function() {
+'use strict';
+
+/* ============================================================
+   JS — Utilities
+   ============================================================ */
+const Utils = {
+  generateId() { return Date.now().toString(36) + Math.random().toString(36).substr(2, 9); },
+  sortByOrder(arr) { return arr.slice().sort((a, b) => a.order - b.order); },
+  formatDate(dateStr) {
+    if (!dateStr) return '';
+    const d = new Date(dateStr + 'T00:00:00');
+    const today = new Date(); today.setHours(0,0,0,0);
+    const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
+    if (d.getTime() === today.getTime()) return "Aujourd'hui";
+    if (d.getTime() === tomorrow.getTime()) return 'Demain';
+    return d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+  },
+  formatHHMMSS(ms) {
+    const totalSec = Math.floor(ms / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  },
+  isInputFocused() {
+    const el = document.activeElement;
+    if (!el) return false;
+    const tag = el.tagName.toLowerCase();
+    return tag === 'input' || tag === 'textarea' || tag === 'select' || el.getAttribute('contenteditable') === 'true';
+  },
+  isOverdue(task, columns) {
+    if (!task.dueDate) return false;
+    const sorted = Utils.sortByOrder(columns);
+    const lastColId = sorted.length ? sorted[sorted.length - 1].id : null;
+    if (task.columnId === lastColId) return false;
+    const due = new Date(task.dueDate + 'T00:00:00');
+    const today = new Date(); today.setHours(0,0,0,0);
+    return due < today;
+  },
+  debounce(fn, ms) {
+    let t;
+    return function(...args) { clearTimeout(t); t = setTimeout(() => fn.apply(this, args), ms); };
+  },
+  cloneState(s) {
+    // Deep clone without ui volatile fields
+    const c = JSON.parse(JSON.stringify(s));
+    return c;
+  },
+  getElapsedMs(task) {
+    let elapsed = task.timer.elapsedMs || 0;
+    if (task.timer.runningSince) {
+      elapsed += Date.now() - task.timer.runningSince;
+    }
+    return elapsed;
+  }
+};
+
+/* ============================================================
+   JS — Tag Colors
+   ============================================================ */
+const TAG_COLORS = [
+  { name: 'Rouge', color: '#eb5a46' },
+  { name: 'Orange', color: '#ff9f1a' },
+  { name: 'Jaune', color: '#f2d600' },
+  { name: 'Vert', color: '#61bd4f' },
+  { name: 'Cyan', color: '#00c2e0' },
+  { name: 'Bleu', color: '#0079bf' },
+  { name: 'Violet', color: '#c377e0' },
+  { name: 'Rose', color: '#ff78cb' }
+];
+
+/* ============================================================
+   JS — Default State
+   ============================================================ */
+function createDefaultState() {
+  const cols = [
+    { id: Utils.generateId(), title: 'Backlog', order: 0 },
+    { id: Utils.generateId(), title: 'To Do', order: 1 },
+    { id: Utils.generateId(), title: 'In Progress', order: 2 },
+    { id: Utils.generateId(), title: 'Done', order: 3 }
+  ];
+  return {
+    version: 1,
+    theme: 'light',
+    filters: { search: '', tags: [] },
+    selection: { taskIds: [], mode: false },
+    columns: cols,
+    tasks: [],
+    ui: { selectedTaskId: null, modalOpen: false }
+  };
+}
+
+/* ============================================================
+   JS — State & History
+   ============================================================ */
+let state = createDefaultState();
+let undoStack = [];
+let redoStack = [];
+const MAX_UNDO = 15;
+
+/* ============================================================
+   JS — Storage
+   ============================================================ */
+const Storage = {
+  save() {
+    try {
+      const toSave = Utils.cloneState(state);
+      delete toSave.ui;
+      delete toSave.selection;
+      localStorage.setItem('kanban-state', JSON.stringify(toSave));
+      localStorage.setItem('kanban-theme', state.theme);
+    } catch(e) {
+      console.warn('Save failed:', e);
+      showToast('Erreur de sauvegarde localStorage');
+    }
+  },
+  load() {
+    try {
+      const theme = localStorage.getItem('kanban-theme');
+      if (theme) {
+        document.documentElement.setAttribute('data-theme', theme);
+      }
+      const raw = localStorage.getItem('kanban-state');
+      if (!raw) return createDefaultState();
+      const parsed = JSON.parse(raw);
+      if (!parsed.version || !Array.isArray(parsed.columns) || !Array.isArray(parsed.tasks)) {
+        console.warn('Invalid stored state, using default');
+        return createDefaultState();
+      }
+      // Ensure fields exist
+      parsed.theme = parsed.theme || 'light';
+      parsed.filters = parsed.filters || { search: '', tags: [] };
+      parsed.selection = { taskIds: [], mode: false };
+      parsed.ui = { selectedTaskId: null, modalOpen: false };
+      parsed.tasks.forEach(t => {
+        t.tags = t.tags || [];
+        t.subtasks = t.subtasks || [];
+        t.timer = t.timer || { elapsedMs: 0, runningSince: null };
+        t.timeByColumn = t.timeByColumn || {};
+        t.enteredColumnAt = t.enteredColumnAt || Date.now();
+      });
+      return parsed;
+    } catch(e) {
+      console.warn('Load failed:', e);
+      return createDefaultState();
+    }
+  }
+};
+
+/* ============================================================
+   JS — History (Undo/Redo)
+   ============================================================ */
+const History = {
+  pushUndo() {
+    const snapshot = Utils.cloneState(state);
+    // Remove volatile data from snapshot
+    delete snapshot.ui;
+    delete snapshot.selection;
+    // Don't snapshot running timer runningSince to avoid undo issues
+    undoStack.push(JSON.stringify(snapshot));
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
+    redoStack = [];
+    updateUndoRedoButtons();
+  },
+  undo() {
+    if (!undoStack.length) return;
+    const currentSnapshot = Utils.cloneState(state);
+    delete currentSnapshot.ui;
+    delete currentSnapshot.selection;
+    redoStack.push(JSON.stringify(currentSnapshot));
+    const prev = JSON.parse(undoStack.pop());
+    prev.ui = { selectedTaskId: null, modalOpen: false };
+    prev.selection = { taskIds: [], mode: false };
+    prev.filters = prev.filters || { search: '', tags: [] };
+    prev.tasks.forEach(t => {
+      t.timer = t.timer || { elapsedMs: 0, runningSince: null };
+      t.timeByColumn = t.timeByColumn || {};
+      t.subtasks = t.subtasks || [];
+      t.tags = t.tags || [];
+    });
+    state = prev;
+    Storage.save();
+    Render.all();
+    updateUndoRedoButtons();
+  },
+  redo() {
+    if (!redoStack.length) return;
+    const currentSnapshot = Utils.cloneState(state);
+    delete currentSnapshot.ui;
+    delete currentSnapshot.selection;
+    undoStack.push(JSON.stringify(currentSnapshot));
+    const next = JSON.parse(redoStack.pop());
+    next.ui = { selectedTaskId: null, modalOpen: false };
+    next.selection = { taskIds: [], mode: false };
+    next.filters = next.filters || { search: '', tags: [] };
+    next.tasks.forEach(t => {
+      t.timer = t.timer || { elapsedMs: 0, runningSince: null };
+      t.timeByColumn = t.timeByColumn || {};
+      t.subtasks = t.subtasks || [];
+      t.tags = t.tags || [];
+    });
+    state = next;
+    Storage.save();
+    Render.all();
+    updateUndoRedoButtons();
+  }
+};
+
+function updateUndoRedoButtons() {
+  document.getElementById('btn-undo').disabled = undoStack.length === 0;
+  document.getElementById('btn-redo').disabled = redoStack.length === 0;
+}
+
+/* ============================================================
+   JS — Dispatch (centralized mutation)
+   ============================================================ */
+function dispatch(action, payload) {
+  History.pushUndo();
+  Actions[action](payload);
+  Storage.save();
+  Render.all();
+}
+
+/* ============================================================
+   JS — Actions
+   ============================================================ */
+const Actions = {
+  ADD_TASK(p) {
+    const colTasks = state.tasks.filter(t => t.columnId === p.columnId);
+    const maxOrder = colTasks.length ? Math.max(...colTasks.map(t => t.order)) + 1 : 0;
+    const now = Date.now();
+    state.tasks.push({
+      id: Utils.generateId(),
+      columnId: p.columnId,
+      title: p.title,
+      description: p.description || '',
+      order: maxOrder,
+      tags: p.tags || [],
+      dueDate: p.dueDate || null,
+      subtasks: p.subtasks || [],
+      createdAt: now,
+      updatedAt: now,
+      timer: { elapsedMs: 0, runningSince: null },
+      enteredColumnAt: now,
+      timeByColumn: {}
+    });
+  },
+  UPDATE_TASK(p) {
+    const task = state.tasks.find(t => t.id === p.id);
+    if (!task) return;
+    Object.assign(task, p.changes);
+    task.updatedAt = Date.now();
+  },
+  DELETE_TASK(p) {
+    state.tasks = state.tasks.filter(t => t.id !== p.id);
+  },
+  MOVE_TASK(p) {
+    const task = state.tasks.find(t => t.id === p.taskId);
+    if (!task) return;
+    const oldColId = task.columnId;
+    const now = Date.now();
+    // Update time tracking if column changed
+    if (oldColId !== p.columnId) {
+      const timeInOld = now - (task.enteredColumnAt || now);
+      task.timeByColumn[oldColId] = (task.timeByColumn[oldColId] || 0) + timeInOld;
+      task.enteredColumnAt = now;
+      task.columnId = p.columnId;
+    }
+    // Reorder
+    const colTasks = Utils.sortByOrder(state.tasks.filter(t => t.columnId === p.columnId && t.id !== p.taskId));
+    const newOrder = p.order !== undefined ? p.order : colTasks.length;
+    colTasks.splice(newOrder, 0, task);
+    colTasks.forEach((t, i) => t.order = i);
+    task.updatedAt = now;
+    // Reorder old column if changed
+    if (oldColId !== p.columnId) {
+      const oldColTasks = Utils.sortByOrder(state.tasks.filter(t => t.columnId === oldColId));
+      oldColTasks.forEach((t, i) => t.order = i);
+    }
+  },
+  ADD_COLUMN(p) {
+    const maxOrder = state.columns.length ? Math.max(...state.columns.map(c => c.order)) + 1 : 0;
+    state.columns.push({ id: Utils.generateId(), title: p.title, order: maxOrder });
+  },
+  RENAME_COLUMN(p) {
+    const col = state.columns.find(c => c.id === p.id);
+    if (col) col.title = p.title;
+  },
+  DELETE_COLUMN(p) {
+    if (p.moveTo) {
+      state.tasks.forEach(t => {
+        if (t.columnId === p.id) {
+          const now = Date.now();
+          const timeInOld = now - (t.enteredColumnAt || now);
+          t.timeByColumn[p.id] = (t.timeByColumn[p.id] || 0) + timeInOld;
+          t.enteredColumnAt = now;
+          t.columnId = p.moveTo;
+        }
+      });
+    } else {
+      state.tasks = state.tasks.filter(t => t.columnId !== p.id);
+    }
+    state.columns = state.columns.filter(c => c.id !== p.id);
+    // Reorder
+    Utils.sortByOrder(state.columns).forEach((c, i) => c.order = i);
+    // Clean filters
+    state.selection.taskIds = state.selection.taskIds.filter(id => state.tasks.some(t => t.id === id));
+  },
+  REORDER_COLUMNS(p) {
+    p.orderedIds.forEach((id, i) => {
+      const col = state.columns.find(c => c.id === id);
+      if (col) col.order = i;
+    });
+  },
+  TOGGLE_SUBTASK(p) {
+    const task = state.tasks.find(t => t.id === p.taskId);
+    if (!task) return;
+    const sub = task.subtasks.find(s => s.id === p.subtaskId);
+    if (sub) sub.done = !sub.done;
+    task.updatedAt = Date.now();
+  },
+  BULK_MOVE(p) {
+    const now = Date.now();
+    p.taskIds.forEach(id => {
+      const task = state.tasks.find(t => t.id === id);
+      if (!task) return;
+      const oldColId = task.columnId;
+      if (oldColId !== p.columnId) {
+        const timeInOld = now - (task.enteredColumnAt || now);
+        task.timeByColumn[oldColId] = (task.timeByColumn[oldColId] || 0) + timeInOld;
+        task.enteredColumnAt = now;
+        task.columnId = p.columnId;
+      }
+    });
+    // Reorder target column
+    const colTasks = Utils.sortByOrder(state.tasks.filter(t => t.columnId === p.columnId));
+    colTasks.forEach((t, i) => t.order = i);
+    state.selection.taskIds = [];
+  },
+  BULK_DELETE(p) {
+    state.tasks = state.tasks.filter(t => !p.taskIds.includes(t.id));
+    state.selection.taskIds = [];
+  },
+  BULK_TAG(p) {
+    p.taskIds.forEach(id => {
+      const task = state.tasks.find(t => t.id === id);
+      if (!task) return;
+      if (!task.tags.some(t => t.name === p.tag.name)) {
+        task.tags.push({ ...p.tag });
+      }
+    });
+  },
+  TIMER_START(p) {
+    const task = state.tasks.find(t => t.id === p.taskId);
+    if (task && !task.timer.runningSince) {
+      task.timer.runningSince = Date.now();
+    }
+  },
+  TIMER_STOP(p) {
+    const task = state.tasks.find(t => t.id === p.taskId);
+    if (task && task.timer.runningSince) {
+      task.timer.elapsedMs += Date.now() - task.timer.runningSince;
+      task.timer.runningSince = null;
+    }
+  },
+  IMPORT_STATE(p) {
+    state.columns = p.columns;
+    state.tasks = p.tasks;
+    state.theme = p.theme || state.theme;
+    state.version = p.version || 1;
+    // Reset
+    undoStack = [];
+    redoStack = [];
+    state.filters = { search: '', tags: [] };
+    state.selection = { taskIds: [], mode: false };
+  }
+};
+
+/* ============================================================
+   JS — Render
+   ============================================================ */
+let editingInline = null; // Track inline editing
+
+const Render = {
+  all() {
+    this.board();
+    this.tagFilters();
+    this.bulkBar();
+    this.updateThemeButton();
+    updateUndoRedoButtons();
+    document.getElementById('search-input').value = state.filters.search;
+  },
+
+  board() {
+    const board = document.getElementById('board');
+    const frag = document.createDocumentFragment();
+    const sortedCols = Utils.sortByOrder(state.columns);
+
+    sortedCols.forEach(col => {
+      frag.appendChild(this.column(col));
+    });
+
+    // Add column button
+    const addBtn = document.createElement('button');
+    addBtn.className = 'add-column-btn';
+    addBtn.textContent = '+ Colonne';
+    addBtn.addEventListener('click', () => promptAddColumn());
+    frag.appendChild(addBtn);
+
+    board.innerHTML = '';
+    board.appendChild(frag);
+
+    // Update bulk move select
+    this.updateBulkMoveSelect();
+  },
+
+  column(col) {
+    const el = document.createElement('div');
+    el.className = 'column';
+    el.setAttribute('data-column-id', col.id);
+
+    const colTasks = Utils.sortByOrder(state.tasks.filter(t => t.columnId === col.id));
+    const visibleTasks = colTasks.filter(t => this.isTaskVisible(t));
+
+    // Header
+    const header = document.createElement('div');
+    header.className = 'column-header';
+
+    const grip = document.createElement('span');
+    grip.className = 'column-grip';
+    grip.textContent = '⠿';
+    grip.draggable = true;
+    grip.addEventListener('dragstart', (e) => DragDrop.columnDragStart(e, col.id));
+    grip.addEventListener('dragend', DragDrop.columnDragEnd);
+
+    const title = document.createElement('span');
+    title.className = 'column-title';
+    title.textContent = col.title;
+    title.addEventListener('dblclick', () => startColumnRename(col.id));
+
+    const count = document.createElement('span');
+    count.className = 'column-count';
+    count.textContent = colTasks.length;
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'column-delete-btn';
+    delBtn.textContent = '✕';
+    delBtn.title = 'Supprimer la colonne';
+    delBtn.setAttribute('aria-label', 'Supprimer la colonne ' + col.title);
+    delBtn.addEventListener('click', (e) => { e.stopPropagation(); confirmDeleteColumn(col.id); });
+
+    header.append(grip, title, count, delBtn);
+
+    // Body
+    const body = document.createElement('div');
+    body.className = 'column-body';
+    body.setAttribute('data-column-id', col.id);
+    body.addEventListener('dragover', (e) => DragDrop.dragOver(e, col.id));
+    body.addEventListener('dragleave', DragDrop.dragLeave);
+    body.addEventListener('drop', (e) => DragDrop.drop(e, col.id));
+
+    colTasks.forEach(task => {
+      const card = this.taskCard(task);
+      if (!this.isTaskVisible(task)) card.classList.add('hidden');
+      body.appendChild(card);
+    });
+
+    // Add task button
+    const addBtn = document.createElement('button');
+    addBtn.className = 'add-task-btn';
+    addBtn.textContent = '+ Tâche';
+    addBtn.setAttribute('aria-label', 'Ajouter une tâche dans ' + col.title);
+    addBtn.addEventListener('click', () => openTaskModal(col.id));
+
+    el.append(header, body, addBtn);
+
+    // Column drop zones
+    el.addEventListener('dragover', (e) => DragDrop.columnDragOver(e, col.id));
+    el.addEventListener('drop', (e) => DragDrop.columnDrop(e, col.id));
+
+    return el;
+  },
+
+  taskCard(task) {
+    const card = document.createElement('div');
+    card.className = 'task-card';
+    card.setAttribute('data-task-id', task.id);
+    card.draggable = true;
+
+    if (state.ui.selectedTaskId === task.id) card.classList.add('selected');
+    if (Utils.isOverdue(task, state.columns)) card.classList.add('overdue');
+
+    card.addEventListener('dragstart', (e) => DragDrop.taskDragStart(e, task.id));
+    card.addEventListener('dragend', DragDrop.taskDragEnd);
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('.task-bulk-checkbox') || e.target.closest('.timer-btn')) return;
+      selectTask(task.id);
+    });
+    card.addEventListener('dblclick', (e) => {
+      if (e.target.closest('.task-bulk-checkbox') || e.target.closest('.timer-btn')) return;
+      openEditTaskModal(task.id);
+    });
+
+    // Header with optional bulk checkbox
+    const hdr = document.createElement('div');
+    hdr.className = 'task-card-header';
+
+    if (state.selection.mode) {
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'task-bulk-checkbox';
+      cb.checked = state.selection.taskIds.includes(task.id);
+      cb.setAttribute('aria-label', 'Sélectionner ' + task.title);
+      cb.addEventListener('change', () => toggleBulkSelect(task.id));
+      hdr.appendChild(cb);
+    }
+
+    const titleEl = document.createElement('span');
+    titleEl.className = 'task-title';
+    titleEl.textContent = task.title;
+    hdr.appendChild(titleEl);
+    card.appendChild(hdr);
+
+    // Description
+    if (task.description) {
+      const desc = document.createElement('div');
+      desc.className = 'task-description';
+      desc.textContent = task.description;
+      card.appendChild(desc);
+    }
+
+    // Tags
+    if (task.tags && task.tags.length) {
+      const tags = document.createElement('div');
+      tags.className = 'task-tags';
+      task.tags.forEach(tag => {
+        const chip = document.createElement('span');
+        chip.className = 'task-tag';
+        chip.textContent = tag.name;
+        chip.style.backgroundColor = tag.color;
+        tags.appendChild(chip);
+      });
+      card.appendChild(tags);
+    }
+
+    // Meta row
+    const meta = document.createElement('div');
+    meta.className = 'task-meta';
+    let hasMeta = false;
+
+    // Due date
+    if (task.dueDate) {
+      const due = document.createElement('span');
+      due.className = 'task-due';
+      if (Utils.isOverdue(task, state.columns)) due.classList.add('overdue-text');
+      due.textContent = '📅 ' + Utils.formatDate(task.dueDate);
+      meta.appendChild(due);
+      hasMeta = true;
+    }
+
+    // Subtasks
+    if (task.subtasks && task.subtasks.length) {
+      const done = task.subtasks.filter(s => s.done).length;
+      const total = task.subtasks.length;
+      const prog = document.createElement('span');
+      prog.className = 'task-subtask-progress';
+      prog.innerHTML = `<span>${done}/${total}</span>`;
+      const bar = document.createElement('span');
+      bar.className = 'subtask-bar';
+      const fill = document.createElement('span');
+      fill.className = 'subtask-bar-fill';
+      fill.style.width = (total ? (done / total * 100) : 0) + '%';
+      bar.appendChild(fill);
+      prog.appendChild(bar);
+      meta.appendChild(prog);
+      hasMeta = true;
+    }
+
+    // Timer
+    const elapsed = Utils.getElapsedMs(task);
+    const timerDiv = document.createElement('span');
+    timerDiv.className = 'task-timer-display' + (task.timer.runningSince ? ' running' : '');
+    timerDiv.setAttribute('data-timer-task-id', task.id);
+
+    const timerBtn = document.createElement('button');
+    timerBtn.className = 'timer-btn';
+    timerBtn.textContent = task.timer.runningSince ? '⏸' : '▶';
+    timerBtn.title = task.timer.runningSince ? 'Stop timer' : 'Start timer';
+    timerBtn.setAttribute('aria-label', task.timer.runningSince ? 'Arrêter le chronomètre' : 'Démarrer le chronomètre');
+    timerBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (task.timer.runningSince) {
+        dispatch('TIMER_STOP', { taskId: task.id });
+      } else {
+        dispatch('TIMER_START', { taskId: task.id });
+      }
+    });
+
+    const timerLabel = document.createElement('span');
+    timerLabel.className = 'timer-value';
+    timerLabel.textContent = Utils.formatHHMMSS(elapsed);
+
+    timerDiv.append(timerBtn, timerLabel);
+    meta.appendChild(timerDiv);
+    hasMeta = true;
+
+    if (hasMeta) card.appendChild(meta);
+
+    return card;
+  },
+
+  isTaskVisible(task) {
+    const q = state.filters.search.toLowerCase();
+    const matchText = !q || task.title.toLowerCase().includes(q) || (task.description || '').toLowerCase().includes(q);
+    const filterTags = state.filters.tags;
+    const matchTags = !filterTags.length || filterTags.some(ft => task.tags.some(tt => tt.name === ft));
+    return matchText && matchTags;
+  },
+
+  tagFilters() {
+    const container = document.getElementById('tag-filters');
+    container.innerHTML = '';
+    // Collect all unique tags
+    const allTags = new Map();
+    state.tasks.forEach(t => {
+      (t.tags || []).forEach(tag => {
+        if (!allTags.has(tag.name)) allTags.set(tag.name, tag.color);
+      });
+    });
+    if (!allTags.size) return;
+
+    allTags.forEach((color, name) => {
+      const chip = document.createElement('span');
+      chip.className = 'tag-filter-chip' + (state.filters.tags.includes(name) ? ' active' : '');
+      chip.textContent = name;
+      chip.style.backgroundColor = color;
+      chip.addEventListener('click', () => {
+        const idx = state.filters.tags.indexOf(name);
+        if (idx >= 0) state.filters.tags.splice(idx, 1);
+        else state.filters.tags.push(name);
+        Render.all();
+      });
+      container.appendChild(chip);
+    });
+
+    if (state.filters.tags.length) {
+      const clear = document.createElement('span');
+      clear.className = 'clear-filters-btn';
+      clear.textContent = '✕ Clear';
+      clear.addEventListener('click', () => {
+        state.filters.tags = [];
+        Render.all();
+      });
+      container.appendChild(clear);
+    }
+  },
+
+  bulkBar() {
+    const bar = document.getElementById('bulk-bar');
+    if (state.selection.mode) {
+      bar.classList.add('active');
+      document.getElementById('bulk-info').textContent = state.selection.taskIds.length + ' sélectionnée(s)';
+    } else {
+      bar.classList.remove('active');
+    }
+    document.getElementById('btn-bulk').textContent = state.selection.mode ? '✅' : '☑️';
+  },
+
+  updateBulkMoveSelect() {
+    const sel = document.getElementById('bulk-move-select');
+    sel.innerHTML = '<option value="">Déplacer vers…</option>';
+    Utils.sortByOrder(state.columns).forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c.id;
+      opt.textContent = c.title;
+      sel.appendChild(opt);
+    });
+  },
+
+  updateThemeButton() {
+    document.getElementById('btn-theme').textContent = state.theme === 'dark' ? '☀️' : '🌙';
+  },
+
+  stats() {
+    const content = document.getElementById('stats-content');
+    const sortedCols = Utils.sortByOrder(state.columns);
+    const totalTasks = state.tasks.length;
+    const lastCol = sortedCols[sortedCols.length - 1];
+    const doneTasks = lastCol ? state.tasks.filter(t => t.columnId === lastCol.id).length : 0;
+    const completionRate = totalTasks ? Math.round(doneTasks / totalTasks * 100) : 0;
+
+    // Tasks per column data
+    const colData = sortedCols.map(c => ({
+      title: c.title,
+      count: state.tasks.filter(t => t.columnId === c.id).length,
+      id: c.id
+    }));
+    const maxCount = Math.max(1, ...colData.map(d => d.count));
+
+    // Bar chart SVG
+    const barWidth = 40;
+    const gap = 20;
+    const chartWidth = colData.length * (barWidth + gap);
+    const chartHeight = 150;
+    const barColors = ['#eb5a46', '#ff9f1a', '#0079bf', '#61bd4f', '#c377e0', '#00c2e0', '#ff78cb', '#f2d600'];
+
+    let barsSvg = colData.map((d, i) => {
+      const h = (d.count / maxCount) * (chartHeight - 30);
+      const x = i * (barWidth + gap) + 10;
+      const y = chartHeight - h - 20;
+      const color = barColors[i % barColors.length];
+      return `<rect class="chart-bar" x="${x}" y="${y}" width="${barWidth}" height="${h}" rx="3" fill="${color}"/>
+              <text class="chart-value" x="${x + barWidth/2}" y="${y - 4}" text-anchor="middle">${d.count}</text>
+              <text class="chart-label" x="${x + barWidth/2}" y="${chartHeight - 4}" text-anchor="middle">${d.title.substring(0, 8)}</text>`;
+    }).join('');
+
+    // Completion arc SVG
+    const arcR = 40;
+    const arcCirc = 2 * Math.PI * arcR;
+    const arcOffset = arcCirc * (1 - completionRate / 100);
+
+    // Time per column
+    let timeRows = '';
+    sortedCols.forEach(col => {
+      let totalTime = 0;
+      let count = 0;
+      state.tasks.forEach(t => {
+        let colTime = t.timeByColumn[col.id] || 0;
+        if (t.columnId === col.id) {
+          colTime += Date.now() - (t.enteredColumnAt || Date.now());
+        }
+        if (colTime > 0) { totalTime += colTime; count++; }
+      });
+      const avg = count ? totalTime / count : 0;
+      // Total elapsed for tasks currently in this column
+      let totalElapsed = 0;
+      state.tasks.filter(t => t.columnId === col.id).forEach(t => {
+        totalElapsed += Utils.getElapsedMs(t);
+      });
+      timeRows += `<div class="time-stat-row">
+        <span>${col.title}</span>
+        <span>Moy: ${Utils.formatHHMMSS(avg)} | Total timer: ${Utils.formatHHMMSS(totalElapsed)}</span>
+      </div>`;
+    });
+
+    content.innerHTML = `
+      <div class="stats-section">
+        <h3>Taux de complétion</h3>
+        <svg viewBox="0 0 120 120" width="120" height="120">
+          <circle cx="60" cy="60" r="${arcR}" fill="none" stroke="var(--border-color)" stroke-width="8"/>
+          <circle cx="60" cy="60" r="${arcR}" fill="none" stroke="var(--color-success)" stroke-width="8"
+            stroke-dasharray="${arcCirc}" stroke-dashoffset="${arcOffset}"
+            stroke-linecap="round" transform="rotate(-90 60 60)"/>
+          <text class="completion-text" x="60" y="62" text-anchor="middle" dominant-baseline="middle">${completionRate}%</text>
+          <text class="completion-label" x="60" y="80" text-anchor="middle">complété</text>
+        </svg>
+      </div>
+      <div class="stats-section">
+        <h3>Tâches par colonne</h3>
+        <svg class="chart-svg" viewBox="0 0 ${Math.max(chartWidth, 100)} ${chartHeight}" height="${chartHeight}">
+          ${barsSvg}
+        </svg>
+      </div>
+      <div class="stats-section">
+        <h3>Temps par colonne</h3>
+        ${timeRows}
+      </div>
+    `;
+  }
+};
+
+/* ============================================================
+   JS — Drag & Drop
+   ============================================================ */
+let dragState = { type: null, id: null };
+
+const DragDrop = {
+  taskDragStart(e, taskId) {
+    dragState = { type: 'task', id: taskId };
+    e.dataTransfer.setData('text/x-kanban-task', taskId);
+    e.dataTransfer.effectAllowed = 'move';
+
+    // Ghost
+    const ghost = e.target.cloneNode(true);
+    ghost.style.transform = 'scale(1.05) rotate(2deg)';
+    ghost.style.opacity = '0.85';
+    ghost.style.boxShadow = '0 8px 24px rgba(0,0,0,0.2)';
+    ghost.style.width = e.target.offsetWidth + 'px';
+    ghost.style.position = 'absolute';
+    const container = document.getElementById('ghost-container');
+    container.innerHTML = '';
+    container.appendChild(ghost);
+    e.dataTransfer.setDragImage(ghost, e.offsetX, e.offsetY);
+
+    requestAnimationFrame(() => e.target.classList.add('dragging'));
+  },
+
+  taskDragEnd(e) {
+    e.target.classList.remove('dragging');
+    document.getElementById('ghost-container').innerHTML = '';
+    document.querySelectorAll('.drag-over, .drag-over-column, .drop-indicator').forEach(el => {
+      el.classList.remove('drag-over', 'drag-over-column');
+      if (el.classList.contains('drop-indicator')) el.remove();
+    });
+    dragState = { type: null, id: null };
+  },
+
+  dragOver(e, colId) {
+    if (dragState.type !== 'task') return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const body = e.currentTarget;
+    body.classList.add('drag-over');
+
+    // Remove old indicators
+    body.querySelectorAll('.drop-indicator').forEach(el => el.remove());
+
+    // Find insertion point
+    const cards = [...body.querySelectorAll('.task-card:not(.dragging):not(.hidden)')];
+    let insertBefore = null;
+    for (const card of cards) {
+      const rect = card.getBoundingClientRect();
+      if (e.clientY < rect.top + rect.height / 2) {
+        insertBefore = card;
+        break;
+      }
+    }
+
+    const indicator = document.createElement('div');
+    indicator.className = 'drop-indicator';
+    if (insertBefore) {
+      body.insertBefore(indicator, insertBefore);
+    } else {
+      body.appendChild(indicator);
+    }
+  },
+
+  dragLeave(e) {
+    if (!e.currentTarget.contains(e.relatedTarget)) {
+      e.currentTarget.classList.remove('drag-over');
+      e.currentTarget.querySelectorAll('.drop-indicator').forEach(el => el.remove());
+    }
+  },
+
+  drop(e, colId) {
+    e.preventDefault();
+    e.stopPropagation();
+    const body = e.currentTarget;
+    body.classList.remove('drag-over');
+    body.querySelectorAll('.drop-indicator').forEach(el => el.remove());
+
+    if (dragState.type === 'task') {
+      const taskId = e.dataTransfer.getData('text/x-kanban-task');
+      if (!taskId) return;
+
+      // Calculate order
+      const cards = [...body.querySelectorAll('.task-card:not(.dragging):not(.hidden)')];
+      let order = cards.length;
+      for (let i = 0; i < cards.length; i++) {
+        const rect = cards[i].getBoundingClientRect();
+        if (e.clientY < rect.top + rect.height / 2) {
+          order = i;
+          break;
+        }
+      }
+      dispatch('MOVE_TASK', { taskId, columnId: colId, order });
+    }
+  },
+
+  // Column drag
+  columnDragStart(e, colId) {
+    dragState = { type: 'column', id: colId };
+    e.dataTransfer.setData('text/x-kanban-column', colId);
+    e.dataTransfer.effectAllowed = 'move';
+
+    const colEl = e.target.closest('.column');
+    if (colEl) {
+      const ghost = colEl.cloneNode(true);
+      ghost.style.transform = 'scale(0.9) rotate(1deg)';
+      ghost.style.opacity = '0.7';
+      ghost.style.width = colEl.offsetWidth + 'px';
+      ghost.style.position = 'absolute';
+      const container = document.getElementById('ghost-container');
+      container.innerHTML = '';
+      container.appendChild(ghost);
+      e.dataTransfer.setDragImage(ghost, 50, 20);
+    }
+  },
+
+  columnDragEnd() {
+    document.getElementById('ghost-container').innerHTML = '';
+    document.querySelectorAll('.drag-over-column').forEach(el => el.classList.remove('drag-over-column'));
+    dragState = { type: null, id: null };
+  },
+
+  columnDragOver(e, colId) {
+    if (dragState.type !== 'column') return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const el = e.currentTarget;
+    el.classList.add('drag-over-column');
+  },
+
+  columnDrop(e, colId) {
+    if (dragState.type !== 'column') return;
+    e.preventDefault();
+    const draggedColId = e.dataTransfer.getData('text/x-kanban-column');
+    if (!draggedColId || draggedColId === colId) return;
+
+    document.querySelectorAll('.drag-over-column').forEach(el => el.classList.remove('drag-over-column'));
+
+    const sorted = Utils.sortByOrder(state.columns);
+    const ids = sorted.map(c => c.id);
+    const fromIdx = ids.indexOf(draggedColId);
+    const toIdx = ids.indexOf(colId);
+    if (fromIdx < 0 || toIdx < 0) return;
+    ids.splice(fromIdx, 1);
+    ids.splice(toIdx, 0, draggedColId);
+    dispatch('REORDER_COLUMNS', { orderedIds: ids });
+  }
+};
+
+/* ============================================================
+   JS — Touch Polyfill for Drag-and-Drop
+   ============================================================ */
+(function touchDnD() {
+  let touchData = null;
+
+  document.addEventListener('touchstart', function(e) {
+    const card = e.target.closest('.task-card[draggable="true"]');
+    if (!card) return;
+    const taskId = card.getAttribute('data-task-id');
+    if (!taskId) return;
+    touchData = {
+      taskId,
+      startX: e.touches[0].clientX,
+      startY: e.touches[0].clientY,
+      el: card,
+      ghost: null,
+      moved: false
+    };
+  }, { passive: true });
+
+  document.addEventListener('touchmove', function(e) {
+    if (!touchData) return;
+    const dx = e.touches[0].clientX - touchData.startX;
+    const dy = e.touches[0].clientY - touchData.startY;
+    if (!touchData.moved && Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+    touchData.moved = true;
+    e.preventDefault();
+
+    if (!touchData.ghost) {
+      touchData.ghost = touchData.el.cloneNode(true);
+      touchData.ghost.style.position = 'fixed';
+      touchData.ghost.style.zIndex = '9999';
+      touchData.ghost.style.pointerEvents = 'none';
+      touchData.ghost.style.opacity = '0.85';
+      touchData.ghost.style.transform = 'scale(1.05) rotate(2deg)';
+      touchData.ghost.style.boxShadow = '0 8px 24px rgba(0,0,0,0.2)';
+      touchData.ghost.style.width = touchData.el.offsetWidth + 'px';
+      document.body.appendChild(touchData.ghost);
+      touchData.el.classList.add('dragging');
+    }
+
+    touchData.ghost.style.left = (e.touches[0].clientX - touchData.el.offsetWidth / 2) + 'px';
+    touchData.ghost.style.top = (e.touches[0].clientY - 20) + 'px';
+
+    // Highlight column under touch
+    document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+    const elUnder = document.elementFromPoint(e.touches[0].clientX, e.touches[0].clientY);
+    if (elUnder) {
+      const colBody = elUnder.closest('.column-body');
+      if (colBody) colBody.classList.add('drag-over');
+    }
+  }, { passive: false });
+
+  document.addEventListener('touchend', function(e) {
+    if (!touchData || !touchData.moved) { touchData = null; return; }
+    touchData.el.classList.remove('dragging');
+    if (touchData.ghost) touchData.ghost.remove();
+    document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+
+    const touch = e.changedTouches[0];
+    const elUnder = document.elementFromPoint(touch.clientX, touch.clientY);
+    if (elUnder) {
+      const colBody = elUnder.closest('.column-body');
+      if (colBody) {
+        const colId = colBody.getAttribute('data-column-id');
+        const cards = [...colBody.querySelectorAll('.task-card:not(.dragging):not(.hidden)')];
+        let order = cards.length;
+        for (let i = 0; i < cards.length; i++) {
+          const rect = cards[i].getBoundingClientRect();
+          if (touch.clientY < rect.top + rect.height / 2) { order = i; break; }
+        }
+        dispatch('MOVE_TASK', { taskId: touchData.taskId, columnId: colId, order });
+      }
+    }
+    touchData = null;
+  });
+})();
+
+/* ============================================================
+   JS — Modals
+   ============================================================ */
+function openModal(html) {
+  document.getElementById('modal-content').innerHTML = html;
+  document.getElementById('modal-overlay').classList.add('active');
+  state.ui.modalOpen = true;
+  // Focus first input
+  setTimeout(() => {
+    const first = document.querySelector('#modal-content input:not([type=hidden]):not([type=checkbox]), #modal-content textarea');
+    if (first) first.focus();
+  }, 50);
+}
+
+function closeModal() {
+  document.getElementById('modal-overlay').classList.remove('active');
+  state.ui.modalOpen = false;
+}
+
+document.getElementById('modal-overlay').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeModal();
+});
+
+/* ============================================================
+   JS — Task Modal (Create/Edit)
+   ============================================================ */
+let modalTags = [];
+let modalSubtasks = [];
+let modalNewTagColor = TAG_COLORS[0].color;
+
+function openTaskModal(columnId, task) {
+  const isEdit = !!task;
+  modalTags = isEdit ? [...task.tags] : [];
+  modalSubtasks = isEdit ? task.subtasks.map(s => ({...s})) : [];
+
+  const allTags = new Map();
+  state.tasks.forEach(t => (t.tags || []).forEach(tag => allTags.set(tag.name, tag.color)));
+
+  const tagPalette = [...allTags.entries()].map(([name, color]) => {
+    const active = modalTags.some(t => t.name === name) ? 'active' : '';
+    return `<span class="tag-palette-item ${active}" style="background:${color}" data-tag-name="${name}" data-tag-color="${color}" onclick="window._toggleModalTag(this)">${name}</span>`;
+  }).join('');
+
+  const subtaskHtml = modalSubtasks.map((s, i) =>
+    `<li class="subtask-item">
+      <input type="checkbox" ${s.done ? 'checked' : ''} onchange="window._toggleModalSubtask(${i})">
+      <span class="subtask-text">${s.text}</span>
+      <span class="subtask-remove" onclick="window._removeModalSubtask(${i})">✕</span>
+    </li>`
+  ).join('');
+
+  const html = `
+    <div class="modal-title">${isEdit ? 'Modifier la tâche' : 'Nouvelle tâche'}</div>
+    <div class="form-group">
+      <label class="form-label">Titre *</label>
+      <input class="form-input" id="modal-task-title" value="${isEdit ? task.title.replace(/"/g, '&quot;') : ''}" placeholder="Titre de la tâche">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Description</label>
+      <textarea class="form-textarea" id="modal-task-desc" placeholder="Description">${isEdit ? (task.description || '') : ''}</textarea>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Date d'échéance</label>
+      <input class="form-date" type="date" id="modal-task-due" value="${isEdit && task.dueDate ? task.dueDate : ''}">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Tags</label>
+      <div class="tag-palette" id="modal-tag-palette">${tagPalette}</div>
+      <div class="new-tag-row">
+        <input class="new-tag-input" id="modal-new-tag-name" placeholder="Nouveau tag">
+        <span class="color-select" id="modal-new-tag-color" style="background:${modalNewTagColor}" title="Couleur" onclick="window._cycleTagColor()"></span>
+        <button class="btn btn-ghost" onclick="window._addNewTag()">+</button>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Sous-tâches</label>
+      <ul class="subtask-list" id="modal-subtask-list">${subtaskHtml}</ul>
+      <div class="add-subtask-row">
+        <input class="form-input" id="modal-new-subtask" placeholder="Nouvelle sous-tâche">
+        <button class="btn btn-ghost" onclick="window._addModalSubtask()">+</button>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="window._closeModal()">Annuler</button>
+      <button class="btn btn-primary" onclick="window._saveTask('${columnId}', ${isEdit ? "'" + task.id + "'" : 'null'})">${isEdit ? 'Enregistrer' : 'Créer'}</button>
+    </div>
+  `;
+  openModal(html);
+}
+
+function openEditTaskModal(taskId) {
+  const task = state.tasks.find(t => t.id === taskId);
+  if (!task) return;
+  openTaskModal(task.columnId, task);
+}
+
+// Global modal helpers
+window._closeModal = closeModal;
+
+window._saveTask = function(colId, taskId) {
+  const title = document.getElementById('modal-task-title').value.trim();
+  if (!title) {
+    document.getElementById('modal-task-title').classList.add('error');
+    return;
+  }
+  const desc = document.getElementById('modal-task-desc').value.trim();
+  const due = document.getElementById('modal-task-due').value || null;
+
+  if (taskId) {
+    dispatch('UPDATE_TASK', { id: taskId, changes: { title, description: desc, dueDate: due, tags: modalTags, subtasks: modalSubtasks } });
+  } else {
+    dispatch('ADD_TASK', { columnId: colId, title, description: desc, dueDate: due, tags: modalTags, subtasks: modalSubtasks });
+  }
+  closeModal();
+};
+
+window._toggleModalTag = function(el) {
+  const name = el.getAttribute('data-tag-name');
+  const color = el.getAttribute('data-tag-color');
+  const idx = modalTags.findIndex(t => t.name === name);
+  if (idx >= 0) { modalTags.splice(idx, 1); el.classList.remove('active'); }
+  else { modalTags.push({ name, color }); el.classList.add('active'); }
+};
+
+let tagColorIdx = 0;
+window._cycleTagColor = function() {
+  tagColorIdx = (tagColorIdx + 1) % TAG_COLORS.length;
+  modalNewTagColor = TAG_COLORS[tagColorIdx].color;
+  document.getElementById('modal-new-tag-color').style.background = modalNewTagColor;
+};
+
+window._addNewTag = function() {
+  const input = document.getElementById('modal-new-tag-name');
+  const name = input.value.trim();
+  if (!name) return;
+  if (!modalTags.some(t => t.name === name)) {
+    modalTags.push({ name, color: modalNewTagColor });
+  }
+  input.value = '';
+  // Add to palette
+  const palette = document.getElementById('modal-tag-palette');
+  const existing = palette.querySelector(`[data-tag-name="${name}"]`);
+  if (!existing) {
+    const chip = document.createElement('span');
+    chip.className = 'tag-palette-item active';
+    chip.style.background = modalNewTagColor;
+    chip.setAttribute('data-tag-name', name);
+    chip.setAttribute('data-tag-color', modalNewTagColor);
+    chip.textContent = name;
+    chip.addEventListener('click', function() { window._toggleModalTag(this); });
+    palette.appendChild(chip);
+  }
+};
+
+window._toggleModalSubtask = function(idx) {
+  if (modalSubtasks[idx]) modalSubtasks[idx].done = !modalSubtasks[idx].done;
+};
+
+window._removeModalSubtask = function(idx) {
+  modalSubtasks.splice(idx, 1);
+  refreshSubtaskList();
+};
+
+window._addModalSubtask = function() {
+  const input = document.getElementById('modal-new-subtask');
+  const text = input.value.trim();
+  if (!text) return;
+  modalSubtasks.push({ id: Utils.generateId(), text, done: false });
+  input.value = '';
+  refreshSubtaskList();
+};
+
+function refreshSubtaskList() {
+  const list = document.getElementById('modal-subtask-list');
+  if (!list) return;
+  list.innerHTML = modalSubtasks.map((s, i) =>
+    `<li class="subtask-item">
+      <input type="checkbox" ${s.done ? 'checked' : ''} onchange="window._toggleModalSubtask(${i})">
+      <span class="subtask-text">${s.text}</span>
+      <span class="subtask-remove" onclick="window._removeModalSubtask(${i})">✕</span>
+    </li>`
+  ).join('');
+}
+
+/* ============================================================
+   JS — Confirmation Modal
+   ============================================================ */
+function confirmAction(message, onConfirm, extraHtml) {
+  const html = `
+    <div class="modal-title">Confirmation</div>
+    <p class="confirm-text">${message}</p>
+    ${extraHtml || ''}
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="window._closeModal()">Annuler</button>
+      <button class="btn btn-danger" id="confirm-yes">Confirmer</button>
+    </div>
+  `;
+  openModal(html);
+  document.getElementById('confirm-yes').addEventListener('click', () => {
+    onConfirm();
+    closeModal();
+  });
+}
+
+/* ============================================================
+   JS — Column Management
+   ============================================================ */
+function promptAddColumn() {
+  const html = `
+    <div class="modal-title">Nouvelle colonne</div>
+    <div class="form-group">
+      <input class="form-input" id="modal-col-name" placeholder="Nom de la colonne" autofocus>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="window._closeModal()">Annuler</button>
+      <button class="btn btn-primary" id="add-col-confirm">Ajouter</button>
+    </div>
+  `;
+  openModal(html);
+  document.getElementById('add-col-confirm').addEventListener('click', () => {
+    const title = document.getElementById('modal-col-name').value.trim();
+    if (title) {
+      dispatch('ADD_COLUMN', { title });
+      closeModal();
+    }
+  });
+  document.getElementById('modal-col-name').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('add-col-confirm').click();
+  });
+}
+
+function startColumnRename(colId) {
+  const col = state.columns.find(c => c.id === colId);
+  if (!col) return;
+  const titleEl = document.querySelector(`.column[data-column-id="${colId}"] .column-title`);
+  if (!titleEl) return;
+
+  const input = document.createElement('input');
+  input.className = 'column-title-input';
+  input.value = col.title;
+  titleEl.replaceWith(input);
+  input.focus();
+  input.select();
+
+  const finish = (save) => {
+    if (save && input.value.trim()) {
+      dispatch('RENAME_COLUMN', { id: colId, title: input.value.trim() });
+    } else {
+      Render.all();
+    }
+  };
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') finish(true);
+    if (e.key === 'Escape') finish(false);
+  });
+  input.addEventListener('blur', () => finish(true));
+}
+
+function confirmDeleteColumn(colId) {
+  const col = state.columns.find(c => c.id === colId);
+  if (!col) return;
+  const tasksInCol = state.tasks.filter(t => t.columnId === colId);
+  const otherCols = state.columns.filter(c => c.id !== colId);
+
+  let extraHtml = '';
+  if (tasksInCol.length > 0 && otherCols.length > 0) {
+    extraHtml = `<label class="form-label">Déplacer les ${tasksInCol.length} tâche(s) vers :</label>
+      <select class="confirm-select" id="col-move-target">
+        <option value="">Supprimer les tâches</option>
+        ${otherCols.map(c => `<option value="${c.id}">${c.title}</option>`).join('')}
+      </select>`;
+  }
+
+  confirmAction(
+    `Supprimer la colonne "${col.title}" ?${tasksInCol.length ? ` (${tasksInCol.length} tâche(s))` : ''}`,
+    () => {
+      const sel = document.getElementById('col-move-target');
+      const moveTo = sel ? sel.value : '';
+      dispatch('DELETE_COLUMN', { id: colId, moveTo: moveTo || null });
+    },
+    extraHtml
+  );
+}
+
+/* ============================================================
+   JS — Task Selection & Navigation
+   ============================================================ */
+function selectTask(taskId) {
+  state.ui.selectedTaskId = state.ui.selectedTaskId === taskId ? null : taskId;
+  // Update visual without full rerender
+  document.querySelectorAll('.task-card').forEach(card => {
+    card.classList.toggle('selected', card.getAttribute('data-task-id') === state.ui.selectedTaskId);
+  });
+}
+
+function navigateTasks(direction) {
+  const sortedCols = Utils.sortByOrder(state.columns);
+  const visibleTasks = sortedCols.map(col =>
+    Utils.sortByOrder(state.tasks.filter(t => t.columnId === col.id && Render.isTaskVisible(t)))
+  );
+
+  if (!state.ui.selectedTaskId) {
+    // Select first visible task
+    for (const tasks of visibleTasks) {
+      if (tasks.length) { selectTask(tasks[0].id); return; }
+    }
+    return;
+  }
+
+  let curColIdx = -1, curTaskIdx = -1;
+  visibleTasks.forEach((tasks, ci) => {
+    const ti = tasks.findIndex(t => t.id === state.ui.selectedTaskId);
+    if (ti >= 0) { curColIdx = ci; curTaskIdx = ti; }
+  });
+  if (curColIdx < 0) return;
+
+  let newColIdx = curColIdx, newTaskIdx = curTaskIdx;
+
+  if (direction === 'up') { newTaskIdx = Math.max(0, curTaskIdx - 1); }
+  else if (direction === 'down') { newTaskIdx = Math.min(visibleTasks[curColIdx].length - 1, curTaskIdx + 1); }
+  else if (direction === 'left') {
+    for (let i = curColIdx - 1; i >= 0; i--) {
+      if (visibleTasks[i].length) { newColIdx = i; newTaskIdx = Math.min(curTaskIdx, visibleTasks[i].length - 1); break; }
+    }
+  }
+  else if (direction === 'right') {
+    for (let i = curColIdx + 1; i < visibleTasks.length; i++) {
+      if (visibleTasks[i].length) { newColIdx = i; newTaskIdx = Math.min(curTaskIdx, visibleTasks[i].length - 1); break; }
+    }
+  }
+
+  const target = visibleTasks[newColIdx] && visibleTasks[newColIdx][newTaskIdx];
+  if (target) {
+    selectTask(target.id);
+    const el = document.querySelector(`[data-task-id="${target.id}"]`);
+    if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+}
+
+/* ============================================================
+   JS — Bulk Operations
+   ============================================================ */
+function toggleBulkMode() {
+  state.selection.mode = !state.selection.mode;
+  if (!state.selection.mode) state.selection.taskIds = [];
+  Render.all();
+}
+
+function toggleBulkSelect(taskId) {
+  const idx = state.selection.taskIds.indexOf(taskId);
+  if (idx >= 0) state.selection.taskIds.splice(idx, 1);
+  else state.selection.taskIds.push(taskId);
+  Render.bulkBar();
+}
+
+document.getElementById('btn-bulk').addEventListener('click', toggleBulkMode);
+
+document.getElementById('bulk-select-all').addEventListener('click', () => {
+  state.selection.taskIds = state.tasks.filter(t => Render.isTaskVisible(t)).map(t => t.id);
+  Render.all();
+});
+
+document.getElementById('bulk-deselect-all').addEventListener('click', () => {
+  state.selection.taskIds = [];
+  Render.all();
+});
+
+document.getElementById('bulk-cancel').addEventListener('click', () => {
+  state.selection.mode = false;
+  state.selection.taskIds = [];
+  Render.all();
+});
+
+document.getElementById('bulk-move-btn').addEventListener('click', () => {
+  const colId = document.getElementById('bulk-move-select').value;
+  if (!colId || !state.selection.taskIds.length) return;
+  dispatch('BULK_MOVE', { taskIds: [...state.selection.taskIds], columnId: colId });
+});
+
+document.getElementById('bulk-delete-btn').addEventListener('click', () => {
+  if (!state.selection.taskIds.length) return;
+  confirmAction(`Supprimer ${state.selection.taskIds.length} tâche(s) ?`, () => {
+    dispatch('BULK_DELETE', { taskIds: [...state.selection.taskIds] });
+  });
+});
+
+document.getElementById('bulk-tag-btn').addEventListener('click', () => {
+  if (!state.selection.taskIds.length) return;
+  const html = `
+    <div class="modal-title">Ajouter un tag</div>
+    <div class="form-group">
+      <div class="tag-palette" id="bulk-tag-palette">
+        ${TAG_COLORS.map(c => `<span class="tag-palette-item" style="background:${c.color}" data-color="${c.color}" onclick="this.classList.toggle('active')">${c.name}</span>`).join('')}
+      </div>
+      <div class="new-tag-row" style="margin-top:8px">
+        <input class="new-tag-input" id="bulk-tag-name" placeholder="Nom du tag">
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="window._closeModal()">Annuler</button>
+      <button class="btn btn-primary" id="bulk-tag-confirm">Appliquer</button>
+    </div>
+  `;
+  openModal(html);
+  document.getElementById('bulk-tag-confirm').addEventListener('click', () => {
+    const name = document.getElementById('bulk-tag-name').value.trim();
+    const activeChip = document.querySelector('#bulk-tag-palette .active');
+    if (!name && !activeChip) return;
+    let tagName = name;
+    let tagColor = TAG_COLORS[0].color;
+    if (activeChip) {
+      tagColor = activeChip.getAttribute('data-color');
+      if (!tagName) tagName = activeChip.textContent;
+    }
+    if (tagName) {
+      dispatch('BULK_TAG', { taskIds: [...state.selection.taskIds], tag: { name: tagName, color: tagColor } });
+      closeModal();
+    }
+  });
+});
+
+/* ============================================================
+   JS — Theme Toggle
+   ============================================================ */
+document.getElementById('btn-theme').addEventListener('click', () => {
+  state.theme = state.theme === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', state.theme);
+  Storage.save();
+  Render.updateThemeButton();
+});
+
+/* ============================================================
+   JS — Search
+   ============================================================ */
+const searchInput = document.getElementById('search-input');
+searchInput.addEventListener('input', Utils.debounce(() => {
+  state.filters.search = searchInput.value;
+  Render.all();
+}, 150));
+
+/* ============================================================
+   JS — Undo/Redo Buttons
+   ============================================================ */
+document.getElementById('btn-undo').addEventListener('click', () => History.undo());
+document.getElementById('btn-redo').addEventListener('click', () => History.redo());
+
+/* ============================================================
+   JS — Stats Panel
+   ============================================================ */
+document.getElementById('btn-stats').addEventListener('click', () => {
+  const panel = document.getElementById('stats-panel');
+  panel.classList.toggle('active');
+  if (panel.classList.contains('active')) Render.stats();
+});
+
+document.getElementById('stats-close').addEventListener('click', () => {
+  document.getElementById('stats-panel').classList.remove('active');
+});
+
+/* ============================================================
+   JS — Export
+   ============================================================ */
+document.getElementById('btn-export').addEventListener('click', () => {
+  const exportData = Utils.cloneState(state);
+  delete exportData.ui;
+  delete exportData.selection;
+  const json = JSON.stringify(exportData, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const d = new Date().toISOString().slice(0, 10);
+  a.href = url;
+  a.download = `kanban-export-${d}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast('Board exporté !');
+});
+
+/* ============================================================
+   JS — Import
+   ============================================================ */
+document.getElementById('btn-import-trigger').addEventListener('click', () => {
+  document.getElementById('import-input').click();
+});
+
+document.getElementById('import-input').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    try {
+      const data = JSON.parse(ev.target.result);
+      // Validate schema
+      const errors = validateImport(data);
+      if (errors.length) {
+        showToast('Import invalide: ' + errors[0]);
+        return;
+      }
+      confirmAction('Importer ce fichier ? L\'état actuel sera remplacé.', () => {
+        const backup = Utils.cloneState(state);
+        try {
+          // Ensure fields
+          data.tasks.forEach(t => {
+            t.tags = t.tags || [];
+            t.subtasks = t.subtasks || [];
+            t.timer = t.timer || { elapsedMs: 0, runningSince: null };
+            t.timeByColumn = t.timeByColumn || {};
+            t.enteredColumnAt = t.enteredColumnAt || Date.now();
+          });
+          dispatch('IMPORT_STATE', { columns: data.columns, tasks: data.tasks, theme: data.theme, version: data.version });
+          showToast('Import réussi !');
+        } catch (err) {
+          // Rollback
+          state = backup;
+          state.ui = { selectedTaskId: null, modalOpen: false };
+          state.selection = { taskIds: [], mode: false };
+          Storage.save();
+          Render.all();
+          showToast('Erreur lors de l\'import, rollback effectué');
+        }
+      });
+    } catch(err) {
+      showToast('Fichier JSON invalide');
+    }
+  };
+  reader.readAsText(file);
+  e.target.value = '';
+});
+
+function validateImport(data) {
+  const errors = [];
+  if (!data || typeof data !== 'object') errors.push('Format invalide');
+  if (!Array.isArray(data.columns)) errors.push('columns manquant ou invalide');
+  if (!Array.isArray(data.tasks)) errors.push('tasks manquant ou invalide');
+  if (errors.length) return errors;
+
+  // Check columns
+  const colIds = new Set();
+  data.columns.forEach((c, i) => {
+    if (!c.id) errors.push(`Colonne ${i}: id manquant`);
+    if (!c.title) errors.push(`Colonne ${i}: title manquant`);
+    if (colIds.has(c.id)) errors.push(`Colonne ${i}: id dupliqué`);
+    colIds.add(c.id);
+  });
+
+  // Check tasks
+  const taskIds = new Set();
+  data.tasks.forEach((t, i) => {
+    if (!t.id) errors.push(`Tâche ${i}: id manquant`);
+    if (!t.title) errors.push(`Tâche ${i}: title manquant`);
+    if (!t.columnId) errors.push(`Tâche ${i}: columnId manquant`);
+    if (t.columnId && !colIds.has(t.columnId)) errors.push(`Tâche ${i}: columnId "${t.columnId}" invalide`);
+    if (taskIds.has(t.id)) errors.push(`Tâche ${i}: id dupliqué`);
+    taskIds.add(t.id);
+    if (t.tags && !Array.isArray(t.tags)) errors.push(`Tâche ${i}: tags invalide`);
+    if (t.subtasks && !Array.isArray(t.subtasks)) errors.push(`Tâche ${i}: subtasks invalide`);
+  });
+
+  return errors;
+}
+
+/* ============================================================
+   JS — Keyboard Shortcuts
+   ============================================================ */
+document.addEventListener('keydown', (e) => {
+  // Guard: don't process shortcuts when typing
+  if (Utils.isInputFocused()) {
+    if (e.key === 'Escape') {
+      document.activeElement.blur();
+      if (state.ui.modalOpen) closeModal();
+    }
+    return;
+  }
+
+  // Ctrl+Z / Ctrl+Shift+Z
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+    e.preventDefault();
+    History.undo();
+    return;
+  }
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'Z' || (e.key === 'z' && e.shiftKey))) {
+    e.preventDefault();
+    History.redo();
+    return;
+  }
+
+  switch (e.key) {
+    case 'n':
+    case 'N':
+      e.preventDefault();
+      const firstCol = Utils.sortByOrder(state.columns)[0];
+      if (firstCol) openTaskModal(firstCol.id);
+      break;
+    case 'Delete':
+    case 'Backspace':
+      if (state.ui.selectedTaskId) {
+        e.preventDefault();
+        const task = state.tasks.find(t => t.id === state.ui.selectedTaskId);
+        if (task) {
+          confirmAction(`Supprimer la tâche "${task.title}" ?`, () => {
+            dispatch('DELETE_TASK', { id: task.id });
+            state.ui.selectedTaskId = null;
+          });
+        }
+      }
+      break;
+    case 'Escape':
+      if (state.ui.modalOpen) closeModal();
+      else if (state.selection.mode) { state.selection.mode = false; state.selection.taskIds = []; Render.all(); }
+      else if (state.ui.selectedTaskId) { state.ui.selectedTaskId = null; document.querySelectorAll('.task-card.selected').forEach(c => c.classList.remove('selected')); }
+      break;
+    case 'ArrowUp': e.preventDefault(); navigateTasks('up'); break;
+    case 'ArrowDown': e.preventDefault(); navigateTasks('down'); break;
+    case 'ArrowLeft': e.preventDefault(); navigateTasks('left'); break;
+    case 'ArrowRight': e.preventDefault(); navigateTasks('right'); break;
+  }
+});
+
+/* ============================================================
+   JS — Toast Notification
+   ============================================================ */
+function showToast(msg) {
+  const toast = document.getElementById('toast');
+  toast.textContent = msg;
+  toast.classList.add('visible');
+  setTimeout(() => toast.classList.remove('visible'), 2500);
+}
+
+/* ============================================================
+   JS — Timer Tick (1s interval, no dispatch)
+   ============================================================ */
+setInterval(() => {
+  const runningTimers = document.querySelectorAll('.task-timer-display.running .timer-value');
+  state.tasks.forEach(t => {
+    if (t.timer.runningSince) {
+      const el = document.querySelector(`[data-timer-task-id="${t.id}"] .timer-value`);
+      if (el) {
+        el.textContent = Utils.formatHHMMSS(Utils.getElapsedMs(t));
+      }
+    }
+  });
+  // Save periodically for running timers
+  if (state.tasks.some(t => t.timer.runningSince)) {
+    Storage.save();
+  }
+  // Refresh stats if open
+  if (document.getElementById('stats-panel').classList.contains('active')) {
+    Render.stats();
+  }
+}, 1000);
+
+/* ============================================================
+   JS — Overdue Check (60s interval)
+   ============================================================ */
+setInterval(() => {
+  document.querySelectorAll('.task-card').forEach(card => {
+    const taskId = card.getAttribute('data-task-id');
+    const task = state.tasks.find(t => t.id === taskId);
+    if (task) {
+      card.classList.toggle('overdue', Utils.isOverdue(task, state.columns));
+    }
+  });
+}, 60000);
+
+/* ============================================================
+   JS — Initialization
+   ============================================================ */
+state = Storage.load();
+document.documentElement.setAttribute('data-theme', state.theme);
+Render.all();
+
+})();
+</script>
+</body>
+</html>
