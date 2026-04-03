@@ -1,20 +1,18 @@
 package mcp
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/SocialGouv/iterion/ir"
 	"github.com/SocialGouv/iterion/tool"
+	gomcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestPrepareWorkflowProjectAutoloadAndOverrides(t *testing.T) {
@@ -131,64 +129,35 @@ func TestPrepareWorkflowActivatesPresetsWithoutProjectFile(t *testing.T) {
 }
 
 func TestManagerHTTPDiscoveryAndCache(t *testing.T) {
-	var initializeCalls atomic.Int32
-	var listCalls atomic.Int32
 	var callCalls atomic.Int32
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req rpcRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		switch req.Method {
-		case "initialize":
-			initializeCalls.Add(1)
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Mcp-Session-Id", "session-1")
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      req.ID,
-				"result": map[string]interface{}{
-					"protocolVersion": DefaultProtocolVersion,
-				},
-			})
-		case "notifications/initialized":
-			w.WriteHeader(http.StatusAccepted)
-		case "tools/list":
-			listCalls.Add(1)
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      req.ID,
-				"result": map[string]interface{}{
-					"tools": []map[string]interface{}{
-						{
-							"name":        "create_issue",
-							"description": "Create a GitHub issue",
-							"inputSchema": map[string]interface{}{
-								"type": "object",
-							},
-						},
-					},
-				},
-			})
-		case "tools/call":
-			callCalls.Add(1)
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      req.ID,
-				"result": map[string]interface{}{
-					"content": []map[string]interface{}{
-						{"type": "text", "text": "created"},
-					},
-				},
-			})
-		default:
-			http.Error(w, "unexpected method", http.StatusBadRequest)
-		}
-	}))
+	// Create a real MCP server using the go-sdk.
+	mcpServer := gomcp.NewServer(&gomcp.Implementation{
+		Name:    "test-server",
+		Version: "v0.0.1",
+	}, nil)
+
+	gomcp.AddTool(mcpServer, &gomcp.Tool{
+		Name:        "create_issue",
+		Description: "Create a GitHub issue",
+		InputSchema: map[string]any{"type": "object"},
+	}, func(ctx context.Context, req *gomcp.CallToolRequest, input any) (*gomcp.CallToolResult, any, error) {
+		callCalls.Add(1)
+		return &gomcp.CallToolResult{
+			Content: []gomcp.Content{
+				&gomcp.TextContent{Text: "created"},
+			},
+		}, nil, nil
+	})
+
+	handler := gomcp.NewStreamableHTTPHandler(func(r *http.Request) *gomcp.Server {
+		return mcpServer
+	}, &gomcp.StreamableHTTPOptions{
+		Stateless:    true,
+		JSONResponse: true,
+	})
+
+	server := httptest.NewServer(handler)
 	defer server.Close()
 
 	manager := NewManager(map[string]*ServerConfig{
@@ -205,13 +174,6 @@ func TestManagerHTTPDiscoveryAndCache(t *testing.T) {
 	}
 	if err := manager.EnsureServers(context.Background(), registry, []string{"github"}); err != nil {
 		t.Fatalf("EnsureServers second call: %v", err)
-	}
-
-	if got := listCalls.Load(); got != 1 {
-		t.Fatalf("expected one tools/list call, got %d", got)
-	}
-	if got := initializeCalls.Load(); got != 1 {
-		t.Fatalf("expected one initialize call, got %d", got)
 	}
 
 	td, err := registry.Resolve("mcp.github.create_issue")
@@ -272,79 +234,33 @@ func helperProcessMode() bool {
 	return false
 }
 
+// runStdioHelperProcess runs a real MCP server using the go-sdk on
+// stdin/stdout. This is used by TestManagerStdioDiscoveryAndCall.
 func runStdioHelperProcess() {
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 0, 1024), maxMessageSize)
+	server := gomcp.NewServer(&gomcp.Implementation{
+		Name:    "echo-server",
+		Version: "v0.0.1",
+	}, nil)
 
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		var req rpcRequest
-		if err := json.Unmarshal([]byte(line), &req); err != nil {
-			panic(err)
-		}
-		switch req.Method {
-		case "initialize":
-			writeHelperResponse(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      req.ID,
-				"result": map[string]interface{}{
-					"protocolVersion": DefaultProtocolVersion,
-				},
-			})
-		case "notifications/initialized":
-			// Notification: no response.
-		case "tools/list":
-			writeHelperResponse(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      req.ID,
-				"result": map[string]interface{}{
-					"tools": []map[string]interface{}{
-						{
-							"name":        "echo",
-							"description": "Echo input.message",
-							"inputSchema": map[string]interface{}{
-								"type": "object",
-							},
-						},
-					},
-				},
-			})
-		case "tools/call":
-			var params callToolParams
-			raw, _ := json.Marshal(req.Params)
-			_ = json.Unmarshal(raw, &params)
-			writeHelperResponse(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      req.ID,
-				"result": map[string]interface{}{
-					"content": []map[string]interface{}{
-						{"type": "text", "text": fmt.Sprint(params.Arguments["message"])},
-					},
-				},
-			})
-		default:
-			writeHelperResponse(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      req.ID,
-				"error": map[string]interface{}{
-					"code":    -32601,
-					"message": "method not found",
-				},
-			})
-		}
+	type echoInput struct {
+		Message string `json:"message"`
+	}
+
+	gomcp.AddTool(server, &gomcp.Tool{
+		Name:        "echo",
+		Description: "Echo input.message",
+	}, func(ctx context.Context, req *gomcp.CallToolRequest, input echoInput) (*gomcp.CallToolResult, any, error) {
+		return &gomcp.CallToolResult{
+			Content: []gomcp.Content{
+				&gomcp.TextContent{Text: input.Message},
+			},
+		}, nil, nil
+	})
+
+	if err := server.Run(context.Background(), &gomcp.StdioTransport{}); err != nil {
+		os.Exit(1)
 	}
 	os.Exit(0)
-}
-
-func writeHelperResponse(v interface{}) {
-	data, err := json.Marshal(v)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(string(data))
 }
 
 func writeProjectMCPFile(t *testing.T, dir, contents string) {

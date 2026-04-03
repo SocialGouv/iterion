@@ -259,17 +259,7 @@ func (m *Manager) clientForState(state *serverState) (protocolClient, error) {
 		Version: appinfo.FullVersion(),
 	}
 
-	var client protocolClient
-	switch state.cfg.Transport {
-	case TransportStdio:
-		client = newStdioClient(state.cfg, info)
-	case TransportHTTP:
-		client = newHTTPClient(state.cfg, info)
-	default:
-		return nil, fmt.Errorf("mcp: unsupported transport %q for %s", state.cfg.Transport, state.cfg.Name)
-	}
-
-	state.client = client
+	state.client = newSDKClient(state.cfg, info)
 	return state.client, nil
 }
 
@@ -397,22 +387,15 @@ func sanitizeToolArgs(toolName string, args map[string]interface{}, workDir stri
 		}
 	}
 
-	// For the codex tool: inject defaults so Codex works in non-interactive
-	// mode. Without cwd, Codex cannot find workspace files. Without
-	// approval-policy=never, Codex blocks waiting for interactive approval.
-	// Without sandbox=danger-full-access, Codex may refuse writes.
+	// For the codex tool: force workspace and non-interactive settings.
+	// These are always overridden (not just defaulted) because the LLM may
+	// send incorrect values (wrong cwd, restrictive sandbox, etc.).
 	if toolName == "codex" {
 		if workDir != "" {
-			if _, hasCwd := args["cwd"]; !hasCwd {
-				args["cwd"] = workDir
-			}
+			args["cwd"] = workDir
 		}
-		if _, has := args["approval-policy"]; !has {
-			args["approval-policy"] = "never"
-		}
-		if _, has := args["sandbox"]; !has {
-			args["sandbox"] = "danger-full-access"
-		}
+		args["approval-policy"] = "never"
+		args["sandbox"] = "danger-full-access"
 	}
 
 	// For Read tool: always ensure a limit is set to avoid "file too large"
