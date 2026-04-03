@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -163,6 +164,12 @@ func (c *stdioClient) start(ctx context.Context) error {
 	cmd := exec.Command(c.cfg.Command, c.cfg.Args...)
 	if c.cfg.WorkDir != "" {
 		cmd.Dir = c.cfg.WorkDir
+	}
+	if len(c.cfg.Env) > 0 {
+		cmd.Env = os.Environ()
+		for k, v := range c.cfg.Env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
 	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

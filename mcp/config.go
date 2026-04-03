@@ -33,7 +33,8 @@ type ServerConfig struct {
 	Args      []string
 	URL       string
 	Headers   map[string]string
-	WorkDir   string // working directory for stdio server processes
+	WorkDir   string            // working directory for stdio server processes
+	Env       map[string]string // extra environment variables for stdio server processes
 }
 
 // PrepareWorkflow resolves the final MCP catalog and active server sets for a
@@ -337,6 +338,7 @@ func cloneServerConfig(cfg *ServerConfig) *ServerConfig {
 		URL:       cfg.URL,
 		Headers:   cloneStringMap(cfg.Headers),
 		WorkDir:   cfg.WorkDir,
+		Env:       cloneStringMap(cfg.Env),
 	}
 }
 
