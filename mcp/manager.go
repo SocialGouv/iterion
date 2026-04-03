@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
@@ -135,6 +136,7 @@ func (m *Manager) ensureServer(ctx context.Context, registry *tool.Registry, ser
 		return fmt.Errorf("mcp: discover tools for %q: %w", server, err)
 	}
 
+	workDir := state.cfg.WorkDir
 	for _, info := range toolsList {
 		serverName := server
 		toolName := info.Name
@@ -145,7 +147,7 @@ func (m *Manager) ensureServer(ctx context.Context, registry *tool.Registry, ser
 					return "", fmt.Errorf("mcp: decode input for %s.%s: %w", serverName, toolName, err)
 				}
 			}
-			sanitizeToolArgs(toolName, args)
+			sanitizeToolArgs(toolName, args, workDir)
 			result, err := client.CallTool(callCtx, toolName, args)
 			if err != nil {
 				return "", err
@@ -167,6 +169,67 @@ func (m *Manager) ensureServer(ctx context.Context, registry *tool.Registry, ser
 	}
 
 	state.discovered = true
+
+	// Smoke-test workspace access: if a WorkDir is configured, verify the
+	// server can list files there. This catches misconfigured CWD early
+	// (e.g. Codex not receiving the cwd parameter) instead of surfacing as
+	// cryptic "No such file or directory" errors deep inside a workflow run.
+	if workDir != "" {
+		if err := m.smokeTestWorkspace(ctx, client, server, toolsList, workDir); err != nil {
+			// Log as warning — don't block server discovery, but make it visible.
+			fmt.Fprintf(os.Stderr, "mcp: WARNING: workspace smoke test failed for %q (workDir=%s): %v\n", server, workDir, err)
+		}
+	}
+
+	return nil
+}
+
+// smokeTestWorkspace verifies that an MCP server can access the configured
+// workspace directory by calling a lightweight tool (Bash "pwd", Read, or
+// the codex tool with a trivial prompt). This catches workspace access
+// problems at startup rather than mid-workflow.
+func (m *Manager) smokeTestWorkspace(ctx context.Context, client protocolClient, server string, tools []ToolInfo, workDir string) error {
+	// Strategy: pick the simplest available tool to verify filesystem access.
+	toolNames := make(map[string]bool, len(tools))
+	for _, t := range tools {
+		toolNames[t.Name] = true
+	}
+
+	switch {
+	case toolNames["Bash"]:
+		// Claude Code exposes Bash — run a quick "ls" in workDir.
+		args := map[string]interface{}{
+			"command":     "ls >/dev/null 2>&1 && pwd",
+			"description": "smoke test: verify workspace access",
+		}
+		result, err := client.CallTool(ctx, "Bash", args)
+		if err != nil {
+			return fmt.Errorf("Bash tool call failed: %w", err)
+		}
+		text, _ := formatToolResult(result)
+		if !strings.Contains(text, workDir) {
+			return fmt.Errorf("Bash pwd returned %q, expected workDir %q", strings.TrimSpace(text), workDir)
+		}
+	case toolNames["codex"]:
+		// Codex exposes a single "codex" tool — ask it to list files.
+		args := map[string]interface{}{
+			"prompt":          "Run: ls -la . && pwd",
+			"cwd":             workDir,
+			"sandbox":         "read-only",
+			"approval-policy": "never",
+		}
+		result, err := client.CallTool(ctx, "codex", args)
+		if err != nil {
+			return fmt.Errorf("codex tool call failed: %w", err)
+		}
+		text, _ := formatToolResult(result)
+		if strings.Contains(text, "No such file") || strings.Contains(text, "not found") {
+			return fmt.Errorf("codex cannot access workDir %q: %s", workDir, text)
+		}
+	default:
+		// No suitable tool for smoke test — skip silently.
+		return nil
+	}
 	return nil
 }
 
@@ -320,7 +383,8 @@ func joinLines(lines []string) string {
 // sanitizeToolArgs fixes common mistakes made by LLMs when calling MCP tools:
 //   - Removes empty string values for optional parameters (e.g. pages: "")
 //   - Adds default limit for Read when reading large files without offset/limit
-func sanitizeToolArgs(toolName string, args map[string]interface{}) {
+//   - Injects cwd for the codex tool when a workDir is provided
+func sanitizeToolArgs(toolName string, args map[string]interface{}, workDir string) {
 	if args == nil {
 		return
 	}
@@ -330,6 +394,24 @@ func sanitizeToolArgs(toolName string, args map[string]interface{}) {
 	for key, val := range args {
 		if s, ok := val.(string); ok && s == "" {
 			delete(args, key)
+		}
+	}
+
+	// For the codex tool: inject defaults so Codex works in non-interactive
+	// mode. Without cwd, Codex cannot find workspace files. Without
+	// approval-policy=never, Codex blocks waiting for interactive approval.
+	// Without sandbox=danger-full-access, Codex may refuse writes.
+	if toolName == "codex" {
+		if workDir != "" {
+			if _, hasCwd := args["cwd"]; !hasCwd {
+				args["cwd"] = workDir
+			}
+		}
+		if _, has := args["approval-policy"]; !has {
+			args["approval-policy"] = "never"
+		}
+		if _, has := args["sandbox"]; !has {
+			args["sandbox"] = "danger-full-access"
 		}
 	}
 
