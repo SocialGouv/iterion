@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -186,6 +187,7 @@ func (r *Registry) Resolve(ref string) (*ToolDef, error) {
 			for i, m := range matches {
 				names[i] = m.QualifiedName
 			}
+			sort.Strings(names)
 			return nil, fmt.Errorf("tool: ambiguous reference %q matches multiple tools: %s", ref, strings.Join(names, ", "))
 		}
 	}

@@ -90,7 +90,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 			return fmt.Errorf("recipe %q does not specify a workflow path; provide --file", spec.Name)
 		}
 
-		wf, err := compileWorkflow(iterFile)
+		wf, wfHash, err := compileWorkflowWithHash(iterFile)
 		if err != nil {
 			return err
 		}
@@ -103,7 +103,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 			defer c.Close()
 		}
 
-		eng, err = runtime.NewFromRecipe(spec, wf, s, executor, runtime.WithLogger(logger))
+		eng, err = runtime.NewFromRecipe(spec, wf, s, executor, runtime.WithLogger(logger), runtime.WithWorkflowHash(wfHash))
 		if err != nil {
 			return err
 		}
@@ -113,7 +113,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 			return fmt.Errorf("provide a .iter file or --recipe")
 		}
 
-		wf, err := compileWorkflow(opts.File)
+		wf, wfHash, err := compileWorkflowWithHash(opts.File)
 		if err != nil {
 			return err
 		}
@@ -126,7 +126,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 			defer c.Close()
 		}
 
-		eng = runtime.New(wf, s, executor, runtime.WithLogger(logger))
+		eng = runtime.New(wf, s, executor, runtime.WithLogger(logger), runtime.WithWorkflowHash(wfHash))
 		workflowName = wf.Name
 	}
 

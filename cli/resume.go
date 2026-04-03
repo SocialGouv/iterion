@@ -128,8 +128,8 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		return fmt.Errorf("no answers provided; use --answers-file or --answer key=value")
 	}
 
-	// Compile workflow.
-	wf, err := compileWorkflow(iterFile)
+	// Compile workflow and compute hash for change detection.
+	wf, wfHash, err := compileWorkflowWithHash(iterFile)
 	if err != nil {
 		return err
 	}
@@ -146,7 +146,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		executor = newDefaultExecutor(wf, nil, s, opts.RunID, logger)
 	}
 
-	eng := runtime.New(wf, s, executor, runtime.WithLogger(logger))
+	eng := runtime.New(wf, s, executor, runtime.WithLogger(logger), runtime.WithWorkflowHash(wfHash))
 
 	if p.Format == OutputHuman {
 		p.Header("Resume: " + opts.RunID)

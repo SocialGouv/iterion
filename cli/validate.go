@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -135,4 +137,41 @@ func compileWorkflow(path string) (*ir.Workflow, error) {
 	}
 
 	return cr.Workflow, nil
+}
+
+// compileWorkflowWithHash is like compileWorkflow but also returns a SHA-256
+// hash of the .iter source, used to detect workflow changes on resume.
+func compileWorkflowWithHash(path string) (*ir.Workflow, string, error) {
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return nil, "", fmt.Errorf("cannot read file: %w", err)
+	}
+
+	h := sha256.Sum256(src)
+	hash := hex.EncodeToString(h[:])
+
+	pr := parser.Parse(path, string(src))
+	for _, d := range pr.Diagnostics {
+		if d.Severity == parser.SeverityError {
+			return nil, "", fmt.Errorf("parse error: %s", d.Error())
+		}
+	}
+
+	if pr.File == nil || len(pr.File.Workflows) == 0 {
+		return nil, "", fmt.Errorf("no workflow found in %s", path)
+	}
+
+	cr := ir.Compile(pr.File)
+	if cr.HasErrors() {
+		for _, d := range cr.Diagnostics {
+			if d.Severity == ir.SeverityError {
+				return nil, "", fmt.Errorf("compile error: %s", d.Error())
+			}
+		}
+	}
+	if err := mcp.PrepareWorkflow(cr.Workflow, filepath.Dir(path)); err != nil {
+		return nil, "", err
+	}
+
+	return cr.Workflow, hash, nil
 }

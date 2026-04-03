@@ -63,14 +63,25 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		return Result{}, fmt.Errorf("delegate: codex stdout pipe: %w", err)
 	}
 
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return Result{}, fmt.Errorf("delegate: codex stderr pipe: %w", err)
+	}
 
 	startTime := time.Now()
 
 	if err := cmd.Start(); err != nil {
 		return Result{}, fmt.Errorf("delegate: codex failed to start: %w", err)
 	}
+
+	// Drain stderr concurrently to avoid pipe buffer deadlock when the
+	// subprocess produces large stderr while we read stdout.
+	var stderr bytes.Buffer
+	stderrDone := make(chan struct{})
+	go func() {
+		defer close(stderrDone)
+		io.Copy(&stderr, stderrPipe) //nolint:errcheck
+	}()
 
 	limited := io.LimitReader(stdoutPipe, maxOutputSize+1)
 	output, err := io.ReadAll(limited)
@@ -80,9 +91,12 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 
 	if len(output) > maxOutputSize {
 		_ = cmd.Process.Kill()
+		<-stderrDone
 		_ = cmd.Wait()
 		return Result{}, fmt.Errorf("delegate: codex output exceeded limit of %d bytes", maxOutputSize)
 	}
+
+	<-stderrDone
 
 	if err := cmd.Wait(); err != nil {
 		exitCode := -1

@@ -30,6 +30,7 @@ type Run struct {
 	FormatVersion int                    `json:"format_version"`
 	ID            string                 `json:"id"`
 	WorkflowName  string                 `json:"workflow_name"`
+	WorkflowHash  string                 `json:"workflow_hash,omitempty"` // SHA-256 of the .iter source at run start
 	Status        RunStatus              `json:"status"`
 	Inputs        map[string]interface{} `json:"inputs,omitempty"`
 	CreatedAt     time.Time              `json:"created_at"`

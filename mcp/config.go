@@ -103,7 +103,7 @@ func NativePresets() map[string]*ServerConfig {
 			Command:   "codex",
 			Args: []string{
 				"mcp-server",
-				"-c", `sandbox_permissions=["disk-full-read-access","disk-write-cwd"]`,
+				"--dangerously-bypass-approvals-and-sandbox",
 			},
 		},
 	}

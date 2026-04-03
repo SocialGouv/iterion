@@ -75,14 +75,25 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		return Result{}, fmt.Errorf("delegate: claude-code stdout pipe: %w", err)
 	}
 
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return Result{}, fmt.Errorf("delegate: claude-code stderr pipe: %w", err)
+	}
 
 	startTime := time.Now()
 
 	if err := cmd.Start(); err != nil {
 		return Result{}, fmt.Errorf("delegate: claude-code failed to start: %w", err)
 	}
+
+	// Drain stderr concurrently to avoid pipe buffer deadlock when the
+	// subprocess produces large stderr while we read stdout.
+	var stderr bytes.Buffer
+	stderrDone := make(chan struct{})
+	go func() {
+		defer close(stderrDone)
+		io.Copy(&stderr, stderrPipe) //nolint:errcheck
+	}()
 
 	limited := io.LimitReader(stdoutPipe, maxOutputSize+1)
 	output, err := io.ReadAll(limited)
@@ -93,9 +104,12 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 	if len(output) > maxOutputSize {
 		// Kill the process since we're not going to use the output.
 		_ = cmd.Process.Kill()
+		<-stderrDone
 		_ = cmd.Wait()
 		return Result{}, fmt.Errorf("delegate: claude-code output exceeded limit of %d bytes", maxOutputSize)
 	}
+
+	<-stderrDone
 
 	if err := cmd.Wait(); err != nil {
 		exitCode := -1
@@ -184,6 +198,7 @@ func parseClaudeResult(data []byte) (Result, error) {
 
 // validateWorkDir checks that workDir resolves to a path within baseDir.
 // If baseDir is empty, no validation is performed.
+// Symlinks are resolved to prevent directory traversal bypasses.
 func validateWorkDir(workDir, baseDir string) error {
 	if baseDir == "" {
 		return nil
@@ -193,13 +208,20 @@ func validateWorkDir(workDir, baseDir string) error {
 	if err != nil {
 		return fmt.Errorf("delegate: invalid WorkDir %q: %w", workDir, err)
 	}
-	absWork = filepath.Clean(absWork)
+	// Resolve symlinks to prevent traversal bypasses via symlinked paths.
+	absWork, err = filepath.EvalSymlinks(absWork)
+	if err != nil {
+		return fmt.Errorf("delegate: resolve WorkDir %q: %w", workDir, err)
+	}
 
 	absBase, err := filepath.Abs(baseDir)
 	if err != nil {
 		return fmt.Errorf("delegate: invalid BaseDir %q: %w", baseDir, err)
 	}
-	absBase = filepath.Clean(absBase)
+	absBase, err = filepath.EvalSymlinks(absBase)
+	if err != nil {
+		return fmt.Errorf("delegate: resolve BaseDir %q: %w", baseDir, err)
+	}
 
 	// Ensure absWork is within absBase by checking the prefix with a trailing separator.
 	if absWork != absBase && !strings.HasPrefix(absWork, absBase+string(filepath.Separator)) {

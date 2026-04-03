@@ -46,6 +46,7 @@ type Engine struct {
 	executor       NodeExecutor
 	logger         *iterlog.Logger
 	onNodeFinished func(nodeID string, output map[string]interface{})
+	workflowHash   string // SHA-256 of the .iter source, set via WithWorkflowHash
 }
 
 // EngineOption configures an Engine.
@@ -60,6 +61,12 @@ func WithLogger(l *iterlog.Logger) EngineOption {
 // with the node's ID and output. The callback must be safe for concurrent use.
 func WithOnNodeFinished(fn func(nodeID string, output map[string]interface{})) EngineOption {
 	return func(e *Engine) { e.onNodeFinished = fn }
+}
+
+// WithWorkflowHash sets a hash of the .iter source so that Resume can
+// detect if the workflow changed since the run was started.
+func WithWorkflowHash(hash string) EngineOption {
+	return func(e *Engine) { e.workflowHash = hash }
 }
 
 // New creates a new Engine for a raw workflow.
@@ -114,8 +121,15 @@ type branchResult struct {
 // is hit (ErrRunPaused), or an error occurs.
 func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interface{}) error {
 	// Create run in store.
-	if _, err := e.store.CreateRun(runID, e.workflow.Name, inputs); err != nil {
+	run, err := e.store.CreateRun(runID, e.workflow.Name, inputs)
+	if err != nil {
 		return fmt.Errorf("runtime: create run: %w", err)
+	}
+	if e.workflowHash != "" {
+		run.WorkflowHash = e.workflowHash
+		if err := e.store.SaveRun(run); err != nil {
+			return fmt.Errorf("runtime: save workflow hash: %w", err)
+		}
 	}
 
 	// Emit run_started.
@@ -148,6 +162,10 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]in
 	}
 	if r.Status != store.RunStatusPausedWaitingHuman {
 		return fmt.Errorf("runtime: cannot resume run %q with status %q", runID, r.Status)
+	}
+	// Warn if the workflow source has changed since the run was started.
+	if r.WorkflowHash != "" && e.workflowHash != "" && r.WorkflowHash != e.workflowHash {
+		return fmt.Errorf("runtime: workflow source has changed since run %q was started (expected hash %s, got %s); re-run from scratch or use the original .iter file", runID, r.WorkflowHash[:12], e.workflowHash[:12])
 	}
 	if r.Checkpoint == nil {
 		return fmt.Errorf("runtime: run %q has no checkpoint", runID)
@@ -473,15 +491,9 @@ func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID stri
 		maxParallel = e.workflow.Budget.MaxParallelBranches
 	}
 
-	// Snapshot parent outputs and artifacts (branches read from this, write to their own map).
-	parentOutputs := make(map[string]map[string]interface{})
-	for k, v := range rs.outputs {
-		parentOutputs[k] = v
-	}
-	parentArtifacts := make(map[string]map[string]interface{})
-	for k, v := range rs.artifacts {
-		parentArtifacts[k] = v
-	}
+	// Deep-copy parent outputs and artifacts so branches can't mutate shared state.
+	parentOutputs := deepCopyOutputs(rs.outputs)
+	parentArtifacts := deepCopyOutputs(rs.artifacts)
 
 	// Launch branches with bounded concurrency.
 	sem := make(chan struct{}, maxParallel)
@@ -493,6 +505,17 @@ func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID stri
 		go func(edge *ir.Edge, branchID string) {
 			sem <- struct{}{}        // acquire semaphore slot
 			defer func() { <-sem }() // release
+
+			// Recover from panics so a single branch doesn't crash the process.
+			defer func() {
+				if r := recover(); r != nil {
+					resultsCh <- &branchResult{
+						branchID: branchID,
+						outputs:  make(map[string]map[string]interface{}),
+						err:      fmt.Errorf("panic in branch %s: %v", branchID, r),
+					}
+				}
+			}()
 
 			result := e.execBranch(ctx, rs, branchID, edge, parentOutputs, parentArtifacts)
 			resultsCh <- result
@@ -798,15 +821,9 @@ func (e *Engine) execLLMRouterMulti(ctx context.Context, rs *runState, routerNod
 		maxParallel = e.workflow.Budget.MaxParallelBranches
 	}
 
-	// Snapshot parent outputs and artifacts.
-	parentOutputs := make(map[string]map[string]interface{})
-	for k, v := range rs.outputs {
-		parentOutputs[k] = v
-	}
-	parentArtifacts := make(map[string]map[string]interface{})
-	for k, v := range rs.artifacts {
-		parentArtifacts[k] = v
-	}
+	// Deep-copy parent outputs and artifacts so branches can't mutate shared state.
+	parentOutputs := deepCopyOutputs(rs.outputs)
+	parentArtifacts := deepCopyOutputs(rs.artifacts)
 
 	// Launch branches with bounded concurrency.
 	sem := make(chan struct{}, maxParallel)
@@ -818,6 +835,18 @@ func (e *Engine) execLLMRouterMulti(ctx context.Context, rs *runState, routerNod
 		go func(edge *ir.Edge, branchID string) {
 			sem <- struct{}{}
 			defer func() { <-sem }()
+
+			// Recover from panics so a single branch doesn't crash the process.
+			defer func() {
+				if r := recover(); r != nil {
+					resultsCh <- &branchResult{
+						branchID: branchID,
+						outputs:  make(map[string]map[string]interface{}),
+						err:      fmt.Errorf("panic in branch %s: %v", branchID, r),
+					}
+				}
+			}()
+
 			result := e.execBranch(ctx, rs, branchID, edge, parentOutputs, parentArtifacts)
 			resultsCh <- result
 		}(edge, branchID)
@@ -1584,6 +1613,20 @@ func mergeOutputs(parent, branch map[string]map[string]interface{}) map[string]m
 		merged[k] = v
 	}
 	return merged
+}
+
+// deepCopyOutputs creates a deep copy of the outputs map so that concurrent
+// branches cannot mutate shared parent state.
+func deepCopyOutputs(src map[string]map[string]interface{}) map[string]map[string]interface{} {
+	dst := make(map[string]map[string]interface{}, len(src))
+	for k, v := range src {
+		inner := make(map[string]interface{}, len(v))
+		for ik, iv := range v {
+			inner[ik] = iv
+		}
+		dst[k] = inner
+	}
+	return dst
 }
 
 // emit is a convenience wrapper for appending an event.

@@ -194,8 +194,10 @@ func (c *stdioClient) start(ctx context.Context) error {
 
 	raw, err := c.call(ctx, "initialize", map[string]interface{}{
 		"protocolVersion": DefaultProtocolVersion,
-		"capabilities":    map[string]interface{}{},
-		"clientInfo":      c.info,
+		"capabilities": map[string]interface{}{
+			"elicitation": map[string]interface{}{"supported": true},
+		},
+		"clientInfo": c.info,
 	})
 	if err != nil {
 		_ = c.Close()
@@ -250,10 +252,10 @@ func (c *stdioClient) notify(method string, params interface{}) error {
 	})
 }
 
-func (c *stdioClient) write(msg rpcRequest) error {
+func (c *stdioClient) write(msg interface{}) error {
 	data, err := json.Marshal(msg)
 	if err != nil {
-		return fmt.Errorf("mcp: encode %s request: %w", msg.Method, err)
+		return fmt.Errorf("mcp: encode request: %w", err)
 	}
 
 	c.writeMu.Lock()
@@ -267,7 +269,7 @@ func (c *stdioClient) write(msg rpcRequest) error {
 	}
 
 	if _, err := stdin.Write(append(data, '\n')); err != nil {
-		return fmt.Errorf("mcp: write %s request: %w", msg.Method, err)
+		return fmt.Errorf("mcp: write request: %w", err)
 	}
 	return nil
 }
@@ -302,6 +304,16 @@ func (c *stdioClient) readLoop(r io.Reader) {
 			c.failAll(fmt.Errorf("mcp: decode stdio response from %q: %w", c.cfg.Name, err))
 			return
 		}
+
+		// Handle server→client requests (elicitations, approvals).
+		// Auto-approve all elicitation requests so Codex MCP can proceed
+		// without interactive confirmation.
+		if msg.Method == "elicitation/create" {
+			go c.autoApproveElicitation(msg.ID)
+			continue
+		}
+
+		// Skip notifications (no ID).
 		if len(msg.ID) == 0 {
 			continue
 		}
@@ -329,6 +341,24 @@ func (c *stdioClient) readLoop(r io.Reader) {
 		return
 	}
 	c.failAll(io.EOF)
+}
+
+// autoApproveElicitation sends an approval response for a server→client
+// elicitation request (e.g. Codex patch approval). This allows the MCP
+// server to proceed without interactive confirmation.
+func (c *stdioClient) autoApproveElicitation(rawID json.RawMessage) {
+	resp := struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Result  interface{}     `json:"result"`
+	}{
+		JSONRPC: "2.0",
+		ID:      rawID,
+		Result: map[string]interface{}{
+			"action": "approve",
+		},
+	}
+	_ = c.write(resp)
 }
 
 func (c *stdioClient) failAll(err error) {

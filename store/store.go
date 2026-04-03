@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -94,6 +95,11 @@ func (s *RunStore) CreateRun(id, workflowName string, inputs map[string]interfac
 		return nil, err
 	}
 	return r, nil
+}
+
+// SaveRun persists the run metadata to disk.
+func (s *RunStore) SaveRun(r *Run) error {
+	return s.writeRun(r)
 }
 
 // LoadRun reads run.json for the given run ID.
@@ -226,6 +232,12 @@ func (s *RunStore) AppendEvent(runID string, evt Event) (*Event, error) {
 		return nil, fmt.Errorf("store: write event: %w", err)
 	}
 
+	// Flush to disk before advancing the sequence counter to avoid
+	// losing events on crash while the in-memory counter has advanced.
+	if err := f.Sync(); err != nil {
+		return nil, fmt.Errorf("store: sync event: %w", err)
+	}
+
 	// Only increment after successful write — no sequence gaps on failure.
 	s.seq[runID] = evt.Seq + 1
 
@@ -254,7 +266,10 @@ func (s *RunStore) LoadEvents(runID string) ([]*Event, error) {
 		}
 		var evt Event
 		if err := json.Unmarshal(line, &evt); err != nil {
-			return nil, fmt.Errorf("store: decode event line: %w", err)
+			// Skip corrupt lines rather than aborting — partial corruption
+			// should not prevent reading subsequent valid events.
+			log.Printf("store: skipping corrupt event line: %v", err)
+			continue
 		}
 		events = append(events, &evt)
 	}

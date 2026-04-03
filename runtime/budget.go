@@ -13,6 +13,12 @@ var ErrBudgetExceeded = fmt.Errorf("runtime: budget exceeded")
 
 // SharedBudget tracks resource consumption across a workflow run.
 // It is safe for concurrent use by parallel branches (first-come-first-served).
+//
+// Budget enforcement is "soft": because nodes are checked before execution
+// and recorded after, concurrent branches may slightly exceed limits when
+// multiple nodes pass the pre-check simultaneously. This is by design —
+// hard enforcement would require holding the lock across the entire node
+// execution, which would serialize all parallel branches.
 type SharedBudget struct {
 	mu sync.Mutex
 
