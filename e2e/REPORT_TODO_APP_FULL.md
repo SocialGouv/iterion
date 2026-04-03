@@ -1,7 +1,7 @@
 # Test Report: TestLive_TodoApp_Full_DualModel_MCP
 
 **Date**: 2026-03-31
-**Workflow**: `todo_app_full_dual_model_mcp.iter`
+**Workflow**: `todo_app_full_dual_model_delegate.iter`
 **Result**: PASS
 **Duration**: 25m51s (1551.18s)
 **Verdict final**: `ready=true, confidence=high` (double validation)

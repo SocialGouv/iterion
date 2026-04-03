@@ -3,7 +3,10 @@ package delegate
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"testing"
+
+	codexsdk "github.com/ethpandaops/codex-agent-sdk-go"
 )
 
 func TestRegistryResolve(t *testing.T) {
@@ -35,159 +38,168 @@ func TestDefaultRegistry(t *testing.T) {
 	}
 }
 
-func TestParseJSONOutput_Object(t *testing.T) {
-	data := []byte(`{"approved": true, "summary": "looks good"}`)
-	result, err := parseJSONOutput(data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestParseSDKOutput_StructuredOutput(t *testing.T) {
+	structured := map[string]interface{}{"approved": true, "summary": "looks good"}
+	output, rawLen, fallback := parseSDKOutput(nil, structured, nil)
+	if output["approved"] != true {
+		t.Errorf("expected approved=true, got %v", output["approved"])
 	}
-	if result.Output["approved"] != true {
-		t.Errorf("expected approved=true, got %v", result.Output["approved"])
+	if output["summary"] != "looks good" {
+		t.Errorf("expected summary='looks good', got %v", output["summary"])
 	}
-	if result.Output["summary"] != "looks good" {
-		t.Errorf("expected summary='looks good', got %v", result.Output["summary"])
+	if rawLen != 0 {
+		t.Errorf("expected rawLen=0 for structured output, got %d", rawLen)
 	}
-}
-
-func TestParseJSONOutput_TextFallback(t *testing.T) {
-	data := []byte(`This is plain text output.`)
-	result, err := parseJSONOutput(data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.Output["text"] != "This is plain text output." {
-		t.Errorf("unexpected text: %v", result.Output["text"])
+	if fallback {
+		t.Error("expected no fallback for structured output")
 	}
 }
 
-func TestParseJSONOutput_Empty(t *testing.T) {
-	result, err := parseJSONOutput([]byte(""))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestParseSDKOutput_ResultTextJSON(t *testing.T) {
+	text := `{"approved": true}`
+	output, rawLen, fallback := parseSDKOutput(&text, nil, nil)
+	if output["approved"] != true {
+		t.Errorf("expected approved=true, got %v", output)
 	}
-	if len(result.Output) != 0 {
-		t.Errorf("expected empty output, got %v", result.Output)
+	if rawLen != len(text) {
+		t.Errorf("expected rawLen=%d, got %d", len(text), rawLen)
 	}
-}
-
-func TestParseJSONOutput_ClaudeArray(t *testing.T) {
-	// Simulate claude --output-format json array output.
-	arr := []map[string]interface{}{
-		{
-			"type": "message",
-			"role": "user",
-			"content": []map[string]interface{}{
-				{"type": "text", "text": "Do something"},
-			},
-		},
-		{
-			"type": "message",
-			"role": "assistant",
-			"content": []map[string]interface{}{
-				{"type": "text", "text": `{"approved": false, "issues": ["bug found"]}`},
-			},
-		},
-	}
-	data, _ := json.Marshal(arr)
-	result, err := parseJSONOutput(data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.Output["approved"] != false {
-		t.Errorf("expected approved=false, got %v", result.Output["approved"])
+	if fallback {
+		t.Error("expected no fallback for JSON text")
 	}
 }
 
-func TestParseClaudeResult_ParseFallbackDetection(t *testing.T) {
-	// When the result is plain text, the output has only a "text" key.
-	data := []byte(`{"type":"result","result":"just plain text","usage":{"input_tokens":10,"output_tokens":5}}`)
-	result, err := parseClaudeResult(data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestParseSDKOutput_ResultTextPlain(t *testing.T) {
+	text := "This is plain text output."
+	output, rawLen, fallback := parseSDKOutput(&text, nil, nil)
+	if output["text"] != text {
+		t.Errorf("expected text=%q, got %v", text, output["text"])
 	}
-	if result.Output["text"] != "just plain text" {
-		t.Errorf("expected text fallback, got %v", result.Output)
+	if rawLen != len(text) {
+		t.Errorf("expected rawLen=%d, got %d", len(text), rawLen)
 	}
-	// Parse functions don't set ParseFallback — that's the backend's job
-	// based on whether OutputSchema was set.
-	if result.ParseFallback {
-		t.Error("parse function should not set ParseFallback")
-	}
-	if len(result.Output) != 1 {
-		t.Errorf("expected exactly 1 key in text fallback output, got %d", len(result.Output))
+	if fallback {
+		t.Error("expected no fallback when no schema")
 	}
 }
 
-func TestParseClaudeResult_StructuredOutput(t *testing.T) {
-	data := []byte(`{"type":"result","result":"{\"approved\":true}","usage":{"input_tokens":10,"output_tokens":5}}`)
-	result, err := parseClaudeResult(data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestParseSDKOutput_ResultTextPlainWithSchema(t *testing.T) {
+	text := "This is plain text output."
+	schema := json.RawMessage(`{"type":"object"}`)
+	output, _, fallback := parseSDKOutput(&text, nil, schema)
+	if output["text"] != text {
+		t.Errorf("expected text=%q, got %v", text, output["text"])
 	}
-	if result.Output["approved"] != true {
-		t.Errorf("expected approved=true, got %v", result.Output)
-	}
-	if result.Tokens != 15 {
-		t.Errorf("expected 15 tokens, got %d", result.Tokens)
+	if !fallback {
+		t.Error("expected fallback when schema is set but output is plain text")
 	}
 }
 
-func TestParseCodexJSONL_ParseFallbackDetection(t *testing.T) {
-	// Codex JSONL with plain text agent message.
-	data := []byte(`{"type":"item.completed","item":{"type":"agent_message","text":"just plain text"}}
-{"type":"turn.completed","usage":{"input_tokens":20,"output_tokens":10}}`)
-	result, err := parseCodexJSONL(data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestParseSDKOutput_MarkdownJSON(t *testing.T) {
+	text := "Here is the result:\n```json\n{\"verdict\": \"pass\"}\n```"
+	output, _, fallback := parseSDKOutput(&text, nil, nil)
+	if output["verdict"] != "pass" {
+		t.Errorf("expected verdict=pass, got %v", output)
 	}
-	if result.Output["text"] != "just plain text" {
-		t.Errorf("expected text fallback, got %v", result.Output)
-	}
-	if result.ParseFallback {
-		t.Error("parse function should not set ParseFallback")
-	}
-	if result.Tokens != 30 {
-		t.Errorf("expected 30 tokens, got %d", result.Tokens)
+	if fallback {
+		t.Error("expected no fallback for markdown JSON")
 	}
 }
 
-func TestParseCodexJSONL_StructuredOutput(t *testing.T) {
-	data := []byte(`{"type":"item.completed","item":{"type":"agent_message","text":"{\"verdict\":\"pass\"}"}}
-{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":3}}`)
-	result, err := parseCodexJSONL(data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestParseSDKOutput_Empty(t *testing.T) {
+	output, rawLen, fallback := parseSDKOutput(nil, nil, nil)
+	if len(output) != 0 {
+		t.Errorf("expected empty output, got %v", output)
 	}
-	if result.Output["verdict"] != "pass" {
-		t.Errorf("expected verdict=pass, got %v", result.Output)
+	if rawLen != 0 {
+		t.Errorf("expected rawLen=0, got %d", rawLen)
+	}
+	if fallback {
+		t.Error("expected no fallback for empty output")
 	}
 }
 
-func TestResult_NewFieldsZeroFromParse(t *testing.T) {
-	// Verify that parse functions return zero-valued metadata fields
-	// (backends populate them in Execute, not in parse).
-	data := []byte(`{"approved": true}`)
-	result, err := parseJSONOutput(data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestParseSDKOutput_StructuredOutputNonMap(t *testing.T) {
+	// Structured output that is not a map but can be marshaled to one.
+	type result struct {
+		Approved bool   `json:"approved"`
+		Summary  string `json:"summary"`
 	}
-	if result.Duration != 0 {
-		t.Error("Duration should be zero from parse function")
+	structured := result{Approved: true, Summary: "ok"}
+	output, _, fallback := parseSDKOutput(nil, structured, nil)
+	if output["approved"] != true {
+		t.Errorf("expected approved=true, got %v", output["approved"])
 	}
-	if result.ExitCode != 0 {
-		t.Error("ExitCode should be zero from parse function")
+	if fallback {
+		t.Error("expected no fallback for struct output")
 	}
-	if result.Stderr != "" {
-		t.Error("Stderr should be empty from parse function")
+}
+
+func TestExtractJSONFromMarkdown(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		expect string
+	}{
+		{"no fences", "plain text", ""},
+		{"json block", "text\n```json\n{\"a\":1}\n```\nmore", `{"a":1}`},
+		{"bare block", "```\n{\"b\":2}\n```", `{"b":2}`},
+		{"multiple blocks", "```\n{\"first\":1}\n```\n```\n{\"second\":2}\n```", `{"second":2}`},
+		{"non-json block", "```\nnot json\n```", ""},
 	}
-	if result.BackendName != "" {
-		t.Error("BackendName should be empty from parse function")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractJSONFromMarkdown(tt.input)
+			if got != tt.expect {
+				t.Errorf("extractJSONFromMarkdown(%q) = %q, want %q", tt.input, got, tt.expect)
+			}
+		})
 	}
-	if result.RawOutputLen != 0 {
-		t.Error("RawOutputLen should be zero from parse function")
+}
+
+func TestValidateWorkDir(t *testing.T) {
+	base := t.TempDir()
+	sub := base + "/sub"
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if result.ParseFallback {
-		t.Error("ParseFallback should be false from parse function")
+
+	// Same dir should pass.
+	if err := validateWorkDir(base, base); err != nil {
+		t.Errorf("expected nil for same dir, got %v", err)
+	}
+	// Subdir should pass.
+	if err := validateWorkDir(sub, base); err != nil {
+		t.Errorf("expected nil for subdir, got %v", err)
+	}
+	// Outside should fail.
+	if err := validateWorkDir("/var", base); err == nil {
+		t.Error("expected error for outside dir")
+	}
+	// Empty baseDir should always pass.
+	if err := validateWorkDir("/anywhere", ""); err != nil {
+		t.Errorf("expected nil for empty baseDir, got %v", err)
+	}
+}
+
+func TestMapReasoningEffort(t *testing.T) {
+	tests := []struct {
+		input  string
+		expect codexsdk.Effort
+	}{
+		{"low", codexsdk.EffortLow},
+		{"medium", codexsdk.EffortMedium},
+		{"high", codexsdk.EffortHigh},
+		{"extra_high", codexsdk.EffortMax},
+		{"unknown", codexsdk.EffortMedium},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := mapReasoningEffort(tt.input)
+			if got != tt.expect {
+				t.Errorf("mapReasoningEffort(%q) = %v, want %v", tt.input, got, tt.expect)
+			}
+		})
 	}
 }
 

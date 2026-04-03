@@ -1,363 +1,109 @@
 package delegate
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
+
+	claude "github.com/partio-io/claude-agent-sdk-go"
 )
 
-// maxOutputSize is the maximum allowed stdout size from a delegate subprocess (50 MB).
-const maxOutputSize = 50 * 1024 * 1024
-
-// ClaudeCodeBackend delegates work to the `claude` CLI (claude-code).
-// It spawns a subprocess with the task prompt and collects structured output.
+// ClaudeCodeBackend delegates work to the `claude` CLI (claude-code)
+// via the Claude Agent SDK.
 type ClaudeCodeBackend struct {
-	// Command overrides the CLI binary name (default: "claude").
+	// Command overrides the CLI binary path (default: "claude").
 	Command string
 }
 
-func (b *ClaudeCodeBackend) command() string {
-	if b.Command != "" {
-		return b.Command
-	}
-	return "claude"
-}
-
-// Execute runs the claude CLI with the given task.
+// Execute runs the claude CLI with the given task using the Claude Agent SDK.
 func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, error) {
-	args := []string{
-		"--print",
-		"--output-format", "json",
-		"--dangerously-skip-permissions",
-	}
-
-	if task.SystemPrompt != "" {
-		args = append(args, "--system-prompt", task.SystemPrompt)
-	}
-
-	if task.ReasoningEffort != "" {
-		args = append(args, "--reasoning-effort", task.ReasoningEffort)
-	}
-
-	if len(task.AllowedTools) > 0 {
-		args = append(args, "--allowedTools", strings.Join(task.AllowedTools, ","))
-	}
-
-	// Build the user prompt; if an output schema is provided, embed the schema
-	// in the prompt text. Note: --json-schema disables tool use in claude CLI,
-	// so we pass the schema as instructions instead.
-	prompt := task.UserPrompt
-	if len(task.OutputSchema) > 0 {
-		prompt += "\n\nAfter completing all actions, you MUST respond with a JSON object matching this schema:\n" + string(task.OutputSchema)
-	}
-
-	// Pass prompt via stdin to avoid OS argument length limits (ARG_MAX).
-	// The claude CLI reads from stdin when no positional argument is provided
-	// and stdin is not a terminal.
-	cmd := exec.CommandContext(ctx, b.command(), args...)
-	cmd.Stdin = strings.NewReader(prompt)
 	if task.WorkDir != "" {
 		if err := validateWorkDir(task.WorkDir, task.BaseDir); err != nil {
 			return Result{}, err
 		}
-		cmd.Dir = task.WorkDir
 	}
 
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return Result{}, fmt.Errorf("delegate: claude-code stdout pipe: %w", err)
+	var opts []claude.Option
+
+	if task.SystemPrompt != "" {
+		opts = append(opts, claude.WithSystemPrompt(task.SystemPrompt))
+	}
+	if task.WorkDir != "" {
+		opts = append(opts, claude.WithCwd(task.WorkDir))
+	}
+	if len(task.AllowedTools) > 0 {
+		opts = append(opts, claude.WithAllowedTools(task.AllowedTools...))
+	}
+	// Bypass interactive permission prompts: the runtime enforces safety via
+	// workspace isolation and allowed-tool lists, so the delegate subprocess
+	// does not need its own permission gate.
+	opts = append(opts, claude.WithPermissionMode("bypassPermissions"))
+
+	if b.Command != "" {
+		opts = append(opts, claude.WithCLIPath(b.Command))
 	}
 
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return Result{}, fmt.Errorf("delegate: claude-code stderr pipe: %w", err)
+	if task.ReasoningEffort != "" {
+		opts = append(opts, claude.WithEnv("CLAUDE_CODE_EFFORT_LEVEL", task.ReasoningEffort))
 	}
+
+	// Build user prompt. When an output schema is provided and tools are also
+	// in use, embed the schema in the prompt text (WithOutputFormat disables
+	// tool use in the claude CLI). When no tools are involved, use the native
+	// structured output flag.
+	prompt := task.UserPrompt
+	if len(task.OutputSchema) > 0 {
+		if len(task.AllowedTools) == 0 {
+			var schema map[string]any
+			if json.Unmarshal(task.OutputSchema, &schema) == nil {
+				opts = append(opts, claude.WithOutputFormat(schema))
+			}
+		} else {
+			prompt += "\n\nAfter completing all actions, you MUST respond with a JSON object matching this schema:\n" + string(task.OutputSchema)
+		}
+	}
+
+	// Capture stderr for observability.
+	var stderrBuf strings.Builder
+	opts = append(opts, claude.WithStderrCallback(func(line string) {
+		stderrBuf.WriteString(line)
+		stderrBuf.WriteString("\n")
+	}))
 
 	startTime := time.Now()
+	rm, err := claude.Prompt(ctx, prompt, opts...)
+	duration := time.Since(startTime)
 
-	if err := cmd.Start(); err != nil {
-		return Result{}, fmt.Errorf("delegate: claude-code failed to start: %w", err)
-	}
-
-	// Drain stderr concurrently to avoid pipe buffer deadlock when the
-	// subprocess produces large stderr while we read stdout.
-	var stderr bytes.Buffer
-	stderrDone := make(chan struct{})
-	go func() {
-		defer close(stderrDone)
-		io.Copy(&stderr, stderrPipe) //nolint:errcheck
-	}()
-
-	limited := io.LimitReader(stdoutPipe, maxOutputSize+1)
-	output, err := io.ReadAll(limited)
 	if err != nil {
-		return Result{}, fmt.Errorf("delegate: claude-code reading stdout: %w", err)
-	}
-
-	if len(output) > maxOutputSize {
-		// Kill the process since we're not going to use the output.
-		_ = cmd.Process.Kill()
-		<-stderrDone
-		_ = cmd.Wait()
-		return Result{}, fmt.Errorf("delegate: claude-code output exceeded limit of %d bytes", maxOutputSize)
-	}
-
-	<-stderrDone
-
-	// Wait for subprocess with a safety timeout. exec.CommandContext sends
-	// SIGKILL on context cancellation, but cmd.Wait() can still block if
-	// process cleanup is slow. Use a bounded wait to avoid indefinite blocking.
-	waitErr := waitWithTimeout(cmd, 10*time.Second)
-	if waitErr != nil {
-		exitCode := -1
-		var exitErr *exec.ExitError
-		if errors.As(waitErr, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		}
 		return Result{
-			Duration:    time.Since(startTime),
-			ExitCode:    exitCode,
-			Stderr:      stderr.String(),
+			Duration:    duration,
+			ExitCode:    -1,
+			Stderr:      stderrBuf.String(),
 			BackendName: "claude_code",
-		}, fmt.Errorf("delegate: claude-code failed: %w\nstderr: %s", waitErr, stderr.String())
+		}, fmt.Errorf("delegate: claude-code failed: %w", err)
 	}
 
-	result, parseErr := parseClaudeResult(output)
-	if parseErr != nil {
-		return Result{}, parseErr
+	result := Result{
+		Duration:    duration,
+		ExitCode:    0,
+		Stderr:      stderrBuf.String(),
+		BackendName: "claude_code",
 	}
-	result.Duration = time.Since(startTime)
-	result.ExitCode = 0
-	result.Stderr = stderr.String()
-	result.BackendName = "claude_code"
-	result.RawOutputLen = len(output)
 
-	// Detect parse fallback: structured output was expected but parsing
-	// fell back to wrapping plain text as {"text": "..."}.
-	if len(task.OutputSchema) > 0 {
-		if _, hasText := result.Output["text"]; hasText && len(result.Output) == 1 {
-			result.ParseFallback = true
-		}
+	if rm.Usage != nil {
+		result.Tokens = rm.Usage.InputTokens + rm.Usage.OutputTokens
 	}
+
+	if rm.IsError {
+		return result, fmt.Errorf("delegate: claude-code error: subtype=%s", rm.Subtype)
+	}
+
+	output, rawLen, fallback := parseSDKOutput(rm.Result, rm.StructuredOutput, task.OutputSchema)
+	result.Output = output
+	result.RawOutputLen = rawLen
+	result.ParseFallback = fallback
 
 	return result, nil
-}
-
-// parseClaudeResult parses the JSON output from `claude --print --output-format json`.
-// The output is a single JSON object with fields:
-//
-//	{type: "result", result: "<text or JSON string>", usage: {input_tokens, output_tokens, ...}}
-//
-// The actual content is in the "result" field as a string (which may itself be JSON).
-func parseClaudeResult(data []byte) (Result, error) {
-	data = bytes.TrimSpace(data)
-	if len(data) == 0 {
-		return Result{Output: map[string]interface{}{}}, nil
-	}
-
-	// Parse the envelope.
-	var envelope struct {
-		Type   string                 `json:"type"`
-		Result string                 `json:"result"`
-		Usage  map[string]interface{} `json:"usage"`
-	}
-	if err := json.Unmarshal(data, &envelope); err == nil && envelope.Type == "result" {
-		tokens := 0
-		if envelope.Usage != nil {
-			input, _ := envelope.Usage["input_tokens"].(float64)
-			output, _ := envelope.Usage["output_tokens"].(float64)
-			tokens = int(input + output)
-		}
-
-		// Try parsing the result string as a JSON object.
-		var obj map[string]interface{}
-		if err := json.Unmarshal([]byte(envelope.Result), &obj); err == nil {
-			return Result{Output: obj, Tokens: tokens}, nil
-		}
-
-		// Try extracting JSON from markdown code blocks (```json ... ```).
-		if extracted := extractJSONFromMarkdown(envelope.Result); extracted != "" {
-			if err := json.Unmarshal([]byte(extracted), &obj); err == nil {
-				return Result{Output: obj, Tokens: tokens}, nil
-			}
-		}
-
-		// Result is plain text.
-		return Result{
-			Output: map[string]interface{}{"text": envelope.Result},
-			Tokens: tokens,
-		}, nil
-	}
-
-	// Fallback to generic JSON parsing for backwards compatibility.
-	return parseJSONOutput(data)
-}
-
-// waitWithTimeout waits for a command to finish with a bounded timeout.
-// If cmd.Wait() doesn't return within the timeout, the process is killed
-// and a timeout error is returned.
-func waitWithTimeout(cmd *exec.Cmd, timeout time.Duration) error {
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-
-	select {
-	case err := <-done:
-		return err
-	case <-time.After(timeout):
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-		<-done // drain to avoid goroutine leak
-		return fmt.Errorf("delegate: process did not exit within %s after context cancellation", timeout)
-	}
-}
-
-// validateWorkDir checks that workDir resolves to a path within baseDir.
-// If baseDir is empty, no validation is performed.
-// Symlinks are resolved to prevent directory traversal bypasses.
-//
-// LIMITATION: This check is subject to a TOCTOU race — the path is validated
-// here but used later when the subprocess starts. A symlink could be swapped
-// between validation and use. For trusted environments this is acceptable;
-// for untrusted workDir sources, additional OS-level protections are needed.
-func validateWorkDir(workDir, baseDir string) error {
-	if baseDir == "" {
-		return nil
-	}
-
-	absWork, err := filepath.Abs(workDir)
-	if err != nil {
-		return fmt.Errorf("delegate: invalid WorkDir %q: %w", workDir, err)
-	}
-	// Resolve symlinks to prevent traversal bypasses via symlinked paths.
-	absWork, err = filepath.EvalSymlinks(absWork)
-	if err != nil {
-		return fmt.Errorf("delegate: resolve WorkDir %q: %w", workDir, err)
-	}
-
-	absBase, err := filepath.Abs(baseDir)
-	if err != nil {
-		return fmt.Errorf("delegate: invalid BaseDir %q: %w", baseDir, err)
-	}
-	absBase, err = filepath.EvalSymlinks(absBase)
-	if err != nil {
-		return fmt.Errorf("delegate: resolve BaseDir %q: %w", baseDir, err)
-	}
-
-	// Ensure absWork is within absBase by checking the prefix with a trailing separator.
-	if absWork != absBase && !strings.HasPrefix(absWork, absBase+string(filepath.Separator)) {
-		return fmt.Errorf("delegate: WorkDir %q is outside allowed BaseDir %q", workDir, baseDir)
-	}
-
-	return nil
-}
-
-// parseJSONOutput tries to parse the CLI output as a JSON object.
-// Falls back to wrapping raw text in {"text": "..."}.
-func parseJSONOutput(data []byte) (Result, error) {
-	data = bytes.TrimSpace(data)
-	if len(data) == 0 {
-		return Result{Output: map[string]interface{}{}}, nil
-	}
-
-	// Try direct JSON object parse.
-	var obj map[string]interface{}
-	if err := json.Unmarshal(data, &obj); err == nil {
-		tokens := extractTokens(obj)
-		return Result{Output: obj, Tokens: tokens}, nil
-	}
-
-	// Try JSON array — take the last element if it's the result.
-	var arr []json.RawMessage
-	if err := json.Unmarshal(data, &arr); err == nil && len(arr) > 0 {
-		// Claude --output-format json may emit an array of messages.
-		// The last message with role "assistant" contains the result text.
-		return parseClaudeJSONArray(arr)
-	}
-
-	// Fallback: wrap raw text.
-	return Result{
-		Output: map[string]interface{}{"text": string(data)},
-	}, nil
-}
-
-// parseClaudeJSONArray handles claude's JSON output format which is an array
-// of message objects. Extracts the assistant's response content.
-func parseClaudeJSONArray(arr []json.RawMessage) (Result, error) {
-	// Walk backwards to find the last assistant text block.
-	for i := len(arr) - 1; i >= 0; i-- {
-		var msg struct {
-			Type    string `json:"type"`
-			Role    string `json:"role"`
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-		}
-		if err := json.Unmarshal(arr[i], &msg); err != nil {
-			continue
-		}
-		if msg.Role != "assistant" || len(msg.Content) == 0 {
-			continue
-		}
-		for _, c := range msg.Content {
-			if c.Type == "text" && c.Text != "" {
-				// Try parsing the text content as JSON.
-				var obj map[string]interface{}
-				if err := json.Unmarshal([]byte(c.Text), &obj); err == nil {
-					return Result{Output: obj}, nil
-				}
-				return Result{Output: map[string]interface{}{"text": c.Text}}, nil
-			}
-		}
-	}
-	return Result{Output: map[string]interface{}{}}, nil
-}
-
-// extractTokens attempts to find token usage metadata in the response.
-func extractTokens(obj map[string]interface{}) int {
-	if usage, ok := obj["usage"].(map[string]interface{}); ok {
-		input, _ := usage["input_tokens"].(float64)
-		output, _ := usage["output_tokens"].(float64)
-		return int(input + output)
-	}
-	return 0
-}
-
-// extractJSONFromMarkdown extracts the last JSON object from markdown code blocks.
-// It looks for ```json ... ``` or ``` ... ``` blocks and returns the last one
-// that contains valid JSON.
-func extractJSONFromMarkdown(text string) string {
-	const fence = "```"
-	result := ""
-	for {
-		start := strings.Index(text, fence)
-		if start == -1 {
-			break
-		}
-		// Skip the opening fence and optional language tag.
-		inner := text[start+len(fence):]
-		// Skip language tag (e.g., "json").
-		if nl := strings.IndexByte(inner, '\n'); nl != -1 {
-			inner = inner[nl+1:]
-		}
-		end := strings.Index(inner, fence)
-		if end == -1 {
-			break
-		}
-		block := strings.TrimSpace(inner[:end])
-		// Check if it looks like a JSON object.
-		if len(block) > 0 && block[0] == '{' {
-			result = block
-		}
-		text = inner[end+len(fence):]
-	}
-	return result
 }

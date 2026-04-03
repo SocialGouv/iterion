@@ -1,202 +1,136 @@
 package delegate
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"os/exec"
+	"strings"
 	"time"
+
+	codexsdk "github.com/ethpandaops/codex-agent-sdk-go"
 )
 
-// CodexBackend delegates work to the `codex` CLI (OpenAI Codex).
-// It spawns a subprocess with the task prompt and collects structured output.
+// CodexBackend delegates work to the `codex` CLI (OpenAI Codex)
+// via the Codex Agent SDK.
 type CodexBackend struct {
-	// Command overrides the CLI binary name (default: "codex").
+	// Command overrides the CLI binary path (default: "codex").
 	Command string
 }
 
-func (b *CodexBackend) command() string {
-	if b.Command != "" {
-		return b.Command
-	}
-	return "codex"
-}
-
-// Execute runs the codex CLI with the given task.
+// Execute runs the codex CLI with the given task using the Codex Agent SDK.
 func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
-	args := []string{
-		"exec",
-		"--dangerously-bypass-approvals-and-sandbox",
-		"--json",
-	}
-
 	if task.WorkDir != "" {
 		if err := validateWorkDir(task.WorkDir, task.BaseDir); err != nil {
 			return Result{}, err
 		}
-		args = append(args, "-C", task.WorkDir)
+	}
+
+	var opts []codexsdk.Option
+
+	if task.SystemPrompt != "" {
+		opts = append(opts, codexsdk.WithSystemPrompt(task.SystemPrompt))
+	}
+	if task.WorkDir != "" {
+		opts = append(opts, codexsdk.WithCwd(task.WorkDir))
+	}
+	if len(task.AllowedTools) > 0 {
+		opts = append(opts, codexsdk.WithAllowedTools(task.AllowedTools...))
+	}
+	// Bypass interactive permission prompts: the runtime enforces safety via
+	// workspace isolation and allowed-tool lists, so the delegate subprocess
+	// does not need its own permission gate.
+	opts = append(opts, codexsdk.WithPermissionMode("bypassPermissions"))
+
+	if b.Command != "" {
+		opts = append(opts, codexsdk.WithCliPath(b.Command))
+	}
+
+	if len(task.OutputSchema) > 0 {
+		opts = append(opts, codexsdk.WithOutputSchema(string(task.OutputSchema)))
 	}
 
 	if task.ReasoningEffort != "" {
-		args = append(args, "-c", "model_reasoning_effort="+task.ReasoningEffort)
+		opts = append(opts, codexsdk.WithEffort(mapReasoningEffort(task.ReasoningEffort)))
 	}
 
-	// Build the full prompt combining system and user messages.
+	// Capture stderr for observability.
+	var stderrBuf strings.Builder
+	opts = append(opts, codexsdk.WithStderr(func(line string) {
+		stderrBuf.WriteString(line)
+		stderrBuf.WriteString("\n")
+	}))
+
 	prompt := task.UserPrompt
-	if task.SystemPrompt != "" {
-		prompt = task.SystemPrompt + "\n\n" + prompt
-	}
-
-	if len(task.OutputSchema) > 0 {
-		prompt += "\n\nYou MUST respond with a JSON object matching this schema:\n" + string(task.OutputSchema)
-	}
-
-	args = append(args, prompt)
-
-	cmd := exec.CommandContext(ctx, b.command(), args...)
-
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return Result{}, fmt.Errorf("delegate: codex stdout pipe: %w", err)
-	}
-
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return Result{}, fmt.Errorf("delegate: codex stderr pipe: %w", err)
-	}
 
 	startTime := time.Now()
 
-	if err := cmd.Start(); err != nil {
-		return Result{}, fmt.Errorf("delegate: codex failed to start: %w", err)
-	}
+	var resultMsg *codexsdk.ResultMessage
+	var queryErr error
 
-	// Drain stderr concurrently to avoid pipe buffer deadlock when the
-	// subprocess produces large stderr while we read stdout.
-	var stderr bytes.Buffer
-	stderrDone := make(chan struct{})
-	go func() {
-		defer close(stderrDone)
-		io.Copy(&stderr, stderrPipe) //nolint:errcheck
-	}()
-
-	limited := io.LimitReader(stdoutPipe, maxOutputSize+1)
-	output, err := io.ReadAll(limited)
-	if err != nil {
-		return Result{}, fmt.Errorf("delegate: codex reading stdout: %w", err)
-	}
-
-	if len(output) > maxOutputSize {
-		_ = cmd.Process.Kill()
-		<-stderrDone
-		_ = cmd.Wait()
-		return Result{}, fmt.Errorf("delegate: codex output exceeded limit of %d bytes", maxOutputSize)
-	}
-
-	<-stderrDone
-
-	waitErr := waitWithTimeout(cmd, 10*time.Second)
-	if waitErr != nil {
-		exitCode := -1
-		var exitErr *exec.ExitError
-		if errors.As(waitErr, &exitErr) {
-			exitCode = exitErr.ExitCode()
+	for msg, err := range codexsdk.Query(ctx, codexsdk.Text(prompt), opts...) {
+		if err != nil {
+			queryErr = err
+			break
 		}
+		if rm, ok := msg.(*codexsdk.ResultMessage); ok {
+			resultMsg = rm
+		}
+	}
+
+	duration := time.Since(startTime)
+
+	if queryErr != nil {
 		return Result{
-			Duration:    time.Since(startTime),
-			ExitCode:    exitCode,
-			Stderr:      stderr.String(),
+			Duration:    duration,
+			ExitCode:    -1,
+			Stderr:      stderrBuf.String(),
 			BackendName: "codex",
-		}, fmt.Errorf("delegate: codex failed: %w\nstderr: %s", waitErr, stderr.String())
+		}, fmt.Errorf("delegate: codex failed: %w", queryErr)
 	}
 
-	result, parseErr := parseCodexJSONL(output)
-	if parseErr != nil {
-		return Result{}, parseErr
+	if resultMsg == nil {
+		return Result{
+			Duration:    duration,
+			ExitCode:    -1,
+			Stderr:      stderrBuf.String(),
+			BackendName: "codex",
+		}, fmt.Errorf("delegate: codex: no result message received")
 	}
-	result.Duration = time.Since(startTime)
-	result.ExitCode = 0
-	result.Stderr = stderr.String()
-	result.BackendName = "codex"
-	result.RawOutputLen = len(output)
 
-	// Detect parse fallback: structured output was expected but parsing
-	// fell back to wrapping plain text as {"text": "..."}.
-	if len(task.OutputSchema) > 0 {
-		if _, hasText := result.Output["text"]; hasText && len(result.Output) == 1 {
-			result.ParseFallback = true
-		}
+	result := Result{
+		Duration:    duration,
+		ExitCode:    0,
+		Stderr:      stderrBuf.String(),
+		BackendName: "codex",
 	}
+
+	if resultMsg.Usage != nil {
+		result.Tokens = resultMsg.Usage.InputTokens + resultMsg.Usage.OutputTokens
+	}
+
+	if resultMsg.IsError {
+		return result, fmt.Errorf("delegate: codex error: subtype=%s", resultMsg.Subtype)
+	}
+
+	output, rawLen, fallback := parseSDKOutput(resultMsg.Result, resultMsg.StructuredOutput, task.OutputSchema)
+	result.Output = output
+	result.RawOutputLen = rawLen
+	result.ParseFallback = fallback
 
 	return result, nil
 }
 
-// parseCodexJSONL parses the JSONL output from `codex exec --json`.
-// It extracts the last agent message text from "item.completed" events
-// and token usage from "turn.completed" events.
-func parseCodexJSONL(data []byte) (Result, error) {
-	data = bytes.TrimSpace(data)
-	if len(data) == 0 {
-		return Result{Output: map[string]interface{}{}}, nil
+// mapReasoningEffort converts iterion reasoning effort strings to Codex SDK Effort constants.
+func mapReasoningEffort(s string) codexsdk.Effort {
+	switch s {
+	case "low":
+		return codexsdk.EffortLow
+	case "medium":
+		return codexsdk.EffortMedium
+	case "high":
+		return codexsdk.EffortHigh
+	case "extra_high":
+		return codexsdk.EffortMax
+	default:
+		return codexsdk.EffortMedium
 	}
-
-	var lastText string
-	var tokens int
-
-	for _, line := range bytes.Split(data, []byte("\n")) {
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-
-		var evt struct {
-			Type string `json:"type"`
-			Item struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"item"`
-			Usage struct {
-				InputTokens  int `json:"input_tokens"`
-				OutputTokens int `json:"output_tokens"`
-			} `json:"usage"`
-		}
-		if err := json.Unmarshal(line, &evt); err != nil {
-			continue
-		}
-
-		switch evt.Type {
-		case "item.completed":
-			if evt.Item.Type == "agent_message" && evt.Item.Text != "" {
-				lastText = evt.Item.Text
-			}
-		case "turn.completed":
-			tokens = evt.Usage.InputTokens + evt.Usage.OutputTokens
-		}
-	}
-
-	if lastText == "" {
-		return Result{Output: map[string]interface{}{}}, nil
-	}
-
-	// Try parsing the agent's text as a JSON object.
-	var obj map[string]interface{}
-	if err := json.Unmarshal([]byte(lastText), &obj); err == nil {
-		return Result{Output: obj, Tokens: tokens}, nil
-	}
-
-	// Try extracting JSON from markdown code blocks.
-	if extracted := extractJSONFromMarkdown(lastText); extracted != "" {
-		if err := json.Unmarshal([]byte(extracted), &obj); err == nil {
-			return Result{Output: obj, Tokens: tokens}, nil
-		}
-	}
-
-	// Fallback: wrap raw text.
-	return Result{
-		Output: map[string]interface{}{"text": lastText},
-		Tokens: tokens,
-	}, nil
 }

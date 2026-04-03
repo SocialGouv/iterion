@@ -27,6 +27,10 @@ func TestPrepareWorkflowProjectAutoloadAndOverrides(t *testing.T) {
       "type": "stdio",
       "command": "falcon",
       "args": ["mcp"]
+    },
+    "sentry": {
+      "type": "http",
+      "url": "https://sentry.example.com/mcp"
     }
   }
 }`)
@@ -42,7 +46,7 @@ func TestPrepareWorkflowProjectAutoloadAndOverrides(t *testing.T) {
 		},
 		MCP: &ir.MCPConfig{
 			AutoloadProject: &autoload,
-			Servers:         []string{"codex"},
+			Servers:         []string{"sentry"},
 			Disable:         []string{"falcon"},
 		},
 		Nodes: map[string]*ir.Node{
@@ -50,8 +54,8 @@ func TestPrepareWorkflowProjectAutoloadAndOverrides(t *testing.T) {
 				ID:   "implement",
 				Kind: ir.NodeAgent,
 				MCP: &ir.MCPConfig{
-					Servers: []string{"claude_code"},
-					Disable: []string{"codex"},
+					Servers: []string{"github"},
+					Disable: []string{"sentry"},
 				},
 			},
 			"act": {
@@ -68,9 +72,9 @@ func TestPrepareWorkflowProjectAutoloadAndOverrides(t *testing.T) {
 	if got := wf.ResolvedMCPServers["github"].URL; got != "https://override.example.com/mcp" {
 		t.Fatalf("expected explicit override, got %q", got)
 	}
-	assertStringSliceEq(t, wf.ActiveMCPServers, []string{"github", "codex"})
-	assertStringSliceEq(t, wf.Nodes["implement"].ActiveMCPServers, []string{"github", "claude_code"})
-	assertStringSliceEq(t, wf.Nodes["act"].ActiveMCPServers, []string{"github", "codex"})
+	assertStringSliceEq(t, wf.ActiveMCPServers, []string{"github", "sentry"})
+	assertStringSliceEq(t, wf.Nodes["implement"].ActiveMCPServers, []string{"github"})
+	assertStringSliceEq(t, wf.Nodes["act"].ActiveMCPServers, []string{"github", "sentry"})
 }
 
 func TestPrepareWorkflowAutoloadDisabledByEnv(t *testing.T) {
@@ -87,8 +91,15 @@ func TestPrepareWorkflowAutoloadDisabledByEnv(t *testing.T) {
 }`)
 
 	wf := &ir.Workflow{
+		MCPServers: map[string]*ir.MCPServer{
+			"sentry": {
+				Name:      "sentry",
+				Transport: ir.MCPTransportHTTP,
+				URL:       "https://sentry.example.com/mcp",
+			},
+		},
 		MCP: &ir.MCPConfig{
-			Servers: []string{"claude_code"},
+			Servers: []string{"sentry"},
 		},
 		Nodes: map[string]*ir.Node{
 			"implement": {ID: "implement", Kind: ir.NodeAgent},
@@ -102,30 +113,7 @@ func TestPrepareWorkflowAutoloadDisabledByEnv(t *testing.T) {
 	if _, ok := wf.ResolvedMCPServers["github"]; ok {
 		t.Fatal("project .mcp.json should be ignored when ITERION_MCP_AUTOLOAD=false")
 	}
-	assertStringSliceEq(t, wf.ActiveMCPServers, []string{"claude_code"})
-}
-
-func TestPrepareWorkflowActivatesPresetsWithoutProjectFile(t *testing.T) {
-	wf := &ir.Workflow{
-		MCP: &ir.MCPConfig{
-			Servers: []string{"claude_code", "codex"},
-		},
-		Nodes: map[string]*ir.Node{
-			"implement": {ID: "implement", Kind: ir.NodeAgent},
-		},
-	}
-
-	if err := PrepareWorkflow(wf, t.TempDir()); err != nil {
-		t.Fatalf("PrepareWorkflow: %v", err)
-	}
-
-	if _, ok := wf.ResolvedMCPServers["claude_code"]; !ok {
-		t.Fatal("expected claude_code preset in resolved catalog")
-	}
-	if _, ok := wf.ResolvedMCPServers["codex"]; !ok {
-		t.Fatal("expected codex preset in resolved catalog")
-	}
-	assertStringSliceEq(t, wf.ActiveMCPServers, []string{"claude_code", "codex"})
+	assertStringSliceEq(t, wf.ActiveMCPServers, []string{"sentry"})
 }
 
 func TestManagerHTTPDiscoveryAndCache(t *testing.T) {

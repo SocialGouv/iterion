@@ -48,21 +48,6 @@ tasks:
       - go test -v -timeout 120s ./e2e/...
 
   test:live:
-    desc: Run live e2e tests via MCP delegation (requires claude + codex CLIs)
-    cmds:
-      - go test -v -run TestLive -timeout 35m ./e2e/...
-
-  test:live:todo:
-    desc: Run the todo app live e2e test (requires claude + codex CLIs)
-    cmds:
-      - go test -v -count=1 -run TestLive_TodoApp_DualModel_MCP$ -timeout 35m ./e2e/...
-
-  test:live:todo-full:
-    desc: Run the full todo app e2e test with cross-review and double judge (requires claude + codex CLIs)
-    cmds:
-      - go test -v -count=1 -run TestLive_TodoApp_Full_DualModel_MCP -timeout 5h ./e2e/...
-
-  test:live:star-chart:
     desc: Run the star chart plan/implement/review live e2e test (requires claude CLI)
     cmds:
       - go test -v -count=1 -run TestLive_DualModel_PlanImplementReview -timeout 5h ./e2e/...

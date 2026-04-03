@@ -488,9 +488,6 @@ workflow dual_model_plan_implement_review:
 
   entry: plan_fanout
 
-  mcp:
-    servers: [claude_code]
-
   budget:
     max_parallel_branches: 4
     max_duration: "5h"

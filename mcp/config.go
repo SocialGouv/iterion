@@ -89,26 +89,6 @@ func AutoLoadProjectEnabled() bool {
 	return value != "0" && value != "false"
 }
 
-func NativePresets() map[string]*ServerConfig {
-	return map[string]*ServerConfig{
-		"claude_code": {
-			Name:      "claude_code",
-			Transport: TransportStdio,
-			Command:   "claude",
-			Args:      []string{"mcp", "serve"},
-		},
-		"codex": {
-			Name:      "codex",
-			Transport: TransportStdio,
-			Command:   "codex",
-			Args: []string{
-				"mcp-server",
-				"-c", `sandbox="danger-full-access"`,
-			},
-		},
-	}
-}
-
 func loadProjectServers(projectDir string) (map[string]*ServerConfig, []string, error) {
 	if !AutoLoadProjectEnabled() {
 		return map[string]*ServerConfig{}, nil, nil
@@ -159,7 +139,7 @@ func loadProjectServers(projectDir string) (map[string]*ServerConfig, []string, 
 }
 
 func mergeCatalog(project map[string]*ServerConfig, explicit map[string]*ir.MCPServer) (map[string]*ServerConfig, error) {
-	catalog := make(map[string]*ServerConfig, len(project)+len(explicit)+2)
+	catalog := make(map[string]*ServerConfig, len(project)+len(explicit))
 	for name, cfg := range project {
 		catalog[name] = cloneServerConfig(cfg)
 	}
@@ -172,12 +152,6 @@ func mergeCatalog(project map[string]*ServerConfig, explicit map[string]*ir.MCPS
 			URL:       cfg.URL,
 			Headers:   cloneStringMap(cfg.Headers),
 		}
-	}
-	for name, cfg := range NativePresets() {
-		if _, exists := catalog[name]; exists {
-			continue
-		}
-		catalog[name] = cloneServerConfig(cfg)
 	}
 
 	for name, cfg := range catalog {

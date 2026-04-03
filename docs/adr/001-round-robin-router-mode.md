@@ -99,7 +99,7 @@ plan_fanout (fan_out_all) → claude_plan + codex_plan → plans_join → merge_
 
 ### 1. Statu quo — pattern cross-pair uniquement
 
-Le pattern cross-pair fonctionne et ne necessite aucune modification du runtime. Il est utilise dans plusieurs exemples existants (`todo_app_full_dual_model_mcp.iter`, `feature_request_dual_model_mcp.iter`).
+Le pattern cross-pair fonctionne et ne necessite aucune modification du runtime. Il est utilise dans plusieurs exemples existants (`todo_app_full_dual_model_delegate.iter`, `feature_request_dual_model.iter`).
 
 **Rejete car** : la duplication croit de facon combinatoire. Une alternance a 2 agents double les noeuds. A 3 agents, le cross-pair produirait 3x les noeuds avec 6 chemins croises. A 4, l'explosion est ingerable. Le pattern ne scale pas.
 
@@ -235,7 +235,7 @@ func (e *Engine) execRouter(ctx context.Context, rs *RunState, nodeID string) (s
 
 ### Migration du workflow existant
 
-Une fois le `round_robin` implemente, le workflow `dual_model_plan_implement_review.iter` pourra etre simplifie de 46 a 23 noeuds. Les exemples existants utilisant le cross-pair pattern (`todo_app_full_dual_model_mcp.iter`, `feature_request_dual_model_mcp.iter`) restent valides — le cross-pair est un pattern d'usage, pas une contrainte du DSL.
+Une fois le `round_robin` implemente, le workflow `dual_model_plan_implement_review.iter` pourra etre simplifie de 46 a 23 noeuds. Les exemples existants utilisant le cross-pair pattern (`todo_app_full_dual_model_delegate.iter`, `feature_request_dual_model.iter`) restent valides — le cross-pair est un pattern d'usage, pas une contrainte du DSL.
 
 ## Consequences
 

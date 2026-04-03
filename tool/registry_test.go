@@ -337,11 +337,11 @@ func TestListByServer(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestIsMCPWildcard(t *testing.T) {
-	if !IsMCPWildcard("mcp.claude_code.*") {
-		t.Error("expected true for mcp.claude_code.*")
+	if !IsMCPWildcard("mcp.github.*") {
+		t.Error("expected true for mcp.github.*")
 	}
-	if !IsMCPWildcard("mcp.codex.*") {
-		t.Error("expected true for mcp.codex.*")
+	if !IsMCPWildcard("mcp.sentry.*") {
+		t.Error("expected true for mcp.sentry.*")
 	}
 	if IsMCPWildcard("mcp.github.create_issue") {
 		t.Error("expected false for non-wildcard MCP name")
@@ -355,12 +355,12 @@ func TestIsMCPWildcard(t *testing.T) {
 }
 
 func TestParseMCPWildcard(t *testing.T) {
-	server, err := ParseMCPWildcard("mcp.claude_code.*")
+	server, err := ParseMCPWildcard("mcp.github.*")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if server != "claude_code" {
-		t.Errorf("expected 'claude_code', got %q", server)
+	if server != "github" {
+		t.Errorf("expected 'github', got %q", server)
 	}
 
 	// Invalid cases.

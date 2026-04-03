@@ -11,7 +11,7 @@ This document describes the role of each reference fixture, their relationships,
 | `pr_refine_dual_model_parallel_compliance` | **V1 flagship workflow** | 2+ | yes (fan-out) | yes | refine(6) + recipe(3) |
 | `recipe_benchmark` | Recipe comparison | N | yes (fan-out) | no | none |
 | `ci_fix_until_green` | Iterative CI fix | 1 | no | no | fix(5) |
-| `pr_refine_dual_model_parallel_mcp` | MCP variant (delegation) | 2 | yes (fan-out) | no | recipe(3) |
+| `pr_refine_dual_model_parallel_delegate` | Delegation variant (claude-code + codex) | 2 | yes (fan-out) | no | recipe(3) |
 
 ## Fixture Details
 
@@ -43,11 +43,11 @@ Exercises **all V1 primitives**: agent, judge, router, join, human, done, fail, 
 
 Executes two recipes in parallel on the same PR, aggregates results, compares via a judge. Used to **compare cost, quality, iterations and latency** between recipes. Extensible to N recipes.
 
-### `pr_refine_dual_model_parallel_mcp`
+### `pr_refine_dual_model_parallel_delegate`
 
 **Nominal path:** identical to `pr_refine_dual_model_parallel`.
 
-MCP variant of the parallel dual-model workflow. Instead of calling LLM APIs directly (`model:`), each node delegates its work to an external CLI agent (`delegate:`). Claude nodes use `claude_code` (claude-code CLI), GPT nodes use `codex` (OpenAI Codex CLI). The graph, schemas, prompts and edges are identical to the API version. Exercises the `delegate` primitive in addition to router, join, publish, loop. See `docs/mcp_delegation.md` for a detailed API vs delegation comparison.
+Delegation variant of the parallel dual-model workflow. Instead of calling LLM APIs directly (`model:`), each node delegates its work to an external CLI agent (`delegate:`). Claude nodes use `claude_code` (claude-code CLI via SDK), GPT nodes use `codex` (OpenAI Codex CLI via SDK). The graph, schemas, prompts and edges are identical to the API version. Exercises the `delegate` primitive in addition to router, join, publish, loop.
 
 ### `ci_fix_until_green`
 
@@ -61,8 +61,8 @@ Iterative CI fix pattern. Diagnoses the failure, plans a fix, applies it, reruns
 pr_refine_single_model          ← simple baseline, 1 model
     ↓ (add parallelism)
 pr_refine_dual_model_parallel   ← dual-model, no gate
-    ↓ (MCP delegation)
-pr_refine_dual_model_parallel_mcp        ← delegation variant (claude-code + codex)
+    ↓ (delegation via SDK)
+pr_refine_dual_model_parallel_delegate   ← delegation variant (claude-code + codex)
     ↓ (add compliance + human)
 pr_refine_dual_model_parallel_compliance  ← complete flagship workflow
     ↓ (benchmark)

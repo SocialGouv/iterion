@@ -1,0 +1,389 @@
+## Fixture : todo_app_full_dual_model_delegate
+## Objectif : Workflow complet de creation d'une todo app (single page HTML)
+## orchestrant deux agents IA via delegation MCP avec cross-review
+## et double validation (les deux modeles doivent valider).
+##
+##   - Claude  -> claude-code (delegate: "claude_code")
+##   - Codex   -> codex       (delegate: "codex")
+##
+## Phases :
+##   1. Design de l'application (Claude)
+##   2. Challenge du design (Codex)
+##   3. Paire 1 : Claude implemente, Codex review, Codex juge
+##      Si Codex valide -> Claude contre-juge
+##   4. Paire 2 : Codex implemente, Claude review, Claude juge
+##      Si Claude valide -> Codex contre-juge
+##   5. Alternance des paires jusqu'a double validation (max 6 iterations)
+##
+## Resultat attendu : un fichier index.html autonome dans le workspace.
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+## ─── Prompts ────────────────────────────────────────────────────
+
+prompt design_system:
+  Tu es un architecte frontend expert en applications web monopage.
+  Tu concois des applications HTML/CSS/JS propres, modernes et autonomes.
+  Produis un design detaille pour une application todo
+  qui tiendra dans un seul fichier index.html.
+
+prompt design_user:
+  Concois l'architecture d'une application todo en une seule page HTML.
+
+  Description : {{input.app_description}}
+  Criteres d'acceptation : {{input.acceptance_criteria}}
+
+  Produis un design detaille incluant :
+  - La structure HTML (sections, composants)
+  - L'approche CSS (layout, theme dark/light, responsive, animations)
+  - L'approche JavaScript (gestion d'etat, evenements, persistence, edition en place)
+  - La liste complete des fonctionnalites a implementer
+
+prompt challenge_system:
+  Tu es un ingenieur frontend senior avec un regard critique.
+  Tu examines les designs d'applications web et identifies les lacunes,
+  les problemes d'accessibilite, d'UX et de maintenabilite.
+  Propose des ameliorations concretes et actionables.
+
+prompt challenge_user:
+  Examine ce design d'application todo et challenge-le.
+
+  Design propose :
+  {{input.design}}
+
+  Criteres d'acceptation :
+  {{input.acceptance_criteria}}
+
+  Identifie les lacunes, propose des alternatives et produis
+  une approche revisee integrant tes ameliorations.
+  Sois particulierement attentif a l'accessibilite, les animations,
+  le theme dark/light et l'edition en place.
+
+prompt implement_system:
+  Tu es un developpeur frontend expert.
+  Tu implementes des applications web completes dans un seul fichier HTML.
+  Le code doit etre propre, bien structure et fonctionnel.
+  Ecris directement le fichier index.html dans le repertoire courant.
+  Corrige les problemes identifies par le reviewer si applicable.
+
+prompt implement_user:
+  Implemente (ou ameliore) l'application todo dans un seul fichier index.html
+  dans le repertoire courant.
+
+  Design a suivre :
+  {{input.design}}
+
+  Retour du reviewer precedent :
+  {{input.previous_feedback}}
+
+  Criteres d'acceptation : {{input.acceptance_criteria}}
+
+  Cree ou mets a jour le fichier index.html avec tout le HTML, CSS et JS
+  embarques. Assure-toi que TOUS les criteres sont satisfaits.
+
+prompt review_system:
+  Tu es un reviewer de code frontend exigeant.
+  Lis le fichier index.html genere et evalue sa qualite,
+  sa conformite aux criteres et son bon fonctionnement.
+  Verifie chaque critere d'acceptation un par un.
+
+prompt review_user:
+  Review l'implementation de cette application todo.
+  Lis le fichier index.html dans le repertoire courant.
+
+  Resultat de l'implementation :
+  {{input.act_result}}
+
+  Criteres d'acceptation :
+  {{input.acceptance_criteria}}
+
+  Evalue chaque critere un par un et identifie les manques.
+
+prompt readiness_system:
+  Tu es un juge technique exigeant.
+  Tu evalues si l'application todo satisfait TOUS les criteres d'acceptation.
+  Sois strict : ne valide que si chaque critere est pleinement satisfait.
+  Un critere partiellement satisfait compte comme non satisfait.
+
+prompt readiness_user:
+  Evalue si cette application todo est prete.
+
+  Resultat de l'implementation :
+  {{input.act_result}}
+
+  Review :
+  {{input.review}}
+
+  Criteres d'acceptation :
+  {{input.acceptance_criteria}}
+
+  Verifie chaque critere individuellement.
+  Ne marque ready=true que si TOUS sont pleinement satisfaits.
+
+prompt counter_readiness_system:
+  Tu es un contre-juge technique. Un premier juge a considere cette
+  application prete. Ton role est de verifier independamment que cette
+  evaluation est correcte. Sois encore plus strict que le premier juge.
+  Lis le fichier index.html dans le repertoire courant pour verifier.
+
+prompt counter_readiness_user:
+  Un premier juge a valide cette application todo.
+  Verifie independamment que l'evaluation est correcte.
+
+  Resultat de l'implementation :
+  {{input.act_result}}
+
+  Review precedente :
+  {{input.review}}
+
+  Criteres d'acceptation :
+  {{input.acceptance_criteria}}
+
+  Lis le code source et verifie chaque critere.
+  Ne marque ready=true que si tu confirmes le verdict du premier juge.
+
+## ─── Schemas ────────────────────────────────────────────────────
+
+schema todo_app_input:
+  app_description: string
+  acceptance_criteria: string
+
+schema design_output:
+  summary: string
+  html_structure: string
+  css_approach: string
+  js_approach: string
+  features: string[]
+
+schema challenge_input:
+  design: json
+  acceptance_criteria: string
+
+schema challenge_output:
+  analysis: string
+  issues: string[]
+  suggestions: string[]
+  revised_approach: string
+
+schema impl_input:
+  design: json
+  previous_feedback: string
+  acceptance_criteria: string
+
+schema impl_output:
+  applied: bool
+  summary: string
+  files_changed: string[]
+
+schema review_input:
+  act_result: json
+  acceptance_criteria: string
+
+schema review_output:
+  summary: string
+  issues: string[]
+  strengths: string[]
+  missing_requirements: string[]
+
+schema readiness_input:
+  act_result: json
+  review: json
+  acceptance_criteria: string
+
+schema readiness_verdict:
+  ready: bool
+  remaining_issues: string[]
+  confidence: string [enum: "low", "medium", "high"]
+
+## ─── Nodes : Phase 1 — Design ───────────────────────────────────
+
+agent claude_design:
+  delegate: "claude_code"
+  input: todo_app_input
+  output: design_output
+  publish: app_design
+  system: design_system
+  user: design_user
+  session: fresh
+
+## ─── Nodes : Phase 2 — Challenge ────────────────────────────────
+
+agent codex_challenge:
+  delegate: "codex"
+  input: challenge_input
+  output: challenge_output
+  publish: design_feedback
+  system: challenge_system
+  user: challenge_user
+  session: fresh
+
+## ─── Nodes : Paire 1 — Claude implemente, Codex review ─────────
+
+agent claude_implement:
+  delegate: "claude_code"
+  input: impl_input
+  output: impl_output
+  publish: act_report
+  system: implement_system
+  user: implement_user
+  session: fresh
+
+agent codex_review:
+  delegate: "codex"
+  input: review_input
+  output: review_output
+  system: review_system
+  user: review_user
+  session: fresh
+
+judge judge_codex:
+  delegate: "codex"
+  input: readiness_input
+  output: readiness_verdict
+  system: readiness_system
+  user: readiness_user
+  session: fresh
+
+judge counter_judge_claude:
+  delegate: "claude_code"
+  input: readiness_input
+  output: readiness_verdict
+  publish: final_verdict
+  system: counter_readiness_system
+  user: counter_readiness_user
+  session: fresh
+
+## ─── Nodes : Paire 2 — Codex implemente, Claude review ─────────
+
+agent codex_implement:
+  delegate: "codex"
+  input: impl_input
+  output: impl_output
+  publish: act_report
+  system: implement_system
+  user: implement_user
+  session: fresh
+
+agent claude_review:
+  delegate: "claude_code"
+  input: review_input
+  output: review_output
+  system: review_system
+  user: review_user
+  session: fresh
+
+judge judge_claude:
+  delegate: "claude_code"
+  input: readiness_input
+  output: readiness_verdict
+  system: readiness_system
+  user: readiness_user
+  session: fresh
+
+judge counter_judge_codex:
+  delegate: "codex"
+  input: readiness_input
+  output: readiness_verdict
+  publish: final_verdict
+  system: counter_readiness_system
+  user: counter_readiness_user
+  session: fresh
+
+## ─── Workflow ────────────────────────────────────────────────────
+
+workflow todo_app_full_dual_model_delegate:
+  vars:
+    app_description: string
+    acceptance_criteria: string
+
+  entry: claude_design
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "4h"
+    max_cost_usd: 100
+    max_tokens: 10000000
+
+  ## 1. Design -> Challenge
+  claude_design -> codex_challenge with {
+    design: "{{outputs.claude_design}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## 2. Challenge -> Paire 1 (premiere implementation)
+  codex_challenge -> claude_implement with {
+    design: "{{artifacts.app_design}}",
+    previous_feedback: "{{outputs.codex_challenge.revised_approach}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## 3. Paire 1 : Claude act -> Codex review -> Codex judge
+  claude_implement -> codex_review with {
+    act_result: "{{outputs.claude_implement}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  codex_review -> judge_codex with {
+    act_result: "{{outputs.claude_implement}}",
+    review: "{{outputs.codex_review}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## 4. Si Codex valide -> contre-judge Claude
+  judge_codex -> counter_judge_claude when ready with {
+    act_result: "{{outputs.claude_implement}}",
+    review: "{{outputs.codex_review}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## 5. Si Codex rejette -> switch vers Paire 2
+  judge_codex -> codex_implement when not ready as impl_loop(6) with {
+    design: "{{artifacts.app_design}}",
+    previous_feedback: "{{outputs.codex_review.summary}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## 6. Contre-judge Claude -> done ou Paire 2
+  counter_judge_claude -> done when ready
+
+  counter_judge_claude -> codex_implement when not ready as impl_loop(6) with {
+    design: "{{artifacts.app_design}}",
+    previous_feedback: "{{outputs.codex_review.summary}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## 7. Paire 2 : Codex act -> Claude review -> Claude judge
+  codex_implement -> claude_review with {
+    act_result: "{{outputs.codex_implement}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  claude_review -> judge_claude with {
+    act_result: "{{outputs.codex_implement}}",
+    review: "{{outputs.claude_review}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## 8. Si Claude valide -> contre-judge Codex
+  judge_claude -> counter_judge_codex when ready with {
+    act_result: "{{outputs.codex_implement}}",
+    review: "{{outputs.claude_review}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## 9. Si Claude rejette -> switch vers Paire 1
+  judge_claude -> claude_implement when not ready as impl_loop(6) with {
+    design: "{{artifacts.app_design}}",
+    previous_feedback: "{{outputs.claude_review.summary}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## 10. Contre-judge Codex -> done ou Paire 1
+  counter_judge_codex -> done when ready
+
+  counter_judge_codex -> claude_implement when not ready as impl_loop(6) with {
+    design: "{{artifacts.app_design}}",
+    previous_feedback: "{{outputs.claude_review.summary}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
