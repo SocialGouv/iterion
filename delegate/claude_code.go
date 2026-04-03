@@ -41,6 +41,10 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 	// does not need its own permission gate.
 	opts = append(opts, claude.WithPermissionMode("bypassPermissions"))
 
+	// The CLI requires --verbose when using --output-format=stream-json in
+	// --print mode. The SDK always uses stream-json, so we must enable verbose.
+	opts = append(opts, claude.WithVerbose(true))
+
 	if b.Command != "" {
 		opts = append(opts, claude.WithCLIPath(b.Command))
 	}

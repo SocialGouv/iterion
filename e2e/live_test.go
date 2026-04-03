@@ -139,35 +139,35 @@ func TestLive_DualModel_PlanImplementReview(t *testing.T) {
 	executor := model.NewGoaiExecutor(reg, wf, execOpts...)
 	defer executor.Close()
 
-	taskDescription := "An interactive astronomical observatory and night sky simulator in a single index.html file. " +
+	taskDescription := "An interactive Kanban task board in a single index.html file. " +
 		"Use vanilla HTML, CSS, and JavaScript (no frameworks or CDNs). " +
-		"The app renders an astronomically accurate SVG star map with real constellation data, " +
-		"advanced interactivity, and educational features that make it a compelling learning tool."
+		"The app provides a fully functional project management board with columns, draggable tasks, " +
+		"persistence, filtering, theming, and data import/export capabilities."
 
 	acceptanceCriteria := "=== Layer 1 - Foundation ===\n" +
-		"1. Single index.html file with all CSS and JS embedded, no external dependencies\n" +
-		"2. SVG-based star map on a realistic dark gradient background simulating the night sky\n" +
-		"3. At least 12 constellations with accurate relative star positions and connecting lines\n" +
-		"4. Stars rendered as circles with 4 distinct size classes based on apparent magnitude (mag 1-2, 2-3, 3-4, 4-5)\n" +
-		"5. Click a constellation to show an info panel with: name, main stars, and a mythology story\n" +
+		"1. Single index.html file with all CSS and JS embedded, no external dependencies or CDN links\n" +
+		"2. Board layout with at least 4 default columns (Backlog, To Do, In Progress, Done) rendered as vertical lanes\n" +
+		"3. CRUD operations for tasks: create via a form (title + description), edit inline, delete with confirmation\n" +
+		"4. Drag and drop: tasks can be moved between columns using HTML5 drag-and-drop API (dragstart, dragover, drop events)\n" +
+		"5. localStorage persistence: all board state (columns, tasks, positions) survives page reload\n" +
 		"\n=== Layer 2 - Interactivity ===\n" +
-		"6. Season selector (4 buttons: Spring, Summer, Autumn, Winter) that smoothly rotates the visible sky with CSS transition (rotation animation over 0.5s)\n" +
-		"7. Search input that filters constellations by name with real-time highlighting (matching constellation glows)\n" +
-		"8. Hover over any star to show a tooltip with the star's name (at least 20 named stars like Sirius, Betelgeuse, Polaris, etc.)\n" +
-		"9. A draggable/pannable star map: click-and-drag to pan the view, mouse wheel to zoom in/out\n" +
-		"10. Responsive layout that works on both desktop (side panel) and mobile (bottom sheet panel) with a CSS media query breakpoint at 768px\n" +
-		"\n=== Layer 3 - Visual Polish ===\n" +
-		"11. Stars twinkle with a subtle CSS animation (opacity oscillation, each star with a slightly different animation delay)\n" +
-		"12. Constellation lines fade in with a drawing animation when a constellation is selected\n" +
-		"13. A magnitude slider (range input) that filters visible stars by brightness threshold in real-time\n" +
-		"14. The Milky Way rendered as a semi-transparent gradient band across the sky\n" +
-		"15. A compass rose indicator showing N/S/E/W orientation that updates as the map is panned\n" +
-		"\n=== Layer 4 - Educational Depth ===\n" +
-		"16. Each constellation includes mythology from at least 3 different cultures (Greek, Chinese, and one indigenous culture: Aboriginal, Inuit, Polynesian, or other)\n" +
-		"17. A constellation quiz mode: the app highlights stars and the user must identify the constellation from 4 multiple-choice options, with score tracking\n" +
-		"18. A time-of-night slider (8pm to 4am) that adjusts star brightness and sky gradient to simulate the darkening sky\n" +
-		"19. Keyboard accessibility: arrow keys to pan, +/- to zoom, Escape to close panels, Tab to navigate constellations\n" +
-		"20. A 'tonight sky' button that calculates the approximate visible constellations based on the current month (using JavaScript Date)"
+		"6. Real-time search input that filters visible tasks by title/description with case-insensitive matching\n" +
+		"7. Category/tag system: each task can have 1+ colored tags, tags are filterable via clickable chips\n" +
+		"8. Due dates: date picker on tasks, overdue tasks highlighted with a red border or background\n" +
+		"9. Column management: add new columns, rename columns via inline edit, reorder columns via drag-and-drop\n" +
+		"10. Undo/redo system: at least 10 levels of undo/redo for task operations (Ctrl+Z / Ctrl+Shift+Z)\n" +
+		"\n=== Layer 3 - Polish ===\n" +
+		"11. Dark and light theme toggle with a visible button; smooth CSS transition (>= 0.3s) between themes; preference saved to localStorage\n" +
+		"12. Keyboard shortcuts: N for new task, Delete/Backspace to remove selected task, Escape to close modals, arrow keys to navigate between tasks\n" +
+		"13. Task counters displayed on each column header showing the number of tasks in that column, updated in real-time\n" +
+		"14. Drag preview: a styled ghost element visible during drag operations (not the browser default)\n" +
+		"15. Responsive layout: single-column stacked view on screens < 768px, horizontal scroll on desktop\n" +
+		"\n=== Layer 4 - Advanced ===\n" +
+		"16. Export/Import: export entire board to JSON file (download), import from JSON file (file input), validate schema on import\n" +
+		"17. Statistics dashboard: a toggleable panel showing tasks per column (bar or pie chart rendered in SVG or Canvas), completion rate percentage, and average time in each column\n" +
+		"18. Subtasks/checklists: each task can have a checklist of sub-items with checkboxes, progress shown as '3/5 done' on the card\n" +
+		"19. Bulk operations: multi-select tasks (checkboxes), bulk move to column, bulk delete, bulk tag assignment\n" +
+		"20. Time tracking: each task has an optional timer (start/stop), elapsed time displayed on the card in HH:MM:SS format, total time per column shown in statistics"
 
 	executor.SetVars(map[string]interface{}{
 		"workspace_dir": workspaceDir,
