@@ -44,7 +44,8 @@ interface DocumentState {
   diagnostics: string[];
   warnings: string[];
   currentFilePath: string | null;
-  _savedSnapshot: string | null;
+  _generation: number;
+  _savedGeneration: number;
 
   // Undo/redo
   _history: IterDocument[];
@@ -56,6 +57,7 @@ interface DocumentState {
   setCurrentFilePath: (path: string | null) => void;
   markSaved: () => void;
   isDirty: () => boolean;
+
 
   // Undo/redo
   undo: () => void;
@@ -142,10 +144,10 @@ function removeNodeEdges(doc: IterDocument, name: string): WorkflowDecl[] {
 }
 
 /** Push current document onto history before making a change. */
-function pushHistory(s: DocumentState): { _history: IterDocument[]; _future: IterDocument[] } {
-  if (!s.document) return { _history: s._history, _future: [] };
+function pushHistory(s: DocumentState): { _history: IterDocument[]; _future: IterDocument[]; _generation: number } {
+  if (!s.document) return { _history: s._history, _future: [], _generation: s._generation + 1 };
   const history = [...s._history, s.document].slice(-MAX_HISTORY);
-  return { _history: history, _future: [] };
+  return { _history: history, _future: [], _generation: s._generation + 1 };
 }
 
 export const useDocumentStore = create<DocumentState>((set, get) => ({
@@ -153,7 +155,8 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   diagnostics: [],
   warnings: [],
   currentFilePath: null,
-  _savedSnapshot: null,
+  _generation: 0,
+  _savedGeneration: 0,
   _history: [],
   _future: [],
 
@@ -163,12 +166,11 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   })),
   setDiagnostics: (diagnostics, warnings = []) => set({ diagnostics: diagnostics ?? [], warnings: warnings ?? [] }),
   setCurrentFilePath: (currentFilePath) => set({ currentFilePath }),
-  markSaved: () => set((s) => ({ _savedSnapshot: s.document ? JSON.stringify(s.document) : null })),
+  markSaved: () => set((s) => ({ _savedGeneration: s._generation })),
   isDirty: () => {
     const s = get();
     if (!s.document) return false;
-    if (!s._savedSnapshot) return true;
-    return JSON.stringify(s.document) !== s._savedSnapshot;
+    return s._generation !== s._savedGeneration;
   },
 
   // Undo/redo
@@ -176,13 +178,13 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     if (s._history.length === 0 || !s.document) return s;
     const history = [...s._history];
     const prev = history.pop()!;
-    return { document: prev, _history: history, _future: [s.document, ...s._future].slice(0, MAX_HISTORY) };
+    return { document: prev, _history: history, _future: [s.document, ...s._future].slice(0, MAX_HISTORY), _generation: s._generation + 1 };
   }),
   redo: () => set((s) => {
     if (s._future.length === 0 || !s.document) return s;
     const future = [...s._future];
     const next = future.shift()!;
-    return { document: next, _history: [...s._history, s.document].slice(-MAX_HISTORY), _future: future };
+    return { document: next, _history: [...s._history, s.document].slice(-MAX_HISTORY), _future: future, _generation: s._generation + 1 };
   }),
   canUndo: () => get()._history.length > 0,
   canRedo: () => get()._future.length > 0,

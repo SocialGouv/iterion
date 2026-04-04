@@ -4,19 +4,8 @@ import type { NodeKind, AgentDecl, ToolNodeDecl, HumanDecl, JoinDecl, RouterDecl
 import { useDocumentStore } from "@/store/document";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { ProviderIcon } from "@/components/icons/ProviderIcon";
+import { NODE_ICONS } from "@/lib/constants";
 import { SIDES, POS_MAP } from "./handlePositions";
-
-const KIND_ICONS: Record<NodeKind, string> = {
-  agent: "\u{1F916}",
-  judge: "\u{2696}",
-  router: "\u{1F500}",
-  join: "\u{1F91D}",
-  human: "\u{1F464}",
-  tool: "\u{1F527}",
-  done: "\u{2705}",
-  fail: "\u{274C}",
-  start: "\u{25B6}\u{FE0F}",
-};
 
 interface WorkflowNodeData extends Record<string, unknown> {
   label: string;
@@ -125,7 +114,7 @@ export default function WorkflowNode({ data }: NodeProps) {
         <Handle key={`target-${s}`} id={`target-${s}`} type="target" position={POS_MAP[s]} className="!bg-gray-400 !w-1.5 !h-1.5 !opacity-0" />
       ))}
       <div className="flex items-center justify-center gap-1">
-        <span className="text-lg">{KIND_ICONS[kind]}</span>
+        <span className="text-lg">{NODE_ICONS[kind]}</span>
         {sessionIndicator && <span className="text-xs" title={`session: ${(decl as AgentDecl)?.session}`}>{sessionIndicator}</span>}
       </div>
       <div className="font-semibold text-sm text-white">{isStart ? "Start" : label}</div>

@@ -1,10 +1,6 @@
 import type { Node, Edge as FlowEdge } from "@xyflow/react";
 import { isAuxiliaryNodeId } from "./documentToGraph";
-
-const NODE_WIDTH = 160;
-const NODE_HEIGHT = 80;
-const AUX_NODE_WIDTH = 120;
-const AUX_NODE_HEIGHT = 44;
+import { NODE_WIDTH, NODE_HEIGHT, AUX_NODE_WIDTH, AUX_NODE_HEIGHT } from "./constants";
 
 type Side = "top" | "right" | "bottom" | "left";
 

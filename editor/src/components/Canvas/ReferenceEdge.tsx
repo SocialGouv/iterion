@@ -9,7 +9,7 @@ const LAYER_COLORS: Record<LayerKind, string> = {
 };
 
 export default function ReferenceEdge(props: EdgeProps) {
-  const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, label, data } = props;
+  const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, label, data, markerEnd } = props;
 
   const layerKind = (data as Record<string, unknown>)?.layerKind as LayerKind | undefined;
   const color = layerKind ? LAYER_COLORS[layerKind] : "#666";
@@ -29,6 +29,7 @@ export default function ReferenceEdge(props: EdgeProps) {
     <>
       <BaseEdge
         path={edgePath}
+        markerEnd={markerEnd}
         style={{
           stroke: color,
           strokeDasharray: "4 3",

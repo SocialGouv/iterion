@@ -2,7 +2,7 @@ import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath } from "@xyflow/react";
 import type { EdgeProps } from "@xyflow/react";
 
 export default function ConditionalEdge(props: EdgeProps) {
-  const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, label, data, selected } = props;
+  const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, label, data, selected, markerEnd } = props;
 
   const hasLoop = !!(data as Record<string, unknown>)?.loop;
 
@@ -25,6 +25,7 @@ export default function ConditionalEdge(props: EdgeProps) {
     <>
       <BaseEdge
         path={edgePath}
+        markerEnd={markerEnd}
         style={{
           stroke: strokeColor,
           strokeDasharray,

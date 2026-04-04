@@ -4,6 +4,7 @@ import type { NodeMouseHandler, EdgeMouseHandler, Connection, Node, NodeChange, 
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { useUIStore } from "@/store/ui";
+import { NODE_COLORS } from "@/lib/constants";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { documentToGraph, getTopologyKey, makeEdgeId, generateLayerNodes, isAuxiliaryNodeId } from "@/lib/documentToGraph";
 import { autoLayout } from "@/lib/autoLayout";
@@ -17,6 +18,9 @@ import AuxiliaryNode from "./AuxiliaryNode";
 import ReferenceEdge from "./ReferenceEdge";
 import NodeContextMenu from "./NodeContextMenu";
 import NodeDetailPopover from "./NodeDetailPopover";
+import CanvasToolbar from "./CanvasToolbar";
+import QuickAddMenu from "./QuickAddMenu";
+import SearchOverlay from "./SearchOverlay";
 
 const nodeTypes = { workflowNode: WorkflowNode, auxiliaryNode: AuxiliaryNode };
 const edgeTypes = { conditionalEdge: ConditionalEdge, referenceEdge: ReferenceEdge };
@@ -25,20 +29,6 @@ function isEditableNode(id: string): boolean {
   return id !== "__start__" && id !== "done" && id !== "fail" && !isAuxiliaryNodeId(id);
 }
 
-const LAYER_TOGGLES: { kind: LayerKind; label: string; icon: string }[] = [
-  { kind: "schemas", label: "Schemas", icon: "\u{1F4D0}" },
-  { kind: "prompts", label: "Prompts", icon: "\u{1F4DD}" },
-  { kind: "vars", label: "Vars", icon: "\u{1F3F7}\u{FE0F}" },
-];
-
-const QUICK_ADD_TYPES: { kind: NodeKind; icon: string; label: string }[] = [
-  { kind: "agent", icon: "\u{1F916}", label: "Agent" },
-  { kind: "judge", icon: "\u{2696}\u{FE0F}", label: "Judge" },
-  { kind: "router", icon: "\u{1F504}", label: "Router" },
-  { kind: "join", icon: "\u{1F91D}", label: "Join" },
-  { kind: "human", icon: "\u{1F464}", label: "Human" },
-  { kind: "tool", icon: "\u{1F527}", label: "Tool" },
-];
 
 export default function Canvas() {
   const document = useDocumentStore((s) => s.document);
@@ -52,6 +42,8 @@ export default function Canvas() {
   const removeNode = useDocumentStore((s) => s.removeNode);
   const removeEdge = useDocumentStore((s) => s.removeEdge);
   const duplicateNode = useDocumentStore((s) => s.duplicateNode);
+  const undo = useDocumentStore((s) => s.undo);
+  const redo = useDocumentStore((s) => s.redo);
   const updateWorkflow = useDocumentStore((s) => s.updateWorkflow);
   const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
   const setSelectedEdge = useSelectionStore((s) => s.setSelectedEdge);
@@ -391,7 +383,19 @@ export default function Canvas() {
         return;
       }
 
-      // Copy/Paste
+      // Undo/Redo
+      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey && !isInput) {
+        e.preventDefault();
+        undo();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === "y" || (e.key === "z" && e.shiftKey)) && !isInput) {
+        e.preventDefault();
+        redo();
+        return;
+      }
+
+      // Copy/Paste/Duplicate
       if ((e.ctrlKey || e.metaKey) && e.key === "c" && !isInput) {
         if (selectedNodeId && isEditableNode(selectedNodeId)) {
           setCopiedNode(selectedNodeId);
@@ -405,6 +409,17 @@ export default function Canvas() {
           if (newName) {
             setSelectedNode(newName);
             addToast(`Pasted as ${newName}`, "success");
+          }
+        }
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === "d" && !isInput) {
+        e.preventDefault();
+        if (selectedNodeId && isEditableNode(selectedNodeId)) {
+          const newName = duplicateNode(selectedNodeId);
+          if (newName) {
+            setSelectedNode(newName);
+            addToast(`Duplicated as ${newName}`, "success");
           }
         }
         return;
@@ -431,7 +446,7 @@ export default function Canvas() {
         }
       }
     },
-    [selectedNodeId, selectedEdgeId, document, removeNode, removeEdge, clearSelection, searchOpen, quickAddMenu, copiedNodeId, duplicateNode, setCopiedNode, setSelectedNode, addToast, expanded, toggleExpanded, detailNodeId, setDetailNodeId, toggleLayer],
+    [selectedNodeId, selectedEdgeId, document, removeNode, removeEdge, clearSelection, searchOpen, quickAddMenu, copiedNodeId, duplicateNode, setCopiedNode, setSelectedNode, addToast, expanded, toggleExpanded, detailNodeId, setDetailNodeId, toggleLayer, undo, redo],
   );
 
   // Sync browser fullscreen state
@@ -525,102 +540,29 @@ export default function Canvas() {
 
   return (
     <div className="h-full w-full relative" ref={reactFlowWrapper} onKeyDown={onKeyDown} tabIndex={0}>
-      {/* Layer toggle buttons */}
-      <div className="absolute top-2 left-2 z-40 flex gap-1">
-        {LAYER_TOGGLES.map(({ kind, label, icon }) => (
-          <button
-            key={kind}
-            className={`border text-xs px-2 py-1 rounded flex items-center gap-1 ${
-              activeLayers.has(kind)
-                ? "bg-blue-600 hover:bg-blue-700 border-blue-500 text-white"
-                : "bg-gray-800/90 hover:bg-gray-700 border-gray-600 text-gray-300"
-            }`}
-            onClick={() => toggleLayer(kind)}
-            title={`Toggle ${label} layer (Alt+${kind === "schemas" ? "1" : kind === "prompts" ? "2" : "3"})`}
-          >
-            <span>{icon}</span>
-            {label}
-          </button>
-        ))}
-      </div>
+      <CanvasToolbar
+        activeLayers={activeLayers}
+        toggleLayer={toggleLayer}
+        layoutDirection={layoutDirection}
+        toggleLayoutDirection={toggleLayoutDirection}
+        onArrange={handleArrange}
+        onFitView={handleFitView}
+        onFocusNode={selectedNodeId ? handleFocusNode : null}
+        expanded={expanded}
+        toggleExpanded={toggleExpanded}
+        browserFullscreen={browserFullscreen}
+        onBrowserFullscreen={handleBrowserFullscreen}
+        onFitViewAfterDelay={() => setTimeout(() => fitView({ padding: 0.2 }), 150)}
+      />
 
-      {/* Search overlay */}
       {searchOpen && (
-        <div className="absolute top-2 left-1/2 -translate-x-1/2 z-50">
-          <input
-            ref={searchInputRef}
-            className="bg-gray-800 border border-gray-500 rounded-lg px-3 py-1.5 text-sm text-white w-64 focus:border-blue-500 focus:outline-none shadow-lg"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            onKeyDown={handleSearchKeyDown}
-            placeholder="Search nodes... (Enter to select, Esc to close)"
-            autoFocus
-          />
-        </div>
+        <SearchOverlay
+          ref={searchInputRef}
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
+          onKeyDown={handleSearchKeyDown}
+        />
       )}
-
-      {/* Fit view / Focus / Fullscreen buttons */}
-      <div className="absolute top-2 right-2 z-40 flex gap-1">
-        <button
-          className={`border text-xs px-2 py-1 rounded ${
-            layoutDirection === "RIGHT"
-              ? "bg-blue-600 hover:bg-blue-700 border-blue-500 text-white"
-              : "bg-gray-800/90 hover:bg-gray-700 border-gray-600 text-gray-300"
-          }`}
-          onClick={() => {
-            toggleLayoutDirection();
-            setTimeout(() => fitView({ padding: 0.2 }), 150);
-          }}
-          title={layoutDirection === "DOWN" ? "Switch to horizontal layout (left\u2192right)" : "Switch to vertical layout (top\u2192bottom)"}
-        >
-          {layoutDirection === "DOWN" ? "\u2194 Horizontal" : "\u2195 Vertical"}
-        </button>
-        <button
-          className="bg-gray-800/90 hover:bg-gray-700 border border-gray-600 text-xs px-2 py-1 rounded text-gray-300"
-          onClick={handleArrange}
-          title="Auto-arrange nodes chronologically"
-        >
-          Arrange
-        </button>
-        <button
-          className="bg-gray-800/90 hover:bg-gray-700 border border-gray-600 text-xs px-2 py-1 rounded text-gray-300"
-          onClick={handleFitView}
-          title="Fit all nodes in view"
-        >
-          Fit
-        </button>
-        {selectedNodeId && (
-          <button
-            className="bg-gray-800/90 hover:bg-gray-700 border border-gray-600 text-xs px-2 py-1 rounded text-gray-300"
-            onClick={handleFocusNode}
-            title="Zoom to selected node"
-          >
-            Focus
-          </button>
-        )}
-        <button
-          className={`border text-xs px-2 py-1 rounded ${
-            expanded
-              ? "bg-blue-600 hover:bg-blue-700 border-blue-500 text-white"
-              : "bg-gray-800/90 hover:bg-gray-700 border-gray-600 text-gray-300"
-          }`}
-          onClick={() => { toggleExpanded(); setTimeout(() => fitView({ padding: 0.2 }), 100); }}
-          title={expanded ? "Collapse canvas (Esc)" : "Expand canvas (hide chrome)"}
-        >
-          {expanded ? "Collapse" : "Expand"}
-        </button>
-        <button
-          className={`border text-xs px-2 py-1 rounded ${
-            browserFullscreen
-              ? "bg-blue-600 hover:bg-blue-700 border-blue-500 text-white"
-              : "bg-gray-800/90 hover:bg-gray-700 border-gray-600 text-gray-300"
-          }`}
-          onClick={() => { handleBrowserFullscreen(); setTimeout(() => fitView({ padding: 0.2 }), 100); }}
-          title={browserFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-        >
-          {browserFullscreen ? "Exit FS" : "Fullscreen"}
-        </button>
-      </div>
 
       {/* Connection error feedback */}
       {connectionError && (
@@ -657,19 +599,8 @@ export default function Canvas() {
           zoomable
           pannable
           nodeColor={(node) => {
-            const kind = (node.data as { kind?: string })?.kind;
-            switch (kind) {
-              case "agent": return "#4A90D9";
-              case "judge": return "#7B68EE";
-              case "router": return "#E67E22";
-              case "join": return "#2ECC71";
-              case "human": return "#E74C3C";
-              case "tool": return "#8B6914";
-              case "done": return "#22C55E";
-              case "fail": return "#EF4444";
-              case "start": return "#10B981";
-              default: return "#6B7280";
-            }
+            const kind = (node.data as { kind?: string })?.kind as NodeKind | undefined;
+            return kind ? (NODE_COLORS[kind] ?? "#6B7280") : "#6B7280";
           }}
         />
       </ReactFlow>
@@ -706,60 +637,20 @@ export default function Canvas() {
         />
       )}
 
-      {/* Quick-add node menu (shown when dragging from handle to empty canvas) */}
       {quickAddMenu && (
-        <div
-          className="fixed bg-gray-800 border border-gray-600 rounded-lg shadow-xl z-50 py-1 min-w-[140px]"
-          style={{
-            left: Math.min(quickAddMenu.x, window.innerWidth - 160),
-            top: Math.min(quickAddMenu.y, window.innerHeight - 340),
+        <QuickAddMenu
+          x={quickAddMenu.x}
+          y={quickAddMenu.y}
+          sourceId={quickAddMenu.sourceId}
+          onAddNode={handleQuickAdd}
+          onConnectTerminal={(target) => {
+            if (activeWorkflow) {
+              addEdge(activeWorkflow.name, { from: quickAddMenu.sourceId, to: target });
+              setQuickAddMenu(null);
+            }
           }}
-        >
-          <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wider">Add node</div>
-          {QUICK_ADD_TYPES.map(({ kind, icon, label }) => (
-            <button
-              key={kind}
-              className="w-full text-left px-3 py-1.5 hover:bg-gray-700 text-xs text-white flex items-center gap-2"
-              onClick={() => handleQuickAdd(kind)}
-            >
-              <span>{icon}</span>
-              {label}
-            </button>
-          ))}
-          <div className="border-t border-gray-700 my-1" />
-          <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wider">Connect to</div>
-          <button
-            className="w-full text-left px-3 py-1.5 hover:bg-gray-700 text-xs text-white flex items-center gap-2"
-            onClick={() => {
-              if (activeWorkflow) {
-                addEdge(activeWorkflow.name, { from: quickAddMenu.sourceId, to: "done" });
-                setQuickAddMenu(null);
-              }
-            }}
-          >
-            <span>{"\u{2705}"}</span>
-            done
-          </button>
-          <button
-            className="w-full text-left px-3 py-1.5 hover:bg-gray-700 text-xs text-white flex items-center gap-2"
-            onClick={() => {
-              if (activeWorkflow) {
-                addEdge(activeWorkflow.name, { from: quickAddMenu.sourceId, to: "fail" });
-                setQuickAddMenu(null);
-              }
-            }}
-          >
-            <span>{"\u{274C}"}</span>
-            fail
-          </button>
-          <div className="border-t border-gray-700 my-1" />
-          <button
-            className="w-full text-left px-3 py-1.5 hover:bg-gray-700 text-xs text-gray-400 flex items-center gap-2"
-            onClick={() => setQuickAddMenu(null)}
-          >
-            Cancel
-          </button>
-        </div>
+          onClose={() => setQuickAddMenu(null)}
+        />
       )}
     </div>
   );

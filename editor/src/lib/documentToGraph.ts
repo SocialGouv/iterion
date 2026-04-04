@@ -1,19 +1,9 @@
+import { MarkerType } from "@xyflow/react";
 import type { Node, Edge as FlowEdge } from "@xyflow/react";
 import type { IterDocument, NodeKind, AgentDecl, JudgeDecl, HumanDecl, ToolNodeDecl, JoinDecl } from "@/api/types";
 import type { LayerKind } from "@/store/ui";
 import type { AuxiliaryNodeData } from "@/components/Canvas/AuxiliaryNode";
-
-export const NODE_COLORS: Record<NodeKind, string> = {
-  agent: "#4A90D9",
-  judge: "#7B68EE",
-  router: "#E67E22",
-  join: "#2ECC71",
-  human: "#E74C3C",
-  tool: "#8B6914",
-  done: "#2ECC71",
-  fail: "#E74C3C",
-  start: "#10B981",
-};
+import { NODE_COLORS } from "./constants";
 
 export interface NodeData extends Record<string, unknown> {
   label: string;
@@ -123,12 +113,14 @@ export function documentToGraph(doc: IterDocument, activeWorkflowName?: string):
       if (edge.with && edge.with.length > 0) {
         label += `${label ? " " : ""}[${edge.with.length} mapping${edge.with.length > 1 ? "s" : ""}]`;
       }
+      const isLoop = !!edge.loop;
       edges.push({
         id: makeEdgeId(wf.name, i),
         source: edge.from,
         target: edge.to,
         type: "conditionalEdge",
         label: label || undefined,
+        markerEnd: { type: MarkerType.ArrowClosed, color: isLoop ? "#F59E0B" : "#888", width: 16, height: 16 },
         data: { when: edge.when, loop: edge.loop, with: edge.with, edgeIndex: i, workflowName: wf.name },
       });
     }
@@ -141,6 +133,7 @@ export function documentToGraph(doc: IterDocument, activeWorkflowName?: string):
       source: "__start__",
       target: entryNode,
       type: "default",
+      markerEnd: { type: MarkerType.ArrowClosed, color: "#888", width: 16, height: 16 },
     });
   }
 
@@ -157,6 +150,16 @@ export function isAuxiliaryNodeId(id: string): boolean {
 }
 
 /** Generate overlay layer nodes and reference edges from the document */
+const LAYER_EDGE_COLORS: Record<LayerKind, string> = {
+  schemas: "#A78BFA",
+  prompts: "#2DD4BF",
+  vars: "#FBBF24",
+};
+
+function refMarker(layerKind: LayerKind) {
+  return { type: MarkerType.ArrowClosed as const, color: LAYER_EDGE_COLORS[layerKind], width: 12, height: 12 };
+}
+
 export function generateLayerNodes(
   doc: IterDocument,
   activeLayers: Set<LayerKind>,
@@ -199,6 +202,7 @@ export function generateLayerNodes(
             target: decl.name,
             type: "referenceEdge",
             label: "input",
+            markerEnd: refMarker("schemas"),
             data: { layerKind: "schemas" },
           });
         }
@@ -209,6 +213,7 @@ export function generateLayerNodes(
             target: nodeId,
             type: "referenceEdge",
             label: "output",
+            markerEnd: refMarker("schemas"),
             data: { layerKind: "schemas" },
           });
         }
@@ -240,6 +245,7 @@ export function generateLayerNodes(
             target: decl.name,
             type: "referenceEdge",
             label: "system",
+            markerEnd: refMarker("prompts"),
             data: { layerKind: "prompts" },
           });
         }
@@ -250,6 +256,7 @@ export function generateLayerNodes(
             target: decl.name,
             type: "referenceEdge",
             label: "user",
+            markerEnd: refMarker("prompts"),
             data: { layerKind: "prompts" },
           });
         }
@@ -260,6 +267,7 @@ export function generateLayerNodes(
             target: decl.name,
             type: "referenceEdge",
             label: "instructions",
+            markerEnd: refMarker("prompts"),
             data: { layerKind: "prompts" },
           });
         }
@@ -306,6 +314,7 @@ export function generateLayerNodes(
               target: promptNodeId,
               type: "referenceEdge",
               label: v.name,
+              markerEnd: refMarker("vars"),
               data: { layerKind: "vars" },
             });
           } else {

@@ -4,10 +4,7 @@ import { isAuxiliaryNodeId } from "./documentToGraph";
 
 const elk = new ELK();
 
-const NODE_WIDTH = 160;
-const NODE_HEIGHT = 80;
-const AUX_NODE_WIDTH = 120;
-const AUX_NODE_HEIGHT = 44;
+import { NODE_WIDTH, NODE_HEIGHT, AUX_NODE_WIDTH, AUX_NODE_HEIGHT } from "./constants";
 
 export async function autoLayout(
   nodes: Node[],
