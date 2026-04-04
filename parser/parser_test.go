@@ -413,6 +413,24 @@ func TestAgentWithTools(t *testing.T) {
 	assertEq(t, "ToolMaxSteps", a.ToolMaxSteps, 15)
 }
 
+func TestAgentSessionFork(t *testing.T) {
+	src := `agent commit_namer:
+  model: "claude-4"
+  delegate: "claude_code"
+  input: in_s
+  output: out_s
+  system: sys
+  user: usr
+  session: fork
+`
+	res := parser.Parse("test.iter", src)
+	assertNoDiags(t, res)
+
+	a := res.File.Agents[0]
+	assertEq(t, "Session", a.Session, ast.SessionFork)
+	assertEq(t, "Delegate", a.Delegate, "claude_code")
+}
+
 func TestAgentReasoningEffort(t *testing.T) {
 	src := `agent planner:
   model: "claude-4"

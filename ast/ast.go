@@ -167,6 +167,7 @@ const (
 	SessionFresh         SessionMode = iota // new context
 	SessionInherit                          // inherit parent session
 	SessionArtifactsOnly                    // only persistent artifacts
+	SessionFork                             // non-consuming fork from parent session
 )
 
 func (sm SessionMode) String() string {
@@ -177,6 +178,8 @@ func (sm SessionMode) String() string {
 		return "inherit"
 	case SessionArtifactsOnly:
 		return "artifacts_only"
+	case SessionFork:
+		return "fork"
 	default:
 		return "unknown"
 	}

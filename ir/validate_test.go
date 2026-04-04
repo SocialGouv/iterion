@@ -86,7 +86,64 @@ workflow test:
   after_join -> done
 `
 	r := compileFile(t, src)
-	expectDiag(t, r, DiagInheritAfterJoin)
+	expectDiag(t, r, DiagSessionAfterJoin)
+}
+
+func TestValidateForkAfterJoin_Rejected(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+schema join_out:
+  merged: json
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent a1:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+agent a2:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+router r1:
+  mode: fan_out_all
+
+join j1:
+  strategy: wait_all
+  require: [a1, a2]
+  output: join_out
+
+agent after_join:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+  session: fork
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> j1
+  a2 -> j1
+  j1 -> after_join
+  after_join -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagSessionAfterJoin)
 }
 
 func TestValidateInheritAfterJoin_FreshAllowed(t *testing.T) {
@@ -143,7 +200,7 @@ workflow test:
   after_join -> done
 `
 	r := compileFile(t, src)
-	expectNoDiag(t, r, DiagInheritAfterJoin)
+	expectNoDiag(t, r, DiagSessionAfterJoin)
 }
 
 // ---------------------------------------------------------------------------
@@ -810,7 +867,7 @@ func TestValidateReferenceFixturesClean(t *testing.T) {
 	}
 
 	newCodes := []DiagCode{
-		DiagInheritAfterJoin,
+		DiagSessionAfterJoin,
 		DiagMultipleDefaultEdges,
 		DiagAmbiguousCondition,
 		DiagMissingFallback,

@@ -25,7 +25,7 @@ export interface SchemaDecl { name: string; fields: SchemaField[]; }
 export interface SchemaField { name: string; type: FieldType; enum_values?: string[]; }
 export type FieldType = "string" | "bool" | "int" | "float" | "json" | "string[]";
 
-export type SessionMode = "fresh" | "inherit" | "artifacts_only";
+export type SessionMode = "fresh" | "inherit" | "fork" | "artifacts_only";
 export interface AgentDecl {
   name: string; model: string; delegate?: string;
   input: string; output: string; publish?: string;

@@ -147,9 +147,10 @@ export default function AgentForm({ decl, kind }: Props) {
         options={[
           { value: "fresh", label: "fresh" },
           { value: "inherit", label: "inherit" },
+          { value: "fork", label: "fork" },
           { value: "artifacts_only", label: "artifacts_only" },
         ]}
-        help="fresh = new context; inherit = reuse parent conversation; artifacts_only = share published artifacts only. Cannot use inherit after a join node."
+        help="fresh = new context; inherit = reuse parent conversation; fork = non-consuming branch from parent session; artifacts_only = share published artifacts only. Cannot use inherit/fork after a join node."
       />
       <TagListField
         label="Tools"

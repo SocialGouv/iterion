@@ -74,7 +74,7 @@ agent_prop = "model"            ":" STRING_LIT              NEWLINE
            | "delegate"         ":" STRING_LIT              NEWLINE
            | "reasoning_effort" ":" reasoning_effort_value  NEWLINE ;
 
-session_mode = "fresh" | "inherit" | "artifacts_only" ;
+session_mode = "fresh" | "inherit" | "fork" | "artifacts_only" ;
 
 reasoning_effort_value = "low" | "medium" | "high" | "extra_high" ;
 

@@ -1,0 +1,105 @@
+## Fixture : session_fork
+## Objective: Demonstrate session forking to extract structured information
+## from an existing session without consuming it.
+##
+## Workflow:
+##   1. worker performs a coding task (fresh session)
+##   2. Two fork nodes branch from the worker's session:
+##      - commit_namer: extracts a semantic commit message
+##      - summarizer: produces a work summary
+##   3. Both forks share the same parent session context but
+##      do not mutate it (--fork-session flag)
+
+vars:
+  workspace_dir: string = "${WORKSPACE_DIR}"
+  task_description: string = "Refactor the authentication module"
+
+schema task_input:
+  task: string
+  workspace: string
+
+schema task_output:
+  result: string
+
+schema commit_name_output:
+  type: string
+  scope: string
+  description: string
+  full_message: string
+
+schema summary_output:
+  summary: string
+  files_changed: string[]
+
+prompt worker_system:
+  You are a software engineer. Complete the given task in the workspace.
+
+prompt worker_user:
+  Task: {{input.task}}
+  Workspace: {{input.workspace}}
+
+prompt commit_system:
+  Based on the work you just completed, generate a semantic commit message
+  following conventional commits format (type(scope): description).
+
+prompt commit_user:
+  Generate the commit message for the changes you made.
+
+prompt summary_system:
+  Based on the work you just completed, provide a brief summary.
+
+prompt summary_user:
+  Summarize what was done and list the files changed.
+
+agent worker:
+  model: "${ANTHROPIC_MODEL}"
+  delegate: "claude_code"
+  input: task_input
+  output: task_output
+  system: worker_system
+  user: worker_user
+  session: fresh
+  tools: [Read, Edit, Write, Bash, Glob, Grep]
+
+agent commit_namer:
+  model: "${ANTHROPIC_MODEL}"
+  delegate: "claude_code"
+  output: commit_name_output
+  system: commit_system
+  user: commit_user
+  session: fork
+  readonly: true
+
+agent summarizer:
+  model: "${ANTHROPIC_MODEL}"
+  delegate: "claude_code"
+  output: summary_output
+  system: summary_system
+  user: summary_user
+  session: fork
+  readonly: true
+
+router fan_out:
+  mode: fan_out_all
+
+join collect:
+  strategy: wait_all
+  require: [commit_namer, summarizer]
+  output: summary_output
+
+workflow session_fork:
+  entry: worker
+
+  worker -> fan_out
+
+  fan_out -> commit_namer with {
+    _session_id: "{{outputs.worker._session_id}}"
+  }
+
+  fan_out -> summarizer with {
+    _session_id: "{{outputs.worker._session_id}}"
+  }
+
+  commit_namer -> collect
+  summarizer -> collect
+  collect -> done

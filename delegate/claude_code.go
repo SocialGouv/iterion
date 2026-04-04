@@ -55,6 +55,9 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 
 	if task.SessionID != "" {
 		opts = append(opts, claude.WithResume(task.SessionID))
+		if task.ForkSession {
+			opts = append(opts, claude.WithForkSession(true))
+		}
 	}
 
 	// Build user prompt. When an output schema is provided and tools are also

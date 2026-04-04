@@ -832,11 +832,14 @@ func (e *GoaiExecutor) executeDelegation(ctx context.Context, node *ir.Node, inp
 		ReasoningEffort: resolveReasoningEffort(node, input),
 	}
 
-	// Session continuity: when the node requests session inheritance,
+	// Session continuity: when the node requests session inheritance or fork,
 	// look for a session ID passed via the _session_id input field.
-	if node.Session == ir.SessionInherit {
+	if node.Session == ir.SessionInherit || node.Session == ir.SessionFork {
 		if sid, ok := input["_session_id"].(string); ok && sid != "" {
 			task.SessionID = sid
+			if node.Session == ir.SessionFork {
+				task.ForkSession = true
+			}
 		}
 	}
 

@@ -42,6 +42,7 @@ export default function WorkflowNode({ data }: NodeProps) {
     else if (d?.model) subtitle = d.model.replace(/\$\{.*?\}/g, "env");
     // Append session indicator to subtitle
     if (d?.session === "inherit") subtitle += subtitle ? " \u{1F517}" : "\u{1F517}";
+    else if (d?.session === "fork") subtitle += subtitle ? " \u{1F500}" : "\u{1F500}";
     else if (d?.session === "artifacts_only") subtitle += subtitle ? " \u{1F4E6}" : "\u{1F4E6}";
   } else if (kind === "tool") {
     const d = decl as ToolNodeDecl | undefined;

@@ -679,6 +679,8 @@ func convertSessionMode(sm ast.SessionMode) SessionMode {
 		return SessionInherit
 	case ast.SessionArtifactsOnly:
 		return SessionArtifactsOnly
+	case ast.SessionFork:
+		return SessionFork
 	default:
 		return SessionFresh
 	}

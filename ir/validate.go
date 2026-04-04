@@ -7,7 +7,7 @@ import "fmt"
 // ---------------------------------------------------------------------------
 
 const (
-	DiagInheritAfterJoin       DiagCode = "C009" // session: inherit on node immediately after join
+	DiagSessionAfterJoin       DiagCode = "C009" // session: inherit or fork on node immediately after join
 	DiagMultipleDefaultEdges   DiagCode = "C010" // multiple unconditional edges from non-fan_out_all source
 	DiagAmbiguousCondition     DiagCode = "C011" // ambiguous conditional edges from same source
 	DiagMissingFallback        DiagCode = "C012" // conditional edges with no default fallback
@@ -67,10 +67,10 @@ func (c *compiler) validateInheritAfterJoin(w *Workflow) {
 		if !ok {
 			continue
 		}
-		if target.Session == SessionInherit {
-			c.errorf(DiagInheritAfterJoin,
-				"node %q has session: inherit but follows join %q; only fresh or artifacts_only are allowed after a join",
-				targetID, joinID)
+		if target.Session == SessionInherit || target.Session == SessionFork {
+			c.errorf(DiagSessionAfterJoin,
+				"node %q has session: %s but follows join %q; only fresh or artifacts_only are allowed after a join",
+				targetID, target.Session, joinID)
 		}
 	}
 }

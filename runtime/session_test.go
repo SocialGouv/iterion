@@ -166,3 +166,94 @@ func TestSessionInheritThroughBranches(t *testing.T) {
 		t.Errorf("expected _session_id from branch_a %q, got %q", "sess-branch-a", capturedSessionID)
 	}
 }
+
+// TestSessionFork verifies that session: fork propagates _session_id the same
+// way as inherit. Two fork nodes share the same parent session ID.
+//
+// Workflow:
+//
+//	producer (agent, fresh) -> fork_a (agent, session: fork) -> done
+//	                        -> fork_b (agent, session: fork) -> done
+func TestSessionFork(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "session_fork_test",
+		Entry: "producer",
+		Nodes: map[string]*ir.Node{
+			"producer": {ID: "producer", Kind: ir.NodeAgent},
+			"splitter": {ID: "splitter", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
+			"fork_a":   {ID: "fork_a", Kind: ir.NodeAgent, Session: ir.SessionFork, Readonly: true},
+			"fork_b":   {ID: "fork_b", Kind: ir.NodeAgent, Session: ir.SessionFork, Readonly: true},
+			"joiner":   {ID: "joiner", Kind: ir.NodeJoin, JoinStrategy: ir.JoinWaitAll, Require: []string{"fork_a", "fork_b"}},
+			"done":     {ID: "done", Kind: ir.NodeDone},
+		},
+		Edges: []*ir.Edge{
+			{From: "producer", To: "splitter"},
+			{
+				From: "splitter",
+				To:   "fork_a",
+				With: []*ir.DataMapping{
+					{
+						Key:  "_session_id",
+						Refs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"producer", "_session_id"}, Raw: "{{outputs.producer._session_id}}"}},
+						Raw:  "{{outputs.producer._session_id}}",
+					},
+				},
+			},
+			{
+				From: "splitter",
+				To:   "fork_b",
+				With: []*ir.DataMapping{
+					{
+						Key:  "_session_id",
+						Refs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"producer", "_session_id"}, Raw: "{{outputs.producer._session_id}}"}},
+						Raw:  "{{outputs.producer._session_id}}",
+					},
+				},
+			},
+			{From: "fork_a", To: "joiner"},
+			{From: "fork_b", To: "joiner"},
+			{From: "joiner", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+
+	var capturedA, capturedB string
+
+	exec := newStubExecutor()
+	exec.on("producer", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{
+			"result":      "work done",
+			"_session_id": "sess-parent-000",
+		}, nil
+	})
+	exec.on("fork_a", func(input map[string]interface{}) (map[string]interface{}, error) {
+		if sid, ok := input["_session_id"].(string); ok {
+			capturedA = sid
+		}
+		return map[string]interface{}{"commit_name": "feat: add session fork"}, nil
+	})
+	exec.on("fork_b", func(input map[string]interface{}) (map[string]interface{}, error) {
+		if sid, ok := input["_session_id"].(string); ok {
+			capturedB = sid
+		}
+		return map[string]interface{}{"summary": "implemented fork feature"}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "run-session-fork-001", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedA != "sess-parent-000" {
+		t.Errorf("fork_a: expected _session_id %q, got %q", "sess-parent-000", capturedA)
+	}
+	if capturedB != "sess-parent-000" {
+		t.Errorf("fork_b: expected _session_id %q, got %q", "sess-parent-000", capturedB)
+	}
+}

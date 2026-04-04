@@ -47,6 +47,11 @@ type Task struct {
 
 	// SessionID is an optional session ID to resume (empty = fresh session).
 	SessionID string
+
+	// ForkSession, when true, forks from the resumed session instead of
+	// continuing it. Requires SessionID to be set. The forked session gets
+	// a new ID and does not mutate the original session.
+	ForkSession bool
 }
 
 // Result contains the output from a delegation backend.

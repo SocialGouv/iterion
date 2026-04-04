@@ -959,6 +959,44 @@ func TestCompileReferenceFixture(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Session: fork mode compiles correctly
+// ---------------------------------------------------------------------------
+
+func TestCompileSessionFork(t *testing.T) {
+	src := `
+schema s:
+  x: string
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent worker:
+  model: "claude"
+  delegate: "claude_code"
+  input: s
+  output: s
+  system: sys
+  user: usr
+  session: fork
+
+workflow fork_test:
+  entry: worker
+  worker -> done
+`
+	w := mustCompile(t, src)
+	n := w.Nodes["worker"]
+	if n.Session != SessionFork {
+		t.Errorf("expected SessionFork, got %v", n.Session)
+	}
+	if n.Delegate != "claude_code" {
+		t.Errorf("expected delegate 'claude_code', got %q", n.Delegate)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Determinism: compiling twice yields identical IR
 // ---------------------------------------------------------------------------
 

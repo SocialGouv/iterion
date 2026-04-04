@@ -84,6 +84,7 @@ const (
 	TokenFresh
 	TokenInherit
 	TokenArtifactsOnly
+	TokenFork
 	// Router modes
 	TokenFanOutAll
 	TokenCondition
@@ -191,6 +192,7 @@ var tokenNames = map[TokenType]string{
 	TokenFresh:             "fresh",
 	TokenInherit:           "inherit",
 	TokenArtifactsOnly:     "artifacts_only",
+	TokenFork:              "fork",
 	TokenFanOutAll:         "fan_out_all",
 	TokenCondition:         "condition",
 	TokenRoundRobin:        "round_robin",
@@ -275,6 +277,7 @@ var keywords = map[string]TokenType{
 	"fresh":                 TokenFresh,
 	"inherit":               TokenInherit,
 	"artifacts_only":        TokenArtifactsOnly,
+	"fork":                  TokenFork,
 	"fan_out_all":           TokenFanOutAll,
 	"condition":             TokenCondition,
 	"round_robin":           TokenRoundRobin,

@@ -54,6 +54,9 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 
 	if task.SessionID != "" {
 		opts = append(opts, codexsdk.WithResume(task.SessionID))
+		if task.ForkSession {
+			opts = append(opts, codexsdk.WithForkSession(true))
+		}
 	}
 
 	// Capture stderr for observability.
