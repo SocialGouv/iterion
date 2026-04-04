@@ -1,6 +1,6 @@
 import { MarkerType } from "@xyflow/react";
 import type { Node, Edge as FlowEdge } from "@xyflow/react";
-import type { IterDocument, NodeKind, AgentDecl, JudgeDecl, HumanDecl, ToolNodeDecl, JoinDecl } from "@/api/types";
+import type { IterDocument, NodeKind, AgentDecl, JudgeDecl, HumanDecl, ToolNodeDecl } from "@/api/types";
 import type { LayerKind } from "@/store/ui";
 import type { AuxiliaryNodeData } from "@/components/Canvas/AuxiliaryNode";
 import { NODE_COLORS, LAYER_COLORS } from "./constants";
@@ -23,7 +23,6 @@ export function getTopologyKey(doc: IterDocument, activeWorkflowName?: string): 
     (doc.agents ?? []).length,
     (doc.judges ?? []).length,
     (doc.routers ?? []).length,
-    (doc.joins ?? []).length,
     (doc.humans ?? []).length,
     (doc.tools ?? []).length,
   ].join(",");
@@ -45,7 +44,6 @@ export function documentToGraph(doc: IterDocument, activeWorkflowName?: string):
   for (const a of doc.agents ?? []) nodeMap.set(a.name, { kind: "agent", decl: a });
   for (const j of doc.judges ?? []) nodeMap.set(j.name, { kind: "judge", decl: j });
   for (const r of doc.routers ?? []) nodeMap.set(r.name, { kind: "router", decl: r });
-  for (const j of doc.joins ?? []) nodeMap.set(j.name, { kind: "join", decl: j });
   for (const h of doc.humans ?? []) nodeMap.set(h.name, { kind: "human", decl: h });
   for (const t of doc.tools ?? []) nodeMap.set(t.name, { kind: "tool", decl: t });
 
@@ -169,7 +167,6 @@ export function generateLayerNodes(
   for (const j of doc.judges ?? []) allDecls.push({ name: j.name, input: (j as JudgeDecl).input, output: (j as JudgeDecl).output, system: (j as JudgeDecl).system, user: (j as JudgeDecl).user });
   for (const h of doc.humans ?? []) allDecls.push({ name: h.name, input: (h as HumanDecl).input, output: (h as HumanDecl).output, instructions: (h as HumanDecl).instructions });
   for (const t of doc.tools ?? []) allDecls.push({ name: t.name, output: (t as ToolNodeDecl).output });
-  for (const j of doc.joins ?? []) allDecls.push({ name: j.name, output: (j as JoinDecl).output });
 
   // --- Schemas layer ---
   if (activeLayers.has("schemas")) {

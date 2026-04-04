@@ -155,15 +155,6 @@ func TestFixtureRecipeBenchmark(t *testing.T) {
 	assertEq(t, "router.Name", f.Routers[0].Name, "recipe_fanout")
 	assertEq(t, "router.Mode", f.Routers[0].Mode, ast.RouterFanOutAll)
 
-	// Join
-	if len(f.Joins) != 1 {
-		t.Fatalf("expected 1 join, got %d", len(f.Joins))
-	}
-	assertEq(t, "join.Name", f.Joins[0].Name, "recipes_join")
-	assertEq(t, "join.Strategy", f.Joins[0].Strategy, ast.JoinWaitAll)
-	if len(f.Joins[0].Require) != 2 {
-		t.Fatalf("expected 2 require entries, got %d", len(f.Joins[0].Require))
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -333,23 +324,6 @@ func TestToolNode(t *testing.T) {
 	assertEq(t, "Name", td.Name, "run_ci")
 	assertEq(t, "Command", td.Command, "${CI_COMMAND}")
 	assertEq(t, "Output", td.Output, "ci_result")
-}
-
-func TestJoinDecl(t *testing.T) {
-	src := `join sync:
-  strategy: wait_all
-  require: [node_a, node_b, node_c]
-  output: merged
-`
-	res := parser.Parse("test.iter", src)
-	assertNoDiags(t, res)
-
-	j := res.File.Joins[0]
-	assertEq(t, "Strategy", j.Strategy, ast.JoinWaitAll)
-	if len(j.Require) != 3 {
-		t.Fatalf("expected 3 require, got %d", len(j.Require))
-	}
-	assertEq(t, "Output", j.Output, "merged")
 }
 
 func TestRouterDecl(t *testing.T) {
@@ -861,7 +835,7 @@ func TestFixtureStability(t *testing.T) {
 			assertEq(t, "agents", len(f1.Agents), len(f2.Agents))
 			assertEq(t, "judges", len(f1.Judges), len(f2.Judges))
 			assertEq(t, "routers", len(f1.Routers), len(f2.Routers))
-			assertEq(t, "joins", len(f1.Joins), len(f2.Joins))
+			// joins removed — convergence is now implicit via await on target nodes
 			assertEq(t, "humans", len(f1.Humans), len(f2.Humans))
 			assertEq(t, "tools", len(f1.Tools), len(f2.Tools))
 			assertEq(t, "workflows", len(f1.Workflows), len(f2.Workflows))

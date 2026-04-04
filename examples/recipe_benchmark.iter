@@ -133,12 +133,8 @@ agent recipe_b_runner:
   tools: [git_diff, read_file, write_file, patch, list_files, search_codebase, run_command]
   tool_max_steps: 30
 
-join recipes_join:
-  strategy: wait_all
-  require: [recipe_a_runner, recipe_b_runner]
-  output: benchmark_results_bundle
-
 judge benchmark_judge:
+  await: wait_all
   model: "${JUDGE_MODEL}"
   input: benchmark_comparison_request
   output: benchmark_verdict
@@ -181,14 +177,13 @@ workflow recipe_benchmark:
     recipe_config: "{{vars.recipe_b_config}}"
   }
 
-  ## 3. Agréger les résultats
-  recipe_a_runner -> recipes_join
-  recipe_b_runner -> recipes_join
+  ## 3-4. Agréger les résultats et comparer
+  recipe_a_runner -> benchmark_judge with {
+    recipe_a_result: "{{outputs.recipe_a_runner}}"
+  }
 
-  ## 4. Comparer et juger
-  recipes_join -> benchmark_judge with {
-    recipe_results: "{{outputs.recipes_join}}",
-    comparison_criteria: "{{vars.comparison_criteria}}"
+  recipe_b_runner -> benchmark_judge with {
+    recipe_b_result: "{{outputs.recipe_b_runner}}"
   }
 
   benchmark_judge -> done

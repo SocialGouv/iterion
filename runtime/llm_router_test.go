@@ -202,8 +202,7 @@ func TestLLMRouterMultiMode(t *testing.T) {
 			"agent_a":    {ID: "agent_a", Kind: ir.NodeAgent},
 			"agent_b":    {ID: "agent_b", Kind: ir.NodeAgent},
 			"agent_c":    {ID: "agent_c", Kind: ir.NodeAgent},
-			"joiner":     {ID: "joiner", Kind: ir.NodeJoin, JoinStrategy: ir.JoinWaitAll, Require: []string{"agent_a", "agent_b"}, JoinOutput: "join_out"},
-			"final":      {ID: "final", Kind: ir.NodeAgent},
+			"final":      {ID: "final", Kind: ir.NodeAgent, AwaitStrategy: ir.AwaitWaitAll},
 			"done":       {ID: "done", Kind: ir.NodeDone},
 			"fail":       {ID: "fail", Kind: ir.NodeFail},
 		},
@@ -212,17 +211,12 @@ func TestLLMRouterMultiMode(t *testing.T) {
 			{From: "llm_router", To: "agent_a"},
 			{From: "llm_router", To: "agent_b"},
 			{From: "llm_router", To: "agent_c"},
-			{From: "agent_a", To: "joiner"},
-			{From: "agent_b", To: "joiner"},
-			{From: "agent_c", To: "joiner"},
-			{From: "joiner", To: "final"},
+			{From: "agent_a", To: "final"},
+			{From: "agent_b", To: "final"},
+			{From: "agent_c", To: "final"},
 			{From: "final", To: "done"},
 		},
-		Schemas: map[string]*ir.Schema{
-			"join_out": {Name: "join_out", Fields: []*ir.SchemaField{
-				{Name: "merged", Type: ir.FieldTypeJSON},
-			}},
-		},
+		Schemas: map[string]*ir.Schema{},
 		Prompts: map[string]*ir.Prompt{},
 		Vars:    map[string]*ir.Var{},
 		Loops:   map[string]*ir.Loop{},
@@ -367,17 +361,19 @@ func TestLLMRouterEvents(t *testing.T) {
 // Test: LLM router multi-mode — join Require not satisfied
 // ---------------------------------------------------------------------------
 
-func TestLLMRouterMultiModeJoinRequireNotMet(t *testing.T) {
+func TestLLMRouterMultiModePartialSelection(t *testing.T) {
+	// When LLM router selects only agent_a (not agent_b), the convergence
+	// point should still succeed — wait_all waits for all started branches,
+	// not all possible incoming edges.
 	wf := &ir.Workflow{
-		Name:  "llm_router_multi_require_fail",
+		Name:  "llm_router_multi_partial",
 		Entry: "entry",
 		Nodes: map[string]*ir.Node{
 			"entry":      {ID: "entry", Kind: ir.NodeAgent},
 			"llm_router": {ID: "llm_router", Kind: ir.NodeRouter, RouterMode: ir.RouterLLM, Model: "test-model", RouterMulti: true},
 			"agent_a":    {ID: "agent_a", Kind: ir.NodeAgent},
 			"agent_b":    {ID: "agent_b", Kind: ir.NodeAgent},
-			"joiner":     {ID: "joiner", Kind: ir.NodeJoin, JoinStrategy: ir.JoinWaitAll, Require: []string{"agent_a", "agent_b"}, JoinOutput: "join_out"},
-			"final":      {ID: "final", Kind: ir.NodeAgent},
+			"final":      {ID: "final", Kind: ir.NodeAgent, AwaitStrategy: ir.AwaitWaitAll},
 			"done":       {ID: "done", Kind: ir.NodeDone},
 			"fail":       {ID: "fail", Kind: ir.NodeFail},
 		},
@@ -385,27 +381,23 @@ func TestLLMRouterMultiModeJoinRequireNotMet(t *testing.T) {
 			{From: "entry", To: "llm_router"},
 			{From: "llm_router", To: "agent_a"},
 			{From: "llm_router", To: "agent_b"},
-			{From: "agent_a", To: "joiner"},
-			{From: "agent_b", To: "joiner"},
-			{From: "joiner", To: "final"},
+			{From: "agent_a", To: "final"},
+			{From: "agent_b", To: "final"},
 			{From: "final", To: "done"},
 		},
-		Schemas: map[string]*ir.Schema{
-			"join_out": {Name: "join_out", Fields: []*ir.SchemaField{
-				{Name: "merged", Type: ir.FieldTypeJSON},
-			}},
-		},
+		Schemas: map[string]*ir.Schema{},
 		Prompts: map[string]*ir.Prompt{},
 		Vars:    map[string]*ir.Var{},
 		Loops:   map[string]*ir.Loop{},
 	}
 
+	var finalCalled bool
 	exec := newStubExecutor()
 	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
 		return map[string]interface{}{}, nil
 	})
 	exec.on("llm_router", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		// Only select agent_a, but the join requires both agent_a and agent_b.
+		// Only select agent_a — agent_b is not executed.
 		return map[string]interface{}{
 			"selected_routes": []interface{}{"agent_a"},
 			"reasoning":       "only need a",
@@ -418,23 +410,27 @@ func TestLLMRouterMultiModeJoinRequireNotMet(t *testing.T) {
 		return map[string]interface{}{"result": "from_b"}, nil
 	})
 	exec.on("final", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		finalCalled = true
 		return map[string]interface{}{}, nil
 	})
 
 	s := tmpStore(t)
 	eng := New(wf, s, exec)
 
-	err := eng.Run(context.Background(), "run-llm-require-fail", nil)
-	if err == nil {
-		t.Fatal("expected error when join Require is not satisfied by LLM router selection")
+	err := eng.Run(context.Background(), "run-llm-partial", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify the run failed.
-	r, err := s.LoadRun("run-llm-require-fail")
+	if !finalCalled {
+		t.Error("expected final node to be called after partial LLM selection")
+	}
+
+	r, err := s.LoadRun("run-llm-partial")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
-	if r.Status != store.RunStatusFailed {
-		t.Errorf("expected status failed, got %s", r.Status)
+	if r.Status != store.RunStatusFinished {
+		t.Errorf("expected status finished, got %s", r.Status)
 	}
 }

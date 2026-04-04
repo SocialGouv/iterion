@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
-import type { HumanDecl, HumanMode } from "@/api/types";
+import type { HumanDecl, HumanMode, AwaitStrategy } from "@/api/types";
 import { defaultSchema, defaultPrompt, getAllNodeNames } from "@/lib/defaults";
 import { TextField, CommittedTextField, NumberField, SelectField, SelectFieldWithCreate } from "./FormField";
 
@@ -113,6 +113,17 @@ export default function HumanForm({ decl }: Props) {
         value={decl.min_answers}
         onChange={(v) => updateHuman(decl.name, { min_answers: v })}
         min={1}
+      />
+      <SelectField
+        label="Await"
+        value={decl.await ?? "none"}
+        onChange={(v) => updateHuman(decl.name, { await: (v === "none" ? undefined : v) as AwaitStrategy | undefined })}
+        options={[
+          { value: "none", label: "none" },
+          { value: "wait_all", label: "wait_all" },
+          { value: "best_effort", label: "best_effort" },
+        ]}
+        help="Implicit convergence: wait_all = wait for all incoming branches; best_effort = continue when available results are ready; none = no await (default)."
       />
       {needsModel && (
         <div className="border-t border-gray-700 pt-2 mt-2">

@@ -345,12 +345,8 @@ agent codex_plan:
   user: plan_user
   session: fresh
 
-join plans_join:
-  strategy: wait_all
-  require: [claude_plan, codex_plan]
-  output: dual_plan_bundle
-
 agent merge_plans:
+  await: wait_all
   delegate: "claude_code"
   input: merge_input
   output: plan_output
@@ -382,12 +378,8 @@ agent codex_val:
   user: validate_plan_user
   session: fresh
 
-join val_join:
-  strategy: wait_all
-  require: [claude_val, codex_val]
-  output: dual_validation_bundle
-
 judge val_judge:
+  await: wait_all
   delegate: "claude_code"
   input: plan_acceptance_input
   output: plan_acceptance_verdict
@@ -465,12 +457,8 @@ agent codex_review:
   user: review_impl_user
   session: fresh
 
-join review_join:
-  strategy: wait_all
-  require: [claude_review, codex_review]
-  output: dual_review_bundle
-
 judge review_judge:
+  await: wait_all
   delegate: "claude_code"
   input: impl_verdict_input
   output: impl_verdict
@@ -510,15 +498,15 @@ workflow dual_model_plan_implement_review:
     previous_codex_review: ""
   }
 
-  claude_plan -> plans_join
-  codex_plan -> plans_join
-
   ## ═══ Phase 2 : Fusion des plans ════════════════════════════════
 
-  plans_join -> merge_plans with {
+  claude_plan -> merge_plans with {
     claude_plan: "{{outputs.claude_plan}}",
-    codex_plan: "{{outputs.codex_plan}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  codex_plan -> merge_plans with {
+    codex_plan: "{{outputs.codex_plan}}"
   }
 
   ## ═══ Phase 3 : Validation parallele ════════════════════════════
@@ -538,14 +526,14 @@ workflow dual_model_plan_implement_review:
     acceptance_criteria: "{{input.acceptance_criteria}}"
   }
 
-  claude_val -> val_join
-  codex_val -> val_join
-
-  val_join -> val_judge with {
+  claude_val -> val_judge with {
     claude_validation: "{{outputs.claude_val}}",
-    codex_validation: "{{outputs.codex_val}}",
     merged_plan: "{{artifacts.merged_plan}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  codex_val -> val_judge with {
+    codex_validation: "{{outputs.codex_val}}"
   }
 
   ## ═══ Phase 4 : Si plan OK -> implementation ════════════════════
@@ -602,10 +590,7 @@ workflow dual_model_plan_implement_review:
     acceptance_criteria: "{{vars.acceptance_criteria}}"
   }
 
-  codex_implement -> review_fanout with {
-    implementation: "{{outputs.codex_implement}}",
-    acceptance_criteria: "{{vars.acceptance_criteria}}"
-  }
+  codex_implement -> review_fanout
 
   review_fanout -> claude_review with {
     implementation: "{{input.implementation}}",
@@ -617,14 +602,14 @@ workflow dual_model_plan_implement_review:
     acceptance_criteria: "{{input.acceptance_criteria}}"
   }
 
-  claude_review -> review_join
-  codex_review -> review_join
-
-  review_join -> review_judge with {
+  claude_review -> review_judge with {
     implementation: "{{artifacts.implementation}}",
     claude_review: "{{outputs.claude_review}}",
-    codex_review: "{{outputs.codex_review}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  codex_review -> review_judge with {
+    codex_review: "{{outputs.codex_review}}"
   }
 
   ## ═══ Phase 7 : Verdict ═════════════════════════════════════════

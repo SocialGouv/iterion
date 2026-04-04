@@ -110,7 +110,7 @@ func TestMermaid_Detailed_MinimalWorkflow(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Workflow with human, join, router
+// Workflow with human, convergence, router
 // ---------------------------------------------------------------------------
 
 const complexDSL = `
@@ -151,10 +151,13 @@ agent reviewer_b:
 router fanout:
   mode: fan_out_all
 
-join merge:
-  strategy: wait_all
-  require: [reviewer_a, reviewer_b]
+agent merge:
+  model: "model-a"
+  input: output_s
   output: output_s
+  system: sys
+  user: usr
+  await: wait_all
 
 human checkpoint:
   mode: pause_until_answers
@@ -168,8 +171,8 @@ workflow complex_workflow:
 
   fanout -> reviewer_a
   fanout -> reviewer_b
-  reviewer_a -> merge
-  reviewer_b -> merge
+  reviewer_a -> merge with { review_a: "{{outputs.reviewer_a}}" }
+  reviewer_b -> merge with { review_b: "{{outputs.reviewer_b}}" }
   merge -> checkpoint when not approved
   merge -> done when approved
   checkpoint -> done
@@ -192,9 +195,9 @@ func TestMermaid_Compact_ComplexWorkflow(t *testing.T) {
 		t.Errorf("expected diamond shape for router, got:\n%s", out)
 	}
 
-	// Join should use double bracket [[]].
-	if !strings.Contains(out, "[[") {
-		t.Errorf("expected double bracket for join, got:\n%s", out)
+	// Convergence node (merge) should be present.
+	if !strings.Contains(out, "merge") {
+		t.Errorf("expected merge node in output, got:\n%s", out)
 	}
 
 	// Human should use asymmetric shape >.
@@ -212,19 +215,14 @@ func TestMermaid_Detailed_ComplexWorkflow(t *testing.T) {
 		t.Errorf("expected router mode in detailed view, got:\n%s", out)
 	}
 
-	// Join strategy should appear.
-	if !strings.Contains(out, "strategy: wait_all") {
-		t.Errorf("expected join strategy in detailed view, got:\n%s", out)
+	// Await strategy should appear on merge node.
+	if !strings.Contains(out, "await: wait_all") {
+		t.Errorf("expected await strategy in detailed view, got:\n%s", out)
 	}
 
 	// Human mode should appear.
 	if !strings.Contains(out, "mode: pause_until_answers") {
 		t.Errorf("expected human mode in detailed view, got:\n%s", out)
-	}
-
-	// Require list should appear.
-	if !strings.Contains(out, "require: reviewer_a, reviewer_b") {
-		t.Errorf("expected require list in detailed view, got:\n%s", out)
 	}
 }
 
@@ -413,12 +411,9 @@ func TestMermaid_Full_ComplexWorkflow(t *testing.T) {
 		t.Errorf("expected router mode in full view, got:\n%s", out)
 	}
 
-	// Join strategy and require should appear.
-	if !strings.Contains(out, "strategy: wait_all") {
-		t.Errorf("expected join strategy in full view, got:\n%s", out)
-	}
-	if !strings.Contains(out, "require: reviewer_a, reviewer_b") {
-		t.Errorf("expected require list in full view, got:\n%s", out)
+	// Await strategy should appear on convergence node.
+	if !strings.Contains(out, "await: wait_all") {
+		t.Errorf("expected await strategy in full view, got:\n%s", out)
 	}
 
 	// Human instructions prompt should appear.
@@ -436,9 +431,9 @@ func TestMermaid_Full_ComplexWorkflow(t *testing.T) {
 		t.Errorf("expected expanded human output schema, got:\n%s", out)
 	}
 
-	// Join output schema should appear.
-	if !strings.Contains(out, "output: output_s") {
-		t.Errorf("expected join output schema in full view, got:\n%s", out)
+	// Output schema should appear on merge node.
+	if !strings.Contains(out, "out: output_s") {
+		t.Errorf("expected output schema in full view, got:\n%s", out)
 	}
 }
 

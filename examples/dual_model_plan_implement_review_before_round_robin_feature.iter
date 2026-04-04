@@ -326,12 +326,8 @@ agent codex_plan_1:
   user: plan_user
   session: fresh
 
-join plans_join_1:
-  strategy: wait_all
-  require: [claude_plan_1, codex_plan_1]
-  output: dual_plan_bundle
-
 agent merge_plans_1:
+  await: wait_all
   delegate: "claude_code"
   input: merge_input
   output: plan_output
@@ -361,12 +357,8 @@ agent codex_val_1a:
   user: validate_plan_user
   session: fresh
 
-join val_join_1a:
-  strategy: wait_all
-  require: [claude_val_1a, codex_val_1a]
-  output: dual_validation_bundle
-
 judge val_judge_1a:
+  await: wait_all
   delegate: "claude_code"
   input: plan_acceptance_input
   output: plan_acceptance_verdict
@@ -406,12 +398,8 @@ agent codex_val_1b:
   user: validate_plan_user
   session: fresh
 
-join val_join_1b:
-  strategy: wait_all
-  require: [claude_val_1b, codex_val_1b]
-  output: dual_validation_bundle
-
 judge val_judge_1b:
+  await: wait_all
   delegate: "codex"
   input: plan_acceptance_input
   output: plan_acceptance_verdict
@@ -466,12 +454,8 @@ agent codex_review_1:
   tools: [read_file, list_files, search_codebase, git_diff, tree]
   tool_max_steps: 10
 
-join review_join_1:
-  strategy: wait_all
-  require: [claude_review_1, codex_review_1]
-  output: dual_review_bundle
-
 judge review_judge_1:
+  await: wait_all
   delegate: "claude_code"
   input: impl_verdict_input
   output: impl_verdict
@@ -500,12 +484,8 @@ agent codex_plan_2:
   user: plan_user
   session: fresh
 
-join plans_join_2:
-  strategy: wait_all
-  require: [claude_plan_2, codex_plan_2]
-  output: dual_plan_bundle
-
 agent merge_plans_2:
+  await: wait_all
   delegate: "claude_code"
   input: merge_input
   output: plan_output
@@ -535,12 +515,8 @@ agent codex_val_2a:
   user: validate_plan_user
   session: fresh
 
-join val_join_2a:
-  strategy: wait_all
-  require: [claude_val_2a, codex_val_2a]
-  output: dual_validation_bundle
-
 judge val_judge_2a:
+  await: wait_all
   delegate: "codex"
   input: plan_acceptance_input
   output: plan_acceptance_verdict
@@ -580,12 +556,8 @@ agent codex_val_2b:
   user: validate_plan_user
   session: fresh
 
-join val_join_2b:
-  strategy: wait_all
-  require: [claude_val_2b, codex_val_2b]
-  output: dual_validation_bundle
-
 judge val_judge_2b:
+  await: wait_all
   delegate: "claude_code"
   input: plan_acceptance_input
   output: plan_acceptance_verdict
@@ -640,12 +612,8 @@ agent codex_review_2:
   tools: [read_file, list_files, search_codebase, git_diff, tree]
   tool_max_steps: 10
 
-join review_join_2:
-  strategy: wait_all
-  require: [claude_review_2, codex_review_2]
-  output: dual_review_bundle
-
 judge review_judge_2:
+  await: wait_all
   delegate: "codex"
   input: impl_verdict_input
   output: impl_verdict
@@ -687,14 +655,14 @@ workflow dual_model_plan_implement_review:
     previous_codex_review: ""
   }
 
-  claude_plan_1 -> plans_join_1
-  codex_plan_1 -> plans_join_1
-
   ## 1.2 Fusion des plans (Claude)
-  plans_join_1 -> merge_plans_1 with {
+  claude_plan_1 -> merge_plans_1 with {
     claude_plan: "{{outputs.claude_plan_1}}",
-    codex_plan: "{{outputs.codex_plan_1}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  codex_plan_1 -> merge_plans_1 with {
+    codex_plan: "{{outputs.codex_plan_1}}"
   }
 
   ## 1.3 Validation parallele — Sous-Paire A
@@ -713,14 +681,14 @@ workflow dual_model_plan_implement_review:
     acceptance_criteria: "{{input.acceptance_criteria}}"
   }
 
-  claude_val_1a -> val_join_1a
-  codex_val_1a -> val_join_1a
-
-  val_join_1a -> val_judge_1a with {
+  claude_val_1a -> val_judge_1a with {
     claude_validation: "{{outputs.claude_val_1a}}",
-    codex_validation: "{{outputs.codex_val_1a}}",
     merged_plan: "{{artifacts.merged_plan}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  codex_val_1a -> val_judge_1a with {
+    codex_validation: "{{outputs.codex_val_1a}}"
   }
 
   ## 1.4 Si plan OK -> Claude implemente
@@ -754,14 +722,14 @@ workflow dual_model_plan_implement_review:
     acceptance_criteria: "{{input.acceptance_criteria}}"
   }
 
-  claude_val_1b -> val_join_1b
-  codex_val_1b -> val_join_1b
-
-  val_join_1b -> val_judge_1b with {
+  claude_val_1b -> val_judge_1b with {
     claude_validation: "{{outputs.claude_val_1b}}",
-    codex_validation: "{{outputs.codex_val_1b}}",
     merged_plan: "{{artifacts.merged_plan}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  codex_val_1b -> val_judge_1b with {
+    codex_validation: "{{outputs.codex_val_1b}}"
   }
 
   ## 1.7 Si plan OK -> Claude implemente
@@ -781,8 +749,7 @@ workflow dual_model_plan_implement_review:
 
   ## 1.9 Claude raffine -> Retour a Sous-Paire A (fermeture boucle interne)
   refine_1_claude -> val_fanout_1a with {
-    merged_plan: "{{outputs.refine_1_claude}}",
-    acceptance_criteria: "{{vars.acceptance_criteria}}"
+    merged_plan: "{{outputs.refine_1_claude}}"
   }
 
   ## 1.10 Implementation Claude
@@ -802,14 +769,14 @@ workflow dual_model_plan_implement_review:
     acceptance_criteria: "{{input.acceptance_criteria}}"
   }
 
-  claude_review_1 -> review_join_1
-  codex_review_1 -> review_join_1
-
-  review_join_1 -> review_judge_1 with {
+  claude_review_1 -> review_judge_1 with {
     implementation: "{{outputs.claude_implement}}",
     claude_review: "{{outputs.claude_review_1}}",
-    codex_review: "{{outputs.codex_review_1}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  codex_review_1 -> review_judge_1 with {
+    codex_review: "{{outputs.codex_review_1}}"
   }
 
   ## 1.12 Si implementation OK -> done
@@ -842,14 +809,14 @@ workflow dual_model_plan_implement_review:
     previous_codex_review: "{{input.previous_codex_review}}"
   }
 
-  claude_plan_2 -> plans_join_2
-  codex_plan_2 -> plans_join_2
-
   ## 2.2 Fusion des plans (Claude)
-  plans_join_2 -> merge_plans_2 with {
+  claude_plan_2 -> merge_plans_2 with {
     claude_plan: "{{outputs.claude_plan_2}}",
-    codex_plan: "{{outputs.codex_plan_2}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  codex_plan_2 -> merge_plans_2 with {
+    codex_plan: "{{outputs.codex_plan_2}}"
   }
 
   ## 2.3 Validation parallele — Sous-Paire A
@@ -868,14 +835,14 @@ workflow dual_model_plan_implement_review:
     acceptance_criteria: "{{input.acceptance_criteria}}"
   }
 
-  claude_val_2a -> val_join_2a
-  codex_val_2a -> val_join_2a
-
-  val_join_2a -> val_judge_2a with {
+  claude_val_2a -> val_judge_2a with {
     claude_validation: "{{outputs.claude_val_2a}}",
-    codex_validation: "{{outputs.codex_val_2a}}",
     merged_plan: "{{artifacts.merged_plan}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  codex_val_2a -> val_judge_2a with {
+    codex_validation: "{{outputs.codex_val_2a}}"
   }
 
   ## 2.4 Si plan OK -> Codex implemente
@@ -909,14 +876,14 @@ workflow dual_model_plan_implement_review:
     acceptance_criteria: "{{input.acceptance_criteria}}"
   }
 
-  claude_val_2b -> val_join_2b
-  codex_val_2b -> val_join_2b
-
-  val_join_2b -> val_judge_2b with {
+  claude_val_2b -> val_judge_2b with {
     claude_validation: "{{outputs.claude_val_2b}}",
-    codex_validation: "{{outputs.codex_val_2b}}",
     merged_plan: "{{artifacts.merged_plan}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  codex_val_2b -> val_judge_2b with {
+    codex_validation: "{{outputs.codex_val_2b}}"
   }
 
   ## 2.7 Si plan OK -> Codex implemente
@@ -936,8 +903,7 @@ workflow dual_model_plan_implement_review:
 
   ## 2.9 Codex raffine -> Retour a Sous-Paire A (fermeture boucle interne)
   refine_2_codex -> val_fanout_2a with {
-    merged_plan: "{{outputs.refine_2_codex}}",
-    acceptance_criteria: "{{vars.acceptance_criteria}}"
+    merged_plan: "{{outputs.refine_2_codex}}"
   }
 
   ## 2.10 Implementation Codex
@@ -957,14 +923,14 @@ workflow dual_model_plan_implement_review:
     acceptance_criteria: "{{input.acceptance_criteria}}"
   }
 
-  claude_review_2 -> review_join_2
-  codex_review_2 -> review_join_2
-
-  review_join_2 -> review_judge_2 with {
+  claude_review_2 -> review_judge_2 with {
     implementation: "{{outputs.codex_implement}}",
     claude_review: "{{outputs.claude_review_2}}",
-    codex_review: "{{outputs.codex_review_2}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  codex_review_2 -> review_judge_2 with {
+    codex_review: "{{outputs.codex_review_2}}"
   }
 
   ## 2.12 Si implementation OK -> done

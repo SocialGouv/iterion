@@ -2,7 +2,6 @@ import type {
   AgentDecl,
   JudgeDecl,
   RouterDecl,
-  JoinDecl,
   HumanDecl,
   ToolNodeDecl,
   SchemaDecl,
@@ -12,7 +11,7 @@ import type {
 
 /** Categories for library items: node kinds (minus terminal) + primitive kinds */
 export type LibraryCategory =
-  | "agent" | "judge" | "router" | "join" | "human" | "tool"
+  | "agent" | "judge" | "router" | "human" | "tool"
   | "schema" | "prompt" | "var";
 
 /** Discriminated union so TypeScript can narrow the node data properly */
@@ -20,7 +19,6 @@ export type NodeTemplate =
   | { kind: "agent"; data: Omit<Partial<AgentDecl>, "name"> }
   | { kind: "judge"; data: Omit<Partial<JudgeDecl>, "name"> }
   | { kind: "router"; data: Omit<Partial<RouterDecl>, "name"> }
-  | { kind: "join"; data: Omit<Partial<JoinDecl>, "name"> }
   | { kind: "human"; data: Omit<Partial<HumanDecl>, "name"> }
   | { kind: "tool"; data: Omit<Partial<ToolNodeDecl>, "name"> };
 

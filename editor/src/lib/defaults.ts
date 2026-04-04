@@ -4,7 +4,6 @@ import type {
   AgentDecl,
   JudgeDecl,
   RouterDecl,
-  JoinDecl,
   HumanDecl,
   ToolNodeDecl,
   SchemaDecl,
@@ -24,7 +23,6 @@ export function createEmptyDocument(): IterDocument {
     }],
     judges: [],
     routers: [],
-    joins: [],
     humans: [],
     tools: [],
     workflows: [{ name: "main", entry: "agent_1", edges: [{ from: "agent_1", to: "done" }] }],
@@ -42,10 +40,6 @@ export function defaultJudge(name: string): JudgeDecl {
 
 export function defaultRouter(name: string): RouterDecl {
   return { name, mode: "fan_out_all" };
-}
-
-export function defaultJoin(name: string): JoinDecl {
-  return { name, strategy: "wait_all", require: [], output: "" };
 }
 
 export function defaultHuman(name: string): HumanDecl {
@@ -82,15 +76,13 @@ export function generateUniqueName(base: string, existingNames: Set<string>): st
 export function findNodeDecl(
   doc: IterDocument,
   name: string,
-): { kind: NodeKind; decl: AgentDecl | JudgeDecl | RouterDecl | JoinDecl | HumanDecl | ToolNodeDecl } | null {
+): { kind: NodeKind; decl: AgentDecl | JudgeDecl | RouterDecl | HumanDecl | ToolNodeDecl } | null {
   const agent = doc.agents?.find((a) => a.name === name);
   if (agent) return { kind: "agent", decl: agent };
   const judge = doc.judges?.find((j) => j.name === name);
   if (judge) return { kind: "judge", decl: judge };
   const router = doc.routers?.find((r) => r.name === name);
   if (router) return { kind: "router", decl: router };
-  const join = doc.joins?.find((j) => j.name === name);
-  if (join) return { kind: "join", decl: join };
   const human = doc.humans?.find((h) => h.name === name);
   if (human) return { kind: "human", decl: human };
   const tool = doc.tools?.find((t) => t.name === name);
@@ -103,7 +95,6 @@ export function getAllNodeNames(doc: IterDocument): Set<string> {
   for (const a of doc.agents) names.add(a.name);
   for (const j of doc.judges) names.add(j.name);
   for (const r of doc.routers) names.add(r.name);
-  for (const j of doc.joins) names.add(j.name);
   for (const h of doc.humans) names.add(h.name);
   for (const t of doc.tools) names.add(t.name);
   return names;

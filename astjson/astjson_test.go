@@ -100,18 +100,6 @@ func buildTestFile() *ast.File {
 			{Name: "dispatch", Mode: ast.RouterFanOutAll},
 			{Name: "check_result", Mode: ast.RouterCondition},
 		},
-		Joins: []*ast.JoinDecl{
-			{
-				Name:     "merge",
-				Strategy: ast.JoinWaitAll,
-				Require:  []string{"coder", "reviewer"},
-				Output:   "merged_output",
-			},
-			{
-				Name:     "fast_merge",
-				Strategy: ast.JoinBestEffort,
-			},
-		},
 		Humans: []*ast.HumanDecl{
 			{
 				Name:         "approval",
@@ -215,9 +203,8 @@ func TestEnumsSerializeAsStrings(t *testing.T) {
 				{Name: "f", Type: ast.FieldTypeJSON},
 			}},
 		},
-		Agents:  []*ast.AgentDecl{{Name: "a", Session: ast.SessionArtifactsOnly}},
+		Agents:  []*ast.AgentDecl{{Name: "a", Session: ast.SessionArtifactsOnly, Await: ast.AwaitBestEffort}},
 		Routers: []*ast.RouterDecl{{Name: "r", Mode: ast.RouterCondition}},
-		Joins:   []*ast.JoinDecl{{Name: "j", Strategy: ast.JoinBestEffort}},
 		Humans:  []*ast.HumanDecl{{Name: "h", Mode: ast.HumanAutoOrPause}},
 	}
 
@@ -234,7 +221,7 @@ func TestEnumsSerializeAsStrings(t *testing.T) {
 		`"json"`,           // FieldTypeJSON
 		`"artifacts_only"`, // SessionArtifactsOnly
 		`"condition"`,      // RouterCondition
-		`"best_effort"`,    // JoinBestEffort
+		`"best_effort"`,    // AwaitBestEffort
 		`"auto_or_pause"`,  // HumanAutoOrPause
 	}
 
@@ -283,7 +270,6 @@ func TestNilAndEmptyFieldsOmitted(t *testing.T) {
 		"schemas",
 		"judges",
 		"routers",
-		"joins",
 		"humans",
 		"tools",
 		"workflows",
@@ -296,6 +282,7 @@ func TestNilAndEmptyFieldsOmitted(t *testing.T) {
 		"system",
 		"user",
 		"tool_max_steps",
+		"await",
 	}
 
 	for _, key := range absent {
@@ -370,7 +357,7 @@ func TestUnmarshalErrors(t *testing.T) {
 		{"unknown field type", `{"schemas":[{"name":"s","fields":[{"name":"f","type":"unknown_type"}]}]}`},
 		{"unknown session mode", `{"agents":[{"name":"a","session":"bad_mode"}]}`},
 		{"unknown router mode", `{"routers":[{"name":"r","mode":"bad_mode"}]}`},
-		{"unknown join strategy", `{"joins":[{"name":"j","strategy":"bad_strat"}]}`},
+		{"unknown await mode", `{"agents":[{"name":"a","await":"bad_mode"}]}`},
 		{"unknown human mode", `{"humans":[{"name":"h","mode":"bad_mode"}]}`},
 		{"unknown type expr", `{"vars":{"fields":[{"name":"v","type":"bad_type"}]}}`},
 		{"unknown literal kind", `{"vars":{"fields":[{"name":"v","type":"string","default":{"kind":"bad_kind"}}]}}`},

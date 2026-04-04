@@ -7,22 +7,22 @@ import "fmt"
 // ---------------------------------------------------------------------------
 
 const (
-	DiagSessionAfterJoin       DiagCode = "C009" // session: inherit or fork on node immediately after join
-	DiagMultipleDefaultEdges   DiagCode = "C010" // multiple unconditional edges from non-fan_out_all source
-	DiagAmbiguousCondition     DiagCode = "C011" // ambiguous conditional edges from same source
-	DiagMissingFallback        DiagCode = "C012" // conditional edges with no default fallback
-	DiagConditionNotBool       DiagCode = "C013" // when field is not boolean in output schema
-	DiagConditionFieldNotFound DiagCode = "C014" // when field not found in source output schema
-	DiagJoinRequireUnknown     DiagCode = "C015" // join require references unknown node
-	DiagUnreachableNode        DiagCode = "C016" // node unreachable from entry
-	DiagHistoryRefNotInLoop    DiagCode = "C017" // outputs.<node>.history but node not in a loop
-	DiagUndeclaredCycle        DiagCode = "C019" // cycle without a declared loop (infinite loop risk)
-	DiagRoundRobinTooFewEdges  DiagCode = "C020" // round_robin router with fewer than 2 outgoing edges
-	DiagLLMRouterTooFewEdges   DiagCode = "C021" // llm router with fewer than 2 outgoing edges
-	DiagLLMRouterConditionEdge DiagCode = "C022" // llm router edge has a 'when' condition
-	DiagRouterLLMOnlyProperty  DiagCode = "C023" // LLM-only property on non-llm router
-	DiagInvalidReasoningEffort DiagCode = "C024" // invalid reasoning_effort value
-	DiagInvalidLoopIterations  DiagCode = "C026" // loop max_iterations must be >= 1
+	DiagSessionAfterConvergence DiagCode = "C009" // session: inherit or fork on convergence point
+	DiagMultipleDefaultEdges    DiagCode = "C010" // multiple unconditional edges from same non-fan_out source
+	DiagAmbiguousCondition      DiagCode = "C011" // ambiguous conditional edges from same source
+	DiagMissingFallback         DiagCode = "C012" // conditional edges with no default fallback
+	DiagConditionNotBool        DiagCode = "C013" // when field is not boolean in output schema
+	DiagConditionFieldNotFound  DiagCode = "C014" // when field not found in source output schema
+	DiagUnreachableNode         DiagCode = "C016" // node unreachable from entry
+	DiagHistoryRefNotInLoop     DiagCode = "C017" // outputs.<node>.history but node not in a loop
+	DiagUndeclaredCycle         DiagCode = "C019" // cycle without a declared loop (infinite loop risk)
+	DiagRoundRobinTooFewEdges   DiagCode = "C020" // round_robin router with fewer than 2 outgoing edges
+	DiagLLMRouterTooFewEdges    DiagCode = "C021" // llm router with fewer than 2 outgoing edges
+	DiagLLMRouterConditionEdge  DiagCode = "C022" // llm router edge has a 'when' condition
+	DiagRouterLLMOnlyProperty   DiagCode = "C023" // LLM-only property on non-llm router
+	DiagInvalidReasoningEffort  DiagCode = "C024" // invalid reasoning_effort value
+	DiagInvalidLoopIterations   DiagCode = "C026" // loop max_iterations must be >= 1
+	DiagDuplicateWithKey        DiagCode = "C028" // duplicate with-mapping key across edges to same target
 )
 
 // validate performs static validation on a compiled workflow.
@@ -32,12 +32,12 @@ func (c *compiler) validate(w *Workflow) {
 		return
 	}
 
-	c.validateInheritAfterJoin(w)
+	c.validateInheritAtConvergence(w)
 	c.validateEdgeRouting(w)
 	c.validateRoundRobinEdges(w)
 	c.validateLLMRouterEdges(w)
 	c.validateConditionFields(w)
-	c.validateJoinRequire(w)
+	c.validateDuplicateWithKeys(w)
 	c.validateReachability(w)
 	c.validateHistoryRefs(w)
 	c.validateUndeclaredCycles(w)
@@ -46,33 +46,54 @@ func (c *compiler) validate(w *Workflow) {
 }
 
 // ---------------------------------------------------------------------------
-// C009 — session: inherit forbidden immediately after a join
+// C009 — session: inherit/fork forbidden on convergence points
 // ---------------------------------------------------------------------------
 
-func (c *compiler) validateInheritAfterJoin(w *Workflow) {
-	// Build set of nodes that are direct targets of a join node.
-	afterJoin := make(map[string]string) // target node -> join node ID
-	for _, e := range w.Edges {
-		src, ok := w.Nodes[e.From]
-		if !ok {
+func (c *compiler) validateInheritAtConvergence(w *Workflow) {
+	// Only check nodes explicitly marked with await — they are declared
+	// convergence points. Implicit multi-source detection (e.g. loop
+	// re-entry) is left to runtime since static analysis can't distinguish
+	// parallel convergence from sequential re-entry.
+	for nodeID, node := range w.Nodes {
+		if node.AwaitStrategy == AwaitNone {
 			continue
 		}
-		if src.Kind == NodeJoin {
-			afterJoin[e.To] = e.From
+		if node.Session == SessionInherit || node.Session == SessionFork {
+			c.errorf(DiagSessionAfterConvergence,
+				"node %q has session: %s but has await: %s (convergence point); only fresh or artifacts_only are allowed",
+				nodeID, node.Session, node.AwaitStrategy)
+		}
+	}
+}
+
+// findConvergenceNodes returns the set of node IDs that are convergence points.
+// A node is a convergence point if it has AwaitStrategy != AwaitNone OR
+// if it receives unconditional edges from multiple distinct sources.
+func (c *compiler) findConvergenceNodes(w *Workflow) map[string]bool {
+	result := make(map[string]bool)
+
+	// Nodes explicitly marked with await.
+	for id, node := range w.Nodes {
+		if node.AwaitStrategy != AwaitNone {
+			result[id] = true
 		}
 	}
 
-	for targetID, joinID := range afterJoin {
-		target, ok := w.Nodes[targetID]
-		if !ok {
-			continue
+	// Nodes receiving edges from multiple distinct sources.
+	incomingSources := make(map[string]map[string]bool) // target -> set of source IDs
+	for _, e := range w.Edges {
+		if _, ok := incomingSources[e.To]; !ok {
+			incomingSources[e.To] = make(map[string]bool)
 		}
-		if target.Session == SessionInherit || target.Session == SessionFork {
-			c.errorf(DiagSessionAfterJoin,
-				"node %q has session: %s but follows join %q; only fresh or artifacts_only are allowed after a join",
-				targetID, target.Session, joinID)
+		incomingSources[e.To][e.From] = true
+	}
+	for nodeID, sources := range incomingSources {
+		if len(sources) > 1 {
+			result[nodeID] = true
 		}
 	}
+
+	return result
 }
 
 // ---------------------------------------------------------------------------
@@ -300,18 +321,59 @@ func findField(s *Schema, name string) *SchemaField {
 }
 
 // ---------------------------------------------------------------------------
-// C015 — join require references unknown node
+// C028 — duplicate with-mapping keys across edges to same target
 // ---------------------------------------------------------------------------
 
-func (c *compiler) validateJoinRequire(w *Workflow) {
-	for _, node := range w.Nodes {
-		if node.Kind != NodeJoin {
-			continue
+func (c *compiler) validateDuplicateWithKeys(w *Workflow) {
+	// Detect duplicate with-mapping keys on edges to the same target node,
+	// but only when the edges can fire simultaneously. Skip:
+	// - Conditional edges (when/when not) — mutually exclusive at runtime
+	// - Loop edges and edges from loop re-entry nodes — they replace initial entry
+	// - Edges targeting convergence points — multiple branches legitimately
+	//   send the same context data to a convergence node
+	type keySource struct {
+		key  string
+		from string
+	}
+
+	convergence := c.findConvergenceNodes(w)
+
+	// Build set of nodes that are targets of loop-bearing edges (loop re-entry points).
+	loopReentryNodes := make(map[string]bool)
+	for _, e := range w.Edges {
+		if e.LoopName != "" {
+			loopReentryNodes[e.To] = true
 		}
-		for _, req := range node.Require {
-			if _, ok := w.Nodes[req]; !ok {
-				c.errorf(DiagJoinRequireUnknown,
-					"join %q requires unknown node %q", node.ID, req)
+	}
+
+	targetKeys := make(map[string][]keySource) // target -> list of (key, source)
+	for _, e := range w.Edges {
+		if e.Condition != "" {
+			continue // skip conditional edges — they're mutually exclusive
+		}
+		if e.LoopName != "" {
+			continue // skip loop edges — they re-enter an already-visited node
+		}
+		if loopReentryNodes[e.From] {
+			continue // skip edges from loop re-entry nodes
+		}
+		if convergence[e.To] {
+			continue // skip edges to convergence points — duplicate context is expected
+		}
+		for _, dm := range e.With {
+			targetKeys[e.To] = append(targetKeys[e.To], keySource{key: dm.Key, from: e.From})
+		}
+	}
+
+	for targetID, keys := range targetKeys {
+		seen := make(map[string]string) // key -> first source
+		for _, ks := range keys {
+			if prevFrom, ok := seen[ks.key]; ok && prevFrom != ks.from {
+				c.errorf(DiagDuplicateWithKey,
+					"node %q receives with-mapping key %q from both %q and %q; keys must be unique across incoming edges",
+					targetID, ks.key, prevFrom, ks.from)
+			} else if !ok {
+				seen[ks.key] = ks.from
 			}
 		}
 	}

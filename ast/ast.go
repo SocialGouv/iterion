@@ -13,7 +13,6 @@ type File struct {
 	Agents     []*AgentDecl     // agent node declarations
 	Judges     []*JudgeDecl     // judge node declarations
 	Routers    []*RouterDecl    // router node declarations
-	Joins      []*JoinDecl      // join node declarations
 	Humans     []*HumanDecl     // human node declarations
 	Tools      []*ToolNodeDecl  // tool node declarations (direct execution, no LLM)
 	Workflows  []*WorkflowDecl  // workflow declarations
@@ -201,6 +200,7 @@ type AgentDecl struct {
 	ToolMaxSteps    int         // max tool-use iterations (0 = not set)
 	ReasoningEffort string      // reasoning effort level: "low", "medium", "high", "extra_high"
 	Readonly        bool        // when true, node is not considered mutating for workspace safety
+	Await           AwaitMode   // convergence strategy (none/wait_all/best_effort)
 	Span            Span
 }
 
@@ -225,7 +225,8 @@ type JudgeDecl struct {
 	Tools           []string // usually empty for judges, but allowed
 	ToolMaxSteps    int
 	ReasoningEffort string // reasoning effort level: "low", "medium", "high", "extra_high"
-	Readonly        bool   // when true, node is not considered mutating for workspace safety
+	Readonly        bool      // when true, node is not considered mutating for workspace safety
+	Await           AwaitMode // convergence strategy (none/wait_all/best_effort)
 	Span            Span
 }
 
@@ -259,6 +260,8 @@ func (rm RouterMode) String() string {
 }
 
 // RouterDecl represents a `router <name>:` node declaration.
+// Routers are fan-out sources and do not support the Await field
+// (convergence is only meaningful on target nodes: agent, judge, human, tool).
 type RouterDecl struct {
 	Name   string
 	Mode   RouterMode
@@ -270,35 +273,30 @@ type RouterDecl struct {
 }
 
 // ---------------------------------------------------------------------------
-// Nodes — Join
+// Await mode — convergence strategy for nodes with multiple incoming edges
 // ---------------------------------------------------------------------------
 
-// JoinStrategy represents how a join aggregates branches.
-type JoinStrategy int
+// AwaitMode represents the convergence strategy when a node receives
+// inputs from multiple parallel branches.
+type AwaitMode int
 
 const (
-	JoinWaitAll    JoinStrategy = iota // wait for all required branches
-	JoinBestEffort                     // proceed when possible
+	AwaitNone       AwaitMode = iota // not a convergence point (or not explicitly set)
+	AwaitWaitAll                     // wait for all incoming branches (default for convergence)
+	AwaitBestEffort                  // proceed when possible, tolerate failures
 )
 
-func (js JoinStrategy) String() string {
-	switch js {
-	case JoinWaitAll:
+func (am AwaitMode) String() string {
+	switch am {
+	case AwaitNone:
+		return "none"
+	case AwaitWaitAll:
 		return "wait_all"
-	case JoinBestEffort:
+	case AwaitBestEffort:
 		return "best_effort"
 	default:
 		return "unknown"
 	}
-}
-
-// JoinDecl represents a `join <name>:` node declaration.
-type JoinDecl struct {
-	Name     string
-	Strategy JoinStrategy
-	Require  []string // node names to wait for
-	Output   string   // schema reference name
-	Span     Span
 }
 
 // ---------------------------------------------------------------------------
@@ -337,7 +335,8 @@ type HumanDecl struct {
 	Mode         HumanMode
 	MinAnswers   int    // minimum human answers required
 	Model        string // model identifier (required for auto_answer / auto_or_pause)
-	System       string // prompt reference for LLM system prompt
+	System       string    // prompt reference for LLM system prompt
+	Await        AwaitMode // convergence strategy (none/wait_all/best_effort)
 	Span         Span
 }
 
@@ -349,8 +348,9 @@ type HumanDecl struct {
 // a command directly without an LLM call.
 type ToolNodeDecl struct {
 	Name    string
-	Command string // command to execute, may contain ${...} env refs
-	Output  string // schema reference name
+	Command string    // command to execute, may contain ${...} env refs
+	Output  string    // schema reference name
+	Await   AwaitMode // convergence strategy (none/wait_all/best_effort)
 	Span    Span
 }
 

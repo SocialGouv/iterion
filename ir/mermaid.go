@@ -86,11 +86,12 @@ func compactShape(n *Node) string {
 		return fmt.Sprintf(`(["%s"])`, label)
 	case NodeRouter:
 		return fmt.Sprintf(`{"%s"}`, label)
-	case NodeJoin:
-		return fmt.Sprintf(`[["%s"]]`, label)
 	case NodeHuman:
 		return fmt.Sprintf(`>"%s"]`, label)
 	default:
+		if n.AwaitStrategy != AwaitNone {
+			return fmt.Sprintf(`[["%s"]]`, label)
+		}
 		return fmt.Sprintf(`["%s"]`, label)
 	}
 }
@@ -121,11 +122,6 @@ func detailedShape(n *Node) string {
 		}
 	case NodeRouter:
 		lines = append(lines, "mode: "+n.RouterMode.String())
-	case NodeJoin:
-		lines = append(lines, "strategy: "+n.JoinStrategy.String())
-		if len(n.Require) > 0 {
-			lines = append(lines, "require: "+strings.Join(n.Require, ", "))
-		}
 	case NodeHuman:
 		lines = append(lines, "mode: "+n.HumanMode.String())
 		if n.MinAnswers > 0 {
@@ -137,6 +133,10 @@ func detailedShape(n *Node) string {
 		}
 	}
 
+	if n.AwaitStrategy != AwaitNone {
+		lines = append(lines, "await: "+n.AwaitStrategy.String())
+	}
+
 	label := strings.Join(lines, "<br/>")
 
 	switch n.Kind {
@@ -144,11 +144,12 @@ func detailedShape(n *Node) string {
 		return fmt.Sprintf(`(["%s"])`, label)
 	case NodeRouter:
 		return fmt.Sprintf(`{"%s"}`, label)
-	case NodeJoin:
-		return fmt.Sprintf(`[["%s"]]`, label)
 	case NodeHuman:
 		return fmt.Sprintf(`>"%s"]`, label)
 	default:
+		if n.AwaitStrategy != AwaitNone {
+			return fmt.Sprintf(`[["%s"]]`, label)
+		}
 		return fmt.Sprintf(`["%s"]`, label)
 	}
 }
@@ -204,7 +205,6 @@ func styleClasses(w *Workflow) string {
 	b.WriteString("    classDef agent fill:#4A90D9,stroke:#2C5F8A,color:#fff\n")
 	b.WriteString("    classDef judge fill:#7B68EE,stroke:#5A4CB5,color:#fff\n")
 	b.WriteString("    classDef router fill:#F5A623,stroke:#C47D0E,color:#fff\n")
-	b.WriteString("    classDef join fill:#50C878,stroke:#2D8B4A,color:#fff\n")
 	b.WriteString("    classDef human fill:#FF6B6B,stroke:#CC4444,color:#fff\n")
 	b.WriteString("    classDef tool fill:#A0522D,stroke:#6E3720,color:#fff\n")
 	b.WriteString("    classDef done fill:#2ECC71,stroke:#1A8B4C,color:#fff\n")
@@ -233,8 +233,6 @@ func kindIcon(k NodeKind) string {
 		return "⚖️"
 	case NodeRouter:
 		return "🔀"
-	case NodeJoin:
-		return "🔗"
 	case NodeHuman:
 		return "👤"
 	case NodeTool:
@@ -290,14 +288,6 @@ func fullShape(n *Node, w *Workflow) string {
 		}
 	case NodeRouter:
 		lines = append(lines, "mode: "+n.RouterMode.String())
-	case NodeJoin:
-		lines = append(lines, "strategy: "+n.JoinStrategy.String())
-		if len(n.Require) > 0 {
-			lines = append(lines, "require: "+strings.Join(n.Require, ", "))
-		}
-		if n.JoinOutput != "" {
-			lines = append(lines, "output: "+expandSchema(n.JoinOutput, w))
-		}
 	case NodeHuman:
 		lines = append(lines, "mode: "+n.HumanMode.String())
 		if n.Model != "" {
@@ -324,6 +314,10 @@ func fullShape(n *Node, w *Workflow) string {
 		}
 	}
 
+	if n.AwaitStrategy != AwaitNone {
+		lines = append(lines, "await: "+n.AwaitStrategy.String())
+	}
+
 	label := strings.Join(lines, "<br/>")
 
 	switch n.Kind {
@@ -331,11 +325,12 @@ func fullShape(n *Node, w *Workflow) string {
 		return fmt.Sprintf(`(["%s"])`, label)
 	case NodeRouter:
 		return fmt.Sprintf(`{"%s"}`, label)
-	case NodeJoin:
-		return fmt.Sprintf(`[["%s"]]`, label)
 	case NodeHuman:
 		return fmt.Sprintf(`>"%s"]`, label)
 	default:
+		if n.AwaitStrategy != AwaitNone {
+			return fmt.Sprintf(`[["%s"]]`, label)
+		}
 		return fmt.Sprintf(`["%s"]`, label)
 	}
 }

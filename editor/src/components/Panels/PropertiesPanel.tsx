@@ -2,10 +2,9 @@ import { useMemo, useState } from "react";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { makeEdgeId } from "@/lib/documentToGraph";
-import type { AgentDecl, JudgeDecl, RouterDecl, JoinDecl, HumanDecl, ToolNodeDecl, NodeKind, Edge } from "@/api/types";
+import type { AgentDecl, JudgeDecl, RouterDecl, HumanDecl, ToolNodeDecl, NodeKind, Edge } from "@/api/types";
 import AgentForm from "./forms/AgentForm";
 import RouterForm from "./forms/RouterForm";
-import JoinForm from "./forms/JoinForm";
 import HumanForm from "./forms/HumanForm";
 import ToolForm from "./forms/ToolForm";
 import EdgeForm from "./forms/EdgeForm";
@@ -13,7 +12,7 @@ import ConfirmDialog from "../shared/ConfirmDialog";
 
 interface NodeMatch {
   kind: NodeKind;
-  decl: AgentDecl | JudgeDecl | RouterDecl | JoinDecl | HumanDecl | ToolNodeDecl;
+  decl: AgentDecl | JudgeDecl | RouterDecl | HumanDecl | ToolNodeDecl;
 }
 
 interface EdgeMatch {
@@ -35,7 +34,6 @@ export default function PropertiesPanel() {
     for (const a of document.agents) if (a.name === selectedNodeId) return { kind: "agent", decl: a };
     for (const j of document.judges) if (j.name === selectedNodeId) return { kind: "judge", decl: j };
     for (const r of document.routers) if (r.name === selectedNodeId) return { kind: "router", decl: r };
-    for (const j of document.joins) if (j.name === selectedNodeId) return { kind: "join", decl: j };
     for (const h of document.humans) if (h.name === selectedNodeId) return { kind: "human", decl: h };
     for (const t of document.tools) if (t.name === selectedNodeId) return { kind: "tool", decl: t };
     return null;
@@ -126,8 +124,6 @@ function NodeForm({ match }: { match: NodeMatch }) {
       return <AgentForm decl={match.decl as JudgeDecl} kind="judge" />;
     case "router":
       return <RouterForm decl={match.decl as RouterDecl} />;
-    case "join":
-      return <JoinForm decl={match.decl as JoinDecl} />;
     case "human":
       return <HumanForm decl={match.decl as HumanDecl} />;
     case "tool":

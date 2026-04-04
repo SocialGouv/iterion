@@ -1,6 +1,6 @@
 import type { Node, Edge as FlowEdge } from "@xyflow/react";
 import { MarkerType } from "@xyflow/react";
-import type { IterDocument, AgentDecl, JudgeDecl, HumanDecl, ToolNodeDecl, JoinDecl, RouterDecl } from "@/api/types";
+import type { IterDocument, AgentDecl, JudgeDecl, HumanDecl, ToolNodeDecl, RouterDecl } from "@/api/types";
 import { findNodeDecl } from "@/lib/defaults";
 import { NODE_COLORS } from "@/lib/constants";
 import type { DetailSubNodeData, DetailSubKind } from "@/components/Canvas/DetailSubNode";
@@ -66,12 +66,11 @@ export function generateNodeDetailGraph(
   const agent = (kind === "agent" || kind === "judge") ? decl as AgentDecl | JudgeDecl : undefined;
   const human = kind === "human" ? decl as HumanDecl : undefined;
   const tool = kind === "tool" ? decl as ToolNodeDecl : undefined;
-  const join = kind === "join" ? decl as JoinDecl : undefined;
   const router = kind === "router" ? decl as RouterDecl : undefined;
 
   // 2. Schema sub-nodes
   const inputSchemaName = (agent || human)?.input;
-  const outputSchemaName = (agent || human || tool || join)?.output;
+  const outputSchemaName = (agent || human || tool)?.output;
 
   if (inputSchemaName) {
     const schema = doc.schemas?.find((s) => s.name === inputSchemaName);

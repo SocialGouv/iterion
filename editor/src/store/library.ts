@@ -20,6 +20,10 @@ function saveCustomItems(items: LibraryItem[]) {
 interface LibraryState {
   presetItems: LibraryItem[];
   customItems: LibraryItem[];
+  /** Cached concatenation of presetItems + customItems. Referentially stable
+   *  between renders so that zustand selectors don't trigger infinite loops
+   *  (React 18 useSyncExternalStore requires getSnapshot to be cached). */
+  _allItems: LibraryItem[];
   searchQuery: string;
   activeCategory: LibraryCategory | null;
 
@@ -30,9 +34,9 @@ interface LibraryState {
   updateCustomItem: (id: string, updates: Partial<LibraryItem>) => void;
 }
 
-/** Selector: all items (presets + custom). Stable when inputs don't change. */
+/** Selector: all items (presets + custom). Returns the cached _allItems array. */
 export function selectAllItems(s: LibraryState): LibraryItem[] {
-  return [...s.presetItems, ...s.customItems];
+  return s._allItems;
 }
 
 /** Selector: filtered items based on active category and search query. */
@@ -59,9 +63,12 @@ export function selectItemById(id: string) {
     selectAllItems(s).find((i) => i.id === id);
 }
 
+const _initialCustom = loadCustomItems();
+
 export const useLibraryStore = create<LibraryState>((set) => ({
   presetItems: PRESET_ITEMS,
-  customItems: loadCustomItems(),
+  customItems: _initialCustom,
+  _allItems: [...PRESET_ITEMS, ..._initialCustom],
   searchQuery: "",
   activeCategory: null,
 
@@ -72,20 +79,20 @@ export const useLibraryStore = create<LibraryState>((set) => ({
     set((s) => {
       const customItems = [...s.customItems, item];
       saveCustomItems(customItems);
-      return { customItems };
+      return { customItems, _allItems: [...s.presetItems, ...customItems] };
     }),
 
   removeCustomItem: (id) =>
     set((s) => {
       const customItems = s.customItems.filter((i) => i.id !== id);
       saveCustomItems(customItems);
-      return { customItems };
+      return { customItems, _allItems: [...s.presetItems, ...customItems] };
     }),
 
   updateCustomItem: (id, updates) =>
     set((s) => {
       const customItems = s.customItems.map((i) => (i.id === id ? { ...i, ...updates } : i));
       saveCustomItems(customItems);
-      return { customItems };
+      return { customItems, _allItems: [...s.presetItems, ...customItems] };
     }),
 }));

@@ -6,7 +6,6 @@ const NODE_TYPES: { kind: NodeKind; label: string; desc: string }[] = [
   { kind: "agent", label: "Agent", desc: "LLM-powered agent with model, prompts, tools, and schemas" },
   { kind: "judge", label: "Judge", desc: "Evaluator agent that assesses outputs and makes decisions" },
   { kind: "router", label: "Router", desc: "Splits flow to multiple branches (fan_out_all, condition, round_robin, or llm)" },
-  { kind: "join", label: "Join", desc: "Merges parallel branches back together (wait_all or best_effort)" },
   { kind: "human", label: "Human", desc: "Human-in-the-loop step for manual input or review" },
   { kind: "tool", label: "Tool", desc: "Executes a shell command and captures structured output" },
 ];

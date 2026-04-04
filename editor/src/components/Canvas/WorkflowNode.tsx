@@ -1,6 +1,6 @@
 import { Handle } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
-import type { NodeKind, AgentDecl, ToolNodeDecl, HumanDecl, JoinDecl, RouterDecl } from "@/api/types";
+import type { NodeKind, AgentDecl, ToolNodeDecl, HumanDecl, RouterDecl } from "@/api/types";
 import { useDocumentStore } from "@/store/document";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { ProviderIcon } from "@/components/icons/ProviderIcon";
@@ -50,14 +50,21 @@ export default function WorkflowNode({ data }: NodeProps) {
   } else if (kind === "human") {
     const d = decl as HumanDecl | undefined;
     if (d?.mode) subtitle = d.mode;
-  } else if (kind === "router") {
+  }
+
+  // Append await indicator for nodes with await strategy
+  if (kind === "agent" || kind === "judge" || kind === "human" || kind === "tool") {
+    const awaitVal = (decl as AgentDecl | HumanDecl | ToolNodeDecl | undefined)?.await;
+    if (awaitVal && awaitVal !== "none") {
+      subtitle += subtitle ? ` \u{23F3}` : "\u{23F3}";
+    }
+  }
+
+  if (kind === "router") {
     const d = decl as RouterDecl | undefined;
     providerModel = d?.model;
     if (d?.mode === "llm" && d?.model) subtitle = d.model.replace(/\$\{.*?\}/g, "env");
     else if (d?.mode) subtitle = d.mode;
-  } else if (kind === "join") {
-    const d = decl as JoinDecl | undefined;
-    if (d?.strategy) subtitle = d.strategy;
   }
 
   // Schema badges for nodes that have input/output
@@ -73,9 +80,6 @@ export default function WorkflowNode({ data }: NodeProps) {
     outputSchema = d?.output ?? "";
   } else if (kind === "tool") {
     const d = decl as ToolNodeDecl | undefined;
-    outputSchema = d?.output ?? "";
-  } else if (kind === "join") {
-    const d = decl as JoinDecl | undefined;
     outputSchema = d?.output ?? "";
   }
 

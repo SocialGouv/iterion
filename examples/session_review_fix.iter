@@ -285,14 +285,10 @@ agent codex_plan:
   user: plan_user
   session: fresh
 
-join plans_join:
-  strategy: wait_all
-  require: [claude_plan, codex_plan]
-  output: dual_plan_bundle
-
 ## ─── Node : Jugement + Fusion combines ─────────────────────────
 
 agent plan_judge_merge:
+  await: wait_all
   delegate: "claude_code"
   input: judge_merge_input
   output: judge_merge_output
@@ -341,14 +337,10 @@ agent codex_review:
   tool_max_steps: 10
   readonly: true
 
-join review_join:
-  strategy: wait_all
-  require: [claude_review, codex_review]
-  output: dual_review_bundle
-
 ## ─── Node : Verdict ────────────────────────────────────────────
 
 judge review_verdict:
+  await: wait_all
   delegate: "claude_code"
   input: verdict_input
   output: verdict_output
@@ -413,15 +405,15 @@ workflow session_review_fix:
     previous_feedback: ""
   }
 
-  claude_plan -> plans_join
-  codex_plan -> plans_join
-
   ## ═══ Phase 2 : Jugement + fusion combines ═════════════════════
 
-  plans_join -> plan_judge_merge with {
+  claude_plan -> plan_judge_merge with {
     claude_plan: "{{outputs.claude_plan}}",
-    codex_plan: "{{outputs.codex_plan}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  codex_plan -> plan_judge_merge with {
+    codex_plan: "{{outputs.codex_plan}}"
   }
 
   ## Plan OK -> implementation
@@ -457,15 +449,15 @@ workflow session_review_fix:
     acceptance_criteria: "{{input.acceptance_criteria}}"
   }
 
-  claude_review -> review_join
-  codex_review -> review_join
-
   ## ═══ Phase 5 : Verdict ════════════════════════════════════════
 
-  review_join -> review_verdict with {
+  claude_review -> review_verdict with {
     claude_review: "{{outputs.claude_review}}",
-    codex_review: "{{outputs.codex_review}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  codex_review -> review_verdict with {
+    codex_review: "{{outputs.codex_review}}"
   }
 
   ## Implementation OK -> done

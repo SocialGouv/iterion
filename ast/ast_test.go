@@ -115,14 +115,6 @@ func TestParallelFanOutJoin(t *testing.T) {
 			{Name: "worker_a", Model: "${MODEL_A}", Input: "req", Output: "res", System: "sys", User: "usr", Session: ast.SessionFresh},
 			{Name: "worker_b", Model: "${MODEL_B}", Input: "req", Output: "res", System: "sys", User: "usr", Session: ast.SessionFresh},
 		},
-		Joins: []*ast.JoinDecl{
-			{
-				Name:     "sync",
-				Strategy: ast.JoinWaitAll,
-				Require:  []string{"worker_a", "worker_b"},
-				Output:   "bundle",
-			},
-		},
 		Workflows: []*ast.WorkflowDecl{
 			{
 				Name:  "parallel_demo",
@@ -130,17 +122,16 @@ func TestParallelFanOutJoin(t *testing.T) {
 				Edges: []*ast.Edge{
 					{From: "fanout", To: "worker_a", With: []*ast.WithEntry{{Key: "data", Value: "{{input.data}}"}}},
 					{From: "fanout", To: "worker_b", With: []*ast.WithEntry{{Key: "data", Value: "{{input.data}}"}}},
-					{From: "worker_a", To: "sync"},
-					{From: "worker_b", To: "sync"},
-					{From: "sync", To: "done"},
+					{From: "worker_a", To: "done"},
+					{From: "worker_b", To: "done"},
 				},
 			},
 		},
 	}
 
 	nodes := file.AllNodeNames()
-	if len(nodes) != 4 { // fanout, worker_a, worker_b, sync
-		t.Fatalf("expected 4 nodes, got %d: %v", len(nodes), nodes)
+	if len(nodes) != 3 { // fanout, worker_a, worker_b
+		t.Fatalf("expected 3 nodes, got %d: %v", len(nodes), nodes)
 	}
 }
 
@@ -284,9 +275,6 @@ func TestFullWorkflowCoverage(t *testing.T) {
 		Routers: []*ast.RouterDecl{
 			{Name: "review_fanout", Mode: ast.RouterFanOutAll},
 		},
-		Joins: []*ast.JoinDecl{
-			{Name: "reviews_join", Strategy: ast.JoinWaitAll, Require: []string{"claude_review", "gpt_review"}, Output: "reviews_bundle"},
-		},
 		Humans: []*ast.HumanDecl{
 			{Name: "human_checkpoint", Input: "decision_assessment", Output: "human_answers", Publish: "human_decisions", Instructions: "clarification_prompt", Mode: ast.HumanPauseUntilAnswers, MinAnswers: 1},
 		},
@@ -335,8 +323,8 @@ func TestFullWorkflowCoverage(t *testing.T) {
 
 	// Verify all node types present
 	nodes := file.AllNodeNames()
-	if len(nodes) != 8 { // 3 agents + 2 judges + 1 router + 1 join + 1 human
-		t.Fatalf("expected 8 nodes, got %d: %v", len(nodes), nodes)
+	if len(nodes) != 7 { // 3 agents + 2 judges + 1 router + 1 human
+		t.Fatalf("expected 7 nodes, got %d: %v", len(nodes), nodes)
 	}
 
 	// Verify edge variety

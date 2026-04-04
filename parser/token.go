@@ -75,6 +75,7 @@ const (
 	TokenURL
 	TokenReadonly
 	TokenDelegate
+	TokenAwait
 	TokenWhen
 	TokenNot
 	TokenAs
@@ -184,6 +185,7 @@ var tokenNames = map[TokenType]string{
 	TokenURL:               "url",
 	TokenReadonly:          "readonly",
 	TokenDelegate:          "delegate",
+	TokenAwait:             "await",
 	TokenWhen:              "when",
 	TokenNot:               "not",
 	TokenAs:                "as",
@@ -269,6 +271,7 @@ var keywords = map[string]TokenType{
 	"url":                   TokenURL,
 	"readonly":              TokenReadonly,
 	"delegate":              TokenDelegate,
+	"await":                 TokenAwait,
 	"when":                  TokenWhen,
 	"not":                   TokenNot,
 	"as":                    TokenAs,

@@ -262,11 +262,6 @@ agent gpt_plan:
   tools: [read_file, search_codebase, git_diff]
   tool_max_steps: 6
 
-join plans_join:
-  strategy: wait_all
-  require: [claude_plan, gpt_plan]
-  output: dual_plan_bundle
-
 router synthesis_fanout:
   mode: fan_out_all
 
@@ -286,12 +281,8 @@ agent gpt_plan_synthesis:
   user: plan_synthesis_user
   session: fresh
 
-join syntheses_join:
-  strategy: wait_all
-  require: [claude_plan_synthesis, gpt_plan_synthesis]
-  output: synthesis_bundle
-
 agent final_plan_merge:
+  await: wait_all
   model: "${FINAL_MERGE_MODEL}"
   input: synthesis_bundle
   output: remediation_plan
@@ -334,12 +325,8 @@ agent gpt_final_review:
   tools: [git_diff, read_file, list_files, search_codebase, tree]
   tool_max_steps: 10
 
-join final_reviews_join:
-  strategy: wait_all
-  require: [claude_final_review, gpt_final_review]
-  output: final_reviews_bundle
-
 judge final_compliance_check:
+  await: wait_all
   model: "${FINAL_JUDGE_MODEL}"
   input: final_reviews_bundle
   output: compliance_verdict
@@ -392,16 +379,15 @@ workflow pr_refine_dual_model_parallel:
     review: "{{outputs.gpt_review}}"
   }
 
-  claude_plan -> plans_join
-  gpt_plan -> plans_join
-
   ## 4. Synthèses croisées parallèles
-  plans_join -> synthesis_fanout with {
+  claude_plan -> synthesis_fanout with {
     claude_review: "{{outputs.claude_review}}",
     gpt_review: "{{outputs.gpt_review}}",
     claude_plan: "{{outputs.claude_plan}}",
     gpt_plan: "{{outputs.gpt_plan}}"
   }
+
+  gpt_plan -> synthesis_fanout
 
   synthesis_fanout -> claude_plan_synthesis with {
     claude_review: "{{input.claude_review}}",
@@ -417,12 +403,12 @@ workflow pr_refine_dual_model_parallel:
     gpt_plan: "{{input.gpt_plan}}"
   }
 
-  claude_plan_synthesis -> syntheses_join
-  gpt_plan_synthesis -> syntheses_join
-
   ## 5. Merge final -> act directement (pas de compliance gate)
-  syntheses_join -> final_plan_merge with {
-    claude_plan_synthesis: "{{outputs.claude_plan_synthesis}}",
+  claude_plan_synthesis -> final_plan_merge with {
+    claude_plan_synthesis: "{{outputs.claude_plan_synthesis}}"
+  }
+
+  gpt_plan_synthesis -> final_plan_merge with {
     gpt_plan_synthesis: "{{outputs.gpt_plan_synthesis}}"
   }
 
@@ -450,16 +436,16 @@ workflow pr_refine_dual_model_parallel:
     review_rules: "{{input.review_rules}}"
   }
 
-  claude_final_review -> final_reviews_join
-  gpt_final_review -> final_reviews_join
-
   ## 7. Verdict final
-  final_reviews_join -> final_compliance_check with {
+  claude_final_review -> final_compliance_check with {
     pr_context: "{{outputs.context_builder}}",
     act_result: "{{outputs.act_on_plan}}",
     claude_final_review: "{{outputs.claude_final_review}}",
-    gpt_final_review: "{{outputs.gpt_final_review}}",
     final_review_rules: "{{vars.final_review_rules}}"
+  }
+
+  gpt_final_review -> final_compliance_check with {
+    gpt_final_review: "{{outputs.gpt_final_review}}"
   }
 
   final_compliance_check -> done when approved

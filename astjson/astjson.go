@@ -41,12 +41,16 @@ var routerModeToStr = map[ast.RouterMode]string{
 
 var strToRouterMode = reverseMap(routerModeToStr)
 
-var joinStrategyToStr = map[ast.JoinStrategy]string{
-	ast.JoinWaitAll:    "wait_all",
-	ast.JoinBestEffort: "best_effort",
+var awaitModeToStr = map[ast.AwaitMode]string{
+	ast.AwaitWaitAll:    "wait_all",
+	ast.AwaitBestEffort: "best_effort",
 }
 
-var strToJoinStrategy = reverseMap(joinStrategyToStr)
+var strToAwaitMode = func() map[string]ast.AwaitMode {
+	m := reverseMap(awaitModeToStr)
+	m["none"] = ast.AwaitNone // accept "none" on input, but never emit it
+	return m
+}()
 
 var humanModeToStr = map[ast.HumanMode]string{
 	ast.HumanPauseUntilAnswers: "pause_until_answers",
@@ -95,7 +99,6 @@ type jsonFile struct {
 	Agents    []*jsonAgentDecl    `json:"agents,omitempty"`
 	Judges    []*jsonJudgeDecl    `json:"judges,omitempty"`
 	Routers   []*jsonRouterDecl   `json:"routers,omitempty"`
-	Joins     []*jsonJoinDecl     `json:"joins,omitempty"`
 	Humans    []*jsonHumanDecl    `json:"humans,omitempty"`
 	Tools     []*jsonToolNodeDecl `json:"tools,omitempty"`
 	Workflows []*jsonWorkflowDecl `json:"workflows,omitempty"`
@@ -154,6 +157,7 @@ type jsonAgentDecl struct {
 	Tools           []string `json:"tools,omitempty"`
 	ToolMaxSteps    int      `json:"tool_max_steps,omitempty"`
 	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
+	Await           string   `json:"await,omitempty"`
 }
 
 type jsonJudgeDecl struct {
@@ -169,6 +173,7 @@ type jsonJudgeDecl struct {
 	Tools           []string `json:"tools,omitempty"`
 	ToolMaxSteps    int      `json:"tool_max_steps,omitempty"`
 	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
+	Await           string   `json:"await,omitempty"`
 }
 
 type jsonRouterDecl struct {
@@ -178,13 +183,6 @@ type jsonRouterDecl struct {
 	System string `json:"system,omitempty"`
 	User   string `json:"user,omitempty"`
 	Multi  bool   `json:"multi,omitempty"`
-}
-
-type jsonJoinDecl struct {
-	Name     string   `json:"name,omitempty"`
-	Strategy string   `json:"strategy,omitempty"`
-	Require  []string `json:"require,omitempty"`
-	Output   string   `json:"output,omitempty"`
 }
 
 type jsonHumanDecl struct {
@@ -197,12 +195,14 @@ type jsonHumanDecl struct {
 	MinAnswers   int    `json:"min_answers,omitempty"`
 	Model        string `json:"model,omitempty"`
 	System       string `json:"system,omitempty"`
+	Await        string `json:"await,omitempty"`
 }
 
 type jsonToolNodeDecl struct {
 	Name    string `json:"name,omitempty"`
 	Command string `json:"command,omitempty"`
 	Output  string `json:"output,omitempty"`
+	Await   string `json:"await,omitempty"`
 }
 
 type jsonWorkflowDecl struct {
@@ -287,14 +287,6 @@ func toJSON(f *ast.File) *jsonFile {
 			Multi:  r.Multi,
 		})
 	}
-	for _, j := range f.Joins {
-		jf.Joins = append(jf.Joins, &jsonJoinDecl{
-			Name:     j.Name,
-			Strategy: joinStrategyToStr[j.Strategy],
-			Require:  j.Require,
-			Output:   j.Output,
-		})
-	}
 	for _, h := range f.Humans {
 		jf.Humans = append(jf.Humans, humanToJSON(h))
 	}
@@ -303,6 +295,7 @@ func toJSON(f *ast.File) *jsonFile {
 			Name:    t.Name,
 			Command: t.Command,
 			Output:  t.Output,
+			Await:   awaitModeToStr[t.Await],
 		})
 	}
 	for _, w := range f.Workflows {
@@ -367,6 +360,7 @@ func agentToJSON(a *ast.AgentDecl) *jsonAgentDecl {
 		Tools:           a.Tools,
 		ToolMaxSteps:    a.ToolMaxSteps,
 		ReasoningEffort: a.ReasoningEffort,
+		Await:           awaitModeToStr[a.Await],
 	}
 }
 
@@ -384,6 +378,7 @@ func judgeToJSON(j *ast.JudgeDecl) *jsonJudgeDecl {
 		Tools:           j.Tools,
 		ToolMaxSteps:    j.ToolMaxSteps,
 		ReasoningEffort: j.ReasoningEffort,
+		Await:           awaitModeToStr[j.Await],
 	}
 }
 
@@ -398,6 +393,7 @@ func humanToJSON(h *ast.HumanDecl) *jsonHumanDecl {
 		MinAnswers:   h.MinAnswers,
 		Model:        h.Model,
 		System:       h.System,
+		Await:        awaitModeToStr[h.Await],
 	}
 }
 
@@ -517,19 +513,6 @@ func fromJSON(jf *jsonFile) (*ast.File, error) {
 		})
 	}
 
-	for _, jj := range jf.Joins {
-		strat, ok := strToJoinStrategy[jj.Strategy]
-		if !ok {
-			return nil, fmt.Errorf("astjson: unknown join strategy %q", jj.Strategy)
-		}
-		f.Joins = append(f.Joins, &ast.JoinDecl{
-			Name:     jj.Name,
-			Strategy: strat,
-			Require:  jj.Require,
-			Output:   jj.Output,
-		})
-	}
-
 	for _, jh := range jf.Humans {
 		h, err := humanFromJSON(jh)
 		if err != nil {
@@ -539,10 +522,15 @@ func fromJSON(jf *jsonFile) (*ast.File, error) {
 	}
 
 	for _, jt := range jf.Tools {
+		aw, ok := strToAwaitMode[jt.Await]
+		if jt.Await != "" && !ok {
+			return nil, fmt.Errorf("astjson: unknown await mode %q", jt.Await)
+		}
 		f.Tools = append(f.Tools, &ast.ToolNodeDecl{
 			Name:    jt.Name,
 			Command: jt.Command,
 			Output:  jt.Output,
+			Await:   aw,
 		})
 	}
 
@@ -617,6 +605,10 @@ func agentFromJSON(ja *jsonAgentDecl) (*ast.AgentDecl, error) {
 	if ja.Session != "" && !ok {
 		return nil, fmt.Errorf("astjson: unknown session mode %q", ja.Session)
 	}
+	aw, ok := strToAwaitMode[ja.Await]
+	if ja.Await != "" && !ok {
+		return nil, fmt.Errorf("astjson: unknown await mode %q", ja.Await)
+	}
 	return &ast.AgentDecl{
 		Name:            ja.Name,
 		Model:           ja.Model,
@@ -630,6 +622,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*ast.AgentDecl, error) {
 		Tools:           ja.Tools,
 		ToolMaxSteps:    ja.ToolMaxSteps,
 		ReasoningEffort: ja.ReasoningEffort,
+		Await:           aw,
 	}, nil
 }
 
@@ -637,6 +630,10 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*ast.JudgeDecl, error) {
 	sess, ok := strToSessionMode[jj.Session]
 	if jj.Session != "" && !ok {
 		return nil, fmt.Errorf("astjson: unknown session mode %q", jj.Session)
+	}
+	aw, ok := strToAwaitMode[jj.Await]
+	if jj.Await != "" && !ok {
+		return nil, fmt.Errorf("astjson: unknown await mode %q", jj.Await)
 	}
 	return &ast.JudgeDecl{
 		Name:            jj.Name,
@@ -651,6 +648,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*ast.JudgeDecl, error) {
 		Tools:           jj.Tools,
 		ToolMaxSteps:    jj.ToolMaxSteps,
 		ReasoningEffort: jj.ReasoningEffort,
+		Await:           aw,
 	}, nil
 }
 
@@ -658,6 +656,10 @@ func humanFromJSON(jh *jsonHumanDecl) (*ast.HumanDecl, error) {
 	mode, ok := strToHumanMode[jh.Mode]
 	if jh.Mode != "" && !ok {
 		return nil, fmt.Errorf("astjson: unknown human mode %q", jh.Mode)
+	}
+	aw, ok := strToAwaitMode[jh.Await]
+	if jh.Await != "" && !ok {
+		return nil, fmt.Errorf("astjson: unknown await mode %q", jh.Await)
 	}
 	return &ast.HumanDecl{
 		Name:         jh.Name,
@@ -669,6 +671,7 @@ func humanFromJSON(jh *jsonHumanDecl) (*ast.HumanDecl, error) {
 		MinAnswers:   jh.MinAnswers,
 		Model:        jh.Model,
 		System:       jh.System,
+		Await:        aw,
 	}, nil
 }
 

@@ -25,22 +25,16 @@ import (
 //   join -> next_node -> done
 // ---------------------------------------------------------------------------
 
-func fanOutWorkflow(joinStrategy ir.JoinStrategy) *ir.Workflow {
+func fanOutWorkflow(awaitStrategy ir.AwaitStrategy) *ir.Workflow {
 	return &ir.Workflow{
 		Name:  "fanout_test",
 		Entry: "entry",
 		Nodes: map[string]*ir.Node{
-			"entry":   {ID: "entry", Kind: ir.NodeAgent},
-			"router":  {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
-			"agent_a": {ID: "agent_a", Kind: ir.NodeAgent},
-			"agent_b": {ID: "agent_b", Kind: ir.NodeAgent},
-			"merge": {
-				ID:           "merge",
-				Kind:         ir.NodeJoin,
-				JoinStrategy: joinStrategy,
-				Require:      []string{"agent_a", "agent_b"},
-			},
-			"finalize": {ID: "finalize", Kind: ir.NodeAgent},
+			"entry":    {ID: "entry", Kind: ir.NodeAgent},
+			"router":   {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
+			"agent_a":  {ID: "agent_a", Kind: ir.NodeAgent},
+			"agent_b":  {ID: "agent_b", Kind: ir.NodeAgent},
+			"finalize": {ID: "finalize", Kind: ir.NodeAgent, AwaitStrategy: awaitStrategy},
 			"done":     {ID: "done", Kind: ir.NodeDone},
 			"fail":     {ID: "fail", Kind: ir.NodeFail},
 		},
@@ -54,10 +48,11 @@ func fanOutWorkflow(joinStrategy ir.JoinStrategy) *ir.Workflow {
 			{From: "router", To: "agent_b", With: []*ir.DataMapping{
 				{Key: "context", Refs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"entry", "summary"}}}, Raw: "{{outputs.entry.summary}}"},
 			}},
-			{From: "agent_a", To: "merge"},
-			{From: "agent_b", To: "merge"},
-			{From: "merge", To: "finalize", With: []*ir.DataMapping{
-				{Key: "reviews", Refs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"merge"}}}, Raw: "{{outputs.merge}}"},
+			{From: "agent_a", To: "finalize", With: []*ir.DataMapping{
+				{Key: "review_a", Refs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"agent_a"}}}, Raw: "{{outputs.agent_a}}"},
+			}},
+			{From: "agent_b", To: "finalize", With: []*ir.DataMapping{
+				{Key: "review_b", Refs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"agent_b"}}}, Raw: "{{outputs.agent_b}}"},
 			}},
 			{From: "finalize", To: "done"},
 		},
@@ -73,7 +68,7 @@ func fanOutWorkflow(joinStrategy ir.JoinStrategy) *ir.Workflow {
 // ---------------------------------------------------------------------------
 
 func TestFanOutWaitAllSuccess(t *testing.T) {
-	wf := fanOutWorkflow(ir.JoinWaitAll)
+	wf := fanOutWorkflow(ir.AwaitWaitAll)
 
 	var capturedFinalizeInput map[string]interface{}
 	exec := newStubExecutor()
@@ -108,20 +103,16 @@ func TestFanOutWaitAllSuccess(t *testing.T) {
 		t.Errorf("expected status finished, got %s", r.Status)
 	}
 
-	// Verify both branch outputs are available in the join output.
+	// Verify both branch outputs are available via with-mappings.
 	if capturedFinalizeInput == nil {
 		t.Fatal("finalize node was never called")
 	}
-	reviews, ok := capturedFinalizeInput["reviews"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected reviews map, got %T: %v", capturedFinalizeInput["reviews"], capturedFinalizeInput["reviews"])
+	// The convergence node receives review_a and review_b from the with-mappings.
+	if capturedFinalizeInput["review_a"] == nil {
+		t.Error("finalize input missing review_a from agent_a")
 	}
-	// The join output should contain agent_a and agent_b entries.
-	if reviews["agent_a"] == nil {
-		t.Error("join output missing agent_a")
-	}
-	if reviews["agent_b"] == nil {
-		t.Error("join output missing agent_b")
+	if capturedFinalizeInput["review_b"] == nil {
+		t.Error("finalize input missing review_b from agent_b")
 	}
 
 	// Verify events contain branch_started events.
@@ -156,7 +147,7 @@ func TestFanOutWaitAllSuccess(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFanOutWaitAllPartialFailure(t *testing.T) {
-	wf := fanOutWorkflow(ir.JoinWaitAll)
+	wf := fanOutWorkflow(ir.AwaitWaitAll)
 
 	exec := newStubExecutor()
 	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
@@ -191,7 +182,7 @@ func TestFanOutWaitAllPartialFailure(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFanOutBestEffortPartialFailure(t *testing.T) {
-	wf := fanOutWorkflow(ir.JoinBestEffort)
+	wf := fanOutWorkflow(ir.AwaitBestEffort)
 
 	var capturedFinalizeInput map[string]interface{}
 	exec := newStubExecutor()
@@ -226,26 +217,14 @@ func TestFanOutBestEffortPartialFailure(t *testing.T) {
 		t.Errorf("expected status finished, got %s", r.Status)
 	}
 
-	// Verify finalize received the join output with failed branches metadata.
+	// Verify finalize received the convergence output with failed branches metadata.
 	if capturedFinalizeInput == nil {
 		t.Fatal("finalize node was never called")
 	}
-	reviews, ok := capturedFinalizeInput["reviews"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected reviews map, got %T", capturedFinalizeInput["reviews"])
-	}
 
-	// agent_a should be present.
-	if reviews["agent_a"] == nil {
-		t.Error("join output missing agent_a")
-	}
-	// agent_b should NOT be present (it failed).
-	if reviews["agent_b"] != nil {
-		t.Error("join output should not contain failed agent_b")
-	}
-	// Failed branches metadata should be exposed.
-	if reviews["_failed_branches"] == nil {
-		t.Error("join output missing _failed_branches metadata")
+	// agent_a's data should be present (via with-mapping review_a).
+	if capturedFinalizeInput["review_a"] == nil {
+		t.Error("finalize input missing review_a from agent_a")
 	}
 
 	// Verify join_ready event includes failed_branches info.
@@ -272,7 +251,7 @@ func TestFanOutBestEffortPartialFailure(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFanOutConcurrentExecution(t *testing.T) {
-	wf := fanOutWorkflow(ir.JoinWaitAll)
+	wf := fanOutWorkflow(ir.AwaitWaitAll)
 
 	// Track execution overlap using channels.
 	var maxConcurrent int64
@@ -328,16 +307,10 @@ func TestFanOutBoundedParallelism(t *testing.T) {
 		Nodes: map[string]*ir.Node{
 			"entry":  {ID: "entry", Kind: ir.NodeAgent},
 			"router": {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
-			"a":      {ID: "a", Kind: ir.NodeAgent},
-			"b":      {ID: "b", Kind: ir.NodeAgent},
-			"c":      {ID: "c", Kind: ir.NodeAgent},
-			"join": {
-				ID:           "join",
-				Kind:         ir.NodeJoin,
-				JoinStrategy: ir.JoinWaitAll,
-				Require:      []string{"a", "b", "c"},
-			},
-			"done": {ID: "done", Kind: ir.NodeDone},
+			"a":    {ID: "a", Kind: ir.NodeAgent},
+			"b":    {ID: "b", Kind: ir.NodeAgent},
+			"c":    {ID: "c", Kind: ir.NodeAgent},
+			"done": {ID: "done", Kind: ir.NodeDone, AwaitStrategy: ir.AwaitWaitAll},
 			"fail": {ID: "fail", Kind: ir.NodeFail},
 		},
 		Edges: []*ir.Edge{
@@ -345,10 +318,9 @@ func TestFanOutBoundedParallelism(t *testing.T) {
 			{From: "router", To: "a"},
 			{From: "router", To: "b"},
 			{From: "router", To: "c"},
-			{From: "a", To: "join"},
-			{From: "b", To: "join"},
-			{From: "c", To: "join"},
-			{From: "join", To: "done"},
+			{From: "a", To: "done"},
+			{From: "b", To: "done"},
+			{From: "c", To: "done"},
 		},
 		Schemas: map[string]*ir.Schema{},
 		Prompts: map[string]*ir.Prompt{},
@@ -418,17 +390,11 @@ func TestFanOutMultiStepBranches(t *testing.T) {
 			"review_fanout":   {ID: "review_fanout", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
 			"claude_review":   {ID: "claude_review", Kind: ir.NodeAgent},
 			"gpt_review":      {ID: "gpt_review", Kind: ir.NodeAgent},
-			"claude_plan":     {ID: "claude_plan", Kind: ir.NodeAgent},
-			"gpt_plan":        {ID: "gpt_plan", Kind: ir.NodeAgent},
-			"plans_join": {
-				ID:           "plans_join",
-				Kind:         ir.NodeJoin,
-				JoinStrategy: ir.JoinWaitAll,
-				Require:      []string{"claude_plan", "gpt_plan"},
-			},
-			"merge": {ID: "merge", Kind: ir.NodeAgent},
-			"done":  {ID: "done", Kind: ir.NodeDone},
-			"fail":  {ID: "fail", Kind: ir.NodeFail},
+			"claude_plan": {ID: "claude_plan", Kind: ir.NodeAgent},
+			"gpt_plan":    {ID: "gpt_plan", Kind: ir.NodeAgent},
+			"merge":       {ID: "merge", Kind: ir.NodeAgent, AwaitStrategy: ir.AwaitWaitAll},
+			"done":        {ID: "done", Kind: ir.NodeDone},
+			"fail":        {ID: "fail", Kind: ir.NodeFail},
 		},
 		Edges: []*ir.Edge{
 			{From: "context_builder", To: "review_fanout", With: []*ir.DataMapping{
@@ -448,12 +414,11 @@ func TestFanOutMultiStepBranches(t *testing.T) {
 			{From: "gpt_review", To: "gpt_plan", With: []*ir.DataMapping{
 				{Key: "review", Refs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"gpt_review"}}}, Raw: "{{outputs.gpt_review}}"},
 			}},
-			// Both plans converge to the join.
-			{From: "claude_plan", To: "plans_join"},
-			{From: "gpt_plan", To: "plans_join"},
-			// Join -> merge -> done
-			{From: "plans_join", To: "merge", With: []*ir.DataMapping{
+			// Both plans converge to merge (convergence point).
+			{From: "claude_plan", To: "merge", With: []*ir.DataMapping{
 				{Key: "claude_plan", Refs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"claude_plan"}}}, Raw: "{{outputs.claude_plan}}"},
+			}},
+			{From: "gpt_plan", To: "merge", With: []*ir.DataMapping{
 				{Key: "gpt_plan", Refs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"gpt_plan"}}}, Raw: "{{outputs.gpt_plan}}"},
 			}},
 			{From: "merge", To: "done"},
@@ -537,7 +502,7 @@ func TestFanOutMultiStepBranches(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFanOutContextCancellation(t *testing.T) {
-	wf := fanOutWorkflow(ir.JoinWaitAll)
+	wf := fanOutWorkflow(ir.AwaitWaitAll)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -578,7 +543,7 @@ func TestFanOutContextCancellation(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFanOutBranchEventIDs(t *testing.T) {
-	wf := fanOutWorkflow(ir.JoinWaitAll)
+	wf := fanOutWorkflow(ir.AwaitWaitAll)
 
 	exec := newStubExecutor()
 	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
@@ -636,7 +601,7 @@ func TestFanOutBranchEventIDs(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFanOutBestEffortAllFail(t *testing.T) {
-	wf := fanOutWorkflow(ir.JoinBestEffort)
+	wf := fanOutWorkflow(ir.AwaitBestEffort)
 
 	exec := newStubExecutor()
 	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
@@ -682,17 +647,11 @@ func TestDualReviewParallelToMerge(t *testing.T) {
 		Nodes: map[string]*ir.Node{
 			"context":       {ID: "context", Kind: ir.NodeAgent, Publish: "pr_ctx"},
 			"review_fanout": {ID: "review_fanout", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
-			"claude_review": {ID: "claude_review", Kind: ir.NodeAgent, Publish: "claude_verdict"},
-			"gpt_review":    {ID: "gpt_review", Kind: ir.NodeAgent, Publish: "gpt_verdict"},
-			"reviews_join": {
-				ID:           "reviews_join",
-				Kind:         ir.NodeJoin,
-				JoinStrategy: ir.JoinWaitAll,
-				Require:      []string{"claude_review", "gpt_review"},
-			},
-			"merge_reviews": {ID: "merge_reviews", Kind: ir.NodeAgent, Publish: "merged_review"},
-			"done":          {ID: "done", Kind: ir.NodeDone},
-			"fail":          {ID: "fail", Kind: ir.NodeFail},
+			"claude_review":  {ID: "claude_review", Kind: ir.NodeAgent, Publish: "claude_verdict"},
+			"gpt_review":     {ID: "gpt_review", Kind: ir.NodeAgent, Publish: "gpt_verdict"},
+			"merge_reviews":  {ID: "merge_reviews", Kind: ir.NodeAgent, Publish: "merged_review", AwaitStrategy: ir.AwaitWaitAll},
+			"done":           {ID: "done", Kind: ir.NodeDone},
+			"fail":           {ID: "fail", Kind: ir.NodeFail},
 		},
 		Edges: []*ir.Edge{
 			{From: "context", To: "review_fanout"},
@@ -702,10 +661,10 @@ func TestDualReviewParallelToMerge(t *testing.T) {
 			{From: "review_fanout", To: "gpt_review", With: []*ir.DataMapping{
 				{Key: "pr_ctx", Refs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"context"}}}, Raw: "{{outputs.context}}"},
 			}},
-			{From: "claude_review", To: "reviews_join"},
-			{From: "gpt_review", To: "reviews_join"},
-			{From: "reviews_join", To: "merge_reviews", With: []*ir.DataMapping{
+			{From: "claude_review", To: "merge_reviews", With: []*ir.DataMapping{
 				{Key: "claude", Refs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"claude_review"}}}, Raw: "{{outputs.claude_review}}"},
+			}},
+			{From: "gpt_review", To: "merge_reviews", With: []*ir.DataMapping{
 				{Key: "gpt", Refs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"gpt_review"}}}, Raw: "{{outputs.gpt_review}}"},
 			}},
 			{From: "merge_reviews", To: "done"},
@@ -783,7 +742,7 @@ func TestDualReviewParallelToMerge(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFanOutEventOrdering(t *testing.T) {
-	wf := fanOutWorkflow(ir.JoinWaitAll)
+	wf := fanOutWorkflow(ir.AwaitWaitAll)
 
 	exec := newStubExecutor()
 	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
@@ -872,7 +831,7 @@ func TestFanOutEventOrdering(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFanOutDataFlow(t *testing.T) {
-	wf := fanOutWorkflow(ir.JoinWaitAll)
+	wf := fanOutWorkflow(ir.AwaitWaitAll)
 
 	var capturedA, capturedB map[string]interface{}
 	exec := newStubExecutor()
@@ -923,28 +882,24 @@ func TestSequentialFanOuts(t *testing.T) {
 			"router1": {ID: "router1", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
 			"a":       {ID: "a", Kind: ir.NodeAgent},
 			"b":       {ID: "b", Kind: ir.NodeAgent},
-			"join1":   {ID: "join1", Kind: ir.NodeJoin, JoinStrategy: ir.JoinWaitAll, Require: []string{"a", "b"}},
-			"mid":     {ID: "mid", Kind: ir.NodeAgent},
+			"mid":     {ID: "mid", Kind: ir.NodeAgent, AwaitStrategy: ir.AwaitWaitAll},
 			"router2": {ID: "router2", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
 			"c":       {ID: "c", Kind: ir.NodeAgent},
 			"d":       {ID: "d", Kind: ir.NodeAgent},
-			"join2":   {ID: "join2", Kind: ir.NodeJoin, JoinStrategy: ir.JoinWaitAll, Require: []string{"c", "d"}},
-			"done":    {ID: "done", Kind: ir.NodeDone},
+			"done":    {ID: "done", Kind: ir.NodeDone, AwaitStrategy: ir.AwaitWaitAll},
 			"fail":    {ID: "fail", Kind: ir.NodeFail},
 		},
 		Edges: []*ir.Edge{
 			{From: "entry", To: "router1"},
 			{From: "router1", To: "a"},
 			{From: "router1", To: "b"},
-			{From: "a", To: "join1"},
-			{From: "b", To: "join1"},
-			{From: "join1", To: "mid"},
+			{From: "a", To: "mid"},
+			{From: "b", To: "mid"},
 			{From: "mid", To: "router2"},
 			{From: "router2", To: "c"},
 			{From: "router2", To: "d"},
-			{From: "c", To: "join2"},
-			{From: "d", To: "join2"},
-			{From: "join2", To: "done"},
+			{From: "c", To: "done"},
+			{From: "d", To: "done"},
 		},
 		Schemas: map[string]*ir.Schema{},
 		Prompts: map[string]*ir.Prompt{},

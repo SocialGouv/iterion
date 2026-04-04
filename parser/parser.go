@@ -82,7 +82,7 @@ func (p *parser) skipToNextTopLevel() {
 		case TokenEOF:
 			return
 		case TokenVars, TokenMCPServer, TokenPrompt, TokenSchema, TokenAgent, TokenJudge,
-			TokenRouter, TokenJoin, TokenHuman, TokenTool, TokenWorkflow:
+			TokenRouter, TokenHuman, TokenTool, TokenWorkflow:
 			return
 		case TokenDedent:
 			p.next()
@@ -194,12 +194,6 @@ func (p *parser) parseFile() *ast.File {
 			rd := p.parseRouterDecl()
 			if rd != nil {
 				f.Routers = append(f.Routers, rd)
-			}
-
-		case TokenJoin:
-			jd := p.parseJoinDecl()
-			if jd != nil {
-				f.Joins = append(f.Joins, jd)
 			}
 
 		case TokenHuman:
@@ -696,6 +690,9 @@ func (p *parser) parseAgentProp(ad *ast.AgentDecl, propTok Token) {
 	case TokenDelegate:
 		p.expect(TokenColon)
 		ad.Delegate = p.expectString()
+	case TokenAwait:
+		p.expect(TokenColon)
+		ad.Await = p.parseAwaitMode()
 	default:
 		p.addError(DiagUnknownProperty, propTok, "unknown agent property '"+propTok.Value+"'")
 		p.skipToNewline()
@@ -782,6 +779,9 @@ func (p *parser) parseJudgeProp(jd *ast.JudgeDecl, propTok Token) {
 	case TokenDelegate:
 		p.expect(TokenColon)
 		jd.Delegate = p.expectString()
+	case TokenAwait:
+		p.expect(TokenColon)
+		jd.Await = p.parseAwaitMode()
 	default:
 		p.addError(DiagUnknownProperty, propTok, "unknown judge property '"+propTok.Value+"'")
 		p.skipToNewline()
@@ -873,71 +873,18 @@ func (p *parser) parseRouterMode() ast.RouterMode {
 	}
 }
 
-// ---- join ----
+// ---- await (convergence strategy) ----
 
-func (p *parser) parseJoinDecl() *ast.JoinDecl {
-	start := p.next() // consume "join"
-	nameT := p.next()
-	name := tokenAsIdent(nameT)
-	if name == "" {
-		p.addError(DiagExpectedToken, nameT, "expected join name")
-		p.skipToNextTopLevel()
-		return nil
-	}
-	p.expect(TokenColon)
-	p.skipNewlines()
-	if _, ok := p.expect(TokenIndent); !ok {
-		return nil
-	}
-
-	jd := &ast.JoinDecl{
-		Name: name,
-		Span: ast.Span{Start: p.pos(start)},
-	}
-
-	for {
-		p.skipNewlines()
-		t := p.peek()
-		if t.Type == TokenDedent || t.Type == TokenEOF {
-			if t.Type == TokenDedent {
-				p.next()
-			}
-			break
-		}
-		p.parseJoinProp(jd, t)
-	}
-	return jd
-}
-
-func (p *parser) parseJoinProp(jd *ast.JoinDecl, propTok Token) {
-	p.next()
-	switch propTok.Type {
-	case TokenStrategy:
-		p.expect(TokenColon)
-		jd.Strategy = p.parseJoinStrategy()
-	case TokenRequire:
-		p.expect(TokenColon)
-		jd.Require = p.parseIdentList()
-	case TokenOutput:
-		p.expect(TokenColon)
-		jd.Output = p.expectIdent()
-	default:
-		p.addError(DiagUnknownProperty, propTok, "unknown join property '"+propTok.Value+"'")
-		p.skipToNewline()
-	}
-	p.skipNewlines()
-}
-
-func (p *parser) parseJoinStrategy() ast.JoinStrategy {
+func (p *parser) parseAwaitMode() ast.AwaitMode {
 	t := p.next()
 	switch t.Type {
 	case TokenWaitAll:
-		return ast.JoinWaitAll
+		return ast.AwaitWaitAll
 	case TokenBestEffort:
-		return ast.JoinBestEffort
+		return ast.AwaitBestEffort
 	default:
-		p.addError(DiagInvalidValue, t, "expected join strategy (wait_all, best_effort), got '"+t.Value+"'")
-		return ast.JoinWaitAll
+		p.addError(DiagInvalidValue, t, "expected await mode (wait_all, best_effort), got '"+t.Value+"'")
+		return ast.AwaitWaitAll
 	}
 }
 
@@ -1001,6 +948,9 @@ func (p *parser) parseHumanProp(hd *ast.HumanDecl, propTok Token) {
 	case TokenSystem:
 		p.expect(TokenColon)
 		hd.System = p.expectIdent()
+	case TokenAwait:
+		p.expect(TokenColon)
+		hd.Await = p.parseAwaitMode()
 	case TokenIdent:
 		if propTok.Value == "min_answers" {
 			p.expect(TokenColon)
@@ -1076,6 +1026,9 @@ func (p *parser) parseToolNodeProp(td *ast.ToolNodeDecl, propTok Token) {
 	case TokenOutput:
 		p.expect(TokenColon)
 		td.Output = p.expectIdent()
+	case TokenAwait:
+		p.expect(TokenColon)
+		td.Await = p.parseAwaitMode()
 	default:
 		p.addError(DiagUnknownProperty, propTok, "unknown tool property '"+propTok.Value+"'")
 		p.skipToNewline()
@@ -1525,12 +1478,12 @@ func tokenAsIdent(t Token) string {
 func isKeywordToken(tt TokenType) bool {
 	switch tt {
 	case TokenVars, TokenMCPServer, TokenPrompt, TokenSchema, TokenAgent, TokenJudge,
-		TokenRouter, TokenJoin, TokenHuman, TokenTool, TokenWorkflow,
+		TokenRouter, TokenHuman, TokenTool, TokenWorkflow,
 		TokenEntry, TokenMCP, TokenBudget, TokenTransport, TokenServers,
 		TokenDisable, TokenAutoloadProject, TokenModel, TokenInput, TokenOutput,
 		TokenPublish, TokenSystem, TokenUser, TokenSession, TokenTools,
 		TokenToolMaxSteps, TokenReasoningEffort, TokenMode, TokenStrategy, TokenRequire,
-		TokenInstructions, TokenCommand, TokenArgs, TokenURL, TokenDelegate, TokenWhen, TokenNot, TokenAs,
+		TokenInstructions, TokenCommand, TokenArgs, TokenURL, TokenDelegate, TokenAwait, TokenWhen, TokenNot, TokenAs,
 		TokenWith, TokenEnum, TokenFresh, TokenInherit, TokenArtifactsOnly,
 		TokenFanOutAll, TokenCondition, TokenWaitAll, TokenBestEffort,
 		TokenPauseUntilAnswers, TokenTrue, TokenFalse,

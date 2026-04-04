@@ -13,9 +13,6 @@ func (f *File) AllNodeNames() []string {
 	for _, n := range f.Routers {
 		names = append(names, n.Name)
 	}
-	for _, n := range f.Joins {
-		names = append(names, n.Name)
-	}
 	for _, n := range f.Humans {
 		names = append(names, n.Name)
 	}

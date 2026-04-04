@@ -9,7 +9,6 @@ import {
   defaultAgent,
   defaultJudge,
   defaultRouter,
-  defaultJoin,
   defaultHuman,
   defaultTool,
 } from "@/lib/defaults";
@@ -176,24 +175,6 @@ export function useAddFromLibrary() {
               result = {
                 ...result,
                 routers: [...result.routers, { ...base, ...nodeTpl.data, name: nodeName }],
-              };
-              break;
-            }
-            case "join": {
-              const base = defaultJoin(nodeName);
-              const data = nodeTpl.data;
-              const schemas = item.template.schemas ?? [];
-              result = {
-                ...result,
-                joins: [
-                  ...result.joins,
-                  {
-                    ...base,
-                    ...data,
-                    name: nodeName,
-                    output: remapSchema(data.output ?? schemas[0]?.name),
-                  },
-                ],
               };
               break;
             }

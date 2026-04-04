@@ -81,10 +81,15 @@ export default function Canvas() {
     }
   }, [activeWorkflowName, fitView]);
 
-  // Apply search filter: dim non-matching nodes, highlight current match
+  // Apply search filter: dim non-matching nodes, highlight current match.
+  // Note: applySearchFilter is intentionally excluded from deps — its internal
+  // state (searchOpen, searchQuery, matchedNodeIds) is captured in the callback.
+  // Including it would create a dependency cycle since it also depends on layoutNodes.
+  const { applySearchFilter } = search;
   const displayNodes = useMemo(
-    () => search.applySearchFilter(layout.layoutNodes),
-    [layout.layoutNodes, search.applySearchFilter],
+    () => applySearchFilter(layout.layoutNodes),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [layout.layoutNodes, search.searchOpen, search.searchQuery, search.currentMatchIndex],
   );
 
   const handleSearchKeyDown = useCallback(

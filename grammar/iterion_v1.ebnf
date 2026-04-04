@@ -21,7 +21,6 @@ top_level_decl = vars_decl
                | agent_decl
                | judge_decl
                | router_decl
-               | join_decl
                | human_decl
                | tool_node_decl
                | workflow_decl
@@ -72,7 +71,8 @@ agent_prop = "model"            ":" STRING_LIT              NEWLINE
            | "tools"            ":" tool_list               NEWLINE
            | "tool_max_steps"   ":" INT_LIT                NEWLINE
            | "delegate"         ":" STRING_LIT              NEWLINE
-           | "reasoning_effort" ":" reasoning_effort_value  NEWLINE ;
+           | "reasoning_effort" ":" reasoning_effort_value  NEWLINE
+           | "await"            ":" await_mode              NEWLINE ;
 
 session_mode = "fresh" | "inherit" | "fork" | "artifacts_only" ;
 
@@ -98,7 +98,8 @@ judge_prop = "model"            ":" STRING_LIT              NEWLINE
            | "tools"            ":" tool_list               NEWLINE
            | "tool_max_steps"   ":" INT_LIT                NEWLINE
            | "delegate"         ":" STRING_LIT              NEWLINE
-           | "reasoning_effort" ":" reasoning_effort_value  NEWLINE ;
+           | "reasoning_effort" ":" reasoning_effort_value  NEWLINE
+           | "await"            ":" await_mode              NEWLINE ;
 
 (* ---- Nœuds : router ---- *)
 
@@ -108,17 +109,17 @@ router_prop = "mode" ":" router_mode NEWLINE ;
 
 router_mode = "fan_out_all" | "condition" | "round_robin" ;
 
-(* ---- Nœuds : join ---- *)
+(* Note: routers do not support "await" — they are fan-out sources, not
+   convergence targets. Only agent, judge, human, and tool nodes can
+   be convergence points. *)
 
-join_decl = "join" IDENT ":" NEWLINE INDENT { join_prop } DEDENT ;
+(* ---- Await (convergence strategy) ---- *)
+(* When a node receives inputs from multiple parallel branches,
+   await controls how it waits for them.
+   wait_all:     wait for all incoming branches (default for convergence points)
+   best_effort:  proceed when possible, tolerate branch failures *)
 
-join_prop = "strategy" ":" join_strategy NEWLINE
-          | "require"  ":" ident_list     NEWLINE
-          | "output"   ":" IDENT          NEWLINE ;
-
-join_strategy = "wait_all" | "best_effort" ;
-
-ident_list = "[" IDENT { "," IDENT } "]" ;
+await_mode = "wait_all" | "best_effort" ;
 
 (* ---- Nœuds : human ---- *)
 
@@ -131,7 +132,8 @@ human_prop = "input"        ":" IDENT            NEWLINE
            | "mode"         ":" human_mode        NEWLINE
            | "model"        ":" STRING_LIT        NEWLINE
            | "system"       ":" IDENT             NEWLINE
-           | "min_answers"  ":" INT_LIT           NEWLINE ;
+           | "min_answers"  ":" INT_LIT           NEWLINE
+           | "await"        ":" await_mode         NEWLINE ;
 
 human_mode = "pause_until_answers" | "auto_answer" | "auto_or_pause" ;
 (* pause_until_answers : always pauses for human input (default).
@@ -144,7 +146,8 @@ human_mode = "pause_until_answers" | "auto_answer" | "auto_or_pause" ;
 tool_node_decl = "tool" IDENT ":" NEWLINE INDENT { tool_node_prop } DEDENT ;
 
 tool_node_prop = "command" ":" STRING_LIT NEWLINE
-               | "output"  ":" IDENT     NEWLINE ;
+               | "output"  ":" IDENT     NEWLINE
+               | "await"   ":" await_mode NEWLINE ;
 
 (* ---- Nœuds terminaux ---- *)
 (* "done" et "fail" ne sont pas déclarés ; ils sont des identifiants réservés

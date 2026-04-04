@@ -74,14 +74,6 @@ func TestUnparseBasic(t *testing.T) {
 		Routers: []*ast.RouterDecl{
 			{Name: "my_router", Mode: ast.RouterFanOutAll},
 		},
-		Joins: []*ast.JoinDecl{
-			{
-				Name:     "my_join",
-				Strategy: ast.JoinWaitAll,
-				Require:  []string{"a", "b"},
-				Output:   "joined",
-			},
-		},
 		Humans: []*ast.HumanDecl{
 			{
 				Name:         "my_human",
@@ -164,7 +156,6 @@ func TestUnparseBasic(t *testing.T) {
 		"judge my_judge:",
 		"reasoning_effort: low",
 		"router my_router:\n  mode: fan_out_all",
-		"join my_join:\n  strategy: wait_all\n  require: [a, b]\n  output: joined",
 		"human my_human:",
 		"min_answers: 1",
 		"tool run_ci:",

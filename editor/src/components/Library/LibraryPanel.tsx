@@ -1,9 +1,9 @@
-import type { DragEvent } from "react";
+import { type DragEvent, useMemo } from "react";
 import type { NodeKind } from "@/api/types";
 import type { LibraryCategory } from "@/lib/library/types";
 import { NODE_ICONS, NODE_COLORS } from "@/lib/constants";
 import { useUIStore } from "@/store/ui";
-import { useLibraryStore, selectFilteredItems } from "@/store/library";
+import { useLibraryStore, selectAllItems } from "@/store/library";
 import { useAddFromLibrary } from "@/hooks/useAddFromLibrary";
 import LibraryItemCard from "./LibraryItemCard";
 
@@ -11,7 +11,6 @@ const NODE_TYPES: { kind: NodeKind; label: string }[] = [
   { kind: "agent", label: "Agent" },
   { kind: "judge", label: "Judge" },
   { kind: "router", label: "Router" },
-  { kind: "join", label: "Join" },
   { kind: "human", label: "Human" },
   { kind: "tool", label: "Tool" },
 ];
@@ -21,7 +20,6 @@ const CATEGORIES: { value: LibraryCategory | null; label: string }[] = [
   { value: "agent", label: "Agent" },
   { value: "judge", label: "Judge" },
   { value: "router", label: "Router" },
-  { value: "join", label: "Join" },
   { value: "human", label: "Human" },
   { value: "tool", label: "Tool" },
   { value: "schema", label: "Schema" },
@@ -70,7 +68,21 @@ function ExpandedPanel({ onCollapse }: { onCollapse: () => void }) {
   const setSearchQuery = useLibraryStore((s) => s.setSearchQuery);
   const activeCategory = useLibraryStore((s) => s.activeCategory);
   const setActiveCategory = useLibraryStore((s) => s.setActiveCategory);
-  const filteredItems = useLibraryStore(selectFilteredItems);
+  const allItems = useLibraryStore(selectAllItems);
+  const filteredItems = useMemo(() => {
+    let items = allItems;
+    if (activeCategory) items = items.filter((i) => i.category === activeCategory);
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      items = items.filter(
+        (i) =>
+          i.name.toLowerCase().includes(q) ||
+          i.description.toLowerCase().includes(q) ||
+          i.tags?.some((t) => t.toLowerCase().includes(q)),
+      );
+    }
+    return items;
+  }, [allItems, activeCategory, searchQuery]);
   const addFromLibrary = useAddFromLibrary();
 
   const onDragStart = (e: DragEvent, kind: NodeKind) => {

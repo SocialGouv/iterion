@@ -6,7 +6,6 @@ const QUICK_ADD_TYPES: { kind: NodeKind; label: string }[] = [
   { kind: "agent", label: "Agent" },
   { kind: "judge", label: "Judge" },
   { kind: "router", label: "Router" },
-  { kind: "join", label: "Join" },
   { kind: "human", label: "Human" },
   { kind: "tool", label: "Tool" },
 ];

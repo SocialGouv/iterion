@@ -29,16 +29,13 @@ func expectNoDiag(t *testing.T, r *CompileResult, code DiagCode) {
 }
 
 // ---------------------------------------------------------------------------
-// C009 — session: inherit after join
+// C009 — session: inherit/fork at convergence point
 // ---------------------------------------------------------------------------
 
-func TestValidateInheritAfterJoin_Rejected(t *testing.T) {
+func TestValidateInheritAtConvergence_Rejected(t *testing.T) {
 	src := `
 schema s:
   ok: bool
-
-schema join_out:
-  merged: json
 
 prompt sys:
   System.
@@ -63,39 +60,31 @@ agent a2:
 router r1:
   mode: fan_out_all
 
-join j1:
-  strategy: wait_all
-  require: [a1, a2]
-  output: join_out
-
-agent after_join:
+agent after_convergence:
   model: "m"
   input: s
   output: s
   system: sys
   user: usr
   session: inherit
+  await: wait_all
 
 workflow test:
   entry: r1
   r1 -> a1
   r1 -> a2
-  a1 -> j1
-  a2 -> j1
-  j1 -> after_join
-  after_join -> done
+  a1 -> after_convergence with { result_a: "{{outputs.a1}}" }
+  a2 -> after_convergence with { result_b: "{{outputs.a2}}" }
+  after_convergence -> done
 `
 	r := compileFile(t, src)
-	expectDiag(t, r, DiagSessionAfterJoin)
+	expectDiag(t, r, DiagSessionAfterConvergence)
 }
 
-func TestValidateForkAfterJoin_Rejected(t *testing.T) {
+func TestValidateForkAtConvergence_Rejected(t *testing.T) {
 	src := `
 schema s:
   ok: bool
-
-schema join_out:
-  merged: json
 
 prompt sys:
   System.
@@ -120,39 +109,31 @@ agent a2:
 router r1:
   mode: fan_out_all
 
-join j1:
-  strategy: wait_all
-  require: [a1, a2]
-  output: join_out
-
-agent after_join:
+agent after_convergence:
   model: "m"
   input: s
   output: s
   system: sys
   user: usr
   session: fork
+  await: wait_all
 
 workflow test:
   entry: r1
   r1 -> a1
   r1 -> a2
-  a1 -> j1
-  a2 -> j1
-  j1 -> after_join
-  after_join -> done
+  a1 -> after_convergence with { result_a: "{{outputs.a1}}" }
+  a2 -> after_convergence with { result_b: "{{outputs.a2}}" }
+  after_convergence -> done
 `
 	r := compileFile(t, src)
-	expectDiag(t, r, DiagSessionAfterJoin)
+	expectDiag(t, r, DiagSessionAfterConvergence)
 }
 
-func TestValidateInheritAfterJoin_FreshAllowed(t *testing.T) {
+func TestValidateFreshAtConvergence_Allowed(t *testing.T) {
 	src := `
 schema s:
   ok: bool
-
-schema join_out:
-  merged: json
 
 prompt sys:
   System.
@@ -177,30 +158,25 @@ agent a2:
 router r1:
   mode: fan_out_all
 
-join j1:
-  strategy: wait_all
-  require: [a1, a2]
-  output: join_out
-
-agent after_join:
+agent after_convergence:
   model: "m"
   input: s
   output: s
   system: sys
   user: usr
   session: fresh
+  await: wait_all
 
 workflow test:
   entry: r1
   r1 -> a1
   r1 -> a2
-  a1 -> j1
-  a2 -> j1
-  j1 -> after_join
-  after_join -> done
+  a1 -> after_convergence with { result_a: "{{outputs.a1}}" }
+  a2 -> after_convergence with { result_b: "{{outputs.a2}}" }
+  after_convergence -> done
 `
 	r := compileFile(t, src)
-	expectNoDiag(t, r, DiagSessionAfterJoin)
+	expectNoDiag(t, r, DiagSessionAfterConvergence)
 }
 
 // ---------------------------------------------------------------------------
@@ -628,93 +604,6 @@ workflow test:
 }
 
 // ---------------------------------------------------------------------------
-// C015 — join require references unknown node
-// ---------------------------------------------------------------------------
-
-func TestValidateJoinRequireUnknown_Rejected(t *testing.T) {
-	src := `
-schema s:
-  ok: bool
-
-schema join_out:
-  merged: json
-
-prompt sys:
-  System.
-
-prompt usr:
-  User.
-
-agent a1:
-  model: "m"
-  input: s
-  output: s
-  system: sys
-  user: usr
-
-join j1:
-  strategy: wait_all
-  require: [a1, nonexistent_node]
-  output: join_out
-
-workflow test:
-  entry: a1
-  a1 -> j1
-  j1 -> done
-`
-	r := compileFile(t, src)
-	expectDiag(t, r, DiagJoinRequireUnknown)
-}
-
-func TestValidateJoinRequire_Valid(t *testing.T) {
-	src := `
-schema s:
-  ok: bool
-
-schema join_out:
-  merged: json
-
-prompt sys:
-  System.
-
-prompt usr:
-  User.
-
-agent a1:
-  model: "m"
-  input: s
-  output: s
-  system: sys
-  user: usr
-
-agent a2:
-  model: "m"
-  input: s
-  output: s
-  system: sys
-  user: usr
-
-router r1:
-  mode: fan_out_all
-
-join j1:
-  strategy: wait_all
-  require: [a1, a2]
-  output: join_out
-
-workflow test:
-  entry: r1
-  r1 -> a1
-  r1 -> a2
-  a1 -> j1
-  a2 -> j1
-  j1 -> done
-`
-	r := compileFile(t, src)
-	expectNoDiag(t, r, DiagJoinRequireUnknown)
-}
-
-// ---------------------------------------------------------------------------
 // C016 — unreachable nodes
 // ---------------------------------------------------------------------------
 
@@ -867,13 +756,12 @@ func TestValidateReferenceFixturesClean(t *testing.T) {
 	}
 
 	newCodes := []DiagCode{
-		DiagSessionAfterJoin,
+		DiagSessionAfterConvergence,
 		DiagMultipleDefaultEdges,
 		DiagAmbiguousCondition,
 		DiagMissingFallback,
 		DiagConditionNotBool,
 		DiagConditionFieldNotFound,
-		DiagJoinRequireUnknown,
 		DiagUnreachableNode,
 		DiagHistoryRefNotInLoop,
 	}

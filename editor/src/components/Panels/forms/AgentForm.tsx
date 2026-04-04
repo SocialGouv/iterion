@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
-import type { AgentDecl, JudgeDecl } from "@/api/types";
+import type { AgentDecl, JudgeDecl, AwaitStrategy } from "@/api/types";
 import { defaultSchema, defaultPrompt, getAllNodeNames } from "@/lib/defaults";
 import { TextField, CommittedTextField, NumberField, SelectField, SelectFieldWithCreate, TagListField } from "./FormField";
 import { ProviderIcon, ProviderLabel } from "@/components/icons/ProviderIcon";
@@ -150,7 +150,18 @@ export default function AgentForm({ decl, kind }: Props) {
           { value: "fork", label: "fork" },
           { value: "artifacts_only", label: "artifacts_only" },
         ]}
-        help="fresh = new context; inherit = reuse parent conversation; fork = non-consuming branch from parent session; artifacts_only = share published artifacts only. Cannot use inherit/fork after a join node."
+        help="fresh = new context; inherit = reuse parent conversation; fork = non-consuming branch from parent session; artifacts_only = share published artifacts only."
+      />
+      <SelectField
+        label="Await"
+        value={decl.await ?? "none"}
+        onChange={(v) => update({ await: (v === "none" ? undefined : v) as AwaitStrategy | undefined })}
+        options={[
+          { value: "none", label: "none" },
+          { value: "wait_all", label: "wait_all" },
+          { value: "best_effort", label: "best_effort" },
+        ]}
+        help="Implicit convergence: wait_all = wait for all incoming branches; best_effort = continue when available results are ready; none = no await (default)."
       />
       <TagListField
         label="Tools"

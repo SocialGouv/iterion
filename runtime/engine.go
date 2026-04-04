@@ -492,6 +492,9 @@ func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID stri
 		maxParallel = e.workflow.Budget.MaxParallelBranches
 	}
 
+	// Pre-compute convergence point so branches know where to stop.
+	preComputedConvergence := e.findConvergencePoint(routerNodeID, fanEdges)
+
 	// Deep-copy parent outputs and artifacts so branches can't mutate shared state.
 	parentOutputs := deepCopyOutputs(rs.outputs)
 	parentArtifacts := deepCopyOutputs(rs.artifacts)
@@ -518,7 +521,7 @@ func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID stri
 				}
 			}()
 
-			result := e.execBranch(ctx, rs, branchID, edge, parentOutputs, parentArtifacts)
+			result := e.execBranch(ctx, rs, branchID, edge, parentOutputs, parentArtifacts, preComputedConvergence)
 			resultsCh <- result
 		}(edge, branchID)
 	}
@@ -529,29 +532,29 @@ func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID stri
 		results = append(results, <-resultsCh)
 	}
 
-	// Determine join node. Prefer the one reported by successful branches;
+	// Determine convergence point. Prefer the one reported by successful branches;
 	// if all branches failed, discover it from the graph topology.
-	joinNodeID := ""
+	convergenceNodeID := ""
 	for _, r := range results {
 		if r.joinNodeID != "" {
-			if joinNodeID == "" {
-				joinNodeID = r.joinNodeID
-			} else if joinNodeID != r.joinNodeID {
-				return "", fmt.Errorf("branches converge to different join nodes: %s vs %s", joinNodeID, r.joinNodeID)
+			if convergenceNodeID == "" {
+				convergenceNodeID = r.joinNodeID
+			} else if convergenceNodeID != r.joinNodeID {
+				return "", fmt.Errorf("branches converge to different nodes: %s vs %s", convergenceNodeID, r.joinNodeID)
 			}
 		}
 	}
-	if joinNodeID == "" {
-		// All branches failed before reaching a join. Walk the graph
-		// from each fan-out target to find the downstream join node.
-		joinNodeID = e.findJoinForRouter(routerNodeID, fanEdges)
-		if joinNodeID == "" {
-			return "", fmt.Errorf("no join node found after fan_out from %s", routerNodeID)
+	if convergenceNodeID == "" {
+		// All branches failed before reaching convergence. Walk the graph
+		// from each fan-out target to find the downstream convergence point.
+		convergenceNodeID = e.findConvergencePoint(routerNodeID, fanEdges)
+		if convergenceNodeID == "" {
+			return "", fmt.Errorf("no convergence point found after fan_out from %s", routerNodeID)
 		}
 	}
 
-	// Process the join.
-	return e.processJoin(rs, joinNodeID, results)
+	// Process convergence.
+	return e.processConvergence(rs, convergenceNodeID, results)
 }
 
 // execRoundRobin handles a round_robin router node by selecting a single
@@ -790,27 +793,6 @@ func (e *Engine) execLLMRouterMulti(ctx context.Context, rs *runState, routerNod
 		}
 	}
 
-	// Pre-validate: if the downstream join has Require, ensure all required
-	// nodes are reachable from the selected fan-out edges. This catches the
-	// case where the LLM selects a subset that cannot satisfy a wait_all join.
-	if joinID := e.findJoinForRouter(routerNodeID, fanEdges); joinID != "" {
-		if joinNode, ok := e.workflow.Nodes[joinID]; ok && joinNode.JoinStrategy == ir.JoinWaitAll && len(joinNode.Require) > 0 {
-			reachable := make(map[string]bool)
-			for _, edge := range fanEdges {
-				reachable[edge.To] = true
-			}
-			for _, req := range joinNode.Require {
-				if !reachable[req] {
-					return "", &RuntimeError{
-						Code:    ErrCodeExecutionFailed,
-						Message: fmt.Sprintf("llm router %q selected routes %v but join %q requires %v (missing %q)", routerNodeID, selected, joinID, joinNode.Require, req),
-						NodeID:  routerNodeID,
-					}
-				}
-			}
-		}
-	}
-
 	// Validate workspace safety.
 	if err := e.validateWorkspaceSafety(fanEdges); err != nil {
 		return "", err
@@ -821,6 +803,9 @@ func (e *Engine) execLLMRouterMulti(ctx context.Context, rs *runState, routerNod
 	if e.workflow.Budget != nil && e.workflow.Budget.MaxParallelBranches > 0 && e.workflow.Budget.MaxParallelBranches < maxParallel {
 		maxParallel = e.workflow.Budget.MaxParallelBranches
 	}
+
+	// Pre-compute convergence point so branches know where to stop.
+	llmPreComputedConvergence := e.findConvergencePoint(routerNodeID, fanEdges)
 
 	// Deep-copy parent outputs and artifacts so branches can't mutate shared state.
 	parentOutputs := deepCopyOutputs(rs.outputs)
@@ -848,7 +833,7 @@ func (e *Engine) execLLMRouterMulti(ctx context.Context, rs *runState, routerNod
 				}
 			}()
 
-			result := e.execBranch(ctx, rs, branchID, edge, parentOutputs, parentArtifacts)
+			result := e.execBranch(ctx, rs, branchID, edge, parentOutputs, parentArtifacts, llmPreComputedConvergence)
 			resultsCh <- result
 		}(edge, branchID)
 	}
@@ -859,25 +844,25 @@ func (e *Engine) execLLMRouterMulti(ctx context.Context, rs *runState, routerNod
 		results = append(results, <-resultsCh)
 	}
 
-	// Determine join node.
-	joinNodeID := ""
+	// Determine convergence point.
+	convergenceNodeID := ""
 	for _, r := range results {
 		if r.joinNodeID != "" {
-			if joinNodeID == "" {
-				joinNodeID = r.joinNodeID
-			} else if joinNodeID != r.joinNodeID {
-				return "", fmt.Errorf("branches converge to different join nodes: %s vs %s", joinNodeID, r.joinNodeID)
+			if convergenceNodeID == "" {
+				convergenceNodeID = r.joinNodeID
+			} else if convergenceNodeID != r.joinNodeID {
+				return "", fmt.Errorf("branches converge to different nodes: %s vs %s", convergenceNodeID, r.joinNodeID)
 			}
 		}
 	}
-	if joinNodeID == "" {
-		joinNodeID = e.findJoinForRouter(routerNodeID, fanEdges)
-		if joinNodeID == "" {
-			return "", fmt.Errorf("no join node found after llm router fan-out from %s", routerNodeID)
+	if convergenceNodeID == "" {
+		convergenceNodeID = e.findConvergencePoint(routerNodeID, fanEdges)
+		if convergenceNodeID == "" {
+			return "", fmt.Errorf("no convergence point found after llm router fan-out from %s", routerNodeID)
 		}
 	}
 
-	return e.processJoin(rs, joinNodeID, results)
+	return e.processConvergence(rs, convergenceNodeID, results)
 }
 
 // ---------------------------------------------------------------------------
@@ -885,9 +870,11 @@ func (e *Engine) execLLMRouterMulti(ctx context.Context, rs *runState, routerNod
 // ---------------------------------------------------------------------------
 
 // execBranch runs a single parallel branch starting from the target of
-// the given edge. It executes nodes sequentially until it reaches a join
-// node, a terminal node, or encounters an error.
-func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, startEdge *ir.Edge, parentOutputs map[string]map[string]interface{}, parentArtifacts map[string]map[string]interface{}) *branchResult {
+// the given edge. It executes nodes sequentially until it reaches a
+// convergence point, a terminal node, or encounters an error.
+// convergenceNodeID is the pre-computed convergence point (may be empty
+// if unknown; in that case, AwaitStrategy on individual nodes is checked).
+func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, startEdge *ir.Edge, parentOutputs map[string]map[string]interface{}, parentArtifacts map[string]map[string]interface{}, convergenceNodeID string) *branchResult {
 	result := &branchResult{
 		branchID:         branchID,
 		outputs:          make(map[string]map[string]interface{}),
@@ -921,8 +908,9 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 			return result
 		}
 
-		// Stop at join node — the branch has converged.
-		if node.Kind == ir.NodeJoin {
+		// Stop at convergence point — the branch has reached the
+		// pre-computed node where parallel branches reconverge.
+		if convergenceNodeID != "" && currentNodeID == convergenceNodeID {
 			result.joinNodeID = currentNodeID
 			return result
 		}
@@ -1110,21 +1098,20 @@ func (e *Engine) selectEdgeBranch(runID, branchID, fromNodeID string, output map
 	return selected.To, nil
 }
 
-// processJoin aggregates branch results according to the join node's
-// strategy, merges outputs into the run state, and returns the next
-// node ID to continue execution from.
-func (e *Engine) processJoin(rs *runState, joinNodeID string, results []*branchResult) (string, error) {
-	joinNode, ok := e.workflow.Nodes[joinNodeID]
+// processConvergence aggregates branch results according to the convergence
+// node's await strategy, merges outputs into the run state, builds the
+// convergence node's input from multi-edge with-mappings, and returns
+// the convergence node ID for the main loop to continue execution.
+func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, results []*branchResult) (string, error) {
+	convNode, ok := e.workflow.Nodes[convergenceNodeID]
 	if !ok {
-		return "", fmt.Errorf("join node %q not found", joinNodeID)
+		return "", fmt.Errorf("convergence node %q not found", convergenceNodeID)
 	}
 
-	// Emit join node_started.
-	if err := e.emit(rs.runID, store.EventNodeStarted, joinNodeID, map[string]interface{}{
-		"kind":     "join",
-		"strategy": joinNode.JoinStrategy.String(),
-	}); err != nil {
-		return "", err
+	// Determine await strategy: use node's explicit setting, default to wait_all.
+	strategy := convNode.AwaitStrategy
+	if strategy == ir.AwaitNone {
+		strategy = ir.AwaitWaitAll
 	}
 
 	// Collect failed branches metadata.
@@ -1138,15 +1125,14 @@ func (e *Engine) processJoin(rs *runState, joinNodeID string, results []*branchR
 		}
 	}
 
-	// Apply join strategy.
-	switch joinNode.JoinStrategy {
-	case ir.JoinWaitAll:
-		// All required branches must have succeeded.
+	// Apply await strategy.
+	switch strategy {
+	case ir.AwaitWaitAll:
 		if len(failedBranches) > 0 {
-			return "", fmt.Errorf("join %s (wait_all): %d branch(es) failed: %v",
-				joinNodeID, len(failedBranches), failedBranches[0]["error"])
+			return "", fmt.Errorf("convergence at %s (wait_all): %d branch(es) failed: %v",
+				convergenceNodeID, len(failedBranches), failedBranches[0]["error"])
 		}
-	case ir.JoinBestEffort:
+	case ir.AwaitBestEffort:
 		// Proceed even with failures — failed branch metadata is exposed.
 	}
 
@@ -1166,49 +1152,48 @@ func (e *Engine) processJoin(rs *runState, joinNodeID string, results []*branchR
 		}
 	}
 
-	// Build join output: one entry per required node + failed branches metadata.
-	joinOutput := make(map[string]interface{})
-	for _, reqNodeID := range joinNode.Require {
-		if output, ok := rs.outputs[reqNodeID]; ok {
-			joinOutput[reqNodeID] = output
+	// Add failed branches metadata to outputs so it's available via with-mappings.
+	if len(failedBranches) > 0 {
+		// Expose as a special output on the convergence node.
+		if rs.outputs[convergenceNodeID] == nil {
+			rs.outputs[convergenceNodeID] = make(map[string]interface{})
 		}
+		rs.outputs[convergenceNodeID]["_failed_branches"] = failedBranches
+	}
+
+	// Emit convergence_ready event.
+	convData := map[string]interface{}{
+		"strategy": strategy.String(),
 	}
 	if len(failedBranches) > 0 {
-		joinOutput["_failed_branches"] = failedBranches
+		convData["failed_branches"] = failedBranches
 	}
-	rs.outputs[joinNodeID] = joinOutput
-
-	// Emit join_ready.
-	joinData := map[string]interface{}{
-		"strategy": joinNode.JoinStrategy.String(),
-		"required": joinNode.Require,
-	}
-	if len(failedBranches) > 0 {
-		joinData["failed_branches"] = failedBranches
-	}
-	if err := e.emit(rs.runID, store.EventJoinReady, joinNodeID, joinData); err != nil {
-		log.Printf("runtime: failed to emit join_ready: %v", err)
+	if err := e.emit(rs.runID, store.EventJoinReady, convergenceNodeID, convData); err != nil {
+		log.Printf("runtime: failed to emit convergence_ready: %v", err)
 	}
 
-	// Emit join node_finished.
-	if err := e.emit(rs.runID, store.EventNodeFinished, joinNodeID, nil); err != nil {
-		return "", err
-	}
-
-	// Select next edge from the join.
-	nextNodeID, err := e.selectEdge(rs.runID, joinNodeID, joinOutput, rs.loopCounters)
-	if err != nil {
-		return "", err
-	}
-
-	return nextNodeID, nil
+	// Return the convergence node ID — the main loop will execute it normally.
+	return convergenceNodeID, nil
 }
 
-// findJoinForRouter walks outgoing edges from the router's targets to
-// find a downstream join node. This is used when all branches failed
-// before reaching the join, so we can still process the join.
-func (e *Engine) findJoinForRouter(routerNodeID string, fanEdges []*ir.Edge) string {
-	// BFS from each fan-out target to find a join node.
+// findConvergencePoint walks outgoing edges from the router's targets to
+// find a downstream convergence point (a node with AwaitStrategy != AwaitNone,
+// or a node that receives edges from multiple distinct sources).
+// Terminal nodes (done/fail) can be convergence points when multiple
+// branches target them directly.
+// This is also called pre-emptively before branches start so that each
+// branch knows where to stop.
+func (e *Engine) findConvergencePoint(routerNodeID string, fanEdges []*ir.Edge) string {
+	// Build in-degree map: count distinct sources per target.
+	inSources := make(map[string]map[string]bool)
+	for _, edge := range e.workflow.Edges {
+		if _, ok := inSources[edge.To]; !ok {
+			inSources[edge.To] = make(map[string]bool)
+		}
+		inSources[edge.To][edge.From] = true
+	}
+
+	// BFS from each fan-out target to find a convergence point.
 	for _, startEdge := range fanEdges {
 		visited := map[string]bool{}
 		queue := []string{startEdge.To}
@@ -1224,7 +1209,8 @@ func (e *Engine) findJoinForRouter(routerNodeID string, fanEdges []*ir.Edge) str
 			if !ok {
 				continue
 			}
-			if node.Kind == ir.NodeJoin {
+			// Convergence point: explicitly marked OR has multiple distinct incoming sources.
+			if node.AwaitStrategy != ir.AwaitNone || len(inSources[nodeID]) > 1 {
 				return nodeID
 			}
 			// Follow outgoing edges.
@@ -1498,12 +1484,14 @@ func (e *Engine) selectEdge(runID, fromNodeID string, output map[string]interfac
 // ---------------------------------------------------------------------------
 
 // buildNodeInput constructs the input map for a node by looking at the
-// edge `with` mappings that target this node. If no mappings exist, the
-// run-level inputs are used as a starting point for the entry node.
+// edge `with` mappings that target this node. For convergence points,
+// mappings from ALL resolved incoming edges are merged. If no mappings
+// exist, the run-level inputs are used for the entry node.
 func (e *Engine) buildNodeInput(nodeID string, vars map[string]interface{}, outputs map[string]map[string]interface{}, runInputs map[string]interface{}, artifacts map[string]map[string]interface{}) map[string]interface{} {
 	result := make(map[string]interface{})
 
-	// Find the edge that targets this node and has `with` mappings.
+	// Merge with-mappings from ALL edges targeting this node whose source
+	// has already produced output.
 	for _, edge := range e.workflow.Edges {
 		if edge.To != nodeID || len(edge.With) == 0 {
 			continue
@@ -1533,9 +1521,10 @@ func (e *Engine) buildNodeInput(nodeID string, vars map[string]interface{}, outp
 				result[dm.Key] = val
 			}
 		}
-		if len(result) > 0 {
-			return result
-		}
+	}
+
+	if len(result) > 0 {
+		return result
 	}
 
 	// Fallback: for the entry node use run-level inputs.
@@ -2007,8 +1996,8 @@ func (e *Engine) branchContainsMutation(startNodeID string) bool {
 		if !ok {
 			continue
 		}
-		// Stop walking at join or terminal nodes.
-		if node.Kind == ir.NodeJoin || node.Kind == ir.NodeDone || node.Kind == ir.NodeFail {
+		// Stop walking at convergence points or terminal nodes.
+		if node.AwaitStrategy != ir.AwaitNone || node.Kind == ir.NodeDone || node.Kind == ir.NodeFail {
 			continue
 		}
 		if isMutatingNode(node) {

@@ -25,16 +25,16 @@ export const iterLanguageConfig: languages.LanguageConfiguration = {
 
 export const iterTokensProvider: languages.IMonarchLanguage = {
   keywords: [
-    "vars", "prompt", "schema", "agent", "judge", "router", "join", "human", "tool", "workflow",
+    "vars", "prompt", "schema", "agent", "judge", "router", "human", "tool", "workflow",
     "entry", "budget", "model", "input", "output", "publish", "system", "user", "session", "tools",
-    "tool_max_steps", "mode", "strategy", "require", "instructions", "command", "delegate",
+    "tool_max_steps", "mode", "await", "instructions", "command", "delegate",
     "when", "not", "as", "with", "enum",
   ],
   typeKeywords: [
     "string", "bool", "int", "float", "json", "string[]",
   ],
   valueKeywords: [
-    "fresh", "inherit", "artifacts_only",
+    "fresh", "inherit", "artifacts_only", "none",
     "fan_out_all", "condition",
     "wait_all", "best_effort",
     "pause_until_answers", "auto_answer", "auto_or_pause",

@@ -41,7 +41,6 @@ const (
 	NodeAgent  NodeKind = iota // LLM agent
 	NodeJudge                  // verdict-producing LLM node
 	NodeRouter                 // deterministic routing (no LLM)
-	NodeJoin                   // branch aggregation
 	NodeHuman                  // human pause/resume
 	NodeTool                   // direct command execution (no LLM)
 	NodeDone                   // terminal: success
@@ -56,8 +55,6 @@ func (k NodeKind) String() string {
 		return "judge"
 	case NodeRouter:
 		return "router"
-	case NodeJoin:
-		return "join"
 	case NodeHuman:
 		return "human"
 	case NodeTool:
@@ -97,10 +94,8 @@ type Node struct {
 	RouterMode  RouterMode // fan_out_all, condition, round_robin, or llm
 	RouterMulti bool       // LLM router: select multiple targets (default: one)
 
-	// --- Join fields ---
-	JoinStrategy JoinStrategy // wait_all or best_effort
-	Require      []string     // node IDs to wait for
-	JoinOutput   string       // schema reference for join output
+	// --- Convergence fields ---
+	AwaitStrategy AwaitStrategy // convergence strategy: wait_all or best_effort (zero = none)
 
 	// --- Human fields ---
 	HumanMode    HumanMode // pause strategy
@@ -163,18 +158,22 @@ func (rm RouterMode) String() string {
 	}
 }
 
-type JoinStrategy int
+// AwaitStrategy determines how a convergence point handles multiple incoming branches.
+type AwaitStrategy int
 
 const (
-	JoinWaitAll JoinStrategy = iota
-	JoinBestEffort
+	AwaitNone       AwaitStrategy = iota // not a convergence point
+	AwaitWaitAll                         // wait for all incoming branches
+	AwaitBestEffort                      // proceed when possible, tolerate failures
 )
 
-func (js JoinStrategy) String() string {
-	switch js {
-	case JoinWaitAll:
+func (as AwaitStrategy) String() string {
+	switch as {
+	case AwaitNone:
+		return "none"
+	case AwaitWaitAll:
 		return "wait_all"
-	case JoinBestEffort:
+	case AwaitBestEffort:
 		return "best_effort"
 	default:
 		return "unknown"

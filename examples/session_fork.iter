@@ -82,11 +82,6 @@ agent summarizer:
 router fan_out:
   mode: fan_out_all
 
-join collect:
-  strategy: wait_all
-  require: [commit_namer, summarizer]
-  output: summary_output
-
 workflow session_fork:
   entry: worker
 
@@ -100,6 +95,5 @@ workflow session_fork:
     _session_id: "{{outputs.worker._session_id}}"
   }
 
-  commit_namer -> collect
-  summarizer -> collect
-  collect -> done
+  commit_namer -> done with { commit_info: "{{outputs.commit_namer}}" }
+  summarizer -> done with { summary_info: "{{outputs.summarizer}}" }

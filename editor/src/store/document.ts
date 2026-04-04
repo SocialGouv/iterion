@@ -4,7 +4,6 @@ import type {
   AgentDecl,
   JudgeDecl,
   RouterDecl,
-  JoinDecl,
   HumanDecl,
   ToolNodeDecl,
   WorkflowDecl,
@@ -26,7 +25,6 @@ function normalize(doc: IterDocument): IterDocument {
     agents: doc.agents ?? [],
     judges: doc.judges ?? [],
     routers: doc.routers ?? [],
-    joins: doc.joins ?? [],
     humans: doc.humans ?? [],
     tools: doc.tools ?? [],
     workflows: (doc.workflows ?? []).map((w) => ({
@@ -69,7 +67,6 @@ interface DocumentState {
   updateAgent: (name: string, updates: Partial<AgentDecl>) => void;
   updateJudge: (name: string, updates: Partial<JudgeDecl>) => void;
   updateRouter: (name: string, updates: Partial<RouterDecl>) => void;
-  updateJoin: (name: string, updates: Partial<JoinDecl>) => void;
   updateHuman: (name: string, updates: Partial<HumanDecl>) => void;
   updateTool: (name: string, updates: Partial<ToolNodeDecl>) => void;
   updateWorkflow: (name: string, updates: Partial<WorkflowDecl>) => void;
@@ -78,7 +75,6 @@ interface DocumentState {
   addAgent: (decl: AgentDecl) => void;
   addJudge: (decl: JudgeDecl) => void;
   addRouter: (decl: RouterDecl) => void;
-  addJoin: (decl: JoinDecl) => void;
   addHuman: (decl: HumanDecl) => void;
   addTool: (decl: ToolNodeDecl) => void;
   removeNode: (name: string) => void;
@@ -199,8 +195,6 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     set((s) => (s.document ? { document: { ...s.document, judges: updateInArray(s.document.judges, name, updates) }, ...pushHistory(s) } : s)),
   updateRouter: (name, updates) =>
     set((s) => (s.document ? { document: { ...s.document, routers: updateInArray(s.document.routers, name, updates) }, ...pushHistory(s) } : s)),
-  updateJoin: (name, updates) =>
-    set((s) => (s.document ? { document: { ...s.document, joins: updateInArray(s.document.joins, name, updates) }, ...pushHistory(s) } : s)),
   updateHuman: (name, updates) =>
     set((s) => (s.document ? { document: { ...s.document, humans: updateInArray(s.document.humans, name, updates) }, ...pushHistory(s) } : s)),
   updateTool: (name, updates) =>
@@ -215,14 +209,12 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     set((s) => (s.document ? { document: { ...s.document, judges: [...s.document.judges, decl] }, ...pushHistory(s) } : s)),
   addRouter: (decl) =>
     set((s) => (s.document ? { document: { ...s.document, routers: [...s.document.routers, decl] }, ...pushHistory(s) } : s)),
-  addJoin: (decl) =>
-    set((s) => (s.document ? { document: { ...s.document, joins: [...s.document.joins, decl] }, ...pushHistory(s) } : s)),
   addHuman: (decl) =>
     set((s) => (s.document ? { document: { ...s.document, humans: [...s.document.humans, decl] }, ...pushHistory(s) } : s)),
   addTool: (decl) =>
     set((s) => (s.document ? { document: { ...s.document, tools: [...s.document.tools, decl] }, ...pushHistory(s) } : s)),
 
-  // Node remove — removes declaration + cleans up all edges referencing it + cleans join.require[]
+  // Node remove — removes declaration + cleans up all edges referencing it
   removeNode: (name) =>
     set((s) => {
       if (!s.document) return s;
@@ -233,9 +225,6 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
           agents: doc.agents.filter((a) => a.name !== name),
           judges: doc.judges.filter((j) => j.name !== name),
           routers: doc.routers.filter((r) => r.name !== name),
-          joins: doc.joins
-            .filter((j) => j.name !== name)
-            .map((j) => ({ ...j, require: j.require.filter((r) => r !== name) })),
           humans: doc.humans.filter((h) => h.name !== name),
           tools: doc.tools.filter((t) => t.name !== name),
           workflows: removeNodeEdges(doc, name),
@@ -261,10 +250,6 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
           agents: renameIn(doc.agents),
           judges: renameIn(doc.judges),
           routers: renameIn(doc.routers),
-          joins: renameIn(doc.joins).map((j) => ({
-            ...j,
-            require: j.require.map((r) => (r === oldName ? newName : r)),
-          })),
           humans: renameIn(doc.humans),
           tools: renameIn(doc.tools),
           workflows: updateWorkflowsEdges(doc, oldName, newName),
@@ -289,11 +274,9 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     // Deep-clone with new name, copying nested arrays to avoid shared references
     const clone = { ...found.decl, name: newName };
     if ("tools" in clone && Array.isArray(clone.tools)) clone.tools = [...clone.tools];
-    if ("require" in clone && Array.isArray(clone.require)) clone.require = [...clone.require];
-
     const kindToArray: Record<string, keyof IterDocument> = {
       agent: "agents", judge: "judges", router: "routers",
-      join: "joins", human: "humans", tool: "tools",
+      human: "humans", tool: "tools",
     };
     const arrayKey = kindToArray[found.kind];
     if (!arrayKey) return null;
@@ -334,7 +317,6 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
           agents: doc.agents.filter((a) => isReferenced(a.name)),
           judges: doc.judges.filter((j) => isReferenced(j.name)),
           routers: doc.routers.filter((r) => isReferenced(r.name)),
-          joins: doc.joins.filter((j) => isReferenced(j.name)),
           humans: doc.humans.filter((h) => isReferenced(h.name)),
           tools: doc.tools.filter((t) => isReferenced(t.name)),
         },
@@ -424,7 +406,6 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
           schemas: doc.schemas.map((sc) => (sc.name === oldName ? { ...sc, name: newName } : sc)),
           agents: doc.agents.map((a) => ({ ...a, input: r(a.input), output: r(a.output) })),
           judges: doc.judges.map((j) => ({ ...j, input: r(j.input), output: r(j.output) })),
-          joins: doc.joins.map((j) => ({ ...j, output: r(j.output) })),
           humans: doc.humans.map((h) => ({ ...h, input: r(h.input), output: r(h.output) })),
           tools: doc.tools.map((t) => ({ ...t, output: r(t.output) })),
         },

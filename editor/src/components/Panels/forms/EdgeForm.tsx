@@ -40,7 +40,6 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
     if (!outputSchemaName) for (const j of document.judges) { if (j.name === sourceNode) { outputSchemaName = j.output; break; } }
     if (!outputSchemaName) for (const h of document.humans) { if (h.name === sourceNode) { outputSchemaName = h.output; break; } }
     if (!outputSchemaName) for (const t of document.tools) { if (t.name === sourceNode) { outputSchemaName = t.output; break; } }
-    if (!outputSchemaName) for (const j of document.joins) { if (j.name === sourceNode) { outputSchemaName = j.output; break; } }
     if (!outputSchemaName) return [];
     // Find the schema and filter bool fields
     const schema = document.schemas.find((s) => s.name === outputSchemaName);
@@ -112,7 +111,6 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
     for (const j of document.judges) allNodes.push({ name: j.name, output: j.output });
     for (const h of document.humans) allNodes.push({ name: h.name, output: h.output });
     for (const t of document.tools) allNodes.push({ name: t.name, output: t.output });
-    for (const j of document.joins) allNodes.push({ name: j.name, output: j.output });
 
     // Collect delegated node names for _session_id suggestions
     const delegatedNodes = new Set<string>();

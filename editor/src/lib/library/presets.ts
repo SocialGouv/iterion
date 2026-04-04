@@ -208,27 +208,6 @@ export const PRESET_ITEMS: LibraryItem[] = [
     },
   },
 
-  // ── Joins ───────────────────────────────────────────────
-  {
-    id: "builtin:wait-all-join",
-    name: "Wait All Join",
-    description: "Waits for all required branches before continuing",
-    category: "join",
-    tags: ["merge", "sync", "wait"],
-    builtin: true,
-    template: {
-      node: { kind: "join", data: { strategy: "wait_all", require: [] } },
-      schemas: [
-        {
-          name: "join_output",
-          fields: [
-            { name: "combined_result", type: "json" },
-          ],
-        },
-      ],
-    },
-  },
-
   // ── Humans ──────────────────────────────────────────────
   {
     id: "builtin:human-review-gate",

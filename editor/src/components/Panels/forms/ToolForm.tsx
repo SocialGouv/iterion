@@ -1,9 +1,9 @@
 import { useCallback } from "react";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
-import type { ToolNodeDecl } from "@/api/types";
+import type { ToolNodeDecl, AwaitStrategy } from "@/api/types";
 import { defaultSchema, getAllNodeNames } from "@/lib/defaults";
-import { TextField, CommittedTextField, SelectFieldWithCreate } from "./FormField";
+import { TextField, CommittedTextField, SelectField, SelectFieldWithCreate } from "./FormField";
 
 interface Props {
   decl: ToolNodeDecl;
@@ -65,6 +65,17 @@ export default function ToolForm({ decl }: Props) {
         allowEmpty
         emptyLabel="-- select schema --"
         onCreate={createSchema}
+      />
+      <SelectField
+        label="Await"
+        value={decl.await ?? "none"}
+        onChange={(v) => updateTool(decl.name, { await: (v === "none" ? undefined : v) as AwaitStrategy | undefined })}
+        options={[
+          { value: "none", label: "none" },
+          { value: "wait_all", label: "wait_all" },
+          { value: "best_effort", label: "best_effort" },
+        ]}
+        help="Implicit convergence: wait_all = wait for all incoming branches; best_effort = continue when available results are ready; none = no await (default)."
       />
     </div>
   );

@@ -140,7 +140,6 @@ func (c *compiler) compile() *Workflow {
 	c.compileAgents()
 	c.compileJudges()
 	c.compileRouters()
-	c.compileJoins()
 	c.compileHumans()
 	c.compileTools()
 
@@ -364,6 +363,7 @@ func (c *compiler) compileAgents() {
 			ToolMaxSteps:    a.ToolMaxSteps,
 			ReasoningEffort: a.ReasoningEffort,
 			Readonly:        a.Readonly,
+			AwaitStrategy:   convertAwaitMode(a.Await),
 		}
 	}
 }
@@ -399,6 +399,7 @@ func (c *compiler) compileJudges() {
 			ToolMaxSteps:    j.ToolMaxSteps,
 			ReasoningEffort: j.ReasoningEffort,
 			Readonly:        j.Readonly,
+			AwaitStrategy:   convertAwaitMode(j.Await),
 		}
 	}
 }
@@ -449,24 +450,6 @@ func (c *compiler) compileRouters() {
 }
 
 // ---------------------------------------------------------------------------
-// Nodes — Join
-// ---------------------------------------------------------------------------
-
-func (c *compiler) compileJoins() {
-	for _, j := range c.file.Joins {
-		c.validateSchemaRef(j.Name, "output", j.Output)
-
-		c.nodes[j.Name] = &Node{
-			ID:           j.Name,
-			Kind:         NodeJoin,
-			JoinStrategy: convertJoinStrategy(j.Strategy),
-			Require:      j.Require,
-			JoinOutput:   j.Output,
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Nodes — Human
 // ---------------------------------------------------------------------------
 
@@ -478,14 +461,15 @@ func (c *compiler) compileHumans() {
 
 		mode := convertHumanMode(h.Mode)
 		node := &Node{
-			ID:           h.Name,
-			Kind:         NodeHuman,
-			InputSchema:  h.Input,
-			OutputSchema: h.Output,
-			Publish:      h.Publish,
-			HumanMode:    mode,
-			MinAnswers:   h.MinAnswers,
-			Instructions: h.Instructions,
+			ID:            h.Name,
+			Kind:          NodeHuman,
+			InputSchema:   h.Input,
+			OutputSchema:  h.Output,
+			Publish:       h.Publish,
+			HumanMode:     mode,
+			MinAnswers:    h.MinAnswers,
+			Instructions:  h.Instructions,
+			AwaitStrategy: convertAwaitMode(h.Await),
 		}
 
 		// Auto modes require a model and output schema for LLM execution.
@@ -516,10 +500,11 @@ func (c *compiler) compileTools() {
 		c.validateSchemaRef(t.Name, "output", t.Output)
 
 		c.nodes[t.Name] = &Node{
-			ID:           t.Name,
-			Kind:         NodeTool,
-			OutputSchema: t.Output,
-			Command:      t.Command,
+			ID:            t.Name,
+			Kind:          NodeTool,
+			OutputSchema:  t.Output,
+			Command:       t.Command,
+			AwaitStrategy: convertAwaitMode(t.Await),
 		}
 	}
 }
@@ -699,12 +684,14 @@ func convertRouterMode(rm ast.RouterMode) RouterMode {
 	}
 }
 
-func convertJoinStrategy(js ast.JoinStrategy) JoinStrategy {
-	switch js {
-	case ast.JoinBestEffort:
-		return JoinBestEffort
+func convertAwaitMode(am ast.AwaitMode) AwaitStrategy {
+	switch am {
+	case ast.AwaitWaitAll:
+		return AwaitWaitAll
+	case ast.AwaitBestEffort:
+		return AwaitBestEffort
 	default:
-		return JoinWaitAll
+		return AwaitNone
 	}
 }
 

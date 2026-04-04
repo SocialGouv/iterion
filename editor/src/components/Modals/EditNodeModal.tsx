@@ -4,10 +4,9 @@ import { useUIStore } from "@/store/ui";
 import { useSelectionStore } from "@/store/selection";
 import { findNodeDecl } from "@/lib/defaults";
 import { NODE_ICONS, NODE_COLORS } from "@/lib/constants";
-import type { AgentDecl, JudgeDecl, RouterDecl, JoinDecl, HumanDecl, ToolNodeDecl, NodeKind } from "@/api/types";
+import type { AgentDecl, JudgeDecl, RouterDecl, HumanDecl, ToolNodeDecl, NodeKind } from "@/api/types";
 import AgentForm from "@/components/Panels/forms/AgentForm";
 import RouterForm from "@/components/Panels/forms/RouterForm";
-import JoinForm from "@/components/Panels/forms/JoinForm";
 import HumanForm from "@/components/Panels/forms/HumanForm";
 import ToolForm from "@/components/Panels/forms/ToolForm";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
@@ -127,7 +126,7 @@ export default function EditNodeModal() {
   );
 }
 
-function NodeForm({ kind, decl }: { kind: NodeKind; decl: AgentDecl | JudgeDecl | RouterDecl | JoinDecl | HumanDecl | ToolNodeDecl }) {
+function NodeForm({ kind, decl }: { kind: NodeKind; decl: AgentDecl | JudgeDecl | RouterDecl | HumanDecl | ToolNodeDecl }) {
   switch (kind) {
     case "agent":
       return <AgentForm decl={decl as AgentDecl} kind="agent" />;
@@ -135,8 +134,6 @@ function NodeForm({ kind, decl }: { kind: NodeKind; decl: AgentDecl | JudgeDecl 
       return <AgentForm decl={decl as JudgeDecl} kind="judge" />;
     case "router":
       return <RouterForm decl={decl as RouterDecl} />;
-    case "join":
-      return <JoinForm decl={decl as JoinDecl} />;
     case "human":
       return <HumanForm decl={decl as HumanDecl} />;
     case "tool":

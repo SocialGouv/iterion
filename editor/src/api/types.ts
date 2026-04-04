@@ -6,7 +6,6 @@ export interface IterDocument {
   agents: AgentDecl[];
   judges: JudgeDecl[];
   routers: RouterDecl[];
-  joins: JoinDecl[];
   humans: HumanDecl[];
   tools: ToolNodeDecl[];
   workflows: WorkflowDecl[];
@@ -26,17 +25,20 @@ export interface SchemaField { name: string; type: FieldType; enum_values?: stri
 export type FieldType = "string" | "bool" | "int" | "float" | "json" | "string[]";
 
 export type SessionMode = "fresh" | "inherit" | "fork" | "artifacts_only";
+export type AwaitStrategy = "none" | "wait_all" | "best_effort";
 export interface AgentDecl {
   name: string; model: string; delegate?: string;
   input: string; output: string; publish?: string;
   system: string; user: string; session: SessionMode;
   tools?: string[]; tool_max_steps?: number;
+  await?: AwaitStrategy;
 }
 export interface JudgeDecl {
   name: string; model: string; delegate?: string;
   input: string; output: string; publish?: string;
   system: string; user: string; session: SessionMode;
   tools?: string[]; tool_max_steps?: number;
+  await?: AwaitStrategy;
 }
 
 export type RouterMode = "fan_out_all" | "condition" | "round_robin" | "llm";
@@ -45,17 +47,15 @@ export interface RouterDecl {
   model?: string; system?: string; user?: string; multi?: boolean;
 }
 
-export type JoinStrategy = "wait_all" | "best_effort";
-export interface JoinDecl { name: string; strategy: JoinStrategy; require: string[]; output: string; }
-
 export type HumanMode = "pause_until_answers" | "auto_answer" | "auto_or_pause";
 export interface HumanDecl {
   name: string; input: string; output: string; publish?: string;
   instructions: string; mode: HumanMode; min_answers?: number;
   model?: string; system?: string;
+  await?: AwaitStrategy;
 }
 
-export interface ToolNodeDecl { name: string; command: string; output: string; }
+export interface ToolNodeDecl { name: string; command: string; output: string; await?: AwaitStrategy; }
 
 export interface WorkflowDecl {
   name: string; vars?: VarsBlock; entry: string;
@@ -74,7 +74,7 @@ export interface LoopClause { name: string; max_iterations: number; }
 export interface WithEntry { key: string; value: string; }
 
 // Node kind for the visual editor
-export type NodeKind = "agent" | "judge" | "router" | "join" | "human" | "tool" | "done" | "fail" | "start";
+export type NodeKind = "agent" | "judge" | "router" | "human" | "tool" | "done" | "fail" | "start";
 
 // File management types
 export interface FileEntry {
