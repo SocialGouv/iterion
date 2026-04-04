@@ -6,8 +6,9 @@ import type { LayerKind } from "@/lib/constants";
 export default function ReferenceEdge(props: EdgeProps) {
   const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, label, data, markerEnd } = props;
 
-  const layerKind = (data as Record<string, unknown>)?.layerKind as LayerKind | undefined;
-  const color = layerKind ? LAYER_COLORS[layerKind] : "#666";
+  const edgeData = data as Record<string, unknown> | undefined;
+  const layerKind = edgeData?.layerKind as LayerKind | undefined;
+  const color = (edgeData?.color as string) ?? (layerKind ? LAYER_COLORS[layerKind] : "#666");
 
   const [edgePath, labelX, labelY] = getSmoothStepPath({
     sourceX,

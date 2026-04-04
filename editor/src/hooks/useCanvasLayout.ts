@@ -4,6 +4,7 @@ import { useDocumentStore } from "@/store/document";
 import { useUIStore } from "@/store/ui";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { documentToGraph, getTopologyKey, generateLayerNodes } from "@/lib/documentToGraph";
+import { generateNodeDetailGraph } from "@/lib/nodeDetailGraph";
 import { autoLayout } from "@/lib/autoLayout";
 import { computeEdgeHandles } from "@/lib/computeEdgeHandles";
 import { DEBOUNCE_EDGE_RECOMPUTE_MS } from "@/lib/constants";
@@ -12,19 +13,26 @@ export function useCanvasLayout() {
   const document = useDocumentStore((s) => s.document);
   const layoutDirection = useUIStore((s) => s.layoutDirection);
   const activeLayers = useUIStore((s) => s.activeLayers);
+  const subNodeViewStack = useUIStore((s) => s.subNodeViewStack);
   const activeWorkflow = useActiveWorkflow();
   const activeWorkflowName = activeWorkflow?.name;
 
-  // Compute graph from document
+  // Current sub-node view target (top of stack)
+  const subNodeViewId = subNodeViewStack.length > 0 ? subNodeViewStack[subNodeViewStack.length - 1]! : null;
+
+  // Compute graph from document — either main workflow or sub-node detail view
   const { nodes: graphNodes, edges: graphEdges } = useMemo(() => {
     if (!document) return { nodes: [], edges: [] };
+    if (subNodeViewId && activeWorkflowName) {
+      return generateNodeDetailGraph(document, subNodeViewId, activeWorkflowName);
+    }
     const base = documentToGraph(document, activeWorkflowName);
     const layer = generateLayerNodes(document, activeLayers);
     return {
       nodes: [...base.nodes, ...layer.nodes],
       edges: [...base.edges, ...layer.edges],
     };
-  }, [document, activeWorkflowName, activeLayers]);
+  }, [document, activeWorkflowName, activeLayers, subNodeViewId]);
 
   // Manage node positions with local state (allows dragging)
   const [layoutNodes, setLayoutNodes] = useState<Node[]>([]);
@@ -48,7 +56,8 @@ export function useCanvasLayout() {
       return;
     }
     const layerKey = Array.from(activeLayers).sort().join(",");
-    const topoKey = document ? getTopologyKey(document, activeWorkflowName) + "|" + layoutDirection + "|" + layerKey : "";
+    const subViewKey = subNodeViewId ?? "";
+    const topoKey = document ? getTopologyKey(document, activeWorkflowName) + "|" + layoutDirection + "|" + layerKey + "|" + subViewKey : "";
     if (prevTopologyRef.current !== topoKey) {
       prevTopologyRef.current = topoKey;
       autoLayout(graphNodes, graphEdges, layoutDirection)
@@ -74,7 +83,7 @@ export function useCanvasLayout() {
           setLayoutEdges(computeEdgeHandles(graphNodes, graphEdges, layoutDirection));
         });
     }
-  }, [document, graphNodes, graphEdges, activeWorkflowName, layoutDirection, activeLayers]);
+  }, [document, graphNodes, graphEdges, activeWorkflowName, layoutDirection, activeLayers, subNodeViewId]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {

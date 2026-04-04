@@ -13,18 +13,22 @@ import { useCanvasLayout } from "@/hooks/useCanvasLayout";
 import { useAddNode } from "@/hooks/useAddNode";
 import { useFullscreen } from "@/hooks/useFullscreen";
 import { isAuxiliaryNodeId } from "@/lib/documentToGraph";
+import { isDetailNodeId, DETAIL_PREFIX_EDGE } from "@/lib/nodeDetailGraph";
 import type { NodeKind } from "@/api/types";
 import WorkflowNode from "./WorkflowNode";
 import ConditionalEdge from "./ConditionalEdge";
 import AuxiliaryNode from "./AuxiliaryNode";
 import ReferenceEdge from "./ReferenceEdge";
+import DetailSubNode from "./DetailSubNode";
 import NodeContextMenu from "./NodeContextMenu";
-import NodeDetailPopover from "./NodeDetailPopover";
+import EditNodeModal from "@/components/Modals/EditNodeModal";
+import EditEdgeModal from "@/components/Modals/EditEdgeModal";
+import BreadcrumbBar from "./BreadcrumbBar";
 import CanvasToolbar from "./CanvasToolbar";
 import QuickAddMenu from "./QuickAddMenu";
 import SearchOverlay from "./SearchOverlay";
 
-const nodeTypes = { workflowNode: WorkflowNode, auxiliaryNode: AuxiliaryNode };
+const nodeTypes = { workflowNode: WorkflowNode, auxiliaryNode: AuxiliaryNode, detailSubNode: DetailSubNode };
 const edgeTypes = { conditionalEdge: ConditionalEdge, referenceEdge: ReferenceEdge };
 
 function isEditableNode(id: string): boolean {
@@ -32,7 +36,6 @@ function isEditableNode(id: string): boolean {
 }
 
 export default function Canvas() {
-  const document = useDocumentStore((s) => s.document);
   const addNode = useAddNode();
   const removeNode = useDocumentStore((s) => s.removeNode);
   const duplicateNode = useDocumentStore((s) => s.duplicateNode);
@@ -41,8 +44,9 @@ export default function Canvas() {
   const setSelectedEdge = useSelectionStore((s) => s.setSelectedEdge);
   const clearSelection = useSelectionStore((s) => s.clearSelection);
   const selectedNodeId = useSelectionStore((s) => s.selectedNodeId);
-  const detailNodeId = useUIStore((s) => s.detailNodeId);
   const setDetailNodeId = useUIStore((s) => s.setDetailNodeId);
+  const subNodeViewStack = useUIStore((s) => s.subNodeViewStack);
+  const pushSubNodeView = useUIStore((s) => s.pushSubNodeView);
   const activeWorkflow = useActiveWorkflow();
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition, fitView } = useReactFlow();
@@ -101,18 +105,38 @@ export default function Canvas() {
   // Node event handlers
   const onNodeClick: NodeMouseHandler = useCallback(
     (_event, node) => {
-      if (!isAuxiliaryNodeId(node.id)) setSelectedNode(node.id);
       connections.setQuickAddMenu(null);
-      setDetailNodeId(null);
+      // In sub-node view, clicking sub-nodes is handled by DetailSubNode itself
+      if (isAuxiliaryNodeId(node.id)) return;
+      // Open editable modal on single click for editable nodes
+      if (isEditableNode(node.id)) {
+        setDetailNodeId(node.id);
+      } else {
+        setSelectedNode(node.id);
+      }
     },
     [setSelectedNode, setDetailNodeId, connections],
   );
 
   const onNodeDoubleClick: NodeMouseHandler = useCallback(
     (_event, node) => {
-      if (isEditableNode(node.id)) setDetailNodeId(node.id);
+      // In sub-node view: double-click on edge sub-node navigates to the target node
+      if (node.id.startsWith(DETAIL_PREFIX_EDGE)) {
+        const data = node.data as { targetNodeId?: string };
+        if (data.targetNodeId && isEditableNode(data.targetNodeId)) {
+          setDetailNodeId(null);
+          pushSubNodeView(data.targetNodeId);
+        }
+        return;
+      }
+      if (isEditableNode(node.id) && !isDetailNodeId(node.id)) {
+        // Close any open modal first
+        setDetailNodeId(null);
+        // Navigate into sub-node detail view
+        pushSubNodeView(node.id);
+      }
     },
-    [setDetailNodeId],
+    [setDetailNodeId, pushSubNodeView],
   );
 
   const onEdgeClick: EdgeMouseHandler = useCallback(
@@ -263,14 +287,14 @@ export default function Canvas() {
         />
       )}
 
-      {/* Node detail popover */}
-      {detailNodeId && document && (
-        <NodeDetailPopover
-          nodeId={detailNodeId}
-          document={document}
-          onClose={() => setDetailNodeId(null)}
-        />
-      )}
+      {/* Breadcrumb for sub-node view */}
+      {subNodeViewStack.length > 0 && <BreadcrumbBar />}
+
+      {/* Editable node modal (single click) */}
+      <EditNodeModal />
+
+      {/* Edge editing modal */}
+      <EditEdgeModal />
 
       {connections.quickAddMenu && (
         <QuickAddMenu

@@ -3,6 +3,7 @@ import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { useUIStore } from "@/store/ui";
 import { makeEdgeId, isAuxiliaryNodeId } from "@/lib/documentToGraph";
+import { useEscapeStack } from "@/hooks/useEscapeStack";
 import type { LayerKind } from "@/lib/constants";
 
 function isEditableNode(id: string): boolean {
@@ -36,9 +37,8 @@ export function useCanvasKeyboard(deps: CanvasKeyboardDeps): (e: KeyboardEvent) 
   const addToast = useUIStore((s) => s.addToast);
   const expanded = useUIStore((s) => s.expanded);
   const toggleExpanded = useUIStore((s) => s.toggleExpanded);
-  const detailNodeId = useUIStore((s) => s.detailNodeId);
-  const setDetailNodeId = useUIStore((s) => s.setDetailNodeId);
   const toggleLayer = useUIStore((s) => s.toggleLayer);
+  const dismissEscape = useEscapeStack();
 
   const { search, quickAddMenu, setQuickAddMenu, setContextMenu } = deps;
 
@@ -52,7 +52,8 @@ export function useCanvasKeyboard(deps: CanvasKeyboardDeps): (e: KeyboardEvent) 
         return;
       }
       if (e.key === "Escape") {
-        if (detailNodeId) { setDetailNodeId(null); return; }
+        // Priority: close modals/sub-views first, then general UI
+        if (dismissEscape()) return;
         if (expanded) { toggleExpanded(); return; }
         if (search.searchOpen) { search.closeSearch(); return; }
         if (quickAddMenu) { setQuickAddMenu(null); return; }
@@ -132,6 +133,6 @@ export function useCanvasKeyboard(deps: CanvasKeyboardDeps): (e: KeyboardEvent) 
         }
       }
     },
-    [selectedNodeId, selectedEdgeId, document, removeNode, removeEdge, clearSelection, search, quickAddMenu, copiedNodeId, duplicateNode, setCopiedNode, setSelectedNode, addToast, expanded, toggleExpanded, detailNodeId, setDetailNodeId, toggleLayer, undo, redo, setQuickAddMenu, setContextMenu],
+    [selectedNodeId, selectedEdgeId, document, removeNode, removeEdge, clearSelection, search, quickAddMenu, copiedNodeId, duplicateNode, setCopiedNode, setSelectedNode, addToast, expanded, toggleExpanded, dismissEscape, toggleLayer, undo, redo, setQuickAddMenu, setContextMenu],
   );
 }

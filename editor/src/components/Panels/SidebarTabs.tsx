@@ -23,13 +23,14 @@ export default function SidebarTabs() {
   const selectedNodeId = useSelectionStore((s) => s.selectedNodeId);
   const selectedEdgeId = useSelectionStore((s) => s.selectedEdgeId);
 
-  // Auto-switch to Properties tab when a node or edge is selected,
-  // but only from passive tabs to avoid disrupting active editing
+  // Auto-switch to Properties tab when an edge is selected,
+  // but only from passive tabs to avoid disrupting active editing.
+  // Node selection no longer triggers this since nodes open in a modal.
   useEffect(() => {
-    if ((selectedNodeId || selectedEdgeId) && (activeTab === "workflow" || activeTab === "comments")) {
+    if (selectedEdgeId && (activeTab === "workflow" || activeTab === "comments")) {
       setActiveTab("properties");
     }
-  }, [selectedNodeId, selectedEdgeId, activeTab, setActiveTab]);
+  }, [selectedEdgeId, activeTab, setActiveTab]);
 
   const hasSelection = !!(selectedNodeId || selectedEdgeId);
 

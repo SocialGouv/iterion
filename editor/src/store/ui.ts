@@ -27,6 +27,10 @@ interface UIState {
   detailNodeId: string | null;
   editingItem: EditingItem | null;
   toasts: Toast[];
+  // Sub-node detail view (double-click navigation)
+  subNodeViewStack: string[];
+  // Edge editing in modal
+  editModalEdgeInfo: { workflowName: string; edgeIndex: number } | null;
   setActiveTab: (tab: SidebarTab) => void;
   toggleSourceView: () => void;
   toggleDiagnosticsPanel: () => void;
@@ -40,6 +44,13 @@ interface UIState {
   setEditingItem: (item: EditingItem | null) => void;
   addToast: (message: string, type: Toast["type"]) => void;
   removeToast: (id: number) => void;
+  // Sub-node view navigation
+  pushSubNodeView: (nodeId: string) => void;
+  popSubNodeView: () => void;
+  clearSubNodeView: () => void;
+  navigateSubNodeViewTo: (index: number) => void;
+  // Edge modal
+  setEditModalEdgeInfo: (info: { workflowName: string; edgeIndex: number } | null) => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -54,6 +65,8 @@ export const useUIStore = create<UIState>((set) => ({
   detailNodeId: null,
   editingItem: null,
   toasts: [],
+  subNodeViewStack: [],
+  editModalEdgeInfo: null,
   setActiveTab: (activeTab) => set({ activeTab }),
   toggleSourceView: () => set((s) => ({ sourceViewOpen: !s.sourceViewOpen })),
   toggleDiagnosticsPanel: () => set((s) => ({ diagnosticsPanelOpen: !s.diagnosticsPanelOpen })),
@@ -77,4 +90,25 @@ export const useUIStore = create<UIState>((set) => ({
     }, TOAST_DURATION_DEFAULT_MS);
   },
   removeToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
+  // Sub-node view navigation
+  pushSubNodeView: (nodeId) => set((s) => {
+    // Prevent duplicate: ignore if already at top of stack
+    if (s.subNodeViewStack.length > 0 && s.subNodeViewStack[s.subNodeViewStack.length - 1] === nodeId) {
+      return s;
+    }
+    return { subNodeViewStack: [...s.subNodeViewStack, nodeId], detailNodeId: null, editModalEdgeInfo: null };
+  }),
+  popSubNodeView: () => set((s) => ({
+    subNodeViewStack: s.subNodeViewStack.slice(0, -1),
+    detailNodeId: null,
+    editModalEdgeInfo: null,
+  })),
+  clearSubNodeView: () => set({ subNodeViewStack: [], detailNodeId: null, editModalEdgeInfo: null }),
+  navigateSubNodeViewTo: (index) => set((s) => ({
+    subNodeViewStack: s.subNodeViewStack.slice(0, index + 1),
+    detailNodeId: null,
+    editModalEdgeInfo: null,
+  })),
+  // Edge modal
+  setEditModalEdgeInfo: (editModalEdgeInfo) => set({ editModalEdgeInfo }),
 }));
