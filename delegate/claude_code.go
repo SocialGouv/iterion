@@ -53,6 +53,10 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		opts = append(opts, claude.WithEnv("CLAUDE_CODE_EFFORT_LEVEL", task.ReasoningEffort))
 	}
 
+	if task.SessionID != "" {
+		opts = append(opts, claude.WithResume(task.SessionID))
+	}
+
 	// Build user prompt. When an output schema is provided and tools are also
 	// in use, embed the schema in the prompt text (WithOutputFormat disables
 	// tool use in the claude CLI). When no tools are involved, use the native
@@ -94,6 +98,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		ExitCode:    0,
 		Stderr:      stderrBuf.String(),
 		BackendName: "claude_code",
+		SessionID:   rm.SessionID,
 	}
 
 	if rm.Usage != nil {

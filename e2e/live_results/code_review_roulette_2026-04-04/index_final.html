@@ -1,0 +1,1344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Code Review Roulette</title>
+<style>
+/* === CSS VARIABLES === */
+:root {
+  --bg: #0a0a0a;
+  --bg-light: #111;
+  --text-green: #00ff41;
+  --text-amber: #ffb000;
+  --text-red: #ff0040;
+  --text-dim: #555;
+  --glow-green: 0 0 5px #00ff41, 0 0 10px rgba(0,255,65,0.3);
+  --glow-amber: 0 0 5px #ffb000, 0 0 10px rgba(255,176,0,0.3);
+  --glow-red: 0 0 5px #ff0040, 0 0 10px rgba(255,0,64,0.3);
+  --font-mono: 'Courier New', Courier, monospace;
+  --line-min-h: 44px;
+}
+
+/* === RESET & BASE === */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text-green);
+  font-family: var(--font-mono);
+  min-height: 100vh;
+  overflow-x: hidden;
+  position: relative;
+  line-height: 1.5;
+}
+
+/* === SCANLINES === */
+body::after {
+  content: '';
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: repeating-linear-gradient(
+    transparent, transparent 2px,
+    rgba(0,0,0,0.3) 2px, rgba(0,0,0,0.3) 4px
+  );
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* === CRT GLOW === */
+.glow { text-shadow: var(--glow-green); }
+.glow-amber { text-shadow: var(--glow-amber); color: var(--text-amber); }
+.glow-red { text-shadow: var(--glow-red); color: var(--text-red); }
+
+/* === LAYOUT === */
+.container {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+section {
+  display: none;
+  animation: fadeIn 0.3s ease;
+}
+section.active { display: block; }
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* === TITLE === */
+h1.title {
+  font-size: clamp(1.2rem, 4vw, 2rem);
+  text-align: center;
+  margin-bottom: 10px;
+  text-shadow: var(--glow-green);
+  letter-spacing: 2px;
+}
+.cursor-blink::after {
+  content: '_';
+  animation: blink 1s step-end infinite;
+}
+@keyframes blink {
+  50% { opacity: 0; }
+}
+
+.subtitle {
+  text-align: center;
+  color: var(--text-amber);
+  font-size: 0.85rem;
+  margin-bottom: 30px;
+  text-shadow: var(--glow-amber);
+}
+
+/* === BUTTONS === */
+.btn {
+  display: inline-block;
+  padding: 12px 24px;
+  border: 1px solid var(--text-green);
+  background: transparent;
+  color: var(--text-green);
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  transition: all 0.15s;
+  min-width: 48px;
+  min-height: 48px;
+  text-shadow: var(--glow-green);
+  box-shadow: inset 0 0 8px rgba(0,255,65,0.1);
+}
+.btn:hover, .btn:focus {
+  background: rgba(0,255,65,0.15);
+  box-shadow: var(--glow-green), inset 0 0 15px rgba(0,255,65,0.15);
+}
+.btn:disabled {
+  color: var(--text-dim);
+  border-color: var(--text-dim);
+  cursor: not-allowed;
+  text-shadow: none;
+  box-shadow: none;
+}
+.btn.amber {
+  border-color: var(--text-amber);
+  color: var(--text-amber);
+  text-shadow: var(--glow-amber);
+  box-shadow: inset 0 0 8px rgba(255,176,0,0.1);
+}
+.btn.amber:hover:not(:disabled) { background: rgba(255,176,0,0.15); }
+.btn.red {
+  border-color: var(--text-red);
+  color: var(--text-red);
+  text-shadow: var(--glow-red);
+}
+.btn.red:hover { background: rgba(255,0,64,0.15); }
+.btn-small { padding: 8px 14px; font-size: 0.8rem; }
+
+/* === MENU SCREEN === */
+.diff-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 15px;
+  justify-content: center;
+  margin: 20px 0;
+}
+.diff-btn {
+  flex: 1 1 200px;
+  max-width: 260px;
+  padding: 20px;
+  border: 1px solid var(--text-green);
+  background: rgba(0,255,65,0.03);
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: center;
+  font-family: var(--font-mono);
+}
+.diff-btn:hover {
+  background: rgba(0,255,65,0.12);
+  box-shadow: var(--glow-green);
+}
+.diff-btn h3 {
+  color: var(--text-green);
+  font-size: 1.2rem;
+  margin-bottom: 8px;
+  text-shadow: var(--glow-green);
+}
+.diff-btn p {
+  color: var(--text-amber);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+.diff-btn.medium { border-color: var(--text-amber); }
+.diff-btn.medium:hover { box-shadow: var(--glow-amber); background: rgba(255,176,0,0.1); }
+.diff-btn.medium h3 { color: var(--text-amber); text-shadow: var(--glow-amber); }
+.diff-btn.hard { border-color: var(--text-red); }
+.diff-btn.hard:hover { box-shadow: var(--glow-red); background: rgba(255,0,64,0.08); }
+.diff-btn.hard h3 { color: var(--text-red); text-shadow: var(--glow-red); }
+
+.timer-override {
+  text-align: center;
+  margin: 15px 0;
+  color: var(--text-dim);
+  font-size: 0.8rem;
+}
+.timer-override label { margin-right: 10px; }
+.timer-override select {
+  background: var(--bg);
+  color: var(--text-green);
+  border: 1px solid var(--text-green);
+  font-family: var(--font-mono);
+  padding: 4px 8px;
+  font-size: 0.85rem;
+}
+
+/* === HUD === */
+.hud {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: var(--bg);
+  border-bottom: 1px solid var(--text-green);
+  padding: 10px 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.hud.hidden { display: none; }
+.hud-item {
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+#timer-display {
+  font-size: 1.3rem;
+  font-weight: bold;
+  text-shadow: var(--glow-green);
+  min-width: 60px;
+  text-align: center;
+}
+#timer-display.timer-critical {
+  color: var(--text-red);
+  text-shadow: var(--glow-red);
+  animation: pulse 0.5s ease-in-out infinite alternate;
+}
+@keyframes pulse {
+  from { transform: scale(1); }
+  to { transform: scale(1.12); }
+}
+.streak-hot { text-shadow: var(--glow-amber); color: var(--text-amber) !important; }
+
+/* === CODE SNIPPET === */
+.snippet-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 15px 0 5px;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.snippet-title {
+  color: var(--text-amber);
+  font-size: 0.9rem;
+  text-shadow: var(--glow-amber);
+}
+.snippet-lang {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  border: 1px solid var(--text-dim);
+  padding: 2px 8px;
+}
+
+.code-container {
+  border: 1px solid var(--text-green);
+  box-shadow: inset 0 0 12px rgba(0,255,65,0.05);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin-bottom: 15px;
+}
+.code-container pre {
+  margin: 0;
+  padding: 0;
+}
+.code-container code {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: clamp(12px, 1.6vw, 14px);
+  line-height: 1.6;
+}
+
+.code-line {
+  display: flex;
+  align-items: stretch;
+  min-height: var(--line-min-h);
+  cursor: pointer;
+  transition: background 0.15s;
+  touch-action: manipulation;
+  padding-right: 12px;
+}
+.code-line:hover { background: rgba(0,255,65,0.08); }
+.code-line.disabled { cursor: default; }
+.code-line.disabled:hover { background: transparent; }
+
+.line-number {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 40px;
+  padding: 0 10px;
+  color: var(--text-dim);
+  user-select: none;
+  border-right: 1px solid #222;
+  flex-shrink: 0;
+  font-size: 0.8em;
+}
+.line-content {
+  display: flex;
+  align-items: center;
+  padding: 2px 10px;
+  white-space: pre;
+  flex: 1;
+}
+
+/* Code line feedback */
+.code-line.correct {
+  animation: flashGreen 0.6s ease;
+  background: rgba(0,255,65,0.25) !important;
+}
+.code-line.wrong {
+  animation: flashRed 0.6s ease;
+  background: rgba(255,0,64,0.25) !important;
+}
+.code-line.reveal-bug {
+  animation: pulseGreen 1s ease infinite;
+  background: rgba(0,255,65,0.2) !important;
+}
+.code-line.hint-region {
+  background: rgba(255,176,0,0.1) !important;
+  border-left: 2px solid var(--text-amber);
+}
+
+@keyframes flashGreen {
+  0% { background: rgba(0,255,65,0.5); }
+  100% { background: rgba(0,255,65,0.15); }
+}
+@keyframes flashRed {
+  0% { background: rgba(255,0,64,0.5); }
+  100% { background: rgba(255,0,64,0.15); }
+}
+@keyframes pulseGreen {
+  0%, 100% { background: rgba(0,255,65,0.15); }
+  50% { background: rgba(0,255,65,0.35); }
+}
+
+/* === SCORE FLOAT === */
+.score-float {
+  position: fixed;
+  top: 60px;
+  right: 30px;
+  font-size: 1.5rem;
+  font-weight: bold;
+  pointer-events: none;
+  animation: floatUp 0.8s ease forwards;
+  z-index: 200;
+}
+.score-float.plus { color: var(--text-green); text-shadow: var(--glow-green); }
+.score-float.minus { color: var(--text-red); text-shadow: var(--glow-red); }
+
+@keyframes floatUp {
+  0% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-60px); }
+}
+
+/* === EXPLANATION SCREEN === */
+.explanation-box {
+  border: 1px solid var(--text-green);
+  padding: 20px;
+  margin: 20px 0;
+  box-shadow: inset 0 0 10px rgba(0,255,65,0.05);
+}
+.explanation-result {
+  font-size: 1.3rem;
+  font-weight: bold;
+  margin-bottom: 15px;
+}
+.explanation-text {
+  color: var(--text-amber);
+  margin: 10px 0;
+  line-height: 1.6;
+}
+.explanation-fix {
+  background: #111;
+  border: 1px solid #333;
+  padding: 10px;
+  margin: 10px 0;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+  color: var(--text-green);
+}
+.progress-bar-track {
+  width: 100%;
+  height: 4px;
+  background: #222;
+  margin-top: 15px;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.progress-bar-fill {
+  height: 100%;
+  background: var(--text-green);
+  width: 100%;
+  animation: shrink 3s linear forwards;
+}
+@keyframes shrink {
+  from { width: 100%; }
+  to { width: 0%; }
+}
+
+/* === GAME OVER === */
+.gameover-stats {
+  text-align: center;
+  margin: 20px 0;
+}
+.gameover-stats .stat-line {
+  font-size: 1.1rem;
+  margin: 10px 0;
+  animation: fadeIn 0.4s ease backwards;
+}
+.gameover-stats .stat-line:nth-child(1) { animation-delay: 0.1s; }
+.gameover-stats .stat-line:nth-child(2) { animation-delay: 0.2s; }
+.gameover-stats .stat-line:nth-child(3) { animation-delay: 0.3s; }
+.gameover-stats .stat-line:nth-child(4) { animation-delay: 0.4s; }
+
+.initials-input {
+  text-align: center;
+  margin: 20px 0;
+}
+.initials-input input {
+  background: var(--bg);
+  border: 1px solid var(--text-amber);
+  color: var(--text-amber);
+  font-family: var(--font-mono);
+  font-size: 1.5rem;
+  text-align: center;
+  width: 100px;
+  padding: 8px;
+  text-transform: uppercase;
+  letter-spacing: 4px;
+}
+
+/* === HIGH SCORES TABLE === */
+.scores-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  margin: 15px 0;
+}
+.scores-table th, .scores-table td {
+  padding: 6px 10px;
+  text-align: left;
+  border-bottom: 1px solid #222;
+}
+.scores-table th {
+  color: var(--text-amber);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+.scores-table td { color: var(--text-green); }
+
+.reset-link {
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  cursor: pointer;
+  text-decoration: underline;
+  background: none;
+  border: none;
+  font-family: var(--font-mono);
+  display: inline-block;
+  margin-top: 5px;
+}
+
+/* === SYNTAX HIGHLIGHTING === */
+.syn-keyword { color: #ff79c6; }
+.syn-string { color: #f1fa8c; }
+.syn-comment { color: #6272a4; font-style: italic; }
+.syn-number { color: #bd93f9; }
+.syn-func { color: #50fa7b; }
+.syn-type { color: #8be9fd; }
+
+/* === RESPONSIVE === */
+@media (max-width: 768px) {
+  .container { padding: 10px; }
+  .hud { font-size: 0.75rem; padding: 8px 0; }
+  #timer-display { font-size: 1.1rem; }
+  .diff-btn { flex: 1 1 100%; max-width: 100%; padding: 15px; }
+  .code-container code { font-size: 12px; }
+  .explanation-box { padding: 12px; }
+}
+@media (max-width: 400px) {
+  .hud { flex-direction: column; align-items: flex-start; gap: 4px; }
+  .line-number { min-width: 30px; padding: 0 6px; }
+  .line-content { padding: 2px 6px; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- ======== MENU SCREEN ======== -->
+  <section id="menu-screen" class="active">
+    <h1 class="title glow">&gt; CODE REVIEW ROULETTE<span class="cursor-blink"></span></h1>
+    <p class="subtitle">// FIND THE BUG. BEAT THE CLOCK. PROVE YOUR SKILL.</p>
+
+    <p style="text-align:center; color:var(--text-amber); margin-bottom:20px; font-size:0.85rem;">[ SELECT DIFFICULTY TO INITIATE SCAN ]</p>
+
+    <div class="diff-buttons">
+      <div class="diff-btn" onclick="startGame('easy')" tabindex="0" role="button" aria-label="Easy difficulty">
+        <h3>EASY</h3>
+        <p>10-12 lines &bull; Obvious bugs<br>Timer: 90s</p>
+      </div>
+      <div class="diff-btn medium" onclick="startGame('medium')" tabindex="0" role="button" aria-label="Medium difficulty">
+        <h3>MEDIUM</h3>
+        <p>13-16 lines &bull; Logical bugs<br>Timer: 60s</p>
+      </div>
+      <div class="diff-btn hard" onclick="startGame('hard')" tabindex="0" role="button" aria-label="Hard difficulty">
+        <h3>HARD</h3>
+        <p>17-20 lines &bull; Subtle bugs<br>Timer: 30s</p>
+      </div>
+    </div>
+
+    <div class="timer-override">
+      <label for="timer-select">TIMER OVERRIDE:</label>
+      <select id="timer-select">
+        <option value="0">Default</option>
+        <option value="30">30s</option>
+        <option value="60">60s</option>
+        <option value="90">90s</option>
+      </select>
+    </div>
+
+    <div id="menu-scores"></div>
+  </section>
+
+  <div class="hud hidden" id="in-game-hud">
+    <span class="hud-item">LEVEL: <span id="hud-difficulty" class="glow-amber">-</span></span>
+    <span id="timer-display" class="glow">--:--</span>
+    <span class="hud-item">SCORE: <span id="hud-score" class="glow">0</span></span>
+    <span class="hud-item">STREAK: <span id="hud-streak">0</span></span>
+    <span class="hud-item">BEST: <span id="hud-best-streak" class="glow-amber">0</span></span>
+    <button class="btn btn-small amber" id="hint-btn" onclick="useHint()">HINT (-1 PT)</button>
+  </div>
+
+  <!-- ======== GAME SCREEN ======== -->
+  <section id="game-screen">
+    <div class="snippet-header">
+      <span class="snippet-title" id="snippet-title"></span>
+      <span class="snippet-lang" id="snippet-lang"></span>
+    </div>
+
+    <div class="code-container">
+      <pre><code id="code-display"></code></pre>
+    </div>
+
+    <p style="text-align:center;color:var(--text-dim);font-size:0.75rem;" id="challenge-counter"></p>
+  </section>
+
+  <!-- ======== EXPLANATION SCREEN ======== -->
+  <section id="explanation-screen">
+    <h2 class="glow" style="text-align:center;margin-bottom:15px;">// ANALYSIS COMPLETE</h2>
+    <div class="explanation-box">
+      <div class="explanation-result" id="expl-result"></div>
+      <p style="color:var(--text-dim);font-size:0.8rem;">BUGGY LINE:</p>
+      <div class="explanation-fix" id="expl-bugline"></div>
+      <p class="explanation-text" id="expl-text"></p>
+      <p style="color:var(--text-dim);font-size:0.8rem;margin-top:10px;">FIX:</p>
+      <div class="explanation-fix" id="expl-fix"></div>
+      <div class="progress-bar-track"><div class="progress-bar-fill" id="expl-progress"></div></div>
+    </div>
+  </section>
+
+  <!-- ======== GAME OVER SCREEN ======== -->
+  <section id="gameover-screen">
+    <h1 class="title glow-red">&gt; SESSION TERMINATED</h1>
+    <p class="subtitle">// SCAN RESULTS</p>
+
+    <div class="gameover-stats" id="gameover-stats"></div>
+    <div id="initials-section" class="initials-input" style="display:none;">
+      <p class="glow-amber">NEW HIGH SCORE! ENTER INITIALS:</p>
+      <input type="text" id="initials-input" maxlength="3" autocomplete="off">
+      <br><br>
+      <button class="btn amber" onclick="saveInitials()">SAVE</button>
+    </div>
+    <div style="text-align:center;margin:20px 0;">
+      <button class="btn" onclick="backToMenu()">PLAY AGAIN</button>
+    </div>
+    <div id="gameover-scores"></div>
+  </section>
+
+</div>
+
+<script>
+/* ============================================================
+   === DATA — Challenge Catalogue ===
+   ============================================================ */
+const CHALLENGES = [
+  // -------- JavaScript Easy --------
+  {
+    id: 'js-easy-1',
+    language: 'javascript',
+    difficulty: 'easy',
+    title: 'Array Sum — Off-by-One',
+    lines: [
+      'function sumArray(arr) {',
+      '  let total = 0;',
+      '  for (let i = 0; i <= arr.length; i++) {',
+      '    total += arr[i];',
+      '  }',
+      '  return total;',
+      '}',
+      '',
+      'const numbers = [1, 2, 3, 4, 5];',
+      'console.log(sumArray(numbers));',
+    ],
+    bugLineIndex: 2,
+    explanation: 'Off-by-one error: the loop uses <= instead of <, so it reads arr[arr.length] which is undefined. Adding undefined to a number produces NaN.',
+    fix: 'for (let i = 0; i < arr.length; i++) {',
+    tags: ['off-by-one', 'loop']
+  },
+  {
+    id: 'js-easy-2',
+    language: 'javascript',
+    difficulty: 'easy',
+    title: 'Loose Equality Trap',
+    lines: [
+      'function isGuest(user) {',
+      '  if (user.id == 0) {',
+      '    return true;',
+      '  }',
+      '  return false;',
+      '}',
+      '',
+      'const u = { id: false };',
+      'console.log(isGuest(u));',
+      'console.log(isGuest({ id: 0 }));',
+    ],
+    bugLineIndex: 1,
+    explanation: 'Using == makes false equal to 0, so a boolean value can be mistaken for guest ID 0. Strict equality avoids that coercion bug.',
+    fix: 'if (user.id === 0) {',
+    tags: ['equality', 'coercion']
+  },
+  {
+    id: 'js-easy-3',
+    language: 'javascript',
+    difficulty: 'easy',
+    title: 'Discount Math Mixup',
+    lines: [
+      'function applyDiscount(price) {',
+      '  let discount = 0.05;',
+      '  if (price > 100) {',
+      '    discount = 0.20;',
+      '  }',
+      '  return price + price * discount;',
+      '}',
+      '',
+      'console.log(applyDiscount(150));',
+      'console.log(applyDiscount(50));',
+    ],
+    bugLineIndex: 5,
+    explanation: 'The function adds the discount amount instead of subtracting it, so discounted prices become larger instead of smaller.',
+    fix: '  return price - price * discount;',
+    tags: ['math', 'operator']
+  },
+
+  // -------- Python Medium --------
+  {
+    id: 'py-med-1',
+    language: 'python',
+    difficulty: 'medium',
+    title: 'Mutable Default Argument',
+    lines: [
+      'def add_item(item, item_list=[]):',
+      '    item_list.append(item)',
+      '    return item_list',
+      '',
+      'result1 = add_item("apple")',
+      'print(result1)  # ["apple"]',
+      '',
+      'result2 = add_item("banana")',
+      'print(result2)',
+      '# Expected: ["banana"]',
+      '# Actual: ["apple", "banana"]',
+      '',
+      '# The default list persists',
+      'result3 = add_item("cherry")',
+    ],
+    bugLineIndex: 0,
+    explanation: 'Mutable default argument trap: the default list [] is created once at function definition time and shared across all calls. Each call mutates the same list object.',
+    fix: 'def add_item(item, item_list=None):\n    if item_list is None:\n        item_list = []',
+    tags: ['mutable-default', 'function']
+  },
+  {
+    id: 'py-med-2',
+    language: 'python',
+    difficulty: 'medium',
+    title: 'Bad Slice in Reverse',
+    lines: [
+      'def reverse_words(sentence):',
+      '    words = sentence.split(" ")',
+      '    reversed_words = []',
+      '    for word in words:',
+      '        reversed_words.append(word[::-1])',
+      '    return " ".join(reversed_words[1:])',
+      '',
+      '# Expected: "olleh dlrow"',
+      '# Actual: "dlrow"',
+      'result = reverse_words("hello world")',
+      'print(result)',
+      '',
+      '# The slice skips first element',
+      'print(len(result.split()))',
+    ],
+    bugLineIndex: 5,
+    explanation: 'reversed_words[1:] skips the first reversed word. It should be reversed_words (no slice) to include all words.',
+    fix: '    return " ".join(reversed_words)',
+    tags: ['slicing', 'off-by-one']
+  },
+  {
+    id: 'py-med-3',
+    language: 'python',
+    difficulty: 'medium',
+    title: 'Indentation Logic Error',
+    lines: [
+      'def classify_age(age):',
+      '    if age < 0:',
+      '        return "invalid"',
+      '    if age < 13:',
+      '        return "child"',
+      '    if age < 18:',
+      '        return "teenager"',
+      '    if age < 65:',
+      '        return "adult"',
+      '        return "senior"',
+      '',
+      'print(classify_age(70))',
+      '# Expected: "senior"',
+      '# Actual: None',
+    ],
+    bugLineIndex: 9,
+    explanation: '"return senior" is indented inside the age < 65 block, so age 70 falls through the function and returns None. It should be dedented to the function level.',
+    fix: '    return "senior"',
+    tags: ['indentation', 'logic']
+  },
+
+  // -------- Go Hard --------
+  {
+    id: 'go-hard-1',
+    language: 'go',
+    difficulty: 'hard',
+    title: 'Typed Nil Error',
+    lines: [
+      'package main',
+      '',
+      'import "fmt"',
+      '',
+      'type MyError struct{ msg string }',
+      '',
+      'func (e *MyError) Error() string { return e.msg }',
+      '',
+      'func mightFail(flag bool) error {',
+      '    var err *MyError',
+      '    if flag {',
+      '        err = &MyError{msg: "boom"}',
+      '    }',
+      '    return err',
+      '}',
+      '',
+      'func main() {',
+      '    fmt.Println(mightFail(false) == nil)',
+      '}',
+    ],
+    bugLineIndex: 13,
+    explanation: 'Returning a typed nil pointer as an error creates a non-nil interface value. `mightFail(false)` therefore looks like an error even though `err` is nil.',
+    fix: '    if err == nil {\n        return nil\n    }\n    return err',
+    tags: ['interface', 'nil']
+  },
+  {
+    id: 'go-hard-2',
+    language: 'go',
+    difficulty: 'hard',
+    title: 'Defer in Loop Leak',
+    lines: [
+      'package main',
+      '',
+      'import (',
+      '    "fmt"',
+      '    "os"',
+      ')',
+      '',
+      'func processFiles(paths []string) error {',
+      '    for _, path := range paths {',
+      '        f, err := os.Open(path)',
+      '        if err != nil {',
+      '            return err',
+      '        }',
+      '        defer f.Close()',
+      '        buf := make([]byte, 1024)',
+      '        n, _ := f.Read(buf)',
+      '        fmt.Println(string(buf[:n]))',
+      '    }',
+      '    return nil',
+      '}',
+    ],
+    bugLineIndex: 13,
+    explanation: 'defer inside a loop delays Close() until the function returns, not the iteration. With many files, this leaks file descriptors. Close explicitly or extract to a helper function.',
+    fix: '        n, _ := f.Read(buf)\n        fmt.Println(string(buf[:n]))\n        f.Close()',
+    tags: ['defer', 'resource-leak']
+  },
+  {
+    id: 'go-hard-3',
+    language: 'go',
+    difficulty: 'hard',
+    title: 'Nil Map Write Panic',
+    lines: [
+      'package main',
+      '',
+      'import "fmt"',
+      '',
+      'type Config struct {',
+      '    Settings map[string]string',
+      '}',
+      '',
+      'func NewConfig() *Config {',
+      '    return &Config{}',
+      '}',
+      '',
+      'func main() {',
+      '    cfg := NewConfig()',
+      '    cfg.Settings["theme"] = "dark"',
+      '    fmt.Println(cfg.Settings)',
+      '',
+      '    // This panics: assignment',
+      '    // to entry in nil map',
+      '}',
+    ],
+    bugLineIndex: 9,
+    explanation: 'NewConfig() returns a Config with a nil Settings map (zero value). Writing to a nil map causes a runtime panic. Initialize with make().',
+    fix: 'return &Config{Settings: make(map[string]string)}',
+    tags: ['nil-map', 'initialization']
+  },
+];
+
+/* ============================================================
+   === STATE ===
+   ============================================================ */
+const TIMER_PRESETS = { easy: 90, medium: 60, hard: 30 };
+
+let gameState = {
+  phase: 'MENU',
+  score: 0,
+  streak: 0,
+  bestStreak: 0,
+  currentChallengeIndex: 0,
+  difficulty: 'easy',
+  timeLeft: 90,
+  totalAnswered: 0,
+  correctAnswers: 0,
+  hintsUsed: 0,
+  hintUsedThisRound: false,
+  challenges: [],
+  answered: false,
+};
+
+let timerIntervalId = null;
+let revealTimeoutId = null;
+let activeTimeouts = [];
+
+/* ============================================================
+   === STORAGE ===
+   ============================================================ */
+const STORAGE_KEY = 'codeReviewRoulette_scores_v1';
+
+function loadHighScores() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    const data = JSON.parse(raw);
+    if (!Array.isArray(data)) return [];
+    return data.filter(e =>
+      typeof e.initials === 'string' &&
+      typeof e.score === 'number' &&
+      typeof e.accuracy === 'number' &&
+      typeof e.difficulty === 'string'
+    ).slice(0, 5);
+  } catch {
+    return [];
+  }
+}
+
+function saveHighScore(entry) {
+  try {
+    let scores = loadHighScores();
+    scores.push(entry);
+    scores.sort((a, b) => b.score - a.score || b.accuracy - a.accuracy);
+    scores = scores.slice(0, 5);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(scores));
+  } catch { /* silent fallback */ }
+}
+
+function resetScores() {
+  try { localStorage.removeItem(STORAGE_KEY); } catch {}
+  renderScoresTable('menu-scores');
+}
+
+function isHighScore(score) {
+  const scores = loadHighScores();
+  if (scores.length < 5) return true;
+  return score > scores[scores.length - 1].score;
+}
+
+function renderScoresTable(containerId) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  const scores = loadHighScores();
+  if (scores.length === 0) {
+    el.innerHTML = '<p style="text-align:center;color:var(--text-dim);font-size:0.75rem;margin-top:20px;">NO HIGH SCORES YET</p>';
+    return;
+  }
+  let html = '<table class="scores-table"><thead><tr><th>#</th><th>NAME</th><th>SCORE</th><th>ACC</th><th>STREAK</th><th>DIFF</th><th>DATE</th></tr></thead><tbody>';
+  scores.forEach((s, i) => {
+    html += '<tr><td>' + (i + 1) + '</td><td>' + escapeHtml(s.initials) + '</td><td>' + s.score + '</td><td>' + s.accuracy.toFixed(1) + '%</td><td>' + (s.bestStreak || '-') + '</td><td>' + (s.difficulty || '').toUpperCase() + '</td><td>' + (s.date || '-') + '</td></tr>';
+  });
+  html += '</tbody></table>';
+  if (containerId === 'menu-scores') {
+    html += '<div style="text-align:center;"><button class="reset-link" onclick="resetScores()">[ RESET SCORES ]</button></div>';
+  }
+  el.innerHTML = html;
+}
+
+/* ============================================================
+   === RENDER ===
+   ============================================================ */
+function showScreen(screenId) {
+  document.querySelectorAll('.container > section').forEach(function(s) {
+    s.classList.remove('active');
+  });
+  document.getElementById(screenId).classList.add('active');
+  syncInGameHUD(screenId);
+}
+
+function syncInGameHUD(screenId) {
+  var hud = document.getElementById('in-game-hud');
+  if (!hud) return;
+  if (screenId === 'game-screen' || screenId === 'explanation-screen') {
+    hud.classList.remove('hidden');
+  } else {
+    hud.classList.add('hidden');
+  }
+}
+
+function escapeHtml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/** Lightweight syntax highlighting — applies AFTER HTML escaping */
+function highlightSyntax(text, lang) {
+  var safe = escapeHtml(text);
+
+  // Comments first (avoid highlighting keywords inside comments)
+  if (lang === 'python') {
+    safe = safe.replace(/(#.*)$/gm, '<span class="syn-comment">$1</span>');
+  } else {
+    safe = safe.replace(/(\/\/.*)$/gm, '<span class="syn-comment">$1</span>');
+  }
+
+  // Strings (escaped quotes via &quot; or actual quotes)
+  safe = safe.replace(/(&quot;.*?&quot;|"[^"]*?"|'[^']*?'|`[^`]*?`)/g, '<span class="syn-string">$1</span>');
+
+  // Numbers
+  safe = safe.replace(/\b(\d+\.?\d*)\b/g, '<span class="syn-number">$1</span>');
+
+  // Language-specific keywords
+  var keywords;
+  if (lang === 'javascript') {
+    keywords = /\b(const|let|var|function|return|if|else|for|while|new|typeof|instanceof|class|import|export|from|true|false|null|undefined|async|await|this)\b/g;
+  } else if (lang === 'python') {
+    keywords = /\b(def|return|if|elif|else|for|while|in|import|from|class|True|False|None|is|not|and|or|print|with|as|try|except|raise|lambda|yield)\b/g;
+  } else if (lang === 'go') {
+    keywords = /\b(package|import|func|return|if|else|for|range|var|const|type|struct|interface|map|make|go|defer|chan|select|case|nil|true|false|string|int|error|byte)\b/g;
+  }
+  if (keywords) {
+    safe = safe.replace(keywords, '<span class="syn-keyword">$&</span>');
+  }
+
+  // Function calls
+  safe = safe.replace(/\b([a-zA-Z_]\w*)\s*\(/g, '<span class="syn-func">$1</span>(');
+
+  return safe;
+}
+
+function renderSnippet(challenge) {
+  var codeEl = document.getElementById('code-display');
+  var html = '';
+  for (var i = 0; i < challenge.lines.length; i++) {
+    var highlighted = highlightSyntax(challenge.lines[i], challenge.language);
+    html += '<div class="code-line" data-line-index="' + i + '">' +
+      '<span class="line-number">' + (i + 1) + '</span>' +
+      '<span class="line-content">' + (highlighted || ' ') + '</span>' +
+      '</div>';
+  }
+  codeEl.innerHTML = html;
+
+  document.getElementById('snippet-title').textContent = challenge.title;
+  document.getElementById('snippet-lang').textContent = challenge.language.toUpperCase();
+  document.getElementById('challenge-counter').textContent =
+    '[ ' + (gameState.currentChallengeIndex + 1) + ' / ' + gameState.challenges.length + ' ]';
+}
+
+function updateHUD() {
+  document.getElementById('hud-score').textContent = gameState.score;
+  document.getElementById('hud-streak').textContent = gameState.streak;
+  document.getElementById('hud-best-streak').textContent = gameState.bestStreak;
+  document.getElementById('hud-difficulty').textContent = gameState.difficulty.toUpperCase();
+
+  var streakEl = document.getElementById('hud-streak');
+  if (gameState.streak >= 3) {
+    streakEl.classList.add('streak-hot');
+  } else {
+    streakEl.classList.remove('streak-hot');
+  }
+
+  var bestStreakEl = document.getElementById('hud-best-streak');
+  if (gameState.bestStreak > 0 && gameState.streak === gameState.bestStreak) {
+    bestStreakEl.classList.add('streak-hot');
+  } else {
+    bestStreakEl.classList.remove('streak-hot');
+  }
+
+  document.getElementById('hint-btn').disabled =
+    gameState.phase !== 'PLAYING' || gameState.answered || gameState.hintUsedThisRound;
+}
+
+function updateTimerDisplay() {
+  var m = Math.floor(gameState.timeLeft / 60);
+  var s = gameState.timeLeft % 60;
+  var el = document.getElementById('timer-display');
+  el.textContent = (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+
+  if (gameState.timeLeft < 10) {
+    el.classList.add('timer-critical');
+  } else {
+    el.classList.remove('timer-critical');
+  }
+}
+
+function showScoreFloat(delta) {
+  var el = document.createElement('div');
+  el.className = 'score-float ' + (delta > 0 ? 'plus' : 'minus');
+  el.textContent = (delta > 0 ? '+' : '') + delta;
+  document.body.appendChild(el);
+  var tid = setTimeout(function() { el.remove(); }, 900);
+  activeTimeouts.push(tid);
+}
+
+/* ============================================================
+   === TIMER ===
+   ============================================================ */
+function startTimer() {
+  stopTimer();
+  updateTimerDisplay();
+  timerIntervalId = setInterval(function() {
+    gameState.timeLeft--;
+    updateTimerDisplay();
+    if (gameState.timeLeft <= 0) {
+      gameState.timeLeft = 0;
+      updateTimerDisplay();
+      stopTimer();
+      endGame();
+    }
+  }, 1000);
+}
+
+function stopTimer() {
+  if (timerIntervalId !== null) {
+    clearInterval(timerIntervalId);
+    timerIntervalId = null;
+  }
+}
+
+function pauseTimer() {
+  stopTimer();
+}
+
+function resumeTimer() {
+  if (gameState.phase === 'PLAYING' && gameState.timeLeft > 0) {
+    startTimer();
+  }
+}
+
+/* ============================================================
+   === EVENTS — Game Logic ===
+   ============================================================ */
+function shuffleArray(arr) {
+  for (var i = arr.length - 1; i > 0; i--) {
+    var j = Math.floor(Math.random() * (i + 1));
+    var tmp = arr[i];
+    arr[i] = arr[j];
+    arr[j] = tmp;
+  }
+  return arr;
+}
+
+function getFilteredChallenges(difficulty) {
+  return CHALLENGES.filter(function(c) { return c.difficulty === difficulty; });
+}
+
+function startGame(difficulty) {
+  gameState.phase = 'PLAYING';
+  gameState.score = 0;
+  gameState.streak = 0;
+  gameState.bestStreak = 0;
+  gameState.currentChallengeIndex = 0;
+  gameState.difficulty = difficulty;
+  gameState.totalAnswered = 0;
+  gameState.correctAnswers = 0;
+  gameState.hintsUsed = 0;
+  gameState.hintUsedThisRound = false;
+  gameState.answered = false;
+
+  var override = parseInt(document.getElementById('timer-select').value, 10);
+  gameState.timeLeft = override > 0 ? override : TIMER_PRESETS[difficulty];
+
+  var pool = getFilteredChallenges(difficulty);
+  gameState.challenges = shuffleArray(pool.slice());
+
+  showScreen('game-screen');
+  loadChallenge();
+  startTimer();
+}
+
+function loadChallenge() {
+  if (gameState.currentChallengeIndex >= gameState.challenges.length) {
+    endGame();
+    return;
+  }
+  gameState.answered = false;
+  gameState.hintUsedThisRound = false;
+
+  var challenge = gameState.challenges[gameState.currentChallengeIndex];
+  renderSnippet(challenge);
+  updateHUD();
+}
+
+function handleLineClick(lineIndex) {
+  if (gameState.answered || gameState.phase !== 'PLAYING') return;
+  gameState.answered = true;
+  gameState.totalAnswered++;
+
+  var challenge = gameState.challenges[gameState.currentChallengeIndex];
+  var correct = (lineIndex === challenge.bugLineIndex);
+
+  if (correct) {
+    gameState.score += 1;
+    gameState.streak += 1;
+    gameState.bestStreak = Math.max(gameState.bestStreak, gameState.streak);
+    gameState.correctAnswers++;
+    showScoreFloat(+1);
+  } else {
+    gameState.score -= 1;
+    gameState.streak = 0;
+    showScoreFloat(-1);
+  }
+  updateHUD();
+
+  // Visual feedback
+  var allLines = document.querySelectorAll('#code-display .code-line');
+  for (var k = 0; k < allLines.length; k++) {
+    allLines[k].classList.add('disabled');
+  }
+
+  var clickedLine = document.querySelector('#code-display .code-line[data-line-index="' + lineIndex + '"]');
+  if (correct) {
+    clickedLine.classList.add('correct');
+  } else {
+    clickedLine.classList.add('wrong');
+    var bugLine = document.querySelector('#code-display .code-line[data-line-index="' + challenge.bugLineIndex + '"]');
+    if (bugLine) bugLine.classList.add('reveal-bug');
+  }
+
+  var tid = setTimeout(function() { showExplanation(correct, challenge); }, 500);
+  activeTimeouts.push(tid);
+}
+
+// Event delegation on code container
+document.getElementById('code-display').addEventListener('click', function(e) {
+  var line = e.target.closest('.code-line');
+  if (!line) return;
+  var idx = parseInt(line.getAttribute('data-line-index'), 10);
+  if (!isNaN(idx)) handleLineClick(idx);
+});
+
+function useHint() {
+  if (gameState.hintUsedThisRound || gameState.answered || gameState.phase !== 'PLAYING') return;
+  gameState.hintUsedThisRound = true;
+  gameState.hintsUsed++;
+  gameState.score -= 1;
+  showScoreFloat(-1);
+  updateHUD();
+
+  var challenge = gameState.challenges[gameState.currentChallengeIndex];
+  var totalLines = challenge.lines.length;
+  var tierSize = Math.ceil(totalLines / 3);
+  var tierIndex = Math.floor(challenge.bugLineIndex / tierSize);
+  var start = tierIndex * tierSize;
+  var end = Math.min(start + tierSize, totalLines);
+
+  var allLines = document.querySelectorAll('#code-display .code-line');
+  for (var k = 0; k < allLines.length; k++) {
+    var i = parseInt(allLines[k].getAttribute('data-line-index'), 10);
+    if (i >= start && i < end) {
+      allLines[k].classList.add('hint-region');
+    }
+  }
+}
+
+/* ============================================================
+   === REVEAL / EXPLANATION ===
+   ============================================================ */
+function showExplanation(correct, challenge) {
+  gameState.phase = 'REVEAL';
+  pauseTimer();
+  updateHUD();
+  showScreen('explanation-screen');
+
+  var resultEl = document.getElementById('expl-result');
+  if (correct) {
+    resultEl.textContent = 'TARGET ACQUIRED \u2713';
+    resultEl.className = 'explanation-result glow';
+  } else {
+    resultEl.textContent = 'SCAN FAILED \u2717';
+    resultEl.className = 'explanation-result glow-red';
+  }
+
+  var bugLine = challenge.lines[challenge.bugLineIndex];
+  document.getElementById('expl-bugline').textContent = 'Line ' + (challenge.bugLineIndex + 1) + ': ' + bugLine;
+  document.getElementById('expl-text').textContent = challenge.explanation;
+  document.getElementById('expl-fix').textContent = challenge.fix;
+
+  // Restart progress bar animation
+  var bar = document.getElementById('expl-progress');
+  bar.style.animation = 'none';
+  void bar.offsetHeight; // reflow
+  bar.style.animation = 'shrink 3s linear forwards';
+
+  // Auto-advance after 3s
+  if (revealTimeoutId) clearTimeout(revealTimeoutId);
+  revealTimeoutId = setTimeout(function() {
+    revealTimeoutId = null;
+    gameState.currentChallengeIndex++;
+    gameState.phase = 'PLAYING';
+
+    if (gameState.currentChallengeIndex >= gameState.challenges.length || gameState.timeLeft <= 0) {
+      endGame();
+    } else {
+      showScreen('game-screen');
+      loadChallenge();
+      resumeTimer();
+    }
+  }, 3000);
+  activeTimeouts.push(revealTimeoutId);
+}
+
+/* ============================================================
+   === GAME OVER ===
+   ============================================================ */
+function endGame() {
+  if (gameState.phase === 'GAME_OVER') return; // prevent double calls
+  gameState.phase = 'GAME_OVER';
+  stopTimer();
+  clearAllTimeouts();
+  showScreen('gameover-screen');
+
+  var accuracy = gameState.totalAnswered > 0
+    ? (gameState.correctAnswers / gameState.totalAnswered * 100)
+    : -1;
+  var accStr = accuracy >= 0 ? accuracy.toFixed(1) + '%' : 'N/A';
+
+  document.getElementById('gameover-stats').innerHTML =
+    '<div class="stat-line glow">FINAL SCORE: <strong>' + gameState.score + '</strong></div>' +
+    '<div class="stat-line glow-amber">ACCURACY: <strong>' + accStr + '</strong></div>' +
+    '<div class="stat-line glow">BEST STREAK: <strong>' + gameState.bestStreak + '</strong></div>' +
+    '<div class="stat-line" style="color:var(--text-dim);">HINTS USED: ' + gameState.hintsUsed + '</div>';
+
+  var section = document.getElementById('initials-section');
+  if (gameState.score > 0 && isHighScore(gameState.score)) {
+    section.style.display = 'block';
+    document.getElementById('initials-input').value = '';
+    setTimeout(function() { document.getElementById('initials-input').focus(); }, 100);
+  } else {
+    section.style.display = 'none';
+  }
+
+  renderScoresTable('gameover-scores');
+}
+
+function saveInitials() {
+  var raw = document.getElementById('initials-input').value.toUpperCase().replace(/[^A-Z]/g, '');
+  if (raw.length === 0) raw = 'AAA';
+  raw = raw.substring(0, 3);
+
+  var accuracy = gameState.totalAnswered > 0
+    ? (gameState.correctAnswers / gameState.totalAnswered * 100)
+    : 0;
+
+  saveHighScore({
+    initials: raw,
+    score: gameState.score,
+    accuracy: parseFloat(accuracy.toFixed(1)),
+    bestStreak: gameState.bestStreak,
+    difficulty: gameState.difficulty,
+    date: new Date().toISOString().split('T')[0]
+  });
+
+  document.getElementById('initials-section').style.display = 'none';
+  renderScoresTable('gameover-scores');
+}
+
+function backToMenu() {
+  gameState.phase = 'MENU';
+  clearAllTimeouts();
+  showScreen('menu-screen');
+  renderScoresTable('menu-scores');
+}
+
+function clearAllTimeouts() {
+  if (revealTimeoutId) { clearTimeout(revealTimeoutId); revealTimeoutId = null; }
+  for (var i = 0; i < activeTimeouts.length; i++) {
+    clearTimeout(activeTimeouts[i]);
+  }
+  activeTimeouts = [];
+}
+
+/* ============================================================
+   === DEBUG HOOK ===
+   ============================================================ */
+window.__rouletteDebug = {
+  get state() { return gameState; },
+  skipToGameOver: function() { endGame(); },
+  setTimer: function(s) { gameState.timeLeft = s; updateTimerDisplay(); },
+  logChallenges: function() {
+    console.table(CHALLENGES.map(function(c) {
+      return { id: c.id, lang: c.language, diff: c.difficulty, bugLine: c.bugLineIndex + 1, lines: c.lines.length };
+    }));
+  }
+};
+
+/* ============================================================
+   === INIT ===
+   ============================================================ */
+renderScoresTable('menu-scores');
+</script>
+</body>
+</html>

@@ -142,30 +142,30 @@ type jsonSchemaField struct {
 }
 
 type jsonAgentDecl struct {
-	Name         string   `json:"name,omitempty"`
-	Model        string   `json:"model,omitempty"`
-	Delegate     string   `json:"delegate,omitempty"`
-	Input        string   `json:"input,omitempty"`
-	Output       string   `json:"output,omitempty"`
-	Publish      string   `json:"publish,omitempty"`
-	System       string   `json:"system,omitempty"`
-	User         string   `json:"user,omitempty"`
-	Session      string   `json:"session,omitempty"`
+	Name            string   `json:"name,omitempty"`
+	Model           string   `json:"model,omitempty"`
+	Delegate        string   `json:"delegate,omitempty"`
+	Input           string   `json:"input,omitempty"`
+	Output          string   `json:"output,omitempty"`
+	Publish         string   `json:"publish,omitempty"`
+	System          string   `json:"system,omitempty"`
+	User            string   `json:"user,omitempty"`
+	Session         string   `json:"session,omitempty"`
 	Tools           []string `json:"tools,omitempty"`
 	ToolMaxSteps    int      `json:"tool_max_steps,omitempty"`
 	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
 }
 
 type jsonJudgeDecl struct {
-	Name         string   `json:"name,omitempty"`
-	Model        string   `json:"model,omitempty"`
-	Delegate     string   `json:"delegate,omitempty"`
-	Input        string   `json:"input,omitempty"`
-	Output       string   `json:"output,omitempty"`
-	Publish      string   `json:"publish,omitempty"`
-	System       string   `json:"system,omitempty"`
-	User         string   `json:"user,omitempty"`
-	Session      string   `json:"session,omitempty"`
+	Name            string   `json:"name,omitempty"`
+	Model           string   `json:"model,omitempty"`
+	Delegate        string   `json:"delegate,omitempty"`
+	Input           string   `json:"input,omitempty"`
+	Output          string   `json:"output,omitempty"`
+	Publish         string   `json:"publish,omitempty"`
+	System          string   `json:"system,omitempty"`
+	User            string   `json:"user,omitempty"`
+	Session         string   `json:"session,omitempty"`
 	Tools           []string `json:"tools,omitempty"`
 	ToolMaxSteps    int      `json:"tool_max_steps,omitempty"`
 	ReasoningEffort string   `json:"reasoning_effort,omitempty"`

@@ -52,6 +52,10 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		opts = append(opts, codexsdk.WithEffort(mapReasoningEffort(task.ReasoningEffort)))
 	}
 
+	if task.SessionID != "" {
+		opts = append(opts, codexsdk.WithResume(task.SessionID))
+	}
+
 	// Capture stderr for observability.
 	var stderrBuf strings.Builder
 	opts = append(opts, codexsdk.WithStderr(func(line string) {
@@ -101,6 +105,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		ExitCode:    0,
 		Stderr:      stderrBuf.String(),
 		BackendName: "codex",
+		SessionID:   resultMsg.SessionID,
 	}
 
 	if resultMsg.Usage != nil {

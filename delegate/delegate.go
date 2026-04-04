@@ -44,6 +44,9 @@ type Task struct {
 	// ReasoningEffort is the reasoning effort level for the CLI agent.
 	// Valid values: "low", "medium", "high", "extra_high".
 	ReasoningEffort string
+
+	// SessionID is an optional session ID to resume (empty = fresh session).
+	SessionID string
 }
 
 // Result contains the output from a delegation backend.
@@ -72,4 +75,7 @@ type Result struct {
 	// ParseFallback is true when structured output was expected (OutputSchema set)
 	// but JSON parsing fell back to wrapping plain text as {"text": "..."}.
 	ParseFallback bool
+
+	// SessionID is the session ID returned by the CLI agent (empty if unavailable).
+	SessionID string
 }

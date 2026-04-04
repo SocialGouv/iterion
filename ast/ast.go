@@ -184,20 +184,20 @@ func (sm SessionMode) String() string {
 
 // AgentDecl represents an `agent <name>:` node declaration.
 type AgentDecl struct {
-	Name         string
-	Model        string // string literal, may contain ${...} env refs
-	Delegate     string // delegation backend name (e.g. "claude_code"); when set, bypasses LLM API
-	MCP          *MCPConfigDecl
-	Input        string      // schema reference name
-	Output       string      // schema reference name
-	Publish      string      // persistent artifact name (empty if not set)
-	System       string      // prompt reference name
-	User         string      // prompt reference name
-	Session      SessionMode // defaults to SessionFresh
-	Tools        []string    // tool capability names
-	ToolMaxSteps    int    // max tool-use iterations (0 = not set)
-	ReasoningEffort string // reasoning effort level: "low", "medium", "high", "extra_high"
-	Readonly        bool   // when true, node is not considered mutating for workspace safety
+	Name            string
+	Model           string // string literal, may contain ${...} env refs
+	Delegate        string // delegation backend name (e.g. "claude_code"); when set, bypasses LLM API
+	MCP             *MCPConfigDecl
+	Input           string      // schema reference name
+	Output          string      // schema reference name
+	Publish         string      // persistent artifact name (empty if not set)
+	System          string      // prompt reference name
+	User            string      // prompt reference name
+	Session         SessionMode // defaults to SessionFresh
+	Tools           []string    // tool capability names
+	ToolMaxSteps    int         // max tool-use iterations (0 = not set)
+	ReasoningEffort string      // reasoning effort level: "low", "medium", "high", "extra_high"
+	Readonly        bool        // when true, node is not considered mutating for workspace safety
 	Span            Span
 }
 
@@ -209,16 +209,16 @@ type AgentDecl struct {
 // Structurally identical to AgentDecl; semantically a judge
 // produces verdicts and typically does not use tools.
 type JudgeDecl struct {
-	Name         string
-	Model        string
-	Delegate     string // delegation backend name; when set, bypasses LLM API
-	MCP          *MCPConfigDecl
-	Input        string
-	Output       string
-	Publish      string
-	System       string
-	User         string
-	Session      SessionMode
+	Name            string
+	Model           string
+	Delegate        string // delegation backend name; when set, bypasses LLM API
+	MCP             *MCPConfigDecl
+	Input           string
+	Output          string
+	Publish         string
+	System          string
+	User            string
+	Session         SessionMode
 	Tools           []string // usually empty for judges, but allowed
 	ToolMaxSteps    int
 	ReasoningEffort string // reasoning effort level: "low", "medium", "high", "extra_high"

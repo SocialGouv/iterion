@@ -181,7 +181,7 @@ var tokenNames = map[TokenType]string{
 	TokenCommand:           "command",
 	TokenArgs:              "args",
 	TokenURL:               "url",
-	TokenReadonly:           "readonly",
+	TokenReadonly:          "readonly",
 	TokenDelegate:          "delegate",
 	TokenWhen:              "when",
 	TokenNot:               "not",

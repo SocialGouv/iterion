@@ -77,16 +77,16 @@ func RunReport(opts ReportOptions, p *Printer) error {
 // ---------------------------------------------------------------------------
 
 type report struct {
-	RunID        string         `json:"run_id"`
-	Workflow     string         `json:"workflow"`
-	Status       string         `json:"status"`
-	Duration     string         `json:"duration"`
-	CreatedAt    time.Time      `json:"created_at"`
-	FinishedAt   *time.Time     `json:"finished_at,omitempty"`
-	Error        string         `json:"error,omitempty"`
-	Metrics      reportMetrics  `json:"metrics"`
-	Steps        []reportStep   `json:"steps"`
-	Artifacts    []reportArtifact `json:"artifacts"`
+	RunID      string           `json:"run_id"`
+	Workflow   string           `json:"workflow"`
+	Status     string           `json:"status"`
+	Duration   string           `json:"duration"`
+	CreatedAt  time.Time        `json:"created_at"`
+	FinishedAt *time.Time       `json:"finished_at,omitempty"`
+	Error      string           `json:"error,omitempty"`
+	Metrics    reportMetrics    `json:"metrics"`
+	Steps      []reportStep     `json:"steps"`
+	Artifacts  []reportArtifact `json:"artifacts"`
 }
 
 type reportMetrics struct {
@@ -98,15 +98,15 @@ type reportMetrics struct {
 }
 
 type reportStep struct {
-	Seq       int64     `json:"seq"`
-	Time      time.Time `json:"time"`
-	Type      string    `json:"type"`
-	NodeID    string    `json:"node_id,omitempty"`
-	BranchID  string    `json:"branch_id,omitempty"`
-	Summary   string    `json:"summary"`
-	Detail    string    `json:"detail,omitempty"`
-	Tokens    int       `json:"tokens,omitempty"`
-	CostUSD   float64   `json:"cost_usd,omitempty"`
+	Seq      int64     `json:"seq"`
+	Time     time.Time `json:"time"`
+	Type     string    `json:"type"`
+	NodeID   string    `json:"node_id,omitempty"`
+	BranchID string    `json:"branch_id,omitempty"`
+	Summary  string    `json:"summary"`
+	Detail   string    `json:"detail,omitempty"`
+	Tokens   int       `json:"tokens,omitempty"`
+	CostUSD  float64   `json:"cost_usd,omitempty"`
 }
 
 type reportArtifact struct {

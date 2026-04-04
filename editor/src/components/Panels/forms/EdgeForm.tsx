@@ -114,6 +114,11 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
     for (const t of document.tools) allNodes.push({ name: t.name, output: t.output });
     for (const j of document.joins) allNodes.push({ name: j.name, output: j.output });
 
+    // Collect delegated node names for _session_id suggestions
+    const delegatedNodes = new Set<string>();
+    for (const a of document.agents) { if (a.delegate) delegatedNodes.add(a.name); }
+    for (const j of document.judges) { if (j.delegate) delegatedNodes.add(j.name); }
+
     for (const node of allNodes) {
       refs.push({ label: node.name, value: `{{outputs.${node.name}}}`, group: "outputs" });
       if (node.output) {
@@ -123,6 +128,10 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
             if (f.name) refs.push({ label: `${node.name}.${f.name}`, value: `{{outputs.${node.name}.${f.name}}}`, group: "outputs" });
           }
         }
+      }
+      // Delegated nodes expose _session_id for session continuity
+      if (delegatedNodes.has(node.name)) {
+        refs.push({ label: `${node.name}._session_id`, value: `{{outputs.${node.name}._session_id}}`, group: "sessions" });
       }
     }
 

@@ -432,6 +432,290 @@ func TestLive_DualModel_PlanImplementReview(t *testing.T) {
 	logRunRecap(t, events)
 }
 
+// ---------------------------------------------------------------------------
+// Live E2E test — Session continuity review/fix
+// ---------------------------------------------------------------------------
+
+// TestLive_SessionContinuity_ReviewFix executes the session_review_fix
+// workflow which demonstrates:
+//   - Combined judge+merge (plan_judge_merge)
+//   - Triple-role review nodes (review + verdict + fix plan)
+//   - Session continuity: fix nodes resume their reviewer's CLI session
+//   - LLM router to select the most relevant fix agent
+//
+// Requires:
+//   - `claude` and `codex` CLIs installed and in PATH
+//   - The CLIs must be authenticated
+//
+// Automatically skipped when CLIs are absent or in -short mode.
+func TestLive_SessionContinuity_ReviewFix(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live test in short mode")
+	}
+	loadDotEnv(t)
+	requireCLI(t, "claude")
+	requireCLI(t, "codex")
+
+	if os.Getenv("CLAUDE_MODEL") == "" {
+		t.Setenv("CLAUDE_MODEL", "openai/gpt-5.4")
+	}
+
+	wf := compileFixture(t, "session_review_fix.iter")
+
+	workspaceDir, err := os.MkdirTemp("", "iterion-session-review-fix-*")
+	if err != nil {
+		t.Fatalf("Failed to create workspace dir: %v", err)
+	}
+	t.Logf("Workspace directory (persists after test): %s", workspaceDir)
+
+	gitInit := exec.Command("git", "init", workspaceDir)
+	if out, gitErr := gitInit.CombinedOutput(); gitErr != nil {
+		t.Fatalf("git init failed: %v\n%s", gitErr, out)
+	}
+
+	storeDir := filepath.Join(workspaceDir, ".iterion")
+	s, storeErr := store.New(storeDir)
+	if storeErr != nil {
+		t.Fatalf("Failed to create store: %v", storeErr)
+	}
+
+	runID := "live-session-review-fix"
+
+	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+		t.Fatalf("mcp.PrepareWorkflow: %v", err)
+	}
+
+	reg := model.NewRegistry()
+	logger := iterlog.New(iterlog.LevelDebug, os.Stderr)
+	hooks := model.NewStoreEventHooks(s, runID, logger)
+
+	execOpts := []model.GoaiExecutorOption{
+		model.WithDelegateRegistry(delegate.DefaultRegistry()),
+		model.WithWorkDir(workspaceDir),
+		model.WithEventHooks(hooks),
+	}
+
+	executor := model.NewGoaiExecutor(reg, wf, execOpts...)
+	defer executor.Close()
+
+	taskDescription := "A 'Code Review Roulette' game in a single index.html file. " +
+		"Use vanilla HTML, CSS, and JavaScript (no frameworks or CDNs). " +
+		"The app displays code snippets containing intentional bugs. The player must " +
+		"find and click on the buggy line within a time limit to score points. " +
+		"Features multiple difficulty levels, a scoring system, and a retro dev aesthetic."
+
+	acceptanceCriteria := "=== Layer 1 - Core Game ===\n" +
+		"1. Single index.html file with all CSS and JS embedded, no external dependencies or CDN links\n" +
+		"2. Game screen displaying a code snippet (syntax-highlighted with <pre>/<code> and CSS) with at least 10-20 lines of code\n" +
+		"3. At least 8 built-in code challenges across 3 languages (JavaScript, Python, Go) with one intentional bug per snippet\n" +
+		"4. Each line of code is clickable; clicking the buggy line scores a point, clicking wrong deducts a point\n" +
+		"5. Countdown timer (configurable: 30s/60s/90s) visible at all times, game ends when timer reaches 0\n" +
+		"\n=== Layer 2 - Game Mechanics ===\n" +
+		"6. Difficulty levels (Easy/Medium/Hard) that affect: number of lines, subtlety of bugs, and timer duration\n" +
+		"7. Score display with running total, streak counter (consecutive correct answers), and best streak highlight\n" +
+		"8. 'Hint' button that highlights the region (top/middle/bottom third) containing the bug, costs 1 point to use\n" +
+		"9. After each answer (correct or wrong), show explanation of the bug with the fix for 3 seconds before next snippet\n" +
+		"\n=== Layer 3 - Polish ===\n" +
+		"10. Retro terminal/hacker aesthetic: dark background, green/amber monospace text, scanline CSS effect, CRT glow\n" +
+		"11. localStorage persistence: high scores table (top 5) with player initials, date, and difficulty level\n" +
+		"12. Game over screen showing: final score, accuracy percentage, best streak, and 'Play Again' button\n" +
+		"13. Smooth animations: line hover highlight, correct/wrong answer feedback (flash green/red), timer pulse when < 10s\n" +
+		"14. Responsive layout: playable on both desktop and mobile (touch-friendly line selection on small screens)"
+
+	executor.SetVars(map[string]interface{}{
+		"workspace_dir": workspaceDir,
+	})
+
+	// Snapshot mechanism.
+	var snapshotMu sync.Mutex
+	snapshotCount := 0
+	snapshotsDir := filepath.Join(workspaceDir, "_snapshots")
+	if err := os.MkdirAll(snapshotsDir, 0o755); err != nil {
+		t.Fatalf("Failed to create snapshots dir: %v", err)
+	}
+
+	onFinished := func(nodeID string, output map[string]interface{}) {
+		if nodeID != "implement" && nodeID != "claude_fix" && nodeID != "codex_fix" {
+			return
+		}
+		snapshotMu.Lock()
+		defer snapshotMu.Unlock()
+		snapshotCount++
+		src := filepath.Join(workspaceDir, "index.html")
+		dst := filepath.Join(snapshotsDir, fmt.Sprintf("index_v%d_%s.html", snapshotCount, nodeID))
+		data, readErr := os.ReadFile(src)
+		if readErr != nil {
+			t.Logf("SNAPSHOT: could not read index.html after %s (v%d): %v", nodeID, snapshotCount, readErr)
+			return
+		}
+		if writeErr := os.WriteFile(dst, data, 0o644); writeErr != nil {
+			t.Logf("SNAPSHOT: could not write %s: %v", filepath.Base(dst), writeErr)
+			return
+		}
+		t.Logf("SNAPSHOT: %s -> %s (%d bytes)", nodeID, filepath.Base(dst), len(data))
+	}
+
+	eng := runtime.New(wf, s, executor, runtime.WithOnNodeFinished(onFinished))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Hour)
+	defer cancel()
+	inputs := map[string]interface{}{
+		"task_description":    taskDescription,
+		"acceptance_criteria": acceptanceCriteria,
+	}
+
+	t.Log("Starting live session continuity review/fix workflow run...")
+	start := time.Now()
+	runErr := eng.Run(ctx, runID, inputs)
+	elapsed := time.Since(start)
+	t.Logf("Run completed in %s", elapsed.Round(time.Second))
+
+	if runErr != nil {
+		acceptable := false
+		if errors.Is(runErr, runtime.ErrBudgetExceeded) {
+			acceptable = true
+		}
+		var rtErr *runtime.RuntimeError
+		if errors.As(runErr, &rtErr) {
+			switch rtErr.Code {
+			case runtime.ErrCodeBudgetExceeded, runtime.ErrCodeLoopExhausted:
+				acceptable = true
+			case runtime.ErrCodeExecutionFailed:
+				acceptable = true
+			}
+		}
+		if acceptable {
+			t.Logf("Run ended with acceptable error: %v", runErr)
+		} else {
+			t.Fatalf("Unexpected run error: %v", runErr)
+		}
+	}
+
+	r, loadErr := s.LoadRun(runID)
+	if loadErr != nil {
+		t.Fatalf("Failed to load run: %v", loadErr)
+	}
+	t.Logf("Run status: %s", r.Status)
+
+	if r.Status != store.RunStatusFinished && r.Status != store.RunStatusFailed {
+		t.Errorf("Unexpected run status: %s (expected finished or failed)", r.Status)
+	}
+
+	events, evtErr := s.LoadEvents(runID)
+	if evtErr != nil {
+		t.Fatalf("Failed to load events: %v", evtErr)
+	}
+
+	if !hasEvent(events, store.EventRunStarted) {
+		t.Error("Missing run_started event")
+	}
+
+	finishedNodes := eventNodeIDs(events, store.EventNodeFinished)
+	t.Logf("Finished nodes: %v", finishedNodes)
+
+	// Verify both agent perspectives were invoked.
+	claudeNodeCalled := false
+	codexNodeCalled := false
+	for _, id := range finishedNodes {
+		if strings.Contains(id, "claude") {
+			claudeNodeCalled = true
+		}
+		if strings.Contains(id, "codex") {
+			codexNodeCalled = true
+		}
+	}
+	if !claudeNodeCalled {
+		t.Error("No claude_* node finished")
+	}
+	if !codexNodeCalled {
+		t.Error("No codex_* node finished")
+	}
+
+	// Verify key nodes executed.
+	nodeSet := make(map[string]bool)
+	for _, id := range finishedNodes {
+		nodeSet[id] = true
+	}
+	for _, expected := range []string{"claude_plan", "codex_plan", "plan_judge_merge", "implement"} {
+		if !nodeSet[expected] {
+			t.Errorf("Expected node %q to have finished", expected)
+		}
+	}
+
+	// Check for review nodes.
+	if !nodeSet["claude_review"] || !nodeSet["codex_review"] {
+		t.Error("Expected both review nodes to have finished")
+	}
+
+	// Check for session continuity: verify fix nodes ran (proves the fix loop fired).
+	fixNodeRan := nodeSet["claude_fix"] || nodeSet["codex_fix"]
+	if fixNodeRan {
+		t.Log("SESSION CONTINUITY: at least one fix node ran with session: inherit")
+	} else {
+		t.Log("INFO: No fix nodes ran — implementation was approved on first review")
+	}
+
+	// Count fix iterations.
+	claudeFixCount := 0
+	codexFixCount := 0
+	for _, id := range finishedNodes {
+		switch id {
+		case "claude_fix":
+			claudeFixCount++
+		case "codex_fix":
+			codexFixCount++
+		}
+	}
+	t.Logf("Fix iterations: claude_fix=%d codex_fix=%d", claudeFixCount, codexFixCount)
+
+	// Check that index.html was generated.
+	htmlPath := filepath.Join(workspaceDir, "index.html")
+	if info, statErr := os.Stat(htmlPath); statErr != nil {
+		t.Logf("WARNING: index.html not found at %s", htmlPath)
+	} else {
+		t.Logf("SUCCESS: index.html exists (%d bytes) at %s", info.Size(), htmlPath)
+		t.Logf("Open in browser: file://%s", htmlPath)
+	}
+
+	// Collect metrics.
+	metrics, mErr := benchmark.CollectMetrics(s, runID, "live-session-review-fix", "")
+	if mErr != nil {
+		t.Fatalf("Failed to collect metrics: %v", mErr)
+	}
+
+	t.Logf("Metrics: tokens=%d cost=$%.4f model_calls=%d iterations=%d duration=%s",
+		metrics.TotalTokens, metrics.TotalCostUSD, metrics.ModelCalls,
+		metrics.Iterations, metrics.DurationStr)
+
+	// Snapshots.
+	snapshots, _ := os.ReadDir(snapshotsDir)
+	if len(snapshots) > 0 {
+		t.Log("\n=== ARTIFACT PROGRESSION ===")
+		for _, snap := range snapshots {
+			info, _ := snap.Info()
+			if info != nil {
+				t.Logf("  %s  (%d bytes)", snap.Name(), info.Size())
+			}
+		}
+	}
+
+	// Generate report.
+	reportPath := filepath.Join(workspaceDir, "report.md")
+	reportOpts := cli.ReportOptions{
+		RunID:    runID,
+		StoreDir: storeDir,
+		Output:   reportPath,
+	}
+	reportPrinter := cli.NewPrinter(cli.OutputHuman)
+	if reportErr := cli.RunReport(reportOpts, reportPrinter); reportErr != nil {
+		t.Logf("WARNING: could not generate report: %v", reportErr)
+	} else {
+		t.Logf("Report written to %s", reportPath)
+	}
+
+	logRunRecap(t, events)
+}
+
 // requireEnv skips the test if the named environment variable is not set.
 func requireEnv(t *testing.T, name string) {
 	t.Helper()

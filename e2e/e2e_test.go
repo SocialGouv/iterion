@@ -1424,6 +1424,7 @@ func TestAllFixturesCompile(t *testing.T) {
 		"todo_app_full_dual_model_delegate.iter",
 		"dual_model_plan_implement_review.iter",
 		"dual_model_plan_implement_review_before_round_robin_feature.iter",
+		"session_review_fix.iter",
 	}
 
 	for _, name := range fixtures {

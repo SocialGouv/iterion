@@ -1,0 +1,505 @@
+## Fixture : session_review_fix
+## Objectif : Workflow de planification et implementation avec revue parallele
+## et correction contextuelle via continuite de session.
+##
+## Nouvelles capacites demontrees :
+##   - Juge+fusion combines en un seul noeud (plan_judge_merge)
+##   - Review a triple role : revue, jugement et plan de fix
+##   - Continuite de session : les noeuds de fix reprennent la session de review
+##   - Routage LLM pour selectionner l'agent de fix
+##
+## Phases :
+##   1. Planification parallele (Claude Code + Codex)
+##   2. Jugement + fusion combines (un seul noeud)
+##   3. Implementation (Claude Code)
+##   4. Review parallele a triple role (Claude Code + Codex)
+##   5. Verdict et routage de fix (LLM router)
+##   6. Fix avec reprise de session -> retour review
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+## ─── Prompts ────────────────────────────────────────────────────
+
+prompt plan_system:
+  Tu es un architecte logiciel senior expert en planification.
+  Tu analyses les exigences et produis un plan d'implementation
+  detaille, ordonne, testable et executable.
+  Sois precis et pragmatique.
+
+prompt plan_user:
+  Produis un plan d'implementation detaille pour cette tache.
+
+  Description de la tache :
+  {{input.task_description}}
+
+  Criteres d'acceptation :
+  {{input.acceptance_criteria}}
+
+  Retour de reviews precedentes (si applicable) :
+  {{input.previous_feedback}}
+
+  Produis un plan incluant :
+  - Un resume de l'approche
+  - Les objectifs principaux
+  - Les etapes ordonnees d'implementation
+  - Les risques identifies
+  - Le plan de test
+
+prompt judge_merge_system:
+  Tu es un architecte senior qui cumule deux roles : juge et synthetiseur.
+  On te presente deux plans d'implementation independants pour la meme tache.
+
+  Tu dois :
+  1. EVALUER si au moins un des deux plans est de qualite suffisante
+     pour servir de base a l'implementation
+  2. Si oui (ready=true) : FUSIONNER les deux plans en un seul plan
+     coherent, complet et actionable en integrant les meilleures idees
+     de chaque plan et en resolvant les contradictions
+  3. Si non (ready=false) : expliquer les lacunes dans issues[]
+     pour guider une nouvelle iteration de planification
+
+  Sois pragmatique : des suggestions mineures ne doivent PAS bloquer.
+
+prompt judge_merge_user:
+  Evalue et fusionne ces deux plans d'implementation.
+
+  Plan A (Claude) :
+  {{input.claude_plan}}
+
+  Plan B (Codex) :
+  {{input.codex_plan}}
+
+  Criteres d'acceptation :
+  {{input.acceptance_criteria}}
+
+  Si les plans sont de qualite suffisante (ready=true),
+  produis un plan fusionne dans merged_plan.
+  Sinon, liste les lacunes dans issues.
+
+prompt implement_system:
+  Tu es un developpeur expert en implementation.
+  Tu appliques un plan d'implementation au workspace avec rigueur.
+  Si un fichier index.html existe deja, AMELIORE-LE en corrigeant les
+  problemes identifies plutot que de le reecrire entierement.
+  Lis d'abord le fichier existant, identifie les manques, puis corrige-les.
+  Ecris du code propre, teste et documente.
+
+prompt implement_user:
+  Implemente la tache selon ce plan valide.
+
+  Plan valide :
+  {{input.validated_plan}}
+
+  Criteres d'acceptation :
+  {{input.acceptance_criteria}}
+
+  Retour precedent (si applicable) :
+  {{input.previous_feedback}}
+
+  INSTRUCTIONS :
+  1. Si index.html existe deja, lis-le d'abord et identifie les criteres manquants
+  2. Corrige les problemes du retour precedent en priorite
+  3. Assure-toi que TOUS les criteres sont satisfaits
+  4. Verifie ton travail en relisant le fichier final
+
+prompt review_system:
+  Tu es un reviewer de code TRES exigeant et methodique.
+  Tu cumules TROIS roles :
+  1. REVIEWER : evalue l'implementation selon les criteres d'acceptation
+  2. JUGE : produis un verdict (approved=true/false)
+  3. PLANIFICATEUR DE FIX : si le verdict est negatif, produis un plan
+     de correction concret et actionable
+
+  Tu DOIS lire le code source du fichier index.html dans le workspace
+  et verifier CHAQUE critere factuellement en citant les lignes de code.
+  Ne te fie pas uniquement au resume de l'implementation, verifie le code reel.
+  Sois strict : un critere partiellement implemente est un FAIL.
+
+prompt review_user:
+  Review cette implementation en lisant le code source.
+
+  Resultat de l'implementation :
+  {{input.implementation}}
+
+  Criteres d'acceptation :
+  {{input.acceptance_criteria}}
+
+  INSTRUCTIONS :
+  1. Lis le fichier index.html dans le workspace
+  2. Pour CHAQUE critere, verifie factuellement dans le code :
+     - Est-il implemente ? Cite la ligne/section
+     - Est-il conforme a la specification exacte ?
+  3. Marque chaque critere PASS ou FAIL avec justification
+  4. Produis approved=true si la majorite des criteres sont satisfaits
+     et qu'aucun critere critique n'est manquant
+  5. Si approved=false, produis un plan de fix detaille dans fix_plan :
+     liste les actions concretes a effectuer pour corriger les problemes
+
+prompt verdict_system:
+  Tu es un juge technique pragmatique.
+  Tu evalues deux reviews independantes d'une meme implementation.
+  Si les DEUX reviews ont approved=true, marque approved=true.
+  Si au moins une review a approved=false, marque approved=false.
+
+prompt verdict_user:
+  Evalue ces deux reviews.
+
+  Review Claude :
+  {{input.claude_review}}
+
+  Review Codex :
+  {{input.codex_review}}
+
+  Criteres d'acceptation :
+  {{input.acceptance_criteria}}
+
+  Determine si l'implementation est approuvee.
+
+prompt fix_router_system:
+  Tu es un routeur de correction. On te presente les reviews de deux agents
+  (Claude et Codex) dont au moins un a rejete l'implementation.
+
+  Selectionne l'agent le mieux place pour corriger les problemes :
+  - claude_fix : si la review Claude a identifie des problemes critiques
+                 ou si les deux reviews ont rejete (Claude corrige en premier)
+  - codex_fix : si SEULE la review Codex a identifie des problemes critiques
+                et que Claude a approuve
+
+  Choisis l'agent dont la review est la plus detaillee et actionable.
+
+prompt fix_system:
+  Tu es dans une session de review de code.
+  Tu as precedemment effectue une review et identifie des problemes.
+  Maintenant, tu dois EXECUTER le plan de fix que tu as produit.
+
+  Applique les corrections decrites dans le plan de fix.
+  Sois methodique : traite chaque probleme un par un.
+  Verifie ton travail en relisant le fichier apres les modifications.
+
+prompt fix_user:
+  Execute le plan de fix suivant sur le workspace.
+
+  Plan de fix :
+  {{input.fix_plan}}
+
+  Criteres d'acceptation :
+  {{input.acceptance_criteria}}
+
+  Applique les corrections et verifie que les criteres sont satisfaits.
+
+## ─── Schemas ────────────────────────────────────────────────────
+
+schema workflow_input:
+  task_description: string
+  acceptance_criteria: string
+
+schema plan_input:
+  task_description: string
+  acceptance_criteria: string
+  previous_feedback: string
+
+schema plan_output:
+  summary: string
+  goals: string[]
+  ordered_steps: string[]
+  risks: string[]
+  test_plan: string[]
+
+schema dual_plan_bundle:
+  claude_plan: json
+  codex_plan: json
+
+schema judge_merge_input:
+  claude_plan: json
+  codex_plan: json
+  acceptance_criteria: string
+
+schema judge_merge_output:
+  ready: bool
+  merged_plan: json
+  issues: string[]
+
+schema impl_input:
+  validated_plan: json
+  acceptance_criteria: string
+  previous_feedback: string
+
+schema impl_output:
+  applied: bool
+  summary: string
+  files_changed: string[]
+
+schema review_input:
+  implementation: json
+  acceptance_criteria: string
+
+schema review_output:
+  summary: string
+  issues: string[]
+  approved: bool
+  fix_plan: string
+
+schema dual_review_bundle:
+  claude_review: json
+  codex_review: json
+
+schema verdict_input:
+  claude_review: json
+  codex_review: json
+  acceptance_criteria: string
+
+schema verdict_output:
+  approved: bool
+  remaining_issues: string[]
+
+schema fix_input:
+  fix_plan: string
+  acceptance_criteria: string
+
+schema fix_output:
+  applied: bool
+  summary: string
+  files_changed: string[]
+
+## ─── Nodes : Planification ─────────────────────────────────────
+
+router plan_fanout:
+  mode: fan_out_all
+
+agent claude_plan:
+  delegate: "claude_code"
+  input: plan_input
+  output: plan_output
+  publish: claude_plan_output
+  system: plan_system
+  user: plan_user
+  session: fresh
+
+agent codex_plan:
+  delegate: "codex"
+  input: plan_input
+  output: plan_output
+  publish: codex_plan_output
+  system: plan_system
+  user: plan_user
+  session: fresh
+
+join plans_join:
+  strategy: wait_all
+  require: [claude_plan, codex_plan]
+  output: dual_plan_bundle
+
+## ─── Node : Jugement + Fusion combines ─────────────────────────
+
+agent plan_judge_merge:
+  delegate: "claude_code"
+  input: judge_merge_input
+  output: judge_merge_output
+  publish: merged_plan
+  system: judge_merge_system
+  user: judge_merge_user
+  session: fresh
+
+## ─── Node : Implementation ─────────────────────────────────────
+
+agent implement:
+  delegate: "claude_code"
+  input: impl_input
+  output: impl_output
+  publish: implementation
+  system: implement_system
+  user: implement_user
+  session: fresh
+
+## ─── Nodes : Review (triple role) ──────────────────────────────
+
+router review_fanout:
+  mode: fan_out_all
+
+agent claude_review:
+  delegate: "claude_code"
+  input: review_input
+  output: review_output
+  publish: claude_review_report
+  system: review_system
+  user: review_user
+  session: fresh
+  tools: [read_file, list_files, search_codebase, tree]
+  tool_max_steps: 10
+  readonly: true
+
+agent codex_review:
+  delegate: "codex"
+  input: review_input
+  output: review_output
+  publish: codex_review_report
+  system: review_system
+  user: review_user
+  session: fresh
+  tools: [read_file, list_files, search_codebase, tree]
+  tool_max_steps: 10
+  readonly: true
+
+join review_join:
+  strategy: wait_all
+  require: [claude_review, codex_review]
+  output: dual_review_bundle
+
+## ─── Node : Verdict ────────────────────────────────────────────
+
+judge review_verdict:
+  delegate: "claude_code"
+  input: verdict_input
+  output: verdict_output
+  publish: review_verdict_report
+  system: verdict_system
+  user: verdict_user
+  session: fresh
+
+## ─── Nodes : Fix Routing ───────────────────────────────────────
+
+router fix_llm_router:
+  mode: llm
+  model: "${CLAUDE_MODEL}"
+  system: fix_router_system
+
+## ─── Nodes : Fix (session inherit) ─────────────────────────────
+
+agent claude_fix:
+  delegate: "claude_code"
+  input: fix_input
+  output: fix_output
+  publish: implementation
+  system: fix_system
+  user: fix_user
+  session: inherit
+
+agent codex_fix:
+  delegate: "codex"
+  input: fix_input
+  output: fix_output
+  publish: implementation
+  system: fix_system
+  user: fix_user
+  session: inherit
+
+## ─── Workflow ────────────────────────────────────────────────────
+
+workflow session_review_fix:
+  vars:
+    task_description: string
+    acceptance_criteria: string
+
+  entry: plan_fanout
+
+  budget:
+    max_parallel_branches: 4
+    max_duration: "3h"
+    max_cost_usd: 80
+    max_tokens: 8000000
+
+  ## ═══ Phase 1 : Planification parallele ═════════════════════════
+
+  plan_fanout -> claude_plan with {
+    task_description: "{{vars.task_description}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}",
+    previous_feedback: ""
+  }
+
+  plan_fanout -> codex_plan with {
+    task_description: "{{vars.task_description}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}",
+    previous_feedback: ""
+  }
+
+  claude_plan -> plans_join
+  codex_plan -> plans_join
+
+  ## ═══ Phase 2 : Jugement + fusion combines ═════════════════════
+
+  plans_join -> plan_judge_merge with {
+    claude_plan: "{{outputs.claude_plan}}",
+    codex_plan: "{{outputs.codex_plan}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## Plan OK -> implementation
+  plan_judge_merge -> implement when ready with {
+    validated_plan: "{{outputs.plan_judge_merge.merged_plan}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}",
+    previous_feedback: ""
+  }
+
+  ## Plan KO -> retour planification
+  plan_judge_merge -> plan_fanout when not ready as plan_loop(3) with {
+    task_description: "{{vars.task_description}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}",
+    previous_feedback: "{{outputs.plan_judge_merge.issues}}"
+  }
+
+  ## ═══ Phase 3 : Implementation ═════════════════════════════════
+
+  implement -> review_fanout with {
+    implementation: "{{outputs.implement}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## ═══ Phase 4 : Review parallele (triple role) ═════════════════
+
+  review_fanout -> claude_review with {
+    implementation: "{{input.implementation}}",
+    acceptance_criteria: "{{input.acceptance_criteria}}"
+  }
+
+  review_fanout -> codex_review with {
+    implementation: "{{input.implementation}}",
+    acceptance_criteria: "{{input.acceptance_criteria}}"
+  }
+
+  claude_review -> review_join
+  codex_review -> review_join
+
+  ## ═══ Phase 5 : Verdict ════════════════════════════════════════
+
+  review_join -> review_verdict with {
+    claude_review: "{{outputs.claude_review}}",
+    codex_review: "{{outputs.codex_review}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## Implementation OK -> done
+  review_verdict -> done when approved
+
+  ## Implementation KO -> routage fix
+  review_verdict -> fix_llm_router when not approved as fix_loop(5) with {
+    claude_review: "{{outputs.claude_review}}",
+    codex_review: "{{outputs.codex_review}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## ═══ Phase 6 : Fix avec continuite de session ═════════════════
+
+  ## Le LLM router selectionne l'agent de fix le plus pertinent
+  fix_llm_router -> claude_fix with {
+    _session_id: "{{outputs.claude_review._session_id}}",
+    fix_plan: "{{outputs.claude_review.fix_plan}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  fix_llm_router -> codex_fix with {
+    _session_id: "{{outputs.codex_review._session_id}}",
+    fix_plan: "{{outputs.codex_review.fix_plan}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  ## Apres fix -> retour review
+  claude_fix -> review_fanout as fix_loop(5) with {
+    implementation: "{{outputs.claude_fix}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
+
+  codex_fix -> review_fanout as fix_loop(5) with {
+    implementation: "{{outputs.codex_fix}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }

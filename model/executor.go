@@ -832,6 +832,14 @@ func (e *GoaiExecutor) executeDelegation(ctx context.Context, node *ir.Node, inp
 		ReasoningEffort: resolveReasoningEffort(node, input),
 	}
 
+	// Session continuity: when the node requests session inheritance,
+	// look for a session ID passed via the _session_id input field.
+	if node.Session == ir.SessionInherit {
+		if sid, ok := input["_session_id"].(string); ok && sid != "" {
+			task.SessionID = sid
+		}
+	}
+
 	// Emit delegation started event.
 	if e.hooks.OnDelegateStarted != nil {
 		e.hooks.OnDelegateStarted(node.ID, node.Delegate)
@@ -872,6 +880,11 @@ func (e *GoaiExecutor) executeDelegation(ctx context.Context, node *ir.Node, inp
 	// Attach metadata.
 	result.Output["_tokens"] = result.Tokens
 	result.Output["_delegate"] = node.Delegate
+
+	// Expose session ID for downstream nodes that may inherit this session.
+	if result.SessionID != "" {
+		result.Output["_session_id"] = result.SessionID
+	}
 
 	return result.Output, nil
 }

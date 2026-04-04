@@ -1,0 +1,168 @@
+package runtime
+
+import (
+	"context"
+	"testing"
+
+	"github.com/SocialGouv/iterion/ir"
+)
+
+// TestSessionInherit verifies that _session_id flows through the output/input
+// pipeline and is available to downstream nodes via edge data mappings.
+//
+// Workflow:
+//
+//	producer (agent) -> consumer (agent, session: inherit) -> done
+//
+// producer returns _session_id in its output; the edge maps it to consumer
+// via the with clause. consumer checks that _session_id is present in its input.
+func TestSessionInherit(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "session_inherit_test",
+		Entry: "producer",
+		Nodes: map[string]*ir.Node{
+			"producer": {ID: "producer", Kind: ir.NodeAgent},
+			"consumer": {ID: "consumer", Kind: ir.NodeAgent, Session: ir.SessionInherit},
+			"done":     {ID: "done", Kind: ir.NodeDone},
+		},
+		Edges: []*ir.Edge{
+			{
+				From: "producer",
+				To:   "consumer",
+				With: []*ir.DataMapping{
+					{
+						Key:  "_session_id",
+						Refs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"producer", "_session_id"}, Raw: "{{outputs.producer._session_id}}"}},
+						Raw:  "{{outputs.producer._session_id}}",
+					},
+					{
+						Key:  "data",
+						Refs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"producer", "result"}, Raw: "{{outputs.producer.result}}"}},
+						Raw:  "{{outputs.producer.result}}",
+					},
+				},
+			},
+			{From: "consumer", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+
+	var capturedSessionID string
+
+	exec := newStubExecutor()
+	exec.on("producer", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		// Simulate a delegation backend returning a session ID.
+		return map[string]interface{}{
+			"result":      "planned",
+			"_session_id": "sess-abc-123",
+		}, nil
+	})
+	exec.on("consumer", func(input map[string]interface{}) (map[string]interface{}, error) {
+		// Capture the session ID received via input.
+		if sid, ok := input["_session_id"].(string); ok {
+			capturedSessionID = sid
+		}
+		return map[string]interface{}{"done": true}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "run-session-001", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedSessionID != "sess-abc-123" {
+		t.Errorf("expected _session_id to be %q, got %q", "sess-abc-123", capturedSessionID)
+	}
+}
+
+// TestSessionInheritThroughBranches verifies that _session_id flows correctly
+// through parallel branches (fan_out -> join) and is accessible to downstream
+// nodes after the join.
+//
+// Workflow:
+//
+//	fanout (router) -> [branch_a, branch_b] -> joiner -> consumer -> done
+//
+// Each branch returns a distinct _session_id. After the join, consumer
+// receives branch_a's session ID via the with clause.
+func TestSessionInheritThroughBranches(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "session_branch_test",
+		Entry: "fanout",
+		Nodes: map[string]*ir.Node{
+			"fanout":   {ID: "fanout", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
+			"branch_a": {ID: "branch_a", Kind: ir.NodeAgent, Readonly: true},
+			"branch_b": {ID: "branch_b", Kind: ir.NodeAgent, Readonly: true},
+			"joiner":   {ID: "joiner", Kind: ir.NodeJoin, JoinStrategy: ir.JoinWaitAll, Require: []string{"branch_a", "branch_b"}},
+			"consumer": {ID: "consumer", Kind: ir.NodeAgent, Session: ir.SessionInherit},
+			"done":     {ID: "done", Kind: ir.NodeDone},
+		},
+		Edges: []*ir.Edge{
+			{From: "fanout", To: "branch_a"},
+			{From: "fanout", To: "branch_b"},
+			{From: "branch_a", To: "joiner"},
+			{From: "branch_b", To: "joiner"},
+			{
+				From: "joiner",
+				To:   "consumer",
+				With: []*ir.DataMapping{
+					{
+						Key:  "_session_id",
+						Refs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"branch_a", "_session_id"}, Raw: "{{outputs.branch_a._session_id}}"}},
+						Raw:  "{{outputs.branch_a._session_id}}",
+					},
+					{
+						Key:  "review",
+						Refs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"branch_a", "review"}, Raw: "{{outputs.branch_a.review}}"}},
+						Raw:  "{{outputs.branch_a.review}}",
+					},
+				},
+			},
+			{From: "consumer", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+
+	var capturedSessionID string
+
+	exec := newStubExecutor()
+	exec.on("branch_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{
+			"review":      "looks good",
+			"_session_id": "sess-branch-a",
+		}, nil
+	})
+	exec.on("branch_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{
+			"review":      "needs work",
+			"_session_id": "sess-branch-b",
+		}, nil
+	})
+	exec.on("consumer", func(input map[string]interface{}) (map[string]interface{}, error) {
+		if sid, ok := input["_session_id"].(string); ok {
+			capturedSessionID = sid
+		}
+		return map[string]interface{}{"fixed": true}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "run-session-002", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedSessionID != "sess-branch-a" {
+		t.Errorf("expected _session_id from branch_a %q, got %q", "sess-branch-a", capturedSessionID)
+	}
+}
