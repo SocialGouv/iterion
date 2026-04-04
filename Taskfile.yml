@@ -48,7 +48,12 @@ tasks:
       - go test -v -timeout 120s ./e2e/...
 
   test:live:
-    desc: Run the kanban board plan/implement/review live e2e test (requires claude CLI)
+    desc: Run the session continuity review/fix live e2e test (requires claude + codex CLIs)
+    cmds:
+      - go test -v -count=1 -run TestLive_SessionContinuity_ReviewFix -timeout 3h ./e2e/...
+
+  test:live:kanban:
+    desc: Run the kanban board plan/implement/review live e2e test (requires claude + codex CLIs)
     cmds:
       - go test -v -count=1 -run TestLive_DualModel_PlanImplementReview -timeout 5h ./e2e/...
 
