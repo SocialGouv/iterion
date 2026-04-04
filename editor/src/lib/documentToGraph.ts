@@ -127,7 +127,7 @@ export function documentToGraph(doc: IterDocument, activeWorkflowName?: string):
         id: makeEdgeId(wf.name, i),
         source: edge.from,
         target: edge.to,
-        type: label ? "conditionalEdge" : "default",
+        type: "conditionalEdge",
         label: label || undefined,
         data: { when: edge.when, loop: edge.loop, with: edge.with, edgeIndex: i, workflowName: wf.name },
       });

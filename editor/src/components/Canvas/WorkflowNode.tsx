@@ -1,10 +1,10 @@
-import { Handle, Position } from "@xyflow/react";
+import { Handle } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 import type { NodeKind, AgentDecl, ToolNodeDecl, HumanDecl, JoinDecl, RouterDecl } from "@/api/types";
 import { useDocumentStore } from "@/store/document";
-import { useUIStore } from "@/store/ui";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { ProviderIcon } from "@/components/icons/ProviderIcon";
+import { SIDES, POS_MAP } from "./handlePositions";
 
 const KIND_ICONS: Record<NodeKind, string> = {
   agent: "\u{1F916}",
@@ -104,10 +104,6 @@ export default function WorkflowNode({ data }: NodeProps) {
     (e) => e.loop && (e.from === label || e.to === label),
   ) ?? false;
 
-  const layoutDirection = useUIStore((s) => s.layoutDirection);
-  const targetPos = layoutDirection === "RIGHT" ? Position.Left : Position.Top;
-  const sourcePos = layoutDirection === "RIGHT" ? Position.Right : Position.Bottom;
-
   const isTerminal = kind === "done" || kind === "fail";
   const isStart = kind === "start";
   const hasDetail = !isTerminal && !isStart;
@@ -125,7 +121,9 @@ export default function WorkflowNode({ data }: NodeProps) {
             : undefined,
       }}
     >
-      {!isStart && <Handle type="target" position={targetPos} className="!bg-gray-400" />}
+      {!isStart && SIDES.map(s => (
+        <Handle key={`target-${s}`} id={`target-${s}`} type="target" position={POS_MAP[s]} className="!bg-gray-400 !w-1.5 !h-1.5 !opacity-0" />
+      ))}
       <div className="flex items-center justify-center gap-1">
         <span className="text-lg">{KIND_ICONS[kind]}</span>
         {sessionIndicator && <span className="text-xs" title={`session: ${(decl as AgentDecl)?.session}`}>{sessionIndicator}</span>}
@@ -164,7 +162,9 @@ export default function WorkflowNode({ data }: NodeProps) {
           ···
         </div>
       )}
-      {!isTerminal && <Handle type="source" position={sourcePos} className="!bg-gray-400" />}
+      {!isTerminal && SIDES.map(s => (
+        <Handle key={`source-${s}`} id={`source-${s}`} type="source" position={POS_MAP[s]} className="!bg-gray-400 !w-1.5 !h-1.5 !opacity-0" />
+      ))}
     </div>
   );
 }

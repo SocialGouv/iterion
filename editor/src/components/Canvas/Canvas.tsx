@@ -7,6 +7,7 @@ import { useUIStore } from "@/store/ui";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { documentToGraph, getTopologyKey, makeEdgeId, generateLayerNodes, isAuxiliaryNodeId } from "@/lib/documentToGraph";
 import { autoLayout } from "@/lib/autoLayout";
+import { computeEdgeHandles } from "@/lib/computeEdgeHandles";
 import { generateUniqueName, getAllNodeNames, defaultAgent, defaultJudge, defaultRouter, defaultJoin, defaultHuman, defaultTool } from "@/lib/defaults";
 import type { NodeKind } from "@/api/types";
 import type { LayerKind } from "@/store/ui";
@@ -104,7 +105,13 @@ export default function Canvas() {
 
   // Manage node positions with local state (allows dragging)
   const [layoutNodes, setLayoutNodes] = useState<Node[]>([]);
+  const [layoutEdges, setLayoutEdges] = useState<FlowEdge[]>([]);
   const prevTopologyRef = useRef<string>("");
+  const dragRecomputeTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const layoutNodesRef = useRef<Node[]>([]);
+
+  // Cleanup debounce timer on unmount
+  useEffect(() => () => clearTimeout(dragRecomputeTimer.current), []);
 
   // Pending drop positions: nodes dropped before layout runs get placed here
   const pendingPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
@@ -113,6 +120,7 @@ export default function Canvas() {
   useEffect(() => {
     if (graphNodes.length === 0) {
       setLayoutNodes([]);
+      setLayoutEdges([]);
       prevTopologyRef.current = "";
       return;
     }
@@ -124,34 +132,51 @@ export default function Canvas() {
         .then((laid) => {
           // Apply any pending drop positions
           const pending = pendingPositionsRef.current;
+          let resultNodes: Node[];
           if (pending.size > 0) {
-            const result = laid.map((n) => {
+            resultNodes = laid.map((n) => {
               const pos = pending.get(n.id);
               return pos ? { ...n, position: pos } : n;
             });
             pending.clear();
-            setLayoutNodes(result);
           } else {
-            setLayoutNodes(laid);
+            resultNodes = laid;
           }
+          layoutNodesRef.current = resultNodes;
+          setLayoutNodes(resultNodes);
+          setLayoutEdges(computeEdgeHandles(resultNodes, graphEdges, layoutDirection));
         })
-        .catch(() => setLayoutNodes(graphNodes));
+        .catch(() => {
+          layoutNodesRef.current = graphNodes;
+          setLayoutNodes(graphNodes);
+          setLayoutEdges(computeEdgeHandles(graphNodes, graphEdges, layoutDirection));
+        });
     }
   }, [document, graphNodes, graphEdges, activeWorkflowName, layoutDirection, activeLayers]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
-      setLayoutNodes((nds) =>
-        nds.map((n) => {
+      const hasPositionChange = changes.some((c) => c.type === "position" && c.position);
+      setLayoutNodes((nds) => {
+        const updated = nds.map((n) => {
           const change = changes.find((c) => c.type === "position" && c.id === n.id);
           if (change && change.type === "position" && change.position) {
             return { ...n, position: change.position };
           }
           return n;
-        }),
-      );
+        });
+        layoutNodesRef.current = updated;
+        return updated;
+      });
+      // Debounced recomputation of edge handles after drag (reads fresh ref)
+      if (hasPositionChange) {
+        clearTimeout(dragRecomputeTimer.current);
+        dragRecomputeTimer.current = setTimeout(() => {
+          setLayoutEdges(computeEdgeHandles(layoutNodesRef.current, graphEdges, layoutDirection));
+        }, 100);
+      }
     },
-    [],
+    [graphEdges, layoutDirection],
   );
 
   const onEdgesChange = useCallback((_changes: EdgeChange[]) => {
@@ -479,7 +504,9 @@ export default function Canvas() {
   const handleArrange = useCallback(() => {
     autoLayout(graphNodes, graphEdges, layoutDirection)
       .then((laid) => {
+        layoutNodesRef.current = laid;
         setLayoutNodes(laid);
+        setLayoutEdges(computeEdgeHandles(laid, graphEdges, layoutDirection));
         prevTopologyRef.current = "";
         setTimeout(() => fitView({ padding: 0.2 }), 50);
       })
@@ -604,7 +631,7 @@ export default function Canvas() {
 
       <ReactFlow
         nodes={displayNodes}
-        edges={graphEdges}
+        edges={layoutEdges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}

@@ -1,4 +1,4 @@
-import { BaseEdge, EdgeLabelRenderer, getBezierPath, getSmoothStepPath } from "@xyflow/react";
+import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath } from "@xyflow/react";
 import type { EdgeProps } from "@xyflow/react";
 
 export default function ConditionalEdge(props: EdgeProps) {
@@ -6,25 +6,16 @@ export default function ConditionalEdge(props: EdgeProps) {
 
   const hasLoop = !!(data as Record<string, unknown>)?.loop;
 
-  // Use smooth step path for loop edges (more distinct visual), bezier for normal
-  const [edgePath, labelX, labelY] = hasLoop
-    ? getSmoothStepPath({
-        sourceX,
-        sourceY,
-        targetX,
-        targetY,
-        sourcePosition,
-        targetPosition,
-        borderRadius: 16,
-      })
-    : getBezierPath({
-        sourceX,
-        sourceY,
-        targetX,
-        targetY,
-        sourcePosition,
-        targetPosition,
-      });
+  const [edgePath, labelX, labelY] = getSmoothStepPath({
+    sourceX,
+    sourceY,
+    targetX,
+    targetY,
+    sourcePosition,
+    targetPosition,
+    borderRadius: hasLoop ? 16 : 8,
+    offset: hasLoop ? 40 : 20,
+  });
 
   const strokeColor = selected ? "#60A5FA" : hasLoop ? "#F59E0B" : "#888";
   const strokeDasharray = hasLoop ? "8 4" : undefined;

@@ -1,7 +1,8 @@
-import { Handle, Position } from "@xyflow/react";
+import { Handle } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 import type { LayerKind, EditingItem } from "@/store/ui";
 import { useUIStore } from "@/store/ui";
+import { SIDES, POS_MAP } from "./handlePositions";
 
 const LAYER_TO_ITEM_KIND: Record<LayerKind, EditingItem["kind"]> = {
   schemas: "schema",
@@ -26,10 +27,6 @@ export default function AuxiliaryNode({ data }: NodeProps) {
   const { label, layerKind, subtitle, badge } = data as AuxiliaryNodeData;
   const style = LAYER_STYLES[layerKind];
   const setEditingItem = useUIStore((s) => s.setEditingItem);
-  const layoutDirection = useUIStore((s) => s.layoutDirection);
-
-  const targetPos = layoutDirection === "RIGHT" ? Position.Left : Position.Top;
-  const sourcePos = layoutDirection === "RIGHT" ? Position.Right : Position.Bottom;
 
   return (
     <div
@@ -38,7 +35,9 @@ export default function AuxiliaryNode({ data }: NodeProps) {
       onClick={() => setEditingItem({ kind: LAYER_TO_ITEM_KIND[layerKind], name: label })}
       title="Click to edit"
     >
-      <Handle type="target" position={targetPos} className="!bg-gray-500 !w-1.5 !h-1.5" />
+      {SIDES.map(s => (
+        <Handle key={`target-${s}`} id={`target-${s}`} type="target" position={POS_MAP[s]} className="!bg-gray-500 !w-1 !h-1 !opacity-0" />
+      ))}
       <div className="flex items-center justify-center gap-1">
         <span className="text-xs">{style.icon}</span>
         <span className="font-medium text-xs text-white truncate max-w-[90px]">{label}</span>
@@ -54,7 +53,9 @@ export default function AuxiliaryNode({ data }: NodeProps) {
       {subtitle && (
         <div className="text-[9px] text-gray-400 truncate max-w-[110px]">{subtitle}</div>
       )}
-      <Handle type="source" position={sourcePos} className="!bg-gray-500 !w-1.5 !h-1.5" />
+      {SIDES.map(s => (
+        <Handle key={`source-${s}`} id={`source-${s}`} type="source" position={POS_MAP[s]} className="!bg-gray-500 !w-1 !h-1 !opacity-0" />
+      ))}
     </div>
   );
 }

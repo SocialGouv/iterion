@@ -1,4 +1,4 @@
-import { BaseEdge, EdgeLabelRenderer, getBezierPath } from "@xyflow/react";
+import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath } from "@xyflow/react";
 import type { EdgeProps } from "@xyflow/react";
 import type { LayerKind } from "@/store/ui";
 
@@ -14,13 +14,15 @@ export default function ReferenceEdge(props: EdgeProps) {
   const layerKind = (data as Record<string, unknown>)?.layerKind as LayerKind | undefined;
   const color = layerKind ? LAYER_COLORS[layerKind] : "#666";
 
-  const [edgePath, labelX, labelY] = getBezierPath({
+  const [edgePath, labelX, labelY] = getSmoothStepPath({
     sourceX,
     sourceY,
     targetX,
     targetY,
     sourcePosition,
     targetPosition,
+    borderRadius: 6,
+    offset: 15,
   });
 
   return (
