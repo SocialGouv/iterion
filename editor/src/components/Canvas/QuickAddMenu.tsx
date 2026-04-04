@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import type { NodeKind } from "@/api/types";
 import { NODE_ICONS } from "@/lib/constants";
 
@@ -20,8 +21,28 @@ interface Props {
 }
 
 export default function QuickAddMenu({ x, y, onAddNode, onConnectTerminal, onClose }: Props) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        onClose();
+      }
+    };
+    const keyHandler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.document.addEventListener("mousedown", handler);
+    window.addEventListener("keydown", keyHandler);
+    return () => {
+      window.document.removeEventListener("mousedown", handler);
+      window.removeEventListener("keydown", keyHandler);
+    };
+  }, [onClose]);
+
   return (
     <div
+      ref={ref}
       className="fixed bg-gray-800 border border-gray-600 rounded-lg shadow-xl z-50 py-1 min-w-[140px]"
       style={{
         left: Math.min(x, window.innerWidth - 160),

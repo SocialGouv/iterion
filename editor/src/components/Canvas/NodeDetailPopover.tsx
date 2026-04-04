@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import type { IterDocument, AgentDecl, JudgeDecl, HumanDecl, ToolNodeDecl, JoinDecl, RouterDecl } from "@/api/types";
 import { useUIStore } from "@/store/ui";
+import { findNodeDecl } from "@/lib/defaults";
 
 interface Props {
   nodeId: string;
@@ -13,17 +14,16 @@ export default function NodeDetailPopover({ nodeId, document, onClose }: Props) 
   const setEditingItem = useUIStore((s) => s.setEditingItem);
 
   // Find the node declaration
-  const agent = document.agents?.find((a) => a.name === nodeId) as AgentDecl | undefined;
-  const judge = document.judges?.find((j) => j.name === nodeId) as JudgeDecl | undefined;
-  const human = document.humans?.find((h) => h.name === nodeId) as HumanDecl | undefined;
-  const tool = document.tools?.find((t) => t.name === nodeId) as ToolNodeDecl | undefined;
-  const join = document.joins?.find((j) => j.name === nodeId) as JoinDecl | undefined;
-  const router = document.routers?.find((r) => r.name === nodeId) as RouterDecl | undefined;
+  const found = findNodeDecl(document, nodeId);
+  if (!found) return null;
+  const { kind, decl } = found;
 
-  const decl = agent || judge || human || tool || join || router;
-  if (!decl) return null;
-
-  const kind = agent ? "agent" : judge ? "judge" : human ? "human" : tool ? "tool" : join ? "join" : "router";
+  const agent = kind === "agent" ? decl as AgentDecl : kind === "judge" ? decl as JudgeDecl : undefined;
+  const judge = kind === "judge" ? decl as JudgeDecl : undefined;
+  const human = kind === "human" ? decl as HumanDecl : undefined;
+  const tool = kind === "tool" ? decl as ToolNodeDecl : undefined;
+  const join = kind === "join" ? decl as JoinDecl : undefined;
+  const router = kind === "router" ? decl as RouterDecl : undefined;
 
   // Resolve schemas
   const inputSchemaName = (agent || judge || human)?.input;

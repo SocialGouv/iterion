@@ -1,17 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { ReactFlow, Background, Controls, MiniMap, useReactFlow } from "@xyflow/react";
-import type { NodeMouseHandler, EdgeMouseHandler, Connection, Node, NodeChange, EdgeChange, Edge as FlowEdge } from "@xyflow/react";
+import type { NodeMouseHandler, EdgeMouseHandler, Node } from "@xyflow/react";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { useUIStore } from "@/store/ui";
-import { NODE_COLORS } from "@/lib/constants";
+import { NODE_COLORS, DEBOUNCE_FIT_VIEW_MS, DEBOUNCE_LAYOUT_SETTLE_MS } from "@/lib/constants";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
-import { documentToGraph, getTopologyKey, makeEdgeId, generateLayerNodes, isAuxiliaryNodeId } from "@/lib/documentToGraph";
-import { autoLayout } from "@/lib/autoLayout";
-import { computeEdgeHandles } from "@/lib/computeEdgeHandles";
-import { generateUniqueName, getAllNodeNames, defaultAgent, defaultJudge, defaultRouter, defaultJoin, defaultHuman, defaultTool } from "@/lib/defaults";
+import { useCanvasSearch } from "@/hooks/useCanvasSearch";
+import { useCanvasKeyboard } from "@/hooks/useCanvasKeyboard";
+import { useCanvasConnections } from "@/hooks/useCanvasConnections";
+import { useCanvasLayout } from "@/hooks/useCanvasLayout";
+import { useAddNode } from "@/hooks/useAddNode";
+import { useFullscreen } from "@/hooks/useFullscreen";
+import { isAuxiliaryNodeId } from "@/lib/documentToGraph";
 import type { NodeKind } from "@/api/types";
-import type { LayerKind } from "@/store/ui";
 import WorkflowNode from "./WorkflowNode";
 import ConditionalEdge from "./ConditionalEdge";
 import AuxiliaryNode from "./AuxiliaryNode";
@@ -29,38 +31,16 @@ function isEditableNode(id: string): boolean {
   return id !== "__start__" && id !== "done" && id !== "fail" && !isAuxiliaryNodeId(id);
 }
 
-
 export default function Canvas() {
   const document = useDocumentStore((s) => s.document);
-  const addAgent = useDocumentStore((s) => s.addAgent);
-  const addJudge = useDocumentStore((s) => s.addJudge);
-  const addRouter = useDocumentStore((s) => s.addRouter);
-  const addJoin = useDocumentStore((s) => s.addJoin);
-  const addHuman = useDocumentStore((s) => s.addHuman);
-  const addTool = useDocumentStore((s) => s.addTool);
-  const addEdge = useDocumentStore((s) => s.addEdge);
+  const addNode = useAddNode();
   const removeNode = useDocumentStore((s) => s.removeNode);
-  const removeEdge = useDocumentStore((s) => s.removeEdge);
   const duplicateNode = useDocumentStore((s) => s.duplicateNode);
-  const undo = useDocumentStore((s) => s.undo);
-  const redo = useDocumentStore((s) => s.redo);
   const updateWorkflow = useDocumentStore((s) => s.updateWorkflow);
   const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
   const setSelectedEdge = useSelectionStore((s) => s.setSelectedEdge);
   const clearSelection = useSelectionStore((s) => s.clearSelection);
   const selectedNodeId = useSelectionStore((s) => s.selectedNodeId);
-  const selectedEdgeId = useSelectionStore((s) => s.selectedEdgeId);
-  const copiedNodeId = useSelectionStore((s) => s.copiedNodeId);
-  const setCopiedNode = useSelectionStore((s) => s.setCopiedNode);
-  const addToast = useUIStore((s) => s.addToast);
-  const expanded = useUIStore((s) => s.expanded);
-  const toggleExpanded = useUIStore((s) => s.toggleExpanded);
-  const browserFullscreen = useUIStore((s) => s.browserFullscreen);
-  const setBrowserFullscreen = useUIStore((s) => s.setBrowserFullscreen);
-  const layoutDirection = useUIStore((s) => s.layoutDirection);
-  const toggleLayoutDirection = useUIStore((s) => s.toggleLayoutDirection);
-  const activeLayers = useUIStore((s) => s.activeLayers);
-  const toggleLayer = useUIStore((s) => s.toggleLayer);
   const detailNodeId = useUIStore((s) => s.detailNodeId);
   const setDetailNodeId = useUIStore((s) => s.setDetailNodeId);
   const activeWorkflow = useActiveWorkflow();
@@ -70,127 +50,67 @@ export default function Canvas() {
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
 
-  // Search state
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searchOpen, setSearchOpen] = useState(false);
-  const searchInputRef = useRef<HTMLInputElement>(null);
+  // Delegated hooks
+  const layout = useCanvasLayout();
+  const search = useCanvasSearch(layout.layoutNodes);
+  const connections = useCanvasConnections();
+  const { toggleFullscreen } = useFullscreen();
+  const onKeyDown = useCanvasKeyboard({
+    search,
+    quickAddMenu: connections.quickAddMenu,
+    setQuickAddMenu: (v) => connections.setQuickAddMenu(v),
+    setContextMenu,
+  });
 
-  // Connection error feedback
-  const [connectionError, setConnectionError] = useState<string | null>(null);
-  const connectionErrorTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
-  // Quick-add menu state (shown when dragging from handle to empty canvas)
-  const [quickAddMenu, setQuickAddMenu] = useState<{ x: number; y: number; sourceId: string } | null>(null);
-  const pendingConnectSourceRef = useRef<string | null>(null);
-  const edgeCountBeforeConnectRef = useRef<number>(0);
-
+  // Fit view when switching workflows
   const activeWorkflowName = activeWorkflow?.name;
-  const { nodes: graphNodes, edges: graphEdges } = useMemo(() => {
-    if (!document) return { nodes: [], edges: [] };
-    const base = documentToGraph(document, activeWorkflowName);
-    const layer = generateLayerNodes(document, activeLayers);
-    return {
-      nodes: [...base.nodes, ...layer.nodes],
-      edges: [...base.edges, ...layer.edges],
-    };
-  }, [document, activeWorkflowName, activeLayers]);
-
-  // Manage node positions with local state (allows dragging)
-  const [layoutNodes, setLayoutNodes] = useState<Node[]>([]);
-  const [layoutEdges, setLayoutEdges] = useState<FlowEdge[]>([]);
-  const prevTopologyRef = useRef<string>("");
-  const dragRecomputeTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const layoutNodesRef = useRef<Node[]>([]);
-
-  // Cleanup debounce timer on unmount
-  useEffect(() => () => clearTimeout(dragRecomputeTimer.current), []);
-
-  // Pending drop positions: nodes dropped before layout runs get placed here
-  const pendingPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
-
-  // Auto-layout only when topology changes (nodes/edges added/removed), not on property edits
+  const prevWorkflowRef = useRef<string | undefined>(activeWorkflowName);
   useEffect(() => {
-    if (graphNodes.length === 0) {
-      setLayoutNodes([]);
-      setLayoutEdges([]);
-      prevTopologyRef.current = "";
-      return;
+    if (prevWorkflowRef.current !== activeWorkflowName && activeWorkflowName) {
+      prevWorkflowRef.current = activeWorkflowName;
+      setTimeout(() => fitView({ padding: 0.2 }), DEBOUNCE_LAYOUT_SETTLE_MS);
     }
-    const layerKey = Array.from(activeLayers).sort().join(",");
-    const topoKey = document ? getTopologyKey(document, activeWorkflowName) + "|" + layoutDirection + "|" + layerKey : "";
-    if (prevTopologyRef.current !== topoKey) {
-      prevTopologyRef.current = topoKey;
-      autoLayout(graphNodes, graphEdges, layoutDirection)
-        .then((laid) => {
-          // Apply any pending drop positions
-          const pending = pendingPositionsRef.current;
-          let resultNodes: Node[];
-          if (pending.size > 0) {
-            resultNodes = laid.map((n) => {
-              const pos = pending.get(n.id);
-              return pos ? { ...n, position: pos } : n;
-            });
-            pending.clear();
-          } else {
-            resultNodes = laid;
-          }
-          layoutNodesRef.current = resultNodes;
-          setLayoutNodes(resultNodes);
-          setLayoutEdges(computeEdgeHandles(resultNodes, graphEdges, layoutDirection));
-        })
-        .catch(() => {
-          layoutNodesRef.current = graphNodes;
-          setLayoutNodes(graphNodes);
-          setLayoutEdges(computeEdgeHandles(graphNodes, graphEdges, layoutDirection));
-        });
-    }
-  }, [document, graphNodes, graphEdges, activeWorkflowName, layoutDirection, activeLayers]);
+  }, [activeWorkflowName, fitView]);
 
-  const onNodesChange = useCallback(
-    (changes: NodeChange[]) => {
-      const hasPositionChange = changes.some((c) => c.type === "position" && c.position);
-      setLayoutNodes((nds) => {
-        const updated = nds.map((n) => {
-          const change = changes.find((c) => c.type === "position" && c.id === n.id);
-          if (change && change.type === "position" && change.position) {
-            return { ...n, position: change.position };
-          }
-          return n;
-        });
-        layoutNodesRef.current = updated;
-        return updated;
-      });
-      // Debounced recomputation of edge handles after drag (reads fresh ref)
-      if (hasPositionChange) {
-        clearTimeout(dragRecomputeTimer.current);
-        dragRecomputeTimer.current = setTimeout(() => {
-          setLayoutEdges(computeEdgeHandles(layoutNodesRef.current, graphEdges, layoutDirection));
-        }, 100);
-      }
-    },
-    [graphEdges, layoutDirection],
+  // Apply search filter: dim non-matching nodes, highlight current match
+  const displayNodes = useMemo(
+    () => search.applySearchFilter(layout.layoutNodes),
+    [layout.layoutNodes, search.applySearchFilter],
   );
 
-  const onEdgesChange = useCallback((_changes: EdgeChange[]) => {
-    // Edge changes handled via document store, not ReactFlow state
-  }, []);
+  const handleSearchKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === "Escape") {
+        search.closeSearch();
+      } else if (e.key === "Enter") {
+        search.selectCurrentMatch();
+        const id = search.matchedNodeIds[search.currentMatchIndex];
+        if (id) fitView({ nodes: [{ id }], padding: 0.5 });
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        search.nextMatch();
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        search.prevMatch();
+      }
+    },
+    [search, fitView],
+  );
 
+  // Node event handlers
   const onNodeClick: NodeMouseHandler = useCallback(
     (_event, node) => {
-      if (!isAuxiliaryNodeId(node.id)) {
-        setSelectedNode(node.id);
-      }
-      setQuickAddMenu(null);
+      if (!isAuxiliaryNodeId(node.id)) setSelectedNode(node.id);
+      connections.setQuickAddMenu(null);
       setDetailNodeId(null);
     },
-    [setSelectedNode, setDetailNodeId],
+    [setSelectedNode, setDetailNodeId, connections],
   );
 
   const onNodeDoubleClick: NodeMouseHandler = useCallback(
     (_event, node) => {
-      if (isEditableNode(node.id)) {
-        setDetailNodeId(node.id);
-      }
+      if (isEditableNode(node.id)) setDetailNodeId(node.id);
     },
     [setDetailNodeId],
   );
@@ -198,17 +118,17 @@ export default function Canvas() {
   const onEdgeClick: EdgeMouseHandler = useCallback(
     (_event, edge) => {
       setSelectedEdge(edge.id);
-      setQuickAddMenu(null);
+      connections.setQuickAddMenu(null);
     },
-    [setSelectedEdge],
+    [setSelectedEdge, connections],
   );
 
   const onPaneClick = useCallback(() => {
     clearSelection();
     setContextMenu(null);
-    setQuickAddMenu(null);
+    connections.setQuickAddMenu(null);
     setDetailNodeId(null);
-  }, [clearSelection, setDetailNodeId]);
+  }, [clearSelection, setDetailNodeId, connections]);
 
   const onNodeContextMenu = useCallback(
     (event: ReactMouseEvent, node: Node) => {
@@ -219,108 +139,21 @@ export default function Canvas() {
     [],
   );
 
-  const getConnectionError = useCallback(
-    (connection: FlowEdge | Connection): string | null => {
-      if (!connection.source || !connection.target) return "Invalid connection";
-      if (connection.source === connection.target) return "Cannot connect a node to itself";
-      if (connection.source === "done" || connection.source === "fail") return "Cannot connect from a terminal node";
-      if (connection.source === "__start__" || connection.target === "__start__") return "Cannot connect to the start node";
-      if (activeWorkflow) {
-        const dup = activeWorkflow.edges.some(
-          (e) => e.from === connection.source && e.to === connection.target,
-        );
-        if (dup) return "This connection already exists";
-      }
-      return null;
-    },
-    [activeWorkflow],
-  );
-
-  const isValidConnection = useCallback(
-    (connection: FlowEdge | Connection) => getConnectionError(connection) === null,
-    [getConnectionError],
-  );
-
-  const onConnect = useCallback(
-    (connection: Connection) => {
-      if (!document || !connection.source || !connection.target) return;
-      const workflowName = activeWorkflow?.name;
-      if (!workflowName) return;
-      const error = getConnectionError(connection);
-      if (error) {
-        setConnectionError(error);
-        clearTimeout(connectionErrorTimer.current);
-        connectionErrorTimer.current = setTimeout(() => setConnectionError(null), 2000);
-        return;
-      }
-      addEdge(workflowName, { from: connection.source, to: connection.target });
-    },
-    [document, activeWorkflow, addEdge, getConnectionError],
-  );
-
-  const onConnectStart = useCallback(
-    (_event: unknown, params: { nodeId: string | null }) => {
-      setConnectionError(null);
-      pendingConnectSourceRef.current = params.nodeId;
-      edgeCountBeforeConnectRef.current = activeWorkflow?.edges?.length ?? 0;
-    },
-    [activeWorkflow],
-  );
-
-  const onConnectEnd = useCallback(
-    (event: MouseEvent | TouchEvent) => {
-      const source = pendingConnectSourceRef.current;
-      pendingConnectSourceRef.current = null;
-
-      if (!source || !document || !activeWorkflow) return;
-
-      // Read fresh state to avoid stale closure after addEdge in onConnect
-      const freshDoc = useDocumentStore.getState().document;
-      const freshWorkflow = freshDoc?.workflows.find((w) => w.name === activeWorkflow.name);
-      const currentEdgeCount = freshWorkflow?.edges?.length ?? 0;
-      if (currentEdgeCount > edgeCountBeforeConnectRef.current) return;
-
-      // No edge created — show quick-add menu at the drop position
-      const clientX = "clientX" in event ? event.clientX : event.changedTouches?.[0]?.clientX ?? 0;
-      const clientY = "clientY" in event ? event.clientY : event.changedTouches?.[0]?.clientY ?? 0;
-
-      // Only show if drop was on the canvas (not on a node)
-      const target = event.target as HTMLElement;
-      if (target.closest(".react-flow__node")) return;
-
-      setQuickAddMenu({ x: clientX, y: clientY, sourceId: source });
-    },
-    [document, activeWorkflow],
-  );
-
+  // Quick-add menu handler
   const handleQuickAdd = useCallback(
     (kind: NodeKind) => {
-      if (!quickAddMenu || !document || !activeWorkflow) return;
-
-      const existingNames = getAllNodeNames(document);
-      const name = generateUniqueName(kind, existingNames);
-
-      // Place at the drop position
-      const position = screenToFlowPosition({ x: quickAddMenu.x, y: quickAddMenu.y });
-      pendingPositionsRef.current.set(name, position);
-
-      switch (kind) {
-        case "agent": addAgent(defaultAgent(name)); break;
-        case "judge": addJudge(defaultJudge(name)); break;
-        case "router": addRouter(defaultRouter(name)); break;
-        case "join": addJoin(defaultJoin(name)); break;
-        case "human": addHuman(defaultHuman(name)); break;
-        case "tool": addTool(defaultTool(name)); break;
-      }
-
-      // Create edge from source to new node
-      addEdge(activeWorkflow.name, { from: quickAddMenu.sourceId, to: name });
-      setSelectedNode(name);
-      setQuickAddMenu(null);
+      if (!connections.quickAddMenu || !activeWorkflow) return;
+      const position = screenToFlowPosition({ x: connections.quickAddMenu.x, y: connections.quickAddMenu.y });
+      const name = addNode(kind);
+      if (!name) return;
+      layout.pendingPositionsRef.current.set(name, position);
+      connections.addEdge(activeWorkflow.name, { from: connections.quickAddMenu.sourceId, to: name });
+      connections.setQuickAddMenu(null);
     },
-    [quickAddMenu, document, activeWorkflow, addAgent, addJudge, addRouter, addJoin, addHuman, addTool, addEdge, setSelectedNode, screenToFlowPosition],
+    [connections, activeWorkflow, addNode, screenToFlowPosition, layout.pendingPositionsRef],
   );
 
+  // Drag-and-drop from palette
   const onDragOver = useCallback((e: DragEvent) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
@@ -330,263 +163,65 @@ export default function Canvas() {
     (e: DragEvent) => {
       e.preventDefault();
       const kind = e.dataTransfer.getData("application/iterion-node") as NodeKind;
-      if (!kind || !document) return;
-
-      // done/fail are virtual terminal nodes, not draggable
-      if (kind === "done" || kind === "fail") return;
-
-      const existingNames = getAllNodeNames(document);
-      const name = generateUniqueName(kind, existingNames);
-
-      // Store the drop position so the next layout applies it
+      if (!kind || kind === "done" || kind === "fail") return;
       const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
-      pendingPositionsRef.current.set(name, position);
-
-      switch (kind) {
-        case "agent": addAgent(defaultAgent(name)); break;
-        case "judge": addJudge(defaultJudge(name)); break;
-        case "router": addRouter(defaultRouter(name)); break;
-        case "join": addJoin(defaultJoin(name)); break;
-        case "human": addHuman(defaultHuman(name)); break;
-        case "tool": addTool(defaultTool(name)); break;
-      }
-      setSelectedNode(name);
+      const name = addNode(kind);
+      if (name) layout.pendingPositionsRef.current.set(name, position);
     },
-    [document, addAgent, addJudge, addRouter, addJoin, addHuman, addTool, setSelectedNode, screenToFlowPosition],
+    [addNode, screenToFlowPosition, layout.pendingPositionsRef],
   );
 
-  const onKeyDown = useCallback(
-    (e: KeyboardEvent) => {
-      const isInput = (e.target as HTMLElement).matches("input, textarea, select");
-
-      if (e.key === "/" && !isInput) {
-        e.preventDefault();
-        setSearchOpen(true);
-        setTimeout(() => searchInputRef.current?.focus(), 0);
-        return;
-      }
-      if (e.key === "Escape") {
-        if (detailNodeId) { setDetailNodeId(null); return; }
-        if (expanded) { toggleExpanded(); return; }
-        if (searchOpen) { setSearchOpen(false); setSearchQuery(""); return; }
-        if (quickAddMenu) { setQuickAddMenu(null); return; }
-        clearSelection();
-        setContextMenu(null);
-        return;
-      }
-
-      // Layer toggle shortcuts: Alt+1=Schemas, Alt+2=Prompts, Alt+3=Vars
-      if (e.altKey && !isInput && (e.key === "1" || e.key === "2" || e.key === "3")) {
-        e.preventDefault();
-        const layers: LayerKind[] = ["schemas", "prompts", "vars"];
-        toggleLayer(layers[parseInt(e.key) - 1]!);
-        return;
-      }
-
-      // Undo/Redo
-      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey && !isInput) {
-        e.preventDefault();
-        undo();
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && (e.key === "y" || (e.key === "z" && e.shiftKey)) && !isInput) {
-        e.preventDefault();
-        redo();
-        return;
-      }
-
-      // Copy/Paste/Duplicate
-      if ((e.ctrlKey || e.metaKey) && e.key === "c" && !isInput) {
-        if (selectedNodeId && isEditableNode(selectedNodeId)) {
-          setCopiedNode(selectedNodeId);
-          addToast("Node copied", "info");
-        }
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === "v" && !isInput) {
-        if (copiedNodeId) {
-          const newName = duplicateNode(copiedNodeId);
-          if (newName) {
-            setSelectedNode(newName);
-            addToast(`Pasted as ${newName}`, "success");
-          }
-        }
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === "d" && !isInput) {
-        e.preventDefault();
-        if (selectedNodeId && isEditableNode(selectedNodeId)) {
-          const newName = duplicateNode(selectedNodeId);
-          if (newName) {
-            setSelectedNode(newName);
-            addToast(`Duplicated as ${newName}`, "success");
-          }
-        }
-        return;
-      }
-
-      if (e.key === "Delete" || e.key === "Backspace") {
-        if (isInput) return;
-
-        if (selectedNodeId && isEditableNode(selectedNodeId)) {
-          removeNode(selectedNodeId);
-          clearSelection();
-        } else if (selectedEdgeId && document) {
-          for (const wf of document.workflows) {
-            const wfEdges = wf.edges ?? [];
-            for (let i = 0; i < wfEdges.length; i++) {
-              const id = makeEdgeId(wf.name, i);
-              if (id === selectedEdgeId) {
-                removeEdge(wf.name, i);
-                clearSelection();
-                return;
-              }
-            }
-          }
-        }
-      }
-    },
-    [selectedNodeId, selectedEdgeId, document, removeNode, removeEdge, clearSelection, searchOpen, quickAddMenu, copiedNodeId, duplicateNode, setCopiedNode, setSelectedNode, addToast, expanded, toggleExpanded, detailNodeId, setDetailNodeId, toggleLayer, undo, redo],
-  );
-
-  // Sync browser fullscreen state
-  useEffect(() => {
-    const handler = () => setBrowserFullscreen(!!window.document.fullscreenElement);
-    window.document.addEventListener("fullscreenchange", handler);
-    return () => window.document.removeEventListener("fullscreenchange", handler);
-  }, [setBrowserFullscreen]);
-
-  const handleBrowserFullscreen = useCallback(() => {
-    if (window.document.fullscreenElement) {
-      window.document.exitFullscreen();
-    } else {
-      window.document.documentElement.requestFullscreen();
-    }
-  }, []);
-
-  // Fit view when switching workflows
-  const prevWorkflowRef = useRef<string | undefined>(activeWorkflowName);
-  useEffect(() => {
-    if (prevWorkflowRef.current !== activeWorkflowName && activeWorkflowName) {
-      prevWorkflowRef.current = activeWorkflowName;
-      // Delay to let layout settle
-      setTimeout(() => fitView({ padding: 0.2 }), 300);
-    }
-  }, [activeWorkflowName, fitView]);
-
-  // Apply search filter: dim non-matching nodes
-  const displayNodes = useMemo(() => {
-    if (!searchOpen || !searchQuery.trim()) return layoutNodes;
-    const q = searchQuery.trim().toLowerCase();
-    return layoutNodes.map((n) => {
-      const data = n.data as { label: string; kind: string } | undefined;
-      const matches =
-        n.id.toLowerCase().includes(q) ||
-        (data?.label ?? "").toLowerCase().includes(q) ||
-        (data?.kind ?? "").toLowerCase().includes(q);
-      return matches ? n : { ...n, style: { ...n.style, opacity: 0.25 } };
-    });
-  }, [layoutNodes, searchOpen, searchQuery]);
-
-  const handleSearchKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setSearchOpen(false);
-        setSearchQuery("");
-      } else if (e.key === "Enter") {
-        // Select first matching node
-        const q = searchQuery.trim().toLowerCase();
-        if (q) {
-          const match = layoutNodes.find((n) => {
-            const data = n.data as { label: string; kind: string } | undefined;
-            return (
-              n.id.toLowerCase().includes(q) ||
-              (data?.label ?? "").toLowerCase().includes(q) ||
-              (data?.kind ?? "").toLowerCase().includes(q)
-            );
-          });
-          if (match) {
-            setSelectedNode(match.id);
-            setSearchOpen(false);
-            setSearchQuery("");
-          }
-        }
-      }
-    },
-    [searchQuery, layoutNodes, setSelectedNode],
-  );
-
-  const handleArrange = useCallback(() => {
-    autoLayout(graphNodes, graphEdges, layoutDirection)
-      .then((laid) => {
-        layoutNodesRef.current = laid;
-        setLayoutNodes(laid);
-        setLayoutEdges(computeEdgeHandles(laid, graphEdges, layoutDirection));
-        prevTopologyRef.current = "";
-        setTimeout(() => fitView({ padding: 0.2 }), 50);
-      })
-      .catch(() => {});
-  }, [graphNodes, graphEdges, layoutDirection, fitView]);
-
-  const handleFitView = useCallback(() => {
-    fitView({ padding: 0.2 });
-  }, [fitView]);
-
+  // Toolbar actions
+  const handleArrange = useCallback(() => layout.handleArrange(fitView), [layout, fitView]);
+  const handleFitView = useCallback(() => fitView({ padding: 0.2 }), [fitView]);
   const handleFocusNode = useCallback(() => {
-    if (selectedNodeId) {
-      fitView({ nodes: [{ id: selectedNodeId }], padding: 0.5 });
-    }
+    if (selectedNodeId) fitView({ nodes: [{ id: selectedNodeId }], padding: 0.5 });
   }, [selectedNodeId, fitView]);
 
   return (
     <div className="h-full w-full relative" ref={reactFlowWrapper} onKeyDown={onKeyDown} tabIndex={0}>
       <CanvasToolbar
-        activeLayers={activeLayers}
-        toggleLayer={toggleLayer}
-        layoutDirection={layoutDirection}
-        toggleLayoutDirection={toggleLayoutDirection}
         onArrange={handleArrange}
         onFitView={handleFitView}
         onFocusNode={selectedNodeId ? handleFocusNode : null}
-        expanded={expanded}
-        toggleExpanded={toggleExpanded}
-        browserFullscreen={browserFullscreen}
-        onBrowserFullscreen={handleBrowserFullscreen}
-        onFitViewAfterDelay={() => setTimeout(() => fitView({ padding: 0.2 }), 150)}
+        onBrowserFullscreen={toggleFullscreen}
+        onFitViewAfterDelay={() => setTimeout(() => fitView({ padding: 0.2 }), DEBOUNCE_FIT_VIEW_MS)}
       />
 
-      {searchOpen && (
+      {search.searchOpen && (
         <SearchOverlay
-          ref={searchInputRef}
-          searchQuery={searchQuery}
-          onSearchChange={setSearchQuery}
+          ref={search.searchInputRef}
+          searchQuery={search.searchQuery}
+          onSearchChange={search.setSearchQuery}
           onKeyDown={handleSearchKeyDown}
+          matchCount={search.matchedNodeIds.length}
+          currentIndex={search.currentMatchIndex}
         />
       )}
 
       {/* Connection error feedback */}
-      {connectionError && (
+      {connections.connectionError && (
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-50 bg-red-900/90 text-red-200 text-xs px-3 py-1.5 rounded-lg shadow-lg border border-red-700">
-          {connectionError}
+          {connections.connectionError}
         </div>
       )}
 
       <ReactFlow
         nodes={displayNodes}
-        edges={layoutEdges}
+        edges={layout.layoutEdges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
+        onNodesChange={layout.onNodesChange}
+        onEdgesChange={layout.onEdgesChange}
         onNodeClick={onNodeClick}
         onNodeDoubleClick={onNodeDoubleClick}
         onEdgeClick={onEdgeClick}
         onPaneClick={onPaneClick}
         onNodeContextMenu={onNodeContextMenu}
-        onConnect={onConnect}
-        onConnectStart={onConnectStart}
-        onConnectEnd={onConnectEnd}
-        isValidConnection={isValidConnection}
+        onConnect={connections.onConnect}
+        onConnectStart={connections.onConnectStart}
+        onConnectEnd={connections.onConnectEnd}
+        isValidConnection={connections.isValidConnection}
         onDragOver={onDragOver}
         onDrop={onDrop}
         fitView
@@ -637,19 +272,19 @@ export default function Canvas() {
         />
       )}
 
-      {quickAddMenu && (
+      {connections.quickAddMenu && (
         <QuickAddMenu
-          x={quickAddMenu.x}
-          y={quickAddMenu.y}
-          sourceId={quickAddMenu.sourceId}
+          x={connections.quickAddMenu.x}
+          y={connections.quickAddMenu.y}
+          sourceId={connections.quickAddMenu.sourceId}
           onAddNode={handleQuickAdd}
           onConnectTerminal={(target) => {
             if (activeWorkflow) {
-              addEdge(activeWorkflow.name, { from: quickAddMenu.sourceId, to: target });
-              setQuickAddMenu(null);
+              connections.addEdge(activeWorkflow.name, { from: connections.quickAddMenu!.sourceId, to: target });
+              connections.setQuickAddMenu(null);
             }
           }}
-          onClose={() => setQuickAddMenu(null)}
+          onClose={() => connections.setQuickAddMenu(null)}
         />
       )}
     </div>

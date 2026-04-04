@@ -3,7 +3,7 @@ import type { Node, Edge as FlowEdge } from "@xyflow/react";
 import type { IterDocument, NodeKind, AgentDecl, JudgeDecl, HumanDecl, ToolNodeDecl, JoinDecl } from "@/api/types";
 import type { LayerKind } from "@/store/ui";
 import type { AuxiliaryNodeData } from "@/components/Canvas/AuxiliaryNode";
-import { NODE_COLORS } from "./constants";
+import { NODE_COLORS, LAYER_COLORS } from "./constants";
 
 export interface NodeData extends Record<string, unknown> {
   label: string;
@@ -150,14 +150,8 @@ export function isAuxiliaryNodeId(id: string): boolean {
 }
 
 /** Generate overlay layer nodes and reference edges from the document */
-const LAYER_EDGE_COLORS: Record<LayerKind, string> = {
-  schemas: "#A78BFA",
-  prompts: "#2DD4BF",
-  vars: "#FBBF24",
-};
-
 function refMarker(layerKind: LayerKind) {
-  return { type: MarkerType.ArrowClosed as const, color: LAYER_EDGE_COLORS[layerKind], width: 12, height: 12 };
+  return { type: MarkerType.ArrowClosed as const, color: LAYER_COLORS[layerKind], width: 12, height: 12 };
 }
 
 export function generateLayerNodes(

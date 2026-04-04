@@ -1,5 +1,6 @@
 import type {
   IterDocument,
+  NodeKind,
   AgentDecl,
   JudgeDecl,
   RouterDecl,
@@ -75,6 +76,26 @@ export function generateUniqueName(base: string, existingNames: Set<string>): st
   let i = 1;
   while (existingNames.has(`${base}_${i}`)) i++;
   return `${base}_${i}`;
+}
+
+/** Find a node declaration by name across all node type arrays. */
+export function findNodeDecl(
+  doc: IterDocument,
+  name: string,
+): { kind: NodeKind; decl: AgentDecl | JudgeDecl | RouterDecl | JoinDecl | HumanDecl | ToolNodeDecl } | null {
+  const agent = doc.agents?.find((a) => a.name === name);
+  if (agent) return { kind: "agent", decl: agent };
+  const judge = doc.judges?.find((j) => j.name === name);
+  if (judge) return { kind: "judge", decl: judge };
+  const router = doc.routers?.find((r) => r.name === name);
+  if (router) return { kind: "router", decl: router };
+  const join = doc.joins?.find((j) => j.name === name);
+  if (join) return { kind: "join", decl: join };
+  const human = doc.humans?.find((h) => h.name === name);
+  if (human) return { kind: "human", decl: human };
+  const tool = doc.tools?.find((t) => t.name === name);
+  if (tool) return { kind: "tool", decl: tool };
+  return null;
 }
 
 export function getAllNodeNames(doc: IterDocument): Set<string> {

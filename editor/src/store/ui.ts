@@ -1,8 +1,10 @@
 import { create } from "zustand";
+import type { LayerKind } from "@/lib/constants";
+import { TOAST_DURATION_DEFAULT_MS } from "@/lib/constants";
 
+export type { LayerKind };
 export type SidebarTab = "properties" | "schemas" | "prompts" | "vars" | "workflow" | "comments";
 export type LayoutDirection = "DOWN" | "RIGHT";
-export type LayerKind = "schemas" | "prompts" | "vars";
 export interface EditingItem { kind: "schema" | "prompt" | "var"; name: string }
 
 export interface Toast {
@@ -72,7 +74,7 @@ export const useUIStore = create<UIState>((set) => ({
     set((s) => ({ toasts: [...s.toasts, { id, message, type }] }));
     setTimeout(() => {
       set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
-    }, 3000);
+    }, TOAST_DURATION_DEFAULT_MS);
   },
   removeToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
 }));

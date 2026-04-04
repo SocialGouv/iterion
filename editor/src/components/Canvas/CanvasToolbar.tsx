@@ -1,45 +1,37 @@
-import type { LayerKind } from "@/store/ui";
+import { useUIStore } from "@/store/ui";
+import { LAYER_ICONS, LAYER_LABELS } from "@/lib/constants";
+import type { LayerKind } from "@/lib/constants";
 
-const LAYER_TOGGLES: { kind: LayerKind; label: string; icon: string }[] = [
-  { kind: "schemas", label: "Schemas", icon: "\u{1F4D0}" },
-  { kind: "prompts", label: "Prompts", icon: "\u{1F4DD}" },
-  { kind: "vars", label: "Vars", icon: "\u{1F3F7}\u{FE0F}" },
-];
+const LAYER_KINDS: LayerKind[] = ["schemas", "prompts", "vars"];
 
 interface Props {
-  activeLayers: Set<LayerKind>;
-  toggleLayer: (layer: LayerKind) => void;
-  layoutDirection: "DOWN" | "RIGHT";
-  toggleLayoutDirection: () => void;
   onArrange: () => void;
   onFitView: () => void;
   onFocusNode: (() => void) | null;
-  expanded: boolean;
-  toggleExpanded: () => void;
-  browserFullscreen: boolean;
   onBrowserFullscreen: () => void;
   onFitViewAfterDelay: () => void;
 }
 
 export default function CanvasToolbar({
-  activeLayers,
-  toggleLayer,
-  layoutDirection,
-  toggleLayoutDirection,
   onArrange,
   onFitView,
   onFocusNode,
-  expanded,
-  toggleExpanded,
-  browserFullscreen,
   onBrowserFullscreen,
   onFitViewAfterDelay,
 }: Props) {
+  const activeLayers = useUIStore((s) => s.activeLayers);
+  const toggleLayer = useUIStore((s) => s.toggleLayer);
+  const layoutDirection = useUIStore((s) => s.layoutDirection);
+  const toggleLayoutDirection = useUIStore((s) => s.toggleLayoutDirection);
+  const expanded = useUIStore((s) => s.expanded);
+  const toggleExpanded = useUIStore((s) => s.toggleExpanded);
+  const browserFullscreen = useUIStore((s) => s.browserFullscreen);
+
   return (
     <>
       {/* Layer toggle buttons */}
       <div className="absolute top-2 left-2 z-40 flex gap-1">
-        {LAYER_TOGGLES.map(({ kind, label, icon }) => (
+        {LAYER_KINDS.map((kind, i) => (
           <button
             key={kind}
             className={`border text-xs px-2 py-1 rounded flex items-center gap-1 ${
@@ -48,10 +40,10 @@ export default function CanvasToolbar({
                 : "bg-gray-800/90 hover:bg-gray-700 border-gray-600 text-gray-300"
             }`}
             onClick={() => toggleLayer(kind)}
-            title={`Toggle ${label} layer (Alt+${kind === "schemas" ? "1" : kind === "prompts" ? "2" : "3"})`}
+            title={`Toggle ${LAYER_LABELS[kind]} layer (Alt+${i + 1})`}
           >
-            <span>{icon}</span>
-            {label}
+            <span>{LAYER_ICONS[kind]}</span>
+            {LAYER_LABELS[kind]}
           </button>
         ))}
       </div>

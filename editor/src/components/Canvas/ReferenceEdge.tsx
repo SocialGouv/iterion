@@ -1,12 +1,7 @@
 import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath } from "@xyflow/react";
 import type { EdgeProps } from "@xyflow/react";
-import type { LayerKind } from "@/store/ui";
-
-const LAYER_COLORS: Record<LayerKind, string> = {
-  schemas: "#A78BFA",
-  prompts: "#2DD4BF",
-  vars: "#FBBF24",
-};
+import { LAYER_COLORS } from "@/lib/constants";
+import type { LayerKind } from "@/lib/constants";
 
 export default function ReferenceEdge(props: EdgeProps) {
   const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, label, data, markerEnd } = props;

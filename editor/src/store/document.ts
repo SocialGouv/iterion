@@ -15,7 +15,7 @@ import type {
   Edge,
   Comment,
 } from "@/api/types";
-import { getAllNodeNames, getAllSchemaNames, getAllPromptNames } from "@/lib/defaults";
+import { getAllNodeNames, getAllSchemaNames, getAllPromptNames, findNodeDecl } from "@/lib/defaults";
 
 // Normalize a document from JSON (omitempty may leave arrays as undefined).
 function normalize(doc: IterDocument): IterDocument {
@@ -275,32 +275,34 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     const s = get();
     if (!s.document) return null;
     const doc = s.document;
-    // Collect all existing names
-    const allNames = new Set<string>();
-    for (const a of doc.agents) allNames.add(a.name);
-    for (const j of doc.judges) allNames.add(j.name);
-    for (const r of doc.routers) allNames.add(r.name);
-    for (const j of doc.joins) allNames.add(j.name);
-    for (const h of doc.humans) allNames.add(h.name);
-    for (const t of doc.tools) allNames.add(t.name);
-    // Generate unique name
+    const found = findNodeDecl(doc, name);
+    if (!found) return null;
+
+    const allNames = getAllNodeNames(doc);
     let i = 1;
     let newName = `${name}_copy`;
     while (allNames.has(newName)) { newName = `${name}_copy_${i}`; i++; }
-    // Find and deep-clone (copy nested arrays/objects to avoid shared references)
-    const cloneAgent = doc.agents.find((a) => a.name === name);
-    if (cloneAgent) { set((st) => ({ document: { ...st.document!, agents: [...st.document!.agents, { ...cloneAgent, name: newName, tools: cloneAgent.tools ? [...cloneAgent.tools] : undefined }] }, ...pushHistory(st) })); return newName; }
-    const cloneJudge = doc.judges.find((j) => j.name === name);
-    if (cloneJudge) { set((st) => ({ document: { ...st.document!, judges: [...st.document!.judges, { ...cloneJudge, name: newName, tools: cloneJudge.tools ? [...cloneJudge.tools] : undefined }] }, ...pushHistory(st) })); return newName; }
-    const cloneRouter = doc.routers.find((r) => r.name === name);
-    if (cloneRouter) { set((st) => ({ document: { ...st.document!, routers: [...st.document!.routers, { ...cloneRouter, name: newName }] }, ...pushHistory(st) })); return newName; }
-    const cloneJoinDecl = doc.joins.find((j) => j.name === name);
-    if (cloneJoinDecl) { set((st) => ({ document: { ...st.document!, joins: [...st.document!.joins, { ...cloneJoinDecl, name: newName, require: [...cloneJoinDecl.require] }] }, ...pushHistory(st) })); return newName; }
-    const cloneHuman = doc.humans.find((h) => h.name === name);
-    if (cloneHuman) { set((st) => ({ document: { ...st.document!, humans: [...st.document!.humans, { ...cloneHuman, name: newName }] }, ...pushHistory(st) })); return newName; }
-    const cloneTool = doc.tools.find((t) => t.name === name);
-    if (cloneTool) { set((st) => ({ document: { ...st.document!, tools: [...st.document!.tools, { ...cloneTool, name: newName }] }, ...pushHistory(st) })); return newName; }
-    return null;
+
+    // Deep-clone with new name, copying nested arrays to avoid shared references
+    const clone = { ...found.decl, name: newName };
+    if ("tools" in clone && Array.isArray(clone.tools)) clone.tools = [...clone.tools];
+    if ("require" in clone && Array.isArray(clone.require)) clone.require = [...clone.require];
+
+    const kindToArray: Record<string, keyof IterDocument> = {
+      agent: "agents", judge: "judges", router: "routers",
+      join: "joins", human: "humans", tool: "tools",
+    };
+    const arrayKey = kindToArray[found.kind];
+    if (!arrayKey) return null;
+
+    set((st) => ({
+      document: {
+        ...st.document!,
+        [arrayKey]: [...(st.document![arrayKey] as unknown[]), clone],
+      },
+      ...pushHistory(st),
+    }));
+    return newName;
   },
 
   // Workflow management
