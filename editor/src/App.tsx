@@ -7,6 +7,7 @@ import DiagnosticsPanel from "./components/Diagnostics/DiagnosticsPanel";
 import NodePalette from "./components/Palette/NodePalette";
 import SourceView from "./components/SourceView/SourceView";
 import ToastContainer from "./components/shared/Toast";
+import EditItemModal from "./components/Modals/EditItemModal";
 import { useUIStore } from "./store/ui";
 import { useDocumentStore } from "./store/document";
 import { useAutoValidation } from "./hooks/useAutoValidation";
@@ -77,6 +78,7 @@ export default function App() {
           </div>
         )}
       </div>
+      <EditItemModal />
       <ToastContainer />
     </ReactFlowProvider>
   );

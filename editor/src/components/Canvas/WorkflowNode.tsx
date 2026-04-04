@@ -110,10 +110,11 @@ export default function WorkflowNode({ data }: NodeProps) {
 
   const isTerminal = kind === "done" || kind === "fail";
   const isStart = kind === "start";
+  const hasDetail = !isTerminal && !isStart;
 
   return (
     <div
-      className={`rounded-lg border-2 px-4 py-2 min-w-[140px] text-center shadow-lg ${isTerminal || isStart ? "opacity-80" : ""}`}
+      className={`rounded-lg border-2 px-4 py-2 min-w-[140px] text-center shadow-lg group ${isTerminal || isStart ? "opacity-80" : ""}`}
       style={{
         borderColor: hasError ? "#EF4444" : isEntry ? "#F59E0B" : color,
         background: `${color}22`,
@@ -157,6 +158,11 @@ export default function WorkflowNode({ data }: NodeProps) {
       {hasError && <div className="text-[9px] text-red-400 mt-0.5">has errors</div>}
       {!isTerminal && !isStart && edgeCount > 0 && (
         <div className="text-[8px] text-gray-600 mt-0.5">{edgeCount} edge{edgeCount !== 1 ? "s" : ""}</div>
+      )}
+      {hasDetail && (
+        <div className="text-[8px] text-gray-600 mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity" title="Double-click for details">
+          ···
+        </div>
       )}
       {!isTerminal && <Handle type="source" position={sourcePos} className="!bg-gray-400" />}
     </div>

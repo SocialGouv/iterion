@@ -1,2 +1,5 @@
 packages:
   - "editor"
+
+# Suppress peer dependency errors from transitive deps (e.g. @monaco-editor/react, @xyflow/react)
+strictPeerDependencies: false

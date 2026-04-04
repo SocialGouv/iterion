@@ -5,16 +5,30 @@ import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { useUIStore } from "@/store/ui";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
-import { documentToGraph, getTopologyKey, makeEdgeId } from "@/lib/documentToGraph";
+import { documentToGraph, getTopologyKey, makeEdgeId, generateLayerNodes, isAuxiliaryNodeId } from "@/lib/documentToGraph";
 import { autoLayout } from "@/lib/autoLayout";
 import { generateUniqueName, getAllNodeNames, defaultAgent, defaultJudge, defaultRouter, defaultJoin, defaultHuman, defaultTool } from "@/lib/defaults";
 import type { NodeKind } from "@/api/types";
+import type { LayerKind } from "@/store/ui";
 import WorkflowNode from "./WorkflowNode";
 import ConditionalEdge from "./ConditionalEdge";
+import AuxiliaryNode from "./AuxiliaryNode";
+import ReferenceEdge from "./ReferenceEdge";
 import NodeContextMenu from "./NodeContextMenu";
+import NodeDetailPopover from "./NodeDetailPopover";
 
-const nodeTypes = { workflowNode: WorkflowNode };
-const edgeTypes = { conditionalEdge: ConditionalEdge };
+const nodeTypes = { workflowNode: WorkflowNode, auxiliaryNode: AuxiliaryNode };
+const edgeTypes = { conditionalEdge: ConditionalEdge, referenceEdge: ReferenceEdge };
+
+function isEditableNode(id: string): boolean {
+  return id !== "__start__" && id !== "done" && id !== "fail" && !isAuxiliaryNodeId(id);
+}
+
+const LAYER_TOGGLES: { kind: LayerKind; label: string; icon: string }[] = [
+  { kind: "schemas", label: "Schemas", icon: "\u{1F4D0}" },
+  { kind: "prompts", label: "Prompts", icon: "\u{1F4DD}" },
+  { kind: "vars", label: "Vars", icon: "\u{1F3F7}\u{FE0F}" },
+];
 
 const QUICK_ADD_TYPES: { kind: NodeKind; icon: string; label: string }[] = [
   { kind: "agent", icon: "\u{1F916}", label: "Agent" },
@@ -52,6 +66,10 @@ export default function Canvas() {
   const setBrowserFullscreen = useUIStore((s) => s.setBrowserFullscreen);
   const layoutDirection = useUIStore((s) => s.layoutDirection);
   const toggleLayoutDirection = useUIStore((s) => s.toggleLayoutDirection);
+  const activeLayers = useUIStore((s) => s.activeLayers);
+  const toggleLayer = useUIStore((s) => s.toggleLayer);
+  const detailNodeId = useUIStore((s) => s.detailNodeId);
+  const setDetailNodeId = useUIStore((s) => s.setDetailNodeId);
   const activeWorkflow = useActiveWorkflow();
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition, fitView } = useReactFlow();
@@ -76,8 +94,13 @@ export default function Canvas() {
   const activeWorkflowName = activeWorkflow?.name;
   const { nodes: graphNodes, edges: graphEdges } = useMemo(() => {
     if (!document) return { nodes: [], edges: [] };
-    return documentToGraph(document, activeWorkflowName);
-  }, [document, activeWorkflowName]);
+    const base = documentToGraph(document, activeWorkflowName);
+    const layer = generateLayerNodes(document, activeLayers);
+    return {
+      nodes: [...base.nodes, ...layer.nodes],
+      edges: [...base.edges, ...layer.edges],
+    };
+  }, [document, activeWorkflowName, activeLayers]);
 
   // Manage node positions with local state (allows dragging)
   const [layoutNodes, setLayoutNodes] = useState<Node[]>([]);
@@ -93,7 +116,8 @@ export default function Canvas() {
       prevTopologyRef.current = "";
       return;
     }
-    const topoKey = document ? getTopologyKey(document, activeWorkflowName) + "|" + layoutDirection : "";
+    const layerKey = Array.from(activeLayers).sort().join(",");
+    const topoKey = document ? getTopologyKey(document, activeWorkflowName) + "|" + layoutDirection + "|" + layerKey : "";
     if (prevTopologyRef.current !== topoKey) {
       prevTopologyRef.current = topoKey;
       autoLayout(graphNodes, graphEdges, layoutDirection)
@@ -113,7 +137,7 @@ export default function Canvas() {
         })
         .catch(() => setLayoutNodes(graphNodes));
     }
-  }, [document, graphNodes, graphEdges, activeWorkflowName, layoutDirection]);
+  }, [document, graphNodes, graphEdges, activeWorkflowName, layoutDirection, activeLayers]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
@@ -136,10 +160,22 @@ export default function Canvas() {
 
   const onNodeClick: NodeMouseHandler = useCallback(
     (_event, node) => {
-      setSelectedNode(node.id);
+      if (!isAuxiliaryNodeId(node.id)) {
+        setSelectedNode(node.id);
+      }
       setQuickAddMenu(null);
+      setDetailNodeId(null);
     },
-    [setSelectedNode],
+    [setSelectedNode, setDetailNodeId],
+  );
+
+  const onNodeDoubleClick: NodeMouseHandler = useCallback(
+    (_event, node) => {
+      if (isEditableNode(node.id)) {
+        setDetailNodeId(node.id);
+      }
+    },
+    [setDetailNodeId],
   );
 
   const onEdgeClick: EdgeMouseHandler = useCallback(
@@ -154,11 +190,13 @@ export default function Canvas() {
     clearSelection();
     setContextMenu(null);
     setQuickAddMenu(null);
-  }, [clearSelection]);
+    setDetailNodeId(null);
+  }, [clearSelection, setDetailNodeId]);
 
   const onNodeContextMenu = useCallback(
     (event: ReactMouseEvent, node: Node) => {
       event.preventDefault();
+      if (isAuxiliaryNodeId(node.id)) return;
       setContextMenu({ x: event.clientX, y: event.clientY, nodeId: node.id });
     },
     [],
@@ -311,6 +349,7 @@ export default function Canvas() {
         return;
       }
       if (e.key === "Escape") {
+        if (detailNodeId) { setDetailNodeId(null); return; }
         if (expanded) { toggleExpanded(); return; }
         if (searchOpen) { setSearchOpen(false); setSearchQuery(""); return; }
         if (quickAddMenu) { setQuickAddMenu(null); return; }
@@ -319,9 +358,17 @@ export default function Canvas() {
         return;
       }
 
+      // Layer toggle shortcuts: Alt+1=Schemas, Alt+2=Prompts, Alt+3=Vars
+      if (e.altKey && !isInput && (e.key === "1" || e.key === "2" || e.key === "3")) {
+        e.preventDefault();
+        const layers: LayerKind[] = ["schemas", "prompts", "vars"];
+        toggleLayer(layers[parseInt(e.key) - 1]!);
+        return;
+      }
+
       // Copy/Paste
       if ((e.ctrlKey || e.metaKey) && e.key === "c" && !isInput) {
-        if (selectedNodeId && selectedNodeId !== "done" && selectedNodeId !== "fail" && selectedNodeId !== "__start__") {
+        if (selectedNodeId && isEditableNode(selectedNodeId)) {
           setCopiedNode(selectedNodeId);
           addToast("Node copied", "info");
         }
@@ -341,7 +388,7 @@ export default function Canvas() {
       if (e.key === "Delete" || e.key === "Backspace") {
         if (isInput) return;
 
-        if (selectedNodeId && selectedNodeId !== "done" && selectedNodeId !== "fail" && selectedNodeId !== "__start__") {
+        if (selectedNodeId && isEditableNode(selectedNodeId)) {
           removeNode(selectedNodeId);
           clearSelection();
         } else if (selectedEdgeId && document) {
@@ -359,7 +406,7 @@ export default function Canvas() {
         }
       }
     },
-    [selectedNodeId, selectedEdgeId, document, removeNode, removeEdge, clearSelection, searchOpen, quickAddMenu, copiedNodeId, duplicateNode, setCopiedNode, setSelectedNode, addToast, expanded, toggleExpanded],
+    [selectedNodeId, selectedEdgeId, document, removeNode, removeEdge, clearSelection, searchOpen, quickAddMenu, copiedNodeId, duplicateNode, setCopiedNode, setSelectedNode, addToast, expanded, toggleExpanded, detailNodeId, setDetailNodeId, toggleLayer],
   );
 
   // Sync browser fullscreen state
@@ -451,6 +498,25 @@ export default function Canvas() {
 
   return (
     <div className="h-full w-full relative" ref={reactFlowWrapper} onKeyDown={onKeyDown} tabIndex={0}>
+      {/* Layer toggle buttons */}
+      <div className="absolute top-2 left-2 z-40 flex gap-1">
+        {LAYER_TOGGLES.map(({ kind, label, icon }) => (
+          <button
+            key={kind}
+            className={`border text-xs px-2 py-1 rounded flex items-center gap-1 ${
+              activeLayers.has(kind)
+                ? "bg-blue-600 hover:bg-blue-700 border-blue-500 text-white"
+                : "bg-gray-800/90 hover:bg-gray-700 border-gray-600 text-gray-300"
+            }`}
+            onClick={() => toggleLayer(kind)}
+            title={`Toggle ${label} layer (Alt+${kind === "schemas" ? "1" : kind === "prompts" ? "2" : "3"})`}
+          >
+            <span>{icon}</span>
+            {label}
+          </button>
+        ))}
+      </div>
+
       {/* Search overlay */}
       {searchOpen && (
         <div className="absolute top-2 left-1/2 -translate-x-1/2 z-50">
@@ -544,6 +610,7 @@ export default function Canvas() {
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onNodeClick={onNodeClick}
+        onNodeDoubleClick={onNodeDoubleClick}
         onEdgeClick={onEdgeClick}
         onPaneClick={onPaneClick}
         onNodeContextMenu={onNodeContextMenu}
@@ -600,6 +667,15 @@ export default function Canvas() {
             clearSelection();
           }}
           onClose={() => setContextMenu(null)}
+        />
+      )}
+
+      {/* Node detail popover */}
+      {detailNodeId && document && (
+        <NodeDetailPopover
+          nodeId={detailNodeId}
+          document={document}
+          onClose={() => setDetailNodeId(null)}
         />
       )}
 

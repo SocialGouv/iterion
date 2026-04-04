@@ -1,10 +1,13 @@
 import ELK from "elkjs/lib/elk.bundled.js";
 import type { Node, Edge as FlowEdge } from "@xyflow/react";
+import { isAuxiliaryNodeId } from "./documentToGraph";
 
 const elk = new ELK();
 
 const NODE_WIDTH = 160;
 const NODE_HEIGHT = 80;
+const AUX_NODE_WIDTH = 120;
+const AUX_NODE_HEIGHT = 44;
 
 export async function autoLayout(
   nodes: Node[],
@@ -25,6 +28,7 @@ export async function autoLayout(
       "elk.layered.nodePlacement.strategy": "BRANDES_KOEPF",
     },
     children: nodes.map((n) => {
+      const isAux = isAuxiliaryNodeId(n.id);
       const kind = (n.data as Record<string, unknown>)?.kind as string | undefined;
       const layoutOptions: Record<string, string> = {};
       if (n.id === "__start__" || kind === "start") {
@@ -34,18 +38,19 @@ export async function autoLayout(
       }
       return {
         id: n.id,
-        width: NODE_WIDTH,
-        height: NODE_HEIGHT,
+        width: isAux ? AUX_NODE_WIDTH : NODE_WIDTH,
+        height: isAux ? AUX_NODE_HEIGHT : NODE_HEIGHT,
         ...(Object.keys(layoutOptions).length > 0 && { layoutOptions }),
       };
     }),
     edges: edges.map((e) => {
       const isLoop = !!(e.data as Record<string, unknown>)?.loop;
+      const isRef = e.type === "referenceEdge";
       return {
         id: e.id,
         sources: [e.source],
         targets: [e.target],
-        ...(isLoop && { layoutOptions: { "elk.layered.priority.direction": "0" } }),
+        ...((isLoop || isRef) && { layoutOptions: { "elk.layered.priority.direction": "0" } }),
       };
     }),
   };

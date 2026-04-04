@@ -1,5 +1,7 @@
 import type { Node, Edge as FlowEdge } from "@xyflow/react";
-import type { IterDocument, NodeKind } from "@/api/types";
+import type { IterDocument, NodeKind, AgentDecl, JudgeDecl, HumanDecl, ToolNodeDecl, JoinDecl } from "@/api/types";
+import type { LayerKind } from "@/store/ui";
+import type { AuxiliaryNodeData } from "@/components/Canvas/AuxiliaryNode";
 
 export const NODE_COLORS: Record<NodeKind, string> = {
   agent: "#4A90D9",
@@ -140,6 +142,189 @@ export function documentToGraph(doc: IterDocument, activeWorkflowName?: string):
       target: entryNode,
       type: "default",
     });
+  }
+
+  return { nodes, edges };
+}
+
+// Prefixes for auxiliary node IDs
+export const AUX_PREFIX_SCHEMA = "__schema__:";
+export const AUX_PREFIX_PROMPT = "__prompt__:";
+export const AUX_PREFIX_VAR = "__var__:";
+
+export function isAuxiliaryNodeId(id: string): boolean {
+  return id.startsWith(AUX_PREFIX_SCHEMA) || id.startsWith(AUX_PREFIX_PROMPT) || id.startsWith(AUX_PREFIX_VAR);
+}
+
+/** Generate overlay layer nodes and reference edges from the document */
+export function generateLayerNodes(
+  doc: IterDocument,
+  activeLayers: Set<LayerKind>,
+): { nodes: Node<AuxiliaryNodeData>[]; edges: FlowEdge[] } {
+  const nodes: Node<AuxiliaryNodeData>[] = [];
+  const edges: FlowEdge[] = [];
+
+  if (activeLayers.size === 0) return { nodes, edges };
+
+  // Collect all workflow node declarations with their schema/prompt references
+  const allDecls: { name: string; input?: string; output?: string; system?: string; user?: string; instructions?: string }[] = [];
+  for (const a of doc.agents ?? []) allDecls.push({ name: a.name, input: (a as AgentDecl).input, output: (a as AgentDecl).output, system: (a as AgentDecl).system, user: (a as AgentDecl).user });
+  for (const j of doc.judges ?? []) allDecls.push({ name: j.name, input: (j as JudgeDecl).input, output: (j as JudgeDecl).output, system: (j as JudgeDecl).system, user: (j as JudgeDecl).user });
+  for (const h of doc.humans ?? []) allDecls.push({ name: h.name, input: (h as HumanDecl).input, output: (h as HumanDecl).output, instructions: (h as HumanDecl).instructions });
+  for (const t of doc.tools ?? []) allDecls.push({ name: t.name, output: (t as ToolNodeDecl).output });
+  for (const j of doc.joins ?? []) allDecls.push({ name: j.name, output: (j as JoinDecl).output });
+
+  // --- Schemas layer ---
+  if (activeLayers.has("schemas")) {
+    for (const schema of doc.schemas ?? []) {
+      const nodeId = AUX_PREFIX_SCHEMA + schema.name;
+      nodes.push({
+        id: nodeId,
+        type: "auxiliaryNode",
+        position: { x: 0, y: 0 },
+        draggable: false,
+        data: {
+          label: schema.name,
+          layerKind: "schemas",
+          subtitle: schema.fields.map((f) => f.name).join(", "),
+          badge: `${schema.fields.length}`,
+        },
+      });
+      // Connect to workflow nodes that reference this schema
+      for (const decl of allDecls) {
+        if (decl.input === schema.name) {
+          edges.push({
+            id: `${nodeId}->ref:${decl.name}:input`,
+            source: nodeId,
+            target: decl.name,
+            type: "referenceEdge",
+            label: "input",
+            data: { layerKind: "schemas" },
+          });
+        }
+        if (decl.output === schema.name) {
+          edges.push({
+            id: `${nodeId}->ref:${decl.name}:output`,
+            source: decl.name,
+            target: nodeId,
+            type: "referenceEdge",
+            label: "output",
+            data: { layerKind: "schemas" },
+          });
+        }
+      }
+    }
+  }
+
+  // --- Prompts layer ---
+  if (activeLayers.has("prompts")) {
+    for (const prompt of doc.prompts ?? []) {
+      const nodeId = AUX_PREFIX_PROMPT + prompt.name;
+      const preview = prompt.body.length > 40 ? prompt.body.slice(0, 40) + "..." : prompt.body;
+      nodes.push({
+        id: nodeId,
+        type: "auxiliaryNode",
+        position: { x: 0, y: 0 },
+        draggable: false,
+        data: {
+          label: prompt.name,
+          layerKind: "prompts",
+          subtitle: preview.replace(/\n/g, " "),
+        },
+      });
+      for (const decl of allDecls) {
+        if (decl.system === prompt.name) {
+          edges.push({
+            id: `${nodeId}->ref:${decl.name}:system`,
+            source: nodeId,
+            target: decl.name,
+            type: "referenceEdge",
+            label: "system",
+            data: { layerKind: "prompts" },
+          });
+        }
+        if (decl.user === prompt.name) {
+          edges.push({
+            id: `${nodeId}->ref:${decl.name}:user`,
+            source: nodeId,
+            target: decl.name,
+            type: "referenceEdge",
+            label: "user",
+            data: { layerKind: "prompts" },
+          });
+        }
+        if (decl.instructions === prompt.name) {
+          edges.push({
+            id: `${nodeId}->ref:${decl.name}:instructions`,
+            source: nodeId,
+            target: decl.name,
+            type: "referenceEdge",
+            label: "instructions",
+            data: { layerKind: "prompts" },
+          });
+        }
+      }
+    }
+  }
+
+  // --- Vars layer ---
+  if (activeLayers.has("vars")) {
+    const varFields = doc.vars?.fields ?? [];
+    // Build a map: prompt name -> set of workflow nodes using it
+    const promptToNodes = new Map<string, string[]>();
+    for (const decl of allDecls) {
+      if (decl.system) promptToNodes.set(decl.system, [...(promptToNodes.get(decl.system) ?? []), decl.name]);
+      if (decl.user) promptToNodes.set(decl.user, [...(promptToNodes.get(decl.user) ?? []), decl.name]);
+      if (decl.instructions) promptToNodes.set(decl.instructions, [...(promptToNodes.get(decl.instructions) ?? []), decl.name]);
+    }
+
+    for (const v of varFields) {
+      const nodeId = AUX_PREFIX_VAR + v.name;
+      const defaultStr = v.default?.raw ? `= ${v.default.raw}` : "";
+      nodes.push({
+        id: nodeId,
+        type: "auxiliaryNode",
+        position: { x: 0, y: 0 },
+        draggable: false,
+        data: {
+          label: v.name,
+          layerKind: "vars",
+          subtitle: `${v.type} ${defaultStr}`.trim(),
+        },
+      });
+
+      // Find which prompts reference this var via {{vars.NAME}}
+      const pattern = `{{vars.${v.name}}}`;
+      for (const prompt of doc.prompts ?? []) {
+        if (prompt.body.includes(pattern)) {
+          const promptNodeId = AUX_PREFIX_PROMPT + prompt.name;
+          // If prompts layer is active, link to prompt node
+          if (activeLayers.has("prompts")) {
+            edges.push({
+              id: `${nodeId}->ref:${promptNodeId}`,
+              source: nodeId,
+              target: promptNodeId,
+              type: "referenceEdge",
+              label: v.name,
+              data: { layerKind: "vars" },
+            });
+          } else {
+            // Link directly to workflow nodes using this prompt
+            const wfNodes = promptToNodes.get(prompt.name) ?? [];
+            for (const wfNode of wfNodes) {
+              edges.push({
+                id: `${nodeId}->ref:${wfNode}:via:${prompt.name}`,
+                source: nodeId,
+                target: wfNode,
+                type: "referenceEdge",
+                label: v.name,
+                data: { layerKind: "vars" },
+              });
+            }
+          }
+        }
+      }
+    }
   }
 
   return { nodes, edges };

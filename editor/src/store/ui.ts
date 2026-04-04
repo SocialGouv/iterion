@@ -2,6 +2,8 @@ import { create } from "zustand";
 
 export type SidebarTab = "properties" | "schemas" | "prompts" | "vars" | "workflow" | "comments";
 export type LayoutDirection = "DOWN" | "RIGHT";
+export type LayerKind = "schemas" | "prompts" | "vars";
+export interface EditingItem { kind: "schema" | "prompt" | "var"; name: string }
 
 export interface Toast {
   id: number;
@@ -19,6 +21,9 @@ interface UIState {
   browserFullscreen: boolean;
   activeWorkflowName: string | null;
   layoutDirection: LayoutDirection;
+  activeLayers: Set<LayerKind>;
+  detailNodeId: string | null;
+  editingItem: EditingItem | null;
   toasts: Toast[];
   setActiveTab: (tab: SidebarTab) => void;
   toggleSourceView: () => void;
@@ -28,6 +33,9 @@ interface UIState {
   setActiveWorkflowName: (name: string | null) => void;
   setLayoutDirection: (dir: LayoutDirection) => void;
   toggleLayoutDirection: () => void;
+  toggleLayer: (layer: LayerKind) => void;
+  setDetailNodeId: (id: string | null) => void;
+  setEditingItem: (item: EditingItem | null) => void;
   addToast: (message: string, type: Toast["type"]) => void;
   removeToast: (id: number) => void;
 }
@@ -40,6 +48,9 @@ export const useUIStore = create<UIState>((set) => ({
   browserFullscreen: false,
   activeWorkflowName: null,
   layoutDirection: "DOWN",
+  activeLayers: new Set<LayerKind>(),
+  detailNodeId: null,
+  editingItem: null,
   toasts: [],
   setActiveTab: (activeTab) => set({ activeTab }),
   toggleSourceView: () => set((s) => ({ sourceViewOpen: !s.sourceViewOpen })),
@@ -49,6 +60,13 @@ export const useUIStore = create<UIState>((set) => ({
   setActiveWorkflowName: (activeWorkflowName) => set({ activeWorkflowName }),
   setLayoutDirection: (layoutDirection) => set({ layoutDirection }),
   toggleLayoutDirection: () => set((s) => ({ layoutDirection: s.layoutDirection === "DOWN" ? "RIGHT" : "DOWN" })),
+  toggleLayer: (layer) => set((s) => {
+    const next = new Set(s.activeLayers);
+    if (next.has(layer)) next.delete(layer); else next.add(layer);
+    return { activeLayers: next };
+  }),
+  setDetailNodeId: (detailNodeId) => set({ detailNodeId }),
+  setEditingItem: (editingItem) => set({ editingItem }),
   addToast: (message, type) => {
     const id = ++toastIdCounter;
     set((s) => ({ toasts: [...s.toasts, { id, message, type }] }));
