@@ -29,6 +29,8 @@ interface UIState {
   toasts: Toast[];
   // Sub-node detail view (double-click navigation)
   subNodeViewStack: string[];
+  // Library panel
+  libraryExpanded: boolean;
   // Edge editing in modal
   editModalEdgeInfo: { workflowName: string; edgeIndex: number } | null;
   setActiveTab: (tab: SidebarTab) => void;
@@ -49,6 +51,8 @@ interface UIState {
   popSubNodeView: () => void;
   clearSubNodeView: () => void;
   navigateSubNodeViewTo: (index: number) => void;
+  // Library panel
+  toggleLibraryPanel: () => void;
   // Edge modal
   setEditModalEdgeInfo: (info: { workflowName: string; edgeIndex: number } | null) => void;
 }
@@ -66,6 +70,7 @@ export const useUIStore = create<UIState>((set) => ({
   editingItem: null,
   toasts: [],
   subNodeViewStack: [],
+  libraryExpanded: false,
   editModalEdgeInfo: null,
   setActiveTab: (activeTab) => set({ activeTab }),
   toggleSourceView: () => set((s) => ({ sourceViewOpen: !s.sourceViewOpen })),
@@ -109,6 +114,8 @@ export const useUIStore = create<UIState>((set) => ({
     detailNodeId: null,
     editModalEdgeInfo: null,
   })),
+  // Library panel
+  toggleLibraryPanel: () => set((s) => ({ libraryExpanded: !s.libraryExpanded })),
   // Edge modal
   setEditModalEdgeInfo: (editModalEdgeInfo) => set({ editModalEdgeInfo }),
 }));

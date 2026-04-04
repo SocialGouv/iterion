@@ -117,6 +117,9 @@ interface DocumentState {
   addComment: (comment: Comment) => void;
   removeComment: (index: number) => void;
   updateComment: (index: number, text: string) => void;
+
+  // Batch mutation (single undo step for multi-declaration changes like library items)
+  applyBatch: (mutator: (doc: IterDocument) => IterDocument) => void;
 }
 
 function updateInArray<T extends { name: string }>(arr: T[], name: string, updates: Partial<T>): T[] {
@@ -493,4 +496,11 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     set((s) => (s.document ? { document: { ...s.document, comments: s.document.comments.filter((_, i) => i !== index) }, ...pushHistory(s) } : s)),
   updateComment: (index, text) =>
     set((s) => (s.document ? { document: { ...s.document, comments: s.document.comments.map((c, i) => i === index ? { ...c, text } : c) }, ...pushHistory(s) } : s)),
+
+  // Batch mutation — applies a document transform as a single undo step
+  applyBatch: (mutator) =>
+    set((s) => {
+      if (!s.document) return s;
+      return { document: normalize(mutator(s.document)), ...pushHistory(s) };
+    }),
 }));

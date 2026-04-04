@@ -11,7 +11,9 @@ import { useCanvasKeyboard } from "@/hooks/useCanvasKeyboard";
 import { useCanvasConnections } from "@/hooks/useCanvasConnections";
 import { useCanvasLayout } from "@/hooks/useCanvasLayout";
 import { useAddNode } from "@/hooks/useAddNode";
+import { useAddFromLibrary } from "@/hooks/useAddFromLibrary";
 import { useFullscreen } from "@/hooks/useFullscreen";
+import { useLibraryStore, selectAllItems } from "@/store/library";
 import { isAuxiliaryNodeId } from "@/lib/documentToGraph";
 import { isDetailNodeId, DETAIL_PREFIX_EDGE } from "@/lib/nodeDetailGraph";
 import type { NodeKind } from "@/api/types";
@@ -37,6 +39,8 @@ function isEditableNode(id: string): boolean {
 
 export default function Canvas() {
   const addNode = useAddNode();
+  const addFromLibrary = useAddFromLibrary();
+  const allLibraryItems = useLibraryStore(selectAllItems);
   const removeNode = useDocumentStore((s) => s.removeNode);
   const duplicateNode = useDocumentStore((s) => s.duplicateNode);
   const updateWorkflow = useDocumentStore((s) => s.updateWorkflow);
@@ -186,13 +190,26 @@ export default function Canvas() {
   const onDrop = useCallback(
     (e: DragEvent) => {
       e.preventDefault();
+      const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+
+      // Library item drop
+      const libraryItemId = e.dataTransfer.getData("application/iterion-library");
+      if (libraryItemId) {
+        const item = allLibraryItems.find((i) => i.id === libraryItemId);
+        if (item) {
+          const name = addFromLibrary(item);
+          if (name) layout.pendingPositionsRef.current.set(name, position);
+        }
+        return;
+      }
+
+      // Generic node drop
       const kind = e.dataTransfer.getData("application/iterion-node") as NodeKind;
       if (!kind || kind === "done" || kind === "fail") return;
-      const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
       const name = addNode(kind);
       if (name) layout.pendingPositionsRef.current.set(name, position);
     },
-    [addNode, screenToFlowPosition, layout.pendingPositionsRef],
+    [addNode, addFromLibrary, allLibraryItems, screenToFlowPosition, layout.pendingPositionsRef],
   );
 
   // Toolbar actions

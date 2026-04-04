@@ -4,7 +4,7 @@ import Canvas from "./components/Canvas/Canvas";
 import SidebarTabs from "./components/Panels/SidebarTabs";
 import Toolbar from "./components/Toolbar/Toolbar";
 import DiagnosticsPanel from "./components/Diagnostics/DiagnosticsPanel";
-import NodePalette from "./components/Palette/NodePalette";
+import LibraryPanel from "./components/Library/LibraryPanel";
 import SourceView from "./components/SourceView/SourceView";
 import ToastContainer from "./components/shared/Toast";
 import EditItemModal from "./components/Modals/EditItemModal";
@@ -16,6 +16,7 @@ export default function App() {
   const sourceViewOpen = useUIStore((s) => s.sourceViewOpen);
   const diagnosticsPanelOpen = useUIStore((s) => s.diagnosticsPanelOpen);
   const expanded = useUIStore((s) => s.expanded);
+  const libraryExpanded = useUIStore((s) => s.libraryExpanded);
   useAutoValidation();
 
   // Warn before closing with unsaved changes
@@ -31,10 +32,10 @@ export default function App() {
 
   return (
     <ReactFlowProvider>
-      <div className={`h-screen w-screen grid bg-gray-900 text-white ${
+      <div className={`h-screen w-screen grid bg-gray-900 text-white transition-[grid-template-columns] duration-200 ${
         expanded
           ? "grid-rows-[1fr] grid-cols-[1fr]"
-          : `grid-cols-[64px_1fr_320px] ${
+          : `${libraryExpanded ? "grid-cols-[280px_1fr_320px]" : "grid-cols-[64px_1fr_320px]"} ${
               diagnosticsPanelOpen ? "grid-rows-[48px_1fr_160px]" : "grid-rows-[48px_1fr_0px]"
             }`
       }`}>
@@ -45,10 +46,10 @@ export default function App() {
           </div>
         )}
 
-        {/* Left palette */}
+        {/* Left: library panel */}
         {!expanded && (
           <div className="border-r border-gray-700 overflow-y-auto">
-            <NodePalette />
+            <LibraryPanel />
           </div>
         )}
 
