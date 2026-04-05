@@ -11,7 +11,8 @@ All commands must be run through `devbox run` (Go and tooling are managed by dev
 ```bash
 devbox run -- task build          # Build binary → ./iterion
 devbox run -- task test           # Run unit tests
-devbox run -- task test:e2e       # Run end-to-end tests
+devbox run -- task test:e2e       # Run end-to-end tests (stub executor)
+devbox run -- task test:live      # Run live e2e tests (requires API keys, uses -tags live)
 devbox run -- task test:race      # Tests with race detector
 devbox run -- task lint           # go fmt + go vet
 devbox run -- task check          # lint + test
