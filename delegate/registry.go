@@ -32,5 +32,7 @@ func DefaultRegistry() *Registry {
 	r := NewRegistry()
 	r.Register("claude_code", &ClaudeCodeBackend{})
 	r.Register("codex", &CodexBackend{})
+	// NOTE: ClawBackend requires a ModelFactory and is not registered by default.
+	// Callers should register it explicitly: r.Register("claw", &ClawBackend{ModelFactory: ...})
 	return r
 }
