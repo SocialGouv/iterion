@@ -7,14 +7,11 @@ import { useUIStore } from "@/store/ui";
 export function useEscapeStack(): () => boolean {
   const editModalEdgeInfo = useUIStore((s) => s.editModalEdgeInfo);
   const setEditModalEdgeInfo = useUIStore((s) => s.setEditModalEdgeInfo);
-  const detailNodeId = useUIStore((s) => s.detailNodeId);
-  const setDetailNodeId = useUIStore((s) => s.setDetailNodeId);
   const subNodeViewStack = useUIStore((s) => s.subNodeViewStack);
   const popSubNodeView = useUIStore((s) => s.popSubNodeView);
 
   return () => {
     if (editModalEdgeInfo) { setEditModalEdgeInfo(null); return true; }
-    if (detailNodeId) { setDetailNodeId(null); return true; }
     if (subNodeViewStack.length > 0) { popSubNodeView(); return true; }
     return false;
   };

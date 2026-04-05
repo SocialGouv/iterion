@@ -80,7 +80,7 @@ agent reviewer:
   session: fresh
 
 human clarify:
-  mode: pause_until_answers
+  interaction: human
   input: output_schema
   output: human_output
   instructions: human_instr

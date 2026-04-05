@@ -107,18 +107,18 @@ func buildTestFile() *ast.File {
 				Output:       "human_output",
 				Publish:      "human_decision",
 				Instructions: "approval_prompt",
-				Mode:         ast.HumanPauseUntilAnswers,
+				Interaction:  ast.InteractionHuman,
 				MinAnswers:   1,
 			},
 			{
-				Name:   "auto_check",
-				Mode:   ast.HumanAutoAnswer,
-				Model:  "claude-sonnet-4-20250514",
-				System: "auto_system",
+				Name:        "auto_check",
+				Interaction: ast.InteractionLLM,
+				Model:       "claude-sonnet-4-20250514",
+				System:      "auto_system",
 			},
 			{
-				Name: "hybrid",
-				Mode: ast.HumanAutoOrPause,
+				Name:        "hybrid",
+				Interaction: ast.InteractionLLMOrHuman,
 			},
 		},
 		Tools: []*ast.ToolNodeDecl{
@@ -205,7 +205,7 @@ func TestEnumsSerializeAsStrings(t *testing.T) {
 		},
 		Agents:  []*ast.AgentDecl{{Name: "a", Session: ast.SessionArtifactsOnly, Await: ast.AwaitBestEffort}},
 		Routers: []*ast.RouterDecl{{Name: "r", Mode: ast.RouterCondition}},
-		Humans:  []*ast.HumanDecl{{Name: "h", Mode: ast.HumanAutoOrPause}},
+		Humans:  []*ast.HumanDecl{{Name: "h", Interaction: ast.InteractionLLMOrHuman}},
 	}
 
 	data, err := Marshal(f)
@@ -222,7 +222,7 @@ func TestEnumsSerializeAsStrings(t *testing.T) {
 		`"artifacts_only"`, // SessionArtifactsOnly
 		`"condition"`,      // RouterCondition
 		`"best_effort"`,    // AwaitBestEffort
-		`"auto_or_pause"`,  // HumanAutoOrPause
+		`"llm_or_human"`,   // InteractionLLMOrHuman
 	}
 
 	for _, exp := range expectations {
@@ -358,7 +358,7 @@ func TestUnmarshalErrors(t *testing.T) {
 		{"unknown session mode", `{"agents":[{"name":"a","session":"bad_mode"}]}`},
 		{"unknown router mode", `{"routers":[{"name":"r","mode":"bad_mode"}]}`},
 		{"unknown await mode", `{"agents":[{"name":"a","await":"bad_mode"}]}`},
-		{"unknown human mode", `{"humans":[{"name":"h","mode":"bad_mode"}]}`},
+		{"unknown human mode", `{"humans":[{"name":"h","interaction":"bad_mode"}]}`},
 		{"unknown type expr", `{"vars":{"fields":[{"name":"v","type":"bad_type"}]}}`},
 		{"unknown literal kind", `{"vars":{"fields":[{"name":"v","type":"string","default":{"kind":"bad_kind"}}]}}`},
 	}

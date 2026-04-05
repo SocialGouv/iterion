@@ -26,6 +26,7 @@ const (
 	DiagMissingModelOrDelegate DiagCode = "C018" // agent/judge has neither model nor delegate
 	DiagDuplicateMCPServer     DiagCode = "C024" // duplicate top-level mcp_server name
 	DiagInvalidMCPServer       DiagCode = "C025" // invalid MCP server config
+	DiagInteractionNoDelegate  DiagCode = "C029" // interaction set on non-delegate LLM node (no runtime effect)
 )
 
 // Severity indicates the severity of a diagnostic.
@@ -86,6 +87,18 @@ type compiler struct {
 	schemas map[string]*Schema
 	prompts map[string]*Prompt
 	mcp     map[string]*MCPServer
+}
+
+// workflowInteractionDefault returns the workflow-level interaction default,
+// or InteractionNone if none is set.
+func (c *compiler) workflowInteractionDefault() InteractionMode {
+	if len(c.file.Workflows) > 0 {
+		wf := c.file.Workflows[0]
+		if wf.Interaction != nil {
+			return convertInteractionMode(*wf.Interaction)
+		}
+	}
+	return InteractionNone
 }
 
 func (c *compiler) errorf(code DiagCode, format string, args ...interface{}) {
@@ -166,18 +179,26 @@ func (c *compiler) compile() *Workflow {
 		budget = c.compileBudget(wf.Budget)
 	}
 
+	// Compile workflow-level interaction default.
+	var interaction *InteractionMode
+	if wf.Interaction != nil {
+		im := convertInteractionMode(*wf.Interaction)
+		interaction = &im
+	}
+
 	w := &Workflow{
-		Name:       wf.Name,
-		Entry:      wf.Entry,
-		Nodes:      c.nodes,
-		Edges:      edges,
-		Schemas:    c.schemas,
-		Prompts:    c.prompts,
-		Vars:       vars,
-		Loops:      loops,
-		Budget:     budget,
-		MCP:        convertMCPConfig(wf.MCP),
-		MCPServers: c.mcp,
+		Name:        wf.Name,
+		Entry:       wf.Entry,
+		Nodes:       c.nodes,
+		Edges:       edges,
+		Schemas:     c.schemas,
+		Prompts:     c.prompts,
+		Vars:        vars,
+		Loops:       loops,
+		Budget:      budget,
+		MCP:         convertMCPConfig(wf.MCP),
+		MCPServers:  c.mcp,
+		Interaction: interaction,
 	}
 
 	// Static validation pass (P2-02).
@@ -347,23 +368,35 @@ func (c *compiler) compileAgents() {
 			c.errorf(DiagMissingModelOrDelegate, "agent %q must set 'model' or 'delegate', or define ITERION_DEFAULT_SUPERVISOR_MODEL", a.Name)
 		}
 
+		// Apply workflow-level interaction default when node doesn't set one.
+		interaction := convertInteractionMode(a.Interaction)
+		if interaction == InteractionNone {
+			interaction = c.workflowInteractionDefault()
+		}
+		if interaction != InteractionNone && a.Delegate == "" {
+			c.warnf(DiagInteractionNoDelegate, "agent %q has interaction %s but no delegate; interaction forwarding only works with delegation backends", a.Name, interaction)
+		}
+
 		c.nodes[a.Name] = &Node{
-			ID:              a.Name,
-			Kind:            NodeAgent,
-			Model:           model,
-			Delegate:        a.Delegate,
-			MCP:             convertMCPConfig(a.MCP),
-			InputSchema:     a.Input,
-			OutputSchema:    a.Output,
-			Publish:         a.Publish,
-			SystemPrompt:    a.System,
-			UserPrompt:      a.User,
-			Session:         convertSessionMode(a.Session),
-			Tools:           a.Tools,
-			ToolMaxSteps:    a.ToolMaxSteps,
-			ReasoningEffort: a.ReasoningEffort,
-			Readonly:        a.Readonly,
-			AwaitStrategy:   convertAwaitMode(a.Await),
+			ID:                a.Name,
+			Kind:              NodeAgent,
+			Model:             model,
+			Delegate:          a.Delegate,
+			MCP:               convertMCPConfig(a.MCP),
+			InputSchema:       a.Input,
+			OutputSchema:      a.Output,
+			Publish:           a.Publish,
+			SystemPrompt:      a.System,
+			UserPrompt:        a.User,
+			Session:           convertSessionMode(a.Session),
+			Tools:             a.Tools,
+			ToolMaxSteps:      a.ToolMaxSteps,
+			ReasoningEffort:   a.ReasoningEffort,
+			Readonly:          a.Readonly,
+			Interaction:       interaction,
+			InteractionPrompt: a.InteractionPrompt,
+			InteractionModel:  a.InteractionModel,
+			AwaitStrategy:     convertAwaitMode(a.Await),
 		}
 	}
 }
@@ -383,23 +416,35 @@ func (c *compiler) compileJudges() {
 			c.errorf(DiagMissingModelOrDelegate, "judge %q must set 'model' or 'delegate', or define ITERION_DEFAULT_SUPERVISOR_MODEL", j.Name)
 		}
 
+		// Apply workflow-level interaction default when node doesn't set one.
+		interaction := convertInteractionMode(j.Interaction)
+		if interaction == InteractionNone {
+			interaction = c.workflowInteractionDefault()
+		}
+		if interaction != InteractionNone && j.Delegate == "" {
+			c.warnf(DiagInteractionNoDelegate, "judge %q has interaction %s but no delegate; interaction forwarding only works with delegation backends", j.Name, interaction)
+		}
+
 		c.nodes[j.Name] = &Node{
-			ID:              j.Name,
-			Kind:            NodeJudge,
-			Model:           model,
-			Delegate:        j.Delegate,
-			MCP:             convertMCPConfig(j.MCP),
-			InputSchema:     j.Input,
-			OutputSchema:    j.Output,
-			Publish:         j.Publish,
-			SystemPrompt:    j.System,
-			UserPrompt:      j.User,
-			Session:         convertSessionMode(j.Session),
-			Tools:           j.Tools,
-			ToolMaxSteps:    j.ToolMaxSteps,
-			ReasoningEffort: j.ReasoningEffort,
-			Readonly:        j.Readonly,
-			AwaitStrategy:   convertAwaitMode(j.Await),
+			ID:                j.Name,
+			Kind:              NodeJudge,
+			Model:             model,
+			Delegate:          j.Delegate,
+			MCP:               convertMCPConfig(j.MCP),
+			InputSchema:       j.Input,
+			OutputSchema:      j.Output,
+			Publish:           j.Publish,
+			SystemPrompt:      j.System,
+			UserPrompt:        j.User,
+			Session:           convertSessionMode(j.Session),
+			Tools:             j.Tools,
+			ToolMaxSteps:      j.ToolMaxSteps,
+			ReasoningEffort:   j.ReasoningEffort,
+			Readonly:          j.Readonly,
+			Interaction:       interaction,
+			InteractionPrompt: j.InteractionPrompt,
+			InteractionModel:  j.InteractionModel,
+			AwaitStrategy:     convertAwaitMode(j.Await),
 		}
 	}
 }
@@ -459,28 +504,47 @@ func (c *compiler) compileHumans() {
 		c.validateSchemaRef(h.Name, "output", h.Output)
 		c.validatePromptRef(h.Name, "instructions", h.Instructions)
 
-		mode := convertHumanMode(h.Mode)
+		interaction := convertInteractionMode(h.Interaction)
+		// Human nodes default to InteractionHuman; workflow-level default
+		// can override when the node doesn't set interaction explicitly.
+		if h.Interaction == 0 {
+			wfDefault := c.workflowInteractionDefault()
+			if wfDefault != InteractionNone {
+				interaction = wfDefault
+			} else {
+				interaction = InteractionHuman
+			}
+		}
 		node := &Node{
-			ID:            h.Name,
-			Kind:          NodeHuman,
-			InputSchema:   h.Input,
-			OutputSchema:  h.Output,
-			Publish:       h.Publish,
-			HumanMode:     mode,
-			MinAnswers:    h.MinAnswers,
-			Instructions:  h.Instructions,
-			AwaitStrategy: convertAwaitMode(h.Await),
+			ID:                h.Name,
+			Kind:              NodeHuman,
+			InputSchema:       h.Input,
+			OutputSchema:      h.Output,
+			Publish:           h.Publish,
+			Interaction:       interaction,
+			InteractionPrompt: h.InteractionPrompt,
+			InteractionModel:  h.InteractionModel,
+			MinAnswers:        h.MinAnswers,
+			Instructions:      h.Instructions,
+			AwaitStrategy:     convertAwaitMode(h.Await),
 		}
 
-		// Auto modes require a model and output schema for LLM execution.
-		if mode == HumanAutoAnswer || mode == HumanAutoOrPause {
-			if h.Model == "" {
-				c.errorf(DiagMissingModelOrDelegate, "human %q with mode %s must set 'model'", h.Name, mode)
+		// LLM-based interaction modes require a model and output schema.
+		if interaction == InteractionLLM || interaction == InteractionLLMOrHuman {
+			model := h.InteractionModel
+			if model == "" {
+				model = h.Model
+			}
+			if model == "" {
+				c.errorf(DiagMissingModelOrDelegate, "human %q with interaction %s must set 'model' or 'interaction_model'", h.Name, interaction)
 			}
 			if h.Output == "" {
-				c.errorf(DiagMissingModelOrDelegate, "human %q with mode %s must set 'output'", h.Name, mode)
+				c.errorf(DiagMissingModelOrDelegate, "human %q with interaction %s must set 'output'", h.Name, interaction)
 			}
 			node.Model = h.Model
+			if h.InteractionModel != "" {
+				node.InteractionModel = h.InteractionModel
+			}
 			if h.System != "" {
 				c.validatePromptRef(h.Name, "system", h.System)
 				node.SystemPrompt = h.System
@@ -695,14 +759,18 @@ func convertAwaitMode(am ast.AwaitMode) AwaitStrategy {
 	}
 }
 
-func convertHumanMode(hm ast.HumanMode) HumanMode {
-	switch hm {
-	case ast.HumanAutoAnswer:
-		return HumanAutoAnswer
-	case ast.HumanAutoOrPause:
-		return HumanAutoOrPause
+func convertInteractionMode(im ast.InteractionMode) InteractionMode {
+	switch im {
+	case ast.InteractionNone:
+		return InteractionNone
+	case ast.InteractionHuman:
+		return InteractionHuman
+	case ast.InteractionLLM:
+		return InteractionLLM
+	case ast.InteractionLLMOrHuman:
+		return InteractionLLMOrHuman
 	default:
-		return HumanPauseUntilAnswers
+		return InteractionNone
 	}
 }
 

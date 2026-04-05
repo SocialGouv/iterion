@@ -75,6 +75,9 @@ const (
 	TokenURL
 	TokenReadonly
 	TokenDelegate
+	TokenInteraction
+	TokenInteractionPrompt
+	TokenInteractionModel
 	TokenAwait
 	TokenWhen
 	TokenNot
@@ -96,10 +99,6 @@ const (
 	// Join strategies
 	TokenWaitAll
 	TokenBestEffort
-	// Human modes
-	TokenPauseUntilAnswers
-	TokenAutoAnswer
-	TokenAutoOrPause
 	// Booleans
 	TokenTrue
 	TokenFalse
@@ -185,6 +184,9 @@ var tokenNames = map[TokenType]string{
 	TokenURL:               "url",
 	TokenReadonly:          "readonly",
 	TokenDelegate:          "delegate",
+	TokenInteraction:       "interaction",
+	TokenInteractionPrompt: "interaction_prompt",
+	TokenInteractionModel:  "interaction_model",
 	TokenAwait:             "await",
 	TokenWhen:              "when",
 	TokenNot:               "not",
@@ -202,9 +204,6 @@ var tokenNames = map[TokenType]string{
 	TokenMulti:             "multi",
 	TokenWaitAll:           "wait_all",
 	TokenBestEffort:        "best_effort",
-	TokenPauseUntilAnswers: "pause_until_answers",
-	TokenAutoAnswer:        "auto_answer",
-	TokenAutoOrPause:       "auto_or_pause",
 	TokenTrue:              "true",
 	TokenFalse:             "false",
 	TokenTypeString:        "string",
@@ -271,6 +270,9 @@ var keywords = map[string]TokenType{
 	"url":                   TokenURL,
 	"readonly":              TokenReadonly,
 	"delegate":              TokenDelegate,
+	"interaction":           TokenInteraction,
+	"interaction_prompt":    TokenInteractionPrompt,
+	"interaction_model":     TokenInteractionModel,
 	"await":                 TokenAwait,
 	"when":                  TokenWhen,
 	"not":                   TokenNot,
@@ -288,9 +290,6 @@ var keywords = map[string]TokenType{
 	"multi":                 TokenMulti,
 	"wait_all":              TokenWaitAll,
 	"best_effort":           TokenBestEffort,
-	"pause_until_answers":   TokenPauseUntilAnswers,
-	"auto_answer":           TokenAutoAnswer,
-	"auto_or_pause":         TokenAutoOrPause,
 	"true":                  TokenTrue,
 	"false":                 TokenFalse,
 	"string":                TokenTypeString,

@@ -40,16 +40,21 @@ type Run struct {
 	Checkpoint    *Checkpoint            `json:"checkpoint,omitempty"`
 }
 
-// Checkpoint captures the runtime state at a human pause point,
-// enabling exact resume without replaying upstream nodes.
+// Checkpoint captures the runtime state at a pause point (human node or
+// delegate interaction), enabling exact resume without replaying upstream nodes.
 type Checkpoint struct {
-	NodeID             string                            `json:"node_id"`                        // the human node where we paused
+	NodeID             string                            `json:"node_id"`                        // the node where we paused
 	InteractionID      string                            `json:"interaction_id"`                 // pending interaction ID
 	Outputs            map[string]map[string]interface{} `json:"outputs"`                        // per-node outputs accumulated so far
 	LoopCounters       map[string]int                    `json:"loop_counters"`                  // current loop iteration counts
 	RoundRobinCounters map[string]int                    `json:"round_robin_counters,omitempty"` // round-robin router counters (keyed by router node ID)
 	ArtifactVersions   map[string]int                    `json:"artifact_versions"`              // next artifact version per node
 	Vars               map[string]interface{}            `json:"vars"`                           // resolved workflow variables
+	// DelegateSessionID is the session ID of a blocked delegate, enabling
+	// re-invocation with session: inherit on resume.
+	DelegateSessionID string `json:"delegate_session_id,omitempty"`
+	// DelegateBackend identifies which delegate backend was used.
+	DelegateBackend string `json:"delegate_backend,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

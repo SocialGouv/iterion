@@ -111,6 +111,25 @@ type EventHooks struct {
 }
 
 // ---------------------------------------------------------------------------
+// Interaction errors
+// ---------------------------------------------------------------------------
+
+// ErrNeedsInteraction is returned by the executor when a delegate or LLM
+// signals that it needs user input to continue. The runtime engine should
+// handle this by pausing (interaction: human), auto-responding (interaction: llm),
+// or deciding (interaction: llm_or_human) based on the node's InteractionMode.
+type ErrNeedsInteraction struct {
+	NodeID    string
+	Questions map[string]interface{} // question_key → question text
+	SessionID string                 // delegate session ID for re-invocation
+	Backend   string                 // delegate backend name (empty for goai direct)
+}
+
+func (e *ErrNeedsInteraction) Error() string {
+	return fmt.Sprintf("model: node %q needs user interaction (%d questions)", e.NodeID, len(e.Questions))
+}
+
+// ---------------------------------------------------------------------------
 // Executor
 // ---------------------------------------------------------------------------
 
@@ -353,12 +372,12 @@ func (e *GoaiExecutor) executeLLM(ctx context.Context, node *ir.Node, input map[
 	return e.generateTextWithRetry(ctx, m, node, opts)
 }
 
-// executeHumanLLM handles human nodes in auto_answer or auto_or_pause mode.
+// executeHumanLLM handles human nodes in llm or llm_or_human interaction mode.
 // It reuses the same LLM call patterns as executeLLM but with mode-specific
-// schema handling for auto_or_pause (wrapper schema with needs_human_input).
+// schema handling for llm_or_human (wrapper schema with needs_human_input).
 func (e *GoaiExecutor) executeHumanLLM(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
-	if node.HumanMode == ir.HumanPauseUntilAnswers {
-		return nil, fmt.Errorf("model: human node %q in pause_until_answers mode should not be executed by the model layer", node.ID)
+	if node.Interaction == ir.InteractionHuman || node.Interaction == ir.InteractionNone {
+		return nil, fmt.Errorf("model: human node %q in %s interaction mode should not be executed by the model layer", node.ID, node.Interaction)
 	}
 
 	// Resolve model (expand env var references).
@@ -417,8 +436,8 @@ func (e *GoaiExecutor) executeHumanLLM(ctx context.Context, node *ir.Node, input
 		return nil, fmt.Errorf("model: human node %q references unknown schema %q", node.ID, node.OutputSchema)
 	}
 
-	// For auto_or_pause, wrap the schema with needs_human_input field.
-	if node.HumanMode == ir.HumanAutoOrPause {
+	// For llm_or_human, wrap the schema with needs_human_input field.
+	if node.Interaction == ir.InteractionLLMOrHuman {
 		schema = wrapSchemaWithHumanFlag(schema)
 	}
 
@@ -824,12 +843,13 @@ func (e *GoaiExecutor) executeDelegation(ctx context.Context, node *ir.Node, inp
 	}
 
 	task := delegate.Task{
-		SystemPrompt:    systemText,
-		UserPrompt:      userText,
-		AllowedTools:    node.Tools,
-		OutputSchema:    outputSchema,
-		WorkDir:         e.workDir,
-		ReasoningEffort: resolveReasoningEffort(node, input),
+		SystemPrompt:       systemText,
+		UserPrompt:         userText,
+		AllowedTools:       node.Tools,
+		OutputSchema:       outputSchema,
+		WorkDir:            e.workDir,
+		ReasoningEffort:    resolveReasoningEffort(node, input),
+		InteractionEnabled: node.Interaction != ir.InteractionNone,
 	}
 
 	// Session continuity: when the node requests session inheritance or fork,
@@ -897,6 +917,25 @@ func (e *GoaiExecutor) executeDelegation(ctx context.Context, node *ir.Node, inp
 	// Expose session ID for downstream nodes that may inherit this session.
 	if result.SessionID != "" {
 		result.Output["_session_id"] = result.SessionID
+	}
+
+	// Check if the delegate signaled that it needs user interaction.
+	if node.Interaction != ir.InteractionNone {
+		if needsInteraction, ok := result.Output["_needs_interaction"].(bool); ok && needsInteraction {
+			questions, _ := result.Output["_interaction_questions"].(map[string]interface{})
+			if questions == nil {
+				questions = map[string]interface{}{"input": "The delegate needs your input to continue."}
+			}
+			// Clean interaction fields from output before returning.
+			delete(result.Output, "_needs_interaction")
+			delete(result.Output, "_interaction_questions")
+			return nil, &ErrNeedsInteraction{
+				NodeID:    node.ID,
+				Questions: questions,
+				SessionID: result.SessionID,
+				Backend:   node.Delegate,
+			}
+		}
 	}
 
 	return result.Output, nil

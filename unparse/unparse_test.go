@@ -79,7 +79,7 @@ func TestUnparseBasic(t *testing.T) {
 				Name:         "my_human",
 				Input:        "review_in",
 				Output:       "review_out",
-				Mode:         ast.HumanPauseUntilAnswers,
+				Interaction:  ast.InteractionHuman,
 				Instructions: "review_prompt",
 				MinAnswers:   1,
 				Model:        "${MODEL}",

@@ -354,14 +354,14 @@ func TestHumanDecl(t *testing.T) {
   input: review_in
   output: review_out
   instructions: review_prompt
-  mode: pause_until_answers
+  interaction: human
   min_answers: 2
 `
 	res := parser.Parse("test.iter", src)
 	assertNoDiags(t, res)
 
 	h := res.File.Humans[0]
-	assertEq(t, "Mode", h.Mode, ast.HumanPauseUntilAnswers)
+	assertEq(t, "Interaction", h.Interaction, ast.InteractionHuman)
 	assertEq(t, "MinAnswers", h.MinAnswers, 2)
 }
 

@@ -95,7 +95,8 @@ func Unparse(f *ast.File) string {
 			writeMCPConfigBlock(&b, a.MCP, "  ")
 		}
 		writeAgentFields(&b, a.Model, a.Delegate, a.Input, a.Output, a.Publish,
-			a.System, a.User, a.Session, a.Tools, a.ToolMaxSteps, a.ReasoningEffort, a.Readonly, a.Await)
+			a.System, a.User, a.Session, a.Tools, a.ToolMaxSteps, a.ReasoningEffort, a.Readonly,
+			a.Interaction, a.InteractionPrompt, a.InteractionModel, a.Await)
 	}
 
 	// --- Judges ---
@@ -106,7 +107,8 @@ func Unparse(f *ast.File) string {
 			writeMCPConfigBlock(&b, j.MCP, "  ")
 		}
 		writeAgentFields(&b, j.Model, j.Delegate, j.Input, j.Output, j.Publish,
-			j.System, j.User, j.Session, j.Tools, j.ToolMaxSteps, j.ReasoningEffort, j.Readonly, j.Await)
+			j.System, j.User, j.Session, j.Tools, j.ToolMaxSteps, j.ReasoningEffort, j.Readonly,
+			j.Interaction, j.InteractionPrompt, j.InteractionModel, j.Await)
 	}
 
 	// --- Routers ---
@@ -143,7 +145,13 @@ func Unparse(f *ast.File) string {
 		if h.Publish != "" {
 			writeProp(&b, "publish", h.Publish)
 		}
-		writeProp(&b, "mode", h.Mode.String())
+		writeProp(&b, "interaction", h.Interaction.String())
+		if h.InteractionPrompt != "" {
+			writeProp(&b, "interaction_prompt", h.InteractionPrompt)
+		}
+		if h.InteractionModel != "" {
+			writeQuotedProp(&b, "interaction_model", h.InteractionModel)
+		}
 		if h.Instructions != "" {
 			writeProp(&b, "instructions", h.Instructions)
 		}
@@ -273,7 +281,7 @@ func quoteList(vals []string) string {
 	return strings.Join(quoted, ", ")
 }
 
-func writeAgentFields(b *strings.Builder, model, delegate, input, output, publish, system, user string, session ast.SessionMode, tools []string, toolMaxSteps int, reasoningEffort string, readonly bool, await ast.AwaitMode) {
+func writeAgentFields(b *strings.Builder, model, delegate, input, output, publish, system, user string, session ast.SessionMode, tools []string, toolMaxSteps int, reasoningEffort string, readonly bool, interaction ast.InteractionMode, interactionPrompt, interactionModel string, await ast.AwaitMode) {
 	if model != "" {
 		writeQuotedProp(b, "model", model)
 	}
@@ -313,6 +321,15 @@ func writeAgentFields(b *strings.Builder, model, delegate, input, output, publis
 	}
 	if readonly {
 		writeProp(b, "readonly", "true")
+	}
+	if interaction != ast.InteractionNone {
+		writeProp(b, "interaction", interaction.String())
+	}
+	if interactionPrompt != "" {
+		writeProp(b, "interaction_prompt", interactionPrompt)
+	}
+	if interactionModel != "" {
+		writeQuotedProp(b, "interaction_model", interactionModel)
 	}
 	if await != ast.AwaitNone {
 		writeProp(b, "await", await.String())

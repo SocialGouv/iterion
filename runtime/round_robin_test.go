@@ -219,7 +219,7 @@ func TestRoundRobinCounterPersistence(t *testing.T) {
 			"human": {
 				ID:        "human",
 				Kind:      ir.NodeHuman,
-				HumanMode: ir.HumanPauseUntilAnswers,
+				Interaction: ir.InteractionHuman,
 			},
 			"done": {ID: "done", Kind: ir.NodeDone},
 			"fail": {ID: "fail", Kind: ir.NodeFail},

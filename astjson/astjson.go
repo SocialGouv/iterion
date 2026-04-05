@@ -52,13 +52,14 @@ var strToAwaitMode = func() map[string]ast.AwaitMode {
 	return m
 }()
 
-var humanModeToStr = map[ast.HumanMode]string{
-	ast.HumanPauseUntilAnswers: "pause_until_answers",
-	ast.HumanAutoAnswer:        "auto_answer",
-	ast.HumanAutoOrPause:       "auto_or_pause",
+var interactionModeToStr = map[ast.InteractionMode]string{
+	ast.InteractionNone:       "none",
+	ast.InteractionHuman:      "human",
+	ast.InteractionLLM:        "llm",
+	ast.InteractionLLMOrHuman: "llm_or_human",
 }
 
-var strToHumanMode = reverseMap(humanModeToStr)
+var strToInteractionMode = reverseMap(interactionModeToStr)
 
 var typeExprToStr = map[ast.TypeExpr]string{
 	ast.TypeString:      "string",
@@ -145,35 +146,41 @@ type jsonSchemaField struct {
 }
 
 type jsonAgentDecl struct {
-	Name            string   `json:"name,omitempty"`
-	Model           string   `json:"model,omitempty"`
-	Delegate        string   `json:"delegate,omitempty"`
-	Input           string   `json:"input,omitempty"`
-	Output          string   `json:"output,omitempty"`
-	Publish         string   `json:"publish,omitempty"`
-	System          string   `json:"system,omitempty"`
-	User            string   `json:"user,omitempty"`
-	Session         string   `json:"session,omitempty"`
-	Tools           []string `json:"tools,omitempty"`
-	ToolMaxSteps    int      `json:"tool_max_steps,omitempty"`
-	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
-	Await           string   `json:"await,omitempty"`
+	Name              string   `json:"name,omitempty"`
+	Model             string   `json:"model,omitempty"`
+	Delegate          string   `json:"delegate,omitempty"`
+	Input             string   `json:"input,omitempty"`
+	Output            string   `json:"output,omitempty"`
+	Publish           string   `json:"publish,omitempty"`
+	System            string   `json:"system,omitempty"`
+	User              string   `json:"user,omitempty"`
+	Session           string   `json:"session,omitempty"`
+	Tools             []string `json:"tools,omitempty"`
+	ToolMaxSteps      int      `json:"tool_max_steps,omitempty"`
+	ReasoningEffort   string   `json:"reasoning_effort,omitempty"`
+	Interaction       string   `json:"interaction,omitempty"`
+	InteractionPrompt string   `json:"interaction_prompt,omitempty"`
+	InteractionModel  string   `json:"interaction_model,omitempty"`
+	Await             string   `json:"await,omitempty"`
 }
 
 type jsonJudgeDecl struct {
-	Name            string   `json:"name,omitempty"`
-	Model           string   `json:"model,omitempty"`
-	Delegate        string   `json:"delegate,omitempty"`
-	Input           string   `json:"input,omitempty"`
-	Output          string   `json:"output,omitempty"`
-	Publish         string   `json:"publish,omitempty"`
-	System          string   `json:"system,omitempty"`
-	User            string   `json:"user,omitempty"`
-	Session         string   `json:"session,omitempty"`
-	Tools           []string `json:"tools,omitempty"`
-	ToolMaxSteps    int      `json:"tool_max_steps,omitempty"`
-	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
-	Await           string   `json:"await,omitempty"`
+	Name              string   `json:"name,omitempty"`
+	Model             string   `json:"model,omitempty"`
+	Delegate          string   `json:"delegate,omitempty"`
+	Input             string   `json:"input,omitempty"`
+	Output            string   `json:"output,omitempty"`
+	Publish           string   `json:"publish,omitempty"`
+	System            string   `json:"system,omitempty"`
+	User              string   `json:"user,omitempty"`
+	Session           string   `json:"session,omitempty"`
+	Tools             []string `json:"tools,omitempty"`
+	ToolMaxSteps      int      `json:"tool_max_steps,omitempty"`
+	ReasoningEffort   string   `json:"reasoning_effort,omitempty"`
+	Interaction       string   `json:"interaction,omitempty"`
+	InteractionPrompt string   `json:"interaction_prompt,omitempty"`
+	InteractionModel  string   `json:"interaction_model,omitempty"`
+	Await             string   `json:"await,omitempty"`
 }
 
 type jsonRouterDecl struct {
@@ -186,16 +193,20 @@ type jsonRouterDecl struct {
 }
 
 type jsonHumanDecl struct {
-	Name         string `json:"name,omitempty"`
-	Input        string `json:"input,omitempty"`
-	Output       string `json:"output,omitempty"`
-	Publish      string `json:"publish,omitempty"`
-	Instructions string `json:"instructions,omitempty"`
-	Mode         string `json:"mode,omitempty"`
-	MinAnswers   int    `json:"min_answers,omitempty"`
-	Model        string `json:"model,omitempty"`
-	System       string `json:"system,omitempty"`
-	Await        string `json:"await,omitempty"`
+	Name              string `json:"name,omitempty"`
+	Input             string `json:"input,omitempty"`
+	Output            string `json:"output,omitempty"`
+	Publish           string `json:"publish,omitempty"`
+	Instructions      string `json:"instructions,omitempty"`
+	Interaction       string `json:"interaction,omitempty"`
+	InteractionPrompt string `json:"interaction_prompt,omitempty"`
+	InteractionModel  string `json:"interaction_model,omitempty"`
+	MinAnswers        int    `json:"min_answers,omitempty"`
+	Model             string `json:"model,omitempty"`
+	System            string `json:"system,omitempty"`
+	Await             string `json:"await,omitempty"`
+	// Legacy field — mapped to Interaction on read, ignored on write.
+	Mode string `json:"mode,omitempty"`
 }
 
 type jsonToolNodeDecl struct {
@@ -348,52 +359,60 @@ func schemaToJSON(s *ast.SchemaDecl) *jsonSchemaDecl {
 
 func agentToJSON(a *ast.AgentDecl) *jsonAgentDecl {
 	return &jsonAgentDecl{
-		Name:            a.Name,
-		Model:           a.Model,
-		Delegate:        a.Delegate,
-		Input:           a.Input,
-		Output:          a.Output,
-		Publish:         a.Publish,
-		System:          a.System,
-		User:            a.User,
-		Session:         sessionModeToStr[a.Session],
-		Tools:           a.Tools,
-		ToolMaxSteps:    a.ToolMaxSteps,
-		ReasoningEffort: a.ReasoningEffort,
-		Await:           awaitModeToStr[a.Await],
+		Name:              a.Name,
+		Model:             a.Model,
+		Delegate:          a.Delegate,
+		Input:             a.Input,
+		Output:            a.Output,
+		Publish:           a.Publish,
+		System:            a.System,
+		User:              a.User,
+		Session:           sessionModeToStr[a.Session],
+		Tools:             a.Tools,
+		ToolMaxSteps:      a.ToolMaxSteps,
+		ReasoningEffort:   a.ReasoningEffort,
+		Interaction:       interactionModeToStr[a.Interaction],
+		InteractionPrompt: a.InteractionPrompt,
+		InteractionModel:  a.InteractionModel,
+		Await:             awaitModeToStr[a.Await],
 	}
 }
 
 func judgeToJSON(j *ast.JudgeDecl) *jsonJudgeDecl {
 	return &jsonJudgeDecl{
-		Name:            j.Name,
-		Model:           j.Model,
-		Delegate:        j.Delegate,
-		Input:           j.Input,
-		Output:          j.Output,
-		Publish:         j.Publish,
-		System:          j.System,
-		User:            j.User,
-		Session:         sessionModeToStr[j.Session],
-		Tools:           j.Tools,
-		ToolMaxSteps:    j.ToolMaxSteps,
-		ReasoningEffort: j.ReasoningEffort,
-		Await:           awaitModeToStr[j.Await],
+		Name:              j.Name,
+		Model:             j.Model,
+		Delegate:          j.Delegate,
+		Input:             j.Input,
+		Output:            j.Output,
+		Publish:           j.Publish,
+		System:            j.System,
+		User:              j.User,
+		Session:           sessionModeToStr[j.Session],
+		Tools:             j.Tools,
+		ToolMaxSteps:      j.ToolMaxSteps,
+		ReasoningEffort:   j.ReasoningEffort,
+		Interaction:       interactionModeToStr[j.Interaction],
+		InteractionPrompt: j.InteractionPrompt,
+		InteractionModel:  j.InteractionModel,
+		Await:             awaitModeToStr[j.Await],
 	}
 }
 
 func humanToJSON(h *ast.HumanDecl) *jsonHumanDecl {
 	return &jsonHumanDecl{
-		Name:         h.Name,
-		Input:        h.Input,
-		Output:       h.Output,
-		Publish:      h.Publish,
-		Instructions: h.Instructions,
-		Mode:         humanModeToStr[h.Mode],
-		MinAnswers:   h.MinAnswers,
-		Model:        h.Model,
-		System:       h.System,
-		Await:        awaitModeToStr[h.Await],
+		Name:              h.Name,
+		Input:             h.Input,
+		Output:            h.Output,
+		Publish:           h.Publish,
+		Instructions:      h.Instructions,
+		Interaction:       interactionModeToStr[h.Interaction],
+		InteractionPrompt: h.InteractionPrompt,
+		InteractionModel:  h.InteractionModel,
+		MinAnswers:        h.MinAnswers,
+		Model:             h.Model,
+		System:            h.System,
+		Await:             awaitModeToStr[h.Await],
 	}
 }
 
@@ -609,20 +628,27 @@ func agentFromJSON(ja *jsonAgentDecl) (*ast.AgentDecl, error) {
 	if ja.Await != "" && !ok {
 		return nil, fmt.Errorf("astjson: unknown await mode %q", ja.Await)
 	}
+	interaction, ok := strToInteractionMode[ja.Interaction]
+	if ja.Interaction != "" && !ok {
+		return nil, fmt.Errorf("astjson: unknown interaction mode %q", ja.Interaction)
+	}
 	return &ast.AgentDecl{
-		Name:            ja.Name,
-		Model:           ja.Model,
-		Delegate:        ja.Delegate,
-		Input:           ja.Input,
-		Output:          ja.Output,
-		Publish:         ja.Publish,
-		System:          ja.System,
-		User:            ja.User,
-		Session:         sess,
-		Tools:           ja.Tools,
-		ToolMaxSteps:    ja.ToolMaxSteps,
-		ReasoningEffort: ja.ReasoningEffort,
-		Await:           aw,
+		Name:              ja.Name,
+		Model:             ja.Model,
+		Delegate:          ja.Delegate,
+		Input:             ja.Input,
+		Output:            ja.Output,
+		Publish:           ja.Publish,
+		System:            ja.System,
+		User:              ja.User,
+		Session:           sess,
+		Tools:             ja.Tools,
+		ToolMaxSteps:      ja.ToolMaxSteps,
+		ReasoningEffort:   ja.ReasoningEffort,
+		Interaction:       interaction,
+		InteractionPrompt: ja.InteractionPrompt,
+		InteractionModel:  ja.InteractionModel,
+		Await:             aw,
 	}, nil
 }
 
@@ -635,43 +661,74 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*ast.JudgeDecl, error) {
 	if jj.Await != "" && !ok {
 		return nil, fmt.Errorf("astjson: unknown await mode %q", jj.Await)
 	}
+	interaction, ok := strToInteractionMode[jj.Interaction]
+	if jj.Interaction != "" && !ok {
+		return nil, fmt.Errorf("astjson: unknown interaction mode %q", jj.Interaction)
+	}
 	return &ast.JudgeDecl{
-		Name:            jj.Name,
-		Model:           jj.Model,
-		Delegate:        jj.Delegate,
-		Input:           jj.Input,
-		Output:          jj.Output,
-		Publish:         jj.Publish,
-		System:          jj.System,
-		User:            jj.User,
-		Session:         sess,
-		Tools:           jj.Tools,
-		ToolMaxSteps:    jj.ToolMaxSteps,
-		ReasoningEffort: jj.ReasoningEffort,
-		Await:           aw,
+		Name:              jj.Name,
+		Model:             jj.Model,
+		Delegate:          jj.Delegate,
+		Input:             jj.Input,
+		Output:            jj.Output,
+		Publish:           jj.Publish,
+		System:            jj.System,
+		User:              jj.User,
+		Session:           sess,
+		Tools:             jj.Tools,
+		ToolMaxSteps:      jj.ToolMaxSteps,
+		ReasoningEffort:   jj.ReasoningEffort,
+		Interaction:       interaction,
+		InteractionPrompt: jj.InteractionPrompt,
+		InteractionModel:  jj.InteractionModel,
+		Await:             aw,
 	}, nil
 }
 
+// legacyHumanModeToInteraction maps the old mode: values to InteractionMode.
+var legacyHumanModeToInteraction = map[string]ast.InteractionMode{
+	"pause_until_answers": ast.InteractionHuman,
+	"auto_answer":         ast.InteractionLLM,
+	"auto_or_pause":       ast.InteractionLLMOrHuman,
+}
+
 func humanFromJSON(jh *jsonHumanDecl) (*ast.HumanDecl, error) {
-	mode, ok := strToHumanMode[jh.Mode]
-	if jh.Mode != "" && !ok {
-		return nil, fmt.Errorf("astjson: unknown human mode %q", jh.Mode)
+	interactionStr := jh.Interaction
+	// Backward compatibility: fall back to legacy "mode" field.
+	if interactionStr == "" && jh.Mode != "" {
+		if mapped, ok := legacyHumanModeToInteraction[jh.Mode]; ok {
+			return humanFromJSONWithInteraction(jh, mapped)
+		}
+		return nil, fmt.Errorf("astjson: unknown legacy human mode %q", jh.Mode)
 	}
+	interaction, ok := strToInteractionMode[interactionStr]
+	if interactionStr != "" && !ok {
+		return nil, fmt.Errorf("astjson: unknown interaction mode %q", interactionStr)
+	}
+	if interactionStr == "" {
+		interaction = ast.InteractionHuman // default for human nodes
+	}
+	return humanFromJSONWithInteraction(jh, interaction)
+}
+
+func humanFromJSONWithInteraction(jh *jsonHumanDecl, interaction ast.InteractionMode) (*ast.HumanDecl, error) {
 	aw, ok := strToAwaitMode[jh.Await]
 	if jh.Await != "" && !ok {
 		return nil, fmt.Errorf("astjson: unknown await mode %q", jh.Await)
 	}
 	return &ast.HumanDecl{
-		Name:         jh.Name,
-		Input:        jh.Input,
-		Output:       jh.Output,
-		Publish:      jh.Publish,
-		Instructions: jh.Instructions,
-		Mode:         mode,
-		MinAnswers:   jh.MinAnswers,
-		Model:        jh.Model,
-		System:       jh.System,
-		Await:        aw,
+		Name:              jh.Name,
+		Input:             jh.Input,
+		Output:            jh.Output,
+		Publish:           jh.Publish,
+		Instructions:      jh.Instructions,
+		Interaction:       interaction,
+		InteractionPrompt: jh.InteractionPrompt,
+		InteractionModel:  jh.InteractionModel,
+		MinAnswers:        jh.MinAnswers,
+		Model:             jh.Model,
+		System:            jh.System,
+		Await:             aw,
 	}, nil
 }
 

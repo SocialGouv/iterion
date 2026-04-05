@@ -26,8 +26,13 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 
 	var opts []codexsdk.Option
 
-	if task.SystemPrompt != "" {
-		opts = append(opts, codexsdk.WithSystemPrompt(task.SystemPrompt))
+	// Build system prompt, optionally augmented with interaction instructions.
+	systemPrompt := task.SystemPrompt
+	if task.InteractionEnabled {
+		systemPrompt += interactionSystemInstruction
+	}
+	if systemPrompt != "" {
+		opts = append(opts, codexsdk.WithSystemPrompt(systemPrompt))
 	}
 	if task.WorkDir != "" {
 		opts = append(opts, codexsdk.WithCwd(task.WorkDir))

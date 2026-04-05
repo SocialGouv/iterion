@@ -450,7 +450,7 @@ func humanWorkflow() *ir.Workflow {
 		Entry: "analyze",
 		Nodes: map[string]*ir.Node{
 			"analyze":   {ID: "analyze", Kind: ir.NodeAgent, Publish: "analysis"},
-			"review":    {ID: "review", Kind: ir.NodeHuman, HumanMode: ir.HumanPauseUntilAnswers, Publish: "human_decisions"},
+			"review":    {ID: "review", Kind: ir.NodeHuman, Interaction: ir.InteractionHuman, Publish: "human_decisions"},
 			"integrate": {ID: "integrate", Kind: ir.NodeAgent},
 			"done":      {ID: "done", Kind: ir.NodeDone},
 			"fail":      {ID: "fail", Kind: ir.NodeFail},
@@ -803,7 +803,7 @@ func TestHumanPausePreservesLoopCounters(t *testing.T) {
 		Nodes: map[string]*ir.Node{
 			"fix":    {ID: "fix", Kind: ir.NodeAgent},
 			"judge":  {ID: "judge", Kind: ir.NodeJudge},
-			"review": {ID: "review", Kind: ir.NodeHuman, HumanMode: ir.HumanPauseUntilAnswers},
+			"review": {ID: "review", Kind: ir.NodeHuman, Interaction: ir.InteractionHuman},
 			"done":   {ID: "done", Kind: ir.NodeDone},
 			"fail":   {ID: "fail", Kind: ir.NodeFail},
 		},
@@ -885,13 +885,13 @@ func TestResumeNonExistentRun(t *testing.T) {
 // ===========================================================================
 
 // humanModeWorkflow builds: agent -> human(mode) -> agent -> done
-func humanModeWorkflow(mode ir.HumanMode) *ir.Workflow {
+func humanModeWorkflow(mode ir.InteractionMode) *ir.Workflow {
 	return &ir.Workflow{
 		Name:  "human_mode_test",
 		Entry: "analyze",
 		Nodes: map[string]*ir.Node{
 			"analyze":   {ID: "analyze", Kind: ir.NodeAgent},
-			"review":    {ID: "review", Kind: ir.NodeHuman, HumanMode: mode, Model: "test-model", OutputSchema: "review_output"},
+			"review":    {ID: "review", Kind: ir.NodeHuman, Interaction: mode, Model: "test-model", OutputSchema: "review_output"},
 			"integrate": {ID: "integrate", Kind: ir.NodeAgent},
 			"done":      {ID: "done", Kind: ir.NodeDone},
 		},
@@ -913,7 +913,7 @@ func humanModeWorkflow(mode ir.HumanMode) *ir.Workflow {
 }
 
 func TestHumanAutoAnswer(t *testing.T) {
-	wf := humanModeWorkflow(ir.HumanAutoAnswer)
+	wf := humanModeWorkflow(ir.InteractionLLM)
 	exec := newStubExecutor()
 	exec.on("analyze", func(_ map[string]interface{}) (map[string]interface{}, error) {
 		return map[string]interface{}{"summary": "all good"}, nil
@@ -944,7 +944,7 @@ func TestHumanAutoAnswer(t *testing.T) {
 }
 
 func TestHumanAutoAnswerPublishArtifact(t *testing.T) {
-	wf := humanModeWorkflow(ir.HumanAutoAnswer)
+	wf := humanModeWorkflow(ir.InteractionLLM)
 	wf.Nodes["review"].Publish = "review_artifact"
 
 	exec := newStubExecutor()
@@ -981,7 +981,7 @@ func TestHumanAutoAnswerPublishArtifact(t *testing.T) {
 // ===========================================================================
 
 func TestHumanAutoOrPause_Proceeds(t *testing.T) {
-	wf := humanModeWorkflow(ir.HumanAutoOrPause)
+	wf := humanModeWorkflow(ir.InteractionLLMOrHuman)
 	exec := newStubExecutor()
 	exec.on("analyze", func(_ map[string]interface{}) (map[string]interface{}, error) {
 		return map[string]interface{}{"summary": "straightforward"}, nil
@@ -1027,7 +1027,7 @@ func TestHumanAutoOrPause_Proceeds(t *testing.T) {
 }
 
 func TestHumanAutoOrPause_Pauses(t *testing.T) {
-	wf := humanModeWorkflow(ir.HumanAutoOrPause)
+	wf := humanModeWorkflow(ir.InteractionLLMOrHuman)
 	exec := newStubExecutor()
 	exec.on("analyze", func(_ map[string]interface{}) (map[string]interface{}, error) {
 		return map[string]interface{}{"summary": "complex change"}, nil

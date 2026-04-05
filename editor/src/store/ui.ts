@@ -24,7 +24,6 @@ interface UIState {
   activeWorkflowName: string | null;
   layoutDirection: LayoutDirection;
   activeLayers: Set<LayerKind>;
-  detailNodeId: string | null;
   editingItem: EditingItem | null;
   toasts: Toast[];
   // Sub-node detail view (double-click navigation)
@@ -42,7 +41,6 @@ interface UIState {
   setLayoutDirection: (dir: LayoutDirection) => void;
   toggleLayoutDirection: () => void;
   toggleLayer: (layer: LayerKind) => void;
-  setDetailNodeId: (id: string | null) => void;
   setEditingItem: (item: EditingItem | null) => void;
   addToast: (message: string, type: Toast["type"]) => void;
   removeToast: (id: number) => void;
@@ -66,7 +64,6 @@ export const useUIStore = create<UIState>((set) => ({
   activeWorkflowName: null,
   layoutDirection: "DOWN",
   activeLayers: new Set<LayerKind>(),
-  detailNodeId: null,
   editingItem: null,
   toasts: [],
   subNodeViewStack: [],
@@ -85,7 +82,6 @@ export const useUIStore = create<UIState>((set) => ({
     if (next.has(layer)) next.delete(layer); else next.add(layer);
     return { activeLayers: next };
   }),
-  setDetailNodeId: (detailNodeId) => set({ detailNodeId }),
   setEditingItem: (editingItem) => set({ editingItem }),
   addToast: (message, type) => {
     const id = ++toastIdCounter;
@@ -101,17 +97,15 @@ export const useUIStore = create<UIState>((set) => ({
     if (s.subNodeViewStack.length > 0 && s.subNodeViewStack[s.subNodeViewStack.length - 1] === nodeId) {
       return s;
     }
-    return { subNodeViewStack: [...s.subNodeViewStack, nodeId], detailNodeId: null, editModalEdgeInfo: null };
+    return { subNodeViewStack: [...s.subNodeViewStack, nodeId], editModalEdgeInfo: null };
   }),
   popSubNodeView: () => set((s) => ({
     subNodeViewStack: s.subNodeViewStack.slice(0, -1),
-    detailNodeId: null,
     editModalEdgeInfo: null,
   })),
-  clearSubNodeView: () => set({ subNodeViewStack: [], detailNodeId: null, editModalEdgeInfo: null }),
+  clearSubNodeView: () => set({ subNodeViewStack: [], editModalEdgeInfo: null }),
   navigateSubNodeViewTo: (index) => set((s) => ({
     subNodeViewStack: s.subNodeViewStack.slice(0, index + 1),
-    detailNodeId: null,
     editModalEdgeInfo: null,
   })),
   // Library panel

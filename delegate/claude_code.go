@@ -27,8 +27,13 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 
 	var opts []claude.Option
 
-	if task.SystemPrompt != "" {
-		opts = append(opts, claude.WithSystemPrompt(task.SystemPrompt))
+	// Build system prompt, optionally augmented with interaction instructions.
+	systemPrompt := task.SystemPrompt
+	if task.InteractionEnabled {
+		systemPrompt += interactionSystemInstruction
+	}
+	if systemPrompt != "" {
+		opts = append(opts, claude.WithSystemPrompt(systemPrompt))
 	}
 	if task.WorkDir != "" {
 		opts = append(opts, claude.WithCwd(task.WorkDir))

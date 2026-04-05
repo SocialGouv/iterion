@@ -120,10 +120,13 @@ func detailedShape(n *Node) string {
 		if n.Session != SessionFresh {
 			lines = append(lines, "session: "+n.Session.String())
 		}
+		if n.Interaction != InteractionNone {
+			lines = append(lines, "interaction: "+n.Interaction.String())
+		}
 	case NodeRouter:
 		lines = append(lines, "mode: "+n.RouterMode.String())
 	case NodeHuman:
-		lines = append(lines, "mode: "+n.HumanMode.String())
+		lines = append(lines, "interaction: "+n.Interaction.String())
 		if n.MinAnswers > 0 {
 			lines = append(lines, fmt.Sprintf("min_answers: %d", n.MinAnswers))
 		}
@@ -289,7 +292,7 @@ func fullShape(n *Node, w *Workflow) string {
 	case NodeRouter:
 		lines = append(lines, "mode: "+n.RouterMode.String())
 	case NodeHuman:
-		lines = append(lines, "mode: "+n.HumanMode.String())
+		lines = append(lines, "interaction: "+n.Interaction.String())
 		if n.Model != "" {
 			lines = append(lines, "model: "+n.Model)
 		}

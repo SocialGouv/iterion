@@ -12,16 +12,17 @@ package ir
 // execute a workflow: resolved nodes, edges, schemas, prompts, vars,
 // loops and budget.
 type Workflow struct {
-	Name    string
-	Entry   string             // entry node ID
-	Nodes   map[string]*Node   // node ID → node
-	Edges   []*Edge            // ordered list of edges
-	Schemas map[string]*Schema // schema name → resolved schema
-	Prompts map[string]*Prompt // prompt name → resolved prompt
-	Vars    map[string]*Var    // var name → resolved variable
-	Loops   map[string]*Loop   // loop name → loop definition
-	Budget  *Budget            // workflow budget (nil if not set)
-	MCP     *MCPConfig         // workflow-level MCP activation/filtering
+	Name        string
+	Entry       string             // entry node ID
+	Nodes       map[string]*Node   // node ID → node
+	Edges       []*Edge            // ordered list of edges
+	Schemas     map[string]*Schema // schema name → resolved schema
+	Prompts     map[string]*Prompt // prompt name → resolved prompt
+	Vars        map[string]*Var    // var name → resolved variable
+	Loops       map[string]*Loop   // loop name → loop definition
+	Budget      *Budget            // workflow budget (nil if not set)
+	MCP         *MCPConfig         // workflow-level MCP activation/filtering
+	Interaction *InteractionMode   // workflow-level default interaction mode (nil = not set)
 	// MCPServers contains the explicit top-level declarations from the .iter file.
 	MCPServers map[string]*MCPServer
 	// ActiveMCPServers and ResolvedMCPServers are populated after project config
@@ -97,17 +98,21 @@ type Node struct {
 	// --- Convergence fields ---
 	AwaitStrategy AwaitStrategy // convergence strategy: wait_all or best_effort (zero = none)
 
+	// --- Interaction fields (agent, judge, human) ---
+	Interaction       InteractionMode // interaction handling mode
+	InteractionPrompt string          // prompt reference guiding LLM for llm_or_human decisions
+	InteractionModel  string          // model for llm/llm_or_human modes (fallback to Model)
+
 	// --- Human fields ---
-	HumanMode    HumanMode // pause strategy
-	MinAnswers   int       // minimum answers required
-	Instructions string    // prompt reference for human instructions
+	MinAnswers   int    // minimum answers required
+	Instructions string // prompt reference for human instructions
 
 	// --- Tool node fields ---
 	Command string // command to execute
 }
 
 // ---------------------------------------------------------------------------
-// Session, Router, Join, Human modes (mirrored from AST for IR independence)
+// Session, Router, Await, Interaction modes (mirrored from AST for IR independence)
 // ---------------------------------------------------------------------------
 
 type SessionMode int
@@ -180,22 +185,27 @@ func (as AwaitStrategy) String() string {
 	}
 }
 
-type HumanMode int
+// InteractionMode controls how a node handles user interaction requests.
+// Available on agent, judge, and human nodes.
+type InteractionMode int
 
 const (
-	HumanPauseUntilAnswers HumanMode = iota
-	HumanAutoAnswer
-	HumanAutoOrPause
+	InteractionNone       InteractionMode = iota // no interaction capability (default for agent/judge)
+	InteractionHuman                             // always pause for human input (default for human nodes)
+	InteractionLLM                               // LLM auto-answers interaction questions
+	InteractionLLMOrHuman                        // LLM decides whether to answer or escalate to human
 )
 
-func (hm HumanMode) String() string {
-	switch hm {
-	case HumanPauseUntilAnswers:
-		return "pause_until_answers"
-	case HumanAutoAnswer:
-		return "auto_answer"
-	case HumanAutoOrPause:
-		return "auto_or_pause"
+func (im InteractionMode) String() string {
+	switch im {
+	case InteractionNone:
+		return "none"
+	case InteractionHuman:
+		return "human"
+	case InteractionLLM:
+		return "llm"
+	case InteractionLLMOrHuman:
+		return "llm_or_human"
 	default:
 		return "unknown"
 	}

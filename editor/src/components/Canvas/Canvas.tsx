@@ -23,7 +23,7 @@ import AuxiliaryNode from "./AuxiliaryNode";
 import ReferenceEdge from "./ReferenceEdge";
 import DetailSubNode from "./DetailSubNode";
 import NodeContextMenu from "./NodeContextMenu";
-import EditNodeModal from "@/components/Modals/EditNodeModal";
+
 import EditEdgeModal from "@/components/Modals/EditEdgeModal";
 import BreadcrumbBar from "./BreadcrumbBar";
 import CanvasToolbar from "./CanvasToolbar";
@@ -48,7 +48,7 @@ export default function Canvas() {
   const setSelectedEdge = useSelectionStore((s) => s.setSelectedEdge);
   const clearSelection = useSelectionStore((s) => s.clearSelection);
   const selectedNodeId = useSelectionStore((s) => s.selectedNodeId);
-  const setDetailNodeId = useUIStore((s) => s.setDetailNodeId);
+
   const subNodeViewStack = useUIStore((s) => s.subNodeViewStack);
   const pushSubNodeView = useUIStore((s) => s.pushSubNodeView);
   const activeWorkflow = useActiveWorkflow();
@@ -117,14 +117,9 @@ export default function Canvas() {
       connections.setQuickAddMenu(null);
       // In sub-node view, clicking sub-nodes is handled by DetailSubNode itself
       if (isAuxiliaryNodeId(node.id)) return;
-      // Open editable modal on single click for editable nodes
-      if (isEditableNode(node.id)) {
-        setDetailNodeId(node.id);
-      } else {
-        setSelectedNode(node.id);
-      }
+      setSelectedNode(node.id);
     },
-    [setSelectedNode, setDetailNodeId, connections],
+    [setSelectedNode, connections],
   );
 
   const onNodeDoubleClick: NodeMouseHandler = useCallback(
@@ -133,19 +128,16 @@ export default function Canvas() {
       if (node.id.startsWith(DETAIL_PREFIX_EDGE)) {
         const data = node.data as { targetNodeId?: string };
         if (data.targetNodeId && isEditableNode(data.targetNodeId)) {
-          setDetailNodeId(null);
           pushSubNodeView(data.targetNodeId);
         }
         return;
       }
       if (isEditableNode(node.id) && !isDetailNodeId(node.id)) {
-        // Close any open modal first
-        setDetailNodeId(null);
         // Navigate into sub-node detail view
         pushSubNodeView(node.id);
       }
     },
-    [setDetailNodeId, pushSubNodeView],
+    [pushSubNodeView],
   );
 
   const onEdgeClick: EdgeMouseHandler = useCallback(
@@ -160,8 +152,7 @@ export default function Canvas() {
     clearSelection();
     setContextMenu(null);
     connections.setQuickAddMenu(null);
-    setDetailNodeId(null);
-  }, [clearSelection, setDetailNodeId, connections]);
+  }, [clearSelection, connections]);
 
   const onNodeContextMenu = useCallback(
     (event: ReactMouseEvent, node: Node) => {
@@ -311,9 +302,6 @@ export default function Canvas() {
 
       {/* Breadcrumb for sub-node view */}
       {subNodeViewStack.length > 0 && <BreadcrumbBar />}
-
-      {/* Editable node modal (single click) */}
-      <EditNodeModal />
 
       {/* Edge editing modal */}
       <EditEdgeModal />

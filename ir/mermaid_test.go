@@ -160,7 +160,7 @@ agent merge:
   await: wait_all
 
 human checkpoint:
-  mode: pause_until_answers
+  interaction: human
   input: output_s
   output: human_out
   instructions: human_instr
@@ -221,7 +221,7 @@ func TestMermaid_Detailed_ComplexWorkflow(t *testing.T) {
 	}
 
 	// Human mode should appear.
-	if !strings.Contains(out, "mode: pause_until_answers") {
+	if !strings.Contains(out, "interaction: human") {
 		t.Errorf("expected human mode in detailed view, got:\n%s", out)
 	}
 }
@@ -422,7 +422,7 @@ func TestMermaid_Full_ComplexWorkflow(t *testing.T) {
 	}
 
 	// Human mode should appear.
-	if !strings.Contains(out, "mode: pause_until_answers") {
+	if !strings.Contains(out, "interaction: human") {
 		t.Errorf("expected human mode in full view, got:\n%s", out)
 	}
 

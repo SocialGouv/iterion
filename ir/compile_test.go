@@ -160,7 +160,7 @@ human h1:
   input: in_s
   output: human_out
   instructions: human_instr
-  mode: pause_until_answers
+  interaction: human
   min_answers: 2
   await: wait_all
 

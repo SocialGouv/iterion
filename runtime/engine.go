@@ -14,6 +14,7 @@ import (
 
 	"github.com/SocialGouv/iterion/ir"
 	iterlog "github.com/SocialGouv/iterion/log"
+	"github.com/SocialGouv/iterion/model"
 	"github.com/SocialGouv/iterion/recipe"
 	"github.com/SocialGouv/iterion/store"
 )
@@ -317,14 +318,14 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 
 		// --- Human node ---
 		if node.Kind == ir.NodeHuman {
-			switch node.HumanMode {
-			case ir.HumanAutoAnswer:
-				// Intentional fall-through: auto_answer human nodes are
+			switch node.Interaction {
+			case ir.InteractionLLM:
+				// Intentional fall-through: LLM interaction human nodes are
 				// executed via the standard node path below (emit started →
 				// budget check → executor.Execute → store output → emit
 				// finished → select edge). The executor dispatches to
 				// executeHumanLLM which handles model resolution and schema.
-			case ir.HumanAutoOrPause:
+			case ir.InteractionLLMOrHuman:
 				paused, err := e.execAutoOrPauseHuman(ctx, rs, currentNodeID, node)
 				if err != nil {
 					return err
@@ -340,6 +341,7 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 				currentNodeID = nextNodeID
 				continue
 			default:
+				// InteractionHuman (default) and InteractionNone both pause.
 				return e.pauseAtHuman(rs, currentNodeID, node)
 			}
 		}
@@ -392,6 +394,11 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 		// --- Execute node ---
 		output, err := e.executor.Execute(ctx, node, nodeInput)
 		if err != nil {
+			// Check if the delegate needs user interaction.
+			var needsInput *model.ErrNeedsInteraction
+			if errors.As(err, &needsInput) {
+				return e.handleNeedsInteraction(ctx, rs, currentNodeID, node, needsInput)
+			}
 			return e.failRun(rs.runID, currentNodeID, fmt.Sprintf("node %q execution failed: %v", currentNodeID, err))
 		}
 
@@ -1383,6 +1390,88 @@ func (e *Engine) persistPause(rs *runState, nodeID string) error {
 	}
 
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Delegate interaction handling
+// ---------------------------------------------------------------------------
+
+// handleNeedsInteraction is called when a delegate or LLM signals it needs
+// user input. The behavior depends on the node's InteractionMode:
+//   - InteractionHuman: pause the workflow for human input
+//   - InteractionLLM: auto-respond using the interaction model
+//   - InteractionLLMOrHuman: LLM decides whether to respond or escalate
+func (e *Engine) handleNeedsInteraction(ctx context.Context, rs *runState, nodeID string, node *ir.Node, ni *model.ErrNeedsInteraction) error {
+	switch node.Interaction {
+	case ir.InteractionHuman:
+		return e.pauseForDelegateInteraction(rs, nodeID, ni)
+
+	case ir.InteractionLLM:
+		// TODO(phase5): invoke interaction_model to auto-respond,
+		// then re-invoke the delegate with the answers.
+		// For now, fall through to pause.
+		return e.pauseForDelegateInteraction(rs, nodeID, ni)
+
+	case ir.InteractionLLMOrHuman:
+		// TODO(phase5): invoke interaction_model to decide whether
+		// to auto-respond or escalate to human.
+		// For now, fall through to pause.
+		return e.pauseForDelegateInteraction(rs, nodeID, ni)
+
+	default:
+		// InteractionNone should not reach here (executor wouldn't return ErrNeedsInteraction).
+		return fmt.Errorf("runtime: node %q received interaction request but has interaction: none", nodeID)
+	}
+}
+
+// pauseForDelegateInteraction creates an interaction record and pauses the
+// workflow, saving the delegate's session ID for re-invocation on resume.
+func (e *Engine) pauseForDelegateInteraction(rs *runState, nodeID string, ni *model.ErrNeedsInteraction) error {
+	interactionID := fmt.Sprintf("%s_%s", rs.runID, nodeID)
+	if loopIter := e.currentLoopIteration(nodeID, rs.loopCounters); loopIter > 0 {
+		interactionID = fmt.Sprintf("%s_%s_%d", rs.runID, nodeID, loopIter)
+	}
+
+	interaction := &store.Interaction{
+		ID:          interactionID,
+		RunID:       rs.runID,
+		NodeID:      nodeID,
+		RequestedAt: time.Now().UTC(),
+		Questions:   ni.Questions,
+	}
+	if err := e.store.WriteInteraction(interaction); err != nil {
+		return fmt.Errorf("runtime: write interaction: %w", err)
+	}
+
+	if err := e.emit(rs.runID, store.EventHumanInputRequested, nodeID, map[string]interface{}{
+		"interaction_id": interactionID,
+		"questions":      ni.Questions,
+		"source":         "delegate",
+		"backend":        ni.Backend,
+	}); err != nil {
+		return err
+	}
+
+	if err := e.emit(rs.runID, store.EventRunPaused, nodeID, nil); err != nil {
+		return err
+	}
+
+	cp := &store.Checkpoint{
+		NodeID:             nodeID,
+		InteractionID:      interactionID,
+		Outputs:            rs.outputs,
+		LoopCounters:       rs.loopCounters,
+		RoundRobinCounters: rs.roundRobinCounters,
+		ArtifactVersions:   rs.artifactVersions,
+		Vars:               rs.vars,
+		DelegateSessionID:  ni.SessionID,
+		DelegateBackend:    ni.Backend,
+	}
+	if err := e.store.PauseRun(rs.runID, cp); err != nil {
+		return fmt.Errorf("runtime: pause run: %w", err)
+	}
+
+	return ErrRunPaused
 }
 
 // ---------------------------------------------------------------------------

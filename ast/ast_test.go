@@ -143,12 +143,12 @@ func TestHumanNode(t *testing.T) {
 		Output:       "human_answers",
 		Publish:      "human_decisions",
 		Instructions: "clarification_prompt",
-		Mode:         ast.HumanPauseUntilAnswers,
+		Interaction:  ast.InteractionHuman,
 		MinAnswers:   1,
 	}
 
-	if h.Mode.String() != "pause_until_answers" {
-		t.Fatalf("unexpected mode: %s", h.Mode.String())
+	if h.Interaction.String() != "human" {
+		t.Fatalf("unexpected interaction: %s", h.Interaction.String())
 	}
 	if h.MinAnswers != 1 {
 		t.Fatal("expected min_answers=1")
@@ -276,7 +276,7 @@ func TestFullWorkflowCoverage(t *testing.T) {
 			{Name: "review_fanout", Mode: ast.RouterFanOutAll},
 		},
 		Humans: []*ast.HumanDecl{
-			{Name: "human_checkpoint", Input: "decision_assessment", Output: "human_answers", Publish: "human_decisions", Instructions: "clarification_prompt", Mode: ast.HumanPauseUntilAnswers, MinAnswers: 1},
+			{Name: "human_checkpoint", Input: "decision_assessment", Output: "human_answers", Publish: "human_decisions", Instructions: "clarification_prompt", Interaction: ast.InteractionHuman, MinAnswers: 1},
 		},
 		Workflows: []*ast.WorkflowDecl{
 			{
@@ -384,8 +384,8 @@ func TestFullWorkflowCoverage(t *testing.T) {
 	if len(file.Humans) != 1 {
 		t.Fatal("expected 1 human node")
 	}
-	if file.Humans[0].Mode != ast.HumanPauseUntilAnswers {
-		t.Fatal("expected pause_until_answers mode")
+	if file.Humans[0].Interaction != ast.InteractionHuman {
+		t.Fatal("expected human interaction mode")
 	}
 
 	// Verify publish on agents

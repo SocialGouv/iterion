@@ -11,6 +11,17 @@ import (
 	"time"
 )
 
+// interactionSystemInstruction is appended to the system prompt when
+// InteractionEnabled is true, instructing the delegate to signal user
+// input needs via reserved output fields.
+const interactionSystemInstruction = "\n\n[INTERACTION PROTOCOL]\n" +
+	"If at any point you need input, clarification, or approval from a human user " +
+	"to proceed with your task, you MUST include these fields in your JSON output:\n" +
+	"  \"_needs_interaction\": true,\n" +
+	"  \"_interaction_questions\": {\"question_key\": \"your question text\"}\n" +
+	"Include as many question keys as needed. If you do NOT need human input, " +
+	"do not include these fields and complete your task normally."
+
 // Backend is the interface for delegation execution. Each backend wraps
 // a CLI agent (e.g. claude, codex) and handles prompt delivery, tool
 // forwarding, and output collection.
@@ -52,6 +63,11 @@ type Task struct {
 	// continuing it. Requires SessionID to be set. The forked session gets
 	// a new ID and does not mutate the original session.
 	ForkSession bool
+
+	// InteractionEnabled, when true, instructs the delegate to signal when
+	// it needs user input by including _needs_interaction and
+	// _interaction_questions fields in its output.
+	InteractionEnabled bool
 }
 
 // Result contains the output from a delegation backend.

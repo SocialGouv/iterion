@@ -690,6 +690,15 @@ func (p *parser) parseAgentProp(ad *ast.AgentDecl, propTok Token) {
 	case TokenDelegate:
 		p.expect(TokenColon)
 		ad.Delegate = p.expectString()
+	case TokenInteraction:
+		p.expect(TokenColon)
+		ad.Interaction = p.parseInteractionMode()
+	case TokenInteractionPrompt:
+		p.expect(TokenColon)
+		ad.InteractionPrompt = p.expectIdent()
+	case TokenInteractionModel:
+		p.expect(TokenColon)
+		ad.InteractionModel = p.expectString()
 	case TokenAwait:
 		p.expect(TokenColon)
 		ad.Await = p.parseAwaitMode()
@@ -779,6 +788,15 @@ func (p *parser) parseJudgeProp(jd *ast.JudgeDecl, propTok Token) {
 	case TokenDelegate:
 		p.expect(TokenColon)
 		jd.Delegate = p.expectString()
+	case TokenInteraction:
+		p.expect(TokenColon)
+		jd.Interaction = p.parseInteractionMode()
+	case TokenInteractionPrompt:
+		p.expect(TokenColon)
+		jd.InteractionPrompt = p.expectIdent()
+	case TokenInteractionModel:
+		p.expect(TokenColon)
+		jd.InteractionModel = p.expectString()
 	case TokenAwait:
 		p.expect(TokenColon)
 		jd.Await = p.parseAwaitMode()
@@ -939,9 +957,15 @@ func (p *parser) parseHumanProp(hd *ast.HumanDecl, propTok Token) {
 	case TokenInstructions:
 		p.expect(TokenColon)
 		hd.Instructions = p.expectIdent()
-	case TokenMode:
+	case TokenInteraction:
 		p.expect(TokenColon)
-		hd.Mode = p.parseHumanMode()
+		hd.Interaction = p.parseInteractionMode()
+	case TokenInteractionPrompt:
+		p.expect(TokenColon)
+		hd.InteractionPrompt = p.expectIdent()
+	case TokenInteractionModel:
+		p.expect(TokenColon)
+		hd.InteractionModel = p.expectString()
 	case TokenModel:
 		p.expect(TokenColon)
 		hd.Model = p.expectString()
@@ -966,18 +990,20 @@ func (p *parser) parseHumanProp(hd *ast.HumanDecl, propTok Token) {
 	p.skipNewlines()
 }
 
-func (p *parser) parseHumanMode() ast.HumanMode {
+func (p *parser) parseInteractionMode() ast.InteractionMode {
 	t := p.next()
-	switch t.Type {
-	case TokenPauseUntilAnswers:
-		return ast.HumanPauseUntilAnswers
-	case TokenAutoAnswer:
-		return ast.HumanAutoAnswer
-	case TokenAutoOrPause:
-		return ast.HumanAutoOrPause
+	switch t.Value {
+	case "none":
+		return ast.InteractionNone
+	case "human":
+		return ast.InteractionHuman
+	case "llm":
+		return ast.InteractionLLM
+	case "llm_or_human":
+		return ast.InteractionLLMOrHuman
 	default:
-		p.addError(DiagInvalidValue, t, "expected human mode (pause_until_answers, auto_answer, auto_or_pause), got '"+t.Value+"'")
-		return ast.HumanPauseUntilAnswers
+		p.addError(DiagInvalidValue, t, "expected interaction mode (none, human, llm, llm_or_human), got '"+t.Value+"'")
+		return ast.InteractionNone
 	}
 }
 
@@ -1083,6 +1109,13 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 
 		case TokenBudget:
 			wd.Budget = p.parseBudgetBlock()
+
+		case TokenInteraction:
+			p.next() // consume "interaction"
+			p.expect(TokenColon)
+			im := p.parseInteractionMode()
+			wd.Interaction = &im
+			p.skipNewlines()
 
 		case TokenComment:
 			p.next() // skip workflow-level comments
@@ -1486,7 +1519,7 @@ func isKeywordToken(tt TokenType) bool {
 		TokenInstructions, TokenCommand, TokenArgs, TokenURL, TokenDelegate, TokenAwait, TokenWhen, TokenNot, TokenAs,
 		TokenWith, TokenEnum, TokenFresh, TokenInherit, TokenArtifactsOnly,
 		TokenFanOutAll, TokenCondition, TokenWaitAll, TokenBestEffort,
-		TokenPauseUntilAnswers, TokenTrue, TokenFalse,
+		TokenTrue, TokenFalse,
 		TokenTypeString, TokenTypeBool, TokenTypeInt, TokenTypeFloat,
 		TokenTypeJSON, TokenTypeStringArray,
 		TokenMaxParallelBranches, TokenMaxDuration, TokenMaxCostUSD,

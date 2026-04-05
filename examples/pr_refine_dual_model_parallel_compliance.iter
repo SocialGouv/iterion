@@ -432,7 +432,7 @@ human technical_decision_human_checkpoint:
   output: human_answers
   publish: human_decisions
   instructions: human_clarification_instructions
-  mode: pause_until_answers
+  interaction: human
   min_answers: 1
 
 agent integrate_human_clarifications:

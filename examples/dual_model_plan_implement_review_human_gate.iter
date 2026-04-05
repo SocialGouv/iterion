@@ -467,7 +467,7 @@ human human_checkpoint:
   output: human_gate_answers
   publish: human_decisions
   instructions: human_gate_instructions
-  mode: pause_until_answers
+  interaction: human
   min_answers: 1
 
 agent integrate_clarifications:
