@@ -211,10 +211,16 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 
 		OnDelegateError: func(nodeID string, info DelegateInfo) {
 			data := map[string]interface{}{
-				"backend": info.BackendName,
+				"backend":     info.BackendName,
+				"duration_ms": info.Duration.Milliseconds(),
+				"tokens":      info.Tokens,
+				"exit_code":   info.ExitCode,
 			}
 			if info.Error != nil {
 				data["error"] = info.Error.Error()
+			}
+			if logger.IsEnabled(iterlog.LevelTrace) && info.Stderr != "" {
+				data["stderr"] = iterlog.Truncate(info.Stderr, maxFieldSize)
 			}
 			_, _ = emitter.AppendEvent(runID, store.Event{
 				Type:   store.EventDelegateError,

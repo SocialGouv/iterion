@@ -115,7 +115,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		result.Tokens = resultMsg.Usage.InputTokens + resultMsg.Usage.OutputTokens
 	}
 
-	if resultMsg.IsError {
+	if resultMsg.IsError && resultMsg.Subtype != "success" {
 		return result, fmt.Errorf("delegate: codex error: subtype=%s", resultMsg.Subtype)
 	}
 

@@ -108,7 +108,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		result.Tokens = rm.Usage.InputTokens + rm.Usage.OutputTokens
 	}
 
-	if rm.IsError {
+	if rm.IsError && rm.Subtype != claude.ResultSuccess {
 		return result, fmt.Errorf("delegate: claude-code error: subtype=%s", rm.Subtype)
 	}
 

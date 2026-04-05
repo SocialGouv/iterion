@@ -853,9 +853,19 @@ func (e *GoaiExecutor) executeDelegation(ctx context.Context, node *ir.Node, inp
 	})
 	if err != nil {
 		if e.hooks.OnDelegateError != nil {
+			backendName := result.BackendName
+			if backendName == "" {
+				backendName = node.Delegate
+			}
 			e.hooks.OnDelegateError(node.ID, DelegateInfo{
-				BackendName: node.Delegate,
-				Error:       err,
+				BackendName:   backendName,
+				Duration:      result.Duration,
+				Tokens:        result.Tokens,
+				ExitCode:      result.ExitCode,
+				Stderr:        result.Stderr,
+				RawOutputLen:  result.RawOutputLen,
+				ParseFallback: result.ParseFallback,
+				Error:         err,
 			})
 		}
 		return nil, fmt.Errorf("model: node %q: delegation to %q failed: %w", node.ID, node.Delegate, err)
