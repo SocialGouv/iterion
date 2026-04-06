@@ -30,6 +30,7 @@ import NodeContextMenu from "./NodeContextMenu";
 import EditEdgeModal from "@/components/Modals/EditEdgeModal";
 import BreadcrumbBar from "./BreadcrumbBar";
 import CanvasToolbar from "./CanvasToolbar";
+import ToolPalette from "./ToolPalette";
 import QuickAddMenu from "./QuickAddMenu";
 import SearchOverlay from "./SearchOverlay";
 
@@ -56,6 +57,7 @@ export default function Canvas() {
   const clearSelection = useSelectionStore((s) => s.clearSelection);
   const selectedNodeId = useSelectionStore((s) => s.selectedNodeId);
 
+  const canvasTool = useUIStore((s) => s.canvasTool);
   const subNodeViewStack = useUIStore((s) => s.subNodeViewStack);
   const pushSubNodeView = useUIStore((s) => s.pushSubNodeView);
   const activeWorkflow = useActiveWorkflow();
@@ -238,7 +240,8 @@ export default function Canvas() {
   }, [selectedNodeId, fitView]);
 
   return (
-    <div className="h-full w-full relative" ref={reactFlowWrapper} onKeyDown={onKeyDown} tabIndex={0}>
+    <div className={`h-full w-full relative${canvasTool === "pan" ? " cursor-grab" : ""}`} ref={reactFlowWrapper} onKeyDown={onKeyDown} tabIndex={0}>
+      <ToolPalette />
       <CanvasToolbar
         onArrange={handleArrange}
         onFitView={handleFitView}
@@ -284,7 +287,8 @@ export default function Canvas() {
         onDragOver={onDragOver}
         onDrop={onDrop}
         fitView
-        selectionOnDrag
+        selectionOnDrag={canvasTool === "select"}
+        panOnDrag={canvasTool === "select" ? [1, 2] : true}
         multiSelectionKeyCode="Shift"
         colorMode="dark"
       >

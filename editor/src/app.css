@@ -14,3 +14,8 @@
 .animate-fade-in {
   animation: fade-in 0.2s ease-out;
 }
+
+/* Hide the persistent bounding box around selected nodes (shown after rectangle selection completes) */
+.react-flow__nodesselection-rect {
+  display: none;
+}

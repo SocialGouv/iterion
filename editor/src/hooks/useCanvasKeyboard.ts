@@ -38,6 +38,7 @@ export function useCanvasKeyboard(deps: CanvasKeyboardDeps): (e: KeyboardEvent) 
   const expanded = useUIStore((s) => s.expanded);
   const toggleExpanded = useUIStore((s) => s.toggleExpanded);
   const toggleLayer = useUIStore((s) => s.toggleLayer);
+  const setCanvasTool = useUIStore((s) => s.setCanvasTool);
   const dismissEscape = useEscapeStack();
 
   const { search, quickAddMenu, setQuickAddMenu, setContextMenu } = deps;
@@ -112,6 +113,16 @@ export function useCanvasKeyboard(deps: CanvasKeyboardDeps): (e: KeyboardEvent) 
         return;
       }
 
+      // Tool switching shortcuts
+      if ((e.key === "v" || e.key === "V") && !isInput && !e.ctrlKey && !e.metaKey) {
+        setCanvasTool("select");
+        return;
+      }
+      if ((e.key === "h" || e.key === "H") && !isInput && !e.ctrlKey && !e.metaKey) {
+        setCanvasTool("pan");
+        return;
+      }
+
       if (e.key === "Delete" || e.key === "Backspace") {
         if (isInput) return;
 
@@ -133,6 +144,6 @@ export function useCanvasKeyboard(deps: CanvasKeyboardDeps): (e: KeyboardEvent) 
         }
       }
     },
-    [selectedNodeId, selectedEdgeId, document, removeNode, removeEdge, clearSelection, search, quickAddMenu, copiedNodeId, duplicateNode, setCopiedNode, setSelectedNode, addToast, expanded, toggleExpanded, dismissEscape, toggleLayer, undo, redo, setQuickAddMenu, setContextMenu],
+    [selectedNodeId, selectedEdgeId, document, removeNode, removeEdge, clearSelection, search, quickAddMenu, copiedNodeId, duplicateNode, setCopiedNode, setSelectedNode, addToast, expanded, toggleExpanded, dismissEscape, toggleLayer, undo, redo, setQuickAddMenu, setContextMenu, setCanvasTool],
   );
 }

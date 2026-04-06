@@ -5,6 +5,7 @@ import { TOAST_DURATION_DEFAULT_MS } from "@/lib/constants";
 export type { LayerKind };
 export type SidebarTab = "properties" | "schemas" | "prompts" | "vars" | "workflow" | "comments";
 export type LayoutDirection = "DOWN" | "RIGHT";
+export type CanvasTool = "pan" | "select";
 export interface EditingItem { kind: "schema" | "prompt" | "var"; name: string }
 
 export interface Toast {
@@ -32,6 +33,8 @@ interface UIState {
   libraryExpanded: boolean;
   // Macro view (all groups collapsed)
   macroView: boolean;
+  // Canvas tool mode
+  canvasTool: CanvasTool;
   // Edge editing in modal
   editModalEdgeInfo: { workflowName: string; edgeIndex: number } | null;
   setActiveTab: (tab: SidebarTab) => void;
@@ -55,6 +58,8 @@ interface UIState {
   toggleLibraryPanel: () => void;
   // Macro view
   toggleMacroView: () => void;
+  // Canvas tool
+  setCanvasTool: (tool: CanvasTool) => void;
   // Edge modal
   setEditModalEdgeInfo: (info: { workflowName: string; edgeIndex: number } | null) => void;
 }
@@ -73,6 +78,7 @@ export const useUIStore = create<UIState>((set) => ({
   subNodeViewStack: [],
   libraryExpanded: false,
   macroView: false,
+  canvasTool: "select",
   editModalEdgeInfo: null,
   setActiveTab: (activeTab) => set({ activeTab }),
   toggleSourceView: () => set((s) => ({ sourceViewOpen: !s.sourceViewOpen })),
@@ -117,6 +123,8 @@ export const useUIStore = create<UIState>((set) => ({
   toggleLibraryPanel: () => set((s) => ({ libraryExpanded: !s.libraryExpanded })),
   // Macro view
   toggleMacroView: () => set((s) => ({ macroView: !s.macroView })),
+  // Canvas tool
+  setCanvasTool: (canvasTool) => set({ canvasTool }),
   // Edge modal
   setEditModalEdgeInfo: (editModalEdgeInfo) => set({ editModalEdgeInfo }),
 }));
