@@ -434,3 +434,77 @@ func TestLLMRouterMultiModePartialSelection(t *testing.T) {
 		t.Errorf("expected status finished, got %s", r.Status)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Test: LLM router with no explicit model still dispatches correctly
+// Regression test for the bug where the executor dispatch gate checked
+// node.Model != "" instead of node.RouterMode == RouterLLM.
+// ---------------------------------------------------------------------------
+
+func TestLLMRouterNoExplicitModel(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "llm_router_no_model",
+		Entry: "entry",
+		Nodes: map[string]*ir.Node{
+			"entry":      {ID: "entry", Kind: ir.NodeAgent},
+			"llm_router": {ID: "llm_router", Kind: ir.NodeRouter, RouterMode: ir.RouterLLM, Model: ""},
+			"agent_a":    {ID: "agent_a", Kind: ir.NodeAgent},
+			"agent_b":    {ID: "agent_b", Kind: ir.NodeAgent},
+			"done":       {ID: "done", Kind: ir.NodeDone},
+			"fail":       {ID: "fail", Kind: ir.NodeFail},
+		},
+		Edges: []*ir.Edge{
+			{From: "entry", To: "llm_router"},
+			{From: "llm_router", To: "agent_a"},
+			{From: "llm_router", To: "agent_b"},
+			{From: "agent_a", To: "done"},
+			{From: "agent_b", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+
+	var agentACalled bool
+
+	exec := newStubExecutor()
+	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"task": "review"}, nil
+	})
+	exec.on("llm_router", func(input map[string]interface{}) (map[string]interface{}, error) {
+		// Verify the engine still treats this as an LLM router
+		// (injects candidates) even with Model == "".
+		if _, ok := input["_route_candidates"].([]string); !ok {
+			t.Error("expected _route_candidates in input for model-less LLM router")
+		}
+		return map[string]interface{}{
+			"selected_route": "agent_a",
+			"reasoning":      "choosing agent_a",
+		}, nil
+	})
+	exec.on("agent_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		agentACalled = true
+		return map[string]interface{}{}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "run-llm-no-model", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !agentACalled {
+		t.Error("expected agent_a to be called")
+	}
+
+	r, err := s.LoadRun("run-llm-no-model")
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if r.Status != store.RunStatusFinished {
+		t.Errorf("expected status finished, got %s", r.Status)
+	}
+}

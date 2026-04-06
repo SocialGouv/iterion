@@ -236,7 +236,7 @@ func (e *GoaiExecutor) Execute(ctx context.Context, node *ir.Node, input map[str
 	case ir.NodeHuman:
 		return e.executeHumanLLM(ctx, node, input)
 	case ir.NodeRouter:
-		if node.Model != "" {
+		if node.RouterMode == ir.RouterLLM {
 			// LLM router: generate structured output to select route(s).
 			return e.executeLLMRouter(ctx, node, input)
 		}
