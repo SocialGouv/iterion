@@ -476,10 +476,11 @@ func (c *compiler) compileRouters() {
 			}
 		}
 		if mode == RouterLLM {
-			if r.Model == "" {
-				c.errorf(DiagMissingModelOrDelegate, "router %q with mode llm must set 'model'", r.Name)
+			model := resolveSupervisorModel(r.Model)
+			if model == "" {
+				c.warnf(DiagMissingModelOrDelegate, "router %q with mode llm has no model; will use built-in default at runtime", r.Name)
 			}
-			node.Model = r.Model
+			node.Model = model
 			if r.System != "" {
 				c.validatePromptRef(r.Name, "system", r.System)
 				node.SystemPrompt = r.System

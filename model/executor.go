@@ -31,6 +31,11 @@ const DefaultMaxAttempts = 3
 // DefaultBackoffBase is the base duration for exponential backoff.
 const DefaultBackoffBase = time.Second
 
+// defaultRouterModel is the last-resort model for LLM routers when no model
+// is configured and ITERION_DEFAULT_SUPERVISOR_MODEL is unset. Routing
+// decisions are lightweight, so a fast/cheap model is sufficient.
+const defaultRouterModel = "anthropic/claude-sonnet-4-6"
+
 // RetryPolicy controls automatic retry on transient LLM errors.
 type RetryPolicy struct {
 	// MaxAttempts is the total number of attempts (1 = no retry). Default: 3.
@@ -1033,8 +1038,15 @@ func (e *GoaiExecutor) executeLLMRouter(ctx context.Context, node *ir.Node, inpu
 		}
 	}
 
-	// Resolve model (expand env var references).
-	m, err := e.registry.Resolve(os.ExpandEnv(node.Model))
+	// Resolve model (expand env var references, with fallback chain).
+	expanded := os.ExpandEnv(node.Model)
+	if expanded == "" {
+		expanded = os.Getenv("ITERION_DEFAULT_SUPERVISOR_MODEL")
+	}
+	if expanded == "" {
+		expanded = defaultRouterModel
+	}
+	m, err := e.registry.Resolve(expanded)
 	if err != nil {
 		return nil, fmt.Errorf("model: llm router %q: %w", node.ID, err)
 	}

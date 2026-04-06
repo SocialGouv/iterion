@@ -790,10 +790,16 @@ judge j:
   system: sys
   user: usr
 
+router r:
+  mode: llm
+  system: sys
+
 workflow test:
   entry: a
   a -> j
-  j -> done
+  j -> r
+  r -> done
+  r -> fail
 `
 	w := mustCompile(t, src)
 	if got := w.Nodes["a"].Model; got != "anthropic/claude-sonnet-4-6" {
@@ -801,6 +807,9 @@ workflow test:
 	}
 	if got := w.Nodes["j"].Model; got != "anthropic/claude-sonnet-4-6" {
 		t.Fatalf("judge model fallback: got %q", got)
+	}
+	if got := w.Nodes["r"].Model; got != "anthropic/claude-sonnet-4-6" {
+		t.Fatalf("router model fallback: got %q", got)
 	}
 }
 
@@ -823,22 +832,35 @@ agent a:
   system: sys
   user: usr
 
+router r:
+  mode: llm
+  system: sys
+
 workflow test:
   entry: a
-  a -> done
+  a -> r
+  r -> done
+  r -> fail
 `
 	r := compileFile(t, src)
 	if !r.HasErrors() {
-		t.Fatal("expected missing supervisor model diagnostic")
+		t.Fatal("expected missing supervisor model diagnostic for agent")
 	}
-	found := false
+	agentError := false
+	routerWarning := false
 	for _, d := range r.Diagnostics {
-		if d.Code == DiagMissingModelOrDelegate {
-			found = true
+		if d.Code == DiagMissingModelOrDelegate && d.Severity == SeverityError {
+			agentError = true
+		}
+		if d.Code == DiagMissingModelOrDelegate && d.Severity == SeverityWarning {
+			routerWarning = true
 		}
 	}
-	if !found {
-		t.Fatal("expected DiagMissingModelOrDelegate diagnostic")
+	if !agentError {
+		t.Fatal("expected DiagMissingModelOrDelegate error for agent")
+	}
+	if !routerWarning {
+		t.Fatal("expected DiagMissingModelOrDelegate warning for router")
 	}
 }
 

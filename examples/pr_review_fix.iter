@@ -261,7 +261,6 @@ judge verdict:
 
 router fix_router:
   mode: llm
-  model: "${CLAUDE_MODEL}"
   system: fix_router_system
 
 ## ─── Nodes : Fix (session inherit from reviewer) ────────────────
