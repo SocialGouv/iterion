@@ -112,20 +112,37 @@ export function CommittedTextField({ label, value, onChange, onCommit, validate,
     [value],
   );
 
+  const isDirty = draft.trim() !== value;
+
   return (
     <div className="mb-2">
       <FieldLabel label={label} help={help} />
-      <input
-        className={`${inputClass}${error ? " ring-1 ring-red-500 border-red-500" : ""}`}
-        type="text"
-        value={draft}
-        onChange={(e) => { setDraft(e.target.value); setError(null); }}
-        onFocus={() => { focusedRef.current = true; }}
-        onBlur={handleBlur}
-        onKeyDown={handleKeyDown}
-        placeholder={placeholder}
-        title={error ?? undefined}
-      />
+      <div className="flex gap-1">
+        <input
+          className={`${inputClass} flex-1${error ? " ring-1 ring-red-500 border-red-500" : ""}`}
+          type="text"
+          value={draft}
+          onChange={(e) => { setDraft(e.target.value); setError(null); }}
+          onFocus={() => { focusedRef.current = true; }}
+          onBlur={handleBlur}
+          onKeyDown={handleKeyDown}
+          placeholder={placeholder}
+          title={error ?? undefined}
+        />
+        {isDirty && (
+          <button
+            className="bg-blue-600 hover:bg-blue-500 text-white text-xs px-1.5 rounded shrink-0"
+            onMouseDown={(e) => {
+              e.preventDefault(); // prevent blur before commit
+              commit();
+              (document.activeElement as HTMLInputElement)?.blur();
+            }}
+            title="Confirm"
+          >
+            &#x2713;
+          </button>
+        )}
+      </div>
       {error && <p className="text-[10px] text-red-400 mt-0.5">{error}</p>}
     </div>
   );

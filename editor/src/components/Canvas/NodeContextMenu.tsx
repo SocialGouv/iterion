@@ -134,10 +134,10 @@ export default function NodeContextMenu({
           )}
 
           {showGroupInput && (
-            <div className="px-3 py-1.5">
+            <div className="px-3 py-1.5 flex gap-1">
               <input
                 ref={inputRef}
-                className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-white placeholder-gray-500"
+                className="flex-1 bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-white placeholder-gray-500"
                 placeholder="Group name..."
                 value={groupName}
                 onChange={(e) => setGroupName(e.target.value)}
@@ -146,6 +146,12 @@ export default function NodeContextMenu({
                   e.stopPropagation();
                 }}
               />
+              <button
+                className="bg-blue-600 hover:bg-blue-500 text-white text-xs px-2 py-1 rounded shrink-0"
+                onClick={handleCreateGroup}
+              >
+                OK
+              </button>
             </div>
           )}
 
