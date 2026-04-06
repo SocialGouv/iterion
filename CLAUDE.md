@@ -73,7 +73,7 @@ devbox run -- go test ./...
 |------|-------------|
 | **Agent** | LLM node with tools, structured I/O, optional delegation (claude_code, codex) |
 | **Judge** | LLM node producing verdicts (typically no tools) |
-| **Router** | Deterministic routing: `fan_out_all` (parallel) or `condition` (branching) |
+| **Router** | Routing node with 4 modes: `fan_out_all`, `condition`, `round_robin`, `llm` (see `docs/routers.md`) |
 | **Join** | Branch aggregation: `wait_all` or `best_effort` strategy, with `require` list |
 | **Human** | Pause/resume: `pause_until_answers`, `auto_answer`, or `auto_or_pause` mode |
 | **Tool** | Direct shell command execution (no LLM) |
