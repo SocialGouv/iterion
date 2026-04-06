@@ -1,0 +1,840 @@
+## Workflow : rust_to_go_port
+## Objective : Port a complete Rust codebase to Go with dual-model orchestration.
+## Both models analyze, plan, implement, and review in parallel/round-robin.
+## Loops until feature parity is achieved or budget is exhausted.
+##
+##   - Claude  -> claude_code (delegate: "claude_code")
+##   - Codex   -> codex       (delegate: "codex")
+##   - Orchestration (merge, judges) -> delegate: "claude_code"
+##
+## Phases :
+##   0. Analysis: parallel codebase analysis -> merge feature manifest
+##   1. Port Planning: parallel planning -> merge porting plan
+##   2. Plan Validation: parallel validation -> acceptance judge
+##   2b. Refinement: round-robin if plan rejected (max 6)
+##   3. Implementation: round-robin porting (Claude <-> Codex)
+##   4. Test Execution: run Go test suite (tool node)
+##   5. Parity Review: parallel review -> parity judge
+##   6. Verdict: parity achieved -> done; else -> Phase 1 (max 10)
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+## ─── Prompts : Analysis ────────────────────────────────────────
+
+prompt analyze_system:
+  You are a senior software architect specializing in cross-language codebase analysis.
+  You thoroughly examine source code, identify features, public APIs, data structures,
+  business logic, error handling patterns, and test coverage.
+  You produce structured, comprehensive inventories suitable for porting planning.
+
+prompt analyze_user:
+  Analyze both codebases to produce a feature parity manifest.
+
+  Rust source repository: {{input.rust_repo_path}}
+  Go target repository: {{input.go_repo_path}}
+  Feature scope (if specified): {{input.feature_list}}
+
+  For the Rust codebase, identify:
+  - All public modules and their responsibilities
+  - Public types, traits, and their methods
+  - Public functions and their signatures
+  - Error types and error handling patterns
+  - Configuration and CLI interfaces
+  - Integration points (HTTP, gRPC, database, file I/O)
+  - Test coverage and test patterns
+
+  For the Go codebase, identify:
+  - What has already been ported (with parity assessment)
+  - Go-specific features not present in Rust (to preserve)
+  - Gaps: Rust features with no Go equivalent
+  - Partial ports: features started but incomplete
+
+  Produce a structured manifest with per-feature status:
+  PORTED, PARTIAL, MISSING, or GO_ONLY.
+
+prompt merge_analysis_system:
+  You are a senior architect specializing in synthesis.
+  You merge two independent codebase analyses into a single comprehensive
+  feature parity manifest. Resolve contradictions by favoring the more
+  detailed analysis. Ensure every Rust feature is accounted for.
+
+prompt merge_analysis_user:
+  Merge these two independent codebase analyses into a single feature manifest.
+
+  Analysis A:
+  {{input.claude_analysis}}
+
+  Analysis B:
+  {{input.codex_analysis}}
+
+  Rust repo: {{input.rust_repo_path}}
+  Go repo: {{input.go_repo_path}}
+
+  Produce a unified manifest that:
+  - Lists every Rust feature/module with status (PORTED, PARTIAL, MISSING)
+  - Identifies Go-only features to preserve
+  - Establishes dependency ordering for porting
+  - Estimates complexity per feature group (low, medium, high)
+  - Computes overall parity percentage
+
+## ─── Prompts : Port Planning ───────────────────────────────────
+
+prompt port_plan_system:
+  You are a senior engineer specializing in language migration projects.
+  You produce detailed, ordered, dependency-aware porting plans.
+  You understand idiomatic differences between Rust and Go and plan
+  for proper translations:
+  - Rust traits -> Go interfaces
+  - Rust Result/Option -> Go error returns and zero values
+  - Rust enums -> Go const+iota, type switches, or sealed interfaces
+  - Rust ownership/borrowing -> Go value/pointer semantics
+  - Rust async/tokio -> Go goroutines and channels
+  - Rust pattern matching -> Go type switches and if chains
+  - Rust derive macros -> Go code generation or manual impl
+
+prompt port_plan_user:
+  Produce a porting plan for the next batch of features to port.
+
+  Feature manifest:
+  {{input.feature_manifest}}
+
+  Previous porting progress:
+  {{input.previous_progress}}
+
+  Previous review feedback:
+  {{input.previous_feedback}}
+
+  Instructions:
+  1. Select the next logical batch of MISSING/PARTIAL features (respect dependencies)
+  2. For each feature, describe the Rust source and the Go target translation
+  3. Identify idiomatic Go patterns to use
+  4. Specify files to create or modify in the Go repo
+  5. Include a test plan for verifying the ported features
+  6. Do NOT touch Go-only features marked GO_ONLY in the manifest
+
+prompt merge_port_plan_system:
+  You are a senior architect who synthesizes migration plans.
+  Merge two independent porting plans into a single coherent plan.
+  Resolve conflicts, eliminate redundancy, and ensure dependency order is correct.
+
+prompt merge_port_plan_user:
+  Merge these two porting plans into a single actionable plan.
+
+  Plan A:
+  {{input.claude_plan}}
+
+  Plan B:
+  {{input.codex_plan}}
+
+  Feature manifest:
+  {{input.feature_manifest}}
+
+  Produce a merged plan that:
+  - Integrates the best approaches from both plans
+  - Maintains correct dependency ordering
+  - Is concrete and actionable
+  - Covers all features selected for this batch
+
+## ─── Prompts : Validation ──────────────────────────────────────
+
+prompt validate_port_plan_system:
+  You are a strict evaluator of porting plans.
+  Verify that the plan is dependency-correct, complete for its stated batch,
+  uses idiomatic Go patterns, and includes adequate test coverage.
+  A partially covered feature counts as not covered.
+
+prompt validate_port_plan_user:
+  Evaluate this porting plan.
+
+  Merged plan:
+  {{input.merged_plan}}
+
+  Feature manifest:
+  {{input.feature_manifest}}
+
+  Verify:
+  - Dependency ordering is correct (no feature depends on an unported feature)
+  - Each feature has a clear Rust-to-Go translation strategy
+  - Idiomatic Go patterns are specified (not literal transliteration)
+  - Test plan is adequate
+  - No critical features are missing from this batch
+
+prompt plan_acceptance_system:
+  You are a pragmatic technical judge for migration projects.
+  Evaluate if a porting plan is ready for implementation based on
+  two independent validations. Minor suggestions should not block.
+  Only major issues (wrong dependencies, missing critical features,
+  non-idiomatic translations) justify rejection.
+
+prompt plan_acceptance_user:
+  Evaluate if this porting plan is ready for implementation.
+
+  Merged plan:
+  {{input.merged_plan}}
+
+  Validation A:
+  {{input.claude_validation}}
+
+  Validation B:
+  {{input.codex_validation}}
+
+  Feature manifest:
+  {{input.feature_manifest}}
+
+  Mark ready=true if the plan is sound and actionable.
+  Only major issues justify ready=false.
+
+## ─── Prompts : Refinement ──────────────────────────────────────
+
+prompt refine_port_plan_system:
+  You are an expert at refining porting plans based on validation feedback.
+  Address each identified issue methodically. Preserve what works,
+  fix what does not.
+
+prompt refine_port_plan_user:
+  Refine this porting plan based on validation feedback.
+
+  Current plan:
+  {{input.merged_plan}}
+
+  Validation report A:
+  {{input.claude_report}}
+
+  Validation report B:
+  {{input.codex_report}}
+
+  Feature manifest:
+  {{input.feature_manifest}}
+
+  Produce an improved plan addressing every identified issue.
+
+## ─── Prompts : Implementation ──────────────────────────────────
+
+prompt port_impl_system:
+  You are an expert developer specializing in Rust-to-Go porting.
+  You write idiomatic Go code that faithfully reproduces the behavior
+  of the Rust source. Key translation patterns:
+  - Rust traits -> Go interfaces
+  - Rust Result/Option -> Go (value, error) returns
+  - Rust enums -> Go const+iota or type switches
+  - Rust ownership -> Go value/pointer semantics
+  - Rust async -> Go goroutines and channels
+  - Rust pattern matching -> Go type switches
+
+  Always read the Rust source files to understand exact behavior before
+  writing Go code. Preserve existing Go code that implements features
+  not present in Rust. Write tests for every ported feature.
+  Run go vet and go fmt on changed files.
+
+prompt port_impl_user:
+  Port the next batch of features according to this validated plan.
+
+  Porting plan:
+  {{input.validated_plan}}
+
+  Feature manifest:
+  {{input.feature_manifest}}
+
+  Rust source repo: {{input.rust_repo_path}}
+  Go target repo: {{input.go_repo_path}}
+
+  Previous feedback (failing tests or missing features):
+  {{input.previous_feedback}}
+
+  Instructions:
+  1. Read the relevant Rust source files to understand exact behavior
+  2. Implement the Go equivalent in the target repo
+  3. Write or update tests for each ported feature
+  4. Ensure existing Go tests still pass
+  5. Do NOT remove Go-only features not present in Rust
+  6. Run go vet and go fmt on all changed files
+
+## ─── Prompts : Review ──────────────────────────────────────────
+
+prompt parity_review_system:
+  You are a meticulous code reviewer specializing in language migrations.
+  You compare Rust source behavior with Go implementation to verify
+  feature parity. You read BOTH codebases and check:
+  - Functional equivalence (same inputs produce same outputs)
+  - Error handling parity (all error cases covered)
+  - API surface parity (all public functions/types ported)
+  - Test coverage (Go tests cover what Rust tests cover)
+  - Idiomatic Go (not a line-by-line transliteration)
+  Be strict: a partially ported feature is a FAIL.
+
+prompt parity_review_user:
+  Review this porting implementation for feature parity.
+
+  Implementation result:
+  {{input.implementation}}
+
+  Feature manifest:
+  {{input.feature_manifest}}
+
+  Rust source repo: {{input.rust_repo_path}}
+  Go target repo: {{input.go_repo_path}}
+
+  Test results:
+  {{input.test_results}}
+
+  For each feature in the current batch:
+  1. Read the Rust source and Go implementation
+  2. Verify functional equivalence
+  3. Verify error handling parity
+  4. Verify test coverage
+  5. Mark each feature PASS or FAIL with justification
+  List all issues precisely in the issues field.
+
+prompt parity_verdict_system:
+  You are the final judge for a Rust-to-Go porting iteration.
+  Based on two independent reviews and test results, determine if
+  this batch is complete and whether overall parity is progressing.
+
+  Mark overall_parity=true ONLY if the feature manifest shows ALL
+  Rust features are now ported (PORTED status) and all Go tests pass.
+
+  Mark overall_parity=false if any Rust feature remains PARTIAL or MISSING.
+
+  In remaining_issues, list precisely what still needs work for the
+  next iteration to address.
+
+prompt parity_verdict_user:
+  Evaluate this porting iteration.
+
+  Implementation:
+  {{input.implementation}}
+
+  Review A:
+  {{input.claude_review}}
+
+  Review B:
+  {{input.codex_review}}
+
+  Test results:
+  {{input.test_results}}
+
+  Feature manifest:
+  {{input.feature_manifest}}
+
+  Instructions:
+  1. Evaluate each feature in the current batch: PASS or FAIL
+  2. Check test results for failures
+  3. Update the parity_percentage based on total ported vs total Rust features
+  4. Set overall_parity=true ONLY if ALL Rust features are PORTED and tests green
+  5. List remaining_issues for the next iteration
+
+## ─── Schemas ───────────────────────────────────────────────────
+
+schema workflow_input:
+  rust_repo_path: string
+  go_repo_path: string
+  feature_list: string
+
+schema analyze_input:
+  rust_repo_path: string
+  go_repo_path: string
+  feature_list: string
+
+schema analysis_output:
+  rust_modules: string[]
+  rust_features: string[]
+  go_ported_features: string[]
+  go_only_features: string[]
+  gaps: string[]
+  partial_ports: string[]
+  dependency_order: string[]
+  complexity_estimates: string[]
+
+schema merge_analysis_input:
+  claude_analysis: json
+  codex_analysis: json
+  rust_repo_path: string
+  go_repo_path: string
+
+schema feature_manifest:
+  total_rust_features: int
+  ported_features: string[]
+  partial_features: string[]
+  missing_features: string[]
+  go_only_features: string[]
+  dependency_order: string[]
+  parity_percentage: string
+
+schema port_plan_input:
+  feature_manifest: json
+  previous_progress: string
+  previous_feedback: string
+
+schema port_plan_output:
+  summary: string
+  batch_features: string[]
+  ordered_steps: string[]
+  translation_strategies: string[]
+  files_to_create: string[]
+  files_to_modify: string[]
+  test_plan: string[]
+  risks: string[]
+
+schema merge_plan_input:
+  claude_plan: json
+  codex_plan: json
+  feature_manifest: json
+
+schema validate_plan_input:
+  merged_plan: json
+  feature_manifest: json
+
+schema validate_plan_output:
+  approved: bool
+  issues: string[]
+  strengths: string[]
+  missing_requirements: string[]
+
+schema plan_acceptance_input:
+  claude_validation: json
+  codex_validation: json
+  merged_plan: json
+  feature_manifest: json
+
+schema plan_acceptance_verdict:
+  ready: bool
+  remaining_issues: string[]
+  confidence: string [enum: "low", "medium", "high"]
+
+schema refine_plan_input:
+  merged_plan: json
+  claude_report: json
+  codex_report: json
+  feature_manifest: json
+
+schema impl_input:
+  validated_plan: json
+  feature_manifest: json
+  rust_repo_path: string
+  go_repo_path: string
+  previous_feedback: string
+
+schema impl_output:
+  applied: bool
+  summary: string
+  files_changed: string[]
+  features_ported: string[]
+  tests_added: string[]
+
+schema test_result:
+  passed: bool
+  exit_code: int
+  logs: string
+  failed_tests: string[]
+
+schema review_input:
+  implementation: json
+  feature_manifest: json
+  rust_repo_path: string
+  go_repo_path: string
+  test_results: json
+
+schema review_output:
+  summary: string
+  issues: string[]
+  strengths: string[]
+  feature_verdicts: string[]
+  missing_requirements: string[]
+
+schema parity_verdict_input:
+  implementation: json
+  claude_review: json
+  codex_review: json
+  test_results: json
+  feature_manifest: json
+
+schema parity_verdict:
+  overall_parity: bool
+  remaining_issues: string[]
+  parity_percentage: string
+  confidence: string [enum: "low", "medium", "high"]
+
+## ─── Nodes : Phase 0 — Analysis ───────────────────────────────
+
+router analyze_fanout:
+  mode: fan_out_all
+
+agent claude_analyze:
+  delegate: "claude_code"
+  input: analyze_input
+  output: analysis_output
+  publish: claude_analysis
+  system: analyze_system
+  user: analyze_user
+  session: fresh
+
+agent codex_analyze:
+  delegate: "codex"
+  input: analyze_input
+  output: analysis_output
+  publish: codex_analysis
+  system: analyze_system
+  user: analyze_user
+  session: fresh
+
+agent merge_analysis:
+  await: wait_all
+  delegate: "claude_code"
+  input: merge_analysis_input
+  output: feature_manifest
+  publish: feature_manifest
+  system: merge_analysis_system
+  user: merge_analysis_user
+  session: fresh
+
+## ─── Nodes : Phase 1 — Port Planning ──────────────────────────
+
+router plan_fanout:
+  mode: fan_out_all
+
+agent claude_plan:
+  delegate: "claude_code"
+  input: port_plan_input
+  output: port_plan_output
+  publish: claude_plan_output
+  system: port_plan_system
+  user: port_plan_user
+  session: fresh
+
+agent codex_plan:
+  delegate: "codex"
+  input: port_plan_input
+  output: port_plan_output
+  publish: codex_plan_output
+  system: port_plan_system
+  user: port_plan_user
+  session: fresh
+
+agent merge_plans:
+  await: wait_all
+  delegate: "claude_code"
+  input: merge_plan_input
+  output: port_plan_output
+  publish: merged_plan
+  system: merge_port_plan_system
+  user: merge_port_plan_user
+  session: fresh
+
+## ─── Nodes : Phase 2 — Plan Validation ────────────────────────
+
+router val_fanout:
+  mode: fan_out_all
+
+agent claude_val:
+  delegate: "claude_code"
+  input: validate_plan_input
+  output: validate_plan_output
+  publish: claude_validation
+  system: validate_port_plan_system
+  user: validate_port_plan_user
+  session: fresh
+
+agent codex_val:
+  delegate: "codex"
+  input: validate_plan_input
+  output: validate_plan_output
+  publish: codex_validation
+  system: validate_port_plan_system
+  user: validate_port_plan_user
+  session: fresh
+
+judge val_judge:
+  await: wait_all
+  delegate: "claude_code"
+  input: plan_acceptance_input
+  output: plan_acceptance_verdict
+  publish: validation_verdict
+  system: plan_acceptance_system
+  user: plan_acceptance_user
+  session: fresh
+
+## ─── Nodes : Phase 2b — Refinement (round-robin) ──────────────
+
+router refine_selector:
+  mode: round_robin
+
+agent claude_refine:
+  delegate: "claude_code"
+  input: refine_plan_input
+  output: port_plan_output
+  publish: merged_plan
+  system: refine_port_plan_system
+  user: refine_port_plan_user
+  session: fresh
+
+agent codex_refine:
+  delegate: "codex"
+  input: refine_plan_input
+  output: port_plan_output
+  publish: merged_plan
+  system: refine_port_plan_system
+  user: refine_port_plan_user
+  session: fresh
+
+## ─── Nodes : Phase 3 — Implementation (round-robin) ───────────
+
+router impl_selector:
+  mode: round_robin
+
+agent claude_implement:
+  delegate: "claude_code"
+  input: impl_input
+  output: impl_output
+  publish: implementation
+  system: port_impl_system
+  user: port_impl_user
+  session: fresh
+
+agent codex_implement:
+  delegate: "codex"
+  input: impl_input
+  output: impl_output
+  publish: implementation
+  system: port_impl_system
+  user: port_impl_user
+  session: fresh
+
+## ─── Nodes : Phase 4 — Test Execution ─────────────────────────
+
+tool run_go_tests:
+  command: "${GO_TEST_COMMAND}"
+  output: test_result
+
+## ─── Nodes : Phase 5 — Parity Review ──────────────────────────
+
+router review_fanout:
+  mode: fan_out_all
+
+agent claude_review:
+  delegate: "claude_code"
+  input: review_input
+  output: review_output
+  publish: claude_review_report
+  system: parity_review_system
+  user: parity_review_user
+  session: fresh
+
+agent codex_review:
+  delegate: "codex"
+  input: review_input
+  output: review_output
+  publish: codex_review_report
+  system: parity_review_system
+  user: parity_review_user
+  session: fresh
+
+judge parity_judge:
+  await: wait_all
+  delegate: "claude_code"
+  input: parity_verdict_input
+  output: parity_verdict
+  publish: parity_verdict_report
+  system: parity_verdict_system
+  user: parity_verdict_user
+  session: fresh
+
+## ─── Workflow ──────────────────────────────────────────────────
+
+workflow rust_to_go_port:
+  vars:
+    rust_repo_path: string
+    go_repo_path: string
+    feature_list: string = ""
+
+  entry: analyze_fanout
+
+  budget:
+    max_parallel_branches: 4
+    max_duration: "12h"
+    max_cost_usd: 500
+    max_tokens: 50000000
+    max_iterations: 100
+
+  ## ═══ Phase 0 : Parallel Analysis ═══════════════════════════════
+
+  analyze_fanout -> claude_analyze with {
+    rust_repo_path: "{{vars.rust_repo_path}}",
+    go_repo_path: "{{vars.go_repo_path}}",
+    feature_list: "{{vars.feature_list}}"
+  }
+
+  analyze_fanout -> codex_analyze with {
+    rust_repo_path: "{{vars.rust_repo_path}}",
+    go_repo_path: "{{vars.go_repo_path}}",
+    feature_list: "{{vars.feature_list}}"
+  }
+
+  claude_analyze -> merge_analysis with {
+    claude_analysis: "{{outputs.claude_analyze}}",
+    rust_repo_path: "{{vars.rust_repo_path}}",
+    go_repo_path: "{{vars.go_repo_path}}"
+  }
+
+  codex_analyze -> merge_analysis with {
+    codex_analysis: "{{outputs.codex_analyze}}"
+  }
+
+  ## ═══ Phase 1 : Parallel Port Planning ══════════════════════════
+
+  merge_analysis -> plan_fanout with {
+    feature_manifest: "{{outputs.merge_analysis}}",
+    previous_progress: "",
+    previous_feedback: ""
+  }
+
+  plan_fanout -> claude_plan with {
+    feature_manifest: "{{input.feature_manifest}}",
+    previous_progress: "{{input.previous_progress}}",
+    previous_feedback: "{{input.previous_feedback}}"
+  }
+
+  plan_fanout -> codex_plan with {
+    feature_manifest: "{{input.feature_manifest}}",
+    previous_progress: "{{input.previous_progress}}",
+    previous_feedback: "{{input.previous_feedback}}"
+  }
+
+  claude_plan -> merge_plans with {
+    claude_plan: "{{outputs.claude_plan}}",
+    feature_manifest: "{{artifacts.feature_manifest}}"
+  }
+
+  codex_plan -> merge_plans with {
+    codex_plan: "{{outputs.codex_plan}}"
+  }
+
+  ## ═══ Phase 2 : Parallel Plan Validation ════════════════════════
+
+  merge_plans -> val_fanout with {
+    merged_plan: "{{outputs.merge_plans}}",
+    feature_manifest: "{{artifacts.feature_manifest}}"
+  }
+
+  val_fanout -> claude_val with {
+    merged_plan: "{{input.merged_plan}}",
+    feature_manifest: "{{input.feature_manifest}}"
+  }
+
+  val_fanout -> codex_val with {
+    merged_plan: "{{input.merged_plan}}",
+    feature_manifest: "{{input.feature_manifest}}"
+  }
+
+  claude_val -> val_judge with {
+    claude_validation: "{{outputs.claude_val}}",
+    merged_plan: "{{artifacts.merged_plan}}",
+    feature_manifest: "{{artifacts.feature_manifest}}"
+  }
+
+  codex_val -> val_judge with {
+    codex_validation: "{{outputs.codex_val}}"
+  }
+
+  ## Plan OK -> implementation
+  val_judge -> impl_selector when ready
+
+  ## Plan KO -> round-robin refinement
+  val_judge -> refine_selector when not ready as refine_loop(6)
+
+  refine_selector -> claude_refine with {
+    merged_plan: "{{artifacts.merged_plan}}",
+    claude_report: "{{outputs.claude_val}}",
+    codex_report: "{{outputs.codex_val}}",
+    feature_manifest: "{{artifacts.feature_manifest}}"
+  }
+
+  refine_selector -> codex_refine with {
+    merged_plan: "{{artifacts.merged_plan}}",
+    claude_report: "{{outputs.claude_val}}",
+    codex_report: "{{outputs.codex_val}}",
+    feature_manifest: "{{artifacts.feature_manifest}}"
+  }
+
+  ## After refinement -> back to validation
+  claude_refine -> val_fanout as refine_loop(6) with {
+    merged_plan: "{{outputs.claude_refine}}",
+    feature_manifest: "{{artifacts.feature_manifest}}"
+  }
+
+  codex_refine -> val_fanout as refine_loop(6) with {
+    merged_plan: "{{outputs.codex_refine}}",
+    feature_manifest: "{{artifacts.feature_manifest}}"
+  }
+
+  ## ═══ Phase 3 : Round-robin Implementation ═════════════════════
+
+  impl_selector -> claude_implement with {
+    validated_plan: "{{artifacts.merged_plan}}",
+    feature_manifest: "{{artifacts.feature_manifest}}",
+    rust_repo_path: "{{vars.rust_repo_path}}",
+    go_repo_path: "{{vars.go_repo_path}}",
+    previous_feedback: "{{artifacts.parity_verdict_report}}"
+  }
+
+  impl_selector -> codex_implement with {
+    validated_plan: "{{artifacts.merged_plan}}",
+    feature_manifest: "{{artifacts.feature_manifest}}",
+    rust_repo_path: "{{vars.rust_repo_path}}",
+    go_repo_path: "{{vars.go_repo_path}}",
+    previous_feedback: "{{artifacts.parity_verdict_report}}"
+  }
+
+  ## ═══ Phase 4 : Run Go Tests ═══════════════════════════════════
+
+  claude_implement -> run_go_tests
+  codex_implement -> run_go_tests
+
+  ## ═══ Phase 5 : Parallel Parity Review ═════════════════════════
+
+  run_go_tests -> review_fanout with {
+    implementation: "{{artifacts.implementation}}",
+    feature_manifest: "{{artifacts.feature_manifest}}",
+    rust_repo_path: "{{vars.rust_repo_path}}",
+    go_repo_path: "{{vars.go_repo_path}}",
+    test_results: "{{outputs.run_go_tests}}"
+  }
+
+  review_fanout -> claude_review with {
+    implementation: "{{input.implementation}}",
+    feature_manifest: "{{input.feature_manifest}}",
+    rust_repo_path: "{{input.rust_repo_path}}",
+    go_repo_path: "{{input.go_repo_path}}",
+    test_results: "{{input.test_results}}"
+  }
+
+  review_fanout -> codex_review with {
+    implementation: "{{input.implementation}}",
+    feature_manifest: "{{input.feature_manifest}}",
+    rust_repo_path: "{{input.rust_repo_path}}",
+    go_repo_path: "{{input.go_repo_path}}",
+    test_results: "{{input.test_results}}"
+  }
+
+  claude_review -> parity_judge with {
+    implementation: "{{artifacts.implementation}}",
+    claude_review: "{{outputs.claude_review}}",
+    test_results: "{{outputs.run_go_tests}}",
+    feature_manifest: "{{artifacts.feature_manifest}}"
+  }
+
+  codex_review -> parity_judge with {
+    codex_review: "{{outputs.codex_review}}"
+  }
+
+  ## ═══ Phase 6 : Verdict ════════════════════════════════════════
+
+  ## Full parity achieved -> done
+  parity_judge -> done when overall_parity
+
+  ## More features to port -> next planning cycle
+  parity_judge -> plan_fanout when not overall_parity as outer_loop(10) with {
+    feature_manifest: "{{artifacts.feature_manifest}}",
+    previous_progress: "{{outputs.parity_judge}}",
+    previous_feedback: "{{outputs.parity_judge}}"
+  }

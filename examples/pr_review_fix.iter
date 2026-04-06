@@ -1,0 +1,371 @@
+## Fixture : pr_review_fix
+## Objectif : Review structuree d'une PR avec deux reviewers paralleles,
+## verdict, et boucle de correction avec continuite de session.
+##
+## Phases :
+##   1. Construction du contexte PR (diff, fichiers, resume)
+##   2. Review parallele par deux agents (code + architecture)
+##   3. Verdict final : synthese et decision
+##   4. Si rejected : routage LLM vers l'agent de fix le plus pertinent
+##   5. Fix avec reprise de session du reviewer -> retour review
+##
+## Usage :
+##   iterion run examples/pr_review_fix.iter \
+##     --var base_ref="origin/main" \
+##     --var head_ref="HEAD" \
+##     --var review_rules="- Code lisible et maintenable\n- Pas de failles de securite\n- Tests presents pour les nouveaux comportements\n- Pas de regression de performance\n- Nommage coherent avec le reste du codebase"
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+## ─── Prompts ────────────────────────────────────────────────────
+
+prompt context_builder_system:
+  Tu es un preparateur de contexte de PR.
+  Tu lis le diff, les fichiers modifies, la structure du repo,
+  et tu produis un resume structure exploitable par un reviewer.
+  Sois factuel et exhaustif.
+
+prompt context_builder_user:
+  Construis un contexte de PR normalise.
+
+  Base : {{input.base_ref}}
+  Head : {{input.head_ref}}
+
+  Instructions :
+  1. Lis le diff entre base et head (git diff)
+  2. Liste les fichiers modifies
+  3. Deduis le titre et la description de la PR a partir du diff et des commits
+  4. Identifie les zones a risque (concurrence, securite, performance)
+  5. Resume les changements
+
+prompt review_code_system:
+  Tu es un reviewer de code senior, methodique et exigeant.
+  Tu cumules DEUX roles :
+  1. REVIEWER : evalue la QUALITE DU CODE (lisibilite, maintenabilite,
+     patterns, gestion d'erreurs, nommage, complexite)
+  2. PLANIFICATEUR DE FIX : si le verdict est negatif, produis un plan
+     de correction concret et actionable dans fix_plan
+
+  Cite les lignes de code pour chaque probleme identifie.
+  Sois factuel : pas de compliment, pas de remplissage.
+
+prompt review_code_user:
+  Review cette PR en te concentrant sur la qualite du code.
+
+  Regles de review :
+  {{input.review_rules}}
+
+  Contexte PR :
+  {{input.pr_context}}
+
+  Pour chaque fichier modifie :
+  1. Lis le diff et le fichier complet
+  2. Identifie les problemes concrets (avec ligne/fichier)
+  3. Classe chaque issue en blocker ou suggestion
+  4. Evalue la conformite aux regles de review
+  5. Si approved=false, produis un plan de fix detaille dans fix_plan
+
+prompt review_archi_system:
+  Tu es un reviewer d'architecture senior.
+  Tu cumules DEUX roles :
+  1. REVIEWER : evalue le DESIGN (coherence architecturale,
+     separation des responsabilites, couplage, abstraction,
+     impact sur le reste du codebase, dette technique)
+  2. PLANIFICATEUR DE FIX : si le verdict est negatif, produis un plan
+     de correction concret et actionable dans fix_plan
+
+  Sois pragmatique : une PR n'a pas a tout refactorer.
+
+prompt review_archi_user:
+  Review cette PR en te concentrant sur l'architecture et le design.
+
+  Regles de review :
+  {{input.review_rules}}
+
+  Contexte PR :
+  {{input.pr_context}}
+
+  Instructions :
+  1. Evalue la coherence avec l'architecture existante
+  2. Identifie les problemes de design (couplage, responsabilites)
+  3. Verifie que les interfaces publiques sont stables
+  4. Note les risques de regression ou dette technique
+  5. Classe chaque issue en blocker ou suggestion
+  6. Si approved=false, produis un plan de fix detaille dans fix_plan
+
+prompt verdict_system:
+  Tu es le juge final de la PR.
+  Tu synthetises deux reviews independantes (code + architecture)
+  en un verdict unique, factuel et actionable.
+
+  Regles :
+  - Si un blocker existe dans l'une ou l'autre review -> approved=false
+  - Si aucun blocker mais des suggestions -> approved=true avec recommandations
+  - Deduplique les issues communes aux deux reviews
+  - Produis un resume executif pour l'auteur de la PR
+
+prompt verdict_user:
+  Synthetise ces deux reviews en un verdict final.
+
+  Review Code :
+  {{input.code_review}}
+
+  Review Architecture :
+  {{input.archi_review}}
+
+  Regles de review :
+  {{input.review_rules}}
+
+  Produis :
+  1. Un verdict (approved/rejected)
+  2. La liste des blockers (si applicable)
+  3. La liste des suggestions
+  4. Un resume executif en 3-5 lignes pour l'auteur
+
+prompt fix_router_system:
+  Tu es un routeur de correction. On te presente les reviews de deux agents
+  (code et architecture) dont au moins un a rejete la PR.
+
+  Selectionne l'agent le mieux place pour corriger les problemes :
+  - code_fix : si les blockers sont principalement du code
+               (bugs, erreurs, nommage, gestion d'erreurs)
+  - archi_fix : si les blockers sont principalement architecturaux
+                (couplage, design, separation des responsabilites)
+
+  En cas de doute, choisis code_fix.
+
+prompt fix_system:
+  Tu es dans une session de review de code.
+  Tu as precedemment effectue une review et identifie des problemes.
+  Maintenant, tu dois EXECUTER le plan de fix que tu as produit.
+
+  Applique les corrections decrites dans le plan de fix.
+  Sois methodique : traite chaque probleme un par un.
+  Verifie ton travail en relisant les fichiers apres les modifications.
+
+prompt fix_user:
+  Execute le plan de fix suivant sur le repository.
+
+  Plan de fix :
+  {{input.fix_plan}}
+
+  Regles de review :
+  {{input.review_rules}}
+
+  Applique les corrections et verifie que les regles sont satisfaites.
+
+## ─── Schemas ────────────────────────────────────────────────────
+
+schema repo_context_request:
+  base_ref: string
+  head_ref: string
+
+schema pr_context:
+  pr_title: string
+  pr_description: string
+  diff: string
+  changed_files: string[]
+  repository_summary: string
+  risky_areas: string[]
+
+schema review_request:
+  pr_context: json
+  review_rules: string
+
+schema review_result:
+  summary: string
+  blockers: string[]
+  suggestions: string[]
+  files_reviewed: string[]
+  approved: bool
+  fix_plan: string
+  confidence: string [enum: "low", "medium", "high"]
+
+schema verdict_request:
+  code_review: json
+  archi_review: json
+  review_rules: string
+
+schema verdict_result:
+  approved: bool
+  executive_summary: string
+  blockers: string[]
+  suggestions: string[]
+  confidence: string [enum: "low", "medium", "high"]
+
+schema fix_input:
+  fix_plan: string
+  review_rules: string
+
+schema fix_output:
+  applied: bool
+  summary: string
+  files_changed: string[]
+
+## ─── Nodes : Contexte ───────────────────────────────────────────
+
+agent context_builder:
+  delegate: "claude_code"
+  input: repo_context_request
+  output: pr_context
+  publish: pr_context
+  system: context_builder_system
+  user: context_builder_user
+  session: fresh
+  tools: [git_diff, git_status, git_log, read_file, list_files, search_codebase, tree]
+  tool_max_steps: 10
+
+## ─── Nodes : Review (double role : review + fix plan) ───────────
+
+router review_fanout:
+  mode: fan_out_all
+
+agent review_code:
+  delegate: "claude_code"
+  input: review_request
+  output: review_result
+  publish: code_review_report
+  system: review_code_system
+  user: review_code_user
+  session: fresh
+  tools: [git_diff, read_file, list_files, search_codebase, tree]
+  tool_max_steps: 12
+  readonly: true
+
+agent review_archi:
+  delegate: "claude_code"
+  input: review_request
+  output: review_result
+  publish: archi_review_report
+  system: review_archi_system
+  user: review_archi_user
+  session: fresh
+  tools: [git_diff, read_file, list_files, search_codebase, tree]
+  tool_max_steps: 12
+  readonly: true
+
+## ─── Node : Verdict ─────────────────────────────────────────────
+
+judge verdict:
+  await: wait_all
+  delegate: "claude_code"
+  input: verdict_request
+  output: verdict_result
+  publish: final_verdict
+  system: verdict_system
+  user: verdict_user
+  session: fresh
+
+## ─── Nodes : Fix Routing ────────────────────────────────────────
+
+router fix_router:
+  mode: llm
+  model: "${CLAUDE_MODEL}"
+  system: fix_router_system
+
+## ─── Nodes : Fix (session inherit from reviewer) ────────────────
+
+agent code_fix:
+  delegate: "claude_code"
+  input: fix_input
+  output: fix_output
+  publish: fix_report
+  system: fix_system
+  user: fix_user
+  session: inherit
+  tools: [read_file, write_file, patch, list_files, search_codebase, git_diff, git_status, run_command]
+  tool_max_steps: 20
+
+agent archi_fix:
+  delegate: "claude_code"
+  input: fix_input
+  output: fix_output
+  publish: fix_report
+  system: fix_system
+  user: fix_user
+  session: inherit
+  tools: [read_file, write_file, patch, list_files, search_codebase, git_diff, git_status, run_command]
+  tool_max_steps: 20
+
+## ─── Workflow ────────────────────────────────────────────────────
+
+workflow pr_review_fix:
+  vars:
+    base_ref: string = "origin/main"
+    head_ref: string = "HEAD"
+    review_rules: string = "- Code lisible et maintenable\n- Pas de failles de securite\n- Tests presents pour les nouveaux comportements\n- Pas de regression de performance\n- Nommage coherent avec le reste du codebase"
+
+  entry: context_builder
+
+  budget:
+    max_parallel_branches: 4
+    max_duration: "2h"
+    max_cost_usd: 50
+    max_tokens: 5000000
+
+  ## ═══ Phase 1 : Construire le contexte PR ══════════════════════
+
+  context_builder -> review_fanout with {
+    pr_context: "{{outputs.context_builder}}",
+    review_rules: "{{vars.review_rules}}"
+  }
+
+  ## ═══ Phase 2 : Review parallele (code + architecture) ═════════
+
+  review_fanout -> review_code with {
+    pr_context: "{{input.pr_context}}",
+    review_rules: "{{input.review_rules}}"
+  }
+
+  review_fanout -> review_archi with {
+    pr_context: "{{input.pr_context}}",
+    review_rules: "{{input.review_rules}}"
+  }
+
+  ## ═══ Phase 3 : Verdict final ══════════════════════════════════
+
+  review_code -> verdict with {
+    code_review: "{{outputs.review_code}}",
+    review_rules: "{{vars.review_rules}}"
+  }
+
+  review_archi -> verdict with {
+    archi_review: "{{outputs.review_archi}}"
+  }
+
+  ## Approved -> done
+  verdict -> done when approved
+
+  ## Rejected -> routage fix
+  verdict -> fix_router when not approved as fix_loop(5) with {
+    code_review: "{{outputs.review_code}}",
+    archi_review: "{{outputs.review_archi}}",
+    review_rules: "{{vars.review_rules}}"
+  }
+
+  ## ═══ Phase 4 : Fix avec continuite de session ═════════════════
+
+  ## Le LLM router selectionne l'agent de fix le plus pertinent
+  fix_router -> code_fix with {
+    _session_id: "{{outputs.review_code._session_id}}",
+    fix_plan: "{{outputs.review_code.fix_plan}}",
+    review_rules: "{{vars.review_rules}}"
+  }
+
+  fix_router -> archi_fix with {
+    _session_id: "{{outputs.review_archi._session_id}}",
+    fix_plan: "{{outputs.review_archi.fix_plan}}",
+    review_rules: "{{vars.review_rules}}"
+  }
+
+  ## Apres fix -> retour review
+  code_fix -> review_fanout as fix_loop(5) with {
+    pr_context: "{{artifacts.pr_context}}",
+    review_rules: "{{vars.review_rules}}"
+  }
+
+  archi_fix -> review_fanout as fix_loop(5) with {
+    pr_context: "{{artifacts.pr_context}}",
+    review_rules: "{{vars.review_rules}}"
+  }

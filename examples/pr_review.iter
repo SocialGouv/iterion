@@ -1,0 +1,247 @@
+## Fixture : pr_review
+## Objectif : Review structuree d'une PR avec deux reviewers paralleles
+## et un juge final qui synthetise les verdicts.
+##
+## Phases :
+##   1. Construction du contexte PR (diff, fichiers, resume)
+##   2. Review parallele par deux agents (perspectives complementaires)
+##   3. Verdict final : synthese et decision
+##
+## Usage :
+##   iterion run examples/pr_review.iter \
+##     --var base_ref="origin/main" \
+##     --var head_ref="HEAD" \
+##     --var review_rules="- Code lisible et maintenable\n- Pas de failles de securite\n- Tests presents pour les nouveaux comportements\n- Pas de regression de performance\n- Nommage coherent avec le reste du codebase"
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+## ─── Prompts ────────────────────────────────────────────────────
+
+prompt context_builder_system:
+  Tu es un preparateur de contexte de PR.
+  Tu lis le diff, les fichiers modifies, la structure du repo,
+  et tu produis un resume structure exploitable par un reviewer.
+  Sois factuel et exhaustif.
+
+prompt context_builder_user:
+  Construis un contexte de PR normalise.
+
+  Base : {{input.base_ref}}
+  Head : {{input.head_ref}}
+
+  Instructions :
+  1. Lis le diff entre base et head (git diff)
+  2. Liste les fichiers modifies
+  3. Deduis le titre et la description de la PR a partir du diff et des commits
+  4. Identifie les zones a risque (concurrence, securite, performance)
+  5. Resume les changements
+
+prompt review_code_system:
+  Tu es un reviewer de code senior, methodique et exigeant.
+  Tu te concentres sur la QUALITE DU CODE : lisibilite, maintenabilite,
+  patterns, gestion d'erreurs, nommage, complexite.
+  Cite les lignes de code pour chaque probleme identifie.
+  Sois factuel : pas de compliment, pas de remplissage.
+
+prompt review_code_user:
+  Review cette PR en te concentrant sur la qualite du code.
+
+  Regles de review :
+  {{input.review_rules}}
+
+  Contexte PR :
+  {{input.pr_context}}
+
+  Pour chaque fichier modifie :
+  1. Lis le diff et le fichier complet
+  2. Identifie les problemes concrets (avec ligne/fichier)
+  3. Classe chaque issue en blocker ou suggestion
+  4. Evalue la conformite aux regles de review
+
+prompt review_archi_system:
+  Tu es un reviewer d'architecture senior.
+  Tu te concentres sur le DESIGN : coherence architecturale,
+  separation des responsabilites, couplage, abstraction,
+  impact sur le reste du codebase, dette technique.
+  Sois pragmatique : une PR n'a pas a tout refactorer.
+
+prompt review_archi_user:
+  Review cette PR en te concentrant sur l'architecture et le design.
+
+  Regles de review :
+  {{input.review_rules}}
+
+  Contexte PR :
+  {{input.pr_context}}
+
+  Instructions :
+  1. Evalue la coherence avec l'architecture existante
+  2. Identifie les problemes de design (couplage, responsabilites)
+  3. Verifie que les interfaces publiques sont stables
+  4. Note les risques de regression ou dette technique
+  5. Classe chaque issue en blocker ou suggestion
+
+prompt verdict_system:
+  Tu es le juge final de la PR.
+  Tu synthetises deux reviews independantes (code + architecture)
+  en un verdict unique, factuel et actionable.
+
+  Regles :
+  - Si un blocker existe dans l'une ou l'autre review -> approved=false
+  - Si aucun blocker mais des suggestions -> approved=true avec recommandations
+  - Deduplique les issues communes aux deux reviews
+  - Produis un resume executif pour l'auteur de la PR
+
+prompt verdict_user:
+  Synthetise ces deux reviews en un verdict final.
+
+  Review Code :
+  {{input.code_review}}
+
+  Review Architecture :
+  {{input.archi_review}}
+
+  Regles de review :
+  {{input.review_rules}}
+
+  Produis :
+  1. Un verdict (approved/rejected)
+  2. La liste des blockers (si applicable)
+  3. La liste des suggestions
+  4. Un resume executif en 3-5 lignes pour l'auteur
+
+## ─── Schemas ────────────────────────────────────────────────────
+
+schema repo_context_request:
+  base_ref: string
+  head_ref: string
+
+schema pr_context:
+  pr_title: string
+  pr_description: string
+  diff: string
+  changed_files: string[]
+  repository_summary: string
+  risky_areas: string[]
+
+schema review_request:
+  pr_context: json
+  review_rules: string
+
+schema review_result:
+  summary: string
+  blockers: string[]
+  suggestions: string[]
+  files_reviewed: string[]
+  approved: bool
+  confidence: string [enum: "low", "medium", "high"]
+
+schema verdict_request:
+  code_review: json
+  archi_review: json
+  review_rules: string
+
+schema verdict_result:
+  approved: bool
+  executive_summary: string
+  blockers: string[]
+  suggestions: string[]
+  confidence: string [enum: "low", "medium", "high"]
+
+## ─── Nodes ──────────────────────────────────────────────────────
+
+agent context_builder:
+  delegate: "claude_code"
+  input: repo_context_request
+  output: pr_context
+  publish: pr_context
+  system: context_builder_system
+  user: context_builder_user
+  session: fresh
+  tools: [git_diff, git_status, git_log, read_file, list_files, search_codebase, tree]
+  tool_max_steps: 10
+
+router review_fanout:
+  mode: fan_out_all
+
+agent review_code:
+  delegate: "claude_code"
+  input: review_request
+  output: review_result
+  publish: code_review_report
+  system: review_code_system
+  user: review_code_user
+  session: fresh
+  tools: [git_diff, read_file, list_files, search_codebase, tree]
+  tool_max_steps: 12
+  readonly: true
+
+agent review_archi:
+  delegate: "claude_code"
+  input: review_request
+  output: review_result
+  publish: archi_review_report
+  system: review_archi_system
+  user: review_archi_user
+  session: fresh
+  tools: [git_diff, read_file, list_files, search_codebase, tree]
+  tool_max_steps: 12
+  readonly: true
+
+judge verdict:
+  await: wait_all
+  delegate: "claude_code"
+  input: verdict_request
+  output: verdict_result
+  publish: final_verdict
+  system: verdict_system
+  user: verdict_user
+  session: fresh
+
+## ─── Workflow ────────────────────────────────────────────────────
+
+workflow pr_review:
+  vars:
+    base_ref: string = "origin/main"
+    head_ref: string = "HEAD"
+    review_rules: string = "- Code lisible et maintenable\n- Pas de failles de securite\n- Tests presents pour les nouveaux comportements\n- Pas de regression de performance\n- Nommage coherent avec le reste du codebase"
+
+  entry: context_builder
+
+  budget:
+    max_parallel_branches: 2
+    max_duration: "15m"
+    max_cost_usd: 5
+    max_tokens: 200000
+
+  ## 1. Construire le contexte PR
+  context_builder -> review_fanout with {
+    pr_context: "{{outputs.context_builder}}",
+    review_rules: "{{vars.review_rules}}"
+  }
+
+  ## 2. Review parallele : code + architecture
+  review_fanout -> review_code with {
+    pr_context: "{{input.pr_context}}",
+    review_rules: "{{input.review_rules}}"
+  }
+
+  review_fanout -> review_archi with {
+    pr_context: "{{input.pr_context}}",
+    review_rules: "{{input.review_rules}}"
+  }
+
+  ## 3. Verdict final
+  review_code -> verdict with {
+    code_review: "{{outputs.review_code}}",
+    review_rules: "{{vars.review_rules}}"
+  }
+
+  review_archi -> verdict with {
+    archi_review: "{{outputs.review_archi}}"
+  }
+
+  ## 4. Terminal
+  verdict -> done when approved
+  verdict -> fail when not approved
