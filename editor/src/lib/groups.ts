@@ -35,10 +35,6 @@ export function groupToCommentText(group: GroupAnnotation): string {
   return `${GROUP_PREFIX}${group.name}: ${group.nodeIds.join(", ")}`;
 }
 
-/** Check if a comment is a group annotation. */
-export function isGroupComment(comment: Comment): boolean {
-  return !!comment.text && comment.text.trim().startsWith(GROUP_PREFIX);
-}
 
 /** Extract group name from a single comment, or null if not a group comment. */
 export function groupNameFromComment(comment: Comment): string | null {

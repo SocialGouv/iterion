@@ -22,65 +22,6 @@ type ResumeOptions struct {
 	Executor    runtime.NodeExecutor
 }
 
-// RunResume resumes a paused run with human answers.
-func RunResume(ctx context.Context, opts ResumeOptions, p *Printer) error {
-	if opts.RunID == "" {
-		return fmt.Errorf("--run-id is required")
-	}
-
-	storeDir := opts.StoreDir
-	if storeDir == "" {
-		storeDir = ".iterion"
-	}
-
-	s, err := store.New(storeDir)
-	if err != nil {
-		return fmt.Errorf("cannot open store: %w", err)
-	}
-
-	// Load run to get workflow info and validate state.
-	r, err := s.LoadRun(opts.RunID)
-	if err != nil {
-		return fmt.Errorf("cannot load run: %w", err)
-	}
-
-	if r.Status != store.RunStatusPausedWaitingHuman {
-		return fmt.Errorf("run %q is not paused (status: %s)", opts.RunID, r.Status)
-	}
-	if r.Checkpoint == nil {
-		return fmt.Errorf("run %q has no checkpoint", opts.RunID)
-	}
-
-	// Build answers from file and/or flags.
-	answers := make(map[string]interface{})
-
-	if opts.AnswersFile != "" {
-		fileAnswers, err := ParseAnswersFile(opts.AnswersFile)
-		if err != nil {
-			return err
-		}
-		for k, v := range fileAnswers {
-			answers[k] = v
-		}
-	}
-
-	// CLI --answer flags override file values.
-	for k, v := range opts.Answers {
-		answers[k] = v
-	}
-
-	if len(answers) == 0 {
-		return fmt.Errorf("no answers provided; use --answers-file or --answer key=value")
-	}
-
-	// Recompile the workflow. We need the workflow IR to build the engine.
-	// For now, we need the .iter file path. We'll try to find it from the store
-	// or require it as an argument.
-	// Since the run stores the workflow name but not the file path, we need
-	// the user to provide the .iter file again.
-	return fmt.Errorf("resume requires the original .iter file; use: iterion resume --run-id %s --file <path.iter> --answers-file <answers.json>", opts.RunID)
-}
-
 // RunResumeWithFile resumes a paused run using a workflow file and answers.
 func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions, p *Printer) error {
 	if opts.RunID == "" {

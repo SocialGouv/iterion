@@ -282,25 +282,6 @@ func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunSto
 
 	return executor
 }
-
-// stubExecutor is a no-op executor used when no real executor is provided.
-// It returns the input as output, allowing validation of the workflow graph
-// traversal without real LLM calls.
-type stubExecutor struct{}
-
-func (s *stubExecutor) Execute(_ context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
-	output := make(map[string]interface{})
-	for k, v := range input {
-		output[k] = v
-	}
-	// For judges, provide default boolean fields so edges can be evaluated.
-	if node.Kind == ir.NodeJudge {
-		output["approved"] = true
-		output["compliant"] = true
-	}
-	return output, nil
-}
-
 // enrichPausedResult loads checkpoint and interaction details from the store
 // and populates the result map with interaction_id, node_id, and questions.
 // It is used by both run and resume to enrich paused-output for CI consumers.

@@ -39,30 +39,6 @@ export function selectAllItems(s: LibraryState): LibraryItem[] {
   return s._allItems;
 }
 
-/** Selector: filtered items based on active category and search query. */
-export function selectFilteredItems(s: LibraryState): LibraryItem[] {
-  let items = selectAllItems(s);
-  if (s.activeCategory) {
-    items = items.filter((i) => i.category === s.activeCategory);
-  }
-  if (s.searchQuery.trim()) {
-    const q = s.searchQuery.toLowerCase();
-    items = items.filter(
-      (i) =>
-        i.name.toLowerCase().includes(q) ||
-        i.description.toLowerCase().includes(q) ||
-        i.tags?.some((t) => t.toLowerCase().includes(q)),
-    );
-  }
-  return items;
-}
-
-/** Selector factory: find an item by id. */
-export function selectItemById(id: string) {
-  return (s: LibraryState): LibraryItem | undefined =>
-    selectAllItems(s).find((i) => i.id === id);
-}
-
 const _initialCustom = loadCustomItems();
 
 export const useLibraryStore = create<LibraryState>((set) => ({

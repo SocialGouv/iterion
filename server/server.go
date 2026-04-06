@@ -18,7 +18,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/SocialGouv/iterion/ast"
 	"github.com/SocialGouv/iterion/astjson"
 	"github.com/SocialGouv/iterion/ir"
 	"github.com/SocialGouv/iterion/parser"
@@ -321,9 +320,6 @@ func (s *Server) handleLoadExample(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- Helpers ---
-
-// Ignore unused import warning — ast is used indirectly via astjson/unparse.
-var _ = (*ast.File)(nil)
 
 func readJSON(r *http.Request, v interface{}) error {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 10<<20)) // 10 MB max

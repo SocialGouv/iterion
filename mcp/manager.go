@@ -279,12 +279,6 @@ func (e *FatalToolError) IsFatal() bool {
 	return true
 }
 
-// IsFatalToolError returns true if the error is a fatal MCP tool error.
-func IsFatalToolError(err error) bool {
-	var fte *FatalToolError
-	return errors.As(err, &fte)
-}
-
 // fatalPatterns are substrings that indicate an MCP tool error is fatal and
 // should stop the node rather than being passed back to the model.
 var fatalPatterns = []string{
