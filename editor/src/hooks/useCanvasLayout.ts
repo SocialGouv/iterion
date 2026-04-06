@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Node, NodeChange, EdgeChange, Edge as FlowEdge } from "@xyflow/react";
 import { useDocumentStore } from "@/store/document";
 import { useUIStore } from "@/store/ui";
+import { useGroupStore } from "@/store/groups";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
-import { documentToGraph, getTopologyKey, generateLayerNodes } from "@/lib/documentToGraph";
+import { documentToGraph, getTopologyKey, generateLayerNodes, applyGroups } from "@/lib/documentToGraph";
+import { parseGroups } from "@/lib/groups";
 import { generateNodeDetailGraph } from "@/lib/nodeDetailGraph";
 import { autoLayout } from "@/lib/autoLayout";
 import { computeEdgeHandles } from "@/lib/computeEdgeHandles";
@@ -14,11 +16,30 @@ export function useCanvasLayout() {
   const layoutDirection = useUIStore((s) => s.layoutDirection);
   const activeLayers = useUIStore((s) => s.activeLayers);
   const subNodeViewStack = useUIStore((s) => s.subNodeViewStack);
+  const macroView = useUIStore((s) => s.macroView);
+  const collapsedGroups = useGroupStore((s) => s.collapsedGroups);
+  const collapseAll = useGroupStore((s) => s.collapseAll);
+  const expandAll = useGroupStore((s) => s.expandAll);
   const activeWorkflow = useActiveWorkflow();
   const activeWorkflowName = activeWorkflow?.name;
 
   // Current sub-node view target (top of stack)
   const subNodeViewId = subNodeViewStack.length > 0 ? subNodeViewStack[subNodeViewStack.length - 1]! : null;
+
+  // Parse groups from document comments
+  const groups = useMemo(() => {
+    if (!document) return [];
+    return parseGroups(document.comments ?? []);
+  }, [document]);
+
+  // Macro view: collapse/expand all groups when toggled
+  useEffect(() => {
+    if (macroView && groups.length > 0) {
+      collapseAll(groups.map((g) => g.name));
+    } else if (!macroView) {
+      expandAll();
+    }
+  }, [macroView, groups, collapseAll, expandAll]);
 
   // Compute graph from document — either main workflow or sub-node detail view
   const { nodes: graphNodes, edges: graphEdges } = useMemo(() => {
@@ -28,11 +49,16 @@ export function useCanvasLayout() {
     }
     const base = documentToGraph(document, activeWorkflowName);
     const layer = generateLayerNodes(document, activeLayers);
-    return {
+    const merged = {
       nodes: [...base.nodes, ...layer.nodes],
       edges: [...base.edges, ...layer.edges],
     };
-  }, [document, activeWorkflowName, activeLayers, subNodeViewId]);
+    // Apply group annotations (no-op if no groups defined)
+    if (groups.length > 0 && !subNodeViewId) {
+      return applyGroups(merged.nodes, merged.edges, groups, collapsedGroups);
+    }
+    return merged;
+  }, [document, activeWorkflowName, activeLayers, subNodeViewId, groups, collapsedGroups]);
 
   // Manage node positions with local state (allows dragging)
   const [layoutNodes, setLayoutNodes] = useState<Node[]>([]);
@@ -57,7 +83,8 @@ export function useCanvasLayout() {
     }
     const layerKey = Array.from(activeLayers).sort().join(",");
     const subViewKey = subNodeViewId ?? "";
-    const topoKey = document ? getTopologyKey(document, activeWorkflowName) + "|" + layoutDirection + "|" + layerKey + "|" + subViewKey : "";
+    const groupKey = groups.map((g) => `${g.name}:${g.nodeIds.join("+")}:${collapsedGroups.has(g.name) ? "c" : "e"}`).join(";");
+    const topoKey = document ? getTopologyKey(document, activeWorkflowName) + "|" + layoutDirection + "|" + layerKey + "|" + subViewKey + "|" + groupKey : "";
     if (prevTopologyRef.current !== topoKey) {
       prevTopologyRef.current = topoKey;
       autoLayout(graphNodes, graphEdges, layoutDirection)
@@ -83,18 +110,23 @@ export function useCanvasLayout() {
           setLayoutEdges(computeEdgeHandles(graphNodes, graphEdges, layoutDirection));
         });
     }
-  }, [document, graphNodes, graphEdges, activeWorkflowName, layoutDirection, activeLayers, subNodeViewId]);
+  }, [document, graphNodes, graphEdges, activeWorkflowName, layoutDirection, activeLayers, subNodeViewId, groups, collapsedGroups]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
       const hasPositionChange = changes.some((c) => c.type === "position" && c.position);
       setLayoutNodes((nds) => {
         const updated = nds.map((n) => {
-          const change = changes.find((c) => c.type === "position" && c.id === n.id);
-          if (change && change.type === "position" && change.position) {
-            return { ...n, position: change.position };
+          let result = n;
+          for (const change of changes) {
+            if (!("id" in change) || change.id !== n.id) continue;
+            if (change.type === "position" && change.position) {
+              result = { ...result, position: change.position };
+            } else if (change.type === "select") {
+              result = { ...result, selected: change.selected };
+            }
           }
-          return n;
+          return result;
         });
         layoutNodesRef.current = updated;
         return updated;

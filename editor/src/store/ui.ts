@@ -30,6 +30,8 @@ interface UIState {
   subNodeViewStack: string[];
   // Library panel
   libraryExpanded: boolean;
+  // Macro view (all groups collapsed)
+  macroView: boolean;
   // Edge editing in modal
   editModalEdgeInfo: { workflowName: string; edgeIndex: number } | null;
   setActiveTab: (tab: SidebarTab) => void;
@@ -51,6 +53,8 @@ interface UIState {
   navigateSubNodeViewTo: (index: number) => void;
   // Library panel
   toggleLibraryPanel: () => void;
+  // Macro view
+  toggleMacroView: () => void;
   // Edge modal
   setEditModalEdgeInfo: (info: { workflowName: string; edgeIndex: number } | null) => void;
 }
@@ -68,6 +72,7 @@ export const useUIStore = create<UIState>((set) => ({
   toasts: [],
   subNodeViewStack: [],
   libraryExpanded: false,
+  macroView: false,
   editModalEdgeInfo: null,
   setActiveTab: (activeTab) => set({ activeTab }),
   toggleSourceView: () => set((s) => ({ sourceViewOpen: !s.sourceViewOpen })),
@@ -110,6 +115,8 @@ export const useUIStore = create<UIState>((set) => ({
   })),
   // Library panel
   toggleLibraryPanel: () => set((s) => ({ libraryExpanded: !s.libraryExpanded })),
+  // Macro view
+  toggleMacroView: () => set((s) => ({ macroView: !s.macroView })),
   // Edge modal
   setEditModalEdgeInfo: (editModalEdgeInfo) => set({ editModalEdgeInfo }),
 }));

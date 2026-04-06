@@ -5,6 +5,7 @@ import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { useUIStore } from "@/store/ui";
 import { NODE_COLORS, DEBOUNCE_FIT_VIEW_MS, DEBOUNCE_LAYOUT_SETTLE_MS } from "@/lib/constants";
+import { parseGroups } from "@/lib/groups";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { useCanvasSearch } from "@/hooks/useCanvasSearch";
 import { useCanvasKeyboard } from "@/hooks/useCanvasKeyboard";
@@ -15,6 +16,7 @@ import { useAddFromLibrary } from "@/hooks/useAddFromLibrary";
 import { useFullscreen } from "@/hooks/useFullscreen";
 import { useLibraryStore, selectAllItems } from "@/store/library";
 import { isAuxiliaryNodeId } from "@/lib/documentToGraph";
+import { isGroupNodeId } from "@/lib/groups";
 import { isDetailNodeId, DETAIL_PREFIX_EDGE } from "@/lib/nodeDetailGraph";
 import type { NodeKind } from "@/api/types";
 import WorkflowNode from "./WorkflowNode";
@@ -22,6 +24,7 @@ import ConditionalEdge from "./ConditionalEdge";
 import AuxiliaryNode from "./AuxiliaryNode";
 import ReferenceEdge from "./ReferenceEdge";
 import DetailSubNode from "./DetailSubNode";
+import GroupNode from "./GroupNode";
 import NodeContextMenu from "./NodeContextMenu";
 
 import EditEdgeModal from "@/components/Modals/EditEdgeModal";
@@ -30,20 +33,24 @@ import CanvasToolbar from "./CanvasToolbar";
 import QuickAddMenu from "./QuickAddMenu";
 import SearchOverlay from "./SearchOverlay";
 
-const nodeTypes = { workflowNode: WorkflowNode, auxiliaryNode: AuxiliaryNode, detailSubNode: DetailSubNode };
+const nodeTypes = { workflowNode: WorkflowNode, auxiliaryNode: AuxiliaryNode, detailSubNode: DetailSubNode, groupNode: GroupNode };
 const edgeTypes = { conditionalEdge: ConditionalEdge, referenceEdge: ReferenceEdge };
 
 function isEditableNode(id: string): boolean {
-  return id !== "__start__" && id !== "done" && id !== "fail" && !isAuxiliaryNodeId(id);
+  return id !== "__start__" && id !== "done" && id !== "fail" && !isAuxiliaryNodeId(id) && !isGroupNodeId(id);
 }
 
 export default function Canvas() {
   const addNode = useAddNode();
   const addFromLibrary = useAddFromLibrary();
   const allLibraryItems = useLibraryStore(selectAllItems);
+  const document = useDocumentStore((s) => s.document);
   const removeNode = useDocumentStore((s) => s.removeNode);
   const duplicateNode = useDocumentStore((s) => s.duplicateNode);
   const updateWorkflow = useDocumentStore((s) => s.updateWorkflow);
+  const addGroup = useDocumentStore((s) => s.addGroup);
+  const removeGroup = useDocumentStore((s) => s.removeGroup);
+  const updateGroup = useDocumentStore((s) => s.updateGroup);
   const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
   const setSelectedEdge = useSelectionStore((s) => s.setSelectedEdge);
   const clearSelection = useSelectionStore((s) => s.clearSelection);
@@ -53,7 +60,22 @@ export default function Canvas() {
   const pushSubNodeView = useUIStore((s) => s.pushSubNodeView);
   const activeWorkflow = useActiveWorkflow();
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
-  const { screenToFlowPosition, fitView } = useReactFlow();
+  const { screenToFlowPosition, fitView, getNodes } = useReactFlow();
+
+  // Parse groups for context menu
+  const groups = useMemo(() => {
+    if (!document) return [];
+    return parseGroups(document.comments ?? []);
+  }, [document]);
+
+  // Build nodeId -> groupName lookup for context menu
+  const nodeToGroup = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const g of groups) {
+      for (const nid of g.nodeIds) map.set(nid, g.name);
+    }
+    return map;
+  }, [groups]);
 
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
@@ -157,7 +179,7 @@ export default function Canvas() {
   const onNodeContextMenu = useCallback(
     (event: ReactMouseEvent, node: Node) => {
       event.preventDefault();
-      if (isAuxiliaryNodeId(node.id)) return;
+      if (isAuxiliaryNodeId(node.id) || isDetailNodeId(node.id)) return;
       setContextMenu({ x: event.clientX, y: event.clientY, nodeId: node.id });
     },
     [],
@@ -262,6 +284,8 @@ export default function Canvas() {
         onDragOver={onDragOver}
         onDrop={onDrop}
         fitView
+        selectionOnDrag
+        multiSelectionKeyCode="Shift"
         colorMode="dark"
       >
         <Background />
@@ -285,6 +309,8 @@ export default function Canvas() {
           nodeId={contextMenu.nodeId}
           isTerminal={contextMenu.nodeId === "done" || contextMenu.nodeId === "fail" || contextMenu.nodeId === "__start__"}
           isEntry={activeWorkflow?.entry === contextMenu.nodeId}
+          selectedNodeIds={getNodes().filter((n) => n.selected).map((n) => n.id)}
+          belongsToGroup={nodeToGroup.get(contextMenu.nodeId) ?? null}
           onSetEntry={() => {
             if (activeWorkflow) updateWorkflow(activeWorkflow.name, { entry: contextMenu.nodeId });
           }}
@@ -295,6 +321,20 @@ export default function Canvas() {
           onDelete={() => {
             removeNode(contextMenu.nodeId);
             clearSelection();
+          }}
+          onCreateGroup={(name, nodeIds) => {
+            addGroup({ name, nodeIds });
+          }}
+          onRemoveGroup={(groupName) => {
+            removeGroup(groupName);
+          }}
+          onRemoveFromGroup={(groupName, nodeId) => {
+            const group = groups.find((g) => g.name === groupName);
+            if (group) {
+              const remaining = group.nodeIds.filter((id) => id !== nodeId);
+              if (remaining.length < 2) removeGroup(groupName);
+              else updateGroup(groupName, { nodeIds: remaining });
+            }
           }}
           onClose={() => setContextMenu(null)}
         />

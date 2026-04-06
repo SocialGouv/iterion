@@ -1,6 +1,8 @@
 import { useUIStore } from "@/store/ui";
+import { useDocumentStore } from "@/store/document";
 import { LAYER_ICONS, LAYER_LABELS } from "@/lib/constants";
 import type { LayerKind } from "@/lib/constants";
+import { parseGroups } from "@/lib/groups";
 
 const LAYER_KINDS: LayerKind[] = ["schemas", "prompts", "vars"];
 
@@ -26,6 +28,10 @@ export default function CanvasToolbar({
   const expanded = useUIStore((s) => s.expanded);
   const toggleExpanded = useUIStore((s) => s.toggleExpanded);
   const browserFullscreen = useUIStore((s) => s.browserFullscreen);
+  const macroView = useUIStore((s) => s.macroView);
+  const toggleMacroView = useUIStore((s) => s.toggleMacroView);
+  const document = useDocumentStore((s) => s.document);
+  const hasGroups = document ? parseGroups(document.comments ?? []).length > 0 : false;
 
   return (
     <>
@@ -46,6 +52,20 @@ export default function CanvasToolbar({
             {LAYER_LABELS[kind]}
           </button>
         ))}
+        {hasGroups && (
+          <button
+            className={`border text-xs px-2 py-1 rounded flex items-center gap-1 ${
+              macroView
+                ? "bg-indigo-600 hover:bg-indigo-700 border-indigo-500 text-white"
+                : "bg-gray-800/90 hover:bg-gray-700 border-gray-600 text-gray-300"
+            }`}
+            onClick={() => { toggleMacroView(); onFitViewAfterDelay(); }}
+            title="Toggle macro view (show groups as nodes)"
+          >
+            <span>{"\u{1F4E6}"}</span>
+            Macro
+          </button>
+        )}
       </div>
 
       {/* Right-side toolbar */}

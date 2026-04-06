@@ -3,6 +3,9 @@ import type { Node, Edge as FlowEdge } from "@xyflow/react";
 import type { IterDocument, NodeKind, AgentDecl, JudgeDecl, HumanDecl, ToolNodeDecl } from "@/api/types";
 import type { LayerKind } from "@/store/ui";
 import type { AuxiliaryNodeData } from "@/components/Canvas/AuxiliaryNode";
+import type { GroupNodeData } from "@/components/Canvas/GroupNode";
+import type { GroupAnnotation } from "./groups";
+import { makeGroupNodeId } from "./groups";
 import { NODE_COLORS, LAYER_COLORS } from "./constants";
 
 export interface NodeData extends Record<string, unknown> {
@@ -136,6 +139,139 @@ export function documentToGraph(doc: IterDocument, activeWorkflowName?: string):
   }
 
   return { nodes, edges };
+}
+
+const GROUP_COLOR = "#6366F1";
+
+/** Apply group annotations to a graph: create group container nodes and handle collapsed groups.
+ *  - Expanded groups: group node added, children get parentId (for ELK compound layout)
+ *  - Collapsed groups: children hidden, edges aggregated to point to/from the group node */
+export function applyGroups(
+  nodes: Node[],
+  edges: FlowEdge[],
+  groups: GroupAnnotation[],
+  collapsedGroups: Set<string>,
+): { nodes: Node[]; edges: FlowEdge[] } {
+  if (groups.length === 0) return { nodes, edges };
+
+  // Build lookups
+  const nodeToGroup = new Map<string, string>();
+  for (const g of groups) {
+    for (const nid of g.nodeIds) {
+      nodeToGroup.set(nid, g.name);
+    }
+  }
+  const nodeById = new Map<string, Node>();
+  for (const n of nodes) nodeById.set(n.id, n);
+
+  const resultNodes: Node[] = [];
+  const resultEdges: FlowEdge[] = [];
+  const hiddenNodeIds = new Set<string>();
+
+  // Determine which nodes are hidden (in collapsed groups)
+  for (const g of groups) {
+    if (collapsedGroups.has(g.name)) {
+      for (const nid of g.nodeIds) hiddenNodeIds.add(nid);
+    }
+  }
+
+  // Add group nodes
+  for (const g of groups) {
+    const groupNodeId = makeGroupNodeId(g.name);
+    const isCollapsed = collapsedGroups.has(g.name);
+
+    // Collect kinds of children for summary
+    const childKindSet = new Set<string>();
+    for (const nid of g.nodeIds) {
+      const found = nodeById.get(nid);
+      if (found) {
+        const kind = (found.data as Record<string, unknown>)?.kind as string | undefined;
+        if (kind) childKindSet.add(kind);
+      }
+    }
+
+    if (isCollapsed) {
+      // Collapsed: add a compact group node (regular size, handles for edges)
+      resultNodes.push({
+        id: groupNodeId,
+        type: "groupNode",
+        position: { x: 0, y: 0 },
+        data: {
+          groupName: g.name,
+          nodeCount: g.nodeIds.length,
+          childKinds: Array.from(childKindSet),
+          color: GROUP_COLOR,
+        } as GroupNodeData,
+      });
+    } else {
+      // Expanded: add a container group node — children will be placed inside by ELK
+      resultNodes.push({
+        id: groupNodeId,
+        type: "groupNode",
+        position: { x: 0, y: 0 },
+        style: { width: 400, height: 300 },
+        data: {
+          groupName: g.name,
+          nodeCount: g.nodeIds.length,
+          childKinds: Array.from(childKindSet),
+          color: GROUP_COLOR,
+        } as GroupNodeData,
+      });
+    }
+  }
+
+  // Add visible nodes (not in collapsed groups), with parentId for expanded groups
+  for (const node of nodes) {
+    if (hiddenNodeIds.has(node.id)) continue;
+    const groupName = nodeToGroup.get(node.id);
+    if (groupName && !collapsedGroups.has(groupName)) {
+      // Node is in an expanded group: set parentId
+      resultNodes.push({
+        ...node,
+        parentId: makeGroupNodeId(groupName),
+        extent: "parent" as const,
+      });
+    } else {
+      resultNodes.push(node);
+    }
+  }
+
+  // Process edges: aggregate for collapsed groups
+  const seenAggregated = new Set<string>();
+  for (const edge of edges) {
+    const srcGroup = nodeToGroup.get(edge.source);
+    const tgtGroup = nodeToGroup.get(edge.target);
+    const srcCollapsed = srcGroup && collapsedGroups.has(srcGroup);
+    const tgtCollapsed = tgtGroup && collapsedGroups.has(tgtGroup);
+
+    if (!srcCollapsed && !tgtCollapsed) {
+      // Neither end is in a collapsed group — keep as-is
+      resultEdges.push(edge);
+      continue;
+    }
+
+    // At least one end is in a collapsed group — aggregate
+    const newSource = srcCollapsed ? makeGroupNodeId(srcGroup) : edge.source;
+    const newTarget = tgtCollapsed ? makeGroupNodeId(tgtGroup) : edge.target;
+
+    // Skip internal edges (both ends in same collapsed group)
+    if (newSource === newTarget) continue;
+
+    // Dedup aggregated edges
+    const aggKey = `${newSource}->${newTarget}`;
+    if (seenAggregated.has(aggKey)) continue;
+    seenAggregated.add(aggKey);
+
+    // Preserve edge annotations from the first matching edge
+    resultEdges.push({
+      ...edge,
+      id: `agg:${aggKey}`,
+      source: newSource,
+      target: newTarget,
+    });
+  }
+
+  return { nodes: resultNodes, edges: resultEdges };
 }
 
 // Prefixes for auxiliary node IDs

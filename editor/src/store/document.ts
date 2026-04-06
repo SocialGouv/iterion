@@ -15,6 +15,8 @@ import type {
   Comment,
 } from "@/api/types";
 import { getAllNodeNames, getAllSchemaNames, getAllPromptNames, findNodeDecl } from "@/lib/defaults";
+import type { GroupAnnotation } from "@/lib/groups";
+import { groupToCommentText, groupNameFromComment, parseGroups } from "@/lib/groups";
 
 // Normalize a document from JSON (omitempty may leave arrays as undefined).
 function normalize(doc: IterDocument): IterDocument {
@@ -116,6 +118,11 @@ interface DocumentState {
 
   // Batch mutation (single undo step for multi-declaration changes like library items)
   applyBatch: (mutator: (doc: IterDocument) => IterDocument) => void;
+
+  // Group operations (manipulate @group comments)
+  addGroup: (group: GroupAnnotation) => void;
+  removeGroup: (groupName: string) => void;
+  updateGroup: (groupName: string, updates: Partial<GroupAnnotation>) => void;
 }
 
 function updateInArray<T extends { name: string }>(arr: T[], name: string, updates: Partial<T>): T[] {
@@ -147,6 +154,31 @@ function pushHistory(s: DocumentState): { _history: IterDocument[]; _future: Ite
   if (!s.document) return { _history: s._history, _future: [], _generation: s._generation + 1 };
   const history = [...s._history, s.document].slice(-MAX_HISTORY);
   return { _history: history, _future: [], _generation: s._generation + 1 };
+}
+
+/** Remove a node from all @group comments. Drops groups that fall below 2 members. */
+function removeNodeFromGroups(comments: Comment[], nodeName: string): Comment[] {
+  return comments.flatMap((c) => {
+    if (!groupNameFromComment(c)) return [c];
+    const parsed = parseGroups([c]);
+    if (parsed.length === 0) return [c];
+    const g = parsed[0]!;
+    const remaining = g.nodeIds.filter((id) => id !== nodeName);
+    if (remaining.length < 2) return []; // dissolve group
+    return [{ text: groupToCommentText({ ...g, nodeIds: remaining }) }];
+  });
+}
+
+/** Rename a node in all @group comments. */
+function renameNodeInGroups(comments: Comment[], oldName: string, newName: string): Comment[] {
+  return comments.map((c) => {
+    if (!groupNameFromComment(c)) return c;
+    const parsed = parseGroups([c]);
+    if (parsed.length === 0) return c;
+    const g = parsed[0]!;
+    if (!g.nodeIds.includes(oldName)) return c;
+    return { text: groupToCommentText({ ...g, nodeIds: g.nodeIds.map((id) => (id === oldName ? newName : id)) }) };
+  });
 }
 
 export const useDocumentStore = create<DocumentState>((set, get) => ({
@@ -228,6 +260,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
           humans: doc.humans.filter((h) => h.name !== name),
           tools: doc.tools.filter((t) => t.name !== name),
           workflows: removeNodeEdges(doc, name),
+          comments: removeNodeFromGroups(doc.comments, name),
         },
         ...pushHistory(s),
       };
@@ -253,6 +286,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
           humans: renameIn(doc.humans),
           tools: renameIn(doc.tools),
           workflows: updateWorkflowsEdges(doc, oldName, newName),
+          comments: renameNodeInGroups(doc.comments, oldName, newName),
         },
         ...pushHistory(s),
       };
@@ -483,5 +517,36 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     set((s) => {
       if (!s.document) return s;
       return { document: normalize(mutator(s.document)), ...pushHistory(s) };
+    }),
+
+  // Group operations — groups are stored as @group comments
+  addGroup: (group) =>
+    set((s) => {
+      if (!s.document) return s;
+      // Check for duplicate group name
+      const existing = parseGroups(s.document.comments);
+      if (existing.some((g) => g.name === group.name)) return s;
+      const comment: Comment = { text: groupToCommentText(group) };
+      return { document: { ...s.document, comments: [...s.document.comments, comment] }, ...pushHistory(s) };
+    }),
+
+  removeGroup: (groupName) =>
+    set((s) => {
+      if (!s.document) return s;
+      const comments = s.document.comments.filter((c) => groupNameFromComment(c) !== groupName);
+      return { document: { ...s.document, comments }, ...pushHistory(s) };
+    }),
+
+  updateGroup: (groupName, updates) =>
+    set((s) => {
+      if (!s.document) return s;
+      const comments = s.document.comments.map((c) => {
+        if (groupNameFromComment(c) !== groupName) return c;
+        const parsed = parseGroups([c]);
+        if (parsed.length === 0) return c;
+        const updated = { ...parsed[0]!, ...updates };
+        return { text: groupToCommentText(updated) };
+      });
+      return { document: { ...s.document, comments }, ...pushHistory(s) };
     }),
 }));
