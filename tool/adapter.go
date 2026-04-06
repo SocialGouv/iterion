@@ -1,8 +1,6 @@
 package tool
 
 import (
-	"context"
-	"encoding/json"
 	"strings"
 
 	goai "github.com/zendev-sh/goai"
@@ -12,9 +10,9 @@ import (
 // GoaiAdapter — bridge between ToolDef and goai.Tool
 // ---------------------------------------------------------------------------
 
-// SanitizedName returns the qualified name with dots replaced by underscores,
+// sanitizedName returns the qualified name with dots replaced by underscores,
 // safe for LLM APIs that restrict tool names to ^[a-zA-Z0-9_-]+$.
-func (td *ToolDef) SanitizedName() string {
+func (td *ToolDef) sanitizedName() string {
 	return strings.ReplaceAll(td.QualifiedName, ".", "_")
 }
 
@@ -24,7 +22,7 @@ func (td *ToolDef) SanitizedName() string {
 // (dots → underscores) for API compatibility.
 func (td *ToolDef) ToGoaiTool() goai.Tool {
 	return goai.Tool{
-		Name:        td.SanitizedName(),
+		Name:        td.sanitizedName(),
 		Description: td.Description,
 		InputSchema: td.InputSchema,
 		Execute:     td.Execute,
@@ -61,33 +59,4 @@ func (r *Registry) ResolveMap(refs []string) (map[string]goai.Tool, error) {
 		result[td.QualifiedName] = td.ToGoaiTool()
 	}
 	return result, nil
-}
-
-// ---------------------------------------------------------------------------
-// Convenience builders
-// ---------------------------------------------------------------------------
-
-// NewBuiltinDef creates a ToolDef for a built-in tool. This is a lower-level
-// helper; prefer RegisterBuiltin for direct registration.
-func NewBuiltinDef(name, desc string, schema json.RawMessage, exec func(ctx context.Context, input json.RawMessage) (string, error)) *ToolDef {
-	return &ToolDef{
-		QualifiedName: name,
-		Description:   desc,
-		InputSchema:   schema,
-		Execute:       exec,
-		Origin:        Origin{Kind: OriginBuiltin},
-	}
-}
-
-// NewMCPDef creates a ToolDef for an MCP tool with the qualified name
-// "mcp.<server>.<tool>". This is a lower-level helper; prefer RegisterMCP
-// for direct registration.
-func NewMCPDef(server, toolName, desc string, schema json.RawMessage, exec func(ctx context.Context, input json.RawMessage) (string, error)) *ToolDef {
-	return &ToolDef{
-		QualifiedName: "mcp." + server + "." + toolName,
-		Description:   desc,
-		InputSchema:   schema,
-		Execute:       exec,
-		Origin:        Origin{Kind: OriginMCP, Server: server},
-	}
 }

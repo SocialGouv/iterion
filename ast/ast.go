@@ -314,10 +314,10 @@ func (am AwaitMode) String() string {
 type InteractionMode int
 
 const (
-	InteractionNone        InteractionMode = iota // no interaction capability (default for agent/judge)
-	InteractionHuman                              // always pause for human input (default for human nodes)
-	InteractionLLM                                // LLM auto-answers interaction questions
-	InteractionLLMOrHuman                         // LLM decides whether to answer or escalate to human
+	InteractionNone       InteractionMode = iota // no interaction capability (default for agent/judge)
+	InteractionHuman                             // always pause for human input (default for human nodes)
+	InteractionLLM                               // LLM auto-answers interaction questions
+	InteractionLLMOrHuman                        // LLM decides whether to answer or escalate to human
 )
 
 func (im InteractionMode) String() string {

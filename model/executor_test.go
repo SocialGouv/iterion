@@ -12,6 +12,7 @@ import (
 	"github.com/zendev-sh/goai/provider"
 
 	"github.com/SocialGouv/iterion/ir"
+	"github.com/SocialGouv/iterion/tool"
 )
 
 // ---------------------------------------------------------------------------
@@ -455,16 +456,12 @@ func TestExecutorToolNode(t *testing.T) {
 		Schemas: map[string]*ir.Schema{},
 	}
 
-	tools := map[string]goai.Tool{
-		"git_diff": {
-			Name: "git_diff",
-			Execute: func(_ context.Context, input json.RawMessage) (string, error) {
-				return `{"diff":"+ new line"}`, nil
-			},
-		},
-	}
+	tr := tool.NewRegistry()
+	_ = tr.RegisterBuiltin("git_diff", "Show git diff", nil, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{"diff":"+ new line"}`, nil
+	})
 
-	exec := NewGoaiExecutor(reg, wf, WithToolImplementations(tools))
+	exec := NewGoaiExecutor(reg, wf, WithToolRegistry(tr))
 
 	node := &ir.Node{
 		ID:      "get_diff",
@@ -491,16 +488,12 @@ func TestExecutorToolNodeTextOutput(t *testing.T) {
 		Schemas: map[string]*ir.Schema{},
 	}
 
-	tools := map[string]goai.Tool{
-		"echo": {
-			Name: "echo",
-			Execute: func(_ context.Context, input json.RawMessage) (string, error) {
-				return "plain text output", nil
-			},
-		},
-	}
+	tr := tool.NewRegistry()
+	_ = tr.RegisterBuiltin("echo", "Echo tool", nil, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return "plain text output", nil
+	})
 
-	exec := NewGoaiExecutor(reg, wf, WithToolImplementations(tools))
+	exec := NewGoaiExecutor(reg, wf, WithToolRegistry(tr))
 
 	node := &ir.Node{
 		ID:      "run_echo",

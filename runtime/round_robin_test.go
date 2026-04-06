@@ -217,8 +217,8 @@ func TestRoundRobinCounterPersistence(t *testing.T) {
 			"agent_a": {ID: "agent_a", Kind: ir.NodeAgent},
 			"agent_b": {ID: "agent_b", Kind: ir.NodeAgent},
 			"human": {
-				ID:        "human",
-				Kind:      ir.NodeHuman,
+				ID:          "human",
+				Kind:        ir.NodeHuman,
 				Interaction: ir.InteractionHuman,
 			},
 			"done": {ID: "done", Kind: ir.NodeDone},

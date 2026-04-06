@@ -144,7 +144,6 @@ type GoaiExecutor struct {
 	prompts          map[string]*ir.Prompt
 	schemas          map[string]*ir.Schema
 	vars             map[string]interface{}
-	tools            map[string]goai.Tool // legacy: direct tool implementations
 	hooks            EventHooks
 	retry            RetryPolicy
 	workDir          string // working directory for delegate subprocesses
@@ -158,15 +157,7 @@ func WithEventHooks(h EventHooks) GoaiExecutorOption {
 	return func(e *GoaiExecutor) { e.hooks = h }
 }
 
-// WithToolImplementations registers tool implementations by name.
-// Deprecated: prefer WithToolRegistry for unified built-in/MCP resolution.
-func WithToolImplementations(tools map[string]goai.Tool) GoaiExecutorOption {
-	return func(e *GoaiExecutor) { e.tools = tools }
-}
-
 // WithToolRegistry sets the unified tool registry on the executor.
-// When set, tool references in nodes are resolved through the registry
-// instead of the legacy tools map.
 func WithToolRegistry(tr *tool.Registry) GoaiExecutorOption {
 	return func(e *GoaiExecutor) { e.toolRegistry = tr }
 }
@@ -207,7 +198,6 @@ func NewGoaiExecutor(registry *Registry, wf *ir.Workflow, opts ...GoaiExecutorOp
 		registry: registry,
 		prompts:  wf.Prompts,
 		schemas:  wf.Schemas,
-		tools:    make(map[string]goai.Tool),
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -1360,31 +1350,18 @@ func (e *GoaiExecutor) resolveSingleToolForNode(ctx context.Context, node *ir.No
 		return goai.Tool{}, false, err
 	}
 
-	if e.toolRegistry != nil {
-		td, err := e.toolRegistry.Resolve(name)
-		if err != nil {
-			// Fall back to the legacy tool map when the registry does not know the tool.
-			if t, ok := e.tools[name]; ok {
-				// Apply policy guard to legacy tools — without this, the
-				// legacy path bypasses tool policy enforcement.
-				if e.toolPolicy != nil {
-					t = e.guardTool(t)
-				}
-				return t, true, nil
-			}
-			return goai.Tool{}, false, err
-		}
-		if err := e.checkNodeToolAccess(node, td.QualifiedName); err != nil {
-			return goai.Tool{}, false, err
-		}
-		return td.ToGoaiTool(), true, nil
+	if e.toolRegistry == nil {
+		return goai.Tool{}, false, fmt.Errorf("no tool registry configured")
 	}
 
-	if err := e.checkNodeToolAccess(node, name); err != nil {
+	td, err := e.toolRegistry.Resolve(name)
+	if err != nil {
 		return goai.Tool{}, false, err
 	}
-	t, ok := e.tools[name]
-	return t, ok, nil
+	if err := e.checkNodeToolAccess(node, td.QualifiedName); err != nil {
+		return goai.Tool{}, false, err
+	}
+	return td.ToGoaiTool(), true, nil
 }
 
 func (e *GoaiExecutor) ensureMCPServers(ctx context.Context, node *ir.Node, names []string) error {

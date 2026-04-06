@@ -205,8 +205,6 @@ type jsonHumanDecl struct {
 	Model             string `json:"model,omitempty"`
 	System            string `json:"system,omitempty"`
 	Await             string `json:"await,omitempty"`
-	// Legacy field — mapped to Interaction on read, ignored on write.
-	Mode string `json:"mode,omitempty"`
 }
 
 type jsonToolNodeDecl struct {
@@ -685,22 +683,8 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*ast.JudgeDecl, error) {
 	}, nil
 }
 
-// legacyHumanModeToInteraction maps the old mode: values to InteractionMode.
-var legacyHumanModeToInteraction = map[string]ast.InteractionMode{
-	"pause_until_answers": ast.InteractionHuman,
-	"auto_answer":         ast.InteractionLLM,
-	"auto_or_pause":       ast.InteractionLLMOrHuman,
-}
-
 func humanFromJSON(jh *jsonHumanDecl) (*ast.HumanDecl, error) {
 	interactionStr := jh.Interaction
-	// Backward compatibility: fall back to legacy "mode" field.
-	if interactionStr == "" && jh.Mode != "" {
-		if mapped, ok := legacyHumanModeToInteraction[jh.Mode]; ok {
-			return humanFromJSONWithInteraction(jh, mapped)
-		}
-		return nil, fmt.Errorf("astjson: unknown legacy human mode %q", jh.Mode)
-	}
 	interaction, ok := strToInteractionMode[interactionStr]
 	if interactionStr != "" && !ok {
 		return nil, fmt.Errorf("astjson: unknown interaction mode %q", interactionStr)

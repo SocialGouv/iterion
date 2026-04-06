@@ -492,33 +492,6 @@ func TestOriginKindString(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Convenience builders
-// ---------------------------------------------------------------------------
-
-func TestNewBuiltinDef(t *testing.T) {
-	td := NewBuiltinDef("git_diff", "diff", nil, noop)
-	if td.QualifiedName != "git_diff" {
-		t.Errorf("unexpected name: %q", td.QualifiedName)
-	}
-	if td.Origin.Kind != OriginBuiltin {
-		t.Errorf("expected OriginBuiltin")
-	}
-}
-
-func TestNewMCPDef(t *testing.T) {
-	td := NewMCPDef("github", "create_issue", "issue", nil, noop)
-	if td.QualifiedName != "mcp.github.create_issue" {
-		t.Errorf("unexpected name: %q", td.QualifiedName)
-	}
-	if td.Origin.Kind != OriginMCP {
-		t.Errorf("expected OriginMCP")
-	}
-	if td.Origin.Server != "github" {
-		t.Errorf("expected server 'github', got %q", td.Origin.Server)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // mustResolve (unexported — test-only helper)
 // ---------------------------------------------------------------------------
 

@@ -264,41 +264,6 @@ func TestFormatVersionPersisted(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test: format_version 0 (legacy) can still be loaded
-// ---------------------------------------------------------------------------
-
-func TestFormatVersionZeroCompatibility(t *testing.T) {
-	s := tmpStore(t)
-
-	// Create a run without format_version (simulates pre-P9-02 data).
-	r := &store.Run{
-		ID:           "legacy-run",
-		WorkflowName: "old_workflow",
-		Status:       store.RunStatusFinished,
-	}
-	// Write it directly (format_version will be 0 / zero value).
-	// We use CreateRun then check that LoadRun handles it.
-	created, err := s.CreateRun("legacy-run", "old_workflow", nil)
-	if err != nil {
-		t.Fatalf("create run: %v", err)
-	}
-	_ = created
-	_ = r
-
-	loaded, err := s.LoadRun("legacy-run")
-	if err != nil {
-		t.Fatalf("load legacy run: %v", err)
-	}
-
-	// Current CreateRun sets format_version, but the key test is that
-	// LoadRun works even if format_version were 0 (forward compatibility).
-	if loaded.FormatVersion == 0 {
-		// This would happen with truly old data. It should not crash.
-		t.Log("loaded legacy run with format_version=0 (expected for old data)")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Test: RuntimeError carries structured information
 // ---------------------------------------------------------------------------
 
