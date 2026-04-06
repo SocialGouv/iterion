@@ -1,0 +1,27 @@
+## Minimal workflow: agent produces output, judge decides pass/fail.
+
+prompt review_system:
+  You are a code reviewer. Evaluate the submission and decide if it meets quality standards.
+
+prompt review_user:
+  Review this code:
+  {{input.code}}
+
+schema review_input:
+  code: string
+
+schema review_output:
+  approved: bool
+  summary: string
+
+agent reviewer:
+  model: "${MODEL}"
+  input: review_input
+  output: review_output
+  system: review_system
+  user: review_user
+
+workflow minimal:
+  entry: reviewer
+  reviewer -> done when approved
+  reviewer -> fail when not approved

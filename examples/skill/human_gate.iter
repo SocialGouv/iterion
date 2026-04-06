@@ -1,0 +1,49 @@
+## Human gate: agent produces a plan, human reviews and approves or rejects.
+
+prompt planner_system:
+  You are a project planner. Create a detailed implementation plan.
+
+prompt planner_user:
+  Create an implementation plan for:
+  {{input.task_description}}
+
+prompt gate_instructions:
+  Review the proposed plan. Approve if it meets requirements, reject otherwise.
+
+schema plan_input:
+  task_description: string
+
+schema plan_output:
+  plan: string
+  estimated_effort: string
+
+schema gate_input:
+  plan: json
+
+schema gate_output:
+  approved: bool
+  comments: string
+
+agent planner:
+  model: "${MODEL}"
+  input: plan_input
+  output: plan_output
+  publish: implementation_plan
+  system: planner_system
+  user: planner_user
+
+human approval:
+  input: gate_input
+  output: gate_output
+  instructions: gate_instructions
+  interaction: human
+
+workflow human_gated:
+  entry: planner
+
+  planner -> approval with {
+    plan: "{{outputs.planner}}"
+  }
+
+  approval -> done when approved
+  approval -> fail when not approved

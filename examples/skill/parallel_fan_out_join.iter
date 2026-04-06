@@ -1,0 +1,69 @@
+## Parallel fan-out: router sends to two agents, judge waits for both results.
+
+prompt analyze_system:
+  You are a specialist analyst. Analyze the data from your perspective.
+
+prompt analyze_user:
+  Analyze this data:
+  {{input.data}}
+
+prompt merge_system:
+  Synthesize the two analyses into a unified conclusion.
+
+prompt merge_user:
+  Analysis A: {{input.analysis_a}}
+  Analysis B: {{input.analysis_b}}
+
+schema analysis_input:
+  data: string
+
+schema analysis_output:
+  findings: string
+  confidence: string [enum: "low", "medium", "high"]
+
+schema merge_input:
+  analysis_a: json
+  analysis_b: json
+
+schema merge_output:
+  conclusion: string
+
+router fan_out:
+  mode: fan_out_all
+
+agent analyst_a:
+  model: "${MODEL}"
+  input: analysis_input
+  output: analysis_output
+  system: analyze_system
+  user: analyze_user
+
+agent analyst_b:
+  model: "${MODEL}"
+  input: analysis_input
+  output: analysis_output
+  system: analyze_system
+  user: analyze_user
+
+judge synthesizer:
+  model: "${MODEL}"
+  await: wait_all
+  input: merge_input
+  output: merge_output
+  system: merge_system
+  user: merge_user
+  session: fresh
+
+workflow parallel_analysis:
+  entry: fan_out
+
+  budget:
+    max_parallel_branches: 4
+
+  fan_out -> analyst_a with { data: "{{input.data}}" }
+  fan_out -> analyst_b with { data: "{{input.data}}" }
+
+  analyst_a -> synthesizer with { analysis_a: "{{outputs.analyst_a}}" }
+  analyst_b -> synthesizer with { analysis_b: "{{outputs.analyst_b}}" }
+
+  synthesizer -> done

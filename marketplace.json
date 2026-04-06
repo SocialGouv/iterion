@@ -1,0 +1,32 @@
+{
+  "name": "iterion-dsl",
+  "version": "0.1.0",
+  "description": "Write correct .iter workflow files for the Iterion orchestration engine",
+  "author": "SocialGouv",
+  "license": "Apache-2.0",
+  "repository": "https://github.com/SocialGouv/iterion",
+  "skills": [
+    {
+      "name": "iterion-dsl",
+      "path": ".",
+      "description": "DSL reference for writing .iter multi-agent workflow files"
+    }
+  ],
+  "compatibility": [
+    "claude-code",
+    "codex",
+    "cursor",
+    "windsurf",
+    "github-copilot",
+    "cline",
+    "aider"
+  ],
+  "tags": [
+    "workflow",
+    "orchestration",
+    "dsl",
+    "ai-agents",
+    "llm",
+    "multi-agent"
+  ]
+}

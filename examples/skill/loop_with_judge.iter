@@ -1,0 +1,61 @@
+## Bounded loop: writer produces text, judge evaluates, loops back if not good enough.
+
+prompt writer_system:
+  You are a technical writer. Write or improve the document based on feedback.
+
+prompt writer_user:
+  Write a document about: {{input.topic}}
+  Previous feedback: {{input.feedback}}
+
+prompt judge_system:
+  Evaluate the document quality. Set pass=true if it meets standards.
+
+prompt judge_user:
+  Evaluate this document:
+  {{input.document}}
+
+schema writer_input:
+  topic: string
+  feedback: string
+
+schema writer_output:
+  document: string
+
+schema judge_input:
+  document: string
+
+schema judge_output:
+  pass: bool
+  summary: string
+
+agent writer:
+  model: "${MODEL}"
+  input: writer_input
+  output: writer_output
+  publish: document
+  system: writer_system
+  user: writer_user
+  session: fresh
+
+judge quality_check:
+  model: "${MODEL}"
+  input: judge_input
+  output: judge_output
+  system: judge_system
+  user: judge_user
+
+workflow iterative_writing:
+  entry: writer
+
+  budget:
+    max_iterations: 15
+
+  writer -> quality_check with {
+    document: "{{outputs.writer.document}}"
+  }
+
+  quality_check -> done when pass
+  quality_check -> writer when not pass as refine(3) with {
+    topic: "{{vars.topic}}",
+    feedback: "{{outputs.quality_check.summary}}"
+  }
