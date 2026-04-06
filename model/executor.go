@@ -237,7 +237,9 @@ func (e *GoaiExecutor) Execute(ctx context.Context, node *ir.Node, input map[str
 		return e.executeHumanLLM(ctx, node, input)
 	case ir.NodeRouter:
 		if node.RouterMode == ir.RouterLLM {
-			// LLM router: generate structured output to select route(s).
+			if node.Delegate != "" {
+				return e.executeLLMRouterDelegated(ctx, node, input)
+			}
 			return e.executeLLMRouter(ctx, node, input)
 		}
 		// Deterministic routers are pass-throughs handled by the engine.
@@ -1067,11 +1069,7 @@ func (e *GoaiExecutor) executeLLMRouter(ctx context.Context, node *ir.Node, inpu
 			systemText = e.resolveTemplate(p.Body, cleanInput)
 		}
 	}
-	routingInstruction := fmt.Sprintf(
-		"\n\nYou are a routing decision maker. Based on the input context, select the most appropriate route(s) from the available options: %v.\nRespond with your selection using the required output format.",
-		candidates,
-	)
-	systemText += routingInstruction
+	systemText += routerRoutingInstruction(candidates)
 	opts = append(opts, goai.WithSystem(systemText))
 
 	// User message.
@@ -1153,6 +1151,148 @@ func buildRouterSchema(node *ir.Node, candidates []string) *ir.Schema {
 			{Name: "reasoning", Type: ir.FieldTypeString},
 		},
 	}
+}
+
+// routerRoutingInstruction returns the standard instruction appended to LLM
+// router system prompts, shared by both direct and delegated paths.
+func routerRoutingInstruction(candidates []string) string {
+	return fmt.Sprintf(
+		"\n\nYou are a routing decision maker. Based on the input context, select the most appropriate route(s) from the available options: %v.\nRespond with your selection using the required output format.",
+		candidates,
+	)
+}
+
+// executeLLMRouterDelegated handles LLM routers that use a delegation backend
+// (e.g. claude_code, codex) instead of a direct goai call. This allows LLM
+// routing decisions without requiring a raw API key.
+func (e *GoaiExecutor) executeLLMRouterDelegated(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+	if e.delegateRegistry == nil {
+		return nil, fmt.Errorf("model: llm router %q uses delegate %q but no delegate registry configured", node.ID, node.Delegate)
+	}
+
+	backend, err := e.delegateRegistry.Resolve(node.Delegate)
+	if err != nil {
+		return nil, fmt.Errorf("model: llm router %q: %w", node.ID, err)
+	}
+
+	// Extract route candidates injected by the engine.
+	candidatesRaw, ok := input["_route_candidates"]
+	if !ok {
+		return nil, fmt.Errorf("model: llm router %q: missing _route_candidates in input", node.ID)
+	}
+	candidates, ok := candidatesRaw.([]string)
+	if !ok {
+		return nil, fmt.Errorf("model: llm router %q: _route_candidates is %T, expected []string", node.ID, candidatesRaw)
+	}
+
+	// Build clean input (without internal keys) for the prompt.
+	cleanInput := make(map[string]interface{})
+	for k, v := range input {
+		if !strings.HasPrefix(k, "_") {
+			cleanInput[k] = v
+		}
+	}
+
+	// Build system prompt with routing instruction.
+	var systemText string
+	if node.SystemPrompt != "" {
+		if p, ok := e.prompts[node.SystemPrompt]; ok {
+			systemText = e.resolveTemplate(p.Body, cleanInput)
+		}
+	}
+	systemText += routerRoutingInstruction(candidates)
+
+	// User message.
+	userText := e.buildUserMessage(node, cleanInput)
+
+	// Emit prompt content for observability.
+	if e.hooks.OnLLMPrompt != nil {
+		e.hooks.OnLLMPrompt(node.ID, systemText, userText)
+	}
+
+	// Auto-generate schema from candidates.
+	schema := buildRouterSchema(node, candidates)
+	jsonSchema, err := SchemaToJSON(schema)
+	if err != nil {
+		return nil, fmt.Errorf("model: llm router %q: schema: %w", node.ID, err)
+	}
+
+	task := delegate.Task{
+		SystemPrompt:    systemText,
+		OutputSchema:    jsonSchema,
+		WorkDir:         e.workDir,
+		ReasoningEffort: resolveReasoningEffort(node, input),
+	}
+	if userText != "" {
+		task.UserPrompt = userText
+	}
+
+	// Emit delegation started event.
+	if e.hooks.OnDelegateStarted != nil {
+		e.hooks.OnDelegateStarted(node.ID, node.Delegate)
+	}
+
+	result, err := e.retryDelegateLoop(ctx, node.ID, node.Delegate, func() (delegate.Result, error) {
+		return backend.Execute(ctx, task)
+	})
+	if err != nil {
+		if e.hooks.OnDelegateError != nil {
+			backendName := result.BackendName
+			if backendName == "" {
+				backendName = node.Delegate
+			}
+			e.hooks.OnDelegateError(node.ID, DelegateInfo{
+				BackendName:   backendName,
+				Duration:      result.Duration,
+				Tokens:        result.Tokens,
+				ExitCode:      result.ExitCode,
+				Stderr:        result.Stderr,
+				RawOutputLen:  result.RawOutputLen,
+				ParseFallback: result.ParseFallback,
+				Error:         err,
+			})
+		}
+		return nil, fmt.Errorf("model: llm router %q: delegation to %q failed: %w", node.ID, node.Delegate, err)
+	}
+
+	// Emit delegation finished event.
+	if e.hooks.OnDelegateFinished != nil {
+		e.hooks.OnDelegateFinished(node.ID, DelegateInfo{
+			BackendName:   result.BackendName,
+			Duration:      result.Duration,
+			Tokens:        result.Tokens,
+			ExitCode:      result.ExitCode,
+			Stderr:        result.Stderr,
+			RawOutputLen:  result.RawOutputLen,
+			ParseFallback: result.ParseFallback,
+		})
+	}
+
+	output := result.Output
+
+	// If structured output parsing fell back to text wrapper, attempt JSON
+	// extraction from the text. Routers must produce structured output.
+	if result.ParseFallback {
+		if textVal, ok := output["text"].(string); ok {
+			var parsed map[string]interface{}
+			if json.Unmarshal([]byte(textVal), &parsed) == nil {
+				output = parsed
+			} else {
+				return nil, fmt.Errorf("model: llm router %q: delegation returned unstructured text, cannot determine route selection", node.ID)
+			}
+		}
+	}
+
+	// Strict validation against the router schema.
+	if err := ValidateOutput(output, schema); err != nil {
+		return nil, fmt.Errorf("model: llm router %q: delegated output invalid: %w", node.ID, err)
+	}
+
+	// Attach metadata.
+	output["_tokens"] = result.Tokens
+	output["_delegate"] = node.Delegate
+
+	return output, nil
 }
 
 // ---------------------------------------------------------------------------

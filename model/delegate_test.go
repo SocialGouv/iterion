@@ -264,3 +264,151 @@ func TestDelegation_ParseFallbackMetadata(t *testing.T) {
 		t.Error("expected _parse_fallback=true in output")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// LLM router delegation tests
+// ---------------------------------------------------------------------------
+
+func TestLLMRouterDelegated_SelectsRoute(t *testing.T) {
+	backend := &stubBackend{
+		results: []delegate.Result{{
+			Output: map[string]interface{}{
+				"selected_route": "agent_a",
+				"reasoning":      "code issues dominate",
+			},
+			Tokens: 100,
+		}},
+	}
+
+	exec := newDelegateTestExecutor(backend, EventHooks{})
+
+	node := &ir.Node{
+		ID:           "fix_router",
+		Kind:         ir.NodeRouter,
+		RouterMode:   ir.RouterLLM,
+		Delegate:     "test_backend",
+		SystemPrompt: "sys",
+	}
+
+	input := map[string]interface{}{
+		"_route_candidates": []string{"agent_a", "agent_b"},
+		"code_review":       "some review",
+	}
+
+	output, err := exec.executeLLMRouterDelegated(context.Background(), node, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := output["selected_route"]; got != "agent_a" {
+		t.Errorf("expected selected_route=agent_a, got %v", got)
+	}
+	if got := output["_delegate"]; got != "test_backend" {
+		t.Errorf("expected _delegate=test_backend, got %v", got)
+	}
+}
+
+func TestLLMRouterDelegated_MultiRoute(t *testing.T) {
+	backend := &stubBackend{
+		results: []delegate.Result{{
+			Output: map[string]interface{}{
+				"selected_routes": []interface{}{"agent_a", "agent_b"},
+				"reasoning":       "both routes needed",
+			},
+			Tokens: 120,
+		}},
+	}
+
+	exec := newDelegateTestExecutor(backend, EventHooks{})
+
+	node := &ir.Node{
+		ID:          "multi_router",
+		Kind:        ir.NodeRouter,
+		RouterMode:  ir.RouterLLM,
+		Delegate:    "test_backend",
+		RouterMulti: true,
+	}
+
+	input := map[string]interface{}{
+		"_route_candidates": []string{"agent_a", "agent_b", "agent_c"},
+	}
+
+	output, err := exec.executeLLMRouterDelegated(context.Background(), node, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	routes, ok := output["selected_routes"]
+	if !ok {
+		t.Fatal("expected selected_routes in output")
+	}
+	routeSlice, ok := routes.([]interface{})
+	if !ok {
+		t.Fatalf("expected []interface{}, got %T", routes)
+	}
+	if len(routeSlice) != 2 {
+		t.Fatalf("expected 2 routes, got %d", len(routeSlice))
+	}
+}
+
+func TestLLMRouterDelegated_ParseFallbackJSON(t *testing.T) {
+	// Backend returns text-wrapped output, but text contains valid JSON.
+	backend := &stubBackend{
+		results: []delegate.Result{{
+			Output:        map[string]interface{}{"text": `{"selected_route":"agent_b","reasoning":"arch issue"}`},
+			ParseFallback: true,
+			Tokens:        50,
+		}},
+	}
+
+	exec := newDelegateTestExecutor(backend, EventHooks{})
+
+	node := &ir.Node{
+		ID:         "router",
+		Kind:       ir.NodeRouter,
+		RouterMode: ir.RouterLLM,
+		Delegate:   "test_backend",
+	}
+
+	input := map[string]interface{}{
+		"_route_candidates": []string{"agent_a", "agent_b"},
+	}
+
+	output, err := exec.executeLLMRouterDelegated(context.Background(), node, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := output["selected_route"]; got != "agent_b" {
+		t.Errorf("expected selected_route=agent_b, got %v", got)
+	}
+}
+
+func TestLLMRouterDelegated_ParseFallbackPlainTextFails(t *testing.T) {
+	// Backend returns plain text that isn't JSON — should fail.
+	backend := &stubBackend{
+		results: []delegate.Result{{
+			Output:        map[string]interface{}{"text": "I think agent_a is best"},
+			ParseFallback: true,
+			Tokens:        30,
+		}},
+	}
+
+	exec := newDelegateTestExecutor(backend, EventHooks{})
+
+	node := &ir.Node{
+		ID:         "router",
+		Kind:       ir.NodeRouter,
+		RouterMode: ir.RouterLLM,
+		Delegate:   "test_backend",
+	}
+
+	input := map[string]interface{}{
+		"_route_candidates": []string{"agent_a", "agent_b"},
+	}
+
+	_, err := exec.executeLLMRouterDelegated(context.Background(), node, input)
+	if err == nil {
+		t.Fatal("expected error for plain text fallback")
+	}
+}

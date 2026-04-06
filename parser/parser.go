@@ -847,6 +847,10 @@ func (p *parser) parseRouterDecl() *ast.RouterDecl {
 			p.next()
 			p.expect(TokenColon)
 			rd.Model = p.expectString()
+		case TokenDelegate:
+			p.next()
+			p.expect(TokenColon)
+			rd.Delegate = p.expectString()
 		case TokenSystem:
 			p.next()
 			p.expect(TokenColon)

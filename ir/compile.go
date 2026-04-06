@@ -465,6 +465,9 @@ func (c *compiler) compileRouters() {
 			if r.Model != "" {
 				c.errorf(DiagRouterLLMOnlyProperty, "router %q property 'model' is only valid with mode: llm", r.Name)
 			}
+			if r.Delegate != "" {
+				c.errorf(DiagRouterLLMOnlyProperty, "router %q property 'delegate' is only valid with mode: llm", r.Name)
+			}
 			if r.System != "" {
 				c.errorf(DiagRouterLLMOnlyProperty, "router %q property 'system' is only valid with mode: llm", r.Name)
 			}
@@ -477,10 +480,11 @@ func (c *compiler) compileRouters() {
 		}
 		if mode == RouterLLM {
 			model := resolveSupervisorModel(r.Model)
-			if model == "" {
-				c.warnf(DiagMissingModelOrDelegate, "router %q with mode llm has no model; will use built-in default at runtime", r.Name)
+			if model == "" && r.Delegate == "" {
+				c.warnf(DiagMissingModelOrDelegate, "router %q with mode llm has no model or delegate; will use built-in default at runtime", r.Name)
 			}
 			node.Model = model
+			node.Delegate = r.Delegate
 			if r.System != "" {
 				c.validatePromptRef(r.Name, "system", r.System)
 				node.SystemPrompt = r.System

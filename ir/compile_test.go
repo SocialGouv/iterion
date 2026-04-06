@@ -865,6 +865,76 @@ workflow test:
 }
 
 // ---------------------------------------------------------------------------
+// LLM router with delegate
+// ---------------------------------------------------------------------------
+
+func TestCompileLLMRouterWithDelegate(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  Route this.
+
+agent a:
+  model: "m"
+  input: s
+  output: s
+
+router r:
+  mode: llm
+  delegate: "claude_code"
+  system: sys
+
+workflow test:
+  entry: a
+  a -> r
+  r -> done
+  r -> fail
+`
+	w := mustCompile(t, src)
+	node := w.Nodes["r"]
+	if node.Delegate != "claude_code" {
+		t.Fatalf("expected delegate 'claude_code', got %q", node.Delegate)
+	}
+	if node.RouterMode != RouterLLM {
+		t.Fatalf("expected RouterLLM, got %v", node.RouterMode)
+	}
+	// With delegate set, no warning about missing model should be emitted.
+}
+
+func TestCompileRouterDelegateOnlyLLM(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+agent a:
+  model: "m"
+  input: s
+  output: s
+
+router r:
+  mode: fan_out_all
+  delegate: "claude_code"
+
+workflow test:
+  entry: a
+  a -> r
+  r -> done
+`
+	r := compileFile(t, src)
+	found := false
+	for _, d := range r.Diagnostics {
+		if d.Code == DiagRouterLLMOnlyProperty {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected DiagRouterLLMOnlyProperty for delegate on non-LLM router")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Prompt template refs
 // ---------------------------------------------------------------------------
 

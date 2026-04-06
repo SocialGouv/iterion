@@ -349,6 +349,22 @@ func TestRouterDeclRoundRobin(t *testing.T) {
 	assertEq(t, "Mode", r.Mode, ast.RouterRoundRobin)
 }
 
+func TestRouterDeclLLMWithDelegate(t *testing.T) {
+	src := `router fix_router:
+  mode: llm
+  delegate: "claude_code"
+  system: my_prompt
+`
+	res := parser.Parse("test.iter", src)
+	assertNoDiags(t, res)
+
+	r := res.File.Routers[0]
+	assertEq(t, "Name", r.Name, "fix_router")
+	assertEq(t, "Mode", r.Mode, ast.RouterLLM)
+	assertEq(t, "Delegate", r.Delegate, "claude_code")
+	assertEq(t, "System", r.System, "my_prompt")
+}
+
 func TestHumanDecl(t *testing.T) {
 	src := `human review:
   input: review_in

@@ -261,6 +261,7 @@ judge verdict:
 
 router fix_router:
   mode: llm
+  delegate: "claude_code"
   system: fix_router_system
 
 ## ─── Nodes : Fix (session inherit from reviewer) ────────────────

@@ -269,13 +269,14 @@ func (rm RouterMode) String() string {
 // Routers are fan-out sources and do not support the Await field
 // (convergence is only meaningful on target nodes: agent, judge, human, tool).
 type RouterDecl struct {
-	Name   string
-	Mode   RouterMode
-	Model  string // only for mode: llm
-	System string // prompt ref, only for mode: llm
-	User   string // prompt ref, only for mode: llm
-	Multi  bool   // multi-route selection, only for mode: llm
-	Span   Span
+	Name     string
+	Mode     RouterMode
+	Model    string // only for mode: llm
+	Delegate string // delegation backend name, only for mode: llm
+	System   string // prompt ref, only for mode: llm
+	User     string // prompt ref, only for mode: llm
+	Multi    bool   // multi-route selection, only for mode: llm
+	Span     Span
 }
 
 // ---------------------------------------------------------------------------
