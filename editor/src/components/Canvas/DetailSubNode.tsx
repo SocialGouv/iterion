@@ -1,6 +1,7 @@
 import { Handle } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 import { useUIStore } from "@/store/ui";
+import { SELECTED_BORDER, SELECTED_GLOW } from "@/lib/constants";
 import { SIDES, POS_MAP } from "./handlePositions";
 
 export type DetailSubKind = "schema" | "prompt" | "var" | "edge" | "tool";
@@ -36,7 +37,7 @@ const SUB_ICONS: Record<DetailSubKind, string> = {
   tool: "\u{1F527}",
 };
 
-export default function DetailSubNode({ data }: NodeProps) {
+export default function DetailSubNode({ data, selected }: NodeProps) {
   const { subKind, label, subtitle, badge, itemName, edgeIndex, workflowName } = data as DetailSubNodeData;
   const color = SUB_COLORS[subKind];
   const icon = SUB_ICONS[subKind];
@@ -58,7 +59,11 @@ export default function DetailSubNode({ data }: NodeProps) {
   return (
     <div
       className="rounded-lg border px-3 py-2 min-w-[130px] max-w-[200px] text-center shadow-md cursor-pointer hover:brightness-125 transition-all"
-      style={{ borderColor: color, background: `${color}18` }}
+      style={{
+        borderColor: selected ? SELECTED_BORDER : color,
+        background: `${color}18`,
+        boxShadow: selected ? SELECTED_GLOW : undefined,
+      }}
       onClick={handleClick}
       title={`Click to edit ${subKind}`}
     >

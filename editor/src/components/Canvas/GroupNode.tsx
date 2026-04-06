@@ -2,6 +2,7 @@ import { Handle } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 import { useGroupStore } from "@/store/groups";
 import { groupNameFromNodeId } from "@/lib/groups";
+import { SELECTED_BORDER, SELECTED_GLOW } from "@/lib/constants";
 import { SIDES, POS_MAP } from "./handlePositions";
 
 export interface GroupNodeData extends Record<string, unknown> {
@@ -13,7 +14,7 @@ export interface GroupNodeData extends Record<string, unknown> {
 
 const GROUP_COLOR = "#6366F1"; // indigo
 
-export default function GroupNode({ id, data }: NodeProps) {
+export default function GroupNode({ id, data, selected }: NodeProps) {
   const { groupName, nodeCount, childKinds, color } = data as unknown as GroupNodeData;
   const name = groupName ?? groupNameFromNodeId(id);
   const collapsed = useGroupStore((s) => s.collapsedGroups.has(name));
@@ -26,9 +27,10 @@ export default function GroupNode({ id, data }: NodeProps) {
       <div
         className="rounded-lg border-2 px-4 py-3 min-w-[160px] text-center shadow-lg cursor-pointer"
         style={{
-          borderColor: themeColor,
+          borderColor: selected ? SELECTED_BORDER : themeColor,
           background: `${themeColor}22`,
           borderStyle: "dashed",
+          boxShadow: selected ? SELECTED_GLOW : undefined,
         }}
         onDoubleClick={(e) => { e.stopPropagation(); toggleCollapse(name); }}
       >
@@ -62,9 +64,10 @@ export default function GroupNode({ id, data }: NodeProps) {
     <div
       className="rounded-xl border-2 w-full h-full"
       style={{
-        borderColor: `${themeColor}66`,
+        borderColor: selected ? SELECTED_BORDER : `${themeColor}66`,
         background: `${themeColor}0A`,
         borderStyle: "dashed",
+        boxShadow: selected ? SELECTED_GLOW : undefined,
         minWidth: "100%",
         minHeight: "100%",
       }}

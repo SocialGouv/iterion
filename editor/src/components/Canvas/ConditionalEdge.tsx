@@ -1,5 +1,6 @@
 import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath } from "@xyflow/react";
 import type { EdgeProps } from "@xyflow/react";
+import { SELECTED_BORDER } from "@/lib/constants";
 
 export default function ConditionalEdge(props: EdgeProps) {
   const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, label, data, selected, markerEnd } = props;
@@ -17,7 +18,7 @@ export default function ConditionalEdge(props: EdgeProps) {
     offset: hasLoop ? 40 : 20,
   });
 
-  const strokeColor = selected ? "#60A5FA" : hasLoop ? "#F59E0B" : "#888";
+  const strokeColor = selected ? SELECTED_BORDER : hasLoop ? "#F59E0B" : "#888";
   const strokeDasharray = hasLoop ? "8 4" : undefined;
   const strokeWidth = selected ? 3 : hasLoop ? 2.5 : 1;
 

@@ -4,7 +4,7 @@ import type { NodeKind, AgentDecl, ToolNodeDecl, HumanDecl, RouterDecl } from "@
 import { useDocumentStore } from "@/store/document";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { ProviderIcon } from "@/components/icons/ProviderIcon";
-import { NODE_ICONS } from "@/lib/constants";
+import { NODE_ICONS, SELECTED_BORDER, SELECTED_GLOW } from "@/lib/constants";
 import { SIDES, POS_MAP } from "./handlePositions";
 
 interface WorkflowNodeData extends Record<string, unknown> {
@@ -14,7 +14,7 @@ interface WorkflowNodeData extends Record<string, unknown> {
   decl: unknown;
 }
 
-export default function WorkflowNode({ data }: NodeProps) {
+export default function WorkflowNode({ data, selected }: NodeProps) {
   const { label, kind, color, decl } = data as unknown as WorkflowNodeData;
   const activeWorkflow = useActiveWorkflow();
   const diagnostics = useDocumentStore((s) => s.diagnostics);
@@ -95,13 +95,15 @@ export default function WorkflowNode({ data }: NodeProps) {
     <div
       className={`rounded-lg border-2 px-4 py-2 min-w-[140px] text-center shadow-lg ${isTerminal || isStart ? "opacity-80" : ""}`}
       style={{
-        borderColor: hasError ? "#EF4444" : isEntry ? "#F59E0B" : color,
+        borderColor: selected ? SELECTED_BORDER : hasError ? "#EF4444" : isEntry ? "#F59E0B" : color,
         background: `${color}22`,
-        boxShadow: hasError
-          ? "0 0 10px #EF444455"
-          : isEntry
-            ? "0 0 8px #F59E0B55"
-            : undefined,
+        boxShadow: selected
+          ? SELECTED_GLOW
+          : hasError
+            ? "0 0 10px #EF444455"
+            : isEntry
+              ? "0 0 8px #F59E0B55"
+              : undefined,
       }}
     >
       {!isStart && SIDES.map(s => (

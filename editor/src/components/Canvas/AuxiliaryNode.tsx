@@ -2,7 +2,7 @@ import { Handle } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 import type { EditingItem } from "@/store/ui";
 import { useUIStore } from "@/store/ui";
-import { LAYER_COLORS, LAYER_ICONS } from "@/lib/constants";
+import { LAYER_COLORS, LAYER_ICONS, SELECTED_BORDER, SELECTED_GLOW } from "@/lib/constants";
 import type { LayerKind } from "@/lib/constants";
 import { SIDES, POS_MAP } from "./handlePositions";
 
@@ -19,7 +19,7 @@ export interface AuxiliaryNodeData extends Record<string, unknown> {
   badge?: string;
 }
 
-export default function AuxiliaryNode({ data }: NodeProps) {
+export default function AuxiliaryNode({ data, selected }: NodeProps) {
   const { label, layerKind, subtitle, badge } = data as AuxiliaryNodeData;
   const color = LAYER_COLORS[layerKind];
   const icon = LAYER_ICONS[layerKind];
@@ -28,7 +28,11 @@ export default function AuxiliaryNode({ data }: NodeProps) {
   return (
     <div
       className="rounded-full border px-3 py-1.5 min-w-[100px] text-center shadow-md cursor-pointer"
-      style={{ borderColor: color, background: `${color}22` }}
+      style={{
+        borderColor: selected ? SELECTED_BORDER : color,
+        background: `${color}22`,
+        boxShadow: selected ? SELECTED_GLOW : undefined,
+      }}
       onClick={() => setEditingItem({ kind: LAYER_TO_ITEM_KIND[layerKind], name: label })}
       title="Click to edit"
     >

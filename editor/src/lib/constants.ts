@@ -51,6 +51,10 @@ export const LAYER_LABELS: Record<LayerKind, string> = {
   vars: "Vars",
 };
 
+/** Selection styling — shared across node and edge components */
+export const SELECTED_BORDER = "#60A5FA";
+export const SELECTED_GLOW = "0 0 10px rgba(96, 165, 250, 0.6)";
+
 /** Timing constants (ms) */
 export const DEBOUNCE_EDGE_RECOMPUTE_MS = 100;
 export const DEBOUNCE_FIT_VIEW_MS = 150;
