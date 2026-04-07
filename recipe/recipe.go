@@ -20,6 +20,7 @@ type RecipeSpec struct {
 	PresetVars       PresetVars       `json:"preset_vars,omitempty"`
 	PromptPack       PromptPack       `json:"prompt_pack,omitempty"`
 	Budget           *BudgetOverride  `json:"budget,omitempty"`
+	ToolPolicy       []string         `json:"tool_policy,omitempty"`
 	EvaluationPolicy EvaluationPolicy `json:"evaluation_policy,omitempty"`
 }
 
@@ -147,6 +148,11 @@ func (r *RecipeSpec) Apply(wf *ir.Workflow) (*ir.Workflow, error) {
 			newPrompts[name] = &cp
 		}
 		applied.Prompts = newPrompts
+	}
+
+	// --- Apply tool policy ---
+	if len(r.ToolPolicy) > 0 {
+		applied.ToolPolicy = r.ToolPolicy
 	}
 
 	// --- Apply budget override ---

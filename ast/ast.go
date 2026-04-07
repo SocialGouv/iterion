@@ -152,6 +152,7 @@ type AgentDecl struct {
 	User              string          // prompt reference name
 	Session           SessionMode     // defaults to SessionFresh
 	Tools             []string        // tool capability names
+	ToolPolicy        []string        // per-node tool policy patterns (nil = inherit workflow)
 	ToolMaxSteps      int             // max tool-use iterations (0 = not set)
 	ReasoningEffort   string          // reasoning effort level: "low", "medium", "high", "extra_high"
 	Readonly          bool            // when true, node is not considered mutating for workspace safety
@@ -181,6 +182,7 @@ type JudgeDecl struct {
 	User              string
 	Session           SessionMode
 	Tools             []string // usually empty for judges, but allowed
+	ToolPolicy        []string // per-node tool policy patterns (nil = inherit workflow)
 	ToolMaxSteps      int
 	ReasoningEffort   string          // reasoning effort level: "low", "medium", "high", "extra_high"
 	Readonly          bool            // when true, node is not considered mutating for workspace safety
@@ -302,6 +304,7 @@ type WorkflowDecl struct {
 	Vars           *VarsBlock       // workflow-level variable declarations
 	Entry          string           // entry node name
 	DefaultBackend string           // workflow-level default backend (empty = not set)
+	ToolPolicy     []string         // workflow-level tool policy patterns (nil = open)
 	MCP            *MCPConfigDecl   // workflow-level MCP activation/filtering
 	Budget         *BudgetBlock     // execution limits (optional)
 	Interaction    *InteractionMode // workflow-level default interaction mode (nil = not set)

@@ -146,7 +146,7 @@ type GoaiExecutor struct {
 	backendRegistry *delegate.Registry // backend registry (goai, claude_code, codex)
 	toolRegistry    *tool.Registry     // unified tool registry (preferred)
 	mcpManager      *mcp.Manager       // generic MCP discovery/call bridge
-	toolPolicy      *tool.Policy       // allowlist policy for tool execution (nil = open)
+	toolPolicy      tool.ToolChecker   // allowlist policy for tool execution (nil = open)
 	prompts         map[string]*ir.Prompt
 	schemas         map[string]*ir.Schema
 	vars            map[string]interface{}
@@ -177,7 +177,7 @@ func WithMCPManager(m *mcp.Manager) GoaiExecutorOption {
 // WithToolPolicy sets the tool execution policy on the executor.
 // When set, every tool call is checked against the allowlist before
 // execution. A denied tool produces an explicit error.
-func WithToolPolicy(p *tool.Policy) GoaiExecutorOption {
+func WithToolPolicy(p tool.ToolChecker) GoaiExecutorOption {
 	return func(e *GoaiExecutor) { e.toolPolicy = p }
 }
 
@@ -816,7 +816,13 @@ func (e *GoaiExecutor) executeToolNode(ctx context.Context, node *ir.ToolNode, i
 
 	// Policy check before resolution — fail fast on denied tools.
 	if e.toolPolicy != nil {
-		if err := e.toolPolicy.Check(toolName); err != nil {
+		pctx := tool.PolicyContext{
+			NodeID:   node.ID,
+			NodeKind: ir.NodeTool.String(),
+			ToolName: toolName,
+			Vars:     e.vars,
+		}
+		if err := e.toolPolicy.CheckContext(pctx); err != nil {
 			if e.hooks.OnToolCall != nil {
 				e.hooks.OnToolCall(node.ID, LLMToolCallInfo{
 					ToolName: toolName,
@@ -1292,7 +1298,7 @@ func (e *GoaiExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, na
 			continue
 		}
 		if e.toolPolicy != nil {
-			t = e.guardTool(t)
+			t = e.guardTool(t, node)
 		}
 		tools = append(tools, t)
 	}
@@ -1430,12 +1436,22 @@ func (e *GoaiExecutor) checkNodeToolAccess(node ir.Node, qualified string) error
 // guardTool wraps a goai.Tool's Execute function with a policy check.
 // If the tool is denied, Execute returns an ErrToolDenied error without
 // invoking the underlying implementation.
-func (e *GoaiExecutor) guardTool(t goai.Tool) goai.Tool {
+func (e *GoaiExecutor) guardTool(t goai.Tool, node ir.Node) goai.Tool {
 	original := t.Execute
 	name := t.Name
 	policy := e.toolPolicy
+	nodeID := node.NodeID()
+	nodeKind := node.NodeKind().String()
+	vars := e.vars
 	t.Execute = func(ctx context.Context, input json.RawMessage) (string, error) {
-		if err := policy.Check(name); err != nil {
+		pctx := tool.PolicyContext{
+			NodeID:   nodeID,
+			NodeKind: nodeKind,
+			ToolName: name,
+			Input:    input,
+			Vars:     vars,
+		}
+		if err := policy.CheckContext(pctx); err != nil {
 			return "", err
 		}
 		return original(ctx, input)

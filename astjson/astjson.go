@@ -156,6 +156,7 @@ type jsonAgentDecl struct {
 	User              string   `json:"user,omitempty"`
 	Session           string   `json:"session,omitempty"`
 	Tools             []string `json:"tools,omitempty"`
+	ToolPolicy        []string `json:"tool_policy,omitempty"`
 	ToolMaxSteps      int      `json:"tool_max_steps,omitempty"`
 	ReasoningEffort   string   `json:"reasoning_effort,omitempty"`
 	Interaction       string   `json:"interaction,omitempty"`
@@ -175,6 +176,7 @@ type jsonJudgeDecl struct {
 	User              string   `json:"user,omitempty"`
 	Session           string   `json:"session,omitempty"`
 	Tools             []string `json:"tools,omitempty"`
+	ToolPolicy        []string `json:"tool_policy,omitempty"`
 	ToolMaxSteps      int      `json:"tool_max_steps,omitempty"`
 	ReasoningEffort   string   `json:"reasoning_effort,omitempty"`
 	Interaction       string   `json:"interaction,omitempty"`
@@ -215,11 +217,12 @@ type jsonToolNodeDecl struct {
 }
 
 type jsonWorkflowDecl struct {
-	Name   string           `json:"name,omitempty"`
-	Vars   *jsonVarsBlock   `json:"vars,omitempty"`
-	Entry  string           `json:"entry,omitempty"`
-	Budget *jsonBudgetBlock `json:"budget,omitempty"`
-	Edges  []*jsonEdge      `json:"edges,omitempty"`
+	Name       string           `json:"name,omitempty"`
+	Vars       *jsonVarsBlock   `json:"vars,omitempty"`
+	Entry      string           `json:"entry,omitempty"`
+	ToolPolicy []string         `json:"tool_policy,omitempty"`
+	Budget     *jsonBudgetBlock `json:"budget,omitempty"`
+	Edges      []*jsonEdge      `json:"edges,omitempty"`
 }
 
 type jsonBudgetBlock struct {
@@ -367,6 +370,7 @@ func agentToJSON(a *ast.AgentDecl) *jsonAgentDecl {
 		User:              a.User,
 		Session:           sessionModeToStr[a.Session],
 		Tools:             a.Tools,
+		ToolPolicy:        a.ToolPolicy,
 		ToolMaxSteps:      a.ToolMaxSteps,
 		ReasoningEffort:   a.ReasoningEffort,
 		Interaction:       interactionModeToStr[a.Interaction],
@@ -388,6 +392,7 @@ func judgeToJSON(j *ast.JudgeDecl) *jsonJudgeDecl {
 		User:              j.User,
 		Session:           sessionModeToStr[j.Session],
 		Tools:             j.Tools,
+		ToolPolicy:        j.ToolPolicy,
 		ToolMaxSteps:      j.ToolMaxSteps,
 		ReasoningEffort:   j.ReasoningEffort,
 		Interaction:       interactionModeToStr[j.Interaction],
@@ -416,8 +421,9 @@ func humanToJSON(h *ast.HumanDecl) *jsonHumanDecl {
 
 func workflowToJSON(w *ast.WorkflowDecl) *jsonWorkflowDecl {
 	jw := &jsonWorkflowDecl{
-		Name:  w.Name,
-		Entry: w.Entry,
+		Name:       w.Name,
+		Entry:      w.Entry,
+		ToolPolicy: w.ToolPolicy,
 	}
 	if w.Vars != nil {
 		jw.Vars = varsBlockToJSON(w.Vars)
@@ -641,6 +647,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*ast.AgentDecl, error) {
 		User:              ja.User,
 		Session:           sess,
 		Tools:             ja.Tools,
+		ToolPolicy:        ja.ToolPolicy,
 		ToolMaxSteps:      ja.ToolMaxSteps,
 		ReasoningEffort:   ja.ReasoningEffort,
 		Interaction:       interaction,
@@ -674,6 +681,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*ast.JudgeDecl, error) {
 		User:              jj.User,
 		Session:           sess,
 		Tools:             jj.Tools,
+		ToolPolicy:        jj.ToolPolicy,
 		ToolMaxSteps:      jj.ToolMaxSteps,
 		ReasoningEffort:   jj.ReasoningEffort,
 		Interaction:       interaction,
@@ -718,8 +726,9 @@ func humanFromJSONWithInteraction(jh *jsonHumanDecl, interaction ast.Interaction
 
 func workflowFromJSON(jw *jsonWorkflowDecl) (*ast.WorkflowDecl, error) {
 	w := &ast.WorkflowDecl{
-		Name:  jw.Name,
-		Entry: jw.Entry,
+		Name:       jw.Name,
+		Entry:      jw.Entry,
+		ToolPolicy: jw.ToolPolicy,
 	}
 	if jw.Vars != nil {
 		v, err := varsBlockFromJSON(jw.Vars)

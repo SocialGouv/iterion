@@ -95,7 +95,7 @@ func Unparse(f *ast.File) string {
 			writeMCPConfigBlock(&b, a.MCP, "  ")
 		}
 		writeAgentFields(&b, a.Model, a.Backend, a.Input, a.Output, a.Publish,
-			a.System, a.User, a.Session, a.Tools, a.ToolMaxSteps, a.ReasoningEffort, a.Readonly,
+			a.System, a.User, a.Session, a.Tools, a.ToolPolicy, a.ToolMaxSteps, a.ReasoningEffort, a.Readonly,
 			a.Interaction, a.InteractionPrompt, a.InteractionModel, a.Await)
 	}
 
@@ -107,7 +107,7 @@ func Unparse(f *ast.File) string {
 			writeMCPConfigBlock(&b, j.MCP, "  ")
 		}
 		writeAgentFields(&b, j.Model, j.Backend, j.Input, j.Output, j.Publish,
-			j.System, j.User, j.Session, j.Tools, j.ToolMaxSteps, j.ReasoningEffort, j.Readonly,
+			j.System, j.User, j.Session, j.Tools, j.ToolPolicy, j.ToolMaxSteps, j.ReasoningEffort, j.Readonly,
 			j.Interaction, j.InteractionPrompt, j.InteractionModel, j.Await)
 	}
 
@@ -203,6 +203,10 @@ func Unparse(f *ast.File) string {
 			writeQuotedProp(&b, "default_backend", w.DefaultBackend)
 		}
 
+		if len(w.ToolPolicy) > 0 {
+			fmt.Fprintf(&b, "  tool_policy: [%s]\n", strings.Join(w.ToolPolicy, ", "))
+		}
+
 		if w.Entry != "" {
 			b.WriteString("\n")
 			fmt.Fprintf(&b, "  entry: %s\n", w.Entry)
@@ -288,7 +292,7 @@ func quoteList(vals []string) string {
 	return strings.Join(quoted, ", ")
 }
 
-func writeAgentFields(b *strings.Builder, model, backend, input, output, publish, system, user string, session ast.SessionMode, tools []string, toolMaxSteps int, reasoningEffort string, readonly bool, interaction ast.InteractionMode, interactionPrompt, interactionModel string, await ast.AwaitMode) {
+func writeAgentFields(b *strings.Builder, model, backend, input, output, publish, system, user string, session ast.SessionMode, tools []string, toolPolicy []string, toolMaxSteps int, reasoningEffort string, readonly bool, interaction ast.InteractionMode, interactionPrompt, interactionModel string, await ast.AwaitMode) {
 	if model != "" {
 		writeQuotedProp(b, "model", model)
 	}
@@ -319,6 +323,9 @@ func writeAgentFields(b *strings.Builder, model, backend, input, output, publish
 	}
 	if len(tools) > 0 {
 		fmt.Fprintf(b, "  tools: [%s]\n", strings.Join(tools, ", "))
+	}
+	if len(toolPolicy) > 0 {
+		fmt.Fprintf(b, "  tool_policy: [%s]\n", strings.Join(toolPolicy, ", "))
 	}
 	if toolMaxSteps > 0 {
 		fmt.Fprintf(b, "  tool_max_steps: %d\n", toolMaxSteps)

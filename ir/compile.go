@@ -190,6 +190,7 @@ func (c *compiler) compile() *Workflow {
 		Name:           wf.Name,
 		Entry:          wf.Entry,
 		DefaultBackend: wf.DefaultBackend,
+		ToolPolicy:     wf.ToolPolicy,
 		Nodes:          c.nodes,
 		Edges:          edges,
 		Schemas:        c.schemas,
@@ -369,6 +370,7 @@ func (c *compiler) compileAgents() {
 			Publish:      a.Publish,
 			Session:      a.Session,
 			Tools:        a.Tools,
+			ToolPolicy:   a.ToolPolicy,
 			ToolMaxSteps: a.ToolMaxSteps,
 			AwaitMode:    a.Await,
 		}
@@ -422,6 +424,7 @@ func (c *compiler) compileJudges() {
 			Publish:      j.Publish,
 			Session:      j.Session,
 			Tools:        j.Tools,
+			ToolPolicy:   j.ToolPolicy,
 			ToolMaxSteps: j.ToolMaxSteps,
 			AwaitMode:    j.Await,
 		}

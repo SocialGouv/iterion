@@ -25,6 +25,7 @@ type Workflow struct {
 	Budget         *Budget            // workflow budget (nil if not set)
 	MCP            *MCPConfig         // workflow-level MCP activation/filtering
 	DefaultBackend string             // workflow-level default backend (empty = not set)
+	ToolPolicy     []string           // workflow-level tool policy patterns (nil = open)
 	Interaction    *InteractionMode   // workflow-level default interaction mode (nil = not set)
 	// MCPServers contains the explicit top-level declarations from the .iter file.
 	MCPServers map[string]*MCPServer
@@ -129,6 +130,7 @@ type AgentNode struct {
 	Publish          string     // persistent artifact name (empty if not set)
 	Session          SessionMode
 	Tools            []string // tool capability names
+	ToolPolicy       []string // per-node tool policy patterns (nil = inherit workflow)
 	ToolMaxSteps     int      // max tool-use iterations (0 = not set)
 	AwaitMode        AwaitMode
 }
@@ -147,6 +149,7 @@ type JudgeNode struct {
 	Publish          string
 	Session          SessionMode
 	Tools            []string
+	ToolPolicy       []string // per-node tool policy patterns (nil = inherit workflow)
 	ToolMaxSteps     int
 	AwaitMode        AwaitMode
 }

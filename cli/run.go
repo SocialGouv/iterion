@@ -269,6 +269,11 @@ func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunSto
 		model.WithEventHooks(hooks),
 		model.WithToolRegistry(tool.NewRegistry()),
 	}
+
+	// Build tool policy from workflow-level and per-node ToolPolicy fields.
+	if checker := buildToolChecker(wf); checker != nil {
+		opts = append(opts, model.WithToolPolicy(checker))
+	}
 	if len(wf.ResolvedMCPServers) > 0 {
 		catalog := make(map[string]*mcp.ServerConfig, len(wf.ResolvedMCPServers))
 		for name, server := range wf.ResolvedMCPServers {
@@ -285,6 +290,7 @@ func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunSto
 		if cacheTTL := mcp.ResolveCacheTTL(); cacheTTL > 0 {
 			mcpOpts = append(mcpOpts, mcp.WithToolCache(mcp.NewToolCache(storeDir, cacheTTL)))
 		}
+		mcpOpts = append(mcpOpts, mcp.WithFingerprintStore(mcp.NewFingerprintStore(storeDir)))
 		opts = append(opts,
 			model.WithMCPManager(mcp.NewManager(catalog, mcpOpts...)),
 		)
@@ -372,4 +378,34 @@ func ParseAnswersFile(path string) (map[string]interface{}, error) {
 		return nil, fmt.Errorf("cannot parse answers file: %w", err)
 	}
 	return answers, nil
+}
+
+// buildToolChecker constructs a tool.ToolChecker from the compiled workflow's
+// ToolPolicy fields. Workflow-level ToolPolicy becomes the base; per-node
+// ToolPolicy fields (on AgentNode and JudgeNode) become node overrides.
+// Returns nil when no policy is configured (open).
+func buildToolChecker(wf *ir.Workflow) tool.ToolChecker {
+	var nodeOverrides map[string][]string
+
+	for _, node := range wf.Nodes {
+		var patterns []string
+		switch n := node.(type) {
+		case *ir.AgentNode:
+			patterns = n.ToolPolicy
+		case *ir.JudgeNode:
+			patterns = n.ToolPolicy
+		}
+		if len(patterns) > 0 {
+			if nodeOverrides == nil {
+				nodeOverrides = make(map[string][]string)
+			}
+			nodeOverrides[node.NodeID()] = patterns
+		}
+	}
+
+	if len(wf.ToolPolicy) == 0 && len(nodeOverrides) == 0 {
+		return nil
+	}
+
+	return tool.BuildChecker(wf.ToolPolicy, nodeOverrides, nil)
 }

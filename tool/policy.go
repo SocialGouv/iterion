@@ -1,9 +1,28 @@
 package tool
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
+
+// ---------------------------------------------------------------------------
+// ToolChecker — contextual tool policy interface
+// ---------------------------------------------------------------------------
+
+// ToolChecker is the interface for contextual tool policy evaluation.
+type ToolChecker interface {
+	CheckContext(ctx PolicyContext) error
+}
+
+// PolicyContext carries evaluation context for dynamic policies.
+type PolicyContext struct {
+	NodeID   string
+	NodeKind string // "agent", "judge", "tool", etc.
+	ToolName string
+	Input    json.RawMessage        // nil when unavailable
+	Vars     map[string]interface{} // workflow vars, read-only
+}
 
 // ---------------------------------------------------------------------------
 // ToolPolicy — allowlist-based command and tool policy
@@ -50,9 +69,13 @@ func (p *Policy) IsAllowed(qualifiedName string) bool {
 	if p == nil {
 		return true
 	}
+	return patternsMatch(p.AllowedTools, qualifiedName)
+}
 
-	for _, pattern := range p.AllowedTools {
-		if matchPattern(pattern, qualifiedName) {
+// patternsMatch checks whether toolName matches any pattern in the list.
+func patternsMatch(patterns []string, toolName string) bool {
+	for _, p := range patterns {
+		if matchPattern(p, toolName) {
 			return true
 		}
 	}
@@ -65,6 +88,73 @@ func (p *Policy) Check(qualifiedName string) error {
 		return nil
 	}
 	return fmt.Errorf("%w: tool %q is not in the allowlist", ErrToolDenied, qualifiedName)
+}
+
+// CheckContext implements ToolChecker for the static Policy.
+// It delegates to Check, ignoring all context fields except ToolName.
+func (p *Policy) CheckContext(ctx PolicyContext) error {
+	return p.Check(ctx.ToolName)
+}
+
+// ---------------------------------------------------------------------------
+// VarRule — conditional tool patterns based on workflow vars
+// ---------------------------------------------------------------------------
+
+// VarRule maps a set of var conditions to tool patterns. When all vars match,
+// the listed patterns are allowed.
+type VarRule struct {
+	VarMatch map[string]interface{} // vars that must match
+	Allow    []string               // tool patterns to allow when matched
+}
+
+// ---------------------------------------------------------------------------
+// BuildChecker — construct a ToolChecker from workflow + node policies
+// ---------------------------------------------------------------------------
+
+// BuildChecker constructs a ToolChecker from workflow-level patterns,
+// optional per-node overrides, and optional var-conditional rules.
+// Returns a simple *Policy when no overrides or rules are needed.
+func BuildChecker(workflowPatterns []string, nodeOverrides map[string][]string, varRules []VarRule) ToolChecker {
+	hasOverrides := len(nodeOverrides) > 0
+	hasVarRules := len(varRules) > 0
+
+	if !hasOverrides && !hasVarRules {
+		// Simple static policy.
+		if len(workflowPatterns) == 0 {
+			return nil // open policy
+		}
+		return NewPolicy(workflowPatterns...)
+	}
+
+	// Build a RulePolicy with rules for overrides and var-rules,
+	// falling back to the workflow-level patterns.
+	var rules []Rule
+
+	// Per-node overrides become rules that match by NodeID.
+	for nodeID, patterns := range nodeOverrides {
+		rules = append(rules, Rule{
+			NodeIDs: []string{nodeID},
+			Allow:   patterns,
+		})
+	}
+
+	// Var-conditional rules.
+	for _, vr := range varRules {
+		rules = append(rules, Rule{
+			VarMatch: vr.VarMatch,
+			Allow:    vr.Allow,
+		})
+	}
+
+	var fallback *Policy
+	if len(workflowPatterns) > 0 {
+		fallback = NewPolicy(workflowPatterns...)
+	}
+
+	return &RulePolicy{
+		Rules:    rules,
+		Fallback: fallback,
+	}
 }
 
 // matchPattern checks whether qualifiedName matches a single pattern.

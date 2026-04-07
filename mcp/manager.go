@@ -64,6 +64,7 @@ type Manager struct {
 	states            map[string]*serverState
 	sanitizationRules []SanitizationRule
 	cache             *ToolCache
+	fingerprints      *FingerprintStore
 }
 
 type serverState struct {
@@ -101,6 +102,10 @@ func (m *Manager) EnsureServers(ctx context.Context, registry *tool.Registry, se
 		if err := m.ensureServer(ctx, registry, server); err != nil {
 			errs = append(errs, err)
 		}
+	}
+	// Persist fingerprints once after all servers are discovered.
+	if m.fingerprints != nil {
+		_ = m.fingerprints.Save()
 	}
 	return errors.Join(errs...)
 }
@@ -225,6 +230,15 @@ func (m *Manager) ensureServer(ctx context.Context, registry *tool.Registry, ser
 			return text, fmtErr
 		}); err != nil {
 			return fmt.Errorf("mcp: register %s.%s: %w", server, info.Name, err)
+		}
+		if m.fingerprints != nil {
+			qualified := "mcp." + serverName + "." + toolName
+			if change := m.fingerprints.Check(qualified, serverName, toolName, info.InputSchema); change != nil {
+				if !change.IsNew {
+					fmt.Fprintf(os.Stderr, "mcp: WARNING: schema changed for %q (was %s, now %s)\n",
+						change.QualifiedName, change.PreviousFingerprint[:12], change.CurrentFingerprint[:12])
+				}
+			}
 		}
 	}
 

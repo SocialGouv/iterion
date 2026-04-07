@@ -64,6 +64,7 @@ const (
 	TokenUser
 	TokenSession
 	TokenTools
+	TokenToolPolicy
 	TokenToolMaxSteps
 	TokenReasoningEffort
 	TokenMode
@@ -174,6 +175,7 @@ var tokenNames = map[TokenType]string{
 	TokenUser:              "user",
 	TokenSession:           "session",
 	TokenTools:             "tools",
+	TokenToolPolicy:        "tool_policy",
 	TokenToolMaxSteps:      "tool_max_steps",
 	TokenReasoningEffort:   "reasoning_effort",
 	TokenMode:              "mode",
@@ -261,6 +263,7 @@ var keywords = map[string]TokenType{
 	"user":                  TokenUser,
 	"session":               TokenSession,
 	"tools":                 TokenTools,
+	"tool_policy":           TokenToolPolicy,
 	"tool_max_steps":        TokenToolMaxSteps,
 	"reasoning_effort":      TokenReasoningEffort,
 	"mode":                  TokenMode,

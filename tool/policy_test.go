@@ -144,6 +144,42 @@ func TestCheckErrorContainsToolName(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// CheckContext on *Policy (ToolChecker interface)
+// ---------------------------------------------------------------------------
+
+func TestPolicyCheckContext(t *testing.T) {
+	p := NewPolicy("git_diff", "mcp.github.*")
+
+	ctx := PolicyContext{
+		NodeID:   "agent1",
+		NodeKind: "agent",
+		ToolName: "git_diff",
+		Vars:     map[string]interface{}{"env": "test"},
+	}
+	if err := p.CheckContext(ctx); err != nil {
+		t.Errorf("CheckContext should allow git_diff, got: %v", err)
+	}
+
+	ctx.ToolName = "mcp.github.create_issue"
+	if err := p.CheckContext(ctx); err != nil {
+		t.Errorf("CheckContext should allow mcp.github.create_issue, got: %v", err)
+	}
+
+	ctx.ToolName = "write_file"
+	if err := p.CheckContext(ctx); err == nil {
+		t.Error("CheckContext should deny write_file")
+	}
+}
+
+func TestNilPolicyCheckContext(t *testing.T) {
+	var p *Policy
+	err := p.CheckContext(PolicyContext{ToolName: "anything"})
+	if err != nil {
+		t.Errorf("nil policy CheckContext should allow everything, got: %v", err)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
 }
