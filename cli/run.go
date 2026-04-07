@@ -152,6 +152,13 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		defer cancel()
 	}
 
+	// Acquire exclusive run lock to prevent concurrent processes.
+	lock, err := s.LockRun(runID)
+	if err != nil {
+		return fmt.Errorf("cannot acquire run lock: %w", err)
+	}
+	defer lock.Unlock()
+
 	// Execute.
 	if p.Format == OutputHuman {
 		p.Header("Run: " + workflowName)

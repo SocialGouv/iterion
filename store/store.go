@@ -287,7 +287,8 @@ func (s *RunStore) LoadEvents(runID string) ([]*Event, error) {
 // Artifacts
 // ---------------------------------------------------------------------------
 
-// WriteArtifact persists an artifact for a node at the given version.
+// WriteArtifact persists an artifact for a node at the given version and
+// updates the run's artifact index for O(1) latest-version lookups.
 func (s *RunStore) WriteArtifact(a *Artifact) error {
 	if err := sanitizePathComponent("run ID", a.RunID); err != nil {
 		return err
@@ -307,7 +308,26 @@ func (s *RunStore) WriteArtifact(a *Artifact) error {
 	if err != nil {
 		return fmt.Errorf("store: marshal artifact: %w", err)
 	}
-	return os.WriteFile(p, data, filePerm)
+	if err := os.WriteFile(p, data, filePerm); err != nil {
+		return err
+	}
+
+	// Update the artifact index in run.json (best-effort: index is a cache,
+	// LoadLatestArtifact falls back to directory scan if missing).
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.LoadRun(a.RunID)
+	if err != nil {
+		return nil // artifact itself was written; index miss is non-fatal
+	}
+	if r.ArtifactIndex == nil {
+		r.ArtifactIndex = make(map[string]int)
+	}
+	if cur, ok := r.ArtifactIndex[a.NodeID]; !ok || a.Version > cur {
+		r.ArtifactIndex[a.NodeID] = a.Version
+		_ = s.writeRun(r) // best-effort
+	}
+	return nil
 }
 
 // LoadArtifact reads a specific artifact version.
@@ -331,6 +351,8 @@ func (s *RunStore) LoadArtifact(runID, nodeID string, version int) (*Artifact, e
 }
 
 // LoadLatestArtifact returns the artifact with the highest version for a node.
+// It first checks the run's artifact index for an O(1) lookup and falls back
+// to a directory scan for backward compatibility with older run formats.
 func (s *RunStore) LoadLatestArtifact(runID, nodeID string) (*Artifact, error) {
 	if err := sanitizePathComponent("run ID", runID); err != nil {
 		return nil, err
@@ -338,6 +360,15 @@ func (s *RunStore) LoadLatestArtifact(runID, nodeID string) (*Artifact, error) {
 	if err := sanitizePathComponent("node ID", nodeID); err != nil {
 		return nil, err
 	}
+
+	// Fast path: use artifact index if available.
+	if r, err := s.LoadRun(runID); err == nil && r.ArtifactIndex != nil {
+		if v, ok := r.ArtifactIndex[nodeID]; ok {
+			return s.LoadArtifact(runID, nodeID, v)
+		}
+	}
+
+	// Fallback: directory scan (backward compat with old runs without index).
 	dir := filepath.Join(s.root, "runs", runID, "artifacts", nodeID)
 	entries, err := os.ReadDir(dir)
 	if err != nil {

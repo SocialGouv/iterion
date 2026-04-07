@@ -640,6 +640,154 @@ func TestPathTraversalRejected(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Artifact index (R1: O(1) LoadLatestArtifact)
+// ---------------------------------------------------------------------------
+
+func TestArtifactIndexUpdatedOnWrite(t *testing.T) {
+	s := tmpStore(t)
+	s.CreateRun("run-idx", "wf", nil)
+
+	// Write two versions for the same node.
+	for v := 0; v < 3; v++ {
+		if err := s.WriteArtifact(&Artifact{
+			RunID:   "run-idx",
+			NodeID:  "analyzer",
+			Version: v,
+			Data:    map[string]interface{}{"v": float64(v)},
+		}); err != nil {
+			t.Fatalf("WriteArtifact v%d: %v", v, err)
+		}
+	}
+
+	r, err := s.LoadRun("run-idx")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if r.ArtifactIndex == nil {
+		t.Fatal("ArtifactIndex should be set")
+	}
+	if got, want := r.ArtifactIndex["analyzer"], 2; got != want {
+		t.Errorf("ArtifactIndex[analyzer] = %d, want %d", got, want)
+	}
+}
+
+func TestLoadLatestArtifactUsesIndex(t *testing.T) {
+	s := tmpStore(t)
+	s.CreateRun("run-fast", "wf", nil)
+
+	for v := 0; v < 3; v++ {
+		s.WriteArtifact(&Artifact{
+			RunID:   "run-fast",
+			NodeID:  "planner",
+			Version: v,
+			Data:    map[string]interface{}{"v": float64(v)},
+		})
+	}
+
+	latest, err := s.LoadLatestArtifact("run-fast", "planner")
+	if err != nil {
+		t.Fatalf("LoadLatestArtifact: %v", err)
+	}
+	if latest.Version != 2 {
+		t.Errorf("Version = %d, want 2", latest.Version)
+	}
+	if latest.Data["v"] != float64(2) {
+		t.Errorf("Data[v] = %v, want 2", latest.Data["v"])
+	}
+}
+
+func TestLoadLatestArtifactFallbackWithoutIndex(t *testing.T) {
+	s := tmpStore(t)
+	s.CreateRun("run-noindex", "wf", nil)
+
+	// Write artifacts then manually clear the index to simulate an old-format run.
+	for v := 0; v < 2; v++ {
+		s.WriteArtifact(&Artifact{
+			RunID:   "run-noindex",
+			NodeID:  "reviewer",
+			Version: v,
+			Data:    map[string]interface{}{"v": float64(v)},
+		})
+	}
+
+	// Clear the index in run.json.
+	r, _ := s.LoadRun("run-noindex")
+	r.ArtifactIndex = nil
+	s.SaveRun(r)
+
+	// LoadLatestArtifact should still work via directory scan.
+	latest, err := s.LoadLatestArtifact("run-noindex", "reviewer")
+	if err != nil {
+		t.Fatalf("LoadLatestArtifact fallback: %v", err)
+	}
+	if latest.Version != 1 {
+		t.Errorf("Version = %d, want 1", latest.Version)
+	}
+}
+
+func TestArtifactIndexMultipleNodes(t *testing.T) {
+	s := tmpStore(t)
+	s.CreateRun("run-multi", "wf", nil)
+
+	s.WriteArtifact(&Artifact{RunID: "run-multi", NodeID: "a", Version: 0, Data: map[string]interface{}{"n": "a"}})
+	s.WriteArtifact(&Artifact{RunID: "run-multi", NodeID: "b", Version: 0, Data: map[string]interface{}{"n": "b"}})
+	s.WriteArtifact(&Artifact{RunID: "run-multi", NodeID: "a", Version: 1, Data: map[string]interface{}{"n": "a2"}})
+
+	r, _ := s.LoadRun("run-multi")
+	if r.ArtifactIndex["a"] != 1 {
+		t.Errorf("ArtifactIndex[a] = %d, want 1", r.ArtifactIndex["a"])
+	}
+	if r.ArtifactIndex["b"] != 0 {
+		t.Errorf("ArtifactIndex[b] = %d, want 0", r.ArtifactIndex["b"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Checkpoint with embedded interaction questions (R4)
+// ---------------------------------------------------------------------------
+
+func TestCheckpointInteractionQuestionsRoundTrip(t *testing.T) {
+	s := tmpStore(t)
+	s.CreateRun("run-cp", "wf", nil)
+
+	questions := map[string]interface{}{
+		"approve": "Do you approve?",
+		"comment": "Any feedback?",
+	}
+	cp := &Checkpoint{
+		NodeID:               "human_review",
+		InteractionID:        "run-cp_human_review",
+		Outputs:              map[string]map[string]interface{}{"agent": {"result": "ok"}},
+		LoopCounters:         map[string]int{},
+		ArtifactVersions:     map[string]int{},
+		Vars:                 map[string]interface{}{"repo": "iterion"},
+		InteractionQuestions: questions,
+	}
+
+	if err := s.PauseRun("run-cp", cp); err != nil {
+		t.Fatalf("PauseRun: %v", err)
+	}
+
+	r, err := s.LoadRun("run-cp")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if r.Checkpoint == nil {
+		t.Fatal("Checkpoint should be set")
+	}
+	if r.Checkpoint.InteractionQuestions == nil {
+		t.Fatal("InteractionQuestions should be set")
+	}
+	if r.Checkpoint.InteractionQuestions["approve"] != "Do you approve?" {
+		t.Errorf("InteractionQuestions[approve] = %v", r.Checkpoint.InteractionQuestions["approve"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Path traversal rejection
+// ---------------------------------------------------------------------------
+
 func TestSanitizePathComponent(t *testing.T) {
 	tests := []struct {
 		input string

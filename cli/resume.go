@@ -89,6 +89,22 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 
 	eng := runtime.New(wf, s, executor, runtime.WithLogger(logger), runtime.WithWorkflowHash(wfHash))
 
+	// Acquire exclusive run lock to prevent concurrent processes.
+	lock, err := s.LockRun(opts.RunID)
+	if err != nil {
+		return fmt.Errorf("cannot acquire run lock: %w", err)
+	}
+	defer lock.Unlock()
+
+	// Re-check run status under the lock to prevent TOCTOU race.
+	r, err = s.LoadRun(opts.RunID)
+	if err != nil {
+		return fmt.Errorf("cannot reload run: %w", err)
+	}
+	if r.Status != store.RunStatusPausedWaitingHuman {
+		return fmt.Errorf("run %q is no longer paused (status: %s)", opts.RunID, r.Status)
+	}
+
 	if p.Format == OutputHuman {
 		p.Header("Resume: " + opts.RunID)
 		p.KV("Workflow", wf.Name)

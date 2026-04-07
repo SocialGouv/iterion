@@ -30,7 +30,8 @@ These formats are considered **stable for V1** — tooling may rely on them.
   "updated_at": "2026-01-01T00:01:00Z",
   "finished_at": "2026-01-01T00:02:00Z",  // set on terminal status (optional)
   "error": "",                         // non-empty on failed/cancelled (optional)
-  "checkpoint": null                   // present only when paused (optional)
+  "checkpoint": null,                  // present only when paused (optional)
+  "artifact_index": { "analyze": 2 }  // node_id → latest version (optional cache)
 }
 ```
 
@@ -46,16 +47,24 @@ These formats are considered **stable for V1** — tooling may rely on them.
 
 ### Checkpoint (when status = paused_waiting_human)
 
+The checkpoint is the **authoritative source of truth** for resume. Events
+(`events.jsonl`) are observational only and are never replayed to reconstruct
+state. If the checkpoint is lost, recovery is not possible via event replay.
+
 ```jsonc
 {
   "node_id": "review",                          // human node where paused
   "interaction_id": "run_123_review",            // pending interaction
   "outputs": { "node_id": { "key": "value" } }, // accumulated outputs
   "loop_counters": { "retry": 2 },              // current iteration counts
-  "artifact_versions": { "node_id": 3 },        // next version per node
-  "vars": { "repo": "my-repo" }                 // resolved workflow variables
+  "artifact_versions": { "node_id": 3 },        // *next* version per node (not latest)
+  "vars": { "repo": "my-repo" },                // resolved workflow variables
+  "interaction_questions": { "summary": "..." } // embedded for resilience (optional)
 }
 ```
+
+`interaction_questions` duplicates the questions from the interaction file so
+that resume is self-sufficient even if the interaction file is deleted.
 
 ## events.jsonl
 
@@ -112,7 +121,8 @@ One JSON object per line, append-only. Events are ordered by `seq` (monotonic wi
 ```
 
 Artifacts are versioned per-node: each loop iteration or re-execution increments the version.
-`LoadLatestArtifact` returns the highest version.
+`LoadLatestArtifact` uses the `artifact_index` in `run.json` for O(1) lookups
+and falls back to a directory scan for runs created before the index was introduced.
 
 ## interactions/<interaction_id>.json
 

@@ -38,10 +38,17 @@ type Run struct {
 	FinishedAt    *time.Time             `json:"finished_at,omitempty"`
 	Error         string                 `json:"error,omitempty"`
 	Checkpoint    *Checkpoint            `json:"checkpoint,omitempty"`
+	ArtifactIndex map[string]int         `json:"artifact_index,omitempty"` // node_id → latest version written
 }
 
 // Checkpoint captures the runtime state at a pause point (human node or
 // backend interaction), enabling exact resume without replaying upstream nodes.
+//
+// The checkpoint embedded in run.json is the authoritative source of truth for
+// resume. Events (events.jsonl) are observational only — they are not replayed
+// to reconstruct state. If the checkpoint is lost, recovery is not possible via
+// event replay. The separate interaction file (interactions/<id>.json) is a
+// convenience for tooling; InteractionQuestions is embedded here for resilience.
 type Checkpoint struct {
 	NodeID             string                            `json:"node_id"`                        // the node where we paused
 	InteractionID      string                            `json:"interaction_id"`                 // pending interaction ID
@@ -50,6 +57,9 @@ type Checkpoint struct {
 	RoundRobinCounters map[string]int                    `json:"round_robin_counters,omitempty"` // round-robin router counters (keyed by router node ID)
 	ArtifactVersions   map[string]int                    `json:"artifact_versions"`              // next artifact version per node
 	Vars               map[string]interface{}            `json:"vars"`                           // resolved workflow variables
+	// InteractionQuestions embeds the questions from the interaction record
+	// so that resume is self-sufficient even if the interaction file is deleted.
+	InteractionQuestions map[string]interface{} `json:"interaction_questions,omitempty"`
 	// BackendSessionID is the session ID of a blocked backend, enabling
 	// re-invocation with session: inherit on resume.
 	BackendSessionID string `json:"backend_session_id,omitempty"`

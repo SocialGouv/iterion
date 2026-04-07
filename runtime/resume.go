@@ -36,9 +36,18 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]in
 	cp := r.Checkpoint
 	humanNodeID := cp.NodeID
 
-	// Record answers on the interaction.
+	// Record answers on the interaction. Fall back to the checkpoint's
+	// embedded questions if the interaction file has been deleted.
 	interaction, err := e.store.LoadInteraction(runID, cp.InteractionID)
-	if err != nil {
+	if err != nil && cp.InteractionQuestions != nil {
+		interaction = &store.Interaction{
+			ID:          cp.InteractionID,
+			RunID:       runID,
+			NodeID:      cp.NodeID,
+			RequestedAt: r.UpdatedAt,
+			Questions:   cp.InteractionQuestions,
+		}
+	} else if err != nil {
 		return fmt.Errorf("runtime: load interaction for resume: %w", err)
 	}
 	now := time.Now().UTC()
@@ -250,54 +259,8 @@ func (e *Engine) pauseAtHuman(rs *runState, nodeID string, node ir.Node) error {
 // execAutoOrPauseHuman. The caller is responsible for emitting node_started
 // before calling this method.
 func (e *Engine) persistPause(rs *runState, nodeID string) error {
-	// Build questions from the node's input (edge mappings into this node).
 	questions := e.buildNodeInput(nodeID, rs.vars, rs.outputs, nil, rs.artifacts)
-
-	// Create interaction. Include loop iteration in the ID so that
-	// human nodes inside loops produce unique interactions per iteration.
-	interactionID := fmt.Sprintf("%s_%s", rs.runID, nodeID)
-	if loopIter := e.currentLoopIteration(nodeID, rs.loopCounters); loopIter > 0 {
-		interactionID = fmt.Sprintf("%s_%s_%d", rs.runID, nodeID, loopIter)
-	}
-	interaction := &store.Interaction{
-		ID:          interactionID,
-		RunID:       rs.runID,
-		NodeID:      nodeID,
-		RequestedAt: time.Now().UTC(),
-		Questions:   questions,
-	}
-	if err := e.store.WriteInteraction(interaction); err != nil {
-		return fmt.Errorf("runtime: write interaction: %w", err)
-	}
-
-	// Emit human_input_requested.
-	if err := e.emit(rs.runID, store.EventHumanInputRequested, nodeID, map[string]interface{}{
-		"interaction_id": interactionID,
-		"questions":      questions,
-	}); err != nil {
-		return err
-	}
-
-	// Emit run_paused.
-	if err := e.emit(rs.runID, store.EventRunPaused, nodeID, nil); err != nil {
-		return err
-	}
-
-	// Atomically save checkpoint and set status to paused in a single write.
-	cp := &store.Checkpoint{
-		NodeID:             nodeID,
-		InteractionID:      interactionID,
-		Outputs:            rs.outputs,
-		LoopCounters:       rs.loopCounters,
-		RoundRobinCounters: rs.roundRobinCounters,
-		ArtifactVersions:   rs.artifactVersions,
-		Vars:               rs.vars,
-	}
-	if err := e.store.PauseRun(rs.runID, cp); err != nil {
-		return fmt.Errorf("runtime: pause run: %w", err)
-	}
-
-	return nil
+	return e.doPause(rs, nodeID, questions, nil, "", "")
 }
 
 // ---------------------------------------------------------------------------
@@ -335,51 +298,71 @@ func (e *Engine) handleNeedsInteraction(ctx context.Context, rs *runState, nodeI
 // pauseForBackendInteraction creates an interaction record and pauses the
 // workflow, saving the backend's session ID for re-invocation on resume.
 func (e *Engine) pauseForBackendInteraction(rs *runState, nodeID string, ni *model.ErrNeedsInteraction) error {
+	eventExtra := map[string]interface{}{
+		"source":  "delegate",
+		"backend": ni.Backend,
+	}
+	if err := e.doPause(rs, nodeID, ni.Questions, eventExtra, ni.SessionID, ni.Backend); err != nil {
+		return err
+	}
+	return ErrRunPaused
+}
+
+// doPause is the unified implementation for pausing a run. It writes the
+// interaction record, emits pause events, and saves the checkpoint.
+func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]interface{}, eventExtra map[string]interface{}, backendSessionID, backendName string) error {
+	// Create interaction. Include loop iteration in the ID so that
+	// human nodes inside loops produce unique interactions per iteration.
 	interactionID := fmt.Sprintf("%s_%s", rs.runID, nodeID)
 	if loopIter := e.currentLoopIteration(nodeID, rs.loopCounters); loopIter > 0 {
 		interactionID = fmt.Sprintf("%s_%s_%d", rs.runID, nodeID, loopIter)
 	}
-
 	interaction := &store.Interaction{
 		ID:          interactionID,
 		RunID:       rs.runID,
 		NodeID:      nodeID,
 		RequestedAt: time.Now().UTC(),
-		Questions:   ni.Questions,
+		Questions:   questions,
 	}
 	if err := e.store.WriteInteraction(interaction); err != nil {
 		return fmt.Errorf("runtime: write interaction: %w", err)
 	}
 
-	if err := e.emit(rs.runID, store.EventHumanInputRequested, nodeID, map[string]interface{}{
+	// Emit human_input_requested.
+	eventData := map[string]interface{}{
 		"interaction_id": interactionID,
-		"questions":      ni.Questions,
-		"source":         "delegate",
-		"backend":        ni.Backend,
-	}); err != nil {
+		"questions":      questions,
+	}
+	for k, v := range eventExtra {
+		eventData[k] = v
+	}
+	if err := e.emit(rs.runID, store.EventHumanInputRequested, nodeID, eventData); err != nil {
 		return err
 	}
 
+	// Emit run_paused.
 	if err := e.emit(rs.runID, store.EventRunPaused, nodeID, nil); err != nil {
 		return err
 	}
 
+	// Atomically save checkpoint and set status to paused in a single write.
 	cp := &store.Checkpoint{
-		NodeID:             nodeID,
-		InteractionID:      interactionID,
-		Outputs:            rs.outputs,
-		LoopCounters:       rs.loopCounters,
-		RoundRobinCounters: rs.roundRobinCounters,
-		ArtifactVersions:   rs.artifactVersions,
-		Vars:               rs.vars,
-		BackendSessionID:   ni.SessionID,
-		BackendName:        ni.Backend,
+		NodeID:               nodeID,
+		InteractionID:        interactionID,
+		Outputs:              rs.outputs,
+		LoopCounters:         rs.loopCounters,
+		RoundRobinCounters:   rs.roundRobinCounters,
+		ArtifactVersions:     rs.artifactVersions,
+		Vars:                 rs.vars,
+		InteractionQuestions: questions,
+		BackendSessionID:     backendSessionID,
+		BackendName:          backendName,
 	}
 	if err := e.store.PauseRun(rs.runID, cp); err != nil {
 		return fmt.Errorf("runtime: pause run: %w", err)
 	}
 
-	return ErrRunPaused
+	return nil
 }
 
 // ---------------------------------------------------------------------------
