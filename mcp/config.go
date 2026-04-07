@@ -14,7 +14,14 @@ import (
 const (
 	// EnvAutoLoad controls automatic project .mcp.json loading.
 	EnvAutoLoad = "ITERION_MCP_AUTOLOAD"
+	// EnvHealthCheck controls MCP pre-execution health checks (default: enabled).
+	EnvHealthCheck = "ITERION_MCP_HEALTHCHECK"
 )
+
+// HealthCheckEnabled returns true unless ITERION_MCP_HEALTHCHECK is "false" or "0".
+func HealthCheckEnabled() bool {
+	return envDefaultTrue(EnvHealthCheck)
+}
 
 // Transport identifies the transport used by an MCP server.
 type Transport string
@@ -99,7 +106,12 @@ func PrepareWorkflow(wf *ir.Workflow, projectDir string) error {
 }
 
 func AutoLoadProjectEnabled() bool {
-	value := strings.TrimSpace(strings.ToLower(os.Getenv(EnvAutoLoad)))
+	return envDefaultTrue(EnvAutoLoad)
+}
+
+// envDefaultTrue returns true unless the environment variable is "false" or "0".
+func envDefaultTrue(key string) bool {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
 	return value != "0" && value != "false"
 }
 
@@ -160,7 +172,7 @@ func mergeCatalog(project map[string]*ServerConfig, explicit map[string]*ir.MCPS
 	for name, cfg := range explicit {
 		catalog[name] = &ServerConfig{
 			Name:      cfg.Name,
-			Transport: fromIRTransport(cfg.Transport),
+			Transport: FromIRTransport(cfg.Transport),
 			Command:   cfg.Command,
 			Args:      append([]string(nil), cfg.Args...),
 			URL:       cfg.URL,
@@ -288,7 +300,8 @@ func normalizeTransport(typeValue, transportValue, command, url string) Transpor
 	}
 }
 
-func fromIRTransport(t ir.MCPTransport) Transport {
+// FromIRTransport converts an IR MCP transport to a runtime transport.
+func FromIRTransport(t ir.MCPTransport) Transport {
 	switch t {
 	case ir.MCPTransportStdio:
 		return TransportStdio

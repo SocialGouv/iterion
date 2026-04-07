@@ -98,7 +98,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 
 		executor := opts.Executor
 		if executor == nil {
-			executor = newDefaultExecutor(wf, opts.Vars, s, runID, logger)
+			executor = newDefaultExecutor(wf, opts.Vars, s, runID, logger, storeDir)
 		}
 		if c, ok := executor.(io.Closer); ok {
 			defer func() {
@@ -106,6 +106,9 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 					log.Printf("cli: warning: executor close: %v", cerr)
 				}
 			}()
+		}
+		if err := mcpHealthCheck(ctx, executor, wf.ActiveMCPServers); err != nil {
+			return err
 		}
 
 		eng, err = runtime.NewFromRecipe(spec, wf, s, executor, runtime.WithLogger(logger), runtime.WithWorkflowHash(wfHash))
@@ -125,7 +128,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 
 		executor := opts.Executor
 		if executor == nil {
-			executor = newDefaultExecutor(wf, opts.Vars, s, runID, logger)
+			executor = newDefaultExecutor(wf, opts.Vars, s, runID, logger, storeDir)
 		}
 		if c, ok := executor.(io.Closer); ok {
 			defer func() {
@@ -133,6 +136,9 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 					log.Printf("cli: warning: executor close: %v", cerr)
 				}
 			}()
+		}
+		if err := mcpHealthCheck(ctx, executor, wf.ActiveMCPServers); err != nil {
+			return err
 		}
 
 		eng = runtime.New(wf, s, executor, runtime.WithLogger(logger), runtime.WithWorkflowHash(wfHash))
@@ -249,7 +255,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 
 // newDefaultExecutor creates a GoaiExecutor with the default delegate registry
 // and event hooks wired to the store for observability.
-func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunStore, runID string, logger *iterlog.Logger) *model.GoaiExecutor {
+func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunStore, runID string, logger *iterlog.Logger, storeDir string) *model.GoaiExecutor {
 	reg := model.NewRegistry()
 	backendReg := delegate.DefaultRegistry()
 
@@ -268,15 +274,19 @@ func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunSto
 		for name, server := range wf.ResolvedMCPServers {
 			catalog[name] = &mcp.ServerConfig{
 				Name:      server.Name,
-				Transport: mcp.Transport(server.Transport.String()),
+				Transport: mcp.FromIRTransport(server.Transport),
 				Command:   server.Command,
 				Args:      append([]string(nil), server.Args...),
 				URL:       server.URL,
 				Headers:   server.Headers,
 			}
 		}
+		var mcpOpts []mcp.ManagerOption
+		if cacheTTL := mcp.ResolveCacheTTL(); cacheTTL > 0 {
+			mcpOpts = append(mcpOpts, mcp.WithToolCache(mcp.NewToolCache(storeDir, cacheTTL)))
+		}
 		opts = append(opts,
-			model.WithMCPManager(mcp.NewManager(catalog)),
+			model.WithMCPManager(mcp.NewManager(catalog, mcpOpts...)),
 		)
 	}
 
@@ -291,6 +301,23 @@ func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunSto
 	}
 
 	return executor
+}
+
+// mcpHealthCheck runs a pre-execution health check on active MCP servers if
+// the executor supports it. Controlled by ITERION_MCP_HEALTHCHECK (default: on).
+func mcpHealthCheck(ctx context.Context, executor runtime.NodeExecutor, servers []string) error {
+	if len(servers) == 0 || !mcp.HealthCheckEnabled() {
+		return nil
+	}
+	type healthChecker interface {
+		MCPHealthCheck(ctx context.Context, servers []string) error
+	}
+	if hc, ok := executor.(healthChecker); ok {
+		if err := hc.MCPHealthCheck(ctx, servers); err != nil {
+			return fmt.Errorf("MCP health check failed: %w", err)
+		}
+	}
+	return nil
 }
 
 // enrichPausedResult loads checkpoint and interaction details from the store

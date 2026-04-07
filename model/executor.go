@@ -223,6 +223,16 @@ func NewGoaiExecutor(registry *Registry, wf *ir.Workflow, opts ...GoaiExecutorOp
 	return e
 }
 
+// MCPHealthCheck verifies that the listed MCP servers are reachable by
+// connecting and sending an MCP ping. Should be called before execution
+// starts to fail fast on misconfigured servers.
+func (e *GoaiExecutor) MCPHealthCheck(ctx context.Context, servers []string) error {
+	if e.mcpManager == nil {
+		return nil
+	}
+	return e.mcpManager.HealthCheck(ctx, servers)
+}
+
 // Close releases resources held by the executor, including MCP server
 // connections. It should be called when the executor is no longer needed.
 func (e *GoaiExecutor) Close() error {

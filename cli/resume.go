@@ -84,7 +84,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 
 	executor := opts.Executor
 	if executor == nil {
-		executor = newDefaultExecutor(wf, nil, s, opts.RunID, logger)
+		executor = newDefaultExecutor(wf, nil, s, opts.RunID, logger, storeDir)
 	}
 
 	eng := runtime.New(wf, s, executor, runtime.WithLogger(logger), runtime.WithWorkflowHash(wfHash))

@@ -249,6 +249,61 @@ func runStdioHelperProcess() {
 	os.Exit(0)
 }
 
+func TestManagerHealthCheckHTTP(t *testing.T) {
+	mcpServer := gomcp.NewServer(&gomcp.Implementation{
+		Name:    "health-server",
+		Version: "v0.0.1",
+	}, nil)
+
+	gomcp.AddTool(mcpServer, &gomcp.Tool{
+		Name:        "noop",
+		Description: "No-op tool",
+		InputSchema: map[string]any{"type": "object"},
+	}, func(ctx context.Context, req *gomcp.CallToolRequest, input any) (*gomcp.CallToolResult, any, error) {
+		return &gomcp.CallToolResult{}, nil, nil
+	})
+
+	handler := gomcp.NewStreamableHTTPHandler(func(r *http.Request) *gomcp.Server {
+		return mcpServer
+	}, &gomcp.StreamableHTTPOptions{
+		Stateless:    true,
+		JSONResponse: true,
+	})
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	manager := NewManager(map[string]*ServerConfig{
+		"test": {
+			Name:      "test",
+			Transport: TransportHTTP,
+			URL:       server.URL,
+		},
+	})
+	defer manager.Close()
+
+	if err := manager.HealthCheck(context.Background(), []string{"test"}); err != nil {
+		t.Fatalf("HealthCheck: %v", err)
+	}
+
+	// After health-check, EnsureServers should reuse the same connection.
+	registry := tool.NewRegistry()
+	if err := manager.EnsureServers(context.Background(), registry, []string{"test"}); err != nil {
+		t.Fatalf("EnsureServers after HealthCheck: %v", err)
+	}
+	if _, err := registry.Resolve("mcp.test.noop"); err != nil {
+		t.Fatalf("tool not registered after EnsureServers: %v", err)
+	}
+}
+
+func TestManagerHealthCheckUnknownServer(t *testing.T) {
+	manager := NewManager(map[string]*ServerConfig{})
+	err := manager.HealthCheck(context.Background(), []string{"nonexistent"})
+	if err == nil {
+		t.Fatal("expected error for unknown server")
+	}
+}
+
 func writeProjectMCPFile(t *testing.T, dir, contents string) {
 	t.Helper()
 	path := filepath.Join(dir, ".mcp.json")

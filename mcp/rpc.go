@@ -29,6 +29,13 @@ func newSDKClient(cfg *ServerConfig, info clientInfo) *sdkClient {
 	return &sdkClient{cfg: cloneServerConfig(cfg), info: info}
 }
 
+func (c *sdkClient) Ping(ctx context.Context) error {
+	if err := c.ensureStarted(ctx); err != nil {
+		return err
+	}
+	return c.session.Ping(ctx, nil)
+}
+
 func (c *sdkClient) ListTools(ctx context.Context) ([]ToolInfo, error) {
 	if err := c.ensureStarted(ctx); err != nil {
 		return nil, err

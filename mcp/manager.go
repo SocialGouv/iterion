@@ -42,17 +42,28 @@ type clientInfo struct {
 }
 
 type protocolClient interface {
+	Ping(ctx context.Context) error
 	ListTools(ctx context.Context) ([]ToolInfo, error)
 	CallTool(ctx context.Context, toolName string, args map[string]interface{}) (*ToolCallResult, error)
 	Close() error
 }
 
+// ManagerOption configures a Manager.
+type ManagerOption func(*Manager)
+
+// WithSanitizationRules replaces the default sanitization rules.
+func WithSanitizationRules(rules []SanitizationRule) ManagerOption {
+	return func(m *Manager) { m.sanitizationRules = rules }
+}
+
 // Manager lazily connects to MCP servers, caches clients and tool discovery,
 // and bridges discovered tools into a tool.Registry.
 type Manager struct {
-	mu      sync.Mutex
-	catalog map[string]*ServerConfig
-	states  map[string]*serverState
+	mu                sync.Mutex
+	catalog           map[string]*ServerConfig
+	states            map[string]*serverState
+	sanitizationRules []SanitizationRule
+	cache             *ToolCache
 }
 
 type serverState struct {
@@ -64,15 +75,20 @@ type serverState struct {
 }
 
 // NewManager creates an MCP manager from a resolved server catalog.
-func NewManager(catalog map[string]*ServerConfig) *Manager {
+func NewManager(catalog map[string]*ServerConfig, opts ...ManagerOption) *Manager {
 	cloned := make(map[string]*ServerConfig, len(catalog))
 	for name, cfg := range catalog {
 		cloned[name] = cloneServerConfig(cfg)
 	}
-	return &Manager{
-		catalog: cloned,
-		states:  make(map[string]*serverState, len(cloned)),
+	m := &Manager{
+		catalog:           cloned,
+		states:            make(map[string]*serverState, len(cloned)),
+		sanitizationRules: DefaultSanitizationRules(),
 	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
 // EnsureServers discovers tools for the given servers and registers them into
@@ -84,6 +100,32 @@ func (m *Manager) EnsureServers(ctx context.Context, registry *tool.Registry, se
 	for _, server := range servers {
 		if err := m.ensureServer(ctx, registry, server); err != nil {
 			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// HealthCheck verifies that each listed server is reachable by connecting and
+// sending an MCP ping. Connections are cached, so a subsequent EnsureServers
+// call reuses the same client (no double-spawn for stdio servers).
+func (m *Manager) HealthCheck(ctx context.Context, servers []string) error {
+	var errs []error
+	for _, server := range servers {
+		state, err := m.state(server)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("mcp: health-check %q: %w", server, err))
+			continue
+		}
+		state.mu.Lock()
+		client, err := m.clientForState(state)
+		if err != nil {
+			state.mu.Unlock()
+			errs = append(errs, fmt.Errorf("mcp: health-check %q: connect failed: %w", server, err))
+			continue
+		}
+		state.mu.Unlock()
+		if err := client.Ping(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("mcp: health-check %q: ping failed: %w", server, err))
 		}
 	}
 	return errors.Join(errs...)
@@ -126,14 +168,32 @@ func (m *Manager) ensureServer(ctx context.Context, registry *tool.Registry, ser
 		return nil
 	}
 
+	// Try cache first to avoid the ListTools RPC latency.
+	var toolsList []ToolInfo
+	if m.cache != nil {
+		if cached, ok := m.cache.Get(server, state.cfg); ok {
+			toolsList = cached
+		}
+	}
+
+	// Establish a client connection. Even with a cache hit we need the
+	// client for CallTool; the connection is lazy (deferred to first call).
 	client, err := m.clientForState(state)
 	if err != nil {
 		return err
 	}
 
-	toolsList, err := client.ListTools(ctx)
-	if err != nil {
-		return fmt.Errorf("mcp: discover tools for %q: %w", server, err)
+	didListTools := false
+	if toolsList == nil {
+		didListTools = true
+		var listErr error
+		toolsList, listErr = client.ListTools(ctx)
+		if listErr != nil {
+			return fmt.Errorf("mcp: discover tools for %q: %w", server, listErr)
+		}
+		if m.cache != nil {
+			_ = m.cache.Set(server, state.cfg, toolsList) // best-effort
+		}
 	}
 
 	workDir := state.cfg.WorkDir
@@ -147,7 +207,7 @@ func (m *Manager) ensureServer(ctx context.Context, registry *tool.Registry, ser
 					return "", fmt.Errorf("mcp: decode input for %s.%s: %w", serverName, toolName, err)
 				}
 			}
-			sanitizeToolArgs(toolName, args, workDir)
+			m.applySanitizationRules(toolName, args, workDir)
 			result, err := client.CallTool(callCtx, toolName, args)
 			if err != nil {
 				return "", err
@@ -170,11 +230,8 @@ func (m *Manager) ensureServer(ctx context.Context, registry *tool.Registry, ser
 
 	state.discovered = true
 
-	// Smoke-test workspace access: if a WorkDir is configured, verify the
-	// server can list files there. This catches misconfigured CWD early
-	// (e.g. Codex not receiving the cwd parameter) instead of surfacing as
-	// cryptic "No such file or directory" errors deep inside a workflow run.
-	if workDir != "" {
+	// Smoke-test workspace access on live discovery only (skip on cache hit).
+	if workDir != "" && didListTools {
 		if err := m.smokeTestWorkspace(ctx, client, server, toolsList, workDir); err != nil {
 			// Log as warning — don't block server discovery, but make it visible.
 			fmt.Fprintf(os.Stderr, "mcp: WARNING: workspace smoke test failed for %q (workDir=%s): %v\n", server, workDir, err)
@@ -360,52 +417,13 @@ func joinLines(lines []string) string {
 	return strings.Join(lines, "\n")
 }
 
-// ---------------------------------------------------------------------------
-// Tool argument sanitization
-// ---------------------------------------------------------------------------
-
-// sanitizeToolArgs fixes common mistakes made by LLMs when calling MCP tools:
-//   - Removes empty string values for optional parameters (e.g. pages: "")
-//   - Adds default limit for Read when reading large files without offset/limit
-//   - Injects cwd for the codex tool when a workDir is provided
-func sanitizeToolArgs(toolName string, args map[string]interface{}, workDir string) {
+func (m *Manager) applySanitizationRules(toolName string, args map[string]interface{}, workDir string) {
 	if args == nil {
 		return
 	}
-
-	// Remove empty-string optional parameters. LLMs often send pages: ""
-	// or other optional fields as empty strings which MCP servers reject.
-	for key, val := range args {
-		if s, ok := val.(string); ok && s == "" {
-			delete(args, key)
-		}
-	}
-
-	// For the codex tool: force workspace and non-interactive settings.
-	// These are always overridden (not just defaulted) because the LLM may
-	// send incorrect values (wrong cwd, restrictive sandbox, etc.).
-	if toolName == "codex" {
-		if workDir != "" {
-			args["cwd"] = workDir
-		}
-		args["approval-policy"] = "never"
-		args["sandbox"] = "danger-full-access"
-	}
-
-	// For Read tool: always ensure a limit is set to avoid "file too large"
-	// errors. The Claude Code MCP server rejects reads over 10K tokens.
-	// A single-file HTML app of ~80KB can be ~28K tokens, so we cap
-	// aggressively. The auto-retry in the tool callback handles cases
-	// where even the capped limit is too large.
-	if toolName == "Read" {
-		_, hasPages := args["pages"]
-		if !hasPages {
-			limit, hasLimit := args["limit"]
-			if !hasLimit {
-				args["limit"] = float64(500)
-			} else if limitF, ok := limit.(float64); ok && limitF > 500 {
-				args["limit"] = float64(500)
-			}
+	for _, rule := range m.sanitizationRules {
+		if rule.Match(toolName) {
+			rule.Apply(toolName, args, workDir)
 		}
 	}
 }
