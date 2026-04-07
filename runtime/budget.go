@@ -39,7 +39,10 @@ type SharedBudget struct {
 	warningsEmitted map[string]bool
 }
 
-const budgetWarningThreshold = 0.8
+const (
+	budgetWarningThreshold = 0.8
+	budgetHardThreshold    = 0.9 // refuse new node executions at 90% to limit concurrent overage
+)
 
 // newSharedBudget creates a SharedBudget from an IR Budget definition.
 // Returns nil if budget is nil or has no enforceable limits.
@@ -73,11 +76,12 @@ func newSharedBudget(b *ir.Budget) *SharedBudget {
 
 // budgetCheckResult holds the outcome of a single dimension check.
 type budgetCheckResult struct {
-	exceeded  bool
-	warning   bool
-	dimension string // "tokens", "cost_usd", "iterations", "duration"
-	used      float64
-	limit     float64
+	exceeded    bool
+	hardLimited bool // true when 90% <= ratio < 100%
+	warning     bool
+	dimension   string // "tokens", "cost_usd", "iterations", "duration"
+	used        float64
+	limit       float64
 }
 
 // RecordUsage records resource consumption from a node execution and returns
@@ -121,74 +125,31 @@ func (b *SharedBudget) Check() []budgetCheckResult {
 func (b *SharedBudget) checkLocked() []budgetCheckResult {
 	var results []budgetCheckResult
 
-	// Iterations.
-	if b.maxIterations > 0 {
-		ratio := float64(b.iterationsUsed) / float64(b.maxIterations)
+	check := func(dimension string, used, limit float64) {
+		if limit <= 0 {
+			return
+		}
+		ratio := used / limit
 		if ratio >= 1.0 {
 			results = append(results, budgetCheckResult{
-				exceeded: true, dimension: "iterations",
-				used: float64(b.iterationsUsed), limit: float64(b.maxIterations),
+				exceeded: true, dimension: dimension, used: used, limit: limit,
 			})
-		} else if ratio >= budgetWarningThreshold && !b.warningsEmitted["iterations"] {
-			b.warningsEmitted["iterations"] = true
+		} else if ratio >= budgetHardThreshold {
 			results = append(results, budgetCheckResult{
-				warning: true, dimension: "iterations",
-				used: float64(b.iterationsUsed), limit: float64(b.maxIterations),
+				hardLimited: true, dimension: dimension, used: used, limit: limit,
+			})
+		} else if ratio >= budgetWarningThreshold && !b.warningsEmitted[dimension] {
+			b.warningsEmitted[dimension] = true
+			results = append(results, budgetCheckResult{
+				warning: true, dimension: dimension, used: used, limit: limit,
 			})
 		}
 	}
 
-	// Tokens.
-	if b.maxTokens > 0 {
-		ratio := float64(b.tokensUsed) / float64(b.maxTokens)
-		if ratio >= 1.0 {
-			results = append(results, budgetCheckResult{
-				exceeded: true, dimension: "tokens",
-				used: float64(b.tokensUsed), limit: float64(b.maxTokens),
-			})
-		} else if ratio >= budgetWarningThreshold && !b.warningsEmitted["tokens"] {
-			b.warningsEmitted["tokens"] = true
-			results = append(results, budgetCheckResult{
-				warning: true, dimension: "tokens",
-				used: float64(b.tokensUsed), limit: float64(b.maxTokens),
-			})
-		}
-	}
-
-	// Cost.
-	if b.maxCostUSD > 0 {
-		ratio := b.costUsed / b.maxCostUSD
-		if ratio >= 1.0 {
-			results = append(results, budgetCheckResult{
-				exceeded: true, dimension: "cost_usd",
-				used: b.costUsed, limit: b.maxCostUSD,
-			})
-		} else if ratio >= budgetWarningThreshold && !b.warningsEmitted["cost_usd"] {
-			b.warningsEmitted["cost_usd"] = true
-			results = append(results, budgetCheckResult{
-				warning: true, dimension: "cost_usd",
-				used: b.costUsed, limit: b.maxCostUSD,
-			})
-		}
-	}
-
-	// Duration.
-	if b.maxDuration > 0 {
-		elapsed := time.Since(b.startedAt)
-		ratio := float64(elapsed) / float64(b.maxDuration)
-		if ratio >= 1.0 {
-			results = append(results, budgetCheckResult{
-				exceeded: true, dimension: "duration",
-				used: float64(elapsed), limit: float64(b.maxDuration),
-			})
-		} else if ratio >= budgetWarningThreshold && !b.warningsEmitted["duration"] {
-			b.warningsEmitted["duration"] = true
-			results = append(results, budgetCheckResult{
-				warning: true, dimension: "duration",
-				used: float64(elapsed), limit: float64(b.maxDuration),
-			})
-		}
-	}
+	check("iterations", float64(b.iterationsUsed), float64(b.maxIterations))
+	check("tokens", float64(b.tokensUsed), float64(b.maxTokens))
+	check("cost_usd", b.costUsed, b.maxCostUSD)
+	check("duration", float64(time.Since(b.startedAt)), float64(b.maxDuration))
 
 	return results
 }
@@ -197,6 +158,16 @@ func (b *SharedBudget) checkLocked() []budgetCheckResult {
 func findExceeded(results []budgetCheckResult) *budgetCheckResult {
 	for i := range results {
 		if results[i].exceeded {
+			return &results[i]
+		}
+	}
+	return nil
+}
+
+// findHardLimited returns the first hard-limited result, or nil.
+func findHardLimited(results []budgetCheckResult) *budgetCheckResult {
+	for i := range results {
+		if results[i].hardLimited {
 			return &results[i]
 		}
 	}

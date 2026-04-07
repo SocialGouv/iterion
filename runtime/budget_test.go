@@ -964,6 +964,211 @@ func TestSharedBudgetWarningOnce(t *testing.T) {
 	}
 }
 
-// keep imports used
-var _ = errors.New
-var _ = atomic.AddInt64
+// ---------------------------------------------------------------------------
+// Test: hard limit blocks new execution at 90%
+// ---------------------------------------------------------------------------
+
+func TestHardBudgetBlocksAt90Percent(t *testing.T) {
+	// Budget of 10 iterations: warning at 8, hard limit at 9, exceeded at 10.
+	wf := &ir.Workflow{
+		Name:  "hard_budget_test",
+		Entry: "n1",
+		Nodes: map[string]ir.Node{
+			"n1":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n1"}},
+			"n2":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n2"}},
+			"n3":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n3"}},
+			"n4":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n4"}},
+			"n5":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n5"}},
+			"n6":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n6"}},
+			"n7":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n7"}},
+			"n8":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n8"}},
+			"n9":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n9"}},
+			"n10":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "n10"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "n1", To: "n2"},
+			{From: "n2", To: "n3"},
+			{From: "n3", To: "n4"},
+			{From: "n4", To: "n5"},
+			{From: "n5", To: "n6"},
+			{From: "n6", To: "n7"},
+			{From: "n7", To: "n8"},
+			{From: "n8", To: "n9"},
+			{From: "n9", To: "n10"},
+			{From: "n10", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  &ir.Budget{MaxIterations: 10},
+	}
+
+	exec := newStubExecutor()
+	// All nodes return empty output.
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "run-hard-budget", nil)
+	if err == nil {
+		t.Fatal("expected budget error, got nil")
+	}
+
+	var rtErr *RuntimeError
+	if !errors.As(err, &rtErr) {
+		t.Fatalf("expected RuntimeError, got %T: %v", err, err)
+	}
+	if rtErr.Code != ErrCodeBudgetExceeded {
+		t.Errorf("expected error code %s, got %s", ErrCodeBudgetExceeded, rtErr.Code)
+	}
+	// The error should mention "hard limit" since the 10th node pre-check
+	// should trigger at 9/10 = 90%.
+	if !strings.Contains(rtErr.Message, "hard limit") {
+		t.Errorf("expected hard limit message, got: %s", rtErr.Message)
+	}
+
+	// Verify that exactly 9 nodes executed (n1 through n9).
+	events, _ := s.LoadEvents("run-hard-budget")
+	nodeFinished := 0
+	for _, ev := range events {
+		if ev.Type == store.EventNodeFinished {
+			nodeFinished++
+		}
+	}
+	if nodeFinished != 9 {
+		t.Errorf("expected 9 nodes to finish before hard limit, got %d", nodeFinished)
+	}
+}
+
+func TestHardBudgetOnTokens(t *testing.T) {
+	// Budget of 100 tokens. Executor reports 95 tokens on first node.
+	// The second node's pre-check should trigger hard limit at 95%.
+	wf := &ir.Workflow{
+		Name:  "hard_budget_tokens_test",
+		Entry: "a",
+		Nodes: map[string]ir.Node{
+			"a":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"b":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "a", To: "b"},
+			{From: "b", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  &ir.Budget{MaxTokens: 100},
+	}
+
+	exec := newStubExecutor()
+	exec.on("a", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"_tokens": float64(95)}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "run-hard-tokens", nil)
+	if err == nil {
+		t.Fatal("expected budget error, got nil")
+	}
+
+	var rtErr *RuntimeError
+	if !errors.As(err, &rtErr) {
+		t.Fatalf("expected RuntimeError, got %T: %v", err, err)
+	}
+	if rtErr.Code != ErrCodeBudgetExceeded {
+		t.Errorf("expected error code %s, got %s", ErrCodeBudgetExceeded, rtErr.Code)
+	}
+}
+
+func TestHardBudgetWarningStillFires(t *testing.T) {
+	// Verify that warning at 80% still fires before hard limit at 90%.
+	b := newSharedBudget(&ir.Budget{MaxIterations: 10})
+
+	// Record 7 iterations (70%) — no warning yet.
+	for i := 0; i < 7; i++ {
+		b.RecordUsage(0, 0)
+	}
+
+	// 8th iteration (80%) — warning should fire.
+	results := b.RecordUsage(0, 0)
+	warnings := findWarnings(results)
+	if len(warnings) != 1 || warnings[0].dimension != "iterations" {
+		t.Errorf("expected warning at 80%%, got %d warnings", len(warnings))
+	}
+
+	// 9th iteration (90%) — hard limit should fire.
+	results = b.RecordUsage(0, 0)
+	hl := findHardLimited(results)
+	if hl == nil || hl.dimension != "iterations" {
+		t.Error("expected hard limit at 90%")
+	}
+
+	// 10th iteration (100%) — exceeded should fire.
+	results = b.RecordUsage(0, 0)
+	exc := findExceeded(results)
+	if exc == nil || exc.dimension != "iterations" {
+		t.Error("expected exceeded at 100%")
+	}
+}
+
+func TestHardBudgetUnit(t *testing.T) {
+	t.Run("iterations_hard_limit", func(t *testing.T) {
+		b := newSharedBudget(&ir.Budget{MaxIterations: 10})
+		// Push to 9 iterations.
+		for i := 0; i < 9; i++ {
+			b.RecordUsage(0, 0)
+		}
+		checks := b.Check()
+		hl := findHardLimited(checks)
+		if hl == nil {
+			t.Fatal("expected hard limit at 9/10")
+		}
+		if hl.dimension != "iterations" {
+			t.Errorf("expected dimension 'iterations', got %q", hl.dimension)
+		}
+	})
+
+	t.Run("tokens_hard_limit", func(t *testing.T) {
+		b := newSharedBudget(&ir.Budget{MaxTokens: 1000})
+		b.RecordUsage(910, 0) // 91%
+		checks := b.Check()
+		hl := findHardLimited(checks)
+		if hl == nil {
+			t.Fatal("expected hard limit at 910/1000")
+		}
+		if hl.dimension != "tokens" {
+			t.Errorf("expected dimension 'tokens', got %q", hl.dimension)
+		}
+	})
+
+	t.Run("cost_hard_limit", func(t *testing.T) {
+		b := newSharedBudget(&ir.Budget{MaxCostUSD: 10.0})
+		b.RecordUsage(0, 9.5) // 95%
+		checks := b.Check()
+		hl := findHardLimited(checks)
+		if hl == nil {
+			t.Fatal("expected hard limit at 9.5/10.0")
+		}
+		if hl.dimension != "cost_usd" {
+			t.Errorf("expected dimension 'cost_usd', got %q", hl.dimension)
+		}
+	})
+
+	t.Run("below_hard_threshold", func(t *testing.T) {
+		b := newSharedBudget(&ir.Budget{MaxIterations: 10})
+		for i := 0; i < 8; i++ {
+			b.RecordUsage(0, 0)
+		}
+		checks := b.Check()
+		hl := findHardLimited(checks)
+		if hl != nil {
+			t.Error("should not trigger hard limit at 8/10 (80%)")
+		}
+	})
+}
