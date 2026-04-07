@@ -24,6 +24,7 @@ import (
 	"github.com/SocialGouv/iterion/model"
 	"github.com/SocialGouv/iterion/runtime"
 	"github.com/SocialGouv/iterion/store"
+	"github.com/SocialGouv/iterion/tool"
 )
 
 // ---------------------------------------------------------------------------
@@ -134,6 +135,7 @@ func TestLive_DualModel_PlanImplementReview(t *testing.T) {
 
 	execOpts := []model.GoaiExecutorOption{
 		model.WithBackendRegistry(delegate.DefaultRegistry()),
+		model.WithToolRegistry(tool.NewRegistry()),
 		model.WithWorkDir(workspaceDir),
 		model.WithEventHooks(hooks),
 	}
@@ -493,6 +495,7 @@ func TestLive_SessionContinuity_ReviewFix(t *testing.T) {
 
 	execOpts := []model.GoaiExecutorOption{
 		model.WithBackendRegistry(delegate.DefaultRegistry()),
+		model.WithToolRegistry(tool.NewRegistry()),
 		model.WithWorkDir(workspaceDir),
 		model.WithEventHooks(hooks),
 	}

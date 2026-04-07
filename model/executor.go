@@ -329,8 +329,10 @@ func (e *GoaiExecutor) executeBackend(ctx context.Context, node *ir.Node, input 
 		InteractionEnabled: node.Interaction != ir.InteractionNone,
 	}
 
-	// Resolve full tool definitions for backends that manage tool loops internally.
-	if len(node.Tools) > 0 {
+	// Resolve full tool definitions for backends that manage tool loops
+	// internally (goai). CLI-based backends (claude_code, codex) handle tools
+	// natively via AllowedTools and do not need ToolDefs.
+	if len(node.Tools) > 0 && backendName == "goai" {
 		tools, toolErr := e.resolveToolsForNode(ctx, node, node.Tools)
 		if toolErr != nil {
 			return nil, fmt.Errorf("model: node %q: %w", node.ID, toolErr)
@@ -411,10 +413,33 @@ func (e *GoaiExecutor) executeBackend(ctx context.Context, node *ir.Node, input 
 	if node.OutputSchema != "" {
 		if schema, ok := e.schemas[node.OutputSchema]; ok {
 			if err := ValidateOutput(result.Output, schema); err != nil {
+				// If parsing fell back to text wrapper, the backend likely
+				// returned non-JSON output (transient SDK issue). Retry once
+				// before giving up.
+				if result.ParseFallback {
+					log.Printf("model: node %q: structured output validation failed with parse fallback, retrying backend: %v", node.ID, err)
+					retryResult, retryErr := backend.Execute(ctx, task)
+					if retryErr == nil && !retryResult.ParseFallback {
+						result = retryResult
+						// Re-attach metadata and re-validate.
+						if result.Output["_tokens"] == nil {
+							result.Output["_tokens"] = result.Tokens
+						}
+						result.Output["_backend"] = backendName
+						if result.SessionID != "" {
+							result.Output["_session_id"] = result.SessionID
+						}
+						if retryValErr := ValidateOutput(result.Output, schema); retryValErr != nil {
+							return nil, fmt.Errorf("model: node %q: structured output invalid after retry: %w", node.ID, retryValErr)
+						}
+						goto validated
+					}
+				}
 				return nil, fmt.Errorf("model: node %q: structured output invalid: %w", node.ID, err)
 			}
 		}
 	}
+validated:
 
 	// Check if the backend signaled that it needs user interaction.
 	if node.Interaction != ir.InteractionNone {

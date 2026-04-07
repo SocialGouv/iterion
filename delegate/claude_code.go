@@ -118,21 +118,32 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 	// is free-form text. We always run Pass 2 with WithOutputFormat to guarantee
 	// structured output conforming to the schema via session resume.
 	if needsTwoPass && rm.SessionID != "" {
-		log.Printf("delegate: claude-code [formatting pass] starting structured output extraction (session=%s)", rm.SessionID)
-		fmtRM, fmtErr := b.formatOutput(ctx, task, rm.SessionID)
-		if fmtErr != nil {
-			return result, fmt.Errorf("delegate: claude-code formatting pass failed: %w", fmtErr)
-		}
-		if fmtRM.Usage != nil {
-			result.Tokens += fmtRM.Usage.InputTokens + fmtRM.Usage.OutputTokens
-		}
-		result.FormattingPassUsed = true
+		const maxFmtAttempts = 2
+		for attempt := 1; attempt <= maxFmtAttempts; attempt++ {
+			log.Printf("delegate: claude-code [formatting pass %d/%d] starting structured output extraction (session=%s)", attempt, maxFmtAttempts, rm.SessionID)
+			fmtRM, fmtErr := b.formatOutput(ctx, task, rm.SessionID)
+			if fmtErr != nil {
+				if attempt < maxFmtAttempts {
+					log.Printf("delegate: claude-code [formatting pass %d/%d] failed, retrying: %v", attempt, maxFmtAttempts, fmtErr)
+					continue
+				}
+				return result, fmt.Errorf("delegate: claude-code formatting pass failed: %w", fmtErr)
+			}
+			if fmtRM.Usage != nil {
+				result.Tokens += fmtRM.Usage.InputTokens + fmtRM.Usage.OutputTokens
+			}
+			result.FormattingPassUsed = true
 
-		output, rawLen, _ := parseSDKOutput(fmtRM.Result, fmtRM.StructuredOutput, task.OutputSchema)
-		result.Output = output
-		result.RawOutputLen = rawLen
-		result.ParseFallback = false
-		return result, nil
+			output, rawLen, fallback := parseSDKOutput(fmtRM.Result, fmtRM.StructuredOutput, task.OutputSchema)
+			if fallback && attempt < maxFmtAttempts {
+				log.Printf("delegate: claude-code [formatting pass %d/%d] produced fallback text, retrying", attempt, maxFmtAttempts)
+				continue
+			}
+			result.Output = output
+			result.RawOutputLen = rawLen
+			result.ParseFallback = fallback
+			return result, nil
+		}
 	}
 
 	output, rawLen, fallback := parseSDKOutput(rm.Result, rm.StructuredOutput, task.OutputSchema)
