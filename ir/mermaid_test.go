@@ -120,6 +120,9 @@ prompt sys:
 prompt usr:
   Review: {{input.description}}
 
+prompt merge_usr:
+  Merge reviews.
+
 prompt human_instr:
   Please provide feedback.
 
@@ -156,7 +159,7 @@ agent merge:
   input: output_s
   output: output_s
   system: sys
-  user: usr
+  user: merge_usr
   await: wait_all
 
 human checkpoint:
@@ -237,6 +240,9 @@ prompt sys:
 prompt usr:
   Refine: {{input.text}}
 
+prompt checker_usr:
+  Check the refinement.
+
 schema refine_input:
   text: string
 
@@ -257,7 +263,7 @@ agent checker:
   input: refine_output
   output: refine_output
   system: sys
-  user: usr
+  user: checker_usr
   session: fresh
 
 workflow loop_workflow:

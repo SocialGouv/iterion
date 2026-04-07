@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
-import type { HumanDecl, HumanMode, AwaitStrategy } from "@/api/types";
+import type { HumanDecl, HumanMode, AwaitMode } from "@/api/types";
 import { defaultSchema, defaultPrompt, getAllNodeNames } from "@/lib/defaults";
 import { TextField, CommittedTextField, NumberField, SelectField, SelectFieldWithCreate } from "./FormField";
 
@@ -117,7 +117,7 @@ export default function HumanForm({ decl }: Props) {
       <SelectField
         label="Await"
         value={decl.await ?? "none"}
-        onChange={(v) => updateHuman(decl.name, { await: (v === "none" ? undefined : v) as AwaitStrategy | undefined })}
+        onChange={(v) => updateHuman(decl.name, { await: (v === "none" ? undefined : v) as AwaitMode | undefined })}
         options={[
           { value: "none", label: "none" },
           { value: "wait_all", label: "wait_all" },

@@ -221,8 +221,8 @@ func TestCompileAllNodeKinds(t *testing.T) {
 
 	// Convergence details (h1 has await: wait_all)
 	h1node := w.Nodes["h1"]
-	if h1node.AwaitStrategy != AwaitWaitAll {
-		t.Errorf("h1 await: expected wait_all, got %v", h1node.AwaitStrategy)
+	if h1node.AwaitMode != AwaitWaitAll {
+		t.Errorf("h1 await: expected wait_all, got %v", h1node.AwaitMode)
 	}
 
 	// Human details
@@ -252,6 +252,9 @@ func TestCompileAllNodeKinds(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 const edgesSrc = `
+vars:
+  review_rules: string
+
 schema s:
   approved: bool
 
@@ -940,7 +943,11 @@ workflow test:
 
 func TestCompilePromptTemplateRefs(t *testing.T) {
 	src := `
+vars:
+  rules: string
+
 schema s:
+  pr_context: string
   ok: bool
 
 prompt sys:

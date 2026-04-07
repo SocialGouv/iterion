@@ -25,7 +25,7 @@ import (
 //   join -> next_node -> done
 // ---------------------------------------------------------------------------
 
-func fanOutWorkflow(awaitStrategy ir.AwaitStrategy) *ir.Workflow {
+func fanOutWorkflow(awaitStrategy ir.AwaitMode) *ir.Workflow {
 	return &ir.Workflow{
 		Name:  "fanout_test",
 		Entry: "entry",
@@ -34,7 +34,7 @@ func fanOutWorkflow(awaitStrategy ir.AwaitStrategy) *ir.Workflow {
 			"router":   {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
 			"agent_a":  {ID: "agent_a", Kind: ir.NodeAgent},
 			"agent_b":  {ID: "agent_b", Kind: ir.NodeAgent},
-			"finalize": {ID: "finalize", Kind: ir.NodeAgent, AwaitStrategy: awaitStrategy},
+			"finalize": {ID: "finalize", Kind: ir.NodeAgent, AwaitMode: awaitStrategy},
 			"done":     {ID: "done", Kind: ir.NodeDone},
 			"fail":     {ID: "fail", Kind: ir.NodeFail},
 		},
@@ -310,7 +310,7 @@ func TestFanOutBoundedParallelism(t *testing.T) {
 			"a":      {ID: "a", Kind: ir.NodeAgent},
 			"b":      {ID: "b", Kind: ir.NodeAgent},
 			"c":      {ID: "c", Kind: ir.NodeAgent},
-			"done":   {ID: "done", Kind: ir.NodeDone, AwaitStrategy: ir.AwaitWaitAll},
+			"done":   {ID: "done", Kind: ir.NodeDone, AwaitMode: ir.AwaitWaitAll},
 			"fail":   {ID: "fail", Kind: ir.NodeFail},
 		},
 		Edges: []*ir.Edge{
@@ -392,7 +392,7 @@ func TestFanOutMultiStepBranches(t *testing.T) {
 			"gpt_review":      {ID: "gpt_review", Kind: ir.NodeAgent},
 			"claude_plan":     {ID: "claude_plan", Kind: ir.NodeAgent},
 			"gpt_plan":        {ID: "gpt_plan", Kind: ir.NodeAgent},
-			"merge":           {ID: "merge", Kind: ir.NodeAgent, AwaitStrategy: ir.AwaitWaitAll},
+			"merge":           {ID: "merge", Kind: ir.NodeAgent, AwaitMode: ir.AwaitWaitAll},
 			"done":            {ID: "done", Kind: ir.NodeDone},
 			"fail":            {ID: "fail", Kind: ir.NodeFail},
 		},
@@ -649,7 +649,7 @@ func TestDualReviewParallelToMerge(t *testing.T) {
 			"review_fanout": {ID: "review_fanout", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
 			"claude_review": {ID: "claude_review", Kind: ir.NodeAgent, Publish: "claude_verdict"},
 			"gpt_review":    {ID: "gpt_review", Kind: ir.NodeAgent, Publish: "gpt_verdict"},
-			"merge_reviews": {ID: "merge_reviews", Kind: ir.NodeAgent, Publish: "merged_review", AwaitStrategy: ir.AwaitWaitAll},
+			"merge_reviews": {ID: "merge_reviews", Kind: ir.NodeAgent, Publish: "merged_review", AwaitMode: ir.AwaitWaitAll},
 			"done":          {ID: "done", Kind: ir.NodeDone},
 			"fail":          {ID: "fail", Kind: ir.NodeFail},
 		},
@@ -882,11 +882,11 @@ func TestSequentialFanOuts(t *testing.T) {
 			"router1": {ID: "router1", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
 			"a":       {ID: "a", Kind: ir.NodeAgent},
 			"b":       {ID: "b", Kind: ir.NodeAgent},
-			"mid":     {ID: "mid", Kind: ir.NodeAgent, AwaitStrategy: ir.AwaitWaitAll},
+			"mid":     {ID: "mid", Kind: ir.NodeAgent, AwaitMode: ir.AwaitWaitAll},
 			"router2": {ID: "router2", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
 			"c":       {ID: "c", Kind: ir.NodeAgent},
 			"d":       {ID: "d", Kind: ir.NodeAgent},
-			"done":    {ID: "done", Kind: ir.NodeDone, AwaitStrategy: ir.AwaitWaitAll},
+			"done":    {ID: "done", Kind: ir.NodeDone, AwaitMode: ir.AwaitWaitAll},
 			"fail":    {ID: "fail", Kind: ir.NodeFail},
 		},
 		Edges: []*ir.Edge{

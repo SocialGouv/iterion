@@ -882,7 +882,7 @@ func (e *Engine) execLLMRouterMulti(ctx context.Context, rs *runState, routerNod
 // the given edge. It executes nodes sequentially until it reaches a
 // convergence point, a terminal node, or encounters an error.
 // convergenceNodeID is the pre-computed convergence point (may be empty
-// if unknown; in that case, AwaitStrategy on individual nodes is checked).
+// if unknown; in that case, AwaitMode on individual nodes is checked).
 func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, startEdge *ir.Edge, parentOutputs map[string]map[string]interface{}, parentArtifacts map[string]map[string]interface{}, convergenceNodeID string) *branchResult {
 	result := &branchResult{
 		branchID:         branchID,
@@ -1118,7 +1118,7 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 	}
 
 	// Determine await strategy: use node's explicit setting, default to wait_all.
-	strategy := convNode.AwaitStrategy
+	strategy := convNode.AwaitMode
 	if strategy == ir.AwaitNone {
 		strategy = ir.AwaitWaitAll
 	}
@@ -1186,7 +1186,7 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 }
 
 // findConvergencePoint walks outgoing edges from the router's targets to
-// find a downstream convergence point (a node with AwaitStrategy != AwaitNone,
+// find a downstream convergence point (a node with AwaitMode != AwaitNone,
 // or a node that receives edges from multiple distinct sources).
 // Terminal nodes (done/fail) can be convergence points when multiple
 // branches target them directly.
@@ -1219,7 +1219,7 @@ func (e *Engine) findConvergencePoint(routerNodeID string, fanEdges []*ir.Edge) 
 				continue
 			}
 			// Convergence point: explicitly marked OR has multiple distinct incoming sources.
-			if node.AwaitStrategy != ir.AwaitNone || len(inSources[nodeID]) > 1 {
+			if node.AwaitMode != ir.AwaitNone || len(inSources[nodeID]) > 1 {
 				return nodeID
 			}
 			// Follow outgoing edges.
@@ -2211,7 +2211,7 @@ func (e *Engine) branchContainsMutation(startNodeID string) bool {
 			continue
 		}
 		// Stop walking at convergence points or terminal nodes.
-		if node.AwaitStrategy != ir.AwaitNone || node.Kind == ir.NodeDone || node.Kind == ir.NodeFail {
+		if node.AwaitMode != ir.AwaitNone || node.Kind == ir.NodeDone || node.Kind == ir.NodeFail {
 			continue
 		}
 		if isMutatingNode(node) {

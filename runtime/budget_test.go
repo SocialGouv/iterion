@@ -29,7 +29,7 @@ func budgetFanOutWorkflow(budget *ir.Budget) *ir.Workflow {
 			"router": {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
 			"a":      {ID: "a", Kind: ir.NodeAgent},
 			"b":      {ID: "b", Kind: ir.NodeAgent},
-			"done":   {ID: "done", Kind: ir.NodeDone, AwaitStrategy: ir.AwaitBestEffort},
+			"done":   {ID: "done", Kind: ir.NodeDone, AwaitMode: ir.AwaitBestEffort},
 			"fail":   {ID: "fail", Kind: ir.NodeFail},
 		},
 		Edges: []*ir.Edge{
@@ -312,7 +312,7 @@ func TestBudgetSharedFirstComeFirstServed(t *testing.T) {
 			"a":      {ID: "a", Kind: ir.NodeAgent},
 			"b1":     {ID: "b1", Kind: ir.NodeAgent},
 			"b2":     {ID: "b2", Kind: ir.NodeAgent},
-			"done":   {ID: "done", Kind: ir.NodeDone, AwaitStrategy: ir.AwaitBestEffort},
+			"done":   {ID: "done", Kind: ir.NodeDone, AwaitMode: ir.AwaitBestEffort},
 			"fail":   {ID: "fail", Kind: ir.NodeFail},
 		},
 		Edges: []*ir.Edge{
@@ -489,7 +489,7 @@ func TestWorkspaceSafetyRejectsDualMutation(t *testing.T) {
 			"router": {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
 			"tool_a": {ID: "tool_a", Kind: ir.NodeTool, Command: "echo a"},
 			"tool_b": {ID: "tool_b", Kind: ir.NodeTool, Command: "echo b"},
-			"done":   {ID: "done", Kind: ir.NodeDone, AwaitStrategy: ir.AwaitWaitAll},
+			"done":   {ID: "done", Kind: ir.NodeDone, AwaitMode: ir.AwaitWaitAll},
 			"fail":   {ID: "fail", Kind: ir.NodeFail},
 		},
 		Edges: []*ir.Edge{
@@ -541,7 +541,7 @@ func TestWorkspaceSafetyAllowsMutationPlusReadonly(t *testing.T) {
 			"router":   {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
 			"tool_a":   {ID: "tool_a", Kind: ir.NodeTool, Command: "echo a"},
 			"review_b": {ID: "review_b", Kind: ir.NodeAgent},
-			"done":     {ID: "done", Kind: ir.NodeDone, AwaitStrategy: ir.AwaitWaitAll},
+			"done":     {ID: "done", Kind: ir.NodeDone, AwaitMode: ir.AwaitWaitAll},
 			"fail":     {ID: "fail", Kind: ir.NodeFail},
 		},
 		Edges: []*ir.Edge{
@@ -596,7 +596,7 @@ func TestWorkspaceSafetyAllowsParallelReadonly(t *testing.T) {
 			"a":      {ID: "a", Kind: ir.NodeAgent},
 			"b":      {ID: "b", Kind: ir.NodeAgent},
 			"c":      {ID: "c", Kind: ir.NodeAgent},
-			"done":   {ID: "done", Kind: ir.NodeDone, AwaitStrategy: ir.AwaitWaitAll},
+			"done":   {ID: "done", Kind: ir.NodeDone, AwaitMode: ir.AwaitWaitAll},
 			"fail":   {ID: "fail", Kind: ir.NodeFail},
 		},
 		Edges: []*ir.Edge{
@@ -651,7 +651,7 @@ func TestWorkspaceSafetyAgentWithToolsIsMutating(t *testing.T) {
 			"router": {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
 			"a":      {ID: "a", Kind: ir.NodeAgent, Tools: []string{"write_file"}},
 			"b":      {ID: "b", Kind: ir.NodeAgent, Tools: []string{"run_command"}},
-			"done":   {ID: "done", Kind: ir.NodeDone, AwaitStrategy: ir.AwaitWaitAll},
+			"done":   {ID: "done", Kind: ir.NodeDone, AwaitMode: ir.AwaitWaitAll},
 			"fail":   {ID: "fail", Kind: ir.NodeFail},
 		},
 		Edges: []*ir.Edge{
@@ -698,7 +698,7 @@ func TestWorkspaceSafetyAllowsParallelReadonlyTools(t *testing.T) {
 			"router": {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
 			"a":      {ID: "a", Kind: ir.NodeAgent, Tools: []string{"read_file", "git_diff"}},
 			"b":      {ID: "b", Kind: ir.NodeAgent, Tools: []string{"git_status", "search_codebase", "tree"}},
-			"done":   {ID: "done", Kind: ir.NodeDone, AwaitStrategy: ir.AwaitWaitAll},
+			"done":   {ID: "done", Kind: ir.NodeDone, AwaitMode: ir.AwaitWaitAll},
 			"fail":   {ID: "fail", Kind: ir.NodeFail},
 		},
 		Edges: []*ir.Edge{
@@ -754,7 +754,7 @@ func TestWorkspaceSafetyOneMutatingOneReadonlyTools(t *testing.T) {
 			"router": {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
 			"a":      {ID: "a", Kind: ir.NodeAgent, Tools: []string{"write_file"}},
 			"b":      {ID: "b", Kind: ir.NodeAgent, Tools: []string{"read_file", "git_status"}},
-			"done":   {ID: "done", Kind: ir.NodeDone, AwaitStrategy: ir.AwaitWaitAll},
+			"done":   {ID: "done", Kind: ir.NodeDone, AwaitMode: ir.AwaitWaitAll},
 			"fail":   {ID: "fail", Kind: ir.NodeFail},
 		},
 		Edges: []*ir.Edge{
@@ -809,7 +809,7 @@ func TestWorkspaceSafetyMixedToolsIsMutating(t *testing.T) {
 			"router": {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
 			"a":      {ID: "a", Kind: ir.NodeAgent, Tools: []string{"read_file", "write_file"}},
 			"b":      {ID: "b", Kind: ir.NodeAgent, Tools: []string{"git_diff", "run_command"}},
-			"done":   {ID: "done", Kind: ir.NodeDone, AwaitStrategy: ir.AwaitWaitAll},
+			"done":   {ID: "done", Kind: ir.NodeDone, AwaitMode: ir.AwaitWaitAll},
 			"fail":   {ID: "fail", Kind: ir.NodeFail},
 		},
 		Edges: []*ir.Edge{

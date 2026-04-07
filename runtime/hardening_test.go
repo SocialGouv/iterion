@@ -190,7 +190,7 @@ func TestCancelDuringParallelBranches(t *testing.T) {
 			"router":   {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
 			"branch_a": {ID: "branch_a", Kind: ir.NodeAgent},
 			"branch_b": {ID: "branch_b", Kind: ir.NodeAgent},
-			"done":     {ID: "done", Kind: ir.NodeDone, AwaitStrategy: ir.AwaitBestEffort},
+			"done":     {ID: "done", Kind: ir.NodeDone, AwaitMode: ir.AwaitBestEffort},
 		},
 		Edges: []*ir.Edge{
 			{From: "router", To: "branch_a"},

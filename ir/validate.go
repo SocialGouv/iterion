@@ -23,6 +23,13 @@ const (
 	DiagInvalidReasoningEffort  DiagCode = "C024" // invalid reasoning_effort value
 	DiagInvalidLoopIterations   DiagCode = "C026" // loop max_iterations must be >= 1
 	DiagDuplicateWithKey        DiagCode = "C028" // duplicate with-mapping key across edges to same target
+	DiagUnknownRefNode          DiagCode = "C030" // outputs ref to non-existent node
+	DiagRefFieldNotInSchema     DiagCode = "C031" // outputs ref field not in output schema
+	DiagRefNodeNoSchema         DiagCode = "C032" // outputs ref field on node without output schema
+	DiagUndeclaredVar           DiagCode = "C033" // vars ref to undeclared variable
+	DiagInputFieldNotInSchema   DiagCode = "C034" // input ref field not in input schema
+	DiagUnknownArtifact         DiagCode = "C035" // artifacts ref to unpublished artifact
+	DiagRefNodeNotReachable     DiagCode = "C036" // outputs ref to node not reachable before consumer
 )
 
 // validate performs static validation on a compiled workflow.
@@ -43,6 +50,7 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateUndeclaredCycles(w)
 	c.validateLoopIterations(w)
 	c.validateReasoningEffort(w)
+	c.validateTemplateRefs(w)
 }
 
 // ---------------------------------------------------------------------------
@@ -55,26 +63,26 @@ func (c *compiler) validateInheritAtConvergence(w *Workflow) {
 	// re-entry) is left to runtime since static analysis can't distinguish
 	// parallel convergence from sequential re-entry.
 	for nodeID, node := range w.Nodes {
-		if node.AwaitStrategy == AwaitNone {
+		if node.AwaitMode == AwaitNone {
 			continue
 		}
 		if node.Session == SessionInherit || node.Session == SessionFork {
 			c.errorf(DiagSessionAfterConvergence,
 				"node %q has session: %s but has await: %s (convergence point); only fresh or artifacts_only are allowed",
-				nodeID, node.Session, node.AwaitStrategy)
+				nodeID, node.Session, node.AwaitMode)
 		}
 	}
 }
 
 // findConvergenceNodes returns the set of node IDs that are convergence points.
-// A node is a convergence point if it has AwaitStrategy != AwaitNone OR
+// A node is a convergence point if it has AwaitMode != AwaitNone OR
 // if it receives unconditional edges from multiple distinct sources.
 func (c *compiler) findConvergenceNodes(w *Workflow) map[string]bool {
 	result := make(map[string]bool)
 
 	// Nodes explicitly marked with await.
 	for id, node := range w.Nodes {
-		if node.AwaitStrategy != AwaitNone {
+		if node.AwaitMode != AwaitNone {
 			result[id] = true
 		}
 	}
@@ -570,6 +578,314 @@ func (c *compiler) validateReasoningEffort(w *Workflow) {
 			c.errorf(DiagInvalidReasoningEffort,
 				"node %q has invalid reasoning_effort %q; valid values are low, medium, high, extra_high",
 				node.ID, node.ReasoningEffort)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// C030–C036 — deep template reference validation
+// ---------------------------------------------------------------------------
+
+// refContext associates a Ref with the node that consumes it and a
+// human-readable location string for diagnostics.
+type refContext struct {
+	Ref         *Ref
+	NodeID      string // consuming node ID
+	Location    string // e.g. "prompt 'sys' (node 'a')"
+	IncludeSelf bool   // true for edge with-mappings: the source node itself is available
+}
+
+// collectAllRefs gathers every template reference in the workflow together
+// with the node that consumes it.
+func collectAllRefs(w *Workflow) []refContext {
+	// Build reverse map: prompt name → list of consuming node IDs.
+	promptUsers := make(map[string][]string)
+	for _, n := range w.Nodes {
+		for _, pname := range nodePromptRefs(n) {
+			promptUsers[pname] = append(promptUsers[pname], n.ID)
+		}
+	}
+
+	var out []refContext
+
+	// Prompt template refs.
+	for _, p := range w.Prompts {
+		consumers := promptUsers[p.Name]
+		for _, ref := range p.TemplateRefs {
+			for _, nodeID := range consumers {
+				out = append(out, refContext{
+					Ref:      ref,
+					NodeID:   nodeID,
+					Location: fmt.Sprintf("prompt %q (node %q)", p.Name, nodeID),
+				})
+			}
+		}
+	}
+
+	// Edge with-mapping refs. The with-mapping is evaluated when the
+	// edge fires, so the source node (From) and all its predecessors
+	// have already produced their outputs. We use From as the consumer
+	// context and include From itself as an additional "self" predecessor.
+	for _, e := range w.Edges {
+		for _, dm := range e.With {
+			for _, ref := range dm.Refs {
+				out = append(out, refContext{
+					Ref:         ref,
+					NodeID:      e.From,
+					Location:    fmt.Sprintf("edge %s -> %s, with %q", e.From, e.To, dm.Key),
+					IncludeSelf: true,
+				})
+			}
+		}
+	}
+
+	// Tool node command refs.
+	for _, n := range w.Nodes {
+		for _, ref := range n.CommandRefs {
+			out = append(out, refContext{
+				Ref:      ref,
+				NodeID:   n.ID,
+				Location: fmt.Sprintf("tool node %q command", n.ID),
+			})
+		}
+	}
+
+	return out
+}
+
+// nodePromptRefs returns all prompt reference names used by a node.
+func nodePromptRefs(n *Node) []string {
+	var refs []string
+	if n.SystemPrompt != "" {
+		refs = append(refs, n.SystemPrompt)
+	}
+	if n.UserPrompt != "" {
+		refs = append(refs, n.UserPrompt)
+	}
+	if n.InteractionPrompt != "" {
+		refs = append(refs, n.InteractionPrompt)
+	}
+	if n.Instructions != "" {
+		refs = append(refs, n.Instructions)
+	}
+	return refs
+}
+
+// buildPredecessors computes, for each node, the set of all nodes that
+// can execute before it (i.e. whose outputs are available). This follows
+// ALL edges (including conditional and loop back-edges) to ensure zero
+// false positives.
+func buildPredecessors(w *Workflow) map[string]map[string]bool {
+	// Build reverse adjacency list.
+	revAdj := make(map[string][]string)
+	for _, e := range w.Edges {
+		revAdj[e.To] = append(revAdj[e.To], e.From)
+	}
+
+	// Identify nodes that are targets of loop back-edges.
+	// These nodes are effectively their own predecessors because
+	// a prior iteration's output is available on re-entry.
+	loopTargets := make(map[string]bool)
+	for _, e := range w.Edges {
+		if e.LoopName != "" {
+			loopTargets[e.To] = true
+		}
+	}
+
+	result := make(map[string]map[string]bool)
+	for id := range w.Nodes {
+		preds := computePredecessors(id, revAdj)
+		if loopTargets[id] {
+			preds[id] = true
+		}
+		result[id] = preds
+	}
+	return result
+}
+
+// computePredecessors returns all transitive predecessors of nodeID via
+// reverse BFS.
+func computePredecessors(nodeID string, revAdj map[string][]string) map[string]bool {
+	visited := make(map[string]bool)
+	queue := revAdj[nodeID]
+	for i := 0; i < len(queue); i++ {
+		pred := queue[i]
+		if visited[pred] || pred == nodeID {
+			continue
+		}
+		visited[pred] = true
+		queue = append(queue, revAdj[pred]...)
+	}
+	return visited
+}
+
+// buildArtifactProducers maps artifact names to their producing node IDs.
+func buildArtifactProducers(w *Workflow) map[string]string {
+	producers := make(map[string]string)
+	for _, n := range w.Nodes {
+		if n.Publish != "" {
+			producers[n.Publish] = n.ID
+		}
+	}
+	return producers
+}
+
+func (c *compiler) validateTemplateRefs(w *Workflow) {
+	refs := collectAllRefs(w)
+	if len(refs) == 0 {
+		return
+	}
+
+	predecessors := buildPredecessors(w)
+	artifactProducers := buildArtifactProducers(w)
+
+	for _, rc := range refs {
+		switch rc.Ref.Kind {
+		case RefOutputs:
+			c.validateOutputsRef(w, rc, predecessors)
+		case RefVars:
+			c.validateVarsRef(w, rc)
+		case RefInput:
+			c.validateInputRef(w, rc)
+		case RefArtifacts:
+			c.validateArtifactsRef(w, rc, predecessors, artifactProducers)
+		}
+	}
+}
+
+func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors map[string]map[string]bool) {
+	if len(rc.Ref.Path) == 0 {
+		return
+	}
+	targetNodeID := rc.Ref.Path[0]
+
+	// C030: referenced node must exist.
+	targetNode, ok := w.Nodes[targetNodeID]
+	if !ok {
+		c.errorf(DiagUnknownRefNode,
+			"%s: reference %s targets unknown node %q",
+			rc.Location, rc.Ref.Raw, targetNodeID)
+		return
+	}
+
+	// C036: referenced node must be reachable before consumer.
+	if preds, ok := predecessors[rc.NodeID]; ok {
+		reachable := preds[targetNodeID]
+		// For edge with-mappings, the source node itself has finished, so
+		// it and its predecessors are all available.
+		if !reachable && rc.IncludeSelf && targetNodeID == rc.NodeID {
+			reachable = true
+		}
+		if !reachable {
+			c.errorf(DiagRefNodeNotReachable,
+				"%s: reference %s targets node %q which is not reachable before %q",
+				rc.Location, rc.Ref.Raw, targetNodeID, rc.NodeID)
+			return
+		}
+	}
+
+	// Field-level validation (only when accessing a specific field).
+	if len(rc.Ref.Path) < 2 {
+		return
+	}
+	fieldName := rc.Ref.Path[1]
+
+	// Skip .history — already covered by C017.
+	if fieldName == "history" {
+		return
+	}
+
+	// Skip underscore-prefixed fields — these are runtime-injected internal
+	// fields (e.g. _session_id) not declared in output schemas.
+	if len(fieldName) > 0 && fieldName[0] == '_' {
+		return
+	}
+
+	// C032: node has no output schema — warn that field access can't be verified.
+	if targetNode.OutputSchema == "" {
+		c.warnf(DiagRefNodeNoSchema,
+			"%s: reference %s accesses field %q on node %q which has no output schema; cannot verify",
+			rc.Location, rc.Ref.Raw, fieldName, targetNodeID)
+		return
+	}
+
+	// C031: field must exist in the output schema.
+	schema, ok := w.Schemas[targetNode.OutputSchema]
+	if !ok {
+		return // already reported by C002
+	}
+	if findField(schema, fieldName) == nil {
+		c.errorf(DiagRefFieldNotInSchema,
+			"%s: reference %s accesses field %q not found in output schema %q of node %q",
+			rc.Location, rc.Ref.Raw, fieldName, targetNode.OutputSchema, targetNodeID)
+	}
+}
+
+func (c *compiler) validateVarsRef(w *Workflow, rc refContext) {
+	if len(rc.Ref.Path) == 0 {
+		return
+	}
+	varName := rc.Ref.Path[0]
+	if _, ok := w.Vars[varName]; !ok {
+		c.errorf(DiagUndeclaredVar,
+			"%s: reference %s targets undeclared variable %q",
+			rc.Location, rc.Ref.Raw, varName)
+	}
+}
+
+func (c *compiler) validateInputRef(w *Workflow, rc refContext) {
+	if len(rc.Ref.Path) == 0 {
+		return
+	}
+	fieldName := rc.Ref.Path[0]
+
+	node, ok := w.Nodes[rc.NodeID]
+	if !ok {
+		return
+	}
+
+	// Can only validate if the consuming node has an input schema.
+	if node.InputSchema == "" {
+		return
+	}
+
+	schema, ok := w.Schemas[node.InputSchema]
+	if !ok {
+		return // already reported by C002
+	}
+
+	if findField(schema, fieldName) == nil {
+		c.errorf(DiagInputFieldNotInSchema,
+			"%s: reference %s accesses field %q not found in input schema %q of node %q",
+			rc.Location, rc.Ref.Raw, fieldName, node.InputSchema, rc.NodeID)
+	}
+}
+
+func (c *compiler) validateArtifactsRef(w *Workflow, rc refContext, predecessors map[string]map[string]bool, producers map[string]string) {
+	if len(rc.Ref.Path) == 0 {
+		return
+	}
+	artifactName := rc.Ref.Path[0]
+
+	// C035: artifact must be published by some node.
+	producerID, ok := producers[artifactName]
+	if !ok {
+		c.errorf(DiagUnknownArtifact,
+			"%s: reference %s targets artifact %q which is not published by any node",
+			rc.Location, rc.Ref.Raw, artifactName)
+		return
+	}
+
+	// C036: producer must be reachable before consumer.
+	if preds, ok := predecessors[rc.NodeID]; ok {
+		reachable := preds[producerID]
+		if !reachable && rc.IncludeSelf && producerID == rc.NodeID {
+			reachable = true
+		}
+		if !reachable {
+			c.errorf(DiagRefNodeNotReachable,
+				"%s: reference %s targets artifact %q published by node %q which is not reachable before %q",
+				rc.Location, rc.Ref.Raw, artifactName, producerID, rc.NodeID)
 		}
 	}
 }

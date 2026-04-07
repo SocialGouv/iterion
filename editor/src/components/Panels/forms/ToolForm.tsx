@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
-import type { ToolNodeDecl, AwaitStrategy } from "@/api/types";
+import type { ToolNodeDecl, AwaitMode } from "@/api/types";
 import { defaultSchema, getAllNodeNames } from "@/lib/defaults";
 import { TextField, CommittedTextField, SelectField, SelectFieldWithCreate } from "./FormField";
 
@@ -69,7 +69,7 @@ export default function ToolForm({ decl }: Props) {
       <SelectField
         label="Await"
         value={decl.await ?? "none"}
-        onChange={(v) => updateTool(decl.name, { await: (v === "none" ? undefined : v) as AwaitStrategy | undefined })}
+        onChange={(v) => updateTool(decl.name, { await: (v === "none" ? undefined : v) as AwaitMode | undefined })}
         options={[
           { value: "none", label: "none" },
           { value: "wait_all", label: "wait_all" },

@@ -99,7 +99,7 @@ func TestSessionInheritThroughBranches(t *testing.T) {
 			"fanout":   {ID: "fanout", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
 			"branch_a": {ID: "branch_a", Kind: ir.NodeAgent, Readonly: true},
 			"branch_b": {ID: "branch_b", Kind: ir.NodeAgent, Readonly: true},
-			"consumer": {ID: "consumer", Kind: ir.NodeAgent, Session: ir.SessionInherit, AwaitStrategy: ir.AwaitWaitAll},
+			"consumer": {ID: "consumer", Kind: ir.NodeAgent, Session: ir.SessionInherit, AwaitMode: ir.AwaitWaitAll},
 			"done":     {ID: "done", Kind: ir.NodeDone},
 		},
 		Edges: []*ir.Edge{
@@ -181,7 +181,7 @@ func TestSessionFork(t *testing.T) {
 			"splitter": {ID: "splitter", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
 			"fork_a":   {ID: "fork_a", Kind: ir.NodeAgent, Session: ir.SessionFork, Readonly: true},
 			"fork_b":   {ID: "fork_b", Kind: ir.NodeAgent, Session: ir.SessionFork, Readonly: true},
-			"done":     {ID: "done", Kind: ir.NodeDone, AwaitStrategy: ir.AwaitWaitAll},
+			"done":     {ID: "done", Kind: ir.NodeDone, AwaitMode: ir.AwaitWaitAll},
 		},
 		Edges: []*ir.Edge{
 			{From: "producer", To: "splitter"},

@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
-import type { AgentDecl, JudgeDecl, AwaitStrategy } from "@/api/types";
+import type { AgentDecl, JudgeDecl, AwaitMode } from "@/api/types";
 import { defaultSchema, defaultPrompt, getAllNodeNames } from "@/lib/defaults";
 import { TextField, CommittedTextField, NumberField, SelectField, SelectFieldWithCreate, TagListField } from "./FormField";
 import { ProviderIcon, ProviderLabel } from "@/components/icons/ProviderIcon";
@@ -155,7 +155,7 @@ export default function AgentForm({ decl, kind }: Props) {
       <SelectField
         label="Await"
         value={decl.await ?? "none"}
-        onChange={(v) => update({ await: (v === "none" ? undefined : v) as AwaitStrategy | undefined })}
+        onChange={(v) => update({ await: (v === "none" ? undefined : v) as AwaitMode | undefined })}
         options={[
           { value: "none", label: "none" },
           { value: "wait_all", label: "wait_all" },

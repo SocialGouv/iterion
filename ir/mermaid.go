@@ -89,7 +89,7 @@ func compactShape(n *Node) string {
 	case NodeHuman:
 		return fmt.Sprintf(`>"%s"]`, label)
 	default:
-		if n.AwaitStrategy != AwaitNone {
+		if n.AwaitMode != AwaitNone {
 			return fmt.Sprintf(`[["%s"]]`, label)
 		}
 		return fmt.Sprintf(`["%s"]`, label)
@@ -136,8 +136,8 @@ func detailedShape(n *Node) string {
 		}
 	}
 
-	if n.AwaitStrategy != AwaitNone {
-		lines = append(lines, "await: "+n.AwaitStrategy.String())
+	if n.AwaitMode != AwaitNone {
+		lines = append(lines, "await: "+n.AwaitMode.String())
 	}
 
 	label := strings.Join(lines, "<br/>")
@@ -150,7 +150,7 @@ func detailedShape(n *Node) string {
 	case NodeHuman:
 		return fmt.Sprintf(`>"%s"]`, label)
 	default:
-		if n.AwaitStrategy != AwaitNone {
+		if n.AwaitMode != AwaitNone {
 			return fmt.Sprintf(`[["%s"]]`, label)
 		}
 		return fmt.Sprintf(`["%s"]`, label)
@@ -317,8 +317,8 @@ func fullShape(n *Node, w *Workflow) string {
 		}
 	}
 
-	if n.AwaitStrategy != AwaitNone {
-		lines = append(lines, "await: "+n.AwaitStrategy.String())
+	if n.AwaitMode != AwaitNone {
+		lines = append(lines, "await: "+n.AwaitMode.String())
 	}
 
 	label := strings.Join(lines, "<br/>")
@@ -331,7 +331,7 @@ func fullShape(n *Node, w *Workflow) string {
 	case NodeHuman:
 		return fmt.Sprintf(`>"%s"]`, label)
 	default:
-		if n.AwaitStrategy != AwaitNone {
+		if n.AwaitMode != AwaitNone {
 			return fmt.Sprintf(`[["%s"]]`, label)
 		}
 		return fmt.Sprintf(`["%s"]`, label)

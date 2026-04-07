@@ -4,6 +4,8 @@
 // independent of the DSL authoring surface.
 package ir
 
+import "github.com/SocialGouv/iterion/types"
+
 // ---------------------------------------------------------------------------
 // Workflow — compiled, execution-ready workflow
 // ---------------------------------------------------------------------------
@@ -97,7 +99,7 @@ type Node struct {
 	RouterMulti bool       // LLM router: select multiple targets (default: one)
 
 	// --- Convergence fields ---
-	AwaitStrategy AwaitStrategy // convergence strategy: wait_all or best_effort (zero = none)
+	AwaitMode AwaitMode // convergence strategy: wait_all or best_effort (zero = none)
 
 	// --- Interaction fields (agent, judge, human) ---
 	Interaction       InteractionMode // interaction handling mode
@@ -117,128 +119,57 @@ type Node struct {
 // Session, Router, Await, Interaction modes (mirrored from AST for IR independence)
 // ---------------------------------------------------------------------------
 
-type SessionMode int
+type SessionMode = types.SessionMode
 
 const (
-	SessionFresh SessionMode = iota
-	SessionInherit
-	SessionArtifactsOnly
-	SessionFork
+	SessionFresh         = types.SessionFresh
+	SessionInherit       = types.SessionInherit
+	SessionArtifactsOnly = types.SessionArtifactsOnly
+	SessionFork          = types.SessionFork
 )
 
-func (sm SessionMode) String() string {
-	switch sm {
-	case SessionFresh:
-		return "fresh"
-	case SessionInherit:
-		return "inherit"
-	case SessionArtifactsOnly:
-		return "artifacts_only"
-	case SessionFork:
-		return "fork"
-	default:
-		return "unknown"
-	}
-}
-
-type RouterMode int
+type RouterMode = types.RouterMode
 
 const (
-	RouterFanOutAll RouterMode = iota
-	RouterCondition
-	RouterRoundRobin
-	RouterLLM
+	RouterFanOutAll  = types.RouterFanOutAll
+	RouterCondition  = types.RouterCondition
+	RouterRoundRobin = types.RouterRoundRobin
+	RouterLLM        = types.RouterLLM
 )
 
-func (rm RouterMode) String() string {
-	switch rm {
-	case RouterFanOutAll:
-		return "fan_out_all"
-	case RouterCondition:
-		return "condition"
-	case RouterRoundRobin:
-		return "round_robin"
-	case RouterLLM:
-		return "llm"
-	default:
-		return "unknown"
-	}
-}
-
-// AwaitStrategy determines how a convergence point handles multiple incoming branches.
-type AwaitStrategy int
+// AwaitMode determines how a convergence point handles multiple incoming branches.
+type AwaitMode = types.AwaitMode
 
 const (
-	AwaitNone       AwaitStrategy = iota // not a convergence point
-	AwaitWaitAll                         // wait for all incoming branches
-	AwaitBestEffort                      // proceed when possible, tolerate failures
+	AwaitNone       = types.AwaitNone
+	AwaitWaitAll    = types.AwaitWaitAll
+	AwaitBestEffort = types.AwaitBestEffort
 )
-
-func (as AwaitStrategy) String() string {
-	switch as {
-	case AwaitNone:
-		return "none"
-	case AwaitWaitAll:
-		return "wait_all"
-	case AwaitBestEffort:
-		return "best_effort"
-	default:
-		return "unknown"
-	}
-}
 
 // InteractionMode controls how a node handles user interaction requests.
 // Available on agent, judge, and human nodes.
-type InteractionMode int
+type InteractionMode = types.InteractionMode
 
 const (
-	InteractionNone       InteractionMode = iota // no interaction capability (default for agent/judge)
-	InteractionHuman                             // always pause for human input (default for human nodes)
-	InteractionLLM                               // LLM auto-answers interaction questions
-	InteractionLLMOrHuman                        // LLM decides whether to answer or escalate to human
+	InteractionNone       = types.InteractionNone
+	InteractionHuman      = types.InteractionHuman
+	InteractionLLM        = types.InteractionLLM
+	InteractionLLMOrHuman = types.InteractionLLMOrHuman
 )
-
-func (im InteractionMode) String() string {
-	switch im {
-	case InteractionNone:
-		return "none"
-	case InteractionHuman:
-		return "human"
-	case InteractionLLM:
-		return "llm"
-	case InteractionLLMOrHuman:
-		return "llm_or_human"
-	default:
-		return "unknown"
-	}
-}
 
 // ---------------------------------------------------------------------------
 // MCP
 // ---------------------------------------------------------------------------
 
 // MCPTransport identifies the transport used by an MCP server.
-type MCPTransport int
+type MCPTransport = types.MCPTransport
 
 const (
-	MCPTransportUnknown MCPTransport = iota
-	MCPTransportStdio
-	MCPTransportHTTP
-	MCPTransportSSE
+	MCPTransportUnknown = types.MCPTransportUnknown
+	MCPTransportStdio   = types.MCPTransportStdio
+	MCPTransportHTTP    = types.MCPTransportHTTP
+	MCPTransportSSE     = types.MCPTransportSSE
 )
-
-func (mt MCPTransport) String() string {
-	switch mt {
-	case MCPTransportStdio:
-		return "stdio"
-	case MCPTransportHTTP:
-		return "http"
-	case MCPTransportSSE:
-		return "sse"
-	default:
-		return "unknown"
-	}
-}
 
 // MCPServer is a reusable MCP server declaration or resolved catalog entry.
 type MCPServer struct {
@@ -349,35 +280,16 @@ type SchemaField struct {
 }
 
 // FieldType enumerates the V1 schema field types.
-type FieldType int
+type FieldType = types.FieldType
 
 const (
-	FieldTypeString FieldType = iota
-	FieldTypeBool
-	FieldTypeInt
-	FieldTypeFloat
-	FieldTypeJSON
-	FieldTypeStringArray
+	FieldTypeString      = types.FieldTypeString
+	FieldTypeBool        = types.FieldTypeBool
+	FieldTypeInt         = types.FieldTypeInt
+	FieldTypeFloat       = types.FieldTypeFloat
+	FieldTypeJSON        = types.FieldTypeJSON
+	FieldTypeStringArray = types.FieldTypeStringArray
 )
-
-func (ft FieldType) String() string {
-	switch ft {
-	case FieldTypeString:
-		return "string"
-	case FieldTypeBool:
-		return "bool"
-	case FieldTypeInt:
-		return "int"
-	case FieldTypeFloat:
-		return "float"
-	case FieldTypeJSON:
-		return "json"
-	case FieldTypeStringArray:
-		return "string[]"
-	default:
-		return "unknown"
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Prompt — resolved prompt with parsed template references

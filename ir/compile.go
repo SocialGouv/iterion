@@ -95,7 +95,7 @@ func (c *compiler) workflowInteractionDefault() InteractionMode {
 	if len(c.file.Workflows) > 0 {
 		wf := c.file.Workflows[0]
 		if wf.Interaction != nil {
-			return convertInteractionMode(*wf.Interaction)
+			return *wf.Interaction
 		}
 	}
 	return InteractionNone
@@ -182,7 +182,7 @@ func (c *compiler) compile() *Workflow {
 	// Compile workflow-level interaction default.
 	var interaction *InteractionMode
 	if wf.Interaction != nil {
-		im := convertInteractionMode(*wf.Interaction)
+		im := *wf.Interaction
 		interaction = &im
 	}
 
@@ -220,7 +220,7 @@ func (c *compiler) compileMCPServers() {
 		}
 		server := &MCPServer{
 			Name:      s.Name,
-			Transport: convertMCPTransport(s.Transport),
+			Transport: s.Transport,
 			Command:   s.Command,
 			Args:      append([]string(nil), s.Args...),
 			URL:       s.URL,
@@ -266,7 +266,7 @@ func (c *compiler) compileSchemas() {
 		for i, f := range s.Fields {
 			fields[i] = &SchemaField{
 				Name:       f.Name,
-				Type:       convertFieldType(f.Type),
+				Type:       f.Type,
 				EnumValues: f.EnumValues,
 			}
 		}
@@ -274,38 +274,6 @@ func (c *compiler) compileSchemas() {
 			Name:   s.Name,
 			Fields: fields,
 		}
-	}
-}
-
-func convertFieldType(ft ast.FieldType) FieldType {
-	switch ft {
-	case ast.FieldTypeString:
-		return FieldTypeString
-	case ast.FieldTypeBool:
-		return FieldTypeBool
-	case ast.FieldTypeInt:
-		return FieldTypeInt
-	case ast.FieldTypeFloat:
-		return FieldTypeFloat
-	case ast.FieldTypeJSON:
-		return FieldTypeJSON
-	case ast.FieldTypeStringArray:
-		return FieldTypeStringArray
-	default:
-		return FieldTypeString
-	}
-}
-
-func convertMCPTransport(mt ast.MCPTransport) MCPTransport {
-	switch mt {
-	case ast.MCPTransportStdio:
-		return MCPTransportStdio
-	case ast.MCPTransportHTTP:
-		return MCPTransportHTTP
-	case ast.MCPTransportSSE:
-		return MCPTransportSSE
-	default:
-		return MCPTransportUnknown
 	}
 }
 
@@ -370,7 +338,7 @@ func (c *compiler) compileAgents() {
 		}
 
 		// Apply workflow-level interaction default when node doesn't set one.
-		interaction := convertInteractionMode(a.Interaction)
+		interaction := a.Interaction
 		if interaction == InteractionNone {
 			interaction = c.workflowInteractionDefault()
 		}
@@ -389,7 +357,7 @@ func (c *compiler) compileAgents() {
 			Publish:           a.Publish,
 			SystemPrompt:      a.System,
 			UserPrompt:        a.User,
-			Session:           convertSessionMode(a.Session),
+			Session:           a.Session,
 			Tools:             a.Tools,
 			ToolMaxSteps:      a.ToolMaxSteps,
 			ReasoningEffort:   a.ReasoningEffort,
@@ -397,7 +365,7 @@ func (c *compiler) compileAgents() {
 			Interaction:       interaction,
 			InteractionPrompt: a.InteractionPrompt,
 			InteractionModel:  a.InteractionModel,
-			AwaitStrategy:     convertAwaitMode(a.Await),
+			AwaitMode:     a.Await,
 		}
 	}
 }
@@ -418,7 +386,7 @@ func (c *compiler) compileJudges() {
 		}
 
 		// Apply workflow-level interaction default when node doesn't set one.
-		interaction := convertInteractionMode(j.Interaction)
+		interaction := j.Interaction
 		if interaction == InteractionNone {
 			interaction = c.workflowInteractionDefault()
 		}
@@ -437,7 +405,7 @@ func (c *compiler) compileJudges() {
 			Publish:           j.Publish,
 			SystemPrompt:      j.System,
 			UserPrompt:        j.User,
-			Session:           convertSessionMode(j.Session),
+			Session:           j.Session,
 			Tools:             j.Tools,
 			ToolMaxSteps:      j.ToolMaxSteps,
 			ReasoningEffort:   j.ReasoningEffort,
@@ -445,7 +413,7 @@ func (c *compiler) compileJudges() {
 			Interaction:       interaction,
 			InteractionPrompt: j.InteractionPrompt,
 			InteractionModel:  j.InteractionModel,
-			AwaitStrategy:     convertAwaitMode(j.Await),
+			AwaitMode:     j.Await,
 		}
 	}
 }
@@ -456,7 +424,7 @@ func (c *compiler) compileJudges() {
 
 func (c *compiler) compileRouters() {
 	for _, r := range c.file.Routers {
-		mode := convertRouterMode(r.Mode)
+		mode := r.Mode
 		node := &Node{
 			ID:         r.Name,
 			Kind:       NodeRouter,
@@ -510,7 +478,7 @@ func (c *compiler) compileHumans() {
 		c.validateSchemaRef(h.Name, "output", h.Output)
 		c.validatePromptRef(h.Name, "instructions", h.Instructions)
 
-		interaction := convertInteractionMode(h.Interaction)
+		interaction := h.Interaction
 		// Human nodes default to InteractionHuman; workflow-level default
 		// can override when the node doesn't set interaction explicitly.
 		if h.Interaction == 0 {
@@ -532,7 +500,7 @@ func (c *compiler) compileHumans() {
 			InteractionModel:  h.InteractionModel,
 			MinAnswers:        h.MinAnswers,
 			Instructions:      h.Instructions,
-			AwaitStrategy:     convertAwaitMode(h.Await),
+			AwaitMode:     h.Await,
 		}
 
 		// LLM-based interaction modes require a model and output schema.
@@ -586,7 +554,7 @@ func (c *compiler) compileTools() {
 			OutputSchema:  t.Output,
 			Command:       t.Command,
 			CommandRefs:   cmdRefs,
-			AwaitStrategy: convertAwaitMode(t.Await),
+			AwaitMode: t.Await,
 		}
 	}
 }
@@ -737,60 +705,8 @@ func (c *compiler) validatePromptRef(node, prop, ref string) {
 }
 
 // ---------------------------------------------------------------------------
-// Type converters (AST → IR, keeping IR independent from AST enums)
+// Type converters (AST → IR)
 // ---------------------------------------------------------------------------
-
-func convertSessionMode(sm ast.SessionMode) SessionMode {
-	switch sm {
-	case ast.SessionInherit:
-		return SessionInherit
-	case ast.SessionArtifactsOnly:
-		return SessionArtifactsOnly
-	case ast.SessionFork:
-		return SessionFork
-	default:
-		return SessionFresh
-	}
-}
-
-func convertRouterMode(rm ast.RouterMode) RouterMode {
-	switch rm {
-	case ast.RouterCondition:
-		return RouterCondition
-	case ast.RouterRoundRobin:
-		return RouterRoundRobin
-	case ast.RouterLLM:
-		return RouterLLM
-	default:
-		return RouterFanOutAll
-	}
-}
-
-func convertAwaitMode(am ast.AwaitMode) AwaitStrategy {
-	switch am {
-	case ast.AwaitWaitAll:
-		return AwaitWaitAll
-	case ast.AwaitBestEffort:
-		return AwaitBestEffort
-	default:
-		return AwaitNone
-	}
-}
-
-func convertInteractionMode(im ast.InteractionMode) InteractionMode {
-	switch im {
-	case ast.InteractionNone:
-		return InteractionNone
-	case ast.InteractionHuman:
-		return InteractionHuman
-	case ast.InteractionLLM:
-		return InteractionLLM
-	case ast.InteractionLLMOrHuman:
-		return InteractionLLMOrHuman
-	default:
-		return InteractionNone
-	}
-}
 
 func convertVarType(te ast.TypeExpr) VarType {
 	switch te {

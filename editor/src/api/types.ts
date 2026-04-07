@@ -25,20 +25,20 @@ export interface SchemaField { name: string; type: FieldType; enum_values?: stri
 export type FieldType = "string" | "bool" | "int" | "float" | "json" | "string[]";
 
 export type SessionMode = "fresh" | "inherit" | "fork" | "artifacts_only";
-export type AwaitStrategy = "none" | "wait_all" | "best_effort";
+export type AwaitMode = "none" | "wait_all" | "best_effort";
 export interface AgentDecl {
   name: string; model: string; delegate?: string;
   input: string; output: string; publish?: string;
   system: string; user: string; session: SessionMode;
   tools?: string[]; tool_max_steps?: number;
-  await?: AwaitStrategy;
+  await?: AwaitMode;
 }
 export interface JudgeDecl {
   name: string; model: string; delegate?: string;
   input: string; output: string; publish?: string;
   system: string; user: string; session: SessionMode;
   tools?: string[]; tool_max_steps?: number;
-  await?: AwaitStrategy;
+  await?: AwaitMode;
 }
 
 export type RouterMode = "fan_out_all" | "condition" | "round_robin" | "llm";
@@ -52,10 +52,10 @@ export interface HumanDecl {
   name: string; input: string; output: string; publish?: string;
   instructions: string; mode: HumanMode; min_answers?: number;
   model?: string; system?: string;
-  await?: AwaitStrategy;
+  await?: AwaitMode;
 }
 
-export interface ToolNodeDecl { name: string; command: string; output: string; await?: AwaitStrategy; }
+export interface ToolNodeDecl { name: string; command: string; output: string; await?: AwaitMode; }
 
 export interface WorkflowDecl {
   name: string; vars?: VarsBlock; entry: string;

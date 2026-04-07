@@ -24,10 +24,10 @@ prompt plan_system:
   et executable par un agent d'action.
 
 prompt plan_user:
-  A partir de la review et du contexte PR, produis un plan de correction.
+  A partir du plan existant et du contexte PR, produis un plan de correction.
 
-  Review :
-  {{input.review}}
+  Plan :
+  {{input.plan}}
 
   Contexte PR :
   {{input.pr_context}}

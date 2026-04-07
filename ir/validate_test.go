@@ -1110,3 +1110,571 @@ func readFixture(t *testing.T, path string) string {
 	}
 	return string(data)
 }
+
+// ---------------------------------------------------------------------------
+// C030 — outputs ref to non-existent node
+// ---------------------------------------------------------------------------
+
+func TestValidateRefUnknownNode(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  Use {{outputs.ghost.ok}} here.
+
+prompt usr:
+  User.
+
+agent a:
+  model: "m"
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a
+  a -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagUnknownRefNode)
+}
+
+func TestValidateRefKnownNode_OK(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  Use {{outputs.a.ok}} here.
+
+agent a:
+  model: "m"
+  output: s
+  system: sys
+  user: usr
+
+agent b:
+  model: "m"
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a
+  a -> b
+  b -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagUnknownRefNode)
+}
+
+// ---------------------------------------------------------------------------
+// C031 — field not in output schema
+// ---------------------------------------------------------------------------
+
+func TestValidateRefFieldNotInSchema(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  Use {{outputs.a.missing_field}} here.
+
+agent a:
+  model: "m"
+  output: s
+  system: sys
+  user: usr
+
+agent b:
+  model: "m"
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a
+  a -> b
+  b -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagRefFieldNotInSchema)
+}
+
+func TestValidateRefFieldInSchema_OK(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  Use {{outputs.a.ok}} here.
+
+agent a:
+  model: "m"
+  output: s
+  system: sys
+  user: usr
+
+agent b:
+  model: "m"
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a
+  a -> b
+  b -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagRefFieldNotInSchema)
+}
+
+// ---------------------------------------------------------------------------
+// C032 — field access on node without output schema (warning)
+// ---------------------------------------------------------------------------
+
+func TestValidateRefNodeNoSchema_Warn(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  Use {{outputs.a.some_field}} here.
+
+agent a:
+  model: "m"
+  system: sys
+  user: usr
+
+agent b:
+  model: "m"
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a
+  a -> b
+  b -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagRefNodeNoSchema)
+}
+
+func TestValidateRefNodeNoSchema_WholeOutput_NoWarn(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  Use {{outputs.a}} here.
+
+agent a:
+  model: "m"
+  system: sys
+  user: usr
+
+agent b:
+  model: "m"
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a
+  a -> b
+  b -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagRefNodeNoSchema)
+}
+
+// ---------------------------------------------------------------------------
+// C033 — undeclared variable
+// ---------------------------------------------------------------------------
+
+func TestValidateRefUndeclaredVar(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  Use {{vars.unknown}} here.
+
+prompt usr:
+  User.
+
+agent a:
+  model: "m"
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a
+  a -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagUndeclaredVar)
+}
+
+func TestValidateRefDeclaredVar_OK(t *testing.T) {
+	src := `
+vars:
+  my_var: string
+
+schema s:
+  ok: bool
+
+prompt sys:
+  Use {{vars.my_var}} here.
+
+prompt usr:
+  User.
+
+agent a:
+  model: "m"
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a
+  a -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagUndeclaredVar)
+}
+
+// ---------------------------------------------------------------------------
+// C035 — unknown artifact
+// ---------------------------------------------------------------------------
+
+func TestValidateRefUnknownArtifact(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  Use {{artifacts.missing}} here.
+
+prompt usr:
+  User.
+
+agent a:
+  model: "m"
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a
+  a -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagUnknownArtifact)
+}
+
+func TestValidateRefPublishedArtifact_OK(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  Use {{artifacts.result}} here.
+
+agent a:
+  model: "m"
+  output: s
+  publish: result
+  system: sys
+  user: usr
+
+agent b:
+  model: "m"
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a
+  a -> b
+  b -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagUnknownArtifact)
+}
+
+// ---------------------------------------------------------------------------
+// C034 — input ref field not in input schema
+// ---------------------------------------------------------------------------
+
+func TestValidateRefInputFieldNotInSchema(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  Use {{input.missing_field}} here.
+
+prompt usr:
+  User.
+
+agent a:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a
+  a -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagInputFieldNotInSchema)
+}
+
+func TestValidateRefInputFieldInSchema_OK(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  Use {{input.ok}} here.
+
+prompt usr:
+  User.
+
+agent a:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a
+  a -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagInputFieldNotInSchema)
+}
+
+func TestValidateRefInputFieldNoInputSchema_Skip(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  Use {{input.anything}} here.
+
+prompt usr:
+  User.
+
+agent a:
+  model: "m"
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a
+  a -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagInputFieldNotInSchema)
+}
+
+// ---------------------------------------------------------------------------
+// C036 — node not reachable before consumer
+// ---------------------------------------------------------------------------
+
+func TestValidateRefNodeNotReachable(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  Use {{outputs.b.ok}} here.
+
+prompt usr:
+  User.
+
+agent a:
+  model: "m"
+  output: s
+  system: sys
+  user: usr
+
+agent b:
+  model: "m"
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a
+  a -> done
+  b -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagRefNodeNotReachable)
+}
+
+func TestValidateRefReachableViaLoop(t *testing.T) {
+	src := `
+schema s:
+  approved: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent writer:
+  model: "m"
+  output: s
+  system: sys
+  user: usr
+
+judge reviewer:
+  model: "m"
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: writer
+  writer -> reviewer
+  reviewer -> done when approved
+  reviewer -> writer when not approved as revision_loop(5) with {
+    feedback: "{{outputs.reviewer}}"
+  }
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagRefNodeNotReachable)
+}
+
+func TestValidateRefInEdgeWithMapping_UnknownNode(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent a:
+  model: "m"
+  output: s
+  system: sys
+  user: usr
+
+agent b:
+  model: "m"
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a
+  a -> b with {
+    data: "{{outputs.ghost}}"
+  }
+  b -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagUnknownRefNode)
+}
+
+func TestValidateRefInToolCommand_UnknownNode(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent a:
+  model: "m"
+  output: s
+  system: sys
+  user: usr
+
+tool t1:
+  command: "echo {{outputs.phantom}}"
+
+workflow test:
+  entry: a
+  a -> t1
+  t1 -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagUnknownRefNode)
+}
+
+// ---------------------------------------------------------------------------
+// Underscore-prefixed fields (runtime-injected) — should be skipped
+// ---------------------------------------------------------------------------
+
+func TestValidateRefUnderscoreField_Skipped(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent a:
+  model: "m"
+  output: s
+  system: sys
+  user: usr
+
+agent b:
+  model: "m"
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a
+  a -> b with {
+    sid: "{{outputs.a._session_id}}"
+  }
+  b -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagRefFieldNotInSchema)
+	expectNoDiag(t, r, DiagRefNodeNoSchema)
+}
