@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -85,7 +86,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 	}))
 
 	startTime := time.Now()
-	rm, err := claude.Prompt(ctx, prompt, opts...)
+	rm, err := promptWithTimeout(ctx, prompt, opts...)
 	duration := time.Since(startTime)
 
 	if err != nil {
@@ -115,13 +116,10 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 
 	// Two-pass execution: when tools + schema are both present, Pass 1 output
 	// is free-form text. We always run Pass 2 with WithOutputFormat to guarantee
-	// structured output conforming to the schema.
-	if needsTwoPass {
-		pass1Text := ""
-		if rm.Result != nil {
-			pass1Text = *rm.Result
-		}
-		fmtRM, fmtErr := b.formatOutput(ctx, task, pass1Text)
+	// structured output conforming to the schema via session resume.
+	if needsTwoPass && rm.SessionID != "" {
+		log.Printf("delegate: claude-code [formatting pass] starting structured output extraction (session=%s)", rm.SessionID)
+		fmtRM, fmtErr := b.formatOutput(ctx, task, rm.SessionID)
 		if fmtErr != nil {
 			return result, fmt.Errorf("delegate: claude-code formatting pass failed: %w", fmtErr)
 		}
@@ -145,13 +143,15 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 	return result, nil
 }
 
-// formatOutput performs the second pass of two-pass execution: a standalone
-// call with WithOutputFormat (no tools) that guarantees structured JSON output
-// conforming to the schema. The Pass 1 text output is included in the prompt
-// so the model has the full context of the work that was done.
-func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, pass1Text string) (*claude.ResultMessage, error) {
-	fmtCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
+// formatOutput performs the second pass of two-pass execution: resumes the
+// Pass 1 session with WithOutputFormat (no tools) to guarantee structured JSON
+// output conforming to the schema. The model already has full context from the
+// session, so only a short formatting instruction is needed.
+func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, sessionID string) (*claude.ResultMessage, error) {
+	// Use the parent context directly — the runtime already enforces budget
+	// timeouts. Adding a short artificial timeout here risks cancelling the
+	// formatting pass while the CLI is still loading the resumed session.
+	fmtCtx := ctx
 
 	var schema map[string]any
 	if err := json.Unmarshal(task.OutputSchema, &schema); err != nil {
@@ -159,6 +159,7 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, pass1Te
 	}
 
 	opts := []claude.Option{
+		claude.WithResume(sessionID),
 		claude.WithOutputFormat(schema),
 		claude.WithPermissionMode("bypassPermissions"),
 		claude.WithVerbose(true),
@@ -170,8 +171,31 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, pass1Te
 		opts = append(opts, claude.WithCLIPath(b.Command))
 	}
 
-	prompt := "You completed the following work:\n\n" + pass1Text +
-		"\n\nNow format your complete findings as JSON matching the required output schema."
+	prompt := "Format your complete findings as JSON matching the required output schema."
 
-	return claude.Prompt(fmtCtx, prompt, opts...)
+	return promptWithTimeout(fmtCtx, prompt, opts...)
+}
+
+// promptWithTimeout wraps claude.Prompt in a goroutine with context-aware
+// cancellation. The Claude Agent SDK's Prompt() function does not check
+// ctx.Done() in its internal ReadLine() loop, so it can block indefinitely
+// even after context cancellation. This wrapper ensures the call returns
+// promptly when the context is cancelled or times out.
+func promptWithTimeout(ctx context.Context, prompt string, opts ...claude.Option) (*claude.ResultMessage, error) {
+	type result struct {
+		rm  *claude.ResultMessage
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		rm, err := claude.Prompt(ctx, prompt, opts...)
+		ch <- result{rm, err}
+	}()
+
+	select {
+	case res := <-ch:
+		return res.rm, res.err
+	case <-ctx.Done():
+		return nil, fmt.Errorf("claude prompt cancelled: %w", ctx.Err())
+	}
 }
