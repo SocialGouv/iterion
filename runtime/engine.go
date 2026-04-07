@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/ir"
@@ -1788,6 +1790,11 @@ func (e *Engine) logEvent(typ store.EventType, nodeID, branchID string, data map
 			}
 		}
 		l.Logf(iterlog.LevelInfo, "✅", "Node finished: %s%s", prefix, tokens)
+		if data != nil {
+			if preview := formatOutputPreview(data); preview != "" {
+				l.Logf(iterlog.LevelInfo, "💬", "%s", preview)
+			}
+		}
 	case store.EventEdgeSelected:
 		to := ""
 		cond := ""
@@ -2030,6 +2037,124 @@ func buildNodeFinishedData(output map[string]interface{}) map[string]interface{}
 		data["_cost_usd"] = v
 	}
 	return data
+}
+
+// formatOutputPreview builds a human-readable single-line summary of a
+// node_finished event's data. It returns an empty string when there is
+// nothing meaningful to display.
+func formatOutputPreview(data map[string]interface{}) string {
+	if data == nil {
+		return ""
+	}
+
+	// Regular nodes wrap output under data["output"]; router events put
+	// fields like selected_route/reasoning directly in data.
+	output, ok := data["output"].(map[string]interface{})
+	if !ok {
+		output = data
+	}
+
+	// Collect user-visible fields (skip internal _-prefixed keys).
+	type kv struct {
+		key string
+		val interface{}
+	}
+
+	var fields []kv
+	for k, v := range output {
+		if strings.HasPrefix(k, "_") {
+			continue
+		}
+		fields = append(fields, kv{k, v})
+	}
+	if len(fields) == 0 {
+		return ""
+	}
+
+	// Special case: text-only output — show a preview of the text.
+	if len(fields) == 1 && fields[0].key == "text" {
+		s, _ := fields[0].val.(string)
+		if s == "" {
+			return ""
+		}
+		return truncatePreview(s, 500)
+	}
+
+	// Priority ordering for known fields.
+	priority := map[string]int{
+		"verdict":         0,
+		"approved":        1,
+		"selected_route":  2,
+		"selected_routes": 3,
+		"reasoning":       10,
+		"feedback":        11,
+		"summary":         12,
+		"text":            13,
+	}
+	sort.SliceStable(fields, func(i, j int) bool {
+		pi, oki := priority[fields[i].key]
+		pj, okj := priority[fields[j].key]
+		if oki && okj {
+			return pi < pj
+		}
+		if oki {
+			return true
+		}
+		if okj {
+			return false
+		}
+		return fields[i].key < fields[j].key
+	})
+
+	// Format each field as "key: value".
+	parts := make([]string, 0, len(fields))
+	for _, f := range fields {
+		parts = append(parts, fmt.Sprintf("%s: %s", f.key, formatFieldValue(f.val)))
+	}
+
+	result := strings.Join(parts, " | ")
+	return truncatePreview(result, 800)
+}
+
+// formatFieldValue formats a single output field value for display.
+func formatFieldValue(v interface{}) string {
+	switch val := v.(type) {
+	case string:
+		return truncatePreview(val, 200)
+	case bool:
+		if val {
+			return "true"
+		}
+		return "false"
+	case []interface{}:
+		items := make([]string, 0, len(val))
+		for _, item := range val {
+			s := fmt.Sprintf("%v", item)
+			if len(s) > 80 {
+				s = s[:80] + "..."
+			}
+			items = append(items, s)
+			if len(items) >= 5 {
+				items = append(items, fmt.Sprintf("... (%d total)", len(val)))
+				break
+			}
+		}
+		return "[" + strings.Join(items, ", ") + "]"
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+// truncatePreview returns s truncated to maxLen characters, with "..."
+// appended if truncated. Newlines are replaced with spaces for single-line display.
+func truncatePreview(s string, maxLen int) string {
+	// Replace newlines with spaces.
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	if len(s) > maxLen {
+		return s[:maxLen] + "..."
+	}
+	return s
 }
 
 // ---------------------------------------------------------------------------

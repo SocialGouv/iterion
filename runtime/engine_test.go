@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/ir"
@@ -1074,5 +1075,145 @@ func TestHumanAutoOrPause_Pauses(t *testing.T) {
 	}
 	if r.Status != store.RunStatusFinished {
 		t.Errorf("expected status finished after resume, got %s", r.Status)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// formatOutputPreview tests
+// ---------------------------------------------------------------------------
+
+func TestFormatOutputPreview(t *testing.T) {
+	tests := []struct {
+		name string
+		data map[string]interface{}
+		want string // substring that must appear (empty = expect empty result)
+	}{
+		{
+			name: "nil data",
+			data: nil,
+			want: "",
+		},
+		{
+			name: "empty data",
+			data: map[string]interface{}{},
+			want: "",
+		},
+		{
+			name: "only internal fields",
+			data: map[string]interface{}{
+				"output": map[string]interface{}{
+					"_tokens": 100,
+					"_model":  "gpt-4",
+				},
+			},
+			want: "",
+		},
+		{
+			name: "text-only output",
+			data: map[string]interface{}{
+				"output": map[string]interface{}{
+					"text":    "Here is my analysis of the code.",
+					"_tokens": 200,
+				},
+			},
+			want: "Here is my analysis of the code.",
+		},
+		{
+			name: "structured judge output",
+			data: map[string]interface{}{
+				"output": map[string]interface{}{
+					"verdict":    "rejected",
+					"reasoning":  "Missing error handling",
+					"confidence": 0.85,
+					"_tokens":    450,
+					"_model":     "claude",
+				},
+			},
+			want: "verdict: rejected",
+		},
+		{
+			name: "structured judge reasoning appears",
+			data: map[string]interface{}{
+				"output": map[string]interface{}{
+					"verdict":   "rejected",
+					"reasoning": "Missing error handling",
+					"_tokens":   450,
+				},
+			},
+			want: "reasoning: Missing error handling",
+		},
+		{
+			name: "verdict before reasoning in order",
+			data: map[string]interface{}{
+				"output": map[string]interface{}{
+					"reasoning": "some reason",
+					"verdict":   "approved",
+					"_tokens":   100,
+				},
+			},
+			want: "verdict: approved | reasoning: some reason",
+		},
+		{
+			name: "router single route (no output wrapper)",
+			data: map[string]interface{}{
+				"selected_route": "fix_agent",
+				"reasoning":      "Issues found",
+			},
+			want: "selected_route: fix_agent",
+		},
+		{
+			name: "router multi route",
+			data: map[string]interface{}{
+				"selected_routes": []interface{}{"agent_a", "agent_b"},
+				"reasoning":       "Both needed",
+			},
+			want: "selected_routes: [agent_a, agent_b]",
+		},
+		{
+			name: "boolean field",
+			data: map[string]interface{}{
+				"output": map[string]interface{}{
+					"approved":  true,
+					"feedback":  "Looks good",
+					"_tokens":   100,
+				},
+			},
+			want: "approved: true",
+		},
+		{
+			name: "long text is truncated",
+			data: map[string]interface{}{
+				"output": map[string]interface{}{
+					"text":    strings.Repeat("x", 600),
+					"_tokens": 100,
+				},
+			},
+			want: "...",
+		},
+		{
+			name: "newlines replaced with spaces",
+			data: map[string]interface{}{
+				"output": map[string]interface{}{
+					"text":    "line1\nline2\nline3",
+					"_tokens": 100,
+				},
+			},
+			want: "line1 line2 line3",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatOutputPreview(tt.data)
+			if tt.want == "" {
+				if got != "" {
+					t.Errorf("expected empty string, got %q", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tt.want) {
+				t.Errorf("expected result to contain %q, got %q", tt.want, got)
+			}
+		})
 	}
 }
