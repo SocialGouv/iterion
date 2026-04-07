@@ -97,6 +97,11 @@ type Result struct {
 	// but JSON parsing fell back to wrapping plain text as {"text": "..."}.
 	ParseFallback bool
 
+	// FormattingPassUsed is true when a two-pass execution was performed:
+	// Pass 1 with tools (no output format), Pass 2 with WithOutputFormat
+	// (no tools) to guarantee structured output conforming to the schema.
+	FormattingPassUsed bool
+
 	// SessionID is the session ID returned by the CLI agent (empty if unavailable).
 	SessionID string
 }

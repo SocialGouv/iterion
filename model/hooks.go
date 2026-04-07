@@ -182,12 +182,13 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 
 		OnDelegateFinished: func(nodeID string, info DelegateInfo) {
 			data := map[string]interface{}{
-				"backend":        info.BackendName,
-				"duration_ms":    info.Duration.Milliseconds(),
-				"tokens":         info.Tokens,
-				"exit_code":      info.ExitCode,
-				"raw_output_len": info.RawOutputLen,
-				"parse_fallback": info.ParseFallback,
+				"backend":              info.BackendName,
+				"duration_ms":          info.Duration.Milliseconds(),
+				"tokens":               info.Tokens,
+				"exit_code":            info.ExitCode,
+				"raw_output_len":       info.RawOutputLen,
+				"parse_fallback":       info.ParseFallback,
+				"formatting_pass_used": info.FormattingPassUsed,
 			}
 			if logger.IsEnabled(iterlog.LevelTrace) && info.Stderr != "" {
 				data["stderr"] = iterlog.Truncate(info.Stderr, maxFieldSize)
@@ -201,7 +202,9 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 
 			logger.Logf(iterlog.LevelDebug, "✅", "Delegation finished [%s]: %s (%dms, %d tokens)",
 				nodeID, info.BackendName, info.Duration.Milliseconds(), info.Tokens)
-			if info.ParseFallback {
+			if info.FormattingPassUsed {
+				logger.Logf(iterlog.LevelDebug, "📐", "Delegation [%s]: two-pass execution used for structured output", nodeID)
+			} else if info.ParseFallback {
 				logger.Warn("Delegation [%s]: structured output parsing fell back to text wrapper", nodeID)
 			}
 			if info.Stderr != "" {

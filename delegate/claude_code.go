@@ -65,19 +65,15 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		}
 	}
 
-	// Build user prompt. When an output schema is provided and tools are also
-	// in use, embed the schema in the prompt text (WithOutputFormat disables
-	// tool use in the claude CLI). When no tools are involved, use the native
-	// structured output flag.
+	// Structured output handling:
+	// - When schema is set and NO tools: use native WithOutputFormat (single pass).
+	// - When schema is set and tools are present: two-pass execution (see below).
 	prompt := task.UserPrompt
-	if len(task.OutputSchema) > 0 {
-		if len(task.AllowedTools) == 0 {
-			var schema map[string]any
-			if json.Unmarshal(task.OutputSchema, &schema) == nil {
-				opts = append(opts, claude.WithOutputFormat(schema))
-			}
-		} else {
-			prompt += "\n\nAfter completing all actions, you MUST respond with a JSON object matching this schema:\n" + string(task.OutputSchema)
+	needsTwoPass := len(task.OutputSchema) > 0 && len(task.AllowedTools) > 0
+	if len(task.OutputSchema) > 0 && !needsTwoPass {
+		var schema map[string]any
+		if json.Unmarshal(task.OutputSchema, &schema) == nil {
+			opts = append(opts, claude.WithOutputFormat(schema))
 		}
 	}
 
@@ -117,10 +113,60 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		return result, fmt.Errorf("delegate: claude-code error: subtype=%s", rm.Subtype)
 	}
 
+	// Two-pass execution: when tools + schema are both present, Pass 1 output
+	// is free-form text. We always run Pass 2 with WithOutputFormat to guarantee
+	// structured output conforming to the schema.
+	if needsTwoPass && rm.SessionID != "" {
+		fmtRM, fmtErr := b.formatOutput(ctx, task.OutputSchema, rm.SessionID)
+		if fmtErr != nil {
+			return result, fmt.Errorf("delegate: claude-code formatting pass failed: %w", fmtErr)
+		}
+		if fmtRM.Usage != nil {
+			result.Tokens += fmtRM.Usage.InputTokens + fmtRM.Usage.OutputTokens
+		}
+		result.FormattingPassUsed = true
+
+		output, rawLen, _ := parseSDKOutput(fmtRM.Result, fmtRM.StructuredOutput, task.OutputSchema)
+		result.Output = output
+		result.RawOutputLen = rawLen
+		result.ParseFallback = false
+		return result, nil
+	}
+
 	output, rawLen, fallback := parseSDKOutput(rm.Result, rm.StructuredOutput, task.OutputSchema)
 	result.Output = output
 	result.RawOutputLen = rawLen
 	result.ParseFallback = fallback
 
 	return result, nil
+}
+
+// formatOutput performs the second pass of two-pass execution: a lightweight
+// call with WithOutputFormat (no tools) that guarantees structured JSON output
+// conforming to the schema. It forks the existing session so the model has
+// full context from the first pass without re-sending the conversation.
+func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, schemaJSON json.RawMessage, sessionID string) (*claude.ResultMessage, error) {
+	fmtCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	var schema map[string]any
+	if err := json.Unmarshal(schemaJSON, &schema); err != nil {
+		return nil, fmt.Errorf("invalid output schema: %w", err)
+	}
+
+	opts := []claude.Option{
+		claude.WithResume(sessionID),
+		claude.WithForkSession(true),
+		claude.WithNoSessionPersistence(true),
+		claude.WithOutputFormat(schema),
+		claude.WithPermissionMode("bypassPermissions"),
+		claude.WithVerbose(true),
+	}
+	if b.Command != "" {
+		opts = append(opts, claude.WithCLIPath(b.Command))
+	}
+
+	return claude.Prompt(fmtCtx,
+		"Format your complete findings as JSON matching the required output schema.",
+		opts...)
 }

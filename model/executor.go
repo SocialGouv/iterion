@@ -85,9 +85,10 @@ type DelegateInfo struct {
 	Tokens        int           // estimated total tokens consumed
 	ExitCode      int           // process exit code
 	Stderr        string        // captured stderr output
-	RawOutputLen  int           // byte length of raw stdout
-	ParseFallback bool          // true if structured output fell back to text wrapper
-	Error         error         // non-nil for OnDelegateError
+	RawOutputLen       int           // byte length of raw stdout
+	ParseFallback      bool          // true if structured output fell back to text wrapper
+	FormattingPassUsed bool          // true if two-pass execution was used (tools + schema)
+	Error              error         // non-nil for OnDelegateError
 	Attempt       int           // 1-based retry number (for OnDelegateRetry)
 	Delay         time.Duration // backoff delay (for OnDelegateRetry)
 }
@@ -881,8 +882,9 @@ func (e *GoaiExecutor) executeDelegation(ctx context.Context, node *ir.Node, inp
 				ExitCode:      result.ExitCode,
 				Stderr:        result.Stderr,
 				RawOutputLen:  result.RawOutputLen,
-				ParseFallback: result.ParseFallback,
-				Error:         err,
+				ParseFallback:      result.ParseFallback,
+				FormattingPassUsed: result.FormattingPassUsed,
+				Error:              err,
 			})
 		}
 		return nil, fmt.Errorf("model: node %q: delegation to %q failed: %w", node.ID, node.Delegate, err)
@@ -896,15 +898,15 @@ func (e *GoaiExecutor) executeDelegation(ctx context.Context, node *ir.Node, inp
 			Tokens:        result.Tokens,
 			ExitCode:      result.ExitCode,
 			Stderr:        result.Stderr,
-			RawOutputLen:  result.RawOutputLen,
-			ParseFallback: result.ParseFallback,
+			RawOutputLen:       result.RawOutputLen,
+			ParseFallback:      result.ParseFallback,
+			FormattingPassUsed: result.FormattingPassUsed,
 		})
 	}
 
-	// Warn if structured output parsing fell back to text wrapper.
+	// Flag if structured output parsing fell back to text wrapper.
 	if result.ParseFallback {
 		result.Output["_parse_fallback"] = true
-		log.Printf("model: node %q: delegation output fell back to text wrapping (structured output was expected)", node.ID)
 	}
 
 	// Attach metadata.
@@ -1248,8 +1250,9 @@ func (e *GoaiExecutor) executeLLMRouterDelegated(ctx context.Context, node *ir.N
 				ExitCode:      result.ExitCode,
 				Stderr:        result.Stderr,
 				RawOutputLen:  result.RawOutputLen,
-				ParseFallback: result.ParseFallback,
-				Error:         err,
+				ParseFallback:      result.ParseFallback,
+				FormattingPassUsed: result.FormattingPassUsed,
+				Error:              err,
 			})
 		}
 		return nil, fmt.Errorf("model: llm router %q: delegation to %q failed: %w", node.ID, node.Delegate, err)
@@ -1263,8 +1266,9 @@ func (e *GoaiExecutor) executeLLMRouterDelegated(ctx context.Context, node *ir.N
 			Tokens:        result.Tokens,
 			ExitCode:      result.ExitCode,
 			Stderr:        result.Stderr,
-			RawOutputLen:  result.RawOutputLen,
-			ParseFallback: result.ParseFallback,
+			RawOutputLen:       result.RawOutputLen,
+			ParseFallback:      result.ParseFallback,
+			FormattingPassUsed: result.FormattingPassUsed,
 		})
 	}
 

@@ -203,6 +203,50 @@ func TestMapReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestFormattingPassUsed_MockBackend(t *testing.T) {
+	// Verify that FormattingPassUsed is correctly propagated through Result.
+	r := NewRegistry()
+	r.Register("mock", &mockBackend{
+		response: Result{
+			Output:             map[string]interface{}{"approved": true},
+			FormattingPassUsed: true,
+			BackendName:        "mock",
+		},
+	})
+
+	backend, err := r.Resolve("mock")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := backend.Execute(context.Background(), Task{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.FormattingPassUsed {
+		t.Error("expected FormattingPassUsed=true")
+	}
+	if result.ParseFallback {
+		t.Error("expected ParseFallback=false when formatting pass was used")
+	}
+}
+
+func TestParseSDKOutput_NoFallbackWhenFormattingPassHandles(t *testing.T) {
+	// When a two-pass backend returns structured output from Pass 2,
+	// parseSDKOutput should return fallback=false since the SDK provides
+	// native structured output.
+	structured := map[string]interface{}{"verdict": "pass", "score": 9.5}
+	schema := json.RawMessage(`{"type":"object","properties":{"verdict":{"type":"string"},"score":{"type":"number"}}}`)
+
+	output, _, fallback := parseSDKOutput(nil, structured, schema)
+	if fallback {
+		t.Error("expected no fallback when SDK returns structured output")
+	}
+	if output["verdict"] != "pass" {
+		t.Errorf("expected verdict=pass, got %v", output["verdict"])
+	}
+}
+
 // mockBackend implements Backend for testing.
 type mockBackend struct {
 	response Result
