@@ -252,6 +252,7 @@ func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunSto
 	opts := []model.GoaiExecutorOption{
 		model.WithBackendRegistry(backendReg),
 		model.WithEventHooks(hooks),
+		model.WithToolRegistry(tool.NewRegistry()),
 	}
 	if len(wf.ResolvedMCPServers) > 0 {
 		catalog := make(map[string]*mcp.ServerConfig, len(wf.ResolvedMCPServers))
@@ -266,7 +267,6 @@ func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunSto
 			}
 		}
 		opts = append(opts,
-			model.WithToolRegistry(tool.NewRegistry()),
 			model.WithMCPManager(mcp.NewManager(catalog)),
 		)
 	}
