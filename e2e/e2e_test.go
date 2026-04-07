@@ -1416,14 +1416,17 @@ func TestAllFixturesCompile(t *testing.T) {
 		"pr_refine_single_model.iter",
 		"pr_refine_dual_model_parallel.iter",
 		"pr_refine_dual_model_parallel_compliance.iter",
-		"pr_refine_dual_model_parallel_delegate.iter",
 		"ci_fix_until_green.iter",
+		"pr_review.iter",
+		"pr_review_fix.iter",
+		"llm_router_task_dispatch.iter",
+		"session_fork.iter",
 		"recipe_benchmark.iter",
 		"feature_request_dual_model.iter",
-		"todo_app_dual_model_delegate.iter",
-		"todo_app_full_dual_model_delegate.iter",
 		"dual_model_plan_implement_review.iter",
 		"session_review_fix.iter",
+		"rust_to_go_port.iter",
+		"exhaustive_dsl_coverage.iter",
 	}
 
 	for _, name := range fixtures {

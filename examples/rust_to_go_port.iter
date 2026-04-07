@@ -510,6 +510,7 @@ agent claude_analyze:
   system: analyze_system
   user: analyze_user
   session: fresh
+  reasoning_effort: high
 
 agent codex_analyze:
   backend: "codex"
@@ -519,6 +520,7 @@ agent codex_analyze:
   system: analyze_system
   user: analyze_user
   session: fresh
+  reasoning_effort: high
 
 agent merge_analysis:
   await: wait_all

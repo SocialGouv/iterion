@@ -1,0 +1,420 @@
+## Fixture : exhaustive_dsl_coverage
+## Purpose : Exercise every DSL feature in a single workflow for integration testing.
+## This workflow is deliberately simple (write "42" to a file) to minimize
+## API cost and runtime while maximizing DSL feature coverage.
+##
+## Features covered:
+##   Node types     : agent, judge, router, human, tool, done, fail
+##   Router modes   : fan_out_all, condition, round_robin
+##   Await          : wait_all, best_effort
+##   Sessions       : fresh, inherit, fork, artifacts_only
+##   Edge features  : when, when not, as loop(N), with {}
+##   References     : {{vars.x}}, {{input.x}}, {{outputs.node.field}}, {{artifacts.name}}
+##   Node props     : backend, tools, tool_max_steps, readonly, publish, reasoning_effort
+##   Tool nodes     : command with template refs
+##   Human nodes    : interaction: llm (auto-answer)
+##   Budget         : all budget parameters
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+## ─── Prompts ────────────────────────────────────────────────────
+
+prompt human_gate_system:
+  You are a request validator. The user has submitted a task.
+  Always approve it by setting approved=true and forwarding
+  the task description unchanged in the task field.
+  This is an automated gate — always approve.
+
+prompt writer_system:
+  You are a developer. Execute the given task in the workspace.
+  Write the requested file with the exact content specified.
+  Read the file back to verify it was written correctly.
+
+prompt writer_user:
+  Execute this task in the workspace:
+  {{input.task}}
+
+  Write exactly what is asked, nothing more.
+  After writing, read the file to verify.
+
+prompt extract_meta_system:
+  You are a metadata extractor.
+  Summarize what was done in the previous step in one sentence.
+
+prompt extract_meta_user:
+  The previous agent produced this result:
+  {{input.content}}
+
+  Summarize what was accomplished in one sentence in the summary field.
+  Set word_count to 1 (as an approximate count).
+
+prompt merge_system:
+  You are a synthesis agent. Merge two independent results
+  into a single coherent summary.
+
+prompt merge_user:
+  Merge these two results:
+
+  Result A:
+  {{input.content_a}}
+
+  Result B:
+  {{input.content_b}}
+
+  Metadata:
+  {{input.metadata}}
+
+  Produce a merged summary.
+
+prompt quality_judge_system:
+  You are a strict quality judge. Evaluate if a task was completed correctly.
+  For this test, the task is writing "42" to answer.txt.
+  Check if the implementation reports creating this file.
+  Be STRICT on the first evaluation: set good=false and fixable=true
+  to exercise the fix loop. On subsequent evaluations (when you see
+  previous issues in the input), set good=true if the issues were addressed.
+
+prompt quality_judge_user:
+  Evaluate this implementation.
+
+  Content A:
+  {{input.content_a}}
+
+  Content B:
+  {{input.content_b}}
+
+  Previous issues (if any):
+  {{input.previous_issues}}
+
+  Set good=true if the task was completed correctly.
+  Set fixable=true if issues can be fixed (always true for this type of task).
+  List any issues found.
+
+prompt refine_system:
+  You are a fixer. Address the issues identified by the quality judge.
+  Read the current state of the workspace, fix any problems, and verify.
+
+prompt refine_user:
+  Fix the following issues:
+  {{input.issues}}
+
+  Workspace directory: {{input.workspace}}
+
+  Make the corrections and verify your work.
+
+prompt recheck_system:
+  You are a recheck judge. Verify that previous issues have been fixed.
+  If the workspace contains answer.txt with "42", set good=true.
+
+prompt recheck_user:
+  Verify the fix was applied correctly.
+
+  Check result:
+  {{input.check_result}}
+
+  Previous verdict:
+  {{input.previous_issues}}
+
+  Set good=true if all issues are resolved.
+
+prompt human_gate_user:
+  A task has been submitted: {{input.task_description}}
+  Should we proceed? Set approved=true and forward the task.
+
+## ─── Schemas ────────────────────────────────────────────────────
+
+schema workflow_input:
+  task_description: string
+
+schema human_gate_input:
+  task_description: string
+
+schema human_gate_output:
+  approved: bool
+  task: string
+
+schema writer_input:
+  task: string
+
+schema writer_output:
+  applied: bool
+  summary: string
+  files_changed: string[]
+
+schema extract_meta_input:
+  content: json
+
+schema extract_meta_output:
+  summary: string
+  word_count: int
+
+schema merge_input:
+  content_a: json
+  content_b: json
+  metadata: json
+
+schema merge_output:
+  summary: string
+
+schema quality_judge_input:
+  content_a: json
+  content_b: json
+  previous_issues: string
+
+schema quality_verdict:
+  good: bool
+  fixable: bool
+  issues: string[]
+
+schema fix_dispatch_input:
+  fixable: bool
+  issues: string[]
+  workspace: string
+
+schema refine_input:
+  issues: string[]
+  workspace: string
+
+schema refine_output:
+  applied: bool
+  summary: string
+
+schema check_result:
+  output: string
+
+schema recheck_input:
+  check_result: json
+  previous_issues: string
+
+schema recheck_verdict:
+  good: bool
+  issues: string[]
+
+## ─── Nodes : Phase 0 — Input Validation (tool node) ────────────
+
+tool check_input:
+  command: "echo task_received_in_{{vars.workspace_dir}}"
+  output: check_result
+
+## ─── Nodes : Phase 1 — Human Gate (auto-answer via LLM) ────────
+
+human human_gate:
+  input: human_gate_input
+  output: human_gate_output
+  interaction: llm
+  model: "${CLAUDE_MODEL}"
+  system: human_gate_system
+
+## ─── Nodes : Phase 2 — Parallel Writing (fan_out_all) ──────────
+
+router dispatch:
+  mode: fan_out_all
+
+agent writer_a:
+  backend: "claude_code"
+  input: writer_input
+  output: writer_output
+  publish: writer_a_result
+  system: writer_system
+  user: writer_user
+  session: fresh
+  tools: [read_file, list_files, tree]
+  tool_max_steps: 5
+
+agent writer_b:
+  backend: "codex"
+  input: writer_input
+  output: writer_output
+  publish: writer_b_result
+  system: writer_system
+  user: writer_user
+  session: fresh
+  readonly: true
+
+## ─── Nodes : Phase 2b — Metadata Extraction (session fork) ─────
+
+agent extract_meta:
+  backend: "claude_code"
+  input: extract_meta_input
+  output: extract_meta_output
+  publish: metadata
+  system: extract_meta_system
+  user: extract_meta_user
+  session: fork
+  readonly: true
+  reasoning_effort: low
+
+## ─── Nodes : Phase 3 — Merge (best_effort join) ────────────────
+
+agent merge:
+  await: best_effort
+  backend: "claude_code"
+  input: merge_input
+  output: merge_output
+  publish: merged_result
+  system: merge_system
+  user: merge_user
+  session: artifacts_only
+
+## ─── Nodes : Phase 4 — Quality Judge (wait_all join) ───────────
+
+judge quality_judge:
+  await: wait_all
+  backend: "claude_code"
+  input: quality_judge_input
+  output: quality_verdict
+  publish: verdict
+  system: quality_judge_system
+  user: quality_judge_user
+  session: fresh
+
+## ─── Nodes : Phase 5 — Fix Routing (condition router) ──────────
+
+router fix_dispatch:
+  mode: condition
+
+## ─── Nodes : Phase 6 — Refinement (round_robin) ────────────────
+
+router refine_selector:
+  mode: round_robin
+
+agent refiner_a:
+  backend: "claude_code"
+  input: refine_input
+  output: refine_output
+  system: refine_system
+  user: refine_user
+  session: inherit
+
+agent refiner_b:
+  backend: "codex"
+  input: refine_input
+  output: refine_output
+  system: refine_system
+  user: refine_user
+  session: inherit
+
+## ─── Nodes : Phase 7 — Recheck (tool + judge) ──────────────────
+
+tool run_check:
+  command: "cat {{vars.workspace_dir}}/answer.txt 2>/dev/null || echo missing"
+  output: check_result
+
+judge recheck_judge:
+  backend: "claude_code"
+  input: recheck_input
+  output: recheck_verdict
+  system: recheck_system
+  user: recheck_user
+  session: fresh
+
+## ─── Workflow ────────────────────────────────────────────────────
+
+workflow exhaustive_dsl_coverage:
+  vars:
+    task_description: string
+    workspace_dir: string = "${PROJECT_DIR}"
+
+  entry: check_input
+
+  budget:
+    max_parallel_branches: 2
+    max_duration: "30m"
+    max_cost_usd: 10
+    max_tokens: 1000000
+
+  ## ═══ Phase 0 : Input validation (tool node) ═══════════════════
+
+  check_input -> human_gate with {
+    task_description: "{{vars.task_description}}"
+  }
+
+  ## ═══ Phase 1 : Human gate (auto-answered by LLM) ══════════════
+
+  human_gate -> dispatch when approved with {
+    task: "{{outputs.human_gate.task}}"
+  }
+
+  human_gate -> fail when not approved
+
+  ## ═══ Phase 2 : Parallel writing (fan_out_all) ═════════════════
+
+  dispatch -> writer_a with {
+    task: "{{input.task}}"
+  }
+
+  dispatch -> writer_b with {
+    task: "{{input.task}}"
+  }
+
+  ## writer_a -> extract_meta (session fork with _session_id)
+  writer_a -> extract_meta with {
+    _session_id: "{{outputs.writer_a._session_id}}",
+    content: "{{outputs.writer_a}}"
+  }
+
+  ## Both branches converge at merge (best_effort)
+  extract_meta -> merge with {
+    content_a: "{{outputs.writer_a}}",
+    metadata: "{{outputs.extract_meta}}"
+  }
+
+  writer_b -> merge with {
+    content_b: "{{outputs.writer_b}}"
+  }
+
+  ## ═══ Phase 3 : Quality assessment ═════════════════════════════
+
+  merge -> quality_judge with {
+    content_a: "{{artifacts.writer_a_result}}",
+    content_b: "{{artifacts.writer_b_result}}",
+    previous_issues: ""
+  }
+
+  ## ═══ Phase 4 : Verdict routing ════════════════════════════════
+
+  quality_judge -> done when good
+
+  quality_judge -> fix_dispatch when not good with {
+    fixable: "{{outputs.quality_judge.fixable}}",
+    issues: "{{outputs.quality_judge.issues}}",
+    workspace: "{{vars.workspace_dir}}"
+  }
+
+  ## ═══ Phase 5 : Condition router ═══════════════════════════════
+
+  fix_dispatch -> refine_selector when fixable
+
+  fix_dispatch -> fail when not fixable
+
+  ## ═══ Phase 6 : Round-robin refinement ═════════════════════════
+
+  refine_selector -> refiner_a with {
+    issues: "{{artifacts.verdict}}",
+    workspace: "{{vars.workspace_dir}}"
+  }
+
+  refine_selector -> refiner_b with {
+    issues: "{{artifacts.verdict}}",
+    workspace: "{{vars.workspace_dir}}"
+  }
+
+  ## After refinement -> recheck
+  refiner_a -> run_check
+  refiner_b -> run_check
+
+  ## ═══ Phase 7 : Recheck ════════════════════════════════════════
+
+  run_check -> recheck_judge with {
+    check_result: "{{outputs.run_check}}",
+    previous_issues: "{{artifacts.verdict}}"
+  }
+
+  recheck_judge -> done when good
+
+  recheck_judge -> fix_dispatch when not good as fix_loop(3) with {
+    fixable: "true",
+    issues: "{{outputs.recheck_judge.issues}}",
+    workspace: "{{vars.workspace_dir}}"
+  }

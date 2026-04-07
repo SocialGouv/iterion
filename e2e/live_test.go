@@ -86,7 +86,7 @@ func requireCLI(t *testing.T, name string) {
 //   - The CLIs must be authenticated
 //
 // Automatically skipped when CLIs are absent or in -short mode.
-func TestLive_DualModel_PlanImplementReview(t *testing.T) {
+func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live test in short mode")
 	}
@@ -452,7 +452,7 @@ func TestLive_DualModel_PlanImplementReview(t *testing.T) {
 //   - The CLIs must be authenticated
 //
 // Automatically skipped when CLIs are absent or in -short mode.
-func TestLive_SessionContinuity_ReviewFix(t *testing.T) {
+func TestLive_Lite_SessionContinuity_ReviewFix(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live test in short mode")
 	}
@@ -711,6 +711,343 @@ func TestLive_SessionContinuity_ReviewFix(t *testing.T) {
 		StoreDir: storeDir,
 		Output:   reportPath,
 	}
+	reportPrinter := cli.NewPrinter(cli.OutputHuman)
+	if reportErr := cli.RunReport(reportOpts, reportPrinter); reportErr != nil {
+		t.Logf("WARNING: could not generate report: %v", reportErr)
+	} else {
+		t.Logf("Report written to %s", reportPath)
+	}
+
+	logRunRecap(t, events)
+}
+
+// ---------------------------------------------------------------------------
+// Live E2E test — Full exhaustive DSL coverage
+// ---------------------------------------------------------------------------
+
+// TestLive_Full_ExhaustiveDSLCoverage exercises every DSL feature in a single
+// workflow run: all node types, router modes, await strategies, session modes,
+// edge features, tool nodes, human nodes (auto-answered), and budget tracking.
+//
+// Requires: `claude` and `codex` CLIs installed and authenticated.
+func TestLive_Full_ExhaustiveDSLCoverage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live test in short mode")
+	}
+	loadDotEnv(t)
+	requireCLI(t, "claude")
+	requireCLI(t, "codex")
+
+	if os.Getenv("CLAUDE_MODEL") == "" {
+		t.Setenv("CLAUDE_MODEL", "openai/gpt-5.4")
+	}
+
+	wf := compileFixture(t, "exhaustive_dsl_coverage.iter")
+
+	workspaceDir, err := os.MkdirTemp("", "iterion-exhaustive-*")
+	if err != nil {
+		t.Fatalf("Failed to create workspace dir: %v", err)
+	}
+	t.Logf("Workspace directory (persists after test): %s", workspaceDir)
+
+	gitInit := exec.Command("git", "init", workspaceDir)
+	if out, gitErr := gitInit.CombinedOutput(); gitErr != nil {
+		t.Fatalf("git init failed: %v\n%s", gitErr, out)
+	}
+
+	storeDir := filepath.Join(workspaceDir, ".iterion")
+	s, storeErr := store.New(storeDir)
+	if storeErr != nil {
+		t.Fatalf("Failed to create store: %v", storeErr)
+	}
+
+	runID := "live-exhaustive"
+
+	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+		t.Fatalf("mcp.PrepareWorkflow: %v", err)
+	}
+
+	reg := model.NewRegistry()
+	logger := iterlog.New(iterlog.LevelDebug, os.Stderr)
+	hooks := model.NewStoreEventHooks(s, runID, logger)
+
+	execOpts := []model.GoaiExecutorOption{
+		model.WithBackendRegistry(delegate.DefaultRegistry()),
+		model.WithToolRegistry(tool.NewRegistry()),
+		model.WithWorkDir(workspaceDir),
+		model.WithEventHooks(hooks),
+	}
+
+	executor := model.NewGoaiExecutor(reg, wf, execOpts...)
+	defer executor.Close()
+
+	executor.SetVars(map[string]interface{}{
+		"workspace_dir": workspaceDir,
+	})
+
+	eng := runtime.New(wf, s, executor)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	inputs := map[string]interface{}{
+		"task_description": "Write the number 42 to a file called answer.txt in the workspace directory.",
+	}
+
+	t.Log("Starting exhaustive DSL coverage workflow run...")
+	start := time.Now()
+	runErr := eng.Run(ctx, runID, inputs)
+	elapsed := time.Since(start)
+	t.Logf("Run completed in %s", elapsed.Round(time.Second))
+
+	// Accept finished, budget-exceeded, loop-exhausted.
+	if runErr != nil {
+		acceptable := false
+		if errors.Is(runErr, runtime.ErrBudgetExceeded) {
+			acceptable = true
+		}
+		var rtErr *runtime.RuntimeError
+		if errors.As(runErr, &rtErr) {
+			switch rtErr.Code {
+			case runtime.ErrCodeBudgetExceeded, runtime.ErrCodeLoopExhausted:
+				acceptable = true
+			case runtime.ErrCodeExecutionFailed:
+				acceptable = true
+			}
+		}
+		if acceptable {
+			t.Logf("Run ended with acceptable error: %v", runErr)
+		} else {
+			t.Fatalf("Unexpected run error: %v", runErr)
+		}
+	}
+
+	r, loadErr := s.LoadRun(runID)
+	if loadErr != nil {
+		t.Fatalf("Failed to load run: %v", loadErr)
+	}
+	t.Logf("Run status: %s", r.Status)
+
+	events, evtErr := s.LoadEvents(runID)
+	if evtErr != nil {
+		t.Fatalf("Failed to load events: %v", evtErr)
+	}
+
+	if !hasEvent(events, store.EventRunStarted) {
+		t.Error("Missing run_started event")
+	}
+
+	finishedNodes := eventNodeIDs(events, store.EventNodeFinished)
+	t.Logf("Finished nodes: %v", finishedNodes)
+	nodeSet := make(map[string]bool)
+	for _, id := range finishedNodes {
+		nodeSet[id] = true
+	}
+
+	// === A. Node Type Coverage ===
+
+	// Tool node
+	if !nodeSet["check_input"] {
+		t.Error("COVERAGE: tool node 'check_input' did not finish")
+	}
+
+	// Human node (auto-answered by LLM)
+	if !nodeSet["human_gate"] {
+		t.Error("COVERAGE: human node 'human_gate' did not finish")
+	}
+
+	// Router fan_out_all
+	if !nodeSet["dispatch"] {
+		t.Error("COVERAGE: fan_out_all router 'dispatch' did not finish")
+	}
+
+	// Agent nodes (both backends)
+	claudeAgent := false
+	codexAgent := false
+	for _, id := range finishedNodes {
+		if id == "writer_a" || id == "refiner_a" || id == "extract_meta" || id == "merge" {
+			claudeAgent = true
+		}
+		if id == "writer_b" || id == "refiner_b" {
+			codexAgent = true
+		}
+	}
+	if !claudeAgent {
+		t.Error("COVERAGE: no claude_code agent node finished")
+	}
+	if !codexAgent {
+		t.Error("COVERAGE: no codex agent node finished")
+	}
+
+	// Judge node
+	if !nodeSet["quality_judge"] {
+		t.Error("COVERAGE: judge node 'quality_judge' did not finish")
+	}
+
+	// === B. Human Node Auto-Answer (no pause) ===
+	humanPaused := false
+	for _, evt := range events {
+		if evt.Type == store.EventRunPaused {
+			humanPaused = true
+		}
+	}
+	if humanPaused {
+		t.Error("COVERAGE: run paused at human gate — expected auto-answer via interaction: llm")
+	}
+
+	// === C. Parallel Branches ===
+	branchCount := countEventType(events, store.EventBranchStarted)
+	if branchCount < 2 {
+		t.Errorf("COVERAGE: expected >= 2 branch_started events (fan_out_all), got %d", branchCount)
+	}
+	t.Logf("Branch events: %d", branchCount)
+
+	// === D. Await Strategies ===
+	if nodeSet["merge"] {
+		t.Log("COVERAGE: best_effort join (merge) completed")
+	}
+	if nodeSet["quality_judge"] {
+		t.Log("COVERAGE: wait_all join (quality_judge) completed")
+	}
+
+	// === E. Session Modes ===
+	if nodeSet["extract_meta"] {
+		t.Log("COVERAGE: session fork (extract_meta) executed")
+	}
+	if nodeSet["merge"] {
+		t.Log("COVERAGE: session artifacts_only (merge) executed")
+	}
+
+	// === F. Conditional Edges ===
+	conditionEdges := 0
+	for _, evt := range events {
+		if evt.Type == store.EventEdgeSelected && evt.Data != nil {
+			if _, ok := evt.Data["condition"]; ok {
+				conditionEdges++
+			}
+		}
+	}
+	if conditionEdges == 0 {
+		t.Error("COVERAGE: no conditional edge selections found")
+	}
+	t.Logf("Conditional edge events: %d", conditionEdges)
+
+	// === G. Loop Events ===
+	loopEdges := 0
+	for _, evt := range events {
+		if evt.Type == store.EventEdgeSelected && evt.Data != nil {
+			if _, ok := evt.Data["loop"]; ok {
+				loopEdges++
+			}
+		}
+	}
+	t.Logf("Loop edge events: %d", loopEdges)
+
+	// === H. Fix Path Coverage ===
+	if nodeSet["fix_dispatch"] {
+		t.Log("COVERAGE: condition router (fix_dispatch) exercised")
+	}
+	if nodeSet["refine_selector"] {
+		t.Log("COVERAGE: round_robin router (refine_selector) exercised")
+	}
+	if nodeSet["refiner_a"] || nodeSet["refiner_b"] {
+		t.Log("COVERAGE: session inherit refiner executed")
+	}
+	if nodeSet["run_check"] {
+		t.Log("COVERAGE: tool node with template refs (run_check) executed")
+	}
+	if nodeSet["recheck_judge"] {
+		t.Log("COVERAGE: recheck judge executed")
+	}
+
+	// === I. Artifacts ===
+	for _, artNode := range []string{"writer_a", "writer_b", "extract_meta", "quality_judge"} {
+		art, artErr := s.LoadLatestArtifact(runID, artNode)
+		if artErr != nil {
+			if nodeSet[artNode] {
+				t.Errorf("COVERAGE: node %q finished but artifact not found", artNode)
+			}
+		} else {
+			t.Logf("Artifact %-20s v%d", artNode, art.Version)
+		}
+	}
+
+	// === J. Metrics ===
+	metrics, mErr := benchmark.CollectMetrics(s, runID, "live-exhaustive", "")
+	if mErr != nil {
+		t.Fatalf("Failed to collect metrics: %v", mErr)
+	}
+	t.Logf("Metrics: tokens=%d cost=$%.4f model_calls=%d iterations=%d duration=%s",
+		metrics.TotalTokens, metrics.TotalCostUSD, metrics.ModelCalls,
+		metrics.Iterations, metrics.DurationStr)
+
+	// ModelCalls counts goai backend calls only; CLI backends (claude_code, codex)
+	// are tracked via Iterations. Verify tokens were consumed.
+	if metrics.TotalTokens == 0 && metrics.Iterations == 0 {
+		t.Error("Expected non-zero token consumption or iterations")
+	}
+
+	// === K. Workspace Validation ===
+	answerPath := filepath.Join(workspaceDir, "answer.txt")
+	if content, readErr := os.ReadFile(answerPath); readErr != nil {
+		t.Logf("WARNING: answer.txt not found at %s", answerPath)
+	} else {
+		if strings.Contains(string(content), "42") {
+			t.Logf("SUCCESS: answer.txt contains '42' (%d bytes)", len(content))
+		} else {
+			t.Logf("WARNING: answer.txt exists but does not contain '42': %q", string(content))
+		}
+	}
+
+	// === L. Coverage Summary ===
+	covered := []string{}
+	if nodeSet["check_input"] {
+		covered = append(covered, "tool_node")
+	}
+	if nodeSet["human_gate"] && !humanPaused {
+		covered = append(covered, "human_auto_answer")
+	}
+	if nodeSet["dispatch"] {
+		covered = append(covered, "router_fan_out_all")
+	}
+	if nodeSet["fix_dispatch"] {
+		covered = append(covered, "router_condition")
+	}
+	if nodeSet["refine_selector"] {
+		covered = append(covered, "router_round_robin")
+	}
+	if nodeSet["quality_judge"] {
+		covered = append(covered, "judge_wait_all")
+	}
+	if nodeSet["merge"] {
+		covered = append(covered, "await_best_effort", "session_artifacts_only")
+	}
+	if nodeSet["extract_meta"] {
+		covered = append(covered, "session_fork", "reasoning_effort", "readonly")
+	}
+	if nodeSet["refiner_a"] || nodeSet["refiner_b"] {
+		covered = append(covered, "session_inherit")
+	}
+	if loopEdges > 0 {
+		covered = append(covered, "bounded_loop")
+	}
+	if conditionEdges > 0 {
+		covered = append(covered, "conditional_edges")
+	}
+	if claudeAgent {
+		covered = append(covered, "backend_claude_code")
+	}
+	if codexAgent {
+		covered = append(covered, "backend_codex")
+	}
+
+	t.Logf("\n=== DSL COVERAGE: %d/%d features ===", len(covered), 15)
+	for _, c := range covered {
+		t.Logf("  [x] %s", c)
+	}
+
+	// Generate report.
+	reportPath := filepath.Join(workspaceDir, "report.md")
+	reportOpts := cli.ReportOptions{RunID: runID, StoreDir: storeDir, Output: reportPath}
 	reportPrinter := cli.NewPrinter(cli.OutputHuman)
 	if reportErr := cli.RunReport(reportOpts, reportPrinter); reportErr != nil {
 		t.Logf("WARNING: could not generate report: %v", reportErr)
