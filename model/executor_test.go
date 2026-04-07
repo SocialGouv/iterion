@@ -511,6 +511,197 @@ func TestExecutorToolNodeTextOutput(t *testing.T) {
 	}
 }
 
+func TestExecutorToolNodeShellCommand(t *testing.T) {
+	reg := NewRegistry()
+	wf := &ir.Workflow{
+		Prompts: map[string]*ir.Prompt{},
+		Schemas: map[string]*ir.Schema{},
+	}
+
+	exec := NewGoaiExecutor(reg, wf)
+
+	refs, err := ir.ParseRefs("echo {{input.message}}")
+	if err != nil {
+		t.Fatalf("ParseRefs: %v", err)
+	}
+
+	node := &ir.Node{
+		ID:          "commit_tool",
+		Kind:        ir.NodeTool,
+		Command:     "echo {{input.message}}",
+		CommandRefs: refs,
+	}
+
+	output, err := exec.Execute(context.Background(), node, map[string]interface{}{
+		"message": "hello world",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if output["result"] != "hello world" {
+		t.Errorf("got result %v, want %q", output["result"], "hello world")
+	}
+}
+
+func TestExecutorToolNodeShellMultipleRefs(t *testing.T) {
+	reg := NewRegistry()
+	wf := &ir.Workflow{
+		Prompts: map[string]*ir.Prompt{},
+		Schemas: map[string]*ir.Schema{},
+	}
+
+	exec := NewGoaiExecutor(reg, wf)
+
+	refs, err := ir.ParseRefs("echo {{input.name}} {{input.value}}")
+	if err != nil {
+		t.Fatalf("ParseRefs: %v", err)
+	}
+
+	node := &ir.Node{
+		ID:          "multi_ref",
+		Kind:        ir.NodeTool,
+		Command:     "echo {{input.name}} {{input.value}}",
+		CommandRefs: refs,
+	}
+
+	output, err := exec.Execute(context.Background(), node, map[string]interface{}{
+		"name":  "foo",
+		"value": "bar",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if output["result"] != "foo bar" {
+		t.Errorf("got result %v, want %q", output["result"], "foo bar")
+	}
+}
+
+func TestExecutorToolNodeShellJSONOutput(t *testing.T) {
+	reg := NewRegistry()
+	wf := &ir.Workflow{
+		Prompts: map[string]*ir.Prompt{},
+		Schemas: map[string]*ir.Schema{},
+	}
+
+	exec := NewGoaiExecutor(reg, wf)
+
+	refs, err := ir.ParseRefs(`printf '{"status":"%s"}' {{input.status}}`)
+	if err != nil {
+		t.Fatalf("ParseRefs: %v", err)
+	}
+
+	node := &ir.Node{
+		ID:          "json_tool",
+		Kind:        ir.NodeTool,
+		Command:     `printf '{"status":"%s"}' {{input.status}}`,
+		CommandRefs: refs,
+	}
+
+	output, err := exec.Execute(context.Background(), node, map[string]interface{}{
+		"status": "ok",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if output["status"] != "ok" {
+		t.Errorf("got status %v, want %q", output["status"], "ok")
+	}
+}
+
+func TestExecutorToolNodeShellInjection(t *testing.T) {
+	reg := NewRegistry()
+	wf := &ir.Workflow{
+		Prompts: map[string]*ir.Prompt{},
+		Schemas: map[string]*ir.Schema{},
+	}
+
+	exec := NewGoaiExecutor(reg, wf)
+
+	refs, err := ir.ParseRefs("echo {{input.msg}}")
+	if err != nil {
+		t.Fatalf("ParseRefs: %v", err)
+	}
+
+	node := &ir.Node{
+		ID:          "inject_tool",
+		Kind:        ir.NodeTool,
+		Command:     "echo {{input.msg}}",
+		CommandRefs: refs,
+	}
+
+	// Attempt shell injection — should be treated as a literal string, not executed.
+	malicious := "'; echo INJECTED; echo '"
+	output, err := exec.Execute(context.Background(), node, map[string]interface{}{
+		"msg": malicious,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// If escaping works, echo receives the entire malicious string as one argument.
+	// If injection succeeded, the output would be split across multiple echo invocations.
+	result, _ := output["result"].(string)
+	if result != malicious {
+		t.Errorf("shell escaping failed: got %q, want literal %q", result, malicious)
+	}
+}
+
+func TestResolveCommandTemplate(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+		input   map[string]interface{}
+		want    string
+	}{
+		{
+			name:    "single ref",
+			command: "echo {{input.msg}}",
+			input:   map[string]interface{}{"msg": "hello"},
+			want:    "echo 'hello'",
+		},
+		{
+			name:    "multiple refs",
+			command: "git -C {{input.dir}} commit -m {{input.msg}}",
+			input:   map[string]interface{}{"dir": "/tmp/repo", "msg": "feat: port"},
+			want:    "git -C '/tmp/repo' commit -m 'feat: port'",
+		},
+		{
+			name:    "missing ref unchanged",
+			command: "echo {{input.missing}}",
+			input:   map[string]interface{}{},
+			want:    "echo {{input.missing}}",
+		},
+		{
+			name:    "no refs passthrough",
+			command: "echo hello",
+			input:   map[string]interface{}{},
+			want:    "echo hello",
+		},
+		{
+			name:    "injection escaped",
+			command: "echo {{input.msg}}",
+			input:   map[string]interface{}{"msg": "'; rm -rf / #"},
+			want:    "echo ''\\''; rm -rf / #'",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			refs, err := ir.ParseRefs(tt.command)
+			if err != nil {
+				t.Fatalf("ParseRefs: %v", err)
+			}
+			got := resolveCommandTemplate(tt.command, refs, tt.input)
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestExecutorUnknownModel(t *testing.T) {
 	reg := NewRegistry()
 	wf := &ir.Workflow{

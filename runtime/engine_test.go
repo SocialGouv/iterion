@@ -1173,9 +1173,9 @@ func TestFormatOutputPreview(t *testing.T) {
 			name: "boolean field",
 			data: map[string]interface{}{
 				"output": map[string]interface{}{
-					"approved":  true,
-					"feedback":  "Looks good",
-					"_tokens":   100,
+					"approved": true,
+					"feedback": "Looks good",
+					"_tokens":  100,
 				},
 			},
 			want: "approved: true",

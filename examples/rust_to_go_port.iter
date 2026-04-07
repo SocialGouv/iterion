@@ -13,6 +13,7 @@
 ##   2. Plan Validation: parallel validation -> acceptance judge
 ##   2b. Refinement: round-robin if plan rejected (max 6)
 ##   3. Implementation: round-robin porting (Claude <-> Codex)
+##   3b. Commit: LLM-generated semantic commit for iteration checkpoint
 ##   4. Test Execution: run Go test suite (tool node)
 ##   5. Parity Review: parallel review -> parity judge
 ##   6. Verdict: parity achieved -> done; else -> Phase 1 (max 10)
@@ -324,6 +325,28 @@ prompt parity_verdict_user:
   4. Set overall_parity=true ONLY if ALL Rust features are PORTED and tests green
   5. List remaining_issues for the next iteration
 
+## ─── Prompts : Commit ─────────────────────────────────────────
+
+prompt commit_namer_system:
+  You are a release engineer. Based on the implementation summary provided,
+  generate a semantic commit message following conventional commits format.
+  Format: type(scope): description
+  Types: feat, fix, refactor, test, docs, chore
+  Scope: the Go package or module most affected by the changes
+  Description: concise summary of what was ported in this iteration
+
+prompt commit_namer_user:
+  Generate a commit message for this porting iteration.
+
+  Implementation summary:
+  {{input.summary}}
+
+  Features ported:
+  {{input.features_ported}}
+
+  Files changed:
+  {{input.files_changed}}
+
 ## ─── Schemas ───────────────────────────────────────────────────
 
 schema workflow_input:
@@ -454,6 +477,25 @@ schema parity_verdict:
   remaining_issues: string[]
   parity_percentage: string
   confidence: string [enum: "low", "medium", "high"]
+
+schema commit_namer_input:
+  summary: string
+  features_ported: string[]
+  files_changed: string[]
+
+schema commit_name_output:
+  type: string [enum: "feat", "fix", "refactor", "test", "docs", "chore"]
+  scope: string
+  description: string
+  full_message: string
+
+schema commit_tool_input:
+  full_message: string
+  go_repo_path: string
+
+schema commit_result:
+  success: bool
+  output: string
 
 ## ─── Nodes : Phase 0 — Analysis ───────────────────────────────
 
@@ -599,6 +641,23 @@ agent codex_implement:
   system: port_impl_system
   user: port_impl_user
   session: fresh
+
+## ─── Nodes : Phase 3b — Commit Iteration ──────────────────────
+
+agent commit_namer:
+  model: "${COMMIT_MODEL}"
+  input: commit_namer_input
+  output: commit_name_output
+  publish: commit_name
+  system: commit_namer_system
+  user: commit_namer_user
+  session: fresh
+  readonly: true
+
+tool commit_changes:
+  command: "git -C {{input.go_repo_path}} add -A && git -C {{input.go_repo_path}} diff --cached --quiet || git -C {{input.go_repo_path}} commit -m {{input.full_message}}"
+  input: commit_tool_input
+  output: commit_result
 
 ## ─── Nodes : Phase 4 — Test Execution ─────────────────────────
 
@@ -785,10 +844,28 @@ workflow rust_to_go_port:
     previous_feedback: "{{artifacts.parity_verdict_report}}"
   }
 
+  ## ═══ Phase 3b : Commit Iteration ════════════════════════════
+
+  claude_implement -> commit_namer with {
+    summary: "{{outputs.claude_implement.summary}}",
+    features_ported: "{{outputs.claude_implement.features_ported}}",
+    files_changed: "{{outputs.claude_implement.files_changed}}"
+  }
+
+  codex_implement -> commit_namer with {
+    summary: "{{outputs.codex_implement.summary}}",
+    features_ported: "{{outputs.codex_implement.features_ported}}",
+    files_changed: "{{outputs.codex_implement.files_changed}}"
+  }
+
+  commit_namer -> commit_changes with {
+    full_message: "{{outputs.commit_namer.full_message}}",
+    go_repo_path: "{{vars.go_repo_path}}"
+  }
+
   ## ═══ Phase 4 : Run Go Tests ═══════════════════════════════════
 
-  claude_implement -> run_go_tests
-  codex_implement -> run_go_tests
+  commit_changes -> run_go_tests
 
   ## ═══ Phase 5 : Parallel Parity Review ═════════════════════════
 

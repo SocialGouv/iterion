@@ -567,12 +567,24 @@ func (c *compiler) compileHumans() {
 func (c *compiler) compileTools() {
 	for _, t := range c.file.Tools {
 		c.validateSchemaRef(t.Name, "output", t.Output)
+		if t.Input != "" {
+			c.validateSchemaRef(t.Name, "input", t.Input)
+		}
+
+		var cmdRefs []*Ref
+		if refs, err := ParseRefs(t.Command); err != nil {
+			c.errorf(DiagBadTemplateRef, "tool %q command: %v", t.Name, err)
+		} else {
+			cmdRefs = refs
+		}
 
 		c.nodes[t.Name] = &Node{
 			ID:            t.Name,
 			Kind:          NodeTool,
+			InputSchema:   t.Input,
 			OutputSchema:  t.Output,
 			Command:       t.Command,
+			CommandRefs:   cmdRefs,
 			AwaitStrategy: convertAwaitMode(t.Await),
 		}
 	}

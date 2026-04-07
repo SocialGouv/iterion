@@ -365,7 +365,8 @@ type HumanDecl struct {
 // a command directly without an LLM call.
 type ToolNodeDecl struct {
 	Name    string
-	Command string    // command to execute, may contain ${...} env refs
+	Command string    // command to execute, may contain ${...} env refs and {{...}} template refs
+	Input   string    // optional input schema reference name
 	Output  string    // schema reference name
 	Await   AwaitMode // convergence strategy (none/wait_all/best_effort)
 	Span    Span

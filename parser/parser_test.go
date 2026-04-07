@@ -326,6 +326,22 @@ func TestToolNode(t *testing.T) {
 	assertEq(t, "Output", td.Output, "ci_result")
 }
 
+func TestToolNodeWithInput(t *testing.T) {
+	src := `tool commit_changes:
+  command: "git commit -m {{input.message}}"
+  input: commit_input
+  output: commit_result
+`
+	res := parser.Parse("test.iter", src)
+	assertNoDiags(t, res)
+
+	td := res.File.Tools[0]
+	assertEq(t, "Name", td.Name, "commit_changes")
+	assertEq(t, "Command", td.Command, "git commit -m {{input.message}}")
+	assertEq(t, "Input", td.Input, "commit_input")
+	assertEq(t, "Output", td.Output, "commit_result")
+}
+
 func TestRouterDecl(t *testing.T) {
 	src := `router dispatch:
   mode: condition

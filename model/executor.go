@@ -81,17 +81,17 @@ type RetryInfo struct {
 
 // DelegateInfo describes a delegation attempt, passed to delegation hooks.
 type DelegateInfo struct {
-	BackendName   string        // e.g. "claude_code", "codex"
-	Duration      time.Duration // subprocess wall-clock time
-	Tokens        int           // estimated total tokens consumed
-	ExitCode      int           // process exit code
-	Stderr        string        // captured stderr output
+	BackendName        string        // e.g. "claude_code", "codex"
+	Duration           time.Duration // subprocess wall-clock time
+	Tokens             int           // estimated total tokens consumed
+	ExitCode           int           // process exit code
+	Stderr             string        // captured stderr output
 	RawOutputLen       int           // byte length of raw stdout
 	ParseFallback      bool          // true if structured output fell back to text wrapper
 	FormattingPassUsed bool          // true if two-pass execution was used (tools + schema)
 	Error              error         // non-nil for OnDelegateError
-	Attempt       int           // 1-based retry number (for OnDelegateRetry)
-	Delay         time.Duration // backoff delay (for OnDelegateRetry)
+	Attempt            int           // 1-based retry number (for OnDelegateRetry)
+	Delay              time.Duration // backoff delay (for OnDelegateRetry)
 }
 
 // ---------------------------------------------------------------------------
@@ -877,12 +877,12 @@ func (e *GoaiExecutor) executeDelegation(ctx context.Context, node *ir.Node, inp
 				backendName = node.Delegate
 			}
 			e.hooks.OnDelegateError(node.ID, DelegateInfo{
-				BackendName:   backendName,
-				Duration:      result.Duration,
-				Tokens:        result.Tokens,
-				ExitCode:      result.ExitCode,
-				Stderr:        result.Stderr,
-				RawOutputLen:  result.RawOutputLen,
+				BackendName:        backendName,
+				Duration:           result.Duration,
+				Tokens:             result.Tokens,
+				ExitCode:           result.ExitCode,
+				Stderr:             result.Stderr,
+				RawOutputLen:       result.RawOutputLen,
 				ParseFallback:      result.ParseFallback,
 				FormattingPassUsed: result.FormattingPassUsed,
 				Error:              err,
@@ -894,11 +894,11 @@ func (e *GoaiExecutor) executeDelegation(ctx context.Context, node *ir.Node, inp
 	// Emit delegation finished event.
 	if e.hooks.OnDelegateFinished != nil {
 		e.hooks.OnDelegateFinished(node.ID, DelegateInfo{
-			BackendName:   result.BackendName,
-			Duration:      result.Duration,
-			Tokens:        result.Tokens,
-			ExitCode:      result.ExitCode,
-			Stderr:        result.Stderr,
+			BackendName:        result.BackendName,
+			Duration:           result.Duration,
+			Tokens:             result.Tokens,
+			ExitCode:           result.ExitCode,
+			Stderr:             result.Stderr,
 			RawOutputLen:       result.RawOutputLen,
 			ParseFallback:      result.ParseFallback,
 			FormattingPassUsed: result.FormattingPassUsed,
@@ -1053,7 +1053,8 @@ func (e *GoaiExecutor) executeToolNodeShell(ctx context.Context, node *ir.Node, 
 }
 
 // resolveCommandTemplate substitutes {{input.X}} references in a command
-// string with values from the input map.
+// string with values from the input map. Values are shell-escaped to prevent
+// command injection when the resolved string is passed to sh -c.
 func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]interface{}) string {
 	resolved := command
 	for _, ref := range refs {
@@ -1064,9 +1065,17 @@ func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]int
 		if val == nil {
 			continue
 		}
-		resolved = strings.Replace(resolved, ref.Raw, fmt.Sprint(val), 1)
+		escaped := shellEscape(fmt.Sprint(val))
+		resolved = strings.ReplaceAll(resolved, ref.Raw, escaped)
 	}
 	return resolved
+}
+
+// shellEscape wraps a value in single quotes, escaping any embedded single
+// quotes. This produces a string safe for interpolation into sh -c commands.
+func shellEscape(s string) string {
+	// Replace each ' with '\'': end current quote, insert escaped quote, reopen quote.
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // ---------------------------------------------------------------------------
@@ -1309,12 +1318,12 @@ func (e *GoaiExecutor) executeLLMRouterDelegated(ctx context.Context, node *ir.N
 				backendName = node.Delegate
 			}
 			e.hooks.OnDelegateError(node.ID, DelegateInfo{
-				BackendName:   backendName,
-				Duration:      result.Duration,
-				Tokens:        result.Tokens,
-				ExitCode:      result.ExitCode,
-				Stderr:        result.Stderr,
-				RawOutputLen:  result.RawOutputLen,
+				BackendName:        backendName,
+				Duration:           result.Duration,
+				Tokens:             result.Tokens,
+				ExitCode:           result.ExitCode,
+				Stderr:             result.Stderr,
+				RawOutputLen:       result.RawOutputLen,
 				ParseFallback:      result.ParseFallback,
 				FormattingPassUsed: result.FormattingPassUsed,
 				Error:              err,
@@ -1326,11 +1335,11 @@ func (e *GoaiExecutor) executeLLMRouterDelegated(ctx context.Context, node *ir.N
 	// Emit delegation finished event.
 	if e.hooks.OnDelegateFinished != nil {
 		e.hooks.OnDelegateFinished(node.ID, DelegateInfo{
-			BackendName:   result.BackendName,
-			Duration:      result.Duration,
-			Tokens:        result.Tokens,
-			ExitCode:      result.ExitCode,
-			Stderr:        result.Stderr,
+			BackendName:        result.BackendName,
+			Duration:           result.Duration,
+			Tokens:             result.Tokens,
+			ExitCode:           result.ExitCode,
+			Stderr:             result.Stderr,
 			RawOutputLen:       result.RawOutputLen,
 			ParseFallback:      result.ParseFallback,
 			FormattingPassUsed: result.FormattingPassUsed,

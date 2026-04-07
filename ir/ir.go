@@ -108,7 +108,8 @@ type Node struct {
 	Instructions string // prompt reference for human instructions
 
 	// --- Tool node fields ---
-	Command string // command to execute
+	Command     string // command to execute, may contain {{...}} template refs
+	CommandRefs []*Ref // parsed template references in Command (resolved at runtime)
 }
 
 // ---------------------------------------------------------------------------

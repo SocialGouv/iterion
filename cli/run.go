@@ -282,6 +282,7 @@ func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunSto
 
 	return executor
 }
+
 // enrichPausedResult loads checkpoint and interaction details from the store
 // and populates the result map with interaction_id, node_id, and questions.
 // It is used by both run and resume to enrich paused-output for CI consumers.
