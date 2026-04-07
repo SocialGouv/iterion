@@ -30,7 +30,7 @@ func actExecutor(t *testing.T, policy *tool.Policy, builtins map[string]func(ctx
 		}
 	}
 
-	return NewGoaiExecutor(reg, wf,
+	return newTestGoaiExecutor(reg, wf,
 		WithToolRegistry(tr),
 		WithToolPolicy(policy),
 	)
@@ -165,7 +165,7 @@ func TestActPrefixWildcardMCP(t *testing.T) {
 	_ = tr.RegisterMCP("github", "create_issue", "create issue", nil, jsonExec(`{"id":42}`))
 	_ = tr.RegisterMCP("slack", "post_message", "post message", nil, jsonExec(`{}`))
 
-	exec := NewGoaiExecutor(reg, wf, WithToolRegistry(tr), WithToolPolicy(policy))
+	exec := newTestGoaiExecutor(reg, wf, WithToolRegistry(tr), WithToolPolicy(policy))
 
 	// mcp.github.create_issue → allowed
 	node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "n1"}, Command: "mcp.github.create_issue"}
@@ -200,7 +200,7 @@ func TestActDeniedToolFiresHook(t *testing.T) {
 	tr := tool.NewRegistry()
 	_ = tr.RegisterBuiltin("run_command", "run cmd", nil, jsonExec(`{}`))
 
-	exec := NewGoaiExecutor(reg, wf,
+	exec := newTestGoaiExecutor(reg, wf,
 		WithToolRegistry(tr),
 		WithToolPolicy(policy),
 		WithEventHooks(EventHooks{

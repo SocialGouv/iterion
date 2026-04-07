@@ -216,12 +216,8 @@ func NewGoaiExecutor(registry *Registry, wf *ir.Workflow, opts ...GoaiExecutorOp
 		opt(e)
 	}
 
-	// Ensure a "goai" backend is always available in the registry.
 	if e.backendRegistry == nil {
 		e.backendRegistry = delegate.NewRegistry()
-	}
-	if _, err := e.backendRegistry.Resolve("goai"); err != nil {
-		e.backendRegistry.Register("goai", NewGoaiBackend(registry, wf.Schemas, e.hooks, e.retry))
 	}
 
 	return e
@@ -263,7 +259,7 @@ func (e *GoaiExecutor) resolveBackendName(node ir.Node) string {
 	if env := os.Getenv("ITERION_DEFAULT_BACKEND"); env != "" {
 		return env
 	}
-	return "goai"
+	return delegate.BackendGoai
 }
 
 // Execute implements runtime.NodeExecutor.
@@ -388,7 +384,7 @@ func (e *GoaiExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	// Resolve full tool definitions for backends that manage tool loops
 	// internally (goai). CLI-based backends (claude_code, codex) handle tools
 	// natively via AllowedTools and do not need ToolDefs.
-	if len(f.tools) > 0 && backendName == "goai" {
+	if len(f.tools) > 0 && backendName == delegate.BackendGoai {
 		tools, toolErr := e.resolveToolsForNode(ctx, node, f.tools)
 		if toolErr != nil {
 			return nil, fmt.Errorf("model: node %q: %w", f.id, toolErr)

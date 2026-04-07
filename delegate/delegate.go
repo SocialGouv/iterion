@@ -12,6 +12,13 @@ import (
 	"time"
 )
 
+// Backend name constants used for registration and dispatch.
+const (
+	BackendGoai       = "goai"
+	BackendClaudeCode = "claude_code"
+	BackendCodex      = "codex"
+)
+
 // interactionSystemInstruction is appended to the system prompt when
 // InteractionEnabled is true, instructing the delegate to signal user
 // input needs via reserved output fields.

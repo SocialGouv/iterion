@@ -19,6 +19,7 @@ import (
 	"github.com/SocialGouv/iterion/benchmark"
 	"github.com/SocialGouv/iterion/cli"
 	"github.com/SocialGouv/iterion/delegate"
+	"github.com/SocialGouv/iterion/ir"
 	iterlog "github.com/SocialGouv/iterion/log"
 	"github.com/SocialGouv/iterion/mcp"
 	"github.com/SocialGouv/iterion/model"
@@ -55,6 +56,23 @@ func loadDotEnv(t *testing.T) {
 		}
 		t.Setenv(strings.TrimSpace(k), strings.TrimSpace(v))
 	}
+}
+
+// newLiveExecutor creates a GoaiExecutor with all standard backends registered.
+func newLiveExecutor(wf *ir.Workflow, s *store.RunStore, runID, workDir string) *model.GoaiExecutor {
+	reg := model.NewRegistry()
+	logger := iterlog.New(iterlog.LevelDebug, os.Stderr)
+	hooks := model.NewStoreEventHooks(s, runID, logger)
+
+	backendReg := delegate.DefaultRegistry()
+	backendReg.Register(delegate.BackendGoai, model.NewGoaiBackend(reg, wf.Schemas, hooks, model.RetryPolicy{}))
+
+	return model.NewGoaiExecutor(reg, wf,
+		model.WithBackendRegistry(backendReg),
+		model.WithToolRegistry(tool.NewRegistry()),
+		model.WithWorkDir(workDir),
+		model.WithEventHooks(hooks),
+	)
 }
 
 // requireCLI skips the test if the given CLI binary is not found in PATH.
@@ -129,18 +147,7 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 
-	reg := model.NewRegistry()
-	logger := iterlog.New(iterlog.LevelDebug, os.Stderr)
-	hooks := model.NewStoreEventHooks(s, runID, logger)
-
-	execOpts := []model.GoaiExecutorOption{
-		model.WithBackendRegistry(delegate.DefaultRegistry()),
-		model.WithToolRegistry(tool.NewRegistry()),
-		model.WithWorkDir(workspaceDir),
-		model.WithEventHooks(hooks),
-	}
-
-	executor := model.NewGoaiExecutor(reg, wf, execOpts...)
+	executor := newLiveExecutor(wf, s, runID, workspaceDir)
 	defer executor.Close()
 
 	taskDescription := "An interactive Kanban task board in a single index.html file. " +
@@ -489,18 +496,7 @@ func TestLive_Lite_SessionContinuity_ReviewFix(t *testing.T) {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 
-	reg := model.NewRegistry()
-	logger := iterlog.New(iterlog.LevelDebug, os.Stderr)
-	hooks := model.NewStoreEventHooks(s, runID, logger)
-
-	execOpts := []model.GoaiExecutorOption{
-		model.WithBackendRegistry(delegate.DefaultRegistry()),
-		model.WithToolRegistry(tool.NewRegistry()),
-		model.WithWorkDir(workspaceDir),
-		model.WithEventHooks(hooks),
-	}
-
-	executor := model.NewGoaiExecutor(reg, wf, execOpts...)
+	executor := newLiveExecutor(wf, s, runID, workspaceDir)
 	defer executor.Close()
 
 	taskDescription := "A 'Code Review Roulette' game in a single index.html file. " +
@@ -767,18 +763,7 @@ func TestLive_Full_ExhaustiveDSLCoverage(t *testing.T) {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 
-	reg := model.NewRegistry()
-	logger := iterlog.New(iterlog.LevelDebug, os.Stderr)
-	hooks := model.NewStoreEventHooks(s, runID, logger)
-
-	execOpts := []model.GoaiExecutorOption{
-		model.WithBackendRegistry(delegate.DefaultRegistry()),
-		model.WithToolRegistry(tool.NewRegistry()),
-		model.WithWorkDir(workspaceDir),
-		model.WithEventHooks(hooks),
-	}
-
-	executor := model.NewGoaiExecutor(reg, wf, execOpts...)
+	executor := newLiveExecutor(wf, s, runID, workspaceDir)
 	defer executor.Close()
 
 	executor.SetVars(map[string]interface{}{

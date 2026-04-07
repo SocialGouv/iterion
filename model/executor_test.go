@@ -11,6 +11,7 @@ import (
 	goai "github.com/zendev-sh/goai"
 	"github.com/zendev-sh/goai/provider"
 
+	"github.com/SocialGouv/iterion/delegate"
 	"github.com/SocialGouv/iterion/ir"
 	"github.com/SocialGouv/iterion/tool"
 )
@@ -105,6 +106,15 @@ type capableMockModel struct {
 
 func (m *capableMockModel) Capabilities() provider.ModelCapabilities {
 	return m.caps
+}
+
+// newTestGoaiExecutor creates a GoaiExecutor with a goai backend pre-registered.
+// It registers the backend after construction so the GoaiBackend shares the
+// executor's hooks and retry policy (already applied via opts).
+func newTestGoaiExecutor(reg *Registry, wf *ir.Workflow, opts ...GoaiExecutorOption) *GoaiExecutor {
+	e := NewGoaiExecutor(reg, wf, opts...)
+	e.backendRegistry.Register(delegate.BackendGoai, NewGoaiBackend(reg, wf.Schemas, e.hooks, e.retry))
+	return e
 }
 
 // ---------------------------------------------------------------------------
@@ -320,7 +330,7 @@ func TestExecuteLLMTextGeneration(t *testing.T) {
 		Schemas: map[string]*ir.Schema{},
 	}
 
-	exec := NewGoaiExecutor(reg, wf)
+	exec := newTestGoaiExecutor(reg, wf)
 
 	node := &ir.AgentNode{
 		BaseNode:  ir.BaseNode{ID: "reviewer"},
@@ -372,7 +382,7 @@ func TestExecuteLLMStructuredOutput(t *testing.T) {
 		},
 	}
 
-	exec := NewGoaiExecutor(reg, wf)
+	exec := newTestGoaiExecutor(reg, wf)
 
 	node := &ir.JudgeNode{
 		BaseNode:     ir.BaseNode{ID: "judge"},
@@ -418,7 +428,7 @@ func TestExecutorEventHooks(t *testing.T) {
 		Schemas: map[string]*ir.Schema{},
 	}
 
-	exec := NewGoaiExecutor(reg, wf, WithEventHooks(EventHooks{
+	exec := newTestGoaiExecutor(reg, wf, WithEventHooks(EventHooks{
 		OnLLMRequest: func(nodeID string, info LLMRequestInfo) {
 			requestNodeID = nodeID
 		},
@@ -457,7 +467,7 @@ func TestExecutorToolNode(t *testing.T) {
 		return `{"diff":"+ new line"}`, nil
 	})
 
-	exec := NewGoaiExecutor(reg, wf, WithToolRegistry(tr))
+	exec := newTestGoaiExecutor(reg, wf, WithToolRegistry(tr))
 
 	node := &ir.ToolNode{
 		BaseNode: ir.BaseNode{ID: "get_diff"},
@@ -488,7 +498,7 @@ func TestExecutorToolNodeTextOutput(t *testing.T) {
 		return "plain text output", nil
 	})
 
-	exec := NewGoaiExecutor(reg, wf, WithToolRegistry(tr))
+	exec := newTestGoaiExecutor(reg, wf, WithToolRegistry(tr))
 
 	node := &ir.ToolNode{
 		BaseNode: ir.BaseNode{ID: "run_echo"},
@@ -512,7 +522,7 @@ func TestExecutorToolNodeShellCommand(t *testing.T) {
 		Schemas: map[string]*ir.Schema{},
 	}
 
-	exec := NewGoaiExecutor(reg, wf)
+	exec := newTestGoaiExecutor(reg, wf)
 
 	refs, err := ir.ParseRefs("echo {{input.message}}")
 	if err != nil {
@@ -544,7 +554,7 @@ func TestExecutorToolNodeShellMultipleRefs(t *testing.T) {
 		Schemas: map[string]*ir.Schema{},
 	}
 
-	exec := NewGoaiExecutor(reg, wf)
+	exec := newTestGoaiExecutor(reg, wf)
 
 	refs, err := ir.ParseRefs("echo {{input.name}} {{input.value}}")
 	if err != nil {
@@ -577,7 +587,7 @@ func TestExecutorToolNodeShellJSONOutput(t *testing.T) {
 		Schemas: map[string]*ir.Schema{},
 	}
 
-	exec := NewGoaiExecutor(reg, wf)
+	exec := newTestGoaiExecutor(reg, wf)
 
 	refs, err := ir.ParseRefs(`printf '{"status":"%s"}' {{input.status}}`)
 	if err != nil {
@@ -609,7 +619,7 @@ func TestExecutorToolNodeShellInjection(t *testing.T) {
 		Schemas: map[string]*ir.Schema{},
 	}
 
-	exec := NewGoaiExecutor(reg, wf)
+	exec := newTestGoaiExecutor(reg, wf)
 
 	refs, err := ir.ParseRefs("echo {{input.msg}}")
 	if err != nil {
@@ -699,7 +709,7 @@ func TestExecutorUnknownModel(t *testing.T) {
 		Schemas: map[string]*ir.Schema{},
 	}
 
-	exec := NewGoaiExecutor(reg, wf)
+	exec := newTestGoaiExecutor(reg, wf)
 
 	node := &ir.AgentNode{
 		BaseNode:  ir.BaseNode{ID: "agent"},
@@ -737,7 +747,7 @@ func TestRetryOnTransientError(t *testing.T) {
 		Schemas: map[string]*ir.Schema{},
 	}
 
-	exec := NewGoaiExecutor(reg, wf,
+	exec := newTestGoaiExecutor(reg, wf,
 		WithRetryPolicy(RetryPolicy{MaxAttempts: 3, BackoffBase: time.Millisecond}),
 		WithEventHooks(EventHooks{
 			OnLLMRetry: func(nodeID string, info RetryInfo) {
@@ -787,7 +797,7 @@ func TestRetryExhausted(t *testing.T) {
 		Schemas: map[string]*ir.Schema{},
 	}
 
-	exec := NewGoaiExecutor(reg, wf,
+	exec := newTestGoaiExecutor(reg, wf,
 		WithRetryPolicy(RetryPolicy{MaxAttempts: 3, BackoffBase: time.Millisecond}),
 		WithEventHooks(EventHooks{
 			OnLLMRetry: func(nodeID string, info RetryInfo) {
@@ -836,7 +846,7 @@ func TestNoRetryOnNonRetryableError(t *testing.T) {
 		Schemas: map[string]*ir.Schema{},
 	}
 
-	exec := NewGoaiExecutor(reg, wf,
+	exec := newTestGoaiExecutor(reg, wf,
 		WithRetryPolicy(RetryPolicy{MaxAttempts: 3, BackoffBase: time.Millisecond}),
 		WithEventHooks(EventHooks{
 			OnLLMRetry: func(nodeID string, info RetryInfo) {
@@ -890,7 +900,7 @@ func TestRetryOnStructuredOutput(t *testing.T) {
 		},
 	}
 
-	exec := NewGoaiExecutor(reg, wf,
+	exec := newTestGoaiExecutor(reg, wf,
 		WithRetryPolicy(RetryPolicy{MaxAttempts: 3, BackoffBase: time.Millisecond}),
 		WithEventHooks(EventHooks{
 			OnLLMRetry: func(nodeID string, info RetryInfo) {
@@ -931,7 +941,7 @@ func TestRetryContextCancellation(t *testing.T) {
 		Schemas: map[string]*ir.Schema{},
 	}
 
-	exec := NewGoaiExecutor(reg, wf,
+	exec := newTestGoaiExecutor(reg, wf,
 		WithRetryPolicy(RetryPolicy{MaxAttempts: 10, BackoffBase: time.Second}),
 	)
 
@@ -982,7 +992,7 @@ func TestStructuredOutputMissingField(t *testing.T) {
 		},
 	}
 
-	exec := NewGoaiExecutor(reg, wf)
+	exec := newTestGoaiExecutor(reg, wf)
 
 	node := &ir.JudgeNode{
 		BaseNode:     ir.BaseNode{ID: "judge"},
@@ -1030,7 +1040,7 @@ func TestStructuredOutputWrongType(t *testing.T) {
 		},
 	}
 
-	exec := NewGoaiExecutor(reg, wf)
+	exec := newTestGoaiExecutor(reg, wf)
 
 	node := &ir.JudgeNode{
 		BaseNode:     ir.BaseNode{ID: "judge"},
@@ -1073,7 +1083,7 @@ func TestStructuredOutputInvalidEnum(t *testing.T) {
 		},
 	}
 
-	exec := NewGoaiExecutor(reg, wf)
+	exec := newTestGoaiExecutor(reg, wf)
 
 	node := &ir.JudgeNode{
 		BaseNode:     ir.BaseNode{ID: "judge"},

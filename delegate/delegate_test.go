@@ -27,12 +27,12 @@ func TestRegistryResolve(t *testing.T) {
 func TestDefaultRegistry(t *testing.T) {
 	r := DefaultRegistry()
 
-	_, err := r.Resolve("claude_code")
+	_, err := r.Resolve(BackendClaudeCode)
 	if err != nil {
 		t.Fatalf("claude_code not found: %v", err)
 	}
 
-	_, err = r.Resolve("codex")
+	_, err = r.Resolve(BackendCodex)
 	if err != nil {
 		t.Fatalf("codex not found: %v", err)
 	}

@@ -94,7 +94,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 			Duration:    duration,
 			ExitCode:    -1,
 			Stderr:      stderrBuf.String(),
-			BackendName: "claude_code",
+			BackendName: BackendClaudeCode,
 		}, fmt.Errorf("delegate: claude-code failed: %w", err)
 	}
 
@@ -102,7 +102,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		Duration:    duration,
 		ExitCode:    0,
 		Stderr:      stderrBuf.String(),
-		BackendName: "claude_code",
+		BackendName: BackendClaudeCode,
 		SessionID:   rm.SessionID,
 	}
 

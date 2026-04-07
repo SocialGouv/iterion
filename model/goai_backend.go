@@ -41,7 +41,8 @@ func (b *GoaiBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 		return delegate.Result{}, fmt.Errorf("goai backend: %w", err)
 	}
 
-	// Build goai options.
+	// Disable goai SDK internal retries — GoaiBackend manages its own retry
+	// loop (retryLoop) with configurable policy and observability hooks.
 	var opts []goai.Option
 	opts = append(opts, goai.WithMaxRetries(0))
 
@@ -187,7 +188,7 @@ func (b *GoaiBackend) generateStructured(ctx context.Context, m provider.Languag
 	return delegate.Result{
 		Output:      output,
 		Tokens:      tokens,
-		BackendName: "goai",
+		BackendName: delegate.BackendGoai,
 	}, nil
 }
 
@@ -213,7 +214,7 @@ func (b *GoaiBackend) generateText(ctx context.Context, m provider.LanguageModel
 	return delegate.Result{
 		Output:      output,
 		Tokens:      tokens,
-		BackendName: "goai",
+		BackendName: delegate.BackendGoai,
 	}, nil
 }
 

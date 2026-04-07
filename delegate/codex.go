@@ -95,7 +95,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 			Duration:    duration,
 			ExitCode:    -1,
 			Stderr:      stderrBuf.String(),
-			BackendName: "codex",
+			BackendName: BackendCodex,
 		}, fmt.Errorf("delegate: codex failed: %w", queryErr)
 	}
 
@@ -104,7 +104,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 			Duration:    duration,
 			ExitCode:    -1,
 			Stderr:      stderrBuf.String(),
-			BackendName: "codex",
+			BackendName: BackendCodex,
 		}, fmt.Errorf("delegate: codex: no result message received")
 	}
 
@@ -112,7 +112,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		Duration:    duration,
 		ExitCode:    0,
 		Stderr:      stderrBuf.String(),
-		BackendName: "codex",
+		BackendName: BackendCodex,
 		SessionID:   resultMsg.SessionID,
 	}
 

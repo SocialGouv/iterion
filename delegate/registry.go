@@ -30,7 +30,7 @@ func (r *Registry) Resolve(name string) (Backend, error) {
 // claude_code and codex backends.
 func DefaultRegistry() *Registry {
 	r := NewRegistry()
-	r.Register("claude_code", &ClaudeCodeBackend{})
-	r.Register("codex", &CodexBackend{})
+	r.Register(BackendClaudeCode, &ClaudeCodeBackend{})
+	r.Register(BackendCodex, &CodexBackend{})
 	return r
 }

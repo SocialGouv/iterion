@@ -248,7 +248,9 @@ func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunSto
 
 	hooks := model.NewStoreEventHooks(s, runID, logger)
 
-	// The goai backend is auto-registered by NewGoaiExecutor when not already present.
+	// Register the goai backend explicitly (API-based LLM path).
+	backendReg.Register(delegate.BackendGoai, model.NewGoaiBackend(reg, wf.Schemas, hooks, model.RetryPolicy{}))
+
 	opts := []model.GoaiExecutorOption{
 		model.WithBackendRegistry(backendReg),
 		model.WithEventHooks(hooks),
