@@ -244,12 +244,13 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 // and event hooks wired to the store for observability.
 func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunStore, runID string, logger *iterlog.Logger) *model.GoaiExecutor {
 	reg := model.NewRegistry()
-	delegateReg := delegate.DefaultRegistry()
+	backendReg := delegate.DefaultRegistry()
 
 	hooks := model.NewStoreEventHooks(s, runID, logger)
 
+	// The goai backend is auto-registered by NewGoaiExecutor when not already present.
 	opts := []model.GoaiExecutorOption{
-		model.WithDelegateRegistry(delegateReg),
+		model.WithBackendRegistry(backendReg),
 		model.WithEventHooks(hooks),
 	}
 	if len(wf.ResolvedMCPServers) > 0 {

@@ -275,7 +275,7 @@ func TestNilAndEmptyFieldsOmitted(t *testing.T) {
 		"workflows",
 		"comments",
 		"model",
-		"delegate",
+		"backend",
 		"input",
 		"output",
 		"publish",

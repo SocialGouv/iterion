@@ -687,9 +687,9 @@ func (p *parser) parseAgentProp(ad *ast.AgentDecl, propTok Token) {
 	case TokenMCP:
 		p.backup()
 		ad.MCP = p.parseMCPConfigBlock()
-	case TokenDelegate:
+	case TokenBackend:
 		p.expect(TokenColon)
-		ad.Delegate = p.expectString()
+		ad.Backend = p.expectString()
 	case TokenInteraction:
 		p.expect(TokenColon)
 		ad.Interaction = p.parseInteractionMode()
@@ -785,9 +785,9 @@ func (p *parser) parseJudgeProp(jd *ast.JudgeDecl, propTok Token) {
 	case TokenMCP:
 		p.backup()
 		jd.MCP = p.parseMCPConfigBlock()
-	case TokenDelegate:
+	case TokenBackend:
 		p.expect(TokenColon)
-		jd.Delegate = p.expectString()
+		jd.Backend = p.expectString()
 	case TokenInteraction:
 		p.expect(TokenColon)
 		jd.Interaction = p.parseInteractionMode()
@@ -847,10 +847,10 @@ func (p *parser) parseRouterDecl() *ast.RouterDecl {
 			p.next()
 			p.expect(TokenColon)
 			rd.Model = p.expectString()
-		case TokenDelegate:
+		case TokenBackend:
 			p.next()
 			p.expect(TokenColon)
-			rd.Delegate = p.expectString()
+			rd.Backend = p.expectString()
 		case TokenSystem:
 			p.next()
 			p.expect(TokenColon)
@@ -1116,6 +1116,12 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 
 		case TokenBudget:
 			wd.Budget = p.parseBudgetBlock()
+
+		case TokenDefaultBackend:
+			p.next() // consume "default_backend"
+			p.expect(TokenColon)
+			wd.DefaultBackend = p.expectString()
+			p.skipNewlines()
 
 		case TokenInteraction:
 			p.next() // consume "interaction"
@@ -1523,7 +1529,7 @@ func isKeywordToken(tt TokenType) bool {
 		TokenDisable, TokenAutoloadProject, TokenModel, TokenInput, TokenOutput,
 		TokenPublish, TokenSystem, TokenUser, TokenSession, TokenTools,
 		TokenToolMaxSteps, TokenReasoningEffort, TokenMode, TokenStrategy, TokenRequire,
-		TokenInstructions, TokenCommand, TokenArgs, TokenURL, TokenDelegate, TokenAwait, TokenWhen, TokenNot, TokenAs,
+		TokenInstructions, TokenCommand, TokenArgs, TokenURL, TokenBackend, TokenAwait, TokenWhen, TokenNot, TokenAs,
 		TokenWith, TokenEnum, TokenFresh, TokenInherit, TokenArtifactsOnly,
 		TokenFanOutAll, TokenCondition, TokenWaitAll, TokenBestEffort,
 		TokenTrue, TokenFalse,

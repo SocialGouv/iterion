@@ -3,8 +3,8 @@
 ## deux agents IA via delegation MCP avec double validation croisee,
 ## alternance round-robin des roles et porte humaine intelligente.
 ##
-##   - Claude  -> claude-code (delegate: "claude_code")
-##   - Codex   -> codex       (delegate: "codex")
+##   - Claude  -> claude-code (backend: "claude_code")
+##   - Codex   -> codex       (backend: "codex")
 ##
 ## Phases :
 ##   1. Planification parallele (Claude + Codex)
@@ -397,7 +397,7 @@ router plan_fanout:
   mode: fan_out_all
 
 agent claude_plan:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: plan_input
   output: plan_output
   system: plan_system
@@ -405,7 +405,7 @@ agent claude_plan:
   session: fresh
 
 agent codex_plan:
-  delegate: "codex"
+  backend: "codex"
   input: plan_input
   output: plan_output
   system: plan_system
@@ -414,7 +414,7 @@ agent codex_plan:
 
 agent merge_plans:
   await: wait_all
-  delegate: "claude_code"
+  backend: "claude_code"
   input: merge_input
   output: plan_output
   publish: merged_plan
@@ -428,7 +428,7 @@ router val_fanout:
   mode: fan_out_all
 
 agent claude_val:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: validate_input
   output: validate_output
   system: validate_plan_system
@@ -436,7 +436,7 @@ agent claude_val:
   session: fresh
 
 agent codex_val:
-  delegate: "codex"
+  backend: "codex"
   input: validate_input
   output: validate_output
   system: validate_plan_system
@@ -445,7 +445,7 @@ agent codex_val:
 
 judge val_judge:
   await: wait_all
-  delegate: "claude_code"
+  backend: "claude_code"
   input: plan_acceptance_input
   output: plan_acceptance_verdict
   system: plan_acceptance_system
@@ -455,7 +455,7 @@ judge val_judge:
 ## ─── Nodes : Porte humaine ─────────────────────────────────────
 
 judge human_gate:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: human_gate_input
   output: human_gate_assessment
   system: human_gate_system
@@ -471,7 +471,7 @@ human human_checkpoint:
   min_answers: 1
 
 agent integrate_clarifications:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: clarification_input
   output: plan_output
   publish: merged_plan
@@ -485,7 +485,7 @@ router refine_selector:
   mode: round_robin
 
 agent claude_refine:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: refine_input
   output: plan_output
   publish: merged_plan
@@ -494,7 +494,7 @@ agent claude_refine:
   session: fresh
 
 agent codex_refine:
-  delegate: "codex"
+  backend: "codex"
   input: refine_input
   output: plan_output
   publish: merged_plan
@@ -508,7 +508,7 @@ router impl_selector:
   mode: round_robin
 
 agent claude_implement:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: impl_input
   output: impl_output
   publish: implementation
@@ -519,7 +519,7 @@ agent claude_implement:
   tool_max_steps: 20
 
 agent codex_implement:
-  delegate: "codex"
+  backend: "codex"
   input: impl_input
   output: impl_output
   publish: implementation
@@ -535,7 +535,7 @@ router review_fanout:
   mode: fan_out_all
 
 agent claude_review:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: review_input
   output: review_output
   system: review_impl_system
@@ -545,7 +545,7 @@ agent claude_review:
   tool_max_steps: 10
 
 agent codex_review:
-  delegate: "codex"
+  backend: "codex"
   input: review_input
   output: review_output
   system: review_impl_system
@@ -556,7 +556,7 @@ agent codex_review:
 
 judge review_judge:
   await: wait_all
-  delegate: "codex"
+  backend: "codex"
   input: impl_verdict_input
   output: impl_verdict
   system: impl_verdict_system

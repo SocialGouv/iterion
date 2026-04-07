@@ -20,14 +20,14 @@ func TestRunInit_CreatesFiles(t *testing.T) {
 	}
 
 	// Verify workflow file exists and is non-empty.
-	data, err := os.ReadFile(filepath.Join(dir, "pr_refine_single_model_delegate.iter"))
+	data, err := os.ReadFile(filepath.Join(dir, "pr_refine_single_model_backend.iter"))
 	if err != nil {
 		t.Fatal("workflow file not created:", err)
 	}
 	if len(data) == 0 {
 		t.Fatal("workflow file is empty")
 	}
-	if !strings.Contains(string(data), "workflow pr_refine_single_model_delegate") {
+	if !strings.Contains(string(data), "workflow pr_refine_single_model_backend") {
 		t.Error("workflow file missing expected content")
 	}
 
@@ -64,7 +64,7 @@ func TestRunInit_Idempotent(t *testing.T) {
 	}
 
 	// Record contents.
-	wf1, _ := os.ReadFile(filepath.Join(dir, "pr_refine_single_model_delegate.iter"))
+	wf1, _ := os.ReadFile(filepath.Join(dir, "pr_refine_single_model_backend.iter"))
 	env1, _ := os.ReadFile(filepath.Join(dir, ".env.example"))
 
 	// Second run should skip everything.
@@ -80,7 +80,7 @@ func TestRunInit_Idempotent(t *testing.T) {
 	}
 
 	// Verify contents unchanged.
-	wf2, _ := os.ReadFile(filepath.Join(dir, "pr_refine_single_model_delegate.iter"))
+	wf2, _ := os.ReadFile(filepath.Join(dir, "pr_refine_single_model_backend.iter"))
 	env2, _ := os.ReadFile(filepath.Join(dir, ".env.example"))
 
 	if !bytes.Equal(wf1, wf2) {
@@ -125,7 +125,7 @@ func TestRunInit_CreatesSubdir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := os.Stat(filepath.Join(dir, "pr_refine_single_model_delegate.iter")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, "pr_refine_single_model_backend.iter")); err != nil {
 		t.Error("workflow file not created in subdirectory:", err)
 	}
 }

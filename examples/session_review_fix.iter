@@ -268,7 +268,7 @@ router plan_fanout:
   mode: fan_out_all
 
 agent claude_plan:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: plan_input
   output: plan_output
   publish: claude_plan_output
@@ -277,7 +277,7 @@ agent claude_plan:
   session: fresh
 
 agent codex_plan:
-  delegate: "codex"
+  backend: "codex"
   input: plan_input
   output: plan_output
   publish: codex_plan_output
@@ -289,7 +289,7 @@ agent codex_plan:
 
 agent plan_judge_merge:
   await: wait_all
-  delegate: "claude_code"
+  backend: "claude_code"
   input: judge_merge_input
   output: judge_merge_output
   publish: merged_plan
@@ -300,7 +300,7 @@ agent plan_judge_merge:
 ## ─── Node : Implementation ─────────────────────────────────────
 
 agent implement:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: impl_input
   output: impl_output
   publish: implementation
@@ -314,7 +314,7 @@ router review_fanout:
   mode: fan_out_all
 
 agent claude_review:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: review_input
   output: review_output
   publish: claude_review_report
@@ -326,7 +326,7 @@ agent claude_review:
   readonly: true
 
 agent codex_review:
-  delegate: "codex"
+  backend: "codex"
   input: review_input
   output: review_output
   publish: codex_review_report
@@ -341,7 +341,7 @@ agent codex_review:
 
 judge review_verdict:
   await: wait_all
-  delegate: "claude_code"
+  backend: "claude_code"
   input: verdict_input
   output: verdict_output
   publish: review_verdict_report
@@ -359,7 +359,7 @@ router fix_llm_router:
 ## ─── Nodes : Fix (session inherit) ─────────────────────────────
 
 agent claude_fix:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: fix_input
   output: fix_output
   publish: implementation
@@ -368,7 +368,7 @@ agent claude_fix:
   session: inherit
 
 agent codex_fix:
-  delegate: "codex"
+  backend: "codex"
   input: fix_input
   output: fix_output
   publish: implementation

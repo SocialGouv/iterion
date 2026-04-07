@@ -230,11 +230,11 @@ func buildReport(r *store.Run, events []*store.Event, s *store.RunStore) *report
 				}
 			}
 
-			delegate := ""
-			if d, ok := evt.Data["_delegate"].(string); ok {
-				delegate = fmt.Sprintf(" [%s]", d)
+			backendTag := ""
+			if d, ok := evt.Data["_backend"].(string); ok {
+				backendTag = fmt.Sprintf(" [%s]", d)
 			}
-			step.Summary = fmt.Sprintf("Finished: %s%s", evt.NodeID, delegate)
+			step.Summary = fmt.Sprintf("Finished: %s%s", evt.NodeID, backendTag)
 			if summary != "" {
 				step.Detail = summary
 			}

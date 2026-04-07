@@ -261,8 +261,8 @@ func fullShape(n *Node, w *Workflow) string {
 		if n.Model != "" {
 			lines = append(lines, "model: "+n.Model)
 		}
-		if n.Delegate != "" {
-			lines = append(lines, "delegate: "+n.Delegate)
+		if n.Backend != "" {
+			lines = append(lines, "backend: "+n.Backend)
 		}
 		if n.InputSchema != "" {
 			lines = append(lines, "in: "+expandSchema(n.InputSchema, w))

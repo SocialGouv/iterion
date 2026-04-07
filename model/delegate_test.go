@@ -52,7 +52,7 @@ func newDelegateTestExecutor(backend delegate.Backend, hooks EventHooks) *GoaiEx
 	}
 
 	return NewGoaiExecutor(NewRegistry(), wf,
-		WithDelegateRegistry(reg),
+		WithBackendRegistry(reg),
 		WithEventHooks(hooks),
 		WithRetryPolicy(RetryPolicy{MaxAttempts: 3, BackoffBase: 10 * time.Millisecond}),
 	)
@@ -91,12 +91,12 @@ func TestDelegation_EmitsStartedAndFinished(t *testing.T) {
 	exec := newDelegateTestExecutor(backend, hooks)
 
 	node := &ir.Node{
-		ID:       "test_node",
-		Kind:     ir.NodeAgent,
-		Delegate: "test_backend",
+		ID:      "test_node",
+		Kind:    ir.NodeAgent,
+		Backend: "test_backend",
 	}
 
-	output, err := exec.executeDelegation(context.Background(), node, map[string]interface{}{})
+	output, err := exec.executeBackend(context.Background(), node, map[string]interface{}{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -121,8 +121,8 @@ func TestDelegation_EmitsStartedAndFinished(t *testing.T) {
 	}
 
 	// Verify metadata is attached to output.
-	if output["_delegate"] != "test_backend" {
-		t.Errorf("expected _delegate='test_backend', got %v", output["_delegate"])
+	if output["_backend"] != "test_backend" {
+		t.Errorf("expected _backend='test_backend', got %v", output["_backend"])
 	}
 	if output["_tokens"] != 100 {
 		t.Errorf("expected _tokens=100, got %v", output["_tokens"])
@@ -149,12 +149,12 @@ func TestDelegation_EmitsErrorOnFailure(t *testing.T) {
 	exec := newDelegateTestExecutor(backend, hooks)
 
 	node := &ir.Node{
-		ID:       "fail_node",
-		Kind:     ir.NodeAgent,
-		Delegate: "test_backend",
+		ID:      "fail_node",
+		Kind:    ir.NodeAgent,
+		Backend: "test_backend",
 	}
 
-	_, err := exec.executeDelegation(context.Background(), node, map[string]interface{}{})
+	_, err := exec.executeBackend(context.Background(), node, map[string]interface{}{})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -199,12 +199,12 @@ func TestDelegation_EmitsRetryOnTransientError(t *testing.T) {
 	exec := newDelegateTestExecutor(backend, hooks)
 
 	node := &ir.Node{
-		ID:       "retry_node",
-		Kind:     ir.NodeAgent,
-		Delegate: "test_backend",
+		ID:      "retry_node",
+		Kind:    ir.NodeAgent,
+		Backend: "test_backend",
 	}
 
-	_, err := exec.executeDelegation(context.Background(), node, map[string]interface{}{})
+	_, err := exec.executeBackend(context.Background(), node, map[string]interface{}{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -245,12 +245,12 @@ func TestDelegation_ParseFallbackMetadata(t *testing.T) {
 	exec := newDelegateTestExecutor(backend, hooks)
 
 	node := &ir.Node{
-		ID:       "fallback_node",
-		Kind:     ir.NodeAgent,
-		Delegate: "test_backend",
+		ID:      "fallback_node",
+		Kind:    ir.NodeAgent,
+		Backend: "test_backend",
 	}
 
-	output, err := exec.executeDelegation(context.Background(), node, map[string]interface{}{})
+	output, err := exec.executeBackend(context.Background(), node, map[string]interface{}{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -286,7 +286,7 @@ func TestLLMRouterDelegated_SelectsRoute(t *testing.T) {
 		ID:           "fix_router",
 		Kind:         ir.NodeRouter,
 		RouterMode:   ir.RouterLLM,
-		Delegate:     "test_backend",
+		Backend:      "test_backend",
 		SystemPrompt: "sys",
 	}
 
@@ -295,7 +295,7 @@ func TestLLMRouterDelegated_SelectsRoute(t *testing.T) {
 		"code_review":       "some review",
 	}
 
-	output, err := exec.executeLLMRouterDelegated(context.Background(), node, input)
+	output, err := exec.executeLLMRouterUnified(context.Background(), node, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -303,8 +303,8 @@ func TestLLMRouterDelegated_SelectsRoute(t *testing.T) {
 	if got := output["selected_route"]; got != "agent_a" {
 		t.Errorf("expected selected_route=agent_a, got %v", got)
 	}
-	if got := output["_delegate"]; got != "test_backend" {
-		t.Errorf("expected _delegate=test_backend, got %v", got)
+	if got := output["_backend"]; got != "test_backend" {
+		t.Errorf("expected _backend=test_backend, got %v", got)
 	}
 }
 
@@ -325,7 +325,7 @@ func TestLLMRouterDelegated_MultiRoute(t *testing.T) {
 		ID:          "multi_router",
 		Kind:        ir.NodeRouter,
 		RouterMode:  ir.RouterLLM,
-		Delegate:    "test_backend",
+		Backend:     "test_backend",
 		RouterMulti: true,
 	}
 
@@ -333,7 +333,7 @@ func TestLLMRouterDelegated_MultiRoute(t *testing.T) {
 		"_route_candidates": []string{"agent_a", "agent_b", "agent_c"},
 	}
 
-	output, err := exec.executeLLMRouterDelegated(context.Background(), node, input)
+	output, err := exec.executeLLMRouterUnified(context.Background(), node, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -367,14 +367,14 @@ func TestLLMRouterDelegated_ParseFallbackJSON(t *testing.T) {
 		ID:         "router",
 		Kind:       ir.NodeRouter,
 		RouterMode: ir.RouterLLM,
-		Delegate:   "test_backend",
+		Backend:    "test_backend",
 	}
 
 	input := map[string]interface{}{
 		"_route_candidates": []string{"agent_a", "agent_b"},
 	}
 
-	output, err := exec.executeLLMRouterDelegated(context.Background(), node, input)
+	output, err := exec.executeLLMRouterUnified(context.Background(), node, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -400,14 +400,14 @@ func TestLLMRouterDelegated_ParseFallbackPlainTextFails(t *testing.T) {
 		ID:         "router",
 		Kind:       ir.NodeRouter,
 		RouterMode: ir.RouterLLM,
-		Delegate:   "test_backend",
+		Backend:    "test_backend",
 	}
 
 	input := map[string]interface{}{
 		"_route_candidates": []string{"agent_a", "agent_b"},
 	}
 
-	_, err := exec.executeLLMRouterDelegated(context.Background(), node, input)
+	_, err := exec.executeLLMRouterUnified(context.Background(), node, input)
 	if err == nil {
 		t.Fatal("expected error for plain text fallback")
 	}

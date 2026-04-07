@@ -148,6 +148,37 @@ func (l *Logger) log(level Level, emoji string, format string, args ...any) {
 	_, _ = io.WriteString(l.w, line)
 }
 
+// blockIndent is the prefix used for continuation lines in LogBlock output.
+// It aligns with content after "HH:MM:SS emoji " (9 chars + separator).
+const blockIndent = "         │ "
+
+// LogBlock logs a header line followed by a multi-line indented body block.
+// The entire output is written in a single mutex-protected write to prevent
+// interleaving from concurrent goroutines. If body is empty, only the header
+// is printed.
+func (l *Logger) LogBlock(level Level, emoji string, header string, body string) {
+	if l == nil || level > l.level {
+		return
+	}
+	ts := time.Now().Format("15:04:05")
+
+	var buf strings.Builder
+	buf.WriteString(fmt.Sprintf("%s %s %s\n", ts, emoji, header))
+
+	if body != "" {
+		lines := strings.Split(body, "\n")
+		for _, line := range lines {
+			buf.WriteString(blockIndent)
+			buf.WriteString(line)
+			buf.WriteByte('\n')
+		}
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	_, _ = io.WriteString(l.w, buf.String())
+}
+
 // Truncate returns s truncated to max bytes with a suffix if it exceeds max.
 // Useful for limiting field sizes in log output and events.
 func Truncate(s string, max int) string {
@@ -155,4 +186,16 @@ func Truncate(s string, max int) string {
 		return s
 	}
 	return s[:max] + "...[truncated]"
+}
+
+// BlockPreview returns s truncated to max bytes, preserving newlines.
+// If truncated, a "...[truncated]" marker is appended on a new line.
+func BlockPreview(s string, max int) string {
+	if len(s) == 0 {
+		return ""
+	}
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "\n...[truncated]"
 }

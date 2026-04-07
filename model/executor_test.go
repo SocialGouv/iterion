@@ -422,10 +422,10 @@ func TestExecutorEventHooks(t *testing.T) {
 	}
 
 	exec := NewGoaiExecutor(reg, wf, WithEventHooks(EventHooks{
-		OnLLMRequest: func(nodeID string, info goai.RequestInfo) {
+		OnLLMRequest: func(nodeID string, info LLMRequestInfo) {
 			requestNodeID = nodeID
 		},
-		OnLLMResponse: func(nodeID string, info goai.ResponseInfo) {
+		OnLLMResponse: func(nodeID string, info LLMResponseInfo) {
 			responseNodeID = nodeID
 		},
 	}))

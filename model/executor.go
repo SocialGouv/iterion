@@ -14,7 +14,6 @@ import (
 	"time"
 
 	goai "github.com/zendev-sh/goai"
-	"github.com/zendev-sh/goai/provider"
 
 	"github.com/SocialGouv/iterion/delegate"
 	"github.com/SocialGouv/iterion/ir"
@@ -79,7 +78,7 @@ type RetryInfo struct {
 	Delay      time.Duration // backoff delay before this retry
 }
 
-// DelegateInfo describes a delegation attempt, passed to delegation hooks.
+// DelegateInfo describes a backend execution attempt, passed to backend hooks.
 type DelegateInfo struct {
 	BackendName        string        // e.g. "claude_code", "codex"
 	Duration           time.Duration // subprocess wall-clock time
@@ -100,12 +99,12 @@ type DelegateInfo struct {
 
 // EventHooks allows the executor to emit observability events back to the caller.
 type EventHooks struct {
-	OnLLMRequest    func(nodeID string, info goai.RequestInfo)
+	OnLLMRequest    func(nodeID string, info LLMRequestInfo)
 	OnLLMPrompt     func(nodeID string, systemPrompt string, userMessage string)
-	OnLLMResponse   func(nodeID string, info goai.ResponseInfo)
+	OnLLMResponse   func(nodeID string, info LLMResponseInfo)
 	OnLLMRetry      func(nodeID string, info RetryInfo)
-	OnLLMStepFinish func(nodeID string, step goai.StepResult)
-	OnToolCall      func(nodeID string, info goai.ToolCallInfo)
+	OnLLMStepFinish func(nodeID string, step LLMStepInfo)
+	OnToolCall      func(nodeID string, info LLMToolCallInfo)
 	// OnToolNodeResult is called for direct tool nodes (not LLM tool loops)
 	// with full input/output content for detailed logging.
 	OnToolNodeResult func(nodeID string, toolName string, input []byte, output string, elapsed time.Duration, err error)
@@ -140,20 +139,21 @@ func (e *ErrNeedsInteraction) Error() string {
 // Executor
 // ---------------------------------------------------------------------------
 
-// GoaiExecutor implements runtime.NodeExecutor by delegating LLM calls
-// to goai's GenerateText and GenerateObject APIs.
+// GoaiExecutor implements runtime.NodeExecutor by routing LLM calls
+// through pluggable Backend implementations (goai, claude_code, codex, etc.).
 type GoaiExecutor struct {
-	registry         *Registry
-	delegateRegistry *delegate.Registry // delegation backends (claude_code, codex)
-	toolRegistry     *tool.Registry     // unified tool registry (preferred)
-	mcpManager       *mcp.Manager       // generic MCP discovery/call bridge
-	toolPolicy       *tool.Policy       // allowlist policy for tool execution (nil = open)
-	prompts          map[string]*ir.Prompt
-	schemas          map[string]*ir.Schema
-	vars             map[string]interface{}
-	hooks            EventHooks
-	retry            RetryPolicy
-	workDir          string // working directory for delegate subprocesses
+	registry        *Registry
+	backendRegistry *delegate.Registry // backend registry (goai, claude_code, codex)
+	toolRegistry    *tool.Registry     // unified tool registry (preferred)
+	mcpManager      *mcp.Manager       // generic MCP discovery/call bridge
+	toolPolicy      *tool.Policy       // allowlist policy for tool execution (nil = open)
+	prompts         map[string]*ir.Prompt
+	schemas         map[string]*ir.Schema
+	vars            map[string]interface{}
+	hooks           EventHooks
+	retry           RetryPolicy
+	workDir         string // working directory for backend subprocesses
+	defaultBackend  string // workflow-level default backend (empty = use "goai")
 }
 
 // GoaiExecutorOption configures a GoaiExecutor.
@@ -186,29 +186,44 @@ func WithRetryPolicy(rp RetryPolicy) GoaiExecutorOption {
 	return func(e *GoaiExecutor) { e.retry = rp }
 }
 
-// WithDelegateRegistry sets the delegation backend registry on the executor.
-// When set, nodes with a `delegate` property are executed via the named
-// backend instead of calling the LLM API.
-func WithDelegateRegistry(dr *delegate.Registry) GoaiExecutorOption {
-	return func(e *GoaiExecutor) { e.delegateRegistry = dr }
+// WithBackendRegistry sets the backend registry on the executor.
+// When set, nodes with a `backend` property are executed via the named
+// backend instead of the default goai backend.
+func WithBackendRegistry(dr *delegate.Registry) GoaiExecutorOption {
+	return func(e *GoaiExecutor) { e.backendRegistry = dr }
 }
 
-// WithWorkDir sets the working directory for delegate subprocesses.
-// When set, delegated nodes will run their CLI in this directory.
+// WithWorkDir sets the working directory for backend subprocesses.
+// When set, backend nodes will run their CLI in this directory.
 func WithWorkDir(dir string) GoaiExecutorOption {
 	return func(e *GoaiExecutor) { e.workDir = dir }
+}
+
+// WithDefaultBackend sets the workflow-level default backend.
+func WithDefaultBackend(name string) GoaiExecutorOption {
+	return func(e *GoaiExecutor) { e.defaultBackend = name }
 }
 
 // NewGoaiExecutor creates a GoaiExecutor for a given workflow.
 func NewGoaiExecutor(registry *Registry, wf *ir.Workflow, opts ...GoaiExecutorOption) *GoaiExecutor {
 	e := &GoaiExecutor{
-		registry: registry,
-		prompts:  wf.Prompts,
-		schemas:  wf.Schemas,
+		registry:       registry,
+		prompts:        wf.Prompts,
+		schemas:        wf.Schemas,
+		defaultBackend: wf.DefaultBackend,
 	}
 	for _, opt := range opts {
 		opt(e)
 	}
+
+	// Ensure a "goai" backend is always available in the registry.
+	if e.backendRegistry == nil {
+		e.backendRegistry = delegate.NewRegistry()
+	}
+	if _, err := e.backendRegistry.Resolve("goai"); err != nil {
+		e.backendRegistry.Register("goai", NewGoaiBackend(registry, wf.Schemas, e.hooks, e.retry))
+	}
+
 	return e
 }
 
@@ -227,22 +242,31 @@ func (e *GoaiExecutor) SetVars(vars map[string]interface{}) {
 	e.vars = vars
 }
 
+// resolveBackendName returns the effective backend name for a node.
+// Resolution chain: node.Backend → workflow default → env ITERION_DEFAULT_BACKEND → "goai".
+func (e *GoaiExecutor) resolveBackendName(node *ir.Node) string {
+	if node.Backend != "" {
+		return node.Backend
+	}
+	if e.defaultBackend != "" {
+		return e.defaultBackend
+	}
+	if env := os.Getenv("ITERION_DEFAULT_BACKEND"); env != "" {
+		return env
+	}
+	return "goai"
+}
+
 // Execute implements runtime.NodeExecutor.
 func (e *GoaiExecutor) Execute(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
 	switch node.Kind {
 	case ir.NodeAgent, ir.NodeJudge:
-		if node.Delegate != "" {
-			return e.executeDelegation(ctx, node, input)
-		}
-		return e.executeLLM(ctx, node, input)
+		return e.executeBackend(ctx, node, input)
 	case ir.NodeHuman:
 		return e.executeHumanLLM(ctx, node, input)
 	case ir.NodeRouter:
 		if node.RouterMode == ir.RouterLLM {
-			if node.Delegate != "" {
-				return e.executeLLMRouterDelegated(ctx, node, input)
-			}
-			return e.executeLLMRouter(ctx, node, input)
+			return e.executeLLMRouterUnified(ctx, node, input)
 		}
 		// Deterministic routers are pass-throughs handled by the engine.
 		return input, nil
@@ -253,126 +277,168 @@ func (e *GoaiExecutor) Execute(ctx context.Context, node *ir.Node, input map[str
 	}
 }
 
-// executeLLM handles agent and judge nodes by calling goai.
-func (e *GoaiExecutor) executeLLM(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
-	// Resolve model (expand env var references like "${CLAUDE_MODEL}").
-	modelSpec := os.ExpandEnv(node.Model)
-	m, err := e.registry.Resolve(modelSpec)
+// executeBackend is the unified execution path for agent and judge nodes.
+// It resolves the backend, builds a Task, and dispatches to the backend.
+func (e *GoaiExecutor) executeBackend(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+	backendName := e.resolveBackendName(node)
+
+	if e.backendRegistry == nil {
+		return nil, fmt.Errorf("model: node %q uses backend %q but no backend registry configured", node.ID, backendName)
+	}
+
+	backend, err := e.backendRegistry.Resolve(backendName)
 	if err != nil {
 		return nil, fmt.Errorf("model: node %q: %w", node.ID, err)
 	}
 
-	// Build goai options.
-	var opts []goai.Option
-
-	// Disable goai's internal retry — we handle retries ourselves for
-	// per-attempt event emission.
-	opts = append(opts, goai.WithMaxRetries(0))
-
-	// Reasoning effort (dynamic override from input, then static node property).
-	if popts := providerOptsForNode(resolveReasoningEffort(node, input)); popts != nil {
-		opts = append(opts, goai.WithProviderOptions(popts))
-	}
-
-	// System prompt.
+	// Build system prompt.
 	var systemText string
 	if node.SystemPrompt != "" {
 		if p, ok := e.prompts[node.SystemPrompt]; ok {
 			systemText = e.resolveTemplate(p.Body, input)
-			opts = append(opts, goai.WithSystem(systemText))
 		}
 	}
 
-	// User message from user prompt or input.
+	// Build user message.
 	userText := e.buildUserMessage(node, input)
-
-	// When both tools AND output schema are present, we use GenerateText
-	// (which has the tool loop) instead of GenerateObject (which doesn't).
-	// Inject the schema format instruction into the user text so the model
-	// knows what JSON to produce after tool use. We do this here because
-	// goai's WithSystem/WithMessages use last-wins semantics (not append).
-	hasTools := len(node.Tools) > 0
-	if node.OutputSchema != "" && hasTools {
-		if schema, ok := e.schemas[node.OutputSchema]; ok {
-			if jsonSchema, schemaErr := SchemaToJSON(schema); schemaErr == nil {
-				schemaJSON, _ := json.MarshalIndent(jsonSchema, "", "  ")
-				userText += fmt.Sprintf(
-					"\n\nOUTPUT FORMAT: After completing all tool operations, your final message MUST be a raw JSON object matching this schema:\n%s\nNo markdown fences, no extra text — ONLY the JSON object.",
-					string(schemaJSON),
-				)
-			}
-		}
-	}
-
-	if userText != "" {
-		opts = append(opts, goai.WithMessages(goai.UserMessage(userText)))
-	}
 
 	// Emit prompt content for observability.
 	if e.hooks.OnLLMPrompt != nil {
 		e.hooks.OnLLMPrompt(node.ID, systemText, userText)
 	}
 
-	// Tools.
+	// Build output schema JSON if structured output is expected.
+	var outputSchema json.RawMessage
+	if node.OutputSchema != "" {
+		if schema, ok := e.schemas[node.OutputSchema]; ok {
+			outputSchema, _ = SchemaToJSON(schema)
+		}
+	}
+
+	task := delegate.Task{
+		NodeID:             node.ID,
+		SystemPrompt:       systemText,
+		UserPrompt:         userText,
+		AllowedTools:       node.Tools,
+		OutputSchema:       outputSchema,
+		Model:              os.ExpandEnv(node.Model),
+		HasTools:           len(node.Tools) > 0,
+		ToolMaxSteps:       node.ToolMaxSteps,
+		WorkDir:            e.workDir,
+		ReasoningEffort:    resolveReasoningEffort(node, input),
+		InteractionEnabled: node.Interaction != ir.InteractionNone,
+	}
+
+	// Resolve full tool definitions for backends that manage tool loops internally.
 	if len(node.Tools) > 0 {
-		tools, err := e.resolveToolsForNode(ctx, node, node.Tools)
-		if err != nil {
-			return nil, fmt.Errorf("model: node %q: %w", node.ID, err)
+		tools, toolErr := e.resolveToolsForNode(ctx, node, node.Tools)
+		if toolErr != nil {
+			return nil, fmt.Errorf("model: node %q: %w", node.ID, toolErr)
 		}
-		if len(tools) > 0 {
-			opts = append(opts, goai.WithTools(tools...))
-			maxSteps := node.ToolMaxSteps
-			if maxSteps <= 0 {
-				maxSteps = 5
+		task.ToolDefs = goaiToolsToDefs(tools)
+	}
+
+	// Session continuity.
+	if node.Session == ir.SessionInherit || node.Session == ir.SessionFork {
+		if sid, ok := input["_session_id"].(string); ok && sid != "" {
+			task.SessionID = sid
+			if node.Session == ir.SessionFork {
+				task.ForkSession = true
 			}
-			opts = append(opts, goai.WithMaxSteps(maxSteps))
 		}
 	}
 
-	// Observability hooks — OnRequest, OnResponse, OnStepFinish, OnToolCall
-	// are wired as goai callbacks. Retry hooks are handled by our retry loop.
-	nodeID := node.ID
-	if e.hooks.OnLLMRequest != nil {
-		fn := e.hooks.OnLLMRequest
-		opts = append(opts, goai.WithOnRequest(func(info goai.RequestInfo) {
-			fn(nodeID, info)
-		}))
-	}
-	if e.hooks.OnLLMResponse != nil {
-		fn := e.hooks.OnLLMResponse
-		opts = append(opts, goai.WithOnResponse(func(info goai.ResponseInfo) {
-			fn(nodeID, info)
-		}))
-	}
-	if e.hooks.OnLLMStepFinish != nil {
-		fn := e.hooks.OnLLMStepFinish
-		opts = append(opts, goai.WithOnStepFinish(func(step goai.StepResult) {
-			fn(nodeID, step)
-		}))
-	}
-	if e.hooks.OnToolCall != nil {
-		fn := e.hooks.OnToolCall
-		opts = append(opts, goai.WithOnToolCall(func(info goai.ToolCallInfo) {
-			fn(nodeID, info)
-		}))
+	// Emit backend started event.
+	if e.hooks.OnDelegateStarted != nil {
+		e.hooks.OnDelegateStarted(node.ID, backendName)
 	}
 
-	// Dispatch to structured or text generation with retry.
-	// When both tools AND output schema are present, use text generation
-	// with the tool loop (GenerateText supports MaxSteps), then parse the
-	// structured output from the final text. GenerateObject does NOT
-	// support multi-step tool use.
-	if node.OutputSchema != "" && !hasTools {
-		return e.generateStructuredWithRetry(ctx, m, node, opts)
+	result, err := e.retryDelegateLoop(ctx, node.ID, backendName, func() (delegate.Result, error) {
+		return backend.Execute(ctx, task)
+	})
+	if err != nil {
+		if e.hooks.OnDelegateError != nil {
+			bn := result.BackendName
+			if bn == "" {
+				bn = backendName
+			}
+			e.hooks.OnDelegateError(node.ID, DelegateInfo{
+				BackendName:        bn,
+				Duration:           result.Duration,
+				Tokens:             result.Tokens,
+				ExitCode:           result.ExitCode,
+				Stderr:             result.Stderr,
+				RawOutputLen:       result.RawOutputLen,
+				ParseFallback:      result.ParseFallback,
+				FormattingPassUsed: result.FormattingPassUsed,
+				Error:              err,
+			})
+		}
+		return nil, fmt.Errorf("model: node %q: backend %q failed: %w", node.ID, backendName, err)
 	}
-	if node.OutputSchema != "" && hasTools {
-		return e.generateTextWithToolsAndSchemaRetry(ctx, m, node, opts)
+
+	// Emit backend finished event.
+	if e.hooks.OnDelegateFinished != nil {
+		e.hooks.OnDelegateFinished(node.ID, DelegateInfo{
+			BackendName:        result.BackendName,
+			Duration:           result.Duration,
+			Tokens:             result.Tokens,
+			ExitCode:           result.ExitCode,
+			Stderr:             result.Stderr,
+			RawOutputLen:       result.RawOutputLen,
+			ParseFallback:      result.ParseFallback,
+			FormattingPassUsed: result.FormattingPassUsed,
+		})
 	}
-	return e.generateTextWithRetry(ctx, m, node, opts)
+
+	// Flag if structured output parsing fell back to text wrapper.
+	if result.ParseFallback {
+		result.Output["_parse_fallback"] = true
+	}
+
+	// Attach metadata.
+	if result.Output["_tokens"] == nil {
+		result.Output["_tokens"] = result.Tokens
+	}
+	result.Output["_backend"] = backendName
+
+	// Expose session ID for downstream nodes.
+	if result.SessionID != "" {
+		result.Output["_session_id"] = result.SessionID
+	}
+
+	// Validate output against schema if present.
+	if node.OutputSchema != "" {
+		if schema, ok := e.schemas[node.OutputSchema]; ok {
+			if err := ValidateOutput(result.Output, schema); err != nil {
+				return nil, fmt.Errorf("model: node %q: structured output invalid: %w", node.ID, err)
+			}
+		}
+	}
+
+	// Check if the backend signaled that it needs user interaction.
+	if node.Interaction != ir.InteractionNone {
+		if needsInteraction, ok := result.Output["_needs_interaction"].(bool); ok && needsInteraction {
+			questions, _ := result.Output["_interaction_questions"].(map[string]interface{})
+			if questions == nil {
+				questions = map[string]interface{}{"input": "The backend needs your input to continue."}
+			}
+			delete(result.Output, "_needs_interaction")
+			delete(result.Output, "_interaction_questions")
+			return nil, &ErrNeedsInteraction{
+				NodeID:    node.ID,
+				Questions: questions,
+				SessionID: result.SessionID,
+				Backend:   backendName,
+			}
+		}
+	}
+
+	return result.Output, nil
 }
 
 // executeHumanLLM handles human nodes in llm or llm_or_human interaction mode.
-// It reuses the same LLM call patterns as executeLLM but with mode-specific
+// It calls goai directly with mode-specific
 // schema handling for llm_or_human (wrapper schema with needs_human_input).
 func (e *GoaiExecutor) executeHumanLLM(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
 	if node.Interaction == ir.InteractionHuman || node.Interaction == ir.InteractionNone {
@@ -419,13 +485,13 @@ func (e *GoaiExecutor) executeHumanLLM(ctx context.Context, node *ir.Node, input
 	if e.hooks.OnLLMRequest != nil {
 		fn := e.hooks.OnLLMRequest
 		opts = append(opts, goai.WithOnRequest(func(info goai.RequestInfo) {
-			fn(nodeID, info)
+			fn(nodeID, fromGoaiRequestInfo(info))
 		}))
 	}
 	if e.hooks.OnLLMResponse != nil {
 		fn := e.hooks.OnLLMResponse
 		opts = append(opts, goai.WithOnResponse(func(info goai.ResponseInfo) {
-			fn(nodeID, info)
+			fn(nodeID, fromGoaiResponseInfo(info))
 		}))
 	}
 
@@ -500,44 +566,11 @@ func statusCodeOf(err error) int {
 	return 0
 }
 
-// retryLoop runs fn up to maxAttempts times, emitting llm_retry events
-// and applying exponential backoff for retryable errors.
-func (e *GoaiExecutor) retryLoop(ctx context.Context, nodeID string, fn func() (map[string]interface{}, error)) (map[string]interface{}, error) {
-	maxAttempts := e.retry.maxAttempts()
-
-	result, err := fn()
-	for attempt := 1; err != nil && isRetryable(err) && attempt < maxAttempts; attempt++ {
-		delay := e.retry.backoff(attempt - 1)
-
-		// Emit retry event.
-		if e.hooks.OnLLMRetry != nil {
-			e.hooks.OnLLMRetry(nodeID, RetryInfo{
-				Attempt:    attempt,
-				Error:      err,
-				StatusCode: statusCodeOf(err),
-				Delay:      delay,
-			})
-		}
-
-		// Backoff.
-		timer := time.NewTimer(delay)
-		select {
-		case <-timer.C:
-		case <-ctx.Done():
-			timer.Stop()
-			return nil, ctx.Err()
-		}
-
-		result, err = fn()
-	}
-	return result, err
-}
-
 // ---------------------------------------------------------------------------
-// Delegate retry
+// Backend retry
 // ---------------------------------------------------------------------------
 
-// isDelegateRetryable determines whether a delegation error is transient
+// isDelegateRetryable determines whether a backend execution error is transient
 // and worth retrying. Only signal-based kills (exit codes 128+, indicating
 // OOM, SIGTERM, etc.) and I/O errors are retried. Permanent failures like
 // exit 1 (application error), exit 2 (misuse), or exit 127 (command not
@@ -596,7 +629,7 @@ func extractExitCode(msg string) int {
 	return n
 }
 
-// retryDelegateLoop retries a delegation call with exponential backoff.
+// retryDelegateLoop retries a backend execution call with exponential backoff.
 func (e *GoaiExecutor) retryDelegateLoop(ctx context.Context, nodeID string, backendName string, fn func() (delegate.Result, error)) (delegate.Result, error) {
 	maxAttempts := e.retry.maxAttempts()
 
@@ -632,108 +665,6 @@ func (e *GoaiExecutor) retryDelegateLoop(ctx context.Context, nodeID string, bac
 // ---------------------------------------------------------------------------
 // Generation with retry
 // ---------------------------------------------------------------------------
-
-// generateTextWithRetry wraps generateText in the retry loop.
-func (e *GoaiExecutor) generateTextWithRetry(ctx context.Context, m provider.LanguageModel, node *ir.Node, opts []goai.Option) (map[string]interface{}, error) {
-	return e.retryLoop(ctx, node.ID, func() (map[string]interface{}, error) {
-		return e.generateText(ctx, m, node, opts)
-	})
-}
-
-// generateStructuredWithRetry wraps generateStructured in the retry loop.
-func (e *GoaiExecutor) generateStructuredWithRetry(ctx context.Context, m provider.LanguageModel, node *ir.Node, opts []goai.Option) (map[string]interface{}, error) {
-	return e.retryLoop(ctx, node.ID, func() (map[string]interface{}, error) {
-		return e.generateStructured(ctx, m, node, opts)
-	})
-}
-
-// ---------------------------------------------------------------------------
-// Core generation
-// ---------------------------------------------------------------------------
-
-// generateStructured uses goai.GenerateObject with an explicit JSON schema.
-func (e *GoaiExecutor) generateStructured(ctx context.Context, m provider.LanguageModel, node *ir.Node, opts []goai.Option) (map[string]interface{}, error) {
-	schema, ok := e.schemas[node.OutputSchema]
-	if !ok {
-		return nil, fmt.Errorf("model: node %q references unknown schema %q", node.ID, node.OutputSchema)
-	}
-
-	jsonSchema, err := SchemaToJSON(schema)
-	if err != nil {
-		return nil, fmt.Errorf("model: node %q: schema conversion: %w", node.ID, err)
-	}
-
-	opts = append(opts, goai.WithExplicitSchema(jsonSchema))
-
-	result, err := goai.GenerateObject[map[string]interface{}](ctx, m, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("model: node %q: structured generation: %w", node.ID, err)
-	}
-
-	output := result.Object
-	if output == nil {
-		output = make(map[string]interface{})
-	}
-
-	// Strict validation: every required field must be present.
-	// No hidden JSON repair — fail explicitly on schema mismatch.
-	if err := ValidateOutput(output, schema); err != nil {
-		return nil, fmt.Errorf("model: node %q: structured output invalid: %w", node.ID, err)
-	}
-
-	// Attach usage metadata.
-	output["_tokens"] = result.Usage.InputTokens + result.Usage.OutputTokens
-	output["_model"] = m.ModelID()
-
-	return output, nil
-}
-
-// generateTextWithToolsAndSchema uses GenerateText (which supports the
-// multi-step tool loop) but expects the final response to contain a JSON
-// object matching the output schema. The schema is injected into the prompt
-// so the model knows the expected format.
-func (e *GoaiExecutor) generateTextWithToolsAndSchema(ctx context.Context, m provider.LanguageModel, node *ir.Node, opts []goai.Option) (map[string]interface{}, error) {
-	schema, ok := e.schemas[node.OutputSchema]
-	if !ok {
-		return nil, fmt.Errorf("model: node %q references unknown schema %q", node.ID, node.OutputSchema)
-	}
-
-	// Schema instruction is already injected into userText by executeLLM.
-	// Just call GenerateText with the tool loop.
-	result, err := goai.GenerateText(ctx, m, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("model: node %q: text+tools generation: %w", node.ID, err)
-	}
-
-	// Parse the final text as JSON matching the schema.
-	text := strings.TrimSpace(result.Text)
-	text = extractJSON(text)
-
-	if text == "" {
-		return nil, fmt.Errorf("model: node %q: text+tools generation produced empty response after tool loop", node.ID)
-	}
-
-	var output map[string]interface{}
-	if err := json.Unmarshal([]byte(text), &output); err != nil {
-		// Fallback: wrap the raw text as a summary.
-		log.Printf("model: node %q: could not parse structured output from text, using fallback (err: %v)", node.ID, err)
-		output = map[string]interface{}{
-			"text":            text,
-			"_parse_fallback": true,
-		}
-	} else {
-		// Validate against schema.
-		if err := ValidateOutput(output, schema); err != nil {
-			log.Printf("model: node %q: structured output validation warning: %v", node.ID, err)
-		}
-	}
-
-	// Attach usage metadata.
-	output["_tokens"] = result.TotalUsage.InputTokens + result.TotalUsage.OutputTokens
-	output["_model"] = m.ModelID()
-
-	return output, nil
-}
 
 // extractJSON extracts a JSON object from text that may contain markdown
 // fences or surrounding commentary. Returns the raw JSON string.
@@ -778,169 +709,6 @@ func extractJSON(text string) string {
 	return text
 }
 
-// generateTextWithToolsAndSchemaRetry wraps generateTextWithToolsAndSchema in the retry loop.
-func (e *GoaiExecutor) generateTextWithToolsAndSchemaRetry(ctx context.Context, m provider.LanguageModel, node *ir.Node, opts []goai.Option) (map[string]interface{}, error) {
-	return e.retryLoop(ctx, node.ID, func() (map[string]interface{}, error) {
-		return e.generateTextWithToolsAndSchema(ctx, m, node, opts)
-	})
-}
-
-// generateText uses goai.GenerateText for free-form text output.
-func (e *GoaiExecutor) generateText(ctx context.Context, m provider.LanguageModel, node *ir.Node, opts []goai.Option) (map[string]interface{}, error) {
-	result, err := goai.GenerateText(ctx, m, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("model: node %q: text generation: %w", node.ID, err)
-	}
-
-	output := map[string]interface{}{
-		"text":    result.Text,
-		"_tokens": result.TotalUsage.InputTokens + result.TotalUsage.OutputTokens,
-		"_model":  m.ModelID(),
-	}
-
-	return output, nil
-}
-
-// ---------------------------------------------------------------------------
-// Delegation execution
-// ---------------------------------------------------------------------------
-
-// executeDelegation handles agent/judge nodes that delegate to an external
-// CLI agent (e.g. claude-code, codex) instead of calling the LLM API.
-func (e *GoaiExecutor) executeDelegation(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
-	if e.delegateRegistry == nil {
-		return nil, fmt.Errorf("model: node %q uses delegate %q but no delegate registry configured", node.ID, node.Delegate)
-	}
-
-	backend, err := e.delegateRegistry.Resolve(node.Delegate)
-	if err != nil {
-		return nil, fmt.Errorf("model: node %q: %w", node.ID, err)
-	}
-
-	// Build system prompt.
-	var systemText string
-	if node.SystemPrompt != "" {
-		if p, ok := e.prompts[node.SystemPrompt]; ok {
-			systemText = e.resolveTemplate(p.Body, input)
-		}
-	}
-
-	// Build user message.
-	userText := e.buildUserMessage(node, input)
-
-	// Emit prompt content for observability.
-	if e.hooks.OnLLMPrompt != nil {
-		e.hooks.OnLLMPrompt(node.ID, systemText, userText)
-	}
-
-	// Build output schema JSON if structured output is expected.
-	var outputSchema json.RawMessage
-	if node.OutputSchema != "" {
-		if schema, ok := e.schemas[node.OutputSchema]; ok {
-			outputSchema, _ = SchemaToJSON(schema)
-		}
-	}
-
-	task := delegate.Task{
-		SystemPrompt:       systemText,
-		UserPrompt:         userText,
-		AllowedTools:       node.Tools,
-		OutputSchema:       outputSchema,
-		WorkDir:            e.workDir,
-		ReasoningEffort:    resolveReasoningEffort(node, input),
-		InteractionEnabled: node.Interaction != ir.InteractionNone,
-	}
-
-	// Session continuity: when the node requests session inheritance or fork,
-	// look for a session ID passed via the _session_id input field.
-	if node.Session == ir.SessionInherit || node.Session == ir.SessionFork {
-		if sid, ok := input["_session_id"].(string); ok && sid != "" {
-			task.SessionID = sid
-			if node.Session == ir.SessionFork {
-				task.ForkSession = true
-			}
-		}
-	}
-
-	// Emit delegation started event.
-	if e.hooks.OnDelegateStarted != nil {
-		e.hooks.OnDelegateStarted(node.ID, node.Delegate)
-	}
-
-	result, err := e.retryDelegateLoop(ctx, node.ID, node.Delegate, func() (delegate.Result, error) {
-		return backend.Execute(ctx, task)
-	})
-	if err != nil {
-		if e.hooks.OnDelegateError != nil {
-			backendName := result.BackendName
-			if backendName == "" {
-				backendName = node.Delegate
-			}
-			e.hooks.OnDelegateError(node.ID, DelegateInfo{
-				BackendName:        backendName,
-				Duration:           result.Duration,
-				Tokens:             result.Tokens,
-				ExitCode:           result.ExitCode,
-				Stderr:             result.Stderr,
-				RawOutputLen:       result.RawOutputLen,
-				ParseFallback:      result.ParseFallback,
-				FormattingPassUsed: result.FormattingPassUsed,
-				Error:              err,
-			})
-		}
-		return nil, fmt.Errorf("model: node %q: delegation to %q failed: %w", node.ID, node.Delegate, err)
-	}
-
-	// Emit delegation finished event.
-	if e.hooks.OnDelegateFinished != nil {
-		e.hooks.OnDelegateFinished(node.ID, DelegateInfo{
-			BackendName:        result.BackendName,
-			Duration:           result.Duration,
-			Tokens:             result.Tokens,
-			ExitCode:           result.ExitCode,
-			Stderr:             result.Stderr,
-			RawOutputLen:       result.RawOutputLen,
-			ParseFallback:      result.ParseFallback,
-			FormattingPassUsed: result.FormattingPassUsed,
-		})
-	}
-
-	// Flag if structured output parsing fell back to text wrapper.
-	if result.ParseFallback {
-		result.Output["_parse_fallback"] = true
-	}
-
-	// Attach metadata.
-	result.Output["_tokens"] = result.Tokens
-	result.Output["_delegate"] = node.Delegate
-
-	// Expose session ID for downstream nodes that may inherit this session.
-	if result.SessionID != "" {
-		result.Output["_session_id"] = result.SessionID
-	}
-
-	// Check if the delegate signaled that it needs user interaction.
-	if node.Interaction != ir.InteractionNone {
-		if needsInteraction, ok := result.Output["_needs_interaction"].(bool); ok && needsInteraction {
-			questions, _ := result.Output["_interaction_questions"].(map[string]interface{})
-			if questions == nil {
-				questions = map[string]interface{}{"input": "The delegate needs your input to continue."}
-			}
-			// Clean interaction fields from output before returning.
-			delete(result.Output, "_needs_interaction")
-			delete(result.Output, "_interaction_questions")
-			return nil, &ErrNeedsInteraction{
-				NodeID:    node.ID,
-				Questions: questions,
-				SessionID: result.SessionID,
-				Backend:   node.Delegate,
-			}
-		}
-	}
-
-	return result.Output, nil
-}
-
 // ---------------------------------------------------------------------------
 // Tool node execution
 // ---------------------------------------------------------------------------
@@ -961,7 +729,7 @@ func (e *GoaiExecutor) executeToolNode(ctx context.Context, node *ir.Node, input
 	if e.toolPolicy != nil {
 		if err := e.toolPolicy.Check(toolName); err != nil {
 			if e.hooks.OnToolCall != nil {
-				e.hooks.OnToolCall(node.ID, goai.ToolCallInfo{
+				e.hooks.OnToolCall(node.ID, LLMToolCallInfo{
 					ToolName: toolName,
 					Error:    err,
 				})
@@ -987,7 +755,7 @@ func (e *GoaiExecutor) executeToolNode(ctx context.Context, node *ir.Node, input
 	outputStr, err := resolved.Execute(ctx, inputJSON)
 	duration := time.Since(start)
 	if e.hooks.OnToolCall != nil {
-		e.hooks.OnToolCall(node.ID, goai.ToolCallInfo{
+		e.hooks.OnToolCall(node.ID, LLMToolCallInfo{
 			ToolName:  toolName,
 			InputSize: len(inputJSON),
 			Duration:  duration,
@@ -1030,7 +798,7 @@ func (e *GoaiExecutor) executeToolNodeShell(ctx context.Context, node *ir.Node, 
 	duration := time.Since(start)
 
 	if e.hooks.OnToolCall != nil {
-		e.hooks.OnToolCall(node.ID, goai.ToolCallInfo{
+		e.hooks.OnToolCall(node.ID, LLMToolCallInfo{
 			ToolName: toolName,
 			Duration: duration,
 			Error:    err,
@@ -1082,131 +850,6 @@ func shellEscape(s string) string {
 // LLM router execution
 // ---------------------------------------------------------------------------
 
-// executeLLMRouter handles router nodes with mode: llm by calling the LLM to
-// decide which route(s) to take. The engine injects _route_candidates into the
-// input before calling this method.
-func (e *GoaiExecutor) executeLLMRouter(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
-	// Extract candidate routes injected by the engine.
-	// Handle both []string (direct) and []interface{} (after JSON round-trip).
-	candidatesRaw, ok := input["_route_candidates"]
-	if !ok {
-		return nil, fmt.Errorf("model: llm router %q: no _route_candidates in input", node.ID)
-	}
-	var candidates []string
-	switch v := candidatesRaw.(type) {
-	case []string:
-		candidates = v
-	case []interface{}:
-		for _, item := range v {
-			s, ok := item.(string)
-			if !ok {
-				return nil, fmt.Errorf("model: llm router %q: _route_candidates contains non-string element", node.ID)
-			}
-			candidates = append(candidates, s)
-		}
-	default:
-		return nil, fmt.Errorf("model: llm router %q: _route_candidates is %T, expected []string", node.ID, candidatesRaw)
-	}
-
-	// Build clean input (without internal keys) for the LLM prompt.
-	cleanInput := make(map[string]interface{})
-	for k, v := range input {
-		if !strings.HasPrefix(k, "_") {
-			cleanInput[k] = v
-		}
-	}
-
-	// Resolve model (expand env var references, with fallback chain).
-	expanded := os.ExpandEnv(node.Model)
-	if expanded == "" {
-		expanded = os.Getenv("ITERION_DEFAULT_SUPERVISOR_MODEL")
-	}
-	if expanded == "" {
-		expanded = defaultRouterModel
-	}
-	m, err := e.registry.Resolve(expanded)
-	if err != nil {
-		return nil, fmt.Errorf("model: llm router %q: %w", node.ID, err)
-	}
-
-	// Build goai options.
-	var opts []goai.Option
-	opts = append(opts, goai.WithMaxRetries(0))
-
-	// Reasoning effort (dynamic override from input, then static node property).
-	if popts := providerOptsForNode(resolveReasoningEffort(node, input)); popts != nil {
-		opts = append(opts, goai.WithProviderOptions(popts))
-	}
-
-	// System prompt: resolve user-provided prompt if set, then append routing instruction.
-	var systemText string
-	if node.SystemPrompt != "" {
-		if p, ok := e.prompts[node.SystemPrompt]; ok {
-			systemText = e.resolveTemplate(p.Body, cleanInput)
-		}
-	}
-	systemText += routerRoutingInstruction(candidates)
-	opts = append(opts, goai.WithSystem(systemText))
-
-	// User message.
-	userText := e.buildUserMessage(node, cleanInput)
-	if userText != "" {
-		opts = append(opts, goai.WithMessages(goai.UserMessage(userText)))
-	}
-
-	// Emit prompt content for observability.
-	if e.hooks.OnLLMPrompt != nil {
-		e.hooks.OnLLMPrompt(node.ID, systemText, userText)
-	}
-
-	// Observability hooks.
-	nodeID := node.ID
-	if e.hooks.OnLLMRequest != nil {
-		fn := e.hooks.OnLLMRequest
-		opts = append(opts, goai.WithOnRequest(func(info goai.RequestInfo) {
-			fn(nodeID, info)
-		}))
-	}
-	if e.hooks.OnLLMResponse != nil {
-		fn := e.hooks.OnLLMResponse
-		opts = append(opts, goai.WithOnResponse(func(info goai.ResponseInfo) {
-			fn(nodeID, info)
-		}))
-	}
-
-	// Auto-generate schema from candidates.
-	schema := buildRouterSchema(node, candidates)
-	jsonSchema, err := SchemaToJSON(schema)
-	if err != nil {
-		return nil, fmt.Errorf("model: llm router %q: schema: %w", node.ID, err)
-	}
-	opts = append(opts, goai.WithExplicitSchema(jsonSchema))
-
-	// Generate structured output with retry.
-	return e.retryLoop(ctx, node.ID, func() (map[string]interface{}, error) {
-		result, err := goai.GenerateObject[map[string]interface{}](ctx, m, opts...)
-		if err != nil {
-			return nil, fmt.Errorf("model: llm router %q: structured generation: %w", node.ID, err)
-		}
-
-		output := result.Object
-		if output == nil {
-			output = make(map[string]interface{})
-		}
-
-		// Strict validation.
-		if err := ValidateOutput(output, schema); err != nil {
-			return nil, fmt.Errorf("model: llm router %q: output invalid: %w", node.ID, err)
-		}
-
-		// Attach usage metadata.
-		output["_tokens"] = result.Usage.InputTokens + result.Usage.OutputTokens
-		output["_model"] = m.ModelID()
-
-		return output, nil
-	})
-}
-
 // buildRouterSchema creates an auto-generated schema for LLM routers.
 // Single mode: {selected_route: string(enum), reasoning: string}
 // Multi mode:  {selected_routes: string[](enum), reasoning: string}
@@ -1238,15 +881,15 @@ func routerRoutingInstruction(candidates []string) string {
 	)
 }
 
-// executeLLMRouterDelegated handles LLM routers that use a delegation backend
-// (e.g. claude_code, codex) instead of a direct goai call. This allows LLM
-// routing decisions without requiring a raw API key.
-func (e *GoaiExecutor) executeLLMRouterDelegated(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
-	if e.delegateRegistry == nil {
-		return nil, fmt.Errorf("model: llm router %q uses delegate %q but no delegate registry configured", node.ID, node.Delegate)
+// executeLLMRouterUnified is the unified LLM router path that works with any backend.
+func (e *GoaiExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+	backendName := e.resolveBackendName(node)
+
+	if e.backendRegistry == nil {
+		return nil, fmt.Errorf("model: llm router %q uses backend %q but no backend registry configured", node.ID, backendName)
 	}
 
-	backend, err := e.delegateRegistry.Resolve(node.Delegate)
+	backend, err := e.backendRegistry.Resolve(backendName)
 	if err != nil {
 		return nil, fmt.Errorf("model: llm router %q: %w", node.ID, err)
 	}
@@ -1254,10 +897,21 @@ func (e *GoaiExecutor) executeLLMRouterDelegated(ctx context.Context, node *ir.N
 	// Extract route candidates injected by the engine.
 	candidatesRaw, ok := input["_route_candidates"]
 	if !ok {
-		return nil, fmt.Errorf("model: llm router %q: missing _route_candidates in input", node.ID)
+		return nil, fmt.Errorf("model: llm router %q: no _route_candidates in input", node.ID)
 	}
-	candidates, ok := candidatesRaw.([]string)
-	if !ok {
+	var candidates []string
+	switch v := candidatesRaw.(type) {
+	case []string:
+		candidates = v
+	case []interface{}:
+		for _, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("model: llm router %q: _route_candidates contains non-string element", node.ID)
+			}
+			candidates = append(candidates, s)
+		}
+	default:
 		return nil, fmt.Errorf("model: llm router %q: _route_candidates is %T, expected []string", node.ID, candidatesRaw)
 	}
 
@@ -1293,32 +947,41 @@ func (e *GoaiExecutor) executeLLMRouterDelegated(ctx context.Context, node *ir.N
 		return nil, fmt.Errorf("model: llm router %q: schema: %w", node.ID, err)
 	}
 
+	// Resolve model for the router (with fallback chain).
+	expanded := os.ExpandEnv(node.Model)
+	if expanded == "" {
+		expanded = os.Getenv("ITERION_DEFAULT_SUPERVISOR_MODEL")
+	}
+	if expanded == "" {
+		expanded = defaultRouterModel
+	}
+
 	task := delegate.Task{
+		NodeID:          node.ID,
 		SystemPrompt:    systemText,
+		UserPrompt:      userText,
 		OutputSchema:    jsonSchema,
+		Model:           expanded,
 		WorkDir:         e.workDir,
 		ReasoningEffort: resolveReasoningEffort(node, input),
 	}
-	if userText != "" {
-		task.UserPrompt = userText
-	}
 
-	// Emit delegation started event.
+	// Emit backend started event.
 	if e.hooks.OnDelegateStarted != nil {
-		e.hooks.OnDelegateStarted(node.ID, node.Delegate)
+		e.hooks.OnDelegateStarted(node.ID, backendName)
 	}
 
-	result, err := e.retryDelegateLoop(ctx, node.ID, node.Delegate, func() (delegate.Result, error) {
+	result, err := e.retryDelegateLoop(ctx, node.ID, backendName, func() (delegate.Result, error) {
 		return backend.Execute(ctx, task)
 	})
 	if err != nil {
 		if e.hooks.OnDelegateError != nil {
-			backendName := result.BackendName
-			if backendName == "" {
-				backendName = node.Delegate
+			bn := result.BackendName
+			if bn == "" {
+				bn = backendName
 			}
 			e.hooks.OnDelegateError(node.ID, DelegateInfo{
-				BackendName:        backendName,
+				BackendName:        bn,
 				Duration:           result.Duration,
 				Tokens:             result.Tokens,
 				ExitCode:           result.ExitCode,
@@ -1329,10 +992,10 @@ func (e *GoaiExecutor) executeLLMRouterDelegated(ctx context.Context, node *ir.N
 				Error:              err,
 			})
 		}
-		return nil, fmt.Errorf("model: llm router %q: delegation to %q failed: %w", node.ID, node.Delegate, err)
+		return nil, fmt.Errorf("model: llm router %q: backend %q failed: %w", node.ID, backendName, err)
 	}
 
-	// Emit delegation finished event.
+	// Emit backend finished event.
 	if e.hooks.OnDelegateFinished != nil {
 		e.hooks.OnDelegateFinished(node.ID, DelegateInfo{
 			BackendName:        result.BackendName,
@@ -1356,19 +1019,21 @@ func (e *GoaiExecutor) executeLLMRouterDelegated(ctx context.Context, node *ir.N
 			if json.Unmarshal([]byte(textVal), &parsed) == nil {
 				output = parsed
 			} else {
-				return nil, fmt.Errorf("model: llm router %q: delegation returned unstructured text, cannot determine route selection", node.ID)
+				return nil, fmt.Errorf("model: llm router %q: backend returned unstructured text, cannot determine route selection", node.ID)
 			}
 		}
 	}
 
 	// Strict validation against the router schema.
 	if err := ValidateOutput(output, schema); err != nil {
-		return nil, fmt.Errorf("model: llm router %q: delegated output invalid: %w", node.ID, err)
+		return nil, fmt.Errorf("model: llm router %q: output invalid: %w", node.ID, err)
 	}
 
 	// Attach metadata.
-	output["_tokens"] = result.Tokens
-	output["_delegate"] = node.Delegate
+	if output["_tokens"] == nil {
+		output["_tokens"] = result.Tokens
+	}
+	output["_backend"] = backendName
 
 	return output, nil
 }

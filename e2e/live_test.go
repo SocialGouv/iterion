@@ -133,7 +133,7 @@ func TestLive_DualModel_PlanImplementReview(t *testing.T) {
 	hooks := model.NewStoreEventHooks(s, runID, logger)
 
 	execOpts := []model.GoaiExecutorOption{
-		model.WithDelegateRegistry(delegate.DefaultRegistry()),
+		model.WithBackendRegistry(delegate.DefaultRegistry()),
 		model.WithWorkDir(workspaceDir),
 		model.WithEventHooks(hooks),
 	}
@@ -492,7 +492,7 @@ func TestLive_SessionContinuity_ReviewFix(t *testing.T) {
 	hooks := model.NewStoreEventHooks(s, runID, logger)
 
 	execOpts := []model.GoaiExecutorOption{
-		model.WithDelegateRegistry(delegate.DefaultRegistry()),
+		model.WithBackendRegistry(delegate.DefaultRegistry()),
 		model.WithWorkDir(workspaceDir),
 		model.WithEventHooks(hooks),
 	}
@@ -809,9 +809,9 @@ func logRunRecap(t *testing.T, events []*store.Event) {
 			if evt.Data == nil {
 				continue
 			}
-			delegate := ""
-			if d, ok := evt.Data["_delegate"].(string); ok {
-				delegate = fmt.Sprintf(" [delegate: %s]", d)
+			backendTag := ""
+			if d, ok := evt.Data["_backend"].(string); ok {
+				backendTag = fmt.Sprintf(" [backend: %s]", d)
 			}
 			// Show node output summary.
 			if output, ok := evt.Data["output"]; ok {
@@ -820,7 +820,7 @@ func logRunRecap(t *testing.T, events []*store.Event) {
 				if len(outStr) > 500 {
 					outStr = outStr[:500] + "..."
 				}
-				sb.WriteString(fmt.Sprintf("   ✅ FINISHED: %s%s\n", evt.NodeID, delegate))
+				sb.WriteString(fmt.Sprintf("   ✅ FINISHED: %s%s\n", evt.NodeID, backendTag))
 				sb.WriteString(fmt.Sprintf("   Output: %s\n\n", outStr))
 			}
 

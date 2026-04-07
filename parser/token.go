@@ -74,7 +74,8 @@ const (
 	TokenArgs
 	TokenURL
 	TokenReadonly
-	TokenDelegate
+	TokenBackend
+	TokenDefaultBackend
 	TokenInteraction
 	TokenInteractionPrompt
 	TokenInteractionModel
@@ -183,7 +184,8 @@ var tokenNames = map[TokenType]string{
 	TokenArgs:              "args",
 	TokenURL:               "url",
 	TokenReadonly:          "readonly",
-	TokenDelegate:          "delegate",
+	TokenBackend:           "backend",
+	TokenDefaultBackend:    "default_backend",
 	TokenInteraction:       "interaction",
 	TokenInteractionPrompt: "interaction_prompt",
 	TokenInteractionModel:  "interaction_model",
@@ -269,7 +271,8 @@ var keywords = map[string]TokenType{
 	"args":                  TokenArgs,
 	"url":                   TokenURL,
 	"readonly":              TokenReadonly,
-	"delegate":              TokenDelegate,
+	"backend":               TokenBackend,
+	"default_backend":       TokenDefaultBackend,
 	"interaction":           TokenInteraction,
 	"interaction_prompt":    TokenInteractionPrompt,
 	"interaction_model":     TokenInteractionModel,

@@ -12,17 +12,18 @@ package ir
 // execute a workflow: resolved nodes, edges, schemas, prompts, vars,
 // loops and budget.
 type Workflow struct {
-	Name        string
-	Entry       string             // entry node ID
-	Nodes       map[string]*Node   // node ID → node
-	Edges       []*Edge            // ordered list of edges
-	Schemas     map[string]*Schema // schema name → resolved schema
-	Prompts     map[string]*Prompt // prompt name → resolved prompt
-	Vars        map[string]*Var    // var name → resolved variable
-	Loops       map[string]*Loop   // loop name → loop definition
-	Budget      *Budget            // workflow budget (nil if not set)
-	MCP         *MCPConfig         // workflow-level MCP activation/filtering
-	Interaction *InteractionMode   // workflow-level default interaction mode (nil = not set)
+	Name           string
+	Entry          string             // entry node ID
+	Nodes          map[string]*Node   // node ID → node
+	Edges          []*Edge            // ordered list of edges
+	Schemas        map[string]*Schema // schema name → resolved schema
+	Prompts        map[string]*Prompt // prompt name → resolved prompt
+	Vars           map[string]*Var    // var name → resolved variable
+	Loops          map[string]*Loop   // loop name → loop definition
+	Budget         *Budget            // workflow budget (nil if not set)
+	MCP            *MCPConfig         // workflow-level MCP activation/filtering
+	DefaultBackend string             // workflow-level default backend (empty = not set)
+	Interaction    *InteractionMode   // workflow-level default interaction mode (nil = not set)
 	// MCPServers contains the explicit top-level declarations from the .iter file.
 	MCPServers map[string]*MCPServer
 	// ActiveMCPServers and ResolvedMCPServers are populated after project config
@@ -75,9 +76,9 @@ type Node struct {
 	Kind NodeKind
 
 	// --- Agent / Judge fields ---
-	Model    string     // model identifier (env refs already noted)
-	Delegate string     // delegation backend name (empty = direct LLM call)
-	MCP      *MCPConfig // node-level MCP activation/filtering
+	Model   string     // model identifier (env refs already noted)
+	Backend string     // execution backend name (empty = direct LLM call)
+	MCP     *MCPConfig // node-level MCP activation/filtering
 	// ActiveMCPServers is populated after project config resolution.
 	ActiveMCPServers []string
 	InputSchema      string      // schema reference name (empty if not set)

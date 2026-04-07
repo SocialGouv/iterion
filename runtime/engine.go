@@ -1406,19 +1406,19 @@ func (e *Engine) persistPause(rs *runState, nodeID string) error {
 func (e *Engine) handleNeedsInteraction(ctx context.Context, rs *runState, nodeID string, node *ir.Node, ni *model.ErrNeedsInteraction) error {
 	switch node.Interaction {
 	case ir.InteractionHuman:
-		return e.pauseForDelegateInteraction(rs, nodeID, ni)
+		return e.pauseForBackendInteraction(rs, nodeID, ni)
 
 	case ir.InteractionLLM:
 		// TODO(phase5): invoke interaction_model to auto-respond,
-		// then re-invoke the delegate with the answers.
+		// then re-invoke the backend with the answers.
 		// For now, fall through to pause.
-		return e.pauseForDelegateInteraction(rs, nodeID, ni)
+		return e.pauseForBackendInteraction(rs, nodeID, ni)
 
 	case ir.InteractionLLMOrHuman:
 		// TODO(phase5): invoke interaction_model to decide whether
 		// to auto-respond or escalate to human.
 		// For now, fall through to pause.
-		return e.pauseForDelegateInteraction(rs, nodeID, ni)
+		return e.pauseForBackendInteraction(rs, nodeID, ni)
 
 	default:
 		// InteractionNone should not reach here (executor wouldn't return ErrNeedsInteraction).
@@ -1426,9 +1426,9 @@ func (e *Engine) handleNeedsInteraction(ctx context.Context, rs *runState, nodeI
 	}
 }
 
-// pauseForDelegateInteraction creates an interaction record and pauses the
-// workflow, saving the delegate's session ID for re-invocation on resume.
-func (e *Engine) pauseForDelegateInteraction(rs *runState, nodeID string, ni *model.ErrNeedsInteraction) error {
+// pauseForBackendInteraction creates an interaction record and pauses the
+// workflow, saving the backend's session ID for re-invocation on resume.
+func (e *Engine) pauseForBackendInteraction(rs *runState, nodeID string, ni *model.ErrNeedsInteraction) error {
 	interactionID := fmt.Sprintf("%s_%s", rs.runID, nodeID)
 	if loopIter := e.currentLoopIteration(nodeID, rs.loopCounters); loopIter > 0 {
 		interactionID = fmt.Sprintf("%s_%s_%d", rs.runID, nodeID, loopIter)
@@ -1466,8 +1466,8 @@ func (e *Engine) pauseForDelegateInteraction(rs *runState, nodeID string, ni *mo
 		RoundRobinCounters: rs.roundRobinCounters,
 		ArtifactVersions:   rs.artifactVersions,
 		Vars:               rs.vars,
-		DelegateSessionID:  ni.SessionID,
-		DelegateBackend:    ni.Backend,
+		BackendSessionID:   ni.SessionID,
+		BackendName:        ni.Backend,
 	}
 	if err := e.store.PauseRun(rs.runID, cp); err != nil {
 		return fmt.Errorf("runtime: pause run: %w", err)
@@ -2077,7 +2077,7 @@ func formatOutputPreview(data map[string]interface{}) string {
 		if s == "" {
 			return ""
 		}
-		return truncatePreview(s, 500)
+		return truncatePreview(s, 1000)
 	}
 
 	// Priority ordering for known fields.
@@ -2113,7 +2113,7 @@ func formatOutputPreview(data map[string]interface{}) string {
 	}
 
 	result := strings.Join(parts, " | ")
-	return truncatePreview(result, 800)
+	return truncatePreview(result, 1200)
 }
 
 // formatFieldValue formats a single output field value for display.

@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"time"
 
-	goai "github.com/zendev-sh/goai"
-
 	iterlog "github.com/SocialGouv/iterion/log"
 	"github.com/SocialGouv/iterion/store"
 )
@@ -40,15 +38,15 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 
 			if logger.IsEnabled(iterlog.LevelDebug) {
 				if systemPrompt != "" {
-					logger.Logf(iterlog.LevelDebug, "📝", "System prompt [%s]: %s", nodeID, preview(systemPrompt, 200))
+					logger.Logf(iterlog.LevelDebug, "📝", "System prompt [%s]: %s", nodeID, preview(systemPrompt, 500))
 				}
 				if userMessage != "" {
-					logger.Logf(iterlog.LevelDebug, "💬", "User message [%s]: %s", nodeID, preview(userMessage, 200))
+					logger.Logf(iterlog.LevelDebug, "💬", "User message [%s]: %s", nodeID, preview(userMessage, 500))
 				}
 			}
 		},
 
-		OnLLMRequest: func(nodeID string, info goai.RequestInfo) {
+		OnLLMRequest: func(nodeID string, info LLMRequestInfo) {
 			_, _ = emitter.AppendEvent(runID, store.Event{
 				Type:   store.EventLLMRequest,
 				RunID:  runID,
@@ -93,12 +91,12 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 				nodeID, info.Attempt, info.Delay.Milliseconds(), errMsg)
 		},
 
-		OnLLMStepFinish: func(nodeID string, step goai.StepResult) {
+		OnLLMStepFinish: func(nodeID string, step LLMStepInfo) {
 			data := map[string]interface{}{
 				"step":          step.Number,
-				"input_tokens":  step.Usage.InputTokens,
-				"output_tokens": step.Usage.OutputTokens,
-				"finish_reason": string(step.FinishReason),
+				"input_tokens":  step.InputTokens,
+				"output_tokens": step.OutputTokens,
+				"finish_reason": step.FinishReason,
 				"tool_calls":    len(step.ToolCalls),
 			}
 
@@ -128,20 +126,21 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 
 			// Console output.
 			if step.Text != "" {
-				logger.Logf(iterlog.LevelDebug, "💬", "LLM response [%s] (step %d): %s",
-					nodeID, step.Number, preview(step.Text, 300))
+				logger.LogBlock(iterlog.LevelDebug, "💬",
+					fmt.Sprintf("LLM response [%s] (step %d):", nodeID, step.Number),
+					iterlog.BlockPreview(step.Text, 2000))
 			}
 			if len(step.ToolCalls) > 0 {
 				for _, tc := range step.ToolCalls {
 					logger.Logf(iterlog.LevelTrace, "🔧", "Tool request [%s]: %s %s",
-						nodeID, tc.Name, preview(string(tc.Input), 200))
+						nodeID, tc.Name, preview(string(tc.Input), 400))
 				}
 			}
 			logger.Logf(iterlog.LevelDebug, "📊", "Step %d [%s]: %d in / %d out tokens, finish=%s",
-				step.Number, nodeID, step.Usage.InputTokens, step.Usage.OutputTokens, step.FinishReason)
+				step.Number, nodeID, step.InputTokens, step.OutputTokens, step.FinishReason)
 		},
 
-		OnToolCall: func(nodeID string, info goai.ToolCallInfo) {
+		OnToolCall: func(nodeID string, info LLMToolCallInfo) {
 			data := map[string]interface{}{
 				"tool":        info.ToolName,
 				"input_size":  info.InputSize,
@@ -299,8 +298,9 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 				logger.Logf(iterlog.LevelDebug, "🔧", "Tool result [%s]: %s → %s (%dms)",
 					nodeID, toolName, humanSize(len(output)), elapsed.Milliseconds())
 				if output != "" {
-					logger.Logf(iterlog.LevelTrace, "🔬", "Tool output [%s/%s]: %s",
-						nodeID, toolName, preview(output, 500))
+					logger.LogBlock(iterlog.LevelTrace, "🔬",
+						fmt.Sprintf("Tool output [%s/%s]:", nodeID, toolName),
+						iterlog.BlockPreview(output, 1500))
 				}
 			}
 		},

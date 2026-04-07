@@ -6,8 +6,6 @@ import (
 	"errors"
 	"testing"
 
-	goai "github.com/zendev-sh/goai"
-
 	"github.com/SocialGouv/iterion/ir"
 	"github.com/SocialGouv/iterion/tool"
 )
@@ -206,7 +204,7 @@ func TestActDeniedToolFiresHook(t *testing.T) {
 		WithToolRegistry(tr),
 		WithToolPolicy(policy),
 		WithEventHooks(EventHooks{
-			OnToolCall: func(nodeID string, info goai.ToolCallInfo) {
+			OnToolCall: func(nodeID string, info LLMToolCallInfo) {
 				hookCalled = true
 				hookErr = info.Error
 			},

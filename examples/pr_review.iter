@@ -152,7 +152,7 @@ schema verdict_result:
 ## ─── Nodes ──────────────────────────────────────────────────────
 
 agent context_builder:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: repo_context_request
   output: pr_context
   publish: pr_context
@@ -166,7 +166,7 @@ router review_fanout:
   mode: fan_out_all
 
 agent review_code:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: review_request
   output: review_result
   publish: code_review_report
@@ -178,7 +178,7 @@ agent review_code:
   readonly: true
 
 agent review_archi:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: review_request
   output: review_result
   publish: archi_review_report
@@ -191,7 +191,7 @@ agent review_archi:
 
 judge verdict:
   await: wait_all
-  delegate: "claude_code"
+  backend: "claude_code"
   input: verdict_request
   output: verdict_result
   publish: final_verdict

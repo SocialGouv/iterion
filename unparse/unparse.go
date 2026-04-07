@@ -94,7 +94,7 @@ func Unparse(f *ast.File) string {
 		if a.MCP != nil {
 			writeMCPConfigBlock(&b, a.MCP, "  ")
 		}
-		writeAgentFields(&b, a.Model, a.Delegate, a.Input, a.Output, a.Publish,
+		writeAgentFields(&b, a.Model, a.Backend, a.Input, a.Output, a.Publish,
 			a.System, a.User, a.Session, a.Tools, a.ToolMaxSteps, a.ReasoningEffort, a.Readonly,
 			a.Interaction, a.InteractionPrompt, a.InteractionModel, a.Await)
 	}
@@ -106,7 +106,7 @@ func Unparse(f *ast.File) string {
 		if j.MCP != nil {
 			writeMCPConfigBlock(&b, j.MCP, "  ")
 		}
-		writeAgentFields(&b, j.Model, j.Delegate, j.Input, j.Output, j.Publish,
+		writeAgentFields(&b, j.Model, j.Backend, j.Input, j.Output, j.Publish,
 			j.System, j.User, j.Session, j.Tools, j.ToolMaxSteps, j.ReasoningEffort, j.Readonly,
 			j.Interaction, j.InteractionPrompt, j.InteractionModel, j.Await)
 	}
@@ -119,6 +119,9 @@ func Unparse(f *ast.File) string {
 		if r.Mode == ast.RouterLLM {
 			if r.Model != "" {
 				writeQuotedProp(&b, "model", r.Model)
+			}
+			if r.Backend != "" {
+				writeQuotedProp(&b, "backend", r.Backend)
 			}
 			if r.System != "" {
 				writeProp(&b, "system", r.System)
@@ -194,6 +197,10 @@ func Unparse(f *ast.File) string {
 		}
 		if w.MCP != nil {
 			writeMCPConfigBlock(&b, w.MCP, "  ")
+		}
+
+		if w.DefaultBackend != "" {
+			writeQuotedProp(&b, "default_backend", w.DefaultBackend)
 		}
 
 		if w.Entry != "" {
@@ -281,12 +288,12 @@ func quoteList(vals []string) string {
 	return strings.Join(quoted, ", ")
 }
 
-func writeAgentFields(b *strings.Builder, model, delegate, input, output, publish, system, user string, session ast.SessionMode, tools []string, toolMaxSteps int, reasoningEffort string, readonly bool, interaction ast.InteractionMode, interactionPrompt, interactionModel string, await ast.AwaitMode) {
+func writeAgentFields(b *strings.Builder, model, backend, input, output, publish, system, user string, session ast.SessionMode, tools []string, toolMaxSteps int, reasoningEffort string, readonly bool, interaction ast.InteractionMode, interactionPrompt, interactionModel string, await ast.AwaitMode) {
 	if model != "" {
 		writeQuotedProp(b, "model", model)
 	}
-	if delegate != "" {
-		writeQuotedProp(b, "delegate", delegate)
+	if backend != "" {
+		writeQuotedProp(b, "backend", backend)
 	}
 	if input != "" {
 		writeProp(b, "input", input)

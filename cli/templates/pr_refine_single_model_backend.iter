@@ -155,7 +155,7 @@ schema verify_request:
   review_rules: string
 
 agent context_builder:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: repo_context_request
   output: pr_context
   publish: pr_context
@@ -166,7 +166,7 @@ agent context_builder:
   tool_max_steps: 8
 
 agent reviewer:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: review_request
   output: review_result
   system: review_system
@@ -176,7 +176,7 @@ agent reviewer:
   tool_max_steps: 10
 
 agent planner:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: plan_compliance_request
   output: remediation_plan
   system: plan_system
@@ -186,7 +186,7 @@ agent planner:
   tool_max_steps: 6
 
 judge compliance_check:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: plan_compliance_request
   output: compliance_verdict
   system: compliance_system
@@ -194,7 +194,7 @@ judge compliance_check:
   session: fresh
 
 agent refine_plan:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: plan_refinement_request
   output: remediation_plan
   system: plan_system
@@ -202,7 +202,7 @@ agent refine_plan:
   session: fresh
 
 judge compliance_check_after_refine:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: plan_compliance_request
   output: compliance_verdict
   system: compliance_system
@@ -210,7 +210,7 @@ judge compliance_check_after_refine:
   session: fresh
 
 agent act_on_plan:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: act_request
   output: act_result
   publish: act_report
@@ -221,7 +221,7 @@ agent act_on_plan:
   tool_max_steps: 20
 
 judge final_verify:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: verify_request
   output: compliance_verdict
   publish: final_verdict
@@ -229,7 +229,7 @@ judge final_verify:
   user: verify_user
   session: fresh
 
-workflow pr_refine_single_model_delegate:
+workflow pr_refine_single_model_backend:
   vars:
     pr_title: string
     pr_description: string = ""

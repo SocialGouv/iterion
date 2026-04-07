@@ -1184,7 +1184,7 @@ func TestFormatOutputPreview(t *testing.T) {
 			name: "long text is truncated",
 			data: map[string]interface{}{
 				"output": map[string]interface{}{
-					"text":    strings.Repeat("x", 600),
+					"text":    strings.Repeat("x", 1200),
 					"_tokens": 100,
 				},
 			},

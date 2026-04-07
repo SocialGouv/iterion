@@ -3,8 +3,8 @@
 ## deux agents IA (Claude Code + Codex) avec double validation croisee
 ## et alternance round-robin des roles.
 ##
-##   - Claude  -> claude_code (delegate: "claude_code")
-##   - Codex   -> codex       (delegate: "codex")
+##   - Claude  -> claude_code (backend: "claude_code")
+##   - Codex   -> codex       (backend: "codex")
 ##   - Orchestration (merge, judges) -> model: "${CLAUDE_MODEL}"
 ##
 ## Phases :
@@ -328,7 +328,7 @@ router plan_fanout:
   mode: fan_out_all
 
 agent claude_plan:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: plan_input
   output: plan_output
   publish: claude_plan_output
@@ -337,7 +337,7 @@ agent claude_plan:
   session: fresh
 
 agent codex_plan:
-  delegate: "codex"
+  backend: "codex"
   input: plan_input
   output: plan_output
   publish: codex_plan_output
@@ -347,7 +347,7 @@ agent codex_plan:
 
 agent merge_plans:
   await: wait_all
-  delegate: "claude_code"
+  backend: "claude_code"
   input: merge_input
   output: plan_output
   publish: merged_plan
@@ -361,7 +361,7 @@ router val_fanout:
   mode: fan_out_all
 
 agent claude_val:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: validate_input
   output: validate_output
   publish: claude_validation
@@ -370,7 +370,7 @@ agent claude_val:
   session: fresh
 
 agent codex_val:
-  delegate: "codex"
+  backend: "codex"
   input: validate_input
   output: validate_output
   publish: codex_validation
@@ -380,7 +380,7 @@ agent codex_val:
 
 judge val_judge:
   await: wait_all
-  delegate: "claude_code"
+  backend: "claude_code"
   input: plan_acceptance_input
   output: plan_acceptance_verdict
   publish: validation_verdict
@@ -394,7 +394,7 @@ router refine_selector:
   mode: round_robin
 
 agent claude_refine:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: refine_input
   output: plan_output
   publish: merged_plan
@@ -403,7 +403,7 @@ agent claude_refine:
   session: fresh
 
 agent codex_refine:
-  delegate: "codex"
+  backend: "codex"
   input: refine_input
   output: plan_output
   publish: merged_plan
@@ -417,7 +417,7 @@ router impl_selector:
   mode: round_robin
 
 agent claude_implement:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: impl_input
   output: impl_output
   publish: implementation
@@ -426,7 +426,7 @@ agent claude_implement:
   session: fresh
 
 agent codex_implement:
-  delegate: "codex"
+  backend: "codex"
   input: impl_input
   output: impl_output
   publish: implementation
@@ -440,7 +440,7 @@ router review_fanout:
   mode: fan_out_all
 
 agent claude_review:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: review_input
   output: review_output
   publish: claude_review_report
@@ -449,7 +449,7 @@ agent claude_review:
   session: fresh
 
 agent codex_review:
-  delegate: "codex"
+  backend: "codex"
   input: review_input
   output: review_output
   publish: codex_review_report
@@ -459,7 +459,7 @@ agent codex_review:
 
 judge review_judge:
   await: wait_all
-  delegate: "claude_code"
+  backend: "claude_code"
   input: impl_verdict_input
   output: impl_verdict
   publish: review_verdict

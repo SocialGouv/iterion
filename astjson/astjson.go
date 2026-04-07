@@ -148,7 +148,7 @@ type jsonSchemaField struct {
 type jsonAgentDecl struct {
 	Name              string   `json:"name,omitempty"`
 	Model             string   `json:"model,omitempty"`
-	Delegate          string   `json:"delegate,omitempty"`
+	Backend           string   `json:"backend,omitempty"`
 	Input             string   `json:"input,omitempty"`
 	Output            string   `json:"output,omitempty"`
 	Publish           string   `json:"publish,omitempty"`
@@ -167,7 +167,7 @@ type jsonAgentDecl struct {
 type jsonJudgeDecl struct {
 	Name              string   `json:"name,omitempty"`
 	Model             string   `json:"model,omitempty"`
-	Delegate          string   `json:"delegate,omitempty"`
+	Backend           string   `json:"backend,omitempty"`
 	Input             string   `json:"input,omitempty"`
 	Output            string   `json:"output,omitempty"`
 	Publish           string   `json:"publish,omitempty"`
@@ -359,7 +359,7 @@ func agentToJSON(a *ast.AgentDecl) *jsonAgentDecl {
 	return &jsonAgentDecl{
 		Name:              a.Name,
 		Model:             a.Model,
-		Delegate:          a.Delegate,
+		Backend:           a.Backend,
 		Input:             a.Input,
 		Output:            a.Output,
 		Publish:           a.Publish,
@@ -380,7 +380,7 @@ func judgeToJSON(j *ast.JudgeDecl) *jsonJudgeDecl {
 	return &jsonJudgeDecl{
 		Name:              j.Name,
 		Model:             j.Model,
-		Delegate:          j.Delegate,
+		Backend:           j.Backend,
 		Input:             j.Input,
 		Output:            j.Output,
 		Publish:           j.Publish,
@@ -633,7 +633,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*ast.AgentDecl, error) {
 	return &ast.AgentDecl{
 		Name:              ja.Name,
 		Model:             ja.Model,
-		Delegate:          ja.Delegate,
+		Backend:           ja.Backend,
 		Input:             ja.Input,
 		Output:            ja.Output,
 		Publish:           ja.Publish,
@@ -666,7 +666,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*ast.JudgeDecl, error) {
 	return &ast.JudgeDecl{
 		Name:              jj.Name,
 		Model:             jj.Model,
-		Delegate:          jj.Delegate,
+		Backend:           jj.Backend,
 		Input:             jj.Input,
 		Output:            jj.Output,
 		Publish:           jj.Publish,

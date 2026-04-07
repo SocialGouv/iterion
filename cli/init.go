@@ -8,10 +8,10 @@ import (
 	"strings"
 )
 
-//go:embed templates/pr_refine_single_model_delegate.iter
+//go:embed templates/pr_refine_single_model_backend.iter
 var defaultWorkflow []byte
 
-const workflowFileName = "pr_refine_single_model_delegate.iter"
+const workflowFileName = "pr_refine_single_model_backend.iter"
 
 const envExample = `# Iterion environment configuration
 # Copy this file to .env and fill in optional settings.

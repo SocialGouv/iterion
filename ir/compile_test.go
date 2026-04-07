@@ -849,26 +849,26 @@ workflow test:
 	agentError := false
 	routerWarning := false
 	for _, d := range r.Diagnostics {
-		if d.Code == DiagMissingModelOrDelegate && d.Severity == SeverityError {
+		if d.Code == DiagMissingModelOrBackend && d.Severity == SeverityError {
 			agentError = true
 		}
-		if d.Code == DiagMissingModelOrDelegate && d.Severity == SeverityWarning {
+		if d.Code == DiagMissingModelOrBackend && d.Severity == SeverityWarning {
 			routerWarning = true
 		}
 	}
 	if !agentError {
-		t.Fatal("expected DiagMissingModelOrDelegate error for agent")
+		t.Fatal("expected DiagMissingModelOrBackend error for agent")
 	}
 	if !routerWarning {
-		t.Fatal("expected DiagMissingModelOrDelegate warning for router")
+		t.Fatal("expected DiagMissingModelOrBackend warning for router")
 	}
 }
 
 // ---------------------------------------------------------------------------
-// LLM router with delegate
+// LLM router with backend
 // ---------------------------------------------------------------------------
 
-func TestCompileLLMRouterWithDelegate(t *testing.T) {
+func TestCompileLLMRouterWithBackend(t *testing.T) {
 	src := `
 schema s:
   ok: bool
@@ -883,7 +883,7 @@ agent a:
 
 router r:
   mode: llm
-  delegate: "claude_code"
+  backend: "claude_code"
   system: sys
 
 workflow test:
@@ -894,16 +894,16 @@ workflow test:
 `
 	w := mustCompile(t, src)
 	node := w.Nodes["r"]
-	if node.Delegate != "claude_code" {
-		t.Fatalf("expected delegate 'claude_code', got %q", node.Delegate)
+	if node.Backend != "claude_code" {
+		t.Fatalf("expected backend 'claude_code', got %q", node.Backend)
 	}
 	if node.RouterMode != RouterLLM {
 		t.Fatalf("expected RouterLLM, got %v", node.RouterMode)
 	}
-	// With delegate set, no warning about missing model should be emitted.
+	// With backend set, no warning about missing model should be emitted.
 }
 
-func TestCompileRouterDelegateOnlyLLM(t *testing.T) {
+func TestCompileRouterBackendOnlyLLM(t *testing.T) {
 	src := `
 schema s:
   ok: bool
@@ -915,7 +915,7 @@ agent a:
 
 router r:
   mode: fan_out_all
-  delegate: "claude_code"
+  backend: "claude_code"
 
 workflow test:
   entry: a
@@ -930,7 +930,7 @@ workflow test:
 		}
 	}
 	if !found {
-		t.Fatal("expected DiagRouterLLMOnlyProperty for delegate on non-LLM router")
+		t.Fatal("expected DiagRouterLLMOnlyProperty for backend on non-LLM router")
 	}
 }
 
@@ -1055,7 +1055,7 @@ prompt usr:
 
 agent worker:
   model: "claude"
-  delegate: "claude_code"
+  backend: "claude_code"
   input: s
   output: s
   system: sys
@@ -1071,8 +1071,8 @@ workflow fork_test:
 	if n.Session != SessionFork {
 		t.Errorf("expected SessionFork, got %v", n.Session)
 	}
-	if n.Delegate != "claude_code" {
-		t.Errorf("expected delegate 'claude_code', got %q", n.Delegate)
+	if n.Backend != "claude_code" {
+		t.Errorf("expected backend 'claude_code', got %q", n.Backend)
 	}
 }
 

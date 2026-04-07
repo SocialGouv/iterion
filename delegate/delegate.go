@@ -1,8 +1,9 @@
-// Package delegate provides backends for delegating agent/judge node execution
-// to external CLI agents (e.g. claude-code, codex) instead of calling LLM APIs directly.
+// Package delegate provides the Backend interface and types for executing
+// agent/judge nodes via pluggable backends (CLI agents like claude-code/codex,
+// or API-based backends like goai).
 //
-// When a node has `delegate: "claude_code"`, the executor bypasses the normal goai
-// path and invokes the named Backend which spawns a CLI subprocess.
+// When a node has `backend: "claude_code"`, the executor invokes the named
+// Backend which handles execution (subprocess, API call, etc.).
 package delegate
 
 import (
@@ -30,8 +31,20 @@ type Backend interface {
 	Execute(ctx context.Context, task Task) (Result, error)
 }
 
-// Task describes the work to delegate to a CLI agent.
+// ToolDef is a fully resolved tool definition for backends that execute tools
+// internally (e.g. goai). CLI-based backends use AllowedTools (string names) instead.
+type ToolDef struct {
+	Name        string
+	Description string
+	InputSchema json.RawMessage
+	Execute     func(ctx context.Context, input json.RawMessage) (string, error)
+}
+
+// Task describes the work to execute on a backend.
 type Task struct {
+	// NodeID is the IR node identifier, used for observability hooks.
+	NodeID string
+
 	// SystemPrompt is the fully resolved system prompt text.
 	SystemPrompt string
 
@@ -39,11 +52,27 @@ type Task struct {
 	UserPrompt string
 
 	// AllowedTools is the list of tool names the CLI agent may use.
+	// Used by CLI-based backends; API-based backends use ToolDefs instead.
 	AllowedTools []string
+
+	// ToolDefs provides full tool definitions for backends that manage tool
+	// loops internally (e.g. goai). CLI-based backends ignore this field.
+	ToolDefs []ToolDef
 
 	// OutputSchema is the JSON Schema for the expected structured output.
 	// Nil means free-form text output.
 	OutputSchema json.RawMessage
+
+	// Model is the resolved model spec (e.g. "anthropic/claude-sonnet-4-6").
+	// Required for API-based backends; ignored by CLI-based backends.
+	Model string
+
+	// HasTools indicates whether the node has tools, enabling backends to
+	// choose between structured-output and text-with-tools generation strategies.
+	HasTools bool
+
+	// ToolMaxSteps is the maximum number of tool-use iterations (0 = default).
+	ToolMaxSteps int
 
 	// WorkDir is the working directory for the CLI subprocess.
 	WorkDir string
@@ -52,7 +81,7 @@ type Task struct {
 	// If set, WorkDir must resolve to a path within BaseDir.
 	BaseDir string
 
-	// ReasoningEffort is the reasoning effort level for the CLI agent.
+	// ReasoningEffort is the reasoning effort level.
 	// Valid values: "low", "medium", "high", "extra_high".
 	ReasoningEffort string
 

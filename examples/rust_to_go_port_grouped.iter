@@ -3,9 +3,9 @@
 ## Both models analyze, plan, implement, and review in parallel/round-robin.
 ## Loops until feature parity is achieved or budget is exhausted.
 ## 
-## - Claude  -> claude_code (delegate: "claude_code")
-## - Codex   -> codex       (delegate: "codex")
-## - Orchestration (merge, judges) -> delegate: "claude_code"
+## - Claude  -> claude_code (backend: "claude_code")
+## - Codex   -> codex       (backend: "codex")
+## - Orchestration (merge, judges) -> backend: "claude_code"
 ## 
 ## Phases :
 ## 0. Analysis: parallel codebase analysis -> merge feature manifest
@@ -404,7 +404,7 @@ schema parity_verdict:
   confidence: string [enum: "low", "medium", "high"]
 
 agent claude_analyze:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: analyze_input
   output: analysis_output
   publish: claude_analysis
@@ -413,7 +413,7 @@ agent claude_analyze:
   session: fresh
 
 agent codex_analyze:
-  delegate: "codex"
+  backend: "codex"
   input: analyze_input
   output: analysis_output
   publish: codex_analysis
@@ -422,7 +422,7 @@ agent codex_analyze:
   session: fresh
 
 agent merge_analysis:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: merge_analysis_input
   output: feature_manifest
   publish: feature_manifest
@@ -432,7 +432,7 @@ agent merge_analysis:
   await: wait_all
 
 agent claude_plan:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: port_plan_input
   output: port_plan_output
   publish: claude_plan_output
@@ -441,7 +441,7 @@ agent claude_plan:
   session: fresh
 
 agent codex_plan:
-  delegate: "codex"
+  backend: "codex"
   input: port_plan_input
   output: port_plan_output
   publish: codex_plan_output
@@ -450,7 +450,7 @@ agent codex_plan:
   session: fresh
 
 agent merge_plans:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: merge_plan_input
   output: port_plan_output
   publish: merged_plan
@@ -460,7 +460,7 @@ agent merge_plans:
   await: wait_all
 
 agent claude_val:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: validate_plan_input
   output: validate_plan_output
   publish: claude_validation
@@ -469,7 +469,7 @@ agent claude_val:
   session: fresh
 
 agent codex_val:
-  delegate: "codex"
+  backend: "codex"
   input: validate_plan_input
   output: validate_plan_output
   publish: codex_validation
@@ -478,7 +478,7 @@ agent codex_val:
   session: fresh
 
 agent claude_refine:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: refine_plan_input
   output: port_plan_output
   publish: merged_plan
@@ -487,7 +487,7 @@ agent claude_refine:
   session: fresh
 
 agent codex_refine:
-  delegate: "codex"
+  backend: "codex"
   input: refine_plan_input
   output: port_plan_output
   publish: merged_plan
@@ -496,7 +496,7 @@ agent codex_refine:
   session: fresh
 
 agent claude_implement:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: impl_input
   output: impl_output
   publish: implementation
@@ -505,7 +505,7 @@ agent claude_implement:
   session: fresh
 
 agent codex_implement:
-  delegate: "codex"
+  backend: "codex"
   input: impl_input
   output: impl_output
   publish: implementation
@@ -514,7 +514,7 @@ agent codex_implement:
   session: fresh
 
 agent claude_review:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: review_input
   output: review_output
   publish: claude_review_report
@@ -523,7 +523,7 @@ agent claude_review:
   session: fresh
 
 agent codex_review:
-  delegate: "codex"
+  backend: "codex"
   input: review_input
   output: review_output
   publish: codex_review_report
@@ -532,7 +532,7 @@ agent codex_review:
   session: fresh
 
 judge val_judge:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: plan_acceptance_input
   output: plan_acceptance_verdict
   publish: validation_verdict
@@ -542,7 +542,7 @@ judge val_judge:
   await: wait_all
 
 judge parity_judge:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: parity_verdict_input
   output: parity_verdict
   publish: parity_verdict_report

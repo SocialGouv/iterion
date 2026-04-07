@@ -1,8 +1,8 @@
 ## Fixture : todo_app_dual_model_delegate
 ## Objectif : Workflow de creation d'une todo app (single page HTML)
 ## orchestrant deux agents IA via delegation MCP :
-##   - Claude  -> claude-code (delegate: "claude_code")
-##   - Codex   -> codex       (delegate: "codex")
+##   - Claude  -> claude-code (backend: "claude_code")
+##   - Codex   -> codex       (backend: "codex")
 ##
 ## Phases :
 ##   1. Claude implemente la todo app (index.html)
@@ -100,7 +100,7 @@ schema readiness_verdict:
 ## ─── Nodes ──────────────────────────────────────────────────────
 
 agent claude_implement:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: todo_app_input
   output: impl_output
   publish: implementation
@@ -109,7 +109,7 @@ agent claude_implement:
   session: fresh
 
 agent codex_review:
-  delegate: "codex"
+  backend: "codex"
   input: review_input
   output: review_output
   system: review_impl_system
@@ -117,7 +117,7 @@ agent codex_review:
   session: fresh
 
 judge readiness_judge:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: readiness_input
   output: readiness_verdict
   publish: final_verdict
@@ -127,7 +127,7 @@ judge readiness_judge:
 
 ## ─── Workflow ────────────────────────────────────────────────────
 
-workflow todo_app_dual_model_delegate:
+workflow todo_app_dual_model_backend:
   vars:
     app_description: string
     acceptance_criteria: string

@@ -15,18 +15,18 @@ import (
 type DiagCode string
 
 const (
-	DiagUnknownNode            DiagCode = "C001" // edge references unknown node
-	DiagUnknownSchema          DiagCode = "C002" // node references unknown schema
-	DiagUnknownPrompt          DiagCode = "C003" // node references unknown prompt
-	DiagBadTemplateRef         DiagCode = "C004" // malformed template reference
-	DiagDuplicateLoop          DiagCode = "C005" // conflicting loop definitions
-	DiagNoWorkflow             DiagCode = "C006" // no workflow found in file
-	DiagMultipleWorkflow       DiagCode = "C007" // multiple workflows (unsupported in V1)
-	DiagMissingEntry           DiagCode = "C008" // entry node not found
-	DiagMissingModelOrDelegate DiagCode = "C018" // agent/judge has neither model nor delegate
-	DiagDuplicateMCPServer     DiagCode = "C024" // duplicate top-level mcp_server name
-	DiagInvalidMCPServer       DiagCode = "C025" // invalid MCP server config
-	DiagInteractionNoDelegate  DiagCode = "C029" // interaction set on non-delegate LLM node (no runtime effect)
+	DiagUnknownNode           DiagCode = "C001" // edge references unknown node
+	DiagUnknownSchema         DiagCode = "C002" // node references unknown schema
+	DiagUnknownPrompt         DiagCode = "C003" // node references unknown prompt
+	DiagBadTemplateRef        DiagCode = "C004" // malformed template reference
+	DiagDuplicateLoop         DiagCode = "C005" // conflicting loop definitions
+	DiagNoWorkflow            DiagCode = "C006" // no workflow found in file
+	DiagMultipleWorkflow      DiagCode = "C007" // multiple workflows (unsupported in V1)
+	DiagMissingEntry          DiagCode = "C008" // entry node not found
+	DiagMissingModelOrBackend DiagCode = "C018" // agent/judge has neither model nor backend
+	DiagDuplicateMCPServer    DiagCode = "C024" // duplicate top-level mcp_server name
+	DiagInvalidMCPServer      DiagCode = "C025" // invalid MCP server config
+	DiagInteractionNoBackend  DiagCode = "C029" // interaction set on non-backend LLM node (no runtime effect)
 )
 
 // Severity indicates the severity of a diagnostic.
@@ -187,18 +187,19 @@ func (c *compiler) compile() *Workflow {
 	}
 
 	w := &Workflow{
-		Name:        wf.Name,
-		Entry:       wf.Entry,
-		Nodes:       c.nodes,
-		Edges:       edges,
-		Schemas:     c.schemas,
-		Prompts:     c.prompts,
-		Vars:        vars,
-		Loops:       loops,
-		Budget:      budget,
-		MCP:         convertMCPConfig(wf.MCP),
-		MCPServers:  c.mcp,
-		Interaction: interaction,
+		Name:           wf.Name,
+		Entry:          wf.Entry,
+		DefaultBackend: wf.DefaultBackend,
+		Nodes:          c.nodes,
+		Edges:          edges,
+		Schemas:        c.schemas,
+		Prompts:        c.prompts,
+		Vars:           vars,
+		Loops:          loops,
+		Budget:         budget,
+		MCP:            convertMCPConfig(wf.MCP),
+		MCPServers:     c.mcp,
+		Interaction:    interaction,
 	}
 
 	// Static validation pass (P2-02).
@@ -364,8 +365,8 @@ func (c *compiler) compileAgents() {
 		c.validatePromptRef(a.Name, "system", a.System)
 		c.validatePromptRef(a.Name, "user", a.User)
 		model := resolveSupervisorModel(a.Model)
-		if model == "" && a.Delegate == "" {
-			c.errorf(DiagMissingModelOrDelegate, "agent %q must set 'model' or 'delegate', or define ITERION_DEFAULT_SUPERVISOR_MODEL", a.Name)
+		if model == "" && a.Backend == "" {
+			c.errorf(DiagMissingModelOrBackend, "agent %q must set 'model' or 'backend', or define ITERION_DEFAULT_SUPERVISOR_MODEL", a.Name)
 		}
 
 		// Apply workflow-level interaction default when node doesn't set one.
@@ -373,15 +374,15 @@ func (c *compiler) compileAgents() {
 		if interaction == InteractionNone {
 			interaction = c.workflowInteractionDefault()
 		}
-		if interaction != InteractionNone && a.Delegate == "" {
-			c.warnf(DiagInteractionNoDelegate, "agent %q has interaction %s but no delegate; interaction forwarding only works with delegation backends", a.Name, interaction)
+		if interaction != InteractionNone && a.Backend == "" {
+			c.warnf(DiagInteractionNoBackend, "agent %q has interaction %s but no backend; interaction forwarding only works with execution backends", a.Name, interaction)
 		}
 
 		c.nodes[a.Name] = &Node{
 			ID:                a.Name,
 			Kind:              NodeAgent,
 			Model:             model,
-			Delegate:          a.Delegate,
+			Backend:           a.Backend,
 			MCP:               convertMCPConfig(a.MCP),
 			InputSchema:       a.Input,
 			OutputSchema:      a.Output,
@@ -412,8 +413,8 @@ func (c *compiler) compileJudges() {
 		c.validatePromptRef(j.Name, "system", j.System)
 		c.validatePromptRef(j.Name, "user", j.User)
 		model := resolveSupervisorModel(j.Model)
-		if model == "" && j.Delegate == "" {
-			c.errorf(DiagMissingModelOrDelegate, "judge %q must set 'model' or 'delegate', or define ITERION_DEFAULT_SUPERVISOR_MODEL", j.Name)
+		if model == "" && j.Backend == "" {
+			c.errorf(DiagMissingModelOrBackend, "judge %q must set 'model' or 'backend', or define ITERION_DEFAULT_SUPERVISOR_MODEL", j.Name)
 		}
 
 		// Apply workflow-level interaction default when node doesn't set one.
@@ -421,15 +422,15 @@ func (c *compiler) compileJudges() {
 		if interaction == InteractionNone {
 			interaction = c.workflowInteractionDefault()
 		}
-		if interaction != InteractionNone && j.Delegate == "" {
-			c.warnf(DiagInteractionNoDelegate, "judge %q has interaction %s but no delegate; interaction forwarding only works with delegation backends", j.Name, interaction)
+		if interaction != InteractionNone && j.Backend == "" {
+			c.warnf(DiagInteractionNoBackend, "judge %q has interaction %s but no backend; interaction forwarding only works with execution backends", j.Name, interaction)
 		}
 
 		c.nodes[j.Name] = &Node{
 			ID:                j.Name,
 			Kind:              NodeJudge,
 			Model:             model,
-			Delegate:          j.Delegate,
+			Backend:           j.Backend,
 			MCP:               convertMCPConfig(j.MCP),
 			InputSchema:       j.Input,
 			OutputSchema:      j.Output,
@@ -465,8 +466,8 @@ func (c *compiler) compileRouters() {
 			if r.Model != "" {
 				c.errorf(DiagRouterLLMOnlyProperty, "router %q property 'model' is only valid with mode: llm", r.Name)
 			}
-			if r.Delegate != "" {
-				c.errorf(DiagRouterLLMOnlyProperty, "router %q property 'delegate' is only valid with mode: llm", r.Name)
+			if r.Backend != "" {
+				c.errorf(DiagRouterLLMOnlyProperty, "router %q property 'backend' is only valid with mode: llm", r.Name)
 			}
 			if r.System != "" {
 				c.errorf(DiagRouterLLMOnlyProperty, "router %q property 'system' is only valid with mode: llm", r.Name)
@@ -480,11 +481,11 @@ func (c *compiler) compileRouters() {
 		}
 		if mode == RouterLLM {
 			model := resolveSupervisorModel(r.Model)
-			if model == "" && r.Delegate == "" {
-				c.warnf(DiagMissingModelOrDelegate, "router %q with mode llm has no model or delegate; will use built-in default at runtime", r.Name)
+			if model == "" && r.Backend == "" {
+				c.warnf(DiagMissingModelOrBackend, "router %q with mode llm has no model or backend; will use built-in default at runtime", r.Name)
 			}
 			node.Model = model
-			node.Delegate = r.Delegate
+			node.Backend = r.Backend
 			if r.System != "" {
 				c.validatePromptRef(r.Name, "system", r.System)
 				node.SystemPrompt = r.System
@@ -541,10 +542,10 @@ func (c *compiler) compileHumans() {
 				model = h.Model
 			}
 			if model == "" {
-				c.errorf(DiagMissingModelOrDelegate, "human %q with interaction %s must set 'model' or 'interaction_model'", h.Name, interaction)
+				c.errorf(DiagMissingModelOrBackend, "human %q with interaction %s must set 'model' or 'interaction_model'", h.Name, interaction)
 			}
 			if h.Output == "" {
-				c.errorf(DiagMissingModelOrDelegate, "human %q with interaction %s must set 'output'", h.Name, interaction)
+				c.errorf(DiagMissingModelOrBackend, "human %q with interaction %s must set 'output'", h.Name, interaction)
 			}
 			node.Model = h.Model
 			if h.InteractionModel != "" {

@@ -2,8 +2,8 @@
 ## Objectif : Variante MCP du workflow dual-model parallele.
 ## Au lieu d'appeler les APIs LLM directement (via goai), chaque noeud
 ## delegue son travail a un agent CLI externe :
-##   - Noeuds Claude  -> claude-code (delegate: "claude_code")
-##   - Noeuds GPT     -> codex       (delegate: "codex")
+##   - Noeuds Claude  -> claude-code (backend: "claude_code")
+##   - Noeuds GPT     -> codex       (backend: "codex")
 ## Le graphe, les schemas, les prompts et les edges sont identiques
 ## a pr_refine_dual_model_parallel.iter.
 ## Voir docs/mcp_delegation.md pour la comparaison API vs delegation.
@@ -211,7 +211,7 @@ schema compliance_verdict:
 ## --- Nodes: delegate instead of model ---
 
 agent context_builder:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: repo_context_request
   output: pr_context
   publish: pr_context
@@ -225,7 +225,7 @@ router review_fanout:
   mode: fan_out_all
 
 agent claude_review:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: review_request
   output: review_result
   system: pr_review_system
@@ -235,7 +235,7 @@ agent claude_review:
   tool_max_steps: 10
 
 agent gpt_review:
-  delegate: "codex"
+  backend: "codex"
   input: review_request
   output: review_result
   system: pr_review_system
@@ -245,7 +245,7 @@ agent gpt_review:
   tool_max_steps: 10
 
 agent claude_plan:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: plan_request
   output: remediation_plan
   system: plan_generation_system
@@ -255,7 +255,7 @@ agent claude_plan:
   tool_max_steps: 6
 
 agent gpt_plan:
-  delegate: "codex"
+  backend: "codex"
   input: plan_request
   output: remediation_plan
   system: plan_generation_system
@@ -268,7 +268,7 @@ router synthesis_fanout:
   mode: fan_out_all
 
 agent claude_plan_synthesis:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: dual_plan_bundle
   output: plan_synthesis
   system: plan_synthesis_system
@@ -276,7 +276,7 @@ agent claude_plan_synthesis:
   session: fresh
 
 agent gpt_plan_synthesis:
-  delegate: "codex"
+  backend: "codex"
   input: dual_plan_bundle
   output: plan_synthesis
   system: plan_synthesis_system
@@ -285,7 +285,7 @@ agent gpt_plan_synthesis:
 
 agent final_plan_merge:
   await: wait_all
-  delegate: "claude_code"
+  backend: "claude_code"
   input: synthesis_bundle
   output: remediation_plan
   publish: final_merged_plan
@@ -294,7 +294,7 @@ agent final_plan_merge:
   session: fresh
 
 agent act_on_plan:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: act_request
   output: act_result
   publish: act_report
@@ -308,7 +308,7 @@ router final_review_fanout:
   mode: fan_out_all
 
 agent claude_final_review:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: final_review_request
   output: review_result
   system: final_review_system
@@ -318,7 +318,7 @@ agent claude_final_review:
   tool_max_steps: 10
 
 agent gpt_final_review:
-  delegate: "codex"
+  backend: "codex"
   input: final_review_request
   output: review_result
   system: final_review_system
@@ -329,7 +329,7 @@ agent gpt_final_review:
 
 judge final_compliance_check:
   await: wait_all
-  delegate: "claude_code"
+  backend: "claude_code"
   input: final_reviews_bundle
   output: compliance_verdict
   publish: final_verdict
@@ -337,7 +337,7 @@ judge final_compliance_check:
   user: final_compliance_user
   session: fresh
 
-workflow pr_refine_dual_model_parallel_delegate:
+workflow pr_refine_dual_model_parallel_backend:
   vars:
     pr_title: string
     pr_description: string = ""

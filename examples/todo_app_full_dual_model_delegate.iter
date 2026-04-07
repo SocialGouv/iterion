@@ -3,8 +3,8 @@
 ## orchestrant deux agents IA via delegation MCP avec cross-review
 ## et double validation (les deux modeles doivent valider).
 ##
-##   - Claude  -> claude-code (delegate: "claude_code")
-##   - Codex   -> codex       (delegate: "codex")
+##   - Claude  -> claude-code (backend: "claude_code")
+##   - Codex   -> codex       (backend: "codex")
 ##
 ## Phases :
 ##   1. Design de l'application (Claude)
@@ -199,7 +199,7 @@ schema readiness_verdict:
 ## ─── Nodes : Phase 1 — Design ───────────────────────────────────
 
 agent claude_design:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: todo_app_input
   output: design_output
   publish: app_design
@@ -210,7 +210,7 @@ agent claude_design:
 ## ─── Nodes : Phase 2 — Challenge ────────────────────────────────
 
 agent codex_challenge:
-  delegate: "codex"
+  backend: "codex"
   input: challenge_input
   output: challenge_output
   publish: design_feedback
@@ -221,7 +221,7 @@ agent codex_challenge:
 ## ─── Nodes : Paire 1 — Claude implemente, Codex review ─────────
 
 agent claude_implement:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: impl_input
   output: impl_output
   publish: act_report
@@ -230,7 +230,7 @@ agent claude_implement:
   session: fresh
 
 agent codex_review:
-  delegate: "codex"
+  backend: "codex"
   input: review_input
   output: review_output
   system: review_system
@@ -238,7 +238,7 @@ agent codex_review:
   session: fresh
 
 judge judge_codex:
-  delegate: "codex"
+  backend: "codex"
   input: readiness_input
   output: readiness_verdict
   system: readiness_system
@@ -246,7 +246,7 @@ judge judge_codex:
   session: fresh
 
 judge counter_judge_claude:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: readiness_input
   output: readiness_verdict
   publish: final_verdict
@@ -257,7 +257,7 @@ judge counter_judge_claude:
 ## ─── Nodes : Paire 2 — Codex implemente, Claude review ─────────
 
 agent codex_implement:
-  delegate: "codex"
+  backend: "codex"
   input: impl_input
   output: impl_output
   publish: act_report
@@ -266,7 +266,7 @@ agent codex_implement:
   session: fresh
 
 agent claude_review:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: review_input
   output: review_output
   system: review_system
@@ -274,7 +274,7 @@ agent claude_review:
   session: fresh
 
 judge judge_claude:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: readiness_input
   output: readiness_verdict
   system: readiness_system
@@ -282,7 +282,7 @@ judge judge_claude:
   session: fresh
 
 judge counter_judge_codex:
-  delegate: "codex"
+  backend: "codex"
   input: readiness_input
   output: readiness_verdict
   publish: final_verdict
@@ -292,7 +292,7 @@ judge counter_judge_codex:
 
 ## ─── Workflow ────────────────────────────────────────────────────
 
-workflow todo_app_full_dual_model_delegate:
+workflow todo_app_full_dual_model_backend:
   vars:
     app_description: string
     acceptance_criteria: string

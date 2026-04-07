@@ -365,10 +365,10 @@ func TestRouterDeclRoundRobin(t *testing.T) {
 	assertEq(t, "Mode", r.Mode, ast.RouterRoundRobin)
 }
 
-func TestRouterDeclLLMWithDelegate(t *testing.T) {
+func TestRouterDeclLLMWithBackend(t *testing.T) {
 	src := `router fix_router:
   mode: llm
-  delegate: "claude_code"
+  backend: "claude_code"
   system: my_prompt
 `
 	res := parser.Parse("test.iter", src)
@@ -377,7 +377,7 @@ func TestRouterDeclLLMWithDelegate(t *testing.T) {
 	r := res.File.Routers[0]
 	assertEq(t, "Name", r.Name, "fix_router")
 	assertEq(t, "Mode", r.Mode, ast.RouterLLM)
-	assertEq(t, "Delegate", r.Delegate, "claude_code")
+	assertEq(t, "Backend", r.Backend, "claude_code")
 	assertEq(t, "System", r.System, "my_prompt")
 }
 
@@ -422,7 +422,7 @@ func TestAgentWithTools(t *testing.T) {
 func TestAgentSessionFork(t *testing.T) {
 	src := `agent commit_namer:
   model: "claude-4"
-  delegate: "claude_code"
+  backend: "claude_code"
   input: in_s
   output: out_s
   system: sys
@@ -434,7 +434,7 @@ func TestAgentSessionFork(t *testing.T) {
 
 	a := res.File.Agents[0]
 	assertEq(t, "Session", a.Session, ast.SessionFork)
-	assertEq(t, "Delegate", a.Delegate, "claude_code")
+	assertEq(t, "Backend", a.Backend, "claude_code")
 }
 
 func TestAgentReasoningEffort(t *testing.T) {
@@ -881,9 +881,9 @@ func TestFixtureStability(t *testing.T) {
 	}
 }
 
-func TestAgentDelegate(t *testing.T) {
+func TestAgentBackend(t *testing.T) {
 	src := `agent worker:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: in_s
   output: out_s
   system: sys
@@ -896,16 +896,16 @@ func TestAgentDelegate(t *testing.T) {
 	assertNoDiags(t, res)
 
 	a := res.File.Agents[0]
-	assertEq(t, "Delegate", a.Delegate, "claude_code")
+	assertEq(t, "Backend", a.Backend, "claude_code")
 	assertEq(t, "Model", a.Model, "")
 	if len(a.Tools) != 2 {
 		t.Fatalf("expected 2 tools, got %d", len(a.Tools))
 	}
 }
 
-func TestJudgeDelegate(t *testing.T) {
+func TestJudgeBackend(t *testing.T) {
 	src := `judge verdict:
-  delegate: "codex"
+  backend: "codex"
   input: in_s
   output: out_s
   system: sys
@@ -916,7 +916,7 @@ func TestJudgeDelegate(t *testing.T) {
 	assertNoDiags(t, res)
 
 	j := res.File.Judges[0]
-	assertEq(t, "Delegate", j.Delegate, "codex")
+	assertEq(t, "Backend", j.Backend, "codex")
 	assertEq(t, "Model", j.Model, "")
 }
 

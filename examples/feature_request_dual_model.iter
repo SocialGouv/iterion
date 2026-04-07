@@ -1,8 +1,8 @@
 ## Fixture : feature_request_dual_model
 ## Objectif : Workflow de feature request orchestrant deux agents IA
 ## via delegation MCP :
-##   - Claude Opus 4.6  -> claude-code (delegate: "claude_code")
-##   - GPT 5.4          -> codex       (delegate: "codex")
+##   - Claude Opus 4.6  -> claude-code (backend: "claude_code")
+##   - GPT 5.4          -> codex       (backend: "codex")
 ##
 ## Phases :
 ##   1. Analyse du contexte feature (Claude)
@@ -221,7 +221,7 @@ schema readiness_verdict:
 ## ─── Nodes : Phase 1 — Contexte Feature ─────────────────────────
 
 agent feature_spec:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: feature_request_input
   output: feature_context
   publish: feature_context
@@ -234,7 +234,7 @@ agent feature_spec:
 ## ─── Nodes : Phase 2 — Discussion (3 rounds) ────────────────────
 
 agent claude_discuss_1:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: discussion_input
   output: discussion_output
   system: discuss_claude_system
@@ -242,7 +242,7 @@ agent claude_discuss_1:
   session: fresh
 
 agent gpt_discuss_1:
-  delegate: "codex"
+  backend: "codex"
   input: discussion_input
   output: discussion_output
   system: discuss_gpt_system
@@ -250,7 +250,7 @@ agent gpt_discuss_1:
   session: fresh
 
 agent claude_discuss_2:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: discussion_input
   output: discussion_output
   system: discuss_claude_system
@@ -258,7 +258,7 @@ agent claude_discuss_2:
   session: fresh
 
 agent gpt_discuss_2:
-  delegate: "codex"
+  backend: "codex"
   input: discussion_input
   output: discussion_output
   system: discuss_gpt_system
@@ -266,7 +266,7 @@ agent gpt_discuss_2:
   session: fresh
 
 agent claude_discuss_3:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: discussion_input
   output: discussion_output
   system: discuss_claude_system
@@ -274,7 +274,7 @@ agent claude_discuss_3:
   session: fresh
 
 agent gpt_discuss_3:
-  delegate: "codex"
+  backend: "codex"
   input: discussion_input
   output: feature_plan
   publish: final_plan
@@ -286,7 +286,7 @@ agent gpt_discuss_3:
 
 ## Paire 1 : Claude agit, GPT review
 agent claude_act:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: act_input
   output: act_output
   publish: act_report
@@ -297,7 +297,7 @@ agent claude_act:
   tool_max_steps: 20
 
 agent gpt_review:
-  delegate: "codex"
+  backend: "codex"
   input: review_input
   output: review_output
   system: review_feature_system
@@ -307,7 +307,7 @@ agent gpt_review:
   tool_max_steps: 10
 
 judge readiness_judge_after_gpt_review:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: readiness_input
   output: readiness_verdict
   system: readiness_system
@@ -316,7 +316,7 @@ judge readiness_judge_after_gpt_review:
 
 ## Paire 2 : GPT agit, Claude review
 agent gpt_act:
-  delegate: "codex"
+  backend: "codex"
   input: act_input
   output: act_output
   publish: act_report
@@ -327,7 +327,7 @@ agent gpt_act:
   tool_max_steps: 20
 
 agent claude_review:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: review_input
   output: review_output
   system: review_feature_system
@@ -337,7 +337,7 @@ agent claude_review:
   tool_max_steps: 10
 
 judge readiness_judge_after_claude_review:
-  delegate: "claude_code"
+  backend: "claude_code"
   input: readiness_input
   output: readiness_verdict
   publish: final_verdict

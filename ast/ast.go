@@ -188,7 +188,7 @@ func (sm SessionMode) String() string {
 type AgentDecl struct {
 	Name              string
 	Model             string // string literal, may contain ${...} env refs
-	Delegate          string // delegation backend name (e.g. "claude_code"); when set, bypasses LLM API
+	Backend           string // execution backend name (e.g. "claude_code"); when set, bypasses direct LLM API
 	MCP               *MCPConfigDecl
 	Input             string          // schema reference name
 	Output            string          // schema reference name
@@ -217,7 +217,7 @@ type AgentDecl struct {
 type JudgeDecl struct {
 	Name              string
 	Model             string
-	Delegate          string // delegation backend name; when set, bypasses LLM API
+	Backend           string // execution backend name; when set, bypasses direct LLM API
 	MCP               *MCPConfigDecl
 	Input             string
 	Output            string
@@ -269,14 +269,14 @@ func (rm RouterMode) String() string {
 // Routers are fan-out sources and do not support the Await field
 // (convergence is only meaningful on target nodes: agent, judge, human, tool).
 type RouterDecl struct {
-	Name     string
-	Mode     RouterMode
-	Model    string // only for mode: llm
-	Delegate string // delegation backend name, only for mode: llm
-	System   string // prompt ref, only for mode: llm
-	User     string // prompt ref, only for mode: llm
-	Multi    bool   // multi-route selection, only for mode: llm
-	Span     Span
+	Name    string
+	Mode    RouterMode
+	Model   string // only for mode: llm
+	Backend string // execution backend name, only for mode: llm
+	System  string // prompt ref, only for mode: llm
+	User    string // prompt ref, only for mode: llm
+	Multi   bool   // multi-route selection, only for mode: llm
+	Span    Span
 }
 
 // ---------------------------------------------------------------------------
@@ -386,14 +386,15 @@ type ToolNodeDecl struct {
 
 // WorkflowDecl represents a `workflow <name>:` declaration.
 type WorkflowDecl struct {
-	Name        string
-	Vars        *VarsBlock       // workflow-level variable declarations
-	Entry       string           // entry node name
-	MCP         *MCPConfigDecl   // workflow-level MCP activation/filtering
-	Budget      *BudgetBlock     // execution limits (optional)
-	Interaction *InteractionMode // workflow-level default interaction mode (nil = not set)
-	Edges       []*Edge          // directed edges between nodes
-	Span        Span
+	Name           string
+	Vars           *VarsBlock       // workflow-level variable declarations
+	Entry          string           // entry node name
+	DefaultBackend string           // workflow-level default backend (empty = not set)
+	MCP            *MCPConfigDecl   // workflow-level MCP activation/filtering
+	Budget         *BudgetBlock     // execution limits (optional)
+	Interaction    *InteractionMode // workflow-level default interaction mode (nil = not set)
+	Edges          []*Edge          // directed edges between nodes
+	Span           Span
 }
 
 // BudgetBlock represents execution limits for a workflow.

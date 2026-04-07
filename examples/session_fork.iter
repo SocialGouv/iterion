@@ -53,7 +53,7 @@ prompt summary_user:
 
 agent worker:
   model: "${ANTHROPIC_MODEL}"
-  delegate: "claude_code"
+  backend: "claude_code"
   input: task_input
   output: task_output
   system: worker_system
@@ -63,7 +63,7 @@ agent worker:
 
 agent commit_namer:
   model: "${ANTHROPIC_MODEL}"
-  delegate: "claude_code"
+  backend: "claude_code"
   output: commit_name_output
   system: commit_system
   user: commit_user
@@ -72,7 +72,7 @@ agent commit_namer:
 
 agent summarizer:
   model: "${ANTHROPIC_MODEL}"
-  delegate: "claude_code"
+  backend: "claude_code"
   output: summary_output
   system: summary_system
   user: summary_user
