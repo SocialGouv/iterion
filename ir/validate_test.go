@@ -912,18 +912,19 @@ workflow test:
 	if r.Workflow == nil {
 		t.Fatal("expected non-nil workflow")
 	}
-	node := r.Workflow.Nodes["r1"]
-	if node == nil {
+	n := r.Workflow.Nodes["r1"]
+	if n == nil {
 		t.Fatal("expected node r1")
 	}
-	if node.RouterMode != RouterLLM {
-		t.Errorf("expected RouterLLM, got %v", node.RouterMode)
+	rn := n.(*RouterNode)
+	if rn.RouterMode != RouterLLM {
+		t.Errorf("expected RouterLLM, got %v", rn.RouterMode)
 	}
-	if node.Model != "test-model" {
-		t.Errorf("expected model test-model, got %s", node.Model)
+	if rn.Model != "test-model" {
+		t.Errorf("expected model test-model, got %s", rn.Model)
 	}
-	if node.SystemPrompt != "route_sys" {
-		t.Errorf("expected system prompt route_sys, got %s", node.SystemPrompt)
+	if rn.SystemPrompt != "route_sys" {
+		t.Errorf("expected system prompt route_sys, got %s", rn.SystemPrompt)
 	}
 }
 
@@ -976,15 +977,16 @@ workflow test:
 	if r.Workflow == nil {
 		t.Fatal("expected non-nil workflow")
 	}
-	node := r.Workflow.Nodes["r1"]
-	if node == nil {
+	n := r.Workflow.Nodes["r1"]
+	if n == nil {
 		t.Fatal("expected node r1")
 	}
-	if node.RouterMode != RouterLLM {
-		t.Errorf("expected RouterLLM, got %v", node.RouterMode)
+	rn := n.(*RouterNode)
+	if rn.RouterMode != RouterLLM {
+		t.Errorf("expected RouterLLM, got %v", rn.RouterMode)
 	}
-	if node.Model != "test-model" {
-		t.Errorf("expected model test-model, got %s", node.Model)
+	if rn.Model != "test-model" {
+		t.Errorf("expected model test-model, got %s", rn.Model)
 	}
 }
 
@@ -1060,7 +1062,7 @@ workflow test:
 `
 	r := compileFile(t, src)
 	// Inject an invalid reasoning effort after compilation to test the IR validator.
-	r.Workflow.Nodes["a1"].ReasoningEffort = "ultra"
+	r.Workflow.Nodes["a1"].(*AgentNode).ReasoningEffort = "ultra"
 	// Re-run validation.
 	c := &compiler{}
 	c.validateReasoningEffort(r.Workflow)

@@ -49,18 +49,16 @@ func TestPrepareWorkflowProjectAutoloadAndOverrides(t *testing.T) {
 			Servers:         []string{"sentry"},
 			Disable:         []string{"falcon"},
 		},
-		Nodes: map[string]*ir.Node{
-			"implement": {
-				ID:   "implement",
-				Kind: ir.NodeAgent,
+		Nodes: map[string]ir.Node{
+			"implement": &ir.AgentNode{
+				BaseNode: ir.BaseNode{ID: "implement"},
 				MCP: &ir.MCPConfig{
 					Servers: []string{"github"},
 					Disable: []string{"sentry"},
 				},
 			},
-			"act": {
-				ID:   "act",
-				Kind: ir.NodeTool,
+			"act": &ir.ToolNode{
+				BaseNode: ir.BaseNode{ID: "act"},
 			},
 		},
 	}
@@ -73,8 +71,8 @@ func TestPrepareWorkflowProjectAutoloadAndOverrides(t *testing.T) {
 		t.Fatalf("expected explicit override, got %q", got)
 	}
 	assertStringSliceEq(t, wf.ActiveMCPServers, []string{"github", "sentry"})
-	assertStringSliceEq(t, wf.Nodes["implement"].ActiveMCPServers, []string{"github"})
-	assertStringSliceEq(t, wf.Nodes["act"].ActiveMCPServers, []string{"github", "sentry"})
+	assertStringSliceEq(t, wf.Nodes["implement"].(*ir.AgentNode).ActiveMCPServers, []string{"github"})
+	// ToolNode does not have ActiveMCPServers — MCP servers are only resolved for Agent/Judge nodes.
 }
 
 func TestPrepareWorkflowAutoloadDisabledByEnv(t *testing.T) {
@@ -101,8 +99,8 @@ func TestPrepareWorkflowAutoloadDisabledByEnv(t *testing.T) {
 		MCP: &ir.MCPConfig{
 			Servers: []string{"sentry"},
 		},
-		Nodes: map[string]*ir.Node{
-			"implement": {ID: "implement", Kind: ir.NodeAgent},
+		Nodes: map[string]ir.Node{
+			"implement": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "implement"}},
 		},
 	}
 

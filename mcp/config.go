@@ -74,11 +74,25 @@ func PrepareWorkflow(wf *ir.Workflow, projectDir string) error {
 	}
 
 	for _, node := range wf.Nodes {
-		active, err := resolveNodeActiveServers(node.MCP, workflowActive, catalog)
-		if err != nil {
-			return fmt.Errorf("mcp: node %q: %w", node.ID, err)
+		var mcpCfg *ir.MCPConfig
+		switch n := node.(type) {
+		case *ir.AgentNode:
+			mcpCfg = n.MCP
+		case *ir.JudgeNode:
+			mcpCfg = n.MCP
+		default:
+			continue
 		}
-		node.ActiveMCPServers = active
+		active, err := resolveNodeActiveServers(mcpCfg, workflowActive, catalog)
+		if err != nil {
+			return fmt.Errorf("mcp: node %q: %w", node.NodeID(), err)
+		}
+		switch n := node.(type) {
+		case *ir.AgentNode:
+			n.ActiveMCPServers = active
+		case *ir.JudgeNode:
+			n.ActiveMCPServers = active
+		}
 	}
 
 	return nil

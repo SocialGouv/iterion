@@ -83,13 +83,13 @@ func TestCompileMinimalWorkflow(t *testing.T) {
 	if len(w.Nodes) != 3 {
 		t.Errorf("expected 3 nodes, got %d", len(w.Nodes))
 	}
-	if w.Nodes["start"].Kind != NodeAgent {
+	if w.Nodes["start"].NodeKind() != NodeAgent {
 		t.Errorf("start should be agent")
 	}
-	if w.Nodes["done"].Kind != NodeDone {
+	if w.Nodes["done"].NodeKind() != NodeDone {
 		t.Errorf("done should be NodeDone")
 	}
-	if w.Nodes["fail"].Kind != NodeFail {
+	if w.Nodes["fail"].NodeKind() != NodeFail {
 		t.Errorf("fail should be NodeFail")
 	}
 
@@ -199,13 +199,13 @@ func TestCompileAllNodeKinds(t *testing.T) {
 			t.Errorf("node %q not found", tt.id)
 			continue
 		}
-		if n.Kind != tt.kind {
-			t.Errorf("node %q: expected kind %v, got %v", tt.id, tt.kind, n.Kind)
+		if n.NodeKind() != tt.kind {
+			t.Errorf("node %q: expected kind %v, got %v", tt.id, tt.kind, n.NodeKind())
 		}
 	}
 
 	// Agent details
-	a1 := w.Nodes["a1"]
+	a1 := w.Nodes["a1"].(*AgentNode)
 	if a1.Model != "claude" {
 		t.Errorf("a1 model: expected 'claude', got %q", a1.Model)
 	}
@@ -220,30 +220,29 @@ func TestCompileAllNodeKinds(t *testing.T) {
 	}
 
 	// Convergence details (h1 has await: wait_all)
-	h1node := w.Nodes["h1"]
+	h1node := w.Nodes["h1"].(*HumanNode)
 	if h1node.AwaitMode != AwaitWaitAll {
 		t.Errorf("h1 await: expected wait_all, got %v", h1node.AwaitMode)
 	}
 
 	// Human details
-	h1 := w.Nodes["h1"]
-	if h1.MinAnswers != 2 {
-		t.Errorf("h1 min_answers: expected 2, got %d", h1.MinAnswers)
+	if h1node.MinAnswers != 2 {
+		t.Errorf("h1 min_answers: expected 2, got %d", h1node.MinAnswers)
 	}
-	if h1.Instructions != "human_instr" {
-		t.Errorf("h1 instructions: expected 'human_instr', got %q", h1.Instructions)
+	if h1node.Instructions != "human_instr" {
+		t.Errorf("h1 instructions: expected 'human_instr', got %q", h1node.Instructions)
 	}
 
 	// Router details
-	r1 := w.Nodes["r1"]
+	r1 := w.Nodes["r1"].(*RouterNode)
 	if r1.RouterMode != RouterFanOutAll {
 		t.Errorf("r1 mode: expected fan_out_all, got %v", r1.RouterMode)
 	}
 
 	// Tool details
-	t1 := w.Nodes["t1"]
-	if t1.Command != "go test ./..." {
-		t.Errorf("t1 command: expected 'go test ./...', got %q", t1.Command)
+	t1node := w.Nodes["t1"].(*ToolNode)
+	if t1node.Command != "go test ./..." {
+		t.Errorf("t1 command: expected 'go test ./...', got %q", t1node.Command)
 	}
 }
 
@@ -606,7 +605,7 @@ workflow flow:
 	if server.Transport != MCPTransportHTTP {
 		t.Fatalf("expected HTTP transport, got %v", server.Transport)
 	}
-	node := w.Nodes["implement"]
+	node := w.Nodes["implement"].(*AgentNode)
 	if node.MCP == nil {
 		t.Fatal("expected node MCP config")
 	}
@@ -805,13 +804,13 @@ workflow test:
   r -> fail
 `
 	w := mustCompile(t, src)
-	if got := w.Nodes["a"].Model; got != "anthropic/claude-sonnet-4-6" {
+	if got := w.Nodes["a"].(*AgentNode).Model; got != "anthropic/claude-sonnet-4-6" {
 		t.Fatalf("agent model fallback: got %q", got)
 	}
-	if got := w.Nodes["j"].Model; got != "anthropic/claude-sonnet-4-6" {
+	if got := w.Nodes["j"].(*JudgeNode).Model; got != "anthropic/claude-sonnet-4-6" {
 		t.Fatalf("judge model fallback: got %q", got)
 	}
-	if got := w.Nodes["r"].Model; got != "anthropic/claude-sonnet-4-6" {
+	if got := w.Nodes["r"].(*RouterNode).Model; got != "anthropic/claude-sonnet-4-6" {
 		t.Fatalf("router model fallback: got %q", got)
 	}
 }
@@ -896,7 +895,7 @@ workflow test:
   r -> fail
 `
 	w := mustCompile(t, src)
-	node := w.Nodes["r"]
+	node := w.Nodes["r"].(*RouterNode)
 	if node.Backend != "claude_code" {
 		t.Fatalf("expected backend 'claude_code', got %q", node.Backend)
 	}
@@ -1074,7 +1073,7 @@ workflow fork_test:
   worker -> done
 `
 	w := mustCompile(t, src)
-	n := w.Nodes["worker"]
+	n := w.Nodes["worker"].(*AgentNode)
 	if n.Session != SessionFork {
 		t.Errorf("expected SessionFork, got %v", n.Session)
 	}
@@ -1211,8 +1210,8 @@ func TestCompileReferenceFixtureDetailed(t *testing.T) {
 	}
 
 	// Specific node checks
-	cb := w.Nodes["context_builder"]
-	if cb.Kind != NodeAgent {
+	cb := w.Nodes["context_builder"].(*AgentNode)
+	if cb.NodeKind() != NodeAgent {
 		t.Errorf("context_builder should be agent")
 	}
 	if cb.Publish != "pr_context" {
@@ -1223,14 +1222,14 @@ func TestCompileReferenceFixtureDetailed(t *testing.T) {
 	}
 
 	// Router
-	irf := w.Nodes["initial_review_fanout"]
-	if irf.Kind != NodeRouter || irf.RouterMode != RouterFanOutAll {
+	irf := w.Nodes["initial_review_fanout"].(*RouterNode)
+	if irf.NodeKind() != NodeRouter || irf.RouterMode != RouterFanOutAll {
 		t.Errorf("initial_review_fanout: expected router fan_out_all")
 	}
 
 	// Human
-	hc := w.Nodes["technical_decision_human_checkpoint"]
-	if hc.Kind != NodeHuman {
+	hc := w.Nodes["technical_decision_human_checkpoint"].(*HumanNode)
+	if hc.NodeKind() != NodeHuman {
 		t.Errorf("technical_decision_human_checkpoint: expected human")
 	}
 	if hc.MinAnswers != 1 {

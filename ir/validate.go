@@ -63,13 +63,27 @@ func (c *compiler) validateInheritAtConvergence(w *Workflow) {
 	// re-entry) is left to runtime since static analysis can't distinguish
 	// parallel convergence from sequential re-entry.
 	for nodeID, node := range w.Nodes {
-		if node.AwaitMode == AwaitNone {
+		var awaitMode AwaitMode
+		var session SessionMode
+		switch n := node.(type) {
+		case *AgentNode:
+			awaitMode, session = n.AwaitMode, n.Session
+		case *JudgeNode:
+			awaitMode, session = n.AwaitMode, n.Session
+		case *HumanNode:
+			awaitMode = n.AwaitMode
+		case *ToolNode:
+			awaitMode, session = n.AwaitMode, n.Session
+		default:
 			continue
 		}
-		if node.Session == SessionInherit || node.Session == SessionFork {
+		if awaitMode == AwaitNone {
+			continue
+		}
+		if session == SessionInherit || session == SessionFork {
 			c.errorf(DiagSessionAfterConvergence,
 				"node %q has session: %s but has await: %s (convergence point); only fresh or artifacts_only are allowed",
-				nodeID, node.Session, node.AwaitMode)
+				nodeID, session, awaitMode)
 		}
 	}
 }
@@ -82,7 +96,7 @@ func (c *compiler) findConvergenceNodes(w *Workflow) map[string]bool {
 
 	// Nodes explicitly marked with await.
 	for id, node := range w.Nodes {
-		if node.AwaitMode != AwaitNone {
+		if NodeAwaitMode(node) != AwaitNone {
 			result[id] = true
 		}
 	}
@@ -135,7 +149,7 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 		}
 
 		// Router fan_out_all, round_robin, and llm are allowed multiple unconditional edges.
-		if node.Kind == NodeRouter && (node.RouterMode == RouterFanOutAll || node.RouterMode == RouterRoundRobin || node.RouterMode == RouterLLM) {
+		if r, ok := node.(*RouterNode); ok && (r.RouterMode == RouterFanOutAll || r.RouterMode == RouterRoundRobin || r.RouterMode == RouterLLM) {
 			continue
 		}
 
@@ -176,19 +190,20 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 
 func (c *compiler) validateRoundRobinEdges(w *Workflow) {
 	for _, node := range w.Nodes {
-		if node.Kind != NodeRouter || node.RouterMode != RouterRoundRobin {
+		r, ok := node.(*RouterNode)
+		if !ok || r.RouterMode != RouterRoundRobin {
 			continue
 		}
 		count := 0
 		for _, e := range w.Edges {
-			if e.From == node.ID && e.Condition == "" {
+			if e.From == r.ID && e.Condition == "" {
 				count++
 			}
 		}
 		if count < 2 {
 			c.errorf(DiagRoundRobinTooFewEdges,
 				"round_robin router %q has %d unconditional outgoing edge(s); at least 2 are needed for alternation",
-				node.ID, count)
+				r.ID, count)
 		}
 	}
 }
@@ -199,24 +214,25 @@ func (c *compiler) validateRoundRobinEdges(w *Workflow) {
 
 func (c *compiler) validateLLMRouterEdges(w *Workflow) {
 	for _, node := range w.Nodes {
-		if node.Kind != NodeRouter || node.RouterMode != RouterLLM {
+		r, ok := node.(*RouterNode)
+		if !ok || r.RouterMode != RouterLLM {
 			continue
 		}
 		count := 0
 		for _, e := range w.Edges {
-			if e.From == node.ID {
+			if e.From == r.ID {
 				count++
 				if e.Condition != "" {
 					c.errorf(DiagLLMRouterConditionEdge,
 						"llm router %q edge to %q has a 'when' condition; LLM routers select targets directly",
-						node.ID, e.To)
+						r.ID, e.To)
 				}
 			}
 		}
 		if count < 2 {
 			c.errorf(DiagLLMRouterTooFewEdges,
 				"llm router %q has %d outgoing edge(s); at least 2 are needed",
-				node.ID, count)
+				r.ID, count)
 		}
 	}
 }
@@ -292,11 +308,12 @@ func (c *compiler) validateConditionFields(w *Workflow) {
 		}
 
 		// Only validate if the source node has an output schema.
-		if src.OutputSchema == "" {
+		outSchema := NodeOutputSchema(src)
+		if outSchema == "" {
 			continue
 		}
 
-		schema, ok := w.Schemas[src.OutputSchema]
+		schema, ok := w.Schemas[outSchema]
 		if !ok {
 			continue // already reported by C002
 		}
@@ -306,7 +323,7 @@ func (c *compiler) validateConditionFields(w *Workflow) {
 		if field == nil {
 			c.errorf(DiagConditionFieldNotFound,
 				"edge %s -> %s: condition field %q not found in output schema %q of node %q",
-				e.From, e.To, e.Condition, src.OutputSchema, e.From)
+				e.From, e.To, e.Condition, outSchema, e.From)
 			continue
 		}
 
@@ -314,7 +331,7 @@ func (c *compiler) validateConditionFields(w *Workflow) {
 		if field.Type != FieldTypeBool {
 			c.errorf(DiagConditionNotBool,
 				"edge %s -> %s: condition field %q is %s, not bool, in output schema %q",
-				e.From, e.To, e.Condition, field.Type, src.OutputSchema)
+				e.From, e.To, e.Condition, field.Type, outSchema)
 		}
 	}
 }
@@ -424,12 +441,13 @@ func (c *compiler) validateReachability(w *Workflow) {
 			continue
 		}
 		// Terminal nodes are always added; skip them if unreachable — it's fine.
-		if node.Kind == NodeDone || node.Kind == NodeFail {
+		switch node.(type) {
+		case *DoneNode, *FailNode:
 			continue
 		}
 		c.errorf(DiagUnreachableNode,
 			"node %q (%s) is unreachable from entry %q",
-			id, node.Kind, w.Entry)
+			id, node.NodeKind(), w.Entry)
 	}
 }
 
@@ -571,13 +589,24 @@ var ValidReasoningEfforts = map[string]bool{
 
 func (c *compiler) validateReasoningEffort(w *Workflow) {
 	for _, node := range w.Nodes {
-		if node.ReasoningEffort == "" {
+		var effort string
+		switch n := node.(type) {
+		case *AgentNode:
+			effort = n.ReasoningEffort
+		case *JudgeNode:
+			effort = n.ReasoningEffort
+		case *RouterNode:
+			effort = n.ReasoningEffort
+		default:
 			continue
 		}
-		if !ValidReasoningEfforts[node.ReasoningEffort] {
+		if effort == "" {
+			continue
+		}
+		if !ValidReasoningEfforts[effort] {
 			c.errorf(DiagInvalidReasoningEffort,
 				"node %q has invalid reasoning_effort %q; valid values are low, medium, high, extra_high",
-				node.ID, node.ReasoningEffort)
+				node.NodeID(), effort)
 		}
 	}
 }
@@ -602,7 +631,7 @@ func collectAllRefs(w *Workflow) []refContext {
 	promptUsers := make(map[string][]string)
 	for _, n := range w.Nodes {
 		for _, pname := range nodePromptRefs(n) {
-			promptUsers[pname] = append(promptUsers[pname], n.ID)
+			promptUsers[pname] = append(promptUsers[pname], n.NodeID())
 		}
 	}
 
@@ -641,35 +670,23 @@ func collectAllRefs(w *Workflow) []refContext {
 
 	// Tool node command refs.
 	for _, n := range w.Nodes {
-		for _, ref := range n.CommandRefs {
-			out = append(out, refContext{
-				Ref:      ref,
-				NodeID:   n.ID,
-				Location: fmt.Sprintf("tool node %q command", n.ID),
-			})
+		if t, ok := n.(*ToolNode); ok {
+			for _, ref := range t.CommandRefs {
+				out = append(out, refContext{
+					Ref:      ref,
+					NodeID:   t.ID,
+					Location: fmt.Sprintf("tool node %q command", t.ID),
+				})
+			}
 		}
 	}
 
 	return out
 }
 
-// nodePromptRefs returns all prompt reference names used by a node.
-func nodePromptRefs(n *Node) []string {
-	var refs []string
-	if n.SystemPrompt != "" {
-		refs = append(refs, n.SystemPrompt)
-	}
-	if n.UserPrompt != "" {
-		refs = append(refs, n.UserPrompt)
-	}
-	if n.InteractionPrompt != "" {
-		refs = append(refs, n.InteractionPrompt)
-	}
-	if n.Instructions != "" {
-		refs = append(refs, n.Instructions)
-	}
-	return refs
-}
+// nodePromptRefs delegates to the exported NodePromptRefs in ir.go.
+// Kept as a local alias for readability in this file.
+var nodePromptRefs = NodePromptRefs
 
 // buildPredecessors computes, for each node, the set of all nodes that
 // can execute before it (i.e. whose outputs are available). This follows
@@ -723,8 +740,8 @@ func computePredecessors(nodeID string, revAdj map[string][]string) map[string]b
 func buildArtifactProducers(w *Workflow) map[string]string {
 	producers := make(map[string]string)
 	for _, n := range w.Nodes {
-		if n.Publish != "" {
-			producers[n.Publish] = n.ID
+		if pub := NodePublish(n); pub != "" {
+			producers[pub] = n.NodeID()
 		}
 	}
 	return producers
@@ -802,7 +819,8 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 	}
 
 	// C032: node has no output schema — warn that field access can't be verified.
-	if targetNode.OutputSchema == "" {
+	outSchema := NodeOutputSchema(targetNode)
+	if outSchema == "" {
 		c.warnf(DiagRefNodeNoSchema,
 			"%s: reference %s accesses field %q on node %q which has no output schema; cannot verify",
 			rc.Location, rc.Ref.Raw, fieldName, targetNodeID)
@@ -810,14 +828,14 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 	}
 
 	// C031: field must exist in the output schema.
-	schema, ok := w.Schemas[targetNode.OutputSchema]
+	schema, ok := w.Schemas[outSchema]
 	if !ok {
 		return // already reported by C002
 	}
 	if findField(schema, fieldName) == nil {
 		c.errorf(DiagRefFieldNotInSchema,
 			"%s: reference %s accesses field %q not found in output schema %q of node %q",
-			rc.Location, rc.Ref.Raw, fieldName, targetNode.OutputSchema, targetNodeID)
+			rc.Location, rc.Ref.Raw, fieldName, outSchema, targetNodeID)
 	}
 }
 
@@ -845,11 +863,12 @@ func (c *compiler) validateInputRef(w *Workflow, rc refContext) {
 	}
 
 	// Can only validate if the consuming node has an input schema.
-	if node.InputSchema == "" {
+	inSchema := NodeInputSchema(node)
+	if inSchema == "" {
 		return
 	}
 
-	schema, ok := w.Schemas[node.InputSchema]
+	schema, ok := w.Schemas[inSchema]
 	if !ok {
 		return // already reported by C002
 	}
@@ -857,7 +876,7 @@ func (c *compiler) validateInputRef(w *Workflow, rc refContext) {
 	if findField(schema, fieldName) == nil {
 		c.errorf(DiagInputFieldNotInSchema,
 			"%s: reference %s accesses field %q not found in input schema %q of node %q",
-			rc.Location, rc.Ref.Raw, fieldName, node.InputSchema, rc.NodeID)
+			rc.Location, rc.Ref.Raw, fieldName, inSchema, rc.NodeID)
 	}
 }
 

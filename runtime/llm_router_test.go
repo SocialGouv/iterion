@@ -23,13 +23,13 @@ func llmRouterWorkflow() *ir.Workflow {
 	return &ir.Workflow{
 		Name:  "llm_router_test",
 		Entry: "entry",
-		Nodes: map[string]*ir.Node{
-			"entry":      {ID: "entry", Kind: ir.NodeAgent},
-			"llm_router": {ID: "llm_router", Kind: ir.NodeRouter, RouterMode: ir.RouterLLM, Model: "test-model"},
-			"agent_a":    {ID: "agent_a", Kind: ir.NodeAgent},
-			"agent_b":    {ID: "agent_b", Kind: ir.NodeAgent},
-			"done":       {ID: "done", Kind: ir.NodeDone},
-			"fail":       {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"entry":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"llm_router": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "llm_router"}, LLMFields: ir.LLMFields{Model: "test-model"}, RouterMode: ir.RouterLLM},
+			"agent_a":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_a"}},
+			"agent_b":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_b"}},
+			"done":       &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":       &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "entry", To: "llm_router"},
@@ -196,15 +196,15 @@ func TestLLMRouterMultiMode(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "llm_router_multi",
 		Entry: "entry",
-		Nodes: map[string]*ir.Node{
-			"entry":      {ID: "entry", Kind: ir.NodeAgent},
-			"llm_router": {ID: "llm_router", Kind: ir.NodeRouter, RouterMode: ir.RouterLLM, Model: "test-model", RouterMulti: true},
-			"agent_a":    {ID: "agent_a", Kind: ir.NodeAgent},
-			"agent_b":    {ID: "agent_b", Kind: ir.NodeAgent},
-			"agent_c":    {ID: "agent_c", Kind: ir.NodeAgent},
-			"final":      {ID: "final", Kind: ir.NodeAgent, AwaitMode: ir.AwaitWaitAll},
-			"done":       {ID: "done", Kind: ir.NodeDone},
-			"fail":       {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"entry":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"llm_router": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "llm_router"}, LLMFields: ir.LLMFields{Model: "test-model"}, RouterMode: ir.RouterLLM, RouterMulti: true},
+			"agent_a":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_a"}},
+			"agent_b":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_b"}},
+			"agent_c":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_c"}},
+			"final":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "final"}, AwaitMode: ir.AwaitWaitAll},
+			"done":       &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":       &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "entry", To: "llm_router"},
@@ -368,14 +368,14 @@ func TestLLMRouterMultiModePartialSelection(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "llm_router_multi_partial",
 		Entry: "entry",
-		Nodes: map[string]*ir.Node{
-			"entry":      {ID: "entry", Kind: ir.NodeAgent},
-			"llm_router": {ID: "llm_router", Kind: ir.NodeRouter, RouterMode: ir.RouterLLM, Model: "test-model", RouterMulti: true},
-			"agent_a":    {ID: "agent_a", Kind: ir.NodeAgent},
-			"agent_b":    {ID: "agent_b", Kind: ir.NodeAgent},
-			"final":      {ID: "final", Kind: ir.NodeAgent, AwaitMode: ir.AwaitWaitAll},
-			"done":       {ID: "done", Kind: ir.NodeDone},
-			"fail":       {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"entry":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"llm_router": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "llm_router"}, LLMFields: ir.LLMFields{Model: "test-model"}, RouterMode: ir.RouterLLM, RouterMulti: true},
+			"agent_a":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_a"}},
+			"agent_b":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_b"}},
+			"final":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "final"}, AwaitMode: ir.AwaitWaitAll},
+			"done":       &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":       &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "entry", To: "llm_router"},
@@ -445,13 +445,13 @@ func TestLLMRouterNoExplicitModel(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "llm_router_no_model",
 		Entry: "entry",
-		Nodes: map[string]*ir.Node{
-			"entry":      {ID: "entry", Kind: ir.NodeAgent},
-			"llm_router": {ID: "llm_router", Kind: ir.NodeRouter, RouterMode: ir.RouterLLM, Model: ""},
-			"agent_a":    {ID: "agent_a", Kind: ir.NodeAgent},
-			"agent_b":    {ID: "agent_b", Kind: ir.NodeAgent},
-			"done":       {ID: "done", Kind: ir.NodeDone},
-			"fail":       {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"entry":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"llm_router": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "llm_router"}, RouterMode: ir.RouterLLM},
+			"agent_a":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_a"}},
+			"agent_b":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_b"}},
+			"done":       &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":       &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "entry", To: "llm_router"},

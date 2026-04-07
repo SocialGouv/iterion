@@ -61,8 +61,8 @@ func (w *Workflow) ToMermaid(view MermaidView) string {
 }
 
 // nodeDecl returns the Mermaid node declaration for a given node.
-func nodeDecl(n *Node, w *Workflow, view MermaidView) string {
-	id := sanitizeID(n.ID)
+func nodeDecl(n Node, w *Workflow, view MermaidView) string {
+	id := sanitizeID(n.NodeID())
 
 	switch view {
 	case MermaidFull:
@@ -75,11 +75,12 @@ func nodeDecl(n *Node, w *Workflow, view MermaidView) string {
 }
 
 // compactShape returns a compact Mermaid shape with a kind icon prefix.
-func compactShape(n *Node) string {
-	icon := kindIcon(n.Kind)
-	label := icon + " " + n.ID
+func compactShape(n Node) string {
+	kind := n.NodeKind()
+	icon := kindIcon(kind)
+	label := icon + " " + n.NodeID()
 
-	switch n.Kind {
+	switch kind {
 	case NodeDone:
 		return fmt.Sprintf(`(["%s"])`, label)
 	case NodeFail:
@@ -89,7 +90,7 @@ func compactShape(n *Node) string {
 	case NodeHuman:
 		return fmt.Sprintf(`>"%s"]`, label)
 	default:
-		if n.AwaitMode != AwaitNone {
+		if NodeAwaitMode(n) != AwaitNone {
 			return fmt.Sprintf(`[["%s"]]`, label)
 		}
 		return fmt.Sprintf(`["%s"]`, label)
@@ -97,52 +98,39 @@ func compactShape(n *Node) string {
 }
 
 // detailedShape returns a detailed Mermaid shape with metadata.
-func detailedShape(n *Node) string {
-	icon := kindIcon(n.Kind)
+func detailedShape(node Node) string {
+	kind := node.NodeKind()
+	icon := kindIcon(kind)
 
 	var lines []string
-	lines = append(lines, icon+" "+n.ID)
+	lines = append(lines, icon+" "+node.NodeID())
 
-	switch n.Kind {
-	case NodeAgent, NodeJudge:
-		if n.Model != "" {
-			lines = append(lines, "model: "+n.Model)
-		}
-		if n.InputSchema != "" {
-			lines = append(lines, "in: "+n.InputSchema)
-		}
-		if n.OutputSchema != "" {
-			lines = append(lines, "out: "+n.OutputSchema)
-		}
-		if n.Publish != "" {
-			lines = append(lines, "publish: "+n.Publish)
-		}
-		if n.Session != SessionFresh {
-			lines = append(lines, "session: "+n.Session.String())
-		}
-		if n.Interaction != InteractionNone {
-			lines = append(lines, "interaction: "+n.Interaction.String())
-		}
-	case NodeRouter:
+	switch n := node.(type) {
+	case *AgentNode:
+		lines = appendLLMDetailedLines(lines, n.Model, n.InputSchema, n.OutputSchema, n.Publish, n.Session, n.Interaction)
+	case *JudgeNode:
+		lines = appendLLMDetailedLines(lines, n.Model, n.InputSchema, n.OutputSchema, n.Publish, n.Session, n.Interaction)
+	case *RouterNode:
 		lines = append(lines, "mode: "+n.RouterMode.String())
-	case NodeHuman:
+	case *HumanNode:
 		lines = append(lines, "interaction: "+n.Interaction.String())
 		if n.MinAnswers > 0 {
 			lines = append(lines, fmt.Sprintf("min_answers: %d", n.MinAnswers))
 		}
-	case NodeTool:
+	case *ToolNode:
 		if n.Command != "" {
 			lines = append(lines, "cmd: "+n.Command)
 		}
 	}
 
-	if n.AwaitMode != AwaitNone {
-		lines = append(lines, "await: "+n.AwaitMode.String())
+	await := NodeAwaitMode(node)
+	if await != AwaitNone {
+		lines = append(lines, "await: "+await.String())
 	}
 
 	label := strings.Join(lines, "<br/>")
 
-	switch n.Kind {
+	switch kind {
 	case NodeDone, NodeFail:
 		return fmt.Sprintf(`(["%s"])`, label)
 	case NodeRouter:
@@ -150,7 +138,7 @@ func detailedShape(n *Node) string {
 	case NodeHuman:
 		return fmt.Sprintf(`>"%s"]`, label)
 	default:
-		if n.AwaitMode != AwaitNone {
+		if await != AwaitNone {
 			return fmt.Sprintf(`[["%s"]]`, label)
 		}
 		return fmt.Sprintf(`["%s"]`, label)
@@ -216,7 +204,7 @@ func styleClasses(w *Workflow) string {
 	// Group nodes by kind.
 	groups := map[NodeKind][]string{}
 	for id, node := range w.Nodes {
-		groups[node.Kind] = append(groups[node.Kind], sanitizeID(id))
+		groups[node.NodeKind()] = append(groups[node.NodeKind()], sanitizeID(id))
 	}
 
 	for kind, nodeIDs := range groups {
@@ -250,48 +238,21 @@ func kindIcon(k NodeKind) string {
 }
 
 // fullShape returns a Mermaid shape with all available metadata.
-func fullShape(n *Node, w *Workflow) string {
-	icon := kindIcon(n.Kind)
+func fullShape(node Node, w *Workflow) string {
+	kind := node.NodeKind()
+	icon := kindIcon(kind)
 
 	var lines []string
-	lines = append(lines, icon+" "+n.ID)
+	lines = append(lines, icon+" "+node.NodeID())
 
-	switch n.Kind {
-	case NodeAgent, NodeJudge:
-		if n.Model != "" {
-			lines = append(lines, "model: "+n.Model)
-		}
-		if n.Backend != "" {
-			lines = append(lines, "backend: "+n.Backend)
-		}
-		if n.InputSchema != "" {
-			lines = append(lines, "in: "+expandSchema(n.InputSchema, w))
-		}
-		if n.OutputSchema != "" {
-			lines = append(lines, "out: "+expandSchema(n.OutputSchema, w))
-		}
-		if n.Publish != "" {
-			lines = append(lines, "publish: "+n.Publish)
-		}
-		lines = append(lines, "session: "+n.Session.String())
-		if n.SystemPrompt != "" {
-			lines = append(lines, "system: "+n.SystemPrompt)
-		}
-		if n.UserPrompt != "" {
-			lines = append(lines, "user: "+n.UserPrompt)
-		}
-		if len(n.Tools) > 0 {
-			lines = append(lines, "tools: "+strings.Join(n.Tools, ", "))
-		}
-		if n.ToolMaxSteps > 0 {
-			lines = append(lines, fmt.Sprintf("tool_max_steps: %d", n.ToolMaxSteps))
-		}
-		if n.ReasoningEffort != "" {
-			lines = append(lines, "reasoning_effort: "+n.ReasoningEffort)
-		}
-	case NodeRouter:
+	switch n := node.(type) {
+	case *AgentNode:
+		lines = appendLLMFullLines(lines, w, n.LLMFields, n.SchemaFields, n.Publish, n.Session, n.Tools, n.ToolMaxSteps)
+	case *JudgeNode:
+		lines = appendLLMFullLines(lines, w, n.LLMFields, n.SchemaFields, n.Publish, n.Session, n.Tools, n.ToolMaxSteps)
+	case *RouterNode:
 		lines = append(lines, "mode: "+n.RouterMode.String())
-	case NodeHuman:
+	case *HumanNode:
 		lines = append(lines, "interaction: "+n.Interaction.String())
 		if n.Model != "" {
 			lines = append(lines, "model: "+n.Model)
@@ -308,7 +269,7 @@ func fullShape(n *Node, w *Workflow) string {
 		if n.MinAnswers > 0 {
 			lines = append(lines, fmt.Sprintf("min_answers: %d", n.MinAnswers))
 		}
-	case NodeTool:
+	case *ToolNode:
 		if n.Command != "" {
 			lines = append(lines, "cmd: "+n.Command)
 		}
@@ -317,13 +278,14 @@ func fullShape(n *Node, w *Workflow) string {
 		}
 	}
 
-	if n.AwaitMode != AwaitNone {
-		lines = append(lines, "await: "+n.AwaitMode.String())
+	await := NodeAwaitMode(node)
+	if await != AwaitNone {
+		lines = append(lines, "await: "+await.String())
 	}
 
 	label := strings.Join(lines, "<br/>")
 
-	switch n.Kind {
+	switch kind {
 	case NodeDone, NodeFail:
 		return fmt.Sprintf(`(["%s"])`, label)
 	case NodeRouter:
@@ -331,11 +293,70 @@ func fullShape(n *Node, w *Workflow) string {
 	case NodeHuman:
 		return fmt.Sprintf(`>"%s"]`, label)
 	default:
-		if n.AwaitMode != AwaitNone {
+		if await != AwaitNone {
 			return fmt.Sprintf(`[["%s"]]`, label)
 		}
 		return fmt.Sprintf(`["%s"]`, label)
 	}
+}
+
+// appendLLMDetailedLines appends the shared metadata lines for Agent/Judge in detailed view.
+func appendLLMDetailedLines(lines []string, model, inSchema, outSchema, publish string, session SessionMode, interaction InteractionMode) []string {
+	if model != "" {
+		lines = append(lines, "model: "+model)
+	}
+	if inSchema != "" {
+		lines = append(lines, "in: "+inSchema)
+	}
+	if outSchema != "" {
+		lines = append(lines, "out: "+outSchema)
+	}
+	if publish != "" {
+		lines = append(lines, "publish: "+publish)
+	}
+	if session != SessionFresh {
+		lines = append(lines, "session: "+session.String())
+	}
+	if interaction != InteractionNone {
+		lines = append(lines, "interaction: "+interaction.String())
+	}
+	return lines
+}
+
+// appendLLMFullLines appends the shared metadata lines for Agent/Judge in full view.
+func appendLLMFullLines(lines []string, w *Workflow, llm LLMFields, schema SchemaFields, publish string, session SessionMode, tools []string, toolMaxSteps int) []string {
+	if llm.Model != "" {
+		lines = append(lines, "model: "+llm.Model)
+	}
+	if llm.Backend != "" {
+		lines = append(lines, "backend: "+llm.Backend)
+	}
+	if schema.InputSchema != "" {
+		lines = append(lines, "in: "+expandSchema(schema.InputSchema, w))
+	}
+	if schema.OutputSchema != "" {
+		lines = append(lines, "out: "+expandSchema(schema.OutputSchema, w))
+	}
+	if publish != "" {
+		lines = append(lines, "publish: "+publish)
+	}
+	lines = append(lines, "session: "+session.String())
+	if llm.SystemPrompt != "" {
+		lines = append(lines, "system: "+llm.SystemPrompt)
+	}
+	if llm.UserPrompt != "" {
+		lines = append(lines, "user: "+llm.UserPrompt)
+	}
+	if len(tools) > 0 {
+		lines = append(lines, "tools: "+strings.Join(tools, ", "))
+	}
+	if toolMaxSteps > 0 {
+		lines = append(lines, fmt.Sprintf("tool_max_steps: %d", toolMaxSteps))
+	}
+	if llm.ReasoningEffort != "" {
+		lines = append(lines, "reasoning_effort: "+llm.ReasoningEffort)
+	}
+	return lines
 }
 
 // expandSchema returns the schema name with inline field definitions.

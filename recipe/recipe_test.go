@@ -17,10 +17,10 @@ func sampleWorkflow() *ir.Workflow {
 	return &ir.Workflow{
 		Name:  "pr_refine",
 		Entry: "review",
-		Nodes: map[string]*ir.Node{
-			"review": {ID: "review", Kind: ir.NodeAgent, SystemPrompt: "review_sys", UserPrompt: "review_usr"},
-			"act":    {ID: "act", Kind: ir.NodeAgent},
-			"done":   {ID: "done", Kind: ir.NodeDone},
+		Nodes: map[string]ir.Node{
+			"review": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review"}, LLMFields: ir.LLMFields{SystemPrompt: "review_sys", UserPrompt: "review_usr"}},
+			"act":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "act"}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "review", To: "act"},

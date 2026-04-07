@@ -38,7 +38,7 @@ var ErrRunCancelled = errors.New("runtime: run cancelled")
 type NodeExecutor interface {
 	// Execute runs the given node with the provided input and returns its
 	// output. For terminal nodes (done/fail) this is never called.
-	Execute(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error)
+	Execute(ctx context.Context, node ir.Node, input map[string]interface{}) (map[string]interface{}, error)
 }
 
 // Engine executes workflows. It supports sequential execution and
@@ -208,7 +208,7 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]in
 		return fmt.Errorf("runtime: human node %q not found in workflow", humanNodeID)
 	}
 	artifactVersions := cp.ArtifactVersions
-	if humanNode.Publish != "" {
+	if pub := nodePublish(humanNode); pub != "" {
 		version := artifactVersions[humanNodeID]
 		artifact := &store.Artifact{
 			RunID:   runID,
@@ -221,7 +221,7 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]in
 		}
 		artifactVersions[humanNodeID] = version + 1
 		_ = e.emit(runID, store.EventArtifactWritten, humanNodeID, map[string]interface{}{
-			"publish": humanNode.Publish,
+			"publish": pub,
 			"version": version,
 		})
 	}
@@ -254,8 +254,10 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]in
 	// Rebuild artifacts map from outputs for nodes that have publish.
 	resumeArtifacts := make(map[string]map[string]interface{})
 	for nodeID, output := range outputs {
-		if n, ok := e.workflow.Nodes[nodeID]; ok && n.Publish != "" {
-			resumeArtifacts[n.Publish] = output
+		if n, ok := e.workflow.Nodes[nodeID]; ok {
+			if pub := nodePublish(n); pub != "" {
+				resumeArtifacts[pub] = output
+			}
 		}
 	}
 
@@ -296,7 +298,8 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 		}
 
 		// --- Terminal nodes ---
-		if node.Kind == ir.NodeDone {
+		switch node.(type) {
+		case *ir.DoneNode:
 			if err := e.emit(rs.runID, store.EventNodeStarted, currentNodeID, nil); err != nil {
 				return err
 			}
@@ -307,8 +310,7 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 				return err
 			}
 			return e.emit(rs.runID, store.EventRunFinished, "", nil)
-		}
-		if node.Kind == ir.NodeFail {
+		case *ir.FailNode:
 			if err := e.emit(rs.runID, store.EventNodeStarted, currentNodeID, nil); err != nil {
 				return err
 			}
@@ -316,11 +318,13 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 				return err
 			}
 			return e.failRun(rs.runID, currentNodeID, "workflow reached fail node")
+		default:
+			// non-terminal — continue below
 		}
 
 		// --- Human node ---
-		if node.Kind == ir.NodeHuman {
-			switch node.Interaction {
+		if hn, ok := node.(*ir.HumanNode); ok {
+			switch hn.Interaction {
 			case ir.InteractionLLM:
 				// Intentional fall-through: LLM interaction human nodes are
 				// executed via the standard node path below (emit started →
@@ -348,39 +352,37 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 			}
 		}
 
-		// --- Fan-out router: spawn parallel branches ---
-		if node.Kind == ir.NodeRouter && node.RouterMode == ir.RouterFanOutAll {
-			nextNodeID, err := e.execFanOut(ctx, rs, currentNodeID)
-			if err != nil {
-				return e.failRunErr(rs.runID, currentNodeID, err)
+		// --- Router nodes ---
+		if rn, ok := node.(*ir.RouterNode); ok {
+			switch rn.RouterMode {
+			case ir.RouterFanOutAll:
+				nextNodeID, err := e.execFanOut(ctx, rs, currentNodeID)
+				if err != nil {
+					return e.failRunErr(rs.runID, currentNodeID, err)
+				}
+				currentNodeID = nextNodeID
+				continue
+			case ir.RouterRoundRobin:
+				nextNodeID, err := e.execRoundRobin(ctx, rs, currentNodeID)
+				if err != nil {
+					return e.failRunErr(rs.runID, currentNodeID, err)
+				}
+				currentNodeID = nextNodeID
+				continue
+			case ir.RouterLLM:
+				nextNodeID, err := e.execLLMRouter(ctx, rs, currentNodeID)
+				if err != nil {
+					return e.failRunErr(rs.runID, currentNodeID, err)
+				}
+				currentNodeID = nextNodeID
+				continue
 			}
-			currentNodeID = nextNodeID
-			continue
-		}
-
-		// --- Round-robin router: select one edge cyclically ---
-		if node.Kind == ir.NodeRouter && node.RouterMode == ir.RouterRoundRobin {
-			nextNodeID, err := e.execRoundRobin(ctx, rs, currentNodeID)
-			if err != nil {
-				return e.failRunErr(rs.runID, currentNodeID, err)
-			}
-			currentNodeID = nextNodeID
-			continue
-		}
-
-		// --- LLM router: ask the LLM which edge(s) to take ---
-		if node.Kind == ir.NodeRouter && node.RouterMode == ir.RouterLLM {
-			nextNodeID, err := e.execLLMRouter(ctx, rs, currentNodeID)
-			if err != nil {
-				return e.failRunErr(rs.runID, currentNodeID, err)
-			}
-			currentNodeID = nextNodeID
-			continue
+			// RouterCondition falls through to normal execution path.
 		}
 
 		// --- Emit node_started ---
 		if err := e.emit(rs.runID, store.EventNodeStarted, currentNodeID, map[string]interface{}{
-			"kind": node.Kind.String(),
+			"kind": node.NodeKind().String(),
 		}); err != nil {
 			return err
 		}
@@ -413,7 +415,7 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 		}
 
 		// Persist artifact if node has publish.
-		if node.Publish != "" {
+		if pub := nodePublish(node); pub != "" {
 			version := rs.artifactVersions[currentNodeID]
 			artifact := &store.Artifact{
 				RunID:   rs.runID,
@@ -425,10 +427,10 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 				return fmt.Errorf("runtime: write artifact: %w", err)
 			}
 			rs.artifactVersions[currentNodeID] = version + 1
-			rs.artifacts[node.Publish] = output
+			rs.artifacts[pub] = output
 
 			if err := e.emit(rs.runID, store.EventArtifactWritten, currentNodeID, map[string]interface{}{
-				"publish": node.Publish,
+				"publish": pub,
 				"version": version,
 			}); err != nil {
 				return fmt.Errorf("runtime: artifact written but event emission failed (state inconsistency): %w", err)
@@ -618,6 +620,10 @@ func (e *Engine) execRoundRobin(ctx context.Context, rs *runState, routerNodeID 
 // for multi mode, it fans out to the selected subset.
 func (e *Engine) execLLMRouter(ctx context.Context, rs *runState, routerNodeID string) (string, error) {
 	node := e.workflow.Nodes[routerNodeID]
+	rn, ok := node.(*ir.RouterNode)
+	if !ok {
+		return "", fmt.Errorf("runtime: node %q is not a RouterNode", routerNodeID)
+	}
 
 	// Emit node_started.
 	if err := e.emit(rs.runID, store.EventNodeStarted, routerNodeID, map[string]interface{}{
@@ -666,7 +672,7 @@ func (e *Engine) execLLMRouter(ctx context.Context, rs *runState, routerNodeID s
 	}
 
 	// Dispatch based on single/multi mode.
-	if node.RouterMulti {
+	if rn.RouterMulti {
 		return e.execLLMRouterMulti(ctx, rs, routerNodeID, output, candidates)
 	}
 	return e.execLLMRouterSingle(rs, routerNodeID, output, candidates)
@@ -925,10 +931,11 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		}
 
 		// Stop at terminal nodes within a branch.
-		if node.Kind == ir.NodeDone || node.Kind == ir.NodeFail {
-			if node.Kind == ir.NodeFail {
-				result.err = fmt.Errorf("branch %s reached fail node %q", branchID, currentNodeID)
-			}
+		switch node.(type) {
+		case *ir.DoneNode:
+			return result
+		case *ir.FailNode:
+			result.err = fmt.Errorf("branch %s reached fail node %q", branchID, currentNodeID)
 			return result
 		}
 
@@ -951,7 +958,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 
 		// Emit node_started.
 		if err := e.emitBranch(runID, branchID, store.EventNodeStarted, currentNodeID, map[string]interface{}{
-			"kind": node.Kind.String(),
+			"kind": node.NodeKind().String(),
 		}); err != nil {
 			log.Printf("runtime: branch %s: failed to emit node_started: %v", branchID, err)
 			result.eventErrors++
@@ -1011,7 +1018,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		}
 
 		// Persist artifact if node has publish.
-		if node.Publish != "" {
+		if pub := nodePublish(node); pub != "" {
 			version := result.artifactVersions[currentNodeID]
 			artifact := &store.Artifact{
 				RunID:   runID,
@@ -1024,9 +1031,9 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 				return result
 			}
 			result.artifactVersions[currentNodeID] = version + 1
-			result.artifacts[node.Publish] = output
+			result.artifacts[pub] = output
 			if err := e.emitBranch(runID, branchID, store.EventArtifactWritten, currentNodeID, map[string]interface{}{
-				"publish": node.Publish,
+				"publish": pub,
 				"version": version,
 			}); err != nil {
 				log.Printf("runtime: branch %s: failed to emit artifact_written: %v", branchID, err)
@@ -1118,7 +1125,7 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 	}
 
 	// Determine await strategy: use node's explicit setting, default to wait_all.
-	strategy := convNode.AwaitMode
+	strategy := nodeAwaitMode(convNode)
 	if strategy == ir.AwaitNone {
 		strategy = ir.AwaitWaitAll
 	}
@@ -1219,7 +1226,7 @@ func (e *Engine) findConvergencePoint(routerNodeID string, fanEdges []*ir.Edge) 
 				continue
 			}
 			// Convergence point: explicitly marked OR has multiple distinct incoming sources.
-			if node.AwaitMode != ir.AwaitNone || len(inSources[nodeID]) > 1 {
+			if nodeAwaitMode(node) != ir.AwaitNone || len(inSources[nodeID]) > 1 {
 				return nodeID
 			}
 			// Follow outgoing edges.
@@ -1240,10 +1247,10 @@ func (e *Engine) findConvergencePoint(routerNodeID string, fanEdges []*ir.Edge) 
 // execAutoOrPauseHuman handles a human node in auto_or_pause mode.
 // It calls the executor (LLM) to produce answers plus a needs_human_input flag.
 // Returns (true, nil) if the run was paused, (false, nil) if the LLM answered.
-func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID string, node *ir.Node) (bool, error) {
+func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID string, node ir.Node) (bool, error) {
 	// Emit node_started.
 	if err := e.emit(rs.runID, store.EventNodeStarted, nodeID, map[string]interface{}{
-		"kind": node.Kind.String(),
+		"kind": node.NodeKind().String(),
 	}); err != nil {
 		return false, err
 	}
@@ -1287,7 +1294,7 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 	rs.outputs[nodeID] = output
 
 	// Persist artifact if node has publish.
-	if node.Publish != "" {
+	if pub := nodePublish(node); pub != "" {
 		version := rs.artifactVersions[nodeID]
 		artifact := &store.Artifact{
 			RunID:   rs.runID,
@@ -1299,9 +1306,9 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 			return false, fmt.Errorf("runtime: write artifact: %w", err)
 		}
 		rs.artifactVersions[nodeID] = version + 1
-		rs.artifacts[node.Publish] = output
+		rs.artifacts[pub] = output
 		_ = e.emit(rs.runID, store.EventArtifactWritten, nodeID, map[string]interface{}{
-			"publish": node.Publish,
+			"publish": pub,
 			"version": version,
 		})
 	}
@@ -1324,10 +1331,10 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 
 // pauseAtHuman suspends the run at a human node: persists an interaction,
 // saves checkpoint state, and returns ErrRunPaused.
-func (e *Engine) pauseAtHuman(rs *runState, nodeID string, node *ir.Node) error {
+func (e *Engine) pauseAtHuman(rs *runState, nodeID string, node ir.Node) error {
 	// Emit node_started for the human node.
 	if err := e.emit(rs.runID, store.EventNodeStarted, nodeID, map[string]interface{}{
-		"kind": node.Kind.String(),
+		"kind": node.NodeKind().String(),
 	}); err != nil {
 		return err
 	}
@@ -1403,8 +1410,8 @@ func (e *Engine) persistPause(rs *runState, nodeID string) error {
 //   - InteractionHuman: pause the workflow for human input
 //   - InteractionLLM: auto-respond using the interaction model
 //   - InteractionLLMOrHuman: LLM decides whether to respond or escalate
-func (e *Engine) handleNeedsInteraction(ctx context.Context, rs *runState, nodeID string, node *ir.Node, ni *model.ErrNeedsInteraction) error {
-	switch node.Interaction {
+func (e *Engine) handleNeedsInteraction(ctx context.Context, rs *runState, nodeID string, node ir.Node, ni *model.ErrNeedsInteraction) error {
+	switch nodeInteraction(node) {
 	case ir.InteractionHuman:
 		return e.pauseForBackendInteraction(rs, nodeID, ni)
 
@@ -2158,6 +2165,17 @@ func truncatePreview(s string, maxLen int) string {
 }
 
 // ---------------------------------------------------------------------------
+// Node field accessors — thin wrappers over ir.Node* exported helpers.
+// ---------------------------------------------------------------------------
+
+var (
+	nodePublish     = ir.NodePublish
+	nodeAwaitMode   = ir.NodeAwaitMode
+	nodeInteraction = ir.NodeInteraction
+	isTerminalNode  = ir.IsTerminalNode
+)
+
+// ---------------------------------------------------------------------------
 // Workspace mutation safety
 // ---------------------------------------------------------------------------
 
@@ -2176,15 +2194,24 @@ var readOnlyTools = map[string]bool{
 // Tool nodes are always mutating. Agent/judge nodes are mutating only
 // if they have at least one tool that is not in the read-only set.
 // Nodes with Readonly=true are never considered mutating.
-func isMutatingNode(node *ir.Node) bool {
-	if node.Readonly {
-		return false
-	}
-	if node.Kind == ir.NodeTool {
+func isMutatingNode(node ir.Node) bool {
+	switch n := node.(type) {
+	case *ir.ToolNode:
 		return true
-	}
-	if node.Kind == ir.NodeAgent || node.Kind == ir.NodeJudge {
-		for _, t := range node.Tools {
+	case *ir.AgentNode:
+		if n.Readonly {
+			return false
+		}
+		for _, t := range n.Tools {
+			if !readOnlyTools[t] {
+				return true
+			}
+		}
+	case *ir.JudgeNode:
+		if n.Readonly {
+			return false
+		}
+		for _, t := range n.Tools {
 			if !readOnlyTools[t] {
 				return true
 			}
@@ -2211,7 +2238,7 @@ func (e *Engine) branchContainsMutation(startNodeID string) bool {
 			continue
 		}
 		// Stop walking at convergence points or terminal nodes.
-		if node.AwaitMode != ir.AwaitNone || node.Kind == ir.NodeDone || node.Kind == ir.NodeFail {
+		if nodeAwaitMode(node) != ir.AwaitNone || isTerminalNode(node) {
 			continue
 		}
 		if isMutatingNode(node) {

@@ -66,8 +66,14 @@ func compileFixtureStubSafe(t *testing.T, name string) *ir.Workflow {
 	t.Helper()
 	wf := compileFixture(t, name)
 	for _, node := range wf.Nodes {
-		node.Tools = nil
-		node.ToolMaxSteps = 0
+		switch n := node.(type) {
+		case *ir.AgentNode:
+			n.Tools = nil
+			n.ToolMaxSteps = 0
+		case *ir.JudgeNode:
+			n.Tools = nil
+			n.ToolMaxSteps = 0
+		}
 	}
 	return wf
 }
@@ -98,12 +104,12 @@ func (e *scenarioExecutor) on(nodeID string, fn func(map[string]interface{}) (ma
 	e.handlers[nodeID] = fn
 }
 
-func (e *scenarioExecutor) Execute(_ context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *scenarioExecutor) Execute(_ context.Context, node ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
 	e.mu.Lock()
-	e.calls = append(e.calls, node.ID)
+	e.calls = append(e.calls, node.NodeID())
 	e.mu.Unlock()
 
-	if fn, ok := e.handlers[node.ID]; ok {
+	if fn, ok := e.handlers[node.NodeID()]; ok {
 		return fn(input)
 	}
 	// Default: return empty output with a _tokens marker for metrics.
@@ -1457,10 +1463,10 @@ func TestAllFixturesCompile(t *testing.T) {
 			hasDone := false
 			hasFail := false
 			for _, n := range wf.Nodes {
-				if n.Kind == ir.NodeDone {
+				if n.NodeKind() == ir.NodeDone {
 					hasDone = true
 				}
-				if n.Kind == ir.NodeFail {
+				if n.NodeKind() == ir.NodeFail {
 					hasFail = true
 				}
 			}

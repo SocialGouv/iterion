@@ -181,7 +181,7 @@ func TestValidate_FileNotFound(t *testing.T) {
 // approveExecutor always returns approved=true.
 type approveExecutor struct{}
 
-func (e *approveExecutor) Execute(_ context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *approveExecutor) Execute(_ context.Context, node ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
 	out := make(map[string]interface{})
 	for k, v := range input {
 		out[k] = v
@@ -294,7 +294,7 @@ func TestRun_NoFile(t *testing.T) {
 // rejectExecutor returns approved=false so the workflow hits a human node.
 type rejectExecutor struct{}
 
-func (e *rejectExecutor) Execute(_ context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *rejectExecutor) Execute(_ context.Context, node ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
 	out := make(map[string]interface{})
 	for k, v := range input {
 		out[k] = v

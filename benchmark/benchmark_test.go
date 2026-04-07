@@ -34,9 +34,9 @@ func (s *stubExecutor) on(nodeID string, fn func(map[string]interface{}) (map[st
 	s.handlers[nodeID] = fn
 }
 
-func (s *stubExecutor) Execute(_ context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
-	s.calls = append(s.calls, node.ID)
-	if fn, ok := s.handlers[node.ID]; ok {
+func (s *stubExecutor) Execute(_ context.Context, node ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+	s.calls = append(s.calls, node.NodeID())
+	if fn, ok := s.handlers[node.NodeID()]; ok {
 		return fn(input)
 	}
 	return map[string]interface{}{}, nil
@@ -51,11 +51,11 @@ func buildTestWorkflow() *ir.Workflow {
 	return &ir.Workflow{
 		Name:  "test_wf",
 		Entry: "analyze",
-		Nodes: map[string]*ir.Node{
-			"analyze": {ID: "analyze", Kind: ir.NodeAgent},
-			"judge":   {ID: "judge", Kind: ir.NodeJudge},
-			"done":    {ID: "done", Kind: ir.NodeDone},
-			"fail":    {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"analyze": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "analyze"}},
+			"judge":   &ir.JudgeNode{BaseNode: ir.BaseNode{ID: "judge"}},
+			"done":    &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":    &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "analyze", To: "judge"},

@@ -20,10 +20,10 @@ func TestSessionInherit(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "session_inherit_test",
 		Entry: "producer",
-		Nodes: map[string]*ir.Node{
-			"producer": {ID: "producer", Kind: ir.NodeAgent},
-			"consumer": {ID: "consumer", Kind: ir.NodeAgent, Session: ir.SessionInherit},
-			"done":     {ID: "done", Kind: ir.NodeDone},
+		Nodes: map[string]ir.Node{
+			"producer": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "producer"}},
+			"consumer": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "consumer"}, Session: ir.SessionInherit},
+			"done":     &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
 		},
 		Edges: []*ir.Edge{
 			{
@@ -95,12 +95,12 @@ func TestSessionInheritThroughBranches(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "session_branch_test",
 		Entry: "fanout",
-		Nodes: map[string]*ir.Node{
-			"fanout":   {ID: "fanout", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
-			"branch_a": {ID: "branch_a", Kind: ir.NodeAgent, Readonly: true},
-			"branch_b": {ID: "branch_b", Kind: ir.NodeAgent, Readonly: true},
-			"consumer": {ID: "consumer", Kind: ir.NodeAgent, Session: ir.SessionInherit, AwaitMode: ir.AwaitWaitAll},
-			"done":     {ID: "done", Kind: ir.NodeDone},
+		Nodes: map[string]ir.Node{
+			"fanout":   &ir.RouterNode{BaseNode: ir.BaseNode{ID: "fanout"}, RouterMode: ir.RouterFanOutAll},
+			"branch_a": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "branch_a"}, LLMFields: ir.LLMFields{Readonly: true}},
+			"branch_b": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "branch_b"}, LLMFields: ir.LLMFields{Readonly: true}},
+			"consumer": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "consumer"}, Session: ir.SessionInherit, AwaitMode: ir.AwaitWaitAll},
+			"done":     &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "fanout", To: "branch_a"},
@@ -176,12 +176,12 @@ func TestSessionFork(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "session_fork_test",
 		Entry: "producer",
-		Nodes: map[string]*ir.Node{
-			"producer": {ID: "producer", Kind: ir.NodeAgent},
-			"splitter": {ID: "splitter", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
-			"fork_a":   {ID: "fork_a", Kind: ir.NodeAgent, Session: ir.SessionFork, Readonly: true},
-			"fork_b":   {ID: "fork_b", Kind: ir.NodeAgent, Session: ir.SessionFork, Readonly: true},
-			"done":     {ID: "done", Kind: ir.NodeDone, AwaitMode: ir.AwaitWaitAll},
+		Nodes: map[string]ir.Node{
+			"producer": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "producer"}},
+			"splitter": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "splitter"}, RouterMode: ir.RouterFanOutAll},
+			"fork_a":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "fork_a"}, LLMFields: ir.LLMFields{Readonly: true}, Session: ir.SessionFork},
+			"fork_b":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "fork_b"}, LLMFields: ir.LLMFields{Readonly: true}, Session: ir.SessionFork},
+			"done":     &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}, AwaitMode: ir.AwaitWaitAll},
 		},
 		Edges: []*ir.Edge{
 			{From: "producer", To: "splitter"},

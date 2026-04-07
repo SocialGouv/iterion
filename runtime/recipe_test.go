@@ -17,9 +17,9 @@ func TestNewFromRecipePresetVars(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "review_wf",
 		Entry: "review",
-		Nodes: map[string]*ir.Node{
-			"review": {ID: "review", Kind: ir.NodeAgent, SystemPrompt: "sys"},
-			"done":   {ID: "done", Kind: ir.NodeDone},
+		Nodes: map[string]ir.Node{
+			"review": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review"}, LLMFields: ir.LLMFields{SystemPrompt: "sys"}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "review", To: "done"},
@@ -84,9 +84,9 @@ func TestNewFromRecipePromptPack(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "review_wf",
 		Entry: "review",
-		Nodes: map[string]*ir.Node{
-			"review": {ID: "review", Kind: ir.NodeAgent, SystemPrompt: "sys"},
-			"done":   {ID: "done", Kind: ir.NodeDone},
+		Nodes: map[string]ir.Node{
+			"review": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review"}, LLMFields: ir.LLMFields{SystemPrompt: "sys"}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "review", To: "done"},
@@ -147,9 +147,9 @@ func TestNewFromRecipeBudgetOverride(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "review_wf",
 		Entry: "review",
-		Nodes: map[string]*ir.Node{
-			"review": {ID: "review", Kind: ir.NodeAgent},
-			"done":   {ID: "done", Kind: ir.NodeDone},
+		Nodes: map[string]ir.Node{
+			"review": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review"}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "review", To: "done"},
@@ -200,7 +200,7 @@ func TestNewFromRecipeNameMismatch(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:    "actual_wf",
 		Entry:   "n",
-		Nodes:   map[string]*ir.Node{"n": {ID: "n", Kind: ir.NodeDone}},
+		Nodes:   map[string]ir.Node{"n": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "n"}}},
 		Schemas: map[string]*ir.Schema{},
 		Prompts: map[string]*ir.Prompt{},
 		Vars:    map[string]*ir.Var{},
@@ -226,9 +226,9 @@ func TestNewFromRecipeInputsOverridePresets(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "wf",
 		Entry: "agent",
-		Nodes: map[string]*ir.Node{
-			"agent": {ID: "agent", Kind: ir.NodeAgent},
-			"done":  {ID: "done", Kind: ir.NodeDone},
+		Nodes: map[string]ir.Node{
+			"agent": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent"}},
+			"done":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "agent", To: "done"},

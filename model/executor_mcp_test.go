@@ -1,14 +1,13 @@
 package model
 
 import (
-	"context"
 	"testing"
 
 	"github.com/SocialGouv/iterion/ir"
 	"github.com/SocialGouv/iterion/tool"
 )
 
-func TestExecuteToolNodeRejectsInactiveMCPServer(t *testing.T) {
+func TestCheckNodeToolAccessRejectsInactiveMCPServer(t *testing.T) {
 	reg := NewRegistry()
 	wf := &ir.Workflow{
 		Prompts: map[string]*ir.Prompt{},
@@ -25,23 +24,29 @@ func TestExecuteToolNodeRejectsInactiveMCPServer(t *testing.T) {
 
 	exec := NewGoaiExecutor(reg, wf, WithToolRegistry(tr))
 
-	allowed := &ir.Node{
-		ID:               "n1",
-		Kind:             ir.NodeTool,
-		Command:          "mcp.github.create_issue",
+	// AgentNode with only "github" active — github tools allowed, slack denied.
+	allowed := &ir.AgentNode{
+		BaseNode:         ir.BaseNode{ID: "n1"},
 		ActiveMCPServers: []string{"github"},
 	}
-	if _, err := exec.Execute(context.Background(), allowed, nil); err != nil {
+	if err := exec.checkNodeToolAccess(allowed, "mcp.github.create_issue"); err != nil {
 		t.Fatalf("github MCP tool should be allowed: %v", err)
 	}
 
-	denied := &ir.Node{
-		ID:               "n2",
-		Kind:             ir.NodeTool,
-		Command:          "mcp.slack.post_message",
+	denied := &ir.AgentNode{
+		BaseNode:         ir.BaseNode{ID: "n2"},
 		ActiveMCPServers: []string{"github"},
 	}
-	if _, err := exec.Execute(context.Background(), denied, nil); err == nil {
+	if err := exec.checkNodeToolAccess(denied, "mcp.slack.post_message"); err == nil {
 		t.Fatal("expected inactive MCP server to be rejected")
+	}
+
+	// ToolNode has no ActiveMCPServers — all MCP tools allowed (no restriction).
+	toolNode := &ir.ToolNode{
+		BaseNode: ir.BaseNode{ID: "n3"},
+		Command:  "mcp.slack.post_message",
+	}
+	if err := exec.checkNodeToolAccess(toolNode, "mcp.slack.post_message"); err != nil {
+		t.Fatalf("ToolNode without ActiveMCPServers should allow all MCP tools: %v", err)
 	}
 }

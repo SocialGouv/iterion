@@ -244,9 +244,18 @@ func (e *GoaiExecutor) SetVars(vars map[string]interface{}) {
 
 // resolveBackendName returns the effective backend name for a node.
 // Resolution chain: node.Backend → workflow default → env ITERION_DEFAULT_BACKEND → "goai".
-func (e *GoaiExecutor) resolveBackendName(node *ir.Node) string {
-	if node.Backend != "" {
-		return node.Backend
+func (e *GoaiExecutor) resolveBackendName(node ir.Node) string {
+	var backend string
+	switch n := node.(type) {
+	case *ir.AgentNode:
+		backend = n.Backend
+	case *ir.JudgeNode:
+		backend = n.Backend
+	case *ir.RouterNode:
+		backend = n.Backend
+	}
+	if backend != "" {
+		return backend
 	}
 	if e.defaultBackend != "" {
 		return e.defaultBackend
@@ -258,93 +267,140 @@ func (e *GoaiExecutor) resolveBackendName(node *ir.Node) string {
 }
 
 // Execute implements runtime.NodeExecutor.
-func (e *GoaiExecutor) Execute(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
-	switch node.Kind {
-	case ir.NodeAgent, ir.NodeJudge:
-		return e.executeBackend(ctx, node, input)
-	case ir.NodeHuman:
-		return e.executeHumanLLM(ctx, node, input)
-	case ir.NodeRouter:
-		if node.RouterMode == ir.RouterLLM {
-			return e.executeLLMRouterUnified(ctx, node, input)
+func (e *GoaiExecutor) Execute(ctx context.Context, node ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+	switch n := node.(type) {
+	case *ir.AgentNode:
+		return e.executeBackend(ctx, n, input)
+	case *ir.JudgeNode:
+		return e.executeBackend(ctx, n, input)
+	case *ir.HumanNode:
+		return e.executeHumanLLM(ctx, n, input)
+	case *ir.RouterNode:
+		if n.RouterMode == ir.RouterLLM {
+			return e.executeLLMRouterUnified(ctx, n, input)
 		}
 		// Deterministic routers are pass-throughs handled by the engine.
 		return input, nil
-	case ir.NodeTool:
-		return e.executeToolNode(ctx, node, input)
+	case *ir.ToolNode:
+		return e.executeToolNode(ctx, n, input)
 	default:
-		return nil, fmt.Errorf("model: unsupported node kind %q for execution", node.Kind)
+		return nil, fmt.Errorf("model: unsupported node kind %q for execution", node.NodeKind())
+	}
+}
+
+// backendFields holds the common fields extracted from AgentNode or JudgeNode
+// for the executeBackend unified path.
+type backendFields struct {
+	id               string
+	model            string
+	backend          string
+	systemPrompt     string
+	userPrompt       string
+	reasoningEffort  string
+	outputSchema     string
+	tools            []string
+	toolMaxSteps     int
+	session          ir.SessionMode
+	interaction      ir.InteractionMode
+	activeMCPServers []string
+}
+
+func extractBackendFields(node ir.Node) backendFields {
+	switch n := node.(type) {
+	case *ir.AgentNode:
+		return backendFields{
+			id: n.ID, model: n.Model, backend: n.Backend,
+			systemPrompt: n.SystemPrompt, userPrompt: n.UserPrompt,
+			reasoningEffort: n.ReasoningEffort, outputSchema: n.OutputSchema,
+			tools: n.Tools, toolMaxSteps: n.ToolMaxSteps,
+			session: n.Session, interaction: n.Interaction,
+			activeMCPServers: n.ActiveMCPServers,
+		}
+	case *ir.JudgeNode:
+		return backendFields{
+			id: n.ID, model: n.Model, backend: n.Backend,
+			systemPrompt: n.SystemPrompt, userPrompt: n.UserPrompt,
+			reasoningEffort: n.ReasoningEffort, outputSchema: n.OutputSchema,
+			tools: n.Tools, toolMaxSteps: n.ToolMaxSteps,
+			session: n.Session, interaction: n.Interaction,
+			activeMCPServers: n.ActiveMCPServers,
+		}
+	default:
+		panic(fmt.Sprintf("model: extractBackendFields called with unsupported node type %T", node))
 	}
 }
 
 // executeBackend is the unified execution path for agent and judge nodes.
 // It resolves the backend, builds a Task, and dispatches to the backend.
-func (e *GoaiExecutor) executeBackend(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *GoaiExecutor) executeBackend(ctx context.Context, node ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+	f := extractBackendFields(node)
 	backendName := e.resolveBackendName(node)
 
 	if e.backendRegistry == nil {
-		return nil, fmt.Errorf("model: node %q uses backend %q but no backend registry configured", node.ID, backendName)
+		return nil, fmt.Errorf("model: node %q uses backend %q but no backend registry configured", f.id, backendName)
 	}
 
 	backend, err := e.backendRegistry.Resolve(backendName)
 	if err != nil {
-		return nil, fmt.Errorf("model: node %q: %w", node.ID, err)
+		return nil, fmt.Errorf("model: node %q: %w", f.id, err)
 	}
 
 	// Build system prompt.
 	var systemText string
-	if node.SystemPrompt != "" {
-		if p, ok := e.prompts[node.SystemPrompt]; ok {
+	if f.systemPrompt != "" {
+		if p, ok := e.prompts[f.systemPrompt]; ok {
 			systemText = e.resolveTemplate(p.Body, input)
 		}
 	}
 
 	// Build user message.
-	userText := e.buildUserMessage(node, input)
+	userText := e.buildUserMessage(f.userPrompt, input)
 
 	// Emit prompt content for observability.
 	if e.hooks.OnLLMPrompt != nil {
-		e.hooks.OnLLMPrompt(node.ID, systemText, userText)
+		e.hooks.OnLLMPrompt(f.id, systemText, userText)
 	}
 
 	// Build output schema JSON if structured output is expected.
 	var outputSchema json.RawMessage
-	if node.OutputSchema != "" {
-		if schema, ok := e.schemas[node.OutputSchema]; ok {
+	if f.outputSchema != "" {
+		if schema, ok := e.schemas[f.outputSchema]; ok {
 			outputSchema, _ = SchemaToJSON(schema)
 		}
 	}
 
+	effort := resolveReasoningEffort(f.reasoningEffort, input)
+
 	task := delegate.Task{
-		NodeID:             node.ID,
+		NodeID:             f.id,
 		SystemPrompt:       systemText,
 		UserPrompt:         userText,
-		AllowedTools:       node.Tools,
+		AllowedTools:       f.tools,
 		OutputSchema:       outputSchema,
-		Model:              os.ExpandEnv(node.Model),
-		HasTools:           len(node.Tools) > 0,
-		ToolMaxSteps:       node.ToolMaxSteps,
+		Model:              os.ExpandEnv(f.model),
+		HasTools:           len(f.tools) > 0,
+		ToolMaxSteps:       f.toolMaxSteps,
 		WorkDir:            e.workDir,
-		ReasoningEffort:    resolveReasoningEffort(node, input),
-		InteractionEnabled: node.Interaction != ir.InteractionNone,
+		ReasoningEffort:    effort,
+		InteractionEnabled: f.interaction != ir.InteractionNone,
 	}
 
 	// Resolve full tool definitions for backends that manage tool loops
 	// internally (goai). CLI-based backends (claude_code, codex) handle tools
 	// natively via AllowedTools and do not need ToolDefs.
-	if len(node.Tools) > 0 && backendName == "goai" {
-		tools, toolErr := e.resolveToolsForNode(ctx, node, node.Tools)
+	if len(f.tools) > 0 && backendName == "goai" {
+		tools, toolErr := e.resolveToolsForNode(ctx, node, f.tools)
 		if toolErr != nil {
-			return nil, fmt.Errorf("model: node %q: %w", node.ID, toolErr)
+			return nil, fmt.Errorf("model: node %q: %w", f.id, toolErr)
 		}
 		task.ToolDefs = goaiToolsToDefs(tools)
 	}
 
 	// Session continuity.
-	if node.Session == ir.SessionInherit || node.Session == ir.SessionFork {
+	if f.session == ir.SessionInherit || f.session == ir.SessionFork {
 		if sid, ok := input["_session_id"].(string); ok && sid != "" {
 			task.SessionID = sid
-			if node.Session == ir.SessionFork {
+			if f.session == ir.SessionFork {
 				task.ForkSession = true
 			}
 		}
@@ -352,10 +408,10 @@ func (e *GoaiExecutor) executeBackend(ctx context.Context, node *ir.Node, input 
 
 	// Emit backend started event.
 	if e.hooks.OnDelegateStarted != nil {
-		e.hooks.OnDelegateStarted(node.ID, backendName)
+		e.hooks.OnDelegateStarted(f.id, backendName)
 	}
 
-	result, err := e.retryDelegateLoop(ctx, node.ID, backendName, func() (delegate.Result, error) {
+	result, err := e.retryDelegateLoop(ctx, f.id, backendName, func() (delegate.Result, error) {
 		return backend.Execute(ctx, task)
 	})
 	if err != nil {
@@ -364,7 +420,7 @@ func (e *GoaiExecutor) executeBackend(ctx context.Context, node *ir.Node, input 
 			if bn == "" {
 				bn = backendName
 			}
-			e.hooks.OnDelegateError(node.ID, DelegateInfo{
+			e.hooks.OnDelegateError(f.id, DelegateInfo{
 				BackendName:        bn,
 				Duration:           result.Duration,
 				Tokens:             result.Tokens,
@@ -376,12 +432,12 @@ func (e *GoaiExecutor) executeBackend(ctx context.Context, node *ir.Node, input 
 				Error:              err,
 			})
 		}
-		return nil, fmt.Errorf("model: node %q: backend %q failed: %w", node.ID, backendName, err)
+		return nil, fmt.Errorf("model: node %q: backend %q failed: %w", f.id, backendName, err)
 	}
 
 	// Emit backend finished event.
 	if e.hooks.OnDelegateFinished != nil {
-		e.hooks.OnDelegateFinished(node.ID, DelegateInfo{
+		e.hooks.OnDelegateFinished(f.id, DelegateInfo{
 			BackendName:        result.BackendName,
 			Duration:           result.Duration,
 			Tokens:             result.Tokens,
@@ -410,14 +466,14 @@ func (e *GoaiExecutor) executeBackend(ctx context.Context, node *ir.Node, input 
 	}
 
 	// Validate output against schema if present.
-	if node.OutputSchema != "" {
-		if schema, ok := e.schemas[node.OutputSchema]; ok {
+	if f.outputSchema != "" {
+		if schema, ok := e.schemas[f.outputSchema]; ok {
 			if err := ValidateOutput(result.Output, schema); err != nil {
 				// If parsing fell back to text wrapper, the backend likely
 				// returned non-JSON output (transient SDK issue). Retry once
 				// before giving up.
 				if result.ParseFallback {
-					log.Printf("model: node %q: structured output validation failed with parse fallback, retrying backend: %v", node.ID, err)
+					log.Printf("model: node %q: structured output validation failed with parse fallback, retrying backend: %v", f.id, err)
 					retryResult, retryErr := backend.Execute(ctx, task)
 					if retryErr == nil && !retryResult.ParseFallback {
 						result = retryResult
@@ -430,19 +486,19 @@ func (e *GoaiExecutor) executeBackend(ctx context.Context, node *ir.Node, input 
 							result.Output["_session_id"] = result.SessionID
 						}
 						if retryValErr := ValidateOutput(result.Output, schema); retryValErr != nil {
-							return nil, fmt.Errorf("model: node %q: structured output invalid after retry: %w", node.ID, retryValErr)
+							return nil, fmt.Errorf("model: node %q: structured output invalid after retry: %w", f.id, retryValErr)
 						}
 						goto validated
 					}
 				}
-				return nil, fmt.Errorf("model: node %q: structured output invalid: %w", node.ID, err)
+				return nil, fmt.Errorf("model: node %q: structured output invalid: %w", f.id, err)
 			}
 		}
 	}
 validated:
 
 	// Check if the backend signaled that it needs user interaction.
-	if node.Interaction != ir.InteractionNone {
+	if f.interaction != ir.InteractionNone {
 		if needsInteraction, ok := result.Output["_needs_interaction"].(bool); ok && needsInteraction {
 			questions, _ := result.Output["_interaction_questions"].(map[string]interface{})
 			if questions == nil {
@@ -451,7 +507,7 @@ validated:
 			delete(result.Output, "_needs_interaction")
 			delete(result.Output, "_interaction_questions")
 			return nil, &ErrNeedsInteraction{
-				NodeID:    node.ID,
+				NodeID:    f.id,
 				Questions: questions,
 				SessionID: result.SessionID,
 				Backend:   backendName,
@@ -465,7 +521,7 @@ validated:
 // executeHumanLLM handles human nodes in llm or llm_or_human interaction mode.
 // It calls goai directly with mode-specific
 // schema handling for llm_or_human (wrapper schema with needs_human_input).
-func (e *GoaiExecutor) executeHumanLLM(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *GoaiExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, input map[string]interface{}) (map[string]interface{}, error) {
 	if node.Interaction == ir.InteractionHuman || node.Interaction == ir.InteractionNone {
 		return nil, fmt.Errorf("model: human node %q in %s interaction mode should not be executed by the model layer", node.ID, node.Interaction)
 	}
@@ -481,7 +537,9 @@ func (e *GoaiExecutor) executeHumanLLM(ctx context.Context, node *ir.Node, input
 	opts = append(opts, goai.WithMaxRetries(0))
 
 	// Reasoning effort (dynamic override from input, then static node property).
-	if popts := providerOptsForNode(resolveReasoningEffort(node, input)); popts != nil {
+	// HumanNode does not embed LLMFields, so there is no ReasoningEffort field;
+	// only the dynamic override from input applies.
+	if popts := providerOptsForNode(resolveReasoningEffort("", input)); popts != nil {
 		opts = append(opts, goai.WithProviderOptions(popts))
 	}
 
@@ -495,7 +553,7 @@ func (e *GoaiExecutor) executeHumanLLM(ctx context.Context, node *ir.Node, input
 	}
 
 	// User message from input.
-	userText := e.buildUserMessage(node, input)
+	userText := e.buildUserMessage("", input)
 	if userText != "" {
 		opts = append(opts, goai.WithMessages(goai.UserMessage(userText)))
 	}
@@ -741,7 +799,7 @@ func extractJSON(text string) string {
 // executeToolNode runs a tool node (direct command, no LLM).
 // The tool policy is checked before execution; denied tools produce an
 // explicit error with the tool_called hook fired (Error != nil).
-func (e *GoaiExecutor) executeToolNode(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *GoaiExecutor) executeToolNode(ctx context.Context, node *ir.ToolNode, input map[string]interface{}) (map[string]interface{}, error) {
 	// When the command contains template refs ({{input.X}}), resolve them
 	// and execute as a direct shell command. Otherwise, use the tool registry.
 	if len(node.CommandRefs) > 0 {
@@ -807,7 +865,7 @@ func (e *GoaiExecutor) executeToolNode(ctx context.Context, node *ir.Node, input
 // executeToolNodeShell handles tool nodes whose command contains {{...}}
 // template references. Templates are resolved from the node's input map,
 // and the resulting string is executed as a shell command via sh -c.
-func (e *GoaiExecutor) executeToolNodeShell(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *GoaiExecutor) executeToolNodeShell(ctx context.Context, node *ir.ToolNode, input map[string]interface{}) (map[string]interface{}, error) {
 	// Resolve template references in the command.
 	resolved := resolveCommandTemplate(node.Command, node.CommandRefs, input)
 
@@ -878,7 +936,7 @@ func shellEscape(s string) string {
 // buildRouterSchema creates an auto-generated schema for LLM routers.
 // Single mode: {selected_route: string(enum), reasoning: string}
 // Multi mode:  {selected_routes: string[](enum), reasoning: string}
-func buildRouterSchema(node *ir.Node, candidates []string) *ir.Schema {
+func buildRouterSchema(node *ir.RouterNode, candidates []string) *ir.Schema {
 	if node.RouterMulti {
 		return &ir.Schema{
 			Name: node.ID + "_route_selection",
@@ -907,7 +965,7 @@ func routerRoutingInstruction(candidates []string) string {
 }
 
 // executeLLMRouterUnified is the unified LLM router path that works with any backend.
-func (e *GoaiExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *GoaiExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.RouterNode, input map[string]interface{}) (map[string]interface{}, error) {
 	backendName := e.resolveBackendName(node)
 
 	if e.backendRegistry == nil {
@@ -958,7 +1016,7 @@ func (e *GoaiExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Nod
 	systemText += routerRoutingInstruction(candidates)
 
 	// User message.
-	userText := e.buildUserMessage(node, cleanInput)
+	userText := e.buildUserMessage(node.UserPrompt, cleanInput)
 
 	// Emit prompt content for observability.
 	if e.hooks.OnLLMPrompt != nil {
@@ -988,7 +1046,7 @@ func (e *GoaiExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Nod
 		OutputSchema:    jsonSchema,
 		Model:           expanded,
 		WorkDir:         e.workDir,
-		ReasoningEffort: resolveReasoningEffort(node, input),
+		ReasoningEffort: resolveReasoningEffort(node.ReasoningEffort, input),
 	}
 
 	// Emit backend started event.
@@ -1079,13 +1137,13 @@ func (e *GoaiExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Nod
 //
 // Valid values are defined in ir.ValidReasoningEfforts: low, medium, high, extra_high.
 // Invalid dynamic values are silently ignored (falls back to the static property).
-func resolveReasoningEffort(node *ir.Node, input map[string]interface{}) string {
+func resolveReasoningEffort(nodeEffort string, input map[string]interface{}) string {
 	if v, ok := input["_reasoning_effort"]; ok {
 		if s, ok := v.(string); ok && ir.ValidReasoningEfforts[s] {
 			return s
 		}
 	}
-	return node.ReasoningEffort
+	return nodeEffort
 }
 
 // providerOptsForNode builds the goai ProviderOptions map from the resolved
@@ -1102,10 +1160,11 @@ func providerOptsForNode(effort string) map[string]any {
 // ---------------------------------------------------------------------------
 
 // buildUserMessage constructs the user message for an LLM call.
-func (e *GoaiExecutor) buildUserMessage(node *ir.Node, input map[string]interface{}) string {
+// userPrompt is the prompt reference name from the node (empty if not set).
+func (e *GoaiExecutor) buildUserMessage(userPrompt string, input map[string]interface{}) string {
 	// If the node has a user prompt template, resolve it.
-	if node.UserPrompt != "" {
-		if p, ok := e.prompts[node.UserPrompt]; ok {
+	if userPrompt != "" {
+		if p, ok := e.prompts[userPrompt]; ok {
 			return e.resolveTemplate(p.Body, input)
 		}
 	}
@@ -1199,11 +1258,14 @@ func (e *GoaiExecutor) resolveTemplateRef(ref string, input map[string]interface
 // Tool resolution helpers
 // ---------------------------------------------------------------------------
 
+// nodeActiveMCPServers delegates to ir.NodeActiveMCPServers.
+var nodeActiveMCPServers = ir.NodeActiveMCPServers
+
 // resolveToolsForNode resolves a list of tool names to goai.Tool instances for
 // a specific node, ensuring that only tools from the node's active MCP servers
 // are exposed. Wildcard entries like "mcp.<server>.*" are expanded to all tools
 // discovered from that server.
-func (e *GoaiExecutor) resolveToolsForNode(ctx context.Context, node *ir.Node, names []string) ([]goai.Tool, error) {
+func (e *GoaiExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, names []string) ([]goai.Tool, error) {
 	// Expand wildcards (e.g. mcp.claude_code.*) into concrete tool names.
 	expanded, err := e.expandWildcards(ctx, node, names)
 	if err != nil {
@@ -1233,7 +1295,7 @@ func (e *GoaiExecutor) resolveToolsForNode(ctx context.Context, node *ir.Node, n
 
 // expandWildcards replaces wildcard entries ("mcp.<server>.*") with the
 // concrete tool names discovered from that MCP server.
-func (e *GoaiExecutor) expandWildcards(ctx context.Context, node *ir.Node, names []string) ([]string, error) {
+func (e *GoaiExecutor) expandWildcards(ctx context.Context, node ir.Node, names []string) ([]string, error) {
 	var expanded []string
 	for _, name := range names {
 		if !tool.IsMCPWildcard(name) {
@@ -1265,7 +1327,7 @@ func (e *GoaiExecutor) expandWildcards(ctx context.Context, node *ir.Node, names
 }
 
 // resolveSingleToolForNode resolves one tool name in the context of a node.
-func (e *GoaiExecutor) resolveSingleToolForNode(ctx context.Context, node *ir.Node, name string) (goai.Tool, bool, error) {
+func (e *GoaiExecutor) resolveSingleToolForNode(ctx context.Context, node ir.Node, name string) (goai.Tool, bool, error) {
 	if err := e.ensureMCPServers(ctx, node, []string{name}); err != nil {
 		return goai.Tool{}, false, err
 	}
@@ -1284,7 +1346,7 @@ func (e *GoaiExecutor) resolveSingleToolForNode(ctx context.Context, node *ir.No
 	return td.ToGoaiTool(), true, nil
 }
 
-func (e *GoaiExecutor) ensureMCPServers(ctx context.Context, node *ir.Node, names []string) error {
+func (e *GoaiExecutor) ensureMCPServers(ctx context.Context, node ir.Node, names []string) error {
 	if e.mcpManager == nil || e.toolRegistry == nil {
 		return nil
 	}
@@ -1295,12 +1357,13 @@ func (e *GoaiExecutor) ensureMCPServers(ctx context.Context, node *ir.Node, name
 	return e.mcpManager.EnsureServers(ctx, e.toolRegistry, servers)
 }
 
-func activeMCPServersForNames(node *ir.Node, names []string) []string {
-	if node == nil || len(node.ActiveMCPServers) == 0 {
+func activeMCPServersForNames(node ir.Node, names []string) []string {
+	mcpServers := nodeActiveMCPServers(node)
+	if node == nil || len(mcpServers) == 0 {
 		return nil
 	}
-	active := make(map[string]struct{}, len(node.ActiveMCPServers))
-	for _, server := range node.ActiveMCPServers {
+	active := make(map[string]struct{}, len(mcpServers))
+	for _, server := range mcpServers {
 		active[server] = struct{}{}
 	}
 
@@ -1334,7 +1397,7 @@ func activeMCPServersForNames(node *ir.Node, names []string) []string {
 	return servers
 }
 
-func (e *GoaiExecutor) checkNodeToolAccess(node *ir.Node, qualified string) error {
+func (e *GoaiExecutor) checkNodeToolAccess(node ir.Node, qualified string) error {
 	server, _, err := tool.ParseMCPName(qualified)
 	if err != nil {
 		return nil
@@ -1342,15 +1405,16 @@ func (e *GoaiExecutor) checkNodeToolAccess(node *ir.Node, qualified string) erro
 	if node == nil {
 		return fmt.Errorf("model: MCP tool %q requires a node context", qualified)
 	}
-	if len(node.ActiveMCPServers) == 0 {
+	mcpServers := nodeActiveMCPServers(node)
+	if len(mcpServers) == 0 {
 		return nil
 	}
-	for _, active := range node.ActiveMCPServers {
+	for _, active := range mcpServers {
 		if active == server {
 			return nil
 		}
 	}
-	return fmt.Errorf("model: node %q cannot access MCP tool %q because server %q is not active", node.ID, qualified, server)
+	return fmt.Errorf("model: node %q cannot access MCP tool %q because server %q is not active", node.NodeID(), qualified, server)
 }
 
 // ---------------------------------------------------------------------------

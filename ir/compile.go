@@ -83,7 +83,7 @@ func (r *CompileResult) HasErrors() bool {
 type compiler struct {
 	file    *ast.File
 	diags   []Diagnostic
-	nodes   map[string]*Node
+	nodes   map[string]Node
 	schemas map[string]*Schema
 	prompts map[string]*Prompt
 	mcp     map[string]*MCPServer
@@ -122,7 +122,7 @@ func (c *compiler) warnf(code DiagCode, format string, args ...interface{}) {
 func Compile(file *ast.File) *CompileResult {
 	c := &compiler{
 		file:    file,
-		nodes:   make(map[string]*Node),
+		nodes:   make(map[string]Node),
 		schemas: make(map[string]*Schema),
 		prompts: make(map[string]*Prompt),
 		mcp:     make(map[string]*MCPServer),
@@ -157,8 +157,8 @@ func (c *compiler) compile() *Workflow {
 	c.compileTools()
 
 	// Add terminal nodes.
-	c.nodes["done"] = &Node{ID: "done", Kind: NodeDone}
-	c.nodes["fail"] = &Node{ID: "fail", Kind: NodeFail}
+	c.nodes["done"] = &DoneNode{BaseNode: BaseNode{ID: "done"}}
+	c.nodes["fail"] = &FailNode{BaseNode: BaseNode{ID: "fail"}}
 
 	wf := c.file.Workflows[0]
 
@@ -346,26 +346,31 @@ func (c *compiler) compileAgents() {
 			c.warnf(DiagInteractionNoBackend, "agent %q has interaction %s but no backend; interaction forwarding only works with execution backends", a.Name, interaction)
 		}
 
-		c.nodes[a.Name] = &Node{
-			ID:                a.Name,
-			Kind:              NodeAgent,
-			Model:             model,
-			Backend:           a.Backend,
-			MCP:               convertMCPConfig(a.MCP),
-			InputSchema:       a.Input,
-			OutputSchema:      a.Output,
-			Publish:           a.Publish,
-			SystemPrompt:      a.System,
-			UserPrompt:        a.User,
-			Session:           a.Session,
-			Tools:             a.Tools,
-			ToolMaxSteps:      a.ToolMaxSteps,
-			ReasoningEffort:   a.ReasoningEffort,
-			Readonly:          a.Readonly,
-			Interaction:       interaction,
-			InteractionPrompt: a.InteractionPrompt,
-			InteractionModel:  a.InteractionModel,
-			AwaitMode:     a.Await,
+		c.nodes[a.Name] = &AgentNode{
+			BaseNode: BaseNode{ID: a.Name},
+			LLMFields: LLMFields{
+				Model:           model,
+				Backend:         a.Backend,
+				SystemPrompt:    a.System,
+				UserPrompt:      a.User,
+				ReasoningEffort: a.ReasoningEffort,
+				Readonly:        a.Readonly,
+			},
+			SchemaFields: SchemaFields{
+				InputSchema:  a.Input,
+				OutputSchema: a.Output,
+			},
+			InteractionFields: InteractionFields{
+				Interaction:       interaction,
+				InteractionPrompt: a.InteractionPrompt,
+				InteractionModel:  a.InteractionModel,
+			},
+			MCP:          convertMCPConfig(a.MCP),
+			Publish:      a.Publish,
+			Session:      a.Session,
+			Tools:        a.Tools,
+			ToolMaxSteps: a.ToolMaxSteps,
+			AwaitMode:    a.Await,
 		}
 	}
 }
@@ -394,26 +399,31 @@ func (c *compiler) compileJudges() {
 			c.warnf(DiagInteractionNoBackend, "judge %q has interaction %s but no backend; interaction forwarding only works with execution backends", j.Name, interaction)
 		}
 
-		c.nodes[j.Name] = &Node{
-			ID:                j.Name,
-			Kind:              NodeJudge,
-			Model:             model,
-			Backend:           j.Backend,
-			MCP:               convertMCPConfig(j.MCP),
-			InputSchema:       j.Input,
-			OutputSchema:      j.Output,
-			Publish:           j.Publish,
-			SystemPrompt:      j.System,
-			UserPrompt:        j.User,
-			Session:           j.Session,
-			Tools:             j.Tools,
-			ToolMaxSteps:      j.ToolMaxSteps,
-			ReasoningEffort:   j.ReasoningEffort,
-			Readonly:          j.Readonly,
-			Interaction:       interaction,
-			InteractionPrompt: j.InteractionPrompt,
-			InteractionModel:  j.InteractionModel,
-			AwaitMode:     j.Await,
+		c.nodes[j.Name] = &JudgeNode{
+			BaseNode: BaseNode{ID: j.Name},
+			LLMFields: LLMFields{
+				Model:           model,
+				Backend:         j.Backend,
+				SystemPrompt:    j.System,
+				UserPrompt:      j.User,
+				ReasoningEffort: j.ReasoningEffort,
+				Readonly:        j.Readonly,
+			},
+			SchemaFields: SchemaFields{
+				InputSchema:  j.Input,
+				OutputSchema: j.Output,
+			},
+			InteractionFields: InteractionFields{
+				Interaction:       interaction,
+				InteractionPrompt: j.InteractionPrompt,
+				InteractionModel:  j.InteractionModel,
+			},
+			MCP:          convertMCPConfig(j.MCP),
+			Publish:      j.Publish,
+			Session:      j.Session,
+			Tools:        j.Tools,
+			ToolMaxSteps: j.ToolMaxSteps,
+			AwaitMode:    j.Await,
 		}
 	}
 }
@@ -425,9 +435,8 @@ func (c *compiler) compileJudges() {
 func (c *compiler) compileRouters() {
 	for _, r := range c.file.Routers {
 		mode := r.Mode
-		node := &Node{
-			ID:         r.Name,
-			Kind:       NodeRouter,
+		node := &RouterNode{
+			BaseNode:   BaseNode{ID: r.Name},
 			RouterMode: mode,
 		}
 		if mode != RouterLLM {
@@ -489,18 +498,21 @@ func (c *compiler) compileHumans() {
 				interaction = InteractionHuman
 			}
 		}
-		node := &Node{
-			ID:                h.Name,
-			Kind:              NodeHuman,
-			InputSchema:       h.Input,
-			OutputSchema:      h.Output,
-			Publish:           h.Publish,
-			Interaction:       interaction,
-			InteractionPrompt: h.InteractionPrompt,
-			InteractionModel:  h.InteractionModel,
-			MinAnswers:        h.MinAnswers,
-			Instructions:      h.Instructions,
-			AwaitMode:     h.Await,
+		node := &HumanNode{
+			BaseNode: BaseNode{ID: h.Name},
+			SchemaFields: SchemaFields{
+				InputSchema:  h.Input,
+				OutputSchema: h.Output,
+			},
+			InteractionFields: InteractionFields{
+				Interaction:       interaction,
+				InteractionPrompt: h.InteractionPrompt,
+				InteractionModel:  h.InteractionModel,
+			},
+			Publish:      h.Publish,
+			MinAnswers:   h.MinAnswers,
+			Instructions: h.Instructions,
+			AwaitMode:    h.Await,
 		}
 
 		// LLM-based interaction modes require a model and output schema.
@@ -547,14 +559,15 @@ func (c *compiler) compileTools() {
 			cmdRefs = refs
 		}
 
-		c.nodes[t.Name] = &Node{
-			ID:            t.Name,
-			Kind:          NodeTool,
-			InputSchema:   t.Input,
-			OutputSchema:  t.Output,
-			Command:       t.Command,
-			CommandRefs:   cmdRefs,
-			AwaitMode: t.Await,
+		c.nodes[t.Name] = &ToolNode{
+			BaseNode: BaseNode{ID: t.Name},
+			SchemaFields: SchemaFields{
+				InputSchema:  t.Input,
+				OutputSchema: t.Output,
+			},
+			Command:     t.Command,
+			CommandRefs: cmdRefs,
+			AwaitMode:   t.Await,
 		}
 	}
 }

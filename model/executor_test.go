@@ -322,11 +322,9 @@ func TestExecuteLLMTextGeneration(t *testing.T) {
 
 	exec := NewGoaiExecutor(reg, wf)
 
-	node := &ir.Node{
-		ID:           "reviewer",
-		Kind:         ir.NodeAgent,
-		Model:        "test/test-model",
-		SystemPrompt: "system_review",
+	node := &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: "reviewer"},
+		LLMFields: ir.LLMFields{Model: "test/test-model", SystemPrompt: "system_review"},
 	}
 
 	output, err := exec.Execute(context.Background(), node, map[string]interface{}{
@@ -376,11 +374,10 @@ func TestExecuteLLMStructuredOutput(t *testing.T) {
 
 	exec := NewGoaiExecutor(reg, wf)
 
-	node := &ir.Node{
-		ID:           "judge",
-		Kind:         ir.NodeJudge,
-		Model:        "test/test-model",
-		OutputSchema: "verdict_schema",
+	node := &ir.JudgeNode{
+		BaseNode:     ir.BaseNode{ID: "judge"},
+		LLMFields:    ir.LLMFields{Model: "test/test-model"},
+		SchemaFields: ir.SchemaFields{OutputSchema: "verdict_schema"},
 	}
 
 	output, err := exec.Execute(context.Background(), node, map[string]interface{}{
@@ -430,10 +427,9 @@ func TestExecutorEventHooks(t *testing.T) {
 		},
 	}))
 
-	node := &ir.Node{
-		ID:    "agent1",
-		Kind:  ir.NodeAgent,
-		Model: "test/test-model",
+	node := &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: "agent1"},
+		LLMFields: ir.LLMFields{Model: "test/test-model"},
 	}
 
 	_, err := exec.Execute(context.Background(), node, map[string]interface{}{"prompt": "hello"})
@@ -463,10 +459,9 @@ func TestExecutorToolNode(t *testing.T) {
 
 	exec := NewGoaiExecutor(reg, wf, WithToolRegistry(tr))
 
-	node := &ir.Node{
-		ID:      "get_diff",
-		Kind:    ir.NodeTool,
-		Command: "git_diff",
+	node := &ir.ToolNode{
+		BaseNode: ir.BaseNode{ID: "get_diff"},
+		Command:  "git_diff",
 	}
 
 	output, err := exec.Execute(context.Background(), node, map[string]interface{}{
@@ -495,10 +490,9 @@ func TestExecutorToolNodeTextOutput(t *testing.T) {
 
 	exec := NewGoaiExecutor(reg, wf, WithToolRegistry(tr))
 
-	node := &ir.Node{
-		ID:      "run_echo",
-		Kind:    ir.NodeTool,
-		Command: "echo",
+	node := &ir.ToolNode{
+		BaseNode: ir.BaseNode{ID: "run_echo"},
+		Command:  "echo",
 	}
 
 	output, err := exec.Execute(context.Background(), node, map[string]interface{}{})
@@ -525,9 +519,8 @@ func TestExecutorToolNodeShellCommand(t *testing.T) {
 		t.Fatalf("ParseRefs: %v", err)
 	}
 
-	node := &ir.Node{
-		ID:          "commit_tool",
-		Kind:        ir.NodeTool,
+	node := &ir.ToolNode{
+		BaseNode:    ir.BaseNode{ID: "commit_tool"},
 		Command:     "echo {{input.message}}",
 		CommandRefs: refs,
 	}
@@ -558,9 +551,8 @@ func TestExecutorToolNodeShellMultipleRefs(t *testing.T) {
 		t.Fatalf("ParseRefs: %v", err)
 	}
 
-	node := &ir.Node{
-		ID:          "multi_ref",
-		Kind:        ir.NodeTool,
+	node := &ir.ToolNode{
+		BaseNode:    ir.BaseNode{ID: "multi_ref"},
 		Command:     "echo {{input.name}} {{input.value}}",
 		CommandRefs: refs,
 	}
@@ -592,9 +584,8 @@ func TestExecutorToolNodeShellJSONOutput(t *testing.T) {
 		t.Fatalf("ParseRefs: %v", err)
 	}
 
-	node := &ir.Node{
-		ID:          "json_tool",
-		Kind:        ir.NodeTool,
+	node := &ir.ToolNode{
+		BaseNode:    ir.BaseNode{ID: "json_tool"},
 		Command:     `printf '{"status":"%s"}' {{input.status}}`,
 		CommandRefs: refs,
 	}
@@ -625,9 +616,8 @@ func TestExecutorToolNodeShellInjection(t *testing.T) {
 		t.Fatalf("ParseRefs: %v", err)
 	}
 
-	node := &ir.Node{
-		ID:          "inject_tool",
-		Kind:        ir.NodeTool,
+	node := &ir.ToolNode{
+		BaseNode:    ir.BaseNode{ID: "inject_tool"},
 		Command:     "echo {{input.msg}}",
 		CommandRefs: refs,
 	}
@@ -711,10 +701,9 @@ func TestExecutorUnknownModel(t *testing.T) {
 
 	exec := NewGoaiExecutor(reg, wf)
 
-	node := &ir.Node{
-		ID:    "agent",
-		Kind:  ir.NodeAgent,
-		Model: "unknown/model",
+	node := &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: "agent"},
+		LLMFields: ir.LLMFields{Model: "unknown/model"},
 	}
 
 	_, err := exec.Execute(context.Background(), node, map[string]interface{}{})
@@ -757,10 +746,9 @@ func TestRetryOnTransientError(t *testing.T) {
 		}),
 	)
 
-	node := &ir.Node{
-		ID:    "agent1",
-		Kind:  ir.NodeAgent,
-		Model: "test/test-model",
+	node := &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: "agent1"},
+		LLMFields: ir.LLMFields{Model: "test/test-model"},
 	}
 
 	output, err := exec.Execute(context.Background(), node, map[string]interface{}{"prompt": "hello"})
@@ -808,10 +796,9 @@ func TestRetryExhausted(t *testing.T) {
 		}),
 	)
 
-	node := &ir.Node{
-		ID:    "agent1",
-		Kind:  ir.NodeAgent,
-		Model: "test/test-model",
+	node := &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: "agent1"},
+		LLMFields: ir.LLMFields{Model: "test/test-model"},
 	}
 
 	_, err := exec.Execute(context.Background(), node, map[string]interface{}{"prompt": "hello"})
@@ -858,10 +845,9 @@ func TestNoRetryOnNonRetryableError(t *testing.T) {
 		}),
 	)
 
-	node := &ir.Node{
-		ID:    "agent1",
-		Kind:  ir.NodeAgent,
-		Model: "test/test-model",
+	node := &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: "agent1"},
+		LLMFields: ir.LLMFields{Model: "test/test-model"},
 	}
 
 	_, err := exec.Execute(context.Background(), node, map[string]interface{}{"prompt": "hello"})
@@ -913,11 +899,10 @@ func TestRetryOnStructuredOutput(t *testing.T) {
 		}),
 	)
 
-	node := &ir.Node{
-		ID:           "judge",
-		Kind:         ir.NodeJudge,
-		Model:        "test/test-model",
-		OutputSchema: "verdict_schema",
+	node := &ir.JudgeNode{
+		BaseNode:     ir.BaseNode{ID: "judge"},
+		LLMFields:    ir.LLMFields{Model: "test/test-model"},
+		SchemaFields: ir.SchemaFields{OutputSchema: "verdict_schema"},
 	}
 
 	output, err := exec.Execute(context.Background(), node, map[string]interface{}{
@@ -954,10 +939,9 @@ func TestRetryContextCancellation(t *testing.T) {
 	// Cancel immediately to abort the retry backoff.
 	cancel()
 
-	node := &ir.Node{
-		ID:    "agent1",
-		Kind:  ir.NodeAgent,
-		Model: "test/test-model",
+	node := &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: "agent1"},
+		LLMFields: ir.LLMFields{Model: "test/test-model"},
 	}
 
 	_, err := exec.Execute(ctx, node, map[string]interface{}{"prompt": "hello"})
@@ -1000,11 +984,10 @@ func TestStructuredOutputMissingField(t *testing.T) {
 
 	exec := NewGoaiExecutor(reg, wf)
 
-	node := &ir.Node{
-		ID:           "judge",
-		Kind:         ir.NodeJudge,
-		Model:        "test/test-model",
-		OutputSchema: "verdict_schema",
+	node := &ir.JudgeNode{
+		BaseNode:     ir.BaseNode{ID: "judge"},
+		LLMFields:    ir.LLMFields{Model: "test/test-model"},
+		SchemaFields: ir.SchemaFields{OutputSchema: "verdict_schema"},
 	}
 
 	_, err := exec.Execute(context.Background(), node, map[string]interface{}{
@@ -1049,11 +1032,10 @@ func TestStructuredOutputWrongType(t *testing.T) {
 
 	exec := NewGoaiExecutor(reg, wf)
 
-	node := &ir.Node{
-		ID:           "judge",
-		Kind:         ir.NodeJudge,
-		Model:        "test/test-model",
-		OutputSchema: "verdict_schema",
+	node := &ir.JudgeNode{
+		BaseNode:     ir.BaseNode{ID: "judge"},
+		LLMFields:    ir.LLMFields{Model: "test/test-model"},
+		SchemaFields: ir.SchemaFields{OutputSchema: "verdict_schema"},
 	}
 
 	_, err := exec.Execute(context.Background(), node, map[string]interface{}{
@@ -1093,11 +1075,10 @@ func TestStructuredOutputInvalidEnum(t *testing.T) {
 
 	exec := NewGoaiExecutor(reg, wf)
 
-	node := &ir.Node{
-		ID:           "judge",
-		Kind:         ir.NodeJudge,
-		Model:        "test/test-model",
-		OutputSchema: "status_schema",
+	node := &ir.JudgeNode{
+		BaseNode:     ir.BaseNode{ID: "judge"},
+		LLMFields:    ir.LLMFields{Model: "test/test-model"},
+		SchemaFields: ir.SchemaFields{OutputSchema: "status_schema"},
 	}
 
 	_, err := exec.Execute(context.Background(), node, map[string]interface{}{})
@@ -1267,52 +1248,52 @@ func TestSetVars(t *testing.T) {
 
 func TestResolveReasoningEffort(t *testing.T) {
 	tests := []struct {
-		name     string
-		node     *ir.Node
-		input    map[string]interface{}
-		expected string
+		name       string
+		nodeEffort string
+		input      map[string]interface{}
+		expected   string
 	}{
 		{
-			name:     "static only",
-			node:     &ir.Node{ReasoningEffort: "high"},
-			input:    map[string]interface{}{},
-			expected: "high",
+			name:       "static only",
+			nodeEffort: "high",
+			input:      map[string]interface{}{},
+			expected:   "high",
 		},
 		{
-			name:     "dynamic override",
-			node:     &ir.Node{ReasoningEffort: "medium"},
-			input:    map[string]interface{}{"_reasoning_effort": "low"},
-			expected: "low",
+			name:       "dynamic override",
+			nodeEffort: "medium",
+			input:      map[string]interface{}{"_reasoning_effort": "low"},
+			expected:   "low",
 		},
 		{
-			name:     "dynamic extra_high",
-			node:     &ir.Node{ReasoningEffort: "low"},
-			input:    map[string]interface{}{"_reasoning_effort": "extra_high"},
-			expected: "extra_high",
+			name:       "dynamic extra_high",
+			nodeEffort: "low",
+			input:      map[string]interface{}{"_reasoning_effort": "extra_high"},
+			expected:   "extra_high",
 		},
 		{
-			name:     "invalid dynamic falls back to static",
-			node:     &ir.Node{ReasoningEffort: "high"},
-			input:    map[string]interface{}{"_reasoning_effort": "ultra"},
-			expected: "high",
+			name:       "invalid dynamic falls back to static",
+			nodeEffort: "high",
+			input:      map[string]interface{}{"_reasoning_effort": "ultra"},
+			expected:   "high",
 		},
 		{
-			name:     "no value set",
-			node:     &ir.Node{},
-			input:    map[string]interface{}{},
-			expected: "",
+			name:       "no value set",
+			nodeEffort: "",
+			input:      map[string]interface{}{},
+			expected:   "",
 		},
 		{
-			name:     "dynamic non-string ignored",
-			node:     &ir.Node{ReasoningEffort: "medium"},
-			input:    map[string]interface{}{"_reasoning_effort": 42},
-			expected: "medium",
+			name:       "dynamic non-string ignored",
+			nodeEffort: "medium",
+			input:      map[string]interface{}{"_reasoning_effort": 42},
+			expected:   "medium",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := resolveReasoningEffort(tt.node, tt.input)
+			got := resolveReasoningEffort(tt.nodeEffort, tt.input)
 			if got != tt.expected {
 				t.Errorf("resolveReasoningEffort() = %q, want %q", got, tt.expected)
 			}

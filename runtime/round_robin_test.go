@@ -24,14 +24,14 @@ func roundRobinWorkflow(maxIterations int) *ir.Workflow {
 	return &ir.Workflow{
 		Name:  "round_robin_test",
 		Entry: "entry",
-		Nodes: map[string]*ir.Node{
-			"entry":   {ID: "entry", Kind: ir.NodeAgent},
-			"judge":   {ID: "judge", Kind: ir.NodeJudge},
-			"router":  {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterRoundRobin},
-			"agent_a": {ID: "agent_a", Kind: ir.NodeAgent},
-			"agent_b": {ID: "agent_b", Kind: ir.NodeAgent},
-			"done":    {ID: "done", Kind: ir.NodeDone},
-			"fail":    {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"entry":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"judge":   &ir.JudgeNode{BaseNode: ir.BaseNode{ID: "judge"}},
+			"router":  &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterRoundRobin},
+			"agent_a": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_a"}},
+			"agent_b": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_b"}},
+			"done":    &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":    &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "entry", To: "judge"},
@@ -129,15 +129,15 @@ func TestRoundRobinThreeTargets(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "round_robin_three",
 		Entry: "entry",
-		Nodes: map[string]*ir.Node{
-			"entry":   {ID: "entry", Kind: ir.NodeAgent},
-			"judge":   {ID: "judge", Kind: ir.NodeJudge},
-			"router":  {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterRoundRobin},
-			"agent_a": {ID: "agent_a", Kind: ir.NodeAgent},
-			"agent_b": {ID: "agent_b", Kind: ir.NodeAgent},
-			"agent_c": {ID: "agent_c", Kind: ir.NodeAgent},
-			"done":    {ID: "done", Kind: ir.NodeDone},
-			"fail":    {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"entry":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"judge":   &ir.JudgeNode{BaseNode: ir.BaseNode{ID: "judge"}},
+			"router":  &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterRoundRobin},
+			"agent_a": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_a"}},
+			"agent_b": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_b"}},
+			"agent_c": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_c"}},
+			"done":    &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":    &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "entry", To: "judge"},
@@ -211,18 +211,14 @@ func TestRoundRobinCounterPersistence(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "round_robin_persist",
 		Entry: "entry",
-		Nodes: map[string]*ir.Node{
-			"entry":   {ID: "entry", Kind: ir.NodeAgent},
-			"router":  {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterRoundRobin},
-			"agent_a": {ID: "agent_a", Kind: ir.NodeAgent},
-			"agent_b": {ID: "agent_b", Kind: ir.NodeAgent},
-			"human": {
-				ID:          "human",
-				Kind:        ir.NodeHuman,
-				Interaction: ir.InteractionHuman,
-			},
-			"done": {ID: "done", Kind: ir.NodeDone},
-			"fail": {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"entry":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"router":  &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterRoundRobin},
+			"agent_a": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_a"}},
+			"agent_b": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_b"}},
+			"human":   &ir.HumanNode{BaseNode: ir.BaseNode{ID: "human"}, InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman}},
+			"done":    &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":    &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "entry", To: "router"},
@@ -354,14 +350,14 @@ func TestRoundRobinWithDataMappings(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "round_robin_with",
 		Entry: "entry",
-		Nodes: map[string]*ir.Node{
-			"entry":   {ID: "entry", Kind: ir.NodeAgent},
-			"judge":   {ID: "judge", Kind: ir.NodeJudge},
-			"router":  {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterRoundRobin},
-			"agent_a": {ID: "agent_a", Kind: ir.NodeAgent},
-			"agent_b": {ID: "agent_b", Kind: ir.NodeAgent},
-			"done":    {ID: "done", Kind: ir.NodeDone},
-			"fail":    {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"entry":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"judge":   &ir.JudgeNode{BaseNode: ir.BaseNode{ID: "judge"}},
+			"router":  &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterRoundRobin},
+			"agent_a": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_a"}},
+			"agent_b": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_b"}},
+			"done":    &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":    &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "entry", To: "judge"},

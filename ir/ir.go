@@ -16,7 +16,7 @@ import "github.com/SocialGouv/iterion/types"
 type Workflow struct {
 	Name           string
 	Entry          string             // entry node ID
-	Nodes          map[string]*Node   // node ID → node
+	Nodes          map[string]Node    // node ID → node
 	Edges          []*Edge            // ordered list of edges
 	Schemas        map[string]*Schema // schema name → resolved schema
 	Prompts        map[string]*Prompt // prompt name → resolved prompt
@@ -35,7 +35,7 @@ type Workflow struct {
 }
 
 // ---------------------------------------------------------------------------
-// Node — unified node with a kind discriminator
+// Node — interface with concrete types per kind
 // ---------------------------------------------------------------------------
 
 // NodeKind discriminates the type of node.
@@ -72,47 +72,288 @@ func (k NodeKind) String() string {
 	}
 }
 
-// Node is the unified IR node. Fields are populated according to Kind.
-type Node struct {
-	ID   string // unique identifier (= DSL name)
-	Kind NodeKind
+// Node is the IR node interface. Concrete types: AgentNode, JudgeNode,
+// RouterNode, HumanNode, ToolNode, DoneNode, FailNode.
+type Node interface {
+	NodeID() string
+	NodeKind() NodeKind
+}
 
-	// --- Agent / Judge fields ---
-	Model   string     // model identifier (env refs already noted)
-	Backend string     // execution backend name (empty = direct LLM call)
-	MCP     *MCPConfig // node-level MCP activation/filtering
-	// ActiveMCPServers is populated after project config resolution.
-	ActiveMCPServers []string
-	InputSchema      string      // schema reference name (empty if not set)
-	OutputSchema     string      // schema reference name (empty if not set)
-	Publish          string      // persistent artifact name (empty if not set)
-	SystemPrompt     string      // prompt reference name
-	UserPrompt       string      // prompt reference name
-	Session          SessionMode // session strategy
-	Tools            []string    // tool capability names
-	ToolMaxSteps     int         // max tool-use iterations (0 = not set)
-	ReasoningEffort  string      // reasoning effort level: "low", "medium", "high", "extra_high"
-	Readonly         bool        // when true, node is not considered mutating for workspace safety
+// BaseNode provides the common ID field embedded in every concrete node.
+type BaseNode struct {
+	ID string // unique identifier (= DSL name)
+}
 
-	// --- Router fields ---
-	RouterMode  RouterMode // fan_out_all, condition, round_robin, or llm
-	RouterMulti bool       // LLM router: select multiple targets (default: one)
+// NodeID implements Node.
+func (b BaseNode) NodeID() string { return b.ID }
 
-	// --- Convergence fields ---
-	AwaitMode AwaitMode // convergence strategy: wait_all or best_effort (zero = none)
+// ---------------------------------------------------------------------------
+// Shared field groups (embedded in concrete node types)
+// ---------------------------------------------------------------------------
 
-	// --- Interaction fields (agent, judge, human) ---
+// LLMFields groups fields shared by LLM-capable nodes (Agent, Judge, Router-LLM).
+type LLMFields struct {
+	Model           string // model identifier (env refs already noted)
+	Backend         string // execution backend name (empty = direct LLM call)
+	SystemPrompt    string // prompt reference name
+	UserPrompt      string // prompt reference name
+	ReasoningEffort string // reasoning effort level: "low", "medium", "high", "extra_high"
+	Readonly        bool   // when true, node is not considered mutating for workspace safety
+}
+
+// SchemaFields groups input/output schema references.
+type SchemaFields struct {
+	InputSchema  string // schema reference name (empty if not set)
+	OutputSchema string // schema reference name (empty if not set)
+}
+
+// InteractionFields groups interaction-related fields.
+type InteractionFields struct {
 	Interaction       InteractionMode // interaction handling mode
 	InteractionPrompt string          // prompt reference guiding LLM for llm_or_human decisions
 	InteractionModel  string          // model for llm/llm_or_human modes (fallback to Model)
+}
 
-	// --- Human fields ---
+// ---------------------------------------------------------------------------
+// Concrete node types
+// ---------------------------------------------------------------------------
+
+// AgentNode is an LLM agent node with tools, structured I/O, and optional delegation.
+type AgentNode struct {
+	BaseNode
+	LLMFields
+	SchemaFields
+	InteractionFields
+	MCP              *MCPConfig // node-level MCP activation/filtering
+	ActiveMCPServers []string   // populated after project config resolution
+	Publish          string     // persistent artifact name (empty if not set)
+	Session          SessionMode
+	Tools            []string // tool capability names
+	ToolMaxSteps     int      // max tool-use iterations (0 = not set)
+	AwaitMode        AwaitMode
+}
+
+// NodeKind implements Node.
+func (n *AgentNode) NodeKind() NodeKind { return NodeAgent }
+
+// JudgeNode is a verdict-producing LLM node (typically no tools).
+type JudgeNode struct {
+	BaseNode
+	LLMFields
+	SchemaFields
+	InteractionFields
+	MCP              *MCPConfig
+	ActiveMCPServers []string
+	Publish          string
+	Session          SessionMode
+	Tools            []string
+	ToolMaxSteps     int
+	AwaitMode        AwaitMode
+}
+
+// NodeKind implements Node.
+func (n *JudgeNode) NodeKind() NodeKind { return NodeJudge }
+
+// RouterNode is a routing node with 4 modes: fan_out_all, condition, round_robin, llm.
+// LLMFields are only populated when RouterMode == RouterLLM.
+type RouterNode struct {
+	BaseNode
+	LLMFields              // only populated for RouterLLM mode
+	RouterMode  RouterMode // fan_out_all, condition, round_robin, or llm
+	RouterMulti bool       // LLM router: select multiple targets (default: one)
+}
+
+// NodeKind implements Node.
+func (n *RouterNode) NodeKind() NodeKind { return NodeRouter }
+
+// HumanNode is a human pause/resume node.
+type HumanNode struct {
+	BaseNode
+	SchemaFields
+	InteractionFields
+	Publish      string
 	MinAnswers   int    // minimum answers required
 	Instructions string // prompt reference for human instructions
+	Model        string // model for LLM-based interaction modes
+	SystemPrompt string // prompt reference for LLM-based interaction modes
+	AwaitMode    AwaitMode
+}
 
-	// --- Tool node fields ---
+// NodeKind implements Node.
+func (n *HumanNode) NodeKind() NodeKind { return NodeHuman }
+
+// ToolNode executes a shell command directly (no LLM).
+type ToolNode struct {
+	BaseNode
+	SchemaFields
 	Command     string // command to execute, may contain {{...}} template refs
 	CommandRefs []*Ref // parsed template references in Command (resolved at runtime)
+	Session     SessionMode
+	AwaitMode   AwaitMode
+}
+
+// NodeKind implements Node.
+func (n *ToolNode) NodeKind() NodeKind { return NodeTool }
+
+// DoneNode is a terminal success node.
+type DoneNode struct {
+	BaseNode
+	AwaitMode AwaitMode // convergence strategy when multiple branches arrive
+}
+
+// NodeKind implements Node.
+func (n *DoneNode) NodeKind() NodeKind { return NodeDone }
+
+// FailNode is a terminal failure node.
+type FailNode struct {
+	BaseNode
+	AwaitMode AwaitMode // convergence strategy when multiple branches arrive
+}
+
+// NodeKind implements Node.
+func (n *FailNode) NodeKind() NodeKind { return NodeFail }
+
+// ---------------------------------------------------------------------------
+// Node field accessors — exported helpers that extract fields from concrete
+// node types via the Node interface. Consumers should use these instead of
+// writing their own type switches.
+// ---------------------------------------------------------------------------
+
+// NodeAwaitMode returns the AwaitMode for nodes that support it, or AwaitNone.
+func NodeAwaitMode(n Node) AwaitMode {
+	switch n := n.(type) {
+	case *AgentNode:
+		return n.AwaitMode
+	case *JudgeNode:
+		return n.AwaitMode
+	case *HumanNode:
+		return n.AwaitMode
+	case *ToolNode:
+		return n.AwaitMode
+	case *DoneNode:
+		return n.AwaitMode
+	case *FailNode:
+		return n.AwaitMode
+	}
+	return AwaitNone
+}
+
+// NodeOutputSchema returns the OutputSchema for nodes that support it, or "".
+func NodeOutputSchema(n Node) string {
+	switch n := n.(type) {
+	case *AgentNode:
+		return n.OutputSchema
+	case *JudgeNode:
+		return n.OutputSchema
+	case *HumanNode:
+		return n.OutputSchema
+	case *ToolNode:
+		return n.OutputSchema
+	}
+	return ""
+}
+
+// NodeInputSchema returns the InputSchema for nodes that support it, or "".
+func NodeInputSchema(n Node) string {
+	switch n := n.(type) {
+	case *AgentNode:
+		return n.InputSchema
+	case *JudgeNode:
+		return n.InputSchema
+	case *HumanNode:
+		return n.InputSchema
+	case *ToolNode:
+		return n.InputSchema
+	}
+	return ""
+}
+
+// NodePublish returns the Publish field for nodes that support it, or "".
+func NodePublish(n Node) string {
+	switch n := n.(type) {
+	case *AgentNode:
+		return n.Publish
+	case *JudgeNode:
+		return n.Publish
+	case *HumanNode:
+		return n.Publish
+	}
+	return ""
+}
+
+// NodeInteraction returns the Interaction field for nodes that support it, or InteractionNone.
+func NodeInteraction(n Node) InteractionMode {
+	switch n := n.(type) {
+	case *AgentNode:
+		return n.Interaction
+	case *JudgeNode:
+		return n.Interaction
+	case *HumanNode:
+		return n.Interaction
+	}
+	return InteractionNone
+}
+
+// NodeActiveMCPServers returns the ActiveMCPServers list for nodes that support it, or nil.
+func NodeActiveMCPServers(n Node) []string {
+	switch n := n.(type) {
+	case *AgentNode:
+		return n.ActiveMCPServers
+	case *JudgeNode:
+		return n.ActiveMCPServers
+	}
+	return nil
+}
+
+// IsTerminalNode returns true if the node is a DoneNode or FailNode.
+func IsTerminalNode(n Node) bool {
+	switch n.(type) {
+	case *DoneNode, *FailNode:
+		return true
+	}
+	return false
+}
+
+// NodePromptRefs returns all prompt reference names used by a node.
+func NodePromptRefs(node Node) []string {
+	var refs []string
+	// Extract LLMFields prompts if applicable.
+	switch n := node.(type) {
+	case *AgentNode:
+		refs = appendLLMPromptRefs(refs, &n.LLMFields)
+		if n.InteractionPrompt != "" {
+			refs = append(refs, n.InteractionPrompt)
+		}
+	case *JudgeNode:
+		refs = appendLLMPromptRefs(refs, &n.LLMFields)
+		if n.InteractionPrompt != "" {
+			refs = append(refs, n.InteractionPrompt)
+		}
+	case *RouterNode:
+		refs = appendLLMPromptRefs(refs, &n.LLMFields)
+	case *HumanNode:
+		if n.SystemPrompt != "" {
+			refs = append(refs, n.SystemPrompt)
+		}
+		if n.InteractionPrompt != "" {
+			refs = append(refs, n.InteractionPrompt)
+		}
+		if n.Instructions != "" {
+			refs = append(refs, n.Instructions)
+		}
+	}
+	return refs
+}
+
+// appendLLMPromptRefs appends SystemPrompt and UserPrompt from LLMFields if set.
+func appendLLMPromptRefs(refs []string, f *LLMFields) []string {
+	if f.SystemPrompt != "" {
+		refs = append(refs, f.SystemPrompt)
+	}
+	if f.UserPrompt != "" {
+		refs = append(refs, f.UserPrompt)
+	}
+	return refs
 }
 
 // ---------------------------------------------------------------------------

@@ -55,7 +55,7 @@ func TestActToolNodeAllowed(t *testing.T) {
 	})
 
 	// run_command allowed
-	node := &ir.Node{ID: "act_cmd", Kind: ir.NodeTool, Command: "run_command"}
+	node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "act_cmd"}, Command: "run_command"}
 	output, err := exec.Execute(context.Background(), node, map[string]interface{}{"cmd": "go test ./..."})
 	if err != nil {
 		t.Fatalf("expected run_command to be allowed, got: %v", err)
@@ -65,7 +65,7 @@ func TestActToolNodeAllowed(t *testing.T) {
 	}
 
 	// git_diff allowed
-	node2 := &ir.Node{ID: "act_diff", Kind: ir.NodeTool, Command: "git_diff"}
+	node2 := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "act_diff"}, Command: "git_diff"}
 	output2, err := exec.Execute(context.Background(), node2, nil)
 	if err != nil {
 		t.Fatalf("expected git_diff to be allowed, got: %v", err)
@@ -86,7 +86,7 @@ func TestActToolNodeDenied(t *testing.T) {
 		"git_diff":    jsonExec(`{"diff":""}`),
 	})
 
-	node := &ir.Node{ID: "act_cmd", Kind: ir.NodeTool, Command: "run_command"}
+	node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "act_cmd"}, Command: "run_command"}
 	_, err := exec.Execute(context.Background(), node, nil)
 	if err == nil {
 		t.Fatal("expected run_command to be denied")
@@ -106,7 +106,7 @@ func TestActDenyAllPolicyRejectsEverything(t *testing.T) {
 		"run_command": jsonExec(`{}`),
 	})
 
-	node := &ir.Node{ID: "act", Kind: ir.NodeTool, Command: "run_command"}
+	node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "act"}, Command: "run_command"}
 	_, err := exec.Execute(context.Background(), node, nil)
 	if err == nil {
 		t.Fatal("deny-all policy should reject")
@@ -125,7 +125,7 @@ func TestActNilPolicyAllowsEverything(t *testing.T) {
 		"run_command": jsonExec(`{"exit_code":0}`),
 	})
 
-	node := &ir.Node{ID: "act", Kind: ir.NodeTool, Command: "run_command"}
+	node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "act"}, Command: "run_command"}
 	output, err := exec.Execute(context.Background(), node, nil)
 	if err != nil {
 		t.Fatalf("nil policy should allow, got: %v", err)
@@ -145,7 +145,7 @@ func TestActWildcardPolicyAllowsEverything(t *testing.T) {
 		"run_command": jsonExec(`{"exit_code":0}`),
 	})
 
-	node := &ir.Node{ID: "act", Kind: ir.NodeTool, Command: "run_command"}
+	node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "act"}, Command: "run_command"}
 	_, err := exec.Execute(context.Background(), node, nil)
 	if err != nil {
 		t.Fatalf("wildcard policy should allow, got: %v", err)
@@ -168,14 +168,14 @@ func TestActPrefixWildcardMCP(t *testing.T) {
 	exec := NewGoaiExecutor(reg, wf, WithToolRegistry(tr), WithToolPolicy(policy))
 
 	// mcp.github.create_issue → allowed
-	node := &ir.Node{ID: "n1", Kind: ir.NodeTool, Command: "mcp.github.create_issue"}
+	node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "n1"}, Command: "mcp.github.create_issue"}
 	_, err := exec.Execute(context.Background(), node, nil)
 	if err != nil {
 		t.Fatalf("mcp.github.create_issue should be allowed: %v", err)
 	}
 
 	// mcp.slack.post_message → denied
-	node2 := &ir.Node{ID: "n2", Kind: ir.NodeTool, Command: "mcp.slack.post_message"}
+	node2 := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "n2"}, Command: "mcp.slack.post_message"}
 	_, err = exec.Execute(context.Background(), node2, nil)
 	if err == nil {
 		t.Fatal("mcp.slack.post_message should be denied")
@@ -211,7 +211,7 @@ func TestActDeniedToolFiresHook(t *testing.T) {
 		}),
 	)
 
-	node := &ir.Node{ID: "act", Kind: ir.NodeTool, Command: "run_command"}
+	node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "act"}, Command: "run_command"}
 	_, _ = exec.Execute(context.Background(), node, nil)
 
 	if !hookCalled {
@@ -248,7 +248,7 @@ func TestActArtifactsProduced(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		node := &ir.Node{ID: tc.nodeID, Kind: ir.NodeTool, Command: tc.command}
+		node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: tc.nodeID}, Command: tc.command}
 		output, err := exec.Execute(context.Background(), node, nil)
 		if err != nil {
 			t.Fatalf("%s: unexpected error: %v", tc.nodeID, err)

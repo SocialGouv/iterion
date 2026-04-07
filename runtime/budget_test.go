@@ -24,13 +24,13 @@ func budgetFanOutWorkflow(budget *ir.Budget) *ir.Workflow {
 	return &ir.Workflow{
 		Name:  "budget_fanout_test",
 		Entry: "entry",
-		Nodes: map[string]*ir.Node{
-			"entry":  {ID: "entry", Kind: ir.NodeAgent},
-			"router": {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
-			"a":      {ID: "a", Kind: ir.NodeAgent},
-			"b":      {ID: "b", Kind: ir.NodeAgent},
-			"done":   {ID: "done", Kind: ir.NodeDone, AwaitMode: ir.AwaitBestEffort},
-			"fail":   {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"entry":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"router": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"a":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"b":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}, AwaitMode: ir.AwaitBestEffort},
+			"fail":   &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "entry", To: "router"},
@@ -56,13 +56,13 @@ func TestBudgetWarningEmitted(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "budget_warning_test",
 		Entry: "a",
-		Nodes: map[string]*ir.Node{
-			"a":    {ID: "a", Kind: ir.NodeAgent},
-			"b":    {ID: "b", Kind: ir.NodeAgent},
-			"c":    {ID: "c", Kind: ir.NodeAgent},
-			"d":    {ID: "d", Kind: ir.NodeAgent},
-			"done": {ID: "done", Kind: ir.NodeDone},
-			"fail": {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"a":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"b":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
+			"c":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "c"}},
+			"d":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "d"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail": &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "a", To: "b"},
@@ -121,12 +121,12 @@ func TestBudgetExceededFailsRun(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "budget_exceeded_test",
 		Entry: "a",
-		Nodes: map[string]*ir.Node{
-			"a":    {ID: "a", Kind: ir.NodeAgent},
-			"b":    {ID: "b", Kind: ir.NodeAgent},
-			"c":    {ID: "c", Kind: ir.NodeAgent},
-			"done": {ID: "done", Kind: ir.NodeDone},
-			"fail": {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"a":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"b":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
+			"c":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "c"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail": &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "a", To: "b"},
@@ -191,11 +191,11 @@ func TestBudgetTokensExceeded(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "token_budget_test",
 		Entry: "a",
-		Nodes: map[string]*ir.Node{
-			"a":    {ID: "a", Kind: ir.NodeAgent},
-			"b":    {ID: "b", Kind: ir.NodeAgent},
-			"done": {ID: "done", Kind: ir.NodeDone},
-			"fail": {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"a":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"b":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail": &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "a", To: "b"},
@@ -258,11 +258,11 @@ func TestBudgetCostExceeded(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "cost_budget_test",
 		Entry: "a",
-		Nodes: map[string]*ir.Node{
-			"a":    {ID: "a", Kind: ir.NodeAgent},
-			"b":    {ID: "b", Kind: ir.NodeAgent},
-			"done": {ID: "done", Kind: ir.NodeDone},
-			"fail": {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"a":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"b":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail": &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "a", To: "b"},
@@ -306,14 +306,14 @@ func TestBudgetSharedFirstComeFirstServed(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "shared_budget_test",
 		Entry: "entry",
-		Nodes: map[string]*ir.Node{
-			"entry":  {ID: "entry", Kind: ir.NodeAgent},
-			"router": {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
-			"a":      {ID: "a", Kind: ir.NodeAgent},
-			"b1":     {ID: "b1", Kind: ir.NodeAgent},
-			"b2":     {ID: "b2", Kind: ir.NodeAgent},
-			"done":   {ID: "done", Kind: ir.NodeDone, AwaitMode: ir.AwaitBestEffort},
-			"fail":   {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"entry":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"router": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"a":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"b1":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b1"}},
+			"b2":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b2"}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}, AwaitMode: ir.AwaitBestEffort},
+			"fail":   &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "entry", To: "router"},
@@ -387,11 +387,11 @@ func TestBudgetDurationExceeded(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "duration_budget_test",
 		Entry: "a",
-		Nodes: map[string]*ir.Node{
-			"a":    {ID: "a", Kind: ir.NodeAgent},
-			"b":    {ID: "b", Kind: ir.NodeAgent},
-			"done": {ID: "done", Kind: ir.NodeDone},
-			"fail": {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"a":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"b":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail": &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "a", To: "b"},
@@ -433,11 +433,11 @@ func TestNoBudgetNoInterference(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "no_budget_test",
 		Entry: "a",
-		Nodes: map[string]*ir.Node{
-			"a":    {ID: "a", Kind: ir.NodeAgent},
-			"b":    {ID: "b", Kind: ir.NodeAgent},
-			"done": {ID: "done", Kind: ir.NodeDone},
-			"fail": {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"a":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"b":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail": &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "a", To: "b"},
@@ -484,13 +484,13 @@ func TestWorkspaceSafetyRejectsDualMutation(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "unsafe_mutation_test",
 		Entry: "entry",
-		Nodes: map[string]*ir.Node{
-			"entry":  {ID: "entry", Kind: ir.NodeAgent},
-			"router": {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
-			"tool_a": {ID: "tool_a", Kind: ir.NodeTool, Command: "echo a"},
-			"tool_b": {ID: "tool_b", Kind: ir.NodeTool, Command: "echo b"},
-			"done":   {ID: "done", Kind: ir.NodeDone, AwaitMode: ir.AwaitWaitAll},
-			"fail":   {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"entry":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"router": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"tool_a": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "tool_a"}, Command: "echo a"},
+			"tool_b": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "tool_b"}, Command: "echo b"},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}, AwaitMode: ir.AwaitWaitAll},
+			"fail":   &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "entry", To: "router"},
@@ -536,13 +536,13 @@ func TestWorkspaceSafetyAllowsMutationPlusReadonly(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "safe_mutation_test",
 		Entry: "entry",
-		Nodes: map[string]*ir.Node{
-			"entry":    {ID: "entry", Kind: ir.NodeAgent},
-			"router":   {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
-			"tool_a":   {ID: "tool_a", Kind: ir.NodeTool, Command: "echo a"},
-			"review_b": {ID: "review_b", Kind: ir.NodeAgent},
-			"done":     {ID: "done", Kind: ir.NodeDone, AwaitMode: ir.AwaitWaitAll},
-			"fail":     {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"entry":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"router":   &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"tool_a":   &ir.ToolNode{BaseNode: ir.BaseNode{ID: "tool_a"}, Command: "echo a"},
+			"review_b": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review_b"}},
+			"done":     &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}, AwaitMode: ir.AwaitWaitAll},
+			"fail":     &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "entry", To: "router"},
@@ -590,14 +590,14 @@ func TestWorkspaceSafetyAllowsParallelReadonly(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "readonly_parallel_test",
 		Entry: "entry",
-		Nodes: map[string]*ir.Node{
-			"entry":  {ID: "entry", Kind: ir.NodeAgent},
-			"router": {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
-			"a":      {ID: "a", Kind: ir.NodeAgent},
-			"b":      {ID: "b", Kind: ir.NodeAgent},
-			"c":      {ID: "c", Kind: ir.NodeAgent},
-			"done":   {ID: "done", Kind: ir.NodeDone, AwaitMode: ir.AwaitWaitAll},
-			"fail":   {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"entry":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"router": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"a":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"b":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
+			"c":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "c"}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}, AwaitMode: ir.AwaitWaitAll},
+			"fail":   &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "entry", To: "router"},
@@ -646,13 +646,13 @@ func TestWorkspaceSafetyAgentWithToolsIsMutating(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "agent_tools_mutation_test",
 		Entry: "entry",
-		Nodes: map[string]*ir.Node{
-			"entry":  {ID: "entry", Kind: ir.NodeAgent},
-			"router": {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
-			"a":      {ID: "a", Kind: ir.NodeAgent, Tools: []string{"write_file"}},
-			"b":      {ID: "b", Kind: ir.NodeAgent, Tools: []string{"run_command"}},
-			"done":   {ID: "done", Kind: ir.NodeDone, AwaitMode: ir.AwaitWaitAll},
-			"fail":   {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"entry":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"router": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"a":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, Tools: []string{"write_file"}},
+			"b":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}, Tools: []string{"run_command"}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}, AwaitMode: ir.AwaitWaitAll},
+			"fail":   &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "entry", To: "router"},
@@ -693,13 +693,13 @@ func TestWorkspaceSafetyAllowsParallelReadonlyTools(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "readonly_tools_parallel_test",
 		Entry: "entry",
-		Nodes: map[string]*ir.Node{
-			"entry":  {ID: "entry", Kind: ir.NodeAgent},
-			"router": {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
-			"a":      {ID: "a", Kind: ir.NodeAgent, Tools: []string{"read_file", "git_diff"}},
-			"b":      {ID: "b", Kind: ir.NodeAgent, Tools: []string{"git_status", "search_codebase", "tree"}},
-			"done":   {ID: "done", Kind: ir.NodeDone, AwaitMode: ir.AwaitWaitAll},
-			"fail":   {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"entry":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"router": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"a":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, Tools: []string{"read_file", "git_diff"}},
+			"b":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}, Tools: []string{"git_status", "search_codebase", "tree"}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}, AwaitMode: ir.AwaitWaitAll},
+			"fail":   &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "entry", To: "router"},
@@ -749,13 +749,13 @@ func TestWorkspaceSafetyOneMutatingOneReadonlyTools(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "one_mutating_one_readonly_test",
 		Entry: "entry",
-		Nodes: map[string]*ir.Node{
-			"entry":  {ID: "entry", Kind: ir.NodeAgent},
-			"router": {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
-			"a":      {ID: "a", Kind: ir.NodeAgent, Tools: []string{"write_file"}},
-			"b":      {ID: "b", Kind: ir.NodeAgent, Tools: []string{"read_file", "git_status"}},
-			"done":   {ID: "done", Kind: ir.NodeDone, AwaitMode: ir.AwaitWaitAll},
-			"fail":   {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"entry":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"router": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"a":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, Tools: []string{"write_file"}},
+			"b":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}, Tools: []string{"read_file", "git_status"}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}, AwaitMode: ir.AwaitWaitAll},
+			"fail":   &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "entry", To: "router"},
@@ -804,13 +804,13 @@ func TestWorkspaceSafetyMixedToolsIsMutating(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "mixed_tools_mutation_test",
 		Entry: "entry",
-		Nodes: map[string]*ir.Node{
-			"entry":  {ID: "entry", Kind: ir.NodeAgent},
-			"router": {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
-			"a":      {ID: "a", Kind: ir.NodeAgent, Tools: []string{"read_file", "write_file"}},
-			"b":      {ID: "b", Kind: ir.NodeAgent, Tools: []string{"git_diff", "run_command"}},
-			"done":   {ID: "done", Kind: ir.NodeDone, AwaitMode: ir.AwaitWaitAll},
-			"fail":   {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"entry":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"router": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"a":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, Tools: []string{"read_file", "write_file"}},
+			"b":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}, Tools: []string{"git_diff", "run_command"}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}, AwaitMode: ir.AwaitWaitAll},
+			"fail":   &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "entry", To: "router"},
@@ -888,11 +888,11 @@ func TestBudgetExceededErrorUnwrap(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "budget_error_test",
 		Entry: "a",
-		Nodes: map[string]*ir.Node{
-			"a":    {ID: "a", Kind: ir.NodeAgent},
-			"b":    {ID: "b", Kind: ir.NodeAgent},
-			"done": {ID: "done", Kind: ir.NodeDone},
-			"fail": {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"a":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"b":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail": &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "a", To: "b"},

@@ -23,9 +23,9 @@ func TestCancelProducesCancelledStatus(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "cancel_status_test",
 		Entry: "step",
-		Nodes: map[string]*ir.Node{
-			"step": {ID: "step", Kind: ir.NodeAgent},
-			"done": {ID: "done", Kind: ir.NodeDone},
+		Nodes: map[string]ir.Node{
+			"step": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "step", To: "done"},
@@ -86,10 +86,10 @@ func TestCancelDuringExecution(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "cancel_mid_test",
 		Entry: "step1",
-		Nodes: map[string]*ir.Node{
-			"step1": {ID: "step1", Kind: ir.NodeAgent},
-			"step2": {ID: "step2", Kind: ir.NodeAgent},
-			"done":  {ID: "done", Kind: ir.NodeDone},
+		Nodes: map[string]ir.Node{
+			"step1": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step1"}},
+			"step2": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step2"}},
+			"done":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "step1", To: "step2"},
@@ -130,9 +130,9 @@ func TestTimeoutProducesFailedStatus(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "timeout_test",
 		Entry: "slow",
-		Nodes: map[string]*ir.Node{
-			"slow": {ID: "slow", Kind: ir.NodeAgent},
-			"done": {ID: "done", Kind: ir.NodeDone},
+		Nodes: map[string]ir.Node{
+			"slow": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "slow"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "slow", To: "done"},
@@ -186,11 +186,11 @@ func TestCancelDuringParallelBranches(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "cancel_parallel_test",
 		Entry: "router",
-		Nodes: map[string]*ir.Node{
-			"router":   {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
-			"branch_a": {ID: "branch_a", Kind: ir.NodeAgent},
-			"branch_b": {ID: "branch_b", Kind: ir.NodeAgent},
-			"done":     {ID: "done", Kind: ir.NodeDone, AwaitMode: ir.AwaitBestEffort},
+		Nodes: map[string]ir.Node{
+			"router":   &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"branch_a": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "branch_a"}},
+			"branch_b": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "branch_b"}},
+			"done":     &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}, AwaitMode: ir.AwaitBestEffort},
 		},
 		Edges: []*ir.Edge{
 			{From: "router", To: "branch_a"},
@@ -232,9 +232,9 @@ func TestFormatVersionPersisted(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "format_test",
 		Entry: "step",
-		Nodes: map[string]*ir.Node{
-			"step": {ID: "step", Kind: ir.NodeAgent},
-			"done": {ID: "done", Kind: ir.NodeDone},
+		Nodes: map[string]ir.Node{
+			"step": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "step", To: "done"},
@@ -271,9 +271,9 @@ func TestRuntimeErrorStructured(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "err_struct_test",
 		Entry: "step",
-		Nodes: map[string]*ir.Node{
-			"step": {ID: "step", Kind: ir.NodeAgent},
-			"done": {ID: "done", Kind: ir.NodeDone},
+		Nodes: map[string]ir.Node{
+			"step": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
 		},
 		Edges: []*ir.Edge{
 			// No edge from step → no outgoing edge error.
@@ -315,10 +315,10 @@ func TestLoopExhaustionRuntimeError(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "loop_err_test",
 		Entry: "fix",
-		Nodes: map[string]*ir.Node{
-			"fix":    {ID: "fix", Kind: ir.NodeAgent},
-			"verify": {ID: "verify", Kind: ir.NodeJudge},
-			"done":   {ID: "done", Kind: ir.NodeDone},
+		Nodes: map[string]ir.Node{
+			"fix":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "fix"}},
+			"verify": &ir.JudgeNode{BaseNode: ir.BaseNode{ID: "verify"}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "fix", To: "verify"},
@@ -369,10 +369,10 @@ func TestBudgetExceededRuntimeError(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "budget_err_test",
 		Entry: "step1",
-		Nodes: map[string]*ir.Node{
-			"step1": {ID: "step1", Kind: ir.NodeAgent},
-			"step2": {ID: "step2", Kind: ir.NodeAgent},
-			"done":  {ID: "done", Kind: ir.NodeDone},
+		Nodes: map[string]ir.Node{
+			"step1": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step1"}},
+			"step2": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step2"}},
+			"done":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "step1", To: "step2"},
@@ -413,9 +413,9 @@ func TestCancelledRunHasFinishedAt(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "cancel_finished_test",
 		Entry: "step",
-		Nodes: map[string]*ir.Node{
-			"step": {ID: "step", Kind: ir.NodeAgent},
-			"done": {ID: "done", Kind: ir.NodeDone},
+		Nodes: map[string]ir.Node{
+			"step": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "step", To: "done"},
@@ -449,9 +449,9 @@ func TestExecutorErrorProducesRuntimeError(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "exec_err_test",
 		Entry: "step",
-		Nodes: map[string]*ir.Node{
-			"step": {ID: "step", Kind: ir.NodeAgent},
-			"done": {ID: "done", Kind: ir.NodeDone},
+		Nodes: map[string]ir.Node{
+			"step": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "step", To: "done"},

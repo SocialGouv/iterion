@@ -27,8 +27,8 @@ func (s *stubExecutor) on(nodeID string, fn func(map[string]interface{}) (map[st
 	s.handlers[nodeID] = fn
 }
 
-func (s *stubExecutor) Execute(_ context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
-	if fn, ok := s.handlers[node.ID]; ok {
+func (s *stubExecutor) Execute(_ context.Context, node ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+	if fn, ok := s.handlers[node.NodeID()]; ok {
 		return fn(input)
 	}
 	// Default: return empty output.
@@ -56,12 +56,12 @@ func TestLinearPath(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "linear_test",
 		Entry: "analyze",
-		Nodes: map[string]*ir.Node{
-			"analyze": {ID: "analyze", Kind: ir.NodeAgent, Publish: "analysis"},
-			"run_cmd": {ID: "run_cmd", Kind: ir.NodeTool, Command: "echo ok"},
-			"verify":  {ID: "verify", Kind: ir.NodeJudge},
-			"done":    {ID: "done", Kind: ir.NodeDone},
-			"fail":    {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"analyze": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "analyze"}, Publish: "analysis"},
+			"run_cmd": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "run_cmd"}, Command: "echo ok"},
+			"verify":  &ir.JudgeNode{BaseNode: ir.BaseNode{ID: "verify"}},
+			"done":    &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":    &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "analyze", To: "run_cmd"},
@@ -155,11 +155,11 @@ func TestBoundedLoop(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "loop_test",
 		Entry: "fix",
-		Nodes: map[string]*ir.Node{
-			"fix":    {ID: "fix", Kind: ir.NodeAgent},
-			"verify": {ID: "verify", Kind: ir.NodeJudge, Publish: "verdict"},
-			"done":   {ID: "done", Kind: ir.NodeDone},
-			"fail":   {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"fix":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "fix"}},
+			"verify": &ir.JudgeNode{BaseNode: ir.BaseNode{ID: "verify"}, Publish: "verdict"},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":   &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "fix", To: "verify"},
@@ -243,11 +243,11 @@ func TestLoopExhaustion(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "exhaust_test",
 		Entry: "fix",
-		Nodes: map[string]*ir.Node{
-			"fix":    {ID: "fix", Kind: ir.NodeAgent},
-			"verify": {ID: "verify", Kind: ir.NodeJudge},
-			"done":   {ID: "done", Kind: ir.NodeDone},
-			"fail":   {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"fix":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "fix"}},
+			"verify": &ir.JudgeNode{BaseNode: ir.BaseNode{ID: "verify"}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":   &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "fix", To: "verify"},
@@ -295,10 +295,10 @@ func TestFailNode(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "fail_test",
 		Entry: "check",
-		Nodes: map[string]*ir.Node{
-			"check": {ID: "check", Kind: ir.NodeJudge},
-			"done":  {ID: "done", Kind: ir.NodeDone},
-			"fail":  {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"check": &ir.JudgeNode{BaseNode: ir.BaseNode{ID: "check"}},
+			"done":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":  &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "check", To: "done", Condition: "ok"},
@@ -350,10 +350,10 @@ func TestContextCancellation(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "cancel_test",
 		Entry: "slow",
-		Nodes: map[string]*ir.Node{
-			"slow": {ID: "slow", Kind: ir.NodeAgent},
-			"done": {ID: "done", Kind: ir.NodeDone},
-			"fail": {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"slow": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "slow"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail": &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "slow", To: "done"},
@@ -393,11 +393,11 @@ func TestDataMappingWithVars(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "mapping_test",
 		Entry: "step1",
-		Nodes: map[string]*ir.Node{
-			"step1": {ID: "step1", Kind: ir.NodeAgent},
-			"step2": {ID: "step2", Kind: ir.NodeAgent},
-			"done":  {ID: "done", Kind: ir.NodeDone},
-			"fail":  {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"step1": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step1"}},
+			"step2": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step2"}},
+			"done":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":  &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "step1", To: "step2", With: []*ir.DataMapping{
@@ -449,12 +449,12 @@ func humanWorkflow() *ir.Workflow {
 	return &ir.Workflow{
 		Name:  "human_pause_test",
 		Entry: "analyze",
-		Nodes: map[string]*ir.Node{
-			"analyze":   {ID: "analyze", Kind: ir.NodeAgent, Publish: "analysis"},
-			"review":    {ID: "review", Kind: ir.NodeHuman, Interaction: ir.InteractionHuman, Publish: "human_decisions"},
-			"integrate": {ID: "integrate", Kind: ir.NodeAgent},
-			"done":      {ID: "done", Kind: ir.NodeDone},
-			"fail":      {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"analyze":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "analyze"}, Publish: "analysis"},
+			"review":    &ir.HumanNode{BaseNode: ir.BaseNode{ID: "review"}, InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman}, Publish: "human_decisions"},
+			"integrate": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "integrate"}},
+			"done":      &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":      &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "analyze", To: "review", With: []*ir.DataMapping{
@@ -689,9 +689,9 @@ func TestResumeNonPausedRun(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "simple",
 		Entry: "step",
-		Nodes: map[string]*ir.Node{
-			"step": {ID: "step", Kind: ir.NodeAgent},
-			"done": {ID: "done", Kind: ir.NodeDone},
+		Nodes: map[string]ir.Node{
+			"step": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "step", To: "done"},
@@ -801,12 +801,12 @@ func TestHumanPausePreservesLoopCounters(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "loop_human_test",
 		Entry: "fix",
-		Nodes: map[string]*ir.Node{
-			"fix":    {ID: "fix", Kind: ir.NodeAgent},
-			"judge":  {ID: "judge", Kind: ir.NodeJudge},
-			"review": {ID: "review", Kind: ir.NodeHuman, Interaction: ir.InteractionHuman},
-			"done":   {ID: "done", Kind: ir.NodeDone},
-			"fail":   {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"fix":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "fix"}},
+			"judge":  &ir.JudgeNode{BaseNode: ir.BaseNode{ID: "judge"}},
+			"review": &ir.HumanNode{BaseNode: ir.BaseNode{ID: "review"}, InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":   &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "fix", To: "judge"},
@@ -890,11 +890,11 @@ func humanModeWorkflow(mode ir.InteractionMode) *ir.Workflow {
 	return &ir.Workflow{
 		Name:  "human_mode_test",
 		Entry: "analyze",
-		Nodes: map[string]*ir.Node{
-			"analyze":   {ID: "analyze", Kind: ir.NodeAgent},
-			"review":    {ID: "review", Kind: ir.NodeHuman, Interaction: mode, Model: "test-model", OutputSchema: "review_output"},
-			"integrate": {ID: "integrate", Kind: ir.NodeAgent},
-			"done":      {ID: "done", Kind: ir.NodeDone},
+		Nodes: map[string]ir.Node{
+			"analyze":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "analyze"}},
+			"review":    &ir.HumanNode{BaseNode: ir.BaseNode{ID: "review"}, SchemaFields: ir.SchemaFields{OutputSchema: "review_output"}, InteractionFields: ir.InteractionFields{Interaction: mode}, Model: "test-model"},
+			"integrate": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "integrate"}},
+			"done":      &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "analyze", To: "review"},
@@ -946,7 +946,7 @@ func TestHumanAutoAnswer(t *testing.T) {
 
 func TestHumanAutoAnswerPublishArtifact(t *testing.T) {
 	wf := humanModeWorkflow(ir.InteractionLLM)
-	wf.Nodes["review"].Publish = "review_artifact"
+	wf.Nodes["review"].(*ir.HumanNode).Publish = "review_artifact"
 
 	exec := newStubExecutor()
 	exec.on("analyze", func(_ map[string]interface{}) (map[string]interface{}, error) {

@@ -90,10 +90,9 @@ func TestDelegation_EmitsStartedAndFinished(t *testing.T) {
 
 	exec := newDelegateTestExecutor(backend, hooks)
 
-	node := &ir.Node{
-		ID:      "test_node",
-		Kind:    ir.NodeAgent,
-		Backend: "test_backend",
+	node := &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: "test_node"},
+		LLMFields: ir.LLMFields{Backend: "test_backend"},
 	}
 
 	output, err := exec.executeBackend(context.Background(), node, map[string]interface{}{})
@@ -148,10 +147,9 @@ func TestDelegation_EmitsErrorOnFailure(t *testing.T) {
 
 	exec := newDelegateTestExecutor(backend, hooks)
 
-	node := &ir.Node{
-		ID:      "fail_node",
-		Kind:    ir.NodeAgent,
-		Backend: "test_backend",
+	node := &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: "fail_node"},
+		LLMFields: ir.LLMFields{Backend: "test_backend"},
 	}
 
 	_, err := exec.executeBackend(context.Background(), node, map[string]interface{}{})
@@ -198,10 +196,9 @@ func TestDelegation_EmitsRetryOnTransientError(t *testing.T) {
 
 	exec := newDelegateTestExecutor(backend, hooks)
 
-	node := &ir.Node{
-		ID:      "retry_node",
-		Kind:    ir.NodeAgent,
-		Backend: "test_backend",
+	node := &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: "retry_node"},
+		LLMFields: ir.LLMFields{Backend: "test_backend"},
 	}
 
 	_, err := exec.executeBackend(context.Background(), node, map[string]interface{}{})
@@ -244,10 +241,9 @@ func TestDelegation_ParseFallbackMetadata(t *testing.T) {
 
 	exec := newDelegateTestExecutor(backend, hooks)
 
-	node := &ir.Node{
-		ID:      "fallback_node",
-		Kind:    ir.NodeAgent,
-		Backend: "test_backend",
+	node := &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: "fallback_node"},
+		LLMFields: ir.LLMFields{Backend: "test_backend"},
 	}
 
 	output, err := exec.executeBackend(context.Background(), node, map[string]interface{}{})
@@ -282,12 +278,10 @@ func TestLLMRouterDelegated_SelectsRoute(t *testing.T) {
 
 	exec := newDelegateTestExecutor(backend, EventHooks{})
 
-	node := &ir.Node{
-		ID:           "fix_router",
-		Kind:         ir.NodeRouter,
-		RouterMode:   ir.RouterLLM,
-		Backend:      "test_backend",
-		SystemPrompt: "sys",
+	node := &ir.RouterNode{
+		BaseNode:   ir.BaseNode{ID: "fix_router"},
+		LLMFields:  ir.LLMFields{Backend: "test_backend", SystemPrompt: "sys"},
+		RouterMode: ir.RouterLLM,
 	}
 
 	input := map[string]interface{}{
@@ -321,11 +315,10 @@ func TestLLMRouterDelegated_MultiRoute(t *testing.T) {
 
 	exec := newDelegateTestExecutor(backend, EventHooks{})
 
-	node := &ir.Node{
-		ID:          "multi_router",
-		Kind:        ir.NodeRouter,
+	node := &ir.RouterNode{
+		BaseNode:    ir.BaseNode{ID: "multi_router"},
+		LLMFields:   ir.LLMFields{Backend: "test_backend"},
 		RouterMode:  ir.RouterLLM,
-		Backend:     "test_backend",
 		RouterMulti: true,
 	}
 
@@ -363,11 +356,10 @@ func TestLLMRouterDelegated_ParseFallbackJSON(t *testing.T) {
 
 	exec := newDelegateTestExecutor(backend, EventHooks{})
 
-	node := &ir.Node{
-		ID:         "router",
-		Kind:       ir.NodeRouter,
+	node := &ir.RouterNode{
+		BaseNode:   ir.BaseNode{ID: "router"},
+		LLMFields:  ir.LLMFields{Backend: "test_backend"},
 		RouterMode: ir.RouterLLM,
-		Backend:    "test_backend",
 	}
 
 	input := map[string]interface{}{
@@ -396,11 +388,10 @@ func TestLLMRouterDelegated_ParseFallbackPlainTextFails(t *testing.T) {
 
 	exec := newDelegateTestExecutor(backend, EventHooks{})
 
-	node := &ir.Node{
-		ID:         "router",
-		Kind:       ir.NodeRouter,
+	node := &ir.RouterNode{
+		BaseNode:   ir.BaseNode{ID: "router"},
+		LLMFields:  ir.LLMFields{Backend: "test_backend"},
 		RouterMode: ir.RouterLLM,
-		Backend:    "test_backend",
 	}
 
 	input := map[string]interface{}{

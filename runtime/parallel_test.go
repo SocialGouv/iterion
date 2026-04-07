@@ -29,14 +29,14 @@ func fanOutWorkflow(awaitStrategy ir.AwaitMode) *ir.Workflow {
 	return &ir.Workflow{
 		Name:  "fanout_test",
 		Entry: "entry",
-		Nodes: map[string]*ir.Node{
-			"entry":    {ID: "entry", Kind: ir.NodeAgent},
-			"router":   {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
-			"agent_a":  {ID: "agent_a", Kind: ir.NodeAgent},
-			"agent_b":  {ID: "agent_b", Kind: ir.NodeAgent},
-			"finalize": {ID: "finalize", Kind: ir.NodeAgent, AwaitMode: awaitStrategy},
-			"done":     {ID: "done", Kind: ir.NodeDone},
-			"fail":     {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"entry":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"router":   &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"agent_a":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_a"}},
+			"agent_b":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_b"}},
+			"finalize": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "finalize"}, AwaitMode: awaitStrategy},
+			"done":     &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":     &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "entry", To: "router", With: []*ir.DataMapping{
@@ -304,14 +304,14 @@ func TestFanOutBoundedParallelism(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "bounded_test",
 		Entry: "entry",
-		Nodes: map[string]*ir.Node{
-			"entry":  {ID: "entry", Kind: ir.NodeAgent},
-			"router": {ID: "router", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
-			"a":      {ID: "a", Kind: ir.NodeAgent},
-			"b":      {ID: "b", Kind: ir.NodeAgent},
-			"c":      {ID: "c", Kind: ir.NodeAgent},
-			"done":   {ID: "done", Kind: ir.NodeDone, AwaitMode: ir.AwaitWaitAll},
-			"fail":   {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"entry":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"router": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"a":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"b":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
+			"c":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "c"}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}, AwaitMode: ir.AwaitWaitAll},
+			"fail":   &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "entry", To: "router"},
@@ -385,16 +385,16 @@ func TestFanOutMultiStepBranches(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "multistep_test",
 		Entry: "context_builder",
-		Nodes: map[string]*ir.Node{
-			"context_builder": {ID: "context_builder", Kind: ir.NodeAgent, Publish: "pr_context"},
-			"review_fanout":   {ID: "review_fanout", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
-			"claude_review":   {ID: "claude_review", Kind: ir.NodeAgent},
-			"gpt_review":      {ID: "gpt_review", Kind: ir.NodeAgent},
-			"claude_plan":     {ID: "claude_plan", Kind: ir.NodeAgent},
-			"gpt_plan":        {ID: "gpt_plan", Kind: ir.NodeAgent},
-			"merge":           {ID: "merge", Kind: ir.NodeAgent, AwaitMode: ir.AwaitWaitAll},
-			"done":            {ID: "done", Kind: ir.NodeDone},
-			"fail":            {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"context_builder": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "context_builder"}, Publish: "pr_context"},
+			"review_fanout":   &ir.RouterNode{BaseNode: ir.BaseNode{ID: "review_fanout"}, RouterMode: ir.RouterFanOutAll},
+			"claude_review":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "claude_review"}},
+			"gpt_review":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "gpt_review"}},
+			"claude_plan":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "claude_plan"}},
+			"gpt_plan":        &ir.AgentNode{BaseNode: ir.BaseNode{ID: "gpt_plan"}},
+			"merge":           &ir.AgentNode{BaseNode: ir.BaseNode{ID: "merge"}, AwaitMode: ir.AwaitWaitAll},
+			"done":            &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":            &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "context_builder", To: "review_fanout", With: []*ir.DataMapping{
@@ -644,14 +644,14 @@ func TestDualReviewParallelToMerge(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "dual_review",
 		Entry: "context",
-		Nodes: map[string]*ir.Node{
-			"context":       {ID: "context", Kind: ir.NodeAgent, Publish: "pr_ctx"},
-			"review_fanout": {ID: "review_fanout", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
-			"claude_review": {ID: "claude_review", Kind: ir.NodeAgent, Publish: "claude_verdict"},
-			"gpt_review":    {ID: "gpt_review", Kind: ir.NodeAgent, Publish: "gpt_verdict"},
-			"merge_reviews": {ID: "merge_reviews", Kind: ir.NodeAgent, Publish: "merged_review", AwaitMode: ir.AwaitWaitAll},
-			"done":          {ID: "done", Kind: ir.NodeDone},
-			"fail":          {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"context":       &ir.AgentNode{BaseNode: ir.BaseNode{ID: "context"}, Publish: "pr_ctx"},
+			"review_fanout": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "review_fanout"}, RouterMode: ir.RouterFanOutAll},
+			"claude_review": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "claude_review"}, Publish: "claude_verdict"},
+			"gpt_review":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "gpt_review"}, Publish: "gpt_verdict"},
+			"merge_reviews": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "merge_reviews"}, Publish: "merged_review", AwaitMode: ir.AwaitWaitAll},
+			"done":          &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":          &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "context", To: "review_fanout"},
@@ -877,17 +877,17 @@ func TestSequentialFanOuts(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "seq_fanout_test",
 		Entry: "entry",
-		Nodes: map[string]*ir.Node{
-			"entry":   {ID: "entry", Kind: ir.NodeAgent},
-			"router1": {ID: "router1", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
-			"a":       {ID: "a", Kind: ir.NodeAgent},
-			"b":       {ID: "b", Kind: ir.NodeAgent},
-			"mid":     {ID: "mid", Kind: ir.NodeAgent, AwaitMode: ir.AwaitWaitAll},
-			"router2": {ID: "router2", Kind: ir.NodeRouter, RouterMode: ir.RouterFanOutAll},
-			"c":       {ID: "c", Kind: ir.NodeAgent},
-			"d":       {ID: "d", Kind: ir.NodeAgent},
-			"done":    {ID: "done", Kind: ir.NodeDone, AwaitMode: ir.AwaitWaitAll},
-			"fail":    {ID: "fail", Kind: ir.NodeFail},
+		Nodes: map[string]ir.Node{
+			"entry":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"router1": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router1"}, RouterMode: ir.RouterFanOutAll},
+			"a":       &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"b":       &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
+			"mid":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "mid"}, AwaitMode: ir.AwaitWaitAll},
+			"router2": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router2"}, RouterMode: ir.RouterFanOutAll},
+			"c":       &ir.AgentNode{BaseNode: ir.BaseNode{ID: "c"}},
+			"d":       &ir.AgentNode{BaseNode: ir.BaseNode{ID: "d"}},
+			"done":    &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}, AwaitMode: ir.AwaitWaitAll},
+			"fail":    &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
 		},
 		Edges: []*ir.Edge{
 			{From: "entry", To: "router1"},
