@@ -78,7 +78,7 @@ export const useUIStore = create<UIState>((set) => ({
   subNodeViewStack: [],
   libraryExpanded: false,
   macroView: false,
-  canvasTool: "select",
+  canvasTool: "pan",
   editModalEdgeInfo: null,
   setActiveTab: (activeTab) => set({ activeTab }),
   toggleSourceView: () => set((s) => ({ sourceViewOpen: !s.sourceViewOpen })),

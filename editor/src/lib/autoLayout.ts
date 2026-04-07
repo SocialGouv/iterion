@@ -42,6 +42,7 @@ export async function autoLayout(
     "elk.layered.cycleBreaking.strategy": "DEPTH_FIRST",
     "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",
     "elk.layered.nodePlacement.strategy": "BRANDES_KOEPF",
+    "elk.hierarchyHandling": "INCLUDE_CHILDREN",
   };
 
   function makeElkNode(n: Node): ElkNode {
@@ -52,6 +53,7 @@ export async function autoLayout(
 
     if (n.id === "__start__" || kind === "start") {
       layoutOptions["elk.layered.layering.layerConstraint"] = "FIRST";
+      layoutOptions["elk.layered.priority.direction"] = "10";
     } else if (kind === "done" || kind === "fail") {
       layoutOptions["elk.layered.layering.layerConstraint"] = "LAST";
     }
@@ -87,13 +89,13 @@ export async function autoLayout(
     edges: edges.map((e) => {
       const isLoop = !!(e.data as Record<string, unknown>)?.loop;
       const isRef = e.type === "referenceEdge";
-      // For edges involving nodes inside groups, ELK needs the full hierarchy path.
-      // But since we nested children inside group nodes, ELK resolves IDs within the compound graph.
+      const isFromStart = e.source === "__start__";
       return {
         id: e.id,
         sources: [e.source],
         targets: [e.target],
         ...((isLoop || isRef) && { layoutOptions: { "elk.layered.priority.direction": "0" } }),
+        ...(isFromStart && { layoutOptions: { "elk.layered.priority.direction": "10" } }),
       };
     }),
   };

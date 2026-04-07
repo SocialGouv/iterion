@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { ReactFlow, Background, Controls, MiniMap, useReactFlow } from "@xyflow/react";
-import type { NodeMouseHandler, EdgeMouseHandler, Node } from "@xyflow/react";
+import type { NodeMouseHandler, EdgeMouseHandler, Node, Viewport } from "@xyflow/react";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { useUIStore } from "@/store/ui";
@@ -62,7 +62,7 @@ export default function Canvas() {
   const pushSubNodeView = useUIStore((s) => s.pushSubNodeView);
   const activeWorkflow = useActiveWorkflow();
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
-  const { screenToFlowPosition, fitView, getNodes } = useReactFlow();
+  const { screenToFlowPosition, fitView, getNodes, getViewport, setViewport } = useReactFlow();
 
   // Parse groups for context menu
   const groups = useMemo(() => {
@@ -104,6 +104,35 @@ export default function Canvas() {
       setTimeout(() => fitView({ padding: 0.2 }), DEBOUNCE_LAYOUT_SETTLE_MS);
     }
   }, [activeWorkflowName, fitView]);
+
+  // Save/restore viewport when entering/leaving sub-node detail view
+  const prevSubViewRef = useRef<string | null>(null);
+  const savedViewportRef = useRef<Viewport | null>(null);
+  useEffect(() => {
+    const currentSubView = subNodeViewStack.length > 0
+      ? subNodeViewStack[subNodeViewStack.length - 1]!
+      : null;
+    if (prevSubViewRef.current === currentSubView) return;
+    const wasInSubView = prevSubViewRef.current !== null;
+    prevSubViewRef.current = currentSubView;
+    if (currentSubView !== null && !wasInSubView) {
+      // Entering sub-node view from global: save viewport, then fitView
+      savedViewportRef.current = getViewport();
+      setTimeout(() => fitView({ padding: 0.2 }), DEBOUNCE_LAYOUT_SETTLE_MS);
+    } else if (currentSubView === null && wasInSubView) {
+      // Returning to global view: restore saved viewport
+      const saved = savedViewportRef.current;
+      if (saved) {
+        setTimeout(() => setViewport(saved), DEBOUNCE_LAYOUT_SETTLE_MS);
+        savedViewportRef.current = null;
+      } else {
+        setTimeout(() => fitView({ padding: 0.2 }), DEBOUNCE_LAYOUT_SETTLE_MS);
+      }
+    } else {
+      // Navigating between sub-node views: fitView
+      setTimeout(() => fitView({ padding: 0.2 }), DEBOUNCE_LAYOUT_SETTLE_MS);
+    }
+  }, [subNodeViewStack, fitView, getViewport, setViewport]);
 
   // Apply search filter: dim non-matching nodes, highlight current match.
   // Note: applySearchFilter is intentionally excluded from deps — its internal
