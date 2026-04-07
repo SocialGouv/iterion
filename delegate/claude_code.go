@@ -116,8 +116,12 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 	// Two-pass execution: when tools + schema are both present, Pass 1 output
 	// is free-form text. We always run Pass 2 with WithOutputFormat to guarantee
 	// structured output conforming to the schema.
-	if needsTwoPass && rm.SessionID != "" {
-		fmtRM, fmtErr := b.formatOutput(ctx, task.OutputSchema, rm.SessionID)
+	if needsTwoPass {
+		pass1Text := ""
+		if rm.Result != nil {
+			pass1Text = *rm.Result
+		}
+		fmtRM, fmtErr := b.formatOutput(ctx, task, pass1Text)
 		if fmtErr != nil {
 			return result, fmt.Errorf("delegate: claude-code formatting pass failed: %w", fmtErr)
 		}
@@ -141,32 +145,33 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 	return result, nil
 }
 
-// formatOutput performs the second pass of two-pass execution: a lightweight
+// formatOutput performs the second pass of two-pass execution: a standalone
 // call with WithOutputFormat (no tools) that guarantees structured JSON output
-// conforming to the schema. It forks the existing session so the model has
-// full context from the first pass without re-sending the conversation.
-func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, schemaJSON json.RawMessage, sessionID string) (*claude.ResultMessage, error) {
-	fmtCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+// conforming to the schema. The Pass 1 text output is included in the prompt
+// so the model has the full context of the work that was done.
+func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, pass1Text string) (*claude.ResultMessage, error) {
+	fmtCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
 	var schema map[string]any
-	if err := json.Unmarshal(schemaJSON, &schema); err != nil {
+	if err := json.Unmarshal(task.OutputSchema, &schema); err != nil {
 		return nil, fmt.Errorf("invalid output schema: %w", err)
 	}
 
 	opts := []claude.Option{
-		claude.WithResume(sessionID),
-		claude.WithForkSession(true),
-		claude.WithNoSessionPersistence(true),
 		claude.WithOutputFormat(schema),
 		claude.WithPermissionMode("bypassPermissions"),
 		claude.WithVerbose(true),
+	}
+	if task.WorkDir != "" {
+		opts = append(opts, claude.WithCwd(task.WorkDir))
 	}
 	if b.Command != "" {
 		opts = append(opts, claude.WithCLIPath(b.Command))
 	}
 
-	return claude.Prompt(fmtCtx,
-		"Format your complete findings as JSON matching the required output schema.",
-		opts...)
+	prompt := "You completed the following work:\n\n" + pass1Text +
+		"\n\nNow format your complete findings as JSON matching the required output schema."
+
+	return claude.Prompt(fmtCtx, prompt, opts...)
 }

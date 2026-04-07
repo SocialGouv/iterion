@@ -9,6 +9,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -948,6 +949,12 @@ func (e *GoaiExecutor) executeDelegation(ctx context.Context, node *ir.Node, inp
 // The tool policy is checked before execution; denied tools produce an
 // explicit error with the tool_called hook fired (Error != nil).
 func (e *GoaiExecutor) executeToolNode(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+	// When the command contains template refs ({{input.X}}), resolve them
+	// and execute as a direct shell command. Otherwise, use the tool registry.
+	if len(node.CommandRefs) > 0 {
+		return e.executeToolNodeShell(ctx, node, input)
+	}
+
 	toolName := node.Command
 
 	// Policy check before resolution — fail fast on denied tools.
@@ -1002,6 +1009,64 @@ func (e *GoaiExecutor) executeToolNode(ctx context.Context, node *ir.Node, input
 	}
 
 	return output, nil
+}
+
+// executeToolNodeShell handles tool nodes whose command contains {{...}}
+// template references. Templates are resolved from the node's input map,
+// and the resulting string is executed as a shell command via sh -c.
+func (e *GoaiExecutor) executeToolNodeShell(ctx context.Context, node *ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+	// Resolve template references in the command.
+	resolved := resolveCommandTemplate(node.Command, node.CommandRefs, input)
+
+	// Expand environment variables in the resolved command.
+	resolved = os.ExpandEnv(resolved)
+
+	toolName := "shell:" + node.ID
+
+	start := time.Now()
+	cmd := exec.CommandContext(ctx, "sh", "-c", resolved)
+	out, err := cmd.CombinedOutput()
+	outputStr := string(out)
+	duration := time.Since(start)
+
+	if e.hooks.OnToolCall != nil {
+		e.hooks.OnToolCall(node.ID, goai.ToolCallInfo{
+			ToolName: toolName,
+			Duration: duration,
+			Error:    err,
+		})
+	}
+	if e.hooks.OnToolNodeResult != nil {
+		e.hooks.OnToolNodeResult(node.ID, toolName, []byte(resolved), outputStr, duration, err)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("model: tool node %q: shell command failed: %w\noutput: %s", node.ID, err, outputStr)
+	}
+
+	// Try to parse output as JSON, otherwise wrap as text.
+	var output map[string]interface{}
+	if jsonErr := json.Unmarshal([]byte(outputStr), &output); jsonErr != nil {
+		output = map[string]interface{}{"result": strings.TrimSpace(outputStr)}
+	}
+
+	return output, nil
+}
+
+// resolveCommandTemplate substitutes {{input.X}} references in a command
+// string with values from the input map.
+func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]interface{}) string {
+	resolved := command
+	for _, ref := range refs {
+		var val interface{}
+		if ref.Kind == ir.RefInput && len(ref.Path) > 0 {
+			val = input[ref.Path[0]]
+		}
+		if val == nil {
+			continue
+		}
+		resolved = strings.Replace(resolved, ref.Raw, fmt.Sprint(val), 1)
+	}
+	return resolved
 }
 
 // ---------------------------------------------------------------------------
