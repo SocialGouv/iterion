@@ -1151,7 +1151,7 @@ func TestFormatOutputPreview(t *testing.T) {
 					"_tokens":   100,
 				},
 			},
-			want: "verdict: approved | reasoning: some reason",
+			want: "verdict: approved\nreasoning: some reason",
 		},
 		{
 			name: "router single route (no output wrapper)",
@@ -1184,21 +1184,21 @@ func TestFormatOutputPreview(t *testing.T) {
 			name: "long text is truncated",
 			data: map[string]interface{}{
 				"output": map[string]interface{}{
-					"text":    strings.Repeat("x", 1200),
+					"text":    strings.Repeat("x", 1600),
 					"_tokens": 100,
 				},
 			},
-			want: "...",
+			want: "...[truncated]",
 		},
 		{
-			name: "newlines replaced with spaces",
+			name: "newlines preserved in text output",
 			data: map[string]interface{}{
 				"output": map[string]interface{}{
 					"text":    "line1\nline2\nline3",
 					"_tokens": 100,
 				},
 			},
-			want: "line1 line2 line3",
+			want: "line1\nline2\nline3",
 		},
 	}
 

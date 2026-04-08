@@ -75,6 +75,24 @@ func newLiveExecutor(wf *ir.Workflow, s *store.RunStore, runID, workDir string) 
 	)
 }
 
+// installValidateSyntax copies the validate_syntax.js script into the
+// workspace's _tools/ directory so tool nodes can invoke it.
+func installValidateSyntax(t *testing.T, workspaceDir string) {
+	t.Helper()
+	src := filepath.Join("..", "examples", "validate_syntax.js")
+	dst := filepath.Join(workspaceDir, "_tools", "validate_syntax.js")
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		t.Fatalf("mkdir _tools: %v", err)
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("read validate_syntax.js: %v", err)
+	}
+	if err := os.WriteFile(dst, data, 0o755); err != nil {
+		t.Fatalf("write validate_syntax.js: %v", err)
+	}
+}
+
 // requireCLI skips the test if the given CLI binary is not found in PATH.
 func requireCLI(t *testing.T, name string) {
 	t.Helper()
@@ -132,6 +150,8 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 	if out, gitErr := gitInit.CombinedOutput(); gitErr != nil {
 		t.Fatalf("git init failed: %v\n%s", gitErr, out)
 	}
+
+	installValidateSyntax(t, workspaceDir)
 
 	// Create store inside the workspace for easy post-run inspection.
 	storeDir := filepath.Join(workspaceDir, ".iterion")
@@ -221,6 +241,7 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 	inputs := map[string]interface{}{
 		"task_description":    taskDescription,
 		"acceptance_criteria": acceptanceCriteria,
+		"workspace_dir":       workspaceDir,
 	}
 
 	t.Log("Starting live dual-model plan/implement/review workflow run...")
@@ -484,6 +505,8 @@ func TestLive_Lite_SessionContinuity_ReviewFix(t *testing.T) {
 		t.Fatalf("git init failed: %v\n%s", gitErr, out)
 	}
 
+	installValidateSyntax(t, workspaceDir)
+
 	storeDir := filepath.Join(workspaceDir, ".iterion")
 	s, storeErr := store.New(storeDir)
 	if storeErr != nil {
@@ -563,6 +586,7 @@ func TestLive_Lite_SessionContinuity_ReviewFix(t *testing.T) {
 	inputs := map[string]interface{}{
 		"task_description":    taskDescription,
 		"acceptance_criteria": acceptanceCriteria,
+		"workspace_dir":       workspaceDir,
 	}
 
 	t.Log("Starting live session continuity review/fix workflow run...")
@@ -751,6 +775,8 @@ func TestLive_Full_ExhaustiveDSLCoverage(t *testing.T) {
 		t.Fatalf("git init failed: %v\n%s", gitErr, out)
 	}
 
+	installValidateSyntax(t, workspaceDir)
+
 	storeDir := filepath.Join(workspaceDir, ".iterion")
 	s, storeErr := store.New(storeDir)
 	if storeErr != nil {
@@ -776,6 +802,7 @@ func TestLive_Full_ExhaustiveDSLCoverage(t *testing.T) {
 	defer cancel()
 	inputs := map[string]interface{}{
 		"task_description": "Write the number 42 to a file called answer.txt in the workspace directory.",
+		"workspace_dir":    workspaceDir,
 	}
 
 	t.Log("Starting exhaustive DSL coverage workflow run...")

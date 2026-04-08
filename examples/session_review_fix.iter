@@ -125,6 +125,12 @@ prompt review_user:
   Criteres d'acceptation :
   {{input.acceptance_criteria}}
 
+  Resultats de la validation syntaxique automatique :
+  {{input.syntax_report}}
+
+  Si la validation syntaxique indique valid=false, les erreurs listees
+  DOIVENT etre mentionnees dans issues[] et approved DOIT etre false.
+
   INSTRUCTIONS :
   1. Lis le fichier index.html dans le workspace
   2. Pour CHAQUE critere, verifie factuellement dans le code :
@@ -153,6 +159,13 @@ prompt verdict_user:
 
   Criteres d'acceptation :
   {{input.acceptance_criteria}}
+
+  Resultats de la validation syntaxique automatique :
+  {{input.syntax_report}}
+
+  IMPORTANT : si la validation syntaxique indique valid=false,
+  l'implementation ne peut PAS etre approuvee quel que soit le
+  verdict des reviewers.
 
   Determine si l'implementation est approuvee.
 
@@ -230,9 +243,15 @@ schema impl_output:
   summary: string
   files_changed: string[]
 
+schema syntax_report:
+  valid: bool
+  errors: string[]
+  file_count: int
+
 schema review_input:
   implementation: json
   acceptance_criteria: string
+  syntax_report: json
 
 schema review_output:
   summary: string
@@ -248,6 +267,7 @@ schema verdict_input:
   claude_review: json
   codex_review: json
   acceptance_criteria: string
+  syntax_report: json
 
 schema verdict_output:
   approved: bool
@@ -307,6 +327,12 @@ agent implement:
   system: implement_system
   user: implement_user
   session: fresh
+
+## ─── Node : Validation syntaxique ─────────────────────────────
+
+tool validate_syntax:
+  command: "node {{input.workspace_dir}}/_tools/validate_syntax.js {{input.workspace_dir}}"
+  output: syntax_report
 
 ## ─── Nodes : Review (triple role) ──────────────────────────────
 
@@ -430,30 +456,40 @@ workflow session_review_fix:
     previous_feedback: "{{outputs.plan_judge_merge.issues}}"
   }
 
-  ## ═══ Phase 3 : Implementation ═════════════════════════════════
+  ## ═══ Phase 3 : Implementation + Validation ═════════════════════
 
-  implement -> review_fanout with {
-    implementation: "{{outputs.implement}}",
-    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  implement -> validate_syntax with {
+    workspace_dir: "{{vars.workspace_dir}}"
+  }
+
+  ## ═══ Phase 3b : Validation syntaxique ═════════════════════════
+
+  validate_syntax -> review_fanout with {
+    implementation: "{{artifacts.implementation}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}",
+    syntax_report: "{{outputs.validate_syntax}}"
   }
 
   ## ═══ Phase 4 : Review parallele (triple role) ═════════════════
 
   review_fanout -> claude_review with {
     implementation: "{{input.implementation}}",
-    acceptance_criteria: "{{input.acceptance_criteria}}"
+    acceptance_criteria: "{{input.acceptance_criteria}}",
+    syntax_report: "{{input.syntax_report}}"
   }
 
   review_fanout -> codex_review with {
     implementation: "{{input.implementation}}",
-    acceptance_criteria: "{{input.acceptance_criteria}}"
+    acceptance_criteria: "{{input.acceptance_criteria}}",
+    syntax_report: "{{input.syntax_report}}"
   }
 
   ## ═══ Phase 5 : Verdict ════════════════════════════════════════
 
   claude_review -> review_verdict with {
     claude_review: "{{outputs.claude_review}}",
-    acceptance_criteria: "{{vars.acceptance_criteria}}"
+    acceptance_criteria: "{{vars.acceptance_criteria}}",
+    syntax_report: "{{outputs.validate_syntax}}"
   }
 
   codex_review -> review_verdict with {
@@ -485,13 +521,11 @@ workflow session_review_fix:
     acceptance_criteria: "{{vars.acceptance_criteria}}"
   }
 
-  ## Apres fix -> retour review
-  claude_fix -> review_fanout as fix_loop(5) with {
-    implementation: "{{outputs.claude_fix}}",
-    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  ## Apres fix -> validation syntaxique -> retour review
+  claude_fix -> validate_syntax as fix_loop(5) with {
+    workspace_dir: "{{vars.workspace_dir}}"
   }
 
-  codex_fix -> review_fanout as fix_loop(5) with {
-    implementation: "{{outputs.codex_fix}}",
-    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  codex_fix -> validate_syntax as fix_loop(5) with {
+    workspace_dir: "{{vars.workspace_dir}}"
   }

@@ -187,6 +187,13 @@ prompt review_impl_user:
   Criteres d'acceptation :
   {{input.acceptance_criteria}}
 
+  Resultats de la validation syntaxique automatique :
+  {{input.syntax_report}}
+
+  Si la validation syntaxique indique valid=false, les erreurs listees
+  DOIVENT etre mentionnees dans issues[] et le critere correspondant
+  DOIT etre marque FAIL.
+
   INSTRUCTIONS :
   1. Lis le fichier index.html dans le workspace
   2. Pour CHAQUE critere (1 a 20), verifie factuellement dans le code :
@@ -220,11 +227,16 @@ prompt impl_verdict_user:
   Criteres d'acceptation :
   {{input.acceptance_criteria}}
 
+  Resultats de la validation syntaxique automatique :
+  {{input.syntax_report}}
+
   INSTRUCTIONS STRICTES :
   1. Evalue chaque critere numerote (1 a 20) individuellement : PASS ou FAIL
   2. Compte le nombre total de PASS
-  3. Marque approved=true UNIQUEMENT si >= 17/20 PASS et tous les criteres Layer 1 et Layer 2 sont PASS
-  4. Sinon marque approved=false et liste dans remaining_issues les criteres FAIL avec explication
+  3. Si la validation syntaxique indique valid=false, l'implementation ne peut
+     PAS etre approuvee quel que soit le nombre de criteres satisfaits
+  4. Marque approved=true UNIQUEMENT si >= 17/20 PASS et tous les criteres Layer 1 et Layer 2 sont PASS
+  5. Sinon marque approved=false et liste dans remaining_issues les criteres FAIL avec explication
 
 ## ─── Schemas ────────────────────────────────────────────────────
 
@@ -295,9 +307,15 @@ schema impl_output:
   summary: string
   files_changed: string[]
 
+schema syntax_report:
+  valid: bool
+  errors: string[]
+  file_count: int
+
 schema review_input:
   implementation: json
   acceptance_criteria: string
+  syntax_report: json
 
 schema review_output:
   summary: string
@@ -316,6 +334,7 @@ schema impl_verdict_input:
   claude_review: json
   codex_review: json
   acceptance_criteria: string
+  syntax_report: json
 
 schema impl_verdict:
   approved: bool
@@ -433,6 +452,12 @@ agent codex_implement:
   system: implement_system
   user: implement_user
   session: fresh
+
+## ─── Node : Validation syntaxique ─────────────────────────────
+
+tool validate_syntax:
+  command: "node {{input.workspace_dir}}/_tools/validate_syntax.js {{input.workspace_dir}}"
+  output: syntax_report
 
 ## ─── Nodes : Review ────────────────────────────────────────────
 
@@ -583,32 +608,39 @@ workflow dual_model_plan_implement_review:
     previous_feedback: "{{artifacts.review_verdict}}"
   }
 
-  ## ═══ Phase 6 : Review parallele ════════════════════════════════
+  ## ═══ Phase 6 : Validation syntaxique + Review parallele ════════
 
-  claude_implement -> review_fanout with {
-    implementation: "{{outputs.claude_implement}}",
-    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  claude_implement -> validate_syntax with {
+    workspace_dir: "{{vars.workspace_dir}}"
   }
 
-  codex_implement -> review_fanout with {
-    implementation: "{{outputs.codex_implement}}",
-    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  codex_implement -> validate_syntax with {
+    workspace_dir: "{{vars.workspace_dir}}"
+  }
+
+  validate_syntax -> review_fanout with {
+    implementation: "{{artifacts.implementation}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}",
+    syntax_report: "{{outputs.validate_syntax}}"
   }
 
   review_fanout -> claude_review with {
     implementation: "{{input.implementation}}",
-    acceptance_criteria: "{{input.acceptance_criteria}}"
+    acceptance_criteria: "{{input.acceptance_criteria}}",
+    syntax_report: "{{input.syntax_report}}"
   }
 
   review_fanout -> codex_review with {
     implementation: "{{input.implementation}}",
-    acceptance_criteria: "{{input.acceptance_criteria}}"
+    acceptance_criteria: "{{input.acceptance_criteria}}",
+    syntax_report: "{{input.syntax_report}}"
   }
 
   claude_review -> review_judge with {
     implementation: "{{artifacts.implementation}}",
     claude_review: "{{outputs.claude_review}}",
-    acceptance_criteria: "{{vars.acceptance_criteria}}"
+    acceptance_criteria: "{{vars.acceptance_criteria}}",
+    syntax_report: "{{outputs.validate_syntax}}"
   }
 
   codex_review -> review_judge with {
