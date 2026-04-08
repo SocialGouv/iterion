@@ -1,8 +1,19 @@
 import { useCallback, useRef, useState } from "react";
 import type { Connection, Edge as FlowEdge } from "@xyflow/react";
 import { useDocumentStore } from "@/store/document";
+import { useUIStore } from "@/store/ui";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
+import { findNodeDecl } from "@/lib/defaults";
+import { assignFieldToNode, addToolToNode } from "@/lib/docMutations";
 import { TOAST_DURATION_CONNECTION_ERROR_MS } from "@/lib/constants";
+import {
+  DETAIL_PREFIX_CENTRAL,
+  DETAIL_PREFIX_SCHEMA,
+  DETAIL_PREFIX_PROMPT,
+  DETAIL_PREFIX_VAR,
+  DETAIL_PREFIX_TOOL,
+} from "@/lib/nodeDetailGraph";
+import type { IterDocument } from "@/api/types";
 
 interface QuickAddState {
   x: number;
@@ -10,10 +21,97 @@ interface QuickAddState {
   sourceId: string;
 }
 
+function parseDetailId(id: string): { kind: "central" | "schema" | "prompt" | "var" | "tool"; name?: string; relation?: string } | null {
+  if (id === DETAIL_PREFIX_CENTRAL) return { kind: "central" };
+  if (id.startsWith(DETAIL_PREFIX_SCHEMA)) {
+    const rest = id.slice(DETAIL_PREFIX_SCHEMA.length);
+    const colonIdx = rest.lastIndexOf(":");
+    if (colonIdx >= 0) return { kind: "schema", name: rest.slice(0, colonIdx), relation: rest.slice(colonIdx + 1) };
+    return { kind: "schema", name: rest };
+  }
+  if (id.startsWith(DETAIL_PREFIX_PROMPT)) {
+    const rest = id.slice(DETAIL_PREFIX_PROMPT.length);
+    const colonIdx = rest.lastIndexOf(":");
+    if (colonIdx >= 0) return { kind: "prompt", name: rest.slice(0, colonIdx), relation: rest.slice(colonIdx + 1) };
+    return { kind: "prompt", name: rest };
+  }
+  if (id.startsWith(DETAIL_PREFIX_VAR)) return { kind: "var", name: id.slice(DETAIL_PREFIX_VAR.length) };
+  if (id.startsWith(DETAIL_PREFIX_TOOL)) return { kind: "tool", name: id.slice(DETAIL_PREFIX_TOOL.length) };
+  return null;
+}
+
+function handleSubNodeConnect(
+  sourceId: string,
+  targetId: string,
+  centralNodeId: string,
+  doc: IterDocument,
+  applyBatch: (mutator: (doc: IterDocument) => IterDocument) => void,
+  addToast: (message: string, type: "success" | "error" | "info" | "warning") => void,
+): void {
+  const src = parseDetailId(sourceId);
+  const tgt = parseDetailId(targetId);
+  if (!src || !tgt) { addToast("Invalid connection", "error"); return; }
+
+  const found = findNodeDecl(doc, centralNodeId);
+  if (!found) return;
+
+  // Normalize direction: extract the non-central side and its info
+  const sub = src.kind === "central" ? tgt : src;
+  const isCentralInvolved = src.kind === "central" || tgt.kind === "central";
+
+  // Schema <-> Central: assign schema to input/output slot
+  if (isCentralInvolved && sub.kind === "schema" && sub.name) {
+    const defaultRole = src.kind === "central" ? "output" : "input";
+    const role = sub.relation ?? defaultRole;
+    applyBatch((d) => assignFieldToNode(d, centralNodeId, role, sub.name!));
+    addToast(`Schema "${sub.name}" assigned as ${role}`, "success");
+    return;
+  }
+
+  // Prompt <-> Central: assign prompt to slot
+  if (isCentralInvolved && sub.kind === "prompt" && sub.name) {
+    const relation = sub.relation;
+    if (!relation) { addToast("Cannot determine prompt slot", "error"); return; }
+    applyBatch((d) => assignFieldToNode(d, centralNodeId, relation, sub.name!));
+    addToast(`Prompt "${sub.name}" assigned as ${relation}`, "success");
+    return;
+  }
+
+  // Tool <-> Central: add tool to agent/judge
+  if (isCentralInvolved && sub.kind === "tool" && sub.name) {
+    if (found.kind !== "agent" && found.kind !== "judge") {
+      addToast("Only agents and judges can have tools", "error");
+      return;
+    }
+    applyBatch((d) => addToolToNode(d, centralNodeId, sub.name!));
+    addToast(`Tool "${sub.name}" added`, "success");
+    return;
+  }
+
+  // Var -> Prompt: insert {{vars.NAME}} reference
+  if (src.kind === "var" && tgt.kind === "prompt" && src.name && tgt.name) {
+    const ref = `{{vars.${src.name}}}`;
+    applyBatch((d) => ({
+      ...d,
+      prompts: d.prompts.map((p) => {
+        if (p.name !== tgt.name) return p;
+        if (p.body.includes(ref)) return p;
+        return { ...p, body: p.body ? p.body + "\n" + ref : ref };
+      }),
+    }));
+    addToast(`Variable reference ${ref} added to prompt "${tgt.name}"`, "success");
+    return;
+  }
+
+  addToast("Invalid connection in detail view", "error");
+}
+
 export function useCanvasConnections() {
   const document = useDocumentStore((s) => s.document);
   const addEdge = useDocumentStore((s) => s.addEdge);
+  const applyBatch = useDocumentStore((s) => s.applyBatch);
   const activeWorkflow = useActiveWorkflow();
+  const addToast = useUIStore((s) => s.addToast);
 
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const connectionErrorTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -40,13 +138,39 @@ export function useCanvasConnections() {
   );
 
   const isValidConnection = useCallback(
-    (connection: FlowEdge | Connection) => getConnectionError(connection) === null,
+    (connection: FlowEdge | Connection) => {
+      // In subnode view, allow any connection between detail nodes
+      const subNodeViewStack = useUIStore.getState().subNodeViewStack;
+      if (subNodeViewStack.length > 0) {
+        if (!connection.source || !connection.target) return false;
+        if (connection.source === connection.target) return false;
+        const src = parseDetailId(connection.source);
+        const tgt = parseDetailId(connection.target);
+        if (!src || !tgt) return false;
+        // Valid combos: schema<->central, prompt<->central, var->prompt, tool<->central
+        if ((src.kind === "schema" && tgt.kind === "central") || (src.kind === "central" && tgt.kind === "schema")) return true;
+        if ((src.kind === "prompt" && tgt.kind === "central") || (src.kind === "central" && tgt.kind === "prompt")) return true;
+        if (src.kind === "var" && tgt.kind === "prompt") return true;
+        if ((src.kind === "tool" && tgt.kind === "central") || (src.kind === "central" && tgt.kind === "tool")) return true;
+        return false;
+      }
+      return getConnectionError(connection) === null;
+    },
     [getConnectionError],
   );
 
   const onConnect = useCallback(
     (connection: Connection) => {
       if (!document || !connection.source || !connection.target) return;
+
+      // Subnode view: semantic connections
+      const subNodeViewStack = useUIStore.getState().subNodeViewStack;
+      if (subNodeViewStack.length > 0) {
+        const centralNodeId = subNodeViewStack[subNodeViewStack.length - 1]!;
+        handleSubNodeConnect(connection.source, connection.target, centralNodeId, document, applyBatch, addToast);
+        return;
+      }
+
       const workflowName = activeWorkflow?.name;
       if (!workflowName) return;
       const error = getConnectionError(connection);
@@ -58,7 +182,7 @@ export function useCanvasConnections() {
       }
       addEdge(workflowName, { from: connection.source, to: connection.target });
     },
-    [document, activeWorkflow, addEdge, getConnectionError],
+    [document, activeWorkflow, addEdge, applyBatch, addToast, getConnectionError],
   );
 
   const onConnectStart = useCallback(

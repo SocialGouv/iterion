@@ -2,8 +2,8 @@ import type { Node, Edge as FlowEdge } from "@xyflow/react";
 import { MarkerType } from "@xyflow/react";
 import type { IterDocument, AgentDecl, JudgeDecl, HumanDecl, ToolNodeDecl, RouterDecl } from "@/api/types";
 import { findNodeDecl } from "@/lib/defaults";
-import { NODE_COLORS } from "@/lib/constants";
-import type { DetailSubNodeData, DetailSubKind } from "@/components/Canvas/DetailSubNode";
+import { NODE_COLORS, SUB_COLORS } from "@/lib/constants";
+import type { DetailSubNodeData } from "@/components/Canvas/DetailSubNode";
 
 // Prefixes for detail sub-node IDs
 export const DETAIL_PREFIX_SCHEMA = "__detail_schema__:";
@@ -24,13 +24,6 @@ export function isDetailNodeId(id: string): boolean {
   );
 }
 
-const DETAIL_COLORS: Record<DetailSubKind, string> = {
-  schema: "#A78BFA",
-  prompt: "#2DD4BF",
-  var: "#FBBF24",
-  edge: "#60A5FA",
-  tool: "#34D399",
-};
 
 function refMarker(color: string) {
   return { type: MarkerType.ArrowClosed as const, color, width: 12, height: 12 };
@@ -94,7 +87,7 @@ export function generateNodeDetailGraph(
       target: DETAIL_PREFIX_CENTRAL,
       type: "referenceEdge",
       label: "input",
-      markerEnd: refMarker(DETAIL_COLORS.schema),
+      markerEnd: refMarker(SUB_COLORS.schema),
       data: { layerKind: "schemas" },
     });
   }
@@ -121,7 +114,7 @@ export function generateNodeDetailGraph(
       target: schemaId,
       type: "referenceEdge",
       label: "output",
-      markerEnd: refMarker(DETAIL_COLORS.schema),
+      markerEnd: refMarker(SUB_COLORS.schema),
       data: { layerKind: "schemas" },
     });
   }
@@ -158,7 +151,7 @@ export function generateNodeDetailGraph(
       target: DETAIL_PREFIX_CENTRAL,
       type: "referenceEdge",
       label: pRef.relation,
-      markerEnd: refMarker(DETAIL_COLORS.prompt),
+      markerEnd: refMarker(SUB_COLORS.prompt),
       data: { layerKind: "prompts" },
     });
   }
@@ -198,7 +191,7 @@ export function generateNodeDetailGraph(
       target: promptNodeId,
       type: "referenceEdge",
       label: varName,
-      markerEnd: refMarker(DETAIL_COLORS.var),
+      markerEnd: refMarker(SUB_COLORS.var),
       data: { layerKind: "vars" },
     });
   }
@@ -242,8 +235,8 @@ export function generateNodeDetailGraph(
           target: edgeId,
           type: "referenceEdge",
           label: badges.length > 0 ? badges[0] : "",
-          markerEnd: refMarker(DETAIL_COLORS.edge),
-          data: { color: DETAIL_COLORS.edge },
+          markerEnd: refMarker(SUB_COLORS.edge),
+          data: { color: SUB_COLORS.edge },
         });
       } else {
         edges.push({
@@ -252,8 +245,8 @@ export function generateNodeDetailGraph(
           target: DETAIL_PREFIX_CENTRAL,
           type: "referenceEdge",
           label: badges.length > 0 ? badges[0] : "",
-          markerEnd: refMarker(DETAIL_COLORS.edge),
-          data: { color: DETAIL_COLORS.edge },
+          markerEnd: refMarker(SUB_COLORS.edge),
+          data: { color: SUB_COLORS.edge },
         });
       }
     }
@@ -279,8 +272,8 @@ export function generateNodeDetailGraph(
       target: toolId,
       type: "referenceEdge",
       label: "tool",
-      markerEnd: refMarker(DETAIL_COLORS.tool),
-      data: { color: DETAIL_COLORS.tool },
+      markerEnd: refMarker(SUB_COLORS.tool),
+      data: { color: SUB_COLORS.tool },
     });
   }
 

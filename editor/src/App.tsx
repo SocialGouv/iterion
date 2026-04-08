@@ -5,6 +5,7 @@ import SidebarTabs from "./components/Panels/SidebarTabs";
 import Toolbar from "./components/Toolbar/Toolbar";
 import DiagnosticsPanel from "./components/Diagnostics/DiagnosticsPanel";
 import LibraryPanel from "./components/Library/LibraryPanel";
+import SubNodePalette from "./components/Canvas/SubNodePalette";
 import SourceView from "./components/SourceView/SourceView";
 import ToastContainer from "./components/shared/Toast";
 import EditItemModal from "./components/Modals/EditItemModal";
@@ -18,6 +19,7 @@ export default function App() {
   const diagnosticsPanelOpen = useUIStore((s) => s.diagnosticsPanelOpen);
   const expanded = useUIStore((s) => s.expanded);
   const libraryExpanded = useUIStore((s) => s.libraryExpanded);
+  const inSubNodeView = useUIStore((s) => s.subNodeViewStack.length > 0);
   useAutoValidation();
   useFileWatcher();
 
@@ -37,7 +39,7 @@ export default function App() {
       <div className={`h-screen w-screen grid bg-gray-900 text-white transition-[grid-template-columns] duration-200 ${
         expanded
           ? "grid-rows-[1fr] grid-cols-[1fr]"
-          : `${libraryExpanded ? "grid-cols-[280px_1fr_320px]" : "grid-cols-[64px_1fr_320px]"} ${
+          : `${libraryExpanded || inSubNodeView ? "grid-cols-[280px_1fr_320px]" : "grid-cols-[64px_1fr_320px]"} ${
               diagnosticsPanelOpen ? "grid-rows-[48px_1fr_160px]" : "grid-rows-[48px_1fr_0px]"
             }`
       }`}>
@@ -48,10 +50,10 @@ export default function App() {
           </div>
         )}
 
-        {/* Left: library panel */}
+        {/* Left: library panel or subnode palette */}
         {!expanded && (
           <div className="border-r border-gray-700 overflow-y-auto">
-            <LibraryPanel />
+            {inSubNodeView ? <SubNodePalette /> : <LibraryPanel />}
           </div>
         )}
 

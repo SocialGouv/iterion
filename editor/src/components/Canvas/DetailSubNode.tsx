@@ -1,10 +1,11 @@
 import { Handle } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 import { useUIStore } from "@/store/ui";
-import { SELECTED_BORDER, SELECTED_GLOW } from "@/lib/constants";
+import { SELECTED_BORDER, SELECTED_GLOW, SUB_COLORS, SUB_ICONS } from "@/lib/constants";
+import type { DetailSubKind } from "@/lib/constants";
 import { SIDES, POS_MAP } from "./handlePositions";
 
-export type DetailSubKind = "schema" | "prompt" | "var" | "edge" | "tool";
+export type { DetailSubKind };
 
 export interface DetailSubNodeData extends Record<string, unknown> {
   subKind: DetailSubKind;
@@ -21,21 +22,6 @@ export interface DetailSubNodeData extends Record<string, unknown> {
   targetNodeId?: string;
 }
 
-const SUB_COLORS: Record<DetailSubKind, string> = {
-  schema: "#A78BFA",
-  prompt: "#2DD4BF",
-  var: "#FBBF24",
-  edge: "#60A5FA",
-  tool: "#34D399",
-};
-
-const SUB_ICONS: Record<DetailSubKind, string> = {
-  schema: "\u{1F4D0}",
-  prompt: "\u{1F4DD}",
-  var: "\u{1F3F7}\u{FE0F}",
-  edge: "\u{1F517}",
-  tool: "\u{1F527}",
-};
 
 export default function DetailSubNode({ data, selected }: NodeProps) {
   const { subKind, label, subtitle, badge, itemName, edgeIndex, workflowName } = data as DetailSubNodeData;

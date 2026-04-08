@@ -55,6 +55,25 @@ export const LAYER_LABELS: Record<LayerKind, string> = {
 export const SELECTED_BORDER = "#60A5FA";
 export const SELECTED_GLOW = "0 0 10px rgba(96, 165, 250, 0.6)";
 
+/** Sub-node kind type and styling — shared across DetailSubNode, SubNodePalette, nodeDetailGraph */
+export type DetailSubKind = "schema" | "prompt" | "var" | "edge" | "tool";
+
+export const SUB_COLORS: Record<DetailSubKind, string> = {
+  schema: "#A78BFA",
+  prompt: "#2DD4BF",
+  var: "#FBBF24",
+  edge: "#60A5FA",
+  tool: "#34D399",
+};
+
+export const SUB_ICONS: Record<DetailSubKind, string> = {
+  schema: "\u{1F4D0}",
+  prompt: "\u{1F4DD}",
+  var: "\u{1F3F7}\u{FE0F}",
+  edge: "\u{1F517}",
+  tool: "\u{1F527}",
+};
+
 /** Timing constants (ms) */
 export const DEBOUNCE_EDGE_RECOMPUTE_MS = 100;
 export const DEBOUNCE_FIT_VIEW_MS = 150;

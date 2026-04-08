@@ -13,6 +13,7 @@ import { useCanvasConnections } from "@/hooks/useCanvasConnections";
 import { useCanvasLayout } from "@/hooks/useCanvasLayout";
 import { useAddNode } from "@/hooks/useAddNode";
 import { useAddFromLibrary } from "@/hooks/useAddFromLibrary";
+import { useAddSubNode, type SubNodeDragData } from "@/hooks/useAddSubNode";
 import { useFullscreen } from "@/hooks/useFullscreen";
 import { useLibraryStore, selectAllItems } from "@/store/library";
 import { isAuxiliaryNodeId } from "@/lib/documentToGraph";
@@ -32,6 +33,7 @@ import BreadcrumbBar from "./BreadcrumbBar";
 import CanvasToolbar from "./CanvasToolbar";
 import ToolPalette from "./ToolPalette";
 import QuickAddMenu from "./QuickAddMenu";
+import SchemaRoleDialog from "./SchemaRoleDialog";
 import SearchOverlay from "./SearchOverlay";
 
 const nodeTypes = { workflowNode: WorkflowNode, auxiliaryNode: AuxiliaryNode, detailSubNode: DetailSubNode, groupNode: GroupNode };
@@ -44,6 +46,7 @@ function isEditableNode(id: string): boolean {
 export default function Canvas() {
   const addNode = useAddNode();
   const addFromLibrary = useAddFromLibrary();
+  const addSubNode = useAddSubNode();
   const allLibraryItems = useLibraryStore(selectAllItems);
   const document = useDocumentStore((s) => s.document);
   const removeNode = useDocumentStore((s) => s.removeNode);
@@ -81,6 +84,11 @@ export default function Canvas() {
 
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
+
+  // Schema role dialog state (for existing schema drops without relation)
+  const [schemaRoleDialog, setSchemaRoleDialog] = useState<{
+    x: number; y: number; data: SubNodeDragData; centralNodeId: string; position: { x: number; y: number };
+  } | null>(null);
 
   // Delegated hooks
   const layout = useCanvasLayout();
@@ -241,6 +249,28 @@ export default function Canvas() {
       e.preventDefault();
       const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
 
+      // Subnode drop (in detail view)
+      const subNodeJson = e.dataTransfer.getData("application/iterion-subnode");
+      if (subNodeJson && subNodeViewStack.length > 0) {
+        try {
+          const data = JSON.parse(subNodeJson) as SubNodeDragData;
+          const centralNodeId = subNodeViewStack[subNodeViewStack.length - 1]!;
+
+          // Existing items without relation need a role picker for schemas
+          if (data.subKind === "schema" && !data.relation && data.existingName) {
+            setSchemaRoleDialog({ x: e.clientX, y: e.clientY, data, centralNodeId, position });
+            return;
+          }
+
+          const predictedId = addSubNode(data, centralNodeId);
+          if (predictedId) layout.pendingPositionsRef.current.set(predictedId, position);
+        } catch { /* invalid JSON */ }
+        return;
+      }
+
+      // Block workflow node drops in subnode view
+      if (subNodeViewStack.length > 0) return;
+
       // Library item drop
       const libraryItemId = e.dataTransfer.getData("application/iterion-library");
       if (libraryItemId) {
@@ -258,7 +288,7 @@ export default function Canvas() {
       const name = addNode(kind);
       if (name) layout.pendingPositionsRef.current.set(name, position);
     },
-    [addNode, addFromLibrary, allLibraryItems, screenToFlowPosition, layout.pendingPositionsRef],
+    [addNode, addFromLibrary, addSubNode, allLibraryItems, screenToFlowPosition, layout.pendingPositionsRef, subNodeViewStack],
   );
 
   // Toolbar actions
@@ -378,6 +408,20 @@ export default function Canvas() {
 
       {/* Edge editing modal */}
       <EditEdgeModal />
+
+      {schemaRoleDialog && (
+        <SchemaRoleDialog
+          x={schemaRoleDialog.x}
+          y={schemaRoleDialog.y}
+          onSelect={(role) => {
+            const { data, centralNodeId, position } = schemaRoleDialog;
+            const predictedId = addSubNode({ ...data, relation: role }, centralNodeId);
+            if (predictedId) layout.pendingPositionsRef.current.set(predictedId, position);
+            setSchemaRoleDialog(null);
+          }}
+          onClose={() => setSchemaRoleDialog(null)}
+        />
+      )}
 
       {connections.quickAddMenu && (
         <QuickAddMenu
