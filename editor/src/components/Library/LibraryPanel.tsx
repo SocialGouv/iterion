@@ -25,6 +25,7 @@ const CATEGORIES: { value: LibraryCategory | null; label: string }[] = [
   { value: "schema", label: "Schema" },
   { value: "prompt", label: "Prompt" },
   { value: "var", label: "Var" },
+  { value: "pattern", label: "Pattern" },
 ];
 
 function CollapsedPalette({ onExpand }: { onExpand: () => void }) {

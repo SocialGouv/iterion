@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
+import { useUIStore } from "@/store/ui";
 import {
   generateUniqueName,
   getAllNodeNames,
@@ -12,8 +13,9 @@ import {
   defaultHuman,
   defaultTool,
 } from "@/lib/defaults";
-import type { LibraryItem } from "@/lib/library/types";
-import type { IterDocument, SchemaDecl } from "@/api/types";
+import { parseGroups, groupToCommentText } from "@/lib/groups";
+import type { LibraryItem, NodeTemplate } from "@/lib/library/types";
+import type { IterDocument, SchemaDecl, VarField } from "@/api/types";
 
 /** Check if two schemas have identical fields (for dedup, order-independent). */
 function schemasEqual(a: SchemaDecl, b: SchemaDecl): boolean {
@@ -31,20 +33,270 @@ function uniqueName(base: string, existing: Set<string>): string {
   return `${base}_${i}`;
 }
 
+/** Convert a display name to a snake_case identifier. */
+function toSnakeCase(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+}
+
+/** Terminal node names that should not be remapped in edge templates. */
+const TERMINAL_NAMES = new Set(["done", "fail", "__start__"]);
+
+/** Create a single node declaration in the document, returning the mutated result. */
+function createNodeInResult(
+  result: IterDocument,
+  nodeTpl: NodeTemplate,
+  nodeName: string,
+  schemaNameMap: Map<string, string>,
+  promptNameMap: Map<string, string>,
+  templateSchemas: SchemaDecl[],
+  templatePrompts: { name: string; body: string }[],
+): IterDocument {
+  const remapSchema = (ref: string | undefined): string => {
+    if (!ref) return "";
+    return schemaNameMap.get(ref) ?? ref;
+  };
+  const remapPrompt = (ref: string | undefined): string => {
+    if (!ref) return "";
+    return promptNameMap.get(ref) ?? ref;
+  };
+
+  switch (nodeTpl.kind) {
+    case "agent": {
+      const base = defaultAgent(nodeName);
+      const data = nodeTpl.data;
+      return {
+        ...result,
+        agents: [
+          ...result.agents,
+          {
+            ...base,
+            ...data,
+            name: nodeName,
+            input: remapSchema(data.input ?? templateSchemas[0]?.name),
+            output: remapSchema(data.output ?? templateSchemas[1]?.name),
+            system: remapPrompt(data.system ?? templatePrompts[0]?.name),
+            user: remapPrompt(data.user ?? templatePrompts[1]?.name),
+          },
+        ],
+      };
+    }
+    case "judge": {
+      const base = defaultJudge(nodeName);
+      const data = nodeTpl.data;
+      return {
+        ...result,
+        judges: [
+          ...result.judges,
+          {
+            ...base,
+            ...data,
+            name: nodeName,
+            input: remapSchema(data.input ?? templateSchemas[0]?.name),
+            output: remapSchema(data.output ?? templateSchemas[1]?.name),
+            system: remapPrompt(data.system ?? templatePrompts[0]?.name),
+            user: remapPrompt(data.user ?? templatePrompts[1]?.name),
+          },
+        ],
+      };
+    }
+    case "router": {
+      const base = defaultRouter(nodeName);
+      return {
+        ...result,
+        routers: [...result.routers, { ...base, ...nodeTpl.data, name: nodeName }],
+      };
+    }
+    case "human": {
+      const base = defaultHuman(nodeName);
+      const data = nodeTpl.data;
+      return {
+        ...result,
+        humans: [
+          ...result.humans,
+          {
+            ...base,
+            ...data,
+            name: nodeName,
+            input: remapSchema(data.input ?? templateSchemas[0]?.name),
+            output: remapSchema(data.output ?? templateSchemas[1]?.name),
+            instructions: remapPrompt(data.instructions ?? templatePrompts[0]?.name),
+          },
+        ],
+      };
+    }
+    case "tool": {
+      const base = defaultTool(nodeName);
+      const data = nodeTpl.data;
+      return {
+        ...result,
+        tools: [
+          ...result.tools,
+          {
+            ...base,
+            ...data,
+            name: nodeName,
+            output: remapSchema(data.output ?? templateSchemas[0]?.name),
+          },
+        ],
+      };
+    }
+  }
+}
+
+/** Process schemas from a template entry, deduplicating against existing ones. */
+function processSchemas(
+  result: IterDocument,
+  templateSchemas: SchemaDecl[],
+  schemaNameMap: Map<string, string>,
+): IterDocument {
+  if (templateSchemas.length === 0) return result;
+  const existingSchemas = getAllSchemaNames(result);
+  const newSchemas = [...result.schemas];
+  for (const tplSchema of templateSchemas) {
+    const existingSchema = result.schemas.find((s) => s.name === tplSchema.name);
+    if (existingSchema && schemasEqual(existingSchema, tplSchema)) {
+      schemaNameMap.set(tplSchema.name, tplSchema.name);
+    } else {
+      const actualName = uniqueName(tplSchema.name, existingSchemas);
+      existingSchemas.add(actualName);
+      schemaNameMap.set(tplSchema.name, actualName);
+      newSchemas.push({ ...tplSchema, name: actualName });
+    }
+  }
+  return { ...result, schemas: newSchemas };
+}
+
+/** Process prompts from a template entry, deduplicating against existing ones. */
+function processPrompts(
+  result: IterDocument,
+  templatePrompts: { name: string; body: string }[],
+  promptNameMap: Map<string, string>,
+): IterDocument {
+  if (templatePrompts.length === 0) return result;
+  const existingPrompts = getAllPromptNames(result);
+  const newPrompts = [...result.prompts];
+  for (const tplPrompt of templatePrompts) {
+    const existingPrompt = result.prompts.find((p) => p.name === tplPrompt.name);
+    if (existingPrompt && existingPrompt.body === tplPrompt.body) {
+      promptNameMap.set(tplPrompt.name, tplPrompt.name);
+    } else {
+      const actualName = uniqueName(tplPrompt.name, existingPrompts);
+      existingPrompts.add(actualName);
+      promptNameMap.set(tplPrompt.name, actualName);
+      newPrompts.push({ ...tplPrompt, name: actualName });
+    }
+  }
+  return { ...result, prompts: newPrompts };
+}
+
+/** Process vars from a template entry, merging into existing vars. */
+function processVars(
+  result: IterDocument,
+  templateVars: VarField[],
+): IterDocument {
+  if (templateVars.length === 0) return result;
+  const existingVarNames = new Set((result.vars?.fields ?? []).map((v) => v.name));
+  const newFields = [...(result.vars?.fields ?? [])];
+  for (const v of templateVars) {
+    if (!existingVarNames.has(v.name)) {
+      newFields.push({ ...v });
+      existingVarNames.add(v.name);
+    }
+  }
+  return { ...result, vars: { fields: newFields } };
+}
+
 /**
  * Hook that creates declarations from a library item as a single atomic operation.
- * Returns the new node name (or null for primitive-only items).
+ * Returns the new node name (single item), array of names (pattern), or null (primitive-only).
  */
 export function useAddFromLibrary() {
   const document = useDocumentStore((s) => s.document);
   const applyBatch = useDocumentStore((s) => s.applyBatch);
   const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
+  const activeWorkflowName = useUIStore((s) => s.activeWorkflowName);
 
   const addFromLibrary = useCallback(
-    (item: LibraryItem): string | null => {
+    (item: LibraryItem): string | string[] | null => {
       if (!document) return null;
 
-      // Build name mappings for schemas and prompts (template name → actual name)
+      // ── Pattern path: multi-node with edges and group ──
+      if (item.template.pattern) {
+        const pattern = item.template.pattern;
+        const createdNames: string[] = [];
+        const placeholderToName = new Map<string, string>();
+
+        applyBatch((doc: IterDocument): IterDocument => {
+          let result = { ...doc };
+          const existingNames = getAllNodeNames(result);
+          const schemaNameMap = new Map<string, string>();
+          const promptNameMap = new Map<string, string>();
+
+          // 1. Create all nodes with their schemas/prompts
+          for (const entry of pattern.nodes) {
+            const entrySchemas = entry.schemas ?? [];
+            const entryPrompts = entry.prompts ?? [];
+            const entryVars = entry.vars ?? [];
+
+            result = processSchemas(result, entrySchemas, schemaNameMap);
+            result = processPrompts(result, entryPrompts, promptNameMap);
+            result = processVars(result, entryVars);
+
+            const nodeName = generateUniqueName(entry.placeholder, existingNames);
+            existingNames.add(nodeName);
+            placeholderToName.set(entry.placeholder, nodeName);
+            createdNames.push(nodeName);
+
+            result = createNodeInResult(
+              result, entry.node, nodeName,
+              schemaNameMap, promptNameMap,
+              entrySchemas, entryPrompts,
+            );
+          }
+
+          // 2. Create edges in the active workflow
+          if (pattern.edges.length > 0) {
+            const wfs = result.workflows ?? [];
+            const wfName = activeWorkflowName ?? wfs[0]?.name;
+            if (wfName) {
+              const remap = (name: string) =>
+                TERMINAL_NAMES.has(name) ? name : (placeholderToName.get(name) ?? name);
+
+              result = {
+                ...result,
+                workflows: result.workflows.map((w) => {
+                  if (w.name !== wfName) return w;
+                  const newEdges = pattern.edges.map((e) => ({
+                    from: remap(e.from),
+                    to: remap(e.to),
+                    ...(e.when ? { when: e.when } : {}),
+                    ...(e.loop ? { loop: e.loop } : {}),
+                    ...(e.with ? { with: e.with } : {}),
+                  }));
+                  return { ...w, edges: [...w.edges, ...newEdges] };
+                }),
+              };
+            }
+          }
+
+          // 3. Create the group annotation
+          const baseGroupName = pattern.groupName ?? toSnakeCase(item.name);
+          const existingGroups = parseGroups(result.comments);
+          const existingGroupNames = new Set(existingGroups.map((g) => g.name));
+          const groupName = uniqueName(baseGroupName, existingGroupNames);
+          const comment = { text: groupToCommentText({ name: groupName, nodeIds: createdNames }) };
+          result = { ...result, comments: [...result.comments, comment] };
+
+          return result;
+        });
+
+        if (createdNames.length > 0) {
+          setTimeout(() => setSelectedNode(createdNames[0]!), 0);
+        }
+        return createdNames.length > 0 ? createdNames : null;
+      }
+
+      // ── Single-node path (unchanged logic) ──
       const schemaNameMap = new Map<string, string>();
       const promptNameMap = new Map<string, string>();
       let createdNodeName: string | null = null;
@@ -52,174 +304,22 @@ export function useAddFromLibrary() {
       applyBatch((doc: IterDocument): IterDocument => {
         let result = { ...doc };
 
-        // 1. Create schemas
-        const templateSchemas = item.template.schemas ?? [];
-        if (templateSchemas.length > 0) {
-          const existingSchemas = getAllSchemaNames(result);
-          const newSchemas = [...result.schemas];
-          for (const tplSchema of templateSchemas) {
-            const existingSchema = result.schemas.find((s) => s.name === tplSchema.name);
-            if (existingSchema && schemasEqual(existingSchema, tplSchema)) {
-              // Identical schema already exists — reuse
-              schemaNameMap.set(tplSchema.name, tplSchema.name);
-            } else {
-              // Create with unique name
-              const actualName = uniqueName(tplSchema.name, existingSchemas);
-              existingSchemas.add(actualName);
-              schemaNameMap.set(tplSchema.name, actualName);
-              newSchemas.push({ ...tplSchema, name: actualName });
-            }
-          }
-          result = { ...result, schemas: newSchemas };
-        }
+        result = processSchemas(result, item.template.schemas ?? [], schemaNameMap);
+        result = processPrompts(result, item.template.prompts ?? [], promptNameMap);
+        result = processVars(result, item.template.vars ?? []);
 
-        // 2. Create prompts
-        const templatePrompts = item.template.prompts ?? [];
-        if (templatePrompts.length > 0) {
-          const existingPrompts = getAllPromptNames(result);
-          const newPrompts = [...result.prompts];
-          for (const tplPrompt of templatePrompts) {
-            const existingPrompt = result.prompts.find((p) => p.name === tplPrompt.name);
-            if (existingPrompt && existingPrompt.body === tplPrompt.body) {
-              promptNameMap.set(tplPrompt.name, tplPrompt.name);
-            } else {
-              const actualName = uniqueName(tplPrompt.name, existingPrompts);
-              existingPrompts.add(actualName);
-              promptNameMap.set(tplPrompt.name, actualName);
-              newPrompts.push({ ...tplPrompt, name: actualName });
-            }
-          }
-          result = { ...result, prompts: newPrompts };
-        }
-
-        // 3. Create vars
-        const templateVars = item.template.vars ?? [];
-        if (templateVars.length > 0) {
-          const existingVarNames = new Set((result.vars?.fields ?? []).map((v) => v.name));
-          const newFields = [...(result.vars?.fields ?? [])];
-          for (const v of templateVars) {
-            if (!existingVarNames.has(v.name)) {
-              newFields.push({ ...v });
-              existingVarNames.add(v.name);
-            }
-          }
-          result = { ...result, vars: { fields: newFields } };
-        }
-
-        // 4. Create node (if this is a node template)
         const nodeTpl = item.template.node;
         if (nodeTpl) {
           const existingNames = getAllNodeNames(result);
-          // Use item name as base (snake_case)
-          const baseName = item.name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+          const baseName = toSnakeCase(item.name);
           const nodeName = generateUniqueName(baseName, existingNames);
-
-          const remapSchema = (ref: string | undefined): string => {
-            if (!ref) return "";
-            return schemaNameMap.get(ref) ?? ref;
-          };
-          const remapPrompt = (ref: string | undefined): string => {
-            if (!ref) return "";
-            return promptNameMap.get(ref) ?? ref;
-          };
-
           createdNodeName = nodeName;
 
-          switch (nodeTpl.kind) {
-            case "agent": {
-              const base = defaultAgent(nodeName);
-              const data = nodeTpl.data;
-              const schemas = item.template.schemas ?? [];
-              const prompts = item.template.prompts ?? [];
-              result = {
-                ...result,
-                agents: [
-                  ...result.agents,
-                  {
-                    ...base,
-                    ...data,
-                    name: nodeName,
-                    input: remapSchema(data.input ?? schemas[0]?.name),
-                    output: remapSchema(data.output ?? schemas[1]?.name),
-                    system: remapPrompt(data.system ?? prompts[0]?.name),
-                    user: remapPrompt(data.user ?? prompts[1]?.name),
-                  },
-                ],
-              };
-              break;
-            }
-            case "judge": {
-              const base = defaultJudge(nodeName);
-              const data = nodeTpl.data;
-              const schemas = item.template.schemas ?? [];
-              const prompts = item.template.prompts ?? [];
-              result = {
-                ...result,
-                judges: [
-                  ...result.judges,
-                  {
-                    ...base,
-                    ...data,
-                    name: nodeName,
-                    input: remapSchema(data.input ?? schemas[0]?.name),
-                    output: remapSchema(data.output ?? schemas[1]?.name),
-                    system: remapPrompt(data.system ?? prompts[0]?.name),
-                    user: remapPrompt(data.user ?? prompts[1]?.name),
-                  },
-                ],
-              };
-              break;
-            }
-            case "router": {
-              const base = defaultRouter(nodeName);
-              result = {
-                ...result,
-                routers: [...result.routers, { ...base, ...nodeTpl.data, name: nodeName }],
-              };
-              break;
-            }
-            case "human": {
-              const base = defaultHuman(nodeName);
-              const data = nodeTpl.data;
-              const schemas = item.template.schemas ?? [];
-              const prompts = item.template.prompts ?? [];
-              result = {
-                ...result,
-                humans: [
-                  ...result.humans,
-                  {
-                    ...base,
-                    ...data,
-                    name: nodeName,
-                    input: remapSchema(data.input ?? schemas[0]?.name),
-                    output: remapSchema(data.output ?? schemas[1]?.name),
-                    instructions: remapPrompt(data.instructions ?? prompts[0]?.name),
-                  },
-                ],
-              };
-              break;
-            }
-            case "tool": {
-              const base = defaultTool(nodeName);
-              const data = nodeTpl.data;
-              const schemas = item.template.schemas ?? [];
-              result = {
-                ...result,
-                tools: [
-                  ...result.tools,
-                  {
-                    ...base,
-                    ...data,
-                    name: nodeName,
-                    output: remapSchema(data.output ?? schemas[0]?.name),
-                  },
-                ],
-              };
-              break;
-            }
-          }
-
-          return result;
+          result = createNodeInResult(
+            result, nodeTpl, nodeName,
+            schemaNameMap, promptNameMap,
+            item.template.schemas ?? [], item.template.prompts ?? [],
+          );
         }
 
         return result;
@@ -231,7 +331,7 @@ export function useAddFromLibrary() {
 
       return createdNodeName;
     },
-    [document, applyBatch, setSelectedNode],
+    [document, applyBatch, setSelectedNode, activeWorkflowName],
   );
 
   return addFromLibrary;

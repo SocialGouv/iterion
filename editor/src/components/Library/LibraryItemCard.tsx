@@ -4,6 +4,7 @@ import { NODE_ICONS, NODE_COLORS } from "@/lib/constants";
 import { LAYER_COLORS, LAYER_ICONS } from "@/lib/constants";
 
 function getCategoryColor(category: LibraryCategory): string {
+  if (category === "pattern") return "#A855F7";
   if (category in NODE_COLORS) return NODE_COLORS[category as keyof typeof NODE_COLORS];
   if (category === "schema") return LAYER_COLORS.schemas;
   if (category === "prompt") return LAYER_COLORS.prompts;
@@ -12,6 +13,7 @@ function getCategoryColor(category: LibraryCategory): string {
 }
 
 function getCategoryIcon(category: LibraryCategory): string {
+  if (category === "pattern") return "\u{1F9E9}";
   if (category in NODE_ICONS) return NODE_ICONS[category as keyof typeof NODE_ICONS];
   if (category === "schema") return LAYER_ICONS.schemas;
   if (category === "prompt") return LAYER_ICONS.prompts;
@@ -44,7 +46,14 @@ export default function LibraryItemCard({ item, onAdd }: Props) {
     >
       <span className="text-sm mt-0.5 shrink-0">{icon}</span>
       <div className="min-w-0 flex-1">
-        <div className="text-xs font-medium text-gray-200 truncate">{item.name}</div>
+        <div className="text-xs font-medium text-gray-200 flex items-center gap-1 min-w-0">
+          <span className="truncate">{item.name}</span>
+          {item.template.pattern && (
+            <span className="text-[9px] bg-purple-500/20 text-purple-300 px-1 rounded shrink-0">
+              {item.template.pattern.nodes.length} nodes
+            </span>
+          )}
+        </div>
         <div className="text-[10px] text-gray-500 line-clamp-2 leading-tight mt-0.5">{item.description}</div>
         {item.tags && item.tags.length > 0 && (
           <div className="flex gap-1 flex-wrap mt-1">

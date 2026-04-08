@@ -271,13 +271,24 @@ export default function Canvas() {
       // Block workflow node drops in subnode view
       if (subNodeViewStack.length > 0) return;
 
-      // Library item drop
+      // Library item drop (single node or multi-node pattern)
       const libraryItemId = e.dataTransfer.getData("application/iterion-library");
       if (libraryItemId) {
         const item = allLibraryItems.find((i) => i.id === libraryItemId);
         if (item) {
-          const name = addFromLibrary(item);
-          if (name) layout.pendingPositionsRef.current.set(name, position);
+          const result = addFromLibrary(item);
+          if (result) {
+            if (Array.isArray(result)) {
+              result.forEach((name, i) => {
+                layout.pendingPositionsRef.current.set(name, {
+                  x: position.x,
+                  y: position.y + (i - (result.length - 1) / 2) * 150,
+                });
+              });
+            } else {
+              layout.pendingPositionsRef.current.set(result, position);
+            }
+          }
         }
         return;
       }

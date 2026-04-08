@@ -135,8 +135,8 @@ func TestChaos_FailMidFanOut_BestEffort(t *testing.T) {
 
 func TestChaos_AllBranchesFail(t *testing.T) {
 	for _, strategy := range []struct {
-		name   string
-		mode   ir.AwaitMode
+		name string
+		mode ir.AwaitMode
 	}{
 		{"wait_all", ir.AwaitWaitAll},
 		{"best_effort", ir.AwaitBestEffort},
@@ -193,7 +193,7 @@ func TestChaos_FailInLoopIteration(t *testing.T) {
 		Schemas: map[string]*ir.Schema{},
 		Prompts: map[string]*ir.Prompt{},
 		Vars:    map[string]*ir.Var{},
-		Loops:   map[string]*ir.Loop{
+		Loops: map[string]*ir.Loop{
 			"refine": {Name: "refine", MaxIterations: 5},
 		},
 	}

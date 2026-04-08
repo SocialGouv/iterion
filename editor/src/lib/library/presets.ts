@@ -354,4 +354,233 @@ export const PRESET_ITEMS: LibraryItem[] = [
       ],
     },
   },
+
+  // ── Patterns (multi-node) ──────────────────────────────
+  {
+    id: "builtin:pattern-review-loop",
+    name: "Review Loop",
+    description: "Agent writes content, judge reviews it, loops back for revisions",
+    category: "pattern",
+    tags: ["pattern", "review", "loop", "agent", "judge"],
+    builtin: true,
+    template: {
+      pattern: {
+        groupName: "review_loop",
+        nodes: [
+          {
+            placeholder: "writer",
+            node: {
+              kind: "agent",
+              data: { model: "${ANTHROPIC_MODEL}", session: "fresh" },
+            },
+            schemas: [
+              {
+                name: "writer_input",
+                fields: [
+                  { name: "task", type: "string" },
+                  { name: "feedback", type: "string" },
+                ],
+              },
+              {
+                name: "writer_output",
+                fields: [
+                  { name: "content", type: "string" },
+                  { name: "confidence", type: "float" },
+                ],
+              },
+            ],
+            prompts: [
+              {
+                name: "writer_system",
+                body: "You are a skilled writer. Produce high-quality content for the given task. If feedback is provided, revise your work accordingly.",
+              },
+            ],
+          },
+          {
+            placeholder: "reviewer",
+            node: {
+              kind: "judge",
+              data: { model: "${ANTHROPIC_MODEL}", session: "fresh" },
+            },
+            schemas: [
+              {
+                name: "review_input",
+                fields: [
+                  { name: "content", type: "string" },
+                ],
+              },
+              {
+                name: "review_verdict",
+                fields: [
+                  { name: "approved", type: "bool" },
+                  { name: "feedback", type: "string" },
+                ],
+              },
+            ],
+            prompts: [
+              {
+                name: "reviewer_system",
+                body: "You are a thorough reviewer. Evaluate the content for quality, correctness, and completeness. Set approved to true only if the content meets all standards.",
+              },
+            ],
+          },
+        ],
+        edges: [
+          { from: "writer", to: "reviewer" },
+          {
+            from: "reviewer",
+            to: "writer",
+            when: { condition: "approved", negated: true },
+            loop: { name: "review", max_iterations: 3 },
+          },
+          {
+            from: "reviewer",
+            to: "done",
+            when: { condition: "approved", negated: false },
+          },
+        ],
+      },
+    },
+  },
+  {
+    id: "builtin:pattern-human-gate",
+    name: "Human Review Gate",
+    description: "Agent drafts content, human reviews and approves or requests changes",
+    category: "pattern",
+    tags: ["pattern", "human", "review", "gate", "approval"],
+    builtin: true,
+    template: {
+      pattern: {
+        groupName: "human_gate",
+        nodes: [
+          {
+            placeholder: "drafter",
+            node: {
+              kind: "agent",
+              data: { model: "${ANTHROPIC_MODEL}", session: "fresh" },
+            },
+            schemas: [
+              {
+                name: "draft_input",
+                fields: [
+                  { name: "task", type: "string" },
+                  { name: "context", type: "string" },
+                ],
+              },
+              {
+                name: "draft_output",
+                fields: [
+                  { name: "draft", type: "string" },
+                  { name: "summary", type: "string" },
+                ],
+              },
+            ],
+            prompts: [
+              {
+                name: "drafter_system",
+                body: "You are a diligent drafter. Produce clear, well-structured content for the given task.",
+              },
+            ],
+          },
+          {
+            placeholder: "human_review",
+            node: {
+              kind: "human",
+              data: { mode: "pause_until_answers" },
+            },
+            schemas: [
+              {
+                name: "gate_input",
+                fields: [
+                  { name: "draft", type: "string" },
+                  { name: "summary", type: "string" },
+                ],
+              },
+              {
+                name: "gate_response",
+                fields: [
+                  { name: "approved", type: "bool" },
+                  { name: "feedback", type: "string" },
+                ],
+              },
+            ],
+            prompts: [
+              {
+                name: "gate_instructions",
+                body: "Please review the draft below and either approve it or provide feedback for revision.\n\nDraft: {{input.draft}}\nSummary: {{input.summary}}",
+              },
+            ],
+          },
+        ],
+        edges: [
+          { from: "drafter", to: "human_review" },
+          {
+            from: "human_review",
+            to: "done",
+            when: { condition: "approved", negated: false },
+          },
+        ],
+      },
+    },
+  },
+  {
+    id: "builtin:pattern-fan-out",
+    name: "Fan-out Pipeline",
+    description: "Router distributes work to parallel agents for concurrent processing",
+    category: "pattern",
+    tags: ["pattern", "parallel", "fan-out", "router"],
+    builtin: true,
+    template: {
+      pattern: {
+        groupName: "fan_out",
+        nodes: [
+          {
+            placeholder: "dispatcher",
+            node: {
+              kind: "router",
+              data: { mode: "fan_out_all" },
+            },
+          },
+          {
+            placeholder: "worker_a",
+            node: {
+              kind: "agent",
+              data: { model: "${ANTHROPIC_MODEL}", session: "fresh" },
+            },
+            schemas: [
+              {
+                name: "worker_input",
+                fields: [
+                  { name: "task", type: "string" },
+                ],
+              },
+              {
+                name: "worker_output",
+                fields: [
+                  { name: "result", type: "string" },
+                ],
+              },
+            ],
+            prompts: [
+              {
+                name: "worker_system",
+                body: "You are a focused worker agent. Complete the assigned task efficiently and return a clear result.",
+              },
+            ],
+          },
+          {
+            placeholder: "worker_b",
+            node: {
+              kind: "agent",
+              data: { model: "${ANTHROPIC_MODEL}", session: "fresh" },
+            },
+          },
+        ],
+        edges: [
+          { from: "dispatcher", to: "worker_a" },
+          { from: "dispatcher", to: "worker_b" },
+        ],
+      },
+    },
+  },
 ];
