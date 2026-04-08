@@ -28,7 +28,7 @@ devbox run -- go test ./...
 
 ## Project Structure
 
-- `cmd/iterion/` — CLI entry point (hand-rolled command parsing, no framework)
+- `cmd/iterion/` — CLI entry point (Cobra-based, one file per command)
 - `cli/` — CLI command implementations (init, validate, run, inspect, resume, diagram, editor)
 - `parser/` — Lexer, parser, tokens, diagnostics for the .iter DSL
 - `ast/` — Abstract Syntax Tree definitions
@@ -172,7 +172,7 @@ Global flags: `--json` (machine output), `--help`
 - Tests use the standard `testing` package — no test frameworks
 - Binary name is `iterion` (ignored in .gitignore)
 - Store data lives in `.iterion/` (ignored in .gitignore)
-- Hand-rolled CLI — no framework (simple loop + switch in `cmd/iterion/main.go`)
+- CLI built with Cobra (`github.com/spf13/cobra`) — one file per command in `cmd/iterion/`
 - `CGO_ENABLED=0`, version/commit injected via ldflags from `package.json` + git
 - Single external dependency: goai (vendored)
 - Event-driven observability via `events.jsonl` — no structured logging library

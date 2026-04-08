@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/ethpandaops/codex-agent-sdk-go v0.0.0-00010101000000-000000000000
 	github.com/partio-io/claude-agent-sdk-go v0.0.0-00010101000000-000000000000
+	github.com/spf13/cobra v1.10.2
 	github.com/zendev-sh/goai v0.4.0
 )
 
@@ -12,9 +13,11 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/glebarez/go-sqlite v1.22.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/spf13/pflag v1.0.9 // indirect
 	golang.org/x/mod v0.34.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	modernc.org/libc v1.70.0 // indirect
