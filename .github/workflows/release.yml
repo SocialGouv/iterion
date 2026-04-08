@@ -43,6 +43,19 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Build editor frontend
+        working-directory: editor
+        run: |
+          corepack enable
+          pnpm install --prefer-offline
+          pnpm exec vite build
+          rm -rf ../server/static/assets ../server/static/index.html
+          cp -r dist/* ../server/static/
+
       - name: Build binary
         env:
           CGO_ENABLED: 0
