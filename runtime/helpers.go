@@ -95,15 +95,22 @@ func (e *Engine) logEvent(typ store.EventType, nodeID, branchID string, data map
 		l.Logf(iterlog.LevelInfo, "📍", "Node started: %s [%s]", prefix, kind)
 	case store.EventNodeFinished:
 		tokens := ""
+		cost := ""
 		if data != nil {
 			if t, ok := data["_tokens"]; ok {
-				tokens = fmt.Sprintf(" (%v tokens)", t)
+				tokens = fmt.Sprintf(", %v tokens", t)
+			}
+			if c, ok := data["_cost_usd"]; ok {
+				if f, ok := c.(float64); ok && f > 0 {
+					cost = fmt.Sprintf(", $%.4f", f)
+				}
 			}
 		}
-		l.Logf(iterlog.LevelInfo, "✅", "Node finished: %s%s", prefix, tokens)
+		l.Logf(iterlog.LevelInfo, "✅", "Node finished: %s%s%s", prefix, tokens, cost)
 		if data != nil {
 			if preview := formatOutputPreview(data); preview != "" {
-				l.Logf(iterlog.LevelInfo, "💬", "%s", preview)
+				l.LogBlock(iterlog.LevelInfo, "📋",
+					fmt.Sprintf("Output [%s]:", prefix), preview)
 			}
 		}
 	case store.EventEdgeSelected:
@@ -425,13 +432,13 @@ func formatOutputPreview(data map[string]interface{}) string {
 		return ""
 	}
 
-	// Special case: text-only output — show a preview of the text.
+	// Special case: text-only output — show a preview of the text (preserve newlines).
 	if len(fields) == 1 && fields[0].key == "text" {
 		s, _ := fields[0].val.(string)
 		if s == "" {
 			return ""
 		}
-		return truncatePreview(s, 1000)
+		return iterlog.BlockPreview(s, 1500)
 	}
 
 	// Priority ordering for known fields.
@@ -460,14 +467,14 @@ func formatOutputPreview(data map[string]interface{}) string {
 		return fields[i].key < fields[j].key
 	})
 
-	// Format each field as "key: value".
+	// Format each field as "key: value" — one per line for readability.
 	parts := make([]string, 0, len(fields))
 	for _, f := range fields {
 		parts = append(parts, fmt.Sprintf("%s: %s", f.key, formatFieldValue(f.val)))
 	}
 
-	result := strings.Join(parts, " | ")
-	return truncatePreview(result, 1200)
+	result := strings.Join(parts, "\n")
+	return iterlog.BlockPreview(result, 1500)
 }
 
 // formatFieldValue formats a single output field value for display.

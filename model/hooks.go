@@ -36,13 +36,11 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 				Data:   data,
 			})
 
-			if logger.IsEnabled(iterlog.LevelDebug) {
-				if systemPrompt != "" {
-					logger.Logf(iterlog.LevelDebug, "📝", "System prompt [%s]: %s", nodeID, preview(systemPrompt, 500))
-				}
-				if userMessage != "" {
-					logger.Logf(iterlog.LevelDebug, "💬", "User message [%s]: %s", nodeID, preview(userMessage, 500))
-				}
+			if userMessage != "" {
+				logger.Logf(iterlog.LevelInfo, "💬", "Prompt [%s]: %s", nodeID, preview(userMessage, 300))
+			}
+			if systemPrompt != "" {
+				logger.Logf(iterlog.LevelDebug, "📝", "System prompt [%s]: %s", nodeID, preview(systemPrompt, 500))
 			}
 		},
 
@@ -58,8 +56,12 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 				},
 			})
 
-			logger.Logf(iterlog.LevelDebug, "🤖", "LLM request [%s]: %s (%d msgs, %d tools)",
-				nodeID, info.Model, info.MessageCount, info.ToolCount)
+			toolInfo := ""
+			if info.ToolCount > 0 {
+				toolInfo = fmt.Sprintf(", %d tools", info.ToolCount)
+			}
+			logger.Logf(iterlog.LevelInfo, "🤖", "LLM call [%s]: %s (%d msgs%s)",
+				nodeID, info.Model, info.MessageCount, toolInfo)
 		},
 
 		// OnLLMResponse is intentionally nil: response data surfaces through
@@ -100,8 +102,8 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 				"tool_calls":    len(step.ToolCalls),
 			}
 
-			// At debug+, include the response text.
-			if logger.IsEnabled(iterlog.LevelDebug) {
+			// Always include response text in persisted events.
+			if step.Text != "" {
 				data["response_text"] = iterlog.Truncate(step.Text, maxFieldSize)
 			}
 
@@ -124,20 +126,21 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 				Data:   data,
 			})
 
-			// Console output.
+			// Console output — show LLM response at info level so users can follow along.
 			if step.Text != "" {
-				logger.LogBlock(iterlog.LevelDebug, "💬",
-					fmt.Sprintf("LLM response [%s] (step %d):", nodeID, step.Number),
+				logger.LogBlock(iterlog.LevelInfo, "💬",
+					fmt.Sprintf("LLM response [%s] step %d:", nodeID, step.Number),
 					iterlog.BlockPreview(step.Text, 2000))
 			}
+			// Show tool calls at info level.
 			if len(step.ToolCalls) > 0 {
 				for _, tc := range step.ToolCalls {
-					logger.Logf(iterlog.LevelTrace, "🔧", "Tool request [%s]: %s %s",
-						nodeID, tc.Name, preview(string(tc.Input), 400))
+					logger.Logf(iterlog.LevelInfo, "🔧", "Tool call [%s]: %s", nodeID, tc.Name)
+					logger.Logf(iterlog.LevelDebug, "🔧", "  input: %s", preview(string(tc.Input), 400))
 				}
 			}
-			logger.Logf(iterlog.LevelDebug, "📊", "Step %d [%s]: %d in / %d out tokens, finish=%s",
-				step.Number, nodeID, step.InputTokens, step.OutputTokens, step.FinishReason)
+			logger.Logf(iterlog.LevelInfo, "📊", "Step %d [%s]: %d in / %d out tokens",
+				step.Number, nodeID, step.InputTokens, step.OutputTokens)
 		},
 
 		OnToolCall: func(nodeID string, info LLMToolCallInfo) {
@@ -164,7 +167,7 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 				logger.Error("Tool error [%s]: %s — %v (%dms)",
 					nodeID, info.ToolName, info.Error, info.Duration.Milliseconds())
 			} else {
-				logger.Logf(iterlog.LevelDebug, "🔧", "Tool call [%s]: %s (%dms)",
+				logger.Logf(iterlog.LevelInfo, "🔧", "Tool done [%s]: %s (%dms)",
 					nodeID, info.ToolName, info.Duration.Milliseconds())
 			}
 		},
@@ -176,7 +179,7 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 				NodeID: nodeID,
 				Data:   map[string]interface{}{"backend": backendName},
 			})
-			logger.Logf(iterlog.LevelDebug, "🚀", "Delegation started [%s]: backend=%s", nodeID, backendName)
+			logger.Logf(iterlog.LevelInfo, "🚀", "Delegation started [%s]: backend=%s", nodeID, backendName)
 		},
 
 		OnDelegateFinished: func(nodeID string, info DelegateInfo) {
@@ -199,7 +202,7 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 				Data:   data,
 			})
 
-			logger.Logf(iterlog.LevelDebug, "✅", "Delegation finished [%s]: %s (%dms, %d tokens)",
+			logger.Logf(iterlog.LevelInfo, "✅", "Delegation finished [%s]: %s (%dms, %d tokens)",
 				nodeID, info.BackendName, info.Duration.Milliseconds(), info.Tokens)
 			if info.FormattingPassUsed {
 				logger.Logf(iterlog.LevelDebug, "📐", "Delegation [%s]: two-pass execution used for structured output", nodeID)
@@ -207,7 +210,7 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 				logger.Warn("Delegation [%s]: structured output parsing fell back to text wrapper", nodeID)
 			}
 			if info.Stderr != "" {
-				logger.Logf(iterlog.LevelTrace, "⚠️", "Delegation stderr [%s]: %s", nodeID, preview(info.Stderr, 500))
+				logger.Logf(iterlog.LevelDebug, "⚠️", "Delegation stderr [%s]: %s", nodeID, preview(info.Stderr, 500))
 			}
 		},
 
@@ -295,10 +298,10 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 				logger.Error("Tool error [%s]: %s — %v (%dms)",
 					nodeID, toolName, err, elapsed.Milliseconds())
 			} else {
-				logger.Logf(iterlog.LevelDebug, "🔧", "Tool result [%s]: %s → %s (%dms)",
+				logger.Logf(iterlog.LevelInfo, "🔧", "Tool result [%s]: %s → %s (%dms)",
 					nodeID, toolName, humanSize(len(output)), elapsed.Milliseconds())
 				if output != "" {
-					logger.LogBlock(iterlog.LevelTrace, "🔬",
+					logger.LogBlock(iterlog.LevelDebug, "🔬",
 						fmt.Sprintf("Tool output [%s/%s]:", nodeID, toolName),
 						iterlog.BlockPreview(output, 1500))
 				}
