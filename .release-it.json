@@ -11,7 +11,7 @@
     "releaseName": "v${version}"
   },
   "hooks": {
-    "after:bump": "task build"
+    "after:bump": "bash scripts/build.sh"
   },
   "plugins": {
     "@release-it/conventional-changelog": {
