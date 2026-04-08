@@ -590,7 +590,10 @@ workflow dual_model_plan_implement_review:
     acceptance_criteria: "{{vars.acceptance_criteria}}"
   }
 
-  codex_implement -> review_fanout
+  codex_implement -> review_fanout with {
+    implementation: "{{outputs.codex_implement}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}"
+  }
 
   review_fanout -> claude_review with {
     implementation: "{{input.implementation}}",

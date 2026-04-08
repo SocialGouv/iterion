@@ -142,11 +142,18 @@ type branchResult struct {
 // convergenceNodeID is the pre-computed convergence point (may be empty
 // if unknown; in that case, AwaitMode on individual nodes is checked).
 func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, startEdge *ir.Edge, parentOutputs map[string]map[string]interface{}, parentArtifacts map[string]map[string]interface{}, convergenceNodeID string) *branchResult {
+	// Copy parent artifact versions so branches continue incrementing from
+	// the correct version, rather than resetting to 0 on each fan-out cycle.
+	branchArtifactVersions := make(map[string]int, len(rs.artifactVersions))
+	for k, v := range rs.artifactVersions {
+		branchArtifactVersions[k] = v
+	}
+
 	result := &branchResult{
 		branchID:         branchID,
 		outputs:          make(map[string]map[string]interface{}),
 		artifacts:        make(map[string]map[string]interface{}),
-		artifactVersions: make(map[string]int),
+		artifactVersions: branchArtifactVersions,
 	}
 
 	runID := rs.runID

@@ -33,6 +33,16 @@ func (e *Engine) execRoundRobin(ctx context.Context, rs *runState, routerNodeID 
 	selected := edges[counter%len(edges)]
 	rs.roundRobinCounters[routerNodeID] = counter + 1
 
+	// Clear stale outputs from sibling targets not selected this round.
+	// Without this, buildNodeInput would pick up with-mappings from edges
+	// whose source ran in a previous iteration, causing downstream nodes
+	// to receive stale data.
+	for _, edge := range edges {
+		if edge.To != selected.To {
+			delete(rs.outputs, edge.To)
+		}
+	}
+
 	// Emit router node_started with round-robin metadata.
 	if err := e.emit(rs.runID, store.EventNodeStarted, routerNodeID, map[string]interface{}{
 		"kind":              "router",
