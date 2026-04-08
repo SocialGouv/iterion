@@ -126,13 +126,11 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 				Data:   data,
 			})
 
-			// Console output — show LLM response at info level so users can follow along.
 			if step.Text != "" {
 				logger.LogBlock(iterlog.LevelInfo, "💬",
 					fmt.Sprintf("LLM response [%s] step %d:", nodeID, step.Number),
 					iterlog.BlockPreview(step.Text, 2000))
 			}
-			// Show tool calls at info level.
 			if len(step.ToolCalls) > 0 {
 				for _, tc := range step.ToolCalls {
 					logger.Logf(iterlog.LevelInfo, "🔧", "Tool call [%s]: %s", nodeID, tc.Name)
