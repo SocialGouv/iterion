@@ -27,12 +27,10 @@ jobs:
         with:
           node-version: 22
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-
       - name: Build editor frontend
         working-directory: editor
         run: |
+          corepack enable
           pnpm install --prefer-offline
           pnpm exec vite build
           rm -rf ../server/static/assets ../server/static/index.html
