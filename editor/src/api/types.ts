@@ -90,3 +90,9 @@ export interface SaveFileResponse {
   path: string;
   source: string;
 }
+
+// WebSocket file watching events
+export interface FileEvent {
+  type: "file_created" | "file_modified" | "file_deleted";
+  path: string;
+}

@@ -28,6 +28,7 @@ export default function Toolbar() {
   const activeWorkflowName = useUIStore((s) => s.activeWorkflowName);
   const setActiveWorkflowName = useUIStore((s) => s.setActiveWorkflowName);
   const addToast = useUIStore((s) => s.addToast);
+  const filesChangedAt = useUIStore((s) => s.filesChangedAt);
 
   const [examples, setExamples] = useState<string[]>([]);
   const [files, setFiles] = useState<FileEntry[]>([]);
@@ -44,6 +45,12 @@ export default function Toolbar() {
     api.listExamples().then(setExamples).catch(console.error);
     api.listFiles().then(setFiles).catch(() => setFiles([]));
   }, []);
+
+  // Refresh file list when file watcher detects changes.
+  useEffect(() => {
+    if (filesChangedAt === 0) return;
+    api.listFiles().then(setFiles).catch(() => {});
+  }, [filesChangedAt]);
 
   // Close open menu on outside click
   useEffect(() => {

@@ -37,9 +37,11 @@ type Config struct {
 
 // Server is the editor HTTP server.
 type Server struct {
-	cfg    Config
-	mux    *http.ServeMux
-	server *http.Server
+	cfg     Config
+	mux     *http.ServeMux
+	server  *http.Server
+	hub     *Hub
+	watcher *Watcher
 }
 
 // New creates a new editor server.
@@ -48,6 +50,17 @@ func New(cfg Config) *Server {
 		cfg.Port = 4891
 	}
 	s := &Server{cfg: cfg, mux: http.NewServeMux()}
+	s.hub = NewHub()
+	go s.hub.Run()
+	if cfg.WorkDir != "" {
+		var err error
+		s.watcher, err = NewWatcher(cfg.WorkDir, s.hub)
+		if err != nil {
+			log.Printf("file watcher disabled: %v", err)
+		} else {
+			go s.watcher.Start()
+		}
+	}
 	s.routes()
 	s.server = &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
@@ -69,6 +82,10 @@ func (s *Server) ListenAndServe() error {
 
 // Shutdown gracefully shuts down the server.
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.watcher != nil {
+		s.watcher.Stop()
+	}
+	s.hub.Stop()
 	return s.server.Shutdown(ctx)
 }
 
@@ -86,6 +103,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/validate", s.handleValidate)
 	s.mux.HandleFunc("GET /api/examples", s.handleListExamples)
 	s.mux.HandleFunc("GET /api/examples/{name...}", s.handleLoadExample)
+
+	// WebSocket endpoint for file watching
+	s.mux.HandleFunc("GET /api/ws", s.hub.HandleWebSocket)
 
 	// File management endpoints
 	s.mux.HandleFunc("GET /api/files", s.handleListFiles)
@@ -375,12 +395,12 @@ func (s *Server) handleListFiles(w http.ResponseWriter, _ *http.Request) {
 			return nil
 		}
 		if d.IsDir() {
-			if strings.HasPrefix(d.Name(), ".") || d.Name() == "node_modules" {
+			if isSkippedDir(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if !strings.HasSuffix(d.Name(), ".iter") {
+		if !isIterFile(d.Name()) {
 			return nil
 		}
 		info, err := d.Info()
@@ -464,6 +484,9 @@ func (s *Server) handleSaveFile(w http.ResponseWriter, r *http.Request) {
 	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
 		httpError(w, http.StatusInternalServerError, "cannot create directory: %v", err)
 		return
+	}
+	if s.watcher != nil {
+		s.watcher.IgnorePath(absPath)
 	}
 	if err := os.WriteFile(absPath, []byte(source), 0o644); err != nil {
 		httpError(w, http.StatusInternalServerError, "write error: %v", err)

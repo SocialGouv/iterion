@@ -11,6 +11,7 @@ import EditItemModal from "./components/Modals/EditItemModal";
 import { useUIStore } from "./store/ui";
 import { useDocumentStore } from "./store/document";
 import { useAutoValidation } from "./hooks/useAutoValidation";
+import { useFileWatcher } from "./hooks/useFileWatcher";
 
 export default function App() {
   const sourceViewOpen = useUIStore((s) => s.sourceViewOpen);
@@ -18,6 +19,7 @@ export default function App() {
   const expanded = useUIStore((s) => s.expanded);
   const libraryExpanded = useUIStore((s) => s.libraryExpanded);
   useAutoValidation();
+  useFileWatcher();
 
   // Warn before closing with unsaved changes
   useEffect(() => {

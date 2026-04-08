@@ -8,10 +8,17 @@ export type LayoutDirection = "DOWN" | "RIGHT";
 export type CanvasTool = "pan" | "select";
 export interface EditingItem { kind: "schema" | "prompt" | "var"; name: string }
 
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 export interface Toast {
   id: number;
   message: string;
-  type: "success" | "error" | "info";
+  type: "success" | "error" | "info" | "warning";
+  action?: ToastAction;
+  persistent?: boolean;
 }
 
 let toastIdCounter = 0;
@@ -37,6 +44,7 @@ interface UIState {
   canvasTool: CanvasTool;
   // Edge editing in modal
   editModalEdgeInfo: { workflowName: string; edgeIndex: number } | null;
+  filesChangedAt: number;
   setActiveTab: (tab: SidebarTab) => void;
   toggleSourceView: () => void;
   toggleDiagnosticsPanel: () => void;
@@ -47,7 +55,7 @@ interface UIState {
   toggleLayoutDirection: () => void;
   toggleLayer: (layer: LayerKind) => void;
   setEditingItem: (item: EditingItem | null) => void;
-  addToast: (message: string, type: Toast["type"]) => void;
+  addToast: (message: string, type: Toast["type"], opts?: { action?: ToastAction; persistent?: boolean }) => void;
   removeToast: (id: number) => void;
   // Sub-node view navigation
   pushSubNodeView: (nodeId: string) => void;
@@ -62,6 +70,7 @@ interface UIState {
   setCanvasTool: (tool: CanvasTool) => void;
   // Edge modal
   setEditModalEdgeInfo: (info: { workflowName: string; edgeIndex: number } | null) => void;
+  notifyFilesChanged: () => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -80,6 +89,7 @@ export const useUIStore = create<UIState>((set) => ({
   macroView: false,
   canvasTool: "pan",
   editModalEdgeInfo: null,
+  filesChangedAt: 0,
   setActiveTab: (activeTab) => set({ activeTab }),
   toggleSourceView: () => set((s) => ({ sourceViewOpen: !s.sourceViewOpen })),
   toggleDiagnosticsPanel: () => set((s) => ({ diagnosticsPanelOpen: !s.diagnosticsPanelOpen })),
@@ -94,12 +104,20 @@ export const useUIStore = create<UIState>((set) => ({
     return { activeLayers: next };
   }),
   setEditingItem: (editingItem) => set({ editingItem }),
-  addToast: (message, type) => {
+  addToast: (message, type, opts) => {
     const id = ++toastIdCounter;
-    set((s) => ({ toasts: [...s.toasts, { id, message, type }] }));
-    setTimeout(() => {
-      set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
-    }, TOAST_DURATION_DEFAULT_MS);
+    set((s) => {
+      // Deduplicate: remove existing persistent toast with the same message
+      const filtered = opts?.persistent
+        ? s.toasts.filter((t) => !(t.persistent && t.message === message))
+        : s.toasts;
+      return { toasts: [...filtered, { id, message, type, action: opts?.action, persistent: opts?.persistent }] };
+    });
+    if (!opts?.persistent) {
+      setTimeout(() => {
+        set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
+      }, TOAST_DURATION_DEFAULT_MS);
+    }
   },
   removeToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
   // Sub-node view navigation
@@ -127,4 +145,5 @@ export const useUIStore = create<UIState>((set) => ({
   setCanvasTool: (canvasTool) => set({ canvasTool }),
   // Edge modal
   setEditModalEdgeInfo: (editModalEdgeInfo) => set({ editModalEdgeInfo }),
+  notifyFilesChanged: () => set({ filesChangedAt: Date.now() }),
 }));
