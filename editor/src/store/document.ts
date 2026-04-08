@@ -14,7 +14,7 @@ import type {
   Edge,
   Comment,
 } from "@/api/types";
-import { getAllNodeNames, getAllSchemaNames, getAllPromptNames, findNodeDecl } from "@/lib/defaults";
+import { createEmptyDocument, getAllNodeNames, getAllSchemaNames, getAllPromptNames, findNodeDecl } from "@/lib/defaults";
 import type { GroupAnnotation } from "@/lib/groups";
 import { groupToCommentText, groupNameFromComment, parseGroups } from "@/lib/groups";
 
@@ -182,7 +182,7 @@ function renameNodeInGroups(comments: Comment[], oldName: string, newName: strin
 }
 
 export const useDocumentStore = create<DocumentState>((set, get) => ({
-  document: null,
+  document: normalize(createEmptyDocument()),
   diagnostics: [],
   warnings: [],
   currentFilePath: null,
