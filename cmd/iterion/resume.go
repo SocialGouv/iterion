@@ -12,11 +12,12 @@ var resumeOpts struct {
 	answersFile string
 	answerFlags []string
 	logLevel    string
+	force       bool
 }
 
 var resumeCmd = &cobra.Command{
 	Use:   "resume",
-	Short: "Resume a paused run",
+	Short: "Resume a paused or failed run",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		opts := cli.ResumeOptions{
@@ -24,6 +25,7 @@ var resumeCmd = &cobra.Command{
 			StoreDir:    resumeOpts.storeDir,
 			AnswersFile: resumeOpts.answersFile,
 			LogLevel:    resumeOpts.logLevel,
+			Force:       resumeOpts.force,
 		}
 		if len(resumeOpts.answerFlags) > 0 {
 			answers, err := cli.ParseAnswerFlags(resumeOpts.answerFlags)
@@ -44,6 +46,7 @@ func init() {
 	f.StringVar(&resumeOpts.answersFile, "answers-file", "", "JSON file with answers")
 	f.StringArrayVar(&resumeOpts.answerFlags, "answer", nil, "Set answer (key=value, repeatable)")
 	f.StringVar(&resumeOpts.logLevel, "log-level", "", "Log verbosity: error, warn, info, debug, trace")
+	f.BoolVar(&resumeOpts.force, "force", false, "Resume even if workflow source has changed")
 	mustMarkRequired(resumeCmd, "run-id", "file")
 	rootCmd.AddCommand(resumeCmd)
 }

@@ -163,13 +163,13 @@ func TestTimeoutProducesFailedStatus(t *testing.T) {
 		t.Error("timeout should not be ErrRunCancelled")
 	}
 
-	// Run status should be "failed" for timeouts.
+	// Run status should be "failed_resumable" for timeouts (all execLoop failures are resumable).
 	r, err := s.LoadRun("run-timeout")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
-	if r.Status != store.RunStatusFailed {
-		t.Errorf("expected status failed for timeout, got %s", r.Status)
+	if r.Status != store.RunStatusFailedResumable {
+		t.Errorf("expected status failed_resumable for timeout, got %s", r.Status)
 	}
 
 	// Error message should mention timeout.

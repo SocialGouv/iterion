@@ -48,6 +48,7 @@ type Engine struct {
 	onNodeFinished  func(nodeID string, output map[string]interface{})
 	workflowHash    string // SHA-256 of the .iter source, set via WithWorkflowHash
 	validateOutputs bool   // when true, validate node outputs against declared schemas
+	forceResume     bool   // when true, skip workflow hash check on resume
 }
 
 // EngineOption configures an Engine.
@@ -68,6 +69,13 @@ func WithOnNodeFinished(fn func(nodeID string, output map[string]interface{})) E
 // detect if the workflow changed since the run was started.
 func WithWorkflowHash(hash string) EngineOption {
 	return func(e *Engine) { e.workflowHash = hash }
+}
+
+// WithForceResume allows resuming a run even when the workflow source has
+// changed since the run was started. The hash mismatch is logged as a warning
+// instead of causing an error.
+func WithForceResume(force bool) EngineOption {
+	return func(e *Engine) { e.forceResume = force }
 }
 
 // WithOutputValidation enables post-execution validation of node outputs
@@ -159,16 +167,14 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 	for {
 		select {
 		case <-ctx.Done():
-			return e.handleContextDone(rs.runID, currentNodeID, ctx.Err())
+			return e.handleContextDoneWithCheckpoint(rs, currentNodeID, ctx.Err())
 		default:
 		}
 
 		node, ok := e.workflow.Nodes[currentNodeID]
 		if !ok {
-			return e.failRunWithCode(rs.runID, currentNodeID,
-				fmt.Sprintf("node %q not found", currentNodeID),
-				ErrCodeNodeNotFound,
-				"check that the workflow graph is valid with 'iterion validate'")
+			return e.failRunWithCheckpoint(rs, currentNodeID,
+				fmt.Sprintf("node %q not found", currentNodeID))
 		}
 
 		// --- Terminal nodes ---
@@ -216,7 +222,7 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 				// LLM decided no human needed — continue to edge selection.
 				nextNodeID, err := e.selectEdge(rs.runID, currentNodeID, rs.outputs[currentNodeID], rs.loopCounters)
 				if err != nil {
-					return e.failRunErr(rs.runID, currentNodeID, err)
+					return e.failRunErrWithCheckpoint(rs, currentNodeID, err)
 				}
 				currentNodeID = nextNodeID
 				continue
@@ -232,21 +238,21 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 			case ir.RouterFanOutAll:
 				nextNodeID, err := e.execFanOut(ctx, rs, currentNodeID)
 				if err != nil {
-					return e.failRunErr(rs.runID, currentNodeID, err)
+					return e.failRunErrWithCheckpoint(rs, currentNodeID, err)
 				}
 				currentNodeID = nextNodeID
 				continue
 			case ir.RouterRoundRobin:
 				nextNodeID, err := e.execRoundRobin(ctx, rs, currentNodeID)
 				if err != nil {
-					return e.failRunErr(rs.runID, currentNodeID, err)
+					return e.failRunErrWithCheckpoint(rs, currentNodeID, err)
 				}
 				currentNodeID = nextNodeID
 				continue
 			case ir.RouterLLM:
 				nextNodeID, err := e.execLLMRouter(ctx, rs, currentNodeID)
 				if err != nil {
-					return e.failRunErr(rs.runID, currentNodeID, err)
+					return e.failRunErrWithCheckpoint(rs, currentNodeID, err)
 				}
 				currentNodeID = nextNodeID
 				continue
@@ -277,7 +283,7 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 			if errors.As(err, &needsInput) {
 				return e.handleNeedsInteraction(ctx, rs, currentNodeID, node, needsInput)
 			}
-			return e.failRun(rs.runID, currentNodeID, fmt.Sprintf("node %q execution failed: %v", currentNodeID, err))
+			return e.failRunWithCheckpoint(rs, currentNodeID, fmt.Sprintf("node %q execution failed: %v", currentNodeID, err))
 		}
 
 		// Store output.
@@ -285,7 +291,7 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 
 		// Validate output against declared schema (optional).
 		if err := e.validateNodeOutput(currentNodeID, node, output); err != nil {
-			return e.failRunErr(rs.runID, currentNodeID, err)
+			return e.failRunErrWithCheckpoint(rs, currentNodeID, err)
 		}
 
 		// Record budget usage and check limits.
@@ -325,10 +331,15 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 			e.onNodeFinished(currentNodeID, output)
 		}
 
+		// Best-effort checkpoint for resume-from-failed.
+		if err := e.store.SaveCheckpoint(rs.runID, buildCheckpoint(rs, currentNodeID)); err != nil {
+			log.Printf("runtime: failed to save checkpoint after node %q: %v", currentNodeID, err)
+		}
+
 		// --- Select outgoing edge ---
 		nextNodeID, err := e.selectEdge(rs.runID, currentNodeID, output, rs.loopCounters)
 		if err != nil {
-			return e.failRunErr(rs.runID, currentNodeID, err)
+			return e.failRunErrWithCheckpoint(rs, currentNodeID, err)
 		}
 
 		currentNodeID = nextNodeID

@@ -129,12 +129,12 @@ func (s *RunStore) UpdateRunStatus(id string, status RunStatus, runErr string) e
 	r.Status = status
 	r.UpdatedAt = time.Now().UTC()
 	r.Error = runErr
-	if status == RunStatusFinished || status == RunStatusFailed || status == RunStatusCancelled {
+	if status == RunStatusFinished || status == RunStatusFailed || status == RunStatusFailedResumable || status == RunStatusCancelled {
 		t := r.UpdatedAt
 		r.FinishedAt = &t
 	}
-	// Clear checkpoint when leaving paused state.
-	if status == RunStatusRunning || status == RunStatusFinished || status == RunStatusFailed || status == RunStatusCancelled {
+	// Clear checkpoint when leaving paused state (preserved for failed_resumable and cancelled).
+	if status == RunStatusRunning || status == RunStatusFinished || status == RunStatusFailed {
 		r.Checkpoint = nil
 	}
 	return s.writeRun(r)
@@ -169,6 +169,26 @@ func (s *RunStore) PauseRun(id string, cp *Checkpoint) error {
 	r.Checkpoint = cp
 	r.Status = RunStatusPausedWaitingHuman
 	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
+}
+
+// FailRunResumable atomically sets the checkpoint, error message, and status
+// to failed_resumable in a single write, enabling resume from the last
+// successfully completed node.
+func (s *RunStore) FailRunResumable(id string, cp *Checkpoint, runErr string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.LoadRun(id)
+	if err != nil {
+		return err
+	}
+	r.Checkpoint = cp
+	r.Status = RunStatusFailedResumable
+	r.Error = runErr
+	t := time.Now().UTC()
+	r.UpdatedAt = t
+	r.FinishedAt = &t
 	return s.writeRun(r)
 }
 

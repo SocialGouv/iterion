@@ -534,8 +534,8 @@ func TestResume_NotPaused(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for non-paused run")
 	}
-	if !strings.Contains(err.Error(), "not paused") {
-		t.Errorf("expected 'not paused' error, got: %v", err)
+	if !strings.Contains(err.Error(), "cannot be resumed") {
+		t.Errorf("expected 'cannot be resumed' error, got: %v", err)
 	}
 }
 

@@ -14,6 +14,7 @@ const (
 	RunStatusPausedWaitingHuman RunStatus = "paused_waiting_human"
 	RunStatusFinished           RunStatus = "finished"
 	RunStatusFailed             RunStatus = "failed"
+	RunStatusFailedResumable    RunStatus = "failed_resumable"
 	RunStatusCancelled          RunStatus = "cancelled"
 )
 

@@ -83,8 +83,8 @@ func TestChaos_FailMidFanOut_WaitAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
-	if r.Status != store.RunStatusFailed {
-		t.Errorf("expected status failed, got %s", r.Status)
+	if r.Status != store.RunStatusFailedResumable {
+		t.Errorf("expected status failed_resumable, got %s", r.Status)
 	}
 }
 
@@ -164,8 +164,8 @@ func TestChaos_AllBranchesFail(t *testing.T) {
 			if err != nil {
 				t.Fatalf("load run: %v", err)
 			}
-			if r.Status != store.RunStatusFailed {
-				t.Errorf("expected status failed, got %s", r.Status)
+			if r.Status != store.RunStatusFailed && r.Status != store.RunStatusFailedResumable {
+				t.Errorf("expected status failed or failed_resumable, got %s", r.Status)
 			}
 		})
 	}
@@ -221,8 +221,8 @@ func TestChaos_FailInLoopIteration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
-	if r.Status != store.RunStatusFailed {
-		t.Errorf("expected status failed, got %s", r.Status)
+	if r.Status != store.RunStatusFailedResumable {
+		t.Errorf("expected status failed_resumable, got %s", r.Status)
 	}
 
 	// Verify some nodes were executed before the failure.

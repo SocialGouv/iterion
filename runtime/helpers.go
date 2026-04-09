@@ -206,35 +206,95 @@ func (e *Engine) failRunWithCode(runID, nodeID, reason string, code ErrorCode, h
 }
 
 // ---------------------------------------------------------------------------
+// Resumable failure — checkpoint-aware variants
+// ---------------------------------------------------------------------------
+
+// buildCheckpoint creates a Checkpoint from the current runState.
+func buildCheckpoint(rs *runState, nodeID string) *store.Checkpoint {
+	return &store.Checkpoint{
+		NodeID:             nodeID,
+		Outputs:            rs.outputs,
+		LoopCounters:       rs.loopCounters,
+		RoundRobinCounters: rs.roundRobinCounters,
+		ArtifactVersions:   rs.artifactVersions,
+		Vars:               rs.vars,
+	}
+}
+
+// failRunWithCheckpoint marks a run as failed_resumable with a checkpoint,
+// enabling resume from the last completed node. Falls back to a regular
+// (non-resumable) failure if the checkpoint write fails.
+func (e *Engine) failRunWithCheckpoint(rs *runState, nodeID, reason string) error {
+	cp := buildCheckpoint(rs, nodeID)
+	if storeErr := e.store.FailRunResumable(rs.runID, cp, reason); storeErr != nil {
+		log.Printf("runtime: failed to persist resumable failure: %v", storeErr)
+		return e.failRun(rs.runID, nodeID, reason)
+	}
+	if err := e.emit(rs.runID, store.EventRunFailed, nodeID, map[string]interface{}{
+		"error":     reason,
+		"code":      string(ErrCodeExecutionFailed),
+		"resumable": true,
+	}); err != nil {
+		log.Printf("runtime: failed to emit run_failed event: %v", err)
+	}
+	return &RuntimeError{
+		Code:    ErrCodeExecutionFailed,
+		Message: reason,
+		NodeID:  nodeID,
+	}
+}
+
+// failRunErrWithCheckpoint is the checkpoint-aware variant of failRunErr.
+func (e *Engine) failRunErrWithCheckpoint(rs *runState, nodeID string, origErr error) error {
+	var rtErr *RuntimeError
+	if errors.As(origErr, &rtErr) {
+		cp := buildCheckpoint(rs, nodeID)
+		if storeErr := e.store.FailRunResumable(rs.runID, cp, rtErr.Message); storeErr != nil {
+			log.Printf("runtime: failed to persist resumable failure: %v", storeErr)
+			return e.failRunErr(rs.runID, nodeID, origErr)
+		}
+		if err := e.emit(rs.runID, store.EventRunFailed, nodeID, map[string]interface{}{
+			"error":     rtErr.Message,
+			"code":      string(rtErr.Code),
+			"resumable": true,
+		}); err != nil {
+			log.Printf("runtime: failed to emit run_failed event: %v", err)
+		}
+		if rtErr.NodeID == "" {
+			rtErr.NodeID = nodeID
+		}
+		return rtErr
+	}
+	return e.failRunWithCheckpoint(rs, nodeID, origErr.Error())
+}
+
+// ---------------------------------------------------------------------------
 // Context handling
 // ---------------------------------------------------------------------------
 
-// handleContextDone handles context cancellation or deadline exceeded at
-// the top-level execution loop. It distinguishes user cancellation
-// (SIGINT / context.Canceled) from timeouts (context.DeadlineExceeded).
-func (e *Engine) handleContextDone(runID, nodeID string, ctxErr error) error {
+// handleContextDoneWithCheckpoint handles context cancellation or deadline
+// exceeded, preserving the checkpoint so the run can be resumed.
+func (e *Engine) handleContextDoneWithCheckpoint(rs *runState, nodeID string, ctxErr error) error {
 	if errors.Is(ctxErr, context.Canceled) {
-		if err := e.store.UpdateRunStatus(runID, store.RunStatusCancelled, "run cancelled"); err != nil {
+		// Save checkpoint so the cancelled run can be resumed.
+		cp := buildCheckpoint(rs, nodeID)
+		if err := e.store.SaveCheckpoint(rs.runID, cp); err != nil {
+			log.Printf("runtime: failed to save checkpoint on cancellation: %v", err)
+		}
+		// Keep "cancelled" status but with checkpoint preserved.
+		if err := e.store.UpdateRunStatus(rs.runID, store.RunStatusCancelled, "run cancelled"); err != nil {
 			log.Printf("runtime: failed to persist cancellation status: %v", err)
 		}
-		if err := e.emit(runID, store.EventRunCancelled, nodeID, map[string]interface{}{
+		if err := e.emit(rs.runID, store.EventRunCancelled, nodeID, map[string]interface{}{
 			"reason": "context cancelled",
 		}); err != nil {
 			log.Printf("runtime: failed to emit run_cancelled event: %v", err)
 		}
 		return fmt.Errorf("%w: interrupted at node %s", ErrRunCancelled, nodeID)
 	}
-	// context.DeadlineExceeded → treat as a timeout failure.
+	// context.DeadlineExceeded → save checkpoint and mark as resumable.
 	reason := fmt.Sprintf("timeout: %s", ctxErr.Error())
-	if err := e.store.UpdateRunStatus(runID, store.RunStatusFailed, reason); err != nil {
-		log.Printf("runtime: failed to persist timeout failure status: %v", err)
-	}
-	if err := e.emit(runID, store.EventRunFailed, nodeID, map[string]interface{}{
-		"error": reason,
-	}); err != nil {
-		log.Printf("runtime: failed to emit run_failed event: %v", err)
-	}
-	return fmt.Errorf("runtime: %s at node %s", reason, nodeID)
+	return e.failRunWithCheckpoint(rs, nodeID, reason)
 }
 
 // wrapContextErr wraps a context error for branch-level reporting.
@@ -264,10 +324,12 @@ func (e *Engine) checkBudgetBeforeExec(rs *runState, nodeID string) error {
 			"used":      exc.used,
 			"limit":     exc.limit,
 		})
-		return e.failRunWithCode(rs.runID, nodeID,
-			fmt.Sprintf("budget exceeded: %s (%.0f/%.0f)", exc.dimension, exc.used, exc.limit),
-			ErrCodeBudgetExceeded,
-			fmt.Sprintf("increase the %s budget or optimize the workflow", exc.dimension))
+		return e.failRunErrWithCheckpoint(rs, nodeID, &RuntimeError{
+			Code:    ErrCodeBudgetExceeded,
+			Message: fmt.Sprintf("budget exceeded: %s (%.0f/%.0f)", exc.dimension, exc.used, exc.limit),
+			NodeID:  nodeID,
+			Hint:    fmt.Sprintf("increase the %s budget or optimize the workflow", exc.dimension),
+		})
 	}
 
 	// Hard limit (90%+) — refuse new node executions to prevent concurrent overage.
@@ -278,10 +340,12 @@ func (e *Engine) checkBudgetBeforeExec(rs *runState, nodeID string) error {
 			"limit":      hl.limit,
 			"hard_limit": true,
 		})
-		return e.failRunWithCode(rs.runID, nodeID,
-			fmt.Sprintf("budget hard limit reached: %s at %.0f%% (%.0f/%.0f)", hl.dimension, (hl.used/hl.limit)*100, hl.used, hl.limit),
-			ErrCodeBudgetExceeded,
-			fmt.Sprintf("increase the %s budget or optimize the workflow; new executions are blocked at 90%% to prevent concurrent overage", hl.dimension))
+		return e.failRunErrWithCheckpoint(rs, nodeID, &RuntimeError{
+			Code:    ErrCodeBudgetExceeded,
+			Message: fmt.Sprintf("budget hard limit reached: %s at %.0f%% (%.0f/%.0f)", hl.dimension, (hl.used/hl.limit)*100, hl.used, hl.limit),
+			NodeID:  nodeID,
+			Hint:    fmt.Sprintf("increase the %s budget or optimize the workflow; new executions are blocked at 90%% to prevent concurrent overage", hl.dimension),
+		})
 	}
 
 	return nil
@@ -313,10 +377,12 @@ func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[st
 			"used":      exc.used,
 			"limit":     exc.limit,
 		})
-		return e.failRunWithCode(rs.runID, nodeID,
-			fmt.Sprintf("budget exceeded: %s (%.0f/%.0f)", exc.dimension, exc.used, exc.limit),
-			ErrCodeBudgetExceeded,
-			fmt.Sprintf("increase the %s budget or optimize the workflow", exc.dimension))
+		return e.failRunErrWithCheckpoint(rs, nodeID, &RuntimeError{
+			Code:    ErrCodeBudgetExceeded,
+			Message: fmt.Sprintf("budget exceeded: %s (%.0f/%.0f)", exc.dimension, exc.used, exc.limit),
+			NodeID:  nodeID,
+			Hint:    fmt.Sprintf("increase the %s budget or optimize the workflow", exc.dimension),
+		})
 	}
 
 	return nil

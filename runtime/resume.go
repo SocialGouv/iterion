@@ -14,20 +14,69 @@ import (
 // Resume — continue a paused run
 // ---------------------------------------------------------------------------
 
-// Resume resumes a paused run by recording human answers and continuing
-// execution from the node immediately after the human checkpoint.
+// Resume resumes a paused or failed-resumable run. For paused runs, human
+// answers are recorded and execution continues from the human node. For
+// failed-resumable runs, execution restarts from the node after the last
+// successfully completed one (re-executing the failed node).
 func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]interface{}) error {
-	// Load and validate run state.
 	r, err := e.store.LoadRun(runID)
 	if err != nil {
 		return fmt.Errorf("runtime: load run for resume: %w", err)
 	}
-	if r.Status != store.RunStatusPausedWaitingHuman {
+	switch r.Status {
+	case store.RunStatusPausedWaitingHuman:
+		return e.resumeFromPause(ctx, r, answers)
+	case store.RunStatusFailedResumable, store.RunStatusCancelled:
+		return e.resumeFromFailure(ctx, r)
+	default:
 		return fmt.Errorf("runtime: cannot resume run %q with status %q", runID, r.Status)
 	}
-	// Warn if the workflow source has changed since the run was started.
-	if r.WorkflowHash != "" && e.workflowHash != "" && r.WorkflowHash != e.workflowHash {
-		return fmt.Errorf("runtime: workflow source has changed since run %q was started (expected hash %s, got %s); re-run from scratch or use the original .iter file", runID, r.WorkflowHash[:12], e.workflowHash[:12])
+}
+
+// checkWorkflowHash validates that the workflow source has not changed since
+// the run was started. When forceResume is set, a mismatch is logged as a
+// warning instead of causing an error.
+func (e *Engine) checkWorkflowHash(r *store.Run) error {
+	if r.WorkflowHash == "" || e.workflowHash == "" {
+		return nil
+	}
+	if r.WorkflowHash == e.workflowHash {
+		return nil
+	}
+	shortHash := func(h string) string {
+		if len(h) > 12 {
+			return h[:12]
+		}
+		return h
+	}
+	if e.forceResume {
+		if e.logger != nil {
+			e.logger.Warn("workflow source has changed since run %q was started (expected %s, got %s); resuming anyway (--force)", r.ID, shortHash(r.WorkflowHash), shortHash(e.workflowHash))
+		}
+		return nil
+	}
+	return fmt.Errorf("runtime: workflow source has changed since run %q was started (expected hash %s, got %s); re-run from scratch or use --force", r.ID, shortHash(r.WorkflowHash), shortHash(e.workflowHash))
+}
+
+// rebuildArtifacts reconstructs the artifacts map from checkpoint outputs.
+func (e *Engine) rebuildArtifacts(outputs map[string]map[string]interface{}) map[string]map[string]interface{} {
+	artifacts := make(map[string]map[string]interface{})
+	for nodeID, output := range outputs {
+		if n, ok := e.workflow.Nodes[nodeID]; ok {
+			if pub := nodePublish(n); pub != "" {
+				artifacts[pub] = output
+			}
+		}
+	}
+	return artifacts
+}
+
+// resumeFromPause resumes a paused run by recording human answers and
+// continuing execution from the node after the human checkpoint.
+func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[string]interface{}) error {
+	runID := r.ID
+	if err := e.checkWorkflowHash(r); err != nil {
+		return err
 	}
 	if r.Checkpoint == nil {
 		return fmt.Errorf("runtime: run %q has no checkpoint", runID)
@@ -106,26 +155,11 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]in
 		return err
 	}
 
-	// Select edge from the human node to find the next node.
+	// Build runState before edge selection so failures are resumable.
 	loopCounters := cp.LoopCounters
-	nextNodeID, err := e.selectEdge(runID, humanNodeID, answers, loopCounters)
-	if err != nil {
-		return e.failRunErr(runID, humanNodeID, err)
-	}
-
 	roundRobinCounters := cp.RoundRobinCounters
 	if roundRobinCounters == nil {
 		roundRobinCounters = make(map[string]int)
-	}
-
-	// Rebuild artifacts map from outputs for nodes that have publish.
-	resumeArtifacts := make(map[string]map[string]interface{})
-	for nodeID, output := range outputs {
-		if n, ok := e.workflow.Nodes[nodeID]; ok {
-			if pub := nodePublish(n); pub != "" {
-				resumeArtifacts[pub] = output
-			}
-		}
 	}
 
 	rs := &runState{
@@ -133,14 +167,70 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]in
 		runInputs:          r.Inputs,
 		vars:               cp.Vars,
 		outputs:            outputs,
-		artifacts:          resumeArtifacts,
+		artifacts:          e.rebuildArtifacts(outputs),
 		loopCounters:       loopCounters,
 		roundRobinCounters: roundRobinCounters,
 		artifactVersions:   artifactVersions,
 		budget:             newSharedBudget(e.workflow.Budget),
 	}
 
+	// Select edge from the human node to find the next node.
+	nextNodeID, err := e.selectEdge(runID, humanNodeID, answers, loopCounters)
+	if err != nil {
+		return e.failRunErrWithCheckpoint(rs, humanNodeID, err)
+	}
+
 	return e.execLoop(ctx, rs, nextNodeID)
+}
+
+// resumeFromFailure resumes a failed_resumable run by re-executing from the
+// node that follows the last successfully completed node (the one that failed).
+func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
+	runID := r.ID
+	if err := e.checkWorkflowHash(r); err != nil {
+		return err
+	}
+	if r.Checkpoint == nil {
+		return fmt.Errorf("runtime: run %q has no checkpoint", runID)
+	}
+
+	cp := r.Checkpoint
+	restartNodeID := cp.NodeID
+
+	// Update status to running and emit run_resumed.
+	if err := e.store.UpdateRunStatus(runID, store.RunStatusRunning, ""); err != nil {
+		return fmt.Errorf("runtime: update status running: %w", err)
+	}
+	if err := e.emit(runID, store.EventRunResumed, "", map[string]interface{}{
+		"resumed_from": "failed",
+		"restart_node": restartNodeID,
+	}); err != nil {
+		return err
+	}
+
+	loopCounters := cp.LoopCounters
+	roundRobinCounters := cp.RoundRobinCounters
+	if roundRobinCounters == nil {
+		roundRobinCounters = make(map[string]int)
+	}
+	artifactVersions := cp.ArtifactVersions
+	if artifactVersions == nil {
+		artifactVersions = make(map[string]int)
+	}
+
+	rs := &runState{
+		runID:              runID,
+		runInputs:          r.Inputs,
+		vars:               cp.Vars,
+		outputs:            cp.Outputs,
+		artifacts:          e.rebuildArtifacts(cp.Outputs),
+		loopCounters:       loopCounters,
+		roundRobinCounters: roundRobinCounters,
+		artifactVersions:   artifactVersions,
+		budget:             newSharedBudget(e.workflow.Budget),
+	}
+
+	return e.execLoop(ctx, rs, restartNodeID)
 }
 
 // ---------------------------------------------------------------------------
@@ -167,7 +257,7 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 	nodeInput := e.buildNodeInput(nodeID, rs.vars, rs.outputs, rs.runInputs, rs.artifacts)
 	output, err := e.executor.Execute(ctx, node, nodeInput)
 	if err != nil {
-		return false, e.failRun(rs.runID, nodeID, fmt.Sprintf("human node %q auto_or_pause execution failed: %v", nodeID, err))
+		return false, e.failRunWithCheckpoint(rs, nodeID, fmt.Sprintf("human node %q auto_or_pause execution failed: %v", nodeID, err))
 	}
 
 	// Record budget usage.
@@ -198,7 +288,7 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 
 	// Validate output against declared schema (optional).
 	if err := e.validateNodeOutput(nodeID, node, output); err != nil {
-		return false, e.failRunErr(rs.runID, nodeID, err)
+		return false, e.failRunErrWithCheckpoint(rs, nodeID, err)
 	}
 
 	// Persist artifact if node has publish.
@@ -346,18 +436,11 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]inter
 	}
 
 	// Atomically save checkpoint and set status to paused in a single write.
-	cp := &store.Checkpoint{
-		NodeID:               nodeID,
-		InteractionID:        interactionID,
-		Outputs:              rs.outputs,
-		LoopCounters:         rs.loopCounters,
-		RoundRobinCounters:   rs.roundRobinCounters,
-		ArtifactVersions:     rs.artifactVersions,
-		Vars:                 rs.vars,
-		InteractionQuestions: questions,
-		BackendSessionID:     backendSessionID,
-		BackendName:          backendName,
-	}
+	cp := buildCheckpoint(rs, nodeID)
+	cp.InteractionID = interactionID
+	cp.InteractionQuestions = questions
+	cp.BackendSessionID = backendSessionID
+	cp.BackendName = backendName
 	if err := e.store.PauseRun(rs.runID, cp); err != nil {
 		return fmt.Errorf("runtime: pause run: %w", err)
 	}

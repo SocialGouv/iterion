@@ -19,6 +19,7 @@ type ResumeOptions struct {
 	AnswersFile string            // path to JSON answers file
 	Answers     map[string]string // --answer key=value overrides
 	LogLevel    string            // log level (default: "info", env: ITERION_LOG_LEVEL)
+	Force       bool              // allow resume despite workflow hash change
 	Executor    runtime.NodeExecutor
 }
 
@@ -44,11 +45,17 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		return fmt.Errorf("cannot load run: %w", err)
 	}
 
-	if r.Status != store.RunStatusPausedWaitingHuman {
-		return fmt.Errorf("run %q is not paused (status: %s)", opts.RunID, r.Status)
+	resumingFromFailure := false
+	switch r.Status {
+	case store.RunStatusPausedWaitingHuman:
+		// OK — requires answers
+	case store.RunStatusFailedResumable, store.RunStatusCancelled:
+		resumingFromFailure = true
+	default:
+		return fmt.Errorf("run %q cannot be resumed (status: %s)", opts.RunID, r.Status)
 	}
 
-	// Build answers.
+	// Build answers (required for paused runs, ignored for failed-resumable).
 	answers := make(map[string]interface{})
 
 	if opts.AnswersFile != "" {
@@ -65,7 +72,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		answers[k] = v
 	}
 
-	if len(answers) == 0 {
+	if !resumingFromFailure && len(answers) == 0 {
 		return fmt.Errorf("no answers provided; use --answers-file or --answer key=value")
 	}
 
@@ -87,7 +94,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		executor = newDefaultExecutor(wf, nil, s, opts.RunID, logger, storeDir)
 	}
 
-	eng := runtime.New(wf, s, executor, runtime.WithLogger(logger), runtime.WithWorkflowHash(wfHash))
+	eng := runtime.New(wf, s, executor, runtime.WithLogger(logger), runtime.WithWorkflowHash(wfHash), runtime.WithForceResume(opts.Force))
 
 	// Acquire exclusive run lock to prevent concurrent processes.
 	lock, err := s.LockRun(opts.RunID)
@@ -101,14 +108,22 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	if err != nil {
 		return fmt.Errorf("cannot reload run: %w", err)
 	}
-	if r.Status != store.RunStatusPausedWaitingHuman {
-		return fmt.Errorf("run %q is no longer paused (status: %s)", opts.RunID, r.Status)
+	if r.Status != store.RunStatusPausedWaitingHuman && r.Status != store.RunStatusFailedResumable && r.Status != store.RunStatusCancelled {
+		return fmt.Errorf("run %q can no longer be resumed (status: %s)", opts.RunID, r.Status)
 	}
 
 	if p.Format == OutputHuman {
 		p.Header("Resume: " + opts.RunID)
 		p.KV("Workflow", wf.Name)
-		p.KV("Node", r.Checkpoint.NodeID)
+		if r.Checkpoint != nil {
+			p.KV("Node", r.Checkpoint.NodeID)
+		}
+		if resumingFromFailure {
+			p.KV("Resuming from", "failed (re-executing failed node)")
+			if r.Error != "" {
+				p.KV("Previous error", r.Error)
+			}
+		}
 		p.KV("Log Level", level.String())
 		p.Blank()
 	}

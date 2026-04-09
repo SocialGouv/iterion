@@ -1396,8 +1396,8 @@ func TestCIFix_LoopExhaustion(t *testing.T) {
 	}
 
 	r, _ := s.LoadRun("e2e-ci-exhaust")
-	if r.Status != store.RunStatusFailed {
-		t.Errorf("status = %s, want failed", r.Status)
+	if r.Status != store.RunStatusFailedResumable {
+		t.Errorf("status = %s, want failed_resumable", r.Status)
 	}
 
 	// Diagnose should have been called 5 times (max iterations of fix_loop).

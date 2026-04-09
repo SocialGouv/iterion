@@ -172,8 +172,8 @@ func TestFanOutWaitAllPartialFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
-	if r.Status != store.RunStatusFailed {
-		t.Errorf("expected status failed, got %s", r.Status)
+	if r.Status != store.RunStatusFailedResumable {
+		t.Errorf("expected status failed_resumable, got %s", r.Status)
 	}
 }
 
@@ -533,8 +533,8 @@ func TestFanOutContextCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
-	if r.Status != store.RunStatusFailed {
-		t.Errorf("expected status failed, got %s", r.Status)
+	if r.Status != store.RunStatusFailedResumable {
+		t.Errorf("expected status failed_resumable, got %s", r.Status)
 	}
 }
 

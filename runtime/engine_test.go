@@ -282,8 +282,8 @@ func TestLoopExhaustion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
-	if r.Status != store.RunStatusFailed {
-		t.Errorf("expected status failed, got %s", r.Status)
+	if r.Status != store.RunStatusFailedResumable {
+		t.Errorf("expected status failed_resumable, got %s", r.Status)
 	}
 }
 
@@ -862,6 +862,199 @@ func TestHumanPausePreservesLoopCounters(t *testing.T) {
 	r, _ = s.LoadRun("run-loop-human")
 	if r.Status != store.RunStatusFinished {
 		t.Errorf("expected finished, got %s", r.Status)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: failed run becomes failed_resumable with checkpoint
+// ---------------------------------------------------------------------------
+
+func TestFailedRunIsResumable(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "fail_resume_test",
+		Entry: "step_a",
+		Nodes: map[string]ir.Node{
+			"step_a": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step_a"}},
+			"step_b": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step_b"}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "step_a", To: "step_b"},
+			{From: "step_b", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+
+	exec := newStubExecutor()
+	exec.on("step_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"result": "ok"}, nil
+	})
+	exec.on("step_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return nil, fmt.Errorf("simulated transient failure")
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "run-fail-1", nil)
+	if err == nil {
+		t.Fatal("expected error from failed node")
+	}
+
+	// Run should be failed_resumable.
+	r, err := s.LoadRun("run-fail-1")
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if r.Status != store.RunStatusFailedResumable {
+		t.Fatalf("expected status failed_resumable, got %s", r.Status)
+	}
+	if r.Checkpoint == nil {
+		t.Fatal("expected checkpoint to be preserved on failed_resumable")
+	}
+	if r.Checkpoint.NodeID != "step_b" {
+		t.Fatalf("expected checkpoint at step_b (failing node), got %s", r.Checkpoint.NodeID)
+	}
+	if r.Error == "" {
+		t.Fatal("expected error message to be preserved")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: resume from failed_resumable re-executes the failed node
+// ---------------------------------------------------------------------------
+
+func TestResumeFromFailed(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "resume_fail_test",
+		Entry: "step_a",
+		Nodes: map[string]ir.Node{
+			"step_a": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step_a"}},
+			"step_b": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step_b"}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "step_a", To: "step_b"},
+			{From: "step_b", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+
+	callCount := 0
+	exec := newStubExecutor()
+	exec.on("step_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"result": "ok"}, nil
+	})
+	exec.on("step_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		callCount++
+		if callCount == 1 {
+			return nil, fmt.Errorf("transient failure")
+		}
+		return map[string]interface{}{"result": "success"}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	// First run: step_b fails.
+	err := eng.Run(context.Background(), "run-resume-fail", nil)
+	if err == nil {
+		t.Fatal("expected error from failed node")
+	}
+
+	r, _ := s.LoadRun("run-resume-fail")
+	if r.Status != store.RunStatusFailedResumable {
+		t.Fatalf("expected failed_resumable, got %s", r.Status)
+	}
+
+	// Resume: step_b should succeed this time.
+	err = eng.Resume(context.Background(), "run-resume-fail", nil)
+	if err != nil {
+		t.Fatalf("resume failed: %v", err)
+	}
+
+	r, _ = s.LoadRun("run-resume-fail")
+	if r.Status != store.RunStatusFinished {
+		t.Fatalf("expected finished after resume, got %s", r.Status)
+	}
+
+	// step_b should have been called exactly 2 times (1 fail + 1 success).
+	if callCount != 2 {
+		t.Fatalf("expected step_b to be called 2 times, got %d", callCount)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: force resume bypasses workflow hash check
+// ---------------------------------------------------------------------------
+
+func TestForceResumeBypassesHashCheck(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "force_test",
+		Entry: "step_a",
+		Nodes: map[string]ir.Node{
+			"step_a": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step_a"}},
+			"step_b": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step_b"}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "step_a", To: "step_b"},
+			{From: "step_b", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+
+	callCount := 0
+	exec := newStubExecutor()
+	exec.on("step_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"result": "ok"}, nil
+	})
+	exec.on("step_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		callCount++
+		if callCount == 1 {
+			return nil, fmt.Errorf("transient failure")
+		}
+		return map[string]interface{}{"result": "ok"}, nil
+	})
+
+	s := tmpStore(t)
+
+	// Run with hash "aaa".
+	eng := New(wf, s, exec, WithWorkflowHash("aaaa_original_hash"))
+	err := eng.Run(context.Background(), "run-force", nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	// Resume with different hash — should fail without force.
+	eng2 := New(wf, s, exec, WithWorkflowHash("bbbb_modified_hash"))
+	err = eng2.Resume(context.Background(), "run-force", nil)
+	if err == nil {
+		t.Fatal("expected hash mismatch error")
+	}
+	if !strings.Contains(err.Error(), "workflow source has changed") {
+		t.Fatalf("expected hash mismatch error, got: %v", err)
+	}
+
+	// Resume with force — should succeed.
+	eng3 := New(wf, s, exec, WithWorkflowHash("bbbb_modified_hash"), WithForceResume(true))
+	err = eng3.Resume(context.Background(), "run-force", nil)
+	if err != nil {
+		t.Fatalf("force resume failed: %v", err)
+	}
+
+	r, _ := s.LoadRun("run-force")
+	if r.Status != store.RunStatusFinished {
+		t.Fatalf("expected finished, got %s", r.Status)
 	}
 }
 

@@ -113,7 +113,8 @@ src -> dst with {field: "{{ref}}"}      # data mapping
 - **RuntimeError** (`runtime/errors.go`) — structured error with `ErrorCode`, `Message`, `NodeID`, `Hint`, `Cause`
   - Codes: `NODE_NOT_FOUND`, `NO_OUTGOING_EDGE`, `LOOP_EXHAUSTED`, `BUDGET_EXCEEDED`, `EXECUTION_FAILED`, `WORKSPACE_SAFETY`, `TIMEOUT`, `CANCELLED`, `JOIN_FAILED`, `RESUME_INVALID`
 - **Diagnostics** (`ir/validate.go`) — compile-time warnings/errors with codes C001–C019 (unknown refs, routing issues, unreachable nodes, undeclared cycles, etc.)
-- **Sentinel errors**: `ErrRunPaused` (resumable), `ErrRunCancelled`, `ErrBudgetExceeded`
+- **Sentinel errors**: `ErrRunPaused` (resumable), `ErrRunCancelled` (resumable with checkpoint), `ErrBudgetExceeded`
+- **Resumable failures**: Most runtime failures produce `failed_resumable` status with a checkpoint. See `docs/resume.md` for the exhaustive matrix.
 
 ### Store & Persistence
 
@@ -128,9 +129,25 @@ src -> dst with {field: "{{ref}}"}      # data mapping
 
 The checkpoint embedded in `run.json` is the authoritative source for resume — events are observational only. See `docs/persisted-formats.md` for field semantics.
 
-**Run statuses:** `running` → `paused_waiting_human` → `finished` | `failed` | `cancelled`
+**Run statuses:** `running` → `paused_waiting_human` → `finished` | `failed` | `failed_resumable` | `cancelled`
 
 **Key event types:** `run_started`, `node_started`, `llm_request`, `llm_retry`, `tool_called`, `artifact_written`, `human_input_requested`, `run_paused`, `run_resumed`, `join_ready`, `edge_selected`, `budget_warning`, `budget_exceeded`, `run_finished`, `run_failed`
+
+### Resume from Failed/Cancelled Runs
+
+The engine saves a checkpoint after every successful node execution. When a run fails or is cancelled, the checkpoint is preserved, enabling `iterion resume` to restart from the failing node without re-executing upstream nodes.
+
+**Resumable statuses:** `paused_waiting_human` (needs answers), `failed_resumable` (automatic retry), `cancelled` (user-interrupted, checkpoint preserved)
+
+**All failure scenarios are resumable** except:
+- `FailNode` reached (intentional workflow termination → `failed`, no checkpoint)
+- First node fails before any checkpoint exists (→ `failed`, must restart)
+
+Common resumable failures: transient LLM errors (rate limit, timeout), budget exceeded (increase budget + resume), schema validation errors (fix workflow + `--force`), context timeout/cancellation, fan-out branch failures, router failures.
+
+**`--force` flag**: allows resume even when the `.iter` source has changed (e.g., bug fix). Without `--force`, a hash mismatch produces an error.
+
+See `docs/resume.md` for the exhaustive failure matrix.
 
 ### Concurrency
 
@@ -146,7 +163,7 @@ iterion init [dir]                      # Scaffold new project
 iterion validate <file.iter>            # Parse and validate workflow
 iterion run <file.iter> [flags]         # Execute workflow (--var, --recipe, --timeout, --store-dir)
 iterion inspect [--run-id] [--events]   # View run state and events
-iterion resume --run-id --file --answers-file  # Resume paused run with human answers
+iterion resume --run-id --file [--answers-file] [--force]  # Resume paused/failed/cancelled run
 iterion diagram <file.iter> [--view]    # Generate Mermaid diagram (compact|detailed|full)
 iterion editor [--port] [--dir]         # Launch visual workflow editor
 iterion report --run-id <id> [--store-dir] [--output]  # Generate chronological run report

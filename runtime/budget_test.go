@@ -163,8 +163,8 @@ func TestBudgetExceededFailsRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
-	if r.Status != store.RunStatusFailed {
-		t.Errorf("expected failed status, got %s", r.Status)
+	if r.Status != store.RunStatusFailedResumable {
+		t.Errorf("expected failed_resumable status, got %s", r.Status)
 	}
 
 	// Verify budget_exceeded event was emitted.
@@ -522,8 +522,8 @@ func TestWorkspaceSafetyRejectsDualMutation(t *testing.T) {
 	}
 
 	r, _ := s.LoadRun("run-unsafe")
-	if r.Status != store.RunStatusFailed {
-		t.Errorf("expected failed, got %s", r.Status)
+	if r.Status != store.RunStatusFailedResumable {
+		t.Errorf("expected failed_resumable, got %s", r.Status)
 	}
 }
 

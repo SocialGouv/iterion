@@ -29,27 +29,33 @@ These formats are considered **stable for V1** — tooling may rely on them.
   "created_at": "2026-01-01T00:00:00Z",
   "updated_at": "2026-01-01T00:01:00Z",
   "finished_at": "2026-01-01T00:02:00Z",  // set on terminal status (optional)
-  "error": "",                         // non-empty on failed/cancelled (optional)
-  "checkpoint": null,                  // present only when paused (optional)
+  "error": "",                         // non-empty on failed/failed_resumable/cancelled (optional)
+  "checkpoint": null,                  // present when paused, failed_resumable, or cancelled (optional)
   "artifact_index": { "analyze": 2 }  // node_id → latest version (optional cache)
 }
 ```
 
 ### Run Status
 
-| Status                  | Meaning                                    |
-|-------------------------|--------------------------------------------|
-| `running`               | Execution in progress                      |
-| `paused_waiting_human`  | Paused at a human node, awaiting answers   |
-| `finished`              | Completed successfully (reached done node) |
-| `failed`                | Terminated due to error or timeout         |
-| `cancelled`             | Interrupted by user (e.g. SIGINT)          |
+| Status                  | Meaning                                          | Resumable? |
+|-------------------------|--------------------------------------------------|------------|
+| `running`               | Execution in progress                            | —          |
+| `paused_waiting_human`  | Paused at a human node, awaiting answers         | Yes (needs answers) |
+| `finished`              | Completed successfully (reached done node)       | No         |
+| `failed`                | Non-resumable failure (fail node or no checkpoint) | No       |
+| `failed_resumable`      | Failed with checkpoint (can resume)              | Yes        |
+| `cancelled`             | Interrupted by user with checkpoint preserved    | Yes        |
 
-### Checkpoint (when status = paused_waiting_human)
+### Checkpoint (when status = paused_waiting_human, failed_resumable, or cancelled)
 
 The checkpoint is the **authoritative source of truth** for resume. Events
 (`events.jsonl`) are observational only and are never replayed to reconstruct
 state. If the checkpoint is lost, recovery is not possible via event replay.
+
+A checkpoint is saved after every successful node execution (best-effort). On
+failure, the checkpoint points to the **failing node** — resume re-executes
+that node. On cancellation, the checkpoint points to the node that was about
+to be executed.
 
 ```jsonc
 {
@@ -90,7 +96,7 @@ One JSON object per line, append-only. Events are ordered by `seq` (monotonic wi
 | `run_resumed`             | no    | —                                      |
 | `run_paused`              | yes   | —                                      |
 | `run_finished`            | no    | —                                      |
-| `run_failed`              | yes   | `error`, `code`                        |
+| `run_failed`              | yes   | `error`, `code`, `resumable?`          |
 | `run_cancelled`           | yes   | `reason`                               |
 | `branch_started`          | yes   | —                                      |
 | `node_started`            | yes   | `kind`                                 |
