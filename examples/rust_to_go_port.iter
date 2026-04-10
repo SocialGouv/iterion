@@ -259,12 +259,14 @@ prompt commit_namer_user:
 
 prompt parity_review_system:
   You are a meticulous code reviewer specializing in language migrations.
-  You combine THREE roles:
+  You combine FOUR roles:
   1. REVIEWER: compare Rust source behavior with Go implementation to verify
      feature parity (functional equivalence, error handling, API surface, tests)
   2. JUDGE: produce a verdict (approved=true/false)
   3. FIX PLANNER: if the verdict is negative, produce a concrete, actionable
      fix plan describing exactly what needs to be corrected
+  4. PARITY REPORTER: scan the ENTIRE Go codebase and report cumulative
+     parity across ALL batches, not just the current one
 
   You have access to file reading tools. USE THEM to read both codebases.
   Do NOT rely solely on the implementation summary — verify the actual code.
@@ -286,7 +288,7 @@ prompt parity_review_user:
   Implementation result:
   {{input.implementation}}
 
-  Feature manifest:
+  Feature manifest (may be stale — verify against actual code):
   {{input.feature_manifest}}
 
   Rust source repo: {{input.rust_repo_path}}
@@ -297,7 +299,7 @@ prompt parity_review_user:
 
   INSTRUCTIONS:
   1. USE YOUR TOOLS to read the actual Rust source files and Go implementation
-  2. For each feature in the current batch, verify:
+  2. For each feature in the CURRENT BATCH, verify:
      - Functional equivalence (read both files)
      - Error handling parity
      - Test coverage
@@ -307,6 +309,10 @@ prompt parity_review_user:
      - suggestions[]: style, cosmetic parity, non-idiomatic patterns
   5. Set approved=true if zero blockers (suggestions don't block)
   6. If approved=false, produce fix_plan for BLOCKERS ONLY
+  7. CUMULATIVE PARITY SCAN: Browse the Go repo (list packages, scan key files)
+     and report in cumulative_ported_features[] ALL Rust features that are now
+     ported across ALL batches (not just this one). Update cumulative_parity_percentage
+     based on your scan of the actual code, not the stale manifest.
 
 ## ─── Prompts : Verdict (dual judge, two-phase) ─────────────────
 
@@ -335,8 +341,9 @@ prompt parity_verdict_system:
   loops on the same issues waste compute for no progress.
 
   OVERALL PARITY:
-  Set overall_parity=true ONLY if ALL Rust features across ALL batches
-  are ported and tests passing (100% manifest coverage).
+  Use the review's cumulative_parity_percentage (based on actual code scan)
+  instead of the stale initial manifest. Set overall_parity=true when the
+  review reports that ALL Rust features are ported and tests pass.
 
   SELF-CRITIQUE (two-phase):
   Phase 1: Rigorously evaluate each current-batch feature.
@@ -374,8 +381,10 @@ prompt parity_verdict_user:
   3. Detect stagnation: same blockers as previous verdict = stagnating
   4. Set batch_complete per acceptance_threshold (default: zero blockers)
      If stagnating, set batch_complete=true regardless
-  5. Set overall_parity=true only if 100% manifest coverage
-  6. Only list real, non-stagnant blockers in blockers[]
+  5. Use the review's cumulative_parity_percentage for parity_percentage
+     (it reflects actual code state, not the stale initial manifest)
+  6. Set overall_parity=true if cumulative parity is 100%
+  7. Only list real, non-stagnant blockers in blockers[]
 
 ## ─── Prompts : Verdict Synthesis ────────────────────────────────
 
@@ -568,6 +577,8 @@ schema review_output:
   feature_verdicts: string[]
   approved: bool
   fix_plan: string
+  cumulative_ported_features: string[]
+  cumulative_parity_percentage: string
 
 schema verdict_input:
   implementation: json
@@ -939,7 +950,7 @@ workflow rust_to_go_port:
   review_verdict -> done when overall_parity
 
   ## Current batch done, plan next batch
-  review_verdict -> plan_fanout when batch_complete as outer_loop(10) with {
+  review_verdict -> plan_fanout when batch_complete as outer_loop(20) with {
     feature_manifest: "{{artifacts.feature_manifest}}",
     previous_progress: "{{outputs.review_verdict}}",
     previous_feedback: "{{outputs.review_verdict}}"
@@ -955,7 +966,7 @@ workflow rust_to_go_port:
   }
 
   ## Fallback: fix_loop exhausted but batch not complete -> re-plan anyway
-  review_verdict -> plan_fanout when not overall_parity as outer_loop(10) with {
+  review_verdict -> plan_fanout when not overall_parity as outer_loop(20) with {
     feature_manifest: "{{artifacts.feature_manifest}}",
     previous_progress: "{{outputs.review_verdict}}",
     previous_feedback: "{{outputs.review_verdict}}"
