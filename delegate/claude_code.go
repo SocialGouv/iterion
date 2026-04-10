@@ -151,11 +151,12 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 	result.RawOutputLen = rawLen
 	result.ParseFallback = fallback
 
-	// Safety net: if we have a schema but got empty/nil output, attempt a
-	// formatting pass via session resume. This catches cases where the agent
-	// did real work (tools, code changes) but the SDK didn't capture structured
-	// output — e.g., backend agents where tools are implicit.
-	if len(output) == 0 && len(task.OutputSchema) > 0 && rm.SessionID != "" {
+	// Safety net: if we have a schema but got empty/nil output or only a
+	// fallback text wrapper, attempt a formatting pass via session resume.
+	// This catches cases where the agent did real work (tools, code changes)
+	// but the SDK didn't capture structured output — e.g., backend agents
+	// where tools are implicit.
+	if (len(output) == 0 || fallback) && len(task.OutputSchema) > 0 && rm.SessionID != "" {
 		log.Printf("delegate: claude-code: empty output with schema — attempting recovery formatting pass (session=%s)", rm.SessionID)
 		fmtRM, fmtErr := b.formatOutput(ctx, task, rm.SessionID)
 		if fmtErr == nil {
