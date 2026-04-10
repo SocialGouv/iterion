@@ -308,7 +308,7 @@ func TestRuntimeErrorStructured(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test: loop exhaustion produces RuntimeError with LOOP_EXHAUSTED code
+// Test: loop exhaustion with no fallback produces NO_OUTGOING_EDGE
 // ---------------------------------------------------------------------------
 
 func TestLoopExhaustionRuntimeError(t *testing.T) {
@@ -353,11 +353,83 @@ func TestLoopExhaustionRuntimeError(t *testing.T) {
 	if !errors.As(err, &rtErr) {
 		t.Fatalf("expected RuntimeError, got: %T: %v", err, err)
 	}
-	if rtErr.Code != ErrCodeLoopExhausted {
-		t.Errorf("expected code LOOP_EXHAUSTED, got %s", rtErr.Code)
+	// When a loop edge is exhausted and no fallback edge exists, the error
+	// is NO_OUTGOING_EDGE (the exhausted edge is skipped, leaving no match).
+	if rtErr.Code != ErrCodeNoOutgoingEdge {
+		t.Errorf("expected code NO_OUTGOING_EDGE, got %s", rtErr.Code)
 	}
 	if rtErr.Hint == "" {
-		t.Error("expected a hint for loop exhaustion")
+		t.Error("expected a hint")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: loop exhaustion with fallback edge selects the fallback
+// ---------------------------------------------------------------------------
+
+func TestLoopExhaustionFallback(t *testing.T) {
+	// Simulates: fix_loop exhausted → falls back to outer_loop (plan_fanout).
+	// verify has two conditional edges on "pass=false":
+	//   1. fix (fix_loop, max 1) — will exhaust
+	//   2. replan (outer_loop, max 10) — fallback
+	wf := &ir.Workflow{
+		Name:  "loop_fallback_test",
+		Entry: "fix",
+		Nodes: map[string]ir.Node{
+			"fix":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "fix"}},
+			"verify": &ir.JudgeNode{BaseNode: ir.BaseNode{ID: "verify"}},
+			"replan": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "replan"}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "fix", To: "verify"},
+			{From: "verify", To: "done", Condition: "pass"},
+			{From: "verify", To: "fix", Condition: "pass", Negated: true, LoopName: "fix_loop"},
+			{From: "verify", To: "replan", Condition: "pass", Negated: true, LoopName: "outer_loop"},
+			{From: "replan", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops: map[string]*ir.Loop{
+			"fix_loop":   {Name: "fix_loop", MaxIterations: 1},
+			"outer_loop": {Name: "outer_loop", MaxIterations: 10},
+		},
+	}
+
+	fixCount := 0
+	exec := newStubExecutor()
+	exec.on("fix", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		fixCount++
+		return map[string]interface{}{}, nil
+	})
+	exec.on("verify", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"pass": false}, nil
+	})
+	exec.on("replan", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "run-loop-fallback", nil)
+	if err != nil {
+		t.Fatalf("expected successful fallback to replan, got error: %v", err)
+	}
+
+	// fix runs twice: once from entry, once from fix_loop iteration 1.
+	// On the third verify, fix_loop is exhausted → falls back to replan → done.
+	if fixCount != 2 {
+		t.Errorf("expected fix to run 2 times, got %d", fixCount)
+	}
+
+	r, err := s.LoadRun("run-loop-fallback")
+	if err != nil {
+		t.Fatalf("failed to load run: %v", err)
+	}
+	if r.Status != "finished" {
+		t.Errorf("expected finished, got %s", r.Status)
 	}
 }
 

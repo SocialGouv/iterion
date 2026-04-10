@@ -353,8 +353,11 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 // selectEdge picks the next node by evaluating outgoing edges from the
 // current node. Conditional edges are checked first; the first matching
 // unconditional edge serves as fallback. Loop counters are enforced.
+// When an edge's loop is exhausted, that edge is skipped and the next
+// matching edge is tried — this enables fallback patterns like
+// fix_loop → outer_loop.
 func (e *Engine) selectEdge(runID, fromNodeID string, output map[string]interface{}, loopCounters map[string]int) (string, error) {
-	selected := e.evaluateEdges(fromNodeID, "main", output)
+	selected := e.evaluateEdgesWithLoops(fromNodeID, "main", output, loopCounters)
 	if selected == nil {
 		return "", &RuntimeError{
 			Code:    ErrCodeNoOutgoingEdge,
@@ -364,22 +367,9 @@ func (e *Engine) selectEdge(runID, fromNodeID string, output map[string]interfac
 		}
 	}
 
-	// Enforce loop counter.
+	// Increment loop counter for the selected edge.
 	if selected.LoopName != "" {
-		loop, ok := e.workflow.Loops[selected.LoopName]
-		if !ok {
-			return "", fmt.Errorf("edge references unknown loop %q", selected.LoopName)
-		}
-		count := loopCounters[selected.LoopName]
-		if count >= loop.MaxIterations {
-			return "", &RuntimeError{
-				Code:    ErrCodeLoopExhausted,
-				Message: fmt.Sprintf("loop %q exceeded max iterations (%d)", selected.LoopName, loop.MaxIterations),
-				NodeID:  fromNodeID,
-				Hint:    fmt.Sprintf("increase max_iterations for loop %q or review the loop exit condition", selected.LoopName),
-			}
-		}
-		loopCounters[selected.LoopName] = count + 1
+		loopCounters[selected.LoopName] = loopCounters[selected.LoopName] + 1
 	}
 
 	// Emit edge_selected.

@@ -591,6 +591,8 @@ func truncatePreview(s string, maxLen int) string {
 // evaluateEdges walks the workflow edges originating from fromNodeID and returns
 // the first conditional match (or the first unconditional fallback). It returns
 // nil when no edge matches. The logPrefix is included in warning messages.
+// This variant does NOT check loop counters — use evaluateEdgesWithLoops for
+// loop-aware selection.
 func (e *Engine) evaluateEdges(fromNodeID, logPrefix string, output map[string]interface{}) *ir.Edge {
 	var unconditional *ir.Edge
 
@@ -598,6 +600,55 @@ func (e *Engine) evaluateEdges(fromNodeID, logPrefix string, output map[string]i
 		if edge.From != fromNodeID {
 			continue
 		}
+		if edge.Condition == "" {
+			if unconditional == nil {
+				unconditional = edge
+			}
+			continue
+		}
+		val, ok := output[edge.Condition]
+		if !ok {
+			continue
+		}
+		boolVal, isBool := val.(bool)
+		if !isBool {
+			log.Printf("runtime: %s: node %q: condition field %q is %T, expected bool — edge to %q skipped",
+				logPrefix, fromNodeID, edge.Condition, val, edge.To)
+			continue
+		}
+		if edge.Negated {
+			boolVal = !boolVal
+		}
+		if boolVal {
+			return edge
+		}
+	}
+
+	return unconditional
+}
+
+// evaluateEdgesWithLoops is like evaluateEdges but skips edges whose loop
+// counter is exhausted. This enables fallback patterns: when a fix_loop edge
+// is exhausted, the next matching edge (e.g., outer_loop or unconditional)
+// is selected instead of producing a fatal LOOP_EXHAUSTED error.
+func (e *Engine) evaluateEdgesWithLoops(fromNodeID, logPrefix string, output map[string]interface{}, loopCounters map[string]int) *ir.Edge {
+	var unconditional *ir.Edge
+
+	for _, edge := range e.workflow.Edges {
+		if edge.From != fromNodeID {
+			continue
+		}
+
+		// Skip edges whose loop is exhausted.
+		if edge.LoopName != "" {
+			loop, ok := e.workflow.Loops[edge.LoopName]
+			if ok && loopCounters[edge.LoopName] >= loop.MaxIterations {
+				log.Printf("runtime: %s: node %q: edge to %q skipped — loop %q exhausted (%d/%d)",
+					logPrefix, fromNodeID, edge.To, edge.LoopName, loopCounters[edge.LoopName], loop.MaxIterations)
+				continue
+			}
+		}
+
 		if edge.Condition == "" {
 			if unconditional == nil {
 				unconditional = edge

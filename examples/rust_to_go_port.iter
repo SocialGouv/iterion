@@ -269,13 +269,16 @@ prompt parity_review_system:
   You have access to file reading tools. USE THEM to read both codebases.
   Do NOT rely solely on the implementation summary — verify the actual code.
 
-  Check:
-  - Functional equivalence (same inputs produce same outputs)
-  - Error handling parity (all error cases covered)
-  - API surface parity (all public functions/types ported)
-  - Test coverage (Go tests cover what Rust tests cover)
-  - Idiomatic Go (not a line-by-line transliteration)
-  Be strict: a partially ported feature is a FAIL.
+  Classify each issue as BLOCKER or SUGGESTION:
+  - BLOCKER: functional breakage, wrong behavior, missing error handling,
+    compilation errors, test failures, security issues. Things that would
+    break a user in production.
+  - SUGGESTION: style differences, non-idiomatic patterns, missing comments,
+    minor format differences (quoting style, whitespace), cosmetic parity
+    gaps that don't affect behavior. Things that are nice-to-have.
+
+  Set approved=true if there are ZERO blockers (suggestions are OK).
+  Set approved=false only if there are blockers.
 
 prompt parity_review_user:
   Review this porting implementation for feature parity.
@@ -299,39 +302,50 @@ prompt parity_review_user:
      - Error handling parity
      - Test coverage
   3. Mark each feature PASS or FAIL with justification citing code
-  4. If any feature is FAIL:
-     - Set approved=false
-     - Produce a detailed fix_plan listing the concrete corrections needed
-  List all issues precisely in the issues field.
+  4. Classify issues as BLOCKER or SUGGESTION:
+     - blockers[]: functional breakage, wrong behavior, security issues
+     - suggestions[]: style, cosmetic parity, non-idiomatic patterns
+  5. Set approved=true if zero blockers (suggestions don't block)
+  6. If approved=false, produce fix_plan for BLOCKERS ONLY
 
 ## ─── Prompts : Verdict (dual judge, two-phase) ─────────────────
 
 prompt parity_verdict_system:
   You are a final judge for a Rust-to-Go porting iteration.
-  You work in TWO PHASES:
+  You evaluate using blocker/suggestion classification and stagnation detection.
 
-  PHASE 1 — Rigorous evaluation:
-  Based on the review and test results, evaluate each feature.
-  A single FAIL with code citation is enough to block.
+  CLASSIFICATION:
+  Separate the review's issues into:
+  - blockers[]: functional breakage, wrong behavior, compilation errors,
+    test failures, security issues — things that break users
+  - suggestions[]: style, cosmetic parity, non-idiomatic patterns,
+    format differences — nice-to-have improvements
 
-  PHASE 2 — Self-critique:
-  Before rendering the final verdict, review EACH provisional FAIL and ask:
-  "Is this a real functional gap, or am I nitpicking an implementation
-  detail not specified in the requirements?"
-  Reclassify false positives as PASS.
+  BATCH COMPLETION:
+  Set batch_complete based on the acceptance_threshold:
+  - "strict": batch_complete=true only if ZERO blockers AND zero suggestions
+  - "normal" (default): batch_complete=true if ZERO blockers (suggestions OK)
+  - "lenient": batch_complete=true if blockers are minor and non-security
 
-  IMPORTANT: Each FAIL in remaining_issues COSTS an entire pipeline
-  iteration — do NOT generate noise for non-real problems.
+  STAGNATION DETECTION:
+  Compare with previous_verdict (if provided). If the same blockers appear
+  in both the current and previous verdict, the fix loop is stagnating.
+  If stagnating, set batch_complete=true anyway — the remaining issues
+  will be carried to the next planning cycle as feedback. Endless fix
+  loops on the same issues waste compute for no progress.
 
-  Then determine:
-  1. overall_parity=true ONLY if ALL Rust features are PORTED and tests pass
-  2. If not, decide: needs_replan=false (fixable) or needs_replan=true
-     (fundamental re-planning needed)
+  OVERALL PARITY:
+  Set overall_parity=true ONLY if ALL Rust features across ALL batches
+  are ported and tests passing (100% manifest coverage).
 
-  Set needs_replan=true only when:
-  - The porting approach is fundamentally wrong
-  - Critical architectural decisions need revisiting
-  - Dependencies were ported in the wrong order
+  SELF-CRITIQUE (two-phase):
+  Phase 1: Rigorously evaluate each current-batch feature.
+  Phase 2: For each provisional blocker, ask THREE questions:
+    a) "Would this break a real user in production?"
+    b) "Is this about the current batch or an unported future feature?"
+    c) "Has this exact issue appeared in the previous verdict already?"
+  Reclassify false positives as suggestions. Reclassify stagnant blockers
+  as suggestions (they'll be addressed in the next planning cycle).
 
 prompt parity_verdict_user:
   Evaluate this porting iteration.
@@ -348,13 +362,20 @@ prompt parity_verdict_user:
   Feature manifest:
   {{input.feature_manifest}}
 
+  Previous verdict (for stagnation detection):
+  {{input.previous_verdict}}
+
+  Acceptance threshold:
+  {{input.acceptance_threshold}}
+
   Instructions:
-  1. PHASE 1: Evaluate each feature: PASS or FAIL with citation
-  2. PHASE 2: Self-critique each FAIL — is it a real gap or a false positive?
-  3. Update the parity_percentage
-  4. Set overall_parity=true ONLY if ALL features PORTED and tests green
-  5. If not, set needs_replan based on severity
-  6. List remaining_issues (only REAL issues after self-critique)
+  1. Classify review issues as blockers[] or suggestions[]
+  2. Self-critique each blocker (would it break production? is it stagnant?)
+  3. Detect stagnation: same blockers as previous verdict = stagnating
+  4. Set batch_complete per acceptance_threshold (default: zero blockers)
+     If stagnating, set batch_complete=true regardless
+  5. Set overall_parity=true only if 100% manifest coverage
+  6. Only list real, non-stagnant blockers in blockers[]
 
 ## ─── Prompts : Verdict Synthesis ────────────────────────────────
 
@@ -362,15 +383,24 @@ prompt verdict_synthesis_system:
   You are the final arbiter of a Rust-to-Go porting iteration.
   You receive two independent verdict evaluations (from Claude and Codex).
 
-  Rules:
-  - BOTH judges must agree on overall_parity=true for the workflow to succeed
-  - If either judge flags needs_replan=true, set needs_replan=true
-  - Merge and deduplicate remaining_issues from both judges
+  Rules for batch_complete:
+  - If BOTH judges set batch_complete=true → batch_complete=true
+  - If only ONE judge has blockers, evaluate: are they real production-
+    breaking issues or cosmetic? A single judge's suggestion should not
+    block the batch.
+  - If both judges detected stagnation → batch_complete=true (move on)
+
+  Rules for overall_parity:
+  - BOTH judges must agree on overall_parity=true
   - Use the LOWER parity_percentage of the two
 
-  IMPORTANT: Apply the same self-critique filter on the merged issues.
-  If both judges flagged the same issue, it's very likely real.
-  If only one judge flagged it, evaluate carefully — it might be a false positive.
+  Rules for blocker/suggestion merge:
+  - An issue flagged as blocker by BOTH judges → blocker (very likely real)
+  - An issue flagged as blocker by ONE judge → evaluate carefully, likely suggestion
+  - Deduplicate across judges
+
+  Acceptance threshold: {{input.acceptance_threshold}}
+  Apply the threshold when deciding batch_complete (strict/normal/lenient).
 
 prompt verdict_synthesis_user:
   Synthesize these two independent verdicts.
@@ -384,7 +414,13 @@ prompt verdict_synthesis_user:
   Feature manifest:
   {{input.feature_manifest}}
 
-  Produce a final synthesized verdict.
+  Acceptance threshold: {{input.acceptance_threshold}}
+
+  Produce a final synthesized verdict with:
+  - batch_complete: true if batch passes per threshold (normal = zero blockers)
+  - overall_parity: true only if 100% of manifest is ported
+  - blockers[]: real production-breaking issues agreed by both judges
+  - suggestions[]: cosmetic/style issues for future improvement
 
 ## ─── Prompts : Fix ─────────────────────────────────────────────
 
@@ -527,10 +563,9 @@ schema review_input:
 
 schema review_output:
   summary: string
-  issues: string[]
-  strengths: string[]
+  blockers: string[]
+  suggestions: string[]
   feature_verdicts: string[]
-  missing_requirements: string[]
   approved: bool
   fix_plan: string
 
@@ -539,11 +574,14 @@ schema verdict_input:
   review: json
   test_results: json
   feature_manifest: json
+  previous_verdict: json
+  acceptance_threshold: string
 
 schema verdict_output:
+  batch_complete: bool
   overall_parity: bool
-  needs_replan: bool
-  remaining_issues: string[]
+  blockers: string[]
+  suggestions: string[]
   parity_percentage: string
   confidence: string [enum: "low", "medium", "high"]
 
@@ -551,11 +589,13 @@ schema verdict_synthesis_input:
   claude_verdict: json
   codex_verdict: json
   feature_manifest: json
+  acceptance_threshold: string
 
 schema parity_verdict:
+  batch_complete: bool
   overall_parity: bool
-  needs_replan: bool
-  remaining_issues: string[]
+  blockers: string[]
+  suggestions: string[]
   parity_percentage: string
   confidence: string [enum: "low", "medium", "high"]
 
@@ -645,7 +685,7 @@ human plan_gate:
   input: plan_gate_input
   output: plan_gate_output
   interaction: llm_or_human
-  model: "${GATE_MODEL}"
+  model: "openai/gpt-5.4-mini"
   system: plan_gate_system
 
 ## ─── Nodes : Phase 2 — Implementation ─────────────────────────
@@ -662,7 +702,7 @@ agent implement:
 ## ─── Nodes : Phase 3 — Checkpoint (commit + test) ─────────────
 
 agent commit_namer:
-  model: "${CLAUDE_MODEL}"
+  backend: "claude_code"
   output: commit_name_output
   system: commit_namer_system
   user: commit_namer_user
@@ -675,7 +715,7 @@ tool commit_changes:
   output: commit_result
 
 tool run_go_tests:
-  command: "${GO_TEST_COMMAND}"
+  command: "export PATH=/workspaces/iterion/.devbox/nix/profile/default/bin:$PATH && cd {{input.go_repo_path}} && go build ./... && go vet ./..."
   output: test_result
 
 ## ─── Nodes : Phase 4 — Review (fork from impl) ────────────────
@@ -743,6 +783,7 @@ workflow rust_to_go_port:
     rust_repo_path: string
     go_repo_path: string
     feature_list: string = ""
+    acceptance_threshold: string = "normal"
 
   entry: analyze
 
@@ -835,7 +876,9 @@ workflow rust_to_go_port:
     go_repo_path: "{{vars.go_repo_path}}"
   }
 
-  commit_changes -> run_go_tests
+  commit_changes -> run_go_tests with {
+    go_repo_path: "{{vars.go_repo_path}}"
+  }
 
   ## ═══ Phase 4 : Review (fork from impl) ════════════════════════
 
@@ -850,32 +893,39 @@ workflow rust_to_go_port:
 
   ## ═══ Phase 5 : Dual Verdict (Claude + Codex judge) ════════════
 
-  ## Fan out to both judges with the same input
+  ## Fan out to both judges with the same input + previous verdict for stagnation
   claude_review -> verdict_fanout with {
     implementation: "{{artifacts.implementation}}",
     review: "{{outputs.claude_review}}",
     test_results: "{{outputs.run_go_tests}}",
-    feature_manifest: "{{artifacts.feature_manifest}}"
+    feature_manifest: "{{artifacts.feature_manifest}}",
+    previous_verdict: "{{artifacts.parity_verdict_report}}",
+    acceptance_threshold: "{{vars.acceptance_threshold}}"
   }
 
   verdict_fanout -> claude_verdict with {
     implementation: "{{input.implementation}}",
     review: "{{input.review}}",
     test_results: "{{input.test_results}}",
-    feature_manifest: "{{input.feature_manifest}}"
+    feature_manifest: "{{input.feature_manifest}}",
+    previous_verdict: "{{input.previous_verdict}}",
+    acceptance_threshold: "{{input.acceptance_threshold}}"
   }
 
   verdict_fanout -> codex_verdict with {
     implementation: "{{input.implementation}}",
     review: "{{input.review}}",
     test_results: "{{input.test_results}}",
-    feature_manifest: "{{input.feature_manifest}}"
+    feature_manifest: "{{input.feature_manifest}}",
+    previous_verdict: "{{input.previous_verdict}}",
+    acceptance_threshold: "{{input.acceptance_threshold}}"
   }
 
   ## Synthesis: both judges must agree
   claude_verdict -> review_verdict with {
     claude_verdict: "{{outputs.claude_verdict}}",
-    feature_manifest: "{{artifacts.feature_manifest}}"
+    feature_manifest: "{{artifacts.feature_manifest}}",
+    acceptance_threshold: "{{vars.acceptance_threshold}}"
   }
 
   codex_verdict -> review_verdict with {
@@ -883,12 +933,20 @@ workflow rust_to_go_port:
   }
 
   ## ═══ Phase 5b : Verdict Routing ═══════════════════════════════
+  ## Edge evaluation order matters: first match wins.
 
   ## Full parity achieved -> done
   review_verdict -> done when overall_parity
 
-  ## Fixable issues -> fix loop (NOT back to planning)
-  review_verdict -> fix when not overall_parity as fix_loop(3) with {
+  ## Current batch done, plan next batch
+  review_verdict -> plan_fanout when batch_complete as outer_loop(10) with {
+    feature_manifest: "{{artifacts.feature_manifest}}",
+    previous_progress: "{{outputs.review_verdict}}",
+    previous_feedback: "{{outputs.review_verdict}}"
+  }
+
+  ## Current batch has bugs -> fix loop (max 5)
+  review_verdict -> fix when not batch_complete as fix_loop(5) with {
     _session_id: "{{outputs.claude_review._session_id}}",
     fix_plan: "{{outputs.claude_review.fix_plan}}",
     feature_manifest: "{{artifacts.feature_manifest}}",
@@ -896,16 +954,19 @@ workflow rust_to_go_port:
     go_repo_path: "{{vars.go_repo_path}}"
   }
 
-  ## Fundamental issues -> back to planning
-  review_verdict -> plan_fanout when needs_replan as outer_loop(10) with {
+  ## Fallback: fix_loop exhausted but batch not complete -> re-plan anyway
+  review_verdict -> plan_fanout when not overall_parity as outer_loop(10) with {
     feature_manifest: "{{artifacts.feature_manifest}}",
     previous_progress: "{{outputs.review_verdict}}",
     previous_feedback: "{{outputs.review_verdict}}"
   }
 
+  ## Terminal fallback: all loops exhausted -> done (budget/iteration limit reached)
+  review_verdict -> done
+
   ## ═══ Phase 6 : Fix with session continuity ════════════════════
 
   ## After fix -> back to checkpoint (re-commit, re-test, re-review)
-  fix -> commit_namer as fix_loop(3) with {
+  fix -> commit_namer with {
     _session_id: "{{outputs.fix._session_id}}"
   }
