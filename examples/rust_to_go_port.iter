@@ -20,7 +20,7 @@
 ##
 ## @group analysis: analyze, merge_analysis
 ## @group planning: plan_fanout, claude_plan, codex_consolidate, plan_judge_merge, plan_gate
-## @group implementation: implement
+## @group implementation: implement, simplify
 ## @group checkpoint: commit_namer, commit_changes, run_go_tests
 ## @group review: review_fanout, claude_review, codex_review_judge, review_verdict
 ## @group fix: fix
@@ -241,6 +241,33 @@ prompt port_impl_user:
   4. Ensure existing Go tests still pass
   5. Do NOT remove Go-only features not present in Rust
   6. Run go vet and go fmt on all changed files
+
+## ─── Prompts : Simplify ───────────────────────────────────────
+
+prompt simplify_system:
+  You are a senior Go engineer focused on code quality and simplification.
+  You review recently changed code for reuse opportunities, quality issues,
+  and efficiency improvements, then fix any issues found.
+
+  Focus on:
+  - Dead code removal (unused functions, imports, variables)
+  - Deduplication (extract shared helpers from copy-pasted blocks)
+  - Idiomatic Go patterns (error wrapping, interface compliance, naming)
+  - Unnecessary complexity (over-abstraction, premature generalization)
+  - Missing error handling on critical paths
+
+  Do NOT:
+  - Refactor working code that isn't part of the recent changes
+  - Add features or change behavior
+  - Add comments or documentation unless code is genuinely unclear
+  - Touch test files unless they have compilation errors
+
+  Run go vet and go fmt on all changed files when done.
+
+prompt simplify_user:
+  Review and simplify the code changes from this implementation session.
+  Focus on the files that were just created or modified.
+  Fix quality issues, remove dead code, deduplicate, and ensure idiomatic Go.
 
 ## ─── Prompts : Commit ─────────────────────────────────────────
 
@@ -710,6 +737,16 @@ agent implement:
   user: port_impl_user
   session: inherit
 
+## ─── Nodes : Phase 2b — Simplify ───────────────────────────────
+
+agent simplify:
+  backend: "claude_code"
+  output: impl_output
+  publish: implementation
+  system: simplify_system
+  user: simplify_user
+  session: inherit
+
 ## ─── Nodes : Phase 3 — Checkpoint (commit + test) ─────────────
 
 agent commit_namer:
@@ -876,8 +913,14 @@ workflow rust_to_go_port:
 
   ## ═══ Phase 2 : Implementation ═════════════════════════════════
 
-  implement -> commit_namer with {
+  implement -> simplify with {
     _session_id: "{{outputs.implement._session_id}}"
+  }
+
+  ## ═══ Phase 2b : Simplify ══════════════════════════════════════
+
+  simplify -> commit_namer with {
+    _session_id: "{{outputs.simplify._session_id}}"
   }
 
   ## ═══ Phase 3 : Checkpoint (commit + test) ═════════════════════
@@ -894,7 +937,7 @@ workflow rust_to_go_port:
   ## ═══ Phase 4 : Review (fork from impl) ════════════════════════
 
   run_go_tests -> claude_review with {
-    _session_id: "{{outputs.implement._session_id}}",
+    _session_id: "{{outputs.simplify._session_id}}",
     implementation: "{{artifacts.implementation}}",
     feature_manifest: "{{artifacts.feature_manifest}}",
     rust_repo_path: "{{vars.rust_repo_path}}",
