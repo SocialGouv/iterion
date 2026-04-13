@@ -6,7 +6,7 @@
           {
             "async": false,
             "command": "npx -y repo-falcon sync --agents none",
-            "timeout": 300,
+            "timeout": 900,
             "type": "command"
           }
         ]
