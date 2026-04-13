@@ -21,7 +21,7 @@
 ## @group analysis: analyze, merge_analysis
 ## @group planning: plan_fanout, claude_plan, codex_consolidate, plan_judge_merge, plan_gate
 ## @group implementation: implement, simplify
-## @group checkpoint: commit_namer, commit_changes, run_go_tests
+## @group checkpoint: commit_namer, commit_changes, run_go_tests, parity_scan
 ## @group review: review_fanout, claude_review, codex_review_judge, review_verdict
 ## @group fix: fix
 
@@ -286,14 +286,12 @@ prompt commit_namer_user:
 
 prompt parity_review_system:
   You are a meticulous code reviewer specializing in language migrations.
-  You combine FOUR roles:
+  You combine THREE roles:
   1. REVIEWER: compare Rust source behavior with Go implementation to verify
      feature parity (functional equivalence, error handling, API surface, tests)
   2. JUDGE: produce a verdict (approved=true/false)
   3. FIX PLANNER: if the verdict is negative, produce a concrete, actionable
      fix plan describing exactly what needs to be corrected
-  4. PARITY REPORTER: scan the ENTIRE Go codebase and report cumulative
-     parity across ALL batches, not just the current one
 
   You have access to file reading tools. USE THEM to read both codebases.
   Do NOT rely solely on the implementation summary — verify the actual code.
@@ -336,10 +334,8 @@ prompt parity_review_user:
      - suggestions[]: style, cosmetic parity, non-idiomatic patterns
   5. Set approved=true if zero blockers (suggestions don't block)
   6. If approved=false, produce fix_plan for BLOCKERS ONLY
-  7. CUMULATIVE PARITY SCAN: Browse the Go repo (list packages, scan key files)
-     and report in cumulative_ported_features[] ALL Rust features that are now
-     ported across ALL batches (not just this one). Update cumulative_parity_percentage
-     based on your scan of the actual code, not the stale manifest.
+  7. Use the parity_scan data (deterministic file/line counts) for context
+     on overall project progress. Focus your review on the CURRENT BATCH only.
 
 ## ─── Prompts : Verdict (dual judge, two-phase) ─────────────────
 
@@ -368,9 +364,10 @@ prompt parity_verdict_system:
   loops on the same issues waste compute for no progress.
 
   OVERALL PARITY:
-  Use the review's cumulative_parity_percentage (based on actual code scan)
-  instead of the stale initial manifest. Set overall_parity=true when the
-  review reports that ALL Rust features are ported and tests pass.
+  Use the parity_scan data (deterministic Go/Rust line counts and file counts)
+  to assess overall progress. The line_ratio_percent gives the Go/Rust line
+  ratio. Set overall_parity=true when the ratio approaches 100% AND the
+  review confirms all features are ported and tests pass.
 
   SELF-CRITIQUE (two-phase):
   Phase 1: Rigorously evaluate each current-batch feature.
@@ -408,9 +405,9 @@ prompt parity_verdict_user:
   3. Detect stagnation: same blockers as previous verdict = stagnating
   4. Set batch_complete per acceptance_threshold (default: zero blockers)
      If stagnating, set batch_complete=true regardless
-  5. Use the review's cumulative_parity_percentage for parity_percentage
-     (it reflects actual code state, not the stale initial manifest)
-  6. Set overall_parity=true if cumulative parity is 100%
+  5. Use parity_scan.line_ratio_percent for parity_percentage
+     (deterministic Go/Rust line ratio, not subjective estimate)
+  6. Set overall_parity=true if line ratio ~100% and review confirms all ported
   7. Only list real, non-stagnant blockers in blockers[]
 
 ## ─── Prompts : Verdict Synthesis ────────────────────────────────
@@ -590,12 +587,28 @@ schema test_result:
   logs: string
   failed_tests: string[]
 
+schema parity_scan_input:
+  rust_repo_path: string
+  go_repo_path: string
+
+schema parity_scan_result:
+  go_source_files: int
+  go_test_files: int
+  go_source_lines: int
+  go_test_lines: int
+  go_packages: string
+  rust_source_files: int
+  rust_source_lines: int
+  rust_crates: string
+  line_ratio_percent: string
+
 schema review_input:
   implementation: json
   feature_manifest: json
   rust_repo_path: string
   go_repo_path: string
   test_results: json
+  parity_scan: json
 
 schema review_output:
   summary: string
@@ -604,14 +617,13 @@ schema review_output:
   feature_verdicts: string[]
   approved: bool
   fix_plan: string
-  cumulative_ported_features: string[]
-  cumulative_parity_percentage: string
 
 schema verdict_input:
   implementation: json
   review: json
   test_results: json
   feature_manifest: json
+  parity_scan: json
   previous_verdict: json
   acceptance_threshold: string
 
@@ -765,6 +777,13 @@ tool commit_changes:
 tool run_go_tests:
   command: "export PATH=/workspaces/iterion/.devbox/nix/profile/default/bin:$PATH && cd {{input.go_repo_path}} && go build ./... && go vet ./..."
   output: test_result
+
+## ─── Nodes : Phase 3b — Deterministic Parity Scan ─────────────
+
+tool parity_scan:
+  command: "export PATH=/workspaces/iterion/.devbox/nix/profile/default/bin:$PATH && GO_SRC=$(find {{input.go_repo_path}} -name '*.go' -not -path '*/vendor/*' -not -name '*_test.go' | wc -l) && GO_TEST=$(find {{input.go_repo_path}} -name '*_test.go' -not -path '*/vendor/*' | wc -l) && GO_LINES=$(find {{input.go_repo_path}} -name '*.go' -not -path '*/vendor/*' -not -name '*_test.go' -exec cat {} + | wc -l) && GO_TLINES=$(find {{input.go_repo_path}} -name '*_test.go' -not -path '*/vendor/*' -exec cat {} + 2>/dev/null | wc -l) && GO_PKGS=$(find {{input.go_repo_path}} -name '*.go' -not -path '*/vendor/*' -exec dirname {} \\; | sort -u | tr '\\n' ', ') && RS_SRC=$(find {{input.rust_repo_path}}/crates -name '*.rs' 2>/dev/null | wc -l) && RS_LINES=$(find {{input.rust_repo_path}}/crates -name '*.rs' -exec cat {} + 2>/dev/null | wc -l) && RS_CRATES=$(ls {{input.rust_repo_path}}/crates/ 2>/dev/null | tr '\\n' ', ') && RATIO=$((GO_LINES * 100 / (RS_LINES + 1))) && printf '{\"go_source_files\":%d,\"go_test_files\":%d,\"go_source_lines\":%d,\"go_test_lines\":%d,\"go_packages\":\"%s\",\"rust_source_files\":%d,\"rust_source_lines\":%d,\"rust_crates\":\"%s\",\"line_ratio_percent\":\"%d%%\"}' $GO_SRC $GO_TEST $GO_LINES $GO_TLINES \"$GO_PKGS\" $RS_SRC $RS_LINES \"$RS_CRATES\" $RATIO"
+  input: parity_scan_input
+  output: parity_scan_result
 
 ## ─── Nodes : Phase 4 — Review (fork from impl) ────────────────
 
@@ -934,25 +953,34 @@ workflow rust_to_go_port:
     go_repo_path: "{{vars.go_repo_path}}"
   }
 
+  ## ═══ Phase 3b : Deterministic Parity Scan ══════════════════════
+
+  run_go_tests -> parity_scan with {
+    rust_repo_path: "{{vars.rust_repo_path}}",
+    go_repo_path: "{{vars.go_repo_path}}"
+  }
+
   ## ═══ Phase 4 : Review (fork from impl) ════════════════════════
 
-  run_go_tests -> claude_review with {
+  parity_scan -> claude_review with {
     _session_id: "{{outputs.simplify._session_id}}",
     implementation: "{{artifacts.implementation}}",
     feature_manifest: "{{artifacts.feature_manifest}}",
     rust_repo_path: "{{vars.rust_repo_path}}",
     go_repo_path: "{{vars.go_repo_path}}",
-    test_results: "{{outputs.run_go_tests}}"
+    test_results: "{{outputs.run_go_tests}}",
+    parity_scan: "{{outputs.parity_scan}}"
   }
 
   ## ═══ Phase 5 : Dual Verdict (Claude + Codex judge) ════════════
 
-  ## Fan out to both judges with the same input + previous verdict for stagnation
+  ## Fan out to both judges with the same input + parity scan + previous verdict
   claude_review -> verdict_fanout with {
     implementation: "{{artifacts.implementation}}",
     review: "{{outputs.claude_review}}",
     test_results: "{{outputs.run_go_tests}}",
     feature_manifest: "{{artifacts.feature_manifest}}",
+    parity_scan: "{{outputs.parity_scan}}",
     previous_verdict: "{{artifacts.parity_verdict_report}}",
     acceptance_threshold: "{{vars.acceptance_threshold}}"
   }
@@ -962,6 +990,7 @@ workflow rust_to_go_port:
     review: "{{input.review}}",
     test_results: "{{input.test_results}}",
     feature_manifest: "{{input.feature_manifest}}",
+    parity_scan: "{{input.parity_scan}}",
     previous_verdict: "{{input.previous_verdict}}",
     acceptance_threshold: "{{input.acceptance_threshold}}"
   }
@@ -971,6 +1000,7 @@ workflow rust_to_go_port:
     review: "{{input.review}}",
     test_results: "{{input.test_results}}",
     feature_manifest: "{{input.feature_manifest}}",
+    parity_scan: "{{input.parity_scan}}",
     previous_verdict: "{{input.previous_verdict}}",
     acceptance_threshold: "{{input.acceptance_threshold}}"
   }
@@ -993,7 +1023,7 @@ workflow rust_to_go_port:
   review_verdict -> done when overall_parity
 
   ## Current batch done, plan next batch
-  review_verdict -> plan_fanout when batch_complete as outer_loop(20) with {
+  review_verdict -> plan_fanout when batch_complete as outer_loop(50) with {
     feature_manifest: "{{artifacts.feature_manifest}}",
     previous_progress: "{{outputs.review_verdict}}",
     previous_feedback: "{{outputs.review_verdict}}"
@@ -1009,7 +1039,7 @@ workflow rust_to_go_port:
   }
 
   ## Fallback: fix_loop exhausted but batch not complete -> re-plan anyway
-  review_verdict -> plan_fanout when not overall_parity as outer_loop(20) with {
+  review_verdict -> plan_fanout when not overall_parity as outer_loop(50) with {
     feature_manifest: "{{artifacts.feature_manifest}}",
     previous_progress: "{{outputs.review_verdict}}",
     previous_feedback: "{{outputs.review_verdict}}"

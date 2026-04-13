@@ -9,20 +9,22 @@ The workflow is generic. Replace the repo paths and language-specific prompts an
 ## Architecture
 
 ```
-Analysis → Planning → [Human Gate] → Implementation → Commit → Test
-                ↑                                                ↓
-                |                                        Review (cumulative scan)
-                |                                                ↓
-                |                                         Dual Verdict
-                |                                          ↙       ↘
-                +——— outer_loop (next batch) ←—— batch_complete    not batch_complete
-                                                                      ↓
-                                                                   Fix Loop ←→ Review
-                                                                      ↓ (exhausted)
-                                                               fallback → done
+Analysis → Planning → [Human Gate] → Implementation → Simplify → Commit → Test
+                ↑                                                          ↓
+                |                                                    Parity Scan
+                |                                                          ↓
+                |                                                       Review
+                |                                                          ↓
+                |                                                    Dual Verdict
+                |                                                     ↙       ↘
+                +——— outer_loop (next batch) ←—— batch_complete     not batch_complete
+                                                                          ↓
+                                                                       Fix Loop ←→ Review
+                                                                          ↓ (exhausted)
+                                                                   fallback → done
 ```
 
-19 nodes, 25 edges, 6 visual groups. Two nested loops: an inner fix loop for correcting bugs in the current batch, and an outer loop for progressing through successive feature batches. A terminal fallback ensures the workflow always exits cleanly.
+21 nodes, 27 edges, 6 visual groups. Two nested loops: an inner fix loop for correcting bugs in the current batch, and an outer loop (max 50) for progressing through successive feature batches. A terminal fallback ensures the workflow always exits cleanly.
 
 ## Core principles
 
@@ -32,13 +34,13 @@ A large porting project has hundreds of features. Trying to port everything in o
 
 The key insight: **the verdict must evaluate the current batch, not overall parity**. Early versions evaluated global parity (always false when 60% of features hadn't been attempted yet), causing infinite fix loops on issues that couldn't be fixed without new planning.
 
-### Cumulative parity tracking
+### Deterministic parity tracking
 
-The initial feature manifest is a point-in-time snapshot. After several batches, it becomes stale — it doesn't reflect the code actually ported. Rather than adding a re-analysis node (which would cost ~8 min per batch), the reviewer performs a cumulative parity scan as part of its normal review.
+The initial feature manifest is a point-in-time snapshot. After several batches, it becomes stale — it doesn't reflect the code actually ported. Early versions asked the reviewer to perform a cumulative parity scan alongside its review, but this proved unreliable: the reported parity fluctuated wildly (93% → 87% → 68%) because the scan was subjective and the reviewer was already overloaded with three other roles.
 
-The reviewer already reads both codebases via tools. Asking it to also report `cumulative_ported_features[]` and `cumulative_parity_percentage` adds ~1-2 min to the review but gives the verdict a live view of actual progress. The verdict uses this live scan instead of the stale manifest for its `overall_parity` decision.
+The solution: a **deterministic `parity_scan` tool node** that runs a shell script counting Go source files, test files, lines, packages, and comparing with the Rust codebase. It produces a factual `line_ratio_percent` (Go lines / Rust lines) that the verdict uses for its `parity_percentage`. This is instant (<1s), perfectly reproducible, and monotonically increasing as code is added.
 
-This was the key to accurate progress reporting: without it, the verdict reported 38% parity for 17 consecutive iterations while the codebase had actually grown from 0 to 19,000 lines of Go across 145 files.
+The verdict uses this deterministic ratio instead of a subjective LLM estimate. The reviewer focuses exclusively on reviewing the current batch — no more cumulative scanning duty.
 
 ### Convergence over perfection
 
@@ -94,9 +96,15 @@ The original design had a 8-node pipeline for plan validation: merge two plans �
 
 This pattern generalizes: when a pipeline has merge → validate → judge steps on the same data, combine them into one node. The LLM handles all three roles in a single pass. Separate nodes add latency and edge complexity for no quality gain.
 
+### Simplify pass for continuous quality
+
+After each implementation, a `simplify` agent inherits the implementation session and performs code quality cleanup: dead code removal, deduplication, idiomatic Go patterns. This adds ~5 min per batch but prevents technical debt from accumulating across iterations.
+
+Without simplification, each batch adds code that passes review (zero blockers) but carries 3-7 suggestions. Over 10+ batches, these accumulate into significant maintainability issues. The simplify pass addresses them in-flight rather than as post-hoc cleanup.
+
 ### Commit via session fork
 
-The commit naming agent forks from the implementation session. It has full context of what was changed and can generate an accurate conventional commit message without needing explicit input fields (summary, files_changed, etc.). This is simpler and more accurate than passing structured summaries.
+The commit naming agent forks from the simplified session (not the raw implementation). It has full context of what was changed and cleaned up, and can generate an accurate conventional commit message without needing explicit input fields (summary, files_changed, etc.).
 
 ## Loop design
 
@@ -106,7 +114,7 @@ A single loop from verdict back to planning (the original design) re-plans from 
 
 The two-tier structure separates concerns:
 - **fix_loop(5)**: quick corrections — fix → commit → test → review → verdict
-- **outer_loop(20)**: batch progression — verdict → plan → implement → review
+- **outer_loop(50)**: batch progression — verdict → plan → implement → simplify → review
 
 The fix loop handles "the code is almost right, fix these specific bugs." The outer loop handles "this batch is done, plan the next set of features."
 
@@ -117,7 +125,7 @@ Edges from `review_verdict` are evaluated in declaration order. The first matchi
 1. `→ done when overall_parity` — all features ported (terminal)
 2. `→ plan_fanout when batch_complete` — batch done, plan next
 3. `→ fix when not batch_complete as fix_loop(5)` — bugs to fix
-4. `→ plan_fanout when not overall_parity as outer_loop(20)` — fallback re-plan
+4. `→ plan_fanout when not overall_parity as outer_loop(50)` — fallback re-plan
 5. `→ done` — terminal fallback (all loops exhausted)
 
 Edge 4 catches the case where fix_loop is exhausted but the batch still has issues. Edge 5 ensures the workflow always terminates cleanly when all loops are exhausted.
@@ -171,8 +179,8 @@ Group annotations collapse the 19 nodes into 6 high-level boxes in the Iterion v
 ```
 @group analysis: analyze, merge_analysis
 @group planning: plan_fanout, claude_plan, codex_consolidate, plan_judge_merge, plan_gate
-@group implementation: implement
-@group checkpoint: commit_namer, commit_changes, run_go_tests
+@group implementation: implement, simplify
+@group checkpoint: commit_namer, commit_changes, run_go_tests, parity_scan
 @group review: review_fanout, claude_review, codex_review_judge, review_verdict
 @group fix: fix
 ```
@@ -192,8 +200,10 @@ From a live run on an ~80-feature Rust codebase (73k lines) with ~40% initial Go
 | Judge+Merge | ~3 min | Single evaluation pass |
 | Human Gate | <1s or pause | LLM decides; pauses for complex batches |
 | Implementation | ~15-20 min | Heaviest phase; writes real code |
+| Simplify | ~5 min | Code quality cleanup, dead code removal |
 | Commit + Test | ~2 min | Fork for naming, build + vet |
-| Review (fork + cumulative scan) | ~10-12 min | Reads both codebases, reports cumulative parity |
+| Parity Scan | <1s | Deterministic Go/Rust line count comparison |
+| Review (fork) | ~8-10 min | Reads both codebases via tools |
 | Dual Verdict | ~5 min | Two judges in parallel |
 | Fix iteration | ~8-12 min | Full cycle: fix + commit + test + review + verdict |
 
@@ -210,4 +220,4 @@ From a live run on an ~80-feature Rust codebase (73k lines) with ~40% initial Go
 | New Go packages created | 11 (hooks, plugin, apikit, worker, lane, policy, recovery...) |
 | Commits in target repo | 20 |
 
-First batch without fix loops: ~50 min. Each fix iteration: ~10 min. Full batch with 5 fix iterations: ~100 min. Resume from failure saves the full upstream cost (analysis + planning = ~20 min minimum).
+First batch without fix loops: ~55 min. Each fix iteration: ~10 min. Full batch with 5 fix iterations: ~105 min. Resume from failure saves the full upstream cost (analysis + planning = ~20 min minimum).
