@@ -78,11 +78,15 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		}
 	}
 
-	// Capture stderr for observability.
+	// Stream stderr for live observability and capture for diagnostics.
 	var stderrBuf strings.Builder
 	opts = append(opts, claude.WithStderrCallback(func(line string) {
 		stderrBuf.WriteString(line)
 		stderrBuf.WriteString("\n")
+		// Log each line in real-time so the user can watch the agent work.
+		if line != "" {
+			log.Printf("delegate: [%s] %s", task.NodeID, line)
+		}
 	}))
 
 	startTime := time.Now()
@@ -200,6 +204,11 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		claude.WithOutputFormat(schema),
 		claude.WithPermissionMode("bypassPermissions"),
 		claude.WithVerbose(true),
+		claude.WithStderrCallback(func(line string) {
+			if line != "" {
+				log.Printf("delegate: [%s/fmt] %s", task.NodeID, line)
+			}
+		}),
 	}
 	if task.WorkDir != "" {
 		opts = append(opts, claude.WithCwd(task.WorkDir))
