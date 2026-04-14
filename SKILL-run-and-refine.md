@@ -166,6 +166,44 @@ This is the most important capability. Every failure is an opportunity to fix an
 {"proceed": true, "plan_summary": "Approved", "questions": []}
 ```
 
+### How to resume after a session break
+
+When you come back to a workflow that was interrupted (internet cut, session end, manual kill), follow this procedure:
+
+1. **Check the run status:**
+```python
+import json
+with open('.my-store/runs/<run_id>/run.json') as f:
+    d = json.load(f)
+print(d['status'], d.get('checkpoint', {}).get('node_id', ''))
+```
+
+2. **Resume based on status:**
+```bash
+# failed_resumable — just resume (re-executes the failing node)
+./iterion resume --run-id <id> --file workflow.iter --store-dir .my-store --force --log-level info
+
+# paused_waiting_human — needs answers
+./iterion resume --run-id <id> --file workflow.iter --store-dir .my-store --force \
+  --answers-file answers.json --log-level info
+
+# running — the process may still be alive. Check before resuming:
+# If no iterion process is running, the status is stale. Kill won't help.
+# Just resume with --force — the engine will detect the inconsistency.
+```
+
+3. **Always provide the tail -f command** so the user can watch:
+```
+tail -f /path/to/output/file
+```
+
+4. **Check for uncommitted code changes** before resuming — the workflow may have generated code in the target repo that wasn't committed:
+```bash
+cd <target_repo> && git status
+```
+
+**Important:** `--force` is always safe on resume. It just bypasses the workflow hash check. The checkpoint contains the full state — the workflow file changes only affect future node executions, not the checkpoint restoration.
+
 ## Common failure patterns and fixes
 
 ### 1. Model spec format mismatch
