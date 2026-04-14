@@ -4,16 +4,19 @@ description: >
   Use when asked to test, run, debug, or optimize an .iter workflow against
   real data. Covers the full cycle: launch a run, observe behavior, diagnose
   failures, fix the workflow or engine, resume, and iterate until the workflow
-  runs reliably and produces quality results.
+  runs reliably and produces quality results. Applies to any workflow type:
+  porting, implementation, review, analysis, or custom orchestration.
   Triggers on: "run this workflow", "test the .iter", "debug the run",
-  "optimize the pipeline", "why did the workflow fail", "improve parity",
+  "optimize the pipeline", "why did the workflow fail", "improve convergence",
   "the workflow is stuck in a loop".
 version: 0.1.0
 ---
 
 # Running and Refining Iterion Workflows
 
-This skill covers the practice of taking an .iter workflow from "validates OK" to "runs reliably and produces quality results at scale." It is based on hard-won experience running multi-hour, multi-batch workflows against real codebases.
+This skill covers the practice of taking any .iter workflow from "validates OK" to "runs reliably and produces quality results at scale." It applies to all workflow types — porting pipelines, implementation loops, review chains, analysis workflows, or any custom orchestration.
+
+The approach is experimental and iterative: launch, observe, diagnose, fix, resume. It is based on hard-won experience running multi-hour, multi-batch workflows against real codebases.
 
 ## The core loop
 
@@ -79,10 +82,22 @@ set -a && source .env && set +a
   --timeout 4h
 ```
 
-Run in the background to keep working while it runs:
+Run in the background to keep working while it runs. **Always provide the user with a `tail -f` command** so they can watch the logs in real-time:
+
 ```bash
-# Same command, but backgrounded — note the output file path for tail -f
+# Background execution — note the output file
+./iterion run examples/my_workflow.iter [...] 2>&1 &
+# The output goes to a temp file — give the user this command:
+tail -f /path/to/output/file
 ```
+
+When using Claude Code's background task system, the output file path is shown in the tool result. Always relay it:
+
+> You can follow the run live with:
+> ```
+> tail -f /tmp/.../tasks/<id>.output
+> ```
+> Ctrl+C to stop following.
 
 ## Monitoring a running workflow
 
@@ -224,29 +239,35 @@ verdict -> done                                # 5. terminal fallback
 
 **Consideration:** For critical paths, consider using Claude for both judges instead of Codex. Use Codex only for independent consolidation where a failure can be retried cheaply.
 
-## Parity tracking in porting workflows
+## Progress measurement
 
-Getting accurate progress measurement was one of the hardest problems.
+Getting accurate, consistent progress measurement across iterations was one of the hardest problems. This applies to any workflow with loops — not just porting.
 
 ### What doesn't work
 
-- **Static manifest:** The initial analysis produces a feature manifest. After 5 batches, it's stale — it shows 38% parity while the code has tripled in size.
-- **Reviewer cumulative scan:** Asking the reviewer to also scan the entire repo for cumulative parity produces wildly inconsistent results (93% → 87% → 68%) because the reviewer is already overloaded with review + verdict + fix planning.
-- **Line counting:** A shell script counting Go/Rust lines gives a number (44%) but it doesn't measure feature parity — it measures code volume.
+- **Static initial assessment:** The initial analysis produces a snapshot. After 5 iterations, it's stale — it shows 38% progress while the actual work has tripled. Verdicts based on stale data make wrong routing decisions.
+- **Overloading the reviewer:** Asking the reviewer to also assess overall progress produces wildly inconsistent results (93% → 87% → 68% on the same codebase) because it's already doing three jobs (review + verdict + fix plan).
+- **Proxy metrics:** Counting lines, files, or commits measures activity, not progress. A 1000-line change might port 10 features or fix one bug.
 
 ### What works
 
-A **dedicated parity scanner agent** that runs after tests and before review. Its only job is to read both codebases and produce an updated feature manifest. It:
-- Has tools to list and read files in both repos
-- Receives the previous manifest as context
-- Publishes an updated `feature_manifest` artifact (overwriting the stale one)
+A **dedicated progress assessment agent** that runs after the work is done but before the review judges it. Its only job is to measure where things stand. It:
+- Has tools to inspect the actual outputs/artifacts
+- Receives the previous assessment as context (to track deltas)
+- Publishes an updated progress artifact (overwriting the stale one)
 - Is not overloaded with other duties
 
-This adds ~5-8 min per batch but gives the verdict and planners an accurate view of progress.
+This adds a few minutes per iteration but gives the verdict and planners an accurate view of real progress. The key insight: **separate the "how good is this batch" question (reviewer) from the "where are we overall" question (progress scanner)**.
 
 ## Session continuity patterns
 
-Session management is the single biggest lever for quality.
+Session management is the single biggest lever for quality. The general principles:
+
+- **`inherit`** for agents that build on previous work (implementation across iterations, fix after review)
+- **`fork`** for agents that need to see context but not modify it (reviewers, commit namers, progress scanners)
+- **`fresh`** for independent evaluators (judges, planners) that should not be biased by prior context
+
+Example from a porting workflow:
 
 | Phase | Session mode | Why |
 |-------|-------------|-----|
@@ -258,16 +279,17 @@ Session management is the single biggest lever for quality.
 
 **Critical rule:** All session-continuous agents must use the same model and backend. Switching models breaks the KV cache.
 
-## Quality control: the simplify pass
+## Quality control between iterations
 
-Without it, each batch accumulates 3-7 suggestions (non-idiomatic patterns, dead code, duplication). Over 10+ batches, this becomes significant technical debt.
+In any workflow with implementation loops, quality degrades gradually. Each iteration adds code that passes review (zero blockers) but carries minor issues. Over 10+ iterations, these accumulate into significant problems.
 
-A `simplify` agent between implementation and commit:
-- Inherits the implementation session
-- Focuses on the files just changed
-- Removes dead code, deduplicates, applies idiomatic patterns
+The solution: a **cleanup pass between implementation and review**. A `simplify` agent that inherits the implementation session:
+- Focuses on what was just changed
+- Removes dead code, deduplicates, applies clean patterns
 - Does NOT add features or change behavior
-- Adds ~5 min per batch
+- Adds ~5 min per iteration but prevents debt accumulation
+
+The review then evaluates clean code, not raw output. This reduces the number of suggestions per verdict and helps the workflow converge faster.
 
 ## Human-in-the-loop: when to pause
 
