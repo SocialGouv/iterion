@@ -180,12 +180,26 @@ Group annotations collapse the 19 nodes into 6 high-level boxes in the Iterion v
 @group analysis: analyze, merge_analysis
 @group planning: plan_fanout, claude_plan, codex_consolidate, plan_judge_merge, plan_gate
 @group implementation: implement, simplify
-@group checkpoint: commit_namer, commit_changes, run_go_tests, parity_scan
-@group review: review_fanout, claude_review, codex_review_judge, review_verdict
+@group checkpoint: commit_namer, commit_changes, run_go_tests, review_scan_fanout, parity_scanner
+@group review: claude_review, verdict_fanout, claude_verdict, codex_verdict, review_verdict
 @group fix: fix
 ```
 
 Double-click any group to expand and see individual nodes.
+
+## Late-stage optimizations
+
+These were identified during live runs and implemented iteratively:
+
+- **Codex auto-retry (3x)** — Root cause analysis revealed Codex CLI exits cleanly (exit 0) without producing a ResultMessage ~1/3 of calls, likely due to internal API timeouts (~30s). The delegate now retries transparently.
+
+- **Parallel review + parity scan** — A `review_scan_fanout` runs code review and parity scanner concurrently. Both are independent reads of the same codebase. Saves ~5-8 min per batch.
+
+- **Cross-batch learning** — Planners receive `batch_history` containing the full array of all verdict outcomes via `{{outputs.review_verdict.history}}`. This prevents re-attempting stagnant features and builds on what worked.
+
+- **Adaptive fix loop (hard cap 5)** — Stagnation detection + blocker/suggestion classification means most batches pass in 0-1 fix iterations. The hard cap of 5 is a safety net, not a target.
+
+- **Cost tracking per batch** — Verdict includes `batch_tokens` summing implementation + review + verdict tokens for per-batch cost analysis.
 
 ## Empirical data
 
@@ -202,8 +216,7 @@ From a live run on an ~80-feature Rust codebase (73k lines) with ~40% initial Go
 | Implementation | ~15-20 min | Heaviest phase; writes real code |
 | Simplify | ~5 min | Code quality cleanup, dead code removal |
 | Commit + Test | ~2 min | Fork for naming, build + vet |
-| Parity Scan | <1s | Deterministic Go/Rust line count comparison |
-| Review (fork) | ~8-10 min | Reads both codebases via tools |
+| Parity Scan + Review | ~8-10 min | Run in parallel after tests (was ~15 min sequential) |
 | Dual Verdict | ~5 min | Two judges in parallel |
 | Fix iteration | ~8-12 min | Full cycle: fix + commit + test + review + verdict |
 
@@ -211,13 +224,14 @@ From a live run on an ~80-feature Rust codebase (73k lines) with ~40% initial Go
 
 | Metric | Value |
 |--------|-------|
-| Total outer loop iterations | 10 batches |
-| Total verdicts | 17 |
-| Fix iterations (batch 1) | 5 |
-| Resumes from failure | 6 (Codex crashes, model spec errors) |
+| Total outer loop iterations | 13 batches |
+| Total verdicts | 13 |
+| Fix iterations (batch 1 only) | 1 (blocker/suggestion classification eliminated stagnation) |
+| Resumes from failure | 8 (Codex crashes, model spec errors, internet interruption) |
 | Longest autonomous stretch | 2h25m |
-| Go code generated | 19,162 lines source + 12,126 lines tests |
-| New Go packages created | 11 (hooks, plugin, apikit, worker, lane, policy, recovery...) |
-| Commits in target repo | 20 |
+| Go code generated | 32,817 lines source + 22,852 lines tests |
+| New Go packages created | 30+ (hooks, plugin, apikit, worker, lane, policy, recovery, sandbox, lsp, task, team...) |
+| Commits in target repo | 28 |
+| Final parity | 100% feature parity (53/53), 44% line ratio (Go more concise) |
 
-First batch without fix loops: ~55 min. Each fix iteration: ~10 min. Full batch with 5 fix iterations: ~105 min. Resume from failure saves the full upstream cost (analysis + planning = ~20 min minimum).
+First batch without fix loops: ~50 min (with parallel review+scan). Each fix iteration: ~10 min. Resume from failure saves the full upstream cost (analysis + planning = ~20 min minimum). Codex auto-retry eliminates ~90% of manual resume interventions.

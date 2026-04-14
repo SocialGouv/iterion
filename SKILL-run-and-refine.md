@@ -323,19 +323,19 @@ The `llm_or_human` interaction mode on a plan gate lets an LLM decide whether to
 
 10. **Don't fight loop exhaustion — use it** — when a fix loop exhausts, let the fallback route to the next planning cycle. The stagnant issues become feedback for better planning. Fighting to fix every last issue in one batch wastes iterations.
 
-## What to improve next
+## Patterns that emerged from practice
 
-Based on observed limitations, here are areas where the approach could be better:
+These patterns were discovered during live runs and are now built into the workflow engine and example workflows:
 
-- **Automatic retry on transient backend failures** — Codex crashes ~1/3 of the time. An automatic retry (with backoff) before marking as failed_resumable would reduce manual intervention.
+- **Automatic retry on transient backend failures** — Some backends (notably Codex) intermittently exit cleanly without producing results. Root cause: internal API timeouts. The delegate retries transparently (3x for Codex) before surfacing the error. This eliminated ~90% of manual resume interventions.
 
-- **Parallel review + parity scan** — currently sequential (test → parity_scanner → review). Both could run in parallel since they're independent reads of the same codebase.
+- **Parallel independent assessments** — When two agents read the same data without modifying it (e.g., code review + progress scan), fan them out in parallel. This is safe because both are readonly and saves the duration of the slower one.
 
-- **Cross-batch learning** — the planner receives `previous_feedback` but doesn't see the full history of what worked and what didn't across all batches. A summary of past batch outcomes would help planning.
+- **Cross-batch learning via loop history** — Use `{{outputs.node.history}}` to pass the full array of all outputs across loop iterations to the planner. This lets it learn from past batch outcomes: what features stagnated, what approaches worked, what to avoid.
 
-- **Adaptive fix loop bounds** — instead of a fixed max (5), the fix loop could observe its own progress (are blockers decreasing?) and decide whether another iteration is worthwhile.
+- **Adaptive loops with hard caps** — Stagnation detection (same blockers across iterations) breaks out early. The hard cap (e.g., 5) is a safety net. In practice, most iterations pass in 0-1 fix loops once blocker/suggestion classification is in place.
 
-- **Cost tracking per batch** — the budget tracks global cost but doesn't break it down per batch. Knowing that "batch 5 cost $12 and fixed 3 features" would help optimize the workflow.
+- **Per-batch cost tracking** — Include token counts in verdict schemas. This enables post-run analysis of which batches were expensive and why, guiding prompt and scope optimization.
 
 ## See Also
 

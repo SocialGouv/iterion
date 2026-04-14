@@ -80,43 +80,59 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 
 	prompt := task.UserPrompt
 
-	startTime := time.Now()
-
+	const maxRetries = 3
 	var resultMsg *codexsdk.ResultMessage
 	var queryErr error
+	var totalDuration time.Duration
 
-	for msg, err := range codexsdk.Query(ctx, codexsdk.Text(prompt), opts...) {
-		if err != nil {
-			queryErr = err
-			break
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		startTime := time.Now()
+		resultMsg = nil
+		queryErr = nil
+
+		for msg, err := range codexsdk.Query(ctx, codexsdk.Text(prompt), opts...) {
+			if err != nil {
+				queryErr = err
+				break
+			}
+			if rm, ok := msg.(*codexsdk.ResultMessage); ok {
+				resultMsg = rm
+			}
 		}
-		if rm, ok := msg.(*codexsdk.ResultMessage); ok {
-			resultMsg = rm
+
+		totalDuration += time.Since(startTime)
+
+		if queryErr != nil {
+			return Result{
+				Duration:    totalDuration,
+				ExitCode:    -1,
+				Stderr:      stderrBuf.String(),
+				BackendName: BackendCodex,
+			}, fmt.Errorf("delegate: codex failed: %w", queryErr)
 		}
-	}
 
-	duration := time.Since(startTime)
+		if resultMsg != nil {
+			break // success
+		}
 
-	if queryErr != nil {
-		return Result{
-			Duration:    duration,
-			ExitCode:    -1,
-			Stderr:      stderrBuf.String(),
-			BackendName: BackendCodex,
-		}, fmt.Errorf("delegate: codex failed: %w", queryErr)
+		// Codex process exited without producing a ResultMessage.
+		// This is a known transient failure — retry.
+		if attempt < maxRetries {
+			b.Logger.Warn("[%s] codex returned no result (attempt %d/%d), retrying", task.NodeID, attempt, maxRetries)
+		}
 	}
 
 	if resultMsg == nil {
 		return Result{
-			Duration:    duration,
+			Duration:    totalDuration,
 			ExitCode:    -1,
 			Stderr:      stderrBuf.String(),
 			BackendName: BackendCodex,
-		}, fmt.Errorf("delegate: codex: no result message received")
+		}, fmt.Errorf("delegate: codex: no result message received after %d attempts", maxRetries)
 	}
 
 	result := Result{
-		Duration:    duration,
+		Duration:    totalDuration,
 		ExitCode:    0,
 		Stderr:      stderrBuf.String(),
 		BackendName: BackendCodex,
