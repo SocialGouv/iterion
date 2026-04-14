@@ -26,13 +26,44 @@ The refinement process is not linear. It follows a tight observe → diagnose �
    a. Read the error or inspect the verdict
    b. Diagnose the root cause (workflow design? prompt? engine bug? infra?)
    c. Fix the .iter file (or engine code if needed)
-   d. Resume from the last checkpoint with --force
+   d. Update the companion .md with what you learned and why you changed it
+   e. Resume from the last checkpoint with --force
 4. Repeat until the workflow runs end-to-end
 5. Observe multi-iteration behavior (loops, batch progression)
 6. Refine prompts and routing based on what the LLM actually does
+7. Update the companion .md with empirical timing and behavioral insights
 ```
 
 This is not a one-shot process. Expect 5-15 iterations before a complex workflow runs smoothly.
+
+## The companion document
+
+Every .iter workflow should have a **companion .md file with the same basename** (e.g., `rust_to_go_port.iter` → `rust_to_go_port.md`). This document is not optional boilerplate — it is a living record of the refinement process.
+
+### What it contains
+
+- **Architecture diagram** — the high-level flow in ASCII, with node counts and edge counts
+- **Design decisions and why** — each non-obvious choice (session modes, loop bounds, model allocation, blocker/suggestion split) with the reasoning and what failed before
+- **Empirical data** — timing per phase, number of batches, fix loop iterations, longest autonomous stretch, resume count
+- **Adaptation guide** — how to reuse the workflow for different inputs or contexts
+
+### When to update it
+
+Update the .md **during the refinement process, not after**. Each time you:
+- Change the workflow structure (add/remove nodes, change edges) → document why
+- Discover a failure pattern → add it to the design decisions
+- Observe a new timing or behavioral insight → update the empirical data
+- Find that a prompt change fixed a stagnation → record what changed and why
+
+The document serves two purposes:
+1. **For the next person (or agent)**: understand why the workflow is shaped this way, not just what it does
+2. **For yourself across sessions**: when you resume a multi-day refinement, the .md is your memory of what was tried and what worked
+
+### What it is NOT
+
+It is not a changelog, not a bug list, not a tutorial. It explains the **science behind the workflow** — the principles, trade-offs, and empirical evidence that justify each design choice. Keep it honest: if something doesn't work well, say so. If a number fluctuates, report the range, not the best case.
+
+See [examples/rust_to_go_port.md](examples/rust_to_go_port.md) for a real example produced during a live refinement session.
 
 ## Launching a run
 
