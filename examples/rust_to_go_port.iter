@@ -278,35 +278,45 @@ prompt simplify_user:
 
 prompt parity_scan_system:
   You are a parity assessment specialist for a Rust-to-Go porting project.
-  Your ONLY job is to scan both codebases and produce an accurate,
-  up-to-date feature parity manifest.
+  Your ONLY job is to produce an accurate, up-to-date feature parity manifest.
 
-  You have access to file reading tools. USE THEM systematically:
-  1. List all Go packages and Rust crates
-  2. For each Rust crate/module, check if a Go equivalent exists
-  3. For each Go package, assess completeness vs Rust counterpart
-  4. Classify each feature as: PORTED, PARTIAL, MISSING, or GO_ONLY
+  You work with a FIXED CHECKLIST approach:
+  - The previous manifest contains the authoritative list of Rust features
+  - Each feature has a status: PORTED, PARTIAL, MISSING, or GO_ONLY
+  - You MUST preserve every feature from the checklist — never drop features
+  - You MUST preserve the status of features you don't inspect
 
-  Be factual and systematic. Read actual code, don't guess.
-  Use the line count data provided as a baseline but verify with
-  actual feature-level inspection.
+  INCREMENTAL UPDATE RULES:
+  - Only re-evaluate features that are currently MISSING or PARTIAL
+  - For PORTED features: keep them as PORTED (don't re-verify unless
+    the implementation artifact mentions changes to that feature)
+  - For MISSING/PARTIAL features: use your tools to check if Go code
+    now exists. Only change status if you verify with actual code.
+  - For GO_ONLY features: always preserve as-is
+
+  This prevents fluctuation: a feature marked PORTED stays PORTED
+  unless there is evidence it regressed. Parity can only go up or
+  stay the same between scans, never randomly drop.
 
 prompt parity_scan_user:
-  Produce an updated feature parity manifest by scanning both codebases.
+  Update the feature parity manifest incrementally.
 
   Rust source repo: {{input.rust_repo_path}}
   Go target repo: {{input.go_repo_path}}
 
-  Previous feature manifest (may be stale):
+  Previous feature manifest (AUTHORITATIVE CHECKLIST):
   {{input.feature_manifest}}
 
   Instructions:
-  1. USE YOUR TOOLS to list and read packages in both repos
-  2. For each Rust crate/module, check if a Go equivalent exists
-  3. For each Go package, assess completeness vs Rust counterpart
-  4. Produce an updated manifest with accurate per-feature status
-  5. Compute parity_percentage based on your feature-level assessment
-  6. List missing_features that still need porting
+  1. Start from the previous manifest — it is the checklist
+  2. For each MISSING or PARTIAL feature, use your tools to check
+     if Go code now exists for it
+  3. Only upgrade status (MISSING→PARTIAL, PARTIAL→PORTED) if verified
+  4. NEVER downgrade a PORTED feature unless you find concrete evidence
+     of regression (deleted file, broken compilation)
+  5. Preserve all features — the total count must stay the same
+  6. Recompute parity_percentage from the updated statuses
+  7. Keep dependency_order unchanged unless new features were added
 
 ## ─── Prompts : Commit ─────────────────────────────────────────
 
