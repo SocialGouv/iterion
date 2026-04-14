@@ -1,4 +1,4 @@
-package claude
+package claudesdk
 
 // MCPServerConfig is a sealed interface for MCP server configurations.
 // Concrete types: [MCPStdioServer], [MCPSSEServer], [MCPHTTPServer].

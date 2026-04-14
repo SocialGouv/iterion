@@ -1,7 +1,7 @@
 # github.com/dustin/go-humanize v1.0.1
 ## explicit; go 1.16
 github.com/dustin/go-humanize
-# github.com/ethpandaops/codex-agent-sdk-go v0.0.0-00010101000000-000000000000 => /workspaces/repos/codex-agent-sdk-go
+# github.com/ethpandaops/codex-agent-sdk-go v0.0.0-00010101000000-000000000000
 ## explicit; go 1.26.0
 github.com/ethpandaops/codex-agent-sdk-go
 github.com/ethpandaops/codex-agent-sdk-go/internal/cli
@@ -56,11 +56,6 @@ github.com/modelcontextprotocol/go-sdk/oauthex
 # github.com/ncruces/go-strftime v1.0.0
 ## explicit; go 1.17
 github.com/ncruces/go-strftime
-# github.com/partio-io/claude-agent-sdk-go v0.0.0-00010101000000-000000000000 => /workspaces/repos/claude-agent-sdk-go
-## explicit; go 1.26
-github.com/partio-io/claude-agent-sdk-go
-github.com/partio-io/claude-agent-sdk-go/internal/process
-github.com/partio-io/claude-agent-sdk-go/internal/protocol
 # github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec
 ## explicit; go 1.12
 github.com/remyoudompheng/bigfft
@@ -149,5 +144,3 @@ modernc.org/memory
 # modernc.org/sqlite v1.48.0
 ## explicit; go 1.25.0
 modernc.org/sqlite/lib
-# github.com/ethpandaops/codex-agent-sdk-go => /workspaces/repos/codex-agent-sdk-go
-# github.com/partio-io/claude-agent-sdk-go => /workspaces/repos/claude-agent-sdk-go

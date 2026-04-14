@@ -1,4 +1,6 @@
-package claude
+package claudesdk
+
+import "encoding/json"
 
 // Option configures a Session or Prompt call.
 type Option func(*config)
@@ -6,6 +8,11 @@ type Option func(*config)
 // CanUseToolFunc is called when the CLI requests permission to use a tool.
 // Return "allow", "deny", or "ask".
 type CanUseToolFunc func(toolName string, input map[string]any) (string, error)
+
+// MessageCallbackFunc is called for every NDJSON line received from the CLI,
+// before the SDK processes it. msgType is the "type" field from the JSON line,
+// and data is the full raw JSON of that line.
+type MessageCallbackFunc func(msgType string, data json.RawMessage)
 
 // ThinkingConfig configures extended thinking behavior.
 type ThinkingConfig struct {
@@ -65,11 +72,12 @@ type config struct {
 	noSessionPersistence bool
 
 	// Advanced
-	outputFormat   map[string]any
-	thinking       *ThinkingConfig
-	settingSources []SettingSource
-	stderrCallback func(string)
-	addDirs        []string
+	outputFormat    map[string]any
+	thinking        *ThinkingConfig
+	settingSources  []SettingSource
+	stderrCallback  func(string)
+	messageCallback MessageCallbackFunc
+	addDirs         []string
 }
 
 // WithModel sets the Claude model (e.g. "claude-sonnet-4-6", "claude-opus-4-6").
@@ -225,6 +233,13 @@ func WithSettingSources(sources ...SettingSource) Option {
 // WithStderrCallback sets a function to receive stderr output from the CLI.
 func WithStderrCallback(fn func(string)) Option {
 	return func(c *config) { c.stderrCallback = fn }
+}
+
+// WithMessageCallback sets a function that is called for every NDJSON line
+// received from the CLI subprocess, before the SDK processes it. This enables
+// callers to observe raw protocol messages for logging or diagnostics.
+func WithMessageCallback(fn MessageCallbackFunc) Option {
+	return func(c *config) { c.messageCallback = fn }
 }
 
 // WithAddDirs adds additional working directories.

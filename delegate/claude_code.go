@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	claude "github.com/partio-io/claude-agent-sdk-go"
+	"github.com/SocialGouv/iterion/delegate/claudesdk"
 
 	iterlog "github.com/SocialGouv/iterion/log"
 )
@@ -29,7 +29,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		}
 	}
 
-	var opts []claude.Option
+	var opts []claudesdk.Option
 
 	// Build system prompt, optionally augmented with interaction instructions.
 	systemPrompt := task.SystemPrompt
@@ -37,35 +37,35 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		systemPrompt += interactionSystemInstruction
 	}
 	if systemPrompt != "" {
-		opts = append(opts, claude.WithSystemPrompt(systemPrompt))
+		opts = append(opts, claudesdk.WithSystemPrompt(systemPrompt))
 	}
 	if task.WorkDir != "" {
-		opts = append(opts, claude.WithCwd(task.WorkDir))
+		opts = append(opts, claudesdk.WithCwd(task.WorkDir))
 	}
 	if len(task.AllowedTools) > 0 {
-		opts = append(opts, claude.WithAllowedTools(task.AllowedTools...))
+		opts = append(opts, claudesdk.WithAllowedTools(task.AllowedTools...))
 	}
 	// Bypass interactive permission prompts: the runtime enforces safety via
 	// workspace isolation and allowed-tool lists, so the delegate subprocess
 	// does not need its own permission gate.
-	opts = append(opts, claude.WithPermissionMode("bypassPermissions"))
+	opts = append(opts, claudesdk.WithPermissionMode("bypassPermissions"))
 
 	// The CLI requires --verbose when using --output-format=stream-json in
 	// --print mode. The SDK always uses stream-json, so we must enable verbose.
-	opts = append(opts, claude.WithVerbose(true))
+	opts = append(opts, claudesdk.WithVerbose(true))
 
 	if b.Command != "" {
-		opts = append(opts, claude.WithCLIPath(b.Command))
+		opts = append(opts, claudesdk.WithCLIPath(b.Command))
 	}
 
 	if task.ReasoningEffort != "" {
-		opts = append(opts, claude.WithEnv("CLAUDE_CODE_EFFORT_LEVEL", task.ReasoningEffort))
+		opts = append(opts, claudesdk.WithEnv("CLAUDE_CODE_EFFORT_LEVEL", task.ReasoningEffort))
 	}
 
 	if task.SessionID != "" {
-		opts = append(opts, claude.WithResume(task.SessionID))
+		opts = append(opts, claudesdk.WithResume(task.SessionID))
 		if task.ForkSession {
-			opts = append(opts, claude.WithForkSession(true))
+			opts = append(opts, claudesdk.WithForkSession(true))
 		}
 	}
 
@@ -77,18 +77,44 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 	if len(task.OutputSchema) > 0 && !needsTwoPass {
 		var schema map[string]any
 		if json.Unmarshal(task.OutputSchema, &schema) == nil {
-			opts = append(opts, claude.WithOutputFormat(schema))
+			opts = append(opts, claudesdk.WithOutputFormat(schema))
 		}
 	}
 
-	// Stream stderr for live observability and capture for diagnostics.
+	// Capture stderr for diagnostics.
 	var stderrBuf strings.Builder
-	opts = append(opts, claude.WithStderrCallback(func(line string) {
+	opts = append(opts, claudesdk.WithStderrCallback(func(line string) {
 		stderrBuf.WriteString(line)
 		stderrBuf.WriteString("\n")
-		// Log each line in real-time so the user can watch the agent work.
-		if line != "" {
-			b.Logger.Info("[%s] %s", task.NodeID, line)
+	}))
+
+	// Stream agent activity in real-time via NDJSON message callback.
+	opts = append(opts, claudesdk.WithMessageCallback(func(msgType string, data json.RawMessage) {
+		switch msgType {
+		case "assistant":
+			var msg struct {
+				Message struct {
+					Content []struct {
+						Type string `json:"type"`
+						Text string `json:"text"`
+						Name string `json:"name"`
+					} `json:"content"`
+				} `json:"message"`
+			}
+			if json.Unmarshal(data, &msg) == nil {
+				for _, block := range msg.Message.Content {
+					switch block.Type {
+					case "tool_use":
+						b.Logger.Info("[%s] tool: %s", task.NodeID, block.Name)
+					case "text":
+						if len(block.Text) > 200 {
+							b.Logger.Info("[%s] %s...", task.NodeID, block.Text[:200])
+						} else if block.Text != "" {
+							b.Logger.Info("[%s] %s", task.NodeID, block.Text)
+						}
+					}
+				}
+			}
 		}
 	}))
 
@@ -117,7 +143,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		result.Tokens = rm.Usage.InputTokens + rm.Usage.OutputTokens
 	}
 
-	if rm.IsError && rm.Subtype != claude.ResultSuccess {
+	if rm.IsError && rm.Subtype != claudesdk.ResultSuccess {
 		return result, fmt.Errorf("delegate: claude-code error: subtype=%s", rm.Subtype)
 	}
 
@@ -191,7 +217,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 // Pass 1 session with WithOutputFormat (no tools) to guarantee structured JSON
 // output conforming to the schema. The model already has full context from the
 // session, so only a short formatting instruction is needed.
-func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, sessionID string) (*claude.ResultMessage, error) {
+func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, sessionID string) (*claudesdk.ResultMessage, error) {
 	// Use the parent context directly — the runtime already enforces budget
 	// timeouts. Adding a short artificial timeout here risks cancelling the
 	// formatting pass while the CLI is still loading the resumed session.
@@ -202,22 +228,22 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		return nil, fmt.Errorf("invalid output schema: %w", err)
 	}
 
-	opts := []claude.Option{
-		claude.WithResume(sessionID),
-		claude.WithOutputFormat(schema),
-		claude.WithPermissionMode("bypassPermissions"),
-		claude.WithVerbose(true),
-		claude.WithStderrCallback(func(line string) {
+	opts := []claudesdk.Option{
+		claudesdk.WithResume(sessionID),
+		claudesdk.WithOutputFormat(schema),
+		claudesdk.WithPermissionMode("bypassPermissions"),
+		claudesdk.WithVerbose(true),
+		claudesdk.WithStderrCallback(func(line string) {
 			if line != "" {
 				b.Logger.Info("[%s/fmt] %s", task.NodeID, line)
 			}
 		}),
 	}
 	if task.WorkDir != "" {
-		opts = append(opts, claude.WithCwd(task.WorkDir))
+		opts = append(opts, claudesdk.WithCwd(task.WorkDir))
 	}
 	if b.Command != "" {
-		opts = append(opts, claude.WithCLIPath(b.Command))
+		opts = append(opts, claudesdk.WithCLIPath(b.Command))
 	}
 
 	prompt := "Format your complete findings as JSON matching the required output schema."
@@ -225,19 +251,19 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	return promptWithTimeout(fmtCtx, prompt, opts...)
 }
 
-// promptWithTimeout wraps claude.Prompt in a goroutine with context-aware
+// promptWithTimeout wraps claudesdk.Prompt in a goroutine with context-aware
 // cancellation. The Claude Agent SDK's Prompt() function does not check
 // ctx.Done() in its internal ReadLine() loop, so it can block indefinitely
 // even after context cancellation. This wrapper ensures the call returns
 // promptly when the context is cancelled or times out.
-func promptWithTimeout(ctx context.Context, prompt string, opts ...claude.Option) (*claude.ResultMessage, error) {
+func promptWithTimeout(ctx context.Context, prompt string, opts ...claudesdk.Option) (*claudesdk.ResultMessage, error) {
 	type result struct {
-		rm  *claude.ResultMessage
+		rm  *claudesdk.ResultMessage
 		err error
 	}
 	ch := make(chan result, 1)
 	go func() {
-		rm, err := claude.Prompt(ctx, prompt, opts...)
+		rm, err := claudesdk.Prompt(ctx, prompt, opts...)
 		ch <- result{rm, err}
 	}()
 

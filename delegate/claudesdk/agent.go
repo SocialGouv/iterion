@@ -1,4 +1,4 @@
-package claude
+package claudesdk
 
 // AgentDefinition defines a subagent configuration.
 type AgentDefinition struct {

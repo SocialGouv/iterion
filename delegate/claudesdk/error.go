@@ -1,8 +1,9 @@
-package claude
+package claudesdk
 
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Sentinel errors for use with [errors.Is].
@@ -63,4 +64,13 @@ type VersionError struct {
 
 func (e *VersionError) Error() string {
 	return fmt.Sprintf("claude: version mismatch: got %s, want %s", e.Got, e.Want)
+}
+
+// cliNotFoundError contains the paths that were searched.
+type cliNotFoundError struct {
+	searched []string
+}
+
+func (e *cliNotFoundError) Error() string {
+	return "claude: CLI not found (searched: " + strings.Join(e.searched, ", ") + ")"
 }

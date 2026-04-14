@@ -1,12 +1,9 @@
-package claude
+package claudesdk
 
 import (
 	"context"
 	"encoding/json"
 	"io"
-
-	"github.com/partio-io/claude-agent-sdk-go/internal/process"
-	"github.com/partio-io/claude-agent-sdk-go/internal/protocol"
 )
 
 // Prompt sends a one-shot prompt to the Claude CLI and returns the result.
@@ -18,24 +15,24 @@ func Prompt(ctx context.Context, prompt string, opts ...Option) (*ResultMessage,
 
 	cfg := applyOptions(opts)
 
-	cliPath, err := process.FindCLI(cfg.cliPath)
+	cliPath, err := findCLI(cfg.cliPath)
 	if err != nil {
 		return nil, ErrCLINotFound
 	}
 
 	procCfg := configToProcess(cfg)
-	args := process.BuildArgs(procCfg, false)
+	args := buildArgs(procCfg, false)
 
 	// For one-shot mode, append the prompt as the last argument.
 	args = append(args, prompt)
 
-	spawnOpts := process.SpawnOptions{
+	spOpts := spawnOptions{
 		Cwd:            cfg.cwd,
 		Env:            cfg.env,
 		StderrCallback: cfg.stderrCallback,
 	}
 
-	proc, err := process.Spawn(ctx, cliPath, args, spawnOpts)
+	proc, err := spawnProcess(ctx, cliPath, args, spOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -43,24 +40,29 @@ func Prompt(ctx context.Context, prompt string, opts ...Option) (*ResultMessage,
 	var result *ResultMessage
 
 	for {
-		line, err := proc.ReadLine()
+		line, err := proc.readLine()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			_ = proc.Close()
+			_ = proc.close()
 			return nil, err
 		}
 		if len(line) == 0 {
 			continue
 		}
 
-		rm, err := protocol.ParseLine(line)
+		rm, err := parseLine(line)
 		if err != nil {
 			continue // skip malformed lines
 		}
 
-		if protocol.IsControlRequest(rm) {
+		// Invoke message callback before processing, if configured.
+		if cfg.messageCallback != nil {
+			cfg.messageCallback(rm.Type, rm.Data)
+		}
+
+		if isControlRequest(rm) {
 			handleControlRequestOneShot(cfg, proc, rm.Data)
 			continue
 		}
@@ -68,18 +70,18 @@ func Prompt(ctx context.Context, prompt string, opts ...Option) (*ResultMessage,
 		if rm.Type == "result" {
 			var r ResultMessage
 			if err := json.Unmarshal(rm.Data, &r); err != nil {
-				_ = proc.Close()
+				_ = proc.close()
 				return nil, &ParseError{Raw: rm.Data, Err: err}
 			}
 			result = &r
 		}
 	}
 
-	// Wait for the process to finish so ExitCode() is valid.
-	_ = proc.Close()
+	// Wait for the process to finish so exitCode() is valid.
+	_ = proc.close()
 
 	if result == nil {
-		exitCode := proc.ExitCode()
+		exitCode := proc.exitCode()
 		if exitCode != 0 {
 			return nil, &ProcessError{ExitCode: exitCode}
 		}
@@ -90,32 +92,32 @@ func Prompt(ctx context.Context, prompt string, opts ...Option) (*ResultMessage,
 }
 
 // handleControlRequestOneShot handles control requests in one-shot mode.
-func handleControlRequestOneShot(cfg *config, proc *process.Process, data json.RawMessage) {
-	var req protocol.ControlRequest
+func handleControlRequestOneShot(cfg *config, proc *cliProcess, data json.RawMessage) {
+	var req controlRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return
 	}
 
-	subtype, err := protocol.ParseRequestSubtype(req.Request)
+	subtype, err := parseRequestSubtype(req.Request)
 	if err != nil {
 		return
 	}
 
-	ctrl := protocol.NewController(proc.WriteLine)
+	ctrl := newController(proc.writeLine)
 
 	switch subtype {
 	case "can_use_tool":
 		handleCanUseTool(cfg, ctrl, req)
 	default:
-		_ = ctrl.SendErrorResponse(req.RequestID, "unsupported request: "+subtype)
+		_ = ctrl.sendErrorResponse(req.RequestID, "unsupported request: "+subtype)
 	}
 }
 
 // handleCanUseTool processes a permission request from the CLI.
-func handleCanUseTool(cfg *config, ctrl *protocol.Controller, req protocol.ControlRequest) {
+func handleCanUseTool(cfg *config, ctrl *controller, req controlRequest) {
 	if cfg.canUseTool == nil {
 		// Default: allow all
-		_ = ctrl.SendResponse(req.RequestID, "success", map[string]any{
+		_ = ctrl.sendResponse(req.RequestID, "success", map[string]any{
 			"behavior": "allow",
 		})
 		return
@@ -126,24 +128,24 @@ func handleCanUseTool(cfg *config, ctrl *protocol.Controller, req protocol.Contr
 		Input    map[string]any `json:"input"`
 	}
 	if err := json.Unmarshal(req.Request, &body); err != nil {
-		_ = ctrl.SendErrorResponse(req.RequestID, "parse error: "+err.Error())
+		_ = ctrl.sendErrorResponse(req.RequestID, "parse error: "+err.Error())
 		return
 	}
 
 	decision, err := cfg.canUseTool(body.ToolName, body.Input)
 	if err != nil {
-		_ = ctrl.SendErrorResponse(req.RequestID, err.Error())
+		_ = ctrl.sendErrorResponse(req.RequestID, err.Error())
 		return
 	}
 
-	_ = ctrl.SendResponse(req.RequestID, "success", map[string]any{
+	_ = ctrl.sendResponse(req.RequestID, "success", map[string]any{
 		"behavior": decision,
 	})
 }
 
-// configToProcess converts internal config to process.Config.
-func configToProcess(cfg *config) process.Config {
-	pc := process.Config{
+// configToProcess converts internal config to processConfig.
+func configToProcess(cfg *config) processConfig {
+	pc := processConfig{
 		Model:                  cfg.model,
 		SystemPrompt:           cfg.systemPrompt,
 		AppendSystemPrompt:     cfg.appendSystemPrompt,

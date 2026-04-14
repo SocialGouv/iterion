@@ -1,4 +1,4 @@
-package claude
+package claudesdk
 
 import "context"
 

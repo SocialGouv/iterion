@@ -1,4 +1,4 @@
-package claude
+package claudesdk
 
 import (
 	"context"
@@ -8,16 +8,13 @@ import (
 	"iter"
 	"os"
 	"sync"
-
-	"github.com/partio-io/claude-agent-sdk-go/internal/process"
-	"github.com/partio-io/claude-agent-sdk-go/internal/protocol"
 )
 
 // Session manages a multi-turn conversation with the Claude CLI.
 type Session struct {
 	cfg  *config
-	proc *process.Process
-	ctrl *protocol.Controller
+	proc *cliProcess
+	ctrl *controller
 
 	sessionID string
 	mu        sync.Mutex
@@ -80,7 +77,7 @@ func (s *Session) Send(ctx context.Context, prompt string) error {
 			"content": prompt,
 		},
 	}
-	return s.proc.WriteLine(msg)
+	return s.proc.writeLine(msg)
 }
 
 // Stream returns an iterator over messages from the CLI.
@@ -103,7 +100,7 @@ func (s *Session) Stream(ctx context.Context) iter.Seq2[Message, error] {
 			default:
 			}
 
-			line, err := s.proc.ReadLine()
+			line, err := s.proc.readLine()
 			if err == io.EOF {
 				return
 			}
@@ -115,22 +112,27 @@ func (s *Session) Stream(ctx context.Context) iter.Seq2[Message, error] {
 				continue
 			}
 
-			rm, err := protocol.ParseLine(line)
+			rm, err := parseLine(line)
 			if err != nil {
 				continue // skip malformed lines
 			}
 
+			// Invoke message callback before processing, if configured.
+			if s.cfg.messageCallback != nil {
+				s.cfg.messageCallback(rm.Type, rm.Data)
+			}
+
 			// Handle control protocol messages.
-			if protocol.IsControlRequest(rm) {
+			if isControlRequest(rm) {
 				s.handleControlRequest(rm.Data)
 				continue
 			}
-			if protocol.IsControlResponse(rm) {
+			if isControlResponse(rm) {
 				s.handleControlResponse(rm.Data)
 				continue
 			}
 
-			if !protocol.IsMessage(rm) {
+			if !isMessage(rm) {
 				continue
 			}
 
@@ -176,7 +178,7 @@ func (s *Session) Close() error {
 	}
 
 	if s.proc != nil {
-		return s.proc.Close()
+		return s.proc.close()
 	}
 	return nil
 }
@@ -190,13 +192,13 @@ func (s *Session) ensureStarted(ctx context.Context) error {
 		return nil
 	}
 
-	cliPath, err := process.FindCLI(s.cfg.cliPath)
+	cliPath, err := findCLI(s.cfg.cliPath)
 	if err != nil {
 		return ErrCLINotFound
 	}
 
 	procCfg := configToProcess(s.cfg)
-	args := process.BuildArgs(procCfg, true)
+	args := buildArgs(procCfg, true)
 
 	// Write MCP config to a temp file if needed.
 	mcpCleanup, err := s.setupMcpConfig(&args)
@@ -205,19 +207,19 @@ func (s *Session) ensureStarted(ctx context.Context) error {
 	}
 	s.mcpCleanup = mcpCleanup
 
-	spawnOpts := process.SpawnOptions{
+	spOpts := spawnOptions{
 		Cwd:            s.cfg.cwd,
 		Env:            s.cfg.env,
 		StderrCallback: s.cfg.stderrCallback,
 	}
 
-	proc, err := process.Spawn(ctx, cliPath, args, spawnOpts)
+	proc, err := spawnProcess(ctx, cliPath, args, spOpts)
 	if err != nil {
 		return err
 	}
 
 	s.proc = proc
-	s.ctrl = protocol.NewController(proc.WriteLine)
+	s.ctrl = newController(proc.writeLine)
 	s.started = true
 
 	// Send initialize request with hooks if configured.
@@ -241,7 +243,7 @@ func (s *Session) setupMcpConfig(args *[]string) (func(), error) {
 		servers[name] = mcpServerJSON(srv)
 	}
 
-	configJSON, err := process.BuildMCPConfigJSON(servers)
+	configJSON, err := buildMCPConfigJSON(servers)
 	if err != nil {
 		return nil, fmt.Errorf("claude: mcp config: %w", err)
 	}
@@ -290,18 +292,18 @@ func (s *Session) sendInitialize() error {
 		"hooks":   hooks,
 	}
 
-	_, err := s.ctrl.SendRequest("initialize", body)
+	_, err := s.ctrl.sendRequest("initialize", body)
 	return err
 }
 
 // handleControlRequest dispatches incoming control requests from the CLI.
 func (s *Session) handleControlRequest(data json.RawMessage) {
-	var req protocol.ControlRequest
+	var req controlRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return
 	}
 
-	subtype, err := protocol.ParseRequestSubtype(req.Request)
+	subtype, err := parseRequestSubtype(req.Request)
 	if err != nil {
 		return
 	}
@@ -312,41 +314,37 @@ func (s *Session) handleControlRequest(data json.RawMessage) {
 	case "hook_callback":
 		s.handleHookCallback(req)
 	default:
-		_ = s.ctrl.SendErrorResponse(req.RequestID, "unsupported: "+subtype)
+		_ = s.ctrl.sendErrorResponse(req.RequestID, "unsupported: "+subtype)
 	}
 }
 
 // handleControlResponse routes responses to pending requests.
 func (s *Session) handleControlResponse(data json.RawMessage) {
-	var resp protocol.ControlResponse
+	var resp controlResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return
 	}
-	s.ctrl.HandleResponse(resp.Response)
+	s.ctrl.handleResponse(resp.Response)
 }
 
 // handleHookCallback processes hook callbacks from the CLI.
-func (s *Session) handleHookCallback(req protocol.ControlRequest) {
+func (s *Session) handleHookCallback(req controlRequest) {
 	var body struct {
 		CallbackID string         `json:"callback_id"`
 		Input      map[string]any `json:"input"`
 		ToolUseID  *string        `json:"tool_use_id,omitempty"`
 	}
 	if err := json.Unmarshal(req.Request, &body); err != nil {
-		_ = s.ctrl.SendErrorResponse(req.RequestID, "parse error: "+err.Error())
+		_ = s.ctrl.sendErrorResponse(req.RequestID, "parse error: "+err.Error())
 		return
 	}
 
 	handler, ok := s.hookCallbacks[body.CallbackID]
 	if !ok {
-		_ = s.ctrl.SendErrorResponse(req.RequestID, "unknown callback: "+body.CallbackID)
+		_ = s.ctrl.sendErrorResponse(req.RequestID, "unknown callback: "+body.CallbackID)
 		return
 	}
 
-	// Convert map to HookCallbackInput via JSON round-trip.
-	// Marshal/Unmarshal errors are impossible here: body.Input is already
-	// a valid map[string]any from a prior json.Unmarshal, and HookCallbackInput
-	// contains only JSON-compatible fields.
 	inputJSON, _ := json.Marshal(body.Input)
 	var input HookCallbackInput
 	_ = json.Unmarshal(inputJSON, &input)
@@ -354,7 +352,7 @@ func (s *Session) handleHookCallback(req protocol.ControlRequest) {
 
 	output, err := handler(context.TODO(), input)
 	if err != nil {
-		_ = s.ctrl.SendErrorResponse(req.RequestID, err.Error())
+		_ = s.ctrl.sendErrorResponse(req.RequestID, err.Error())
 		return
 	}
 
@@ -384,5 +382,5 @@ func (s *Session) handleHookCallback(req protocol.ControlRequest) {
 		resp["continue"] = *output.Continue
 	}
 
-	_ = s.ctrl.SendResponse(req.RequestID, "success", resp)
+	_ = s.ctrl.sendResponse(req.RequestID, "success", resp)
 }
