@@ -60,11 +60,6 @@ func Prompt(ctx context.Context, prompt string, opts ...Option) (*ResultMessage,
 			continue // skip malformed lines
 		}
 
-		// Emit every message to the callback for real-time observability.
-		if cfg.messageCallback != nil {
-			cfg.messageCallback(rm.Type, rm.Data)
-		}
-
 		if protocol.IsControlRequest(rm) {
 			handleControlRequestOneShot(cfg, proc, rm.Data)
 			continue
