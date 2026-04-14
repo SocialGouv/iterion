@@ -21,7 +21,7 @@
 ## @group analysis: analyze, merge_analysis
 ## @group planning: plan_fanout, claude_plan, codex_consolidate, plan_judge_merge, plan_gate
 ## @group implementation: implement, simplify
-## @group checkpoint: commit_namer, commit_changes, run_go_tests, line_count, parity_scanner
+## @group checkpoint: commit_namer, commit_changes, run_go_tests, parity_scanner
 ## @group review: review_fanout, claude_review, codex_review_judge, review_verdict
 ## @group fix: fix
 
@@ -292,18 +292,16 @@ prompt parity_scan_user:
   Rust source repo: {{input.rust_repo_path}}
   Go target repo: {{input.go_repo_path}}
 
-  Line count baseline (from deterministic scan):
-  {{input.line_counts}}
-
   Previous feature manifest (may be stale):
   {{input.feature_manifest}}
 
   Instructions:
   1. USE YOUR TOOLS to list and read packages in both repos
-  2. For each Rust feature/module, check Go implementation status
-  3. Produce an updated manifest with accurate per-feature status
-  4. Compute parity_percentage based on your feature-level assessment
-  5. List missing_features that still need porting
+  2. For each Rust crate/module, check if a Go equivalent exists
+  3. For each Go package, assess completeness vs Rust counterpart
+  4. Produce an updated manifest with accurate per-feature status
+  5. Compute parity_percentage based on your feature-level assessment
+  6. List missing_features that still need porting
 
 ## ─── Prompts : Commit ─────────────────────────────────────────
 
@@ -623,25 +621,9 @@ schema test_result:
   logs: string
   failed_tests: string[]
 
-schema line_count_input:
-  rust_repo_path: string
-  go_repo_path: string
-
-schema line_count_result:
-  go_source_files: int
-  go_test_files: int
-  go_source_lines: int
-  go_test_lines: int
-  go_packages: string
-  rust_source_files: int
-  rust_source_lines: int
-  rust_crates: string
-  line_ratio_percent: string
-
 schema parity_scan_input:
   rust_repo_path: string
   go_repo_path: string
-  line_counts: json
   feature_manifest: json
 
 schema review_input:
@@ -821,11 +803,6 @@ tool run_go_tests:
   output: test_result
 
 ## ─── Nodes : Phase 3b — Parity Scan ───────────────────────────
-
-tool line_count:
-  command: "sh /workspaces/iterion/examples/parity_scan.sh {{input.go_repo_path}} {{input.rust_repo_path}}"
-  input: line_count_input
-  output: line_count_result
 
 agent parity_scanner:
   backend: "claude_code"
@@ -1007,17 +984,11 @@ workflow rust_to_go_port:
     go_repo_path: "{{vars.go_repo_path}}"
   }
 
-  ## ═══ Phase 3b : Parity Scan (line count + LLM assessment) ══════
+  ## ═══ Phase 3b : Parity Scan ════════════════════════════════════
 
-  run_go_tests -> line_count with {
-    rust_repo_path: "{{vars.rust_repo_path}}",
-    go_repo_path: "{{vars.go_repo_path}}"
-  }
-
-  line_count -> parity_scanner with {
+  run_go_tests -> parity_scanner with {
     rust_repo_path: "{{vars.rust_repo_path}}",
     go_repo_path: "{{vars.go_repo_path}}",
-    line_counts: "{{outputs.line_count}}",
     feature_manifest: "{{artifacts.feature_manifest}}"
   }
 
