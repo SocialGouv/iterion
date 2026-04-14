@@ -94,24 +94,47 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		case "assistant":
 			var msg struct {
 				Message struct {
-					Content []struct {
-						Type string `json:"type"`
-						Text string `json:"text"`
-						Name string `json:"name"`
-					} `json:"content"`
+					Content []json.RawMessage `json:"content"`
 				} `json:"message"`
 			}
-			if json.Unmarshal(data, &msg) == nil {
-				for _, block := range msg.Message.Content {
-					switch block.Type {
-					case "tool_use":
-						b.Logger.Info("[%s] tool: %s", task.NodeID, block.Name)
-					case "text":
-						if len(block.Text) > 200 {
-							b.Logger.Info("[%s] %s...", task.NodeID, block.Text[:200])
-						} else if block.Text != "" {
-							b.Logger.Info("[%s] %s", task.NodeID, block.Text)
+			if json.Unmarshal(data, &msg) != nil {
+				return
+			}
+			for _, raw := range msg.Message.Content {
+				var probe struct {
+					Type string `json:"type"`
+				}
+				if json.Unmarshal(raw, &probe) != nil {
+					continue
+				}
+				switch probe.Type {
+				case "tool_use":
+					var tu struct {
+						Name  string         `json:"name"`
+						Input map[string]any `json:"input"`
+					}
+					if json.Unmarshal(raw, &tu) == nil {
+						detail := toolUseDetail(tu.Name, tu.Input)
+						b.Logger.Info("[%s] 🔧 %s %s", task.NodeID, tu.Name, detail)
+					}
+				case "tool_result":
+					var tr struct {
+						Content any  `json:"content"`
+						IsError bool `json:"is_error"`
+					}
+					if json.Unmarshal(raw, &tr) == nil && tr.IsError {
+						b.Logger.Info("[%s] ❌ tool error: %v", task.NodeID, tr.Content)
+					}
+				case "text":
+					var tb struct {
+						Text string `json:"text"`
+					}
+					if json.Unmarshal(raw, &tb) == nil && tb.Text != "" {
+						text := tb.Text
+						if len(text) > 300 {
+							text = text[:300] + "..."
 						}
+						b.Logger.Info("[%s] 💬 %s", task.NodeID, text)
 					}
 				}
 			}
@@ -273,4 +296,30 @@ func promptWithTimeout(ctx context.Context, prompt string, opts ...claudesdk.Opt
 	case <-ctx.Done():
 		return nil, fmt.Errorf("claude prompt cancelled: %w", ctx.Err())
 	}
+}
+
+// toolUseDetail extracts a human-readable detail from tool input.
+func toolUseDetail(name string, input map[string]any) string {
+	// File-related tools: show the path
+	if p, ok := input["file_path"].(string); ok {
+		return p
+	}
+	if p, ok := input["path"].(string); ok {
+		return p
+	}
+	// Search/grep: show the pattern
+	if p, ok := input["pattern"].(string); ok {
+		if len(p) > 80 {
+			return p[:80] + "..."
+		}
+		return p
+	}
+	// Bash: show the command (truncated)
+	if c, ok := input["command"].(string); ok {
+		if len(c) > 100 {
+			return c[:100] + "..."
+		}
+		return c
+	}
+	return ""
 }
