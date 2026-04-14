@@ -3,6 +3,7 @@ package delegate
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -64,11 +65,14 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		}
 	}
 
-	// Capture stderr for observability.
+	// Stream stderr for live observability and capture for diagnostics.
 	var stderrBuf strings.Builder
 	opts = append(opts, codexsdk.WithStderr(func(line string) {
 		stderrBuf.WriteString(line)
 		stderrBuf.WriteString("\n")
+		if line != "" {
+			log.Printf("delegate: [%s] %s", task.NodeID, line)
+		}
 	}))
 
 	prompt := task.UserPrompt
