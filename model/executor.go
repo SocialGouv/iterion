@@ -624,6 +624,97 @@ func (e *GoaiExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, 
 	return output, nil
 }
 
+// ExecuteHumanLLMForInteraction handles delegate interaction requests by
+// creating a synthetic HumanNode from the original node's InteractionFields
+// and calling executeHumanLLM. The questions from the ErrNeedsInteraction
+// become the input, and the interaction schema is synthesized from the
+// question keys.
+//
+// Returns:
+//   - answers: LLM-generated answers for each question
+//   - needsHuman: true if the LLM decided to escalate (llm_or_human mode only)
+//   - err: any error from model execution
+func (e *GoaiExecutor) ExecuteHumanLLMForInteraction(
+	ctx context.Context,
+	nodeID string,
+	ni *ErrNeedsInteraction,
+	fields ir.InteractionFields,
+) (answers map[string]interface{}, needsHuman bool, err error) {
+	// Build synthetic schema from question keys.
+	schemaFields := make([]*ir.SchemaField, 0, len(ni.Questions))
+	for key := range ni.Questions {
+		sanitized := sanitizeSchemaKey(key)
+		schemaFields = append(schemaFields, &ir.SchemaField{
+			Name: sanitized,
+			Type: ir.FieldTypeString,
+		})
+	}
+	syntheticSchema := &ir.Schema{
+		Name:   nodeID + "_interaction",
+		Fields: schemaFields,
+	}
+
+	// Register the synthetic schema so executeHumanLLM can find it.
+	schemaName := syntheticSchema.Name
+	e.schemas[schemaName] = syntheticSchema
+
+	// Build synthetic HumanNode.
+	node := &ir.HumanNode{
+		BaseNode: ir.BaseNode{ID: nodeID + "_interaction"},
+		SchemaFields: ir.SchemaFields{
+			OutputSchema: schemaName,
+		},
+		InteractionFields: fields,
+		Model:             fields.InteractionModel,
+		SystemPrompt:      fields.InteractionPrompt,
+	}
+
+	// Build input from questions (question_key → question text).
+	input := make(map[string]interface{}, len(ni.Questions))
+	for k, v := range ni.Questions {
+		input[sanitizeSchemaKey(k)] = v
+	}
+
+	output, err := e.executeHumanLLM(ctx, node, input)
+	if err != nil {
+		return nil, false, fmt.Errorf("model: interaction LLM for node %q: %w", nodeID, err)
+	}
+
+	// Check if the LLM decided to escalate (llm_or_human mode).
+	if v, ok := output["needs_human_input"]; ok {
+		if b, ok := v.(bool); ok {
+			needsHuman = b
+		}
+		delete(output, "needs_human_input")
+	}
+
+	// Strip metadata keys.
+	delete(output, "_tokens")
+	delete(output, "_model")
+
+	return output, needsHuman, nil
+}
+
+// sanitizeSchemaKey replaces characters that are invalid in JSON Schema
+// property names with underscores. This ensures question keys containing
+// special characters (spaces, dots, etc.) produce valid schema fields.
+func sanitizeSchemaKey(key string) string {
+	var b strings.Builder
+	b.Grow(len(key))
+	for _, r := range key {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	result := b.String()
+	if result == "" {
+		return "input"
+	}
+	return result
+}
+
 // wrapSchemaWithHumanFlag creates a copy of the schema with an additional
 // needs_human_input boolean field for auto_or_pause mode.
 func wrapSchemaWithHumanFlag(schema *ir.Schema) *ir.Schema {

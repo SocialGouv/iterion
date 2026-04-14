@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/ir"
+	"github.com/SocialGouv/iterion/model"
 	"github.com/SocialGouv/iterion/store"
 )
 
@@ -1408,5 +1409,217 @@ func TestFormatOutputPreview(t *testing.T) {
 				t.Errorf("expected result to contain %q, got %q", tt.want, got)
 			}
 		})
+	}
+}
+
+// ===========================================================================
+// Phase 5: Interaction model tests
+// ===========================================================================
+
+// interactionWorkflow builds a workflow where an agent node has interaction mode
+// set, allowing it to request user interaction during delegate execution.
+func interactionWorkflow(interaction ir.InteractionMode) *ir.Workflow {
+	return &ir.Workflow{
+		Name:  "interaction_test",
+		Entry: "worker",
+		Nodes: map[string]ir.Node{
+			"worker": &ir.AgentNode{
+				BaseNode:          ir.BaseNode{ID: "worker"},
+				InteractionFields: ir.InteractionFields{Interaction: interaction},
+			},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail": &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "worker", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: InteractionHuman — ErrNeedsInteraction pauses the run
+// ---------------------------------------------------------------------------
+
+func TestInteractionHumanPauses(t *testing.T) {
+	wf := interactionWorkflow(ir.InteractionHuman)
+
+	exec := newStubExecutor()
+	exec.on("worker", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return nil, &model.ErrNeedsInteraction{
+			NodeID:    "worker",
+			Questions: map[string]interface{}{"approval": "Do you approve this change?"},
+			SessionID: "session-abc",
+			Backend:   "claude_code",
+		}
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "run-interact-human", nil)
+	if !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("expected ErrRunPaused, got: %v", err)
+	}
+
+	// Verify run status is paused.
+	r, err := s.LoadRun("run-interact-human")
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if r.Status != store.RunStatusPausedWaitingHuman {
+		t.Errorf("expected status paused_waiting_human, got %s", r.Status)
+	}
+
+	// Verify interaction was created with the delegate's questions.
+	if r.Checkpoint == nil {
+		t.Fatal("expected checkpoint")
+	}
+	interaction, err := s.LoadInteraction("run-interact-human", r.Checkpoint.InteractionID)
+	if err != nil {
+		t.Fatalf("load interaction: %v", err)
+	}
+	if interaction.Questions["approval"] != "Do you approve this change?" {
+		t.Errorf("questions[approval] = %v, want 'Do you approve this change?'", interaction.Questions["approval"])
+	}
+
+	// Verify human_input_requested event has delegate source info.
+	events, err := s.LoadEvents("run-interact-human")
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	var foundHumanInput bool
+	for _, evt := range events {
+		if evt.Type == store.EventHumanInputRequested {
+			foundHumanInput = true
+			if evt.Data["source"] != "delegate" {
+				t.Errorf("event source = %v, want 'delegate'", evt.Data["source"])
+			}
+			if evt.Data["backend"] != "claude_code" {
+				t.Errorf("event backend = %v, want 'claude_code'", evt.Data["backend"])
+			}
+		}
+	}
+	if !foundHumanInput {
+		t.Error("expected human_input_requested event")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: InteractionLLM — falls back to pause with stub executor
+// (real LLM path requires GoaiExecutor which is integration-level)
+// ---------------------------------------------------------------------------
+
+func TestInteractionLLMAutoRespond(t *testing.T) {
+	wf := interactionWorkflow(ir.InteractionLLM)
+
+	exec := newStubExecutor()
+	exec.on("worker", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return nil, &model.ErrNeedsInteraction{
+			NodeID:    "worker",
+			Questions: map[string]interface{}{"input": "What branch should I work on?"},
+			SessionID: "session-def",
+			Backend:   "claude_code",
+		}
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "run-interact-llm", nil)
+	// With a stub executor (not GoaiExecutor), InteractionLLM falls back
+	// to pause — this verifies the fallback path is wired correctly.
+	if !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("expected ErrRunPaused (fallback), got: %v", err)
+	}
+
+	r, err := s.LoadRun("run-interact-llm")
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if r.Status != store.RunStatusPausedWaitingHuman {
+		t.Errorf("expected paused_waiting_human, got %s", r.Status)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: InteractionLLMOrHuman — falls back to pause with stub executor
+// ---------------------------------------------------------------------------
+
+func TestInteractionLLMOrHumanEscalation(t *testing.T) {
+	wf := interactionWorkflow(ir.InteractionLLMOrHuman)
+
+	exec := newStubExecutor()
+	exec.on("worker", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return nil, &model.ErrNeedsInteraction{
+			NodeID:    "worker",
+			Questions: map[string]interface{}{"decision": "Should we proceed with the deployment?"},
+			SessionID: "session-ghi",
+			Backend:   "codex",
+		}
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "run-interact-llm-or-human", nil)
+	if !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("expected ErrRunPaused (fallback), got: %v", err)
+	}
+
+	r, err := s.LoadRun("run-interact-llm-or-human")
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if r.Status != store.RunStatusPausedWaitingHuman {
+		t.Errorf("expected paused_waiting_human, got %s", r.Status)
+	}
+
+	// Verify interaction was created.
+	if r.Checkpoint == nil {
+		t.Fatal("expected checkpoint")
+	}
+	interaction, err := s.LoadInteraction("run-interact-llm-or-human", r.Checkpoint.InteractionID)
+	if err != nil {
+		t.Fatalf("load interaction: %v", err)
+	}
+	if interaction.Questions["decision"] != "Should we proceed with the deployment?" {
+		t.Errorf("questions mismatch: %v", interaction.Questions)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: InteractionNone — ErrNeedsInteraction causes an error, not a pause
+// ---------------------------------------------------------------------------
+
+func TestInteractionNoneRejects(t *testing.T) {
+	wf := interactionWorkflow(ir.InteractionNone)
+
+	exec := newStubExecutor()
+	exec.on("worker", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return nil, &model.ErrNeedsInteraction{
+			NodeID:    "worker",
+			Questions: map[string]interface{}{"input": "unexpected question"},
+			SessionID: "session-jkl",
+			Backend:   "claude_code",
+		}
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "run-interact-none", nil)
+	if err == nil {
+		t.Fatal("expected error for InteractionNone with ErrNeedsInteraction")
+	}
+	if errors.Is(err, ErrRunPaused) {
+		t.Fatal("InteractionNone should NOT pause — it should fail")
+	}
+	// Should contain the error message about interaction: none.
+	if !strings.Contains(err.Error(), "interaction: none") {
+		t.Errorf("error should mention interaction: none, got: %v", err)
 	}
 }

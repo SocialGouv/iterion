@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -368,20 +369,152 @@ func (e *Engine) handleNeedsInteraction(ctx context.Context, rs *runState, nodeI
 		return e.pauseForBackendInteraction(rs, nodeID, ni)
 
 	case ir.InteractionLLM:
-		// TODO(phase5): invoke interaction_model to auto-respond,
-		// then re-invoke the backend with the answers.
-		// For now, fall through to pause.
-		return e.pauseForBackendInteraction(rs, nodeID, ni)
+		return e.handleInteractionLLM(ctx, rs, nodeID, node, ni)
 
 	case ir.InteractionLLMOrHuman:
-		// TODO(phase5): invoke interaction_model to decide whether
-		// to auto-respond or escalate to human.
-		// For now, fall through to pause.
-		return e.pauseForBackendInteraction(rs, nodeID, ni)
+		return e.handleInteractionLLMOrHuman(ctx, rs, nodeID, node, ni)
 
 	default:
 		// InteractionNone should not reach here (executor wouldn't return ErrNeedsInteraction).
 		return fmt.Errorf("runtime: node %q received interaction request but has interaction: none", nodeID)
+	}
+}
+
+// handleInteractionLLM invokes the interaction model to auto-respond to the
+// delegate's questions, then re-invokes the backend with the answers.
+func (e *Engine) handleInteractionLLM(ctx context.Context, rs *runState, nodeID string, node ir.Node, ni *model.ErrNeedsInteraction) error {
+	goaiExec, ok := e.executor.(*model.GoaiExecutor)
+	if !ok {
+		// Fallback to pause if executor doesn't support interaction LLM.
+		return e.pauseForBackendInteraction(rs, nodeID, ni)
+	}
+
+	fields := interactionFields(node)
+	answers, _, err := goaiExec.ExecuteHumanLLMForInteraction(ctx, nodeID, ni, fields)
+	if err != nil {
+		return e.failRunWithCheckpoint(rs, nodeID,
+			fmt.Sprintf("interaction LLM for node %q failed: %v", nodeID, err))
+	}
+
+	// Re-invoke the backend with the LLM-generated answers.
+	return e.reInvokeBackend(ctx, rs, nodeID, node, ni, answers)
+}
+
+// handleInteractionLLMOrHuman invokes the interaction model to decide whether
+// to auto-respond or escalate to a human. If the LLM sets needs_human_input=true,
+// the run is paused for human input.
+func (e *Engine) handleInteractionLLMOrHuman(ctx context.Context, rs *runState, nodeID string, node ir.Node, ni *model.ErrNeedsInteraction) error {
+	goaiExec, ok := e.executor.(*model.GoaiExecutor)
+	if !ok {
+		return e.pauseForBackendInteraction(rs, nodeID, ni)
+	}
+
+	fields := interactionFields(node)
+	answers, needsHuman, err := goaiExec.ExecuteHumanLLMForInteraction(ctx, nodeID, ni, fields)
+	if err != nil {
+		return e.failRunWithCheckpoint(rs, nodeID,
+			fmt.Sprintf("interaction LLM for node %q failed: %v", nodeID, err))
+	}
+
+	if needsHuman {
+		// LLM decided it needs human input — pause.
+		return e.pauseForBackendInteraction(rs, nodeID, ni)
+	}
+
+	// LLM auto-responded — re-invoke the backend.
+	return e.reInvokeBackend(ctx, rs, nodeID, node, ni, answers)
+}
+
+// reInvokeBackend re-invokes the delegate backend with the LLM-provided
+// answers merged into the node input. It uses the delegate's session ID
+// for session continuity so the backend can resume where it left off.
+func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID string, node ir.Node, ni *model.ErrNeedsInteraction, answers map[string]interface{}) error {
+	// Build the input for re-invocation: original node input + answers.
+	nodeInput := e.buildNodeInput(nodeID, rs.vars, rs.outputs, rs.runInputs, rs.artifacts)
+	for k, v := range answers {
+		nodeInput[k] = v
+	}
+
+	// Re-execute the node. The executor will use the session ID for
+	// delegate re-invocation if the backend supports it.
+	output, err := e.executor.Execute(ctx, node, nodeInput)
+	if err != nil {
+		// Check for another interaction request (recursive).
+		var needsInput *model.ErrNeedsInteraction
+		if errors.As(err, &needsInput) {
+			return e.handleNeedsInteraction(ctx, rs, nodeID, node, needsInput)
+		}
+		return e.failRunWithCheckpoint(rs, nodeID,
+			fmt.Sprintf("node %q re-invocation failed: %v", nodeID, err))
+	}
+
+	// Store the output and continue execution normally.
+	rs.outputs[nodeID] = output
+
+	// Validate output.
+	if err := e.validateNodeOutput(nodeID, node, output); err != nil {
+		return e.failRunErrWithCheckpoint(rs, nodeID, err)
+	}
+
+	// Record budget.
+	if err := e.recordAndCheckBudget(rs, nodeID, output); err != nil {
+		return err
+	}
+
+	// Persist artifact if node has publish.
+	if pub := nodePublish(node); pub != "" {
+		version := rs.artifactVersions[nodeID]
+		artifact := &store.Artifact{
+			RunID:   rs.runID,
+			NodeID:  nodeID,
+			Version: version,
+			Data:    output,
+		}
+		if err := e.store.WriteArtifact(artifact); err != nil {
+			return fmt.Errorf("runtime: write artifact: %w", err)
+		}
+		rs.artifactVersions[nodeID] = version + 1
+		rs.artifacts[pub] = output
+		_ = e.emit(rs.runID, store.EventArtifactWritten, nodeID, map[string]interface{}{
+			"publish": pub,
+			"version": version,
+		})
+	}
+
+	// Emit node_finished.
+	nodeFinishedData := buildNodeFinishedData(output)
+	if err := e.emit(rs.runID, store.EventNodeFinished, nodeID, nodeFinishedData); err != nil {
+		return err
+	}
+	if e.onNodeFinished != nil {
+		e.onNodeFinished(nodeID, output)
+	}
+
+	// Checkpoint.
+	if err := e.store.SaveCheckpoint(rs.runID, buildCheckpoint(rs, nodeID)); err != nil {
+		e.logger.Error("failed to save checkpoint after re-invocation of node %q: %v", nodeID, err)
+	}
+
+	// Select next edge.
+	nextNodeID, err := e.selectEdge(rs.runID, nodeID, output, rs.loopCounters)
+	if err != nil {
+		return e.failRunErrWithCheckpoint(rs, nodeID, err)
+	}
+
+	return e.execLoop(ctx, rs, nextNodeID)
+}
+
+// interactionFields extracts InteractionFields from a node that supports them.
+func interactionFields(node ir.Node) ir.InteractionFields {
+	switch n := node.(type) {
+	case *ir.AgentNode:
+		return n.InteractionFields
+	case *ir.JudgeNode:
+		return n.InteractionFields
+	case *ir.HumanNode:
+		return n.InteractionFields
+	default:
+		return ir.InteractionFields{}
 	}
 }
 
