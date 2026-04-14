@@ -34,7 +34,14 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		storeDir = ".iterion"
 	}
 
-	s, err := store.New(storeDir)
+	// Resolve log level early so the logger is available for store creation.
+	level, err := iterlog.ResolveLevel(opts.LogLevel, "ITERION_LOG_LEVEL")
+	if err != nil {
+		return err
+	}
+	logger := iterlog.New(level, os.Stderr)
+
+	s, err := store.New(storeDir, store.WithLogger(logger))
 	if err != nil {
 		return fmt.Errorf("cannot open store: %w", err)
 	}
@@ -81,13 +88,6 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	if err != nil {
 		return err
 	}
-
-	// Resolve log level.
-	level, err := iterlog.ResolveLevel(opts.LogLevel, "ITERION_LOG_LEVEL")
-	if err != nil {
-		return err
-	}
-	logger := iterlog.New(level, os.Stderr)
 
 	executor := opts.Executor
 	if executor == nil {

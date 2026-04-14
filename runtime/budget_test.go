@@ -1088,7 +1088,7 @@ func TestHardBudgetOnTokens(t *testing.T) {
 
 func TestHardBudgetWarningStillFires(t *testing.T) {
 	// Verify that warning at 80% still fires before hard limit at 90%.
-	b := newSharedBudget(&ir.Budget{MaxIterations: 10})
+	b := newSharedBudget(&ir.Budget{MaxIterations: 10}, nil)
 
 	// Record 7 iterations (70%) — no warning yet.
 	for i := 0; i < 7; i++ {
@@ -1119,7 +1119,7 @@ func TestHardBudgetWarningStillFires(t *testing.T) {
 
 func TestHardBudgetUnit(t *testing.T) {
 	t.Run("iterations_hard_limit", func(t *testing.T) {
-		b := newSharedBudget(&ir.Budget{MaxIterations: 10})
+		b := newSharedBudget(&ir.Budget{MaxIterations: 10}, nil)
 		// Push to 9 iterations.
 		for i := 0; i < 9; i++ {
 			b.RecordUsage(0, 0)
@@ -1135,7 +1135,7 @@ func TestHardBudgetUnit(t *testing.T) {
 	})
 
 	t.Run("tokens_hard_limit", func(t *testing.T) {
-		b := newSharedBudget(&ir.Budget{MaxTokens: 1000})
+		b := newSharedBudget(&ir.Budget{MaxTokens: 1000}, nil)
 		b.RecordUsage(910, 0) // 91%
 		checks := b.Check()
 		hl := findHardLimited(checks)
@@ -1148,7 +1148,7 @@ func TestHardBudgetUnit(t *testing.T) {
 	})
 
 	t.Run("cost_hard_limit", func(t *testing.T) {
-		b := newSharedBudget(&ir.Budget{MaxCostUSD: 10.0})
+		b := newSharedBudget(&ir.Budget{MaxCostUSD: 10.0}, nil)
 		b.RecordUsage(0, 9.5) // 95%
 		checks := b.Check()
 		hl := findHardLimited(checks)
@@ -1161,7 +1161,7 @@ func TestHardBudgetUnit(t *testing.T) {
 	})
 
 	t.Run("below_hard_threshold", func(t *testing.T) {
-		b := newSharedBudget(&ir.Budget{MaxIterations: 10})
+		b := newSharedBudget(&ir.Budget{MaxIterations: 10}, nil)
 		for i := 0; i < 8; i++ {
 			b.RecordUsage(0, 0)
 		}

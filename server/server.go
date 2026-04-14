@@ -20,6 +20,7 @@ import (
 
 	"github.com/SocialGouv/iterion/astjson"
 	"github.com/SocialGouv/iterion/ir"
+	iterlog "github.com/SocialGouv/iterion/log"
 	"github.com/SocialGouv/iterion/parser"
 	"github.com/SocialGouv/iterion/unparse"
 )
@@ -38,6 +39,7 @@ type Config struct {
 // Server is the editor HTTP server.
 type Server struct {
 	cfg     Config
+	logger  *iterlog.Logger
 	mux     *http.ServeMux
 	server  *http.Server
 	hub     *Hub
@@ -45,18 +47,18 @@ type Server struct {
 }
 
 // New creates a new editor server.
-func New(cfg Config) *Server {
+func New(cfg Config, logger *iterlog.Logger) *Server {
 	if cfg.Port == 0 {
 		cfg.Port = 4891
 	}
-	s := &Server{cfg: cfg, mux: http.NewServeMux()}
-	s.hub = NewHub()
+	s := &Server{cfg: cfg, logger: logger, mux: http.NewServeMux()}
+	s.hub = NewHub(logger)
 	go s.hub.Run()
 	if cfg.WorkDir != "" {
 		var err error
-		s.watcher, err = NewWatcher(cfg.WorkDir, s.hub)
+		s.watcher, err = NewWatcher(cfg.WorkDir, s.hub, logger)
 		if err != nil {
-			log.Printf("file watcher disabled: %v", err)
+			logger.Warn("file watcher disabled: %v", err)
 		} else {
 			go s.watcher.Start()
 		}
@@ -76,7 +78,7 @@ func (s *Server) ListenAndServe() error {
 	if err != nil {
 		return err
 	}
-	log.Printf("Editor server listening on http://localhost:%d", s.cfg.Port)
+	s.logger.Info("Editor server listening on http://localhost:%d", s.cfg.Port)
 	return s.server.Serve(ln)
 }
 
@@ -352,9 +354,7 @@ func readJSON(r *http.Request, v interface{}) error {
 func writeJSON(w http.ResponseWriter, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		log.Printf("write error: %v", err)
-	}
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 func httpError(w http.ResponseWriter, code int, format string, args ...interface{}) {

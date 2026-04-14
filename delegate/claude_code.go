@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
 	claude "github.com/partio-io/claude-agent-sdk-go"
+
+	iterlog "github.com/SocialGouv/iterion/log"
 )
 
 // ClaudeCodeBackend delegates work to the `claude` CLI (claude-code)
@@ -16,6 +17,8 @@ import (
 type ClaudeCodeBackend struct {
 	// Command overrides the CLI binary path (default: "claude").
 	Command string
+	// Logger is the leveled logger for diagnostic output.
+	Logger *iterlog.Logger
 }
 
 // Execute runs the claude CLI with the given task using the Claude Agent SDK.
@@ -85,7 +88,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		stderrBuf.WriteString("\n")
 		// Log each line in real-time so the user can watch the agent work.
 		if line != "" {
-			log.Printf("delegate: [%s] %s", task.NodeID, line)
+			b.Logger.Debug("[%s] %s", task.NodeID, line)
 		}
 	}))
 
@@ -124,11 +127,11 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 	if needsTwoPass && rm.SessionID != "" {
 		const maxFmtAttempts = 2
 		for attempt := 1; attempt <= maxFmtAttempts; attempt++ {
-			log.Printf("delegate: claude-code [formatting pass %d/%d] starting structured output extraction (session=%s)", attempt, maxFmtAttempts, rm.SessionID)
+			b.Logger.Debug("claude-code [formatting pass %d/%d] starting structured output extraction (session=%s)", attempt, maxFmtAttempts, rm.SessionID)
 			fmtRM, fmtErr := b.formatOutput(ctx, task, rm.SessionID)
 			if fmtErr != nil {
 				if attempt < maxFmtAttempts {
-					log.Printf("delegate: claude-code [formatting pass %d/%d] failed, retrying: %v", attempt, maxFmtAttempts, fmtErr)
+					b.Logger.Warn("claude-code [formatting pass %d/%d] failed, retrying: %v", attempt, maxFmtAttempts, fmtErr)
 					continue
 				}
 				return result, fmt.Errorf("delegate: claude-code formatting pass failed: %w", fmtErr)
@@ -140,7 +143,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 
 			output, rawLen, fallback := parseSDKOutput(fmtRM.Result, fmtRM.StructuredOutput, task.OutputSchema)
 			if fallback && attempt < maxFmtAttempts {
-				log.Printf("delegate: claude-code [formatting pass %d/%d] produced fallback text, retrying", attempt, maxFmtAttempts)
+				b.Logger.Warn("claude-code [formatting pass %d/%d] produced fallback text, retrying", attempt, maxFmtAttempts)
 				continue
 			}
 			result.Output = output
@@ -161,7 +164,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 	// but the SDK didn't capture structured output — e.g., backend agents
 	// where tools are implicit.
 	if (len(output) == 0 || fallback) && len(task.OutputSchema) > 0 && rm.SessionID != "" {
-		log.Printf("delegate: claude-code: empty output with schema — attempting recovery formatting pass (session=%s)", rm.SessionID)
+		b.Logger.Debug("claude-code: empty output with schema — attempting recovery formatting pass (session=%s)", rm.SessionID)
 		fmtRM, fmtErr := b.formatOutput(ctx, task, rm.SessionID)
 		if fmtErr == nil {
 			if fmtRM.Usage != nil {
@@ -174,10 +177,10 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 				result.RawOutputLen = fmtRawLen
 				result.ParseFallback = fmtFallback
 			} else {
-				log.Printf("delegate: claude-code: recovery formatting pass also produced empty output")
+				b.Logger.Warn("claude-code: recovery formatting pass also produced empty output")
 			}
 		} else {
-			log.Printf("delegate: claude-code: recovery formatting pass failed: %v", fmtErr)
+			b.Logger.Warn("claude-code: recovery formatting pass failed: %v", fmtErr)
 		}
 	}
 
@@ -206,7 +209,7 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		claude.WithVerbose(true),
 		claude.WithStderrCallback(func(line string) {
 			if line != "" {
-				log.Printf("delegate: [%s/fmt] %s", task.NodeID, line)
+				b.Logger.Debug("[%s/fmt] %s", task.NodeID, line)
 			}
 		}),
 	}

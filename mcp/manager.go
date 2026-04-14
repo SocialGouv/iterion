@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 
 	"github.com/SocialGouv/iterion/internal/appinfo"
+	iterlog "github.com/SocialGouv/iterion/log"
 	"github.com/SocialGouv/iterion/tool"
 )
 
@@ -56,6 +56,11 @@ func WithSanitizationRules(rules []SanitizationRule) ManagerOption {
 	return func(m *Manager) { m.sanitizationRules = rules }
 }
 
+// WithLogger sets a leveled logger on the manager.
+func WithLogger(l *iterlog.Logger) ManagerOption {
+	return func(m *Manager) { m.logger = l }
+}
+
 // Manager lazily connects to MCP servers, caches clients and tool discovery,
 // and bridges discovered tools into a tool.Registry.
 type Manager struct {
@@ -65,6 +70,7 @@ type Manager struct {
 	sanitizationRules []SanitizationRule
 	cache             *ToolCache
 	fingerprints      *FingerprintStore
+	logger            *iterlog.Logger
 }
 
 type serverState struct {
@@ -235,7 +241,7 @@ func (m *Manager) ensureServer(ctx context.Context, registry *tool.Registry, ser
 			qualified := "mcp." + serverName + "." + toolName
 			if change := m.fingerprints.Check(qualified, serverName, toolName, info.InputSchema); change != nil {
 				if !change.IsNew {
-					fmt.Fprintf(os.Stderr, "mcp: WARNING: schema changed for %q (was %s, now %s)\n",
+					m.logger.Warn("schema changed for %q (was %s, now %s)",
 						change.QualifiedName, change.PreviousFingerprint[:12], change.CurrentFingerprint[:12])
 				}
 			}
@@ -248,7 +254,7 @@ func (m *Manager) ensureServer(ctx context.Context, registry *tool.Registry, ser
 	if workDir != "" && didListTools {
 		if err := m.smokeTestWorkspace(ctx, client, server, toolsList, workDir); err != nil {
 			// Log as warning — don't block server discovery, but make it visible.
-			fmt.Fprintf(os.Stderr, "mcp: WARNING: workspace smoke test failed for %q (workDir=%s): %v\n", server, workDir, err)
+			m.logger.Warn("workspace smoke test failed for %q (workDir=%s): %v", server, workDir, err)
 		}
 	}
 

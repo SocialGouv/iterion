@@ -25,7 +25,7 @@ func TestRegistryResolve(t *testing.T) {
 }
 
 func TestDefaultRegistry(t *testing.T) {
-	r := DefaultRegistry()
+	r := DefaultRegistry(nil)
 
 	_, err := r.Resolve(BackendClaudeCode)
 	if err != nil {

@@ -2,11 +2,11 @@ package runtime
 
 import (
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
 	"github.com/SocialGouv/iterion/ir"
+	iterlog "github.com/SocialGouv/iterion/log"
 )
 
 // ErrBudgetExceeded is returned when a budget limit has been reached.
@@ -21,7 +21,8 @@ var ErrBudgetExceeded = fmt.Errorf("runtime: budget exceeded")
 // hard enforcement would require holding the lock across the entire node
 // execution, which would serialize all parallel branches.
 type SharedBudget struct {
-	mu sync.Mutex
+	mu     sync.Mutex
+	logger *iterlog.Logger
 
 	// Limits (0 means unlimited).
 	maxTokens     int
@@ -46,7 +47,7 @@ const (
 
 // newSharedBudget creates a SharedBudget from an IR Budget definition.
 // Returns nil if budget is nil or has no enforceable limits.
-func newSharedBudget(b *ir.Budget) *SharedBudget {
+func newSharedBudget(b *ir.Budget, logger *iterlog.Logger) *SharedBudget {
 	if b == nil {
 		return nil
 	}
@@ -65,6 +66,7 @@ func newSharedBudget(b *ir.Budget) *SharedBudget {
 	}
 
 	return &SharedBudget{
+		logger:          logger,
 		maxTokens:       b.MaxTokens,
 		maxCostUSD:      b.MaxCostUSD,
 		maxIterations:   b.MaxIterations,
@@ -106,7 +108,7 @@ func (b *SharedBudget) RecordUsage(tokens int, costUSD float64) []budgetCheckRes
 		if c.exceeded && c.limit > 0 {
 			overage := (c.used - c.limit) / c.limit
 			if overage > 0.2 {
-				log.Printf("runtime: budget %s exceeded by %.0f%% (%.0f/%.0f) — concurrent branches may have passed pre-check simultaneously",
+				b.logger.Warn("budget %s exceeded by %.0f%% (%.0f/%.0f) — concurrent branches may have passed pre-check simultaneously",
 					c.dimension, overage*100, c.used, c.limit)
 			}
 		}

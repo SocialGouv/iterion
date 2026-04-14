@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"sort"
 	"strings"
 
@@ -166,14 +165,14 @@ func (e *Engine) failRunErr(runID, nodeID string, origErr error) error {
 	var rtErr *RuntimeError
 	if errors.As(origErr, &rtErr) {
 		if storeErr := e.store.UpdateRunStatus(runID, store.RunStatusFailed, rtErr.Message); storeErr != nil {
-			log.Printf("runtime: failed to persist run failure status: %v", storeErr)
+			e.logger.Error("failed to persist run failure status: %v", storeErr)
 			return fmt.Errorf("runtime: node %q failed (%s) and could not persist failure: %w", nodeID, rtErr.Message, storeErr)
 		}
 		if err := e.emit(runID, store.EventRunFailed, nodeID, map[string]interface{}{
 			"error": rtErr.Message,
 			"code":  string(rtErr.Code),
 		}); err != nil {
-			log.Printf("runtime: failed to emit run_failed event: %v", err)
+			e.logger.Warn("failed to emit run_failed event: %v", err)
 		}
 		if rtErr.NodeID == "" {
 			rtErr.NodeID = nodeID
@@ -188,14 +187,14 @@ func (e *Engine) failRunErr(runID, nodeID string, origErr error) error {
 // error so callers know the failure state was not persisted.
 func (e *Engine) failRunWithCode(runID, nodeID, reason string, code ErrorCode, hint string) error {
 	if storeErr := e.store.UpdateRunStatus(runID, store.RunStatusFailed, reason); storeErr != nil {
-		log.Printf("runtime: failed to persist run failure status: %v", storeErr)
+		e.logger.Error("failed to persist run failure status: %v", storeErr)
 		return fmt.Errorf("runtime: node %q failed (%s) and could not persist failure: %w", nodeID, reason, storeErr)
 	}
 	if err := e.emit(runID, store.EventRunFailed, nodeID, map[string]interface{}{
 		"error": reason,
 		"code":  string(code),
 	}); err != nil {
-		log.Printf("runtime: failed to emit run_failed event: %v", err)
+		e.logger.Warn("failed to emit run_failed event: %v", err)
 	}
 	return &RuntimeError{
 		Code:    code,
@@ -227,7 +226,7 @@ func buildCheckpoint(rs *runState, nodeID string) *store.Checkpoint {
 func (e *Engine) failRunWithCheckpoint(rs *runState, nodeID, reason string) error {
 	cp := buildCheckpoint(rs, nodeID)
 	if storeErr := e.store.FailRunResumable(rs.runID, cp, reason); storeErr != nil {
-		log.Printf("runtime: failed to persist resumable failure: %v", storeErr)
+		e.logger.Error("failed to persist resumable failure: %v", storeErr)
 		return e.failRun(rs.runID, nodeID, reason)
 	}
 	if err := e.emit(rs.runID, store.EventRunFailed, nodeID, map[string]interface{}{
@@ -235,7 +234,7 @@ func (e *Engine) failRunWithCheckpoint(rs *runState, nodeID, reason string) erro
 		"code":      string(ErrCodeExecutionFailed),
 		"resumable": true,
 	}); err != nil {
-		log.Printf("runtime: failed to emit run_failed event: %v", err)
+		e.logger.Warn("failed to emit run_failed event: %v", err)
 	}
 	return &RuntimeError{
 		Code:    ErrCodeExecutionFailed,
@@ -250,7 +249,7 @@ func (e *Engine) failRunErrWithCheckpoint(rs *runState, nodeID string, origErr e
 	if errors.As(origErr, &rtErr) {
 		cp := buildCheckpoint(rs, nodeID)
 		if storeErr := e.store.FailRunResumable(rs.runID, cp, rtErr.Message); storeErr != nil {
-			log.Printf("runtime: failed to persist resumable failure: %v", storeErr)
+			e.logger.Error("failed to persist resumable failure: %v", storeErr)
 			return e.failRunErr(rs.runID, nodeID, origErr)
 		}
 		if err := e.emit(rs.runID, store.EventRunFailed, nodeID, map[string]interface{}{
@@ -258,7 +257,7 @@ func (e *Engine) failRunErrWithCheckpoint(rs *runState, nodeID string, origErr e
 			"code":      string(rtErr.Code),
 			"resumable": true,
 		}); err != nil {
-			log.Printf("runtime: failed to emit run_failed event: %v", err)
+			e.logger.Warn("failed to emit run_failed event: %v", err)
 		}
 		if rtErr.NodeID == "" {
 			rtErr.NodeID = nodeID
@@ -279,16 +278,16 @@ func (e *Engine) handleContextDoneWithCheckpoint(rs *runState, nodeID string, ct
 		// Save checkpoint so the cancelled run can be resumed.
 		cp := buildCheckpoint(rs, nodeID)
 		if err := e.store.SaveCheckpoint(rs.runID, cp); err != nil {
-			log.Printf("runtime: failed to save checkpoint on cancellation: %v", err)
+			e.logger.Error("failed to save checkpoint on cancellation: %v", err)
 		}
 		// Keep "cancelled" status but with checkpoint preserved.
 		if err := e.store.UpdateRunStatus(rs.runID, store.RunStatusCancelled, "run cancelled"); err != nil {
-			log.Printf("runtime: failed to persist cancellation status: %v", err)
+			e.logger.Error("failed to persist cancellation status: %v", err)
 		}
 		if err := e.emit(rs.runID, store.EventRunCancelled, nodeID, map[string]interface{}{
 			"reason": "context cancelled",
 		}); err != nil {
-			log.Printf("runtime: failed to emit run_cancelled event: %v", err)
+			e.logger.Warn("failed to emit run_cancelled event: %v", err)
 		}
 		return fmt.Errorf("%w: interrupted at node %s", ErrRunCancelled, nodeID)
 	}
@@ -612,7 +611,7 @@ func (e *Engine) evaluateEdges(fromNodeID, logPrefix string, output map[string]i
 		}
 		boolVal, isBool := val.(bool)
 		if !isBool {
-			log.Printf("runtime: %s: node %q: condition field %q is %T, expected bool — edge to %q skipped",
+			e.logger.Warn("%s: node %q: condition field %q is %T, expected bool — edge to %q skipped",
 				logPrefix, fromNodeID, edge.Condition, val, edge.To)
 			continue
 		}
@@ -643,7 +642,7 @@ func (e *Engine) evaluateEdgesWithLoops(fromNodeID, logPrefix string, output map
 		if edge.LoopName != "" {
 			loop, ok := e.workflow.Loops[edge.LoopName]
 			if ok && loopCounters[edge.LoopName] >= loop.MaxIterations {
-				log.Printf("runtime: %s: node %q: edge to %q skipped — loop %q exhausted (%d/%d)",
+				e.logger.Warn("%s: node %q: edge to %q skipped — loop %q exhausted (%d/%d)",
 					logPrefix, fromNodeID, edge.To, edge.LoopName, loopCounters[edge.LoopName], loop.MaxIterations)
 				continue
 			}
@@ -661,7 +660,7 @@ func (e *Engine) evaluateEdgesWithLoops(fromNodeID, logPrefix string, output map
 		}
 		boolVal, isBool := val.(bool)
 		if !isBool {
-			log.Printf("runtime: %s: node %q: condition field %q is %T, expected bool — edge to %q skipped",
+			e.logger.Warn("%s: node %q: condition field %q is %T, expected bool — edge to %q skipped",
 				logPrefix, fromNodeID, edge.Condition, val, edge.To)
 			continue
 		}

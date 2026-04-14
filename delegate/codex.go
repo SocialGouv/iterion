@@ -3,11 +3,12 @@ package delegate
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
 	codexsdk "github.com/ethpandaops/codex-agent-sdk-go"
+
+	iterlog "github.com/SocialGouv/iterion/log"
 )
 
 // CodexBackend delegates work to the `codex` CLI (OpenAI Codex)
@@ -15,6 +16,8 @@ import (
 type CodexBackend struct {
 	// Command overrides the CLI binary path (default: "codex").
 	Command string
+	// Logger is the leveled logger for diagnostic output.
+	Logger *iterlog.Logger
 }
 
 // Execute runs the codex CLI with the given task using the Codex Agent SDK.
@@ -71,7 +74,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		stderrBuf.WriteString(line)
 		stderrBuf.WriteString("\n")
 		if line != "" {
-			log.Printf("delegate: [%s] %s", task.NodeID, line)
+			b.Logger.Debug("[%s] %s", task.NodeID, line)
 		}
 	}))
 

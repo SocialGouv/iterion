@@ -2,11 +2,12 @@ package server
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	iterlog "github.com/SocialGouv/iterion/log"
 )
 
 const (
@@ -25,6 +26,7 @@ type FileEvent struct {
 
 // Hub maintains the set of active WebSocket clients and broadcasts messages to them.
 type Hub struct {
+	logger     *iterlog.Logger
 	clients    map[*wsClient]bool
 	broadcast  chan []byte
 	register   chan *wsClient
@@ -46,8 +48,9 @@ var upgrader = websocket.Upgrader{
 }
 
 // NewHub creates a new Hub.
-func NewHub() *Hub {
+func NewHub(logger *iterlog.Logger) *Hub {
 	return &Hub{
+		logger:     logger,
 		clients:    make(map[*wsClient]bool),
 		broadcast:  make(chan []byte, 64),
 		register:   make(chan *wsClient),
@@ -95,7 +98,7 @@ func (h *Hub) Stop() {
 func (h *Hub) Broadcast(event FileEvent) {
 	data, err := json.Marshal(event)
 	if err != nil {
-		log.Printf("hub: marshal error: %v", err)
+		h.logger.Error("hub: marshal error: %v", err)
 		return
 	}
 	select {
@@ -108,7 +111,7 @@ func (h *Hub) Broadcast(event FileEvent) {
 func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("ws upgrade error: %v", err)
+		h.logger.Error("ws upgrade error: %v", err)
 		return
 	}
 	c := &wsClient{hub: h, conn: conn, send: make(chan []byte, sendBufferSize)}

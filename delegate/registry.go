@@ -1,6 +1,10 @@
 package delegate
 
-import "fmt"
+import (
+	"fmt"
+
+	iterlog "github.com/SocialGouv/iterion/log"
+)
 
 // Registry maps backend names to Backend implementations.
 type Registry struct {
@@ -28,9 +32,9 @@ func (r *Registry) Resolve(name string) (Backend, error) {
 
 // DefaultRegistry returns a registry pre-loaded with the standard
 // claude_code and codex backends.
-func DefaultRegistry() *Registry {
+func DefaultRegistry(logger *iterlog.Logger) *Registry {
 	r := NewRegistry()
-	r.Register(BackendClaudeCode, &ClaudeCodeBackend{})
-	r.Register(BackendCodex, &CodexBackend{})
+	r.Register(BackendClaudeCode, &ClaudeCodeBackend{Logger: logger})
+	r.Register(BackendCodex, &CodexBackend{Logger: logger})
 	return r
 }

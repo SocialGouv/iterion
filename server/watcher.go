@@ -1,13 +1,14 @@
 package server
 
 import (
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+
+	iterlog "github.com/SocialGouv/iterion/log"
 )
 
 const (
@@ -24,6 +25,7 @@ const (
 type Watcher struct {
 	workDir   string
 	hub       *Hub
+	logger    *iterlog.Logger
 	fsWatcher *fsnotify.Watcher
 	done      chan struct{}
 
@@ -35,7 +37,7 @@ type Watcher struct {
 }
 
 // NewWatcher creates a new file watcher for the given directory.
-func NewWatcher(workDir string, hub *Hub) (*Watcher, error) {
+func NewWatcher(workDir string, hub *Hub, logger *iterlog.Logger) (*Watcher, error) {
 	fw, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
@@ -43,6 +45,7 @@ func NewWatcher(workDir string, hub *Hub) (*Watcher, error) {
 	return &Watcher{
 		workDir:     workDir,
 		hub:         hub,
+		logger:      logger,
 		fsWatcher:   fw,
 		done:        make(chan struct{}),
 		ignoreUntil: make(map[string]time.Time),
@@ -61,7 +64,7 @@ func (w *Watcher) Start() {
 				return filepath.SkipDir
 			}
 			if err := w.fsWatcher.Add(path); err != nil {
-				log.Printf("watcher: cannot watch %s: %v", path, err)
+				w.logger.Warn("watcher: cannot watch %s: %v", path, err)
 			}
 		}
 		return nil
@@ -82,7 +85,7 @@ func (w *Watcher) Start() {
 			if !ok {
 				return
 			}
-			log.Printf("watcher error: %v", err)
+			w.logger.Error("watcher error: %v", err)
 		}
 	}
 }

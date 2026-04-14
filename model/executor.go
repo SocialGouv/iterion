@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"math"
 	"math/rand/v2"
 	"os"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/SocialGouv/iterion/delegate"
 	"github.com/SocialGouv/iterion/ir"
+	iterlog "github.com/SocialGouv/iterion/log"
 	"github.com/SocialGouv/iterion/mcp"
 	"github.com/SocialGouv/iterion/tool"
 )
@@ -152,6 +152,7 @@ type GoaiExecutor struct {
 	vars            map[string]interface{}
 	hooks           EventHooks
 	retry           RetryPolicy
+	logger          *iterlog.Logger
 	workDir         string // working directory for backend subprocesses
 	defaultBackend  string // workflow-level default backend (empty = use "goai")
 }
@@ -202,6 +203,11 @@ func WithWorkDir(dir string) GoaiExecutorOption {
 // WithDefaultBackend sets the workflow-level default backend.
 func WithDefaultBackend(name string) GoaiExecutorOption {
 	return func(e *GoaiExecutor) { e.defaultBackend = name }
+}
+
+// WithLogger sets a leveled logger for the executor.
+func WithLogger(l *iterlog.Logger) GoaiExecutorOption {
+	return func(e *GoaiExecutor) { e.logger = l }
 }
 
 // NewGoaiExecutor creates a GoaiExecutor for a given workflow.
@@ -479,7 +485,7 @@ func (e *GoaiExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 				// returned non-JSON output (transient SDK issue). Retry once
 				// before giving up.
 				if result.ParseFallback {
-					log.Printf("model: node %q: structured output validation failed with parse fallback, retrying backend: %v", f.id, err)
+					e.logger.Warn("node %q: structured output validation failed with parse fallback, retrying backend: %v", f.id, err)
 					retryResult, retryErr := backend.Execute(ctx, task)
 					if retryErr == nil && !retryResult.ParseFallback {
 						result = retryResult
@@ -726,7 +732,7 @@ func (e *GoaiExecutor) retryDelegateLoop(ctx context.Context, nodeID string, bac
 	for attempt := 1; err != nil && isDelegateRetryable(err) && attempt < maxAttempts; attempt++ {
 		delay := e.retry.backoff(attempt - 1)
 
-		log.Printf("model: node %q: delegate retry %d/%d after error: %v (backoff %s)",
+		e.logger.Warn("node %q: delegate retry %d/%d after error: %v (backoff %s)",
 			nodeID, attempt, maxAttempts-1, err, delay.Round(time.Millisecond))
 
 		if e.hooks.OnDelegateRetry != nil {
@@ -1231,7 +1237,7 @@ func (e *GoaiExecutor) resolveTemplate(body string, input map[string]interface{}
 		// Guard against excessive expansion from large input values.
 		// Truncate at the limit rather than appending the remaining template.
 		if b.Len() > maxTemplateExpansionSize {
-			log.Printf("model: template expansion exceeded %d bytes, truncating", maxTemplateExpansionSize)
+			e.logger.Warn("template expansion exceeded %d bytes, truncating", maxTemplateExpansionSize)
 			break
 		}
 	}
@@ -1329,7 +1335,7 @@ func (e *GoaiExecutor) expandWildcards(ctx context.Context, node ir.Node, names 
 		}
 		serverTools := e.toolRegistry.ListByServer(server)
 		if len(serverTools) == 0 {
-			log.Printf("model: warning: wildcard %q matched no tools (server %q may not be started or has no tools)", name, server)
+			e.logger.Warn("wildcard %q matched no tools (server %q may not be started or has no tools)", name, server)
 		}
 		for _, td := range serverTools {
 			expanded = append(expanded, td.QualifiedName)

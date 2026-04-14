@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 
 	"github.com/SocialGouv/iterion/ir"
 	iterlog "github.com/SocialGouv/iterion/log"
@@ -152,7 +151,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 		loopCounters:       make(map[string]int),
 		roundRobinCounters: make(map[string]int),
 		artifactVersions:   make(map[string]int),
-		budget:             newSharedBudget(e.workflow.Budget),
+		budget:             newSharedBudget(e.workflow.Budget, e.logger),
 	}
 
 	return e.execLoop(ctx, rs, e.workflow.Entry)
@@ -333,7 +332,7 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 
 		// Best-effort checkpoint for resume-from-failed.
 		if err := e.store.SaveCheckpoint(rs.runID, buildCheckpoint(rs, currentNodeID)); err != nil {
-			log.Printf("runtime: failed to save checkpoint after node %q: %v", currentNodeID, err)
+			e.logger.Error("failed to save checkpoint after node %q: %v", currentNodeID, err)
 		}
 
 		// --- Select outgoing edge ---
@@ -386,7 +385,7 @@ func (e *Engine) selectEdge(runID, fromNodeID string, output map[string]interfac
 		data["iteration"] = loopCounters[selected.LoopName]
 	}
 	if err := e.emit(runID, store.EventEdgeSelected, "", data); err != nil {
-		log.Printf("runtime: failed to emit edge_selected: %v", err)
+		e.logger.Warn("failed to emit edge_selected: %v", err)
 	}
 
 	return selected.To, nil

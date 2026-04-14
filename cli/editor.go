@@ -3,12 +3,12 @@ package cli
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 
+	iterlog "github.com/SocialGouv/iterion/log"
 	"github.com/SocialGouv/iterion/server"
 )
 
@@ -43,7 +43,8 @@ func RunEditor(ctx context.Context, opts EditorOptions, p *Printer) error {
 		OpenBrowser: !opts.NoBrowser,
 	}
 
-	srv := server.New(cfg)
+	logger := iterlog.New(iterlog.LevelInfo, os.Stderr)
+	srv := server.New(cfg, logger)
 
 	// Open browser in background.
 	if !opts.NoBrowser {
@@ -86,7 +87,5 @@ func openBrowser(url string) {
 	default:
 		cmd = exec.Command("xdg-open", url)
 	}
-	if err := cmd.Start(); err != nil {
-		log.Printf("failed to open browser: %v", err)
-	}
+	_ = cmd.Start()
 }

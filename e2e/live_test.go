@@ -64,7 +64,7 @@ func newLiveExecutor(wf *ir.Workflow, s *store.RunStore, runID, workDir string) 
 	logger := iterlog.New(iterlog.LevelDebug, os.Stderr)
 	hooks := model.NewStoreEventHooks(s, runID, logger)
 
-	backendReg := delegate.DefaultRegistry()
+	backendReg := delegate.DefaultRegistry(logger)
 	backendReg.Register(delegate.BackendGoai, model.NewGoaiBackend(reg, wf.Schemas, hooks, model.RetryPolicy{}))
 
 	return model.NewGoaiExecutor(reg, wf,

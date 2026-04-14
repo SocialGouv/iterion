@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"sort"
 	"strings"
@@ -53,7 +52,14 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	if storeDir == "" {
 		storeDir = ".iterion"
 	}
-	s, err := store.New(storeDir)
+	// Resolve log level early so the logger is available for store creation.
+	level, err := iterlog.ResolveLevel(opts.LogLevel, "ITERION_LOG_LEVEL")
+	if err != nil {
+		return err
+	}
+	logger := iterlog.New(level, os.Stderr)
+
+	s, err := store.New(storeDir, store.WithLogger(logger))
 	if err != nil {
 		return fmt.Errorf("cannot create store: %w", err)
 	}
@@ -63,13 +69,6 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	if runID == "" {
 		runID = fmt.Sprintf("run_%d", time.Now().UnixMilli())
 	}
-
-	// Resolve log level.
-	level, err := iterlog.ResolveLevel(opts.LogLevel, "ITERION_LOG_LEVEL")
-	if err != nil {
-		return err
-	}
-	logger := iterlog.New(level, os.Stderr)
 
 	// Build engine: either from recipe or raw workflow.
 	var eng *runtime.Engine
@@ -103,7 +102,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		if c, ok := executor.(io.Closer); ok {
 			defer func() {
 				if cerr := c.Close(); cerr != nil {
-					log.Printf("cli: warning: executor close: %v", cerr)
+					logger.Warn("executor close: %v", cerr)
 				}
 			}()
 		}
@@ -133,7 +132,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		if c, ok := executor.(io.Closer); ok {
 			defer func() {
 				if cerr := c.Close(); cerr != nil {
-					log.Printf("cli: warning: executor close: %v", cerr)
+					logger.Warn("executor close: %v", cerr)
 				}
 			}()
 		}
@@ -257,7 +256,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 // and event hooks wired to the store for observability.
 func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunStore, runID string, logger *iterlog.Logger, storeDir string) *model.GoaiExecutor {
 	reg := model.NewRegistry()
-	backendReg := delegate.DefaultRegistry()
+	backendReg := delegate.DefaultRegistry(logger)
 
 	hooks := model.NewStoreEventHooks(s, runID, logger)
 
@@ -268,6 +267,7 @@ func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunSto
 		model.WithBackendRegistry(backendReg),
 		model.WithEventHooks(hooks),
 		model.WithToolRegistry(tool.NewRegistry()),
+		model.WithLogger(logger),
 	}
 
 	// Build tool policy from workflow-level and per-node ToolPolicy fields.
@@ -287,6 +287,7 @@ func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunSto
 			}
 		}
 		var mcpOpts []mcp.ManagerOption
+		mcpOpts = append(mcpOpts, mcp.WithLogger(logger))
 		if cacheTTL := mcp.ResolveCacheTTL(); cacheTTL > 0 {
 			mcpOpts = append(mcpOpts, mcp.WithToolCache(mcp.NewToolCache(storeDir, cacheTTL)))
 		}

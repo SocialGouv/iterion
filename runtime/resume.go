@@ -171,7 +171,7 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 		loopCounters:       loopCounters,
 		roundRobinCounters: roundRobinCounters,
 		artifactVersions:   artifactVersions,
-		budget:             newSharedBudget(e.workflow.Budget),
+		budget:             newSharedBudget(e.workflow.Budget, e.logger),
 	}
 
 	// Select edge from the human node to find the next node.
@@ -227,7 +227,7 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 		loopCounters:       loopCounters,
 		roundRobinCounters: roundRobinCounters,
 		artifactVersions:   artifactVersions,
-		budget:             newSharedBudget(e.workflow.Budget),
+		budget:             newSharedBudget(e.workflow.Budget, e.logger),
 	}
 
 	return e.execLoop(ctx, rs, restartNodeID)

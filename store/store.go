@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	iterlog "github.com/SocialGouv/iterion/log"
 )
 
 // maxEventLineSize is the maximum size of a single event JSON line.
@@ -54,19 +55,32 @@ func sanitizePathComponent(name, component string) error {
 //	<root>/runs/<run_id>/artifacts/<node>/<version>.json
 //	<root>/runs/<run_id>/interactions/<interaction_id>.json
 type RunStore struct {
-	root string // base directory
+	root   string // base directory
+	logger *iterlog.Logger
 
 	mu  sync.Mutex
 	seq map[string]int64 // run_id → next event sequence number
 }
 
+// StoreOption configures a RunStore.
+type StoreOption func(*RunStore)
+
+// WithLogger sets a leveled logger on the store.
+func WithLogger(l *iterlog.Logger) StoreOption {
+	return func(s *RunStore) { s.logger = l }
+}
+
 // New creates a RunStore rooted at the given directory.
 // The directory is created if it does not exist.
-func New(root string) (*RunStore, error) {
+func New(root string, opts ...StoreOption) (*RunStore, error) {
 	if err := os.MkdirAll(filepath.Join(root, "runs"), dirPerm); err != nil {
 		return nil, fmt.Errorf("store: create root: %w", err)
 	}
-	return &RunStore{root: root, seq: make(map[string]int64)}, nil
+	s := &RunStore{root: root, seq: make(map[string]int64)}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s, nil
 }
 
 // Root returns the store root directory.
@@ -298,7 +312,7 @@ func (s *RunStore) LoadEvents(runID string) ([]*Event, error) {
 		return nil, fmt.Errorf("store: scan events: %w", err)
 	}
 	if skipped > 0 {
-		log.Printf("store: warning: skipped %d corrupt event line(s) in run %s", skipped, runID)
+		s.logger.Warn("skipped %d corrupt event line(s) in run %s", skipped, runID)
 	}
 	return events, nil
 }

@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"log"
 
 	"github.com/SocialGouv/iterion/ir"
 	"github.com/SocialGouv/iterion/store"
@@ -162,7 +161,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 
 	// Emit branch_started (best-effort — branch can proceed without the event).
 	if err := e.emitBranch(runID, branchID, store.EventBranchStarted, startEdge.To, nil); err != nil {
-		log.Printf("runtime: branch %s: failed to emit branch_started: %v", branchID, err)
+		e.logger.Warn("branch %s: failed to emit branch_started: %v", branchID, err)
 		result.eventErrors++
 	}
 
@@ -207,7 +206,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 					"used":      exc.used,
 					"limit":     exc.limit,
 				}); err != nil {
-					log.Printf("runtime: branch %s: failed to emit budget_exceeded: %v", branchID, err)
+					e.logger.Warn("branch %s: failed to emit budget_exceeded: %v", branchID, err)
 					result.eventErrors++
 				}
 				result.err = fmt.Errorf("%w: %s (%.0f/%.0f)", ErrBudgetExceeded, exc.dimension, exc.used, exc.limit)
@@ -220,7 +219,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 					"limit":      hl.limit,
 					"hard_limit": true,
 				}); err != nil {
-					log.Printf("runtime: branch %s: failed to emit budget hard limit: %v", branchID, err)
+					e.logger.Warn("branch %s: failed to emit budget hard limit: %v", branchID, err)
 					result.eventErrors++
 				}
 				result.err = fmt.Errorf("%w: hard limit %s at %.0f%% (%.0f/%.0f)", ErrBudgetExceeded, hl.dimension, (hl.used/hl.limit)*100, hl.used, hl.limit)
@@ -232,7 +231,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		if err := e.emitBranch(runID, branchID, store.EventNodeStarted, currentNodeID, map[string]interface{}{
 			"kind": node.NodeKind().String(),
 		}); err != nil {
-			log.Printf("runtime: branch %s: failed to emit node_started: %v", branchID, err)
+			e.logger.Warn("branch %s: failed to emit node_started: %v", branchID, err)
 			result.eventErrors++
 		}
 
@@ -249,7 +248,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 			if emitErr := e.emitBranch(runID, branchID, store.EventNodeFinished, currentNodeID, map[string]interface{}{
 				"error": err.Error(),
 			}); emitErr != nil {
-				log.Printf("runtime: branch %s: failed to emit node_finished: %v", branchID, emitErr)
+				e.logger.Warn("branch %s: failed to emit node_finished: %v", branchID, emitErr)
 				result.eventErrors++
 			}
 			return result
@@ -275,7 +274,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 					"used":      w.used,
 					"limit":     w.limit,
 				}); err != nil {
-					log.Printf("runtime: branch %s: failed to emit budget_warning: %v", branchID, err)
+					e.logger.Warn("branch %s: failed to emit budget_warning: %v", branchID, err)
 					result.eventErrors++
 				}
 			}
@@ -287,7 +286,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 					"used":      exc.used,
 					"limit":     exc.limit,
 				}); err != nil {
-					log.Printf("runtime: branch %s: failed to emit budget_exceeded: %v", branchID, err)
+					e.logger.Warn("branch %s: failed to emit budget_exceeded: %v", branchID, err)
 					result.eventErrors++
 				}
 				result.err = fmt.Errorf("%w: %s (%.0f/%.0f)", ErrBudgetExceeded, exc.dimension, exc.used, exc.limit)
@@ -314,14 +313,14 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 				"publish": pub,
 				"version": version,
 			}); err != nil {
-				log.Printf("runtime: branch %s: failed to emit artifact_written: %v", branchID, err)
+				e.logger.Warn("branch %s: failed to emit artifact_written: %v", branchID, err)
 				result.eventErrors++
 			}
 		}
 
 		// Emit node_finished with usage data.
 		if err := e.emitBranch(runID, branchID, store.EventNodeFinished, currentNodeID, buildNodeFinishedData(output)); err != nil {
-			log.Printf("runtime: branch %s: failed to emit node_finished: %v", branchID, err)
+			e.logger.Warn("branch %s: failed to emit node_finished: %v", branchID, err)
 			result.eventErrors++
 		}
 		if e.onNodeFinished != nil {
@@ -351,7 +350,7 @@ func (e *Engine) selectEdgeBranch(runID, branchID, fromNodeID string, output map
 		"from": selected.From,
 		"to":   selected.To,
 	}); err != nil {
-		log.Printf("runtime: branch %s: failed to emit edge_selected: %v", branchID, err)
+		e.logger.Warn("branch %s: failed to emit edge_selected: %v", branchID, err)
 	}
 
 	return selected.To, nil
@@ -432,7 +431,7 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 		convData["failed_branches"] = failedBranches
 	}
 	if err := e.emit(rs.runID, store.EventJoinReady, convergenceNodeID, convData); err != nil {
-		log.Printf("runtime: failed to emit convergence_ready: %v", err)
+		e.logger.Warn("failed to emit convergence_ready: %v", err)
 	}
 
 	// Return the convergence node ID — the main loop will execute it normally.
