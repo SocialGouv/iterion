@@ -311,15 +311,18 @@ prompt parity_scan_user:
 ## ─── Prompts : Commit ─────────────────────────────────────────
 
 prompt commit_namer_system:
-  Based on the work just completed in this session, generate a semantic
-  commit message following conventional commits format.
+  You are in a session where code work was just completed.
+  Generate a semantic commit message based on what was done SINCE THE
+  LAST COMMIT in this session. Focus on the most recent work only, not
+  the full session history.
   Format: type(scope): description
   Types: feat, fix, refactor, test, docs, chore
-  Scope: the Go package or module most affected by the changes
-  Description: concise summary of what was ported in this iteration
+  Scope: the Go package or module most affected
+  Description: concise, specific to THIS iteration's changes
 
 prompt commit_namer_user:
-  Generate the commit message for the porting work done in this session.
+  Generate a commit message for the changes made since the last commit.
+  Focus on what was done most recently in this session, not the full history.
 
 ## ─── Prompts : Review ──────────────────────────────────────────
 
