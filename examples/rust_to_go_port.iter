@@ -447,9 +447,9 @@ prompt parity_verdict_user:
   5. Use parity_scan data for parity_percentage if available,
      otherwise use the feature manifest assessment
   6. Set overall_parity=true if all features ported and review confirms
-  7. Set batch_tokens to the sum of _tokens fields from implementation,
-     review, and verdict inputs (for cost tracking per batch)
   7. Only list real, non-stagnant blockers in blockers[]
+  8. Set batch_tokens to the sum of _tokens fields from implementation,
+     review, and verdict inputs (for cost tracking per batch)
 
 ## ─── Prompts : Verdict Synthesis ────────────────────────────────
 

@@ -116,8 +116,18 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		}
 
 		// Codex process exited without producing a ResultMessage.
-		// This is a known transient failure — retry.
+		// This is a known transient failure — retry unless context is done.
 		if attempt < maxRetries {
+			select {
+			case <-ctx.Done():
+				return Result{
+					Duration:    totalDuration,
+					ExitCode:    -1,
+					Stderr:      stderrBuf.String(),
+					BackendName: BackendCodex,
+				}, fmt.Errorf("delegate: codex: context cancelled during retry: %w", ctx.Err())
+			default:
+			}
 			b.Logger.Warn("[%s] codex returned no result (attempt %d/%d), retrying", task.NodeID, attempt, maxRetries)
 		}
 	}
