@@ -114,8 +114,16 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 						Input map[string]any `json:"input"`
 					}
 					if json.Unmarshal(raw, &tu) == nil {
+						displayName := tu.Name
+						// Strip MCP prefixes for cleaner display
+						for _, prefix := range []string{"mcp__claude_code__", "mcp__plugin_claude-mem_mcp-search__"} {
+							if strings.HasPrefix(displayName, prefix) {
+								displayName = displayName[len(prefix):]
+								break
+							}
+						}
 						detail := toolUseDetail(tu.Name, tu.Input)
-						b.Logger.Info("[%s] 🔧 %s %s", task.NodeID, tu.Name, detail)
+						b.Logger.Info("[%s/claude-code] 🔧 %s %s", task.NodeID, displayName, detail)
 					}
 				case "tool_result":
 					var tr struct {
@@ -123,7 +131,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 						IsError bool `json:"is_error"`
 					}
 					if json.Unmarshal(raw, &tr) == nil && tr.IsError {
-						b.Logger.Info("[%s] ❌ tool error: %v", task.NodeID, tr.Content)
+						b.Logger.Info("[%s/claude-code] ❌ tool error: %v", task.NodeID, tr.Content)
 					}
 				case "text":
 					var tb struct {
@@ -134,7 +142,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 						if len(text) > 300 {
 							text = text[:300] + "..."
 						}
-						b.Logger.Info("[%s] 💬 %s", task.NodeID, text)
+						b.Logger.Info("[%s/claude-code] 💬 %s", task.NodeID, text)
 					}
 				}
 			}
