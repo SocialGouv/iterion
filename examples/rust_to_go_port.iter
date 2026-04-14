@@ -21,7 +21,7 @@
 ## @group analysis: analyze, merge_analysis
 ## @group planning: plan_fanout, claude_plan, codex_consolidate, plan_judge_merge, plan_gate
 ## @group implementation: implement, simplify
-## @group checkpoint: commit_namer, commit_changes, run_go_tests, parity_scan
+## @group checkpoint: commit_namer, commit_changes, run_go_tests, line_count, parity_scanner
 ## @group review: review_fanout, claude_review, codex_review_judge, review_verdict
 ## @group fix: fix
 
@@ -268,6 +268,42 @@ prompt simplify_user:
   Review and simplify the code changes from this implementation session.
   Focus on the files that were just created or modified.
   Fix quality issues, remove dead code, deduplicate, and ensure idiomatic Go.
+
+## ─── Prompts : Parity Scan ────────────────────────────────────
+
+prompt parity_scan_system:
+  You are a parity assessment specialist for a Rust-to-Go porting project.
+  Your ONLY job is to scan both codebases and produce an accurate,
+  up-to-date feature parity manifest.
+
+  You have access to file reading tools. USE THEM systematically:
+  1. List all Go packages and Rust crates
+  2. For each Rust crate/module, check if a Go equivalent exists
+  3. For each Go package, assess completeness vs Rust counterpart
+  4. Classify each feature as: PORTED, PARTIAL, MISSING, or GO_ONLY
+
+  Be factual and systematic. Read actual code, don't guess.
+  Use the line count data provided as a baseline but verify with
+  actual feature-level inspection.
+
+prompt parity_scan_user:
+  Produce an updated feature parity manifest by scanning both codebases.
+
+  Rust source repo: {{input.rust_repo_path}}
+  Go target repo: {{input.go_repo_path}}
+
+  Line count baseline (from deterministic scan):
+  {{input.line_counts}}
+
+  Previous feature manifest (may be stale):
+  {{input.feature_manifest}}
+
+  Instructions:
+  1. USE YOUR TOOLS to list and read packages in both repos
+  2. For each Rust feature/module, check Go implementation status
+  3. Produce an updated manifest with accurate per-feature status
+  4. Compute parity_percentage based on your feature-level assessment
+  5. List missing_features that still need porting
 
 ## ─── Prompts : Commit ─────────────────────────────────────────
 
@@ -587,11 +623,11 @@ schema test_result:
   logs: string
   failed_tests: string[]
 
-schema parity_scan_input:
+schema line_count_input:
   rust_repo_path: string
   go_repo_path: string
 
-schema parity_scan_result:
+schema line_count_result:
   go_source_files: int
   go_test_files: int
   go_source_lines: int
@@ -601,6 +637,12 @@ schema parity_scan_result:
   rust_source_lines: int
   rust_crates: string
   line_ratio_percent: string
+
+schema parity_scan_input:
+  rust_repo_path: string
+  go_repo_path: string
+  line_counts: json
+  feature_manifest: json
 
 schema review_input:
   implementation: json
@@ -778,12 +820,24 @@ tool run_go_tests:
   command: "export PATH=/workspaces/iterion/.devbox/nix/profile/default/bin:$PATH && cd {{input.go_repo_path}} && go build ./... && go vet ./..."
   output: test_result
 
-## ─── Nodes : Phase 3b — Deterministic Parity Scan ─────────────
+## ─── Nodes : Phase 3b — Parity Scan ───────────────────────────
 
-tool parity_scan:
+tool line_count:
   command: "sh /workspaces/iterion/examples/parity_scan.sh {{input.go_repo_path}} {{input.rust_repo_path}}"
+  input: line_count_input
+  output: line_count_result
+
+agent parity_scanner:
+  backend: "claude_code"
   input: parity_scan_input
-  output: parity_scan_result
+  output: feature_manifest
+  publish: feature_manifest
+  system: parity_scan_system
+  user: parity_scan_user
+  session: fresh
+  tools: [read_file, list_files, search_codebase, tree]
+  tool_max_steps: 20
+  readonly: true
 
 ## ─── Nodes : Phase 4 — Review (fork from impl) ────────────────
 
@@ -953,23 +1007,30 @@ workflow rust_to_go_port:
     go_repo_path: "{{vars.go_repo_path}}"
   }
 
-  ## ═══ Phase 3b : Deterministic Parity Scan ══════════════════════
+  ## ═══ Phase 3b : Parity Scan (line count + LLM assessment) ══════
 
-  run_go_tests -> parity_scan with {
+  run_go_tests -> line_count with {
     rust_repo_path: "{{vars.rust_repo_path}}",
     go_repo_path: "{{vars.go_repo_path}}"
   }
 
+  line_count -> parity_scanner with {
+    rust_repo_path: "{{vars.rust_repo_path}}",
+    go_repo_path: "{{vars.go_repo_path}}",
+    line_counts: "{{outputs.line_count}}",
+    feature_manifest: "{{artifacts.feature_manifest}}"
+  }
+
   ## ═══ Phase 4 : Review (fork from impl) ════════════════════════
 
-  parity_scan -> claude_review with {
+  parity_scanner -> claude_review with {
     _session_id: "{{outputs.simplify._session_id}}",
     implementation: "{{artifacts.implementation}}",
     feature_manifest: "{{artifacts.feature_manifest}}",
     rust_repo_path: "{{vars.rust_repo_path}}",
     go_repo_path: "{{vars.go_repo_path}}",
     test_results: "{{outputs.run_go_tests}}",
-    parity_scan: "{{outputs.parity_scan}}"
+    parity_scan: "{{outputs.parity_scanner}}"
   }
 
   ## ═══ Phase 5 : Dual Verdict (Claude + Codex judge) ════════════
@@ -980,7 +1041,7 @@ workflow rust_to_go_port:
     review: "{{outputs.claude_review}}",
     test_results: "{{outputs.run_go_tests}}",
     feature_manifest: "{{artifacts.feature_manifest}}",
-    parity_scan: "{{outputs.parity_scan}}",
+    parity_scan: "{{outputs.parity_scanner}}",
     previous_verdict: "{{artifacts.parity_verdict_report}}",
     acceptance_threshold: "{{vars.acceptance_threshold}}"
   }
