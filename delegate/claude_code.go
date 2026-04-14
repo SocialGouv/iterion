@@ -81,14 +81,41 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		}
 	}
 
-	// Stream stderr for live observability and capture for diagnostics.
+	// Stream stderr for diagnostics.
 	var stderrBuf strings.Builder
 	opts = append(opts, claude.WithStderrCallback(func(line string) {
 		stderrBuf.WriteString(line)
 		stderrBuf.WriteString("\n")
-		// Log each line in real-time so the user can watch the agent work.
-		if line != "" {
-			b.Logger.Info("[%s] %s", task.NodeID, line)
+	}))
+
+	// Stream NDJSON messages for real-time observability of agent activity.
+	opts = append(opts, claude.WithMessageCallback(func(msgType string, data json.RawMessage) {
+		switch msgType {
+		case "assistant":
+			// Extract tool use or text from assistant message.
+			var msg struct {
+				Message struct {
+					Content []struct {
+						Type string `json:"type"`
+						Text string `json:"text"`
+						Name string `json:"name"`
+					} `json:"content"`
+				} `json:"message"`
+			}
+			if json.Unmarshal(data, &msg) == nil {
+				for _, block := range msg.Message.Content {
+					switch block.Type {
+					case "tool_use":
+						b.Logger.Info("[%s] 🔧 tool: %s", task.NodeID, block.Name)
+					case "text":
+						if len(block.Text) > 200 {
+							b.Logger.Info("[%s] 💬 %s...", task.NodeID, block.Text[:200])
+						} else if block.Text != "" {
+							b.Logger.Info("[%s] 💬 %s", task.NodeID, block.Text)
+						}
+					}
+				}
+			}
 		}
 	}))
 

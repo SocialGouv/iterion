@@ -1,5 +1,7 @@
 package claude
 
+import "encoding/json"
+
 // Option configures a Session or Prompt call.
 type Option func(*config)
 
@@ -68,8 +70,9 @@ type config struct {
 	outputFormat   map[string]any
 	thinking       *ThinkingConfig
 	settingSources []SettingSource
-	stderrCallback func(string)
-	addDirs        []string
+	stderrCallback  func(string)
+	messageCallback func(msgType string, data json.RawMessage) // called for every NDJSON line
+	addDirs         []string
 }
 
 // WithModel sets the Claude model (e.g. "claude-sonnet-4-6", "claude-opus-4-6").
@@ -225,6 +228,13 @@ func WithSettingSources(sources ...SettingSource) Option {
 // WithStderrCallback sets a function to receive stderr output from the CLI.
 func WithStderrCallback(fn func(string)) Option {
 	return func(c *config) { c.stderrCallback = fn }
+}
+
+// WithMessageCallback sets a function called for every NDJSON message from the CLI.
+// The callback receives the message type (e.g., "assistant", "system", "result")
+// and the raw JSON data. This enables real-time observability of agent activity.
+func WithMessageCallback(fn func(msgType string, data json.RawMessage)) Option {
+	return func(c *config) { c.messageCallback = fn }
 }
 
 // WithAddDirs adds additional working directories.
