@@ -88,7 +88,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		stderrBuf.WriteString("\n")
 		// Log each line in real-time so the user can watch the agent work.
 		if line != "" {
-			b.Logger.Debug("[%s] %s", task.NodeID, line)
+			b.Logger.Info("[%s] %s", task.NodeID, line)
 		}
 	}))
 
@@ -209,7 +209,7 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		claude.WithVerbose(true),
 		claude.WithStderrCallback(func(line string) {
 			if line != "" {
-				b.Logger.Debug("[%s/fmt] %s", task.NodeID, line)
+				b.Logger.Info("[%s/fmt] %s", task.NodeID, line)
 			}
 		}),
 	}

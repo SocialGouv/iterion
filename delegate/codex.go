@@ -74,7 +74,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		stderrBuf.WriteString(line)
 		stderrBuf.WriteString("\n")
 		if line != "" {
-			b.Logger.Debug("[%s] %s", task.NodeID, line)
+			b.Logger.Info("[%s] %s", task.NodeID, line)
 		}
 	}))
 
