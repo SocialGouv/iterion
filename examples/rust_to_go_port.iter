@@ -292,7 +292,23 @@ prompt parity_scan_system:
     the implementation artifact mentions changes to that feature)
   - For MISSING/PARTIAL features: use your tools to check if Go code
     now exists. Only change status if you verify with actual code.
+  - For SKIPPED features: always preserve as-is (human-decided, never change)
   - For GO_ONLY features: always preserve as-is
+
+  STATUSES:
+  - PORTED: fully implemented in Go
+  - PARTIAL: partially implemented (list what's missing)
+  - MISSING: not yet ported but should be
+  - SKIPPED: intentionally not ported. ONLY a human can mark a feature
+    as SKIPPED. The scanner MUST NEVER mark a feature as SKIPPED on
+    its own. If a feature seems non-applicable, keep it as MISSING
+    and note the reason — the human will decide during the plan gate.
+
+  These are excluded from parity percentage calculation.
+
+  PARITY CALCULATION:
+  parity = ported / (ported + partial + missing)
+  Skipped and Go-only features are NOT counted in the denominator.
 
   This prevents fluctuation: a feature marked PORTED stays PORTED
   unless there is evidence it regressed. Parity can only go up or
@@ -418,8 +434,9 @@ prompt parity_verdict_system:
   OVERALL PARITY:
   Use the parity_scan data (deterministic Go/Rust line counts and file counts)
   to assess overall progress. The line_ratio_percent gives the Go/Rust line
-  ratio. Set overall_parity=true when the ratio approaches 100% AND the
-  review confirms all features are ported and tests pass.
+  Set overall_parity=true when the parity_percentage is 100% (all non-skipped
+  features are PORTED) AND the review confirms tests pass. Features marked
+  SKIPPED are excluded from the calculation — they are intentionally not ported.
 
   SELF-CRITIQUE (two-phase):
   Phase 1: Rigorously evaluate each current-batch feature.
@@ -459,7 +476,7 @@ prompt parity_verdict_user:
      If stagnating, set batch_complete=true regardless
   5. Use parity_scan data for parity_percentage if available,
      otherwise use the feature manifest assessment
-  6. Set overall_parity=true if all features ported and review confirms
+  6. Set overall_parity=true if parity is 100% (excluding SKIPPED features)
   7. Only list real, non-stagnant blockers in blockers[]
   8. Set batch_tokens to the sum of _tokens fields from implementation,
      review, and verdict inputs (for cost tracking per batch)
@@ -567,6 +584,7 @@ schema feature_manifest:
   ported_features: string[]
   partial_features: string[]
   missing_features: string[]
+  skipped_features: string[]
   go_only_features: string[]
   dependency_order: string[]
   parity_percentage: string
