@@ -201,37 +201,50 @@ These were identified during live runs and implemented iteratively:
 
 - **Cost tracking per batch** — Verdict includes `batch_tokens` summing implementation + review + verdict tokens for per-batch cost analysis.
 
+- **Incremental checklist-based parity scanner** — The parity scanner was producing inconsistent results (94% → 84% → 92%) because it re-evaluated the entire codebase from scratch each time. The fix: treat the previous manifest as a fixed checklist. Only re-evaluate MISSING/PARTIAL features. Never downgrade a PORTED feature without regression evidence. Parity can only go up or stay the same. This eliminated all fluctuation.
+
+- **Inlined Claude Agent SDK** — The vendored SDK (`github.com/partio-io/claude-agent-sdk-go`) was inlined into `delegate/claudesdk/` to enable direct modification. Added `WithMessageCallback` for real-time NDJSON streaming of agent activity (tool calls, text output, errors).
+
 ## Empirical data
 
-From a live run on an ~80-feature Rust codebase (73k lines) with ~40% initial Go parity:
+### Final run (with all optimizations)
 
-### Per-phase timing
+The workflow reached **100% feature parity in 41 minutes** with a single batch, zero fix loops, and zero manual interventions. This was the culmination of multiple refinement sessions that built up the Go codebase incrementally.
 
 | Phase | Duration | Notes |
 |-------|----------|-------|
 | Analysis | ~8 min | Single agent reads both codebases |
-| Planning (parallel) | ~8 min | Two agents plan + consolidate |
+| Planning (parallel) | ~5 min | Two agents plan + consolidate |
 | Judge+Merge | ~3 min | Single evaluation pass |
-| Human Gate | <1s or pause | LLM decides; pauses for complex batches |
-| Implementation | ~15-20 min | Heaviest phase; writes real code |
-| Simplify | ~5 min | Code quality cleanup, dead code removal |
+| Human Gate | pause | LLM paused for approval |
+| Implementation | ~8 min | Lightweight — most code already ported |
+| Simplify | ~3 min | Code quality cleanup |
 | Commit + Test | ~2 min | Fork for naming, build + vet |
-| Parity Scan + Review | ~8-10 min | Run in parallel after tests (was ~15 min sequential) |
-| Dual Verdict | ~5 min | Two judges in parallel |
-| Fix iteration | ~8-12 min | Full cycle: fix + commit + test + review + verdict |
+| Parity Scan + Review | ~5 min | Parallel; incremental scan |
+| Dual Verdict | ~3 min | Two judges in parallel |
+| **Total** | **41 min** | **1 batch, 0 fix loops, status: finished** |
 
-### Run-level stats
+### Cumulative stats (across all refinement sessions)
 
 | Metric | Value |
 |--------|-------|
-| Total outer loop iterations | 13 batches |
-| Total verdicts | 13 |
-| Fix iterations (batch 1 only) | 1 (blocker/suggestion classification eliminated stagnation) |
-| Resumes from failure | 8 (Codex crashes, model spec errors, internet interruption) |
+| Total runs | 4 (each building on prior code) |
+| Total verdicts across all runs | 30+ |
+| Total outer loop iterations | 25+ batches |
+| Resumes from failure | 15+ (Codex crashes, model spec errors, internet interruptions, kills) |
 | Longest autonomous stretch | 2h25m |
-| Go code generated | 32,817 lines source + 22,852 lines tests |
-| New Go packages created | 30+ (hooks, plugin, apikit, worker, lane, policy, recovery, sandbox, lsp, task, team...) |
-| Commits in target repo | 28 |
-| Final parity | 100% feature parity (53/53), 44% line ratio (Go more concise) |
+| Go code generated | 37,995 lines source across 173 files |
+| Go test files | 96 files |
+| Commits in target repo | 70 |
+| Final parity | 100% (37/37 features in final manifest) |
 
-First batch without fix loops: ~50 min (with parallel review+scan). Each fix iteration: ~10 min. Resume from failure saves the full upstream cost (analysis + planning = ~20 min minimum). Codex auto-retry eliminates ~90% of manual resume interventions.
+### Evolution across runs
+
+| Run | Starting parity | Ending parity | Key improvement |
+|-----|----------------|---------------|-----------------|
+| Run 1 (initial) | 38% stale | 38% (stagnant) | Discovered batch_complete vs overall_parity problem |
+| Run 2 (batch_complete) | 61% | 93% | Blocker/suggestion classification, stagnation detection |
+| Run 3 (cumulative scan) | 94% | 96% (stable) | Incremental parity scanner eliminated fluctuation |
+| Run 4 (final) | ~96% | **100%** | Single batch to completion in 41 min |
+
+First batch without fix loops: ~41 min (with all optimizations). Each fix iteration when needed: ~10 min. Resume from failure saves the full upstream cost (analysis + planning = ~15 min). Codex auto-retry eliminates ~90% of manual resume interventions.
