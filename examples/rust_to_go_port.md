@@ -235,7 +235,7 @@ The workflow reached **100% feature parity in 41 minutes** with a single batch, 
 | Longest autonomous stretch | 2h25m |
 | Go code generated | 37,995 lines source across 173 files |
 | Go test files | 96 files |
-| Commits in target repo | 70 |
+| Commits in target repo | 47 (by iterion) + 21 (pre-existing) + 2 (manual) |
 | Final parity | 100% (37/37 features in final manifest) |
 
 ### Evolution across runs
