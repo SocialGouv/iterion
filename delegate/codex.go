@@ -95,8 +95,11 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 				queryErr = err
 				break
 			}
-			if rm, ok := msg.(*codexsdk.ResultMessage); ok {
-				resultMsg = rm
+			switch m := msg.(type) {
+			case *codexsdk.AssistantMessage:
+				b.logAssistantActivity(task.NodeID, m)
+			case *codexsdk.ResultMessage:
+				resultMsg = m
 			}
 		}
 
@@ -163,6 +166,31 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	result.ParseFallback = fallback
 
 	return result, nil
+}
+
+// logAssistantActivity logs tool calls, text output, and tool errors from an
+// AssistantMessage in real-time, mirroring the claude_code backend's activity
+// streaming.
+func (b *CodexBackend) logAssistantActivity(nodeID string, msg *codexsdk.AssistantMessage) {
+	for _, block := range msg.Content {
+		switch blk := block.(type) {
+		case *codexsdk.ToolUseBlock:
+			detail := toolUseDetail(blk.Name, blk.Input)
+			b.Logger.Info("[%s/codex] 🔧 %s %s", nodeID, blk.Name, detail)
+		case *codexsdk.ToolResultBlock:
+			if blk.IsError {
+				b.Logger.Info("[%s/codex] ❌ tool error: %v", nodeID, blk.Content)
+			}
+		case *codexsdk.TextBlock:
+			if blk.Text != "" {
+				text := blk.Text
+				if len(text) > 300 {
+					text = text[:300] + "..."
+				}
+				b.Logger.Info("[%s/codex] 💬 %s", nodeID, text)
+			}
+		}
+	}
 }
 
 // mapReasoningEffort converts iterion reasoning effort strings to Codex SDK Effort constants.

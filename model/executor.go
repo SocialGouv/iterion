@@ -903,9 +903,10 @@ func extractJSON(text string) string {
 // The tool policy is checked before execution; denied tools produce an
 // explicit error with the tool_called hook fired (Error != nil).
 func (e *GoaiExecutor) executeToolNode(ctx context.Context, node *ir.ToolNode, input map[string]interface{}) (map[string]interface{}, error) {
-	// When the command contains template refs ({{input.X}}), resolve them
-	// and execute as a direct shell command. Otherwise, use the tool registry.
-	if len(node.CommandRefs) > 0 {
+	// When the command contains template refs ({{input.X}}) or looks like a
+	// shell command (contains spaces or shell operators), execute as a direct
+	// shell command. Otherwise, use the tool registry.
+	if len(node.CommandRefs) > 0 || looksLikeShellCommand(node.Command) {
 		return e.executeToolNodeShell(ctx, node, input)
 	}
 
@@ -976,7 +977,7 @@ func (e *GoaiExecutor) executeToolNode(ctx context.Context, node *ir.ToolNode, i
 // and the resulting string is executed as a shell command via sh -c.
 func (e *GoaiExecutor) executeToolNodeShell(ctx context.Context, node *ir.ToolNode, input map[string]interface{}) (map[string]interface{}, error) {
 	// Resolve template references in the command.
-	resolved := resolveCommandTemplate(node.Command, node.CommandRefs, input)
+	resolved := resolveCommandTemplate(node.Command, node.CommandRefs, input, e.vars)
 
 	// Expand environment variables in the resolved command.
 	resolved = os.ExpandEnv(resolved)
@@ -1012,15 +1013,27 @@ func (e *GoaiExecutor) executeToolNodeShell(ctx context.Context, node *ir.ToolNo
 	return output, nil
 }
 
-// resolveCommandTemplate substitutes {{input.X}} references in a command
-// string with values from the input map. Values are shell-escaped to prevent
-// command injection when the resolved string is passed to sh -c.
-func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]interface{}) string {
+// looksLikeShellCommand returns true if the command string looks like a shell
+// command rather than a bare tool name. Tool names are simple identifiers
+// (e.g. "read_file", "bash"), while shell commands contain spaces, operators,
+// or path separators.
+func looksLikeShellCommand(cmd string) bool {
+	return strings.ContainsAny(cmd, " \t|&;><$`(){}\"'/")
+}
+
+// resolveCommandTemplate substitutes {{input.X}} and {{vars.X}} references in
+// a command string with values from the input map and workflow variables.
+// Values are shell-escaped to prevent command injection when the resolved
+// string is passed to sh -c.
+func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]interface{}, vars map[string]interface{}) string {
 	resolved := command
 	for _, ref := range refs {
 		var val interface{}
-		if ref.Kind == ir.RefInput && len(ref.Path) > 0 {
+		switch {
+		case ref.Kind == ir.RefInput && len(ref.Path) > 0:
 			val = input[ref.Path[0]]
+		case ref.Kind == ir.RefVars && len(ref.Path) > 0:
+			val = vars[ref.Path[0]]
 		}
 		if val == nil {
 			continue

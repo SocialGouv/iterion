@@ -694,7 +694,7 @@ func TestResolveCommandTemplate(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseRefs: %v", err)
 			}
-			got := resolveCommandTemplate(tt.command, refs, tt.input)
+			got := resolveCommandTemplate(tt.command, refs, tt.input, nil)
 			if got != tt.want {
 				t.Errorf("got %q, want %q", got, tt.want)
 			}
