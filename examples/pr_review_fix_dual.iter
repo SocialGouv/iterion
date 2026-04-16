@@ -1,0 +1,501 @@
+## Workflow : pr_review_fix_dual
+## Objectif : Review structuree d'une PR avec dual verdict (Claude + Codex)
+## et boucle de correction automatique.
+##
+## Architecture :
+##   context_builder -> reviewer (claude) -> go_check -> verdict (claude)
+##        ^                                                  |
+##        |                            not approved -> claude_fixer (inherit reviewer) -+
+##        |                                                  |                         |
+##        |                                        approved -> codex_reviewer -> codex_verdict
+##        |                                                                          |
+##        |                                                            approved -> done
+##        |                                                                          |
+##        |                            not approved -> codex_fixer (inherit codex) ---+
+##        |                                                                          |
+##        +----------------------- go_check_post_fix <-------------------------------+
+##
+##   Each fixer inherits the session of the reviewer that found the blockers.
+##   If fix_loop exhausted with remaining blockers -> fail (human decides).
+##
+## Primitives exercees : agent, judge, tool, done, fail, boucle bornee, publish,
+##   session fresh/inherit, dual backend (claude_code + codex), dual fixers,
+##   sequential dual verdict.
+##
+## Usage :
+##   iterion run examples/pr_review_fix_dual.iter \
+##     --var workspace_dir=/path/to/repo \
+##     --var review_rules="your review rules" \
+##     --store-dir .iterion \
+##     --log-level info
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+## ─── Prompts ────────────────────────────────────────────────────
+
+prompt context_builder_system:
+  You are a PR context builder.
+  Read the git diff between base and head, list changed files,
+  identify the PR's purpose from commit messages, and flag risky areas
+  (concurrency, security, error handling, database queries).
+  Be factual and exhaustive. Do not editorialize.
+
+prompt context_builder_user:
+  Build a structured PR context.
+
+  Base ref: {{vars.base_ref}}
+  Head ref: {{vars.head_ref}}
+
+  Instructions:
+  1. Run git diff between base and head
+  2. List all changed files with their change type (added/modified/deleted)
+  3. Read the commit messages to infer the PR title and description
+  4. Identify risky areas (concurrency, security, error handling, database)
+  5. Summarize changes by domain/package
+
+prompt reviewer_system:
+  You are a senior code reviewer. You combine TWO roles:
+
+  1. REVIEWER: evaluate code quality, error handling, idiomatic patterns,
+     security, and correctness. For each issue, cite file:line and classify as:
+     - BLOCKER: would break production or cause data loss/corruption
+     - SUGGESTION: style, naming, cosmetic, non-critical improvements
+
+  2. FIX PLANNER: if approved=false, produce a concrete, actionable fix_plan
+     targeting ONLY blockers. Each step must specify the file, the line range,
+     and the exact change to make.
+
+  BLOCKER classification — these are ALWAYS blockers, not suggestions:
+  - DATA RACES: any shared mutable state accessed without proper synchronization
+    (mutex, atomic, channel). Concurrent reads+writes to maps, slices, or struct
+    fields are blockers even if "unlikely" in practice.
+  - MISSING ERROR HANDLING: errors returned by I/O, network, or DB operations
+    that are silently discarded (assigned to _ or not checked)
+  - SECURITY: authentication/authorization bypasses, missing input validation
+    on external-facing endpoints, credential exposure
+  - DATA LOSS: code paths where user data could be silently lost or corrupted
+    (e.g. recovery path that drops fields, incomplete struct population)
+  - PANICS: any panic reachable from HTTP handlers or library code
+  - UNBOUNDED RESOURCE GROWTH: maps/caches without size limits that grow with
+    user input, leading to OOM in production
+
+  SUGGESTION classification — these are NEVER blockers:
+  - Code style, naming conventions, comment quality
+  - Log level choices (Warn vs Error vs Debug)
+  - Non-critical performance optimizations
+  - Missing tests (flag as suggestion, not blocker)
+  - Deprecation warnings, backward compatibility concerns
+
+  Rules:
+  - approved=true means ZERO blockers
+  - When in doubt between BLOCKER and SUGGESTION, choose BLOCKER
+  - Be factual: no compliments, no filler
+  - If build/lint checks failed, those are automatic blockers
+  - Read the FULL file for each issue, not just the diff — context matters
+
+prompt reviewer_user:
+  Review this PR.
+
+  Review rules:
+  {{input.review_rules}}
+
+  PR context:
+  {{input.pr_context}}
+
+  Build/lint results:
+  {{input.go_check_results}}
+
+  Previous verdict from primary reviewer:
+  {{input.previous_claude_verdict}}
+
+  Previous verdict from cross-reviewer:
+  {{input.previous_codex_verdict}}
+
+  Previous fix summary (what the fixer did, including any false positives noted):
+  {{input.previous_fix_summary}}
+
+  For each changed file:
+  1. Read the diff and the full file
+  2. Identify concrete issues with file:line
+  3. Classify each as BLOCKER or SUGGESTION
+  4. If approved=false, produce an actionable fix_plan targeting blockers only
+
+prompt verdict_system:
+  You are the final judge of this PR review iteration.
+
+  DECISION RULES:
+  1. Any build/lint failure -> approved=false, period
+  2. Any BLOCKER in the review -> approved=false
+  3. Only SUGGESTIONS remaining -> approved=true
+
+  TRUST THE REVIEWER'S CLASSIFICATION. The reviewer has strict rules for what
+  constitutes a BLOCKER (data races, security issues, data loss, panics,
+  unbounded resource growth). Do NOT reclassify a reviewer's BLOCKER as a
+  suggestion unless you can demonstrate with specific reasoning that the
+  reviewer made a factual error (e.g. the field IS actually guarded by a
+  mutex the reviewer missed).
+
+  SELF-CRITIQUE (apply sparingly, only to clearly false positives):
+  - "Did the reviewer cite the wrong line or misread the code?"
+  - "Is the mutex/guard actually present but the reviewer missed it?"
+  Only reclassify if you have concrete evidence, not just "it's unlikely."
+
+  STAGNATION DETECTION: compare with previous_verdict.
+  If the EXACT same blockers appear across iterations, note this in the
+  executive_summary so the human operator can see the loop is stuck.
+  Do NOT auto-approve — the workflow will fail and the human will decide.
+
+prompt verdict_user:
+  Evaluate this review and produce a verdict.
+
+  Review:
+  {{input.review}}
+
+  Build/lint results:
+  {{input.go_check_results}}
+
+  Review rules:
+  {{input.review_rules}}
+
+  Previous verdict (empty on first iteration):
+  {{input.previous_verdict}}
+
+  Produce:
+  1. A verdict (approved=true/false)
+  2. List of remaining blockers (if any)
+  3. List of suggestions
+  4. Executive summary (3-5 lines for the PR author)
+
+prompt codex_reviewer_system:
+  You are an independent code reviewer providing a second opinion.
+  A first reviewer has already approved this PR. Your job is to
+  catch anything the first reviewer may have missed.
+
+  Use the SAME blocker classification rules:
+  - DATA RACES, MISSING ERROR HANDLING, SECURITY, DATA LOSS, PANICS,
+    UNBOUNDED RESOURCE GROWTH are ALWAYS blockers.
+  - Style, naming, log levels, missing tests are SUGGESTIONS.
+
+  Be independent: do not rubber-stamp the first review. Read the actual code.
+  If you find new blockers, produce a fix_plan.
+  approved=true means you agree with the first reviewer that zero blockers remain.
+
+  CRITICAL — SELF-CRITIQUE before classifying a BLOCKER:
+  For EACH potential blocker you identify, ask yourself:
+  1. "Am I reading the code correctly? Did I miss a guard/mutex/check nearby?"
+  2. "Is this actually reachable in production, or is it dead code?"
+  3. "Is the first reviewer right to NOT flag this, and am I being overly strict?"
+  Only classify as BLOCKER if you are confident after this self-check.
+  False positives waste entire fix loop iterations (~10 min each).
+
+prompt codex_reviewer_user:
+  Provide an independent second review of this PR.
+
+  Review rules:
+  {{input.review_rules}}
+
+  PR context:
+  {{input.pr_context}}
+
+  Build/lint results:
+  {{input.go_check_results}}
+
+  First reviewer's assessment:
+  {{input.claude_verdict}}
+
+  Previous cross-review verdict (for stagnation awareness):
+  {{input.previous_codex_verdict}}
+
+  Instructions:
+  1. Read the critical files yourself — do not rely on the first review
+  2. Focus on areas the first reviewer may have overlooked
+  3. Classify issues as BLOCKER or SUGGESTION
+  4. If approved=false, produce a fix_plan for the new blockers you found
+
+prompt fixer_system:
+  You are in a code review session. A reviewer has identified problems
+  and you have access to their full session context. Now EXECUTE the fix plan.
+
+  Rules:
+  - Apply corrections methodically, one by one
+  - After each fix, re-read the file to verify correctness
+  - Only fix what the plan specifies - do not refactor beyond scope
+  - If a fix would break something else, note it in summary but still apply
+  - If a blocker turns out to be a false positive after reading the code,
+    note it clearly in summary (e.g. "B2 is a false positive because...")
+  - Run build/lint checks on changed files when done
+
+prompt fixer_user:
+  Execute the following fix plan on the repository.
+
+  Fix plan:
+  {{input.fix_plan}}
+
+  Review rules:
+  {{input.review_rules}}
+
+  Apply the corrections and verify that the rules are satisfied.
+
+## ─── Schemas ────────────────────────────────────────────────────
+
+schema pr_context_request:
+  base_ref: string
+  head_ref: string
+
+schema pr_context:
+  pr_title: string
+  pr_description: string
+  changed_files: string[]
+  summary: string
+  risky_areas: string[]
+
+schema review_request:
+  pr_context: json
+  review_rules: string
+  go_check_results: string
+  previous_claude_verdict: string
+  previous_codex_verdict: string
+  previous_fix_summary: string
+
+schema review_result:
+  summary: string
+  blockers: string[]
+  suggestions: string[]
+  files_reviewed: string[]
+  approved: bool
+  fix_plan: string
+  confidence: string [enum: "low", "medium", "high"]
+
+schema check_input:
+  workspace_dir: string
+
+schema check_result:
+  passed: bool
+  exit_code: int
+  logs: string
+
+schema verdict_request:
+  review: json
+  go_check_results: json
+  review_rules: string
+  previous_verdict: string
+
+schema verdict_result:
+  approved: bool
+  blockers: string[]
+  suggestions: string[]
+  executive_summary: string
+  confidence: string [enum: "low", "medium", "high"]
+
+schema codex_review_request:
+  pr_context: json
+  review_rules: string
+  go_check_results: json
+  claude_verdict: json
+  previous_codex_verdict: string
+
+schema fix_input:
+  fix_plan: string
+  review_rules: string
+
+schema fix_output:
+  applied: bool
+  summary: string
+  files_changed: string[]
+
+## ─── Nodes ──────────────────────────────────────────────────────
+
+agent context_builder:
+  backend: "claude_code"
+  input: pr_context_request
+  output: pr_context
+  publish: pr_context
+  system: context_builder_system
+  user: context_builder_user
+  session: fresh
+  tools: [Bash, Read, Glob, Grep]
+  tool_max_steps: 15
+
+agent reviewer:
+  backend: "claude_code"
+  input: review_request
+  output: review_result
+  publish: claude_review
+  system: reviewer_system
+  user: reviewer_user
+  session: fresh
+  tools: [Bash, Read, Glob, Grep]
+  tool_max_steps: 25
+  readonly: true
+
+## Adapt this command to your project's build/lint toolchain.
+## The command must be a template (contain {{...}}) to run as shell.
+tool build_check:
+  command: "cd {{input.workspace_dir}} && make build && make lint"
+  input: check_input
+  output: check_result
+
+judge verdict:
+  backend: "claude_code"
+  input: verdict_request
+  output: verdict_result
+  publish: claude_verdict
+  system: verdict_system
+  user: verdict_user
+  session: fresh
+
+agent codex_reviewer:
+  backend: "codex"
+  input: codex_review_request
+  output: review_result
+  publish: codex_review
+  system: codex_reviewer_system
+  user: codex_reviewer_user
+  session: fresh
+  tools: [Bash, Read, Glob, Grep]
+  tool_max_steps: 25
+  readonly: true
+
+judge codex_verdict:
+  backend: "codex"
+  input: verdict_request
+  output: verdict_result
+  publish: codex_verdict
+  system: verdict_system
+  user: verdict_user
+  session: fresh
+
+agent claude_fixer:
+  backend: "claude_code"
+  input: fix_input
+  output: fix_output
+  publish: fix_report
+  system: fixer_system
+  user: fixer_user
+  session: inherit
+  tools: [Bash, Read, Edit, Write, Glob, Grep]
+  tool_max_steps: 30
+
+agent codex_fixer:
+  backend: "codex"
+  input: fix_input
+  output: fix_output
+  publish: fix_report
+  system: fixer_system
+  user: fixer_user
+  session: inherit
+  tools: [Bash, Read, Edit, Write, Glob, Grep]
+  tool_max_steps: 30
+
+tool build_check_post_fix:
+  command: "cd {{input.workspace_dir}} && make build && make lint"
+  input: check_input
+  output: check_result
+
+## ─── Workflow ───────────────────────────────────────────────────
+
+workflow pr_review_fix_dual:
+  vars:
+    base_ref: string = "main"
+    head_ref: string = "HEAD"
+    review_rules: string = "- No swallowed errors\n- No panics in library code\n- Proper error wrapping with context\n- No hardcoded secrets or credentials\n- Concurrent access properly guarded\n- No dead code or unused imports"
+
+  entry: context_builder
+
+  budget:
+    max_parallel_branches: 2
+    max_duration: "2h"
+    max_cost_usd: 50
+    max_tokens: 5000000
+    max_iterations: 50
+
+  ## ═══ Phase 1 : Build PR context (once) ════════════════════════
+
+  context_builder -> reviewer with {
+    pr_context: "{{outputs.context_builder}}",
+    review_rules: "{{vars.review_rules}}",
+    go_check_results: "",
+    previous_claude_verdict: "",
+    previous_codex_verdict: "",
+    previous_fix_summary: ""
+  }
+
+  ## ═══ Phase 2 : Primary review -> build check -> verdict ══════
+
+  reviewer -> build_check with {
+    workspace_dir: "{{vars.workspace_dir}}"
+  }
+
+  build_check -> verdict with {
+    review: "{{outputs.reviewer}}",
+    go_check_results: "{{outputs.build_check}}",
+    review_rules: "{{vars.review_rules}}",
+    previous_verdict: "{{outputs.verdict}}"
+  }
+
+  ## ═══ Phase 3 : Primary verdict routing ════════════════════════
+
+  ## Primary approved -> cross-review
+  verdict -> codex_reviewer when approved with {
+    pr_context: "{{artifacts.pr_context}}",
+    review_rules: "{{vars.review_rules}}",
+    go_check_results: "{{outputs.build_check}}",
+    claude_verdict: "{{outputs.verdict}}",
+    previous_codex_verdict: "{{outputs.codex_verdict}}"
+  }
+
+  ## Primary not approved -> primary fixer (inherits reviewer session)
+  verdict -> claude_fixer when not approved as fix_loop(20) with {
+    _session_id: "{{outputs.reviewer._session_id}}",
+    fix_plan: "{{outputs.reviewer.fix_plan}}",
+    review_rules: "{{vars.review_rules}}"
+  }
+
+  ## Terminal fallback: fix_loop exhausted -> fail
+  verdict -> fail
+
+  ## ═══ Phase 4 : Cross-review -> cross verdict ══════════════════
+
+  codex_reviewer -> codex_verdict with {
+    review: "{{outputs.codex_reviewer}}",
+    go_check_results: "{{outputs.build_check}}",
+    review_rules: "{{vars.review_rules}}",
+    previous_verdict: "{{outputs.codex_verdict}}"
+  }
+
+  ## Both approved -> done
+  codex_verdict -> done when approved
+
+  ## Cross-reviewer not approved -> cross fixer (inherits cross-reviewer session)
+  codex_verdict -> codex_fixer when not approved as fix_loop(20) with {
+    _session_id: "{{outputs.codex_reviewer._session_id}}",
+    fix_plan: "{{outputs.codex_reviewer.fix_plan}}",
+    review_rules: "{{vars.review_rules}}"
+  }
+
+  ## Terminal fallback: fix_loop exhausted -> fail
+  codex_verdict -> fail
+
+  ## ═══ Phase 5a : Primary fix -> verify ═════════════════════════
+
+  claude_fixer -> build_check_post_fix with {
+    workspace_dir: "{{vars.workspace_dir}}"
+  }
+
+  ## ═══ Phase 5b : Cross fix -> verify ═══════════════════════════
+
+  codex_fixer -> build_check_post_fix with {
+    workspace_dir: "{{vars.workspace_dir}}"
+  }
+
+  ## ═══ Phase 6 : Post-fix -> back to review ═════════════════════
+
+  build_check_post_fix -> reviewer as fix_loop(20) with {
+    pr_context: "{{artifacts.pr_context}}",
+    review_rules: "{{vars.review_rules}}",
+    go_check_results: "{{outputs.build_check_post_fix}}",
+    previous_claude_verdict: "{{outputs.verdict}}",
+    previous_codex_verdict: "{{outputs.codex_verdict}}",
+    previous_fix_summary: "{{artifacts.fix_report}}"
+  }
