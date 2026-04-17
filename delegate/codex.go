@@ -1,8 +1,12 @@
 package delegate
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -84,6 +88,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	var resultMsg *codexsdk.ResultMessage
 	var queryErr error
 	var totalDuration time.Duration
+	var lastThreadID string
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		startTime := time.Now()
@@ -100,6 +105,12 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 				b.logAssistantActivity(task.NodeID, m)
 			case *codexsdk.ResultMessage:
 				resultMsg = m
+			case *codexsdk.SystemMessage:
+				if m.Subtype == "thread.started" {
+					if tid, ok := m.Data["thread_id"].(string); ok && tid != "" {
+						lastThreadID = tid
+					}
+				}
 			}
 		}
 
@@ -136,12 +147,17 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	}
 
 	if resultMsg == nil {
+		diag := inspectCodexRollout(lastThreadID)
+		errMsg := fmt.Sprintf("delegate: codex: no result message received after %d attempts", maxRetries)
+		if diag != "" {
+			errMsg += " (" + diag + ")"
+		}
 		return Result{
 			Duration:    totalDuration,
 			ExitCode:    -1,
 			Stderr:      stderrBuf.String(),
 			BackendName: BackendCodex,
-		}, fmt.Errorf("delegate: codex: no result message received after %d attempts", maxRetries)
+		}, fmt.Errorf("%s", errMsg)
 	}
 
 	result := Result{
@@ -179,7 +195,7 @@ func (b *CodexBackend) logAssistantActivity(nodeID string, msg *codexsdk.Assista
 			b.Logger.Info("[%s/codex] 🔧 %s %s", nodeID, blk.Name, detail)
 		case *codexsdk.ToolResultBlock:
 			if blk.IsError {
-				b.Logger.Info("[%s/codex] ❌ tool error: %v", nodeID, blk.Content)
+				b.Logger.Info("[%s/codex] ❌ tool error: %s", nodeID, contentBlocksText(blk.Content))
 			}
 		case *codexsdk.TextBlock:
 			if blk.Text != "" {
@@ -191,6 +207,102 @@ func (b *CodexBackend) logAssistantActivity(nodeID string, msg *codexsdk.Assista
 			}
 		}
 	}
+}
+
+// inspectCodexRollout locates the session rollout file for the given thread_id
+// under ~/.codex/sessions/ and returns a short diagnostic extracted from its
+// last event. Used when the SDK Query iterator returns without a ResultMessage
+// — which typically means the codex CLI exited without sending turn.completed
+// or turn.failed (e.g. on context-window overflow). Returns "" if nothing
+// useful can be extracted; callers should treat that as "no extra info".
+func inspectCodexRollout(threadID string) string {
+	if threadID == "" {
+		return ""
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	// Codex writes rollouts to ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<thread_id>.jsonl.
+	pattern := filepath.Join(home, ".codex", "sessions", "*", "*", "*", "rollout-*-"+threadID+".jsonl")
+	matches, err := filepath.Glob(pattern)
+	if err != nil || len(matches) == 0 {
+		return ""
+	}
+	// With a unique thread_id there should be exactly one match; pick the
+	// first defensively.
+	path := matches[0]
+
+	// Read the last non-empty JSONL event. Small files — full scan is fine.
+	f, err := os.Open(path) // #nosec G304 — path is built from a thread_id we just saw come out of the SDK and a fixed ~/.codex/sessions prefix.
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = f.Close() }()
+
+	var last map[string]any
+	scanner := bufio.NewScanner(f)
+	// Allow large lines (tool outputs can be big).
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var ev map[string]any
+		if err := json.Unmarshal(line, &ev); err == nil {
+			last = ev
+		}
+	}
+	if last == nil {
+		return ""
+	}
+
+	// Pull out the payload type and check for a context-window overflow.
+	payload, _ := last["payload"].(map[string]any)
+	pType, _ := payload["type"].(string)
+	evType, _ := last["type"].(string)
+
+	if evType == "event_msg" && pType == "token_count" {
+		info, _ := payload["info"].(map[string]any)
+		tot, _ := info["total_token_usage"].(map[string]any)
+		total, _ := tot["total_tokens"].(float64)
+		window, _ := info["model_context_window"].(float64)
+		if total > 0 && window > 0 && total > window {
+			return fmt.Sprintf("codex likely hit context window: total_tokens=%d > model_context_window=%d; reduce prompt size or use a larger-context model", int(total), int(window))
+		}
+		return fmt.Sprintf("codex exited without completion; last event was token_count (total_tokens=%d, window=%d)", int(total), int(window))
+	}
+	if evType != "" || pType != "" {
+		return fmt.Sprintf("codex exited without completion; last rollout event was %s/%s", evType, pType)
+	}
+	return ""
+}
+
+// contentBlocksText flattens a ContentBlock slice (as used by ToolResultBlock.Content)
+// into a single readable string, extracting text from TextBlocks and a short type
+// tag for unrecognized blocks. Truncates to 500 chars to keep logs bounded.
+func contentBlocksText(blocks []codexsdk.ContentBlock) string {
+	if len(blocks) == 0 {
+		return "<empty>"
+	}
+	var sb strings.Builder
+	for i, blk := range blocks {
+		if i > 0 {
+			sb.WriteString(" | ")
+		}
+		switch b := blk.(type) {
+		case *codexsdk.TextBlock:
+			sb.WriteString(b.Text)
+		default:
+			fmt.Fprintf(&sb, "<%s>", blk.BlockType())
+		}
+	}
+	out := sb.String()
+	if len(out) > 500 {
+		out = out[:500] + "..."
+	}
+	return out
 }
 
 // mapReasoningEffort converts iterion reasoning effort strings to Codex SDK Effort constants.
