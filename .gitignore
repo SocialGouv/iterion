@@ -30,3 +30,6 @@ server/static/index.html
 
 # Live test results
 .live-results/
+
+# Claude
+.claude/*.local.json
