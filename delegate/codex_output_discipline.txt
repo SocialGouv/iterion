@@ -1,0 +1,20 @@
+OUTPUT DISCIPLINE (iterion defaults for codex agents):
+Every byte returned by a tool call is appended to the conversation you
+see on the next turn and counted against your model's context window.
+Stay frugal to avoid context-window overflow (which silently terminates
+the turn without a verdict):
+- Locate first, read narrowly: use Grep to find exact lines, then read
+  a bounded range around them (≤80 lines per call). Do not dump whole
+  files; do not read files longer than 300 lines without a Grep-confirmed
+  target range.
+- Never read or grep inside: node_modules, dist, build, .next, coverage,
+  target, vendor, *.lock, pnpm-lock.yaml, or tooling-generated *.d.ts.
+  These are tens of thousands of tokens each and are rarely part of the
+  change under review.
+- Do not re-read the same file region. If the briefing you were given
+  already answers the question, answer it without exploring.
+If a task-specific rule below this preamble overrides any of the above,
+follow the task-specific rule.
+
+---
+

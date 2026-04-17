@@ -3,6 +3,7 @@ package delegate
 import (
 	"bufio"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,6 +15,9 @@ import (
 
 	iterlog "github.com/SocialGouv/iterion/log"
 )
+
+//go:embed codex_output_discipline.txt
+var codexOutputDisciplinePreamble string
 
 // CodexBackend delegates work to the `codex` CLI (OpenAI Codex)
 // via the Codex Agent SDK.
@@ -34,8 +38,8 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 
 	var opts []codexsdk.Option
 
-	// Build system prompt, optionally augmented with interaction instructions.
-	systemPrompt := task.SystemPrompt
+	// Preamble teaches frugal tool usage; task prompt follows and may override.
+	systemPrompt := codexOutputDisciplinePreamble + task.SystemPrompt
 	if task.InteractionEnabled {
 		systemPrompt += interactionSystemInstruction
 	}
@@ -45,12 +49,9 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	if task.WorkDir != "" {
 		opts = append(opts, codexsdk.WithCwd(task.WorkDir))
 	}
-	if len(task.AllowedTools) > 0 {
-		opts = append(opts, codexsdk.WithAllowedTools(task.AllowedTools...))
-	}
-	// Bypass interactive permission prompts: the runtime enforces safety via
-	// workspace isolation and allowed-tool lists, so the delegate subprocess
-	// does not need its own permission gate.
+	// Codex has a single shell tool; per-name allowlisting is not meaningful.
+	// Translate AllowedTools intent into codex's native sandbox instead.
+	opts = append(opts, codexsdk.WithSandbox(codexSandboxForAllowedTools(task.AllowedTools)))
 	opts = append(opts, codexsdk.WithPermissionMode("bypassPermissions"))
 
 	if b.Command != "" {
@@ -199,22 +200,16 @@ func (b *CodexBackend) logAssistantActivity(nodeID string, msg *codexsdk.Assista
 			}
 		case *codexsdk.TextBlock:
 			if blk.Text != "" {
-				text := blk.Text
-				if len(text) > 300 {
-					text = text[:300] + "..."
-				}
-				b.Logger.Info("[%s/codex] 💬 %s", nodeID, text)
+				b.Logger.Info("[%s/codex] 💬 %s", nodeID, truncate(blk.Text, 300))
 			}
 		}
 	}
 }
 
-// inspectCodexRollout locates the session rollout file for the given thread_id
-// under ~/.codex/sessions/ and returns a short diagnostic extracted from its
-// last event. Used when the SDK Query iterator returns without a ResultMessage
-// — which typically means the codex CLI exited without sending turn.completed
-// or turn.failed (e.g. on context-window overflow). Returns "" if nothing
-// useful can be extracted; callers should treat that as "no extra info".
+// inspectCodexRollout returns a short diagnostic pulled from the last event
+// of ~/.codex/sessions/.../rollout-*-<threadID>.jsonl. Used when codex exits
+// without sending turn.completed/turn.failed (e.g. context-window overflow).
+// Returns "" when nothing useful can be extracted.
 func inspectCodexRollout(threadID string) string {
 	if threadID == "" {
 		return ""
@@ -279,9 +274,7 @@ func inspectCodexRollout(threadID string) string {
 	return ""
 }
 
-// contentBlocksText flattens a ContentBlock slice (as used by ToolResultBlock.Content)
-// into a single readable string, extracting text from TextBlocks and a short type
-// tag for unrecognized blocks. Truncates to 500 chars to keep logs bounded.
+// contentBlocksText flattens a ContentBlock slice for logging; truncates to 500 chars.
 func contentBlocksText(blocks []codexsdk.ContentBlock) string {
 	if len(blocks) == 0 {
 		return "<empty>"
@@ -298,11 +291,23 @@ func contentBlocksText(blocks []codexsdk.ContentBlock) string {
 			fmt.Fprintf(&sb, "<%s>", blk.BlockType())
 		}
 	}
-	out := sb.String()
-	if len(out) > 500 {
-		out = out[:500] + "..."
+	return truncate(sb.String(), 500)
+}
+
+// codexSandboxForAllowedTools picks codex's sandbox mode from AllowedTools:
+// empty or any mutating tool (Bash/Edit/Write/NotebookEdit) → danger-full-access;
+// otherwise → read-only (shell still works, writes are OS-blocked).
+func codexSandboxForAllowedTools(allowed []string) string {
+	if len(allowed) == 0 {
+		return "danger-full-access"
 	}
-	return out
+	for _, t := range allowed {
+		switch t {
+		case "Bash", "Edit", "Write", "NotebookEdit":
+			return "danger-full-access"
+		}
+	}
+	return "read-only"
 }
 
 // mapReasoningEffort converts iterion reasoning effort strings to Codex SDK Effort constants.

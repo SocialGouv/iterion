@@ -138,11 +138,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 						Text string `json:"text"`
 					}
 					if json.Unmarshal(raw, &tb) == nil && tb.Text != "" {
-						text := tb.Text
-						if len(text) > 300 {
-							text = text[:300] + "..."
-						}
-						b.Logger.Info("[%s/claude-code] 💬 %s", task.NodeID, text)
+						b.Logger.Info("[%s/claude-code] 💬 %s", task.NodeID, truncate(tb.Text, 300))
 					}
 				}
 			}
@@ -317,17 +313,11 @@ func toolUseDetail(name string, input map[string]any) string {
 	}
 	// Search/grep: show the pattern
 	if p, ok := input["pattern"].(string); ok {
-		if len(p) > 80 {
-			return p[:80] + "..."
-		}
-		return p
+		return truncate(p, 80)
 	}
 	// Bash: show the command (truncated)
 	if c, ok := input["command"].(string); ok {
-		if len(c) > 100 {
-			return c[:100] + "..."
-		}
-		return c
+		return truncate(c, 100)
 	}
 	return ""
 }

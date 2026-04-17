@@ -203,6 +203,54 @@ func TestMapReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestCodexSandboxForAllowedTools(t *testing.T) {
+	tests := []struct {
+		name    string
+		allowed []string
+		want    string
+	}{
+		{"empty preserves unrestricted default", nil, "danger-full-access"},
+		{"bash unlocks full access", []string{"Read", "Bash"}, "danger-full-access"},
+		{"edit is mutating", []string{"Read", "Edit"}, "danger-full-access"},
+		{"write is mutating", []string{"Write"}, "danger-full-access"},
+		{"notebookedit is mutating", []string{"NotebookEdit"}, "danger-full-access"},
+		{"read-only reviewer stays read-only", []string{"Read", "Glob", "Grep"}, "read-only"},
+		{"single read tool stays read-only", []string{"Grep"}, "read-only"},
+		{"unknown name falls through to read-only", []string{"SomeFutureTool"}, "read-only"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := codexSandboxForAllowedTools(tt.allowed)
+			if got != tt.want {
+				t.Errorf("codexSandboxForAllowedTools(%v) = %q, want %q", tt.allowed, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTruncate(t *testing.T) {
+	tests := []struct {
+		name string
+		s    string
+		max  int
+		want string
+	}{
+		{"under limit", "hello", 10, "hello"},
+		{"at limit", "hello", 5, "hello"},
+		{"over limit ASCII", "hello world", 5, "hello..."},
+		// "héllo" is 6 bytes (h, 0xc3, 0xa9, l, l, o). Truncating at 2 bytes
+		// would split the é; truncate must back up to a rune boundary.
+		{"over limit backs up off a rune boundary", "héllo", 2, "h..."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := truncate(tt.s, tt.max); got != tt.want {
+				t.Errorf("truncate(%q, %d) = %q, want %q", tt.s, tt.max, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFormattingPassUsed_MockBackend(t *testing.T) {
 	// Verify that FormattingPassUsed is correctly propagated through Result.
 	r := NewRegistry()
