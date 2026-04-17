@@ -1,0 +1,902 @@
+## Workflow : feature_dev_review_fix_dual
+## Objectif : Developpement d'une nouvelle feature (plan + implement) suivi
+## d'une review structuree dual verdict (Claude + Codex) avec boucle de
+## correction automatique.
+##
+## Specialisation : projet carto (TypeScript CLI, pnpm, devbox).
+##   - Build gate : devbox run -- pnpm typecheck && lint && test
+##   - Tous les agents savent qu'ils doivent prefixer les commandes avec devbox.
+##
+## Repartition des roles :
+##   - Claude Code = WORKER PRINCIPAL. Il fait tout le travail lourd :
+##     planification, implementation, review primaire, verdict primaire,
+##     correction de ses propres blockers.
+##   - Codex = SUPPORT. Il intervient UNIQUEMENT apres que Claude a approuve,
+##     en deux roles stricts :
+##       1. Second avis de verdict final (cross-review pour attraper les
+##          angles morts de Claude)
+##       2. Correction de SES PROPRES trouvailles (codex_fixer inherit
+##          codex_reviewer). Codex ne touche jamais aux blockers trouves
+##          par Claude.
+##   Si Codex approuve -> done. S'il rejette, il corrige ce qu'il a trouve
+##   puis on repasse par la chaine Claude (review + verdict) pour valider
+##   que la correction ne regresse rien. Claude reste l'arbitre final de
+##   la qualite du code ; Codex est un filet de securite.
+##
+## Architecture :
+##   [main] planner (claude)
+##     -> [main] developer (inherit planner)
+##        -> commit_namer_post_dev -> commit_post_dev (git commit WIP)
+##        -> build_check_post_dev
+##        -> [main] context_builder -> [main] reviewer (claude)
+##           -> build_check -> [main] verdict (claude)
+##             ^                                                         |
+##             |                      not approved -> [main] claude_fixer-+
+##             |                                                         |
+##             |                     approved -> [support] codex_reviewer
+##             |                                           |
+##             |                                 -> [support] codex_verdict
+##             |                                                     |
+##             |                                       approved -> done
+##             |                                                     |
+##             |                      not approved -> [support] codex_fixer -+
+##             |                                                             |
+##             |                commit_namer_post_fix <---------------------+
+##             |                         |
+##             |                commit_post_fix (git commit WIP)
+##             |                         |
+##             +------------------ build_check_post_fix <-------------------+
+##
+##   Nouveautes vs pr_review_fix_dual :
+##     - Phase amont "plan -> implement" qui cree le code a reviewer
+##     - planner en readonly, developer inherit planner (context gratuit)
+##     - Commits WIP reguliers :
+##         * apres developer   (commit initial de la feature)
+##         * apres claude_fixer (commit: fix reviews de Claude)
+##         * apres codex_fixer  (commit: fix reviews de Codex)
+##       Les commits se font AVANT le build check pour ne jamais perdre de
+##       travail meme si la build casse (pattern rust_to_go_port).
+##     - build_check_post_dev : gate deterministe apres le commit initial
+##       (si le build casse, on repart du reviewer qui le verra, mais on a
+##        deja capture l'erreur dans les logs ET un commit existe dans git)
+##
+## Primitives exercees : agent, judge, tool, done, fail, boucle bornee, publish,
+##   session fresh/inherit, dual backend (claude_code + codex).
+##
+## Usage :
+##   iterion run examples/feature_dev_review_fix_dual.iter \
+##     --var workspace_dir=/Users/Vidy/code/dnum/iterion_carto/carto \
+##     --var feature_title="Exhaustive CLI --help + README Getting Started" \
+##     --var feature_description="See carto/plans/cli-docs-and-readme-refresh.md" \
+##     --var acceptance_criteria="Every carto command/subcommand has a complete --help; README leads with Getting Started; env var precedence documented" \
+##     --var base_ref=HEAD \
+##     --store-dir .iterion \
+##     --log-level info
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+## ─── Prompts : Phase dev ────────────────────────────────────────
+
+prompt planner_system:
+  You are a senior software architect writing an implementation plan
+  for a new feature in the carto TypeScript CLI project. You explore
+  the codebase (read-only) and produce a concrete, ordered, testable
+  plan that another agent can execute.
+
+  Project conventions (carto):
+  - Every shell command must be prefixed with `devbox run --`
+    (e.g. `devbox run -- pnpm test`, `devbox run -- node src/cli.ts --help`).
+    Bare `pnpm` / `node` / `tsc` will fail.
+  - Long logs go to stderr, machine output goes to stdout.
+  - TypeScript (Node >= 24), ESM, Commander CLI, zod schemas.
+  - Column registry in carto.columns.yaml is YAML-driven, no TS needed for new columns.
+
+  Rules:
+  - Plan ONLY the requested feature. Do not expand scope.
+  - Cite file paths and symbols for every step (file:line where useful).
+  - Identify existing patterns to follow and dependencies to reuse.
+  - Flag risks, unknowns, and explicit non-goals.
+  - Order steps so that each step leaves the workspace in a buildable state.
+
+prompt planner_user:
+  Produce an implementation plan for this feature.
+
+  Feature title:
+  {{input.feature_title}}
+
+  Feature description:
+  {{input.feature_description}}
+
+  Acceptance criteria:
+  {{input.acceptance_criteria}}
+
+  Instructions:
+  1. Explore the codebase to understand the existing architecture and patterns.
+  2. Identify the files to create or modify with file:line references.
+  3. Produce an ordered list of steps. Each step must be concrete and scoped.
+  4. Note test additions/updates required for the acceptance criteria.
+  5. List risks and non-goals explicitly.
+
+prompt developer_system:
+  You are a feature implementation agent working on the carto TypeScript
+  CLI project. A planner has just explored the codebase in your session
+  and produced a plan. Execute the plan.
+
+  Project conventions (carto):
+  - Every shell command must be prefixed with `devbox run --`.
+    Verification commands: `devbox run -- pnpm typecheck`,
+    `devbox run -- pnpm lint`, `devbox run -- pnpm test`.
+    Running the CLI: `devbox run -- pnpm carto <cmd>`.
+  - Node >= 24, TypeScript ESM, Commander.js for CLI, zod for schemas.
+  - Long logs to stderr, machine output to stdout.
+  - Tests use node:test (`node --test`). Test files: `test/**/*.test.ts`.
+
+  Rules:
+  - Apply the plan step by step. After each step, re-read the touched files.
+  - Do not expand scope beyond the plan. If you find an issue outside scope,
+    note it in remaining_work but do not fix it.
+  - Follow existing patterns observed by the planner.
+  - Add or update tests per the plan.
+  - Before finishing, run `devbox run -- pnpm typecheck` and fix any TS errors.
+  - Produce a structured summary of what was changed and what remains.
+
+prompt developer_user:
+  Implement the feature according to this plan.
+
+  Feature title:
+  {{input.feature_title}}
+
+  Feature description:
+  {{input.feature_description}}
+
+  Acceptance criteria:
+  {{input.acceptance_criteria}}
+
+  Plan:
+  {{input.plan}}
+
+  Apply the plan now and produce a structured implementation report.
+
+## ─── Prompts : Phase review (identiques a pr_review_fix_dual) ───
+
+prompt context_builder_system:
+  You are a PR context builder.
+  Read the git diff between base and head, list changed files,
+  identify the PR's purpose from commit messages, and flag risky areas
+  (concurrency, security, error handling, database queries).
+  Be factual and exhaustive. Do not editorialize.
+
+prompt context_builder_user:
+  Build a structured PR context.
+
+  Base ref: {{vars.base_ref}}
+  Head ref: {{vars.head_ref}}
+
+  Feature being implemented:
+  Title: {{vars.feature_title}}
+  Description: {{vars.feature_description}}
+  Acceptance criteria: {{vars.acceptance_criteria}}
+
+  Developer report:
+  {{input.dev_report}}
+
+  Instructions:
+  1. Run git diff between base and head
+  2. List all changed files with their change type (added/modified/deleted)
+  3. Cross-check the developer report against the actual diff
+  4. Identify risky areas (concurrency, security, error handling, database)
+  5. Summarize changes by domain/package
+
+prompt reviewer_system:
+  You are a senior code reviewer. You combine TWO roles:
+
+  1. REVIEWER: evaluate code quality, error handling, idiomatic patterns,
+     security, correctness, and whether the acceptance criteria are met.
+     For each issue, cite file:line and classify as:
+     - BLOCKER: would break production, cause data loss/corruption, or
+       leave an acceptance criterion unmet
+     - SUGGESTION: style, naming, cosmetic, non-critical improvements
+
+  2. FIX PLANNER: if approved=false, produce a concrete, actionable fix_plan
+     targeting ONLY blockers. Each step must specify the file, the line range,
+     and the exact change to make.
+
+  BLOCKER classification — these are ALWAYS blockers, not suggestions:
+  - ACCEPTANCE CRITERIA NOT MET: any criterion left partially or unimplemented
+  - TYPE ERRORS: `tsc --noEmit` must pass; any `as any` added without explicit
+    justification, or any use of `@ts-ignore` / `@ts-expect-error` without
+    comment justifying why
+  - UNHANDLED PROMISE REJECTIONS: awaited async errors silently dropped,
+    floating promises (missing `await` or `.catch`), fire-and-forget I/O
+  - MISSING ERROR HANDLING: errors from fs, git, network, or SDK calls
+    silently discarded
+  - SECURITY: credential exposure (logged tokens, API keys in URLs),
+    missing input validation on external inputs, shell-injection via
+    unescaped user data in exec/spawn
+  - OUTPUT CHANNEL VIOLATIONS: progress/log text written to stdout instead
+    of stderr (breaks the "stderr=logs / stdout=machine output" contract)
+  - BROKEN HELP: Commander commands/options missing `.description()` when
+    acceptance criteria require exhaustive `--help`
+  - HARDCODED CONFIG: values that should come from env vars or config files
+    hardcoded at call sites
+
+  SUGGESTION classification — these are NEVER blockers:
+  - Code style, naming conventions, comment quality
+  - Log level choices
+  - Non-critical performance optimizations
+  - Missing JSDoc
+  - Deprecation warnings, backward compatibility concerns
+
+  Rules:
+  - approved=true means ZERO blockers AND all acceptance criteria met
+  - When in doubt between BLOCKER and SUGGESTION, choose BLOCKER
+  - Be factual: no compliments, no filler
+  - If typecheck/lint/test failed, those are automatic blockers
+  - Read the FULL file for each issue, not just the diff
+
+prompt reviewer_user:
+  Review this feature implementation.
+
+  Review rules:
+  {{input.review_rules}}
+
+  Acceptance criteria:
+  {{input.acceptance_criteria}}
+
+  PR context:
+  {{input.pr_context}}
+
+  Build/lint results:
+  {{input.build_check_results}}
+
+  Previous verdict from primary reviewer:
+  {{input.previous_claude_verdict}}
+
+  Previous verdict from cross-reviewer:
+  {{input.previous_codex_verdict}}
+
+  Previous fix summary (what the fixer did, including any false positives noted):
+  {{input.previous_fix_summary}}
+
+  For each changed file:
+  1. Read the diff and the full file
+  2. Identify concrete issues with file:line
+  3. Classify each as BLOCKER or SUGGESTION
+  4. Verify that each acceptance criterion is met
+  5. If approved=false, produce an actionable fix_plan targeting blockers only
+
+prompt verdict_system:
+  You are the final judge of this review iteration.
+
+  DECISION RULES:
+  1. Any build/lint failure -> approved=false
+  2. Any BLOCKER in the review -> approved=false
+  3. Any acceptance criterion unmet -> approved=false
+  4. Only SUGGESTIONS remaining AND all criteria met -> approved=true
+
+  TRUST THE REVIEWER'S CLASSIFICATION. Do NOT reclassify a BLOCKER as a
+  suggestion unless you can demonstrate with specific reasoning that the
+  reviewer made a factual error.
+
+  STAGNATION DETECTION: compare with previous_verdict. If the EXACT same
+  blockers appear across iterations, note this in the executive_summary.
+  Do NOT auto-approve — the workflow will fail and a human will decide.
+
+prompt verdict_user:
+  Evaluate this review and produce a verdict.
+
+  Review:
+  {{input.review}}
+
+  Build/lint results:
+  {{input.build_check_results}}
+
+  Review rules:
+  {{input.review_rules}}
+
+  Previous verdict (empty on first iteration):
+  {{input.previous_verdict}}
+
+  Produce:
+  1. A verdict (approved=true/false)
+  2. List of remaining blockers
+  3. List of suggestions
+  4. Executive summary (3-5 lines for the feature author)
+
+prompt codex_reviewer_system:
+  You are an independent code reviewer providing a second opinion.
+  A first reviewer has already approved this feature implementation.
+  Your job is to catch anything the first reviewer may have missed.
+
+  Use the SAME blocker classification rules, including:
+  - "acceptance criterion unmet" as a blocker
+  - TypeScript type errors, unhandled promise rejections, missing error
+    handling, security issues, stderr/stdout channel violations, broken
+    Commander `--help` descriptions, hardcoded config.
+
+  Be independent: do not rubber-stamp the first review. Read the actual code.
+  If you find new blockers, produce a fix_plan.
+
+  CRITICAL — SELF-CRITIQUE before classifying a BLOCKER:
+  For EACH potential blocker, ask yourself:
+  1. Am I reading the code correctly? Did I miss a guard nearby?
+  2. Is this actually reachable in production, or dead code?
+  3. Is the first reviewer right to NOT flag this?
+  Only classify as BLOCKER if confident after this self-check.
+  False positives waste entire fix loop iterations.
+
+  BUDGET — exploration must be frugal:
+  - Aim for ≤12 tool calls total, hard cap 15.
+  - You already have the full PR context, changed-file list, risky areas,
+    the acceptance criteria, and the primary reviewer's findings. Trust that
+    input; only read files when a specific claim requires verification.
+  - Tool-output discipline (every returned byte lands in your model context
+    on the next turn):
+      * ALWAYS Grep first to locate the exact lines relevant to a claim;
+        THEN Read with a bounded line range (offset + limit ≤ 80 lines).
+      * Do NOT Read whole source files. Do NOT Read files longer than
+        300 lines without a Grep-confirmed target range.
+      * Never Read or Grep inside: node_modules, dist, build, .next,
+        coverage, target, vendor, *.lock, *.d.ts generated by tooling,
+        pnpm-lock.yaml. These are tens of thousands of tokens each and
+        are not part of the change under review.
+      * Do not re-read the same file twice. If you need a second region,
+        do one bounded Read call that covers both.
+  - If you hit the tool budget before reaching a verdict, ship the verdict
+    you have based on the PR context — do not keep exploring.
+  Reason: each tool result accumulates into the conversation you see on
+  the next turn. Unbounded file reads blow codex's ~258k context window
+  and the turn ends without a verdict.
+
+prompt codex_reviewer_user:
+  Provide an independent second review.
+
+  Review rules:
+  {{input.review_rules}}
+
+  Acceptance criteria:
+  {{input.acceptance_criteria}}
+
+  PR context:
+  {{input.pr_context}}
+
+  Build/lint results:
+  {{input.build_check_results}}
+
+  First reviewer's assessment:
+  {{input.claude_verdict}}
+
+  Previous cross-review verdict (for stagnation awareness):
+  {{input.previous_codex_verdict}}
+
+  Instructions:
+  1. Read the critical files yourself
+  2. Focus on areas the first reviewer may have overlooked
+  3. Verify acceptance criteria independently
+  4. Classify issues as BLOCKER or SUGGESTION
+  5. If approved=false, produce a fix_plan for the new blockers
+
+## ─── Prompts : Commit ──────────────────────────────────────────
+
+prompt commit_namer_system:
+  You generate semantic commit messages for work just completed on the
+  carto project. You receive a structured description of what changed
+  and produce a single-line conventional commit message.
+
+  Format: type(scope): description
+  Types:
+    - feat     : new user-facing capability
+    - fix      : bug fix or review-blocker resolution
+    - refactor : code restructuring without behavior change
+    - test     : test-only changes
+    - docs     : documentation only (README, --help, comments)
+    - chore    : tooling, config, dependencies
+  Scope (pick the most affected area; keep short):
+    - cli, grist, inspect, secrets, columns, git, llm, config, docs
+  Description:
+    - Imperative mood ("add X", not "added X")
+    - Under 72 characters
+    - Specific: "fix(grist): retry 429 on auto-ia-run" not "fix grist"
+
+  SHELL SAFETY RULES (IMPORTANT):
+    - Do NOT include single quotes (') in the message
+    - Do NOT include double quotes (") in the message
+    - Do NOT include backticks (`) in the message
+    - Do NOT include newlines — single line only
+  The message is interpolated into a shell command. Any of these characters
+  will break the commit. Use plain prose only.
+
+prompt commit_namer_user:
+  Produce a commit message for the work just completed.
+
+  Change type (dev / claude-fix / codex-fix): {{input.change_type}}
+
+  Summary of work:
+  {{input.summary}}
+
+  Files changed:
+  {{input.files_changed}}
+
+  Produce type, scope, description, and full_message. The full_message must
+  follow the format "type(scope): description" and respect the shell safety
+  rules. No quotes, no backticks, no newlines.
+
+prompt fixer_system:
+  You are in a code review session for the carto TypeScript CLI project.
+  A reviewer has identified problems and you have access to their full
+  session context. EXECUTE the fix plan.
+
+  Project conventions (carto):
+  - Every shell command must be prefixed with `devbox run --`.
+    Bare `pnpm` / `node` / `tsc` will fail.
+  - Verification: `devbox run -- pnpm typecheck`,
+    `devbox run -- pnpm lint`, `devbox run -- pnpm test`.
+
+  Rules:
+  - Apply corrections methodically, one by one
+  - After each fix, re-read the file to verify correctness
+  - Only fix what the plan specifies - do not refactor beyond scope
+  - If a fix would break something else, note it in summary but still apply
+  - If a blocker turns out to be a false positive after reading the code,
+    note it clearly in summary (e.g. "B2 is a false positive because...")
+  - Before finishing, run `devbox run -- pnpm typecheck` on the workspace.
+
+prompt fixer_user:
+  Execute the following fix plan.
+
+  Fix plan:
+  {{input.fix_plan}}
+
+  Review rules:
+  {{input.review_rules}}
+
+  Apply the corrections and verify the rules are satisfied.
+
+## ─── Schemas ────────────────────────────────────────────────────
+
+schema feature_request:
+  feature_title: string
+  feature_description: string
+  acceptance_criteria: string
+
+schema plan_output:
+  summary: string
+  ordered_steps: string[]
+  files_to_create: string[]
+  files_to_modify: string[]
+  tests_required: string[]
+  risks: string[]
+  non_goals: string[]
+
+schema dev_input:
+  feature_title: string
+  feature_description: string
+  acceptance_criteria: string
+  plan: json
+
+schema dev_output:
+  summary: string
+  files_changed: string[]
+  commands_run: string[]
+  tests_run: string[]
+  remaining_work: string[]
+
+schema pr_context_request:
+  base_ref: string
+  head_ref: string
+  dev_report: json
+
+schema pr_context:
+  pr_title: string
+  pr_description: string
+  changed_files: string[]
+  summary: string
+  risky_areas: string[]
+
+schema review_request:
+  pr_context: json
+  review_rules: string
+  acceptance_criteria: string
+  build_check_results: string
+  previous_claude_verdict: string
+  previous_codex_verdict: string
+  previous_fix_summary: string
+
+schema review_result:
+  summary: string
+  blockers: string[]
+  suggestions: string[]
+  files_reviewed: string[]
+  approved: bool
+  fix_plan: string
+  confidence: string [enum: "low", "medium", "high"]
+
+schema check_input:
+  workspace_dir: string
+
+schema check_result:
+  passed: bool
+  exit_code: int
+  logs: string
+
+schema verdict_request:
+  review: json
+  build_check_results: json
+  review_rules: string
+  previous_verdict: string
+
+schema verdict_result:
+  approved: bool
+  blockers: string[]
+  suggestions: string[]
+  executive_summary: string
+  confidence: string [enum: "low", "medium", "high"]
+
+schema codex_review_request:
+  pr_context: json
+  review_rules: string
+  acceptance_criteria: string
+  build_check_results: json
+  claude_verdict: json
+  previous_codex_verdict: string
+
+schema fix_input:
+  fix_plan: string
+  review_rules: string
+
+schema fix_output:
+  applied: bool
+  summary: string
+  files_changed: string[]
+
+schema commit_context_input:
+  change_type: string
+  summary: string
+  files_changed: string[]
+
+schema commit_name_output:
+  type: string [enum: "feat", "fix", "refactor", "test", "docs", "chore"]
+  scope: string
+  description: string
+  full_message: string
+
+schema commit_tool_input:
+  workspace_dir: string
+  full_message: string
+
+schema commit_result:
+  success: bool
+  output: string
+
+## ─── Nodes : Phase dev [MAIN = Claude Code] ─────────────────────
+
+agent planner:
+  backend: "claude_code"
+  input: feature_request
+  output: plan_output
+  publish: plan
+  system: planner_system
+  user: planner_user
+  session: fresh
+  tools: [Bash, Read, Glob, Grep]
+  tool_max_steps: 20
+  readonly: true
+  reasoning_effort: high
+
+agent developer:
+  backend: "claude_code"
+  input: dev_input
+  output: dev_output
+  publish: dev_report
+  system: developer_system
+  user: developer_user
+  session: inherit
+  tools: [Bash, Read, Edit, Write, Glob, Grep]
+  tool_max_steps: 40
+  reasoning_effort: high
+
+## Commit namer after dev: generates a commit message from the developer's
+## structured output (summary + files_changed). session: fresh + data-passing
+## (not session: fork) because the same node is also reused in the fix path,
+## which may come from a codex-backed session — fork across backends is unsafe.
+agent commit_namer_post_dev:
+  backend: "claude_code"
+  input: commit_context_input
+  output: commit_name_output
+  system: commit_namer_system
+  user: commit_namer_user
+  session: fresh
+  readonly: true
+  reasoning_effort: high
+
+## Commit the dev's work BEFORE the build check (WIP commit pattern from
+## rust_to_go_port). If the build check fails afterwards, the work is
+## preserved and the fix loop can iterate. git commit is skipped if nothing
+## was staged (no-op safe).
+tool commit_post_dev:
+  command: "devbox run -- git -C {{input.workspace_dir}} add -A && devbox run -- git -C {{input.workspace_dir}} diff --cached --quiet || devbox run -- git -C {{input.workspace_dir}} commit -m {{input.full_message}}"
+  input: commit_tool_input
+  output: commit_result
+
+## Build check after dev: captures compile errors immediately.
+## If it fails, the reviewer will see the failing build in its input
+## and the fix loop will kick in naturally.
+tool build_check_post_dev:
+  command: "cd {{input.workspace_dir}} && devbox run -- pnpm typecheck && devbox run -- pnpm lint && devbox run -- pnpm test"
+  input: check_input
+  output: check_result
+
+## ─── Nodes : Phase review primaire [MAIN = Claude Code] ─────────
+## Toute la chaine de review primaire (+ fixer primaire) tourne sur
+## claude_code. C'est Claude qui porte la qualite du code.
+
+agent context_builder:
+  backend: "claude_code"
+  input: pr_context_request
+  output: pr_context
+  publish: pr_context
+  system: context_builder_system
+  user: context_builder_user
+  session: fresh
+  tools: [Bash, Read, Glob, Grep]
+  tool_max_steps: 15
+  reasoning_effort: high
+
+agent reviewer:
+  backend: "claude_code"
+  input: review_request
+  output: review_result
+  publish: claude_review
+  system: reviewer_system
+  user: reviewer_user
+  session: fresh
+  tools: [Bash, Read, Glob, Grep]
+  tool_max_steps: 25
+  readonly: true
+  reasoning_effort: high
+
+tool build_check:
+  command: "cd {{input.workspace_dir}} && devbox run -- pnpm typecheck && devbox run -- pnpm lint && devbox run -- pnpm test"
+  input: check_input
+  output: check_result
+
+judge verdict:
+  backend: "claude_code"
+  input: verdict_request
+  output: verdict_result
+  publish: claude_verdict
+  system: verdict_system
+  user: verdict_user
+  session: fresh
+  reasoning_effort: high
+
+## ─── Nodes : Support final [SUPPORT = Codex] ────────────────────
+## Codex n'intervient QUE apres approbation par Claude. Role strict :
+##   1. codex_reviewer / codex_verdict : second avis final
+##   2. codex_fixer : corrige UNIQUEMENT les blockers trouves par
+##      codex_reviewer (session: inherit).
+## Codex ne corrige jamais les blockers de Claude (claude_fixer s'en charge).
+
+agent codex_reviewer:
+  backend: "codex"
+  input: codex_review_request
+  output: review_result
+  publish: codex_review
+  system: codex_reviewer_system
+  user: codex_reviewer_user
+  session: fresh
+  tools: [Read, Glob, Grep]
+  tool_max_steps: 15
+  readonly: true
+  reasoning_effort: high
+
+judge codex_verdict:
+  backend: "codex"
+  input: verdict_request
+  output: verdict_result
+  publish: codex_verdict
+  system: verdict_system
+  user: verdict_user
+  session: fresh
+  reasoning_effort: high
+
+agent claude_fixer:
+  backend: "claude_code"
+  input: fix_input
+  output: fix_output
+  publish: fix_report
+  system: fixer_system
+  user: fixer_user
+  session: inherit
+  tools: [Bash, Read, Edit, Write, Glob, Grep]
+  tool_max_steps: 30
+  reasoning_effort: high
+
+agent codex_fixer:
+  backend: "codex"
+  input: fix_input
+  output: fix_output
+  publish: fix_report
+  system: fixer_system
+  user: fixer_user
+  session: inherit
+  tools: [Bash, Read, Edit, Write, Glob, Grep]
+  tool_max_steps: 30
+  reasoning_effort: high
+
+## Commit namer after fix: shared between claude_fixer and codex_fixer.
+## Two incoming edges (from either fixer) are OK because they are
+## mutually exclusive in time (only one fixer runs per iteration).
+agent commit_namer_post_fix:
+  backend: "claude_code"
+  input: commit_context_input
+  output: commit_name_output
+  system: commit_namer_system
+  user: commit_namer_user
+  session: fresh
+  readonly: true
+  reasoning_effort: high
+
+tool commit_post_fix:
+  command: "devbox run -- git -C {{input.workspace_dir}} add -A && devbox run -- git -C {{input.workspace_dir}} diff --cached --quiet || devbox run -- git -C {{input.workspace_dir}} commit -m {{input.full_message}}"
+  input: commit_tool_input
+  output: commit_result
+
+tool build_check_post_fix:
+  command: "cd {{input.workspace_dir}} && devbox run -- pnpm typecheck && devbox run -- pnpm lint && devbox run -- pnpm test"
+  input: check_input
+  output: check_result
+
+## ─── Workflow ───────────────────────────────────────────────────
+
+workflow feature_dev_review_fix_dual:
+  vars:
+    feature_title: string
+    feature_description: string
+    acceptance_criteria: string
+    base_ref: string = "HEAD"
+    head_ref: string = "HEAD"
+    review_rules: string = "- Acceptance criteria fully implemented\n- `devbox run -- pnpm typecheck` passes (no new type errors, no unjustified `as any` or `@ts-ignore`)\n- `devbox run -- pnpm lint` passes\n- `devbox run -- pnpm test` passes\n- No swallowed errors, no floating promises, no fire-and-forget I/O\n- Proper error wrapping with context\n- No hardcoded secrets or credentials; config via env vars\n- stderr for logs, stdout for machine output (carto convention)\n- Every Commander command/option has a `.description()`\n- No dead code or unused imports"
+
+  entry: planner
+
+  budget:
+    max_parallel_branches: 2
+    max_duration: "3h"
+    max_cost_usd: 75
+    max_tokens: 8000000
+    max_iterations: 60
+
+  ## ═══ Phase 0 : Plan → Implement ═══════════════════════════════
+
+  planner -> developer with {
+    feature_title: "{{vars.feature_title}}",
+    feature_description: "{{vars.feature_description}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}",
+    plan: "{{outputs.planner}}"
+  }
+
+  ## Commit the developer's work BEFORE the build check (WIP pattern).
+  ## Even if typecheck/lint/test fails next, the work is preserved in git.
+  developer -> commit_namer_post_dev with {
+    change_type: "dev",
+    summary: "{{outputs.developer.summary}}",
+    files_changed: "{{outputs.developer.files_changed}}"
+  }
+
+  commit_namer_post_dev -> commit_post_dev with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    full_message: "{{outputs.commit_namer_post_dev.full_message}}"
+  }
+
+  commit_post_dev -> build_check_post_dev with {
+    workspace_dir: "{{vars.workspace_dir}}"
+  }
+
+  build_check_post_dev -> context_builder with {
+    base_ref: "{{vars.base_ref}}",
+    head_ref: "{{vars.head_ref}}",
+    dev_report: "{{outputs.developer}}"
+  }
+
+  ## ═══ Phase 1 : Primary review -> build check -> verdict ═══════
+
+  context_builder -> reviewer with {
+    pr_context: "{{outputs.context_builder}}",
+    review_rules: "{{vars.review_rules}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}",
+    build_check_results: "{{outputs.build_check_post_dev}}",
+    previous_claude_verdict: "",
+    previous_codex_verdict: "",
+    previous_fix_summary: ""
+  }
+
+  reviewer -> build_check with {
+    workspace_dir: "{{vars.workspace_dir}}"
+  }
+
+  build_check -> verdict with {
+    review: "{{outputs.reviewer}}",
+    build_check_results: "{{outputs.build_check}}",
+    review_rules: "{{vars.review_rules}}",
+    previous_verdict: "{{outputs.verdict}}"
+  }
+
+  ## ═══ Phase 2 : Primary verdict routing ════════════════════════
+
+  verdict -> codex_reviewer when approved with {
+    pr_context: "{{artifacts.pr_context}}",
+    review_rules: "{{vars.review_rules}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}",
+    build_check_results: "{{outputs.build_check}}",
+    claude_verdict: "{{outputs.verdict}}",
+    previous_codex_verdict: "{{outputs.codex_verdict}}"
+  }
+
+  verdict -> claude_fixer when not approved as fix_loop(20) with {
+    _session_id: "{{outputs.reviewer._session_id}}",
+    fix_plan: "{{outputs.reviewer.fix_plan}}",
+    review_rules: "{{vars.review_rules}}"
+  }
+
+  verdict -> fail
+
+  ## ═══ Phase 3 : Cross-review -> cross verdict ══════════════════
+
+  codex_reviewer -> codex_verdict with {
+    review: "{{outputs.codex_reviewer}}",
+    build_check_results: "{{outputs.build_check}}",
+    review_rules: "{{vars.review_rules}}",
+    previous_verdict: "{{outputs.codex_verdict}}"
+  }
+
+  codex_verdict -> done when approved
+
+  ## Codex rejette -> codex_fixer corrige ce que codex_reviewer a trouve
+  ## (session inherit = fixer a deja lu les fichiers concernes).
+  ## Claude ne touche pas a ces blockers : c'est Codex qui decide et corrige.
+  codex_verdict -> codex_fixer when not approved as fix_loop(20) with {
+    _session_id: "{{outputs.codex_reviewer._session_id}}",
+    fix_plan: "{{outputs.codex_reviewer.fix_plan}}",
+    review_rules: "{{vars.review_rules}}"
+  }
+
+  codex_verdict -> fail
+
+  ## ═══ Phase 4 : Post-fix verify, then back to reviewer ═════════
+
+  ## Commit each fix BEFORE the build check, so every iteration leaves
+  ## a trace in git (even if the build breaks and the loop retries).
+  ## claude_fixer and codex_fixer both route to the shared commit_namer_post_fix;
+  ## they are mutually exclusive in time (only one fires per iteration).
+  claude_fixer -> commit_namer_post_fix with {
+    change_type: "claude-fix",
+    summary: "{{outputs.claude_fixer.summary}}",
+    files_changed: "{{outputs.claude_fixer.files_changed}}"
+  }
+
+  codex_fixer -> commit_namer_post_fix with {
+    change_type: "codex-fix",
+    summary: "{{outputs.codex_fixer.summary}}",
+    files_changed: "{{outputs.codex_fixer.files_changed}}"
+  }
+
+  commit_namer_post_fix -> commit_post_fix with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    full_message: "{{outputs.commit_namer_post_fix.full_message}}"
+  }
+
+  commit_post_fix -> build_check_post_fix with {
+    workspace_dir: "{{vars.workspace_dir}}"
+  }
+
+  build_check_post_fix -> reviewer as fix_loop(20) with {
+    pr_context: "{{artifacts.pr_context}}",
+    review_rules: "{{vars.review_rules}}",
+    acceptance_criteria: "{{vars.acceptance_criteria}}",
+    build_check_results: "{{outputs.build_check_post_fix}}",
+    previous_claude_verdict: "{{outputs.verdict}}",
+    previous_codex_verdict: "{{outputs.codex_verdict}}",
+    previous_fix_summary: "{{artifacts.fix_report}}"
+  }
