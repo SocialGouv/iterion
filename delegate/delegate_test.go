@@ -209,11 +209,11 @@ func TestCodexSandboxForAllowedTools(t *testing.T) {
 		allowed []string
 		want    string
 	}{
-		{"empty preserves unrestricted default", nil, "danger-full-access"},
-		{"bash unlocks full access", []string{"Read", "Bash"}, "danger-full-access"},
-		{"edit is mutating", []string{"Read", "Edit"}, "danger-full-access"},
-		{"write is mutating", []string{"Write"}, "danger-full-access"},
-		{"notebookedit is mutating", []string{"NotebookEdit"}, "danger-full-access"},
+		{"empty allowlist defaults to read-only (fail-safe)", nil, "read-only"},
+		{"bash unlocks workspace-write, not full-access", []string{"Read", "Bash"}, "workspace-write"},
+		{"edit is mutating -> workspace-write", []string{"Read", "Edit"}, "workspace-write"},
+		{"write is mutating -> workspace-write", []string{"Write"}, "workspace-write"},
+		{"notebookedit is mutating -> workspace-write", []string{"NotebookEdit"}, "workspace-write"},
 		{"read-only reviewer stays read-only", []string{"Read", "Glob", "Grep"}, "read-only"},
 		{"single read tool stays read-only", []string{"Grep"}, "read-only"},
 		{"unknown name falls through to read-only", []string{"SomeFutureTool"}, "read-only"},

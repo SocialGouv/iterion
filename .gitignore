@@ -33,3 +33,4 @@ server/static/index.html
 
 # Claude
 .claude/*.local.json
+.scratch/
