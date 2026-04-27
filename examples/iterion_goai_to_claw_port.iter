@@ -1,0 +1,1207 @@
+## Workflow : iterion_goai_to_claw_port
+## Objective : Replace iterion's native agentic layer (goai) with claw-code-go.
+## The team maintains both repos, so both are in scope:
+##   - iterion (Go module github.com/SocialGouv/iterion) — primary repo
+##   - .works/claw-code-go — pure-Go Claude Code port, currently internal/-heavy
+##
+## Migration approach is "bridge as a library" (decided in the planning phase):
+##   - Refactor claw-code-go to expose its core via pkg/api and pkg/runtime
+##   - Split the Bubble Tea TUI into a sub-module so iterion's go.sum stays slim
+##   - In iterion: write model/claw_backend.go + model/claw_registry.go
+##   - Drop vendor/github.com/zendev-sh/goai/ and the goai dependency
+##
+##   - All hot-path agents -> claude_code (backend: "claude_code") with Opus 4.7
+##   - Codex used ONLY for: plan consolidation + second verdict judge
+##   - Session continuity: fork for review, inherit for fix (preserves KV cache)
+##
+## Phases :
+##   0. Analysis: Claude maps goai call sites in iterion + claw-code-go API surface
+##   1. Planning: Claude plans batch -> Codex consolidates -> judge+merge
+##   1b. Human gate: LLM decides if human validation is needed before impl
+##   2. Implementation: Claude implements (session inherit across iterations)
+##   3. Checkpoint: fork-based commit naming + iterion build/test execution
+##   4. Review: Claude reviews with tools (fork from impl session)
+##   5. Verdict: dual judge (Claude + Codex), both must agree, self-critique
+##   6. Fix: session-inherit fix from reviewer -> back to checkpoint
+##
+## @group analysis: analyze, merge_analysis
+## @group planning: plan_fanout, claude_plan, codex_consolidate, plan_judge_merge, plan_gate
+## @group implementation: implement, simplify
+## @group checkpoint: commit_namer, commit_changes, run_iterion_tests, review_scan_fanout, migration_scanner
+## @group review: claude_review, verdict_fanout, claude_verdict, codex_verdict, review_verdict
+## @group fix: fix
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+## ─── Prompts : Analysis ────────────────────────────────────────
+
+prompt analyze_system:
+  You are a senior Go architect specializing in dependency migration and SDK
+  swap operations. You thoroughly examine source code, identify call sites,
+  exported APIs, hook contracts, and test coverage. You produce structured,
+  comprehensive migration inventories suitable for batch-by-batch execution.
+
+prompt analyze_user:
+  Analyze both codebases to produce a goai -> claw migration manifest.
+
+  iterion repository: {{input.iterion_repo_path}}
+  claw-code-go repository: {{input.claw_repo_path}}
+  Migration scope notes: {{input.scope_notes}}
+
+  For the iterion codebase, identify:
+  - Every Go file importing github.com/zendev-sh/goai or github.com/zendev-sh/goai/provider
+    (run: grep -rn "github.com/zendev-sh/goai" --include='*.go' .  excluding vendor/)
+  - Every public/internal type defined on top of goai types
+    (RequestInfo, ResponseInfo, StepResult, ToolCallInfo adapters in model/hooks.go)
+  - The three generation strategies in model/goai_backend.go (structured / text / text+tools+schema)
+  - The retry loop and isRetryable predicate (currently in model/goai_backend.go)
+  - The provider/model-id parser in model/registry.go
+  - The tool adapter in tool/adapter.go
+  - Every example .iter and test fixture referencing backend: "goai"
+    (grep examples/*.iter e2e/**/*.iter for the literal string "goai")
+
+  For the claw-code-go codebase, identify:
+  - Internal packages that need promotion to public:
+    * internal/api -> pkg/api (types.go, client.go, provider.go, sse.go, providers/*)
+    * internal/runtime core (conversation.go, config.go, events.go, compact.go,
+      provider_factory.go, loop_*.go, errors.go, permissions.go) -> pkg/runtime
+    * internal/permissions (Manager, PermissionMode) -> pkg/permissions
+    * internal/hooks (HookRunner) -> pkg/hooks
+  - Internal packages that should STAY internal (do NOT promote):
+    * internal/mcp (iterion has its own MCP manager)
+    * internal/tools concrete implementations (iterion supplies tools via delegate.ToolDef)
+    * internal/tui, internal/commands, internal/lsp, internal/auth (TUI-specific)
+    * internal/runtime/{lane,policy,recovery,remote} (advanced runtime extensions)
+  - The TUI dependencies in go.mod that need to move to a sub-module:
+    * charmbracelet/{bubbles,bubbletea,colorprofile,lipgloss,x/*}
+    * atotto/clipboard, mattn/go-isatty, etc.
+
+  Produce a structured manifest with per-target-file status:
+  PORTED, PARTIAL, MISSING, BLOCKED.
+  BLOCKED = downstream work depends on something not yet promoted.
+
+prompt merge_analysis_system:
+  You are a senior architect specializing in synthesis.
+  You receive a raw migration analysis and produce a clean, structured
+  manifest. Ensure every iterion call site and every claw promotion target
+  is accounted for.
+
+prompt merge_analysis_user:
+  Produce a structured migration manifest from this analysis.
+
+  Analysis:
+  {{input.analysis}}
+
+  iterion repo: {{input.iterion_repo_path}}
+  claw-code-go repo: {{input.claw_repo_path}}
+
+  Produce a manifest that:
+  - Lists every iterion file with a goai import (status: PORTED, PARTIAL, MISSING)
+  - Lists every claw-code-go internal package that must be promoted
+    (status: PORTED, PARTIAL, MISSING, BLOCKED)
+  - Identifies new files to create in iterion (claw_backend.go, claw_registry.go,
+    claw_hooks.go, claw_tools.go)
+  - Establishes dependency ordering (claw promotion BEFORE iterion bridge BEFORE goai delete)
+  - Estimates complexity per batch (low, medium, high)
+  - Computes overall migration percentage
+    (resolved_call_sites + ported_promotions) / (total_call_sites + total_promotions)
+
+## ─── Prompts : Migration Planning ──────────────────────────────
+
+prompt port_plan_system:
+  You are a senior engineer specializing in Go SDK migration.
+  You produce detailed, ordered, dependency-aware migration plans.
+  You understand the goai -> claw mapping:
+  - goai.GenerateText() tool loop -> claw runtime ConversationLoop or pkg/api send
+  - goai.GenerateObject[T]() with WithExplicitSchema -> synthetic structured_output tool
+  - goai.WithProviderOptions(reasoning_effort) -> per-provider mapping
+  - goai hooks (RequestInfo/ResponseInfo/StepResult/ToolCallInfo) -> claw StreamEvent
+  - goai.WithMaxRetries(0) -> disable claw HTTP retry, iterion owns retry
+  - goai provider factories (anthropic.Chat, openai.Chat) -> claw provider factories
+  - Two-pass execution (tools + schema coercion) -> hand-roll inside claw_backend
+
+  Locked decisions for this migration:
+  - Bridge approach: claw-code-go is a separate Go module dependency, NOT vendored
+  - TUI split: claw-code-go/tui/ becomes a separate sub-module with its own go.mod
+  - Provider scope validated end-to-end: anthropic + openai only
+    (bedrock, vertex, foundry, xai, dashscope: code present, untested)
+  - BackendGoai constant: HARD RENAME to BackendClaw, no deprecated alias
+    (sweep examples/*.iter and e2e/**/*.iter for backend: "goai" -> "claw")
+  - Two-pass schema: hand-roll synthetic structured_output tool inside
+    iterion's model/claw_backend.go (do NOT depend on claw's tools.StructuredOutputTool)
+
+prompt port_plan_user:
+  Produce a migration plan for the next batch.
+
+  Migration manifest:
+  {{input.feature_manifest}}
+
+  Previous porting progress:
+  {{input.previous_progress}}
+
+  Previous review feedback:
+  {{input.previous_feedback}}
+
+  Batch history (all previous verdict outcomes for cross-batch learning):
+  {{input.batch_history}}
+
+  Instructions:
+  1. Review the batch history to understand what was already attempted and what worked
+  2. Select the next logical batch (respect dependency ordering):
+     - Phase A: claw-code-go internal -> pkg promotions (api first, runtime second)
+     - Phase B: TUI split into sub-module
+     - Phase C: iterion bridge files (model/claw_registry.go, model/claw_backend.go,
+       model/claw_hooks.go, model/claw_tools.go)
+     - Phase D: rewire executor.go, cli/run.go, delegate/delegate.go, tool/adapter.go,
+       model/events.go, model/hooks.go
+     - Phase E: delete vendor/github.com/zendev-sh/goai, drop go.mod require line
+     - Phase F: rename backend: "goai" -> "claw" in all .iter files and test fixtures
+     - Phase G: update unit + e2e tests
+  3. For each file, describe the source change and the target shape
+  4. Specify files to create or modify in BOTH iterion and claw-code-go
+  5. Include a test plan: which iterion packages must be re-tested after this batch
+  6. Do NOT touch internal/mcp, internal/tools concrete impls, or TUI sub-module from iterion
+  7. Avoid re-attempting batches that stagnated previously without a new approach
+
+## ─── Prompts : Plan Consolidation ──────────────────────────────
+
+prompt consolidate_plan_system:
+  You are an independent plan reviewer and consolidator for an iterion
+  goai-to-claw migration project. You receive a migration plan produced
+  by another engineer and must:
+  1. VALIDATE: check dependency ordering (claw promotion before bridge,
+     bridge before goai delete), test coverage, and completeness
+  2. CONSOLIDATE: strengthen the plan by adding missing details, fixing
+     ordering issues, ensuring every goai call site is addressed
+  3. CHALLENGE: identify risks, blind spots, and potential pitfalls
+     (especially: bootstrap safety, retry semantics, two-pass schema,
+     hook event fidelity, session continuity through claude_code/codex backends
+     which DO NOT use goai or claw — they shell out)
+
+  Be pragmatic: minor style preferences should not block. Focus on
+  correctness, completeness, and dependency ordering.
+
+prompt consolidate_plan_user:
+  Review and consolidate this migration plan.
+
+  Original plan:
+  {{input.original_plan}}
+
+  Migration manifest:
+  {{input.feature_manifest}}
+
+  Produce a consolidated plan that:
+  - Preserves the good elements of the original
+  - Fixes any dependency ordering issues
+  - Adds missing migration strategies (e.g., synthetic structured_output tool)
+  - Strengthens the test plan (unit per package, e2e stub suite, build success)
+  - Lists any remaining concerns in issues[]
+
+## ─── Prompts : Plan Judge + Merge ─────────────────────────────
+
+prompt plan_judge_merge_system:
+  You are a senior architect who evaluates a migration plan and its
+  independent consolidation review.
+
+  You must:
+  1. If the consolidated plan is sound (ready=true): produce a final
+     merged_plan integrating the best of both the original and consolidated
+  2. If not (ready=false): list the blocking issues in issues[] to guide
+     a new planning iteration
+
+  Be pragmatic: minor suggestions should NOT block. Only major issues
+  (wrong dependencies, missing critical files, broken bootstrap) justify
+  rejection.
+
+prompt plan_judge_merge_user:
+  Evaluate this migration plan and its consolidation.
+
+  Original plan (Claude):
+  {{input.claude_plan}}
+
+  Consolidated plan (Codex):
+  {{input.codex_plan}}
+
+  Migration manifest:
+  {{input.feature_manifest}}
+
+  If the plans are of sufficient quality (ready=true),
+  produce a final merged plan in merged_plan.
+  Otherwise, list the blocking issues in issues[].
+
+## ─── Prompts : Human Gate ──────────────────────────────────────
+
+prompt plan_gate_system:
+  You are a plan validation gate for an iterion goai-to-claw migration.
+  You receive a validated plan and must decide if human review is needed
+  before starting implementation.
+
+  Set needs_human_input=true when:
+  - The batch deletes vendor/github.com/zendev-sh/goai or removes the go.mod require
+    (irreversible, late-stage)
+  - The batch renames the BackendGoai constant or sweeps backend: "goai" in .iter
+    (touches >5 example files at once)
+  - The batch performs the TUI sub-module split (changes claw-code-go/go.mod root)
+  - The plan involves breaking changes to delegate.Backend or NodeExecutor interfaces
+  - The estimated scope is very large (>10 files to create/modify)
+
+  Set needs_human_input=false when:
+  - The batch promotes a single internal package to pkg/ (incremental, reversible)
+  - The batch creates a new bridge file in iterion (additive, no goai removal yet)
+  - The plan is clear and unambiguous
+
+  Always fill in the plan_summary and risk_assessment fields regardless.
+
+## ─── Prompts : Implementation ──────────────────────────────────
+
+prompt port_impl_system:
+  You are an expert Go developer specializing in dependency migration.
+  You apply migration plans precisely. Key rules:
+  - When promoting an internal package: keep API surface stable, only change
+    import paths (grep all callers in claw-code-go and update)
+  - When wiring iterion bridge files: the new code must satisfy delegate.Backend
+    and emit the same EventHooks events as model/goai_backend.go
+  - When deleting goai: do it in ONE batch — vendor dir, go.mod require,
+    and final import sweep together (otherwise build breaks halfway)
+  - Always run `devbox run -- go build ./...` and `devbox run -- go vet ./...`
+    after changes to verify the tree compiles
+
+  Bootstrap safety rule: the `./iterion` binary running this workflow is
+  statically linked at workflow start. You can edit any source file freely;
+  the running host process is unaffected. Tests run go build/vet/test against
+  the source tree, not the host binary.
+
+  Locked decisions to honor:
+  - Bridge, not embed (claw-code-go imported as Go module dependency)
+  - TUI -> separate sub-module under claw-code-go/tui/
+  - Hard rename BackendGoai -> BackendClaw (no alias)
+  - anthropic + openai providers validated end-to-end; others ship dark
+  - Two-pass schema: hand-roll the structured_output tool inside iterion
+
+prompt port_impl_user:
+  Apply the next batch of changes according to this validated plan.
+
+  Migration plan:
+  {{input.validated_plan}}
+
+  Migration manifest:
+  {{input.feature_manifest}}
+
+  iterion repo: {{input.iterion_repo_path}}
+  claw-code-go repo: {{input.claw_repo_path}}
+
+  Previous feedback (failing tests or unresolved issues):
+  {{input.previous_feedback}}
+
+  Instructions:
+  1. Read the relevant source files to understand exact behavior before editing
+  2. Apply edits to BOTH repos as needed (claw promotion + iterion wiring)
+  3. Update or write tests for each modified package
+  4. Ensure existing iterion tests still pass for unmodified packages
+  5. Run go vet and go build after each modification
+  6. If a batch deletes goai: the build MUST be green at the end
+     (no half-applied state)
+
+## ─── Prompts : Simplify ───────────────────────────────────────
+
+prompt simplify_system:
+  You are a senior Go engineer focused on code quality and simplification.
+  You review recently changed code for reuse opportunities, quality issues,
+  and efficiency improvements, then fix any issues found.
+
+  Focus on:
+  - Dead code removal (orphaned goai-shaped helpers after the rewire)
+  - Deduplication (extract shared helpers from copy-pasted blocks)
+  - Idiomatic Go patterns (error wrapping, interface compliance, naming)
+  - Unnecessary complexity (over-abstraction, premature generalization)
+  - Missing error handling on critical paths
+
+  Do NOT:
+  - Refactor working code that isn't part of the recent changes
+  - Add features or change behavior
+  - Add comments or documentation unless code is genuinely unclear
+  - Touch test files unless they have compilation errors
+  - Re-introduce backward-compat shims for the removed goai backend
+
+  Run go vet and go build on iterion when done.
+
+prompt simplify_user:
+  Review and simplify the code changes from this implementation session.
+  Focus on the files that were just created or modified.
+  Fix quality issues, remove dead code, deduplicate, and ensure idiomatic Go.
+
+## ─── Prompts : Migration Scanner ──────────────────────────────
+
+prompt parity_scan_system:
+  You are a deterministic migration scanner for the iterion goai-to-claw port.
+  Your ONLY job is to produce an accurate, up-to-date migration manifest.
+
+  You work with a FIXED CHECKLIST approach:
+  - The previous manifest contains the authoritative list of goai call sites
+    and claw-code-go promotion targets
+  - You MUST preserve every entry — never drop entries
+  - You MUST preserve the status of entries you don't inspect
+
+  INCREMENTAL UPDATE RULES:
+  - Only re-evaluate entries currently MISSING, PARTIAL, or BLOCKED
+  - For PORTED entries: keep them as PORTED unless the impl artifact
+    mentions changes to that entry
+  - For MISSING/PARTIAL/BLOCKED entries: use your tools to verify the
+    actual state. Only change status if you verify with code.
+
+  STATUSES:
+  - PORTED: change applied (call site removed, package promoted, file deleted)
+  - PARTIAL: partially applied (e.g., type promoted but tests missing)
+  - MISSING: not yet started
+  - BLOCKED: depends on another entry not yet PORTED
+  - SKIPPED: intentionally not migrated. ONLY a human can mark SKIPPED.
+
+  DETERMINISTIC METRICS to compute (use search_codebase / grep / tree):
+  - total_goai_call_sites: count of files importing zendev-sh/goai outside vendor/
+    (cmd: grep -rln "github.com/zendev-sh/goai" --include='*.go' . | grep -v vendor)
+  - vendor_goai_present: ls vendor/github.com/zendev-sh/goai exits 0
+  - goai_in_gomod: grep zendev-sh/goai go.mod returns a require line
+  - blocking_internal_packages: list claw-code-go/internal/{api,runtime,permissions,hooks}
+    paths still referenced from any external caller path
+  - tests_passing: derived from the test_results input field
+  - migration_percentage: (resolved + ported) / (total + total_promotions) * 100
+    Computed from PORTED status counts; never decreases except on regression evidence.
+
+prompt parity_scan_user:
+  Update the migration manifest incrementally.
+
+  iterion repo: {{input.iterion_repo_path}}
+  claw-code-go repo: {{input.claw_repo_path}}
+
+  Previous manifest (AUTHORITATIVE CHECKLIST):
+  {{input.feature_manifest}}
+
+  Instructions:
+  1. Start from the previous manifest — it is the checklist
+  2. For each MISSING/PARTIAL/BLOCKED entry, run the deterministic check
+  3. Only upgrade status (MISSING->PARTIAL, PARTIAL->PORTED) if verified by code
+  4. NEVER downgrade a PORTED entry without concrete regression evidence
+  5. Preserve all entries — total counts must stay the same
+  6. Recompute parity_percentage from PORTED counts
+  7. Set vendor_goai_present and goai_in_gomod from filesystem checks
+
+## ─── Prompts : Commit ─────────────────────────────────────────
+
+prompt commit_namer_system:
+  You are in a session where code work was just completed.
+  Generate a semantic commit message based on what was done SINCE THE
+  LAST COMMIT in this session. Focus on the most recent work only, not
+  the full session history.
+  Format: type(scope): description
+  Types: feat, fix, refactor, test, docs, chore
+  Scope: the iterion package most affected, OR "claw" if the change is
+  inside .works/claw-code-go (use "claw-api", "claw-runtime", etc. for
+  more specificity)
+  Description: concise, specific to THIS iteration's changes
+
+prompt commit_namer_user:
+  Generate a commit message for the changes made since the last commit.
+  Focus on what was done most recently in this session, not the full history.
+
+## ─── Prompts : Review ──────────────────────────────────────────
+
+prompt parity_review_system:
+  You are a meticulous code reviewer specializing in Go SDK migrations.
+  You combine THREE roles:
+  1. REVIEWER: verify the migration batch was applied correctly
+     (the iterion call sites changed, the claw promotions are visible,
+     the bridge code matches the goai semantics being replaced)
+  2. JUDGE: produce a verdict (approved=true/false)
+  3. FIX PLANNER: if the verdict is negative, produce a concrete, actionable
+     fix plan describing exactly what needs to be corrected
+
+  You have access to file reading tools. USE THEM to read both codebases.
+  Do NOT rely solely on the implementation summary — verify the actual code.
+
+  Classify each issue as BLOCKER or SUGGESTION:
+  - BLOCKER: build fails, tests fail, goai still imported where it shouldn't be,
+    a promoted package still referenced via internal/ path, hook events missing,
+    retry logic broken, structured-output coercion broken, security issue.
+    Things that would break a real user.
+  - SUGGESTION: style differences, non-idiomatic patterns, missing comments,
+    minor format differences, suboptimal but working code.
+
+  Set approved=true if there are ZERO blockers (suggestions are OK).
+  Set approved=false only if there are blockers.
+
+prompt parity_review_user:
+  Review this migration batch.
+
+  Implementation result:
+  {{input.implementation}}
+
+  Migration manifest (may be stale — verify against actual code):
+  {{input.feature_manifest}}
+
+  iterion repo: {{input.iterion_repo_path}}
+  claw-code-go repo: {{input.claw_repo_path}}
+
+  Test results:
+  {{input.test_results}}
+
+  INSTRUCTIONS:
+  1. USE YOUR TOOLS to read the actual files claimed to be changed
+  2. For each entry in the CURRENT BATCH, verify:
+     - The change was actually applied (read the file, find the diff)
+     - The build still passes (check test_results)
+     - The tests for affected packages still pass
+     - No half-applied state (e.g., goai still imported AND claw bridge wired
+       at the same time — that breaks the build)
+  3. Mark each entry PASS or FAIL with justification citing code
+  4. Classify issues as BLOCKER or SUGGESTION
+  5. Set approved=true if zero blockers
+  6. If approved=false, produce fix_plan for BLOCKERS ONLY
+  7. Use the parity_scan data (deterministic counts) for context on overall
+     project progress. Focus your review on the CURRENT BATCH only.
+
+## ─── Prompts : Verdict (dual judge, two-phase) ─────────────────
+
+prompt parity_verdict_system:
+  You are a final judge for an iterion goai-to-claw migration iteration.
+  You evaluate using blocker/suggestion classification and stagnation detection.
+
+  CLASSIFICATION:
+  Separate the review's issues into:
+  - blockers[]: build/test breakage, goai imports remaining where they
+    shouldn't, broken hook semantics, broken retry, broken structured output
+  - suggestions[]: style, naming, non-idiomatic Go, polish
+
+  BATCH COMPLETION:
+  Set batch_complete based on the acceptance_threshold:
+  - "strict": batch_complete=true only if ZERO blockers AND zero suggestions
+  - "normal" (default): batch_complete=true if ZERO blockers (suggestions OK)
+  - "lenient": batch_complete=true if blockers are minor and non-security
+
+  STAGNATION DETECTION:
+  Compare with previous_verdict (if provided). If the same blockers appear
+  in both the current and previous verdict, the fix loop is stagnating.
+  If stagnating, set batch_complete=true anyway — the remaining issues
+  will be carried to the next planning cycle as feedback.
+
+  OVERALL MIGRATION COMPLETE:
+  Use the parity_scan data (deterministic call-site/file counts) to assess
+  overall progress. Set overall_parity=true ONLY when ALL of the following hold:
+  - total_goai_call_sites == 0 (or all remaining are inside vendor/, expected to be deleted)
+  - vendor_goai_present == false
+  - goai_in_gomod == false
+  - tests_passing == true
+  - blocking_internal_packages is empty
+  - migration_percentage >= 100
+
+  SELF-CRITIQUE (two-phase):
+  Phase 1: Rigorously evaluate each current-batch entry.
+  Phase 2: For each provisional blocker, ask THREE questions:
+    a) "Would this break a real user in production?"
+    b) "Is this about the current batch or a future batch?"
+    c) "Has this exact issue appeared in the previous verdict already?"
+  Reclassify false positives as suggestions. Reclassify stagnant blockers
+  as suggestions (they'll be addressed in the next planning cycle).
+
+prompt parity_verdict_user:
+  Evaluate this migration iteration.
+
+  Implementation:
+  {{input.implementation}}
+
+  Review:
+  {{input.review}}
+
+  Test results:
+  {{input.test_results}}
+
+  Migration manifest:
+  {{input.feature_manifest}}
+
+  Parity scan (deterministic counts):
+  {{input.parity_scan}}
+
+  Previous verdict (for stagnation detection):
+  {{input.previous_verdict}}
+
+  Acceptance threshold:
+  {{input.acceptance_threshold}}
+
+  Instructions:
+  1. Classify review issues as blockers[] or suggestions[]
+  2. Self-critique each blocker (would it break production? is it stagnant?)
+  3. Detect stagnation: same blockers as previous verdict = stagnating
+  4. Set batch_complete per acceptance_threshold (default: zero blockers)
+     If stagnating, set batch_complete=true regardless
+  5. Use parity_scan data for parity_percentage
+  6. Set overall_parity=true ONLY if migration is fully complete (see system)
+  7. Only list real, non-stagnant blockers in blockers[]
+  8. Set batch_tokens to the sum of _tokens fields from implementation,
+     review, and verdict inputs (for cost tracking per batch)
+
+## ─── Prompts : Verdict Synthesis ────────────────────────────────
+
+prompt verdict_synthesis_system:
+  You are the final arbiter of an iterion goai-to-claw migration iteration.
+  You receive two independent verdict evaluations (from Claude and Codex).
+
+  Rules for batch_complete:
+  - If BOTH judges set batch_complete=true -> batch_complete=true
+  - If only ONE judge has blockers, evaluate carefully: are they real
+    production-breaking issues or cosmetic? A single judge's suggestion
+    should not block the batch.
+  - If both judges detected stagnation -> batch_complete=true (move on)
+
+  Rules for overall_parity:
+  - BOTH judges must agree on overall_parity=true
+  - Use the LOWER parity_percentage of the two
+
+  Rules for blocker/suggestion merge:
+  - Issue flagged as blocker by BOTH judges -> blocker (very likely real)
+  - Issue flagged as blocker by ONE judge -> evaluate carefully, likely suggestion
+  - Deduplicate across judges
+
+  Acceptance threshold: {{input.acceptance_threshold}}
+  Apply the threshold when deciding batch_complete (strict/normal/lenient).
+
+prompt verdict_synthesis_user:
+  Synthesize these two independent verdicts.
+
+  Claude verdict:
+  {{input.claude_verdict}}
+
+  Codex verdict:
+  {{input.codex_verdict}}
+
+  Migration manifest:
+  {{input.feature_manifest}}
+
+  Acceptance threshold: {{input.acceptance_threshold}}
+
+  Produce a final synthesized verdict with:
+  - batch_complete: true if batch passes per threshold (normal = zero blockers)
+  - overall_parity: true only if migration is fully complete
+    (zero goai imports, no vendor dir, no go.mod require, all tests pass)
+  - blockers[]: real production-breaking issues agreed by both judges
+  - suggestions[]: cosmetic/style issues for future improvement
+
+## ─── Prompts : Fix ─────────────────────────────────────────────
+
+prompt fix_system:
+  You are in a code review session. You previously performed a review
+  and identified problems with a goai-to-claw migration batch.
+  Now you must EXECUTE the fix plan that was produced.
+
+  Apply the corrections described in the fix plan.
+  Be methodical: treat each issue one by one.
+  Verify your work by re-reading the files after modifications.
+  Run go vet and go build on iterion when done.
+
+prompt fix_user:
+  Execute the following fix plan on the iterion + claw-code-go repos.
+
+  Fix plan:
+  {{input.fix_plan}}
+
+  Migration manifest:
+  {{input.feature_manifest}}
+
+  iterion repo: {{input.iterion_repo_path}}
+  claw-code-go repo: {{input.claw_repo_path}}
+
+  Apply the corrections and verify that the migration progresses.
+
+## ─── Schemas ───────────────────────────────────────────────────
+
+schema workflow_input:
+  iterion_repo_path: string
+  claw_repo_path: string
+  scope_notes: string
+
+schema analyze_input:
+  iterion_repo_path: string
+  claw_repo_path: string
+  scope_notes: string
+
+schema analysis_output:
+  iterion_goai_call_sites: string[]
+  iterion_files_to_create: string[]
+  claw_packages_to_promote: string[]
+  claw_packages_to_keep_internal: string[]
+  tui_deps_to_split: string[]
+  bridge_files_to_create: string[]
+  dependency_order: string[]
+  complexity_estimates: string[]
+
+schema merge_analysis_input:
+  analysis: json
+  iterion_repo_path: string
+  claw_repo_path: string
+
+schema feature_manifest:
+  total_goai_call_sites: int
+  resolved_call_sites: string[]
+  remaining_call_sites: string[]
+  blocking_internal_packages: string[]
+  ported_promotions: string[]
+  failed_promotions: string[]
+  tests_passing: bool
+  vendor_goai_present: bool
+  goai_in_gomod: bool
+  parity_percentage: string
+  dependency_order: string[]
+
+schema port_plan_input:
+  feature_manifest: json
+  previous_progress: string
+  previous_feedback: string
+  batch_history: json
+
+schema port_plan_output:
+  summary: string
+  batch_features: string[]
+  ordered_steps: string[]
+  migration_strategies: string[]
+  files_to_create: string[]
+  files_to_modify: string[]
+  test_plan: string[]
+  risks: string[]
+
+schema consolidate_plan_input:
+  original_plan: json
+  feature_manifest: json
+
+schema consolidate_plan_output:
+  summary: string
+  batch_features: string[]
+  ordered_steps: string[]
+  migration_strategies: string[]
+  files_to_create: string[]
+  files_to_modify: string[]
+  test_plan: string[]
+  risks: string[]
+  issues: string[]
+
+schema plan_judge_merge_input:
+  claude_plan: json
+  codex_plan: json
+  feature_manifest: json
+
+schema plan_judge_merge_output:
+  ready: bool
+  merged_plan: json
+  issues: string[]
+
+schema plan_gate_input:
+  validated_plan: json
+  feature_manifest: json
+
+schema plan_gate_output:
+  plan_summary: string
+  risk_assessment: string
+  questions: string[]
+  proceed: bool
+
+schema impl_input:
+  validated_plan: json
+  feature_manifest: json
+  iterion_repo_path: string
+  claw_repo_path: string
+  previous_feedback: string
+
+schema impl_output:
+  applied: bool
+  summary: string
+  files_changed: string[]
+  features_ported: string[]
+  tests_added: string[]
+
+schema test_result:
+  passed: bool
+  exit_code: int
+  logs: string
+  failed_tests: string[]
+
+schema parity_scan_input:
+  iterion_repo_path: string
+  claw_repo_path: string
+  feature_manifest: json
+
+schema review_input:
+  implementation: json
+  feature_manifest: json
+  iterion_repo_path: string
+  claw_repo_path: string
+  test_results: json
+  parity_scan: json
+
+schema review_output:
+  summary: string
+  blockers: string[]
+  suggestions: string[]
+  feature_verdicts: string[]
+  approved: bool
+  fix_plan: string
+
+schema verdict_input:
+  implementation: json
+  review: json
+  test_results: json
+  feature_manifest: json
+  parity_scan: json
+  previous_verdict: json
+  acceptance_threshold: string
+
+schema verdict_output:
+  batch_complete: bool
+  overall_parity: bool
+  blockers: string[]
+  suggestions: string[]
+  parity_percentage: string
+  confidence: string [enum: "low", "medium", "high"]
+  batch_tokens: int
+
+schema verdict_synthesis_input:
+  claude_verdict: json
+  codex_verdict: json
+  feature_manifest: json
+  acceptance_threshold: string
+
+schema parity_verdict:
+  batch_complete: bool
+  overall_parity: bool
+  blockers: string[]
+  suggestions: string[]
+  parity_percentage: string
+  confidence: string [enum: "low", "medium", "high"]
+  batch_tokens: int
+
+schema commit_name_output:
+  type: string [enum: "feat", "fix", "refactor", "test", "docs", "chore"]
+  scope: string
+  description: string
+  full_message: string
+
+schema commit_tool_input:
+  full_message: string
+  iterion_repo_path: string
+  claw_repo_path: string
+
+schema commit_result:
+  success: bool
+  output: string
+
+schema fix_input:
+  fix_plan: string
+  feature_manifest: json
+  iterion_repo_path: string
+  claw_repo_path: string
+
+schema fix_output:
+  applied: bool
+  summary: string
+  files_changed: string[]
+  features_fixed: string[]
+
+## ─── Nodes : Phase 0 — Analysis ───────────────────────────────
+
+agent analyze:
+  backend: "claude_code"
+  input: analyze_input
+  output: analysis_output
+  publish: raw_analysis
+  system: analyze_system
+  user: analyze_user
+  session: fresh
+  reasoning_effort: high
+
+agent merge_analysis:
+  backend: "claude_code"
+  input: merge_analysis_input
+  output: feature_manifest
+  publish: feature_manifest
+  system: merge_analysis_system
+  user: merge_analysis_user
+  session: fresh
+
+## ─── Nodes : Phase 1 — Planning + Consolidation ───────────────
+
+router plan_fanout:
+  mode: fan_out_all
+
+agent claude_plan:
+  backend: "claude_code"
+  input: port_plan_input
+  output: port_plan_output
+  publish: claude_plan_output
+  system: port_plan_system
+  user: port_plan_user
+  session: fresh
+
+agent codex_consolidate:
+  backend: "codex"
+  input: consolidate_plan_input
+  output: consolidate_plan_output
+  publish: codex_plan_output
+  system: consolidate_plan_system
+  user: consolidate_plan_user
+  session: fresh
+
+agent plan_judge_merge:
+  await: wait_all
+  backend: "claude_code"
+  input: plan_judge_merge_input
+  output: plan_judge_merge_output
+  publish: merged_plan
+  system: plan_judge_merge_system
+  user: plan_judge_merge_user
+  session: fresh
+
+## ─── Node : Phase 1b — Human Gate (LLM decides) ───────────────
+
+human plan_gate:
+  input: plan_gate_input
+  output: plan_gate_output
+  interaction: llm_or_human
+  model: "openai/gpt-5.4-mini"
+  system: plan_gate_system
+
+## ─── Nodes : Phase 2 — Implementation ─────────────────────────
+
+agent implement:
+  backend: "claude_code"
+  input: impl_input
+  output: impl_output
+  publish: implementation
+  system: port_impl_system
+  user: port_impl_user
+  session: inherit
+
+## ─── Nodes : Phase 2b — Simplify ───────────────────────────────
+
+agent simplify:
+  backend: "claude_code"
+  output: impl_output
+  publish: implementation
+  system: simplify_system
+  user: simplify_user
+  session: inherit
+
+## ─── Nodes : Phase 3 — Checkpoint (commit + test) ─────────────
+
+agent commit_namer:
+  backend: "claude_code"
+  output: commit_name_output
+  system: commit_namer_system
+  user: commit_namer_user
+  session: fork
+  readonly: true
+
+## Commits both repos: iterion always; claw-code-go only if it changed.
+## `git diff --cached --quiet` exits non-zero when there are staged changes;
+## the `||` runs the commit only in that case.
+tool commit_changes:
+  command: "git -C {{input.iterion_repo_path}} add -A && (git -C {{input.iterion_repo_path}} diff --cached --quiet || git -C {{input.iterion_repo_path}} commit -m {{input.full_message}}) && git -C {{input.claw_repo_path}} add -A && (git -C {{input.claw_repo_path}} diff --cached --quiet || git -C {{input.claw_repo_path}} commit -m {{input.full_message}})"
+  input: commit_tool_input
+  output: commit_result
+
+## Build + vet iterion against the source tree. The host binary running this
+## workflow is unaffected by source edits (statically linked).
+tool run_iterion_tests:
+  command: "export PATH=/workspaces/iterion/.devbox/nix/profile/default/bin:$PATH && cd {{input.iterion_repo_path}} && go build ./... && go vet ./..."
+  output: test_result
+
+## ─── Nodes : Phase 3b — Parallel Review + Migration Scan ──────
+
+router review_scan_fanout:
+  mode: fan_out_all
+
+agent migration_scanner:
+  backend: "claude_code"
+  input: parity_scan_input
+  output: feature_manifest
+  publish: feature_manifest
+  system: parity_scan_system
+  user: parity_scan_user
+  session: fresh
+  tools: [read_file, list_files, search_codebase, tree]
+  tool_max_steps: 20
+  readonly: true
+
+## ─── Nodes : Phase 4 — Review (fork from impl) ────────────────
+
+agent claude_review:
+  backend: "claude_code"
+  input: review_input
+  output: review_output
+  publish: claude_review_report
+  system: parity_review_system
+  user: parity_review_user
+  session: fork
+  tools: [read_file, list_files, search_codebase, tree, git_diff]
+  tool_max_steps: 15
+  readonly: true
+
+## ─── Nodes : Phase 5 — Dual Verdict (Claude + Codex) ──────────
+
+router verdict_fanout:
+  mode: fan_out_all
+
+judge claude_verdict:
+  backend: "claude_code"
+  input: verdict_input
+  output: verdict_output
+  publish: claude_verdict_report
+  system: parity_verdict_system
+  user: parity_verdict_user
+  session: fresh
+
+judge codex_verdict:
+  backend: "codex"
+  input: verdict_input
+  output: verdict_output
+  publish: codex_verdict_report
+  system: parity_verdict_system
+  user: parity_verdict_user
+  session: fresh
+
+judge review_verdict:
+  await: wait_all
+  backend: "claude_code"
+  input: verdict_synthesis_input
+  output: parity_verdict
+  publish: parity_verdict_report
+  system: verdict_synthesis_system
+  user: verdict_synthesis_user
+  session: fresh
+
+## ─── Nodes : Phase 6 — Fix (session inherit from reviewer) ────
+
+agent fix:
+  backend: "claude_code"
+  input: fix_input
+  output: fix_output
+  publish: implementation
+  system: fix_system
+  user: fix_user
+  session: inherit
+
+## ─── Workflow ──────────────────────────────────────────────────
+
+workflow iterion_goai_to_claw_port:
+  vars:
+    iterion_repo_path: string
+    claw_repo_path: string
+    scope_notes: string = ""
+    acceptance_threshold: string = "normal"
+
+  entry: analyze
+
+  budget:
+    max_parallel_branches: 3
+    max_duration: "8h"
+    max_cost_usd: 200
+    max_tokens: 30000000
+    max_iterations: 60
+
+  ## ═══ Phase 0 : Analysis ════════════════════════════════════════
+
+  analyze -> merge_analysis with {
+    analysis: "{{outputs.analyze}}",
+    iterion_repo_path: "{{vars.iterion_repo_path}}",
+    claw_repo_path: "{{vars.claw_repo_path}}"
+  }
+
+  ## ═══ Phase 1 : Planning + Consolidation ════════════════════════
+
+  merge_analysis -> plan_fanout with {
+    feature_manifest: "{{outputs.merge_analysis}}",
+    previous_progress: "",
+    previous_feedback: ""
+  }
+
+  plan_fanout -> claude_plan with {
+    feature_manifest: "{{input.feature_manifest}}",
+    previous_progress: "{{input.previous_progress}}",
+    previous_feedback: "{{input.previous_feedback}}"
+  }
+
+  plan_fanout -> codex_consolidate with {
+    original_plan: "{{input.feature_manifest}}",
+    feature_manifest: "{{input.feature_manifest}}"
+  }
+
+  claude_plan -> plan_judge_merge with {
+    claude_plan: "{{outputs.claude_plan}}",
+    feature_manifest: "{{artifacts.feature_manifest}}"
+  }
+
+  codex_consolidate -> plan_judge_merge with {
+    codex_plan: "{{outputs.codex_consolidate}}"
+  }
+
+  ## Plan OK -> human gate
+  plan_judge_merge -> plan_gate when ready with {
+    validated_plan: "{{outputs.plan_judge_merge.merged_plan}}",
+    feature_manifest: "{{artifacts.feature_manifest}}"
+  }
+
+  ## Plan KO -> back to planning with feedback
+  plan_judge_merge -> plan_fanout when not ready as plan_loop(4) with {
+    feature_manifest: "{{artifacts.feature_manifest}}",
+    previous_progress: "",
+    previous_feedback: "{{outputs.plan_judge_merge.issues}}"
+  }
+
+  ## ═══ Phase 1b : Human Gate ═════════════════════════════════════
+
+  plan_gate -> implement when proceed with {
+    validated_plan: "{{artifacts.merged_plan}}",
+    feature_manifest: "{{artifacts.feature_manifest}}",
+    iterion_repo_path: "{{vars.iterion_repo_path}}",
+    claw_repo_path: "{{vars.claw_repo_path}}",
+    previous_feedback: "{{artifacts.parity_verdict_report}}"
+  }
+
+  plan_gate -> plan_fanout when not proceed as plan_loop(4) with {
+    feature_manifest: "{{artifacts.feature_manifest}}",
+    previous_progress: "",
+    previous_feedback: "{{outputs.plan_gate.questions}}"
+  }
+
+  ## ═══ Phase 2 : Implementation ═════════════════════════════════
+
+  implement -> simplify with {
+    _session_id: "{{outputs.implement._session_id}}"
+  }
+
+  ## ═══ Phase 2b : Simplify ══════════════════════════════════════
+
+  simplify -> commit_namer with {
+    _session_id: "{{outputs.simplify._session_id}}"
+  }
+
+  ## ═══ Phase 3 : Checkpoint (commit + test) ═════════════════════
+
+  commit_namer -> commit_changes with {
+    full_message: "{{outputs.commit_namer.full_message}}",
+    iterion_repo_path: "{{vars.iterion_repo_path}}",
+    claw_repo_path: "{{vars.claw_repo_path}}"
+  }
+
+  commit_changes -> run_iterion_tests with {
+    iterion_repo_path: "{{vars.iterion_repo_path}}"
+  }
+
+  ## ═══ Phase 3b : Parallel Review + Migration Scan ══════════════
+  ## Both run in parallel after tests. Migration scanner publishes the
+  ## updated feature_manifest artifact. Review and verdict read it from
+  ## artifacts.
+
+  run_iterion_tests -> review_scan_fanout with {
+    _session_id: "{{outputs.simplify._session_id}}",
+    implementation: "{{artifacts.implementation}}",
+    feature_manifest: "{{artifacts.feature_manifest}}",
+    iterion_repo_path: "{{vars.iterion_repo_path}}",
+    claw_repo_path: "{{vars.claw_repo_path}}",
+    test_results: "{{outputs.run_iterion_tests}}"
+  }
+
+  review_scan_fanout -> migration_scanner with {
+    iterion_repo_path: "{{input.iterion_repo_path}}",
+    claw_repo_path: "{{input.claw_repo_path}}",
+    feature_manifest: "{{input.feature_manifest}}"
+  }
+
+  review_scan_fanout -> claude_review with {
+    _session_id: "{{input._session_id}}",
+    implementation: "{{input.implementation}}",
+    feature_manifest: "{{input.feature_manifest}}",
+    iterion_repo_path: "{{input.iterion_repo_path}}",
+    claw_repo_path: "{{input.claw_repo_path}}",
+    test_results: "{{input.test_results}}"
+  }
+
+  ## ═══ Phase 5 : Dual Verdict (Claude + Codex judge) ════════════
+
+  claude_review -> verdict_fanout with {
+    implementation: "{{artifacts.implementation}}",
+    review: "{{outputs.claude_review}}",
+    test_results: "{{outputs.run_iterion_tests}}",
+    feature_manifest: "{{artifacts.feature_manifest}}",
+    parity_scan: "{{artifacts.feature_manifest}}",
+    previous_verdict: "{{artifacts.parity_verdict_report}}",
+    acceptance_threshold: "{{vars.acceptance_threshold}}"
+  }
+
+  migration_scanner -> verdict_fanout with {}
+
+  verdict_fanout -> claude_verdict with {
+    implementation: "{{input.implementation}}",
+    review: "{{input.review}}",
+    test_results: "{{input.test_results}}",
+    feature_manifest: "{{input.feature_manifest}}",
+    parity_scan: "{{input.parity_scan}}",
+    previous_verdict: "{{input.previous_verdict}}",
+    acceptance_threshold: "{{input.acceptance_threshold}}"
+  }
+
+  verdict_fanout -> codex_verdict with {
+    implementation: "{{input.implementation}}",
+    review: "{{input.review}}",
+    test_results: "{{input.test_results}}",
+    feature_manifest: "{{input.feature_manifest}}",
+    parity_scan: "{{input.parity_scan}}",
+    previous_verdict: "{{input.previous_verdict}}",
+    acceptance_threshold: "{{input.acceptance_threshold}}"
+  }
+
+  claude_verdict -> review_verdict with {
+    claude_verdict: "{{outputs.claude_verdict}}",
+    feature_manifest: "{{artifacts.feature_manifest}}",
+    acceptance_threshold: "{{vars.acceptance_threshold}}"
+  }
+
+  codex_verdict -> review_verdict with {
+    codex_verdict: "{{outputs.codex_verdict}}"
+  }
+
+  ## ═══ Phase 5b : Verdict Routing ═══════════════════════════════
+  ## Edge evaluation order matters: first match wins.
+
+  ## Full migration achieved -> done
+  review_verdict -> done when overall_parity
+
+  ## Current batch done, plan next batch (with full verdict history for cross-batch learning)
+  review_verdict -> plan_fanout when batch_complete as outer_loop(50) with {
+    feature_manifest: "{{artifacts.feature_manifest}}",
+    previous_progress: "{{outputs.review_verdict}}",
+    previous_feedback: "{{outputs.review_verdict}}",
+    batch_history: "{{outputs.review_verdict.history}}"
+  }
+
+  ## Current batch has bugs -> fix loop (max 5 hard cap)
+  review_verdict -> fix when not batch_complete as fix_loop(5) with {
+    _session_id: "{{outputs.claude_review._session_id}}",
+    fix_plan: "{{outputs.claude_review.fix_plan}}",
+    feature_manifest: "{{artifacts.feature_manifest}}",
+    iterion_repo_path: "{{vars.iterion_repo_path}}",
+    claw_repo_path: "{{vars.claw_repo_path}}"
+  }
+
+  ## Fallback: fix_loop exhausted but batch not complete -> re-plan anyway
+  review_verdict -> plan_fanout when not overall_parity as outer_loop(50) with {
+    feature_manifest: "{{artifacts.feature_manifest}}",
+    previous_progress: "{{outputs.review_verdict}}",
+    previous_feedback: "{{outputs.review_verdict}}",
+    batch_history: "{{outputs.review_verdict.history}}"
+  }
+
+  ## Terminal fallback: all loops exhausted -> done (budget/iteration limit reached)
+  review_verdict -> done
+
+  ## ═══ Phase 6 : Fix with session continuity ════════════════════
+
+  fix -> commit_namer with {
+    _session_id: "{{outputs.fix._session_id}}"
+  }
