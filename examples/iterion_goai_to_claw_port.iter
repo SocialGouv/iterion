@@ -45,8 +45,8 @@ prompt analyze_system:
 prompt analyze_user:
   Analyze both codebases to produce a goai -> claw migration manifest.
 
-  iterion repository: {{input.iterion_repo_path}}
-  claw-code-go repository: {{input.claw_repo_path}}
+  iterion repository: {{vars.iterion_repo_path}}
+  claw-code-go repository: {{vars.claw_repo_path}}
   Migration scope notes: {{input.scope_notes}}
 
   For the iterion codebase, identify:
@@ -93,8 +93,8 @@ prompt merge_analysis_user:
   Analysis:
   {{input.analysis}}
 
-  iterion repo: {{input.iterion_repo_path}}
-  claw-code-go repo: {{input.claw_repo_path}}
+  iterion repo: {{vars.iterion_repo_path}}
+  claw-code-go repo: {{vars.claw_repo_path}}
 
   Produce a manifest that:
   - Lists every iterion file with a goai import (status: PORTED, PARTIAL, MISSING)
@@ -297,11 +297,11 @@ prompt plan_judge_merge_user:
   tools (read_file, list_files, search_codebase, tree, git_diff). You
   MUST use them to verify every filesystem claim. ABSOLUTE PATHS ONLY:
 
-  - iterion source is at {{input.iterion_repo_path}} (the clone the
+  - iterion source is at {{vars.iterion_repo_path}} (the clone the
     workflow operates on). EXAMPLE: grep -rn "github.com/zendev-sh/goai"
-    --include='*.go' {{input.iterion_repo_path}} | grep -v "/vendor/"
-  - claw-code-go source is at {{input.claw_repo_path}}. EXAMPLE:
-    grep -rn "github.com/zendev-sh/goai" --include='*.go' {{input.claw_repo_path}}
+    --include='*.go' {{vars.iterion_repo_path}} | grep -v "/vendor/"
+  - claw-code-go source is at {{vars.claw_repo_path}}. EXAMPLE:
+    grep -rn "github.com/zendev-sh/goai" --include='*.go' {{vars.claw_repo_path}}
   - DO NOT grep /workspaces/iterion (the main checkout) or any path that
     is not iterion_repo_path or claw_repo_path. Other paths contain
     pre-migration source and produce misleading evidence. If a tool
@@ -315,7 +315,7 @@ prompt plan_judge_merge_user:
     directories (excluding iterion's vendored copy of claw).
 
   Past judges in this workflow have grepped the WRONG repo
-  (/workspaces/iterion instead of {{input.iterion_repo_path}}) and
+  (/workspaces/iterion instead of {{vars.iterion_repo_path}}) and
   rejected sound plans based on stale state. If you make ANY claim
   about file presence or content, cite the absolute path you grepped
   and the tool output inline.
@@ -432,8 +432,8 @@ prompt port_impl_user:
   Migration manifest:
   {{input.feature_manifest}}
 
-  iterion repo: {{input.iterion_repo_path}}
-  claw-code-go repo: {{input.claw_repo_path}}
+  iterion repo: {{vars.iterion_repo_path}}
+  claw-code-go repo: {{vars.claw_repo_path}}
 
   Previous feedback (failing tests or unresolved issues):
   {{input.previous_feedback}}
@@ -486,11 +486,11 @@ prompt parity_scan_system:
   CRITICAL — SCAN BOTH REPOS, INCLUDING CLAW-CODE-GO'S SOURCE:
   Past runs of this workflow gamed a single-repo grep by moving goai imports
   into a façade inside claw-code-go (which iterion vendors). To prevent that,
-  you MUST scan claw-code-go's SOURCE directory directly via {{input.claw_repo_path}},
+  you MUST scan claw-code-go's SOURCE directory directly via {{vars.claw_repo_path}},
   NOT iterion's vendored copy. The two paths are different:
-  - iterion source: {{input.iterion_repo_path}}/  (iterion's own *.go)
-  - claw-code-go source: {{input.claw_repo_path}}/  (the upstream repo of claw-code-go)
-  - iterion's vendored copy of claw: {{input.iterion_repo_path}}/vendor/claw-code-go/  (DO NOT use as truth — it can be stale)
+  - iterion source: {{vars.iterion_repo_path}}/  (iterion's own *.go)
+  - claw-code-go source: {{vars.claw_repo_path}}/  (the upstream repo of claw-code-go)
+  - iterion's vendored copy of claw: {{vars.iterion_repo_path}}/vendor/claw-code-go/  (DO NOT use as truth — it can be stale)
 
   You work with a FIXED CHECKLIST approach for textual entries:
   - The previous manifest contains the list of goai call sites
@@ -510,34 +510,34 @@ prompt parity_scan_system:
   DETERMINISTIC METRICS — compute these every scan via search_codebase / Bash / tree:
 
   ITERION-SIDE (textual surface in iterion source):
-  - iterion_goai_imports: number of *.go files in {{input.iterion_repo_path}}
+  - iterion_goai_imports: number of *.go files in {{vars.iterion_repo_path}}
     importing github.com/zendev-sh/goai, EXCLUDING the workflow .iter file and
     iterion's own vendor/ directory.
     Command: grep -rln "github.com/zendev-sh/goai" --include='*.go' \
-      {{input.iterion_repo_path}} | grep -v "/vendor/" | wc -l
+      {{vars.iterion_repo_path}} | grep -v "/vendor/" | wc -l
 
   CLAW-CODE-GO-SIDE (architectural surface — the gameable axis):
-  - claw_source_goai_imports: number of *.go files in {{input.claw_repo_path}}
+  - claw_source_goai_imports: number of *.go files in {{vars.claw_repo_path}}
     importing github.com/zendev-sh/goai (NOT iterion's vendored copy — the
     actual upstream repo).
     Command: grep -rln "github.com/zendev-sh/goai" --include='*.go' \
-      {{input.claw_repo_path}} | wc -l
+      {{vars.claw_repo_path}} | wc -l
   - claw_pkg_sdk_files_present: list of *.go files under
-    {{input.claw_repo_path}}/pkg/sdk/. END STATE requires this list be EMPTY
+    {{vars.claw_repo_path}}/pkg/sdk/. END STATE requires this list be EMPTY
     (the directory deleted entirely).
-  - claw_gomod_has_goai: true if {{input.claw_repo_path}}/go.mod contains
+  - claw_gomod_has_goai: true if {{vars.claw_repo_path}}/go.mod contains
     a require line for github.com/zendev-sh/goai (direct or // indirect).
 
   GO-MODULE-SIDE (negative-space checks):
   - vendor_goai_present: true if directory
-    {{input.iterion_repo_path}}/vendor/github.com/zendev-sh/goai exists.
+    {{vars.iterion_repo_path}}/vendor/github.com/zendev-sh/goai exists.
     END STATE: false.
-  - iterion_gomod_has_goai: true if {{input.iterion_repo_path}}/go.mod
+  - iterion_gomod_has_goai: true if {{vars.iterion_repo_path}}/go.mod
     has a require for github.com/zendev-sh/goai. END STATE: false.
 
   ARCHITECTURAL CHECK (positive-space):
   - iterion_uses_pkg_api_directly: true if iterion's
-    {{input.iterion_repo_path}}/model/claw_backend.go imports
+    {{vars.iterion_repo_path}}/model/claw_backend.go imports
     `claw-code-go/pkg/api` AND calls `Client.StreamResponse` directly.
     Verify by reading the file.
 
@@ -564,8 +564,8 @@ prompt parity_scan_system:
 prompt parity_scan_user:
   Update the migration manifest incrementally.
 
-  iterion repo: {{input.iterion_repo_path}}
-  claw-code-go repo: {{input.claw_repo_path}}
+  iterion repo: {{vars.iterion_repo_path}}
+  claw-code-go repo: {{vars.claw_repo_path}}
 
   Previous manifest (AUTHORITATIVE CHECKLIST):
   {{input.feature_manifest}}
@@ -646,8 +646,8 @@ prompt parity_review_user:
   Migration manifest (may be stale — verify against actual code):
   {{input.feature_manifest}}
 
-  iterion repo: {{input.iterion_repo_path}}
-  claw-code-go repo: {{input.claw_repo_path}}
+  iterion repo: {{vars.iterion_repo_path}}
+  claw-code-go repo: {{vars.claw_repo_path}}
 
   Test results:
   {{input.test_results}}
@@ -752,14 +752,14 @@ prompt parity_verdict_user:
   STEP 0 — VERIFY WITH ABSOLUTE PATHS. You have read-only tools
   (read_file, list_files, search_codebase, tree, git_diff). USE them
   to verify every negative-space claim before setting overall_parity.
-  ABSOLUTE PATHS ONLY — iterion source is at {{input.iterion_repo_path}},
-  claw-code-go source is at {{input.claw_repo_path}}. DO NOT grep
+  ABSOLUTE PATHS ONLY — iterion source is at {{vars.iterion_repo_path}},
+  claw-code-go source is at {{vars.claw_repo_path}}. DO NOT grep
   /workspaces/iterion or any other path:
-  - grep -rn "github.com/zendev-sh/goai" --include='*.go' {{input.iterion_repo_path}} | grep -v "/vendor/"
-  - grep -rn "github.com/zendev-sh/goai" --include='*.go' {{input.claw_repo_path}}
-  - ls {{input.claw_repo_path}}/pkg/sdk/ (must be empty/absent for completion)
-  - Read {{input.iterion_repo_path}}/go.mod and {{input.claw_repo_path}}/go.mod to confirm goai is/is not present.
-  - Read {{input.iterion_repo_path}}/model/claw_backend.go to confirm whether it imports pkg/api directly or still pkg/sdk.
+  - grep -rn "github.com/zendev-sh/goai" --include='*.go' {{vars.iterion_repo_path}} | grep -v "/vendor/"
+  - grep -rn "github.com/zendev-sh/goai" --include='*.go' {{vars.claw_repo_path}}
+  - ls {{vars.claw_repo_path}}/pkg/sdk/ (must be empty/absent for completion)
+  - Read {{vars.iterion_repo_path}}/go.mod and {{vars.claw_repo_path}}/go.mod to confirm goai is/is not present.
+  - Read {{vars.iterion_repo_path}}/model/claw_backend.go to confirm whether it imports pkg/api directly or still pkg/sdk.
   Cite tool outputs inline. Do not rely solely on parity_scan claims —
   they are an LLM-derived snapshot and must be cross-checked.
 
@@ -816,14 +816,14 @@ prompt verdict_synthesis_user:
 
   STEP 0 — INDEPENDENT FILESYSTEM CHECK WITH ABSOLUTE PATHS. You have
   read-only tools. ABSOLUTE PATHS ONLY — iterion source is at
-  {{input.iterion_repo_path}}, claw-code-go source is at
-  {{input.claw_repo_path}}. DO NOT grep /workspaces/iterion. Before
+  {{vars.iterion_repo_path}}, claw-code-go source is at
+  {{vars.claw_repo_path}}. DO NOT grep /workspaces/iterion. Before
   declaring overall_parity=true, USE the tools to confirm:
-  - grep -rn "github.com/zendev-sh/goai" --include='*.go' {{input.iterion_repo_path}} | grep -v "/vendor/" returns 0
-  - grep -rn "github.com/zendev-sh/goai" --include='*.go' {{input.claw_repo_path}} returns 0
-  - {{input.claw_repo_path}}/pkg/sdk directory is absent or empty.
-  - {{input.iterion_repo_path}}/go.mod and {{input.claw_repo_path}}/go.mod have no zendev-sh/goai require lines.
-  - {{input.iterion_repo_path}}/vendor/github.com/zendev-sh does not exist.
+  - grep -rn "github.com/zendev-sh/goai" --include='*.go' {{vars.iterion_repo_path}} | grep -v "/vendor/" returns 0
+  - grep -rn "github.com/zendev-sh/goai" --include='*.go' {{vars.claw_repo_path}} returns 0
+  - {{vars.claw_repo_path}}/pkg/sdk directory is absent or empty.
+  - {{vars.iterion_repo_path}}/go.mod and {{vars.claw_repo_path}}/go.mod have no zendev-sh/goai require lines.
+  - {{vars.iterion_repo_path}}/vendor/github.com/zendev-sh does not exist.
   This double-check protects against scanner-side or judge-side errors
   in the upstream verdicts. Cite tool outputs inline.
 
@@ -855,8 +855,8 @@ prompt fix_user:
   Migration manifest:
   {{input.feature_manifest}}
 
-  iterion repo: {{input.iterion_repo_path}}
-  claw-code-go repo: {{input.claw_repo_path}}
+  iterion repo: {{vars.iterion_repo_path}}
+  claw-code-go repo: {{vars.claw_repo_path}}
 
   Apply the corrections and verify that the migration progresses.
 
@@ -1159,14 +1159,14 @@ agent commit_namer:
 ## `git diff --cached --quiet` exits non-zero when there are staged changes;
 ## the `||` runs the commit only in that case.
 tool commit_changes:
-  command: "git -C {{input.iterion_repo_path}} add -A && (git -C {{input.iterion_repo_path}} diff --cached --quiet || git -C {{input.iterion_repo_path}} commit -m {{input.full_message}}) && git -C {{input.claw_repo_path}} add -A && (git -C {{input.claw_repo_path}} diff --cached --quiet || git -C {{input.claw_repo_path}} commit -m {{input.full_message}})"
+  command: "git -C {{vars.iterion_repo_path}} add -A && (git -C {{vars.iterion_repo_path}} diff --cached --quiet || git -C {{vars.iterion_repo_path}} commit -m {{input.full_message}}) && git -C {{vars.claw_repo_path}} add -A && (git -C {{vars.claw_repo_path}} diff --cached --quiet || git -C {{vars.claw_repo_path}} commit -m {{input.full_message}})"
   input: commit_tool_input
   output: commit_result
 
 ## Build + vet iterion against the source tree. The host binary running this
 ## workflow is unaffected by source edits (statically linked).
 tool run_iterion_tests:
-  command: "export PATH=/workspaces/iterion/.devbox/nix/profile/default/bin:$PATH && cd {{input.iterion_repo_path}} && go build ./... && go vet ./..."
+  command: "export PATH=/workspaces/iterion/.devbox/nix/profile/default/bin:$PATH && cd {{vars.iterion_repo_path}} && go build ./... && go vet ./..."
   output: test_result
 
 ## ─── Nodes : Phase 3b — Parallel Review + Migration Scan ──────
@@ -1372,8 +1372,8 @@ workflow iterion_goai_to_claw_port:
   }
 
   review_scan_fanout -> migration_scanner with {
-    iterion_repo_path: "{{input.iterion_repo_path}}",
-    claw_repo_path: "{{input.claw_repo_path}}",
+    iterion_repo_path: "{{vars.iterion_repo_path}}",
+    claw_repo_path: "{{vars.claw_repo_path}}",
     feature_manifest: "{{input.feature_manifest}}"
   }
 
@@ -1381,8 +1381,8 @@ workflow iterion_goai_to_claw_port:
     _session_id: "{{input._session_id}}",
     implementation: "{{input.implementation}}",
     feature_manifest: "{{input.feature_manifest}}",
-    iterion_repo_path: "{{input.iterion_repo_path}}",
-    claw_repo_path: "{{input.claw_repo_path}}",
+    iterion_repo_path: "{{vars.iterion_repo_path}}",
+    claw_repo_path: "{{vars.claw_repo_path}}",
     test_results: "{{input.test_results}}"
   }
 
