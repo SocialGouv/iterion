@@ -439,8 +439,18 @@ func (e *Engine) buildNodeInput(nodeID string, vars map[string]interface{}, outp
 		return result
 	}
 
-	// Fallback: for the entry node use run-level inputs.
+	// Fallback: for the entry node merge workflow var defaults with run-level
+	// inputs so that {{input.X}} references resolve to the var default when
+	// --var X=... was not provided on the CLI. Without this, vars declared
+	// with a default like `scope_notes: string = ""` are missing from the
+	// entry node's input map and the placeholder is left literal in prompts.
+	// CLI inputs override defaults.
 	if nodeID == e.workflow.Entry {
+		for name, v := range e.workflow.Vars {
+			if v.HasDefault {
+				result[name] = v.Default
+			}
+		}
 		for k, v := range runInputs {
 			result[k] = v
 		}

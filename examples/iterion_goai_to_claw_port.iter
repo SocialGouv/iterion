@@ -1056,6 +1056,9 @@ agent plan_judge_merge:
   system: plan_judge_merge_system
   user: plan_judge_merge_user
   session: fresh
+  tools: [read_file, list_files, search_codebase, tree, git_diff]
+  tool_max_steps: 12
+  readonly: true
 
 ## ─── Node : Phase 1b — Human Gate (LLM decides) ───────────────
 
@@ -1155,6 +1158,9 @@ judge claude_verdict:
   system: parity_verdict_system
   user: parity_verdict_user
   session: fresh
+  tools: [read_file, list_files, search_codebase, tree, git_diff]
+  tool_max_steps: 10
+  readonly: true
 
 judge codex_verdict:
   backend: "codex"
@@ -1174,6 +1180,9 @@ judge review_verdict:
   system: verdict_synthesis_system
   user: verdict_synthesis_user
   session: fresh
+  tools: [read_file, list_files, search_codebase, tree, git_diff]
+  tool_max_steps: 8
+  readonly: true
 
 ## ─── Nodes : Phase 6 — Fix (session inherit from reviewer) ────
 
