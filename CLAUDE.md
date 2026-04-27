@@ -156,6 +156,17 @@ See `docs/resume.md` for the exhaustive failure matrix.
 - **Workspace safety**: only one mutating branch allowed (agents/humans with tools); multiple read-only branches OK
 - **Shared budget**: mutex-protected token/cost/duration tracking across all branches
 
+## Authoring `.iter` workflows that touch real code
+
+**Before writing or amending any `.iter` workflow that has the power to
+commit code, read [docs/workflow_authoring_pitfalls.md](docs/workflow_authoring_pitfalls.md).**
+It captures hard-won lessons about Goodhart's law in workflow design,
+the façade pattern that LLM agents reach for when goals are
+under-specified, and concrete rules for prompts, scanners, and judges
+that resist metric-gaming. Skipping it has a real cost — the
+goai → claw-code-go migration ran for 3 hours and produced a
+96%-parity-reported façade because these lessons weren't yet codified.
+
 ## CLI Commands
 
 ```

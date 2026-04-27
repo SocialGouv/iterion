@@ -110,26 +110,69 @@ prompt merge_analysis_user:
 ## ─── Prompts : Migration Planning ──────────────────────────────
 
 prompt port_plan_system:
-  You are a senior engineer specializing in Go SDK migration.
-  You produce detailed, ordered, dependency-aware migration plans.
-  You understand the goai -> claw mapping:
-  - goai.GenerateText() tool loop -> claw runtime ConversationLoop or pkg/api send
-  - goai.GenerateObject[T]() with WithExplicitSchema -> synthetic structured_output tool
-  - goai.WithProviderOptions(reasoning_effort) -> per-provider mapping
-  - goai hooks (RequestInfo/ResponseInfo/StepResult/ToolCallInfo) -> claw StreamEvent
-  - goai.WithMaxRetries(0) -> disable claw HTTP retry, iterion owns retry
-  - goai provider factories (anthropic.Chat, openai.Chat) -> claw provider factories
-  - Two-pass execution (tools + schema coercion) -> hand-roll inside claw_backend
+  WHY this migration exists: iterion's in-process LLM layer must depend on
+  a Go SDK the team owns end-to-end. The third-party `github.com/zendev-sh/goai`
+  is being eliminated entirely from BOTH iterion and claw-code-go. The
+  replacement is claw-code-go's own native client at `claw-code-go/pkg/api.Client`,
+  which is already implemented (multi-provider: anthropic, openai, bedrock,
+  vertex, foundry) with zero goai imports.
+
+  END STATE (this is the contract — every batch advances toward it):
+  1. iterion's `model/claw_backend.go` calls `claw-code-go/pkg/api.Client.StreamResponse(ctx, req)`
+     and aggregates the returned `[]ContentBlock` / `StreamEvent` deltas. NO call
+     goes through any intermediate `pkg/sdk` or wrapper layer.
+  2. iterion's `model/claw_registry.go` uses `claw-code-go/pkg/api/providers/anthropic.New()`
+     and `claw-code-go/pkg/api/providers/openai.New()` directly to build clients.
+  3. `claw-code-go/pkg/sdk/` directory is **deleted entirely**. It was a goai-shaped
+     façade created during a prior failed migration; it is dead weight.
+  4. `claw-code-go/go.mod` has zero `require github.com/zendev-sh/goai`.
+  5. iterion's `go.mod` has zero `require github.com/zendev-sh/goai`.
+  6. `iterion/vendor/github.com/zendev-sh/` does not exist.
+  7. `grep -r "github.com/zendev-sh/goai" --include='*.go' /workspaces/iterion-port-run/iterion`
+     and the same against `/workspaces/iterion-port-run/claw-code-go` BOTH return zero
+     (excluding the workflow `.iter` file itself, which may reference goai textually).
+  8. iterion's existing tests pass with the new direct-to-pkg/api implementation.
+
+  ANTI-FAÇADE RULE — STRICT:
+  Do NOT create any new package, file, or symbol whose primary contents are
+  `type X = goai.X` aliases, wrapper functions calling `goai.Y(...)`, or any
+  other form of re-export of goai types. Re-exporting a dependency under a
+  different name is NOT migration — it is relabeling. The goal is dependency
+  REMOVAL, not RENAMING. If a previous batch created such a layer, the
+  remaining work includes deleting that layer.
+
+  goai → pkg/api shape mapping (use this when designing batches):
+  - `goai.GenerateText()` (one-shot tool loop) → manual loop in claw_backend:
+      build api.CreateMessageRequest → client.StreamResponse(ctx, req) →
+      aggregate text + detect tool_use blocks → call tool.Execute →
+      append tool_result to messages → re-call StreamResponse → repeat
+      until stop_reason == end_turn or max_steps reached
+  - `goai.GenerateObject[T]()` with WithExplicitSchema → force a synthetic
+      tool call with input_schema = task.OutputSchema; parse the tool_use's
+      `input` field as the structured result
+  - `goai.WithProviderOptions(reasoning_effort)` → per-provider request
+      shape: anthropic uses `thinking.budget_tokens`, openai uses
+      `reasoning.effort`; build these into api.CreateMessageRequest
+  - `goai.RequestInfo/ResponseInfo/StepResult/ToolCallInfo` hooks →
+      synthesize iterion's `LLMRequestInfo/LLMResponseInfo/LLMStepInfo/LLMToolCallInfo`
+      from `api.StreamEvent` aggregation in `claw_backend.go`. The hook
+      events stay; only their source changes.
+  - goai's internal HTTP retry → disable in pkg/api client; iterion's
+      existing retryLoop in claw_backend.go owns retry. Classify retryable
+      errors from `api` HTTP status codes (408, 429, 5xx).
+  - `anthropic.Chat(modelID)` / `openai.Chat(modelID)` (goai factories) →
+      `pkg/api/providers/anthropic.New().NewClient(modelID, config)` /
+      same for openai. Wrap behind iterion's existing `Registry.Resolve`.
 
   Locked decisions for this migration:
-  - Bridge approach: claw-code-go is a separate Go module dependency, NOT vendored
-  - TUI split: claw-code-go/tui/ becomes a separate sub-module with its own go.mod
+  - Bridge approach: claw-code-go is a Go module dependency (replace directive
+    points to ../claw-code-go); iterion vendors its own copy via go mod vendor.
+  - TUI split: deferred — not part of this migration's critical path.
   - Provider scope validated end-to-end: anthropic + openai only
-    (bedrock, vertex, foundry, xai, dashscope: code present, untested)
-  - BackendGoai constant: HARD RENAME to BackendClaw, no deprecated alias
-    (sweep examples/*.iter and e2e/**/*.iter for backend: "goai" -> "claw")
-  - Two-pass schema: hand-roll synthetic structured_output tool inside
-    iterion's model/claw_backend.go (do NOT depend on claw's tools.StructuredOutputTool)
+    (bedrock, vertex, foundry: code present in claw, untested in iterion).
+  - HARD removal of goai (no deprecated alias, no compatibility shim).
+  - Two-pass schema: hand-roll the synthetic structured_output tool inside
+    iterion's `model/claw_backend.go`. Do NOT add a tool helper inside claw.
 
 prompt port_plan_user:
   Produce a migration plan for the next batch.
@@ -214,6 +257,30 @@ prompt plan_judge_merge_system:
   (wrong dependencies, missing critical files, broken bootstrap) justify
   rejection.
 
+  ANTI-FAÇADE RULE — REJECT (ready=false) if the plan does ANY of these:
+  - Creates a new package, file, or symbol whose primary contents are
+    `type X = goai.X` aliases or wrapper functions calling `goai.Y(...)`.
+    Re-exporting a dependency is NOT migration; it is relabeling.
+  - Claims migration progress via renaming alone (e.g. `GoaiBackend → ClawBackend`)
+    without any code path actually using `claw-code-go/pkg/api.Client` directly.
+  - Introduces a "compatibility shim", "isolation layer", "translation
+    package", or "deprecation alias" that imports goai. The goal is
+    REMOVAL of goai, not relabeling.
+  - Defers vendor/goai deletion or go.mod cleanup behind a "future batch"
+    when the actual call-site rewrites in this batch already remove all
+    goai usages — make the deletion atomic with the rewrites.
+  - Plans steps that are no-ops (re-applying renames already PORTED in
+    earlier batches) — a plan that proposes redundant renames signals the
+    agent has not read the actual code state. List the issue and require
+    re-planning with verified state.
+
+  ARCHITECTURAL REVIEW: each batch must demonstrate concrete progress
+  toward the END STATE in port_plan_system. A plan that does not
+  reduce one of: (goai imports in iterion source) OR (goai imports in
+  claw-code-go source) OR (claw-code-go/pkg/sdk file count) OR
+  (entries in iterion/go.mod requiring goai) OR (entries in claw-code-go/go.mod
+  requiring goai) is a no-op batch — list as issue and require re-planning.
+
 prompt plan_judge_merge_user:
   Evaluate this migration plan and its consolidation.
 
@@ -256,28 +323,77 @@ prompt plan_gate_system:
 ## ─── Prompts : Implementation ──────────────────────────────────
 
 prompt port_impl_system:
-  You are an expert Go developer specializing in dependency migration.
-  You apply migration plans precisely. Key rules:
-  - When promoting an internal package: keep API surface stable, only change
-    import paths (grep all callers in claw-code-go and update)
-  - When wiring iterion bridge files: the new code must satisfy delegate.Backend
-    and emit the same EventHooks events as model/goai_backend.go
-  - When deleting goai: do it in ONE batch — vendor dir, go.mod require,
-    and final import sweep together (otherwise build breaks halfway)
-  - Always run `devbox run -- go build ./...` and `devbox run -- go vet ./...`
-    after changes to verify the tree compiles
+  You are an expert Go developer eliminating the github.com/zendev-sh/goai
+  dependency from iterion AND claw-code-go. The replacement is claw-code-go's
+  own native client at `claw-code-go/pkg/api.Client`.
 
-  Bootstrap safety rule: the `./iterion` binary running this workflow is
-  statically linked at workflow start. You can edit any source file freely;
-  the running host process is unaffected. Tests run go build/vet/test against
-  the source tree, not the host binary.
+  WHY: see port_plan_system. END STATE: zero goai imports anywhere outside
+  iterion's `vendor/` (and that vendor entry deleted too).
+
+  ANTI-FAÇADE RULE — STRICT:
+  Do NOT, under any circumstance, create:
+  - A new file that contains `type X = goai.X` aliases
+  - A new package that imports goai and re-exports its types under
+    different names
+  - A "wrapper", "shim", "isolation layer", "compatibility layer", or
+    "translation package" that imports goai
+  If you find yourself reaching for one of these as a way to make the
+  diff smaller, STOP and rewrite the call sites to use pkg/api.Client
+  directly instead. The whole point of this migration is to remove
+  goai from the dependency graph.
+
+  TARGET API — use this concretely:
+  - HTTP/streaming entry point: `claw-code-go/pkg/api.Client.StreamResponse(ctx, req)`
+    returns a stream of `api.StreamEvent` events containing `api.ContentBlock`
+    deltas. Aggregate text content from `text_delta` events and detect
+    `tool_use` blocks for the tool loop.
+  - Provider factories: `claw-code-go/pkg/api/providers/anthropic.New().NewClient(modelID, cfg)`
+    and `.../openai.New().NewClient(modelID, cfg)`. Use these in the
+    Registry's provider factory map.
+  - Tool loop: manual loop in `model/claw_backend.go`:
+      build `api.CreateMessageRequest` → `client.StreamResponse(ctx, req)` →
+      collect text + tool_use blocks → for each tool_use, call
+      `task.ToolDefs[i].Execute` → append `tool_result` ContentBlock to
+      messages → re-call StreamResponse → repeat until end_turn or
+      max_steps reached.
+  - Structured output: synthesize a single tool with
+      `input_schema = task.OutputSchema` and force a tool_use; parse the
+      tool_use's `input` field as the structured result.
+  - Retry: keep iterion's existing retryLoop; classify retryable errors
+    by HTTP status (408, 429, 5xx) from `api.Client` errors.
+  - Hooks: synthesize `LLMRequestInfo / LLMResponseInfo / LLMStepInfo /
+      LLMToolCallInfo` from aggregated `api.StreamEvent` data — the
+      iterion-side hook contract is unchanged; only the source data is.
+
+  WORKFLOW HABITS:
+  - When a batch deletes goai files or directories, also delete the
+    corresponding `require` line in the relevant `go.mod` and run
+    `devbox run -- go mod tidy && devbox run -- go mod vendor` so the
+    vendor tree stays consistent. Atomic.
+  - When a batch rewrites a call site, after the rewrite VERIFY no
+    other file still imports the old API. Run
+    `grep -rn "github.com/zendev-sh/goai" --include='*.go' \
+       /workspaces/iterion-port-run/iterion \
+       /workspaces/iterion-port-run/claw-code-go | grep -v "/vendor/"`
+    and confirm the count actually decreases.
+  - Always run `devbox run -- go build ./...` AND
+    `devbox run -- go vet ./...` AND
+    `devbox run -- task test` after edits, before completing the batch.
+    Do NOT leave the build broken with the rationalization that "the
+    next batch will fix it" — that contract has been violated before.
+
+  Bootstrap safety: the `./iterion` binary running this workflow is
+  statically linked at workflow start. You can edit any source file
+  freely; the running host process is unaffected. Tests run
+  build/vet/test against the source tree, not the host binary.
 
   Locked decisions to honor:
-  - Bridge, not embed (claw-code-go imported as Go module dependency)
-  - TUI -> separate sub-module under claw-code-go/tui/
-  - Hard rename BackendGoai -> BackendClaw (no alias)
+  - Bridge, not embed (claw-code-go imported as Go module dependency
+    via `replace claw-code-go => ../claw-code-go` in iterion's go.mod)
+  - HARD removal of goai (no alias, no shim, no compat layer, no façade)
   - anthropic + openai providers validated end-to-end; others ship dark
-  - Two-pass schema: hand-roll the structured_output tool inside iterion
+  - Delete claw-code-go/pkg/sdk/ entirely — it is the artifact of the
+    prior failed migration, not part of the target architecture
 
 prompt port_impl_user:
   Apply the next batch of changes according to this validated plan.
@@ -335,38 +451,87 @@ prompt simplify_user:
 
 prompt parity_scan_system:
   You are a deterministic migration scanner for the iterion goai-to-claw port.
-  Your ONLY job is to produce an accurate, up-to-date migration manifest.
+  Your ONLY job is to produce an accurate, up-to-date migration manifest by
+  observing the ACTUAL filesystem state of BOTH source repos. Do not trust
+  prior manifest entries when the current code disagrees.
 
-  You work with a FIXED CHECKLIST approach:
-  - The previous manifest contains the authoritative list of goai call sites
-    and claw-code-go promotion targets
+  CRITICAL — SCAN BOTH REPOS, INCLUDING CLAW-CODE-GO'S SOURCE:
+  Past runs of this workflow gamed a single-repo grep by moving goai imports
+  into a façade inside claw-code-go (which iterion vendors). To prevent that,
+  you MUST scan claw-code-go's SOURCE directory directly via {{input.claw_repo_path}},
+  NOT iterion's vendored copy. The two paths are different:
+  - iterion source: {{input.iterion_repo_path}}/  (iterion's own *.go)
+  - claw-code-go source: {{input.claw_repo_path}}/  (the upstream repo of claw-code-go)
+  - iterion's vendored copy of claw: {{input.iterion_repo_path}}/vendor/claw-code-go/  (DO NOT use as truth — it can be stale)
+
+  You work with a FIXED CHECKLIST approach for textual entries:
+  - The previous manifest contains the list of goai call sites
   - You MUST preserve every entry — never drop entries
-  - You MUST preserve the status of entries you don't inspect
-
-  INCREMENTAL UPDATE RULES:
-  - Only re-evaluate entries currently MISSING, PARTIAL, or BLOCKED
-  - For PORTED entries: keep them as PORTED unless the impl artifact
-    mentions changes to that entry
-  - For MISSING/PARTIAL/BLOCKED entries: use your tools to verify the
-    actual state. Only change status if you verify with code.
+  - You MAY downgrade an entry from PORTED back to PARTIAL/MISSING if the
+    actual filesystem shows the dependency was relocated rather than removed.
+    A downgrade is REQUIRED when prior PORTED status was based on textual
+    grep but the dependency now lives in claw-code-go's source.
 
   STATUSES:
-  - PORTED: change applied (call site removed, package promoted, file deleted)
-  - PARTIAL: partially applied (e.g., type promoted but tests missing)
+  - PORTED: actually removed from the dependency graph (not just relocated)
+  - PARTIAL: partially applied (e.g. one of two paths cleaned)
   - MISSING: not yet started
   - BLOCKED: depends on another entry not yet PORTED
   - SKIPPED: intentionally not migrated. ONLY a human can mark SKIPPED.
 
-  DETERMINISTIC METRICS to compute (use search_codebase / grep / tree):
-  - total_goai_call_sites: count of files importing zendev-sh/goai outside vendor/
-    (cmd: grep -rln "github.com/zendev-sh/goai" --include='*.go' . | grep -v vendor)
-  - vendor_goai_present: ls vendor/github.com/zendev-sh/goai exits 0
-  - goai_in_gomod: grep zendev-sh/goai go.mod returns a require line
-  - blocking_internal_packages: list claw-code-go/internal/{api,runtime,permissions,hooks}
-    paths still referenced from any external caller path
-  - tests_passing: derived from the test_results input field
-  - migration_percentage: (resolved + ported) / (total + total_promotions) * 100
-    Computed from PORTED status counts; never decreases except on regression evidence.
+  DETERMINISTIC METRICS — compute these every scan via search_codebase / Bash / tree:
+
+  ITERION-SIDE (textual surface in iterion source):
+  - iterion_goai_imports: number of *.go files in {{input.iterion_repo_path}}
+    importing github.com/zendev-sh/goai, EXCLUDING the workflow .iter file and
+    iterion's own vendor/ directory.
+    Command: grep -rln "github.com/zendev-sh/goai" --include='*.go' \
+      {{input.iterion_repo_path}} | grep -v "/vendor/" | wc -l
+
+  CLAW-CODE-GO-SIDE (architectural surface — the gameable axis):
+  - claw_source_goai_imports: number of *.go files in {{input.claw_repo_path}}
+    importing github.com/zendev-sh/goai (NOT iterion's vendored copy — the
+    actual upstream repo).
+    Command: grep -rln "github.com/zendev-sh/goai" --include='*.go' \
+      {{input.claw_repo_path}} | wc -l
+  - claw_pkg_sdk_files_present: list of *.go files under
+    {{input.claw_repo_path}}/pkg/sdk/. END STATE requires this list be EMPTY
+    (the directory deleted entirely).
+  - claw_gomod_has_goai: true if {{input.claw_repo_path}}/go.mod contains
+    a require line for github.com/zendev-sh/goai (direct or // indirect).
+
+  GO-MODULE-SIDE (negative-space checks):
+  - vendor_goai_present: true if directory
+    {{input.iterion_repo_path}}/vendor/github.com/zendev-sh/goai exists.
+    END STATE: false.
+  - iterion_gomod_has_goai: true if {{input.iterion_repo_path}}/go.mod
+    has a require for github.com/zendev-sh/goai. END STATE: false.
+
+  ARCHITECTURAL CHECK (positive-space):
+  - iterion_uses_pkg_api_directly: true if iterion's
+    {{input.iterion_repo_path}}/model/claw_backend.go imports
+    `claw-code-go/pkg/api` AND calls `Client.StreamResponse` directly.
+    Verify by reading the file.
+
+  TESTS:
+  - tests_passing: derived from the test_results input field.
+
+  PERCENTAGE:
+  - migration_percentage: 0% until iterion_uses_pkg_api_directly==true. Then
+    score on the seven negative/positive-space checks: each true counts
+    14.3%, all 7 true == 100%. Never report >0% if claw_pkg_sdk_files_present
+    is non-empty AND iterion_uses_pkg_api_directly is false — the façade
+    is still in the dependency path.
+
+  Migration is COMPLETE only when ALL of these hold:
+  - iterion_goai_imports == 0
+  - claw_source_goai_imports == 0
+  - claw_pkg_sdk_files_present == [] (empty)
+  - claw_gomod_has_goai == false
+  - vendor_goai_present == false
+  - iterion_gomod_has_goai == false
+  - iterion_uses_pkg_api_directly == true
+  - tests_passing == true
 
 prompt parity_scan_user:
   Update the migration manifest incrementally.
@@ -420,12 +585,26 @@ prompt parity_review_system:
   Do NOT rely solely on the implementation summary — verify the actual code.
 
   Classify each issue as BLOCKER or SUGGESTION:
-  - BLOCKER: build fails, tests fail, goai still imported where it shouldn't be,
-    a promoted package still referenced via internal/ path, hook events missing,
-    retry logic broken, structured-output coercion broken, security issue.
-    Things that would break a real user.
+  - BLOCKER: build fails, tests fail, hook events missing, retry logic
+    broken, structured-output coercion broken, security issue. ALSO:
+    any FAÇADE pattern is a BLOCKER — see ANTI-FAÇADE rule below.
   - SUGGESTION: style differences, non-idiomatic patterns, missing comments,
     minor format differences, suboptimal but working code.
+
+  ANTI-FAÇADE RULE — BLOCKER ELEVATION:
+  Inspect the diff. Mark as BLOCKER if the batch:
+  - Creates any *.go file that imports goai and re-exports it (type aliases,
+    wrapper functions, constants pointing to goai values).
+  - Adds any new file under `claw-code-go/pkg/sdk/` (the entire directory
+    must be DELETED, not extended).
+  - Renames a goai symbol to a claw-shaped name without rewiring the call
+    site to actually use claw-code-go/pkg/api.Client.
+  - Defers cleanup ("vendor/goai will be removed in a future batch") when
+    the batch's own changes have already eliminated the last goai callers
+    — atomic deletion is required.
+  Re-exporting goai under different names is not migration. The
+  workflow's prior run produced a 96%-reported façade that was actually
+  zero progress. Never approve a batch that perpetuates it.
 
   Set approved=true if there are ZERO blockers (suggestions are OK).
   Set approved=false only if there are blockers.
@@ -469,8 +648,18 @@ prompt parity_verdict_system:
   CLASSIFICATION:
   Separate the review's issues into:
   - blockers[]: build/test breakage, goai imports remaining where they
-    shouldn't, broken hook semantics, broken retry, broken structured output
+    shouldn't, broken hook semantics, broken retry, broken structured output,
+    presence of any FAÇADE pattern (new package re-exporting goai under
+    different names — see ANTI-FAÇADE rule below)
   - suggestions[]: style, naming, non-idiomatic Go, polish
+
+  ANTI-FAÇADE RULE — ELEVATE TO BLOCKER:
+  Inspect the implementation diff. If this batch creates ANY of:
+  - A new file containing `type X = goai.X` aliases or `import "github.com/zendev-sh/goai"` followed by re-exporting wrapper functions
+  - A new package whose stated purpose is "isolation layer" / "compatibility shim" / "migration façade" while still importing goai
+  - Renames without underlying behavior change (e.g. `BackendGoai` → `BackendClaw` with no rewire to pkg/api)
+  …elevate the issue to a BLOCKER and require the next batch to remove
+  the façade. Re-exporting goai is not migration; it is relabeling.
 
   BATCH COMPLETION:
   Set batch_complete based on the acceptance_threshold:
@@ -484,15 +673,20 @@ prompt parity_verdict_system:
   If stagnating, set batch_complete=true anyway — the remaining issues
   will be carried to the next planning cycle as feedback.
 
-  OVERALL MIGRATION COMPLETE:
-  Use the parity_scan data (deterministic call-site/file counts) to assess
-  overall progress. Set overall_parity=true ONLY when ALL of the following hold:
-  - total_goai_call_sites == 0 (or all remaining are inside vendor/, expected to be deleted)
+  OVERALL MIGRATION COMPLETE — STRICT CONJUNCTION:
+  Use the parity_scan data (deterministic counts from BOTH repo sources).
+  Set overall_parity=true ONLY when ALL of the following are TRUE:
+  - iterion_goai_imports == 0
+  - claw_source_goai_imports == 0  (claw's source repo, not iterion's vendored copy)
+  - claw_pkg_sdk_files_present is empty (façade directory deleted)
+  - claw_gomod_has_goai == false
   - vendor_goai_present == false
-  - goai_in_gomod == false
+  - iterion_gomod_has_goai == false
+  - iterion_uses_pkg_api_directly == true (iterion calls pkg/api.Client directly)
   - tests_passing == true
-  - blocking_internal_packages is empty
-  - migration_percentage >= 100
+  This is a STRICT AND. Any single false → overall_parity=false. Do NOT
+  approximate; do NOT round up; do NOT defer negative-space checks to
+  "future cleanup".
 
   SELF-CRITIQUE (two-phase):
   Phase 1: Rigorously evaluate each current-batch entry.
@@ -650,6 +844,12 @@ schema feature_manifest:
   goai_in_gomod: bool
   parity_percentage: string
   dependency_order: string[]
+  iterion_goai_imports: int
+  claw_source_goai_imports: int
+  claw_pkg_sdk_files_present: string[]
+  claw_gomod_has_goai: bool
+  iterion_gomod_has_goai: bool
+  iterion_uses_pkg_api_directly: bool
 
 schema port_plan_input:
   feature_manifest: json
