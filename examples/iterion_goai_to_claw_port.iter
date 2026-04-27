@@ -293,22 +293,32 @@ prompt plan_judge_merge_user:
   Migration manifest:
   {{input.feature_manifest}}
 
-  STEP 0 — VERIFY ACTUAL STATE BEFORE EVALUATING. You have read-only tools
-  (read_file, list_files, search_codebase, tree, git_diff). You MUST use
-  them to verify any claim you make about the filesystem. Specifically,
-  before listing issues:
-  - Run search_codebase or grep to confirm whether files referenced by
-    the plans actually exist in iterion_repo_path and claw_repo_path.
-  - Read the relevant files cited in the plans to verify their actual
-    contents (not what the manifest says they contain).
+  STEP 0 — VERIFY ACTUAL STATE WITH ABSOLUTE PATHS. You have read-only
+  tools (read_file, list_files, search_codebase, tree, git_diff). You
+  MUST use them to verify every filesystem claim. ABSOLUTE PATHS ONLY:
+
+  - iterion source is at {{input.iterion_repo_path}} (the clone the
+    workflow operates on). EXAMPLE: grep -rn "github.com/zendev-sh/goai"
+    --include='*.go' {{input.iterion_repo_path}} | grep -v "/vendor/"
+  - claw-code-go source is at {{input.claw_repo_path}}. EXAMPLE:
+    grep -rn "github.com/zendev-sh/goai" --include='*.go' {{input.claw_repo_path}}
+  - DO NOT grep /workspaces/iterion (the main checkout) or any path that
+    is not iterion_repo_path or claw_repo_path. Other paths contain
+    pre-migration source and produce misleading evidence. If a tool
+    call returns no results, it is because the path is correct and
+    empty — do not retry on a different path.
+
+  Specifically, before listing issues:
+  - Read the relevant files cited in the plans (full absolute path) to
+    verify their actual contents.
   - Run grep against iterion_repo_path and claw_repo_path SOURCE
-    directories (not iterion's vendored copy) to count actual goai
-    imports.
-  Past judges in this workflow have hallucinated filesystem claims
-  ("file X does not exist" when it does) and triggered wasteful
-  re-planning loops. If you make ANY claim about file presence or
-  content, ground it in a tool call you actually invoked. Cite the
-  command and result inline.
+    directories (excluding iterion's vendored copy of claw).
+
+  Past judges in this workflow have grepped the WRONG repo
+  (/workspaces/iterion instead of {{input.iterion_repo_path}}) and
+  rejected sound plans based on stale state. If you make ANY claim
+  about file presence or content, cite the absolute path you grepped
+  and the tool output inline.
 
   After verification: if the plans are of sufficient quality
   (ready=true), produce a final merged plan in merged_plan. Otherwise,
@@ -739,15 +749,17 @@ prompt parity_verdict_user:
   Acceptance threshold:
   {{input.acceptance_threshold}}
 
-  STEP 0 — VERIFY ACTUAL STATE BEFORE VERDICT. You have read-only tools
-  (read_file, list_files, search_codebase, tree, git_diff). USE them to
-  verify any negative-space claim before setting overall_parity:
-  - Run grep on iterion source AND claw-code-go source for goai imports.
-  - List files in claw-code-go/pkg/sdk/ (must be empty for completion).
-  - Read iterion go.mod and claw-code-go go.mod to confirm goai is/is
-    not present.
-  - Read iterion model/claw_backend.go to confirm whether it imports
-    pkg/api directly or still goes through pkg/sdk.
+  STEP 0 — VERIFY WITH ABSOLUTE PATHS. You have read-only tools
+  (read_file, list_files, search_codebase, tree, git_diff). USE them
+  to verify every negative-space claim before setting overall_parity.
+  ABSOLUTE PATHS ONLY — iterion source is at {{input.iterion_repo_path}},
+  claw-code-go source is at {{input.claw_repo_path}}. DO NOT grep
+  /workspaces/iterion or any other path:
+  - grep -rn "github.com/zendev-sh/goai" --include='*.go' {{input.iterion_repo_path}} | grep -v "/vendor/"
+  - grep -rn "github.com/zendev-sh/goai" --include='*.go' {{input.claw_repo_path}}
+  - ls {{input.claw_repo_path}}/pkg/sdk/ (must be empty/absent for completion)
+  - Read {{input.iterion_repo_path}}/go.mod and {{input.claw_repo_path}}/go.mod to confirm goai is/is not present.
+  - Read {{input.iterion_repo_path}}/model/claw_backend.go to confirm whether it imports pkg/api directly or still pkg/sdk.
   Cite tool outputs inline. Do not rely solely on parity_scan claims —
   they are an LLM-derived snapshot and must be cross-checked.
 
@@ -802,15 +814,16 @@ prompt verdict_synthesis_user:
 
   Acceptance threshold: {{input.acceptance_threshold}}
 
-  STEP 0 — INDEPENDENT FILESYSTEM CHECK. You have read-only tools
-  (read_file, list_files, search_codebase, tree, git_diff). Before
-  declaring overall_parity=true, USE them to confirm:
-  - grep "github.com/zendev-sh/goai" --include='*.go' in iterion source
-    AND claw-code-go source returns 0 hits.
-  - claw-code-go/pkg/sdk directory is empty or absent.
-  - iterion go.mod and claw-code-go go.mod have no zendev-sh/goai
-    require lines.
-  - iterion vendor/github.com/zendev-sh does not exist.
+  STEP 0 — INDEPENDENT FILESYSTEM CHECK WITH ABSOLUTE PATHS. You have
+  read-only tools. ABSOLUTE PATHS ONLY — iterion source is at
+  {{input.iterion_repo_path}}, claw-code-go source is at
+  {{input.claw_repo_path}}. DO NOT grep /workspaces/iterion. Before
+  declaring overall_parity=true, USE the tools to confirm:
+  - grep -rn "github.com/zendev-sh/goai" --include='*.go' {{input.iterion_repo_path}} | grep -v "/vendor/" returns 0
+  - grep -rn "github.com/zendev-sh/goai" --include='*.go' {{input.claw_repo_path}} returns 0
+  - {{input.claw_repo_path}}/pkg/sdk directory is absent or empty.
+  - {{input.iterion_repo_path}}/go.mod and {{input.claw_repo_path}}/go.mod have no zendev-sh/goai require lines.
+  - {{input.iterion_repo_path}}/vendor/github.com/zendev-sh does not exist.
   This double-check protects against scanner-side or judge-side errors
   in the upstream verdicts. Cite tool outputs inline.
 
