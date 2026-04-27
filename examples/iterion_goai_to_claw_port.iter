@@ -999,10 +999,10 @@ workflow iterion_goai_to_claw_port:
 
   budget:
     max_parallel_branches: 3
-    max_duration: "8h"
-    max_cost_usd: 200
-    max_tokens: 30000000
-    max_iterations: 60
+    max_duration: "12h"
+    max_cost_usd: 300
+    max_tokens: 50000000
+    max_iterations: 200
 
   ## ═══ Phase 0 : Analysis ════════════════════════════════════════
 
