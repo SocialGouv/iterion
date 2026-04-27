@@ -293,9 +293,27 @@ prompt plan_judge_merge_user:
   Migration manifest:
   {{input.feature_manifest}}
 
-  If the plans are of sufficient quality (ready=true),
-  produce a final merged plan in merged_plan.
-  Otherwise, list the blocking issues in issues[].
+  STEP 0 — VERIFY ACTUAL STATE BEFORE EVALUATING. You have read-only tools
+  (read_file, list_files, search_codebase, tree, git_diff). You MUST use
+  them to verify any claim you make about the filesystem. Specifically,
+  before listing issues:
+  - Run search_codebase or grep to confirm whether files referenced by
+    the plans actually exist in iterion_repo_path and claw_repo_path.
+  - Read the relevant files cited in the plans to verify their actual
+    contents (not what the manifest says they contain).
+  - Run grep against iterion_repo_path and claw_repo_path SOURCE
+    directories (not iterion's vendored copy) to count actual goai
+    imports.
+  Past judges in this workflow have hallucinated filesystem claims
+  ("file X does not exist" when it does) and triggered wasteful
+  re-planning loops. If you make ANY claim about file presence or
+  content, ground it in a tool call you actually invoked. Cite the
+  command and result inline.
+
+  After verification: if the plans are of sufficient quality
+  (ready=true), produce a final merged plan in merged_plan. Otherwise,
+  list the blocking issues in issues[] — each issue must reference
+  observed filesystem state, not inferred state.
 
 ## ─── Prompts : Human Gate ──────────────────────────────────────
 
@@ -721,6 +739,18 @@ prompt parity_verdict_user:
   Acceptance threshold:
   {{input.acceptance_threshold}}
 
+  STEP 0 — VERIFY ACTUAL STATE BEFORE VERDICT. You have read-only tools
+  (read_file, list_files, search_codebase, tree, git_diff). USE them to
+  verify any negative-space claim before setting overall_parity:
+  - Run grep on iterion source AND claw-code-go source for goai imports.
+  - List files in claw-code-go/pkg/sdk/ (must be empty for completion).
+  - Read iterion go.mod and claw-code-go go.mod to confirm goai is/is
+    not present.
+  - Read iterion model/claw_backend.go to confirm whether it imports
+    pkg/api directly or still goes through pkg/sdk.
+  Cite tool outputs inline. Do not rely solely on parity_scan claims —
+  they are an LLM-derived snapshot and must be cross-checked.
+
   Instructions:
   1. Classify review issues as blockers[] or suggestions[]
   2. Self-critique each blocker (would it break production? is it stagnant?)
@@ -771,6 +801,18 @@ prompt verdict_synthesis_user:
   {{input.feature_manifest}}
 
   Acceptance threshold: {{input.acceptance_threshold}}
+
+  STEP 0 — INDEPENDENT FILESYSTEM CHECK. You have read-only tools
+  (read_file, list_files, search_codebase, tree, git_diff). Before
+  declaring overall_parity=true, USE them to confirm:
+  - grep "github.com/zendev-sh/goai" --include='*.go' in iterion source
+    AND claw-code-go source returns 0 hits.
+  - claw-code-go/pkg/sdk directory is empty or absent.
+  - iterion go.mod and claw-code-go go.mod have no zendev-sh/goai
+    require lines.
+  - iterion vendor/github.com/zendev-sh does not exist.
+  This double-check protects against scanner-side or judge-side errors
+  in the upstream verdicts. Cite tool outputs inline.
 
   Produce a final synthesized verdict with:
   - batch_complete: true if batch passes per threshold (normal = zero blockers)
