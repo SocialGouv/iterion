@@ -25,7 +25,7 @@ import (
 	"github.com/SocialGouv/iterion/unparse"
 )
 
-//go:embed static
+//go:embed all:static
 var staticFS embed.FS
 
 // Config holds the server configuration.
