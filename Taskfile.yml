@@ -92,6 +92,11 @@ tasks:
     cmds:
       - go test -v -tags live -count=1 -run TestLive_Lite_ClawMCP -timeout 10m ./e2e/...
 
+  test:live:claw-long-context:
+    desc: Run the long-context live e2e test (requires ANTHROPIC_API_KEY)
+    cmds:
+      - go test -v -tags live -count=1 -run TestLive_Lite_ClawLongContext -timeout 10m ./e2e/...
+
   fmt:
     desc: Format Go source files
     cmds:

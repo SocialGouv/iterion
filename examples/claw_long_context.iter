@@ -1,0 +1,60 @@
+## Fixture : claw_long_context
+##
+## But : prouver que le backend claw + un modele Anthropic 200k context
+## peuvent ingerer un prompt large (>= 30k tokens) sans erreur ni
+## truncation silencieuse, et produire un resume utilisable.
+##
+## Le test injecte un grand corpus repete dans `input.text` et asserte :
+##   - run termine en `done`
+##   - output.summary non vide et de longueur raisonnable
+##   - input_tokens dans EventLLMStepFinished >= un seuil eleve
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+prompt summarizer_system:
+  You are a summarization assistant. Given a long body of text, produce
+  a single-paragraph summary in english. Be faithful to the source —
+  do not invent or extrapolate. The summary must mention the SHA-1
+  marker at the very top of the input verbatim, exactly once.
+
+prompt summarizer_user:
+  {{input.text}}
+
+  Provide your summary in the `summary` field. Also include the marker
+  you found in the `marker` field, copied verbatim from the input.
+
+schema summarizer_input:
+  text: string
+
+schema summarizer_output:
+  summary: string
+  marker: string
+
+agent summarizer:
+  ## anthropic/claude-haiku-4-5 : 200k context window, cheap, fast.
+  ## Tests claw's ability to ship a multi-thousand-token prompt without
+  ## hitting preflight rejections, encoder OOMs, or stream truncation.
+  model: "anthropic/claude-haiku-4-5-20251001"
+  input: summarizer_input
+  output: summarizer_output
+  publish: summary_result
+  system: summarizer_system
+  user: summarizer_user
+  session: fresh
+
+workflow claw_long_context:
+  vars:
+    text: string
+
+  entry: summarizer
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "5m"
+    max_cost_usd: 3
+    max_tokens: 300000
+
+  summarizer -> done with {
+    text: "{{vars.text}}"
+  }

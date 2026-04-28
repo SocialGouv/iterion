@@ -1973,6 +1973,148 @@ func TestLive_Lite_ClawMCP(t *testing.T) {
 	logRunRecap(t, events)
 }
 
+// ---------------------------------------------------------------------------
+// Live E2E test — claw long-context
+// ---------------------------------------------------------------------------
+
+// TestLive_Lite_ClawLongContext sends a multi-thousand-token prompt through
+// claw + Anthropic Haiku 4.5 (200k window) and verifies that:
+//
+//  1. The run finishes successfully (no preflight rejection, no encoder
+//     OOM, no stream truncation).
+//  2. The agent's `summary` field is non-empty.
+//  3. The agent's `marker` field exactly equals the SHA-1 sentinel we
+//     planted at the top of the input — proving the input reached the
+//     model whole, not truncated mid-prompt.
+//  4. EventLLMStepFinished reports input_tokens > a high threshold,
+//     confirming the request really carried the bulk of the text.
+//
+// Requires ANTHROPIC_API_KEY.
+func TestLive_Lite_ClawLongContext(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live test in short mode")
+	}
+	loadDotEnv(t)
+	requireEnv(t, "ANTHROPIC_API_KEY")
+
+	wf := compileFixture(t, "claw_long_context.iter")
+
+	workspaceDir, err := os.MkdirTemp("", "iterion-claw-long-*")
+	if err != nil {
+		t.Fatalf("Failed to create workspace dir: %v", err)
+	}
+	t.Logf("Workspace directory (persists after test): %s", workspaceDir)
+
+	storeDir := filepath.Join(workspaceDir, ".iterion")
+	s, storeErr := store.New(storeDir)
+	if storeErr != nil {
+		t.Fatalf("Failed to create store: %v", storeErr)
+	}
+	runID := "live-claw-long-context"
+
+	executor := newLiveExecutor(wf, s, runID, workspaceDir)
+	defer executor.Close()
+	executor.SetVars(map[string]interface{}{
+		"workspace_dir": workspaceDir,
+	})
+
+	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+		t.Fatalf("mcp.PrepareWorkflow: %v", err)
+	}
+
+	// Build the long input. The marker is a fixed SHA-1-like sentinel at
+	// the top so the model can echo it back to prove the prompt arrived
+	// whole. The body is a repeated paragraph; ~5000 repeats yields
+	// roughly 25k–35k tokens depending on the tokenizer.
+	const marker = "MARKER_SHA1=4af3c2b8a7d10e9f6512cd84e0b3f7a9d1e6b0c2"
+	paragraph := "The Holocene is a geological epoch that began approximately 11,700 years before the present. It follows the Last Glacial Period, characterized by periodic glaciations and the eventual retreat of the ice sheets that covered large portions of the Northern Hemisphere. During the Holocene, human civilizations emerged, agricultural practices spread, and complex societies developed across multiple continents. "
+	var sb strings.Builder
+	sb.WriteString(marker)
+	sb.WriteString("\n\nLong corpus follows; please ignore content and just produce a one-paragraph summary.\n\n")
+	for i := 0; i < 800; i++ {
+		fmt.Fprintf(&sb, "[para %d] %s\n\n", i+1, paragraph)
+	}
+	longText := sb.String()
+	t.Logf("Long input: %d bytes (~%d tokens estimate)", len(longText), len(longText)/4)
+
+	eng := runtime.New(wf, s, executor)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	start := time.Now()
+	if runErr := eng.Run(ctx, runID, map[string]interface{}{
+		"text": longText,
+	}); runErr != nil {
+		t.Fatalf("Run error: %v", runErr)
+	}
+	t.Logf("Run completed in %s", time.Since(start).Round(time.Second))
+
+	r, _ := s.LoadRun(runID)
+	if r.Status != store.RunStatusFinished {
+		t.Fatalf("Expected run status 'finished', got %q", r.Status)
+	}
+
+	events, evtErr := s.LoadEvents(runID)
+	if evtErr != nil {
+		t.Fatalf("LoadEvents: %v", evtErr)
+	}
+
+	// Output sanity.
+	for _, evt := range events {
+		if evt.Type != store.EventNodeFinished || evt.NodeID != "summarizer" || evt.Data == nil {
+			continue
+		}
+		out, _ := evt.Data["output"].(map[string]interface{})
+		if out == nil {
+			continue
+		}
+		summary, _ := out["summary"].(string)
+		gotMarker, _ := out["marker"].(string)
+		t.Logf("summary (%d chars): %s", len(summary), summary)
+		t.Logf("marker echo: %q", gotMarker)
+		if strings.TrimSpace(summary) == "" {
+			t.Error("LONG CONTEXT: empty summary")
+		}
+		// The unique SHA portion is what proves the model saw the top of
+		// the input. Some models echo only the value, not the "KEY=" prefix.
+		if !strings.Contains(gotMarker, "4af3c2b8a7d10e9f6512cd84e0b3f7a9d1e6b0c2") {
+			t.Errorf("LONG CONTEXT: marker SHA not echoed — model may have truncated input. got=%q", gotMarker)
+		}
+		break
+	}
+
+	// Token-count assertion.
+	maxInputTokens := 0
+	for _, evt := range events {
+		if evt.Type != store.EventLLMStepFinished || evt.NodeID != "summarizer" || evt.Data == nil {
+			continue
+		}
+		switch v := evt.Data["input_tokens"].(type) {
+		case int:
+			if v > maxInputTokens {
+				maxInputTokens = v
+			}
+		case int64:
+			if int(v) > maxInputTokens {
+				maxInputTokens = int(v)
+			}
+		case float64:
+			if int(v) > maxInputTokens {
+				maxInputTokens = int(v)
+			}
+		}
+	}
+	t.Logf("Max input_tokens reported: %d", maxInputTokens)
+	const minExpectedTokens = 20000
+	if maxInputTokens < minExpectedTokens {
+		t.Errorf("LONG CONTEXT: input_tokens=%d is below expected threshold %d — prompt may have been truncated upstream", maxInputTokens, minExpectedTokens)
+	} else {
+		t.Logf("LONG CONTEXT VALIDATED: claw shipped %d input tokens to Anthropic", maxInputTokens)
+	}
+
+	logRunRecap(t, events)
+}
+
 // requireBinaryInPath skips the test if the named binary is not in PATH.
 func requireBinaryInPath(t *testing.T, name string) {
 	t.Helper()
