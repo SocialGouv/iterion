@@ -36,6 +36,6 @@ require (
 	golang.org/x/sys v0.42.0 // indirect
 )
 
-require claw-code-go v0.0.0
+require github.com/SocialGouv/claw-code-go v0.0.0
 
-replace claw-code-go v0.0.0 => ../claw-code-go
+replace github.com/SocialGouv/claw-code-go v0.0.0 => ./.works/claw-code-go

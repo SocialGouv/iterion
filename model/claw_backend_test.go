@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"claw-code-go/pkg/api"
+	"github.com/SocialGouv/claw-code-go/pkg/api"
 
 	"github.com/SocialGouv/iterion/delegate"
 	"github.com/SocialGouv/iterion/ir"

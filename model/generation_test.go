@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"claw-code-go/pkg/api"
+	"github.com/SocialGouv/claw-code-go/pkg/api"
 )
 
 // ---------------------------------------------------------------------------

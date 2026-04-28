@@ -3,7 +3,7 @@ package model
 import (
 	"testing"
 
-	"claw-code-go/pkg/api"
+	"github.com/SocialGouv/claw-code-go/pkg/api"
 )
 
 // ---------------------------------------------------------------------------

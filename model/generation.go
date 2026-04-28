@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"claw-code-go/pkg/api"
+	"github.com/SocialGouv/claw-code-go/pkg/api"
 )
 
 const (

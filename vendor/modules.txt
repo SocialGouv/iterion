@@ -1,13 +1,13 @@
-# claw-code-go v0.0.0 => ../claw-code-go
+# github.com/SocialGouv/claw-code-go v0.0.0 => ./.works/claw-code-go
 ## explicit; go 1.25
-claw-code-go/internal/api
-claw-code-go/internal/api/providers/anthropic
-claw-code-go/internal/api/providers/openai
-claw-code-go/internal/apikit
-claw-code-go/internal/strutil
-claw-code-go/pkg/api
-claw-code-go/pkg/api/providers/anthropic
-claw-code-go/pkg/api/providers/openai
+github.com/SocialGouv/claw-code-go/internal/api
+github.com/SocialGouv/claw-code-go/internal/api/providers/anthropic
+github.com/SocialGouv/claw-code-go/internal/api/providers/openai
+github.com/SocialGouv/claw-code-go/internal/apikit
+github.com/SocialGouv/claw-code-go/internal/strutil
+github.com/SocialGouv/claw-code-go/pkg/api
+github.com/SocialGouv/claw-code-go/pkg/api/providers/anthropic
+github.com/SocialGouv/claw-code-go/pkg/api/providers/openai
 # github.com/dustin/go-humanize v1.0.1
 ## explicit; go 1.16
 github.com/dustin/go-humanize

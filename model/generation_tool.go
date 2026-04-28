@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"claw-code-go/pkg/api"
+	"github.com/SocialGouv/claw-code-go/pkg/api"
 )
 
 // GenerationTool describes a tool available during direct generation.

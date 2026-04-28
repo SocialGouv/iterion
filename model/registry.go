@@ -8,9 +8,9 @@ import (
 	"strings"
 	"sync"
 
-	"claw-code-go/pkg/api"
-	anthropicprovider "claw-code-go/pkg/api/providers/anthropic"
-	openaiprovider "claw-code-go/pkg/api/providers/openai"
+	"github.com/SocialGouv/claw-code-go/pkg/api"
+	anthropicprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/anthropic"
+	openaiprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/openai"
 )
 
 // ProviderFactory creates an APIClient for a given model ID.
