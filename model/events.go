@@ -11,10 +11,11 @@ import (
 
 // LLMRequestInfo describes an LLM request, passed to the OnLLMRequest hook.
 type LLMRequestInfo struct {
-	Model        string
-	MessageCount int
-	ToolCount    int
-	Timestamp    time.Time
+	Model           string
+	MessageCount    int
+	ToolCount       int
+	ReasoningEffort string
+	Timestamp       time.Time
 }
 
 // LLMResponseInfo describes an LLM response, passed to the OnLLMResponse hook.
@@ -62,10 +63,11 @@ type LLMToolCallInfo struct {
 
 func toLLMRequestInfo(info RequestInfo) LLMRequestInfo {
 	return LLMRequestInfo{
-		Model:        info.Model,
-		MessageCount: info.MessageCount,
-		ToolCount:    info.ToolCount,
-		Timestamp:    info.Timestamp,
+		Model:           info.Model,
+		MessageCount:    info.MessageCount,
+		ToolCount:       info.ToolCount,
+		ReasoningEffort: info.ReasoningEffort,
+		Timestamp:       info.Timestamp,
 	}
 }
 

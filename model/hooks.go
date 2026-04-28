@@ -45,23 +45,31 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 		},
 
 		OnLLMRequest: func(nodeID string, info LLMRequestInfo) {
+			data := map[string]interface{}{
+				"model":         info.Model,
+				"message_count": info.MessageCount,
+				"tool_count":    info.ToolCount,
+			}
+			if info.ReasoningEffort != "" {
+				data["reasoning_effort"] = info.ReasoningEffort
+			}
 			_, _ = emitter.AppendEvent(runID, store.Event{
 				Type:   store.EventLLMRequest,
 				RunID:  runID,
 				NodeID: nodeID,
-				Data: map[string]interface{}{
-					"model":         info.Model,
-					"message_count": info.MessageCount,
-					"tool_count":    info.ToolCount,
-				},
+				Data:   data,
 			})
 
 			toolInfo := ""
 			if info.ToolCount > 0 {
 				toolInfo = fmt.Sprintf(", %d tools", info.ToolCount)
 			}
-			logger.Logf(iterlog.LevelInfo, "🤖", "LLM call [%s]: %s (%d msgs%s)",
-				nodeID, info.Model, info.MessageCount, toolInfo)
+			reasoningInfo := ""
+			if info.ReasoningEffort != "" {
+				reasoningInfo = fmt.Sprintf(", reasoning=%s", info.ReasoningEffort)
+			}
+			logger.Logf(iterlog.LevelInfo, "🤖", "LLM call [%s]: %s (%d msgs%s%s)",
+				nodeID, info.Model, info.MessageCount, toolInfo, reasoningInfo)
 		},
 
 		// OnLLMResponse is intentionally nil: response data surfaces through

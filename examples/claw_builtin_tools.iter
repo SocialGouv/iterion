@@ -1,0 +1,86 @@
+## Fixture : claw_builtin_tools
+##
+## But : prouver que claw (in-process) est aussi capable que claude_code
+## (CLI) pour des taches d'agent operant sur le filesystem, en s'appuyant
+## sur les built-in tools de claw-code-go (read_file, write_file, bash,
+## glob, grep, file_edit, web_fetch) enregistres cote iterion via
+## tool.RegisterClawBuiltins.
+##
+## Taches :
+##   1. Implement un agent claw qui doit ecrire un petit programme
+##      executable, le lancer via bash, et verifier la sortie.
+##   2. Le test asserte que les tools ont ete reellement appeles
+##      (>= 1 write_file, >= 1 bash, et le fichier final existe).
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+prompt builder_system:
+  You are a Go developer with access to filesystem tools.
+
+  Tools at your disposal:
+   - read_file(path)
+   - write_file(path, content)
+   - bash(command)             — run a shell command
+   - glob(pattern)              — match files
+   - grep(pattern, path)        — search file contents
+   - file_edit(path, old, new)  — string-replace edit
+
+  Use these tools faithfully. Do not pretend; actually call the tools.
+  Do not write files mentally — every artifact must come from a
+  write_file call.
+
+prompt builder_user:
+  Task: in the workspace at {{input.workspace_dir}}, write a tiny Go
+  program named `hello.go` that prints exactly the line:
+
+      claw is operational
+
+  Then run `go run hello.go` from that directory using the bash tool
+  and capture the output. Read the file back to verify its content.
+
+  When done, fill the output schema:
+   - applied=true
+   - file_path = absolute path to hello.go
+   - bash_output = the exact stdout you observed from `go run`
+   - tools_used  = a non-empty list of every distinct tool name you
+                   called during this task (e.g. ["write_file","bash","read_file"])
+
+schema builder_input:
+  workspace_dir: string
+
+schema builder_output:
+  applied: bool
+  file_path: string
+  bash_output: string
+  tools_used: string[]
+
+agent builder:
+  ## Pure claw agent: no `backend:` field -> claw direct path. The tool
+  ## list is wired via the iterion tool registry and resolved into
+  ## ToolDefs that claw_backend's tool loop drives.
+  model: "anthropic/claude-haiku-4-5-20251001"
+  input: builder_input
+  output: builder_output
+  publish: builder_result
+  system: builder_system
+  user: builder_user
+  tools: [read_file, write_file, bash, glob, grep, file_edit]
+  tool_max_steps: 12
+  session: fresh
+
+workflow claw_builtin_tools:
+  vars:
+    workspace_dir: string = "${PROJECT_DIR}"
+
+  entry: builder
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "10m"
+    max_cost_usd: 3
+    max_tokens: 200000
+
+  builder -> done with {
+    workspace_dir: "{{vars.workspace_dir}}"
+  }

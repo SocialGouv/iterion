@@ -1,5 +1,5 @@
-github.com/SocialGouv/claw-code-go v0.0.0-20260428101538-7799a7e633d3 h1:ZVDFgmIODg32xZwcdHTNFO1bezWfA4K0n9gq3ZSCHUk=
-github.com/SocialGouv/claw-code-go v0.0.0-20260428101538-7799a7e633d3/go.mod h1:N4MiYGySaER+hSloUeiHOU90fNjOxkAJjAcoOgJMPAs=
+github.com/SocialGouv/claw-code-go v0.0.0-20260428150308-bf21311bac7b h1:BiLlfmez4AUcH0mhvFJ4i8uXMtKJvN25ai4T5nw7K6s=
+github.com/SocialGouv/claw-code-go v0.0.0-20260428150308-bf21311bac7b/go.mod h1:N4MiYGySaER+hSloUeiHOU90fNjOxkAJjAcoOgJMPAs=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=

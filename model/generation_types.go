@@ -13,6 +13,11 @@ type RequestInfo struct {
 	// ToolCount is the number of tools available.
 	ToolCount int
 
+	// ReasoningEffort is the resolved reasoning_effort spec sent on the
+	// request, when set ("low", "medium", "high", "extra_high"). Empty
+	// when the node did not request a reasoning level.
+	ReasoningEffort string
+
 	// Timestamp is when the request was initiated.
 	Timestamp time.Time
 }

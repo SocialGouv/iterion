@@ -1,0 +1,57 @@
+## Fixture : claw_reasoning_effort
+##
+## But : prouver que `reasoning_effort: "high"` est correctement
+## propage de la declaration .iter jusqu'au request body envoye au
+## provider, en passant par GenerationOptions.ProviderOptions et
+## RequestInfo.ReasoningEffort.
+##
+## Le test asserte qu'un EventLLMRequest pour le node `thinker` porte
+## `reasoning_effort=high` dans son data — preuve que la plomberie
+## task.ReasoningEffort -> opts.ProviderOptions["reasoning_effort"]
+## -> req.ReasoningEffort -> JSON body fonctionne.
+
+vars:
+  question: string
+
+prompt thinker_system:
+  You are a careful reasoner. Use as many internal reasoning steps as
+  the user's question warrants before producing your final answer.
+
+prompt thinker_user:
+  Question : {{input.question}}
+
+  Reply with a one-sentence answer in the `answer` field.
+
+schema thinker_input:
+  question: string
+
+schema thinker_output:
+  answer: string
+
+agent thinker:
+  ## reasoning_effort: high should propagate to req.ReasoningEffort.
+  ## OpenAI's gpt-5.5 family supports this header for reasoning models.
+  model: "openai/gpt-5.5"
+  input: thinker_input
+  output: thinker_output
+  publish: thinker_result
+  system: thinker_system
+  user: thinker_user
+  reasoning_effort: high
+  session: fresh
+
+workflow claw_reasoning_effort:
+  vars:
+    question: string
+
+  entry: thinker
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "5m"
+    max_cost_usd: 2
+    max_tokens: 100000
+
+  thinker -> done with {
+    question: "{{vars.question}}"
+  }

@@ -251,11 +251,18 @@ func toolCallsFromBlocks(toolUses []toolUseBlock) []ToolCall {
 // fireOnRequest calls the OnRequest hook if set.
 func fireOnRequest(opts GenerationOptions, messageCount int) {
 	if opts.OnRequest != nil {
+		var reasoning string
+		if opts.ProviderOptions != nil {
+			if re, ok := opts.ProviderOptions["reasoning_effort"].(string); ok {
+				reasoning = re
+			}
+		}
 		opts.OnRequest(RequestInfo{
-			Model:        opts.Model,
-			MessageCount: messageCount,
-			ToolCount:    len(opts.Tools),
-			Timestamp:    time.Now(),
+			Model:           opts.Model,
+			MessageCount:    messageCount,
+			ToolCount:       len(opts.Tools),
+			ReasoningEffort: reasoning,
+			Timestamp:       time.Now(),
 		})
 	}
 }

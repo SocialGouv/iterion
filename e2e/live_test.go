@@ -1549,6 +1549,275 @@ func TestLive_Lite_ClawComprehensive(t *testing.T) {
 	logRunRecap(t, events)
 }
 
+// ---------------------------------------------------------------------------
+// Live E2E test — claw with built-in filesystem/shell tools
+// ---------------------------------------------------------------------------
+
+// TestLive_Lite_ClawBuiltinTools exercises the new tool.RegisterClawBuiltins
+// helper that wires claw-code-go's built-in tools (read_file, write_file,
+// bash, glob, grep, file_edit, web_fetch) into iterion's tool registry,
+// closing the "claude_code has tools out of the box, claw doesn't" gap.
+//
+// A claw-direct agent is given a small Go-development task that requires
+// real file IO + shell execution (write hello.go, run `go run hello.go`,
+// capture output, read file back).
+//
+// Asserts:
+//  1. Run finishes successfully.
+//  2. hello.go exists in the workspace.
+//  3. The agent's reported bash output matches "claw is operational".
+//  4. EventToolCalled events show >= 1 write_file and >= 1 bash call.
+//
+// Requires ANTHROPIC_API_KEY (the agent runs on claude-haiku-4-5).
+func TestLive_Lite_ClawBuiltinTools(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live test in short mode")
+	}
+	loadDotEnv(t)
+	requireEnv(t, "ANTHROPIC_API_KEY")
+	requireBinaryInPath(t, "go")
+
+	wf := compileFixture(t, "claw_builtin_tools.iter")
+
+	workspaceDir, err := os.MkdirTemp("", "iterion-claw-builtin-tools-*")
+	if err != nil {
+		t.Fatalf("Failed to create workspace dir: %v", err)
+	}
+	t.Logf("Workspace directory (persists after test): %s", workspaceDir)
+
+	// Initialise a tiny go.mod so `go run hello.go` works without GOPATH.
+	if werr := os.WriteFile(filepath.Join(workspaceDir, "go.mod"),
+		[]byte("module hello\n\ngo 1.21\n"), 0o644); werr != nil {
+		t.Fatalf("write go.mod: %v", werr)
+	}
+
+	storeDir := filepath.Join(workspaceDir, ".iterion")
+	s, storeErr := store.New(storeDir)
+	if storeErr != nil {
+		t.Fatalf("Failed to create store: %v", storeErr)
+	}
+
+	runID := "live-claw-builtin-tools"
+
+	// Tool registry seeded with claw built-ins.
+	toolReg := tool.NewRegistry()
+	if regErr := tool.RegisterClawBuiltins(toolReg, workspaceDir); regErr != nil {
+		t.Fatalf("RegisterClawBuiltins: %v", regErr)
+	}
+
+	reg := model.NewRegistry()
+	logger := iterlog.New(iterlog.LevelDebug, os.Stderr)
+	hooks := model.NewStoreEventHooks(s, runID, logger)
+	backendReg := delegate.DefaultRegistry(logger)
+	backendReg.Register(delegate.BackendClaw, model.NewClawBackend(reg, hooks, model.RetryPolicy{}))
+	executor := model.NewClawExecutor(reg, wf,
+		model.WithBackendRegistry(backendReg),
+		model.WithToolRegistry(toolReg),
+		model.WithWorkDir(workspaceDir),
+		model.WithEventHooks(hooks),
+	)
+	defer executor.Close()
+	executor.SetVars(map[string]interface{}{
+		"workspace_dir": workspaceDir,
+	})
+
+	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+		t.Fatalf("mcp.PrepareWorkflow: %v", err)
+	}
+
+	eng := runtime.New(wf, s, executor)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	t.Log("Starting live claw built-in tools run...")
+	start := time.Now()
+	runErr := eng.Run(ctx, runID, map[string]interface{}{
+		"workspace_dir": workspaceDir,
+	})
+	elapsed := time.Since(start)
+	t.Logf("Run completed in %s", elapsed.Round(time.Second))
+
+	if runErr != nil {
+		t.Fatalf("Unexpected run error: %v", runErr)
+	}
+	r, loadErr := s.LoadRun(runID)
+	if loadErr != nil {
+		t.Fatalf("Failed to load run: %v", loadErr)
+	}
+	if r.Status != store.RunStatusFinished {
+		t.Fatalf("Expected run status 'finished', got %q", r.Status)
+	}
+
+	events, evtErr := s.LoadEvents(runID)
+	if evtErr != nil {
+		t.Fatalf("Failed to load events: %v", evtErr)
+	}
+
+	// Tool call counts.
+	toolCounts := map[string]int{}
+	for _, evt := range events {
+		if evt.Type != store.EventToolCalled || evt.Data == nil {
+			continue
+		}
+		if evt.NodeID != "builder" {
+			continue
+		}
+		if name, _ := evt.Data["tool"].(string); name != "" {
+			toolCounts[name]++
+		}
+	}
+	t.Logf("Tool call counts: %v", toolCounts)
+
+	if toolCounts["write_file"] < 1 {
+		t.Errorf("CLAW BUILTIN TOOLS: expected >= 1 write_file call, got %d", toolCounts["write_file"])
+	}
+	if toolCounts["bash"] < 1 {
+		t.Errorf("CLAW BUILTIN TOOLS: expected >= 1 bash call, got %d", toolCounts["bash"])
+	}
+
+	// hello.go must exist in workspace.
+	helloPath := filepath.Join(workspaceDir, "hello.go")
+	helloBytes, hErr := os.ReadFile(helloPath)
+	if hErr != nil {
+		t.Errorf("hello.go not found at %s: %v", helloPath, hErr)
+	} else {
+		t.Logf("hello.go (%d bytes):\n%s", len(helloBytes), string(helloBytes))
+	}
+
+	// Agent output should report applied=true and bash_output containing the marker.
+	for _, evt := range events {
+		if evt.Type != store.EventNodeFinished || evt.NodeID != "builder" || evt.Data == nil {
+			continue
+		}
+		out, ok := evt.Data["output"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		applied, _ := out["applied"].(bool)
+		bashOut, _ := out["bash_output"].(string)
+		toolsUsed, _ := out["tools_used"].([]interface{})
+		t.Logf("builder.applied = %v", applied)
+		t.Logf("builder.bash_output = %q", bashOut)
+		t.Logf("builder.tools_used = %v", toolsUsed)
+		if !applied {
+			t.Error("builder reported applied=false")
+		}
+		if !strings.Contains(bashOut, "claw is operational") {
+			t.Errorf("bash_output missing marker 'claw is operational', got %q", bashOut)
+		}
+		if len(toolsUsed) < 2 {
+			t.Errorf("expected tools_used to mention >= 2 distinct tools, got %v", toolsUsed)
+		}
+		break
+	}
+
+	metrics, mErr := benchmark.CollectMetrics(s, runID, "live-claw-builtin-tools", "")
+	if mErr == nil {
+		t.Logf("Metrics: tokens=%d cost=$%.4f model_calls=%d iterations=%d duration=%s",
+			metrics.TotalTokens, metrics.TotalCostUSD, metrics.ModelCalls,
+			metrics.Iterations, metrics.DurationStr)
+	}
+
+	logRunRecap(t, events)
+}
+
+// ---------------------------------------------------------------------------
+// Live E2E test — reasoning_effort propagation
+// ---------------------------------------------------------------------------
+
+// TestLive_Lite_ClawReasoningEffort verifies that a node's reasoning_effort
+// field propagates from the .iter declaration to the request body sent to
+// the provider, by inspecting the EventLLMRequest entry in the store.
+//
+// Asserts that the EventLLMRequest event for the `thinker` node contains
+// reasoning_effort=high in its data — proving the chain
+//   ir.Node.ReasoningEffort
+//     → delegate.Task.ReasoningEffort
+//       → providerOptsForNode → opts.ProviderOptions["reasoning_effort"]
+//         → fireOnRequest → RequestInfo.ReasoningEffort
+//           → LLMRequestInfo.ReasoningEffort
+//             → store EventLLMRequest.data["reasoning_effort"]
+// is intact end-to-end.
+func TestLive_Lite_ClawReasoningEffort(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live test in short mode")
+	}
+	loadDotEnv(t)
+	requireEnv(t, "OPENAI_API_KEY")
+
+	wf := compileFixture(t, "claw_reasoning_effort.iter")
+
+	workspaceDir, err := os.MkdirTemp("", "iterion-claw-reasoning-*")
+	if err != nil {
+		t.Fatalf("Failed to create workspace dir: %v", err)
+	}
+	t.Logf("Workspace directory (persists after test): %s", workspaceDir)
+
+	storeDir := filepath.Join(workspaceDir, ".iterion")
+	s, storeErr := store.New(storeDir)
+	if storeErr != nil {
+		t.Fatalf("Failed to create store: %v", storeErr)
+	}
+
+	runID := "live-claw-reasoning"
+	executor := newLiveExecutor(wf, s, runID, workspaceDir)
+	defer executor.Close()
+
+	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+		t.Fatalf("mcp.PrepareWorkflow: %v", err)
+	}
+
+	eng := runtime.New(wf, s, executor)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	// Don't fail on the API call result — OpenAI's /v1/chat/completions
+	// rejects reasoning_effort+tools on gpt-5.5 (requires /v1/responses,
+	// a separate fix in claw-code-go's openai provider). The point of this
+	// test is to verify iterion's *propagation*, which happens before the
+	// API actually replies. The event we assert on is emitted by
+	// fireOnRequest() at the start of every call.
+	runErr := eng.Run(ctx, runID, map[string]interface{}{
+		"question": "Briefly: why is the sky blue?",
+	})
+	if runErr != nil {
+		t.Logf("note: run did not finish cleanly (%v) — checking propagation via events anyway", runErr)
+	}
+
+	events, evtErr := s.LoadEvents(runID)
+	if evtErr != nil {
+		t.Fatalf("LoadEvents: %v", evtErr)
+	}
+
+	// Assert: at least one llm_request event for `thinker` carries
+	// reasoning_effort = "high".
+	found := false
+	for _, evt := range events {
+		if evt.Type != store.EventLLMRequest || evt.NodeID != "thinker" || evt.Data == nil {
+			continue
+		}
+		if re, _ := evt.Data["reasoning_effort"].(string); re == "high" {
+			found = true
+			t.Logf("REASONING_EFFORT VALIDATED: thinker llm_request carries reasoning_effort=%q (model=%v)",
+				re, evt.Data["model"])
+			break
+		}
+	}
+	if !found {
+		t.Errorf("REASONING_EFFORT: no EventLLMRequest for 'thinker' carried reasoning_effort=high — propagation broken")
+	}
+
+	logRunRecap(t, events)
+}
+
+// requireBinaryInPath skips the test if the named binary is not in PATH.
+func requireBinaryInPath(t *testing.T, name string) {
+	t.Helper()
+	if _, err := exec.LookPath(name); err != nil {
+		t.Skipf("%s not in PATH — skipping", name)
+	}
+}
+
 // requireEnv skips the test if the named environment variable is not set.
 func requireEnv(t *testing.T, name string) {
 	t.Helper()
