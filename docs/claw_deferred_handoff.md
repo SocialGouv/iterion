@@ -365,9 +365,9 @@ cd /workspaces/iterion
 devbox run -- task check                                                          # PASS
 ```
 
-**Restant côté wiring** (non bloquant pour l'usage du broker / des plugins) :
-- Câbler `oauth.Broker.BearerHeaderFunc` dans `internal/mcp/sse.go::SSETransport` (signature actuelle accepte un `authHeader string` statique → besoin d'un setter `WithAuthFunc(func(ctx) (string, error))`).
-- Wirer `LoadClaudeMdCommands` dans le `cmd/claw` boot pour qu'il scanne le cwd au démarrage.
-- Connecter `plugins.Manager` à un adaptateur `PluginManagerProvider` côté boot pour activer `/store`.
+**Wiring final** (livré dans le commit `e26e73b`) :
+- `SSETransport.SetAuthFunc(func(ctx) (string, error))` — override le `authHeader` statique. À utiliser via `broker.BearerHeaderFunc(cfg)` côté caller. Tests : `internal/mcp/sse_test.go`.
+- `LoadClaudeMdCommands(registry, cwd)` invoqué au boot du TUI dans `cmd/claw-code-go/main.go::runTUI`. Erreurs non-fatales.
+- `ConversationLoop.MarketplaceMgr *plugins.Manager` peuplé via env var `CLAW_MARKETPLACE_URL` au boot. Le dispatcher (`conversation.go::executeSlashCommand`) wire l'adapter avec `SetPluginManager(loop.MarketplaceMgr)`. Compile-time assertions dans `loop_adapter_test.go` verrouillent `PluginManagerProvider` + `SessionDirProvider`.
 
-Ces trois branchements requièrent l'accès au `cmd/claw` main et à l'adapter de loop ; ils ne touchent ni la sémantique des features livrées ni leurs tests. À faire en suivi.
+Tout est livré. `go test -race -short ./...` PASS sur claw + iterion (`task check`). Aucun push (l'utilisateur pousse manuellement).
