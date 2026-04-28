@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/SocialGouv/iterion/internal/appinfo"
+	"github.com/SocialGouv/iterion/llmtypes"
 	iterlog "github.com/SocialGouv/iterion/log"
 	"github.com/SocialGouv/iterion/tool"
 )
@@ -342,16 +343,18 @@ func (m *Manager) clientForState(state *serverState) (protocolClient, error) {
 
 // FatalToolError wraps MCP tool errors that should not be retried or
 // absorbed by the LLM tool loop (e.g. rate limits, credit exhaustion).
-// Implements goai.FatalToolError so goai stops the generation loop.
+// Implements llmtypes.FatalToolError so the generation loop stops.
 type FatalToolError struct {
 	Message string
 }
+
+var _ llmtypes.FatalToolError = (*FatalToolError)(nil)
 
 func (e *FatalToolError) Error() string {
 	return e.Message
 }
 
-// IsFatal implements the goai.FatalToolError interface.
+// IsFatal implements llmtypes.FatalToolError.
 func (e *FatalToolError) IsFatal() bool {
 	return true
 }

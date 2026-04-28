@@ -1,6 +1,6 @@
 // Package delegate provides the Backend interface and types for executing
 // agent/judge nodes via pluggable backends (CLI agents like claude-code/codex,
-// or API-based backends like goai).
+// or API-based backends like claw).
 //
 // When a node has `backend: "claude_code"`, the executor invokes the named
 // Backend which handles execution (subprocess, API call, etc.).
@@ -14,7 +14,7 @@ import (
 
 // Backend name constants used for registration and dispatch.
 const (
-	BackendGoai       = "goai"
+	BackendClaw       = "claw"
 	BackendClaudeCode = "claude_code"
 	BackendCodex      = "codex"
 )
@@ -39,7 +39,7 @@ type Backend interface {
 }
 
 // ToolDef is a fully resolved tool definition for backends that execute tools
-// internally (e.g. goai). CLI-based backends use AllowedTools (string names) instead.
+// internally (e.g. claw). CLI-based backends use AllowedTools (string names) instead.
 type ToolDef struct {
 	Name        string
 	Description string
@@ -63,7 +63,7 @@ type Task struct {
 	AllowedTools []string
 
 	// ToolDefs provides full tool definitions for backends that manage tool
-	// loops internally (e.g. goai). CLI-based backends ignore this field.
+	// loops internally (e.g. claw). CLI-based backends ignore this field.
 	ToolDefs []ToolDef
 
 	// OutputSchema is the JSON Schema for the expected structured output.

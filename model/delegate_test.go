@@ -39,7 +39,7 @@ func (b *stubBackend) Execute(_ context.Context, _ delegate.Task) (delegate.Resu
 	return b.fallback, nil
 }
 
-func newDelegateTestExecutor(backend delegate.Backend, hooks EventHooks) *GoaiExecutor {
+func newDelegateTestExecutor(backend delegate.Backend, hooks EventHooks) *ClawExecutor {
 	reg := delegate.NewRegistry()
 	reg.Register("test_backend", backend)
 
@@ -51,7 +51,7 @@ func newDelegateTestExecutor(backend delegate.Backend, hooks EventHooks) *GoaiEx
 		Schemas: map[string]*ir.Schema{},
 	}
 
-	return NewGoaiExecutor(NewRegistry(), wf,
+	return NewClawExecutor(NewRegistry(), wf,
 		WithBackendRegistry(reg),
 		WithEventHooks(hooks),
 		WithRetryPolicy(RetryPolicy{MaxAttempts: 3, BackoffBase: 10 * time.Millisecond}),

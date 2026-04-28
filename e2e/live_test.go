@@ -58,16 +58,16 @@ func loadDotEnv(t *testing.T) {
 	}
 }
 
-// newLiveExecutor creates a GoaiExecutor with all standard backends registered.
-func newLiveExecutor(wf *ir.Workflow, s *store.RunStore, runID, workDir string) *model.GoaiExecutor {
+// newLiveExecutor creates a ClawExecutor with all standard backends registered.
+func newLiveExecutor(wf *ir.Workflow, s *store.RunStore, runID, workDir string) *model.ClawExecutor {
 	reg := model.NewRegistry()
 	logger := iterlog.New(iterlog.LevelDebug, os.Stderr)
 	hooks := model.NewStoreEventHooks(s, runID, logger)
 
 	backendReg := delegate.DefaultRegistry(logger)
-	backendReg.Register(delegate.BackendGoai, model.NewGoaiBackend(reg, wf.Schemas, hooks, model.RetryPolicy{}))
+	backendReg.Register(delegate.BackendClaw, model.NewClawBackend(reg, hooks, model.RetryPolicy{}))
 
-	return model.NewGoaiExecutor(reg, wf,
+	return model.NewClawExecutor(reg, wf,
 		model.WithBackendRegistry(backendReg),
 		model.WithToolRegistry(tool.NewRegistry()),
 		model.WithWorkDir(workDir),
@@ -992,7 +992,7 @@ func TestLive_Full_ExhaustiveDSLCoverage(t *testing.T) {
 		metrics.TotalTokens, metrics.TotalCostUSD, metrics.ModelCalls,
 		metrics.Iterations, metrics.DurationStr)
 
-	// ModelCalls counts goai backend calls only; CLI backends (claude_code, codex)
+	// ModelCalls counts claw backend calls only; CLI backends (claude_code, codex)
 	// are tracked via Iterations. Verify tokens were consumed.
 	if metrics.TotalTokens == 0 && metrics.Iterations == 0 {
 		t.Error("Expected non-zero token consumption or iterations")

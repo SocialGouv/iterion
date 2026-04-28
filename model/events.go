@@ -3,12 +3,10 @@ package model
 import (
 	"encoding/json"
 	"time"
-
-	goai "github.com/zendev-sh/goai"
 )
 
 // ---------------------------------------------------------------------------
-// Iterion-owned event types (decoupled from goai)
+// Iterion-owned event types (decoupled from SDK)
 // ---------------------------------------------------------------------------
 
 // LLMRequestInfo describes an LLM request, passed to the OnLLMRequest hook.
@@ -55,10 +53,10 @@ type LLMToolCallInfo struct {
 }
 
 // ---------------------------------------------------------------------------
-// Conversion functions (goai → iterion types)
+// Conversion functions (local model types → iterion event types)
 // ---------------------------------------------------------------------------
 
-func fromGoaiRequestInfo(info goai.RequestInfo) LLMRequestInfo {
+func toLLMRequestInfo(info RequestInfo) LLMRequestInfo {
 	return LLMRequestInfo{
 		Model:        info.Model,
 		MessageCount: info.MessageCount,
@@ -67,7 +65,7 @@ func fromGoaiRequestInfo(info goai.RequestInfo) LLMRequestInfo {
 	}
 }
 
-func fromGoaiResponseInfo(info goai.ResponseInfo) LLMResponseInfo {
+func toLLMResponseInfo(info ResponseInfo) LLMResponseInfo {
 	return LLMResponseInfo{
 		Latency:      info.Latency,
 		InputTokens:  info.Usage.InputTokens,
@@ -78,7 +76,7 @@ func fromGoaiResponseInfo(info goai.ResponseInfo) LLMResponseInfo {
 	}
 }
 
-func fromGoaiStepResult(step goai.StepResult) LLMStepInfo {
+func toLLMStepInfo(step StepResult) LLMStepInfo {
 	calls := make([]ToolCallEntry, len(step.ToolCalls))
 	for i, tc := range step.ToolCalls {
 		calls[i] = ToolCallEntry{
@@ -96,11 +94,46 @@ func fromGoaiStepResult(step goai.StepResult) LLMStepInfo {
 	}
 }
 
-func fromGoaiToolCallInfo(info goai.ToolCallInfo) LLMToolCallInfo {
+func toLLMToolCallInfo(info ToolCallInfo) LLMToolCallInfo {
 	return LLMToolCallInfo{
 		ToolName:  info.ToolName,
 		InputSize: info.InputSize,
 		Duration:  info.Duration,
 		Error:     info.Error,
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Hook wiring (shared between claw_backend.go and executor.go)
+// ---------------------------------------------------------------------------
+
+// applyHooks populates the GenerationOptions hook callbacks that bridge the
+// generation engine's types (RequestInfo, ResponseInfo, StepResult, ToolCallInfo)
+// to the iterion event types (LLMRequestInfo, etc.) and dispatch to the
+// EventHooks callbacks. Only non-nil hooks are wired.
+func applyHooks(nodeID string, h EventHooks, opts *GenerationOptions) {
+	if h.OnLLMRequest != nil {
+		fn := h.OnLLMRequest
+		opts.OnRequest = func(info RequestInfo) {
+			fn(nodeID, toLLMRequestInfo(info))
+		}
+	}
+	if h.OnLLMResponse != nil {
+		fn := h.OnLLMResponse
+		opts.OnResponse = func(info ResponseInfo) {
+			fn(nodeID, toLLMResponseInfo(info))
+		}
+	}
+	if h.OnLLMStepFinish != nil {
+		fn := h.OnLLMStepFinish
+		opts.OnStepFinish = func(step StepResult) {
+			fn(nodeID, toLLMStepInfo(step))
+		}
+	}
+	if h.OnToolCall != nil {
+		fn := h.OnToolCall
+		opts.OnToolCall = func(info ToolCallInfo) {
+			fn(nodeID, toLLMToolCallInfo(info))
+		}
 	}
 }

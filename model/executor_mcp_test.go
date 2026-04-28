@@ -22,7 +22,7 @@ func TestCheckNodeToolAccessRejectsInactiveMCPServer(t *testing.T) {
 		t.Fatalf("register slack MCP tool: %v", err)
 	}
 
-	exec := newTestGoaiExecutor(reg, wf, WithToolRegistry(tr))
+	exec := newTestClawExecutor(reg, wf, WithToolRegistry(tr))
 
 	// AgentNode with only "github" active — github tools allowed, slack denied.
 	allowed := &ir.AgentNode{

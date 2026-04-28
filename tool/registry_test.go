@@ -373,10 +373,10 @@ func TestParseMCPWildcard(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Adapter — ToGoaiTool
+// Adapter — ToLLMTool
 // ---------------------------------------------------------------------------
 
-func TestToGoaiTool(t *testing.T) {
+func TestToLLMTool(t *testing.T) {
 	called := false
 	td := &ToolDef{
 		QualifiedName: "mcp.github.create_issue",
@@ -389,7 +389,7 @@ func TestToGoaiTool(t *testing.T) {
 		Origin: Origin{Kind: OriginMCP, Server: "github"},
 	}
 
-	gt := td.ToGoaiTool()
+	gt := td.ToLLMTool()
 	if gt.Name != "mcp_github_create_issue" {
 		t.Errorf("expected sanitized name, got %q", gt.Name)
 	}

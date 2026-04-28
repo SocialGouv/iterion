@@ -8,7 +8,7 @@ import (
 )
 
 // SchemaToJSON converts an IR Schema to a JSON Schema (json.RawMessage)
-// suitable for use with goai.WithExplicitSchema.
+// suitable for use with sdk.WithExplicitSchema.
 func SchemaToJSON(schema *ir.Schema) (json.RawMessage, error) {
 	if schema == nil {
 		return nil, fmt.Errorf("model: nil schema")

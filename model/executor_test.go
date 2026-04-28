@@ -8,8 +8,7 @@ import (
 	"testing"
 	"time"
 
-	goai "github.com/zendev-sh/goai"
-	"github.com/zendev-sh/goai/provider"
+	"claw-code-go/pkg/api"
 
 	"github.com/SocialGouv/iterion/delegate"
 	"github.com/SocialGouv/iterion/ir"
@@ -20,100 +19,111 @@ import (
 // Test doubles
 // ---------------------------------------------------------------------------
 
-// mockModel is a test double for provider.LanguageModel.
-type mockModel struct {
-	id       string
-	response *provider.GenerateResult
-	err      error
+// mockStreamEvents builds a channel of api.StreamEvent that simulates a
+// complete Anthropic streaming response with the given text and stop reason.
+func mockStreamEvents(text string, stopReason string) <-chan api.StreamEvent {
+	ch := make(chan api.StreamEvent, 10)
+	go func() {
+		defer close(ch)
+		// message_start
+		ch <- api.StreamEvent{Type: api.EventMessageStart, InputTokens: 100}
+		// content_block_start
+		ch <- api.StreamEvent{
+			Type:         api.EventContentBlockStart,
+			ContentBlock: api.ContentBlockInfo{Type: "text", Index: 0},
+		}
+		// content_block_delta
+		ch <- api.StreamEvent{
+			Type:  api.EventContentBlockDelta,
+			Index: 0,
+			Delta: api.Delta{Type: "text_delta", Text: text},
+		}
+		// content_block_stop
+		ch <- api.StreamEvent{Type: api.EventContentBlockStop, Index: 0}
+		// message_delta
+		ch <- api.StreamEvent{
+			Type:       api.EventMessageDelta,
+			StopReason: stopReason,
+			Usage:      api.UsageDelta{OutputTokens: 50},
+		}
+		// message_stop
+		ch <- api.StreamEvent{Type: api.EventMessageStop}
+	}()
+	return ch
 }
 
-func (m *mockModel) ModelID() string { return m.id }
+// execMockClient is a test double for api.APIClient.
+type execMockClient struct {
+	streams []<-chan api.StreamEvent // responses to return in order
+	err     error                   // error to return (overrides streams)
+	mu      sync.Mutex
+	calls   int
+}
 
-func (m *mockModel) DoGenerate(_ context.Context, _ provider.GenerateParams) (*provider.GenerateResult, error) {
+func (m *execMockClient) StreamResponse(_ context.Context, _ api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls++
 	if m.err != nil {
 		return nil, m.err
 	}
-	return m.response, nil
+	idx := m.calls - 1
+	if idx >= len(m.streams) {
+		idx = len(m.streams) - 1
+	}
+	return m.streams[idx], nil
 }
 
-func (m *mockModel) DoStream(_ context.Context, _ provider.GenerateParams) (*provider.StreamResult, error) {
-	return nil, fmt.Errorf("streaming not implemented in mock")
-}
-
-// failThenSucceedModel fails the first N calls with a retryable error,
-// then succeeds with the given response.
-type failThenSucceedModel struct {
-	id       string
-	response *provider.GenerateResult
-	failures int // how many times to fail before succeeding
+// failThenSucceedClient fails the first N calls, then returns streams.
+type failThenSucceedClient struct {
+	streams  []<-chan api.StreamEvent
+	failures int
 	mu       sync.Mutex
 	calls    int
 }
 
-func (m *failThenSucceedModel) ModelID() string { return m.id }
-
-func (m *failThenSucceedModel) DoGenerate(_ context.Context, _ provider.GenerateParams) (*provider.GenerateResult, error) {
+func (m *failThenSucceedClient) StreamResponse(_ context.Context, _ api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
 	m.mu.Lock()
 	m.calls++
 	call := m.calls
 	m.mu.Unlock()
 
 	if call <= m.failures {
-		return nil, &goai.APIError{
+		return nil, &APIError{
 			Message:     "rate limited",
 			StatusCode:  429,
 			IsRetryable: true,
 		}
 	}
-	return m.response, nil
+	idx := call - m.failures - 1
+	if idx >= len(m.streams) {
+		idx = len(m.streams) - 1
+	}
+	return m.streams[idx], nil
 }
 
-func (m *failThenSucceedModel) DoStream(_ context.Context, _ provider.GenerateParams) (*provider.StreamResult, error) {
-	return nil, fmt.Errorf("streaming not implemented in mock")
-}
-
-// alwaysFailModel always fails with a retryable error.
-type alwaysFailModel struct {
-	id         string
+// alwaysFailClient always returns a retryable error.
+type alwaysFailClient struct {
 	statusCode int
 	mu         sync.Mutex
 	calls      int
 }
 
-func (m *alwaysFailModel) ModelID() string { return m.id }
-
-func (m *alwaysFailModel) DoGenerate(_ context.Context, _ provider.GenerateParams) (*provider.GenerateResult, error) {
+func (m *alwaysFailClient) StreamResponse(_ context.Context, _ api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
 	m.mu.Lock()
 	m.calls++
 	m.mu.Unlock()
-
-	return nil, &goai.APIError{
+	return nil, &APIError{
 		Message:     fmt.Sprintf("server error %d", m.statusCode),
 		StatusCode:  m.statusCode,
 		IsRetryable: true,
 	}
 }
 
-func (m *alwaysFailModel) DoStream(_ context.Context, _ provider.GenerateParams) (*provider.StreamResult, error) {
-	return nil, fmt.Errorf("streaming not implemented in mock")
-}
-
-// capableMockModel adds Capabilities to mockModel.
-type capableMockModel struct {
-	mockModel
-	caps provider.ModelCapabilities
-}
-
-func (m *capableMockModel) Capabilities() provider.ModelCapabilities {
-	return m.caps
-}
-
-// newTestGoaiExecutor creates a GoaiExecutor with a goai backend pre-registered.
-// It registers the backend after construction so the GoaiBackend shares the
-// executor's hooks and retry policy (already applied via opts).
-func newTestGoaiExecutor(reg *Registry, wf *ir.Workflow, opts ...GoaiExecutorOption) *GoaiExecutor {
-	e := NewGoaiExecutor(reg, wf, opts...)
-	e.backendRegistry.Register(delegate.BackendGoai, NewGoaiBackend(reg, wf.Schemas, e.hooks, e.retry))
+// newTestClawExecutor creates a ClawExecutor with the claw backend pre-registered.
+func newTestClawExecutor(reg *Registry, wf *ir.Workflow, opts ...ClawExecutorOption) *ClawExecutor {
+	e := NewClawExecutor(reg, wf, opts...)
+	e.backendRegistry.Register(delegate.BackendClaw, NewClawBackend(reg, e.hooks, e.retry))
 	return e
 }
 
@@ -153,8 +163,8 @@ func TestParseModelSpec(t *testing.T) {
 func TestRegistryResolve(t *testing.T) {
 	r := NewRegistry()
 
-	mock := &mockModel{id: "test-model"}
-	r.Register("test", func(modelID string) (provider.LanguageModel, error) {
+	mock := &execMockClient{streams: []<-chan api.StreamEvent{mockStreamEvents("hello", "end_turn")}}
+	r.Register("test", func(modelID string) (api.APIClient, error) {
 		return mock, nil
 	})
 
@@ -163,17 +173,17 @@ func TestRegistryResolve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if m.ModelID() != "test-model" {
-		t.Errorf("got model ID %q, want %q", m.ModelID(), "test-model")
+	if m == nil {
+		t.Fatal("expected non-nil client")
 	}
 
-	// Same spec returns cached model.
+	// Same spec returns cached client.
 	m2, err := r.Resolve("test/test-model")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if m != m2 {
-		t.Error("expected cached model, got different instance")
+		t.Error("expected cached client, got different instance")
 	}
 
 	// Unknown provider.
@@ -191,17 +201,12 @@ func TestRegistryResolve(t *testing.T) {
 
 func TestRegistryCapabilities(t *testing.T) {
 	r := NewRegistry()
-	mock := &capableMockModel{
-		mockModel: mockModel{id: "capable-model"},
-		caps: provider.ModelCapabilities{
-			ToolCall:    true,
-			Temperature: true,
-		},
-	}
-	r.Register("test", func(modelID string) (provider.LanguageModel, error) {
+	mock := &execMockClient{streams: []<-chan api.StreamEvent{mockStreamEvents("hello", "end_turn")}}
+	r.Register("test", func(modelID string) (api.APIClient, error) {
 		return mock, nil
 	})
 
+	// Static capabilities for unknown provider → defaults.
 	caps, err := r.Capabilities("test/capable-model")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -211,6 +216,33 @@ func TestRegistryCapabilities(t *testing.T) {
 	}
 	if !caps.Temperature {
 		t.Error("expected Temperature capability")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Capabilities tests
+// ---------------------------------------------------------------------------
+
+func TestCapabilitiesForModel(t *testing.T) {
+	tests := []struct {
+		provider string
+		modelID  string
+		wantCaps ModelCapabilities
+	}{
+		{"anthropic", "claude-sonnet-4-20250514", ModelCapabilities{Reasoning: true, ToolCall: true, Temperature: true}},
+		{"anthropic", "claude-3-haiku", ModelCapabilities{Reasoning: false, ToolCall: true, Temperature: true}},
+		{"openai", "gpt-4o", ModelCapabilities{Reasoning: false, ToolCall: true, Temperature: true}},
+		{"openai", "o1-preview", ModelCapabilities{Reasoning: true, ToolCall: true, Temperature: false}},
+		{"openai", "o3-mini", ModelCapabilities{Reasoning: true, ToolCall: true, Temperature: false}},
+		{"unknown", "any-model", ModelCapabilities{Reasoning: false, ToolCall: true, Temperature: true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.provider+"/"+tt.modelID, func(t *testing.T) {
+			caps := capabilitiesForModel(tt.provider, tt.modelID)
+			if caps != tt.wantCaps {
+				t.Errorf("capabilitiesForModel(%q, %q) = %+v, want %+v", tt.provider, tt.modelID, caps, tt.wantCaps)
+			}
+		})
 	}
 }
 
@@ -252,13 +284,11 @@ func TestSchemaToJSON(t *testing.T) {
 		t.Errorf("expected 5 properties, got %d", len(props))
 	}
 
-	// Verify field types.
 	assertPropType(t, props, "verdict", "boolean")
 	assertPropType(t, props, "reason", "string")
 	assertPropType(t, props, "score", "number")
 	assertPropType(t, props, "tags", "array")
 
-	// Verify enum.
 	status := props["status"].(map[string]interface{})
 	enumVals, ok := status["enum"].([]interface{})
 	if !ok {
@@ -268,7 +298,6 @@ func TestSchemaToJSON(t *testing.T) {
 		t.Errorf("expected 2 enum values, got %d", len(enumVals))
 	}
 
-	// Verify required.
 	req, ok := parsed["required"].([]interface{})
 	if !ok {
 		t.Fatal("missing required")
@@ -277,7 +306,6 @@ func TestSchemaToJSON(t *testing.T) {
 		t.Errorf("expected 5 required, got %d", len(req))
 	}
 
-	// Verify additionalProperties.
 	if parsed["additionalProperties"] != false {
 		t.Error("expected additionalProperties=false")
 	}
@@ -308,15 +336,10 @@ func assertPropType(t *testing.T, props map[string]interface{}, field, expectedT
 
 func TestExecuteLLMTextGeneration(t *testing.T) {
 	reg := NewRegistry()
-	mock := &mockModel{
-		id: "test-model",
-		response: &provider.GenerateResult{
-			Text:         "This is the review.",
-			FinishReason: provider.FinishStop,
-			Usage:        provider.Usage{InputTokens: 100, OutputTokens: 50},
-		},
+	mock := &execMockClient{
+		streams: []<-chan api.StreamEvent{mockStreamEvents("This is the review.", "end_turn")},
 	}
-	reg.Register("test", func(modelID string) (provider.LanguageModel, error) {
+	reg.Register("test", func(modelID string) (api.APIClient, error) {
 		return mock, nil
 	})
 
@@ -330,7 +353,7 @@ func TestExecuteLLMTextGeneration(t *testing.T) {
 		Schemas: map[string]*ir.Schema{},
 	}
 
-	exec := newTestGoaiExecutor(reg, wf)
+	exec := newTestClawExecutor(reg, wf)
 
 	node := &ir.AgentNode{
 		BaseNode:  ir.BaseNode{ID: "reviewer"},
@@ -350,22 +373,44 @@ func TestExecuteLLMTextGeneration(t *testing.T) {
 	if output["_tokens"] != 150 {
 		t.Errorf("got tokens %v, want 150", output["_tokens"])
 	}
-	if output["_model"] != "test-model" {
-		t.Errorf("got model %v, want %q", output["_model"], "test-model")
+	if output["_model"] != "test/test-model" {
+		t.Errorf("got model %v, want %q", output["_model"], "test/test-model")
 	}
 }
 
 func TestExecuteLLMStructuredOutput(t *testing.T) {
 	reg := NewRegistry()
-	mock := &mockModel{
-		id: "test-model",
-		response: &provider.GenerateResult{
-			Text:         `{"verdict":true,"reason":"Looks good"}`,
-			FinishReason: provider.FinishStop,
-			Usage:        provider.Usage{InputTokens: 100, OutputTokens: 30},
-		},
-	}
-	reg.Register("test", func(modelID string) (provider.LanguageModel, error) {
+	// For structured output, the model returns a tool_use block.
+	ch := make(chan api.StreamEvent, 10)
+	go func() {
+		defer close(ch)
+		ch <- api.StreamEvent{Type: api.EventMessageStart, InputTokens: 100}
+		ch <- api.StreamEvent{
+			Type:  api.EventContentBlockStart,
+			Index: 0,
+			ContentBlock: api.ContentBlockInfo{
+				Type:  "tool_use",
+				Index: 0,
+				ID:    "tu_1",
+				Name:  "structured_output",
+			},
+		}
+		ch <- api.StreamEvent{
+			Type:  api.EventContentBlockDelta,
+			Index: 0,
+			Delta: api.Delta{Type: "input_json_delta", PartialJSON: `{"verdict":true,"reason":"Looks good"}`},
+		}
+		ch <- api.StreamEvent{Type: api.EventContentBlockStop, Index: 0}
+		ch <- api.StreamEvent{
+			Type:       api.EventMessageDelta,
+			StopReason: "tool_use",
+			Usage:      api.UsageDelta{OutputTokens: 30},
+		}
+		ch <- api.StreamEvent{Type: api.EventMessageStop}
+	}()
+
+	mock := &execMockClient{streams: []<-chan api.StreamEvent{ch}}
+	reg.Register("test", func(modelID string) (api.APIClient, error) {
 		return mock, nil
 	})
 
@@ -382,7 +427,7 @@ func TestExecuteLLMStructuredOutput(t *testing.T) {
 		},
 	}
 
-	exec := newTestGoaiExecutor(reg, wf)
+	exec := newTestClawExecutor(reg, wf)
 
 	node := &ir.JudgeNode{
 		BaseNode:     ir.BaseNode{ID: "judge"},
@@ -410,15 +455,10 @@ func TestExecuteLLMStructuredOutput(t *testing.T) {
 
 func TestExecutorEventHooks(t *testing.T) {
 	reg := NewRegistry()
-	mock := &mockModel{
-		id: "test-model",
-		response: &provider.GenerateResult{
-			Text:         "result",
-			FinishReason: provider.FinishStop,
-			Usage:        provider.Usage{InputTokens: 10, OutputTokens: 5},
-		},
+	mock := &execMockClient{
+		streams: []<-chan api.StreamEvent{mockStreamEvents("result", "end_turn")},
 	}
-	reg.Register("test", func(modelID string) (provider.LanguageModel, error) {
+	reg.Register("test", func(modelID string) (api.APIClient, error) {
 		return mock, nil
 	})
 
@@ -428,7 +468,7 @@ func TestExecutorEventHooks(t *testing.T) {
 		Schemas: map[string]*ir.Schema{},
 	}
 
-	exec := newTestGoaiExecutor(reg, wf, WithEventHooks(EventHooks{
+	exec := newTestClawExecutor(reg, wf, WithEventHooks(EventHooks{
 		OnLLMRequest: func(nodeID string, info LLMRequestInfo) {
 			requestNodeID = nodeID
 		},
@@ -467,7 +507,7 @@ func TestExecutorToolNode(t *testing.T) {
 		return `{"diff":"+ new line"}`, nil
 	})
 
-	exec := newTestGoaiExecutor(reg, wf, WithToolRegistry(tr))
+	exec := newTestClawExecutor(reg, wf, WithToolRegistry(tr))
 
 	node := &ir.ToolNode{
 		BaseNode: ir.BaseNode{ID: "get_diff"},
@@ -498,7 +538,7 @@ func TestExecutorToolNodeTextOutput(t *testing.T) {
 		return "plain text output", nil
 	})
 
-	exec := newTestGoaiExecutor(reg, wf, WithToolRegistry(tr))
+	exec := newTestClawExecutor(reg, wf, WithToolRegistry(tr))
 
 	node := &ir.ToolNode{
 		BaseNode: ir.BaseNode{ID: "run_echo"},
@@ -522,7 +562,7 @@ func TestExecutorToolNodeShellCommand(t *testing.T) {
 		Schemas: map[string]*ir.Schema{},
 	}
 
-	exec := newTestGoaiExecutor(reg, wf)
+	exec := newTestClawExecutor(reg, wf)
 
 	refs, err := ir.ParseRefs("echo {{input.message}}")
 	if err != nil {
@@ -554,7 +594,7 @@ func TestExecutorToolNodeShellMultipleRefs(t *testing.T) {
 		Schemas: map[string]*ir.Schema{},
 	}
 
-	exec := newTestGoaiExecutor(reg, wf)
+	exec := newTestClawExecutor(reg, wf)
 
 	refs, err := ir.ParseRefs("echo {{input.name}} {{input.value}}")
 	if err != nil {
@@ -587,7 +627,7 @@ func TestExecutorToolNodeShellJSONOutput(t *testing.T) {
 		Schemas: map[string]*ir.Schema{},
 	}
 
-	exec := newTestGoaiExecutor(reg, wf)
+	exec := newTestClawExecutor(reg, wf)
 
 	refs, err := ir.ParseRefs(`printf '{"status":"%s"}' {{input.status}}`)
 	if err != nil {
@@ -619,7 +659,7 @@ func TestExecutorToolNodeShellInjection(t *testing.T) {
 		Schemas: map[string]*ir.Schema{},
 	}
 
-	exec := newTestGoaiExecutor(reg, wf)
+	exec := newTestClawExecutor(reg, wf)
 
 	refs, err := ir.ParseRefs("echo {{input.msg}}")
 	if err != nil {
@@ -632,7 +672,6 @@ func TestExecutorToolNodeShellInjection(t *testing.T) {
 		CommandRefs: refs,
 	}
 
-	// Attempt shell injection — should be treated as a literal string, not executed.
 	malicious := "'; echo INJECTED; echo '"
 	output, err := exec.Execute(context.Background(), node, map[string]interface{}{
 		"msg": malicious,
@@ -641,8 +680,6 @@ func TestExecutorToolNodeShellInjection(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// If escaping works, echo receives the entire malicious string as one argument.
-	// If injection succeeded, the output would be split across multiple echo invocations.
 	result, _ := output["result"].(string)
 	if result != malicious {
 		t.Errorf("shell escaping failed: got %q, want literal %q", result, malicious)
@@ -709,7 +746,7 @@ func TestExecutorUnknownModel(t *testing.T) {
 		Schemas: map[string]*ir.Schema{},
 	}
 
-	exec := newTestGoaiExecutor(reg, wf)
+	exec := newTestClawExecutor(reg, wf)
 
 	node := &ir.AgentNode{
 		BaseNode:  ir.BaseNode{ID: "agent"},
@@ -728,16 +765,11 @@ func TestExecutorUnknownModel(t *testing.T) {
 
 func TestRetryOnTransientError(t *testing.T) {
 	reg := NewRegistry()
-	mock := &failThenSucceedModel{
-		id: "test-model",
-		response: &provider.GenerateResult{
-			Text:         "success after retry",
-			FinishReason: provider.FinishStop,
-			Usage:        provider.Usage{InputTokens: 10, OutputTokens: 5},
-		},
-		failures: 2, // fail twice, succeed on 3rd attempt
+	mock := &failThenSucceedClient{
+		streams:  []<-chan api.StreamEvent{mockStreamEvents("success after retry", "end_turn")},
+		failures: 2,
 	}
-	reg.Register("test", func(modelID string) (provider.LanguageModel, error) {
+	reg.Register("test", func(modelID string) (api.APIClient, error) {
 		return mock, nil
 	})
 
@@ -747,7 +779,7 @@ func TestRetryOnTransientError(t *testing.T) {
 		Schemas: map[string]*ir.Schema{},
 	}
 
-	exec := newTestGoaiExecutor(reg, wf,
+	exec := newTestClawExecutor(reg, wf,
 		WithRetryPolicy(RetryPolicy{MaxAttempts: 3, BackoffBase: time.Millisecond}),
 		WithEventHooks(EventHooks{
 			OnLLMRetry: func(nodeID string, info RetryInfo) {
@@ -769,7 +801,6 @@ func TestRetryOnTransientError(t *testing.T) {
 		t.Errorf("got text %q, want %q", output["text"], "success after retry")
 	}
 
-	// Should have 2 retry events.
 	if len(retries) != 2 {
 		t.Fatalf("expected 2 retry events, got %d", len(retries))
 	}
@@ -786,8 +817,8 @@ func TestRetryOnTransientError(t *testing.T) {
 
 func TestRetryExhausted(t *testing.T) {
 	reg := NewRegistry()
-	mock := &alwaysFailModel{id: "test-model", statusCode: 500}
-	reg.Register("test", func(modelID string) (provider.LanguageModel, error) {
+	mock := &alwaysFailClient{statusCode: 500}
+	reg.Register("test", func(modelID string) (api.APIClient, error) {
 		return mock, nil
 	})
 
@@ -797,7 +828,7 @@ func TestRetryExhausted(t *testing.T) {
 		Schemas: map[string]*ir.Schema{},
 	}
 
-	exec := newTestGoaiExecutor(reg, wf,
+	exec := newTestClawExecutor(reg, wf,
 		WithRetryPolicy(RetryPolicy{MaxAttempts: 3, BackoffBase: time.Millisecond}),
 		WithEventHooks(EventHooks{
 			OnLLMRetry: func(nodeID string, info RetryInfo) {
@@ -816,12 +847,10 @@ func TestRetryExhausted(t *testing.T) {
 		t.Fatal("expected error after retries exhausted")
 	}
 
-	// 3 attempts = 2 retries.
 	if len(retries) != 2 {
 		t.Fatalf("expected 2 retry events, got %d", len(retries))
 	}
 
-	// Total calls should be 3.
 	mock.mu.Lock()
 	calls := mock.calls
 	mock.mu.Unlock()
@@ -832,11 +861,10 @@ func TestRetryExhausted(t *testing.T) {
 
 func TestNoRetryOnNonRetryableError(t *testing.T) {
 	reg := NewRegistry()
-	mock := &mockModel{
-		id:  "test-model",
+	mock := &execMockClient{
 		err: fmt.Errorf("non-retryable error"),
 	}
-	reg.Register("test", func(modelID string) (provider.LanguageModel, error) {
+	reg.Register("test", func(modelID string) (api.APIClient, error) {
 		return mock, nil
 	})
 
@@ -846,7 +874,7 @@ func TestNoRetryOnNonRetryableError(t *testing.T) {
 		Schemas: map[string]*ir.Schema{},
 	}
 
-	exec := newTestGoaiExecutor(reg, wf,
+	exec := newTestClawExecutor(reg, wf,
 		WithRetryPolicy(RetryPolicy{MaxAttempts: 3, BackoffBase: time.Millisecond}),
 		WithEventHooks(EventHooks{
 			OnLLMRetry: func(nodeID string, info RetryInfo) {
@@ -865,7 +893,6 @@ func TestNoRetryOnNonRetryableError(t *testing.T) {
 		t.Fatal("expected error")
 	}
 
-	// No retries for non-retryable errors.
 	if len(retries) != 0 {
 		t.Errorf("expected 0 retry events, got %d", len(retries))
 	}
@@ -873,16 +900,41 @@ func TestNoRetryOnNonRetryableError(t *testing.T) {
 
 func TestRetryOnStructuredOutput(t *testing.T) {
 	reg := NewRegistry()
-	mock := &failThenSucceedModel{
-		id: "test-model",
-		response: &provider.GenerateResult{
-			Text:         `{"verdict":true,"reason":"OK"}`,
-			FinishReason: provider.FinishStop,
-			Usage:        provider.Usage{InputTokens: 50, OutputTokens: 20},
-		},
+
+	// First call fails (via failThenSucceedClient), second succeeds with structured output.
+	ch := make(chan api.StreamEvent, 10)
+	go func() {
+		defer close(ch)
+		ch <- api.StreamEvent{Type: api.EventMessageStart, InputTokens: 50}
+		ch <- api.StreamEvent{
+			Type:  api.EventContentBlockStart,
+			Index: 0,
+			ContentBlock: api.ContentBlockInfo{
+				Type:  "tool_use",
+				Index: 0,
+				ID:    "tu_1",
+				Name:  "structured_output",
+			},
+		}
+		ch <- api.StreamEvent{
+			Type:  api.EventContentBlockDelta,
+			Index: 0,
+			Delta: api.Delta{Type: "input_json_delta", PartialJSON: `{"verdict":true,"reason":"OK"}`},
+		}
+		ch <- api.StreamEvent{Type: api.EventContentBlockStop, Index: 0}
+		ch <- api.StreamEvent{
+			Type:       api.EventMessageDelta,
+			StopReason: "tool_use",
+			Usage:      api.UsageDelta{OutputTokens: 20},
+		}
+		ch <- api.StreamEvent{Type: api.EventMessageStop}
+	}()
+
+	mock := &failThenSucceedClient{
+		streams:  []<-chan api.StreamEvent{ch},
 		failures: 1,
 	}
-	reg.Register("test", func(modelID string) (provider.LanguageModel, error) {
+	reg.Register("test", func(modelID string) (api.APIClient, error) {
 		return mock, nil
 	})
 
@@ -900,7 +952,7 @@ func TestRetryOnStructuredOutput(t *testing.T) {
 		},
 	}
 
-	exec := newTestGoaiExecutor(reg, wf,
+	exec := newTestClawExecutor(reg, wf,
 		WithRetryPolicy(RetryPolicy{MaxAttempts: 3, BackoffBase: time.Millisecond}),
 		WithEventHooks(EventHooks{
 			OnLLMRetry: func(nodeID string, info RetryInfo) {
@@ -931,8 +983,8 @@ func TestRetryOnStructuredOutput(t *testing.T) {
 
 func TestRetryContextCancellation(t *testing.T) {
 	reg := NewRegistry()
-	mock := &alwaysFailModel{id: "test-model", statusCode: 429}
-	reg.Register("test", func(modelID string) (provider.LanguageModel, error) {
+	mock := &alwaysFailClient{statusCode: 429}
+	reg.Register("test", func(modelID string) (api.APIClient, error) {
 		return mock, nil
 	})
 
@@ -941,12 +993,11 @@ func TestRetryContextCancellation(t *testing.T) {
 		Schemas: map[string]*ir.Schema{},
 	}
 
-	exec := newTestGoaiExecutor(reg, wf,
+	exec := newTestClawExecutor(reg, wf,
 		WithRetryPolicy(RetryPolicy{MaxAttempts: 10, BackoffBase: time.Second}),
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	// Cancel immediately to abort the retry backoff.
 	cancel()
 
 	node := &ir.AgentNode{
@@ -966,16 +1017,32 @@ func TestRetryContextCancellation(t *testing.T) {
 
 func TestStructuredOutputMissingField(t *testing.T) {
 	reg := NewRegistry()
-	// Response missing the "reason" field.
-	mock := &mockModel{
-		id: "test-model",
-		response: &provider.GenerateResult{
-			Text:         `{"verdict":true}`,
-			FinishReason: provider.FinishStop,
-			Usage:        provider.Usage{InputTokens: 50, OutputTokens: 20},
-		},
-	}
-	reg.Register("test", func(modelID string) (provider.LanguageModel, error) {
+	ch := make(chan api.StreamEvent, 10)
+	go func() {
+		defer close(ch)
+		ch <- api.StreamEvent{Type: api.EventMessageStart, InputTokens: 50}
+		ch <- api.StreamEvent{
+			Type:  api.EventContentBlockStart,
+			Index: 0,
+			ContentBlock: api.ContentBlockInfo{
+				Type: "tool_use", Index: 0, ID: "tu_1", Name: "structured_output",
+			},
+		}
+		ch <- api.StreamEvent{
+			Type:  api.EventContentBlockDelta,
+			Index: 0,
+			Delta: api.Delta{Type: "input_json_delta", PartialJSON: `{"verdict":true}`},
+		}
+		ch <- api.StreamEvent{Type: api.EventContentBlockStop, Index: 0}
+		ch <- api.StreamEvent{
+			Type:       api.EventMessageDelta,
+			StopReason: "tool_use",
+			Usage:      api.UsageDelta{OutputTokens: 20},
+		}
+		ch <- api.StreamEvent{Type: api.EventMessageStop}
+	}()
+	mock := &execMockClient{streams: []<-chan api.StreamEvent{ch}}
+	reg.Register("test", func(modelID string) (api.APIClient, error) {
 		return mock, nil
 	})
 
@@ -992,7 +1059,7 @@ func TestStructuredOutputMissingField(t *testing.T) {
 		},
 	}
 
-	exec := newTestGoaiExecutor(reg, wf)
+	exec := newTestClawExecutor(reg, wf)
 
 	node := &ir.JudgeNode{
 		BaseNode:     ir.BaseNode{ID: "judge"},
@@ -1006,24 +1073,37 @@ func TestStructuredOutputMissingField(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing required field")
 	}
-	if !contains([]string{err.Error()}, "") {
-		// Just verify the error mentions the issue.
-		t.Logf("got expected error: %v", err)
-	}
+	t.Logf("got expected error: %v", err)
 }
 
 func TestStructuredOutputWrongType(t *testing.T) {
 	reg := NewRegistry()
-	// Return a string where a bool is expected.
-	mock := &mockModel{
-		id: "test-model",
-		response: &provider.GenerateResult{
-			Text:         `{"verdict":"yes","reason":"OK"}`,
-			FinishReason: provider.FinishStop,
-			Usage:        provider.Usage{InputTokens: 50, OutputTokens: 20},
-		},
-	}
-	reg.Register("test", func(modelID string) (provider.LanguageModel, error) {
+	ch := make(chan api.StreamEvent, 10)
+	go func() {
+		defer close(ch)
+		ch <- api.StreamEvent{Type: api.EventMessageStart, InputTokens: 50}
+		ch <- api.StreamEvent{
+			Type:  api.EventContentBlockStart,
+			Index: 0,
+			ContentBlock: api.ContentBlockInfo{
+				Type: "tool_use", Index: 0, ID: "tu_1", Name: "structured_output",
+			},
+		}
+		ch <- api.StreamEvent{
+			Type:  api.EventContentBlockDelta,
+			Index: 0,
+			Delta: api.Delta{Type: "input_json_delta", PartialJSON: `{"verdict":"yes","reason":"OK"}`},
+		}
+		ch <- api.StreamEvent{Type: api.EventContentBlockStop, Index: 0}
+		ch <- api.StreamEvent{
+			Type:       api.EventMessageDelta,
+			StopReason: "tool_use",
+			Usage:      api.UsageDelta{OutputTokens: 20},
+		}
+		ch <- api.StreamEvent{Type: api.EventMessageStop}
+	}()
+	mock := &execMockClient{streams: []<-chan api.StreamEvent{ch}}
+	reg.Register("test", func(modelID string) (api.APIClient, error) {
 		return mock, nil
 	})
 
@@ -1040,7 +1120,7 @@ func TestStructuredOutputWrongType(t *testing.T) {
 		},
 	}
 
-	exec := newTestGoaiExecutor(reg, wf)
+	exec := newTestClawExecutor(reg, wf)
 
 	node := &ir.JudgeNode{
 		BaseNode:     ir.BaseNode{ID: "judge"},
@@ -1059,15 +1139,32 @@ func TestStructuredOutputWrongType(t *testing.T) {
 
 func TestStructuredOutputInvalidEnum(t *testing.T) {
 	reg := NewRegistry()
-	mock := &mockModel{
-		id: "test-model",
-		response: &provider.GenerateResult{
-			Text:         `{"status":"maybe"}`,
-			FinishReason: provider.FinishStop,
-			Usage:        provider.Usage{InputTokens: 50, OutputTokens: 20},
-		},
-	}
-	reg.Register("test", func(modelID string) (provider.LanguageModel, error) {
+	ch := make(chan api.StreamEvent, 10)
+	go func() {
+		defer close(ch)
+		ch <- api.StreamEvent{Type: api.EventMessageStart, InputTokens: 50}
+		ch <- api.StreamEvent{
+			Type:  api.EventContentBlockStart,
+			Index: 0,
+			ContentBlock: api.ContentBlockInfo{
+				Type: "tool_use", Index: 0, ID: "tu_1", Name: "structured_output",
+			},
+		}
+		ch <- api.StreamEvent{
+			Type:  api.EventContentBlockDelta,
+			Index: 0,
+			Delta: api.Delta{Type: "input_json_delta", PartialJSON: `{"status":"maybe"}`},
+		}
+		ch <- api.StreamEvent{Type: api.EventContentBlockStop, Index: 0}
+		ch <- api.StreamEvent{
+			Type:       api.EventMessageDelta,
+			StopReason: "tool_use",
+			Usage:      api.UsageDelta{OutputTokens: 20},
+		}
+		ch <- api.StreamEvent{Type: api.EventMessageStop}
+	}()
+	mock := &execMockClient{streams: []<-chan api.StreamEvent{ch}}
+	reg.Register("test", func(modelID string) (api.APIClient, error) {
 		return mock, nil
 	})
 
@@ -1083,7 +1180,7 @@ func TestStructuredOutputInvalidEnum(t *testing.T) {
 		},
 	}
 
-	exec := newTestGoaiExecutor(reg, wf)
+	exec := newTestClawExecutor(reg, wf)
 
 	node := &ir.JudgeNode{
 		BaseNode:     ir.BaseNode{ID: "judge"},
@@ -1173,12 +1270,10 @@ func TestValidateOutputIntegerCheck(t *testing.T) {
 		Fields: []*ir.SchemaField{{Name: "count", Type: ir.FieldTypeInt}},
 	}
 
-	// Whole float is OK.
 	if err := ValidateOutput(map[string]interface{}{"count": float64(42)}, schema); err != nil {
 		t.Errorf("expected 42.0 to be valid integer, got: %v", err)
 	}
 
-	// Non-whole float is not.
 	if err := ValidateOutput(map[string]interface{}{"count": 3.14}, schema); err == nil {
 		t.Error("expected error for non-integer float")
 	}
@@ -1201,7 +1296,7 @@ func TestValidateOutputStringArrayBadElement(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestResolveTemplate(t *testing.T) {
-	exec := &GoaiExecutor{
+	exec := &ClawExecutor{
 		vars: map[string]interface{}{
 			"rules": "Be thorough",
 		},
@@ -1221,7 +1316,7 @@ func TestResolveTemplate(t *testing.T) {
 }
 
 func TestResolveTemplateUnknownRef(t *testing.T) {
-	exec := &GoaiExecutor{}
+	exec := &ClawExecutor{}
 
 	result := exec.resolveTemplate("Hello {{unknown.ref}}", nil)
 	if result != "Hello {{unknown.ref}}" {
@@ -1230,7 +1325,7 @@ func TestResolveTemplateUnknownRef(t *testing.T) {
 }
 
 func TestResolveTemplateJSONValue(t *testing.T) {
-	exec := &GoaiExecutor{}
+	exec := &ClawExecutor{}
 
 	input := map[string]interface{}{
 		"items": []string{"a", "b", "c"},
@@ -1243,7 +1338,7 @@ func TestResolveTemplateJSONValue(t *testing.T) {
 }
 
 func TestSetVars(t *testing.T) {
-	exec := &GoaiExecutor{}
+	exec := &ClawExecutor{}
 	vars := map[string]interface{}{"key": "value"}
 	exec.SetVars(vars)
 

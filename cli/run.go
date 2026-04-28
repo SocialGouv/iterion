@@ -252,18 +252,18 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	return nil
 }
 
-// newDefaultExecutor creates a GoaiExecutor with the default delegate registry
+// newDefaultExecutor creates a ClawExecutor with the default delegate registry
 // and event hooks wired to the store for observability.
-func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunStore, runID string, logger *iterlog.Logger, storeDir string) *model.GoaiExecutor {
+func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunStore, runID string, logger *iterlog.Logger, storeDir string) *model.ClawExecutor {
 	reg := model.NewRegistry()
 	backendReg := delegate.DefaultRegistry(logger)
 
 	hooks := model.NewStoreEventHooks(s, runID, logger)
 
-	// Register the goai backend explicitly (API-based LLM path).
-	backendReg.Register(delegate.BackendGoai, model.NewGoaiBackend(reg, wf.Schemas, hooks, model.RetryPolicy{}))
+	// Register the claw backend explicitly (API-based LLM path).
+	backendReg.Register(delegate.BackendClaw, model.NewClawBackend(reg, hooks, model.RetryPolicy{}))
 
-	opts := []model.GoaiExecutorOption{
+	opts := []model.ClawExecutorOption{
 		model.WithBackendRegistry(backendReg),
 		model.WithEventHooks(hooks),
 		model.WithToolRegistry(tool.NewRegistry()),
@@ -297,7 +297,7 @@ func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunSto
 		)
 	}
 
-	executor := model.NewGoaiExecutor(reg, wf, opts...)
+	executor := model.NewClawExecutor(reg, wf, opts...)
 
 	if len(vars) > 0 {
 		v := make(map[string]interface{}, len(vars))

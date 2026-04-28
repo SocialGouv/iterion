@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	goai "github.com/zendev-sh/goai"
+	"claw-code-go/pkg/api"
 
 	"github.com/SocialGouv/iterion/delegate"
 	"github.com/SocialGouv/iterion/ir"
@@ -128,7 +128,7 @@ type ErrNeedsInteraction struct {
 	NodeID    string
 	Questions map[string]interface{} // question_key → question text
 	SessionID string                 // delegate session ID for re-invocation
-	Backend   string                 // delegate backend name (empty for goai direct)
+	Backend   string                 // delegate backend name (empty for claw direct)
 }
 
 func (e *ErrNeedsInteraction) Error() string {
@@ -139,11 +139,11 @@ func (e *ErrNeedsInteraction) Error() string {
 // Executor
 // ---------------------------------------------------------------------------
 
-// GoaiExecutor implements runtime.NodeExecutor by routing LLM calls
-// through pluggable Backend implementations (goai, claude_code, codex, etc.).
-type GoaiExecutor struct {
+// ClawExecutor implements runtime.NodeExecutor by routing LLM calls
+// through pluggable Backend implementations (claw, claude_code, codex, etc.).
+type ClawExecutor struct {
 	registry        *Registry
-	backendRegistry *delegate.Registry // backend registry (goai, claude_code, codex)
+	backendRegistry *delegate.Registry // backend registry (claw, claude_code, codex)
 	toolRegistry    *tool.Registry     // unified tool registry (preferred)
 	mcpManager      *mcp.Manager       // generic MCP discovery/call bridge
 	toolPolicy      tool.ToolChecker   // allowlist policy for tool execution (nil = open)
@@ -154,65 +154,65 @@ type GoaiExecutor struct {
 	retry           RetryPolicy
 	logger          *iterlog.Logger
 	workDir         string // working directory for backend subprocesses
-	defaultBackend  string // workflow-level default backend (empty = use "goai")
+	defaultBackend  string // workflow-level default backend (empty = use "claw")
 }
 
-// GoaiExecutorOption configures a GoaiExecutor.
-type GoaiExecutorOption func(*GoaiExecutor)
+// ClawExecutorOption configures a ClawExecutor.
+type ClawExecutorOption func(*ClawExecutor)
 
 // WithEventHooks sets observability callbacks on the executor.
-func WithEventHooks(h EventHooks) GoaiExecutorOption {
-	return func(e *GoaiExecutor) { e.hooks = h }
+func WithEventHooks(h EventHooks) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.hooks = h }
 }
 
 // WithToolRegistry sets the unified tool registry on the executor.
-func WithToolRegistry(tr *tool.Registry) GoaiExecutorOption {
-	return func(e *GoaiExecutor) { e.toolRegistry = tr }
+func WithToolRegistry(tr *tool.Registry) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.toolRegistry = tr }
 }
 
 // WithMCPManager sets the generic MCP manager used to lazily discover MCP tools.
-func WithMCPManager(m *mcp.Manager) GoaiExecutorOption {
-	return func(e *GoaiExecutor) { e.mcpManager = m }
+func WithMCPManager(m *mcp.Manager) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.mcpManager = m }
 }
 
 // WithToolPolicy sets the tool execution policy on the executor.
 // When set, every tool call is checked against the allowlist before
 // execution. A denied tool produces an explicit error.
-func WithToolPolicy(p tool.ToolChecker) GoaiExecutorOption {
-	return func(e *GoaiExecutor) { e.toolPolicy = p }
+func WithToolPolicy(p tool.ToolChecker) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.toolPolicy = p }
 }
 
 // WithRetryPolicy sets the retry policy for transient LLM errors.
-func WithRetryPolicy(rp RetryPolicy) GoaiExecutorOption {
-	return func(e *GoaiExecutor) { e.retry = rp }
+func WithRetryPolicy(rp RetryPolicy) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.retry = rp }
 }
 
 // WithBackendRegistry sets the backend registry on the executor.
 // When set, nodes with a `backend` property are executed via the named
-// backend instead of the default goai backend.
-func WithBackendRegistry(dr *delegate.Registry) GoaiExecutorOption {
-	return func(e *GoaiExecutor) { e.backendRegistry = dr }
+// backend instead of the default claw backend.
+func WithBackendRegistry(dr *delegate.Registry) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.backendRegistry = dr }
 }
 
 // WithWorkDir sets the working directory for backend subprocesses.
 // When set, backend nodes will run their CLI in this directory.
-func WithWorkDir(dir string) GoaiExecutorOption {
-	return func(e *GoaiExecutor) { e.workDir = dir }
+func WithWorkDir(dir string) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.workDir = dir }
 }
 
 // WithDefaultBackend sets the workflow-level default backend.
-func WithDefaultBackend(name string) GoaiExecutorOption {
-	return func(e *GoaiExecutor) { e.defaultBackend = name }
+func WithDefaultBackend(name string) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.defaultBackend = name }
 }
 
 // WithLogger sets a leveled logger for the executor.
-func WithLogger(l *iterlog.Logger) GoaiExecutorOption {
-	return func(e *GoaiExecutor) { e.logger = l }
+func WithLogger(l *iterlog.Logger) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.logger = l }
 }
 
-// NewGoaiExecutor creates a GoaiExecutor for a given workflow.
-func NewGoaiExecutor(registry *Registry, wf *ir.Workflow, opts ...GoaiExecutorOption) *GoaiExecutor {
-	e := &GoaiExecutor{
+// NewClawExecutor creates a ClawExecutor for a given workflow.
+func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOption) *ClawExecutor {
+	e := &ClawExecutor{
 		registry:       registry,
 		prompts:        wf.Prompts,
 		schemas:        wf.Schemas,
@@ -232,7 +232,7 @@ func NewGoaiExecutor(registry *Registry, wf *ir.Workflow, opts ...GoaiExecutorOp
 // MCPHealthCheck verifies that the listed MCP servers are reachable by
 // connecting and sending an MCP ping. Should be called before execution
 // starts to fail fast on misconfigured servers.
-func (e *GoaiExecutor) MCPHealthCheck(ctx context.Context, servers []string) error {
+func (e *ClawExecutor) MCPHealthCheck(ctx context.Context, servers []string) error {
 	if e.mcpManager == nil {
 		return nil
 	}
@@ -241,7 +241,7 @@ func (e *GoaiExecutor) MCPHealthCheck(ctx context.Context, servers []string) err
 
 // Close releases resources held by the executor, including MCP server
 // connections. It should be called when the executor is no longer needed.
-func (e *GoaiExecutor) Close() error {
+func (e *ClawExecutor) Close() error {
 	if e.mcpManager != nil {
 		return e.mcpManager.Close()
 	}
@@ -250,13 +250,13 @@ func (e *GoaiExecutor) Close() error {
 
 // SetVars sets the workflow variables for the current run.
 // Must be called before Execute.
-func (e *GoaiExecutor) SetVars(vars map[string]interface{}) {
+func (e *ClawExecutor) SetVars(vars map[string]interface{}) {
 	e.vars = vars
 }
 
 // resolveBackendName returns the effective backend name for a node.
-// Resolution chain: node.Backend → workflow default → env ITERION_DEFAULT_BACKEND → "goai".
-func (e *GoaiExecutor) resolveBackendName(node ir.Node) string {
+// Resolution chain: node.Backend → workflow default → env ITERION_DEFAULT_BACKEND → "claw".
+func (e *ClawExecutor) resolveBackendName(node ir.Node) string {
 	var backend string
 	switch n := node.(type) {
 	case *ir.AgentNode:
@@ -275,11 +275,11 @@ func (e *GoaiExecutor) resolveBackendName(node ir.Node) string {
 	if env := os.Getenv("ITERION_DEFAULT_BACKEND"); env != "" {
 		return env
 	}
-	return delegate.BackendGoai
+	return delegate.BackendClaw
 }
 
 // Execute implements runtime.NodeExecutor.
-func (e *GoaiExecutor) Execute(ctx context.Context, node ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *ClawExecutor) Execute(ctx context.Context, node ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
 	switch n := node.(type) {
 	case *ir.AgentNode:
 		return e.executeBackend(ctx, n, input)
@@ -344,7 +344,7 @@ func extractBackendFields(node ir.Node) backendFields {
 
 // executeBackend is the unified execution path for agent and judge nodes.
 // It resolves the backend, builds a Task, and dispatches to the backend.
-func (e *GoaiExecutor) executeBackend(ctx context.Context, node ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
 	f := extractBackendFields(node)
 	backendName := e.resolveBackendName(node)
 
@@ -398,14 +398,14 @@ func (e *GoaiExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	}
 
 	// Resolve full tool definitions for backends that manage tool loops
-	// internally (goai). CLI-based backends (claude_code, codex) handle tools
+	// internally (claw). CLI-based backends (claude_code, codex) handle tools
 	// natively via AllowedTools and do not need ToolDefs.
-	if len(f.tools) > 0 && backendName == delegate.BackendGoai {
-		tools, toolErr := e.resolveToolsForNode(ctx, node, f.tools)
+	if len(f.tools) > 0 && backendName == delegate.BackendClaw {
+		toolDefs, toolErr := e.resolveToolsForNode(ctx, node, f.tools)
 		if toolErr != nil {
 			return nil, fmt.Errorf("model: node %q: %w", f.id, toolErr)
 		}
-		task.ToolDefs = goaiToolsToDefs(tools)
+		task.ToolDefs = toolDefs
 	}
 
 	// Session continuity.
@@ -531,28 +531,28 @@ validated:
 }
 
 // executeHumanLLM handles human nodes in llm or llm_or_human interaction mode.
-// It calls goai directly with mode-specific
+// It calls GenerateObjectDirect against api.APIClient with mode-specific
 // schema handling for llm_or_human (wrapper schema with needs_human_input).
-func (e *GoaiExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, input map[string]interface{}) (map[string]interface{}, error) {
 	if node.Interaction == ir.InteractionHuman || node.Interaction == ir.InteractionNone {
 		return nil, fmt.Errorf("model: human node %q in %s interaction mode should not be executed by the model layer", node.ID, node.Interaction)
 	}
 
-	// Resolve model (expand env var references).
-	m, err := e.registry.Resolve(os.ExpandEnv(node.Model))
+	// Resolve API client (expand env var references).
+	modelSpec := os.ExpandEnv(node.Model)
+	client, err := e.registry.Resolve(modelSpec)
 	if err != nil {
 		return nil, fmt.Errorf("model: human node %q: %w", node.ID, err)
 	}
 
-	// Build goai options.
-	var opts []goai.Option
-	opts = append(opts, goai.WithMaxRetries(0))
+	// Build GenerationOptions.
+	genOpts := GenerationOptions{
+		Model: modelSpec,
+	}
 
 	// Reasoning effort (dynamic override from input, then static node property).
-	// HumanNode does not embed LLMFields, so there is no ReasoningEffort field;
-	// only the dynamic override from input applies.
 	if popts := providerOptsForNode(resolveReasoningEffort("", input)); popts != nil {
-		opts = append(opts, goai.WithProviderOptions(popts))
+		genOpts.ProviderOptions = popts
 	}
 
 	// System prompt.
@@ -560,35 +560,26 @@ func (e *GoaiExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, 
 	if node.SystemPrompt != "" {
 		if p, ok := e.prompts[node.SystemPrompt]; ok {
 			systemText = e.resolveTemplate(p.Body, input)
-			opts = append(opts, goai.WithSystem(systemText))
+			genOpts.System = systemText
 		}
 	}
 
 	// User message from input.
 	userText := e.buildUserMessage("", input)
-	if userText != "" {
-		opts = append(opts, goai.WithMessages(goai.UserMessage(userText)))
-	}
 
 	// Emit prompt content for observability.
 	if e.hooks.OnLLMPrompt != nil {
 		e.hooks.OnLLMPrompt(node.ID, systemText, userText)
 	}
 
+	if userText != "" {
+		genOpts.Messages = []api.Message{
+			{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: userText}}},
+		}
+	}
+
 	// Observability hooks.
-	nodeID := node.ID
-	if e.hooks.OnLLMRequest != nil {
-		fn := e.hooks.OnLLMRequest
-		opts = append(opts, goai.WithOnRequest(func(info goai.RequestInfo) {
-			fn(nodeID, fromGoaiRequestInfo(info))
-		}))
-	}
-	if e.hooks.OnLLMResponse != nil {
-		fn := e.hooks.OnLLMResponse
-		opts = append(opts, goai.WithOnResponse(func(info goai.ResponseInfo) {
-			fn(nodeID, fromGoaiResponseInfo(info))
-		}))
-	}
+	applyHooks(node.ID, e.hooks, &genOpts)
 
 	// Determine the schema to use.
 	schema, ok := e.schemas[node.OutputSchema]
@@ -605,9 +596,9 @@ func (e *GoaiExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, 
 	if err != nil {
 		return nil, fmt.Errorf("model: human node %q: schema conversion: %w", node.ID, err)
 	}
-	opts = append(opts, goai.WithExplicitSchema(jsonSchema))
+	genOpts.ExplicitSchema = jsonSchema
 
-	result, err := goai.GenerateObject[map[string]interface{}](ctx, m, opts...)
+	result, err := GenerateObjectDirect[map[string]interface{}](ctx, client, genOpts)
 	if err != nil {
 		return nil, fmt.Errorf("model: human node %q: structured generation: %w", node.ID, err)
 	}
@@ -618,8 +609,8 @@ func (e *GoaiExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, 
 	}
 
 	// Attach usage metadata.
-	output["_tokens"] = result.Usage.InputTokens + result.Usage.OutputTokens
-	output["_model"] = m.ModelID()
+	output["_tokens"] = result.TotalUsage.InputTokens + result.TotalUsage.OutputTokens
+	output["_model"] = modelSpec
 
 	return output, nil
 }
@@ -634,7 +625,7 @@ func (e *GoaiExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, 
 //   - answers: LLM-generated answers for each question
 //   - needsHuman: true if the LLM decided to escalate (llm_or_human mode only)
 //   - err: any error from model execution
-func (e *GoaiExecutor) ExecuteHumanLLMForInteraction(
+func (e *ClawExecutor) ExecuteHumanLLMForInteraction(
 	ctx context.Context,
 	nodeID string,
 	ni *ErrNeedsInteraction,
@@ -734,9 +725,9 @@ func wrapSchemaWithHumanFlag(schema *ir.Schema) *ir.Schema {
 // Retry wrapper
 // ---------------------------------------------------------------------------
 
-// isRetryable returns true if err is a transient goai error that should be retried.
+// isRetryable returns true if err is a transient LLM API error that should be retried.
 func isRetryable(err error) bool {
-	var apiErr *goai.APIError
+	var apiErr *APIError
 	if errors.As(err, &apiErr) {
 		return apiErr.IsRetryable
 	}
@@ -745,7 +736,7 @@ func isRetryable(err error) bool {
 
 // statusCodeOf extracts the HTTP status code from an APIError, or 0.
 func statusCodeOf(err error) int {
-	var apiErr *goai.APIError
+	var apiErr *APIError
 	if errors.As(err, &apiErr) {
 		return apiErr.StatusCode
 	}
@@ -816,7 +807,7 @@ func extractExitCode(msg string) int {
 }
 
 // retryDelegateLoop retries a backend execution call with exponential backoff.
-func (e *GoaiExecutor) retryDelegateLoop(ctx context.Context, nodeID string, backendName string, fn func() (delegate.Result, error)) (delegate.Result, error) {
+func (e *ClawExecutor) retryDelegateLoop(ctx context.Context, nodeID string, backendName string, fn func() (delegate.Result, error)) (delegate.Result, error) {
 	maxAttempts := e.retry.maxAttempts()
 
 	result, err := fn()
@@ -902,7 +893,7 @@ func extractJSON(text string) string {
 // executeToolNode runs a tool node (direct command, no LLM).
 // The tool policy is checked before execution; denied tools produce an
 // explicit error with the tool_called hook fired (Error != nil).
-func (e *GoaiExecutor) executeToolNode(ctx context.Context, node *ir.ToolNode, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *ClawExecutor) executeToolNode(ctx context.Context, node *ir.ToolNode, input map[string]interface{}) (map[string]interface{}, error) {
 	// When the command contains template refs ({{input.X}}) or looks like a
 	// shell command (contains spaces or shell operators), execute as a direct
 	// shell command. Otherwise, use the tool registry.
@@ -975,7 +966,7 @@ func (e *GoaiExecutor) executeToolNode(ctx context.Context, node *ir.ToolNode, i
 // executeToolNodeShell handles tool nodes whose command contains {{...}}
 // template references. Templates are resolved from the node's input map,
 // and the resulting string is executed as a shell command via sh -c.
-func (e *GoaiExecutor) executeToolNodeShell(ctx context.Context, node *ir.ToolNode, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *ClawExecutor) executeToolNodeShell(ctx context.Context, node *ir.ToolNode, input map[string]interface{}) (map[string]interface{}, error) {
 	// Resolve template references in the command.
 	resolved := resolveCommandTemplate(node.Command, node.CommandRefs, input, e.vars)
 
@@ -1087,7 +1078,7 @@ func routerRoutingInstruction(candidates []string) string {
 }
 
 // executeLLMRouterUnified is the unified LLM router path that works with any backend.
-func (e *GoaiExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.RouterNode, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.RouterNode, input map[string]interface{}) (map[string]interface{}, error) {
 	backendName := e.resolveBackendName(node)
 
 	if e.backendRegistry == nil {
@@ -1268,7 +1259,7 @@ func resolveReasoningEffort(nodeEffort string, input map[string]interface{}) str
 	return nodeEffort
 }
 
-// providerOptsForNode builds the goai ProviderOptions map from the resolved
+// providerOptsForNode builds the ProviderOptions map from the resolved
 // reasoning effort. Returns nil if no provider options are needed.
 func providerOptsForNode(effort string) map[string]any {
 	if effort == "" {
@@ -1283,7 +1274,7 @@ func providerOptsForNode(effort string) map[string]any {
 
 // buildUserMessage constructs the user message for an LLM call.
 // userPrompt is the prompt reference name from the node (empty if not set).
-func (e *GoaiExecutor) buildUserMessage(userPrompt string, input map[string]interface{}) string {
+func (e *ClawExecutor) buildUserMessage(userPrompt string, input map[string]interface{}) string {
 	// If the node has a user prompt template, resolve it.
 	if userPrompt != "" {
 		if p, ok := e.prompts[userPrompt]; ok {
@@ -1308,7 +1299,7 @@ func (e *GoaiExecutor) buildUserMessage(userPrompt string, input map[string]inte
 const maxTemplateExpansionSize = 5 * 1024 * 1024 // 5 MB
 
 // resolveTemplate substitutes {{...}} references in a prompt body.
-func (e *GoaiExecutor) resolveTemplate(body string, input map[string]interface{}) string {
+func (e *ClawExecutor) resolveTemplate(body string, input map[string]interface{}) string {
 	var b strings.Builder
 	remaining := body
 
@@ -1351,7 +1342,7 @@ func (e *GoaiExecutor) resolveTemplate(body string, input map[string]interface{}
 
 // resolveTemplateRef resolves a single "namespace.path" reference.
 // Returns the resolved value and true, or ("", false) if unresolvable.
-func (e *GoaiExecutor) resolveTemplateRef(ref string, input map[string]interface{}) (string, bool) {
+func (e *ClawExecutor) resolveTemplateRef(ref string, input map[string]interface{}) (string, bool) {
 	parts := strings.SplitN(ref, ".", 2)
 	if len(parts) < 2 {
 		return "", false
@@ -1383,11 +1374,11 @@ func (e *GoaiExecutor) resolveTemplateRef(ref string, input map[string]interface
 // nodeActiveMCPServers delegates to ir.NodeActiveMCPServers.
 var nodeActiveMCPServers = ir.NodeActiveMCPServers
 
-// resolveToolsForNode resolves a list of tool names to goai.Tool instances for
-// a specific node, ensuring that only tools from the node's active MCP servers
-// are exposed. Wildcard entries like "mcp.<server>.*" are expanded to all tools
-// discovered from that server.
-func (e *GoaiExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, names []string) ([]goai.Tool, error) {
+// resolveToolsForNode resolves a list of tool names to delegate.ToolDef
+// instances for a specific node, ensuring that only tools from the node's
+// active MCP servers are exposed. Wildcard entries like "mcp.<server>.*"
+// are expanded to all tools discovered from that server.
+func (e *ClawExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, names []string) ([]delegate.ToolDef, error) {
 	// Expand wildcards (e.g. mcp.claude_code.*) into concrete tool names.
 	expanded, err := e.expandWildcards(ctx, node, names)
 	if err != nil {
@@ -1398,7 +1389,7 @@ func (e *GoaiExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, na
 		return nil, err
 	}
 
-	var tools []goai.Tool
+	var tools []delegate.ToolDef
 	for _, name := range expanded {
 		t, ok, err := e.resolveSingleToolForNode(ctx, node, name)
 		if err != nil {
@@ -1417,7 +1408,7 @@ func (e *GoaiExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, na
 
 // expandWildcards replaces wildcard entries ("mcp.<server>.*") with the
 // concrete tool names discovered from that MCP server.
-func (e *GoaiExecutor) expandWildcards(ctx context.Context, node ir.Node, names []string) ([]string, error) {
+func (e *ClawExecutor) expandWildcards(ctx context.Context, node ir.Node, names []string) ([]string, error) {
 	var expanded []string
 	for _, name := range names {
 		if !tool.IsMCPWildcard(name) {
@@ -1449,26 +1440,26 @@ func (e *GoaiExecutor) expandWildcards(ctx context.Context, node ir.Node, names 
 }
 
 // resolveSingleToolForNode resolves one tool name in the context of a node.
-func (e *GoaiExecutor) resolveSingleToolForNode(ctx context.Context, node ir.Node, name string) (goai.Tool, bool, error) {
+func (e *ClawExecutor) resolveSingleToolForNode(ctx context.Context, node ir.Node, name string) (delegate.ToolDef, bool, error) {
 	if err := e.ensureMCPServers(ctx, node, []string{name}); err != nil {
-		return goai.Tool{}, false, err
+		return delegate.ToolDef{}, false, err
 	}
 
 	if e.toolRegistry == nil {
-		return goai.Tool{}, false, fmt.Errorf("no tool registry configured")
+		return delegate.ToolDef{}, false, fmt.Errorf("no tool registry configured")
 	}
 
 	td, err := e.toolRegistry.Resolve(name)
 	if err != nil {
-		return goai.Tool{}, false, err
+		return delegate.ToolDef{}, false, err
 	}
 	if err := e.checkNodeToolAccess(node, td.QualifiedName); err != nil {
-		return goai.Tool{}, false, err
+		return delegate.ToolDef{}, false, err
 	}
-	return td.ToGoaiTool(), true, nil
+	return td.ToDelegateDef(), true, nil
 }
 
-func (e *GoaiExecutor) ensureMCPServers(ctx context.Context, node ir.Node, names []string) error {
+func (e *ClawExecutor) ensureMCPServers(ctx context.Context, node ir.Node, names []string) error {
 	if e.mcpManager == nil || e.toolRegistry == nil {
 		return nil
 	}
@@ -1519,7 +1510,7 @@ func activeMCPServersForNames(node ir.Node, names []string) []string {
 	return servers
 }
 
-func (e *GoaiExecutor) checkNodeToolAccess(node ir.Node, qualified string) error {
+func (e *ClawExecutor) checkNodeToolAccess(node ir.Node, qualified string) error {
 	server, _, err := tool.ParseMCPName(qualified)
 	if err != nil {
 		return nil
@@ -1543,10 +1534,10 @@ func (e *GoaiExecutor) checkNodeToolAccess(node ir.Node, qualified string) error
 // Policy guard
 // ---------------------------------------------------------------------------
 
-// guardTool wraps a goai.Tool's Execute function with a policy check.
+// guardTool wraps a tool's Execute function with a policy check.
 // If the tool is denied, Execute returns an ErrToolDenied error without
 // invoking the underlying implementation.
-func (e *GoaiExecutor) guardTool(t goai.Tool, node ir.Node) goai.Tool {
+func (e *ClawExecutor) guardTool(t delegate.ToolDef, node ir.Node) delegate.ToolDef {
 	original := t.Execute
 	name := t.Name
 	policy := e.toolPolicy

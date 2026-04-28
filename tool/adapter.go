@@ -3,11 +3,12 @@ package tool
 import (
 	"strings"
 
-	goai "github.com/zendev-sh/goai"
+	"github.com/SocialGouv/iterion/delegate"
+	"github.com/SocialGouv/iterion/llmtypes"
 )
 
 // ---------------------------------------------------------------------------
-// GoaiAdapter — bridge between ToolDef and goai.Tool
+// LLMTool adapter — bridge between ToolDef and llmtypes.LLMTool
 // ---------------------------------------------------------------------------
 
 // sanitizedName returns the qualified name with dots replaced by underscores,
@@ -16,12 +17,23 @@ func (td *ToolDef) sanitizedName() string {
 	return strings.ReplaceAll(td.QualifiedName, ".", "_")
 }
 
-// ToGoaiTool converts a ToolDef into a goai.Tool, which is the execution
-// contract consumed by the GoaiExecutor. Both built-in and MCP tools
-// produce the exact same goai.Tool shape. Tool names are sanitized
+// ToLLMTool converts a ToolDef into an llmtypes.LLMTool, which is the execution
+// contract consumed by the LLM generation layer. Both built-in and MCP tools
+// produce the exact same LLMTool shape. Tool names are sanitized
 // (dots → underscores) for API compatibility.
-func (td *ToolDef) ToGoaiTool() goai.Tool {
-	return goai.Tool{
+func (td *ToolDef) ToLLMTool() llmtypes.LLMTool {
+	return llmtypes.LLMTool{
+		Name:        td.sanitizedName(),
+		Description: td.Description,
+		InputSchema: td.InputSchema,
+		Execute:     td.Execute,
+	}
+}
+
+// ToDelegateDef converts a ToolDef into a delegate.ToolDef, which is the
+// execution contract consumed by the backend dispatch layer.
+func (td *ToolDef) ToDelegateDef() delegate.ToolDef {
+	return delegate.ToolDef{
 		Name:        td.sanitizedName(),
 		Description: td.Description,
 		InputSchema: td.InputSchema,
@@ -34,29 +46,29 @@ func (td *ToolDef) ToGoaiTool() goai.Tool {
 // ---------------------------------------------------------------------------
 
 // ResolveAll resolves a list of tool references and returns the corresponding
-// goai.Tool slice. It stops at the first resolution error.
-func (r *Registry) ResolveAll(refs []string) ([]goai.Tool, error) {
-	tools := make([]goai.Tool, 0, len(refs))
+// llmtypes.LLMTool slice. It stops at the first resolution error.
+func (r *Registry) ResolveAll(refs []string) ([]llmtypes.LLMTool, error) {
+	tools := make([]llmtypes.LLMTool, 0, len(refs))
 	for _, ref := range refs {
 		td, err := r.Resolve(ref)
 		if err != nil {
 			return nil, err
 		}
-		tools = append(tools, td.ToGoaiTool())
+		tools = append(tools, td.ToLLMTool())
 	}
 	return tools, nil
 }
 
 // ResolveMap resolves a list of tool references and returns a map keyed
 // by qualified name. Useful for the executor's tool lookup table.
-func (r *Registry) ResolveMap(refs []string) (map[string]goai.Tool, error) {
-	result := make(map[string]goai.Tool, len(refs))
+func (r *Registry) ResolveMap(refs []string) (map[string]llmtypes.LLMTool, error) {
+	result := make(map[string]llmtypes.LLMTool, len(refs))
 	for _, ref := range refs {
 		td, err := r.Resolve(ref)
 		if err != nil {
 			return nil, err
 		}
-		result[td.QualifiedName] = td.ToGoaiTool()
+		result[td.QualifiedName] = td.ToLLMTool()
 	}
 	return result, nil
 }

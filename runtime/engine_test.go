@@ -1510,7 +1510,7 @@ func TestInteractionHumanPauses(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Test: InteractionLLM — falls back to pause with stub executor
-// (real LLM path requires GoaiExecutor which is integration-level)
+// (real LLM path requires ClawExecutor which is integration-level)
 // ---------------------------------------------------------------------------
 
 func TestInteractionLLMAutoRespond(t *testing.T) {
@@ -1530,7 +1530,7 @@ func TestInteractionLLMAutoRespond(t *testing.T) {
 	eng := New(wf, s, exec)
 
 	err := eng.Run(context.Background(), "run-interact-llm", nil)
-	// With a stub executor (not GoaiExecutor), InteractionLLM falls back
+	// With a stub executor (not ClawExecutor), InteractionLLM falls back
 	// to pause — this verifies the fallback path is wired correctly.
 	if !errors.Is(err, ErrRunPaused) {
 		t.Fatalf("expected ErrRunPaused (fallback), got: %v", err)

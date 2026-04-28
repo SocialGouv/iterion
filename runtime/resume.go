@@ -383,14 +383,14 @@ func (e *Engine) handleNeedsInteraction(ctx context.Context, rs *runState, nodeI
 // handleInteractionLLM invokes the interaction model to auto-respond to the
 // delegate's questions, then re-invokes the backend with the answers.
 func (e *Engine) handleInteractionLLM(ctx context.Context, rs *runState, nodeID string, node ir.Node, ni *model.ErrNeedsInteraction) error {
-	goaiExec, ok := e.executor.(*model.GoaiExecutor)
+	clawExec, ok := e.executor.(*model.ClawExecutor)
 	if !ok {
 		// Fallback to pause if executor doesn't support interaction LLM.
 		return e.pauseForBackendInteraction(rs, nodeID, ni)
 	}
 
 	fields := interactionFields(node)
-	answers, _, err := goaiExec.ExecuteHumanLLMForInteraction(ctx, nodeID, ni, fields)
+	answers, _, err := clawExec.ExecuteHumanLLMForInteraction(ctx, nodeID, ni, fields)
 	if err != nil {
 		return e.failRunWithCheckpoint(rs, nodeID,
 			fmt.Sprintf("interaction LLM for node %q failed: %v", nodeID, err))
@@ -404,13 +404,13 @@ func (e *Engine) handleInteractionLLM(ctx context.Context, rs *runState, nodeID 
 // to auto-respond or escalate to a human. If the LLM sets needs_human_input=true,
 // the run is paused for human input.
 func (e *Engine) handleInteractionLLMOrHuman(ctx context.Context, rs *runState, nodeID string, node ir.Node, ni *model.ErrNeedsInteraction) error {
-	goaiExec, ok := e.executor.(*model.GoaiExecutor)
+	clawExec, ok := e.executor.(*model.ClawExecutor)
 	if !ok {
 		return e.pauseForBackendInteraction(rs, nodeID, ni)
 	}
 
 	fields := interactionFields(node)
-	answers, needsHuman, err := goaiExec.ExecuteHumanLLMForInteraction(ctx, nodeID, ni, fields)
+	answers, needsHuman, err := clawExec.ExecuteHumanLLMForInteraction(ctx, nodeID, ni, fields)
 	if err != nil {
 		return e.failRunWithCheckpoint(rs, nodeID,
 			fmt.Sprintf("interaction LLM for node %q failed: %v", nodeID, err))

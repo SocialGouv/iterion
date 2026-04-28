@@ -14,7 +14,7 @@ import (
 // Helper: build a minimal workflow + executor with a tool registry and policy
 // ---------------------------------------------------------------------------
 
-func actExecutor(t *testing.T, policy *tool.Policy, builtins map[string]func(ctx context.Context, input json.RawMessage) (string, error)) *GoaiExecutor {
+func actExecutor(t *testing.T, policy *tool.Policy, builtins map[string]func(ctx context.Context, input json.RawMessage) (string, error)) *ClawExecutor {
 	t.Helper()
 
 	reg := NewRegistry()
@@ -30,7 +30,7 @@ func actExecutor(t *testing.T, policy *tool.Policy, builtins map[string]func(ctx
 		}
 	}
 
-	return newTestGoaiExecutor(reg, wf,
+	return newTestClawExecutor(reg, wf,
 		WithToolRegistry(tr),
 		WithToolPolicy(policy),
 	)
@@ -165,7 +165,7 @@ func TestActPrefixWildcardMCP(t *testing.T) {
 	_ = tr.RegisterMCP("github", "create_issue", "create issue", nil, jsonExec(`{"id":42}`))
 	_ = tr.RegisterMCP("slack", "post_message", "post message", nil, jsonExec(`{}`))
 
-	exec := newTestGoaiExecutor(reg, wf, WithToolRegistry(tr), WithToolPolicy(policy))
+	exec := newTestClawExecutor(reg, wf, WithToolRegistry(tr), WithToolPolicy(policy))
 
 	// mcp.github.create_issue → allowed
 	node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "n1"}, Command: "mcp.github.create_issue"}
@@ -200,7 +200,7 @@ func TestActDeniedToolFiresHook(t *testing.T) {
 	tr := tool.NewRegistry()
 	_ = tr.RegisterBuiltin("run_command", "run cmd", nil, jsonExec(`{}`))
 
-	exec := newTestGoaiExecutor(reg, wf,
+	exec := newTestClawExecutor(reg, wf,
 		WithToolRegistry(tr),
 		WithToolPolicy(policy),
 		WithEventHooks(EventHooks{

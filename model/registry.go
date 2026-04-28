@@ -1,34 +1,35 @@
-// Package model provides the ModelRegistry and goai-based NodeExecutor
-// for resolving "provider/model-id" specs and executing LLM nodes via goai.
+// Package model provides the ModelRegistry and claw-based NodeExecutor
+// for resolving "provider/model-id" specs and executing LLM nodes.
 package model
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
-	"github.com/zendev-sh/goai/provider"
-	"github.com/zendev-sh/goai/provider/anthropic"
-	"github.com/zendev-sh/goai/provider/openai"
+	"claw-code-go/pkg/api"
+	anthropicprovider "claw-code-go/pkg/api/providers/anthropic"
+	openaiprovider "claw-code-go/pkg/api/providers/openai"
 )
 
-// ProviderFactory creates a LanguageModel for a given model ID.
+// ProviderFactory creates an APIClient for a given model ID.
 // The factory is called once per unique model ID; results are cached.
-type ProviderFactory func(modelID string) (provider.LanguageModel, error)
+type ProviderFactory func(modelID string) (api.APIClient, error)
 
 // Registry resolves model specs of the form "provider/model-id" to
-// goai LanguageModel instances. It caches resolved models for reuse.
+// APIClient instances. It caches resolved clients for reuse.
 type Registry struct {
 	mu        sync.RWMutex
 	providers map[string]ProviderFactory
-	cache     map[string]provider.LanguageModel
+	cache     map[string]api.APIClient
 }
 
 // NewRegistry creates a model registry pre-loaded with built-in providers.
 func NewRegistry() *Registry {
 	r := &Registry{
 		providers: make(map[string]ProviderFactory),
-		cache:     make(map[string]provider.LanguageModel),
+		cache:     make(map[string]api.APIClient),
 	}
 	r.registerDefaults()
 	return r
@@ -36,11 +37,19 @@ func NewRegistry() *Registry {
 
 // registerDefaults registers the built-in provider factories.
 func (r *Registry) registerDefaults() {
-	r.providers["anthropic"] = func(modelID string) (provider.LanguageModel, error) {
-		return anthropic.Chat(modelID), nil
+	r.providers["anthropic"] = func(modelID string) (api.APIClient, error) {
+		p := anthropicprovider.New()
+		return p.NewClient(api.ProviderConfig{
+			APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+			Model:  modelID,
+		})
 	}
-	r.providers["openai"] = func(modelID string) (provider.LanguageModel, error) {
-		return openai.Chat(modelID), nil
+	r.providers["openai"] = func(modelID string) (api.APIClient, error) {
+		p := openaiprovider.New()
+		return p.NewClient(api.ProviderConfig{
+			APIKey: os.Getenv("OPENAI_API_KEY"),
+			Model:  modelID,
+		})
 	}
 }
 
@@ -53,9 +62,9 @@ func (r *Registry) Register(providerName string, factory ProviderFactory) {
 }
 
 // Resolve parses a model spec ("provider/model-id") and returns the
-// corresponding LanguageModel, creating it via the provider factory if
+// corresponding APIClient, creating it via the provider factory if
 // not already cached.
-func (r *Registry) Resolve(spec string) (provider.LanguageModel, error) {
+func (r *Registry) Resolve(spec string) (api.APIClient, error) {
 	providerName, modelID, err := ParseModelSpec(spec)
 	if err != nil {
 		return nil, err
@@ -71,7 +80,7 @@ func (r *Registry) Resolve(spec string) (provider.LanguageModel, error) {
 	}
 	r.mu.RUnlock()
 
-	// Slow path: create model.
+	// Slow path: create client.
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -95,12 +104,19 @@ func (r *Registry) Resolve(spec string) (provider.LanguageModel, error) {
 }
 
 // Capabilities returns the capabilities of the model identified by spec.
-func (r *Registry) Capabilities(spec string) (provider.ModelCapabilities, error) {
-	m, err := r.Resolve(spec)
+// Capabilities are derived from a static table keyed by provider and model family.
+func (r *Registry) Capabilities(spec string) (ModelCapabilities, error) {
+	providerName, modelID, err := ParseModelSpec(spec)
 	if err != nil {
-		return provider.ModelCapabilities{}, err
+		return ModelCapabilities{}, err
 	}
-	return provider.ModelCapabilitiesOf(m), nil
+
+	// Resolve to validate the provider exists and cache the client.
+	if _, err := r.Resolve(spec); err != nil {
+		return ModelCapabilities{}, err
+	}
+
+	return capabilitiesForModel(providerName, modelID), nil
 }
 
 // ParseModelSpec splits "provider/model-id" into its components.
