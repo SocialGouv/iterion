@@ -1071,6 +1071,178 @@ func TestLive_Full_ExhaustiveDSLCoverage(t *testing.T) {
 	logRunRecap(t, events)
 }
 
+// ---------------------------------------------------------------------------
+// Live E2E test — claude_code session: inherit validation
+// ---------------------------------------------------------------------------
+
+// TestLive_Lite_SessionInheritValidation forces exactly one fix iteration via
+// a "strict-first" judge that ALWAYS rejects on the first evaluation, so that
+// the `fix` agent (declared `session: inherit`) actually runs with the
+// upstream `_session_id` wired through the edge mapping.
+//
+// Asserts:
+//  1. Run finishes successfully.
+//  2. `fix` finished at least once.
+//  3. `fix.output._session_id` equals `implement.output._session_id` —
+//     proves claude_code received `--resume <id>` and continued the same
+//     CLI session, rather than starting a fresh one.
+//
+// Requires: `claude` CLI installed and authenticated.
+func TestLive_Lite_SessionInheritValidation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live test in short mode")
+	}
+	loadDotEnv(t)
+	requireCLI(t, "claude")
+
+	if os.Getenv("CLAUDE_MODEL") == "" {
+		t.Setenv("CLAUDE_MODEL", "openai/gpt-5.5")
+	}
+
+	wf := compileFixture(t, "session_inherit_validation.iter")
+
+	workspaceDir, err := os.MkdirTemp("", "iterion-session-inherit-*")
+	if err != nil {
+		t.Fatalf("Failed to create workspace dir: %v", err)
+	}
+	t.Logf("Workspace directory (persists after test): %s", workspaceDir)
+
+	gitInit := exec.Command("git", "init", workspaceDir)
+	if out, gitErr := gitInit.CombinedOutput(); gitErr != nil {
+		t.Fatalf("git init failed: %v\n%s", gitErr, out)
+	}
+
+	storeDir := filepath.Join(workspaceDir, ".iterion")
+	s, storeErr := store.New(storeDir)
+	if storeErr != nil {
+		t.Fatalf("Failed to create store: %v", storeErr)
+	}
+
+	runID := "live-session-inherit"
+
+	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+		t.Fatalf("mcp.PrepareWorkflow: %v", err)
+	}
+
+	executor := newLiveExecutor(wf, s, runID, workspaceDir)
+	defer executor.Close()
+
+	executor.SetVars(map[string]interface{}{
+		"workspace_dir": workspaceDir,
+	})
+
+	eng := runtime.New(wf, s, executor)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+
+	inputs := map[string]interface{}{
+		"task":          "Write the number 42 to a file named result.txt in the workspace directory. Just the two characters '4' and '2', no trailing newline.",
+		"workspace_dir": workspaceDir,
+	}
+
+	t.Log("Starting live session-inherit validation run...")
+	start := time.Now()
+	runErr := eng.Run(ctx, runID, inputs)
+	elapsed := time.Since(start)
+	t.Logf("Run completed in %s", elapsed.Round(time.Second))
+
+	if runErr != nil {
+		t.Fatalf("Unexpected run error: %v", runErr)
+	}
+
+	r, loadErr := s.LoadRun(runID)
+	if loadErr != nil {
+		t.Fatalf("Failed to load run: %v", loadErr)
+	}
+	if r.Status != store.RunStatusFinished {
+		t.Fatalf("Expected run status 'finished', got %q", r.Status)
+	}
+
+	events, evtErr := s.LoadEvents(runID)
+	if evtErr != nil {
+		t.Fatalf("Failed to load events: %v", evtErr)
+	}
+
+	finishedNodes := eventNodeIDs(events, store.EventNodeFinished)
+	t.Logf("Finished nodes: %v", finishedNodes)
+
+	nodeSet := make(map[string]bool)
+	for _, id := range finishedNodes {
+		nodeSet[id] = true
+	}
+	for _, expected := range []string{"implement", "judge_strict", "fix", "judge_recheck"} {
+		if !nodeSet[expected] {
+			t.Errorf("Expected node %q to have finished — strict-first judge or fix wiring may have failed", expected)
+		}
+	}
+
+	// === Critical assertion: session_id continuity ===
+	// Pull _session_id out of the implement and fix node_finished events.
+	var implSessionID, fixSessionID string
+	for _, evt := range events {
+		if evt.Type != store.EventNodeFinished || evt.Data == nil {
+			continue
+		}
+		out, ok := evt.Data["output"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		sid, _ := out["_session_id"].(string)
+		switch evt.NodeID {
+		case "implement":
+			if implSessionID == "" {
+				implSessionID = sid
+			}
+		case "fix":
+			if fixSessionID == "" {
+				fixSessionID = sid
+			}
+		}
+	}
+
+	if implSessionID == "" {
+		t.Fatal("implement node finished without a _session_id — backend did not return one")
+	}
+	if fixSessionID == "" {
+		t.Fatal("fix node finished without a _session_id — backend did not return one")
+	}
+	t.Logf("implement._session_id = %s", implSessionID)
+	t.Logf("fix._session_id       = %s", fixSessionID)
+
+	if fixSessionID != implSessionID {
+		t.Errorf("SESSION INHERIT BROKEN: fix used a different CLI session.\n  implement: %s\n  fix:       %s\nThe fix agent declared session: inherit but did not resume the upstream session.", implSessionID, fixSessionID)
+	} else {
+		t.Logf("SESSION INHERIT VALIDATED: fix continued implement's session %s", implSessionID)
+	}
+
+	// Check that result.txt actually exists.
+	resultPath := filepath.Join(workspaceDir, "result.txt")
+	if content, readErr := os.ReadFile(resultPath); readErr != nil {
+		t.Errorf("result.txt not found at %s: %v", resultPath, readErr)
+	} else {
+		t.Logf("result.txt content: %q (%d bytes)", string(content), len(content))
+	}
+
+	metrics, mErr := benchmark.CollectMetrics(s, runID, "live-session-inherit", "")
+	if mErr == nil {
+		t.Logf("Metrics: tokens=%d cost=$%.4f model_calls=%d iterations=%d duration=%s",
+			metrics.TotalTokens, metrics.TotalCostUSD, metrics.ModelCalls,
+			metrics.Iterations, metrics.DurationStr)
+	}
+
+	reportPath := filepath.Join(workspaceDir, "report.md")
+	reportOpts := cli.ReportOptions{RunID: runID, StoreDir: storeDir, Output: reportPath}
+	reportPrinter := cli.NewPrinter(cli.OutputHuman)
+	if reportErr := cli.RunReport(reportOpts, reportPrinter); reportErr != nil {
+		t.Logf("WARNING: could not generate report: %v", reportErr)
+	} else {
+		t.Logf("Report written to %s", reportPath)
+	}
+
+	logRunRecap(t, events)
+}
+
 // requireEnv skips the test if the named environment variable is not set.
 func requireEnv(t *testing.T, name string) {
 	t.Helper()

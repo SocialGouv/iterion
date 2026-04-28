@@ -67,6 +67,11 @@ tasks:
     cmds:
       - go test -v -tags live -count=1 -run TestLive_Full_ExhaustiveDSLCoverage -timeout 5h ./e2e/...
 
+  test:live:session-inherit:
+    desc: Run the claude_code session-inherit validation live e2e test (requires claude CLI + ANTHROPIC_API_KEY)
+    cmds:
+      - go test -v -tags live -count=1 -run TestLive_Lite_SessionInheritValidation -timeout 30m ./e2e/...
+
   fmt:
     desc: Format Go source files
     cmds:

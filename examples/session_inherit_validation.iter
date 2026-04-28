@@ -1,0 +1,189 @@
+## Fixture : session_inherit_validation
+##
+## But : valider de bout-en-bout le mecanisme `session: inherit` cote
+## claude_code (review/fix qui reprennent la meme session CLI via --resume).
+##
+## Strategie : un juge "strict-first" rejette OBLIGATOIREMENT le 1er passage
+## pour forcer une iteration de fix. Le noeud fix est declare en
+## `session: inherit` et recupere l'_session_id du noeud `implement` via le
+## edge mapping. claude_code recoit alors `--resume <session_id>` et continue
+## la meme session.
+##
+## Le test asserte (1) que `fix` a bien ete execute, (2) que sa sortie
+## `_session_id` est identique a celle de `implement` (preuve que la session
+## a ete reprise et non recreee), (3) que le run termine en `done`.
+##
+## Tache deliberement triviale : ecrire "42" dans result.txt. Le but est de
+## valider le wiring, pas la qualite de l'implementation.
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+## ─── Prompts ────────────────────────────────────────────────────
+
+prompt implement_system:
+  You are a developer. Execute the given task in the workspace using
+  Write/Read tools. Report applied=true and list the files you touched
+  in files_changed[]. Re-read the file to verify the contents before
+  finishing.
+
+prompt implement_user:
+  Task : {{input.task}}
+  Workspace directory : {{input.workspace_dir}}
+
+  Write the file using your tools, then read it back to verify.
+
+prompt judge_strict_system:
+  You are a quality judge whose role is to FORCE one revision pass for
+  testing the session-inherit code path. Rules:
+
+    - On the FIRST evaluation (no previous_issues in the input, or
+      previous_issues field is empty), you MUST return good=false with
+      a SINGLE concrete cosmetic issue in issues[]. Choose any small
+      style nit (e.g. "missing trailing newline", "summary should
+      mention the absolute path"). Mark it actionable.
+    - On SUBSEQUENT evaluations (previous_issues is non-empty in the
+      input), you MUST return good=true with empty issues[]. The fix
+      pass is assumed sufficient — never reject twice.
+
+  This judge is intentionally toy: do not over-think, just follow the
+  rules above so the fix loop fires exactly once.
+
+prompt judge_strict_user:
+  Evaluate this implementation.
+
+  Implementation result :
+  {{input.implementation}}
+
+  Previous issues (empty on first pass) :
+  {{input.previous_issues}}
+
+  Apply the strict-first rule. Return good=false with one cosmetic issue
+  on the first eval; good=true on subsequent evals.
+
+prompt fix_system:
+  You are continuing a previous CLI session in which you implemented
+  a task. The quality judge raised one cosmetic issue. Address it
+  using your tools (Write/Read), keeping the rest of the file intact.
+
+  Report applied=true and a short summary of what you changed.
+
+prompt fix_user:
+  Issue raised by the judge :
+  {{input.issues}}
+
+  Workspace directory : {{input.workspace_dir}}
+
+  Apply the fix and verify the file.
+
+## ─── Schemas ────────────────────────────────────────────────────
+
+schema workflow_input:
+  task: string
+
+schema impl_input:
+  task: string
+  workspace_dir: string
+
+schema impl_output:
+  applied: bool
+  summary: string
+  files_changed: string[]
+
+schema judge_input:
+  implementation: json
+  previous_issues: string
+
+schema judge_verdict:
+  good: bool
+  issues: string[]
+
+schema fix_input:
+  issues: string[]
+  workspace_dir: string
+
+schema fix_output:
+  applied: bool
+  summary: string
+
+## ─── Nodes ──────────────────────────────────────────────────────
+
+agent implement:
+  backend: "claude_code"
+  model: "claude-opus-4-7"
+  input: impl_input
+  output: impl_output
+  publish: implementation
+  system: implement_system
+  user: implement_user
+  session: fresh
+
+judge judge_strict:
+  backend: "claude_code"
+  model: "claude-opus-4-7"
+  input: judge_input
+  output: judge_verdict
+  publish: verdict
+  system: judge_strict_system
+  user: judge_strict_user
+  session: fresh
+
+agent fix:
+  ## CRITICAL: session: inherit + _session_id passed via the edge below.
+  ## claude_code receives --resume <session_id> and continues the same
+  ## CLI session as `implement`.
+  backend: "claude_code"
+  model: "claude-opus-4-7"
+  input: fix_input
+  output: fix_output
+  publish: implementation
+  system: fix_system
+  user: fix_user
+  session: inherit
+
+judge judge_recheck:
+  ## Lenient — approves if the fix reports applied=true.
+  backend: "claude_code"
+  model: "claude-opus-4-7"
+  input: judge_input
+  output: judge_verdict
+  publish: verdict_recheck
+  system: judge_strict_system
+  user: judge_strict_user
+  session: fresh
+
+## ─── Workflow ────────────────────────────────────────────────────
+
+workflow session_inherit_validation:
+  vars:
+    task: string
+
+  entry: implement
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "15m"
+    max_cost_usd: 5
+    max_tokens: 200000
+
+  implement -> judge_strict with {
+    implementation: "{{outputs.implement}}",
+    previous_issues: ""
+  }
+
+  ## judge_strict ALWAYS returns good=false on first pass (per prompt).
+  judge_strict -> done when good
+  judge_strict -> fix when not good with {
+    _session_id: "{{outputs.implement._session_id}}",
+    issues: "{{outputs.judge_strict.issues}}",
+    workspace_dir: "{{vars.workspace_dir}}"
+  }
+
+  fix -> judge_recheck with {
+    implementation: "{{outputs.fix}}",
+    previous_issues: "{{outputs.judge_strict.issues}}"
+  }
+
+  ## judge_recheck approves (previous_issues non-empty -> good=true).
+  judge_recheck -> done when good
+  judge_recheck -> fail when not good
