@@ -13,7 +13,7 @@
 //
 // Example usage:
 //
-//	transport := subprocess.NewCLITransport(log, "", options)
+//	transport := subprocess.NewCLITransport(log, "", options, nil)
 //	transport.Start(ctx)
 //
 //	controller := protocol.NewController(log, transport)

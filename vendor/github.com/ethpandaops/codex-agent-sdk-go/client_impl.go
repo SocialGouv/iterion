@@ -21,14 +21,23 @@ func newClientImpl() Client {
 	return &clientWrapper{impl: client.New()}
 }
 
+// applyAgentOptionsToConfig applies functional options and initializes the
+// OTel metrics recorder so the persistent client path records metrics/traces.
+func applyAgentOptionsToConfig(opts []Option) *CodexAgentOptions {
+	options := applyAgentOptions(opts)
+	initMetricsRecorder(options)
+
+	return options
+}
+
 // Start establishes a connection to the Codex CLI.
 func (c *clientWrapper) Start(ctx context.Context, opts ...Option) error {
-	return c.impl.Start(ctx, applyAgentOptions(opts))
+	return c.impl.Start(ctx, applyAgentOptionsToConfig(opts))
 }
 
 // StartWithContent establishes a connection and immediately sends an initial message.
 func (c *clientWrapper) StartWithContent(ctx context.Context, content UserMessageContent, opts ...Option) error {
-	return c.impl.StartWithContent(ctx, content, applyAgentOptions(opts))
+	return c.impl.StartWithContent(ctx, content, applyAgentOptionsToConfig(opts))
 }
 
 // StartWithStream establishes a connection and streams initial messages.
@@ -45,7 +54,7 @@ func (c *clientWrapper) StartWithStream(
 		}
 	}
 
-	return c.impl.StartWithStream(ctx, convertedMessages, applyAgentOptions(opts))
+	return c.impl.StartWithStream(ctx, convertedMessages, applyAgentOptionsToConfig(opts))
 }
 
 // Query sends user content to the agent.

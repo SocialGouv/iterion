@@ -4,6 +4,10 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/ethpandaops/codex-agent-sdk-go/internal/config"
 )
 
@@ -63,6 +67,13 @@ func WithModel(model string) Option {
 func WithPermissionMode(mode string) Option {
 	return func(o *CodexAgentOptions) {
 		o.PermissionMode = mode
+	}
+}
+
+// WithMaxTurns sets the maximum number of conversation turns.
+func WithMaxTurns(maxTurns int) Option {
+	return func(o *CodexAgentOptions) {
+		o.MaxTurns = maxTurns
 	}
 }
 
@@ -210,6 +221,18 @@ func WithOnUserInput(callback UserInputCallback) Option {
 	}
 }
 
+// ===== Elicitation =====
+
+// WithOnElicitation sets a callback for handling MCP elicitation requests.
+// The callback is invoked when an MCP server sends an elicitation/create request
+// through the CLI, allowing the SDK consumer to present forms or collect input.
+// If not set, elicitation requests are auto-declined.
+func WithOnElicitation(callback ElicitationCallback) Option {
+	return func(o *CodexAgentOptions) {
+		o.OnElicitation = callback
+	}
+}
+
 // ===== Session =====
 
 // WithContinueConversation indicates whether to continue an existing conversation.
@@ -348,8 +371,22 @@ func WithSkipVersionCheck(skip bool) Option {
 // WithIncludePartialMessages controls whether streaming deltas are emitted as
 // StreamEvent messages. When false (default), only completed AssistantMessage
 // and ResultMessage are emitted. When true, token-by-token deltas are emitted
-// as StreamEvent with content_block_delta/text_delta shape, followed by the
-// completed AssistantMessage.
+// as StreamEvent with content_block_delta shape, followed by the completed
+// AssistantMessage.
+//
+// Each StreamEvent's event.delta carries a "type" field that identifies the
+// source of the chunk so consumers can route it appropriately:
+//
+//   - text_delta            — assistant prose (delta.text)
+//   - thinking_delta        — model reasoning content (delta.thinking)
+//   - command_output_delta  — shell stdout/stderr from a command_execution item
+//     (delta.text; delta.item_id correlates back to the ToolUseBlock)
+//   - file_change_delta     — diff output from a file_change item
+//     (delta.text; delta.item_id correlates back to the ToolUseBlock)
+//
+// Consumers that render assistant prose should match on text_delta only and
+// route command_output_delta / file_change_delta into the ToolUseBlock view
+// rather than the assistant text stream.
 func WithIncludePartialMessages(include bool) Option {
 	return func(o *CodexAgentOptions) {
 		o.IncludePartialMessages = include
@@ -363,5 +400,34 @@ func WithIncludePartialMessages(include bool) Option {
 func WithCodexHome(path string) Option {
 	return func(o *CodexAgentOptions) {
 		o.CodexHome = path
+	}
+}
+
+// ===== Observability =====
+
+// WithMeterProvider sets the OTel meter provider for recording SDK metrics.
+// When not set, all metric recording is noop (zero-cost).
+// The SDK depends on the OTel API only — callers supply their own MeterProvider.
+func WithMeterProvider(mp metric.MeterProvider) Option {
+	return func(o *CodexAgentOptions) {
+		o.MeterProvider = mp
+	}
+}
+
+// WithTracerProvider sets the OTel tracer provider for recording SDK spans.
+// When not set, all trace recording is noop (zero-cost).
+func WithTracerProvider(tp trace.TracerProvider) Option {
+	return func(o *CodexAgentOptions) {
+		o.TracerProvider = tp
+	}
+}
+
+// WithPrometheusRegisterer configures a Prometheus registerer for SDK metrics.
+// This is sugar: when set and WithMeterProvider is not, an OTel MeterProvider
+// is created automatically from the registerer via the OTel→Prometheus bridge.
+// If WithMeterProvider is also set, WithMeterProvider takes precedence.
+func WithPrometheusRegisterer(reg prometheus.Registerer) Option {
+	return func(o *CodexAgentOptions) {
+		o.PrometheusRegisterer = reg
 	}
 }

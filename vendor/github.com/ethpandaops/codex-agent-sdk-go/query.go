@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/ethpandaops/codex-agent-sdk-go/internal/config"
@@ -172,6 +173,23 @@ func Query(
 		log = log.With("component", "query")
 		log.Debug("starting query execution")
 
+		// Initialize OTel metrics recorder from providers if configured.
+		initMetricsRecorder(options)
+
+		var queryErr error
+
+		var querySpan trace.Span
+
+		ctx, querySpan = startQuerySpan(ctx, options, "query")
+
+		defer func() {
+			if queryErr != nil {
+				querySpan.SetStatus(1, queryErr.Error()) // codes.Error = 1
+			}
+
+			querySpan.End()
+		}()
+
 		var transport config.Transport
 
 		useAppServerQuery := false
@@ -198,6 +216,8 @@ func Query(
 			}
 
 			if err := config.ValidateOptionsForBackend(options, backend); err != nil {
+				queryErr = err
+
 				yield(nil, err)
 
 				return
@@ -219,6 +239,9 @@ func Query(
 
 		if err := transport.Start(ctx); err != nil {
 			log.Error("failed to start CLI", "error", err)
+
+			queryErr = err
+
 			yield(nil, err)
 
 			return
@@ -234,7 +257,9 @@ func Query(
 
 		controller := protocol.NewController(log, transport)
 		if err := controller.Start(ctx); err != nil {
-			yield(nil, fmt.Errorf("start protocol controller: %w", err))
+			queryErr = fmt.Errorf("start protocol controller: %w", err)
+
+			yield(nil, queryErr)
 
 			return
 		}
@@ -250,7 +275,9 @@ func Query(
 			log.Debug("initializing session for hooks/callbacks")
 
 			if err := session.Initialize(ctx); err != nil {
-				yield(nil, fmt.Errorf("initialize session: %w", err))
+				queryErr = fmt.Errorf("initialize session: %w", err)
+
+				yield(nil, queryErr)
 
 				return
 			}
@@ -261,13 +288,17 @@ func Query(
 
 			data, err := json.Marshal(userMessage)
 			if err != nil {
-				yield(nil, fmt.Errorf("marshal initial user message: %w", err))
+				queryErr = fmt.Errorf("marshal initial user message: %w", err)
+
+				yield(nil, queryErr)
 
 				return
 			}
 
 			if err := transport.SendMessage(ctx, data); err != nil {
-				yield(nil, fmt.Errorf("send initial user message: %w", err))
+				queryErr = fmt.Errorf("send initial user message: %w", err)
+
+				yield(nil, queryErr)
 
 				return
 			}
@@ -275,7 +306,9 @@ func Query(
 			log.Debug("closing stdin for one-shot query mode")
 
 			if err := transport.EndInput(); err != nil {
-				yield(nil, fmt.Errorf("close stdin: %w", err))
+				queryErr = fmt.Errorf("close stdin: %w", err)
+
+				yield(nil, queryErr)
 
 				return
 			}
@@ -295,6 +328,9 @@ func Query(
 
 					if err := controller.FatalError(); err != nil {
 						log.Error("error from transport", "error", err)
+
+						queryErr = err
+
 						yield(nil, err)
 					}
 
@@ -309,7 +345,8 @@ func Query(
 				if err != nil {
 					log.Warn("failed to parse message", "error", err)
 
-					if !yield(nil, fmt.Errorf("parse message: %w", err)) {
+					queryErr = fmt.Errorf("parse message: %w", err)
+					if !yield(nil, queryErr) {
 						return
 					}
 
@@ -326,6 +363,10 @@ func Query(
 					if resultMsg.SessionID == "" && sessionID != "" {
 						resultMsg.SessionID = sessionID
 					}
+				}
+
+				if options.MetricsRecorder != nil {
+					options.MetricsRecorder.Observe(ctx, parsed)
 				}
 
 				if !yield(parsed, nil) {
@@ -345,6 +386,8 @@ func Query(
 
 				if err := controller.FatalError(); err != nil {
 					log.Error("error from transport", "error", err)
+					queryErr = err
+
 					yield(nil, err)
 				}
 
@@ -352,6 +395,9 @@ func Query(
 
 			case <-ctx.Done():
 				log.Debug("context cancelled")
+
+				queryErr = ctx.Err()
+
 				yield(nil, ctx.Err())
 
 				return
@@ -462,9 +508,28 @@ func QueryStream(
 		log := getLoggerWithComponent(options, "query_stream")
 		log.Debug("starting streaming query execution")
 
+		// Initialize OTel metrics recorder from providers if configured.
+		initMetricsRecorder(options)
+
+		var queryErr error
+
+		var querySpan trace.Span
+
+		ctx, querySpan = startQuerySpan(ctx, options, "query_stream")
+
+		defer func() {
+			if queryErr != nil {
+				querySpan.SetStatus(1, queryErr.Error()) // codes.Error = 1
+			}
+
+			querySpan.End()
+		}()
+
 		// QueryStream uses app-server semantics unless a custom transport is injected.
 		if options.Transport == nil {
 			if err := config.ValidateOptionsForBackend(options, config.QueryBackendAppServer); err != nil {
+				queryErr = err
+
 				yield(nil, err)
 
 				return
@@ -477,6 +542,9 @@ func QueryStream(
 
 		if err := transport.Start(ctx); err != nil {
 			log.Error("failed to start CLI", "error", err)
+
+			queryErr = err
+
 			yield(nil, err)
 
 			return
@@ -492,7 +560,9 @@ func QueryStream(
 
 		controller := protocol.NewController(log, transport)
 		if err := controller.Start(ctx); err != nil {
-			yield(nil, fmt.Errorf("start protocol controller: %w", err))
+			queryErr = fmt.Errorf("start protocol controller: %w", err)
+
+			yield(nil, queryErr)
 
 			return
 		}
@@ -507,7 +577,9 @@ func QueryStream(
 		log.Debug("initializing session for streaming mode")
 
 		if err := session.Initialize(ctx); err != nil {
-			yield(nil, fmt.Errorf("initialize session: %w", err))
+			queryErr = fmt.Errorf("initialize session: %w", err)
+
+			yield(nil, queryErr)
 
 			return
 		}
@@ -558,80 +630,104 @@ func QueryStream(
 
 		log.Debug("reading messages from controller")
 
-		for {
-			select {
-			case msg, ok := <-rawMessages:
-				if !ok {
-					log.Debug("raw message channel closed")
+		queryErr = streamReceiveLoop(ctx, log, controller, options,
+			rawMessages, gCtx, g, closeResult, hasMCPOrHooks, yield)
+	}
+}
 
-					if err := controller.FatalError(); err != nil {
-						log.Error("error from transport", "error", err)
-						yield(nil, err)
-					}
-
-					return
-				}
-
-				parsed, err := message.Parse(log, msg)
-				if errors.Is(err, sdkerrors.ErrUnknownMessageType) {
-					continue
-				}
-
-				if err != nil {
-					log.Warn("failed to parse message", "error", err)
-
-					if !yield(nil, fmt.Errorf("parse message: %w", err)) {
-						return
-					}
-
-					continue
-				}
-
-				if hasMCPOrHooks {
-					if _, isResult := parsed.(*message.ResultMessage); isResult {
-						closeResult()
-					}
-				}
-
-				if !yield(parsed, nil) {
-					log.Debug("yield returned false, stopping iteration")
-
-					return
-				}
-
-				// QueryStream represents a single streaming query. Once the final
-				// ResultMessage arrives, stop iterating instead of waiting for
-				// transport/controller shutdown, which may happen later.
-				if _, isResult := parsed.(*message.ResultMessage); isResult {
-					log.Debug("result message received, stopping iteration")
-
-					return
-				}
-
-			case <-controller.Done():
-				log.Debug("controller stopped")
+// streamReceiveLoop reads parsed messages from the controller and yields them.
+// It returns the first fatal error encountered, or nil on clean completion.
+func streamReceiveLoop(
+	ctx context.Context,
+	log *slog.Logger,
+	controller *protocol.Controller,
+	options *CodexAgentOptions,
+	rawMessages <-chan map[string]any,
+	gCtx context.Context,
+	g *errgroup.Group,
+	closeResult func(),
+	hasMCPOrHooks bool,
+	yield func(Message, error) bool,
+) error {
+	for {
+		select {
+		case msg, ok := <-rawMessages:
+			if !ok {
+				log.Debug("raw message channel closed")
 
 				if err := controller.FatalError(); err != nil {
 					log.Error("error from transport", "error", err)
 					yield(nil, err)
+
+					return err
 				}
 
-				return
-
-			case <-ctx.Done():
-				log.Debug("context cancelled")
-				yield(nil, ctx.Err())
-
-				return
-
-			case <-gCtx.Done():
-				if err := g.Wait(); err != nil {
-					log.Error("streaming goroutine failed", "error", err)
-					yield(nil, err)
-				}
-
-				return
+				return nil
 			}
+
+			parsed, err := message.Parse(log, msg)
+			if errors.Is(err, sdkerrors.ErrUnknownMessageType) {
+				continue
+			}
+
+			if err != nil {
+				log.Warn("failed to parse message", "error", err)
+
+				fmtErr := fmt.Errorf("parse message: %w", err)
+				if !yield(nil, fmtErr) {
+					return fmtErr
+				}
+
+				continue
+			}
+
+			if hasMCPOrHooks {
+				if _, isResult := parsed.(*message.ResultMessage); isResult {
+					closeResult()
+				}
+			}
+
+			if options.MetricsRecorder != nil {
+				options.MetricsRecorder.Observe(ctx, parsed)
+			}
+
+			if !yield(parsed, nil) {
+				log.Debug("yield returned false, stopping iteration")
+
+				return nil
+			}
+
+			if _, isResult := parsed.(*message.ResultMessage); isResult {
+				log.Debug("result message received, stopping iteration")
+
+				return nil
+			}
+
+		case <-controller.Done():
+			log.Debug("controller stopped")
+
+			if err := controller.FatalError(); err != nil {
+				log.Error("error from transport", "error", err)
+				yield(nil, err)
+
+				return err
+			}
+
+			return nil
+
+		case <-ctx.Done():
+			log.Debug("context cancelled")
+			yield(nil, ctx.Err())
+
+			return ctx.Err()
+
+		case <-gCtx.Done():
+			if err := g.Wait(); err != nil {
+				log.Error("streaming goroutine failed", "error", err)
+				yield(nil, err)
+			}
+
+			return nil
 		}
 	}
 }

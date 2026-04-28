@@ -12,6 +12,7 @@ import (
 
 	"github.com/ethpandaops/codex-agent-sdk-go/internal/config"
 	sdkerrors "github.com/ethpandaops/codex-agent-sdk-go/internal/errors"
+	"github.com/ethpandaops/codex-agent-sdk-go/internal/message"
 	"github.com/ethpandaops/codex-agent-sdk-go/internal/schema"
 )
 
@@ -60,6 +61,11 @@ type AppServerAdapter struct {
 	lastAssistantText       string
 	lastAssistantTextByTurn map[string]string
 
+	// reasoningTextByItem accumulates streaming reasoning text deltas
+	// per item ID so that item.completed events for reasoning items with
+	// empty summaries can still carry the full reasoning text.
+	reasoningTextByItem map[string]*strings.Builder
+
 	// currentTurnHasOutputSchema tracks whether the active turn requested
 	// structured output, allowing the adapter to parse JSON final text back
 	// into ResultMessage.StructuredOutput when app-server omits a dedicated field.
@@ -99,6 +105,7 @@ func NewAppServerAdapter(
 		includePartialMessages:  opts.IncludePartialMessages,
 		pendingRPCRequests:      make(map[string]int64, 8),
 		lastAssistantTextByTurn: make(map[string]string, 8),
+		reasoningTextByItem:     make(map[string]*strings.Builder, 8),
 		turnHasOutputSchema:     make(map[string]bool, 8),
 		sdkMCPServerNames:       make(map[string]struct{}, 8),
 	}
@@ -977,6 +984,10 @@ var officialModelSpecs = map[string]modelSpec{
 		ContextWindow:   1050000,
 		MaxOutputTokens: 128000,
 	},
+	"gpt-5.5": {
+		ContextWindow:   1050000,
+		MaxOutputTokens: 128000,
+	},
 }
 
 var runtimeModelSpecs = map[string]modelSpec{
@@ -1048,10 +1059,34 @@ func (a *AppServerAdapter) listAllModels(ctx context.Context) (*modelListResult,
 		cursor = nextCursor
 	}
 
+	ensureDefaultModel(models)
+
 	return &modelListResult{
 		models:   models,
 		metadata: metadata,
 	}, nil
+}
+
+// defaultModelID is the model marked as default when the API does
+// not flag any model with isDefault.
+const defaultModelID = "gpt-5.5"
+
+// ensureDefaultModel sets isDefault on the preferred model when no
+// model in the list has isDefault set to true.
+func ensureDefaultModel(models []map[string]any) {
+	for _, m := range models {
+		if v, ok := m["isDefault"].(bool); ok && v {
+			return
+		}
+	}
+
+	for _, m := range models {
+		if id, _ := m["id"].(string); id == defaultModelID {
+			m["isDefault"] = true
+
+			return
+		}
+	}
 }
 
 func parseModelListPage(raw json.RawMessage) ([]map[string]any, map[string]any, string, error) {
@@ -1482,6 +1517,10 @@ func (a *AppServerAdapter) handleNotification(notif *RPCNotification) {
 		return
 	}
 
+	if len(notif.Raw) > 0 {
+		event = message.AnnotateRawJSON(event, notif.Raw)
+	}
+
 	select {
 	case a.messages <- event:
 	case <-a.done:
@@ -1577,6 +1616,8 @@ func (a *AppServerAdapter) translateNotification(
 				if _, known := a.turnHasOutputSchema[tid]; !known {
 					a.turnHasOutputSchema[tid] = a.currentTurnHasOutputSchema
 				}
+
+				clear(a.reasoningTextByItem)
 				a.mu.Unlock()
 			}
 		}
@@ -1590,16 +1631,18 @@ func (a *AppServerAdapter) translateNotification(
 		return a.translateTextDeltaNotification(params)
 
 	case "item/reasoning/textDelta":
-		return a.translateTextDeltaNotification(params)
+		a.accumulateReasoningDelta(params)
+
+		return a.translateThinkingDeltaNotification(params)
 
 	case "item/reasoning/summaryTextDelta":
-		return a.translateTextDeltaNotification(params)
+		return a.translateThinkingDeltaNotification(params)
 
 	case "item/commandExecution/outputDelta":
-		return a.translateTextDeltaNotification(params)
+		return a.translateOutputDeltaNotification(params, "command_output_delta")
 
 	case "item/fileChange/outputDelta":
-		return a.translateTextDeltaNotification(params)
+		return a.translateOutputDeltaNotification(params, "file_change_delta")
 
 	case "item/plan/delta":
 		return a.translateTextDeltaNotification(params)
@@ -1618,6 +1661,7 @@ func (a *AppServerAdapter) translateNotification(
 			a.mu.Lock()
 			delete(a.turnHasOutputSchema, turnID)
 			delete(a.lastAssistantTextByTurn, turnID)
+			clear(a.reasoningTextByItem)
 			a.mu.Unlock()
 		}
 
@@ -1837,6 +1881,110 @@ func (a *AppServerAdapter) translateTextDeltaNotification(
 			"delta": map[string]any{
 				"type": "text_delta",
 				"text": delta,
+			},
+		},
+	}
+}
+
+// accumulateReasoningDelta appends a reasoning text delta to the per-item
+// accumulator so that item.completed can recover the full reasoning text
+// when the completed item arrives with an empty summary array.
+func (a *AppServerAdapter) accumulateReasoningDelta(params map[string]any) {
+	delta, _ := params["delta"].(string)
+	itemID, _ := params["itemId"].(string)
+
+	if itemID == "" || delta == "" {
+		return
+	}
+
+	a.mu.Lock()
+
+	buf, ok := a.reasoningTextByItem[itemID]
+	if !ok {
+		buf = &strings.Builder{}
+		a.reasoningTextByItem[itemID] = buf
+	}
+
+	buf.WriteString(delta)
+	a.mu.Unlock()
+}
+
+// translateOutputDeltaNotification converts a non-prose delta notification
+// (shell command output, file diff output, etc.) into a stream_event with a
+// dedicated delta.type so consumers can distinguish tool output from regular
+// assistant text. The originating itemId is included inside the delta payload
+// so a consumer can correlate the chunk back to the ToolUseBlock emitted at
+// item.started.
+func (a *AppServerAdapter) translateOutputDeltaNotification(
+	params map[string]any,
+	deltaType string,
+) map[string]any {
+	if !a.includePartialMessages {
+		return nil
+	}
+
+	delta, _ := params["delta"].(string)
+	itemID, _ := params["itemId"].(string)
+
+	a.mu.Lock()
+	sessionID := a.threadID
+	a.mu.Unlock()
+
+	if threadID, ok := params["threadId"].(string); ok && threadID != "" {
+		sessionID = threadID
+	}
+
+	deltaPayload := map[string]any{
+		"type": deltaType,
+		"text": delta,
+	}
+	if itemID != "" {
+		deltaPayload["item_id"] = itemID
+	}
+
+	return map[string]any{
+		"type":       "stream_event",
+		"uuid":       itemID,
+		"session_id": sessionID,
+		"event": map[string]any{
+			"type":  "content_block_delta",
+			"index": 0,
+			"delta": deltaPayload,
+		},
+	}
+}
+
+// translateThinkingDeltaNotification converts a reasoning delta notification
+// into a stream_event with delta.type "thinking_delta", allowing consumers
+// to distinguish reasoning content from regular text in the streaming path.
+func (a *AppServerAdapter) translateThinkingDeltaNotification(
+	params map[string]any,
+) map[string]any {
+	if !a.includePartialMessages {
+		return nil
+	}
+
+	delta, _ := params["delta"].(string)
+	itemID, _ := params["itemId"].(string)
+
+	a.mu.Lock()
+	sessionID := a.threadID
+	a.mu.Unlock()
+
+	if threadID, ok := params["threadId"].(string); ok && threadID != "" {
+		sessionID = threadID
+	}
+
+	return map[string]any{
+		"type":       "stream_event",
+		"uuid":       itemID,
+		"session_id": sessionID,
+		"event": map[string]any{
+			"type":  "content_block_delta",
+			"index": 0,
+			"delta": map[string]any{
+				"type":     "thinking_delta",
+				"thinking": delta,
 			},
 		},
 	}
@@ -2372,6 +2520,20 @@ func (a *AppServerAdapter) extractAndTranslateItem(params map[string]any) map[st
 			if len(parts) > 0 {
 				item["text"] = strings.Join(parts, "\n")
 			}
+		}
+
+		// Fall back to accumulated reasoning deltas when summary is empty.
+		text, _ := item["text"].(string)
+		itemID, _ := item["id"].(string)
+
+		if strings.TrimSpace(text) == "" && itemID != "" {
+			a.mu.Lock()
+			if buf, ok := a.reasoningTextByItem[itemID]; ok && buf.Len() > 0 {
+				item["text"] = buf.String()
+			}
+
+			delete(a.reasoningTextByItem, itemID)
+			a.mu.Unlock()
 		}
 	case "image_view":
 		if path, ok := item["path"].(string); ok && path != "" {

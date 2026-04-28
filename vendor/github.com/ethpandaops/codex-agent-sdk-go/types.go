@@ -4,6 +4,7 @@ import (
 	"iter"
 
 	"github.com/ethpandaops/codex-agent-sdk-go/internal/config"
+	"github.com/ethpandaops/codex-agent-sdk-go/internal/elicitation"
 	"github.com/ethpandaops/codex-agent-sdk-go/internal/hook"
 	"github.com/ethpandaops/codex-agent-sdk-go/internal/mcp"
 	"github.com/ethpandaops/codex-agent-sdk-go/internal/message"
@@ -105,6 +106,12 @@ type Message = message.Message
 
 // UserMessage represents a message from the user.
 type UserMessage = message.UserMessage
+
+// AuditEnvelope captures the provider-native event payload emitted by the SDK.
+type AuditEnvelope = message.AuditEnvelope
+
+// NewAuditEnvelope creates an audit envelope from a typed payload.
+var NewAuditEnvelope = message.NewAuditEnvelope
 
 // UserMessageContent represents content that can be either a string or []ContentBlock.
 type UserMessageContent = message.UserMessageContent
@@ -409,6 +416,39 @@ type UserInputResponse = userinput.Response
 
 // UserInputCallback is invoked when the CLI sends an item/tool/requestUserInput request.
 type UserInputCallback = userinput.Callback
+
+// ===== Elicitation =====
+
+// ElicitationMode identifies the elicitation UX expected by the CLI.
+type ElicitationMode = elicitation.Mode
+
+const (
+	// ElicitationModeForm requests a form-style elicitation.
+	ElicitationModeForm = elicitation.ModeForm
+	// ElicitationModeURL requests a URL-based elicitation.
+	ElicitationModeURL = elicitation.ModeURL
+)
+
+// ElicitationAction identifies the SDK consumer's response to an elicitation request.
+type ElicitationAction = elicitation.Action
+
+const (
+	// ElicitationActionAccept accepts the elicitation and optionally returns content.
+	ElicitationActionAccept = elicitation.ActionAccept
+	// ElicitationActionDecline declines the elicitation.
+	ElicitationActionDecline = elicitation.ActionDecline
+	// ElicitationActionCancel cancels the elicitation flow.
+	ElicitationActionCancel = elicitation.ActionCancel
+)
+
+// ElicitationRequest contains an MCP elicitation request from the CLI.
+type ElicitationRequest = elicitation.Request
+
+// ElicitationResponse contains the SDK consumer's elicitation decision.
+type ElicitationResponse = elicitation.Response
+
+// ElicitationCallback handles MCP elicitation requests.
+type ElicitationCallback = elicitation.Callback
 
 // ===== MCP Server Configuration =====
 

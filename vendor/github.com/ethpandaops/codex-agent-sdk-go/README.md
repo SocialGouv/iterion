@@ -291,6 +291,24 @@ Options are backend-dependent. Unsupported combinations fail fast with `ErrUnsup
 - `WithAddDirs(...)` and `WithExtraArgs(...)` are unsupported on app-server paths.
 - `WithOutputSchema(...)` and `WithOutputFormat(...)` serve different integration styles; choose one based on how you want structured output surfaced.
 
+### Streaming delta subtypes
+
+When `WithIncludePartialMessages(true)` is set, each `StreamEvent` carries an
+`event.delta` map whose `type` distinguishes the source of the chunk:
+
+| `delta.type` | Source | Payload field |
+|---|---|---|
+| `text_delta` | Assistant prose (`item/agentMessage/delta`, `item/plan/delta`) | `text` |
+| `thinking_delta` | Model reasoning (`item/reasoning/textDelta`, `item/reasoning/summaryTextDelta`) | `thinking` |
+| `command_output_delta` | Shell stdout/stderr from a `command_execution` item | `text` (+ `item_id`) |
+| `file_change_delta` | Diff output from a `file_change` item | `text` (+ `item_id`) |
+
+`command_output_delta` and `file_change_delta` both include an `item_id` field
+inside the delta payload so consumers can correlate the chunk back to the
+`ToolUseBlock` emitted at `item.started`. Render those into the tool view
+rather than the assistant text stream — only `text_delta` should be treated as
+visible assistant prose.
+
 ## Session Metadata
 
 Read metadata from a local Codex session using `StatSession`:

@@ -9,12 +9,65 @@ import (
 	"github.com/ethpandaops/codex-agent-sdk-go/internal/errors"
 )
 
+func newAuditEnvelope(data map[string]any) (*AuditEnvelope, error) {
+	payload, ok := extractRawJSON(data)
+	if !ok {
+		var err error
+
+		payload, err = json.Marshal(stripRawJSON(data))
+		if err != nil {
+			return nil, fmt.Errorf("marshal audit payload: %w", err)
+		}
+	}
+
+	eventType, _ := data["type"].(string)
+	subtype, _ := data["subtype"].(string)
+
+	return &AuditEnvelope{
+		EventType: eventType,
+		Subtype:   subtype,
+		Payload:   payload,
+	}, nil
+}
+
 // Parse converts a raw JSON map into a typed Message.
 //
 // This function handles both Claude-style messages (with "type": "user"|"assistant"|etc.)
 // and Codex-style events (with "type": "thread.started"|"item.completed"|etc.).
-func Parse(log *slog.Logger, data map[string]any) (Message, error) {
+func Parse(log *slog.Logger, payload any) (Message, error) {
 	log = log.With("component", "message_parser")
+
+	var data map[string]any
+
+	switch raw := payload.(type) {
+	case map[string]any:
+		data = raw
+	case []byte:
+		if err := json.Unmarshal(raw, &data); err != nil {
+			return nil, &errors.MessageParseError{
+				Message: err.Error(),
+				Err:     err,
+			}
+		}
+
+		data = AnnotateRawJSON(data, raw)
+	case json.RawMessage:
+		if err := json.Unmarshal(raw, &data); err != nil {
+			return nil, &errors.MessageParseError{
+				Message: err.Error(),
+				Err:     err,
+			}
+		}
+
+		data = AnnotateRawJSON(data, raw)
+	default:
+		return nil, &errors.MessageParseError{
+			Message: fmt.Sprintf(
+				"unsupported payload type %T", payload,
+			),
+			Err: fmt.Errorf("unsupported payload type %T", payload),
+		}
+	}
 
 	msgType, ok := data["type"].(string)
 	if !ok {
@@ -28,21 +81,59 @@ func Parse(log *slog.Logger, data map[string]any) (Message, error) {
 	log.Debug("parsing message", slog.String("message_type", msgType))
 
 	// Try Claude-style message types first
+	var (
+		msg Message
+		err error
+	)
+
 	switch msgType {
 	case "user":
-		return parseUserMessage(data)
+		msg, err = parseUserMessage(data)
 	case "assistant":
-		return parseAssistantMessage(data)
+		msg, err = parseAssistantMessage(data)
 	case "system":
-		return parseSystemMessage(data)
+		msg, err = parseSystemMessage(data)
 	case "result":
-		return parseResultMessage(data)
+		msg, err = parseResultMessage(data)
 	case "stream_event":
-		return parseStreamEvent(data)
+		msg, err = parseStreamEvent(data)
+	default:
+		msg, err = parseCodexEvent(log, data, EventType(msgType))
 	}
 
-	// Try Codex event types
-	return parseCodexEvent(log, data, EventType(msgType))
+	if err != nil {
+		return nil, err
+	}
+
+	audit, err := newAuditEnvelope(data)
+	if err != nil {
+		return nil, err
+	}
+
+	attachAudit(msg, audit)
+
+	return msg, nil
+}
+
+func attachAudit(msg Message, audit *AuditEnvelope) {
+	switch typed := msg.(type) {
+	case *UserMessage:
+		typed.Audit = audit
+	case *AssistantMessage:
+		typed.Audit = audit
+	case *SystemMessage:
+		typed.Audit = audit
+	case *TaskStartedMessage:
+		typed.Audit = audit
+	case *TaskCompleteMessage:
+		typed.Audit = audit
+	case *ThreadRolledBackMessage:
+		typed.Audit = audit
+	case *ResultMessage:
+		typed.Audit = audit
+	case *StreamEvent:
+		typed.Audit = audit
+	}
 }
 
 // parseCodexEvent converts a Codex event into a claude-sdk-compatible Message.
@@ -465,6 +556,22 @@ func parseCodexTurnCompleted(data map[string]any) (*ResultMessage, error) {
 		}
 
 		result.Usage = usage
+	}
+
+	if sr, ok := data["stop_reason"].(string); ok {
+		result.StopReason = &sr
+	}
+
+	if dur, ok := data["duration_ms"].(float64); ok {
+		result.DurationMs = int(dur)
+	}
+
+	if nt, ok := data["num_turns"].(float64); ok {
+		result.NumTurns = int(nt)
+	}
+
+	if tc, ok := data["total_cost_usd"].(float64); ok {
+		result.TotalCostUSD = &tc
 	}
 
 	return result, nil

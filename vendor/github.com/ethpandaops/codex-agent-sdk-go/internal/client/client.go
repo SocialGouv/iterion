@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	agenttracer "github.com/ethpandaops/agent-sdk-observability/tracer"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/ethpandaops/codex-agent-sdk-go/internal/config"
@@ -47,11 +49,21 @@ type Client struct {
 
 	eg *errgroup.Group
 
+	// Session-level OTel trace span covering Start() → Close().
+	// Nil when no tracer provider is configured.
+	sessionSpan *agenttracer.Span
+
 	mu        sync.Mutex
 	done      chan struct{}
 	connected bool
 	closed    bool
 	closeOnce sync.Once
+
+	// Per-query OTel trace span, active from Query() to ResultMessage.
+	// Protected by activeQueryMu since Query() and readLoop() are concurrent.
+	activeQueryMu   sync.Mutex
+	activeQuerySpan *agenttracer.Span
+	activeQueryCtx  context.Context //nolint:containedctx // intentional: carries per-query span across Query()→readLoop() boundary
 }
 
 // New creates a new interactive client.
@@ -92,6 +104,98 @@ func (c *Client) isConnected() bool {
 	return c.connected
 }
 
+// startSessionSpan opens a session-level OTel trace span.
+// Safe to call when no observer is configured (no-op).
+func (c *Client) startSessionSpan(ctx context.Context) {
+	if c.options == nil || c.options.Observer == nil {
+		return
+	}
+
+	model := c.options.Model
+	sessionID := c.options.Resume
+
+	_, span := c.options.Observer.StartSessionSpan(ctx, model, sessionID)
+	c.sessionSpan = span
+}
+
+// endSessionSpan ends the session-level OTel trace span.
+// Safe to call multiple times or when no span is active.
+func (c *Client) endSessionSpan() {
+	if c.sessionSpan != nil {
+		c.sessionSpan.End()
+		c.sessionSpan = nil
+	}
+}
+
+// traceCtx returns ctx enriched with the session span for child span propagation.
+// If no session span is active, returns ctx as-is.
+func (c *Client) traceCtx(ctx context.Context) context.Context {
+	if c.sessionSpan == nil {
+		return ctx
+	}
+
+	return trace.ContextWithSpan(ctx, c.sessionSpan.Raw())
+}
+
+// startQuerySpan creates a per-query chat span from the caller's context.
+// The span is parented under whatever span the caller carries (e.g., the
+// consumer's application span), NOT the session span. This makes tool spans
+// within a query nest correctly under the per-query span.
+func (c *Client) startQuerySpan(callerCtx context.Context) {
+	if c.options == nil || c.options.Observer == nil {
+		return
+	}
+
+	model := c.options.Model
+	sessionID := c.options.Resume
+
+	_, span := c.options.Observer.StartSessionSpan(callerCtx, model, sessionID)
+
+	c.activeQueryMu.Lock()
+	c.activeQuerySpan = span
+	// Use a detached context so the span outlives the caller's context timeout/cancel.
+	c.activeQueryCtx = trace.ContextWithSpan(context.Background(), span.Raw())
+	c.activeQueryMu.Unlock()
+}
+
+// endQuerySpan ends the active per-query span. Safe to call when no span is active.
+func (c *Client) endQuerySpan() {
+	c.activeQueryMu.Lock()
+	span := c.activeQuerySpan
+	c.activeQuerySpan = nil
+	c.activeQueryCtx = nil
+	c.activeQueryMu.Unlock()
+
+	if span != nil {
+		span.End()
+	}
+}
+
+// observeCtx returns the per-query span context if a query is active,
+// otherwise falls back to the provided context (which carries the session span).
+func (c *Client) observeCtx(fallback context.Context) context.Context {
+	c.activeQueryMu.Lock()
+	ctx := c.activeQueryCtx
+	c.activeQueryMu.Unlock()
+
+	if ctx != nil {
+		return ctx
+	}
+
+	return fallback
+}
+
+// notifyQueryStart marks the start of a query for TTFT tracking.
+func (c *Client) notifyQueryStart() {
+	if c.options == nil {
+		return
+	}
+
+	if notifier, ok := c.options.MetricsRecorder.(config.QueryLifecycleNotifier); ok {
+		notifier.MarkQueryStart()
+	}
+}
+
 // initializeCore performs common client initialization.
 // Caller must hold c.mu lock.
 func (c *Client) initializeCore(ctx context.Context, options *config.Options) error {
@@ -112,6 +216,9 @@ func (c *Client) initializeCore(ctx context.Context, options *config.Options) er
 
 	c.options = options
 
+	// Start session-level OTel trace span if a tracer provider is configured.
+	c.startSessionSpan(ctx)
+
 	var transport config.Transport
 
 	if options.Transport != nil {
@@ -127,6 +234,8 @@ func (c *Client) initializeCore(ctx context.Context, options *config.Options) er
 	}
 
 	if err := transport.Start(ctx); err != nil {
+		c.endSessionSpan()
+
 		return fmt.Errorf("start transport: %w", err)
 	}
 
@@ -134,6 +243,8 @@ func (c *Client) initializeCore(ctx context.Context, options *config.Options) er
 
 	c.controller = protocol.NewController(c.log, transport)
 	if err := c.controller.Start(ctx); err != nil {
+		c.endSessionSpan()
+
 		_ = transport.Close()
 
 		return fmt.Errorf("start protocol controller: %w", err)
@@ -148,6 +259,8 @@ func (c *Client) initializeCore(ctx context.Context, options *config.Options) er
 	// to establish the bidirectional session. This differs from Query() which
 	// conditionally initializes only when hooks/callbacks/MCP are configured.
 	if err := c.session.Initialize(ctx); err != nil {
+		c.endSessionSpan()
+
 		_ = transport.Close()
 
 		return fmt.Errorf("initialize session: %w", err)
@@ -181,8 +294,10 @@ func (c *Client) Start(ctx context.Context, options *config.Options) error {
 
 	c.emitInitMessage()
 
+	readCtx := c.traceCtx(egCtx)
+
 	c.eg.Go(func() error {
-		return c.readLoop(egCtx)
+		return c.readLoop(readCtx)
 	})
 
 	c.connected = true
@@ -231,15 +346,24 @@ func (c *Client) StartWithStream(
 
 	c.emitInitMessage()
 
+	readCtx := c.traceCtx(egCtx)
+
 	c.eg.Go(func() error {
 		return c.streamMessages(egCtx, messages)
 	})
 
 	c.eg.Go(func() error {
-		return c.readLoop(egCtx)
+		return c.readLoop(readCtx)
 	})
 
 	c.connected = true
+
+	// Start per-query span for the initial stream.
+	c.startQuerySpan(ctx)
+
+	// Mark query start for TTFT tracking of the initial stream.
+	c.notifyQueryStart()
+
 	c.log.Info("client started in streaming mode")
 
 	return nil
@@ -354,6 +478,18 @@ func (c *Client) readLoop(ctx context.Context) error {
 				return fmt.Errorf("parse message: %w", err)
 			}
 
+			// Use per-query span context if active, otherwise session span context.
+			msgCtx := c.observeCtx(ctx)
+
+			if c.options != nil && c.options.MetricsRecorder != nil {
+				c.options.MetricsRecorder.Observe(msgCtx, parsed)
+			}
+
+			// End per-query span when a ResultMessage arrives.
+			if _, isResult := parsed.(*message.ResultMessage); isResult {
+				c.endQuerySpan()
+			}
+
 			select {
 			case c.messages <- parsed:
 			case <-c.done:
@@ -385,6 +521,13 @@ func (c *Client) Query(ctx context.Context, content message.UserMessageContent, 
 	if !c.isConnected() {
 		return errors.ErrClientNotConnected
 	}
+
+	// End any previous per-query span and start a new one from the caller's context.
+	c.endQuerySpan()
+	c.startQuerySpan(ctx)
+
+	// Mark query start for TTFT tracking.
+	c.notifyQueryStart()
 
 	sid := "default"
 	if len(sessionID) > 0 && sessionID[0] != "" {
@@ -722,6 +865,15 @@ func (c *Client) Close() error {
 				closeErr = err
 			}
 		}
+
+		// End any active per-query span and session span after all activity has stopped.
+		c.endQuerySpan()
+
+		if fatalErr := c.getFatalError(); fatalErr != nil && c.sessionSpan != nil {
+			c.sessionSpan.RecordError(fatalErr)
+		}
+
+		c.endSessionSpan()
 
 		c.log.Info("client closed")
 	})

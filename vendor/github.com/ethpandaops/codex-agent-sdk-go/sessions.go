@@ -243,7 +243,7 @@ func GetSessionMessages(ctx context.Context, sessionID string, opts ...Option) (
 			continue
 		}
 
-		msg, err := message.Parse(log, raw)
+		msg, err := message.Parse(log, line)
 		if err != nil {
 			if errors.Is(err, internalerrors.ErrUnknownMessageType) {
 				continue

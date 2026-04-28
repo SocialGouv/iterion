@@ -377,7 +377,7 @@ func (t *AppServerTransport) readLoop() {
 			}
 		} else if msg.isNotification() {
 			select {
-			case t.notifyCh <- msg.toNotification():
+			case t.notifyCh <- msg.toNotification(line):
 			default:
 				t.log.Warn("notification channel full, dropping",
 					slog.String("method", msg.Method),

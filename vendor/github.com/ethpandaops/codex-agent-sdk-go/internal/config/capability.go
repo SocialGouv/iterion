@@ -47,6 +47,7 @@ var optionCapabilities = []OptionCapability{
 	},
 	{Field: "Model", OptionName: "WithModel", Exec: SupportSupported, AppServer: SupportSupported},
 	{Field: "PermissionMode", OptionName: "WithPermissionMode", Exec: SupportSupported, AppServer: SupportSupported},
+	{Field: "MaxTurns", OptionName: "WithMaxTurns", Exec: SupportSupported, AppServer: SupportSupported},
 	{Field: "Cwd", OptionName: "WithCwd", Exec: SupportSupported, AppServer: SupportSupported},
 	{Field: "CliPath", OptionName: "WithCliPath", Exec: SupportSupported, AppServer: SupportSupported},
 	{Field: "Env", OptionName: "WithEnv", Exec: SupportSupported, AppServer: SupportSupported},
@@ -62,6 +63,7 @@ var optionCapabilities = []OptionCapability{
 	{Field: "SDKTools", OptionName: "WithSDKTools", Exec: SupportUnsupported, AppServer: SupportSupported},
 	{Field: "CanUseTool", OptionName: "WithCanUseTool", Exec: SupportUnsupported, AppServer: SupportSupported},
 	{Field: "OnUserInput", OptionName: "WithOnUserInput", Exec: SupportUnsupported, AppServer: SupportSupported},
+	{Field: "OnElicitation", OptionName: "WithOnElicitation", Exec: SupportUnsupported, AppServer: SupportSupported},
 	{
 		Field: "Tools", OptionName: "WithTools", Exec: SupportUnsupported, AppServer: SupportEmulated,
 		Notes: "emulated via SDK can_use_tool policy (not a native codex option)",
@@ -115,6 +117,26 @@ var optionCapabilities = []OptionCapability{
 		Field: "CodexHome", OptionName: "WithCodexHome", Exec: SupportSupported,
 		AppServer: SupportSupported, Notes: "only used by StatSession, no-op for Query/Client",
 	},
+	{
+		Field: "MeterProvider", OptionName: "WithMeterProvider", Exec: SupportSupported,
+		AppServer: SupportSupported, Notes: "SDK-local observability, no CLI interaction",
+	},
+	{
+		Field: "TracerProvider", OptionName: "WithTracerProvider", Exec: SupportSupported,
+		AppServer: SupportSupported, Notes: "SDK-local observability, no CLI interaction",
+	},
+	{
+		Field: "PrometheusRegisterer", OptionName: "WithPrometheusRegisterer", Exec: SupportSupported,
+		AppServer: SupportSupported, Notes: "SDK-local observability, creates MeterProvider from Prometheus registry",
+	},
+	{
+		Field: "MetricsRecorder", OptionName: "initMetricsRecorder", Exec: SupportSupported,
+		AppServer: SupportSupported, Notes: "SDK-internal, set at runtime by initMetricsRecorder",
+	},
+	{
+		Field: "Observer", OptionName: "initMetricsRecorder", Exec: SupportSupported,
+		AppServer: SupportSupported, Notes: "SDK-internal, set at runtime alongside MetricsRecorder",
+	},
 }
 
 var optionCapabilityByField = func() map[string]OptionCapability {
@@ -152,6 +174,7 @@ func EnabledOptionFields(opts *Options) map[string]bool {
 	set("SystemPromptPreset", opts.SystemPromptPreset != nil)
 	set("Model", opts.Model != "")
 	set("PermissionMode", opts.PermissionMode != "")
+	set("MaxTurns", opts.MaxTurns > 0)
 	set("Cwd", opts.Cwd != "")
 	set("CliPath", opts.CliPath != "")
 	set("Env", len(opts.Env) > 0)
@@ -164,6 +187,7 @@ func EnabledOptionFields(opts *Options) map[string]bool {
 	set("SDKTools", len(opts.SDKTools) > 0)
 	set("CanUseTool", opts.CanUseTool != nil)
 	set("OnUserInput", opts.OnUserInput != nil)
+	set("OnElicitation", opts.OnElicitation != nil)
 	set("Tools", opts.Tools != nil)
 	set("AllowedTools", len(opts.AllowedTools) > 0)
 	set("DisallowedTools", len(opts.DisallowedTools) > 0)
@@ -184,6 +208,9 @@ func EnabledOptionFields(opts *Options) map[string]bool {
 	set("SkipVersionCheck", opts.SkipVersionCheck)
 	set("IncludePartialMessages", opts.IncludePartialMessages)
 	set("CodexHome", opts.CodexHome != "")
+	set("MeterProvider", opts.MeterProvider != nil)
+	set("TracerProvider", opts.TracerProvider != nil)
+	set("PrometheusRegisterer", opts.PrometheusRegisterer != nil)
 
 	return enabled
 }

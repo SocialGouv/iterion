@@ -25,6 +25,7 @@ type RPCNotification struct {
 	JSONRPC string          `json:"jsonrpc"`
 	Method  string          `json:"method"`
 	Params  json.RawMessage `json:"params,omitempty"`
+	Raw     json.RawMessage `json:"-"`
 }
 
 // RPCError contains error information from a JSON-RPC response.
@@ -92,10 +93,11 @@ func (m *rpcMessage) toResponse() *RPCResponse {
 }
 
 // toNotification converts the message to an RPCNotification.
-func (m *rpcMessage) toNotification() *RPCNotification {
+func (m *rpcMessage) toNotification(raw []byte) *RPCNotification {
 	return &RPCNotification{
 		JSONRPC: m.JSONRPC,
 		Method:  m.Method,
 		Params:  m.Params,
+		Raw:     append(json.RawMessage(nil), raw...),
 	}
 }

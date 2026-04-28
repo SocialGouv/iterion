@@ -77,7 +77,13 @@
 //	        log.Fatal(err)
 //	    }
 //	    if se, ok := msg.(*codexsdk.StreamEvent); ok {
-//	        // se.Event contains content_block_delta / text_delta data
+//	        // se.Event contains content_block_delta data. The nested
+//	        // delta.type identifies the chunk source: text_delta for
+//	        // assistant prose, thinking_delta for reasoning,
+//	        // command_output_delta for shell stdout/stderr, and
+//	        // file_change_delta for diff output. command_output_delta
+//	        // and file_change_delta carry an item_id that correlates
+//	        // back to the corresponding ToolUseBlock.
 //	    }
 //	}
 //

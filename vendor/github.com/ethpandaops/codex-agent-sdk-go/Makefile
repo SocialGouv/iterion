@@ -15,7 +15,7 @@ test:
 
 ## test-integration: run integration tests
 test-integration:
-	go test -race -tags=integration -timeout=240s -v ./integration/...
+	go test -race -tags=integration -timeout=600s -v ./integration/...
 
 ## clean: remove build artifacts
 clean:

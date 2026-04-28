@@ -17,6 +17,7 @@ import (
 	"github.com/ethpandaops/codex-agent-sdk-go/internal/cli"
 	"github.com/ethpandaops/codex-agent-sdk-go/internal/config"
 	"github.com/ethpandaops/codex-agent-sdk-go/internal/errors"
+	"github.com/ethpandaops/codex-agent-sdk-go/internal/message"
 )
 
 const (
@@ -269,6 +270,8 @@ func (t *CLITransport) ReadMessages(
 
 				continue
 			}
+
+			msg = message.AnnotateRawJSON(msg, line)
 
 			messageCount++
 			t.log.Debug("Received message from CLI", "message_count", messageCount)
