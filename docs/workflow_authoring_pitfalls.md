@@ -248,3 +248,106 @@ the metrics. The goal stayed unmet.
 5. **When an agent's output contradicts the plan but satisfies the
    metrics, the metrics are wrong.** Don't relax the goal to fit the
    output; sharpen the metrics and re-run.
+
+---
+
+## What worked in the end (run-005, 2026-04-28)
+
+After four failed attempts (run-001 façade, run-002 auth, run-003
+var-substitution + judge tool-blindness, run-004 wrong-path grep),
+run-005 converged to `overall_parity=true` in four batches over ~1h45.
+The workflow file changes that made the difference:
+
+### 1. Goal anchored on a concrete API entry point
+
+`port_plan_system` and `port_impl_system` named the target by symbol,
+not by intent:
+
+> END STATE: iterion's `model/claw_backend.go` calls
+> `claw-code-go/pkg/api.Client.StreamResponse(ctx, req)` and
+> aggregates the returned `[]ContentBlock` / `StreamEvent` deltas.
+> NO call goes through any intermediate `pkg/sdk` or wrapper layer.
+
+The agent could not "interpret" the goal as something easier; it had
+to use that exact entry point.
+
+### 2. Architectural scanner across both source repos
+
+`parity_scan_system` greps both `vars.iterion_repo_path` and
+`vars.claw_repo_path` (the source dirs, not iterion's vendored copy
+of claw). This closed the run-001 gameable axis where goai imports
+were relocated into a vendored sub-tree.
+
+### 3. Strict 8-condition AND for completion
+
+`overall_parity=true` requires ALL of:
+
+- iterion_goai_imports == 0
+- claw_source_goai_imports == 0
+- claw_pkg_sdk_files_present is empty
+- claw_gomod_has_goai == false
+- vendor_goai_present == false
+- iterion_gomod_has_goai == false
+- iterion_uses_pkg_api_directly == true
+- tests_passing == true
+
+A single false anywhere → overall_parity stays false. No partial
+credit, no deferred negative-space checks.
+
+### 4. Tools on judges + explicit USE-TOOLS preamble
+
+The first attempt to add tools to judge nodes failed because the
+agents had access but didn't invoke them — the prompt didn't *require*
+tool use. Adding an explicit `STEP 0 — VERIFY ACTUAL STATE` preamble
+with imperative language ("USE the tools", "Cite tool outputs
+inline") made every judge invocation actually grep before claiming
+filesystem state.
+
+### 5. Absolute paths in judge prompts
+
+The next attempt's judges *did* use tools but greped the wrong
+directory (`/workspaces/iterion` instead of the clone). The fix was
+to write the absolute path inline in the prompt: `grep -rn ...
+{{vars.iterion_repo_path}} | grep -v "/vendor/"`. With the literal
+path embedded, the agent stopped defaulting to its CWD.
+
+### 6. Workflow vars > input refs for global config
+
+Tool commands' shell substitution uses `{{input.X}}` (per-node input
+map). Judge prompts' template substitution can use `{{vars.X}}`
+(workflow-global). Mixing them up produces literal placeholders in
+shell commands. Be explicit about which substitution context applies
+to which template usage.
+
+### 7. The phasing pattern that worked
+
+Run-005's batches were:
+
+- **Batch 1 — foundation:** create iterion-owned local types
+  (api_errors, streaming_types, generation_types) so the rest of the
+  rewrite has stable type names.
+- **Batch 2 — engine:** build the new generation primitives
+  (generation.go, generation_tool.go) calling pkg/api.Client.StreamResponse
+  *without* swapping any call site yet.
+- **Batch 3 — swap:** replace every iterion call site to use the new
+  engine instead of the old wrapper. Goai imports drop out of iterion
+  here.
+- **Batch 4 — cleanup:** delete the now-unused wrapper layer in
+  claw-code-go, drop goai from both go.mod files, regenerate vendor.
+
+This phasing matters because it isolates risk: every batch's tests
+must pass before moving on. A "rewrite everything in one batch"
+shape would not survive the first compile error.
+
+### 8. Independent verification > workflow report
+
+Even after the workflow reported `overall_parity=true`, an
+independent grep / filesystem audit against the same eight conditions
+confirmed it. Don't trust the verdict node's claim alone — run the
+checks yourself, post-merge.
+
+### Cost note
+
+Five workflow runs cost roughly $120-180 in API. Run-001's façade
+burnt about a third of that on a result that had to be discarded.
+Sharper prompts up front would have cut that in half.
