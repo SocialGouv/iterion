@@ -4,7 +4,7 @@
 ## et alternance round-robin des roles.
 ##
 ##   - Claude  -> claude_code   (backend: "claude_code")
-##   - GPT     -> claw direct   (model: "openai/gpt-5.4-mini")
+##   - GPT     -> claw direct   (model: "openai/gpt-5.5")
 ##   - Orchestration (merge, judges) -> model: "${CLAUDE_MODEL}"
 ##
 ## Phases :
@@ -348,6 +348,7 @@ router plan_fanout:
 
 agent claude_plan:
   backend: "claude_code"
+  model: "claude-opus-4-7"
   input: plan_input
   output: plan_output
   publish: claude_plan_output
@@ -356,7 +357,7 @@ agent claude_plan:
   session: fresh
 
 agent gpt_plan:
-  model: "openai/gpt-5.4-mini"
+  model: "openai/gpt-5.5"
   input: plan_input
   output: plan_output
   publish: gpt_plan_output
@@ -367,6 +368,7 @@ agent gpt_plan:
 agent merge_plans:
   await: wait_all
   backend: "claude_code"
+  model: "claude-opus-4-7"
   input: merge_input
   output: plan_output
   publish: merged_plan
@@ -381,6 +383,7 @@ router val_fanout:
 
 agent claude_val:
   backend: "claude_code"
+  model: "claude-opus-4-7"
   input: validate_input
   output: validate_output
   publish: claude_validation
@@ -389,7 +392,7 @@ agent claude_val:
   session: fresh
 
 agent gpt_val:
-  model: "openai/gpt-5.4-mini"
+  model: "openai/gpt-5.5"
   input: validate_input
   output: validate_output
   publish: gpt_validation
@@ -400,6 +403,7 @@ agent gpt_val:
 judge val_judge:
   await: wait_all
   backend: "claude_code"
+  model: "claude-opus-4-7"
   input: plan_acceptance_input
   output: plan_acceptance_verdict
   publish: validation_verdict
@@ -414,6 +418,7 @@ router refine_selector:
 
 agent claude_refine:
   backend: "claude_code"
+  model: "claude-opus-4-7"
   input: refine_input
   output: plan_output
   publish: merged_plan
@@ -422,7 +427,7 @@ agent claude_refine:
   session: fresh
 
 agent gpt_refine:
-  model: "openai/gpt-5.4-mini"
+  model: "openai/gpt-5.5"
   input: refine_input
   output: plan_output
   publish: merged_plan
@@ -437,6 +442,7 @@ router impl_selector:
 
 agent claude_implement:
   backend: "claude_code"
+  model: "claude-opus-4-7"
   input: impl_input
   output: impl_output
   publish: implementation
@@ -445,7 +451,7 @@ agent claude_implement:
   session: fresh
 
 agent gpt_implement:
-  model: "openai/gpt-5.4-mini"
+  model: "openai/gpt-5.5"
   input: impl_input
   output: impl_output
   publish: implementation
@@ -466,6 +472,7 @@ router review_fanout:
 
 agent claude_review:
   backend: "claude_code"
+  model: "claude-opus-4-7"
   input: review_input
   output: review_output
   publish: claude_review_report
@@ -474,7 +481,7 @@ agent claude_review:
   session: fresh
 
 agent gpt_review:
-  model: "openai/gpt-5.4-mini"
+  model: "openai/gpt-5.5"
   input: review_input
   output: review_output
   publish: gpt_review_report
@@ -485,6 +492,7 @@ agent gpt_review:
 judge review_judge:
   await: wait_all
   backend: "claude_code"
+  model: "claude-opus-4-7"
   input: impl_verdict_input
   output: impl_verdict
   publish: review_verdict

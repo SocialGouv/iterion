@@ -118,7 +118,7 @@ func requireCLI(t *testing.T, name string) {
 // inspect the resulting files.
 //
 // Requires:
-//   - `claude` and `codex` CLIs installed and in PATH
+//   - `claude` CLI installed and in PATH
 //   - The CLIs must be authenticated
 //
 // Automatically skipped when CLIs are absent or in -short mode.
@@ -128,11 +128,10 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 	}
 	loadDotEnv(t)
 	requireCLI(t, "claude")
-	requireCLI(t, "codex")
 
 	// Default model if not set via .env or environment.
 	if os.Getenv("CLAUDE_MODEL") == "" {
-		t.Setenv("CLAUDE_MODEL", "openai/gpt-5.4")
+		t.Setenv("CLAUDE_MODEL", "openai/gpt-5.5")
 	}
 
 	// Compile the fixture.
@@ -145,7 +144,7 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 	}
 	t.Logf("Workspace directory (persists after test): %s", workspaceDir)
 
-	// Initialize a git repo in the workspace so that codex CLI accepts it.
+	// Initialize a git repo so claude_code can read git context (status/diff).
 	gitInit := exec.Command("git", "init", workspaceDir)
 	if out, gitErr := gitInit.CombinedOutput(); gitErr != nil {
 		t.Fatalf("git init failed: %v\n%s", gitErr, out)
@@ -213,7 +212,7 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 	}
 
 	onFinished := func(nodeID string, output map[string]interface{}) {
-		if nodeID != "claude_implement" && nodeID != "codex_implement" {
+		if nodeID != "claude_implement" && nodeID != "gpt_implement" {
 			return
 		}
 		snapshotMu.Lock()
@@ -298,22 +297,22 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 	finishedNodes := eventNodeIDs(events, store.EventNodeFinished)
 	t.Logf("Finished nodes: %v", finishedNodes)
 
-	// Verify both agent perspectives were invoked (same model, different sessions).
+	// Verify both agent perspectives were invoked (different backends).
 	claudeNodeCalled := false
-	codexNodeCalled := false
+	gptNodeCalled := false
 	for _, id := range finishedNodes {
 		if strings.Contains(id, "claude") {
 			claudeNodeCalled = true
 		}
-		if strings.Contains(id, "codex") {
-			codexNodeCalled = true
+		if strings.Contains(id, "gpt") {
+			gptNodeCalled = true
 		}
 	}
 	if !claudeNodeCalled {
 		t.Error("No claude_* node finished — agent A perspective may have failed")
 	}
-	if !codexNodeCalled {
-		t.Error("No codex_* node finished — agent B perspective may have failed")
+	if !gptNodeCalled {
+		t.Error("No gpt_* node finished — agent B perspective may have failed")
 	}
 
 	// Verify key planning nodes executed.
@@ -321,7 +320,7 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 	for _, id := range finishedNodes {
 		nodeSet[id] = true
 	}
-	for _, expected := range []string{"claude_plan", "codex_plan", "merge_plans"} {
+	for _, expected := range []string{"claude_plan", "gpt_plan", "merge_plans"} {
 		if !nodeSet[expected] {
 			t.Errorf("Expected node %q to have finished", expected)
 		}
@@ -329,16 +328,16 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 
 	// Count implementation and review iterations.
 	claudeImplCount := 0
-	codexImplCount := 0
+	gptImplCount := 0
 	for _, id := range finishedNodes {
 		if id == "claude_implement" {
 			claudeImplCount++
 		}
-		if id == "codex_implement" {
-			codexImplCount++
+		if id == "gpt_implement" {
+			gptImplCount++
 		}
 	}
-	t.Logf("Implementation iterations: claude_implement=%d codex_implement=%d", claudeImplCount, codexImplCount)
+	t.Logf("Implementation iterations: claude_implement=%d gpt_implement=%d", claudeImplCount, gptImplCount)
 
 	// Verify loop edge events exist.
 	loopEdges := 0
@@ -426,7 +425,7 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 	}
 
 	// Published artifact versions
-	for _, nodeID := range []string{"claude_plan", "codex_plan", "merge_plans", "claude_val", "codex_val", "val_judge", "claude_implement", "codex_implement", "claude_review", "codex_review", "review_judge"} {
+	for _, nodeID := range []string{"claude_plan", "gpt_plan", "merge_plans", "claude_val", "gpt_val", "val_judge", "claude_implement", "gpt_implement", "claude_review", "gpt_review", "review_judge"} {
 		art, artErr := s.LoadLatestArtifact(runID, nodeID)
 		if artErr != nil {
 			continue
@@ -476,7 +475,7 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 //   - LLM router to select the most relevant fix agent
 //
 // Requires:
-//   - `claude` and `codex` CLIs installed and in PATH
+//   - `claude` CLI installed and in PATH
 //   - The CLIs must be authenticated
 //
 // Automatically skipped when CLIs are absent or in -short mode.
@@ -486,10 +485,9 @@ func TestLive_Lite_SessionContinuity_ReviewFix(t *testing.T) {
 	}
 	loadDotEnv(t)
 	requireCLI(t, "claude")
-	requireCLI(t, "codex")
 
 	if os.Getenv("CLAUDE_MODEL") == "" {
-		t.Setenv("CLAUDE_MODEL", "openai/gpt-5.4")
+		t.Setenv("CLAUDE_MODEL", "openai/gpt-5.5")
 	}
 
 	wf := compileFixture(t, "session_review_fix.iter")
@@ -559,7 +557,7 @@ func TestLive_Lite_SessionContinuity_ReviewFix(t *testing.T) {
 	}
 
 	onFinished := func(nodeID string, output map[string]interface{}) {
-		if nodeID != "implement" && nodeID != "claude_fix" && nodeID != "codex_fix" {
+		if nodeID != "implement" && nodeID != "claude_fix" && nodeID != "gpt_fix" {
 			return
 		}
 		snapshotMu.Lock()
@@ -640,20 +638,20 @@ func TestLive_Lite_SessionContinuity_ReviewFix(t *testing.T) {
 
 	// Verify both agent perspectives were invoked.
 	claudeNodeCalled := false
-	codexNodeCalled := false
+	gptNodeCalled := false
 	for _, id := range finishedNodes {
 		if strings.Contains(id, "claude") {
 			claudeNodeCalled = true
 		}
-		if strings.Contains(id, "codex") {
-			codexNodeCalled = true
+		if strings.Contains(id, "gpt") {
+			gptNodeCalled = true
 		}
 	}
 	if !claudeNodeCalled {
 		t.Error("No claude_* node finished")
 	}
-	if !codexNodeCalled {
-		t.Error("No codex_* node finished")
+	if !gptNodeCalled {
+		t.Error("No gpt_* node finished")
 	}
 
 	// Verify key nodes executed.
@@ -661,37 +659,41 @@ func TestLive_Lite_SessionContinuity_ReviewFix(t *testing.T) {
 	for _, id := range finishedNodes {
 		nodeSet[id] = true
 	}
-	for _, expected := range []string{"claude_plan", "codex_plan", "plan_judge_merge", "implement"} {
+	for _, expected := range []string{"claude_plan", "gpt_plan", "plan_judge_merge", "implement"} {
 		if !nodeSet[expected] {
 			t.Errorf("Expected node %q to have finished", expected)
 		}
 	}
 
 	// Check for review nodes.
-	if !nodeSet["claude_review"] || !nodeSet["codex_review"] {
+	if !nodeSet["claude_review"] || !nodeSet["gpt_review"] {
 		t.Error("Expected both review nodes to have finished")
 	}
 
 	// Check for session continuity: verify fix nodes ran (proves the fix loop fired).
-	fixNodeRan := nodeSet["claude_fix"] || nodeSet["codex_fix"]
-	if fixNodeRan {
-		t.Log("SESSION CONTINUITY: at least one fix node ran with session: inherit")
-	} else {
+	// Only claude_fix exercises session: inherit (claude_code path).
+	// gpt_fix runs session: fresh on claw direct — no CLI session to inherit.
+	fixNodeRan := nodeSet["claude_fix"] || nodeSet["gpt_fix"]
+	if nodeSet["claude_fix"] {
+		t.Log("SESSION CONTINUITY: claude_fix ran with session: inherit")
+	} else if nodeSet["gpt_fix"] {
+		t.Log("INFO: gpt_fix ran (session: fresh — claw direct has no CLI sessions)")
+	} else if !fixNodeRan {
 		t.Log("INFO: No fix nodes ran — implementation was approved on first review")
 	}
 
 	// Count fix iterations.
 	claudeFixCount := 0
-	codexFixCount := 0
+	gptFixCount := 0
 	for _, id := range finishedNodes {
 		switch id {
 		case "claude_fix":
 			claudeFixCount++
-		case "codex_fix":
-			codexFixCount++
+		case "gpt_fix":
+			gptFixCount++
 		}
 	}
-	t.Logf("Fix iterations: claude_fix=%d codex_fix=%d", claudeFixCount, codexFixCount)
+	t.Logf("Fix iterations: claude_fix=%d gpt_fix=%d", claudeFixCount, gptFixCount)
 
 	// Check that index.html was generated.
 	htmlPath := filepath.Join(workspaceDir, "index.html")
@@ -749,17 +751,16 @@ func TestLive_Lite_SessionContinuity_ReviewFix(t *testing.T) {
 // workflow run: all node types, router modes, await strategies, session modes,
 // edge features, tool nodes, human nodes (auto-answered), and budget tracking.
 //
-// Requires: `claude` and `codex` CLIs installed and authenticated.
+// Requires: `claude` CLI installed and authenticated.
 func TestLive_Full_ExhaustiveDSLCoverage(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live test in short mode")
 	}
 	loadDotEnv(t)
 	requireCLI(t, "claude")
-	requireCLI(t, "codex")
 
 	if os.Getenv("CLAUDE_MODEL") == "" {
-		t.Setenv("CLAUDE_MODEL", "openai/gpt-5.4")
+		t.Setenv("CLAUDE_MODEL", "openai/gpt-5.5")
 	}
 
 	wf := compileFixture(t, "exhaustive_dsl_coverage.iter")
@@ -874,20 +875,20 @@ func TestLive_Full_ExhaustiveDSLCoverage(t *testing.T) {
 
 	// Agent nodes (both backends)
 	claudeAgent := false
-	codexAgent := false
+	clawAgent := false
 	for _, id := range finishedNodes {
-		if id == "writer_a" || id == "refiner_a" || id == "extract_meta" || id == "merge" {
+		if id == "writer_a" || id == "refiner_a" || id == "refiner_b" || id == "extract_meta" || id == "merge" {
 			claudeAgent = true
 		}
-		if id == "writer_b" || id == "refiner_b" {
-			codexAgent = true
+		if id == "writer_b" {
+			clawAgent = true
 		}
 	}
 	if !claudeAgent {
 		t.Error("COVERAGE: no claude_code agent node finished")
 	}
-	if !codexAgent {
-		t.Error("COVERAGE: no codex agent node finished")
+	if !clawAgent {
+		t.Error("COVERAGE: no claw direct agent node finished (writer_b)")
 	}
 
 	// Judge node
@@ -992,7 +993,7 @@ func TestLive_Full_ExhaustiveDSLCoverage(t *testing.T) {
 		metrics.TotalTokens, metrics.TotalCostUSD, metrics.ModelCalls,
 		metrics.Iterations, metrics.DurationStr)
 
-	// ModelCalls counts claw backend calls only; CLI backends (claude_code, codex)
+	// ModelCalls counts claw backend calls only; CLI backends (claude_code)
 	// are tracked via Iterations. Verify tokens were consumed.
 	if metrics.TotalTokens == 0 && metrics.Iterations == 0 {
 		t.Error("Expected non-zero token consumption or iterations")
@@ -1048,8 +1049,8 @@ func TestLive_Full_ExhaustiveDSLCoverage(t *testing.T) {
 	if claudeAgent {
 		covered = append(covered, "backend_claude_code")
 	}
-	if codexAgent {
-		covered = append(covered, "backend_codex")
+	if clawAgent {
+		covered = append(covered, "backend_claw")
 	}
 
 	t.Logf("\n=== DSL COVERAGE: %d/%d features ===", len(covered), 15)

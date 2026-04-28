@@ -54,6 +54,10 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 	// --print mode. The SDK always uses stream-json, so we must enable verbose.
 	opts = append(opts, claudesdk.WithVerbose(true))
 
+	if task.Model != "" {
+		opts = append(opts, claudesdk.WithModel(task.Model))
+	}
+
 	if b.Command != "" {
 		opts = append(opts, claudesdk.WithCLIPath(b.Command))
 	}
@@ -268,6 +272,9 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	}
 	if task.WorkDir != "" {
 		opts = append(opts, claudesdk.WithCwd(task.WorkDir))
+	}
+	if task.Model != "" {
+		opts = append(opts, claudesdk.WithModel(task.Model))
 	}
 	if b.Command != "" {
 		opts = append(opts, claudesdk.WithCLIPath(b.Command))

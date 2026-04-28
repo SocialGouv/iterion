@@ -213,6 +213,7 @@ router dispatch:
 
 agent writer_a:
   backend: "claude_code"
+  model: "claude-opus-4-7"
   input: writer_input
   output: writer_output
   publish: writer_a_result
@@ -224,7 +225,7 @@ agent writer_a:
 
 agent writer_b:
   ## DSL coverage: exercises claw direct API path (no `backend:` field).
-  model: "openai/gpt-5.4-mini"
+  model: "openai/gpt-5.5"
   input: writer_input
   output: writer_output
   publish: writer_b_result
@@ -236,6 +237,7 @@ agent writer_b:
 
 agent extract_meta:
   backend: "claude_code"
+  model: "claude-opus-4-7"
   input: extract_meta_input
   output: extract_meta_output
   publish: metadata
@@ -250,6 +252,7 @@ agent extract_meta:
 agent merge:
   await: best_effort
   backend: "claude_code"
+  model: "claude-opus-4-7"
   input: merge_input
   output: merge_output
   publish: merged_result
@@ -262,6 +265,7 @@ agent merge:
 judge quality_judge:
   await: wait_all
   backend: "claude_code"
+  model: "claude-opus-4-7"
   input: quality_judge_input
   output: quality_verdict
   publish: verdict
@@ -281,6 +285,7 @@ router refine_selector:
 
 agent refiner_a:
   backend: "claude_code"
+  model: "claude-opus-4-7"
   input: refine_input
   output: refine_output
   system: refine_system
@@ -306,6 +311,7 @@ tool run_check:
 
 judge recheck_judge:
   backend: "claude_code"
+  model: "claude-opus-4-7"
   input: recheck_input
   output: recheck_verdict
   system: recheck_system

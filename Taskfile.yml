@@ -48,22 +48,22 @@ tasks:
       - go test -v -timeout 120s ./e2e/...
 
   test:live:
-    desc: Run all live e2e tests (requires claude + codex CLIs)
+    desc: Run all live e2e tests (requires claude CLI + ANTHROPIC_API_KEY + OPENAI_API_KEY)
     cmds:
       - go test -v -tags live -count=1 -run "TestLive_" -timeout 5h ./e2e/...
 
   test:live:review:
-    desc: Run the session continuity review/fix live e2e test (requires claude + codex CLIs)
+    desc: Run the session continuity review/fix live e2e test (requires claude CLI + ANTHROPIC_API_KEY + OPENAI_API_KEY)
     cmds:
       - go test -v -tags live -count=1 -run TestLive_Lite_SessionContinuity_ReviewFix -timeout 3h ./e2e/...
 
   test:live:kanban:
-    desc: Run the kanban board plan/implement/review live e2e test (requires claude + codex CLIs)
+    desc: Run the kanban board plan/implement/review live e2e test (requires claude CLI + ANTHROPIC_API_KEY + OPENAI_API_KEY)
     cmds:
       - go test -v -tags live -count=1 -run TestLive_Lite_DualModel_PlanImplementReview -timeout 5h ./e2e/...
 
   test:live:full:
-    desc: Run the exhaustive DSL coverage live e2e test (requires claude + codex CLIs)
+    desc: Run the exhaustive DSL coverage live e2e test (requires claude CLI + ANTHROPIC_API_KEY + OPENAI_API_KEY)
     cmds:
       - go test -v -tags live -count=1 -run TestLive_Full_ExhaustiveDSLCoverage -timeout 5h ./e2e/...
 

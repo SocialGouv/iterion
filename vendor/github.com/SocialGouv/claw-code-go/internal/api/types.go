@@ -84,9 +84,19 @@ type InputSchema struct {
 }
 
 // Property is a single JSON schema property definition.
+//
+// Items, Enum and Properties make Property recursive so non-trivial schemas
+// (string arrays with `items: {type: "string"}`, enums, nested objects)
+// survive a JSON round-trip without losing fields. OpenAI's function-calling
+// validator rejects array properties whose `items` is missing, so dropping
+// those fields silently produces 400 errors at request time.
 type Property struct {
-	Type        string `json:"type"`
-	Description string `json:"description"`
+	Type        string              `json:"type"`
+	Description string              `json:"description,omitempty"`
+	Items       *Property           `json:"items,omitempty"`
+	Enum        []any               `json:"enum,omitempty"`
+	Properties  map[string]Property `json:"properties,omitempty"`
+	Required    []string            `json:"required,omitempty"`
 }
 
 // ToolChoice controls which tool the model must use.

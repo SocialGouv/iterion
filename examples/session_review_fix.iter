@@ -9,12 +9,16 @@
 ##   - Routage LLM pour selectionner l'agent de fix
 ##
 ## Phases :
-##   1. Planification parallele (Claude Code + Claude Code-Opus)
+##   1. Planification parallele (Claude Code Opus + claw GPT 5.5)
 ##   2. Jugement + fusion combines (un seul noeud)
-##   3. Implementation (Claude Code)
-##   4. Review parallele a triple role (Claude Code + Claude Code-Opus)
+##   3. Implementation (Claude Code Opus)
+##   4. Review parallele a triple role (Claude Code Opus avec tools + claw GPT 5.5)
 ##   5. Verdict et routage de fix (LLM router)
-##   6. Fix avec reprise de session -> retour review
+##   6. Fix avec reprise de session (claude path) -> retour review
+##
+## Note : la branche claude_* exerce session: inherit sur Claude Code (review->fix
+## reprend la meme session CLI). La branche gpt_* tourne en claw direct sans
+## sessions CLI ; gpt_fix demarre fresh, c'est attendu.
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
@@ -67,8 +71,8 @@ prompt judge_merge_user:
   Plan A (Claude) :
   {{input.claude_plan}}
 
-  Plan B (Opus) :
-  {{input.opus_plan}}
+  Plan B (GPT) :
+  {{input.gpt_plan}}
 
   Criteres d'acceptation :
   {{input.acceptance_criteria}}
@@ -154,8 +158,8 @@ prompt verdict_user:
   Review Claude :
   {{input.claude_review}}
 
-  Review Opus :
-  {{input.opus_review}}
+  Review GPT :
+  {{input.gpt_review}}
 
   Criteres d'acceptation :
   {{input.acceptance_criteria}}
@@ -171,13 +175,14 @@ prompt verdict_user:
 
 prompt fix_router_system:
   Tu es un routeur de correction. On te presente les reviews de deux agents
-  (Claude et Opus) dont au moins un a rejete l'implementation.
+  (Claude et GPT) dont au moins un a rejete l'implementation.
 
   Selectionne l'agent le mieux place pour corriger les problemes :
   - claude_fix : si la review Claude a identifie des problemes critiques
-                 ou si les deux reviews ont rejete (Claude corrige en premier)
-  - opus_fix : si SEULE la review Opus a identifie des problemes critiques
-                et que Claude a approuve
+                 ou si les deux reviews ont rejete (Claude corrige en premier,
+                 reprend sa session de review via session: inherit)
+  - gpt_fix : si SEULE la review GPT a identifie des problemes critiques
+                et que Claude a approuve (claw direct, session fresh)
 
   Choisis l'agent dont la review est la plus detaillee et actionable.
 
@@ -221,11 +226,11 @@ schema plan_output:
 
 schema dual_plan_bundle:
   claude_plan: json
-  opus_plan: json
+  gpt_plan: json
 
 schema judge_merge_input:
   claude_plan: json
-  opus_plan: json
+  gpt_plan: json
   acceptance_criteria: string
 
 schema judge_merge_output:
@@ -261,11 +266,11 @@ schema review_output:
 
 schema dual_review_bundle:
   claude_review: json
-  opus_review: json
+  gpt_review: json
 
 schema verdict_input:
   claude_review: json
-  opus_review: json
+  gpt_review: json
   acceptance_criteria: string
   syntax_report: json
 
@@ -289,6 +294,7 @@ router plan_fanout:
 
 agent claude_plan:
   backend: "claude_code"
+  model: "claude-opus-4-7"
   input: plan_input
   output: plan_output
   publish: claude_plan_output
@@ -296,15 +302,14 @@ agent claude_plan:
   user: plan_user
   session: fresh
 
-agent opus_plan:
-  ## Alternate planner via claude_code + Opus (different model from
-  ## claude_plan to keep dual-model coverage; same backend so session
-  ## semantics remain identical across the two paths).
-  backend: "claude_code"
-  model: "claude-opus-4-7"
+agent gpt_plan:
+  ## Alternate planner via claw direct + GPT 5.5 to enforce real cross-vendor
+  ## diversity (different vendor, different model). claw has no CLI session
+  ## semantics — gpt_fix below runs session: fresh, by design.
+  model: "openai/gpt-5.5"
   input: plan_input
   output: plan_output
-  publish: opus_plan_output
+  publish: gpt_plan_output
   system: plan_system
   user: plan_user
   session: fresh
@@ -314,6 +319,7 @@ agent opus_plan:
 agent plan_judge_merge:
   await: wait_all
   backend: "claude_code"
+  model: "claude-opus-4-7"
   input: judge_merge_input
   output: judge_merge_output
   publish: merged_plan
@@ -325,6 +331,7 @@ agent plan_judge_merge:
 
 agent implement:
   backend: "claude_code"
+  model: "claude-opus-4-7"
   input: impl_input
   output: impl_output
   publish: implementation
@@ -345,6 +352,7 @@ router review_fanout:
 
 agent claude_review:
   backend: "claude_code"
+  model: "claude-opus-4-7"
   input: review_input
   output: review_output
   publish: claude_review_report
@@ -355,24 +363,25 @@ agent claude_review:
   tool_max_steps: 10
   readonly: true
 
-agent opus_review:
-  backend: "claude_code"
-  model: "claude-opus-4-7"
+agent gpt_review:
+  ## Cross-vendor reviewer via claw direct + GPT 5.5. Has no CLI tools — reviews
+  ## from the implementation summary text rather than reading source files.
+  ## Session is fresh; gpt_fix below cannot inherit anything (claw has no CLI
+  ## sessions), so the session-continuity exercise is on the claude branch only.
+  model: "openai/gpt-5.5"
   input: review_input
   output: review_output
-  publish: opus_review_report
+  publish: gpt_review_report
   system: review_system
   user: review_user
   session: fresh
-  tools: [read_file, list_files, search_codebase, tree]
-  tool_max_steps: 10
-  readonly: true
 
 ## ─── Node : Verdict ────────────────────────────────────────────
 
 judge review_verdict:
   await: wait_all
   backend: "claude_code"
+  model: "claude-opus-4-7"
   input: verdict_input
   output: verdict_output
   publish: review_verdict_report
@@ -391,15 +400,6 @@ router fix_llm_router:
 
 agent claude_fix:
   backend: "claude_code"
-  input: fix_input
-  output: fix_output
-  publish: implementation
-  system: fix_system
-  user: fix_user
-  session: inherit
-
-agent opus_fix:
-  backend: "claude_code"
   model: "claude-opus-4-7"
   input: fix_input
   output: fix_output
@@ -407,6 +407,16 @@ agent opus_fix:
   system: fix_system
   user: fix_user
   session: inherit
+
+agent gpt_fix:
+  ## claw direct GPT 5.5 — no CLI session to inherit, so fresh.
+  model: "openai/gpt-5.5"
+  input: fix_input
+  output: fix_output
+  publish: implementation
+  system: fix_system
+  user: fix_user
+  session: fresh
 
 ## ─── Workflow ────────────────────────────────────────────────────
 
@@ -431,7 +441,7 @@ workflow session_review_fix:
     previous_feedback: ""
   }
 
-  plan_fanout -> opus_plan with {
+  plan_fanout -> gpt_plan with {
     task_description: "{{vars.task_description}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}",
     previous_feedback: ""
@@ -444,8 +454,8 @@ workflow session_review_fix:
     acceptance_criteria: "{{vars.acceptance_criteria}}"
   }
 
-  opus_plan -> plan_judge_merge with {
-    opus_plan: "{{outputs.opus_plan}}"
+  gpt_plan -> plan_judge_merge with {
+    gpt_plan: "{{outputs.gpt_plan}}"
   }
 
   ## Plan OK -> implementation
@@ -484,7 +494,7 @@ workflow session_review_fix:
     syntax_report: "{{input.syntax_report}}"
   }
 
-  review_fanout -> opus_review with {
+  review_fanout -> gpt_review with {
     implementation: "{{input.implementation}}",
     acceptance_criteria: "{{input.acceptance_criteria}}",
     syntax_report: "{{input.syntax_report}}"
@@ -498,8 +508,8 @@ workflow session_review_fix:
     syntax_report: "{{outputs.validate_syntax}}"
   }
 
-  opus_review -> review_verdict with {
-    opus_review: "{{outputs.opus_review}}"
+  gpt_review -> review_verdict with {
+    gpt_review: "{{outputs.gpt_review}}"
   }
 
   ## Implementation OK -> done
@@ -508,7 +518,7 @@ workflow session_review_fix:
   ## Implementation KO -> routage fix
   review_verdict -> fix_llm_router when not approved as fix_loop(5) with {
     claude_review: "{{outputs.claude_review}}",
-    opus_review: "{{outputs.opus_review}}",
+    gpt_review: "{{outputs.gpt_review}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}"
   }
 
@@ -521,9 +531,8 @@ workflow session_review_fix:
     acceptance_criteria: "{{vars.acceptance_criteria}}"
   }
 
-  fix_llm_router -> opus_fix with {
-    _session_id: "{{outputs.opus_review._session_id}}",
-    fix_plan: "{{outputs.opus_review.fix_plan}}",
+  fix_llm_router -> gpt_fix with {
+    fix_plan: "{{outputs.gpt_review.fix_plan}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}"
   }
 
@@ -532,6 +541,6 @@ workflow session_review_fix:
     workspace_dir: "{{vars.workspace_dir}}"
   }
 
-  opus_fix -> validate_syntax as fix_loop(5) with {
+  gpt_fix -> validate_syntax as fix_loop(5) with {
     workspace_dir: "{{vars.workspace_dir}}"
   }
