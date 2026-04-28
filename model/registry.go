@@ -20,19 +20,28 @@ import (
 // The factory is called once per unique model ID; results are cached.
 type ProviderFactory func(modelID string) (api.APIClient, error)
 
+// cacheEntry holds a per-key sync.Once so concurrent resolves for the same
+// spec only invoke the factory once, without holding the registry lock for
+// the duration of slow factory I/O (e.g. AWS IMDS, Google ADC).
+type cacheEntry struct {
+	once   sync.Once
+	client api.APIClient
+	err    error
+}
+
 // Registry resolves model specs of the form "provider/model-id" to
 // APIClient instances. It caches resolved clients for reuse.
 type Registry struct {
-	mu        sync.RWMutex
+	mu        sync.Mutex
 	providers map[string]ProviderFactory
-	cache     map[string]api.APIClient
+	cache     map[string]*cacheEntry
 }
 
 // NewRegistry creates a model registry pre-loaded with built-in providers.
 func NewRegistry() *Registry {
 	r := &Registry{
 		providers: make(map[string]ProviderFactory),
-		cache:     make(map[string]api.APIClient),
+		cache:     make(map[string]*cacheEntry),
 	}
 	r.registerDefaults()
 	return r
@@ -84,16 +93,34 @@ func (r *Registry) registerDefaults() {
 }
 
 // Register adds a provider factory under the given name.
-// Calling Register with an already-registered name replaces the factory.
+// Calling Register with an already-registered name replaces the factory and
+// invalidates any previously cached entries for that provider, so subsequent
+// Resolve calls go through the new factory.
 func (r *Registry) Register(providerName string, factory ProviderFactory) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.providers[providerName] = factory
+
+	// Invalidate any cached entries created by the previous factory for this
+	// provider. The prefix is "<providerName>/" — see cacheKey construction
+	// in Resolve.
+	prefix := providerName + "/"
+	for key := range r.cache {
+		if strings.HasPrefix(key, prefix) {
+			delete(r.cache, key)
+		}
+	}
 }
 
 // Resolve parses a model spec ("provider/model-id") and returns the
 // corresponding APIClient, creating it via the provider factory if
 // not already cached.
+//
+// Concurrency: the registry mutex is only held while looking up or creating
+// the per-key cache entry — never during the factory call. Concurrent
+// Resolve calls for the same spec rendezvous on the entry's sync.Once so the
+// factory runs exactly once; concurrent calls for different specs run their
+// factories in parallel.
 func (r *Registry) Resolve(spec string) (api.APIClient, error) {
 	providerName, modelID, err := ParseModelSpec(spec)
 	if err != nil {
@@ -102,35 +129,40 @@ func (r *Registry) Resolve(spec string) (api.APIClient, error) {
 
 	cacheKey := providerName + "/" + modelID
 
-	// Fast path: check cache.
-	r.mu.RLock()
-	if m, ok := r.cache[cacheKey]; ok {
-		r.mu.RUnlock()
-		return m, nil
-	}
-	r.mu.RUnlock()
-
-	// Slow path: create client.
+	// Get-or-create the cache entry under the lock (fast — no I/O).
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// Double-check after acquiring write lock.
-	if m, ok := r.cache[cacheKey]; ok {
-		return m, nil
-	}
-
-	factory, ok := r.providers[providerName]
+	entry, ok := r.cache[cacheKey]
 	if !ok {
+		entry = &cacheEntry{}
+		r.cache[cacheKey] = entry
+	}
+	factory, hasFactory := r.providers[providerName]
+	r.mu.Unlock()
+
+	if !hasFactory {
+		// Drop the just-created empty entry so a later Register can succeed
+		// without being shadowed by a permanently-failed once.
+		r.mu.Lock()
+		if cached, ok := r.cache[cacheKey]; ok && cached == entry {
+			delete(r.cache, cacheKey)
+		}
+		r.mu.Unlock()
 		return nil, fmt.Errorf("model: unknown provider %q (spec: %q)", providerName, spec)
 	}
 
-	m, err := factory(modelID)
-	if err != nil {
-		return nil, fmt.Errorf("model: provider %q failed to create model %q: %w", providerName, modelID, err)
+	// Run the factory exactly once per key, without holding the registry lock.
+	entry.once.Do(func() {
+		client, ferr := factory(modelID)
+		if ferr != nil {
+			entry.err = fmt.Errorf("model: provider %q failed to create model %q: %w", providerName, modelID, ferr)
+			return
+		}
+		entry.client = client
+	})
+	if entry.err != nil {
+		return nil, entry.err
 	}
-
-	r.cache[cacheKey] = m
-	return m, nil
+	return entry.client, nil
 }
 
 // Capabilities returns the capabilities of the model identified by spec.
