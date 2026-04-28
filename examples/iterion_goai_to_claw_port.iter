@@ -1159,14 +1159,14 @@ agent commit_namer:
 ## `git diff --cached --quiet` exits non-zero when there are staged changes;
 ## the `||` runs the commit only in that case.
 tool commit_changes:
-  command: "git -C {{vars.iterion_repo_path}} add -A && (git -C {{vars.iterion_repo_path}} diff --cached --quiet || git -C {{vars.iterion_repo_path}} commit -m {{input.full_message}}) && git -C {{vars.claw_repo_path}} add -A && (git -C {{vars.claw_repo_path}} diff --cached --quiet || git -C {{vars.claw_repo_path}} commit -m {{input.full_message}})"
+  command: "git -C {{input.iterion_repo_path}} add -A && (git -C {{input.iterion_repo_path}} diff --cached --quiet || git -C {{input.iterion_repo_path}} commit -m {{input.full_message}}) && git -C {{input.claw_repo_path}} add -A && (git -C {{input.claw_repo_path}} diff --cached --quiet || git -C {{input.claw_repo_path}} commit -m {{input.full_message}})"
   input: commit_tool_input
   output: commit_result
 
 ## Build + vet iterion against the source tree. The host binary running this
 ## workflow is unaffected by source edits (statically linked).
 tool run_iterion_tests:
-  command: "export PATH=/workspaces/iterion/.devbox/nix/profile/default/bin:$PATH && cd {{vars.iterion_repo_path}} && go build ./... && go vet ./..."
+  command: "export PATH=/workspaces/iterion/.devbox/nix/profile/default/bin:$PATH && cd {{input.iterion_repo_path}} && go build ./... && go vet ./..."
   output: test_result
 
 ## ─── Nodes : Phase 3b — Parallel Review + Migration Scan ──────
