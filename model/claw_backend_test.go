@@ -212,6 +212,96 @@ func TestClawBackend_RetryClassification(t *testing.T) {
 		}
 	})
 
+	t.Run("retryable_clawAPIError_429", func(t *testing.T) {
+		// Phase 2.2 coverage: an *api.APIError (claw-code-go's public typed
+		// error, returned by the OpenAI/Anthropic provider HTTP layer on
+		// non-2xx responses) must drive iterion's retry loop the same way
+		// iterion's local *APIError does. Without this, transient HTTP
+		// errors from claw providers leak to the user and never retry.
+		reg := NewRegistry()
+		mock := &clawErrThenSucceedClient{
+			streams: []<-chan api.StreamEvent{mockStreamEvents("recovered after 429", "end_turn")},
+			err: &api.APIError{
+				Provider:   "openai",
+				StatusCode: 429,
+				Message:    "rate limited (mock)",
+				Retryable:  true,
+			},
+			failures: 1,
+		}
+		reg.Register("test", func(modelID string) (api.APIClient, error) {
+			return mock, nil
+		})
+
+		var retries int
+		var lastStatus int
+		hooks := EventHooks{
+			OnLLMRetry: func(_ string, info RetryInfo) {
+				retries++
+				lastStatus = info.StatusCode
+			},
+		}
+		backend := NewClawBackend(reg, hooks, RetryPolicy{
+			MaxAttempts: 3,
+			BackoffBase: time.Millisecond,
+		})
+
+		result, err := backend.Execute(context.Background(), delegate.Task{
+			NodeID:     "agent1",
+			Model:      "test/test-model",
+			UserPrompt: "hello",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if retries != 1 {
+			t.Errorf("retries = %d, want 1", retries)
+		}
+		if lastStatus != 429 {
+			t.Errorf("RetryInfo.StatusCode = %d, want 429", lastStatus)
+		}
+		if got, _ := result.Output["text"].(string); got != "recovered after 429" {
+			t.Errorf("text = %q, want %q", got, "recovered after 429")
+		}
+	})
+
+	t.Run("non_retryable_clawAPIError_403", func(t *testing.T) {
+		// 403 is NOT in {408, 409, 429, 5xx}; retry must not fire.
+		reg := NewRegistry()
+		mock := &execMockClient{
+			err: &api.APIError{
+				Provider:   "openai",
+				StatusCode: 403,
+				Message:    "forbidden",
+				Retryable:  false,
+			},
+		}
+		reg.Register("test", func(modelID string) (api.APIClient, error) {
+			return mock, nil
+		})
+
+		var retries int
+		hooks := EventHooks{
+			OnLLMRetry: func(_ string, _ RetryInfo) { retries++ },
+		}
+		backend := NewClawBackend(reg, hooks, RetryPolicy{
+			MaxAttempts: 3,
+			BackoffBase: time.Millisecond,
+		})
+
+		_, err := backend.Execute(context.Background(), delegate.Task{
+			NodeID:     "agent1",
+			Model:      "test/test-model",
+			UserPrompt: "hello",
+		})
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if retries != 0 {
+			t.Errorf("retries = %d, want 0 (403 is not retryable)", retries)
+		}
+	})
+
 	t.Run("non_retryable_error", func(t *testing.T) {
 		reg := NewRegistry()
 		mock := &execMockClient{

@@ -228,7 +228,14 @@ func (c *Client) StreamResponse(ctx context.Context, req api.CreateMessageReques
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
 		errBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("openai: API error %d: %s", resp.StatusCode, string(errBody))
+		bodyStr := string(errBody)
+		return nil, &api.APIError{
+			Provider:   "openai",
+			StatusCode: resp.StatusCode,
+			Message:    extractOpenAIErrorMessage(bodyStr, resp.StatusCode),
+			Body:       truncateBody(bodyStr, 1000),
+			Retryable:  api.IsRetryableStatus(resp.StatusCode),
+		}
 	}
 
 	ch := make(chan api.StreamEvent, 64)
@@ -615,4 +622,33 @@ func extractText(blocks []api.ContentBlock) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+// extractOpenAIErrorMessage best-effort decodes the standard OpenAI error
+// envelope ({"error":{"message":"...","type":"...","code":"..."}}) and
+// returns just the human-readable message. Falls back to the raw body
+// (truncated) when the envelope shape doesn't match.
+func extractOpenAIErrorMessage(body string, statusCode int) string {
+	var parsed struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(body), &parsed); err == nil && parsed.Error.Message != "" {
+		return parsed.Error.Message
+	}
+	return truncateBody(body, 200)
+}
+
+// truncateBody clamps a response body to maxRunes runes, appending an
+// ellipsis when truncated. Keeps logs readable when an upstream error
+// returns a multi-kilobyte HTML page instead of structured JSON.
+func truncateBody(body string, maxRunes int) string {
+	r := []rune(body)
+	if len(r) <= maxRunes {
+		return body
+	}
+	return string(r[:maxRunes]) + "…"
 }

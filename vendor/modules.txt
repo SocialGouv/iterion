@@ -1,4 +1,4 @@
-# github.com/SocialGouv/claw-code-go v0.0.0-20260428150308-bf21311bac7b
+# github.com/SocialGouv/claw-code-go v0.0.0-20260428150308-bf21311bac7b => ./.works/claw-code-go
 ## explicit; go 1.25.0
 github.com/SocialGouv/claw-code-go/internal/api
 github.com/SocialGouv/claw-code-go/internal/api/providers/anthropic
@@ -287,3 +287,4 @@ modernc.org/memory
 # modernc.org/sqlite v1.48.0
 ## explicit; go 1.25.0
 modernc.org/sqlite/lib
+# github.com/SocialGouv/claw-code-go => ./.works/claw-code-go

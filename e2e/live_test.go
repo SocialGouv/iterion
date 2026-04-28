@@ -1323,8 +1323,21 @@ func TestLive_Lite_ClawComprehensive(t *testing.T) {
 	)
 	defer executor.Close()
 
+	// Build a stable filler so cache_warm and cache_hit see byte-identical
+	// system blocks. Empirically, Claude 4-series models only engage the
+	// prompt cache once the cacheable prefix exceeds several thousand
+	// tokens — under ~3k tokens, cache_creation_input_tokens stays at 0.
+	// ~88k chars ≈ 20k tokens, well above the observed threshold.
+	var fillerSB strings.Builder
+	fillerPara := "The Holocene is a geological epoch that began approximately 11,700 years before the present. It follows the Last Glacial Period, characterized by periodic glaciations and the eventual retreat of the ice sheets that covered large portions of the Northern Hemisphere. During the Holocene, human civilizations emerged, agricultural practices spread, and complex societies developed across multiple continents. "
+	for i := 0; i < 200; i++ {
+		fillerSB.WriteString(fillerPara)
+	}
+	cacheFiller := fillerSB.String()
+
 	executor.SetVars(map[string]interface{}{
 		"workspace_dir": workspaceDir,
+		"cache_filler":  cacheFiller,
 	})
 
 	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
@@ -1492,13 +1505,7 @@ func TestLive_Lite_ClawComprehensive(t *testing.T) {
 		}
 	}
 	if cacheReadFound == 0 {
-		// Soft assertion: Anthropic prompt cache is best-effort and depends
-		// on server-side state. The wiring is verified by the fact that
-		// cache_control markers are emitted on system blocks (claw_backend.go)
-		// and that cache_read_tokens deserialization works (events_test.go).
-		// In live runs the actual hit may be missed: 5-min TTL, cluster
-		// affinity, or minimum-token threshold variations.
-		t.Logf("CLAW PROMPT CACHE: cache_hit had 0 cache_read_tokens this run (Anthropic cache miss is non-fatal — wiring is unit-tested)")
+		t.Errorf("CLAW PROMPT CACHE: cache_hit produced no step with cache_read_tokens > 0. The cache_warm pass should have written the cache; if this fails, either the system block size dropped below Claude 4's eligibility threshold or the cache_control marker isn't reaching the wire (run model/cache_marshal_test.go to confirm marshal contract).")
 	} else {
 		t.Logf("CLAW PROMPT CACHE VALIDATED: cache_hit read %d cached tokens across %d step(s)", cacheReadTotal, cacheReadFound)
 	}

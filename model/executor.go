@@ -731,20 +731,32 @@ func wrapSchemaWithHumanFlag(schema *ir.Schema) *ir.Schema {
 // Retry wrapper
 // ---------------------------------------------------------------------------
 
-// isRetryable returns true if err is a transient LLM API error that should be retried.
+// isRetryable returns true if err is a transient LLM API error that should be
+// retried. Recognises both iterion's local *APIError (used for stream-decoded
+// errors) and claw-code-go's *clawapi.APIError (returned by provider HTTP
+// clients on non-2xx responses, e.g. 429 / 5xx).
 func isRetryable(err error) bool {
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
 		return apiErr.IsRetryable
 	}
+	var clawErr *api.APIError
+	if errors.As(err, &clawErr) {
+		return clawErr.IsRetryable()
+	}
 	return false
 }
 
-// statusCodeOf extracts the HTTP status code from an APIError, or 0.
+// statusCodeOf extracts the HTTP status code from a recognised API error
+// type, or 0 when the error is not an API error.
 func statusCodeOf(err error) int {
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
 		return apiErr.StatusCode
+	}
+	var clawErr *api.APIError
+	if errors.As(err, &clawErr) {
+		return clawErr.StatusCode
 	}
 	return 0
 }

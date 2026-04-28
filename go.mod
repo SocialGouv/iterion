@@ -57,3 +57,7 @@ require (
 )
 
 require github.com/SocialGouv/claw-code-go v0.0.0-20260428150308-bf21311bac7b
+
+// TEMPORARY: develop against the local copy until the next claw-code-go
+// release (APIError + reasoning_effort routing) is pushed.
+replace github.com/SocialGouv/claw-code-go => ./.works/claw-code-go

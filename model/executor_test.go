@@ -102,6 +102,35 @@ func (m *failThenSucceedClient) StreamResponse(_ context.Context, _ api.CreateMe
 	return m.streams[idx], nil
 }
 
+// clawErrThenSucceedClient fails the first N calls with a claw-code-go
+// public *api.APIError (the type returned by provider HTTP clients on
+// non-2xx responses), then returns streams. Used to verify that
+// iterion's retry loop classifies clawAPIError the same way it
+// classifies its local *APIError.
+type clawErrThenSucceedClient struct {
+	streams  []<-chan api.StreamEvent
+	err      *api.APIError
+	failures int
+	mu       sync.Mutex
+	calls    int
+}
+
+func (m *clawErrThenSucceedClient) StreamResponse(_ context.Context, _ api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
+	m.mu.Lock()
+	m.calls++
+	call := m.calls
+	m.mu.Unlock()
+
+	if call <= m.failures {
+		return nil, m.err
+	}
+	idx := call - m.failures - 1
+	if idx >= len(m.streams) {
+		idx = len(m.streams) - 1
+	}
+	return m.streams[idx], nil
+}
+
 // alwaysFailClient always returns a retryable error.
 type alwaysFailClient struct {
 	statusCode int

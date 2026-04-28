@@ -66,3 +66,13 @@ const (
 
 // EphemeralCacheControl returns a cache_control marker with type "ephemeral".
 var EphemeralCacheControl = api.EphemeralCacheControl
+
+// APIError is the typed error returned by provider clients when an upstream
+// API call yields a non-2xx HTTP response. Detect it via errors.As to drive
+// retry / classification logic on top.
+type APIError = api.APIError
+
+// IsRetryableStatus returns true for HTTP status codes that warrant a retry
+// (408, 409, 429, 5xx). Providers that build *APIError values populate the
+// Retryable field from this function.
+var IsRetryableStatus = api.IsRetryableStatus
