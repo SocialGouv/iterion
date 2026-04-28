@@ -1,0 +1,129 @@
+## Fixture : claw_hooks_observability
+##
+## But : montrer le pattern recommande pour observer les appels LLM
+## d'un workflow iterion. Aujourd'hui (2026-04-28) les hooks sont
+## consommes au niveau iterion runtime via EventHooks (events.jsonl
+## capture llm_request, llm_retry, tool_called, artifact_written ...).
+## Ce fixture est un harnais minimal sur lequel un futur PR pourra
+## brancher des hooks declaratifs cote .iter sans toucher au graphe.
+##
+## TODO (suivi) :
+##   - exposer les hooks claw-code-go (`internal/hooks.Runner` :
+##     PreToolUse, PostToolUse, UserPromptSubmit, SessionStart,
+##     SessionEnd, Stop, Notification) dans la grammaire DSL, par
+##     exemple :
+##
+##         hooks:
+##           pre_tool_use:  log_tool_call
+##           post_tool_use: redact_secrets
+##           on_stop:       summarize_run
+##
+##     Chaque entree resoudrait sur un Hook enregistre cote runtime
+##     (Go) ou un binaire externe (subprocess), de maniere similaire
+##     a la facon dont `tool ...` declare un command shell.
+##   - cote runtime, brancher la resolution Hook -> hooks.Runner sur
+##     le delegate claw_backend (model/claw_backend.go) avant
+##     l'appel a Client.StreamResponse.
+##   - cote events.jsonl, emettre un nouvel event_type
+##     `hook_triggered` avec payload {hook, node_id, phase, payload}
+##     pour rendre les hooks de premiere classe dans le report.
+##
+## En attendant, les events natifs de iterion (`llm_request`,
+## `tool_called`, `artifact_written`) sont suffisants pour reconstituer
+## la trace : `iterion report --run-id ...` produit deja un report.md
+## chronologique, et `events.jsonl` est lisible directement.
+
+vars:
+  task: string = "draft a 2-line release note about hooks observability"
+
+## ─── Prompts ────────────────────────────────────────────────────
+
+prompt writer_system:
+  You are a release-notes copywriter. Produce exactly 2 short lines
+  (max 20 words each) summarising the requested change. Plain text,
+  no markdown bullets, no preamble.
+
+prompt writer_user:
+  Task: {{input.task}}
+
+  Fill the `note` field with your 2-line release note.
+
+prompt judge_system:
+  You are a release-notes editor. Verify that the supplied note has
+  exactly 2 lines, neither exceeds 20 words, and that it is on-topic.
+
+prompt judge_user:
+  Note to evaluate:
+  {{input.note}}
+
+  Original task:
+  {{input.task}}
+
+  Set approved=true iff the note has exactly 2 lines, each <=20 words,
+  and is on-topic. Otherwise approved=false with `reason` filled.
+
+## ─── Schemas ────────────────────────────────────────────────────
+
+schema writer_input:
+  task: string
+
+schema writer_output:
+  note: string
+
+schema judge_input:
+  note: string
+  task: string
+
+schema judge_verdict:
+  approved: bool
+  reason: string
+
+## ─── Nodes ──────────────────────────────────────────────────────
+
+agent writer:
+  ## Read-only LLM node, claw direct path. Each invocation will emit
+  ## the standard iterion events (llm_request / artifact_written) that
+  ## a future hooks layer would augment with PreToolUse / PostToolUse
+  ## triggers if tools were declared.
+  model: "anthropic/claude-haiku-4-5-20251001"
+  input: writer_input
+  output: writer_output
+  publish: writer_note
+  system: writer_system
+  user: writer_user
+  session: fresh
+
+judge note_judge:
+  ## A judge has no tools by design — the only events emitted will be
+  ## llm_request / artifact_written. This isolates the verdict pass
+  ## from any side-effects, which is exactly the surface a future
+  ## `on_judge_verdict` hook would target.
+  model: "openai/gpt-5.5"
+  input: judge_input
+  output: judge_verdict
+  publish: judge_result
+  system: judge_system
+  user: judge_user
+  session: fresh
+
+## ─── Workflow ────────────────────────────────────────────────────
+
+workflow claw_hooks_observability:
+  vars:
+    task: string
+
+  entry: writer
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "5m"
+    max_cost_usd: 2
+    max_tokens: 100000
+
+  writer -> note_judge with {
+    note: "{{outputs.writer.note}}",
+    task: "{{vars.task}}"
+  }
+
+  note_judge -> done when approved
+  note_judge -> fail when not approved

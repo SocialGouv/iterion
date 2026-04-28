@@ -1,0 +1,132 @@
+## Fixture : claw_permission_safety
+##
+## But : exprimer l'intention "permission asymetrique" entre deux
+## agents claw qui n'ont pas le meme niveau de privilege sur le
+## workspace. Le fetcher est strictement en lecture (read_file,
+## web_fetch) ; l'installer peut muter (bash, write_file).
+##
+## Cas d'usage cible (post-feature, voir TODO ci-dessous) :
+##   - claw-code-go expose deja `permission.ModeAuto` (auto-approuve
+##     une classe de tool calls jugee safe par un classifier interne)
+##     et `permission.ModeDontAsk` (refuse silencieusement tout ce qui
+##     n'est pas explicitement allowlist).
+##   - Sur fetcher, ModeAuto convient : read_file + web_fetch sont
+##     dans la classe "read_only" et seraient auto-approves sans
+##     prompt utilisateur ni latence.
+##   - Sur installer, ModeAuto demanderait confirmation pour chaque
+##     bash/write_file. ModeDontAsk les refuserait sauf allowlist.
+##     C'est la posture safe par defaut quand on lance un workflow
+##     non-interactif (CI, cron, `iterion run --json`).
+##
+## TODO (suivi runtime) :
+##   - exposer dans la grammaire .iter un champ `permission:` au
+##     niveau agent, par exemple :
+##
+##         agent installer:
+##           permission:
+##             mode: "dont_ask"
+##             allow:
+##               bash: ["go test ./...", "go build ./..."]
+##               write_file: ["dist/**"]
+##
+##     Ce champ se materialiserait, cote model/claw_backend.go, en
+##     un ClawAgentOptions.Permission (ou equivalent) construit avant
+##     l'appel a Client.StreamResponse, et passe en filtre devant
+##     chaque tool_use_block du modele.
+##   - le PreToolUse hook de claw-code-go peut deja emuler ce
+##     comportement aujourd'hui (via une callback Go), mais ce n'est
+##     pas declaratif depuis le .iter — d'ou la presence ici de
+##     `tools: [...]` seulement, comme intention documentee.
+
+vars:
+  url: string = "https://example.com/release-notes.txt"
+  install_dir: string = "${PROJECT_DIR}/.iterion/tmp/install"
+
+## ─── Prompts ────────────────────────────────────────────────────
+
+prompt fetcher_system:
+  You are a read-only fetcher. You may use read_file and web_fetch.
+  You MUST NOT attempt to mutate the filesystem; refuse and explain
+  if the task requires it.
+
+prompt fetcher_user:
+  Fetch the URL {{input.url}} via the web_fetch tool, then summarise
+  it in english (max 3 sentences). Fill the `summary` field with the
+  summary and `bytes_seen` with the number of bytes returned.
+
+prompt installer_system:
+  You are an install agent. You may use bash and write_file. You can
+  mutate the filesystem inside {{input.install_dir}}. Do not write
+  outside that directory under any circumstance.
+
+prompt installer_user:
+  Create the directory {{input.install_dir}} if missing (via bash
+  `mkdir -p`), then write a file `INSTALL_OK` inside it whose body is
+  the single line "ok". Use only bash and write_file. Confirm by
+  re-listing the directory with bash and report the listing in
+  `verification`.
+
+## ─── Schemas ────────────────────────────────────────────────────
+
+schema fetcher_input:
+  url: string
+
+schema fetcher_output:
+  summary: string
+  bytes_seen: int
+
+schema installer_input:
+  install_dir: string
+
+schema installer_output:
+  applied: bool
+  verification: string
+
+## ─── Nodes ──────────────────────────────────────────────────────
+
+agent fetcher:
+  ## Read-only intent. ModeAuto-friendly tools.
+  ## Future: permission.mode = "auto"
+  model: "anthropic/claude-haiku-4-5-20251001"
+  input: fetcher_input
+  output: fetcher_output
+  publish: fetcher_summary
+  system: fetcher_system
+  user: fetcher_user
+  tools: [read_file, web_fetch]
+  tool_max_steps: 4
+  session: fresh
+
+agent installer:
+  ## Mutating intent. ModeDontAsk-by-default territory.
+  ## Future: permission.mode = "dont_ask" with explicit allow list.
+  model: "anthropic/claude-haiku-4-5-20251001"
+  input: installer_input
+  output: installer_output
+  publish: installer_result
+  system: installer_system
+  user: installer_user
+  tools: [bash, write_file]
+  tool_max_steps: 6
+  session: fresh
+
+## ─── Workflow ────────────────────────────────────────────────────
+
+workflow claw_permission_safety:
+  vars:
+    url: string
+    install_dir: string
+
+  entry: fetcher
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "5m"
+    max_cost_usd: 2
+    max_tokens: 100000
+
+  fetcher -> installer with {
+    install_dir: "{{vars.install_dir}}"
+  }
+
+  installer -> done

@@ -1,0 +1,113 @@
+## Fixture : claw_bedrock_provider
+##
+## But : prouver que iterion (via le backend claw, in-process) peut
+## orchestrer une SEULE workflow qui melange plusieurs providers
+## supportes par claw-code-go. Ici on utilise Bedrock-Anthropic pour
+## le planner et OpenAI pour le reviewer.
+##
+## Pre-requis runtime (lecture seule, non valide a la compile) :
+##   - AWS_REGION et credentials AWS (env standard) pour l'appel
+##     Bedrock — voir vendor/.../providers/bedrock/provider.go
+##   - OPENAI_API_KEY pour l'appel OpenAI
+##
+## Ce qu'on demontre :
+##   - claw expose desormais "bedrock/..." comme spec de modele a part
+##     entiere, au meme niveau que "anthropic/..." et "openai/..."
+##   - aucun champ `backend:` n'est specifie : les deux nodes prennent
+##     le chemin claw direct, ce qui evite tout fork de CLI externe
+##   - les schemas typed (plan_output / review_output) sont enforces
+##     uniformement quel que soit le provider sous-jacent
+
+vars:
+  topic: string = "ship a versioned changelog generator"
+
+## ─── Prompts ────────────────────────────────────────────────────
+
+prompt planner_system:
+  You are a senior product engineer.
+  Produce a concise, actionable 3-step plan for the requested topic.
+  Each step must be a single sentence, imperative, and independently
+  verifiable. Do not pad or repeat.
+
+prompt planner_user:
+  Topic: {{input.topic}}
+
+  Produce the plan in the structured output:
+   - steps : exactly 3 strings, each one sentence
+   - rationale : a one-line summary of why this ordering
+
+prompt reviewer_system:
+  You are a critical reviewer. Given a plan, return a single-sentence
+  verdict in english (max 30 words) describing whether the plan is
+  coherent and complete. No bullet lists, no preamble.
+
+prompt reviewer_user:
+  Plan steps:
+  {{input.steps}}
+
+  Plan rationale:
+  {{input.rationale}}
+
+  Provide your verdict in the `verdict` field.
+
+## ─── Schemas ────────────────────────────────────────────────────
+
+schema plan_input:
+  topic: string
+
+schema plan_output:
+  steps: string[]
+  rationale: string
+
+schema review_input:
+  steps: string[]
+  rationale: string
+
+schema review_output:
+  verdict: string
+
+## ─── Nodes ──────────────────────────────────────────────────────
+
+agent planner:
+  ## Bedrock-hosted Anthropic Haiku 4.5 — exercises the bedrock/
+  ## provider factory wired in claw-code-go. No `backend:` => claw
+  ## direct path (in-process StreamResponse).
+  model: "bedrock/anthropic.claude-haiku-4-5-20251001-v1:0"
+  input: plan_input
+  output: plan_output
+  publish: planner_result
+  system: planner_system
+  user: planner_user
+  session: fresh
+
+agent reviewer:
+  ## OpenAI provider — same workflow, different vendor. Demonstrates
+  ## that schema-typed agent output flows seamlessly between providers.
+  model: "openai/gpt-5.5"
+  input: review_input
+  output: review_output
+  publish: reviewer_result
+  system: reviewer_system
+  user: reviewer_user
+  session: fresh
+
+## ─── Workflow ────────────────────────────────────────────────────
+
+workflow claw_bedrock_provider:
+  vars:
+    topic: string
+
+  entry: planner
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "5m"
+    max_cost_usd: 2
+    max_tokens: 100000
+
+  planner -> reviewer with {
+    steps: "{{outputs.planner.steps}}",
+    rationale: "{{outputs.planner.rationale}}"
+  }
+
+  reviewer -> done
