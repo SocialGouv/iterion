@@ -10,7 +10,10 @@ import (
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	anthropicprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/anthropic"
+	bedrockprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/bedrock"
+	foundryprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/foundry"
 	openaiprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/openai"
+	vertexprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/vertex"
 )
 
 // ProviderFactory creates an APIClient for a given model ID.
@@ -35,7 +38,10 @@ func NewRegistry() *Registry {
 	return r
 }
 
-// registerDefaults registers the built-in provider factories.
+// registerDefaults registers the built-in provider factories. Each maps a
+// "<name>/" prefix in a model spec to a claw-code-go provider; auth comes
+// from the standard env vars / SDK credential chains documented in each
+// provider package.
 func (r *Registry) registerDefaults() {
 	r.providers["anthropic"] = func(modelID string) (api.APIClient, error) {
 		p := anthropicprovider.New()
@@ -48,6 +54,30 @@ func (r *Registry) registerDefaults() {
 		p := openaiprovider.New()
 		return p.NewClient(api.ProviderConfig{
 			APIKey: os.Getenv("OPENAI_API_KEY"),
+			Model:  modelID,
+		})
+	}
+	// AWS Bedrock — auth via aws-sdk-go-v2 standard credential chain
+	// (AWS_REGION, AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, profile,
+	// EC2/ECS metadata, etc.). cfg.APIKey is ignored; Bedrock doesn't
+	// use API keys.
+	r.providers["bedrock"] = func(modelID string) (api.APIClient, error) {
+		p := bedrockprovider.New()
+		return p.NewClient(api.ProviderConfig{Model: modelID})
+	}
+	// GCP Vertex AI — auth via Google ADC. Requires GOOGLE_CLOUD_PROJECT;
+	// GOOGLE_CLOUD_REGION defaults to us-east5.
+	r.providers["vertex"] = func(modelID string) (api.APIClient, error) {
+		p := vertexprovider.New()
+		return p.NewClient(api.ProviderConfig{Model: modelID})
+	}
+	// Azure Foundry (Azure OpenAI Service) — auth via AZURE_OPENAI_API_KEY
+	// or azidentity DefaultAzureCredential. Requires AZURE_OPENAI_ENDPOINT
+	// and AZURE_OPENAI_DEPLOYMENT (or modelID is treated as the deployment).
+	r.providers["foundry"] = func(modelID string) (api.APIClient, error) {
+		p := foundryprovider.New()
+		return p.NewClient(api.ProviderConfig{
+			APIKey: os.Getenv("AZURE_OPENAI_API_KEY"),
 			Model:  modelID,
 		})
 	}

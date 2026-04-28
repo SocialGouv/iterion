@@ -201,7 +201,16 @@ type oaiUsage struct {
 
 // StreamResponse sends a streaming request to OpenAI and emits StreamEvents
 // that are compatible with the conversation loop's event processing.
+//
+// Dispatch: when reasoning_effort and tools are both present, we route to
+// /v1/responses because /v1/chat/completions rejects that combination on
+// gpt-5.5+. Every other request keeps using the well-tested chat
+// completions path.
 func (c *Client) StreamResponse(ctx context.Context, req api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
+	if shouldUseResponsesAPI(req) {
+		return c.streamResponses(ctx, req)
+	}
+
 	oaiReq, err := c.buildRequest(req)
 	if err != nil {
 		return nil, fmt.Errorf("openai: build request: %w", err)
