@@ -28,8 +28,13 @@ type GenerationOptions struct {
 	// Model is the model ID (e.g., "claude-sonnet-4-6").
 	Model string
 
-	// System is the system prompt.
+	// System is the system prompt (plain string form).
 	System string
+
+	// SystemBlocks, when non-empty, takes precedence over System and is sent
+	// as the Anthropic array-form `system` field. This is the only way to
+	// attach `cache_control` markers to system content for prompt caching.
+	SystemBlocks []api.ContentBlock
 
 	// Messages is the initial conversation history.
 	Messages []api.Message

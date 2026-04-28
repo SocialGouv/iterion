@@ -19,23 +19,27 @@ type LLMRequestInfo struct {
 
 // LLMResponseInfo describes an LLM response, passed to the OnLLMResponse hook.
 type LLMResponseInfo struct {
-	Latency      time.Duration
-	InputTokens  int
-	OutputTokens int
-	FinishReason string
-	Error        error
-	StatusCode   int
+	Latency          time.Duration
+	InputTokens      int
+	OutputTokens     int
+	CacheReadTokens  int
+	CacheWriteTokens int
+	FinishReason     string
+	Error            error
+	StatusCode       int
 }
 
 // LLMStepInfo describes a single step in a multi-step LLM generation,
 // passed to the OnLLMStepFinish hook.
 type LLMStepInfo struct {
-	Number       int
-	Text         string
-	ToolCalls    []ToolCallEntry
-	FinishReason string
-	InputTokens  int
-	OutputTokens int
+	Number           int
+	Text             string
+	ToolCalls        []ToolCallEntry
+	FinishReason     string
+	InputTokens      int
+	OutputTokens     int
+	CacheReadTokens  int
+	CacheWriteTokens int
 }
 
 // ToolCallEntry describes a single tool call within a step.
@@ -67,12 +71,14 @@ func toLLMRequestInfo(info RequestInfo) LLMRequestInfo {
 
 func toLLMResponseInfo(info ResponseInfo) LLMResponseInfo {
 	return LLMResponseInfo{
-		Latency:      info.Latency,
-		InputTokens:  info.Usage.InputTokens,
-		OutputTokens: info.Usage.OutputTokens,
-		FinishReason: string(info.FinishReason),
-		Error:        info.Error,
-		StatusCode:   info.StatusCode,
+		Latency:          info.Latency,
+		InputTokens:      info.Usage.InputTokens,
+		OutputTokens:     info.Usage.OutputTokens,
+		CacheReadTokens:  info.Usage.CacheReadTokens,
+		CacheWriteTokens: info.Usage.CacheWriteTokens,
+		FinishReason:     string(info.FinishReason),
+		Error:            info.Error,
+		StatusCode:       info.StatusCode,
 	}
 }
 
@@ -85,12 +91,14 @@ func toLLMStepInfo(step StepResult) LLMStepInfo {
 		}
 	}
 	return LLMStepInfo{
-		Number:       step.Number,
-		Text:         step.Text,
-		ToolCalls:    calls,
-		FinishReason: string(step.FinishReason),
-		InputTokens:  step.Usage.InputTokens,
-		OutputTokens: step.Usage.OutputTokens,
+		Number:           step.Number,
+		Text:             step.Text,
+		ToolCalls:        calls,
+		FinishReason:     string(step.FinishReason),
+		InputTokens:      step.Usage.InputTokens,
+		OutputTokens:     step.Usage.OutputTokens,
+		CacheReadTokens:  step.Usage.CacheReadTokens,
+		CacheWriteTokens: step.Usage.CacheWriteTokens,
 	}
 }
 

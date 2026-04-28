@@ -81,6 +81,11 @@ type Task struct {
 	// ToolMaxSteps is the maximum number of tool-use iterations (0 = default).
 	ToolMaxSteps int
 
+	// MaxTokens caps the LLM response length per call. Honored by API-based
+	// backends (claw); CLI-based backends (claude_code, codex) ignore it.
+	// Zero means "use the backend default" (typically 8192).
+	MaxTokens int
+
 	// WorkDir is the working directory for the CLI subprocess.
 	WorkDir string
 

@@ -154,6 +154,7 @@ type AgentDecl struct {
 	Tools             []string        // tool capability names
 	ToolPolicy        []string        // per-node tool policy patterns (nil = inherit workflow)
 	ToolMaxSteps      int             // max tool-use iterations (0 = not set)
+	MaxTokens         int             // max output tokens per LLM call (0 = inherit backend default)
 	ReasoningEffort   string          // reasoning effort level: "low", "medium", "high", "extra_high"
 	Readonly          bool            // when true, node is not considered mutating for workspace safety
 	Interaction       InteractionMode // interaction handling (default none for agents)
@@ -184,6 +185,7 @@ type JudgeDecl struct {
 	Tools             []string // usually empty for judges, but allowed
 	ToolPolicy        []string // per-node tool policy patterns (nil = inherit workflow)
 	ToolMaxSteps      int
+	MaxTokens         int             // max output tokens per LLM call (0 = inherit backend default)
 	ReasoningEffort   string          // reasoning effort level: "low", "medium", "high", "extra_high"
 	Readonly          bool            // when true, node is not considered mutating for workspace safety
 	Interaction       InteractionMode // interaction handling (default none for judges)

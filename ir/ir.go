@@ -98,6 +98,7 @@ type LLMFields struct {
 	Backend         string // execution backend name (empty = direct LLM call)
 	SystemPrompt    string // prompt reference name
 	UserPrompt      string // prompt reference name
+	MaxTokens       int    // per-node cap on output tokens (0 = backend default)
 	ReasoningEffort string // reasoning effort level: "low", "medium", "high", "extra_high"
 	Readonly        bool   // when true, node is not considered mutating for workspace safety
 }

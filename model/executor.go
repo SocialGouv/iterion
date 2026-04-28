@@ -312,6 +312,7 @@ type backendFields struct {
 	outputSchema     string
 	tools            []string
 	toolMaxSteps     int
+	maxTokens        int
 	session          ir.SessionMode
 	interaction      ir.InteractionMode
 	activeMCPServers []string
@@ -325,7 +326,9 @@ func extractBackendFields(node ir.Node) backendFields {
 			systemPrompt: n.SystemPrompt, userPrompt: n.UserPrompt,
 			reasoningEffort: n.ReasoningEffort, outputSchema: n.OutputSchema,
 			tools: n.Tools, toolMaxSteps: n.ToolMaxSteps,
-			session: n.Session, interaction: n.Interaction,
+			maxTokens:        n.MaxTokens,
+			session:          n.Session,
+			interaction:      n.Interaction,
 			activeMCPServers: n.ActiveMCPServers,
 		}
 	case *ir.JudgeNode:
@@ -334,7 +337,9 @@ func extractBackendFields(node ir.Node) backendFields {
 			systemPrompt: n.SystemPrompt, userPrompt: n.UserPrompt,
 			reasoningEffort: n.ReasoningEffort, outputSchema: n.OutputSchema,
 			tools: n.Tools, toolMaxSteps: n.ToolMaxSteps,
-			session: n.Session, interaction: n.Interaction,
+			maxTokens:        n.MaxTokens,
+			session:          n.Session,
+			interaction:      n.Interaction,
 			activeMCPServers: n.ActiveMCPServers,
 		}
 	default:
@@ -392,6 +397,7 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 		Model:              os.ExpandEnv(f.model),
 		HasTools:           len(f.tools) > 0,
 		ToolMaxSteps:       f.toolMaxSteps,
+		MaxTokens:          f.maxTokens,
 		WorkDir:            e.workDir,
 		ReasoningEffort:    effort,
 		InteractionEnabled: f.interaction != ir.InteractionNone,

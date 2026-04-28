@@ -95,7 +95,7 @@ func Unparse(f *ast.File) string {
 			writeMCPConfigBlock(&b, a.MCP, "  ")
 		}
 		writeAgentFields(&b, a.Model, a.Backend, a.Input, a.Output, a.Publish,
-			a.System, a.User, a.Session, a.Tools, a.ToolPolicy, a.ToolMaxSteps, a.ReasoningEffort, a.Readonly,
+			a.System, a.User, a.Session, a.Tools, a.ToolPolicy, a.ToolMaxSteps, a.MaxTokens, a.ReasoningEffort, a.Readonly,
 			a.Interaction, a.InteractionPrompt, a.InteractionModel, a.Await)
 	}
 
@@ -107,7 +107,7 @@ func Unparse(f *ast.File) string {
 			writeMCPConfigBlock(&b, j.MCP, "  ")
 		}
 		writeAgentFields(&b, j.Model, j.Backend, j.Input, j.Output, j.Publish,
-			j.System, j.User, j.Session, j.Tools, j.ToolPolicy, j.ToolMaxSteps, j.ReasoningEffort, j.Readonly,
+			j.System, j.User, j.Session, j.Tools, j.ToolPolicy, j.ToolMaxSteps, j.MaxTokens, j.ReasoningEffort, j.Readonly,
 			j.Interaction, j.InteractionPrompt, j.InteractionModel, j.Await)
 	}
 
@@ -292,7 +292,7 @@ func quoteList(vals []string) string {
 	return strings.Join(quoted, ", ")
 }
 
-func writeAgentFields(b *strings.Builder, model, backend, input, output, publish, system, user string, session ast.SessionMode, tools []string, toolPolicy []string, toolMaxSteps int, reasoningEffort string, readonly bool, interaction ast.InteractionMode, interactionPrompt, interactionModel string, await ast.AwaitMode) {
+func writeAgentFields(b *strings.Builder, model, backend, input, output, publish, system, user string, session ast.SessionMode, tools []string, toolPolicy []string, toolMaxSteps int, maxTokens int, reasoningEffort string, readonly bool, interaction ast.InteractionMode, interactionPrompt, interactionModel string, await ast.AwaitMode) {
 	if model != "" {
 		writeQuotedProp(b, "model", model)
 	}
@@ -329,6 +329,9 @@ func writeAgentFields(b *strings.Builder, model, backend, input, output, publish
 	}
 	if toolMaxSteps > 0 {
 		fmt.Fprintf(b, "  tool_max_steps: %d\n", toolMaxSteps)
+	}
+	if maxTokens > 0 {
+		fmt.Fprintf(b, "  max_tokens: %d\n", maxTokens)
 	}
 	if reasoningEffort != "" {
 		writeProp(b, "reasoning_effort", reasoningEffort)

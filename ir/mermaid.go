@@ -353,6 +353,9 @@ func appendLLMFullLines(lines []string, w *Workflow, llm LLMFields, schema Schem
 	if toolMaxSteps > 0 {
 		lines = append(lines, fmt.Sprintf("tool_max_steps: %d", toolMaxSteps))
 	}
+	if llm.MaxTokens > 0 {
+		lines = append(lines, fmt.Sprintf("max_tokens: %d", llm.MaxTokens))
+	}
 	if llm.ReasoningEffort != "" {
 		lines = append(lines, "reasoning_effort: "+llm.ReasoningEffort)
 	}

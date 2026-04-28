@@ -859,3 +859,93 @@ func TestGenerateTextDirect_UnknownTool(t *testing.T) {
 		t.Errorf("error = %q", toolCallErrors[0])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Cache control wire format
+// ---------------------------------------------------------------------------
+
+func TestBuildRequest_PropagatesSystemBlocksOverString(t *testing.T) {
+	opts := GenerationOptions{
+		Model:  "claude-sonnet-4-6",
+		System: "string-form-system",
+		SystemBlocks: []api.ContentBlock{{
+			Type:         "text",
+			Text:         "block-form-system",
+			CacheControl: api.EphemeralCacheControl(),
+		}},
+	}
+
+	req, err := buildRequest(opts, []api.Message{{Role: "user"}}, nil, nil)
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	if len(req.SystemBlocks) != 1 {
+		t.Fatalf("SystemBlocks len = %d, want 1", len(req.SystemBlocks))
+	}
+	if req.SystemBlocks[0].CacheControl == nil {
+		t.Error("expected ephemeral cache_control on system block")
+	}
+	if req.System != "" {
+		t.Errorf("System should be empty when SystemBlocks is set, got %q", req.System)
+	}
+}
+
+func TestBuildRequest_FallsBackToSystemString(t *testing.T) {
+	opts := GenerationOptions{
+		Model:  "claude-sonnet-4-6",
+		System: "fallback-system",
+	}
+	req, err := buildRequest(opts, []api.Message{{Role: "user"}}, nil, nil)
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	if req.System != "fallback-system" {
+		t.Errorf("System = %q, want fallback-system", req.System)
+	}
+	if len(req.SystemBlocks) != 0 {
+		t.Errorf("SystemBlocks should be empty, got %d", len(req.SystemBlocks))
+	}
+}
+
+func TestBuildRequest_MarksLastToolWithCacheControl(t *testing.T) {
+	opts := GenerationOptions{
+		Model: "claude-sonnet-4-6",
+		Tools: []GenerationTool{
+			{Name: "first", Description: "a"},
+			{Name: "second", Description: "b"},
+			{Name: "third", Description: "c"},
+		},
+	}
+	req, err := buildRequest(opts, []api.Message{{Role: "user"}}, nil, nil)
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	if len(req.Tools) != 3 {
+		t.Fatalf("Tools len = %d, want 3", len(req.Tools))
+	}
+	// First two tools must NOT carry the marker.
+	for i := 0; i < 2; i++ {
+		if req.Tools[i].CacheControl != nil {
+			t.Errorf("Tools[%d].CacheControl should be nil", i)
+		}
+	}
+	// Last tool MUST carry the marker.
+	if req.Tools[2].CacheControl == nil {
+		t.Error("expected last tool to have ephemeral cache_control marker")
+	} else if req.Tools[2].CacheControl.Type != "ephemeral" {
+		t.Errorf("CacheControl.Type = %q, want ephemeral", req.Tools[2].CacheControl.Type)
+	}
+}
+
+func TestBuildRequest_NoToolsNoMarker(t *testing.T) {
+	opts := GenerationOptions{
+		Model: "claude-sonnet-4-6",
+	}
+	req, err := buildRequest(opts, []api.Message{{Role: "user"}}, nil, nil)
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	if len(req.Tools) != 0 {
+		t.Errorf("Tools len = %d, want 0", len(req.Tools))
+	}
+}

@@ -54,6 +54,7 @@ agent simple_agent:
   output: task_output
   system: simple_system
   user: simple_user
+  max_tokens: 1024
 
 agent complex_agent:
   model: "{{vars.default_model}}"
@@ -61,6 +62,7 @@ agent complex_agent:
   output: task_output
   system: complex_system
   user: complex_user
+  max_tokens: 8192
 
 workflow task_dispatch:
   entry: entry_agent

@@ -101,6 +101,12 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 				"finish_reason": step.FinishReason,
 				"tool_calls":    len(step.ToolCalls),
 			}
+			if step.CacheReadTokens > 0 {
+				data["cache_read_tokens"] = step.CacheReadTokens
+			}
+			if step.CacheWriteTokens > 0 {
+				data["cache_write_tokens"] = step.CacheWriteTokens
+			}
 
 			// Always include response text in persisted events.
 			if step.Text != "" {
@@ -137,8 +143,14 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 					logger.Logf(iterlog.LevelDebug, "🔧", "  input: %s", preview(string(tc.Input), 400))
 				}
 			}
-			logger.Logf(iterlog.LevelInfo, "📊", "Step %d [%s]: %d in / %d out tokens",
-				step.Number, nodeID, step.InputTokens, step.OutputTokens)
+			if step.CacheReadTokens > 0 || step.CacheWriteTokens > 0 {
+				logger.Logf(iterlog.LevelInfo, "📊", "Step %d [%s]: %d in / %d out tokens (cache: %d read, %d write)",
+					step.Number, nodeID, step.InputTokens, step.OutputTokens,
+					step.CacheReadTokens, step.CacheWriteTokens)
+			} else {
+				logger.Logf(iterlog.LevelInfo, "📊", "Step %d [%s]: %d in / %d out tokens",
+					step.Number, nodeID, step.InputTokens, step.OutputTokens)
+			}
 		},
 
 		OnToolCall: func(nodeID string, info LLMToolCallInfo) {

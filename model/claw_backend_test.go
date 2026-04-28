@@ -285,3 +285,128 @@ func TestClawBackend_HookEmissionOrdering(t *testing.T) {
 		t.Errorf("order[1] = %q, want %q", order[1], "response:agent1")
 	}
 }
+
+// requestCapturingClient records every CreateMessageRequest passed to
+// StreamResponse, then returns a one-shot deterministic stream.
+type requestCapturingClient struct {
+	requests []api.CreateMessageRequest
+}
+
+func (c *requestCapturingClient) StreamResponse(_ context.Context, req api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
+	c.requests = append(c.requests, req)
+	ch := make(chan api.StreamEvent, 6)
+	ch <- api.StreamEvent{Type: api.EventMessageStart, InputTokens: 10}
+	ch <- api.StreamEvent{Type: api.EventContentBlockStart, ContentBlock: api.ContentBlockInfo{Type: "text", Index: 0}}
+	ch <- api.StreamEvent{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "text_delta", Text: "ok"}}
+	ch <- api.StreamEvent{Type: api.EventContentBlockStop, Index: 0}
+	ch <- api.StreamEvent{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{OutputTokens: 5}}
+	ch <- api.StreamEvent{Type: api.EventMessageStop}
+	close(ch)
+	return ch, nil
+}
+
+// newCapturingBackend wires a registry, a requestCapturingClient under provider
+// "test", and a fresh ClawBackend. Used by the cache_control / max_tokens tests
+// that need to assert the exact wire-level CreateMessageRequest.
+func newCapturingBackend() (*ClawBackend, *requestCapturingClient) {
+	reg := NewRegistry()
+	cap := &requestCapturingClient{}
+	reg.Register("test", func(modelID string) (api.APIClient, error) {
+		return cap, nil
+	})
+	return NewClawBackend(reg, EventHooks{}, RetryPolicy{}), cap
+}
+
+func TestClawBackend_SystemPromptUsesEphemeralCacheControl(t *testing.T) {
+	backend, cap := newCapturingBackend()
+
+	_, err := backend.Execute(context.Background(), delegate.Task{
+		NodeID:       "agent1",
+		Model:        "test/test-model",
+		SystemPrompt: "You are a helpful assistant.",
+		UserPrompt:   "Say hello",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(cap.requests) != 1 {
+		t.Fatalf("requests = %d, want 1", len(cap.requests))
+	}
+	req := cap.requests[0]
+	if req.System != "" {
+		t.Errorf("req.System = %q, want empty (should use SystemBlocks)", req.System)
+	}
+	if len(req.SystemBlocks) != 1 {
+		t.Fatalf("SystemBlocks len = %d, want 1", len(req.SystemBlocks))
+	}
+	block := req.SystemBlocks[0]
+	if block.Type != "text" {
+		t.Errorf("block.Type = %q, want text", block.Type)
+	}
+	if block.Text != "You are a helpful assistant." {
+		t.Errorf("block.Text = %q", block.Text)
+	}
+	if block.CacheControl == nil {
+		t.Error("expected ephemeral cache_control marker on system block")
+	} else if block.CacheControl.Type != "ephemeral" {
+		t.Errorf("CacheControl.Type = %q, want ephemeral", block.CacheControl.Type)
+	}
+}
+
+func TestClawBackend_NoSystemPromptDoesNotPopulateBlocks(t *testing.T) {
+	backend, cap := newCapturingBackend()
+
+	_, err := backend.Execute(context.Background(), delegate.Task{
+		NodeID:     "agent1",
+		Model:      "test/test-model",
+		UserPrompt: "Say hello",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(cap.requests) != 1 {
+		t.Fatalf("requests = %d, want 1", len(cap.requests))
+	}
+	if len(cap.requests[0].SystemBlocks) != 0 {
+		t.Errorf("SystemBlocks should be empty, got %d entries", len(cap.requests[0].SystemBlocks))
+	}
+	if cap.requests[0].System != "" {
+		t.Errorf("System should be empty, got %q", cap.requests[0].System)
+	}
+}
+
+func TestClawBackend_TaskMaxTokensPropagated(t *testing.T) {
+	backend, cap := newCapturingBackend()
+
+	_, err := backend.Execute(context.Background(), delegate.Task{
+		NodeID:     "agent1",
+		Model:      "test/test-model",
+		UserPrompt: "go",
+		MaxTokens:  256,
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(cap.requests) != 1 {
+		t.Fatalf("requests = %d, want 1", len(cap.requests))
+	}
+	if cap.requests[0].MaxTokens != 256 {
+		t.Errorf("req.MaxTokens = %d, want 256", cap.requests[0].MaxTokens)
+	}
+}
+
+func TestClawBackend_TaskMaxTokensZeroFallsBackToDefault(t *testing.T) {
+	backend, cap := newCapturingBackend()
+
+	_, err := backend.Execute(context.Background(), delegate.Task{
+		NodeID:     "agent1",
+		Model:      "test/test-model",
+		UserPrompt: "go",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if cap.requests[0].MaxTokens != defaultMaxTokens {
+		t.Errorf("req.MaxTokens = %d, want %d (default)", cap.requests[0].MaxTokens, defaultMaxTokens)
+	}
+}

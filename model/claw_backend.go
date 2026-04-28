@@ -40,7 +40,8 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 
 	// Build GenerationOptions.
 	opts := GenerationOptions{
-		Model: task.Model,
+		Model:     task.Model,
+		MaxTokens: task.MaxTokens,
 	}
 
 	// Reasoning effort via ProviderOptions.
@@ -48,9 +49,13 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 		opts.ProviderOptions = popts
 	}
 
-	// System prompt.
+	// System prompt with ephemeral cache_control marker.
 	if task.SystemPrompt != "" {
-		opts.System = task.SystemPrompt
+		opts.SystemBlocks = []api.ContentBlock{{
+			Type:         "text",
+			Text:         task.SystemPrompt,
+			CacheControl: api.EphemeralCacheControl(),
+		}}
 	}
 
 	// User message.

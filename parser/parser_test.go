@@ -419,6 +419,34 @@ func TestAgentWithTools(t *testing.T) {
 	assertEq(t, "ToolMaxSteps", a.ToolMaxSteps, 15)
 }
 
+func TestAgentMaxTokens(t *testing.T) {
+	src := `agent worker:
+  model: "claude-sonnet-4-6"
+  system: sys
+  user: usr
+  max_tokens: 2048
+`
+	res := parser.Parse("test.iter", src)
+	assertNoDiags(t, res)
+
+	a := res.File.Agents[0]
+	assertEq(t, "MaxTokens", a.MaxTokens, 2048)
+}
+
+func TestJudgeMaxTokens(t *testing.T) {
+	src := `judge reviewer:
+  model: "claude-sonnet-4-6"
+  system: sys
+  user: usr
+  max_tokens: 1024
+`
+	res := parser.Parse("test.iter", src)
+	assertNoDiags(t, res)
+
+	j := res.File.Judges[0]
+	assertEq(t, "MaxTokens", j.MaxTokens, 1024)
+}
+
 func TestAgentSessionFork(t *testing.T) {
 	src := `agent commit_namer:
   model: "claude-4"

@@ -680,6 +680,9 @@ func (p *parser) parseAgentProp(ad *ast.AgentDecl, propTok Token) {
 	case TokenToolMaxSteps:
 		p.expect(TokenColon)
 		ad.ToolMaxSteps = p.expectInt()
+	case TokenMaxTokens:
+		p.expect(TokenColon)
+		ad.MaxTokens = p.expectInt()
 	case TokenReasoningEffort:
 		ad.ReasoningEffort = p.parseReasoningEffort()
 	case TokenReadonly:
@@ -781,6 +784,9 @@ func (p *parser) parseJudgeProp(jd *ast.JudgeDecl, propTok Token) {
 	case TokenToolMaxSteps:
 		p.expect(TokenColon)
 		jd.ToolMaxSteps = p.expectInt()
+	case TokenMaxTokens:
+		p.expect(TokenColon)
+		jd.MaxTokens = p.expectInt()
 	case TokenReasoningEffort:
 		jd.ReasoningEffort = p.parseReasoningEffort()
 	case TokenReadonly:

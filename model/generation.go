@@ -168,10 +168,16 @@ func buildRequest(opts GenerationOptions, messages []api.Message, extraTools []a
 	req := api.CreateMessageRequest{
 		Model:       opts.Model,
 		MaxTokens:   maxTokens,
-		System:      opts.System,
 		Messages:    messages,
 		Temperature: opts.Temperature,
 		ToolChoice:  toolChoice,
+	}
+
+	// SystemBlocks takes precedence over System string for cache_control support.
+	if len(opts.SystemBlocks) > 0 {
+		req.SystemBlocks = opts.SystemBlocks
+	} else {
+		req.System = opts.System
 	}
 
 	// Map provider-specific options.
@@ -195,6 +201,11 @@ func buildRequest(opts GenerationOptions, messages []api.Message, extraTools []a
 		})
 	}
 	req.Tools = append(req.Tools, extraTools...)
+
+	// Mark the last tool as the cache breakpoint for the tools array prefix.
+	if n := len(req.Tools); n > 0 {
+		req.Tools[n-1].CacheControl = api.EphemeralCacheControl()
+	}
 
 	return req, nil
 }

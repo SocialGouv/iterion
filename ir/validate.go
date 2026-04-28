@@ -30,6 +30,7 @@ const (
 	DiagInputFieldNotInSchema   DiagCode = "C034" // input ref field not in input schema
 	DiagUnknownArtifact         DiagCode = "C035" // artifacts ref to unpublished artifact
 	DiagRefNodeNotReachable     DiagCode = "C036" // outputs ref to node not reachable before consumer
+	DiagNodeMaxTokensVsBudget   DiagCode = "C037" // node-level max_tokens exceeds workflow.budget.max_tokens
 )
 
 // validate performs static validation on a compiled workflow.
@@ -51,6 +52,40 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateLoopIterations(w)
 	c.validateReasoningEffort(w)
 	c.validateTemplateRefs(w)
+	c.validateNodeMaxTokensVsBudget(w)
+}
+
+// ---------------------------------------------------------------------------
+// C037 — per-node max_tokens vs workflow budget
+// ---------------------------------------------------------------------------
+
+// validateNodeMaxTokensVsBudget warns when an LLM node's per-node max_tokens
+// exceeds the workflow-level Budget.MaxTokens cap. Not blocking — the node may
+// still legitimately want a larger ceiling, but it signals likely budget
+// pressure to the author.
+func (c *compiler) validateNodeMaxTokensVsBudget(w *Workflow) {
+	if w == nil || w.Budget == nil || w.Budget.MaxTokens <= 0 {
+		return
+	}
+	cap := w.Budget.MaxTokens
+	checkLLM := func(id string, mt int) {
+		if mt > 0 && mt > cap {
+			c.warnf(DiagNodeMaxTokensVsBudget,
+				"node %q has max_tokens=%d which exceeds workflow.budget.max_tokens=%d", id, mt, cap)
+		}
+	}
+	for _, n := range w.Nodes {
+		switch nd := n.(type) {
+		case *AgentNode:
+			checkLLM(nd.ID, nd.MaxTokens)
+		case *JudgeNode:
+			checkLLM(nd.ID, nd.MaxTokens)
+		case *RouterNode:
+			if nd.RouterMode == RouterLLM {
+				checkLLM(nd.ID, nd.MaxTokens)
+			}
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------

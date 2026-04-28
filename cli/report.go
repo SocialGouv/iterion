@@ -90,11 +90,14 @@ type report struct {
 }
 
 type reportMetrics struct {
-	TotalTokens  int     `json:"total_tokens"`
-	TotalCostUSD float64 `json:"total_cost_usd"`
-	ModelCalls   int     `json:"model_calls"`
-	NodeCount    int     `json:"node_count"`
-	LoopEdges    int     `json:"loop_edges"`
+	TotalTokens      int     `json:"total_tokens"`
+	TotalInputTokens int     `json:"total_input_tokens"`
+	CacheReadTokens  int     `json:"cache_read_tokens"`
+	CacheWriteTokens int     `json:"cache_write_tokens"`
+	TotalCostUSD     float64 `json:"total_cost_usd"`
+	ModelCalls       int     `json:"model_calls"`
+	NodeCount        int     `json:"node_count"`
+	LoopEdges        int     `json:"loop_edges"`
 }
 
 type reportStep struct {
@@ -195,6 +198,9 @@ func buildReport(r *store.Run, events []*store.Event, s *store.RunStore) *report
 			tokens := extractTokens(evt.Data)
 			step.Summary = fmt.Sprintf("LLM response [%s] (%d chars)", evt.NodeID, respLen)
 			step.Tokens = tokens
+			rpt.Metrics.TotalInputTokens += extractInt(evt.Data, "input_tokens")
+			rpt.Metrics.CacheReadTokens += extractInt(evt.Data, "cache_read_tokens")
+			rpt.Metrics.CacheWriteTokens += extractInt(evt.Data, "cache_write_tokens")
 
 		case store.EventNodeFinished:
 			if evt.Data == nil {
@@ -353,6 +359,15 @@ func renderMarkdown(rpt *report) string {
 	sb.WriteString(fmt.Sprintf("| Model Calls | %d |\n", rpt.Metrics.ModelCalls))
 	sb.WriteString(fmt.Sprintf("| Node Executions | %d |\n", rpt.Metrics.NodeCount))
 	sb.WriteString(fmt.Sprintf("| Loop Edges | %d |\n", rpt.Metrics.LoopEdges))
+	if rpt.Metrics.CacheReadTokens > 0 || rpt.Metrics.CacheWriteTokens > 0 {
+		sb.WriteString(fmt.Sprintf("| Cache Read Tokens | %d |\n", rpt.Metrics.CacheReadTokens))
+		sb.WriteString(fmt.Sprintf("| Cache Write Tokens | %d |\n", rpt.Metrics.CacheWriteTokens))
+		denom := rpt.Metrics.TotalInputTokens + rpt.Metrics.CacheReadTokens
+		if denom > 0 {
+			ratio := float64(rpt.Metrics.CacheReadTokens) * 100 / float64(denom)
+			sb.WriteString(fmt.Sprintf("| Cache Hit Ratio | %.1f%% |\n", ratio))
+		}
+	}
 	if rpt.Error != "" {
 		sb.WriteString(fmt.Sprintf("| Error | %s |\n", rpt.Error))
 	}
@@ -443,16 +458,22 @@ func renderMarkdown(rpt *report) string {
 // ---------------------------------------------------------------------------
 
 func extractTokens(data map[string]interface{}) int {
-	if v, ok := data["_tokens"]; ok {
-		switch t := v.(type) {
-		case float64:
-			return int(t)
-		case int:
-			return t
-		case json.Number:
-			n, _ := t.Int64()
-			return int(n)
-		}
+	return extractInt(data, "_tokens")
+}
+
+func extractInt(data map[string]interface{}, key string) int {
+	v, ok := data[key]
+	if !ok {
+		return 0
+	}
+	switch t := v.(type) {
+	case float64:
+		return int(t)
+	case int:
+		return t
+	case json.Number:
+		n, _ := t.Int64()
+		return int(n)
 	}
 	return 0
 }

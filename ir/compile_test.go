@@ -1255,3 +1255,88 @@ func TestCompileReferenceFixtureDetailed(t *testing.T) {
 		t.Error("edge context_builder->initial_review_fanout not found")
 	}
 }
+
+func TestCompileNodeMaxTokens(t *testing.T) {
+	src := `
+schema empty:
+  ok: bool
+
+prompt sys:
+  You are a helpful assistant.
+
+prompt usr:
+  Do something.
+
+agent worker:
+  model: "claude-sonnet-4-6"
+  input: empty
+  output: empty
+  system: sys
+  user: usr
+  max_tokens: 2048
+
+judge reviewer:
+  model: "claude-sonnet-4-6"
+  input: empty
+  output: empty
+  system: sys
+  user: usr
+  max_tokens: 1024
+
+workflow w:
+  entry: worker
+  worker -> reviewer
+  reviewer -> done
+`
+	w := mustCompile(t, src)
+	a := w.Nodes["worker"].(*AgentNode)
+	if a.MaxTokens != 2048 {
+		t.Errorf("worker MaxTokens: expected 2048, got %d", a.MaxTokens)
+	}
+	j := w.Nodes["reviewer"].(*JudgeNode)
+	if j.MaxTokens != 1024 {
+		t.Errorf("reviewer MaxTokens: expected 1024, got %d", j.MaxTokens)
+	}
+}
+
+func TestValidateC037NodeMaxTokensExceedsBudget(t *testing.T) {
+	src := `
+schema empty:
+  ok: bool
+
+prompt sys:
+  You are.
+
+prompt usr:
+  Do.
+
+agent worker:
+  model: "claude-sonnet-4-6"
+  input: empty
+  output: empty
+  system: sys
+  user: usr
+  max_tokens: 100000
+
+workflow w:
+  entry: worker
+  worker -> done
+
+  budget:
+    max_tokens: 50000
+`
+	r := compileFile(t, src)
+	if r.Workflow == nil {
+		t.Fatalf("expected workflow, got errors: %v", r.Diagnostics)
+	}
+	found := false
+	for _, d := range r.Diagnostics {
+		if d.Code == DiagNodeMaxTokensVsBudget {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected DiagNodeMaxTokensVsBudget warning, diagnostics: %v", r.Diagnostics)
+	}
+}
