@@ -38,9 +38,19 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 		return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
 	}
 
+	// Strip the "provider/" prefix so the request body carries the bare
+	// model ID. Provider routing is already done at this point (via
+	// Resolve), and provider APIs (Anthropic, OpenAI) don't recognize the
+	// prefixed form in the JSON body — Anthropic returns 404, OpenAI may
+	// silently coerce or also reject depending on the model.
+	_, modelID, err := ParseModelSpec(task.Model)
+	if err != nil {
+		return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
+	}
+
 	// Build GenerationOptions.
 	opts := GenerationOptions{
-		Model:     task.Model,
+		Model:     modelID,
 		MaxTokens: task.MaxTokens,
 	}
 

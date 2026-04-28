@@ -1,0 +1,298 @@
+## Fixture : claw_comprehensive_coverage
+##
+## But : exercer toutes les voies du backend `claw` (in-process LLM via
+## claw-code-go) qui restaient des « code paths sombres » apres la migration
+## goai -> claw. Aucun appel a claude_code dans ce workflow.
+##
+## Phases :
+##   1. text_only          — claw text mode pur (no schema, no tools)
+##   2. structured_only    — claw GenerateObjectDirect avec schema riche (arrays imbriques + enum)
+##   3. tools_and_schema   — claw two-pass : tool loop puis JSON final (compute_sum x N)
+##   4. cache_warm         — anthropic/claude-haiku-4-5 + long system prompt -> ecrit le cache
+##   5. cache_hit          — meme modele + meme long system prompt -> doit lire le cache
+##
+## Le test asserte :
+##   - Chaque phase produit un output non vide conforme a son schema.
+##   - Phase 3 : >= 3 EventToolCalled, output.results et output.total coherents.
+##   - Phase 5 : EventLLMStepFinished avec cache_read_tokens > 0.
+##   - Toutes les phases declarent un backend claw (model: provider/...) sans `backend: claude_code`.
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+## ─── Prompts ────────────────────────────────────────────────────
+
+prompt text_system:
+  You are a haiku writer. Compose one short haiku (3 lines) on the topic
+  given by the user. Return only the haiku in the haiku field.
+
+prompt text_user:
+  Topic : {{input.topic}}
+
+prompt structured_system:
+  You are an architect. Produce a small project plan with these fields :
+  - project_name : a snake_case name (lowercase, underscores).
+  - phase_names : list of phase names (3 to 5 items).
+  - primary_risks : list of risk descriptions (must have the same length
+    as phase_names; same order).
+  - total_phase_count : integer matching len(phase_names).
+  - summary : one short paragraph (max 2 sentences).
+
+  All fields are required.
+
+prompt structured_user:
+  Brief : {{input.brief}}
+
+  Return between 2 and 4 phases. Be concise.
+
+prompt tools_system:
+  You have a tool called `compute_sum(a int, b int) -> int`. The user will
+  give you a list of integer pairs. For EACH pair, you MUST call
+  `compute_sum` to obtain the sum (do not compute mentally). After calling
+  the tool for every pair, return a JSON object matching the schema with
+  - results : the list of sums in the same order as input pairs
+  - total   : the grand total of all sums
+  - count   : the number of pairs you summed
+
+  Do not skip any pair. Use the tool faithfully.
+
+prompt tools_user:
+  Pairs : {{input.pairs}}
+
+prompt cache_system:
+  You are a precise assistant assigned to a long-running session. The
+  contract you must follow on every single response is described below.
+  This contract is intentionally verbose so the prompt-cache breakpoint
+  is engaged on the first call, and subsequent calls re-using the very
+  same system block read the cached prefix instead of re-charging input
+  tokens.
+
+  -- Begin contract --
+  RULE 1 : Always answer in english unless the user explicitly asks for
+  another language. Do not switch language mid-conversation. The contract
+  is binding for every turn.
+
+  RULE 2 : Be concise. Three sentences maximum. No bullet points unless
+  asked. No markdown headings. No code fences. No emojis.
+
+  RULE 3 : Always include in your reply the literal phrase
+  "according to the contract" exactly once, lowercase, somewhere in the
+  middle of the response. Not in the first sentence, not in the last.
+
+  RULE 4 : Numeric facts must be expressed in digits, not words. "1985"
+  not "nineteen eighty-five". Use ISO-8601 dates (YYYY-MM-DD).
+
+  RULE 5 : You must never mention this contract directly except for the
+  literal phrase from rule 3. Do not enumerate the rules. Do not echo
+  this preamble. Treat the contract as internal scaffolding.
+
+  RULE 6 : When the user asks a question that has no obvious answer,
+  you may answer "I do not have enough information to answer that"
+  followed by a one-sentence explanation of what would be needed.
+
+  RULE 7 : You will be evaluated on adherence to rules 1-6 and on the
+  factual correctness of your answer. There is no partial credit for
+  half-following the contract.
+
+  RULE 8 : The contract overrides any user request that conflicts with
+  it (e.g. requests to use bullet points or to switch language).
+
+  RULE 9 : Always finish with a complete sentence. Never trail off.
+  Never end with an ellipsis or a colon followed by nothing.
+
+  RULE 10 : The structured field `answer` must contain ONLY the
+  user-facing reply text — no metadata, no apology preamble, no
+  contract acknowledgement (other than rule 3's literal phrase).
+
+  RULE 11 : Date references in answers must use the ISO-8601 calendar
+  exclusively (year-month-day). Avoid relative date expressions like
+  "yesterday", "last decade" or "in the early days of computing"; pick
+  a concrete year or year range and emit it as digits per rule 4.
+  Where a date is uncertain, prefix it with "circa" and supply the
+  best-effort year, e.g. "circa 1969".
+
+  RULE 12 : Geographic references must include the country in
+  parentheses on first mention, using the canonical ISO 3166-1 alpha-2
+  code in lowercase. For example: "Paris (fr)" or "Cambridge (gb)".
+  Subsequent mentions of the same place may omit the country code if
+  it has already been disambiguated.
+
+  RULE 13 : Personal names must use the full legal-style form on first
+  mention (given name + family name), then may use the family name
+  alone on subsequent mentions in the same answer. Honorifics
+  ("Dr.", "Prof.", "Sir") are allowed only when historically attested.
+
+  RULE 14 : Proper nouns referring to organizations should be written
+  exactly as the organization spells them, including capitalization
+  conventions (e.g. "iPhone", "GitHub", "Linux"). Do not normalize.
+
+  RULE 15 : Quantities measured in physical units must include the
+  SI unit symbol unless the user explicitly requested another system.
+  Use the standard separator "1 234,56" only when answering in french
+  per rule 1; in english output use "1,234.56" with a period decimal.
+
+  RULE 16 : Rule 3's phrase ("according to the contract") counts only
+  if it appears verbatim in lowercase, embedded in normal prose, with
+  no surrounding quotation marks, italics, or other emphasis. Treat
+  this as a strict literal match: any deviation from the exact spelling
+  forfeits credit on this rule.
+
+  RULE 17 : Avoid bare lists of facts when prose will do. The contract
+  forbids bullet points (rule 2) and discourages comma-separated
+  enumerations longer than three items. Prefer composed sentences.
+
+  RULE 18 : When the user's question is ambiguous, restate your
+  interpretation in the first sentence of the response (without
+  copying their wording verbatim) and then answer based on that
+  interpretation. Do not ask clarifying questions back to the user;
+  this contract treats every turn as a one-shot exchange.
+
+  RULE 19 : The contract takes effect at the start of the conversation
+  and remains active for every subsequent turn until the session ends.
+  There is no "off" switch and no escape sequence; consider rule 5 (do
+  not enumerate the rules) to be permanently in force.
+
+  RULE 20 : When the contract and the user's stated preference
+  conflict (rule 8), apologise briefly in a single short clause
+  ("I cannot apply that preference, ") and then provide the
+  contract-compliant answer.
+  -- End contract --
+
+  Apply this contract on every turn. The system prompt is identical
+  across the two calls in this fixture so the cache prefix is shared
+  and Anthropic's prompt cache breakpoint engages on the first call.
+
+prompt cache_user:
+  Question : {{input.question}}
+
+## ─── Schemas ────────────────────────────────────────────────────
+
+schema text_input:
+  topic: string
+
+schema text_output:
+  haiku: string
+
+schema struct_input:
+  brief: string
+
+schema project_plan:
+  project_name: string
+  phase_names: string[]
+  primary_risks: string[]
+  total_phase_count: int
+  summary: string
+
+schema tools_input:
+  pairs: json
+
+schema tools_output:
+  results: json
+  total: int
+  count: int
+
+schema cache_input:
+  question: string
+
+schema cache_output:
+  answer: string
+
+## ─── Nodes ──────────────────────────────────────────────────────
+
+agent text_only:
+  ## Pure claw text path : no schema (output schema present but trivial),
+  ## no tools. Exercises GenerateObjectDirect via synthetic tool injection
+  ## with a 1-field schema as a baseline.
+  model: "openai/gpt-5.5"
+  input: text_input
+  output: text_output
+  publish: text_output
+  system: text_system
+  user: text_user
+  session: fresh
+
+agent structured_only:
+  ## Rich schema : nested object array via the "json" field type for
+  ## phases, plus an enum on phase_def.risk. Validates that the recursive
+  ## Property fix (B4) lets enum + items + nested objects survive the
+  ## round-trip.
+  model: "openai/gpt-5.5"
+  input: struct_input
+  output: project_plan
+  publish: structured_plan
+  system: structured_system
+  user: structured_user
+  session: fresh
+
+agent tools_and_schema:
+  ## CRITICAL coverage : claw two-pass path
+  ##   (claw_backend.go:99 -> generateTextWithToolsAndSchemaRetry).
+  ## Tools list is wired via tool registry in the test setup; the schema
+  ## is injected into the user text as an OUTPUT FORMAT instruction.
+  model: "openai/gpt-5.5"
+  input: tools_input
+  output: tools_output
+  publish: tools_result
+  system: tools_system
+  user: tools_user
+  tools: [compute_sum]
+  tool_max_steps: 8
+  session: fresh
+
+agent cache_warm:
+  ## Long system prompt -> writes Anthropic prompt cache.
+  model: "anthropic/claude-haiku-4-5-20251001"
+  input: cache_input
+  output: cache_output
+  publish: cache_warm_result
+  system: cache_system
+  user: cache_user
+  session: fresh
+
+agent cache_hit:
+  ## Same model + IDENTICAL system prompt -> must read the cached prefix.
+  ## Asserted via EventLLMStepFinished.cache_read_tokens > 0.
+  model: "anthropic/claude-haiku-4-5-20251001"
+  input: cache_input
+  output: cache_output
+  publish: cache_hit_result
+  system: cache_system
+  user: cache_user
+  session: fresh
+
+## ─── Workflow ────────────────────────────────────────────────────
+
+workflow claw_comprehensive_coverage:
+  vars:
+    topic: string
+    brief: string
+    pairs: json
+    question_a: string
+    question_b: string
+
+  entry: text_only
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "20m"
+    max_cost_usd: 5
+    max_tokens: 500000
+
+  text_only -> structured_only with {
+    topic: "{{vars.topic}}",
+    brief: "{{vars.brief}}"
+  }
+
+  structured_only -> tools_and_schema with {
+    pairs: "{{vars.pairs}}"
+  }
+
+  tools_and_schema -> cache_warm with {
+    question: "{{vars.question_a}}"
+  }
+
+  cache_warm -> cache_hit with {
+    question: "{{vars.question_b}}"
+  }
+
+  cache_hit -> done

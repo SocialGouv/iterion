@@ -72,6 +72,11 @@ tasks:
     cmds:
       - go test -v -tags live -count=1 -run TestLive_Lite_SessionInheritValidation -timeout 30m ./e2e/...
 
+  test:live:claw:
+    desc: Run the claw backend comprehensive coverage live e2e test (requires OPENAI_API_KEY + ANTHROPIC_API_KEY)
+    cmds:
+      - go test -v -tags live -count=1 -run TestLive_Lite_ClawComprehensive -timeout 30m ./e2e/...
+
   fmt:
     desc: Format Go source files
     cmds:
