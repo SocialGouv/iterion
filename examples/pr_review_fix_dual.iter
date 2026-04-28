@@ -1,5 +1,5 @@
 ## Workflow : pr_review_fix_dual
-## Objectif : Review structuree d'une PR avec dual verdict (Claude + Codex)
+## Objectif : Review structuree d'une PR avec dual verdict (Claude + GPT)
 ## et boucle de correction automatique.
 ##
 ## Architecture :
@@ -7,20 +7,23 @@
 ##        ^                                                  |
 ##        |                            not approved -> claude_fixer (inherit reviewer) -+
 ##        |                                                  |                         |
-##        |                                        approved -> codex_reviewer -> codex_verdict
+##        |                                        approved -> gpt_reviewer -> gpt_verdict
 ##        |                                                                          |
 ##        |                                                            approved -> done
 ##        |                                                                          |
-##        |                            not approved -> codex_fixer (inherit codex) ---+
+##        |                            not approved -> opus_fixer (claude_code+Opus) -+
 ##        |                                                                          |
 ##        +----------------------- go_check_post_fix <-------------------------------+
 ##
-##   Each fixer inherits the session of the reviewer that found the blockers.
+##   claude_fixer inherits the session of the primary reviewer (claude_code).
+##   opus_fixer cannot inherit gpt_reviewer's session (claw direct API has
+##   no session_id) — runs fresh and consumes the fix_plan from the GPT
+##   verdict input only.
 ##   If fix_loop exhausted with remaining blockers -> fail (human decides).
 ##
 ## Primitives exercees : agent, judge, tool, done, fail, boucle bornee, publish,
-##   session fresh/inherit, dual backend (claude_code + codex), dual fixers,
-##   sequential dual verdict.
+##   session fresh/inherit, multi-backend (claude_code + claw direct API),
+##   dual fixers, sequential dual verdict.
 ##
 ## Usage :
 ##   iterion run examples/pr_review_fix_dual.iter \
@@ -110,7 +113,7 @@ prompt reviewer_user:
   {{input.previous_claude_verdict}}
 
   Previous verdict from cross-reviewer:
-  {{input.previous_codex_verdict}}
+  {{input.previous_gpt_verdict}}
 
   Previous fix summary (what the fixer did, including any false positives noted):
   {{input.previous_fix_summary}}
@@ -167,7 +170,7 @@ prompt verdict_user:
   3. List of suggestions
   4. Executive summary (3-5 lines for the PR author)
 
-prompt codex_reviewer_system:
+prompt gpt_reviewer_system:
   You are an independent code reviewer providing a second opinion.
   A first reviewer has already approved this PR. Your job is to
   catch anything the first reviewer may have missed.
@@ -189,7 +192,7 @@ prompt codex_reviewer_system:
   Only classify as BLOCKER if you are confident after this self-check.
   False positives waste entire fix loop iterations (~10 min each).
 
-prompt codex_reviewer_user:
+prompt gpt_reviewer_user:
   Provide an independent second review of this PR.
 
   Review rules:
@@ -205,7 +208,7 @@ prompt codex_reviewer_user:
   {{input.claude_verdict}}
 
   Previous cross-review verdict (for stagnation awareness):
-  {{input.previous_codex_verdict}}
+  {{input.previous_gpt_verdict}}
 
   Instructions:
   1. Read the critical files yourself — do not rely on the first review
@@ -255,7 +258,7 @@ schema review_request:
   review_rules: string
   go_check_results: string
   previous_claude_verdict: string
-  previous_codex_verdict: string
+  previous_gpt_verdict: string
   previous_fix_summary: string
 
 schema review_result:
@@ -288,12 +291,12 @@ schema verdict_result:
   executive_summary: string
   confidence: string [enum: "low", "medium", "high"]
 
-schema codex_review_request:
+schema gpt_review_request:
   pr_context: json
   review_rules: string
   go_check_results: json
   claude_verdict: json
-  previous_codex_verdict: string
+  previous_gpt_verdict: string
 
 schema fix_input:
   fix_plan: string
@@ -345,26 +348,24 @@ judge verdict:
   user: verdict_user
   session: fresh
 
-agent codex_reviewer:
-  backend: "codex"
-  input: codex_review_request
+agent gpt_reviewer:
+  ## Second-opinion reviewer via claw direct API (no shell tools);
+  ## reviews from the structured PR context only.
+  model: "openai/gpt-5.4-mini"
+  input: gpt_review_request
   output: review_result
-  publish: codex_review
-  system: codex_reviewer_system
-  user: codex_reviewer_user
-  session: fresh
-  tools: [Bash, Read, Glob, Grep]
-  tool_max_steps: 25
+  publish: gpt_review
+  system: gpt_reviewer_system
+  user: gpt_reviewer_user
   readonly: true
 
-judge codex_verdict:
-  backend: "codex"
+judge gpt_verdict:
+  model: "openai/gpt-5.4-mini"
   input: verdict_request
   output: verdict_result
-  publish: codex_verdict
+  publish: gpt_verdict
   system: verdict_system
   user: verdict_user
-  session: fresh
 
 agent claude_fixer:
   backend: "claude_code"
@@ -377,14 +378,18 @@ agent claude_fixer:
   tools: [Bash, Read, Edit, Write, Glob, Grep]
   tool_max_steps: 30
 
-agent codex_fixer:
-  backend: "codex"
+agent opus_fixer:
+  ## Fixer for GPT-found blockers: claude_code with Opus model
+  ## (different from claude_fixer which uses claude_code's default).
+  ## session: fresh because gpt_reviewer (claw direct API) has no session_id.
+  backend: "claude_code"
+  model: "claude-opus-4-7"
   input: fix_input
   output: fix_output
   publish: fix_report
   system: fixer_system
   user: fixer_user
-  session: inherit
+  session: fresh
   tools: [Bash, Read, Edit, Write, Glob, Grep]
   tool_max_steps: 30
 
@@ -417,7 +422,7 @@ workflow pr_review_fix_dual:
     review_rules: "{{vars.review_rules}}",
     go_check_results: "",
     previous_claude_verdict: "",
-    previous_codex_verdict: "",
+    previous_gpt_verdict: "",
     previous_fix_summary: ""
   }
 
@@ -437,12 +442,12 @@ workflow pr_review_fix_dual:
   ## ═══ Phase 3 : Primary verdict routing ════════════════════════
 
   ## Primary approved -> cross-review
-  verdict -> codex_reviewer when approved with {
+  verdict -> gpt_reviewer when approved with {
     pr_context: "{{artifacts.pr_context}}",
     review_rules: "{{vars.review_rules}}",
     go_check_results: "{{outputs.build_check}}",
     claude_verdict: "{{outputs.verdict}}",
-    previous_codex_verdict: "{{outputs.codex_verdict}}"
+    previous_gpt_verdict: "{{outputs.gpt_verdict}}"
   }
 
   ## Primary not approved -> primary fixer (inherits reviewer session)
@@ -457,25 +462,25 @@ workflow pr_review_fix_dual:
 
   ## ═══ Phase 4 : Cross-review -> cross verdict ══════════════════
 
-  codex_reviewer -> codex_verdict with {
-    review: "{{outputs.codex_reviewer}}",
+  gpt_reviewer -> gpt_verdict with {
+    review: "{{outputs.gpt_reviewer}}",
     go_check_results: "{{outputs.build_check}}",
     review_rules: "{{vars.review_rules}}",
-    previous_verdict: "{{outputs.codex_verdict}}"
+    previous_verdict: "{{outputs.gpt_verdict}}"
   }
 
   ## Both approved -> done
-  codex_verdict -> done when approved
+  gpt_verdict -> done when approved
 
-  ## Cross-reviewer not approved -> cross fixer (inherits cross-reviewer session)
-  codex_verdict -> codex_fixer when not approved as fix_loop(20) with {
-    _session_id: "{{outputs.codex_reviewer._session_id}}",
-    fix_plan: "{{outputs.codex_reviewer.fix_plan}}",
+  ## Cross-reviewer not approved -> cross fixer (fresh session — gpt_reviewer
+  ## runs via claw direct API and has no session_id to inherit).
+  gpt_verdict -> opus_fixer when not approved as fix_loop(20) with {
+    fix_plan: "{{outputs.gpt_reviewer.fix_plan}}",
     review_rules: "{{vars.review_rules}}"
   }
 
   ## Terminal fallback: fix_loop exhausted -> fail
-  codex_verdict -> fail
+  gpt_verdict -> fail
 
   ## ═══ Phase 5a : Primary fix -> verify ═════════════════════════
 
@@ -485,7 +490,7 @@ workflow pr_review_fix_dual:
 
   ## ═══ Phase 5b : Cross fix -> verify ═══════════════════════════
 
-  codex_fixer -> build_check_post_fix with {
+  opus_fixer -> build_check_post_fix with {
     workspace_dir: "{{vars.workspace_dir}}"
   }
 
@@ -496,6 +501,6 @@ workflow pr_review_fix_dual:
     review_rules: "{{vars.review_rules}}",
     go_check_results: "{{outputs.build_check_post_fix}}",
     previous_claude_verdict: "{{outputs.verdict}}",
-    previous_codex_verdict: "{{outputs.codex_verdict}}",
+    previous_gpt_verdict: "{{outputs.gpt_verdict}}",
     previous_fix_summary: "{{artifacts.fix_report}}"
   }

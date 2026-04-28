@@ -1,6 +1,6 @@
 ## Workflow : feature_dev_review_fix_dual
 ## Objectif : Developpement d'une nouvelle feature (plan + implement) suivi
-## d'une review structuree dual verdict (Claude + Codex) avec boucle de
+## d'une review structuree dual verdict (Claude + GPT) avec boucle de
 ## correction automatique.
 ##
 ## Specialisation : projet carto (TypeScript CLI, pnpm, devbox).
@@ -11,17 +11,20 @@
 ##   - Claude Code = WORKER PRINCIPAL. Il fait tout le travail lourd :
 ##     planification, implementation, review primaire, verdict primaire,
 ##     correction de ses propres blockers.
-##   - Codex = SUPPORT. Il intervient UNIQUEMENT apres que Claude a approuve,
-##     en deux roles stricts :
-##       1. Second avis de verdict final (cross-review pour attraper les
-##          angles morts de Claude)
-##       2. Correction de SES PROPRES trouvailles (codex_fixer inherit
-##          codex_reviewer). Codex ne touche jamais aux blockers trouves
-##          par Claude.
-##   Si Codex approuve -> done. S'il rejette, il corrige ce qu'il a trouve
-##   puis on repasse par la chaine Claude (review + verdict) pour valider
-##   que la correction ne regresse rien. Claude reste l'arbitre final de
-##   la qualite du code ; Codex est un filet de securite.
+##   - GPT (claw direct API, openai/gpt-5.4-mini) + Opus (claude_code) =
+##     SUPPORT. N'interviennent QU'APRES approbation par Claude principal :
+##       1. gpt_reviewer + gpt_verdict : second avis de verdict final
+##          (cross-review pour attraper les angles morts du modele Claude
+##          principal). Sans outils — review depuis le contexte fourni.
+##       2. opus_fixer : si gpt_verdict rejette, opus_fixer (claude_code +
+##          claude-opus-4-7) corrige UNIQUEMENT les blockers trouves par
+##          gpt_reviewer. Le couple GPT/Opus ne touche jamais aux blockers
+##          trouves par le Claude principal.
+##   Si GPT approuve -> done. S'il rejette, opus_fixer corrige ce que
+##   gpt_reviewer a trouve puis on repasse par la chaine Claude (review +
+##   verdict) pour valider que la correction ne regresse rien. Claude reste
+##   l'arbitre final de la qualite du code ; le couple GPT/Opus est un filet
+##   de securite.
 ##
 ## Architecture :
 ##   [main] planner (claude)
@@ -33,13 +36,13 @@
 ##             ^                                                         |
 ##             |                      not approved -> [main] claude_fixer-+
 ##             |                                                         |
-##             |                     approved -> [support] codex_reviewer
+##             |                     approved -> [support] gpt_reviewer
 ##             |                                           |
-##             |                                 -> [support] codex_verdict
+##             |                                 -> [support] gpt_verdict
 ##             |                                                     |
 ##             |                                       approved -> done
 ##             |                                                     |
-##             |                      not approved -> [support] codex_fixer -+
+##             |                      not approved -> [support] opus_fixer -+
 ##             |                                                             |
 ##             |                commit_namer_post_fix <---------------------+
 ##             |                         |
@@ -53,7 +56,7 @@
 ##     - Commits WIP reguliers :
 ##         * apres developer   (commit initial de la feature)
 ##         * apres claude_fixer (commit: fix reviews de Claude)
-##         * apres codex_fixer  (commit: fix reviews de Codex)
+##         * apres opus_fixer  (commit: fix reviews de GPT)
 ##       Les commits se font AVANT le build check pour ne jamais perdre de
 ##       travail meme si la build casse (pattern rust_to_go_port).
 ##     - build_check_post_dev : gate deterministe apres le commit initial
@@ -61,7 +64,7 @@
 ##        deja capture l'erreur dans les logs ET un commit existe dans git)
 ##
 ## Primitives exercees : agent, judge, tool, done, fail, boucle bornee, publish,
-##   session fresh/inherit, dual backend (claude_code + codex).
+##   session fresh/inherit, multi-backend (claude_code + claw direct API).
 ##
 ## Usage :
 ##   iterion run examples/feature_dev_review_fix_dual.iter \
@@ -254,7 +257,7 @@ prompt reviewer_user:
   {{input.previous_claude_verdict}}
 
   Previous verdict from cross-reviewer:
-  {{input.previous_codex_verdict}}
+  {{input.previous_gpt_verdict}}
 
   Previous fix summary (what the fixer did, including any false positives noted):
   {{input.previous_fix_summary}}
@@ -304,7 +307,7 @@ prompt verdict_user:
   3. List of suggestions
   4. Executive summary (3-5 lines for the feature author)
 
-prompt codex_reviewer_system:
+prompt gpt_reviewer_system:
   You are an independent code reviewer providing a second opinion.
   A first reviewer has already approved this feature implementation.
   Your job is to catch anything the first reviewer may have missed.
@@ -326,30 +329,14 @@ prompt codex_reviewer_system:
   Only classify as BLOCKER if confident after this self-check.
   False positives waste entire fix loop iterations.
 
-  BUDGET — exploration must be frugal:
-  - Aim for ≤12 tool calls total, hard cap 15.
-  - You already have the full PR context, changed-file list, risky areas,
-    the acceptance criteria, and the primary reviewer's findings. Trust that
-    input; only read files when a specific claim requires verification.
-  - Tool-output discipline (every returned byte lands in your model context
-    on the next turn):
-      * ALWAYS Grep first to locate the exact lines relevant to a claim;
-        THEN Read with a bounded line range (offset + limit ≤ 80 lines).
-      * Do NOT Read whole source files. Do NOT Read files longer than
-        300 lines without a Grep-confirmed target range.
-      * Never Read or Grep inside: node_modules, dist, build, .next,
-        coverage, target, vendor, *.lock, *.d.ts generated by tooling,
-        pnpm-lock.yaml. These are tens of thousands of tokens each and
-        are not part of the change under review.
-      * Do not re-read the same file twice. If you need a second region,
-        do one bounded Read call that covers both.
-  - If you hit the tool budget before reaching a verdict, ship the verdict
-    you have based on the PR context — do not keep exploring.
-  Reason: each tool result accumulates into the conversation you see on
-  the next turn. Unbounded file reads blow codex's ~258k context window
-  and the turn ends without a verdict.
+  Note: this reviewer runs via claw direct API and has no shell tool
+  access. Form your verdict from the structured input only (PR context,
+  changed-file list, risky areas, acceptance criteria, primary reviewer's
+  findings). Do not invent file contents — if a claim cannot be verified
+  from the input, surface it as a question or a soft suggestion rather
+  than a blocker.
 
-prompt codex_reviewer_user:
+prompt gpt_reviewer_user:
   Provide an independent second review.
 
   Review rules:
@@ -368,7 +355,7 @@ prompt codex_reviewer_user:
   {{input.claude_verdict}}
 
   Previous cross-review verdict (for stagnation awareness):
-  {{input.previous_codex_verdict}}
+  {{input.previous_gpt_verdict}}
 
   Instructions:
   1. Read the critical files yourself
@@ -410,7 +397,7 @@ prompt commit_namer_system:
 prompt commit_namer_user:
   Produce a commit message for the work just completed.
 
-  Change type (dev / claude-fix / codex-fix): {{input.change_type}}
+  Change type (dev / claude-fix / opus-fix): {{input.change_type}}
 
   Summary of work:
   {{input.summary}}
@@ -500,7 +487,7 @@ schema review_request:
   acceptance_criteria: string
   build_check_results: string
   previous_claude_verdict: string
-  previous_codex_verdict: string
+  previous_gpt_verdict: string
   previous_fix_summary: string
 
 schema review_result:
@@ -533,13 +520,13 @@ schema verdict_result:
   executive_summary: string
   confidence: string [enum: "low", "medium", "high"]
 
-schema codex_review_request:
+schema gpt_review_request:
   pr_context: json
   review_rules: string
   acceptance_criteria: string
   build_check_results: json
   claude_verdict: json
-  previous_codex_verdict: string
+  previous_gpt_verdict: string
 
 schema fix_input:
   fix_plan: string
@@ -599,7 +586,7 @@ agent developer:
 ## Commit namer after dev: generates a commit message from the developer's
 ## structured output (summary + files_changed). session: fresh + data-passing
 ## (not session: fork) because the same node is also reused in the fix path,
-## which may come from a codex-backed session — fork across backends is unsafe.
+## which may come from a non-claude_code backend — fork across backends is unsafe.
 agent commit_namer_post_dev:
   backend: "claude_code"
   input: commit_context_input
@@ -671,34 +658,35 @@ judge verdict:
   session: fresh
   reasoning_effort: high
 
-## ─── Nodes : Support final [SUPPORT = Codex] ────────────────────
-## Codex n'intervient QUE apres approbation par Claude. Role strict :
-##   1. codex_reviewer / codex_verdict : second avis final
-##   2. codex_fixer : corrige UNIQUEMENT les blockers trouves par
-##      codex_reviewer (session: inherit).
-## Codex ne corrige jamais les blockers de Claude (claude_fixer s'en charge).
+## ─── Nodes : Support final [SUPPORT = GPT + Opus] ───────────────
+## Le filet de securite n'intervient QU'APRES approbation par Claude
+## principal. Role strict :
+##   1. gpt_reviewer / gpt_verdict : second avis final (claw direct API)
+##   2. opus_fixer : corrige UNIQUEMENT les blockers trouves par
+##      gpt_reviewer (claude_code + Opus, session fresh — inherit
+##      n'est pas dispo car gpt_reviewer ne produit pas de session_id).
+## Le couple GPT/Opus ne corrige jamais les blockers de Claude principal
+## (claude_fixer s'en charge).
 
-agent codex_reviewer:
-  backend: "codex"
-  input: codex_review_request
+agent gpt_reviewer:
+  ## Second-opinion reviewer via claw direct API (no shell tools);
+  ## relies on the structured review request inputs for context.
+  model: "openai/gpt-5.4-mini"
+  input: gpt_review_request
   output: review_result
-  publish: codex_review
-  system: codex_reviewer_system
-  user: codex_reviewer_user
-  session: fresh
-  tools: [Read, Glob, Grep]
-  tool_max_steps: 15
+  publish: gpt_review
+  system: gpt_reviewer_system
+  user: gpt_reviewer_user
   readonly: true
   reasoning_effort: high
 
-judge codex_verdict:
-  backend: "codex"
+judge gpt_verdict:
+  model: "openai/gpt-5.4-mini"
   input: verdict_request
   output: verdict_result
-  publish: codex_verdict
+  publish: gpt_verdict
   system: verdict_system
   user: verdict_user
-  session: fresh
   reasoning_effort: high
 
 agent claude_fixer:
@@ -713,19 +701,24 @@ agent claude_fixer:
   tool_max_steps: 30
   reasoning_effort: high
 
-agent codex_fixer:
-  backend: "codex"
+agent opus_fixer:
+  ## Fixer side runs claude_code with Opus to differentiate from the
+  ## main claude_fixer (which uses claude_code's default model).
+  ## Note: session: inherit no longer works here (the upstream gpt_reviewer
+  ## now runs via claw direct API which has no session_id); use fresh.
+  backend: "claude_code"
+  model: "claude-opus-4-7"
   input: fix_input
   output: fix_output
   publish: fix_report
   system: fixer_system
   user: fixer_user
-  session: inherit
+  session: fresh
   tools: [Bash, Read, Edit, Write, Glob, Grep]
   tool_max_steps: 30
   reasoning_effort: high
 
-## Commit namer after fix: shared between claude_fixer and codex_fixer.
+## Commit namer after fix: shared between claude_fixer and opus_fixer.
 ## Two incoming edges (from either fixer) are OK because they are
 ## mutually exclusive in time (only one fixer runs per iteration).
 agent commit_namer_post_fix:
@@ -808,7 +801,7 @@ workflow feature_dev_review_fix_dual:
     acceptance_criteria: "{{vars.acceptance_criteria}}",
     build_check_results: "{{outputs.build_check_post_dev}}",
     previous_claude_verdict: "",
-    previous_codex_verdict: "",
+    previous_gpt_verdict: "",
     previous_fix_summary: ""
   }
 
@@ -825,13 +818,13 @@ workflow feature_dev_review_fix_dual:
 
   ## ═══ Phase 2 : Primary verdict routing ════════════════════════
 
-  verdict -> codex_reviewer when approved with {
+  verdict -> gpt_reviewer when approved with {
     pr_context: "{{artifacts.pr_context}}",
     review_rules: "{{vars.review_rules}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}",
     build_check_results: "{{outputs.build_check}}",
     claude_verdict: "{{outputs.verdict}}",
-    previous_codex_verdict: "{{outputs.codex_verdict}}"
+    previous_gpt_verdict: "{{outputs.gpt_verdict}}"
   }
 
   verdict -> claude_fixer when not approved as fix_loop(20) with {
@@ -844,31 +837,30 @@ workflow feature_dev_review_fix_dual:
 
   ## ═══ Phase 3 : Cross-review -> cross verdict ══════════════════
 
-  codex_reviewer -> codex_verdict with {
-    review: "{{outputs.codex_reviewer}}",
+  gpt_reviewer -> gpt_verdict with {
+    review: "{{outputs.gpt_reviewer}}",
     build_check_results: "{{outputs.build_check}}",
     review_rules: "{{vars.review_rules}}",
-    previous_verdict: "{{outputs.codex_verdict}}"
+    previous_verdict: "{{outputs.gpt_verdict}}"
   }
 
-  codex_verdict -> done when approved
+  gpt_verdict -> done when approved
 
-  ## Codex rejette -> codex_fixer corrige ce que codex_reviewer a trouve
+  ## GPT rejette -> opus_fixer corrige ce que gpt_reviewer a trouve
   ## (session inherit = fixer a deja lu les fichiers concernes).
-  ## Claude ne touche pas a ces blockers : c'est Codex qui decide et corrige.
-  codex_verdict -> codex_fixer when not approved as fix_loop(20) with {
-    _session_id: "{{outputs.codex_reviewer._session_id}}",
-    fix_plan: "{{outputs.codex_reviewer.fix_plan}}",
+  ## Claude ne touche pas a ces blockers : c'est GPT/Opus qui decide et corrige.
+  gpt_verdict -> opus_fixer when not approved as fix_loop(20) with {
+    fix_plan: "{{outputs.gpt_reviewer.fix_plan}}",
     review_rules: "{{vars.review_rules}}"
   }
 
-  codex_verdict -> fail
+  gpt_verdict -> fail
 
   ## ═══ Phase 4 : Post-fix verify, then back to reviewer ═════════
 
   ## Commit each fix BEFORE the build check, so every iteration leaves
   ## a trace in git (even if the build breaks and the loop retries).
-  ## claude_fixer and codex_fixer both route to the shared commit_namer_post_fix;
+  ## claude_fixer and opus_fixer both route to the shared commit_namer_post_fix;
   ## they are mutually exclusive in time (only one fires per iteration).
   claude_fixer -> commit_namer_post_fix with {
     change_type: "claude-fix",
@@ -876,10 +868,10 @@ workflow feature_dev_review_fix_dual:
     files_changed: "{{outputs.claude_fixer.files_changed}}"
   }
 
-  codex_fixer -> commit_namer_post_fix with {
-    change_type: "codex-fix",
-    summary: "{{outputs.codex_fixer.summary}}",
-    files_changed: "{{outputs.codex_fixer.files_changed}}"
+  opus_fixer -> commit_namer_post_fix with {
+    change_type: "opus-fix",
+    summary: "{{outputs.opus_fixer.summary}}",
+    files_changed: "{{outputs.opus_fixer.files_changed}}"
   }
 
   commit_namer_post_fix -> commit_post_fix with {
@@ -897,6 +889,6 @@ workflow feature_dev_review_fix_dual:
     acceptance_criteria: "{{vars.acceptance_criteria}}",
     build_check_results: "{{outputs.build_check_post_fix}}",
     previous_claude_verdict: "{{outputs.verdict}}",
-    previous_codex_verdict: "{{outputs.codex_verdict}}",
+    previous_gpt_verdict: "{{outputs.gpt_verdict}}",
     previous_fix_summary: "{{artifacts.fix_report}}"
   }

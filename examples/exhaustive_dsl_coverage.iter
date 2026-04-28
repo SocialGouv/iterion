@@ -223,13 +223,13 @@ agent writer_a:
   tool_max_steps: 5
 
 agent writer_b:
-  backend: "codex"
+  ## DSL coverage: exercises claw direct API path (no `backend:` field).
+  model: "openai/gpt-5.4-mini"
   input: writer_input
   output: writer_output
   publish: writer_b_result
   system: writer_system
   user: writer_user
-  session: fresh
   readonly: true
 
 ## ─── Nodes : Phase 2b — Metadata Extraction (session fork) ─────
@@ -288,7 +288,10 @@ agent refiner_a:
   session: inherit
 
 agent refiner_b:
-  backend: "codex"
+  ## DSL coverage: exercises claude_code with explicit model override
+  ## (different from refiner_a which uses claude_code's default model).
+  backend: "claude_code"
+  model: "claude-opus-4-7"
   input: refine_input
   output: refine_output
   system: refine_system

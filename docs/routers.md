@@ -27,7 +27,7 @@ router fix_router:
   multi: true                             # select multiple routes (default: false)
 ```
 
-Using `model` makes a direct API call. Using `delegate` routes through a delegation backend (like `claude_code` or `codex`) — useful when no raw API key is available. If neither is set, the engine falls back to a built-in default model.
+Using `model` makes a direct API call (via the in-process `claw` backend — supports `anthropic/...`, `openai/...`, etc.). Using `delegate` routes through a delegation backend — `claude_code` is the recommended CLI backend. (`codex` is also supported but discouraged; see the [Delegation](../README.md#delegation) section of the README for the rationale.) If neither is set, the engine falls back to a built-in default model.
 
 ---
 
@@ -42,9 +42,9 @@ router review_fanout:
 workflow example:
   ...
   review_fanout -> claude_review
-  review_fanout -> codex_review
+  review_fanout -> gpt_review
   claude_review -> review_join
-  codex_review -> review_join
+  gpt_review -> review_join
 ```
 
 The router itself is a pass-through — it forwards its input unchanged to all targets. The number of concurrent branches is bounded by the `max_parallel_branches` budget setting. For workspace safety, only one mutating branch (an agent or human with tools) is allowed at a time; read-only branches can run freely in parallel.
@@ -84,17 +84,17 @@ workflow example:
   ...
   val_judge -> refine_selector when not ready as refine_loop(4)
   refine_selector -> claude_refine
-  refine_selector -> codex_refine
+  refine_selector -> gpt_refine
 ```
 
 | Traversal | Selected target |
 |-----------|----------------|
 | 1st | `claude_refine` |
-| 2nd | `codex_refine` |
+| 2nd | `gpt_refine` |
 | 3rd | `claude_refine` |
-| 4th | `codex_refine` |
+| 4th | `gpt_refine` |
 
-The counter persists across pause/resume cycles — if a run is paused and later resumed, the alternation picks up where it left off. This mode is ideal for alternating between agents (e.g. Claude and Codex) in a refinement loop, avoiding the need to duplicate nodes.
+The counter persists across pause/resume cycles — if a run is paused and later resumed, the alternation picks up where it left off. This mode is ideal for alternating between agents from different providers (e.g. a `claude_code`-delegated Claude and a `claw`-direct OpenAI model) in a refinement loop, avoiding the need to duplicate nodes.
 
 ---
 
@@ -158,7 +158,7 @@ When using `model`, the engine resolves the model identifier through this chain:
 2. The `ITERION_DEFAULT_SUPERVISOR_MODEL` environment variable
 3. Built-in default: `anthropic/claude-sonnet-4-6`
 
-When using `delegate`, the named backend (e.g. `claude_code`, `codex`) handles the LLM call entirely — no API key or model configuration needed on the Iterion side.
+When using `delegate`, the named backend (e.g. `claude_code`) handles the LLM call entirely — no API key or model configuration needed on the Iterion side. (`codex` is also accepted but discouraged.)
 
 ---
 

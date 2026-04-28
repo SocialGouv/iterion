@@ -1,8 +1,10 @@
 ## Fixture : feature_request_dual_model
-## Objectif : Workflow de feature request orchestrant deux agents IA
-## via delegation MCP :
-##   - Claude Opus 4.6  -> claude-code (backend: "claude_code")
-##   - GPT 5.4          -> codex       (backend: "codex")
+## Objectif : Workflow de feature request orchestrant deux agents IA :
+##   - Claude            -> claude-code (backend: "claude_code")
+##   - GPT (discussions) -> claw direct API (model: "openai/gpt-5.4-mini")
+##   - "gpt_act" : claude_code avec Opus (le claw direct API ne donne pas
+##     acces aux outils shell ; on utilise claude_code+Opus pour conserver
+##     la diversite de modele tout en gardant les outils d'edition).
 ##
 ## Phases :
 ##   1. Analyse du contexte feature (Claude)
@@ -242,12 +244,11 @@ agent claude_discuss_1:
   session: fresh
 
 agent gpt_discuss_1:
-  backend: "codex"
+  model: "openai/gpt-5.4-mini"
   input: discussion_input
   output: discussion_output
   system: discuss_gpt_system
   user: discuss_gpt_user
-  session: fresh
 
 agent claude_discuss_2:
   backend: "claude_code"
@@ -258,12 +259,11 @@ agent claude_discuss_2:
   session: fresh
 
 agent gpt_discuss_2:
-  backend: "codex"
+  model: "openai/gpt-5.4-mini"
   input: discussion_input
   output: discussion_output
   system: discuss_gpt_system
   user: discuss_gpt_user
-  session: fresh
 
 agent claude_discuss_3:
   backend: "claude_code"
@@ -274,13 +274,12 @@ agent claude_discuss_3:
   session: fresh
 
 agent gpt_discuss_3:
-  backend: "codex"
+  model: "openai/gpt-5.4-mini"
   input: discussion_input
   output: feature_plan
   publish: final_plan
   system: discuss_final_system
   user: discuss_final_user
-  session: fresh
 
 ## ─── Nodes : Phase 3 — Cycle Act/Review avec cross-review ───────
 
@@ -297,14 +296,13 @@ agent claude_act:
   tool_max_steps: 20
 
 agent gpt_review:
-  backend: "codex"
+  ## Reviewer side runs via claw direct API (no shell tool access);
+  ## relies on the structured input (act_report) for review context.
+  model: "openai/gpt-5.4-mini"
   input: review_input
   output: review_output
   system: review_feature_system
   user: review_feature_user
-  session: fresh
-  tools: [read_file, list_files, search_codebase, git_diff, tree]
-  tool_max_steps: 10
 
 judge readiness_judge_after_gpt_review:
   backend: "claude_code"
@@ -314,9 +312,11 @@ judge readiness_judge_after_gpt_review:
   user: readiness_user
   session: fresh
 
-## Paire 2 : GPT agit, Claude review
+## Paire 2 : second model agit (claude_code with Opus to differentiate from claude_act),
+## Claude review.
 agent gpt_act:
-  backend: "codex"
+  backend: "claude_code"
+  model: "claude-opus-4-7"
   input: act_input
   output: act_output
   publish: act_report

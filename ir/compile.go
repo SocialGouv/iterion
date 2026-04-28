@@ -27,7 +27,13 @@ const (
 	DiagDuplicateMCPServer    DiagCode = "C024" // duplicate top-level mcp_server name
 	DiagInvalidMCPServer      DiagCode = "C025" // invalid MCP server config
 	DiagInteractionNoBackend  DiagCode = "C029" // interaction set on non-backend LLM node (no runtime effect)
+	DiagCodexDiscouraged      DiagCode = "C030" // codex backend is supported but discouraged
 )
+
+// codexBackendName is the literal value of the discouraged backend.
+// Hardcoded here (rather than imported from delegate/) to avoid an ir → delegate
+// dependency, which the package layout intentionally forbids.
+const codexBackendName = "codex"
 
 // Severity indicates the severity of a diagnostic.
 type Severity int
@@ -115,6 +121,20 @@ func (c *compiler) warnf(code DiagCode, format string, args ...interface{}) {
 		Severity: SeverityWarning,
 		Message:  fmt.Sprintf(format, args...),
 	})
+}
+
+// warnCodexDiscouraged emits a C030 warning when a node uses the codex backend.
+// Codex is still supported but has known limitations (cannot configure tool set,
+// tends to fill its own context window, weaker iterion integration). New
+// workflows should prefer 'claude_code' for tool-using agents or 'claw' with an
+// OpenAI model (e.g. model: "openai/gpt-5.4-mini") for judges/reviewers.
+func (c *compiler) warnCodexDiscouraged(kind, name, backend string) {
+	if backend != codexBackendName {
+		return
+	}
+	c.warnf(DiagCodexDiscouraged,
+		"%s %q uses 'codex' backend which is supported but discouraged: codex cannot configure its tool set, tends to fill its context window, and has weaker integration; prefer 'claude_code' for tool-using agents or 'claw' with an OpenAI model (e.g. model: \"openai/gpt-5.4-mini\") for judges/reviewers",
+		kind, name)
 }
 
 // Compile transforms an AST File into a canonical IR Workflow.
@@ -337,6 +357,7 @@ func (c *compiler) compileAgents() {
 		if model == "" && a.Backend == "" {
 			c.errorf(DiagMissingModelOrBackend, "agent %q must set 'model' or 'backend', or define ITERION_DEFAULT_SUPERVISOR_MODEL", a.Name)
 		}
+		c.warnCodexDiscouraged("agent", a.Name, a.Backend)
 
 		// Apply workflow-level interaction default when node doesn't set one.
 		interaction := a.Interaction
@@ -391,6 +412,7 @@ func (c *compiler) compileJudges() {
 		if model == "" && j.Backend == "" {
 			c.errorf(DiagMissingModelOrBackend, "judge %q must set 'model' or 'backend', or define ITERION_DEFAULT_SUPERVISOR_MODEL", j.Name)
 		}
+		c.warnCodexDiscouraged("judge", j.Name, j.Backend)
 
 		// Apply workflow-level interaction default when node doesn't set one.
 		interaction := j.Interaction
@@ -466,6 +488,7 @@ func (c *compiler) compileRouters() {
 			}
 			node.Model = model
 			node.Backend = r.Backend
+			c.warnCodexDiscouraged("router", r.Name, r.Backend)
 			if r.System != "" {
 				c.validatePromptRef(r.Name, "system", r.System)
 				node.SystemPrompt = r.System

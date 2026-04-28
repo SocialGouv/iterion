@@ -1,10 +1,10 @@
 ## Fixture : dual_model_plan_implement_review
 ## Objectif : Workflow de planification et implementation orchestrant
-## deux agents IA (Claude Code + Codex) avec double validation croisee
+## deux agents IA (Claude Code + GPT) avec double validation croisee
 ## et alternance round-robin des roles.
 ##
-##   - Claude  -> claude_code (backend: "claude_code")
-##   - Codex   -> codex       (backend: "codex")
+##   - Claude  -> claude_code   (backend: "claude_code")
+##   - GPT     -> claw direct   (model: "openai/gpt-5.4-mini")
 ##   - Orchestration (merge, judges) -> model: "${CLAUDE_MODEL}"
 ##
 ## Phases :
@@ -17,8 +17,8 @@
 ##   7. Si rejet -> retour a Phase 1 avec reviews en contexte
 ##
 ## Pattern d'alternance : round_robin router
-##   - refine_selector alterne entre claude_refine et codex_refine
-##   - impl_selector alterne entre claude_implement et codex_implement
+##   - refine_selector alterne entre claude_refine et gpt_refine
+##   - impl_selector alterne entre claude_implement et gpt_implement
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
@@ -42,7 +42,7 @@ prompt plan_user:
 
   Reviews de l'iteration precedente (si applicable) :
   Claude : {{input.previous_claude_review}}
-  Codex : {{input.previous_codex_review}}
+  GPT : {{input.previous_gpt_review}}
 
   Produis un plan incluant :
   - Un resume de l'approche
@@ -65,7 +65,7 @@ prompt merge_plan_user:
   {{input.claude_plan}}
 
   Plan B :
-  {{input.codex_plan}}
+  {{input.gpt_plan}}
 
   Criteres d'acceptation :
   {{input.acceptance_criteria}}
@@ -113,7 +113,7 @@ prompt plan_acceptance_user:
   {{input.claude_validation}}
 
   Evaluation B :
-  {{input.codex_validation}}
+  {{input.gpt_validation}}
 
   Criteres d'acceptation :
   {{input.acceptance_criteria}}
@@ -137,7 +137,7 @@ prompt refine_plan_user:
   {{input.claude_report}}
 
   Rapport de validation B :
-  {{input.codex_report}}
+  {{input.gpt_report}}
 
   Criteres d'acceptation :
   {{input.acceptance_criteria}}
@@ -222,7 +222,7 @@ prompt impl_verdict_user:
   {{input.claude_review}}
 
   Review B :
-  {{input.codex_review}}
+  {{input.gpt_review}}
 
   Criteres d'acceptation :
   {{input.acceptance_criteria}}
@@ -248,7 +248,7 @@ schema plan_input:
   task_description: string
   acceptance_criteria: string
   previous_claude_review: string
-  previous_codex_review: string
+  previous_gpt_review: string
 
 schema plan_output:
   summary: string
@@ -259,11 +259,11 @@ schema plan_output:
 
 schema dual_plan_bundle:
   claude_plan: json
-  codex_plan: json
+  gpt_plan: json
 
 schema merge_input:
   claude_plan: json
-  codex_plan: json
+  gpt_plan: json
   acceptance_criteria: string
 
 schema validate_input:
@@ -278,11 +278,11 @@ schema validate_output:
 
 schema dual_validation_bundle:
   claude_validation: json
-  codex_validation: json
+  gpt_validation: json
 
 schema plan_acceptance_input:
   claude_validation: json
-  codex_validation: json
+  gpt_validation: json
   merged_plan: json
   acceptance_criteria: string
 
@@ -294,7 +294,7 @@ schema plan_acceptance_verdict:
 schema refine_input:
   merged_plan: json
   claude_report: json
-  codex_report: json
+  gpt_report: json
   acceptance_criteria: string
 
 schema impl_input:
@@ -325,14 +325,14 @@ schema review_output:
 
 schema dual_review_bundle:
   claude_review: json
-  codex_review: json
+  gpt_review: json
   implementation: json
   acceptance_criteria: string
 
 schema impl_verdict_input:
   implementation: json
   claude_review: json
-  codex_review: json
+  gpt_review: json
   acceptance_criteria: string
   syntax_report: json
 
@@ -355,11 +355,11 @@ agent claude_plan:
   user: plan_user
   session: fresh
 
-agent codex_plan:
-  backend: "codex"
+agent gpt_plan:
+  model: "openai/gpt-5.4-mini"
   input: plan_input
   output: plan_output
-  publish: codex_plan_output
+  publish: gpt_plan_output
   system: plan_system
   user: plan_user
   session: fresh
@@ -388,11 +388,11 @@ agent claude_val:
   user: validate_plan_user
   session: fresh
 
-agent codex_val:
-  backend: "codex"
+agent gpt_val:
+  model: "openai/gpt-5.4-mini"
   input: validate_input
   output: validate_output
-  publish: codex_validation
+  publish: gpt_validation
   system: validate_plan_system
   user: validate_plan_user
   session: fresh
@@ -421,8 +421,8 @@ agent claude_refine:
   user: refine_plan_user
   session: fresh
 
-agent codex_refine:
-  backend: "codex"
+agent gpt_refine:
+  model: "openai/gpt-5.4-mini"
   input: refine_input
   output: plan_output
   publish: merged_plan
@@ -444,8 +444,8 @@ agent claude_implement:
   user: implement_user
   session: fresh
 
-agent codex_implement:
-  backend: "codex"
+agent gpt_implement:
+  model: "openai/gpt-5.4-mini"
   input: impl_input
   output: impl_output
   publish: implementation
@@ -473,11 +473,11 @@ agent claude_review:
   user: review_impl_user
   session: fresh
 
-agent codex_review:
-  backend: "codex"
+agent gpt_review:
+  model: "openai/gpt-5.4-mini"
   input: review_input
   output: review_output
-  publish: codex_review_report
+  publish: gpt_review_report
   system: review_impl_system
   user: review_impl_user
   session: fresh
@@ -513,14 +513,14 @@ workflow dual_model_plan_implement_review:
     task_description: "{{vars.task_description}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}",
     previous_claude_review: "",
-    previous_codex_review: ""
+    previous_gpt_review: ""
   }
 
-  plan_fanout -> codex_plan with {
+  plan_fanout -> gpt_plan with {
     task_description: "{{vars.task_description}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}",
     previous_claude_review: "",
-    previous_codex_review: ""
+    previous_gpt_review: ""
   }
 
   ## ═══ Phase 2 : Fusion des plans ════════════════════════════════
@@ -530,8 +530,8 @@ workflow dual_model_plan_implement_review:
     acceptance_criteria: "{{vars.acceptance_criteria}}"
   }
 
-  codex_plan -> merge_plans with {
-    codex_plan: "{{outputs.codex_plan}}"
+  gpt_plan -> merge_plans with {
+    gpt_plan: "{{outputs.gpt_plan}}"
   }
 
   ## ═══ Phase 3 : Validation parallele ════════════════════════════
@@ -546,7 +546,7 @@ workflow dual_model_plan_implement_review:
     acceptance_criteria: "{{input.acceptance_criteria}}"
   }
 
-  val_fanout -> codex_val with {
+  val_fanout -> gpt_val with {
     merged_plan: "{{input.merged_plan}}",
     acceptance_criteria: "{{input.acceptance_criteria}}"
   }
@@ -557,8 +557,8 @@ workflow dual_model_plan_implement_review:
     acceptance_criteria: "{{vars.acceptance_criteria}}"
   }
 
-  codex_val -> val_judge with {
-    codex_validation: "{{outputs.codex_val}}"
+  gpt_val -> val_judge with {
+    gpt_validation: "{{outputs.gpt_val}}"
   }
 
   ## ═══ Phase 4 : Si plan OK -> implementation ════════════════════
@@ -572,14 +572,14 @@ workflow dual_model_plan_implement_review:
   refine_selector -> claude_refine with {
     merged_plan: "{{artifacts.merged_plan}}",
     claude_report: "{{outputs.claude_val}}",
-    codex_report: "{{outputs.codex_val}}",
+    gpt_report: "{{outputs.gpt_val}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}"
   }
 
-  refine_selector -> codex_refine with {
+  refine_selector -> gpt_refine with {
     merged_plan: "{{artifacts.merged_plan}}",
     claude_report: "{{outputs.claude_val}}",
-    codex_report: "{{outputs.codex_val}}",
+    gpt_report: "{{outputs.gpt_val}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}"
   }
 
@@ -589,8 +589,8 @@ workflow dual_model_plan_implement_review:
     acceptance_criteria: "{{vars.acceptance_criteria}}"
   }
 
-  codex_refine -> val_fanout as refine_loop(6) with {
-    merged_plan: "{{outputs.codex_refine}}",
+  gpt_refine -> val_fanout as refine_loop(6) with {
+    merged_plan: "{{outputs.gpt_refine}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}"
   }
 
@@ -602,7 +602,7 @@ workflow dual_model_plan_implement_review:
     previous_feedback: "{{artifacts.review_verdict}}"
   }
 
-  impl_selector -> codex_implement with {
+  impl_selector -> gpt_implement with {
     validated_plan: "{{artifacts.merged_plan}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}",
     previous_feedback: "{{artifacts.review_verdict}}"
@@ -614,7 +614,7 @@ workflow dual_model_plan_implement_review:
     workspace_dir: "{{vars.workspace_dir}}"
   }
 
-  codex_implement -> validate_syntax with {
+  gpt_implement -> validate_syntax with {
     workspace_dir: "{{vars.workspace_dir}}"
   }
 
@@ -630,7 +630,7 @@ workflow dual_model_plan_implement_review:
     syntax_report: "{{input.syntax_report}}"
   }
 
-  review_fanout -> codex_review with {
+  review_fanout -> gpt_review with {
     implementation: "{{input.implementation}}",
     acceptance_criteria: "{{input.acceptance_criteria}}",
     syntax_report: "{{input.syntax_report}}"
@@ -643,8 +643,8 @@ workflow dual_model_plan_implement_review:
     syntax_report: "{{outputs.validate_syntax}}"
   }
 
-  codex_review -> review_judge with {
-    codex_review: "{{outputs.codex_review}}"
+  gpt_review -> review_judge with {
+    gpt_review: "{{outputs.gpt_review}}"
   }
 
   ## ═══ Phase 7 : Verdict ═════════════════════════════════════════
@@ -657,5 +657,5 @@ workflow dual_model_plan_implement_review:
     task_description: "{{vars.task_description}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}",
     previous_claude_review: "{{outputs.claude_review}}",
-    previous_codex_review: "{{outputs.codex_review}}"
+    previous_gpt_review: "{{outputs.gpt_review}}"
   }

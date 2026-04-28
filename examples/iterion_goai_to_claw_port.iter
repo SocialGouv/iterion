@@ -11,24 +11,24 @@
 ##   - Drop vendor/github.com/zendev-sh/goai/ and the goai dependency
 ##
 ##   - All hot-path agents -> claude_code (backend: "claude_code") with Opus 4.7
-##   - Codex used ONLY for: plan consolidation + second verdict judge
+##   - GPT (via claw direct API, openai/gpt-5.4-mini) used ONLY for: plan consolidation + second verdict judge
 ##   - Session continuity: fork for review, inherit for fix (preserves KV cache)
 ##
 ## Phases :
 ##   0. Analysis: Claude maps goai call sites in iterion + claw-code-go API surface
-##   1. Planning: Claude plans batch -> Codex consolidates -> judge+merge
+##   1. Planning: Claude plans batch -> GPT consolidates -> judge+merge
 ##   1b. Human gate: LLM decides if human validation is needed before impl
 ##   2. Implementation: Claude implements (session inherit across iterations)
 ##   3. Checkpoint: fork-based commit naming + iterion build/test execution
 ##   4. Review: Claude reviews with tools (fork from impl session)
-##   5. Verdict: dual judge (Claude + Codex), both must agree, self-critique
+##   5. Verdict: dual judge (Claude + GPT), both must agree, self-critique
 ##   6. Fix: session-inherit fix from reviewer -> back to checkpoint
 ##
 ## @group analysis: analyze, merge_analysis
-## @group planning: plan_fanout, claude_plan, codex_consolidate, plan_judge_merge, plan_gate
+## @group planning: plan_fanout, claude_plan, gpt_consolidate, plan_judge_merge, plan_gate
 ## @group implementation: implement, simplify
 ## @group checkpoint: commit_namer, commit_changes, run_iterion_tests, review_scan_fanout, migration_scanner
-## @group review: claude_review, verdict_fanout, claude_verdict, codex_verdict, review_verdict
+## @group review: claude_review, verdict_fanout, claude_verdict, gpt_verdict, review_verdict
 ## @group fix: fix
 
 vars:
@@ -219,8 +219,8 @@ prompt consolidate_plan_system:
      ordering issues, ensuring every goai call site is addressed
   3. CHALLENGE: identify risks, blind spots, and potential pitfalls
      (especially: bootstrap safety, retry semantics, two-pass schema,
-     hook event fidelity, session continuity through claude_code/codex backends
-     which DO NOT use goai or claw — they shell out)
+     hook event fidelity, session continuity through claude_code/codex CLI backends
+     which DO NOT use the in-process claw client — they shell out)
 
   Be pragmatic: minor style preferences should not block. Focus on
   correctness, completeness, and dependency ordering.
@@ -287,8 +287,8 @@ prompt plan_judge_merge_user:
   Original plan (Claude):
   {{input.claude_plan}}
 
-  Consolidated plan (Codex):
-  {{input.codex_plan}}
+  Consolidated plan (GPT):
+  {{input.gpt_plan}}
 
   Migration manifest:
   {{input.feature_manifest}}
@@ -779,7 +779,7 @@ prompt parity_verdict_user:
 
 prompt verdict_synthesis_system:
   You are the final arbiter of an iterion goai-to-claw migration iteration.
-  You receive two independent verdict evaluations (from Claude and Codex).
+  You receive two independent verdict evaluations (from Claude and GPT).
 
   Rules for batch_complete:
   - If BOTH judges set batch_complete=true -> batch_complete=true
@@ -806,8 +806,8 @@ prompt verdict_synthesis_user:
   Claude verdict:
   {{input.claude_verdict}}
 
-  Codex verdict:
-  {{input.codex_verdict}}
+  GPT verdict:
+  {{input.gpt_verdict}}
 
   Migration manifest:
   {{input.feature_manifest}}
@@ -939,7 +939,7 @@ schema consolidate_plan_output:
 
 schema plan_judge_merge_input:
   claude_plan: json
-  codex_plan: json
+  gpt_plan: json
   feature_manifest: json
 
 schema plan_judge_merge_output:
@@ -1018,7 +1018,7 @@ schema verdict_output:
 
 schema verdict_synthesis_input:
   claude_verdict: json
-  codex_verdict: json
+  gpt_verdict: json
   feature_manifest: json
   acceptance_threshold: string
 
@@ -1093,14 +1093,13 @@ agent claude_plan:
   user: port_plan_user
   session: fresh
 
-agent codex_consolidate:
-  backend: "codex"
+agent gpt_consolidate:
+  model: "openai/gpt-5.4-mini"
   input: consolidate_plan_input
   output: consolidate_plan_output
-  publish: codex_plan_output
+  publish: gpt_plan_output
   system: consolidate_plan_system
   user: consolidate_plan_user
-  session: fresh
 
 agent plan_judge_merge:
   await: wait_all
@@ -1200,7 +1199,7 @@ agent claude_review:
   tool_max_steps: 15
   readonly: true
 
-## ─── Nodes : Phase 5 — Dual Verdict (Claude + Codex) ──────────
+## ─── Nodes : Phase 5 — Dual Verdict (Claude + GPT) ──────────
 
 router verdict_fanout:
   mode: fan_out_all
@@ -1217,14 +1216,13 @@ judge claude_verdict:
   tool_max_steps: 10
   readonly: true
 
-judge codex_verdict:
-  backend: "codex"
+judge gpt_verdict:
+  model: "openai/gpt-5.4-mini"
   input: verdict_input
   output: verdict_output
-  publish: codex_verdict_report
+  publish: gpt_verdict_report
   system: parity_verdict_system
   user: parity_verdict_user
-  session: fresh
 
 judge review_verdict:
   await: wait_all
@@ -1290,7 +1288,7 @@ workflow iterion_goai_to_claw_port:
     previous_feedback: "{{input.previous_feedback}}"
   }
 
-  plan_fanout -> codex_consolidate with {
+  plan_fanout -> gpt_consolidate with {
     original_plan: "{{input.feature_manifest}}",
     feature_manifest: "{{input.feature_manifest}}"
   }
@@ -1300,8 +1298,8 @@ workflow iterion_goai_to_claw_port:
     feature_manifest: "{{artifacts.feature_manifest}}"
   }
 
-  codex_consolidate -> plan_judge_merge with {
-    codex_plan: "{{outputs.codex_consolidate}}"
+  gpt_consolidate -> plan_judge_merge with {
+    gpt_plan: "{{outputs.gpt_consolidate}}"
   }
 
   ## Plan OK -> human gate
@@ -1386,7 +1384,7 @@ workflow iterion_goai_to_claw_port:
     test_results: "{{input.test_results}}"
   }
 
-  ## ═══ Phase 5 : Dual Verdict (Claude + Codex judge) ════════════
+  ## ═══ Phase 5 : Dual Verdict (Claude + GPT judge) ════════════
 
   claude_review -> verdict_fanout with {
     implementation: "{{artifacts.implementation}}",
@@ -1410,7 +1408,7 @@ workflow iterion_goai_to_claw_port:
     acceptance_threshold: "{{input.acceptance_threshold}}"
   }
 
-  verdict_fanout -> codex_verdict with {
+  verdict_fanout -> gpt_verdict with {
     implementation: "{{input.implementation}}",
     review: "{{input.review}}",
     test_results: "{{input.test_results}}",
@@ -1426,8 +1424,8 @@ workflow iterion_goai_to_claw_port:
     acceptance_threshold: "{{vars.acceptance_threshold}}"
   }
 
-  codex_verdict -> review_verdict with {
-    codex_verdict: "{{outputs.codex_verdict}}"
+  gpt_verdict -> review_verdict with {
+    gpt_verdict: "{{outputs.gpt_verdict}}"
   }
 
   ## ═══ Phase 5b : Verdict Routing ═══════════════════════════════

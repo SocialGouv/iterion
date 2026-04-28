@@ -18,6 +18,7 @@ All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`
 | **C024** | error | Duplicate MCP server | A `mcp_server` name is declared more than once | Use unique names for each MCP server |
 | **C025** | error | Invalid MCP server config | MCP server misconfigured (e.g., stdio without command, http without url) | Match properties to transport type: stdio needs `command`, http needs `url` |
 | **C029** | warning | Interaction on non-delegate node | `interaction` is set on an agent/judge without `delegate:` | Interaction forwarding only works with delegation backends — add `delegate:` or remove `interaction:` |
+| **C030** | warning | Codex backend discouraged | A node uses `backend: "codex"` | Codex is still supported but has limitations (cannot configure tool set, fills its own context window, weaker integration). Prefer `backend: "claude_code"` for tool-using agents or `claw` (default) with an OpenAI model (`model: "openai/gpt-5.4-mini"`) for judges/reviewers. |
 
 ## Validation Diagnostics
 

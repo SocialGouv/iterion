@@ -55,7 +55,7 @@ func mockStreamEvents(text string, stopReason string) <-chan api.StreamEvent {
 // execMockClient is a test double for api.APIClient.
 type execMockClient struct {
 	streams []<-chan api.StreamEvent // responses to return in order
-	err     error                   // error to return (overrides streams)
+	err     error                    // error to return (overrides streams)
 	mu      sync.Mutex
 	calls   int
 }

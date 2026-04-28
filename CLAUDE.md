@@ -100,6 +100,13 @@ src -> dst with {field: "{{ref}}"}      # data mapping
 
 **Budget block:** `max_parallel_branches`, `max_duration`, `max_cost_usd`, `max_tokens`, `max_iterations`
 
+### Backend selection
+
+Three backends are wired:
+- `claw` (default, in-process) — recommended for read-only LLM nodes (judges, reviewers, planners). Use any provider model claw supports, e.g. `model: "openai/gpt-5.4-mini"` or `model: "anthropic/claude-sonnet-4-6"`.
+- `claude_code` — recommended for nodes that need real tool/shell access (implementers, fixers).
+- `codex` — **supported but discouraged**. The IR compiler emits `C030` for any node using it. Reasons: codex SDK cannot configure its tool set (`AllowedTools`/`CanUseTool` don't gate the built-in shell), it tends to fill its own context window, and its iterion integration is less ergonomic. Live tests (`task test:live`) still exercise codex for compatibility coverage; new workflows should not adopt it.
+
 ### Key Interfaces
 
 - `NodeExecutor` (`runtime/engine.go`) — `Execute(ctx, node, input) → (output, error)`, abstraction between engine and execution backend

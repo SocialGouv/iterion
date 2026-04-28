@@ -282,7 +282,7 @@ agent reviewer:
 | Property | Description |
 |----------|-------------|
 | `model` | LLM model identifier (supports `${ENV_VAR}`) |
-| `delegate` | Offload to external agent: `claude_code` or `codex` (see [Delegation](#delegation)) |
+| `delegate` | Offload to external agent: `claude_code` (recommended) or `codex` (discouraged, see [Delegation](#delegation)) |
 | `input` / `output` | Schema references for structured I/O |
 | `publish` | Persist output as a named artifact |
 | `system` / `user` | Prompt references |
@@ -597,19 +597,20 @@ For tasks that need full tool access (file editing, shell commands, git operatio
 
 ```iter
 agent implementer:
-  delegate: "claude_code"          # or: "codex"
+  delegate: "claude_code"          # recommended (codex is supported but discouraged)
   input: plan_schema
   output: result_schema
   system: implementation_prompt
   tools: [read_file, write_file, run_command, git_diff]
 ```
 
-| Backend | What it does |
-|---------|-------------|
-| `claude_code` | Runs the `claude` CLI as a subprocess with full tool access |
-| `codex` | Runs the `codex` CLI as a subprocess |
+| Backend | Status | What it does |
+|---------|--------|-------------|
+| `claude_code` | recommended | Runs the `claude` CLI as a subprocess with full tool access |
+| `claw` (default) | recommended for read-only / judges | In-process multi-provider LLM client (Anthropic, OpenAI, …) — use with `model: "openai/gpt-5.4-mini"` etc. |
+| `codex` | **discouraged** | Runs the `codex` CLI as a subprocess. Cannot configure its tool set, tends to fill its own context window, and has weaker iterion integration. The compiler emits a `C030` warning per node. Kept for compatibility — prefer `claude_code` or `claw`+OpenAI in new workflows. |
 
-> 💡 Both backends work with standard subscriptions — Claude Code with your Claude subscription (Pro/Max/Team/Enterprise), and Codex with your ChatGPT subscription (Plus/Pro/Team/Enterprise). No separate API key is required for delegation.
+> 💡 `claude_code` works with your Claude subscription (Pro/Max/Team/Enterprise) — no separate API key required. `claw` calls provider APIs directly and needs the corresponding API key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …).
 
 Delegation is useful for agents that need to *act* on the codebase (write files, run tests, execute commands). For agents that only need to *think* (review, judge, plan), use `model:` directly — it's lighter weight and faster.
 
@@ -853,7 +854,7 @@ iterion/
 ├── runtime/           # Execution engine, budget, parallel orchestration
 ├── store/             # File-backed persistence (runs, events, artifacts)
 ├── model/             # LLM executor, model registry, event hooks
-├── delegate/          # Delegation backends (claude_code, codex)
+├── delegate/          # Delegation backends (claude_code, codex (discouraged), claw)
 ├── tool/              # Tool adapter and allowlist-based access policy
 ├── recipe/            # Recipe/preset management
 ├── server/            # HTTP server for editor backend

@@ -244,3 +244,16 @@ Une fois le `round_robin` implemente, le workflow `dual_model_plan_implement_rev
 - Les workflows futurs pourront exprimer des patterns d'alternance de facon declarative et concise
 - Le pattern cross-pair reste disponible pour les cas ou un controle plus fin est necessaire
 - Le type `RouterMode` est prepare pour des extensions futures (`weighted`, `random`, etc.) sans changement d'architecture
+
+---
+
+## Addendum (2026-04-28) — Recommandations de backend
+
+Le pattern `round_robin` decrit ci-dessus reste pleinement valide. En revanche, le choix initial d'illustrer l'alternance avec **Claude Code + Codex** n'est plus recommande : depuis cette ADR, l'experience accumulee a montre que le backend `codex` souffre de limitations significatives (impossibilite de configurer son set d'outils, tendance a remplir lui-meme sa fenetre de contexte, integration moins aboutie). Le compilateur emet desormais un warning `C030` lorsqu'un noeud utilise `backend: "codex"`.
+
+Pour les nouveaux workflows utilisant `round_robin`, preferer une alternance entre :
+- `claude_code` (delegate) + `claw` direct API avec un modele OpenAI (`model: "openai/gpt-5.4-mini"`), ou
+- deux instances de `claude_code` configurees avec des modeles Claude differents (e.g. Sonnet vs Opus), ou
+- deux modeles directs via `claw` (e.g. `anthropic/claude-...` vs `openai/gpt-...`).
+
+Les examples historiques qui utilisaient `codex` dans ce role ont ete migres dans le meme commit ; voir `examples/dual_model_plan_implement_review.iter` pour la version courante.

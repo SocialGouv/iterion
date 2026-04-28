@@ -9,10 +9,10 @@
 ##   - Routage LLM pour selectionner l'agent de fix
 ##
 ## Phases :
-##   1. Planification parallele (Claude Code + Codex)
+##   1. Planification parallele (Claude Code + Claude Code-Opus)
 ##   2. Jugement + fusion combines (un seul noeud)
 ##   3. Implementation (Claude Code)
-##   4. Review parallele a triple role (Claude Code + Codex)
+##   4. Review parallele a triple role (Claude Code + Claude Code-Opus)
 ##   5. Verdict et routage de fix (LLM router)
 ##   6. Fix avec reprise de session -> retour review
 
@@ -67,8 +67,8 @@ prompt judge_merge_user:
   Plan A (Claude) :
   {{input.claude_plan}}
 
-  Plan B (Codex) :
-  {{input.codex_plan}}
+  Plan B (Opus) :
+  {{input.opus_plan}}
 
   Criteres d'acceptation :
   {{input.acceptance_criteria}}
@@ -154,8 +154,8 @@ prompt verdict_user:
   Review Claude :
   {{input.claude_review}}
 
-  Review Codex :
-  {{input.codex_review}}
+  Review Opus :
+  {{input.opus_review}}
 
   Criteres d'acceptation :
   {{input.acceptance_criteria}}
@@ -171,12 +171,12 @@ prompt verdict_user:
 
 prompt fix_router_system:
   Tu es un routeur de correction. On te presente les reviews de deux agents
-  (Claude et Codex) dont au moins un a rejete l'implementation.
+  (Claude et Opus) dont au moins un a rejete l'implementation.
 
   Selectionne l'agent le mieux place pour corriger les problemes :
   - claude_fix : si la review Claude a identifie des problemes critiques
                  ou si les deux reviews ont rejete (Claude corrige en premier)
-  - codex_fix : si SEULE la review Codex a identifie des problemes critiques
+  - opus_fix : si SEULE la review Opus a identifie des problemes critiques
                 et que Claude a approuve
 
   Choisis l'agent dont la review est la plus detaillee et actionable.
@@ -221,11 +221,11 @@ schema plan_output:
 
 schema dual_plan_bundle:
   claude_plan: json
-  codex_plan: json
+  opus_plan: json
 
 schema judge_merge_input:
   claude_plan: json
-  codex_plan: json
+  opus_plan: json
   acceptance_criteria: string
 
 schema judge_merge_output:
@@ -261,11 +261,11 @@ schema review_output:
 
 schema dual_review_bundle:
   claude_review: json
-  codex_review: json
+  opus_review: json
 
 schema verdict_input:
   claude_review: json
-  codex_review: json
+  opus_review: json
   acceptance_criteria: string
   syntax_report: json
 
@@ -296,11 +296,15 @@ agent claude_plan:
   user: plan_user
   session: fresh
 
-agent codex_plan:
-  backend: "codex"
+agent opus_plan:
+  ## Alternate planner via claude_code + Opus (different model from
+  ## claude_plan to keep dual-model coverage; same backend so session
+  ## semantics remain identical across the two paths).
+  backend: "claude_code"
+  model: "claude-opus-4-7"
   input: plan_input
   output: plan_output
-  publish: codex_plan_output
+  publish: opus_plan_output
   system: plan_system
   user: plan_user
   session: fresh
@@ -351,11 +355,12 @@ agent claude_review:
   tool_max_steps: 10
   readonly: true
 
-agent codex_review:
-  backend: "codex"
+agent opus_review:
+  backend: "claude_code"
+  model: "claude-opus-4-7"
   input: review_input
   output: review_output
-  publish: codex_review_report
+  publish: opus_review_report
   system: review_system
   user: review_user
   session: fresh
@@ -393,8 +398,9 @@ agent claude_fix:
   user: fix_user
   session: inherit
 
-agent codex_fix:
-  backend: "codex"
+agent opus_fix:
+  backend: "claude_code"
+  model: "claude-opus-4-7"
   input: fix_input
   output: fix_output
   publish: implementation
@@ -425,7 +431,7 @@ workflow session_review_fix:
     previous_feedback: ""
   }
 
-  plan_fanout -> codex_plan with {
+  plan_fanout -> opus_plan with {
     task_description: "{{vars.task_description}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}",
     previous_feedback: ""
@@ -438,8 +444,8 @@ workflow session_review_fix:
     acceptance_criteria: "{{vars.acceptance_criteria}}"
   }
 
-  codex_plan -> plan_judge_merge with {
-    codex_plan: "{{outputs.codex_plan}}"
+  opus_plan -> plan_judge_merge with {
+    opus_plan: "{{outputs.opus_plan}}"
   }
 
   ## Plan OK -> implementation
@@ -478,7 +484,7 @@ workflow session_review_fix:
     syntax_report: "{{input.syntax_report}}"
   }
 
-  review_fanout -> codex_review with {
+  review_fanout -> opus_review with {
     implementation: "{{input.implementation}}",
     acceptance_criteria: "{{input.acceptance_criteria}}",
     syntax_report: "{{input.syntax_report}}"
@@ -492,8 +498,8 @@ workflow session_review_fix:
     syntax_report: "{{outputs.validate_syntax}}"
   }
 
-  codex_review -> review_verdict with {
-    codex_review: "{{outputs.codex_review}}"
+  opus_review -> review_verdict with {
+    opus_review: "{{outputs.opus_review}}"
   }
 
   ## Implementation OK -> done
@@ -502,7 +508,7 @@ workflow session_review_fix:
   ## Implementation KO -> routage fix
   review_verdict -> fix_llm_router when not approved as fix_loop(5) with {
     claude_review: "{{outputs.claude_review}}",
-    codex_review: "{{outputs.codex_review}}",
+    opus_review: "{{outputs.opus_review}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}"
   }
 
@@ -515,9 +521,9 @@ workflow session_review_fix:
     acceptance_criteria: "{{vars.acceptance_criteria}}"
   }
 
-  fix_llm_router -> codex_fix with {
-    _session_id: "{{outputs.codex_review._session_id}}",
-    fix_plan: "{{outputs.codex_review.fix_plan}}",
+  fix_llm_router -> opus_fix with {
+    _session_id: "{{outputs.opus_review._session_id}}",
+    fix_plan: "{{outputs.opus_review.fix_plan}}",
     acceptance_criteria: "{{vars.acceptance_criteria}}"
   }
 
@@ -526,6 +532,6 @@ workflow session_review_fix:
     workspace_dir: "{{vars.workspace_dir}}"
   }
 
-  codex_fix -> validate_syntax as fix_loop(5) with {
+  opus_fix -> validate_syntax as fix_loop(5) with {
     workspace_dir: "{{vars.workspace_dir}}"
   }
