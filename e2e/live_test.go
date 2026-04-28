@@ -1738,12 +1738,14 @@ func TestLive_Lite_ClawBuiltinTools(t *testing.T) {
 //
 // Asserts that the EventLLMRequest event for the `thinker` node contains
 // reasoning_effort=high in its data — proving the chain
-//   ir.Node.ReasoningEffort
-//     → delegate.Task.ReasoningEffort
-//       → providerOptsForNode → opts.ProviderOptions["reasoning_effort"]
-//         → fireOnRequest → RequestInfo.ReasoningEffort
-//           → LLMRequestInfo.ReasoningEffort
-//             → store EventLLMRequest.data["reasoning_effort"]
+//
+//	ir.Node.ReasoningEffort
+//	  → delegate.Task.ReasoningEffort
+//	    → providerOptsForNode → opts.ProviderOptions["reasoning_effort"]
+//	      → fireOnRequest → RequestInfo.ReasoningEffort
+//	        → LLMRequestInfo.ReasoningEffort
+//	          → store EventLLMRequest.data["reasoning_effort"]
+//
 // is intact end-to-end.
 func TestLive_Lite_ClawReasoningEffort(t *testing.T) {
 	if testing.Short() {

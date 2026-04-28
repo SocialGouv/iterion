@@ -1,5 +1,11 @@
 # Handoff — claw-code-go deferred features
 
+> **STATUS 2026-04-28 (session de reprise) : LIVRÉ.** Les 7 features
+> différées ont été implémentées en main thread, dans claw-code-go,
+> sur la branche `master`. Voir la section [Statut de livraison](#statut-de-livraison)
+> en bas pour le récap commit-par-commit. Le reste de ce document
+> conserve la spec originale à titre d'archive.
+
 Document complet permettant à un nouvel agent global de reprendre les 7 features différées de la session du 28 avril 2026. Se lit avant tout dispatch.
 
 ---
@@ -331,3 +337,37 @@ Par ordre de ratio impact/effort, et en évitant les conflits de fichiers entre 
 - Memory : `~/.claude/projects/-workspaces-iterion/memory/project_claw_parity_port_2026-04-28.md`
 
 Bon courage à l'agent suivant. Cette ligne de travail mérite d'être achevée — claw-code-go est à un cheveu de la parité COMPLETE avec Claude Code.
+
+---
+
+## Statut de livraison
+
+Session du 2026-04-28, en main thread (pas de subagents), commits locaux sur claw-code-go `master` (non poussés à la rédaction de cette mise à jour) :
+
+| # | Feature | Commit | Notes |
+|---|---|---|---|
+| 1 | BUG 4 — `ExecuteTool(ctx, ...)` propagation | `a942ae1` | Pre/post lifecycle hooks, MCP fallback, et `ExecuteToolQuiet` reçoivent maintenant `ctx`. Test `TestExecuteTool_PropagatesCtxCancellation`. |
+| 2 | BUGs 2/3 — Responses interleaved | déjà fait dans `80f5a8c` | `textByItem map` + `TestStreamResponses_InterleavedMessageItems` étaient déjà en place. Le handoff listait cette feature à tort. |
+| 3 | Computer use — read_image + screenshot stub | `0dbc723` | 5 MB cap, sniff PNG/JPEG/GIF/WebP, HTTPS-only URL fetch, screenshot retourne `*api.APIError{StatusCode:501}`. |
+| 4 | Session timeline + lineage CLI | `c875a5f` | `/timeline <id>` + `/lineage <id>` slash commands ; `SessionDirProvider` interface ajoutée à `LoopAdapter`. |
+| 5 | OTLP exporter | `e27e0ac` | OTLP/HTTP JSON (pas de dep otlp-proto). Batch + retry 5xx + drop 4xx. |
+| 6 | MCP OAuth broker (PKCE + refresh + revoke + bridge) | `8a6bf15` | A.1 + A.2 livrés en un commit. `BearerHeaderFunc` expose un closure pour le wiring SSETransport (à câbler côté MCP transports dans une session de suivi). |
+| 7.1 | Plugin marketplace HTTP client | `e6f9749` | |
+| 7.2 | Plugin installer (download + checksum + extract) | `016b35d` | Path traversal rejeté ; staging dir + atomic rename. |
+| 7.3 | Plugin manager + slash commands `/store` | `44adb41` | Renommé `/store` (au lieu de `/plugins`) pour ne pas entrer en collision avec l'alias existant de `/plugin`. |
+| 7.4 | CLAUDE.md slash command auto-load | `3dc754f` | Walk cwd→/, parse H2 `/<name>`, leaf wins on conflict. |
+
+**Vérification** :
+```bash
+cd /workspaces/iterion/.works/claw-code-go
+devbox run --config=/workspaces/iterion -- go -C $(pwd) test -race -short ./...   # PASS
+cd /workspaces/iterion
+devbox run -- task check                                                          # PASS
+```
+
+**Restant côté wiring** (non bloquant pour l'usage du broker / des plugins) :
+- Câbler `oauth.Broker.BearerHeaderFunc` dans `internal/mcp/sse.go::SSETransport` (signature actuelle accepte un `authHeader string` statique → besoin d'un setter `WithAuthFunc(func(ctx) (string, error))`).
+- Wirer `LoadClaudeMdCommands` dans le `cmd/claw` boot pour qu'il scanne le cwd au démarrage.
+- Connecter `plugins.Manager` à un adaptateur `PluginManagerProvider` côté boot pour activer `/store`.
+
+Ces trois branchements requièrent l'accès au `cmd/claw` main et à l'adapter de loop ; ils ne touchent ni la sémantique des features livrées ni leurs tests. À faire en suivi.
