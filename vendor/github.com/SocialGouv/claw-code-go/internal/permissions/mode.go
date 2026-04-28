@@ -20,6 +20,15 @@ const (
 	ModePrompt PermissionMode = 3
 	// ModeAllow permits all operations without prompting.
 	ModeAllow PermissionMode = 4
+	// ModeDontAsk enforces a strict allow-list: any operation that is not
+	// explicitly listed via WithToolRequirement (or matched by an allow rule)
+	// is denied immediately without consulting the prompter.
+	ModeDontAsk PermissionMode = 5
+	// ModeAuto delegates the decision to a Classifier. The default classifier
+	// permits a small read-only safe-list and prompts for everything else,
+	// making ModeAuto strictly safer than ModePrompt for read operations.
+	// Custom Classifiers can be registered via WithClassifier on the policy.
+	ModeAuto PermissionMode = 6
 )
 
 // CLI-facing aliases preserving backward compatibility with the original Go
@@ -45,8 +54,12 @@ func ParsePermissionMode(s string) (PermissionMode, error) {
 		return ModeReadOnly, nil
 	case "danger-full-access":
 		return ModeDangerFullAccess, nil
+	case "dont-ask", "strict-allow-list":
+		return ModeDontAsk, nil
+	case "auto":
+		return ModeAuto, nil
 	default:
-		return ModePrompt, fmt.Errorf("unknown permission mode %q (want: default, accept-edits, bypass, plan, read-only, workspace-write, danger-full-access, prompt, allow)", s)
+		return ModePrompt, fmt.Errorf("unknown permission mode %q (want: default, accept-edits, bypass, plan, read-only, workspace-write, danger-full-access, prompt, allow, dont-ask, auto)", s)
 	}
 }
 
@@ -63,6 +76,10 @@ func (m PermissionMode) String() string {
 		return "prompt"
 	case ModeAllow:
 		return "allow"
+	case ModeDontAsk:
+		return "dont-ask"
+	case ModeAuto:
+		return "auto"
 	default:
 		return "unknown"
 	}

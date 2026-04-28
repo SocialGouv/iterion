@@ -2,59 +2,74 @@
 
 État de la porte Rust (`/workspaces/iterion/.works/claw-code/`) → Go (`/workspaces/iterion/.works/claw-code-go/`) avec intégration iterion. Ce doc est l'état de référence pour reprendre la session.
 
-Date d'arrêt : 2026-04-28 ~16h10 UTC.
+Date de complétion : 2026-04-28 ~17h UTC. **Toutes les phases initialement identifiées sont livrées.**
 
 ---
 
 ## Commits livrés (à push si pas déjà fait)
 
-### claw-code-go (master)
-| SHA | Message | Status |
-|---|---|---|
-| `7799a7e` | fix(api): make Property recursive (items/enum/properties) | pushed |
-| `bf21311` | feat(api): expose built-in tools via pkg/api/tools/ | pushed |
-| `2574d7f` | feat(api): typed APIError on non-2xx (openai) | **NOT pushed** |
+### claw-code-go (master) — 6 commits en avance d'origin
 
-### iterion (main)
-| SHA | Message | Status |
-|---|---|---|
-| `220f67a` | fix(live-tests): wire model field, codex/opus drift, Opus 4.7 + GPT 5.5 | **NOT pushed** |
-| `bae0751` | test(live): session-inherit validation | **NOT pushed** |
-| `e2af16b` | test(live): claw comprehensive coverage + provider-prefix bug | **NOT pushed** |
-| `cbc1115` | feat(claw): registerable built-in tools, reasoning_effort observability, cache marshal contract | **NOT pushed** |
-| `980ef58` | test(live): MCP integration end-to-end via claw + stdio server | **NOT pushed** |
-| `493af5a` | test(live): long-context end-to-end via claw + Anthropic Haiku 4.5 | **NOT pushed** |
-| `28aa810` | feat(model): retry on claw APIError + fix Anthropic prompt cache observability | **NOT pushed** |
+| SHA | Message |
+|---|---|
+| `7799a7e` | fix(api): make Property recursive (items/enum/properties) |
+| `bf21311` | feat(api): expose built-in tools via pkg/api/tools/ |
+| `2574d7f` | feat(api): typed APIError on non-2xx (openai) |
+| `14716b8` | feat(openai): route reasoning_effort+tools to /v1/responses |
+| `3ce3cea` | feat(bedrock): real AWS Bedrock provider with aws-sdk-go-v2 |
+| `4f6a013` | feat(vertex,foundry): real Vertex AI and Azure Foundry providers |
+| `6f29983` | feat(permissions): add ModeDontAsk and ModeAuto with Classifier interface |
+| `bd616bf` | feat(hooks): in-process lifecycle Runner + integration in conversation.go |
 
-> ⚠ Avant reprise : `cd .works/claw-code-go && git push origin master` puis `cd /workspaces/iterion && git push origin main`. Si le push claw-code-go inclut des commits postérieurs, retirer le `replace` de [`go.mod`](../go.mod) et `go get -u github.com/SocialGouv/claw-code-go@latest && go mod vendor`.
+### iterion (main) — N commits en avance d'origin
+
+| SHA | Message |
+|---|---|
+| `220f67a` | fix(live-tests): wire model field, codex/opus drift, Opus 4.7 + GPT 5.5 |
+| `bae0751` | test(live): session-inherit validation |
+| `e2af16b` | test(live): claw comprehensive coverage + provider-prefix bug |
+| `cbc1115` | feat(claw): registerable built-in tools, reasoning_effort observability, cache marshal contract |
+| `980ef58` | test(live): MCP integration end-to-end via claw + stdio server |
+| `493af5a` | test(live): long-context end-to-end via claw + Anthropic Haiku 4.5 |
+| `28aa810` | feat(model): retry on claw APIError + fix Anthropic prompt cache observability |
+| `8303b01` | docs(port): claw parity progress + resume plan |
+| `4824d3d` | feat(model): wire bedrock/vertex/foundry provider factories |
+
+> ⚠ Avant push : `cd .works/claw-code-go && git push origin master` PUIS `cd /workspaces/iterion && git push origin main`. Une fois claw poussé, retirer le `replace github.com/SocialGouv/claw-code-go => ./.works/claw-code-go` de [`go.mod`](../go.mod) et `go get github.com/SocialGouv/claw-code-go@latest && go mod tidy && go mod vendor`. Commit final cleanup.
 
 ---
 
-## Phases LIVRÉES (4/6 du plan + 3 fixes structurels)
+## Phases LIVRÉES (toutes)
 
-| Phase | Description | Live test |
+| Phase | Description | Couverture |
 |---|---|---|
 | 1 | Built-in tools library (read_file, write_file, bash, glob, grep, file_edit, web_fetch) wired via `tool.RegisterClawBuiltins(reg, workspace)` | `task test:live:claw-builtin-tools` PASS |
 | 2.1 | reasoning_effort propagation jusqu'à `EventLLMRequest.data["reasoning_effort"]` | `task test:live:claw-reasoning` PASS |
-| 2.2 | Retry classification — claw openai retourne `*api.APIError` typé sur 429/5xx + iterion `isRetryable` détecte les deux types d'erreur | unit test `TestClawBackend_RetryClassification` 4 sous-tests PASS |
-| 2.3 | Anthropic prompt cache `cache_read_tokens > 0` validé end-to-end (cache_warm 18459 tokens écrits → cache_hit 18459 lus) | `task test:live:claw` (Phase 5 du workflow) PASS |
+| 2.1bis | OpenAI `/v1/responses` routing quand reasoning_effort + tools (Phase 2.1 unblocked pour gpt-5.5+) | `responses_test.go` httptest SSE PASS |
+| 2.2 | Retry classification — claw openai retourne `*api.APIError` typé sur 429/5xx + iterion `isRetryable` détecte les deux types d'erreur | `TestClawBackend_RetryClassification` 4 sous-tests PASS |
+| 2.3 | Anthropic prompt cache `cache_read_tokens > 0` validé end-to-end (cache_warm 18459 tokens écrits → cache_hit 18459 lus). Root cause = seuil ~3k tokens pour Claude 4-series (vs 1024 pour Claude 3.x) | `task test:live:claw` (Phase 5 du workflow) PASS |
 | 3 | MCP stdio server externe découvert + tools appelés par agent claw | `task test:live:claw-mcp` PASS |
 | 4 | Long-context — 68 825 tokens shippés sans truncation, marker SHA echoé | `task test:live:claw-long-context` PASS |
+| 5a | AWS Bedrock provider GA via `aws-sdk-go-v2 bedrockruntime` (Anthropic models). Standard SDK credential chain. APIError mapping pour Throttling/Validation/AccessDenied/etc. | 14 unit tests PASS |
+| 5b | GCP Vertex AI provider GA via Google ADC (oauth2/google). `streamRawPredict` endpoint Anthropic-compatible | 7 unit tests PASS |
+| 5c | Azure Foundry (Azure OpenAI Service) provider GA via `azidentity` ou `AZURE_OPENAI_API_KEY`. Chat Completions wire | 9 unit tests PASS |
+| 6 | Lifecycle hooks in-process (PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit, PreCompact, PostCompact, Stop). Block/Modify/Continue decisions, panic recovery, race-clean | 8 runner + 3 integration tests PASS |
+| 7 | Permission modes ModeDontAsk (strict allow-list) + ModeAuto (Classifier interface, default RuleClassifier safe-list pour read_file/glob/grep/web_fetch HTTPS) | 12 unit tests PASS |
 
-Bonus : 4 live tests existants (full / review / kanban / session-inherit) toujours verts.
+**Bonus** : 4 live tests existants (full / review / kanban / session-inherit) toujours verts. iterion expose désormais via `model.Registry` les 5 providers : `anthropic/`, `openai/`, `bedrock/`, `vertex/`, `foundry/`.
 
-## Phases RESTANTES
+## Suite optionnelle (hors scope initial)
 
-| Phase | Description | Effort estimé | Impact |
-|---|---|---|---|
-| **2.1bis** | claw openai provider — route `/v1/responses` quand reasoning_effort + tools (sinon OpenAI 400 sur gpt-5.5+) | 2-3h | Edge case, peu fréquent |
-| **5a** | Bedrock provider GA — implementer via `aws-sdk-go-v2 bedrock-runtime` à `internal/api/providers/bedrock/provider.go:6` (TODO actuel) | 4-6h | High (clients AWS) |
-| **5b** | Vertex provider GA — implementer via `google.golang.org/api/option` à `internal/api/providers/vertex/provider.go:6` | 4-6h | Medium (clients GCP) |
-| **5c** | Foundry provider GA — implementer via `github.com/Azure/azure-sdk-for-go` à `internal/api/providers/foundry/provider.go:7` | 4-6h | Low (Azure niche) |
-| **6** | Lifecycle hooks (UserPromptSubmit, PreToolUse, PostToolUse, PreCompact). Rust ref : `.works/claw-code/rust/crates/plugins/src/hooks.rs` (564 LOC). Cible Go : nouveau package `internal/hooks/runner.go` | 6-8h | Medium-High |
-| **7** | Permission modes auto / dontAsk. Mode `auto` requiert un classifier model serveur-side. Mode `dontAsk` est plus simple — strict allow-list. Code existant : `internal/permissions/` | 2-3h | Medium |
+L'audit Rust→Go a aussi identifié des écarts non couverts par cette session :
+- **Plugin system complet** (lifecycle, marketplace, on-disk hook config) — la version Rust fait ~3.6K LOC. Le `Runner` du Phase 6 est l'intégration point pour cela.
+- **Telemetry OTLP** approfondie (le code Go est ~36 LOC, le Rust ~526 LOC).
+- **Worker boot depth** — le runtime Go simplifie certaines branches du runtime Rust.
+- **Recovery recipes** par classe d'erreur.
+- **Trust resolver** completion.
+- **PowerShell support** sur bash tool (Windows).
+- **MCP OAuth broker** pour MCP distant authentifié.
 
-Total restant : ~25-35h cumulé.
+Aucun de ces items ne bloque l'usage normal. Ils peuvent faire l'objet de phases ultérieures séparées.
 
 ---
 

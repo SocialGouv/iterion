@@ -1,6 +1,10 @@
 package permissions
 
-import "fmt"
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+)
 
 // PermissionPolicy evaluates permission mode requirements plus allow/deny/ask
 // rules. This matches Rust's PermissionPolicy struct and authorize_with_context
@@ -12,6 +16,7 @@ type PermissionPolicy struct {
 	allowRules       []permissionRule
 	denyRules        []permissionRule
 	askRules         []permissionRule
+	classifier       Classifier
 }
 
 // NewPermissionPolicy creates a policy with the given active mode.
@@ -25,6 +30,14 @@ func NewPermissionPolicy(activeMode PermissionMode) *PermissionPolicy {
 // WithToolRequirement adds a per-tool permission mode requirement.
 func (p *PermissionPolicy) WithToolRequirement(toolName string, requiredMode PermissionMode) *PermissionPolicy {
 	p.toolRequirements[toolName] = requiredMode
+	return p
+}
+
+// WithClassifier registers a Classifier consulted when the active mode is
+// ModeAuto. Passing nil clears any previously registered classifier (in
+// which case the documented default RuleClassifier is used).
+func (p *PermissionPolicy) WithClassifier(c Classifier) *PermissionPolicy {
+	p.classifier = c
 	return p
 }
 
@@ -75,7 +88,7 @@ func (p *PermissionPolicy) Authorize(toolName, input string, prompter Permission
 //  4. Allow rules or mode check
 //  5. Escalation prompt (WorkspaceWrite→DangerFullAccess, or Prompt mode)
 //  6. Default deny
-func (p *PermissionPolicy) AuthorizeWithContext(toolName, input string, context *PermissionContext, prompter PermissionPrompter) PermissionOutcome {
+func (p *PermissionPolicy) AuthorizeWithContext(toolName, input string, permCtx *PermissionContext, prompter PermissionPrompter) PermissionOutcome {
 	// 1. Deny rules always short-circuit.
 	if rule := findMatchingRule(p.denyRules, toolName, input); rule != nil {
 		return PermissionOutcome{
@@ -89,20 +102,68 @@ func (p *PermissionPolicy) AuthorizeWithContext(toolName, input string, context 
 	askRule := findMatchingRule(p.askRules, toolName, input)
 	allowRule := findMatchingRule(p.allowRules, toolName, input)
 
+	// ModeDontAsk: strict allow-list. After deny rules have run, the only
+	// paths to Allow are an explicit allow rule match or an explicit
+	// per-tool requirement registered via WithToolRequirement. Anything
+	// else is denied without prompting.
+	if currentMode == ModeDontAsk {
+		if allowRule != nil {
+			return PermissionOutcome{Allowed: true}
+		}
+		if _, listed := p.toolRequirements[toolName]; listed {
+			return PermissionOutcome{Allowed: true}
+		}
+		return PermissionOutcome{
+			Allowed: false,
+			Reason: fmt.Sprintf("tool '%s' is not in the dont-ask allow-list", toolName),
+		}
+	}
+
+	// ModeAuto: consult the registered classifier (or the default
+	// RuleClassifier if none) and route Allow/Deny/Ask outcomes.
+	if currentMode == ModeAuto {
+		classifier := p.classifier
+		if classifier == nil {
+			classifier = NewRuleClassifier()
+		}
+		args := parseToolArgs(input)
+		decision, err := classifier.Classify(context.Background(), toolName, args)
+		if err != nil {
+			decision = DecisionAsk
+		}
+		switch decision {
+		case DecisionAllow:
+			// Ask rules still take precedence over a classifier Allow.
+			if askRule != nil {
+				reason := fmt.Sprintf("tool '%s' requires approval due to ask rule '%s'", toolName, askRule.raw)
+				return promptOrDeny(toolName, input, currentMode, requiredMode, reason, prompter)
+			}
+			return PermissionOutcome{Allowed: true}
+		case DecisionDeny:
+			return PermissionOutcome{
+				Allowed: false,
+				Reason: fmt.Sprintf("tool '%s' denied by auto-mode classifier", toolName),
+			}
+		default:
+			reason := fmt.Sprintf("tool '%s' requires approval (auto-mode classifier deferred)", toolName)
+			return promptOrDeny(toolName, input, currentMode, requiredMode, reason, prompter)
+		}
+	}
+
 	// 2. Hook override.
-	if context != nil && context.OverrideDecision != nil {
-		switch *context.OverrideDecision {
+	if permCtx != nil && permCtx.OverrideDecision != nil {
+		switch *permCtx.OverrideDecision {
 		case OverrideDeny:
 			reason := fmt.Sprintf("tool '%s' denied by hook", toolName)
-			if context.OverrideReason != "" {
-				reason = context.OverrideReason
+			if permCtx.OverrideReason != "" {
+				reason = permCtx.OverrideReason
 			}
 			return PermissionOutcome{Allowed: false, Reason: reason}
 
 		case OverrideAsk:
 			reason := fmt.Sprintf("tool '%s' requires approval due to hook guidance", toolName)
-			if context.OverrideReason != "" {
-				reason = context.OverrideReason
+			if permCtx.OverrideReason != "" {
+				reason = permCtx.OverrideReason
 			}
 			return promptOrDeny(toolName, input, currentMode, requiredMode, reason, prompter)
 
@@ -167,6 +228,18 @@ func promptOrDeny(toolName, input string, currentMode, requiredMode PermissionMo
 		return PermissionOutcome{Allowed: true}
 	}
 	return PermissionOutcome{Allowed: false, Reason: decision.Reason}
+}
+
+// parseToolArgs decodes a tool input string as a JSON object so the result can
+// be handed to a Classifier. If the input is not valid JSON, an empty map is
+// returned (the classifier still receives the toolName).
+func parseToolArgs(input string) map[string]any {
+	args := map[string]any{}
+	if input == "" {
+		return args
+	}
+	_ = json.Unmarshal([]byte(input), &args)
+	return args
 }
 
 // findMatchingRule returns the first rule that matches the given tool name and input.
