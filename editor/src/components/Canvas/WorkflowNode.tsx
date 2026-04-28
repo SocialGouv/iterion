@@ -1,9 +1,12 @@
 import { Handle } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 import type { NodeKind, AgentDecl, ToolNodeDecl, HumanDecl, RouterDecl } from "@/api/types";
-import { useDocumentStore } from "@/store/document";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
+import { useGroupedDiagnostics } from "@/hooks/useGroupedDiagnostics";
+import { useSelectionStore } from "@/store/selection";
+import { dominantSeverity } from "@/lib/diagnostics";
 import { ProviderIcon } from "@/components/icons/ProviderIcon";
+import DiagnosticBadge from "@/components/Diagnostics/DiagnosticBadge";
 import { NODE_ICONS, SELECTED_BORDER, SELECTED_GLOW } from "@/lib/constants";
 import { SIDES, POS_MAP } from "./handlePositions";
 
@@ -17,18 +20,14 @@ interface WorkflowNodeData extends Record<string, unknown> {
 export default function WorkflowNode({ data, selected }: NodeProps) {
   const { label, kind, color, decl } = data as unknown as WorkflowNodeData;
   const activeWorkflow = useActiveWorkflow();
-  const diagnostics = useDocumentStore((s) => s.diagnostics);
+  const grouped = useGroupedDiagnostics();
+  const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
   const isEntry = activeWorkflow?.entry === label;
 
-  // Check if any diagnostic mentions this node (boundary match to avoid false positives)
-  const hasError = diagnostics.some((d) => {
-    const idx = d.indexOf(label);
-    if (idx === -1) return false;
-    const before = idx > 0 ? d.charAt(idx - 1) : " ";
-    const after = idx + label.length < d.length ? d.charAt(idx + label.length) : " ";
-    const isWordChar = (c: string) => /\w/.test(c);
-    return !isWordChar(before) && !isWordChar(after);
-  });
+  const nodeDiags = grouped.byNode.get(label) ?? [];
+  const severity = dominantSeverity(nodeDiags);
+  const hasError = severity === "error";
+  const hasWarning = severity === "warning";
 
   // Extract subtitle info from declaration
   let subtitle = "";
@@ -91,31 +90,52 @@ export default function WorkflowNode({ data, selected }: NodeProps) {
   const isTerminal = kind === "done" || kind === "fail";
   const isStart = kind === "start";
 
+  const borderColor = selected
+    ? SELECTED_BORDER
+    : hasError
+      ? "#EF4444"
+      : hasWarning
+        ? "#F59E0B"
+        : isEntry
+          ? "#F59E0B"
+          : color;
+  const glow = selected
+    ? SELECTED_GLOW
+    : hasError
+      ? "0 0 10px #EF444455"
+      : hasWarning
+        ? "0 0 8px #F59E0B44"
+        : isEntry
+          ? "0 0 8px #F59E0B55"
+          : undefined;
+
   return (
     <div
-      className={`rounded-lg border-2 px-4 py-2 min-w-[140px] text-center shadow-lg ${isTerminal || isStart ? "opacity-80" : ""}`}
+      className={`relative rounded-lg border-2 px-4 py-2 min-w-[140px] text-center shadow-lg ${isTerminal || isStart ? "opacity-80" : ""}`}
       style={{
-        borderColor: selected ? SELECTED_BORDER : hasError ? "#EF4444" : isEntry ? "#F59E0B" : color,
+        borderColor,
         background: `${color}22`,
-        boxShadow: selected
-          ? SELECTED_GLOW
-          : hasError
-            ? "0 0 10px #EF444455"
-            : isEntry
-              ? "0 0 8px #F59E0B55"
-              : undefined,
+        boxShadow: glow,
       }}
     >
+      {nodeDiags.length > 0 && (
+        <div className="absolute -top-2 -right-2 z-10">
+          <DiagnosticBadge
+            diagnostics={nodeDiags}
+            onReveal={() => setSelectedNode(label)}
+          />
+        </div>
+      )}
       {!isStart && SIDES.map(s => (
-        <Handle key={`target-${s}`} id={`target-${s}`} type="target" position={POS_MAP[s]} className="!bg-gray-400 !w-1.5 !h-1.5 !opacity-0" />
+        <Handle key={`target-${s}`} id={`target-${s}`} type="target" position={POS_MAP[s]} className="!bg-surface-3 !w-1.5 !h-1.5 !opacity-0" />
       ))}
       <div className="flex items-center justify-center gap-1">
         <span className="text-lg">{NODE_ICONS[kind]}</span>
       </div>
-      <div className="font-semibold text-sm text-white">{isStart ? "Start" : label}</div>
-      {!isStart && <div className="text-xs text-gray-300">{kind}</div>}
+      <div className="font-semibold text-sm text-fg-default">{isStart ? "Start" : label}</div>
+      {!isStart && <div className="text-xs text-fg-muted">{kind}</div>}
       {subtitle && (
-        <div className="text-[10px] text-gray-500 mt-0.5 max-w-[140px] flex items-center justify-center gap-1">
+        <div className="text-[10px] text-fg-subtle mt-0.5 max-w-[140px] flex items-center justify-center gap-1">
           <ProviderIcon model={providerModel} delegate={providerDelegate} size={10} className="shrink-0 opacity-70" />
           <span className="truncate">{subtitle}</span>
         </div>
@@ -124,27 +144,26 @@ export default function WorkflowNode({ data, selected }: NodeProps) {
       {(inputSchema || outputSchema) && (
         <div className="flex items-center justify-center gap-1 mt-1">
           {inputSchema && (
-            <span className="text-[9px] bg-blue-900/50 text-blue-300 px-1 rounded" title={`input: ${inputSchema}`}>
+            <span className="text-[9px] bg-accent-soft text-accent px-1 rounded" title={`input: ${inputSchema}`}>
               {"\u2192"}{inputSchema}
             </span>
           )}
           {outputSchema && (
-            <span className="text-[9px] bg-green-900/50 text-green-300 px-1 rounded" title={`output: ${outputSchema}`}>
+            <span className="text-[9px] bg-success-soft text-success-fg px-1 rounded" title={`output: ${outputSchema}`}>
               {outputSchema}{"\u2192"}
             </span>
           )}
         </div>
       )}
-      {/* Compact status badges: entry, loop, error — single row */}
-      {(isEntry || hasLoop || hasError) && (
+      {/* Compact status badges: entry, loop. Diagnostic badge handled separately. */}
+      {(isEntry || hasLoop) && (
         <div className="flex items-center justify-center gap-1.5 mt-1">
-          {isEntry && <span className="text-[9px] bg-amber-900/50 text-amber-400 px-1 rounded">entry</span>}
-          {hasLoop && <span className="text-[9px] bg-amber-800/50 text-amber-300 px-1 rounded">{"\u{1F504}"} loop</span>}
-          {hasError && <span className="text-[9px] bg-red-900/50 text-red-400 px-1 rounded">error</span>}
+          {isEntry && <span className="text-[9px] bg-warning-soft text-warning-fg px-1 rounded">entry</span>}
+          {hasLoop && <span className="text-[9px] bg-warning-soft text-warning-fg px-1 rounded">{"\u{1F504}"} loop</span>}
         </div>
       )}
       {!isTerminal && SIDES.map(s => (
-        <Handle key={`source-${s}`} id={`source-${s}`} type="source" position={POS_MAP[s]} className="!bg-gray-400 !w-1.5 !h-1.5 !opacity-0" />
+        <Handle key={`source-${s}`} id={`source-${s}`} type="source" position={POS_MAP[s]} className="!bg-surface-3 !w-1.5 !h-1.5 !opacity-0" />
       ))}
     </div>
   );

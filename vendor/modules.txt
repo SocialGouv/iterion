@@ -62,11 +62,14 @@ github.com/AzureAD/microsoft-authentication-library-for-go/apps/public
 # github.com/SocialGouv/claw-code-go v0.0.0-20260428150308-bf21311bac7b => ./.works/claw-code-go
 ## explicit; go 1.25.0
 github.com/SocialGouv/claw-code-go/internal/api
+github.com/SocialGouv/claw-code-go/internal/api/httputil
 github.com/SocialGouv/claw-code-go/internal/api/providers/anthropic
 github.com/SocialGouv/claw-code-go/internal/api/providers/bedrock
 github.com/SocialGouv/claw-code-go/internal/api/providers/foundry
 github.com/SocialGouv/claw-code-go/internal/api/providers/openai
+github.com/SocialGouv/claw-code-go/internal/api/providers/openaiwire
 github.com/SocialGouv/claw-code-go/internal/api/providers/vertex
+github.com/SocialGouv/claw-code-go/internal/api/sseutil
 github.com/SocialGouv/claw-code-go/internal/apikit
 github.com/SocialGouv/claw-code-go/internal/config
 github.com/SocialGouv/claw-code-go/internal/lsp

@@ -78,7 +78,7 @@ export default function AgentForm({ decl, kind }: Props) {
         }}
       />
       {detectProvider(decl.model, decl.delegate) && (
-        <div className="flex items-center gap-1.5 px-2 py-1 mb-1 bg-gray-800/50 rounded text-[10px] text-gray-400">
+        <div className="flex items-center gap-1.5 px-2 py-1 mb-1 bg-surface-1/50 rounded text-[10px] text-fg-subtle">
           <ProviderIcon model={decl.model} delegate={decl.delegate} size={14} />
           <span><ProviderLabel model={decl.model} delegate={decl.delegate} /></span>
         </div>

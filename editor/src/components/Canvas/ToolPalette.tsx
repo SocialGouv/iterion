@@ -29,14 +29,14 @@ export default function ToolPalette() {
   const setCanvasTool = useUIStore((s) => s.setCanvasTool);
 
   return (
-    <div className="absolute top-14 left-2 z-40 flex flex-col gap-1 bg-gray-900/90 border border-gray-700 rounded-lg p-1">
+    <div className="absolute top-14 left-2 z-40 flex flex-col gap-1 bg-surface-0/90 border border-border-default rounded-lg p-1">
       {tools.map((tool) => (
         <button
           key={tool.id}
           className={`flex items-center justify-center w-8 h-8 rounded transition-colors ${
             canvasTool === tool.id
-              ? "bg-blue-600 text-white"
-              : "text-gray-400 hover:bg-gray-700 hover:text-gray-200"
+              ? "bg-accent text-fg-default"
+              : "text-fg-subtle hover:bg-surface-2 hover:text-fg-default"
           }`}
           onClick={() => setCanvasTool(tool.id)}
           title={`${tool.label} (${tool.shortcut})`}

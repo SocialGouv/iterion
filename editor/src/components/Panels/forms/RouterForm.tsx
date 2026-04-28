@@ -74,7 +74,7 @@ export default function RouterForm({ decl }: Props) {
       {decl.mode === "llm" && (
         <div className="mt-2 space-y-1">
           {detectProvider(decl.model) && (
-            <div className="flex items-center gap-1.5 px-2 py-1 mb-1 bg-gray-800/50 rounded text-[10px] text-gray-400">
+            <div className="flex items-center gap-1.5 px-2 py-1 mb-1 bg-surface-1/50 rounded text-[10px] text-fg-subtle">
               <ProviderIcon model={decl.model} size={14} />
               <span><ProviderLabel model={decl.model} /></span>
             </div>
@@ -115,35 +115,35 @@ export default function RouterForm({ decl }: Props) {
         </div>
       )}
       {decl.mode === "condition" && (
-        <div className="mt-2 p-2 bg-gray-800 rounded border border-gray-700">
-          <p className="text-[10px] text-gray-400 mb-2">
+        <div className="mt-2 p-2 bg-surface-1 rounded border border-border-default">
+          <p className="text-[10px] text-fg-subtle mb-2">
             In condition mode, routing is controlled by &quot;when&quot; clauses on outgoing edges. Click an edge to add conditions.
           </p>
           {outgoingEdges.length === 0 && (
-            <p className="text-[10px] text-yellow-400">No outgoing edges yet. Connect this router to target nodes.</p>
+            <p className="text-[10px] text-warning">No outgoing edges yet. Connect this router to target nodes.</p>
           )}
           {outgoingEdges.map((e, i) => (
-            <div key={i} className="text-xs text-gray-300 flex items-center gap-1 py-0.5">
-              <span className="text-gray-500">&rarr;</span>
+            <div key={i} className="text-xs text-fg-muted flex items-center gap-1 py-0.5">
+              <span className="text-fg-subtle">&rarr;</span>
               <span>{e.to}</span>
               {e.when ? (
                 <span className="text-amber-400 text-[10px]">
                   (when{e.when.negated ? " not" : ""} {e.when.condition})
                 </span>
               ) : (
-                <span className="text-gray-500 text-[10px]">(no condition)</span>
+                <span className="text-fg-subtle text-[10px]">(no condition)</span>
               )}
             </div>
           ))}
         </div>
       )}
       {decl.mode === "fan_out_all" && outgoingEdges.length > 0 && (
-        <p className="text-[10px] text-gray-500 mt-1">
+        <p className="text-[10px] text-fg-subtle mt-1">
           Sends input to {outgoingEdges.length} target{outgoingEdges.length !== 1 ? "s" : ""} in parallel.
         </p>
       )}
       {decl.mode === "round_robin" && outgoingEdges.length > 0 && (
-        <p className="text-[10px] text-gray-500 mt-1">
+        <p className="text-[10px] text-fg-subtle mt-1">
           Cycles through {outgoingEdges.length} target{outgoingEdges.length !== 1 ? "s" : ""} one at a time.
         </p>
       )}

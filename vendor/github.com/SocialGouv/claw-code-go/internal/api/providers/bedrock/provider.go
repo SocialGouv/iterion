@@ -292,15 +292,15 @@ func decodeAnthropicJSON(data []byte) (*api.StreamEvent, error) {
 //   - "anthropic_version" is required.
 func MarshalRequest(req api.CreateMessageRequest) ([]byte, error) {
 	type wire struct {
-		AnthropicVersion string             `json:"anthropic_version"`
-		MaxTokens        int                `json:"max_tokens"`
-		System           json.RawMessage    `json:"system,omitempty"`
-		Messages         []api.Message      `json:"messages"`
-		Tools            []api.Tool         `json:"tools,omitempty"`
-		ToolChoice       *api.ToolChoice    `json:"tool_choice,omitempty"`
-		Temperature      *float64           `json:"temperature,omitempty"`
-		TopP             *float64           `json:"top_p,omitempty"`
-		Stop             []string           `json:"stop_sequences,omitempty"`
+		AnthropicVersion string          `json:"anthropic_version"`
+		MaxTokens        int             `json:"max_tokens"`
+		System           json.RawMessage `json:"system,omitempty"`
+		Messages         []api.Message   `json:"messages"`
+		Tools            []api.Tool      `json:"tools,omitempty"`
+		ToolChoice       *api.ToolChoice `json:"tool_choice,omitempty"`
+		Temperature      *float64        `json:"temperature,omitempty"`
+		TopP             *float64        `json:"top_p,omitempty"`
+		Stop             []string        `json:"stop_sequences,omitempty"`
 	}
 
 	maxTokens := req.MaxTokens

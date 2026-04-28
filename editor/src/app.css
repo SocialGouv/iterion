@@ -1,5 +1,165 @@
 @import "tailwindcss";
 
+/* =============================================================================
+ * Design tokens
+ * ----------------------------------------------------------------------------
+ * Tokens are declared in @theme so Tailwind generates the corresponding
+ * utilities (bg-surface-0, text-fg-default, border-border-default, ...).
+ * The default values resolve to the DARK palette so the editor matches its
+ * historical appearance pixel-for-pixel before any theme migration. The
+ * [data-theme="light"] block re-assigns the same custom properties to the
+ * LIGHT palette; utilities pick up the new values automatically because they
+ * reference var(--color-...) under the hood.
+ * ========================================================================== */
+
+@theme {
+  /* Surfaces (lowest = deepest background; highest = hovered/elevated) */
+  --color-surface-0: #111827; /* matches bg-gray-900 */
+  --color-surface-1: #1f2937; /* matches bg-gray-800 */
+  --color-surface-2: #374151; /* matches bg-gray-700 */
+  --color-surface-3: #4b5563; /* matches bg-gray-600 */
+
+  /* Foreground tones */
+  --color-fg-default: #ffffff;
+  --color-fg-muted: #d1d5db;   /* matches gray-300 */
+  --color-fg-subtle: #9ca3af;  /* matches gray-400 */
+  --color-fg-onAccent: #ffffff;
+
+  /* Borders */
+  --color-border-default: #374151; /* matches gray-700 */
+  --color-border-strong: #4b5563;  /* matches gray-600 */
+  --color-border-subtle: #1f2937;
+
+  /* Accent (interactive primary) */
+  --color-accent: #2563eb;          /* blue-600 */
+  --color-accent-hover: #1d4ed8;    /* blue-700 */
+  --color-accent-soft: rgba(37, 99, 235, 0.16);
+  --color-accent-fg: #ffffff;
+
+  /* Severity */
+  --color-danger: #dc2626;          /* red-600 */
+  --color-danger-soft: rgba(220, 38, 38, 0.18);
+  --color-danger-fg: #fecaca;
+  --color-warning: #d97706;         /* amber-600 */
+  --color-warning-soft: rgba(217, 119, 6, 0.18);
+  --color-warning-fg: #fde68a;
+  --color-success: #16a34a;         /* green-600 */
+  --color-success-soft: rgba(22, 163, 74, 0.18);
+  --color-success-fg: #bbf7d0;
+  --color-info: #0891b2;            /* cyan-600 */
+  --color-info-soft: rgba(8, 145, 178, 0.18);
+  --color-info-fg: #a5f3fc;
+
+  /* Node kind palette (kept in sync with lib/constants.ts NODE_COLORS) */
+  --color-node-agent: #4a90d9;
+  --color-node-judge: #7b68ee;
+  --color-node-router: #e67e22;
+  --color-node-join: #14b8a6;
+  --color-node-human: #e74c3c;
+  --color-node-tool: #8b6914;
+  --color-node-done: #2ecc71;
+  --color-node-fail: #e74c3c;
+  --color-node-start: #10b981;
+
+  /* Radii */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+
+  /* Motion */
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --motion-slow: 280ms;
+  --motion-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Explicit dark theme override (== defaults; declared for parity with light) */
+:root[data-theme="dark"] {
+  --color-surface-0: #111827;
+  --color-surface-1: #1f2937;
+  --color-surface-2: #374151;
+  --color-surface-3: #4b5563;
+  --color-fg-default: #ffffff;
+  --color-fg-muted: #d1d5db;
+  --color-fg-subtle: #9ca3af;
+  --color-fg-onAccent: #ffffff;
+  --color-border-default: #374151;
+  --color-border-strong: #4b5563;
+  --color-border-subtle: #1f2937;
+  --color-accent: #2563eb;
+  --color-accent-hover: #1d4ed8;
+  --color-accent-soft: rgba(37, 99, 235, 0.16);
+  --color-accent-fg: #ffffff;
+  --color-danger: #dc2626;
+  --color-danger-soft: rgba(220, 38, 38, 0.18);
+  --color-danger-fg: #fecaca;
+  --color-warning: #d97706;
+  --color-warning-soft: rgba(217, 119, 6, 0.18);
+  --color-warning-fg: #fde68a;
+  --color-success: #16a34a;
+  --color-success-soft: rgba(22, 163, 74, 0.18);
+  --color-success-fg: #bbf7d0;
+  --color-info: #0891b2;
+  --color-info-soft: rgba(8, 145, 178, 0.18);
+  --color-info-fg: #a5f3fc;
+  color-scheme: dark;
+}
+
+/* Light theme palette */
+:root[data-theme="light"] {
+  --color-surface-0: #ffffff;
+  --color-surface-1: #f9fafb; /* gray-50 */
+  --color-surface-2: #f3f4f6; /* gray-100 */
+  --color-surface-3: #e5e7eb; /* gray-200 */
+  --color-fg-default: #111827;
+  --color-fg-muted: #374151;
+  --color-fg-subtle: #6b7280;
+  --color-fg-onAccent: #ffffff;
+  --color-border-default: #e5e7eb;
+  --color-border-strong: #d1d5db;
+  --color-border-subtle: #f3f4f6;
+  --color-accent: #2563eb;
+  --color-accent-hover: #1d4ed8;
+  --color-accent-soft: rgba(37, 99, 235, 0.12);
+  --color-accent-fg: #ffffff;
+  --color-danger: #b91c1c;
+  --color-danger-soft: rgba(185, 28, 28, 0.10);
+  --color-danger-fg: #7f1d1d;
+  --color-warning: #b45309;
+  --color-warning-soft: rgba(180, 83, 9, 0.10);
+  --color-warning-fg: #78350f;
+  --color-success: #15803d;
+  --color-success-soft: rgba(21, 128, 61, 0.10);
+  --color-success-fg: #14532d;
+  --color-info: #0e7490;
+  --color-info-soft: rgba(14, 116, 144, 0.10);
+  --color-info-fg: #164e63;
+  color-scheme: light;
+}
+
+/* =============================================================================
+ * Global resets and accessibility
+ * ========================================================================== */
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+button:focus:not(:focus-visible),
+[role="button"]:focus:not(:focus-visible),
+input:focus:not(:focus-visible),
+textarea:focus:not(:focus-visible),
+select:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* =============================================================================
+ * Animations (existing, preserved)
+ * ========================================================================== */
+
 @keyframes dash-flow {
   to {
     stroke-dashoffset: -12;
@@ -7,8 +167,14 @@
 }
 
 @keyframes fade-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .animate-fade-in {

@@ -4,8 +4,8 @@
 // `reasoning_effort` and `tools` for gpt-5.5+ (and likely other reasoning
 // models in the future), with the explicit error:
 //
-//   Function tools with reasoning_effort are not supported for gpt-5.5
-//   in /v1/chat/completions. Please use /v1/responses instead.
+//	Function tools with reasoning_effort are not supported for gpt-5.5
+//	in /v1/chat/completions. Please use /v1/responses instead.
 //
 // This file implements a parallel streaming code path that targets the
 // /v1/responses endpoint and translates its (very different) SSE event
@@ -26,6 +26,8 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/claw-code-go/internal/api"
+	"github.com/SocialGouv/claw-code-go/internal/api/httputil"
+	"github.com/SocialGouv/claw-code-go/internal/api/sseutil"
 )
 
 // ----- Wire types: request --------------------------------------------------
@@ -92,8 +94,8 @@ type oaiResponsesTool struct {
 type oaiResponsesEvent struct {
 	Type string `json:"type"`
 
-	// response.output_item.added / response.output_item.done
-	OutputIndex int                    `json:"output_index"`
+	// response.output_item.added (the .done variant is not consumed)
+	OutputIndex int                     `json:"output_index"`
 	Item        *oaiResponsesOutputItem `json:"item,omitempty"`
 
 	// response.output_text.delta / done
@@ -108,7 +110,7 @@ type oaiResponsesEvent struct {
 }
 
 type oaiResponsesOutputItem struct {
-	Type      string `json:"type"`       // "message" | "function_call" | "reasoning"
+	Type      string `json:"type"` // "message" | "function_call" | "reasoning"
 	ID        string `json:"id"`
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
@@ -117,10 +119,10 @@ type oaiResponsesOutputItem struct {
 }
 
 type oaiResponsesFinal struct {
-	ID         string                 `json:"id"`
-	Status     string                 `json:"status"`
-	Usage      *oaiResponsesUsage     `json:"usage,omitempty"`
-	Output     []oaiResponsesOutputItem `json:"output,omitempty"`
+	ID     string                   `json:"id"`
+	Status string                   `json:"status"`
+	Usage  *oaiResponsesUsage       `json:"usage,omitempty"`
+	Output []oaiResponsesOutputItem `json:"output,omitempty"`
 }
 
 type oaiResponsesUsage struct {
@@ -178,8 +180,8 @@ func (c *Client) streamResponses(ctx context.Context, req api.CreateMessageReque
 		return nil, &api.APIError{
 			Provider:   "openai",
 			StatusCode: resp.StatusCode,
-			Message:    extractOpenAIErrorMessage(bodyStr, resp.StatusCode),
-			Body:       truncateBody(bodyStr, 1000),
+			Message:    extractOpenAIErrorMessage(bodyStr),
+			Body:       httputil.TruncateBody(bodyStr, httputil.BodyTruncateForLog),
 			Retryable:  api.IsRetryableStatus(resp.StatusCode),
 		}
 	}
@@ -203,11 +205,16 @@ func (c *Client) buildResponsesRequest(req api.CreateMessageRequest) (*oaiRespon
 		maxTokens = c.MaxTokens
 	}
 
+	tools, err := convertToolsToResponses(req.Tools)
+	if err != nil {
+		return nil, err
+	}
+
 	r := &oaiResponsesRequest{
 		Model:        wireModel,
 		Instructions: req.System,
 		Input:        convertMessagesToResponsesInput(req.Messages),
-		Tools:        convertToolsToResponses(req.Tools),
+		Tools:        tools,
 		Stream:       true,
 	}
 
@@ -251,7 +258,7 @@ func convertMessagesToResponsesInput(messages []api.Message) []oaiResponsesMessa
 					out = append(out, oaiResponsesMessage{
 						Type:   "function_call_output",
 						CallID: block.ToolUseID,
-						Output: extractText(block.Content),
+						Output: httputil.ExtractText(block.Content),
 					})
 				}
 			}
@@ -299,7 +306,10 @@ func convertMessagesToResponsesInput(messages []api.Message) []oaiResponsesMessa
 // shape. The key difference vs chat completions is that the function name,
 // description, and parameters are FLAT on the tool object (not nested
 // under a `function` key).
-func convertToolsToResponses(tools []api.Tool) []oaiResponsesTool {
+//
+// A marshal failure on any tool's input schema is propagated as an error
+// rather than silently dropping the tool — see convertTools for rationale.
+func convertToolsToResponses(tools []api.Tool) ([]oaiResponsesTool, error) {
 	out := make([]oaiResponsesTool, 0, len(tools))
 	for _, t := range tools {
 		params, err := json.Marshal(map[string]interface{}{
@@ -308,7 +318,7 @@ func convertToolsToResponses(tools []api.Tool) []oaiResponsesTool {
 			"required":   t.InputSchema.Required,
 		})
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("openai: marshal input schema for tool %q: %w", t.Name, err)
 		}
 		out = append(out, oaiResponsesTool{
 			Type:        "function",
@@ -317,7 +327,7 @@ func convertToolsToResponses(tools []api.Tool) []oaiResponsesTool {
 			Parameters:  json.RawMessage(params),
 		})
 	}
-	return out
+	return out, nil
 }
 
 // convertToolChoiceToResponses adapts our ToolChoice to the responses-API
@@ -364,24 +374,58 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
-	type pendingFn struct {
-		callID       string
-		name         string
-		blockIndex   int
-		startEmitted bool
+	sendAll := func(events []api.StreamEvent) bool {
+		for _, ev := range events {
+			if !send(ev) {
+				return false
+			}
+		}
+		return true
+	}
+
+	type pendingText struct {
+		blockIndex int
+		started    bool
+		closed     bool
 	}
 
 	var (
-		textStarted    bool
-		textBlockIndex = 0
-		nextBlockIndex = 1
+		nextBlockIndex = 0
+		// Map keyed by message-item id to track per-text-block state. The
+		// responses stream may interleave multiple message items with
+		// function_call items; each new message item gets its own block
+		// index so deltas from a later item don't collapse into the first
+		// text block.
+		textByItem = make(map[string]*pendingText)
+		// activeTextItem tracks the most recently started/active text item
+		// id, so we can close it when a new message item with a different
+		// id starts.
+		activeTextItem string
 		// Map keyed by item_id (function_call output item id) to track
 		// per-tool-call state. Some events use "item_id" directly, others
 		// reach us via the Item embedded in output_item.added.
-		fnByItem  = make(map[string]*pendingFn)
-		stopReason = "end_turn"
+		fnByItem     = make(map[string]*sseutil.ToolCallAccumulator)
+		stopReason   = "end_turn"
 		outputTokens int
 	)
+
+	closeText := func(itemID string) bool {
+		if itemID == "" {
+			return true
+		}
+		t := textByItem[itemID]
+		if t == nil || !t.started || t.closed {
+			return true
+		}
+		t.closed = true
+		if !send(api.StreamEvent{Type: api.EventContentBlockStop, Index: t.blockIndex}) {
+			return false
+		}
+		if activeTextItem == itemID {
+			activeTextItem = ""
+		}
+		return true
+	}
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -414,50 +458,87 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 			}
 			switch ev.Item.Type {
 			case "function_call":
-				p := &pendingFn{
-					callID:     ev.Item.CallID,
-					name:       ev.Item.Name,
-					blockIndex: nextBlockIndex,
+				// A new non-text item is starting: close any active text
+				// block before allocating the function-call block index so
+				// indices remain monotonically increasing in the order
+				// blocks open and close.
+				if activeTextItem != "" {
+					if !closeText(activeTextItem) {
+						return
+					}
 				}
+				acc := sseutil.NewToolCallAccumulator(nextBlockIndex)
 				nextBlockIndex++
-				fnByItem[ev.Item.ID] = p
-				if p.callID != "" && p.name != "" {
-					p.startEmitted = true
-					if !send(api.StreamEvent{
-						Type:  api.EventContentBlockStart,
-						Index: p.blockIndex,
-						ContentBlock: api.ContentBlockInfo{
-							Type:  "tool_use",
-							Index: p.blockIndex,
-							ID:    p.callID,
-							Name:  p.name,
-						},
-					}) {
+				fnByItem[ev.Item.ID] = acc
+				if ev.Item.CallID != "" && ev.Item.Name != "" {
+					if !send(acc.MarkStarted(ev.Item.CallID, ev.Item.Name)) {
 						return
 					}
 				}
 				stopReason = "tool_use"
 			case "message":
-				// text block; nothing to emit until first delta arrives
+				// New message item: if a previous text item is still
+				// active and has a different id, close it before opening a
+				// new text block. Reserve a fresh block index for this
+				// item; the actual content_block_start will be emitted on
+				// the first delta.
+				if activeTextItem != "" && activeTextItem != ev.Item.ID {
+					if !closeText(activeTextItem) {
+						return
+					}
+				}
+				if _, exists := textByItem[ev.Item.ID]; !exists {
+					textByItem[ev.Item.ID] = &pendingText{blockIndex: nextBlockIndex}
+					nextBlockIndex++
+				}
 			case "reasoning":
 				// reasoning items are not surfaced as content blocks
 			}
 
 		case "response.output_text.delta":
-			if !textStarted {
-				textStarted = true
+			itemID := ev.ItemID
+			t, ok := textByItem[itemID]
+			if !ok {
+				// Fallback: some streams may emit text deltas without a
+				// preceding output_item.added for the message (or with an
+				// empty item id). Allocate a block on demand so deltas
+				// aren't dropped.
+				if activeTextItem != "" && activeTextItem != itemID {
+					if !closeText(activeTextItem) {
+						return
+					}
+				}
+				t = &pendingText{blockIndex: nextBlockIndex}
+				nextBlockIndex++
+				textByItem[itemID] = t
+			}
+			if t.closed {
+				// Defensive: never reopen a closed block.
+				continue
+			}
+			if !t.started {
+				t.started = true
+				activeTextItem = itemID
 				if !send(api.StreamEvent{
 					Type:         api.EventContentBlockStart,
-					Index:        textBlockIndex,
-					ContentBlock: api.ContentBlockInfo{Type: "text", Index: textBlockIndex},
+					Index:        t.blockIndex,
+					ContentBlock: api.ContentBlockInfo{Type: "text", Index: t.blockIndex},
 				}) {
 					return
 				}
+			} else if activeTextItem != itemID {
+				// Different text item became active without an explicit
+				// open event; close the old one to keep block accounting
+				// consistent.
+				if !closeText(activeTextItem) {
+					return
+				}
+				activeTextItem = itemID
 			}
 			if ev.Delta != "" {
 				if !send(api.StreamEvent{
 					Type:  api.EventContentBlockDelta,
-					Index: textBlockIndex,
+					Index: t.blockIndex,
 					Delta: api.Delta{Type: "text_delta", Text: ev.Delta},
 				}) {
 					return
@@ -465,23 +546,20 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 			}
 
 		case "response.output_text.done":
-			// We close the text block at the end of the stream rather than
-			// here, because the responses stream may interleave additional
-			// text items after function calls in some configurations.
+			// Close this specific text block. Other text blocks (from
+			// later message items) remain open until their own done event
+			// or the post-loop sweep.
+			if !closeText(ev.ItemID) {
+				return
+			}
 
 		case "response.function_call_arguments.delta":
-			p := fnByItem[ev.ItemID]
-			if p == nil {
+			acc := fnByItem[ev.ItemID]
+			if acc == nil {
 				continue
 			}
-			if p.startEmitted && ev.Delta != "" {
-				if !send(api.StreamEvent{
-					Type:  api.EventContentBlockDelta,
-					Index: p.blockIndex,
-					Delta: api.Delta{Type: "input_json_delta", PartialJSON: ev.Delta},
-				}) {
-					return
-				}
+			if !sendAll(acc.HandleDelta("", "", ev.Delta)) {
+				return
 			}
 
 		case "response.function_call_arguments.done":
@@ -492,43 +570,39 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 			if ev.Response != nil && ev.Response.Usage != nil {
 				outputTokens = ev.Response.Usage.OutputTokens
 			}
-			// Loop will exit on [DONE] or EOF; record stop_reason.
-			if ev.Response != nil && ev.Response.Status == "completed" {
-				// keep the tool_use stopReason if any function_call was emitted,
-				// else end_turn.
-				hasFn := false
-				for _, p := range fnByItem {
-					if p.startEmitted {
-						hasFn = true
-						break
-					}
-				}
-				if !hasFn {
-					stopReason = "end_turn"
-				} else {
-					stopReason = "tool_use"
-				}
-			}
+			// stopReason is the source-of-truth set when each output_item
+			// was observed: "tool_use" the moment a function_call item
+			// landed, otherwise the initial "end_turn". No recompute here.
 		}
 	}
 
-	if textStarted {
-		if !send(api.StreamEvent{Type: api.EventContentBlockStop, Index: textBlockIndex}) {
+	// Close any text blocks that were opened but not explicitly closed
+	// by a response.output_text.done event.
+	for id, t := range textByItem {
+		if t.started && !t.closed {
+			t.closed = true
+			if !send(api.StreamEvent{Type: api.EventContentBlockStop, Index: t.blockIndex}) {
+				return
+			}
+			if activeTextItem == id {
+				activeTextItem = ""
+			}
+		}
+	}
+	for _, acc := range fnByItem {
+		if !sendAll(acc.Finish()) {
 			return
 		}
 	}
-	for _, p := range fnByItem {
-		if p.startEmitted {
-			if !send(api.StreamEvent{Type: api.EventContentBlockStop, Index: p.blockIndex}) {
-				return
-			}
-		}
-	}
 
-	send(api.StreamEvent{
+	if !send(api.StreamEvent{
 		Type:       api.EventMessageDelta,
 		StopReason: stopReason,
 		Usage:      api.UsageDelta{OutputTokens: outputTokens},
-	})
-	send(api.StreamEvent{Type: api.EventMessageStop})
+	}) {
+		return
+	}
+	if !send(api.StreamEvent{Type: api.EventMessageStop}) {
+		return
+	}
 }

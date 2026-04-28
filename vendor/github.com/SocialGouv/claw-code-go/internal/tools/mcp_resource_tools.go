@@ -1,11 +1,11 @@
 package tools
 
 import (
-	"github.com/SocialGouv/claw-code-go/internal/api"
-	"github.com/SocialGouv/claw-code-go/internal/mcp"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/SocialGouv/claw-code-go/internal/api"
+	"github.com/SocialGouv/claw-code-go/internal/mcp"
 )
 
 // --- MCP resource/auth tool definitions ---

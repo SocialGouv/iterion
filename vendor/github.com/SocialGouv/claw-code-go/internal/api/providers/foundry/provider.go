@@ -18,7 +18,6 @@
 package foundry
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -33,6 +32,8 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/SocialGouv/claw-code-go/internal/api"
+	"github.com/SocialGouv/claw-code-go/internal/api/httputil"
+	"github.com/SocialGouv/claw-code-go/internal/api/providers/openaiwire"
 )
 
 const (
@@ -170,90 +171,26 @@ func (c *Client) applyAuth(ctx context.Context, req *http.Request) error {
 	return nil
 }
 
-// ----- Wire types (OpenAI-compatible) ----------------------------------------
+// ----- Wire request shape ----------------------------------------------------
 //
-// We duplicate the OpenAI wire types here rather than importing the openai
-// package to keep providers loosely coupled. The shape mirrors what Azure
-// OpenAI accepts and matches the OpenAI Chat Completions API.
+// We share the per-message and per-tool wire types with the openai provider
+// via internal/api/providers/openaiwire. The top-level request envelope
+// stays foundry-local because Azure does not expect the `model` field
+// (deployment is encoded in the URL) and uses *int rather than int for
+// max_tokens so it can be omitted.
 
 type oaiRequest struct {
-	Messages         []oaiMessage `json:"messages"`
-	Tools            []oaiTool    `json:"tools,omitempty"`
-	Stream           bool         `json:"stream"`
-	StreamOptions    *streamOpts  `json:"stream_options,omitempty"`
-	MaxTokens        *int         `json:"max_tokens,omitempty"`
-	Temperature      *float64     `json:"temperature,omitempty"`
-	TopP             *float64     `json:"top_p,omitempty"`
-	FrequencyPenalty *float64     `json:"frequency_penalty,omitempty"`
-	PresencePenalty  *float64     `json:"presence_penalty,omitempty"`
-	Stop             []string     `json:"stop,omitempty"`
-	ReasoningEffort  string       `json:"reasoning_effort,omitempty"`
-}
-
-type streamOpts struct {
-	IncludeUsage bool `json:"include_usage"`
-}
-
-type oaiMessage struct {
-	Role       string        `json:"role"`
-	Content    *string       `json:"content,omitempty"`
-	ToolCalls  []oaiToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string        `json:"tool_call_id,omitempty"`
-}
-
-type oaiTool struct {
-	Type     string      `json:"type"`
-	Function oaiFunction `json:"function"`
-}
-
-type oaiFunction struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	Parameters  json.RawMessage `json:"parameters"`
-}
-
-type oaiToolCall struct {
-	ID       string          `json:"id"`
-	Type     string          `json:"type"`
-	Function oaiFunctionCall `json:"function"`
-}
-
-type oaiFunctionCall struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
-}
-
-type oaiChunk struct {
-	Choices []oaiChoice `json:"choices"`
-	Usage   *oaiUsage   `json:"usage"`
-}
-
-type oaiChoice struct {
-	Index        int      `json:"index"`
-	Delta        oaiDelta `json:"delta"`
-	FinishReason *string  `json:"finish_reason"`
-}
-
-type oaiDelta struct {
-	Content   *string            `json:"content"`
-	ToolCalls []oaiToolCallDelta `json:"tool_calls"`
-}
-
-type oaiToolCallDelta struct {
-	Index    int              `json:"index"`
-	ID       string           `json:"id"`
-	Type     string           `json:"type"`
-	Function oaiFunctionDelta `json:"function"`
-}
-
-type oaiFunctionDelta struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
-}
-
-type oaiUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
+	Messages         []openaiwire.Message   `json:"messages"`
+	Tools            []openaiwire.Tool      `json:"tools,omitempty"`
+	Stream           bool                   `json:"stream"`
+	StreamOptions    *openaiwire.StreamOpts `json:"stream_options,omitempty"`
+	MaxTokens        *int                   `json:"max_tokens,omitempty"`
+	Temperature      *float64               `json:"temperature,omitempty"`
+	TopP             *float64               `json:"top_p,omitempty"`
+	FrequencyPenalty *float64               `json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float64               `json:"presence_penalty,omitempty"`
+	Stop             []string               `json:"stop,omitempty"`
+	ReasoningEffort  string                 `json:"reasoning_effort,omitempty"`
 }
 
 // ----- buildRequest ----------------------------------------------------------
@@ -264,11 +201,16 @@ func (c *Client) buildRequest(req api.CreateMessageRequest) ([]byte, error) {
 		maxTokens = c.MaxTokens
 	}
 
+	tools, err := openaiwire.ConvertTools("foundry", req.Tools)
+	if err != nil {
+		return nil, err
+	}
+
 	r := oaiRequest{
-		Messages:         convertMessages(req.System, req.Messages),
-		Tools:            convertTools(req.Tools),
+		Messages:         openaiwire.ConvertMessages(req.System, req.Messages),
+		Tools:            tools,
 		Stream:           true,
-		StreamOptions:    &streamOpts{IncludeUsage: true},
+		StreamOptions:    &openaiwire.StreamOpts{IncludeUsage: true},
 		Temperature:      req.Temperature,
 		TopP:             req.TopP,
 		FrequencyPenalty: req.FrequencyPenalty,
@@ -282,99 +224,12 @@ func (c *Client) buildRequest(req api.CreateMessageRequest) ([]byte, error) {
 	return json.Marshal(r)
 }
 
-func convertMessages(system string, messages []api.Message) []oaiMessage {
-	var result []oaiMessage
-	if system != "" {
-		result = append(result, oaiMessage{Role: "system", Content: strPtr(system)})
-	}
-	for _, msg := range messages {
-		switch msg.Role {
-		case "user":
-			var texts []string
-			for _, block := range msg.Content {
-				switch block.Type {
-				case "text":
-					if block.Text != "" {
-						texts = append(texts, block.Text)
-					}
-				case "tool_result":
-					content := extractText(block.Content)
-					result = append(result, oaiMessage{
-						Role:       "tool",
-						Content:    strPtr(content),
-						ToolCallID: block.ToolUseID,
-					})
-				}
-			}
-			if len(texts) > 0 {
-				result = append(result, oaiMessage{
-					Role:    "user",
-					Content: strPtr(strings.Join(texts, "\n")),
-				})
-			}
-		case "assistant":
-			var texts []string
-			var toolCalls []oaiToolCall
-			for _, block := range msg.Content {
-				switch block.Type {
-				case "text":
-					if block.Text != "" {
-						texts = append(texts, block.Text)
-					}
-				case "tool_use":
-					args, _ := json.Marshal(block.Input)
-					toolCalls = append(toolCalls, oaiToolCall{
-						ID:   block.ID,
-						Type: "function",
-						Function: oaiFunctionCall{
-							Name:      block.Name,
-							Arguments: string(args),
-						},
-					})
-				}
-			}
-			var contentPtr *string
-			if len(texts) > 0 {
-				contentPtr = strPtr(strings.Join(texts, "\n"))
-			}
-			result = append(result, oaiMessage{
-				Role:      "assistant",
-				Content:   contentPtr,
-				ToolCalls: toolCalls,
-			})
-		}
-	}
-	return result
-}
-
-func convertTools(tools []api.Tool) []oaiTool {
-	result := make([]oaiTool, 0, len(tools))
-	for _, t := range tools {
-		params, err := json.Marshal(map[string]interface{}{
-			"type":       t.InputSchema.Type,
-			"properties": t.InputSchema.Properties,
-			"required":   t.InputSchema.Required,
-		})
-		if err != nil {
-			continue
-		}
-		result = append(result, oaiTool{
-			Type: "function",
-			Function: oaiFunction{
-				Name:        t.Name,
-				Description: t.Description,
-				Parameters:  json.RawMessage(params),
-			},
-		})
-	}
-	return result
-}
-
 // ----- StreamResponse --------------------------------------------------------
 
 // StreamResponse sends a streaming chat completions request to the Azure
 // OpenAI / Foundry deployment and emits api.StreamEvents in the same shape as
-// the OpenAI provider.
+// the OpenAI provider. The SSE → api.StreamEvent translation is delegated to
+// openaiwire.StreamEvents, which both providers share.
 func (c *Client) StreamResponse(ctx context.Context, req api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
 	body, err := c.buildRequest(req)
 	if err != nil {
@@ -403,181 +258,17 @@ func (c *Client) StreamResponse(ctx context.Context, req api.CreateMessageReques
 			Provider:   "foundry",
 			StatusCode: resp.StatusCode,
 			Message:    extractFoundryErrorMessage(bodyStr),
-			Body:       truncateBody(bodyStr, 1000),
+			Body:       httputil.TruncateBody(bodyStr, httputil.BodyTruncateForLog),
 			Retryable:  api.IsRetryableStatus(resp.StatusCode),
 		}
 	}
 
 	ch := make(chan api.StreamEvent, 64)
-	go c.streamEvents(ctx, resp, ch)
+	go openaiwire.StreamEvents(ctx, resp, ch)
 	return ch, nil
 }
 
-// ----- Streaming event conversion --------------------------------------------
-
-type pendingToolCall struct {
-	id           string
-	name         string
-	startEmitted bool
-	blockIndex   int
-}
-
-func (c *Client) streamEvents(ctx context.Context, resp *http.Response, ch chan<- api.StreamEvent) {
-	defer close(ch)
-	defer resp.Body.Close()
-
-	send := func(ev api.StreamEvent) bool {
-		select {
-		case ch <- ev:
-			return true
-		case <-ctx.Done():
-			return false
-		}
-	}
-
-	if !send(api.StreamEvent{Type: api.EventMessageStart}) {
-		return
-	}
-
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-
-	var (
-		textStarted  bool
-		toolCalls    = make(map[int]*pendingToolCall)
-		finishReason string
-		outputTokens int
-	)
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" || strings.HasPrefix(line, "event:") {
-			continue
-		}
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		data := strings.TrimPrefix(line, "data: ")
-		if data == "[DONE]" {
-			break
-		}
-
-		var chunk oaiChunk
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
-		}
-
-		if chunk.Usage != nil {
-			outputTokens = chunk.Usage.CompletionTokens
-		}
-
-		for _, choice := range chunk.Choices {
-			delta := choice.Delta
-
-			if delta.Content != nil && *delta.Content != "" {
-				if !textStarted {
-					textStarted = true
-					if !send(api.StreamEvent{
-						Type:         api.EventContentBlockStart,
-						Index:        0,
-						ContentBlock: api.ContentBlockInfo{Type: "text", Index: 0},
-					}) {
-						return
-					}
-				}
-				if !send(api.StreamEvent{
-					Type:  api.EventContentBlockDelta,
-					Index: 0,
-					Delta: api.Delta{Type: "text_delta", Text: *delta.Content},
-				}) {
-					return
-				}
-			}
-
-			for _, tc := range delta.ToolCalls {
-				idx := tc.Index
-				if _, ok := toolCalls[idx]; !ok {
-					toolCalls[idx] = &pendingToolCall{blockIndex: 1 + idx}
-				}
-				pending := toolCalls[idx]
-
-				if tc.ID != "" {
-					pending.id = tc.ID
-				}
-				if tc.Function.Name != "" {
-					pending.name = tc.Function.Name
-				}
-
-				if !pending.startEmitted && pending.id != "" && pending.name != "" {
-					pending.startEmitted = true
-					if !send(api.StreamEvent{
-						Type:  api.EventContentBlockStart,
-						Index: pending.blockIndex,
-						ContentBlock: api.ContentBlockInfo{
-							Type:  "tool_use",
-							Index: pending.blockIndex,
-							ID:    pending.id,
-							Name:  pending.name,
-						},
-					}) {
-						return
-					}
-				}
-				if pending.startEmitted && tc.Function.Arguments != "" {
-					if !send(api.StreamEvent{
-						Type:  api.EventContentBlockDelta,
-						Index: pending.blockIndex,
-						Delta: api.Delta{Type: "input_json_delta", PartialJSON: tc.Function.Arguments},
-					}) {
-						return
-					}
-				}
-			}
-
-			if choice.FinishReason != nil && *choice.FinishReason != "" {
-				finishReason = *choice.FinishReason
-			}
-		}
-	}
-
-	if textStarted {
-		if !send(api.StreamEvent{Type: api.EventContentBlockStop, Index: 0}) {
-			return
-		}
-	}
-	for i := 0; i < len(toolCalls); i++ {
-		if tc, ok := toolCalls[i]; ok && tc.startEmitted {
-			if !send(api.StreamEvent{Type: api.EventContentBlockStop, Index: tc.blockIndex}) {
-				return
-			}
-		}
-	}
-
-	stopReason := "end_turn"
-	if finishReason == "tool_calls" {
-		stopReason = "tool_use"
-	}
-	send(api.StreamEvent{
-		Type:       api.EventMessageDelta,
-		StopReason: stopReason,
-		Usage:      api.UsageDelta{OutputTokens: outputTokens},
-	})
-	send(api.StreamEvent{Type: api.EventMessageStop})
-}
-
 // ----- helpers --------------------------------------------------------------
-
-func strPtr(s string) *string { return &s }
-
-func extractText(blocks []api.ContentBlock) string {
-	var parts []string
-	for _, b := range blocks {
-		if b.Text != "" {
-			parts = append(parts, b.Text)
-		}
-	}
-	return strings.Join(parts, "\n")
-}
 
 // extractFoundryErrorMessage best-effort decodes the standard OpenAI error
 // envelope ({"error":{"message":"...","code":"..."}}) used by Azure OpenAI.
@@ -591,14 +282,5 @@ func extractFoundryErrorMessage(body string) string {
 	if err := json.Unmarshal([]byte(body), &parsed); err == nil && parsed.Error.Message != "" {
 		return parsed.Error.Message
 	}
-	return truncateBody(body, 200)
+	return httputil.TruncateBody(body, httputil.BodyTruncateForMessage)
 }
-
-func truncateBody(body string, maxRunes int) string {
-	r := []rune(body)
-	if len(r) <= maxRunes {
-		return body
-	}
-	return string(r[:maxRunes]) + "…"
-}
-

@@ -44,7 +44,12 @@ function displayDefault(lit: Literal | undefined): string {
   return raw;
 }
 
-export default function VarsEditor() {
+interface VarsEditorProps {
+  /** When set, renders only that variable's row (used by the Inspector "edit item" mode). */
+  filterName?: string;
+}
+
+export default function VarsEditor({ filterName }: VarsEditorProps = {}) {
   const document = useDocumentStore((s) => s.document);
   const setVars = useDocumentStore((s) => s.setVars);
   const setWorkflowVars = useDocumentStore((s) => s.setWorkflowVars);
@@ -55,13 +60,14 @@ export default function VarsEditor() {
 
   return (
     <div className="p-3 text-sm">
-      <h2 className="font-bold text-gray-300 mb-3">Variables</h2>
+      {!filterName && <h2 className="font-bold text-fg-muted mb-3">Variables</h2>}
 
       <VarsSection
         title="Top-Level Vars"
         vars={topLevelVars}
         onChange={setVars}
         disabled={!document}
+        filterName={filterName}
       />
 
       {activeWorkflow && (
@@ -70,6 +76,7 @@ export default function VarsEditor() {
           vars={workflowVars}
           onChange={(v) => setWorkflowVars(activeWorkflow.name, v)}
           disabled={!document}
+          filterName={filterName}
         />
       )}
     </div>
@@ -81,13 +88,18 @@ function VarsSection({
   vars,
   onChange,
   disabled,
+  filterName,
 }: {
   title: string;
   vars: VarsBlock | undefined;
   onChange: (v: VarsBlock | undefined) => void;
   disabled: boolean;
+  filterName?: string;
 }) {
   const fields = vars?.fields ?? [];
+  const visibleIndices = filterName
+    ? fields.map((f, i) => (f.name === filterName ? i : -1)).filter((i) => i !== -1)
+    : fields.map((_, i) => i);
 
   const updateField = useCallback(
     (index: number, updates: Partial<VarField>) => {
@@ -109,21 +121,27 @@ function VarsSection({
     [fields, onChange],
   );
 
+  if (filterName && visibleIndices.length === 0) return null;
+
   return (
     <div className="mb-4">
       <div className="flex items-center justify-between mb-2">
-        <h3 className="text-xs text-gray-400 font-semibold">{title}</h3>
-        <button
-          className="text-blue-400 hover:text-blue-300 text-xs"
-          onClick={addField}
-          disabled={disabled}
-        >
-          + Add
-        </button>
+        <h3 className="text-xs text-fg-subtle font-semibold">{title}</h3>
+        {!filterName && (
+          <button
+            className="text-accent hover:text-accent text-xs"
+            onClick={addField}
+            disabled={disabled}
+          >
+            + Add
+          </button>
+        )}
       </div>
-      {fields.length === 0 && <p className="text-gray-500 text-xs">No variables defined.</p>}
-      {fields.map((field, i) => (
-        <div key={i} className="mb-2 p-2 bg-gray-800 rounded border border-gray-700">
+      {!filterName && fields.length === 0 && <p className="text-fg-subtle text-xs">No variables defined.</p>}
+      {visibleIndices.map((i) => {
+        const field = fields[i]!;
+        return (
+        <div key={i} className="mb-2 p-2 bg-surface-1 rounded border border-border-default">
           <div className="flex gap-1 items-end">
             <div className="flex-1">
               <TextField
@@ -141,16 +159,16 @@ function VarsSection({
                 options={TYPE_OPTIONS}
               />
             </div>
-            <button className="text-red-400 hover:text-red-300 text-xs pb-2" onClick={() => removeField(i)}>
+            <button className="text-danger hover:text-danger-fg text-xs pb-2" onClick={() => removeField(i)}>
               x
             </button>
           </div>
           <div className="mt-1">
             {field.type === "bool" ? (
               <div className="flex items-center gap-2">
-                <label className="text-xs text-gray-400">Default</label>
+                <label className="text-xs text-fg-subtle">Default</label>
                 <select
-                  className="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:border-blue-500 focus:outline-none"
+                  className="bg-surface-1 border border-border-strong rounded px-2 py-1 text-sm text-fg-default focus:border-accent focus:outline-none"
                   value={field.default ? displayDefault(field.default) : ""}
                   onChange={(e) => updateField(i, { default: e.target.value === "" ? undefined : rawToLiteral("bool", e.target.value) })}
                 >
@@ -176,7 +194,8 @@ function VarsSection({
             )}
           </div>
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

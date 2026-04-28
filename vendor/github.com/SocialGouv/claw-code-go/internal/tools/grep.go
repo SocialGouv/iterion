@@ -2,8 +2,8 @@ package tools
 
 import (
 	"bufio"
-	"github.com/SocialGouv/claw-code-go/internal/api"
 	"fmt"
+	"github.com/SocialGouv/claw-code-go/internal/api"
 	"os"
 	"path/filepath"
 	"regexp"

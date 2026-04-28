@@ -23,6 +23,19 @@ export interface Toast {
 
 let toastIdCounter = 0;
 
+const INSPECTOR_WIDTH_KEY = "iterion.inspectorWidth";
+const INSPECTOR_WIDTH_DEFAULT = 360;
+const INSPECTOR_WIDTH_MIN = 280;
+const INSPECTOR_WIDTH_MAX = 600;
+
+function readInspectorWidth(): number {
+  if (typeof window === "undefined") return INSPECTOR_WIDTH_DEFAULT;
+  const raw = window.localStorage.getItem(INSPECTOR_WIDTH_KEY);
+  const parsed = raw ? parseInt(raw, 10) : NaN;
+  if (!Number.isFinite(parsed)) return INSPECTOR_WIDTH_DEFAULT;
+  return Math.min(INSPECTOR_WIDTH_MAX, Math.max(INSPECTOR_WIDTH_MIN, parsed));
+}
+
 interface UIState {
   activeTab: SidebarTab;
   sourceViewOpen: boolean;
@@ -42,8 +55,8 @@ interface UIState {
   macroView: boolean;
   // Canvas tool mode
   canvasTool: CanvasTool;
-  // Edge editing in modal
-  editModalEdgeInfo: { workflowName: string; edgeIndex: number } | null;
+  // Inspector width (resizable right panel)
+  inspectorWidth: number;
   filesChangedAt: number;
   setActiveTab: (tab: SidebarTab) => void;
   toggleSourceView: () => void;
@@ -68,8 +81,8 @@ interface UIState {
   toggleMacroView: () => void;
   // Canvas tool
   setCanvasTool: (tool: CanvasTool) => void;
-  // Edge modal
-  setEditModalEdgeInfo: (info: { workflowName: string; edgeIndex: number } | null) => void;
+  // Inspector width
+  setInspectorWidth: (px: number) => void;
   notifyFilesChanged: () => void;
 }
 
@@ -88,7 +101,7 @@ export const useUIStore = create<UIState>((set) => ({
   libraryExpanded: false,
   macroView: false,
   canvasTool: "pan",
-  editModalEdgeInfo: null,
+  inspectorWidth: readInspectorWidth(),
   filesChangedAt: 0,
   setActiveTab: (activeTab) => set({ activeTab }),
   toggleSourceView: () => set((s) => ({ sourceViewOpen: !s.sourceViewOpen })),
@@ -126,16 +139,14 @@ export const useUIStore = create<UIState>((set) => ({
     if (s.subNodeViewStack.length > 0 && s.subNodeViewStack[s.subNodeViewStack.length - 1] === nodeId) {
       return s;
     }
-    return { subNodeViewStack: [...s.subNodeViewStack, nodeId], editModalEdgeInfo: null };
+    return { subNodeViewStack: [...s.subNodeViewStack, nodeId] };
   }),
   popSubNodeView: () => set((s) => ({
     subNodeViewStack: s.subNodeViewStack.slice(0, -1),
-    editModalEdgeInfo: null,
   })),
-  clearSubNodeView: () => set({ subNodeViewStack: [], editModalEdgeInfo: null }),
+  clearSubNodeView: () => set({ subNodeViewStack: [] }),
   navigateSubNodeViewTo: (index) => set((s) => ({
     subNodeViewStack: s.subNodeViewStack.slice(0, index + 1),
-    editModalEdgeInfo: null,
   })),
   // Library panel
   toggleLibraryPanel: () => set((s) => ({ libraryExpanded: !s.libraryExpanded })),
@@ -143,7 +154,13 @@ export const useUIStore = create<UIState>((set) => ({
   toggleMacroView: () => set((s) => ({ macroView: !s.macroView })),
   // Canvas tool
   setCanvasTool: (canvasTool) => set({ canvasTool }),
-  // Edge modal
-  setEditModalEdgeInfo: (editModalEdgeInfo) => set({ editModalEdgeInfo }),
+  // Inspector width
+  setInspectorWidth: (px) => {
+    const clamped = Math.min(INSPECTOR_WIDTH_MAX, Math.max(INSPECTOR_WIDTH_MIN, Math.round(px)));
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(INSPECTOR_WIDTH_KEY, String(clamped));
+    }
+    set({ inspectorWidth: clamped });
+  },
   notifyFilesChanged: () => set({ filesChangedAt: Date.now() }),
 }));

@@ -1729,6 +1729,173 @@ func TestLive_Lite_ClawBuiltinTools(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Live E2E test — claw read_image (computer use)
+// ---------------------------------------------------------------------------
+
+// TestLive_Lite_ClawReadImage exercises the vision tool path: the
+// agent receives a local PNG, calls read_image, and reports back the
+// media type + base64 size it observed. Proves the chain
+//
+//	tool.RegisterClawComputerUse → claw tool registry → claw agent
+//	  loop → ExecuteReadImage → ContentBlock with base64 source
+//
+// is wired end-to-end through iterion's workflow runtime.
+func TestLive_Lite_ClawReadImage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live test in short mode")
+	}
+	loadDotEnv(t)
+	requireEnv(t, "ANTHROPIC_API_KEY")
+
+	wf := compileFixture(t, "claw_read_image.iter")
+
+	workspaceDir, err := os.MkdirTemp("", "iterion-claw-read-image-*")
+	if err != nil {
+		t.Fatalf("Failed to create workspace dir: %v", err)
+	}
+	t.Logf("Workspace directory (persists after test): %s", workspaceDir)
+
+	// 1x1 transparent PNG fixture.
+	pngBytes := []byte{
+		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+		0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+		0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41,
+		0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+		0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+		0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+		0x42, 0x60, 0x82,
+	}
+	imagePath := filepath.Join(workspaceDir, "tiny.png")
+	if werr := os.WriteFile(imagePath, pngBytes, 0o644); werr != nil {
+		t.Fatalf("write png fixture: %v", werr)
+	}
+
+	storeDir := filepath.Join(workspaceDir, ".iterion")
+	s, storeErr := store.New(storeDir)
+	if storeErr != nil {
+		t.Fatalf("Failed to create store: %v", storeErr)
+	}
+	runID := "live-claw-read-image"
+
+	// Tool registry seeded with computer-use tools (opt-in; not in
+	// the default set).
+	toolReg := tool.NewRegistry()
+	if regErr := tool.RegisterClawComputerUse(toolReg); regErr != nil {
+		t.Fatalf("RegisterClawComputerUse: %v", regErr)
+	}
+
+	reg := model.NewRegistry()
+	logger := iterlog.New(iterlog.LevelDebug, os.Stderr)
+	hooks := model.NewStoreEventHooks(s, runID, logger)
+	backendReg := delegate.DefaultRegistry(logger)
+	backendReg.Register(delegate.BackendClaw, model.NewClawBackend(reg, hooks, model.RetryPolicy{}))
+	executor := model.NewClawExecutor(reg, wf,
+		model.WithBackendRegistry(backendReg),
+		model.WithToolRegistry(toolReg),
+		model.WithWorkDir(workspaceDir),
+		model.WithEventHooks(hooks),
+	)
+	defer executor.Close()
+	executor.SetVars(map[string]interface{}{
+		"image_path": imagePath,
+	})
+
+	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+		t.Fatalf("mcp.PrepareWorkflow: %v", err)
+	}
+
+	eng := runtime.New(wf, s, executor)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	t.Log("Starting live claw read_image run...")
+	start := time.Now()
+	runErr := eng.Run(ctx, runID, map[string]interface{}{
+		"image_path": imagePath,
+	})
+	t.Logf("Run completed in %s", time.Since(start).Round(time.Second))
+
+	if runErr != nil {
+		t.Fatalf("Unexpected run error: %v", runErr)
+	}
+	r, loadErr := s.LoadRun(runID)
+	if loadErr != nil {
+		t.Fatalf("Failed to load run: %v", loadErr)
+	}
+	if r.Status != store.RunStatusFinished {
+		t.Fatalf("Expected run status 'finished', got %q", r.Status)
+	}
+
+	events, evtErr := s.LoadEvents(runID)
+	if evtErr != nil {
+		t.Fatalf("Failed to load events: %v", evtErr)
+	}
+
+	// Tool call counts — read_image must have fired at least once.
+	readImageCount := 0
+	for _, evt := range events {
+		if evt.Type != store.EventToolCalled || evt.Data == nil || evt.NodeID != "visioner" {
+			continue
+		}
+		if name, _ := evt.Data["tool"].(string); name == "read_image" {
+			readImageCount++
+		}
+	}
+	if readImageCount < 1 {
+		t.Errorf("expected >= 1 read_image call, got %d", readImageCount)
+	}
+
+	// Agent output: applied=true, media_type contains "image", data_size >= 50.
+	var sawOutput bool
+	for _, evt := range events {
+		if evt.Type != store.EventNodeFinished || evt.NodeID != "visioner" || evt.Data == nil {
+			continue
+		}
+		out, ok := evt.Data["output"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		applied, _ := out["applied"].(bool)
+		mediaType, _ := out["media_type"].(string)
+		dataSize, _ := out["data_size"].(float64)
+		toolUsed, _ := out["tool_used"].(string)
+		t.Logf("visioner.applied = %v", applied)
+		t.Logf("visioner.media_type = %q", mediaType)
+		t.Logf("visioner.data_size = %v", dataSize)
+		t.Logf("visioner.tool_used = %q", toolUsed)
+
+		if !applied {
+			t.Error("visioner reported applied=false")
+		}
+		if !strings.Contains(strings.ToLower(mediaType), "image") {
+			t.Errorf("media_type does not look like image/*, got %q", mediaType)
+		}
+		if dataSize < 50 {
+			t.Errorf("data_size suspiciously small for a base64-encoded PNG: %v", dataSize)
+		}
+		if toolUsed != "read_image" {
+			t.Errorf("expected tool_used=read_image, got %q", toolUsed)
+		}
+		sawOutput = true
+		break
+	}
+	if !sawOutput {
+		t.Error("never saw a finished visioner node with structured output")
+	}
+
+	metrics, mErr := benchmark.CollectMetrics(s, runID, "live-claw-read-image", "")
+	if mErr == nil {
+		t.Logf("Metrics: tokens=%d cost=$%.4f model_calls=%d iterations=%d duration=%s",
+			metrics.TotalTokens, metrics.TotalCostUSD, metrics.ModelCalls,
+			metrics.Iterations, metrics.DurationStr)
+	}
+
+	logRunRecap(t, events)
+}
+
+// ---------------------------------------------------------------------------
 // Live E2E test — reasoning_effort propagation
 // ---------------------------------------------------------------------------
 

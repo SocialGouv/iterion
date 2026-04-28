@@ -35,25 +35,25 @@ export default function GroupNode({ id, data, selected }: NodeProps) {
         onDoubleClick={(e) => { e.stopPropagation(); toggleCollapse(name); }}
       >
         {SIDES.map(s => (
-          <Handle key={`target-${s}`} id={`target-${s}`} type="target" position={POS_MAP[s]} className="!bg-gray-400 !w-1.5 !h-1.5 !opacity-0" />
+          <Handle key={`target-${s}`} id={`target-${s}`} type="target" position={POS_MAP[s]} className="!bg-surface-3 !w-1.5 !h-1.5 !opacity-0" />
         ))}
         <div className="flex items-center justify-center gap-1.5">
           <span className="text-lg">{"\u{1F4E6}"}</span>
-          <span className="font-semibold text-sm text-white">{name}</span>
+          <span className="font-semibold text-sm text-fg-default">{name}</span>
         </div>
-        <div className="text-xs text-gray-400 mt-0.5">
+        <div className="text-xs text-fg-subtle mt-0.5">
           {nodeCount} node{nodeCount !== 1 ? "s" : ""}
         </div>
         {childKinds.length > 0 && (
           <div className="flex items-center justify-center gap-1 mt-1 flex-wrap">
             {childKinds.map((k, i) => (
-              <span key={i} className="text-[9px] bg-gray-700/60 text-gray-300 px-1 rounded">{k}</span>
+              <span key={i} className="text-[9px] bg-surface-2/60 text-fg-muted px-1 rounded">{k}</span>
             ))}
           </div>
         )}
-        <div className="text-[9px] text-gray-500 mt-1">double-click to expand</div>
+        <div className="text-[9px] text-fg-subtle mt-1">double-click to expand</div>
         {SIDES.map(s => (
-          <Handle key={`source-${s}`} id={`source-${s}`} type="source" position={POS_MAP[s]} className="!bg-gray-400 !w-1.5 !h-1.5 !opacity-0" />
+          <Handle key={`source-${s}`} id={`source-${s}`} type="source" position={POS_MAP[s]} className="!bg-surface-3 !w-1.5 !h-1.5 !opacity-0" />
         ))}
       </div>
     );
@@ -79,8 +79,8 @@ export default function GroupNode({ id, data, selected }: NodeProps) {
         onDoubleClick={(e) => { e.stopPropagation(); toggleCollapse(name); }}
       >
         <span className="text-xs">{"\u{1F4E6}"}</span>
-        <span className="text-xs font-medium text-gray-300">{name}</span>
-        <span className="text-[9px] text-gray-500 ml-auto">{nodeCount} nodes</span>
+        <span className="text-xs font-medium text-fg-muted">{name}</span>
+        <span className="text-[9px] text-fg-subtle ml-auto">{nodeCount} nodes</span>
       </div>
     </div>
   );

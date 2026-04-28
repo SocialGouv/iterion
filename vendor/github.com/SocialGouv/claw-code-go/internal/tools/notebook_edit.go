@@ -1,9 +1,9 @@
 package tools
 
 import (
-	"github.com/SocialGouv/claw-code-go/internal/api"
 	"encoding/json"
 	"fmt"
+	"github.com/SocialGouv/claw-code-go/internal/api"
 	"os"
 	"strconv"
 	"strings"

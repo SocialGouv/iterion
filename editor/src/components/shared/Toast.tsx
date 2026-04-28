@@ -1,10 +1,10 @@
 import { useUIStore, type Toast } from "@/store/ui";
 
 const TYPE_STYLES: Record<Toast["type"], string> = {
-  success: "bg-green-900/90 text-green-200 border-green-700",
-  error: "bg-red-900/90 text-red-200 border-red-700",
-  info: "bg-blue-900/90 text-blue-200 border-blue-700",
-  warning: "bg-yellow-900/90 text-yellow-200 border-yellow-700",
+  success: "bg-success-soft text-success-fg border-success",
+  error: "bg-danger-soft text-danger-fg border-danger",
+  info: "bg-accent-soft text-info-fg border-accent",
+  warning: "bg-warning-soft text-warning-fg border-warning",
 };
 
 const TYPE_ICONS: Record<Toast["type"], string> = {

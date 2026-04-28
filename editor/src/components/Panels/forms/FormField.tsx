@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 
-const labelClass = "block text-xs text-gray-400 mb-1";
-const inputClass = "w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:border-blue-500 focus:outline-none";
+const labelClass = "block text-xs text-fg-subtle mb-1";
+const inputClass = "w-full bg-surface-1 border border-border-strong rounded px-2 py-1 text-sm text-fg-default focus:border-accent focus:outline-none";
 const selectClass = inputClass;
 
 function FieldLabel({ label, help }: { label: string; help?: string }) {
@@ -9,7 +9,7 @@ function FieldLabel({ label, help }: { label: string; help?: string }) {
     <label className={labelClass}>
       {label}
       {help && (
-        <span className="text-gray-600 hover:text-gray-300 cursor-help ml-1" title={help}>?</span>
+        <span className="text-fg-subtle hover:text-fg-muted cursor-help ml-1" title={help}>?</span>
       )}
     </label>
   );
@@ -119,7 +119,7 @@ export function CommittedTextField({ label, value, onChange, onCommit, validate,
       <FieldLabel label={label} help={help} />
       <div className="flex gap-1">
         <input
-          className={`${inputClass} flex-1${error ? " ring-1 ring-red-500 border-red-500" : ""}`}
+          className={`${inputClass} flex-1${error ? " ring-1 ring-red-500 border-danger" : ""}`}
           type="text"
           value={draft}
           onChange={(e) => { setDraft(e.target.value); setError(null); }}
@@ -131,7 +131,7 @@ export function CommittedTextField({ label, value, onChange, onCommit, validate,
         />
         {isDirty && (
           <button
-            className="bg-blue-600 hover:bg-blue-500 text-white text-xs px-1.5 rounded shrink-0"
+            className="bg-accent hover:bg-accent text-fg-default text-xs px-1.5 rounded shrink-0"
             onMouseDown={(e) => {
               e.preventDefault(); // prevent blur before commit
               commit();
@@ -143,7 +143,7 @@ export function CommittedTextField({ label, value, onChange, onCommit, validate,
           </button>
         )}
       </div>
-      {error && <p className="text-[10px] text-red-400 mt-0.5">{error}</p>}
+      {error && <p className="text-[10px] text-danger mt-0.5">{error}</p>}
     </div>
   );
 }
@@ -217,7 +217,7 @@ export function SelectFieldWithCreate({ label, value, onChange, options, allowEm
           ))}
         </select>
         <button
-          className="bg-green-700 hover:bg-green-600 text-xs px-1.5 rounded shrink-0"
+          className="bg-success hover:bg-success text-xs px-1.5 rounded shrink-0"
           onClick={() => {
             const newName = onCreate();
             onChange(newName);
@@ -245,12 +245,12 @@ export function CheckboxField({ label, checked, onChange, help }: CheckboxFieldP
         type="checkbox"
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
-        className="rounded border-gray-600 bg-gray-800"
+        className="rounded border-border-strong bg-surface-1"
       />
-      <label className="text-xs text-gray-400">
+      <label className="text-xs text-fg-subtle">
         {label}
         {help && (
-          <span className="text-gray-600 hover:text-gray-300 cursor-help ml-1" title={help}>?</span>
+          <span className="text-fg-subtle hover:text-fg-muted cursor-help ml-1" title={help}>?</span>
         )}
       </label>
     </div>
@@ -290,10 +290,10 @@ export function TagListField({ label, values, onChange, placeholder = "Add..." }
       <label className={labelClass}>{label}</label>
       <div className="flex flex-wrap gap-1 mb-1">
         {values.map((v) => (
-          <span key={v} className="bg-gray-700 text-xs px-2 py-0.5 rounded flex items-center gap-1">
+          <span key={v} className="bg-surface-2 text-xs px-2 py-0.5 rounded flex items-center gap-1">
             {v}
             <button
-              className="text-gray-400 hover:text-white"
+              className="text-fg-subtle hover:text-fg-default"
               onClick={() => onChange(values.filter((x) => x !== v))}
             >
               x
@@ -311,7 +311,7 @@ export function TagListField({ label, values, onChange, placeholder = "Add..." }
           placeholder={placeholder}
         />
         <button
-          className="bg-gray-700 hover:bg-gray-600 text-xs px-2 rounded"
+          className="bg-surface-2 hover:bg-surface-3 text-xs px-2 rounded"
           onClick={addTag}
         >
           +
@@ -332,9 +332,9 @@ export function MultiSelectField({ label, values, onChange, options }: MultiSele
   return (
     <div className="mb-2">
       <label className={labelClass}>{label}</label>
-      <div className="flex flex-col gap-1 max-h-32 overflow-y-auto bg-gray-800 border border-gray-600 rounded p-1">
+      <div className="flex flex-col gap-1 max-h-32 overflow-y-auto bg-surface-1 border border-border-strong rounded p-1">
         {options.map((opt) => (
-          <label key={opt} className="flex items-center gap-2 text-xs text-gray-300 px-1 hover:bg-gray-700 rounded cursor-pointer">
+          <label key={opt} className="flex items-center gap-2 text-xs text-fg-muted px-1 hover:bg-surface-2 rounded cursor-pointer">
             <input
               type="checkbox"
               checked={values.includes(opt)}
@@ -349,7 +349,7 @@ export function MultiSelectField({ label, values, onChange, options }: MultiSele
             {opt}
           </label>
         ))}
-        {options.length === 0 && <span className="text-xs text-gray-500 px-1">No options available</span>}
+        {options.length === 0 && <span className="text-xs text-fg-subtle px-1">No options available</span>}
       </div>
     </div>
   );

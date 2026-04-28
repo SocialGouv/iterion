@@ -14,7 +14,12 @@ const FIELD_TYPES: { value: FieldType; label: string }[] = [
   { value: "string[]", label: "string[]" },
 ];
 
-export default function SchemaEditor() {
+interface SchemaEditorProps {
+  /** When set, renders only that schema's card (used by the Inspector "edit item" mode). */
+  filterName?: string;
+}
+
+export default function SchemaEditor({ filterName }: SchemaEditorProps = {}) {
   const document = useDocumentStore((s) => s.document);
   const addSchema = useDocumentStore((s) => s.addSchema);
   const removeSchema = useDocumentStore((s) => s.removeSchema);
@@ -22,6 +27,7 @@ export default function SchemaEditor() {
   const renameSchema = useDocumentStore((s) => s.renameSchema);
 
   const schemas = document?.schemas ?? [];
+  const visible = filterName ? schemas.filter((s) => s.name === filterName) : schemas;
 
   const handleAdd = useCallback(() => {
     const existing = new Set(schemas.map((s) => s.name));
@@ -32,18 +38,24 @@ export default function SchemaEditor() {
 
   return (
     <div className="p-3 text-sm">
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="font-bold text-gray-300">Schemas</h2>
-        <button
-          className="bg-blue-600 hover:bg-blue-700 text-xs px-2 py-1 rounded"
-          onClick={handleAdd}
-          disabled={!document}
-        >
-          + New
-        </button>
-      </div>
-      {schemas.length === 0 && <p className="text-gray-500 text-xs">No schemas defined.</p>}
-      {schemas.map((schema) => (
+      {!filterName && (
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-bold text-fg-muted">Schemas</h2>
+          <button
+            className="bg-accent hover:bg-accent-hover text-xs px-2 py-1 rounded"
+            onClick={handleAdd}
+            disabled={!document}
+          >
+            + New
+          </button>
+        </div>
+      )}
+      {visible.length === 0 && (
+        <p className="text-fg-subtle text-xs">
+          {filterName ? `Schema "${filterName}" not found.` : "No schemas defined."}
+        </p>
+      )}
+      {visible.map((schema) => (
         <SchemaCard key={schema.name} schema={schema} allSchemas={schemas} onUpdate={updateSchema} onRemove={removeSchema} onRename={renameSchema} />
       ))}
     </div>
@@ -85,7 +97,7 @@ function SchemaCard({
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   return (
-    <div className="mb-4 p-2 bg-gray-800 rounded border border-gray-700">
+    <div className="mb-4 p-2 bg-surface-1 rounded border border-border-default">
       <div className="flex items-center justify-between mb-2">
         <CommittedTextField
           label="Schema Name"
@@ -99,7 +111,7 @@ function SchemaCard({
             return null;
           }}
         />
-        <button className="text-red-400 hover:text-red-300 text-xs ml-2" onClick={() => setConfirmDelete(true)}>
+        <button className="text-danger hover:text-danger-fg text-xs ml-2" onClick={() => setConfirmDelete(true)}>
           Delete
         </button>
       </div>
@@ -123,7 +135,7 @@ function SchemaCard({
                   options={FIELD_TYPES}
                 />
               </div>
-              <button className="text-red-400 hover:text-red-300 text-xs pb-2" onClick={() => removeField(i)}>
+              <button className="text-danger hover:text-danger-fg text-xs pb-2" onClick={() => removeField(i)}>
                 x
               </button>
             </div>
@@ -140,7 +152,7 @@ function SchemaCard({
           </div>
         ))}
       </div>
-      <button className="text-blue-400 hover:text-blue-300 text-xs mt-1" onClick={addField}>
+      <button className="text-accent hover:text-accent text-xs mt-1" onClick={addField}>
         + Add Field
       </button>
       <ConfirmDialog

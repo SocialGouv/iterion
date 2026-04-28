@@ -13,7 +13,7 @@ export default function WorkflowSettingsForm() {
 
   const workflow = useActiveWorkflow();
   if (!workflow) {
-    return <p className="p-3 text-gray-500 text-xs">No workflow defined.</p>;
+    return <p className="p-3 text-fg-subtle text-xs">No workflow defined.</p>;
   }
 
   const nodeNames = document ? Array.from(getAllNodeNames(document)).filter((n) => n !== "done" && n !== "fail") : [];
@@ -29,7 +29,7 @@ export default function WorkflowSettingsForm() {
 
   return (
     <div className="p-3 text-sm">
-      <h2 className="font-bold text-gray-300 mb-3">Workflow Settings</h2>
+      <h2 className="font-bold text-fg-muted mb-3">Workflow Settings</h2>
 
       <CommittedTextField
         label="Workflow Name"
@@ -53,8 +53,8 @@ export default function WorkflowSettingsForm() {
         emptyLabel="-- select entry node --"
       />
 
-      <div className="border-t border-gray-700 mt-3 pt-3">
-        <h3 className="text-xs text-gray-400 font-semibold mb-2">Budget</h3>
+      <div className="border-t border-border-default mt-3 pt-3">
+        <h3 className="text-xs text-fg-subtle font-semibold mb-2">Budget</h3>
         <NumberField
           label="Max Parallel Branches"
           value={budget.max_parallel_branches}

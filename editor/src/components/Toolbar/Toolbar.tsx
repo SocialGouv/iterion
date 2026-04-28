@@ -263,29 +263,29 @@ export default function Toolbar() {
   return (
     <div className="flex items-center gap-2 px-4 h-full text-sm">
       <span className="font-bold tracking-wide">ITERION</span>
-      <div className="h-4 w-px bg-gray-600" />
+      <div className="h-4 w-px bg-surface-3" />
 
       {/* File operations */}
-      <button className="bg-green-700 hover:bg-green-600 px-2.5 py-1 rounded" onClick={handleNew}>
+      <button className="bg-success hover:bg-success px-2.5 py-1 rounded" onClick={handleNew}>
         New
       </button>
 
       <div className="relative" ref={openMenuRef}>
         <button
-          className="bg-gray-700 hover:bg-gray-600 px-2.5 py-1 rounded"
+          className="bg-surface-2 hover:bg-surface-3 px-2.5 py-1 rounded"
           onClick={() => { setShowOpenMenu(!showOpenMenu); api.listFiles().then(setFiles).catch(() => {}); }}
         >
           Open
         </button>
         {showOpenMenu && (
-          <div className="absolute top-full left-0 mt-1 bg-gray-800 border border-gray-600 rounded shadow-xl z-50 min-w-[200px] max-h-[300px] overflow-y-auto">
+          <div className="absolute top-full left-0 mt-1 bg-surface-1 border border-border-strong rounded shadow-xl z-50 min-w-[200px] max-h-[300px] overflow-y-auto">
             {files.length > 0 && (
               <>
-                <div className="px-3 py-1.5 text-[10px] text-gray-500 uppercase tracking-wider">Files</div>
+                <div className="px-3 py-1.5 text-[10px] text-fg-subtle uppercase tracking-wider">Files</div>
                 {files.map((f) => (
                   <button
                     key={f.name}
-                    className="w-full text-left px-3 py-1.5 hover:bg-gray-700 text-xs truncate"
+                    className="w-full text-left px-3 py-1.5 hover:bg-surface-2 text-xs truncate"
                     onClick={() => handleOpenFile(f.name)}
                   >
                     {f.name}
@@ -293,14 +293,14 @@ export default function Toolbar() {
                 ))}
               </>
             )}
-            {files.length > 0 && examples.length > 0 && <div className="border-t border-gray-700" />}
+            {files.length > 0 && examples.length > 0 && <div className="border-t border-border-default" />}
             {examples.length > 0 && (
               <>
-                <div className="px-3 py-1.5 text-[10px] text-gray-500 uppercase tracking-wider">Examples</div>
+                <div className="px-3 py-1.5 text-[10px] text-fg-subtle uppercase tracking-wider">Examples</div>
                 {examples.map((name) => (
                   <button
                     key={name}
-                    className="w-full text-left px-3 py-1.5 hover:bg-gray-700 text-xs truncate"
+                    className="w-full text-left px-3 py-1.5 hover:bg-surface-2 text-xs truncate"
                     onClick={() => { loadExample(name); setShowOpenMenu(false); }}
                   >
                     {name}
@@ -309,21 +309,21 @@ export default function Toolbar() {
               </>
             )}
             {files.length === 0 && examples.length === 0 && (
-              <div className="px-3 py-2 text-xs text-gray-500">No files found</div>
+              <div className="px-3 py-2 text-xs text-fg-subtle">No files found</div>
             )}
           </div>
         )}
       </div>
 
       <button
-        className="bg-gray-700 hover:bg-gray-600 px-2.5 py-1 rounded"
+        className="bg-surface-2 hover:bg-surface-3 px-2.5 py-1 rounded"
         onClick={() => fileInputRef.current?.click()}
       >
         Import
       </button>
       <input ref={fileInputRef} type="file" accept=".iter" className="hidden" onChange={handleImport} />
 
-      <div className="h-4 w-px bg-gray-600" />
+      <div className="h-4 w-px bg-surface-3" />
 
       {/* Save operations */}
       <button
@@ -336,7 +336,7 @@ export default function Toolbar() {
       </button>
 
       <button
-        className="bg-gray-700 hover:bg-gray-600 px-2.5 py-1 rounded disabled:opacity-50"
+        className="bg-surface-2 hover:bg-surface-3 px-2.5 py-1 rounded disabled:opacity-50"
         onClick={handleDownload}
         disabled={!document}
         title="Download .iter file"
@@ -345,7 +345,7 @@ export default function Toolbar() {
       </button>
 
       <button
-        className="bg-gray-700 hover:bg-gray-600 px-2.5 py-1 rounded disabled:opacity-50"
+        className="bg-surface-2 hover:bg-surface-3 px-2.5 py-1 rounded disabled:opacity-50"
         onClick={handleCopySource}
         disabled={!document}
         title="Copy source to clipboard"
@@ -353,11 +353,11 @@ export default function Toolbar() {
         Copy
       </button>
 
-      <div className="h-4 w-px bg-gray-600" />
+      <div className="h-4 w-px bg-surface-3" />
 
       {/* Undo/Redo */}
       <button
-        className="bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded disabled:opacity-30"
+        className="bg-surface-2 hover:bg-surface-3 px-2 py-1 rounded disabled:opacity-30"
         onClick={undo}
         disabled={!canUndo()}
         title="Undo (Ctrl+Z)"
@@ -365,7 +365,7 @@ export default function Toolbar() {
         &#x21A9;
       </button>
       <button
-        className="bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded disabled:opacity-30"
+        className="bg-surface-2 hover:bg-surface-3 px-2 py-1 rounded disabled:opacity-30"
         onClick={redo}
         disabled={!canRedo()}
         title="Redo (Ctrl+Y)"
@@ -373,11 +373,11 @@ export default function Toolbar() {
         &#x21AA;
       </button>
 
-      <div className="h-4 w-px bg-gray-600" />
+      <div className="h-4 w-px bg-surface-3" />
 
       {/* Validate */}
       <button
-        className="bg-blue-600 hover:bg-blue-700 px-2.5 py-1 rounded disabled:opacity-50"
+        className="bg-accent hover:bg-accent-hover px-2.5 py-1 rounded disabled:opacity-50"
         onClick={handleValidate}
         disabled={!document}
       >
@@ -387,7 +387,7 @@ export default function Toolbar() {
       {/* Source view toggle */}
       <button
         className={`px-2.5 py-1 rounded ${
-          sourceViewOpen ? "bg-purple-600 hover:bg-purple-700" : "bg-gray-700 hover:bg-gray-600"
+          sourceViewOpen ? "bg-purple-600 hover:bg-purple-700" : "bg-surface-2 hover:bg-surface-3"
         }`}
         onClick={toggleSourceView}
       >
@@ -397,7 +397,7 @@ export default function Toolbar() {
       {/* Diagnostics panel toggle */}
       <button
         className={`px-2.5 py-1 rounded ${
-          diagnosticsPanelOpen ? "bg-orange-600 hover:bg-orange-700" : "bg-gray-700 hover:bg-gray-600"
+          diagnosticsPanelOpen ? "bg-orange-600 hover:bg-orange-700" : "bg-surface-2 hover:bg-surface-3"
         }`}
         onClick={toggleDiagnosticsPanel}
       >
@@ -405,20 +405,20 @@ export default function Toolbar() {
       </button>
 
       <button
-        className="bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded text-xs"
+        className="bg-surface-2 hover:bg-surface-3 px-2 py-1 rounded text-xs"
         onClick={() => setShowShortcuts(true)}
         title="Keyboard shortcuts (?)"
       >
         ?
       </button>
 
-      <div className="h-4 w-px bg-gray-600" />
+      <div className="h-4 w-px bg-surface-3" />
 
       {/* Workflow selector */}
       {workflows.length > 0 && (
         <>
           <select
-            className="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs"
+            className="bg-surface-1 border border-border-strong rounded px-2 py-1 text-xs"
             value={activeWorkflowName ?? workflows[0]?.name ?? ""}
             onChange={(e) => setActiveWorkflowName(e.target.value)}
           >
@@ -429,7 +429,7 @@ export default function Toolbar() {
             ))}
           </select>
           <button
-            className="bg-green-800 hover:bg-green-700 px-1.5 py-1 rounded text-xs"
+            className="bg-success hover:bg-success px-1.5 py-1 rounded text-xs"
             onClick={handleAddWorkflow}
             title="Add workflow"
           >
@@ -437,7 +437,7 @@ export default function Toolbar() {
           </button>
           {workflows.length > 1 && (
             <button
-              className="bg-red-900 hover:bg-red-800 px-1.5 py-1 rounded text-xs"
+              className="bg-danger-soft hover:bg-danger px-1.5 py-1 rounded text-xs"
               onClick={() => setConfirmRemoveWorkflow(true)}
               title="Remove current workflow"
             >
@@ -449,16 +449,16 @@ export default function Toolbar() {
 
       {/* File path indicator */}
       {currentFilePath && (
-        <span className="text-[10px] text-gray-500 ml-2 truncate max-w-[200px]" title={currentFilePath}>
-          {isDirty() && <span className="text-yellow-400">* </span>}
+        <span className="text-[10px] text-fg-subtle ml-2 truncate max-w-[200px]" title={currentFilePath}>
+          {isDirty() && <span className="text-warning">* </span>}
           {currentFilePath}
         </span>
       )}
       {!currentFilePath && document && isDirty() && (
-        <span className="text-[10px] text-yellow-400 ml-2">* unsaved</span>
+        <span className="text-[10px] text-warning ml-2">* unsaved</span>
       )}
 
-      {loading && <span className="text-xs text-gray-400">Loading...</span>}
+      {loading && <span className="text-xs text-fg-subtle">Loading...</span>}
 
       <ConfirmDialog
         open={confirmRemoveWorkflow}
@@ -473,10 +473,10 @@ export default function Toolbar() {
       {/* Save dialog */}
       {showSaveDialog && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-gray-800 border border-gray-600 rounded-lg p-4 min-w-[300px]">
+          <div className="bg-surface-1 border border-border-strong rounded-lg p-4 min-w-[300px]">
             <h3 className="text-sm font-bold mb-3">Save As</h3>
             <input
-              className="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-sm mb-3 focus:border-blue-500 focus:outline-none"
+              className="w-full bg-surface-0 border border-border-strong rounded px-3 py-2 text-sm mb-3 focus:border-accent focus:outline-none"
               value={saveFileName}
               onChange={(e) => setSaveFileName(e.target.value)}
               placeholder="filename.iter"
@@ -485,7 +485,7 @@ export default function Toolbar() {
             />
             <div className="flex justify-end gap-2">
               <button
-                className="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-xs"
+                className="bg-surface-2 hover:bg-surface-3 px-3 py-1.5 rounded text-xs"
                 onClick={() => setShowSaveDialog(false)}
               >
                 Cancel

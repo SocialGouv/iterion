@@ -37,14 +37,14 @@ export default function AuxiliaryNode({ data, selected }: NodeProps) {
       title="Click to edit"
     >
       {SIDES.map(s => (
-        <Handle key={`target-${s}`} id={`target-${s}`} type="target" position={POS_MAP[s]} className="!bg-gray-500 !w-1 !h-1 !opacity-0" />
+        <Handle key={`target-${s}`} id={`target-${s}`} type="target" position={POS_MAP[s]} className="!bg-surface-3 !w-1 !h-1 !opacity-0" />
       ))}
       <div className="flex items-center justify-center gap-1">
         <span className="text-xs">{icon}</span>
-        <span className="font-medium text-xs text-white truncate max-w-[90px]">{label}</span>
+        <span className="font-medium text-xs text-fg-default truncate max-w-[90px]">{label}</span>
         {badge && (
           <span
-            className="text-[8px] px-1 rounded-full text-white/80"
+            className="text-[8px] px-1 rounded-full text-fg-default/80"
             style={{ background: color + "44" }}
           >
             {badge}
@@ -52,10 +52,10 @@ export default function AuxiliaryNode({ data, selected }: NodeProps) {
         )}
       </div>
       {subtitle && (
-        <div className="text-[9px] text-gray-400 truncate max-w-[110px]">{subtitle}</div>
+        <div className="text-[9px] text-fg-subtle truncate max-w-[110px]">{subtitle}</div>
       )}
       {SIDES.map(s => (
-        <Handle key={`source-${s}`} id={`source-${s}`} type="source" position={POS_MAP[s]} className="!bg-gray-500 !w-1 !h-1 !opacity-0" />
+        <Handle key={`source-${s}`} id={`source-${s}`} type="source" position={POS_MAP[s]} className="!bg-surface-3 !w-1 !h-1 !opacity-0" />
       ))}
     </div>
   );

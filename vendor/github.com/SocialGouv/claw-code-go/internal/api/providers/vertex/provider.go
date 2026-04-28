@@ -26,6 +26,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/claw-code-go/internal/api"
+	"github.com/SocialGouv/claw-code-go/internal/api/httputil"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
@@ -95,8 +96,12 @@ func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
 // Vertex uses an "@<version>" suffix instead of "-<version>" before the date
 // segment. Example: "claude-sonnet-4-20250514" → "claude-sonnet-4@20250514".
 //
-// Inputs that already contain "@" are returned unchanged. The "vertex/" routing
-// prefix (mirroring openai's stripRoutingPrefix) is stripped first.
+// The first "-YYYYMMDD" run found in the string (after stripping any "vertex/"
+// routing prefix) is rewritten to "@YYYYMMDD". Anything that follows the date —
+// for instance a trailing version suffix like "-v1" — is preserved verbatim, so
+// "claude-haiku-4-5-20251001-v1" maps to "claude-haiku-4-5@20251001-v1".
+//
+// Inputs that already contain "@" are returned unchanged.
 func MapModelID(model string) string {
 	model = strings.TrimSpace(model)
 	if model == "" {
@@ -111,20 +116,34 @@ func MapModelID(model string) string {
 	if strings.Contains(model, "@") {
 		return model
 	}
-	// Convert the trailing "-<8-digit-date>" to "@<date>" if present.
-	// We look for the last hyphen followed by 8 digits (YYYYMMDD).
-	if i := strings.LastIndex(model, "-"); i > 0 && i+9 == len(model) {
-		tail := model[i+1:]
+	// Find a "-YYYYMMDD" run anywhere in the string (followed by either end
+	// of string or another "-"). The first match wins; trailing suffixes
+	// such as "-v1" are preserved.
+	for i := 0; i+9 <= len(model); i++ {
+		if model[i] != '-' {
+			continue
+		}
+		if i == 0 {
+			continue
+		}
+		// Require 8 digits at positions i+1..i+8.
 		allDigits := true
-		for _, r := range tail {
-			if r < '0' || r > '9' {
+		for k := 1; k <= 8; k++ {
+			c := model[i+k]
+			if c < '0' || c > '9' {
 				allDigits = false
 				break
 			}
 		}
-		if allDigits {
-			return model[:i] + "@" + tail
+		if !allDigits {
+			continue
 		}
+		// The 8-digit run must be terminated by end-of-string or '-'
+		// (otherwise it's part of a longer numeric run we don't recognize).
+		if i+9 != len(model) && model[i+9] != '-' {
+			continue
+		}
+		return model[:i] + "@" + model[i+1:]
 	}
 	return model
 }
@@ -160,18 +179,18 @@ func (c *Client) endpoint() string {
 // Anthropic /v1/messages request but (a) requires anthropic_version and
 // (b) does NOT carry the model field — that's encoded in the URL path.
 type vertexRequest struct {
-	AnthropicVersion string             `json:"anthropic_version"`
-	MaxTokens        int                `json:"max_tokens"`
-	System           json.RawMessage    `json:"system,omitempty"`
-	Messages         []api.Message      `json:"messages"`
-	Tools            []api.Tool         `json:"tools,omitempty"`
-	ToolChoice       *api.ToolChoice    `json:"tool_choice,omitempty"`
-	Stream           bool               `json:"stream"`
-	Temperature      *float64           `json:"temperature,omitempty"`
-	TopP             *float64           `json:"top_p,omitempty"`
-	FrequencyPenalty *float64           `json:"frequency_penalty,omitempty"`
-	PresencePenalty  *float64           `json:"presence_penalty,omitempty"`
-	Stop             []string           `json:"stop,omitempty"`
+	AnthropicVersion string          `json:"anthropic_version"`
+	MaxTokens        int             `json:"max_tokens"`
+	System           json.RawMessage `json:"system,omitempty"`
+	Messages         []api.Message   `json:"messages"`
+	Tools            []api.Tool      `json:"tools,omitempty"`
+	ToolChoice       *api.ToolChoice `json:"tool_choice,omitempty"`
+	Stream           bool            `json:"stream"`
+	Temperature      *float64        `json:"temperature,omitempty"`
+	TopP             *float64        `json:"top_p,omitempty"`
+	FrequencyPenalty *float64        `json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float64        `json:"presence_penalty,omitempty"`
+	Stop             []string        `json:"stop,omitempty"`
 }
 
 func (c *Client) buildRequest(req api.CreateMessageRequest) ([]byte, error) {
@@ -250,7 +269,7 @@ func (c *Client) StreamResponse(ctx context.Context, req api.CreateMessageReques
 			Provider:   "vertex",
 			StatusCode: resp.StatusCode,
 			Message:    extractVertexErrorMessage(bodyStr),
-			Body:       truncateBody(bodyStr, 1000),
+			Body:       httputil.TruncateBody(bodyStr, httputil.BodyTruncateForLog),
 			Retryable:  api.IsRetryableStatus(resp.StatusCode),
 		}
 	}
@@ -326,14 +345,5 @@ func extractVertexErrorMessage(body string) string {
 	if err := json.Unmarshal([]byte(body), &parsed); err == nil && parsed.Error.Message != "" {
 		return parsed.Error.Message
 	}
-	return truncateBody(body, 200)
-}
-
-// truncateBody clamps a body string to maxRunes runes for log-friendliness.
-func truncateBody(body string, maxRunes int) string {
-	r := []rune(body)
-	if len(r) <= maxRunes {
-		return body
-	}
-	return string(r[:maxRunes]) + "…"
+	return httputil.TruncateBody(body, httputil.BodyTruncateForMessage)
 }

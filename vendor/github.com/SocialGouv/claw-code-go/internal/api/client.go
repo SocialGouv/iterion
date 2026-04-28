@@ -2,10 +2,10 @@ package api
 
 import (
 	"bytes"
-	"github.com/SocialGouv/claw-code-go/internal/apikit"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/SocialGouv/claw-code-go/internal/apikit"
 	"io"
 	"net/http"
 	"time"

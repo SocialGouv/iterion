@@ -2,10 +2,10 @@ package tools
 
 import (
 	"bytes"
-	"github.com/SocialGouv/claw-code-go/internal/api"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/claw-code-go/internal/api"
 	"os"
 	"path/filepath"
 )

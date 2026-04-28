@@ -14,10 +14,16 @@ import (
 
 // SSETransport communicates with a remote MCP server over HTTP.
 // Requests are sent as JSON-RPC POSTs to /message; responses are returned directly.
-// If an authHeader is provided (e.g. "Bearer <token>"), it is sent on every request.
+// Authentication has two modes:
+//
+//   - Static: authHeader is a literal "Scheme value" string sent on every request.
+//   - Dynamic: authFunc is invoked per-request to produce a fresh header. Used
+//     by the OAuth broker to refresh tokens transparently. authFunc takes
+//     priority when set.
 type SSETransport struct {
 	baseURL    string
 	authHeader string
+	authFunc   func(ctx context.Context) (string, error)
 	httpClient *http.Client
 	mu         sync.Mutex
 }
@@ -32,8 +38,43 @@ func NewSSETransport(baseURL string, authHeader string) *SSETransport {
 	}
 }
 
+// SetAuthFunc installs a dynamic authorization-header producer. When
+// non-nil, it is invoked on every Send / Notify and its return value
+// is used as the Authorization header. This is the bridge MCP
+// transports use with the OAuth broker:
+//
+//	transport.SetAuthFunc(broker.BearerHeaderFunc(serverCfg))
+//
+// Errors from authFunc abort the request with a wrapped mcp sse error.
+func (t *SSETransport) SetAuthFunc(fn func(ctx context.Context) (string, error)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.authFunc = fn
+}
+
+// resolveAuth returns the Authorization header to use for a given
+// request, or "" when no auth is configured. Caller must NOT hold t.mu
+// — authFunc may make HTTP calls of its own (token refresh) which
+// would deadlock if invoked under the transport mutex.
+func (t *SSETransport) resolveAuth(ctx context.Context) (string, error) {
+	t.mu.Lock()
+	fn := t.authFunc
+	header := t.authHeader
+	t.mu.Unlock()
+
+	if fn != nil {
+		return fn(ctx)
+	}
+	return header, nil
+}
+
 // Send POSTs the JSON-RPC request to the server's /message endpoint and returns the response.
 func (t *SSETransport) Send(ctx context.Context, req Request) (Response, error) {
+	authHeader, err := t.resolveAuth(ctx)
+	if err != nil {
+		return Response{}, fmt.Errorf("mcp sse: resolve auth: %w", err)
+	}
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -49,8 +90,8 @@ func (t *SSETransport) Send(ctx context.Context, req Request) (Response, error) 
 
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
-	if t.authHeader != "" {
-		httpReq.Header.Set("Authorization", t.authHeader)
+	if authHeader != "" {
+		httpReq.Header.Set("Authorization", authHeader)
 	}
 
 	httpResp, err := t.httpClient.Do(httpReq)
@@ -79,6 +120,11 @@ func (t *SSETransport) Send(ctx context.Context, req Request) (Response, error) 
 
 // Notify sends a notification to the server (no response expected).
 func (t *SSETransport) Notify(n Notification) error {
+	authHeader, err := t.resolveAuth(context.Background())
+	if err != nil {
+		return fmt.Errorf("mcp sse: resolve auth: %w", err)
+	}
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -93,12 +139,15 @@ func (t *SSETransport) Notify(n Notification) error {
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
-	if t.authHeader != "" {
-		httpReq.Header.Set("Authorization", t.authHeader)
+	if authHeader != "" {
+		httpReq.Header.Set("Authorization", authHeader)
 	}
 
 	httpResp, err := t.httpClient.Do(httpReq)
 	if err != nil {
+		// Note: Do returns (nil, err) on transport failure, so we
+		// MUST NOT touch httpResp before this guard. Body.Close()
+		// runs only on success below.
 		return fmt.Errorf("mcp sse: http post notification: %w", err)
 	}
 	httpResp.Body.Close()

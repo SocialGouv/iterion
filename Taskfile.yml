@@ -97,6 +97,11 @@ tasks:
     cmds:
       - go test -v -tags live -count=1 -run TestLive_Lite_ClawLongContext -timeout 10m ./e2e/...
 
+  test:live:claw-read-image:
+    desc: Run the read_image (computer use) live e2e test (requires ANTHROPIC_API_KEY)
+    cmds:
+      - go test -v -tags live -count=1 -run TestLive_Lite_ClawReadImage -timeout 5m ./e2e/...
+
   fmt:
     desc: Format Go source files
     cmds:

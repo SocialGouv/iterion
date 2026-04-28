@@ -1,11 +1,17 @@
 import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath } from "@xyflow/react";
 import type { EdgeProps } from "@xyflow/react";
 import { SELECTED_BORDER } from "@/lib/constants";
+import { useGroupedDiagnostics } from "@/hooks/useGroupedDiagnostics";
+import { useSelectionStore } from "@/store/selection";
+import DiagnosticBadge from "@/components/Diagnostics/DiagnosticBadge";
 
 export default function ConditionalEdge(props: EdgeProps) {
-  const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, label, data, selected, markerEnd } = props;
+  const { id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, label, data, selected, markerEnd } = props;
 
   const hasLoop = !!(data as Record<string, unknown>)?.loop;
+  const grouped = useGroupedDiagnostics();
+  const setSelectedEdge = useSelectionStore((s) => s.setSelectedEdge);
+  const edgeDiags = grouped.byEdge.get(id) ?? [];
 
   const [edgePath, labelX, labelY] = getSmoothStepPath({
     sourceX,
@@ -47,6 +53,21 @@ export default function ConditionalEdge(props: EdgeProps) {
             }}
           >
             {label}
+          </div>
+        </EdgeLabelRenderer>
+      )}
+      {edgeDiags.length > 0 && (
+        <EdgeLabelRenderer>
+          <div
+            className="absolute pointer-events-all"
+            style={{
+              transform: `translate(-50%, -50%) translate(${labelX}px,${(labelY ?? 0) - (label ? 18 : 0)}px)`,
+            }}
+          >
+            <DiagnosticBadge
+              diagnostics={edgeDiags}
+              onReveal={() => setSelectedEdge(id)}
+            />
           </div>
         </EdgeLabelRenderer>
       )}

@@ -16,7 +16,7 @@ const SearchOverlay = forwardRef<HTMLInputElement, Props>(
       <div className="absolute top-2 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2">
         <input
           ref={ref}
-          className="bg-gray-800 border border-gray-500 rounded-lg px-3 py-1.5 text-sm text-white w-64 focus:border-blue-500 focus:outline-none shadow-lg"
+          className="bg-surface-1 border border-border-strong rounded-lg px-3 py-1.5 text-sm text-fg-default w-64 focus:border-accent focus:outline-none shadow-lg"
           value={searchQuery}
           onChange={(e) => onSearchChange(e.target.value)}
           onKeyDown={onKeyDown}
@@ -24,7 +24,7 @@ const SearchOverlay = forwardRef<HTMLInputElement, Props>(
           autoFocus
         />
         {hasQuery && (
-          <span className="text-xs text-gray-400 bg-gray-800/90 border border-gray-600 rounded px-2 py-1 whitespace-nowrap shadow-lg">
+          <span className="text-xs text-fg-subtle bg-surface-1/90 border border-border-strong rounded px-2 py-1 whitespace-nowrap shadow-lg">
             {matchCount > 0
               ? `${currentIndex + 1} / ${matchCount}`
               : "No matches"}

@@ -14,6 +14,10 @@ type CacheControlMarker = api.CacheControlMarker
 // ContentBlock represents a single content block in a message.
 type ContentBlock = api.ContentBlock
 
+// ImageSource is the "source" object on an Anthropic image content block.
+// See https://docs.anthropic.com/en/docs/build-with-claude/vision.
+type ImageSource = api.ImageSource
+
 // ToolResult is a convenience wrapper for building tool_result content blocks.
 type ToolResult = api.ToolResult
 

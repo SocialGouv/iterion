@@ -38,18 +38,18 @@ export default function ConfirmDialog({
 
   const confirmClass =
     confirmVariant === "danger"
-      ? "bg-red-600 hover:bg-red-700 text-white"
-      : "bg-blue-600 hover:bg-blue-700 text-white";
+      ? "bg-danger hover:bg-danger text-fg-default"
+      : "bg-accent hover:bg-accent-hover text-fg-default";
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-gray-800 border border-gray-600 rounded-lg p-4 min-w-[300px] max-w-[400px]">
-        <h3 className="text-sm font-bold text-white mb-2">{title}</h3>
-        <p className="text-xs text-gray-300 mb-4">{message}</p>
+      <div className="bg-surface-1 border border-border-strong rounded-lg p-4 min-w-[300px] max-w-[400px]">
+        <h3 className="text-sm font-bold text-fg-default mb-2">{title}</h3>
+        <p className="text-xs text-fg-muted mb-4">{message}</p>
         <div className="flex justify-end gap-2">
           <button
             ref={cancelRef}
-            className="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-xs text-white"
+            className="bg-surface-2 hover:bg-surface-3 px-3 py-1.5 rounded text-xs text-fg-default"
             onClick={onCancel}
           >
             Cancel

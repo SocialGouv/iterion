@@ -4,7 +4,12 @@ import { defaultPrompt } from "@/lib/defaults";
 import { TextField, CommittedTextField } from "./forms/FormField";
 import ConfirmDialog from "../shared/ConfirmDialog";
 
-export default function PromptEditor() {
+interface PromptEditorProps {
+  /** When set, renders only that prompt's card (used by the Inspector "edit item" mode). */
+  filterName?: string;
+}
+
+export default function PromptEditor({ filterName }: PromptEditorProps = {}) {
   const document = useDocumentStore((s) => s.document);
   const addPrompt = useDocumentStore((s) => s.addPrompt);
   const removePrompt = useDocumentStore((s) => s.removePrompt);
@@ -12,6 +17,7 @@ export default function PromptEditor() {
   const renamePrompt = useDocumentStore((s) => s.renamePrompt);
 
   const prompts = document?.prompts ?? [];
+  const visible = filterName ? prompts.filter((p) => p.name === filterName) : prompts;
 
   const handleAdd = useCallback(() => {
     const existing = new Set(prompts.map((p) => p.name));
@@ -22,18 +28,24 @@ export default function PromptEditor() {
 
   return (
     <div className="p-3 text-sm">
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="font-bold text-gray-300">Prompts</h2>
-        <button
-          className="bg-blue-600 hover:bg-blue-700 text-xs px-2 py-1 rounded"
-          onClick={handleAdd}
-          disabled={!document}
-        >
-          + New
-        </button>
-      </div>
-      {prompts.length === 0 && <p className="text-gray-500 text-xs">No prompts defined.</p>}
-      {prompts.map((prompt) => (
+      {!filterName && (
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-bold text-fg-muted">Prompts</h2>
+          <button
+            className="bg-accent hover:bg-accent-hover text-xs px-2 py-1 rounded"
+            onClick={handleAdd}
+            disabled={!document}
+          >
+            + New
+          </button>
+        </div>
+      )}
+      {visible.length === 0 && (
+        <p className="text-fg-subtle text-xs">
+          {filterName ? `Prompt "${filterName}" not found.` : "No prompts defined."}
+        </p>
+      )}
+      {visible.map((prompt) => (
         <PromptCard
           key={prompt.name}
           name={prompt.name}
@@ -66,7 +78,7 @@ function PromptCard({
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   return (
-    <div className="mb-4 p-2 bg-gray-800 rounded border border-gray-700">
+    <div className="mb-4 p-2 bg-surface-1 rounded border border-border-default">
       <div className="flex items-center justify-between mb-1">
         <CommittedTextField
           label="Prompt Name"
@@ -80,7 +92,7 @@ function PromptCard({
             return null;
           }}
         />
-        <button className="text-red-400 hover:text-red-300 text-xs ml-2" onClick={() => setConfirmDelete(true)}>
+        <button className="text-danger hover:text-danger-fg text-xs ml-2" onClick={() => setConfirmDelete(true)}>
           Delete
         </button>
       </div>

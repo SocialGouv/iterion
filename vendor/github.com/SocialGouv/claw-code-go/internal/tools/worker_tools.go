@@ -1,11 +1,11 @@
 package tools
 
 import (
+	"encoding/json"
+	"fmt"
 	"github.com/SocialGouv/claw-code-go/internal/api"
 	"github.com/SocialGouv/claw-code-go/internal/config"
 	"github.com/SocialGouv/claw-code-go/internal/runtime/worker"
-	"encoding/json"
-	"fmt"
 )
 
 // --- Worker tool definitions ---

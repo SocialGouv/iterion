@@ -78,13 +78,13 @@ export default function NodeContextMenu({
   return (
     <div
       ref={ref}
-      className="fixed bg-gray-800 border border-gray-600 rounded-lg shadow-xl z-50 py-1 min-w-[160px]"
+      className="fixed bg-surface-1 border border-border-strong rounded-lg shadow-xl z-50 py-1 min-w-[160px]"
       style={{
         left: Math.min(x, window.innerWidth - 180),
         top: Math.min(y, window.innerHeight - 200),
       }}
     >
-      <div className="px-3 py-1 text-[10px] text-gray-500 uppercase tracking-wider">
+      <div className="px-3 py-1 text-[10px] text-fg-subtle uppercase tracking-wider">
         {isGroupNode ? groupNameFromNodeId(nodeId) : nodeId}
       </div>
 
@@ -92,7 +92,7 @@ export default function NodeContextMenu({
       {isGroupNode && (
         <>
           <button
-            className="w-full text-left px-3 py-1.5 hover:bg-red-900/50 text-xs text-red-400 flex items-center gap-2"
+            className="w-full text-left px-3 py-1.5 hover:bg-danger-soft text-xs text-danger flex items-center gap-2"
             onClick={() => { onRemoveGroup(groupNameFromNodeId(nodeId)); onClose(); }}
           >
             <span>{"\u{1F4E4}"}</span>
@@ -105,7 +105,7 @@ export default function NodeContextMenu({
       {!isTerminal && !isGroupNode && (
         <>
           <button
-            className="w-full text-left px-3 py-1.5 hover:bg-gray-700 text-xs text-white flex items-center gap-2"
+            className="w-full text-left px-3 py-1.5 hover:bg-surface-2 text-xs text-fg-default flex items-center gap-2"
             onClick={() => { onSetEntry(); onClose(); }}
             disabled={isEntry}
           >
@@ -113,19 +113,19 @@ export default function NodeContextMenu({
             {isEntry ? "Already entry point" : "Set as entry point"}
           </button>
           <button
-            className="w-full text-left px-3 py-1.5 hover:bg-gray-700 text-xs text-white flex items-center gap-2"
+            className="w-full text-left px-3 py-1.5 hover:bg-surface-2 text-xs text-fg-default flex items-center gap-2"
             onClick={() => { onDuplicate(); onClose(); }}
           >
-            <span className="text-blue-400">&#x2398;</span>
+            <span className="text-accent">&#x2398;</span>
             Duplicate
           </button>
 
           {/* Group operations */}
-          <div className="border-t border-gray-700 my-1" />
+          <div className="border-t border-border-default my-1" />
 
           {canGroup && !showGroupInput && (
             <button
-              className="w-full text-left px-3 py-1.5 hover:bg-gray-700 text-xs text-white flex items-center gap-2"
+              className="w-full text-left px-3 py-1.5 hover:bg-surface-2 text-xs text-fg-default flex items-center gap-2"
               onClick={() => setShowGroupInput(true)}
             >
               <span className="text-indigo-400">{"\u{1F4E6}"}</span>
@@ -137,7 +137,7 @@ export default function NodeContextMenu({
             <div className="px-3 py-1.5 flex gap-1">
               <input
                 ref={inputRef}
-                className="flex-1 bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-white placeholder-gray-500"
+                className="flex-1 bg-surface-0 border border-border-strong rounded px-2 py-1 text-xs text-fg-default placeholder:text-fg-subtle"
                 placeholder="Group name..."
                 value={groupName}
                 onChange={(e) => setGroupName(e.target.value)}
@@ -147,7 +147,7 @@ export default function NodeContextMenu({
                 }}
               />
               <button
-                className="bg-blue-600 hover:bg-blue-500 text-white text-xs px-2 py-1 rounded shrink-0"
+                className="bg-accent hover:bg-accent text-fg-default text-xs px-2 py-1 rounded shrink-0"
                 onClick={handleCreateGroup}
               >
                 OK
@@ -157,17 +157,17 @@ export default function NodeContextMenu({
 
           {belongsToGroup && (
             <button
-              className="w-full text-left px-3 py-1.5 hover:bg-gray-700 text-xs text-gray-300 flex items-center gap-2"
+              className="w-full text-left px-3 py-1.5 hover:bg-surface-2 text-xs text-fg-muted flex items-center gap-2"
               onClick={() => { onRemoveFromGroup(belongsToGroup, nodeId); onClose(); }}
             >
-              <span className="text-gray-500">{"\u{1F4E4}"}</span>
+              <span className="text-fg-subtle">{"\u{1F4E4}"}</span>
               Remove from "{belongsToGroup}"
             </button>
           )}
 
-          <div className="border-t border-gray-700 my-1" />
+          <div className="border-t border-border-default my-1" />
           <button
-            className="w-full text-left px-3 py-1.5 hover:bg-red-900/50 text-xs text-red-400 flex items-center gap-2"
+            className="w-full text-left px-3 py-1.5 hover:bg-danger-soft text-xs text-danger flex items-center gap-2"
             onClick={() => { onDelete(); onClose(); }}
           >
             <span>&#x2716;</span>
@@ -176,7 +176,7 @@ export default function NodeContextMenu({
         </>
       )}
       {isTerminal && (
-        <div className="px-3 py-1.5 text-xs text-gray-500">
+        <div className="px-3 py-1.5 text-xs text-fg-subtle">
           Terminal node (no actions)
         </div>
       )}

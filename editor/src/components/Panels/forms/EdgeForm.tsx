@@ -148,26 +148,26 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
   return (
     <div className="space-y-3">
       <div>
-        <p className="text-xs text-gray-400 mb-1">Connection</p>
-        <p className="text-sm text-white">
-          {edge.from} <span className="text-gray-500">-&gt;</span> {edge.to}
+        <p className="text-xs text-fg-subtle mb-1">Connection</p>
+        <p className="text-sm text-fg-default">
+          {edge.from} <span className="text-fg-subtle">-&gt;</span> {edge.to}
         </p>
       </div>
 
       {/* When clause */}
-      <div className="border-t border-gray-700 pt-2">
+      <div className="border-t border-border-default pt-2">
         <div className="flex items-center justify-between mb-1">
-          <span className="text-xs text-gray-400 font-semibold">When Condition <span className="text-gray-600 hover:text-gray-300 cursor-help" title="Boolean field from the source node's output schema. Controls whether this edge is followed.">?</span></span>
+          <span className="text-xs text-fg-subtle font-semibold">When Condition <span className="text-fg-subtle hover:text-fg-muted cursor-help" title="Boolean field from the source node's output schema. Controls whether this edge is followed.">?</span></span>
           {!when ? (
             <button
-              className="text-xs text-blue-400 hover:text-blue-300"
+              className="text-xs text-accent hover:text-accent"
               onClick={() => setWhen({ condition: "", negated: false })}
             >
               + Add
             </button>
           ) : (
             <button
-              className="text-xs text-red-400 hover:text-red-300"
+              className="text-xs text-danger hover:text-danger-fg"
               onClick={() => setWhen(undefined)}
             >
               Remove
@@ -204,19 +204,19 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
       </div>
 
       {/* Loop clause */}
-      <div className="border-t border-gray-700 pt-2">
+      <div className="border-t border-border-default pt-2">
         <div className="flex items-center justify-between mb-1">
-          <span className="text-xs text-gray-400 font-semibold">Loop <span className="text-gray-600 hover:text-gray-300 cursor-help" title="Creates a named loop through this edge, repeating up to max_iterations times. Use {{outputs.node.history}} to access previous iterations.">?</span></span>
+          <span className="text-xs text-fg-subtle font-semibold">Loop <span className="text-fg-subtle hover:text-fg-muted cursor-help" title="Creates a named loop through this edge, repeating up to max_iterations times. Use {{outputs.node.history}} to access previous iterations.">?</span></span>
           {!loop ? (
             <button
-              className="text-xs text-blue-400 hover:text-blue-300"
+              className="text-xs text-accent hover:text-accent"
               onClick={() => setLoop({ name: "", max_iterations: 3 })}
             >
               + Add
             </button>
           ) : (
             <button
-              className="text-xs text-red-400 hover:text-red-300"
+              className="text-xs text-danger hover:text-danger-fg"
               onClick={() => setLoop(undefined)}
             >
               Remove
@@ -242,11 +242,11 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
       </div>
 
       {/* With entries */}
-      <div className="border-t border-gray-700 pt-2">
+      <div className="border-t border-border-default pt-2">
         <div className="flex items-center justify-between mb-1">
-          <span className="text-xs text-gray-400 font-semibold">With (data mapping) <span className="text-gray-600 hover:text-gray-300 cursor-help" title="Map data to the target node's input fields. Use {{outputs.node.field}}, {{vars.name}}, or {{artifacts.name}} as values.">?</span></span>
+          <span className="text-xs text-fg-subtle font-semibold">With (data mapping) <span className="text-fg-subtle hover:text-fg-muted cursor-help" title="Map data to the target node's input fields. Use {{outputs.node.field}}, {{vars.name}}, or {{artifacts.name}} as values.">?</span></span>
           <button
-            className="text-xs text-blue-400 hover:text-blue-300"
+            className="text-xs text-accent hover:text-accent"
             onClick={() => setWith([...withEntries, { key: "", value: "" }])}
           >
             + Add
@@ -266,9 +266,9 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
       </div>
 
       {/* Delete edge */}
-      <div className="border-t border-gray-700 pt-2">
+      <div className="border-t border-border-default pt-2">
         <button
-          className="w-full bg-red-900 hover:bg-red-800 text-red-200 text-xs py-1 rounded"
+          className="w-full bg-danger-soft hover:bg-danger text-danger-fg text-xs py-1 rounded"
           onClick={() => removeEdge(workflowName, edgeIndex, edge.from, edge.to)}
         >
           Delete Edge
@@ -315,7 +315,7 @@ function WithEntryRow({
   }, [templateRefs]);
 
   return (
-    <div className="mb-2 p-1.5 bg-gray-800/50 rounded border border-gray-700">
+    <div className="mb-2 p-1.5 bg-surface-1/50 rounded border border-border-default">
       <div className="flex gap-1 items-end">
         <div className="flex-1">
           <CommittedTextField
@@ -331,7 +331,7 @@ function WithEntryRow({
           />
         </div>
         <button
-          className="text-red-400 hover:text-red-300 text-xs pb-2"
+          className="text-danger hover:text-danger-fg text-xs pb-2"
           onClick={() => {
             const next = withEntries.filter((_, j) => j !== index);
             setWith(next.length > 0 ? next : undefined);
@@ -351,23 +351,23 @@ function WithEntryRow({
         </div>
         <div className="relative">
           <button
-            className="text-blue-400 hover:text-blue-300 text-[10px] pb-2 whitespace-nowrap"
+            className="text-accent hover:text-accent text-[10px] pb-2 whitespace-nowrap"
             onClick={() => setPickerOpen(!pickerOpen)}
             title="Insert a template reference"
           >
             {"{{"} ref
           </button>
           {pickerOpen && (
-            <div className="absolute bottom-6 right-0 bg-gray-800 border border-gray-600 rounded-lg shadow-xl z-50 py-1 min-w-[200px] max-h-[240px] overflow-y-auto">
+            <div className="absolute bottom-6 right-0 bg-surface-1 border border-border-strong rounded-lg shadow-xl z-50 py-1 min-w-[200px] max-h-[240px] overflow-y-auto">
               {Array.from(groups.entries()).map(([group, refs]) => (
                 <div key={group}>
-                  <div className="px-2 py-1 text-[9px] text-gray-500 uppercase tracking-wider sticky top-0 bg-gray-800">
+                  <div className="px-2 py-1 text-[9px] text-fg-subtle uppercase tracking-wider sticky top-0 bg-surface-1">
                     {group}
                   </div>
                   {refs.map((ref) => (
                     <button
                       key={ref.value}
-                      className="w-full text-left px-2 py-1 hover:bg-gray-700 text-[11px] text-gray-300 truncate"
+                      className="w-full text-left px-2 py-1 hover:bg-surface-2 text-[11px] text-fg-muted truncate"
                       onClick={() => {
                         updateValue(entry.value ? `${entry.value} ${ref.value}` : ref.value);
                         setPickerOpen(false);
@@ -380,7 +380,7 @@ function WithEntryRow({
                 </div>
               ))}
               {templateRefs.length === 0 && (
-                <p className="px-2 py-1 text-[10px] text-gray-500">No references available. Add nodes with output schemas first.</p>
+                <p className="px-2 py-1 text-[10px] text-fg-subtle">No references available. Add nodes with output schemas first.</p>
               )}
             </div>
           )}
@@ -388,12 +388,12 @@ function WithEntryRow({
       </div>
       {enumValues && enumValues.length > 0 && (
         <div className="mt-0.5">
-          <span className="text-[9px] text-gray-500">Allowed values: </span>
+          <span className="text-[9px] text-fg-subtle">Allowed values: </span>
           <div className="flex flex-wrap gap-1 mt-0.5">
             {enumValues.map((v) => (
               <button
                 key={v}
-                className="text-[10px] bg-gray-700 hover:bg-gray-600 text-amber-300 px-1.5 py-0.5 rounded cursor-pointer"
+                className="text-[10px] bg-surface-2 hover:bg-surface-3 text-amber-300 px-1.5 py-0.5 rounded cursor-pointer"
                 onClick={() => updateValue(`"${v}"`)}
                 title={`Set value to "${v}"`}
               >

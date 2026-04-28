@@ -42,8 +42,8 @@ export default function CanvasToolbar({
             key={kind}
             className={`border text-xs px-2 py-1 rounded flex items-center gap-1 ${
               activeLayers.has(kind)
-                ? "bg-blue-600 hover:bg-blue-700 border-blue-500 text-white"
-                : "bg-gray-800/90 hover:bg-gray-700 border-gray-600 text-gray-300"
+                ? "bg-accent hover:bg-accent-hover border-accent text-fg-default"
+                : "bg-surface-1/90 hover:bg-surface-2 border-border-strong text-fg-muted"
             }`}
             onClick={() => toggleLayer(kind)}
             title={`Toggle ${LAYER_LABELS[kind]} layer (Alt+${i + 1})`}
@@ -56,8 +56,8 @@ export default function CanvasToolbar({
           <button
             className={`border text-xs px-2 py-1 rounded flex items-center gap-1 ${
               macroView
-                ? "bg-indigo-600 hover:bg-indigo-700 border-indigo-500 text-white"
-                : "bg-gray-800/90 hover:bg-gray-700 border-gray-600 text-gray-300"
+                ? "bg-indigo-600 hover:bg-indigo-700 border-indigo-500 text-fg-default"
+                : "bg-surface-1/90 hover:bg-surface-2 border-border-strong text-fg-muted"
             }`}
             onClick={() => { toggleMacroView(); onFitViewAfterDelay(); }}
             title="Toggle macro view (show groups as nodes)"
@@ -73,8 +73,8 @@ export default function CanvasToolbar({
         <button
           className={`border text-xs px-2 py-1 rounded ${
             layoutDirection === "RIGHT"
-              ? "bg-blue-600 hover:bg-blue-700 border-blue-500 text-white"
-              : "bg-gray-800/90 hover:bg-gray-700 border-gray-600 text-gray-300"
+              ? "bg-accent hover:bg-accent-hover border-accent text-fg-default"
+              : "bg-surface-1/90 hover:bg-surface-2 border-border-strong text-fg-muted"
           }`}
           onClick={() => {
             toggleLayoutDirection();
@@ -85,14 +85,14 @@ export default function CanvasToolbar({
           {layoutDirection === "DOWN" ? "\u2194 Horizontal" : "\u2195 Vertical"}
         </button>
         <button
-          className="bg-gray-800/90 hover:bg-gray-700 border border-gray-600 text-xs px-2 py-1 rounded text-gray-300"
+          className="bg-surface-1/90 hover:bg-surface-2 border border-border-strong text-xs px-2 py-1 rounded text-fg-muted"
           onClick={onArrange}
           title="Auto-arrange nodes chronologically"
         >
           Arrange
         </button>
         <button
-          className="bg-gray-800/90 hover:bg-gray-700 border border-gray-600 text-xs px-2 py-1 rounded text-gray-300"
+          className="bg-surface-1/90 hover:bg-surface-2 border border-border-strong text-xs px-2 py-1 rounded text-fg-muted"
           onClick={onFitView}
           title="Fit all nodes in view"
         >
@@ -100,7 +100,7 @@ export default function CanvasToolbar({
         </button>
         {onFocusNode && (
           <button
-            className="bg-gray-800/90 hover:bg-gray-700 border border-gray-600 text-xs px-2 py-1 rounded text-gray-300"
+            className="bg-surface-1/90 hover:bg-surface-2 border border-border-strong text-xs px-2 py-1 rounded text-fg-muted"
             onClick={onFocusNode}
             title="Zoom to selected node"
           >
@@ -110,8 +110,8 @@ export default function CanvasToolbar({
         <button
           className={`border text-xs px-2 py-1 rounded ${
             expanded
-              ? "bg-blue-600 hover:bg-blue-700 border-blue-500 text-white"
-              : "bg-gray-800/90 hover:bg-gray-700 border-gray-600 text-gray-300"
+              ? "bg-accent hover:bg-accent-hover border-accent text-fg-default"
+              : "bg-surface-1/90 hover:bg-surface-2 border-border-strong text-fg-muted"
           }`}
           onClick={() => { toggleExpanded(); onFitViewAfterDelay(); }}
           title={expanded ? "Collapse canvas (Esc)" : "Expand canvas (hide chrome)"}
@@ -121,8 +121,8 @@ export default function CanvasToolbar({
         <button
           className={`border text-xs px-2 py-1 rounded ${
             browserFullscreen
-              ? "bg-blue-600 hover:bg-blue-700 border-blue-500 text-white"
-              : "bg-gray-800/90 hover:bg-gray-700 border-gray-600 text-gray-300"
+              ? "bg-accent hover:bg-accent-hover border-accent text-fg-default"
+              : "bg-surface-1/90 hover:bg-surface-2 border-border-strong text-fg-muted"
           }`}
           onClick={() => { onBrowserFullscreen(); onFitViewAfterDelay(); }}
           title={browserFullscreen ? "Exit fullscreen" : "Enter fullscreen"}

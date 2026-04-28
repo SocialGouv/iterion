@@ -115,7 +115,7 @@ func (p *PermissionPolicy) AuthorizeWithContext(toolName, input string, permCtx 
 		}
 		return PermissionOutcome{
 			Allowed: false,
-			Reason: fmt.Sprintf("tool '%s' is not in the dont-ask allow-list", toolName),
+			Reason:  fmt.Sprintf("tool '%s' is not in the dont-ask allow-list", toolName),
 		}
 	}
 
@@ -142,7 +142,7 @@ func (p *PermissionPolicy) AuthorizeWithContext(toolName, input string, permCtx 
 		case DecisionDeny:
 			return PermissionOutcome{
 				Allowed: false,
-				Reason: fmt.Sprintf("tool '%s' denied by auto-mode classifier", toolName),
+				Reason:  fmt.Sprintf("tool '%s' denied by auto-mode classifier", toolName),
 			}
 		default:
 			reason := fmt.Sprintf("tool '%s' requires approval (auto-mode classifier deferred)", toolName)

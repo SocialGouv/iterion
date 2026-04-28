@@ -4,6 +4,7 @@ import type { NodeMouseHandler, EdgeMouseHandler, Node, Viewport } from "@xyflow
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { useUIStore } from "@/store/ui";
+import { useThemeStore } from "@/store/theme";
 import { NODE_COLORS, DEBOUNCE_FIT_VIEW_MS, DEBOUNCE_LAYOUT_SETTLE_MS } from "@/lib/constants";
 import { parseGroups } from "@/lib/groups";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
@@ -28,7 +29,6 @@ import DetailSubNode from "./DetailSubNode";
 import GroupNode from "./GroupNode";
 import NodeContextMenu from "./NodeContextMenu";
 
-import EditEdgeModal from "@/components/Modals/EditEdgeModal";
 import BreadcrumbBar from "./BreadcrumbBar";
 import CanvasToolbar from "./CanvasToolbar";
 import ToolPalette from "./ToolPalette";
@@ -61,6 +61,7 @@ export default function Canvas() {
   const selectedNodeId = useSelectionStore((s) => s.selectedNodeId);
 
   const canvasTool = useUIStore((s) => s.canvasTool);
+  const resolvedTheme = useThemeStore((s) => s.resolved);
   const subNodeViewStack = useUIStore((s) => s.subNodeViewStack);
   const pushSubNodeView = useUIStore((s) => s.pushSubNodeView);
   const activeWorkflow = useActiveWorkflow();
@@ -333,7 +334,7 @@ export default function Canvas() {
 
       {/* Connection error feedback */}
       {connections.connectionError && (
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-50 bg-red-900/90 text-red-200 text-xs px-3 py-1.5 rounded-lg shadow-lg border border-red-700">
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-50 bg-danger-soft text-danger-fg text-xs px-3 py-1.5 rounded-lg shadow-lg border border-danger">
           {connections.connectionError}
         </div>
       )}
@@ -360,7 +361,7 @@ export default function Canvas() {
         selectionOnDrag={canvasTool === "select"}
         panOnDrag={canvasTool === "select" ? [1, 2] : true}
         multiSelectionKeyCode="Shift"
-        colorMode="dark"
+        colorMode={resolvedTheme}
       >
         <Background />
         <Controls />
@@ -416,9 +417,6 @@ export default function Canvas() {
 
       {/* Breadcrumb for sub-node view */}
       {subNodeViewStack.length > 0 && <BreadcrumbBar />}
-
-      {/* Edge editing modal */}
-      <EditEdgeModal />
 
       {schemaRoleDialog && (
         <SchemaRoleDialog

@@ -1,6 +1,8 @@
 import { Handle } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 import { useUIStore } from "@/store/ui";
+import { useSelectionStore } from "@/store/selection";
+import { makeEdgeId } from "@/lib/documentToGraph";
 import { SELECTED_BORDER, SELECTED_GLOW, SUB_COLORS, SUB_ICONS } from "@/lib/constants";
 import type { DetailSubKind } from "@/lib/constants";
 import { SIDES, POS_MAP } from "./handlePositions";
@@ -28,7 +30,8 @@ export default function DetailSubNode({ data, selected }: NodeProps) {
   const color = SUB_COLORS[subKind];
   const icon = SUB_ICONS[subKind];
   const setEditingItem = useUIStore((s) => s.setEditingItem);
-  const setEditModalEdgeInfo = useUIStore((s) => s.setEditModalEdgeInfo);
+  const clearSubNodeView = useUIStore((s) => s.clearSubNodeView);
+  const setSelectedEdge = useSelectionStore((s) => s.setSelectedEdge);
 
   const handleClick = () => {
     if (subKind === "schema" && itemName) {
@@ -38,7 +41,10 @@ export default function DetailSubNode({ data, selected }: NodeProps) {
     } else if (subKind === "var" && itemName) {
       setEditingItem({ kind: "var", name: itemName });
     } else if (subKind === "edge" && workflowName != null && edgeIndex != null) {
-      setEditModalEdgeInfo({ workflowName, edgeIndex });
+      // Pop back to the global view and select the edge so the Inspector
+      // shows the EdgeForm for it.
+      setSelectedEdge(makeEdgeId(workflowName, edgeIndex));
+      clearSubNodeView();
     }
   };
 
@@ -54,14 +60,14 @@ export default function DetailSubNode({ data, selected }: NodeProps) {
       title={`Click to edit ${subKind}`}
     >
       {SIDES.map((s) => (
-        <Handle key={`target-${s}`} id={`target-${s}`} type="target" position={POS_MAP[s]} className="!bg-gray-500 !w-1 !h-1 !opacity-0" />
+        <Handle key={`target-${s}`} id={`target-${s}`} type="target" position={POS_MAP[s]} className="!bg-surface-3 !w-1 !h-1 !opacity-0" />
       ))}
       <div className="flex items-center justify-center gap-1.5">
         <span className="text-xs">{icon}</span>
-        <span className="font-medium text-xs text-white truncate max-w-[120px]">{label}</span>
+        <span className="font-medium text-xs text-fg-default truncate max-w-[120px]">{label}</span>
         {badge && (
           <span
-            className="text-[8px] px-1.5 py-0.5 rounded-full text-white/80"
+            className="text-[8px] px-1.5 py-0.5 rounded-full text-fg-default/80"
             style={{ background: color + "44" }}
           >
             {badge}
@@ -69,10 +75,10 @@ export default function DetailSubNode({ data, selected }: NodeProps) {
         )}
       </div>
       {subtitle && (
-        <div className="text-[9px] text-gray-400 mt-0.5 truncate max-w-[180px]">{subtitle}</div>
+        <div className="text-[9px] text-fg-subtle mt-0.5 truncate max-w-[180px]">{subtitle}</div>
       )}
       {SIDES.map((s) => (
-        <Handle key={`source-${s}`} id={`source-${s}`} type="source" position={POS_MAP[s]} className="!bg-gray-500 !w-1 !h-1 !opacity-0" />
+        <Handle key={`source-${s}`} id={`source-${s}`} type="source" position={POS_MAP[s]} className="!bg-surface-3 !w-1 !h-1 !opacity-0" />
       ))}
     </div>
   );

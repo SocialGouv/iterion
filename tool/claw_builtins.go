@@ -47,6 +47,52 @@ func RegisterClawBuiltins(reg *Registry, workspace string) error {
 	return nil
 }
 
+// RegisterClawComputerUse registers the vision-grade computer-use tools
+// (read_image, screenshot stub) against reg. These are kept out of the
+// default RegisterClawBuiltins set because most workflows don't need
+// vision content blocks; opt in explicitly when you have an agent that
+// processes images.
+//
+// read_image returns a JSON payload describing the image plus a base64
+// content block envelope; downstream agents can either inline it as
+// commentary or splice the block into their next-turn message
+// (multimodal models accept it directly).
+//
+// screenshot is a stub today — it returns an *api.APIError{StatusCode:
+// 501}. Registering it surfaces the tool definition to the model so
+// that prompt-engineered agents can be authored against the eventual
+// implementation.
+func RegisterClawComputerUse(reg *Registry) error {
+	specs := []clawBuiltinSpec{
+		{tool: clawtools.ReadImageTool(), exec: clawComputerUseAdapter(clawtools.ExecuteReadImage)},
+		{tool: clawtools.ScreenshotTool(), exec: clawComputerUseAdapter(clawtools.ExecuteScreenshot)},
+	}
+	for _, s := range specs {
+		if err := RegisterClawTool(reg, s.tool, s.exec); err != nil {
+			return fmt.Errorf("register %q: %w", s.tool.Name, err)
+		}
+	}
+	return nil
+}
+
+// clawComputerUseAdapter wraps a (ctx, input) → (ReadImageResult, error)
+// function into the (ctx, input) → (string, error) signature the
+// iterion tool registry expects. The result is JSON-encoded so
+// downstream agents see the description + blocks structure verbatim.
+func clawComputerUseAdapter(fn func(context.Context, map[string]any) (clawtools.ReadImageResult, error)) func(context.Context, map[string]any) (string, error) {
+	return func(ctx context.Context, input map[string]any) (string, error) {
+		res, err := fn(ctx, input)
+		if err != nil {
+			return "", err
+		}
+		buf, err := json.Marshal(res)
+		if err != nil {
+			return "", fmt.Errorf("encode read_image result: %w", err)
+		}
+		return string(buf), nil
+	}
+}
+
 // RegisterClawTool registers a single claw-code-go tool against the
 // registry. Use this to add specialised tools that RegisterClawBuiltins
 // does not include by default.

@@ -126,8 +126,8 @@ export default function HumanForm({ decl }: Props) {
         help="Implicit convergence: wait_all = wait for all incoming branches; best_effort = continue when available results are ready; none = no await (default)."
       />
       {needsModel && (
-        <div className="border-t border-gray-700 pt-2 mt-2">
-          <p className="text-[10px] text-yellow-400 mb-1">Required for {decl.mode} mode</p>
+        <div className="border-t border-border-default pt-2 mt-2">
+          <p className="text-[10px] text-warning mb-1">Required for {decl.mode} mode</p>
         </div>
       )}
       <TextField

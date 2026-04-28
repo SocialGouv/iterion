@@ -1,0 +1,75 @@
+## Fixture : claw_read_image
+##
+## But : prouver que tool.RegisterClawComputerUse cable correctement le
+## tool read_image depuis claw-code-go vers le tool registry iterion,
+## qu'un agent claw peut l'invoquer sur un fichier local, et que le
+## resultat (description + base64 block) revient dans l'output du node.
+##
+## Important : le test fournit explicitement le chemin du PNG via
+## input.image_path. L'agent doit appeler read_image, lire le payload
+## decode (Description, MediaType, Data b64) et reporter ce qu'il a vu.
+
+vars:
+  image_path: string = ""
+
+prompt vision_system:
+  You are a vision-aware agent with access to a single tool:
+
+   - read_image(path)        — load a local image file and receive a
+                               JSON payload with {description, blocks:
+                               [{type:"image", source:{type:"base64",
+                               media_type, data}}]}.
+
+  Use it faithfully. Do not pretend; you must actually call the tool.
+
+prompt vision_user:
+  Task: read the image at {{input.image_path}} using the read_image
+  tool. From the JSON payload returned by the tool, extract the
+  Source.MediaType (e.g. "image/png") and verify that the Data field
+  is a non-empty base64 string.
+
+  When done, fill the output schema:
+   - applied = true
+   - media_type = the media_type from the tool's response
+   - data_size  = number of base64 characters in source.data (use the
+                  literal length of the data field — do not decode)
+   - tool_used  = "read_image"
+
+schema vision_input:
+  image_path: string
+
+schema vision_output:
+  applied: bool
+  media_type: string
+  data_size: int
+  tool_used: string
+
+agent visioner:
+  ## Pure claw agent. tool.RegisterClawComputerUse exposes the
+  ## vision tools to the iterion registry; the .iter contract here
+  ## just declares it as available.
+  model: "anthropic/claude-haiku-4-5-20251001"
+  input: vision_input
+  output: vision_output
+  publish: vision_result
+  system: vision_system
+  user: vision_user
+  tools: [read_image]
+  tool_max_steps: 4
+  session: fresh
+
+workflow claw_read_image:
+  vars:
+    image_path: string = ""
+
+  entry: visioner
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "5m"
+    max_cost_usd: 1
+    max_tokens: 50000
+
+  visioner -> done with {
+    image_path: "{{vars.image_path}}"
+  }

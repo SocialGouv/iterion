@@ -12,7 +12,7 @@ func EphemeralCacheControl() *CacheControlMarker {
 }
 
 // ContentBlock represents a single content block in a message.
-// Type can be "text", "tool_use", or "tool_result".
+// Type can be "text", "tool_use", "tool_result", or "image".
 type ContentBlock struct {
 	Type string `json:"type"`
 
@@ -29,8 +29,30 @@ type ContentBlock struct {
 	Content   []ContentBlock `json:"content,omitempty"`
 	IsError   bool           `json:"is_error,omitempty"`
 
+	// For type == "image" — Anthropic vision content block. Source carries
+	// either base64-encoded bytes (Source.Type == "base64") or a URL
+	// (Source.Type == "url"). See:
+	// https://docs.anthropic.com/en/docs/build-with-claude/vision
+	Source *ImageSource `json:"source,omitempty"`
+
 	// Anthropic prompt caching marker (ignored by non-Anthropic providers).
 	CacheControl *CacheControlMarker `json:"cache_control,omitempty"`
+}
+
+// ImageSource represents the "source" object on an Anthropic image content
+// block. Two variants are supported:
+//
+//   - Type == "base64" → MediaType + Data are required, URL must be empty.
+//   - Type == "url"    → URL is required, MediaType + Data must be empty.
+//
+// MediaType is one of "image/png", "image/jpeg", "image/gif", "image/webp".
+// All fields use omitempty so the zero value of a non-image ContentBlock
+// continues to serialize identically to pre-vision builds.
+type ImageSource struct {
+	Type      string `json:"type,omitempty"`
+	MediaType string `json:"media_type,omitempty"`
+	Data      string `json:"data,omitempty"`
+	URL       string `json:"url,omitempty"`
 }
 
 // ToolResult is a convenience wrapper for building tool_result content blocks.

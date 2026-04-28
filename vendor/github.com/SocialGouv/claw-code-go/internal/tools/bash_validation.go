@@ -2,8 +2,8 @@
 package tools
 
 import (
-	"github.com/SocialGouv/claw-code-go/internal/permissions"
 	"fmt"
+	"github.com/SocialGouv/claw-code-go/internal/permissions"
 	"strings"
 	"unicode"
 )

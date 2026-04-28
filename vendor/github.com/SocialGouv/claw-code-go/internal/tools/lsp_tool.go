@@ -1,10 +1,10 @@
 package tools
 
 import (
-	"github.com/SocialGouv/claw-code-go/internal/api"
-	"github.com/SocialGouv/claw-code-go/internal/lsp"
 	"encoding/json"
 	"fmt"
+	"github.com/SocialGouv/claw-code-go/internal/api"
+	"github.com/SocialGouv/claw-code-go/internal/lsp"
 )
 
 func LspTool() api.Tool {

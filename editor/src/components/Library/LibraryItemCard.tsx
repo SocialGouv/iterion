@@ -40,13 +40,13 @@ export default function LibraryItemCard({ item, onAdd }: Props) {
       draggable
       onDragStart={onDragStart}
       onClick={() => onAdd(item)}
-      className="flex items-start gap-2 px-2 py-2 rounded cursor-grab hover:bg-gray-700/50 transition-colors border-l-2 group"
+      className="flex items-start gap-2 px-2 py-2 rounded cursor-grab hover:bg-surface-2/50 transition-colors border-l-2 group"
       style={{ borderLeftColor: color }}
       title={item.description}
     >
       <span className="text-sm mt-0.5 shrink-0">{icon}</span>
       <div className="min-w-0 flex-1">
-        <div className="text-xs font-medium text-gray-200 flex items-center gap-1 min-w-0">
+        <div className="text-xs font-medium text-fg-default flex items-center gap-1 min-w-0">
           <span className="truncate">{item.name}</span>
           {item.template.pattern && (
             <span className="text-[9px] bg-purple-500/20 text-purple-300 px-1 rounded shrink-0">
@@ -54,13 +54,13 @@ export default function LibraryItemCard({ item, onAdd }: Props) {
             </span>
           )}
         </div>
-        <div className="text-[10px] text-gray-500 line-clamp-2 leading-tight mt-0.5">{item.description}</div>
+        <div className="text-[10px] text-fg-subtle line-clamp-2 leading-tight mt-0.5">{item.description}</div>
         {item.tags && item.tags.length > 0 && (
           <div className="flex gap-1 flex-wrap mt-1">
             {item.tags.slice(0, 3).map((tag) => (
               <span
                 key={tag}
-                className="text-[9px] px-1 py-0 rounded bg-gray-700 text-gray-400"
+                className="text-[9px] px-1 py-0 rounded bg-surface-2 text-fg-subtle"
               >
                 {tag}
               </span>
