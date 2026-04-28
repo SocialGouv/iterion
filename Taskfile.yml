@@ -87,6 +87,11 @@ tasks:
     cmds:
       - go test -v -tags live -count=1 -run TestLive_Lite_ClawReasoningEffort -timeout 10m ./e2e/...
 
+  test:live:claw-mcp:
+    desc: Run the MCP integration live e2e test (requires ANTHROPIC_API_KEY + go in PATH)
+    cmds:
+      - go test -v -tags live -count=1 -run TestLive_Lite_ClawMCP -timeout 10m ./e2e/...
+
   fmt:
     desc: Format Go source files
     cmds:

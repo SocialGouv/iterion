@@ -1810,6 +1810,169 @@ func TestLive_Lite_ClawReasoningEffort(t *testing.T) {
 	logRunRecap(t, events)
 }
 
+// ---------------------------------------------------------------------------
+// Live E2E test — MCP tool discovery + invocation through claw
+// ---------------------------------------------------------------------------
+
+// TestLive_Lite_ClawMCP exercises iterion's MCP integration end-to-end:
+// it builds a tiny stdio MCP server (examples/mcp_test_server) that exposes
+// two trivial tools (greet, reverse), declares it via `mcp_server testsrv`
+// in the workflow, and asks a claw agent to call BOTH tools.
+//
+// Asserts:
+//  1. Run finishes successfully.
+//  2. EventToolCalled events show invocations of `mcp.testsrv.greet` and
+//     `mcp.testsrv.reverse`.
+//  3. Agent output greeting == "Hello, Iterion!" and reversed == "setatS"
+//     — proving the tool results made it back into the model context.
+//
+// Requires: ANTHROPIC_API_KEY + go in PATH (used to compile the server).
+func TestLive_Lite_ClawMCP(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live test in short mode")
+	}
+	loadDotEnv(t)
+	requireEnv(t, "ANTHROPIC_API_KEY")
+	requireBinaryInPath(t, "go")
+
+	// Build the stdio MCP server.
+	binPath := filepath.Join(t.TempDir(), "mcp_test_server")
+	buildCmd := exec.Command("go", "build", "-o", binPath, "./examples/mcp_test_server")
+	buildCmd.Dir = ".."
+	if out, berr := buildCmd.CombinedOutput(); berr != nil {
+		t.Fatalf("build mcp_test_server: %v\n%s", berr, out)
+	}
+	t.Setenv("ITERION_MCP_TEST_BINARY", binPath)
+
+	wf := compileFixture(t, "claw_mcp.iter")
+
+	workspaceDir, err := os.MkdirTemp("", "iterion-claw-mcp-*")
+	if err != nil {
+		t.Fatalf("Failed to create workspace dir: %v", err)
+	}
+	t.Logf("Workspace directory (persists after test): %s", workspaceDir)
+
+	storeDir := filepath.Join(workspaceDir, ".iterion")
+	s, storeErr := store.New(storeDir)
+	if storeErr != nil {
+		t.Fatalf("Failed to create store: %v", storeErr)
+	}
+
+	runID := "live-claw-mcp"
+
+	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+		t.Fatalf("mcp.PrepareWorkflow: %v", err)
+	}
+
+	// Build executor with an MCP manager so the testsrv stdio server is
+	// connected on first tool call and its tools are registered as
+	// mcp.testsrv.* in the registry.
+	reg := model.NewRegistry()
+	logger := iterlog.New(iterlog.LevelDebug, os.Stderr)
+	hooks := model.NewStoreEventHooks(s, runID, logger)
+	backendReg := delegate.DefaultRegistry(logger)
+	backendReg.Register(delegate.BackendClaw, model.NewClawBackend(reg, hooks, model.RetryPolicy{}))
+
+	mcpCatalog := make(map[string]*mcp.ServerConfig, len(wf.ResolvedMCPServers))
+	for name, server := range wf.ResolvedMCPServers {
+		// Expand env vars in stdio command/args so workflows can refer to
+		// test-provided binaries via ${ITERION_MCP_TEST_BINARY} etc.
+		expandedArgs := make([]string, len(server.Args))
+		for i, a := range server.Args {
+			expandedArgs[i] = os.ExpandEnv(a)
+		}
+		mcpCatalog[name] = &mcp.ServerConfig{
+			Name:      server.Name,
+			Transport: mcp.FromIRTransport(server.Transport),
+			Command:   os.ExpandEnv(server.Command),
+			Args:      expandedArgs,
+			URL:       os.ExpandEnv(server.URL),
+			Headers:   server.Headers,
+		}
+	}
+	mcpManager := mcp.NewManager(mcpCatalog, mcp.WithLogger(logger))
+
+	executor := model.NewClawExecutor(reg, wf,
+		model.WithBackendRegistry(backendReg),
+		model.WithToolRegistry(tool.NewRegistry()),
+		model.WithMCPManager(mcpManager),
+		model.WithWorkDir(workspaceDir),
+		model.WithEventHooks(hooks),
+	)
+	defer executor.Close()
+	executor.SetVars(map[string]interface{}{
+		"workspace_dir": workspaceDir,
+	})
+
+	eng := runtime.New(wf, s, executor)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	if runErr := eng.Run(ctx, runID, map[string]interface{}{}); runErr != nil {
+		t.Fatalf("Run error: %v", runErr)
+	}
+	r, _ := s.LoadRun(runID)
+	if r.Status != store.RunStatusFinished {
+		t.Fatalf("Expected run status 'finished', got %q", r.Status)
+	}
+
+	events, evtErr := s.LoadEvents(runID)
+	if evtErr != nil {
+		t.Fatalf("LoadEvents: %v", evtErr)
+	}
+
+	// Tool call counts. iterion normalises mcp.<server>.<tool> to
+	// mcp_<server>_<tool> for the wire because providers reject dots in
+	// tool names. The original form is what the workflow declares; the
+	// underscore form is what shows up in events.
+	greetCalls, reverseCalls := 0, 0
+	for _, evt := range events {
+		if evt.Type != store.EventToolCalled || evt.Data == nil {
+			continue
+		}
+		name, _ := evt.Data["tool"].(string)
+		switch name {
+		case "mcp.testsrv.greet", "mcp_testsrv_greet":
+			greetCalls++
+		case "mcp.testsrv.reverse", "mcp_testsrv_reverse":
+			reverseCalls++
+		}
+	}
+	t.Logf("MCP tool calls: greet=%d reverse=%d", greetCalls, reverseCalls)
+	if greetCalls < 1 {
+		t.Errorf("MCP: agent did not call mcp.testsrv.greet")
+	}
+	if reverseCalls < 1 {
+		t.Errorf("MCP: agent did not call mcp.testsrv.reverse")
+	}
+
+	// Verify the agent output captured the tool results.
+	for _, evt := range events {
+		if evt.Type != store.EventNodeFinished || evt.NodeID != "mcp_caller" || evt.Data == nil {
+			continue
+		}
+		out, _ := evt.Data["output"].(map[string]interface{})
+		if out == nil {
+			continue
+		}
+		greeting, _ := out["greeting"].(string)
+		reversed, _ := out["reversed"].(string)
+		toolsUsed, _ := out["tools_used"].([]interface{})
+		t.Logf("greeting = %q", greeting)
+		t.Logf("reversed = %q", reversed)
+		t.Logf("tools_used = %v", toolsUsed)
+		if !strings.Contains(greeting, "Iterion") {
+			t.Errorf("greeting missing 'Iterion': %q", greeting)
+		}
+		if reversed != "setatS" {
+			t.Errorf("reversed != \"setatS\": got %q", reversed)
+		}
+		break
+	}
+
+	logRunRecap(t, events)
+}
+
 // requireBinaryInPath skips the test if the named binary is not in PATH.
 func requireBinaryInPath(t *testing.T, name string) {
 	t.Helper()

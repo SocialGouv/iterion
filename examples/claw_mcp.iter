@@ -1,0 +1,85 @@
+## Fixture : claw_mcp
+##
+## But : prouver que le client MCP d'iterion + un agent claw peuvent
+## decouvrir et appeler des tools exposes par un serveur MCP stdio
+## externe (binaire teste).
+##
+## Le serveur est demarre par iterion via mcp_server testsrv -> command.
+## L'agent declare `mcp.servers: [testsrv]` ; les tools `greet` et
+## `reverse` sont resolus dans la registry sous `mcp.testsrv.greet` /
+## `mcp.testsrv.reverse`.
+##
+## Le test asserte qu'au moins greet et reverse ont ete appeles, et que
+## la sortie finale de l'agent contient les chaines retournees par les
+## tools (`Hello, Iterion!` et `setatS`).
+
+mcp_server testsrv:
+  transport: stdio
+  command: "${ITERION_MCP_TEST_BINARY}"
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+prompt mcp_agent_system:
+  You have access to MCP tools provided by an external server named
+  `testsrv`:
+   - mcp.testsrv.greet({name})    : returns a greeting string
+   - mcp.testsrv.reverse({text})  : returns the text reversed
+
+  Your task is to call BOTH tools in sequence and return what they
+  produced. Do not compute results mentally — every value must come
+  from a tool call.
+
+prompt mcp_agent_user:
+  Tasks:
+   1. Call mcp.testsrv.greet with name="Iterion" and capture the result.
+   2. Call mcp.testsrv.reverse with text="States" and capture the result.
+
+  When you're done, fill the schema:
+   - greeting   = string returned by greet
+   - reversed   = string returned by reverse
+   - tools_used = a list of every distinct mcp tool name you called
+                  (e.g. ["mcp.testsrv.greet","mcp.testsrv.reverse"])
+
+schema mcp_agent_input:
+  trigger: string
+
+schema mcp_agent_output:
+  greeting: string
+  reversed: string
+  tools_used: string[]
+
+agent mcp_caller:
+  ## claw direct + Anthropic Haiku 4.5; the tool list pulls in the MCP
+  ## tools resolved by iterion's MCP manager and forwarded as ToolDefs
+  ## to the claw backend's tool loop.
+  model: "anthropic/claude-haiku-4-5-20251001"
+  input: mcp_agent_input
+  output: mcp_agent_output
+  publish: mcp_result
+  system: mcp_agent_system
+  user: mcp_agent_user
+  tools: [mcp.testsrv.greet, mcp.testsrv.reverse]
+  tool_max_steps: 6
+  session: fresh
+  mcp:
+    servers: [testsrv]
+
+workflow claw_mcp:
+  vars:
+    workspace_dir: string = "${PROJECT_DIR}"
+
+  entry: mcp_caller
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "5m"
+    max_cost_usd: 2
+    max_tokens: 100000
+
+  mcp:
+    servers: [testsrv]
+
+  mcp_caller -> done with {
+    trigger: "start"
+  }
