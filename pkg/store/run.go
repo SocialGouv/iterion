@@ -1,6 +1,9 @@
 package store
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // ---------------------------------------------------------------------------
 // RunStatus — lifecycle state of a run
@@ -73,6 +76,16 @@ type Checkpoint struct {
 	BackendSessionID string `json:"backend_session_id,omitempty"`
 	// BackendName identifies which backend was used.
 	BackendName string `json:"backend_name,omitempty"`
+	// BackendConversation is the opaque, backend-specific persisted
+	// conversation captured at the moment of an ask_user pause. On
+	// resume, the backend rehydrates from this blob (claw: []api.Message)
+	// and appends a tool_result block answering BackendPendingToolUseID,
+	// avoiding a stateless restart from system+user prompts.
+	BackendConversation json.RawMessage `json:"backend_conversation,omitempty"`
+	// BackendPendingToolUseID is the ID of the tool_use block awaiting
+	// an answer in BackendConversation. Required when BackendConversation
+	// is non-nil.
+	BackendPendingToolUseID string `json:"backend_pending_tool_use_id,omitempty"`
 	// NodeAttempts records prior failed attempts per (node_id, error_code) so
 	// that resume preserves the recovery dispatcher's retry budget. Outer key
 	// is the node ID, inner key is the runtime error code (string-typed).

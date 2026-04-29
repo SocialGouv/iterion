@@ -109,6 +109,25 @@ type Task struct {
 	// it needs user input by including _needs_interaction and
 	// _interaction_questions fields in its output.
 	InteractionEnabled bool
+
+	// ResumeConversation, when non-nil, instructs the backend to skip
+	// rendering the system+user prompts from scratch and instead replay
+	// the persisted conversation history captured at the previous pause.
+	// The backend appends a tool_result content block (tool_use_id =
+	// ResumePendingToolUseID, content = ResumeAnswer) to answer the
+	// pending ask_user call, then continues the agent loop. The opaque
+	// json.RawMessage shape lets each backend choose its own message
+	// representation (e.g. claw uses []api.Message).
+	ResumeConversation json.RawMessage
+
+	// ResumePendingToolUseID is the ID of the tool_use block waiting
+	// for an answer in the persisted conversation. Required when
+	// ResumeConversation is set.
+	ResumePendingToolUseID string
+
+	// ResumeAnswer is the human-supplied answer to the captured
+	// ask_user call, sent back to the LLM as the tool_result content.
+	ResumeAnswer string
 }
 
 // SystemPromptWithInteraction returns the task's SystemPrompt augmented
@@ -127,11 +146,17 @@ func (t Task) SystemPromptWithInteraction() string {
 // the generation layer to the backend, which converts it into a standard
 // _needs_interaction Result so iterion's existing pause/resume flow
 // surfaces the question to the dev's terminal and re-invokes the node
-// with the answer. This bridges claw-code-go's native `ask_user` tool
-// (clawtools.AskUserQuestionTool) into iterion's runtime model without
-// requiring claw-side conversation persistence.
+// with the answer.
+//
+// Conversation and PendingToolUseID enable mid-tool-loop resume: when set,
+// they let the backend rehydrate the LLM's exact pre-pause state on the
+// next turn (the persisted message history plus a tool_result block
+// answering the captured tool_use). The opaque json.RawMessage type keeps
+// the delegate package agnostic of any specific LLM SDK's message shape.
 type ErrAskUser struct {
-	Question string
+	Question         string
+	PendingToolUseID string
+	Conversation     json.RawMessage
 }
 
 func (e *ErrAskUser) Error() string {
@@ -179,4 +204,18 @@ type Result struct {
 
 	// SessionID is the session ID returned by the CLI agent (empty if unavailable).
 	SessionID string
+
+	// PendingConversation is the persisted LLM conversation captured at
+	// the moment the agent loop was suspended by an ask_user call. The
+	// runtime serializes this opaque blob into the checkpoint so that
+	// resume can replay it via Task.ResumeConversation, preserving the
+	// LLM's mid-tool-loop state across the pause. Backends that cannot
+	// persist conversation state (CLI-based: claude_code, codex) leave
+	// this nil and rely on the [PRIOR INTERACTION] prompt-side fallback.
+	PendingConversation json.RawMessage
+
+	// PendingToolUseID is the ID of the tool_use block awaiting an
+	// answer in PendingConversation. Required when PendingConversation
+	// is non-nil.
+	PendingToolUseID string
 }

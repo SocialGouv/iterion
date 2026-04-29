@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -498,5 +499,73 @@ func TestClawBackend_TaskMaxTokensZeroFallsBackToDefault(t *testing.T) {
 	}
 	if cap.requests[0].MaxTokens != defaultMaxTokens {
 		t.Errorf("req.MaxTokens = %d, want %d (default)", cap.requests[0].MaxTokens, defaultMaxTokens)
+	}
+}
+
+// TestClawBackend_ResumeConversationReplacesMessages verifies the L1
+// resume path: when Task.ResumeConversation carries the persisted
+// pre-pause history and Task.ResumePendingToolUseID names a pending
+// tool_use, the wire-level request's Messages slice is the persisted
+// conversation followed by a single user-role message containing a
+// tool_result block answering the pending call. The original UserPrompt
+// is ignored because the conversation already contains it.
+func TestClawBackend_ResumeConversationReplacesMessages(t *testing.T) {
+	backend, cap := newCapturingBackend()
+
+	persisted := []api.Message{
+		{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "kick off the work"}}},
+		{Role: "assistant", Content: []api.ContentBlock{{
+			Type:  "tool_use",
+			ID:    "toolu_99",
+			Name:  "ask_user",
+			Input: map[string]any{"question": "Which env?"},
+		}}},
+	}
+	convBytes, err := json.Marshal(persisted)
+	if err != nil {
+		t.Fatalf("marshal persisted: %v", err)
+	}
+
+	_, err = backend.Execute(context.Background(), delegate.Task{
+		NodeID:                 "agent1",
+		Model:                  "test/test-model",
+		UserPrompt:             "this should be ignored on resume",
+		ResumeConversation:     convBytes,
+		ResumePendingToolUseID: "toolu_99",
+		ResumeAnswer:           "staging",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(cap.requests) != 1 {
+		t.Fatalf("requests = %d, want 1", len(cap.requests))
+	}
+	msgs := cap.requests[0].Messages
+	if len(msgs) != 3 {
+		t.Fatalf("Messages len = %d, want 3 (2 persisted + tool_result), got %+v", len(msgs), msgs)
+	}
+	// First two messages must be the persisted history verbatim.
+	if msgs[0].Role != "user" || len(msgs[0].Content) == 0 || msgs[0].Content[0].Text != "kick off the work" {
+		t.Errorf("msgs[0] = %+v, want persisted user prompt", msgs[0])
+	}
+	if msgs[1].Role != "assistant" || len(msgs[1].Content) == 0 || msgs[1].Content[0].Type != "tool_use" || msgs[1].Content[0].ID != "toolu_99" {
+		t.Errorf("msgs[1] = %+v, want persisted assistant tool_use(toolu_99)", msgs[1])
+	}
+	// Final message: user with a tool_result block answering toolu_99.
+	if msgs[2].Role != "user" || len(msgs[2].Content) != 1 {
+		t.Fatalf("msgs[2] = %+v, want single tool_result content block", msgs[2])
+	}
+	tr := msgs[2].Content[0]
+	if tr.Type != "tool_result" {
+		t.Errorf("tr.Type = %q, want tool_result", tr.Type)
+	}
+	if tr.ToolUseID != "toolu_99" {
+		t.Errorf("tr.ToolUseID = %q, want %q", tr.ToolUseID, "toolu_99")
+	}
+	// Content is either a string ("staging") or nested blocks; assert the
+	// answer text is present somewhere in the serialized content.
+	bodyJSON, _ := json.Marshal(tr)
+	if !strings.Contains(string(bodyJSON), "staging") {
+		t.Errorf("tool_result content does not contain answer %q: %s", "staging", bodyJSON)
 	}
 }

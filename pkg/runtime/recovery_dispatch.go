@@ -127,7 +127,7 @@ func (e *Engine) pauseForRecovery(rs *runState, nodeID string, code ErrorCode, r
 			eventExtra["last_error_details"] = errFields
 		}
 	}
-	if err := e.doPause(rs, nodeID, questions, eventExtra, "", ""); err != nil {
+	if err := e.doPause(rs, nodeID, questions, eventExtra, pauseInfo{}); err != nil {
 		return err
 	}
 	return ErrRunPaused

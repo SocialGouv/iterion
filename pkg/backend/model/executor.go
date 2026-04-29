@@ -265,6 +265,17 @@ type ErrNeedsInteraction struct {
 	Questions map[string]interface{} // question_key → question text
 	SessionID string                 // delegate session ID for re-invocation
 	Backend   string                 // delegate backend name (empty for claw direct)
+
+	// Conversation is the persisted backend-specific conversation history
+	// captured at the pause point (claw: marshalled []api.Message). The
+	// runtime relays this opaque blob into the checkpoint so that resume
+	// can rehydrate the LLM's mid-tool-loop state instead of restarting
+	// from system+user prompts. Backends that cannot persist conversation
+	// state (CLI: claude_code, codex) leave this nil.
+	Conversation json.RawMessage
+	// PendingToolUseID is the ID of the tool_use block in Conversation
+	// that is awaiting an answer. Required when Conversation is non-nil.
+	PendingToolUseID string
 }
 
 func (e *ErrNeedsInteraction) Error() string {
@@ -675,6 +686,21 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 		}
 	}
 
+	// Resume continuity. When the runtime relays a persisted backend
+	// conversation (claw's mid-tool-loop snapshot captured at the
+	// previous pause), the Task carries it forward. The backend uses
+	// these fields to rehydrate the LLM's exact pre-pause state instead
+	// of restarting from the rendered system+user prompts.
+	if conv, ok := input[resumeConversationKey].(json.RawMessage); ok && len(conv) > 0 {
+		task.ResumeConversation = conv
+		if id, ok := input[resumePendingToolUseIDKey].(string); ok {
+			task.ResumePendingToolUseID = id
+		}
+		if a, ok := input[resumeAnswerKey].(string); ok {
+			task.ResumeAnswer = a
+		}
+	}
+
 	// Emit backend started event.
 	if e.hooks.OnDelegateStarted != nil {
 		e.hooks.OnDelegateStarted(f.id, backendName)
@@ -776,10 +802,12 @@ validated:
 			delete(result.Output, "_needs_interaction")
 			delete(result.Output, "_interaction_questions")
 			return nil, &ErrNeedsInteraction{
-				NodeID:    f.id,
-				Questions: questions,
-				SessionID: result.SessionID,
-				Backend:   backendName,
+				NodeID:           f.id,
+				Questions:        questions,
+				SessionID:        result.SessionID,
+				Backend:          backendName,
+				Conversation:     result.PendingConversation,
+				PendingToolUseID: result.PendingToolUseID,
 			}
 		}
 	}
@@ -1864,14 +1892,17 @@ func ensureAskUser(tools []string) []string {
 	return append(append([]string(nil), tools...), askUserToolName)
 }
 
-// priorAskUserQuestionKey / priorAskUserAnswerKey are the reserved
-// input keys the runtime sets when re-invoking after an ask_user pause.
-// Mirror of the constants in pkg/runtime/resume.go (they form a
-// contract between the runtime and the executor; duplicated to avoid
-// circular imports).
+// priorAskUserQuestionKey / priorAskUserAnswerKey / resume* are the
+// reserved input keys the runtime sets when re-invoking after an
+// ask_user pause. Mirror of the constants in pkg/runtime/resume.go (they
+// form a contract between the runtime and the executor; duplicated to
+// avoid circular imports).
 const (
-	priorAskUserQuestionKey = "_prior_ask_user_question"
-	priorAskUserAnswerKey   = "_prior_ask_user_answer"
+	priorAskUserQuestionKey   = "_prior_ask_user_question"
+	priorAskUserAnswerKey     = "_prior_ask_user_answer"
+	resumeConversationKey     = "_resume_conversation"
+	resumePendingToolUseIDKey = "_resume_pending_tool_use_id"
+	resumeAnswerKey           = "_resume_answer"
 )
 
 // prependPriorAskUser injects an explicit "[PRIOR INTERACTION]" block

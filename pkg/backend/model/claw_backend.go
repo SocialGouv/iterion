@@ -107,6 +107,35 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 		}
 	}
 
+	// Resume mode: the persisted conversation already contains the original
+	// user prompt and the assistant message with the pending tool_use block.
+	// Replace opts.Messages with that conversation plus a new user-role
+	// message carrying a tool_result that answers the captured ask_user
+	// call. This rehydrates the LLM's mid-tool-loop state across the pause
+	// without re-rendering the prompt or relying on the [PRIOR INTERACTION]
+	// suffix.
+	if len(task.ResumeConversation) > 0 {
+		var prior []api.Message
+		if err := json.Unmarshal(task.ResumeConversation, &prior); err != nil {
+			return delegate.Result{}, fmt.Errorf("claw backend: decode resume conversation: %w", err)
+		}
+		if task.ResumePendingToolUseID == "" {
+			return delegate.Result{}, fmt.Errorf("claw backend: resume conversation set but pending tool_use ID is empty")
+		}
+		answer := task.ResumeAnswer
+		if answer == "" {
+			answer = "(no answer provided)"
+		}
+		prior = append(prior, api.Message{
+			Role: "user",
+			Content: []api.ContentBlock{api.ToolResult{
+				ToolUseID: task.ResumePendingToolUseID,
+				Content:   answer,
+			}.ToContentBlock()},
+		})
+		opts.Messages = prior
+	}
+
 	// Tools.
 	if len(task.ToolDefs) > 0 {
 		opts.Tools = toolDefsToGeneration(task.ToolDefs)
@@ -181,7 +210,9 @@ func (b *ClawBackend) generateStructuredWithRetry(ctx context.Context, client ap
 // _needs_interaction Result iterion's executor expects. Used by every
 // generation path so an LLM-issued ask_user call surfaces uniformly
 // regardless of which generation strategy ran (structured / text /
-// text+tools+schema).
+// text+tools+schema). Conversation + PendingToolUseID propagate through
+// Result so the runtime can persist them in the checkpoint, enabling
+// mid-tool-loop resume on the next turn.
 func askUserResult(err error) (delegate.Result, bool) {
 	var ask *delegate.ErrAskUser
 	if !errors.As(err, &ask) {
@@ -194,7 +225,9 @@ func askUserResult(err error) (delegate.Result, bool) {
 				delegate.AskUserQuestionKey: ask.Question,
 			},
 		},
-		BackendName: delegate.BackendClaw,
+		BackendName:         delegate.BackendClaw,
+		PendingConversation: ask.Conversation,
+		PendingToolUseID:    ask.PendingToolUseID,
 	}, true
 }
 

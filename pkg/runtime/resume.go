@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -15,10 +16,17 @@ import (
 // Reserved input keys used to relay prior ask_user context across
 // pause/resume cycles. The executor reads these on re-invocation and
 // prepends a context block to the user prompt so the LLM doesn't lose
-// the thread when the conversation can't be persisted natively.
+// the thread when the conversation can't be persisted natively
+// (claude_code, codex). For backends that DO persist conversation state
+// (claw), the "_resume_*" keys carry the persisted message history and
+// pending tool_use so the executor can route the Task into the backend's
+// resume path instead of restarting from system+user prompts.
 const (
-	priorAskUserQuestionKey = "_prior_ask_user_question"
-	priorAskUserAnswerKey   = "_prior_ask_user_answer"
+	priorAskUserQuestionKey   = "_prior_ask_user_question"
+	priorAskUserAnswerKey     = "_prior_ask_user_answer"
+	resumeConversationKey     = "_resume_conversation"
+	resumePendingToolUseIDKey = "_resume_pending_tool_use_id"
+	resumeAnswerKey           = "_resume_answer"
 )
 
 // ---------------------------------------------------------------------------
@@ -195,10 +203,12 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 			return fmt.Errorf("runtime: paused node %q not found in workflow", humanNodeID)
 		}
 		ni := &model.ErrNeedsInteraction{
-			NodeID:    humanNodeID,
-			Questions: cp.InteractionQuestions,
-			SessionID: cp.BackendSessionID,
-			Backend:   cp.BackendName,
+			NodeID:           humanNodeID,
+			Questions:        cp.InteractionQuestions,
+			SessionID:        cp.BackendSessionID,
+			Backend:          cp.BackendName,
+			Conversation:     cp.BackendConversation,
+			PendingToolUseID: cp.BackendPendingToolUseID,
 		}
 		loopErr := e.reInvokeBackend(ctx, rs, humanNodeID, node, ni, answers)
 		e.evictRunSessions(runID, loopErr)
@@ -383,7 +393,7 @@ func (e *Engine) pauseAtHuman(rs *runState, nodeID string, node ir.Node) error {
 // before calling this method.
 func (e *Engine) persistPause(rs *runState, nodeID string) error {
 	questions := e.buildNodeInputRS(nodeID, rs.vars, rs.outputs, nil, rs.artifacts, rs)
-	return e.doPause(rs, nodeID, questions, nil, "", "")
+	return e.doPause(rs, nodeID, questions, nil, pauseInfo{})
 }
 
 // ---------------------------------------------------------------------------
@@ -479,6 +489,19 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 		}
 	}
 
+	// When the backend captured the LLM's conversation at the pause point
+	// (claw), relay it through the executor so the Task carries
+	// ResumeConversation/ResumePendingToolUseID/ResumeAnswer. The backend
+	// then rehydrates the message history and continues the agent loop
+	// instead of restarting from system+user prompts.
+	if len(ni.Conversation) > 0 && ni.PendingToolUseID != "" {
+		nodeInput[resumeConversationKey] = ni.Conversation
+		nodeInput[resumePendingToolUseIDKey] = ni.PendingToolUseID
+		if a, ok := answers[delegate.AskUserQuestionKey].(string); ok {
+			nodeInput[resumeAnswerKey] = a
+		}
+	}
+
 	// Re-execute the node. The executor will use the session ID for
 	// delegate re-invocation if the backend supports it.
 	output, err := e.executor.Execute(ctx, node, nodeInput)
@@ -571,15 +594,32 @@ func (e *Engine) pauseForBackendInteraction(rs *runState, nodeID string, ni *mod
 		"source":  "delegate",
 		"backend": ni.Backend,
 	}
-	if err := e.doPause(rs, nodeID, ni.Questions, eventExtra, ni.SessionID, ni.Backend); err != nil {
+	pi := pauseInfo{
+		BackendSessionID:        ni.SessionID,
+		BackendName:             ni.Backend,
+		BackendConversation:     ni.Conversation,
+		BackendPendingToolUseID: ni.PendingToolUseID,
+	}
+	if err := e.doPause(rs, nodeID, ni.Questions, eventExtra, pi); err != nil {
 		return err
 	}
 	return ErrRunPaused
 }
 
+// pauseInfo bundles the optional backend-side state captured at pause
+// time. It travels into the checkpoint so resume can either re-invoke
+// the backend with the original session ID (CLI backends) or replay the
+// persisted conversation (claw).
+type pauseInfo struct {
+	BackendSessionID        string
+	BackendName             string
+	BackendConversation     json.RawMessage
+	BackendPendingToolUseID string
+}
+
 // doPause is the unified implementation for pausing a run. It writes the
 // interaction record, emits pause events, and saves the checkpoint.
-func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]interface{}, eventExtra map[string]interface{}, backendSessionID, backendName string) error {
+func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]interface{}, eventExtra map[string]interface{}, info pauseInfo) error {
 	// Create interaction. Include loop iteration in the ID so that
 	// human nodes inside loops produce unique interactions per iteration.
 	interactionID := fmt.Sprintf("%s_%s", rs.runID, nodeID)
@@ -618,8 +658,10 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]inter
 	cp := buildCheckpoint(rs, nodeID)
 	cp.InteractionID = interactionID
 	cp.InteractionQuestions = questions
-	cp.BackendSessionID = backendSessionID
-	cp.BackendName = backendName
+	cp.BackendSessionID = info.BackendSessionID
+	cp.BackendName = info.BackendName
+	cp.BackendConversation = info.BackendConversation
+	cp.BackendPendingToolUseID = info.BackendPendingToolUseID
 	if err := e.store.PauseRun(rs.runID, cp); err != nil {
 		return fmt.Errorf("runtime: pause run: %w", err)
 	}

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -1692,4 +1693,97 @@ func TestInteractionAskUserRelaysPriorQA(t *testing.T) {
 	if got := secondCallInput[priorAskUserAnswerKey]; got != "staging" {
 		t.Errorf("input[%q] = %v, want %q", priorAskUserAnswerKey, got, "staging")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: ask_user pause persists the backend conversation + pending tool_use ID
+// ---------------------------------------------------------------------------
+//
+// Verifies L1 (mid-tool-loop resume): when the claw backend captures the
+// LLM's pre-pause conversation and pending tool_use, the runtime stores
+// the opaque blob in the checkpoint and re-injects it into nodeInput on
+// resume so the executor can route the Task into the backend's resume
+// path. This avoids losing the LLM's mid-loop state across pauses.
+func TestInteractionAskUserPersistsConversation(t *testing.T) {
+	wf := interactionWorkflow(ir.InteractionHuman)
+
+	persistedConv := json.RawMessage(`[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"assistant","content":[{"type":"tool_use","id":"toolu_42","name":"ask_user","input":{"question":"Which env?"}}]}]`)
+
+	exec := newStubExecutor()
+	calls := 0
+	var secondCallInput map[string]interface{}
+	exec.on("worker", func(input map[string]interface{}) (map[string]interface{}, error) {
+		calls++
+		if calls == 1 {
+			return nil, &model.ErrNeedsInteraction{
+				NodeID:           "worker",
+				Questions:        map[string]interface{}{delegate.AskUserQuestionKey: "Which env?"},
+				Backend:          "claw",
+				Conversation:     persistedConv,
+				PendingToolUseID: "toolu_42",
+			}
+		}
+		secondCallInput = input
+		return map[string]interface{}{"text": "ok", "_tokens": 10}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	if err := eng.Run(context.Background(), "run-ask-user-persist", nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("expected ErrRunPaused on first call, got: %v", err)
+	}
+
+	// Checkpoint should carry the conversation + pending tool_use ID.
+	r, err := s.LoadRun("run-ask-user-persist")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if r.Checkpoint == nil {
+		t.Fatal("checkpoint is nil after pause")
+	}
+	if !sameJSON(t, r.Checkpoint.BackendConversation, persistedConv) {
+		t.Errorf("checkpoint.BackendConversation = %s, want (semantically) %s", r.Checkpoint.BackendConversation, persistedConv)
+	}
+	if r.Checkpoint.BackendPendingToolUseID != "toolu_42" {
+		t.Errorf("checkpoint.BackendPendingToolUseID = %q, want %q", r.Checkpoint.BackendPendingToolUseID, "toolu_42")
+	}
+
+	if err := eng.Resume(context.Background(), "run-ask-user-persist", map[string]interface{}{
+		delegate.AskUserQuestionKey: "staging",
+	}); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	// Second call should see the resume-mode keys merged into nodeInput.
+	gotConv, ok := secondCallInput[resumeConversationKey].(json.RawMessage)
+	if !ok {
+		t.Fatalf("input[%q] missing or wrong type: %T", resumeConversationKey, secondCallInput[resumeConversationKey])
+	}
+	if !sameJSON(t, gotConv, persistedConv) {
+		t.Errorf("input[%q] = %s, want (semantically) %s", resumeConversationKey, gotConv, persistedConv)
+	}
+	if got := secondCallInput[resumePendingToolUseIDKey]; got != "toolu_42" {
+		t.Errorf("input[%q] = %v, want %q", resumePendingToolUseIDKey, got, "toolu_42")
+	}
+	if got := secondCallInput[resumeAnswerKey]; got != "staging" {
+		t.Errorf("input[%q] = %v, want %q", resumeAnswerKey, got, "staging")
+	}
+}
+
+// sameJSON returns true when two JSON byte slices encode the same value
+// regardless of whitespace formatting (run.json round-trips through
+// MarshalIndent on disk).
+func sameJSON(t *testing.T, a, b []byte) bool {
+	t.Helper()
+	var av, bv any
+	if err := json.Unmarshal(a, &av); err != nil {
+		t.Fatalf("invalid JSON a: %v", err)
+	}
+	if err := json.Unmarshal(b, &bv); err != nil {
+		t.Fatalf("invalid JSON b: %v", err)
+	}
+	ac, _ := json.Marshal(av)
+	bc, _ := json.Marshal(bv)
+	return string(ac) == string(bc)
 }

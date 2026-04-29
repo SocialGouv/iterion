@@ -402,9 +402,11 @@ func executeToolsDirect(
 			// and propagate up so the backend can surface the question to
 			// iterion's pause/resume flow. The PostToolUseFailure hook is
 			// intentionally NOT fired — this isn't a tool failure, it's a
-			// suspension request.
+			// suspension request. Stamp the pending tool_use ID so the
+			// backend can craft a tool_result block on resume.
 			var askErr *delegate.ErrAskUser
 			if errors.As(err, &askErr) {
+				askErr.PendingToolUseID = tu.ID
 				return results, askErr
 			}
 			// Post-tool fires are observational; the runner logs any
@@ -554,6 +556,15 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 		if toolErr != nil {
 			// ErrAskUser (and any future suspension signal) bubbles up to
 			// the backend, which converts it into iterion's pause flow.
+			// At this point `messages` already contains the assistant
+			// message with the pending tool_use block — capture it so the
+			// backend can persist the conversation and resume mid-loop.
+			var askErr *delegate.ErrAskUser
+			if errors.As(toolErr, &askErr) {
+				if convBytes, mErr := json.Marshal(messages); mErr == nil {
+					askErr.Conversation = convBytes
+				}
+			}
 			return partial(), toolErr
 		}
 		messages = append(messages, api.Message{
