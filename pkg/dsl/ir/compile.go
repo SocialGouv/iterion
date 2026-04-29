@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 )
 
 // ---------------------------------------------------------------------------
@@ -28,6 +29,8 @@ const (
 	DiagInvalidMCPServer      DiagCode = "C025" // invalid MCP server config
 	DiagInteractionNoBackend  DiagCode = "C029" // interaction set on non-backend LLM node (no runtime effect)
 	DiagCodexDiscouraged      DiagCode = "C030" // codex backend is supported but discouraged
+	DiagComputeNoExpr         DiagCode = "C039" // compute node has no expressions
+	DiagBadExpr               DiagCode = "C040" // expression failed to parse
 )
 
 // codexBackendName is the literal value of the discouraged backend.
@@ -218,6 +221,7 @@ func (c *compiler) compile() *Workflow {
 	c.compileRouters()
 	c.compileHumans()
 	c.compileTools()
+	c.compileComputes()
 
 	// Add terminal nodes.
 	c.nodes["done"] = &DoneNode{BaseNode: BaseNode{ID: "done"}}
@@ -661,6 +665,46 @@ func (c *compiler) compileTools() {
 }
 
 // ---------------------------------------------------------------------------
+// Nodes — Compute
+// ---------------------------------------------------------------------------
+
+func (c *compiler) compileComputes() {
+	for _, cd := range c.file.Computes {
+		c.validateSchemaRef(cd.Name, "output", cd.Output)
+		if cd.Input != "" {
+			c.validateSchemaRef(cd.Name, "input", cd.Input)
+		}
+		if len(cd.Expr) == 0 {
+			c.errorfAt(DiagComputeNoExpr, cd.Name, "",
+				"compute %q has no `expr:` block — at least one expression is required", cd.Name)
+		}
+		exprs := make([]*ComputeExpr, 0, len(cd.Expr))
+		for _, e := range cd.Expr {
+			ast, err := expr.Parse(e.Expr)
+			if err != nil {
+				c.errorfAt(DiagBadExpr, cd.Name, "",
+					"compute %q field %q: invalid expression %q: %v", cd.Name, e.Key, e.Expr, err)
+				continue
+			}
+			exprs = append(exprs, &ComputeExpr{
+				Key: e.Key,
+				AST: ast,
+				Raw: e.Expr,
+			})
+		}
+		c.nodes[cd.Name] = &ComputeNode{
+			BaseNode: BaseNode{ID: cd.Name},
+			SchemaFields: SchemaFields{
+				InputSchema:  cd.Input,
+				OutputSchema: cd.Output,
+			},
+			Exprs:     exprs,
+			AwaitMode: cd.Await,
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Edges
 // ---------------------------------------------------------------------------
 
@@ -682,10 +726,22 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 			To:   ae.To,
 		}
 
-		// Condition.
+		// Condition: either a simple field name (legacy) or a parsed expression.
 		if ae.When != nil {
-			e.Condition = ae.When.Condition
-			e.Negated = ae.When.Negated
+			if ae.When.Expr != "" {
+				ast, err := expr.Parse(ae.When.Expr)
+				if err != nil {
+					c.errorfAt(DiagBadExpr, "", edgeID(ae.From, ae.To),
+						"edge %s -> %s: invalid `when` expression %q: %v",
+						ae.From, ae.To, ae.When.Expr, err)
+				} else {
+					e.Expression = ast
+					e.ExpressionSrc = ae.When.Expr
+				}
+			} else {
+				e.Condition = ae.When.Condition
+				e.Negated = ae.When.Negated
+			}
 		}
 
 		// Loop.

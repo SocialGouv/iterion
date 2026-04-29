@@ -1,0 +1,229 @@
+## ─────────────────────────────────────────────────────────────────
+## vibe_review_alternating
+##
+## Alternating Claude / GPT code review with deterministic
+## "two consecutive positive verdicts" stop condition. When a
+## verdict is negative, apply fix-all in a fresh Claude session
+## before retrying.
+##
+##   Loop 1: claude_code + opus 4.7
+##   Loop 2: claw + gpt-5.5
+##   Loop 3: like loop 1, alternating
+##
+## Stops when:
+##   - 2 consecutive positive verdicts (Claude AND GPT both validate
+##     in successive iterations of opposite families), OR
+##   - max review_loop iterations reached
+##
+## Demonstrates four DSL features delivered together:
+##   1. `round_robin` router for backend alternation
+##   2. `compute` node for deterministic AND of current + previous
+##      verdict (no LLM call, no shell-out)
+##   3. `loop.<name>.previous_output` namespace eliminating manual
+##      `previous_verdict` relay through every loop-bearing edge
+##   4. Boolean expressions in `when` clauses (quoted form)
+## ─────────────────────────────────────────────────────────────────
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+  scope_notes: string = ""
+
+prompt review_system:
+  Tu es un reviewer de code TRES exigeant et methodique.
+  Effectue une review complete du code dans le workspace
+  pour s'assurer qu'il est de qualite production-ready.
+  Sois souple sur les points non bloquants : ne marque
+  approved=false que pour des problemes reellement
+  bloquants pour la production (bugs, regressions,
+  vulnerabilites, code mort).
+
+prompt review_user_claude:
+  Review le code dans {{vars.workspace_dir}}.
+
+  Notes de portee :
+  {{vars.scope_notes}}
+
+  Iteration courante : {{loop.review_loop.iteration}}/{{loop.review_loop.max}}
+  Verdict precedent (vide si premiere iteration) :
+  {{loop.review_loop.previous_output}}
+
+  Produis un verdict structure :
+    - approved: true uniquement si le code est production-ready
+    - family: "claude" pour ce reviewer
+    - blockers: liste des problemes vraiment bloquants
+    - fix_plan: plan d'action concret pour fixer les blockers
+
+prompt review_user_gpt:
+  Review le code dans {{vars.workspace_dir}}.
+
+  Notes de portee :
+  {{vars.scope_notes}}
+
+  Iteration courante : {{loop.review_loop.iteration}}/{{loop.review_loop.max}}
+  Verdict precedent (vide si premiere iteration) :
+  {{loop.review_loop.previous_output}}
+
+  Produis un verdict structure :
+    - approved: true uniquement si le code est production-ready
+    - family: "gpt" pour ce reviewer
+    - blockers: liste des problemes vraiment bloquants
+    - fix_plan: plan d'action concret pour fixer les blockers
+
+prompt fix_system:
+  Tu es un developpeur expert. Tu corriges les problemes
+  bloquants signales par un reviewer en appliquant des
+  modifications concretes au code.
+
+prompt fix_user:
+  Applique fix-all sur les blockers suivants pour le code
+  dans {{vars.workspace_dir}} :
+
+  Blockers :
+  {{input.blockers}}
+
+  Plan de fix :
+  {{input.fix_plan}}
+
+  Lis les fichiers concernes, applique les corrections,
+  puis verifie que les tests passent.
+
+## ─── Schemas ────────────────────────────────────────────────────
+
+schema verdict_output:
+  approved: bool
+  family: string
+  blockers: string[]
+  fix_plan: string
+
+## streak_check relays approved/blockers/fix_plan from its input
+## (the current reviewer's verdict) and computes a deterministic
+## stop signal based on the previous reviewer's verdict.
+schema streak_state:
+  stop: bool
+  approved: bool
+  blockers: string[]
+  fix_plan: string
+
+schema fix_input:
+  blockers: string[]
+  fix_plan: string
+
+schema fix_output:
+  applied: bool
+  summary: string
+
+## ─── Nodes ──────────────────────────────────────────────────────
+
+router alt:
+  mode: round_robin
+
+judge reviewer_claude:
+  backend: "claude_code"
+  model: "claude-opus-4-7"
+  reasoning_effort: extra_high
+  output: verdict_output
+  system: review_system
+  user: review_user_claude
+  session: fresh
+
+judge reviewer_gpt:
+  model: "openai/gpt-5.5"
+  output: verdict_output
+  system: review_system
+  user: review_user_gpt
+  session: fresh
+
+## Deterministic streak detector. Inputs come from the reviewer
+## via `with` mappings; the loop's previous_output is the previous
+## reviewer's verdict (snapshotted on the loop-bearing edge below).
+##
+## stop=true iff:
+##   - current verdict approved
+##   - previous verdict approved
+##   - the two verdicts came from different families (Claude / GPT)
+##
+## All other fields are passed through so downstream edges can read
+## them via outputs.streak_check.* without re-routing through the
+## reviewer outputs.
+compute streak_check:
+  output: streak_state
+  expr:
+    stop: "input.approved && loop.review_loop.previous_output.approved && input.family != loop.review_loop.previous_output.family"
+    approved: "input.approved"
+    blockers: "input.blockers"
+    fix_plan: "input.fix_plan"
+
+agent fix_claude:
+  backend: "claude_code"
+  model: "claude-opus-4-7"
+  reasoning_effort: extra_high
+  input: fix_input
+  output: fix_output
+  system: fix_system
+  user: fix_user
+  session: fresh
+
+## ─── Workflow ───────────────────────────────────────────────────
+
+workflow vibe_review_alternating:
+  entry: alt
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "2h"
+    max_cost_usd: 60
+
+  ## Round-robin alternates: 1st pass → claude, 2nd → gpt, repeat.
+  alt -> reviewer_claude
+  alt -> reviewer_gpt
+
+  ## Both reviewers feed into streak_check. The loop is attached
+  ## here so the runtime snapshots the reviewer's verdict as
+  ## `loop.review_loop.previous_output` for the NEXT iteration to
+  ## inspect — eliminating the manual `previous_verdict` relay.
+  reviewer_claude -> streak_check as review_loop(6) with {
+    approved: "{{outputs.reviewer_claude.approved}}",
+    family: "{{outputs.reviewer_claude.family}}",
+    blockers: "{{outputs.reviewer_claude.blockers}}",
+    fix_plan: "{{outputs.reviewer_claude.fix_plan}}"
+  }
+  reviewer_gpt -> streak_check as review_loop(6) with {
+    approved: "{{outputs.reviewer_gpt.approved}}",
+    family: "{{outputs.reviewer_gpt.family}}",
+    blockers: "{{outputs.reviewer_gpt.blockers}}",
+    fix_plan: "{{outputs.reviewer_gpt.fix_plan}}"
+  }
+
+  ## Stop when streak detected (cross-family double approval).
+  streak_check -> done when stop
+
+  ## Otherwise approved (no streak yet): keep alternating without
+  ## fixing — code passes this reviewer. Expression form is shown
+  ## here both to demonstrate the new syntax and so future authors
+  ## can extend the predicate (e.g. add a confidence threshold) by
+  ## simply enriching the quoted expression.
+  ##
+  ## NOTE: this edge does NOT carry `review_loop` so the loop counter
+  ## (and the previous_output snapshot) is incremented ONCE per cycle
+  ## on the reviewer→streak_check edge above. The cycle is still
+  ## bounded because that edge IS loop-bearing.
+  streak_check -> alt when "approved"
+
+  ## Verdict was negative: apply fix-all then re-enter the loop.
+  streak_check -> fix_claude when not approved with {
+    blockers: "{{outputs.streak_check.blockers}}",
+    fix_plan: "{{outputs.streak_check.fix_plan}}"
+  }
+
+  ## Recovery cycle uses a separate loop name so its counter doesn't
+  ## interfere with the review_loop snapshot semantics. Sized large
+  ## enough to allow review_loop to be the binding constraint.
+  fix_claude -> alt as recovery_loop(20)
+
+  ## Loop exhaustion fallbacks: when a bounded loop hits its limit
+  ## the loop-bearing edges above are skipped and execution falls
+  ## through to these unconditional terminal edges.
+  reviewer_claude -> done
+  reviewer_gpt    -> done
+  fix_claude      -> done
+  streak_check    -> done

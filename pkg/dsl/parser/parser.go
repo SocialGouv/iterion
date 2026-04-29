@@ -82,7 +82,7 @@ func (p *parser) skipToNextTopLevel() {
 		case TokenEOF:
 			return
 		case TokenVars, TokenMCPServer, TokenPrompt, TokenSchema, TokenAgent, TokenJudge,
-			TokenRouter, TokenHuman, TokenTool, TokenWorkflow:
+			TokenRouter, TokenHuman, TokenTool, TokenCompute, TokenWorkflow:
 			return
 		case TokenDedent:
 			p.next()
@@ -206,6 +206,15 @@ func (p *parser) parseFile() *ast.File {
 			td := p.parseToolNodeDecl()
 			if td != nil {
 				f.Tools = append(f.Tools, td)
+			}
+
+		case TokenCompute:
+			cd := p.parseComputeDecl()
+			if cd != nil {
+				if ast.ReservedTargets[cd.Name] {
+					p.addError(DiagReservedName, t, "cannot use reserved name '"+cd.Name+"' as compute name")
+				}
+				f.Computes = append(f.Computes, cd)
 			}
 
 		case TokenWorkflow:
@@ -1142,6 +1151,117 @@ func (p *parser) parseToolNodeProp(td *ast.ToolNodeDecl, propTok Token) {
 	p.skipNewlines()
 }
 
+// ---- compute ----
+
+func (p *parser) parseComputeDecl() *ast.ComputeDecl {
+	start := p.next() // consume "compute"
+	nameT := p.next()
+	name := tokenAsIdent(nameT)
+	if name == "" {
+		p.addError(DiagExpectedToken, nameT, "expected compute name")
+		p.skipToNextTopLevel()
+		return nil
+	}
+	p.expect(TokenColon)
+	p.skipNewlines()
+	if _, ok := p.expect(TokenIndent); !ok {
+		return nil
+	}
+
+	cd := &ast.ComputeDecl{
+		Name: name,
+		Span: ast.Span{Start: p.pos(start)},
+	}
+
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		p.parseComputeProp(cd, t)
+	}
+	return cd
+}
+
+func (p *parser) parseComputeProp(cd *ast.ComputeDecl, propTok Token) {
+	// Most compute properties are plain identifiers (input, output, expr,
+	// await). We resolve by token TYPE for the ones that carry dedicated
+	// keywords and by token VALUE for the others.
+	p.next()
+	switch propTok.Type {
+	case TokenInput:
+		p.expect(TokenColon)
+		cd.Input = p.expectIdent()
+	case TokenOutput:
+		p.expect(TokenColon)
+		cd.Output = p.expectIdent()
+	case TokenAwait:
+		p.expect(TokenColon)
+		cd.Await = p.parseAwaitMode()
+	case TokenIdent:
+		if propTok.Value == "expr" {
+			cd.Expr = p.parseComputeExprBlock()
+		} else {
+			p.addError(DiagUnknownProperty, propTok, "unknown compute property '"+propTok.Value+"'")
+			p.skipToNewline()
+		}
+	default:
+		p.addError(DiagUnknownProperty, propTok, "unknown compute property '"+propTok.Value+"'")
+		p.skipToNewline()
+	}
+	p.skipNewlines()
+}
+
+// parseComputeExprBlock parses the indented `expr:` block:
+//
+//	expr:
+//	  field_a: "input.x && input.y"
+//	  field_b: "vars.n + 1"
+func (p *parser) parseComputeExprBlock() []*ast.ComputeExpr {
+	p.expect(TokenColon)
+	p.skipNewlines()
+	if _, ok := p.expect(TokenIndent); !ok {
+		return nil
+	}
+
+	var entries []*ast.ComputeExpr
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		keyT := p.next()
+		key := tokenAsIdent(keyT)
+		if key == "" {
+			p.addError(DiagExpectedToken, keyT, "expected field name in compute expr block")
+			p.skipToNewline()
+			continue
+		}
+		p.expect(TokenColon)
+		valT := p.next()
+		if valT.Type != TokenString {
+			p.addError(DiagExpectedToken, valT, "expected string expression in compute expr block")
+			p.skipToNewline()
+			continue
+		}
+		entries = append(entries, &ast.ComputeExpr{
+			Key:  key,
+			Expr: valT.Value,
+			Span: ast.Span{Start: p.pos(keyT), End: p.pos(valT)},
+		})
+		p.skipNewlines()
+	}
+	return entries
+}
+
 // ---- workflow ----
 
 func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
@@ -1326,9 +1446,27 @@ done:
 	return edge
 }
 
+// parseWhenClause parses a `when ...` edge clause. Two forms:
+//
+//	when [not] <ident>            simple boolean field check (legacy)
+//	when "<expression>"           arbitrary boolean expression (quoted)
+//
+// The expression form must be a single string literal containing the full
+// expression source (operators like `&&`, `||`, `==` are not tokenized by
+// the iterion lexer, so quoting keeps the surface area small).
 func (p *parser) parseWhenClause() *ast.WhenClause {
 	start := p.next() // consume "when"
 	wc := &ast.WhenClause{Span: ast.Span{Start: p.pos(start)}}
+
+	// Expression form: when "<expression>"
+	if p.peek().Type == TokenString {
+		t := p.next()
+		wc.Expr = t.Value
+		if wc.Expr == "" {
+			p.addError(DiagExpectedToken, t, "empty expression in 'when \"...\"'")
+		}
+		return wc
+	}
 
 	if p.peek().Type == TokenNot {
 		p.next()
@@ -1338,7 +1476,7 @@ func (p *parser) parseWhenClause() *ast.WhenClause {
 	t := p.next()
 	cond := tokenAsIdent(t)
 	if cond == "" {
-		p.addError(DiagExpectedToken, t, "expected condition identifier after 'when'")
+		p.addError(DiagExpectedToken, t, "expected condition identifier or quoted expression after 'when'")
 	}
 	wc.Condition = cond
 	return wc
@@ -1603,7 +1741,7 @@ func tokenAsIdent(t Token) string {
 func isKeywordToken(tt TokenType) bool {
 	switch tt {
 	case TokenVars, TokenMCPServer, TokenPrompt, TokenSchema, TokenAgent, TokenJudge,
-		TokenRouter, TokenHuman, TokenTool, TokenWorkflow,
+		TokenRouter, TokenHuman, TokenTool, TokenCompute, TokenWorkflow,
 		TokenEntry, TokenMCP, TokenBudget, TokenTransport, TokenServers,
 		TokenDisable, TokenAutoloadProject, TokenModel, TokenInput, TokenOutput,
 		TokenPublish, TokenSystem, TokenUser, TokenSession, TokenTools, TokenToolPolicy,

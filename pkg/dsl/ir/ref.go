@@ -52,6 +52,10 @@ func parseRef(expr, raw string) (*Ref, error) {
 		kind = RefOutputs
 	case "artifacts":
 		kind = RefArtifacts
+	case "loop":
+		kind = RefLoop
+	case "run":
+		kind = RefRun
 	default:
 		return nil, fmt.Errorf("unknown reference namespace %q in %q", namespace, raw)
 	}

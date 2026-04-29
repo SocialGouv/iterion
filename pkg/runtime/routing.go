@@ -20,7 +20,7 @@ func (e *Engine) execRoundRobin(ctx context.Context, rs *runState, routerNodeID 
 	// Collect unconditional outgoing edges from the router.
 	var edges []*ir.Edge
 	for _, edge := range e.workflow.Edges {
-		if edge.From == routerNodeID && edge.Condition == "" {
+		if edge.From == routerNodeID && !edge.IsConditional() {
 			edges = append(edges, edge)
 		}
 	}
@@ -54,7 +54,7 @@ func (e *Engine) execRoundRobin(ctx context.Context, rs *runState, routerNodeID 
 	}
 
 	// Router is a pass-through: its output = its input from incoming edges.
-	routerInput := e.buildNodeInput(routerNodeID, rs.vars, rs.outputs, rs.runInputs, rs.artifacts)
+	routerInput := e.buildNodeInputRS(routerNodeID, rs.vars, rs.outputs, rs.runInputs, rs.artifacts, rs)
 	rs.outputs[routerNodeID] = routerInput
 
 	// Emit router node_finished.
@@ -88,7 +88,7 @@ func (e *Engine) execLLMRouter(ctx context.Context, rs *runState, routerNodeID s
 	}
 
 	// Build router input.
-	routerInput := e.buildNodeInput(routerNodeID, rs.vars, rs.outputs, rs.runInputs, rs.artifacts)
+	routerInput := e.buildNodeInputRS(routerNodeID, rs.vars, rs.outputs, rs.runInputs, rs.artifacts, rs)
 
 	// Collect outgoing edge targets as candidates.
 	// NOTE: order follows edge declaration order in the .iter file, which the

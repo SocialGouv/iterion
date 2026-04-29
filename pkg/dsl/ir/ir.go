@@ -4,7 +4,10 @@
 // independent of the DSL authoring surface.
 package ir
 
-import "github.com/SocialGouv/iterion/pkg/dsl/types"
+import (
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
+	"github.com/SocialGouv/iterion/pkg/dsl/types"
+)
 
 // ---------------------------------------------------------------------------
 // Workflow — compiled, execution-ready workflow
@@ -43,13 +46,14 @@ type Workflow struct {
 type NodeKind int
 
 const (
-	NodeAgent  NodeKind = iota // LLM agent
-	NodeJudge                  // verdict-producing LLM node
-	NodeRouter                 // deterministic routing (no LLM)
-	NodeHuman                  // human pause/resume
-	NodeTool                   // direct command execution (no LLM)
-	NodeDone                   // terminal: success
-	NodeFail                   // terminal: failure
+	NodeAgent   NodeKind = iota // LLM agent
+	NodeJudge                   // verdict-producing LLM node
+	NodeRouter                  // deterministic routing (no LLM)
+	NodeHuman                   // human pause/resume
+	NodeTool                    // direct command execution (no LLM)
+	NodeCompute                 // deterministic expression evaluation (no LLM, no shell)
+	NodeDone                    // terminal: success
+	NodeFail                    // terminal: failure
 )
 
 func (k NodeKind) String() string {
@@ -64,6 +68,8 @@ func (k NodeKind) String() string {
 		return "human"
 	case NodeTool:
 		return "tool"
+	case NodeCompute:
+		return "compute"
 	case NodeDone:
 		return "done"
 	case NodeFail:
@@ -199,6 +205,28 @@ type ToolNode struct {
 // NodeKind implements Node.
 func (n *ToolNode) NodeKind() NodeKind { return NodeTool }
 
+// ComputeNode evaluates a set of named expressions over the standard
+// reference namespaces (vars, input, outputs, artifacts, loop, run) and
+// returns them as a structured output. It performs no LLM call and no
+// shell-out; expressions are parsed at compile time and re-evaluated on
+// each visit.
+type ComputeNode struct {
+	BaseNode
+	SchemaFields
+	Exprs     []*ComputeExpr // ordered field-name → parsed AST pairs
+	AwaitMode AwaitMode
+}
+
+// ComputeExpr is a single field expression in a ComputeNode.
+type ComputeExpr struct {
+	Key string    // output field name
+	AST *expr.AST // parsed expression
+	Raw string    // original source for diagnostics / unparse
+}
+
+// NodeKind implements Node.
+func (n *ComputeNode) NodeKind() NodeKind { return NodeCompute }
+
 // DoneNode is a terminal success node.
 type DoneNode struct {
 	BaseNode
@@ -234,6 +262,8 @@ func NodeAwaitMode(n Node) AwaitMode {
 		return n.AwaitMode
 	case *ToolNode:
 		return n.AwaitMode
+	case *ComputeNode:
+		return n.AwaitMode
 	case *DoneNode:
 		return n.AwaitMode
 	case *FailNode:
@@ -253,6 +283,8 @@ func NodeOutputSchema(n Node) string {
 		return n.OutputSchema
 	case *ToolNode:
 		return n.OutputSchema
+	case *ComputeNode:
+		return n.OutputSchema
 	}
 	return ""
 }
@@ -267,6 +299,8 @@ func NodeInputSchema(n Node) string {
 	case *HumanNode:
 		return n.InputSchema
 	case *ToolNode:
+		return n.InputSchema
+	case *ComputeNode:
 		return n.InputSchema
 	}
 	return ""
@@ -473,9 +507,17 @@ type Edge struct {
 	To   string // target node ID
 
 	// Condition (optional). Condition is a field name from the source
-	// node's output schema. Negated inverts the check.
+	// node's output schema. Negated inverts the check. Mutually exclusive
+	// with Expression: the compiler chooses one form per edge.
 	Condition string
 	Negated   bool
+
+	// Expression (optional). When non-nil, this parsed expression replaces
+	// Condition/Negated and is evaluated against the source node's output
+	// (exposed as `input`/`outputs.<self>`), the run vars, artifacts, and
+	// loop/run namespaces.
+	Expression    *expr.AST
+	ExpressionSrc string // original source string preserved for unparse/debug
 
 	// Loop reference (optional). LoopName references a Loop in Workflow.Loops.
 	LoopName string
@@ -492,6 +534,16 @@ type DataMapping struct {
 	Raw  string // original template string for debugging
 }
 
+// IsConditional reports whether an edge carries any predicate (simple
+// boolean field or parsed expression). Used by validators and the runtime
+// to distinguish guarded edges from unconditional fallbacks.
+func (e *Edge) IsConditional() bool {
+	if e == nil {
+		return false
+	}
+	return e.Condition != "" || e.Expression != nil
+}
+
 // ---------------------------------------------------------------------------
 // Ref — normalized reference expression
 // ---------------------------------------------------------------------------
@@ -504,6 +556,8 @@ const (
 	RefInput                    // {{input.field}}
 	RefOutputs                  // {{outputs.node}} or {{outputs.node.field}}
 	RefArtifacts                // {{artifacts.name}}
+	RefLoop                     // {{loop.<name>.iteration}} / .max / .previous_output[.field]
+	RefRun                      // {{run.id}}
 )
 
 func (rk RefKind) String() string {
@@ -516,6 +570,10 @@ func (rk RefKind) String() string {
 		return "outputs"
 	case RefArtifacts:
 		return "artifacts"
+	case RefLoop:
+		return "loop"
+	case RefRun:
+		return "run"
 	default:
 		return "unknown"
 	}

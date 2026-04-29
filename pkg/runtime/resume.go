@@ -171,9 +171,10 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	rs.roundRobinCounters = roundRobinCounters
 	rs.artifactVersions = artifactVersions
 	rs.nodeAttempts = restoreNodeAttempts(cp.NodeAttempts)
+	restoreLoopSnapshots(rs, cp)
 
 	// Select edge from the human node to find the next node.
-	nextNodeID, err := e.selectEdge(runID, humanNodeID, answers, loopCounters)
+	nextNodeID, err := e.selectEdgeRS(rs, humanNodeID, answers)
 	if err != nil {
 		return e.failRunErrWithCheckpoint(rs, humanNodeID, err)
 	}
@@ -226,6 +227,7 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 	rs.roundRobinCounters = roundRobinCounters
 	rs.artifactVersions = artifactVersions
 	rs.nodeAttempts = restoreNodeAttempts(cp.NodeAttempts)
+	restoreLoopSnapshots(rs, cp)
 
 	loopErr := e.execLoop(ctx, rs, restartNodeID)
 	e.evictRunSessions(runID, loopErr)
@@ -253,7 +255,7 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 	}
 
 	// Build input and execute LLM.
-	nodeInput := e.buildNodeInput(nodeID, rs.vars, rs.outputs, rs.runInputs, rs.artifacts)
+	nodeInput := e.buildNodeInputRS(nodeID, rs.vars, rs.outputs, rs.runInputs, rs.artifacts, rs)
 	output, err := e.executor.Execute(ctx, node, nodeInput)
 	if err != nil {
 		return false, e.failRunWithCheckpoint(rs, nodeID, fmt.Sprintf("human node %q auto_or_pause execution failed: %v", nodeID, err))
@@ -348,7 +350,7 @@ func (e *Engine) pauseAtHuman(rs *runState, nodeID string, node ir.Node) error {
 // execAutoOrPauseHuman. The caller is responsible for emitting node_started
 // before calling this method.
 func (e *Engine) persistPause(rs *runState, nodeID string) error {
-	questions := e.buildNodeInput(nodeID, rs.vars, rs.outputs, nil, rs.artifacts)
+	questions := e.buildNodeInputRS(nodeID, rs.vars, rs.outputs, nil, rs.artifacts, rs)
 	return e.doPause(rs, nodeID, questions, nil, "", "")
 }
 
@@ -428,7 +430,7 @@ func (e *Engine) handleInteractionLLMOrHuman(ctx context.Context, rs *runState, 
 // for session continuity so the backend can resume where it left off.
 func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID string, node ir.Node, ni *model.ErrNeedsInteraction, answers map[string]interface{}) error {
 	// Build the input for re-invocation: original node input + answers.
-	nodeInput := e.buildNodeInput(nodeID, rs.vars, rs.outputs, rs.runInputs, rs.artifacts)
+	nodeInput := e.buildNodeInputRS(nodeID, rs.vars, rs.outputs, rs.runInputs, rs.artifacts, rs)
 	for k, v := range answers {
 		nodeInput[k] = v
 	}
@@ -494,7 +496,7 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 	}
 
 	// Select next edge.
-	nextNodeID, err := e.selectEdge(rs.runID, nodeID, output, rs.loopCounters)
+	nextNodeID, err := e.selectEdgeRS(rs, nodeID, output)
 	if err != nil {
 		return e.failRunErrWithCheckpoint(rs, nodeID, err)
 	}

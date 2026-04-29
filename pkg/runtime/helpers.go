@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/internal/log"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -223,6 +224,8 @@ func buildCheckpoint(rs *runState, nodeID string) *store.Checkpoint {
 		Outputs:            rs.outputs,
 		LoopCounters:       rs.loopCounters,
 		RoundRobinCounters: rs.roundRobinCounters,
+		LoopPreviousOutput: rs.loopPreviousOutput,
+		LoopCurrentOutput:  rs.loopCurrentOutput,
 		ArtifactVersions:   rs.artifactVersions,
 		Vars:               rs.vars,
 		NodeAttempts:       serializeNodeAttempts(rs.nodeAttempts),
@@ -251,6 +254,21 @@ func serializeNodeAttempts(src map[string]map[ErrorCode]int) map[string]map[stri
 		return nil
 	}
 	return out
+}
+
+// restoreLoopSnapshots rehydrates the loop-edge snapshot maps from a
+// checkpoint into the runState. Without this, a paused/failed run that
+// resumes mid-loop would lose the prior-iteration `previous_output`,
+// causing {{loop.<name>.previous_output}} to read nil on the next
+// iteration (silent data loss in expression-form `when` clauses and
+// compute nodes that depend on it).
+func restoreLoopSnapshots(rs *runState, cp *store.Checkpoint) {
+	if cp.LoopPreviousOutput != nil {
+		rs.loopPreviousOutput = cp.LoopPreviousOutput
+	}
+	if cp.LoopCurrentOutput != nil {
+		rs.loopCurrentOutput = cp.LoopCurrentOutput
+	}
 }
 
 // restoreNodeAttempts is the inverse of serializeNodeAttempts: it rebuilds
@@ -649,6 +667,15 @@ func (e *Engine) evaluateEdges(fromNodeID, logPrefix string, output map[string]i
 		if edge.From != fromNodeID {
 			continue
 		}
+		if edge.Expression != nil {
+			// Expression-form `when` is unsupported in branch-local edge
+			// selection — branches don't iterate, so loop/run namespaces
+			// have no meaning. Use a simple boolean field condition or
+			// compute the predicate in a `compute` node upstream.
+			e.logger.Debug("%s: node %q: edge to %q has an expression `when` but branch evaluator has no runState — edge skipped",
+				logPrefix, fromNodeID, edge.To)
+			continue
+		}
 		if edge.Condition == "" {
 			if unconditional == nil {
 				unconditional = edge
@@ -676,26 +703,45 @@ func (e *Engine) evaluateEdges(fromNodeID, logPrefix string, output map[string]i
 	return unconditional
 }
 
-// evaluateEdgesWithLoops is like evaluateEdges but skips edges whose loop
-// counter is exhausted. This enables fallback patterns: when a fix_loop edge
-// is exhausted, the next matching edge (e.g., outer_loop or unconditional)
-// is selected instead of producing a fatal LOOP_EXHAUSTED error.
-func (e *Engine) evaluateEdgesWithLoops(fromNodeID, logPrefix string, output map[string]interface{}, loopCounters map[string]int) *ir.Edge {
+// evaluateEdgesWithLoopsRS is the rs-aware variant: it evaluates edge `when`
+// expressions against the full runState (vars, outputs, artifacts, loop, run)
+// while still falling back to the simple boolean-field check when the edge
+// has no parsed Expression. The expression evaluation context is built lazily
+// at most once per call (only if at least one outgoing edge uses an
+// expression).
+func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output map[string]interface{}, rs *runState) *ir.Edge {
 	var unconditional *ir.Edge
+	var exprCtx *expr.Context
 
 	for _, edge := range e.workflow.Edges {
 		if edge.From != fromNodeID {
 			continue
 		}
 
-		// Skip edges whose loop is exhausted.
 		if edge.LoopName != "" {
 			loop, ok := e.workflow.Loops[edge.LoopName]
-			if ok && loopCounters[edge.LoopName] >= loop.MaxIterations {
+			if ok && rs.loopCounters[edge.LoopName] >= loop.MaxIterations {
 				e.logger.Warn("%s: node %q: edge to %q skipped — loop %q exhausted (%d/%d)",
-					logPrefix, fromNodeID, edge.To, edge.LoopName, loopCounters[edge.LoopName], loop.MaxIterations)
+					logPrefix, fromNodeID, edge.To, edge.LoopName, rs.loopCounters[edge.LoopName], loop.MaxIterations)
 				continue
 			}
+		}
+
+		// Expression form: parsed AST evaluated against the full context.
+		if edge.Expression != nil {
+			if exprCtx == nil {
+				exprCtx = e.exprContext(rs, output)
+			}
+			ok, err := edge.Expression.EvalBool(exprCtx)
+			if err != nil {
+				e.logger.Warn("%s: node %q: edge `when` expression %q failed: %v — edge to %q skipped",
+					logPrefix, fromNodeID, edge.ExpressionSrc, err, edge.To)
+				continue
+			}
+			if ok {
+				return edge
+			}
+			continue
 		}
 
 		if edge.Condition == "" {
@@ -723,4 +769,47 @@ func (e *Engine) evaluateEdgesWithLoops(fromNodeID, logPrefix string, output map
 	}
 
 	return unconditional
+}
+
+// exprContext builds a generic expression evaluator context using runState.
+// `input` resolves against the supplied input map (the current node's input
+// for compute nodes, or the source node's output when called from edge
+// selection — both correspond to "the data this edge sees").
+func (e *Engine) exprContext(rs *runState, input map[string]interface{}) *expr.Context {
+	mapResolver := func(m map[string]interface{}) func([]string) interface{} {
+		return func(path []string) interface{} {
+			if len(path) == 0 {
+				return m
+			}
+			return drillPath(m, path)
+		}
+	}
+	keyedMapResolver := func(byKey map[string]map[string]interface{}) func([]string) interface{} {
+		return func(path []string) interface{} {
+			if len(path) == 0 {
+				return byKey
+			}
+			return drillPath(byKey[path[0]], path[1:])
+		}
+	}
+	loopResolver := func(path []string) interface{} {
+		if len(path) < 2 {
+			return nil
+		}
+		return resolveLoopPath(path, rs, e.workflow.Loops)
+	}
+	runResolver := func(path []string) interface{} {
+		if len(path) == 1 && path[0] == "id" {
+			return rs.runID
+		}
+		return nil
+	}
+	return &expr.Context{
+		Vars:      mapResolver(rs.vars),
+		Input:     mapResolver(input),
+		Outputs:   keyedMapResolver(rs.outputs),
+		Artifacts: keyedMapResolver(rs.artifacts),
+		Loop:      loopResolver,
+		Run:       runResolver,
+	}
 }

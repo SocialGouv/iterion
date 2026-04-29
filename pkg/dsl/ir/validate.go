@@ -228,9 +228,22 @@ func (c *compiler) findConvergenceNodes(w *Workflow) map[string]bool {
 // ---------------------------------------------------------------------------
 
 func (c *compiler) validateEdgeRouting(w *Workflow) {
-	// Group outgoing edges by source node.
+	// Group outgoing edges by source node. We distinguish three classes:
+	//   - conditional: has a `when` (boolean field or expression)
+	//   - loopBearing: has `as <name>(N)` but no `when`
+	//   - unconditional: neither
+	//
+	// Loop-bearing edges sit between the two: at runtime they are taken
+	// while the loop counter is below max and skipped once exhausted. So:
+	//   - For C010 (too many fallbacks): only PURE unconditional edges
+	//     count — loop-bearing edges are not duplicate fallbacks.
+	//   - For C012 (no fallback): a loop-bearing edge counts as a
+	//     fallback (it's reached while the loop is alive); the existing
+	//     `streak_check -> alt as l(6)` + `streak_check -> done` pattern
+	//     is the canonical graceful-exhaustion shape.
 	type edgeGroup struct {
 		unconditional []*Edge
+		loopBearing   []*Edge
 		conditional   []*Edge
 	}
 	groups := make(map[string]*edgeGroup)
@@ -240,10 +253,13 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 			g = &edgeGroup{}
 			groups[e.From] = g
 		}
-		if e.Condition == "" {
-			g.unconditional = append(g.unconditional, e)
-		} else {
+		switch {
+		case e.IsConditional():
 			g.conditional = append(g.conditional, e)
+		case e.LoopName != "":
+			g.loopBearing = append(g.loopBearing, e)
+		default:
+			g.unconditional = append(g.unconditional, e)
 		}
 	}
 
@@ -258,7 +274,7 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 			continue
 		}
 
-		// C010: multiple unconditional edges from a non-fan_out_all node.
+		// C010: multiple PURE unconditional edges from a non-fan_out_all node.
 		if len(g.unconditional) > 1 {
 			targets := make([]string, len(g.unconditional))
 			for i, e := range g.unconditional {
@@ -274,9 +290,9 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 			continue
 		}
 
-		// C012: conditional edges but no fallback (unconditional) edge.
-		if len(g.unconditional) == 0 {
-			// Check if conditions cover true/false exhaustively.
+		// C012: conditional edges but no fallback. A loop-bearing edge counts
+		// as a fallback for this purpose.
+		if len(g.unconditional) == 0 && len(g.loopBearing) == 0 {
 			if !isExhaustive(g.conditional) {
 				c.errorf(DiagMissingFallback,
 					"node %q has conditional edges but no default (unconditional) fallback edge",
@@ -301,7 +317,7 @@ func (c *compiler) validateRoundRobinEdges(w *Workflow) {
 		}
 		count := 0
 		for _, e := range w.Edges {
-			if e.From == r.ID && e.Condition == "" {
+			if e.From == r.ID && !e.IsConditional() {
 				count++
 			}
 		}

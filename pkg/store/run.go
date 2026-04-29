@@ -56,8 +56,15 @@ type Checkpoint struct {
 	Outputs            map[string]map[string]interface{} `json:"outputs"`                        // per-node outputs accumulated so far
 	LoopCounters       map[string]int                    `json:"loop_counters"`                  // current loop iteration counts
 	RoundRobinCounters map[string]int                    `json:"round_robin_counters,omitempty"` // round-robin router counters (keyed by router node ID)
-	ArtifactVersions   map[string]int                    `json:"artifact_versions"`              // next artifact version per node
-	Vars               map[string]interface{}            `json:"vars"`                           // resolved workflow variables
+	// LoopPreviousOutput / LoopCurrentOutput preserve the rotating snapshot
+	// of source-node outputs at each loop-edge traversal so that
+	// {{loop.<name>.previous_output}} resolves correctly across resume.
+	// Without these, a paused/failed run would lose the prior-iteration
+	// snapshot and the very next iteration would see nil.
+	LoopPreviousOutput map[string]map[string]interface{} `json:"loop_previous_output,omitempty"`
+	LoopCurrentOutput  map[string]map[string]interface{} `json:"loop_current_output,omitempty"`
+	ArtifactVersions   map[string]int                    `json:"artifact_versions"` // next artifact version per node
+	Vars               map[string]interface{}            `json:"vars"`              // resolved workflow variables
 	// InteractionQuestions embeds the questions from the interaction record
 	// so that resume is self-sufficient even if the interaction file is deleted.
 	InteractionQuestions map[string]interface{} `json:"interaction_questions,omitempty"`

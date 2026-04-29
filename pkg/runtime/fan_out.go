@@ -25,7 +25,7 @@ func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID stri
 	}
 
 	// Router is a pass-through: its output = its input from incoming edges.
-	routerInput := e.buildNodeInput(routerNodeID, rs.vars, rs.outputs, rs.runInputs, rs.artifacts)
+	routerInput := e.buildNodeInputRS(routerNodeID, rs.vars, rs.outputs, rs.runInputs, rs.artifacts, rs)
 	rs.outputs[routerNodeID] = routerInput
 
 	// Emit router node_finished.
@@ -253,10 +253,12 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		}
 
 		// Build input: merge parent outputs with branch-local outputs so
-		// refs to upstream nodes (before the router) still resolve.
+		// refs to upstream nodes (before the router) still resolve. We
+		// pass the parent rs so {{loop.*}} / {{run.*}} read the parent's
+		// loop snapshots (read-only — branches never traverse loop edges).
 		merged := mergeOutputs(parentOutputs, result.outputs)
 		mergedArt := mergeOutputs(parentArtifacts, result.artifacts)
-		nodeInput := e.buildNodeInput(currentNodeID, vars, merged, runInputs, mergedArt)
+		nodeInput := e.buildNodeInputRS(currentNodeID, vars, merged, runInputs, mergedArt, rs)
 
 		// Execute.
 		output, err := e.executor.Execute(ctx, node, nodeInput)

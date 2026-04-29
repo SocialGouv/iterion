@@ -17,6 +17,7 @@ type File struct {
 	Routers    []*RouterDecl    // router node declarations
 	Humans     []*HumanDecl     // human node declarations
 	Tools      []*ToolNodeDecl  // tool node declarations (direct execution, no LLM)
+	Computes   []*ComputeDecl   // deterministic compute node declarations (no LLM, no shell)
 	Workflows  []*WorkflowDecl  // workflow declarations
 	Comments   []*Comment       // top-level comments (## ...)
 	Span       Span
@@ -303,6 +304,31 @@ type ToolNodeDecl struct {
 }
 
 // ---------------------------------------------------------------------------
+// Nodes — Compute (deterministic expression node, no LLM, no shell)
+// ---------------------------------------------------------------------------
+
+// ComputeDecl represents a `compute <name>:` node that evaluates a set of
+// expressions over `vars`/`input`/`outputs`/`artifacts`/`loop`/`run` to
+// produce a structured output. Used for streak detection, boolean ANDs,
+// counters, etc., without invoking an LLM or shelling out.
+type ComputeDecl struct {
+	Name   string
+	Input  string         // optional input schema reference name
+	Output string         // schema reference name (defines the output fields)
+	Expr   []*ComputeExpr // ordered list of field-name → expression-source pairs
+	Await  AwaitMode      // convergence strategy (none/wait_all/best_effort)
+	Span   Span
+}
+
+// ComputeExpr is one entry inside a `compute` node's `expr:` block:
+// `<key>: "<expression>"`.
+type ComputeExpr struct {
+	Key  string
+	Expr string // raw expression source (parsed at compile time)
+	Span Span
+}
+
+// ---------------------------------------------------------------------------
 // Terminal nodes — done / fail
 // ---------------------------------------------------------------------------
 
@@ -352,10 +378,15 @@ type Edge struct {
 	Span Span
 }
 
-// WhenClause represents a `when [not] <condition>` on an edge.
+// WhenClause represents a `when [not] <condition>` or `when <expression>` on
+// an edge. When Expr is non-empty, it is the raw expression source and
+// supersedes Condition/Negated. The simple boolean-field form remains
+// supported for ergonomics; the expression form unlocks compound conditions
+// like `when approved && loop.l.previous_output.approved`.
 type WhenClause struct {
-	Condition string // condition identifier (e.g. "approved", "green", "needs_human_input")
-	Negated   bool   // true if `when not <condition>`
+	Condition string // condition identifier (e.g. "approved"); empty when Expr set
+	Negated   bool   // true if `when not <condition>`; ignored when Expr set
+	Expr      string // raw expression source (e.g. "a && b == 1"); empty when using simple form
 	Span      Span
 }
 

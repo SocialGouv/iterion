@@ -121,6 +121,13 @@ func detailedShape(node Node) string {
 		if n.Command != "" {
 			lines = append(lines, "cmd: "+n.Command)
 		}
+	case *ComputeNode:
+		if n.OutputSchema != "" {
+			lines = append(lines, "out: "+n.OutputSchema)
+		}
+		for _, e := range n.Exprs {
+			lines = append(lines, e.Key+" = "+e.Raw)
+		}
 	}
 
 	await := NodeAwaitMode(node)
@@ -167,6 +174,8 @@ func edgeLabel(e *Edge, w *Workflow, view MermaidView) string {
 			cond = "NOT " + cond
 		}
 		parts = append(parts, cond)
+	} else if e.ExpressionSrc != "" {
+		parts = append(parts, "expr: "+e.ExpressionSrc)
 	}
 
 	if e.LoopName != "" {
@@ -198,6 +207,7 @@ func styleClasses(w *Workflow) string {
 	b.WriteString("    classDef router fill:#F5A623,stroke:#C47D0E,color:#fff\n")
 	b.WriteString("    classDef human fill:#FF6B6B,stroke:#CC4444,color:#fff\n")
 	b.WriteString("    classDef tool fill:#A0522D,stroke:#6E3720,color:#fff\n")
+	b.WriteString("    classDef compute fill:#6BB7B7,stroke:#3D7A7A,color:#fff\n")
 	b.WriteString("    classDef done fill:#2ECC71,stroke:#1A8B4C,color:#fff\n")
 	b.WriteString("    classDef fail fill:#E74C3C,stroke:#A93226,color:#fff\n")
 
@@ -228,6 +238,8 @@ func kindIcon(k NodeKind) string {
 		return "👤"
 	case NodeTool:
 		return "🔧"
+	case NodeCompute:
+		return "🧮"
 	case NodeDone:
 		return "✅"
 	case NodeFail:

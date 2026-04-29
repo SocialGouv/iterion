@@ -132,12 +132,20 @@ func NewFromRecipe(r *recipe.RecipeSpec, wf *ir.Workflow, s *store.RunStore, exe
 
 // runState holds the mutable runtime state passed through the execution loop.
 type runState struct {
-	runID              string
-	runInputs          map[string]interface{}
-	vars               map[string]interface{}
-	outputs            map[string]map[string]interface{}
-	artifacts          map[string]map[string]interface{} // publish name → output
-	loopCounters       map[string]int
+	runID        string
+	runInputs    map[string]interface{}
+	vars         map[string]interface{}
+	outputs      map[string]map[string]interface{}
+	artifacts    map[string]map[string]interface{} // publish name → output
+	loopCounters map[string]int
+	// loopPreviousOutput holds the snapshot of the source node output from
+	// the PREVIOUS traversal of a given loop's edge — i.e., one iteration
+	// behind the current one. Workflows reference it as
+	// {{loop.<name>.previous_output[.field]}}; in the very first iteration
+	// of a loop the value is nil. The snapshot is rotated through
+	// loopCurrentOutput on each traversal to preserve the one-iteration lag.
+	loopPreviousOutput map[string]map[string]interface{}
+	loopCurrentOutput  map[string]map[string]interface{} // staging slot for the next iteration's "previous"
 	roundRobinCounters map[string]int
 	artifactVersions   map[string]int
 	budget             *SharedBudget // shared across branches, nil if no budget
@@ -158,6 +166,8 @@ func (e *Engine) newRunState(runID string, inputs map[string]interface{}) *runSt
 		outputs:            make(map[string]map[string]interface{}),
 		artifacts:          make(map[string]map[string]interface{}),
 		loopCounters:       make(map[string]int),
+		loopPreviousOutput: make(map[string]map[string]interface{}),
+		loopCurrentOutput:  make(map[string]map[string]interface{}),
 		roundRobinCounters: make(map[string]int),
 		artifactVersions:   make(map[string]int),
 		nodeAttempts:       make(map[string]map[ErrorCode]int),
@@ -268,7 +278,7 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 					return ErrRunPaused
 				}
 				// LLM decided no human needed — continue to edge selection.
-				nextNodeID, err := e.selectEdge(rs.runID, currentNodeID, rs.outputs[currentNodeID], rs.loopCounters)
+				nextNodeID, err := e.selectEdgeRS(rs, currentNodeID, rs.outputs[currentNodeID])
 				if err != nil {
 					return e.failRunErrWithCheckpoint(rs, currentNodeID, err)
 				}
@@ -308,6 +318,18 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 			// RouterCondition falls through to normal execution path.
 		}
 
+		// --- Compute nodes execute deterministically inside the engine ---
+		// (no LLM, no shell-out). Keep this path before emitting node_started
+		// so it shares the same envelope as other nodes.
+		if cn, ok := node.(*ir.ComputeNode); ok {
+			nextNodeID, err := e.execCompute(rs, currentNodeID, cn)
+			if err != nil {
+				return e.failRunErrWithCheckpoint(rs, currentNodeID, err)
+			}
+			currentNodeID = nextNodeID
+			continue
+		}
+
 		// --- Emit node_started ---
 		if err := e.emit(rs.runID, store.EventNodeStarted, currentNodeID, map[string]interface{}{
 			"kind": node.NodeKind().String(),
@@ -321,7 +343,7 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 		}
 
 		// --- Build node input from edge mappings ---
-		nodeInput := e.buildNodeInput(currentNodeID, rs.vars, rs.outputs, rs.runInputs, rs.artifacts)
+		nodeInput := e.buildNodeInputRS(currentNodeID, rs.vars, rs.outputs, rs.runInputs, rs.artifacts, rs)
 
 		// --- Execute node ---
 		// Thread the run ID into ctx so the executor can locate
@@ -406,7 +428,7 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 		}
 
 		// --- Select outgoing edge ---
-		nextNodeID, err := e.selectEdge(rs.runID, currentNodeID, output, rs.loopCounters)
+		nextNodeID, err := e.selectEdgeRS(rs, currentNodeID, output)
 		if err != nil {
 			return e.failRunErrWithCheckpoint(rs, currentNodeID, err)
 		}
@@ -416,17 +438,72 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 }
 
 // ---------------------------------------------------------------------------
+// Compute nodes
+// ---------------------------------------------------------------------------
+
+// execCompute evaluates a ComputeNode's expressions deterministically and
+// stores the result as the node's output. It mirrors the standard execution
+// envelope (node_started → output → node_finished → checkpoint → edge select)
+// without invoking the executor backend.
+func (e *Engine) execCompute(rs *runState, nodeID string, cn *ir.ComputeNode) (string, error) {
+	if err := e.emit(rs.runID, store.EventNodeStarted, nodeID, map[string]interface{}{
+		"kind": "compute",
+	}); err != nil {
+		return "", err
+	}
+
+	nodeInput := e.buildNodeInputRS(nodeID, rs.vars, rs.outputs, rs.runInputs, rs.artifacts, rs)
+	output := make(map[string]interface{}, len(cn.Exprs))
+
+	exprCtx := e.exprContext(rs, nodeInput)
+	for _, ce := range cn.Exprs {
+		v, err := ce.AST.Eval(exprCtx)
+		if err != nil {
+			return "", &RuntimeError{
+				Code:    ErrCodeExecutionFailed,
+				Message: fmt.Sprintf("compute %q: field %q expression %q: %v", nodeID, ce.Key, ce.Raw, err),
+				NodeID:  nodeID,
+				Hint:    "check the compute node's expressions for type mismatches or unknown references",
+			}
+		}
+		output[ce.Key] = v
+	}
+
+	rs.outputs[nodeID] = output
+	delete(rs.nodeAttempts, nodeID)
+
+	if err := e.validateNodeOutput(nodeID, cn, output); err != nil {
+		return "", err
+	}
+
+	if err := e.emit(rs.runID, store.EventNodeFinished, nodeID, buildNodeFinishedData(output)); err != nil {
+		return "", err
+	}
+	if e.onNodeFinished != nil {
+		e.onNodeFinished(nodeID, output)
+	}
+
+	if err := e.store.SaveCheckpoint(rs.runID, buildCheckpoint(rs, nodeID)); err != nil {
+		e.logger.Error("failed to save checkpoint after compute %q: %v", nodeID, err)
+	}
+
+	return e.selectEdgeRS(rs, nodeID, output)
+}
+
+// ---------------------------------------------------------------------------
 // Edge selection
 // ---------------------------------------------------------------------------
 
-// selectEdge picks the next node by evaluating outgoing edges from the
-// current node. Conditional edges are checked first; the first matching
-// unconditional edge serves as fallback. Loop counters are enforced.
-// When an edge's loop is exhausted, that edge is skipped and the next
-// matching edge is tried — this enables fallback patterns like
-// fix_loop → outer_loop.
-func (e *Engine) selectEdge(runID, fromNodeID string, output map[string]interface{}, loopCounters map[string]int) (string, error) {
-	selected := e.evaluateEdgesWithLoops(fromNodeID, "main", output, loopCounters)
+// selectEdgeRS picks the next node by evaluating outgoing edges from the
+// current node, threading the runState so expression-form `when` clauses
+// can resolve `{{loop.*}}` / `{{run.*}}` namespaces and so loop edges
+// snapshot the source node's output as `loop.<name>.previous_output` for
+// the next iteration. Conditional edges are checked first; the first
+// matching unconditional edge serves as fallback. When a loop's counter is
+// exhausted that edge is skipped — enabling graceful exit patterns like
+// `fix_loop -> outer_loop` or `loop_edge -> done`.
+func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string]interface{}) (string, error) {
+	selected := e.evaluateEdgesWithLoopsRS(fromNodeID, "main", output, rs)
 	if selected == nil {
 		return "", &RuntimeError{
 			Code:    ErrCodeNoOutgoingEdge,
@@ -436,12 +513,25 @@ func (e *Engine) selectEdge(runID, fromNodeID string, output map[string]interfac
 		}
 	}
 
-	// Increment loop counter for the selected edge.
 	if selected.LoopName != "" {
-		loopCounters[selected.LoopName] = loopCounters[selected.LoopName] + 1
+		rs.loopCounters[selected.LoopName] = rs.loopCounters[selected.LoopName] + 1
+		// Rotate snapshots so {{loop.<name>.previous_output}} reads the
+		// snapshot from the PRIOR traversal (one iteration behind), not the
+		// current one. The current iteration's source output is staged in
+		// loopCurrentOutput and only promoted to loopPreviousOutput at the
+		// NEXT loop-edge crossing for the same loop name.
+		if rs.loopPreviousOutput != nil {
+			if staged, ok := rs.loopCurrentOutput[selected.LoopName]; ok {
+				rs.loopPreviousOutput[selected.LoopName] = staged
+			}
+			snap := make(map[string]interface{}, len(output))
+			for k, v := range output {
+				snap[k] = v
+			}
+			rs.loopCurrentOutput[selected.LoopName] = snap
+		}
 	}
 
-	// Emit edge_selected.
 	data := map[string]interface{}{
 		"from": selected.From,
 		"to":   selected.To,
@@ -450,11 +540,14 @@ func (e *Engine) selectEdge(runID, fromNodeID string, output map[string]interfac
 		data["condition"] = selected.Condition
 		data["negated"] = selected.Negated
 	}
+	if selected.ExpressionSrc != "" {
+		data["expression"] = selected.ExpressionSrc
+	}
 	if selected.LoopName != "" {
 		data["loop"] = selected.LoopName
-		data["iteration"] = loopCounters[selected.LoopName]
+		data["iteration"] = rs.loopCounters[selected.LoopName]
 	}
-	if err := e.emit(runID, store.EventEdgeSelected, "", data); err != nil {
+	if err := e.emit(rs.runID, store.EventEdgeSelected, "", data); err != nil {
 		e.logger.Warn("failed to emit edge_selected: %v", err)
 	}
 
@@ -465,11 +558,14 @@ func (e *Engine) selectEdge(runID, fromNodeID string, output map[string]interfac
 // Input resolution
 // ---------------------------------------------------------------------------
 
-// buildNodeInput constructs the input map for a node by looking at the
+// buildNodeInputRS constructs the input map for a node by looking at the
 // edge `with` mappings that target this node. For convergence points,
 // mappings from ALL resolved incoming edges are merged. If no mappings
-// exist, the run-level inputs are used for the entry node.
-func (e *Engine) buildNodeInput(nodeID string, vars map[string]interface{}, outputs map[string]map[string]interface{}, runInputs map[string]interface{}, artifacts map[string]map[string]interface{}) map[string]interface{} {
+// exist, the run-level inputs are used for the entry node. The runState
+// is required so that `{{loop.*}}` / `{{run.*}}` references resolve
+// against the run's iteration state. Pass nil for rs only in tests that
+// don't exercise those namespaces.
+func (e *Engine) buildNodeInputRS(nodeID string, vars map[string]interface{}, outputs map[string]map[string]interface{}, runInputs map[string]interface{}, artifacts map[string]map[string]interface{}, rs *runState) map[string]interface{} {
 	result := make(map[string]interface{})
 
 	// Merge with-mappings from ALL edges targeting this node whose source
@@ -498,7 +594,7 @@ func (e *Engine) buildNodeInput(nodeID string, vars map[string]interface{}, outp
 		}
 
 		for _, dm := range edge.With {
-			val := e.resolveMapping(dm, vars, outputs, effectiveInputs, artifacts)
+			val := e.resolveMapping(dm, vars, outputs, effectiveInputs, artifacts, rs)
 			if val != nil {
 				result[dm.Key] = val
 			}
@@ -532,16 +628,17 @@ func (e *Engine) buildNodeInput(nodeID string, vars map[string]interface{}, outp
 // resolveMapping resolves a DataMapping's references to concrete values.
 // For simplicity in the minimal runtime, if there is exactly one ref we
 // return the resolved value directly; otherwise we return the raw template.
-func (e *Engine) resolveMapping(dm *ir.DataMapping, vars map[string]interface{}, outputs map[string]map[string]interface{}, runInputs map[string]interface{}, artifacts map[string]map[string]interface{}) interface{} {
+func (e *Engine) resolveMapping(dm *ir.DataMapping, vars map[string]interface{}, outputs map[string]map[string]interface{}, runInputs map[string]interface{}, artifacts map[string]map[string]interface{}, rs *runState) interface{} {
 	if len(dm.Refs) == 1 {
-		return e.resolveRef(dm.Refs[0], vars, outputs, runInputs, artifacts)
+		return e.resolveRef(dm.Refs[0], vars, outputs, runInputs, artifacts, rs)
 	}
-	// Multiple refs or no refs: return raw template as-is.
 	return dm.Raw
 }
 
-// resolveRef resolves a single Ref to a concrete value.
-func (e *Engine) resolveRef(ref *ir.Ref, vars map[string]interface{}, outputs map[string]map[string]interface{}, runInputs map[string]interface{}, artifacts map[string]map[string]interface{}) interface{} {
+// resolveRef resolves a single Ref to a concrete value. The runState is
+// required for `loop` and `run` namespace resolution; pass nil to skip
+// those (they'll resolve to nil).
+func (e *Engine) resolveRef(ref *ir.Ref, vars map[string]interface{}, outputs map[string]map[string]interface{}, runInputs map[string]interface{}, artifacts map[string]map[string]interface{}, rs *runState) interface{} {
 	switch ref.Kind {
 	case ir.RefVars:
 		if len(ref.Path) > 0 {
@@ -567,8 +664,60 @@ func (e *Engine) resolveRef(ref *ir.Ref, vars map[string]interface{}, outputs ma
 		if len(ref.Path) > 0 {
 			return artifacts[ref.Path[0]]
 		}
+	case ir.RefLoop:
+		if rs == nil || len(ref.Path) < 2 {
+			return nil
+		}
+		return resolveLoopPath(ref.Path, rs, e.workflow.Loops)
+	case ir.RefRun:
+		if rs == nil || len(ref.Path) == 0 {
+			return nil
+		}
+		switch ref.Path[0] {
+		case "id":
+			return rs.runID
+		}
 	}
 	return nil
+}
+
+// resolveLoopPath resolves a {{loop.<name>.<field>[.subfield…]}} reference.
+// Recognized fields:
+//
+//	iteration       — current loop counter (int64)
+//	max             — declared maximum iterations (int64)
+//	previous_output — snapshot of the source node output at the previous
+//	                   traversal of this loop's edge; sub-fields drill in.
+func resolveLoopPath(path []string, rs *runState, loops map[string]*ir.Loop) interface{} {
+	loopName := path[0]
+	switch path[1] {
+	case "iteration":
+		return int64(rs.loopCounters[loopName])
+	case "max":
+		if l, ok := loops[loopName]; ok {
+			return int64(l.MaxIterations)
+		}
+		return nil
+	case "previous_output":
+		return drillPath(rs.loopPreviousOutput[loopName], path[2:])
+	}
+	return nil
+}
+
+// drillPath walks a nested map[string]interface{} structure by the given
+// path, returning the final value (or nil if any segment is missing or
+// non-map). Used by every reference resolver that needs to descend into
+// node outputs / artifacts / loop snapshots.
+func drillPath(root interface{}, path []string) interface{} {
+	cur := root
+	for _, key := range path {
+		m, ok := cur.(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		cur = m[key]
+	}
+	return cur
 }
 
 // resolveVars builds the vars map from workflow variable defaults.

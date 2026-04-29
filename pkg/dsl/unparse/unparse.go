@@ -187,6 +187,27 @@ func Unparse(f *ast.File) string {
 		}
 	}
 
+	// --- Computes ---
+	for _, c := range f.Computes {
+		blankLine()
+		fmt.Fprintf(&b, "compute %s:\n", c.Name)
+		if c.Input != "" {
+			writeProp(&b, "input", c.Input)
+		}
+		if c.Output != "" {
+			writeProp(&b, "output", c.Output)
+		}
+		if c.Await != ast.AwaitNone {
+			writeProp(&b, "await", c.Await.String())
+		}
+		if len(c.Expr) > 0 {
+			b.WriteString("  expr:\n")
+			for _, e := range c.Expr {
+				fmt.Fprintf(&b, "    %s: %q\n", e.Key, e.Expr)
+			}
+		}
+	}
+
 	// --- Workflows ---
 	for _, w := range f.Workflows {
 		blankLine()
@@ -375,11 +396,15 @@ func writeBudget(b *strings.Builder, budget *ast.BudgetBlock) {
 func writeEdge(b *strings.Builder, e *ast.Edge) {
 	fmt.Fprintf(b, "  %s -> %s", e.From, e.To)
 	if e.When != nil {
-		b.WriteString(" when ")
-		if e.When.Negated {
-			b.WriteString("not ")
+		if e.When.Expr != "" {
+			fmt.Fprintf(b, " when %q", e.When.Expr)
+		} else {
+			b.WriteString(" when ")
+			if e.When.Negated {
+				b.WriteString("not ")
+			}
+			b.WriteString(e.When.Condition)
 		}
-		b.WriteString(e.When.Condition)
 	}
 	if e.Loop != nil {
 		fmt.Fprintf(b, " as %s(%d)", e.Loop.Name, e.Loop.MaxIterations)

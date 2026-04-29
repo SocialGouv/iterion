@@ -100,6 +100,7 @@ type jsonFile struct {
 	Routers   []*jsonRouterDecl   `json:"routers,omitempty"`
 	Humans    []*jsonHumanDecl    `json:"humans,omitempty"`
 	Tools     []*jsonToolNodeDecl `json:"tools,omitempty"`
+	Computes  []*jsonComputeDecl  `json:"computes,omitempty"`
 	Workflows []*jsonWorkflowDecl `json:"workflows,omitempty"`
 	Comments  []*jsonComment      `json:"comments,omitempty"`
 }
@@ -215,6 +216,19 @@ type jsonToolNodeDecl struct {
 	Await   string `json:"await,omitempty"`
 }
 
+type jsonComputeDecl struct {
+	Name   string             `json:"name,omitempty"`
+	Input  string             `json:"input,omitempty"`
+	Output string             `json:"output,omitempty"`
+	Expr   []*jsonComputeExpr `json:"expr,omitempty"`
+	Await  string             `json:"await,omitempty"`
+}
+
+type jsonComputeExpr struct {
+	Key  string `json:"key,omitempty"`
+	Expr string `json:"expr,omitempty"`
+}
+
 type jsonWorkflowDecl struct {
 	Name       string           `json:"name,omitempty"`
 	Vars       *jsonVarsBlock   `json:"vars,omitempty"`
@@ -243,6 +257,7 @@ type jsonEdge struct {
 type jsonWhenClause struct {
 	Condition string `json:"condition,omitempty"`
 	Negated   bool   `json:"negated,omitempty"`
+	Expr      string `json:"expr,omitempty"`
 }
 
 type jsonLoopClause struct {
@@ -309,6 +324,18 @@ func toJSON(f *File) *jsonFile {
 			Output:  t.Output,
 			Await:   awaitModeToStr[t.Await],
 		})
+	}
+	for _, c := range f.Computes {
+		jc := &jsonComputeDecl{
+			Name:   c.Name,
+			Input:  c.Input,
+			Output: c.Output,
+			Await:  awaitModeToStr[c.Await],
+		}
+		for _, e := range c.Expr {
+			jc.Expr = append(jc.Expr, &jsonComputeExpr{Key: e.Key, Expr: e.Expr})
+		}
+		jf.Computes = append(jf.Computes, jc)
 	}
 	for _, w := range f.Workflows {
 		jf.Workflows = append(jf.Workflows, workflowToJSON(w))
@@ -452,6 +479,7 @@ func edgeToJSON(e *Edge) *jsonEdge {
 		je.When = &jsonWhenClause{
 			Condition: e.When.Condition,
 			Negated:   e.When.Negated,
+			Expr:      e.When.Expr,
 		}
 	}
 	if e.Loop != nil {
@@ -556,6 +584,23 @@ func fromJSON(jf *jsonFile) (*File, error) {
 			Output:  jt.Output,
 			Await:   aw,
 		})
+	}
+
+	for _, jc := range jf.Computes {
+		aw, ok := strToAwaitMode[jc.Await]
+		if jc.Await != "" && !ok {
+			return nil, fmt.Errorf("astjson: unknown await mode %q", jc.Await)
+		}
+		cd := &ComputeDecl{
+			Name:   jc.Name,
+			Input:  jc.Input,
+			Output: jc.Output,
+			Await:  aw,
+		}
+		for _, je := range jc.Expr {
+			cd.Expr = append(cd.Expr, &ComputeExpr{Key: je.Key, Expr: je.Expr})
+		}
+		f.Computes = append(f.Computes, cd)
 	}
 
 	for _, jw := range jf.Workflows {
@@ -766,6 +811,7 @@ func edgeFromJSON(je *jsonEdge) (*Edge, error) {
 		e.When = &WhenClause{
 			Condition: je.When.Condition,
 			Negated:   je.When.Negated,
+			Expr:      je.When.Expr,
 		}
 	}
 	if je.Loop != nil {
