@@ -691,12 +691,12 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	// previous pause), the Task carries it forward. The backend uses
 	// these fields to rehydrate the LLM's exact pre-pause state instead
 	// of restarting from the rendered system+user prompts.
-	if conv, ok := input[resumeConversationKey].(json.RawMessage); ok && len(conv) > 0 {
+	if conv, ok := input[delegate.ResumeConversationKey].(json.RawMessage); ok && len(conv) > 0 {
 		task.ResumeConversation = conv
-		if id, ok := input[resumePendingToolUseIDKey].(string); ok {
+		if id, ok := input[delegate.ResumePendingToolUseIDKey].(string); ok {
 			task.ResumePendingToolUseID = id
 		}
-		if a, ok := input[resumeAnswerKey].(string); ok {
+		if a, ok := input[delegate.ResumeAnswerKey].(string); ok {
 			task.ResumeAnswer = a
 		}
 	}
@@ -1892,28 +1892,15 @@ func ensureAskUser(tools []string) []string {
 	return append(append([]string(nil), tools...), askUserToolName)
 }
 
-// priorAskUserQuestionKey / priorAskUserAnswerKey / resume* are the
-// reserved input keys the runtime sets when re-invoking after an
-// ask_user pause. Mirror of the constants in pkg/runtime/resume.go (they
-// form a contract between the runtime and the executor; duplicated to
-// avoid circular imports).
-const (
-	priorAskUserQuestionKey   = "_prior_ask_user_question"
-	priorAskUserAnswerKey     = "_prior_ask_user_answer"
-	resumeConversationKey     = "_resume_conversation"
-	resumePendingToolUseIDKey = "_resume_pending_tool_use_id"
-	resumeAnswerKey           = "_resume_answer"
-)
-
 // prependPriorAskUser injects an explicit "[PRIOR INTERACTION]" block
 // at the top of userText when the runtime relayed a prior ask_user
 // question and answer. Returns userText unchanged when no relay is
 // present (first invocation, or pause came from another source).
 func prependPriorAskUser(userText string, input map[string]interface{}) string {
-	q, qOK := input[priorAskUserQuestionKey].(string)
+	q, qOK := input[delegate.PriorAskUserQuestionKey].(string)
 	if !qOK || q == "" {
 		return userText
 	}
-	a, _ := input[priorAskUserAnswerKey].(string)
+	a, _ := input[delegate.PriorAskUserAnswerKey].(string)
 	return fmt.Sprintf("[PRIOR INTERACTION]\nYou previously called ask_user with question: %q\nThe user answered: %q\nUse this answer to complete your task. Do NOT call ask_user with the same question again.\n\n%s", q, a, userText)
 }

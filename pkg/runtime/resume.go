@@ -13,21 +13,9 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// Reserved input keys used to relay prior ask_user context across
-// pause/resume cycles. The executor reads these on re-invocation and
-// prepends a context block to the user prompt so the LLM doesn't lose
-// the thread when the conversation can't be persisted natively
-// (claude_code, codex). For backends that DO persist conversation state
-// (claw), the "_resume_*" keys carry the persisted message history and
-// pending tool_use so the executor can route the Task into the backend's
-// resume path instead of restarting from system+user prompts.
-const (
-	priorAskUserQuestionKey   = "_prior_ask_user_question"
-	priorAskUserAnswerKey     = "_prior_ask_user_answer"
-	resumeConversationKey     = "_resume_conversation"
-	resumePendingToolUseIDKey = "_resume_pending_tool_use_id"
-	resumeAnswerKey           = "_resume_answer"
-)
+// Reserved input keys live in the delegate package (delegate.PriorAskUser*Key
+// and delegate.Resume*Key) so runtime and executor can share them without
+// either side needing the other's package.
 
 // ---------------------------------------------------------------------------
 // Resume — continue a paused run
@@ -483,9 +471,9 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 		nodeInput[k] = v
 	}
 	if q, ok := ni.Questions[delegate.AskUserQuestionKey]; ok {
-		nodeInput[priorAskUserQuestionKey] = q
+		nodeInput[delegate.PriorAskUserQuestionKey] = q
 		if a, ok := answers[delegate.AskUserQuestionKey]; ok {
-			nodeInput[priorAskUserAnswerKey] = a
+			nodeInput[delegate.PriorAskUserAnswerKey] = a
 		}
 	}
 
@@ -495,10 +483,10 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 	// then rehydrates the message history and continues the agent loop
 	// instead of restarting from system+user prompts.
 	if len(ni.Conversation) > 0 && ni.PendingToolUseID != "" {
-		nodeInput[resumeConversationKey] = ni.Conversation
-		nodeInput[resumePendingToolUseIDKey] = ni.PendingToolUseID
+		nodeInput[delegate.ResumeConversationKey] = ni.Conversation
+		nodeInput[delegate.ResumePendingToolUseIDKey] = ni.PendingToolUseID
 		if a, ok := answers[delegate.AskUserQuestionKey].(string); ok {
-			nodeInput[resumeAnswerKey] = a
+			nodeInput[delegate.ResumeAnswerKey] = a
 		}
 	}
 

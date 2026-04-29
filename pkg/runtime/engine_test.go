@@ -1687,11 +1687,11 @@ func TestInteractionAskUserRelaysPriorQA(t *testing.T) {
 	// The prior question and answer must be relayed under the reserved
 	// keys so the executor can prepend a [PRIOR INTERACTION] block to
 	// the user prompt.
-	if got := secondCallInput[priorAskUserQuestionKey]; got != "Which env: staging or prod?" {
-		t.Errorf("input[%q] = %v, want %q", priorAskUserQuestionKey, got, "Which env: staging or prod?")
+	if got := secondCallInput[delegate.PriorAskUserQuestionKey]; got != "Which env: staging or prod?" {
+		t.Errorf("input[%q] = %v, want %q", delegate.PriorAskUserQuestionKey, got, "Which env: staging or prod?")
 	}
-	if got := secondCallInput[priorAskUserAnswerKey]; got != "staging" {
-		t.Errorf("input[%q] = %v, want %q", priorAskUserAnswerKey, got, "staging")
+	if got := secondCallInput[delegate.PriorAskUserAnswerKey]; got != "staging" {
+		t.Errorf("input[%q] = %v, want %q", delegate.PriorAskUserAnswerKey, got, "staging")
 	}
 }
 
@@ -1756,18 +1756,18 @@ func TestInteractionAskUserPersistsConversation(t *testing.T) {
 	}
 
 	// Second call should see the resume-mode keys merged into nodeInput.
-	gotConv, ok := secondCallInput[resumeConversationKey].(json.RawMessage)
+	gotConv, ok := secondCallInput[delegate.ResumeConversationKey].(json.RawMessage)
 	if !ok {
-		t.Fatalf("input[%q] missing or wrong type: %T", resumeConversationKey, secondCallInput[resumeConversationKey])
+		t.Fatalf("input[%q] missing or wrong type: %T", delegate.ResumeConversationKey, secondCallInput[delegate.ResumeConversationKey])
 	}
 	if !sameJSON(t, gotConv, persistedConv) {
-		t.Errorf("input[%q] = %s, want (semantically) %s", resumeConversationKey, gotConv, persistedConv)
+		t.Errorf("input[%q] = %s, want (semantically) %s", delegate.ResumeConversationKey, gotConv, persistedConv)
 	}
-	if got := secondCallInput[resumePendingToolUseIDKey]; got != "toolu_42" {
-		t.Errorf("input[%q] = %v, want %q", resumePendingToolUseIDKey, got, "toolu_42")
+	if got := secondCallInput[delegate.ResumePendingToolUseIDKey]; got != "toolu_42" {
+		t.Errorf("input[%q] = %v, want %q", delegate.ResumePendingToolUseIDKey, got, "toolu_42")
 	}
-	if got := secondCallInput[resumeAnswerKey]; got != "staging" {
-		t.Errorf("input[%q] = %v, want %q", resumeAnswerKey, got, "staging")
+	if got := secondCallInput[delegate.ResumeAnswerKey]; got != "staging" {
+		t.Errorf("input[%q] = %v, want %q", delegate.ResumeAnswerKey, got, "staging")
 	}
 }
 

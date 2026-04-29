@@ -170,6 +170,23 @@ func (e *ErrAskUser) Error() string {
 // handling beyond the auto-prepended context block.
 const AskUserQuestionKey = "ask_user_response"
 
+// Reserved input keys used to relay ask_user pause/resume state across
+// runtime → executor → backend. Owned by the delegate package because
+// they are part of the ask_user contract and both pkg/runtime and
+// pkg/backend/model already import delegate.
+//
+// PriorAskUser* keys carry the question/answer text for the prompt-side
+// fallback (claude_code, codex). Resume* keys carry the persisted backend
+// conversation, the pending tool_use ID, and the user's answer for
+// in-process backends (claw) that can rehydrate the LLM mid-loop.
+const (
+	PriorAskUserQuestionKey   = "_prior_ask_user_question"
+	PriorAskUserAnswerKey     = "_prior_ask_user_answer"
+	ResumeConversationKey     = "_resume_conversation"
+	ResumePendingToolUseIDKey = "_resume_pending_tool_use_id"
+	ResumeAnswerKey           = "_resume_answer"
+)
+
 // Result contains the output from a delegation backend.
 type Result struct {
 	// Output is the parsed structured output from the CLI agent.
