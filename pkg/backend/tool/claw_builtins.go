@@ -12,6 +12,8 @@ import (
 	clawteam "github.com/SocialGouv/claw-code-go/pkg/api/team"
 	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
 	clawworker "github.com/SocialGouv/claw-code-go/pkg/api/worker"
+
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 )
 
 // RegisterClawBuiltins registers the standard claw-code-go built-in tools
@@ -153,6 +155,29 @@ func RegisterClawSimple(reg *Registry) error {
 // the project todo list at .claude/todos.json. No dependency.
 func RegisterClawTodo(reg *Registry) error {
 	return RegisterClawTool(reg, clawtools.TodoWriteTool(), clawtools.ExecuteTodoWrite)
+}
+
+// RegisterAskUser registers claw-code-go's native `ask_user` tool, wired
+// to surface the LLM's question through iterion's interaction flow
+// (ErrNeedsInteraction → pause → CLI prompt → resume). The tool is
+// available to any node with `interaction:` enabled; iterion's executor
+// auto-includes it in such nodes' resolved tool list so workflow
+// authors don't need to add `ask_user` to their `tools:` field.
+//
+// The exec callback returns delegate.ErrAskUser, which propagates up
+// through executeToolsDirect into claw_backend. The backend converts it
+// to a Result with `_needs_interaction: true`, and iterion's existing
+// pause/resume machinery handles everything from there. On resume the
+// node is re-invoked with the answer mapped under
+// delegate.AskUserQuestionKey.
+func RegisterAskUser(reg *Registry) error {
+	asker := clawtools.NewProgrammaticAsker(func(_ context.Context, q clawtools.Question) (clawtools.Answer, error) {
+		return clawtools.Answer{}, &delegate.ErrAskUser{Question: q.Prompt}
+	})
+	return RegisterClawTool(reg, clawtools.AskUserQuestionTool(),
+		func(ctx context.Context, input map[string]any) (string, error) {
+			return clawtools.ExecuteAskUser(ctx, asker, input)
+		})
 }
 
 // RegisterClawSubagents registers the `agent` tool. The internal
@@ -487,6 +512,9 @@ func RegisterClawAll(reg *Registry, defaults ClawDefaults) error {
 		return err
 	}
 	if err := RegisterClawTodo(reg); err != nil {
+		return err
+	}
+	if err := RegisterAskUser(reg); err != nil {
 		return err
 	}
 	if err := RegisterClawSubagents(reg); err != nil {

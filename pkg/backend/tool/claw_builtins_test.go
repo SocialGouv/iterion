@@ -18,6 +18,8 @@ import (
 	clawteam "github.com/SocialGouv/claw-code-go/pkg/api/team"
 	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
 	clawworker "github.com/SocialGouv/claw-code-go/pkg/api/worker"
+
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 )
 
 func hasTool(r *Registry, name string) bool {
@@ -134,7 +136,7 @@ func TestRegisterClawComputerUse_ReadImagePropagatesError(t *testing.T) {
 	}
 }
 
-func TestRegisterClawComputerUse_ScreenshotReturnsAPIError(t *testing.T) {
+func TestRegisterClawComputerUse_ScreenshotPropagatesUnavailable(t *testing.T) {
 	r := NewRegistry()
 	if err := RegisterClawComputerUse(r); err != nil {
 		t.Fatalf("RegisterClawComputerUse: %v", err)
@@ -144,14 +146,10 @@ func TestRegisterClawComputerUse_ScreenshotReturnsAPIError(t *testing.T) {
 	input, _ := json.Marshal(map[string]any{})
 	_, err := tool.Execute(context.Background(), input)
 	if err == nil {
-		t.Fatal("expected stub error from screenshot")
+		t.Fatal("expected error from screenshot in headless test env")
 	}
-	var apiErr *clawapi.APIError
-	if !errors.As(err, &apiErr) {
-		t.Fatalf("expected *api.APIError to propagate through adapter, got %T: %v", err, err)
-	}
-	if apiErr.StatusCode != 501 {
-		t.Errorf("expected status 501, got %d", apiErr.StatusCode)
+	if !errors.Is(err, clawtools.ErrComputerUseUnavailable) {
+		t.Fatalf("expected ErrComputerUseUnavailable to propagate through adapter, got %T: %v", err, err)
 	}
 }
 
@@ -412,5 +410,27 @@ func TestRegisterClawAll_OptInWebSearchAndComputerUse(t *testing.T) {
 		if !hasTool(r, name) {
 			t.Errorf("expected opt-in %q registered", name)
 		}
+	}
+}
+
+func TestRegisterAskUser_ProducesErrAskUserOnInvocation(t *testing.T) {
+	r := NewRegistry()
+	if err := RegisterAskUser(r); err != nil {
+		t.Fatalf("RegisterAskUser: %v", err)
+	}
+	td, err := r.Resolve("ask_user")
+	if err != nil {
+		t.Fatalf("Resolve(ask_user): %v", err)
+	}
+	_, execErr := td.Execute(context.Background(), json.RawMessage(`{"question":"Should we deploy?"}`))
+	if execErr == nil {
+		t.Fatal("expected ask_user to surface ErrAskUser, got nil")
+	}
+	var ask *delegate.ErrAskUser
+	if !errors.As(execErr, &ask) {
+		t.Fatalf("expected *delegate.ErrAskUser, got %T: %v", execErr, execErr)
+	}
+	if ask.Question != "Should we deploy?" {
+		t.Errorf("Question = %q, want %q", ask.Question, "Should we deploy?")
 	}
 }

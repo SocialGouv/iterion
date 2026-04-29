@@ -122,6 +122,29 @@ func (t Task) SystemPromptWithInteraction() string {
 	return t.SystemPrompt
 }
 
+// ErrAskUser is returned by the iterion-wired `ask_user` tool's handler
+// when an LLM calls it during the agent loop. It propagates up through
+// the generation layer to the backend, which converts it into a standard
+// _needs_interaction Result so iterion's existing pause/resume flow
+// surfaces the question to the dev's terminal and re-invokes the node
+// with the answer. This bridges claw-code-go's native `ask_user` tool
+// (clawtools.AskUserQuestionTool) into iterion's runtime model without
+// requiring claw-side conversation persistence.
+type ErrAskUser struct {
+	Question string
+}
+
+func (e *ErrAskUser) Error() string {
+	return "ask_user: " + e.Question
+}
+
+// AskUserQuestionKey is the canonical key under which iterion files an
+// ask_user question in the Interaction record (and looks up the answer
+// on resume). Stable across runs so workflow authors can reference
+// {{input.ask_user_response}} in their prompts if they want explicit
+// handling beyond the auto-prepended context block.
+const AskUserQuestionKey = "ask_user_response"
+
 // Result contains the output from a delegation backend.
 type Result struct {
 	// Output is the parsed structured output from the CLI agent.

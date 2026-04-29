@@ -607,6 +607,12 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	// Build user message.
 	userText := e.buildUserMessage(f.userPrompt, input)
 
+	// On re-invocation after an ask_user pause, prepend the prior
+	// question and the user's answer so the (stateless) LLM doesn't
+	// lose the thread. Without this, claw would re-ask the same
+	// question because its conversation history isn't persisted.
+	userText = prependPriorAskUser(userText, input)
+
 	// Emit prompt content for observability.
 	if e.hooks.OnLLMPrompt != nil {
 		e.hooks.OnLLMPrompt(f.id, systemText, userText)
@@ -637,15 +643,26 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 		InteractionEnabled: f.interaction != ir.InteractionNone,
 	}
 
+	// When interaction is enabled, ensure `ask_user` is in the node's
+	// tool list so the LLM can natively escalate. We don't require the
+	// workflow author to declare it in their `tools:` field — the
+	// presence of `interaction:` is the opt-in.
+	effectiveTools := f.tools
+	if f.interaction != ir.InteractionNone {
+		effectiveTools = ensureAskUser(effectiveTools)
+		task.AllowedTools = effectiveTools // CLI backends read this
+	}
+
 	// Resolve full tool definitions for backends that manage tool loops
 	// internally (claw). CLI-based backends (claude_code, codex) handle tools
 	// natively via AllowedTools and do not need ToolDefs.
-	if len(f.tools) > 0 && backendName == delegate.BackendClaw {
-		toolDefs, toolErr := e.resolveToolsForNode(ctx, node, f.tools)
+	if len(effectiveTools) > 0 && backendName == delegate.BackendClaw {
+		toolDefs, toolErr := e.resolveToolsForNode(ctx, node, effectiveTools)
 		if toolErr != nil {
 			return nil, fmt.Errorf("model: node %q: %w", f.id, toolErr)
 		}
 		task.ToolDefs = toolDefs
+		task.HasTools = true // claw needs the tool loop active for ask_user
 	}
 
 	// Session continuity.
@@ -1828,4 +1845,44 @@ func formatValue(v interface{}) string {
 		}
 		return string(b)
 	}
+}
+
+// askUserToolName is the qualified name under which iterion registers
+// claw-code-go's native ask_user tool. Kept private to model so
+// nothing else hard-codes the string.
+const askUserToolName = "ask_user"
+
+// ensureAskUser returns tools with "ask_user" appended if not already
+// present. Used when a node has interaction enabled to guarantee the
+// LLM has a way to escalate to the human.
+func ensureAskUser(tools []string) []string {
+	for _, t := range tools {
+		if t == askUserToolName {
+			return tools
+		}
+	}
+	return append(append([]string(nil), tools...), askUserToolName)
+}
+
+// priorAskUserQuestionKey / priorAskUserAnswerKey are the reserved
+// input keys the runtime sets when re-invoking after an ask_user pause.
+// Mirror of the constants in pkg/runtime/resume.go (they form a
+// contract between the runtime and the executor; duplicated to avoid
+// circular imports).
+const (
+	priorAskUserQuestionKey = "_prior_ask_user_question"
+	priorAskUserAnswerKey   = "_prior_ask_user_answer"
+)
+
+// prependPriorAskUser injects an explicit "[PRIOR INTERACTION]" block
+// at the top of userText when the runtime relayed a prior ask_user
+// question and answer. Returns userText unchanged when no relay is
+// present (first invocation, or pause came from another source).
+func prependPriorAskUser(userText string, input map[string]interface{}) string {
+	q, qOK := input[priorAskUserQuestionKey].(string)
+	if !qOK || q == "" {
+		return userText
+	}
+	a, _ := input[priorAskUserAnswerKey].(string)
+	return fmt.Sprintf("[PRIOR INTERACTION]\nYou previously called ask_user with question: %q\nThe user answered: %q\nUse this answer to complete your task. Do NOT call ask_user with the same question again.\n\n%s", q, a, userText)
 }

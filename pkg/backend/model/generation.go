@@ -3,11 +3,14 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
+
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 )
 
 const (
@@ -315,13 +318,20 @@ func callAndAggregate(
 // Execute (a Block decision short-circuits to a synthetic refusal
 // tool_result carrying the decision Reason), then either PostToolUse
 // (success) or PostToolUseFailure (error) afterwards.
+//
+// A non-nil error return signals that the tool loop must abort and the
+// caller should propagate the error up. The only case currently using
+// this is *delegate.ErrAskUser (claw-code-go's native ask_user tool
+// asking iterion to pause the run and surface the question to the dev).
+// In every other failure mode the error is rendered into an isError=true
+// tool_result and execution continues, so the LLM can recover.
 func executeToolsDirect(
 	ctx context.Context,
 	toolUses []toolUseBlock,
 	toolMap map[string]*GenerationTool,
 	onToolCall func(ToolCallInfo),
 	runner *hooks.Runner,
-) []api.ContentBlock {
+) ([]api.ContentBlock, error) {
 	results := make([]api.ContentBlock, 0, len(toolUses))
 
 	for _, tu := range toolUses {
@@ -388,6 +398,15 @@ func executeToolsDirect(
 		}
 
 		if err != nil {
+			// Special case: ask_user requested by the LLM. Abort the loop
+			// and propagate up so the backend can surface the question to
+			// iterion's pause/resume flow. The PostToolUseFailure hook is
+			// intentionally NOT fired — this isn't a tool failure, it's a
+			// suspension request.
+			var askErr *delegate.ErrAskUser
+			if errors.As(err, &askErr) {
+				return results, askErr
+			}
 			// Post-tool fires are observational; the runner logs any
 			// handler error itself, so we discard the (Decision, error)
 			// return on purpose.
@@ -416,7 +435,7 @@ func executeToolsDirect(
 		}
 	}
 
-	return results
+	return results, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -531,7 +550,12 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 		messages = append(messages, assistantToolUseMessage(agg.text, agg.toolUses))
 
 		// Execute tools and append tool_result message.
-		toolResults := executeToolsDirect(ctx, agg.toolUses, toolMap, opts.OnToolCall, opts.Hooks)
+		toolResults, toolErr := executeToolsDirect(ctx, agg.toolUses, toolMap, opts.OnToolCall, opts.Hooks)
+		if toolErr != nil {
+			// ErrAskUser (and any future suspension signal) bubbles up to
+			// the backend, which converts it into iterion's pause flow.
+			return partial(), toolErr
+		}
 		messages = append(messages, api.Message{
 			Role:    "user",
 			Content: toolResults,

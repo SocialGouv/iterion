@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -176,6 +177,27 @@ func (b *ClawBackend) generateStructuredWithRetry(ctx context.Context, client ap
 	})
 }
 
+// askUserResult converts a *delegate.ErrAskUser into the standard
+// _needs_interaction Result iterion's executor expects. Used by every
+// generation path so an LLM-issued ask_user call surfaces uniformly
+// regardless of which generation strategy ran (structured / text /
+// text+tools+schema).
+func askUserResult(err error) (delegate.Result, bool) {
+	var ask *delegate.ErrAskUser
+	if !errors.As(err, &ask) {
+		return delegate.Result{}, false
+	}
+	return delegate.Result{
+		Output: map[string]interface{}{
+			"_needs_interaction": true,
+			"_interaction_questions": map[string]interface{}{
+				delegate.AskUserQuestionKey: ask.Question,
+			},
+		},
+		BackendName: delegate.BackendClaw,
+	}, true
+}
+
 func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClient, task delegate.Task, opts GenerationOptions) (delegate.Result, error) {
 	// Set the explicit schema for structured output.
 	genOpts := opts
@@ -183,6 +205,9 @@ func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClie
 
 	result, err := GenerateObjectDirect[map[string]interface{}](ctx, client, genOpts)
 	if err != nil {
+		if r, ok := askUserResult(err); ok {
+			return r, nil
+		}
 		return delegate.Result{}, fmt.Errorf("claw backend: structured generation: %w", err)
 	}
 
@@ -211,6 +236,9 @@ func (b *ClawBackend) generateText(ctx context.Context, client api.APIClient, ta
 	result, err := GenerateTextDirect(ctx, client, opts)
 	captureSessionMessages(ctx, task.NodeID, result)
 	if err != nil {
+		if r, ok := askUserResult(err); ok {
+			return r, nil
+		}
 		return delegate.Result{}, fmt.Errorf("claw backend: text generation: %w", err)
 	}
 
@@ -235,6 +263,9 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	result, err := GenerateTextDirect(ctx, client, opts)
 	captureSessionMessages(ctx, task.NodeID, result)
 	if err != nil {
+		if r, ok := askUserResult(err); ok {
+			return r, nil
+		}
 		return delegate.Result{}, fmt.Errorf("claw backend: text+tools generation: %w", err)
 	}
 

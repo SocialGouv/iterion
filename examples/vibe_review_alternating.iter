@@ -75,22 +75,18 @@ prompt review_system:
   Quand tu rencontres une AMBIGUITE qu'aucune lecture du
   code ne peut resoudre (ex : "ce comportement est-il
   intentionnel ?", "la spec dit-elle X ou Y ?", "dois-je
-  preserver la rétrocompatibilité ?"), tu peux poser la
-  question directement au developpeur qui a lance le run
-  en incluant ces deux champs dans ton JSON de sortie :
+  preserver la rétrocompatibilité ?"), appelle le tool
+  `ask_user` avec ta question precise. Le run sera mis en
+  pause, la question s'affichera dans le terminal du dev,
+  et tu seras re-invoque avec sa reponse injectee dans
+  ton contexte (un bloc "[PRIOR INTERACTION]" sera
+  prepended a ton prompt utilisateur).
 
-      "_needs_interaction": true,
-      "_interaction_questions": {
-          "cle_lisible": "ta question precise"
-      }
-
-  Le run sera mis en pause, la question affichee dans le
-  terminal du dev, et tu seras re-invoque avec la reponse
-  injectee dans ton input. Utilise cette escalade avec
-  parcimonie : seulement quand tu ne peux PAS trancher
-  sans information humaine. Pour les jugements techniques
-  ordinaires, tranche toi-meme et baisse `confidence` si
-  tu n'es pas sur.
+  Utilise cette escalade avec parcimonie : seulement
+  quand tu ne peux PAS trancher sans information
+  humaine. Pour les jugements techniques ordinaires,
+  tranche toi-meme et baisse `confidence` si tu n'es pas
+  sur.
 
 prompt review_user_claude:
   Review le code dans {{vars.workspace_dir}}.
@@ -162,18 +158,12 @@ prompt fix_system:
   ESCALADE HUMAINE :
   Si un blocker est reellement ambigu (la spec ne dit pas
   comment le resoudre, plusieurs approches valides
-  s'opposent, etc.), pose directement la question au dev
-  en incluant dans ton JSON de sortie :
-
-      "_needs_interaction": true,
-      "_interaction_questions": {
-          "cle_lisible": "ta question precise"
-      }
-
-  Le run se met en pause, la question s'affiche dans le
-  terminal du dev, et tu seras re-invoque avec la reponse.
-  N'utilise pas cette voie pour des choix techniques que
-  tu peux trancher seul.
+  s'opposent, etc.), appelle le tool `ask_user` avec ta
+  question precise. Le run se met en pause, la question
+  s'affiche dans le terminal du dev, et tu seras
+  re-invoque avec la reponse en contexte. N'utilise pas
+  cette voie pour des choix techniques que tu peux
+  trancher seul.
 
 prompt fix_user:
   Pour le code dans {{vars.workspace_dir}}, examine cette

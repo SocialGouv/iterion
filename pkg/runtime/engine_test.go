@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -1621,5 +1622,74 @@ func TestInteractionNoneRejects(t *testing.T) {
 	// Should contain the error message about interaction: none.
 	if !strings.Contains(err.Error(), "interaction: none") {
 		t.Errorf("error should mention interaction: none, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: ask_user pause → resume → re-invoke relays prior Q/A back into input
+// ---------------------------------------------------------------------------
+//
+// Verifies the contract iterion adds on top of claw-code-go's native
+// ask_user tool: when an LLM calls ask_user mid-run, iterion pauses,
+// the dev answers, and the node is re-invoked with both the answer
+// (under delegate.AskUserQuestionKey) and the prior question text
+// (under the runtime's reserved relay keys) merged into nodeInput.
+// Without this relay, claw's stateless re-invocation would lose the
+// thread and the LLM might call ask_user with the same question.
+func TestInteractionAskUserRelaysPriorQA(t *testing.T) {
+	wf := interactionWorkflow(ir.InteractionHuman)
+
+	exec := newStubExecutor()
+	calls := 0
+	var secondCallInput map[string]interface{}
+	exec.on("worker", func(input map[string]interface{}) (map[string]interface{}, error) {
+		calls++
+		if calls == 1 {
+			// First invocation: simulate the claw backend converting an
+			// ErrAskUser from the tool loop into _needs_interaction.
+			return nil, &model.ErrNeedsInteraction{
+				NodeID:    "worker",
+				Questions: map[string]interface{}{delegate.AskUserQuestionKey: "Which env: staging or prod?"},
+				Backend:   "claw",
+			}
+		}
+		// Second invocation (after resume): record the input and return success.
+		secondCallInput = input
+		return map[string]interface{}{"text": "ok", "_tokens": 10}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "run-ask-user", nil)
+	if !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("expected ErrRunPaused on first call, got: %v", err)
+	}
+
+	// Resume with the dev's answer.
+	err = eng.Resume(context.Background(), "run-ask-user", map[string]interface{}{
+		delegate.AskUserQuestionKey: "staging",
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	if calls != 2 {
+		t.Fatalf("worker called %d times, want 2", calls)
+	}
+
+	// The answer must arrive under the canonical key.
+	if got := secondCallInput[delegate.AskUserQuestionKey]; got != "staging" {
+		t.Errorf("input[%q] = %v, want %q", delegate.AskUserQuestionKey, got, "staging")
+	}
+
+	// The prior question and answer must be relayed under the reserved
+	// keys so the executor can prepend a [PRIOR INTERACTION] block to
+	// the user prompt.
+	if got := secondCallInput[priorAskUserQuestionKey]; got != "Which env: staging or prod?" {
+		t.Errorf("input[%q] = %v, want %q", priorAskUserQuestionKey, got, "Which env: staging or prod?")
+	}
+	if got := secondCallInput[priorAskUserAnswerKey]; got != "staging" {
+		t.Errorf("input[%q] = %v, want %q", priorAskUserAnswerKey, got, "staging")
 	}
 }

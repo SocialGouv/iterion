@@ -6,9 +6,19 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
+)
+
+// Reserved input keys used to relay prior ask_user context across
+// pause/resume cycles. The executor reads these on re-invocation and
+// prepends a context block to the user prompt so the LLM doesn't lose
+// the thread when the conversation can't be persisted natively.
+const (
+	priorAskUserQuestionKey = "_prior_ask_user_question"
+	priorAskUserAnswerKey   = "_prior_ask_user_answer"
 )
 
 // ---------------------------------------------------------------------------
@@ -172,6 +182,28 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	rs.artifactVersions = artifactVersions
 	rs.nodeAttempts = restoreNodeAttempts(cp.NodeAttempts)
 	restoreLoopSnapshots(rs, cp)
+
+	// When the pause originated from a delegate (an agent/judge that
+	// emitted _needs_interaction or called the native ask_user tool),
+	// the paused node still owes its work — re-invoke it with the
+	// answer merged into the input. Without this branch, the runtime
+	// would treat the agent/judge as a finished human node and skip
+	// past it, losing the verdict it was supposed to produce.
+	if cp.BackendName != "" {
+		node, ok := e.workflow.Nodes[humanNodeID]
+		if !ok {
+			return fmt.Errorf("runtime: paused node %q not found in workflow", humanNodeID)
+		}
+		ni := &model.ErrNeedsInteraction{
+			NodeID:    humanNodeID,
+			Questions: cp.InteractionQuestions,
+			SessionID: cp.BackendSessionID,
+			Backend:   cp.BackendName,
+		}
+		loopErr := e.reInvokeBackend(ctx, rs, humanNodeID, node, ni, answers)
+		e.evictRunSessions(runID, loopErr)
+		return loopErr
+	}
 
 	// Select edge from the human node to find the next node.
 	nextNodeID, err := e.selectEdgeRS(rs, humanNodeID, answers)
@@ -428,11 +460,23 @@ func (e *Engine) handleInteractionLLMOrHuman(ctx context.Context, rs *runState, 
 // reInvokeBackend re-invokes the delegate backend with the LLM-provided
 // answers merged into the node input. It uses the delegate's session ID
 // for session continuity so the backend can resume where it left off.
+//
+// When the prior interaction came from the native ask_user tool, the
+// question text is also relayed via reserved keys so the executor can
+// prepend a "[PRIOR INTERACTION]" block to the user prompt — without
+// this, claw's stateless re-invocation would lose the question and the
+// LLM might call ask_user with the same question again.
 func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID string, node ir.Node, ni *model.ErrNeedsInteraction, answers map[string]interface{}) error {
 	// Build the input for re-invocation: original node input + answers.
 	nodeInput := e.buildNodeInputRS(nodeID, rs.vars, rs.outputs, rs.runInputs, rs.artifacts, rs)
 	for k, v := range answers {
 		nodeInput[k] = v
+	}
+	if q, ok := ni.Questions[delegate.AskUserQuestionKey]; ok {
+		nodeInput[priorAskUserQuestionKey] = q
+		if a, ok := answers[delegate.AskUserQuestionKey]; ok {
+			nodeInput[priorAskUserAnswerKey] = a
+		}
 	}
 
 	// Re-execute the node. The executor will use the session ID for
