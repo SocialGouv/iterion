@@ -34,4 +34,5 @@ server/static/index.html
 
 # Claude
 .claude/*.local.json
+.claude/scheduled_tasks.lock
 .scratch/
