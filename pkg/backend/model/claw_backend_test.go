@@ -622,6 +622,60 @@ func TestClawBackend_ResumeConversationReplacesMessages(t *testing.T) {
 	}
 }
 
+// TestMaybeCompactPause verifies the helper is a no-op for short
+// transcripts and produces a bounded continuation message + the
+// preserve-recent window for long ones. The pending tool_use must
+// always remain addressable.
+func TestMaybeCompactPause(t *testing.T) {
+	// Short transcript: returned unchanged.
+	short := []api.Message{
+		{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "hi"}}},
+		{Role: "assistant", Content: []api.ContentBlock{{Type: "tool_use", ID: "tu_1", Name: "ask_user", Input: map[string]any{"question": "?"}}}},
+	}
+	got := maybeCompactPause(short)
+	if len(got) != len(short) {
+		t.Errorf("short transcript was unexpectedly compacted: %d → %d", len(short), len(got))
+	}
+
+	// Long transcript: build many user/assistant turns each with
+	// substantial text content so the token estimator goes over the
+	// 10_000 default threshold. The final assistant message is the
+	// pending tool_use we want to preserve.
+	bigText := strings.Repeat("filler word ", 200) // ~2400 chars per message
+	long := make([]api.Message, 0, 30)
+	for i := 0; i < 28; i++ {
+		role := "assistant"
+		if i%2 == 0 {
+			role = "user"
+		}
+		long = append(long, api.Message{
+			Role:    role,
+			Content: []api.ContentBlock{{Type: "text", Text: bigText}},
+		})
+	}
+	long = append(long, api.Message{
+		Role: "assistant",
+		Content: []api.ContentBlock{{
+			Type: "tool_use", ID: "tu_pending", Name: "ask_user",
+			Input: map[string]any{"question": "Continue?"},
+		}},
+	})
+
+	got = maybeCompactPause(long)
+	if len(got) >= len(long) {
+		t.Fatalf("long transcript not compacted: input %d, got %d", len(long), len(got))
+	}
+	rawBytes, _ := json.Marshal(got)
+	origBytes, _ := json.Marshal(long)
+	if len(rawBytes) >= len(origBytes) {
+		t.Errorf("compacted size %d not smaller than original %d", len(rawBytes), len(origBytes))
+	}
+	// The pending tool_use must survive in the preserved-recent window.
+	if !strings.Contains(string(rawBytes), "tu_pending") {
+		t.Errorf("compacted conversation lost the pending tool_use ID: %s", rawBytes)
+	}
+}
+
 // TestClawBackend_MultiPauseAccumulatesHistory verifies L3 (multi-turn
 // ask_user accumulation) emerges for free from L1: when the LLM calls
 // ask_user a second time after the first answer is delivered, the

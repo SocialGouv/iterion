@@ -9,6 +9,7 @@ import (
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
+	clawrt "github.com/SocialGouv/claw-code-go/pkg/runtime"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 )
@@ -440,6 +441,20 @@ func executeToolsDirect(
 	return results, nil
 }
 
+// maybeCompactPause runs the pure-function compactor on the
+// pre-pause message slice with default settings. It is a no-op for
+// short transcripts (returns the input unchanged) and a bounded
+// summarisation for long ones — the last cfg.PreserveRecentMessages
+// turns are kept verbatim, so the assistant message holding the
+// pending ask_user tool_use stays addressable on resume.
+func maybeCompactPause(messages []api.Message) []api.Message {
+	res := clawrt.CompactMessages(messages, clawrt.DefaultCompactionConfig())
+	if res == nil {
+		return messages
+	}
+	return res.CompactedMessages
+}
+
 // ---------------------------------------------------------------------------
 // Finish reason mapping
 // ---------------------------------------------------------------------------
@@ -559,9 +574,13 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 			// At this point `messages` already contains the assistant
 			// message with the pending tool_use block — capture it so the
 			// backend can persist the conversation and resume mid-loop.
+			// Apply pure-function compaction before marshalling so a long
+			// transcript is bounded on disk; the pending tool_use stays
+			// in the preserved-recent window (default 4) so its ID
+			// remains addressable at resume time.
 			var askErr *delegate.ErrAskUser
 			if errors.As(toolErr, &askErr) {
-				if convBytes, mErr := json.Marshal(messages); mErr == nil {
+				if convBytes, mErr := json.Marshal(maybeCompactPause(messages)); mErr == nil {
 					askErr.Conversation = convBytes
 				}
 			}
