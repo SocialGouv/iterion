@@ -1,22 +1,13 @@
 # Iterion observability stack
 
-> **STATUS — dashboard is a schema contract, not a working live view.**
-> The Grafana panels reference metrics (`iterion_node_cost_usd_total`,
-> `iterion_node_tokens_total`, `iterion_llm_retry_total`,
-> `iterion_llm_request_total`, `iterion_tool_call_total`,
-> `iterion_node_duration_ms`, `iterion_parallel_branches`) that **no
-> code in this repo currently emits**. The OTLP exporter translation
-> layer that converts `TelemetryEvent` records into these metrics is
-> deferred — see `docs/roadmap_progress.md` track on observability.
->
-> Until that translation lands, `docker compose up -d` will produce an
-> empty dashboard. The contents below describe the target shape, which
-> is also the source-of-truth for the metric names the emitter needs to
-> implement.
-
 A self-contained docker-compose stack that gives you Grafana dashboards
 for cost, tokens, retries, and node duration without any external
 SaaS dependency.
+
+iterion exposes a Prometheus `/metrics` endpoint directly (no OTLP hop
+required) when started with `ITERION_PROMETHEUS_ADDR=:9464`. The
+docker-compose stack scrapes this endpoint and renders the dashboards
+listed below.
 
 ## What's included
 
@@ -42,12 +33,15 @@ Then open <http://localhost:3000>. The dashboard "Iterion Workflow"
 appears under General. Login with `admin` / `admin` (or browse
 anonymously — anonymous Viewer access is enabled).
 
-To export iterion telemetry, point the claw-code-go OTLP exporter at
-the local collector:
+To make the dashboard render data, run iterion with the Prometheus
+endpoint enabled. Prometheus is preconfigured to scrape
+`host.docker.internal:9464` every 5 s (see
+`configs/prometheus.yaml`).
 
 ```bash
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-iterion run examples/your_workflow.iter
+ITERION_PROMETHEUS_ADDR=:9464 iterion run examples/your_workflow.iter
+# In another shell, sanity-check the metrics:
+curl -s localhost:9464/metrics | grep iterion_
 ```
 
 Tear down:
@@ -82,8 +76,24 @@ metrics on each event:
 - Histogram metric: `iterion_node_duration_ms`
 - Gauge metric: `iterion_parallel_branches`
 
-The claw-code-go telemetry exporter ships `TelemetryEvent` records over
-OTLP; the iterion side is responsible for translating those into the
-named metrics above. Until that translation lands, this dashboard is
-the schema contract — emit metrics with these names and the dashboard
-will render.
+## Backend coverage
+
+iterion attributes metrics from each backend on a best-effort basis:
+
+| Metric                          | claw | claude_code | codex |
+|---------------------------------|:----:|:-----------:|:-----:|
+| `iterion_llm_request_total`     | ✅    | ✅           | ✅     |
+| `iterion_llm_retry_total`       | ✅    | ✅           | ✅     |
+| `iterion_node_duration_ms`      | ✅    | ✅           | ✅     |
+| `iterion_tool_call_total`       | ✅    | ✅           | ✅     |
+| `iterion_node_tokens_total`     | ✅    | ⚠️ subset    | ❌     |
+| `iterion_node_cost_usd_total`   | ✅\*  | ⚠️           | ❌     |
+| `iterion_parallel_branches`     | ✅    | ✅           | ✅     |
+
+\* Cost is computed from a small per-model pricing table embedded in
+`model/cost.go`. Models not in the table emit no `_cost_usd` field.
+Add models there if you want them tracked.
+
+claude_code and codex emit subprocess-based telemetry that may not
+include token counts or cost; the dashboard shows zero for those panels
+when no usage data is reported.

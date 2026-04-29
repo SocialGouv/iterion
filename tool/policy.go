@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -16,7 +17,13 @@ type ToolChecker interface {
 }
 
 // PolicyContext carries evaluation context for dynamic policies.
+//
+// Ctx is the caller's request context. Checkers that perform I/O (LLM
+// classifiers, remote rule lookups) must honour it for cancellation and
+// deadlines. A nil Ctx is treated as context.Background by the classifier
+// wrapper for backward compatibility, but callers should always populate it.
 type PolicyContext struct {
+	Ctx      context.Context
 	NodeID   string
 	NodeKind string // "agent", "judge", "tool", etc.
 	ToolName string

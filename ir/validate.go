@@ -1,6 +1,10 @@
 package ir
 
-import "fmt"
+import (
+	"fmt"
+	"net/url"
+	"strings"
+)
 
 // ---------------------------------------------------------------------------
 // Additional diagnostic codes for static validation (P2-02)
@@ -72,9 +76,40 @@ func (c *compiler) validateMCPAuth(w *Workflow) {
 		if server == nil || server.Auth == nil {
 			return
 		}
-		if server.Auth.Type != "oauth2" {
+		a := server.Auth
+		if a.Type == "" {
 			c.errorf(DiagUnsupportedMCPAuth,
-				"mcp server %q: auth type %q is not supported (only \"oauth2\" is wired)", name, server.Auth.Type)
+				"mcp server %q: auth block missing 'type'", name)
+			return
+		}
+		if a.Type != "oauth2" {
+			c.errorf(DiagUnsupportedMCPAuth,
+				"mcp server %q: auth type %q is not supported (only \"oauth2\" is wired)", name, a.Type)
+			return
+		}
+		if a.AuthURL == "" {
+			c.errorf(DiagUnsupportedMCPAuth,
+				"mcp server %q: oauth2 auth requires 'auth_url'", name)
+		} else if err := validateHTTPURL(a.AuthURL); err != nil {
+			c.errorf(DiagUnsupportedMCPAuth,
+				"mcp server %q: invalid 'auth_url' %q: %v", name, a.AuthURL, err)
+		}
+		if a.TokenURL == "" {
+			c.errorf(DiagUnsupportedMCPAuth,
+				"mcp server %q: oauth2 auth requires 'token_url'", name)
+		} else if err := validateHTTPURL(a.TokenURL); err != nil {
+			c.errorf(DiagUnsupportedMCPAuth,
+				"mcp server %q: invalid 'token_url' %q: %v", name, a.TokenURL, err)
+		}
+		if a.RevokeURL != "" {
+			if err := validateHTTPURL(a.RevokeURL); err != nil {
+				c.errorf(DiagUnsupportedMCPAuth,
+					"mcp server %q: invalid 'revoke_url' %q: %v", name, a.RevokeURL, err)
+			}
+		}
+		if a.ClientID == "" {
+			c.errorf(DiagUnsupportedMCPAuth,
+				"mcp server %q: oauth2 auth requires 'client_id'", name)
 		}
 	}
 	for name, server := range w.MCPServers {
@@ -977,4 +1012,21 @@ func (c *compiler) validateArtifactsRef(w *Workflow, rc refContext, predecessors
 				rc.Location, rc.Ref.Raw, artifactName, producerID, rc.NodeID)
 		}
 	}
+}
+
+// validateHTTPURL returns nil when raw parses as an absolute http(s) URL
+// with a non-empty host. It rejects schemes other than http/https
+// (e.g. typos like "htps://"), relative refs, and missing hosts.
+func validateHTTPURL(raw string) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("scheme must be http or https (got %q)", u.Scheme)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("missing host")
+	}
+	return nil
 }

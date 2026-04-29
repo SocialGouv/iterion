@@ -66,6 +66,10 @@ type Checkpoint struct {
 	BackendSessionID string `json:"backend_session_id,omitempty"`
 	// BackendName identifies which backend was used.
 	BackendName string `json:"backend_name,omitempty"`
+	// NodeAttempts records prior failed attempts per (node_id, error_code) so
+	// that resume preserves the recovery dispatcher's retry budget. Outer key
+	// is the node ID, inner key is the runtime error code (string-typed).
+	NodeAttempts map[string]map[string]int `json:"node_attempts,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

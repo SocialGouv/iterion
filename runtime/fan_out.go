@@ -165,6 +165,23 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		result.eventErrors++
 	}
 
+	// Always emit branch_finished, regardless of how the branch exits.
+	// Observers (e.g. the Prometheus exporter's parallel-branches gauge)
+	// rely on the started/finished pair to track in-flight concurrency.
+	defer func() {
+		data := map[string]interface{}{}
+		if result.err != nil {
+			data["error"] = result.err.Error()
+		}
+		if result.joinNodeID != "" {
+			data["join_node"] = result.joinNodeID
+		}
+		if err := e.emitBranch(runID, branchID, store.EventBranchFinished, startEdge.To, data); err != nil {
+			e.logger.Warn("branch %s: failed to emit branch_finished: %v", branchID, err)
+			result.eventErrors++
+		}
+	}()
+
 	currentNodeID := startEdge.To
 
 	for {

@@ -30,13 +30,17 @@ var (
 
 // emit is a convenience wrapper for appending an event.
 func (e *Engine) emit(runID string, typ store.EventType, nodeID string, data map[string]interface{}) error {
-	_, err := e.store.AppendEvent(runID, store.Event{
+	evt := store.Event{
 		Type:   typ,
 		NodeID: nodeID,
 		Data:   data,
-	})
+	}
+	persisted, err := e.store.AppendEvent(runID, evt)
 	if err != nil {
 		return fmt.Errorf("runtime: emit %s: %w", typ, err)
+	}
+	if e.onEvent != nil && persisted != nil {
+		e.onEvent(*persisted)
 	}
 	e.logEvent(typ, nodeID, "", data)
 	return nil
@@ -44,14 +48,18 @@ func (e *Engine) emit(runID string, typ store.EventType, nodeID string, data map
 
 // emitBranch appends an event with a branch ID.
 func (e *Engine) emitBranch(runID, branchID string, typ store.EventType, nodeID string, data map[string]interface{}) error {
-	_, err := e.store.AppendEvent(runID, store.Event{
+	evt := store.Event{
 		Type:     typ,
 		BranchID: branchID,
 		NodeID:   nodeID,
 		Data:     data,
-	})
+	}
+	persisted, err := e.store.AppendEvent(runID, evt)
 	if err != nil {
 		return fmt.Errorf("runtime: emit %s (branch %s): %w", typ, branchID, err)
+	}
+	if e.onEvent != nil && persisted != nil {
+		e.onEvent(*persisted)
 	}
 	e.logEvent(typ, nodeID, branchID, data)
 	return nil
@@ -217,7 +225,49 @@ func buildCheckpoint(rs *runState, nodeID string) *store.Checkpoint {
 		RoundRobinCounters: rs.roundRobinCounters,
 		ArtifactVersions:   rs.artifactVersions,
 		Vars:               rs.vars,
+		NodeAttempts:       serializeNodeAttempts(rs.nodeAttempts),
 	}
+}
+
+// serializeNodeAttempts converts the runState's typed-key bucket into a
+// JSON-friendly map[string]map[string]int. Returns nil when the source is
+// empty so checkpoints stay compact.
+func serializeNodeAttempts(src map[string]map[ErrorCode]int) map[string]map[string]int {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]map[string]int, len(src))
+	for nodeID, bucket := range src {
+		if len(bucket) == 0 {
+			continue
+		}
+		inner := make(map[string]int, len(bucket))
+		for code, n := range bucket {
+			inner[string(code)] = n
+		}
+		out[nodeID] = inner
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// restoreNodeAttempts is the inverse of serializeNodeAttempts: it rebuilds
+// the typed-key map used by the recovery dispatcher from a checkpoint.
+func restoreNodeAttempts(src map[string]map[string]int) map[string]map[ErrorCode]int {
+	if len(src) == 0 {
+		return make(map[string]map[ErrorCode]int)
+	}
+	out := make(map[string]map[ErrorCode]int, len(src))
+	for nodeID, bucket := range src {
+		inner := make(map[ErrorCode]int, len(bucket))
+		for code, n := range bucket {
+			inner[ErrorCode(code)] = n
+		}
+		out[nodeID] = inner
+	}
+	return out
 }
 
 // failRunWithCheckpoint marks a run as failed_resumable with a checkpoint,

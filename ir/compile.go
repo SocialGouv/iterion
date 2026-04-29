@@ -288,9 +288,26 @@ func (c *compiler) compileMCPServers() {
 			Command:   s.Command,
 			Args:      append([]string(nil), s.Args...),
 			URL:       s.URL,
+			Auth:      compileMCPAuth(s.Auth),
 		}
 		c.validateMCPServer(server)
 		c.mcp[s.Name] = server
+	}
+}
+
+// compileMCPAuth converts an AST auth declaration to its IR form.
+// Returns nil when the AST node is nil so a missing block stays absent.
+func compileMCPAuth(decl *ast.MCPAuthDecl) *MCPAuth {
+	if decl == nil {
+		return nil
+	}
+	return &MCPAuth{
+		Type:      decl.Type,
+		AuthURL:   decl.AuthURL,
+		TokenURL:  decl.TokenURL,
+		RevokeURL: decl.RevokeURL,
+		ClientID:  decl.ClientID,
+		Scopes:    append([]string(nil), decl.Scopes...),
 	}
 }
 

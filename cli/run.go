@@ -6,11 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/claw-code-go/pkg/permissions"
+
+	"github.com/SocialGouv/iterion/benchmark"
 	"github.com/SocialGouv/iterion/delegate"
 	"github.com/SocialGouv/iterion/ir"
 	iterlog "github.com/SocialGouv/iterion/log"
@@ -18,6 +23,7 @@ import (
 	"github.com/SocialGouv/iterion/model"
 	"github.com/SocialGouv/iterion/recipe"
 	"github.com/SocialGouv/iterion/runtime"
+	"github.com/SocialGouv/iterion/runtime/recovery"
 	"github.com/SocialGouv/iterion/store"
 	"github.com/SocialGouv/iterion/tool"
 )
@@ -70,6 +76,26 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		runID = fmt.Sprintf("run_%d", time.Now().UnixMilli())
 	}
 
+	// Optional Prometheus exporter (env-controlled, see docs/observability/).
+	exporter, metricsServer, metricsErr := startPrometheusFromEnv(runID, logger)
+	if metricsErr != nil {
+		return metricsErr
+	}
+	if metricsServer != nil {
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = metricsServer.Shutdown(shutdownCtx)
+		}()
+	}
+	engineOpts := []runtime.EngineOption{
+		runtime.WithLogger(logger),
+		runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())),
+	}
+	if exporter != nil {
+		engineOpts = append(engineOpts, runtime.WithEventObserver(exporter.EventObserver()))
+	}
+
 	// Build engine: either from recipe or raw workflow.
 	var eng *runtime.Engine
 	var workflowName string
@@ -97,7 +123,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 
 		executor := opts.Executor
 		if executor == nil {
-			exec, execErr := newDefaultExecutor(wf, opts.Vars, s, runID, logger, storeDir)
+			exec, execErr := newDefaultExecutor(wf, opts.Vars, s, runID, logger, storeDir, exporter)
 			if execErr != nil {
 				return execErr
 			}
@@ -114,7 +140,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 			return err
 		}
 
-		eng, err = runtime.NewFromRecipe(spec, wf, s, executor, runtime.WithLogger(logger), runtime.WithWorkflowHash(wfHash))
+		eng, err = runtime.NewFromRecipe(spec, wf, s, executor, append(engineOpts, runtime.WithWorkflowHash(wfHash))...)
 		if err != nil {
 			return err
 		}
@@ -131,7 +157,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 
 		executor := opts.Executor
 		if executor == nil {
-			exec, execErr := newDefaultExecutor(wf, opts.Vars, s, runID, logger, storeDir)
+			exec, execErr := newDefaultExecutor(wf, opts.Vars, s, runID, logger, storeDir, exporter)
 			if execErr != nil {
 				return execErr
 			}
@@ -148,7 +174,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 			return err
 		}
 
-		eng = runtime.New(wf, s, executor, runtime.WithLogger(logger), runtime.WithWorkflowHash(wfHash))
+		eng = runtime.New(wf, s, executor, append(engineOpts, runtime.WithWorkflowHash(wfHash))...)
 		workflowName = wf.Name
 	}
 
@@ -268,11 +294,15 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 // MCP server with a declared `Auth` block fails OAuth wiring (the run
 // would otherwise dispatch unauthenticated requests and surface 401s
 // at runtime, which is harder to diagnose).
-func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunStore, runID string, logger *iterlog.Logger, storeDir string) (*model.ClawExecutor, error) {
+func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunStore, runID string, logger *iterlog.Logger, storeDir string, exporter *benchmark.PrometheusExporter) (*model.ClawExecutor, error) {
 	reg := model.NewRegistry()
 	backendReg := delegate.DefaultRegistry(logger)
 
 	hooks := model.NewStoreEventHooks(s, runID, logger)
+	if exporter != nil {
+		hooks = model.ChainHooks(hooks, exporter.EventHooks())
+	}
+
 	lifecycle := model.NewDefaultLifecycleHooks(hooks)
 
 	// Register the claw backend explicitly (API-based LLM path).
@@ -300,7 +330,16 @@ func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunSto
 	}
 
 	// Build tool policy from workflow-level and per-node ToolPolicy fields.
-	if checker := buildToolChecker(wf); checker != nil {
+	// When ITERION_LLM_CLASSIFIER_MODEL is set, wrap the static checker in
+	// an LLMClassifier consulted before the static allowlist (Allow/Deny
+	// short-circuits; Ask falls through to the static policy).
+	checker := buildToolChecker(wf)
+	if classifier, err := newLLMClassifierFromEnv(reg, logger); err != nil {
+		return nil, fmt.Errorf("cli: build LLM classifier: %w", err)
+	} else if classifier != nil {
+		checker = &tool.ClassifierChecker{Classifier: classifier, Base: checker, Logger: logger}
+	}
+	if checker != nil {
 		opts = append(opts, model.WithToolPolicy(checker))
 	}
 	if len(wf.ResolvedMCPServers) > 0 {
@@ -362,6 +401,91 @@ func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunSto
 	}
 
 	return executor, nil
+}
+
+// startPrometheusFromEnv builds a PrometheusExporter and serves /metrics
+// on the address from the ITERION_PROMETHEUS_ADDR env var (e.g. ":9464").
+// Returns (nil, nil, nil) when the env var is empty.
+//
+// The HTTP server runs in a goroutine; the caller should Shutdown it on
+// exit. By default ListenAndServe failures (port in use, permission) are
+// logged at error level and the exporter is returned anyway so the rest
+// of the run can proceed (fail-soft).
+//
+// When ITERION_PROMETHEUS_REQUIRED is truthy, the address is bound
+// synchronously upfront so a startup failure (port in use, missing
+// permission, malformed addr) is surfaced as an error instead of being
+// hidden in the background goroutine.
+func startPrometheusFromEnv(runID string, logger *iterlog.Logger) (*benchmark.PrometheusExporter, *http.Server, error) {
+	addr := strings.TrimSpace(os.Getenv("ITERION_PROMETHEUS_ADDR"))
+	if addr == "" {
+		return nil, nil, nil
+	}
+	required := isTruthyEnv("ITERION_PROMETHEUS_REQUIRED")
+	exporter := benchmark.NewPrometheusExporter(runID, nil)
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", exporter.Handler())
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	if required {
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			return nil, nil, fmt.Errorf("prometheus: bind %s (ITERION_PROMETHEUS_REQUIRED=1): %w", addr, err)
+		}
+		go func() {
+			if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				logger.Error("prometheus: serve %s: %v", addr, err)
+			}
+		}()
+	} else {
+		go func() {
+			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				logger.Error("prometheus: serve %s: %v", addr, err)
+			}
+		}()
+	}
+	logger.Info("prometheus: serving /metrics on %s (run_id=%s)", addr, runID)
+	return exporter, srv, nil
+}
+
+// isTruthyEnv returns true for the conventional "yes" values: 1, true, yes, on.
+func isTruthyEnv(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// newLLMClassifierFromEnv builds an LLMClassifier when the
+// ITERION_LLM_CLASSIFIER_MODEL env var is set (e.g.
+// "anthropic/claude-haiku-4-5"). The classifier is chained over the
+// default RuleClassifier and uses a 30-minute TTL cache to keep per-call
+// cost predictable.
+//
+// Returns (nil, nil) when the env var is empty.
+func newLLMClassifierFromEnv(reg *model.Registry, logger *iterlog.Logger) (permissions.Classifier, error) {
+	spec := strings.TrimSpace(os.Getenv("ITERION_LLM_CLASSIFIER_MODEL"))
+	if spec == "" {
+		return nil, nil
+	}
+	client, err := reg.Resolve(spec)
+	if err != nil {
+		return nil, fmt.Errorf("resolve classifier model %q: %w", spec, err)
+	}
+	logger.Info("llm-classifier: enabled (model=%s)", spec)
+	_, modelID, _ := model.ParseModelSpec(spec)
+	return &permissions.LLMClassifier{
+		Client:    client,
+		Model:     modelID,
+		Fallback:  permissions.NewRuleClassifier(),
+		Cache:     permissions.NewClassifierCache(30 * time.Minute),
+		MaxTokens: 64,
+	}, nil
 }
 
 // mcpHealthCheck runs a pre-execution health check on active MCP servers if

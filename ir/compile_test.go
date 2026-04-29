@@ -767,9 +767,8 @@ workflow test:
 }
 
 // TestValidateMCPAuth_Unsupported asserts that compile-time validation
-// flags MCPServer entries with non-oauth2 Auth.Type. The .iter parser
-// does not yet emit `auth:` blocks, so this test injects the workflow
-// state directly and exercises validateMCPAuth.
+// flags MCPServer entries with non-oauth2 Auth.Type or with oauth2
+// blocks missing required fields.
 func TestValidateMCPAuth_Unsupported(t *testing.T) {
 	w := &Workflow{
 		Name: "t",
@@ -792,13 +791,18 @@ func TestValidateMCPAuth_Unsupported(t *testing.T) {
 		t.Fatalf("expected DiagUnsupportedMCPAuth, got %+v", c.diags)
 	}
 
-	// oauth2 must NOT trigger the diagnostic.
+	// Fully-populated oauth2 must NOT trigger the diagnostic.
 	w2 := &Workflow{
 		Name: "t",
 		MCPServers: map[string]*MCPServer{
 			"good": {
 				Name: "good",
-				Auth: &MCPAuth{Type: "oauth2"},
+				Auth: &MCPAuth{
+					Type:     "oauth2",
+					AuthURL:  "https://example.com/auth",
+					TokenURL: "https://example.com/token",
+					ClientID: "client",
+				},
 			},
 		},
 	}
@@ -808,6 +812,70 @@ func TestValidateMCPAuth_Unsupported(t *testing.T) {
 		if d.Code == DiagUnsupportedMCPAuth {
 			t.Fatalf("oauth2 should not trigger diagnostic, got %+v", d)
 		}
+	}
+
+	// oauth2 with missing required fields → diagnostics for each gap.
+	w3 := &Workflow{
+		Name: "t",
+		MCPServers: map[string]*MCPServer{
+			"missing": {
+				Name: "missing",
+				Auth: &MCPAuth{Type: "oauth2"},
+			},
+		},
+	}
+	c3 := &compiler{}
+	c3.validateMCPAuth(w3)
+	if got := len(c3.diags); got < 3 {
+		t.Fatalf("expected ≥3 diagnostics for missing oauth2 fields, got %d: %+v", got, c3.diags)
+	}
+}
+
+// TestCompileAuthAttachesToIR ensures the parser→AST→IR path propagates
+// the auth fields into the compiled MCPServer entry.
+func TestCompileAuthAttachesToIR(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+mcp_server github:
+  transport: http
+  url: "https://api.github.example/mcp"
+  auth:
+    type: "oauth2"
+    auth_url: "https://github.example/oauth/authorize"
+    token_url: "https://github.example/oauth/token"
+    client_id: "Iv1.demo"
+    scopes: ["repo"]
+
+agent run:
+  model: "anthropic/claude-sonnet-4-6"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+workflow w:
+  entry: run
+  run -> done
+`
+	wf := mustCompile(t, src)
+	server := wf.MCPServers["github"]
+	if server == nil {
+		t.Fatal("missing compiled mcp_server")
+	}
+	if server.Auth == nil {
+		t.Fatal("expected compiled Auth")
+	}
+	a := server.Auth
+	if a.Type != "oauth2" || a.ClientID != "Iv1.demo" || len(a.Scopes) != 1 {
+		t.Errorf("auth not propagated: %+v", a)
 	}
 }
 

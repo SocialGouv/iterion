@@ -22,6 +22,13 @@ import (
 	"github.com/SocialGouv/iterion/tool"
 )
 
+// ErrCompactionUnsupported is the sentinel ClawExecutor.Compact returns
+// when the backend has no in-process conversation handle to drop. The
+// runtime re-exports it (runtime.ErrCompactionUnsupported is an alias)
+// so the engine's `errors.Is` check works without importing model
+// directly. Lives here because runtime imports model, not the reverse.
+var ErrCompactionUnsupported = errors.New("model: compaction not supported by executor")
+
 // ---------------------------------------------------------------------------
 // Retry policy
 // ---------------------------------------------------------------------------
@@ -115,6 +122,133 @@ type EventHooks struct {
 	OnDelegateFinished func(nodeID string, info DelegateInfo)
 	OnDelegateError    func(nodeID string, info DelegateInfo)
 	OnDelegateRetry    func(nodeID string, info DelegateInfo)
+
+	// OnNodeFinished fires after a node's executor returns successfully.
+	// The output map carries iterion's conventional usage keys (`_tokens`,
+	// `_cost_usd`, `_model`) so observers (e.g. the Prometheus exporter)
+	// can attribute cost and tokens per-node without re-parsing the event
+	// log.
+	OnNodeFinished func(nodeID string, output map[string]interface{})
+}
+
+// ChainHooks composes two EventHooks so callbacks registered on either
+// side run in order (a then b) for every event. Either side may leave
+// any callback nil; the result keeps the non-nil one without an extra
+// closure.
+func ChainHooks(a, b EventHooks) EventHooks {
+	return EventHooks{
+		OnLLMRequest: func() func(string, LLMRequestInfo) {
+			if a.OnLLMRequest == nil {
+				return b.OnLLMRequest
+			}
+			if b.OnLLMRequest == nil {
+				return a.OnLLMRequest
+			}
+			return func(n string, i LLMRequestInfo) { a.OnLLMRequest(n, i); b.OnLLMRequest(n, i) }
+		}(),
+		OnLLMPrompt: func() func(string, string, string) {
+			if a.OnLLMPrompt == nil {
+				return b.OnLLMPrompt
+			}
+			if b.OnLLMPrompt == nil {
+				return a.OnLLMPrompt
+			}
+			return func(n, s, u string) { a.OnLLMPrompt(n, s, u); b.OnLLMPrompt(n, s, u) }
+		}(),
+		OnLLMResponse: func() func(string, LLMResponseInfo) {
+			if a.OnLLMResponse == nil {
+				return b.OnLLMResponse
+			}
+			if b.OnLLMResponse == nil {
+				return a.OnLLMResponse
+			}
+			return func(n string, i LLMResponseInfo) { a.OnLLMResponse(n, i); b.OnLLMResponse(n, i) }
+		}(),
+		OnLLMRetry: func() func(string, RetryInfo) {
+			if a.OnLLMRetry == nil {
+				return b.OnLLMRetry
+			}
+			if b.OnLLMRetry == nil {
+				return a.OnLLMRetry
+			}
+			return func(n string, i RetryInfo) { a.OnLLMRetry(n, i); b.OnLLMRetry(n, i) }
+		}(),
+		OnLLMStepFinish: func() func(string, LLMStepInfo) {
+			if a.OnLLMStepFinish == nil {
+				return b.OnLLMStepFinish
+			}
+			if b.OnLLMStepFinish == nil {
+				return a.OnLLMStepFinish
+			}
+			return func(n string, s LLMStepInfo) { a.OnLLMStepFinish(n, s); b.OnLLMStepFinish(n, s) }
+		}(),
+		OnToolCall: func() func(string, LLMToolCallInfo) {
+			if a.OnToolCall == nil {
+				return b.OnToolCall
+			}
+			if b.OnToolCall == nil {
+				return a.OnToolCall
+			}
+			return func(n string, i LLMToolCallInfo) { a.OnToolCall(n, i); b.OnToolCall(n, i) }
+		}(),
+		OnToolNodeResult: func() func(string, string, []byte, string, time.Duration, error) {
+			if a.OnToolNodeResult == nil {
+				return b.OnToolNodeResult
+			}
+			if b.OnToolNodeResult == nil {
+				return a.OnToolNodeResult
+			}
+			return func(n, t string, in []byte, out string, e time.Duration, err error) {
+				a.OnToolNodeResult(n, t, in, out, e, err)
+				b.OnToolNodeResult(n, t, in, out, e, err)
+			}
+		}(),
+		OnDelegateStarted: func() func(string, string) {
+			if a.OnDelegateStarted == nil {
+				return b.OnDelegateStarted
+			}
+			if b.OnDelegateStarted == nil {
+				return a.OnDelegateStarted
+			}
+			return func(n, bn string) { a.OnDelegateStarted(n, bn); b.OnDelegateStarted(n, bn) }
+		}(),
+		OnDelegateFinished: func() func(string, DelegateInfo) {
+			if a.OnDelegateFinished == nil {
+				return b.OnDelegateFinished
+			}
+			if b.OnDelegateFinished == nil {
+				return a.OnDelegateFinished
+			}
+			return func(n string, i DelegateInfo) { a.OnDelegateFinished(n, i); b.OnDelegateFinished(n, i) }
+		}(),
+		OnDelegateError: func() func(string, DelegateInfo) {
+			if a.OnDelegateError == nil {
+				return b.OnDelegateError
+			}
+			if b.OnDelegateError == nil {
+				return a.OnDelegateError
+			}
+			return func(n string, i DelegateInfo) { a.OnDelegateError(n, i); b.OnDelegateError(n, i) }
+		}(),
+		OnDelegateRetry: func() func(string, DelegateInfo) {
+			if a.OnDelegateRetry == nil {
+				return b.OnDelegateRetry
+			}
+			if b.OnDelegateRetry == nil {
+				return a.OnDelegateRetry
+			}
+			return func(n string, i DelegateInfo) { a.OnDelegateRetry(n, i); b.OnDelegateRetry(n, i) }
+		}(),
+		OnNodeFinished: func() func(string, map[string]interface{}) {
+			if a.OnNodeFinished == nil {
+				return b.OnNodeFinished
+			}
+			if b.OnNodeFinished == nil {
+				return a.OnNodeFinished
+			}
+			return func(n string, o map[string]interface{}) { a.OnNodeFinished(n, o); b.OnNodeFinished(n, o) }
+		}(),
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -230,6 +364,17 @@ func (e *ClawExecutor) LifecycleHooks() *hooks.Runner {
 	return e.lifecycleHooks
 }
 
+// Compact satisfies the runtime.Compactor structural interface. iterion
+// does not maintain a long-lived ConversationLoop session — each node
+// runs a fresh GenerateTextDirect / GenerateObjectDirect call with the
+// prompts re-built from the workflow schema. There is no in-process
+// conversation history to drop, so we return ErrCompactionUnsupported
+// to make the engine's recovery dispatcher log the gap and fall back
+// to a plain retry instead of silently doing nothing.
+func (e *ClawExecutor) Compact(ctx context.Context, nodeID string) error {
+	return fmt.Errorf("claw executor (node %q): %w", nodeID, ErrCompactionUnsupported)
+}
+
 // NewClawExecutor creates a ClawExecutor for a given workflow.
 func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOption) *ClawExecutor {
 	e := &ClawExecutor{
@@ -300,6 +445,14 @@ func (e *ClawExecutor) resolveBackendName(node ir.Node) string {
 
 // Execute implements runtime.NodeExecutor.
 func (e *ClawExecutor) Execute(ctx context.Context, node ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+	output, err := e.executeNode(ctx, node, input)
+	if err == nil && output != nil && e.hooks.OnNodeFinished != nil {
+		e.hooks.OnNodeFinished(node.NodeID(), output)
+	}
+	return output, err
+}
+
+func (e *ClawExecutor) executeNode(ctx context.Context, node ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
 	switch n := node.(type) {
 	case *ir.AgentNode:
 		return e.executeBackend(ctx, n, input)
@@ -944,6 +1097,7 @@ func (e *ClawExecutor) executeToolNode(ctx context.Context, node *ir.ToolNode, i
 	// Policy check before resolution — fail fast on denied tools.
 	if e.toolPolicy != nil {
 		pctx := tool.PolicyContext{
+			Ctx:      ctx,
 			NodeID:   node.ID,
 			NodeKind: ir.NodeTool.String(),
 			ToolName: toolName,
@@ -1584,6 +1738,7 @@ func (e *ClawExecutor) guardTool(t delegate.ToolDef, node ir.Node) delegate.Tool
 	vars := e.vars
 	t.Execute = func(ctx context.Context, input json.RawMessage) (string, error) {
 		pctx := tool.PolicyContext{
+			Ctx:      ctx,
 			NodeID:   nodeID,
 			NodeKind: nodeKind,
 			ToolName: name,

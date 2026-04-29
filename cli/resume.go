@@ -91,7 +91,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 
 	executor := opts.Executor
 	if executor == nil {
-		exec, execErr := newDefaultExecutor(wf, nil, s, opts.RunID, logger, storeDir)
+		exec, execErr := newDefaultExecutor(wf, nil, s, opts.RunID, logger, storeDir, nil)
 		if execErr != nil {
 			return execErr
 		}

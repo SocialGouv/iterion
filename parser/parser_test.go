@@ -1010,6 +1010,53 @@ func TestMCPServerDecl(t *testing.T) {
 	assertEq(t, "URL", server.URL, "https://api.githubcopilot.com/mcp")
 }
 
+func TestMCPServerAuthBlock(t *testing.T) {
+	src := `mcp_server github:
+  transport: http
+  url: "https://api.githubcopilot.com/mcp"
+  auth:
+    type: "oauth2"
+    auth_url: "https://github.com/login/oauth/authorize"
+    token_url: "https://github.com/login/oauth/access_token"
+    client_id: "Iv1.iterion-demo"
+    scopes: ["repo", "read:org"]
+    revoke_url: "https://github.com/login/oauth/revoke"
+`
+	res := parser.Parse("test.iter", src)
+	assertNoDiags(t, res)
+
+	if len(res.File.MCPServers) != 1 {
+		t.Fatalf("expected 1 mcp_server, got %d", len(res.File.MCPServers))
+	}
+	server := res.File.MCPServers[0]
+	if server.Auth == nil {
+		t.Fatal("expected Auth block")
+	}
+	a := server.Auth
+	assertEq(t, "Type", a.Type, "oauth2")
+	assertEq(t, "AuthURL", a.AuthURL, "https://github.com/login/oauth/authorize")
+	assertEq(t, "TokenURL", a.TokenURL, "https://github.com/login/oauth/access_token")
+	assertEq(t, "ClientID", a.ClientID, "Iv1.iterion-demo")
+	assertEq(t, "RevokeURL", a.RevokeURL, "https://github.com/login/oauth/revoke")
+	if len(a.Scopes) != 2 || a.Scopes[0] != "repo" || a.Scopes[1] != "read:org" {
+		t.Errorf("unexpected scopes: %v", a.Scopes)
+	}
+}
+
+func TestMCPServerAuthUnknownProperty(t *testing.T) {
+	src := `mcp_server github:
+  transport: http
+  url: "https://example.com/mcp"
+  auth:
+    type: "oauth2"
+    bogus: "x"
+`
+	res := parser.Parse("test.iter", src)
+	if len(res.Diagnostics) == 0 {
+		t.Fatal("expected diagnostic for unknown auth property")
+	}
+}
+
 func TestWorkflowAndNodeMCPBlocks(t *testing.T) {
 	src := `mcp_server github:
   transport: http

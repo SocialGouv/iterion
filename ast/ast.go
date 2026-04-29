@@ -52,6 +52,20 @@ type MCPServerDecl struct {
 	Command   string
 	Args      []string
 	URL       string
+	Auth      *MCPAuthDecl
+	Span      Span
+}
+
+// MCPAuthDecl represents an `auth:` block under an `mcp_server`. Only
+// the OAuth2 authorization-code + PKCE flow is currently wired; Type
+// is "oauth2".
+type MCPAuthDecl struct {
+	Type      string
+	AuthURL   string
+	TokenURL  string
+	RevokeURL string
+	ClientID  string
+	Scopes    []string
 	Span      Span
 }
 

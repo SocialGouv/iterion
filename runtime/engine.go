@@ -40,14 +40,16 @@ type NodeExecutor interface {
 // Engine executes workflows. It supports sequential execution and
 // parallel fan-out via bounded branch scheduling.
 type Engine struct {
-	workflow        *ir.Workflow
-	store           *store.RunStore
-	executor        NodeExecutor
-	logger          *iterlog.Logger
-	onNodeFinished  func(nodeID string, output map[string]interface{})
-	workflowHash    string // SHA-256 of the .iter source, set via WithWorkflowHash
-	validateOutputs bool   // when true, validate node outputs against declared schemas
-	forceResume     bool   // when true, skip workflow hash check on resume
+	workflow         *ir.Workflow
+	store            *store.RunStore
+	executor         NodeExecutor
+	logger           *iterlog.Logger
+	onNodeFinished   func(nodeID string, output map[string]interface{})
+	onEvent          func(evt store.Event) // optional observer fired after every successful append
+	recoveryDispatch RecoveryDispatch      // optional; consulted on node execution failure
+	workflowHash     string                // SHA-256 of the .iter source, set via WithWorkflowHash
+	validateOutputs  bool                  // when true, validate node outputs against declared schemas
+	forceResume      bool                  // when true, skip workflow hash check on resume
 }
 
 // EngineOption configures an Engine.
@@ -62,6 +64,26 @@ func WithLogger(l *iterlog.Logger) EngineOption {
 // with the node's ID and output. The callback must be safe for concurrent use.
 func WithOnNodeFinished(fn func(nodeID string, output map[string]interface{})) EngineOption {
 	return func(e *Engine) { e.onNodeFinished = fn }
+}
+
+// WithEventObserver registers a callback invoked after every successful
+// event append (including branch_started/finished). It must be safe for
+// concurrent use; the callback runs in the goroutine that emitted the
+// event. Use it to fan out events to non-store observers (Prometheus,
+// custom metrics) without changing the persistence layer.
+func WithEventObserver(fn func(evt store.Event)) EngineOption {
+	return func(e *Engine) { e.onEvent = fn }
+}
+
+// WithRecoveryDispatch installs the dispatcher consulted when a node's
+// executor returns an error. The dispatcher decides between retry,
+// compact-and-retry, pause for human, and terminal failure. When unset,
+// every error falls straight through to failed_resumable (legacy
+// behaviour).
+//
+// Build the dispatcher with recovery.Dispatch(recovery.DefaultRecipes()).
+func WithRecoveryDispatch(d RecoveryDispatch) EngineOption {
+	return func(e *Engine) { e.recoveryDispatch = d }
 }
 
 // WithWorkflowHash sets a hash of the .iter source so that Resume can
@@ -119,6 +141,28 @@ type runState struct {
 	roundRobinCounters map[string]int
 	artifactVersions   map[string]int
 	budget             *SharedBudget // shared across branches, nil if no budget
+
+	// nodeAttempts counts prior failed attempts per (nodeID, ErrorCode)
+	// so the recovery dispatcher can apply per-class retry budgets and
+	// reset them after a successful execution. Keys are created lazily.
+	nodeAttempts map[string]map[ErrorCode]int
+}
+
+// newRunState builds a runState with all maps allocated. Resume paths
+// then overwrite specific fields (outputs, loop counters, vars, etc.)
+// from the persisted checkpoint.
+func (e *Engine) newRunState(runID string, inputs map[string]interface{}) *runState {
+	return &runState{
+		runID:              runID,
+		runInputs:          inputs,
+		outputs:            make(map[string]map[string]interface{}),
+		artifacts:          make(map[string]map[string]interface{}),
+		loopCounters:       make(map[string]int),
+		roundRobinCounters: make(map[string]int),
+		artifactVersions:   make(map[string]int),
+		nodeAttempts:       make(map[string]map[ErrorCode]int),
+		budget:             newSharedBudget(e.workflow.Budget, e.logger),
+	}
 }
 
 // Run executes the workflow. It creates a run, walks the graph from the
@@ -142,17 +186,8 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 		return err
 	}
 
-	rs := &runState{
-		runID:              runID,
-		runInputs:          inputs,
-		vars:               e.resolveVars(inputs),
-		outputs:            make(map[string]map[string]interface{}),
-		artifacts:          make(map[string]map[string]interface{}),
-		loopCounters:       make(map[string]int),
-		roundRobinCounters: make(map[string]int),
-		artifactVersions:   make(map[string]int),
-		budget:             newSharedBudget(e.workflow.Budget, e.logger),
-	}
+	rs := e.newRunState(runID, inputs)
+	rs.vars = e.resolveVars(inputs)
 
 	return e.execLoop(ctx, rs, e.workflow.Entry)
 }
@@ -282,16 +317,23 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 			if errors.As(err, &needsInput) {
 				return e.handleNeedsInteraction(ctx, rs, currentNodeID, node, needsInput)
 			}
-			// TODO(recovery): consult runtime/recovery.Classify(err) and
-			// runtime/recovery.DefaultRecipes() here. Implement the
-			// per-node attempts loop, ActionRetrySameNode delay, and
-			// ActionCompactAndRetry / ActionPauseForHuman dispatch.
-			// Tracking: docs/roadmap_progress.md track #1 (engine-level
-			// recovery dispatch). The recipes package is stable but
-			// currently unwired — every error falls through to
-			// failed_resumable as before.
+			// Recovery dispatch (when wired via WithRecoveryDispatch):
+			// classify the error, look up a recipe, and either retry,
+			// pause, or fail terminally. Without a dispatcher, every
+			// failure produces failed_resumable as before.
+			retry, recoveryErr := e.handleNodeFailure(ctx, rs, currentNodeID, err)
+			if recoveryErr != nil {
+				return recoveryErr
+			}
+			if retry {
+				continue
+			}
 			return e.failRunWithCheckpoint(rs, currentNodeID, fmt.Sprintf("node %q execution failed: %v", currentNodeID, err))
 		}
+
+		// Reset per-node retry counters on success so a future failure
+		// starts fresh.
+		delete(rs.nodeAttempts, currentNodeID)
 
 		// Store output.
 		rs.outputs[currentNodeID] = output

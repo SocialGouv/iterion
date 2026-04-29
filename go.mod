@@ -46,7 +46,6 @@ require (
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
-	github.com/prometheus/client_golang v1.23.2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/otlptranslator v1.0.0 // indirect
@@ -82,7 +81,10 @@ require (
 	golang.org/x/sys v0.43.0 // indirect
 )
 
-require github.com/SocialGouv/claw-code-go v0.0.0-20260428150308-bf21311bac7b
+require (
+	github.com/SocialGouv/claw-code-go v0.0.0-20260428150308-bf21311bac7b
+	github.com/prometheus/client_golang v1.23.2
+)
 
 // TEMPORARY: develop against the local copy until the next claw-code-go
 // release (APIError + reasoning_effort routing) is pushed.

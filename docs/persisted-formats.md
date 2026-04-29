@@ -103,6 +103,7 @@ One JSON object per line, append-only. Events are ordered by `seq` (monotonic wi
 | `node_finished`           | yes   | `output`, `_tokens`, `_cost_usd`       |
 | `llm_request`             | yes   | provider-specific                      |
 | `llm_retry`               | yes   | `attempt`, `error`                     |
+| `node_recovery`           | yes   | `code`, `reason`, `attempt`, `delay_ms?`, `error?` |
 | `llm_step_finished`       | yes   | provider-specific                      |
 | `tool_called`             | yes   | `tool`, `args`                         |
 | `tool_error`              | yes   | `tool`, `error`                        |

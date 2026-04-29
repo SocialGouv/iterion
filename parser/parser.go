@@ -543,11 +543,72 @@ func (p *parser) parseMCPServerProp(md *ast.MCPServerDecl, propTok Token) {
 	case TokenURL:
 		p.expect(TokenColon)
 		md.URL = p.expectString()
+	case TokenAuth:
+		md.Auth = p.parseMCPAuthBlock(propTok)
 	default:
 		p.addError(DiagUnknownProperty, propTok, "unknown mcp_server property '"+propTok.Value+"'")
 		p.skipToNewline()
 	}
 	p.skipNewlines()
+}
+
+// parseMCPAuthBlock parses an `auth:` block under an `mcp_server`. The
+// `auth` keyword has already been consumed by the caller. The body uses
+// indent-block syntax with one property per line.
+//
+// Recognised properties (matched by identifier value to avoid polluting
+// the global keyword namespace):
+//
+//	type:       "oauth2"            (string, required)
+//	auth_url:   "https://..."       (string, required for oauth2)
+//	token_url:  "https://..."       (string, required for oauth2)
+//	revoke_url: "https://..."       (string, optional)
+//	client_id:  "..."               (string, required for oauth2)
+//	scopes:     ["repo", "read:org"] (string list, optional)
+func (p *parser) parseMCPAuthBlock(authTok Token) *ast.MCPAuthDecl {
+	p.expect(TokenColon)
+	p.skipNewlines()
+	if _, ok := p.expect(TokenIndent); !ok {
+		return nil
+	}
+	auth := &ast.MCPAuthDecl{Span: ast.Span{Start: p.pos(authTok)}}
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		if t.Type != TokenIdent {
+			p.addError(DiagUnknownProperty, t, "unknown auth property '"+t.Value+"'")
+			p.next()
+			p.skipToNewline()
+			continue
+		}
+		propTok := p.next()
+		p.expect(TokenColon)
+		switch propTok.Value {
+		case "type":
+			auth.Type = p.expectString()
+		case "auth_url":
+			auth.AuthURL = p.expectString()
+		case "token_url":
+			auth.TokenURL = p.expectString()
+		case "revoke_url":
+			auth.RevokeURL = p.expectString()
+		case "client_id":
+			auth.ClientID = p.expectString()
+		case "scopes":
+			auth.Scopes = p.parseStringList()
+		default:
+			p.addError(DiagUnknownProperty, propTok, "unknown auth property '"+propTok.Value+"'")
+			p.skipToNewline()
+		}
+		p.skipNewlines()
+	}
+	return auth
 }
 
 func (p *parser) parseMCPTransport() ast.MCPTransport {

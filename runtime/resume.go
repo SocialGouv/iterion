@@ -163,17 +163,14 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 		roundRobinCounters = make(map[string]int)
 	}
 
-	rs := &runState{
-		runID:              runID,
-		runInputs:          r.Inputs,
-		vars:               cp.Vars,
-		outputs:            outputs,
-		artifacts:          e.rebuildArtifacts(outputs),
-		loopCounters:       loopCounters,
-		roundRobinCounters: roundRobinCounters,
-		artifactVersions:   artifactVersions,
-		budget:             newSharedBudget(e.workflow.Budget, e.logger),
-	}
+	rs := e.newRunState(runID, r.Inputs)
+	rs.vars = cp.Vars
+	rs.outputs = outputs
+	rs.artifacts = e.rebuildArtifacts(outputs)
+	rs.loopCounters = loopCounters
+	rs.roundRobinCounters = roundRobinCounters
+	rs.artifactVersions = artifactVersions
+	rs.nodeAttempts = restoreNodeAttempts(cp.NodeAttempts)
 
 	// Select edge from the human node to find the next node.
 	nextNodeID, err := e.selectEdge(runID, humanNodeID, answers, loopCounters)
@@ -219,17 +216,14 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 		artifactVersions = make(map[string]int)
 	}
 
-	rs := &runState{
-		runID:              runID,
-		runInputs:          r.Inputs,
-		vars:               cp.Vars,
-		outputs:            cp.Outputs,
-		artifacts:          e.rebuildArtifacts(cp.Outputs),
-		loopCounters:       loopCounters,
-		roundRobinCounters: roundRobinCounters,
-		artifactVersions:   artifactVersions,
-		budget:             newSharedBudget(e.workflow.Budget, e.logger),
-	}
+	rs := e.newRunState(runID, r.Inputs)
+	rs.vars = cp.Vars
+	rs.outputs = cp.Outputs
+	rs.artifacts = e.rebuildArtifacts(cp.Outputs)
+	rs.loopCounters = loopCounters
+	rs.roundRobinCounters = roundRobinCounters
+	rs.artifactVersions = artifactVersions
+	rs.nodeAttempts = restoreNodeAttempts(cp.NodeAttempts)
 
 	return e.execLoop(ctx, rs, restartNodeID)
 }

@@ -188,9 +188,7 @@ func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClie
 		output = make(map[string]interface{})
 	}
 
-	tokens := result.TotalUsage.InputTokens + result.TotalUsage.OutputTokens
-	output["_tokens"] = tokens
-	output["_model"] = task.Model
+	tokens := annotateUsage(output, task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
 
 	return delegate.Result{
 		Output:      output,
@@ -211,12 +209,8 @@ func (b *ClawBackend) generateText(ctx context.Context, client api.APIClient, ta
 		return delegate.Result{}, fmt.Errorf("claw backend: text generation: %w", err)
 	}
 
-	tokens := result.TotalUsage.InputTokens + result.TotalUsage.OutputTokens
-	output := map[string]interface{}{
-		"text":    result.Text,
-		"_tokens": tokens,
-		"_model":  task.Model,
-	}
+	output := map[string]interface{}{"text": result.Text}
+	tokens := annotateUsage(output, task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
 
 	return delegate.Result{
 		Output:      output,
@@ -253,9 +247,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		parseFallback = true
 	}
 
-	tokens := result.TotalUsage.InputTokens + result.TotalUsage.OutputTokens
-	output["_tokens"] = tokens
-	output["_model"] = task.Model
+	tokens := annotateUsage(output, task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
 
 	return delegate.Result{
 		Output:        output,

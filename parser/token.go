@@ -74,6 +74,7 @@ const (
 	TokenCommand
 	TokenArgs
 	TokenURL
+	TokenAuth
 	TokenReadonly
 	TokenBackend
 	TokenDefaultBackend
@@ -273,6 +274,7 @@ var keywords = map[string]TokenType{
 	"command":               TokenCommand,
 	"args":                  TokenArgs,
 	"url":                   TokenURL,
+	"auth":                  TokenAuth,
 	"readonly":              TokenReadonly,
 	"backend":               TokenBackend,
 	"default_backend":       TokenDefaultBackend,

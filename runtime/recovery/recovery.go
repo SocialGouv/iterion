@@ -5,26 +5,9 @@
 //
 // The package is deliberately decoupled from the engine: a Recipe
 // returns an Action describing what to do, leaving the actual
-// execution (retry, compact, pause) to the caller.
-//
-// STATUS — engine wiring deferred. The Recipe / Action / Classify
-// surface is stable and unit-tested, but `runtime/engine.go` does
-// NOT yet consult these recipes when `executor.Execute` returns an
-// error — it currently falls straight through to
-// `failRunWithCheckpoint`. Wiring is deferred because:
-//
-//   - ActionCompactAndRetry needs an executor-level Compact() hook
-//     (claw exposes ConversationLoop.Compact but the
-//     `runtime.NodeExecutor` abstraction does not surface it).
-//   - ActionPauseForHuman needs a synthetic interaction record
-//     compatible with `iterion resume --answers-file`.
-//   - ActionRetrySameNode needs the engine to track per-node
-//     attempt counts across the loop.
-//
-// New code that produces ErrCodeRateLimited / ErrCodeContextLengthExceeded
-// / ErrCodeToolFailedTransient / ErrCodeToolFailedPermanent should
-// continue to do so; the recipes will start consuming them once the
-// engine is wired. See TODO(recovery) markers in runtime/engine.go.
+// execution (retry, compact, pause) to the caller. Hosts wire the
+// dispatcher into the engine via runtime.WithRecoveryDispatch and
+// recovery.Dispatch(DefaultRecipes()).
 package recovery
 
 import (
@@ -40,40 +23,31 @@ import (
 	"github.com/SocialGouv/iterion/runtime"
 )
 
-// ActionKind enumerates the recipes' possible decisions.
-type ActionKind int
+// ActionKind is an alias for the engine-facing decision kind so existing
+// callers of the recovery package keep working after the engine wiring.
+type ActionKind = runtime.RecoveryActionKind
 
 const (
-	// ActionRetrySameNode means: re-execute the failing node from
-	// scratch (or from its checkpoint if available). Use Delay to
-	// throttle the retry; AttemptsLeft tracks the budget.
-	ActionRetrySameNode ActionKind = iota
+	// ActionRetrySameNode re-executes the failing node, optionally
+	// after Delay; AttemptsLeft tracks the remaining budget.
+	ActionRetrySameNode = runtime.RecoveryRetrySameNode
 
-	// ActionCompactAndRetry means: ask the LLM client to drop older
-	// turns from the conversation history (claw exposes
-	// ConversationLoop.Compact for this) and then retry.
-	ActionCompactAndRetry
+	// ActionCompactAndRetry asks the LLM client to drop older
+	// conversation turns (when supported) and then retry. Falls back
+	// to a plain retry when the executor doesn't implement Compactor.
+	ActionCompactAndRetry = runtime.RecoveryCompactAndRetry
 
-	// ActionPauseForHuman means: pause the run with a human
-	// interaction so an operator can decide (extend budget, change
-	// auth, fix a tool definition) before resuming.
-	ActionPauseForHuman
+	// ActionPauseForHuman pauses the run with a synthetic
+	// interaction so an operator can resolve and resume.
+	ActionPauseForHuman = runtime.RecoveryPauseForHuman
 
-	// ActionFailTerminal means: surface the error to the caller as a
-	// non-resumable failure. Used for permanent tool failures
-	// (missing files, invalid config) that cannot be recovered.
-	ActionFailTerminal
+	// ActionFailTerminal surfaces the error as a non-recoverable
+	// failure (still produces a checkpoint via failRunWithCheckpoint).
+	ActionFailTerminal = runtime.RecoveryFailTerminal
 )
 
-// Action carries a recipe's decision plus parameters relevant to that
-// kind. Zero values are safe (treated as ActionRetrySameNode with no
-// delay).
-type Action struct {
-	Kind         ActionKind
-	Delay        time.Duration // for ActionRetrySameNode / ActionCompactAndRetry
-	AttemptsLeft int           // 0 means "no more retries; escalate"
-	Reason       string        // human-readable hint surfaced to operator
-}
+// Action is the engine-facing decision returned by a recipe.
+type Action = runtime.RecoveryAction
 
 // Recipe decides what to do for a given error class.
 // `attempts` is the count of prior retries for this class on this
@@ -190,6 +164,38 @@ func DefaultRecipes() map[runtime.ErrorCode]Recipe {
 		runtime.ErrCodeBudgetExceeded:        BudgetRecipe(),
 		runtime.ErrCodeToolFailedTransient:   TransientToolRecipe(2),
 		runtime.ErrCodeToolFailedPermanent:   PermanentToolRecipe(),
+	}
+}
+
+// Dispatch turns a recipe map into a runtime.RecoveryDispatch
+// callback. The dispatcher classifies, asks the engine for the prior
+// attempt count under that class, and returns the recipe's decision
+// plus the matched code. Errors that don't classify into a wired code
+// fall through to RecoveryFailTerminal.
+//
+// Safe for concurrent use as long as the wrapped recipes are.
+func Dispatch(recipes map[runtime.ErrorCode]Recipe) runtime.RecoveryDispatch {
+	return func(ctx context.Context, err error, priorAttempts func(runtime.ErrorCode) int) (runtime.RecoveryAction, runtime.ErrorCode) {
+		if err == nil {
+			return runtime.RecoveryAction{Kind: runtime.RecoveryFailTerminal}, ""
+		}
+		code := Classify(err)
+		recipe, ok := recipes[code]
+		if !ok {
+			return runtime.RecoveryAction{
+				Kind:   runtime.RecoveryFailTerminal,
+				Reason: "no recipe registered for error code " + string(code),
+			}, code
+		}
+		var rerr *runtime.RuntimeError
+		if !errors.As(err, &rerr) {
+			rerr = &runtime.RuntimeError{Code: code, Message: err.Error(), Cause: err}
+		}
+		attempts := 0
+		if priorAttempts != nil {
+			attempts = priorAttempts(code)
+		}
+		return recipe.Apply(ctx, rerr, attempts), code
 	}
 }
 

@@ -20,10 +20,12 @@ type EventType string
 const (
 	EventRunStarted           EventType = "run_started"
 	EventBranchStarted        EventType = "branch_started"
+	EventBranchFinished       EventType = "branch_finished"
 	EventNodeStarted          EventType = "node_started"
 	EventLLMRequest           EventType = "llm_request"
 	EventLLMPrompt            EventType = "llm_prompt"
 	EventLLMRetry             EventType = "llm_retry"
+	EventNodeRecovery         EventType = "node_recovery"
 	EventLLMStepFinished      EventType = "llm_step_finished"
 	EventToolCalled           EventType = "tool_called"
 	EventToolError            EventType = "tool_error"
