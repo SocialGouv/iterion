@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
@@ -12,6 +14,19 @@ import (
 
 	iterlog "github.com/SocialGouv/iterion/pkg/internal/log"
 )
+
+// askUserMCPServerName is the name under which iterion registers itself as an
+// MCP server exposing the ask_user tool. The CLI prefixes MCP tool names as
+// "mcp__<server>__<tool>", so the LLM sees the tool as "mcp__iterion__ask_user".
+const askUserMCPServerName = "iterion"
+
+// askUserMCPToolName is the fully-qualified name of the ask_user tool as the
+// CLI exposes it to the LLM.
+const askUserMCPToolName = "mcp__iterion__ask_user"
+
+// askUserMCPSubcommand is the hidden iterion subcommand that runs an MCP stdio
+// server exposing only the ask_user tool. See cmd/iterion/mcp_ask_user.go.
+const askUserMCPSubcommand = "__mcp-ask-user"
 
 // ClaudeCodeBackend delegates work to the `claude` CLI (claude-code)
 // via the Claude Agent SDK.
@@ -89,74 +104,88 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		stderrBuf.WriteString("\n")
 	}))
 
-	// Stream agent activity in real-time via NDJSON message callback.
-	opts = append(opts, claudesdk.WithMessageCallback(func(msgType string, data json.RawMessage) {
-		switch msgType {
-		case "assistant":
-			var msg struct {
-				Message struct {
-					Content []json.RawMessage `json:"content"`
-				} `json:"message"`
+	// Native ask_user interception. When the workflow enables interaction, we
+	// register iterion itself as an MCP server exposing the ask_user tool, and
+	// install a PreToolUse hook that captures the question and short-circuits
+	// the session as soon as the LLM calls it. This mirrors the claw backend's
+	// in-process ask_user path. The system prompt's [INTERACTION PROTOCOL]
+	// suffix is preserved so the existing JSON-output fallback still works if
+	// the LLM bypasses the native tool.
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
+	var pendingQuestion atomic.Value // string
+
+	if task.InteractionEnabled {
+		if selfPath, err := os.Executable(); err == nil {
+			opts = append(opts, claudesdk.WithMCPServer(askUserMCPServerName, &claudesdk.MCPStdioServer{
+				Command: selfPath,
+				Args:    []string{askUserMCPSubcommand},
+			}))
+			// Only extend the allowlist when the workflow already restricts tools.
+			// An empty AllowedTools means "no restriction", and the MCP tool will
+			// be discoverable without explicit listing.
+			if len(task.AllowedTools) > 0 {
+				combined := make([]string, 0, len(task.AllowedTools)+1)
+				combined = append(combined, task.AllowedTools...)
+				combined = append(combined, askUserMCPToolName)
+				opts = append(opts, claudesdk.WithAllowedTools(combined...))
 			}
-			if json.Unmarshal(data, &msg) != nil {
-				return
-			}
-			for _, raw := range msg.Message.Content {
-				var probe struct {
-					Type string `json:"type"`
-				}
-				if json.Unmarshal(raw, &probe) != nil {
-					continue
-				}
-				switch probe.Type {
-				case "tool_use":
-					var tu struct {
-						Name  string         `json:"name"`
-						Input map[string]any `json:"input"`
+			matcher := "^" + askUserMCPToolName + "$"
+			noContinue := false
+			opts = append(opts, claudesdk.WithHook(claudesdk.HookPreToolUse, claudesdk.HookMatcher{
+				Matcher: &matcher,
+				Handler: func(_ context.Context, in claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
+					if q, ok := in.ToolInput["question"].(string); ok && q != "" {
+						pendingQuestion.Store(q)
+						cancelStream()
 					}
-					if json.Unmarshal(raw, &tu) == nil {
-						displayName := tu.Name
-						// Strip MCP prefixes for cleaner display
-						for _, prefix := range []string{"mcp__claude_code__", "mcp__plugin_claude-mem_mcp-search__"} {
-							if strings.HasPrefix(displayName, prefix) {
-								displayName = displayName[len(prefix):]
-								break
-							}
-						}
-						detail := toolUseDetail(tu.Name, tu.Input)
-						b.Logger.Info("[%s/claude-code] 🔧 %s %s", task.NodeID, displayName, detail)
-					}
-				case "tool_result":
-					var tr struct {
-						Content any  `json:"content"`
-						IsError bool `json:"is_error"`
-					}
-					if json.Unmarshal(raw, &tr) == nil && tr.IsError {
-						b.Logger.Info("[%s/claude-code] ❌ tool error: %v", task.NodeID, tr.Content)
-					}
-				case "text":
-					var tb struct {
-						Text string `json:"text"`
-					}
-					if json.Unmarshal(raw, &tb) == nil && tb.Text != "" {
-						b.Logger.Info("[%s/claude-code] 💬 %s", task.NodeID, truncate(tb.Text, 300))
-					}
-				}
-			}
+					return claudesdk.HookOutput{
+						Decision:      "deny",
+						Continue:      &noContinue,
+						SystemMessage: "ask_user has been escalated to the iterion runtime; stop generating.",
+					}, nil
+				},
+			}))
+		} else {
+			b.Logger.Warn("[%s/claude-code] could not resolve iterion binary path; native ask_user MCP server disabled (falling back to JSON _needs_interaction protocol): %v", task.NodeID, err)
 		}
-	}))
+	}
 
 	startTime := time.Now()
-	rm, err := promptWithTimeout(ctx, prompt, opts...)
+	rm, streamErr := b.runSession(streamCtx, prompt, task, opts)
 	duration := time.Since(startTime)
 
-	if err != nil {
+	// Native ask_user capture takes precedence over any error: if the hook
+	// fired, the resulting context cancellation surfaces here as ctx.Err(),
+	// which we must not treat as a failure.
+	if q, ok := pendingQuestion.Load().(string); ok && q != "" {
+		b.Logger.Info("[%s/claude-code] 🛑 ask_user escalated via native MCP tool", task.NodeID)
+		sessID := ""
+		if rm != nil {
+			sessID = rm.SessionID
+		}
+		return Result{
+			Output: map[string]interface{}{
+				"_needs_interaction": true,
+				"_interaction_questions": map[string]interface{}{
+					AskUserQuestionKey: q,
+				},
+			},
+			Duration:    duration,
+			ExitCode:    0,
+			Stderr:      stderrBuf.String(),
+			BackendName: BackendClaudeCode,
+			SessionID:   sessID,
+		}, nil
+	}
+
+	if streamErr != nil {
 		return Result{
 			Duration:    duration,
 			ExitCode:    -1,
 			Stderr:      stderrBuf.String(),
 			BackendName: BackendClaudeCode,
-		}, fmt.Errorf("delegate: claude-code failed: %w", err)
+		}, fmt.Errorf("delegate: claude-code failed: %w", streamErr)
 	}
 
 	result := Result{
@@ -292,10 +321,10 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 }
 
 // promptWithTimeout wraps claudesdk.Prompt in a goroutine with context-aware
-// cancellation. The Claude Agent SDK's Prompt() function does not check
-// ctx.Done() in its internal ReadLine() loop, so it can block indefinitely
-// even after context cancellation. This wrapper ensures the call returns
-// promptly when the context is cancelled or times out.
+// cancellation. The Claude Agent SDK's Prompt() function may not check
+// ctx.Done() in its internal ReadLine() loop on every read, so this wrapper
+// ensures the call returns promptly when the context is cancelled. Used only
+// by formatOutput (no hooks needed); the main Execute path uses Session.
 func promptWithTimeout(ctx context.Context, prompt string, opts ...claudesdk.Option) (*claudesdk.ResultMessage, error) {
 	type result struct {
 		rm  *claudesdk.ResultMessage
@@ -312,6 +341,66 @@ func promptWithTimeout(ctx context.Context, prompt string, opts ...claudesdk.Opt
 		return res.rm, res.err
 	case <-ctx.Done():
 		return nil, fmt.Errorf("claude prompt cancelled: %w", ctx.Err())
+	}
+}
+
+// runSession opens an interactive Session with the Claude CLI, sends the
+// prompt, and consumes the message stream until a ResultMessage arrives. It
+// streams agent activity (tool_use, tool_result, text) directly from the typed
+// content blocks to the iterion logger — this replaces the previous raw-JSON
+// WithMessageCallback path. Hooks (PreToolUse, etc.) only fire when configured
+// via Session, which is why we use this mode rather than one-shot Prompt().
+func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task Task, opts []claudesdk.Option) (*claudesdk.ResultMessage, error) {
+	sess := claudesdk.NewSession(opts...)
+	defer func() { _ = sess.Close() }()
+
+	if err := sess.Send(ctx, prompt); err != nil {
+		return nil, err
+	}
+
+	var result *claudesdk.ResultMessage
+	for msg, err := range sess.Stream(ctx) {
+		if err != nil {
+			return result, err
+		}
+		switch m := msg.(type) {
+		case *claudesdk.AssistantMessage:
+			if m.Message != nil {
+				logAssistantContent(b.Logger, task.NodeID, m.Message.Content)
+			}
+		case *claudesdk.ResultMessage:
+			result = m
+		}
+	}
+	if result == nil {
+		return nil, fmt.Errorf("claude session ended without result message")
+	}
+	return result, nil
+}
+
+// logAssistantContent emits human-readable info logs for tool calls, tool
+// errors, and text deltas from a single assistant message.
+func logAssistantContent(logger *iterlog.Logger, nodeID string, blocks []claudesdk.ContentBlock) {
+	for _, block := range blocks {
+		switch bl := block.(type) {
+		case *claudesdk.ToolUseBlock:
+			displayName := bl.Name
+			for _, prefix := range []string{"mcp__claude_code__", "mcp__plugin_claude-mem_mcp-search__", "mcp__iterion__"} {
+				if strings.HasPrefix(displayName, prefix) {
+					displayName = displayName[len(prefix):]
+					break
+				}
+			}
+			logger.Info("[%s/claude-code] 🔧 %s %s", nodeID, displayName, toolUseDetail(bl.Name, bl.Input))
+		case *claudesdk.ToolResultBlock:
+			if bl.IsError {
+				logger.Info("[%s/claude-code] ❌ tool error: %v", nodeID, bl.Content)
+			}
+		case *claudesdk.TextBlock:
+			if bl.Text != "" {
+				logger.Info("[%s/claude-code] 💬 %s", nodeID, truncate(bl.Text, 300))
+			}
+		}
 	}
 }
 
