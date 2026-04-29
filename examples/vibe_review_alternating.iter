@@ -15,6 +15,19 @@
 ##     in successive iterations of opposite families), OR
 ##   - max review_loop iterations reached
 ##
+## False-positive resistance:
+##   1. Reviewers self-rate their `confidence` (low/medium/high) and
+##      are explicitly told to drop stylistic preferences.
+##   2. The fixer can `pushback` on items it judges non-bloquant,
+##      with a justification.
+##   3. The next reviewer receives the prior pushback list and is
+##      instructed to NOT re-flag those items unless evidence has
+##      changed — this prevents a single false positive from
+##      blocking the loop forever.
+##   4. `streak_check` treats a low-confidence rejection as a
+##      soft-approval (alternation continues, no fix is triggered).
+##      Only medium/high-confidence rejections route to the fixer.
+##
 ## Demonstrates four DSL features delivered together:
 ##   1. `round_robin` router for backend alternation
 ##   2. `compute` node for deterministic AND of current + previous
@@ -32,10 +45,31 @@ prompt review_system:
   Tu es un reviewer de code TRES exigeant et methodique.
   Effectue une review complete du code dans le workspace
   pour s'assurer qu'il est de qualite production-ready.
-  Sois souple sur les points non bloquants : ne marque
-  approved=false que pour des problemes reellement
-  bloquants pour la production (bugs, regressions,
-  vulnerabilites, code mort).
+
+  REGLES ANTI FAUX-POSITIFS :
+  1. Ne marque approved=false que pour des problemes
+     reellement bloquants pour la production : bugs,
+     regressions, vulnerabilites de securite, code mort
+     evident. Les preferences stylistiques, le naming,
+     les optimisations mineures, la documentation
+     manquante ne sont PAS des blockers.
+  2. Auto-critique : pour chaque blocker que tu envisages,
+     demande-toi "est-ce REELLEMENT bloquant en production
+     ou est-ce une preference personnelle ?" Si tu hesites,
+     ce n'est PAS un blocker — au mieux un point de
+     vigilance non bloquant.
+  3. Confiance : evalue ta propre certitude.
+       - "high" = tu peux pointer la ligne exacte et
+         expliquer le scenario de production qui casse
+       - "medium" = tu vois un probleme probable mais pas
+         100% sur du contexte
+       - "low" = doute, intuition, pas de preuve concrete
+  4. Si une review precedente (de l'autre famille) a juge
+     ce code OK, sois EXTRA strict avant d'ajouter de
+     nouveaux blockers — il faut une preuve concrete que
+     l'autre reviewer a ratee.
+  5. Items deja pushbackes par le fixer : ne les
+     re-flague PAS sauf si tu as une preuve nouvelle.
 
 prompt review_user_claude:
   Review le code dans {{vars.workspace_dir}}.
@@ -47,11 +81,20 @@ prompt review_user_claude:
   Verdict precedent (vide si premiere iteration) :
   {{loop.review_loop.previous_output}}
 
+  Items deja pushbackes par le fixer (NE PAS RE-FLAGUER
+  sans preuve nouvelle) :
+  {{input.prior_pushback}}
+
+  Justification du pushback precedent :
+  {{input.prior_pushback_justification}}
+
   Produis un verdict structure :
     - approved: true uniquement si le code est production-ready
     - family: "claude" pour ce reviewer
     - blockers: liste des problemes vraiment bloquants
+      (apres auto-critique — exclure les preferences)
     - fix_plan: plan d'action concret pour fixer les blockers
+    - confidence: "low" / "medium" / "high"
 
 prompt review_user_gpt:
   Review le code dans {{vars.workspace_dir}}.
@@ -63,41 +106,85 @@ prompt review_user_gpt:
   Verdict precedent (vide si premiere iteration) :
   {{loop.review_loop.previous_output}}
 
+  Items deja pushbackes par le fixer (NE PAS RE-FLAGUER
+  sans preuve nouvelle) :
+  {{input.prior_pushback}}
+
+  Justification du pushback precedent :
+  {{input.prior_pushback_justification}}
+
   Produis un verdict structure :
     - approved: true uniquement si le code est production-ready
     - family: "gpt" pour ce reviewer
     - blockers: liste des problemes vraiment bloquants
+      (apres auto-critique — exclure les preferences)
     - fix_plan: plan d'action concret pour fixer les blockers
+    - confidence: "low" / "medium" / "high"
 
 prompt fix_system:
   Tu es un developpeur expert. Tu corriges les problemes
   bloquants signales par un reviewer en appliquant des
   modifications concretes au code.
 
-prompt fix_user:
-  Applique fix-all sur les blockers suivants pour le code
-  dans {{vars.workspace_dir}} :
+  Tu peux REFUSER un item de la liste de blockers si tu
+  juges qu'il n'est pas reellement bloquant pour la
+  production (preference stylistique, optimisation
+  mineure, doc manquante, etc.). Liste ces items dans
+  `pushback` avec une justification dans
+  `pushback_justification`. Le prochain reviewer sera
+  instruit de NE PAS re-flaguer ces items, evitant qu'un
+  faux positif fasse boucler le workflow indefiniment.
 
-  Blockers :
+  Utilise pushback avec parcimonie : si tu pushbackes
+  tout, le code ne sera jamais ameliore.
+
+prompt fix_user:
+  Pour le code dans {{vars.workspace_dir}}, examine cette
+  liste de blockers et applique des fixes concrets.
+
+  Blockers signales :
   {{input.blockers}}
 
-  Plan de fix :
+  Plan de fix propose :
   {{input.fix_plan}}
 
-  Lis les fichiers concernes, applique les corrections,
-  puis verifie que les tests passent.
+  Pour CHAQUE blocker :
+    - Si c'est un vrai probleme bloquant production :
+      lis le fichier concerne, applique la correction,
+      verifie que les tests passent.
+    - Si tu juges que ce n'est PAS bloquant (preference
+      stylistique, optimisation mineure, etc.) : ajoute
+      l'item exact a `pushback` avec une justification
+      claire dans `pushback_justification`.
+
+  En sortie :
+    - applied: true si au moins un fix a ete applique
+    - summary: resume des fixes appliques
+    - pushback: items refuses (vide si tous fixes)
+    - pushback_justification: explication du pushback
 
 ## ─── Schemas ────────────────────────────────────────────────────
+
+schema review_input:
+  prior_pushback: string[]
+  prior_pushback_justification: string
 
 schema verdict_output:
   approved: bool
   family: string
   blockers: string[]
   fix_plan: string
+  confidence: string [enum: "low", "medium", "high"]
 
 ## streak_check relays approved/blockers/fix_plan from its input
 ## (the current reviewer's verdict) and computes a deterministic
 ## stop signal based on the previous reviewer's verdict.
+##
+## Soft-approval: a low-confidence rejection (`approved=false` AND
+## `confidence=="low"`) is treated as approved for streak/fix
+## routing purposes. The reviewer's own uncertainty isn't a strong
+## enough signal to trigger a fix cycle and risk a false-positive
+## loop.
 schema streak_state:
   stop: bool
   approved: bool
@@ -111,6 +198,8 @@ schema fix_input:
 schema fix_output:
   applied: bool
   summary: string
+  pushback: string[]
+  pushback_justification: string
 
 ## ─── Nodes ──────────────────────────────────────────────────────
 
@@ -121,6 +210,7 @@ judge reviewer_claude:
   backend: "claude_code"
   model: "claude-opus-4-7"
   reasoning_effort: extra_high
+  input: review_input
   output: verdict_output
   system: review_system
   user: review_user_claude
@@ -128,28 +218,28 @@ judge reviewer_claude:
 
 judge reviewer_gpt:
   model: "openai/gpt-5.5"
+  input: review_input
   output: verdict_output
   system: review_system
   user: review_user_gpt
   session: fresh
 
-## Deterministic streak detector. Inputs come from the reviewer
-## via `with` mappings; the loop's previous_output is the previous
-## reviewer's verdict (snapshotted on the loop-bearing edge below).
+## Deterministic streak detector + soft-approval gate.
 ##
-## stop=true iff:
-##   - current verdict approved
-##   - previous verdict approved
-##   - the two verdicts came from different families (Claude / GPT)
+## stop=true iff (current AND previous reviewer both effectively
+## approved) AND families differ. "Effectively approved" includes
+## low-confidence rejections so reviewer flakiness alone can't
+## break the streak.
 ##
-## All other fields are passed through so downstream edges can read
-## them via outputs.streak_check.* without re-routing through the
-## reviewer outputs.
+## All passthrough fields (approved, blockers, fix_plan) reflect
+## the EFFECTIVE state — `approved` becomes true on a low-confidence
+## rejection so the downstream `when approved` edge keeps the loop
+## alternating instead of routing to fix.
 compute streak_check:
   output: streak_state
   expr:
-    stop: "input.approved && loop.review_loop.previous_output.approved && input.family != loop.review_loop.previous_output.family"
-    approved: "input.approved"
+    stop: "(input.approved || input.confidence == 'low') && (loop.review_loop.previous_output.approved || loop.review_loop.previous_output.confidence == 'low') && input.family != loop.review_loop.previous_output.family"
+    approved: "input.approved || input.confidence == 'low'"
     blockers: "input.blockers"
     fix_plan: "input.fix_plan"
 
@@ -174,8 +264,18 @@ workflow vibe_review_alternating:
     max_cost_usd: 60
 
   ## Round-robin alternates: 1st pass → claude, 2nd → gpt, repeat.
-  alt -> reviewer_claude
-  alt -> reviewer_gpt
+  ## Each reviewer receives the most recent fixer's `pushback`
+  ## list so it knows which items to skip. On the first iteration
+  ## `outputs.fix_claude` is empty → both fields render as nil and
+  ## the prompt's "ne re-flague pas ces items" section is harmless.
+  alt -> reviewer_claude with {
+    prior_pushback: "{{outputs.fix_claude.pushback}}",
+    prior_pushback_justification: "{{outputs.fix_claude.pushback_justification}}"
+  }
+  alt -> reviewer_gpt with {
+    prior_pushback: "{{outputs.fix_claude.pushback}}",
+    prior_pushback_justification: "{{outputs.fix_claude.pushback_justification}}"
+  }
 
   ## Both reviewers feed into streak_check. The loop is attached
   ## here so the runtime snapshots the reviewer's verdict as
@@ -185,31 +285,36 @@ workflow vibe_review_alternating:
     approved: "{{outputs.reviewer_claude.approved}}",
     family: "{{outputs.reviewer_claude.family}}",
     blockers: "{{outputs.reviewer_claude.blockers}}",
-    fix_plan: "{{outputs.reviewer_claude.fix_plan}}"
+    fix_plan: "{{outputs.reviewer_claude.fix_plan}}",
+    confidence: "{{outputs.reviewer_claude.confidence}}"
   }
   reviewer_gpt -> streak_check as review_loop(6) with {
     approved: "{{outputs.reviewer_gpt.approved}}",
     family: "{{outputs.reviewer_gpt.family}}",
     blockers: "{{outputs.reviewer_gpt.blockers}}",
-    fix_plan: "{{outputs.reviewer_gpt.fix_plan}}"
+    fix_plan: "{{outputs.reviewer_gpt.fix_plan}}",
+    confidence: "{{outputs.reviewer_gpt.confidence}}"
   }
 
   ## Stop when streak detected (cross-family double approval).
   streak_check -> done when stop
 
-  ## Otherwise approved (no streak yet): keep alternating without
-  ## fixing — code passes this reviewer. Expression form is shown
-  ## here both to demonstrate the new syntax and so future authors
-  ## can extend the predicate (e.g. add a confidence threshold) by
-  ## simply enriching the quoted expression.
+  ## Otherwise approved (no streak yet, OR low-confidence rejection
+  ## treated as soft-approved): keep alternating without fixing.
+  ## Expression form is shown here both to demonstrate the new
+  ## syntax and so future authors can extend the predicate (e.g.
+  ## tighten the soft-approval condition) by enriching the
+  ## quoted expression.
   ##
-  ## NOTE: this edge does NOT carry `review_loop` so the loop counter
-  ## (and the previous_output snapshot) is incremented ONCE per cycle
-  ## on the reviewer→streak_check edge above. The cycle is still
-  ## bounded because that edge IS loop-bearing.
+  ## NOTE: this edge does NOT carry `review_loop` so the loop
+  ## counter (and the previous_output snapshot) is incremented
+  ## ONCE per cycle on the reviewer→streak_check edge above. The
+  ## cycle is still bounded because that edge IS loop-bearing.
   streak_check -> alt when "approved"
 
-  ## Verdict was negative: apply fix-all then re-enter the loop.
+  ## Medium/high-confidence rejection: apply fix-all then re-enter
+  ## the loop. The fixer's `pushback` output flows to the next
+  ## reviewer via the alt→reviewer with-mappings above.
   streak_check -> fix_claude when not approved with {
     blockers: "{{outputs.streak_check.blockers}}",
     fix_plan: "{{outputs.streak_check.fix_plan}}"
