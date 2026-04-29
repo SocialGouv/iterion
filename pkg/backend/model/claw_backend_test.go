@@ -502,6 +502,58 @@ func TestClawBackend_TaskMaxTokensZeroFallsBackToDefault(t *testing.T) {
 	}
 }
 
+// scriptedClient returns a different StreamResponse stream per call,
+// allowing tests to simulate multi-turn conversations where each turn
+// produces a different LLM response. The captured CreateMessageRequest
+// for each call is recorded for later assertion.
+type scriptedClient struct {
+	requests []api.CreateMessageRequest
+	calls    int
+	scripts  [][]api.StreamEvent
+}
+
+func (c *scriptedClient) StreamResponse(_ context.Context, req api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
+	c.requests = append(c.requests, req)
+	idx := c.calls
+	c.calls++
+	if idx >= len(c.scripts) {
+		idx = len(c.scripts) - 1
+	}
+	events := c.scripts[idx]
+	ch := make(chan api.StreamEvent, len(events))
+	for _, ev := range events {
+		ch <- ev
+	}
+	close(ch)
+	return ch, nil
+}
+
+func newScriptedBackend(scripts ...[]api.StreamEvent) (*ClawBackend, *scriptedClient) {
+	reg := NewRegistry()
+	sc := &scriptedClient{scripts: scripts}
+	reg.Register("test", func(modelID string) (api.APIClient, error) { return sc, nil })
+	return NewClawBackend(reg, EventHooks{}, RetryPolicy{}), sc
+}
+
+// askUserToolDef returns a ToolDef whose handler always raises
+// *delegate.ErrAskUser carrying the question argument verbatim. Used by
+// L1/L3 tests to drive the ask_user tool loop without depending on the
+// real claw-code-go ask_user implementation.
+func askUserToolDef() delegate.ToolDef {
+	return delegate.ToolDef{
+		Name:        "ask_user",
+		Description: "Ask the human a question",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"question":{"type":"string"}},"required":["question"]}`),
+		Execute: func(_ context.Context, input json.RawMessage) (string, error) {
+			var args struct {
+				Question string `json:"question"`
+			}
+			_ = json.Unmarshal(input, &args)
+			return "", &delegate.ErrAskUser{Question: args.Question}
+		},
+	}
+}
+
 // TestClawBackend_ResumeConversationReplacesMessages verifies the L1
 // resume path: when Task.ResumeConversation carries the persisted
 // pre-pause history and Task.ResumePendingToolUseID names a pending
@@ -567,5 +619,95 @@ func TestClawBackend_ResumeConversationReplacesMessages(t *testing.T) {
 	bodyJSON, _ := json.Marshal(tr)
 	if !strings.Contains(string(bodyJSON), "staging") {
 		t.Errorf("tool_result content does not contain answer %q: %s", "staging", bodyJSON)
+	}
+}
+
+// TestClawBackend_MultiPauseAccumulatesHistory verifies L3 (multi-turn
+// ask_user accumulation) emerges for free from L1: when the LLM calls
+// ask_user a second time after the first answer is delivered, the
+// conversation persisted at the second pause must contain BOTH the
+// original Q1/A1 exchange AND the new Q2 tool_use. Without this
+// property, only the most recent question would survive across pauses
+// and a third resume would lose context for everything before.
+func TestClawBackend_MultiPauseAccumulatesHistory(t *testing.T) {
+	// First call: model issues tool_use(ask_user, Q1).
+	firstScript := []api.StreamEvent{
+		{Type: api.EventMessageStart, InputTokens: 10},
+		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "tool_use", Index: 0, ID: "tu_q1", Name: "ask_user"}},
+		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "input_json_delta", PartialJSON: `{"question":"Which env? Q1"}`}},
+		{Type: api.EventContentBlockStop, Index: 0},
+		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{OutputTokens: 5}},
+		{Type: api.EventMessageStop},
+	}
+	// Second call (after resume with A1): model issues tool_use(ask_user, Q2).
+	secondScript := []api.StreamEvent{
+		{Type: api.EventMessageStart, InputTokens: 20},
+		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "tool_use", Index: 0, ID: "tu_q2", Name: "ask_user"}},
+		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "input_json_delta", PartialJSON: `{"question":"Which region? Q2"}`}},
+		{Type: api.EventContentBlockStop, Index: 0},
+		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{OutputTokens: 5}},
+		{Type: api.EventMessageStop},
+	}
+
+	backend, _ := newScriptedBackend(firstScript, secondScript)
+
+	// First Execute: should yield a paused Result with PendingConversation.
+	firstResult, err := backend.Execute(context.Background(), delegate.Task{
+		NodeID:       "agent1",
+		Model:        "test/test-model",
+		UserPrompt:   "do the work",
+		HasTools:     true,
+		ToolDefs:     []delegate.ToolDef{askUserToolDef()},
+		ToolMaxSteps: 5,
+	})
+	if err != nil {
+		t.Fatalf("first Execute: %v", err)
+	}
+	if needs, _ := firstResult.Output["_needs_interaction"].(bool); !needs {
+		t.Fatalf("first call did not produce _needs_interaction: %v", firstResult.Output)
+	}
+	if firstResult.PendingToolUseID != "tu_q1" {
+		t.Errorf("first PendingToolUseID = %q, want tu_q1", firstResult.PendingToolUseID)
+	}
+	if len(firstResult.PendingConversation) == 0 {
+		t.Fatal("first PendingConversation is empty")
+	}
+
+	// Second Execute (resume): pass the persisted conversation + answer.
+	secondResult, err := backend.Execute(context.Background(), delegate.Task{
+		NodeID:                 "agent1",
+		Model:                  "test/test-model",
+		UserPrompt:             "ignored on resume",
+		HasTools:               true,
+		ToolDefs:               []delegate.ToolDef{askUserToolDef()},
+		ToolMaxSteps:           5,
+		ResumeConversation:     firstResult.PendingConversation,
+		ResumePendingToolUseID: firstResult.PendingToolUseID,
+		ResumeAnswer:           "answer-A1",
+	})
+	if err != nil {
+		t.Fatalf("second Execute: %v", err)
+	}
+	if needs, _ := secondResult.Output["_needs_interaction"].(bool); !needs {
+		t.Fatalf("second call did not produce _needs_interaction: %v", secondResult.Output)
+	}
+	if secondResult.PendingToolUseID != "tu_q2" {
+		t.Errorf("second PendingToolUseID = %q, want tu_q2", secondResult.PendingToolUseID)
+	}
+
+	// L3: the second PendingConversation must include Q1, A1, and Q2.
+	var msgs []api.Message
+	if err := json.Unmarshal(secondResult.PendingConversation, &msgs); err != nil {
+		t.Fatalf("unmarshal second conversation: %v", err)
+	}
+	// Expect: [user:original, assistant:tool_use(tu_q1), user:tool_result(tu_q1, A1), assistant:tool_use(tu_q2)]
+	if len(msgs) != 4 {
+		t.Fatalf("conversation len = %d, want 4 (original, Q1, A1, Q2); got: %+v", len(msgs), msgs)
+	}
+	full, _ := json.Marshal(msgs)
+	for _, want := range []string{"do the work", "tu_q1", "answer-A1", "tu_q2", "Which region? Q2"} {
+		if !strings.Contains(string(full), want) {
+			t.Errorf("accumulated conversation missing %q: %s", want, full)
+		}
 	}
 }
