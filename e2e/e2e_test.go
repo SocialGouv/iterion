@@ -18,11 +18,11 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/SocialGouv/iterion/benchmark"
-	"github.com/SocialGouv/iterion/ir"
-	"github.com/SocialGouv/iterion/parser"
-	"github.com/SocialGouv/iterion/runtime"
-	"github.com/SocialGouv/iterion/store"
+	"github.com/SocialGouv/iterion/pkg/benchmark"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // ---------------------------------------------------------------------------

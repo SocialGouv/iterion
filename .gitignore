@@ -20,19 +20,17 @@ node_modules
 .env
 editor/dist/
 editor/node_modules/
-server/static/assets/
-server/static/index.html
-!server/static/.gitkeep
+pkg/server/static/assets/
+pkg/server/static/index.html
+!pkg/server/static/.gitkeep
 
 .task/
 
 *.tsbuildinfo
 
-# Live test results
-.live-results/
-.live-runs/
+# Local user state (consolidated under .local/)
+.local/
 
 # Claude
 .claude/*.local.json
 .claude/scheduled_tasks.lock
-.scratch/

@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/SocialGouv/iterion/cli"
+	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/spf13/cobra"
 )
 

@@ -168,7 +168,7 @@ Le compilateur IR doit verifier des contraintes supplementaires pour `round_robi
 - Au moins 2 edges sortants (sinon c'est un noeud normal)
 - Les schemas d'input des cibles doivent etre compatibles (meme `with {}` alimente N cibles)
 
-**Mitigation** : ces validations sont simples a implementer et suivent le modele existant de `ir/validate.go`.
+**Mitigation** : ces validations sont simples a implementer et suivent le modele existant de `pkg/dsl/ir/validate.go`.
 
 ### 5. Risque de feature creep
 
@@ -184,14 +184,14 @@ Apres `round_robin`, on voudra `weighted_round_robin`, `random`, `least_recently
 |---|---|
 | `grammar/iterion_v1.ebnf` | Ajouter `round_robin` a la regle `router_mode` |
 | `grammar/V1_SCOPE.md` | Documenter le nouveau mode |
-| `ast/ast.go` | Ajouter `RouterModeRoundRobin` a l'enum `RouterMode` |
-| `parser/` | Parser `round_robin` comme valeur de `mode:` |
-| `ir/ir.go` | Ajouter `RouterRoundRobin` au type `RouterMode` IR |
-| `ir/compile.go` | Compiler le mode AST vers IR |
-| `ir/validate.go` | Valider >= 2 edges sortants, schemas compatibles |
-| `runtime/engine.go` | Selection d'edge par `counter % len(edges)` dans `execRouter` / `findNext` |
-| `store/` | Serialiser/deserialiser `roundRobinCounters` dans le run state |
-| `cli/diagram.go` | Representation visuelle distincte pour `round_robin` |
+| `pkg/dsl/ast/ast.go` | Ajouter `RouterModeRoundRobin` a l'enum `RouterMode` |
+| `pkg/dsl/parser/` | Parser `round_robin` comme valeur de `mode:` |
+| `pkg/dsl/ir/ir.go` | Ajouter `RouterRoundRobin` au type `RouterMode` IR |
+| `pkg/dsl/ir/compile.go` | Compiler le mode AST vers IR |
+| `pkg/dsl/ir/validate.go` | Valider >= 2 edges sortants, schemas compatibles |
+| `pkg/runtime/engine.go` | Selection d'edge par `counter % len(edges)` dans `execRouter` / `findNext` |
+| `pkg/store/` | Serialiser/deserialiser `roundRobinCounters` dans le run state |
+| `pkg/cli/diagram.go` | Representation visuelle distincte pour `round_robin` |
 
 ### Structure de l'etat
 

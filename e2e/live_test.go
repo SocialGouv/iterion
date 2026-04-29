@@ -16,16 +16,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SocialGouv/iterion/benchmark"
-	"github.com/SocialGouv/iterion/cli"
-	"github.com/SocialGouv/iterion/delegate"
-	"github.com/SocialGouv/iterion/ir"
-	iterlog "github.com/SocialGouv/iterion/log"
-	"github.com/SocialGouv/iterion/mcp"
-	"github.com/SocialGouv/iterion/model"
-	"github.com/SocialGouv/iterion/runtime"
-	"github.com/SocialGouv/iterion/store"
-	"github.com/SocialGouv/iterion/tool"
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/mcp"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/benchmark"
+	"github.com/SocialGouv/iterion/pkg/cli"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/internal/log"
+	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // ---------------------------------------------------------------------------

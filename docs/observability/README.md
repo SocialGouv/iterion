@@ -91,7 +91,7 @@ iterion attributes metrics from each backend on a best-effort basis:
 | `iterion_parallel_branches`     | ✅    | ✅           | ✅     |
 
 \* Cost is computed from a small per-model pricing table embedded in
-`cost/cost.go`. Models not in the table emit no `_cost_usd` field.
+`pkg/backend/cost/cost.go`. Models not in the table emit no `_cost_usd` field.
 Add models there if you want them tracked.
 
 \*\* Token counts come from the SDK's `ResultMessage.Usage` for

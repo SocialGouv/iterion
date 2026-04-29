@@ -8,8 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/SocialGouv/iterion/cli"
-	"github.com/SocialGouv/iterion/internal/appinfo"
+	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/spf13/cobra"
 )
 
@@ -25,7 +24,7 @@ var rootCmd = &cobra.Command{
 
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
-	rootCmd.Version = appinfo.FullVersion()
+	rootCmd.Version = cli.Version()
 	rootCmd.SetVersionTemplate("{{.Version}}\n")
 }
 

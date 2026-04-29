@@ -7,7 +7,7 @@ vars:
     sh: node -p "require('./package.json').version" 2>/dev/null || echo "dev"
   COMMIT:
     sh: git rev-parse --short HEAD 2>/dev/null || echo ""
-  LDFLAGS: -X github.com/SocialGouv/iterion/internal/appinfo.Version=v{{.VERSION}} -X github.com/SocialGouv/iterion/internal/appinfo.Commit={{.COMMIT}}
+  LDFLAGS: -X github.com/SocialGouv/iterion/pkg/internal/appinfo.Version=v{{.VERSION}} -X github.com/SocialGouv/iterion/pkg/internal/appinfo.Commit={{.COMMIT}}
 
 tasks:
   default:
@@ -158,8 +158,8 @@ tasks:
     cmds:
       - pnpm install --prefer-offline
       - pnpm exec vite build
-      - rm -rf ../server/static/assets ../server/static/index.html
-      - cp -r dist/* ../server/static/
+      - rm -rf ../pkg/server/static/assets ../pkg/server/static/index.html
+      - cp -r dist/* ../pkg/server/static/
 
   editor:dev:
     desc: Start editor in dev mode (Vite HMR + Go backend with auto-restart)
@@ -168,7 +168,7 @@ tasks:
   editor:dev:backend:
     desc: Run Go editor backend with auto-restart on changes
     cmds:
-      - watchexec -r -e go -w cmd -w cli -w server -w astjson -w unparse -w parser -w ast -w ir -- go run {{.CMD}} editor --no-browser --port 4891
+      - watchexec -r -e go -w cmd -w pkg -- go run {{.CMD}} editor --no-browser --port 4891
     interactive: true
 
   editor:dev:frontend:

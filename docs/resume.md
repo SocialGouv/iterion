@@ -123,9 +123,9 @@ The hash mismatch is logged as a warning when `--force` is used.
 
 | File | Role |
 |------|------|
-| `store/run.go` | `RunStatusFailedResumable` constant, `Checkpoint` struct |
-| `store/store.go` | `FailRunResumable()`, `SaveCheckpoint()`, checkpoint preservation logic |
-| `runtime/engine.go` | Best-effort checkpoint after each node, `WithForceResume` option |
-| `runtime/helpers.go` | `buildCheckpoint()`, `failRunWithCheckpoint()`, `failRunErrWithCheckpoint()`, `handleContextDoneWithCheckpoint()` |
-| `runtime/resume.go` | `Resume()` dispatch, `resumeFromPause()`, `resumeFromFailure()`, `checkWorkflowHash()` |
-| `cli/resume.go` | CLI validation, `--force` flag, status-dependent answer requirements |
+| `pkg/store/run.go` | `RunStatusFailedResumable` constant, `Checkpoint` struct |
+| `pkg/store/store.go` | `FailRunResumable()`, `SaveCheckpoint()`, checkpoint preservation logic |
+| `pkg/runtime/engine.go` | Best-effort checkpoint after each node, `WithForceResume` option |
+| `pkg/runtime/helpers.go` | `buildCheckpoint()`, `failRunWithCheckpoint()`, `failRunErrWithCheckpoint()`, `handleContextDoneWithCheckpoint()` |
+| `pkg/runtime/resume.go` | `Resume()` dispatch, `resumeFromPause()`, `resumeFromFailure()`, `checkWorkflowHash()` |
+| `pkg/cli/resume.go` | CLI validation, `--force` flag, status-dependent answer requirements |

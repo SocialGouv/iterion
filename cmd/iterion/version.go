@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/SocialGouv/iterion/internal/appinfo"
+	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/spf13/cobra"
 )
 
@@ -12,7 +12,7 @@ var versionCmd = &cobra.Command{
 	Short: "Show version information",
 	Args:  cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println(appinfo.FullVersion())
+		fmt.Println(cli.Version())
 	},
 }
 

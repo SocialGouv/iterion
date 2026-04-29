@@ -67,7 +67,7 @@ jobs:
           OUTPUT="iterion-${GOOS}-${GOARCH}${EXT}"
           VERSION="$(node -p "require('./package.json').version")"
           COMMIT="$(git rev-parse --short HEAD)"
-          LDFLAGS="-s -w -X github.com/SocialGouv/iterion/internal/appinfo.Version=v${VERSION} -X github.com/SocialGouv/iterion/internal/appinfo.Commit=${COMMIT}"
+          LDFLAGS="-s -w -X github.com/SocialGouv/iterion/pkg/internal/appinfo.Version=v${VERSION} -X github.com/SocialGouv/iterion/pkg/internal/appinfo.Commit=${COMMIT}"
           go build -mod=vendor -trimpath -ldflags="${LDFLAGS}" -o "${OUTPUT}" ./cmd/iterion
           if command -v sha256sum &>/dev/null; then
             sha256sum "${OUTPUT}" > "${OUTPUT}.sha256"

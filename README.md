@@ -210,7 +210,7 @@ iterion editor --no-browser        # Don't auto-open browser
 
 ## 📝 The `.iter` DSL
 
-Workflows are written in a declarative, indentation-significant language. The formal grammar is in [`grammar/iterion_v1.ebnf`](grammar/iterion_v1.ebnf).
+Workflows are written in a declarative, indentation-significant language. The formal grammar is in [`docs/grammar/iterion_v1.ebnf`](docs/grammar/iterion_v1.ebnf).
 
 ### Variables
 
@@ -643,9 +643,9 @@ npx skills add https://github.com/SocialGouv/iterion --skill iterion-dsl
 | File | Content |
 |------|---------|
 | [`SKILL.md`](SKILL.md) | Complete DSL reference — node types, properties, edge syntax, templates, budget, MCP |
-| [`references/dsl-grammar.md`](references/dsl-grammar.md) | Formal grammar specification (EBNF) |
-| [`references/patterns.md`](references/patterns.md) | 10 reusable workflow patterns with annotated snippets |
-| [`references/diagnostics.md`](references/diagnostics.md) | All validation diagnostic codes (C001–C029) with causes and fixes |
+| [`docs/references/dsl-grammar.md`](docs/references/dsl-grammar.md) | Formal grammar specification (EBNF) |
+| [`docs/references/patterns.md`](docs/references/patterns.md) | 10 reusable workflow patterns with annotated snippets |
+| [`docs/references/diagnostics.md`](docs/references/diagnostics.md) | All validation diagnostic codes (C001–C029) with causes and fixes |
 | [`examples/skill/`](examples/skill/) | 4 minimal, self-contained `.iter` examples |
 
 ### Usage
@@ -749,9 +749,9 @@ See [`examples/FIXTURES.md`](examples/FIXTURES.md) for detailed documentation on
    AST              IR          Diagnostics
 ```
 
-1. **Parse** (`parser/`) — Indent-sensitive lexer + recursive-descent parser produces an AST
-2. **Compile** (`ir/compile.go`) — Transforms AST to IR, resolves template references, binds schemas and prompts
-3. **Validate** (`ir/validate.go`) — Static analysis with 29 diagnostic codes: reachability, routing correctness, cycle detection, schema validation, and more
+1. **Parse** (`pkg/dsl/parser/`) — Indent-sensitive lexer + recursive-descent parser produces an AST
+2. **Compile** (`pkg/dsl/ir/compile.go`) — Transforms AST to IR, resolves template references, binds schemas and prompts
+3. **Validate** (`pkg/dsl/ir/validate.go`) — Static analysis with 29 diagnostic codes: reachability, routing correctness, cycle detection, schema validation, and more
 
 ### Runtime Engine
 

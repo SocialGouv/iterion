@@ -125,7 +125,7 @@ Five concrete defects in the `.iter`:
 A workflow that would have caught this:
 
 - **Goal in `port_plan_system`** restated concretely:
-  > END STATE: iterion's `model/claw_backend.go` calls
+  > END STATE: iterion's `pkg/backend/model/claw_backend.go` calls
   > `claw-code-go/pkg/api.Client.StreamResponse(ctx, req)` and
   > aggregates `StreamEvent` deltas. NO intermediate package exists in
   > claw-code-go that re-exports `github.com/zendev-sh/goai` types.
@@ -263,7 +263,7 @@ The workflow file changes that made the difference:
 `port_plan_system` and `port_impl_system` named the target by symbol,
 not by intent:
 
-> END STATE: iterion's `model/claw_backend.go` calls
+> END STATE: iterion's `pkg/backend/model/claw_backend.go` calls
 > `claw-code-go/pkg/api.Client.StreamResponse(ctx, req)` and
 > aggregates the returned `[]ContentBlock` / `StreamEvent` deltas.
 > NO call goes through any intermediate `pkg/sdk` or wrapper layer.

@@ -31,31 +31,43 @@ devbox run -- go test ./...
 
 ## Project Structure
 
+The Go code follows the standard `cmd/` + `pkg/` layout. Three top-level Go directories:
+
 - `cmd/iterion/` — CLI entry point (Cobra-based, one file per command)
-- `cli/` — CLI command implementations (init, validate, run, inspect, resume, diagram, editor)
-- `parser/` — Lexer, parser, tokens, diagnostics for the .iter DSL
-- `ast/` — Abstract Syntax Tree definitions
-- `ir/` — Intermediate Representation compilation and validation
-- `runtime/` — Workflow execution engine (branch scheduling, events, budget)
-- `store/` — Run persistence (JSON-based, versioned artifacts, events.jsonl)
-- `model/` — Executor registry (GoaiExecutor), schema validation, event hooks
-- `recipe/` — Recipe handling for tool adapters and execution policies
-- `tool/` — Tool registry, policies, and adapters
-- `delegate/` — Delegation backends (claude_code, codex subprocess execution)
-- `server/` — HTTP server for editor backend
-- `editor/` — Web UI (React/Vite/TypeScript with XYFlow)
-- `log/` — Leveled logger (error, warn, info, debug, trace)
-- `benchmark/` — Metrics collection and reporting
-- `unparse/` — IR back to .iter serialization
-- `astjson/` — AST JSON utilities
-- `e2e/` — End-to-end test suite
-- `examples/` — Example .iter workflow files
-- `grammar/` — DSL grammar specification (EBNF)
+- `pkg/` — All library code, grouped by role (see breakdown below)
+- `e2e/` — End-to-end test suite (kept at root by Go convention)
+
+Other top-level directories: `editor/` (React/Vite frontend), `examples/` (.iter workflows), `docs/` (incl. `docs/grammar/` EBNF and `docs/references/` patterns/diagnostics), `scripts/`, `vendor/`.
+
+### `pkg/` breakdown
+
+- `pkg/dsl/` — DSL pipeline (parser → AST → IR)
+  - `parser/` — Lexer, parser, tokens, diagnostics for the .iter DSL
+  - `ast/` — AST definitions and `MarshalFile`/`UnmarshalFile` (JSON encoder for AST)
+  - `ir/` — Intermediate Representation compilation and validation
+  - `unparse/` — IR back to .iter serialization
+  - `types/` — Shared enums (transports, field types, session/router/await/interaction modes)
+- `pkg/backend/` — Execution stack (LLM + tools)
+  - `model/` — Executor registry (`ClawExecutor`), schema validation, event hooks
+  - `delegate/` — Delegation backends (claude_code, codex subprocess; claw in-process)
+  - `tool/` — Tool registry, policies, adapters
+  - `mcp/` — MCP server lifecycle, configuration, health checks
+  - `recipe/` — Recipe handling for tool adapters and execution policies
+  - `cost/` — Cost estimation and budgeting
+  - `llmtypes/` — LLM SDK abstraction (`LLMTool`, `FatalToolError`, `ModelCapabilities`)
+- `pkg/runtime/` — Workflow execution engine (branch scheduling, events, budget, recovery dispatch)
+- `pkg/store/` — Run persistence (JSON-based, versioned artifacts, events.jsonl)
+- `pkg/server/` — HTTP server for editor backend (embedded static UI)
+- `pkg/cli/` — CLI command implementations (init, validate, run, inspect, resume, diagram, editor, version)
+- `pkg/benchmark/` — Metrics collection and reporting
+- `pkg/internal/` — Internal utilities (not importable outside `pkg/`)
+  - `appinfo/` — Build-time version/commit injection (LDFLAGS targets)
+  - `log/` — Leveled logger (error, warn, info, debug, trace)
 
 ## Key Dependencies
 
 - Go 1.25.0
-- `claw-code-go` (sibling repo, vendored under `vendor/claw-code-go/`) — native multi-provider LLM client. iterion uses `claw-code-go/pkg/api.Client.StreamResponse` directly via `model/generation.go` for in-process LLM calls (anthropic + openai validated; bedrock/vertex/foundry available but untested).
+- `claw-code-go` (sibling repo, vendored under `vendor/claw-code-go/`) — native multi-provider LLM client. iterion uses `claw-code-go/pkg/api.Client.StreamResponse` directly via `pkg/backend/model/generation.go` for in-process LLM calls (anthropic + openai validated; bedrock/vertex/foundry available but untested).
 
 ## Architecture
 
@@ -109,17 +121,17 @@ Three backends are wired:
 
 ### Key Interfaces
 
-- `NodeExecutor` (`runtime/engine.go`) — `Execute(ctx, node, input) → (output, error)`, abstraction between engine and execution backend
-- `ClawExecutor` (`model/executor.go`) — production `NodeExecutor` impl, dispatches to `delegate.Backend` (claude_code, codex, claw); for direct LLM calls (e.g. `human` nodes) it uses `model/generation.go` (`GenerateTextDirect` / `GenerateObjectDirect`) which calls `claw-code-go/pkg/api.Client.StreamResponse` and aggregates the streaming response.
-- `Backend` (`delegate/delegate.go`) — delegation interface for execution backends. CLI-based backends (claude_code, codex) shell out; the `claw` backend (`model/claw_backend.go`) calls claw-code-go directly via the generation engine above.
-- `RunStore` (`store/store.go`) — file-backed persistence for runs, events, artifacts, interactions
-- `Workflow` (`ir/ir.go`) — compiled execution unit with Nodes, Edges, Schemas, Prompts, Vars, Loops, Budget
+- `NodeExecutor` (`pkg/runtime/engine.go`) — `Execute(ctx, node, input) → (output, error)`, abstraction between engine and execution backend
+- `ClawExecutor` (`pkg/backend/model/executor.go`) — production `NodeExecutor` impl, dispatches to `delegate.Backend` (claude_code, codex, claw); for direct LLM calls (e.g. `human` nodes) it uses `pkg/backend/model/generation.go` (`GenerateTextDirect` / `GenerateObjectDirect`) which calls `claw-code-go/pkg/api.Client.StreamResponse` and aggregates the streaming response.
+- `Backend` (`pkg/backend/delegate/delegate.go`) — delegation interface for execution backends. CLI-based backends (claude_code, codex) shell out; the `claw` backend (`pkg/backend/model/claw_backend.go`) calls claw-code-go directly via the generation engine above.
+- `RunStore` (`pkg/store/store.go`) — file-backed persistence for runs, events, artifacts, interactions
+- `Workflow` (`pkg/dsl/ir/ir.go`) — compiled execution unit with Nodes, Edges, Schemas, Prompts, Vars, Loops, Budget
 
 ### Error Handling
 
-- **RuntimeError** (`runtime/errors.go`) — structured error with `ErrorCode`, `Message`, `NodeID`, `Hint`, `Cause`
+- **RuntimeError** (`pkg/runtime/errors.go`) — structured error with `ErrorCode`, `Message`, `NodeID`, `Hint`, `Cause`
   - Codes: `NODE_NOT_FOUND`, `NO_OUTGOING_EDGE`, `LOOP_EXHAUSTED`, `BUDGET_EXCEEDED`, `EXECUTION_FAILED`, `WORKSPACE_SAFETY`, `TIMEOUT`, `CANCELLED`, `JOIN_FAILED`, `RESUME_INVALID`
-- **Diagnostics** (`ir/validate.go`) — compile-time warnings/errors with codes C001–C019 (unknown refs, routing issues, unreachable nodes, undeclared cycles, etc.)
+- **Diagnostics** (`pkg/dsl/ir/validate.go`) — compile-time warnings/errors with codes C001–C019 (unknown refs, routing issues, unreachable nodes, undeclared cycles, etc.)
 - **Sentinel errors**: `ErrRunPaused` (resumable), `ErrRunCancelled` (resumable with checkpoint), `ErrBudgetExceeded`
 - **Resumable failures**: Most runtime failures produce `failed_resumable` status with a checkpoint. See `docs/resume.md` for the exhaustive matrix.
 
@@ -214,5 +226,5 @@ Global flags: `--json` (machine output), `--help`
 - `CGO_ENABLED=0`, version/commit injected via ldflags from `package.json` + git
 - External LLM SDK: claw-code-go (vendored), used directly via `pkg/api`
 - Event-driven observability via `events.jsonl` — no structured logging library
-- Output abstraction: `Printer` (`cli/output.go`) with human and JSON modes
+- Output abstraction: `Printer` (`pkg/cli/output.go`) with human and JSON modes
 
