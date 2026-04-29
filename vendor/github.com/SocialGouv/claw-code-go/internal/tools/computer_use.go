@@ -46,19 +46,6 @@ func ReadImageTool() api.Tool {
 	}
 }
 
-// ScreenshotTool returns the tool definition for capturing a screenshot of
-// the host display. Currently a stub: no platform implementation exists.
-func ScreenshotTool() api.Tool {
-	return api.Tool{
-		Name:        "screenshot",
-		Description: "Capture a screenshot of the host display. Not yet implemented for any platform.",
-		InputSchema: api.InputSchema{
-			Type:       "object",
-			Properties: map[string]api.Property{},
-		},
-	}
-}
-
 // ReadImageResult is what ExecuteReadImage produces. The Blocks field is
 // shaped so callers can splice it directly into a tool_result content list
 // destined for the next user-turn message.
@@ -117,17 +104,6 @@ func ExecuteReadImage(ctx context.Context, input map[string]any) (ReadImageResul
 		},
 	}
 	return ReadImageResult{Description: caption, Blocks: []api.ContentBlock{block}}, nil
-}
-
-// ExecuteScreenshot is a stub. The Anthropic vision content path is in
-// place — what's missing is a cross-platform capture backend. Returning a
-// typed APIError lets callers route it through the same retry/classifier
-// machinery as upstream errors instead of leaking string-matched fallbacks.
-func ExecuteScreenshot(ctx context.Context, input map[string]any) (ReadImageResult, error) {
-	return ReadImageResult{}, &api.APIError{
-		StatusCode: 501,
-		Message:    "screenshot not yet implemented for this platform",
-	}
 }
 
 func loadImageFromPath(path string) ([]byte, string, error) {

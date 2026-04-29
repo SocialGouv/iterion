@@ -122,6 +122,14 @@ func defaultAuthOpener(authURL string) error {
 	return nil
 }
 
+// ErrReauthRequired is returned by AcquireNoninteractive when the
+// cached token is missing/expired and the refresh path is unusable
+// (no refresh_token, or the AS replied with invalid_grant). Callers
+// hitting this error should drive a full Acquire() — possibly after
+// surfacing the condition to a human, since the interactive flow
+// requires a browser.
+var ErrReauthRequired = errors.New("oauth broker: reauthorization required")
+
 // Acquire returns a valid access token for cfg, performing the full
 // auth code + PKCE flow when no cached token is available, or
 // refreshing one that is about to expire. The returned string is
@@ -134,19 +142,8 @@ func (b *Broker) Acquire(ctx context.Context, cfg ServerConfig) (string, error) 
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if b.storage != nil {
-		if tok, ok, err := b.storage.Load(cfg.Name); err == nil && ok {
-			if !tok.IsExpired(30 * time.Second) {
-				return tok.AccessToken, nil
-			}
-			if tok.RefreshToken != "" {
-				if refreshed, err := b.refresh(ctx, cfg, tok.RefreshToken); err == nil {
-					_ = b.storage.Save(cfg.Name, refreshed)
-					return refreshed.AccessToken, nil
-				}
-				// Fall through to a fresh interactive flow if refresh fails.
-			}
-		}
+	if tok, ok, err := b.tryCacheLocked(ctx, cfg); err == nil && ok {
+		return tok, nil
 	}
 
 	tok, err := b.runAuthCodeFlow(ctx, cfg)
@@ -157,6 +154,91 @@ func (b *Broker) Acquire(ctx context.Context, cfg ServerConfig) (string, error) 
 		_ = b.storage.Save(cfg.Name, tok)
 	}
 	return tok.AccessToken, nil
+}
+
+// AcquireNoninteractive returns a valid access token without ever
+// running the browser flow. It is the entry point for headless
+// callers (daemons, scheduled jobs, MCP transports invoked behind a
+// proxy). Behaviour:
+//
+//   - cached token is fresh → return it.
+//   - cached token is near expiry and a refresh_token is present →
+//     refresh and return.
+//   - no cache, no refresh_token, or refresh fails with invalid_grant
+//     → return ErrReauthRequired.
+//   - refresh fails with a transient error (network, 5xx) → return
+//     that error wrapped (NOT ErrReauthRequired) so retry logic can
+//     distinguish.
+func (b *Broker) AcquireNoninteractive(ctx context.Context, cfg ServerConfig) (string, error) {
+	if cfg.Name == "" || cfg.TokenURL == "" || cfg.ClientID == "" {
+		return "", errors.New("oauth broker: ServerConfig missing required fields (Name/TokenURL/ClientID)")
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.storage == nil {
+		return "", ErrReauthRequired
+	}
+	tok, ok, err := b.storage.Load(cfg.Name)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", ErrReauthRequired
+	}
+	if !tok.IsExpired(30 * time.Second) {
+		return tok.AccessToken, nil
+	}
+	if tok.RefreshToken == "" {
+		return "", ErrReauthRequired
+	}
+	refreshed, err := b.refresh(ctx, cfg, tok.RefreshToken)
+	if err != nil {
+		if isInvalidGrant(err) {
+			return "", ErrReauthRequired
+		}
+		return "", err
+	}
+	if err := b.storage.Save(cfg.Name, refreshed); err != nil {
+		return "", err
+	}
+	return refreshed.AccessToken, nil
+}
+
+// tryCacheLocked attempts to satisfy Acquire from the cache: returns
+// the access token if it is fresh OR refreshable. Caller must hold
+// b.mu. The returned bool reports whether the cache hit produced a
+// usable token; an error is returned only on storage I/O failures.
+func (b *Broker) tryCacheLocked(ctx context.Context, cfg ServerConfig) (string, bool, error) {
+	if b.storage == nil {
+		return "", false, nil
+	}
+	tok, ok, err := b.storage.Load(cfg.Name)
+	if err != nil || !ok {
+		return "", false, err
+	}
+	if !tok.IsExpired(30 * time.Second) {
+		return tok.AccessToken, true, nil
+	}
+	if tok.RefreshToken == "" {
+		return "", false, nil
+	}
+	refreshed, refErr := b.refresh(ctx, cfg, tok.RefreshToken)
+	if refErr != nil {
+		// Fall through to a fresh interactive flow.
+		return "", false, nil
+	}
+	_ = b.storage.Save(cfg.Name, refreshed)
+	return refreshed.AccessToken, true, nil
+}
+
+// isInvalidGrant reports whether err originated from an RFC 6749
+// "invalid_grant" response. We detect it by string match because
+// the broker wraps the AS error message verbatim into a *fmt.Errorf,
+// and the AS field is a stable RFC-defined token.
+func isInvalidGrant(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "invalid_grant")
 }
 
 // Revoke removes the cached token for cfg.Name. When cfg.RevokeURL is

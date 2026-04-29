@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"strings"
@@ -39,11 +40,18 @@ type commandExecution struct {
 }
 
 // runShellCommand executes a command string with env vars and stdin payload.
-// Polls every 20ms checking abort signal.
+// Cancellation propagates two ways: (a) ctx is wired into exec.CommandContext
+// so the OS process gets SIGKILL when ctx is cancelled, and (b) the polling
+// loop treats ctx.Done() symmetrically to the abort signal so the goroutine
+// returns promptly with Cancelled=true even before the kernel reaps the child.
 // Returns commandExecution with exit code, stdout, stderr.
-func runShellCommand(command string, env map[string]string, stdin []byte, abort *HookAbortSignal) commandExecution {
+func runShellCommand(ctx context.Context, command string, env map[string]string, stdin []byte, abort *HookAbortSignal) commandExecution {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	shell, args := shellArgs(command)
-	cmd := exec.Command(shell, args...)
+	cmd := exec.CommandContext(ctx, shell, args...)
+	setProcGroup(cmd)
 
 	// Inherit parent process environment, then add hook-specific vars.
 	// Rust's Command::env() adds to the inherited env; in Go, setting
@@ -83,6 +91,17 @@ func runShellCommand(command string, env map[string]string, stdin []byte, abort 
 	for {
 		select {
 		case err := <-done:
+			// If ctx was cancelled, exec.CommandContext will have signalled
+			// the process; surface that as Cancelled rather than an exit
+			// code so callers don't treat it as a hook failure.
+			if ctx.Err() != nil {
+				return commandExecution{
+					Stdout:    strings.TrimSpace(stdout.String()),
+					Stderr:    strings.TrimSpace(stderr.String()),
+					ExitCode:  -1,
+					Cancelled: true,
+				}
+			}
 			exitCode := 0
 			if err != nil {
 				if exitErr, ok := err.(*exec.ExitError); ok {
@@ -96,9 +115,18 @@ func runShellCommand(command string, env map[string]string, stdin []byte, abort 
 				Stderr:   strings.TrimSpace(stderr.String()),
 				ExitCode: exitCode,
 			}
+		case <-ctx.Done():
+			killProcessTree(cmd)
+			<-done // wait for goroutine to finish
+			return commandExecution{
+				Stdout:    strings.TrimSpace(stdout.String()),
+				Stderr:    strings.TrimSpace(stderr.String()),
+				ExitCode:  -1,
+				Cancelled: true,
+			}
 		case <-ticker.C:
 			if abort != nil && abort.IsAborted() {
-				_ = cmd.Process.Kill()
+				killProcessTree(cmd)
 				<-done // wait for goroutine to finish
 				return commandExecution{
 					Stdout:    strings.TrimSpace(stdout.String()),

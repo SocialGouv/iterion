@@ -65,6 +65,20 @@ type ClassifierCache = permissions.ClassifierCache
 // classifier errors and panics. Set via Manager.SetClassifierLogger.
 type ClassifierLogger = permissions.ClassifierLogger
 
+// LLMClassifierOption configures an LLMClassifier built via NewLLMClassifier.
+type LLMClassifierOption = permissions.LLMClassifierOption
+
+// DefaultLLMClassifierModel is the default classification model used by
+// NewLLMClassifier when no override is supplied.
+const DefaultLLMClassifierModel = permissions.DefaultLLMClassifierModel
+
+// DefaultLLMClassifierCacheSize is the FIFO eviction cap used by the default
+// classifier cache.
+const DefaultLLMClassifierCacheSize = permissions.DefaultLLMClassifierCacheSize
+
+// DefaultLLMClassifierCacheTTL is the TTL used by the default classifier cache.
+const DefaultLLMClassifierCacheTTL = permissions.DefaultLLMClassifierCacheTTL
+
 const (
 	ModeReadOnly         = permissions.ModeReadOnly
 	ModeWorkspaceWrite   = permissions.ModeWorkspaceWrite
@@ -117,5 +131,27 @@ var NewPermissionContext = permissions.NewPermissionContext
 // NewRuleClassifier returns a RuleClassifier with the documented default safe-list.
 var NewRuleClassifier = permissions.NewRuleClassifier
 
-// NewClassifierCache builds a TTL+FIFO classifier cache.
+// NewClassifierCache builds a TTL+FIFO classifier cache with the default size cap.
 var NewClassifierCache = permissions.NewClassifierCache
+
+// NewClassifierCacheWithSize builds a TTL+FIFO classifier cache with a custom size cap.
+var NewClassifierCacheWithSize = permissions.NewClassifierCacheWithSize
+
+// NewLLMClassifier builds an LLMClassifier with sensible defaults
+// (RuleClassifier fast-path, in-memory cache, fail-safe to Ask).
+var NewLLMClassifier = permissions.NewLLMClassifier
+
+// NewLLMClassifierManager returns a Manager pre-wired with an LLMClassifier.
+var NewLLMClassifierManager = permissions.NewLLMClassifierManager
+
+// WithFallbackClassifier installs a Classifier consulted before the LLM.
+var WithFallbackClassifier = permissions.WithFallbackClassifier
+
+// WithClassifierCache installs an in-memory decision cache.
+var WithClassifierCache = permissions.WithClassifierCache
+
+// WithMaxTokens caps the classifier model's response length.
+var WithMaxTokens = permissions.WithMaxTokens
+
+// WithLogger installs an io.Writer for classifier diagnostics.
+var WithLogger = permissions.WithLogger

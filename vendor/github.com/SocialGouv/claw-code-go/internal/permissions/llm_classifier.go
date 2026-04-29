@@ -22,6 +22,16 @@ import (
 // many tool/arg combinations.
 const DefaultLLMClassifierCacheSize = 1024
 
+// DefaultLLMClassifierModel is the default classification model used by
+// NewLLMClassifier when no override is supplied. Small, fast, cheap.
+const DefaultLLMClassifierModel = "anthropic/claude-haiku-4-5"
+
+// DefaultLLMClassifierCacheTTL is the cache TTL used when callers do not
+// override it. Decisions for autonomous-agent workloads can safely live
+// for the duration of a session; one hour bounds staleness without
+// thrashing.
+const DefaultLLMClassifierCacheTTL = time.Hour
+
 // LLMClassifier delegates ModeAuto allow/ask/deny decisions to a small
 // fast model. For each tool call, it sends a focused prompt asking
 // the model to classify the call given its name, arguments, and a
@@ -62,6 +72,79 @@ type LLMClassifier struct {
 	// for production debugging. nil → os.Stderr; pass io.Discard to
 	// silence.
 	Logger io.Writer
+}
+
+// LLMClassifierOption configures an LLMClassifier built via
+// NewLLMClassifier. Options are applied left-to-right; later options
+// override earlier ones.
+type LLMClassifierOption func(*LLMClassifier)
+
+// WithFallbackClassifier installs a Classifier consulted before the LLM.
+// When the fallback returns Allow or Deny, the LLM is not invoked. Pass
+// nil to clear any previously set fallback.
+func WithFallbackClassifier(c Classifier) LLMClassifierOption {
+	return func(lc *LLMClassifier) { lc.Fallback = c }
+}
+
+// WithClassifierCache installs an in-memory decision cache. Passing nil
+// disables caching; callers usually want NewClassifierCache(...).
+func WithClassifierCache(cache *ClassifierCache) LLMClassifierOption {
+	return func(lc *LLMClassifier) { lc.Cache = cache }
+}
+
+// WithMaxTokens caps the model's response length. Zero or negative
+// values fall back to the documented default (64 tokens).
+func WithMaxTokens(n int) LLMClassifierOption {
+	return func(lc *LLMClassifier) { lc.MaxTokens = n }
+}
+
+// WithLogger installs an io.Writer that receives diagnostic messages
+// (LLM call failures, malformed responses). Nil → os.Stderr; pass
+// io.Discard to silence.
+func WithLogger(w io.Writer) LLMClassifierOption {
+	return func(lc *LLMClassifier) { lc.Logger = w }
+}
+
+// NewLLMClassifier builds an LLMClassifier wired with sensible
+// defaults: the default RuleClassifier as fast-path fallback, an
+// in-memory cache (DefaultLLMClassifierCacheSize entries,
+// DefaultLLMClassifierCacheTTL TTL), and 64-token responses.
+//
+// model defaults to DefaultLLMClassifierModel when empty.
+//
+// Safety: if the LLM call fails for any reason (timeout, network,
+// malformed response), Classify returns DecisionAsk so the operator
+// sees the prompt instead of silently allowing or denying. Callers
+// MUST ensure ctx has a sensible deadline; the classifier does not
+// impose its own.
+func NewLLMClassifier(client api.APIClient, model string, opts ...LLMClassifierOption) *LLMClassifier {
+	if model == "" {
+		model = DefaultLLMClassifierModel
+	}
+	lc := &LLMClassifier{
+		Client:    client,
+		Model:     model,
+		Fallback:  NewRuleClassifier(),
+		Cache:     NewClassifierCache(DefaultLLMClassifierCacheTTL),
+		MaxTokens: 64,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(lc)
+		}
+	}
+	return lc
+}
+
+// NewLLMClassifierManager returns a Manager for the given mode pre-wired
+// with an LLMClassifier built from NewLLMClassifier. rules may be nil
+// (defaults to an empty Ruleset). The classifier is installed via
+// SetClassifier so the standard resolution order applies (policy →
+// classifier → legacy).
+func NewLLMClassifierManager(mode PermissionMode, rules *Ruleset, client api.APIClient, model string, opts ...LLMClassifierOption) *Manager {
+	m := NewManager(mode, rules)
+	m.SetClassifier(NewLLMClassifier(client, model, opts...))
+	return m
 }
 
 // logf is a nil-safe logger writer for the LLMClassifier.

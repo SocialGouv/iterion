@@ -25,16 +25,43 @@ func ExecuteReadImage(ctx context.Context, input map[string]any) (ReadImageResul
 	return intl.ExecuteReadImage(ctx, input)
 }
 
-// ----- screenshot (stub) -----
+// ----- screenshot -----
 
 // ScreenshotTool returns the tool definition for capturing a screenshot.
-// The underlying executor is a stub: ExecuteScreenshot always returns a
-// 501 *api.APIError until a platform backend lands.
+// Backed by ImageMagick `import` on Linux/X11; returns
+// ErrComputerUseUnavailable when prerequisites are missing.
 func ScreenshotTool() api.Tool { return intl.ScreenshotTool() }
 
-// ExecuteScreenshot is currently a stub returning *api.APIError{StatusCode:
-// 501}. The vision pipeline is ready end-to-end; only the capture backend
-// is missing.
+// ExecuteScreenshot captures the host display and returns it as a
+// base64-encoded image content block. Equivalent to ExecuteComputerUse with
+// action="screenshot".
 func ExecuteScreenshot(ctx context.Context, input map[string]any) (ReadImageResult, error) {
 	return intl.ExecuteScreenshot(ctx, input)
+}
+
+// ----- computer_use (full action surface) -----
+
+// ComputerUseResult is the typed payload of ExecuteComputerUse. For
+// screenshot actions, Blocks holds a single image ContentBlock and
+// Description is "screenshot". For input actions (click / type / key /
+// mouse_move / cursor_position / left_click_drag), Blocks is empty and
+// Description holds a short success summary.
+type ComputerUseResult = intl.ComputerUseResult
+
+// ErrComputerUseUnavailable is returned (wrapped) when the host environment
+// cannot support computer-use actions: no display server, missing required
+// binaries (xdotool, ImageMagick `import`), or unsupported OS. Use
+// errors.Is to detect.
+var ErrComputerUseUnavailable = intl.ErrComputerUseUnavailable
+
+// ComputerUseTool returns the tool definition for the computer_use tool.
+// Action verbs mirror Anthropic's computer_use_20241022 spec: screenshot,
+// left_click, right_click, middle_click, double_click, type, key,
+// mouse_move, cursor_position, left_click_drag.
+func ComputerUseTool() api.Tool { return intl.ComputerUseTool() }
+
+// ExecuteComputerUse dispatches the action verb in input["action"] to the
+// matching backend handler. See ComputerUseTool for the schema.
+func ExecuteComputerUse(ctx context.Context, input map[string]any) (ComputerUseResult, error) {
+	return intl.ExecuteComputerUse(ctx, input)
 }

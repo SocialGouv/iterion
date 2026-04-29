@@ -73,6 +73,26 @@ const (
 	// Stop fires once at session end (e.g. when the conversation loop tears
 	// down). It is purely observational; decisions are ignored.
 	Stop
+
+	// PrePluginInstall fires before a plugin is installed. A Block decision
+	// aborts the install: no files are copied, the registry is not mutated,
+	// and Install returns an error so callers can surface the refusal.
+	PrePluginInstall
+
+	// PostPluginInstall fires after Install completes — successfully or not.
+	// On success, Context.Plugin.Error is nil. On failure, it is set to the
+	// error returned by the install pipeline so observers can audit the
+	// outcome.
+	PostPluginInstall
+
+	// PrePluginUninstall fires before a plugin is uninstalled. A Block
+	// decision aborts the uninstall: the plugin remains in the registry and
+	// on disk.
+	PrePluginUninstall
+
+	// PostPluginUninstall fires after Uninstall completes — successfully or
+	// not. Context.Plugin.Error reflects the outcome.
+	PostPluginUninstall
 )
 
 // String returns the canonical name of an Event for diagnostics and logging.
@@ -92,9 +112,30 @@ func (e Event) String() string {
 		return "PostCompact"
 	case Stop:
 		return "Stop"
+	case PrePluginInstall:
+		return "PrePluginInstall"
+	case PostPluginInstall:
+		return "PostPluginInstall"
+	case PrePluginUninstall:
+		return "PrePluginUninstall"
+	case PostPluginUninstall:
+		return "PostPluginUninstall"
 	default:
 		return fmt.Sprintf("Event(%d)", int(e))
 	}
+}
+
+// PluginInfo carries plugin lifecycle metadata into the hook Context.
+// Defined in this package (rather than in `plugin/`) to keep the hooks
+// runner free of plugin-package imports and avoid an import cycle.
+type PluginInfo struct {
+	ID          string
+	Name        string
+	Version     string
+	Description string
+	InstallPath string
+	Source      string
+	Error       error
 }
 
 // Context is the payload passed to a Handler. Fields are populated only when
@@ -106,6 +147,9 @@ func (e Event) String() string {
 //   - UserPromptSubmit: UserPrompt.
 //   - PreCompact / PostCompact: MessageCount.
 //   - Stop: no event-specific fields.
+//   - PrePluginInstall / PostPluginInstall / PrePluginUninstall /
+//     PostPluginUninstall: Plugin (PluginInfo). Pre-events leave
+//     Plugin.Error nil; Post-events set it on failure.
 //
 // SessionID and WorkDir are populated on every event when the runtime knows
 // them. The struct is intentionally flat so it is cheap to copy by value;
@@ -120,6 +164,7 @@ type Context struct {
 	MessageCount int
 	SessionID    string
 	WorkDir      string
+	Plugin       *PluginInfo
 }
 
 // ActionKind enumerates what a Decision instructs the runtime to do.
@@ -226,6 +271,9 @@ func (r *Runner) Fire(ctx context.Context, hctx Context) (Decision, error) {
 	if r == nil {
 		return Decision{Action: ActionContinue}, nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	// Snapshot handler list under read lock so we don't hold the lock while
 	// invoking user code (which could block, take other locks, etc.).
@@ -241,16 +289,28 @@ func (r *Runner) Fire(ctx context.Context, hctx Context) (Decision, error) {
 		if err != nil {
 			fmt.Fprintf(logger, "[hooks] handler %d for %s returned error: %v (treating as Continue)\n",
 				i, hctx.Event, err)
+			// Continue past handler errors, but stop the chain if the
+			// context itself is cancelled — the remaining handlers cannot
+			// usefully run and we surface the cancellation to the caller.
+			if cerr := ctx.Err(); cerr != nil {
+				return Decision{Action: ActionContinue}, cerr
+			}
 			continue
 		}
 		if decision.Action == ActionContinue {
+			// Stop the chain if the context was cancelled mid-flight so a
+			// long handler list does not keep running after the conversation
+			// has been torn down.
+			if cerr := ctx.Err(); cerr != nil {
+				return Decision{Action: ActionContinue}, cerr
+			}
 			continue
 		}
 		// First non-Continue wins.
 		return decision, nil
 	}
 
-	return Decision{Action: ActionContinue}, nil
+	return Decision{Action: ActionContinue}, ctx.Err()
 }
 
 // errHandlerPanic is returned from safeInvoke when a handler panics.

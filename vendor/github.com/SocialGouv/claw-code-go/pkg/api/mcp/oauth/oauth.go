@@ -15,9 +15,15 @@ type Broker = intl.Broker
 type Option = intl.Option
 type Storage = intl.Storage
 
-func NewBroker(opts ...Option) *Broker      { return intl.NewBroker(opts...) }
-func NewStorage(path string) *Storage       { return intl.NewStorage(path) }
-func DefaultStoragePath() (string, error)   { return intl.DefaultStoragePath() }
+// ErrReauthRequired is returned by Broker.AcquireNoninteractive when
+// the cached token is unusable and cannot be refreshed silently.
+// Callers should fall back to interactive Acquire(), which runs the
+// full auth-code + PKCE flow.
+var ErrReauthRequired = intl.ErrReauthRequired
+
+func NewBroker(opts ...Option) *Broker    { return intl.NewBroker(opts...) }
+func NewStorage(path string) *Storage     { return intl.NewStorage(path) }
+func DefaultStoragePath() (string, error) { return intl.DefaultStoragePath() }
 
 // WithStorage routes token persistence through the given Storage.
 // Default: in-memory store unique to this process.

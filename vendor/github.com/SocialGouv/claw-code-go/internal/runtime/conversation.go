@@ -41,11 +41,11 @@ type ConversationLoop struct {
 	Usage           *usage.Tracker         // Phase 13 per-session token usage tracker
 	TelemetrySink   apikit.TelemetrySink   // Telemetry event sink (may be nil)
 	Tracer          *apikit.SessionTracer  // Session telemetry tracer (may be nil)
-	PluginRegistry    *plugin.PluginRegistry // Plugin registry (may be nil)
-	MarketplaceMgr    *plugins.Manager       // Marketplace plugin manager (may be nil; wired by main when CLAW_MARKETPLACE_URL is set)
-	HookRunner        *hooks.HookRunner      // Shell-command hook runner (may be nil; wired from config + plugin hooks)
-	LifecycleHooks    *lifehooks.Runner      // In-process programmatic hooks (may be nil; default no-op)
-	CommandRegistry   interface{}            // Slash command registry (may be nil; *commands.Registry)
+	PluginRegistry  *plugin.PluginRegistry // Plugin registry (may be nil)
+	MarketplaceMgr  *plugins.Manager       // Marketplace plugin manager (may be nil; wired by main when CLAW_MARKETPLACE_URL is set)
+	HookRunner      *hooks.HookRunner      // Shell-command hook runner (may be nil; wired from config + plugin hooks)
+	LifecycleHooks  *lifehooks.Runner      // In-process programmatic hooks (may be nil; default no-op)
+	CommandRegistry interface{}            // Slash command registry (may be nil; *commands.Registry)
 
 	// --- Batch 2: registries for CRUD tools ---
 	TaskRegistry   *task.Registry         // Task registry (may be nil)
@@ -57,6 +57,11 @@ type ConversationLoop struct {
 
 	// PlanModeActive tracks whether plan mode is currently engaged.
 	PlanModeActive bool
+
+	// Asker is consulted by the non-streaming ExecuteTool path for ask_user.
+	// May be nil (legacy fallback prints to stdout). The streaming path uses
+	// the TurnEventAskUser channel and is unaffected by this field.
+	Asker tools.Asker
 
 	// toolCallCount is the number of tool_use blocks executed in this session.
 	// Incremented atomically in ExecuteTool for goroutine safety (Rust parity:
@@ -934,7 +939,7 @@ func (loop *ConversationLoop) ExecuteToolQuiet(ctx context.Context, name string,
 		result, err = tools.ExecuteCronDelete(input, loop.CronRegistry)
 	// --- Batch 2: remote trigger ---
 	case "remote_trigger":
-		result, err = tools.ExecuteRemoteTrigger(input)
+		result, err = tools.ExecuteRemoteTrigger(ctx, input)
 	// --- Batch 2: orchestration tools ---
 	case "agent":
 		result, err = tools.ExecuteAgent(input)
@@ -1112,7 +1117,7 @@ func (loop *ConversationLoop) ExecuteTool(ctx context.Context, name string, inpu
 	var preHookPermOverride *hooks.PermissionDecision
 	var preHookPermReason string
 	if loop.HookRunner != nil {
-		hookResult := loop.HookRunner.RunPreToolUse(name, inputStr)
+		hookResult := loop.HookRunner.RunPreToolUse(ctx, name, inputStr)
 		if hookResult.IsDenied() || hookResult.IsFailed() || hookResult.IsCancelled() {
 			msg := strings.Join(hookResult.Messages, "\n")
 			if msg == "" {
@@ -1206,32 +1211,42 @@ func (loop *ConversationLoop) ExecuteTool(ctx context.Context, name string, inpu
 	case "web_search":
 		result, err = tools.ExecuteWebSearch(input)
 	case "ask_user":
-		q, ok := tools.AskUserInput(input)
-		if !ok {
-			err = fmt.Errorf("ask_user: 'question' is required")
+		var askText string
+		var askErr error
+		if loop.Asker != nil {
+			askText, askErr = tools.ExecuteAskUser(ctx, loop.Asker, input)
 		} else {
-			cb := tools.AskUserFallback(q)
-			askText := cb.Content[0].Text
-			fmt.Fprintf(os.Stdout, "%s\n", askText)
-			// Run post-hooks and telemetry for ask_user (matching Rust behavior).
-			askText = hooks.MergeHookFeedback(preHookMessages, askText, false)
-			postResult := loop.runPostToolHooks(name, inputStr, askText, false)
-			if postResult.IsDenied() || postResult.IsFailed() || postResult.IsCancelled() {
-				askText = hooks.MergeHookFeedback(postResult.Messages, askText, true)
-				cb.Content[0].Text = askText
-				cb.IsError = true
+			q, ok := tools.AskUserInput(input)
+			if !ok {
+				askErr = fmt.Errorf("ask_user: 'question' is required")
 			} else {
-				askText = hooks.MergeHookFeedback(postResult.Messages, askText, false)
-				cb.Content[0].Text = askText
+				askText = tools.AskUserFallback(q).Content[0].Text
+				fmt.Fprintf(os.Stdout, "%s\n", askText)
 			}
-			if loop.Tracer != nil {
-				loop.Tracer.Record("tool_execute_end", map[string]any{
-					"tool_name": name,
-					"is_error":  cb.IsError,
-				})
-			}
-			return cb
 		}
+		cb := api.ContentBlock{Type: "tool_result"}
+		if askErr != nil {
+			cb.Content = []api.ContentBlock{{Type: "text", Text: askErr.Error()}}
+			cb.IsError = true
+		} else {
+			cb.Content = []api.ContentBlock{{Type: "text", Text: askText}}
+		}
+		askText = hooks.MergeHookFeedback(preHookMessages, cb.Content[0].Text, cb.IsError)
+		postResult := loop.runPostToolHooks(ctx, name, inputStr, askText, cb.IsError)
+		if postResult.IsDenied() || postResult.IsFailed() || postResult.IsCancelled() {
+			askText = hooks.MergeHookFeedback(postResult.Messages, askText, true)
+			cb.IsError = true
+		} else {
+			askText = hooks.MergeHookFeedback(postResult.Messages, askText, false)
+		}
+		cb.Content[0].Text = askText
+		if loop.Tracer != nil {
+			loop.Tracer.Record("tool_execute_end", map[string]any{
+				"tool_name": name,
+				"is_error":  cb.IsError,
+			})
+		}
+		return cb
 	case "todo_write":
 		result, err = tools.ExecuteTodoWrite(input)
 	// --- Batch 2: simple stateless tools ---
@@ -1286,7 +1301,7 @@ func (loop *ConversationLoop) ExecuteTool(ctx context.Context, name string, inpu
 		result, err = tools.ExecuteCronDelete(input, loop.CronRegistry)
 	// --- Batch 2: remote trigger ---
 	case "remote_trigger":
-		result, err = tools.ExecuteRemoteTrigger(input)
+		result, err = tools.ExecuteRemoteTrigger(ctx, input)
 	// --- Batch 2: orchestration tools ---
 	case "agent":
 		result, err = tools.ExecuteAgent(input)
@@ -1341,7 +1356,7 @@ func (loop *ConversationLoop) ExecuteTool(ctx context.Context, name string, inpu
 							fmt.Fprintf(os.Stdout, "%s\n", ptResult)
 						}
 						ptText = hooks.MergeHookFeedback(preHookMessages, ptText, ptIsError)
-						postResult := loop.runPostToolHooks(name, inputStr, ptText, ptIsError)
+						postResult := loop.runPostToolHooks(ctx, name, inputStr, ptText, ptIsError)
 						if postResult.IsDenied() || postResult.IsFailed() || postResult.IsCancelled() {
 							ptIsError = true
 						}
@@ -1371,7 +1386,7 @@ func (loop *ConversationLoop) ExecuteTool(ctx context.Context, name string, inpu
 					fmt.Fprintf(os.Stderr, "[MCP tool %s error]: %v\n", name, mcpErr)
 					mcpErrText := fmt.Sprintf("Error: %v", mcpErr)
 					mcpErrText = hooks.MergeHookFeedback(preHookMessages, mcpErrText, true)
-					postResult := loop.runPostToolHooks(name, inputStr, mcpErrText, true)
+					postResult := loop.runPostToolHooks(ctx, name, inputStr, mcpErrText, true)
 					mcpErrText = hooks.MergeHookFeedback(postResult.Messages, mcpErrText, true)
 					return api.ContentBlock{
 						Type:    "tool_result",
@@ -1383,7 +1398,7 @@ func (loop *ConversationLoop) ExecuteTool(ctx context.Context, name string, inpu
 				fmt.Fprintf(os.Stdout, "%s\n", mcpText)
 				mcpIsError := mcpResult.IsError
 				mcpText = hooks.MergeHookFeedback(preHookMessages, mcpText, false)
-				postResult := loop.runPostToolHooks(name, inputStr, mcpText, mcpIsError)
+				postResult := loop.runPostToolHooks(ctx, name, inputStr, mcpText, mcpIsError)
 				if postResult.IsDenied() || postResult.IsFailed() || postResult.IsCancelled() {
 					mcpIsError = true
 				}
@@ -1412,7 +1427,7 @@ func (loop *ConversationLoop) ExecuteTool(ctx context.Context, name string, inpu
 	text = hooks.MergeHookFeedback(preHookMessages, text, false)
 
 	// --- PostToolUse / PostToolUseFailure hooks ---
-	postResult := loop.runPostToolHooks(name, inputStr, text, isError)
+	postResult := loop.runPostToolHooks(ctx, name, inputStr, text, isError)
 	if postResult.IsDenied() || postResult.IsFailed() || postResult.IsCancelled() {
 		isError = true
 	}
@@ -1535,15 +1550,16 @@ func (loop *ConversationLoop) fireLifecyclePostToolUse(ctx context.Context, name
 
 // runPostToolHooks runs PostToolUse or PostToolUseFailure hooks if a HookRunner is configured.
 // Returns the HookRunResult so callers can check for denial/failure/cancellation
-// and merge hook messages into tool output (matching Rust behavior).
-func (loop *ConversationLoop) runPostToolHooks(toolName, toolInput, toolOutput string, isError bool) hooks.HookRunResult {
+// and merge hook messages into tool output (matching Rust behavior). The
+// caller's ctx is propagated so cancellation aborts in-flight hook scripts.
+func (loop *ConversationLoop) runPostToolHooks(ctx context.Context, toolName, toolInput, toolOutput string, isError bool) hooks.HookRunResult {
 	if loop.HookRunner == nil {
 		return hooks.Allow(nil)
 	}
 	if isError {
-		return loop.HookRunner.RunPostToolUseFailure(toolName, toolInput, toolOutput)
+		return loop.HookRunner.RunPostToolUseFailure(ctx, toolName, toolInput, toolOutput)
 	}
-	return loop.HookRunner.RunPostToolUse(toolName, toolInput, toolOutput, false)
+	return loop.HookRunner.RunPostToolUse(ctx, toolName, toolInput, toolOutput, false)
 }
 
 // configMap returns a flat map of configuration values for the Config tool.

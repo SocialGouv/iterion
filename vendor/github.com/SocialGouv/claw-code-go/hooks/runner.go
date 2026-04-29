@@ -1,6 +1,7 @@
 package hooks
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
@@ -35,49 +36,53 @@ func NewHookRunner(config HookConfig) *HookRunner {
 	return &HookRunner{config: config}
 }
 
-// RunPreToolUse runs hooks for the PreToolUse event.
-func (r *HookRunner) RunPreToolUse(toolName, toolInput string) HookRunResult {
-	return r.RunPreToolUseWithContext(toolName, toolInput, nil, nil)
+// RunPreToolUse runs hooks for the PreToolUse event. Cancelling ctx kills any
+// running hook script and surfaces a Cancelled result.
+func (r *HookRunner) RunPreToolUse(ctx context.Context, toolName, toolInput string) HookRunResult {
+	return r.RunPreToolUseWithContext(ctx, toolName, toolInput, nil, nil)
 }
 
-// RunPostToolUse runs hooks for the PostToolUse event.
-func (r *HookRunner) RunPostToolUse(toolName, toolInput, toolOutput string, isError bool) HookRunResult {
-	return r.RunPostToolUseWithContext(toolName, toolInput, toolOutput, isError, nil, nil)
+// RunPostToolUse runs hooks for the PostToolUse event. Cancelling ctx kills
+// any running hook script and surfaces a Cancelled result.
+func (r *HookRunner) RunPostToolUse(ctx context.Context, toolName, toolInput, toolOutput string, isError bool) HookRunResult {
+	return r.RunPostToolUseWithContext(ctx, toolName, toolInput, toolOutput, isError, nil, nil)
 }
 
 // RunPostToolUseFailure runs hooks for the PostToolUseFailure event.
-func (r *HookRunner) RunPostToolUseFailure(toolName, toolInput, toolError string) HookRunResult {
-	return r.RunPostToolUseFailureWithContext(toolName, toolInput, toolError, nil, nil)
+// Cancelling ctx kills any running hook script and surfaces a Cancelled
+// result.
+func (r *HookRunner) RunPostToolUseFailure(ctx context.Context, toolName, toolInput, toolError string) HookRunResult {
+	return r.RunPostToolUseFailureWithContext(ctx, toolName, toolInput, toolError, nil, nil)
 }
 
 // RunPreToolUseWithSignal runs PreToolUse hooks with an abort signal but no progress reporter.
-func (r *HookRunner) RunPreToolUseWithSignal(toolName, toolInput string, abort *HookAbortSignal) HookRunResult {
-	return r.RunPreToolUseWithContext(toolName, toolInput, abort, nil)
+func (r *HookRunner) RunPreToolUseWithSignal(ctx context.Context, toolName, toolInput string, abort *HookAbortSignal) HookRunResult {
+	return r.RunPreToolUseWithContext(ctx, toolName, toolInput, abort, nil)
 }
 
 // RunPostToolUseWithSignal runs PostToolUse hooks with an abort signal but no progress reporter.
-func (r *HookRunner) RunPostToolUseWithSignal(toolName, toolInput, toolOutput string, isError bool, abort *HookAbortSignal) HookRunResult {
-	return r.RunPostToolUseWithContext(toolName, toolInput, toolOutput, isError, abort, nil)
+func (r *HookRunner) RunPostToolUseWithSignal(ctx context.Context, toolName, toolInput, toolOutput string, isError bool, abort *HookAbortSignal) HookRunResult {
+	return r.RunPostToolUseWithContext(ctx, toolName, toolInput, toolOutput, isError, abort, nil)
 }
 
 // RunPostToolUseFailureWithSignal runs PostToolUseFailure hooks with an abort signal but no progress reporter.
-func (r *HookRunner) RunPostToolUseFailureWithSignal(toolName, toolInput, toolError string, abort *HookAbortSignal) HookRunResult {
-	return r.RunPostToolUseFailureWithContext(toolName, toolInput, toolError, abort, nil)
+func (r *HookRunner) RunPostToolUseFailureWithSignal(ctx context.Context, toolName, toolInput, toolError string, abort *HookAbortSignal) HookRunResult {
+	return r.RunPostToolUseFailureWithContext(ctx, toolName, toolInput, toolError, abort, nil)
 }
 
 // RunPreToolUseWithContext runs PreToolUse hooks with abort signal and progress reporter.
-func (r *HookRunner) RunPreToolUseWithContext(toolName, toolInput string, abort *HookAbortSignal, reporter HookProgressReporter) HookRunResult {
-	return r.runHooks(PreToolUse, toolName, toolInput, nil, false, abort, reporter)
+func (r *HookRunner) RunPreToolUseWithContext(ctx context.Context, toolName, toolInput string, abort *HookAbortSignal, reporter HookProgressReporter) HookRunResult {
+	return r.runHooks(ctx, PreToolUse, toolName, toolInput, nil, false, abort, reporter)
 }
 
 // RunPostToolUseWithContext runs PostToolUse hooks with abort signal and progress reporter.
-func (r *HookRunner) RunPostToolUseWithContext(toolName, toolInput, toolOutput string, isError bool, abort *HookAbortSignal, reporter HookProgressReporter) HookRunResult {
-	return r.runHooks(PostToolUse, toolName, toolInput, &toolOutput, isError, abort, reporter)
+func (r *HookRunner) RunPostToolUseWithContext(ctx context.Context, toolName, toolInput, toolOutput string, isError bool, abort *HookAbortSignal, reporter HookProgressReporter) HookRunResult {
+	return r.runHooks(ctx, PostToolUse, toolName, toolInput, &toolOutput, isError, abort, reporter)
 }
 
 // RunPostToolUseFailureWithContext runs PostToolUseFailure hooks with abort signal and progress reporter.
-func (r *HookRunner) RunPostToolUseFailureWithContext(toolName, toolInput, toolError string, abort *HookAbortSignal, reporter HookProgressReporter) HookRunResult {
-	return r.runHooks(PostToolUseFailure, toolName, toolInput, &toolError, true, abort, reporter)
+func (r *HookRunner) RunPostToolUseFailureWithContext(ctx context.Context, toolName, toolInput, toolError string, abort *HookAbortSignal, reporter HookProgressReporter) HookRunResult {
+	return r.runHooks(ctx, PostToolUseFailure, toolName, toolInput, &toolError, true, abort, reporter)
 }
 
 // commandsForEvent returns the command list for the given event type.
@@ -99,7 +104,10 @@ func (r *HookRunner) commandsForEvent(event HookEvent) []string {
 // Rust flow: run_command → parse stdout → with_fallback_message (per-command) →
 // merge_parsed_hook_output (extends result.messages). We replicate this by
 // applying fallback to parsed.Messages BEFORE accumulating into allMessages.
-func (r *HookRunner) runHooks(event HookEvent, toolName, toolInput string, toolOutput *string, isError bool, abort *HookAbortSignal, reporter HookProgressReporter) HookRunResult {
+func (r *HookRunner) runHooks(ctx context.Context, event HookEvent, toolName, toolInput string, toolOutput *string, isError bool, abort *HookAbortSignal, reporter HookProgressReporter) HookRunResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	commands := r.commandsForEvent(event)
 	if len(commands) == 0 {
 		return Allow(nil)
@@ -110,7 +118,15 @@ func (r *HookRunner) runHooks(event HookEvent, toolName, toolInput string, toolO
 	var permReason string
 	var updatedInput string
 
-	// Rust checks abort once before entering the loop (hooks.rs:324).
+	// Rust checks abort once before entering the loop (hooks.rs:324). Honour
+	// a pre-cancelled ctx symmetrically: callers that hand us a dead context
+	// must not see hook scripts launched.
+	if ctx.Err() != nil {
+		return HookRunResult{
+			Cancelled: true,
+			Messages:  []string{fmt.Sprintf("%s hook cancelled before execution", event)},
+		}
+	}
 	if abort != nil && abort.IsAborted() {
 		return HookRunResult{
 			Cancelled: true,
@@ -148,7 +164,7 @@ func (r *HookRunner) runHooks(event HookEvent, toolName, toolInput string, toolO
 		payload := BuildPayload(event, toolName, toolInput, toolOutput, isError)
 
 		// Execute command.
-		result := runShellCommand(command, env, payload, abort)
+		result := runShellCommand(ctx, command, env, payload, abort)
 
 		// Handle cancellation during execution (Rust hooks.rs:473-478).
 		if result.Cancelled {

@@ -395,18 +395,21 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 		// responses stream may interleave multiple message items with
 		// function_call items; each new message item gets its own block
 		// index so deltas from a later item don't collapse into the first
-		// text block.
+		// text block. Multiple text blocks may be open simultaneously —
+		// each one is closed only by its own response.output_text.done
+		// event or by the post-loop sweep.
 		textByItem = make(map[string]*pendingText)
-		// activeTextItem tracks the most recently started/active text item
-		// id, so we can close it when a new message item with a different
-		// id starts.
-		activeTextItem string
 		// Map keyed by item_id (function_call output item id) to track
 		// per-tool-call state. Some events use "item_id" directly, others
 		// reach us via the Item embedded in output_item.added.
-		fnByItem     = make(map[string]*sseutil.ToolCallAccumulator)
-		stopReason   = "end_turn"
-		outputTokens int
+		fnByItem = make(map[string]*sseutil.ToolCallAccumulator)
+		// textOpenOrder records the order text blocks were opened in, so
+		// the post-loop sweep emits content_block_stop in a deterministic
+		// (open-order) sequence rather than Go's randomised map order.
+		textOpenOrder []string
+		fnOpenOrder   []string
+		stopReason    = "end_turn"
+		outputTokens  int
 	)
 
 	closeText := func(itemID string) bool {
@@ -418,13 +421,7 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 			return true
 		}
 		t.closed = true
-		if !send(api.StreamEvent{Type: api.EventContentBlockStop, Index: t.blockIndex}) {
-			return false
-		}
-		if activeTextItem == itemID {
-			activeTextItem = ""
-		}
-		return true
+		return send(api.StreamEvent{Type: api.EventContentBlockStop, Index: t.blockIndex})
 	}
 
 	for scanner.Scan() {
@@ -458,18 +455,18 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 			}
 			switch ev.Item.Type {
 			case "function_call":
-				// A new non-text item is starting: close any active text
-				// block before allocating the function-call block index so
-				// indices remain monotonically increasing in the order
-				// blocks open and close.
-				if activeTextItem != "" {
-					if !closeText(activeTextItem) {
-						return
-					}
+				// Each function_call item gets its own block index. Block
+				// indices for sibling items (text, other tool calls,
+				// reasoning) are independent — opening this block does
+				// NOT close anything else. Text items remain open until
+				// their own response.output_text.done.
+				if _, exists := fnByItem[ev.Item.ID]; exists {
+					continue
 				}
 				acc := sseutil.NewToolCallAccumulator(nextBlockIndex)
 				nextBlockIndex++
 				fnByItem[ev.Item.ID] = acc
+				fnOpenOrder = append(fnOpenOrder, ev.Item.ID)
 				if ev.Item.CallID != "" && ev.Item.Name != "" {
 					if !send(acc.MarkStarted(ev.Item.CallID, ev.Item.Name)) {
 						return
@@ -477,16 +474,10 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 				}
 				stopReason = "tool_use"
 			case "message":
-				// New message item: if a previous text item is still
-				// active and has a different id, close it before opening a
-				// new text block. Reserve a fresh block index for this
-				// item; the actual content_block_start will be emitted on
-				// the first delta.
-				if activeTextItem != "" && activeTextItem != ev.Item.ID {
-					if !closeText(activeTextItem) {
-						return
-					}
-				}
+				// Reserve a block index for this message item. The
+				// content_block_start is emitted on the first delta, and
+				// the block stays open until its own
+				// response.output_text.done.
 				if _, exists := textByItem[ev.Item.ID]; !exists {
 					textByItem[ev.Item.ID] = &pendingText{blockIndex: nextBlockIndex}
 					nextBlockIndex++
@@ -500,25 +491,19 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 			t, ok := textByItem[itemID]
 			if !ok {
 				// Fallback: some streams may emit text deltas without a
-				// preceding output_item.added for the message (or with an
-				// empty item id). Allocate a block on demand so deltas
-				// aren't dropped.
-				if activeTextItem != "" && activeTextItem != itemID {
-					if !closeText(activeTextItem) {
-						return
-					}
-				}
+				// preceding output_item.added for the message. Allocate a
+				// block on demand so deltas aren't dropped.
 				t = &pendingText{blockIndex: nextBlockIndex}
 				nextBlockIndex++
 				textByItem[itemID] = t
 			}
 			if t.closed {
-				// Defensive: never reopen a closed block.
+				// The item's own done event already fired; ignore late deltas.
 				continue
 			}
 			if !t.started {
 				t.started = true
-				activeTextItem = itemID
+				textOpenOrder = append(textOpenOrder, itemID)
 				if !send(api.StreamEvent{
 					Type:         api.EventContentBlockStart,
 					Index:        t.blockIndex,
@@ -526,14 +511,6 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 				}) {
 					return
 				}
-			} else if activeTextItem != itemID {
-				// Different text item became active without an explicit
-				// open event; close the old one to keep block accounting
-				// consistent.
-				if !closeText(activeTextItem) {
-					return
-				}
-				activeTextItem = itemID
 			}
 			if ev.Delta != "" {
 				if !send(api.StreamEvent{
@@ -547,8 +524,8 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 
 		case "response.output_text.done":
 			// Close this specific text block. Other text blocks (from
-			// later message items) remain open until their own done event
-			// or the post-loop sweep.
+			// concurrent message items) remain open until their own done
+			// event or the post-loop sweep.
 			if !closeText(ev.ItemID) {
 				return
 			}
@@ -577,19 +554,22 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 	}
 
 	// Close any text blocks that were opened but not explicitly closed
-	// by a response.output_text.done event.
-	for id, t := range textByItem {
-		if t.started && !t.closed {
-			t.closed = true
-			if !send(api.StreamEvent{Type: api.EventContentBlockStop, Index: t.blockIndex}) {
-				return
-			}
-			if activeTextItem == id {
-				activeTextItem = ""
-			}
+	// by a response.output_text.done event, in the order they were opened.
+	for _, id := range textOpenOrder {
+		t := textByItem[id]
+		if t == nil || !t.started || t.closed {
+			continue
+		}
+		t.closed = true
+		if !send(api.StreamEvent{Type: api.EventContentBlockStop, Index: t.blockIndex}) {
+			return
 		}
 	}
-	for _, acc := range fnByItem {
+	for _, id := range fnOpenOrder {
+		acc := fnByItem[id]
+		if acc == nil {
+			continue
+		}
 		if !sendAll(acc.Finish()) {
 			return
 		}

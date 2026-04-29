@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	hooks "github.com/SocialGouv/claw-code-go/internal/hooks"
 )
 
 // PluginManagerConfig holds discovery configuration.
@@ -84,10 +87,23 @@ type InstalledPluginRegistry struct {
 type PluginManager struct {
 	config   PluginManagerConfig
 	registry InstalledPluginRegistry
+	hooks    *hooks.Runner
+}
+
+// ManagerOption configures a PluginManager at construction time.
+type ManagerOption func(*PluginManager)
+
+// WithHooks attaches a lifecycle hooks Runner to the PluginManager. The
+// runner receives Pre/Post Install and Pre/Post Uninstall events. Passing
+// nil is a documented no-op (matches default behavior).
+func WithHooks(r *hooks.Runner) ManagerOption {
+	return func(m *PluginManager) {
+		m.hooks = r
+	}
 }
 
 // NewPluginManager creates a plugin manager and loads the installed plugin registry.
-func NewPluginManager(config PluginManagerConfig) (*PluginManager, error) {
+func NewPluginManager(config PluginManagerConfig, opts ...ManagerOption) (*PluginManager, error) {
 	if config.InstallRoot == "" {
 		config.InstallRoot = filepath.Join(config.ConfigHome, "plugins", "installed")
 	}
@@ -126,6 +142,10 @@ func NewPluginManager(config PluginManagerConfig) (*PluginManager, error) {
 				m.config.EnabledPlugins = saved
 			}
 		}
+	}
+
+	for _, opt := range opts {
+		opt(m)
 	}
 
 	return m, nil
@@ -228,8 +248,20 @@ func (m *PluginManager) discoverInDir(dir string, kind PluginKind, source string
 }
 
 // Install installs a plugin from a source (local path or git URL).
+// Equivalent to InstallContext(context.Background(), source).
 func (m *PluginManager) Install(source string) (*InstallOutcome, error) {
-	// Check if source is a git URL
+	return m.InstallContext(context.Background(), source)
+}
+
+// InstallContext installs a plugin and threads ctx through any registered
+// lifecycle hooks. PrePluginInstall fires before any filesystem mutation; a
+// Block decision aborts the install. PostPluginInstall always fires (success
+// or failure) so observers can audit the outcome.
+func (m *PluginManager) InstallContext(ctx context.Context, source string) (*InstallOutcome, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") ||
 		strings.HasPrefix(source, "git@") || strings.HasSuffix(source, ".git") {
 		return nil, &PluginError{
@@ -238,13 +270,11 @@ func (m *PluginManager) Install(source string) (*InstallOutcome, error) {
 		}
 	}
 
-	// Local path copy
 	source, err := filepath.Abs(source)
 	if err != nil {
 		return nil, &PluginError{Kind: ErrIO, Message: "invalid source path", Cause: err}
 	}
 
-	// Load and validate manifest
 	manifestPath := filepath.Join(source, "plugin.json")
 	manifest, err := LoadManifest(manifestPath)
 	if err != nil {
@@ -254,12 +284,41 @@ func (m *PluginManager) Install(source string) (*InstallOutcome, error) {
 	id := pluginID(manifest.Name, externalMarketplace)
 	installDir := filepath.Join(m.config.InstallRoot, sanitizePluginID(id))
 
-	// Remove existing installation if present.
+	preInfo := &hooks.PluginInfo{
+		ID:          id,
+		Name:        manifest.Name,
+		Version:     manifest.Version,
+		Description: manifest.Description,
+		InstallPath: installDir,
+		Source:      source,
+	}
+	if dec, _ := m.fireHook(ctx, hooks.PrePluginInstall, preInfo); dec.Action == hooks.ActionBlock {
+		return nil, &PluginError{
+			Kind:    ErrCommandFailed,
+			Message: fmt.Sprintf("plugin install blocked by hook: %s", dec.Reason),
+		}
+	}
+
+	outcome, installErr := m.doInstall(source, manifest, id, installDir)
+
+	postInfo := *preInfo
+	postInfo.Error = installErr
+	_, _ = m.fireHook(ctx, hooks.PostPluginInstall, &postInfo)
+
+	if installErr != nil {
+		return nil, installErr
+	}
+	return outcome, nil
+}
+
+// doInstall performs the filesystem + registry mutations for an install. It
+// is split out so InstallContext can wrap it with Pre/Post hook firings and
+// guarantee Post fires whether or not the install succeeds.
+func (m *PluginManager) doInstall(source string, manifest *PluginManifest, id, installDir string) (*InstallOutcome, error) {
 	if installDir != "" {
 		_ = os.RemoveAll(installDir)
 	}
 
-	// Copy plugin directory
 	if err := copyDir(source, installDir); err != nil {
 		return nil, &PluginError{
 			Kind:    ErrIO,
@@ -286,7 +345,6 @@ func (m *PluginManager) Install(source string) (*InstallOutcome, error) {
 		return nil, err
 	}
 
-	// Auto-enable installed plugin (matching Rust behavior).
 	if err := m.Enable(id); err != nil {
 		return nil, err
 	}
@@ -299,7 +357,19 @@ func (m *PluginManager) Install(source string) (*InstallOutcome, error) {
 }
 
 // Uninstall removes an installed plugin.
+// Equivalent to UninstallContext(context.Background(), pluginID).
 func (m *PluginManager) Uninstall(pluginID string) error {
+	return m.UninstallContext(context.Background(), pluginID)
+}
+
+// UninstallContext removes an installed plugin and threads ctx through any
+// registered lifecycle hooks. A PrePluginUninstall Block decision aborts the
+// uninstall (the plugin remains installed). PostPluginUninstall always fires.
+func (m *PluginManager) UninstallContext(ctx context.Context, pluginID string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	record, ok := m.registry.Plugins[pluginID]
 	if !ok {
 		return &PluginError{
@@ -308,6 +378,31 @@ func (m *PluginManager) Uninstall(pluginID string) error {
 		}
 	}
 
+	preInfo := &hooks.PluginInfo{
+		ID:          record.ID,
+		Name:        record.Name,
+		Version:     record.Version,
+		Description: record.Description,
+		InstallPath: record.InstallPath,
+		Source:      record.Source.SourcePath(),
+	}
+	if dec, _ := m.fireHook(ctx, hooks.PrePluginUninstall, preInfo); dec.Action == hooks.ActionBlock {
+		return &PluginError{
+			Kind:    ErrCommandFailed,
+			Message: fmt.Sprintf("plugin uninstall blocked by hook: %s", dec.Reason),
+		}
+	}
+
+	uninstallErr := m.doUninstall(record, pluginID)
+
+	postInfo := *preInfo
+	postInfo.Error = uninstallErr
+	_, _ = m.fireHook(ctx, hooks.PostPluginUninstall, &postInfo)
+
+	return uninstallErr
+}
+
+func (m *PluginManager) doUninstall(record InstalledPluginRecord, pluginID string) error {
 	if err := os.RemoveAll(record.InstallPath); err != nil {
 		return &PluginError{
 			Kind:    ErrIO,
@@ -318,6 +413,15 @@ func (m *PluginManager) Uninstall(pluginID string) error {
 
 	delete(m.registry.Plugins, pluginID)
 	return m.saveRegistry()
+}
+
+// fireHook is a nil-safe wrapper around hooks.Runner.Fire. When no Runner is
+// installed it returns ActionContinue without invoking anything.
+func (m *PluginManager) fireHook(ctx context.Context, event hooks.Event, info *hooks.PluginInfo) (hooks.Decision, error) {
+	if m == nil || m.hooks == nil {
+		return hooks.Decision{Action: hooks.ActionContinue}, nil
+	}
+	return m.hooks.Fire(ctx, hooks.Context{Event: event, Plugin: info})
 }
 
 // Enable marks a plugin as enabled and persists the state.
