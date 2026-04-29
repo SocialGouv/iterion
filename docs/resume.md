@@ -106,6 +106,69 @@ The `--force` flag bypasses this check. This is useful when:
 
 The hash mismatch is logged as a warning when `--force` is used.
 
+## ask_user Pause/Resume
+
+When an LLM calls the `ask_user` tool mid-run, iterion pauses the workflow and
+surfaces the question to the dev's terminal. Resume routes the answer back to
+the same node.
+
+The mechanics differ between in-process (`claw`) and CLI (`claude_code`,
+`codex`) backends because only the in-process path can persist conversation
+state.
+
+### `claw` backend — native conversation persistence
+
+At the moment the LLM emits `tool_use(ask_user)`, the generation layer captures:
+
+- The full `[]api.Message` history (the original user prompt, every prior
+  tool_use/tool_result pair, and the assistant message holding the pending
+  `ask_user` tool_use).
+- The `tool_use.id` of the pending call.
+
+These travel up through `delegate.ErrAskUser` → `delegate.Result`
+(`PendingConversation`, `PendingToolUseID`) → `model.ErrNeedsInteraction` →
+`store.Checkpoint` (`BackendConversation`, `BackendPendingToolUseID`).
+
+On resume, the runtime relays the persisted blob back through `nodeInput`
+(`_resume_conversation`, `_resume_pending_tool_use_id`, `_resume_answer`) into
+`delegate.Task.Resume*`. The claw backend then takes a resume path: it skips
+the system+user prompt rendering and instead replays the persisted conversation
+plus a single user message containing a `tool_result` content block answering
+the captured `tool_use`. The agent loop continues from where it left off.
+
+Multi-turn `ask_user` accumulates naturally: each pause snapshots the live
+message slice, which already contains every prior tool_result. A run with
+three pauses persists a conversation of growing length, never losing earlier
+exchanges.
+
+### CLI backends (`claude_code`, `codex`) — prompt-side fallback
+
+CLI backends spawn `claude` / `codex` subprocesses and cannot persist API
+message state across pauses. They use the existing fallback: the runtime
+injects `_prior_ask_user_question` / `_prior_ask_user_answer` into `nodeInput`,
+and `prependPriorAskUser` adds a `[PRIOR INTERACTION]` block to the user
+prompt so the (stateless) LLM knows what it asked and what the human answered.
+
+For `claude_code`, the `ask_user` tool is exposed natively via an in-process
+MCP self-server (`iterion __mcp-ask-user` subcommand) plus a `PreToolUse` hook
+that captures the question and short-circuits the SDK session. The
+`[INTERACTION PROTOCOL]` JSON-output suffix remains active as a graceful
+fallback if the LLM bypasses the native tool.
+
+### Field reference
+
+| Layer | Field | Type |
+|-------|-------|------|
+| `delegate.ErrAskUser` | `Question`, `PendingToolUseID`, `Conversation` | string, string, json.RawMessage |
+| `delegate.Task` | `ResumeConversation`, `ResumePendingToolUseID`, `ResumeAnswer` | json.RawMessage, string, string |
+| `delegate.Result` | `PendingConversation`, `PendingToolUseID` | json.RawMessage, string |
+| `model.ErrNeedsInteraction` | `Conversation`, `PendingToolUseID` | json.RawMessage, string |
+| `store.Checkpoint` | `BackendConversation`, `BackendPendingToolUseID` | json.RawMessage, string |
+| `nodeInput` (runtime↔executor) | `_resume_conversation`, `_resume_pending_tool_use_id`, `_resume_answer` | json.RawMessage, string, string |
+
+The `json.RawMessage` keeps the conversation shape backend-specific; only the
+claw backend marshals/unmarshals it as `[]api.Message`.
+
 ## Implementation Details
 
 ### Store Methods
