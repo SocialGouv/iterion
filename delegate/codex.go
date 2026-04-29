@@ -13,6 +13,7 @@ import (
 
 	codexsdk "github.com/ethpandaops/codex-agent-sdk-go"
 
+	"github.com/SocialGouv/iterion/cost"
 	iterlog "github.com/SocialGouv/iterion/log"
 )
 
@@ -125,9 +126,12 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		SessionID:   resultMsg.SessionID,
 	}
 
+	var totalIn, totalOut int
 	if resultMsg.Usage != nil {
-		result.Tokens = resultMsg.Usage.InputTokens + resultMsg.Usage.OutputTokens
+		totalIn += resultMsg.Usage.InputTokens
+		totalOut += resultMsg.Usage.OutputTokens
 	}
+	result.Tokens = totalIn + totalOut
 
 	if resultMsg.IsError && resultMsg.Subtype != "success" {
 		return result, fmt.Errorf("delegate: codex error: subtype=%s", resultMsg.Subtype)
@@ -151,7 +155,9 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 				return result, fmt.Errorf("delegate: codex formatting pass failed: %w", fmtErr)
 			}
 			if fmtRM.Usage != nil {
-				result.Tokens += fmtRM.Usage.InputTokens + fmtRM.Usage.OutputTokens
+				totalIn += fmtRM.Usage.InputTokens
+				totalOut += fmtRM.Usage.OutputTokens
+				result.Tokens = totalIn + totalOut
 			}
 			result.FormattingPassUsed = true
 
@@ -163,6 +169,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 			result.Output = output
 			result.RawOutputLen = rawLen
 			result.ParseFallback = fallback
+			cost.Annotate(result.Output, task.Model, totalIn, totalOut)
 			return result, nil
 		}
 	}
@@ -180,7 +187,9 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		result.Duration += fmtDuration
 		if fmtErr == nil {
 			if fmtRM.Usage != nil {
-				result.Tokens += fmtRM.Usage.InputTokens + fmtRM.Usage.OutputTokens
+				totalIn += fmtRM.Usage.InputTokens
+				totalOut += fmtRM.Usage.OutputTokens
+				result.Tokens = totalIn + totalOut
 			}
 			result.FormattingPassUsed = true
 			fmtOutput, fmtRawLen, fmtFallback := parseSDKOutput(fmtRM.Result, fmtRM.StructuredOutput, task.OutputSchema)
@@ -196,6 +205,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		}
 	}
 
+	cost.Annotate(result.Output, task.Model, totalIn, totalOut)
 	return result, nil
 }
 

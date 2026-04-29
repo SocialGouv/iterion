@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
 
+	"github.com/SocialGouv/iterion/cost"
 	"github.com/SocialGouv/iterion/delegate"
 )
 
@@ -188,7 +189,7 @@ func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClie
 		output = make(map[string]interface{})
 	}
 
-	tokens := annotateUsage(output, task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
+	tokens := cost.Annotate(output, task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
 
 	return delegate.Result{
 		Output:      output,
@@ -204,13 +205,15 @@ func (b *ClawBackend) generateTextWithRetry(ctx context.Context, client api.APIC
 }
 
 func (b *ClawBackend) generateText(ctx context.Context, client api.APIClient, task delegate.Task, opts GenerationOptions) (delegate.Result, error) {
+	opts = applySessionMessages(ctx, task.NodeID, opts)
 	result, err := GenerateTextDirect(ctx, client, opts)
+	captureSessionMessages(ctx, task.NodeID, result)
 	if err != nil {
 		return delegate.Result{}, fmt.Errorf("claw backend: text generation: %w", err)
 	}
 
 	output := map[string]interface{}{"text": result.Text}
-	tokens := annotateUsage(output, task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
+	tokens := cost.Annotate(output, task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
 
 	return delegate.Result{
 		Output:      output,
@@ -226,7 +229,9 @@ func (b *ClawBackend) generateTextWithToolsAndSchemaRetry(ctx context.Context, c
 }
 
 func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client api.APIClient, task delegate.Task, opts GenerationOptions) (delegate.Result, error) {
+	opts = applySessionMessages(ctx, task.NodeID, opts)
 	result, err := GenerateTextDirect(ctx, client, opts)
+	captureSessionMessages(ctx, task.NodeID, result)
 	if err != nil {
 		return delegate.Result{}, fmt.Errorf("claw backend: text+tools generation: %w", err)
 	}
@@ -247,7 +252,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		parseFallback = true
 	}
 
-	tokens := annotateUsage(output, task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
+	tokens := cost.Annotate(output, task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
 
 	return delegate.Result{
 		Output:        output,

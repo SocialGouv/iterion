@@ -178,7 +178,9 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 		return e.failRunErrWithCheckpoint(rs, humanNodeID, err)
 	}
 
-	return e.execLoop(ctx, rs, nextNodeID)
+	loopErr := e.execLoop(ctx, rs, nextNodeID)
+	e.evictRunSessions(runID, loopErr)
+	return loopErr
 }
 
 // resumeFromFailure resumes a failed_resumable run by re-executing from the
@@ -225,7 +227,9 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 	rs.artifactVersions = artifactVersions
 	rs.nodeAttempts = restoreNodeAttempts(cp.NodeAttempts)
 
-	return e.execLoop(ctx, rs, restartNodeID)
+	loopErr := e.execLoop(ctx, rs, restartNodeID)
+	e.evictRunSessions(runID, loopErr)
+	return loopErr
 }
 
 // ---------------------------------------------------------------------------
@@ -495,7 +499,9 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 		return e.failRunErrWithCheckpoint(rs, nodeID, err)
 	}
 
-	return e.execLoop(ctx, rs, nextNodeID)
+	loopErr := e.execLoop(ctx, rs, nextNodeID)
+	e.evictRunSessions(rs.runID, loopErr)
+	return loopErr
 }
 
 // interactionFields extracts InteractionFields from a node that supports them.

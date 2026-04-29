@@ -1,0 +1,80 @@
+## Fixture : claw_subagents
+##
+## But : prouver que RegisterClawSubagents (-> claw `agent` tool) est
+## correctement câblée dans le tool registry d'iterion et que la boucle
+## tool_use -> tool_result du claw backend traite bien l'appel.
+##
+## Contrat actuel : ExecuteAgent côté claw-code-go ne spawn pas
+## réellement un sous-agent — il valide les params et renvoie un spec
+## (agent_id, name, subagent_type, status: running). Le vrai spawning
+## requiert ConversationLoop, qui est attaché au follow-up Track 5
+## (compaction session-per-node). Cette fixture valide donc :
+##   1. Le tool `agent` est exposé via RegisterClawSubagents.
+##   2. Le LLM parent peut le découvrir et l'appeler.
+##   3. Le tool_result remonte avec un agent_id non vide.
+##
+## Le parent fait deux appels successifs (un par "topic") pour valider
+## que la registration tient sur des appels répétés et que chaque
+## invocation produit son propre agent_id.
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+prompt coordinator_system:
+  You are a coordinator with access to a `agent` tool that lets you
+  spawn sub-agents. The tool input takes:
+   - description (3-5 word task summary)
+   - prompt (the task itself)
+   - subagent_type (optional, e.g. "explore" or "general-purpose")
+   - name (optional)
+
+  When called, the tool returns metadata (agent_id, name,
+  subagent_type, status). Your job: spawn TWO sub-agents, one per
+  topic, and report the metadata you observed. Do NOT pretend; you
+  MUST issue exactly two `agent` tool calls.
+
+prompt coordinator_user:
+  Spawn one sub-agent per topic in this list, each with subagent_type
+  "general-purpose":
+   - {{input.topic_a}}
+   - {{input.topic_b}}
+
+  After both calls return, fill the output schema with what you
+  observed. The two agent_ids must be distinct.
+
+schema coordinator_input:
+  topic_a: string
+  topic_b: string
+
+schema coordinator_output:
+  spawn_count: int
+  agent_ids: string[]
+  names: string[]
+  subagent_types: string[]
+  statuses: string[]
+
+agent coordinator:
+  ## Pure claw direct path — no `backend:` field.
+  model: "anthropic/claude-haiku-4-5-20251001"
+  input: coordinator_input
+  output: coordinator_output
+  publish: coordinator_result
+  system: coordinator_system
+  user: coordinator_user
+  tools: [agent]
+  tool_max_steps: 8
+  session: fresh
+
+workflow claw_subagents:
+  vars:
+    workspace_dir: string = "${PROJECT_DIR}"
+
+  entry: coordinator
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "5m"
+    max_cost_usd: 1
+    max_tokens: 60000
+
+  coordinator -> done

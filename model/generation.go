@@ -470,20 +470,35 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 	var lastToolCalls []ToolCall
 	var lastFinish FinishReason
 
+	// partialResult captures whatever has been accumulated so the
+	// caller can stash the conversation history for compaction-aware
+	// retries even when this attempt fails. Caller should consult
+	// `err` first; the partial result is best-effort.
+	partial := func() *TextResult {
+		return &TextResult{
+			Text:         lastText,
+			ToolCalls:    lastToolCalls,
+			Steps:        steps,
+			TotalUsage:   totalUsage,
+			FinishReason: lastFinish,
+			Messages:     messages,
+		}
+	}
+
 	for step := 1; step <= maxSteps; step++ {
 		req, err := buildRequest(opts, messages, nil, nil)
 		if err != nil {
-			return nil, err
+			return partial(), err
 		}
 
 		fireOnRequest(opts, len(messages))
 
 		agg, err := callAndAggregate(ctx, client, req, opts)
 		if err != nil {
-			return nil, err
+			return partial(), err
 		}
 		if agg.err != nil {
-			return nil, agg.err
+			return partial(), agg.err
 		}
 
 		accumulateUsage(&totalUsage, agg.usage)
@@ -529,6 +544,7 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 		Steps:        steps,
 		TotalUsage:   totalUsage,
 		FinishReason: lastFinish,
+		Messages:     messages,
 	}, nil
 }
 

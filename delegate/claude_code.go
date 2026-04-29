@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/cost"
 	"github.com/SocialGouv/iterion/delegate/claudesdk"
 
 	iterlog "github.com/SocialGouv/iterion/log"
@@ -170,9 +171,12 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		SessionID:   rm.SessionID,
 	}
 
+	var totalIn, totalOut int
 	if rm.Usage != nil {
-		result.Tokens = rm.Usage.InputTokens + rm.Usage.OutputTokens
+		totalIn += rm.Usage.InputTokens
+		totalOut += rm.Usage.OutputTokens
 	}
+	result.Tokens = totalIn + totalOut
 
 	if rm.IsError && rm.Subtype != claudesdk.ResultSuccess {
 		return result, fmt.Errorf("delegate: claude-code error: subtype=%s", rm.Subtype)
@@ -194,7 +198,9 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 				return result, fmt.Errorf("delegate: claude-code formatting pass failed: %w", fmtErr)
 			}
 			if fmtRM.Usage != nil {
-				result.Tokens += fmtRM.Usage.InputTokens + fmtRM.Usage.OutputTokens
+				totalIn += fmtRM.Usage.InputTokens
+				totalOut += fmtRM.Usage.OutputTokens
+				result.Tokens = totalIn + totalOut
 			}
 			result.FormattingPassUsed = true
 
@@ -206,6 +212,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 			result.Output = output
 			result.RawOutputLen = rawLen
 			result.ParseFallback = fallback
+			cost.Annotate(result.Output, task.Model, totalIn, totalOut)
 			return result, nil
 		}
 	}
@@ -225,7 +232,9 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		fmtRM, fmtErr := b.formatOutput(ctx, task, rm.SessionID)
 		if fmtErr == nil {
 			if fmtRM.Usage != nil {
-				result.Tokens += fmtRM.Usage.InputTokens + fmtRM.Usage.OutputTokens
+				totalIn += fmtRM.Usage.InputTokens
+				totalOut += fmtRM.Usage.OutputTokens
+				result.Tokens = totalIn + totalOut
 			}
 			result.FormattingPassUsed = true
 			fmtOutput, fmtRawLen, fmtFallback := parseSDKOutput(fmtRM.Result, fmtRM.StructuredOutput, task.OutputSchema)
@@ -241,6 +250,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		}
 	}
 
+	cost.Annotate(result.Output, task.Model, totalIn, totalOut)
 	return result, nil
 }
 

@@ -1,6 +1,10 @@
 package model
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/SocialGouv/claw-code-go/pkg/api"
+)
 
 // FinishReason indicates why generation stopped.
 type FinishReason string
@@ -53,6 +57,14 @@ type TextResult struct {
 
 	// FinishReason indicates why generation stopped.
 	FinishReason FinishReason
+
+	// Messages is the final accumulated conversation list, including
+	// the initial input plus every assistant turn (with tool_use
+	// blocks) and tool_result message produced during the loop. Hosts
+	// that maintain a per-node session — e.g. for compaction-aware
+	// retries — capture this slice and feed it back as opts.Messages
+	// on the next attempt.
+	Messages []api.Message
 }
 
 // ObjectResult is a typed wrapper around a text generation result that includes

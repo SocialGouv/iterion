@@ -189,7 +189,21 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 	rs := e.newRunState(runID, inputs)
 	rs.vars = e.resolveVars(inputs)
 
-	return e.execLoop(ctx, rs, e.workflow.Entry)
+	loopErr := e.execLoop(ctx, rs, e.workflow.Entry)
+	e.evictRunSessions(runID, loopErr)
+	return loopErr
+}
+
+// evictRunSessions clears any per-node session state still held by
+// the executor for runID, except when the run is paused (human input
+// awaited) — in which case Resume will pick up the same sessions.
+func (e *Engine) evictRunSessions(runID string, loopErr error) {
+	if errors.Is(loopErr, ErrRunPaused) {
+		return
+	}
+	if ev, ok := e.executor.(interface{ EvictRun(string) }); ok {
+		ev.EvictRun(runID)
+	}
 }
 
 // execLoop is the shared execution loop used by both Run and Resume.
@@ -310,7 +324,11 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 		nodeInput := e.buildNodeInput(currentNodeID, rs.vars, rs.outputs, rs.runInputs, rs.artifacts)
 
 		// --- Execute node ---
-		output, err := e.executor.Execute(ctx, node, nodeInput)
+		// Thread the run ID into ctx so the executor can locate
+		// per-node session state (used by Compactor implementations
+		// to find the right messages list to compact + retry).
+		execCtx := model.WithRunID(ctx, rs.runID)
+		output, err := e.executor.Execute(execCtx, node, nodeInput)
 		if err != nil {
 			// Check if the delegate needs user interaction.
 			var needsInput *model.ErrNeedsInteraction
@@ -320,8 +338,10 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 			// Recovery dispatch (when wired via WithRecoveryDispatch):
 			// classify the error, look up a recipe, and either retry,
 			// pause, or fail terminally. Without a dispatcher, every
-			// failure produces failed_resumable as before.
-			retry, recoveryErr := e.handleNodeFailure(ctx, rs, currentNodeID, err)
+			// failure produces failed_resumable as before. The
+			// run-ID-enriched ctx is passed so Compact() can locate
+			// the per-node session.
+			retry, recoveryErr := e.handleNodeFailure(execCtx, rs, currentNodeID, err)
 			if recoveryErr != nil {
 				return recoveryErr
 			}

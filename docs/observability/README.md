@@ -86,14 +86,21 @@ iterion attributes metrics from each backend on a best-effort basis:
 | `iterion_llm_retry_total`       | ✅    | ✅           | ✅     |
 | `iterion_node_duration_ms`      | ✅    | ✅           | ✅     |
 | `iterion_tool_call_total`       | ✅    | ✅           | ✅     |
-| `iterion_node_tokens_total`     | ✅    | ⚠️ subset    | ❌     |
-| `iterion_node_cost_usd_total`   | ✅\*  | ⚠️           | ❌     |
+| `iterion_node_tokens_total`     | ✅    | ✅\*\*       | ✅\*\* |
+| `iterion_node_cost_usd_total`   | ✅\*  | ✅\*         | ✅\*   |
 | `iterion_parallel_branches`     | ✅    | ✅           | ✅     |
 
 \* Cost is computed from a small per-model pricing table embedded in
-`model/cost.go`. Models not in the table emit no `_cost_usd` field.
+`cost/cost.go`. Models not in the table emit no `_cost_usd` field.
 Add models there if you want them tracked.
 
-claude_code and codex emit subprocess-based telemetry that may not
-include token counts or cost; the dashboard shows zero for those panels
-when no usage data is reported.
+\*\* Token counts come from the SDK's `ResultMessage.Usage` for
+claude_code (Claude Agent SDK) and codex (Codex Agent SDK). Both
+backends now annotate the node output with `_tokens` / `_model` /
+`_cost_usd` exactly like the in-process claw backend, so all three
+backends feed the same Prometheus counters.
+
+If a particular SDK version omits the usage block (e.g. early codex
+betas), the tokens counter simply does not increment for that node — no
+zero-fill is emitted, which keeps the dashboard's "no data" state
+distinguishable from a real zero.

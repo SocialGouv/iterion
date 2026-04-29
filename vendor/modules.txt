@@ -61,6 +61,7 @@ github.com/AzureAD/microsoft-authentication-library-for-go/apps/managedidentity
 github.com/AzureAD/microsoft-authentication-library-for-go/apps/public
 # github.com/SocialGouv/claw-code-go v0.0.0-20260428150308-bf21311bac7b => ./.works/claw-code-go
 ## explicit; go 1.25.0
+github.com/SocialGouv/claw-code-go/hooks
 github.com/SocialGouv/claw-code-go/internal/api
 github.com/SocialGouv/claw-code-go/internal/api/httputil
 github.com/SocialGouv/claw-code-go/internal/api/providers/anthropic
@@ -72,17 +73,22 @@ github.com/SocialGouv/claw-code-go/internal/api/providers/vertex
 github.com/SocialGouv/claw-code-go/internal/api/sseutil
 github.com/SocialGouv/claw-code-go/internal/apikit
 github.com/SocialGouv/claw-code-go/internal/config
+github.com/SocialGouv/claw-code-go/internal/context
 github.com/SocialGouv/claw-code-go/internal/hooks
 github.com/SocialGouv/claw-code-go/internal/lsp
 github.com/SocialGouv/claw-code-go/internal/mcp
 github.com/SocialGouv/claw-code-go/internal/mcp/oauth
 github.com/SocialGouv/claw-code-go/internal/permissions
+github.com/SocialGouv/claw-code-go/internal/plugins
+github.com/SocialGouv/claw-code-go/internal/runtime
+github.com/SocialGouv/claw-code-go/internal/runtime/lane
 github.com/SocialGouv/claw-code-go/internal/runtime/task
 github.com/SocialGouv/claw-code-go/internal/runtime/team
 github.com/SocialGouv/claw-code-go/internal/runtime/trust
 github.com/SocialGouv/claw-code-go/internal/runtime/worker
 github.com/SocialGouv/claw-code-go/internal/strutil
 github.com/SocialGouv/claw-code-go/internal/tools
+github.com/SocialGouv/claw-code-go/internal/usage
 github.com/SocialGouv/claw-code-go/pkg/api
 github.com/SocialGouv/claw-code-go/pkg/api/hooks
 github.com/SocialGouv/claw-code-go/pkg/api/lsp
@@ -98,6 +104,8 @@ github.com/SocialGouv/claw-code-go/pkg/api/team
 github.com/SocialGouv/claw-code-go/pkg/api/tools
 github.com/SocialGouv/claw-code-go/pkg/api/worker
 github.com/SocialGouv/claw-code-go/pkg/permissions
+github.com/SocialGouv/claw-code-go/pkg/runtime
+github.com/SocialGouv/claw-code-go/plugin
 # github.com/aws/aws-sdk-go-v2 v1.41.6
 ## explicit; go 1.24
 github.com/aws/aws-sdk-go-v2/aws

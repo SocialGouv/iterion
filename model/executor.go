@@ -14,6 +14,7 @@ import (
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
+	clawrt "github.com/SocialGouv/claw-code-go/pkg/runtime"
 
 	"github.com/SocialGouv/iterion/delegate"
 	"github.com/SocialGouv/iterion/ir"
@@ -291,6 +292,16 @@ type ClawExecutor struct {
 	workDir         string // working directory for backend subprocesses
 	defaultBackend  string // workflow-level default backend (empty = use "claw")
 	lifecycleHooks  *hooks.Runner
+
+	// sessions holds per-(runID, nodeID) accumulated message lists
+	// so the recovery dispatcher's CompactAndRetry path has
+	// something to actually compact. The claw backend reads this
+	// store via ctx values plumbed by executeBackend.
+	sessions *nodeSessionStore
+	// currentRunID is set by executeNode at the top of each call
+	// and cleared at the bottom. Compact reads it because the
+	// runtime.Compactor structural interface only carries nodeID.
+	currentRunID string
 }
 
 // ClawExecutorOption configures a ClawExecutor.
@@ -364,15 +375,48 @@ func (e *ClawExecutor) LifecycleHooks() *hooks.Runner {
 	return e.lifecycleHooks
 }
 
-// Compact satisfies the runtime.Compactor structural interface. iterion
-// does not maintain a long-lived ConversationLoop session — each node
-// runs a fresh GenerateTextDirect / GenerateObjectDirect call with the
-// prompts re-built from the workflow schema. There is no in-process
-// conversation history to drop, so we return ErrCompactionUnsupported
-// to make the engine's recovery dispatcher log the gap and fall back
-// to a plain retry instead of silently doing nothing.
+// EvictRun drops every per-node session belonging to the given run.
+// The runtime engine calls this when a run terminates (success,
+// terminal failure, or cancellation) so a long-lived executor
+// shared across runs does not leak session state from failed nodes.
+func (e *ClawExecutor) EvictRun(runID string) {
+	if e.sessions != nil {
+		e.sessions.evictRun(runID)
+	}
+}
+
+// Compact satisfies the runtime.Compactor structural interface.
+//
+// ClawExecutor maintains a session-per-node store of messages
+// accumulated during the previous attempt. On Compact, the pure
+// CompactSessionPure helper from claw-code-go is applied to that
+// list — the next retry's claw backend prepends the (now smaller)
+// list to its opts.Messages so the LLM sees a summarised history
+// instead of the full pre-overflow conversation.
+//
+// When no session is wired (non-claw backends, or a node that has
+// never been executed) Compact returns ErrCompactionUnsupported, the
+// recovery dispatcher logs the gap, and the retry runs without
+// special treatment — the same behaviour as before session tracking
+// existed.
 func (e *ClawExecutor) Compact(ctx context.Context, nodeID string) error {
-	return fmt.Errorf("claw executor (node %q): %w", nodeID, ErrCompactionUnsupported)
+	if e.sessions == nil {
+		return fmt.Errorf("claw executor (node %q): %w", nodeID, ErrCompactionUnsupported)
+	}
+	runID := RunIDFromContext(ctx)
+	if runID == "" {
+		return fmt.Errorf("claw executor (node %q): no run ID in context: %w", nodeID, ErrCompactionUnsupported)
+	}
+	removed, fired := e.sessions.compact(runID, nodeID, clawrt.DefaultCompactionConfig())
+	if !fired {
+		// Either no session for this node yet (non-claw backend, first
+		// attempt) or the session was already small enough to skip.
+		return fmt.Errorf("claw executor (node %q): nothing to compact: %w", nodeID, ErrCompactionUnsupported)
+	}
+	if e.logger != nil {
+		e.logger.Info("recovery: compacted node %q session (%d messages dropped)", nodeID, removed)
+	}
+	return nil
 }
 
 // NewClawExecutor creates a ClawExecutor for a given workflow.
@@ -382,6 +426,7 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 		prompts:        wf.Prompts,
 		schemas:        wf.Schemas,
 		defaultBackend: wf.DefaultBackend,
+		sessions:       newNodeSessionStore(),
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -445,9 +490,25 @@ func (e *ClawExecutor) resolveBackendName(node ir.Node) string {
 
 // Execute implements runtime.NodeExecutor.
 func (e *ClawExecutor) Execute(ctx context.Context, node ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+	// Promote the engine-supplied run ID into the richer
+	// runtimeContext that backends read for session-aware retries.
+	runID := RunIDFromContext(ctx)
+	if runID != "" && e.sessions != nil {
+		ctx = withRuntimeContext(ctx, runID, e.sessions)
+	}
+
 	output, err := e.executeNode(ctx, node, input)
-	if err == nil && output != nil && e.hooks.OnNodeFinished != nil {
-		e.hooks.OnNodeFinished(node.NodeID(), output)
+	if err == nil {
+		// Successful node completion: drop any session messages so
+		// the store doesn't grow without bound across long runs.
+		// Sessions are preserved on error so the recovery dispatcher
+		// has something to compact for the next attempt.
+		if e.sessions != nil && runID != "" {
+			e.sessions.evict(runID, node.NodeID())
+		}
+		if output != nil && e.hooks.OnNodeFinished != nil {
+			e.hooks.OnNodeFinished(node.NodeID(), output)
+		}
 	}
 	return output, err
 }

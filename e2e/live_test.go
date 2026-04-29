@@ -2291,6 +2291,180 @@ func TestLive_Lite_ClawLongContext(t *testing.T) {
 	logRunRecap(t, events)
 }
 
+// ---------------------------------------------------------------------------
+// Live E2E test — claw subagents tool registration
+// ---------------------------------------------------------------------------
+
+// TestLive_Lite_ClawSubagents exercises tool.RegisterClawSubagents:
+// the parent agent receives the `agent` tool and must call it twice
+// (one per topic). Each call runs ExecuteAgent which returns a JSON
+// spec ({agent_id, name, subagent_type, status: "running", ...}); the
+// parent is asked to surface what it observed in the output schema.
+//
+// This validates the registration + tool dispatch contract end-to-end:
+//
+//	tool.RegisterClawSubagents → claw tool registry → claw_backend
+//	  tool loop → ExecuteAgent → tool_result back to LLM
+//
+// Note: ExecuteAgent does NOT spawn a real child loop in iterion's
+// stateless StreamResponse path — that would require a per-node
+// ConversationLoop (Track 5 follow-up). The test asserts only what is
+// honest given the current contract: the tool fires and returns valid
+// metadata.
+//
+// Requires ANTHROPIC_API_KEY (parent runs claude-haiku-4-5).
+func TestLive_Lite_ClawSubagents(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live test in short mode")
+	}
+	loadDotEnv(t)
+	requireEnv(t, "ANTHROPIC_API_KEY")
+
+	wf := compileFixture(t, "claw_subagents.iter")
+
+	workspaceDir, err := os.MkdirTemp("", "iterion-claw-subagents-*")
+	if err != nil {
+		t.Fatalf("Failed to create workspace dir: %v", err)
+	}
+	t.Logf("Workspace directory (persists after test): %s", workspaceDir)
+
+	storeDir := filepath.Join(workspaceDir, ".iterion")
+	s, storeErr := store.New(storeDir)
+	if storeErr != nil {
+		t.Fatalf("Failed to create store: %v", storeErr)
+	}
+	runID := "live-claw-subagents"
+
+	// Tool registry seeded with subagent tool only (deliberately minimal —
+	// we want to prove RegisterClawSubagents stands alone without pulling
+	// in the rest of the curated set).
+	toolReg := tool.NewRegistry()
+	if regErr := tool.RegisterClawSubagents(toolReg); regErr != nil {
+		t.Fatalf("RegisterClawSubagents: %v", regErr)
+	}
+
+	reg := model.NewRegistry()
+	logger := iterlog.New(iterlog.LevelDebug, os.Stderr)
+	hooks := model.NewStoreEventHooks(s, runID, logger)
+	backendReg := delegate.DefaultRegistry(logger)
+	backendReg.Register(delegate.BackendClaw, model.NewClawBackend(reg, hooks, model.RetryPolicy{}))
+	executor := model.NewClawExecutor(reg, wf,
+		model.WithBackendRegistry(backendReg),
+		model.WithToolRegistry(toolReg),
+		model.WithWorkDir(workspaceDir),
+		model.WithEventHooks(hooks),
+	)
+	defer executor.Close()
+	executor.SetVars(map[string]interface{}{
+		"workspace_dir": workspaceDir,
+	})
+
+	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+		t.Fatalf("mcp.PrepareWorkflow: %v", err)
+	}
+
+	eng := runtime.New(wf, s, executor)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	t.Log("Starting live claw subagents run...")
+	start := time.Now()
+	runErr := eng.Run(ctx, runID, map[string]interface{}{
+		"topic_a": "Summarize Go interfaces in two lines",
+		"topic_b": "List three concurrency primitives in Go",
+	})
+	t.Logf("Run completed in %s", time.Since(start).Round(time.Second))
+
+	if runErr != nil {
+		t.Fatalf("Unexpected run error: %v", runErr)
+	}
+	r, loadErr := s.LoadRun(runID)
+	if loadErr != nil {
+		t.Fatalf("Failed to load run: %v", loadErr)
+	}
+	if r.Status != store.RunStatusFinished {
+		t.Fatalf("Expected run status 'finished', got %q", r.Status)
+	}
+
+	events, evtErr := s.LoadEvents(runID)
+	if evtErr != nil {
+		t.Fatalf("Failed to load events: %v", evtErr)
+	}
+
+	// Count `agent` tool calls dispatched by the coordinator.
+	agentCalls := 0
+	for _, evt := range events {
+		if evt.Type != store.EventToolCalled || evt.NodeID != "coordinator" || evt.Data == nil {
+			continue
+		}
+		if name, _ := evt.Data["tool"].(string); name == "agent" {
+			agentCalls++
+		}
+	}
+	t.Logf("agent tool calls observed: %d", agentCalls)
+	if agentCalls < 2 {
+		t.Errorf("CLAW SUBAGENTS: expected >= 2 agent tool calls, got %d", agentCalls)
+	}
+
+	// Validate output schema: spawn_count and distinct agent_ids.
+	for _, evt := range events {
+		if evt.Type != store.EventNodeFinished || evt.NodeID != "coordinator" || evt.Data == nil {
+			continue
+		}
+		out, ok := evt.Data["output"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		spawnCountAny, _ := out["spawn_count"]
+		var spawnCount int
+		switch v := spawnCountAny.(type) {
+		case int:
+			spawnCount = v
+		case float64:
+			spawnCount = int(v)
+		}
+		ids, _ := out["agent_ids"].([]interface{})
+		statuses, _ := out["statuses"].([]interface{})
+		t.Logf("coordinator.spawn_count = %d", spawnCount)
+		t.Logf("coordinator.agent_ids   = %v", ids)
+		t.Logf("coordinator.statuses    = %v", statuses)
+
+		if spawnCount < 2 {
+			t.Errorf("expected spawn_count >= 2, got %d", spawnCount)
+		}
+		if len(ids) < 2 {
+			t.Errorf("expected >= 2 agent_ids, got %d", len(ids))
+		} else {
+			seen := map[string]bool{}
+			for _, raw := range ids {
+				if s, _ := raw.(string); s != "" {
+					seen[s] = true
+				}
+			}
+			if len(seen) < 2 {
+				t.Errorf("expected >= 2 distinct agent_ids, got %v", seen)
+			}
+		}
+		// Every reported status should be "running" (the literal returned by
+		// ExecuteAgent). If the LLM hallucinated, this catches it.
+		for _, raw := range statuses {
+			if s, _ := raw.(string); s != "" && s != "running" {
+				t.Errorf("unexpected status %q (expected \"running\")", s)
+			}
+		}
+		break
+	}
+
+	metrics, mErr := benchmark.CollectMetrics(s, runID, "live-claw-subagents", "")
+	if mErr == nil {
+		t.Logf("Metrics: tokens=%d cost=$%.4f model_calls=%d iterations=%d duration=%s",
+			metrics.TotalTokens, metrics.TotalCostUSD, metrics.ModelCalls,
+			metrics.Iterations, metrics.DurationStr)
+	}
+
+	logRunRecap(t, events)
+}
+
 // requireBinaryInPath skips the test if the named binary is not in PATH.
 func requireBinaryInPath(t *testing.T, name string) {
 	t.Helper()
