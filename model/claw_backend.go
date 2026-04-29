@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
 
 	"github.com/SocialGouv/iterion/delegate"
 )
@@ -16,18 +17,32 @@ import (
 // GenerateObjectDirect against api.APIClient. It wraps the direct LLM path
 // into the unified Backend interface.
 type ClawBackend struct {
-	registry *Registry
-	hooks    EventHooks
-	retry    RetryPolicy
+	registry       *Registry
+	hooks          EventHooks
+	retry          RetryPolicy
+	lifecycleHooks *hooks.Runner
+}
+
+// ClawBackendOption configures a ClawBackend at construction time.
+type ClawBackendOption func(*ClawBackend)
+
+// WithBackendLifecycleHooks installs an in-process hook runner fired
+// around tool execution and at session end. A nil runner is a no-op.
+func WithBackendLifecycleHooks(r *hooks.Runner) ClawBackendOption {
+	return func(b *ClawBackend) { b.lifecycleHooks = r }
 }
 
 // NewClawBackend creates a new ClawBackend.
-func NewClawBackend(registry *Registry, hooks EventHooks, retry RetryPolicy) *ClawBackend {
-	return &ClawBackend{
+func NewClawBackend(registry *Registry, hk EventHooks, retry RetryPolicy, opts ...ClawBackendOption) *ClawBackend {
+	b := &ClawBackend{
 		registry: registry,
-		hooks:    hooks,
+		hooks:    hk,
 		retry:    retry,
 	}
+	for _, opt := range opts {
+		opt(b)
+	}
+	return b
 }
 
 // Execute implements delegate.Backend.
@@ -100,6 +115,10 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 
 	// Observability hooks.
 	applyHooks(task.NodeID, b.hooks, &opts)
+
+	// In-process lifecycle hooks (audit, safety, compaction
+	// observability). Nil-safe at call sites in generation.go.
+	opts.Hooks = b.lifecycleHooks
 
 	// Dispatch to the appropriate generation strategy.
 	hasSchema := task.OutputSchema != nil

@@ -282,6 +282,14 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 			if errors.As(err, &needsInput) {
 				return e.handleNeedsInteraction(ctx, rs, currentNodeID, node, needsInput)
 			}
+			// TODO(recovery): consult runtime/recovery.Classify(err) and
+			// runtime/recovery.DefaultRecipes() here. Implement the
+			// per-node attempts loop, ActionRetrySameNode delay, and
+			// ActionCompactAndRetry / ActionPauseForHuman dispatch.
+			// Tracking: docs/roadmap_progress.md track #1 (engine-level
+			// recovery dispatch). The recipes package is stable but
+			// currently unwired — every error falls through to
+			// failed_resumable as before.
 			return e.failRunWithCheckpoint(rs, currentNodeID, fmt.Sprintf("node %q execution failed: %v", currentNodeID, err))
 		}
 

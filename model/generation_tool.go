@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
 )
 
 // GenerationTool describes a tool available during direct generation.
@@ -73,4 +74,11 @@ type GenerationOptions struct {
 
 	// OnToolCall is called after each tool execution.
 	OnToolCall func(ToolCallInfo)
+
+	// Hooks, when non-nil, is consulted around tool execution and at
+	// session end. PreToolUse fires before each Execute and may Block
+	// (the tool returns a synthetic refusal). PostToolUse fires after
+	// successful Execute, PostToolUseFailure fires on error. Stop
+	// fires once when the generation loop exits (success or failure).
+	Hooks *hooks.Runner
 }

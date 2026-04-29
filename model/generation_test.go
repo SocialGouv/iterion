@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
 )
 
 // ---------------------------------------------------------------------------
@@ -947,5 +948,164 @@ func TestBuildRequest_NoToolsNoMarker(t *testing.T) {
 	}
 	if len(req.Tools) != 0 {
 		t.Errorf("Tools len = %d, want 0", len(req.Tools))
+	}
+}
+
+func TestGenerateTextDirect_LifecycleHooks(t *testing.T) {
+	// Step 1: model calls "echo" tool. Step 2: model returns text.
+	client := newMockClient(
+		toolUseEvents("tu_1", "echo", `{"msg":"hello"}`, 100, 30),
+		textEvents("done", 150, 25),
+	)
+
+	echoTool := GenerationTool{
+		Name:        "echo",
+		Description: "echoes the message",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"msg":{"type":"string"}}}`),
+		Execute: func(_ context.Context, input json.RawMessage) (string, error) {
+			return string(input), nil
+		},
+	}
+
+	r := hooks.NewRunner()
+	var seen []string
+	r.Register(hooks.PreToolUse, func(_ context.Context, hctx hooks.Context) (hooks.Decision, error) {
+		seen = append(seen, "pre:"+hctx.ToolName)
+		return hooks.Decision{Action: hooks.ActionContinue}, nil
+	})
+	r.Register(hooks.PostToolUse, func(_ context.Context, hctx hooks.Context) (hooks.Decision, error) {
+		seen = append(seen, "post:"+hctx.ToolName)
+		return hooks.Decision{Action: hooks.ActionContinue}, nil
+	})
+	r.Register(hooks.Stop, func(_ context.Context, _ hooks.Context) (hooks.Decision, error) {
+		seen = append(seen, "stop")
+		return hooks.Decision{Action: hooks.ActionContinue}, nil
+	})
+
+	if _, err := GenerateTextDirect(context.Background(), client, GenerationOptions{
+		Model: "claude-sonnet-4-6",
+		Tools: []GenerationTool{echoTool},
+		Hooks: r,
+		Messages: []api.Message{
+			{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "echo"}}},
+		},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := []string{"pre:echo", "post:echo", "stop"}
+	if len(seen) != len(want) {
+		t.Fatalf("seen = %v, want %v", seen, want)
+	}
+	for i := range want {
+		if seen[i] != want[i] {
+			t.Errorf("seen[%d] = %q, want %q", i, seen[i], want[i])
+		}
+	}
+}
+
+func TestGenerateTextDirect_LifecycleHooks_BlockShortCircuits(t *testing.T) {
+	// Model calls "danger" tool, but a PreToolUse hook blocks it.
+	// The tool's Execute must NOT be called.
+	client := newMockClient(
+		toolUseEvents("tu_1", "danger", `{}`, 100, 30),
+		textEvents("aborted", 150, 25),
+	)
+
+	executed := false
+	dangerTool := GenerationTool{
+		Name:        "danger",
+		Description: "should be blocked",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+		Execute: func(_ context.Context, _ json.RawMessage) (string, error) {
+			executed = true
+			return "should not see", nil
+		},
+	}
+
+	r := hooks.NewRunner()
+	r.Register(hooks.PreToolUse, func(_ context.Context, _ hooks.Context) (hooks.Decision, error) {
+		return hooks.Decision{Action: hooks.ActionBlock, Reason: "test refused"}, nil
+	})
+
+	_, err := GenerateTextDirect(context.Background(), client, GenerationOptions{
+		Model: "claude-sonnet-4-6",
+		Tools: []GenerationTool{dangerTool},
+		Hooks: r,
+		Messages: []api.Message{
+			{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "go"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if executed {
+		t.Errorf("expected PreToolUse Block to short-circuit Execute; tool ran anyway")
+	}
+}
+
+// TestGenerateObjectDirect_StopFiredOnError checks that the Stop hook
+// fires even when the function returns an error (no tool_use block in
+// the response). Observers (telemetry, audit) need session-end signals
+// regardless of outcome.
+func TestGenerateObjectDirect_StopFiredOnError(t *testing.T) {
+	type Result struct {
+		Value int `json:"value"`
+	}
+
+	// Model returns plain text instead of a tool_use block — this
+	// triggers the "did not produce a tool_use block" error path.
+	client := newMockClient(textEvents("sorry, no schema", 50, 10))
+
+	r := hooks.NewRunner()
+	stopped := false
+	r.Register(hooks.Stop, func(_ context.Context, _ hooks.Context) (hooks.Decision, error) {
+		stopped = true
+		return hooks.Decision{Action: hooks.ActionContinue}, nil
+	})
+
+	_, err := GenerateObjectDirect[Result](context.Background(), client, GenerationOptions{
+		Model:          "claude-sonnet-4-6",
+		ExplicitSchema: json.RawMessage(`{"type":"object","properties":{"value":{"type":"integer"}}}`),
+		Hooks:          r,
+		Messages: []api.Message{
+			{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "go"}}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for missing tool_use block")
+	}
+	if !stopped {
+		t.Errorf("Stop hook was not fired on error path")
+	}
+}
+
+// TestGenerateTextDirect_StopFiredOnError checks that Stop fires even
+// when an upstream error (e.g. validation, mock-client failure) returns
+// before the tool loop completes.
+func TestGenerateTextDirect_StopFiredOnError(t *testing.T) {
+	// No scripts: the mock client returns "no more scripts" error on
+	// the first StreamResponse call.
+	client := newMockClient()
+
+	r := hooks.NewRunner()
+	stopped := false
+	r.Register(hooks.Stop, func(_ context.Context, _ hooks.Context) (hooks.Decision, error) {
+		stopped = true
+		return hooks.Decision{Action: hooks.ActionContinue}, nil
+	})
+
+	_, err := GenerateTextDirect(context.Background(), client, GenerationOptions{
+		Model: "claude-sonnet-4-6",
+		Hooks: r,
+		Messages: []api.Message{
+			{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "go"}}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error from mock client")
+	}
+	if !stopped {
+		t.Errorf("Stop hook was not fired on error path")
 	}
 }

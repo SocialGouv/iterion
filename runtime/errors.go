@@ -6,17 +6,21 @@ import "fmt"
 type ErrorCode string
 
 const (
-	ErrCodeNodeNotFound     ErrorCode = "NODE_NOT_FOUND"
-	ErrCodeNoOutgoingEdge   ErrorCode = "NO_OUTGOING_EDGE"
-	ErrCodeLoopExhausted    ErrorCode = "LOOP_EXHAUSTED"
-	ErrCodeBudgetExceeded   ErrorCode = "BUDGET_EXCEEDED"
-	ErrCodeExecutionFailed  ErrorCode = "EXECUTION_FAILED"
-	ErrCodeWorkspaceSafety  ErrorCode = "WORKSPACE_SAFETY"
-	ErrCodeTimeout          ErrorCode = "TIMEOUT"
-	ErrCodeCancelled        ErrorCode = "CANCELLED"
-	ErrCodeJoinFailed       ErrorCode = "JOIN_FAILED"
-	ErrCodeResumeInvalid    ErrorCode = "RESUME_INVALID"
-	ErrCodeSchemaValidation ErrorCode = "SCHEMA_VALIDATION"
+	ErrCodeNodeNotFound          ErrorCode = "NODE_NOT_FOUND"
+	ErrCodeNoOutgoingEdge        ErrorCode = "NO_OUTGOING_EDGE"
+	ErrCodeLoopExhausted         ErrorCode = "LOOP_EXHAUSTED"
+	ErrCodeBudgetExceeded        ErrorCode = "BUDGET_EXCEEDED"
+	ErrCodeExecutionFailed       ErrorCode = "EXECUTION_FAILED"
+	ErrCodeWorkspaceSafety       ErrorCode = "WORKSPACE_SAFETY"
+	ErrCodeTimeout               ErrorCode = "TIMEOUT"
+	ErrCodeCancelled             ErrorCode = "CANCELLED"
+	ErrCodeJoinFailed            ErrorCode = "JOIN_FAILED"
+	ErrCodeResumeInvalid         ErrorCode = "RESUME_INVALID"
+	ErrCodeSchemaValidation      ErrorCode = "SCHEMA_VALIDATION"
+	ErrCodeRateLimited           ErrorCode = "RATE_LIMITED"
+	ErrCodeContextLengthExceeded ErrorCode = "CONTEXT_LENGTH_EXCEEDED"
+	ErrCodeToolFailedTransient   ErrorCode = "TOOL_FAILED_TRANSIENT"
+	ErrCodeToolFailedPermanent   ErrorCode = "TOOL_FAILED_PERMANENT"
 )
 
 // RuntimeError is a structured error carrying a machine-readable code,

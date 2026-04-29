@@ -28,14 +28,35 @@ type SSETransport struct {
 	mu         sync.Mutex
 }
 
-// NewSSETransport creates an SSE transport for the given server URL.
-// authHeader may be empty or a full "Scheme value" string (e.g. "Bearer mytoken").
+// NewSSETransport creates an SSE transport with a static Authorization
+// header. authHeader may be empty or a full "Scheme value" string
+// (e.g. "Bearer mytoken").
+//
+// For dynamic auth (OAuth refresh, etc.) prefer
+// NewSSETransportWithAuthFunc, or call SetAuthFunc on the returned
+// transport. AuthFunc, when set, takes priority over authHeader.
 func NewSSETransport(baseURL string, authHeader string) *SSETransport {
 	return &SSETransport{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		authHeader: authHeader,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
+}
+
+// NewSSETransportWithAuthFunc creates an SSE transport with a dynamic
+// Authorization-header producer. Pass nil authFunc to fall back to
+// the static authHeader (equivalent to NewSSETransport).
+//
+// Bundling the AuthFunc into the constructor prevents the silent-
+// failure mode where a caller forgets to call SetAuthFunc on a
+// transport that needs OAuth: the call site is forced to acknowledge
+// the auth strategy at construction time.
+func NewSSETransportWithAuthFunc(baseURL, authHeader string, authFunc func(ctx context.Context) (string, error)) *SSETransport {
+	t := NewSSETransport(baseURL, authHeader)
+	if authFunc != nil {
+		t.SetAuthFunc(authFunc)
+	}
+	return t
 }
 
 // SetAuthFunc installs a dynamic authorization-header producer. When

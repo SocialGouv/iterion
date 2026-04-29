@@ -1,0 +1,75 @@
+# Local observability stack for iterion workflows.
+#
+# Bring up with:
+#
+#   cd docs/observability && docker compose up -d
+#
+# Exposes:
+#   - Grafana   → http://localhost:3000 (admin / admin)
+#   - Prometheus → http://localhost:9090
+#   - Tempo      → http://localhost:3200
+#   - OTLP HTTP  → http://localhost:4318/v1/{traces,metrics,logs}
+#
+# Point the iterion OTLP exporter at http://localhost:4318 and import
+# `grafana/iterion-workflow.json` in the Grafana UI.
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.110.0
+    container_name: iterion-otel
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./configs/otel-collector.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "4318:4318"  # OTLP HTTP receiver
+      - "4317:4317"  # OTLP gRPC receiver
+    depends_on:
+      - tempo
+      - prometheus
+
+  tempo:
+    image: grafana/tempo:2.6.0
+    container_name: iterion-tempo
+    command: ["-config.file=/etc/tempo/config.yaml"]
+    volumes:
+      - ./configs/tempo.yaml:/etc/tempo/config.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: iterion-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --enable-feature=otlp-write-receiver
+      - --web.enable-remote-write-receiver
+    volumes:
+      - ./configs/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - prom-data:/prometheus
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: iterion-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    volumes:
+      - ./configs/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - ./grafana:/var/lib/grafana/dashboards:ro
+      - ./configs/grafana-dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - tempo
+
+volumes:
+  tempo-data:
+  prom-data:
+  grafana-data:

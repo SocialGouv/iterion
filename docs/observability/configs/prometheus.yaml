@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+# OTLP metrics arrive via the otlp-write-receiver feature flag enabled
+# at the prometheus command line.

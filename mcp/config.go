@@ -42,6 +42,43 @@ type ServerConfig struct {
 	Headers   map[string]string
 	WorkDir   string            // working directory for stdio server processes
 	Env       map[string]string // extra environment variables for stdio server processes
+	Auth      *AuthConfig       // authentication (OAuth2, etc.) for SSE/HTTP servers
+
+	// AuthFunc, when set, is invoked on every outbound HTTP request
+	// to obtain a fresh "Authorization" header value. Populated by
+	// PrepareAuth from Auth (OAuth2 → broker.BearerHeaderFunc).
+	//
+	// Excluded from JSON serialization (function values can't
+	// marshal, and the cache fingerprint must remain stable).
+	AuthFunc AuthFunc `json:"-"`
+}
+
+// AuthConfig describes authentication for an MCP server. Only the
+// OAuth2 authorization-code + PKCE flow is wired; future schemes
+// extend the same struct.
+type AuthConfig struct {
+	Type      string   // "oauth2" (only supported value today)
+	AuthURL   string   // OAuth authorization endpoint
+	TokenURL  string   // OAuth token endpoint
+	RevokeURL string   // optional RFC 7009 revocation endpoint
+	ClientID  string   // OAuth client ID
+	Scopes    []string // requested scopes
+}
+
+// FromIRAuth converts an ir.MCPAuth (workflow-level config) into a
+// runtime AuthConfig. Returns nil if auth is nil.
+func FromIRAuth(auth *ir.MCPAuth) *AuthConfig {
+	if auth == nil {
+		return nil
+	}
+	return &AuthConfig{
+		Type:      auth.Type,
+		AuthURL:   auth.AuthURL,
+		TokenURL:  auth.TokenURL,
+		RevokeURL: auth.RevokeURL,
+		ClientID:  auth.ClientID,
+		Scopes:    append([]string(nil), auth.Scopes...),
+	}
 }
 
 // PrepareWorkflow resolves the final MCP catalog and active server sets for a
@@ -77,6 +114,7 @@ func PrepareWorkflow(wf *ir.Workflow, projectDir string) error {
 			Args:      append([]string(nil), cfg.Args...),
 			URL:       cfg.URL,
 			Headers:   cloneStringMap(cfg.Headers),
+			Auth:      authConfigToIR(cfg.Auth),
 		}
 	}
 
@@ -137,6 +175,14 @@ func loadProjectServers(projectDir string) (map[string]*ServerConfig, []string, 
 			Args      []string          `json:"args"`
 			URL       string            `json:"url"`
 			Headers   map[string]string `json:"headers"`
+			Auth      *struct {
+				Type      string   `json:"type"`
+				AuthURL   string   `json:"auth_url"`
+				TokenURL  string   `json:"token_url"`
+				RevokeURL string   `json:"revoke_url"`
+				ClientID  string   `json:"client_id"`
+				Scopes    []string `json:"scopes"`
+			} `json:"auth"`
 		} `json:"mcpServers"`
 	}
 	if err := json.Unmarshal(data, &file); err != nil {
@@ -153,6 +199,16 @@ func loadProjectServers(projectDir string) (map[string]*ServerConfig, []string, 
 			Args:      append([]string(nil), raw.Args...),
 			URL:       raw.URL,
 			Headers:   cloneStringMap(raw.Headers),
+		}
+		if raw.Auth != nil {
+			cfg.Auth = &AuthConfig{
+				Type:      raw.Auth.Type,
+				AuthURL:   raw.Auth.AuthURL,
+				TokenURL:  raw.Auth.TokenURL,
+				RevokeURL: raw.Auth.RevokeURL,
+				ClientID:  raw.Auth.ClientID,
+				Scopes:    append([]string(nil), raw.Auth.Scopes...),
+			}
 		}
 		if err := validateServerConfig(cfg); err != nil {
 			return nil, nil, fmt.Errorf("mcp: project server %q: %w", name, err)
@@ -257,18 +313,18 @@ func validateServerConfig(cfg *ServerConfig) error {
 		if strings.TrimSpace(cfg.URL) != "" {
 			return fmt.Errorf("transport stdio cannot set url")
 		}
-	case TransportHTTP:
+	case TransportHTTP, TransportSSE:
+		// HTTP and SSE share the same StreamableClientTransport in
+		// rpc.go: both require a URL and forbid Command/Args.
 		if strings.TrimSpace(cfg.URL) == "" {
-			return fmt.Errorf("transport http requires url")
+			return fmt.Errorf("transport %s requires url", cfg.Transport)
 		}
 		if strings.TrimSpace(cfg.Command) != "" {
-			return fmt.Errorf("transport http cannot set command")
+			return fmt.Errorf("transport %s cannot set command", cfg.Transport)
 		}
 		if len(cfg.Args) > 0 {
-			return fmt.Errorf("transport http cannot set args")
+			return fmt.Errorf("transport %s cannot set args", cfg.Transport)
 		}
-	case TransportSSE:
-		return fmt.Errorf("transport sse is not supported in v1")
 	default:
 		return fmt.Errorf("unsupported transport %q", cfg.Transport)
 	}
@@ -340,7 +396,61 @@ func cloneServerConfig(cfg *ServerConfig) *ServerConfig {
 		Headers:   cloneStringMap(cfg.Headers),
 		WorkDir:   cfg.WorkDir,
 		Env:       cloneStringMap(cfg.Env),
+		Auth:      cloneAuthConfig(cfg.Auth),
+		AuthFunc:  cfg.AuthFunc,
 	}
+}
+
+func cloneAuthConfig(a *AuthConfig) *AuthConfig {
+	if a == nil {
+		return nil
+	}
+	return &AuthConfig{
+		Type:      a.Type,
+		AuthURL:   a.AuthURL,
+		TokenURL:  a.TokenURL,
+		RevokeURL: a.RevokeURL,
+		ClientID:  a.ClientID,
+		Scopes:    append([]string(nil), a.Scopes...),
+	}
+}
+
+func authConfigToIR(a *AuthConfig) *ir.MCPAuth {
+	if a == nil {
+		return nil
+	}
+	return &ir.MCPAuth{
+		Type:      a.Type,
+		AuthURL:   a.AuthURL,
+		TokenURL:  a.TokenURL,
+		RevokeURL: a.RevokeURL,
+		ClientID:  a.ClientID,
+		Scopes:    append([]string(nil), a.Scopes...),
+	}
+}
+
+// PrepareAuth populates AuthFunc on every server in the catalog whose
+// Auth.Type == "oauth2", using broker as the token source. Servers
+// without an Auth block are left untouched. A non-nil error is
+// returned if any server's Auth block is malformed (missing URLs,
+// unsupported type).
+//
+// Pass nil broker to disable OAuth wiring entirely (returns nil).
+func PrepareAuth(catalog map[string]*ServerConfig, broker *OAuthBroker) error {
+	if broker == nil {
+		return nil
+	}
+	for name, cfg := range catalog {
+		if cfg == nil || cfg.Auth == nil {
+			continue
+		}
+		fn, err := broker.AuthFuncFor(cfg.Auth, name)
+		if err != nil {
+			return fmt.Errorf("mcp: prepare auth for %q: %w", name, err)
+		}
+		cfg.AuthFunc = fn
+	}
+	return nil
 }
 
 func cloneStringMap(src map[string]string) map[string]string {

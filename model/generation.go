@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
 )
 
 const (
@@ -309,11 +310,17 @@ func callAndAggregate(
 // ---------------------------------------------------------------------------
 
 // executeToolsDirect runs each tool_use block and builds tool_result content blocks.
+//
+// When runner is non-nil, the function fires PreToolUse before each
+// Execute (a Block decision short-circuits to a synthetic refusal
+// tool_result carrying the decision Reason), then either PostToolUse
+// (success) or PostToolUseFailure (error) afterwards.
 func executeToolsDirect(
 	ctx context.Context,
 	toolUses []toolUseBlock,
 	toolMap map[string]*GenerationTool,
 	onToolCall func(ToolCallInfo),
+	runner *hooks.Runner,
 ) []api.ContentBlock {
 	results := make([]api.ContentBlock, 0, len(toolUses))
 
@@ -335,6 +342,38 @@ func executeToolsDirect(
 			continue
 		}
 
+		// Lazy-decoded hook input: only parse when a runner is
+		// installed. Underlying Execute unmarshals separately, so
+		// skipping this when nil avoids a redundant parse per call.
+		var hookInput map[string]any
+		if runner != nil {
+			_ = json.Unmarshal([]byte(tu.PartialJSON), &hookInput)
+		}
+
+		if dec, _ := runner.Fire(ctx, hooks.Context{
+			Event:     hooks.PreToolUse,
+			ToolName:  tu.Name,
+			ToolInput: hookInput,
+		}); dec.Action == hooks.ActionBlock {
+			reason := dec.Reason
+			if reason == "" {
+				reason = "blocked by lifecycle hook"
+			}
+			results = append(results, api.ToolResult{
+				ToolUseID: tu.ID,
+				Content:   fmt.Sprintf("tool refused: %s", reason),
+				IsError:   true,
+			}.ToContentBlock())
+			if onToolCall != nil {
+				onToolCall(ToolCallInfo{
+					ToolName:  tu.Name,
+					InputSize: len(tu.PartialJSON),
+					Error:     fmt.Errorf("blocked by hook: %s", reason),
+				})
+			}
+			continue
+		}
+
 		start := time.Now()
 		output, err := gt.Execute(ctx, json.RawMessage(tu.PartialJSON))
 		dur := time.Since(start)
@@ -349,12 +388,27 @@ func executeToolsDirect(
 		}
 
 		if err != nil {
+			// Post-tool fires are observational; the runner logs any
+			// handler error itself, so we discard the (Decision, error)
+			// return on purpose.
+			_, _ = runner.Fire(ctx, hooks.Context{
+				Event:     hooks.PostToolUseFailure,
+				ToolName:  tu.Name,
+				ToolInput: hookInput,
+				ToolError: err,
+			})
 			results = append(results, api.ToolResult{
 				ToolUseID: tu.ID,
 				Content:   fmt.Sprintf("tool error: %v", err),
 				IsError:   true,
 			}.ToContentBlock())
 		} else {
+			_, _ = runner.Fire(ctx, hooks.Context{
+				Event:      hooks.PostToolUse,
+				ToolName:   tu.Name,
+				ToolInput:  hookInput,
+				ToolResult: output,
+			})
 			results = append(results, api.ToolResult{
 				ToolUseID: tu.ID,
 				Content:   output,
@@ -393,6 +447,12 @@ func mapStopReason(reason string) FinishReason {
 // It runs a tool loop: call model → execute tools → append results → repeat,
 // up to MaxSteps iterations.
 func GenerateTextDirect(ctx context.Context, client api.APIClient, opts GenerationOptions) (*TextResult, error) {
+	if opts.Hooks != nil {
+		defer func() {
+			_, _ = opts.Hooks.Fire(ctx, hooks.Context{Event: hooks.Stop})
+		}()
+	}
+
 	maxSteps := opts.MaxSteps
 	if maxSteps <= 0 {
 		maxSteps = defaultMaxSteps
@@ -456,7 +516,7 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 		messages = append(messages, assistantToolUseMessage(agg.text, agg.toolUses))
 
 		// Execute tools and append tool_result message.
-		toolResults := executeToolsDirect(ctx, agg.toolUses, toolMap, opts.OnToolCall)
+		toolResults := executeToolsDirect(ctx, agg.toolUses, toolMap, opts.OnToolCall, opts.Hooks)
 		messages = append(messages, api.Message{
 			Role:    "user",
 			Content: toolResults,
@@ -505,6 +565,12 @@ func assistantToolUseMessage(text string, toolUses []toolUseBlock) api.Message {
 // with the given schema and forcing the model to call it. The tool_use input
 // is parsed as the result object of type T.
 func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts GenerationOptions) (*ObjectResult[T], error) {
+	if opts.Hooks != nil {
+		defer func() {
+			_, _ = opts.Hooks.Fire(ctx, hooks.Context{Event: hooks.Stop})
+		}()
+	}
+
 	schemaName := opts.SchemaName
 	if schemaName == "" {
 		schemaName = "structured_output"

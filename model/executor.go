@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
 
 	"github.com/SocialGouv/iterion/delegate"
 	"github.com/SocialGouv/iterion/ir"
@@ -155,6 +156,7 @@ type ClawExecutor struct {
 	logger          *iterlog.Logger
 	workDir         string // working directory for backend subprocesses
 	defaultBackend  string // workflow-level default backend (empty = use "claw")
+	lifecycleHooks  *hooks.Runner
 }
 
 // ClawExecutorOption configures a ClawExecutor.
@@ -208,6 +210,24 @@ func WithDefaultBackend(name string) ClawExecutorOption {
 // WithLogger sets a leveled logger for the executor.
 func WithLogger(l *iterlog.Logger) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.logger = l }
+}
+
+// WithLifecycleHooks installs an in-process lifecycle hook runner.
+// When set, the runner is consulted around every tool execution
+// (PreToolUse, PostToolUse, PostToolUseFailure) and at session end
+// (Stop). Build the runner once via hooks.NewRunner, register
+// callbacks with runner.Register(event, handler), then pass it here.
+//
+// A nil runner disables the integration (default).
+func WithLifecycleHooks(r *hooks.Runner) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.lifecycleHooks = r }
+}
+
+// LifecycleHooks returns the runner installed via WithLifecycleHooks
+// (nil if none). It is intended for backends that need to forward the
+// runner into their own generation paths.
+func (e *ClawExecutor) LifecycleHooks() *hooks.Runner {
+	return e.lifecycleHooks
 }
 
 // NewClawExecutor creates a ClawExecutor for a given workflow.

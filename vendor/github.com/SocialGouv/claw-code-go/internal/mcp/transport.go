@@ -26,15 +26,16 @@ const (
 
 // TransportConfig holds common configuration for creating transports.
 type TransportConfig struct {
-	Type    TransportType
-	URL     string            // For SSE, HTTP, WebSocket, ManagedProxy
-	Headers map[string]string // For SSE, HTTP, WebSocket
-	Command string            // For Stdio
-	Args    []string          // For Stdio
-	Env     map[string]string // For Stdio
-	Auth    string            // Auth header for SSE/HTTP
-	ID      string            // For ManagedProxy
-	Name    string            // For SDK
+	Type     TransportType
+	URL      string            // For SSE, HTTP, WebSocket, ManagedProxy
+	Headers  map[string]string // For SSE, HTTP, WebSocket
+	Command  string            // For Stdio
+	Args     []string          // For Stdio
+	Env      map[string]string // For Stdio
+	Auth     string            // Static Bearer/Authorization header for SSE/HTTP
+	AuthFunc func(ctx context.Context) (string, error) // Dynamic auth header (overrides Auth when set; for SSE/HTTP)
+	ID       string            // For ManagedProxy
+	Name     string            // For SDK
 }
 
 // NewTransport creates a Transport from the given configuration.
@@ -48,7 +49,7 @@ func NewTransport(cfg TransportConfig) (Transport, error) {
 		}
 		return NewStdioTransport(cfg.Command, cfg.Args, env)
 	case TransportSSE, TransportHTTP:
-		return NewSSETransport(cfg.URL, cfg.Auth), nil
+		return NewSSETransportWithAuthFunc(cfg.URL, cfg.Auth, cfg.AuthFunc), nil
 	case TransportWebSocket:
 		return NewWebSocketTransport(websocketURL(cfg.URL), cfg.Headers)
 	case TransportManagedProxy:

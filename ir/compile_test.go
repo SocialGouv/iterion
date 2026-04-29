@@ -719,11 +719,10 @@ workflow test:
 `,
 		},
 		{
-			name: "sse_out_of_scope",
+			name: "sse_missing_url",
 			src: `
 mcp_server bad:
   transport: sse
-  url: "https://example.com/events"
 
 schema s:
   ok: bool
@@ -764,6 +763,51 @@ workflow test:
 				t.Fatal("expected DiagInvalidMCPServer diagnostic")
 			}
 		})
+	}
+}
+
+// TestValidateMCPAuth_Unsupported asserts that compile-time validation
+// flags MCPServer entries with non-oauth2 Auth.Type. The .iter parser
+// does not yet emit `auth:` blocks, so this test injects the workflow
+// state directly and exercises validateMCPAuth.
+func TestValidateMCPAuth_Unsupported(t *testing.T) {
+	w := &Workflow{
+		Name: "t",
+		MCPServers: map[string]*MCPServer{
+			"bad": {
+				Name: "bad",
+				Auth: &MCPAuth{Type: "mtls"},
+			},
+		},
+	}
+	c := &compiler{}
+	c.validateMCPAuth(w)
+	found := false
+	for _, d := range c.diags {
+		if d.Code == DiagUnsupportedMCPAuth {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected DiagUnsupportedMCPAuth, got %+v", c.diags)
+	}
+
+	// oauth2 must NOT trigger the diagnostic.
+	w2 := &Workflow{
+		Name: "t",
+		MCPServers: map[string]*MCPServer{
+			"good": {
+				Name: "good",
+				Auth: &MCPAuth{Type: "oauth2"},
+			},
+		},
+	}
+	c2 := &compiler{}
+	c2.validateMCPAuth(w2)
+	for _, d := range c2.diags {
+		if d.Code == DiagUnsupportedMCPAuth {
+			t.Fatalf("oauth2 should not trigger diagnostic, got %+v", d)
+		}
 	}
 }
 

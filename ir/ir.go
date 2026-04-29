@@ -424,6 +424,34 @@ type MCPServer struct {
 	Args      []string
 	URL       string
 	Headers   map[string]string
+	Auth      *MCPAuth
+}
+
+// MCPAuth describes how to authenticate against an MCP server.
+// Only the OAuth2 authorization-code + PKCE flow is wired today;
+// `Type` is reserved for future schemes (bearer, mTLS, ...).
+type MCPAuth struct {
+	// Type is the authentication scheme. The only supported value is
+	// "oauth2"; other values produce a C-code diagnostic.
+	Type string
+
+	// AuthURL is the OAuth authorization endpoint the user's browser
+	// visits to consent.
+	AuthURL string
+
+	// TokenURL is the back-channel endpoint that issues access and
+	// refresh tokens.
+	TokenURL string
+
+	// RevokeURL is the optional RFC 7009 revocation endpoint.
+	RevokeURL string
+
+	// ClientID is the OAuth client identifier registered with the
+	// provider.
+	ClientID string
+
+	// Scopes is the set of OAuth scopes requested at authorization.
+	Scopes []string
 }
 
 // MCPConfig represents workflow-level or node-level MCP activation/filtering.

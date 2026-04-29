@@ -72,8 +72,10 @@ github.com/SocialGouv/claw-code-go/internal/api/providers/vertex
 github.com/SocialGouv/claw-code-go/internal/api/sseutil
 github.com/SocialGouv/claw-code-go/internal/apikit
 github.com/SocialGouv/claw-code-go/internal/config
+github.com/SocialGouv/claw-code-go/internal/hooks
 github.com/SocialGouv/claw-code-go/internal/lsp
 github.com/SocialGouv/claw-code-go/internal/mcp
+github.com/SocialGouv/claw-code-go/internal/mcp/oauth
 github.com/SocialGouv/claw-code-go/internal/permissions
 github.com/SocialGouv/claw-code-go/internal/runtime/task
 github.com/SocialGouv/claw-code-go/internal/runtime/team
@@ -82,12 +84,19 @@ github.com/SocialGouv/claw-code-go/internal/runtime/worker
 github.com/SocialGouv/claw-code-go/internal/strutil
 github.com/SocialGouv/claw-code-go/internal/tools
 github.com/SocialGouv/claw-code-go/pkg/api
+github.com/SocialGouv/claw-code-go/pkg/api/hooks
+github.com/SocialGouv/claw-code-go/pkg/api/lsp
+github.com/SocialGouv/claw-code-go/pkg/api/mcp
+github.com/SocialGouv/claw-code-go/pkg/api/mcp/oauth
 github.com/SocialGouv/claw-code-go/pkg/api/providers/anthropic
 github.com/SocialGouv/claw-code-go/pkg/api/providers/bedrock
 github.com/SocialGouv/claw-code-go/pkg/api/providers/foundry
 github.com/SocialGouv/claw-code-go/pkg/api/providers/openai
 github.com/SocialGouv/claw-code-go/pkg/api/providers/vertex
+github.com/SocialGouv/claw-code-go/pkg/api/task
+github.com/SocialGouv/claw-code-go/pkg/api/team
 github.com/SocialGouv/claw-code-go/pkg/api/tools
+github.com/SocialGouv/claw-code-go/pkg/api/worker
 # github.com/aws/aws-sdk-go-v2 v1.41.6
 ## explicit; go 1.24
 github.com/aws/aws-sdk-go-v2/aws

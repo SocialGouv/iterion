@@ -97,7 +97,11 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 
 		executor := opts.Executor
 		if executor == nil {
-			executor = newDefaultExecutor(wf, opts.Vars, s, runID, logger, storeDir)
+			exec, execErr := newDefaultExecutor(wf, opts.Vars, s, runID, logger, storeDir)
+			if execErr != nil {
+				return execErr
+			}
+			executor = exec
 		}
 		if c, ok := executor.(io.Closer); ok {
 			defer func() {
@@ -127,7 +131,11 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 
 		executor := opts.Executor
 		if executor == nil {
-			executor = newDefaultExecutor(wf, opts.Vars, s, runID, logger, storeDir)
+			exec, execErr := newDefaultExecutor(wf, opts.Vars, s, runID, logger, storeDir)
+			if execErr != nil {
+				return execErr
+			}
+			executor = exec
 		}
 		if c, ok := executor.(io.Closer); ok {
 			defer func() {
@@ -254,20 +262,41 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 
 // newDefaultExecutor creates a ClawExecutor with the default delegate registry
 // and event hooks wired to the store for observability.
-func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunStore, runID string, logger *iterlog.Logger, storeDir string) *model.ClawExecutor {
+//
+// Returns an error if a hard precondition cannot be met: the working
+// directory cannot be resolved (workspace gating relies on it), or any
+// MCP server with a declared `Auth` block fails OAuth wiring (the run
+// would otherwise dispatch unauthenticated requests and surface 401s
+// at runtime, which is harder to diagnose).
+func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunStore, runID string, logger *iterlog.Logger, storeDir string) (*model.ClawExecutor, error) {
 	reg := model.NewRegistry()
 	backendReg := delegate.DefaultRegistry(logger)
 
 	hooks := model.NewStoreEventHooks(s, runID, logger)
+	lifecycle := model.NewDefaultLifecycleHooks(hooks)
 
 	// Register the claw backend explicitly (API-based LLM path).
-	backendReg.Register(delegate.BackendClaw, model.NewClawBackend(reg, hooks, model.RetryPolicy{}))
+	clawBackend := model.NewClawBackend(reg, hooks, model.RetryPolicy{}, model.WithBackendLifecycleHooks(lifecycle))
+	backendReg.Register(delegate.BackendClaw, clawBackend)
+
+	toolReg := tool.NewRegistry()
+	workspace, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("cli: resolve working dir for tool workspace: %w", err)
+	}
+	if err := tool.RegisterClawAll(toolReg, tool.ClawDefaults{Workspace: workspace}); err != nil {
+		// Non-fatal: log and continue with whatever was registered.
+		// A malformed registry is better than a hard run failure on
+		// startup; downstream tool resolution will surface the gap.
+		logger.Warn("RegisterClawAll: %v", err)
+	}
 
 	opts := []model.ClawExecutorOption{
 		model.WithBackendRegistry(backendReg),
 		model.WithEventHooks(hooks),
-		model.WithToolRegistry(tool.NewRegistry()),
+		model.WithToolRegistry(toolReg),
 		model.WithLogger(logger),
+		model.WithLifecycleHooks(lifecycle),
 	}
 
 	// Build tool policy from workflow-level and per-node ToolPolicy fields.
@@ -276,6 +305,7 @@ func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunSto
 	}
 	if len(wf.ResolvedMCPServers) > 0 {
 		catalog := make(map[string]*mcp.ServerConfig, len(wf.ResolvedMCPServers))
+		hasAuth := false
 		for name, server := range wf.ResolvedMCPServers {
 			catalog[name] = &mcp.ServerConfig{
 				Name:      server.Name,
@@ -284,7 +314,31 @@ func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunSto
 				Args:      append([]string(nil), server.Args...),
 				URL:       server.URL,
 				Headers:   server.Headers,
+				Auth:      mcp.FromIRAuth(server.Auth),
 			}
+			if server.Auth != nil {
+				hasAuth = true
+			}
+		}
+		// Wire OAuth tokens for any server with Auth.Type == "oauth2".
+		// Storage lives under the run's store dir so refresh tokens
+		// survive across runs of the same project.
+		//
+		// When at least one server declares an Auth block, broker
+		// init and PrepareAuth failures are fatal: continuing would
+		// dispatch the run with AuthFunc == nil and surface as 401s
+		// later, hiding the root cause from the operator.
+		broker, brokerErr := mcp.NewOAuthBroker(storeDir)
+		if brokerErr != nil {
+			if hasAuth {
+				return nil, fmt.Errorf("mcp: oauth broker init (required by catalog Auth): %w", brokerErr)
+			}
+			logger.Warn("mcp: oauth broker init: %v", brokerErr)
+		} else if err := mcp.PrepareAuth(catalog, broker); err != nil {
+			if hasAuth {
+				return nil, fmt.Errorf("mcp: prepare oauth auth: %w", err)
+			}
+			logger.Warn("mcp: prepare oauth auth: %v", err)
 		}
 		var mcpOpts []mcp.ManagerOption
 		mcpOpts = append(mcpOpts, mcp.WithLogger(logger))
@@ -307,7 +361,7 @@ func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunSto
 		executor.SetVars(v)
 	}
 
-	return executor
+	return executor, nil
 }
 
 // mcpHealthCheck runs a pre-execution health check on active MCP servers if

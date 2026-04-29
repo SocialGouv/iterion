@@ -303,18 +303,18 @@ func (c *compiler) validateMCPServer(s *MCPServer) {
 		if s.URL != "" {
 			c.errorf(DiagInvalidMCPServer, "mcp_server %q with transport stdio cannot set 'url'", s.Name)
 		}
-	case MCPTransportHTTP:
+	case MCPTransportHTTP, MCPTransportSSE:
+		// HTTP and SSE share the same StreamableClientTransport at
+		// runtime: both require a URL and forbid Command/Args.
 		if s.URL == "" {
-			c.errorf(DiagInvalidMCPServer, "mcp_server %q with transport http must set 'url'", s.Name)
+			c.errorf(DiagInvalidMCPServer, "mcp_server %q with transport %s must set 'url'", s.Name, s.Transport)
 		}
 		if s.Command != "" {
-			c.errorf(DiagInvalidMCPServer, "mcp_server %q with transport http cannot set 'command'", s.Name)
+			c.errorf(DiagInvalidMCPServer, "mcp_server %q with transport %s cannot set 'command'", s.Name, s.Transport)
 		}
 		if len(s.Args) > 0 {
-			c.errorf(DiagInvalidMCPServer, "mcp_server %q with transport http cannot set 'args'", s.Name)
+			c.errorf(DiagInvalidMCPServer, "mcp_server %q with transport %s cannot set 'args'", s.Name, s.Transport)
 		}
-	case MCPTransportSSE:
-		c.errorf(DiagInvalidMCPServer, "mcp_server %q uses transport sse, which is not supported in v1", s.Name)
 	case MCPTransportUnknown:
 		c.errorf(DiagInvalidMCPServer, "mcp_server %q must set a supported 'transport'", s.Name)
 	}

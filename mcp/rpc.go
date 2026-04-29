@@ -134,14 +134,17 @@ func (c *sdkClient) buildTransport() (mcp.Transport, error) {
 			TerminateDuration: 2 * time.Second,
 		}, nil
 
-	case TransportHTTP:
+	case TransportHTTP, TransportSSE:
 		t := &mcp.StreamableClientTransport{
 			Endpoint: c.cfg.URL,
 		}
-		if len(c.cfg.Headers) > 0 {
+		if len(c.cfg.Headers) > 0 || c.cfg.AuthFunc != nil {
 			t.HTTPClient = &http.Client{
-				Timeout:   60 * time.Second,
-				Transport: &headerRoundTripper{headers: c.cfg.Headers},
+				Timeout: 60 * time.Second,
+				Transport: &headerRoundTripper{
+					headers:  c.cfg.Headers,
+					authFunc: c.cfg.AuthFunc,
+				},
 			}
 		}
 		return t, nil
@@ -152,14 +155,27 @@ func (c *sdkClient) buildTransport() (mcp.Transport, error) {
 }
 
 // headerRoundTripper injects custom headers into every HTTP request.
+// When authFunc is set, it is invoked on every request to obtain a
+// fresh "Authorization" header value, overriding any static
+// Authorization in headers.
 type headerRoundTripper struct {
-	headers map[string]string
-	base    http.RoundTripper
+	headers  map[string]string
+	authFunc AuthFunc
+	base     http.RoundTripper
 }
 
 func (rt *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	for k, v := range rt.headers {
 		req.Header.Set(k, v)
+	}
+	if rt.authFunc != nil {
+		token, err := rt.authFunc(req.Context())
+		if err != nil {
+			return nil, fmt.Errorf("mcp: oauth: %w", err)
+		}
+		if token != "" {
+			req.Header.Set("Authorization", token)
+		}
 	}
 	base := rt.base
 	if base == nil {

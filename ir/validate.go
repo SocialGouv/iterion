@@ -31,6 +31,7 @@ const (
 	DiagUnknownArtifact         DiagCode = "C035" // artifacts ref to unpublished artifact
 	DiagRefNodeNotReachable     DiagCode = "C036" // outputs ref to node not reachable before consumer
 	DiagNodeMaxTokensVsBudget   DiagCode = "C037" // node-level max_tokens exceeds workflow.budget.max_tokens
+	DiagUnsupportedMCPAuth      DiagCode = "C038" // MCP server Auth.Type not supported (only "oauth2" is wired)
 )
 
 // validate performs static validation on a compiled workflow.
@@ -53,6 +54,40 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateReasoningEffort(w)
 	c.validateTemplateRefs(w)
 	c.validateNodeMaxTokensVsBudget(w)
+	c.validateMCPAuth(w)
+}
+
+// ---------------------------------------------------------------------------
+// C038 — MCP server Auth.Type validation
+// ---------------------------------------------------------------------------
+
+// validateMCPAuth catches workflows that declare an MCP server with an
+// unsupported Auth.Type at compile time, instead of waiting for runtime
+// init to fail with the same message.
+func (c *compiler) validateMCPAuth(w *Workflow) {
+	if w == nil {
+		return
+	}
+	check := func(name string, server *MCPServer) {
+		if server == nil || server.Auth == nil {
+			return
+		}
+		if server.Auth.Type != "oauth2" {
+			c.errorf(DiagUnsupportedMCPAuth,
+				"mcp server %q: auth type %q is not supported (only \"oauth2\" is wired)", name, server.Auth.Type)
+		}
+	}
+	for name, server := range w.MCPServers {
+		check(name, server)
+	}
+	for name, server := range w.ResolvedMCPServers {
+		// Skip resolved entries already covered by the explicit map
+		// to avoid duplicate diagnostics on the same source.
+		if _, dup := w.MCPServers[name]; dup {
+			continue
+		}
+		check(name, server)
+	}
 }
 
 // ---------------------------------------------------------------------------
