@@ -27,7 +27,6 @@ const (
 	DiagMissingModelOrBackend DiagCode = "C018" // agent/judge has neither model nor backend
 	DiagDuplicateMCPServer    DiagCode = "C024" // duplicate top-level mcp_server name
 	DiagInvalidMCPServer      DiagCode = "C025" // invalid MCP server config
-	DiagInteractionNoBackend  DiagCode = "C029" // interaction set on non-backend LLM node (no runtime effect)
 	DiagCodexDiscouraged      DiagCode = "C030" // codex backend is supported but discouraged
 	DiagComputeNoExpr         DiagCode = "C039" // compute node has no expressions
 	DiagBadExpr               DiagCode = "C040" // expression failed to parse
@@ -428,9 +427,6 @@ func (c *compiler) compileAgents() {
 		if interaction == InteractionNone {
 			interaction = c.workflowInteractionDefault()
 		}
-		if interaction != InteractionNone && a.Backend == "" {
-			c.warnf(DiagInteractionNoBackend, "agent %q has interaction %s but no backend; interaction forwarding only works with execution backends", a.Name, interaction)
-		}
 
 		c.nodes[a.Name] = &AgentNode{
 			BaseNode: BaseNode{ID: a.Name},
@@ -483,9 +479,6 @@ func (c *compiler) compileJudges() {
 		interaction := j.Interaction
 		if interaction == InteractionNone {
 			interaction = c.workflowInteractionDefault()
-		}
-		if interaction != InteractionNone && j.Backend == "" {
-			c.warnf(DiagInteractionNoBackend, "judge %q has interaction %s but no backend; interaction forwarding only works with execution backends", j.Name, interaction)
 		}
 
 		c.nodes[j.Name] = &JudgeNode{

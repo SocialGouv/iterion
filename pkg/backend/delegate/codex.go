@@ -40,10 +40,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	var opts []codexsdk.Option
 
 	// Preamble teaches frugal tool usage; task prompt follows and may override.
-	systemPrompt := codexOutputDisciplinePreamble + task.SystemPrompt
-	if task.InteractionEnabled {
-		systemPrompt += interactionSystemInstruction
-	}
+	systemPrompt := codexOutputDisciplinePreamble + task.SystemPromptWithInteraction()
 	if systemPrompt != "" {
 		opts = append(opts, codexsdk.WithSystemPrompt(systemPrompt))
 	}

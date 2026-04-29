@@ -32,11 +32,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 
 	var opts []claudesdk.Option
 
-	// Build system prompt, optionally augmented with interaction instructions.
-	systemPrompt := task.SystemPrompt
-	if task.InteractionEnabled {
-		systemPrompt += interactionSystemInstruction
-	}
+	systemPrompt := task.SystemPromptWithInteraction()
 	if systemPrompt != "" {
 		opts = append(opts, claudesdk.WithSystemPrompt(systemPrompt))
 	}

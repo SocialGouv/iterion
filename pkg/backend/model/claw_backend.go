@@ -75,11 +75,13 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 		opts.ProviderOptions = popts
 	}
 
-	// System prompt with ephemeral cache_control marker.
-	if task.SystemPrompt != "" {
+	// System prompt (optionally augmented with the interaction protocol)
+	// with ephemeral cache_control marker.
+	systemText := task.SystemPromptWithInteraction()
+	if systemText != "" {
 		opts.SystemBlocks = []api.ContentBlock{{
 			Type:         "text",
-			Text:         task.SystemPrompt,
+			Text:         systemText,
 			CacheControl: api.EphemeralCacheControl(),
 		}}
 	}

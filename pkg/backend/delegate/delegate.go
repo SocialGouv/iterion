@@ -111,6 +111,17 @@ type Task struct {
 	InteractionEnabled bool
 }
 
+// SystemPromptWithInteraction returns the task's SystemPrompt augmented
+// with the interaction protocol instructions when InteractionEnabled is
+// true. Backends should call this instead of reading SystemPrompt
+// directly so the LLM consistently learns how to escalate to a human.
+func (t Task) SystemPromptWithInteraction() string {
+	if t.InteractionEnabled {
+		return t.SystemPrompt + interactionSystemInstruction
+	}
+	return t.SystemPrompt
+}
+
 // Result contains the output from a delegation backend.
 type Result struct {
 	// Output is the parsed structured output from the CLI agent.

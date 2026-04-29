@@ -71,6 +71,27 @@ prompt review_system:
   5. Items deja pushbackes par le fixer : ne les
      re-flague PAS sauf si tu as une preuve nouvelle.
 
+  ESCALADE HUMAINE :
+  Quand tu rencontres une AMBIGUITE qu'aucune lecture du
+  code ne peut resoudre (ex : "ce comportement est-il
+  intentionnel ?", "la spec dit-elle X ou Y ?", "dois-je
+  preserver la rétrocompatibilité ?"), tu peux poser la
+  question directement au developpeur qui a lance le run
+  en incluant ces deux champs dans ton JSON de sortie :
+
+      "_needs_interaction": true,
+      "_interaction_questions": {
+          "cle_lisible": "ta question precise"
+      }
+
+  Le run sera mis en pause, la question affichee dans le
+  terminal du dev, et tu seras re-invoque avec la reponse
+  injectee dans ton input. Utilise cette escalade avec
+  parcimonie : seulement quand tu ne peux PAS trancher
+  sans information humaine. Pour les jugements techniques
+  ordinaires, tranche toi-meme et baisse `confidence` si
+  tu n'es pas sur.
+
 prompt review_user_claude:
   Review le code dans {{vars.workspace_dir}}.
 
@@ -137,6 +158,22 @@ prompt fix_system:
 
   Utilise pushback avec parcimonie : si tu pushbackes
   tout, le code ne sera jamais ameliore.
+
+  ESCALADE HUMAINE :
+  Si un blocker est reellement ambigu (la spec ne dit pas
+  comment le resoudre, plusieurs approches valides
+  s'opposent, etc.), pose directement la question au dev
+  en incluant dans ton JSON de sortie :
+
+      "_needs_interaction": true,
+      "_interaction_questions": {
+          "cle_lisible": "ta question precise"
+      }
+
+  Le run se met en pause, la question s'affiche dans le
+  terminal du dev, et tu seras re-invoque avec la reponse.
+  N'utilise pas cette voie pour des choix techniques que
+  tu peux trancher seul.
 
 prompt fix_user:
   Pour le code dans {{vars.workspace_dir}}, examine cette
@@ -215,6 +252,14 @@ judge reviewer_claude:
   system: review_system
   user: review_user_claude
   session: fresh
+  ## When the LLM hits genuine uncertainty (ambiguous spec, missing
+  ## context, impossible-to-decide trade-off), it can escalate to
+  ## the human running the CLI by emitting `_needs_interaction:
+  ## true` + `_interaction_questions: {...}` in its JSON output.
+  ## The runtime catches this, pauses, prompts the dev in their
+  ## terminal, and re-invokes the reviewer with the answer mapped
+  ## into its input — preserving session continuity.
+  interaction: human
 
 judge reviewer_gpt:
   model: "openai/gpt-5.5"
@@ -223,6 +268,7 @@ judge reviewer_gpt:
   system: review_system
   user: review_user_gpt
   session: fresh
+  interaction: human
 
 ## Deterministic streak detector + soft-approval gate.
 ##
@@ -252,6 +298,10 @@ agent fix_claude:
   system: fix_system
   user: fix_user
   session: fresh
+  ## Same escalation contract as the reviewers — the fixer can ask
+  ## the dev a question (e.g. clarify the intent of an ambiguous
+  ## blocker) instead of guessing.
+  interaction: human
 
 ## ─── Workflow ───────────────────────────────────────────────────
 
