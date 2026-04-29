@@ -1,8 +1,8 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo } from "react";
 import { useDocumentStore } from "@/store/document";
-import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import type { Edge, WhenClause, LoopClause, WithEntry } from "@/api/types";
 import { TextField, NumberField, CheckboxField, SelectField, CommittedTextField } from "./FormField";
+import type { RefContext } from "@/lib/refCompletion";
 
 interface Props {
   edge: Edge;
@@ -49,8 +49,6 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
       .map((f) => ({ value: f.name, label: f.name }));
   }, [document, edge.from]);
 
-  const activeWorkflow = useActiveWorkflow();
-
   // Build enum hints for target node's input schema fields
   const targetEnumMap = useMemo(() => {
     if (!document) return new Map<string, string[]>();
@@ -73,73 +71,10 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
     return map;
   }, [document, edge.to]);
 
-  // Build template reference suggestions for With value fields
-  const templateRefs = useMemo(() => {
-    if (!document) return [];
-    const refs: { label: string; value: string; group: string }[] = [];
-
-    // {{input.*}} from target node's input schema
-    const targetNode = edge.to;
-    let targetInputSchemaName = "";
-    for (const a of document.agents) { if (a.name === targetNode) { targetInputSchemaName = a.input; break; } }
-    if (!targetInputSchemaName) for (const j of document.judges) { if (j.name === targetNode) { targetInputSchemaName = j.input; break; } }
-    if (!targetInputSchemaName) for (const h of document.humans) { if (h.name === targetNode) { targetInputSchemaName = h.input; break; } }
-    if (targetInputSchemaName) {
-      const schema = document.schemas.find((s) => s.name === targetInputSchemaName);
-      if (schema) {
-        for (const f of schema.fields) {
-          if (f.name) refs.push({ label: f.name, value: `{{input.${f.name}}}`, group: "input" });
-        }
-      }
-    }
-
-    // {{vars.*}} from top-level and workflow vars
-    const varFields = document.vars?.fields ?? [];
-    for (const v of varFields) {
-      if (v.name) refs.push({ label: v.name, value: `{{vars.${v.name}}}`, group: "vars" });
-    }
-    const wfVars = activeWorkflow?.vars?.fields ?? [];
-    for (const v of wfVars) {
-      if (v.name && !varFields.some((f) => f.name === v.name)) {
-        refs.push({ label: v.name, value: `{{vars.${v.name}}}`, group: "vars" });
-      }
-    }
-
-    // {{outputs.*}} from all nodes
-    const allNodes: { name: string; output: string }[] = [];
-    for (const a of document.agents) allNodes.push({ name: a.name, output: a.output });
-    for (const j of document.judges) allNodes.push({ name: j.name, output: j.output });
-    for (const h of document.humans) allNodes.push({ name: h.name, output: h.output });
-    for (const t of document.tools) allNodes.push({ name: t.name, output: t.output });
-
-    // Collect delegated node names for _session_id suggestions
-    const delegatedNodes = new Set<string>();
-    for (const a of document.agents) { if (a.delegate) delegatedNodes.add(a.name); }
-    for (const j of document.judges) { if (j.delegate) delegatedNodes.add(j.name); }
-
-    for (const node of allNodes) {
-      refs.push({ label: node.name, value: `{{outputs.${node.name}}}`, group: "outputs" });
-      if (node.output) {
-        const schema = document.schemas.find((s) => s.name === node.output);
-        if (schema) {
-          for (const f of schema.fields) {
-            if (f.name) refs.push({ label: `${node.name}.${f.name}`, value: `{{outputs.${node.name}.${f.name}}}`, group: "outputs" });
-          }
-        }
-      }
-      // Delegated nodes expose _session_id for session continuity
-      if (delegatedNodes.has(node.name)) {
-        refs.push({ label: `${node.name}._session_id`, value: `{{outputs.${node.name}._session_id}}`, group: "sessions" });
-      }
-    }
-
-    // {{artifacts.*}} from nodes with publish
-    for (const a of document.agents) { if (a.publish) refs.push({ label: a.publish, value: `{{artifacts.${a.publish}}}`, group: "artifacts" }); }
-    for (const j of document.judges) { if (j.publish) refs.push({ label: j.publish, value: `{{artifacts.${j.publish}}}`, group: "artifacts" }); }
-    for (const h of document.humans) { if (h.publish) refs.push({ label: h.publish, value: `{{artifacts.${h.publish}}}`, group: "artifacts" }); }
-
-    return refs;
-  }, [document, activeWorkflow]);
+  const refContext = useMemo<RefContext>(
+    () => ({ kind: "edge-with", edgeFrom: edge.from, edgeTo: edge.to }),
+    [edge.from, edge.to],
+  );
 
   const when = edge.when;
   const loop = edge.loop;
@@ -259,7 +194,7 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
             index={i}
             withEntries={withEntries}
             setWith={setWith}
-            templateRefs={templateRefs}
+            refContext={refContext}
             enumValues={targetEnumMap.get(entry.key)}
           />
         ))}
@@ -278,24 +213,21 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
   );
 }
 
-/** A single With entry row with an "Insert ref" picker for the value field. */
 function WithEntryRow({
   entry,
   index,
   withEntries,
   setWith,
-  templateRefs,
+  refContext,
   enumValues,
 }: {
   entry: WithEntry;
   index: number;
   withEntries: WithEntry[];
   setWith: (w: WithEntry[] | undefined) => void;
-  templateRefs: { label: string; value: string; group: string }[];
+  refContext: RefContext;
   enumValues?: string[];
 }) {
-  const [pickerOpen, setPickerOpen] = useState(false);
-
   const updateValue = useCallback(
     (v: string) => {
       const next = [...withEntries];
@@ -304,15 +236,6 @@ function WithEntryRow({
     },
     [withEntries, index, entry.key, setWith],
   );
-
-  const groups = useMemo(() => {
-    const map = new Map<string, { label: string; value: string }[]>();
-    for (const ref of templateRefs) {
-      if (!map.has(ref.group)) map.set(ref.group, []);
-      map.get(ref.group)!.push({ label: ref.label, value: ref.value });
-    }
-    return map;
-  }, [templateRefs]);
 
   return (
     <div className="mb-2 p-1.5 bg-surface-1/50 rounded border border-border-default">
@@ -340,52 +263,14 @@ function WithEntryRow({
           x
         </button>
       </div>
-      <div className="flex gap-1 items-end">
-        <div className="flex-1">
-          <TextField
-            label="Value"
-            value={entry.value}
-            onChange={updateValue}
-            placeholder="{{outputs.node.field}}"
-          />
-        </div>
-        <div className="relative">
-          <button
-            className="text-accent hover:text-accent text-[10px] pb-2 whitespace-nowrap"
-            onClick={() => setPickerOpen(!pickerOpen)}
-            title="Insert a template reference"
-          >
-            {"{{"} ref
-          </button>
-          {pickerOpen && (
-            <div className="absolute bottom-6 right-0 bg-surface-1 border border-border-strong rounded-lg shadow-xl z-50 py-1 min-w-[200px] max-h-[240px] overflow-y-auto">
-              {Array.from(groups.entries()).map(([group, refs]) => (
-                <div key={group}>
-                  <div className="px-2 py-1 text-[9px] text-fg-subtle uppercase tracking-wider sticky top-0 bg-surface-1">
-                    {group}
-                  </div>
-                  {refs.map((ref) => (
-                    <button
-                      key={ref.value}
-                      className="w-full text-left px-2 py-1 hover:bg-surface-2 text-[11px] text-fg-muted truncate"
-                      onClick={() => {
-                        updateValue(entry.value ? `${entry.value} ${ref.value}` : ref.value);
-                        setPickerOpen(false);
-                      }}
-                      title={ref.value}
-                    >
-                      {ref.label}
-                    </button>
-                  ))}
-                </div>
-              ))}
-              {templateRefs.length === 0 && (
-                <p className="px-2 py-1 text-[10px] text-fg-subtle">No references available. Add nodes with output schemas first.</p>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
+      <TextField
+        label="Value"
+        value={entry.value}
+        onChange={updateValue}
+        placeholder="{{outputs.node.field}}"
+        refContext={refContext}
+        help="Type {{ to autocomplete from inputs, vars, outputs, and artifacts in scope."
+      />
       {enumValues && enumValues.length > 0 && (
         <div className="mt-0.5">
           <span className="text-[9px] text-fg-subtle">Allowed values: </span>
@@ -393,7 +278,7 @@ function WithEntryRow({
             {enumValues.map((v) => (
               <button
                 key={v}
-                className="text-[10px] bg-surface-2 hover:bg-surface-3 text-amber-300 px-1.5 py-0.5 rounded cursor-pointer"
+                className="text-[10px] bg-surface-2 hover:bg-surface-3 text-warning-fg px-1.5 py-0.5 rounded cursor-pointer"
                 onClick={() => updateValue(`"${v}"`)}
                 title={`Set value to "${v}"`}
               >

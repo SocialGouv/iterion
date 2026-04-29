@@ -51,10 +51,23 @@ func (s Severity) String() string {
 }
 
 // Diagnostic represents a compilation error or warning.
+//
+// NodeID and EdgeID are best-effort attribution fields used by tooling (the
+// editor renders them as inline badges). They may be empty when the diagnostic
+// is global (e.g. "no workflow"). EdgeID follows the canonical "<from>-><to>"
+// format the editor uses; when multiple edges share endpoints the first
+// matching one wins.
+//
+// Hint is a one-line, user-facing fix suggestion when one is known. The
+// authoritative documentation still lives in `docs/diagnostics.md`; Hint is
+// for UIs that want a quick tooltip without round-tripping to docs.
 type Diagnostic struct {
 	Code     DiagCode
 	Severity Severity
 	Message  string
+	NodeID   string
+	EdgeID   string
+	Hint     string
 }
 
 func (d Diagnostic) Error() string {
@@ -123,6 +136,36 @@ func (c *compiler) warnf(code DiagCode, format string, args ...interface{}) {
 	})
 }
 
+// errorfAt is a variant of errorf that attaches authoritative attribution
+// (nodeID and/or edgeID) so downstream tooling can render the diagnostic on
+// the precise node or edge instead of guessing from the message text.
+func (c *compiler) errorfAt(code DiagCode, nodeID, edgeID string, format string, args ...interface{}) {
+	c.diags = append(c.diags, Diagnostic{
+		Code:     code,
+		Severity: SeverityError,
+		Message:  fmt.Sprintf(format, args...),
+		NodeID:   nodeID,
+		EdgeID:   edgeID,
+	})
+}
+
+// warnfAt is the warning counterpart to errorfAt.
+func (c *compiler) warnfAt(code DiagCode, nodeID, edgeID string, format string, args ...interface{}) {
+	c.diags = append(c.diags, Diagnostic{
+		Code:     code,
+		Severity: SeverityWarning,
+		Message:  fmt.Sprintf(format, args...),
+		NodeID:   nodeID,
+		EdgeID:   edgeID,
+	})
+}
+
+// edgeID builds the canonical "<from>-><to>" identifier the editor uses so
+// inline diagnostic badges can match attributed diagnostics to the right edge.
+func edgeID(from, to string) string {
+	return from + "->" + to
+}
+
 // warnCodexDiscouraged emits a C030 warning when a node uses the codex backend.
 // Codex is still supported but has known limitations (cannot configure tool set,
 // tends to fill its own context window, weaker iterion integration). New
@@ -132,7 +175,7 @@ func (c *compiler) warnCodexDiscouraged(kind, name, backend string) {
 	if backend != codexBackendName {
 		return
 	}
-	c.warnf(DiagCodexDiscouraged,
+	c.warnfAt(DiagCodexDiscouraged, name, "",
 		"%s %q uses 'codex' backend which is supported but discouraged: codex cannot configure its tool set, tends to fill its context window, and has weaker integration; prefer 'claude_code' for tool-using agents or 'claw' with an OpenAI model (e.g. model: \"openai/gpt-5.4-mini\") for judges/reviewers",
 		kind, name)
 }
@@ -355,7 +398,7 @@ func (c *compiler) compileAgents() {
 		c.validatePromptRef(a.Name, "user", a.User)
 		model := resolveSupervisorModel(a.Model)
 		if model == "" && a.Backend == "" {
-			c.errorf(DiagMissingModelOrBackend, "agent %q must set 'model' or 'backend', or define ITERION_DEFAULT_SUPERVISOR_MODEL", a.Name)
+			c.errorfAt(DiagMissingModelOrBackend, a.Name, "", "agent %q must set 'model' or 'backend', or define ITERION_DEFAULT_SUPERVISOR_MODEL", a.Name)
 		}
 		c.warnCodexDiscouraged("agent", a.Name, a.Backend)
 
@@ -411,7 +454,7 @@ func (c *compiler) compileJudges() {
 		c.validatePromptRef(j.Name, "user", j.User)
 		model := resolveSupervisorModel(j.Model)
 		if model == "" && j.Backend == "" {
-			c.errorf(DiagMissingModelOrBackend, "judge %q must set 'model' or 'backend', or define ITERION_DEFAULT_SUPERVISOR_MODEL", j.Name)
+			c.errorfAt(DiagMissingModelOrBackend, j.Name, "", "judge %q must set 'model' or 'backend', or define ITERION_DEFAULT_SUPERVISOR_MODEL", j.Name)
 		}
 		c.warnCodexDiscouraged("judge", j.Name, j.Backend)
 

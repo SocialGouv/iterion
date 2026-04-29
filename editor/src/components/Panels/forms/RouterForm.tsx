@@ -127,7 +127,7 @@ export default function RouterForm({ decl }: Props) {
               <span className="text-fg-subtle">&rarr;</span>
               <span>{e.to}</span>
               {e.when ? (
-                <span className="text-amber-400 text-[10px]">
+                <span className="text-warning-fg text-[10px]">
                   (when{e.when.negated ? " not" : ""} {e.when.condition})
                 </span>
               ) : (

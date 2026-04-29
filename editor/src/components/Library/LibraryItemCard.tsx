@@ -49,7 +49,7 @@ export default function LibraryItemCard({ item, onAdd }: Props) {
         <div className="text-xs font-medium text-fg-default flex items-center gap-1 min-w-0">
           <span className="truncate">{item.name}</span>
           {item.template.pattern && (
-            <span className="text-[9px] bg-purple-500/20 text-purple-300 px-1 rounded shrink-0">
+            <span className="text-[9px] bg-info/20 text-info-fg px-1 rounded shrink-0">
               {item.template.pattern.nodes.length} nodes
             </span>
           )}

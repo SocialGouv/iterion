@@ -30,6 +30,7 @@ import GroupNode from "./GroupNode";
 import NodeContextMenu from "./NodeContextMenu";
 
 import BreadcrumbBar from "./BreadcrumbBar";
+import CanvasEmpty from "./CanvasEmpty";
 import CanvasToolbar from "./CanvasToolbar";
 import ToolPalette from "./ToolPalette";
 import QuickAddMenu from "./QuickAddMenu";
@@ -375,6 +376,14 @@ export default function Canvas() {
           }}
         />
       </ReactFlow>
+
+      {/* Empty-state overlay when the document has no editable nodes */}
+      {document &&
+        document.agents.length === 0 &&
+        document.judges.length === 0 &&
+        document.routers.length === 0 &&
+        document.humans.length === 0 &&
+        document.tools.length === 0 && <CanvasEmpty />}
 
       {/* Context menu */}
       {contextMenu && (

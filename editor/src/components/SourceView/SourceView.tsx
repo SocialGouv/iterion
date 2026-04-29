@@ -4,6 +4,7 @@ import { useDocumentStore } from "@/store/document";
 import { useThemeStore } from "@/store/theme";
 import * as api from "@/api/client";
 import { ITER_LANGUAGE_ID, iterLanguageConfig, iterTokensProvider } from "@/lib/iterLanguage";
+import { registerIterCompletionProvider } from "@/lib/iterMonacoCompletion";
 
 export default function SourceView() {
   const document = useDocumentStore((s) => s.document);
@@ -49,6 +50,7 @@ export default function SourceView() {
       monaco.languages.setLanguageConfiguration(ITER_LANGUAGE_ID, iterLanguageConfig);
       monaco.languages.setMonarchTokensProvider(ITER_LANGUAGE_ID, iterTokensProvider);
     }
+    registerIterCompletionProvider(monaco);
   }, []);
 
   return (

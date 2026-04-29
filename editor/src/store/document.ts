@@ -14,6 +14,7 @@ import type {
   Edge,
   Comment,
 } from "@/api/types";
+import type { DiagnosticIssue } from "@/api/client";
 import { createEmptyDocument, getAllNodeNames, getAllSchemaNames, getAllPromptNames, findNodeDecl } from "@/lib/defaults";
 import type { GroupAnnotation } from "@/lib/groups";
 import { groupToCommentText, groupNameFromComment, parseGroups } from "@/lib/groups";
@@ -43,6 +44,10 @@ interface DocumentState {
   document: IterDocument | null;
   diagnostics: string[];
   warnings: string[];
+  /** Structured diagnostics from the Go validator (Phase 7). When present,
+   *  these supersede the heuristic attribution applied to `diagnostics` /
+   *  `warnings`. Empty for parser-only responses. */
+  issues: DiagnosticIssue[];
   currentFilePath: string | null;
   _generation: number;
   _savedGeneration: number;
@@ -53,7 +58,7 @@ interface DocumentState {
 
   // Document lifecycle
   setDocument: (doc: IterDocument) => void;
-  setDiagnostics: (d: string[], w?: string[]) => void;
+  setDiagnostics: (d: string[], w?: string[], issues?: DiagnosticIssue[]) => void;
   setCurrentFilePath: (path: string | null) => void;
   markSaved: () => void;
   isDirty: () => boolean;
@@ -185,6 +190,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   document: normalize(createEmptyDocument()),
   diagnostics: [],
   warnings: [],
+  issues: [],
   currentFilePath: null,
   _generation: 0,
   _savedGeneration: 0,
@@ -195,7 +201,12 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     document: normalize(document),
     ...pushHistory(s),
   })),
-  setDiagnostics: (diagnostics, warnings = []) => set({ diagnostics: diagnostics ?? [], warnings: warnings ?? [] }),
+  setDiagnostics: (diagnostics, warnings = [], issues = []) =>
+    set({
+      diagnostics: diagnostics ?? [],
+      warnings: warnings ?? [],
+      issues: issues ?? [],
+    }),
   setCurrentFilePath: (currentFilePath) => set({ currentFilePath }),
   markSaved: () => set((s) => ({ _savedGeneration: s._generation })),
   isDirty: () => {

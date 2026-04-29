@@ -26,13 +26,13 @@ export default function SchemaRoleDialog({ x, y, onSelect, onClose }: SchemaRole
     >
       <span className="text-[9px] text-fg-subtle uppercase tracking-wider px-2 pt-1">Assign as</span>
       <button
-        className="text-xs text-left px-3 py-1.5 rounded hover:bg-purple-500/20 text-purple-300 transition-colors"
+        className="text-xs text-left px-3 py-1.5 rounded hover:bg-info/20 text-info-fg transition-colors"
         onClick={() => onSelect("input")}
       >
         Input Schema
       </button>
       <button
-        className="text-xs text-left px-3 py-1.5 rounded hover:bg-purple-500/20 text-purple-300 transition-colors"
+        className="text-xs text-left px-3 py-1.5 rounded hover:bg-info/20 text-info-fg transition-colors"
         onClick={() => onSelect("output")}
       >
         Output Schema

@@ -1,4 +1,5 @@
 import type { IterDocument, Edge } from "@/api/types";
+import type { DiagnosticIssue } from "@/api/client";
 import { getAllNodeNames } from "@/lib/defaults";
 import { makeEdgeId } from "@/lib/documentToGraph";
 
@@ -16,10 +17,14 @@ export interface ParsedDiagnostic {
 }
 
 export interface AttributedDiagnostic extends ParsedDiagnostic {
-  /** Node id this diagnostic was attributed to (heuristic until Phase 7). */
+  /** Node id this diagnostic was attributed to. */
   nodeId?: string;
   /** Edge id this diagnostic was attributed to. */
   edgeId?: string;
+  /** Optional fix hint (preferred over the static client-side hint table). */
+  hint?: string;
+  /** "structured" when sourced from server `issues`, "heuristic" otherwise. */
+  source: "structured" | "heuristic";
 }
 
 export interface GroupedDiagnostics {
@@ -80,7 +85,7 @@ function attribute(
       break;
     }
   }
-  return { ...parsed, nodeId, edgeId };
+  return { ...parsed, nodeId, edgeId, source: "heuristic" };
 }
 
 /**
@@ -101,18 +106,39 @@ function buildEdgeLookup(doc: IterDocument | null): Map<string, string> {
   return lookup;
 }
 
+function fromIssue(issue: DiagnosticIssue): AttributedDiagnostic {
+  return {
+    raw: issue.message,
+    severity: issue.severity,
+    code: issue.code ?? "",
+    message: issue.message,
+    nodeId: issue.node_id || undefined,
+    edgeId: issue.edge_id || undefined,
+    hint: issue.hint || undefined,
+    source: "structured",
+  };
+}
+
 export function groupDiagnostics(
   errors: string[],
   warnings: string[],
   doc: IterDocument | null,
+  issues?: DiagnosticIssue[],
 ): GroupedDiagnostics {
   const nodeNames: string[] = doc ? Array.from(getAllNodeNames(doc)) : [];
   const edgeLookup = buildEdgeLookup(doc);
 
-  const all: AttributedDiagnostic[] = [
-    ...errors.map((s) => attribute(parseDiagnostic(s, "error"), nodeNames, edgeLookup)),
-    ...warnings.map((s) => attribute(parseDiagnostic(s, "warning"), nodeNames, edgeLookup)),
-  ];
+  let all: AttributedDiagnostic[];
+  if (issues && issues.length > 0) {
+    // Authoritative path: server provided structured fields.
+    all = issues.map(fromIssue);
+  } else {
+    // Fallback: parse strings and run the heuristic attribution.
+    all = [
+      ...errors.map((s) => attribute(parseDiagnostic(s, "error"), nodeNames, edgeLookup)),
+      ...warnings.map((s) => attribute(parseDiagnostic(s, "warning"), nodeNames, edgeLookup)),
+    ];
+  }
 
   const byNode = new Map<string, AttributedDiagnostic[]>();
   const byEdge = new Map<string, AttributedDiagnostic[]>();

@@ -19,7 +19,7 @@ export function useAutoValidation() {
       try {
         const result = await api.validate(document, controller.signal);
         if (!controller.signal.aborted) {
-          setDiagnostics(result.diagnostics, result.warnings);
+          setDiagnostics(result.diagnostics, result.warnings, result.issues);
         }
       } catch {
         // silently ignore validation errors during auto-validation

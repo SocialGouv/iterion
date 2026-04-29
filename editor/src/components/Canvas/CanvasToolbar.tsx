@@ -56,7 +56,7 @@ export default function CanvasToolbar({
           <button
             className={`border text-xs px-2 py-1 rounded flex items-center gap-1 ${
               macroView
-                ? "bg-indigo-600 hover:bg-indigo-700 border-indigo-500 text-fg-default"
+                ? "bg-accent hover:bg-accent border-accent text-fg-default"
                 : "bg-surface-1/90 hover:bg-surface-2 border-border-strong text-fg-muted"
             }`}
             onClick={() => { toggleMacroView(); onFitViewAfterDelay(); }}

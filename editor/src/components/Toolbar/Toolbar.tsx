@@ -1,11 +1,37 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useDocumentStore } from "@/store/document";
 import { useUIStore } from "@/store/ui";
+import { useRecentsStore } from "@/store/recents";
 import { createEmptyDocument } from "@/lib/defaults";
 import * as api from "@/api/client";
 import ConfirmDialog from "../shared/ConfirmDialog";
 import ShortcutsHelp from "../shared/ShortcutsHelp";
-import type { FileEntry } from "@/api/types";
+import FilePicker from "../FilePicker/FilePicker";
+import {
+  Button,
+  IconButton,
+  Select,
+  Dialog,
+  Input,
+} from "@/components/ui";
+import ThemeToggle from "@/components/ui/ThemeToggle";
+import ToolbarGroup from "./ToolbarGroup";
+import {
+  FilePlusIcon,
+  Pencil2Icon,
+  DownloadIcon,
+  UploadIcon,
+  CopyIcon,
+  ResetIcon,
+  ChevronRightIcon,
+  CheckCircledIcon,
+  EyeOpenIcon,
+  ExclamationTriangleIcon,
+  QuestionMarkCircledIcon,
+  PlusIcon,
+  MinusIcon,
+  DotsHorizontalIcon,
+} from "@radix-ui/react-icons";
 
 export default function Toolbar() {
   const setDocument = useDocumentStore((s) => s.setDocument);
@@ -28,41 +54,30 @@ export default function Toolbar() {
   const activeWorkflowName = useUIStore((s) => s.activeWorkflowName);
   const setActiveWorkflowName = useUIStore((s) => s.setActiveWorkflowName);
   const addToast = useUIStore((s) => s.addToast);
-  const filesChangedAt = useUIStore((s) => s.filesChangedAt);
+  const pushRecent = useRecentsStore((s) => s.pushRecent);
 
-  const [examples, setExamples] = useState<string[]>([]);
-  const [files, setFiles] = useState<FileEntry[]>([]);
+  const filePickerOpen = useUIStore((s) => s.filePickerOpen);
+  const setFilePickerOpen = useUIStore((s) => s.setFilePickerOpen);
   const [loading, setLoading] = useState(false);
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [saveFileName, setSaveFileName] = useState("");
-  const [showOpenMenu, setShowOpenMenu] = useState(false);
+  const [overflowOpen, setOverflowOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const openMenuRef = useRef<HTMLDivElement>(null);
+  const overflowRef = useRef<HTMLDivElement>(null);
   const [confirmRemoveWorkflow, setConfirmRemoveWorkflow] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
 
+  // Close overflow menu on outside click
   useEffect(() => {
-    api.listExamples().then(setExamples).catch(console.error);
-    api.listFiles().then(setFiles).catch(() => setFiles([]));
-  }, []);
-
-  // Refresh file list when file watcher detects changes.
-  useEffect(() => {
-    if (filesChangedAt === 0) return;
-    api.listFiles().then(setFiles).catch(() => {});
-  }, [filesChangedAt]);
-
-  // Close open menu on outside click
-  useEffect(() => {
-    if (!showOpenMenu) return;
+    if (!overflowOpen) return;
     const handler = (e: MouseEvent) => {
-      if (openMenuRef.current && !openMenuRef.current.contains(e.target as Node)) {
-        setShowOpenMenu(false);
+      if (overflowRef.current && !overflowRef.current.contains(e.target as Node)) {
+        setOverflowOpen(false);
       }
     };
     window.document.addEventListener("mousedown", handler);
     return () => window.document.removeEventListener("mousedown", handler);
-  }, [showOpenMenu]);
+  }, [overflowOpen]);
 
   const handleNew = useCallback(() => {
     if (isDirty() && !window.confirm("You have unsaved changes. Discard them?")) return;
@@ -72,44 +87,33 @@ export default function Toolbar() {
     markSaved();
   }, [setDocument, setDiagnostics, setCurrentFilePath, markSaved, isDirty]);
 
-  const loadExample = useCallback(
-    async (name: string) => {
-      if (!name) return;
+  const handlePickFile = useCallback(
+    async (kind: "file" | "example", path: string) => {
       if (isDirty() && !window.confirm("You have unsaved changes. Discard them?")) return;
       setLoading(true);
       try {
-        const result = await api.loadExample(name);
-        setDocument(result.document);
-        setDiagnostics(result.diagnostics);
-        setCurrentFilePath(null);
-        markSaved();
+        if (kind === "file") {
+          const result = await api.openFile(path);
+          setDocument(result.document);
+          setDiagnostics(result.diagnostics);
+          setCurrentFilePath(result.path);
+          pushRecent(result.path);
+          markSaved();
+        } else {
+          const result = await api.loadExample(path);
+          setDocument(result.document);
+          setDiagnostics(result.diagnostics);
+          setCurrentFilePath(null);
+          markSaved();
+        }
       } catch (err) {
-        console.error("Failed to load example:", err);
+        console.error("Open failed:", err);
+        addToast("Open failed", "error");
       } finally {
         setLoading(false);
       }
     },
-    [setDocument, setDiagnostics, setCurrentFilePath, markSaved, isDirty],
-  );
-
-  const handleOpenFile = useCallback(
-    async (path: string) => {
-      if (isDirty() && !window.confirm("You have unsaved changes. Discard them?")) return;
-      setLoading(true);
-      setShowOpenMenu(false);
-      try {
-        const result = await api.openFile(path);
-        setDocument(result.document);
-        setDiagnostics(result.diagnostics);
-        setCurrentFilePath(result.path);
-        markSaved();
-      } catch (err) {
-        console.error("Failed to open file:", err);
-      } finally {
-        setLoading(false);
-      }
-    },
-    [setDocument, setDiagnostics, setCurrentFilePath, markSaved, isDirty],
+    [setDocument, setDiagnostics, setCurrentFilePath, markSaved, isDirty, pushRecent, addToast],
   );
 
   const handleImport = useCallback(
@@ -129,7 +133,6 @@ export default function Toolbar() {
       } catch (err) {
         console.error("Import failed:", err);
       }
-      // Reset input so the same file can be re-imported
       e.target.value = "";
     },
     [setDocument, setDiagnostics, setCurrentFilePath, isDirty],
@@ -139,7 +142,7 @@ export default function Toolbar() {
     if (!document) return;
     try {
       const result = await api.validate(document);
-      setDiagnostics(result.diagnostics, result.warnings);
+      setDiagnostics(result.diagnostics, result.warnings, result.issues);
       const errorCount = (result.diagnostics ?? []).length;
       const warnCount = (result.warnings ?? []).length;
       if (errorCount === 0 && warnCount === 0) {
@@ -156,24 +159,21 @@ export default function Toolbar() {
   const handleSave = useCallback(async () => {
     if (!document) return;
     if (currentFilePath) {
-      // Save to existing file
       try {
         await api.saveFile(currentFilePath, document);
         markSaved();
         addToast("Saved successfully", "success");
-        // Refresh file list
-        api.listFiles().then(setFiles).catch(() => {});
+        pushRecent(currentFilePath);
       } catch (err) {
         console.error("Save failed:", err);
         addToast("Save failed", "error");
       }
     } else {
-      // Show save dialog for new file
       const name = document.workflows?.[0]?.name || "workflow";
       setSaveFileName(`${name}.iter`);
       setShowSaveDialog(true);
     }
-  }, [document, currentFilePath, markSaved, addToast]);
+  }, [document, currentFilePath, markSaved, addToast, pushRecent]);
 
   const handleSaveAs = useCallback(async () => {
     if (!document || !saveFileName) return;
@@ -182,16 +182,16 @@ export default function Toolbar() {
       const result = await api.saveFile(fileName, document);
       setCurrentFilePath(result.path);
       markSaved();
+      pushRecent(result.path);
       addToast("Saved successfully", "success");
       setShowSaveDialog(false);
-      // Refresh file list
-      api.listFiles().then(setFiles).catch(() => {});
     } catch (err) {
       console.error("Save failed:", err);
+      addToast("Save failed", "error");
     }
-  }, [document, saveFileName, setCurrentFilePath]);
+  }, [document, saveFileName, setCurrentFilePath, markSaved, pushRecent, addToast]);
 
-  // Keyboard shortcuts (must be after handleSave is defined)
+  // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
@@ -203,6 +203,9 @@ export default function Toolbar() {
       } else if ((e.ctrlKey || e.metaKey) && e.key === "s") {
         e.preventDefault();
         handleSave();
+      } else if ((e.ctrlKey || e.metaKey) && e.key === "o") {
+        e.preventDefault();
+        setFilePickerOpen(true);
       } else if (e.key === "?" && !(e.target as HTMLElement).matches("input, textarea, select")) {
         e.preventDefault();
         setShowShortcuts(true);
@@ -261,204 +264,189 @@ export default function Toolbar() {
   const workflows = document?.workflows ?? [];
 
   return (
-    <div className="flex items-center gap-2 px-4 h-full text-sm">
-      <span className="font-bold tracking-wide">ITERION</span>
-      <div className="h-4 w-px bg-surface-3" />
+    <div className="flex items-center gap-1 px-3 h-full text-sm">
+      <span className="font-bold tracking-wide mr-2">ITERION</span>
 
-      {/* File operations */}
-      <button className="bg-success hover:bg-success px-2.5 py-1 rounded" onClick={handleNew}>
-        New
-      </button>
-
-      <div className="relative" ref={openMenuRef}>
-        <button
-          className="bg-surface-2 hover:bg-surface-3 px-2.5 py-1 rounded"
-          onClick={() => { setShowOpenMenu(!showOpenMenu); api.listFiles().then(setFiles).catch(() => {}); }}
+      {/* File ops */}
+      <ToolbarGroup>
+        <IconButton label="New (Ctrl+N)" tooltip="New workflow" onClick={handleNew} size="sm">
+          <FilePlusIcon />
+        </IconButton>
+        <IconButton
+          label="Open (Ctrl+O)"
+          tooltip="Open file"
+          size="sm"
+          onClick={() => setFilePickerOpen(true)}
         >
-          Open
-        </button>
-        {showOpenMenu && (
-          <div className="absolute top-full left-0 mt-1 bg-surface-1 border border-border-strong rounded shadow-xl z-50 min-w-[200px] max-h-[300px] overflow-y-auto">
-            {files.length > 0 && (
-              <>
-                <div className="px-3 py-1.5 text-[10px] text-fg-subtle uppercase tracking-wider">Files</div>
-                {files.map((f) => (
-                  <button
-                    key={f.name}
-                    className="w-full text-left px-3 py-1.5 hover:bg-surface-2 text-xs truncate"
-                    onClick={() => handleOpenFile(f.name)}
-                  >
-                    {f.name}
-                  </button>
-                ))}
-              </>
-            )}
-            {files.length > 0 && examples.length > 0 && <div className="border-t border-border-default" />}
-            {examples.length > 0 && (
-              <>
-                <div className="px-3 py-1.5 text-[10px] text-fg-subtle uppercase tracking-wider">Examples</div>
-                {examples.map((name) => (
-                  <button
-                    key={name}
-                    className="w-full text-left px-3 py-1.5 hover:bg-surface-2 text-xs truncate"
-                    onClick={() => { loadExample(name); setShowOpenMenu(false); }}
-                  >
-                    {name}
-                  </button>
-                ))}
-              </>
-            )}
-            {files.length === 0 && examples.length === 0 && (
-              <div className="px-3 py-2 text-xs text-fg-subtle">No files found</div>
-            )}
-          </div>
-        )}
-      </div>
+          <Pencil2Icon />
+        </IconButton>
+        <Button
+          variant="primary"
+          size="sm"
+          leadingIcon={<DownloadIcon />}
+          onClick={handleSave}
+          disabled={!document}
+          title={currentFilePath ? `Save to ${currentFilePath}` : "Save as..."}
+        >
+          {currentFilePath ? "Save" : "Save As"}
+        </Button>
+        <div className="relative" ref={overflowRef}>
+          <IconButton
+            label="More file actions"
+            tooltip="More"
+            size="sm"
+            onClick={() => setOverflowOpen((v) => !v)}
+            active={overflowOpen}
+          >
+            <DotsHorizontalIcon />
+          </IconButton>
+          {overflowOpen && (
+            <div className="absolute top-full left-0 mt-1 z-50 min-w-[180px] rounded-md border border-border-default bg-surface-1 shadow-xl py-1">
+              <OverflowItem
+                icon={<UploadIcon />}
+                label="Import .iter file"
+                onClick={() => {
+                  setOverflowOpen(false);
+                  fileInputRef.current?.click();
+                }}
+              />
+              <OverflowItem
+                icon={<DownloadIcon />}
+                label="Download as .iter"
+                onClick={() => {
+                  setOverflowOpen(false);
+                  handleDownload();
+                }}
+                disabled={!document}
+              />
+              <OverflowItem
+                icon={<CopyIcon />}
+                label="Copy source to clipboard"
+                onClick={() => {
+                  setOverflowOpen(false);
+                  handleCopySource();
+                }}
+                disabled={!document}
+              />
+            </div>
+          )}
+        </div>
+      </ToolbarGroup>
 
-      <button
-        className="bg-surface-2 hover:bg-surface-3 px-2.5 py-1 rounded"
-        onClick={() => fileInputRef.current?.click()}
-      >
-        Import
-      </button>
-      <input ref={fileInputRef} type="file" accept=".iter" className="hidden" onChange={handleImport} />
+      {/* Edit */}
+      <ToolbarGroup>
+        <IconButton
+          label="Undo (Ctrl+Z)"
+          tooltip="Undo"
+          size="sm"
+          onClick={undo}
+          disabled={!canUndo()}
+        >
+          <ResetIcon />
+        </IconButton>
+        <IconButton
+          label="Redo (Ctrl+Y)"
+          tooltip="Redo"
+          size="sm"
+          onClick={redo}
+          disabled={!canRedo()}
+        >
+          <ChevronRightIcon />
+        </IconButton>
+      </ToolbarGroup>
 
-      <div className="h-4 w-px bg-surface-3" />
+      {/* View */}
+      <ToolbarGroup>
+        <IconButton
+          label="Validate"
+          tooltip="Validate workflow"
+          size="sm"
+          onClick={handleValidate}
+          disabled={!document}
+        >
+          <CheckCircledIcon />
+        </IconButton>
+        <IconButton
+          label="Toggle source view"
+          tooltip="Source"
+          size="sm"
+          onClick={toggleSourceView}
+          active={sourceViewOpen}
+        >
+          <EyeOpenIcon />
+        </IconButton>
+        <IconButton
+          label="Toggle diagnostics panel"
+          tooltip="Diagnostics"
+          size="sm"
+          onClick={toggleDiagnosticsPanel}
+          active={diagnosticsPanelOpen}
+        >
+          <ExclamationTriangleIcon />
+        </IconButton>
+        <ThemeToggle />
+      </ToolbarGroup>
 
-      {/* Save operations */}
-      <button
-        className="bg-indigo-600 hover:bg-indigo-700 px-2.5 py-1 rounded disabled:opacity-50"
-        onClick={handleSave}
-        disabled={!document}
-        title={currentFilePath ? `Save to ${currentFilePath}` : "Save as..."}
-      >
-        Save{currentFilePath ? "" : " As"}
-      </button>
-
-      <button
-        className="bg-surface-2 hover:bg-surface-3 px-2.5 py-1 rounded disabled:opacity-50"
-        onClick={handleDownload}
-        disabled={!document}
-        title="Download .iter file"
-      >
-        Download
-      </button>
-
-      <button
-        className="bg-surface-2 hover:bg-surface-3 px-2.5 py-1 rounded disabled:opacity-50"
-        onClick={handleCopySource}
-        disabled={!document}
-        title="Copy source to clipboard"
-      >
-        Copy
-      </button>
-
-      <div className="h-4 w-px bg-surface-3" />
-
-      {/* Undo/Redo */}
-      <button
-        className="bg-surface-2 hover:bg-surface-3 px-2 py-1 rounded disabled:opacity-30"
-        onClick={undo}
-        disabled={!canUndo()}
-        title="Undo (Ctrl+Z)"
-      >
-        &#x21A9;
-      </button>
-      <button
-        className="bg-surface-2 hover:bg-surface-3 px-2 py-1 rounded disabled:opacity-30"
-        onClick={redo}
-        disabled={!canRedo()}
-        title="Redo (Ctrl+Y)"
-      >
-        &#x21AA;
-      </button>
-
-      <div className="h-4 w-px bg-surface-3" />
-
-      {/* Validate */}
-      <button
-        className="bg-accent hover:bg-accent-hover px-2.5 py-1 rounded disabled:opacity-50"
-        onClick={handleValidate}
-        disabled={!document}
-      >
-        Validate
-      </button>
-
-      {/* Source view toggle */}
-      <button
-        className={`px-2.5 py-1 rounded ${
-          sourceViewOpen ? "bg-purple-600 hover:bg-purple-700" : "bg-surface-2 hover:bg-surface-3"
-        }`}
-        onClick={toggleSourceView}
-      >
-        Source
-      </button>
-
-      {/* Diagnostics panel toggle */}
-      <button
-        className={`px-2.5 py-1 rounded ${
-          diagnosticsPanelOpen ? "bg-orange-600 hover:bg-orange-700" : "bg-surface-2 hover:bg-surface-3"
-        }`}
-        onClick={toggleDiagnosticsPanel}
-      >
-        Diagnostics
-      </button>
-
-      <button
-        className="bg-surface-2 hover:bg-surface-3 px-2 py-1 rounded text-xs"
-        onClick={() => setShowShortcuts(true)}
-        title="Keyboard shortcuts (?)"
-      >
-        ?
-      </button>
-
-      <div className="h-4 w-px bg-surface-3" />
-
-      {/* Workflow selector */}
+      {/* Workflow */}
       {workflows.length > 0 && (
-        <>
-          <select
-            className="bg-surface-1 border border-border-strong rounded px-2 py-1 text-xs"
+        <ToolbarGroup>
+          <Select
             value={activeWorkflowName ?? workflows[0]?.name ?? ""}
             onChange={(e) => setActiveWorkflowName(e.target.value)}
+            size="sm"
           >
             {workflows.map((w) => (
               <option key={w.name} value={w.name}>
                 {w.name}
               </option>
             ))}
-          </select>
-          <button
-            className="bg-success hover:bg-success px-1.5 py-1 rounded text-xs"
-            onClick={handleAddWorkflow}
-            title="Add workflow"
-          >
-            +
-          </button>
+          </Select>
+          <IconButton label="Add workflow" tooltip="Add workflow" size="sm" onClick={handleAddWorkflow}>
+            <PlusIcon />
+          </IconButton>
           {workflows.length > 1 && (
-            <button
-              className="bg-danger-soft hover:bg-danger px-1.5 py-1 rounded text-xs"
+            <IconButton
+              label="Remove current workflow"
+              tooltip="Remove workflow"
+              variant="danger"
+              size="sm"
               onClick={() => setConfirmRemoveWorkflow(true)}
-              title="Remove current workflow"
             >
-              -
-            </button>
+              <MinusIcon />
+            </IconButton>
           )}
-        </>
+        </ToolbarGroup>
       )}
 
-      {/* File path indicator */}
-      {currentFilePath && (
-        <span className="text-[10px] text-fg-subtle ml-2 truncate max-w-[200px]" title={currentFilePath}>
-          {isDirty() && <span className="text-warning">* </span>}
-          {currentFilePath}
-        </span>
-      )}
-      {!currentFilePath && document && isDirty() && (
-        <span className="text-[10px] text-warning ml-2">* unsaved</span>
-      )}
+      <input ref={fileInputRef} type="file" accept=".iter" className="hidden" onChange={handleImport} />
 
-      {loading && <span className="text-xs text-fg-subtle">Loading...</span>}
+      {/* Right-aligned: file path + help */}
+      <div className="ml-auto flex items-center gap-2">
+        {currentFilePath && (
+          <span className="text-[10px] text-fg-subtle truncate max-w-[280px]" title={currentFilePath}>
+            {isDirty() && <span className="text-warning">* </span>}
+            {currentFilePath}
+          </span>
+        )}
+        {!currentFilePath && document && isDirty() && (
+          <span className="text-[10px] text-warning">* unsaved</span>
+        )}
+        {loading && <span className="text-xs text-fg-subtle">Loading...</span>}
+        <IconButton
+          label="Keyboard shortcuts (?)"
+          tooltip="Shortcuts"
+          size="sm"
+          onClick={() => setShowShortcuts(true)}
+        >
+          <QuestionMarkCircledIcon />
+        </IconButton>
+      </div>
+
+      <FilePicker
+        open={filePickerOpen}
+        onOpenChange={setFilePickerOpen}
+        onPick={handlePickFile}
+      />
 
       <ConfirmDialog
         open={confirmRemoveWorkflow}
@@ -466,42 +454,68 @@ export default function Toolbar() {
         message={`Remove workflow "${activeWorkflowName}"? This cannot be undone.`}
         confirmLabel="Remove"
         confirmVariant="danger"
-        onConfirm={() => { handleRemoveWorkflow(); setConfirmRemoveWorkflow(false); }}
+        onConfirm={() => {
+          handleRemoveWorkflow();
+          setConfirmRemoveWorkflow(false);
+        }}
         onCancel={() => setConfirmRemoveWorkflow(false)}
       />
 
       {/* Save dialog */}
-      {showSaveDialog && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-surface-1 border border-border-strong rounded-lg p-4 min-w-[300px]">
-            <h3 className="text-sm font-bold mb-3">Save As</h3>
-            <input
-              className="w-full bg-surface-0 border border-border-strong rounded px-3 py-2 text-sm mb-3 focus:border-accent focus:outline-none"
-              value={saveFileName}
-              onChange={(e) => setSaveFileName(e.target.value)}
-              placeholder="filename.iter"
-              autoFocus
-              onKeyDown={(e) => { if (e.key === "Enter") handleSaveAs(); if (e.key === "Escape") setShowSaveDialog(false); }}
-            />
-            <div className="flex justify-end gap-2">
-              <button
-                className="bg-surface-2 hover:bg-surface-3 px-3 py-1.5 rounded text-xs"
-                onClick={() => setShowSaveDialog(false)}
-              >
-                Cancel
-              </button>
-              <button
-                className="bg-indigo-600 hover:bg-indigo-700 px-3 py-1.5 rounded text-xs"
-                onClick={handleSaveAs}
-              >
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <Dialog
+        open={showSaveDialog}
+        onOpenChange={setShowSaveDialog}
+        title="Save As"
+        widthClass="max-w-sm"
+        footer={
+          <>
+            <Button variant="secondary" size="sm" onClick={() => setShowSaveDialog(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" size="sm" onClick={handleSaveAs}>
+              Save
+            </Button>
+          </>
+        }
+      >
+        <Input
+          autoFocus
+          value={saveFileName}
+          onChange={(e) => setSaveFileName(e.target.value)}
+          placeholder="filename.iter"
+          size="md"
+          onKeyDown={(e) => {
+            if (e.key === "Enter") handleSaveAs();
+            if (e.key === "Escape") setShowSaveDialog(false);
+          }}
+        />
+      </Dialog>
 
       <ShortcutsHelp open={showShortcuts} onClose={() => setShowShortcuts(false)} />
     </div>
+  );
+}
+
+function OverflowItem({
+  icon,
+  label,
+  onClick,
+  disabled,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-fg-default hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed"
+    >
+      {icon}
+      <span>{label}</span>
+    </button>
   );
 }

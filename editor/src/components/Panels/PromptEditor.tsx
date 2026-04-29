@@ -103,6 +103,7 @@ function PromptCard({
         multiline
         rows={6}
         placeholder="Prompt template... use {{vars.x}} or {{outputs.node.field}}"
+        refContext={{ kind: "prompt-body" }}
       />
       <ConfirmDialog
         open={confirmDelete}

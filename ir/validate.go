@@ -356,7 +356,7 @@ func (c *compiler) validateConditionFields(w *Workflow) {
 		// Find the field in the schema.
 		field := findField(schema, e.Condition)
 		if field == nil {
-			c.errorf(DiagConditionFieldNotFound,
+			c.errorfAt(DiagConditionFieldNotFound, e.From, edgeID(e.From, e.To),
 				"edge %s -> %s: condition field %q not found in output schema %q of node %q",
 				e.From, e.To, e.Condition, outSchema, e.From)
 			continue
@@ -364,7 +364,7 @@ func (c *compiler) validateConditionFields(w *Workflow) {
 
 		// C013: field must be boolean.
 		if field.Type != FieldTypeBool {
-			c.errorf(DiagConditionNotBool,
+			c.errorfAt(DiagConditionNotBool, e.From, edgeID(e.From, e.To),
 				"edge %s -> %s: condition field %q is %s, not bool, in output schema %q",
 				e.From, e.To, e.Condition, field.Type, outSchema)
 		}
@@ -480,7 +480,7 @@ func (c *compiler) validateReachability(w *Workflow) {
 		case *DoneNode, *FailNode:
 			continue
 		}
-		c.errorf(DiagUnreachableNode,
+		c.errorfAt(DiagUnreachableNode, id, "",
 			"node %q (%s) is unreachable from entry %q",
 			id, node.NodeKind(), w.Entry)
 	}

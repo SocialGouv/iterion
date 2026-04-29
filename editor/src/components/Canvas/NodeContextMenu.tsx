@@ -109,7 +109,7 @@ export default function NodeContextMenu({
             onClick={() => { onSetEntry(); onClose(); }}
             disabled={isEntry}
           >
-            <span className="text-amber-400">&#x25B6;</span>
+            <span className="text-warning-fg">&#x25B6;</span>
             {isEntry ? "Already entry point" : "Set as entry point"}
           </button>
           <button
@@ -128,7 +128,7 @@ export default function NodeContextMenu({
               className="w-full text-left px-3 py-1.5 hover:bg-surface-2 text-xs text-fg-default flex items-center gap-2"
               onClick={() => setShowGroupInput(true)}
             >
-              <span className="text-indigo-400">{"\u{1F4E6}"}</span>
+              <span className="text-accent">{"\u{1F4E6}"}</span>
               Group {selectedNodeIds.length} nodes...
             </button>
           )}

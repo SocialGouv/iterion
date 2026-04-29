@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { RefAwareInput, RefAwareTextarea } from "@/components/ui/RefAwareInput";
+import type { RefContext } from "@/lib/refCompletion";
 
 const labelClass = "block text-xs text-fg-subtle mb-1";
 const inputClass = "w-full bg-surface-1 border border-border-strong rounded px-2 py-1 text-sm text-fg-default focus:border-accent focus:outline-none";
@@ -23,19 +25,38 @@ interface TextFieldProps {
   multiline?: boolean;
   rows?: number;
   help?: string;
+  /** When provided, enables {{...}} reference autocomplete for this field. */
+  refContext?: RefContext;
 }
 
-export function TextField({ label, value, onChange, placeholder, multiline, rows = 3, help }: TextFieldProps) {
+export function TextField({ label, value, onChange, placeholder, multiline, rows = 3, help, refContext }: TextFieldProps) {
   return (
     <div className="mb-2">
       <FieldLabel label={label} help={help} />
       {multiline ? (
-        <textarea
-          className={inputClass + " resize-y"}
+        refContext ? (
+          <RefAwareTextarea
+            value={value}
+            onChange={onChange}
+            placeholder={placeholder}
+            rows={rows}
+            refContext={refContext}
+          />
+        ) : (
+          <textarea
+            className={inputClass + " resize-y"}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder={placeholder}
+            rows={rows}
+          />
+        )
+      ) : refContext ? (
+        <RefAwareInput
           value={value}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={onChange}
           placeholder={placeholder}
-          rows={rows}
+          refContext={refContext}
         />
       ) : (
         <input

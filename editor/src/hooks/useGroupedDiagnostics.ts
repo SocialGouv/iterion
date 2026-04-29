@@ -11,9 +11,10 @@ export function useGroupedDiagnostics(): GroupedDiagnostics {
   const document = useDocumentStore((s) => s.document);
   const diagnostics = useDocumentStore((s) => s.diagnostics);
   const warnings = useDocumentStore((s) => s.warnings);
+  const issues = useDocumentStore((s) => s.issues);
 
   return useMemo(
-    () => groupDiagnostics(diagnostics, warnings, document),
-    [diagnostics, warnings, document],
+    () => groupDiagnostics(diagnostics, warnings, document, issues),
+    [diagnostics, warnings, document, issues],
   );
 }

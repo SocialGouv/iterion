@@ -55,7 +55,8 @@ export default function ToolForm({ decl }: Props) {
         value={decl.command}
         onChange={(v) => updateTool(decl.name, { command: v })}
         placeholder="Shell command (e.g. ${CMD})"
-        help="Shell command to execute. Use ${ENV_VAR} for environment variable substitution."
+        help="Shell command to execute. Use ${ENV_VAR} for environment variable substitution. Type {{ to autocomplete refs."
+        refContext={{ kind: "node-prompt", nodeId: decl.name }}
       />
       <SelectFieldWithCreate
         label="Output Schema"

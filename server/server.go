@@ -132,6 +132,34 @@ type parseRequest struct {
 type parseResponse struct {
 	Document    json.RawMessage `json:"document"`
 	Diagnostics []string        `json:"diagnostics,omitempty"`
+	Issues      []DiagnosticDTO `json:"issues,omitempty"`
+}
+
+// DiagnosticDTO is the wire-safe shape of an ir.Diagnostic. It carries the
+// structured fields (code, severity, attribution, hint) so the editor can
+// render inline badges without resorting to string-matching the message.
+type DiagnosticDTO struct {
+	Code     string `json:"code,omitempty"`
+	Severity string `json:"severity"`
+	Message  string `json:"message"`
+	NodeID   string `json:"node_id,omitempty"`
+	EdgeID   string `json:"edge_id,omitempty"`
+	Hint     string `json:"hint,omitempty"`
+}
+
+func irDiagToDTO(d ir.Diagnostic) DiagnosticDTO {
+	sev := "error"
+	if d.Severity == ir.SeverityWarning {
+		sev = "warning"
+	}
+	return DiagnosticDTO{
+		Code:     string(d.Code),
+		Severity: sev,
+		Message:  d.Message,
+		NodeID:   d.NodeID,
+		EdgeID:   d.EdgeID,
+		Hint:     d.Hint,
+	}
 }
 
 type unparseRequest struct {
@@ -147,11 +175,15 @@ type validateRequest struct {
 }
 
 type validateResponse struct {
-	Diagnostics []string `json:"diagnostics,omitempty"`
-	Warnings    []string `json:"warnings,omitempty"`
-	Valid       bool     `json:"valid"`
-	NodeCount   int      `json:"node_count,omitempty"`
-	EdgeCount   int      `json:"edge_count,omitempty"`
+	// Legacy string shape — preserved for any external consumer that already
+	// reads it. New consumers should prefer Issues, which carries structured
+	// attribution and hints.
+	Diagnostics []string        `json:"diagnostics,omitempty"`
+	Warnings    []string        `json:"warnings,omitempty"`
+	Issues      []DiagnosticDTO `json:"issues,omitempty"`
+	Valid       bool            `json:"valid"`
+	NodeCount   int             `json:"node_count,omitempty"`
+	EdgeCount   int             `json:"edge_count,omitempty"`
 }
 
 // --- File management types ---
@@ -248,6 +280,7 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 	cr := ir.Compile(f)
 	for _, d := range cr.Diagnostics {
 		msg := d.Error()
+		resp.Issues = append(resp.Issues, irDiagToDTO(d))
 		if d.Severity == ir.SeverityError {
 			resp.Diagnostics = append(resp.Diagnostics, msg)
 			resp.Valid = false

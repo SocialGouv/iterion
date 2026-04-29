@@ -57,6 +57,8 @@ interface UIState {
   canvasTool: CanvasTool;
   // Inspector width (resizable right panel)
   inspectorWidth: number;
+  // File picker dialog
+  filePickerOpen: boolean;
   filesChangedAt: number;
   setActiveTab: (tab: SidebarTab) => void;
   toggleSourceView: () => void;
@@ -83,6 +85,8 @@ interface UIState {
   setCanvasTool: (tool: CanvasTool) => void;
   // Inspector width
   setInspectorWidth: (px: number) => void;
+  // File picker
+  setFilePickerOpen: (open: boolean) => void;
   notifyFilesChanged: () => void;
 }
 
@@ -102,6 +106,7 @@ export const useUIStore = create<UIState>((set) => ({
   macroView: false,
   canvasTool: "pan",
   inspectorWidth: readInspectorWidth(),
+  filePickerOpen: false,
   filesChangedAt: 0,
   setActiveTab: (activeTab) => set({ activeTab }),
   toggleSourceView: () => set((s) => ({ sourceViewOpen: !s.sourceViewOpen })),
@@ -162,5 +167,7 @@ export const useUIStore = create<UIState>((set) => ({
     }
     set({ inspectorWidth: clamped });
   },
+  // File picker
+  setFilePickerOpen: (filePickerOpen) => set({ filePickerOpen }),
   notifyFilesChanged: () => set({ filesChangedAt: Date.now() }),
 }));

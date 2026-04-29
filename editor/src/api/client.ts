@@ -13,9 +13,22 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/**
+ * Wire-format diagnostic mirror of `ir.DiagnosticDTO` on the Go side.
+ * Code/NodeID/EdgeID/Hint may be empty for parser-only paths.
+ */
+export interface DiagnosticIssue {
+  code?: string;
+  severity: "error" | "warning";
+  message: string;
+  node_id?: string;
+  edge_id?: string;
+  hint?: string;
+}
+
 export async function parseSource(
   source: string,
-): Promise<{ document: IterDocument; diagnostics: string[] }> {
+): Promise<{ document: IterDocument; diagnostics: string[]; issues?: DiagnosticIssue[] }> {
   return request("/parse", {
     method: "POST",
     body: JSON.stringify({ source }),
@@ -33,7 +46,11 @@ export async function unparse(document: IterDocument): Promise<string> {
 export async function validate(
   document: IterDocument,
   signal?: AbortSignal,
-): Promise<{ diagnostics: string[]; warnings: string[] }> {
+): Promise<{
+  diagnostics: string[];
+  warnings: string[];
+  issues?: DiagnosticIssue[];
+}> {
   return request("/validate", {
     method: "POST",
     body: JSON.stringify({ document }),

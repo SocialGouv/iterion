@@ -39,7 +39,7 @@ export default function DiagnosticBadge({
     sev === "error"
       ? "bg-danger text-fg-onAccent border-danger"
       : "bg-warning text-fg-onAccent border-warning";
-  const Icon: () => ReactNode = sev === "error" ? CrossCircledIcon : ExclamationTriangleIcon;
+  const Icon = sev === "error" ? CrossCircledIcon : ExclamationTriangleIcon;
 
   return (
     <Popover
@@ -63,7 +63,8 @@ export default function DiagnosticBadge({
     >
       <div className="p-3 space-y-2">
         {diagnostics.map((d, i) => {
-          const hint = d.code ? getHint(d.code) : undefined;
+          const staticHint = d.code ? getHint(d.code) : undefined;
+          const hintText = d.hint ?? staticHint?.hint;
           return (
             <div key={i} className="text-xs">
               <div className="flex items-center gap-2 mb-0.5">
@@ -76,10 +77,10 @@ export default function DiagnosticBadge({
                 >
                   {d.code || (d.severity === "error" ? "ERR" : "WARN")}
                 </span>
-                {hint && <span className="font-semibold text-fg-default">{hint.title}</span>}
+                {staticHint && <span className="font-semibold text-fg-default">{staticHint.title}</span>}
               </div>
               <p className="text-fg-muted mb-0.5">{d.message}</p>
-              {hint && <p className="text-fg-subtle italic">{hint.hint}</p>}
+              {hintText && <p className="text-fg-subtle italic">{hintText}</p>}
             </div>
           );
         })}
