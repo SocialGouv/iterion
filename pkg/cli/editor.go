@@ -15,6 +15,7 @@ import (
 // EditorOptions holds options for the editor command.
 type EditorOptions struct {
 	Port      int
+	Bind      string // bind address (default "127.0.0.1"); use "0.0.0.0" to expose on LAN
 	Dir       string // working directory (for examples)
 	NoBrowser bool   // skip opening browser
 }
@@ -23,6 +24,9 @@ type EditorOptions struct {
 func RunEditor(ctx context.Context, opts EditorOptions, p *Printer) error {
 	if opts.Port == 0 {
 		opts.Port = 4891
+	}
+	if opts.Bind == "" {
+		opts.Bind = "127.0.0.1"
 	}
 
 	dir := opts.Dir
@@ -38,6 +42,7 @@ func RunEditor(ctx context.Context, opts EditorOptions, p *Printer) error {
 
 	cfg := server.Config{
 		Port:        opts.Port,
+		Bind:        opts.Bind,
 		ExamplesDir: examplesDir,
 		WorkDir:     dir,
 		OpenBrowser: !opts.NoBrowser,

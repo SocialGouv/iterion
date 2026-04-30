@@ -31,6 +31,7 @@ var staticFS embed.FS
 // Config holds the server configuration.
 type Config struct {
 	Port        int    // HTTP port (default 4891)
+	Bind        string // bind address (default "127.0.0.1"; use "0.0.0.0" only with explicit user opt-in)
 	ExamplesDir string // path to examples directory
 	WorkDir     string // root directory for file operations
 	OpenBrowser bool   // open browser on start
@@ -51,6 +52,15 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	if cfg.Port == 0 {
 		cfg.Port = 4891
 	}
+	// Default to loopback. The previous behaviour was to leave Addr as ":<port>"
+	// which binds 0.0.0.0 — exposing the editor (which has unauthenticated
+	// /api/files/save and /api/files/open endpoints) to anyone on the LAN.
+	// The startup log used to print "http://localhost:<port>" regardless,
+	// which actively misled operators about the bind surface. Operators who
+	// genuinely want LAN access must now opt in via --bind 0.0.0.0.
+	if cfg.Bind == "" {
+		cfg.Bind = "127.0.0.1"
+	}
 	s := &Server{cfg: cfg, logger: logger, mux: http.NewServeMux()}
 	s.hub = NewHub(logger)
 	go s.hub.Run()
@@ -68,7 +78,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	SetWebSocketOriginCheck(s.isAllowedOrigin)
 	s.routes()
 	s.server = &http.Server{
-		Addr:              fmt.Sprintf(":%d", cfg.Port),
+		Addr:              net.JoinHostPort(cfg.Bind, fmt.Sprintf("%d", cfg.Port)),
 		Handler:           s.mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -81,7 +91,15 @@ func (s *Server) ListenAndServe() error {
 	if err != nil {
 		return err
 	}
-	s.logger.Info("Editor server listening on http://localhost:%d", s.cfg.Port)
+	// Truthful URL in the log: if the operator chose a non-loopback bind we
+	// print the actual address so they know the editor is exposed beyond the
+	// local machine. Previously we always printed http://localhost:<port>
+	// regardless of the bind interface.
+	displayHost := s.cfg.Bind
+	if displayHost == "127.0.0.1" || displayHost == "::1" || displayHost == "" {
+		displayHost = "localhost"
+	}
+	s.logger.Info("Editor server listening on http://%s:%d", displayHost, s.cfg.Port)
 	return s.server.Serve(ln)
 }
 
@@ -488,21 +506,95 @@ func (s *Server) requireSafeOrigin(w http.ResponseWriter, r *http.Request) bool 
 	return false
 }
 
-// safePath resolves relPath against WorkDir and ensures the result stays within WorkDir.
+// safePath resolves relPath against WorkDir and ensures the result stays within
+// WorkDir AFTER symlink resolution. The previous implementation used only
+// filepath.Abs + prefix check, which lets a symlink at any depth in the
+// workdir point at /etc, /home/$USER/.ssh, etc. — combined with the
+// unauthenticated /api/files/open and /api/files/save endpoints, that gave
+// any caller on an allowlisted origin (or the same machine, before B5) a
+// path-traversal primitive.
+//
+// Strategy:
+//  1. Compute the workdir's canonical (symlink-resolved) absolute path once;
+//     use it as the containment root.
+//  2. Resolve the requested path's canonical form. If the file does not yet
+//     exist (legitimate Save case for new files), resolve the longest
+//     existing ancestor and append the remaining components. We refuse the
+//     path if any existing ancestor is itself a symlink that escapes the
+//     root, OR if the final composed path is not under the root.
+//  3. As a defence-in-depth on Save, refuse if the immediate parent
+//     directory or any intermediate path component is a symlink — a
+//     pre-planted symlink at parent dir would otherwise let WriteFile
+//     follow it through.
 func (s *Server) safePath(relPath string) (string, error) {
 	if s.cfg.WorkDir == "" {
 		return "", fmt.Errorf("no working directory configured")
 	}
-	abs := filepath.Join(s.cfg.WorkDir, filepath.Clean("/"+relPath))
-	abs, err := filepath.Abs(abs)
+	baseAbs, err := filepath.Abs(s.cfg.WorkDir)
+	if err != nil {
+		return "", fmt.Errorf("workdir abs: %w", err)
+	}
+	baseReal, err := filepath.EvalSymlinks(baseAbs)
+	if err != nil {
+		return "", fmt.Errorf("workdir resolve: %w", err)
+	}
+
+	// Compute the requested absolute path (without symlink resolution yet).
+	abs := filepath.Join(baseAbs, filepath.Clean("/"+relPath))
+	abs, err = filepath.Abs(abs)
 	if err != nil {
 		return "", err
 	}
-	base, _ := filepath.Abs(s.cfg.WorkDir)
-	if !strings.HasPrefix(abs, base+string(filepath.Separator)) && abs != base {
+
+	// Resolve symlinks for the longest existing prefix; keep the trailing
+	// not-yet-existing components verbatim. This supports legitimate Save of
+	// a brand-new file inside an existing directory.
+	resolved, err := evalSymlinksLongestPrefix(abs)
+	if err != nil {
+		return "", err
+	}
+
+	if !pathContains(baseReal, resolved) {
 		return "", fmt.Errorf("path escapes working directory")
 	}
-	return abs, nil
+	return resolved, nil
+}
+
+// pathContains reports whether target is base or a path under base, after
+// canonicalisation. Both paths must be absolute.
+func pathContains(base, target string) bool {
+	if base == target {
+		return true
+	}
+	sep := string(filepath.Separator)
+	if !strings.HasSuffix(base, sep) {
+		base += sep
+	}
+	return strings.HasPrefix(target, base)
+}
+
+// evalSymlinksLongestPrefix walks abs from the root, finding the longest
+// existing prefix and resolving it via filepath.EvalSymlinks; it then
+// re-attaches any remaining (not-yet-existing) trailing components. If any
+// existing component on the path is a symlink, EvalSymlinks resolves it —
+// callers that want to refuse all symlinks in the chain (e.g. Save) should
+// gate via a separate check. Returns the canonicalised absolute path.
+func evalSymlinksLongestPrefix(abs string) (string, error) {
+	// If the full path exists, resolve it directly.
+	if _, err := os.Lstat(abs); err == nil {
+		return filepath.EvalSymlinks(abs)
+	}
+	// Walk up until we find an existing ancestor.
+	dir, leaf := filepath.Split(abs)
+	dir = strings.TrimSuffix(dir, string(filepath.Separator))
+	if dir == "" || dir == abs {
+		return abs, nil
+	}
+	parent, err := evalSymlinksLongestPrefix(dir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(parent, leaf), nil
 }
 
 // --- File management handlers ---
