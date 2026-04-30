@@ -455,12 +455,31 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 				return result, it.err
 			}
 			switch m := it.msg.(type) {
+			case *claudesdk.SystemMessage:
+				// `init` is the canonical session start: model + tool list +
+				// MCP server count are interesting for debugging at info
+				// level. Hook lifecycle subtypes (hook_started, hook_response,
+				// hook_progress) fire repeatedly during a session and would
+				// flood the log; route them to debug.
+				if m.Subtype == "init" {
+					b.Logger.Info("[%s/claude-code] ⚙️  system/init session=%s model=%s tools=%d mcp=%d",
+						task.NodeID, m.SessionID, m.Model, len(m.Tools), len(m.MCPServers))
+				} else {
+					b.Logger.Debug("[%s/claude-code] ⚙️  system/%s session=%s",
+						task.NodeID, m.Subtype, m.SessionID)
+				}
 			case *claudesdk.AssistantMessage:
 				if m.Message != nil {
 					logAssistantContent(b.Logger, task.NodeID, m.Message.Content)
 				}
+			case *claudesdk.UserMessage:
+				b.Logger.Debug("[%s/claude-code] 👤 user message echoed back", task.NodeID)
 			case *claudesdk.ResultMessage:
 				result = m
+			default:
+				if it.msg != nil {
+					b.Logger.Debug("[%s/claude-code] 📨 %T message", task.NodeID, it.msg)
+				}
 			}
 		case <-idle.C:
 			if idleTimeout <= 0 {

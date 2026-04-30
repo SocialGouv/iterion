@@ -270,7 +270,13 @@ func (s *Session) setupMcpConfig(args *[]string) (func(), error) {
 	return cleanup, nil
 }
 
-// sendInitialize sends the initialize control request with hook configuration.
+// sendInitialize sends the initialize control request with hook
+// configuration. The request must be written to stdin BEFORE the
+// first user message (FIFO ordering ensures the CLI registers hooks
+// before processing the prompt) — but we do NOT wait for the
+// response, because the response can only be dispatched from inside
+// Stream() and Stream() is called AFTER ensureStarted returns.
+// Calling sendRequest here would deadlock the session forever.
 func (s *Session) sendInitialize() error {
 	hooks := make(map[string][]hookMatcherConfig)
 	for event, matchers := range s.cfg.hooks {
@@ -288,12 +294,10 @@ func (s *Session) sendInitialize() error {
 	}
 
 	body := map[string]any{
-		"subtype": "initialize",
-		"hooks":   hooks,
+		"hooks": hooks,
 	}
 
-	_, err := s.ctrl.sendRequest("initialize", body)
-	return err
+	return s.ctrl.sendRequestNoWait("initialize", body)
 }
 
 // handleControlRequest dispatches incoming control requests from the CLI.

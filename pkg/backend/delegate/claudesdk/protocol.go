@@ -148,6 +148,35 @@ func (c *controller) sendRequest(subtype string, body any) (*controlResponseBody
 	return &resp, nil
 }
 
+// sendRequestNoWait writes a control request without blocking on the
+// response. Use this in setup paths that run BEFORE Stream() begins
+// reading stdout — calling sendRequest there would deadlock because
+// the response can only be dispatched from inside Stream(). Ordering
+// vs. subsequent writeLine() calls is preserved (the underlying
+// writeFn is synchronous), so the CLI receives the request before
+// any subsequent user message.
+func (c *controller) sendRequestNoWait(subtype string, body any) error {
+	bodyJSON, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	var bodyMap map[string]any
+	if err := json.Unmarshal(bodyJSON, &bodyMap); err != nil {
+		bodyMap = make(map[string]any)
+	}
+	bodyMap["subtype"] = subtype
+	finalBody, err := json.Marshal(bodyMap)
+	if err != nil {
+		return err
+	}
+	req := controlRequest{
+		Type:      "control_request",
+		RequestID: c.nextRequestID(),
+		Request:   json.RawMessage(finalBody),
+	}
+	return c.writeFn(req)
+}
+
 // handleResponse routes a control response to its pending request.
 func (c *controller) handleResponse(resp controlResponseBody) {
 	c.mu.Lock()
