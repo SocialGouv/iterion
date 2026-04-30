@@ -233,6 +233,7 @@ func mergeCatalog(project map[string]*ServerConfig, explicit map[string]*ir.MCPS
 			Args:      append([]string(nil), cfg.Args...),
 			URL:       cfg.URL,
 			Headers:   cloneStringMap(cfg.Headers),
+			Auth:      FromIRAuth(cfg.Auth),
 		}
 	}
 

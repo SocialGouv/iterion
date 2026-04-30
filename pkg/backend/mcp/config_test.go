@@ -75,6 +75,73 @@ func TestPrepareWorkflowProjectAutoloadAndOverrides(t *testing.T) {
 	// ToolNode does not have ActiveMCPServers — MCP servers are only resolved for Agent/Judge nodes.
 }
 
+func TestPrepareWorkflowPreservesExplicitServerAuth(t *testing.T) {
+	wf := &ir.Workflow{
+		MCPServers: map[string]*ir.MCPServer{
+			"oauth-api": {
+				Name:      "oauth-api",
+				Transport: ir.MCPTransportHTTP,
+				URL:       "https://api.example.com/mcp",
+				Auth: &ir.MCPAuth{
+					Type:      "oauth2",
+					AuthURL:   "https://auth.example.com/oauth/authorize",
+					TokenURL:  "https://auth.example.com/oauth/token",
+					RevokeURL: "https://auth.example.com/oauth/revoke",
+					ClientID:  "iterion-client",
+					Scopes:    []string{"read", "write"},
+				},
+			},
+		},
+	}
+
+	if err := PrepareWorkflow(wf, t.TempDir()); err != nil {
+		t.Fatalf("PrepareWorkflow: %v", err)
+	}
+
+	resolved := wf.ResolvedMCPServers["oauth-api"]
+	if resolved == nil {
+		t.Fatal("expected explicit MCP server to be resolved")
+	}
+	if resolved.Auth == nil {
+		t.Fatal("expected explicit MCP server Auth to be preserved")
+	}
+	if got, want := resolved.Auth.Type, "oauth2"; got != want {
+		t.Fatalf("Auth.Type mismatch: got %q want %q", got, want)
+	}
+	if got, want := resolved.Auth.AuthURL, "https://auth.example.com/oauth/authorize"; got != want {
+		t.Fatalf("Auth.AuthURL mismatch: got %q want %q", got, want)
+	}
+	if got, want := resolved.Auth.TokenURL, "https://auth.example.com/oauth/token"; got != want {
+		t.Fatalf("Auth.TokenURL mismatch: got %q want %q", got, want)
+	}
+	if got, want := resolved.Auth.RevokeURL, "https://auth.example.com/oauth/revoke"; got != want {
+		t.Fatalf("Auth.RevokeURL mismatch: got %q want %q", got, want)
+	}
+	if got, want := resolved.Auth.ClientID, "iterion-client"; got != want {
+		t.Fatalf("Auth.ClientID mismatch: got %q want %q", got, want)
+	}
+	assertStringSliceEq(t, resolved.Auth.Scopes, []string{"read", "write"})
+
+	catalog := map[string]*ServerConfig{
+		"oauth-api": {
+			Name:      resolved.Name,
+			Transport: FromIRTransport(resolved.Transport),
+			URL:       resolved.URL,
+			Auth:      FromIRAuth(resolved.Auth),
+		},
+	}
+	broker, err := NewOAuthBroker(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewOAuthBroker: %v", err)
+	}
+	if err := PrepareAuth(catalog, broker); err != nil {
+		t.Fatalf("PrepareAuth: %v", err)
+	}
+	if catalog["oauth-api"].AuthFunc == nil {
+		t.Fatal("expected PrepareAuth to populate AuthFunc for explicit DSL server auth")
+	}
+}
+
 func TestPrepareWorkflowAutoloadDisabledByEnv(t *testing.T) {
 	t.Setenv(EnvAutoLoad, "false")
 
