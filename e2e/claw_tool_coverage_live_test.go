@@ -4,6 +4,9 @@ package e2e
 
 import (
 	"context"
+	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -82,6 +85,65 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 	}
 	t.Logf("Workspace directory (persists after test): %s", workspaceDir)
 
+	// ── Phase 4 fixtures ───────────────────────────────────────────
+	//
+	// Deterministic fixtures the aux_runner agent will exercise:
+	//   - HTTP server : web_fetch GET /probe → "iterion-web-fetch-probe"
+	//                   remote_trigger POST /trigger → 202 + "queued"
+	//   - skill       : .claude/skills/probe-skill.md inside workspaceDir
+	//   - notebook    : probe.ipynb inside workspaceDir (1 code cell)
+	//   - image       : probe.png inside workspaceDir (1×1 transparent PNG)
+	//   - config      : ClawDefaults.Config map with known keys
+
+	auxHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/probe":
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte(`<html><body><h1>iterion-web-fetch-probe</h1><p>fixture content</p></body></html>`))
+		case "/trigger":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"status":"queued","probe":"iterion-remote-trigger-probe"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(auxHTTP.Close)
+
+	skillsDir := filepath.Join(workspaceDir, ".claude", "skills")
+	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
+		t.Fatalf("mkdir skills: %v", err)
+	}
+	skillPath := filepath.Join(skillsDir, "probe-skill.md")
+	const skillBody = "# Probe skill\n\niterion-skill-probe-marker\n"
+	if err := os.WriteFile(skillPath, []byte(skillBody), 0o644); err != nil {
+		t.Fatalf("write skill fixture: %v", err)
+	}
+
+	nbPath := filepath.Join(workspaceDir, "probe.ipynb")
+	const nbBody = `{
+  "cells": [
+    {"cell_type": "code", "id": "probe-cell", "source": "print('iterion-notebook-probe-original')\n", "metadata": {}, "outputs": []}
+  ],
+  "metadata": {"kernelspec": {"name": "python3", "display_name": "Python 3"}},
+  "nbformat": 4,
+  "nbformat_minor": 5
+}
+`
+	if err := os.WriteFile(nbPath, []byte(nbBody), 0o644); err != nil {
+		t.Fatalf("write notebook fixture: %v", err)
+	}
+
+	pngPath := filepath.Join(workspaceDir, "probe.png")
+	pngBytes, _ := base64.StdEncoding.DecodeString(
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+	)
+	if err := os.WriteFile(pngPath, pngBytes, 0o644); err != nil {
+		t.Fatalf("write png fixture: %v", err)
+	}
+
+	t.Setenv("ITERION_AUX_HTTP_URL", auxHTTP.URL)
+
 	storeDir := filepath.Join(workspaceDir, ".iterion")
 	s, storeErr := store.New(storeDir)
 	if storeErr != nil {
@@ -130,6 +192,10 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 		Workspace:   workspaceDir,
 		PlanMode:    &clawtools.PlanModeState{Active: &planActive, Dir: planDir},
 		MCPProvider: mcpManager.ClawProvider(nil),
+		Config: map[string]any{
+			"probe_key":    "iterion-config-probe-value",
+			"probe_number": 42,
+		},
 	}
 	clawDefaults.Subagent = model.NewSubagentRunner(
 		reg, toolReg, hooks, nil, "anthropic/claude-haiku-4-5-20251001",
@@ -227,6 +293,10 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 		// subagent_runner — claw `agent` tool dispatched into a real
 		// child conversation (iterion-supplied SubagentRunner).
 		"agent",
+		// aux_runner — Phase 4a auxiliaries: 8 tools driven by deterministic
+		// fixtures (httptest, .ipynb, .md skill, PNG, in-memory config).
+		"config", "remote_trigger", "web_fetch", "mcp_auth",
+		"skill", "repl", "notebook_edit", "read_image",
 	}
 	// Two-tier assertion: every tool must be dispatched, AND every
 	// tool must succeed at least once. The dispatch tier catches
@@ -268,6 +338,11 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 		tasksTaskID, tasksStoppedStatus               string
 		tasksPacketObjective                          string
 		subagentID, subagentText                      string
+		auxConfigValue, auxWebFetchText               string
+		auxTriggerProbe, auxMCPAuthStatus             string
+		auxSkillText, auxREPLStdout                   string
+		auxNotebookStatus, auxImageDescription        string
+		auxTriggerStatus                              float64
 	)
 	for _, evt := range events {
 		if evt.Type != store.EventNodeFinished || evt.Data == nil {
@@ -302,6 +377,16 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 		case "subagent_runner":
 			subagentID, _ = out["subagent_id"].(string)
 			subagentText, _ = out["subagent_text"].(string)
+		case "aux_runner":
+			auxConfigValue, _ = out["config_value"].(string)
+			auxTriggerStatus, _ = out["trigger_status"].(float64)
+			auxTriggerProbe, _ = out["trigger_probe"].(string)
+			auxWebFetchText, _ = out["web_fetch_text"].(string)
+			auxMCPAuthStatus, _ = out["mcp_auth_status"].(string)
+			auxSkillText, _ = out["skill_text"].(string)
+			auxREPLStdout, _ = out["repl_stdout"].(string)
+			auxNotebookStatus, _ = out["notebook_status"].(string)
+			auxImageDescription, _ = out["image_description"].(string)
 		}
 	}
 
@@ -383,6 +468,43 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 	if !strings.Contains(subagentText, "PROBE-OK-12345") {
 		t.Errorf("subagent_runner.subagent_text missing probe (real subagent did not run, or output not captured): %q",
 			subagentText)
+	}
+
+	// aux_runner — 8 fixtures driven via real LLM dispatch.
+	if auxConfigValue != "iterion-config-probe-value" {
+		t.Errorf("aux_runner.config_value != %q: got %q (config tool result not exploited)",
+			"iterion-config-probe-value", auxConfigValue)
+	}
+	if int(auxTriggerStatus) != 202 {
+		t.Errorf("aux_runner.trigger_status != 202: got %v (remote_trigger HTTP status not captured)",
+			auxTriggerStatus)
+	}
+	if !strings.Contains(auxTriggerProbe, "iterion-remote-trigger-probe") {
+		t.Errorf("aux_runner.trigger_probe missing fixture marker: %q (remote_trigger response body not parsed)",
+			auxTriggerProbe)
+	}
+	if !strings.Contains(auxWebFetchText, "iterion-web-fetch-probe") {
+		t.Errorf("aux_runner.web_fetch_text missing fixture marker: %q (web_fetch result not exploited)",
+			auxWebFetchText)
+	}
+	if auxMCPAuthStatus != "connected" {
+		t.Errorf("aux_runner.mcp_auth_status != %q: got %q (mcp_auth via ClawProvider should report stdio testsrv as connected)",
+			"connected", auxMCPAuthStatus)
+	}
+	if !strings.Contains(auxSkillText, "iterion-skill-probe-marker") {
+		t.Errorf("aux_runner.skill_text missing fixture marker: %q (skill body not exploited)",
+			auxSkillText)
+	}
+	if !strings.Contains(auxREPLStdout, "4") {
+		t.Errorf("aux_runner.repl_stdout missing %q: got %q (repl python did not run, or stdout not captured)",
+			"4", auxREPLStdout)
+	}
+	if auxNotebookStatus != "success" {
+		t.Errorf("aux_runner.notebook_status != %q: got %q (notebook_edit replace did not succeed)",
+			"success", auxNotebookStatus)
+	}
+	if auxImageDescription == "" {
+		t.Errorf("aux_runner.image_description empty (read_image returned no description, or LLM did not exploit it)")
 	}
 
 	logRunRecap(t, events)

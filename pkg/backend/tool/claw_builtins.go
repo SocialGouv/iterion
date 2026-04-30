@@ -68,27 +68,33 @@ func RegisterClawBuiltinsWithEnv(reg *Registry, workspace string, bashExtraEnv [
 	return nil
 }
 
-// RegisterClawComputerUse registers the vision + desktop-control tools
-// against reg: read_image, screenshot, and the unified computer_use
+// RegisterClawReadImage registers `read_image` only — the file/URL
+// loader that returns a base64 content block downstream multimodal
+// agents can splice into their next message. Unlike screenshot /
+// computer_use this tool does not require a display, so it's safe in
+// headless workflows.
+func RegisterClawReadImage(reg *Registry) error {
+	return RegisterClawTool(reg,
+		clawtools.ReadImageTool(),
+		clawComputerUseAdapter(clawtools.ExecuteReadImage),
+	)
+}
+
+// RegisterClawComputerUse registers the desktop-control tools that
+// require an X11 display — screenshot and the unified computer_use
 // action dispatcher (left_click / right_click / middle_click /
 // double_click / type / key / mouse_move / cursor_position /
-// left_click_drag, plus screenshot). These are kept out of the
-// default RegisterClawBuiltins set because most iterion workflows are
-// headless; opt in via Defaults.IncludeComputerUse when you have an
-// agent targeting an X11 display.
+// left_click_drag). Kept out of the default RegisterClawBuiltins set
+// because most iterion workflows are headless; opt in via
+// Defaults.IncludeComputerUse when you have an agent targeting a
+// display (Xvfb covered by the live coverage test).
 //
-// read_image returns a JSON payload describing the image plus a
-// base64 content block envelope; downstream agents can either inline
-// it as commentary or splice the block into their next-turn message
-// (multimodal models accept it directly).
-//
-// screenshot and computer_use shell out to xdotool + ImageMagick
-// `import`. On a host without those binaries (or without a display),
-// each call returns ErrComputerUseUnavailable wrapped — agents can
-// detect the gap with errors.Is rather than parsing strings.
+// On a host without xdotool / ImageMagick `import` (or without a
+// display), each call returns ErrComputerUseUnavailable wrapped —
+// agents can detect the gap with errors.Is rather than parsing
+// strings.
 func RegisterClawComputerUse(reg *Registry) error {
 	specs := []clawBuiltinSpec{
-		{tool: clawtools.ReadImageTool(), exec: clawComputerUseAdapter(clawtools.ExecuteReadImage)},
 		{tool: clawtools.ScreenshotTool(), exec: clawComputerUseAdapter(clawtools.ExecuteScreenshot)},
 		{tool: clawtools.ComputerUseTool(), exec: clawComputerUseAdapter(clawtools.ExecuteComputerUse)},
 	}
@@ -98,6 +104,20 @@ func RegisterClawComputerUse(reg *Registry) error {
 		}
 	}
 	return nil
+}
+
+// RegisterClawConfig registers the `config` tool against a
+// host-supplied flat configuration map. Pass an empty map (not nil)
+// if you have no configuration to expose — the tool will report
+// `found: false` for every key, which is still a valid live result.
+func RegisterClawConfig(reg *Registry, configMap map[string]any) error {
+	if configMap == nil {
+		configMap = map[string]any{}
+	}
+	exec := func(ctx context.Context, input map[string]any) (string, error) {
+		return clawtools.ExecuteConfig(ctx, input, configMap)
+	}
+	return RegisterClawTool(reg, clawtools.ConfigTool(), exec)
 }
 
 // clawComputerUseAdapter wraps a (ctx, input) → (ReadImageResult, error)
@@ -505,13 +525,20 @@ type ClawDefaults struct {
 	PlanMode *clawtools.PlanModeState
 
 	// IncludeWebSearch toggles registration of the `web_search` tool.
-	// Off by default because it requires BRAVE_API_KEY; surfacing it
-	// without a key causes runtime errors visible to the model.
+	// Off by default because it falls back to scraping DuckDuckGo Lite
+	// when BRAVE_API_KEY is unset, which is brittle; tests typically
+	// override the URL via env to point at a fixture.
 	IncludeWebSearch bool
 
-	// IncludeComputerUse toggles read_image / screenshot. Off by
-	// default since most workflows don't process images.
+	// IncludeComputerUse toggles screenshot + computer_use registration.
+	// Off by default since both require an X11 display. read_image is
+	// always registered (no display needed).
 	IncludeComputerUse bool
+
+	// Config, when non-nil, is exposed via the `config` tool. Leave
+	// nil to surface an empty map — the tool will still register but
+	// every key lookup reports `found: false`.
+	Config map[string]any
 
 	// BashExtraEnv, when non-empty, is appended to the inherited
 	// environment of every bash tool invocation (KEY=value entries).
@@ -580,10 +607,16 @@ func RegisterClawAll(reg *Registry, defaults ClawDefaults) error {
 			return err
 		}
 	}
+	if err := RegisterClawReadImage(reg); err != nil {
+		return err
+	}
 	if defaults.IncludeComputerUse {
 		if err := RegisterClawComputerUse(reg); err != nil {
 			return err
 		}
+	}
+	if err := RegisterClawConfig(reg, defaults.Config); err != nil {
+		return err
 	}
 	if defaults.PlanMode != nil {
 		if err := RegisterClawPlanMode(reg, defaults.PlanMode); err != nil {

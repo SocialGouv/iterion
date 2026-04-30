@@ -353,7 +353,87 @@ agent subagent_runner:
   tool_max_steps: 4
   session: fresh
 
-## ─── Workflow : 6 agents en séquence ─────────────────────────
+## ─── Agent 7 — Auxiliaires (Phase 4a, 8 tools) ──────────────
+
+prompt aux_system:
+  Tu valides 8 tools auxiliaires de claw avec des fixtures déterministes
+  fournies par le test : un serveur HTTP local (env ITERION_AUX_HTTP_URL),
+  une skill markdown, un notebook .ipynb, une image PNG, et une config
+  in-memory. Pour CHAQUE étape, appelle réellement le tool — n'invente
+  pas la réponse.
+
+prompt aux_user:
+  Workspace : {{vars.workspace_dir}}
+  HTTP fixture URL : ${ITERION_AUX_HTTP_URL}
+
+  Checklist (8 tools, dans l'ordre) :
+
+   1. config — key="probe_key"
+        → capture la valeur retournée (champ "value") dans `config_value`.
+
+   2. remote_trigger — url="${ITERION_AUX_HTTP_URL}/trigger", method="POST",
+                       body="ping"
+        → capture `status_code` (number) dans `trigger_status`,
+          et le champ "probe" du JSON retourné dans le champ "body" du
+          retour, dans `trigger_probe` (devrait être "iterion-remote-trigger-probe").
+
+   3. web_fetch — url="${ITERION_AUX_HTTP_URL}/probe"
+        → capture la string contenant "iterion-web-fetch-probe" dans
+          `web_fetch_text` (le tool retourne le HTML converti en
+          texte/markdown ; la string doit y figurer).
+
+   4. mcp_auth — server="testsrv"
+        → capture le champ "status" du retour dans `mcp_auth_status`
+          (doit être "connected", car testsrv stdio est branché via
+          ClawProvider).
+
+   5. skill — skill="probe-skill"
+        → capture le champ "prompt" du retour dans `skill_text`
+          (doit contenir "iterion-skill-probe-marker").
+
+   6. repl — language="python", code="print(2+2)"
+        → capture le champ "stdout" du retour dans `repl_stdout`
+          (doit contenir "4").
+
+   7. notebook_edit — notebook_path="{{vars.workspace_dir}}/probe.ipynb",
+                      cell_id="probe-cell", edit_mode="replace",
+                      new_source="print('iterion-notebook-probe-edited')\n"
+        → capture le champ "status" du retour dans `notebook_status`
+          (doit être "success").
+
+   8. read_image — path="{{vars.workspace_dir}}/probe.png"
+        → capture le champ "description" du retour dans `image_description`
+          (le tool fait un best-effort describe ; la string ne doit
+          juste PAS être vide).
+
+schema aux_input:
+  trigger: string
+
+schema aux_output:
+  config_value: string
+  trigger_status: int
+  trigger_probe: string
+  web_fetch_text: string
+  mcp_auth_status: string
+  skill_text: string
+  repl_stdout: string
+  notebook_status: string
+  image_description: string
+
+agent aux_runner:
+  model: "anthropic/claude-haiku-4-5-20251001"
+  input: aux_input
+  output: aux_output
+  publish: aux_result
+  system: aux_system
+  user: aux_user
+  tools: [config, remote_trigger, web_fetch, mcp_auth, skill, repl, notebook_edit, read_image]
+  tool_max_steps: 16
+  session: fresh
+  mcp:
+    servers: [testsrv]
+
+## ─── Workflow : 7 agents en séquence ─────────────────────────
 
 workflow claw_tool_coverage:
   vars:
@@ -375,4 +455,5 @@ workflow claw_tool_coverage:
   lifecycle_runner -> workers_runner   with { trigger: "next" }
   workers_runner   -> tasks_runner     with { trigger: "next" }
   tasks_runner     -> subagent_runner  with { trigger: "next" }
-  subagent_runner  -> done             with { trigger: "end" }
+  subagent_runner  -> aux_runner       with { trigger: "next" }
+  aux_runner       -> done             with { trigger: "end" }

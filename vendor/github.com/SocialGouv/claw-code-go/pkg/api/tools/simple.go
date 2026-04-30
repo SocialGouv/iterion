@@ -112,6 +112,16 @@ func AllowedToolsForSubagent(subagentType string) map[string]bool {
 	return intl.AllowedToolsForSubagent(subagentType)
 }
 
+// ConfigTool returns the `config` tool that reads from a host-supplied
+// configuration map. Hosts wire it via ExecuteConfig with a populated
+// map; without a map the tool returns "no configuration available".
+func ConfigTool() api.Tool { return intl.ConfigTool() }
+
+// ExecuteConfig reads a value out of `configMap` for the requested key.
+func ExecuteConfig(ctx context.Context, input map[string]any, configMap map[string]any) (string, error) {
+	return intl.ExecuteConfig(input, configMap)
+}
+
 func StructuredOutputTool() api.Tool { return intl.StructuredOutputTool() }
 
 func ExecuteStructuredOutput(ctx context.Context, input map[string]any) (string, error) {

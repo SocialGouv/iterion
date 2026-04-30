@@ -57,6 +57,9 @@ func TestRegisterClawComputerUse_RegistersAll(t *testing.T) {
 	if err := RegisterClawComputerUse(r); err != nil {
 		t.Fatalf("RegisterClawComputerUse: %v", err)
 	}
+	if err := RegisterClawReadImage(r); err != nil {
+		t.Fatalf("RegisterClawReadImage: %v", err)
+	}
 	for _, name := range []string{"read_image", "screenshot", "computer_use"} {
 		if !hasTool(r, name) {
 			t.Errorf("expected %q registered after opt-in", name)
@@ -68,6 +71,9 @@ func TestRegisterClawComputerUse_ReadImageRoundTrip(t *testing.T) {
 	r := NewRegistry()
 	if err := RegisterClawComputerUse(r); err != nil {
 		t.Fatalf("RegisterClawComputerUse: %v", err)
+	}
+	if err := RegisterClawReadImage(r); err != nil {
+		t.Fatalf("RegisterClawReadImage: %v", err)
 	}
 
 	// Tiny 1x1 transparent PNG.
@@ -126,6 +132,9 @@ func TestRegisterClawComputerUse_ReadImagePropagatesError(t *testing.T) {
 	if err := RegisterClawComputerUse(r); err != nil {
 		t.Fatalf("RegisterClawComputerUse: %v", err)
 	}
+	if err := RegisterClawReadImage(r); err != nil {
+		t.Fatalf("RegisterClawReadImage: %v", err)
+	}
 	tool, _ := r.Resolve("read_image")
 
 	// Missing both path and url → underlying tool errors. The
@@ -140,6 +149,9 @@ func TestRegisterClawComputerUse_ScreenshotPropagatesUnavailable(t *testing.T) {
 	r := NewRegistry()
 	if err := RegisterClawComputerUse(r); err != nil {
 		t.Fatalf("RegisterClawComputerUse: %v", err)
+	}
+	if err := RegisterClawReadImage(r); err != nil {
+		t.Fatalf("RegisterClawReadImage: %v", err)
 	}
 	tool, _ := r.Resolve("screenshot")
 
@@ -163,6 +175,9 @@ func TestRegisterClawComputerUse_ComputerUsePropagatesUnavailable(t *testing.T) 
 	r := NewRegistry()
 	if err := RegisterClawComputerUse(r); err != nil {
 		t.Fatalf("RegisterClawComputerUse: %v", err)
+	}
+	if err := RegisterClawReadImage(r); err != nil {
+		t.Fatalf("RegisterClawReadImage: %v", err)
 	}
 	tool, err := r.Resolve("computer_use")
 	if err != nil {
@@ -207,7 +222,7 @@ func TestRegisterClawComputerUse_ReadImageRejectsHTTPRedirect(t *testing.T) {
 	t.Cleanup(func() { http.DefaultClient = prev })
 
 	r := NewRegistry()
-	if err := RegisterClawComputerUse(r); err != nil {
+	if err := RegisterClawReadImage(r); err != nil {
 		t.Fatal(err)
 	}
 	tool, _ := r.Resolve("read_image")
@@ -242,7 +257,7 @@ func TestRegisterClawTodo_Registered(t *testing.T) {
 
 func TestRegisterClawSubagents_Registered(t *testing.T) {
 	r := NewRegistry()
-	if err := RegisterClawSubagents(r); err != nil {
+	if err := RegisterClawSubagents(r, nil); err != nil {
 		t.Fatalf("RegisterClawSubagents: %v", err)
 	}
 	if !hasTool(r, "agent") {
@@ -409,7 +424,7 @@ func TestRegisterClawAll_RegistersFullSet(t *testing.T) {
 	// Spot-check one tool from each family.
 	expected := []string{
 		"read_file", "write_file", "bash", "glob", "grep", "file_edit", "web_fetch",
-		"todo_write", "agent", "skill",
+		"todo_write", "agent", "skill", "config",
 		"send_user_message", "remote_trigger", "sleep", "notebook_edit", "repl", "structured_output",
 		"task_create", "worker_create", "team_create", "cron_create",
 		"list_mcp_resources", "lsp", "tool_search",
@@ -419,8 +434,13 @@ func TestRegisterClawAll_RegistersFullSet(t *testing.T) {
 			t.Errorf("expected %q registered by RegisterClawAll", name)
 		}
 	}
-	// Opt-in flags off by default.
-	for _, name := range []string{"web_search", "read_image", "screenshot", "computer_use"} {
+	// read_image is now always-on (no display needed); only screenshot
+	// and computer_use stay opt-in via IncludeComputerUse.
+	if !hasTool(r, "read_image") {
+		t.Errorf("expected %q registered by RegisterClawAll (always-on, no display required)", "read_image")
+	}
+	// Display-bound + Brave/DDG opt-ins remain off by default.
+	for _, name := range []string{"web_search", "screenshot", "computer_use"} {
 		if hasTool(r, name) {
 			t.Errorf("%q should be opt-in, but was registered", name)
 		}
