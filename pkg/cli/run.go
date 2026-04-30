@@ -238,17 +238,30 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	// Interactive TTY loop: when paused at a human node and stdin is a terminal,
 	// prompt the user for answers and resume in the same process.
 	for errors.Is(err, runtime.ErrRunPaused) && !opts.NoInteractive && IsTTY() {
+		// Each error path replaces err so the outer reporting reflects
+		// the actual failure rather than the stale ErrRunPaused: a load
+		// or prompt error here was previously swallowed by `break`,
+		// leaving the user with a paused_waiting_human status that hid
+		// the real issue (corrupt checkpoint, missing interaction file,
+		// stdin closed mid-prompt, etc.).
 		r, loadErr := s.LoadRun(runID)
-		if loadErr != nil || r.Checkpoint == nil {
+		if loadErr != nil {
+			err = fmt.Errorf("interactive resume: load run: %w", loadErr)
+			break
+		}
+		if r.Checkpoint == nil {
+			err = fmt.Errorf("interactive resume: run %q has no checkpoint", runID)
 			break
 		}
 		interaction, loadErr := s.LoadInteraction(runID, r.Checkpoint.InteractionID)
 		if loadErr != nil {
+			err = fmt.Errorf("interactive resume: load interaction: %w", loadErr)
 			break
 		}
 
 		answers, promptErr := PromptHumanAnswers(interaction)
 		if promptErr != nil {
+			err = fmt.Errorf("interactive resume: prompt answers: %w", promptErr)
 			break
 		}
 		err = eng.Resume(ctx, runID, answers)
