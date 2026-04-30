@@ -30,21 +30,6 @@
 ##                               n'utilise pas (StreamResponse direct).
 ##                               Couvert au niveau dispatch par le smoke
 ##                               test seulement.
-##   - structured_output       → schema avec Properties:{} et Required:[]
-##                               porte les LLMs à appeler avec input vide
-##                               (que le tool rejette : "payload must not
-##                               be empty"). Bug de design tool, pas
-##                               iterion. Couvert au niveau dispatch par
-##                               le smoke test.
-##   - list_mcp_resources / read_mcp_resource → bug iterion connu :
-##                               iterion enregistre les MCP servers dans
-##                               son `mcp.Manager` mais claw's intro-
-##                               spection tools regardent claw's
-##                               `mcp.Registry` (séparé, vide). Le call
-##                               retourne "server testsrv not found"
-##                               même si testsrv est connecté pour
-##                               mcp.testsrv.<tool>. Bridge à câbler
-##                               séparément.
 ##
 ## Couverture attendue ici : 25 tools réels via 3 agents en séquence.
 
@@ -81,10 +66,10 @@ prompt files_user:
   10. file_edit        — path="{{vars.workspace_dir}}/probe.txt", old_string="hello-from-claw", new_string="edited-from-claw"
   11. glob             — pattern="*.txt", path="{{vars.workspace_dir}}"
   12. grep             — pattern="edited-from-claw", path="{{vars.workspace_dir}}"
-  13. structured_output — passe l'objet JSON {"probe": "claw-coverage", "ok": true}
-                          comme tool input directement (pas wrapped sous "payload").
-                          → capture la valeur de la clé "probe" du retour du
-                            tool dans `structured_payload_echo`.
+  13. structured_output — passe l'objet JSON {"payload": {"probe": "claw-coverage", "ok": true}}.
+                          Le tool echo le map "payload" tel quel.
+                          → capture la valeur de la clé "probe" (sous "payload")
+                            du retour du tool dans `structured_payload_echo`.
 
   Quand TOUS sont faits, fournis :
    - tools_called             : liste de chaque tool appelé (ordre)
@@ -121,13 +106,17 @@ prompt mcp_system:
   réellement le tool MCP — ne déduis pas le résultat.
 
 prompt mcp_user:
-  Checklist MCP (2 appels — voir plan dans
-  examples/claw_tool_coverage.iter en-tête pour la raison de
-  l'omission de list_mcp_resources / read_mcp_resource) :
+  Checklist MCP (4 appels) :
    1. mcp.testsrv.greet     — name="Iterion"
         → capture exactement la string retournée dans `greeting`.
    2. mcp.testsrv.reverse   — text="States"
         → capture exactement la string retournée dans `reversed`.
+   3. list_mcp_resources    — server="testsrv"
+        → capture l'URI listé (champ "uri" du premier élément du tableau
+          "resources") dans `resource_uri`.
+   4. read_mcp_resource     — server="testsrv", uri=<celui de l'étape 3>
+        → capture exactement la string retournée dans le champ "content"
+          dans `resource_text`.
 
 schema mcp_input:
   trigger: string
@@ -135,6 +124,8 @@ schema mcp_input:
 schema mcp_output:
   greeting: string
   reversed: string
+  resource_uri: string
+  resource_text: string
 
 agent mcp_runner:
   model: "anthropic/claude-haiku-4-5-20251001"
@@ -144,7 +135,7 @@ agent mcp_runner:
   system: mcp_system
   user: mcp_user
   tools: [mcp.testsrv.greet, mcp.testsrv.reverse, list_mcp_resources, read_mcp_resource]
-  tool_max_steps: 8
+  tool_max_steps: 12
   session: fresh
   mcp:
     servers: [testsrv]

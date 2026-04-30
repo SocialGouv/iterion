@@ -55,6 +55,12 @@ type ConversationLoop struct {
 	LspRegistry    *lsp.Registry          // LSP server registry (may be nil)
 	McpAuthState   *mcp.AuthState         // MCP auth state tracker (may be nil)
 
+	// McpProvider feeds list_mcp_resources / read_mcp_resource / mcp_auth.
+	// When nil, a default Provider is built lazily from MCPRegistry +
+	// McpAuthState. Embedders (e.g. iterion's MCP manager) override this
+	// to bridge their own MCP infrastructure.
+	McpProvider mcp.Provider
+
 	// PlanModeActive tracks whether plan mode is currently engaged.
 	PlanModeActive bool
 
@@ -78,6 +84,17 @@ type ConversationLoop struct {
 // conversation loop (goroutine-safe).
 func (loop *ConversationLoop) ToolCallCount() int {
 	return int(loop.toolCallCount.Load())
+}
+
+// mcpProvider returns the configured Provider, falling back to a
+// default backed by the loop's MCPRegistry + McpAuthState. Always
+// returns a non-nil Provider so the resource/auth tools can format
+// "server not found" errors uniformly.
+func (loop *ConversationLoop) mcpProvider() mcp.Provider {
+	if loop.McpProvider != nil {
+		return loop.McpProvider
+	}
+	return mcp.NewRegistryProvider(loop.MCPRegistry, loop.McpAuthState)
 }
 
 // NewConversationLoop creates a new conversation loop with the given client.
@@ -971,11 +988,11 @@ func (loop *ConversationLoop) ExecuteToolQuiet(ctx context.Context, name string,
 		result, err = tools.ExecuteLSP(input, loop.LspRegistry)
 	// --- Batch 3: MCP resource/auth tools ---
 	case "list_mcp_resources":
-		result, err = tools.ExecuteListMcpResources(input, loop.MCPRegistry)
+		result, err = tools.ExecuteListMcpResources(ctx, input, loop.mcpProvider())
 	case "read_mcp_resource":
-		result, err = tools.ExecuteReadMcpResource(input, loop.MCPRegistry)
+		result, err = tools.ExecuteReadMcpResource(ctx, input, loop.mcpProvider())
 	case "mcp_auth":
-		result, err = tools.ExecuteMcpAuth(input, loop.MCPRegistry, loop.McpAuthState)
+		result, err = tools.ExecuteMcpAuth(ctx, input, loop.mcpProvider())
 	default:
 		// Fall back to MCP registry.
 		if loop.MCPRegistry != nil {
@@ -1333,11 +1350,11 @@ func (loop *ConversationLoop) ExecuteTool(ctx context.Context, name string, inpu
 		result, err = tools.ExecuteLSP(input, loop.LspRegistry)
 	// --- Batch 3: MCP resource/auth tools ---
 	case "list_mcp_resources":
-		result, err = tools.ExecuteListMcpResources(input, loop.MCPRegistry)
+		result, err = tools.ExecuteListMcpResources(ctx, input, loop.mcpProvider())
 	case "read_mcp_resource":
-		result, err = tools.ExecuteReadMcpResource(input, loop.MCPRegistry)
+		result, err = tools.ExecuteReadMcpResource(ctx, input, loop.mcpProvider())
 	case "mcp_auth":
-		result, err = tools.ExecuteMcpAuth(input, loop.MCPRegistry, loop.McpAuthState)
+		result, err = tools.ExecuteMcpAuth(ctx, input, loop.mcpProvider())
 	default:
 		// Try plugin tools first.
 		if loop.PluginRegistry != nil {

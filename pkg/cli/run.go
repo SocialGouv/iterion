@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
+	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
 	"github.com/SocialGouv/claw-code-go/pkg/apikit/telemetry/otlpgrpc"
 	"github.com/SocialGouv/claw-code-go/pkg/permissions"
-	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
@@ -367,17 +367,6 @@ func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunSto
 		logger.Warn("cli: prepare plan_mode dir: %v — plan_mode tools disabled", err)
 		planDir = ""
 	}
-	clawDefaults := tool.ClawDefaults{Workspace: workspace}
-	if planDir != "" {
-		clawDefaults.PlanMode = &clawtools.PlanModeState{Active: &planActive, Dir: planDir}
-	}
-	if err := tool.RegisterClawAll(toolReg, clawDefaults); err != nil {
-		// Non-fatal: log and continue with whatever was registered.
-		// A malformed registry is better than a hard run failure on
-		// startup; downstream tool resolution will surface the gap.
-		logger.Warn("RegisterClawAll: %v", err)
-	}
-
 	opts := []model.ClawExecutorOption{
 		model.WithBackendRegistry(backendReg),
 		model.WithEventHooks(hooks),
@@ -399,6 +388,14 @@ func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunSto
 	if checker != nil {
 		opts = append(opts, model.WithToolPolicy(checker))
 	}
+
+	// MCP manager has to exist before claw tool registration so its
+	// Provider implementation can back list_mcp_resources /
+	// read_mcp_resource / mcp_auth. Without this the claw tools see an
+	// empty Registry-backed Provider and report "server not found"
+	// even though iterion has the server connected.
+	var mcpManager *mcp.Manager
+	var oauthBroker *mcp.OAuthBroker
 	if len(wf.ResolvedMCPServers) > 0 {
 		catalog := make(map[string]*mcp.ServerConfig, len(wf.ResolvedMCPServers))
 		hasAuth := false
@@ -451,15 +448,29 @@ func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunSto
 			}
 			logger.Warn("mcp: prepare oauth auth: %v", err)
 		}
+		oauthBroker = broker
 		var mcpOpts []mcp.ManagerOption
 		mcpOpts = append(mcpOpts, mcp.WithLogger(logger))
 		if cacheTTL := mcp.ResolveCacheTTL(); cacheTTL > 0 {
 			mcpOpts = append(mcpOpts, mcp.WithToolCache(mcp.NewToolCache(storeDir, cacheTTL)))
 		}
 		mcpOpts = append(mcpOpts, mcp.WithFingerprintStore(mcp.NewFingerprintStore(storeDir)))
-		opts = append(opts,
-			model.WithMCPManager(mcp.NewManager(catalog, mcpOpts...)),
-		)
+		mcpManager = mcp.NewManager(catalog, mcpOpts...)
+		opts = append(opts, model.WithMCPManager(mcpManager))
+	}
+
+	clawDefaults := tool.ClawDefaults{Workspace: workspace}
+	if planDir != "" {
+		clawDefaults.PlanMode = &clawtools.PlanModeState{Active: &planActive, Dir: planDir}
+	}
+	if mcpManager != nil {
+		clawDefaults.MCPProvider = mcpManager.ClawProvider(oauthBroker)
+	}
+	if err := tool.RegisterClawAll(toolReg, clawDefaults); err != nil {
+		// Non-fatal: log and continue with whatever was registered.
+		// A malformed registry is better than a hard run failure on
+		// startup; downstream tool resolution will surface the gap.
+		logger.Warn("RegisterClawAll: %v", err)
 	}
 
 	executor := model.NewClawExecutor(reg, wf, opts...)

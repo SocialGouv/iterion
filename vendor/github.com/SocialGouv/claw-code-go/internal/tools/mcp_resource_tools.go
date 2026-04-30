@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
 	"github.com/SocialGouv/claw-code-go/internal/api"
 	"github.com/SocialGouv/claw-code-go/internal/mcp"
 )
@@ -54,9 +55,9 @@ func McpAuthTool() api.Tool {
 
 // --- MCP resource/auth Execute functions ---
 
-func ExecuteListMcpResources(input map[string]any, registry *mcp.Registry) (string, error) {
-	if registry == nil {
-		return "", fmt.Errorf("list_mcp_resources: MCP registry not available")
+func ExecuteListMcpResources(ctx context.Context, input map[string]any, provider mcp.Provider) (string, error) {
+	if provider == nil {
+		return "", fmt.Errorf("list_mcp_resources: MCP provider not available")
 	}
 
 	server := "default"
@@ -64,7 +65,7 @@ func ExecuteListMcpResources(input map[string]any, registry *mcp.Registry) (stri
 		server = s
 	}
 
-	client, ok := findServerClient(registry, server)
+	client, ok := provider.GetResourceClient(server)
 	if !ok {
 		result := map[string]any{
 			"server":    server,
@@ -75,7 +76,7 @@ func ExecuteListMcpResources(input map[string]any, registry *mcp.Registry) (stri
 		return string(out), nil
 	}
 
-	resources, err := client.ListResources(context.Background())
+	resources, err := client.ListResources(ctx)
 	if err != nil {
 		result := map[string]any{
 			"server":    server,
@@ -95,9 +96,9 @@ func ExecuteListMcpResources(input map[string]any, registry *mcp.Registry) (stri
 	return string(out), nil
 }
 
-func ExecuteReadMcpResource(input map[string]any, registry *mcp.Registry) (string, error) {
-	if registry == nil {
-		return "", fmt.Errorf("read_mcp_resource: MCP registry not available")
+func ExecuteReadMcpResource(ctx context.Context, input map[string]any, provider mcp.Provider) (string, error) {
+	if provider == nil {
+		return "", fmt.Errorf("read_mcp_resource: MCP provider not available")
 	}
 
 	uri, ok := input["uri"].(string)
@@ -110,7 +111,7 @@ func ExecuteReadMcpResource(input map[string]any, registry *mcp.Registry) (strin
 		server = s
 	}
 
-	client, ok := findServerClient(registry, server)
+	client, ok := provider.GetResourceClient(server)
 	if !ok {
 		result := map[string]any{
 			"server": server,
@@ -121,7 +122,7 @@ func ExecuteReadMcpResource(input map[string]any, registry *mcp.Registry) (strin
 		return string(out), nil
 	}
 
-	resource, err := client.ReadResource(context.Background(), uri)
+	resource, err := client.ReadResource(ctx, uri)
 	if err != nil {
 		result := map[string]any{
 			"server": server,
@@ -132,22 +133,24 @@ func ExecuteReadMcpResource(input map[string]any, registry *mcp.Registry) (strin
 		return string(out), nil
 	}
 
-	// Match Rust response shape: {server, uri, name, description, mime_type}.
-	// Content is available internally via McpResourceContent but excluded from tool output.
+	// Response shape: {server, uri, name, description, mime_type, content}.
+	// `content` is the resource body (text); kept here so callers that need
+	// the body don't have to issue a second round-trip.
 	result := map[string]any{
 		"server":      server,
 		"uri":         resource.URI,
 		"name":        resource.Name,
 		"description": resource.Description,
 		"mime_type":   resource.MimeType,
+		"content":     resource.Content,
 	}
 	out, _ := json.MarshalIndent(result, "", "  ")
 	return string(out), nil
 }
 
-func ExecuteMcpAuth(input map[string]any, registry *mcp.Registry, authState *mcp.AuthState) (string, error) {
-	if registry == nil {
-		return "", fmt.Errorf("mcp_auth: MCP registry not available")
+func ExecuteMcpAuth(ctx context.Context, input map[string]any, provider mcp.Provider) (string, error) {
+	if provider == nil {
+		return "", fmt.Errorf("mcp_auth: MCP provider not available")
 	}
 
 	server, ok := input["server"].(string)
@@ -155,17 +158,8 @@ func ExecuteMcpAuth(input map[string]any, registry *mcp.Registry, authState *mcp
 		return "", fmt.Errorf("mcp_auth: 'server' is required")
 	}
 
-	// Check if server is registered.
-	serverNames := registry.ServerNames()
-	found := false
-	for _, name := range serverNames {
-		if name == server {
-			found = true
-			break
-		}
-	}
-
-	if !found {
+	status, ok := provider.ServerStatus(server)
+	if !ok {
 		result := map[string]any{
 			"server":  server,
 			"status":  "disconnected",
@@ -175,31 +169,14 @@ func ExecuteMcpAuth(input map[string]any, registry *mcp.Registry, authState *mcp
 		return string(out), nil
 	}
 
-	// Get connection status from auth state.
-	var status string
-	if authState != nil {
-		status = authState.GetStatus(server).String()
-	} else {
-		status = "connected" // If no auth state, assume connected since server is registered.
-	}
-
-	// Match Rust response shape: {server, status, server_info, tool_count, resource_count}
-	serverInfo := registry.GetServerInfo(server)
-	resourceCount := registry.GetResourceCount(server)
-
+	// Match Rust response shape: {server, status, server_info, tool_count, resource_count}.
 	result := map[string]any{
-		"server":         server,
-		"status":         status,
-		"server_info":    serverInfo,
-		"tool_count":     len(registry.ServerTools(server)),
-		"resource_count": resourceCount,
+		"server":         status.Name,
+		"status":         status.Status,
+		"server_info":    status.ServerInfo,
+		"tool_count":     status.ToolCount,
+		"resource_count": status.ResourceCount,
 	}
 	out, _ := json.MarshalIndent(result, "", "  ")
 	return string(out), nil
-}
-
-// findServerClient looks up the MCP client for a named server.
-func findServerClient(registry *mcp.Registry, serverName string) (*mcp.Client, bool) {
-	client := registry.GetClient(serverName)
-	return client, client != nil
 }

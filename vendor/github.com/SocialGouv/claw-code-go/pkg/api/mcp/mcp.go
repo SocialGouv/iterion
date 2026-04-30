@@ -15,6 +15,16 @@ type Transport = mcppkg.Transport
 type TransportConfig = mcppkg.TransportConfig
 type TransportType = mcppkg.TransportType
 
+// MCP resource introspection surface (used by list_mcp_resources,
+// read_mcp_resource, mcp_auth tools).
+type (
+	ResourceClient    = mcppkg.ResourceClient
+	ServerStatus      = mcppkg.ServerStatus
+	Provider          = mcppkg.Provider
+	McpResourceInfo    = mcppkg.McpResourceInfo
+	McpResourceContent = mcppkg.McpResourceContent
+)
+
 const (
 	TransportStdio        = mcppkg.TransportStdio
 	TransportSSE          = mcppkg.TransportSSE
@@ -26,6 +36,13 @@ const (
 
 func NewRegistry() *Registry  { return mcppkg.NewRegistry() }
 func NewAuthState() *AuthState { return mcppkg.NewAuthState() }
+
+// NewRegistryProvider bundles a *Registry + *AuthState into a Provider.
+// authState may be nil; in that case all known servers report status
+// "connected".
+func NewRegistryProvider(r *Registry, a *AuthState) Provider {
+	return mcppkg.NewRegistryProvider(r, a)
+}
 
 // NewTransport builds a Transport from cfg. SSE/HTTP transports honor
 // cfg.AuthFunc when non-nil — the closure is invoked on every request

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -37,6 +38,23 @@ type ToolContent struct {
 	Text string `json:"text,omitempty"`
 }
 
+// ResourceInfo describes a resource exposed by an MCP server.
+type ResourceInfo struct {
+	URI         string `json:"uri"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	MimeType    string `json:"mimeType,omitempty"`
+}
+
+// ResourceContent is the body returned by resources/read.
+type ResourceContent struct {
+	URI         string
+	Name        string
+	Description string
+	MimeType    string
+	Text        string
+}
+
 type clientInfo struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
@@ -46,6 +64,8 @@ type protocolClient interface {
 	Ping(ctx context.Context) error
 	ListTools(ctx context.Context) ([]ToolInfo, error)
 	CallTool(ctx context.Context, toolName string, args map[string]interface{}) (*ToolCallResult, error)
+	ListResources(ctx context.Context) ([]ResourceInfo, error)
+	ReadResource(ctx context.Context, uri string) (ResourceContent, error)
 	Close() error
 }
 
@@ -141,6 +161,65 @@ func (m *Manager) HealthCheck(ctx context.Context, servers []string) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// ServerNames returns the names of every server known to the catalog
+// (whether or not it has been connected yet). The order is stable but
+// unspecified.
+func (m *Manager) ServerNames() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	names := make([]string, 0, len(m.catalog))
+	for name := range m.catalog {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// ServerConfig returns a clone of the catalog entry for `name`. The
+// boolean is false when the server is unknown.
+func (m *Manager) ServerConfig(name string) (*ServerConfig, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cfg, ok := m.catalog[name]
+	if !ok {
+		return nil, false
+	}
+	return cloneServerConfig(cfg), true
+}
+
+// ListResources connects (lazily) to `server` and returns the
+// resources it exposes. The connection is shared with subsequent
+// CallTool / ReadResource calls.
+func (m *Manager) ListResources(ctx context.Context, server string) ([]ResourceInfo, error) {
+	state, err := m.state(server)
+	if err != nil {
+		return nil, err
+	}
+	state.mu.Lock()
+	client, err := m.clientForState(state)
+	state.mu.Unlock()
+	if err != nil {
+		return nil, fmt.Errorf("mcp: list resources from %q: %w", server, err)
+	}
+	return client.ListResources(ctx)
+}
+
+// ReadResource connects (lazily) to `server` and returns the body of
+// the resource at `uri`.
+func (m *Manager) ReadResource(ctx context.Context, server, uri string) (ResourceContent, error) {
+	state, err := m.state(server)
+	if err != nil {
+		return ResourceContent{}, err
+	}
+	state.mu.Lock()
+	client, err := m.clientForState(state)
+	state.mu.Unlock()
+	if err != nil {
+		return ResourceContent{}, fmt.Errorf("mcp: read resource from %q: %w", server, err)
+	}
+	return client.ReadResource(ctx, uri)
 }
 
 // Close closes any open MCP clients held by the manager.

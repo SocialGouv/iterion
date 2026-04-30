@@ -415,30 +415,28 @@ func RegisterClawCron(reg *Registry, cronReg *clawteam.CronRegistry) error {
 	return nil
 }
 
-// RegisterClawMCPResources registers the three MCP resource/auth
-// tools (list_mcp_resources, read_mcp_resource, mcp_auth). Hosts
-// supply the *mcp.Registry and *mcp.AuthState; callers that don't
-// care about per-server auth state may pass a fresh
-// clawmcp.NewAuthState() — the tools handle empty state gracefully.
-func RegisterClawMCPResources(reg *Registry, mcpReg *clawmcp.Registry, auth *clawmcp.AuthState) error {
-	if mcpReg == nil {
-		return fmt.Errorf("register mcp resources: mcp registry is nil")
-	}
-	if auth == nil {
-		auth = clawmcp.NewAuthState()
+// RegisterClawMCPResources registers list_mcp_resources,
+// read_mcp_resource and mcp_auth against the supplied Provider. The
+// Provider is the one bridge between iterion's MCP manager and claw's
+// resource introspection tools — passing nil falls back to an empty
+// in-process Registry, which is fine for tests but not for hosts that
+// already manage their own MCP servers.
+func RegisterClawMCPResources(reg *Registry, provider clawmcp.Provider) error {
+	if provider == nil {
+		return fmt.Errorf("register mcp resources: provider is nil")
 	}
 	specs := []struct {
 		tool api.Tool
 		exec func(ctx context.Context, input map[string]any) (string, error)
 	}{
 		{clawtools.ListMcpResourcesTool(), func(ctx context.Context, in map[string]any) (string, error) {
-			return clawtools.ExecuteListMcpResources(ctx, in, mcpReg)
+			return clawtools.ExecuteListMcpResources(ctx, in, provider)
 		}},
 		{clawtools.ReadMcpResourceTool(), func(ctx context.Context, in map[string]any) (string, error) {
-			return clawtools.ExecuteReadMcpResource(ctx, in, mcpReg)
+			return clawtools.ExecuteReadMcpResource(ctx, in, provider)
 		}},
 		{clawtools.McpAuthTool(), func(ctx context.Context, in map[string]any) (string, error) {
-			return clawtools.ExecuteMcpAuth(ctx, in, mcpReg, auth)
+			return clawtools.ExecuteMcpAuth(ctx, in, provider)
 		}},
 	}
 	for _, s := range specs {
@@ -462,16 +460,23 @@ type ClawDefaults struct {
 	// gating.
 	Workspace string
 
-	// Tasks, Workers, Teams, Crons, MCP, LSP hold the registries each
-	// tool family needs. Leave nil to have RegisterClawAll allocate a
-	// fresh empty registry.
+	// Tasks, Workers, Teams, Crons, LSP hold the registries each tool
+	// family needs. Leave nil to have RegisterClawAll allocate a fresh
+	// empty registry.
 	Tasks   *clawtask.Registry
 	Workers *clawworker.WorkerRegistry
 	Teams   *clawteam.TeamRegistry
 	Crons   *clawteam.CronRegistry
-	MCP     *clawmcp.Registry
-	MCPAuth *clawmcp.AuthState
 	LSP     *clawlsp.Registry
+
+	// MCPProvider feeds list_mcp_resources / read_mcp_resource /
+	// mcp_auth. Hosts (e.g. iterion's MCP manager) implement the
+	// Provider interface to avoid double-connecting servers; tests can
+	// pass a Registry-backed provider via clawmcp.NewRegistryProvider.
+	// Leave nil for RegisterClawAll to wire an empty in-process
+	// Registry-backed provider — useful for stand-alone claw smoke
+	// tests, not for hosts that have their own MCP infrastructure.
+	MCPProvider clawmcp.Provider
 
 	// PlanMode is shared by enter_plan_mode and exit_plan_mode so the
 	// pair can coordinate. Nil disables plan_mode tooling.
@@ -523,11 +528,8 @@ func RegisterClawAll(reg *Registry, defaults ClawDefaults) error {
 	if defaults.Crons == nil {
 		defaults.Crons = clawteam.NewCronRegistry()
 	}
-	if defaults.MCP == nil {
-		defaults.MCP = clawmcp.NewRegistry()
-	}
-	if defaults.MCPAuth == nil {
-		defaults.MCPAuth = clawmcp.NewAuthState()
+	if defaults.MCPProvider == nil {
+		defaults.MCPProvider = clawmcp.NewRegistryProvider(clawmcp.NewRegistry(), clawmcp.NewAuthState())
 	}
 	if defaults.LSP == nil {
 		defaults.LSP = clawlsp.NewRegistry()
@@ -578,7 +580,7 @@ func RegisterClawAll(reg *Registry, defaults ClawDefaults) error {
 	if err := RegisterClawCron(reg, defaults.Crons); err != nil {
 		return err
 	}
-	if err := RegisterClawMCPResources(reg, defaults.MCP, defaults.MCPAuth); err != nil {
+	if err := RegisterClawMCPResources(reg, defaults.MCPProvider); err != nil {
 		return err
 	}
 	if err := RegisterClawLSP(reg, defaults.LSP); err != nil {

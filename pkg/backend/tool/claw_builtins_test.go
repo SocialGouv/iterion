@@ -373,7 +373,8 @@ func TestRegisterClawCron_All(t *testing.T) {
 
 func TestRegisterClawMCPResources_All(t *testing.T) {
 	r := NewRegistry()
-	if err := RegisterClawMCPResources(r, clawmcp.NewRegistry(), clawmcp.NewAuthState()); err != nil {
+	provider := clawmcp.NewRegistryProvider(clawmcp.NewRegistry(), clawmcp.NewAuthState())
+	if err := RegisterClawMCPResources(r, provider); err != nil {
 		t.Fatalf("RegisterClawMCPResources: %v", err)
 	}
 	for _, name := range []string{"list_mcp_resources", "read_mcp_resource", "mcp_auth"} {
@@ -383,10 +384,10 @@ func TestRegisterClawMCPResources_All(t *testing.T) {
 	}
 }
 
-func TestRegisterClawMCPResources_NilAuthFallsBack(t *testing.T) {
+func TestRegisterClawMCPResources_NilProviderRejected(t *testing.T) {
 	r := NewRegistry()
-	if err := RegisterClawMCPResources(r, clawmcp.NewRegistry(), nil); err != nil {
-		t.Errorf("expected nil auth to fallback to fresh AuthState; got %v", err)
+	if err := RegisterClawMCPResources(r, nil); err == nil {
+		t.Errorf("expected nil provider to fail; got nil")
 	}
 }
 

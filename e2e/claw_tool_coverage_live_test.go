@@ -33,12 +33,12 @@ import (
 // prompt:
 //
 //   - files_runner    — file ops + shell + LLM utilities + plan_mode
-//                       (13 tools)
+//     (13 tools)
 //   - mcp_runner      — MCP tools (greet/reverse) + MCP resources
-//                       (list_mcp_resources, read_mcp_resource)
-//                       (4 tools)
+//     (list_mcp_resources, read_mcp_resource)
+//     (4 tools)
 //   - lifecycle_runner — task / team / cron CRUD lifecycle
-//                       (11 tools)
+//     (11 tools)
 //
 // Asserts:
 //   - Run finishes successfully.
@@ -127,8 +127,9 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 		t.Fatalf("mkdir plan-mode dir: %v", err)
 	}
 	clawDefaults := tool.ClawDefaults{
-		Workspace: workspaceDir,
-		PlanMode:  &clawtools.PlanModeState{Active: &planActive, Dir: planDir},
+		Workspace:   workspaceDir,
+		PlanMode:    &clawtools.PlanModeState{Active: &planActive, Dir: planDir},
+		MCPProvider: mcpManager.ClawProvider(nil),
 	}
 	if err := tool.RegisterClawAll(toolReg, clawDefaults); err != nil {
 		t.Fatalf("RegisterClawAll: %v", err)
@@ -247,9 +248,9 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 	// results — prove the LLM not only DISPATCHED each tool but
 	// EXPLOITED its return value into the workflow's output schema.
 	var (
-		probeText, toolSearchHit, structuredEcho                      string
-		greeting, reversed, resourceURI, resourceText                 string
-		taskID, teamID, cronID                                        string
+		probeText, toolSearchHit, structuredEcho      string
+		greeting, reversed, resourceURI, resourceText string
+		taskID, teamID, cronID                        string
 	)
 	for _, evt := range events {
 		if evt.Type != store.EventNodeFinished || evt.Data == nil {

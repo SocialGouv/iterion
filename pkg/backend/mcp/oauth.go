@@ -7,7 +7,9 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"time"
 
+	clawmcp "github.com/SocialGouv/claw-code-go/pkg/api/mcp"
 	clawoauth "github.com/SocialGouv/claw-code-go/pkg/api/mcp/oauth"
 )
 
@@ -88,6 +90,32 @@ func (b *OAuthBroker) AuthFuncFor(cfg *AuthConfig, serverName string) (AuthFunc,
 		Scopes:    append([]string(nil), cfg.Scopes...),
 	}
 	return b.broker.BearerHeaderFunc(srv), nil
+}
+
+// AuthStatus reports the persisted OAuth token state for `serverName`.
+// Returns "connected" when a non-expired token is on file, "auth_required"
+// when a token is missing, and "expired" when the cache holds a stale
+// token. The returned struct keeps Server/Type/Scopes/ExpiresAt fields so
+// the mcp_auth tool can format a complete report.
+func (b *OAuthBroker) AuthStatus(serverName string) clawmcp.ServerStatus {
+	if b == nil || b.storage == nil {
+		return clawmcp.ServerStatus{Name: serverName, Status: "disconnected"}
+	}
+	tok, ok, err := b.storage.Load(serverName)
+	switch {
+	case err != nil:
+		return clawmcp.ServerStatus{Name: serverName, Status: "error", ServerInfo: err.Error()}
+	case !ok:
+		return clawmcp.ServerStatus{Name: serverName, Status: "auth_required"}
+	case tok.IsExpired(30 * time.Second):
+		return clawmcp.ServerStatus{Name: serverName, Status: "expired"}
+	default:
+		info := "oauth2"
+		if tok.Scope != "" {
+			info = info + " (scope=" + tok.Scope + ")"
+		}
+		return clawmcp.ServerStatus{Name: serverName, Status: "connected", ServerInfo: info}
+	}
 }
 
 // requireSecureURL accepts any https:// URL and rejects http:// unless

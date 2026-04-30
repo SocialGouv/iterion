@@ -70,6 +70,56 @@ func (c *sdkClient) CallTool(ctx context.Context, toolName string, args map[stri
 	return sdkResultToToolCallResult(result), nil
 }
 
+func (c *sdkClient) ListResources(ctx context.Context) ([]ResourceInfo, error) {
+	if err := c.ensureStarted(ctx); err != nil {
+		return nil, err
+	}
+	result, err := c.session.ListResources(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ResourceInfo, 0, len(result.Resources))
+	for _, r := range result.Resources {
+		out = append(out, ResourceInfo{
+			URI:         r.URI,
+			Name:        r.Name,
+			Description: r.Description,
+			MimeType:    r.MIMEType,
+		})
+	}
+	return out, nil
+}
+
+func (c *sdkClient) ReadResource(ctx context.Context, uri string) (ResourceContent, error) {
+	if err := c.ensureStarted(ctx); err != nil {
+		return ResourceContent{}, err
+	}
+	result, err := c.session.ReadResource(ctx, &mcp.ReadResourceParams{URI: uri})
+	if err != nil {
+		return ResourceContent{}, err
+	}
+	rc := ResourceContent{URI: uri}
+	for _, item := range result.Contents {
+		if item == nil {
+			continue
+		}
+		if rc.URI == "" || rc.URI == uri {
+			rc.URI = item.URI
+		}
+		if item.MIMEType != "" {
+			rc.MimeType = item.MIMEType
+		}
+		if item.Text != "" {
+			if rc.Text == "" {
+				rc.Text = item.Text
+			} else {
+				rc.Text = rc.Text + "\n" + item.Text
+			}
+		}
+	}
+	return rc, nil
+}
+
 func (c *sdkClient) Close() error {
 	c.startMu.Lock()
 	session := c.session

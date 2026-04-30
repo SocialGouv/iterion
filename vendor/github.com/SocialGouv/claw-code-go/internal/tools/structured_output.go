@@ -8,11 +8,20 @@ import (
 
 func StructuredOutputTool() api.Tool {
 	return api.Tool{
-		Name:        "structured_output",
-		Description: "Return structured data as the final output. The input is echoed back as-is. Payload must not be empty.",
+		Name: "structured_output",
+		Description: "Return structured data as the final output. " +
+			"Pass your structured object under the \"payload\" key " +
+			"(e.g. {\"payload\": {\"key\": \"value\"}}); the input is " +
+			"echoed back as-is.",
 		InputSchema: api.InputSchema{
-			Type:       "object",
-			Properties: map[string]api.Property{},
+			Type: "object",
+			Properties: map[string]api.Property{
+				"payload": {
+					Type:        "object",
+					Description: "The structured output object to echo back. Any keys you include will be returned to the caller verbatim.",
+				},
+			},
+			Required: []string{"payload"},
 		},
 	}
 }

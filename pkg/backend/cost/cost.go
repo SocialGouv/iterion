@@ -61,16 +61,16 @@ var modelPriceTable = map[string]modelPricing{
 	// are roughly an order of magnitude cheaper. Numbers below are best
 	// effort against the known list; refresh against the OpenAI pricing
 	// page when a new tier ships.
-	"gpt-5":         {1.25, 10.00},
-	"gpt-5-mini":    {0.25, 2.00},
-	"gpt-5.4":       {1.50, 12.00},
-	"gpt-5.4-pro":   {3.00, 25.00},
-	"gpt-5.4-mini":  {0.30, 2.40},
-	"gpt-5.4-nano":  {0.15, 1.20},
-	"gpt-5.5":       {2.00, 15.00},
-	"gpt-5.5-pro":   {4.00, 30.00},
-	"gpt-4o":        {2.50, 10.00},
-	"gpt-4o-mini":   {0.15, 0.60},
+	"gpt-5":        {1.25, 10.00},
+	"gpt-5-mini":   {0.25, 2.00},
+	"gpt-5.4":      {1.50, 12.00},
+	"gpt-5.4-pro":  {3.00, 25.00},
+	"gpt-5.4-mini": {0.30, 2.40},
+	"gpt-5.4-nano": {0.15, 1.20},
+	"gpt-5.5":      {2.00, 15.00},
+	"gpt-5.5-pro":  {4.00, 30.00},
+	"gpt-4o":       {2.50, 10.00},
+	"gpt-4o-mini":  {0.15, 0.60},
 }
 
 // EstimateUSD returns a rough cost estimate for the given token usage on
