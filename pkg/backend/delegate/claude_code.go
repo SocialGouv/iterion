@@ -28,6 +28,18 @@ const askUserMCPToolName = "mcp__iterion__ask_user"
 // server exposing only the ask_user tool. See cmd/iterion/mcp_ask_user.go.
 const askUserMCPSubcommand = "__mcp-ask-user"
 
+// defaultClaudeCodeModel is the model iterion forces on the claude_code
+// backend when the workflow doesn't specify one. Mirrors the official
+// Claude Code CLI default — Opus 4.7 (1M context window). Workflows can
+// always override via the node's `model:` field.
+const defaultClaudeCodeModel = "claude-opus-4-7"
+
+// defaultClaudeCodeEffort is the reasoning effort iterion forces on the
+// claude_code backend when the workflow doesn't specify one. Mirrors the
+// official Claude Code CLI default ("extra_high" thinking budget for
+// Opus). Workflows can always override via `reasoning_effort:`.
+const defaultClaudeCodeEffort = "extra_high"
+
 // ClaudeCodeBackend delegates work to the `claude` CLI (claude-code)
 // via the Claude Agent SDK.
 type ClaudeCodeBackend struct {
@@ -66,17 +78,21 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 	// --print mode. The SDK always uses stream-json, so we must enable verbose.
 	opts = append(opts, claudesdk.WithVerbose(true))
 
-	if task.Model != "" {
-		opts = append(opts, claudesdk.WithModel(task.Model))
+	model := task.Model
+	if model == "" {
+		model = defaultClaudeCodeModel
 	}
+	opts = append(opts, claudesdk.WithModel(model))
 
 	if b.Command != "" {
 		opts = append(opts, claudesdk.WithCLIPath(b.Command))
 	}
 
-	if task.ReasoningEffort != "" {
-		opts = append(opts, claudesdk.WithEnv("CLAUDE_CODE_EFFORT_LEVEL", task.ReasoningEffort))
+	effort := task.ReasoningEffort
+	if effort == "" {
+		effort = defaultClaudeCodeEffort
 	}
+	opts = append(opts, claudesdk.WithEnv("CLAUDE_CODE_EFFORT_LEVEL", effort))
 
 	if task.SessionID != "" {
 		opts = append(opts, claudesdk.WithResume(task.SessionID))
@@ -316,9 +332,11 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	if task.WorkDir != "" {
 		opts = append(opts, claudesdk.WithCwd(task.WorkDir))
 	}
-	if task.Model != "" {
-		opts = append(opts, claudesdk.WithModel(task.Model))
+	model := task.Model
+	if model == "" {
+		model = defaultClaudeCodeModel
 	}
+	opts = append(opts, claudesdk.WithModel(model))
 	if b.Command != "" {
 		opts = append(opts, claudesdk.WithCLIPath(b.Command))
 	}
