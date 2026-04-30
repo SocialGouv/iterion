@@ -1296,11 +1296,19 @@ func (e *ClawExecutor) executeToolNode(ctx context.Context, node *ir.ToolNode, i
 // template references. Templates are resolved from the node's input map,
 // and the resulting string is executed as a shell command via sh -c.
 func (e *ClawExecutor) executeToolNodeShell(ctx context.Context, node *ir.ToolNode, input map[string]interface{}) (map[string]interface{}, error) {
-	// Resolve template references in the command.
-	resolved := resolveCommandTemplate(node.Command, node.CommandRefs, input, e.vars)
+	// Expand environment variables FIRST, on the author-controlled command
+	// template only. Doing this AFTER resolveCommandTemplate would re-introduce
+	// shell metacharacters into substituted values that shellEscape thought
+	// were inert single-quoted strings — e.g. an upstream-LLM-controlled input
+	// of `$INJECT` would survive shellEscape as `'$INJECT'`, then become
+	// `''; rm -rf ~; ''` if the env had INJECT=`'; rm -rf ~; '`. By expanding
+	// before substitution, only the .iter author's own `$VAR` references in
+	// the static command template are expanded; substituted values stay safely
+	// quoted.
+	expandedCommand := os.ExpandEnv(node.Command)
 
-	// Expand environment variables in the resolved command.
-	resolved = os.ExpandEnv(resolved)
+	// Resolve template references in the (env-expanded) command.
+	resolved := resolveCommandTemplate(expandedCommand, node.CommandRefs, input, e.vars)
 
 	toolName := "shell:" + node.ID
 
@@ -1366,6 +1374,13 @@ func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]int
 
 // shellEscape wraps a value in single quotes, escaping any embedded single
 // quotes. This produces a string safe for interpolation into sh -c commands.
+//
+// SECURITY: the returned string MUST NOT be passed through any further
+// expansion that interprets shell metacharacters (notably os.ExpandEnv,
+// which expands $VAR even inside single quotes from sh's perspective).
+// Any post-escape expansion can re-introduce metacharacters that defeat
+// the quoting and re-open command-injection paths. Apply such expansions
+// to the raw command template BEFORE substitution, never after.
 func shellEscape(s string) string {
 	// Replace each ' with '\'': end current quote, insert escaped quote, reopen quote.
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"

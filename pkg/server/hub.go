@@ -41,10 +41,39 @@ type wsClient struct {
 	send chan []byte
 }
 
-// upgrader accepts all origins — acceptable for a local-only editor server.
-// Restrict CheckOrigin if the server is ever exposed on a network.
+// upgrader for the editor file-event WebSocket. CheckOrigin enforces a
+// loopback origin allowlist injected by the Hub at construction time:
+// without this, any browser tab could open ws://localhost:<port>/api/ws and
+// observe every file change in WorkDir. The previous "return true" was
+// justified as 'acceptable for a local-only editor server' but the threat
+// here is browser-side / drive-by, which a local-only bind does not stop.
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin: func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			// Non-browser caller (curl, websocat without --origin) — allow.
+			// Browsers always send Origin on cross-origin WS handshakes.
+			return true
+		}
+		if currentOriginCheck == nil {
+			// Defensive fallback: refuse rather than re-open the hole if
+			// the Hub forgot to register an origin checker.
+			return false
+		}
+		return currentOriginCheck(origin)
+	},
+}
+
+// currentOriginCheck is set by Server.routes() to the same allowlist used
+// by the HTTP CORS path. Keeping it as a package-level var avoids changing
+// gorilla/websocket's CheckOrigin signature, which can't carry a closure
+// per-Hub instance without forking the upgrader struct per Hub.
+var currentOriginCheck func(origin string) bool
+
+// SetWebSocketOriginCheck registers the origin allowlist function used by
+// the WebSocket upgrader. Called by Server during routes() setup.
+func SetWebSocketOriginCheck(fn func(origin string) bool) {
+	currentOriginCheck = fn
 }
 
 // NewHub creates a new Hub.

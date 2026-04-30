@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -811,5 +812,109 @@ func TestSanitizePathComponent(t *testing.T) {
 		if !tt.ok && err == nil {
 			t.Errorf("sanitize(%q) = nil, want error", tt.input)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Atomic write — torn-write resilience
+// ---------------------------------------------------------------------------
+
+// TestWriteFileAtomic_NoTornWrites verifies the atomic-write helper never
+// leaves a partial run.json visible to readers: the destination either
+// contains the prior valid bytes or the new valid bytes, never a truncated
+// in-between state.
+//
+// Strategy: write a large payload many times in succession; between writes,
+// read the file and ensure it parses as valid JSON. The temp file must never
+// be observed under the destination name.
+func TestWriteFileAtomic_NoTornWrites(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "run.json")
+
+	// First write establishes the file.
+	initial := map[string]any{"version": 0, "payload": "x"}
+	data, _ := json.MarshalIndent(initial, "", "  ")
+	if err := writeFileAtomic(path, data, 0o600); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+
+	// Repeatedly overwrite with progressively larger payloads, reading
+	// between writes to assert the destination is always parseable.
+	for i := 1; i <= 50; i++ {
+		// Build a payload large enough that a torn write would be obvious
+		// (>4KB, exceeds typical page boundary).
+		filler := make([]byte, 4096+i*128)
+		for j := range filler {
+			filler[j] = byte('a' + (j % 26))
+		}
+		next := map[string]any{"version": i, "payload": string(filler)}
+		data, _ := json.MarshalIndent(next, "", "  ")
+		if err := writeFileAtomic(path, data, 0o600); err != nil {
+			t.Fatalf("write iter %d: %v", i, err)
+		}
+
+		// Read back and confirm it's a fully formed JSON object.
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read iter %d: %v", i, err)
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal(got, &parsed); err != nil {
+			t.Fatalf("torn write detected at iter %d: %v\nbytes: %q", i, err, got[:min(64, len(got))])
+		}
+		if v, _ := parsed["version"].(float64); int(v) != i {
+			t.Fatalf("iter %d: read version %v, want %d", i, parsed["version"], i)
+		}
+
+		// The .tmp file must not survive a successful write.
+		if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+			t.Errorf("iter %d: leftover %s.tmp (stat err: %v)", i, path, err)
+		}
+	}
+}
+
+// TestWriteFileAtomic_PreservesPriorOnFailure verifies that if the rename
+// itself never happens (simulated here by checking that the tmp file is the
+// only thing modified during the in-between state), readers continue to see
+// the prior valid contents.
+func TestWriteFileAtomic_PreservesPriorOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "run.json")
+
+	priorPayload := map[string]any{"version": 0, "data": "prior"}
+	data, _ := json.MarshalIndent(priorPayload, "", "  ")
+	if err := writeFileAtomic(path, data, 0o600); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+
+	// Manually create a stale .tmp file (simulates a crash mid-write where
+	// the rename never happened). The next successful write must overwrite
+	// it cleanly, and the destination must still hold the prior payload
+	// in the meantime.
+	if err := os.WriteFile(path+".tmp", []byte("PARTIAL"), 0o600); err != nil {
+		t.Fatalf("seed stale tmp: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(got, &parsed); err != nil {
+		t.Fatalf("destination corrupted by stale tmp: %v", err)
+	}
+	if parsed["data"] != "prior" {
+		t.Errorf("destination = %v, want prior payload", parsed)
+	}
+
+	// A subsequent write should succeed and overwrite the stale tmp.
+	newPayload, _ := json.MarshalIndent(map[string]any{"version": 1, "data": "new"}, "", "  ")
+	if err := writeFileAtomic(path, newPayload, 0o600); err != nil {
+		t.Fatalf("recovery write: %v", err)
+	}
+	got, _ = os.ReadFile(path)
+	_ = json.Unmarshal(got, &parsed)
+	if parsed["data"] != "new" {
+		t.Errorf("after recovery write: data = %v, want new", parsed["data"])
 	}
 }

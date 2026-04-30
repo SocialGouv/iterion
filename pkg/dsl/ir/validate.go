@@ -36,7 +36,7 @@ const (
 	DiagRefNodeNotReachable     DiagCode = "C036" // outputs ref to node not reachable before consumer
 	DiagNodeMaxTokensVsBudget   DiagCode = "C037" // node-level max_tokens exceeds workflow.budget.max_tokens
 	DiagUnsupportedMCPAuth      DiagCode = "C038" // MCP server Auth.Type not supported (only "oauth2" is wired)
-	DiagInvalidCompaction       DiagCode = "C039" // compaction.threshold or compaction.preserve_recent out of range
+	DiagInvalidCompaction       DiagCode = "C043" // compaction.threshold or compaction.preserve_recent out of range
 )
 
 // validate performs static validation on a compiled workflow.

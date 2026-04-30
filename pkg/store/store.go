@@ -26,6 +26,48 @@ const (
 	filePerm os.FileMode = 0o600
 )
 
+// writeFileAtomic writes data to path atomically by first writing to a sibling
+// temp file (path+".tmp"), fsyncing, and then renaming over the destination.
+// On POSIX, rename(2) is atomic for paths on the same filesystem, so a reader
+// observes either the prior contents or the new contents — never a torn write.
+//
+// This matters for run.json (the authoritative resume checkpoint per CLAUDE.md):
+// the prior code path used os.WriteFile, which truncates and then writes; a
+// SIGKILL/OOM/power-loss between truncate and write produced an empty or
+// partial JSON that LoadRun could no longer decode, making the run permanently
+// unresumable.
+//
+// On error, the temp file is best-effort removed so we don't leak it.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	if err != nil {
+		return fmt.Errorf("store: open temp file: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("store: write temp file: %w", err)
+	}
+	// fsync the file contents before rename so the new bytes are durably on
+	// disk; otherwise a crash after rename but before the data block flush
+	// could still surface a zero-length file on recovery.
+	if err := f.Sync(); err != nil {
+		f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("store: sync temp file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("store: close temp file: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("store: rename temp file: %w", err)
+	}
+	return nil
+}
+
 // sanitizePathComponent validates that a path component (RunID, NodeID,
 // InteractionID) does not contain path traversal sequences or separators.
 func sanitizePathComponent(name, component string) error {
@@ -117,7 +159,15 @@ func (s *RunStore) SaveRun(r *Run) error {
 }
 
 // LoadRun reads run.json for the given run ID.
+//
+// The run ID is sanitised before path-joining so a hostile or
+// network-sourced ID cannot escape the store root. The write side
+// (CreateRun/WriteArtifact/WriteInteraction) already sanitises its inputs;
+// the read paths must do the same so the defence is symmetric.
 func (s *RunStore) LoadRun(id string) (*Run, error) {
+	if err := sanitizePathComponent("run ID", id); err != nil {
+		return nil, err
+	}
 	p := s.runJSONPath(id)
 	data, err := os.ReadFile(p)
 	if err != nil {
@@ -279,7 +329,12 @@ func (s *RunStore) AppendEvent(runID string, evt Event) (*Event, error) {
 }
 
 // LoadEvents reads all events for a run in sequence order.
+//
+// runID is sanitised before path-joining (see LoadRun for rationale).
 func (s *RunStore) LoadEvents(runID string) ([]*Event, error) {
+	if err := sanitizePathComponent("run ID", runID); err != nil {
+		return nil, err
+	}
 	p := s.eventsPath(runID)
 	f, err := os.Open(p)
 	if err != nil {
@@ -342,7 +397,7 @@ func (s *RunStore) WriteArtifact(a *Artifact) error {
 	if err != nil {
 		return fmt.Errorf("store: marshal artifact: %w", err)
 	}
-	if err := os.WriteFile(p, data, filePerm); err != nil {
+	if err := writeFileAtomic(p, data, filePerm); err != nil {
 		return err
 	}
 
@@ -450,7 +505,7 @@ func (s *RunStore) WriteInteraction(i *Interaction) error {
 	if err != nil {
 		return fmt.Errorf("store: marshal interaction: %w", err)
 	}
-	return os.WriteFile(p, data, filePerm)
+	return writeFileAtomic(p, data, filePerm)
 }
 
 // LoadInteraction reads a specific interaction by ID.
@@ -474,7 +529,12 @@ func (s *RunStore) LoadInteraction(runID, interactionID string) (*Interaction, e
 }
 
 // ListInteractions returns all interaction IDs for a run.
+//
+// runID is sanitised before path-joining (see LoadRun for rationale).
 func (s *RunStore) ListInteractions(runID string) ([]string, error) {
+	if err := sanitizePathComponent("run ID", runID); err != nil {
+		return nil, err
+	}
 	dir := filepath.Join(s.root, "runs", runID, "interactions")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -511,6 +571,14 @@ func (s *RunStore) eventsPath(runID string) string {
 }
 
 func (s *RunStore) writeRun(r *Run) error {
+	// Defence in depth: every public entry point that mutates a run
+	// (SaveRun, UpdateRunStatus, SaveCheckpoint, PauseRun,
+	// FailRunResumable) flows through here. Sanitise once, here, so
+	// e.g. a Run loaded with a tampered ID can't be re-serialised to a
+	// path outside the store root.
+	if err := sanitizePathComponent("run ID", r.ID); err != nil {
+		return err
+	}
 	dir := s.runDir(r.ID)
 	if err := os.MkdirAll(dir, dirPerm); err != nil {
 		return fmt.Errorf("store: mkdir run: %w", err)
@@ -519,5 +587,7 @@ func (s *RunStore) writeRun(r *Run) error {
 	if err != nil {
 		return fmt.Errorf("store: marshal run: %w", err)
 	}
-	return os.WriteFile(s.runJSONPath(r.ID), data, filePerm)
+	// Atomic write: run.json is the authoritative resume checkpoint
+	// (per CLAUDE.md). A torn write would lose all prior checkpoint state.
+	return writeFileAtomic(s.runJSONPath(r.ID), data, filePerm)
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -712,6 +714,102 @@ func TestExecutorToolNodeShellInjection(t *testing.T) {
 	result, _ := output["result"].(string)
 	if result != malicious {
 		t.Errorf("shell escaping failed: got %q, want literal %q", result, malicious)
+	}
+}
+
+// TestExecutorToolNodeEnvVarInjectionAfterEscape is a regression test for
+// the security bug where os.ExpandEnv was applied AFTER shellEscape, allowing
+// an upstream-controlled input value of `$VAR` to be expanded into shell
+// metacharacters that escaped from the protective single quotes. With the
+// fix, ExpandEnv runs on the author's command template only; substituted
+// values containing `$VAR` are quoted as the literal string `$VAR`.
+func TestExecutorToolNodeEnvVarInjectionAfterEscape(t *testing.T) {
+	// The "attacker" sets an env var whose value contains shell
+	// metacharacters that, if interpreted, would close the protective
+	// single quotes and execute an arbitrary command (here: write a
+	// sentinel file we can later check for absence).
+	sentinel := filepath.Join(t.TempDir(), "pwned")
+	t.Setenv("ITERION_TEST_INJECT", "'; touch "+sentinel+"; echo '")
+
+	reg := NewRegistry()
+	wf := &ir.Workflow{
+		Prompts: map[string]*ir.Prompt{},
+		Schemas: map[string]*ir.Schema{},
+	}
+	exec := newTestClawExecutor(reg, wf)
+
+	refs, err := ir.ParseRefs("echo {{input.msg}}")
+	if err != nil {
+		t.Fatalf("ParseRefs: %v", err)
+	}
+	node := &ir.ToolNode{
+		BaseNode:    ir.BaseNode{ID: "inject_env_tool"},
+		Command:     "echo {{input.msg}}",
+		CommandRefs: refs,
+	}
+
+	// The upstream value is the literal string `$ITERION_TEST_INJECT`.
+	// Pre-fix, this would survive shellEscape as `'$ITERION_TEST_INJECT'`,
+	// then ExpandEnv would substitute the env value, producing
+	// `''; touch <sentinel>; echo ''` which sh would interpret as three
+	// commands: an empty string, a `touch`, and another empty string.
+	payload := "$ITERION_TEST_INJECT"
+	output, err := exec.Execute(context.Background(), node, map[string]interface{}{
+		"msg": payload,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// 1. The sentinel file must NOT exist — the touch payload was neutralized.
+	if _, statErr := os.Stat(sentinel); !os.IsNotExist(statErr) {
+		t.Fatalf("SECURITY REGRESSION: sentinel file %q exists, payload was executed (stat err: %v)", sentinel, statErr)
+	}
+
+	// 2. The echo output should be the LITERAL `$ITERION_TEST_INJECT` string,
+	//    proving that the env var was not expanded inside the substituted value.
+	result, _ := output["result"].(string)
+	if result != payload {
+		t.Errorf("env var was expanded inside escaped substitution: got %q, want literal %q", result, payload)
+	}
+}
+
+// TestExecutorToolNodeEnvVarInTemplateStillExpands ensures the legitimate
+// use case (env vars in the author's command template) still works after
+// the ExpandEnv re-ordering. Workflows like rust_to_go_port.iter rely on
+// `export PATH=...:$PATH && cd {{input.dir}} && go build` — the $PATH in
+// the static template must still be expanded.
+func TestExecutorToolNodeEnvVarInTemplateStillExpands(t *testing.T) {
+	t.Setenv("ITERION_TEST_TEMPLATE_VAR", "from_env")
+
+	reg := NewRegistry()
+	wf := &ir.Workflow{
+		Prompts: map[string]*ir.Prompt{},
+		Schemas: map[string]*ir.Schema{},
+	}
+	exec := newTestClawExecutor(reg, wf)
+
+	refs, err := ir.ParseRefs("echo $ITERION_TEST_TEMPLATE_VAR {{input.suffix}}")
+	if err != nil {
+		t.Fatalf("ParseRefs: %v", err)
+	}
+	node := &ir.ToolNode{
+		BaseNode:    ir.BaseNode{ID: "tmpl_env_tool"},
+		Command:     "echo $ITERION_TEST_TEMPLATE_VAR {{input.suffix}}",
+		CommandRefs: refs,
+	}
+
+	output, err := exec.Execute(context.Background(), node, map[string]interface{}{
+		"suffix": "tail",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, _ := output["result"].(string)
+	want := "from_env tail"
+	if got != want {
+		t.Errorf("template env-var expansion regressed: got %q, want %q", got, want)
 	}
 }
 

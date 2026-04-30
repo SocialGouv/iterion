@@ -30,6 +30,8 @@ const (
 	DiagCodexDiscouraged      DiagCode = "C030" // codex backend is supported but discouraged
 	DiagComputeNoExpr         DiagCode = "C039" // compute node has no expressions
 	DiagBadExpr               DiagCode = "C040" // expression failed to parse
+	DiagDuplicateNodeID       DiagCode = "C041" // two declarations share a node ID
+	DiagReservedNodeName      DiagCode = "C042" // user node uses reserved name (done/fail)
 )
 
 // codexBackendName is the literal value of the discouraged backend.
@@ -182,6 +184,77 @@ func (c *compiler) warnCodexDiscouraged(kind, name, backend string) {
 		kind, name)
 }
 
+// validateNodeNames enforces two cross-kind invariants on the AST node
+// declarations BEFORE c.nodes is populated:
+//
+//  1. No user-declared node may use a reserved name ("done" / "fail").
+//     Without this guard a JSON workflow declaring e.g. `agent done:`
+//     would be silently replaced by the implicit DoneNode added later
+//     in compile() — a different node kind with different semantics
+//     than what was authored or reviewed.
+//
+//  2. Two declarations must not share an ID, whether within the same
+//     kind or across kinds. The IR stores nodes in a single
+//     map[string]Node so duplicates are last-wins; a second `agent foo`
+//     would silently shadow the first with no diagnostic. Validation
+//     would then run only against the survivor, which is the precise
+//     trust-boundary hole an attacker can use to slip an unaudited
+//     agent past a review pipeline that only inspects the first
+//     occurrence.
+//
+// The parser already rejects reserved names for prompts/schemas/agents/
+// judges/computes, but NOT for routers/humans/tools, AND the JSON AST
+// path bypasses the parser entirely. Centralising the check here means
+// both source paths (DSL and JSON) fail closed.
+func (c *compiler) validateNodeNames() {
+	type decl struct {
+		kind string
+		name string
+	}
+	all := make([]decl, 0,
+		len(c.file.Agents)+len(c.file.Judges)+len(c.file.Routers)+
+			len(c.file.Humans)+len(c.file.Tools)+len(c.file.Computes))
+	for _, d := range c.file.Agents {
+		all = append(all, decl{"agent", d.Name})
+	}
+	for _, d := range c.file.Judges {
+		all = append(all, decl{"judge", d.Name})
+	}
+	for _, d := range c.file.Routers {
+		all = append(all, decl{"router", d.Name})
+	}
+	for _, d := range c.file.Humans {
+		all = append(all, decl{"human", d.Name})
+	}
+	for _, d := range c.file.Tools {
+		all = append(all, decl{"tool", d.Name})
+	}
+	for _, d := range c.file.Computes {
+		all = append(all, decl{"compute", d.Name})
+	}
+
+	seen := make(map[string]string, len(all)) // name → first kind to claim it
+	for _, d := range all {
+		if d.name == "" {
+			// The parser already emits a positional error; skip.
+			continue
+		}
+		if ast.ReservedTargets[d.name] {
+			c.errorfAt(DiagReservedNodeName, d.name, "",
+				"%s %q uses reserved name %q: 'done' and 'fail' are implicit terminal nodes and cannot be declared",
+				d.kind, d.name, d.name)
+			continue
+		}
+		if firstKind, dup := seen[d.name]; dup {
+			c.errorfAt(DiagDuplicateNodeID, d.name, "",
+				"duplicate node ID %q: already declared as %s, redeclared as %s — node IDs must be unique across all kinds",
+				d.name, firstKind, d.kind)
+			continue
+		}
+		seen[d.name] = d.kind
+	}
+}
+
 // Compile transforms an AST File into a canonical IR Workflow.
 // In V1, exactly one workflow per file is supported.
 func Compile(file *ast.File) *CompileResult {
@@ -214,6 +287,29 @@ func (c *compiler) compile() *Workflow {
 	c.compileSchemas()
 	c.compilePrompts()
 
+	// Cross-kind node-name validation, run BEFORE the per-kind compile
+	// passes that populate c.nodes. The parser already rejects reserved
+	// names for prompts/schemas/agents/judges/computes — but NOT for
+	// routers/humans/tools, and the JSON AST entry point (jsonenc.go
+	// UnmarshalFile) bypasses the parser entirely. The compiler is the
+	// single convergence point for both source paths, so we enforce two
+	// invariants here:
+	//
+	//   1. No user node may be named "done" or "fail" (those slots are
+	//      reserved for the implicit terminal nodes added below). Without
+	//      this guard a hostile JSON workflow can declare e.g.
+	//      `agent done:` with elevated tools, then have it silently
+	//      shadowed by the DoneNode written at l.226-227 — but only AFTER
+	//      validation has run against the user node, so the diagnostic
+	//      would be wrong.
+	//   2. Two declarations must not share a node ID across (or within)
+	//      kinds. Last-wins semantics on the c.nodes map means a second
+	//      `agent foo` block silently shadows the first; downstream
+	//      validation runs only against the surviving node, which is
+	//      exactly the trust-boundary hole an attacker can use to slip
+	//      a tool-using agent past review.
+	c.validateNodeNames()
+
 	// Compile nodes from all node declarations.
 	c.compileAgents()
 	c.compileJudges()
@@ -222,7 +318,8 @@ func (c *compiler) compile() *Workflow {
 	c.compileTools()
 	c.compileComputes()
 
-	// Add terminal nodes.
+	// Add terminal nodes. Safe by construction now: validateNodeNames
+	// above rejects any user node named "done"/"fail" before this point.
 	c.nodes["done"] = &DoneNode{BaseNode: BaseNode{ID: "done"}}
 	c.nodes["fail"] = &FailNode{BaseNode: BaseNode{ID: "fail"}}
 
@@ -416,6 +513,17 @@ func (c *compiler) compilePrompts() {
 
 func (c *compiler) compileAgents() {
 	for _, a := range c.file.Agents {
+		// First-wins on duplicate node IDs (validateNodeNames already
+		// emitted the diagnostic). Skipping here keeps validation
+		// running against the FIRST declaration — the one that survives
+		// upstream review pipelines — instead of letting a later
+		// duplicate silently shadow it.
+		if _, exists := c.nodes[a.Name]; exists {
+			continue
+		}
+		if ast.ReservedTargets[a.Name] {
+			continue
+		}
 		c.validateSchemaRef(a.Name, "input", a.Input)
 		c.validateSchemaRef(a.Name, "output", a.Output)
 		c.validatePromptRef(a.Name, "system", a.System)
@@ -470,6 +578,12 @@ func (c *compiler) compileAgents() {
 
 func (c *compiler) compileJudges() {
 	for _, j := range c.file.Judges {
+		if _, exists := c.nodes[j.Name]; exists {
+			continue
+		}
+		if ast.ReservedTargets[j.Name] {
+			continue
+		}
 		c.validateSchemaRef(j.Name, "input", j.Input)
 		c.validateSchemaRef(j.Name, "output", j.Output)
 		c.validatePromptRef(j.Name, "system", j.System)
@@ -524,6 +638,12 @@ func (c *compiler) compileJudges() {
 
 func (c *compiler) compileRouters() {
 	for _, r := range c.file.Routers {
+		if _, exists := c.nodes[r.Name]; exists {
+			continue
+		}
+		if ast.ReservedTargets[r.Name] {
+			continue
+		}
 		mode := r.Mode
 		node := &RouterNode{
 			BaseNode:   BaseNode{ID: r.Name},
@@ -574,6 +694,12 @@ func (c *compiler) compileRouters() {
 
 func (c *compiler) compileHumans() {
 	for _, h := range c.file.Humans {
+		if _, exists := c.nodes[h.Name]; exists {
+			continue
+		}
+		if ast.ReservedTargets[h.Name] {
+			continue
+		}
 		c.validateSchemaRef(h.Name, "input", h.Input)
 		c.validateSchemaRef(h.Name, "output", h.Output)
 		c.validatePromptRef(h.Name, "instructions", h.Instructions)
@@ -638,6 +764,12 @@ func (c *compiler) compileHumans() {
 
 func (c *compiler) compileTools() {
 	for _, t := range c.file.Tools {
+		if _, exists := c.nodes[t.Name]; exists {
+			continue
+		}
+		if ast.ReservedTargets[t.Name] {
+			continue
+		}
 		c.validateSchemaRef(t.Name, "output", t.Output)
 		if t.Input != "" {
 			c.validateSchemaRef(t.Name, "input", t.Input)
@@ -669,6 +801,12 @@ func (c *compiler) compileTools() {
 
 func (c *compiler) compileComputes() {
 	for _, cd := range c.file.Computes {
+		if _, exists := c.nodes[cd.Name]; exists {
+			continue
+		}
+		if ast.ReservedTargets[cd.Name] {
+			continue
+		}
 		c.validateSchemaRef(cd.Name, "output", cd.Output)
 		if cd.Input != "" {
 			c.validateSchemaRef(cd.Name, "input", cd.Input)

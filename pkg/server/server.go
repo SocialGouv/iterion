@@ -63,6 +63,9 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 			go s.watcher.Start()
 		}
 	}
+	// Wire the same Origin allowlist used for HTTP CORS into the WebSocket
+	// upgrader so cross-origin browser tabs can't subscribe to file events.
+	SetWebSocketOriginCheck(s.isAllowedOrigin)
 	s.routes()
 	s.server = &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
@@ -92,9 +95,23 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) routes() {
-	// CORS preflight handler
-	s.mux.HandleFunc("OPTIONS /api/", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+	// CORS preflight handler — only echoes ACAO when the Origin is an
+	// allowed loopback origin. The wildcard ACAO previously emitted here
+	// (combined with POST /api/files/save accepting JSON bodies) allowed
+	// any browser tab the user visited to write attacker-controlled .iter
+	// files into WorkDir, which iterion would then execute under `sh -c`
+	// the next time the user ran the workflow — drive-by RCE on the dev
+	// machine. The 'local-only server' framing didn't address this because
+	// the threat is browser-side, not network-side.
+	s.mux.HandleFunc("OPTIONS /api/", func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if !s.isAllowedOrigin(origin) {
+			// No ACAO header → browser blocks the cross-origin request.
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Vary", "Origin")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		w.WriteHeader(http.StatusNoContent)
@@ -384,18 +401,91 @@ func readJSON(r *http.Request, v interface{}) error {
 	return json.Unmarshal(body, v)
 }
 
+// IsAllowedOrigin reports whether the given Origin header value matches the
+// loopback set the editor server accepts. It is exposed as a method so test
+// code (and a future config flag) can extend the allowlist without rewriting
+// every handler. Empty Origin (same-origin request, curl, etc.) is allowed
+// because the browser CORS layer is not involved in that case.
+func (s *Server) isAllowedOrigin(origin string) bool {
+	if origin == "" {
+		return true
+	}
+	for _, allowed := range s.allowedOrigins() {
+		if origin == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) allowedOrigins() []string {
+	return []string{
+		fmt.Sprintf("http://localhost:%d", s.cfg.Port),
+		fmt.Sprintf("http://127.0.0.1:%d", s.cfg.Port),
+		fmt.Sprintf("http://[::1]:%d", s.cfg.Port),
+	}
+}
+
+// reflectAllowedOrigin sets ACAO to the request's Origin if (and only if) it
+// is in the allowlist. Callers should always set Vary: Origin so caches don't
+// poison the response across origins.
+func (s *Server) reflectAllowedOrigin(w http.ResponseWriter, r *http.Request) {
+	origin := r.Header.Get("Origin")
+	if origin != "" && s.isAllowedOrigin(origin) {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Vary", "Origin")
+	}
+}
+
 func writeJSON(w http.ResponseWriter, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// writeJSONFor is the request-aware variant of writeJSON: it also reflects an
+// allowlisted Origin header so legitimate browser callers receive ACAO.
+func (s *Server) writeJSONFor(w http.ResponseWriter, r *http.Request, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	s.reflectAllowedOrigin(w, r)
 	_ = json.NewEncoder(w).Encode(v)
 }
 
 func httpError(w http.ResponseWriter, code int, format string, args ...interface{}) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(code)
 	msg := fmt.Sprintf(format, args...)
 	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// httpErrorFor is the request-aware variant: reflects allowlisted Origin so
+// browser code can read the error body when same-origin or loopback.
+func (s *Server) httpErrorFor(w http.ResponseWriter, r *http.Request, code int, format string, args ...interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	s.reflectAllowedOrigin(w, r)
+	w.WriteHeader(code)
+	msg := fmt.Sprintf(format, args...)
+	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// requireSafeOrigin gates state-changing endpoints. Any request whose Origin
+// header is set and not in the allowlist is rejected with 403 BEFORE the
+// handler runs — preventing a malicious page in another tab from POSTing
+// into the local editor's filesystem-write endpoints. Same-origin and
+// non-browser callers (no Origin header) pass through.
+func (s *Server) requireSafeOrigin(w http.ResponseWriter, r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	if s.isAllowedOrigin(origin) {
+		return true
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusForbidden)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error": "cross-origin request rejected: editor only accepts loopback origins",
+	})
+	return false
 }
 
 // safePath resolves relPath against WorkDir and ensures the result stays within WorkDir.
@@ -451,6 +541,9 @@ func (s *Server) handleListFiles(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSafeOrigin(w, r) {
+		return
+	}
 	var req openFileRequest
 	if err := readJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, "invalid request: %v", err)
@@ -494,6 +587,9 @@ func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSaveFile(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSafeOrigin(w, r) {
+		return
+	}
 	var req saveFileRequest
 	if err := readJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, "invalid request: %v", err)

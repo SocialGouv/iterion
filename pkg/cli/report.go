@@ -35,6 +35,8 @@ func RunReport(opts ReportOptions, p *Printer) error {
 		return fmt.Errorf("--run-id is required")
 	}
 
+	// LoadRun / LoadEvents now sanitise the run ID, so any traversal
+	// attempt (e.g. "../etc/cron.d") fails closed before touching the FS.
 	r, err := s.LoadRun(opts.RunID)
 	if err != nil {
 		return fmt.Errorf("cannot load run: %w", err)

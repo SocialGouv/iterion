@@ -336,10 +336,24 @@ func (p *parser) parseLiteral() *ast.Literal {
 	case TokenString:
 		return &ast.Literal{Kind: ast.LitString, Raw: `"` + t.Value + `"`, StrVal: t.Value}
 	case TokenInt:
-		v, _ := strconv.ParseInt(t.Value, 10, 64)
+		// Check the strconv error explicitly: out-of-range integer
+		// literals would otherwise silently clamp to math.MaxInt64 /
+		// math.MinInt64 and propagate as legitimate values into vars
+		// defaults, budget literals, loop iteration counts, etc.,
+		// producing data corruption from authored input.
+		v, err := strconv.ParseInt(t.Value, 10, 64)
+		if err != nil {
+			p.addError(DiagInvalidValue, t, "invalid integer literal '"+t.Value+"': "+err.Error())
+		}
 		return &ast.Literal{Kind: ast.LitInt, Raw: t.Value, IntVal: v}
 	case TokenFloat:
-		v, _ := strconv.ParseFloat(t.Value, 64)
+		// Out-of-range float literals would silently become +Inf/-Inf
+		// without this error check — a value that round-trips through
+		// JSON as `null` and breaks downstream comparisons and budgets.
+		v, err := strconv.ParseFloat(t.Value, 64)
+		if err != nil {
+			p.addError(DiagInvalidValue, t, "invalid float literal '"+t.Value+"': "+err.Error())
+		}
 		return &ast.Literal{Kind: ast.LitFloat, Raw: t.Value, FloatVal: v}
 	case TokenTrue:
 		return &ast.Literal{Kind: ast.LitBool, Raw: "true", BoolVal: true}
