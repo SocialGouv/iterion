@@ -15,6 +15,6 @@
     "HOST_WORKSPACE": "${localWorkspaceFolder}"
   },
   "initializeCommand": "mkdir -p ${localEnv:HOME}/.claude",
-  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y jq ripgrep fd-find bat tree htop && sudo ln -sf /usr/bin/fdfind /usr/local/bin/fd 2>/dev/null || true; sudo ln -sf /usr/bin/batcat /usr/local/bin/bat 2>/dev/null || true; devbox install && npm install -g @anthropic-ai/claude-code && HOST_KEY=$(echo \"$HOST_WORKSPACE\" | tr '/' '-'); CONTAINER_KEY=$(echo \"$PWD\" | tr '/' '-'); if [ \"$HOST_KEY\" != \"$CONTAINER_KEY\" ] && [ -d \"$HOME/.claude/projects/$HOST_KEY\" ]; then ln -sfn \"$HOME/.claude/projects/$HOST_KEY\" \"$HOME/.claude/projects/$CONTAINER_KEY\"; fi",
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y jq yq ripgrep fd-find bat tree htop file xxd bsdmainutils gh git-delta xmlstarlet && sudo ln -sf /usr/bin/fdfind /usr/local/bin/fd 2>/dev/null || true; sudo ln -sf /usr/bin/batcat /usr/local/bin/bat 2>/dev/null || true; devbox install && npm install -g @anthropic-ai/claude-code @mermaid-js/mermaid-cli && HOST_KEY=$(echo \"$HOST_WORKSPACE\" | tr '/' '-'); CONTAINER_KEY=$(echo \"$PWD\" | tr '/' '-'); if [ \"$HOST_KEY\" != \"$CONTAINER_KEY\" ] && [ -d \"$HOME/.claude/projects/$HOST_KEY\" ]; then ln -sfn \"$HOME/.claude/projects/$HOST_KEY\" \"$HOME/.claude/projects/$CONTAINER_KEY\"; fi",
   "remoteUser": "devbox"
 }

@@ -1,6 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/main/.schema/devbox.schema.json",
   "packages": [
+    "delve@latest",
     "go@1.23",
     "go-task@latest",
     "nodejs_22@latest",
