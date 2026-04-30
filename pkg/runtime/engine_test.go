@@ -1771,6 +1771,46 @@ func TestInteractionAskUserPersistsConversation(t *testing.T) {
 	}
 }
 
+// TestInteractionDepthGuardFailsRunaway verifies the maxInteractionDepth
+// guard: a run whose initial dispatch already exceeds the cap is failed
+// with a structured checkpoint rather than recursing further. The guard
+// is the first thing handleNeedsInteraction does, so it fires regardless
+// of the executor type — calling it directly with depth > max is enough
+// to exercise the path.
+func TestInteractionDepthGuardFailsRunaway(t *testing.T) {
+	wf := interactionWorkflow(ir.InteractionHuman)
+	exec := newStubExecutor()
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	// Bootstrap a runState the same way Run() would so failRunWithCheckpoint
+	// has a coherent state to persist. The store needs the run to exist.
+	if _, err := s.CreateRun("run-depth-guard", wf.Name, nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	rs := eng.newRunState("run-depth-guard", nil)
+	rs.vars = map[string]interface{}{}
+
+	node := wf.Nodes["worker"]
+	ni := &model.ErrNeedsInteraction{NodeID: "worker", Questions: map[string]interface{}{"q": "?"}}
+
+	err := eng.handleNeedsInteraction(context.Background(), rs, "worker", node, ni, maxInteractionDepth+1)
+	if err == nil {
+		t.Fatal("expected non-nil error when depth exceeds maxInteractionDepth")
+	}
+	if !strings.Contains(err.Error(), "interaction recursion depth") {
+		t.Errorf("error should mention recursion depth, got: %v", err)
+	}
+
+	r, loadErr := s.LoadRun("run-depth-guard")
+	if loadErr != nil {
+		t.Fatalf("LoadRun: %v", loadErr)
+	}
+	if r.Status != store.RunStatusFailedResumable {
+		t.Errorf("expected failed_resumable, got %s", r.Status)
+	}
+}
+
 // sameJSON returns true when two JSON byte slices encode the same value
 // regardless of whitespace formatting (run.json round-trips through
 // MarshalIndent on disk).

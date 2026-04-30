@@ -361,7 +361,7 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 			// Check if the delegate needs user interaction.
 			var needsInput *model.ErrNeedsInteraction
 			if errors.As(err, &needsInput) {
-				return e.handleNeedsInteraction(ctx, rs, currentNodeID, node, needsInput)
+				return e.handleNeedsInteraction(ctx, rs, currentNodeID, node, needsInput, 0)
 			}
 			// Recovery dispatch (when wired via WithRecoveryDispatch):
 			// classify the error, look up a recipe, and either retry,

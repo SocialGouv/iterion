@@ -169,6 +169,15 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 		roundRobinCounters = make(map[string]int)
 	}
 
+	// rs.outputs and rs.vars alias cp.Outputs and cp.Vars by reference,
+	// matching how buildCheckpoint assembles them (no copies on save
+	// either). Subsequent runtime mutations therefore land in both —
+	// fine because runState is single-goroutine-owned and the next
+	// SaveCheckpoint emits exactly the post-resume snapshot we want
+	// (a deep copy here would just churn allocator memory without
+	// changing observable behaviour). DO NOT introduce a parallel
+	// reader of cp.Outputs / cp.Vars after this point — if you need
+	// the pre-resume state, snapshot it before the alias.
 	rs := e.newRunState(runID, r.Inputs)
 	rs.vars = cp.Vars
 	rs.outputs = outputs
@@ -198,7 +207,7 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 			Conversation:     cp.BackendConversation,
 			PendingToolUseID: cp.BackendPendingToolUseID,
 		}
-		loopErr := e.reInvokeBackend(ctx, rs, humanNodeID, node, ni, answers)
+		loopErr := e.reInvokeBackend(ctx, rs, humanNodeID, node, ni, answers, 0)
 		e.evictRunSessions(runID, loopErr)
 		return loopErr
 	}
@@ -388,21 +397,39 @@ func (e *Engine) persistPause(rs *runState, nodeID string) error {
 // Delegate interaction handling
 // ---------------------------------------------------------------------------
 
+// maxInteractionDepth caps the number of consecutive interaction
+// auto-responses for a single node within one run. Each ErrNeedsInteraction
+// → handleNeedsInteraction → reInvokeBackend cycle increments depth; the
+// guard fires before reaching the budget/iteration limits, surfacing a
+// clear error rather than silently grinding on a runaway LLM that keeps
+// re-asking. 5 is generous for legitimate multi-turn dialogues — most
+// real interactions resolve in 1–2 rounds.
+const maxInteractionDepth = 5
+
 // handleNeedsInteraction is called when a delegate or LLM signals it needs
 // user input. The behavior depends on the node's InteractionMode:
 //   - InteractionHuman: pause the workflow for human input
 //   - InteractionLLM: auto-respond using the interaction model
 //   - InteractionLLMOrHuman: LLM decides whether to respond or escalate
-func (e *Engine) handleNeedsInteraction(ctx context.Context, rs *runState, nodeID string, node ir.Node, ni *model.ErrNeedsInteraction) error {
+//
+// depth tracks the number of consecutive auto-respond cycles for the
+// current node. External callers pass 0; the recursive callsite in
+// reInvokeBackend forwards depth+1.
+func (e *Engine) handleNeedsInteraction(ctx context.Context, rs *runState, nodeID string, node ir.Node, ni *model.ErrNeedsInteraction, depth int) error {
+	if depth > maxInteractionDepth {
+		return e.failRunWithCheckpoint(rs, nodeID, fmt.Sprintf(
+			"node %q exceeded interaction recursion depth (%d > %d) — backend kept escalating without converging",
+			nodeID, depth, maxInteractionDepth))
+	}
 	switch nodeInteraction(node) {
 	case ir.InteractionHuman:
 		return e.pauseForBackendInteraction(rs, nodeID, ni)
 
 	case ir.InteractionLLM:
-		return e.handleInteractionLLM(ctx, rs, nodeID, node, ni)
+		return e.handleInteractionLLM(ctx, rs, nodeID, node, ni, depth)
 
 	case ir.InteractionLLMOrHuman:
-		return e.handleInteractionLLMOrHuman(ctx, rs, nodeID, node, ni)
+		return e.handleInteractionLLMOrHuman(ctx, rs, nodeID, node, ni, depth)
 
 	default:
 		// InteractionNone should not reach here (executor wouldn't return ErrNeedsInteraction).
@@ -412,7 +439,7 @@ func (e *Engine) handleNeedsInteraction(ctx context.Context, rs *runState, nodeI
 
 // handleInteractionLLM invokes the interaction model to auto-respond to the
 // delegate's questions, then re-invokes the backend with the answers.
-func (e *Engine) handleInteractionLLM(ctx context.Context, rs *runState, nodeID string, node ir.Node, ni *model.ErrNeedsInteraction) error {
+func (e *Engine) handleInteractionLLM(ctx context.Context, rs *runState, nodeID string, node ir.Node, ni *model.ErrNeedsInteraction, depth int) error {
 	clawExec, ok := e.executor.(*model.ClawExecutor)
 	if !ok {
 		// Fallback to pause if executor doesn't support interaction LLM.
@@ -427,13 +454,13 @@ func (e *Engine) handleInteractionLLM(ctx context.Context, rs *runState, nodeID 
 	}
 
 	// Re-invoke the backend with the LLM-generated answers.
-	return e.reInvokeBackend(ctx, rs, nodeID, node, ni, answers)
+	return e.reInvokeBackend(ctx, rs, nodeID, node, ni, answers, depth)
 }
 
 // handleInteractionLLMOrHuman invokes the interaction model to decide whether
 // to auto-respond or escalate to a human. If the LLM sets needs_human_input=true,
 // the run is paused for human input.
-func (e *Engine) handleInteractionLLMOrHuman(ctx context.Context, rs *runState, nodeID string, node ir.Node, ni *model.ErrNeedsInteraction) error {
+func (e *Engine) handleInteractionLLMOrHuman(ctx context.Context, rs *runState, nodeID string, node ir.Node, ni *model.ErrNeedsInteraction, depth int) error {
 	clawExec, ok := e.executor.(*model.ClawExecutor)
 	if !ok {
 		return e.pauseForBackendInteraction(rs, nodeID, ni)
@@ -452,7 +479,7 @@ func (e *Engine) handleInteractionLLMOrHuman(ctx context.Context, rs *runState, 
 	}
 
 	// LLM auto-responded — re-invoke the backend.
-	return e.reInvokeBackend(ctx, rs, nodeID, node, ni, answers)
+	return e.reInvokeBackend(ctx, rs, nodeID, node, ni, answers, depth)
 }
 
 // reInvokeBackend re-invokes the delegate backend with the LLM-provided
@@ -464,7 +491,7 @@ func (e *Engine) handleInteractionLLMOrHuman(ctx context.Context, rs *runState, 
 // prepend a "[PRIOR INTERACTION]" block to the user prompt — without
 // this, claw's stateless re-invocation would lose the question and the
 // LLM might call ask_user with the same question again.
-func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID string, node ir.Node, ni *model.ErrNeedsInteraction, answers map[string]interface{}) error {
+func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID string, node ir.Node, ni *model.ErrNeedsInteraction, answers map[string]interface{}, depth int) error {
 	// Build the input for re-invocation: original node input + answers.
 	nodeInput := e.buildNodeInputRS(nodeID, rs.vars, rs.outputs, rs.runInputs, rs.artifacts, rs)
 	for k, v := range answers {
@@ -494,10 +521,13 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 	// delegate re-invocation if the backend supports it.
 	output, err := e.executor.Execute(ctx, node, nodeInput)
 	if err != nil {
-		// Check for another interaction request (recursive).
+		// Check for another interaction request (recursive). depth+1
+		// so the maxInteractionDepth guard in handleNeedsInteraction
+		// fires before a runaway LLM chains escalations to budget
+		// exhaustion.
 		var needsInput *model.ErrNeedsInteraction
 		if errors.As(err, &needsInput) {
-			return e.handleNeedsInteraction(ctx, rs, nodeID, node, needsInput)
+			return e.handleNeedsInteraction(ctx, rs, nodeID, node, needsInput, depth+1)
 		}
 		return e.failRunWithCheckpoint(rs, nodeID,
 			fmt.Sprintf("node %q re-invocation failed: %v", nodeID, err))
