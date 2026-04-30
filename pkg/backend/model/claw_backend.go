@@ -305,51 +305,61 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	text := strings.TrimSpace(result.Text)
 	text = extractJSON(text)
 
-	if text == "" {
-		// Tool loop ended without a final text response — typical when
-		// the model exhausted MaxSteps or kept stalling on tool calls.
-		// Issue a recovery pass that mirrors claude_code's two-pass
-		// formatting: same conversation history, NO tools, schema
-		// enforced via GenerateObjectDirect. The model is now obliged
-		// to produce structured output on its next turn.
-		recoveryOpts := opts
-		recoveryOpts.Messages = result.Messages
-		recoveryOpts.Tools = nil
-		recoveryOpts.MaxSteps = 1
-		recoveryOpts.ExplicitSchema = task.OutputSchema
-
-		obj, recErr := GenerateObjectDirect[map[string]interface{}](ctx, client, recoveryOpts)
-		if recErr == nil && obj != nil && obj.Object != nil {
-			tokens := cost.Annotate(obj.Object, task.Model,
-				result.TotalUsage.InputTokens+obj.TotalUsage.InputTokens,
-				result.TotalUsage.OutputTokens+obj.TotalUsage.OutputTokens)
+	// Try the cheap path first: parse the tool-loop's final text as JSON.
+	// If the model already committed to structured output, we're done.
+	if text != "" {
+		var output map[string]interface{}
+		if err := json.Unmarshal([]byte(text), &output); err == nil {
+			tokens := cost.Annotate(output, task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
 			return delegate.Result{
-				Output:             obj.Object,
-				Tokens:             tokens,
-				BackendName:        delegate.BackendClaw,
-				FormattingPassUsed: true,
+				Output:      output,
+				Tokens:      tokens,
+				BackendName: delegate.BackendClaw,
 			}, nil
 		}
+	}
 
+	// Recovery pass — fires when the tool loop produced either no
+	// final text (MaxSteps exhausted, model kept calling tools) OR a
+	// non-JSON narrative response ("No findings.", "I reviewed X..."
+	// — common with gpt-5.5 when the schema feels heavy). Same
+	// conversation history, NO tools, schema enforced via
+	// GenerateObjectDirect. The model is now obliged to produce
+	// structured output on its next turn. Mirrors claude_code's
+	// two-pass formatting.
+	recoveryOpts := opts
+	recoveryOpts.Messages = result.Messages
+	recoveryOpts.Tools = nil
+	recoveryOpts.MaxSteps = 1
+	recoveryOpts.ExplicitSchema = task.OutputSchema
+
+	obj, recErr := GenerateObjectDirect[map[string]interface{}](ctx, client, recoveryOpts)
+	if recErr == nil && obj != nil && obj.Object != nil {
+		tokens := cost.Annotate(obj.Object, task.Model,
+			result.TotalUsage.InputTokens+obj.TotalUsage.InputTokens,
+			result.TotalUsage.OutputTokens+obj.TotalUsage.OutputTokens)
+		return delegate.Result{
+			Output:             obj.Object,
+			Tokens:             tokens,
+			BackendName:        delegate.BackendClaw,
+			FormattingPassUsed: true,
+		}, nil
+	}
+
+	// Last-ditch: surface whatever text we got as a parse-fallback so
+	// the runtime's existing structured-output retry path can decide
+	// what to do. The error from the recovery pass is logged for
+	// post-mortem.
+	if text == "" {
 		return delegate.Result{}, fmt.Errorf("claw backend: text+tools generation produced empty response after tool loop and structured-output recovery failed: %v", recErr)
 	}
-
-	var output map[string]interface{}
-	parseFallback := false
-	if err := json.Unmarshal([]byte(text), &output); err != nil {
-		output = map[string]interface{}{
-			"text": text,
-		}
-		parseFallback = true
-	}
-
+	output := map[string]interface{}{"text": text}
 	tokens := cost.Annotate(output, task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
-
 	return delegate.Result{
 		Output:        output,
 		Tokens:        tokens,
 		BackendName:   delegate.BackendClaw,
-		ParseFallback: parseFallback,
+		ParseFallback: true,
 	}, nil
 }
 
