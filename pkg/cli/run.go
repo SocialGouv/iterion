@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/claw-code-go/pkg/apikit/telemetry/otlpgrpc"
 	"github.com/SocialGouv/claw-code-go/pkg/permissions"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -88,12 +89,27 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 			_ = metricsServer.Shutdown(shutdownCtx)
 		}()
 	}
+	// Optional OTLP/gRPC exporter (env-controlled, see docs/observability/).
+	otlpExporter, otlpErr := startOTLPGRPCFromEnv(runID, logger)
+	if otlpErr != nil {
+		return otlpErr
+	}
+	if otlpExporter != nil {
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = otlpExporter.Stop(shutdownCtx)
+		}()
+	}
 	engineOpts := []runtime.EngineOption{
 		runtime.WithLogger(logger),
 		runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())),
 	}
 	if exporter != nil {
 		engineOpts = append(engineOpts, runtime.WithEventObserver(exporter.EventObserver()))
+	}
+	if otlpExporter != nil {
+		engineOpts = append(engineOpts, runtime.WithEventObserver(otlpExporter.EventObserver()))
 	}
 
 	// Build engine: either from recipe or raw workflow.
@@ -450,6 +466,46 @@ func startPrometheusFromEnv(runID string, logger *iterlog.Logger) (*benchmark.Pr
 	}
 	logger.Info("prometheus: serving /metrics on %s (run_id=%s)", addr, runID)
 	return exporter, srv, nil
+}
+
+// startOTLPGRPCFromEnv builds an OTLP/gRPC exporter from environment
+// configuration and registers it as a secondary observer on the run's
+// event bus. Returns (nil, nil) when no endpoint is configured.
+//
+// Recognised env vars (claw-code-go upstream):
+//
+//	CLAWD_OTLP_GRPC_ENDPOINT   host:port or URL (required to enable)
+//	CLAWD_OTLP_GRPC_INSECURE   "1" / "true" disables TLS
+//	CLAWD_OTLP_GRPC_HEADERS    comma-separated key=value pairs
+//	CLAWD_SERVICE_NAME         service.name resource attr
+//	CLAWD_SERVICE_VERSION      service.version resource attr
+//
+// ITERION_OTLP_GRPC_ENDPOINT is honored as an iterion-prefixed alias for
+// the endpoint so operators can keep CLAWD_* reserved for claw-internal
+// traffic if their deployment runs both side-by-side.
+func startOTLPGRPCFromEnv(runID string, logger *iterlog.Logger) (*benchmark.OTLPGRPCExporter, error) {
+	if alias := strings.TrimSpace(os.Getenv("ITERION_OTLP_GRPC_ENDPOINT")); alias != "" {
+		if os.Getenv(otlpgrpc.EnvEndpoint) == "" {
+			_ = os.Setenv(otlpgrpc.EnvEndpoint, alias)
+		}
+	}
+
+	cfg, err := otlpgrpc.FromEnv()
+	if err != nil {
+		if errors.Is(err, otlpgrpc.ErrEndpointMissing) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("otlp/grpc: %w", err)
+	}
+	if strings.TrimSpace(cfg.ServiceName) == "" {
+		cfg.ServiceName = "iterion"
+	}
+	exp, err := benchmark.NewOTLPGRPCExporter(runID, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("otlp/grpc: %w", err)
+	}
+	logger.Info("otlp/grpc: exporting to %s (run_id=%s, service=%s)", cfg.Endpoint, runID, cfg.ServiceName)
+	return exp, nil
 }
 
 // isTruthyEnv returns true for the conventional "yes" values: 1, true, yes, on.
