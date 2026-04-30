@@ -42,9 +42,67 @@ vars:
   scope_notes: string = ""
 
 prompt review_system:
-  Tu es un reviewer de code TRES exigeant et methodique.
-  Effectue une review complete du code dans le workspace
-  pour s'assurer qu'il est de qualite production-ready.
+  Tu es un reviewer de code TRES exigeant et methodique
+  en charge d'une revue PRODUCTION-READY GLOBALE — pas
+  une revue de diff, pas une revue de "ce qui a change
+  recemment", mais une revue complete du code en
+  exploitation reelle.
+
+  PERIMETRE DE LA REVUE (CRUCIAL) :
+  1. Tu reviews TOUT le code dans le workspace, comme un
+     SRE qui prend en charge le service. Le hash HEAD du
+     git n'a aucun privilege — un bug introduit il y a
+     six mois compte autant qu'un bug du dernier commit.
+  2. NE TE LIMITE PAS aux derniers commits, au diff, ou
+     aux fichiers que tu as touches lors d'iterations
+     precedentes. `git log` peut servir d'orientation
+     mais JAMAIS de perimetre.
+  3. Couvre les axes production-ready :
+       - Securite : auth, validation des entrees, fuites
+         de secrets, injection (shell/SQL/template),
+         path traversal, deserialisation non sure.
+       - Robustesse : gestion d'erreur exhaustive, panics
+         non rattrapes, goroutines fuyantes, race
+         conditions, deadlocks, channels non bornes,
+         timeouts manquants, retry sans backoff.
+       - Donnees : migrations schema, integrite des
+         indexes, transactions, idempotence, ordre de
+         commit, perte de donnees sur crash.
+       - Concurrence : mutex non equilibres, lock
+         hierarchy, double-close, double-spawn,
+         atomicity bugs.
+       - Observabilite : logs structures, metrics,
+         traces, signaux d'erreur perdus.
+       - Performance : O(n^2) sur chemin chaud, memoire
+         non bornee, cache miss systematique, requetes
+         N+1.
+       - Boundaries : reprise apres crash/panic,
+         resilience aux entrees corrompues, comportement
+         sur saturation.
+  4. ITERATIONS — usage concret de l'historique :
+     - Sur la premiere iteration, choisis 3-5 surfaces
+       et fouille a fond.
+     - Sur les iterations suivantes, choisis des
+       surfaces NON COUVERTES par les iterations
+       precedentes (utilise `previous_scanned_areas` en
+       input). Les surfaces deja examinees sont, par
+       defaut, considerees vetees.
+     - Tu peux re-examiner une surface deja couverte
+       UNIQUEMENT si tu as une nouvelle hypothese
+       concrete a tester (preuve specifique d'un bug
+       qui aurait ete rate).
+     - Renseigne `scanned_areas` avec les paquets,
+       fichiers, ou domaines que tu as effectivement
+       audites cette iteration. Sois precis et concis.
+  5. Le PRINCIPE D'ELARGISSEMENT s'applique : si tu n'as
+     trouve aucun blocker apres avoir epuise les
+     surfaces evidentes, ELARGIS — passe aux surfaces
+     subtiles (concurrence, recovery, observabilite,
+     entrees corrompues, edge cases). Ne donne pas
+     `approved=true` simplement parce que la zone que tu
+     as regardee est propre. Approved=true exige que la
+     COUVERTURE CUMULATIVE entre les iterations soit
+     suffisante.
 
   REGLES ANTI FAUX-POSITIFS :
   1. Ne marque approved=false que pour des problemes
@@ -65,11 +123,45 @@ prompt review_system:
          100% sur du contexte
        - "low" = doute, intuition, pas de preuve concrete
   4. Si une review precedente (de l'autre famille) a juge
-     ce code OK, sois EXTRA strict avant d'ajouter de
-     nouveaux blockers — il faut une preuve concrete que
-     l'autre reviewer a ratee.
+     ce code OK SUR DES SURFACES PRECISES, sois EXTRA
+     strict avant d'ajouter de nouveaux blockers SUR CES
+     MEMES surfaces — il faut une preuve concrete que
+     l'autre reviewer a ratee. Mais sur des surfaces
+     NON couvertes precedemment, repars a froid.
   5. Items deja pushbackes par le fixer : ne les
      re-flague PAS sauf si tu as une preuve nouvelle.
+
+  PATTERN DE CONVERGENCE (utilise-le comme calibrage) :
+  La methode est observee empiriquement comme convergent
+  asymptotiquement :
+   - Iterations precoces : tu trouveras des problemes
+     reellement critiques (bugs concrets, fuites, races,
+     vulnerabilites). Liste-les.
+   - Iterations intermediaires : la densite de blockers
+     critiques decroit. Tu deviens probablement plus
+     enclin a flaguer des problemes plus subtils. Hausse
+     la barre — un blocker doit toujours casser la prod
+     concretement, pas etre une "amelioration".
+   - Iterations tardives : tu vas commencer a re-decouvrir
+     des choses deja vetees, ou a flaguer des points qui
+     ressemblent fort a une preference/optimisation.
+     C'est le SIGNAL DE CONVERGENCE. Si tu vois ce
+     pattern, accepte que la couverture cumulative est
+     suffisante et donne `approved=true`. Resister par
+     reflexe perfectionniste fait boucler indefiniment.
+   - SIGNAL D'ALARME : si tu trouves enormement de
+     blockers critiques tres tardivement (iter 5+), c'est
+     suspect. Probablement: (a) tu hallucines, (b) le
+     fixer n'applique pas correctement, (c) tu re-flagues
+     ce qui a deja ete pushback. Re-verifie tes preuves
+     concretes ligne par ligne avant d'emettre un blocker
+     iteration tardive.
+
+  Le bon curseur n'est NI "tres souple" (faux positif
+  d'approbation) NI "tres strict" (boucles infinies).
+  Vise: rejette si un scenario concret de prod casse,
+  approuve si la couverture cumulative te convainc qu'il
+  n'y a plus de tel scenario evident.
 
   ESCALADE HUMAINE :
   Quand tu rencontres une AMBIGUITE qu'aucune lecture du
@@ -95,8 +187,17 @@ prompt review_user_claude:
   {{vars.scope_notes}}
 
   Iteration courante : {{loop.review_loop.iteration}}/{{loop.review_loop.max}}
-  Verdict precedent (vide si premiere iteration) :
+
+  Verdict du reviewer precedent (l'autre famille,
+  iteration immediatement avant — vide si premiere
+  iteration) :
   {{loop.review_loop.previous_output}}
+
+  Surfaces deja auditees lors d'iterations precedentes
+  (toutes familles confondues — utilisees pour orienter
+  ta couverture differente, pas pour limiter ta
+  rigueur) :
+  {{input.previous_scanned_areas}}
 
   Items deja pushbackes par le fixer (NE PAS RE-FLAGUER
   sans preuve nouvelle) :
@@ -106,12 +207,21 @@ prompt review_user_claude:
   {{input.prior_pushback_justification}}
 
   Produis un verdict structure :
-    - approved: true uniquement si le code est production-ready
+    - approved: true UNIQUEMENT si la couverture
+      cumulative entre les iterations est suffisante
+      ET aucun blocker n'a ete trouve — pas si tu n'as
+      regarde qu'une partie du code.
     - family: "claude" pour ce reviewer
     - blockers: liste des problemes vraiment bloquants
       (apres auto-critique — exclure les preferences)
     - fix_plan: plan d'action concret pour fixer les blockers
     - confidence: "low" / "medium" / "high"
+    - scanned_areas: paquets / fichiers / surfaces que
+      tu as effectivement audites CETTE iteration
+      (texte concis : ex. "pkg/runtime/engine.go (recovery dispatch)",
+      ".works/claw-code-go/internal/runtime/recovery/",
+      "concurrency review across pkg/store/").
+      Sera relaye au prochain reviewer.
 
 prompt review_user_gpt:
   Review le code dans {{vars.workspace_dir}}.
@@ -120,8 +230,17 @@ prompt review_user_gpt:
   {{vars.scope_notes}}
 
   Iteration courante : {{loop.review_loop.iteration}}/{{loop.review_loop.max}}
-  Verdict precedent (vide si premiere iteration) :
+
+  Verdict du reviewer precedent (l'autre famille,
+  iteration immediatement avant — vide si premiere
+  iteration) :
   {{loop.review_loop.previous_output}}
+
+  Surfaces deja auditees lors d'iterations precedentes
+  (toutes familles confondues — utilisees pour orienter
+  ta couverture differente, pas pour limiter ta
+  rigueur) :
+  {{input.previous_scanned_areas}}
 
   Items deja pushbackes par le fixer (NE PAS RE-FLAGUER
   sans preuve nouvelle) :
@@ -131,12 +250,18 @@ prompt review_user_gpt:
   {{input.prior_pushback_justification}}
 
   Produis un verdict structure :
-    - approved: true uniquement si le code est production-ready
+    - approved: true UNIQUEMENT si la couverture
+      cumulative entre les iterations est suffisante
+      ET aucun blocker n'a ete trouve — pas si tu n'as
+      regarde qu'une partie du code.
     - family: "gpt" pour ce reviewer
     - blockers: liste des problemes vraiment bloquants
       (apres auto-critique — exclure les preferences)
     - fix_plan: plan d'action concret pour fixer les blockers
     - confidence: "low" / "medium" / "high"
+    - scanned_areas: paquets / fichiers / surfaces que
+      tu as effectivement audites CETTE iteration
+      (texte concis). Sera relaye au prochain reviewer.
 
 prompt fix_system:
   Tu es un developpeur expert. Tu corriges les problemes
@@ -195,6 +320,11 @@ prompt fix_user:
 schema review_input:
   prior_pushback: string[]
   prior_pushback_justification: string
+  ## previous_scanned_areas accumulates the audit surfaces from
+  ## ALL prior reviewer iterations (both families). The current
+  ## reviewer reads it to prefer uncovered surfaces — see
+  ## review_system rule 4. Empty on the first iteration.
+  previous_scanned_areas: string[]
 
 schema verdict_output:
   approved: bool
@@ -209,6 +339,13 @@ schema verdict_output:
   blockers: string[]
   fix_plan: string
   confidence: string [enum: "low", "medium", "high"]
+  ## scanned_areas captures the surfaces this reviewer actually
+  ## audited this iteration (e.g. "pkg/runtime", "claw-code-go
+  ## recovery dispatch", "concurrency around pkg/store/.lock").
+  ## The accumulator passes the union to the next reviewer so
+  ## subsequent iterations explore uncovered ground rather than
+  ## re-walking the same files.
+  scanned_areas: string[]
 
 ## streak_check relays approved/blockers/fix_plan/family from its
 ## input (the current reviewer's verdict) and computes a
@@ -357,25 +494,27 @@ workflow vibe_review_alternating:
   ## section is harmless.
   alt -> reviewer_claude with {
     prior_pushback: "{{outputs.fix_gpt.pushback}}",
-    prior_pushback_justification: "{{outputs.fix_gpt.pushback_justification}}"
+    prior_pushback_justification: "{{outputs.fix_gpt.pushback_justification}}",
+    previous_scanned_areas: "{{loop.review_loop.previous_output.scanned_areas}}"
   }
   alt -> reviewer_gpt with {
     prior_pushback: "{{outputs.fix_claude.pushback}}",
-    prior_pushback_justification: "{{outputs.fix_claude.pushback_justification}}"
+    prior_pushback_justification: "{{outputs.fix_claude.pushback_justification}}",
+    previous_scanned_areas: "{{loop.review_loop.previous_output.scanned_areas}}"
   }
 
   ## Both reviewers feed into streak_check. The loop is attached
   ## here so the runtime snapshots the reviewer's verdict as
   ## `loop.review_loop.previous_output` for the NEXT iteration to
   ## inspect — eliminating the manual `previous_verdict` relay.
-  reviewer_claude -> streak_check as review_loop(6) with {
+  reviewer_claude -> streak_check as review_loop(15) with {
     approved: "{{outputs.reviewer_claude.approved}}",
     family: "{{outputs.reviewer_claude.family}}",
     blockers: "{{outputs.reviewer_claude.blockers}}",
     fix_plan: "{{outputs.reviewer_claude.fix_plan}}",
     confidence: "{{outputs.reviewer_claude.confidence}}"
   }
-  reviewer_gpt -> streak_check as review_loop(6) with {
+  reviewer_gpt -> streak_check as review_loop(15) with {
     approved: "{{outputs.reviewer_gpt.approved}}",
     family: "{{outputs.reviewer_gpt.family}}",
     blockers: "{{outputs.reviewer_gpt.blockers}}",
