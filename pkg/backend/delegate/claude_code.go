@@ -344,12 +344,41 @@ func promptWithTimeout(ctx context.Context, prompt string, opts ...claudesdk.Opt
 	}
 }
 
+// streamIdleTimeout is the maximum duration the claude_code session
+// is allowed to stay silent (no AssistantMessage / ResultMessage)
+// before the runSession loop aborts and surfaces a transient error.
+// The runtime then classifies it as resumable so the recovery
+// dispatcher can retry without manual intervention.
+//
+// The default is calibrated to tolerate Opus extra_high reasoning
+// intervals (which can stay silent for a few minutes between
+// tool calls) without letting truly hung sessions block forever.
+// Override with ITERION_CLAUDE_CODE_STREAM_IDLE_TIMEOUT (Go duration
+// string, e.g. "10m"). Set to "0" to disable the idle timeout.
+const defaultStreamIdleTimeout = 6 * time.Minute
+
+func resolveStreamIdleTimeout() time.Duration {
+	if v := os.Getenv("ITERION_CLAUDE_CODE_STREAM_IDLE_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return defaultStreamIdleTimeout
+}
+
 // runSession opens an interactive Session with the Claude CLI, sends the
 // prompt, and consumes the message stream until a ResultMessage arrives. It
 // streams agent activity (tool_use, tool_result, text) directly from the typed
 // content blocks to the iterion logger — this replaces the previous raw-JSON
 // WithMessageCallback path. Hooks (PreToolUse, etc.) only fire when configured
 // via Session, which is why we use this mode rather than one-shot Prompt().
+//
+// An idle-timeout watchdog aborts the session when no message arrives for
+// `streamIdleTimeout` — protecting against hung Claude CLI processes that
+// otherwise block indefinitely (we observed the SDK occasionally getting
+// stuck in ep_poll without any propagated error). The aborted session
+// returns an error the runtime classifies as resumable, so the recovery
+// dispatcher retries automatically.
 func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task Task, opts []claudesdk.Option) (*claudesdk.ResultMessage, error) {
 	sess := claudesdk.NewSession(opts...)
 	defer func() { _ = sess.Close() }()
@@ -358,24 +387,86 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 		return nil, err
 	}
 
-	var result *claudesdk.ResultMessage
-	for msg, err := range sess.Stream(ctx) {
-		if err != nil {
-			return result, err
-		}
-		switch m := msg.(type) {
-		case *claudesdk.AssistantMessage:
-			if m.Message != nil {
-				logAssistantContent(b.Logger, task.NodeID, m.Message.Content)
+	idleTimeout := resolveStreamIdleTimeout()
+
+	// Forward messages from the SDK iterator into a channel so we can
+	// select on (msg, idle-timer, ctx.Done) and abort cleanly when
+	// the session falls silent. Using range-over-func directly would
+	// block the goroutine until ctx is cancelled, which the runtime
+	// only does at the workflow's max_duration (way too late).
+	type streamItem struct {
+		msg claudesdk.Message
+		err error
+	}
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
+
+	items := make(chan streamItem, 1)
+	go func() {
+		defer close(items)
+		for msg, err := range sess.Stream(streamCtx) {
+			select {
+			case items <- streamItem{msg: msg, err: err}:
+			case <-streamCtx.Done():
+				return
 			}
-		case *claudesdk.ResultMessage:
-			result = m
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	var result *claudesdk.ResultMessage
+	idle := time.NewTimer(idleTimeout)
+	defer idle.Stop()
+
+	for {
+		// Reset the idle timer on every iteration so any progress
+		// (assistant tokens, tool calls, tool results) keeps the
+		// session alive.
+		if !idle.Stop() {
+			select {
+			case <-idle.C:
+			default:
+			}
+		}
+		if idleTimeout > 0 {
+			idle.Reset(idleTimeout)
+		}
+
+		select {
+		case it, ok := <-items:
+			if !ok {
+				// Stream closed without surfacing an error.
+				if result == nil {
+					return nil, fmt.Errorf("claude session ended without result message")
+				}
+				return result, nil
+			}
+			if it.err != nil {
+				return result, it.err
+			}
+			switch m := it.msg.(type) {
+			case *claudesdk.AssistantMessage:
+				if m.Message != nil {
+					logAssistantContent(b.Logger, task.NodeID, m.Message.Content)
+				}
+			case *claudesdk.ResultMessage:
+				result = m
+			}
+		case <-idle.C:
+			if idleTimeout <= 0 {
+				continue
+			}
+			cancelStream()
+			b.Logger.Warn("[%s/claude-code] no SDK message for %s — aborting (idle timeout)",
+				task.NodeID, idleTimeout)
+			return result, fmt.Errorf("claude session idle for %s — aborting (set ITERION_CLAUDE_CODE_STREAM_IDLE_TIMEOUT to extend, or 0 to disable)", idleTimeout)
+		case <-ctx.Done():
+			cancelStream()
+			return result, ctx.Err()
 		}
 	}
-	if result == nil {
-		return nil, fmt.Errorf("claude session ended without result message")
-	}
-	return result, nil
 }
 
 // logAssistantContent emits human-readable info logs for tool calls, tool

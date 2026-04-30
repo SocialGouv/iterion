@@ -1088,6 +1088,14 @@ func isDelegateRetryable(err error) bool {
 	if strings.Contains(msg, "reading stdout") {
 		return true
 	}
+	// claude_code SDK fell silent for too long (we observed sessions
+	// hanging in ep_poll without any propagated error). The runSession
+	// watchdog aborts and surfaces this — retrying usually picks up
+	// where the previous attempt left off because the resumed session
+	// gets a fresh subprocess.
+	if strings.Contains(msg, "session idle for") {
+		return true
+	}
 	return false
 }
 
