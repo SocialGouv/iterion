@@ -441,18 +441,31 @@ func executeToolsDirect(
 	return results, nil
 }
 
-// maybeCompactPause runs the pure-function compactor on the
-// pre-pause message slice with default settings. It is a no-op for
-// short transcripts (returns the input unchanged) and a bounded
-// summarisation for long ones — the last cfg.PreserveRecentMessages
-// turns are kept verbatim, so the assistant message holding the
-// pending ask_user tool_use stays addressable on resume.
-func maybeCompactPause(messages []api.Message) []api.Message {
+// maybeCompact runs claw's pure-function compactor with the default
+// configuration (preserve last 4 messages, only fire when ≥ 10k
+// estimated tokens). It is a no-op for short transcripts (returns the
+// input unchanged with `compacted=false`) and a bounded summarisation
+// for long ones — the last cfg.PreserveRecentMessages turns are kept
+// verbatim, so any assistant message holding a pending tool_use stays
+// addressable for the next tool round or for resume after a pause.
+func maybeCompact(messages []api.Message) (out []api.Message, info CompactInfo, compacted bool) {
 	res := clawrt.CompactMessages(messages, clawrt.DefaultCompactionConfig())
 	if res == nil {
-		return messages
+		return messages, CompactInfo{}, false
 	}
-	return res.CompactedMessages
+	return res.CompactedMessages, CompactInfo{
+		BeforeMessages:      len(messages),
+		AfterMessages:       len(res.CompactedMessages),
+		RemovedMessageCount: res.RemovedMessageCount,
+	}, true
+}
+
+// maybeCompactPause is a thin wrapper over maybeCompact for the pause
+// path that already discards the info struct (the pause checkpoint
+// records the conversation, not the compaction event).
+func maybeCompactPause(messages []api.Message) []api.Message {
+	out, _, _ := maybeCompact(messages)
+	return out
 }
 
 // ---------------------------------------------------------------------------
@@ -590,6 +603,21 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 			Role:    "user",
 			Content: toolResults,
 		})
+
+		// Compact the running history before the next round if it's
+		// grown large. No-op for short transcripts; for long ones,
+		// older tool turns are summarised while the last 4 messages
+		// stay verbatim, so the assistant message that just dispatched
+		// tool_use blocks paired with our tool_results stays in the
+		// preserved-recent window. Without this the tool loop on a
+		// small-context model crashes with context_length_exceeded
+		// once history exceeds the budget.
+		if compacted, info, ok := maybeCompact(messages); ok {
+			messages = compacted
+			if opts.OnCompact != nil {
+				opts.OnCompact(info)
+			}
+		}
 	}
 
 	return &TextResult{

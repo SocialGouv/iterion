@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -414,6 +415,102 @@ func TestGenerateTextDirect_MaxSteps(t *testing.T) {
 	}
 	if result.FinishReason != FinishToolCalls {
 		t.Errorf("FinishReason = %q, want %q", result.FinishReason, FinishToolCalls)
+	}
+}
+
+// TestGenerateTextDirect_CompactionInLoop verifies that when the
+// running tool-loop history grows past claw's default compaction
+// threshold (10 000 estimated tokens), the next iteration sees a
+// shrunk message list and OnCompact fires once per round that
+// actually compacted. Short transcripts stay untouched.
+func TestGenerateTextDirect_CompactionInLoop(t *testing.T) {
+	// 6 scripted responses: each step calls bloat_tool with a unique
+	// tool_use ID. The 6th lets the loop terminate cleanly via end_turn
+	// when the model decides it's done — but we cap MaxSteps before
+	// that, so it never runs.
+	scripts := make([][]api.StreamEvent, 6)
+	for i := range scripts {
+		scripts[i] = toolUseEvents(fmt.Sprintf("tu_%d", i), "bloat_tool", `{}`, 10, 5)
+	}
+	client := newMockClient(scripts...)
+
+	// Each tool_result returns ~12 KB of text, so after a few rounds
+	// the compactable prefix crosses the 10k-token default threshold.
+	bigOutput := strings.Repeat("filler word ", 1000)
+	bloatTool := GenerationTool{
+		Name:        "bloat_tool",
+		Description: "Returns a large fixed payload.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+		Execute: func(_ context.Context, _ json.RawMessage) (string, error) {
+			return bigOutput, nil
+		},
+	}
+
+	var compactCalls []CompactInfo
+	result, err := GenerateTextDirect(context.Background(), client, GenerationOptions{
+		Model:    "claude-sonnet-4-6",
+		Tools:    []GenerationTool{bloatTool},
+		MaxSteps: 5,
+		Messages: []api.Message{
+			{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "loop please"}}},
+		},
+		OnCompact: func(info CompactInfo) {
+			compactCalls = append(compactCalls, info)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Steps) != 5 {
+		t.Fatalf("Steps = %d, want 5", len(result.Steps))
+	}
+	if len(compactCalls) == 0 {
+		t.Fatalf("OnCompact never fired — expected at least one compaction round")
+	}
+	for i, info := range compactCalls {
+		if info.AfterMessages >= info.BeforeMessages {
+			t.Errorf("compactCalls[%d]: after=%d not smaller than before=%d", i, info.AfterMessages, info.BeforeMessages)
+		}
+		if info.RemovedMessageCount <= 0 {
+			t.Errorf("compactCalls[%d]: removed=%d, expected > 0", i, info.RemovedMessageCount)
+		}
+	}
+}
+
+// TestGenerateTextDirect_NoCompactionShortTranscript verifies the
+// loop is a no-op for short conversations: OnCompact must not fire
+// when the running message list never grows past the threshold.
+func TestGenerateTextDirect_NoCompactionShortTranscript(t *testing.T) {
+	scripts := [][]api.StreamEvent{
+		toolUseEvents("tu_1", "tiny_tool", `{}`, 10, 5),
+		textEvents("done", 10, 5),
+	}
+	client := newMockClient(scripts...)
+
+	tinyTool := GenerationTool{
+		Name:        "tiny_tool",
+		Description: "Returns a small payload.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+		Execute: func(_ context.Context, _ json.RawMessage) (string, error) {
+			return "ok", nil
+		},
+	}
+
+	var compactCalls int
+	_, err := GenerateTextDirect(context.Background(), client, GenerationOptions{
+		Model:    "claude-sonnet-4-6",
+		Tools:    []GenerationTool{tinyTool},
+		MaxSteps: 5,
+		Messages: []api.Message{
+			{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "hi"}}},
+		},
+		OnCompact: func(_ CompactInfo) { compactCalls++ },
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if compactCalls != 0 {
+		t.Errorf("OnCompact fired %d times for a short transcript, want 0", compactCalls)
 	}
 }
 

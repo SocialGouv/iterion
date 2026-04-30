@@ -113,6 +113,7 @@ type EventHooks struct {
 	OnLLMResponse   func(nodeID string, info LLMResponseInfo)
 	OnLLMRetry      func(nodeID string, info RetryInfo)
 	OnLLMStepFinish func(nodeID string, step LLMStepInfo)
+	OnLLMCompacted  func(nodeID string, info LLMCompactInfo)
 	OnToolCall      func(nodeID string, info LLMToolCallInfo)
 	// OnToolNodeResult is called for direct tool nodes (not LLM tool loops)
 	// with full input/output content for detailed logging.
@@ -182,6 +183,15 @@ func ChainHooks(a, b EventHooks) EventHooks {
 				return a.OnLLMStepFinish
 			}
 			return func(n string, s LLMStepInfo) { a.OnLLMStepFinish(n, s); b.OnLLMStepFinish(n, s) }
+		}(),
+		OnLLMCompacted: func() func(string, LLMCompactInfo) {
+			if a.OnLLMCompacted == nil {
+				return b.OnLLMCompacted
+			}
+			if b.OnLLMCompacted == nil {
+				return a.OnLLMCompacted
+			}
+			return func(n string, i LLMCompactInfo) { a.OnLLMCompacted(n, i); b.OnLLMCompacted(n, i) }
 		}(),
 		OnToolCall: func() func(string, LLMToolCallInfo) {
 			if a.OnToolCall == nil {

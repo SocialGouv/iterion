@@ -58,6 +58,21 @@ type StepResult struct {
 	Usage Usage
 }
 
+// CompactInfo is passed to the OnCompact hook when the running tool-loop
+// message history is shrunk by claw's pure-function compactor between
+// iterations. Emitted only when compaction actually fired (no event when
+// the transcript was short enough to skip).
+type CompactInfo struct {
+	// BeforeMessages is the message count before compaction.
+	BeforeMessages int
+
+	// AfterMessages is the message count after compaction.
+	AfterMessages int
+
+	// RemovedMessageCount is reported by claw's CompactionResult.
+	RemovedMessageCount int
+}
+
 // ToolCallInfo is passed to the OnToolCall hook after a tool executes.
 type ToolCallInfo struct {
 	// ToolName is the name of the tool that was called.

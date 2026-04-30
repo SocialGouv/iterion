@@ -57,6 +57,17 @@ type LLMToolCallInfo struct {
 	Error     error
 }
 
+// LLMCompactInfo describes a mid-tool-loop compaction round, passed to the
+// OnLLMCompacted hook. Emitted when claw's pure-function compactor shrinks
+// the running message history before the next StreamResponse call so
+// long agentic loops on small-context models do not silently hit
+// context_length_exceeded.
+type LLMCompactInfo struct {
+	BeforeMessages      int
+	AfterMessages       int
+	RemovedMessageCount int
+}
+
 // ---------------------------------------------------------------------------
 // Conversion functions (local model types → iterion event types)
 // ---------------------------------------------------------------------------
@@ -113,6 +124,14 @@ func toLLMToolCallInfo(info ToolCallInfo) LLMToolCallInfo {
 	}
 }
 
+func toLLMCompactInfo(info CompactInfo) LLMCompactInfo {
+	return LLMCompactInfo{
+		BeforeMessages:      info.BeforeMessages,
+		AfterMessages:       info.AfterMessages,
+		RemovedMessageCount: info.RemovedMessageCount,
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Hook wiring (shared between claw_backend.go and executor.go)
 // ---------------------------------------------------------------------------
@@ -144,6 +163,12 @@ func applyHooks(nodeID string, h EventHooks, opts *GenerationOptions) {
 		fn := h.OnToolCall
 		opts.OnToolCall = func(info ToolCallInfo) {
 			fn(nodeID, toLLMToolCallInfo(info))
+		}
+	}
+	if h.OnLLMCompacted != nil {
+		fn := h.OnLLMCompacted
+		opts.OnCompact = func(info CompactInfo) {
+			fn(nodeID, toLLMCompactInfo(info))
 		}
 	}
 }

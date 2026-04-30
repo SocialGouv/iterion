@@ -161,6 +161,23 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 			}
 		},
 
+		OnLLMCompacted: func(nodeID string, info LLMCompactInfo) {
+			data := map[string]interface{}{
+				"before_messages":       info.BeforeMessages,
+				"after_messages":        info.AfterMessages,
+				"removed_message_count": info.RemovedMessageCount,
+			}
+			_, _ = emitter.AppendEvent(runID, store.Event{
+				Type:   store.EventLLMCompacted,
+				RunID:  runID,
+				NodeID: nodeID,
+				Data:   data,
+			})
+
+			logger.Logf(iterlog.LevelInfo, "📦", "Compacted [%s]: %d → %d msgs (%d removed)",
+				nodeID, info.BeforeMessages, info.AfterMessages, info.RemovedMessageCount)
+		},
+
 		OnToolCall: func(nodeID string, info LLMToolCallInfo) {
 			data := map[string]interface{}{
 				"tool":        info.ToolName,

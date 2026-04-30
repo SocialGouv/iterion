@@ -75,6 +75,11 @@ type GenerationOptions struct {
 	// OnToolCall is called after each tool execution.
 	OnToolCall func(ToolCallInfo)
 
+	// OnCompact is called once after each in-loop compaction round
+	// that actually shrunk the message history. No-op compactions
+	// (transcript too short) do not fire the callback.
+	OnCompact func(CompactInfo)
+
 	// Hooks, when non-nil, is consulted around tool execution and at
 	// session end. PreToolUse fires before each Execute and may Block
 	// (the tool returns a synthetic refusal). PostToolUse fires after
