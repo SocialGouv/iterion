@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,11 +22,18 @@ const liveCacheFilename = "models-cache.json"
 
 // LiveCacheEntry mirrors a normalized model record from the unified model
 // sources (OpenRouter, models.dev). Only fields used by claw are retained.
+//
+// InputUSDPerM and OutputUSDPerM hold per-million-token pricing in USD.
+// Zero means "unknown" (the source did not publish pricing for this
+// model), distinct from the rare-but-valid free model. Consumers
+// rendering cost estimates should treat zero as "skip emission".
 type LiveCacheEntry struct {
 	Canonical     string   `json:"canonical"`
 	Provider      string   `json:"provider"`
 	ContextWindow uint32   `json:"context_window"`
 	MaxOutput     uint32   `json:"max_output"`
+	InputUSDPerM  float64  `json:"input_usd_per_million,omitempty"`
+	OutputUSDPerM float64  `json:"output_usd_per_million,omitempty"`
 	Aliases       []string `json:"aliases,omitempty"`
 }
 
@@ -71,9 +79,9 @@ func liveCachePath() (string, error) {
 	return filepath.Join(dir, liveCacheFilename), nil
 }
 
-// loadLiveCache reads the on-disk cache, if any. Returns (nil, nil) when the
+// LoadLiveCache reads the on-disk cache, if any. Returns (nil, nil) when the
 // file is missing — that's not an error, just a cache miss.
-func loadLiveCache() (*LiveCache, error) {
+func LoadLiveCache() (*LiveCache, error) {
 	path, err := liveCachePath()
 	if err != nil {
 		return nil, err
@@ -228,7 +236,7 @@ func MaybeRefreshLive(reg *ModelRegistry) {
 	}
 	liveFetchOnce.Do(func() {
 		go func() {
-			cache, _ := loadLiveCache()
+			cache, _ := LoadLiveCache()
 			fresh := cache != nil && time.Since(cache.FetchedAt) < LiveCacheTTL
 			if cache != nil {
 				mergeLiveIntoRegistry(reg, cache)
@@ -321,6 +329,14 @@ type openRouterModel struct {
 	TopProvider   struct {
 		MaxCompletionTokens uint32 `json:"max_completion_tokens"`
 	} `json:"top_provider"`
+	// OpenRouter exposes pricing as USD/token strings (e.g. "0.000001"
+	// for $1/M input). Strings are parsed to float64 in the canonical
+	// step and stored as USD/million tokens to match the table format
+	// human operators expect.
+	Pricing struct {
+		Prompt     string `json:"prompt"`
+		Completion string `json:"completion"`
+	} `json:"pricing"`
 }
 
 func fetchOpenRouter(ctx context.Context) ([]LiveCacheEntry, error) {
@@ -355,6 +371,8 @@ func fetchOpenRouter(ctx context.Context) ([]LiveCacheEntry, error) {
 			Provider:      provider,
 			ContextWindow: m.ContextLength,
 			MaxOutput:     m.TopProvider.MaxCompletionTokens,
+			InputUSDPerM:  parseUSDPerToken(m.Pricing.Prompt),
+			OutputUSDPerM: parseUSDPerToken(m.Pricing.Completion),
 		}
 		// The OpenRouter id (e.g. "openai/gpt-5.5") is kept as alias.
 		if m.ID != canonical {
@@ -369,6 +387,21 @@ func fetchOpenRouter(ctx context.Context) ([]LiveCacheEntry, error) {
 // and normalises Anthropic-style canonical names to the dot-free form used
 // by the embed registry (e.g. "claude-opus-4.7" → "claude-opus-4-7").
 // Returns empty string when the id should be skipped.
+// parseUSDPerToken converts an OpenRouter pricing string ("0.000001",
+// "1e-6", or "") into per-million-USD. Returns 0 on parse failure or
+// empty input — caller treats 0 as "unknown" and skips emission rather
+// than reporting a wrong number.
+func parseUSDPerToken(s string) float64 {
+	if s == "" {
+		return 0
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil || v <= 0 {
+		return 0
+	}
+	return v * 1_000_000
+}
+
 func canonicalFromOpenRouterID(id string) (canonical, provider string) {
 	parts := strings.SplitN(id, "/", 2)
 	if len(parts) != 2 {

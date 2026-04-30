@@ -5,9 +5,27 @@
 // and `delegate/` (claude_code, codex backends) can call `Annotate`
 // without creating an import cycle (`model/` already depends on
 // `delegate/`).
+//
+// Pricing resolution order (first match wins):
+//
+//  1. claw-code-go's live registry cache (refreshed async every 24h
+//     from OpenRouter). Picks up new models without iterion-side
+//     updates — the long-term path that eliminates the static-table
+//     maintenance burden.
+//  2. The static modelPriceTable below. Acts as the offline fallback
+//     for cold starts (no cache file yet) and as a last-known-good
+//     for models the live source has not yet published.
+//
+// Operators can opt out of step 1 with CLAW_DISABLE_LIVE_REGISTRY=1
+// (typically in air-gapped environments); the static table then
+// serves every lookup.
 package cost
 
-import "strings"
+import (
+	"strings"
+
+	clawapi "github.com/SocialGouv/claw-code-go/pkg/api"
+)
 
 // pricePerMillion is the per-million-token price (USD) for a small set of
 // commonly used models. Two costs per entry: input tokens and output
@@ -66,6 +84,16 @@ var modelPriceTable = map[string]modelPricing{
 // resolves to "claude-sonnet-4-6" — intentional, since pricing is the
 // same across regions for the providers we track.
 func EstimateUSD(model string, inputTokens, outputTokens int) float64 {
+	// First: ask claw's live registry cache. When it has a hit, it
+	// reflects the OpenRouter pricing as published — which means new
+	// models picked up since the last static-table update get correct
+	// estimates without anyone editing this file.
+	if pricing, ok := clawapi.LookupModelPricing(model); ok {
+		return (float64(inputTokens)*pricing.InputUSDPerMillion + float64(outputTokens)*pricing.OutputUSDPerMillion) / 1_000_000.0
+	}
+	// Fallback: the static table below. Used on cold starts (cache
+	// not yet populated) and for any model the live source has not
+	// yet shipped.
 	if i := strings.LastIndex(model, "/"); i >= 0 {
 		model = model[i+1:]
 	}

@@ -1,6 +1,12 @@
 package cost
 
-import "testing"
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
 
 func TestEstimateUSD(t *testing.T) {
 	cases := []struct {
@@ -71,4 +77,58 @@ func TestAnnotate(t *testing.T) {
 			t.Fatalf("total = %d, want 200", total)
 		}
 	})
+}
+
+// TestEstimateUSD_PrefersLiveRegistry covers the resolution chain: when
+// claw's live cache contains the model, EstimateUSD uses those rates
+// rather than the static table. This is the path that eliminates the
+// static-table maintenance burden as new models ship via OpenRouter.
+func TestEstimateUSD_PrefersLiveRegistry(t *testing.T) {
+	// Seed claw's live cache with rates that intentionally differ from
+	// the static gpt-5 entry so we can verify which source EstimateUSD
+	// trusted.
+	dir := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", dir)
+	clawDir := filepath.Join(dir, "claw-code-go")
+	if err := os.MkdirAll(clawDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Inline the LiveCache JSON so we don't import claw's internal
+	// package (Go's internal-import rule blocks cross-module access).
+	// The on-disk format is the public source of truth for the
+	// integration: any change to the JSON shape would break consumers
+	// regardless of whether they go through claw's typed APIs.
+	cache := fmt.Sprintf(`{
+  "entries": [
+    {
+      "canonical": "gpt-5",
+      "provider": "openai",
+      "input_usd_per_million": 99.0,
+      "output_usd_per_million": 999.0
+    }
+  ],
+  "fetched_at": %q,
+  "source": "test"
+}`, time.Now().UTC().Format(time.RFC3339Nano))
+	if err := os.WriteFile(filepath.Join(clawDir, "models-cache.json"), []byte(cache), 0o644); err != nil {
+		t.Fatalf("write cache: %v", err)
+	}
+
+	got := EstimateUSD("gpt-5", 1_000_000, 1_000_000)
+	// 99 + 999 = 1098 if claw is consulted; 11.25 from the static
+	// table otherwise.
+	if got != 1098.0 {
+		t.Errorf("EstimateUSD did not consult claw live cache: got %v, want 1098 (99+999)", got)
+	}
+}
+
+// TestEstimateUSD_FallsBackToStaticTable covers the cold-start path:
+// when the live cache has no entry for the model, EstimateUSD falls
+// back to the static table seeded in this package.
+func TestEstimateUSD_FallsBackToStaticTable(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir()) // empty cache dir
+	got := EstimateUSD("gpt-5", 1_000_000, 1_000_000)
+	if got != 11.25 {
+		t.Errorf("static fallback: got %v, want 11.25", got)
+	}
 }
