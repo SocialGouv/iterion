@@ -17,6 +17,13 @@ func TestEstimateUSD(t *testing.T) {
 		{"sonnet 1m+1m", "claude-sonnet-4-6", 1_000_000, 1_000_000, 18.00, false},
 		{"opus 1m+1m", "claude-opus-4-7", 1_000_000, 1_000_000, 90.00, false},
 		{"gpt-5 1m+1m", "openai/gpt-5", 1_000_000, 1_000_000, 11.25, false},
+		// Newer OpenAI tiers — exercised by claw delegate; previously
+		// missing from the table they silently reported $0 in run
+		// observability (vibe_review_alternating run_1777560043656).
+		{"gpt-5.5 1m+1m", "openai/gpt-5.5", 1_000_000, 1_000_000, 17.00, false},
+		{"gpt-5.4-mini 1m+1m", "openai/gpt-5.4-mini", 1_000_000, 1_000_000, 2.70, false},
+		{"opus 4-6 inherits opus rate", "claude-opus-4-6", 1_000_000, 1_000_000, 90.00, false},
+		{"sonnet 4-7 inherits sonnet rate", "claude-sonnet-4-7", 1_000_000, 1_000_000, 18.00, false},
 		{"zero tokens", "claude-haiku-4-5", 0, 0, 0, false},
 	}
 	for _, tc := range cases {

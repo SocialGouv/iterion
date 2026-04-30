@@ -26,20 +26,33 @@ type modelPricing struct {
 }
 
 var modelPriceTable = map[string]modelPricing{
-	// Anthropic
+	// Anthropic — opus / sonnet / haiku families share rates within a
+	// family, so newer point releases inherit the same numbers until
+	// Anthropic publishes a new price.
 	"claude-opus-4-7":           {15.00, 75.00},
+	"claude-opus-4-6":           {15.00, 75.00},
 	"claude-opus-4-5":           {15.00, 75.00},
 	"claude-opus-4":             {15.00, 75.00},
+	"claude-sonnet-4-7":         {3.00, 15.00},
 	"claude-sonnet-4-6":         {3.00, 15.00},
 	"claude-sonnet-4-5":         {3.00, 15.00},
 	"claude-sonnet-4":           {3.00, 15.00},
 	"claude-haiku-4-5":          {0.25, 1.25},
 	"claude-haiku-4-5-20251001": {0.25, 1.25},
-	// OpenAI
-	"gpt-5":       {1.25, 10.00},
-	"gpt-5-mini":  {0.25, 2.00},
-	"gpt-4o":      {2.50, 10.00},
-	"gpt-4o-mini": {0.15, 0.60},
+	// OpenAI — gpt-5.5+ are priced higher than gpt-5; mini/nano variants
+	// are roughly an order of magnitude cheaper. Numbers below are best
+	// effort against the known list; refresh against the OpenAI pricing
+	// page when a new tier ships.
+	"gpt-5":         {1.25, 10.00},
+	"gpt-5-mini":    {0.25, 2.00},
+	"gpt-5.4":       {1.50, 12.00},
+	"gpt-5.4-pro":   {3.00, 25.00},
+	"gpt-5.4-mini":  {0.30, 2.40},
+	"gpt-5.4-nano":  {0.15, 1.20},
+	"gpt-5.5":       {2.00, 15.00},
+	"gpt-5.5-pro":   {4.00, 30.00},
+	"gpt-4o":        {2.50, 10.00},
+	"gpt-4o-mini":   {0.15, 0.60},
 }
 
 // EstimateUSD returns a rough cost estimate for the given token usage on
