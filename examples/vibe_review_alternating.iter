@@ -512,7 +512,8 @@ workflow vibe_review_alternating:
   streak_check -> done when stop
 
   ## Otherwise approved (no streak yet, OR low-confidence rejection
-  ## treated as soft-approved): keep alternating without fixing.
+  ## treated as soft-approved, OR rejection without concrete blockers
+  ## — see below): keep alternating without fixing.
   ## Expression form is shown here both to demonstrate the new
   ## syntax and so future authors can extend the predicate (e.g.
   ## tighten the soft-approval condition) by enriching the
@@ -524,23 +525,33 @@ workflow vibe_review_alternating:
   ## cycle is still bounded because that edge IS loop-bearing.
   streak_check -> alt when "approved"
 
-  ## Medium/high-confidence rejection: route to the SAME-family
-  ## fixer so it can inherit the reviewer's session (one session
-  ## per iteration per family — see fix_claude / fix_gpt comments).
-  ## `_session_id` reads directly from the most recent reviewer
-  ## output rather than going through streak_check, because compute
-  ## passthrough strips the underscore-prefixed metadata fields.
+  ## Medium/high-confidence rejection WITH concrete blockers: route
+  ## to the SAME-family fixer so it can inherit the reviewer's
+  ## session (one session per iteration per family — see
+  ## fix_claude / fix_gpt comments). `_session_id` reads directly
+  ## from the most recent reviewer output rather than going through
+  ## streak_check, because compute passthrough strips the
+  ## underscore-prefixed metadata fields.
+  ##
+  ## The `length(blockers) > 0` guard avoids invoking the fixer
+  ## when the reviewer rejected on coverage grounds alone (e.g.
+  ## "cumulative coverage is partial at iteration 0/15") with no
+  ## production-blocking issue identified. In that case the fixer
+  ## has nothing to fix — burning a session round-trip and tokens
+  ## (~$0.15/$0.43 observed in vibe_review run_1777560043656) only
+  ## to push back. The unconditional alt fallthrough below picks
+  ## those up so alternation continues without a wasted fix call.
   ##
   ## Edge order matters: iterion evaluates conditional edges top-
   ## down, first match wins. We list both family-specific fixers
   ## before the unconditional `done` fallthrough so loop-exhaustion
   ## still terminates cleanly.
-  streak_check -> fix_claude when "!approved && family == 'claude'" with {
+  streak_check -> fix_claude when "!approved && family == 'claude' && length(blockers) > 0" with {
     blockers: "{{outputs.streak_check.blockers}}",
     fix_plan: "{{outputs.streak_check.fix_plan}}",
     _session_id: "{{outputs.reviewer_claude._session_id}}"
   }
-  streak_check -> fix_gpt when "!approved && family == 'gpt'" with {
+  streak_check -> fix_gpt when "!approved && family == 'gpt' && length(blockers) > 0" with {
     blockers: "{{outputs.streak_check.blockers}}",
     fix_plan: "{{outputs.streak_check.fix_plan}}",
     _session_id: "{{outputs.reviewer_gpt._session_id}}"
