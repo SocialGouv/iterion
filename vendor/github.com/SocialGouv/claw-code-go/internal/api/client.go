@@ -5,10 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/SocialGouv/claw-code-go/internal/apikit"
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/SocialGouv/claw-code-go/internal/apikit"
 )
 
 const (
@@ -40,12 +41,19 @@ type Client struct {
 }
 
 // NewClient creates a new API client with the given API key and model.
+//
+// The default HTTPClient is built via httputil.NewStreamingHTTPClient so
+// that connect/TLS/response-header stages have bounded timeouts. A
+// half-open peer therefore cannot pin a goroutine + FD until the caller's
+// run-level deadline fires, which under provider incidents would
+// otherwise translate into process-level resource exhaustion across
+// fan-out branches.
 func NewClient(apiKey, model string) *Client {
 	return &Client{
 		APIKey:     apiKey,
 		BaseURL:    defaultBaseURL,
 		Model:      model,
-		HTTPClient: &http.Client{},
+		HTTPClient: NewStreamingHTTPClient(),
 	}
 }
 

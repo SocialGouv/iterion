@@ -86,7 +86,7 @@ func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
 		Model:       model,
 		MaxTokens:   cfg.MaxTokens,
 		TokenSource: tokenSource,
-		HTTPClient:  &http.Client{},
+		HTTPClient:  api.NewStreamingHTTPClient(),
 		BaseURL:     cfg.BaseURL, // optional override; empty means compute from region
 	}, nil
 }

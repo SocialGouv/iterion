@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -53,8 +54,14 @@ func StreamEvents(ctx context.Context, resp *http.Response, ch chan<- api.Stream
 		return
 	}
 
+	// Use a 16 MiB scanner buffer. The default 64 KiB (and the prior 1 MiB
+	// cap) is silently exceeded by large reasoning chunks and tool-call
+	// argument blobs from o1/gpt-5; on overflow Scan() returns false with
+	// bufio.ErrTooLong. The post-loop scanner.Err() check surfaces such
+	// truncations as an EventError instead of a clean MessageStop with
+	// partial content — a real source of silent data corruption.
 	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 
 	var (
 		textStarted  bool
@@ -133,6 +140,18 @@ func StreamEvents(ctx context.Context, resp *http.Response, ch chan<- api.Stream
 				finishReason = *choice.FinishReason
 			}
 		}
+	}
+
+	// Surface scanner errors (bufio.ErrTooLong on oversize SSE lines, read
+	// failures, etc.) as an explicit EventError. Without this check, the
+	// caller would see a clean MessageStop and silently commit a truncated
+	// or partial response.
+	if err := scanner.Err(); err != nil {
+		send(api.StreamEvent{
+			Type:         api.EventError,
+			ErrorMessage: fmt.Sprintf("openai stream read: %v", err),
+		})
+		return
 	}
 
 	// Close the text block.

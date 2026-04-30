@@ -94,7 +94,7 @@ func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
 		APIVersion: apiVersion,
 		APIKey:     apiKey,
 		MaxTokens:  cfg.MaxTokens,
-		HTTPClient: &http.Client{},
+		HTTPClient: api.NewStreamingHTTPClient(),
 	}
 
 	// If no API key, prepare an Azure AD credential. We acquire the bearer

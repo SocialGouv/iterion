@@ -50,7 +50,7 @@ func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
 		BaseURL:    baseURL,
 		Model:      model,
 		MaxTokens:  cfg.MaxTokens,
-		HTTPClient: &http.Client{},
+		HTTPClient: api.NewStreamingHTTPClient(),
 	}, nil
 }
 

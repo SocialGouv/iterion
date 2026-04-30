@@ -6,6 +6,14 @@ import (
 	"strings"
 )
 
+// maxSseBufferBytes caps the bytes the SSE parser will accumulate without
+// observing a frame delimiter (\n\n). A misbehaving or malicious upstream
+// that never emits a delimiter would otherwise grow the buffer until the
+// process OOMs; capping the buffer surfaces a normal protocol error
+// instead. 16 MiB leaves ample headroom for very large reasoning chunks
+// or tool-call argument blobs while preventing unbounded growth.
+const maxSseBufferBytes = 16 * 1024 * 1024
+
 // SseParser is a byte-buffer state machine for parsing Server-Sent Events.
 // It accumulates bytes via Push, scans for frame delimiters, extracts complete
 // frames, and deserializes them into StreamEvent values.
@@ -35,7 +43,18 @@ func (p *SseParser) WithContext(provider, model string) *SseParser {
 
 // Push appends a chunk of bytes to the buffer and returns any complete
 // StreamEvents that can be parsed from the accumulated data.
+//
+// If accumulating chunk would push the buffer past maxSseBufferBytes
+// without a frame delimiter being seen, Push returns an error and clears
+// the buffer so the caller surfaces a normal protocol failure rather than
+// OOM-ing the process.
 func (p *SseParser) Push(chunk []byte) ([]StreamEvent, error) {
+	if len(p.buffer)+len(chunk) > maxSseBufferBytes {
+		size := len(p.buffer) + len(chunk)
+		p.buffer = nil
+		return nil, fmt.Errorf("sse: provider %s model %s: pending frame exceeds %d bytes (%d) without delimiter — possible malformed stream",
+			p.provider, p.model, maxSseBufferBytes, size)
+	}
 	p.buffer = append(p.buffer, chunk...)
 	return p.drainFrames()
 }
