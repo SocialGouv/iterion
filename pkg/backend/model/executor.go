@@ -617,16 +617,18 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 		return nil, fmt.Errorf("model: node %q: %w", f.id, err)
 	}
 
+	td := TemplateDataFromContext(ctx)
+
 	// Build system prompt.
 	var systemText string
 	if f.systemPrompt != "" {
 		if p, ok := e.prompts[f.systemPrompt]; ok {
-			systemText = e.resolveTemplate(p.Body, input)
+			systemText = e.resolveTemplate(p.Body, input, td)
 		}
 	}
 
 	// Build user message.
-	userText := e.buildUserMessage(f.userPrompt, input)
+	userText := e.buildUserMessage(f.userPrompt, input, td)
 
 	// On re-invocation after an ask_user pause, prepend the prior
 	// question and the user's answer so the (stateless) LLM doesn't
@@ -850,17 +852,19 @@ func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, 
 		genOpts.ProviderOptions = popts
 	}
 
+	td := TemplateDataFromContext(ctx)
+
 	// System prompt.
 	var systemText string
 	if node.SystemPrompt != "" {
 		if p, ok := e.prompts[node.SystemPrompt]; ok {
-			systemText = e.resolveTemplate(p.Body, input)
+			systemText = e.resolveTemplate(p.Body, input, td)
 			genOpts.System = systemText
 		}
 	}
 
 	// User message from input.
-	userText := e.buildUserMessage("", input)
+	userText := e.buildUserMessage("", input, td)
 
 	// Emit prompt content for observability.
 	if e.hooks.OnLLMPrompt != nil {
@@ -1427,17 +1431,19 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 		}
 	}
 
+	td := TemplateDataFromContext(ctx)
+
 	// Build system prompt with routing instruction.
 	var systemText string
 	if node.SystemPrompt != "" {
 		if p, ok := e.prompts[node.SystemPrompt]; ok {
-			systemText = e.resolveTemplate(p.Body, cleanInput)
+			systemText = e.resolveTemplate(p.Body, cleanInput, td)
 		}
 	}
 	systemText += routerRoutingInstruction(candidates)
 
 	// User message.
-	userText := e.buildUserMessage(node.UserPrompt, cleanInput)
+	userText := e.buildUserMessage(node.UserPrompt, cleanInput, td)
 
 	// Emit prompt content for observability.
 	if e.hooks.OnLLMPrompt != nil {
@@ -1582,11 +1588,13 @@ func providerOptsForNode(effort string) map[string]any {
 
 // buildUserMessage constructs the user message for an LLM call.
 // userPrompt is the prompt reference name from the node (empty if not set).
-func (e *ClawExecutor) buildUserMessage(userPrompt string, input map[string]interface{}) string {
+// td carries the runtime state for cross-namespace refs (`outputs.*`,
+// `loop.*`, `artifacts.*`, `run.*`); pass nil to skip those.
+func (e *ClawExecutor) buildUserMessage(userPrompt string, input map[string]interface{}, td *TemplateData) string {
 	// If the node has a user prompt template, resolve it.
 	if userPrompt != "" {
 		if p, ok := e.prompts[userPrompt]; ok {
-			return e.resolveTemplate(p.Body, input)
+			return e.resolveTemplate(p.Body, input, td)
 		}
 	}
 
@@ -1607,7 +1615,9 @@ func (e *ClawExecutor) buildUserMessage(userPrompt string, input map[string]inte
 const maxTemplateExpansionSize = 5 * 1024 * 1024 // 5 MB
 
 // resolveTemplate substitutes {{...}} references in a prompt body.
-func (e *ClawExecutor) resolveTemplate(body string, input map[string]interface{}) string {
+// td carries the runtime state for cross-namespace refs; pass nil
+// to limit resolution to `input.*` and `vars.*`.
+func (e *ClawExecutor) resolveTemplate(body string, input map[string]interface{}, td *TemplateData) string {
 	var b strings.Builder
 	remaining := body
 
@@ -1627,7 +1637,7 @@ func (e *ClawExecutor) resolveTemplate(body string, input map[string]interface{}
 		b.WriteString(remaining[:start])
 
 		ref := strings.TrimSpace(remaining[start+2 : end-2])
-		val, resolved := e.resolveTemplateRef(ref, input)
+		val, resolved := e.resolveTemplateRef(ref, input, td)
 		if resolved {
 			b.WriteString(val)
 		} else {
@@ -1650,7 +1660,19 @@ func (e *ClawExecutor) resolveTemplate(body string, input map[string]interface{}
 
 // resolveTemplateRef resolves a single "namespace.path" reference.
 // Returns the resolved value and true, or ("", false) if unresolvable.
-func (e *ClawExecutor) resolveTemplateRef(ref string, input map[string]interface{}) (string, bool) {
+// Supported namespaces:
+//   - input.<field>                                  — current node's input
+//   - vars.<name>                                    — workflow variables
+//   - outputs.<node_id>[.<field>...]                 — upstream node output
+//   - loop.<name>.iteration                          — current iteration counter
+//   - loop.<name>.max                                — declared loop bound
+//   - loop.<name>.previous_output[.<field>...]       — snapshot one iteration behind
+//   - artifacts.<publish_name>[.<field>...]          — published artifact
+//   - run.id                                         — current run ID
+//
+// Cross-namespace refs require td (TemplateData) — when td is nil they
+// resolve as not-found and the literal placeholder is preserved.
+func (e *ClawExecutor) resolveTemplateRef(ref string, input map[string]interface{}, td *TemplateData) (string, bool) {
 	parts := strings.SplitN(ref, ".", 2)
 	if len(parts) < 2 {
 		return "", false
@@ -1661,7 +1683,11 @@ func (e *ClawExecutor) resolveTemplateRef(ref string, input map[string]interface
 
 	switch namespace {
 	case "input":
-		if v, ok := input[key]; ok {
+		// `input.X` accepts dotted sub-paths so prompts can drill into
+		// structured fields populated by edge `with`-mappings.
+		segs := strings.Split(key, ".")
+		v, ok := drillTemplatePath(input, segs)
+		if ok {
 			return formatValue(v), true
 		}
 	case "vars":
@@ -1670,9 +1696,107 @@ func (e *ClawExecutor) resolveTemplateRef(ref string, input map[string]interface
 				return formatValue(v), true
 			}
 		}
+	case "outputs":
+		if td == nil {
+			return "", false
+		}
+		segs := strings.Split(key, ".")
+		nodeOut, ok := td.Outputs[segs[0]]
+		if !ok || nodeOut == nil {
+			return "", false
+		}
+		if len(segs) == 1 {
+			return formatValue(nodeOut), true
+		}
+		v, ok := drillTemplatePath(nodeOut, segs[1:])
+		if !ok {
+			return "", false
+		}
+		return formatValue(v), true
+	case "loop":
+		if td == nil {
+			return "", false
+		}
+		segs := strings.Split(key, ".")
+		if len(segs) < 2 {
+			return "", false
+		}
+		loopName, field := segs[0], segs[1]
+		switch field {
+		case "iteration":
+			return formatValue(int64(td.LoopCounters[loopName])), true
+		case "max":
+			return formatValue(int64(td.LoopMaxIterations[loopName])), true
+		case "previous_output":
+			prev := td.LoopPreviousOutput[loopName]
+			// Render empty string on the first iteration (prev is nil)
+			// so prompts that say "vide si premiere iteration" read
+			// naturally instead of leaving a literal placeholder.
+			if len(segs) == 2 {
+				if prev == nil {
+					return "", true
+				}
+				return formatValue(prev), true
+			}
+			if prev == nil {
+				return "", true
+			}
+			v, ok := drillTemplatePath(prev, segs[2:])
+			if !ok {
+				return "", true
+			}
+			return formatValue(v), true
+		}
+	case "artifacts":
+		if td == nil {
+			return "", false
+		}
+		segs := strings.Split(key, ".")
+		art, ok := td.Artifacts[segs[0]]
+		if !ok || art == nil {
+			return "", false
+		}
+		if len(segs) == 1 {
+			return formatValue(art), true
+		}
+		v, ok := drillTemplatePath(art, segs[1:])
+		if !ok {
+			return "", false
+		}
+		return formatValue(v), true
+	case "run":
+		if td == nil {
+			return "", false
+		}
+		if key == "id" {
+			return td.RunID, true
+		}
 	}
 
 	return "", false
+}
+
+// drillTemplatePath walks a dotted path through nested maps. Returns
+// the leaf value and true on success, or (nil, false) when any segment
+// can't be resolved. Used by resolveTemplateRef to drill into
+// outputs.<node>.<field>, loop.<name>.previous_output.<field>, etc.
+func drillTemplatePath(root map[string]interface{}, path []string) (interface{}, bool) {
+	if len(path) == 0 {
+		return root, true
+	}
+	var cur interface{} = root
+	for _, p := range path {
+		m, ok := cur.(map[string]interface{})
+		if !ok {
+			return nil, false
+		}
+		v, ok := m[p]
+		if !ok {
+			return nil, false
+		}
+		cur = v
+	}
+	return cur, true
 }
 
 // ---------------------------------------------------------------------------

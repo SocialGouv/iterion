@@ -1336,7 +1336,7 @@ func TestResolveTemplate(t *testing.T) {
 	}
 
 	body := "Review this PR:\n{{input.diff}}\nRules: {{vars.rules}}"
-	result := exec.resolveTemplate(body, input)
+	result := exec.resolveTemplate(body, input, nil)
 
 	expected := "Review this PR:\nfile.go: +func Hello()\nRules: Be thorough"
 	if result != expected {
@@ -1347,7 +1347,7 @@ func TestResolveTemplate(t *testing.T) {
 func TestResolveTemplateUnknownRef(t *testing.T) {
 	exec := &ClawExecutor{}
 
-	result := exec.resolveTemplate("Hello {{unknown.ref}}", nil)
+	result := exec.resolveTemplate("Hello {{unknown.ref}}", nil, nil)
 	if result != "Hello {{unknown.ref}}" {
 		t.Errorf("expected unresolved ref to remain, got %q", result)
 	}
@@ -1360,7 +1360,7 @@ func TestResolveTemplateJSONValue(t *testing.T) {
 		"items": []string{"a", "b", "c"},
 	}
 
-	result := exec.resolveTemplate("Items: {{input.items}}", input)
+	result := exec.resolveTemplate("Items: {{input.items}}", input, nil)
 	if result != `Items: ["a","b","c"]` {
 		t.Errorf("got %q", result)
 	}

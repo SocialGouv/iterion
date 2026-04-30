@@ -350,6 +350,12 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 		// per-node session state (used by Compactor implementations
 		// to find the right messages list to compact + retry).
 		execCtx := model.WithRunID(ctx, rs.runID)
+		// Attach a template-data snapshot so the executor can resolve
+		// `outputs.*`, `loop.*`, `artifacts.*`, and `run.*` refs in
+		// prompt bodies. These namespaces complement the `input.*`
+		// fields populated by edge `with`-mappings and the workflow-
+		// level `vars.*`.
+		execCtx = model.WithTemplateData(execCtx, e.buildTemplateData(rs))
 		output, err := e.executor.Execute(execCtx, node, nodeInput)
 		if err != nil {
 			// Check if the delegate needs user interaction.
@@ -702,6 +708,28 @@ func resolveLoopPath(path []string, rs *runState, loops map[string]*ir.Loop) int
 		return drillPath(rs.loopPreviousOutput[loopName], path[2:])
 	}
 	return nil
+}
+
+// buildTemplateData assembles a model.TemplateData snapshot from the
+// current run state. It is attached to ctx before each node execution
+// so the executor can resolve `outputs.*`, `loop.*`, `artifacts.*`,
+// and `run.*` refs in prompt bodies. Maps are passed by reference —
+// the executor must treat them as read-only.
+func (e *Engine) buildTemplateData(rs *runState) *model.TemplateData {
+	loopMax := make(map[string]int, len(e.workflow.Loops))
+	for name, l := range e.workflow.Loops {
+		if l != nil {
+			loopMax[name] = l.MaxIterations
+		}
+	}
+	return &model.TemplateData{
+		Outputs:            rs.outputs,
+		LoopCounters:       rs.loopCounters,
+		LoopMaxIterations:  loopMax,
+		LoopPreviousOutput: rs.loopPreviousOutput,
+		Artifacts:          rs.artifacts,
+		RunID:              rs.runID,
+	}
 }
 
 // drillPath walks a nested map[string]interface{} structure by the given
