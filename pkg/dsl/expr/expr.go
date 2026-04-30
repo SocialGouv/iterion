@@ -11,12 +11,18 @@
 //	add      := mul ( ( "+" | "-" ) mul )*
 //	mul      := unary ( ( "*" | "/" | "%" ) unary )*
 //	unary    := "-" unary | primary
-//	primary  := number | string | bool | path | "(" expr ")"
+//	primary  := number | string | bool | funcCall | path | "(" expr ")"
+//	funcCall := IDENT "(" ( expr ( "," expr )* )? ")"
 //	path     := IDENT ( "." IDENT )*
 //
 // The path namespaces recognized by the evaluator depend on the Context:
 // `vars`, `input`, `outputs`, `artifacts`, `loop.<name>.{iteration,max,previous_output[.field]}`,
 // and `run.{id}` are the standard ones.
+//
+// Builtin functions: `length`, `concat`, `unique`, `contains`. See the
+// builtins map below for signatures and semantics. Function calls are
+// disambiguated from path lookups purely by the presence of `(` directly
+// after the leading IDENT — there is no separate keyword set.
 package expr
 
 import (
@@ -164,6 +170,7 @@ const (
 	tokTrue
 	tokFalse
 	tokDot
+	tokComma
 	tokLParen
 	tokRParen
 	tokAnd   // &&
@@ -218,6 +225,9 @@ func (l *lexer) next() (token, error) {
 	case c == '.':
 		l.pos++
 		return token{kind: tokDot, value: "."}, nil
+	case c == ',':
+		l.pos++
+		return token{kind: tokComma, value: ","}, nil
 	case c == '(':
 		l.pos++
 		return token{kind: tokLParen, value: "("}, nil
@@ -397,14 +407,19 @@ type binaryNode struct {
 	op          string
 	left, right node
 }
+type funcCallNode struct {
+	name string
+	args []node
+}
 
-func (litBool) exprNode()     {}
-func (litInt) exprNode()      {}
-func (litFloat) exprNode()    {}
-func (litString) exprNode()   {}
-func (pathNode) exprNode()    {}
-func (*unaryNode) exprNode()  {}
-func (*binaryNode) exprNode() {}
+func (litBool) exprNode()       {}
+func (litInt) exprNode()        {}
+func (litFloat) exprNode()      {}
+func (litString) exprNode()     {}
+func (pathNode) exprNode()      {}
+func (*unaryNode) exprNode()    {}
+func (*binaryNode) exprNode()   {}
+func (*funcCallNode) exprNode() {}
 
 // ---------------------------------------------------------------------------
 // Parser (recursive-descent)
@@ -583,6 +598,14 @@ func (p *parser) parsePrimary() (node, error) {
 	case tokIdent:
 		ns := p.cur.value
 		p.advance()
+		// `IDENT(` (with no intervening dot) is a function call. Reject
+		// unknown names at parse time so authoring errors surface up front.
+		if p.cur.kind == tokLParen {
+			if _, ok := builtins[ns]; !ok {
+				return nil, fmt.Errorf("expr: unknown function %q", ns)
+			}
+			return p.parseFuncCallArgs(ns)
+		}
 		var path []string
 		for p.cur.kind == tokDot {
 			p.advance()
@@ -595,6 +618,32 @@ func (p *parser) parsePrimary() (node, error) {
 		return pathNode{namespace: ns, path: path}, nil
 	}
 	return nil, fmt.Errorf("expr: unexpected token %s", p.cur.value)
+}
+
+// parseFuncCallArgs is invoked with `cur` sitting on the opening `(` of a
+// function call. It consumes the argument list and the closing `)`.
+func (p *parser) parseFuncCallArgs(name string) (node, error) {
+	p.advance() // consume '('
+	var args []node
+	if p.cur.kind != tokRParen {
+		for {
+			arg, err := p.parseExpr()
+			if err != nil {
+				return nil, err
+			}
+			args = append(args, arg)
+			if p.cur.kind == tokComma {
+				p.advance()
+				continue
+			}
+			break
+		}
+	}
+	if p.cur.kind != tokRParen {
+		return nil, fmt.Errorf("expr: expected ')' or ',' in call to %s, got %s", name, p.cur.value)
+	}
+	p.advance() // consume ')'
+	return &funcCallNode{name: name, args: args}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -617,6 +666,8 @@ func evalNode(n node, ctx *Context) (interface{}, error) {
 		return evalUnary(v, ctx)
 	case *binaryNode:
 		return evalBinary(v, ctx)
+	case *funcCallNode:
+		return evalFuncCall(v, ctx)
 	}
 	return nil, fmt.Errorf("expr: unknown node type %T", n)
 }
@@ -873,6 +924,118 @@ func toFloat(v interface{}) (float64, bool) {
 // Reference walker
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Builtin functions
+// ---------------------------------------------------------------------------
+
+// builtins is the function registry. Kept private — extending the language
+// is a deliberate act, not an accidental side-effect of importing the
+// package. Future additions should live here.
+var builtins = map[string]func(args []interface{}) (interface{}, error){
+	"length":   builtinLength,
+	"concat":   builtinConcat,
+	"unique":   builtinUnique,
+	"contains": builtinContains,
+}
+
+func evalFuncCall(n *funcCallNode, ctx *Context) (interface{}, error) {
+	fn, ok := builtins[n.name]
+	if !ok {
+		// Belt-and-suspenders: parser already rejects unknown names, but
+		// keep the runtime check in case an AST is constructed by other
+		// means in the future.
+		return nil, fmt.Errorf("expr: unknown function %q", n.name)
+	}
+	args := make([]interface{}, len(n.args))
+	for i, a := range n.args {
+		v, err := evalNode(a, ctx)
+		if err != nil {
+			return nil, err
+		}
+		args[i] = v
+	}
+	return fn(args)
+}
+
+func builtinLength(args []interface{}) (interface{}, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("expr: length() takes 1 argument, got %d", len(args))
+	}
+	switch v := args[0].(type) {
+	case nil:
+		return int64(0), nil
+	case []interface{}:
+		return int64(len(v)), nil
+	case string:
+		return int64(len(v)), nil
+	}
+	return nil, fmt.Errorf("expr: length() expects array or string, got %T", args[0])
+}
+
+func builtinConcat(args []interface{}) (interface{}, error) {
+	if len(args) == 0 {
+		return nil, fmt.Errorf("expr: concat() takes at least 1 argument")
+	}
+	out := make([]interface{}, 0)
+	for i, a := range args {
+		if a == nil {
+			continue
+		}
+		arr, ok := a.([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("expr: concat() argument %d is %T, want array", i+1, a)
+		}
+		out = append(out, arr...)
+	}
+	return out, nil
+}
+
+func builtinUnique(args []interface{}) (interface{}, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("expr: unique() takes 1 argument, got %d", len(args))
+	}
+	if args[0] == nil {
+		return []interface{}{}, nil
+	}
+	arr, ok := args[0].([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("expr: unique() expects array, got %T", args[0])
+	}
+	// Stringify for equality so heterogeneous arrays (which the runtime
+	// cheerfully produces from JSON) don't blow up on map/slice keys.
+	seen := make(map[string]struct{}, len(arr))
+	out := make([]interface{}, 0, len(arr))
+	for _, v := range arr {
+		key := fmt.Sprintf("%v", v)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+func builtinContains(args []interface{}) (interface{}, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("expr: contains() takes 2 arguments, got %d", len(args))
+	}
+	if args[0] == nil {
+		return false, nil
+	}
+	arr, ok := args[0].([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("expr: contains() expects array as first argument, got %T", args[0])
+	}
+	target := fmt.Sprintf("%v", args[1])
+	for _, v := range arr {
+		if fmt.Sprintf("%v", v) == target {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func walkRefs(n node, fn func(Ref)) {
 	switch v := n.(type) {
 	case pathNode:
@@ -882,5 +1045,9 @@ func walkRefs(n node, fn func(Ref)) {
 	case *binaryNode:
 		walkRefs(v.left, fn)
 		walkRefs(v.right, fn)
+	case *funcCallNode:
+		for _, a := range v.args {
+			walkRefs(a, fn)
+		}
 	}
 }

@@ -267,3 +267,258 @@ func TestExpr_ParseErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestExpr_FuncCall_Length(t *testing.T) {
+	ctx := makeCtx(
+		map[string]interface{}{
+			"items": []interface{}{"a", "b", "c"},
+			"empty": []interface{}{},
+			"name":  "iterion",
+		},
+		nil, nil, nil,
+	)
+	cases := []struct {
+		src    string
+		expect interface{}
+	}{
+		{"length(vars.items)", int64(3)},
+		{"length(vars.empty)", int64(0)},
+		{"length(vars.name)", int64(7)},
+		{"length(vars.missing)", int64(0)},
+		{"length(vars.items) + 1", int64(4)},
+		{"length(vars.items) > 2", true},
+	}
+	for _, c := range cases {
+		ast, err := Parse(c.src)
+		if err != nil {
+			t.Fatalf("Parse(%q) error: %v", c.src, err)
+		}
+		got, err := ast.Eval(ctx)
+		if err != nil {
+			t.Fatalf("Eval(%q) error: %v", c.src, err)
+		}
+		if got != c.expect {
+			t.Errorf("Eval(%q) = %v (%T), want %v (%T)", c.src, got, got, c.expect, c.expect)
+		}
+	}
+}
+
+func TestExpr_FuncCall_Concat(t *testing.T) {
+	ctx := makeCtx(
+		map[string]interface{}{
+			"a": []interface{}{"x", "y"},
+			"b": []interface{}{"z"},
+		},
+		nil, nil, nil,
+	)
+	ast, err := Parse("concat(vars.a, vars.b, vars.missing)")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	got, err := ast.Eval(ctx)
+	if err != nil {
+		t.Fatalf("Eval error: %v", err)
+	}
+	arr, ok := got.([]interface{})
+	if !ok {
+		t.Fatalf("expected []interface{}, got %T", got)
+	}
+	want := []interface{}{"x", "y", "z"}
+	if len(arr) != len(want) {
+		t.Fatalf("concat length = %d, want %d (%v)", len(arr), len(want), arr)
+	}
+	for i := range want {
+		if arr[i] != want[i] {
+			t.Errorf("concat[%d] = %v, want %v", i, arr[i], want[i])
+		}
+	}
+}
+
+func TestExpr_FuncCall_Unique(t *testing.T) {
+	ctx := makeCtx(
+		map[string]interface{}{
+			"items": []interface{}{"a", "b", "a", "c", "b"},
+		},
+		nil, nil, nil,
+	)
+	ast, err := Parse("unique(vars.items)")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	got, err := ast.Eval(ctx)
+	if err != nil {
+		t.Fatalf("Eval error: %v", err)
+	}
+	arr, ok := got.([]interface{})
+	if !ok {
+		t.Fatalf("expected []interface{}, got %T", got)
+	}
+	want := []interface{}{"a", "b", "c"}
+	if len(arr) != len(want) {
+		t.Fatalf("unique length = %d, want %d (%v)", len(arr), len(want), arr)
+	}
+	for i := range want {
+		if arr[i] != want[i] {
+			t.Errorf("unique[%d] = %v, want %v", i, arr[i], want[i])
+		}
+	}
+
+	// nil input → empty array
+	nilAst := MustParse("unique(vars.missing)")
+	out, err := nilAst.Eval(ctx)
+	if err != nil {
+		t.Fatalf("Eval nil error: %v", err)
+	}
+	if a, ok := out.([]interface{}); !ok || len(a) != 0 {
+		t.Errorf("unique(nil) = %v, want empty array", out)
+	}
+}
+
+func TestExpr_FuncCall_Contains(t *testing.T) {
+	ctx := makeCtx(
+		map[string]interface{}{
+			"items": []interface{}{"a", "b", "c"},
+			"nums":  []interface{}{int64(1), int64(2), int64(3)},
+		},
+		nil, nil, nil,
+	)
+	cases := []struct {
+		src    string
+		expect interface{}
+	}{
+		{`contains(vars.items, "a")`, true},
+		{`contains(vars.items, "z")`, false},
+		{`contains(vars.nums, 2)`, true},
+		{`contains(vars.missing, "x")`, false},
+	}
+	for _, c := range cases {
+		ast, err := Parse(c.src)
+		if err != nil {
+			t.Fatalf("Parse(%q) error: %v", c.src, err)
+		}
+		got, err := ast.Eval(ctx)
+		if err != nil {
+			t.Fatalf("Eval(%q) error: %v", c.src, err)
+		}
+		if got != c.expect {
+			t.Errorf("Eval(%q) = %v, want %v", c.src, got, c.expect)
+		}
+	}
+}
+
+func TestExpr_FuncCall_Nested(t *testing.T) {
+	// Mirrors the iterion review-workflow accumulator:
+	// unique(concat(loop.l.previous_output.cumulative, input.scanned_areas))
+	ctx := makeCtx(
+		nil,
+		map[string]interface{}{
+			"scanned_areas": []interface{}{"docs/", "pkg/dsl/"},
+		},
+		nil,
+		map[string]map[string]interface{}{
+			"l": {
+				"previous_output": map[string]interface{}{
+					"cumulative": []interface{}{"docs/", "pkg/runtime/"},
+				},
+			},
+		},
+	)
+	ast, err := Parse("unique(concat(loop.l.previous_output.cumulative, input.scanned_areas))")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	got, err := ast.Eval(ctx)
+	if err != nil {
+		t.Fatalf("Eval error: %v", err)
+	}
+	arr, ok := got.([]interface{})
+	if !ok {
+		t.Fatalf("expected []interface{}, got %T", got)
+	}
+	want := []interface{}{"docs/", "pkg/runtime/", "pkg/dsl/"}
+	if len(arr) != len(want) {
+		t.Fatalf("got %v, want %v", arr, want)
+	}
+	for i := range want {
+		if arr[i] != want[i] {
+			t.Errorf("[%d] = %v, want %v", i, arr[i], want[i])
+		}
+	}
+}
+
+func TestExpr_FuncCall_FirstIterationNilCumulative(t *testing.T) {
+	// Models the first iteration of the review loop where
+	// loop.l.previous_output.cumulative is nil.
+	ctx := makeCtx(
+		nil,
+		map[string]interface{}{"scanned_areas": []interface{}{"a", "b"}},
+		nil,
+		map[string]map[string]interface{}{
+			"l": {"previous_output": map[string]interface{}{}},
+		},
+	)
+	got, err := MustParse("unique(concat(loop.l.previous_output.cumulative, input.scanned_areas))").Eval(ctx)
+	if err != nil {
+		t.Fatalf("Eval error: %v", err)
+	}
+	arr, _ := got.([]interface{})
+	if len(arr) != 2 || arr[0] != "a" || arr[1] != "b" {
+		t.Errorf("got %v, want [a b]", arr)
+	}
+}
+
+func TestExpr_FuncCall_Errors(t *testing.T) {
+	// Parse-time: unknown function name.
+	if _, err := Parse("frobnicate(1)"); err == nil {
+		t.Errorf("expected unknown-function parse error")
+	}
+
+	// Parse-time: missing closing paren.
+	if _, err := Parse("length(1"); err == nil {
+		t.Errorf("expected missing-paren parse error")
+	}
+
+	// Eval-time: arg-count mismatches and type errors.
+	ctx := makeCtx(
+		map[string]interface{}{"s": "hi", "n": int64(5)},
+		nil, nil, nil,
+	)
+	bad := []string{
+		"length()",
+		"length(vars.s, vars.s)",
+		"length(vars.n)", // int is not array/string
+		"concat()",
+		"concat(vars.n)", // int is not array
+		"unique()",
+		"unique(vars.s)", // string is not array
+		"contains(vars.s)",
+		"contains(vars.n, 1)", // int is not array
+	}
+	for _, src := range bad {
+		ast, err := Parse(src)
+		if err != nil {
+			// arg-count failures may surface at parse time for some shapes;
+			// either layer is acceptable.
+			continue
+		}
+		if _, err := ast.Eval(ctx); err == nil {
+			t.Errorf("expected Eval(%q) to fail", src)
+		}
+	}
+}
+
+func TestExpr_FuncCall_Refs(t *testing.T) {
+	ast, err := Parse("unique(concat(loop.l.previous_output.cumulative, input.scanned_areas))")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	gotNs := make(map[string]bool)
+	for _, r := range ast.Refs() {
+		gotNs[r.Namespace] = true
+	}
+	for _, ns := range []string{"loop", "input"} {
+		if !gotNs[ns] {
+			t.Errorf("expected ref namespace %q, got %v", ns, gotNs)
+		}
+	}
+}
