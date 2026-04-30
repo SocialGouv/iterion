@@ -544,7 +544,7 @@ func (e *ClawExecutor) executeNode(ctx context.Context, node ir.Node, input map[
 	case *ir.JudgeNode:
 		return e.executeBackend(ctx, n, input)
 	case *ir.HumanNode:
-		return e.executeHumanLLM(ctx, n, input)
+		return e.executeHumanLLM(ctx, n, input, nil)
 	case *ir.RouterNode:
 		if n.RouterMode == ir.RouterLLM {
 			return e.executeLLMRouterUnified(ctx, n, input)
@@ -839,7 +839,14 @@ validated:
 // executeHumanLLM handles human nodes in llm or llm_or_human interaction mode.
 // It calls GenerateObjectDirect against api.APIClient with mode-specific
 // schema handling for llm_or_human (wrapper schema with needs_human_input).
-func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, input map[string]interface{}) (map[string]interface{}, error) {
+//
+// schemaOverride, when non-nil, is used as the structured-output schema
+// instead of looking up node.OutputSchema in e.schemas. This lets callers
+// (notably ExecuteHumanLLMForInteraction) thread per-call synthetic
+// schemas through without having to register them on the shared
+// e.schemas map — eliminating a concurrent-map-write race when multiple
+// fan-out branches dispatch interaction LLMs in parallel.
+func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, input map[string]interface{}, schemaOverride *ir.Schema) (map[string]interface{}, error) {
 	if node.Interaction == ir.InteractionHuman || node.Interaction == ir.InteractionNone {
 		return nil, fmt.Errorf("model: human node %q in %s interaction mode should not be executed by the model layer", node.ID, node.Interaction)
 	}
@@ -889,10 +896,19 @@ func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, 
 	// Observability hooks.
 	applyHooks(node.ID, e.hooks, &genOpts)
 
-	// Determine the schema to use.
-	schema, ok := e.schemas[node.OutputSchema]
-	if !ok {
-		return nil, fmt.Errorf("model: human node %q references unknown schema %q", node.ID, node.OutputSchema)
+	// Determine the schema to use. A non-nil override takes precedence
+	// over the registered-schemas lookup; this is how the interaction
+	// path passes its per-call synthetic schema without mutating the
+	// shared e.schemas map.
+	var schema *ir.Schema
+	if schemaOverride != nil {
+		schema = schemaOverride
+	} else {
+		var ok bool
+		schema, ok = e.schemas[node.OutputSchema]
+		if !ok {
+			return nil, fmt.Errorf("model: human node %q references unknown schema %q", node.ID, node.OutputSchema)
+		}
 	}
 
 	// For llm_or_human, wrap the schema with needs_human_input field.
@@ -953,9 +969,16 @@ func (e *ClawExecutor) ExecuteHumanLLMForInteraction(
 		Fields: schemaFields,
 	}
 
-	// Register the synthetic schema so executeHumanLLM can find it.
+	// The synthetic schema is per-call state, not workflow state — pass
+	// it through to executeHumanLLM as an override instead of registering
+	// it on the shared e.schemas map. The previous registration approach
+	// races with sibling fan-out branches reading e.schemas for their own
+	// agent/judge/router execution and crashes the process with Go's
+	// 'fatal error: concurrent map writes' when ≥2 branches concurrently
+	// reach this path. Threading the schema as a parameter also avoids
+	// the secondary leak (synthetic entries accumulating across runs
+	// without an evict counterpart).
 	schemaName := syntheticSchema.Name
-	e.schemas[schemaName] = syntheticSchema
 
 	// Build synthetic HumanNode.
 	node := &ir.HumanNode{
@@ -974,7 +997,7 @@ func (e *ClawExecutor) ExecuteHumanLLMForInteraction(
 		input[sanitizeSchemaKey(k)] = v
 	}
 
-	output, err := e.executeHumanLLM(ctx, node, input)
+	output, err := e.executeHumanLLM(ctx, node, input, syntheticSchema)
 	if err != nil {
 		return nil, false, fmt.Errorf("model: interaction LLM for node %q: %w", nodeID, err)
 	}
