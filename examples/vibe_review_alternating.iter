@@ -492,14 +492,16 @@ workflow vibe_review_alternating:
     family: "{{outputs.reviewer_claude.family}}",
     blockers: "{{outputs.reviewer_claude.blockers}}",
     fix_plan: "{{outputs.reviewer_claude.fix_plan}}",
-    confidence: "{{outputs.reviewer_claude.confidence}}"
+    confidence: "{{outputs.reviewer_claude.confidence}}",
+    scanned_areas: "{{outputs.reviewer_claude.scanned_areas}}"
   }
   reviewer_gpt -> streak_check as review_loop(15) with {
     approved: "{{outputs.reviewer_gpt.approved}}",
     family: "{{outputs.reviewer_gpt.family}}",
     blockers: "{{outputs.reviewer_gpt.blockers}}",
     fix_plan: "{{outputs.reviewer_gpt.fix_plan}}",
-    confidence: "{{outputs.reviewer_gpt.confidence}}"
+    confidence: "{{outputs.reviewer_gpt.confidence}}",
+    scanned_areas: "{{outputs.reviewer_gpt.scanned_areas}}"
   }
 
   ## Stop when streak detected (cross-family double approval).
