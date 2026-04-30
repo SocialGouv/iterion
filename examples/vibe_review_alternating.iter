@@ -258,6 +258,12 @@ judge reviewer_gpt:
   system: review_system
   user: review_user_gpt
   session: fresh
+  ## claw backend uses snake_case tool names. Without these the
+  ## reviewer can't read the workspace and produces a
+  ## "no filesystem access" verdict — the claw runtime exposes
+  ## these via tool.RegisterClawBuiltins.
+  tools: [bash, read_file, glob, grep]
+  tool_max_steps: 30
   interaction: human
 
 ## Deterministic streak detector.

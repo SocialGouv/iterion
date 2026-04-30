@@ -352,26 +352,47 @@ func promptWithTimeout(ctx context.Context, prompt string, opts ...claudesdk.Opt
 	}
 }
 
-// streamIdleTimeout is the maximum duration the claude_code session
-// is allowed to stay silent (no AssistantMessage / ResultMessage)
-// before the runSession loop aborts and surfaces a transient error.
-// The runtime then classifies it as resumable so the recovery
-// dispatcher can retry without manual intervention.
+// Stream-timeout tiers calibrated for the two failure shapes we
+// see in practice:
 //
-// The default is calibrated to tolerate Opus extra_high reasoning
-// intervals (which can stay silent for a few minutes between
-// tool calls) without letting truly hung sessions block forever.
-// Override with ITERION_CLAUDE_CODE_STREAM_IDLE_TIMEOUT (Go duration
-// string, e.g. "10m"). Set to "0" to disable the idle timeout.
-const defaultStreamIdleTimeout = 6 * time.Minute
+//   - **Cold timeout** (no message yet, session never produced a
+//     SystemMessage/AssistantMessage): an SDK or process deadlock
+//     manifests immediately. We want to fail fast so the recovery
+//     dispatcher can retry without burning minutes on a corpse.
+//
+//   - **Hot timeout** (at least one message received): claude is
+//     genuinely working — possibly waiting on a sub-agent or a
+//     long-running tool call. We give it significantly more leeway
+//     before declaring the session stuck. Sub-agent runs commonly
+//     take 5–10 min before producing the next visible message.
+//
+// Override either via env (Go duration strings):
+//   - ITERION_CLAUDE_CODE_STREAM_COLD_TIMEOUT
+//   - ITERION_CLAUDE_CODE_STREAM_IDLE_TIMEOUT (the hot timeout —
+//     name kept for back-compat with earlier behavior).
+//
+// Set either to "0" to disable that tier.
+const (
+	defaultStreamColdTimeout = 90 * time.Second
+	defaultStreamHotTimeout  = 15 * time.Minute
+)
 
-func resolveStreamIdleTimeout() time.Duration {
+func resolveStreamColdTimeout() time.Duration {
+	if v := os.Getenv("ITERION_CLAUDE_CODE_STREAM_COLD_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return defaultStreamColdTimeout
+}
+
+func resolveStreamHotTimeout() time.Duration {
 	if v := os.Getenv("ITERION_CLAUDE_CODE_STREAM_IDLE_TIMEOUT"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			return d
 		}
 	}
-	return defaultStreamIdleTimeout
+	return defaultStreamHotTimeout
 }
 
 // runSession opens an interactive Session with the Claude CLI, sends the
@@ -395,7 +416,8 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 		return nil, err
 	}
 
-	idleTimeout := resolveStreamIdleTimeout()
+	coldTimeout := resolveStreamColdTimeout()
+	hotTimeout := resolveStreamHotTimeout()
 
 	// Forward messages from the SDK iterator into a channel so we can
 	// select on (msg, idle-timer, ctx.Done) and abort cleanly when
@@ -424,22 +446,35 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 		}
 	}()
 
+	// receivedAny tracks whether the session has emitted at least one
+	// message. While false we apply the tighter cold timeout (hung
+	// SDK / deadlocked subprocess); once any progress is observed we
+	// switch to the hot timeout (give claude room for sub-agent runs
+	// or other long tool calls).
+	receivedAny := false
 	var result *claudesdk.ResultMessage
-	idle := time.NewTimer(idleTimeout)
+	currentTimeout := coldTimeout
+	idle := time.NewTimer(currentTimeout)
 	defer idle.Stop()
 
 	for {
-		// Reset the idle timer on every iteration so any progress
-		// (assistant tokens, tool calls, tool results) keeps the
-		// session alive.
+		// Pick the timeout that matches the current phase and reset
+		// the timer for this iteration. Any progress (assistant
+		// tokens, tool calls, tool results) flips us into hot mode
+		// and grants the longer budget on every subsequent wait.
+		if receivedAny {
+			currentTimeout = hotTimeout
+		} else {
+			currentTimeout = coldTimeout
+		}
 		if !idle.Stop() {
 			select {
 			case <-idle.C:
 			default:
 			}
 		}
-		if idleTimeout > 0 {
-			idle.Reset(idleTimeout)
+		if currentTimeout > 0 {
+			idle.Reset(currentTimeout)
 		}
 
 		select {
@@ -454,6 +489,9 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 			if it.err != nil {
 				return result, it.err
 			}
+			// Any incoming item proves the SDK is alive — flip into
+			// hot-timeout mode for the rest of the session.
+			receivedAny = true
 			switch m := it.msg.(type) {
 			case *claudesdk.SystemMessage:
 				// `init` is the canonical session start: model + tool list +
@@ -482,13 +520,19 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 				}
 			}
 		case <-idle.C:
-			if idleTimeout <= 0 {
+			if currentTimeout <= 0 {
 				continue
 			}
 			cancelStream()
-			b.Logger.Warn("[%s/claude-code] no SDK message for %s — aborting (idle timeout)",
-				task.NodeID, idleTimeout)
-			return result, fmt.Errorf("claude session idle for %s — aborting (set ITERION_CLAUDE_CODE_STREAM_IDLE_TIMEOUT to extend, or 0 to disable)", idleTimeout)
+			phase := "cold"
+			envHint := "ITERION_CLAUDE_CODE_STREAM_COLD_TIMEOUT"
+			if receivedAny {
+				phase = "hot"
+				envHint = "ITERION_CLAUDE_CODE_STREAM_IDLE_TIMEOUT"
+			}
+			b.Logger.Warn("[%s/claude-code] no SDK message for %s (%s phase) — aborting",
+				task.NodeID, currentTimeout, phase)
+			return result, fmt.Errorf("claude session idle for %s (%s phase) — aborting (set %s to extend, or 0 to disable)", currentTimeout, phase, envHint)
 		case <-ctx.Done():
 			cancelStream()
 			return result, ctx.Err()
