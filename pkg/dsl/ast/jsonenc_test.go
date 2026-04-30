@@ -440,3 +440,71 @@ func TestEdgeWithAllClauses(t *testing.T) {
 		t.Errorf("expected negated=true in JSON:\n%s", jsonStr)
 	}
 }
+
+func TestEditorCriticalFieldsRoundtrip(t *testing.T) {
+	threshold := 0.82
+	preserve := 7
+	workflowInteraction := ast.InteractionLLMOrHuman
+	inherit := false
+	autoload := true
+	original := &ast.File{
+		MCPServers: []*ast.MCPServerDecl{{
+			Name:      "github",
+			Transport: ast.MCPTransportHTTP,
+			URL:       "https://api.githubcopilot.com/mcp",
+			Auth: &ast.MCPAuthDecl{
+				Type:      "oauth2",
+				AuthURL:   "https://github.com/login/oauth/authorize",
+				TokenURL:  "https://github.com/login/oauth/access_token",
+				RevokeURL: "https://github.com/login/oauth/revoke",
+				ClientID:  "Iv1.iterion-demo",
+				Scopes:    []string{"repo", "read:org"},
+			},
+		}},
+		Agents: []*ast.AgentDecl{{
+			Name:      "implement",
+			Backend:   "claude_code",
+			MCP:       &ast.MCPConfigDecl{Inherit: &inherit, Servers: []string{"github"}, Disable: []string{"local"}},
+			System:    "sys",
+			User:      "usr",
+			Session:   ast.SessionFork,
+			MaxTokens: 2048,
+			Readonly:  true,
+			Compaction: &ast.CompactionBlock{
+				Threshold:      &threshold,
+				PreserveRecent: &preserve,
+			},
+		}},
+		Judges: []*ast.JudgeDecl{{
+			Name:        "review",
+			Backend:     "claude_code",
+			MaxTokens:   1024,
+			Readonly:    true,
+			Compaction:  &ast.CompactionBlock{Threshold: &threshold},
+			Interaction: ast.InteractionLLM,
+		}},
+		Workflows: []*ast.WorkflowDecl{{
+			Name:           "flow",
+			Entry:          "implement",
+			DefaultBackend: "claude_code",
+			MCP:            &ast.MCPConfigDecl{AutoloadProject: &autoload, Servers: []string{"github"}},
+			Compaction:     &ast.CompactionBlock{Threshold: &threshold, PreserveRecent: &preserve},
+			Interaction:    &workflowInteraction,
+			Edges:          []*ast.Edge{{From: "implement", To: "review"}, {From: "review", To: "done"}},
+		}},
+	}
+
+	data, err := ast.MarshalFile(original)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	restored, err := ast.UnmarshalFile(data)
+	if err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if !reflect.DeepEqual(original, restored) {
+		origJSON, _ := ast.MarshalFile(original)
+		restJSON, _ := ast.MarshalFile(restored)
+		t.Fatalf("critical field roundtrip mismatch.\nOriginal JSON:\n%s\n\nRestored JSON:\n%s", origJSON, restJSON)
+	}
+}

@@ -213,3 +213,63 @@ func TestUnparseSingleEdgeWith(t *testing.T) {
 		t.Errorf("with entry missing, got:\n%s", got)
 	}
 }
+
+func TestUnparseCriticalEditorFields(t *testing.T) {
+	threshold := 0.82
+	preserve := 7
+	interaction := ast.InteractionLLMOrHuman
+	inherit := false
+	autoload := true
+	f := &ast.File{
+		MCPServers: []*ast.MCPServerDecl{{
+			Name:      "github",
+			Transport: ast.MCPTransportHTTP,
+			URL:       "https://api.githubcopilot.com/mcp",
+			Auth: &ast.MCPAuthDecl{
+				Type:      "oauth2",
+				AuthURL:   "https://github.com/login/oauth/authorize",
+				TokenURL:  "https://github.com/login/oauth/access_token",
+				RevokeURL: "https://github.com/login/oauth/revoke",
+				ClientID:  "Iv1.iterion-demo",
+				Scopes:    []string{"repo", "read:org"},
+			},
+		}},
+		Agents: []*ast.AgentDecl{{
+			Name:       "implement",
+			Backend:    "claude_code",
+			MCP:        &ast.MCPConfigDecl{Inherit: &inherit, Servers: []string{"github"}, Disable: []string{"local"}},
+			Session:    ast.SessionFresh,
+			MaxTokens:  2048,
+			Readonly:   true,
+			Compaction: &ast.CompactionBlock{Threshold: &threshold, PreserveRecent: &preserve},
+		}},
+		Workflows: []*ast.WorkflowDecl{{
+			Name:           "flow",
+			Entry:          "implement",
+			DefaultBackend: "claude_code",
+			MCP:            &ast.MCPConfigDecl{AutoloadProject: &autoload, Servers: []string{"github"}},
+			Compaction:     &ast.CompactionBlock{Threshold: &threshold, PreserveRecent: &preserve},
+			Interaction:    &interaction,
+			Edges:          []*ast.Edge{{From: "implement", To: "done"}},
+		}},
+	}
+
+	got := Unparse(f)
+	checks := []string{
+		"mcp_server github:",
+		"  auth:\n    type: \"oauth2\"",
+		"    scopes: [\"repo\", \"read:org\"]",
+		"  mcp:\n    inherit: false\n    servers: [github]\n    disable: [local]",
+		"  max_tokens: 2048",
+		"  readonly: true",
+		"  compaction:\n    threshold: 0.82\n    preserve_recent: 7",
+		"  default_backend: \"claude_code\"",
+		"  interaction: llm_or_human",
+		"  mcp:\n    autoload_project: true\n    servers: [github]",
+	}
+	for _, want := range checks {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output missing expected fragment %q\nfull output:\n%s", want, got)
+		}
+	}
+}

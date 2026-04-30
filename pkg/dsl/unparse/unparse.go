@@ -51,6 +51,9 @@ func Unparse(f *ast.File) string {
 		if s.URL != "" {
 			writeQuotedProp(&b, "url", s.URL)
 		}
+		if s.Auth != nil {
+			writeMCPAuthBlock(&b, s.Auth)
+		}
 	}
 
 	// --- Prompts ---
@@ -97,6 +100,9 @@ func Unparse(f *ast.File) string {
 		writeAgentFields(&b, a.Model, a.Backend, a.Input, a.Output, a.Publish,
 			a.System, a.User, a.Session, a.Tools, a.ToolPolicy, a.ToolMaxSteps, a.MaxTokens, a.ReasoningEffort, a.Readonly,
 			a.Interaction, a.InteractionPrompt, a.InteractionModel, a.Await)
+		if a.Compaction != nil {
+			writeCompaction(&b, a.Compaction, "  ", false)
+		}
 	}
 
 	// --- Judges ---
@@ -109,6 +115,9 @@ func Unparse(f *ast.File) string {
 		writeAgentFields(&b, j.Model, j.Backend, j.Input, j.Output, j.Publish,
 			j.System, j.User, j.Session, j.Tools, j.ToolPolicy, j.ToolMaxSteps, j.MaxTokens, j.ReasoningEffort, j.Readonly,
 			j.Interaction, j.InteractionPrompt, j.InteractionModel, j.Await)
+		if j.Compaction != nil {
+			writeCompaction(&b, j.Compaction, "  ", false)
+		}
 	}
 
 	// --- Routers ---
@@ -224,6 +233,10 @@ func Unparse(f *ast.File) string {
 			writeQuotedProp(&b, "default_backend", w.DefaultBackend)
 		}
 
+		if w.Interaction != nil {
+			writeProp(&b, "interaction", w.Interaction.String())
+		}
+
 		if len(w.ToolPolicy) > 0 {
 			fmt.Fprintf(&b, "  tool_policy: [%s]\n", strings.Join(w.ToolPolicy, ", "))
 		}
@@ -235,6 +248,10 @@ func Unparse(f *ast.File) string {
 
 		if w.Budget != nil {
 			writeBudget(&b, w.Budget)
+		}
+
+		if w.Compaction != nil {
+			writeCompaction(&b, w.Compaction, "  ", true)
 		}
 
 		for _, e := range w.Edges {
@@ -286,6 +303,28 @@ func writeLiteral(b *strings.Builder, lit *ast.Literal) {
 		}
 	default:
 		b.WriteString(lit.Raw)
+	}
+}
+
+func writeMCPAuthBlock(b *strings.Builder, auth *ast.MCPAuthDecl) {
+	b.WriteString("  auth:\n")
+	if auth.Type != "" {
+		fmt.Fprintf(b, "    type: %q\n", auth.Type)
+	}
+	if auth.AuthURL != "" {
+		fmt.Fprintf(b, "    auth_url: %q\n", auth.AuthURL)
+	}
+	if auth.TokenURL != "" {
+		fmt.Fprintf(b, "    token_url: %q\n", auth.TokenURL)
+	}
+	if auth.RevokeURL != "" {
+		fmt.Fprintf(b, "    revoke_url: %q\n", auth.RevokeURL)
+	}
+	if auth.ClientID != "" {
+		fmt.Fprintf(b, "    client_id: %q\n", auth.ClientID)
+	}
+	if len(auth.Scopes) > 0 {
+		fmt.Fprintf(b, "    scopes: [%s]\n", quoteList(auth.Scopes))
 	}
 }
 
@@ -371,6 +410,19 @@ func writeAgentFields(b *strings.Builder, model, backend, input, output, publish
 	}
 	if await != ast.AwaitNone {
 		writeProp(b, "await", await.String())
+	}
+}
+
+func writeCompaction(b *strings.Builder, compaction *ast.CompactionBlock, indent string, leadingBlank bool) {
+	if leadingBlank {
+		b.WriteByte('\n')
+	}
+	fmt.Fprintf(b, "%scompaction:\n", indent)
+	if compaction.Threshold != nil {
+		fmt.Fprintf(b, "%s  threshold: %g\n", indent, *compaction.Threshold)
+	}
+	if compaction.PreserveRecent != nil {
+		fmt.Fprintf(b, "%s  preserve_recent: %d\n", indent, *compaction.PreserveRecent)
 	}
 }
 

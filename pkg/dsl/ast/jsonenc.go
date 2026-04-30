@@ -26,9 +26,23 @@ var sessionModeToStr = map[SessionMode]string{
 	SessionFresh:         "fresh",
 	SessionInherit:       "inherit",
 	SessionArtifactsOnly: "artifacts_only",
+	SessionFork:          "fork",
 }
 
 var strToSessionMode = reverseMap(sessionModeToStr)
+
+var mcpTransportToStr = map[MCPTransport]string{
+	MCPTransportUnknown: "unknown",
+	MCPTransportStdio:   "stdio",
+	MCPTransportHTTP:    "http",
+	MCPTransportSSE:     "sse",
+}
+
+var strToMCPTransport = func() map[string]MCPTransport {
+	m := reverseMap(mcpTransportToStr)
+	m[""] = MCPTransportUnknown
+	return m
+}()
 
 var routerModeToStr = map[RouterMode]string{
 	RouterFanOutAll:  "fan_out_all",
@@ -92,17 +106,18 @@ func reverseMap[K comparable, V comparable](m map[K]V) map[V]K {
 // ---------------------------------------------------------------------------
 
 type jsonFile struct {
-	Vars      *jsonVarsBlock      `json:"vars,omitempty"`
-	Prompts   []*jsonPromptDecl   `json:"prompts,omitempty"`
-	Schemas   []*jsonSchemaDecl   `json:"schemas,omitempty"`
-	Agents    []*jsonAgentDecl    `json:"agents,omitempty"`
-	Judges    []*jsonJudgeDecl    `json:"judges,omitempty"`
-	Routers   []*jsonRouterDecl   `json:"routers,omitempty"`
-	Humans    []*jsonHumanDecl    `json:"humans,omitempty"`
-	Tools     []*jsonToolNodeDecl `json:"tools,omitempty"`
-	Computes  []*jsonComputeDecl  `json:"computes,omitempty"`
-	Workflows []*jsonWorkflowDecl `json:"workflows,omitempty"`
-	Comments  []*jsonComment      `json:"comments,omitempty"`
+	Vars       *jsonVarsBlock       `json:"vars,omitempty"`
+	MCPServers []*jsonMCPServerDecl `json:"mcp_servers,omitempty"`
+	Prompts    []*jsonPromptDecl    `json:"prompts,omitempty"`
+	Schemas    []*jsonSchemaDecl    `json:"schemas,omitempty"`
+	Agents     []*jsonAgentDecl     `json:"agents,omitempty"`
+	Judges     []*jsonJudgeDecl     `json:"judges,omitempty"`
+	Routers    []*jsonRouterDecl    `json:"routers,omitempty"`
+	Humans     []*jsonHumanDecl     `json:"humans,omitempty"`
+	Tools      []*jsonToolNodeDecl  `json:"tools,omitempty"`
+	Computes   []*jsonComputeDecl   `json:"computes,omitempty"`
+	Workflows  []*jsonWorkflowDecl  `json:"workflows,omitempty"`
+	Comments   []*jsonComment       `json:"comments,omitempty"`
 }
 
 type jsonComment struct {
@@ -128,6 +143,36 @@ type jsonLiteral struct {
 	BoolVal  bool    `json:"bool_val,omitempty"`
 }
 
+type jsonMCPServerDecl struct {
+	Name      string           `json:"name,omitempty"`
+	Transport string           `json:"transport,omitempty"`
+	Command   string           `json:"command,omitempty"`
+	Args      []string         `json:"args,omitempty"`
+	URL       string           `json:"url,omitempty"`
+	Auth      *jsonMCPAuthDecl `json:"auth,omitempty"`
+}
+
+type jsonMCPAuthDecl struct {
+	Type      string   `json:"type,omitempty"`
+	AuthURL   string   `json:"auth_url,omitempty"`
+	TokenURL  string   `json:"token_url,omitempty"`
+	RevokeURL string   `json:"revoke_url,omitempty"`
+	ClientID  string   `json:"client_id,omitempty"`
+	Scopes    []string `json:"scopes,omitempty"`
+}
+
+type jsonMCPConfigDecl struct {
+	AutoloadProject *bool    `json:"autoload_project,omitempty"`
+	Inherit         *bool    `json:"inherit,omitempty"`
+	Servers         []string `json:"servers,omitempty"`
+	Disable         []string `json:"disable,omitempty"`
+}
+
+type jsonCompactionBlock struct {
+	Threshold      *float64 `json:"threshold,omitempty"`
+	PreserveRecent *int     `json:"preserve_recent,omitempty"`
+}
+
 type jsonPromptDecl struct {
 	Name string `json:"name,omitempty"`
 	Body string `json:"body,omitempty"`
@@ -145,43 +190,51 @@ type jsonSchemaField struct {
 }
 
 type jsonAgentDecl struct {
-	Name              string   `json:"name,omitempty"`
-	Model             string   `json:"model,omitempty"`
-	Backend           string   `json:"backend,omitempty"`
-	Input             string   `json:"input,omitempty"`
-	Output            string   `json:"output,omitempty"`
-	Publish           string   `json:"publish,omitempty"`
-	System            string   `json:"system,omitempty"`
-	User              string   `json:"user,omitempty"`
-	Session           string   `json:"session,omitempty"`
-	Tools             []string `json:"tools,omitempty"`
-	ToolPolicy        []string `json:"tool_policy,omitempty"`
-	ToolMaxSteps      int      `json:"tool_max_steps,omitempty"`
-	ReasoningEffort   string   `json:"reasoning_effort,omitempty"`
-	Interaction       string   `json:"interaction,omitempty"`
-	InteractionPrompt string   `json:"interaction_prompt,omitempty"`
-	InteractionModel  string   `json:"interaction_model,omitempty"`
-	Await             string   `json:"await,omitempty"`
+	Name              string               `json:"name,omitempty"`
+	Model             string               `json:"model,omitempty"`
+	Backend           string               `json:"backend,omitempty"`
+	MCP               *jsonMCPConfigDecl   `json:"mcp,omitempty"`
+	Input             string               `json:"input,omitempty"`
+	Output            string               `json:"output,omitempty"`
+	Publish           string               `json:"publish,omitempty"`
+	System            string               `json:"system,omitempty"`
+	User              string               `json:"user,omitempty"`
+	Session           string               `json:"session,omitempty"`
+	Tools             []string             `json:"tools,omitempty"`
+	ToolPolicy        []string             `json:"tool_policy,omitempty"`
+	ToolMaxSteps      int                  `json:"tool_max_steps,omitempty"`
+	MaxTokens         int                  `json:"max_tokens,omitempty"`
+	ReasoningEffort   string               `json:"reasoning_effort,omitempty"`
+	Readonly          bool                 `json:"readonly,omitempty"`
+	Interaction       string               `json:"interaction,omitempty"`
+	InteractionPrompt string               `json:"interaction_prompt,omitempty"`
+	InteractionModel  string               `json:"interaction_model,omitempty"`
+	Await             string               `json:"await,omitempty"`
+	Compaction        *jsonCompactionBlock `json:"compaction,omitempty"`
 }
 
 type jsonJudgeDecl struct {
-	Name              string   `json:"name,omitempty"`
-	Model             string   `json:"model,omitempty"`
-	Backend           string   `json:"backend,omitempty"`
-	Input             string   `json:"input,omitempty"`
-	Output            string   `json:"output,omitempty"`
-	Publish           string   `json:"publish,omitempty"`
-	System            string   `json:"system,omitempty"`
-	User              string   `json:"user,omitempty"`
-	Session           string   `json:"session,omitempty"`
-	Tools             []string `json:"tools,omitempty"`
-	ToolPolicy        []string `json:"tool_policy,omitempty"`
-	ToolMaxSteps      int      `json:"tool_max_steps,omitempty"`
-	ReasoningEffort   string   `json:"reasoning_effort,omitempty"`
-	Interaction       string   `json:"interaction,omitempty"`
-	InteractionPrompt string   `json:"interaction_prompt,omitempty"`
-	InteractionModel  string   `json:"interaction_model,omitempty"`
-	Await             string   `json:"await,omitempty"`
+	Name              string               `json:"name,omitempty"`
+	Model             string               `json:"model,omitempty"`
+	Backend           string               `json:"backend,omitempty"`
+	MCP               *jsonMCPConfigDecl   `json:"mcp,omitempty"`
+	Input             string               `json:"input,omitempty"`
+	Output            string               `json:"output,omitempty"`
+	Publish           string               `json:"publish,omitempty"`
+	System            string               `json:"system,omitempty"`
+	User              string               `json:"user,omitempty"`
+	Session           string               `json:"session,omitempty"`
+	Tools             []string             `json:"tools,omitempty"`
+	ToolPolicy        []string             `json:"tool_policy,omitempty"`
+	ToolMaxSteps      int                  `json:"tool_max_steps,omitempty"`
+	MaxTokens         int                  `json:"max_tokens,omitempty"`
+	ReasoningEffort   string               `json:"reasoning_effort,omitempty"`
+	Readonly          bool                 `json:"readonly,omitempty"`
+	Interaction       string               `json:"interaction,omitempty"`
+	InteractionPrompt string               `json:"interaction_prompt,omitempty"`
+	InteractionModel  string               `json:"interaction_model,omitempty"`
+	Await             string               `json:"await,omitempty"`
+	Compaction        *jsonCompactionBlock `json:"compaction,omitempty"`
 }
 
 type jsonRouterDecl struct {
@@ -212,6 +265,7 @@ type jsonHumanDecl struct {
 type jsonToolNodeDecl struct {
 	Name    string `json:"name,omitempty"`
 	Command string `json:"command,omitempty"`
+	Input   string `json:"input,omitempty"`
 	Output  string `json:"output,omitempty"`
 	Await   string `json:"await,omitempty"`
 }
@@ -230,12 +284,16 @@ type jsonComputeExpr struct {
 }
 
 type jsonWorkflowDecl struct {
-	Name       string           `json:"name,omitempty"`
-	Vars       *jsonVarsBlock   `json:"vars,omitempty"`
-	Entry      string           `json:"entry,omitempty"`
-	ToolPolicy []string         `json:"tool_policy,omitempty"`
-	Budget     *jsonBudgetBlock `json:"budget,omitempty"`
-	Edges      []*jsonEdge      `json:"edges,omitempty"`
+	Name           string               `json:"name,omitempty"`
+	Vars           *jsonVarsBlock       `json:"vars,omitempty"`
+	Entry          string               `json:"entry,omitempty"`
+	DefaultBackend string               `json:"default_backend,omitempty"`
+	ToolPolicy     []string             `json:"tool_policy,omitempty"`
+	MCP            *jsonMCPConfigDecl   `json:"mcp,omitempty"`
+	Budget         *jsonBudgetBlock     `json:"budget,omitempty"`
+	Compaction     *jsonCompactionBlock `json:"compaction,omitempty"`
+	Interaction    string               `json:"interaction,omitempty"`
+	Edges          []*jsonEdge          `json:"edges,omitempty"`
 }
 
 type jsonBudgetBlock struct {
@@ -291,6 +349,9 @@ func toJSON(f *File) *jsonFile {
 		jf.Vars = varsBlockToJSON(f.Vars)
 	}
 
+	for _, s := range f.MCPServers {
+		jf.MCPServers = append(jf.MCPServers, mcpServerToJSON(s))
+	}
 	for _, p := range f.Prompts {
 		jf.Prompts = append(jf.Prompts, &jsonPromptDecl{Name: p.Name, Body: p.Body})
 	}
@@ -321,6 +382,7 @@ func toJSON(f *File) *jsonFile {
 		jf.Tools = append(jf.Tools, &jsonToolNodeDecl{
 			Name:    t.Name,
 			Command: t.Command,
+			Input:   t.Input,
 			Output:  t.Output,
 			Await:   awaitModeToStr[t.Await],
 		})
@@ -345,6 +407,46 @@ func toJSON(f *File) *jsonFile {
 	}
 
 	return jf
+}
+
+func mcpServerToJSON(s *MCPServerDecl) *jsonMCPServerDecl {
+	js := &jsonMCPServerDecl{
+		Name:      s.Name,
+		Transport: mcpTransportToStr[s.Transport],
+		Command:   s.Command,
+		Args:      s.Args,
+		URL:       s.URL,
+	}
+	if s.Auth != nil {
+		js.Auth = &jsonMCPAuthDecl{
+			Type:      s.Auth.Type,
+			AuthURL:   s.Auth.AuthURL,
+			TokenURL:  s.Auth.TokenURL,
+			RevokeURL: s.Auth.RevokeURL,
+			ClientID:  s.Auth.ClientID,
+			Scopes:    s.Auth.Scopes,
+		}
+	}
+	return js
+}
+
+func mcpConfigToJSON(c *MCPConfigDecl) *jsonMCPConfigDecl {
+	if c == nil {
+		return nil
+	}
+	return &jsonMCPConfigDecl{
+		AutoloadProject: c.AutoloadProject,
+		Inherit:         c.Inherit,
+		Servers:         c.Servers,
+		Disable:         c.Disable,
+	}
+}
+
+func compactionToJSON(c *CompactionBlock) *jsonCompactionBlock {
+	if c == nil {
+		return nil
+	}
+	return &jsonCompactionBlock{Threshold: c.Threshold, PreserveRecent: c.PreserveRecent}
 }
 
 func varsBlockToJSON(v *VarsBlock) *jsonVarsBlock {
@@ -390,6 +492,7 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		Name:              a.Name,
 		Model:             a.Model,
 		Backend:           a.Backend,
+		MCP:               mcpConfigToJSON(a.MCP),
 		Input:             a.Input,
 		Output:            a.Output,
 		Publish:           a.Publish,
@@ -399,11 +502,14 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		Tools:             a.Tools,
 		ToolPolicy:        a.ToolPolicy,
 		ToolMaxSteps:      a.ToolMaxSteps,
+		MaxTokens:         a.MaxTokens,
 		ReasoningEffort:   a.ReasoningEffort,
+		Readonly:          a.Readonly,
 		Interaction:       interactionModeToStr[a.Interaction],
 		InteractionPrompt: a.InteractionPrompt,
 		InteractionModel:  a.InteractionModel,
 		Await:             awaitModeToStr[a.Await],
+		Compaction:        compactionToJSON(a.Compaction),
 	}
 }
 
@@ -412,6 +518,7 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		Name:              j.Name,
 		Model:             j.Model,
 		Backend:           j.Backend,
+		MCP:               mcpConfigToJSON(j.MCP),
 		Input:             j.Input,
 		Output:            j.Output,
 		Publish:           j.Publish,
@@ -421,11 +528,14 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		Tools:             j.Tools,
 		ToolPolicy:        j.ToolPolicy,
 		ToolMaxSteps:      j.ToolMaxSteps,
+		MaxTokens:         j.MaxTokens,
 		ReasoningEffort:   j.ReasoningEffort,
+		Readonly:          j.Readonly,
 		Interaction:       interactionModeToStr[j.Interaction],
 		InteractionPrompt: j.InteractionPrompt,
 		InteractionModel:  j.InteractionModel,
 		Await:             awaitModeToStr[j.Await],
+		Compaction:        compactionToJSON(j.Compaction),
 	}
 }
 
@@ -448,12 +558,18 @@ func humanToJSON(h *HumanDecl) *jsonHumanDecl {
 
 func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 	jw := &jsonWorkflowDecl{
-		Name:       w.Name,
-		Entry:      w.Entry,
-		ToolPolicy: w.ToolPolicy,
+		Name:           w.Name,
+		Entry:          w.Entry,
+		DefaultBackend: w.DefaultBackend,
+		ToolPolicy:     w.ToolPolicy,
+		MCP:            mcpConfigToJSON(w.MCP),
+		Compaction:     compactionToJSON(w.Compaction),
 	}
 	if w.Vars != nil {
 		jw.Vars = varsBlockToJSON(w.Vars)
+	}
+	if w.Interaction != nil {
+		jw.Interaction = interactionModeToStr[*w.Interaction]
 	}
 	if w.Budget != nil {
 		jw.Budget = &jsonBudgetBlock{
@@ -521,6 +637,14 @@ func fromJSON(jf *jsonFile) (*File, error) {
 		f.Vars = v
 	}
 
+	for _, js := range jf.MCPServers {
+		s, err := mcpServerFromJSON(js)
+		if err != nil {
+			return nil, err
+		}
+		f.MCPServers = append(f.MCPServers, s)
+	}
+
 	for _, jp := range jf.Prompts {
 		f.Prompts = append(f.Prompts, &PromptDecl{Name: jp.Name, Body: jp.Body})
 	}
@@ -581,6 +705,7 @@ func fromJSON(jf *jsonFile) (*File, error) {
 		f.Tools = append(f.Tools, &ToolNodeDecl{
 			Name:    jt.Name,
 			Command: jt.Command,
+			Input:   jt.Input,
 			Output:  jt.Output,
 			Await:   aw,
 		})
@@ -616,6 +741,50 @@ func fromJSON(jf *jsonFile) (*File, error) {
 	}
 
 	return f, nil
+}
+
+func mcpServerFromJSON(js *jsonMCPServerDecl) (*MCPServerDecl, error) {
+	transport, ok := strToMCPTransport[js.Transport]
+	if js.Transport != "" && !ok {
+		return nil, fmt.Errorf("astjson: unknown mcp transport %q", js.Transport)
+	}
+	s := &MCPServerDecl{
+		Name:      js.Name,
+		Transport: transport,
+		Command:   js.Command,
+		Args:      js.Args,
+		URL:       js.URL,
+	}
+	if js.Auth != nil {
+		s.Auth = &MCPAuthDecl{
+			Type:      js.Auth.Type,
+			AuthURL:   js.Auth.AuthURL,
+			TokenURL:  js.Auth.TokenURL,
+			RevokeURL: js.Auth.RevokeURL,
+			ClientID:  js.Auth.ClientID,
+			Scopes:    js.Auth.Scopes,
+		}
+	}
+	return s, nil
+}
+
+func mcpConfigFromJSON(jc *jsonMCPConfigDecl) *MCPConfigDecl {
+	if jc == nil {
+		return nil
+	}
+	return &MCPConfigDecl{
+		AutoloadProject: jc.AutoloadProject,
+		Inherit:         jc.Inherit,
+		Servers:         jc.Servers,
+		Disable:         jc.Disable,
+	}
+}
+
+func compactionFromJSON(jc *jsonCompactionBlock) *CompactionBlock {
+	if jc == nil {
+		return nil
+	}
+	return &CompactionBlock{Threshold: jc.Threshold, PreserveRecent: jc.PreserveRecent}
 }
 
 func varsBlockFromJSON(jv *jsonVarsBlock) (*VarsBlock, error) {
@@ -686,6 +855,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 		Name:              ja.Name,
 		Model:             ja.Model,
 		Backend:           ja.Backend,
+		MCP:               mcpConfigFromJSON(ja.MCP),
 		Input:             ja.Input,
 		Output:            ja.Output,
 		Publish:           ja.Publish,
@@ -695,11 +865,14 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 		Tools:             ja.Tools,
 		ToolPolicy:        ja.ToolPolicy,
 		ToolMaxSteps:      ja.ToolMaxSteps,
+		MaxTokens:         ja.MaxTokens,
 		ReasoningEffort:   ja.ReasoningEffort,
+		Readonly:          ja.Readonly,
 		Interaction:       interaction,
 		InteractionPrompt: ja.InteractionPrompt,
 		InteractionModel:  ja.InteractionModel,
 		Await:             aw,
+		Compaction:        compactionFromJSON(ja.Compaction),
 	}, nil
 }
 
@@ -720,6 +893,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 		Name:              jj.Name,
 		Model:             jj.Model,
 		Backend:           jj.Backend,
+		MCP:               mcpConfigFromJSON(jj.MCP),
 		Input:             jj.Input,
 		Output:            jj.Output,
 		Publish:           jj.Publish,
@@ -729,11 +903,14 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 		Tools:             jj.Tools,
 		ToolPolicy:        jj.ToolPolicy,
 		ToolMaxSteps:      jj.ToolMaxSteps,
+		MaxTokens:         jj.MaxTokens,
 		ReasoningEffort:   jj.ReasoningEffort,
+		Readonly:          jj.Readonly,
 		Interaction:       interaction,
 		InteractionPrompt: jj.InteractionPrompt,
 		InteractionModel:  jj.InteractionModel,
 		Await:             aw,
+		Compaction:        compactionFromJSON(jj.Compaction),
 	}, nil
 }
 
@@ -772,9 +949,12 @@ func humanFromJSONWithInteraction(jh *jsonHumanDecl, interaction InteractionMode
 
 func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 	w := &WorkflowDecl{
-		Name:       jw.Name,
-		Entry:      jw.Entry,
-		ToolPolicy: jw.ToolPolicy,
+		Name:           jw.Name,
+		Entry:          jw.Entry,
+		DefaultBackend: jw.DefaultBackend,
+		ToolPolicy:     jw.ToolPolicy,
+		MCP:            mcpConfigFromJSON(jw.MCP),
+		Compaction:     compactionFromJSON(jw.Compaction),
 	}
 	if jw.Vars != nil {
 		v, err := varsBlockFromJSON(jw.Vars)
@@ -782,6 +962,13 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 			return nil, err
 		}
 		w.Vars = v
+	}
+	if jw.Interaction != "" {
+		interaction, ok := strToInteractionMode[jw.Interaction]
+		if !ok {
+			return nil, fmt.Errorf("astjson: unknown interaction mode %q", jw.Interaction)
+		}
+		w.Interaction = &interaction
 	}
 	if jw.Budget != nil {
 		w.Budget = &BudgetBlock{
