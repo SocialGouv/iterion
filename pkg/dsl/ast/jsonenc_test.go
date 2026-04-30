@@ -125,6 +125,7 @@ func buildTestFile() *ast.File {
 			{
 				Name:    "run_tests",
 				Command: "go test ./...",
+				Input:   "task_input",
 				Output:  "test_output",
 			},
 		},

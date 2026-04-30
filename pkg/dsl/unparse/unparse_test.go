@@ -87,7 +87,7 @@ func TestUnparseBasic(t *testing.T) {
 			},
 		},
 		Tools: []*ast.ToolNodeDecl{
-			{Name: "run_ci", Command: "${CI_COMMAND}", Output: "ci_result"},
+			{Name: "run_ci", Command: "${CI_COMMAND}", Input: "ci_input", Output: "ci_result"},
 		},
 		Workflows: []*ast.WorkflowDecl{
 			{
@@ -160,6 +160,7 @@ func TestUnparseBasic(t *testing.T) {
 		"min_answers: 1",
 		"tool run_ci:",
 		"command: \"${CI_COMMAND}\"",
+		"input: ci_input",
 		"output: ci_result",
 		"workflow my_workflow:",
 		"  vars:\n    branch: string\n    ci_command: string = \"make test\"",

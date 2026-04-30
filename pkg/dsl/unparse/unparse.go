@@ -188,6 +188,9 @@ func Unparse(f *ast.File) string {
 		if t.Command != "" {
 			writeQuotedProp(&b, "command", t.Command)
 		}
+		if t.Input != "" {
+			writeProp(&b, "input", t.Input)
+		}
 		if t.Output != "" {
 			writeProp(&b, "output", t.Output)
 		}
