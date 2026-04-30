@@ -317,7 +317,43 @@ agent tasks_runner:
   tool_max_steps: 12
   session: fresh
 
-## ─── Workflow : 5 agents en séquence ─────────────────────────
+## ─── Agent 6 — Subagent (claw `agent` tool) ──────────────────
+
+prompt subagent_system:
+  Tu valides le tool claw `agent` qui spawne un sub-agent réel via une
+  child conversation. Le sous-agent reçoit son propre prompt, ses
+  propres tools (filtrés selon subagent_type), et retourne du texte
+  qui arrive en JSON dans le tool_result.
+
+prompt subagent_user:
+  Appelle UNE fois le tool `agent` :
+   - description="probe-subagent"
+   - subagent_type="explore"
+   - prompt="Réponds par exactement le texte 'PROBE-OK-12345' sans rien d'autre."
+
+  Le retour du tool est un JSON avec un champ "text" — capture ce
+  champ tel quel dans `subagent_text`. Le champ "agent_id" doit aussi
+  être capturé dans `subagent_id` (preuve que la metadata est cohérente).
+
+schema subagent_input:
+  trigger: string
+
+schema subagent_output:
+  subagent_id: string
+  subagent_text: string
+
+agent subagent_runner:
+  model: "anthropic/claude-haiku-4-5-20251001"
+  input: subagent_input
+  output: subagent_output
+  publish: subagent_result
+  system: subagent_system
+  user: subagent_user
+  tools: [agent]
+  tool_max_steps: 4
+  session: fresh
+
+## ─── Workflow : 6 agents en séquence ─────────────────────────
 
 workflow claw_tool_coverage:
   vars:
@@ -327,9 +363,9 @@ workflow claw_tool_coverage:
 
   budget:
     max_parallel_branches: 1
-    max_duration: "15m"
+    max_duration: "20m"
     max_cost_usd: 5
-    max_tokens: 400000
+    max_tokens: 600000
 
   mcp:
     servers: [testsrv]
@@ -338,4 +374,5 @@ workflow claw_tool_coverage:
   mcp_runner       -> lifecycle_runner with { trigger: "next" }
   lifecycle_runner -> workers_runner   with { trigger: "next" }
   workers_runner   -> tasks_runner     with { trigger: "next" }
-  tasks_runner     -> done             with { trigger: "end" }
+  tasks_runner     -> subagent_runner  with { trigger: "next" }
+  subagent_runner  -> done             with { trigger: "end" }

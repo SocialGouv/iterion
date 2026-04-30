@@ -131,6 +131,9 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 		PlanMode:    &clawtools.PlanModeState{Active: &planActive, Dir: planDir},
 		MCPProvider: mcpManager.ClawProvider(nil),
 	}
+	clawDefaults.Subagent = model.NewSubagentRunner(
+		reg, toolReg, hooks, nil, "anthropic/claude-haiku-4-5-20251001",
+	)
 	if err := tool.RegisterClawAll(toolReg, clawDefaults); err != nil {
 		t.Fatalf("RegisterClawAll: %v", err)
 	}
@@ -221,6 +224,9 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 		"worker_observe_completion", "worker_restart", "worker_terminate",
 		// tasks_runner — task lifecycle tools beyond CRUD basics.
 		"task_update", "task_output", "task_stop", "run_task_packet",
+		// subagent_runner — claw `agent` tool dispatched into a real
+		// child conversation (iterion-supplied SubagentRunner).
+		"agent",
 	}
 	// Two-tier assertion: every tool must be dispatched, AND every
 	// tool must succeed at least once. The dispatch tier catches
@@ -261,6 +267,7 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 		workerPromptAttempts                          float64
 		tasksTaskID, tasksStoppedStatus               string
 		tasksPacketObjective                          string
+		subagentID, subagentText                      string
 	)
 	for _, evt := range events {
 		if evt.Type != store.EventNodeFinished || evt.Data == nil {
@@ -292,6 +299,9 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 			tasksTaskID, _ = out["tasks_task_id"].(string)
 			tasksStoppedStatus, _ = out["tasks_stopped_status"].(string)
 			tasksPacketObjective, _ = out["tasks_packet_objective"].(string)
+		case "subagent_runner":
+			subagentID, _ = out["subagent_id"].(string)
+			subagentText, _ = out["subagent_text"].(string)
 		}
 	}
 
@@ -362,6 +372,17 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 	if tasksPacketObjective != "probe-objective" {
 		t.Errorf("tasks_runner.tasks_packet_objective != %q: got %q (run_task_packet objective not exploited)",
 			"probe-objective", tasksPacketObjective)
+	}
+
+	// subagent_runner — the agent tool was overridden with iterion's
+	// real SubagentRunner; the child Haiku call must produce the probe
+	// string and the parent must capture it via the tool result.
+	if subagentID == "" {
+		t.Errorf("subagent_runner.subagent_id empty — agent tool result not exploited")
+	}
+	if !strings.Contains(subagentText, "PROBE-OK-12345") {
+		t.Errorf("subagent_runner.subagent_text missing probe (real subagent did not run, or output not captured): %q",
+			subagentText)
 	}
 
 	logRunRecap(t, events)

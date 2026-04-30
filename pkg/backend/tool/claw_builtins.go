@@ -200,12 +200,28 @@ func RegisterAskUser(reg *Registry) error {
 		})
 }
 
-// RegisterClawSubagents registers the `agent` tool. The internal
-// executor only validates and returns the subagent spec; actual
-// orchestration is the host's responsibility — iterion's claw backend
-// already routes tool_use events back through the engine.
-func RegisterClawSubagents(reg *Registry) error {
-	return RegisterClawTool(reg, clawtools.AgentTool(), clawtools.ExecuteAgent)
+// SubagentRunner is the host-supplied closure invoked when the LLM
+// calls the agent tool. It receives the validated input map, spawns a
+// child LLM conversation (typically against the same model registry
+// the parent uses), and returns the child's final result formatted as
+// JSON. Returning a string + nil error treats the call as successful;
+// any non-nil error is surfaced to the LLM as a tool error.
+type SubagentRunner func(ctx context.Context, input map[string]any) (string, error)
+
+// RegisterClawSubagents registers the `agent` tool. When `runner` is
+// nil, the registration falls back to claw's metadata-only stub —
+// useful for stand-alone tests where actually launching a child
+// conversation is out of scope. When `runner` is non-nil, it is
+// invoked directly: the LLM's tool_use lands in the runner, which is
+// expected to coordinate the child loop.
+func RegisterClawSubagents(reg *Registry, runner SubagentRunner) error {
+	exec := clawtools.ExecuteAgent
+	if runner != nil {
+		exec = func(ctx context.Context, input map[string]any) (string, error) {
+			return runner(ctx, input)
+		}
+	}
+	return RegisterClawTool(reg, clawtools.AgentTool(), exec)
 }
 
 // RegisterClawWebSearch registers the `web_search` tool. Reads
@@ -478,6 +494,12 @@ type ClawDefaults struct {
 	// tests, not for hosts that have their own MCP infrastructure.
 	MCPProvider clawmcp.Provider
 
+	// Subagent, when non-nil, replaces claw's default metadata-only
+	// agent executor with a real child-conversation runner. Hosts
+	// build this via model.NewSubagentRunner. When nil, the agent
+	// tool stays a stub (smoke-test parity).
+	Subagent SubagentRunner
+
 	// PlanMode is shared by enter_plan_mode and exit_plan_mode so the
 	// pair can coordinate. Nil disables plan_mode tooling.
 	PlanMode *clawtools.PlanModeState
@@ -547,7 +569,7 @@ func RegisterClawAll(reg *Registry, defaults ClawDefaults) error {
 	if err := RegisterAskUser(reg); err != nil {
 		return err
 	}
-	if err := RegisterClawSubagents(reg); err != nil {
+	if err := RegisterClawSubagents(reg, defaults.Subagent); err != nil {
 		return err
 	}
 	if err := RegisterClawSkill(reg, defaults.Workspace); err != nil {

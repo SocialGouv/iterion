@@ -2339,7 +2339,7 @@ func TestLive_Lite_ClawSubagents(t *testing.T) {
 	// we want to prove RegisterClawSubagents stands alone without pulling
 	// in the rest of the curated set).
 	toolReg := tool.NewRegistry()
-	if regErr := tool.RegisterClawSubagents(toolReg); regErr != nil {
+	if regErr := tool.RegisterClawSubagents(toolReg, nil); regErr != nil {
 		t.Fatalf("RegisterClawSubagents: %v", regErr)
 	}
 
