@@ -260,21 +260,27 @@ judge reviewer_gpt:
   session: fresh
   interaction: human
 
-## Deterministic streak detector + soft-approval gate.
+## Deterministic streak detector.
 ##
-## stop=true iff (current AND previous reviewer both effectively
-## approved) AND families differ. "Effectively approved" includes
-## low-confidence rejections so reviewer flakiness alone can't
-## break the streak.
+## stop=true iff (current AND previous reviewer both ACTUALLY
+## approved) AND families differ. The success criterion is two
+## consecutive POSITIVE verdicts from opposite families — both
+## AIs must let the code pass on successive iterations. A
+## low-confidence rejection does NOT count as approval for the
+## stop signal: the code only ships when it convinces both
+## reviewers.
 ##
-## All passthrough fields (approved, blockers, fix_plan) reflect
-## the EFFECTIVE state — `approved` becomes true on a low-confidence
-## rejection so the downstream `when approved` edge keeps the loop
-## alternating instead of routing to fix.
+## The `approved` passthrough field stays soft — it includes
+## low-confidence rejections — so the downstream
+## `when approved` edge keeps alternating without invoking the
+## fixer when a reviewer is merely uncertain. This separation
+## means the workflow keeps cycling without forced fix attempts
+## on flaky-low-confidence rejections, but requires real
+## approvals to terminate.
 compute streak_check:
   output: streak_state
   expr:
-    stop: "(input.approved || input.confidence == 'low') && (loop.review_loop.previous_output.approved || loop.review_loop.previous_output.confidence == 'low') && input.family != loop.review_loop.previous_output.family"
+    stop: "input.approved && loop.review_loop.previous_output.approved && input.family != loop.review_loop.previous_output.family"
     approved: "input.approved || input.confidence == 'low'"
     blockers: "input.blockers"
     fix_plan: "input.fix_plan"
