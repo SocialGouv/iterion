@@ -406,6 +406,17 @@ prompt aux_user:
           (le tool fait un best-effort describe ; la string ne doit
           juste PAS être vide).
 
+   9. web_search — query="iterion probe", num_results=1
+        → capture la première ligne (ou le titre) qui contient
+          "iterion-web-search-probe" dans `web_search_text`.
+          (Le test inject CLAW_WEB_SEARCH_BRAVE_URL pour rediriger
+           Brave vers une fixture httptest avec un marker fixe.)
+
+  10. ask_user — question="probe?", allow_free_text=true
+        → capture le champ "free_text" du retour dans `ask_user_answer`
+          (le test inject un AskUser handler qui retourne
+           "iterion-ask-user-probe-answer" inline, sans pause).
+
 schema aux_input:
   trigger: string
 
@@ -419,6 +430,8 @@ schema aux_output:
   repl_stdout: string
   notebook_status: string
   image_description: string
+  web_search_text: string
+  ask_user_answer: string
 
 agent aux_runner:
   model: "anthropic/claude-haiku-4-5-20251001"
@@ -427,8 +440,8 @@ agent aux_runner:
   publish: aux_result
   system: aux_system
   user: aux_user
-  tools: [config, remote_trigger, web_fetch, mcp_auth, skill, repl, notebook_edit, read_image]
-  tool_max_steps: 16
+  tools: [config, remote_trigger, web_fetch, mcp_auth, skill, repl, notebook_edit, read_image, web_search, ask_user]
+  tool_max_steps: 20
   session: fresh
   mcp:
     servers: [testsrv]

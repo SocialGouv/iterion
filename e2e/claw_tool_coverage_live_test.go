@@ -104,6 +104,19 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusAccepted)
 			_, _ = w.Write([]byte(`{"status":"queued","probe":"iterion-remote-trigger-probe"}`))
+		case "/brave-search":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+                "web": {
+                    "results": [
+                        {
+                            "title": "iterion-web-search-probe",
+                            "url": "https://example.com/iterion-probe",
+                            "description": "iterion-web-search-marker"
+                        }
+                    ]
+                }
+            }`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -143,6 +156,8 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 	}
 
 	t.Setenv("ITERION_AUX_HTTP_URL", auxHTTP.URL)
+	t.Setenv("BRAVE_API_KEY", "iterion-test-fixture-key")
+	t.Setenv("CLAW_WEB_SEARCH_BRAVE_URL", auxHTTP.URL+"/brave-search")
 
 	storeDir := filepath.Join(workspaceDir, ".iterion")
 	s, storeErr := store.New(storeDir)
@@ -189,12 +204,17 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 		t.Fatalf("mkdir plan-mode dir: %v", err)
 	}
 	clawDefaults := tool.ClawDefaults{
-		Workspace:   workspaceDir,
-		PlanMode:    &clawtools.PlanModeState{Active: &planActive, Dir: planDir},
-		MCPProvider: mcpManager.ClawProvider(nil),
+		Workspace:        workspaceDir,
+		PlanMode:         &clawtools.PlanModeState{Active: &planActive, Dir: planDir},
+		MCPProvider:      mcpManager.ClawProvider(nil),
+		IncludeWebSearch: true,
 		Config: map[string]any{
 			"probe_key":    "iterion-config-probe-value",
 			"probe_number": 42,
+		},
+		AskUser: func(_ context.Context, q clawtools.Question) (clawtools.Answer, error) {
+			// Inline auto-answer: free-text marker the test asserts on.
+			return clawtools.Answer{FreeText: "iterion-ask-user-probe-answer"}, nil
 		},
 	}
 	clawDefaults.Subagent = model.NewSubagentRunner(
@@ -297,6 +317,9 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 		// fixtures (httptest, .ipynb, .md skill, PNG, in-memory config).
 		"config", "remote_trigger", "web_fetch", "mcp_auth",
 		"skill", "repl", "notebook_edit", "read_image",
+		// aux_runner — Phase 4b additions: web_search via Brave-URL
+		// override + ask_user with inline auto-answer.
+		"web_search", "ask_user",
 	}
 	// Two-tier assertion: every tool must be dispatched, AND every
 	// tool must succeed at least once. The dispatch tier catches
@@ -343,6 +366,7 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 		auxSkillText, auxREPLStdout                   string
 		auxNotebookStatus, auxImageDescription        string
 		auxTriggerStatus                              float64
+		auxWebSearchText, auxAskUserAnswer            string
 	)
 	for _, evt := range events {
 		if evt.Type != store.EventNodeFinished || evt.Data == nil {
@@ -387,6 +411,8 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 			auxREPLStdout, _ = out["repl_stdout"].(string)
 			auxNotebookStatus, _ = out["notebook_status"].(string)
 			auxImageDescription, _ = out["image_description"].(string)
+			auxWebSearchText, _ = out["web_search_text"].(string)
+			auxAskUserAnswer, _ = out["ask_user_answer"].(string)
 		}
 	}
 
@@ -505,6 +531,14 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 	}
 	if auxImageDescription == "" {
 		t.Errorf("aux_runner.image_description empty (read_image returned no description, or LLM did not exploit it)")
+	}
+	if !strings.Contains(auxWebSearchText, "iterion-web-search-probe") {
+		t.Errorf("aux_runner.web_search_text missing fixture marker: %q (Brave URL override / response not exploited)",
+			auxWebSearchText)
+	}
+	if auxAskUserAnswer != "iterion-ask-user-probe-answer" {
+		t.Errorf("aux_runner.ask_user_answer != %q: got %q (inline AskUser handler answer not captured by LLM)",
+			"iterion-ask-user-probe-answer", auxAskUserAnswer)
 	}
 
 	logRunRecap(t, events)

@@ -197,23 +197,30 @@ func RegisterClawTodo(reg *Registry) error {
 	return RegisterClawTool(reg, clawtools.TodoWriteTool(), clawtools.ExecuteTodoWrite)
 }
 
-// RegisterAskUser registers claw-code-go's native `ask_user` tool, wired
-// to surface the LLM's question through iterion's interaction flow
-// (ErrNeedsInteraction → pause → CLI prompt → resume). The tool is
-// available to any node with `interaction:` enabled; iterion's executor
-// auto-includes it in such nodes' resolved tool list so workflow
-// authors don't need to add `ask_user` to their `tools:` field.
+// AskUserHandler is invoked when the LLM calls ask_user. Returning an
+// Answer + nil error completes the call inline (no workflow pause);
+// returning an error of type *delegate.ErrAskUser triggers iterion's
+// pause/resume flow. nil falls back to the latter (default behaviour).
+type AskUserHandler func(ctx context.Context, q clawtools.Question) (clawtools.Answer, error)
+
+// RegisterAskUser registers claw-code-go's native `ask_user` tool. The
+// handler controls behaviour: when nil, the default raises
+// delegate.ErrAskUser so iterion's pause/resume flow takes over (CLI
+// prompt → answer injection on resume). Tests and headless runners
+// supply a handler that returns an Answer directly so the workflow
+// proceeds inline.
 //
-// The exec callback returns delegate.ErrAskUser, which propagates up
-// through executeToolsDirect into claw_backend. The backend converts it
-// to a Result with `_needs_interaction: true`, and iterion's existing
-// pause/resume machinery handles everything from there. On resume the
-// node is re-invoked with the answer mapped under
-// delegate.AskUserQuestionKey.
-func RegisterAskUser(reg *Registry) error {
-	asker := clawtools.NewProgrammaticAsker(func(_ context.Context, q clawtools.Question) (clawtools.Answer, error) {
-		return clawtools.Answer{}, &delegate.ErrAskUser{Question: q.Prompt}
-	})
+// The tool is available to any node with `interaction:` enabled;
+// iterion's executor auto-includes it in such nodes' resolved tool
+// list so workflow authors don't need to add `ask_user` to their
+// `tools:` field.
+func RegisterAskUser(reg *Registry, handler AskUserHandler) error {
+	if handler == nil {
+		handler = func(_ context.Context, q clawtools.Question) (clawtools.Answer, error) {
+			return clawtools.Answer{}, &delegate.ErrAskUser{Question: q.Prompt}
+		}
+	}
+	asker := clawtools.NewProgrammaticAsker(handler)
 	return RegisterClawTool(reg, clawtools.AskUserQuestionTool(),
 		func(ctx context.Context, input map[string]any) (string, error) {
 			return clawtools.ExecuteAskUser(ctx, asker, input)
@@ -520,6 +527,12 @@ type ClawDefaults struct {
 	// tool stays a stub (smoke-test parity).
 	Subagent SubagentRunner
 
+	// AskUser, when non-nil, replaces the default ask_user handler
+	// (which raises delegate.ErrAskUser to trigger pause/resume) with
+	// an inline handler. Tests use this to auto-answer the LLM so the
+	// workflow continues without pausing.
+	AskUser AskUserHandler
+
 	// PlanMode is shared by enter_plan_mode and exit_plan_mode so the
 	// pair can coordinate. Nil disables plan_mode tooling.
 	PlanMode *clawtools.PlanModeState
@@ -593,7 +606,7 @@ func RegisterClawAll(reg *Registry, defaults ClawDefaults) error {
 	if err := RegisterClawTodo(reg); err != nil {
 		return err
 	}
-	if err := RegisterAskUser(reg); err != nil {
+	if err := RegisterAskUser(reg, defaults.AskUser); err != nil {
 		return err
 	}
 	if err := RegisterClawSubagents(reg, defaults.Subagent); err != nil {

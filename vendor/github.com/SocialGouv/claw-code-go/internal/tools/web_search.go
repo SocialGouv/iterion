@@ -13,11 +13,30 @@ import (
 )
 
 const (
-	braveSearchURL    = "https://api.search.brave.com/res/v1/web/search"
-	ddgLiteURL        = "https://lite.duckduckgo.com/lite/"
-	searchTimeout     = 15 * time.Second
-	defaultNumResults = 5
+	defaultBraveSearchURL = "https://api.search.brave.com/res/v1/web/search"
+	defaultDdgLiteURL     = "https://lite.duckduckgo.com/lite/"
+	searchTimeout         = 15 * time.Second
+	defaultNumResults     = 5
 )
+
+// braveSearchEndpoint and ddgSearchEndpoint return the upstream URL,
+// optionally overridden via CLAW_WEB_SEARCH_BRAVE_URL /
+// CLAW_WEB_SEARCH_DDG_URL. The override is intended for hosts that
+// drive web_search through a fixture httptest server in tests; it is
+// not a public configuration knob for production callers.
+func braveSearchEndpoint() string {
+	if v := os.Getenv("CLAW_WEB_SEARCH_BRAVE_URL"); v != "" {
+		return v
+	}
+	return defaultBraveSearchURL
+}
+
+func ddgSearchEndpoint() string {
+	if v := os.Getenv("CLAW_WEB_SEARCH_DDG_URL"); v != "" {
+		return v
+	}
+	return defaultDdgLiteURL
+}
 
 // WebSearchTool returns the tool definition for web search.
 func WebSearchTool() api.Tool {
@@ -76,7 +95,7 @@ func braveSearch(query string, numResults int, apiKey string) (string, error) {
 	params.Set("q", query)
 	params.Set("count", fmt.Sprintf("%d", numResults))
 
-	req, err := http.NewRequest("GET", braveSearchURL+"?"+params.Encode(), nil)
+	req, err := http.NewRequest("GET", braveSearchEndpoint()+"?"+params.Encode(), nil)
 	if err != nil {
 		return "", fmt.Errorf("web_search: build request: %w", err)
 	}
@@ -129,7 +148,7 @@ func ddgSearch(query string, numResults int) (string, error) {
 	params := url.Values{}
 	params.Set("q", query)
 
-	req, err := http.NewRequest("POST", ddgLiteURL, strings.NewReader(params.Encode()))
+	req, err := http.NewRequest("POST", ddgSearchEndpoint(), strings.NewReader(params.Encode()))
 	if err != nil {
 		return "", fmt.Errorf("web_search (ddg): build request: %w", err)
 	}

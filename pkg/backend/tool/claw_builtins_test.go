@@ -473,7 +473,7 @@ func TestRegisterClawAll_OptInWebSearchAndComputerUse(t *testing.T) {
 
 func TestRegisterAskUser_ProducesErrAskUserOnInvocation(t *testing.T) {
 	r := NewRegistry()
-	if err := RegisterAskUser(r); err != nil {
+	if err := RegisterAskUser(r, nil); err != nil {
 		t.Fatalf("RegisterAskUser: %v", err)
 	}
 	td, err := r.Resolve("ask_user")
