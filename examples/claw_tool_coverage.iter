@@ -185,7 +185,139 @@ agent lifecycle_runner:
   tool_max_steps: 25
   session: fresh
 
-## ─── Workflow : 3 agents en séquence ─────────────────────────
+## ─── Agent 4 — Worker state-machine lifecycle ────────────────
+
+prompt workers_system:
+  Tu valides la state machine claw "worker" (10 appels qui transitionnent
+  StatusSpawning → TrustRequired → Spawning → ReadyForPrompt → Running →
+  Finished, puis Restart + Terminate). Le worker est un objet en mémoire,
+  pas un subprocess — chaque appel mute son state machine via un texte
+  d'écran (worker_observe) ou un signal explicite. Ne saute aucune
+  étape.
+
+prompt workers_user:
+  Workspace : {{vars.workspace_dir}}
+
+  Checklist (10 appels, dans l'ordre exact — chaque tool name doit
+  apparaître au moins une fois sauf worker_observe qui apparaît deux
+  fois) :
+
+   1. worker_create  — cwd="{{vars.workspace_dir}}",
+                       auto_recover_prompt_misdelivery=true
+                       (NE PAS passer trusted_roots — laisser vide pour
+                        éviter l'auto-resolve du trust gate)
+                       → capture worker_id retourné dans `worker_id`.
+
+   2. worker_observe — worker_id=<celui de l'étape 1>,
+                       screen_text="Do you trust the files in this folder?"
+                       → fait passer le worker en TrustRequired.
+
+   3. worker_resolve_trust — worker_id=<même>
+                       → clears trust_gate_cleared, repasse en Spawning.
+
+   4. worker_observe — worker_id=<même>,
+                       screen_text="ready for input\n>"
+                       → fait passer le worker en ReadyForPrompt.
+
+   5. worker_await_ready — worker_id=<même>
+                       → snapshot avec ready=true.
+
+   6. worker_get     — worker_id=<même>
+                       → JSON dump de l'état Worker.
+
+   7. worker_send_prompt — worker_id=<même>, prompt="probe-from-llm"
+                       → status passe à Running, prompt_in_flight=true.
+
+   8. worker_observe_completion — worker_id=<même>, finish_reason="stop",
+                                   tokens_output=42
+                       → status passe à Finished.
+
+   9. worker_restart — worker_id=<même>
+                       → reset à Spawning, trust_gate_cleared remis à false.
+
+  10. worker_terminate — worker_id=<même>
+                       → status final Finished.
+
+  Quand tous sont faits, fournis :
+   - worker_id                  : id retourné par worker_create
+   - worker_status_after_send   : status retourné par worker_send_prompt
+                                  (doit être "running" — preuve que le
+                                   send a bien transitionné)
+   - worker_prompt_attempts     : valeur de prompt_delivery_attempts du
+                                  retour de worker_send_prompt (doit être ≥ 1)
+
+schema workers_input:
+  trigger: string
+
+schema workers_output:
+  worker_id: string
+  worker_status_after_send: string
+  worker_prompt_attempts: int
+
+agent workers_runner:
+  model: "anthropic/claude-haiku-4-5-20251001"
+  input: workers_input
+  output: workers_output
+  publish: workers_result
+  system: workers_system
+  user: workers_user
+  tools: [worker_create, worker_observe, worker_resolve_trust, worker_await_ready, worker_get, worker_send_prompt, worker_observe_completion, worker_restart, worker_terminate]
+  tool_max_steps: 24
+  session: fresh
+
+## ─── Agent 5 — Task advanced lifecycle ───────────────────────
+
+prompt tasks_system:
+  Tu valides les tools claw "task" avancés : task_update, task_output,
+  task_stop, run_task_packet. (task_create / task_get / task_list sont
+  déjà couverts par lifecycle_runner.) Toutes opérations CRUD en mémoire.
+
+prompt tasks_user:
+  Checklist (5 appels, dans l'ordre) :
+
+   1. task_create — description="probe-task-2", prompt="probe-2"
+                  → capture task_id retourné dans `tasks_task_id`.
+
+   2. task_update — task_id=<celui de l'étape 1>, message="probe-message"
+                  → ajoute un message au task.
+
+   3. task_output — task_id=<même>
+                  → renvoie {task_id, output, has_output} ; output sera
+                    vide pour une task synchrone in-memory, c'est OK.
+
+   4. task_stop   — task_id=<même>
+                  → status passe à "stopped", capture le champ "status"
+                    du retour dans `tasks_stopped_status` (doit être "stopped").
+
+   5. run_task_packet — objective="probe-objective", scope="probe-scope",
+                        repo="probe-repo", branch_policy="probe-branch",
+                        commit_policy="probe-commit",
+                        reporting_contract="probe-report",
+                        escalation_policy="probe-escalation"
+                  → crée une task à partir d'un packet structuré. Capture
+                    le champ "task_packet.objective" du retour dans
+                    `tasks_packet_objective` (doit être "probe-objective").
+
+schema tasks_input:
+  trigger: string
+
+schema tasks_output:
+  tasks_task_id: string
+  tasks_stopped_status: string
+  tasks_packet_objective: string
+
+agent tasks_runner:
+  model: "anthropic/claude-haiku-4-5-20251001"
+  input: tasks_input
+  output: tasks_output
+  publish: tasks_result
+  system: tasks_system
+  user: tasks_user
+  tools: [task_create, task_update, task_output, task_stop, run_task_packet]
+  tool_max_steps: 12
+  session: fresh
+
+## ─── Workflow : 5 agents en séquence ─────────────────────────
 
 workflow claw_tool_coverage:
   vars:
@@ -195,13 +327,15 @@ workflow claw_tool_coverage:
 
   budget:
     max_parallel_branches: 1
-    max_duration: "10m"
+    max_duration: "15m"
     max_cost_usd: 5
-    max_tokens: 200000
+    max_tokens: 400000
 
   mcp:
     servers: [testsrv]
 
-  files_runner    -> mcp_runner       with { trigger: "next" }
-  mcp_runner      -> lifecycle_runner with { trigger: "next" }
-  lifecycle_runner -> done             with { trigger: "end" }
+  files_runner     -> mcp_runner       with { trigger: "next" }
+  mcp_runner       -> lifecycle_runner with { trigger: "next" }
+  lifecycle_runner -> workers_runner   with { trigger: "next" }
+  workers_runner   -> tasks_runner     with { trigger: "next" }
+  tasks_runner     -> done             with { trigger: "end" }

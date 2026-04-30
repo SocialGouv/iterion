@@ -215,6 +215,12 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 		"task_create", "task_get", "task_list",
 		"team_create", "team_get", "team_list", "team_delete",
 		"cron_create", "cron_get", "cron_list", "cron_delete",
+		// workers_runner — claw worker state machine (in-memory).
+		"worker_create", "worker_observe", "worker_resolve_trust",
+		"worker_await_ready", "worker_get", "worker_send_prompt",
+		"worker_observe_completion", "worker_restart", "worker_terminate",
+		// tasks_runner — task lifecycle tools beyond CRUD basics.
+		"task_update", "task_output", "task_stop", "run_task_packet",
 	}
 	// Two-tier assertion: every tool must be dispatched, AND every
 	// tool must succeed at least once. The dispatch tier catches
@@ -251,6 +257,10 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 		probeText, toolSearchHit, structuredEcho      string
 		greeting, reversed, resourceURI, resourceText string
 		taskID, teamID, cronID                        string
+		workerID, workerStatusAfterSend               string
+		workerPromptAttempts                          float64
+		tasksTaskID, tasksStoppedStatus               string
+		tasksPacketObjective                          string
 	)
 	for _, evt := range events {
 		if evt.Type != store.EventNodeFinished || evt.Data == nil {
@@ -274,6 +284,14 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 			taskID, _ = out["task_id"].(string)
 			teamID, _ = out["team_id"].(string)
 			cronID, _ = out["cron_id"].(string)
+		case "workers_runner":
+			workerID, _ = out["worker_id"].(string)
+			workerStatusAfterSend, _ = out["worker_status_after_send"].(string)
+			workerPromptAttempts, _ = out["worker_prompt_attempts"].(float64)
+		case "tasks_runner":
+			tasksTaskID, _ = out["tasks_task_id"].(string)
+			tasksStoppedStatus, _ = out["tasks_stopped_status"].(string)
+			tasksPacketObjective, _ = out["tasks_packet_objective"].(string)
 		}
 	}
 
@@ -316,6 +334,34 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 	}
 	if cronID == "" {
 		t.Errorf("lifecycle_runner.cron_id empty — cron_create return not exploited")
+	}
+
+	// workers_runner — the state machine actually transitioned through
+	// trust → spawning → ready → running, then restart + terminate.
+	if workerID == "" {
+		t.Errorf("workers_runner.worker_id empty — worker_create return not exploited")
+	}
+	if workerStatusAfterSend != "running" {
+		t.Errorf("workers_runner.worker_status_after_send != %q: got %q (worker_send_prompt did not transition state, or LLM failed to capture it)",
+			"running", workerStatusAfterSend)
+	}
+	if workerPromptAttempts < 1 {
+		t.Errorf("workers_runner.worker_prompt_attempts < 1: got %v (proves prompt_delivery_attempts not exploited)",
+			workerPromptAttempts)
+	}
+
+	// tasks_runner — task_stop transitioned status, run_task_packet
+	// echoed the objective.
+	if tasksTaskID == "" {
+		t.Errorf("tasks_runner.tasks_task_id empty — task_create (in this runner) return not exploited")
+	}
+	if tasksStoppedStatus != "stopped" {
+		t.Errorf("tasks_runner.tasks_stopped_status != %q: got %q (task_stop transition not exploited)",
+			"stopped", tasksStoppedStatus)
+	}
+	if tasksPacketObjective != "probe-objective" {
+		t.Errorf("tasks_runner.tasks_packet_objective != %q: got %q (run_task_packet objective not exploited)",
+			"probe-objective", tasksPacketObjective)
 	}
 
 	logRunRecap(t, events)
