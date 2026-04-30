@@ -202,12 +202,12 @@ func synthesiseInputForSchema(schema json.RawMessage, toolName, workspace string
 // purpose is to dispatch, not to succeed.
 func placeholderString(toolName, fieldName, workspace string) string {
 	switch fieldName {
-	case "path", "file_path":
+	case "path", "file_path", "cwd":
 		// Path under the test's t.TempDir()-backed workspace so any
-		// successful write (write_file, file_edit) stays within the
-		// scope-cleaned directory rather than leaking under /tmp.
-		// Most tools error on missing-file before writing, but
-		// write_file in particular will create this path.
+		// successful write (write_file, file_edit, worker_create
+		// resolving cwd-relative state files) stays within the
+		// scope-cleaned directory rather than leaking under /tmp
+		// or the package directory.
 		return workspace + "/iterion-claw-smoke-target"
 	case "command":
 		// A fast no-op that still proves bash dispatches.
