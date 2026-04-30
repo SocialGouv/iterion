@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -312,6 +313,7 @@ type ClawExecutor struct {
 	logger          *iterlog.Logger
 	workDir         string // working directory for backend subprocesses
 	defaultBackend  string // workflow-level default backend (empty = use "claw")
+	wfCompaction    *ir.Compaction
 	lifecycleHooks  *hooks.Runner
 
 	// sessions holds per-(runID, nodeID) accumulated message lists
@@ -447,6 +449,7 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 		prompts:        wf.Prompts,
 		schemas:        wf.Schemas,
 		defaultBackend: wf.DefaultBackend,
+		wfCompaction:   wf.Compaction,
 		sessions:       newNodeSessionStore(),
 	}
 	for _, opt := range opts {
@@ -571,6 +574,7 @@ type backendFields struct {
 	session          ir.SessionMode
 	interaction      ir.InteractionMode
 	activeMCPServers []string
+	compaction       *ir.Compaction
 }
 
 func extractBackendFields(node ir.Node) backendFields {
@@ -585,6 +589,7 @@ func extractBackendFields(node ir.Node) backendFields {
 			session:          n.Session,
 			interaction:      n.Interaction,
 			activeMCPServers: n.ActiveMCPServers,
+			compaction:       n.Compaction,
 		}
 	case *ir.JudgeNode:
 		return backendFields{
@@ -596,6 +601,7 @@ func extractBackendFields(node ir.Node) backendFields {
 			session:          n.Session,
 			interaction:      n.Interaction,
 			activeMCPServers: n.ActiveMCPServers,
+			compaction:       n.Compaction,
 		}
 	default:
 		panic(fmt.Sprintf("model: extractBackendFields called with unsupported node type %T", node))
@@ -650,20 +656,23 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	}
 
 	effort := resolveReasoningEffort(f.reasoningEffort, input)
+	compactRatio, compactPreserve := resolveCompaction(f.compaction, e.wfCompaction)
 
 	task := delegate.Task{
-		NodeID:             f.id,
-		SystemPrompt:       systemText,
-		UserPrompt:         userText,
-		AllowedTools:       f.tools,
-		OutputSchema:       outputSchema,
-		Model:              os.ExpandEnv(f.model),
-		HasTools:           len(f.tools) > 0,
-		ToolMaxSteps:       f.toolMaxSteps,
-		MaxTokens:          f.maxTokens,
-		WorkDir:            e.workDir,
-		ReasoningEffort:    effort,
-		InteractionEnabled: f.interaction != ir.InteractionNone,
+		NodeID:                f.id,
+		SystemPrompt:          systemText,
+		UserPrompt:            userText,
+		AllowedTools:          f.tools,
+		OutputSchema:          outputSchema,
+		Model:                 os.ExpandEnv(f.model),
+		HasTools:              len(f.tools) > 0,
+		ToolMaxSteps:          f.toolMaxSteps,
+		MaxTokens:             f.maxTokens,
+		WorkDir:               e.workDir,
+		ReasoningEffort:       effort,
+		InteractionEnabled:    f.interaction != ir.InteractionNone,
+		CompactThresholdRatio: compactRatio,
+		CompactPreserveRecent: compactPreserve,
 	}
 
 	// When interaction is enabled, ensure `ask_user` is in the node's
@@ -1588,6 +1597,41 @@ func providerOptsForNode(effort string) map[string]any {
 		return nil
 	}
 	return map[string]any{"reasoning_effort": effort}
+}
+
+// resolveCompaction returns the effective compaction threshold ratio and
+// preserve_recent count for a node, walking the cascade
+// node → workflow → env → built-in (0 falls through). The backend treats 0
+// as "use default", so callers can pass the result straight through to
+// delegate.Task.
+func resolveCompaction(node, workflow *ir.Compaction) (ratio float64, preserveRecent int) {
+	if node != nil {
+		ratio = node.Threshold
+		preserveRecent = node.PreserveRecent
+	}
+	if workflow != nil {
+		if ratio == 0 {
+			ratio = workflow.Threshold
+		}
+		if preserveRecent == 0 {
+			preserveRecent = workflow.PreserveRecent
+		}
+	}
+	if ratio == 0 {
+		if env := os.Getenv("ITERION_CLAW_COMPACT_THRESHOLD_RATIO"); env != "" {
+			if v, err := strconv.ParseFloat(env, 64); err == nil && v > 0 && v <= 1 {
+				ratio = v
+			}
+		}
+	}
+	if preserveRecent == 0 {
+		if env := os.Getenv("ITERION_CLAW_COMPACT_PRESERVE_RECENT"); env != "" {
+			if v, err := strconv.Atoi(env); err == nil && v > 0 {
+				preserveRecent = v
+			}
+		}
+	}
+	return ratio, preserveRecent
 }
 
 // ---------------------------------------------------------------------------

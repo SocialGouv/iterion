@@ -419,10 +419,15 @@ func TestGenerateTextDirect_MaxSteps(t *testing.T) {
 }
 
 // TestGenerateTextDirect_CompactionInLoop verifies that when the
-// running tool-loop history grows past claw's default compaction
-// threshold (10 000 estimated tokens), the next iteration sees a
-// shrunk message list and OnCompact fires once per round that
-// actually compacted. Short transcripts stay untouched.
+// running tool-loop history grows past the model-aware compaction
+// threshold, the next iteration sees a shrunk message list and
+// OnCompact fires once per round that actually compacted. Short
+// transcripts stay untouched.
+//
+// We use an unknown model so the legacy 10k fallback applies, which
+// keeps the test cheap (~12 KB tool results trigger compaction quickly).
+// With a real 1M-window model, the same transcript would never
+// approach the 850k-token default threshold.
 func TestGenerateTextDirect_CompactionInLoop(t *testing.T) {
 	// 6 scripted responses: each step calls bloat_tool with a unique
 	// tool_use ID. The 6th lets the loop terminate cleanly via end_turn
@@ -435,7 +440,7 @@ func TestGenerateTextDirect_CompactionInLoop(t *testing.T) {
 	client := newMockClient(scripts...)
 
 	// Each tool_result returns ~12 KB of text, so after a few rounds
-	// the compactable prefix crosses the 10k-token default threshold.
+	// the compactable prefix crosses the 10k-token legacy fallback.
 	bigOutput := strings.Repeat("filler word ", 1000)
 	bloatTool := GenerationTool{
 		Name:        "bloat_tool",
@@ -448,7 +453,7 @@ func TestGenerateTextDirect_CompactionInLoop(t *testing.T) {
 
 	var compactCalls []CompactInfo
 	result, err := GenerateTextDirect(context.Background(), client, GenerationOptions{
-		Model:    "claude-sonnet-4-6",
+		Model:    "test-only-unknown-model",
 		Tools:    []GenerationTool{bloatTool},
 		MaxSteps: 5,
 		Messages: []api.Message{

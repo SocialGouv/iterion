@@ -632,7 +632,7 @@ func TestMaybeCompactPause(t *testing.T) {
 		{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "hi"}}},
 		{Role: "assistant", Content: []api.ContentBlock{{Type: "tool_use", ID: "tu_1", Name: "ask_user", Input: map[string]any{"question": "?"}}}},
 	}
-	got := maybeCompactPause(short)
+	got := maybeCompactPause(short, "", 0, 0)
 	if len(got) != len(short) {
 		t.Errorf("short transcript was unexpectedly compacted: %d → %d", len(short), len(got))
 	}
@@ -661,7 +661,7 @@ func TestMaybeCompactPause(t *testing.T) {
 		}},
 	})
 
-	got = maybeCompactPause(long)
+	got = maybeCompactPause(long, "", 0, 0)
 	if len(got) >= len(long) {
 		t.Fatalf("long transcript not compacted: input %d, got %d", len(long), len(got))
 	}

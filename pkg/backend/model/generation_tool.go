@@ -61,6 +61,16 @@ type GenerationOptions struct {
 	// ProviderOptions are provider-specific options (e.g., reasoning_effort).
 	ProviderOptions map[string]any
 
+	// CompactThresholdRatio overrides the default compaction trigger as a
+	// fraction of the model's context window. 0 falls back to the built-in
+	// default (0.85). Values outside (0, 1] fall back to the default.
+	CompactThresholdRatio float64
+
+	// CompactPreserveRecent overrides the default count of recent messages
+	// kept verbatim during compaction. 0 falls back to the built-in default
+	// (4). Values < 0 fall back to the default.
+	CompactPreserveRecent int
+
 	// --- Hook callbacks ---
 
 	// OnRequest is called before each StreamResponse call.

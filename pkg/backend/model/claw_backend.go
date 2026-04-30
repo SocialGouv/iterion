@@ -67,8 +67,10 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 
 	// Build GenerationOptions.
 	opts := GenerationOptions{
-		Model:     modelID,
-		MaxTokens: task.MaxTokens,
+		Model:                 modelID,
+		MaxTokens:             task.MaxTokens,
+		CompactThresholdRatio: task.CompactThresholdRatio,
+		CompactPreserveRecent: task.CompactPreserveRecent,
 	}
 
 	// Reasoning effort via ProviderOptions.

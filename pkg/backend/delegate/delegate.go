@@ -97,6 +97,16 @@ type Task struct {
 	// Valid values: "low", "medium", "high", "extra_high".
 	ReasoningEffort string
 
+	// CompactThresholdRatio is the resolved compaction trigger as a
+	// fraction of the model's context window (0 = use backend default).
+	// Backends that maintain their own session history (claw) honor this;
+	// CLI-based backends ignore it (claude_code does its own compaction).
+	CompactThresholdRatio float64
+
+	// CompactPreserveRecent is the number of recent messages kept verbatim
+	// during compaction (0 = use backend default of 4).
+	CompactPreserveRecent int
+
 	// SessionID is an optional session ID to resume (empty = fresh session).
 	SessionID string
 

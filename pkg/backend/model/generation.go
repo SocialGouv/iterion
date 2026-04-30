@@ -441,15 +441,19 @@ func executeToolsDirect(
 	return results, nil
 }
 
-// maybeCompact runs claw's pure-function compactor with the default
-// configuration (preserve last 4 messages, only fire when ≥ 10k
-// estimated tokens). It is a no-op for short transcripts (returns the
-// input unchanged with `compacted=false`) and a bounded summarisation
-// for long ones — the last cfg.PreserveRecentMessages turns are kept
-// verbatim, so any assistant message holding a pending tool_use stays
-// addressable for the next tool round or for resume after a pause.
-func maybeCompact(messages []api.Message) (out []api.Message, info CompactInfo, compacted bool) {
-	res := clawrt.CompactMessages(messages, clawrt.DefaultCompactionConfig())
+// maybeCompact runs claw's pure-function compactor with a config sized
+// to the given model's context window (default trigger at 85% of the
+// window, last 4 messages kept verbatim). The ratio and preserveRecent
+// arguments override those defaults; pass 0 to keep them.
+//
+// It is a no-op for short transcripts (returns the input unchanged with
+// `compacted=false`) and a bounded summarisation for long ones — the
+// last preserveRecent turns are kept verbatim, so any assistant message
+// holding a pending tool_use stays addressable for the next tool round
+// or for resume after a pause.
+func maybeCompact(messages []api.Message, model string, ratio float64, preserveRecent int) (out []api.Message, info CompactInfo, compacted bool) {
+	cfg := clawrt.DefaultCompactionConfigForModel(model, ratio, preserveRecent)
+	res := clawrt.CompactMessages(messages, cfg)
 	if res == nil {
 		return messages, CompactInfo{}, false
 	}
@@ -463,8 +467,8 @@ func maybeCompact(messages []api.Message) (out []api.Message, info CompactInfo, 
 // maybeCompactPause is a thin wrapper over maybeCompact for the pause
 // path that already discards the info struct (the pause checkpoint
 // records the conversation, not the compaction event).
-func maybeCompactPause(messages []api.Message) []api.Message {
-	out, _, _ := maybeCompact(messages)
+func maybeCompactPause(messages []api.Message, model string, ratio float64, preserveRecent int) []api.Message {
+	out, _, _ := maybeCompact(messages, model, ratio, preserveRecent)
 	return out
 }
 
@@ -593,7 +597,7 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 			// remains addressable at resume time.
 			var askErr *delegate.ErrAskUser
 			if errors.As(toolErr, &askErr) {
-				if convBytes, mErr := json.Marshal(maybeCompactPause(messages)); mErr == nil {
+				if convBytes, mErr := json.Marshal(maybeCompactPause(messages, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent)); mErr == nil {
 					askErr.Conversation = convBytes
 				}
 			}
@@ -612,7 +616,7 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 		// preserved-recent window. Without this the tool loop on a
 		// small-context model crashes with context_length_exceeded
 		// once history exceeds the budget.
-		if compacted, info, ok := maybeCompact(messages); ok {
+		if compacted, info, ok := maybeCompact(messages, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent); ok {
 			messages = compacted
 			if opts.OnCompact != nil {
 				opts.OnCompact(info)
