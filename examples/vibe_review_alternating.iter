@@ -327,12 +327,23 @@ schema verdict_output:
 ## routing purposes. The reviewer's own uncertainty isn't a strong
 ## enough signal to trigger a fix cycle and risk a false-positive
 ## loop.
+##
+## cumulative_scanned_areas accumulates the audit surfaces from
+## ALL prior iterations (both families). The accumulator pattern
+## relies on `outputs.streak_check` resolving to the PREVIOUS
+## iteration's output during the current expression evaluation
+## (rs.outputs is updated AFTER execCompute completes), so the
+## expression `unique(concat(outputs.streak_check.cumulative_scanned_areas,
+## input.scanned_areas))` produces a monotonically growing union.
+## On the first iteration `outputs.streak_check` is nil → concat
+## treats it as empty → result == unique(input.scanned_areas).
 schema streak_state:
   stop: bool
   approved: bool
   family: string
   blockers: string[]
   fix_plan: string
+  cumulative_scanned_areas: string[]
 
 schema fix_input:
   blockers: string[]
@@ -407,6 +418,7 @@ compute streak_check:
     family: "input.family"
     blockers: "input.blockers"
     fix_plan: "input.fix_plan"
+    cumulative_scanned_areas: "unique(concat(outputs.streak_check.cumulative_scanned_areas, input.scanned_areas))"
 
 ## Per-family fixers. Each one inherits the SAME-family reviewer's
 ## session via `session: inherit` + `_session_id` mapping on the
@@ -463,12 +475,12 @@ workflow vibe_review_alternating:
   alt -> reviewer_claude with {
     prior_pushback: "{{outputs.fix_gpt.pushback}}",
     prior_pushback_justification: "{{outputs.fix_gpt.pushback_justification}}",
-    previous_scanned_areas: "{{loop.review_loop.previous_output.scanned_areas}}"
+    previous_scanned_areas: "{{outputs.streak_check.cumulative_scanned_areas}}"
   }
   alt -> reviewer_gpt with {
     prior_pushback: "{{outputs.fix_claude.pushback}}",
     prior_pushback_justification: "{{outputs.fix_claude.pushback_justification}}",
-    previous_scanned_areas: "{{loop.review_loop.previous_output.scanned_areas}}"
+    previous_scanned_areas: "{{outputs.streak_check.cumulative_scanned_areas}}"
   }
 
   ## Both reviewers feed into streak_check. The loop is attached
