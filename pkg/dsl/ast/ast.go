@@ -160,22 +160,22 @@ type AgentDecl struct {
 	Model             string // string literal, may contain ${...} env refs
 	Backend           string // execution backend name (e.g. "claude_code"); when set, bypasses direct LLM API
 	MCP               *MCPConfigDecl
-	Input             string          // schema reference name
-	Output            string          // schema reference name
-	Publish           string          // persistent artifact name (empty if not set)
-	System            string          // prompt reference name
-	User              string          // prompt reference name
-	Session           SessionMode     // defaults to SessionFresh
-	Tools             []string        // tool capability names
-	ToolPolicy        []string        // per-node tool policy patterns (nil = inherit workflow)
-	ToolMaxSteps      int             // max tool-use iterations (0 = not set)
-	MaxTokens         int             // max output tokens per LLM call (0 = inherit backend default)
-	ReasoningEffort   string          // reasoning effort level: "low", "medium", "high", "extra_high"
-	Readonly          bool            // when true, node is not considered mutating for workspace safety
-	Interaction       InteractionMode // interaction handling (default none for agents)
-	InteractionPrompt string          // prompt reference guiding LLM for llm_or_human decisions
-	InteractionModel  string          // model for llm/llm_or_human modes (fallback to Model)
-	Await             AwaitMode       // convergence strategy (none/wait_all/best_effort)
+	Input             string           // schema reference name
+	Output            string           // schema reference name
+	Publish           string           // persistent artifact name (empty if not set)
+	System            string           // prompt reference name
+	User              string           // prompt reference name
+	Session           SessionMode      // defaults to SessionFresh
+	Tools             []string         // tool capability names
+	ToolPolicy        []string         // per-node tool policy patterns (nil = inherit workflow)
+	ToolMaxSteps      int              // max tool-use iterations (0 = not set)
+	MaxTokens         int              // max output tokens per LLM call (0 = inherit backend default)
+	ReasoningEffort   string           // reasoning effort level: "low", "medium", "high", "extra_high"
+	Readonly          bool             // when true, node is not considered mutating for workspace safety
+	Interaction       InteractionMode  // interaction handling (default none for agents)
+	InteractionPrompt string           // prompt reference guiding LLM for llm_or_human decisions
+	InteractionModel  string           // model for llm/llm_or_human modes (fallback to Model)
+	Await             AwaitMode        // convergence strategy (none/wait_all/best_effort)
 	Compaction        *CompactionBlock // per-node compaction overrides (nil = inherit workflow)
 	Span              Span
 }
@@ -201,13 +201,13 @@ type JudgeDecl struct {
 	Tools             []string // usually empty for judges, but allowed
 	ToolPolicy        []string // per-node tool policy patterns (nil = inherit workflow)
 	ToolMaxSteps      int
-	MaxTokens         int             // max output tokens per LLM call (0 = inherit backend default)
-	ReasoningEffort   string          // reasoning effort level: "low", "medium", "high", "extra_high"
-	Readonly          bool            // when true, node is not considered mutating for workspace safety
-	Interaction       InteractionMode // interaction handling (default none for judges)
-	InteractionPrompt string          // prompt reference guiding LLM for llm_or_human decisions
-	InteractionModel  string          // model for llm/llm_or_human modes (fallback to Model)
-	Await             AwaitMode       // convergence strategy (none/wait_all/best_effort)
+	MaxTokens         int              // max output tokens per LLM call (0 = inherit backend default)
+	ReasoningEffort   string           // reasoning effort level: "low", "medium", "high", "extra_high"
+	Readonly          bool             // when true, node is not considered mutating for workspace safety
+	Interaction       InteractionMode  // interaction handling (default none for judges)
+	InteractionPrompt string           // prompt reference guiding LLM for llm_or_human decisions
+	InteractionModel  string           // model for llm/llm_or_human modes (fallback to Model)
+	Await             AwaitMode        // convergence strategy (none/wait_all/best_effort)
 	Compaction        *CompactionBlock // per-node compaction overrides (nil = inherit workflow)
 	Span              Span
 }

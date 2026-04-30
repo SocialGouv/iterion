@@ -100,8 +100,9 @@ type RunStore struct {
 	root   string // base directory
 	logger *iterlog.Logger
 
-	mu  sync.Mutex
-	seq map[string]int64 // run_id → next event sequence number
+	mu      sync.Mutex
+	seq     map[string]int64 // run_id → next event sequence number
+	seqSeed map[string]bool  // run_id → seq has been seeded from disk
 }
 
 // StoreOption configures a RunStore.
@@ -118,7 +119,11 @@ func New(root string, opts ...StoreOption) (*RunStore, error) {
 	if err := os.MkdirAll(filepath.Join(root, "runs"), dirPerm); err != nil {
 		return nil, fmt.Errorf("store: create root: %w", err)
 	}
-	s := &RunStore{root: root, seq: make(map[string]int64)}
+	s := &RunStore{
+		root:    root,
+		seq:     make(map[string]int64),
+		seqSeed: make(map[string]bool),
+	}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -291,6 +296,24 @@ func (s *RunStore) AppendEvent(runID string, evt Event) (*Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// On first append for this runID since process start, seed the in-memory
+	// sequence counter from any existing events.jsonl. Without this, a fresh
+	// process opening a pre-existing run (typical for `iterion resume`) would
+	// restart Seq at 0 and produce duplicate sequence numbers in the
+	// append-only event stream — breaking the documented monotonic ordering
+	// and any downstream consumer that dedups by Seq.
+	if !s.seqSeed[runID] {
+		if next, err := s.scanMaxSeqLocked(runID); err == nil {
+			s.seq[runID] = next
+		} else {
+			// Fall back to 0 (the previous behaviour) but record the failure
+			// so the operator can investigate; corrupt events.jsonl shouldn't
+			// block new appends.
+			s.logger.Warn("store: could not seed seq for run %s: %v (starting at 0)", runID, err)
+		}
+		s.seqSeed[runID] = true
+	}
+
 	// Assign seq but don't increment the counter yet — only advance on
 	// successful write to prevent gaps from failed marshals or I/O.
 	evt.Seq = s.seq[runID]
@@ -401,20 +424,33 @@ func (s *RunStore) WriteArtifact(a *Artifact) error {
 		return err
 	}
 
-	// Update the artifact index in run.json (best-effort: index is a cache,
-	// LoadLatestArtifact falls back to directory scan if missing).
+	// Update the artifact index in run.json. The index is a cache — if it's
+	// stale, LoadLatestArtifact falls back to a directory scan — so a fresh
+	// run with no run.json yet (LoadRun errors with NotExist) is not fatal.
+	// But once run.json exists, a failure to update the index (e.g. ENOSPC,
+	// permission denied, JSON encode error) IS surfaced to the caller: a
+	// silently dropped index update can cause downstream nodes to read a
+	// stale artifact version, which is a correctness bug, not a performance
+	// degradation. Callers can decide to retry or fail the run.
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, err := s.LoadRun(a.RunID)
 	if err != nil {
-		return nil // artifact itself was written; index miss is non-fatal
+		if os.IsNotExist(err) || strings.Contains(err.Error(), "no such file") {
+			// No run.json yet (e.g. early CreateRun race) — artifact written,
+			// index will be populated by a later write or by directory scan.
+			return nil
+		}
+		return fmt.Errorf("store: write artifact: load run for index update: %w", err)
 	}
 	if r.ArtifactIndex == nil {
 		r.ArtifactIndex = make(map[string]int)
 	}
 	if cur, ok := r.ArtifactIndex[a.NodeID]; !ok || a.Version > cur {
 		r.ArtifactIndex[a.NodeID] = a.Version
-		_ = s.writeRun(r) // best-effort
+		if err := s.writeRun(r); err != nil {
+			return fmt.Errorf("store: write artifact: update index: %w", err)
+		}
 	}
 	return nil
 }
@@ -568,6 +604,54 @@ func (s *RunStore) runJSONPath(runID string) string {
 
 func (s *RunStore) eventsPath(runID string) string {
 	return filepath.Join(s.runDir(runID), "events.jsonl")
+}
+
+// scanMaxSeqLocked reads events.jsonl for runID and returns max(Seq)+1, the
+// value that should be assigned to the next appended event. Returns 0 (with
+// nil error) if the file does not exist (fresh run) or contains no decodable
+// lines. Caller must hold s.mu.
+//
+// This intentionally does NOT use LoadEvents (which allocates the full slice
+// of events) — we only need the max Seq, so we scan and discard.
+func (s *RunStore) scanMaxSeqLocked(runID string) (int64, error) {
+	p := s.eventsPath(runID)
+	f, err := os.Open(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	defer f.Close()
+
+	var maxSeq int64 = -1
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxEventLineSize)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		// Decode only the seq field — minimal struct keeps allocations low.
+		var hdr struct {
+			Seq int64 `json:"seq"`
+		}
+		if err := json.Unmarshal(line, &hdr); err != nil {
+			// Skip corrupt lines rather than aborting (consistent with
+			// LoadEvents' tolerant behaviour).
+			continue
+		}
+		if hdr.Seq > maxSeq {
+			maxSeq = hdr.Seq
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return 0, err
+	}
+	if maxSeq < 0 {
+		return 0, nil
+	}
+	return maxSeq + 1, nil
 }
 
 func (s *RunStore) writeRun(r *Run) error {

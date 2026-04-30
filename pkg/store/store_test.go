@@ -588,10 +588,14 @@ func TestReloadFromDisk(t *testing.T) {
 		t.Errorf("artifact data = %v", art.Data)
 	}
 
-	// Appending new events starts from seq 0 on fresh store (independent counter).
+	// On a fresh store opening a pre-existing run, the seq counter must be
+	// seeded from events.jsonl on the first AppendEvent so that we don't emit
+	// duplicate sequence numbers (which would break monotonic ordering and
+	// any consumer that dedups by Seq). Two events were appended above with
+	// Seq 0 and 1, so the next append must be Seq 2.
 	evt, _ := s2.AppendEvent("reload-001", Event{Type: EventRunFinished})
-	if evt.Seq != 0 {
-		t.Errorf("fresh store seq = %d, want 0", evt.Seq)
+	if evt.Seq != 2 {
+		t.Errorf("seeded seq after reload = %d, want 2", evt.Seq)
 	}
 }
 

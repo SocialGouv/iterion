@@ -4,6 +4,7 @@
 
 # Store data
 .iterion/
+.iterion-*/
 
 # IDE
 .idea/
