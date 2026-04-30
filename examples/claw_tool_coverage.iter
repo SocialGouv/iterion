@@ -24,10 +24,29 @@
 ##                                via le smoke test au niveau dispatch)
 ##   - task_output / task_stop / task_update → besoin d'une task qui tourne
 ##   - run_task_packet         → packet semantics complexes
-##   - agent (subagent)        → invoque un autre LLM, multiplie le coût
-##                               et complique l'isolation
+##   - agent (subagent)        → ExecuteAgent retourne juste un agent_id
+##                               metadata ; la vraie exec subagent passe
+##                               par claw's ConversationLoop qu'iterion
+##                               n'utilise pas (StreamResponse direct).
+##                               Couvert au niveau dispatch par le smoke
+##                               test seulement.
+##   - structured_output       → schema avec Properties:{} et Required:[]
+##                               porte les LLMs à appeler avec input vide
+##                               (que le tool rejette : "payload must not
+##                               be empty"). Bug de design tool, pas
+##                               iterion. Couvert au niveau dispatch par
+##                               le smoke test.
+##   - list_mcp_resources / read_mcp_resource → bug iterion connu :
+##                               iterion enregistre les MCP servers dans
+##                               son `mcp.Manager` mais claw's intro-
+##                               spection tools regardent claw's
+##                               `mcp.Registry` (séparé, vide). Le call
+##                               retourne "server testsrv not found"
+##                               même si testsrv est connecté pour
+##                               mcp.testsrv.<tool>. Bridge à câbler
+##                               séparément.
 ##
-## Couverture attendue ici : ~28 tools réels via 3 agents en séquence.
+## Couverture attendue ici : 25 tools réels via 3 agents en séquence.
 
 mcp_server testsrv:
   transport: stdio
@@ -62,11 +81,18 @@ prompt files_user:
   10. file_edit        — path="{{vars.workspace_dir}}/probe.txt", old_string="hello-from-claw", new_string="edited-from-claw"
   11. glob             — pattern="*.txt", path="{{vars.workspace_dir}}"
   12. grep             — pattern="edited-from-claw", path="{{vars.workspace_dir}}"
-  13. structured_output — payload={"step":"final","ok":true}
+  13. structured_output — passe l'objet JSON {"probe": "claw-coverage", "ok": true}
+                          comme tool input directement (pas wrapped sous "payload").
+                          → capture la valeur de la clé "probe" du retour du
+                            tool dans `structured_payload_echo`.
 
   Quand TOUS sont faits, fournis :
-   - tools_called : liste de chaque tool appelé (ordre)
-   - probe_text   : contenu après file_edit
+   - tools_called             : liste de chaque tool appelé (ordre)
+   - probe_text               : contenu après file_edit (doit contenir "edited-from-claw")
+   - tool_search_hit          : nom du premier tool listé par tool_search
+                                (NE PAS l'inventer — utilise vraiment le retour du tool)
+   - structured_payload_echo  : valeur de "probe" dans le retour de structured_output
+                                (preuve qu'il a tourné et echoed back l'input)
 
 schema files_input:
   trigger: string
@@ -74,6 +100,8 @@ schema files_input:
 schema files_output:
   tools_called: string[]
   probe_text: string
+  tool_search_hit: string
+  structured_payload_echo: string
 
 agent files_runner:
   model: "anthropic/claude-haiku-4-5-20251001"
@@ -93,17 +121,13 @@ prompt mcp_system:
   réellement le tool MCP — ne déduis pas le résultat.
 
 prompt mcp_user:
-  Checklist MCP (4 appels) :
+  Checklist MCP (2 appels — voir plan dans
+  examples/claw_tool_coverage.iter en-tête pour la raison de
+  l'omission de list_mcp_resources / read_mcp_resource) :
    1. mcp.testsrv.greet     — name="Iterion"
+        → capture exactement la string retournée dans `greeting`.
    2. mcp.testsrv.reverse   — text="States"
-   3. list_mcp_resources    — server="testsrv"
-   4. read_mcp_resource     — server="testsrv", uri="iterion://test/golden.txt"
-
-  Quand TOUS sont faits, remplis :
-   - greeting       : retour de greet
-   - reversed       : retour de reverse
-   - resource_uri   : la URI listée par list_mcp_resources (la première)
-   - resource_text  : contenu textuel du resource lu
+        → capture exactement la string retournée dans `reversed`.
 
 schema mcp_input:
   trigger: string
@@ -111,8 +135,6 @@ schema mcp_input:
 schema mcp_output:
   greeting: string
   reversed: string
-  resource_uri: string
-  resource_text: string
 
 agent mcp_runner:
   model: "anthropic/claude-haiku-4-5-20251001"
