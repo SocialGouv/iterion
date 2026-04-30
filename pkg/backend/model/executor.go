@@ -444,6 +444,22 @@ func (e *ClawExecutor) Compact(ctx context.Context, nodeID string) error {
 
 // NewClawExecutor creates a ClawExecutor for a given workflow.
 func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOption) *ClawExecutor {
+	// Seed vars with workflow-declared defaults from the .iter `vars:`
+	// block so prompt templates referencing {{vars.X}} resolve even
+	// when the var is not overridden via CLI --var or resume inputs.
+	// Without this, an unoverridden var with a default rendered as the
+	// literal "{{vars.X}}" string in the LLM prompt — a silent prompt
+	// corruption observed in vibe_review_alternating where scope_notes
+	// (default "") leaked the placeholder into every reviewer call.
+	var seed map[string]interface{}
+	if len(wf.Vars) > 0 {
+		seed = make(map[string]interface{}, len(wf.Vars))
+		for name, vr := range wf.Vars {
+			if vr.HasDefault {
+				seed[name] = vr.Default
+			}
+		}
+	}
 	e := &ClawExecutor{
 		registry:       registry,
 		prompts:        wf.Prompts,
@@ -451,6 +467,7 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 		defaultBackend: wf.DefaultBackend,
 		wfCompaction:   wf.Compaction,
 		sessions:       newNodeSessionStore(),
+		vars:           seed,
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -482,10 +499,17 @@ func (e *ClawExecutor) Close() error {
 	return nil
 }
 
-// SetVars sets the workflow variables for the current run.
-// Must be called before Execute.
+// SetVars merges run-level workflow variables into the executor's
+// vars map. Keys present in vars override the matching default seeded
+// from wf.Vars at construction time; keys absent from vars retain
+// their default. Must be called before Execute.
 func (e *ClawExecutor) SetVars(vars map[string]interface{}) {
-	e.vars = vars
+	if e.vars == nil {
+		e.vars = make(map[string]interface{}, len(vars))
+	}
+	for k, v := range vars {
+		e.vars[k] = v
+	}
 }
 
 // resolveBackendName returns the effective backend name for a node.

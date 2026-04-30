@@ -1474,6 +1474,54 @@ func TestSetVars(t *testing.T) {
 	}
 }
 
+// TestNewClawExecutorSeedsVarsDefaults verifies that workflow-declared
+// var defaults from the .iter `vars:` block are seeded into the
+// executor's vars map at construction, so prompt templates that
+// reference {{vars.X}} for an unoverridden var with a default render
+// the default value rather than the literal "{{vars.X}}" placeholder.
+//
+// SetVars must overlay run-level overrides on top of the seeded
+// defaults rather than replacing the whole map.
+func TestNewClawExecutorSeedsVarsDefaults(t *testing.T) {
+	wf := &ir.Workflow{
+		Vars: map[string]*ir.Var{
+			"scope_notes":   {Name: "scope_notes", Type: ir.VarString, HasDefault: true, Default: ""},
+			"workspace_dir": {Name: "workspace_dir", Type: ir.VarString, HasDefault: true, Default: "/default/path"},
+			"max_loops":     {Name: "max_loops", Type: ir.VarInt, HasDefault: true, Default: int64(5)},
+			"no_default":    {Name: "no_default", Type: ir.VarString, HasDefault: false},
+		},
+	}
+	exec := NewClawExecutor(NewRegistry(), wf)
+
+	// Defaults seeded.
+	if got, want := exec.vars["scope_notes"], ""; got != want {
+		t.Errorf("scope_notes seed: got %v, want %q", got, want)
+	}
+	if got, want := exec.vars["workspace_dir"], "/default/path"; got != want {
+		t.Errorf("workspace_dir seed: got %v, want %q", got, want)
+	}
+	if got, want := exec.vars["max_loops"], int64(5); got != want {
+		t.Errorf("max_loops seed: got %v, want %v", got, want)
+	}
+	if _, ok := exec.vars["no_default"]; ok {
+		t.Errorf("no_default should not be seeded (HasDefault=false)")
+	}
+
+	// SetVars merges on top, preserving non-overridden defaults.
+	exec.SetVars(map[string]interface{}{
+		"workspace_dir": "/runtime/override",
+	})
+	if got, want := exec.vars["workspace_dir"], "/runtime/override"; got != want {
+		t.Errorf("workspace_dir after override: got %v, want %q", got, want)
+	}
+	if got, want := exec.vars["scope_notes"], ""; got != want {
+		t.Errorf("scope_notes after partial override: got %v, want %q", got, want)
+	}
+	if got, want := exec.vars["max_loops"], int64(5); got != want {
+		t.Errorf("max_loops after partial override: got %v, want %v", got, want)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Reasoning effort resolution
 // ---------------------------------------------------------------------------
