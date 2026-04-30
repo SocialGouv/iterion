@@ -95,6 +95,17 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		if execErr != nil {
 			return execErr
 		}
+		// Re-seed the executor's `vars` from the run's stored inputs so
+		// prompt templates can resolve `{{vars.X}}` after resume.
+		// Without this, the executor's vars map is nil and references
+		// render as the literal `{{vars.X}}` string, silently breaking
+		// any prompt that points at a workspace_dir/scope_notes/etc.
+		// (RunStarted persisted the same map under run.Inputs; the
+		// engine reloads them into rs.vars from the checkpoint, but
+		// the executor has its own copy used for prompt rendering.)
+		if r != nil && len(r.Inputs) > 0 {
+			exec.SetVars(r.Inputs)
+		}
 		executor = exec
 	}
 
