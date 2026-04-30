@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	clawlsp "github.com/SocialGouv/claw-code-go/pkg/api/lsp"
 	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -203,11 +204,27 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 	if err := os.MkdirAll(planDir, 0o755); err != nil {
 		t.Fatalf("mkdir plan-mode dir: %v", err)
 	}
+	// Pre-register a fake "go" LSP server so the lsp tool's
+	// diagnostics action returns deterministic empty results without
+	// us having to spawn gopls. The server status is "connected" but
+	// no transport is wired — the registry's Dispatch path produces a
+	// canned response for diagnostics that the LLM can extract from.
+	lspReg := clawlsp.NewRegistry()
+	lspReg.Register("go", clawlsp.StatusConnected, &workspaceDir, nil)
+
+	// Fixture .go file the lsp tool can reference (no analysis needed
+	// — claw's registry pattern-matches the extension to language).
+	lspGoPath := filepath.Join(workspaceDir, "probe.go")
+	if err := os.WriteFile(lspGoPath, []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("write fixture .go: %v", err)
+	}
+
 	clawDefaults := tool.ClawDefaults{
 		Workspace:        workspaceDir,
 		PlanMode:         &clawtools.PlanModeState{Active: &planActive, Dir: planDir},
 		MCPProvider:      mcpManager.ClawProvider(nil),
 		IncludeWebSearch: true,
+		LSP:              lspReg,
 		Config: map[string]any{
 			"probe_key":    "iterion-config-probe-value",
 			"probe_number": 42,
@@ -318,8 +335,8 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 		"config", "remote_trigger", "web_fetch", "mcp_auth",
 		"skill", "repl", "notebook_edit", "read_image",
 		// aux_runner — Phase 4b additions: web_search via Brave-URL
-		// override + ask_user with inline auto-answer.
-		"web_search", "ask_user",
+		// override + ask_user with inline auto-answer + lsp.
+		"web_search", "ask_user", "lsp",
 	}
 	// Two-tier assertion: every tool must be dispatched, AND every
 	// tool must succeed at least once. The dispatch tier catches
@@ -367,6 +384,7 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 		auxNotebookStatus, auxImageDescription        string
 		auxTriggerStatus                              float64
 		auxWebSearchText, auxAskUserAnswer            string
+		auxLSPAction                                  string
 	)
 	for _, evt := range events {
 		if evt.Type != store.EventNodeFinished || evt.Data == nil {
@@ -413,6 +431,7 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 			auxImageDescription, _ = out["image_description"].(string)
 			auxWebSearchText, _ = out["web_search_text"].(string)
 			auxAskUserAnswer, _ = out["ask_user_answer"].(string)
+			auxLSPAction, _ = out["lsp_action"].(string)
 		}
 	}
 
@@ -539,6 +558,10 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 	if auxAskUserAnswer != "iterion-ask-user-probe-answer" {
 		t.Errorf("aux_runner.ask_user_answer != %q: got %q (inline AskUser handler answer not captured by LLM)",
 			"iterion-ask-user-probe-answer", auxAskUserAnswer)
+	}
+	if auxLSPAction != "diagnostics" {
+		t.Errorf("aux_runner.lsp_action != %q: got %q (lsp Dispatch result not exploited by LLM)",
+			"diagnostics", auxLSPAction)
 	}
 
 	logRunRecap(t, events)

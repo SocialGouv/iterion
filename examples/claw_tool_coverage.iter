@@ -417,6 +417,13 @@ prompt aux_user:
           (le test inject un AskUser handler qui retourne
            "iterion-ask-user-probe-answer" inline, sans pause).
 
+  11. lsp — action="diagnostics", path="{{vars.workspace_dir}}/probe.go"
+        → capture le champ "action" du retour dans `lsp_action`
+          (doit être "diagnostics" — le test pré-enregistre un serveur
+           LSP "go" StatusConnected sans transport, donc Dispatch
+           retourne une réponse déterministe : action=diagnostics,
+           path=<fixture>, count=0).
+
 schema aux_input:
   trigger: string
 
@@ -432,6 +439,7 @@ schema aux_output:
   image_description: string
   web_search_text: string
   ask_user_answer: string
+  lsp_action: string
 
 agent aux_runner:
   model: "anthropic/claude-haiku-4-5-20251001"
@@ -440,8 +448,8 @@ agent aux_runner:
   publish: aux_result
   system: aux_system
   user: aux_user
-  tools: [config, remote_trigger, web_fetch, mcp_auth, skill, repl, notebook_edit, read_image, web_search, ask_user]
-  tool_max_steps: 20
+  tools: [config, remote_trigger, web_fetch, mcp_auth, skill, repl, notebook_edit, read_image, web_search, ask_user, lsp]
+  tool_max_steps: 22
   session: fresh
   mcp:
     servers: [testsrv]
