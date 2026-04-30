@@ -463,7 +463,7 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 				// flood the log; route them to debug.
 				if m.Subtype == "init" {
 					b.Logger.Info("[%s/claude-code] ⚙️  system/init session=%s model=%s tools=%d mcp=%d",
-						task.NodeID, m.SessionID, m.Model, len(m.Tools), len(m.MCPServers))
+						task.NodeID, m.SessionID, m.Model, m.ToolCount(), m.MCPServerCount())
 				} else {
 					b.Logger.Debug("[%s/claude-code] ⚙️  system/%s session=%s",
 						task.NodeID, m.Subtype, m.SessionID)

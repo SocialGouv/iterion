@@ -40,19 +40,54 @@ type ModelUsage struct {
 }
 
 // SystemMessage is emitted once at session initialization.
+//
+// Forward-compat note: claude_code's wire format evolves (e.g.,
+// `agents` shipped as a map of metadata in 2.1.0 then became a flat
+// array of names by 2.1.104; `mcp_servers`, `tools`, `slash_commands`
+// have undergone similar tweaks). We use json.RawMessage for fields
+// whose shape varies across CLI versions to avoid hard-failing on
+// unmarshal — the SDK keeps surfacing init events even when a new
+// CLI tweaks payload structure.
 type SystemMessage struct {
-	Type              string         `json:"type"`    // "system"
-	Subtype           string         `json:"subtype"` // "init"
-	SessionID         string         `json:"session_id"`
-	UUID              string         `json:"uuid"`
-	Cwd               string         `json:"cwd"`
-	Model             string         `json:"model"`
-	Tools             []string       `json:"tools"`
-	MCPServers        []any          `json:"mcp_servers"`
-	PermissionMode    string         `json:"permissionMode"`
-	APIKeySource      string         `json:"apiKeySource"`
-	ClaudeCodeVersion string         `json:"claude_code_version"`
-	Agents            map[string]any `json:"agents"`
+	Type              string          `json:"type"`    // "system"
+	Subtype           string          `json:"subtype"` // "init"
+	SessionID         string          `json:"session_id"`
+	UUID              string          `json:"uuid"`
+	Cwd               string          `json:"cwd"`
+	Model             string          `json:"model"`
+	Tools             json.RawMessage `json:"tools"`
+	MCPServers        json.RawMessage `json:"mcp_servers"`
+	PermissionMode    string          `json:"permissionMode"`
+	APIKeySource      string          `json:"apiKeySource"`
+	ClaudeCodeVersion string          `json:"claude_code_version"`
+	Agents            json.RawMessage `json:"agents"`
+}
+
+// MCPServerCount returns the number of MCP servers reported in the
+// init payload, regardless of whether the wire format is an array of
+// names or an array of {name, status} objects. Returns -1 when the
+// raw message is empty or shaped unexpectedly.
+func (s *SystemMessage) MCPServerCount() int {
+	return jsonArrayLen(s.MCPServers)
+}
+
+// ToolCount returns the number of tools reported in the init payload.
+// Returns -1 when the raw message is missing.
+func (s *SystemMessage) ToolCount() int {
+	return jsonArrayLen(s.Tools)
+}
+
+// jsonArrayLen unmarshals raw as a JSON array and returns its
+// length. Returns -1 if raw is empty or not a JSON array.
+func jsonArrayLen(raw json.RawMessage) int {
+	if len(raw) == 0 {
+		return -1
+	}
+	var arr []json.RawMessage
+	if err := json.Unmarshal(raw, &arr); err != nil {
+		return -1
+	}
+	return len(arr)
 }
 
 func (*SystemMessage) messageType() string { return "system" }
