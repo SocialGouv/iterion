@@ -27,6 +27,7 @@ package expr
 
 import (
 	"fmt"
+	"reflect"
 	"strconv"
 )
 
@@ -969,7 +970,21 @@ func builtinLength(args []interface{}) (interface{}, error) {
 	case string:
 		return int64(len(v)), nil
 	}
-	return nil, fmt.Errorf("expr: length() expects array or string, got %T", args[0])
+	// Fall back to reflection so concrete slice/array/map types coming
+	// from runtime stubs or backend-specific output shapes (e.g. a
+	// reviewer node returning blockers as []string instead of the
+	// generic []interface{}) still measure correctly. Without this,
+	// the legacy type-switch errored on every concrete-typed slice
+	// and the failing `length()` silently disabled the enclosing
+	// `when` edge condition — surfaced by an `.iter` workflow whose
+	// streak_check edge guarded fix routing on length(blockers) > 0.
+	if rv := reflect.ValueOf(args[0]); rv.IsValid() {
+		switch rv.Kind() {
+		case reflect.Slice, reflect.Array, reflect.Map:
+			return int64(rv.Len()), nil
+		}
+	}
+	return nil, fmt.Errorf("expr: length() expects array, string, or map, got %T", args[0])
 }
 
 func builtinConcat(args []interface{}) (interface{}, error) {

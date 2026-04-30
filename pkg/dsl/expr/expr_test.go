@@ -288,6 +288,43 @@ func TestExpr_FuncCall_Length(t *testing.T) {
 		{"length(vars.items) + 1", int64(4)},
 		{"length(vars.items) > 2", true},
 	}
+
+	// Concrete-typed slices (e.g. []string from a runtime stub or
+	// backend output) should also count — without reflection support
+	// in builtinLength, an `.iter` edge condition like
+	// `length(blockers) > 0` would silently no-op when blockers came
+	// in as []string instead of the canonical []interface{}.
+	concreteCtx := makeCtx(
+		map[string]interface{}{
+			"strs":  []string{"x", "y"},
+			"ints":  []int{1, 2, 3, 4},
+			"empty": []string{},
+		},
+		nil, nil, nil,
+	)
+	concreteCases := []struct {
+		src    string
+		expect interface{}
+	}{
+		{"length(vars.strs)", int64(2)},
+		{"length(vars.ints)", int64(4)},
+		{"length(vars.empty)", int64(0)},
+		{"length(vars.empty) > 0", false},
+		{"length(vars.strs) > 0", true},
+	}
+	for _, c := range concreteCases {
+		ast, err := Parse(c.src)
+		if err != nil {
+			t.Fatalf("Parse(%q) error: %v", c.src, err)
+		}
+		got, err := ast.Eval(concreteCtx)
+		if err != nil {
+			t.Fatalf("Eval(%q) on concrete-typed slice error: %v", c.src, err)
+		}
+		if got != c.expect {
+			t.Errorf("Eval(%q) on concrete-typed slice = %v (%T), want %v (%T)", c.src, got, got, c.expect, c.expect)
+		}
+	}
 	for _, c := range cases {
 		ast, err := Parse(c.src)
 		if err != nil {
