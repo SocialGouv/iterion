@@ -97,11 +97,19 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		}
 	}
 
-	// Capture stderr for diagnostics.
+	// Capture stderr for post-session diagnostics AND surface every
+	// line live so the user can see what the CLI is doing during long
+	// reasoning intervals. Without live stderr, the SDK is a black box
+	// while it streams thinking tokens or reads files: the runtime
+	// emits nothing between "Delegation started" and the final
+	// AssistantMessage, which can be many minutes for Opus extra_high.
 	var stderrBuf strings.Builder
 	opts = append(opts, claudesdk.WithStderrCallback(func(line string) {
 		stderrBuf.WriteString(line)
 		stderrBuf.WriteString("\n")
+		if line != "" {
+			b.Logger.Info("[%s/claude-code:err] %s", task.NodeID, line)
+		}
 	}))
 
 	// Native ask_user interception. When the workflow enables interaction, we
