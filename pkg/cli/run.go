@@ -137,9 +137,19 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 			return err
 		}
 
+		// Apply the recipe before constructing the executor. The default executor
+		// snapshots workflow fields such as Prompts, Schemas, ToolPolicy, Budget
+		// and Compaction at construction time; building it from the raw workflow
+		// would make recipe prompt_pack/tool_policy overrides invisible to the
+		// model/tool layer even though the Engine receives the applied workflow.
+		appliedWF, err := spec.Apply(wf)
+		if err != nil {
+			return fmt.Errorf("runtime: apply recipe %q: %w", spec.Name, err)
+		}
+
 		executor := opts.Executor
 		if executor == nil {
-			exec, execErr := newDefaultExecutor(wf, opts.Vars, s, runID, logger, storeDir, exporter)
+			exec, execErr := newDefaultExecutor(appliedWF, opts.Vars, s, runID, logger, storeDir, exporter)
 			if execErr != nil {
 				return execErr
 			}
@@ -152,15 +162,12 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 				}
 			}()
 		}
-		if err := mcpHealthCheck(ctx, executor, wf.ActiveMCPServers); err != nil {
+		if err := mcpHealthCheck(ctx, executor, appliedWF.ActiveMCPServers); err != nil {
 			return err
 		}
 
-		eng, err = runtime.NewFromRecipe(spec, wf, s, executor, append(engineOpts, runtime.WithWorkflowHash(wfHash))...)
-		if err != nil {
-			return err
-		}
-		workflowName = spec.Name + " (" + wf.Name + ")"
+		eng = runtime.New(appliedWF, s, executor, append(engineOpts, runtime.WithWorkflowHash(wfHash))...)
+		workflowName = spec.Name + " (" + appliedWF.Name + ")"
 	} else {
 		if opts.File == "" {
 			return fmt.Errorf("provide a .iter file or --recipe")
