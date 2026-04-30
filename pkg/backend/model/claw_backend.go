@@ -306,7 +306,32 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	text = extractJSON(text)
 
 	if text == "" {
-		return delegate.Result{}, fmt.Errorf("claw backend: text+tools generation produced empty response after tool loop")
+		// Tool loop ended without a final text response — typical when
+		// the model exhausted MaxSteps or kept stalling on tool calls.
+		// Issue a recovery pass that mirrors claude_code's two-pass
+		// formatting: same conversation history, NO tools, schema
+		// enforced via GenerateObjectDirect. The model is now obliged
+		// to produce structured output on its next turn.
+		recoveryOpts := opts
+		recoveryOpts.Messages = result.Messages
+		recoveryOpts.Tools = nil
+		recoveryOpts.MaxSteps = 1
+		recoveryOpts.ExplicitSchema = task.OutputSchema
+
+		obj, recErr := GenerateObjectDirect[map[string]interface{}](ctx, client, recoveryOpts)
+		if recErr == nil && obj != nil && obj.Object != nil {
+			tokens := cost.Annotate(obj.Object, task.Model,
+				result.TotalUsage.InputTokens+obj.TotalUsage.InputTokens,
+				result.TotalUsage.OutputTokens+obj.TotalUsage.OutputTokens)
+			return delegate.Result{
+				Output:             obj.Object,
+				Tokens:             tokens,
+				BackendName:        delegate.BackendClaw,
+				FormattingPassUsed: true,
+			}, nil
+		}
+
+		return delegate.Result{}, fmt.Errorf("claw backend: text+tools generation produced empty response after tool loop and structured-output recovery failed: %v", recErr)
 	}
 
 	var output map[string]interface{}
