@@ -1,0 +1,194 @@
+## Fixture : claw_tool_coverage
+##
+## But : prouver empiriquement par un VRAI run LLM que chaque famille
+## de tools claw est exercée end-to-end (l'agent appelle réellement
+## le tool, le résultat retourne dans son contexte, et l'EventToolCalled
+## correspondant est émis dans events.jsonl).
+##
+## Le smoke test pkg/backend/tool/claw_smoke_test.go prouvait
+## la dispatch ; ce workflow prouve l'usage LLM réel : c'est un agent
+## (claude-haiku-4-5 pour limiter le coût) qui décide d'appeler chaque
+## tool sur la base d'une checklist explicite dans le prompt.
+##
+## Tools NON couverts ici (et pourquoi) :
+##   - web_fetch / web_search → besoin de network stable / BRAVE_API_KEY
+##   - mcp_auth                → flux OAuth, dépendances externes
+##   - lsp                     → besoin d'un LSP server
+##   - skill                   → besoin d'un skill registry pré-rempli
+##   - repl                    → besoin d'un runtime python/js
+##   - notebook_edit           → besoin d'un .ipynb réel
+##   - read_image / screenshot / computer_use → besoin X11
+##   - ask_user                → pauserait le workflow (incompatible test linéaire)
+##   - worker_*                → worker = subprocess, lifecycle complexe
+##                               (worker_create + worker_terminate testés
+##                                via le smoke test au niveau dispatch)
+##   - task_output / task_stop / task_update → besoin d'une task qui tourne
+##   - run_task_packet         → packet semantics complexes
+##   - agent (subagent)        → invoque un autre LLM, multiplie le coût
+##                               et complique l'isolation
+##
+## Couverture attendue ici : ~28 tools réels via 3 agents en séquence.
+
+mcp_server testsrv:
+  transport: stdio
+  command: "${ITERION_MCP_TEST_BINARY}"
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+## ─── Agent 1 — File ops + shell + LLM utilities ─────────────────
+
+prompt files_system:
+  Tu es un agent de validation. Tu dois exécuter EXACTEMENT chaque
+  étape de la checklist utilisateur avec les tools indiqués. Ne pas
+  inférer, ne pas inventer — appelle réellement chaque tool.
+
+  Ne pas répéter un tool si le précédent a déjà réussi. Quand tous
+  les tools de la checklist ont été appelés, remplis le schema.
+
+prompt files_user:
+  Workspace : {{vars.workspace_dir}}
+
+  Checklist (appelle CHAQUE tool une fois, dans l'ordre) :
+   1. enter_plan_mode  — entre en mode plan
+   2. tool_search      — query="read_file"
+   3. exit_plan_mode   — quitte le mode plan, plan="probe"
+   4. sleep            — duration_ms=10
+   5. todo_write       — action=write, todos=[{"content":"probe","status":"completed","activeForm":"probing"}]
+   6. send_user_message — message="probe-step-6"
+   7. bash             — command="echo claw-probe-bash"
+   8. write_file       — path="{{vars.workspace_dir}}/probe.txt", content="hello-from-claw\n"
+   9. read_file        — path="{{vars.workspace_dir}}/probe.txt"
+  10. file_edit        — path="{{vars.workspace_dir}}/probe.txt", old_string="hello-from-claw", new_string="edited-from-claw"
+  11. glob             — pattern="*.txt", path="{{vars.workspace_dir}}"
+  12. grep             — pattern="edited-from-claw", path="{{vars.workspace_dir}}"
+  13. structured_output — payload={"step":"final","ok":true}
+
+  Quand TOUS sont faits, fournis :
+   - tools_called : liste de chaque tool appelé (ordre)
+   - probe_text   : contenu après file_edit
+
+schema files_input:
+  trigger: string
+
+schema files_output:
+  tools_called: string[]
+  probe_text: string
+
+agent files_runner:
+  model: "anthropic/claude-haiku-4-5-20251001"
+  input: files_input
+  output: files_output
+  publish: files_result
+  system: files_system
+  user: files_user
+  tools: [bash, read_file, write_file, file_edit, glob, grep, sleep, send_user_message, todo_write, tool_search, structured_output, enter_plan_mode, exit_plan_mode]
+  tool_max_steps: 30
+  session: fresh
+
+## ─── Agent 2 — MCP (tools + resources) ─────────────────────────
+
+prompt mcp_system:
+  Tu valides l'intégration MCP d'iterion. Pour CHAQUE étape, appelle
+  réellement le tool MCP — ne déduis pas le résultat.
+
+prompt mcp_user:
+  Checklist MCP (4 appels) :
+   1. mcp.testsrv.greet     — name="Iterion"
+   2. mcp.testsrv.reverse   — text="States"
+   3. list_mcp_resources    — server="testsrv"
+   4. read_mcp_resource     — server="testsrv", uri="iterion://test/golden.txt"
+
+  Quand TOUS sont faits, remplis :
+   - greeting       : retour de greet
+   - reversed       : retour de reverse
+   - resource_uri   : la URI listée par list_mcp_resources (la première)
+   - resource_text  : contenu textuel du resource lu
+
+schema mcp_input:
+  trigger: string
+
+schema mcp_output:
+  greeting: string
+  reversed: string
+  resource_uri: string
+  resource_text: string
+
+agent mcp_runner:
+  model: "anthropic/claude-haiku-4-5-20251001"
+  input: mcp_input
+  output: mcp_output
+  publish: mcp_result
+  system: mcp_system
+  user: mcp_user
+  tools: [mcp.testsrv.greet, mcp.testsrv.reverse, list_mcp_resources, read_mcp_resource]
+  tool_max_steps: 8
+  session: fresh
+  mcp:
+    servers: [testsrv]
+
+## ─── Agent 3 — State lifecycle (tasks/teams/cron) ──────────────
+
+prompt lifecycle_system:
+  Tu valides le state lifecycle de claw (tasks/teams/cron). Crée
+  une entité de chaque type, lis-la, liste-la. Pour cron et team,
+  supprime-la après lecture.
+
+prompt lifecycle_user:
+  Checklist (11 tools, dans l'ordre) :
+   1. task_create   — description="probe-task", prompt="ok"
+   2. task_get      — task_id=<celui retourné par task_create>
+   3. task_list
+   4. team_create   — name="probe-team", description="probe"
+   5. team_get      — team_id=<celui de team_create>
+   6. team_list
+   7. team_delete   — team_id=<même>
+   8. cron_create   — name="probe-cron", schedule="0 * * * *", prompt="ok"
+   9. cron_get      — cron_id=<celui de cron_create>
+  10. cron_list
+  11. cron_delete   — cron_id=<même>
+
+  Remplis :
+   - task_id    : id retourné par task_create
+   - team_id    : id retourné par team_create
+   - cron_id    : id retourné par cron_create
+
+schema lifecycle_input:
+  trigger: string
+
+schema lifecycle_output:
+  task_id: string
+  team_id: string
+  cron_id: string
+
+agent lifecycle_runner:
+  model: "anthropic/claude-haiku-4-5-20251001"
+  input: lifecycle_input
+  output: lifecycle_output
+  publish: lifecycle_result
+  system: lifecycle_system
+  user: lifecycle_user
+  tools: [task_create, task_get, task_list, team_create, team_get, team_list, team_delete, cron_create, cron_get, cron_list, cron_delete]
+  tool_max_steps: 25
+  session: fresh
+
+## ─── Workflow : 3 agents en séquence ─────────────────────────
+
+workflow claw_tool_coverage:
+  vars:
+    workspace_dir: string = "${PROJECT_DIR}"
+
+  entry: files_runner
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "10m"
+    max_cost_usd: 5
+    max_tokens: 200000
+
+  mcp:
+    servers: [testsrv]
+
+  files_runner    -> mcp_runner       with { trigger: "next" }
+  mcp_runner      -> lifecycle_runner with { trigger: "next" }
+  lifecycle_runner -> done             with { trigger: "end" }

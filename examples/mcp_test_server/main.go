@@ -1,11 +1,13 @@
-// Tiny MCP stdio server used by TestLive_Lite_ClawMCP.
+// Tiny MCP stdio server used by the live tests.
 //
-// Exposes two trivial tools so the live test can prove iterion's MCP
-// integration end-to-end (server discovery, tools/list, tools/call,
-// content extraction back into the agent's response):
+// Exposes two trivial tools and one trivial resource so the live tests
+// can prove iterion's MCP integration end-to-end (server discovery,
+// tools/list, tools/call, resources/list, resources/read, content
+// extraction back into the agent's response):
 //
 //   - greet(name string) -> "Hello, {name}!"
 //   - reverse(text string) -> text reversed character-by-character
+//   - resource iterion://test/golden.txt -> a small fixture string
 //
 // Build:  go build -o /tmp/mcp_test_server ./examples/mcp_test_server
 // Run:    invoked over stdio by iterion's MCP manager.
@@ -61,6 +63,23 @@ func main() {
 			runes[i], runes[j] = runes[j], runes[i]
 		}
 		return nil, reverseOut{Reversed: string(runes)}, nil
+	})
+
+	const goldenURI = "iterion://test/golden.txt"
+	const goldenBody = "iterion-mcp-test-resource\nline-2\n"
+	srv.AddResource(&mcp.Resource{
+		URI:         goldenURI,
+		Name:        "golden",
+		Description: "A small fixture resource the live tests assert is discoverable + readable end-to-end.",
+		MIMEType:    "text/plain",
+	}, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		return &mcp.ReadResourceResult{
+			Contents: []*mcp.ResourceContents{{
+				URI:      goldenURI,
+				MIMEType: "text/plain",
+				Text:     goldenBody,
+			}},
+		}, nil
 	})
 
 	if err := srv.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
