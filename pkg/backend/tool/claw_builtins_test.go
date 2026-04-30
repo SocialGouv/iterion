@@ -45,19 +45,19 @@ func TestRegisterClawBuiltins_DoesNotRegisterComputerUse(t *testing.T) {
 	if err := RegisterClawBuiltins(r, ""); err != nil {
 		t.Fatalf("RegisterClawBuiltins: %v", err)
 	}
-	for _, name := range []string{"read_image", "screenshot"} {
+	for _, name := range []string{"read_image", "screenshot", "computer_use"} {
 		if hasTool(r, name) {
 			t.Errorf("expected %q NOT registered by default; vision tools are opt-in", name)
 		}
 	}
 }
 
-func TestRegisterClawComputerUse_RegistersBoth(t *testing.T) {
+func TestRegisterClawComputerUse_RegistersAll(t *testing.T) {
 	r := NewRegistry()
 	if err := RegisterClawComputerUse(r); err != nil {
 		t.Fatalf("RegisterClawComputerUse: %v", err)
 	}
-	for _, name := range []string{"read_image", "screenshot"} {
+	for _, name := range []string{"read_image", "screenshot", "computer_use"} {
 		if !hasTool(r, name) {
 			t.Errorf("expected %q registered after opt-in", name)
 		}
@@ -150,6 +150,43 @@ func TestRegisterClawComputerUse_ScreenshotPropagatesUnavailable(t *testing.T) {
 	}
 	if !errors.Is(err, clawtools.ErrComputerUseUnavailable) {
 		t.Fatalf("expected ErrComputerUseUnavailable to propagate through adapter, got %T: %v", err, err)
+	}
+}
+
+// TestRegisterClawComputerUse_ComputerUsePropagatesUnavailable verifies
+// the unified action dispatcher reaches the same gating: in a headless
+// CI env, every action verb (left_click, type, key, …) bottoms out in
+// xdotool / ImageMagick which we don't ship in the test container, so
+// the adapter must surface ErrComputerUseUnavailable instead of
+// silently returning a stub success.
+func TestRegisterClawComputerUse_ComputerUsePropagatesUnavailable(t *testing.T) {
+	r := NewRegistry()
+	if err := RegisterClawComputerUse(r); err != nil {
+		t.Fatalf("RegisterClawComputerUse: %v", err)
+	}
+	tool, err := r.Resolve("computer_use")
+	if err != nil {
+		t.Fatalf("computer_use not in registry: %v", err)
+	}
+	for _, action := range []string{"screenshot", "left_click", "type", "key", "mouse_move"} {
+		input := map[string]any{"action": action}
+		switch action {
+		case "type":
+			input["text"] = "hello"
+		case "key":
+			input["text"] = "Return"
+		case "left_click", "mouse_move":
+			input["coordinate"] = []any{10, 10}
+		}
+		raw, _ := json.Marshal(input)
+		_, err := tool.Execute(context.Background(), raw)
+		if err == nil {
+			t.Errorf("action %q: expected error in headless test env", action)
+			continue
+		}
+		if !errors.Is(err, clawtools.ErrComputerUseUnavailable) {
+			t.Errorf("action %q: expected ErrComputerUseUnavailable, got %T: %v", action, err, err)
+		}
 	}
 }
 
@@ -382,7 +419,7 @@ func TestRegisterClawAll_RegistersFullSet(t *testing.T) {
 		}
 	}
 	// Opt-in flags off by default.
-	for _, name := range []string{"web_search", "read_image", "screenshot"} {
+	for _, name := range []string{"web_search", "read_image", "screenshot", "computer_use"} {
 		if hasTool(r, name) {
 			t.Errorf("%q should be opt-in, but was registered", name)
 		}
@@ -406,7 +443,7 @@ func TestRegisterClawAll_OptInWebSearchAndComputerUse(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("RegisterClawAll: %v", err)
 	}
-	for _, name := range []string{"web_search", "read_image", "screenshot", "enter_plan_mode", "exit_plan_mode"} {
+	for _, name := range []string{"web_search", "read_image", "screenshot", "computer_use", "enter_plan_mode", "exit_plan_mode"} {
 		if !hasTool(r, name) {
 			t.Errorf("expected opt-in %q registered", name)
 		}

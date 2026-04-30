@@ -54,25 +54,29 @@ func RegisterClawBuiltins(reg *Registry, workspace string) error {
 	return nil
 }
 
-// RegisterClawComputerUse registers the vision-grade computer-use tools
-// (read_image, screenshot stub) against reg. These are kept out of the
-// default RegisterClawBuiltins set because most workflows don't need
-// vision content blocks; opt in explicitly when you have an agent that
-// processes images.
+// RegisterClawComputerUse registers the vision + desktop-control tools
+// against reg: read_image, screenshot, and the unified computer_use
+// action dispatcher (left_click / right_click / middle_click /
+// double_click / type / key / mouse_move / cursor_position /
+// left_click_drag, plus screenshot). These are kept out of the
+// default RegisterClawBuiltins set because most iterion workflows are
+// headless; opt in via Defaults.IncludeComputerUse when you have an
+// agent targeting an X11 display.
 //
-// read_image returns a JSON payload describing the image plus a base64
-// content block envelope; downstream agents can either inline it as
-// commentary or splice the block into their next-turn message
+// read_image returns a JSON payload describing the image plus a
+// base64 content block envelope; downstream agents can either inline
+// it as commentary or splice the block into their next-turn message
 // (multimodal models accept it directly).
 //
-// screenshot is a stub today — it returns an *api.APIError{StatusCode:
-// 501}. Registering it surfaces the tool definition to the model so
-// that prompt-engineered agents can be authored against the eventual
-// implementation.
+// screenshot and computer_use shell out to xdotool + ImageMagick
+// `import`. On a host without those binaries (or without a display),
+// each call returns ErrComputerUseUnavailable wrapped — agents can
+// detect the gap with errors.Is rather than parsing strings.
 func RegisterClawComputerUse(reg *Registry) error {
 	specs := []clawBuiltinSpec{
 		{tool: clawtools.ReadImageTool(), exec: clawComputerUseAdapter(clawtools.ExecuteReadImage)},
 		{tool: clawtools.ScreenshotTool(), exec: clawComputerUseAdapter(clawtools.ExecuteScreenshot)},
+		{tool: clawtools.ComputerUseTool(), exec: clawComputerUseAdapter(clawtools.ExecuteComputerUse)},
 	}
 	for _, s := range specs {
 		if err := RegisterClawTool(reg, s.tool, s.exec); err != nil {
@@ -86,6 +90,8 @@ func RegisterClawComputerUse(reg *Registry) error {
 // function into the (ctx, input) → (string, error) signature the
 // iterion tool registry expects. The result is JSON-encoded so
 // downstream agents see the description + blocks structure verbatim.
+// Works for ReadImageResult and ComputerUseResult alike — claw declares
+// them as a type alias.
 func clawComputerUseAdapter(fn func(context.Context, map[string]any) (clawtools.ReadImageResult, error)) func(context.Context, map[string]any) (string, error) {
 	return func(ctx context.Context, input map[string]any) (string, error) {
 		res, err := fn(ctx, input)
@@ -94,7 +100,7 @@ func clawComputerUseAdapter(fn func(context.Context, map[string]any) (clawtools.
 		}
 		buf, err := json.Marshal(res)
 		if err != nil {
-			return "", fmt.Errorf("encode read_image result: %w", err)
+			return "", fmt.Errorf("encode computer-use result: %w", err)
 		}
 		return string(buf), nil
 	}
