@@ -36,6 +36,7 @@ const (
 	DiagRefNodeNotReachable     DiagCode = "C036" // outputs ref to node not reachable before consumer
 	DiagNodeMaxTokensVsBudget   DiagCode = "C037" // node-level max_tokens exceeds workflow.budget.max_tokens
 	DiagUnsupportedMCPAuth      DiagCode = "C038" // MCP server Auth.Type not supported (only "oauth2" is wired)
+	DiagInvalidCompaction       DiagCode = "C039" // compaction.threshold or compaction.preserve_recent out of range
 )
 
 // validate performs static validation on a compiled workflow.
@@ -59,6 +60,34 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateTemplateRefs(w)
 	c.validateNodeMaxTokensVsBudget(w)
 	c.validateMCPAuth(w)
+	c.validateCompaction(w)
+}
+
+// validateCompaction enforces the value ranges for the compaction block at
+// both workflow and per-node level: threshold must be in (0, 1] and
+// preserve_recent must be >= 1 when set. A 0 value means "inherit" and is
+// always accepted — only out-of-range explicit values are flagged.
+func (c *compiler) validateCompaction(w *Workflow) {
+	check := func(scope, id string, cp *Compaction) {
+		if cp == nil {
+			return
+		}
+		if cp.Threshold != 0 && (cp.Threshold <= 0 || cp.Threshold > 1) {
+			c.errorf(DiagInvalidCompaction, "%s %q: compaction.threshold must be in (0, 1], got %g", scope, id, cp.Threshold)
+		}
+		if cp.PreserveRecent < 0 {
+			c.errorf(DiagInvalidCompaction, "%s %q: compaction.preserve_recent must be >= 1, got %d", scope, id, cp.PreserveRecent)
+		}
+	}
+	check("workflow", w.Name, w.Compaction)
+	for _, n := range w.Nodes {
+		switch nn := n.(type) {
+		case *AgentNode:
+			check("agent", nn.ID, nn.Compaction)
+		case *JudgeNode:
+			check("judge", nn.ID, nn.Compaction)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------

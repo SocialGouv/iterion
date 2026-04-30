@@ -26,6 +26,7 @@ type Workflow struct {
 	Vars           map[string]*Var    // var name → resolved variable
 	Loops          map[string]*Loop   // loop name → loop definition
 	Budget         *Budget            // workflow budget (nil if not set)
+	Compaction     *Compaction        // workflow-level compaction overrides (nil = no override)
 	MCP            *MCPConfig         // workflow-level MCP activation/filtering
 	DefaultBackend string             // workflow-level default backend (empty = not set)
 	ToolPolicy     []string           // workflow-level tool policy patterns (nil = open)
@@ -140,6 +141,7 @@ type AgentNode struct {
 	ToolPolicy       []string // per-node tool policy patterns (nil = inherit workflow)
 	ToolMaxSteps     int      // max tool-use iterations (0 = not set)
 	AwaitMode        AwaitMode
+	Compaction       *Compaction // per-node compaction overrides (nil = inherit workflow)
 }
 
 // NodeKind implements Node.
@@ -159,6 +161,7 @@ type JudgeNode struct {
 	ToolPolicy       []string // per-node tool policy patterns (nil = inherit workflow)
 	ToolMaxSteps     int
 	AwaitMode        AwaitMode
+	Compaction       *Compaction // per-node compaction overrides (nil = inherit workflow)
 }
 
 // NodeKind implements Node.
@@ -699,4 +702,17 @@ type Budget struct {
 	MaxCostUSD          float64
 	MaxTokens           int
 	MaxIterations       int
+}
+
+// ---------------------------------------------------------------------------
+// Compaction — session compaction overrides
+// ---------------------------------------------------------------------------
+
+// Compaction overrides the default compaction behavior. Threshold is
+// applied as a fraction of the model's context window (0 means inherit).
+// PreserveRecent caps the number of recent messages kept verbatim
+// (0 means inherit).
+type Compaction struct {
+	Threshold      float64 // 0 = inherit (env / 0.85 default)
+	PreserveRecent int     // 0 = inherit (default 4)
 }

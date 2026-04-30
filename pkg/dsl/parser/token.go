@@ -119,6 +119,10 @@ const (
 	TokenMaxCostUSD
 	TokenMaxTokens
 	TokenMaxIterations
+	// Compaction block + properties
+	TokenCompaction
+	TokenThreshold
+	TokenPreserveRecent
 	// Terminal node names (reserved identifiers)
 	TokenDone
 	TokenFail
@@ -226,6 +230,10 @@ var tokenNames = map[TokenType]string{
 	TokenMaxTokens:           "max_tokens",
 	TokenMaxIterations:       "max_iterations",
 
+	TokenCompaction:     "compaction",
+	TokenThreshold:      "threshold",
+	TokenPreserveRecent: "preserve_recent",
+
 	TokenDone: "done",
 	TokenFail: "fail",
 }
@@ -313,6 +321,9 @@ var keywords = map[string]TokenType{
 	"max_cost_usd":          TokenMaxCostUSD,
 	"max_tokens":            TokenMaxTokens,
 	"max_iterations":        TokenMaxIterations,
+	"compaction":            TokenCompaction,
+	"threshold":             TokenThreshold,
+	"preserve_recent":       TokenPreserveRecent,
 	"done":                  TokenDone,
 	"fail":                  TokenFail,
 }

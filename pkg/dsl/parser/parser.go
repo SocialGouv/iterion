@@ -778,6 +778,9 @@ func (p *parser) parseAgentProp(ad *ast.AgentDecl, propTok Token) {
 	case TokenAwait:
 		p.expect(TokenColon)
 		ad.Await = p.parseAwaitMode()
+	case TokenCompaction:
+		p.backup()
+		ad.Compaction = p.parseCompactionBlock()
 	default:
 		p.addError(DiagUnknownProperty, propTok, "unknown agent property '"+propTok.Value+"'")
 		p.skipToNewline()
@@ -882,6 +885,9 @@ func (p *parser) parseJudgeProp(jd *ast.JudgeDecl, propTok Token) {
 	case TokenAwait:
 		p.expect(TokenColon)
 		jd.Await = p.parseAwaitMode()
+	case TokenCompaction:
+		p.backup()
+		jd.Compaction = p.parseCompactionBlock()
 	default:
 		p.addError(DiagUnknownProperty, propTok, "unknown judge property '"+propTok.Value+"'")
 		p.skipToNewline()
@@ -1310,6 +1316,9 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 		case TokenBudget:
 			wd.Budget = p.parseBudgetBlock()
 
+		case TokenCompaction:
+			wd.Compaction = p.parseCompactionBlock()
+
 		case TokenDefaultBackend:
 			p.next() // consume "default_backend"
 			p.expect(TokenColon)
@@ -1392,6 +1401,48 @@ func (p *parser) parseBudgetProp(bb *ast.BudgetBlock, propTok Token) {
 		bb.MaxIterations = p.expectInt()
 	default:
 		p.addError(DiagUnknownProperty, propTok, "unknown budget property '"+propTok.Value+"'")
+		p.skipToNewline()
+	}
+	p.skipNewlines()
+}
+
+func (p *parser) parseCompactionBlock() *ast.CompactionBlock {
+	start := p.next() // consume "compaction"
+	p.expect(TokenColon)
+	p.skipNewlines()
+	if _, ok := p.expect(TokenIndent); !ok {
+		return nil
+	}
+
+	cb := &ast.CompactionBlock{Span: ast.Span{Start: p.pos(start)}}
+
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		p.parseCompactionProp(cb, t)
+	}
+	return cb
+}
+
+func (p *parser) parseCompactionProp(cb *ast.CompactionBlock, propTok Token) {
+	p.next()
+	switch propTok.Type {
+	case TokenThreshold:
+		p.expect(TokenColon)
+		v := p.expectNumber()
+		cb.Threshold = &v
+	case TokenPreserveRecent:
+		p.expect(TokenColon)
+		v := p.expectInt()
+		cb.PreserveRecent = &v
+	default:
+		p.addError(DiagUnknownProperty, propTok, "unknown compaction property '"+propTok.Value+"'")
 		p.skipToNewline()
 	}
 	p.skipNewlines()
@@ -1754,6 +1805,7 @@ func isKeywordToken(tt TokenType) bool {
 		TokenTypeJSON, TokenTypeStringArray,
 		TokenMaxParallelBranches, TokenMaxDuration, TokenMaxCostUSD,
 		TokenMaxTokens, TokenMaxIterations,
+		TokenCompaction, TokenThreshold, TokenPreserveRecent,
 		TokenDone, TokenFail:
 		return true
 	}

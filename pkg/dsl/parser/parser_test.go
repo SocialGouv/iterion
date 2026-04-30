@@ -523,6 +523,56 @@ agent x:
 	}
 }
 
+func TestCompactionBlockWorkflow(t *testing.T) {
+	src := `workflow w:
+  entry: a
+  compaction:
+    threshold: 0.85
+    preserve_recent: 8
+  a -> done
+`
+	res := parser.Parse("test.iter", src)
+	assertNoDiags(t, res)
+
+	c := res.File.Workflows[0].Compaction
+	if c == nil {
+		t.Fatal("expected compaction block")
+	}
+	if c.Threshold == nil || *c.Threshold != 0.85 {
+		t.Errorf("Threshold = %v, want 0.85", c.Threshold)
+	}
+	if c.PreserveRecent == nil || *c.PreserveRecent != 8 {
+		t.Errorf("PreserveRecent = %v, want 8", c.PreserveRecent)
+	}
+}
+
+func TestCompactionBlockAgent(t *testing.T) {
+	src := `agent foo:
+  model: "m"
+  input: i
+  output: o
+  system: s
+  user: u
+  session: fresh
+  compaction:
+    threshold: 0.95
+    preserve_recent: 12
+`
+	res := parser.Parse("test.iter", src)
+	assertNoDiags(t, res)
+
+	c := res.File.Agents[0].Compaction
+	if c == nil {
+		t.Fatal("expected compaction block on agent")
+	}
+	if c.Threshold == nil || *c.Threshold != 0.95 {
+		t.Errorf("Threshold = %v, want 0.95", c.Threshold)
+	}
+	if c.PreserveRecent == nil || *c.PreserveRecent != 12 {
+		t.Errorf("PreserveRecent = %v, want 12", c.PreserveRecent)
+	}
+}
+
 func TestBudgetBlock(t *testing.T) {
 	src := `workflow w:
   entry: a

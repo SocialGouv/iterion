@@ -176,6 +176,7 @@ type AgentDecl struct {
 	InteractionPrompt string          // prompt reference guiding LLM for llm_or_human decisions
 	InteractionModel  string          // model for llm/llm_or_human modes (fallback to Model)
 	Await             AwaitMode       // convergence strategy (none/wait_all/best_effort)
+	Compaction        *CompactionBlock // per-node compaction overrides (nil = inherit workflow)
 	Span              Span
 }
 
@@ -207,6 +208,7 @@ type JudgeDecl struct {
 	InteractionPrompt string          // prompt reference guiding LLM for llm_or_human decisions
 	InteractionModel  string          // model for llm/llm_or_human modes (fallback to Model)
 	Await             AwaitMode       // convergence strategy (none/wait_all/best_effort)
+	Compaction        *CompactionBlock // per-node compaction overrides (nil = inherit workflow)
 	Span              Span
 }
 
@@ -349,6 +351,7 @@ type WorkflowDecl struct {
 	ToolPolicy     []string         // workflow-level tool policy patterns (nil = open)
 	MCP            *MCPConfigDecl   // workflow-level MCP activation/filtering
 	Budget         *BudgetBlock     // execution limits (optional)
+	Compaction     *CompactionBlock // session compaction defaults for all nodes (optional)
 	Interaction    *InteractionMode // workflow-level default interaction mode (nil = not set)
 	Edges          []*Edge          // directed edges between nodes
 	Span           Span
@@ -362,6 +365,15 @@ type BudgetBlock struct {
 	MaxTokens           int     // 0 = not set
 	MaxIterations       int     // 0 = not set
 	Span                Span
+}
+
+// CompactionBlock configures session compaction. Both fields use a "0/nil
+// means inherit" convention so workflow-level defaults fall through to
+// node-level overrides which fall through to env / built-in defaults.
+type CompactionBlock struct {
+	Threshold      *float64 // ratio of model context window (0 < t <= 1); nil = inherit
+	PreserveRecent *int     // recent messages kept verbatim (>= 1); nil = inherit
+	Span           Span
 }
 
 // ---------------------------------------------------------------------------

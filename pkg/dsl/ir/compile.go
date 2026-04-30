@@ -245,6 +245,9 @@ func (c *compiler) compile() *Workflow {
 		budget = c.compileBudget(wf.Budget)
 	}
 
+	// Compile workflow-level compaction overrides.
+	compaction := compileCompaction(wf.Compaction)
+
 	// Compile workflow-level interaction default.
 	var interaction *InteractionMode
 	if wf.Interaction != nil {
@@ -264,6 +267,7 @@ func (c *compiler) compile() *Workflow {
 		Vars:           vars,
 		Loops:          loops,
 		Budget:         budget,
+		Compaction:     compaction,
 		MCP:            convertMCPConfig(wf.MCP),
 		MCPServers:     c.mcp,
 		Interaction:    interaction,
@@ -455,6 +459,7 @@ func (c *compiler) compileAgents() {
 			ToolPolicy:   a.ToolPolicy,
 			ToolMaxSteps: a.ToolMaxSteps,
 			AwaitMode:    a.Await,
+			Compaction:   compileCompaction(a.Compaction),
 		}
 	}
 }
@@ -508,6 +513,7 @@ func (c *compiler) compileJudges() {
 			ToolPolicy:   j.ToolPolicy,
 			ToolMaxSteps: j.ToolMaxSteps,
 			AwaitMode:    j.Await,
+			Compaction:   compileCompaction(j.Compaction),
 		}
 	}
 }
@@ -830,6 +836,26 @@ func (c *compiler) compileBudget(b *ast.BudgetBlock) *Budget {
 		MaxTokens:           b.MaxTokens,
 		MaxIterations:       b.MaxIterations,
 	}
+}
+
+// compileCompaction converts an AST CompactionBlock to its IR form. Returns
+// nil when the AST block is nil or carries no overrides — keeping `nil` as
+// the canonical "inherit" marker.
+func compileCompaction(b *ast.CompactionBlock) *Compaction {
+	if b == nil {
+		return nil
+	}
+	out := &Compaction{}
+	if b.Threshold != nil {
+		out.Threshold = *b.Threshold
+	}
+	if b.PreserveRecent != nil {
+		out.PreserveRecent = *b.PreserveRecent
+	}
+	if out.Threshold == 0 && out.PreserveRecent == 0 {
+		return nil
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------
