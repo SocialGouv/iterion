@@ -390,22 +390,32 @@ func isExhaustive(edges []*Edge) bool {
 }
 
 // checkAmbiguousConditions detects duplicate conditions with the same polarity
-// on the same source node.
+// on the same source node. Expression-form edges (`when "<expr>"`) are keyed
+// by their full source so two distinct expressions are treated as different
+// conditions; the validator can't statically prove disjointness or overlap of
+// arbitrary boolean expressions, so we trust the author and only flag exact
+// duplicates of the same expression source.
 func (c *compiler) checkAmbiguousConditions(nodeID string, edges []*Edge) {
 	type condKey struct {
-		field   string
-		negated bool
+		field      string
+		negated    bool
+		expression string
 	}
 	seen := make(map[condKey]*Edge)
 	for _, e := range edges {
-		key := condKey{field: e.Condition, negated: e.Negated}
+		key := condKey{field: e.Condition, negated: e.Negated, expression: e.ExpressionSrc}
 		if prev, ok := seen[key]; ok {
-			label := e.Condition
-			if e.Negated {
-				label = "not " + label
+			var label string
+			switch {
+			case e.ExpressionSrc != "":
+				label = `"` + e.ExpressionSrc + `"`
+			case e.Negated:
+				label = "not " + e.Condition
+			default:
+				label = e.Condition
 			}
 			c.errorf(DiagAmbiguousCondition,
-				"node %q has ambiguous edges: both %s->%s and %s->%s trigger on %q",
+				"node %q has ambiguous edges: both %s->%s and %s->%s trigger on %s",
 				nodeID, prev.From, prev.To, e.From, e.To, label)
 		} else {
 			seen[key] = e

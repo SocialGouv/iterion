@@ -203,9 +203,12 @@ schema verdict_output:
   fix_plan: string
   confidence: string [enum: "low", "medium", "high"]
 
-## streak_check relays approved/blockers/fix_plan from its input
-## (the current reviewer's verdict) and computes a deterministic
-## stop signal based on the previous reviewer's verdict.
+## streak_check relays approved/blockers/fix_plan/family from its
+## input (the current reviewer's verdict) and computes a
+## deterministic stop signal based on the previous reviewer's
+## verdict. The `family` passthrough lets the fix routing pick the
+## same-family fixer so the fix session can inherit the reviewer's
+## context (and benefit from prompt-cache hits).
 ##
 ## Soft-approval: a low-confidence rejection (`approved=false` AND
 ## `confidence=="low"`) is treated as approved for streak/fix
@@ -215,6 +218,7 @@ schema verdict_output:
 schema streak_state:
   stop: bool
   approved: bool
+  family: string
   blockers: string[]
   fix_plan: string
 
@@ -288,9 +292,17 @@ compute streak_check:
   expr:
     stop: "input.approved && loop.review_loop.previous_output.approved && input.family != loop.review_loop.previous_output.family"
     approved: "input.approved || input.confidence == 'low'"
+    family: "input.family"
     blockers: "input.blockers"
     fix_plan: "input.fix_plan"
 
+## Per-family fixers. Each one inherits the SAME-family reviewer's
+## session via `session: inherit` + `_session_id` mapping on the
+## edge — so the fixer reuses the prompt cache, the workspace files
+## already loaded, and the reviewer's reasoning chain. The result
+## is one session per loop iteration per family (not two), which
+## both shortens latency and dramatically reduces token cost:
+## without inheritance every fixer would re-scan the workspace.
 agent fix_claude:
   backend: "claude_code"
   model: "claude-opus-4-7"
@@ -299,10 +311,23 @@ agent fix_claude:
   output: fix_output
   system: fix_system
   user: fix_user
-  session: fresh
+  session: inherit
   ## Same escalation contract as the reviewers — the fixer can ask
   ## the dev a question (e.g. clarify the intent of an ambiguous
   ## blocker) instead of guessing.
+  interaction: human
+
+agent fix_gpt:
+  model: "openai/gpt-5.5"
+  input: fix_input
+  output: fix_output
+  system: fix_system
+  user: fix_user
+  session: inherit
+  ## claw needs the same read/write toolset the reviewer used so
+  ## the fixer can actually apply edits.
+  tools: [bash, read_file, write_file, file_edit, glob, grep]
+  tool_max_steps: 30
   interaction: human
 
 ## ─── Workflow ───────────────────────────────────────────────────
@@ -316,13 +341,16 @@ workflow vibe_review_alternating:
     max_cost_usd: 60
 
   ## Round-robin alternates: 1st pass → claude, 2nd → gpt, repeat.
-  ## Each reviewer receives the most recent fixer's `pushback`
-  ## list so it knows which items to skip. On the first iteration
-  ## `outputs.fix_claude` is empty → both fields render as nil and
-  ## the prompt's "ne re-flague pas ces items" section is harmless.
+  ## Each reviewer receives the OTHER family's most recent fixer
+  ## pushback so it knows which items to skip — the alternation
+  ## guarantees the cross-family pushback comes from the previous
+  ## iteration's fixer of the opposing family. On the first
+  ## iteration both `outputs.fix_*` are empty → fields render as
+  ## empty strings and the prompt's "ne re-flague pas ces items"
+  ## section is harmless.
   alt -> reviewer_claude with {
-    prior_pushback: "{{outputs.fix_claude.pushback}}",
-    prior_pushback_justification: "{{outputs.fix_claude.pushback_justification}}"
+    prior_pushback: "{{outputs.fix_gpt.pushback}}",
+    prior_pushback_justification: "{{outputs.fix_gpt.pushback_justification}}"
   }
   alt -> reviewer_gpt with {
     prior_pushback: "{{outputs.fix_claude.pushback}}",
@@ -364,18 +392,35 @@ workflow vibe_review_alternating:
   ## cycle is still bounded because that edge IS loop-bearing.
   streak_check -> alt when "approved"
 
-  ## Medium/high-confidence rejection: apply fix-all then re-enter
-  ## the loop. The fixer's `pushback` output flows to the next
-  ## reviewer via the alt→reviewer with-mappings above.
-  streak_check -> fix_claude when not approved with {
+  ## Medium/high-confidence rejection: route to the SAME-family
+  ## fixer so it can inherit the reviewer's session (one session
+  ## per iteration per family — see fix_claude / fix_gpt comments).
+  ## `_session_id` reads directly from the most recent reviewer
+  ## output rather than going through streak_check, because compute
+  ## passthrough strips the underscore-prefixed metadata fields.
+  ##
+  ## Edge order matters: iterion evaluates conditional edges top-
+  ## down, first match wins. We list both family-specific fixers
+  ## before the unconditional `done` fallthrough so loop-exhaustion
+  ## still terminates cleanly.
+  streak_check -> fix_claude when "!approved && family == 'claude'" with {
     blockers: "{{outputs.streak_check.blockers}}",
-    fix_plan: "{{outputs.streak_check.fix_plan}}"
+    fix_plan: "{{outputs.streak_check.fix_plan}}",
+    _session_id: "{{outputs.reviewer_claude._session_id}}"
+  }
+  streak_check -> fix_gpt when "!approved && family == 'gpt'" with {
+    blockers: "{{outputs.streak_check.blockers}}",
+    fix_plan: "{{outputs.streak_check.fix_plan}}",
+    _session_id: "{{outputs.reviewer_gpt._session_id}}"
   }
 
   ## Recovery cycle uses a separate loop name so its counter doesn't
   ## interfere with the review_loop snapshot semantics. Sized large
-  ## enough to allow review_loop to be the binding constraint.
+  ## enough to allow review_loop to be the binding constraint. Both
+  ## fixers share the loop counter — total fix attempts across both
+  ## families are capped at 20.
   fix_claude -> alt as recovery_loop(20)
+  fix_gpt    -> alt as recovery_loop(20)
 
   ## Loop exhaustion fallbacks: when a bounded loop hits its limit
   ## the loop-bearing edges above are skipped and execution falls
@@ -383,4 +428,5 @@ workflow vibe_review_alternating:
   reviewer_claude -> done
   reviewer_gpt    -> done
   fix_claude      -> done
+  fix_gpt         -> done
   streak_check    -> done
