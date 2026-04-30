@@ -601,9 +601,15 @@ func (e *Engine) buildNodeInputRS(nodeID string, vars map[string]interface{}, ou
 
 		for _, dm := range edge.With {
 			val := e.resolveMapping(dm, vars, outputs, effectiveInputs, artifacts, rs)
-			if val != nil {
-				result[dm.Key] = val
-			}
+			// Include nil values too: a ref that resolves to nil
+			// (e.g. `{{outputs.fixer.pushback}}` before the fixer
+			// has run, `{{loop.X.previous_output}}` on iteration 1)
+			// is still a *valid* mapping — the field exists, its
+			// value is just empty. Dropping it would leave
+			// `{{input.<key>}}` placeholders unresolved in
+			// downstream prompts, surfacing template syntax to the
+			// LLM instead of an empty string.
+			result[dm.Key] = val
 		}
 	}
 
