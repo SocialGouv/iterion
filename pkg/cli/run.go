@@ -9,12 +9,14 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/SocialGouv/claw-code-go/pkg/apikit/telemetry/otlpgrpc"
 	"github.com/SocialGouv/claw-code-go/pkg/permissions"
+	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
@@ -350,7 +352,26 @@ func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunSto
 	if err != nil {
 		return nil, fmt.Errorf("cli: resolve working dir for tool workspace: %w", err)
 	}
-	if err := tool.RegisterClawAll(toolReg, tool.ClawDefaults{Workspace: workspace}); err != nil {
+	// Allocate per-run PlanMode state so workflows that declare
+	// enter_plan_mode / exit_plan_mode resolve those tools through
+	// the registry. The state directory lives under storeDir so any
+	// plan artefacts the tool persists travel with the run. Without
+	// this, a workflow declaring those tools failed at first call
+	// with "unknown tool" — a registration gap that didn't surface
+	// in the dispatch smoke test because the test enabled PlanMode
+	// explicitly via ClawDefaults.
+	planActive := false
+	planDir := filepath.Join(storeDir, "plan-mode")
+	if err := os.MkdirAll(planDir, 0o755); err != nil {
+		// Non-fatal: log and continue without plan_mode tools.
+		logger.Warn("cli: prepare plan_mode dir: %v — plan_mode tools disabled", err)
+		planDir = ""
+	}
+	clawDefaults := tool.ClawDefaults{Workspace: workspace}
+	if planDir != "" {
+		clawDefaults.PlanMode = &clawtools.PlanModeState{Active: &planActive, Dir: planDir}
+	}
+	if err := tool.RegisterClawAll(toolReg, clawDefaults); err != nil {
 		// Non-fatal: log and continue with whatever was registered.
 		// A malformed registry is better than a hard run failure on
 		// startup; downstream tool resolution will surface the gap.
@@ -382,12 +403,27 @@ func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunSto
 		catalog := make(map[string]*mcp.ServerConfig, len(wf.ResolvedMCPServers))
 		hasAuth := false
 		for name, server := range wf.ResolvedMCPServers {
+			// Expand $VAR / ${VAR} on Command, Args, URL so a workflow
+			// can refer to test-provided or env-pinned binaries / hosts
+			// (a long-standing pattern: examples/claw_mcp.iter uses
+			// `command: "${ITERION_MCP_TEST_BINARY}"`). Without this
+			// expansion the literal placeholder leaks straight into
+			// exec.Command, which then fails with "executable file
+			// not found in $PATH" — silently broken for any workflow
+			// author who picked up the env-substitution idiom from
+			// the example fixtures. The live e2e tests had been
+			// working around the gap by building their own catalog;
+			// fixing it centrally lets the standard CLI path work.
+			expandedArgs := make([]string, len(server.Args))
+			for i, a := range server.Args {
+				expandedArgs[i] = os.ExpandEnv(a)
+			}
 			catalog[name] = &mcp.ServerConfig{
 				Name:      server.Name,
 				Transport: mcp.FromIRTransport(server.Transport),
-				Command:   server.Command,
-				Args:      append([]string(nil), server.Args...),
-				URL:       server.URL,
+				Command:   os.ExpandEnv(server.Command),
+				Args:      expandedArgs,
+				URL:       os.ExpandEnv(server.URL),
 				Headers:   server.Headers,
 				Auth:      mcp.FromIRAuth(server.Auth),
 			}

@@ -1,5 +1,7 @@
 package api
 
+import "encoding/json"
+
 // CacheControlMarker is the Anthropic prompt caching marker.
 // Set Type to "ephemeral" to enable caching up to this content block.
 type CacheControlMarker struct {
@@ -37,6 +39,47 @@ type ContentBlock struct {
 
 	// Anthropic prompt caching marker (ignored by non-Anthropic providers).
 	CacheControl *CacheControlMarker `json:"cache_control,omitempty"`
+}
+
+// MarshalJSON enforces the Anthropic protocol invariant that a tool_use
+// block carries a present (possibly empty) `input` object, even when
+// the LLM produced no arguments — schemas with no required fields
+// (e.g. `enter_plan_mode`) and tools the model invokes with no payload
+// would otherwise serialise via the default `omitempty` rule, which
+// strips empty maps. The Anthropic API then rejects the next turn
+// with `messages.N.content.M.tool_use.input: Field required` (HTTP
+// 400), aborting the conversation. Forcing `input: {}` for tool_use
+// blocks restores round-trip stability without affecting non-tool_use
+// blocks (text / tool_result / image still omit input).
+//
+// We can't simply mutate b.Input to map[string]any{} and forward
+// through a struct alias — Go's json encoder treats both nil AND
+// empty-map as "omit" under the omitempty tag. The fix is to route
+// tool_use blocks through a dedicated struct that drops omitempty
+// from Input.
+func (b ContentBlock) MarshalJSON() ([]byte, error) {
+	if b.Type != "tool_use" {
+		type alias ContentBlock
+		return json.Marshal(alias(b))
+	}
+	type toolUseEcho struct {
+		Type         string              `json:"type"`
+		ID           string              `json:"id,omitempty"`
+		Name         string              `json:"name,omitempty"`
+		Input        map[string]any      `json:"input"`
+		CacheControl *CacheControlMarker `json:"cache_control,omitempty"`
+	}
+	input := b.Input
+	if input == nil {
+		input = map[string]any{}
+	}
+	return json.Marshal(toolUseEcho{
+		Type:         b.Type,
+		ID:           b.ID,
+		Name:         b.Name,
+		Input:        input,
+		CacheControl: b.CacheControl,
+	})
 }
 
 // ImageSource represents the "source" object on an Anthropic image content
