@@ -424,6 +424,16 @@ prompt aux_user:
            retourne une réponse déterministe : action=diagnostics,
            path=<fixture>, count=0).
 
+  12. screenshot
+        → capture l'écran (Xvfb sur DISPLAY=:99 dans le test). Le retour
+          contient un champ "description" — capture-le dans
+          `screenshot_description` (ne doit PAS être vide).
+
+  13. computer_use — action="cursor_position"
+        → action read-only qui interroge xdotool pour la position
+          actuelle du curseur. Capture le champ "description" dans
+          `computer_use_description` (ne doit PAS être vide).
+
 schema aux_input:
   trigger: string
 
@@ -440,6 +450,8 @@ schema aux_output:
   web_search_text: string
   ask_user_answer: string
   lsp_action: string
+  screenshot_description: string
+  computer_use_description: string
 
 agent aux_runner:
   model: "anthropic/claude-haiku-4-5-20251001"
@@ -448,8 +460,8 @@ agent aux_runner:
   publish: aux_result
   system: aux_system
   user: aux_user
-  tools: [config, remote_trigger, web_fetch, mcp_auth, skill, repl, notebook_edit, read_image, web_search, ask_user, lsp]
-  tool_max_steps: 22
+  tools: [config, remote_trigger, web_fetch, mcp_auth, skill, repl, notebook_edit, read_image, web_search, ask_user, lsp, screenshot, computer_use]
+  tool_max_steps: 26
   session: fresh
   mcp:
     servers: [testsrv]

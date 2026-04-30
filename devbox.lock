@@ -149,6 +149,86 @@
         }
       }
     },
+    "imagemagick@latest": {
+      "last_modified": "2026-04-23T13:07:47Z",
+      "resolved": "github:NixOS/nixpkgs/01fbdeef22b76df85ea168fbfe1bfd9e63681b30#imagemagick",
+      "source": "devbox-search",
+      "version": "7.1.2-19",
+      "systems": {
+        "aarch64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/wpzigcx7gxjlwwp37zarhvd3bqa80b8c-imagemagick-7.1.2-19",
+              "default": true
+            },
+            {
+              "name": "doc",
+              "path": "/nix/store/nbsq26ilsasp7q30yi1a0wg7gphas4yd-imagemagick-7.1.2-19-doc"
+            },
+            {
+              "name": "dev",
+              "path": "/nix/store/5aqqkdj4f73paq3g2j4w4hzzr761ikxl-imagemagick-7.1.2-19-dev"
+            }
+          ],
+          "store_path": "/nix/store/wpzigcx7gxjlwwp37zarhvd3bqa80b8c-imagemagick-7.1.2-19"
+        },
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/fwzsk0k739njgrc6akds0gb9dlf35c7j-imagemagick-7.1.2-19",
+              "default": true
+            },
+            {
+              "name": "dev",
+              "path": "/nix/store/cbix8xr3hapw0gxnb9frs03pmk4qwg03-imagemagick-7.1.2-19-dev"
+            },
+            {
+              "name": "doc",
+              "path": "/nix/store/0n8il9kwbiz0iv7v5i2lqgq0b74ysabl-imagemagick-7.1.2-19-doc"
+            }
+          ],
+          "store_path": "/nix/store/fwzsk0k739njgrc6akds0gb9dlf35c7j-imagemagick-7.1.2-19"
+        },
+        "x86_64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/gg9cl0mxb1imfdswpfizk5dj7zrxrwh6-imagemagick-7.1.2-19",
+              "default": true
+            },
+            {
+              "name": "dev",
+              "path": "/nix/store/lgixyf4qclp6bcm6z76ffpjmzlhvxa4l-imagemagick-7.1.2-19-dev"
+            },
+            {
+              "name": "doc",
+              "path": "/nix/store/8lbb1bszlsbva3j87k24vmgznd8lnfzr-imagemagick-7.1.2-19-doc"
+            }
+          ],
+          "store_path": "/nix/store/gg9cl0mxb1imfdswpfizk5dj7zrxrwh6-imagemagick-7.1.2-19"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/pjcg9z9zj4hqa7y8jjgsx06rc31q6r8s-imagemagick-7.1.2-19",
+              "default": true
+            },
+            {
+              "name": "dev",
+              "path": "/nix/store/hn59rqwq5j0z7l13yns903l6ibylwz1g-imagemagick-7.1.2-19-dev"
+            },
+            {
+              "name": "doc",
+              "path": "/nix/store/ynxxq1m4789p30i1g8qjlkm9lp80h9c0-imagemagick-7.1.2-19-doc"
+            }
+          ],
+          "store_path": "/nix/store/pjcg9z9zj4hqa7y8jjgsx06rc31q6r8s-imagemagick-7.1.2-19"
+        }
+      }
+    },
     "nodejs_22@latest": {
       "last_modified": "2026-03-07T23:46:50Z",
       "plugin_version": "0.0.2",
@@ -243,6 +323,98 @@
             }
           ],
           "store_path": "/nix/store/hp6rarchx58b998kybcs6ki8gb86i5lk-watchexec-2.3.2"
+        }
+      }
+    },
+    "xdotool@latest": {
+      "last_modified": "2026-04-23T13:07:47Z",
+      "resolved": "github:NixOS/nixpkgs/01fbdeef22b76df85ea168fbfe1bfd9e63681b30#xdotool",
+      "source": "devbox-search",
+      "version": "3.20211022.1",
+      "systems": {
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/sjg33axklxl2xn7lm4y00cxwb87r9klg-xdotool-3.20211022.1",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/sjg33axklxl2xn7lm4y00cxwb87r9klg-xdotool-3.20211022.1"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/39xp06psy20hnwhxvm1jhh1iksfdqki7-xdotool-3.20211022.1",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/39xp06psy20hnwhxvm1jhh1iksfdqki7-xdotool-3.20211022.1"
+        }
+      }
+    },
+    "xorg.xorgserver@latest": {
+      "last_modified": "2026-01-23T17:20:52Z",
+      "resolved": "github:NixOS/nixpkgs/a1bab9e494f5f4939442a57a58d0449a109593fe#xorg.xorgserver",
+      "source": "devbox-search",
+      "version": "21.1.21",
+      "systems": {
+        "aarch64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/75p8mc7x4ispc3rv53ihzc12bxdknknd-xorg-server-21.1.21",
+              "default": true
+            },
+            {
+              "name": "dev",
+              "path": "/nix/store/rx2f8nzkjpnkh7pqb9zd870j6i90qq92-xorg-server-21.1.21-dev"
+            }
+          ],
+          "store_path": "/nix/store/75p8mc7x4ispc3rv53ihzc12bxdknknd-xorg-server-21.1.21"
+        },
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/4bhis5784f8r59sbrjvkkd6icvbap91n-xorg-server-21.1.21",
+              "default": true
+            },
+            {
+              "name": "dev",
+              "path": "/nix/store/ky4xb7ivf4i7i46w0lx6yf0wcj07drjx-xorg-server-21.1.21-dev"
+            }
+          ],
+          "store_path": "/nix/store/4bhis5784f8r59sbrjvkkd6icvbap91n-xorg-server-21.1.21"
+        },
+        "x86_64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/yjnby2dvgjly1d5lk5450xqhyvhz3xmd-xorg-server-21.1.21",
+              "default": true
+            },
+            {
+              "name": "dev",
+              "path": "/nix/store/bsivsmm9gsglf6jnjj0gq4gz8mplngnp-xorg-server-21.1.21-dev"
+            }
+          ],
+          "store_path": "/nix/store/yjnby2dvgjly1d5lk5450xqhyvhz3xmd-xorg-server-21.1.21"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/4ip8dc15r758m8yc30bycq0vxj8ic6yg-xorg-server-21.1.21",
+              "default": true
+            },
+            {
+              "name": "dev",
+              "path": "/nix/store/gkjzmw807dwnd11kh9pxrj6nvhjgh9hf-xorg-server-21.1.21-dev"
+            }
+          ],
+          "store_path": "/nix/store/4ip8dc15r758m8yc30bycq0vxj8ic6yg-xorg-server-21.1.21"
         }
       }
     }

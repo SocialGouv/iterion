@@ -5,7 +5,10 @@
     "go@1.23",
     "go-task@latest",
     "nodejs_22@latest",
-    "watchexec@latest"
+    "watchexec@latest",
+    "xorg.xorgserver@latest",
+    "xdotool@latest",
+    "imagemagick@latest"
   ],
   "shell": {
     "init_hook": [],

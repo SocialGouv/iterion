@@ -160,6 +160,23 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 	t.Setenv("BRAVE_API_KEY", "iterion-test-fixture-key")
 	t.Setenv("CLAW_WEB_SEARCH_BRAVE_URL", auxHTTP.URL+"/brave-search")
 
+	// ── Phase 5 fixtures ───────────────────────────────────────────
+	//
+	// Xvfb on display :99 lets screenshot + computer_use shell out to
+	// xdotool / ImageMagick `import` against an empty 1024×768 frame
+	// buffer. The display is torn down after the test via t.Cleanup.
+	xvfb := exec.Command("Xvfb", ":99", "-screen", "0", "1024x768x24", "-nolisten", "tcp")
+	if err := xvfb.Start(); err != nil {
+		t.Fatalf("start Xvfb: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = xvfb.Process.Kill()
+		_ = xvfb.Wait()
+	})
+	// Give Xvfb a moment to be ready before xdotool / import call it.
+	time.Sleep(500 * time.Millisecond)
+	t.Setenv("DISPLAY", ":99")
+
 	storeDir := filepath.Join(workspaceDir, ".iterion")
 	s, storeErr := store.New(storeDir)
 	if storeErr != nil {
@@ -223,8 +240,9 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 		Workspace:        workspaceDir,
 		PlanMode:         &clawtools.PlanModeState{Active: &planActive, Dir: planDir},
 		MCPProvider:      mcpManager.ClawProvider(nil),
-		IncludeWebSearch: true,
-		LSP:              lspReg,
+		IncludeWebSearch:   true,
+		IncludeComputerUse: true,
+		LSP:                lspReg,
 		Config: map[string]any{
 			"probe_key":    "iterion-config-probe-value",
 			"probe_number": 42,
@@ -337,6 +355,9 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 		// aux_runner — Phase 4b additions: web_search via Brave-URL
 		// override + ask_user with inline auto-answer + lsp.
 		"web_search", "ask_user", "lsp",
+		// aux_runner — Phase 5: display tools via Xvfb + xdotool +
+		// ImageMagick.
+		"screenshot", "computer_use",
 	}
 	// Two-tier assertion: every tool must be dispatched, AND every
 	// tool must succeed at least once. The dispatch tier catches
@@ -385,6 +406,8 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 		auxTriggerStatus                              float64
 		auxWebSearchText, auxAskUserAnswer            string
 		auxLSPAction                                  string
+		auxScreenshotDescription                      string
+		auxComputerUseDescription                     string
 	)
 	for _, evt := range events {
 		if evt.Type != store.EventNodeFinished || evt.Data == nil {
@@ -432,6 +455,8 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 			auxWebSearchText, _ = out["web_search_text"].(string)
 			auxAskUserAnswer, _ = out["ask_user_answer"].(string)
 			auxLSPAction, _ = out["lsp_action"].(string)
+			auxScreenshotDescription, _ = out["screenshot_description"].(string)
+			auxComputerUseDescription, _ = out["computer_use_description"].(string)
 		}
 	}
 
@@ -562,6 +587,12 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 	if auxLSPAction != "diagnostics" {
 		t.Errorf("aux_runner.lsp_action != %q: got %q (lsp Dispatch result not exploited by LLM)",
 			"diagnostics", auxLSPAction)
+	}
+	if auxScreenshotDescription == "" {
+		t.Errorf("aux_runner.screenshot_description empty (Xvfb capture path failed, or LLM did not exploit)")
+	}
+	if auxComputerUseDescription == "" {
+		t.Errorf("aux_runner.computer_use_description empty (xdotool cursor_position failed, or LLM did not exploit)")
 	}
 
 	logRunRecap(t, events)
