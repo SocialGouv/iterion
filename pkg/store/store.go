@@ -303,13 +303,18 @@ func (s *RunStore) AppendEvent(runID string, evt Event) (*Event, error) {
 	// append-only event stream — breaking the documented monotonic ordering
 	// and any downstream consumer that dedups by Seq.
 	if !s.seqSeed[runID] {
-		if next, err := s.scanMaxSeqLocked(runID); err == nil {
-			s.seq[runID] = next
-		} else {
-			// Fall back to 0 (the previous behaviour) but record the failure
-			// so the operator can investigate; corrupt events.jsonl shouldn't
-			// block new appends.
-			s.logger.Warn("store: could not seed seq for run %s: %v (starting at 0)", runID, err)
+		// scanMaxSeqLocked now returns the best-effort max+1 even on
+		// partial scan failures (a scanner error past N readable lines
+		// returns N+1 rather than 0), so we can trust `next` regardless
+		// of err. Restarting at 0 on a partial scan would collide with
+		// the readable-but-skipped tail and break the monotonic Seq
+		// invariant downstream consumers rely on for dedup. The error
+		// remains worth logging so an operator can investigate the
+		// corruption — but we don't gate on it.
+		next, err := s.scanMaxSeqLocked(runID)
+		s.seq[runID] = next
+		if err != nil {
+			s.logger.Warn("store: partial seq seed for run %s: %v (resuming from %d — best-effort)", runID, err, next)
 		}
 		s.seqSeed[runID] = true
 	}
@@ -645,13 +650,18 @@ func (s *RunStore) scanMaxSeqLocked(runID string) (int64, error) {
 			maxSeq = hdr.Seq
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return 0, err
+	scanErr := scanner.Err()
+	// Always return the best-effort max+1: when scanner.Err is non-nil
+	// (oversized line, read failure mid-file) the readable prefix's
+	// max is still trustworthy. Restarting from 0 on a partial scan
+	// would collide with prior events and break the monotonic Seq
+	// invariant. Caller logs scanErr; this function never withholds
+	// the count it managed to compute.
+	next := int64(0)
+	if maxSeq >= 0 {
+		next = maxSeq + 1
 	}
-	if maxSeq < 0 {
-		return 0, nil
-	}
-	return maxSeq + 1, nil
+	return next, scanErr
 }
 
 func (s *RunStore) writeRun(r *Run) error {
