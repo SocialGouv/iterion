@@ -67,6 +67,11 @@ tasks:
     cmds:
       - go test -v -tags live -count=1 -run TestLive_Full_ExhaustiveDSLCoverage -timeout 5h ./e2e/...
 
+  test:live:coverage:
+    desc: Run the claw broad-tool-coverage live e2e test (requires ANTHROPIC_API_KEY; ~$0.03/run on Haiku 4.5)
+    cmds:
+      - go test -v -tags live -count=1 -run TestLive_ClawToolCoverage -timeout 15m ./e2e/...
+
   test:live:session-inherit:
     desc: Run the claude_code session-inherit validation live e2e test (requires claude CLI + ANTHROPIC_API_KEY)
     cmds:
