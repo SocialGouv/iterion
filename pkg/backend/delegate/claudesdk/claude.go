@@ -30,6 +30,10 @@ func Prompt(ctx context.Context, prompt string, opts ...Option) (*ResultMessage,
 		Cwd:            cfg.cwd,
 		Env:            cfg.env,
 		StderrCallback: cfg.stderrCallback,
+		// One-shot Prompt(): the prompt is the last CLI argument, nothing
+		// is ever written to stdin. Leave it attached to /dev/null so the
+		// CLI doesn't emit "no stdin data received in 3s, ...".
+		OpenStdin: false,
 	}
 
 	proc, err := spawnProcess(ctx, cliPath, args, spOpts)

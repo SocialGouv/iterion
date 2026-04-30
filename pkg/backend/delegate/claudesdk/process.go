@@ -174,6 +174,14 @@ type spawnOptions struct {
 	Cwd            string
 	Env            map[string]string
 	StderrCallback func(string)
+	// OpenStdin opens a writable pipe to the child stdin (required by the
+	// streaming Session: NDJSON messages are written there). When false,
+	// cmd.Stdin is left nil so Go attaches /dev/null to the child stdin —
+	// this avoids the CLI's "no stdin data received in 3s" warning that
+	// fires when stdin is a non-TTY pipe with no data and the input format
+	// is not stream-json (the one-shot Prompt() case, where the prompt is
+	// passed as a CLI argument).
+	OpenStdin bool
 }
 
 // spawnProcess starts a new Claude CLI subprocess with the given arguments.
@@ -190,9 +198,13 @@ func spawnProcess(ctx context.Context, cliPath string, args []string, opts spawn
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
 
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, fmt.Errorf("claude: stdin pipe: %w", err)
+	var stdin io.WriteCloser
+	if opts.OpenStdin {
+		var err error
+		stdin, err = cmd.StdinPipe()
+		if err != nil {
+			return nil, fmt.Errorf("claude: stdin pipe: %w", err)
+		}
 	}
 
 	stdout, err := cmd.StdoutPipe()
@@ -247,6 +259,9 @@ func (p *cliProcess) writeLine(v any) error {
 	if p.closed {
 		return fmt.Errorf("claude: write to closed process")
 	}
+	if p.stdin == nil {
+		return fmt.Errorf("claude: stdin not opened (one-shot mode)")
+	}
 	data, err := json.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("claude: marshal: %w", err)
@@ -266,8 +281,10 @@ func (p *cliProcess) close() error {
 	p.closed = true
 	p.mu.Unlock()
 
-	// Close stdin to signal the process to exit.
-	_ = p.stdin.Close()
+	// Close stdin to signal the process to exit (only if we opened it).
+	if p.stdin != nil {
+		_ = p.stdin.Close()
+	}
 	return p.cmd.Wait()
 }
 
