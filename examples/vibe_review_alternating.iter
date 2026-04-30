@@ -198,7 +198,14 @@ schema review_input:
 
 schema verdict_output:
   approved: bool
-  family: string
+  ## family is enum-constrained: a model that hallucinates a third
+  ## value (we observed gpt-5.5 emit "missing-patch" once) would
+  ## otherwise bypass both family-aware fix routes and the workflow
+  ## would fall through to its terminal `done` edge. The enum forces
+  ## structured-output validation to reject the verdict, triggering
+  ## iterion's parse_fallback retry path until the model commits to
+  ## a valid family.
+  family: string [enum: "claude", "gpt"]
   blockers: string[]
   fix_plan: string
   confidence: string [enum: "low", "medium", "high"]
@@ -429,4 +436,11 @@ workflow vibe_review_alternating:
   reviewer_gpt    -> done
   fix_claude      -> done
   fix_gpt         -> done
-  streak_check    -> done
+  ## streak_check's catch-all routes back to `alt` (not `done`) so
+  ## an unmatched conditional state (e.g. a hallucinated family that
+  ## escapes the enum, or any future expression edge case) keeps
+  ## the loop cycling rather than silently terminating. The bounded
+  ## review_loop counter on the reviewer→streak_check edges still
+  ## guarantees the workflow eventually exits — exhaustion routes
+  ## via the reviewer→done fallthrough above.
+  streak_check    -> alt
