@@ -3,6 +3,7 @@ package apikit
 import (
 	"encoding/json"
 	"math"
+	"strings"
 )
 
 // ModelTokenLimit holds the token limits for a known model.
@@ -27,17 +28,21 @@ func ModelTokenLimitForModel(model string) *ModelTokenLimit {
 		}
 	}
 
-	// 2. Hardcoded fallback for backward compat.
-	switch canonical {
-	case "claude-opus-4-6":
-		return &ModelTokenLimit{MaxOutputTokens: 32_000, ContextWindowTokens: 200_000}
-	case "claude-sonnet-4-6", "claude-haiku-4-5-20251213":
+	// 2. Hardcoded prefix fallback — for models not yet in the registry
+	//    (e.g., a fresh canonical name received before live cache refresh).
+	//    Kept conservative; the registry is the source of truth.
+	lower := strings.ToLower(canonical)
+	switch {
+	case strings.HasPrefix(lower, "claude-opus"), strings.HasPrefix(lower, "claude-sonnet"):
+		return &ModelTokenLimit{MaxOutputTokens: 128_000, ContextWindowTokens: 1_000_000}
+	case strings.HasPrefix(lower, "claude-haiku"):
 		return &ModelTokenLimit{MaxOutputTokens: 64_000, ContextWindowTokens: 200_000}
-	case "grok-3", "grok-3-mini":
+	case strings.HasPrefix(lower, "gpt-5") || strings.HasPrefix(lower, "openai/gpt-5"):
+		return &ModelTokenLimit{MaxOutputTokens: 128_000, ContextWindowTokens: 1_050_000}
+	case strings.HasPrefix(lower, "grok"):
 		return &ModelTokenLimit{MaxOutputTokens: 64_000, ContextWindowTokens: 131_072}
-	default:
-		return nil
 	}
+	return nil
 }
 
 // ResolveModelAlias normalizes model names to their canonical form.

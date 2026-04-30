@@ -48,6 +48,12 @@ var (
 		BaseURLEnvVar:  "XAI_BASE_URL",
 		DefaultBaseURL: "https://api.x.ai/v1",
 	}
+	openaiMeta = &ProviderMetadata{
+		Provider:       ProviderOpenAI,
+		AuthEnvVar:     "OPENAI_API_KEY",
+		BaseURLEnvVar:  "OPENAI_BASE_URL",
+		DefaultBaseURL: "https://api.openai.com/v1",
+	}
 	dashScopeMeta = &ProviderMetadata{
 		Provider:       ProviderDashScope,
 		AuthEnvVar:     "DASHSCOPE_API_KEY",
@@ -76,12 +82,24 @@ func (r *ModelRegistry) ensureInit() {
 	r.aliases = make(map[string]string)
 
 	entries := []ModelEntry{
-		{Canonical: "claude-opus-4-6", Provider: ProviderAnthropic, MaxOutput: 32_000, ContextWindow: 200_000, Aliases: []string{"opus"}, Metadata: anthropicMeta},
-		{Canonical: "claude-sonnet-4-6", Provider: ProviderAnthropic, MaxOutput: 64_000, ContextWindow: 200_000, Aliases: []string{"sonnet"}, Metadata: anthropicMeta},
-		{Canonical: "claude-haiku-4-5-20251213", Provider: ProviderAnthropic, MaxOutput: 64_000, ContextWindow: 200_000, Aliases: []string{"haiku"}, Metadata: anthropicMeta},
+		// Anthropic — context windows from models.dev / OpenRouter (1M for current SDKs).
+		{Canonical: "claude-opus-4-7", Provider: ProviderAnthropic, MaxOutput: 128_000, ContextWindow: 1_000_000, Aliases: []string{"opus", "opus-4-7"}, Metadata: anthropicMeta},
+		{Canonical: "claude-opus-4-6", Provider: ProviderAnthropic, MaxOutput: 128_000, ContextWindow: 1_000_000, Aliases: []string{"opus-4-6"}, Metadata: anthropicMeta},
+		{Canonical: "claude-sonnet-4-7", Provider: ProviderAnthropic, MaxOutput: 128_000, ContextWindow: 1_000_000, Aliases: []string{"sonnet", "sonnet-4-7"}, Metadata: anthropicMeta},
+		{Canonical: "claude-sonnet-4-6", Provider: ProviderAnthropic, MaxOutput: 64_000, ContextWindow: 1_000_000, Aliases: []string{"sonnet-4-6"}, Metadata: anthropicMeta},
+		{Canonical: "claude-haiku-4-5", Provider: ProviderAnthropic, MaxOutput: 64_000, ContextWindow: 200_000, Aliases: []string{"haiku", "claude-haiku-4-5-20251213"}, Metadata: anthropicMeta},
+		// OpenAI — gpt-5.x family (1M+ context).
+		{Canonical: "gpt-5.5", Provider: ProviderOpenAI, MaxOutput: 128_000, ContextWindow: 1_050_000, Aliases: []string{"openai/gpt-5.5"}, Metadata: openaiMeta},
+		{Canonical: "gpt-5.5-pro", Provider: ProviderOpenAI, MaxOutput: 128_000, ContextWindow: 1_050_000, Aliases: []string{"openai/gpt-5.5-pro"}, Metadata: openaiMeta},
+		{Canonical: "gpt-5.4", Provider: ProviderOpenAI, MaxOutput: 128_000, ContextWindow: 1_050_000, Aliases: []string{"openai/gpt-5.4"}, Metadata: openaiMeta},
+		{Canonical: "gpt-5.4-pro", Provider: ProviderOpenAI, MaxOutput: 128_000, ContextWindow: 1_050_000, Aliases: []string{"openai/gpt-5.4-pro"}, Metadata: openaiMeta},
+		{Canonical: "gpt-5.4-mini", Provider: ProviderOpenAI, MaxOutput: 128_000, ContextWindow: 400_000, Aliases: []string{"openai/gpt-5.4-mini"}, Metadata: openaiMeta},
+		{Canonical: "gpt-5.4-nano", Provider: ProviderOpenAI, MaxOutput: 128_000, ContextWindow: 400_000, Aliases: []string{"openai/gpt-5.4-nano"}, Metadata: openaiMeta},
+		// xAI
 		{Canonical: "grok-3", Provider: ProviderXai, MaxOutput: 64_000, ContextWindow: 131_072, Aliases: []string{"grok"}, Metadata: xaiMeta},
 		{Canonical: "grok-3-mini", Provider: ProviderXai, MaxOutput: 64_000, ContextWindow: 131_072, Aliases: []string{"grok-mini"}, Metadata: xaiMeta},
-		{Canonical: "grok-2", Provider: ProviderXai, Metadata: xaiMeta},
+		{Canonical: "grok-2", Provider: ProviderXai, MaxOutput: 64_000, ContextWindow: 131_072, Metadata: xaiMeta},
+		// DashScope (Qwen)
 		{Canonical: "qwen-max", Provider: ProviderDashScope, Aliases: []string{"qwen"}, Metadata: dashScopeMeta},
 		{Canonical: "qwen-plus", Provider: ProviderDashScope, Metadata: dashScopeMeta},
 		{Canonical: "qwen-turbo", Provider: ProviderDashScope, Metadata: dashScopeMeta},
@@ -141,7 +159,14 @@ func (r *ModelRegistry) RegisterModel(entry ModelEntry) {
 }
 
 // DefaultModelRegistry returns the package-level singleton registry.
+//
+// On first access, the embed entries are loaded synchronously and the live
+// cache (if present and recent) is merged on top. A background fetch of the
+// upstream model sources is then scheduled — the current call does not wait
+// for it. See MaybeRefreshLive for details and the CLAW_DISABLE_LIVE_REGISTRY
+// env var to opt out.
 func DefaultModelRegistry() *ModelRegistry {
 	defaultRegistry.ensureInit()
+	MaybeRefreshLive(defaultRegistry)
 	return defaultRegistry
 }

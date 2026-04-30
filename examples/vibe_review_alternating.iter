@@ -464,6 +464,10 @@ workflow vibe_review_alternating:
     max_duration: "2h"
     max_cost_usd: 60
 
+  compaction:
+    threshold: 0.9
+    preserve_recent: 8
+
   ## Round-robin alternates: 1st pass → claude, 2nd → gpt, repeat.
   ## Each reviewer receives the OTHER family's most recent fixer
   ## pushback so it knows which items to skip — the alternation
