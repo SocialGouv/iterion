@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -147,7 +148,11 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 			}
 			if len(step.ToolCalls) > 0 {
 				for _, tc := range step.ToolCalls {
-					logger.Logf(iterlog.LevelInfo, "🔧", "Tool call [%s]: %s", nodeID, tc.Name)
+					if detail := summarizeToolCallInput(tc.Name, tc.Input); detail != "" {
+						logger.Logf(iterlog.LevelInfo, "🔧", "Tool call [%s]: %s %s", nodeID, tc.Name, detail)
+					} else {
+						logger.Logf(iterlog.LevelInfo, "🔧", "Tool call [%s]: %s", nodeID, tc.Name)
+					}
 					logger.Logf(iterlog.LevelDebug, "🔧", "  input: %s", preview(string(tc.Input), 400))
 				}
 			}
@@ -368,6 +373,63 @@ func preview(s string, n int) string {
 		return string(cleaned) + "..."
 	}
 	return string(cleaned)
+}
+
+// toolDetailKeys maps a tool name to the input fields whose value best
+// identifies the call at a glance (file path, command, pattern, url).
+// Order matters: the first non-empty string match wins. Tools not in
+// the map fall back to logging just the name.
+var toolDetailKeys = map[string][]string{
+	"read_file":     {"path", "file_path"},
+	"file_edit":     {"path", "file_path"},
+	"write_file":    {"path", "file_path"},
+	"notebook_edit": {"path", "file_path", "notebook_path"},
+	"bash":          {"command"},
+	"grep":          {"pattern"},
+	"glob":          {"pattern"},
+	"web_fetch":     {"url"},
+	"web_search":    {"query"},
+	"skill":         {"skill", "name"},
+	"agent":         {"description"},
+	"ask_user":      {"question"},
+	"task_create":   {"description"},
+	"tool_search":   {"query"},
+	"sleep":         {"seconds", "duration"},
+}
+
+// summarizeToolCallInput returns a one-line, truncated detail string
+// describing the tool's primary argument for inclusion in the per-step
+// log line. Returns "" when the tool name is unknown or the input has
+// no usable primary field — log call falls back to bare tool name.
+//
+// This brings the claw-side log output to parity with the claude_code
+// delegate, which already emits "🔧 Read /path/to/file" lines.
+func summarizeToolCallInput(toolName string, input json.RawMessage) string {
+	keys := toolDetailKeys[toolName]
+	if len(keys) == 0 || len(input) == 0 {
+		return ""
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(input, &raw); err != nil {
+		return ""
+	}
+	for _, k := range keys {
+		v, ok := raw[k]
+		if !ok {
+			continue
+		}
+		switch s := v.(type) {
+		case string:
+			if s != "" {
+				return preview(s, 200)
+			}
+		case float64:
+			return preview(fmt.Sprintf("%g", s), 200)
+		case bool:
+			return preview(fmt.Sprintf("%v", s), 200)
+		}
+	}
+	return ""
 }
 
 // humanSize formats a byte count as a human-readable string.
