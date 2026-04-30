@@ -131,38 +131,6 @@ prompt review_system:
   5. Items deja pushbackes par le fixer : ne les
      re-flague PAS sauf si tu as une preuve nouvelle.
 
-  PATTERN DE CONVERGENCE (utilise-le comme calibrage) :
-  La methode est observee empiriquement comme convergent
-  asymptotiquement :
-   - Iterations precoces : tu trouveras des problemes
-     reellement critiques (bugs concrets, fuites, races,
-     vulnerabilites). Liste-les.
-   - Iterations intermediaires : la densite de blockers
-     critiques decroit. Tu deviens probablement plus
-     enclin a flaguer des problemes plus subtils. Hausse
-     la barre — un blocker doit toujours casser la prod
-     concretement, pas etre une "amelioration".
-   - Iterations tardives : tu vas commencer a re-decouvrir
-     des choses deja vetees, ou a flaguer des points qui
-     ressemblent fort a une preference/optimisation.
-     C'est le SIGNAL DE CONVERGENCE. Si tu vois ce
-     pattern, accepte que la couverture cumulative est
-     suffisante et donne `approved=true`. Resister par
-     reflexe perfectionniste fait boucler indefiniment.
-   - SIGNAL D'ALARME : si tu trouves enormement de
-     blockers critiques tres tardivement (iter 5+), c'est
-     suspect. Probablement: (a) tu hallucines, (b) le
-     fixer n'applique pas correctement, (c) tu re-flagues
-     ce qui a deja ete pushback. Re-verifie tes preuves
-     concretes ligne par ligne avant d'emettre un blocker
-     iteration tardive.
-
-  Le bon curseur n'est NI "tres souple" (faux positif
-  d'approbation) NI "tres strict" (boucles infinies).
-  Vise: rejette si un scenario concret de prod casse,
-  approuve si la couverture cumulative te convainc qu'il
-  n'y a plus de tel scenario evident.
-
   ESCALADE HUMAINE :
   Quand tu rencontres une AMBIGUITE qu'aucune lecture du
   code ne peut resoudre (ex : "ce comportement est-il
