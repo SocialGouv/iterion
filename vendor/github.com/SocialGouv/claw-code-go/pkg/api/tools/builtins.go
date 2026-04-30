@@ -55,8 +55,26 @@ func BashTool() api.Tool { return intl.BashTool() }
 // workspace-based validation entirely. Permission mode is fixed to
 // ModeAllow — the wrapper assumes the caller has already gated invocations
 // upstream (e.g. via an iterion workflow's allowed-tools list).
+//
+// The spawned bash inherits the calling process's environment. When
+// the caller manages a project-local toolchain (devbox, nix, asdf)
+// whose bin path is absent from the parent shell's PATH, use
+// ExecuteBashWithEnv to surface it explicitly.
 func ExecuteBash(ctx context.Context, input map[string]any, workspace string) (string, error) {
 	return intl.ExecuteBash(input, permissions.ModeAllow, workspace)
+}
+
+// ExecuteBashWithEnv runs the bash command with extra environment
+// entries (KEY=value format) appended to the inherited environment.
+// Permission mode is fixed to ModeAllow as in ExecuteBash. Pass nil
+// extraEnv for plain inheritance (equivalent to ExecuteBash).
+//
+// Typical use: an iterion CLI launched outside its devbox shell can
+// pass the devbox bin directory via extraEnv so the LLM-driven fixer
+// can run `go test` / `gofmt` against the project toolchain even when
+// the operator forgot to prefix the run with `devbox run --`.
+func ExecuteBashWithEnv(ctx context.Context, input map[string]any, workspace string, extraEnv []string) (string, error) {
+	return intl.ExecuteBashWithEnv(input, permissions.ModeAllow, workspace, extraEnv)
 }
 
 // ----- glob -----

@@ -32,7 +32,21 @@ import (
 // that need them should import claw-code-go/pkg/api/tools and register
 // individual entries via RegisterClawTool.
 func RegisterClawBuiltins(reg *Registry, workspace string) error {
+	return RegisterClawBuiltinsWithEnv(reg, workspace, nil)
+}
+
+// RegisterClawBuiltinsWithEnv is RegisterClawBuiltins plus an optional
+// extraEnv slice (KEY=value entries) that the bash tool will append to
+// the inherited environment on every call. Use this when iterion is
+// invoked outside its devbox/nix shell and the caller wants to surface
+// the project toolchain (go, gofmt, ...) to the LLM-driven shell so
+// fixers can validate their patches in-loop. Pass nil for plain
+// inheritance.
+func RegisterClawBuiltinsWithEnv(reg *Registry, workspace string, bashExtraEnv []string) error {
 	bashExec := func(ctx context.Context, input map[string]any) (string, error) {
+		if len(bashExtraEnv) > 0 {
+			return clawtools.ExecuteBashWithEnv(ctx, input, workspace, bashExtraEnv)
+		}
 		return clawtools.ExecuteBash(ctx, input, workspace)
 	}
 
@@ -471,6 +485,14 @@ type ClawDefaults struct {
 	// IncludeComputerUse toggles read_image / screenshot. Off by
 	// default since most workflows don't process images.
 	IncludeComputerUse bool
+
+	// BashExtraEnv, when non-empty, is appended to the inherited
+	// environment of every bash tool invocation (KEY=value entries).
+	// Use this to surface a project-managed toolchain (devbox / nix /
+	// asdf) bin path so the LLM-driven shell can run go/gofmt/etc.
+	// even when the operator did not prefix the iterion launch with
+	// `devbox run --`. Nil/empty means plain os.Environ() inheritance.
+	BashExtraEnv []string
 }
 
 // RegisterClawAll registers the full curated set of claw tools
@@ -511,7 +533,7 @@ func RegisterClawAll(reg *Registry, defaults ClawDefaults) error {
 		defaults.LSP = clawlsp.NewRegistry()
 	}
 
-	if err := RegisterClawBuiltins(reg, defaults.Workspace); err != nil {
+	if err := RegisterClawBuiltinsWithEnv(reg, defaults.Workspace, defaults.BashExtraEnv); err != nil {
 		return err
 	}
 	if err := RegisterClawSimple(reg); err != nil {

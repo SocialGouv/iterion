@@ -49,7 +49,30 @@ func BashTool() api.Tool {
 // ExecuteBash runs a bash command and returns combined stdout+stderr.
 // It validates the command against the current permission mode and workspace
 // path before execution. Pass permissions.ModeAllow and "" to skip validation.
+//
+// The spawned bash inherits os.Environ() of the calling process. Use
+// ExecuteBashWithEnv when the caller needs to surface a project-managed
+// toolchain (devbox, nix, asdf) whose bin path is not in the parent
+// shell's PATH.
 func ExecuteBash(input map[string]any, mode permissions.PermissionMode, workspace string) (string, error) {
+	return ExecuteBashWithEnv(input, mode, workspace, nil)
+}
+
+// ExecuteBashWithEnv runs a bash command with extra environment
+// variables appended to the inherited process environment. Each
+// extraEnv entry uses the standard "KEY=value" format; later entries
+// for the same key win (Go's exec.Cmd convention).
+//
+// The use case driving this entry point: when iterion is launched
+// without the project's devbox/nix/asdf toolchain in PATH, the bash
+// tool can't find go/gofmt/etc. and the LLM-driven fixer can't run
+// `go test` to validate its patch. Passing devbox's bin path via
+// extraEnv from the iterion side restores autonomy without forcing
+// every operator to remember `devbox run --` at launch.
+//
+// Pass nil to inherit only the parent process's environment (same
+// behaviour as the legacy ExecuteBash entry point).
+func ExecuteBashWithEnv(input map[string]any, mode permissions.PermissionMode, workspace string, extraEnv []string) (string, error) {
 	command, ok := input["command"].(string)
 	if !ok || command == "" {
 		return "", fmt.Errorf("bash: 'command' input is required and must be a string")
@@ -72,6 +95,9 @@ func ExecuteBash(input map[string]any, mode permissions.PermissionMode, workspac
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "bash", "-c", command)
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
 
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
