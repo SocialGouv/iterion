@@ -660,11 +660,30 @@ func truncatePreview(s string, maxLen int) string {
 // nil when no edge matches. The logPrefix is included in warning messages.
 // This variant does NOT check loop counters — use evaluateEdgesWithLoops for
 // loop-aware selection.
+//
+// Branches inside fan-out call this variant. The runState's loop counters are
+// owned by the main execution loop and not propagated to branches (branches
+// run concurrently with arbitrary topology; sharing the loop counter would
+// be racy and the semantics — global vs per-branch — are not defined). To
+// prevent runaway iteration when a workflow accidentally places a `loop`
+// edge inside a fan-out branch (which would otherwise be selected without
+// the MaxIterations guard), we explicitly skip edges with a LoopName here.
+// The intent matches the existing comment block on the Expression case:
+// "branches don't iterate, so loop/run namespaces have no meaning."
 func (e *Engine) evaluateEdges(fromNodeID, logPrefix string, output map[string]interface{}) *ir.Edge {
 	var unconditional *ir.Edge
 
 	for _, edge := range e.workflow.Edges {
 		if edge.From != fromNodeID {
+			continue
+		}
+		if edge.LoopName != "" {
+			// Defensive: a loop edge inside a branch would otherwise iterate
+			// without the MaxIterations cap (which is enforced only by the
+			// main loop's evaluateEdgesWithLoopsRS). Skip with a warning so
+			// the operator notices and restructures the workflow.
+			e.logger.Warn("%s: node %q: edge to %q is a loop edge (%q) inside a fan-out branch — skipped (loop semantics are undefined inside branches)",
+				logPrefix, fromNodeID, edge.To, edge.LoopName)
 			continue
 		}
 		if edge.Expression != nil {

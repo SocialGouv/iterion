@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -263,7 +264,7 @@ func (e *Engine) execLLMRouterMulti(ctx context.Context, rs *runState, routerNod
 	}
 
 	// Validate workspace safety.
-	if err := e.validateWorkspaceSafety(fanEdges); err != nil {
+	if err := e.validateWorkspaceSafety(routerNodeID, fanEdges); err != nil {
 		return "", err
 	}
 
@@ -279,6 +280,12 @@ func (e *Engine) execLLMRouterMulti(ctx context.Context, rs *runState, routerNod
 	// Deep-copy parent outputs and artifacts so branches can't mutate shared state.
 	parentOutputs := copyOutputs(rs.outputs)
 	parentArtifacts := copyOutputs(rs.artifacts)
+
+	// Cancellable child ctx so a budget-busting branch (or parent ctx
+	// cancellation) can stop sibling branches mid-flight. See execFanOut for
+	// the rationale (real-money cost overrun).
+	branchCtx, cancelBranches := context.WithCancel(ctx)
+	defer cancelBranches()
 
 	// Launch branches with bounded concurrency.
 	sem := make(chan struct{}, maxParallel)
@@ -302,15 +309,31 @@ func (e *Engine) execLLMRouterMulti(ctx context.Context, rs *runState, routerNod
 				}
 			}()
 
-			result := e.execBranch(ctx, rs, branchID, edge, parentOutputs, parentArtifacts, llmPreComputedConvergence)
+			result := e.execBranch(branchCtx, rs, branchID, edge, parentOutputs, parentArtifacts, llmPreComputedConvergence)
+			if result != nil && result.err != nil && errors.Is(result.err, ErrBudgetExceeded) {
+				cancelBranches()
+			}
 			resultsCh <- result
 		}(edge, branchID)
 	}
 
-	// Collect all results.
+	// Collect all results, ctx-aware so parent cancellation propagates.
 	results := make([]*branchResult, 0, len(fanEdges))
-	for range fanEdges {
-		results = append(results, <-resultsCh)
+	var ctxErr error
+	for i := 0; i < len(fanEdges); i++ {
+		select {
+		case r := <-resultsCh:
+			results = append(results, r)
+		case <-ctx.Done():
+			if ctxErr == nil {
+				ctxErr = ctx.Err()
+				cancelBranches()
+			}
+			results = append(results, <-resultsCh)
+		}
+	}
+	if ctxErr != nil {
+		return "", e.wrapContextErr(ctxErr)
 	}
 
 	// Determine convergence point.

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -45,7 +46,7 @@ func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID stri
 	}
 
 	// Validate workspace safety: at most one mutating branch in parallel.
-	if err := e.validateWorkspaceSafety(fanEdges); err != nil {
+	if err := e.validateWorkspaceSafety(routerNodeID, fanEdges); err != nil {
 		return "", err
 	}
 
@@ -61,6 +62,14 @@ func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID stri
 	// Deep-copy parent outputs and artifacts so branches can't mutate shared state.
 	parentOutputs := copyOutputs(rs.outputs)
 	parentArtifacts := copyOutputs(rs.artifacts)
+
+	// Derive a cancellable context for the whole fan-out. When any branch
+	// trips the budget (or the parent ctx is cancelled — Ctrl-C), we cancel
+	// branchCtx so siblings stop racking up tokens/USD on subsequent LLM
+	// calls. Without this, a fan_out_all with N branches and a $10 cap would
+	// burn N * $10 in the worst case before stopping.
+	branchCtx, cancelBranches := context.WithCancel(ctx)
+	defer cancelBranches()
 
 	// Launch branches with bounded concurrency.
 	sem := make(chan struct{}, maxParallel)
@@ -84,15 +93,44 @@ func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID stri
 				}
 			}()
 
-			result := e.execBranch(ctx, rs, branchID, edge, parentOutputs, parentArtifacts, preComputedConvergence)
+			result := e.execBranch(branchCtx, rs, branchID, edge, parentOutputs, parentArtifacts, preComputedConvergence)
+			// On budget overshoot in this branch, cancel siblings so they
+			// stop calling executor.Execute. Sibling branches see the
+			// cancellation via the ctx.Done() select at the top of their
+			// per-iteration loop and return a wrapped ctx error.
+			if result != nil && result.err != nil && errors.Is(result.err, ErrBudgetExceeded) {
+				cancelBranches()
+			}
 			resultsCh <- result
 		}(edge, branchID)
 	}
 
-	// Collect all results.
+	// Collect all results. The collector is ctx-aware: if the parent ctx
+	// fires (run cancellation, timeout) we still need to drain branches that
+	// already started but won't honour cancellation immediately (e.g. a
+	// claude_code subprocess that swallows SIGINT). To avoid leaking
+	// goroutines, we keep waiting on resultsCh — but we record the
+	// cancellation so the final aggregate error reflects it.
 	results := make([]*branchResult, 0, len(fanEdges))
-	for range fanEdges {
-		results = append(results, <-resultsCh)
+	var ctxErr error
+	for i := 0; i < len(fanEdges); i++ {
+		select {
+		case r := <-resultsCh:
+			results = append(results, r)
+		case <-ctx.Done():
+			if ctxErr == nil {
+				ctxErr = ctx.Err()
+				cancelBranches()
+			}
+			// Re-receive on resultsCh; we MUST drain to avoid goroutine
+			// leaks (a goroutine blocked on `resultsCh <- result` would
+			// otherwise leak). The buffered channel of size len(fanEdges)
+			// guarantees no producer ever blocks on send.
+			results = append(results, <-resultsCh)
+		}
+	}
+	if ctxErr != nil {
+		return "", e.wrapContextErr(ctxErr)
 	}
 
 	// Determine convergence point. Prefer the one reported by successful branches;
@@ -581,9 +619,26 @@ func isMutatingNode(node ir.Node) bool {
 	return false
 }
 
-// branchContainsMutation walks from startNodeID to a join/terminal node
-// and returns true if any node along the path may mutate the workspace.
-func (e *Engine) branchContainsMutation(startNodeID string) bool {
+// branchContainsMutation walks from startNodeID to globalConvergence (or to a
+// terminal node) and returns true if any node along the path may mutate the
+// workspace.
+//
+// The previous implementation stopped walking at the FIRST node with
+// AwaitMode != AwaitNone — i.e. at any intermediate join — which meant that
+// in a topology like
+//
+//	router(fan_out_all) -> A -> joinA -> mutA -> globalJoin
+//	                    -> B -> joinB -> mutB -> globalJoin
+//
+// the BFS treated `joinA` / `joinB` as the stopping point and never saw
+// `mutA` or `mutB`. Both branches passed validateWorkspaceSafety, then ran
+// in parallel and raced on the shared workspace (e.g. git index).
+//
+// The correct stopping condition is the GLOBAL convergence point of the
+// fan-out (the node where all branches reconverge), not the first
+// intermediate join. We pass that in explicitly. Terminal nodes (done/fail)
+// also stop the walk because the branch ends there.
+func (e *Engine) branchContainsMutation(startNodeID, globalConvergence string) bool {
 	visited := map[string]bool{}
 	queue := []string{startNodeID}
 	for len(queue) > 0 {
@@ -594,12 +649,18 @@ func (e *Engine) branchContainsMutation(startNodeID string) bool {
 		}
 		visited[nodeID] = true
 
+		// Stop at the global convergence point — beyond it, nodes are
+		// post-fan-out and shared by all branches sequentially.
+		if globalConvergence != "" && nodeID == globalConvergence {
+			continue
+		}
+
 		node, ok := e.workflow.Nodes[nodeID]
 		if !ok {
 			continue
 		}
-		// Stop walking at convergence points or terminal nodes.
-		if nodeAwaitMode(node) != ir.AwaitNone || isTerminalNode(node) {
+		// Stop walking at terminal nodes.
+		if isTerminalNode(node) {
 			continue
 		}
 		if isMutatingNode(node) {
@@ -616,11 +677,16 @@ func (e *Engine) branchContainsMutation(startNodeID string) bool {
 
 // validateWorkspaceSafety checks that at most one branch in a fan-out
 // contains mutating nodes. Returns an error if the topology is unsafe.
-func (e *Engine) validateWorkspaceSafety(fanEdges []*ir.Edge) error {
+//
+// routerNodeID + fanEdges are used to compute the global convergence point
+// up-front; we pass it down to branchContainsMutation so the BFS doesn't
+// stop early at intermediate joins.
+func (e *Engine) validateWorkspaceSafety(routerNodeID string, fanEdges []*ir.Edge) error {
+	globalConvergence := e.findConvergencePoint(routerNodeID, fanEdges)
 	mutatingCount := 0
 	var mutatingBranches []string
 	for _, edge := range fanEdges {
-		if e.branchContainsMutation(edge.To) {
+		if e.branchContainsMutation(edge.To, globalConvergence) {
 			mutatingCount++
 			mutatingBranches = append(mutatingBranches, edge.To)
 		}
