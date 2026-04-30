@@ -22,7 +22,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
-	iterlog "github.com/SocialGouv/iterion/pkg/internal/log"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 //go:embed all:static

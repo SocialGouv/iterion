@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	iterlog "github.com/SocialGouv/iterion/pkg/internal/log"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // ErrBudgetExceeded is returned when a budget limit has been reached.

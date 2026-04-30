@@ -21,7 +21,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	iterlog "github.com/SocialGouv/iterion/pkg/internal/log"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // ErrCompactionUnsupported is the sentinel ClawExecutor.Compact returns

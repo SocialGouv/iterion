@@ -8,7 +8,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
-	iterlog "github.com/SocialGouv/iterion/pkg/internal/log"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 const (

@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 
-	iterlog "github.com/SocialGouv/iterion/pkg/internal/log"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/server"
 )
 

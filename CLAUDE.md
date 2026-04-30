@@ -60,9 +60,9 @@ Other top-level directories: `editor/` (React/Vite frontend), `examples/` (.iter
 - `pkg/server/` — HTTP server for editor backend (embedded static UI)
 - `pkg/cli/` — CLI command implementations (init, validate, run, inspect, resume, diagram, editor, version)
 - `pkg/benchmark/` — Metrics collection and reporting
+- `pkg/log/` — Leveled logger (error, warn, info, debug, trace) — public so e2e tests can construct it
 - `pkg/internal/` — Internal utilities (not importable outside `pkg/`)
   - `appinfo/` — Build-time version/commit injection (LDFLAGS targets)
-  - `log/` — Leveled logger (error, warn, info, debug, trace)
 
 ## Key Dependencies
 

@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	iterlog "github.com/SocialGouv/iterion/pkg/internal/log"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // maxEventLineSize is the maximum size of a single event JSON line.

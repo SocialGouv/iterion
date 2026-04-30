@@ -7,7 +7,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	iterlog "github.com/SocialGouv/iterion/pkg/internal/log"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 const (

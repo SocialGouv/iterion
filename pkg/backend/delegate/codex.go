@@ -14,7 +14,7 @@ import (
 	codexsdk "github.com/ethpandaops/codex-agent-sdk-go"
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
-	iterlog "github.com/SocialGouv/iterion/pkg/internal/log"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 //go:embed codex_output_discipline.txt

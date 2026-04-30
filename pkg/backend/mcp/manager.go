@@ -11,7 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/llmtypes"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
-	iterlog "github.com/SocialGouv/iterion/pkg/internal/log"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // DefaultProtocolVersion is the MCP version advertised by Iterion.
