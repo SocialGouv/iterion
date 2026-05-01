@@ -1,54 +1,64 @@
-# ADR-001 : Ajout du mode `round_robin` au Router
+# ADR-001: Adding the `round_robin` mode to Router
 
-- **Statut** : Accepte
-- **Date** : 2026-04-01
-- **Auteurs** : devthejo
-- **Contexte workflow** : `examples/dual_model_plan_implement_review.iter`
+- **Status**: Accepted
+- **Date**: 2026-04-01
+- **Authors**: devthejo
+- **Workflow context**: `examples/dual_model_plan_implement_review.iter`
 
-## Contexte
+## Context
 
-Le DSL Iterion v1 permet d'orchestrer des workflows multi-agents avec des primitives de base : `agent`, `judge`, `router`, `join`, `human`, `tool`. Le router ne supporte actuellement qu'un seul mode — `fan_out_all` — qui spawn toutes les branches sortantes en parallele.
+The Iterion v1 DSL orchestrates multi-agent workflows with a small set of
+primitives: `agent`, `judge`, `router`, `join`, `human`, `tool`. The router
+currently supports a single mode — `fan_out_all` — which spawns every
+outgoing branch in parallel.
 
-Lorsqu'un workflow necessite d'**alterner entre deux agents** a chaque iteration d'une boucle (ex : Claude raffine au tour 1, Codex au tour 2), le DSL v1 impose un **pattern cross-pair** : dupliquer structurellement les noeuds et croiser les edges de rejet entre les deux paires.
+When a workflow needs to **alternate between two agents** at each iteration
+of a loop (e.g. Claude refines on turn 1, Codex on turn 2), the v1 DSL
+forces a **cross-pair pattern**: structurally duplicating the nodes and
+crossing the rejection edges between the two pairs.
 
-Ce pattern a ete mis en evidence lors de la conception du workflow `dual_model_plan_implement_review.iter`, qui orchestre :
-- Une planification parallele (Claude + Codex) avec fusion par Claude
-- Une boucle de validation/raffinage avec alternance du raffineur
-- Une implementation avec alternance de l'implementeur
-- Une review parallele avec retour a la planification en cas de rejet
+This pattern surfaced while designing the `dual_model_plan_implement_review.iter`
+workflow, which orchestrates:
+- Parallel planning (Claude + Codex) with a Claude-driven merge
+- A validation/refinement loop with the refiner alternating between models
+- Implementation with the implementer alternating between models
+- Parallel review with a fall-back to planning on rejection
 
-### Cout mesure du pattern cross-pair
+### Measured cost of the cross-pair pattern
 
-| Metrique | Avec cross-pair | Avec `round_robin` (estime) |
+| Metric | With cross-pair | With `round_robin` (estimated) |
 |---|---|---|
-| Noeuds | 46 | ~23 |
+| Nodes | 46 | ~23 |
 | Edges | 60 | ~30 |
-| Lignes `.iter` | ~550 | ~280 |
-| Prompts dupliques | 0 (partages) | 0 |
-| Noeuds dupliques | 23 (tout sauf prompts/schemas) | 0 |
+| `.iter` lines | ~550 | ~280 |
+| Duplicated prompts | 0 (shared) | 0 |
+| Duplicated nodes | 23 (everything except prompts/schemas) | 0 |
 
-La duplication est purement structurelle — chaque noeud duplique a le meme delegate, les memes prompts, les memes schemas. Son seul role est de fournir un point d'ancrage pour des edges differents.
+The duplication is purely structural — every duplicated node has the same
+delegate, the same prompts, the same schemas. Its only purpose is to
+provide an anchor point for different edges.
 
 ## Decision
 
-Ajouter un mode `round_robin` au noeud `router` dans le DSL v1.
+Add a `round_robin` mode to the `router` node in the v1 DSL.
 
-### Syntaxe
+### Syntax
 
 ```iter
 router refine_selector:
   mode: round_robin
 ```
 
-### Semantique
+### Semantics
 
-- A chaque traversee du router, **un seul** edge sortant est active, selectionne par un compteur cyclique : `edge_index = counter % len(edges)`
-- Le compteur est **auto-incremente** a chaque traversee
-- Le compteur est **persiste** dans le run state (analogue aux `loopCounters`)
-- Le compteur demarre a 0 (premier edge declare dans le workflow)
-- En cas de `resume` apres pause, le compteur est restaure depuis le store
+- On each traversal of the router, **exactly one** outgoing edge is
+  activated, selected by a cyclic counter: `edge_index = counter % len(edges)`
+- The counter is **auto-incremented** on each traversal
+- The counter is **persisted** in the run state (analogous to `loopCounters`)
+- The counter starts at 0 (the first edge declared in the workflow)
+- On `resume` after pause, the counter is restored from the store
 
-### Exemple d'usage
+### Usage example
 
 ```iter
 router refine_selector:
@@ -74,137 +84,179 @@ workflow example:
   ...
 ```
 
-Au premier passage : `claude_refine` est selectionne.
-Au deuxieme passage : `codex_refine` est selectionne.
-Au troisieme passage : `claude_refine` a nouveau. Etc.
+On the first pass: `claude_refine` is selected.
+On the second pass: `codex_refine` is selected.
+On the third pass: `claude_refine` again. And so on.
 
-### Workflow simplifie
+### Simplified workflow
 
-Avec `round_robin`, le workflow `dual_model_plan_implement_review.iter` se reduit a :
+With `round_robin`, the `dual_model_plan_implement_review.iter` workflow
+collapses to:
 
 ```
 plan_fanout (fan_out_all) → claude_plan + codex_plan → plans_join → merge_plans
   → val_fanout (fan_out_all) → claude_val + codex_val → val_join → val_judge
     → [ready] → impl_selector (round_robin) → claude_implement | codex_implement
     → [not ready] → refine_selector (round_robin) → claude_refine | codex_refine
-      → val_fanout (boucle)
+      → val_fanout (loop)
   → review_fanout (fan_out_all) → claude_review + codex_review → review_join → review_judge
     → [approved] → done
-    → [not approved] → plan_fanout (boucle externe avec reviews)
+    → [not approved] → plan_fanout (outer loop with reviews)
 ```
 
-23 noeuds, zero duplication, intention lisible.
+23 nodes, zero duplication, intent visible at a glance.
 
-## Alternatives considerees
+## Alternatives considered
 
-### 1. Statu quo — pattern cross-pair uniquement
+### 1. Status quo — cross-pair pattern only
 
-Le pattern cross-pair fonctionne et ne necessite aucune modification du runtime. Il est utilise dans plusieurs exemples existants (`todo_app_full_dual_model_delegate.iter`, `feature_request_dual_model.iter`).
+The cross-pair pattern works and requires no runtime changes. It is used
+in several existing examples (`todo_app_full_dual_model_delegate.iter`,
+`feature_request_dual_model.iter`).
 
-**Rejete car** : la duplication croit de facon combinatoire. Une alternance a 2 agents double les noeuds. A 3 agents, le cross-pair produirait 3x les noeuds avec 6 chemins croises. A 4, l'explosion est ingerable. Le pattern ne scale pas.
+**Rejected because**: duplication grows combinatorially. Alternation
+between 2 agents doubles the node count. With 3 agents the cross-pair
+would produce 3× the nodes with 6 crossed paths. At 4, the explosion is
+unmanageable. The pattern does not scale.
 
 ### 2. Sub-workflows / macros
 
-Encapsuler le pattern cross-pair dans un sub-workflow reutilisable pour masquer la duplication.
+Encapsulate the cross-pair pattern in a reusable sub-workflow to hide
+the duplication.
 
-**Rejete car** : le DSL v1 ne supporte pas les sub-workflows. Les ajouter serait un changement bien plus lourd qu'un nouveau mode de router, avec des implications sur le scoping des variables, les artifacts, et le store. Disproportionne par rapport au probleme.
+**Rejected because**: the v1 DSL has no sub-workflow support. Adding it
+would be a much larger change than a new router mode, with implications
+for variable scoping, artifacts, and the store. Disproportionate to the
+problem at hand.
 
-### 3. Router conditionnel avec etat utilisateur
+### 3. Conditional router with user-provided state
 
-Permettre au router d'evaluer une expression sur les outputs d'un noeud precedent pour choisir l'edge (ex : `mode: condition`, `when last_refiner == "claude" -> codex_refine`).
+Allow the router to evaluate an expression on a previous node's output
+to choose an edge (e.g. `mode: condition`,
+`when last_refiner == "claude" -> codex_refine`).
 
-**Rejete car** : introduit un mini-langage d'expressions dans le DSL, complexifie le parsing et la validation, et le `round_robin` couvre le cas d'usage principal (alternance deterministe) plus simplement.
+**Rejected because**: introduces a mini expression language into the DSL,
+complicates parsing and validation, and `round_robin` covers the main
+use case (deterministic alternation) more simply.
 
-## Arguments en faveur
+## Arguments in favor
 
-### 1. Reduction de surface drastique
+### 1. Drastic surface reduction
 
-La moitie du fichier `dual_model_plan_implement_review.iter` est du boilerplate structurel qui n'apporte rien au lecteur. Chaque noeud duplique a exactement le meme delegate, les memes prompts, les memes schemas — seul son nom differe pour ancrer des edges differents.
+Half of the `dual_model_plan_implement_review.iter` file is structural
+boilerplate that adds nothing for the reader. Each duplicated node has
+exactly the same delegate, the same prompts, the same schemas — only its
+name differs to anchor different edges.
 
-### 2. Lisibilite et intention declarative
+### 2. Readability and declarative intent
 
-Le cross-pair encode l'intention "alterner" de facon indirecte, via la structure du graphe. Un lecteur doit reconstituer mentalement le pattern pour comprendre qu'il s'agit d'une alternance. Avec `round_robin`, l'intention est explicite et declarative.
+The cross-pair encodes the "alternate" intent indirectly, through graph
+structure. A reader has to mentally reconstruct the pattern to recognize
+that an alternation is happening. With `round_robin`, the intent is
+explicit and declarative.
 
-### 3. Maintenabilite
+### 3. Maintainability
 
-Avec le cross-pair, modifier un prompt, un schema, ou un mapping `with {}` necessite de repercuter le changement dans toutes les paires. Un oubli cree une divergence silencieuse entre paires. Avec `round_robin`, chaque noeud n'existe qu'une fois.
+With cross-pair, modifying a prompt, a schema, or a `with {}` mapping
+requires propagating the change across all pairs. A miss creates silent
+divergence between pairs. With `round_robin`, each node exists exactly
+once.
 
-### 4. Composabilite
+### 4. Composability
 
-Le `round_robin` se combine naturellement avec les autres primitives :
-- Avec des boucles bornees (`as loop(N)`) : l'alternance s'arrete quand la boucle expire
-- Avec des `fan_out_all` en amont/aval : on peut alterner l'implementeur tout en parallelisant les reviewers
-- Extension future a N agents sans explosion combinatoire
+`round_robin` composes naturally with the other primitives:
+- With bounded loops (`as loop(N)`): the alternation stops when the loop
+  expires
+- With `fan_out_all` upstream/downstream: you can alternate the
+  implementer while parallelizing the reviewers
+- Future extension to N agents without combinatorial explosion
 
-### 5. Nouveaux patterns rendus possibles
+### 5. New patterns become possible
 
-- Rotation d'equipe a 3+ agents
-- Alternance implementeur/reviewer asymetrique
-- Diversite de modeles sur des taches repetees (eviter le biais d'un seul modele)
+- Team rotation across 3+ agents
+- Asymmetric implementer/reviewer alternation
+- Model diversity on repeated tasks (avoiding single-model bias)
 
-## Arguments en defaveur
+## Arguments against
 
-### 1. Introduction d'etat dans le router
+### 1. Introduces state in the router
 
-Aujourd'hui, le router `fan_out_all` est **stateless** : il lit ses edges et les spawn. Le `round_robin` necessite un compteur persistant. Cela casse l'invariant "un noeud ne depend que de ses inputs et du graphe".
+Today, the `fan_out_all` router is **stateless**: it reads its edges and
+spawns them. `round_robin` requires a persistent counter. This breaks
+the invariant "a node depends only on its inputs and the graph."
 
-**Mitigation** : les `loopCounters` sont deja un etat persistant dans le runtime, gere et serialise de facon analogue. Le `roundRobinCounters` suit exactement le meme pattern — ce n'est pas un precedent, c'est une extension naturelle.
+**Mitigation**: `loopCounters` are already persistent runtime state,
+managed and serialized analogously. `roundRobinCounters` follow exactly
+the same pattern — this is not a precedent, it is a natural extension.
 
-### 2. Semantique dans les boucles
+### 2. Semantics inside loops
 
-Quand un `round_robin` est atteint via une boucle bornee, la question se pose : quand incrementer le compteur ? A chaque traversee ou a chaque cycle complet ?
+When a `round_robin` is reached via a bounded loop, the question arises:
+when do we increment the counter? On every traversal or on every full
+loop cycle?
 
-**Resolution** : incrementer a chaque traversee, c'est la semantique la plus simple et la plus intuitive. Un cycle de boucle = une traversee = un increment. Le compteur est un entier monotone croissant, modulo N.
+**Resolution**: increment on every traversal — that is the simplest and
+most intuitive semantics. One loop cycle = one traversal = one
+increment. The counter is a monotonically increasing integer modulo N.
 
-### 3. Determinisme et debugging
+### 3. Determinism and debugging
 
-Le chemin d'execution depend de l'historique de traversee (le compteur), pas seulement des outputs des noeuds. Cela complique le debugging : "pourquoi codex a ete choisi ?" necessite d'inspecter l'etat interne du compteur.
+The execution path depends on the traversal history (the counter), not
+only on node outputs. This complicates debugging: "why was Codex
+chosen?" requires inspecting the counter's internal state.
 
-**Mitigation** : emettre un evenement `router_selected` dans le log du run, indiquant l'edge choisi et la valeur du compteur. L'outil `inspect --events` rend cette information visible.
+**Mitigation**: emit a `router_selected` event in the run log, recording
+the chosen edge and the counter value. The `inspect --events` tool makes
+this information visible.
 
-### 4. Validation du graphe plus complexe
+### 4. More complex graph validation
 
-Le compilateur IR doit verifier des contraintes supplementaires pour `round_robin` :
-- Au moins 2 edges sortants (sinon c'est un noeud normal)
-- Les schemas d'input des cibles doivent etre compatibles (meme `with {}` alimente N cibles)
+The IR compiler must enforce additional constraints for `round_robin`:
+- At least 2 outgoing edges (otherwise it is a regular node)
+- Target input schemas must be compatible (the same `with {}` feeds N
+  targets)
 
-**Mitigation** : ces validations sont simples a implementer et suivent le modele existant de `pkg/dsl/ir/validate.go`.
+**Mitigation**: these validations are simple to implement and follow the
+existing model in `pkg/dsl/ir/validate.go`.
 
-### 5. Risque de feature creep
+### 5. Risk of feature creep
 
-Apres `round_robin`, on voudra `weighted_round_robin`, `random`, `least_recently_used`...
+After `round_robin`, demand will follow for `weighted_round_robin`,
+`random`, `least_recently_used`...
 
-**Mitigation** : limiter v1 a `fan_out_all` et `round_robin`. Les modes avances sont des extensions futures explicitement hors scope. Le type `RouterMode` est deja un enum extensible.
+**Mitigation**: limit v1 to `fan_out_all` and `round_robin`. Advanced
+modes are future extensions, explicitly out of scope. The `RouterMode`
+type is already an extensible enum.
 
-## Plan d'implementation
+## Implementation plan
 
-### Fichiers impactes
+### Files affected
 
-| Fichier | Modification |
+| File | Modification |
 |---|---|
-| `grammar/iterion_v1.ebnf` | Ajouter `round_robin` a la regle `router_mode` |
-| `grammar/V1_SCOPE.md` | Documenter le nouveau mode |
-| `pkg/dsl/ast/ast.go` | Ajouter `RouterModeRoundRobin` a l'enum `RouterMode` |
-| `pkg/dsl/parser/` | Parser `round_robin` comme valeur de `mode:` |
-| `pkg/dsl/ir/ir.go` | Ajouter `RouterRoundRobin` au type `RouterMode` IR |
-| `pkg/dsl/ir/compile.go` | Compiler le mode AST vers IR |
-| `pkg/dsl/ir/validate.go` | Valider >= 2 edges sortants, schemas compatibles |
-| `pkg/runtime/engine.go` | Selection d'edge par `counter % len(edges)` dans `execRouter` / `findNext` |
-| `pkg/store/` | Serialiser/deserialiser `roundRobinCounters` dans le run state |
-| `pkg/cli/diagram.go` | Representation visuelle distincte pour `round_robin` |
+| `grammar/iterion_v1.ebnf` | Add `round_robin` to the `router_mode` rule |
+| `grammar/V1_SCOPE.md` | Document the new mode |
+| `pkg/dsl/ast/ast.go` | Add `RouterModeRoundRobin` to the `RouterMode` enum |
+| `pkg/dsl/parser/` | Parse `round_robin` as a value of `mode:` |
+| `pkg/dsl/ir/ir.go` | Add `RouterRoundRobin` to the IR `RouterMode` type |
+| `pkg/dsl/ir/compile.go` | Compile the AST mode into IR |
+| `pkg/dsl/ir/validate.go` | Validate ≥ 2 outgoing edges, compatible schemas |
+| `pkg/runtime/engine.go` | Edge selection by `counter % len(edges)` in `execRouter` / `findNext` |
+| `pkg/store/` | Serialize/deserialize `roundRobinCounters` in the run state |
+| `pkg/cli/diagram.go` | Distinct visual representation for `round_robin` |
 
-### Structure de l'etat
+### State structure
 
 ```go
-// Dans RunState ou equivalent
+// In RunState or equivalent
 type RunState struct {
-    // ... champs existants ...
-    LoopCounters       map[string]int  // existant
-    RoundRobinCounters map[string]int  // nouveau — cle: nodeID du router
+    // ... existing fields ...
+    LoopCounters       map[string]int  // existing
+    RoundRobinCounters map[string]int  // new — key: router nodeID
 }
 ```
 
-### Logique runtime (pseudo-code)
+### Runtime logic (pseudo-code)
 
 ```go
 func (e *Engine) execRouter(ctx context.Context, rs *RunState, nodeID string) (string, error) {
@@ -219,8 +271,8 @@ func (e *Engine) execRouter(ctx context.Context, rs *RunState, nodeID string) (s
         counter := rs.RoundRobinCounters[nodeID]
         selectedEdge := edges[counter % len(edges)]
         rs.RoundRobinCounters[nodeID] = counter + 1
-        // Resoudre les inputs via le with{} de l'edge selectionnee
-        // Executer le noeud cible
+        // Resolve inputs via the selected edge's with{}
+        // Execute the target node
         return selectedEdge.Target, nil
     }
 }
@@ -228,32 +280,56 @@ func (e *Engine) execRouter(ctx context.Context, rs *RunState, nodeID string) (s
 
 ### Tests
 
-- **Unitaire** : parser `round_robin`, compiler, valider (>= 2 edges, < 2 edges = erreur)
-- **Integration** : workflow minimal avec `round_robin` a 2 cibles, verifier l'alternance sur 4 iterations
-- **E2E** : workflow avec `round_robin` + boucle bornee + resume, verifier la persistance du compteur
-- **Regression** : s'assurer que `fan_out_all` est inchange
+- **Unit**: parsing `round_robin`, compiling, validating (≥ 2 edges,
+  < 2 edges = error)
+- **Integration**: minimal workflow with `round_robin` over 2 targets,
+  asserting alternation across 4 iterations
+- **E2E**: workflow with `round_robin` + bounded loop + resume,
+  asserting counter persistence
+- **Regression**: ensure `fan_out_all` is unchanged
 
-### Migration du workflow existant
+### Migration of existing workflows
 
-Une fois le `round_robin` implemente, le workflow `dual_model_plan_implement_review.iter` pourra etre simplifie de 46 a 23 noeuds. Les exemples existants utilisant le cross-pair pattern (`todo_app_full_dual_model_delegate.iter`, `feature_request_dual_model.iter`) restent valides — le cross-pair est un pattern d'usage, pas une contrainte du DSL.
+Once `round_robin` is implemented, the
+`dual_model_plan_implement_review.iter` workflow can be simplified from
+46 to 23 nodes. Existing examples that use the cross-pair pattern
+(`todo_app_full_dual_model_delegate.iter`,
+`feature_request_dual_model.iter`) remain valid — cross-pair is a
+usage pattern, not a DSL constraint.
 
 ## Consequences
 
-- Le DSL v1 gagne une primitive de routage qui couvre un cas d'usage frequent (alternance d'agents) sans recourir a la duplication structurelle
-- Le runtime gagne un vecteur d'etat supplementaire (`roundRobinCounters`) a persister et restaurer
-- Les workflows futurs pourront exprimer des patterns d'alternance de facon declarative et concise
-- Le pattern cross-pair reste disponible pour les cas ou un controle plus fin est necessaire
-- Le type `RouterMode` est prepare pour des extensions futures (`weighted`, `random`, etc.) sans changement d'architecture
+- The v1 DSL gains a routing primitive that covers a frequent use case
+  (agent alternation) without resorting to structural duplication
+- The runtime gains an additional state vector (`roundRobinCounters`) to
+  persist and restore
+- Future workflows can express alternation patterns declaratively and
+  concisely
+- The cross-pair pattern remains available for cases where finer control
+  is required
+- The `RouterMode` type is ready for future extensions (`weighted`,
+  `random`, etc.) without architectural changes
 
 ---
 
-## Addendum (2026-04-28) — Recommandations de backend
+## Addendum (2026-04-28) — Backend recommendations
 
-Le pattern `round_robin` decrit ci-dessus reste pleinement valide. En revanche, le choix initial d'illustrer l'alternance avec **Claude Code + Codex** n'est plus recommande : depuis cette ADR, l'experience accumulee a montre que le backend `codex` souffre de limitations significatives (impossibilite de configurer son set d'outils, tendance a remplir lui-meme sa fenetre de contexte, integration moins aboutie). Le compilateur emet desormais un warning `C030` lorsqu'un noeud utilise `backend: "codex"`.
+The `round_robin` pattern described above remains fully valid. However,
+the original choice of illustrating alternation with **Claude Code +
+Codex** is no longer recommended: since this ADR was written, accumulated
+experience has shown that the `codex` backend has significant limitations
+(its tool set cannot be configured, it tends to fill its own context
+window, and its integration is less polished). The compiler now emits a
+`C030` warning when a node uses `backend: "codex"`.
 
-Pour les nouveaux workflows utilisant `round_robin`, preferer une alternance entre :
-- `claude_code` (delegate) + `claw` direct API avec un modele OpenAI (`model: "openai/gpt-5.4-mini"`), ou
-- deux instances de `claude_code` configurees avec des modeles Claude differents (e.g. Sonnet vs Opus), ou
-- deux modeles directs via `claw` (e.g. `anthropic/claude-...` vs `openai/gpt-...`).
+For new workflows using `round_robin`, prefer alternating between:
+- `claude_code` (delegate) + the in-process `claw` API with an OpenAI
+  model (`model: "openai/gpt-5.4-mini"`), or
+- two `claude_code` instances configured with different Claude models
+  (e.g. Sonnet vs. Opus), or
+- two direct `claw` models (e.g. `anthropic/claude-...` vs.
+  `openai/gpt-...`).
 
-Les examples historiques qui utilisaient `codex` dans ce role ont ete migres dans le meme commit ; voir `examples/dual_model_plan_implement_review.iter` pour la version courante.
+Historical examples that used `codex` in this role have been migrated in
+the same commit; see `examples/dual_model_plan_implement_review.iter`
+for the current version.

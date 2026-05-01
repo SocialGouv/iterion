@@ -180,7 +180,7 @@ From here you can add judges for multi-pass review, routers for parallel fan-out
 - 📐 **Mermaid diagrams** — Auto-generate visual workflow diagrams
 - 🧪 **Recipe system** — Bundle workflows with presets for comparison and benchmarking
 - 🛡️ **Tool policies** — Allowlist-based access control with exact, namespace, and wildcard matching
-- 🌐 **Provider-agnostic** — Supports multiple LLM providers (Claude, OpenAI, etc.) via goai
+- 🌐 **Provider-agnostic** — Supports multiple LLM providers (Claude, OpenAI, Bedrock, Vertex, Foundry) via the vendored `claw-code-go` SDK
 - 🧠 **AI agent skill** — Install as a skill in Claude Code, Codex, Cursor, and other AI agents
 
 ---
@@ -643,9 +643,10 @@ npx skills add https://github.com/SocialGouv/iterion --skill iterion-dsl
 | File | Content |
 |------|---------|
 | [`SKILL.md`](SKILL.md) | Complete DSL reference — node types, properties, edge syntax, templates, budget, MCP |
+| [`SKILL-run-and-refine.md`](SKILL-run-and-refine.md) | Practice guide for running, debugging and iteratively refining `.iter` workflows against real data |
 | [`docs/references/dsl-grammar.md`](docs/references/dsl-grammar.md) | Formal grammar specification (EBNF) |
 | [`docs/references/patterns.md`](docs/references/patterns.md) | 10 reusable workflow patterns with annotated snippets |
-| [`docs/references/diagnostics.md`](docs/references/diagnostics.md) | All validation diagnostic codes (C001–C029) with causes and fixes |
+| [`docs/references/diagnostics.md`](docs/references/diagnostics.md) | All validation diagnostic codes (C001–C030) with causes and fixes |
 | [`examples/skill/`](examples/skill/) | 4 minimal, self-contained `.iter` examples |
 
 ### Usage
@@ -843,34 +844,45 @@ go test ./...
 
 ### Project Structure
 
+The Go code follows the standard `cmd/` + `pkg/` layout:
+
 ```
 iterion/
-├── cmd/iterion/       # CLI entry point (Cobra, one file per command)
-├── cli/               # Command implementations
-├── ast/               # Abstract syntax tree definitions
-├── parser/            # Lexer and recursive-descent parser
-├── grammar/           # EBNF grammar specification
-├── ir/                # IR compiler, validator, Mermaid generator
-├── runtime/           # Execution engine, budget, parallel orchestration
-├── store/             # File-backed persistence (runs, events, artifacts)
-├── model/             # LLM executor, model registry, event hooks
-├── delegate/          # Delegation backends (claude_code, codex (discouraged), claw)
-├── tool/              # Tool adapter and allowlist-based access policy
-├── recipe/            # Recipe/preset management
-├── server/            # HTTP server for editor backend
-├── editor/            # Web UI (React/Vite/TypeScript + XYFlow)
-├── benchmark/         # Metrics collection and reporting
-├── log/               # Leveled logger
-├── unparse/           # IR → .iter serialization
-├── examples/          # Reference .iter workflows
-├── e2e/               # End-to-end test scenarios
-└── docs/              # Format specifications and ADRs
+├── cmd/iterion/         # CLI entry point (Cobra, one file per command)
+├── pkg/
+│   ├── dsl/             # DSL pipeline
+│   │   ├── parser/      # Lexer, recursive-descent parser, diagnostics
+│   │   ├── ast/         # AST definitions and JSON marshaling
+│   │   ├── ir/          # IR compilation and validation
+│   │   ├── unparse/     # IR → .iter serialization
+│   │   └── types/       # Shared enums (transports, session/router modes…)
+│   ├── backend/         # Execution stack (LLM + tools)
+│   │   ├── model/       # Executor registry, schema validation, event hooks
+│   │   ├── delegate/    # Delegation backends (claude_code, codex, claw)
+│   │   ├── tool/        # Tool registry, policies, adapters
+│   │   ├── mcp/         # MCP server lifecycle, configuration, health checks
+│   │   ├── recipe/      # Recipe handling for tool adapters and policies
+│   │   ├── cost/        # Cost estimation and budgeting
+│   │   └── llmtypes/    # LLM SDK abstraction
+│   ├── runtime/         # Workflow execution engine (scheduling, budget, recovery)
+│   ├── store/           # File-backed persistence (runs, events, artifacts)
+│   ├── server/          # HTTP server for the editor backend (embedded UI)
+│   ├── cli/             # CLI command implementations
+│   ├── benchmark/       # Metrics collection and reporting
+│   ├── log/             # Leveled logger
+│   └── internal/        # Internal utilities (e.g. appinfo)
+├── editor/              # Web UI (React/Vite/TypeScript + XYFlow)
+├── examples/            # Reference .iter workflows + companion docs
+├── e2e/                 # End-to-end test suite (stub + live)
+├── docs/                # Format specifications, references, ADRs, observability
+├── scripts/             # Build helpers
+└── vendor/              # Vendored Go modules (incl. claw-code-go)
 ```
 
-**Key dependencies:** Go 1.25.0, [goai](https://github.com/zendev-sh/goai) v0.4.0 (vendored). Single external dependency.
+**Key dependencies:** Go 1.25.0 and [`claw-code-go`](https://github.com/ethpandaops/claw-code-go) (vendored under `vendor/claw-code-go/`) — a multi-provider LLM client. iterion uses `claw-code-go/pkg/api.Client.StreamResponse` directly for in-process LLM calls (Anthropic and OpenAI validated; Bedrock/Vertex/Foundry available).
 
 ---
 
 ## 📄 License
 
-Copyright (c) Iterion AI. All rights reserved.
+Apache-2.0. See `LICENSE` for the full text. Copyright © SocialGouv.
