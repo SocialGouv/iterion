@@ -9,7 +9,7 @@ import {
   type Node as FlowNode,
 } from "@xyflow/react";
 
-import type { ExecStatus, ExecutionState, WireWorkflow } from "@/api/runs";
+import type { ExecutionState, WireWorkflow } from "@/api/runs";
 import { getRunWorkflow } from "@/api/runs";
 import { autoLayout } from "@/lib/autoLayout";
 
@@ -147,9 +147,8 @@ export default function RunCanvasIR({
       // Loop backedges get the iteration-palette color so the eye can
       // associate them with the matching node-pip color when scanning
       // the canvas. Other edges stay neutral.
-      const loopStroke = isLoop
-        ? iterationColor(execsByNode.get(e.from)?.length ? execsByNode.get(e.from)!.length - 1 : 0)
-        : undefined;
+      const lastIter = (execsByNode.get(e.from)?.length ?? 0) - 1;
+      const loopStroke = isLoop ? iterationColor(Math.max(lastIter, 0)) : undefined;
       return {
         id: `ir-edge-${i}`,
         source: e.from,
@@ -255,17 +254,3 @@ export default function RunCanvasIR({
     </div>
   );
 }
-
-// Utility re-exported for the parent's detail-panel resolver: given a
-// list of executions for one IR node and the user's chosen iteration,
-// find the matching exec.
-export function execAtIteration(
-  execs: ExecutionState[],
-  iteration: number,
-): ExecutionState | null {
-  return execs.find((e) => e.loop_iteration === iteration) ?? null;
-}
-
-// Re-export so RunView can name a status type without importing it
-// from runs.ts again.
-export type { ExecStatus };

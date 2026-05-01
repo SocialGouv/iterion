@@ -5,6 +5,8 @@ import type { ExecStatus, ExecutionState } from "@/api/runs";
 import type { NodeKind } from "@/api/types";
 import { NODE_ICONS } from "@/lib/constants";
 
+import { statusClasses } from "./runStatusClasses";
+
 // Palette cycled through iteration indices so a loop body that fired
 // 5 times shows pip 0 cyan, pip 1 violet, pip 2 amber, etc. Independent
 // of status colors — the eye can track "which iteration?" separately
@@ -21,24 +23,6 @@ export const ITERATION_PALETTE = [
 export function iterationColor(index: number): string {
   return ITERATION_PALETTE[index % ITERATION_PALETTE.length]!;
 }
-
-const STATUS_BORDER: Record<ExecStatus | "none", string> = {
-  running: "border-info",
-  finished: "border-success/60",
-  failed: "border-danger",
-  paused_waiting_human: "border-warning",
-  skipped: "border-border-default",
-  none: "border-border-default",
-};
-
-const STATUS_BG: Record<ExecStatus | "none", string> = {
-  running: "bg-info-soft animate-pulse",
-  finished: "bg-success-soft",
-  failed: "bg-danger-soft",
-  paused_waiting_human: "bg-warning-soft",
-  skipped: "bg-surface-2 text-fg-subtle",
-  none: "bg-surface-1 text-fg-subtle",
-};
 
 interface IRNodeData {
   id: string;
@@ -65,10 +49,11 @@ export default function IRNode({ data }: NodeProps) {
     executions[executions.length - 1] ??
     null;
   const status: ExecStatus | "none" = activeExec?.status ?? "none";
+  const c = statusClasses(status);
 
   return (
     <div
-      className={`relative rounded-md border px-3 py-2 shadow-sm w-[200px] text-xs ${STATUS_BG[status]} ${STATUS_BORDER[status]} ${
+      className={`relative rounded-md border px-3 py-2 shadow-sm w-[200px] text-xs ${c.bg} ${c.border} ${c.text} ${
         selected ? "ring-2 ring-accent" : ""
       }`}
       // Inner ring tinted by the selected iteration index so the user
@@ -131,24 +116,22 @@ function IterationTimeline({
   onSelectIteration,
 }: {
   nodeId: string;
+  // Already sorted by loop_iteration ascending — RunCanvasIR.execsByNode
+  // does the sort once at grouping time so we don't re-sort per render.
   executions: ExecutionState[];
   selectedIteration: number;
   onSelectIteration: (nodeId: string, iteration: number) => void;
 }) {
-  // Sort once by iteration; defensive in case the parent passes them
-  // in event order rather than iteration order.
-  const sorted = [...executions].sort((a, b) => a.loop_iteration - b.loop_iteration);
-
   return (
     <div
       className="mt-1.5 flex items-center gap-1 flex-wrap"
       onClick={(e) => {
-        // Prevent ReactFlow's node-click handler from also firing
-        // when the user is interacting with the pips.
+        // ReactFlow's node-click handler would otherwise fire when the
+        // user clicks inside the pip strip.
         e.stopPropagation();
       }}
     >
-      {sorted.map((exec) => {
+      {executions.map((exec) => {
         const iter = exec.loop_iteration;
         const palette = iterationColor(iter);
         const isSelected = iter === selectedIteration;

@@ -5,17 +5,7 @@ import type { ExecutionState } from "@/api/runs";
 import { NODE_ICONS } from "@/lib/constants";
 import type { NodeKind } from "@/api/types";
 
-const STATUS_CLASS: Record<ExecutionState["status"], string> = {
-  running:
-    "bg-info-soft border-info text-fg-default animate-pulse",
-  finished:
-    "bg-success-soft border-success/60 text-fg-default",
-  failed:
-    "bg-danger-soft border-danger/60 text-fg-default",
-  paused_waiting_human:
-    "bg-warning-soft border-warning/60 text-fg-default",
-  skipped: "bg-surface-2 border-border-default text-fg-subtle",
-};
+import { statusClasses } from "./runStatusClasses";
 
 interface NodeData {
   exec: ExecutionState;
@@ -24,12 +14,12 @@ interface NodeData {
 
 export default function ExecutionNode({ data }: NodeProps) {
   const { exec, selected } = data as unknown as NodeData;
-  const klass = STATUS_CLASS[exec.status] ?? STATUS_CLASS.skipped;
+  const c = statusClasses(exec.status);
   const glyph = exec.kind ? NODE_ICONS[exec.kind as NodeKind] ?? "" : "";
 
   return (
     <div
-      className={`relative rounded-md border px-3 py-2 shadow-sm w-[180px] text-xs ${klass} ${
+      className={`relative rounded-md border px-3 py-2 shadow-sm w-[180px] text-xs ${c.bg} ${c.border} ${c.text} ${
         selected ? "ring-2 ring-accent" : ""
       }`}
     >
