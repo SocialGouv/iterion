@@ -15,7 +15,7 @@ const STATUS_VARIANT: Record<RunStatus, BadgeVariant> = {
   cancelled: "neutral",
 };
 
-export type RunViewMode = "execution" | "ir";
+export type RunViewMode = "execution" | "workflow";
 
 interface Props {
   run: RunHeaderType;
@@ -105,14 +105,14 @@ export default function RunHeader({
         <button
           type="button"
           className={`px-2 py-0.5 ${
-            viewMode === "ir"
+            viewMode === "workflow"
               ? "bg-accent text-on-accent"
               : "bg-surface-1 text-fg-subtle hover:text-fg-default"
           }`}
-          onClick={() => onViewModeChange("ir")}
-          title="Show the IR workflow with execution counts"
+          onClick={() => onViewModeChange("workflow")}
+          title="Show the workflow graph with per-node iteration tracking"
         >
-          IR
+          Workflow
         </button>
       </div>
       <div className="ml-auto flex items-center gap-2">

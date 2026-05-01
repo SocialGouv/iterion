@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { useParams } from "wouter";
 
@@ -9,7 +9,7 @@ import { useRunWebSocket } from "@/hooks/useRunWebSocket";
 import EventLog from "./EventLog";
 import NodeDetailPanel from "./NodeDetailPanel";
 import RunCanvas from "./RunCanvas";
-import RunCanvasIR from "./RunCanvasIR";
+import RunCanvasIR, { defaultIterationFor } from "./RunCanvasIR";
 import RunHeader, { type RunViewMode } from "./RunHeader";
 
 export default function RunView() {
@@ -28,10 +28,24 @@ export default function RunView() {
   const followTail = useRunStore((s) => s.followTail);
   const setFollowTail = useRunStore((s) => s.setFollowTail);
   const [viewMode, setViewMode] = useState<RunViewMode>("execution");
-  // IR view selects by IR node id (not execution id). When the user
-  // clicks an IR node, we surface the most recent execution for that
-  // node so the detail panel still has something to show.
-  const [irSelectedNodeId, setIrSelectedNodeId] = useState<string | null>(null);
+  // Workflow view selects by IR node id (not execution id). The
+  // detail panel is driven by the selected node's currently-picked
+  // iteration (per-node, default = "current").
+  const [wfSelectedNodeId, setWfSelectedNodeId] = useState<string | null>(null);
+  // Per-IR-node iteration override. Empty map means "use the default
+  // (running > paused > latest)". A user click on a timeline pip
+  // sets the entry; we never auto-clear so the user's pick stays
+  // sticky across new events.
+  const [iterationByNode, setIterationByNode] = useState<Map<string, number>>(
+    () => new Map(),
+  );
+  const handleSelectIteration = useCallback((nodeId: string, iteration: number) => {
+    setIterationByNode((prev) => {
+      const next = new Map(prev);
+      next.set(nodeId, iteration);
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     setRunId(runId);
@@ -65,19 +79,25 @@ export default function RunView() {
   const selectedExec = selectedExecutionId
     ? executionsById.get(selectedExecutionId) ?? null
     : null;
-  // For IR view: when the user clicks an IR node, surface the latest
-  // execution that touched it. No execution → leave the panel in its
-  // empty state (the IR node was never run in this trace).
+  // Workflow view: detail panel reflects the selected node's
+  // currently-picked iteration. If the user hasn't picked an
+  // iteration, we fall back to defaultIterationFor (running > paused
+  // > latest). No execution at all → panel stays empty.
   const detailExec = useMemo(() => {
     if (viewMode === "execution") return selectedExec;
-    if (!irSelectedNodeId) return null;
-    let best: typeof selectedExec = null;
-    for (const e of executionsById.values()) {
-      if (e.ir_node_id !== irSelectedNodeId) continue;
-      if (!best || e.loop_iteration > best.loop_iteration) best = e;
-    }
-    return best;
-  }, [viewMode, selectedExec, irSelectedNodeId, executionsById]);
+    if (!wfSelectedNodeId) return null;
+    const matching = Array.from(executionsById.values()).filter(
+      (e) => e.ir_node_id === wfSelectedNodeId,
+    );
+    if (matching.length === 0) return null;
+    const iter =
+      iterationByNode.get(wfSelectedNodeId) ?? defaultIterationFor(matching);
+    return (
+      matching.find((e) => e.loop_iteration === iter) ??
+      matching[matching.length - 1] ??
+      null
+    );
+  }, [viewMode, selectedExec, wfSelectedNodeId, iterationByNode, executionsById]);
 
   if (!runId) {
     return <div className="p-4 text-xs text-fg-subtle">Missing run id.</div>;
@@ -116,8 +136,10 @@ export default function RunView() {
               <RunCanvasIR
                 runId={runId}
                 executions={executions}
-                selectedNodeId={irSelectedNodeId}
-                onSelectNode={setIrSelectedNodeId}
+                selectedNodeId={wfSelectedNodeId}
+                onSelectNode={setWfSelectedNodeId}
+                iterationByNode={iterationByNode}
+                onSelectIteration={handleSelectIteration}
               />
             )}
           </div>

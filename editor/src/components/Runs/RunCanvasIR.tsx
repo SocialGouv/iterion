@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -9,11 +9,11 @@ import {
   type Node as FlowNode,
 } from "@xyflow/react";
 
-import type { ExecutionState, WireWorkflow } from "@/api/runs";
+import type { ExecStatus, ExecutionState, WireWorkflow } from "@/api/runs";
 import { getRunWorkflow } from "@/api/runs";
 import { autoLayout } from "@/lib/autoLayout";
 
-import IRNode, { type AggregateStatus } from "./IRNode";
+import IRNode, { iterationColor } from "./IRNode";
 
 const nodeTypes = { ir: IRNode };
 
@@ -24,51 +24,31 @@ interface Props {
   executions: ExecutionState[];
   selectedNodeId: string | null;
   onSelectNode: (id: string | null) => void;
+  // Per-IR-node iteration selection. Owned by the parent so the
+  // detail panel can resolve which exec to render. Default is
+  // computed from `executions` (current > paused > latest).
+  iterationByNode: Map<string, number>;
+  onSelectIteration: (nodeId: string, iteration: number) => void;
 }
 
-// Aggregate the status of all executions sharing an ir_node_id.
-// Priority is roughly "most attention-worthy first": running and
-// failed dominate; finished/skipped only matter when nothing else is
-// happening. Returns "none" when no execution touched this IR node.
-function aggregateStatus(
-  irNodeId: string,
-  executions: ExecutionState[],
-): { status: AggregateStatus; count: number } {
-  let count = 0;
-  let running = false;
-  let failed = false;
-  let paused = false;
-  let finished = false;
-  let skipped = false;
-  for (const e of executions) {
-    if (e.ir_node_id !== irNodeId) continue;
-    count++;
-    switch (e.status) {
-      case "running":
-        running = true;
-        break;
-      case "failed":
-        failed = true;
-        break;
-      case "paused_waiting_human":
-        paused = true;
-        break;
-      case "finished":
-        finished = true;
-        break;
-      case "skipped":
-        skipped = true;
-        break;
-    }
+// Compute the "current" iteration for an IR node — the one we want to
+// land on when the user first opens the run console. Priority is the
+// in-flight iteration first, then a paused one, then the most recent
+// finished. Returns 0 when there are no executions yet.
+export function defaultIterationFor(execs: ExecutionState[]): number {
+  if (execs.length === 0) return 0;
+  // Index iterations so we can scan once and return the most relevant.
+  let running: number | undefined;
+  let paused: number | undefined;
+  let maxIter = 0;
+  for (const e of execs) {
+    if (e.status === "running" && running === undefined) running = e.loop_iteration;
+    if (e.status === "paused_waiting_human" && paused === undefined) paused = e.loop_iteration;
+    if (e.loop_iteration > maxIter) maxIter = e.loop_iteration;
   }
-  if (count === 0) return { status: "none", count: 0 };
-  if (running) return { status: "running", count };
-  if (failed && finished) return { status: "mixed", count };
-  if (failed) return { status: "failed", count };
-  if (paused) return { status: "paused_waiting_human", count };
-  if (finished) return { status: "finished", count };
-  if (skipped) return { status: "skipped", count };
-  return { status: "none", count };
+  if (running !== undefined) return running;
+  if (paused !== undefined) return paused;
+  return maxIter;
 }
 
 export default function RunCanvasIR({
@@ -76,6 +56,8 @@ export default function RunCanvasIR({
   executions,
   selectedNodeId,
   onSelectNode,
+  iterationByNode,
+  onSelectIteration,
 }: Props) {
   const [wf, setWf] = useState<WireWorkflow | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -83,9 +65,6 @@ export default function RunCanvasIR({
   const [edges, setEdges] = useState<FlowEdge[]>([]);
   const reactFlow = useReactFlow();
 
-  // Fetch the IR projection once per runId. The endpoint re-compiles
-  // the .iter source, so a tiny delay is expected; the empty-state UI
-  // covers it.
   useEffect(() => {
     setWf(null);
     setError(null);
@@ -104,26 +83,41 @@ export default function RunCanvasIR({
     };
   }, [runId]);
 
-  // Aggregation depends on both the IR (which IDs exist) and the live
-  // executions (which IDs were touched). Recompute whenever either
-  // changes — usually cheap because executions list is small.
-  const aggregates = useMemo(() => {
-    if (!wf) return null;
-    const out = new Map<string, { status: AggregateStatus; count: number }>();
-    for (const n of wf.nodes) {
-      out.set(n.id, aggregateStatus(n.id, executions));
+  // Group executions by IR node id once; both the layout and the
+  // visual-patch effects below reuse this.
+  const execsByNode = useMemo(() => {
+    const m = new Map<string, ExecutionState[]>();
+    for (const ex of executions) {
+      const list = m.get(ex.ir_node_id);
+      if (list) list.push(ex);
+      else m.set(ex.ir_node_id, [ex]);
     }
-    return out;
-  }, [wf, executions]);
+    // Keep iteration order so the timeline pips render left-to-right.
+    for (const list of m.values()) {
+      list.sort((a, b) => a.loop_iteration - b.loop_iteration);
+    }
+    return m;
+  }, [executions]);
 
-  // Build base nodes/edges, then run ELK layout. Same pattern as
-  // RunCanvas: relayout only when the structural set changes (which
-  // here is "the IR" — a one-shot fetch — so effectively once).
+  const handleSelectIteration = useCallback(
+    (nodeId: string, iteration: number) => {
+      onSelectIteration(nodeId, iteration);
+      // Also select the node so the detail panel follows the picked
+      // iteration without an extra click.
+      onSelectNode(nodeId);
+    },
+    [onSelectIteration, onSelectNode],
+  );
+
+  // Layout pass — runs once when the IR arrives. Iteration changes
+  // and execution flips are handled by the patch effect below.
   useEffect(() => {
-    if (!wf || !aggregates) return;
+    if (!wf) return;
     let cancelled = false;
     const baseNodes: FlowNode[] = wf.nodes.map((n) => {
-      const agg = aggregates.get(n.id) ?? { status: "none" as AggregateStatus, count: 0 };
+      const execs = execsByNode.get(n.id) ?? [];
+      const selectedIteration =
+        iterationByNode.get(n.id) ?? defaultIterationFor(execs);
       return {
         id: n.id,
         type: "ir",
@@ -131,10 +125,11 @@ export default function RunCanvasIR({
         data: {
           id: n.id,
           kind: n.kind,
-          count: agg.count,
-          status: agg.status,
+          executions: execs,
+          selectedIteration,
           isEntry: n.id === wf.entry,
           selected: n.id === selectedNodeId,
+          onSelectIteration: handleSelectIteration,
         },
       };
     });
@@ -149,17 +144,28 @@ export default function RunCanvasIR({
           : e.condition
           ? `${e.negated ? "!" : ""}${e.condition}`
           : undefined;
+      // Loop backedges get the iteration-palette color so the eye can
+      // associate them with the matching node-pip color when scanning
+      // the canvas. Other edges stay neutral.
+      const loopStroke = isLoop
+        ? iterationColor(execsByNode.get(e.from)?.length ? execsByNode.get(e.from)!.length - 1 : 0)
+        : undefined;
       return {
         id: `ir-edge-${i}`,
         source: e.from,
         target: e.to,
-        markerEnd: ARROW,
+        markerEnd: loopStroke ? { ...ARROW, color: loopStroke } : ARROW,
         animated: isLoop,
         label,
         labelStyle: { fontSize: 10 },
         labelBgStyle: { fill: "var(--surface-0, #fff)", opacity: 0.9 },
         labelBgPadding: [4, 2],
-        style: conditional || isLoop ? { strokeDasharray: "4 3" } : undefined,
+        style:
+          isLoop
+            ? { strokeDasharray: "8 4", stroke: loopStroke }
+            : conditional
+            ? { strokeDasharray: "4 3" }
+            : undefined,
       };
     });
 
@@ -180,35 +186,39 @@ export default function RunCanvasIR({
     return () => {
       cancelled = true;
     };
-    // wf is the structural input; aggregates+selected are visual
-    // patches handled below to avoid a layout reshuffle.
+    // wf is the only structural input. iterationByNode/executions are
+    // refreshed by the patch effect below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wf]);
 
-  // Visual patch path: status flips and selection don't trigger ELK.
+  // Visual patch: rerun whenever executions, selection, or per-node
+  // iteration changes. Cheap because it only mutates `data` — no
+  // ELK relayout. Skipped when the layout effect hasn't completed.
   useEffect(() => {
-    if (!wf || !aggregates) return;
+    if (!wf) return;
     setNodes((prev) =>
       prev.map((n) => {
-        const agg = aggregates.get(n.id);
-        if (!agg) return n;
+        const execs = execsByNode.get(n.id) ?? [];
+        const selectedIteration =
+          iterationByNode.get(n.id) ?? defaultIterationFor(execs);
         return {
           ...n,
           data: {
             ...(n.data as Record<string, unknown>),
-            count: agg.count,
-            status: agg.status,
+            executions: execs,
+            selectedIteration,
             selected: n.id === selectedNodeId,
+            onSelectIteration: handleSelectIteration,
           },
         };
       }),
     );
-  }, [wf, aggregates, selectedNodeId]);
+  }, [wf, execsByNode, iterationByNode, selectedNodeId, handleSelectIteration]);
 
   if (error) {
     return (
       <div className="h-full p-4 text-xs text-danger-fg">
-        IR view unavailable: {error}
+        Workflow view unavailable: {error}
       </div>
     );
   }
@@ -245,3 +255,17 @@ export default function RunCanvasIR({
     </div>
   );
 }
+
+// Utility re-exported for the parent's detail-panel resolver: given a
+// list of executions for one IR node and the user's chosen iteration,
+// find the matching exec.
+export function execAtIteration(
+  execs: ExecutionState[],
+  iteration: number,
+): ExecutionState | null {
+  return execs.find((e) => e.loop_iteration === iteration) ?? null;
+}
+
+// Re-export so RunView can name a status type without importing it
+// from runs.ts again.
+export type { ExecStatus };
