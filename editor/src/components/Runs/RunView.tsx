@@ -27,7 +27,7 @@ export default function RunView() {
   const wsState = useRunStore((s) => s.wsState);
   const followTail = useRunStore((s) => s.followTail);
   const setFollowTail = useRunStore((s) => s.setFollowTail);
-  const [viewMode, setViewMode] = useState<RunViewMode>("execution");
+  const [viewMode, setViewMode] = useState<RunViewMode>("workflow");
   // Workflow view selects by IR node id (not execution id). The
   // detail panel is driven by the selected node's currently-picked
   // iteration (per-node, default = "current").
