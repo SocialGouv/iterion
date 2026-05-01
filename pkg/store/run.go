@@ -35,6 +35,7 @@ type Run struct {
 	ID            string                 `json:"id"`
 	WorkflowName  string                 `json:"workflow_name"`
 	WorkflowHash  string                 `json:"workflow_hash,omitempty"` // SHA-256 of the .iter source at run start
+	FilePath      string                 `json:"file_path,omitempty"`     // absolute .iter source path captured at launch (resume without re-supplying file)
 	Status        RunStatus              `json:"status"`
 	Inputs        map[string]interface{} `json:"inputs,omitempty"`
 	CreatedAt     time.Time              `json:"created_at"`

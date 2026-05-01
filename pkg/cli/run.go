@@ -9,25 +9,19 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
-	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
 	"github.com/SocialGouv/claw-code-go/pkg/apikit/telemetry/otlpgrpc"
-	"github.com/SocialGouv/claw-code-go/pkg/permissions"
 
-	"github.com/SocialGouv/iterion/pkg/backend/delegate"
-	"github.com/SocialGouv/iterion/pkg/backend/mcp"
-	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/recipe"
-	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/benchmark"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -114,94 +108,53 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		engineOpts = append(engineOpts, runtime.WithEventObserver(otlpExporter.EventObserver()))
 	}
 
-	// Build engine: either from recipe or raw workflow.
-	var eng *runtime.Engine
-	var workflowName string
-
-	if opts.Recipe != "" {
-		// Load recipe.
-		spec, err := recipe.LoadFile(opts.Recipe)
-		if err != nil {
-			return fmt.Errorf("cannot load recipe: %w", err)
-		}
-
-		// Resolve the .iter file path from recipe or option.
-		iterFile := opts.File
-		if iterFile == "" {
-			iterFile = spec.WorkflowRef.Path
-		}
-		if iterFile == "" {
-			return fmt.Errorf("recipe %q does not specify a workflow path; provide --file", spec.Name)
-		}
-
-		wf, wfHash, err := compileWorkflowWithHash(iterFile)
-		if err != nil {
-			return err
-		}
-
-		// Apply the recipe before constructing the executor. The default executor
-		// snapshots workflow fields such as Prompts, Schemas, ToolPolicy, Budget
-		// and Compaction at construction time; building it from the raw workflow
-		// would make recipe prompt_pack/tool_policy overrides invisible to the
-		// model/tool layer even though the Engine receives the applied workflow.
-		appliedWF, err := spec.Apply(wf)
-		if err != nil {
-			return fmt.Errorf("runtime: apply recipe %q: %w", spec.Name, err)
-		}
-
-		executor := opts.Executor
-		if executor == nil {
-			exec, execErr := newDefaultExecutor(appliedWF, opts.Vars, s, runID, logger, storeDir, exporter)
-			if execErr != nil {
-				return execErr
-			}
-			executor = exec
-		}
-		if c, ok := executor.(io.Closer); ok {
-			defer func() {
-				if cerr := c.Close(); cerr != nil {
-					logger.Warn("executor close: %v", cerr)
-				}
-			}()
-		}
-		if err := mcpHealthCheck(ctx, executor, appliedWF.ActiveMCPServers); err != nil {
-			return err
-		}
-
-		eng = runtime.New(appliedWF, s, executor, append(engineOpts, runtime.WithWorkflowHash(wfHash))...)
-		workflowName = spec.Name + " (" + appliedWF.Name + ")"
-	} else {
-		if opts.File == "" {
-			return fmt.Errorf("provide a .iter file or --recipe")
-		}
-
-		wf, wfHash, err := compileWorkflowWithHash(opts.File)
-		if err != nil {
-			return err
-		}
-
-		executor := opts.Executor
-		if executor == nil {
-			exec, execErr := newDefaultExecutor(wf, opts.Vars, s, runID, logger, storeDir, exporter)
-			if execErr != nil {
-				return execErr
-			}
-			executor = exec
-		}
-		if c, ok := executor.(io.Closer); ok {
-			defer func() {
-				if cerr := c.Close(); cerr != nil {
-					logger.Warn("executor close: %v", cerr)
-				}
-			}()
-		}
-		if err := mcpHealthCheck(ctx, executor, wf.ActiveMCPServers); err != nil {
-			return err
-		}
-
-		eng = runtime.New(wf, s, executor, append(engineOpts, runtime.WithWorkflowHash(wfHash))...)
-		workflowName = wf.Name
+	// Resolve the workflow source: either via recipe (which may
+	// override prompts/tools/budget) or directly from a .iter file.
+	// Recipe overrides MUST be applied before BuildExecutor — the
+	// executor snapshots Prompts/Schemas/ToolPolicy/Budget/Compaction
+	// at construction time, so feeding it the raw workflow would make
+	// the recipe's overrides invisible to the model/tool layer.
+	wf, wfHash, iterFile, workflowName, err := resolveWorkflow(opts)
+	if err != nil {
+		return err
 	}
+
+	executor := opts.Executor
+	if executor == nil {
+		execSpec := runview.ExecutorSpec{
+			Workflow: wf,
+			Vars:     opts.Vars,
+			Store:    s,
+			RunID:    runID,
+			Logger:   logger,
+			StoreDir: storeDir,
+		}
+		if exporter != nil {
+			execSpec.ExtraHooks = append(execSpec.ExtraHooks, exporter.EventHooks())
+		}
+		exec, execErr := runview.BuildExecutor(execSpec)
+		if execErr != nil {
+			return execErr
+		}
+		executor = exec
+	}
+	if c, ok := executor.(io.Closer); ok {
+		defer func() {
+			if cerr := c.Close(); cerr != nil {
+				logger.Warn("executor close: %v", cerr)
+			}
+		}()
+	}
+	if err := runview.MCPHealthCheck(ctx, executor, wf.ActiveMCPServers); err != nil {
+		return err
+	}
+
+	eng := runtime.New(wf, s, executor,
+		append(engineOpts,
+			runtime.WithWorkflowHash(wfHash),
+			runtime.WithFilePath(iterFile),
+		)...,
+	)
 
 	// Build run inputs from vars.
 	inputs := make(map[string]interface{})
@@ -324,166 +277,42 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	return nil
 }
 
-// newDefaultExecutor creates a ClawExecutor with the default delegate registry
-// and event hooks wired to the store for observability.
-//
-// Returns an error if a hard precondition cannot be met: the working
-// directory cannot be resolved (workspace gating relies on it), or any
-// MCP server with a declared `Auth` block fails OAuth wiring (the run
-// would otherwise dispatch unauthenticated requests and surface 401s
-// at runtime, which is harder to diagnose).
-func newDefaultExecutor(wf *ir.Workflow, vars map[string]string, s *store.RunStore, runID string, logger *iterlog.Logger, storeDir string, exporter *benchmark.PrometheusExporter) (*model.ClawExecutor, error) {
-	reg := model.NewRegistry()
-	backendReg := delegate.DefaultRegistry(logger)
-
-	hooks := model.NewStoreEventHooks(s, runID, logger)
-	if exporter != nil {
-		hooks = model.ChainHooks(hooks, exporter.EventHooks())
-	}
-
-	lifecycle := model.NewDefaultLifecycleHooks(hooks)
-
-	// Register the claw backend explicitly (API-based LLM path).
-	clawBackend := model.NewClawBackend(reg, hooks, model.RetryPolicy{}, model.WithBackendLifecycleHooks(lifecycle))
-	backendReg.Register(delegate.BackendClaw, clawBackend)
-
-	toolReg := tool.NewRegistry()
-	workspace, err := os.Getwd()
-	if err != nil {
-		return nil, fmt.Errorf("cli: resolve working dir for tool workspace: %w", err)
-	}
-	// Allocate per-run PlanMode state so workflows that declare
-	// enter_plan_mode / exit_plan_mode resolve those tools through
-	// the registry. The state directory lives under storeDir so any
-	// plan artefacts the tool persists travel with the run. Without
-	// this, a workflow declaring those tools failed at first call
-	// with "unknown tool" — a registration gap that didn't surface
-	// in the dispatch smoke test because the test enabled PlanMode
-	// explicitly via ClawDefaults.
-	planActive := false
-	planDir := filepath.Join(storeDir, "plan-mode")
-	if err := os.MkdirAll(planDir, 0o755); err != nil {
-		// Non-fatal: log and continue without plan_mode tools.
-		logger.Warn("cli: prepare plan_mode dir: %v — plan_mode tools disabled", err)
-		planDir = ""
-	}
-	opts := []model.ClawExecutorOption{
-		model.WithBackendRegistry(backendReg),
-		model.WithEventHooks(hooks),
-		model.WithToolRegistry(toolReg),
-		model.WithLogger(logger),
-		model.WithLifecycleHooks(lifecycle),
-	}
-
-	// Build tool policy from workflow-level and per-node ToolPolicy fields.
-	// When ITERION_LLM_CLASSIFIER_MODEL is set, wrap the static checker in
-	// an LLMClassifier consulted before the static allowlist (Allow/Deny
-	// short-circuits; Ask falls through to the static policy).
-	checker := buildToolChecker(wf)
-	if classifier, err := newLLMClassifierFromEnv(reg, logger); err != nil {
-		return nil, fmt.Errorf("cli: build LLM classifier: %w", err)
-	} else if classifier != nil {
-		checker = &tool.ClassifierChecker{Classifier: classifier, Base: checker, Logger: logger}
-	}
-	if checker != nil {
-		opts = append(opts, model.WithToolPolicy(checker))
-	}
-
-	// MCP manager has to exist before claw tool registration so its
-	// Provider implementation can back list_mcp_resources /
-	// read_mcp_resource / mcp_auth. Without this the claw tools see an
-	// empty Registry-backed Provider and report "server not found"
-	// even though iterion has the server connected.
-	var mcpManager *mcp.Manager
-	var oauthBroker *mcp.OAuthBroker
-	if len(wf.ResolvedMCPServers) > 0 {
-		catalog := make(map[string]*mcp.ServerConfig, len(wf.ResolvedMCPServers))
-		hasAuth := false
-		for name, server := range wf.ResolvedMCPServers {
-			// Expand $VAR / ${VAR} on Command, Args, URL so a workflow
-			// can refer to test-provided or env-pinned binaries / hosts
-			// (a long-standing pattern: examples/claw_mcp.iter uses
-			// `command: "${ITERION_MCP_TEST_BINARY}"`). Without this
-			// expansion the literal placeholder leaks straight into
-			// exec.Command, which then fails with "executable file
-			// not found in $PATH" — silently broken for any workflow
-			// author who picked up the env-substitution idiom from
-			// the example fixtures. The live e2e tests had been
-			// working around the gap by building their own catalog;
-			// fixing it centrally lets the standard CLI path work.
-			expandedArgs := make([]string, len(server.Args))
-			for i, a := range server.Args {
-				expandedArgs[i] = os.ExpandEnv(a)
-			}
-			catalog[name] = &mcp.ServerConfig{
-				Name:      server.Name,
-				Transport: mcp.FromIRTransport(server.Transport),
-				Command:   os.ExpandEnv(server.Command),
-				Args:      expandedArgs,
-				URL:       os.ExpandEnv(server.URL),
-				Headers:   server.Headers,
-				Auth:      mcp.FromIRAuth(server.Auth),
-			}
-			if server.Auth != nil {
-				hasAuth = true
-			}
+// resolveWorkflow loads the workflow either via a recipe or directly
+// from a .iter file. When a recipe is given, its overrides are applied
+// before the workflow is returned so the caller can hand a fully-
+// realised workflow to BuildExecutor (which snapshots the policy
+// fields at construction time).
+func resolveWorkflow(opts RunOptions) (wf *ir.Workflow, hash, filePath, displayName string, err error) {
+	if opts.Recipe != "" {
+		spec, recipeErr := recipe.LoadFile(opts.Recipe)
+		if recipeErr != nil {
+			return nil, "", "", "", fmt.Errorf("cannot load recipe: %w", recipeErr)
 		}
-		// Wire OAuth tokens for any server with Auth.Type == "oauth2".
-		// Storage lives under the run's store dir so refresh tokens
-		// survive across runs of the same project.
-		//
-		// When at least one server declares an Auth block, broker
-		// init and PrepareAuth failures are fatal: continuing would
-		// dispatch the run with AuthFunc == nil and surface as 401s
-		// later, hiding the root cause from the operator.
-		broker, brokerErr := mcp.NewOAuthBroker(storeDir)
-		if brokerErr != nil {
-			if hasAuth {
-				return nil, fmt.Errorf("mcp: oauth broker init (required by catalog Auth): %w", brokerErr)
-			}
-			logger.Warn("mcp: oauth broker init: %v", brokerErr)
-		} else if err := mcp.PrepareAuth(catalog, broker); err != nil {
-			if hasAuth {
-				return nil, fmt.Errorf("mcp: prepare oauth auth: %w", err)
-			}
-			logger.Warn("mcp: prepare oauth auth: %v", err)
+		filePath = opts.File
+		if filePath == "" {
+			filePath = spec.WorkflowRef.Path
 		}
-		oauthBroker = broker
-		var mcpOpts []mcp.ManagerOption
-		mcpOpts = append(mcpOpts, mcp.WithLogger(logger))
-		if cacheTTL := mcp.ResolveCacheTTL(); cacheTTL > 0 {
-			mcpOpts = append(mcpOpts, mcp.WithToolCache(mcp.NewToolCache(storeDir, cacheTTL)))
+		if filePath == "" {
+			return nil, "", "", "", fmt.Errorf("recipe %q does not specify a workflow path; provide --file", spec.Name)
 		}
-		mcpOpts = append(mcpOpts, mcp.WithFingerprintStore(mcp.NewFingerprintStore(storeDir)))
-		mcpManager = mcp.NewManager(catalog, mcpOpts...)
-		opts = append(opts, model.WithMCPManager(mcpManager))
-	}
-
-	clawDefaults := tool.ClawDefaults{Workspace: workspace}
-	if planDir != "" {
-		clawDefaults.PlanMode = &clawtools.PlanModeState{Active: &planActive, Dir: planDir}
-	}
-	if mcpManager != nil {
-		clawDefaults.MCPProvider = mcpManager.ClawProvider(oauthBroker)
-	}
-	if err := tool.RegisterClawAll(toolReg, clawDefaults); err != nil {
-		// Non-fatal: log and continue with whatever was registered.
-		// A malformed registry is better than a hard run failure on
-		// startup; downstream tool resolution will surface the gap.
-		logger.Warn("RegisterClawAll: %v", err)
-	}
-
-	executor := model.NewClawExecutor(reg, wf, opts...)
-
-	if len(vars) > 0 {
-		v := make(map[string]interface{}, len(vars))
-		for k, val := range vars {
-			v[k] = val
+		raw, h, compileErr := runview.CompileWorkflowWithHash(filePath)
+		if compileErr != nil {
+			return nil, "", "", "", compileErr
 		}
-		executor.SetVars(v)
+		applied, applyErr := spec.Apply(raw)
+		if applyErr != nil {
+			return nil, "", "", "", fmt.Errorf("runtime: apply recipe %q: %w", spec.Name, applyErr)
+		}
+		return applied, h, filePath, spec.Name + " (" + applied.Name + ")", nil
 	}
-
-	return executor, nil
+	if opts.File == "" {
+		return nil, "", "", "", fmt.Errorf("provide a .iter file or --recipe")
+	}
+	raw, h, compileErr := runview.CompileWorkflowWithHash(opts.File)
+	if compileErr != nil {
+		return nil, "", "", "", compileErr
+	}
+	return raw, h, opts.File, raw.Name, nil
 }
 
 // startPrometheusFromEnv builds a PrometheusExporter and serves /metrics
@@ -584,50 +413,6 @@ func isTruthyEnv(name string) bool {
 	return false
 }
 
-// newLLMClassifierFromEnv builds an LLMClassifier when the
-// ITERION_LLM_CLASSIFIER_MODEL env var is set (e.g.
-// "anthropic/claude-haiku-4-5"). The classifier is chained over the
-// default RuleClassifier and uses a 30-minute TTL cache to keep per-call
-// cost predictable.
-//
-// Returns (nil, nil) when the env var is empty.
-func newLLMClassifierFromEnv(reg *model.Registry, logger *iterlog.Logger) (permissions.Classifier, error) {
-	spec := strings.TrimSpace(os.Getenv("ITERION_LLM_CLASSIFIER_MODEL"))
-	if spec == "" {
-		return nil, nil
-	}
-	client, err := reg.Resolve(spec)
-	if err != nil {
-		return nil, fmt.Errorf("resolve classifier model %q: %w", spec, err)
-	}
-	logger.Info("llm-classifier: enabled (model=%s)", spec)
-	_, modelID, _ := model.ParseModelSpec(spec)
-	return &permissions.LLMClassifier{
-		Client:    client,
-		Model:     modelID,
-		Fallback:  permissions.NewRuleClassifier(),
-		Cache:     permissions.NewClassifierCache(30 * time.Minute),
-		MaxTokens: 64,
-	}, nil
-}
-
-// mcpHealthCheck runs a pre-execution health check on active MCP servers if
-// the executor supports it. Controlled by ITERION_MCP_HEALTHCHECK (default: on).
-func mcpHealthCheck(ctx context.Context, executor runtime.NodeExecutor, servers []string) error {
-	if len(servers) == 0 || !mcp.HealthCheckEnabled() {
-		return nil
-	}
-	type healthChecker interface {
-		MCPHealthCheck(ctx context.Context, servers []string) error
-	}
-	if hc, ok := executor.(healthChecker); ok {
-		if err := hc.MCPHealthCheck(ctx, servers); err != nil {
-			return fmt.Errorf("MCP health check failed: %w", err)
-		}
-	}
-	return nil
-}
-
 // enrichPausedResult loads checkpoint and interaction details from the store
 // and populates the result map with interaction_id, node_id, and questions.
 // It is used by both run and resume to enrich paused-output for CI consumers.
@@ -680,34 +465,4 @@ func ParseAnswersFile(path string) (map[string]interface{}, error) {
 		return nil, fmt.Errorf("cannot parse answers file: %w", err)
 	}
 	return answers, nil
-}
-
-// buildToolChecker constructs a tool.ToolChecker from the compiled workflow's
-// ToolPolicy fields. Workflow-level ToolPolicy becomes the base; per-node
-// ToolPolicy fields (on AgentNode and JudgeNode) become node overrides.
-// Returns nil when no policy is configured (open).
-func buildToolChecker(wf *ir.Workflow) tool.ToolChecker {
-	var nodeOverrides map[string][]string
-
-	for _, node := range wf.Nodes {
-		var patterns []string
-		switch n := node.(type) {
-		case *ir.AgentNode:
-			patterns = n.ToolPolicy
-		case *ir.JudgeNode:
-			patterns = n.ToolPolicy
-		}
-		if len(patterns) > 0 {
-			if nodeOverrides == nil {
-				nodeOverrides = make(map[string][]string)
-			}
-			nodeOverrides[node.NodeID()] = patterns
-		}
-	}
-
-	if len(wf.ToolPolicy) == 0 && len(nodeOverrides) == 0 {
-		return nil
-	}
-
-	return tool.BuildChecker(wf.ToolPolicy, nodeOverrides, nil)
 }

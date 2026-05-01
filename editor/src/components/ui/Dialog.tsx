@@ -40,9 +40,19 @@ export function Dialog({
                     {title}
                   </RD.Title>
                 )}
-                {description && (
+                {/* Radix Dialog requires a Description (or
+                    aria-describedby) on every Content for screen
+                    readers; render visibly when one is provided,
+                    else fall back to a sr-only stub so the warning
+                    doesn't fire on simple dialogs that already
+                    convey their intent through the title. */}
+                {description ? (
                   <RD.Description className="text-xs text-fg-subtle mt-0.5">
                     {description}
+                  </RD.Description>
+                ) : (
+                  <RD.Description className="sr-only">
+                    {typeof title === "string" ? title : "Dialog"}
                   </RD.Description>
                 )}
               </div>

@@ -69,7 +69,7 @@ jobs:
           COMMIT="$(git rev-parse --short HEAD)"
           LDFLAGS="-s -w -X github.com/SocialGouv/iterion/pkg/internal/appinfo.Version=v${VERSION} -X github.com/SocialGouv/iterion/pkg/internal/appinfo.Commit=${COMMIT}"
           go build -mod=vendor -trimpath -ldflags="${LDFLAGS}" -o "${OUTPUT}" ./cmd/iterion
-          if command -v sha256sum &>/dev/null; then
+          if command -v sha256sum >/dev/null 2>&1; then
             sha256sum "${OUTPUT}" > "${OUTPUT}.sha256"
           else
             shasum -a 256 "${OUTPUT}" > "${OUTPUT}.sha256"

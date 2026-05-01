@@ -175,16 +175,26 @@ function Row({
   onPick: () => void;
   trailing?: React.ReactNode;
 }) {
+  // The trailing slot can itself be a <button> (e.g. "remove from
+  // recents"), so it must be a DOM sibling of the row's main button —
+  // not a child — to avoid the "<button> cannot be a descendant of
+  // <button>" HTML invalidity. Absolute positioning preserves the
+  // visual layout while keeping the elements as siblings.
   return (
-    <li>
+    <li className="relative">
       <button
         type="button"
         onClick={onPick}
-        className="w-full flex items-center justify-between px-2 py-2 text-sm text-fg-default hover:bg-surface-2 rounded-sm"
+        className="w-full flex items-center px-2 py-2 text-sm text-fg-default hover:bg-surface-2 rounded-sm"
       >
-        <span className="truncate">{label}</span>
-        {trailing}
+        <span className="truncate text-left flex-1">{label}</span>
+        {trailing && <span aria-hidden className="w-5 shrink-0" />}
       </button>
+      {trailing && (
+        <span className="absolute right-2 top-1/2 -translate-y-1/2">
+          {trailing}
+        </span>
+      )}
     </li>
   );
 }

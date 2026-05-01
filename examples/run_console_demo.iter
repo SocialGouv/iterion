@@ -1,0 +1,190 @@
+## Fixture : run_console_demo
+##
+## Purpose: end-to-end visual exercise of the run console UI in a
+## tempo that's slow enough to follow. Mostly LLM-free (cheap + fast)
+## with a single agent step at the end so you can see what an `agent`
+## node looks like in the canvas (🤖 glyph, slower transition while
+## the LLM call is in flight).
+##
+## What you should see in the UI:
+##
+##   1. Sequential nodes turning blue (running) → green (finished),
+##      with directional edges drawing as each transition fires.
+##   2. A bounded loop on `tick` — three iterations stack as
+##      separate execution rows in the canvas, with dashed loop
+##      edges back-pointing from `loop_check` to `tick`.
+##   3. A single `summarize` agent (🤖) that calls a real LLM and
+##      produces a one-line summary; visible as a slower transition
+##      and an artifact body in the NodeDetailPanel.
+##   4. A condition router (`gate`) routing on a compute output.
+##   5. Path that ends at `done`, alternative path that ends at
+##      `fail` (set var `force_failure="true"` at launch).
+##   6. The failing branch's `boom` tool turns red, the run header
+##      flips to `failed_resumable`, exposing the Resume button.
+##
+## Required env (only for the agent step):
+##   - ANTHROPIC_API_KEY (default model) or OPENAI_API_KEY (if you
+##     change the `summarize` agent's model). The CLI auto-loads
+##     them from the closest `.env` file walking up from $CWD.
+##     If neither is set the agent step fails — the rest of the
+##     canvas still renders.
+##
+## NB: parallel fan-out is omitted because the runtime's compute
+## path only fires on the sequential execution loop (not branches),
+## and `tool` nodes are workspace-mutating so two of them can't
+## run in parallel either. The PR-refine examples exercise real
+## fan-out via parallel agent/judge nodes — try those once you
+## have API keys for the full visual experience.
+##
+## NB on tool commands:
+##   - The engine runs `os.ExpandEnv` on the command before sh -c.
+##     Shell variables like `$F` / `$N` get clobbered; only `$(...)`
+##     command substitution survives. We use that for counters.
+##   - `{{vars.X}}` substituted values are shell-escaped (single-
+##     quoted) for injection safety. Don't put them inside JSON
+##     output literals or stray quotes leak.
+##   - JSON output uses `echo \{\"key\":value\}` — every `{`, `}`,
+##     and `"` is backslash-escaped. The braces matter: bash (and
+##     other shells with brace expansion enabled, which is what
+##     devbox-shipped `sh` ends up being) would otherwise read
+##     `{a,b}` as a glob list and split the JSON into `a b`. POSIX
+##     dash doesn't do brace expansion, but we want a portable
+##     command that works under both.
+
+vars:
+  workspace_dir: string = "/tmp/iterion-demo"
+  loop_count: int = 3
+  force_failure: string = "false"
+  step_delay_seconds: int = 2
+
+## ─── Schemas ────────────────────────────────────────────────────────
+
+schema setup_result:
+  ok: bool
+
+schema counter:
+  count: int
+  done: bool
+
+schema summary_input:
+  count: int
+
+schema summary_output:
+  message: string
+  iterations: int
+
+schema final_result:
+  total: int
+  message: string
+  passed: bool
+
+## ─── Prompts ────────────────────────────────────────────────────────
+
+prompt summarize_system:
+  You are a concise build summary writer. The build performed a
+  bounded loop and is about to finalize. Produce a single short
+  celebratory message (under 80 characters) to display in the
+  console UI. Echo the iteration count back into the `iterations`
+  field exactly as given.
+
+prompt summarize_user:
+  The loop completed {{input.count}} iterations. Produce a
+  one-line message and copy iterations into the output.
+
+## ─── Tool nodes (no LLM) ────────────────────────────────────────────
+
+## Phase 1 — set up a fresh workspace
+tool setup:
+  command: "sleep {{vars.step_delay_seconds}} && mkdir -p {{vars.workspace_dir}} && rm -f {{vars.workspace_dir}}/counter && echo \{\"ok\":true\}"
+  output: setup_result
+
+## Phase 2 — bounded loop body. Each call appends a single byte to a
+## counter file; we read the file size as the running count. The
+## sleep is what makes the iteration visible in the UI; without it
+## the loop completes faster than React Flow can lay it out.
+tool tick:
+  command: "sleep {{vars.step_delay_seconds}} && printf x >> {{vars.workspace_dir}}/counter && echo \{\"count\":$(wc -c < {{vars.workspace_dir}}/counter),\"done\":false\}"
+  output: counter
+
+## Loop guard — checks whether we've ticked enough times.
+compute loop_check:
+  output: counter
+  expr:
+    count: "input.count"
+    done: "input.count >= vars.loop_count"
+
+## Phase 3 — single agent that calls a real LLM. This is where you
+## can see what an `agent` execution looks like in the canvas: the
+## node sits in `running` longer (LLM round-trip) and the
+## NodeDetailPanel shows the published artifact when it finishes.
+agent summarize:
+  model: "anthropic/claude-haiku-4-5"
+  input: summary_input
+  output: summary_output
+  publish: summary
+  system: summarize_system
+  user: summarize_user
+  session: fresh
+
+## Phase 4 — finalize: aggregate the loop output into a final result.
+compute finalize:
+  output: final_result
+  expr:
+    total: "input.count"
+    message: "input.message"
+    passed: "vars.force_failure != 'true'"
+
+## Phase 5 — condition router: success → done, failure → fail
+router gate:
+  mode: condition
+
+## Tool that intentionally fails — wired only on the failure branch.
+## Demonstrates a node turning red and the run flipping to
+## failed_resumable, exposing the Resume button in the run header.
+tool boom:
+  command: "echo simulated failure && exit 1"
+  output: setup_result
+
+## ─── Workflow ────────────────────────────────────────────────────────
+
+workflow run_console_demo:
+  vars:
+    workspace_dir: string = "/tmp/iterion-demo"
+    loop_count: int = 3
+    force_failure: string = "false"
+    step_delay_seconds: int = 2
+
+  entry: setup
+
+  budget:
+    max_duration: "5m"
+    max_iterations: 10
+    max_cost_usd: 1
+
+  ## ── Setup
+  setup -> tick
+
+  ## ── Bounded loop: tick → loop_check → tick (until count >= loop_count).
+  tick -> loop_check with {
+    count: "{{outputs.tick.count}}"
+  }
+  loop_check -> tick when not done as counter_loop(10)
+
+  ## ── On loop exit, hand off to the LLM agent for a summary.
+  loop_check -> summarize when done with {
+    count: "{{outputs.loop_check.count}}"
+  }
+
+  ## ── Agent → finalize, threading both the count and the agent's message.
+  summarize -> finalize with {
+    count: "{{outputs.summarize.iterations}}",
+    message: "{{outputs.summarize.message}}"
+  }
+
+  ## ── Condition gate: success → done, failure → boom → fail.
+  finalize -> gate with {
+    passed: "{{outputs.finalize.passed}}"
+  }
+  gate -> done when passed
+  gate -> boom when not passed
+  boom -> fail

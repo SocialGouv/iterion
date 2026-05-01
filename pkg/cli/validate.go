@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +8,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/runview"
 )
 
 // ValidateResult holds the outcome of a validate command.
@@ -106,72 +105,15 @@ func RunValidate(path string, p *Printer) error {
 }
 
 // compileWorkflow is a shared helper that parses and compiles a .iter file.
-// Returns the compiled workflow or an error with diagnostics.
+// Returns the compiled workflow or an error with diagnostics. Thin
+// alias over runview.CompileWorkflow.
 func compileWorkflow(path string) (*ir.Workflow, error) {
-	src, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("cannot read file: %w", err)
-	}
-
-	pr := parser.Parse(path, string(src))
-	for _, d := range pr.Diagnostics {
-		if d.Severity == parser.SeverityError {
-			return nil, fmt.Errorf("parse error: %s", d.Error())
-		}
-	}
-
-	if pr.File == nil || len(pr.File.Workflows) == 0 {
-		return nil, fmt.Errorf("no workflow found in %s", path)
-	}
-
-	cr := ir.Compile(pr.File)
-	if cr.HasErrors() {
-		for _, d := range cr.Diagnostics {
-			if d.Severity == ir.SeverityError {
-				return nil, fmt.Errorf("compile error: %s", d.Error())
-			}
-		}
-	}
-	if err := mcp.PrepareWorkflow(cr.Workflow, filepath.Dir(path)); err != nil {
-		return nil, err
-	}
-
-	return cr.Workflow, nil
+	return runview.CompileWorkflow(path)
 }
 
 // compileWorkflowWithHash is like compileWorkflow but also returns a SHA-256
 // hash of the .iter source, used to detect workflow changes on resume.
+// Thin alias over runview.CompileWorkflowWithHash.
 func compileWorkflowWithHash(path string) (*ir.Workflow, string, error) {
-	src, err := os.ReadFile(path)
-	if err != nil {
-		return nil, "", fmt.Errorf("cannot read file: %w", err)
-	}
-
-	h := sha256.Sum256(src)
-	hash := hex.EncodeToString(h[:])
-
-	pr := parser.Parse(path, string(src))
-	for _, d := range pr.Diagnostics {
-		if d.Severity == parser.SeverityError {
-			return nil, "", fmt.Errorf("parse error: %s", d.Error())
-		}
-	}
-
-	if pr.File == nil || len(pr.File.Workflows) == 0 {
-		return nil, "", fmt.Errorf("no workflow found in %s", path)
-	}
-
-	cr := ir.Compile(pr.File)
-	if cr.HasErrors() {
-		for _, d := range cr.Diagnostics {
-			if d.Severity == ir.SeverityError {
-				return nil, "", fmt.Errorf("compile error: %s", d.Error())
-			}
-		}
-	}
-	if err := mcp.PrepareWorkflow(cr.Workflow, filepath.Dir(path)); err != nil {
-		return nil, "", err
-	}
-
-	return cr.Workflow, hash, nil
+	return runview.CompileWorkflowWithHash(path)
 }

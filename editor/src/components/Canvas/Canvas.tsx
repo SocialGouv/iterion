@@ -65,6 +65,8 @@ export default function Canvas() {
   const resolvedTheme = useThemeStore((s) => s.resolved);
   const subNodeViewStack = useUIStore((s) => s.subNodeViewStack);
   const pushSubNodeView = useUIStore((s) => s.pushSubNodeView);
+  const pendingFitNodeId = useUIStore((s) => s.pendingFitNodeId);
+  const setPendingFitNodeId = useUIStore((s) => s.setPendingFitNodeId);
   const activeWorkflow = useActiveWorkflow();
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition, fitView, getNodes, getViewport, setViewport } = useReactFlow();
@@ -114,6 +116,23 @@ export default function Canvas() {
       setTimeout(() => fitView({ padding: 0.2 }), DEBOUNCE_LAYOUT_SETTLE_MS);
     }
   }, [activeWorkflowName, fitView]);
+
+  // URL-driven node centering ("Open in editor" from a run). The
+  // EditorView puts the target ir_node_id into the UI store; we wait
+  // for it to appear in React Flow's node set (the layout pass needs
+  // a tick) before calling fitView, then clear the request so a later
+  // navigation doesn't re-trigger.
+  useEffect(() => {
+    if (!pendingFitNodeId) return;
+    const t = setTimeout(() => {
+      const exists = getNodes().some((n) => n.id === pendingFitNodeId);
+      if (exists) {
+        fitView({ nodes: [{ id: pendingFitNodeId }], padding: 0.5, duration: 400 });
+      }
+      setPendingFitNodeId(null);
+    }, DEBOUNCE_LAYOUT_SETTLE_MS);
+    return () => clearTimeout(t);
+  }, [pendingFitNodeId, fitView, getNodes, setPendingFitNodeId]);
 
   // Save/restore viewport when entering/leaving sub-node detail view
   const prevSubViewRef = useRef<string | null>(null);

@@ -68,8 +68,8 @@ func NewSubagentRunner(
 		genTools := buildSubagentTools(toolReg, allowed)
 
 		opts := GenerationOptions{
-			Model:    modelID,
-			System:   "You are a sub-agent. Complete the task with the tools available and return your final answer concisely.",
+			Model:  modelID,
+			System: "You are a sub-agent. Complete the task with the tools available and return your final answer concisely.",
 			Messages: []api.Message{{
 				Role:    "user",
 				Content: []api.ContentBlock{{Type: "text", Text: spec.Prompt}},

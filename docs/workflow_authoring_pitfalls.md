@@ -351,3 +351,99 @@ checks yourself, post-merge.
 Five workflow runs cost roughly $120-180 in API. Run-001's façade
 burnt about a third of that on a result that had to be discarded.
 Sharper prompts up front would have cut that in half.
+
+---
+
+## Shell portability for tool nodes
+
+`.iter` `tool` nodes execute their `command:` string via
+`exec.Command("sh", "-c", …)` (see `pkg/backend/model/executor.go`,
+`executeToolNodeShell`). The crucial detail: **`sh` resolves to whatever
+binary `sh` points at in the runtime PATH.** It is *not* a fixed
+interpreter.
+
+This means the same workflow can behave differently across hosts:
+
+| Environment              | What `sh` actually is |
+| ------------------------ | --------------------- |
+| Devbox shell (any OS)    | `bash` 5.x            |
+| Linux Mint / Ubuntu host | `dash`                |
+| Debian host              | `dash`                |
+| Alpine / busybox image   | `ash`                 |
+| macOS (default)          | `bash` 3.2 (very old) |
+
+### The brace-expansion gotcha (real, observed)
+
+`run_console_demo.iter` originally contained:
+
+```
+echo {"count":3,"done":false}
+```
+
+This worked under devbox (bash interpreting). On a Linux Mint host the
+same workflow piped through `sh -c` ran under dash — *which has no
+brace expansion*. The output landed unchanged, JSON parsed, run
+succeeded.
+
+But on a host where the user's `sh` *was* bash (e.g. Ubuntu with
+`dash` reconfigured to `bash`, or any rebuilt image where bash is
+`/bin/sh`), bash applied brace expansion to `{"count":3,"done":false}`
+and emitted `count":3 done":false` — destroying the JSON, and
+silently failing every downstream node that expected
+`{"count": ..., "done": ...}`.
+
+### Rule: every `command:` string must be POSIX-portable
+
+When you write a `tool` node, **assume `sh` is dash**. That means none
+of the following:
+
+| Pattern              | Replace with                          |
+| -------------------- | ------------------------------------- |
+| `echo {"k":v}`       | `echo \{\"k\":v\}` (escape every brace and quote) |
+| `[[ "$x" == "y" ]]`  | `[ "$x" = "y" ]`                      |
+| `cmd <<< "$input"`   | `printf '%s' "$input" \| cmd`         |
+| `$'\t'`              | `"$(printf '\t')"`                    |
+| `((i++))`            | `i=$((i+1))`                          |
+| `for f in *.{a,b}`   | `for f in *.a *.b`                    |
+| `${var^^}` / `${var,,}` | `printf '%s' "$var" \| tr a-z A-Z` |
+
+For JSON output specifically, the safest pattern landed on in
+`run_console_demo.iter`:
+
+```
+echo \{\"count\":$(wc -c < /tmp/counter),\"done\":false\}
+```
+
+Every `{`, `}`, and `"` is backslash-escaped. The braces are escaped
+to defeat brace expansion under bash; the quotes are escaped to
+survive the outer YAML/`.iter` string-literal layer plus `sh -c`.
+
+Alternative: produce JSON via `printf '{"count":%d,"done":false}\n' N`.
+`printf` is POSIX, has no brace expansion semantics, and reads as
+intent-first.
+
+### Diagnostics
+
+If a downstream node fails with "expected object, got string" or
+"missing required field" right after a tool node:
+
+1. Run the command manually under `dash` *and* under `bash` — they
+   should produce identical output.
+2. Run it under devbox (`devbox run -- sh -c '…'`) since that's what
+   the engine inherits from PATH.
+3. Inspect the run's `events.jsonl` for the `tool_called` event — it
+   records the resolved command string and raw stdout.
+
+### Why the engine doesn't pin `bash`
+
+We stayed with `sh` because:
+
+- Alpine / busybox images don't ship bash by default; pinning to
+  `bash` would break minimal containers.
+- macOS bash is 3.2 (GPL-3 avoidance); pinning would silently invoke
+  a 17-year-old bash with different defaults.
+- POSIX is a small, well-documented target. Authoring to it scales.
+
+**If you genuinely need bash**, invoke it explicitly:
+`bash -c '…bash-only syntax…'`. That's a contract the workflow
+declares, not an assumption.

@@ -161,8 +161,8 @@ tasks:
     desc: Build the editor frontend
     dir: editor
     cmds:
-      - pnpm install --prefer-offline
-      - pnpm exec vite build
+      - corepack pnpm install --prefer-offline
+      - corepack pnpm exec vite build
       - rm -rf ../pkg/server/static/assets ../pkg/server/static/index.html
       - cp -r dist/* ../pkg/server/static/
 
@@ -180,7 +180,7 @@ tasks:
     desc: Run Vite dev server for editor frontend
     dir: editor
     cmds:
-      - pnpm install --prefer-offline 2>/dev/null; pnpm exec vite --port 5173 --open
+      - corepack pnpm install --prefer-offline 2>/dev/null; corepack pnpm exec vite --port 5173 --open
     interactive: true
 
   editor:

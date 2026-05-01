@@ -1,6 +1,7 @@
 {
   "name": "Claude Code Sandbox",
-  "image": "jetpackio/devbox:latest",
+  "_image_tag_for_humans": "jetpackio/devbox:latest @ 2026-04-21",
+  "image": "jetpackio/devbox@sha256:b6a8812a39834a93200e2735704c4a049242f739ca7de8651bf93f919386e8c0",
   "features": {
     "ghcr.io/devcontainers/features/node:1.6.1": {
       "version": "lts"

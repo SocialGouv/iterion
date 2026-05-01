@@ -7,8 +7,11 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/recipe"
@@ -48,6 +51,7 @@ type Engine struct {
 	onEvent          func(evt store.Event) // optional observer fired after every successful append
 	recoveryDispatch RecoveryDispatch      // optional; consulted on node execution failure
 	workflowHash     string                // SHA-256 of the .iter source, set via WithWorkflowHash
+	filePath         string                // absolute .iter source path, set via WithFilePath
 	validateOutputs  bool                  // when true, validate node outputs against declared schemas
 	forceResume      bool                  // when true, skip workflow hash check on resume
 }
@@ -90,6 +94,14 @@ func WithRecoveryDispatch(d RecoveryDispatch) EngineOption {
 // detect if the workflow changed since the run was started.
 func WithWorkflowHash(hash string) EngineOption {
 	return func(e *Engine) { e.workflowHash = hash }
+}
+
+// WithFilePath records the absolute .iter source path on the run
+// metadata so that resume (and the run console) can re-locate the
+// workflow without the caller having to thread it back through the
+// API. Optional — empty string is ignored.
+func WithFilePath(path string) EngineOption {
+	return func(e *Engine) { e.filePath = path }
 }
 
 // WithForceResume allows resuming a run even when the workflow source has
@@ -184,8 +196,13 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 	if err != nil {
 		return fmt.Errorf("runtime: create run: %w", err)
 	}
-	if e.workflowHash != "" {
-		run.WorkflowHash = e.workflowHash
+	if e.workflowHash != "" || e.filePath != "" {
+		if e.workflowHash != "" {
+			run.WorkflowHash = e.workflowHash
+		}
+		if e.filePath != "" {
+			run.FilePath = e.filePath
+		}
 		if err := e.store.SaveRun(run); err != nil {
 			return fmt.Errorf("runtime: save workflow hash: %w", err)
 		}
@@ -754,7 +771,18 @@ func drillPath(root interface{}, path []string) interface{} {
 	return cur
 }
 
-// resolveVars builds the vars map from workflow variable defaults.
+// resolveVars builds the vars map from workflow variable defaults,
+// coercing user-provided override strings to the declared type.
+//
+// Coercion is necessary because the CLI's --var flag and the HTTP
+// /api/runs endpoint both deliver vars as raw strings. Without
+// coercion, an explicit "--var loop_count=3" stores the var as the
+// string "3", which then fails downstream comparisons against the
+// typed defaults (e.g. "input.count >= vars.loop_count" tries to
+// compare a number against a string and aborts the run with an
+// opaque "cannot compare X >= string" error). Defaults from the
+// .iter source are already typed by the IR compiler — we coerce
+// only on overrides.
 func (e *Engine) resolveVars(inputs map[string]interface{}) map[string]interface{} {
 	vars := make(map[string]interface{})
 	for name, v := range e.workflow.Vars {
@@ -762,11 +790,87 @@ func (e *Engine) resolveVars(inputs map[string]interface{}) map[string]interface
 			vars[name] = v.Default
 		}
 	}
-	// Inputs can override vars.
 	for k, v := range inputs {
-		if _, isVar := e.workflow.Vars[k]; isVar {
-			vars[k] = v
+		decl, isVar := e.workflow.Vars[k]
+		if !isVar {
+			continue
 		}
+		coerced, err := coerceVarValue(v, decl.Type)
+		if err != nil {
+			// Fall back to whatever the caller passed; the engine's
+			// downstream type checks will surface a clear error if
+			// the value really is incompatible. The alternative —
+			// failing the run here — would be more aggressive than
+			// the previous behaviour.
+			e.logger.Warn("runtime: var %q: coerce to %s failed: %v (using raw value)", k, decl.Type, err)
+			vars[k] = v
+			continue
+		}
+		vars[k] = coerced
 	}
 	return vars
+}
+
+// coerceVarValue narrows a user-provided override (typically a
+// string from --var or POST /api/runs) to the type declared in the
+// IR for that var. Already-typed values pass through.
+func coerceVarValue(v interface{}, vt ir.VarType) (interface{}, error) {
+	s, isStr := v.(string)
+	if !isStr {
+		return v, nil
+	}
+	switch vt {
+	case ir.VarString:
+		return s, nil
+	case ir.VarBool:
+		switch strings.ToLower(strings.TrimSpace(s)) {
+		case "true", "1", "yes":
+			return true, nil
+		case "false", "0", "no", "":
+			return false, nil
+		default:
+			return nil, fmt.Errorf("invalid bool %q", s)
+		}
+	case ir.VarInt:
+		n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid int %q: %w", s, err)
+		}
+		return n, nil
+	case ir.VarFloat:
+		n, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid float %q: %w", s, err)
+		}
+		return n, nil
+	case ir.VarJSON:
+		// Parse JSON; if the user gave us non-JSON text, leave it
+		// as a string — JSON expressions accept either.
+		var out interface{}
+		if err := json.Unmarshal([]byte(s), &out); err != nil {
+			return s, nil
+		}
+		return out, nil
+	case ir.VarStringArray:
+		trimmed := strings.TrimSpace(s)
+		if trimmed == "" {
+			return []interface{}{}, nil
+		}
+		// Accept either JSON array form (["a","b"]) or
+		// comma-separated (a,b).
+		if strings.HasPrefix(trimmed, "[") {
+			var arr []interface{}
+			if err := json.Unmarshal([]byte(trimmed), &arr); err == nil {
+				return arr, nil
+			}
+		}
+		parts := strings.Split(trimmed, ",")
+		out := make([]interface{}, len(parts))
+		for i, p := range parts {
+			out[i] = strings.TrimSpace(p)
+		}
+		return out, nil
+	default:
+		return s, nil
+	}
 }

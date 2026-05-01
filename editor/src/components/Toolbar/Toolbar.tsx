@@ -31,9 +31,13 @@ import {
   PlusIcon,
   MinusIcon,
   DotsHorizontalIcon,
+  ListBulletIcon,
+  PlayIcon,
 } from "@radix-ui/react-icons";
+import { useLocation } from "wouter";
 
 export default function Toolbar() {
+  const [, setLocation] = useLocation();
   const setDocument = useDocumentStore((s) => s.setDocument);
   const setDiagnostics = useDocumentStore((s) => s.setDiagnostics);
   const document = useDocumentStore((s) => s.document);
@@ -103,7 +107,13 @@ export default function Toolbar() {
           const result = await api.loadExample(path);
           setDocument(result.document);
           setDiagnostics(result.diagnostics);
-          setCurrentFilePath(null);
+          // Examples live at <WorkDir>/examples/<name>, so the same
+          // relative path is reachable via the file API. Setting it
+          // here lets the user Save edits back to the example file
+          // and — more importantly — enables the Launch run button,
+          // which would otherwise be disabled with "Save the workflow
+          // first" on every example.
+          setCurrentFilePath(`examples/${path}`);
           markSaved();
         }
       } catch (err) {
@@ -420,7 +430,7 @@ export default function Toolbar() {
 
       <input ref={fileInputRef} type="file" accept=".iter" className="hidden" onChange={handleImport} />
 
-      {/* Right-aligned: file path + help */}
+      {/* Right-aligned: file path + help + run console */}
       <div className="ml-auto flex items-center gap-2">
         {currentFilePath && (
           <span className="text-[10px] text-fg-subtle truncate max-w-[280px]" title={currentFilePath}>
@@ -432,6 +442,29 @@ export default function Toolbar() {
           <span className="text-[10px] text-warning">* unsaved</span>
         )}
         {loading && <span className="text-xs text-fg-subtle">Loading...</span>}
+        <IconButton
+          label="Launch run"
+          tooltip={
+            currentFilePath
+              ? `Launch ${currentFilePath}`
+              : "Save the workflow first to launch a run"
+          }
+          size="sm"
+          onClick={() =>
+            setLocation(`/runs/new?file=${encodeURIComponent(currentFilePath ?? "")}`)
+          }
+          disabled={!currentFilePath}
+        >
+          <PlayIcon />
+        </IconButton>
+        <IconButton
+          label="Run console"
+          tooltip="Open run console"
+          size="sm"
+          onClick={() => setLocation("/runs")}
+        >
+          <ListBulletIcon />
+        </IconButton>
         <IconButton
           label="Keyboard shortcuts (?)"
           tooltip="Shortcuts"

@@ -237,9 +237,9 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 	}
 
 	clawDefaults := tool.ClawDefaults{
-		Workspace:        workspaceDir,
-		PlanMode:         &clawtools.PlanModeState{Active: &planActive, Dir: planDir},
-		MCPProvider:      mcpManager.ClawProvider(nil),
+		Workspace:          workspaceDir,
+		PlanMode:           &clawtools.PlanModeState{Active: &planActive, Dir: planDir},
+		MCPProvider:        mcpManager.ClawProvider(nil),
 		IncludeWebSearch:   true,
 		IncludeComputerUse: true,
 		LSP:                lspReg,

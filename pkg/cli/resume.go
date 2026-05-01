@@ -9,6 +9,7 @@ import (
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -84,14 +85,21 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	}
 
 	// Compile workflow and compute hash for change detection.
-	wf, wfHash, err := compileWorkflowWithHash(iterFile)
+	wf, wfHash, err := runview.CompileWorkflowWithHash(iterFile)
 	if err != nil {
 		return err
 	}
 
 	executor := opts.Executor
 	if executor == nil {
-		exec, execErr := newDefaultExecutor(wf, nil, s, opts.RunID, logger, storeDir, nil)
+		exec, execErr := runview.BuildExecutor(runview.ExecutorSpec{
+			Workflow: wf,
+			Vars:     nil,
+			Store:    s,
+			RunID:    opts.RunID,
+			Logger:   logger,
+			StoreDir: storeDir,
+		})
 		if execErr != nil {
 			return execErr
 		}
@@ -109,7 +117,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		executor = exec
 	}
 
-	eng := runtime.New(wf, s, executor, runtime.WithLogger(logger), runtime.WithWorkflowHash(wfHash), runtime.WithForceResume(opts.Force))
+	eng := runtime.New(wf, s, executor, runtime.WithLogger(logger), runtime.WithWorkflowHash(wfHash), runtime.WithFilePath(iterFile), runtime.WithForceResume(opts.Force))
 
 	// Acquire exclusive run lock to prevent concurrent processes.
 	lock, err := s.LockRun(opts.RunID)

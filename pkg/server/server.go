@@ -23,6 +23,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/runview"
 )
 
 //go:embed all:static
@@ -34,6 +35,7 @@ type Config struct {
 	Bind        string // bind address (default "127.0.0.1"; use "0.0.0.0" only with explicit user opt-in)
 	ExamplesDir string // path to examples directory
 	WorkDir     string // root directory for file operations
+	StoreDir    string // run store directory (default: <WorkDir>/.iterion)
 	OpenBrowser bool   // open browser on start
 }
 
@@ -45,6 +47,7 @@ type Server struct {
 	server  *http.Server
 	hub     *Hub
 	watcher *Watcher
+	runs    *runview.Service // run console service; nil disables /api/runs endpoints
 }
 
 // New creates a new editor server.
@@ -71,6 +74,24 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 			logger.Warn("file watcher disabled: %v", err)
 		} else {
 			go s.watcher.Start()
+		}
+	}
+	// Wire the run console service. Default the store dir to
+	// <WorkDir>/.iterion when the operator did not specify one — that
+	// matches the CLI default and keeps single-machine workflows
+	// (edit + run from the same dir) self-consistent. A failure here
+	// is non-fatal: we log a warning and leave s.runs == nil, which
+	// disables the /api/runs surface but keeps the editor usable.
+	storeDir := cfg.StoreDir
+	if storeDir == "" && cfg.WorkDir != "" {
+		storeDir = filepath.Join(cfg.WorkDir, ".iterion")
+	}
+	if storeDir != "" {
+		svc, svcErr := runview.NewService(storeDir, runview.WithLogger(logger))
+		if svcErr != nil {
+			logger.Warn("run console disabled: %v", svcErr)
+		} else {
+			s.runs = svc
 		}
 	}
 	// Wire the same Origin allowlist used for HTTP CORS into the WebSocket
@@ -104,7 +125,17 @@ func (s *Server) ListenAndServe() error {
 }
 
 // Shutdown gracefully shuts down the server.
+//
+// Order matters: HTTP-level shutdown (Server.Shutdown) drains in-flight
+// requests, while the run console service drains in-process workflow
+// goroutines. We do the workflow drain first so any cancel events
+// reach the on-disk store before the file watcher stops broadcasting
+// and clients drop. The drain ctx is the caller-supplied shutdown
+// deadline.
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.runs != nil {
+		s.runs.Stop(ctx)
+	}
 	if s.watcher != nil {
 		s.watcher.Stop()
 	}
@@ -148,6 +179,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/files", s.handleListFiles)
 	s.mux.HandleFunc("POST /api/files/open", s.handleOpenFile)
 	s.mux.HandleFunc("POST /api/files/save", s.handleSaveFile)
+
+	// Run console endpoints (registered only when s.runs is wired).
+	s.registerRunRoutes()
 
 	// Serve static frontend files.
 	staticSub, err := fs.Sub(staticFS, "static")

@@ -1,0 +1,56 @@
+# Normalize line endings to LF on checkout for all text files.
+# Without this, a Windows clone with autocrlf=true would rewrite .iter
+# and shell scripts with CRLF, breaking parser indentation rules and
+# any `#!/bin/sh` shebang.
+* text=auto eol=lf
+
+# Source code — always LF.
+*.go        text eol=lf
+*.iter      text eol=lf
+*.md        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.json      text eol=lf
+*.sh        text eol=lf
+*.bash      text eol=lf
+*.ts        text eol=lf
+*.tsx       text eol=lf
+*.js        text eol=lf
+*.jsx       text eol=lf
+*.css       text eol=lf
+*.html      text eol=lf
+*.toml      text eol=lf
+Taskfile.yml text eol=lf
+Dockerfile  text eol=lf
+.envrc      text eol=lf
+.gitignore  text eol=lf
+.gitattributes text eol=lf
+
+# Windows-only files that legitimately need CRLF (none today, but
+# reserve the convention).
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+*.ps1       text eol=crlf
+
+# Binary assets — never normalize.
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.webp      binary
+*.pdf       binary
+*.zip       binary
+*.gz        binary
+*.tgz       binary
+*.tar       binary
+*.woff      binary
+*.woff2     binary
+*.ttf       binary
+*.eot       binary
+*.otf       binary
+
+# Generated / vendored artifacts: leave alone for diffs.
+vendor/**          linguist-vendored
+pnpm-lock.yaml     linguist-generated
+go.sum             linguist-generated

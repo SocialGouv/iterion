@@ -3,7 +3,7 @@ import type { LayerKind } from "@/lib/constants";
 import { TOAST_DURATION_DEFAULT_MS } from "@/lib/constants";
 
 export type { LayerKind };
-export type SidebarTab = "properties" | "schemas" | "prompts" | "vars" | "workflow" | "comments";
+export type SidebarTab = "properties" | "schemas" | "prompts" | "vars" | "workflow" | "comments" | "mcp";
 export type LayoutDirection = "DOWN" | "RIGHT";
 export type CanvasTool = "pan" | "select";
 export interface EditingItem { kind: "schema" | "prompt" | "var"; name: string }
@@ -60,6 +60,11 @@ interface UIState {
   // File picker dialog
   filePickerOpen: boolean;
   filesChangedAt: number;
+  // One-shot canvas-pan-and-zoom request: set by URL-driven navigation
+  // (e.g. "Open in editor" from a run) so the Canvas can fitView on the
+  // target node once the document has finished loading. Consumers must
+  // clear it via setPendingFitNodeId(null) after applying.
+  pendingFitNodeId: string | null;
   setActiveTab: (tab: SidebarTab) => void;
   toggleSourceView: () => void;
   toggleDiagnosticsPanel: () => void;
@@ -88,6 +93,8 @@ interface UIState {
   // File picker
   setFilePickerOpen: (open: boolean) => void;
   notifyFilesChanged: () => void;
+  // Pending fit (URL-driven canvas centering)
+  setPendingFitNodeId: (id: string | null) => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -108,6 +115,7 @@ export const useUIStore = create<UIState>((set) => ({
   inspectorWidth: readInspectorWidth(),
   filePickerOpen: false,
   filesChangedAt: 0,
+  pendingFitNodeId: null,
   setActiveTab: (activeTab) => set({ activeTab }),
   toggleSourceView: () => set((s) => ({ sourceViewOpen: !s.sourceViewOpen })),
   toggleDiagnosticsPanel: () => set((s) => ({ diagnosticsPanelOpen: !s.diagnosticsPanelOpen })),
@@ -170,4 +178,6 @@ export const useUIStore = create<UIState>((set) => ({
   // File picker
   setFilePickerOpen: (filePickerOpen) => set({ filePickerOpen }),
   notifyFilesChanged: () => set({ filesChangedAt: Date.now() }),
+  // Pending fit
+  setPendingFitNodeId: (id) => set({ pendingFitNodeId: id }),
 }));

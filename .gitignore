@@ -21,6 +21,13 @@ node_modules
 .env
 editor/dist/
 editor/node_modules/
+# This is a pnpm workspace (see pnpm-workspace.yaml). Lockfiles from
+# other package managers bypass pnpm-lock.yaml and produce silently
+# divergent dependency trees — never commit them.
+package-lock.json
+**/package-lock.json
+yarn.lock
+**/yarn.lock
 pkg/server/static/assets/
 pkg/server/static/index.html
 !pkg/server/static/.gitkeep

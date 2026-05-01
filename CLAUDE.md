@@ -4,6 +4,38 @@ Workflow orchestration engine with a custom DSL (`.iter` files).
 
 **Module:** `github.com/SocialGouv/iterion`
 
+## Development setup
+
+The repo uses **devbox** (Go, go-task, Node 22, watchexec, xorg, …) and
+**direnv** to auto-activate the devbox shell on `cd`. With both installed:
+
+```bash
+eval "$(direnv hook bash)"   # or: eval "$(direnv hook zsh)"
+direnv allow                  # picks up .envrc → devbox environment
+```
+
+Without direnv, prefix every command with `devbox run -- …` (the form
+this file uses below). All Go and node tooling come from `devbox.json`;
+**do not** rely on host-installed Go or Node — versions will drift.
+
+A `.devcontainer/devcontainer.json` provides the same environment for VS
+Code / GitHub Codespaces.
+
+**Cross-shell note:** `.iter` tool nodes invoke commands via `sh -c`,
+which on Linux Mint/Ubuntu hosts is **dash**, but inside devbox is
+**bash 5.x**. Author tool commands as POSIX-compatible (no brace
+expansion, no `[[ ]]`, no `<<<`). See
+[docs/workflow_authoring_pitfalls.md](docs/workflow_authoring_pitfalls.md#shell-portability-for-tool-nodes).
+
+**pnpm via corepack:** the `editor/` workspace is locked to a specific
+pnpm version through `package.json`'s `packageManager` field. The
+Taskfile invokes pnpm as `corepack pnpm …` so the version is
+auto-dispatched without polluting the host install. Corepack ships
+with the `nodejs_22` package devbox already provides — no extra
+install. Don't run `corepack enable` inside devbox: the Nix store is
+read-only, the global symlink fails, and you don't need it (`corepack
+pnpm` works without enable).
+
 ## Build & Test
 
 All commands must be run through `devbox run` (Go and tooling are managed by devbox):
