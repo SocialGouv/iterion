@@ -1,6 +1,6 @@
 import { MarkerType } from "@xyflow/react";
 import type { Node, Edge as FlowEdge } from "@xyflow/react";
-import type { IterDocument, NodeKind, AgentDecl, JudgeDecl, HumanDecl, ToolNodeDecl } from "@/api/types";
+import type { IterDocument, NodeKind, AgentDecl, JudgeDecl, HumanDecl, ToolNodeDecl, ComputeDecl } from "@/api/types";
 import type { LayerKind } from "@/store/ui";
 import type { AuxiliaryNodeData } from "@/components/Canvas/AuxiliaryNode";
 import type { GroupNodeData } from "@/components/Canvas/GroupNode";
@@ -28,6 +28,7 @@ export function getTopologyKey(doc: IterDocument, activeWorkflowName?: string): 
     (doc.routers ?? []).length,
     (doc.humans ?? []).length,
     (doc.tools ?? []).length,
+    (doc.computes ?? []).length,
   ].join(",");
   const targetWorkflows = activeWorkflowName
     ? (doc.workflows ?? []).filter(w => w.name === activeWorkflowName)
@@ -49,6 +50,7 @@ export function documentToGraph(doc: IterDocument, activeWorkflowName?: string):
   for (const r of doc.routers ?? []) nodeMap.set(r.name, { kind: "router", decl: r });
   for (const h of doc.humans ?? []) nodeMap.set(h.name, { kind: "human", decl: h });
   for (const t of doc.tools ?? []) nodeMap.set(t.name, { kind: "tool", decl: t });
+  for (const c of doc.computes ?? []) nodeMap.set(c.name, { kind: "compute", decl: c });
 
   // Resolve target workflows early so we can check edge references
   const targetWorkflows = activeWorkflowName
@@ -106,7 +108,13 @@ export function documentToGraph(doc: IterDocument, activeWorkflowName?: string):
       const edge = wfEdges[i]!;
       let label = "";
       if (edge.when) {
-        label = edge.when.negated ? `!${edge.when.condition}` : edge.when.condition;
+        // expression form takes precedence over the simple boolean field;
+        // the runtime evaluates Expr when set, ignoring Condition/Negated.
+        if (edge.when.expr) {
+          label = edge.when.expr.length > 24 ? `${edge.when.expr.slice(0, 24)}…` : edge.when.expr;
+        } else if (edge.when.condition) {
+          label = edge.when.negated ? `!${edge.when.condition}` : edge.when.condition;
+        }
       }
       if (edge.loop) {
         label += `${label ? " " : ""}loop:${edge.loop.name}(${edge.loop.max_iterations})`;
@@ -302,7 +310,8 @@ export function generateLayerNodes(
   for (const a of doc.agents ?? []) allDecls.push({ name: a.name, input: (a as AgentDecl).input, output: (a as AgentDecl).output, system: (a as AgentDecl).system, user: (a as AgentDecl).user });
   for (const j of doc.judges ?? []) allDecls.push({ name: j.name, input: (j as JudgeDecl).input, output: (j as JudgeDecl).output, system: (j as JudgeDecl).system, user: (j as JudgeDecl).user });
   for (const h of doc.humans ?? []) allDecls.push({ name: h.name, input: (h as HumanDecl).input, output: (h as HumanDecl).output, instructions: (h as HumanDecl).instructions });
-  for (const t of doc.tools ?? []) allDecls.push({ name: t.name, output: (t as ToolNodeDecl).output });
+  for (const t of doc.tools ?? []) allDecls.push({ name: t.name, input: (t as ToolNodeDecl).input, output: (t as ToolNodeDecl).output });
+  for (const c of doc.computes ?? []) allDecls.push({ name: c.name, input: (c as ComputeDecl).input, output: (c as ComputeDecl).output });
 
   // --- Schemas layer ---
   if (activeLayers.has("schemas")) {

@@ -183,6 +183,16 @@ const HINTS: Record<string, DiagnosticHint> = {
     hint: "Lower the node's `max_tokens` or raise `budget.max_tokens`.",
     docsAnchor: "c037",
   },
+  C038: {
+    title: "Unsupported MCP auth type",
+    hint: "Only `oauth2` is currently wired. Drop the `auth:` block or switch to a supported type.",
+    docsAnchor: "c038",
+  },
+  C043: {
+    title: "Invalid compaction values",
+    hint: "`threshold` must be in (0, 1]; `preserve_recent` must be ≥ 1. Omit either field to inherit defaults.",
+    docsAnchor: "c043",
+  },
 };
 
 export function getHint(code: string): DiagnosticHint {

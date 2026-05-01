@@ -6,11 +6,14 @@ import type {
   RouterDecl,
   HumanDecl,
   ToolNodeDecl,
+  ComputeDecl,
   WorkflowDecl,
   SchemaDecl,
   PromptDecl,
   VarsBlock,
   BudgetBlock,
+  CompactionBlock,
+  MCPServerDecl,
   Edge,
   Comment,
 } from "@/api/types";
@@ -23,6 +26,7 @@ import { groupToCommentText, groupNameFromComment, parseGroups } from "@/lib/gro
 function normalize(doc: IterDocument): IterDocument {
   return {
     ...doc,
+    mcp_servers: doc.mcp_servers ?? [],
     prompts: doc.prompts ?? [],
     schemas: doc.schemas ?? [],
     agents: doc.agents ?? [],
@@ -30,6 +34,7 @@ function normalize(doc: IterDocument): IterDocument {
     routers: doc.routers ?? [],
     humans: doc.humans ?? [],
     tools: doc.tools ?? [],
+    computes: doc.computes ?? [],
     workflows: (doc.workflows ?? []).map((w) => ({
       ...w,
       edges: w.edges ?? [],
@@ -76,6 +81,7 @@ interface DocumentState {
   updateRouter: (name: string, updates: Partial<RouterDecl>) => void;
   updateHuman: (name: string, updates: Partial<HumanDecl>) => void;
   updateTool: (name: string, updates: Partial<ToolNodeDecl>) => void;
+  updateCompute: (name: string, updates: Partial<ComputeDecl>) => void;
   updateWorkflow: (name: string, updates: Partial<WorkflowDecl>) => void;
 
   // Node add/remove
@@ -84,6 +90,7 @@ interface DocumentState {
   addRouter: (decl: RouterDecl) => void;
   addHuman: (decl: HumanDecl) => void;
   addTool: (decl: ToolNodeDecl) => void;
+  addCompute: (decl: ComputeDecl) => void;
   removeNode: (name: string) => void;
   renameNode: (oldName: string, newName: string) => void;
   duplicateNode: (name: string) => string | null;
@@ -115,6 +122,14 @@ interface DocumentState {
 
   // Budget mutations
   updateWorkflowBudget: (workflowName: string, budget: BudgetBlock | undefined) => void;
+
+  // Compaction mutations
+  updateWorkflowCompaction: (workflowName: string, compaction: CompactionBlock | undefined) => void;
+
+  // Top-level MCP server declarations
+  addMCPServer: (decl: MCPServerDecl) => void;
+  removeMCPServer: (name: string) => void;
+  updateMCPServer: (name: string, updates: Partial<MCPServerDecl>) => void;
 
   // Comment mutations
   addComment: (comment: Comment) => void;
@@ -242,6 +257,8 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     set((s) => (s.document ? { document: { ...s.document, humans: updateInArray(s.document.humans, name, updates) }, ...pushHistory(s) } : s)),
   updateTool: (name, updates) =>
     set((s) => (s.document ? { document: { ...s.document, tools: updateInArray(s.document.tools, name, updates) }, ...pushHistory(s) } : s)),
+  updateCompute: (name, updates) =>
+    set((s) => (s.document ? { document: { ...s.document, computes: updateInArray(s.document.computes, name, updates) }, ...pushHistory(s) } : s)),
   updateWorkflow: (name, updates) =>
     set((s) => (s.document ? { document: { ...s.document, workflows: updateInArray(s.document.workflows, name, updates) }, ...pushHistory(s) } : s)),
 
@@ -256,6 +273,8 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     set((s) => (s.document ? { document: { ...s.document, humans: [...s.document.humans, decl] }, ...pushHistory(s) } : s)),
   addTool: (decl) =>
     set((s) => (s.document ? { document: { ...s.document, tools: [...s.document.tools, decl] }, ...pushHistory(s) } : s)),
+  addCompute: (decl) =>
+    set((s) => (s.document ? { document: { ...s.document, computes: [...s.document.computes, decl] }, ...pushHistory(s) } : s)),
 
   // Node remove — removes declaration + cleans up all edges referencing it
   removeNode: (name) =>
@@ -270,6 +289,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
           routers: doc.routers.filter((r) => r.name !== name),
           humans: doc.humans.filter((h) => h.name !== name),
           tools: doc.tools.filter((t) => t.name !== name),
+          computes: doc.computes.filter((c) => c.name !== name),
           workflows: removeNodeEdges(doc, name),
           comments: removeNodeFromGroups(doc.comments, name),
         },
@@ -296,6 +316,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
           routers: renameIn(doc.routers),
           humans: renameIn(doc.humans),
           tools: renameIn(doc.tools),
+          computes: renameIn(doc.computes),
           workflows: updateWorkflowsEdges(doc, oldName, newName),
           comments: renameNodeInGroups(doc.comments, oldName, newName),
         },
@@ -321,7 +342,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     if ("tools" in clone && Array.isArray(clone.tools)) clone.tools = [...clone.tools];
     const kindToArray: Record<string, keyof IterDocument> = {
       agent: "agents", judge: "judges", router: "routers",
-      human: "humans", tool: "tools",
+      human: "humans", tool: "tools", compute: "computes",
     };
     const arrayKey = kindToArray[found.kind];
     if (!arrayKey) return null;
@@ -364,6 +385,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
           routers: doc.routers.filter((r) => isReferenced(r.name)),
           humans: doc.humans.filter((h) => isReferenced(h.name)),
           tools: doc.tools.filter((t) => isReferenced(t.name)),
+          computes: doc.computes.filter((c) => isReferenced(c.name)),
         },
         ...pushHistory(s),
       };
@@ -445,6 +467,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       existingSchemas.delete(oldName);
       if (existingSchemas.has(newName)) return s;
       const r = (v: string) => (v === oldName ? newName : v);
+      const ro = (v?: string) => (v === oldName ? newName : v);
       return {
         document: {
           ...doc,
@@ -452,7 +475,8 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
           agents: doc.agents.map((a) => ({ ...a, input: r(a.input), output: r(a.output) })),
           judges: doc.judges.map((j) => ({ ...j, input: r(j.input), output: r(j.output) })),
           humans: doc.humans.map((h) => ({ ...h, input: r(h.input), output: r(h.output) })),
-          tools: doc.tools.map((t) => ({ ...t, output: r(t.output) })),
+          tools: doc.tools.map((t) => ({ ...t, input: ro(t.input), output: r(t.output) })),
+          computes: doc.computes.map((c) => ({ ...c, input: ro(c.input), output: r(c.output) })),
         },
         ...pushHistory(s),
       };
@@ -514,6 +538,53 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
         ...pushHistory(s),
       };
     }),
+
+  // Compaction mutations (workflow-level)
+  updateWorkflowCompaction: (workflowName, compaction) =>
+    set((s) => {
+      if (!s.document) return s;
+      return {
+        document: {
+          ...s.document,
+          workflows: s.document.workflows.map((w) => (w.name === workflowName ? { ...w, compaction } : w)),
+        },
+        ...pushHistory(s),
+      };
+    }),
+
+  // Top-level MCP server declarations. The `mcp_servers` array is
+  // shared across all workflows in the file; per-node activation
+  // happens via the node's `mcp` field which references these by name.
+  addMCPServer: (decl) =>
+    set((s) =>
+      s.document
+        ? { document: { ...s.document, mcp_servers: [...(s.document.mcp_servers ?? []), decl] }, ...pushHistory(s) }
+        : s,
+    ),
+  removeMCPServer: (name) =>
+    set((s) =>
+      s.document
+        ? {
+            document: {
+              ...s.document,
+              mcp_servers: (s.document.mcp_servers ?? []).filter((d) => d.name !== name),
+            },
+            ...pushHistory(s),
+          }
+        : s,
+    ),
+  updateMCPServer: (name, updates) =>
+    set((s) =>
+      s.document
+        ? {
+            document: {
+              ...s.document,
+              mcp_servers: updateInArray(s.document.mcp_servers ?? [], name, updates),
+            },
+            ...pushHistory(s),
+          }
+        : s,
+    ),
 
   // Comment mutations
   addComment: (comment) =>

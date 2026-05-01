@@ -1,14 +1,29 @@
 import { useDocumentStore } from "@/store/document";
 import { useUIStore } from "@/store/ui";
-import type { BudgetBlock } from "@/api/types";
+import type { BudgetBlock, InteractionMode } from "@/api/types";
 import { getAllNodeNames } from "@/lib/defaults";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
-import { TextField, CommittedTextField, NumberField, SelectField } from "./forms/FormField";
+import {
+  TextField,
+  CommittedTextField,
+  NumberField,
+  SelectField,
+  TagListField,
+} from "./forms/FormField";
+import {
+  BACKEND_OPTIONS,
+  INTERACTION_OPTIONS,
+} from "@/lib/dslOptions";
+import CompactionFields from "./forms/CompactionFields";
+import MCPConfigFields from "./forms/MCPConfigFields";
 
 export default function WorkflowSettingsForm() {
   const document = useDocumentStore((s) => s.document);
   const updateWorkflow = useDocumentStore((s) => s.updateWorkflow);
   const updateWorkflowBudget = useDocumentStore((s) => s.updateWorkflowBudget);
+  const updateWorkflowCompaction = useDocumentStore(
+    (s) => s.updateWorkflowCompaction,
+  );
   const setActiveWorkflowName = useUIStore((s) => s.setActiveWorkflowName);
 
   const workflow = useActiveWorkflow();
@@ -51,6 +66,45 @@ export default function WorkflowSettingsForm() {
         options={nodeOptions}
         allowEmpty
         emptyLabel="-- select entry node --"
+      />
+
+      <SelectField
+        label="Default Backend"
+        value={workflow.default_backend ?? ""}
+        onChange={(v) => updateWorkflow(workflow.name, { default_backend: v || undefined })}
+        // Workflow-level: empty means "per-node default" (override whatever
+        // the node sets), not "direct LLM API".
+        options={BACKEND_OPTIONS.map((o) =>
+          o.value === "" ? { value: "", label: "(per-node default)" } : o,
+        )}
+        help="Backend used by any node that doesn't set its own."
+      />
+      <SelectField
+        label="Default Interaction"
+        value={workflow.interaction ?? ""}
+        onChange={(v) =>
+          updateWorkflow(workflow.name, {
+            interaction: (v || undefined) as InteractionMode | undefined,
+          })
+        }
+        options={[{ value: "", label: "(per-node default)" }, ...INTERACTION_OPTIONS]}
+        help="Default interaction mode for ask_user / human-in-the-loop requests in this workflow."
+      />
+      <TagListField
+        label="Tool Policy"
+        values={workflow.tool_policy ?? []}
+        onChange={(v) => updateWorkflow(workflow.name, { tool_policy: v.length > 0 ? v : undefined })}
+        placeholder="Add allow/deny pattern..."
+      />
+
+      <CompactionFields
+        value={workflow.compaction}
+        onChange={(c) => updateWorkflowCompaction(workflow.name, c)}
+      />
+      <MCPConfigFields
+        scope="workflow"
+        value={workflow.mcp}
+        onChange={(c) => updateWorkflow(workflow.name, { mcp: c })}
       />
 
       <div className="border-t border-border-default mt-3 pt-3">

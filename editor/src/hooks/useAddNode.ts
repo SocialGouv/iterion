@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
-import { generateUniqueName, getAllNodeNames, defaultAgent, defaultJudge, defaultRouter, defaultHuman, defaultTool } from "@/lib/defaults";
+import { generateUniqueName, getAllNodeNames, defaultAgent, defaultJudge, defaultRouter, defaultHuman, defaultTool, defaultCompute } from "@/lib/defaults";
 import type { NodeKind } from "@/api/types";
 
 /**
@@ -17,6 +17,7 @@ export function useAddNode() {
   const addRouter = useDocumentStore((s) => s.addRouter);
   const addHuman = useDocumentStore((s) => s.addHuman);
   const addTool = useDocumentStore((s) => s.addTool);
+  const addCompute = useDocumentStore((s) => s.addCompute);
   const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
 
   const addNode = useCallback(
@@ -33,12 +34,13 @@ export function useAddNode() {
         case "router": addRouter(defaultRouter(name)); break;
         case "human": addHuman(defaultHuman(name)); break;
         case "tool": addTool(defaultTool(name)); break;
+        case "compute": addCompute(defaultCompute(name)); break;
       }
 
       setSelectedNode(name);
       return name;
     },
-    [document, addAgent, addJudge, addRouter, addHuman, addTool, setSelectedNode],
+    [document, addAgent, addJudge, addRouter, addHuman, addTool, addCompute, setSelectedNode],
   );
 
   return addNode;

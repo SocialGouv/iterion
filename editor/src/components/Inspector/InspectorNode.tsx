@@ -4,6 +4,7 @@ import { useSelectionStore } from "@/store/selection";
 import { NODE_COLORS, NODE_ICONS } from "@/lib/constants";
 import type {
   AgentDecl,
+  ComputeDecl,
   HumanDecl,
   JudgeDecl,
   NodeKind,
@@ -14,7 +15,9 @@ import AgentForm from "@/components/Panels/forms/AgentForm";
 import RouterForm from "@/components/Panels/forms/RouterForm";
 import HumanForm from "@/components/Panels/forms/HumanForm";
 import ToolForm from "@/components/Panels/forms/ToolForm";
+import ComputeForm from "@/components/Panels/forms/ComputeForm";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
+import NodeRunsChip from "./NodeRunsChip";
 import { IconButton } from "@/components/ui";
 import { TrashIcon } from "@radix-ui/react-icons";
 
@@ -32,7 +35,7 @@ const TERMINAL_LABELS: Record<string, string> = {
 
 interface NodeMatch {
   kind: NodeKind;
-  decl: AgentDecl | JudgeDecl | RouterDecl | HumanDecl | ToolNodeDecl;
+  decl: AgentDecl | JudgeDecl | RouterDecl | HumanDecl | ToolNodeDecl | ComputeDecl;
 }
 
 export default function InspectorNode({ nodeId }: { nodeId: string }) {
@@ -50,6 +53,7 @@ export default function InspectorNode({ nodeId }: { nodeId: string }) {
     for (const r of document.routers) if (r.name === nodeId) return { kind: "router", decl: r };
     for (const h of document.humans) if (h.name === nodeId) return { kind: "human", decl: h };
     for (const t of document.tools) if (t.name === nodeId) return { kind: "tool", decl: t };
+    for (const c of document.computes ?? []) if (c.name === nodeId) return { kind: "compute", decl: c };
     return null;
   }, [document, nodeId]);
 
@@ -99,6 +103,7 @@ export default function InspectorNode({ nodeId }: { nodeId: string }) {
         onRename={handleRename}
         onDelete={() => setConfirmDelete(true)}
       />
+      <NodeRunsChip nodeId={nodeId} />
       <div className="flex-1 overflow-y-auto p-3">
         <NodeForm match={match} />
       </div>
@@ -203,6 +208,8 @@ function NodeForm({ match }: { match: NodeMatch }) {
       return <HumanForm decl={match.decl as HumanDecl} />;
     case "tool":
       return <ToolForm decl={match.decl as ToolNodeDecl} />;
+    case "compute":
+      return <ComputeForm decl={match.decl as ComputeDecl} />;
     default:
       return <p className="text-fg-subtle text-xs">Terminal node (no editable properties)</p>;
   }

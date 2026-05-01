@@ -1,6 +1,6 @@
 import { Handle } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
-import type { NodeKind, AgentDecl, ToolNodeDecl, HumanDecl, RouterDecl } from "@/api/types";
+import type { NodeKind, AgentDecl, ToolNodeDecl, HumanDecl, RouterDecl, ComputeDecl } from "@/api/types";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { useGroupedDiagnostics } from "@/hooks/useGroupedDiagnostics";
 import { useSelectionStore } from "@/store/selection";
@@ -36,8 +36,8 @@ export default function WorkflowNode({ data, selected }: NodeProps) {
   if (kind === "agent" || kind === "judge") {
     const d = decl as AgentDecl | undefined;
     providerModel = d?.model;
-    providerDelegate = d?.delegate;
-    if (d?.delegate) subtitle = d.delegate;
+    providerDelegate = d?.backend;
+    if (d?.backend) subtitle = d.backend;
     else if (d?.model) subtitle = d.model.replace(/\$\{.*?\}/g, "env");
     // Append session indicator to subtitle
     if (d?.session === "inherit") subtitle += subtitle ? " \u{1F517}" : "\u{1F517}";
@@ -48,7 +48,10 @@ export default function WorkflowNode({ data, selected }: NodeProps) {
     if (d?.command) subtitle = d.command.length > 20 ? d.command.slice(0, 20) + "..." : d.command;
   } else if (kind === "human") {
     const d = decl as HumanDecl | undefined;
-    if (d?.mode) subtitle = d.mode;
+    if (d?.interaction) subtitle = d.interaction;
+  } else if (kind === "compute") {
+    const d = decl as ComputeDecl | undefined;
+    if (d?.expr?.length) subtitle = `${d.expr.length} expr`;
   }
 
   // Append await indicator for nodes with await strategy

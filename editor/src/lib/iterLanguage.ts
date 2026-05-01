@@ -25,19 +25,45 @@ export const iterLanguageConfig: languages.LanguageConfiguration = {
 
 export const iterTokensProvider: languages.IMonarchLanguage = {
   keywords: [
-    "vars", "prompt", "schema", "agent", "judge", "router", "human", "tool", "workflow",
-    "entry", "budget", "model", "input", "output", "publish", "system", "user", "session", "tools",
-    "tool_max_steps", "mode", "await", "instructions", "command", "delegate",
+    // Top-level / declaration kinds
+    "vars", "prompt", "schema", "agent", "judge", "router", "human", "tool", "compute", "workflow",
+    "mcp_server",
+    // Workflow + node fields
+    "entry", "default_backend", "budget", "compaction", "mcp",
+    "model", "backend", "input", "output", "publish", "system", "user", "session",
+    "tools", "tool_policy", "tool_max_steps", "max_tokens", "reasoning_effort", "readonly",
+    "interaction", "interaction_prompt", "interaction_model",
+    "instructions", "min_answers", "command", "expr",
+    "mode", "multi", "await",
+    // MCP server block
+    "transport", "args", "url", "auth",
+    "type", "auth_url", "token_url", "revoke_url", "client_id", "scopes",
+    // MCP config block
+    "autoload_project", "inherit", "servers", "disable",
+    // Compaction block
+    "threshold", "preserve_recent",
+    // Edge syntax
     "when", "not", "as", "with", "enum",
   ],
   typeKeywords: [
     "string", "bool", "int", "float", "json", "string[]",
   ],
   valueKeywords: [
-    "fresh", "inherit", "artifacts_only", "none",
-    "fan_out_all", "condition",
-    "wait_all", "best_effort",
-    "pause_until_answers", "auto_answer", "auto_or_pause",
+    // Session
+    "fresh", "inherit", "fork", "artifacts_only",
+    // Router mode
+    "fan_out_all", "condition", "round_robin",
+    // Await
+    "wait_all", "best_effort", "none",
+    // Interaction (replaces the legacy human "mode" values
+    // pause_until_answers / auto_answer / auto_or_pause)
+    "human", "llm", "llm_or_human",
+    // Reasoning effort
+    "low", "medium", "high", "extra_high",
+    // MCP transport
+    "stdio", "http", "sse",
+    // OAuth
+    "oauth2",
     "true", "false",
   ],
   builtinNodes: ["done", "fail"],

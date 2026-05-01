@@ -111,29 +111,72 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
         </div>
         {when && (
           <>
-            {boolFieldOptions.length > 0 ? (
-              <SelectField
-                label="Condition (bool field)"
-                value={when.condition}
-                onChange={(v) => setWhen({ ...when, condition: v })}
-                options={boolFieldOptions}
-                allowEmpty
-                emptyLabel="-- select field --"
-              />
-            ) : (
+            <div className="flex gap-2 text-xs">
+              <button
+                type="button"
+                className={`px-2 py-0.5 rounded ${
+                  !when.expr ? "bg-accent text-on-accent" : "bg-surface-2 hover:bg-surface-3"
+                }`}
+                onClick={() =>
+                  setWhen({
+                    condition: when.condition ?? "",
+                    negated: when.negated ?? false,
+                  })
+                }
+              >
+                Field
+              </button>
+              <button
+                type="button"
+                className={`px-2 py-0.5 rounded ${
+                  when.expr ? "bg-accent text-on-accent" : "bg-surface-2 hover:bg-surface-3"
+                }`}
+                onClick={() => setWhen({ expr: when.expr ?? "" })}
+                title="Switch to a raw boolean expression (e.g. approved && loop.l.previous_output.x)"
+              >
+                Expression
+              </button>
+            </div>
+            {when.expr !== undefined ? (
               <TextField
-                label="Condition"
-                value={when.condition}
-                onChange={(v) => setWhen({ ...when, condition: v })}
-                placeholder="e.g. approved"
+                label="Expression"
+                value={when.expr}
+                onChange={(v) => setWhen({ expr: v })}
+                placeholder="e.g. approved && loop.l.previous_output.x"
               />
+            ) : boolFieldOptions.length > 0 ? (
+              <>
+                <SelectField
+                  label="Condition (bool field)"
+                  value={when.condition ?? ""}
+                  onChange={(v) => setWhen({ ...when, condition: v })}
+                  options={boolFieldOptions}
+                  allowEmpty
+                  emptyLabel="-- select field --"
+                />
+                <CheckboxField
+                  label="Negated (when not)"
+                  checked={when.negated ?? false}
+                  onChange={(v) => setWhen({ ...when, negated: v })}
+                  help="Invert the condition: follow this edge when the field is false."
+                />
+              </>
+            ) : (
+              <>
+                <TextField
+                  label="Condition"
+                  value={when.condition ?? ""}
+                  onChange={(v) => setWhen({ ...when, condition: v })}
+                  placeholder="e.g. approved"
+                />
+                <CheckboxField
+                  label="Negated (when not)"
+                  checked={when.negated ?? false}
+                  onChange={(v) => setWhen({ ...when, negated: v })}
+                  help="Invert the condition: follow this edge when the field is false."
+                />
+              </>
             )}
-            <CheckboxField
-              label="Negated (when not)"
-              checked={when.negated}
-              onChange={(v) => setWhen({ ...when, negated: v })}
-              help="Invert the condition: follow this edge when the field is false."
-            />
           </>
         )}
       </div>

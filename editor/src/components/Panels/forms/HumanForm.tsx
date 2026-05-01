@@ -1,8 +1,14 @@
-import { useCallback } from "react";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
-import type { HumanDecl, HumanMode, AwaitMode } from "@/api/types";
-import { defaultSchema, defaultPrompt, getAllNodeNames } from "@/lib/defaults";
+import { useSchemaPromptCreators } from "@/hooks/useSchemaPromptCreators";
+import type { HumanDecl, InteractionMode, AwaitMode } from "@/api/types";
+import { getAllNodeNames } from "@/lib/defaults";
+import {
+  AWAIT_HELP,
+  AWAIT_OPTIONS,
+  HUMAN_INTERACTION_HELP,
+  HUMAN_INTERACTION_OPTIONS,
+} from "@/lib/dslOptions";
 import { TextField, CommittedTextField, NumberField, SelectField, SelectFieldWithCreate } from "./FormField";
 
 interface Props {
@@ -13,32 +19,19 @@ export default function HumanForm({ decl }: Props) {
   const document = useDocumentStore((s) => s.document);
   const updateHuman = useDocumentStore((s) => s.updateHuman);
   const renameNode = useDocumentStore((s) => s.renameNode);
-  const addSchema = useDocumentStore((s) => s.addSchema);
-  const addPrompt = useDocumentStore((s) => s.addPrompt);
   const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
+  const { createSchema, createPrompt } = useSchemaPromptCreators();
 
   const schemaOptions = (document?.schemas ?? []).map((s) => ({ value: s.name, label: s.name }));
   const promptOptions = (document?.prompts ?? []).map((p) => ({ value: p.name, label: p.name }));
 
-  const createSchema = useCallback(() => {
-    const existing = new Set((document?.schemas ?? []).map((s) => s.name));
-    let i = 1;
-    while (existing.has(`schema_${i}`)) i++;
-    const name = `schema_${i}`;
-    addSchema(defaultSchema(name));
-    return name;
-  }, [document, addSchema]);
-
-  const createPrompt = useCallback(() => {
-    const existing = new Set((document?.prompts ?? []).map((p) => p.name));
-    let i = 1;
-    while (existing.has(`prompt_${i}`)) i++;
-    const name = `prompt_${i}`;
-    addPrompt(defaultPrompt(name));
-    return name;
-  }, [document, addPrompt]);
-
-  const needsModel = decl.mode === "auto_answer" || decl.mode === "auto_or_pause";
+  // The unified InteractionMode replaces the legacy editor-only field.
+  // human-only modes from the old UI map onto:
+  //   pause_until_answers → "human"
+  //   auto_answer         → "llm"
+  //   auto_or_pause       → "llm_or_human"
+  const interaction: InteractionMode = decl.interaction ?? "human";
+  const needsModel = interaction === "llm" || interaction === "llm_or_human";
 
   return (
     <div className="space-y-1">
@@ -98,16 +91,31 @@ export default function HumanForm({ decl }: Props) {
         onCreate={createPrompt}
       />
       <SelectField
-        label="Mode"
-        value={decl.mode}
-        onChange={(v) => updateHuman(decl.name, { mode: v as HumanMode })}
-        options={[
-          { value: "pause_until_answers", label: "pause_until_answers" },
-          { value: "auto_answer", label: "auto_answer" },
-          { value: "auto_or_pause", label: "auto_or_pause" },
-        ]}
-        help="pause_until_answers = always wait for human input; auto_answer = LLM generates answer (requires model); auto_or_pause = LLM decides whether to answer or pause."
+        label="Interaction"
+        value={interaction}
+        onChange={(v) => updateHuman(decl.name, { interaction: v as InteractionMode })}
+        options={HUMAN_INTERACTION_OPTIONS}
+        help={HUMAN_INTERACTION_HELP}
       />
+      {needsModel && (
+        <>
+          <SelectFieldWithCreate
+            label="Interaction Prompt"
+            value={decl.interaction_prompt ?? ""}
+            onChange={(v) => updateHuman(decl.name, { interaction_prompt: v || undefined })}
+            options={promptOptions}
+            allowEmpty
+            emptyLabel="-- select prompt --"
+            onCreate={createPrompt}
+          />
+          <TextField
+            label="Interaction Model"
+            value={decl.interaction_model ?? ""}
+            onChange={(v) => updateHuman(decl.name, { interaction_model: v || undefined })}
+            placeholder="(falls back to Model below)"
+          />
+        </>
+      )}
       <NumberField
         label="Min Answers"
         value={decl.min_answers}
@@ -118,16 +126,12 @@ export default function HumanForm({ decl }: Props) {
         label="Await"
         value={decl.await ?? "none"}
         onChange={(v) => updateHuman(decl.name, { await: (v === "none" ? undefined : v) as AwaitMode | undefined })}
-        options={[
-          { value: "none", label: "none" },
-          { value: "wait_all", label: "wait_all" },
-          { value: "best_effort", label: "best_effort" },
-        ]}
-        help="Implicit convergence: wait_all = wait for all incoming branches; best_effort = continue when available results are ready; none = no await (default)."
+        options={AWAIT_OPTIONS}
+        help={AWAIT_HELP}
       />
       {needsModel && (
         <div className="border-t border-border-default pt-2 mt-2">
-          <p className="text-[10px] text-warning mb-1">Required for {decl.mode} mode</p>
+          <p className="text-[10px] text-warning mb-1">Required for {interaction} interaction</p>
         </div>
       )}
       <TextField

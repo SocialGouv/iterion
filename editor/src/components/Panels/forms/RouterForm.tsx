@@ -1,9 +1,11 @@
-import { useCallback, useMemo } from "react";
+import { useMemo } from "react";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
+import { useSchemaPromptCreators } from "@/hooks/useSchemaPromptCreators";
 import type { RouterDecl, RouterMode } from "@/api/types";
-import { getAllNodeNames, defaultPrompt } from "@/lib/defaults";
+import { getAllNodeNames } from "@/lib/defaults";
+import { BACKEND_HELP, BACKEND_OPTIONS } from "@/lib/dslOptions";
 import { CommittedTextField, SelectField, SelectFieldWithCreate, TextField, CheckboxField } from "./FormField";
 import { ProviderIcon, ProviderLabel } from "@/components/icons/ProviderIcon";
 import { detectProvider } from "@/components/icons/providerDetect";
@@ -16,9 +18,9 @@ export default function RouterForm({ decl }: Props) {
   const document = useDocumentStore((s) => s.document);
   const updateRouter = useDocumentStore((s) => s.updateRouter);
   const renameNode = useDocumentStore((s) => s.renameNode);
-  const addPrompt = useDocumentStore((s) => s.addPrompt);
   const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
   const activeWorkflow = useActiveWorkflow();
+  const { createPrompt } = useSchemaPromptCreators();
 
   const outgoingEdges = useMemo(() => {
     if (!activeWorkflow) return [];
@@ -26,15 +28,6 @@ export default function RouterForm({ decl }: Props) {
   }, [activeWorkflow, decl.name]);
 
   const promptOptions = (document?.prompts ?? []).map((p) => ({ value: p.name, label: p.name }));
-
-  const createPrompt = useCallback(() => {
-    const existing = new Set((document?.prompts ?? []).map((p) => p.name));
-    let i = 1;
-    while (existing.has(`prompt_${i}`)) i++;
-    const name = `prompt_${i}`;
-    addPrompt(defaultPrompt(name));
-    return name;
-  }, [document, addPrompt]);
 
   return (
     <div className="space-y-1">
@@ -73,10 +66,10 @@ export default function RouterForm({ decl }: Props) {
       />
       {decl.mode === "llm" && (
         <div className="mt-2 space-y-1">
-          {detectProvider(decl.model) && (
+          {detectProvider(decl.model, decl.backend) && (
             <div className="flex items-center gap-1.5 px-2 py-1 mb-1 bg-surface-1/50 rounded text-[10px] text-fg-subtle">
-              <ProviderIcon model={decl.model} size={14} />
-              <span><ProviderLabel model={decl.model} /></span>
+              <ProviderIcon model={decl.model} delegate={decl.backend} size={14} />
+              <span><ProviderLabel model={decl.model} delegate={decl.backend} /></span>
             </div>
           )}
           <TextField
@@ -85,6 +78,13 @@ export default function RouterForm({ decl }: Props) {
             onChange={(v) => updateRouter(decl.name, { model: v })}
             placeholder='e.g. ${ANTHROPIC_MODEL}'
             help="The LLM model to use for routing decisions (required)."
+          />
+          <SelectField
+            label="Backend"
+            value={decl.backend ?? ""}
+            onChange={(v) => updateRouter(decl.name, { backend: v || undefined })}
+            options={BACKEND_OPTIONS}
+            help={BACKEND_HELP}
           />
           <SelectFieldWithCreate
             label="System Prompt"
@@ -128,7 +128,9 @@ export default function RouterForm({ decl }: Props) {
               <span>{e.to}</span>
               {e.when ? (
                 <span className="text-warning-fg text-[10px]">
-                  (when{e.when.negated ? " not" : ""} {e.when.condition})
+                  {e.when.expr
+                    ? `(when ${e.when.expr.length > 24 ? e.when.expr.slice(0, 24) + "…" : e.when.expr})`
+                    : `(when${e.when.negated ? " not" : ""} ${e.when.condition})`}
                 </span>
               ) : (
                 <span className="text-fg-subtle text-[10px]">(no condition)</span>

@@ -1,8 +1,9 @@
-import { useCallback } from "react";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
+import { useSchemaPromptCreators } from "@/hooks/useSchemaPromptCreators";
 import type { ToolNodeDecl, AwaitMode } from "@/api/types";
-import { defaultSchema, getAllNodeNames } from "@/lib/defaults";
+import { getAllNodeNames } from "@/lib/defaults";
+import { AWAIT_HELP, AWAIT_OPTIONS } from "@/lib/dslOptions";
 import { TextField, CommittedTextField, SelectField, SelectFieldWithCreate } from "./FormField";
 
 interface Props {
@@ -13,19 +14,10 @@ export default function ToolForm({ decl }: Props) {
   const document = useDocumentStore((s) => s.document);
   const updateTool = useDocumentStore((s) => s.updateTool);
   const renameNode = useDocumentStore((s) => s.renameNode);
-  const addSchema = useDocumentStore((s) => s.addSchema);
   const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
+  const { createSchema } = useSchemaPromptCreators();
 
   const schemaOptions = (document?.schemas ?? []).map((s) => ({ value: s.name, label: s.name }));
-
-  const createSchema = useCallback(() => {
-    const existing = new Set((document?.schemas ?? []).map((s) => s.name));
-    let i = 1;
-    while (existing.has(`schema_${i}`)) i++;
-    const name = `schema_${i}`;
-    addSchema(defaultSchema(name));
-    return name;
-  }, [document, addSchema]);
 
   return (
     <div className="space-y-1">
@@ -59,6 +51,16 @@ export default function ToolForm({ decl }: Props) {
         refContext={{ kind: "node-prompt", nodeId: decl.name }}
       />
       <SelectFieldWithCreate
+        label="Input Schema"
+        value={decl.input ?? ""}
+        onChange={(v) => updateTool(decl.name, { input: v || undefined })}
+        options={schemaOptions}
+        allowEmpty
+        emptyLabel="-- none --"
+        onCreate={createSchema}
+        help="Optional. When set, structured input is rendered into the command via {{input.field}} templates."
+      />
+      <SelectFieldWithCreate
         label="Output Schema"
         value={decl.output}
         onChange={(v) => updateTool(decl.name, { output: v })}
@@ -71,12 +73,8 @@ export default function ToolForm({ decl }: Props) {
         label="Await"
         value={decl.await ?? "none"}
         onChange={(v) => updateTool(decl.name, { await: (v === "none" ? undefined : v) as AwaitMode | undefined })}
-        options={[
-          { value: "none", label: "none" },
-          { value: "wait_all", label: "wait_all" },
-          { value: "best_effort", label: "best_effort" },
-        ]}
-        help="Implicit convergence: wait_all = wait for all incoming branches; best_effort = continue when available results are ready; none = no await (default)."
+        options={AWAIT_OPTIONS}
+        help={AWAIT_HELP}
       />
     </div>
   );

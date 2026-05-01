@@ -6,6 +6,7 @@ import type {
   RouterDecl,
   HumanDecl,
   ToolNodeDecl,
+  ComputeDecl,
   SchemaDecl,
   PromptDecl,
 } from "@/api/types";
@@ -25,6 +26,7 @@ export function createEmptyDocument(): IterDocument {
     routers: [],
     humans: [],
     tools: [],
+    computes: [],
     workflows: [{ name: "main", entry: "agent_1", edges: [{ from: "agent_1", to: "done" }] }],
     comments: [],
   };
@@ -43,11 +45,19 @@ export function defaultRouter(name: string): RouterDecl {
 }
 
 export function defaultHuman(name: string): HumanDecl {
-  return { name, input: "", output: "", instructions: "", mode: "pause_until_answers" };
+  // `interaction: "human"` is the canonical default — it's what a bare
+  // `human <name>:` block resolves to in the AST. The previous
+  // editor-only `pause_until_answers` was a synonym that never reached
+  // the wire format.
+  return { name, input: "", output: "", instructions: "", interaction: "human" };
 }
 
 export function defaultTool(name: string): ToolNodeDecl {
   return { name, command: "", output: "" };
+}
+
+export function defaultCompute(name: string): ComputeDecl {
+  return { name, output: "", expr: [] };
 }
 
 export function defaultSchema(name: string): SchemaDecl {
@@ -76,7 +86,9 @@ export function generateUniqueName(base: string, existingNames: Set<string>): st
 export function findNodeDecl(
   doc: IterDocument,
   name: string,
-): { kind: NodeKind; decl: AgentDecl | JudgeDecl | RouterDecl | HumanDecl | ToolNodeDecl } | null {
+):
+  | { kind: NodeKind; decl: AgentDecl | JudgeDecl | RouterDecl | HumanDecl | ToolNodeDecl | ComputeDecl }
+  | null {
   const agent = doc.agents?.find((a) => a.name === name);
   if (agent) return { kind: "agent", decl: agent };
   const judge = doc.judges?.find((j) => j.name === name);
@@ -87,6 +99,8 @@ export function findNodeDecl(
   if (human) return { kind: "human", decl: human };
   const tool = doc.tools?.find((t) => t.name === name);
   if (tool) return { kind: "tool", decl: tool };
+  const compute = doc.computes?.find((c) => c.name === name);
+  if (compute) return { kind: "compute", decl: compute };
   return null;
 }
 
@@ -97,5 +111,6 @@ export function getAllNodeNames(doc: IterDocument): Set<string> {
   for (const r of doc.routers) names.add(r.name);
   for (const h of doc.humans) names.add(h.name);
   for (const t of doc.tools) names.add(t.name);
+  for (const c of doc.computes ?? []) names.add(c.name);
   return names;
 }

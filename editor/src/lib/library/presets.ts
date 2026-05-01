@@ -14,7 +14,7 @@ export const PRESET_ITEMS: LibraryItem[] = [
         kind: "agent",
         data: {
           model: "${ANTHROPIC_MODEL}",
-          delegate: "claude_code",
+          backend: "claude_code",
           session: "fresh",
         },
       },
@@ -103,7 +103,7 @@ export const PRESET_ITEMS: LibraryItem[] = [
         kind: "agent",
         data: {
           model: "${ANTHROPIC_MODEL}",
-          delegate: "claude_code",
+          backend: "claude_code",
           session: "inherit",
           tools: ["Read", "Edit", "Write", "Bash", "Glob", "Grep"],
         },
@@ -220,7 +220,7 @@ export const PRESET_ITEMS: LibraryItem[] = [
       node: {
         kind: "human",
         data: {
-          mode: "pause_until_answers",
+          interaction: "human",
         },
       },
       schemas: [
@@ -486,7 +486,7 @@ export const PRESET_ITEMS: LibraryItem[] = [
             placeholder: "human_review",
             node: {
               kind: "human",
-              data: { mode: "pause_until_answers" },
+              data: { interaction: "human" },
             },
             schemas: [
               {

@@ -209,7 +209,13 @@ export function generateNodeDetailGraph(
       const edgeId = DETAIL_PREFIX_EDGE + workflowName + ":" + i;
 
       const badges: string[] = [];
-      if (edge.when) badges.push(edge.when.negated ? `not ${edge.when.condition}` : edge.when.condition);
+      if (edge.when) {
+        if (edge.when.expr) {
+          badges.push(`expr: ${edge.when.expr.length > 24 ? edge.when.expr.slice(0, 24) + "…" : edge.when.expr}`);
+        } else if (edge.when.condition) {
+          badges.push(edge.when.negated ? `not ${edge.when.condition}` : edge.when.condition);
+        }
+      }
       if (edge.loop) badges.push(`loop:${edge.loop.name}(${edge.loop.max_iterations})`);
       if (edge.with && edge.with.length > 0) badges.push(`${edge.with.length} mapping${edge.with.length > 1 ? "s" : ""}`);
 

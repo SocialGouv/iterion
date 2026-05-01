@@ -13,6 +13,7 @@ const NODE_TYPES: { kind: NodeKind; label: string }[] = [
   { kind: "router", label: "Router" },
   { kind: "human", label: "Human" },
   { kind: "tool", label: "Tool" },
+  { kind: "compute", label: "Compute" },
 ];
 
 const CATEGORIES: { value: LibraryCategory | null; label: string }[] = [
@@ -22,6 +23,7 @@ const CATEGORIES: { value: LibraryCategory | null; label: string }[] = [
   { value: "router", label: "Router" },
   { value: "human", label: "Human" },
   { value: "tool", label: "Tool" },
+  { value: "compute", label: "Compute" },
   { value: "schema", label: "Schema" },
   { value: "prompt", label: "Prompt" },
   { value: "var", label: "Var" },

@@ -4,6 +4,7 @@ import type {
   RouterDecl,
   HumanDecl,
   ToolNodeDecl,
+  ComputeDecl,
   SchemaDecl,
   PromptDecl,
   VarField,
@@ -14,7 +15,7 @@ import type {
 
 /** Categories for library items: node kinds (minus terminal) + primitive kinds + pattern */
 export type LibraryCategory =
-  | "agent" | "judge" | "router" | "human" | "tool"
+  | "agent" | "judge" | "router" | "human" | "tool" | "compute"
   | "schema" | "prompt" | "var"
   | "pattern";
 
@@ -24,7 +25,8 @@ export type NodeTemplate =
   | { kind: "judge"; data: Omit<Partial<JudgeDecl>, "name"> }
   | { kind: "router"; data: Omit<Partial<RouterDecl>, "name"> }
   | { kind: "human"; data: Omit<Partial<HumanDecl>, "name"> }
-  | { kind: "tool"; data: Omit<Partial<ToolNodeDecl>, "name"> };
+  | { kind: "tool"; data: Omit<Partial<ToolNodeDecl>, "name"> }
+  | { kind: "compute"; data: Omit<Partial<ComputeDecl>, "name"> };
 
 /** Edge template for multi-node patterns, using placeholder names. */
 export interface EdgeTemplate {

@@ -38,6 +38,8 @@ function findNodeInputSchema(doc: IterDocument, nodeName: string): string {
   for (const a of doc.agents) if (a.name === nodeName) return a.input ?? "";
   for (const j of doc.judges) if (j.name === nodeName) return j.input ?? "";
   for (const h of doc.humans) if (h.name === nodeName) return h.input ?? "";
+  for (const t of doc.tools) if (t.name === nodeName) return t.input ?? "";
+  for (const c of doc.computes ?? []) if (c.name === nodeName) return c.input ?? "";
   return "";
 }
 
@@ -50,16 +52,19 @@ interface NodeRef {
 function collectAllNodes(doc: IterDocument): NodeRef[] {
   const all: NodeRef[] = [];
   for (const a of doc.agents) {
-    all.push({ name: a.name, output: a.output ?? "", delegated: !!a.delegate });
+    all.push({ name: a.name, output: a.output ?? "", delegated: !!a.backend });
   }
   for (const j of doc.judges) {
-    all.push({ name: j.name, output: j.output ?? "", delegated: !!j.delegate });
+    all.push({ name: j.name, output: j.output ?? "", delegated: !!j.backend });
   }
   for (const h of doc.humans) {
     all.push({ name: h.name, output: h.output ?? "", delegated: false });
   }
   for (const t of doc.tools) {
     all.push({ name: t.name, output: t.output ?? "", delegated: false });
+  }
+  for (const c of doc.computes ?? []) {
+    all.push({ name: c.name, output: c.output ?? "", delegated: false });
   }
   return all;
 }

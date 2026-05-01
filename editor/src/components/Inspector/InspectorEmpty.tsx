@@ -4,6 +4,7 @@ import PromptEditor from "@/components/Panels/PromptEditor";
 import VarsEditor from "@/components/Panels/VarsEditor";
 import WorkflowSettingsForm from "@/components/Panels/WorkflowSettingsForm";
 import CommentsEditor from "@/components/Panels/CommentsEditor";
+import MCPServersEditor from "@/components/Panels/MCPServersEditor";
 import { Tabs } from "@/components/ui";
 
 const TABS: { value: SidebarTab; label: string }[] = [
@@ -11,6 +12,7 @@ const TABS: { value: SidebarTab; label: string }[] = [
   { value: "vars", label: "Vars" },
   { value: "schemas", label: "Schemas" },
   { value: "prompts", label: "Prompts" },
+  { value: "mcp", label: "MCP" },
   { value: "comments", label: "##" },
 ];
 
@@ -39,6 +41,7 @@ export default function InspectorEmpty() {
         vars: <VarsEditor />,
         schemas: <SchemaEditor />,
         prompts: <PromptEditor />,
+        mcp: <MCPServersEditor />,
         comments: <CommentsEditor />,
       }}
       className="h-full"

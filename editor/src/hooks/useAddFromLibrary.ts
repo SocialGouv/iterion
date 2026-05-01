@@ -12,6 +12,7 @@ import {
   defaultRouter,
   defaultHuman,
   defaultTool,
+  defaultCompute,
 } from "@/lib/defaults";
 import { parseGroups, groupToCommentText } from "@/lib/groups";
 import type { LibraryItem, NodeTemplate } from "@/lib/library/types";
@@ -136,6 +137,27 @@ function createNodeInResult(
             ...data,
             name: nodeName,
             output: remapSchema(data.output ?? templateSchemas[0]?.name),
+          },
+        ],
+      };
+    }
+    case "compute": {
+      const base = defaultCompute(nodeName);
+      const data = nodeTpl.data;
+      return {
+        ...result,
+        computes: [
+          ...result.computes,
+          {
+            ...base,
+            ...data,
+            name: nodeName,
+            input:
+              data.input !== undefined
+                ? remapSchema(data.input) || undefined
+                : undefined,
+            output: remapSchema(data.output ?? templateSchemas[0]?.name ?? ""),
+            expr: data.expr ?? [],
           },
         ],
       };
