@@ -28,7 +28,16 @@ func setupWorktree(storeRoot, runID, repoHint string, logger *iterlog.Logger) (s
 		return "", nil, fmt.Errorf("locate git repo: %w", err)
 	}
 
-	wtPath := filepath.Join(storeRoot, "worktrees", runID)
+	// Always resolve the worktree path to an absolute one. Tool nodes set
+	// cmd.Dir to the worktree path AND substitute it into shell commands
+	// like `git -C <path> ...`; if the path is relative, those two layers
+	// stack the resolution (Go exec.Command resolves Dir against the parent
+	// cwd, then sh resolves the substituted relative path against Dir),
+	// landing in a phantom <wt>/<wt> location that doesn't exist.
+	wtPath, err := filepath.Abs(filepath.Join(storeRoot, "worktrees", runID))
+	if err != nil {
+		return "", nil, fmt.Errorf("resolve worktree absolute path: %w", err)
+	}
 	if err := os.MkdirAll(filepath.Dir(wtPath), 0o755); err != nil {
 		return "", nil, fmt.Errorf("create worktrees directory: %w", err)
 	}
