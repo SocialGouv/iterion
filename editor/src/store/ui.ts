@@ -154,12 +154,23 @@ export const useUIStore = create<UIState>((set) => ({
     }
     return { subNodeViewStack: [...s.subNodeViewStack, nodeId] };
   }),
+  // Sub-node-view "exit / change scope" actions also drop the per-item
+  // edit focus. Without this, the Inspector's `editingItem` mode stays
+  // pinned across navigation: e.g. clicking a prompt sub-node in
+  // streak_check's subview, then clicking the breadcrumb back to the
+  // global view, would leave the right panel showing the prompt editor
+  // until the user manually clicked "Back" — even after picking a
+  // different node in the canvas. Mirrors the contract enforced by
+  // selection.ts, where setSelectedNode/Edge/clearSelection clear
+  // editingItem.
   popSubNodeView: () => set((s) => ({
     subNodeViewStack: s.subNodeViewStack.slice(0, -1),
+    editingItem: null,
   })),
-  clearSubNodeView: () => set({ subNodeViewStack: [] }),
+  clearSubNodeView: () => set({ subNodeViewStack: [], editingItem: null }),
   navigateSubNodeViewTo: (index) => set((s) => ({
     subNodeViewStack: s.subNodeViewStack.slice(0, index + 1),
+    editingItem: null,
   })),
   // Library panel
   toggleLibraryPanel: () => set((s) => ({ libraryExpanded: !s.libraryExpanded })),

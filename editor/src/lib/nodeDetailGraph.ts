@@ -1,6 +1,6 @@
 import type { Node, Edge as FlowEdge } from "@xyflow/react";
 import { MarkerType } from "@xyflow/react";
-import type { IterDocument, AgentDecl, JudgeDecl, HumanDecl, ToolNodeDecl, RouterDecl } from "@/api/types";
+import type { IterDocument, AgentDecl, JudgeDecl, HumanDecl, ToolNodeDecl, RouterDecl, ComputeDecl } from "@/api/types";
 import { findNodeDecl } from "@/lib/defaults";
 import { NODE_COLORS, SUB_COLORS } from "@/lib/constants";
 import type { DetailSubNodeData } from "@/components/Canvas/DetailSubNode";
@@ -95,10 +95,13 @@ export function generateNodeDetailGraph(
   const human = kind === "human" ? decl as HumanDecl : undefined;
   const tool = kind === "tool" ? decl as ToolNodeDecl : undefined;
   const router = kind === "router" ? decl as RouterDecl : undefined;
+  const compute = kind === "compute" ? decl as ComputeDecl : undefined;
 
-  // 2. Schema sub-nodes
-  const inputSchemaName = (agent || human)?.input;
-  const outputSchemaName = (agent || human || tool)?.output;
+  // 2. Schema sub-nodes — every kind that legally carries `input`/`output`
+  // contributes here. Previously tool.input and compute.input/output were
+  // missed, so e.g. `streak_check`'s subview rendered with no schema info.
+  const inputSchemaName = agent?.input ?? human?.input ?? tool?.input ?? compute?.input;
+  const outputSchemaName = agent?.output ?? human?.output ?? tool?.output ?? compute?.output;
 
   if (inputSchemaName) {
     const schema = doc.schemas?.find((s) => s.name === inputSchemaName);
@@ -191,12 +194,16 @@ export function generateNodeDetailGraph(
     });
   }
 
-  // 4. Var sub-nodes (vars referenced in the node's prompts)
-  const varsFound = new Map<string, string>(); // varName -> promptNodeId
+  // 4. Var sub-nodes (vars referenced in the node's prompts and, for
+  // compute nodes, in the expression bodies).
+  // Map: varName -> attachment target (a prompt sub-node id when the var
+  // came from a prompt body, or the central node id for compute exprs).
+  const varsFound = new Map<string, string>();
+  const varPattern = /\{\{vars\.(\w+)\}\}/g;
   for (const pRef of promptRefs) {
     const prompt = doc.prompts?.find((p) => p.name === pRef.name);
     if (!prompt) continue;
-    const varPattern = /\{\{vars\.(\w+)\}\}/g;
+    varPattern.lastIndex = 0;
     let match;
     while ((match = varPattern.exec(prompt.body)) !== null) {
       const varName = match[1]!;
@@ -205,8 +212,28 @@ export function generateNodeDetailGraph(
       }
     }
   }
+  if (compute) {
+    // Compute expressions are bare expressions (e.g. `vars.x + outputs.y`)
+    // — not template strings — so the `{{vars.NAME}}` pattern used for
+    // prompt bodies does not apply. Match raw `vars.NAME` member access
+    // instead, with a leading non-word boundary so `myvars.x` doesn't
+    // accidentally match.
+    const computeVarPattern = /(?:^|[^A-Za-z0-9_])vars\.(\w+)/g;
+    for (const e of compute.expr ?? []) {
+      computeVarPattern.lastIndex = 0;
+      let match;
+      while ((match = computeVarPattern.exec(e.expr)) !== null) {
+        const varName = match[1]!;
+        if (!varsFound.has(varName)) {
+          // Attach directly to the central node — there is no prompt
+          // sub-node for compute, so the var connects to the compute itself.
+          varsFound.set(varName, DETAIL_PREFIX_CENTRAL);
+        }
+      }
+    }
+  }
 
-  for (const [varName, promptNodeId] of varsFound) {
+  for (const [varName, attachTargetId] of varsFound) {
     const varField = doc.vars?.fields?.find((v) => v.name === varName);
     const varId = DETAIL_PREFIX_VAR + varName;
     nodes.push({
@@ -221,9 +248,9 @@ export function generateNodeDetailGraph(
       } satisfies DetailSubNodeData,
     });
     edges.push({
-      id: `${varId}->${promptNodeId}`,
+      id: `${varId}->${attachTargetId}`,
       source: varId,
-      target: promptNodeId,
+      target: attachTargetId,
       type: "referenceEdge",
       label: varName,
       markerEnd: refMarker(SUB_COLORS.var),
