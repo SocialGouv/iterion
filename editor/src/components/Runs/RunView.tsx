@@ -127,7 +127,7 @@ export default function RunView() {
   const [eventlogCollapsed, setEventlogCollapsed] = useState<boolean>(() =>
     readBooleanFlag(EVENTLOG_COLLAPSED_KEY),
   );
-  const [bottomTab, setBottomTab] = useState<"events" | "logs">("events");
+  const [bottomTab, setBottomTab] = useState<"events" | "logs">("logs");
   const toggleDetailCollapsed = useCallback(() => {
     setDetailCollapsed((prev) => {
       const next = !prev;
