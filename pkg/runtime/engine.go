@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -54,6 +55,7 @@ type Engine struct {
 	filePath         string                // absolute .iter source path, set via WithFilePath
 	validateOutputs  bool                  // when true, validate node outputs against declared schemas
 	forceResume      bool                  // when true, skip workflow hash check on resume
+	workDir          string                // working directory for subprocesses + PROJECT_DIR expansion; defaults to os.Getwd() at Run() time
 }
 
 // EngineOption configures an Engine.
@@ -109,6 +111,14 @@ func WithFilePath(path string) EngineOption {
 // instead of causing an error.
 func WithForceResume(force bool) EngineOption {
 	return func(e *Engine) { e.forceResume = force }
+}
+
+// WithWorkDir sets the working directory used for backend subprocesses and
+// for resolving the `${PROJECT_DIR}` placeholder in workflow var defaults.
+// When unset, defaults to os.Getwd() at Run() time. With worktree: auto on
+// the workflow, the engine overrides this with the per-run worktree path.
+func WithWorkDir(dir string) EngineOption {
+	return func(e *Engine) { e.workDir = dir }
 }
 
 // WithOutputValidation enables post-execution validation of node outputs
@@ -208,6 +218,36 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 		}
 	}
 
+	// Default workDir to process cwd if not set explicitly.
+	if e.workDir == "" {
+		if cwd, cwdErr := os.Getwd(); cwdErr == nil {
+			e.workDir = cwd
+		}
+	}
+
+	// Worktree setup: when the workflow opts in with `worktree: auto`,
+	// create a fresh git worktree for this run so all node executions
+	// happen in an isolated checkout. The user's main working tree
+	// (with WIP, build artefacts, etc.) is invisible by construction.
+	var worktreeCleanup func()
+	if e.workflow.Worktree == "auto" {
+		wtPath, cleanup, wtErr := setupWorktree(e.store.Root(), runID, e.workDir, e.logger)
+		if wtErr != nil {
+			_ = e.store.UpdateRunStatus(runID, store.RunStatusFailed, wtErr.Error())
+			return fmt.Errorf("runtime: worktree setup: %w", wtErr)
+		}
+		e.workDir = wtPath
+		worktreeCleanup = cleanup
+	}
+
+	// Push workDir into the executor so backend subprocesses (claude_code,
+	// codex) and tool nodes see it. Type-assert because NodeExecutor is a
+	// minimal interface; only ClawExecutor implements SetWorkDir.
+	type workDirSetter interface{ SetWorkDir(string) }
+	if s, ok := e.executor.(workDirSetter); ok {
+		s.SetWorkDir(e.workDir)
+	}
+
 	// Emit run_started.
 	if err := e.emit(runID, store.EventRunStarted, "", nil); err != nil {
 		return err
@@ -216,8 +256,26 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 	rs := e.newRunState(runID, inputs)
 	rs.vars = e.resolveVars(inputs)
 
+	// Refresh executor vars: PROJECT_DIR-aware expansion may have changed
+	// values from what the CLI/server originally seeded.
+	type varsSetter interface{ SetVars(map[string]interface{}) }
+	if sv, ok := e.executor.(varsSetter); ok {
+		sv.SetVars(rs.vars)
+	}
+
 	loopErr := e.execLoop(ctx, rs, e.workflow.Entry)
 	e.evictRunSessions(runID, loopErr)
+
+	// Worktree retention: remove on clean exit; preserve on error so the
+	// operator can inspect what the run actually produced.
+	if worktreeCleanup != nil {
+		if loopErr == nil {
+			worktreeCleanup()
+		} else if e.logger != nil {
+			e.logger.Info("runtime: worktree preserved for inspection: %s", e.workDir)
+		}
+	}
+
 	return loopErr
 }
 
@@ -785,9 +843,24 @@ func drillPath(root interface{}, path []string) interface{} {
 // only on overrides.
 func (e *Engine) resolveVars(inputs map[string]interface{}) map[string]interface{} {
 	vars := make(map[string]interface{})
+	// expandFn lets var defaults reference ${PROJECT_DIR} (resolved to the
+	// engine's workDir, possibly the worktree path) and any other env var.
+	// Applied to string defaults only — typed defaults (int/float/bool/json)
+	// pass through unchanged. User-provided overrides further down are taken
+	// at face value.
+	expandFn := func(key string) string {
+		if key == "PROJECT_DIR" {
+			return e.workDir
+		}
+		return os.Getenv(key)
+	}
 	for name, v := range e.workflow.Vars {
 		if v.HasDefault {
-			vars[name] = v.Default
+			if s, ok := v.Default.(string); ok {
+				vars[name] = os.Expand(s, expandFn)
+			} else {
+				vars[name] = v.Default
+			}
 		}
 	}
 	for k, v := range inputs {

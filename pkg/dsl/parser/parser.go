@@ -1333,6 +1333,12 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 		case TokenCompaction:
 			wd.Compaction = p.parseCompactionBlock()
 
+		case TokenWorktree:
+			p.next() // consume "worktree"
+			p.expect(TokenColon)
+			wd.Worktree = p.expectIdent()
+			p.skipNewlines()
+
 		case TokenDefaultBackend:
 			p.next() // consume "default_backend"
 			p.expect(TokenColon)
@@ -1625,10 +1631,10 @@ func (p *parser) parseReasoningEffort() string {
 	t := p.next()
 	value := tokenAsIdent(t)
 	switch value {
-	case "low", "medium", "high", "extra_high":
+	case "low", "medium", "high", "xhigh", "max":
 		return value
 	default:
-		p.addError(DiagInvalidValue, t, "expected reasoning effort (low, medium, high, extra_high), got '"+t.Value+"'")
+		p.addError(DiagInvalidValue, t, "expected reasoning effort (low, medium, high, xhigh, max), got '"+t.Value+"'")
 		return ""
 	}
 }
@@ -1820,6 +1826,7 @@ func isKeywordToken(tt TokenType) bool {
 		TokenMaxParallelBranches, TokenMaxDuration, TokenMaxCostUSD,
 		TokenMaxTokens, TokenMaxIterations,
 		TokenCompaction, TokenThreshold, TokenPreserveRecent,
+		TokenWorktree,
 		TokenDone, TokenFail:
 		return true
 	}

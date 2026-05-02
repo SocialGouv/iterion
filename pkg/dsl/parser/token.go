@@ -123,6 +123,8 @@ const (
 	TokenCompaction
 	TokenThreshold
 	TokenPreserveRecent
+	// Worktree
+	TokenWorktree
 	// Terminal node names (reserved identifiers)
 	TokenDone
 	TokenFail
@@ -233,6 +235,7 @@ var tokenNames = map[TokenType]string{
 	TokenCompaction:     "compaction",
 	TokenThreshold:      "threshold",
 	TokenPreserveRecent: "preserve_recent",
+	TokenWorktree:       "worktree",
 
 	TokenDone: "done",
 	TokenFail: "fail",
@@ -324,6 +327,7 @@ var keywords = map[string]TokenType{
 	"compaction":            TokenCompaction,
 	"threshold":             TokenThreshold,
 	"preserve_recent":       TokenPreserveRecent,
+	"worktree":              TokenWorktree,
 	"done":                  TokenDone,
 	"fail":                  TokenFail,
 }

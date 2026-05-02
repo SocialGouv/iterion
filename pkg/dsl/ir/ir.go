@@ -31,6 +31,7 @@ type Workflow struct {
 	DefaultBackend string             // workflow-level default backend (empty = not set)
 	ToolPolicy     []string           // workflow-level tool policy patterns (nil = open)
 	Interaction    *InteractionMode   // workflow-level default interaction mode (nil = not set)
+	Worktree       string             // "auto" runs in a per-run git worktree; "" or "none" runs in-place
 	// MCPServers contains the explicit top-level declarations from the .iter file.
 	MCPServers map[string]*MCPServer
 	// ActiveMCPServers and ResolvedMCPServers are populated after project config
@@ -106,7 +107,7 @@ type LLMFields struct {
 	SystemPrompt    string // prompt reference name
 	UserPrompt      string // prompt reference name
 	MaxTokens       int    // per-node cap on output tokens (0 = backend default)
-	ReasoningEffort string // reasoning effort level: "low", "medium", "high", "extra_high"
+	ReasoningEffort string // reasoning effort level: "low", "medium", "high", "xhigh", "max"
 	Readonly        bool   // when true, node is not considered mutating for workspace safety
 }
 

@@ -368,6 +368,7 @@ func (c *compiler) compile() *Workflow {
 		MCP:            convertMCPConfig(wf.MCP),
 		MCPServers:     c.mcp,
 		Interaction:    interaction,
+		Worktree:       wf.Worktree,
 	}
 
 	// Static validation pass (P2-02).

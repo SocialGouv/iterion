@@ -170,7 +170,7 @@ type AgentDecl struct {
 	ToolPolicy        []string         // per-node tool policy patterns (nil = inherit workflow)
 	ToolMaxSteps      int              // max tool-use iterations (0 = not set)
 	MaxTokens         int              // max output tokens per LLM call (0 = inherit backend default)
-	ReasoningEffort   string           // reasoning effort level: "low", "medium", "high", "extra_high"
+	ReasoningEffort   string           // reasoning effort level: "low", "medium", "high", "xhigh", "max"
 	Readonly          bool             // when true, node is not considered mutating for workspace safety
 	Interaction       InteractionMode  // interaction handling (default none for agents)
 	InteractionPrompt string           // prompt reference guiding LLM for llm_or_human decisions
@@ -202,7 +202,7 @@ type JudgeDecl struct {
 	ToolPolicy        []string // per-node tool policy patterns (nil = inherit workflow)
 	ToolMaxSteps      int
 	MaxTokens         int              // max output tokens per LLM call (0 = inherit backend default)
-	ReasoningEffort   string           // reasoning effort level: "low", "medium", "high", "extra_high"
+	ReasoningEffort   string           // reasoning effort level: "low", "medium", "high", "xhigh", "max"
 	Readonly          bool             // when true, node is not considered mutating for workspace safety
 	Interaction       InteractionMode  // interaction handling (default none for judges)
 	InteractionPrompt string           // prompt reference guiding LLM for llm_or_human decisions
@@ -353,6 +353,7 @@ type WorkflowDecl struct {
 	Budget         *BudgetBlock     // execution limits (optional)
 	Compaction     *CompactionBlock // session compaction defaults for all nodes (optional)
 	Interaction    *InteractionMode // workflow-level default interaction mode (nil = not set)
+	Worktree       string           // "auto" creates a per-run git worktree; "" or "none" runs in-place
 	Edges          []*Edge          // directed edges between nodes
 	Span           Span
 }
