@@ -47,6 +47,11 @@ type RunOptions struct {
 	LogLevel      string               // log level (default: "info", env: ITERION_LOG_LEVEL)
 	NoInteractive bool                 // disable interactive TTY prompting on human pause
 	Executor      runtime.NodeExecutor // pluggable executor (nil = stub)
+	// Background marks this invocation as a managed-runner subprocess
+	// spawned by the editor server. The CLI writes a .pid file so the
+	// server can detect liveness across its own restart, and forces
+	// NoInteractive (no TTY in the spawned process).
+	Background bool
 }
 
 // RunRun executes a workflow or recipe and reports the outcome.
@@ -58,6 +63,11 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		return err
 	}
 	logger := iterlog.New(level, os.Stderr)
+	if opts.Background {
+		// Managed-runner mode: no TTY available in the spawned
+		// subprocess, and prompts would deadlock.
+		opts.NoInteractive = true
+	}
 
 	// Resolve run ID.
 	runID := opts.RunID
@@ -177,6 +187,18 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		return fmt.Errorf("cannot acquire run lock: %w", err)
 	}
 	defer lock.Unlock()
+
+	// Managed-runner mode: the editor server writes the .pid file on
+	// our behalf at spawn time, so we only need to remove it on exit.
+	// The server's reconciler then flips this run to a terminal status
+	// without waiting for the next reconcile sweep.
+	if opts.Background {
+		defer func() {
+			if rmErr := s.RemovePIDFile(runID); rmErr != nil {
+				logger.Warn("background: remove .pid: %v", rmErr)
+			}
+		}()
+	}
 
 	// Execute.
 	if p.Format == OutputHuman {

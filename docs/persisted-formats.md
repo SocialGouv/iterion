@@ -10,12 +10,31 @@ These formats are considered **stable for V1** — tooling may rely on them.
   <run_id>/
     run.json                            # Run metadata & checkpoint
     events.jsonl                        # Append-only event log
+    run.log                             # Free-form runtime log (best-effort)
+    .pid                                # Detached-runner PID (Phase 2 only)
     artifacts/
       <node_id>/
         0.json, 1.json, ...            # Versioned node artifacts
     interactions/
       <interaction_id>.json             # Human input/output exchanges
 ```
+
+### .pid (detached-runner mode)
+
+When `ITERION_RUNS_DETACHED=1` is set in the editor server's
+environment, runs launched by the server are spawned as detached
+`iterion run --background` subprocesses instead of in-process
+goroutines. The runner subprocess writes its PID to `.pid` and
+removes the file on exit; the editor server reads `.pid` to
+re-attach to the runner across its own restarts (e.g. after a
+`watchexec` rebuild during development).
+
+Format: a single decimal integer, optionally followed by a newline.
+Written atomically via tmp + rename. Absence is meaningful: a
+"running" run with no `.pid` is either an in-process run or a
+pre-Phase-2 run, and the legacy flock-based reconciliation still
+applies. Presence of `.pid` whose PID has died is cleaned up by the
+reconciler on next server boot.
 
 ## run.json (format_version: 1)
 

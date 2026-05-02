@@ -13,14 +13,24 @@ import (
 // in this process or it has already terminated).
 var ErrRunNotActive = errors.New("runview: run is not active in this process")
 
-// runHandle is the in-memory per-run state owned by Manager. It carries
-// the cancel func that signals a graceful shutdown to the engine
-// goroutine, plus a done channel that's closed when the goroutine
-// returns.
+// runHandle is the in-memory per-run state owned by Manager. It
+// carries the cancel func that signals a graceful shutdown plus a
+// done channel that's closed when the run terminates.
+//
+// Two flavours share this struct:
+//
+//   - In-process (Pid == 0): cancel is the context.CancelFunc returned
+//     by context.WithCancel; done is closed by Deregister when the
+//     run goroutine exits.
+//
+//   - Detached subprocess (Pid > 0): cancel sends SIGTERM to the
+//     process group; done is closed by a watcher goroutine that
+//     polls process liveness (kill -0) until the runner exits.
 type runHandle struct {
 	cancel    context.CancelFunc
 	done      chan struct{}
 	startedAt time.Time
+	pid       int // 0 for in-process; non-zero for a detached runner
 }
 
 // Manager owns the lifecycle of in-process workflow goroutines. A run
@@ -65,6 +75,34 @@ func (m *Manager) Register(parent context.Context, runID string) (context.Contex
 		startedAt: time.Now().UTC(),
 	}
 	return ctx, nil
+}
+
+// RegisterDetached installs a handle for a runner running as a
+// detached subprocess (PID > 0). Cancel is the closure that the
+// caller wants invoked when Manager.Cancel(runID) is called — typically
+// `func() { syscall.Kill(-pid, syscall.SIGTERM) }`. The caller is
+// responsible for closing done when the runner exits.
+//
+// Unlike Register, this method does NOT create a context — detached
+// runners own their own context inside the spawned process, so the
+// server-side handle has no ctx to propagate.
+func (m *Manager) RegisterDetached(runID string, pid int, cancel context.CancelFunc, done chan struct{}) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.stopped {
+		return fmt.Errorf("runview: manager is stopped")
+	}
+	if _, exists := m.handles[runID]; exists {
+		return fmt.Errorf("runview: run %q is already registered", runID)
+	}
+	m.handles[runID] = &runHandle{
+		cancel:    cancel,
+		done:      done,
+		startedAt: time.Now().UTC(),
+		pid:       pid,
+	}
+	return nil
 }
 
 // Deregister removes the handle and closes its done channel. Called
@@ -119,11 +157,13 @@ func (m *Manager) ActiveRuns() []string {
 }
 
 // HandleSnapshot is one row in the Snapshot view: the run ID plus the
-// in-memory primitives Drain needs (cancel + done).
+// in-memory primitives Drain needs (cancel + done) and the optional
+// PID so callers can distinguish in-process from detached runners.
 type HandleSnapshot struct {
 	RunID  string
 	Cancel context.CancelFunc
 	Done   <-chan struct{}
+	PID    int // 0 for in-process; >0 for detached subprocess
 }
 
 // Snapshot returns a point-in-time copy of every active handle. Drain
@@ -138,6 +178,7 @@ func (m *Manager) Snapshot() []HandleSnapshot {
 			RunID:  id,
 			Cancel: h.cancel,
 			Done:   h.done,
+			PID:    h.pid,
 		})
 	}
 	return out

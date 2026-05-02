@@ -15,6 +15,7 @@ var runOpts struct {
 	logLevel      string
 	noInteractive bool
 	varFlags      []string
+	background    bool
 }
 
 var runCmd = &cobra.Command{
@@ -30,6 +31,7 @@ var runCmd = &cobra.Command{
 			Timeout:       runOpts.timeout,
 			LogLevel:      runOpts.logLevel,
 			NoInteractive: runOpts.noInteractive,
+			Background:    runOpts.background,
 		}
 		if len(runOpts.varFlags) > 0 {
 			vars, err := cli.ParseVarFlags(runOpts.varFlags)
@@ -51,5 +53,7 @@ func init() {
 	f.DurationVar(&runOpts.timeout, "timeout", 0, "Maximum run duration (e.g. 30s, 5m, 1h)")
 	f.StringVar(&runOpts.logLevel, "log-level", "", "Log verbosity: error, warn, info, debug, trace")
 	f.BoolVar(&runOpts.noInteractive, "no-interactive", false, "Don't prompt on TTY; exit on human pause")
+	f.BoolVar(&runOpts.background, "background", false, "Internal: managed-runner mode for the editor server (writes .pid, suppresses interactive prompts)")
+	_ = f.MarkHidden("background")
 	rootCmd.AddCommand(runCmd)
 }

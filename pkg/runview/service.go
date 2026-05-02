@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -221,6 +222,13 @@ func (s *Service) reconcileOrphans() {
 		if r.Status != store.RunStatusRunning {
 			continue
 		}
+		// .pid present + PID alive → runner outlived the previous
+		// server lifetime; re-attach. Stale .pid → remove and fall
+		// through to the flock probe. Missing .pid → in-process or
+		// older run; flock probe applies.
+		if s.tryReattachByPID(id) {
+			continue
+		}
 		// Try to grab the lock; non-blocking semantics mean we
 		// either own it instantly (orphan) or fail fast (live).
 		lock, err := s.store.LockRun(id)
@@ -245,6 +253,89 @@ func (s *Service) reconcileOrphans() {
 			s.logger.Info("runview: reconciled orphan run %s → %s", id, newStatus)
 		}
 		_ = lock.Unlock()
+	}
+}
+
+// tryReattachByPID handles the .pid path of reconcileOrphans. Returns
+// true if the run was re-attached (caller should skip the orphan
+// reconcile). Removes a stale .pid as a side effect so the next
+// reconcile cycle doesn't false-positive on it.
+func (s *Service) tryReattachByPID(runID string) bool {
+	pid, err := s.store.ReadPIDFile(runID)
+	if err != nil || pid <= 0 {
+		return false
+	}
+	if pidAlive(pid) == nil {
+		s.reattachDetached(runID, pid)
+		return true
+	}
+	_ = s.store.RemovePIDFile(runID)
+	return false
+}
+
+// reattachDetached re-establishes the editor server's view of a
+// detached runner that survived a previous server lifetime. It
+// installs an in-memory log buffer (so WS subscribers can stream
+// live), starts the file-based event + log tailers, and registers a
+// manager handle whose Cancel signals the runner's process group and
+// whose done channel is closed by a watcher goroutine that polls for
+// process exit.
+//
+// We can't cmd.Wait() on the runner here — we are not its parent —
+// so liveness is inferred via kill -0 polling at 1s cadence. That
+// resolution is fine: the runner can take seconds to reach its
+// shutdown checkpoints anyway, and the watcher's only consumer is
+// Drain (timing-sensitive) and the broker.CloseRun call (post-mortem).
+func (s *Service) reattachDetached(runID string, pid int) {
+	s.prepareRunLogNoFile(runID)
+
+	done := make(chan struct{})
+	var cancelOnce sync.Once
+	cancel := func() {
+		cancelOnce.Do(func() {
+			if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil {
+				s.logger.Warn("runview: reattach: signal pgrp %d: %v", pid, err)
+			}
+		})
+	}
+
+	if err := s.manager.RegisterDetached(runID, pid, cancel, done); err != nil {
+		s.logger.Warn("runview: reattach: register %s pid=%d: %v", runID, pid, err)
+		return
+	}
+
+	go func() {
+		watchDetachedExit(s, runID, pid, done)
+	}()
+
+	startEventSource(s, runID, done)
+	startLogSource(s, runID, done)
+
+	s.logger.Info("runview: re-attached detached run %s (pid=%d) across server restart", runID, pid)
+}
+
+// watchDetachedExit polls kill(0) on pid until the process exits,
+// then performs the same cleanup spawnDetached's cmd.Wait goroutine
+// would: clean up the .pid file, close subscriptions, and Deregister
+// the handle (which closes done). Used only on the re-attach path
+// where we don't own the cmd. 5s cadence is fine because runners
+// typically run for minutes; a faster probe would just burn syscalls.
+func watchDetachedExit(s *Service, runID string, pid int, done chan struct{}) {
+	t := time.NewTicker(5 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-t.C:
+			if err := pidAlive(pid); err != nil {
+				_ = s.store.RemovePIDFile(runID)
+				s.broker.CloseRun(runID)
+				s.dropRunLog(runID)
+				s.manager.Deregister(runID)
+				return
+			}
+		}
 	}
 }
 
@@ -299,6 +390,23 @@ func (s *Service) prepareRunLog(runID string) (*RunLogBuffer, *iterlog.Logger) {
 
 	perRunLogger := iterlog.New(s.logger.Level(), io.MultiWriter(s.logger.Writer(), buf))
 	return buf, perRunLogger
+}
+
+// prepareRunLogNoFile is the detached-mode counterpart to
+// prepareRunLog: it installs an in-memory-only buffer for runID
+// (no file tee) and does NOT return a logger. The runner subprocess
+// owns the on-disk run.log; a second writer here would corrupt it.
+// File contents reach this buffer via the file_log_source tailer,
+// which reads new bytes off disk and pushes them through Write.
+func (s *Service) prepareRunLogNoFile(runID string) *RunLogBuffer {
+	buf, _ := NewRunLogBuffer("")
+	s.runLogsMu.Lock()
+	if old, ok := s.runLogs[runID]; ok {
+		old.Close()
+	}
+	s.runLogs[runID] = buf
+	s.runLogsMu.Unlock()
+	return buf
 }
 
 // dropRunLog tears down the per-run buffer at run-completion time:
@@ -595,6 +703,10 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		runID = fmt.Sprintf("run_%d", time.Now().UnixMilli())
 	}
 
+	if detachedEnabled() {
+		return s.launchDetached(parent, runID, spec)
+	}
+
 	wf, hash, err := CompileWorkflowWithHash(spec.FilePath)
 	if err != nil {
 		return nil, err
@@ -659,6 +771,10 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	}
 	if err := validateResumable(r, spec.Answers); err != nil {
 		return nil, err
+	}
+
+	if detachedEnabled() {
+		return s.resumeDetached(parent, spec)
 	}
 
 	wf, hash, err := CompileWorkflowWithHash(spec.FilePath)

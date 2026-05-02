@@ -23,6 +23,10 @@ type ResumeOptions struct {
 	LogLevel    string            // log level (default: "info", env: ITERION_LOG_LEVEL)
 	Force       bool              // allow resume despite workflow hash change
 	Executor    runtime.NodeExecutor
+	// Background marks this invocation as a managed-runner subprocess
+	// spawned by the editor server. The CLI writes a .pid file so the
+	// server can detect liveness across its own restart.
+	Background bool
 }
 
 // RunResumeWithFile resumes a paused run using a workflow file and answers.
@@ -123,6 +127,16 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		return fmt.Errorf("cannot acquire run lock: %w", err)
 	}
 	defer lock.Unlock()
+
+	// Managed-runner mode: the editor server writes the .pid file on
+	// our behalf at spawn time, so we only need to remove it on exit.
+	if opts.Background {
+		defer func() {
+			if rmErr := s.RemovePIDFile(opts.RunID); rmErr != nil {
+				logger.Warn("background: remove .pid: %v", rmErr)
+			}
+		}()
+	}
 
 	// Re-check run status under the lock to prevent TOCTOU race.
 	r, err = s.LoadRun(opts.RunID)
