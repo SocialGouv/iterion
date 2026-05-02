@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { LayerKind } from "@/lib/constants";
 import { TOAST_DURATION_DEFAULT_MS } from "@/lib/constants";
+import { readBooleanFlag, writeBooleanFlag } from "@/lib/localStorageFlag";
 
 export type { LayerKind };
 export type SidebarTab = "properties" | "schemas" | "prompts" | "vars" | "workflow" | "comments" | "mcp";
@@ -27,6 +28,7 @@ const INSPECTOR_WIDTH_KEY = "iterion.inspectorWidth";
 const INSPECTOR_WIDTH_DEFAULT = 360;
 const INSPECTOR_WIDTH_MIN = 280;
 const INSPECTOR_WIDTH_MAX = 600;
+const INSPECTOR_COLLAPSED_KEY = "iterion.inspectorCollapsed";
 
 function readInspectorWidth(): number {
   if (typeof window === "undefined") return INSPECTOR_WIDTH_DEFAULT;
@@ -57,6 +59,7 @@ interface UIState {
   canvasTool: CanvasTool;
   // Inspector width (resizable right panel)
   inspectorWidth: number;
+  inspectorCollapsed: boolean;
   // File picker dialog
   filePickerOpen: boolean;
   filesChangedAt: number;
@@ -90,6 +93,7 @@ interface UIState {
   setCanvasTool: (tool: CanvasTool) => void;
   // Inspector width
   setInspectorWidth: (px: number) => void;
+  toggleInspectorCollapsed: () => void;
   // File picker
   setFilePickerOpen: (open: boolean) => void;
   notifyFilesChanged: () => void;
@@ -113,6 +117,7 @@ export const useUIStore = create<UIState>((set) => ({
   macroView: false,
   canvasTool: "pan",
   inspectorWidth: readInspectorWidth(),
+  inspectorCollapsed: readBooleanFlag(INSPECTOR_COLLAPSED_KEY),
   filePickerOpen: false,
   filesChangedAt: 0,
   pendingFitNodeId: null,
@@ -186,6 +191,11 @@ export const useUIStore = create<UIState>((set) => ({
     }
     set({ inspectorWidth: clamped });
   },
+  toggleInspectorCollapsed: () => set((s) => {
+    const next = !s.inspectorCollapsed;
+    writeBooleanFlag(INSPECTOR_COLLAPSED_KEY, next);
+    return { inspectorCollapsed: next };
+  }),
   // File picker
   setFilePickerOpen: (filePickerOpen) => set({ filePickerOpen }),
   notifyFilesChanged: () => set({ filesChangedAt: Date.now() }),

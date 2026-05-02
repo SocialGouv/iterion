@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation } from "wouter";
+import { ChevronRightIcon } from "@radix-ui/react-icons";
 
 import type { ArtifactSummary, ExecutionState, RunEvent } from "@/api/runs";
 import { listArtifacts } from "@/api/runs";
@@ -16,11 +17,27 @@ interface Props {
   filePath?: string;
   exec: ExecutionState | null;
   events: RunEvent[];
+  onCollapse?: () => void;
+}
+
+function CollapseButton({ onCollapse }: { onCollapse?: () => void }): ReactNode {
+  if (!onCollapse) return null;
+  return (
+    <IconButton
+      label="Hide details panel"
+      size="sm"
+      variant="ghost"
+      className="absolute top-1.5 right-1.5 z-10"
+      onClick={onCollapse}
+    >
+      <ChevronRightIcon />
+    </IconButton>
+  );
 }
 
 type TabValue = "pause" | "trace" | "tools" | "artifact" | "events";
 
-export default function NodeDetailPanel({ runId, filePath, exec, events }: Props) {
+export default function NodeDetailPanel({ runId, filePath, exec, events, onCollapse }: Props) {
   const [artifactVersions, setArtifactVersions] = useState<ArtifactSummary[]>([]);
   const [activeTab, setActiveTab] = useState<TabValue | null>(null);
 
@@ -68,7 +85,8 @@ export default function NodeDetailPanel({ runId, filePath, exec, events }: Props
 
   if (!exec) {
     return (
-      <div className="h-full p-4 text-xs text-fg-subtle">
+      <div className="relative h-full p-4 text-xs text-fg-subtle">
+        <CollapseButton onCollapse={onCollapse} />
         Click a node to see its events, prompt, response, artifact, and error trace.
       </div>
     );
@@ -105,7 +123,8 @@ export default function NodeDetailPanel({ runId, filePath, exec, events }: Props
   ];
 
   return (
-    <div className="h-full flex flex-col text-xs">
+    <div className="relative h-full flex flex-col text-xs">
+      <CollapseButton onCollapse={onCollapse} />
       <DetailHeader runId={runId} filePath={filePath} exec={exec} />
 
       <Tabs
@@ -199,7 +218,7 @@ function DetailHeader({
   };
 
   return (
-    <div className="px-4 pt-3 pb-3 border-b border-border-default">
+    <div className="px-4 pt-3 pb-3 pr-10 border-b border-border-default">
       <div className="flex items-start gap-2">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">

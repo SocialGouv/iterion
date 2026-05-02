@@ -181,6 +181,20 @@ select:focus:not(:focus-visible) {
   animation: fade-in 0.2s ease-out;
 }
 
+/* Opacity-only fade-in for panels that mount inside a fixed app-shell.
+ * The translateY in `animate-fade-in` briefly extends content past the
+ * viewport edge, which makes the browser's scrollbar flash on/off. Use
+ * this variant whenever the animated element is pinned to the bottom
+ * or right edge of the viewport. */
+@keyframes fade-in-opacity {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-fade-in-opacity {
+  animation: fade-in-opacity 0.18s ease-out;
+}
+
 /* Hide the persistent bounding box around selected nodes (shown after rectangle selection completes) */
 .react-flow__nodesselection-rect {
   display: none;

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { useLocation, useSearch } from "wouter";
+import { ChevronLeftIcon, ChevronRightIcon } from "@radix-ui/react-icons";
 
 import Canvas from "@/components/Canvas/Canvas";
 import Inspector from "@/components/Inspector/Inspector";
@@ -9,6 +10,7 @@ import DiagnosticsPanel from "@/components/Diagnostics/DiagnosticsPanel";
 import LibraryPanel from "@/components/Library/LibraryPanel";
 import SubNodePalette from "@/components/Canvas/SubNodePalette";
 import SourceView from "@/components/SourceView/SourceView";
+import { IconButton } from "@/components/ui";
 import { useUIStore } from "@/store/ui";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
@@ -24,6 +26,8 @@ export default function EditorView() {
   const inSubNodeView = useUIStore((s) => s.subNodeViewStack.length > 0);
   const inspectorWidth = useUIStore((s) => s.inspectorWidth);
   const setInspectorWidth = useUIStore((s) => s.setInspectorWidth);
+  const inspectorCollapsed = useUIStore((s) => s.inspectorCollapsed);
+  const toggleInspectorCollapsed = useUIStore((s) => s.toggleInspectorCollapsed);
   const setPendingFitNodeId = useUIStore((s) => s.setPendingFitNodeId);
   const addToast = useUIStore((s) => s.addToast);
   const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
@@ -140,12 +144,15 @@ export default function EditorView() {
     document.body.style.userSelect = "none";
   };
 
-  const effectiveInspectorWidth = draftWidth ?? inspectorWidth;
+  const COLLAPSED_INSPECTOR_PX = 28;
+  const effectiveInspectorWidth = inspectorCollapsed
+    ? COLLAPSED_INSPECTOR_PX
+    : (draftWidth ?? inspectorWidth);
   const leftWidth = libraryExpanded || inSubNodeView ? 280 : 64;
 
   return (
     <ReactFlowProvider>
-      <div className="h-screen w-screen flex flex-col bg-surface-0 text-fg-default">
+      <div className="h-screen w-screen overflow-hidden flex flex-col bg-surface-0 text-fg-default">
         {bannerRunId && (
           <div className="flex items-center gap-2 px-3 py-1.5 text-xs bg-accent-soft text-accent-fg border-b border-border-default">
             <span aria-hidden>↗</span>
@@ -210,15 +217,38 @@ export default function EditorView() {
 
         {!expanded && (
           <div className="relative border-l border-border-default min-h-0 flex flex-col overflow-hidden">
-            <div
-              role="separator"
-              aria-orientation="vertical"
-              aria-label="Resize inspector"
-              onMouseDown={startResize}
-              className="absolute left-0 top-0 bottom-0 w-1 -translate-x-1/2 cursor-col-resize hover:bg-accent/50 z-10"
-              title="Drag to resize"
-            />
-            <Inspector />
+            {inspectorCollapsed ? (
+              <IconButton
+                label="Show inspector"
+                size="sm"
+                variant="ghost"
+                className="mt-2 mx-auto"
+                onClick={toggleInspectorCollapsed}
+              >
+                <ChevronLeftIcon />
+              </IconButton>
+            ) : (
+              <>
+                <div
+                  role="separator"
+                  aria-orientation="vertical"
+                  aria-label="Resize inspector"
+                  onMouseDown={startResize}
+                  className="absolute left-0 top-0 bottom-0 w-1 -translate-x-1/2 cursor-col-resize hover:bg-accent/50 z-10"
+                  title="Drag to resize"
+                />
+                <IconButton
+                  label="Hide inspector"
+                  size="sm"
+                  variant="ghost"
+                  className="absolute top-1.5 right-1.5 z-20"
+                  onClick={toggleInspectorCollapsed}
+                >
+                  <ChevronRightIcon />
+                </IconButton>
+                <Inspector />
+              </>
+            )}
           </div>
         )}
 

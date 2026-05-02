@@ -7,6 +7,7 @@ import {
 
 import { IconButton, Tooltip } from "@/components/ui";
 import { useRunFiles } from "@/hooks/useRunFiles";
+import { readBooleanFlag, writeBooleanFlag } from "@/lib/localStorageFlag";
 import type { RunFile, RunFileStatus } from "@/api/runs";
 
 // Collapsed mirrors VSCode's activity bar (~36px); expanded matches the
@@ -23,15 +24,13 @@ interface FilesPanelProps {
 
 export default function FilesPanel({ runId, onSelectFile }: FilesPanelProps) {
   const { data, loading, error, refresh } = useRunFiles(runId);
-  const [collapsed, setCollapsed] = useState<boolean>(readCollapsed);
+  const [collapsed, setCollapsed] = useState<boolean>(() =>
+    readBooleanFlag(COLLAPSED_KEY, true),
+  );
   const toggleCollapsed = useCallback(() => {
     setCollapsed((prev) => {
       const next = !prev;
-      try {
-        window.localStorage.setItem(COLLAPSED_KEY, next ? "1" : "0");
-      } catch {
-        // storage may be unavailable
-      }
+      writeBooleanFlag(COLLAPSED_KEY, next);
       return next;
     });
   }, []);
@@ -231,11 +230,3 @@ function dirname(path: string): string {
   return i < 0 ? "" : path.slice(0, i);
 }
 
-function readCollapsed(): boolean {
-  try {
-    const v = window.localStorage.getItem(COLLAPSED_KEY);
-    return v === null ? true : v === "1";
-  } catch {
-    return true;
-  }
-}

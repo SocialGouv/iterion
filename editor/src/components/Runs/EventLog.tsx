@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
+import { ChevronDownIcon } from "@radix-ui/react-icons";
 
 import type { RunEvent } from "@/api/runs";
-import { Input } from "@/components/ui";
+import { IconButton, Input } from "@/components/ui";
 import { stepIteration } from "@/lib/eventIter";
 
 interface Props {
@@ -19,6 +20,7 @@ interface Props {
   // Clear the execution filter (typically a "Clear" affordance shown
   // in the toolbar when an execution is selected).
   onClearSelection?: () => void;
+  onCollapse?: () => void;
 }
 
 const EVENT_BADGE: Record<string, string> = {
@@ -57,6 +59,7 @@ export default function EventLog({
   onToggleFollow,
   onSelectNodeIteration,
   onClearSelection,
+  onCollapse,
 }: Props) {
   const [search, setSearch] = useState("");
   const [activeTypes, setActiveTypes] = useState<Set<string>>(() => new Set());
@@ -160,6 +163,16 @@ export default function EventLog({
           />
           Follow tail
         </label>
+        {onCollapse && (
+          <IconButton
+            label="Hide event log"
+            size="sm"
+            variant="ghost"
+            onClick={onCollapse}
+          >
+            <ChevronDownIcon />
+          </IconButton>
+        )}
       </div>
       {knownTypes.length > 1 && (
         <div className="px-3 py-1 border-b border-border-default flex flex-wrap gap-1">

@@ -2,14 +2,16 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { useParams } from "wouter";
 import { Group, Panel, Separator } from "react-resizable-panels";
+import { ChevronLeftIcon, ChevronUpIcon } from "@radix-ui/react-icons";
 
 import { getRun, type RunFile } from "@/api/runs";
-import { Skeleton } from "@/components/ui";
+import { IconButton, Skeleton } from "@/components/ui";
 import { useRunStore } from "@/store/run";
 import { useRunWebSocket } from "@/hooks/useRunWebSocket";
 import { useLayoutPersistence } from "@/hooks/useLayoutPersistence";
 import { useRunToasts } from "@/hooks/useRunToasts";
 import { useRunKeyboard } from "@/hooks/useRunKeyboard";
+import { readBooleanFlag, writeBooleanFlag } from "@/lib/localStorageFlag";
 
 import { buildExecutionsAt } from "@/lib/snapshotReducer";
 
@@ -28,6 +30,9 @@ interface RuntimeLLMOverride {
   model?: string;
   reasoning_effort?: string;
 }
+
+const DETAIL_COLLAPSED_KEY = "run-console-v1.detail-collapsed";
+const EVENTLOG_COLLAPSED_KEY = "run-console-v1.eventlog-collapsed";
 
 export default function RunView() {
   const params = useParams<{ id: string }>();
@@ -95,6 +100,27 @@ export default function RunView() {
     "run-console-v1.horizontal",
     { canvas: 70, detail: 30 },
   );
+
+  const [detailCollapsed, setDetailCollapsed] = useState<boolean>(() =>
+    readBooleanFlag(DETAIL_COLLAPSED_KEY),
+  );
+  const [eventlogCollapsed, setEventlogCollapsed] = useState<boolean>(() =>
+    readBooleanFlag(EVENTLOG_COLLAPSED_KEY),
+  );
+  const toggleDetailCollapsed = useCallback(() => {
+    setDetailCollapsed((prev) => {
+      const next = !prev;
+      writeBooleanFlag(DETAIL_COLLAPSED_KEY, next);
+      return next;
+    });
+  }, []);
+  const toggleEventlogCollapsed = useCallback(() => {
+    setEventlogCollapsed((prev) => {
+      const next = !prev;
+      writeBooleanFlag(EVENTLOG_COLLAPSED_KEY, next);
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     setRunId(runId);
@@ -213,7 +239,7 @@ export default function RunView() {
 
   return (
     <ReactFlowProvider>
-      <div className="h-screen w-screen flex flex-col bg-surface-0 text-fg-default">
+      <div className="h-screen w-screen overflow-hidden flex flex-col bg-surface-0 text-fg-default">
         <RunHeader run={snapshot.run} active={active} wsState={wsState} />
         <RunMetrics active={active} onJumpToFailed={handleJumpToFailed} />
         <Scrubber
@@ -225,71 +251,95 @@ export default function RunView() {
         />
       <div className="flex-1 min-h-0 flex">
         <FilesPanel runId={runId} onSelectFile={setDiffFile} />
-        <Group
-          orientation="vertical"
-          className="flex-1 min-h-0"
-          defaultLayout={verticalLayout.layout}
-          onLayoutChanged={verticalLayout.onChange}
-        >
-          <Panel id="top" defaultSize={70} minSize={30} className="min-h-0">
-            <Group
-              orientation="horizontal"
-              className="h-full w-full"
-              defaultLayout={horizontalLayout.layout}
-              onLayoutChanged={horizontalLayout.onChange}
-            >
-              <Panel id="canvas" defaultSize={70} minSize={30} className="min-h-0">
-                <div className={scrubbing ? "h-full w-full saturate-50" : "h-full w-full"}>
-                  <RunCanvasIR
-                    runId={runId}
-                    executions={displayedExecutions}
-                    selectedNodeId={wfSelectedNodeId}
-                    onSelectNode={setWfSelectedNodeId}
-                    iterationByNode={iterationByNode}
-                    onSelectIteration={handleSelectIteration}
-                    runtimeOverrideByNode={runtimeOverrideByNode}
-                  />
-                </div>
-              </Panel>
-              <ResizeSeparator orientation="horizontal" />
-              <Panel
-                id="detail"
-                defaultSize={30}
-                minSize={18}
-                collapsible
-                className="min-h-0"
-              >
-                <div className="h-full border-l border-border-default min-h-0 overflow-hidden">
-                  <NodeDetailPanel
-                    runId={runId}
-                    filePath={snapshot.run.file_path}
-                    exec={detailExec}
-                    events={displayedEvents}
-                  />
-                </div>
-              </Panel>
-            </Group>
-          </Panel>
-          <ResizeSeparator orientation="vertical" />
-          <Panel
-            id="eventlog"
-            defaultSize={30}
-            minSize={10}
-            collapsible
-            className="min-h-0"
+        <div className="flex-1 min-h-0 flex flex-col">
+          <Group
+            orientation="vertical"
+            className="flex-1 min-h-0"
+            defaultLayout={verticalLayout.layout}
+            onLayoutChanged={verticalLayout.onChange}
           >
-            <div className="h-full border-t border-border-default min-h-0">
-              <EventLog
-                events={displayedEvents}
-                selectedExecutionId={eventLogSelection}
-                followTail={followTail && !scrubbing}
-                onToggleFollow={setFollowTail}
-                onSelectNodeIteration={handleEventSelect}
-                onClearSelection={handleClearSelection}
-              />
-            </div>
-          </Panel>
-        </Group>
+            <Panel id="top" defaultSize={70} minSize={30} className="min-h-0">
+              <Group
+                orientation="horizontal"
+                className="h-full w-full"
+                defaultLayout={horizontalLayout.layout}
+                onLayoutChanged={horizontalLayout.onChange}
+              >
+                <Panel id="canvas" defaultSize={70} minSize={30} className="min-h-0">
+                  <div className={scrubbing ? "h-full w-full saturate-50" : "h-full w-full"}>
+                    <RunCanvasIR
+                      runId={runId}
+                      executions={displayedExecutions}
+                      selectedNodeId={wfSelectedNodeId}
+                      onSelectNode={setWfSelectedNodeId}
+                      iterationByNode={iterationByNode}
+                      onSelectIteration={handleSelectIteration}
+                      runtimeOverrideByNode={runtimeOverrideByNode}
+                    />
+                  </div>
+                </Panel>
+                {!detailCollapsed && (
+                  <>
+                    <ResizeSeparator orientation="horizontal" />
+                    <Panel
+                      id="detail"
+                      defaultSize={30}
+                      minSize={18}
+                      className="min-h-0"
+                    >
+                      <div className="h-full border-l border-border-default min-h-0 overflow-hidden animate-fade-in-opacity">
+                        <NodeDetailPanel
+                          runId={runId}
+                          filePath={snapshot.run.file_path}
+                          exec={detailExec}
+                          events={displayedEvents}
+                          onCollapse={toggleDetailCollapsed}
+                        />
+                      </div>
+                    </Panel>
+                  </>
+                )}
+              </Group>
+            </Panel>
+            {!eventlogCollapsed && (
+              <>
+                <ResizeSeparator orientation="vertical" />
+                <Panel
+                  id="eventlog"
+                  defaultSize={30}
+                  minSize={10}
+                  className="min-h-0"
+                >
+                  <div className="h-full border-t border-border-default min-h-0 overflow-hidden animate-fade-in-opacity">
+                    <EventLog
+                      events={displayedEvents}
+                      selectedExecutionId={eventLogSelection}
+                      followTail={followTail && !scrubbing}
+                      onToggleFollow={setFollowTail}
+                      onSelectNodeIteration={handleEventSelect}
+                      onClearSelection={handleClearSelection}
+                      onCollapse={toggleEventlogCollapsed}
+                    />
+                  </div>
+                </Panel>
+              </>
+            )}
+          </Group>
+          {eventlogCollapsed && (
+            <ExpandStrip
+              orientation="bottom"
+              label="Show event log"
+              onClick={toggleEventlogCollapsed}
+            />
+          )}
+        </div>
+        {detailCollapsed && (
+          <ExpandStrip
+            orientation="right"
+            label="Show details panel"
+            onClick={toggleDetailCollapsed}
+          />
+        )}
       </div>
         <FileDiffDialog
           runId={runId}
@@ -298,6 +348,30 @@ export default function RunView() {
         />
       </div>
     </ReactFlowProvider>
+  );
+}
+
+function ExpandStrip({
+  orientation,
+  label,
+  onClick,
+}: {
+  orientation: "right" | "bottom";
+  label: string;
+  onClick: () => void;
+}) {
+  const isRight = orientation === "right";
+  const stripClass = isRight
+    ? "flex flex-col items-center justify-start border-l w-7 py-2"
+    : "flex items-center justify-center border-t h-7";
+  return (
+    <div
+      className={`${stripClass} border-border-default bg-surface-1 shrink-0 animate-fade-in-opacity`}
+    >
+      <IconButton label={label} size="sm" variant="ghost" onClick={onClick}>
+        {isRight ? <ChevronLeftIcon /> : <ChevronUpIcon />}
+      </IconButton>
+    </div>
   );
 }
 
