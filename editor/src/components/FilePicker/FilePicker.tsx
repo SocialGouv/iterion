@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import * as api from "@/api/client";
 import type { FileEntry } from "@/api/types";
 import { useRecentsStore } from "@/store/recents";
-import { Dialog, Tabs, Input } from "@/components/ui";
+import { Badge, Dialog, Tabs, Input } from "@/components/ui";
 import { MagnifyingGlassIcon, FileIcon, ClockIcon, RocketIcon, TrashIcon } from "@radix-ui/react-icons";
+import { buildSearchResults, type SearchResult } from "./searchResults";
 
 interface FilePickerProps {
   open: boolean;
@@ -29,28 +30,129 @@ export default function FilePicker({ open, onOpenChange, onPick }: FilePickerPro
     setTab(recents.length > 0 ? "recents" : "files");
   }, [open, recents.length]);
 
-  const filteredFiles = useMemo(() => {
-    if (!query) return files;
-    const q = query.toLowerCase();
-    return files.filter((f) => f.name.toLowerCase().includes(q));
-  }, [files, query]);
+  const isSearching = query.trim() !== "";
 
-  const filteredExamples = useMemo(() => {
-    if (!query) return examples;
-    const q = query.toLowerCase();
-    return examples.filter((n) => n.toLowerCase().includes(q));
-  }, [examples, query]);
-
-  const filteredRecents = useMemo(() => {
-    if (!query) return recents;
-    const q = query.toLowerCase();
-    return recents.filter((p) => p.toLowerCase().includes(q));
-  }, [recents, query]);
+  // Per-tab panels are only rendered when !isSearching, so the raw
+  // arrays double as the displayed lists — no per-tab filtering needed.
+  const searchResults = useMemo<SearchResult[]>(
+    () => (isSearching ? buildSearchResults(query, recents, files, examples) : []),
+    [isSearching, query, recents, files, examples],
+  );
 
   const pick = (kind: "file" | "example", path: string) => {
     onPick(kind, path);
     onOpenChange(false);
   };
+
+  // While searching we visually highlight the Files tab (the
+  // "exhaustive" view) without mutating `tab` — clearing the query
+  // restores the user's prior selection.
+  const displayTab = isSearching ? "files" : tab;
+
+  // Clicking a tab while searching clears the query so the chosen
+  // tab actually becomes visible — otherwise Radix would flip
+  // `displayTab` back to "files" via `isSearching`.
+  const handleTabChange = (next: string) => {
+    if (isSearching) setQuery("");
+    setTab(next);
+  };
+
+  const renderRecentRow = (path: string, source?: RowSource) => (
+    <Row
+      key={source ? `recent:${path}` : path}
+      label={path}
+      source={source}
+      onPick={() => pick("file", path)}
+      trailing={
+        <button
+          type="button"
+          aria-label={`Remove ${path} from recents`}
+          className="text-fg-subtle hover:text-danger"
+          onClick={(e) => {
+            e.stopPropagation();
+            removeRecent(path);
+          }}
+        >
+          <TrashIcon />
+        </button>
+      }
+    />
+  );
+
+  // All three tabs render the same unified list while searching, so
+  // whichever tab Radix has active still shows the cross-source hits.
+  const searchPanel =
+    searchResults.length === 0 ? (
+      <Empty>No matches.</Empty>
+    ) : (
+      <List>
+        {searchResults.map((r) => {
+          if (r.kind === "recent") return renderRecentRow(r.path, "recent");
+          if (r.kind === "file") {
+            return (
+              <Row
+                key={`file:${r.path}`}
+                label={r.path}
+                source="file"
+                onPick={() => pick("file", r.path)}
+              />
+            );
+          }
+          return (
+            <Row
+              key={`example:${r.name}`}
+              label={r.name}
+              source="example"
+              onPick={() => pick("example", r.name)}
+            />
+          );
+        })}
+      </List>
+    );
+
+  const recentsPanel =
+    recents.length === 0 ? (
+      <Empty>Open a file to see it here.</Empty>
+    ) : (
+      <List>
+        {recents.map((path) => renderRecentRow(path))}
+        <li className="pt-2 mt-2 border-t border-border-default">
+          <button
+            type="button"
+            className="text-xs text-fg-subtle hover:text-danger"
+            onClick={clearRecents}
+          >
+            Clear all recents
+          </button>
+        </li>
+      </List>
+    );
+
+  const filesPanel =
+    files.length === 0 ? (
+      <Empty>No files in workspace.</Empty>
+    ) : (
+      <List>
+        {files.map((f) => (
+          <Row key={f.name} label={f.name} onPick={() => pick("file", f.name)} />
+        ))}
+      </List>
+    );
+
+  const examplesPanel =
+    examples.length === 0 ? (
+      <Empty>No examples available.</Empty>
+    ) : (
+      <List>
+        {examples.map((n) => (
+          <Row key={n} label={n} onPick={() => pick("example", n)} />
+        ))}
+      </List>
+    );
+
+  const panels: Record<string, React.ReactNode> = isSearching
+    ? { recents: searchPanel, files: searchPanel, examples: searchPanel }
+    : { recents: recentsPanel, files: filesPanel, examples: examplesPanel };
 
   return (
     <Dialog
@@ -68,9 +170,20 @@ export default function FilePicker({ open, onOpenChange, onPick }: FilePickerPro
           leadingIcon={<MagnifyingGlassIcon />}
           size="md"
         />
+        {isSearching && (
+          <p
+            data-testid="filepicker-search-note"
+            className="text-xs text-fg-subtle px-1"
+            role="status"
+            aria-live="polite"
+          >
+            Searching across all workflows ({searchResults.length}{" "}
+            {searchResults.length === 1 ? "result" : "results"})
+          </p>
+        )}
         <Tabs
-          value={tab}
-          onValueChange={setTab}
+          value={displayTab}
+          onValueChange={handleTabChange}
           variant="pill"
           items={[
             {
@@ -89,66 +202,7 @@ export default function FilePicker({ open, onOpenChange, onPick }: FilePickerPro
               icon: <RocketIcon />,
             },
           ]}
-          panels={{
-            recents:
-              filteredRecents.length === 0 ? (
-                <Empty>{recents.length === 0 ? "Open a file to see it here." : "No matches."}</Empty>
-              ) : (
-                <List>
-                  {filteredRecents.map((path) => (
-                    <Row
-                      key={path}
-                      label={path}
-                      onPick={() => pick("file", path)}
-                      trailing={
-                        <button
-                          type="button"
-                          aria-label={`Remove ${path} from recents`}
-                          className="text-fg-subtle hover:text-danger"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            removeRecent(path);
-                          }}
-                        >
-                          <TrashIcon />
-                        </button>
-                      }
-                    />
-                  ))}
-                  {recents.length > 0 && (
-                    <li className="pt-2 mt-2 border-t border-border-default">
-                      <button
-                        type="button"
-                        className="text-xs text-fg-subtle hover:text-danger"
-                        onClick={clearRecents}
-                      >
-                        Clear all recents
-                      </button>
-                    </li>
-                  )}
-                </List>
-              ),
-            files:
-              filteredFiles.length === 0 ? (
-                <Empty>{files.length === 0 ? "No files in workspace." : "No matches."}</Empty>
-              ) : (
-                <List>
-                  {filteredFiles.map((f) => (
-                    <Row key={f.name} label={f.name} onPick={() => pick("file", f.name)} />
-                  ))}
-                </List>
-              ),
-            examples:
-              filteredExamples.length === 0 ? (
-                <Empty>{examples.length === 0 ? "No examples available." : "No matches."}</Empty>
-              ) : (
-                <List>
-                  {filteredExamples.map((n) => (
-                    <Row key={n} label={n} onPick={() => pick("example", n)} />
-                  ))}
-                </List>
-              ),
-          }}
+          panels={panels}
           listClassName="mb-2"
         />
       </div>
@@ -166,14 +220,39 @@ function List({ children }: { children: React.ReactNode }) {
   );
 }
 
+type RowSource = "recent" | "file" | "example";
+
+const SOURCE_META: Record<RowSource, { icon: React.ReactNode; label: string }> = {
+  recent: { icon: <ClockIcon />, label: "Recent" },
+  file: { icon: <FileIcon />, label: "File" },
+  example: { icon: <RocketIcon />, label: "Example" },
+};
+
+function SourceChip({ source }: { source: RowSource }) {
+  const { icon, label } = SOURCE_META[source];
+  return (
+    <Badge
+      variant="neutral"
+      size="sm"
+      leadingIcon={icon}
+      className="uppercase tracking-wide mr-2 shrink-0"
+      aria-label={`Source: ${label}`}
+    >
+      {label}
+    </Badge>
+  );
+}
+
 function Row({
   label,
   onPick,
   trailing,
+  source,
 }: {
   label: string;
   onPick: () => void;
   trailing?: React.ReactNode;
+  source?: RowSource;
 }) {
   // The trailing slot can itself be a <button> (e.g. "remove from
   // recents"), so it must be a DOM sibling of the row's main button —
@@ -187,6 +266,7 @@ function Row({
         onClick={onPick}
         className="w-full flex items-center px-2 py-2 text-sm text-fg-default hover:bg-surface-2 rounded-sm"
       >
+        {source && <SourceChip source={source} />}
         <span className="truncate text-left flex-1">{label}</span>
         {trailing && <span aria-hidden className="w-5 shrink-0" />}
       </button>
