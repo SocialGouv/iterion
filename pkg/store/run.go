@@ -59,6 +59,20 @@ type Run struct {
 	// Worktree is true when WorkDir was created by `worktree: auto`,
 	// false when WorkDir is the inherited cwd.
 	Worktree bool `json:"worktree,omitempty"`
+	// FinalCommit is the SHA the worktree's HEAD pointed to when the
+	// run finished successfully, captured before the worktree was torn
+	// down. Empty when the run made no commits, didn't use a worktree,
+	// or didn't finish.
+	FinalCommit string `json:"final_commit,omitempty"`
+	// FinalBranch is the persistent branch name created on
+	// FinalCommit (default "iterion/run/<friendly-name>", overridable
+	// via launch params). Acts as a GC guard so the commits remain
+	// reachable after the worktree directory is removed.
+	FinalBranch string `json:"final_branch,omitempty"`
+	// MergedInto is the branch the engine fast-forwarded to FinalCommit
+	// after the run, or empty when the FF was skipped (dirty main,
+	// non-FF, branch divergence, opt-out, or detached HEAD at start).
+	MergedInto string `json:"merged_into,omitempty"`
 }
 
 // Checkpoint captures the runtime state at a pause point (human node or

@@ -16,6 +16,8 @@ var runOpts struct {
 	noInteractive bool
 	varFlags      []string
 	background    bool
+	mergeInto     string
+	branchName    string
 }
 
 var runCmd = &cobra.Command{
@@ -32,6 +34,8 @@ var runCmd = &cobra.Command{
 			LogLevel:      runOpts.logLevel,
 			NoInteractive: runOpts.noInteractive,
 			Background:    runOpts.background,
+			MergeInto:     runOpts.mergeInto,
+			BranchName:    runOpts.branchName,
 		}
 		if len(runOpts.varFlags) > 0 {
 			vars, err := cli.ParseVarFlags(runOpts.varFlags)
@@ -55,5 +59,7 @@ func init() {
 	f.BoolVar(&runOpts.noInteractive, "no-interactive", false, "Don't prompt on TTY; exit on human pause")
 	f.BoolVar(&runOpts.background, "background", false, "Internal: managed-runner mode for the editor server (writes .pid, suppresses interactive prompts)")
 	_ = f.MarkHidden("background")
+	f.StringVar(&runOpts.mergeInto, "merge-into", "", "For worktree:auto runs, branch to fast-forward after the run (\"\"/\"current\"=current branch, \"none\"=skip, or a branch name)")
+	f.StringVar(&runOpts.branchName, "branch-name", "", "For worktree:auto runs, override the storage branch name (default iterion/run/<friendly>)")
 	rootCmd.AddCommand(runCmd)
 }

@@ -77,6 +77,12 @@ type RunHeader struct {
 	WorkDir string `json:"work_dir,omitempty"`
 	// Worktree is true when WorkDir was created by `worktree: auto`.
 	Worktree bool `json:"worktree,omitempty"`
+	// Worktree finalization summary (only populated for `worktree:
+	// auto` runs that reached a clean exit). The editor uses these to
+	// surface the persistent branch and FF status in the run header.
+	FinalCommit string `json:"final_commit,omitempty"`
+	FinalBranch string `json:"final_branch,omitempty"`
+	MergedInto  string `json:"merged_into,omitempty"`
 }
 
 // RunSnapshot is the structured view returned by GET /api/runs/{id} and
@@ -430,6 +436,9 @@ func headerFromRun(r *store.Run) RunHeader {
 		Checkpoint:   r.Checkpoint,
 		WorkDir:      r.WorkDir,
 		Worktree:     r.Worktree,
+		FinalCommit:  r.FinalCommit,
+		FinalBranch:  r.FinalBranch,
+		MergedInto:   r.MergedInto,
 	}
 }
 

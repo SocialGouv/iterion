@@ -42,6 +42,11 @@ export interface RunSummary {
   finished_at?: string;
   error?: string;
   active: boolean;
+  // Worktree finalization summary; empty for non-worktree runs or
+  // runs that never reached a clean exit.
+  final_commit?: string;
+  final_branch?: string;
+  merged_into?: string;
 }
 
 // Mirror of runview.ExecutionState.
@@ -83,6 +88,11 @@ export interface RunHeader {
   // whether to render at all.
   work_dir?: string;
   worktree?: boolean;
+  // Worktree finalization summary; empty for non-worktree runs or
+  // runs that never reached a clean exit.
+  final_commit?: string;
+  final_branch?: string;
+  merged_into?: string;
 }
 
 // Mirror of runview.RunSnapshot.
@@ -218,6 +228,15 @@ export interface CreateRunRequest {
   run_id?: string;
   vars?: Record<string, string>;
   timeout?: string;
+  // For `worktree: auto` workflows: the branch the engine will
+  // fast-forward after the run. "" or "current" → current branch
+  // (default); "none" → skip FF; <branch> → that named branch (only
+  // honoured when it matches the currently-checked-out branch).
+  merge_into?: string;
+  // For `worktree: auto` workflows: override the storage branch
+  // name (default `iterion/run/<friendly>`). Useful for landing
+  // every run on a stable name (e.g. `feat/auto-fixes`).
+  branch_name?: string;
 }
 
 export interface CreateRunResponse {

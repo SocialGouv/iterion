@@ -30,6 +30,13 @@ export default function LaunchView() {
   const [values, setValues] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Worktree finalization overrides — only meaningful when the
+  // workflow declares `worktree: auto`. We always render the controls
+  // (collapsed) even for non-worktree runs so the UI is predictable;
+  // the backend ignores them when worktree is off.
+  const [mergeInto, setMergeInto] = useState<string>(""); // "" = current
+  const [branchName, setBranchName] = useState<string>("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   useEffect(() => {
     if (!filePath) {
@@ -61,13 +68,24 @@ export default function LaunchView() {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await createRun({ file_path: filePath, vars: values });
+      const res = await createRun({
+        file_path: filePath,
+        vars: values,
+        merge_into: mergeInto || undefined,
+        branch_name: branchName || undefined,
+      });
       setLocation(`/runs/${encodeURIComponent(res.run_id)}`);
     } catch (e) {
       setError((e as Error).message);
       setSubmitting(false);
     }
   };
+
+  // Surface the worktree config so the user knows whether the
+  // finalization fields will have any effect. Only the first workflow
+  // is inspected (matches pickVars's selection rule).
+  const worktreeMode = doc?.workflows?.[0]?.worktree ?? "";
+  const worktreeOn = worktreeMode === "auto";
 
   return (
     <div className="h-full flex flex-col bg-surface-1 text-fg-default">
@@ -145,6 +163,70 @@ export default function LaunchView() {
                 </div>
               </form>
             )}
+            <div className="mt-6 border-t border-border-default pt-4">
+              <button
+                type="button"
+                className="text-xs text-fg-muted hover:text-fg-default flex items-center gap-1"
+                onClick={() => setShowAdvanced((v) => !v)}
+              >
+                <span>{showAdvanced ? "▼" : "▶"}</span>
+                <span>Advanced (worktree finalization)</span>
+                {!worktreeOn && (
+                  <span className="text-[10px] text-fg-subtle">
+                    — workflow has no `worktree: auto`, fields are ignored
+                  </span>
+                )}
+              </button>
+              {showAdvanced && (
+                <div className="mt-3 space-y-3 pl-4 border-l border-border-default">
+                  <div className="grid grid-cols-[160px_1fr] gap-3 items-start">
+                    <label htmlFor="launch-merge-into" className="pt-1">
+                      <div className="text-xs font-medium font-mono">merge_into</div>
+                      <div className="text-[10px] text-fg-subtle">
+                        FF target after run
+                      </div>
+                    </label>
+                    <div>
+                      <input
+                        id="launch-merge-into"
+                        type="text"
+                        className="w-full px-2 py-1 text-xs font-mono rounded bg-surface-2 border border-border-default focus:outline-none focus:ring-1 focus:ring-accent"
+                        placeholder="current (default) | none | <branch-name>"
+                        value={mergeInto}
+                        onChange={(e) => setMergeInto(e.target.value)}
+                      />
+                      <div className="mt-1 text-[10px] text-fg-subtle">
+                        Empty/<code>current</code>: fast-forward your current branch.
+                        <code> none</code>: keep commits on the storage branch only.
+                        Named branch: only honoured if it matches your checked-out
+                        branch.
+                      </div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-[160px_1fr] gap-3 items-start">
+                    <label htmlFor="launch-branch-name" className="pt-1">
+                      <div className="text-xs font-medium font-mono">branch_name</div>
+                      <div className="text-[10px] text-fg-subtle">Storage branch</div>
+                    </label>
+                    <div>
+                      <input
+                        id="launch-branch-name"
+                        type="text"
+                        className="w-full px-2 py-1 text-xs font-mono rounded bg-surface-2 border border-border-default focus:outline-none focus:ring-1 focus:ring-accent"
+                        placeholder="iterion/run/<friendly> (default)"
+                        value={branchName}
+                        onChange={(e) => setBranchName(e.target.value)}
+                      />
+                      <div className="mt-1 text-[10px] text-fg-subtle">
+                        Override the GC-guard branch name. On collision a numeric
+                        suffix is appended.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
             <div className="mt-6 flex items-center gap-2">
               <Button
                 variant="primary"

@@ -44,6 +44,12 @@ type launchRunRequest struct {
 	Vars     map[string]string `json:"vars,omitempty"`
 	// Timeout is a Go-style duration string ("30m", "2h"). Empty disables.
 	Timeout string `json:"timeout,omitempty"`
+	// MergeInto is the worktree-finalization FF target. See
+	// runview.LaunchSpec.MergeInto.
+	MergeInto string `json:"merge_into,omitempty"`
+	// BranchName overrides the storage branch name created on the
+	// worktree's HEAD. See runview.LaunchSpec.BranchName.
+	BranchName string `json:"branch_name,omitempty"`
 }
 
 type launchRunResponse struct {
@@ -129,10 +135,12 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	ctx := context.Background()
 
 	res, err := s.runs.Launch(ctx, runview.LaunchSpec{
-		FilePath: absPath,
-		RunID:    req.RunID,
-		Vars:     req.Vars,
-		Timeout:  timeout,
+		FilePath:   absPath,
+		RunID:      req.RunID,
+		Vars:       req.Vars,
+		Timeout:    timeout,
+		MergeInto:  req.MergeInto,
+		BranchName: req.BranchName,
 	})
 	if err != nil {
 		if errors.Is(err, runtime.ErrServerDraining) {

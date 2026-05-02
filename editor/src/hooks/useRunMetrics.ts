@@ -45,12 +45,18 @@ export function useEventDrivenMetrics(): EventDrivenMetrics {
     for (const e of events) {
       if (e.type === "llm_step_finished" && e.data) {
         m.llmStepCount += 1;
-        const cost = e.data["cost_usd"];
-        if (typeof cost === "number") m.costUsd += cost;
         const inT = e.data["input_tokens"];
         if (typeof inT === "number") m.inputTokens += inT;
         const outT = e.data["output_tokens"];
         if (typeof outT === "number") m.outputTokens += outT;
+      }
+      // Cost is annotated per-node by the backend (cost.Annotate writes
+      // _cost_usd onto the node output, which the runtime mirrors into
+      // node_finished.data). LLMStepInfo carries no cost, so summing
+      // cost from llm_step_finished would always yield $0.
+      if (e.type === "node_finished" && e.data) {
+        const c = e.data["_cost_usd"];
+        if (typeof c === "number") m.costUsd += c;
       }
     }
 

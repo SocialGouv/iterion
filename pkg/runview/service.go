@@ -30,6 +30,15 @@ type LaunchSpec struct {
 	Vars     map[string]string // --var-style overrides
 	RunID    string            // optional explicit ID; auto-generated when empty
 	Timeout  time.Duration     // 0 disables
+	// MergeInto controls the worktree-finalization fast-forward target
+	// for `worktree: auto` runs. "" or "current" → FF the user's
+	// currently-checked-out branch (default); "none" → skip FF;
+	// <branch-name> → FF that branch (only honoured when it matches
+	// the currently-checked-out branch).
+	MergeInto string
+	// BranchName overrides the default storage branch
+	// `iterion/run/<friendly>` created on the worktree's HEAD.
+	BranchName string
 }
 
 // ResumeSpec describes a resume request.
@@ -61,6 +70,12 @@ type RunSummary struct {
 	// belongs to another process or to a previous boot — Cancel won't
 	// reach it from here.
 	Active bool `json:"active"`
+	// Worktree finalization summary (only populated for `worktree:
+	// auto` runs that reached a clean exit). See store.Run for the
+	// full semantics.
+	FinalCommit string `json:"final_commit,omitempty"`
+	FinalBranch string `json:"final_branch,omitempty"`
+	MergedInto  string `json:"merged_into,omitempty"`
 }
 
 // ListFilter scopes a List request. Empty fields mean no filter.
@@ -551,6 +566,9 @@ func (s *Service) List(f ListFilter) ([]RunSummary, error) {
 			FinishedAt:   r.FinishedAt,
 			Error:        r.Error,
 			Active:       s.manager.Active(r.ID),
+			FinalCommit:  r.FinalCommit,
+			FinalBranch:  r.FinalBranch,
+			MergedInto:   r.MergedInto,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -732,7 +750,10 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		inputs[k] = v
 	}
 
-	return s.spawnRun(parent, runID, wf, hash, spec.FilePath, executor, runLogger, spec.Timeout, false,
+	runName := store.GenerateRunName(spec.FilePath + ":" + runID)
+	fin := finalizationOpts{mergeInto: spec.MergeInto, branchName: spec.BranchName}
+
+	return s.spawnRun(parent, runID, wf, hash, spec.FilePath, runName, fin, executor, runLogger, spec.Timeout, false,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
 		})
@@ -799,7 +820,20 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		executor.SetVars(r.Inputs)
 	}
 
-	return s.spawnRun(parent, spec.RunID, wf, hash, spec.FilePath, executor, runLogger, spec.Timeout, spec.Force,
+	// Preserve an existing name; back-fill one for legacy runs that
+	// predate the friendly-name field so the editor never falls back
+	// to workflow_name after a resume.
+	runName := r.Name
+	if runName == "" {
+		runName = store.GenerateRunName(spec.FilePath + ":" + spec.RunID)
+	}
+
+	// Finalization params for resume: empty (no override). The original
+	// launch's choice cannot be re-derived (we don't persist the
+	// MergeInto/BranchName decisions on the run), so resume uses
+	// engine defaults. If we ever surface "edit finalization on
+	// resume" we'd plumb a ResumeSpec field here.
+	return s.spawnRun(parent, spec.RunID, wf, hash, spec.FilePath, runName, finalizationOpts{}, executor, runLogger, spec.Timeout, spec.Force,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			// Re-validate under the lock acquired by spawnRun (TOCTOU
 			// guard against a concurrent resume / state change).
@@ -904,7 +938,8 @@ func (s *Service) spawnRun(
 	parent context.Context,
 	runID string,
 	wf *ir.Workflow,
-	hash, filePath string,
+	hash, filePath, runName string,
+	fin finalizationOpts,
 	executor runtime.NodeExecutor,
 	runLogger *iterlog.Logger,
 	timeout time.Duration,
@@ -929,7 +964,7 @@ func (s *Service) spawnRun(
 		ctx, cancelTimeout = context.WithTimeout(ctx, timeout)
 	}
 
-	opts := s.engineOptions(runLogger, hash, filePath)
+	opts := s.engineOptions(runLogger, hash, filePath, runName, fin)
 	if force {
 		opts = append(opts, runtime.WithForceResume(true))
 	}
@@ -952,12 +987,22 @@ func (s *Service) spawnRun(
 	return &LaunchResult{RunID: runID, Done: done}, nil
 }
 
+// finalizationOpts groups the worktree-finalization params Launch (and
+// Resume, in case the user wants to revisit the choice mid-run) wants
+// to thread through to the engine without inflating engineOptions's
+// signature for every callsite.
+type finalizationOpts struct {
+	mergeInto  string
+	branchName string
+}
+
 // engineOptions builds the standard option set for both Launch and
 // Resume: logger, recovery dispatch, broker observer, extra observers,
-// workflow hash, and file path. The logger is always per-run (built
-// by prepareRunLog) so every iterion log line is captured into the
-// run's log buffer for streaming to the editor.
-func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath string) []runtime.EngineOption {
+// workflow hash, file path, run name, and worktree-finalization
+// targets. The logger is always per-run (built by prepareRunLog) so
+// every iterion log line is captured into the run's log buffer for
+// streaming to the editor.
+func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runName string, fin finalizationOpts) []runtime.EngineOption {
 	if runLogger == nil {
 		runLogger = s.logger
 	}
@@ -974,6 +1019,15 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath string
 	}
 	if filePath != "" {
 		opts = append(opts, runtime.WithFilePath(filePath))
+	}
+	if runName != "" {
+		opts = append(opts, runtime.WithRunName(runName))
+	}
+	if fin.mergeInto != "" {
+		opts = append(opts, runtime.WithMergeInto(fin.mergeInto))
+	}
+	if fin.branchName != "" {
+		opts = append(opts, runtime.WithBranchName(fin.branchName))
 	}
 	return opts
 }

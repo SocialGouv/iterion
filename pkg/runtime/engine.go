@@ -59,6 +59,8 @@ type Engine struct {
 	workflowHash     string                // SHA-256 of the .iter source, set via WithWorkflowHash
 	filePath         string                // absolute .iter source path, set via WithFilePath
 	runName          string                // deterministic human-friendly run label, set via WithRunName
+	mergeInto        string                // worktree finalization: FF target ("" = current branch, "none" = skip, or branch name); set via WithMergeInto
+	branchName       string                // worktree finalization: storage branch override ("" = iterion/run/<runName>); set via WithBranchName
 	validateOutputs  bool                  // when true, validate node outputs against declared schemas
 	forceResume      bool                  // when true, skip workflow hash check on resume
 	workDir          string                // working directory for subprocesses + PROJECT_DIR expansion; defaults to os.Getwd() at Run() time
@@ -117,6 +119,31 @@ func WithFilePath(path string) EngineOption {
 // remains the run ID. Optional — empty string is ignored.
 func WithRunName(name string) EngineOption {
 	return func(e *Engine) { e.runName = name }
+}
+
+// WithMergeInto controls the worktree-finalization fast-forward target
+// for `worktree: auto` runs. Values:
+//   - "" or "current" → fast-forward the user's currently-checked-out
+//     branch (default behaviour)
+//   - "none"          → skip the fast-forward; the storage branch
+//     remains the only landing
+//   - <branch-name>   → fast-forward this named branch (only honoured
+//     when it matches the currently-checked-out branch; otherwise a
+//     warning is logged and the FF is skipped)
+//
+// No effect on runs without `worktree: auto`.
+func WithMergeInto(target string) EngineOption {
+	return func(e *Engine) { e.mergeInto = target }
+}
+
+// WithBranchName overrides the storage branch name for the worktree
+// finalization. The default `iterion/run/<runName>` is used when this
+// is empty. The branch is always created (it is the GC guard for the
+// run's commits); on collision the engine appends a numeric suffix.
+//
+// No effect on runs without `worktree: auto`.
+func WithBranchName(name string) EngineOption {
+	return func(e *Engine) { e.branchName = name }
 }
 
 // WithForceResume allows resuming a run even when the workflow source has
@@ -246,14 +273,18 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 	// happen in an isolated checkout. The user's main working tree
 	// (with WIP, build artefacts, etc.) is invisible by construction.
 	var worktreeCleanup func()
+	var wtCtx worktreeContext
+	worktreeActive := false
 	if e.workflow.Worktree == "auto" {
-		wtPath, cleanup, wtErr := setupWorktree(e.store.Root(), runID, e.workDir, e.logger)
+		ctx, cleanup, wtErr := setupWorktree(e.store.Root(), runID, e.workDir, e.logger)
 		if wtErr != nil {
 			_ = e.store.UpdateRunStatus(runID, store.RunStatusFailed, wtErr.Error())
 			return fmt.Errorf("runtime: worktree setup: %w", wtErr)
 		}
-		e.workDir = wtPath
+		e.workDir = ctx.wtPath
 		worktreeCleanup = cleanup
+		wtCtx = ctx
+		worktreeActive = true
 	}
 
 	// Persist the resolved working directory so editor surfaces (modified-
@@ -293,11 +324,33 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 	loopErr := e.execLoop(ctx, rs, e.workflow.Entry)
 	e.evictRunSessions(runID, loopErr)
 
-	// Worktree retention: remove on clean exit; preserve on error so the
-	// operator can inspect what the run actually produced.
-	if worktreeCleanup != nil {
+	// Worktree retention: on clean exit, promote any commits the run
+	// produced onto a persistent branch (and best-effort FF the user's
+	// branch), then remove the worktree dir. On error, preserve the
+	// worktree so the operator can inspect what was produced.
+	if worktreeActive {
 		if loopErr == nil {
-			worktreeCleanup()
+			finRes := finalizeWorktree(wtCtx, finalizeOptions{
+				runName:    e.runName,
+				runID:      runID,
+				branchName: e.branchName,
+				mergeInto:  e.mergeInto,
+			}, e.logger)
+			// Persist whatever the finalization decided. Best-effort:
+			// a save failure logs but doesn't fail the run.
+			if finRes.FinalCommit != "" || finRes.FinalBranch != "" || finRes.MergedInto != "" {
+				if r2, err := e.store.LoadRun(runID); err == nil {
+					r2.FinalCommit = finRes.FinalCommit
+					r2.FinalBranch = finRes.FinalBranch
+					r2.MergedInto = finRes.MergedInto
+					if saveErr := e.store.SaveRun(r2); saveErr != nil && e.logger != nil {
+						e.logger.Warn("runtime: persist finalization metadata: %v", saveErr)
+					}
+				}
+			}
+			if worktreeCleanup != nil {
+				worktreeCleanup()
+			}
 		} else if e.logger != nil {
 			e.logger.Info("runtime: worktree preserved for inspection: %s", e.workDir)
 		}

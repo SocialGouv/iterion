@@ -59,14 +59,16 @@ func runnerBinary() (string, error) {
 // from a LaunchSpec or ResumeSpec and turned into an os/exec command
 // by buildRunnerCmd.
 type detachedSpec struct {
-	Command  runnerCommand
-	RunID    string
-	FilePath string
-	Vars     map[string]string // Launch only
-	Answers  map[string]string // Resume only; CLI --answer accepts string values today
-	StoreDir string
-	Force    bool
-	Timeout  time.Duration
+	Command    runnerCommand
+	RunID      string
+	FilePath   string
+	Vars       map[string]string // Launch only
+	Answers    map[string]string // Resume only; CLI --answer accepts string values today
+	StoreDir   string
+	Force      bool
+	Timeout    time.Duration
+	MergeInto  string // worktree finalization, Launch only
+	BranchName string // worktree finalization, Launch only
 }
 
 // buildRunnerCmd assembles the exec.Cmd for a detached-runner
@@ -79,6 +81,12 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 		args = append(args, "run", spec.FilePath, "--background", "--run-id", spec.RunID, "--no-interactive")
 		for k, v := range spec.Vars {
 			args = append(args, "--var", k+"="+v)
+		}
+		if spec.MergeInto != "" {
+			args = append(args, "--merge-into", spec.MergeInto)
+		}
+		if spec.BranchName != "" {
+			args = append(args, "--branch-name", spec.BranchName)
 		}
 	case runnerCommandResume:
 		args = append(args, "resume", "--background", "--no-interactive", "--run-id", spec.RunID, "--file", spec.FilePath)
@@ -211,12 +219,14 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	s.prepareRunLogNoFile(runID)
 
 	res, err := s.spawnDetached(parent, detachedSpec{
-		Command:  runnerCommandRun,
-		RunID:    runID,
-		FilePath: spec.FilePath,
-		Vars:     spec.Vars,
-		StoreDir: s.storeDir,
-		Timeout:  spec.Timeout,
+		Command:    runnerCommandRun,
+		RunID:      runID,
+		FilePath:   spec.FilePath,
+		Vars:       spec.Vars,
+		StoreDir:   s.storeDir,
+		Timeout:    spec.Timeout,
+		MergeInto:  spec.MergeInto,
+		BranchName: spec.BranchName,
 	})
 	if err != nil {
 		s.dropRunLog(runID)

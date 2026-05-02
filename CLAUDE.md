@@ -217,6 +217,37 @@ See `docs/resume.md` for the exhaustive failure matrix.
 - **Workspace safety**: only one mutating branch allowed (agents/humans with tools); multiple read-only branches OK
 - **Shared budget**: mutex-protected token/cost/duration tracking across all branches
 
+### Worktree finalization (`worktree: auto`)
+
+When a workflow declares `worktree: auto`, the engine creates a fresh git
+worktree at `<store-dir>/worktrees/<run-id>` and runs all nodes inside it
+(see `pkg/runtime/worktree.go`). On a clean exit, `finalizeWorktree`:
+
+1. Reads the worktree's HEAD. If unchanged, no-op (the run made no commits).
+2. **Always** creates a persistent branch on that HEAD (default
+   `iterion/run/<friendly-name>`, overridable via `--branch-name`). This
+   is the GC guard — without it the commits would only be reachable via
+   reflog and eligible for `git gc` after ~30 days.
+3. **Best-effort** fast-forwards the user's currently-checked-out branch
+   to that HEAD (default behaviour, overridable via `--merge-into`).
+   Skipped — with a warning logged — if any guard fails: dirty working
+   tree, branch switched mid-run, non-FF, or detached HEAD at start.
+4. Removes the worktree directory.
+
+The result is persisted on `run.json` as `final_commit`, `final_branch`,
+`merged_into` and surfaced in the editor RunHeader so the user always
+knows where the run's commits landed.
+
+Override flags (CLI + editor Launch modal + HTTP API):
+- `--merge-into <target>` — `current` (default), `none` (skip FF, branch
+  only), or a branch name (must match currently-checked-out)
+- `--branch-name <name>` — override the storage branch (default
+  `iterion/run/<friendly-name>`); on collision a numeric suffix is added
+
+On error, the worktree is preserved at `<store-dir>/worktrees/<run-id>`
+for inspection and finalization is skipped — the operator decides what
+to do with any partial commits.
+
 ## Authoring `.iter` workflows that touch real code
 
 **Before writing or amending any `.iter` workflow that has the power to
@@ -233,7 +264,7 @@ goai → claw-code-go migration ran for 3 hours and produced a
 ```
 iterion init [dir]                      # Scaffold new project
 iterion validate <file.iter>            # Parse and validate workflow
-iterion run <file.iter> [flags]         # Execute workflow (--var, --recipe, --timeout, --store-dir)
+iterion run <file.iter> [flags]         # Execute workflow (--var, --recipe, --timeout, --store-dir, --merge-into, --branch-name)
 iterion inspect [--run-id] [--events]   # View run state and events
 iterion resume --run-id --file [--answers-file] [--force]  # Resume paused/failed/cancelled run
 iterion diagram <file.iter> [--view]    # Generate Mermaid diagram (compact|detailed|full)

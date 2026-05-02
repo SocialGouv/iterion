@@ -52,6 +52,16 @@ type RunOptions struct {
 	// server can detect liveness across its own restart, and forces
 	// NoInteractive (no TTY in the spawned process).
 	Background bool
+	// MergeInto controls the worktree-finalization fast-forward target
+	// for `worktree: auto` runs. "" or "current" → FF the user's
+	// currently-checked-out branch (default); "none" → skip FF;
+	// <branch-name> → FF that branch (must match currently-checked-out).
+	MergeInto string
+	// BranchName overrides the default storage branch
+	// `iterion/run/<friendly>` created on the worktree's HEAD. The
+	// branch is always created (GC guard); on collision a numeric
+	// suffix is appended.
+	BranchName string
 }
 
 // RunRun executes a workflow or recipe and reports the outcome.
@@ -165,6 +175,8 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 			runtime.WithWorkflowHash(wfHash),
 			runtime.WithFilePath(iterFile),
 			runtime.WithRunName(runName),
+			runtime.WithMergeInto(opts.MergeInto),
+			runtime.WithBranchName(opts.BranchName),
 		)...,
 	)
 
