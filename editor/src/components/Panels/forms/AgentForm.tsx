@@ -1,7 +1,8 @@
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { useSchemaPromptCreators } from "@/hooks/useSchemaPromptCreators";
+import { useEffortCapabilities } from "@/hooks/useEffortCapabilities";
 import type { AgentDecl, JudgeDecl, AwaitMode, InteractionMode, ReasoningEffort } from "@/api/types";
 import { getAllNodeNames } from "@/lib/defaults";
 import {
@@ -45,6 +46,38 @@ export default function AgentForm({ decl, kind }: Props) {
 
   const schemaOptions = (document?.schemas ?? []).map((s) => ({ value: s.name, label: s.name }));
   const promptOptions = (document?.prompts ?? []).map((p) => ({ value: p.name, label: p.name }));
+
+  // Effort levels are model+backend-dependent (per Anthropic docs:
+  // Opus 4.7 has xhigh; Opus 4.6 / Sonnet 4.6 don't; Haiku has nothing).
+  // When backend is unset iterion routes via the in-process `claw` client,
+  // so we query that path. Fetched lazily; cached in the hook.
+  const effortBackend = decl.backend?.trim() || "claw";
+  const { capabilities: effortCaps, loading: effortLoading } = useEffortCapabilities(
+    effortBackend,
+    decl.model,
+  );
+  const effortOptions = useMemo(() => {
+    if (effortLoading || !effortCaps) return REASONING_EFFORT_OPTIONS;
+    const supported = effortCaps.supported ?? [];
+    if (supported.length === 0) return [];
+    const defaultLabel = effortCaps.default ? `(default: ${effortCaps.default})` : "(default)";
+    return [
+      { value: "", label: defaultLabel },
+      ...supported.map((s) => ({ value: s, label: s })),
+    ];
+  }, [effortCaps, effortLoading]);
+  const effortNotSupported =
+    !effortLoading &&
+    effortCaps !== null &&
+    (effortCaps.supported ?? []).length === 0;
+  const effortHelp = useMemo(() => {
+    if (effortLoading) return REASONING_EFFORT_HELP;
+    if (!effortCaps) return REASONING_EFFORT_HELP;
+    if (effortNotSupported) {
+      return `${decl.model || "This model"} does not support reasoning_effort.`;
+    }
+    return `${REASONING_EFFORT_HELP} Levels available for ${decl.model}: ${(effortCaps.supported ?? []).join(", ")}.`;
+  }, [effortLoading, effortCaps, effortNotSupported, decl.model]);
 
   const headerColor = kind === "agent" ? "#4A90D9" : "#7B68EE";
   const headerIcon = kind === "agent" ? "\u{1F916}" : "\u{2696}\u{FE0F}";
@@ -100,13 +133,15 @@ export default function AgentForm({ decl, kind }: Props) {
         min={1}
         help="Per-LLM-call output cap. 0/empty inherits the backend default."
       />
-      <SelectField
-        label="Reasoning Effort"
-        value={decl.reasoning_effort ?? ""}
-        onChange={(v) => update({ reasoning_effort: (v || undefined) as ReasoningEffort | undefined })}
-        options={REASONING_EFFORT_OPTIONS}
-        help={REASONING_EFFORT_HELP}
-      />
+      {(!effortNotSupported || decl.reasoning_effort) && (
+        <SelectField
+          label="Reasoning Effort"
+          value={decl.reasoning_effort ?? ""}
+          onChange={(v) => update({ reasoning_effort: (v || undefined) as ReasoningEffort | undefined })}
+          options={effortOptions}
+          help={effortHelp}
+        />
+      )}
       <SelectFieldWithCreate
         label="Input Schema"
         value={decl.input}

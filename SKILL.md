@@ -59,7 +59,7 @@ agent my_agent:
   session: fresh                           ## fresh | inherit | fork | artifacts_only
   tools: [Read, Edit, Write, Bash]         ## tool capability names
   tool_max_steps: 15                       ## max tool-use iterations (0 = unlimited)
-  reasoning_effort: high                   ## low | medium | high | extra_high
+  reasoning_effort: high                   ## low | medium | high | xhigh | max
   readonly: true                           ## not considered mutating for workspace safety
   interaction: llm_or_human                ## none | human | llm | llm_or_human
   interaction_prompt: my_interaction_prompt ## prompt ref for LLM interaction decisions

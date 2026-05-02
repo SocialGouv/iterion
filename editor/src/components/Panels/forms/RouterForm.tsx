@@ -3,9 +3,15 @@ import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { useSchemaPromptCreators } from "@/hooks/useSchemaPromptCreators";
-import type { RouterDecl, RouterMode } from "@/api/types";
+import { useEffortCapabilities } from "@/hooks/useEffortCapabilities";
+import type { ReasoningEffort, RouterDecl, RouterMode } from "@/api/types";
 import { getAllNodeNames } from "@/lib/defaults";
-import { BACKEND_HELP, BACKEND_OPTIONS } from "@/lib/dslOptions";
+import {
+  BACKEND_HELP,
+  BACKEND_OPTIONS,
+  REASONING_EFFORT_HELP,
+  REASONING_EFFORT_OPTIONS,
+} from "@/lib/dslOptions";
 import { CommittedTextField, SelectField, SelectFieldWithCreate, TextField, CheckboxField } from "./FormField";
 import { ProviderIcon, ProviderLabel } from "@/components/icons/ProviderIcon";
 import { detectProvider } from "@/components/icons/providerDetect";
@@ -28,6 +34,37 @@ export default function RouterForm({ decl }: Props) {
   }, [activeWorkflow, decl.name]);
 
   const promptOptions = (document?.prompts ?? []).map((p) => ({ value: p.name, label: p.name }));
+
+  // Mirror AgentForm: derive effort options from the model registry when
+  // mode=llm, falling back to the static list while loading or when the
+  // backend/model is empty. The endpoint accepts "claw" as the empty-backend
+  // alias since iterion routes there by default.
+  const effortBackend = decl.backend?.trim() || "claw";
+  const { capabilities: effortCaps, loading: effortLoading } = useEffortCapabilities(
+    decl.mode === "llm" ? effortBackend : undefined,
+    decl.mode === "llm" ? decl.model : undefined,
+  );
+  const effortOptions = useMemo(() => {
+    if (effortLoading || !effortCaps) return REASONING_EFFORT_OPTIONS;
+    const supported = effortCaps.supported ?? [];
+    if (supported.length === 0) return [];
+    const defaultLabel = effortCaps.default ? `(default: ${effortCaps.default})` : "(default)";
+    return [
+      { value: "", label: defaultLabel },
+      ...supported.map((s) => ({ value: s, label: s })),
+    ];
+  }, [effortCaps, effortLoading]);
+  const effortNotSupported =
+    !effortLoading &&
+    effortCaps !== null &&
+    (effortCaps.supported ?? []).length === 0;
+  const effortHelp = useMemo(() => {
+    if (effortLoading || !effortCaps) return REASONING_EFFORT_HELP;
+    if (effortNotSupported) {
+      return `${decl.model || "This model"} does not support reasoning_effort.`;
+    }
+    return `${REASONING_EFFORT_HELP} Levels available for ${decl.model}: ${(effortCaps.supported ?? []).join(", ")}.`;
+  }, [effortLoading, effortCaps, effortNotSupported, decl.model]);
 
   return (
     <div className="space-y-1">
@@ -112,6 +149,19 @@ export default function RouterForm({ decl }: Props) {
             onChange={(v) => updateRouter(decl.name, { multi: v })}
             help="When enabled, the LLM can select multiple routes for parallel execution."
           />
+          {(!effortNotSupported || decl.reasoning_effort) && (
+            <SelectField
+              label="Reasoning Effort"
+              value={decl.reasoning_effort ?? ""}
+              onChange={(v) =>
+                updateRouter(decl.name, {
+                  reasoning_effort: (v || undefined) as ReasoningEffort | undefined,
+                })
+              }
+              options={effortOptions}
+              help={effortHelp}
+            />
+          )}
         </div>
       )}
       {decl.mode === "condition" && (

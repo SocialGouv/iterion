@@ -66,7 +66,8 @@ export const REASONING_EFFORT_OPTIONS: SelectOption[] = [
   { value: "low", label: "low" },
   { value: "medium", label: "medium" },
   { value: "high", label: "high" },
-  { value: "extra_high", label: "extra_high" },
+  { value: "xhigh", label: "xhigh" },
+  { value: "max", label: "max" },
 ];
 
 export const REASONING_EFFORT_HELP =

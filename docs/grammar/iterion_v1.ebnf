@@ -76,7 +76,7 @@ agent_prop = "model"            ":" STRING_LIT              NEWLINE
 
 session_mode = "fresh" | "inherit" | "fork" | "artifacts_only" ;
 
-reasoning_effort_value = "low" | "medium" | "high" | "extra_high" ;
+reasoning_effort_value = "low" | "medium" | "high" | "xhigh" | "max" ;
 
 tool_list = "[" tool_ref { "," tool_ref } "]" ;
 

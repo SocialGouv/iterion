@@ -485,15 +485,17 @@ func codexSandboxForAllowedTools(allowed []string) string {
 }
 
 // mapReasoningEffort converts iterion reasoning effort strings to Codex SDK Effort constants.
+// Codex only supports low/medium/high/max — xhigh maps down to high (matching the
+// "fall back to highest supported at or below" convention used by Claude Code).
 func mapReasoningEffort(s string) codexsdk.Effort {
 	switch s {
 	case "low":
 		return codexsdk.EffortLow
 	case "medium":
 		return codexsdk.EffortMedium
-	case "high":
+	case "high", "xhigh":
 		return codexsdk.EffortHigh
-	case "extra_high":
+	case "max":
 		return codexsdk.EffortMax
 	default:
 		return codexsdk.EffortMedium

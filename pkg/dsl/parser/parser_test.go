@@ -475,14 +475,24 @@ func TestAgentReasoningEffort(t *testing.T) {
 	assertEq(t, "ReasoningEffort", res.File.Agents[0].ReasoningEffort, "high")
 }
 
-func TestAgentReasoningEffortExtraHigh(t *testing.T) {
+func TestAgentReasoningEffortXHigh(t *testing.T) {
 	src := `agent planner:
   model: "claude-4"
-  reasoning_effort: extra_high
+  reasoning_effort: xhigh
 `
 	res := parser.Parse("test.iter", src)
 	assertNoDiags(t, res)
-	assertEq(t, "ReasoningEffort", res.File.Agents[0].ReasoningEffort, "extra_high")
+	assertEq(t, "ReasoningEffort", res.File.Agents[0].ReasoningEffort, "xhigh")
+}
+
+func TestAgentReasoningEffortMax(t *testing.T) {
+	src := `agent planner:
+  model: "claude-4"
+  reasoning_effort: max
+`
+	res := parser.Parse("test.iter", src)
+	assertNoDiags(t, res)
+	assertEq(t, "ReasoningEffort", res.File.Agents[0].ReasoningEffort, "max")
 }
 
 func TestJudgeReasoningEffort(t *testing.T) {

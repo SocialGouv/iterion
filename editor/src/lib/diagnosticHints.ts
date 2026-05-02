@@ -120,7 +120,7 @@ const HINTS: Record<string, DiagnosticHint> = {
   },
   C024: {
     title: "Invalid reasoning_effort or duplicate MCP server",
-    hint: "Use `low | medium | high | extra_high` for reasoning_effort, and unique mcp_server names.",
+    hint: "Use `low | medium | high | xhigh | max` for reasoning_effort, and unique mcp_server names.",
     docsAnchor: "c024",
   },
   C025: {

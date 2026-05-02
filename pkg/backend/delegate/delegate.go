@@ -94,7 +94,7 @@ type Task struct {
 	BaseDir string
 
 	// ReasoningEffort is the reasoning effort level.
-	// Valid values: "low", "medium", "high", "extra_high".
+	// Valid values: "low", "medium", "high", "xhigh", "max".
 	ReasoningEffort string
 
 	// CompactThresholdRatio is the resolved compaction trigger as a

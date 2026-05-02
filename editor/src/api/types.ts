@@ -123,7 +123,7 @@ export type AwaitMode = "none" | "wait_all" | "best_effort";
 // the old editor-only `HumanMode` and adds llm/llm_or_human surfaces.
 export type InteractionMode = "none" | "human" | "llm" | "llm_or_human";
 
-export type ReasoningEffort = "low" | "medium" | "high" | "extra_high";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface AgentDecl {
   name: string;
@@ -187,6 +187,7 @@ export interface RouterDecl {
   system?: string;
   user?: string;
   multi?: boolean;
+  reasoning_effort?: ReasoningEffort;
 }
 
 export interface HumanDecl {

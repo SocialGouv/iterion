@@ -289,7 +289,7 @@ agent reviewer:
 | `session` | Context mode: `fresh` (default), `inherit`, `fork`, or `artifacts_only` |
 | `tools` | List of allowed tool names |
 | `tool_max_steps` | Max tool-use iterations (0 = unlimited) |
-| `reasoning_effort` | Extended thinking: `low`, `medium`, `high`, `extra_high` |
+| `reasoning_effort` | Extended thinking: `low`, `medium`, `high`, `xhigh`, `max` |
 | `readonly` | If `true`, prevents tool side effects (workspace safety) |
 
 #### Judge

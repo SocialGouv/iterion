@@ -36,9 +36,10 @@ const defaultClaudeCodeModel = "claude-opus-4-7"
 
 // defaultClaudeCodeEffort is the reasoning effort iterion forces on the
 // claude_code backend when the workflow doesn't specify one. Mirrors the
-// official Claude Code CLI default ("extra_high" thinking budget for
-// Opus). Workflows can always override via `reasoning_effort:`.
-const defaultClaudeCodeEffort = "extra_high"
+// official Claude Code CLI default ("xhigh" thinking budget for Opus 4.7,
+// per code.claude.com/docs/en/model-config). Workflows can always override
+// via `reasoning_effort:`.
+const defaultClaudeCodeEffort = "xhigh"
 
 // ClaudeCodeBackend delegates work to the `claude` CLI (claude-code)
 // via the Claude Agent SDK.
@@ -118,7 +119,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 	// reasoning intervals. Without live stderr, the SDK is a black box
 	// while it streams thinking tokens or reads files: the runtime
 	// emits nothing between "Delegation started" and the final
-	// AssistantMessage, which can be many minutes for Opus extra_high.
+	// AssistantMessage, which can be many minutes for Opus xhigh/max.
 	var stderrBuf strings.Builder
 	opts = append(opts, claudesdk.WithStderrCallback(func(line string) {
 		stderrBuf.WriteString(line)

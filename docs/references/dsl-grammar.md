@@ -204,7 +204,7 @@ with_mapping = IDENT ":" STRING_LIT NEWLINE ;
 session_mode           = "fresh" | "inherit" | "fork" | "artifacts_only" ;
 await_mode             = "wait_all" | "best_effort" ;
 interaction_mode       = "human" | "llm" | "llm_or_human" ;
-reasoning_effort_value = "low" | "medium" | "high" | "extra_high" ;
+reasoning_effort_value = "low" | "medium" | "high" | "xhigh" | "max" ;
 ```
 
 ## Template Expressions
@@ -238,4 +238,4 @@ DEDENT       = (* decrease in indentation level *) ;
 
 ## Reserved Keywords
 
-`vars`, `prompt`, `schema`, `agent`, `judge`, `router`, `human`, `tool`, `workflow`, `entry`, `mcp`, `mcp_server`, `budget`, `model`, `input`, `output`, `publish`, `system`, `user`, `session`, `tools`, `tool_max_steps`, `reasoning_effort`, `readonly`, `interaction`, `interaction_prompt`, `interaction_model`, `await`, `delegate`, `mode`, `instructions`, `min_answers`, `command`, `multi`, `transport`, `args`, `url`, `autoload_project`, `inherit`, `servers`, `disable`, `when`, `not`, `as`, `with`, `enum`, `fresh`, `fork`, `artifacts_only`, `fan_out_all`, `condition`, `round_robin`, `llm`, `wait_all`, `best_effort`, `done`, `fail`, `true`, `false`, `string`, `bool`, `int`, `float`, `json`, `string[]`, `max_parallel_branches`, `max_duration`, `max_cost_usd`, `max_tokens`, `max_iterations`, `low`, `medium`, `high`, `extra_high`.
+`vars`, `prompt`, `schema`, `agent`, `judge`, `router`, `human`, `tool`, `workflow`, `entry`, `mcp`, `mcp_server`, `budget`, `model`, `input`, `output`, `publish`, `system`, `user`, `session`, `tools`, `tool_max_steps`, `reasoning_effort`, `readonly`, `interaction`, `interaction_prompt`, `interaction_model`, `await`, `delegate`, `mode`, `instructions`, `min_answers`, `command`, `multi`, `transport`, `args`, `url`, `autoload_project`, `inherit`, `servers`, `disable`, `when`, `not`, `as`, `with`, `enum`, `fresh`, `fork`, `artifacts_only`, `fan_out_all`, `condition`, `round_robin`, `llm`, `wait_all`, `best_effort`, `done`, `fail`, `true`, `false`, `string`, `bool`, `int`, `float`, `json`, `string[]`, `max_parallel_branches`, `max_duration`, `max_cost_usd`, `max_tokens`, `max_iterations`, `low`, `medium`, `high`, `xhigh`, `max`.

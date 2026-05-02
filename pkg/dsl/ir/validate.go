@@ -740,11 +740,16 @@ func (c *compiler) validateLoopIterations(w *Workflow) {
 // ---------------------------------------------------------------------------
 
 // ValidReasoningEfforts is the set of accepted reasoning effort levels.
+// Mirrors the Anthropic effort spec (platform.claude.com/docs/en/build-with-claude/effort)
+// and the CLAUDE_CODE_EFFORT_LEVEL env var (code.claude.com/docs/en/model-config).
+// Per-model availability is curated upstream in claw-code-go's ModelEntry; this
+// set is the union across all models.
 var ValidReasoningEfforts = map[string]bool{
-	"low":        true,
-	"medium":     true,
-	"high":       true,
-	"extra_high": true,
+	"low":    true,
+	"medium": true,
+	"high":   true,
+	"xhigh":  true,
+	"max":    true,
 }
 
 func (c *compiler) validateReasoningEffort(w *Workflow) {
@@ -765,7 +770,7 @@ func (c *compiler) validateReasoningEffort(w *Workflow) {
 		}
 		if !ValidReasoningEfforts[effort] {
 			c.errorf(DiagInvalidReasoningEffort,
-				"node %q has invalid reasoning_effort %q; valid values are low, medium, high, extra_high",
+				"node %q has invalid reasoning_effort %q; valid values are low, medium, high, xhigh, max",
 				node.NodeID(), effort)
 		}
 	}

@@ -363,7 +363,7 @@ router alt:
 judge reviewer_claude:
   backend: "claude_code"
   model: "claude-opus-4-7"
-  reasoning_effort: extra_high
+  reasoning_effort: xhigh
   input: review_input
   output: verdict_output
   system: review_system
@@ -430,7 +430,7 @@ compute streak_check:
 agent fix_claude:
   backend: "claude_code"
   model: "claude-opus-4-7"
-  reasoning_effort: extra_high
+  reasoning_effort: xhigh
   input: fix_input
   output: fix_output
   system: fix_system

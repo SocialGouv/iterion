@@ -26,6 +26,12 @@ var ResolveModelAlias = apikit.ResolveModelAlias
 // ModelTokenLimitForModel returns the token limits for a known model.
 var ModelTokenLimitForModel = apikit.ModelTokenLimitForModel
 
+// EffortCapabilities returns the supported reasoning_effort levels and the
+// API default for a model name or alias. Returns (nil, "") when the model
+// is unknown or does not declare an effort matrix. Curated from provider
+// documentation; see internal/apikit/effort.go for sources.
+var EffortCapabilities = apikit.EffortCapabilities
+
 // ---------------------------------------------------------------------------
 // Telemetry surface
 // ---------------------------------------------------------------------------

@@ -238,13 +238,14 @@ type jsonJudgeDecl struct {
 }
 
 type jsonRouterDecl struct {
-	Name    string `json:"name,omitempty"`
-	Mode    string `json:"mode,omitempty"`
-	Model   string `json:"model,omitempty"`
-	Backend string `json:"backend,omitempty"`
-	System  string `json:"system,omitempty"`
-	User    string `json:"user,omitempty"`
-	Multi   bool   `json:"multi,omitempty"`
+	Name            string `json:"name,omitempty"`
+	Mode            string `json:"mode,omitempty"`
+	Model           string `json:"model,omitempty"`
+	Backend         string `json:"backend,omitempty"`
+	System          string `json:"system,omitempty"`
+	User            string `json:"user,omitempty"`
+	Multi           bool   `json:"multi,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 type jsonHumanDecl struct {
@@ -366,13 +367,14 @@ func toJSON(f *File) *jsonFile {
 	}
 	for _, r := range f.Routers {
 		jf.Routers = append(jf.Routers, &jsonRouterDecl{
-			Name:    r.Name,
-			Mode:    routerModeToStr[r.Mode],
-			Model:   r.Model,
-			Backend: r.Backend,
-			System:  r.System,
-			User:    r.User,
-			Multi:   r.Multi,
+			Name:            r.Name,
+			Mode:            routerModeToStr[r.Mode],
+			Model:           r.Model,
+			Backend:         r.Backend,
+			System:          r.System,
+			User:            r.User,
+			Multi:           r.Multi,
+			ReasoningEffort: r.ReasoningEffort,
 		})
 	}
 	for _, h := range f.Humans {
@@ -679,13 +681,14 @@ func fromJSON(jf *jsonFile) (*File, error) {
 			return nil, fmt.Errorf("astjson: unknown router mode %q", jr.Mode)
 		}
 		f.Routers = append(f.Routers, &RouterDecl{
-			Name:    jr.Name,
-			Mode:    mode,
-			Model:   jr.Model,
-			Backend: jr.Backend,
-			System:  jr.System,
-			User:    jr.User,
-			Multi:   jr.Multi,
+			Name:            jr.Name,
+			Mode:            mode,
+			Model:           jr.Model,
+			Backend:         jr.Backend,
+			System:          jr.System,
+			User:            jr.User,
+			Multi:           jr.Multi,
+			ReasoningEffort: jr.ReasoningEffort,
 		})
 	}
 

@@ -37,7 +37,7 @@ All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`
 | **C021** | error | LLM router too few edges | An `llm` router has fewer than 2 outgoing edges | Add at least 2 outgoing edges for the LLM to choose from |
 | **C022** | error | LLM router edge has condition | An edge from an `llm` router has a `when` clause | Remove the `when` clause — LLM routers select targets directly |
 | **C023** | error | LLM-only property on non-LLM router | Properties `model`, `system`, `user`, or `multi` are set on a router that isn't `mode: llm` | Remove these properties or change the mode to `llm` |
-| **C024** | error | Invalid reasoning effort | `reasoning_effort` has a value other than `low`, `medium`, `high`, `extra_high` | Use one of the four valid values |
+| **C024** | error | Invalid reasoning effort | `reasoning_effort` has a value other than `low`, `medium`, `high`, `xhigh`, `max` | Use one of the five valid values |
 | **C026** | error | Invalid loop iterations | A loop's `max_iterations` is less than 1 | Set `max_iterations` to at least 1 |
 | **C028** | error | Duplicate with-mapping key | The same `with` key appears on multiple non-conditional edges to the same target | Use unique keys, or make edges conditional/convergent |
 

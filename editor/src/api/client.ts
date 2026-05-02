@@ -93,3 +93,20 @@ export async function saveFile(
     body: JSON.stringify({ path, document }),
   });
 }
+
+// Reasoning effort capabilities
+
+export interface EffortCapabilities {
+  supported: string[] | null;
+  default: string;
+  source: "claw-registry" | "codex-cli" | "codex-fallback";
+}
+
+export async function fetchEffortCapabilities(
+  backend: string,
+  model: string,
+  signal?: AbortSignal,
+): Promise<EffortCapabilities> {
+  const params = new URLSearchParams({ backend, model });
+  return request<EffortCapabilities>(`/effort-capabilities?${params.toString()}`, { signal });
+}

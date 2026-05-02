@@ -141,6 +141,9 @@ func Unparse(f *ast.File) string {
 			if r.Multi {
 				writeProp(&b, "multi", "true")
 			}
+			if r.ReasoningEffort != "" {
+				writeProp(&b, "reasoning_effort", r.ReasoningEffort)
+			}
 		}
 	}
 

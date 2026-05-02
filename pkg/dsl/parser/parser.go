@@ -970,6 +970,9 @@ func (p *parser) parseRouterDecl() *ast.RouterDecl {
 			} else if bt.Type != TokenFalse {
 				p.addError(DiagInvalidValue, bt, "expected true or false for 'multi'")
 			}
+		case TokenReasoningEffort:
+			p.next()
+			rd.ReasoningEffort = p.parseReasoningEffort()
 		default:
 			p.addError(DiagUnknownProperty, t, "unknown router property '"+t.Value+"'")
 			p.next()

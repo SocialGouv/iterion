@@ -666,6 +666,9 @@ func (c *compiler) compileRouters() {
 			if r.Multi {
 				c.errorf(DiagRouterLLMOnlyProperty, "router %q property 'multi' is only valid with mode: llm", r.Name)
 			}
+			if r.ReasoningEffort != "" {
+				c.errorf(DiagRouterLLMOnlyProperty, "router %q property 'reasoning_effort' is only valid with mode: llm", r.Name)
+			}
 		}
 		if mode == RouterLLM {
 			model := resolveSupervisorModel(r.Model)
@@ -684,6 +687,7 @@ func (c *compiler) compileRouters() {
 				node.UserPrompt = r.User
 			}
 			node.RouterMulti = r.Multi
+			node.ReasoningEffort = r.ReasoningEffort
 		}
 		c.nodes[r.Name] = node
 	}

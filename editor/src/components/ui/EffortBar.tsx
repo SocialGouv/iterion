@@ -1,11 +1,17 @@
 // Visual indicator for the LLM reasoning_effort field. Renders the level
-// name plus a 3-cell intensity bar tinted by severity, so users can scan
-// the canvas and tell low/medium/high apart without reading.
+// name plus a 5-cell intensity bar tinted by severity, so users can scan
+// the canvas and tell low/medium/high/xhigh/max apart without reading.
 
-export type EffortLevel = "low" | "medium" | "high" | "extra_high";
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
 export function isEffortLevel(s: string | undefined): s is EffortLevel {
-  return s === "low" || s === "medium" || s === "high" || s === "extra_high";
+  return (
+    s === "low" ||
+    s === "medium" ||
+    s === "high" ||
+    s === "xhigh" ||
+    s === "max"
+  );
 }
 
 interface Props {
@@ -22,9 +28,8 @@ const FILLED: Record<EffortLevel, number> = {
   low: 1,
   medium: 2,
   high: 3,
-  // extra_high also fills 3 cells but uses the danger tint to push past
-  // the visual ceiling of "high".
-  extra_high: 3,
+  xhigh: 4,
+  max: 5,
 };
 
 const TONE: Record<EffortLevel, { text: string; bar: string; cell: string }> = {
@@ -43,7 +48,12 @@ const TONE: Record<EffortLevel, { text: string; bar: string; cell: string }> = {
     bar: "bg-warning/20",
     cell: "bg-warning",
   },
-  extra_high: {
+  xhigh: {
+    text: "text-danger-fg",
+    bar: "bg-danger/20",
+    cell: "bg-danger/70",
+  },
+  max: {
     text: "text-danger-fg",
     bar: "bg-danger/20",
     cell: "bg-danger",
@@ -53,15 +63,14 @@ const TONE: Record<EffortLevel, { text: string; bar: string; cell: string }> = {
 export function EffortBar({ level, live, className, title }: Props) {
   const filled = FILLED[level];
   const tone = TONE[level];
-  const label = level === "extra_high" ? "extra" : level;
   return (
     <span
       className={`inline-flex items-center gap-1 text-[9px] leading-none ${tone.text} ${className ?? ""}`}
       title={title ?? `reasoning_effort: ${level}`}
     >
-      <span>{label}</span>
+      <span>{level}</span>
       <span className={`inline-flex gap-px rounded-sm p-px ${tone.bar}`}>
-        {[0, 1, 2].map((i) => (
+        {[0, 1, 2, 3, 4].map((i) => (
           <span
             key={i}
             className={`inline-block w-[3px] h-[6px] rounded-[1px] ${
