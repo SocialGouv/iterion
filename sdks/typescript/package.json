@@ -1,0 +1,66 @@
+{
+  "name": "@iterion/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for the iterion workflow orchestration CLI",
+  "license": "MIT",
+  "homepage": "https://github.com/SocialGouv/iterion",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SocialGouv/iterion.git",
+    "directory": "sdks/typescript"
+  },
+  "bugs": "https://github.com/SocialGouv/iterion/issues",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./errors": {
+      "types": "./dist/errors.d.ts",
+      "import": "./dist/errors.js"
+    },
+    "./events": {
+      "types": "./dist/events.d.ts",
+      "import": "./dist/events.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "import": "./dist/types.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rimraf dist",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "pnpm clean && pnpm build"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "rimraf": "^6.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.5"
+  },
+  "keywords": [
+    "iterion",
+    "workflow",
+    "orchestration",
+    "ai",
+    "agents",
+    "llm",
+    "sdk"
+  ]
+}

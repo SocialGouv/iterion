@@ -204,3 +204,37 @@ tasks:
     deps: [build, editor:build]
     cmds:
       - ./{{.BINARY}} editor {{.CLI_ARGS}}
+
+  sdk:ts:install:
+    desc: Install dependencies for the TypeScript SDK
+    dir: sdks/typescript
+    cmds:
+      - corepack pnpm install --prefer-offline
+
+  sdk:ts:build:
+    desc: Build the TypeScript SDK (emits dist/)
+    dir: sdks/typescript
+    deps: [sdk:ts:install]
+    cmds:
+      - corepack pnpm run build
+
+  sdk:ts:test:
+    desc: Run the TypeScript SDK unit tests
+    dir: sdks/typescript
+    deps: [sdk:ts:install]
+    cmds:
+      - corepack pnpm exec vitest run
+
+  sdk:ts:typecheck:
+    desc: Typecheck the TypeScript SDK including tests
+    dir: sdks/typescript
+    deps: [sdk:ts:install]
+    cmds:
+      - corepack pnpm exec tsc -p tsconfig.test.json
+
+  sdk:ts:check:
+    desc: Build + typecheck + test the TypeScript SDK
+    cmds:
+      - task: sdk:ts:build
+      - task: sdk:ts:typecheck
+      - task: sdk:ts:test
