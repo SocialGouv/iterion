@@ -24,6 +24,41 @@ export function isDetailNodeId(id: string): boolean {
   );
 }
 
+export type ParsedDetailId =
+  | { kind: "central" }
+  | { kind: "schema" | "prompt"; name: string; relation?: string }
+  | { kind: "var" | "tool"; name: string }
+  | { kind: "edge"; workflowName: string; edgeIndex: number };
+
+export function parseDetailId(id: string): ParsedDetailId | null {
+  if (id === DETAIL_PREFIX_CENTRAL) return { kind: "central" };
+  if (id.startsWith(DETAIL_PREFIX_SCHEMA)) {
+    const rest = id.slice(DETAIL_PREFIX_SCHEMA.length);
+    const colonIdx = rest.lastIndexOf(":");
+    if (colonIdx >= 0) return { kind: "schema", name: rest.slice(0, colonIdx), relation: rest.slice(colonIdx + 1) };
+    return { kind: "schema", name: rest };
+  }
+  if (id.startsWith(DETAIL_PREFIX_PROMPT)) {
+    const rest = id.slice(DETAIL_PREFIX_PROMPT.length);
+    const colonIdx = rest.lastIndexOf(":");
+    if (colonIdx >= 0) return { kind: "prompt", name: rest.slice(0, colonIdx), relation: rest.slice(colonIdx + 1) };
+    return { kind: "prompt", name: rest };
+  }
+  if (id.startsWith(DETAIL_PREFIX_VAR)) return { kind: "var", name: id.slice(DETAIL_PREFIX_VAR.length) };
+  if (id.startsWith(DETAIL_PREFIX_TOOL)) return { kind: "tool", name: id.slice(DETAIL_PREFIX_TOOL.length) };
+  if (id.startsWith(DETAIL_PREFIX_EDGE)) {
+    const rest = id.slice(DETAIL_PREFIX_EDGE.length);
+    const colonIdx = rest.lastIndexOf(":");
+    if (colonIdx < 0) return null;
+    const workflowName = rest.slice(0, colonIdx);
+    const indexText = rest.slice(colonIdx + 1);
+    const edgeIndex = Number(indexText);
+    if (!workflowName || !/^\d+$/.test(indexText) || !Number.isInteger(edgeIndex)) return null;
+    return { kind: "edge", workflowName, edgeIndex };
+  }
+  return null;
+}
+
 
 function refMarker(color: string) {
   return { type: MarkerType.ArrowClosed as const, color, width: 12, height: 12 };

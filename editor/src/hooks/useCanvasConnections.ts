@@ -6,38 +6,13 @@ import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { findNodeDecl } from "@/lib/defaults";
 import { assignFieldToNode, addToolToNode } from "@/lib/docMutations";
 import { TOAST_DURATION_CONNECTION_ERROR_MS } from "@/lib/constants";
-import {
-  DETAIL_PREFIX_CENTRAL,
-  DETAIL_PREFIX_SCHEMA,
-  DETAIL_PREFIX_PROMPT,
-  DETAIL_PREFIX_VAR,
-  DETAIL_PREFIX_TOOL,
-} from "@/lib/nodeDetailGraph";
+import { parseDetailId } from "@/lib/nodeDetailGraph";
 import type { IterDocument } from "@/api/types";
 
 interface QuickAddState {
   x: number;
   y: number;
   sourceId: string;
-}
-
-function parseDetailId(id: string): { kind: "central" | "schema" | "prompt" | "var" | "tool"; name?: string; relation?: string } | null {
-  if (id === DETAIL_PREFIX_CENTRAL) return { kind: "central" };
-  if (id.startsWith(DETAIL_PREFIX_SCHEMA)) {
-    const rest = id.slice(DETAIL_PREFIX_SCHEMA.length);
-    const colonIdx = rest.lastIndexOf(":");
-    if (colonIdx >= 0) return { kind: "schema", name: rest.slice(0, colonIdx), relation: rest.slice(colonIdx + 1) };
-    return { kind: "schema", name: rest };
-  }
-  if (id.startsWith(DETAIL_PREFIX_PROMPT)) {
-    const rest = id.slice(DETAIL_PREFIX_PROMPT.length);
-    const colonIdx = rest.lastIndexOf(":");
-    if (colonIdx >= 0) return { kind: "prompt", name: rest.slice(0, colonIdx), relation: rest.slice(colonIdx + 1) };
-    return { kind: "prompt", name: rest };
-  }
-  if (id.startsWith(DETAIL_PREFIX_VAR)) return { kind: "var", name: id.slice(DETAIL_PREFIX_VAR.length) };
-  if (id.startsWith(DETAIL_PREFIX_TOOL)) return { kind: "tool", name: id.slice(DETAIL_PREFIX_TOOL.length) };
-  return null;
 }
 
 function handleSubNodeConnect(

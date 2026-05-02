@@ -19,7 +19,7 @@ import { useFullscreen } from "@/hooks/useFullscreen";
 import { useLibraryStore, selectAllItems } from "@/store/library";
 import { isAuxiliaryNodeId } from "@/lib/documentToGraph";
 import { isGroupNodeId } from "@/lib/groups";
-import { isDetailNodeId, DETAIL_PREFIX_EDGE } from "@/lib/nodeDetailGraph";
+import { isDetailNodeId, DETAIL_PREFIX_EDGE, parseDetailId } from "@/lib/nodeDetailGraph";
 import type { NodeKind } from "@/api/types";
 import WorkflowNode from "./WorkflowNode";
 import ConditionalEdge from "./ConditionalEdge";
@@ -197,8 +197,24 @@ export default function Canvas() {
   const onNodeClick: NodeMouseHandler = useCallback(
     (_event, node) => {
       connections.setQuickAddMenu(null);
-      // In sub-node view, clicking sub-nodes is handled by DetailSubNode itself
       if (isAuxiliaryNodeId(node.id)) return;
+
+      const detail = parseDetailId(node.id);
+      if (detail) {
+        if (detail.kind === "central") {
+          const label = (node.data as { label?: string }).label;
+          if (label) setSelectedNode(label);
+        } else if (detail.kind === "tool") {
+          setSelectedNode(detail.name);
+        }
+        // schema/prompt/var/edge: DetailSubNode's onClick drives the action.
+        return;
+      }
+
+      if (node.id.startsWith(DETAIL_PREFIX_EDGE)) {
+        return;
+      }
+
       setSelectedNode(node.id);
     },
     [setSelectedNode, connections],

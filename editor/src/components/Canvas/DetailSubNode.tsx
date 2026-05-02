@@ -45,6 +45,9 @@ export default function DetailSubNode({ data, selected }: NodeProps) {
       // shows the EdgeForm for it.
       setSelectedEdge(makeEdgeId(workflowName, edgeIndex));
       clearSubNodeView();
+    } else if (subKind === "tool") {
+      // Canvas onNodeClick has selected the underlying tool node already.
+      clearSubNodeView();
     }
   };
 

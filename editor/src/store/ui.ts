@@ -129,7 +129,7 @@ export const useUIStore = create<UIState>((set) => ({
     if (next.has(layer)) next.delete(layer); else next.add(layer);
     return { activeLayers: next };
   }),
-  setEditingItem: (editingItem) => set({ editingItem }),
+  setEditingItem: (editingItem) => set((s) => (s.editingItem === editingItem ? s : { editingItem })),
   addToast: (message, type, opts) => {
     const id = ++toastIdCounter;
     set((s) => {
