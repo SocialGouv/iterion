@@ -7,12 +7,12 @@
 ## consecutive cross-family approvals.
 ##
 ## Pipeline:
-##   1. plan      — Claude Code, opus 4.7, extra_high. session=fresh.
+##   1. plan      — Claude Code, opus 4.7, xhigh. session=fresh.
 ##                  Read-only exploration. Produces a structured plan.
-##   2. act       — Claude Code, opus 4.7, extra_high. session=inherit.
+##   2. act       — Claude Code, opus 4.7, xhigh. session=inherit.
 ##                  Implements the plan in the SAME Claude Code
 ##                  session (continuity of reasoning + workspace).
-##   3. simplify  — Claude Code, opus 4.7, extra_high. session=inherit.
+##   3. simplify  — Claude Code, opus 4.7, xhigh. session=inherit.
 ##                  Invokes the native /simplify skill on the code
 ##                  just produced.
 ##   4. alt → reviewer_claude / reviewer_gpt → streak_check → fixers
@@ -116,47 +116,48 @@ prompt simplify_user:
 ## ─── Prompts : Commit ───────────────────────────────────────────
 
 prompt commit_namer_system:
-  Your job in this session is to commit the feature implemented in
-  this workflow run, and ONLY that feature, using a single git
-  commit with a semantic message.
+  Your job in this session is to identify the EXACT set of files
+  that should be committed to capture the feature implemented in
+  this workflow run, and produce a semantic commit message for
+  them. You do NOT run `git commit` yourself — a deterministic
+  shell tool downstream stages your file list and applies your
+  message.
 
   Procedure (follow exactly, in order):
-    1. Run `git status` and `git diff HEAD` to enumerate all files
-       in the working tree.
+    1. Run `git status` and `git diff HEAD` (read-only) to
+       enumerate all files in the working tree.
     2. Identify which of those files were created or modified to
        implement the feature described to you. Cross-check with
-       the feature description in the user prompt.
-    3. EXCLUDE any file that does NOT belong to the feature, even
-       if it is dirty in the working tree. Pre-existing user WIP
-       (unrelated edits, in-flight work in other packages, etc.)
-       MUST NOT be staged. When in doubt, exclude.
-    4. Stage the feature files explicitly with `git add` listing
-       each path. NEVER use `git add -A`, `git add .`, or any
-       glob that could pick up unrelated files.
-    5. Run `git commit -m <subject>` with a semantic subject in
-       the format `<type>(<scope>): <subject>` (or
-       `<type>: <subject>` when scope is empty), where type is
-       one of feat, fix, refactor, test, docs, chore.
+       the feature description in the user prompt and your own
+       conversation history (this session forks from the
+       implementation session, so you have its full context).
+    3. EXCLUDE any file that does NOT belong to the feature,
+       even if it is dirty in the working tree:
+         - pre-existing user WIP in unrelated packages
+         - build artifacts not produced for the feature
+           (binaries, coverage reports, lockfiles created by
+           the agent's bash but not part of the feature)
+         - editor / IDE scratch files
+         - LLM scratch files (`notes.md`, `plan.txt`, etc.)
+       When in doubt, EXCLUDE. Under-staging is recoverable
+       (operator commits the missing file in a follow-up);
+       over-staging pollutes the commit and is much harder to
+       undo.
+    4. Build the structured output:
+         - type, scope, subject, full_message: the semantic
+           parts of the commit message
+         - files: the exact list of repo-relative paths to stage
+         - committed: false (you do NOT commit yourself; the
+           downstream tool will set the actual commit result on
+           its own output).
 
   Subject rules: imperative mood, present tense, ≤ 72 chars, no
-  trailing period, no double or single quotes, single line.
-
-  After committing, output a structured JSON object describing
-  what you did. The fields are AUDIT signal — compare them to the
-  actual commit:
-    - type, scope, subject, full_message: the semantic parts of
-      the message you used.
-    - files: the exact list of paths you passed to `git add`.
-    - committed: true if `git commit` succeeded, false otherwise.
-
-  If `git commit` fails (no changes staged, hook rejection, etc.):
-  do not retry blindly — output `committed: false` with the error
-  in `subject` so the operator can intervene.
+  trailing period, single line.
 
 prompt commit_namer_user:
-  Commit the feature below into the repository. Stage ONLY the
-  files belonging to this feature; ignore unrelated working-tree
-  edits.
+  Identify the files belonging to the feature below and produce
+  a semantic commit name for them. Do not run `git commit`
+  yourself — only output the structured object.
 
   Feature: {{vars.feature_prompt}}
 
@@ -478,12 +479,21 @@ schema commit_output:
   files: string[]
   committed: bool
 
+schema commit_tool_input:
+  full_message: string
+  files: string[]
+  workspace_dir: string
+
+schema commit_result:
+  success: bool
+  output: string
+
 ## ─── Nodes : Feature Dev Phase ──────────────────────────────────
 
 agent plan:
   backend: "claude_code"
   model: "claude-opus-4-7"
-  reasoning_effort: extra_high
+  reasoning_effort: xhigh
   system: plan_system
   user: plan_user
   session: fresh
@@ -491,7 +501,7 @@ agent plan:
 agent act:
   backend: "claude_code"
   model: "claude-opus-4-7"
-  reasoning_effort: extra_high
+  reasoning_effort: xhigh
   system: act_system
   user: act_user
   session: inherit
@@ -499,31 +509,24 @@ agent act:
 agent simplify:
   backend: "claude_code"
   model: "claude-opus-4-7"
-  reasoning_effort: extra_high
+  reasoning_effort: xhigh
   user: simplify_user
   session: inherit
 
 ## ─── Nodes : Commit ─────────────────────────────────────────────
 
 ## commit_namer forks the simplify session so it inherits the
-## conversation context (feature prompt, plan, implementation,
-## simplification). It then runs `git status`/`git diff HEAD` to
-## enumerate all working-tree files, picks the ones that belong
-## to this feature, stages them explicitly with `git add <paths>`
-## (NEVER `add -A`), and commits with a semantic message.
+## full feature context (plan, implementation, simplification).
+## Read-only: it runs `git status` / `git diff HEAD` to identify
+## the file set, then emits structured output. It never stages
+## or commits.
 ##
-## NOT readonly — this node mutates the index and commits. The
-## structured output (`files`, `committed`) is for audit only.
-##
-## Why one node and not "commit_namer + tool commit_changes":
-## a deterministic shell tool would need iterion-side support for
-## `string[]` substitution in commands (currently only `string`
-## is shell-quoted; arrays would render as Go's `[a b]`). Until
-## that capability lands (see cross-improvement opportunities),
-## doing the commit inside the agent keeps iterion's core
-## prompting-agnostic and avoids the substitution gap. The
-## prompt's procedure section (steps 1-5) is the explicit guard
-## against `git add -A` and against staging unrelated WIP.
+## The downstream `tool commit_changes` does the deterministic
+## `git add -- <files> && git commit -m <msg>`. Splitting intent
+## (this node) from execution (the tool) means the structured
+## output IS the audit record — the operator can replay or
+## inspect what was supposed to be committed independently of
+## what `git log` shows.
 agent commit_namer:
   backend: "claude_code"
   model: "claude-opus-4-7"
@@ -532,6 +535,20 @@ agent commit_namer:
   system: commit_namer_system
   user: commit_namer_user
   session: fork
+  readonly: true
+
+## commit_changes is a deterministic shell tool — no LLM. It
+## stages exactly the file list produced by commit_namer (via
+## `git add -- <files>`, leveraging iterion's string[]
+## substitution from pkg/backend/model/executor.go's
+## shellEscapeValue) and commits with the semantic message. The
+## guard `git diff --cached --quiet || git commit` skips the
+## commit if `git add` ended up staging nothing — e.g. when the
+## file list resolved to paths that were already at HEAD.
+tool commit_changes:
+  command: "git -C {{input.workspace_dir}} add -- {{input.files}} && (git -C {{input.workspace_dir}} diff --cached --quiet || git -C {{input.workspace_dir}} commit -m {{input.full_message}})"
+  input: commit_tool_input
+  output: commit_result
 
 ## ─── Nodes : Review / Fix Loop ──────────────────────────────────
 
@@ -541,7 +558,7 @@ router alt:
 judge reviewer_claude:
   backend: "claude_code"
   model: "claude-opus-4-7"
-  reasoning_effort: extra_high
+  reasoning_effort: xhigh
   input: review_input
   output: verdict_output
   system: review_system
@@ -608,7 +625,7 @@ compute streak_check:
 agent fix_claude:
   backend: "claude_code"
   model: "claude-opus-4-7"
-  reasoning_effort: extra_high
+  reasoning_effort: xhigh
   input: fix_input
   output: fix_output
   system: fix_system
@@ -636,6 +653,16 @@ agent fix_gpt:
 
 workflow vibe_feature_dev:
   entry: plan
+
+  ## Run in an isolated git worktree at .iterion/worktrees/<run-id>/.
+  ## This shields the user's main working tree from any mutations the
+  ## workflow makes, makes commit_namer's job structurally correct (no
+  ## WIP visible to misclassify), and turns failure cleanup into a
+  ## one-line `git worktree remove`. See docs / worktree-runs-plan.md
+  ## for the artifact-pollution caveat: even in a fresh worktree, the
+  ## dev phase can introduce un-gitignored build outputs, so commit_namer
+  ## still has to discriminate — but on a much smaller noise floor.
+  worktree: auto
 
   budget:
     max_parallel_branches: 1
@@ -708,18 +735,20 @@ workflow vibe_feature_dev:
   }
 
   ## ═══ Phase 3 : Commit on streak success ═══════════════════════
-  ## Cross-family double-approval reached → fork the simplify
-  ## session so the commit_namer inherits the full feature context
-  ## (plan, implementation, simplification) without spending a
-  ## fresh-session priming call. The agent itself stages the
-  ## feature files (NEVER add -A — see commit_namer_system) and
-  ## issues a single `git commit`. Working-tree files unrelated
-  ## to the feature stay unstaged.
+  ## Cross-family double-approval reached. commit_namer (forked
+  ## from simplify) emits the structured commit intent;
+  ## commit_changes deterministically applies it.
   streak_check -> commit_namer when stop with {
     _session_id: "{{outputs.simplify._session_id}}"
   }
 
-  commit_namer -> done
+  commit_namer -> commit_changes with {
+    full_message: "{{outputs.commit_namer.full_message}}",
+    files: "{{outputs.commit_namer.files}}",
+    workspace_dir: "{{vars.workspace_dir}}"
+  }
+
+  commit_changes -> done
 
   ## Otherwise approved (no streak yet, OR low-confidence rejection
   ## treated as soft-approved, OR rejection without concrete blockers
