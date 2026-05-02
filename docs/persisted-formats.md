@@ -98,6 +98,7 @@ One JSON object per line, append-only. Events are ordered by `seq` (monotonic wi
 | `run_finished`            | no    | —                                      |
 | `run_failed`              | yes   | `error`, `code`, `resumable?`          |
 | `run_cancelled`           | yes   | `reason`                               |
+| `run_interrupted`         | no    | `reason` (e.g. "server drained: editor process shutting down") |
 | `branch_started`          | yes   | —                                      |
 | `node_started`            | yes   | `kind`                                 |
 | `node_finished`           | yes   | `output`, `_tokens`, `_cost_usd`       |

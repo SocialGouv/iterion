@@ -31,6 +31,11 @@ var ErrRunPaused = errors.New("runtime: run paused waiting for human input")
 // can handle cancellation gracefully.
 var ErrRunCancelled = errors.New("runtime: run cancelled")
 
+// ErrServerDraining is returned by the runview Service when Launch or
+// Resume is called after the server has begun graceful shutdown. The
+// HTTP layer translates this to 503 Service Unavailable.
+var ErrServerDraining = errors.New("runtime: server draining")
+
 // NodeExecutor is the abstraction called by the engine to actually run a
 // node (LLM call, tool invocation, etc.). The runtime itself is agnostic
 // to the concrete implementation — tests supply stubs, production code

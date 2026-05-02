@@ -118,6 +118,31 @@ func (m *Manager) ActiveRuns() []string {
 	return out
 }
 
+// HandleSnapshot is one row in the Snapshot view: the run ID plus the
+// in-memory primitives Drain needs (cancel + done).
+type HandleSnapshot struct {
+	RunID  string
+	Cancel context.CancelFunc
+	Done   <-chan struct{}
+}
+
+// Snapshot returns a point-in-time copy of every active handle. Drain
+// uses this to issue cancel + wait without holding the manager's lock
+// across the wait (which would deadlock with concurrent Deregister).
+func (m *Manager) Snapshot() []HandleSnapshot {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]HandleSnapshot, 0, len(m.handles))
+	for id, h := range m.handles {
+		out = append(out, HandleSnapshot{
+			RunID:  id,
+			Cancel: h.cancel,
+			Done:   h.done,
+		})
+	}
+	return out
+}
+
 // Wait blocks until the goroutine for runID completes, or until ctx
 // is done. Returns ErrRunNotActive immediately if no handle exists.
 func (m *Manager) Wait(ctx context.Context, runID string) error {

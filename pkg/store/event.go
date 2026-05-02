@@ -43,10 +43,15 @@ const (
 	EventRunFinished          EventType = "run_finished"
 	EventRunFailed            EventType = "run_failed"
 	EventRunCancelled         EventType = "run_cancelled"
-	EventDelegateStarted      EventType = "delegate_started"
-	EventDelegateFinished     EventType = "delegate_finished"
-	EventDelegateError        EventType = "delegate_error"
-	EventDelegateRetry        EventType = "delegate_retry"
+	// EventRunInterrupted is emitted when the editor server drains in-flight
+	// runs during shutdown (SIGTERM, watchexec rebuild, etc). The companion
+	// run.json status flips to failed_resumable so the next boot can offer
+	// one-click resume — distinct from EventRunCancelled (user-initiated).
+	EventRunInterrupted   EventType = "run_interrupted"
+	EventDelegateStarted  EventType = "delegate_started"
+	EventDelegateFinished EventType = "delegate_finished"
+	EventDelegateError    EventType = "delegate_error"
+	EventDelegateRetry    EventType = "delegate_retry"
 )
 
 // Event is a single timestamped fact persisted in events.jsonl.

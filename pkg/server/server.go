@@ -132,9 +132,14 @@ func (s *Server) ListenAndServe() error {
 // reach the on-disk store before the file watcher stops broadcasting
 // and clients drop. The drain ctx is the caller-supplied shutdown
 // deadline.
+//
+// Drain (rather than Stop) is intentional: it flips each in-flight
+// run to failed_resumable and emits EventRunInterrupted so the next
+// boot can offer one-click resume and clients can distinguish
+// shutdown-induced termination from user-initiated cancel.
 func (s *Server) Shutdown(ctx context.Context) error {
 	if s.runs != nil {
-		s.runs.Stop(ctx)
+		s.runs.Drain(ctx)
 	}
 	if s.watcher != nil {
 		s.watcher.Stop()

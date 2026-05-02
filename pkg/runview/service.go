@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -118,6 +119,11 @@ type Service struct {
 	// runlog.go and the /api/runs/{id}/log endpoint.
 	runLogsMu sync.RWMutex
 	runLogs   map[string]*RunLogBuffer
+
+	// draining is set by Drain at the start of graceful shutdown.
+	// Once true, Launch and Resume early-return runtime.ErrServerDraining
+	// so the HTTP layer can map it to 503 Service Unavailable.
+	draining atomic.Bool
 }
 
 // ServiceOption configures a Service at construction time.
@@ -308,9 +314,88 @@ func (s *Service) dropRunLog(runID string) {
 	}
 }
 
-// Stop drains every active run for graceful shutdown.
+// Stop cancels every active run and waits for their goroutines to
+// finish, but does not flip persisted statuses or emit any
+// observability event. Use Stop in tests or for a quiet teardown
+// where the caller takes responsibility for the on-disk state.
+//
+// Production shutdown should call Drain instead, which additionally
+// publishes EventRunInterrupted and flips each in-flight run to
+// failed_resumable so the next server boot can offer one-click resume.
 func (s *Service) Stop(ctx context.Context) {
 	s.manager.Stop(ctx)
+}
+
+// Drain performs a graceful shutdown of every active run:
+//
+//  1. Sets the draining flag so subsequent Launch / Resume return
+//     runtime.ErrServerDraining.
+//  2. Snapshots active handles and cancels each one.
+//  3. Waits on each handle's done channel up to ctx's deadline.
+//  4. For every run that was active at the moment of Drain — whether
+//     its goroutine exited cleanly within the deadline or not —
+//     emits EventRunInterrupted and flips the persisted status to
+//     failed_resumable with reason "server drained".
+//
+// The status flip happens regardless of clean exit so the on-disk
+// state is unambiguous; the runtime's own failure event (typically
+// EventRunFailed with cause "context canceled") may also land in
+// the same events.jsonl, which is acceptable telemetry noise — both
+// events accurately describe what happened.
+//
+// Drain is intended to be called once during process shutdown. After
+// it returns, the service should not be used to launch new work.
+func (s *Service) Drain(ctx context.Context) {
+	s.draining.Store(true)
+
+	handles := s.manager.Snapshot()
+
+	for _, h := range handles {
+		h.Cancel()
+	}
+
+	for _, h := range handles {
+		select {
+		case <-h.Done:
+		case <-ctx.Done():
+			// Out of time — record what's still live then bail out.
+			s.markRemainingInterrupted(handles)
+			return
+		}
+	}
+
+	// All goroutines drained within budget. Flip statuses + emit events.
+	for _, h := range handles {
+		s.markInterrupted(h.RunID)
+	}
+}
+
+// markRemainingInterrupted marks every snapshot handle as interrupted.
+// Used on the deadline-exceeded path where we can't tell which
+// individual handles are still live without re-snapshotting; flipping
+// all of them is idempotent (UpdateRunStatus tolerates the run already
+// being in a terminal state — it just rewrites the status).
+func (s *Service) markRemainingInterrupted(handles []HandleSnapshot) {
+	for _, h := range handles {
+		s.markInterrupted(h.RunID)
+	}
+}
+
+// markInterrupted emits EventRunInterrupted and flips the run's status
+// to failed_resumable with reason "server drained". Errors are logged
+// at warn level — drain must not abort over a single run's bookkeeping.
+func (s *Service) markInterrupted(runID string) {
+	const reason = "server drained: editor process shutting down"
+	if _, err := s.store.AppendEvent(runID, store.Event{
+		Type:  store.EventRunInterrupted,
+		RunID: runID,
+		Data:  map[string]interface{}{"reason": reason},
+	}); err != nil {
+		s.logger.Warn("runview: drain: append run_interrupted for %s: %v", runID, err)
+	}
+	if err := s.store.UpdateRunStatus(runID, store.RunStatusFailedResumable, reason); err != nil {
+		s.logger.Warn("runview: drain: update status for %s: %v", runID, err)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -499,6 +584,9 @@ type LaunchResult struct {
 // against any sandbox / origin policy. The service does not double-
 // check origins — its job is lifecycle, not authentication.
 func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult, error) {
+	if s.draining.Load() {
+		return nil, runtime.ErrServerDraining
+	}
 	if spec.FilePath == "" {
 		return nil, errors.New("runview: file_path is required")
 	}
@@ -542,6 +630,9 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 // optional answers. The .iter source must be supplied (and must hash-
 // match the original unless spec.Force).
 func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult, error) {
+	if s.draining.Load() {
+		return nil, runtime.ErrServerDraining
+	}
 	if spec.RunID == "" {
 		return nil, errors.New("runview: run_id is required")
 	}

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -134,6 +135,10 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		Timeout:  timeout,
 	})
 	if err != nil {
+		if errors.Is(err, runtime.ErrServerDraining) {
+			s.httpErrorFor(w, r, http.StatusServiceUnavailable, "server is draining: %v", err)
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusBadRequest, "launch: %v", err)
 		return
 	}
@@ -315,6 +320,10 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		Timeout:  timeout,
 	})
 	if err != nil {
+		if errors.Is(err, runtime.ErrServerDraining) {
+			s.httpErrorFor(w, r, http.StatusServiceUnavailable, "server is draining: %v", err)
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusBadRequest, "resume: %v", err)
 		return
 	}

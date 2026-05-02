@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/server"
@@ -76,7 +77,16 @@ func RunEditor(ctx context.Context, opts EditorOptions, p *Printer) error {
 
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*1e9) // 5s
+		// 60 s drain budget: long enough to let in-flight runs reach
+		// their cancel points + flip persisted status to
+		// failed_resumable, but bounded so a wedged subprocess can't
+		// hold the editor process forever. Server.Shutdown calls
+		// runs.Drain (which uses this ctx) and then http.Server.Shutdown
+		// in sequence, so the budget is shared across both phases.
+		if p.Format == OutputHuman {
+			p.Line("\nShutdown signal received — draining in-flight runs (up to 60s)…")
+		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		return srv.Shutdown(shutdownCtx)
 	case err := <-errCh:
