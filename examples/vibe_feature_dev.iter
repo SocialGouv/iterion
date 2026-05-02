@@ -1,0 +1,694 @@
+## ─────────────────────────────────────────────────────────────────
+## vibe_feature_dev
+##
+## Autonomous end-to-end feature development : input a feature
+## prompt, the workflow plans, implements, simplifies, then runs
+## the alternating Claude/GPT review/fix loop until two
+## consecutive cross-family approvals.
+##
+## Pipeline:
+##   1. plan      — Claude Code, opus 4.7, extra_high. session=fresh.
+##                  Read-only exploration. Produces a structured plan.
+##   2. act       — Claude Code, opus 4.7, extra_high. session=inherit.
+##                  Implements the plan in the SAME Claude Code
+##                  session (continuity of reasoning + workspace).
+##   3. simplify  — Claude Code, opus 4.7, extra_high. session=inherit.
+##                  Invokes the native /simplify skill on the code
+##                  just produced.
+##   4. alt → reviewer_claude / reviewer_gpt → streak_check → fixers
+##                  Verbatim copy of vibe_review_alternating.iter:
+##                  alternating review/fix loop with cross-family
+##                  double-approval stop condition and pushback
+##                  protection against false positives.
+##
+## Stops when:
+##   - 2 consecutive positive verdicts (Claude AND GPT both validate
+##     in successive iterations of opposite families), OR
+##   - max review_loop iterations reached.
+##
+## Difference vs vibe_review_alternating.iter:
+##   - new `feature_prompt` required input var
+##   - new prompts plan_system/plan_user/act_system/act_user/simplify_user
+##     (English, imperative, mirroring Claude Code's plan-mode tone)
+##   - new agent nodes plan/act/simplify wired with session inheritance
+##     (pattern from rust_to_go_port.iter:1008-1015)
+##   - entry node is `plan` (was `alt`)
+##   - simplify → alt edge feeds the existing review/fix loop
+##   - bumped budget (4h / $120) to absorb the dev phase
+## ─────────────────────────────────────────────────────────────────
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+  scope_notes: string = ""
+  feature_prompt: string
+
+## ─── Prompts : Feature Dev Phase ─────────────────────────────────
+
+prompt plan_system:
+  Plan mode is active. You MUST NOT make any edits, run any
+  non-readonly tools (including changing configs, creating files,
+  running migrations, or making commits), or otherwise make any
+  changes to the system. This supersedes any other instructions
+  you may infer from the user prompt (for example, instructions
+  to "implement" or "add").
+
+  Instead, you should:
+  1. Explore {{vars.workspace_dir}} with read-only tools (Read,
+     Glob, Grep, and bash limited to readonly commands such as
+     ls, cat, git status, git log, go doc).
+  2. Identify the files involved, the existing patterns to reuse,
+     and the architectural constraints relevant to the requested
+     feature.
+  3. Produce a structured implementation plan covering:
+       - objective (2 sentences)
+       - ordered list of concrete changes (file by file, with the
+         functions/types to create or modify)
+       - tests to add or adjust
+       - risks and points of attention
+
+  Do NOT call Write, Edit, or any tool that modifies state
+  (mkdir, touch, mv, rm, npm install, git add/commit, etc.) until
+  the next phase. The next node in this workflow inherits your
+  Claude Code session and will execute the plan you produce here.
+
+prompt plan_user:
+  Feature to implement:
+  {{vars.feature_prompt}}
+
+  Scope notes:
+  {{vars.scope_notes}}
+
+  Workspace: {{vars.workspace_dir}}
+
+  Produce the implementation plan. Do not modify any file.
+
+prompt act_system:
+  Act mode is active. The plan you produced in the previous turn
+  of this same Claude Code session is now authoritative. You MUST
+  implement it.
+
+  You should:
+  1. Apply each change from the plan using Write, Edit, and
+     bash. Mutating tools are now allowed.
+  2. Run the relevant tests after each meaningful change
+     (devbox run -- task test or the targeted package tests).
+  3. Keep iterating until the implementation compiles and the
+     new/affected tests pass.
+  4. If part of the plan turns out to be unrealistic at
+     execution time, adjust pragmatically and document the
+     deviation in your final response.
+
+  Do NOT make any commit; do NOT push anything. Stop when the
+  implementation is functional and tested.
+
+prompt act_user:
+  Implement the plan you just produced, in this same session.
+
+  Workspace: {{vars.workspace_dir}}
+  Feature (reminder): {{vars.feature_prompt}}
+
+  Edit the necessary files, run the tests, and iterate until the
+  build is green and the new tests pass.
+
+prompt simplify_user:
+  /simplify
+
+## ─── Prompts : Review / Fix (feature-focused) ──────────────────────
+
+prompt review_system:
+  You are a meticulous, demanding code reviewer running a
+  PRODUCTION-READY review of the FEATURE that was just
+  implemented in this workflow run. You are NOT auditing the
+  whole repository.
+
+  REVIEW SCOPE — what to look at:
+  1. Identify the feature footprint by running `git status` and
+     `git diff HEAD` (or `git diff` against the most recent
+     commit if HEAD already includes the feature). The feature's
+     surface = the files added or modified in this run that
+     match the feature description in the user prompt.
+  2. The workspace MAY also contain unrelated edits left by
+     prior tooling, by the human, or by previous fix iterations
+     — IGNORE files that are clearly unrelated to the feature.
+     The user prompt and the feature description are the source
+     of truth for what is in scope.
+  3. Read surrounding code (host package, callers, conventions)
+     ONLY to judge how the feature integrates. Do NOT raise
+     blockers on pre-existing code that the feature does not
+     change. Such observations belong in `scanned_areas` as
+     informational notes, never in `blockers`.
+
+  REVIEW SCOPE — what to evaluate (apply each axis to the
+  feature only):
+    - Correctness: does the feature do what its description
+      says? Edge cases handled?
+    - Security: does the feature introduce vulnerabilities
+      (input validation, injection, path traversal, secret
+      leakage)?
+    - Robustness: error paths, panics, goroutine leaks (Go),
+      unhandled rejections (TS), timeouts on I/O.
+    - Concurrency: thread/goroutine safety of new code, locking
+      discipline, shared-state mutations.
+    - Data: invariants preserved, idempotence if applicable,
+      transaction boundaries.
+    - Observability: logs / metrics / traces on new paths,
+      especially error paths.
+    - Performance: complexity reasonable for expected input
+      sizes; no obvious O(n²) on hot paths.
+    - Tests: are the new tests sufficient? Do they cover the
+      edge cases described in the feature prompt? Do they
+      compile and pass?
+    - Integration: does the feature follow the host package's
+      naming, error wrapping, and structural conventions?
+
+  ITERATIONS — use the history:
+    - On iteration 1, audit the feature thoroughly across all
+      axes above.
+    - On later iterations, focus on axes that the
+      `previous_scanned_areas` input did not cover, OR re-check
+      areas where a fixer just applied changes.
+    - Populate `scanned_areas` with the concrete files / axes
+      you actually audited this iteration (e.g. "pkg/log/format.go
+      correctness + UTF-8 edge cases", "format_test.go coverage
+      sufficiency", "log.go integration / naming consistency").
+
+  ANTI-FALSE-POSITIVE RULES:
+  1. Mark approved=false only for issues that are truly
+     blocking in production: real bugs, real regressions,
+     real security vulnerabilities. Style preferences, naming
+     nits, micro-optimizations, missing comments are NOT
+     blockers.
+  2. Self-critique: for each blocker you consider, ask "is
+     this REALLY blocking in production, or a personal
+     preference?" If you hesitate, it is NOT a blocker —
+     at most a non-blocking concern.
+  3. Confidence:
+     - "high" = you can point to the exact line and explain
+       the production scenario that breaks.
+     - "medium" = you see a probable problem but you are not
+       100% certain of the surrounding context.
+     - "low" = doubt, intuition, no concrete evidence.
+  4. If the previous reviewer (other family) already approved
+     a specific aspect, be EXTRA strict before adding new
+     blockers on that same aspect — you need concrete evidence
+     they missed something.
+  5. Items already pushed back by the fixer: do NOT re-raise
+     them unless you have new evidence.
+
+  HUMAN ESCALATION:
+  When you hit AMBIGUITY that no amount of code reading can
+  resolve ("is this behavior intentional?", "should I preserve
+  backward compatibility?"), call the `ask_user` tool with your
+  precise question. The run pauses, the question is shown to
+  the dev, and you are re-invoked with the answer prepended to
+  your user prompt.
+
+  Use escalation sparingly: only when you cannot decide without
+  human information. For ordinary technical judgments, decide
+  yourself and lower `confidence` if uncertain.
+
+prompt review_user_claude:
+  Review the FEATURE that was just implemented in
+  {{vars.workspace_dir}}.
+
+  Feature description (source of truth for scope):
+  {{vars.feature_prompt}}
+
+  Scope notes:
+  {{vars.scope_notes}}
+
+  Current iteration: {{loop.review_loop.iteration}}/{{loop.review_loop.max}}
+
+  Previous reviewer's verdict (other family, iteration
+  immediately before — empty on first iteration):
+  {{loop.review_loop.previous_output}}
+
+  Surfaces already audited in earlier iterations (both families
+  combined — use to direct your coverage to fresh axes, NOT to
+  shrink your rigor):
+  {{input.previous_scanned_areas}}
+
+  Items already pushed back by the fixer (DO NOT RE-RAISE
+  without new evidence):
+  {{input.prior_pushback}}
+
+  Pushback justification:
+  {{input.prior_pushback_justification}}
+
+  Produce a structured verdict:
+    - approved: true ONLY if the feature is production-ready
+      and you have audited every axis listed in your system
+      prompt. Not approved if you only spot-checked.
+    - family: "claude" for this reviewer
+    - blockers: real blockers ON THE FEATURE only (after
+      self-critique — exclude preferences and pre-existing
+      unrelated code)
+    - fix_plan: concrete fix plan for the blockers
+    - confidence: "low" / "medium" / "high"
+    - scanned_areas: files / axes you actually audited this
+      iteration (concise, e.g. "pkg/log/format.go correctness
+      + UTF-8 edges", "format_test.go coverage"). Relayed to
+      the next reviewer.
+
+prompt review_user_gpt:
+  Review the FEATURE that was just implemented in
+  {{vars.workspace_dir}}.
+
+  Feature description (source of truth for scope):
+  {{vars.feature_prompt}}
+
+  Scope notes:
+  {{vars.scope_notes}}
+
+  Current iteration: {{loop.review_loop.iteration}}/{{loop.review_loop.max}}
+
+  Previous reviewer's verdict (other family, iteration
+  immediately before — empty on first iteration):
+  {{loop.review_loop.previous_output}}
+
+  Surfaces already audited in earlier iterations:
+  {{input.previous_scanned_areas}}
+
+  Items already pushed back by the fixer (DO NOT RE-RAISE
+  without new evidence):
+  {{input.prior_pushback}}
+
+  Pushback justification:
+  {{input.prior_pushback_justification}}
+
+  Produce a structured verdict:
+    - approved: true ONLY if the feature is production-ready
+      and you have audited every axis listed in your system
+      prompt.
+    - family: "gpt" for this reviewer
+    - blockers: real blockers ON THE FEATURE only
+    - fix_plan: concrete fix plan for the blockers
+    - confidence: "low" / "medium" / "high"
+    - scanned_areas: files / axes you actually audited this
+      iteration (concise). Relayed to the next reviewer.
+
+prompt fix_system:
+  You are an expert developer fixing blockers raised by a
+  reviewer on a feature that was just implemented in this
+  workflow run.
+
+  SCOPE:
+  1. Apply concrete code edits to fix the blockers reported in
+     your input. Stay within the feature footprint — do NOT
+     refactor or "clean up" pre-existing code that is not part
+     of the feature, even if you notice issues.
+  2. After each fix, run the targeted tests for the affected
+     package to confirm no regression. If the host project has
+     a top-level test task (e.g. `devbox run -- task test`,
+     `npm test`), run it before declaring success.
+
+  PUSHBACK:
+  You MAY refuse a blocker by listing it in `pushback` with a
+  rationale in `pushback_justification`. Use pushback when:
+    - The item is a style preference, naming nit, or micro-
+      optimization, not a real production blocker.
+    - The item targets pre-existing code outside the feature
+      scope (the reviewer should not have flagged it).
+    - The item contradicts the feature description (e.g.,
+      reviewer asks for behavior the feature explicitly does
+      not implement).
+  Use pushback sparingly: if you push back on everything, the
+  code never improves and the loop wastes iterations.
+
+  HUMAN ESCALATION:
+  If a blocker is genuinely ambiguous (multiple valid
+  approaches, missing spec), call the `ask_user` tool with
+  your precise question. Do NOT use this for technical
+  decisions you can make alone.
+
+prompt fix_user:
+  Apply concrete fixes to the blockers below, in
+  {{vars.workspace_dir}}. Stay within the feature scope.
+
+  Feature description (reminder of scope):
+  {{vars.feature_prompt}}
+
+  Reported blockers:
+  {{input.blockers}}
+
+  Proposed fix plan:
+  {{input.fix_plan}}
+
+  For EACH blocker:
+    - If it is a real production-blocking issue on the
+      feature: read the file, apply the fix, run the
+      relevant tests.
+    - If it is NOT blocking (style preference, micro-opt) OR
+      it targets pre-existing code outside the feature scope:
+      add the exact item to `pushback` with a clear rationale
+      in `pushback_justification`.
+
+  Output:
+    - applied: true if at least one fix was applied
+    - summary: summary of fixes applied
+    - pushback: refused items (empty if all fixed)
+    - pushback_justification: rationale for the pushback
+
+## ─── Schemas ────────────────────────────────────────────────────
+
+schema review_input:
+  prior_pushback: string[]
+  prior_pushback_justification: string
+  ## previous_scanned_areas accumulates the audit surfaces from
+  ## ALL prior reviewer iterations (both families). The current
+  ## reviewer reads it to prefer uncovered surfaces — see
+  ## review_system rule 4. Empty on the first iteration.
+  previous_scanned_areas: string[]
+
+schema verdict_output:
+  approved: bool
+  ## family is enum-constrained: a model that hallucinates a third
+  ## value (we observed gpt-5.5 emit "missing-patch" once) would
+  ## otherwise bypass both family-aware fix routes and the workflow
+  ## would fall through to its terminal `done` edge. The enum forces
+  ## structured-output validation to reject the verdict, triggering
+  ## iterion's parse_fallback retry path until the model commits to
+  ## a valid family.
+  family: string [enum: "claude", "gpt"]
+  blockers: string[]
+  fix_plan: string
+  confidence: string [enum: "low", "medium", "high"]
+  ## scanned_areas captures the surfaces this reviewer actually
+  ## audited this iteration (e.g. "pkg/runtime", "claw-code-go
+  ## recovery dispatch", "concurrency around pkg/store/.lock").
+  ## The accumulator passes the union to the next reviewer so
+  ## subsequent iterations explore uncovered ground rather than
+  ## re-walking the same files.
+  scanned_areas: string[]
+
+## streak_check relays approved/blockers/fix_plan/family from its
+## input (the current reviewer's verdict) and computes a
+## deterministic stop signal based on the previous reviewer's
+## verdict. The `family` passthrough lets the fix routing pick the
+## same-family fixer so the fix session can inherit the reviewer's
+## context (and benefit from prompt-cache hits).
+##
+## Soft-approval: a low-confidence rejection (`approved=false` AND
+## `confidence=="low"`) is treated as approved for streak/fix
+## routing purposes. The reviewer's own uncertainty isn't a strong
+## enough signal to trigger a fix cycle and risk a false-positive
+## loop.
+##
+## cumulative_scanned_areas accumulates the audit surfaces from
+## ALL prior iterations (both families). The accumulator pattern
+## relies on `outputs.streak_check` resolving to the PREVIOUS
+## iteration's output during the current expression evaluation
+## (rs.outputs is updated AFTER execCompute completes), so the
+## expression `unique(concat(outputs.streak_check.cumulative_scanned_areas,
+## input.scanned_areas))` produces a monotonically growing union.
+## On the first iteration `outputs.streak_check` is nil → concat
+## treats it as empty → result == unique(input.scanned_areas).
+schema streak_state:
+  stop: bool
+  approved: bool
+  family: string
+  blockers: string[]
+  fix_plan: string
+  cumulative_scanned_areas: string[]
+
+schema fix_input:
+  blockers: string[]
+  fix_plan: string
+
+schema fix_output:
+  applied: bool
+  summary: string
+  pushback: string[]
+  pushback_justification: string
+
+## ─── Nodes : Feature Dev Phase ──────────────────────────────────
+
+agent plan:
+  backend: "claude_code"
+  model: "claude-opus-4-7"
+  reasoning_effort: extra_high
+  system: plan_system
+  user: plan_user
+  session: fresh
+
+agent act:
+  backend: "claude_code"
+  model: "claude-opus-4-7"
+  reasoning_effort: extra_high
+  system: act_system
+  user: act_user
+  session: inherit
+
+agent simplify:
+  backend: "claude_code"
+  model: "claude-opus-4-7"
+  reasoning_effort: extra_high
+  user: simplify_user
+  session: inherit
+
+## ─── Nodes : Review / Fix Loop ──────────────────────────────────
+
+router alt:
+  mode: round_robin
+
+judge reviewer_claude:
+  backend: "claude_code"
+  model: "claude-opus-4-7"
+  reasoning_effort: extra_high
+  input: review_input
+  output: verdict_output
+  system: review_system
+  user: review_user_claude
+  session: fresh
+  ## When the LLM hits genuine uncertainty (ambiguous spec, missing
+  ## context, impossible-to-decide trade-off), it can escalate to
+  ## the human running the CLI by emitting `_needs_interaction:
+  ## true` + `_interaction_questions: {...}` in its JSON output.
+  ## The runtime catches this, pauses, prompts the dev in their
+  ## terminal, and re-invokes the reviewer with the answer mapped
+  ## into its input — preserving session continuity.
+  interaction: human
+
+judge reviewer_gpt:
+  model: "openai/gpt-5.5"
+  input: review_input
+  output: verdict_output
+  system: review_system
+  user: review_user_gpt
+  session: fresh
+  ## claw backend uses snake_case tool names. Without these the
+  ## reviewer can't read the workspace and produces a
+  ## "no filesystem access" verdict — the claw runtime exposes
+  ## these via tool.RegisterClawBuiltins.
+  tools: [bash, read_file, glob, grep]
+  tool_max_steps: 30
+  interaction: human
+
+## Deterministic streak detector.
+##
+## stop=true iff (current AND previous reviewer both ACTUALLY
+## approved) AND families differ. The success criterion is two
+## consecutive POSITIVE verdicts from opposite families — both
+## AIs must let the code pass on successive iterations. A
+## low-confidence rejection does NOT count as approval for the
+## stop signal: the code only ships when it convinces both
+## reviewers.
+##
+## The `approved` passthrough field stays soft — it includes
+## low-confidence rejections — so the downstream
+## `when approved` edge keeps alternating without invoking the
+## fixer when a reviewer is merely uncertain. This separation
+## means the workflow keeps cycling without forced fix attempts
+## on flaky-low-confidence rejections, but requires real
+## approvals to terminate.
+compute streak_check:
+  output: streak_state
+  expr:
+    stop: "input.approved && loop.review_loop.previous_output.approved && input.family != loop.review_loop.previous_output.family"
+    approved: "input.approved || input.confidence == 'low'"
+    family: "input.family"
+    blockers: "input.blockers"
+    fix_plan: "input.fix_plan"
+    cumulative_scanned_areas: "unique(concat(outputs.streak_check.cumulative_scanned_areas, input.scanned_areas))"
+
+## Per-family fixers. Each one inherits the SAME-family reviewer's
+## session via `session: inherit` + `_session_id` mapping on the
+## edge — so the fixer reuses the prompt cache, the workspace files
+## already loaded, and the reviewer's reasoning chain. The result
+## is one session per loop iteration per family (not two), which
+## both shortens latency and dramatically reduces token cost:
+## without inheritance every fixer would re-scan the workspace.
+agent fix_claude:
+  backend: "claude_code"
+  model: "claude-opus-4-7"
+  reasoning_effort: extra_high
+  input: fix_input
+  output: fix_output
+  system: fix_system
+  user: fix_user
+  session: inherit
+  ## Same escalation contract as the reviewers — the fixer can ask
+  ## the dev a question (e.g. clarify the intent of an ambiguous
+  ## blocker) instead of guessing.
+  interaction: human
+
+agent fix_gpt:
+  model: "openai/gpt-5.5"
+  input: fix_input
+  output: fix_output
+  system: fix_system
+  user: fix_user
+  session: inherit
+  ## claw needs the same read/write toolset the reviewer used so
+  ## the fixer can actually apply edits.
+  tools: [bash, read_file, write_file, file_edit, glob, grep]
+  tool_max_steps: 30
+  interaction: human
+
+## ─── Workflow ───────────────────────────────────────────────────
+
+workflow vibe_feature_dev:
+  entry: plan
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "4h"
+    max_cost_usd: 120
+
+  compaction:
+    threshold: 0.9
+    preserve_recent: 8
+
+  ## ═══ Phase 1 : Plan → Act → Simplify ══════════════════════════
+  ## All three nodes share one Claude Code session via
+  ## `session: inherit` on act/simplify. Plan emits text only;
+  ## act executes the plan in the same conversation; simplify
+  ## invokes the native /simplify skill on the freshly-modified
+  ## code. The pattern mirrors rust_to_go_port.iter:1008-1015.
+  plan -> act with {
+    _session_id: "{{outputs.plan._session_id}}"
+  }
+  act -> simplify with {
+    _session_id: "{{outputs.act._session_id}}"
+  }
+
+  ## Hand off to the alternating review/fix loop. Reviewers run
+  ## with `session: fresh` (re-scan the workspace independently)
+  ## so they aren't biased by the dev session's reasoning chain.
+  simplify -> alt
+
+  ## ═══ Phase 2 : Alternating Review / Fix Loop ══════════════════
+  ## Verbatim from vibe_review_alternating.iter (entry was alt).
+  ##
+  ## Round-robin alternates: 1st pass → claude, 2nd → gpt, repeat.
+  ## Each reviewer receives the OTHER family's most recent fixer
+  ## pushback so it knows which items to skip — the alternation
+  ## guarantees the cross-family pushback comes from the previous
+  ## iteration's fixer of the opposing family. On the first
+  ## iteration both `outputs.fix_*` are empty → fields render as
+  ## empty strings and the prompt's "ne re-flague pas ces items"
+  ## section is harmless.
+  alt -> reviewer_claude with {
+    prior_pushback: "{{outputs.fix_gpt.pushback}}",
+    prior_pushback_justification: "{{outputs.fix_gpt.pushback_justification}}",
+    previous_scanned_areas: "{{outputs.streak_check.cumulative_scanned_areas}}"
+  }
+  alt -> reviewer_gpt with {
+    prior_pushback: "{{outputs.fix_claude.pushback}}",
+    prior_pushback_justification: "{{outputs.fix_claude.pushback_justification}}",
+    previous_scanned_areas: "{{outputs.streak_check.cumulative_scanned_areas}}"
+  }
+
+  ## Both reviewers feed into streak_check. The loop is attached
+  ## here so the runtime snapshots the reviewer's verdict as
+  ## `loop.review_loop.previous_output` for the NEXT iteration to
+  ## inspect — eliminating the manual `previous_verdict` relay.
+  reviewer_claude -> streak_check as review_loop(15) with {
+    approved: "{{outputs.reviewer_claude.approved}}",
+    family: "{{outputs.reviewer_claude.family}}",
+    blockers: "{{outputs.reviewer_claude.blockers}}",
+    fix_plan: "{{outputs.reviewer_claude.fix_plan}}",
+    confidence: "{{outputs.reviewer_claude.confidence}}",
+    scanned_areas: "{{outputs.reviewer_claude.scanned_areas}}"
+  }
+  reviewer_gpt -> streak_check as review_loop(15) with {
+    approved: "{{outputs.reviewer_gpt.approved}}",
+    family: "{{outputs.reviewer_gpt.family}}",
+    blockers: "{{outputs.reviewer_gpt.blockers}}",
+    fix_plan: "{{outputs.reviewer_gpt.fix_plan}}",
+    confidence: "{{outputs.reviewer_gpt.confidence}}",
+    scanned_areas: "{{outputs.reviewer_gpt.scanned_areas}}"
+  }
+
+  ## Stop when streak detected (cross-family double approval).
+  streak_check -> done when stop
+
+  ## Otherwise approved (no streak yet, OR low-confidence rejection
+  ## treated as soft-approved, OR rejection without concrete blockers
+  ## — see below): keep alternating without fixing.
+  ## Expression form is shown here both to demonstrate the new
+  ## syntax and so future authors can extend the predicate (e.g.
+  ## tighten the soft-approval condition) by enriching the
+  ## quoted expression.
+  ##
+  ## NOTE: this edge does NOT carry `review_loop` so the loop
+  ## counter (and the previous_output snapshot) is incremented
+  ## ONCE per cycle on the reviewer→streak_check edge above. The
+  ## cycle is still bounded because that edge IS loop-bearing.
+  streak_check -> alt when "approved"
+
+  ## Medium/high-confidence rejection WITH concrete blockers: route
+  ## to the SAME-family fixer so it can inherit the reviewer's
+  ## session (one session per iteration per family — see
+  ## fix_claude / fix_gpt comments). `_session_id` reads directly
+  ## from the most recent reviewer output rather than going through
+  ## streak_check, because compute passthrough strips the
+  ## underscore-prefixed metadata fields.
+  ##
+  ## The `length(blockers) > 0` guard avoids invoking the fixer
+  ## when the reviewer rejected on coverage grounds alone (e.g.
+  ## "cumulative coverage is partial at iteration 0/15") with no
+  ## production-blocking issue identified. In that case the fixer
+  ## has nothing to fix — burning a session round-trip and tokens
+  ## (~$0.15/$0.43 observed in vibe_review run_1777560043656) only
+  ## to push back. The unconditional alt fallthrough below picks
+  ## those up so alternation continues without a wasted fix call.
+  ##
+  ## Edge order matters: iterion evaluates conditional edges top-
+  ## down, first match wins. We list both family-specific fixers
+  ## before the unconditional `done` fallthrough so loop-exhaustion
+  ## still terminates cleanly.
+  streak_check -> fix_claude when "!approved && family == 'claude' && length(blockers) > 0" with {
+    blockers: "{{outputs.streak_check.blockers}}",
+    fix_plan: "{{outputs.streak_check.fix_plan}}",
+    _session_id: "{{outputs.reviewer_claude._session_id}}"
+  }
+  streak_check -> fix_gpt when "!approved && family == 'gpt' && length(blockers) > 0" with {
+    blockers: "{{outputs.streak_check.blockers}}",
+    fix_plan: "{{outputs.streak_check.fix_plan}}",
+    _session_id: "{{outputs.reviewer_gpt._session_id}}"
+  }
+
+  ## Recovery cycle uses a separate loop name so its counter doesn't
+  ## interfere with the review_loop snapshot semantics. Sized large
+  ## enough to allow review_loop to be the binding constraint. Both
+  ## fixers share the loop counter — total fix attempts across both
+  ## families are capped at 20.
+  fix_claude -> alt as recovery_loop(20)
+  fix_gpt    -> alt as recovery_loop(20)
+
+  ## Loop exhaustion fallbacks: when a bounded loop hits its limit
+  ## the loop-bearing edges above are skipped and execution falls
+  ## through to these unconditional terminal edges.
+  reviewer_claude -> done
+  reviewer_gpt    -> done
+  fix_claude      -> done
+  fix_gpt         -> done
+  ## streak_check's catch-all routes back to `alt` (not `done`) so
+  ## an unmatched conditional state (e.g. a hallucinated family that
+  ## escapes the enum, or any future expression edge case) keeps
+  ## the loop cycling rather than silently terminating. The bounded
+  ## review_loop counter on the reviewer→streak_check edges still
+  ## guarantees the workflow eventually exits — exhaustion routes
+  ## via the reviewer→done fallthrough above.
+  streak_check    -> alt
