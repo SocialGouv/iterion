@@ -228,39 +228,38 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	return loopErr
 }
 
-// resumeFromFailure resumes a failed_resumable run by re-executing from the
-// node that follows the last successfully completed node (the one that failed).
+// resumeFromFailure resumes a failed_resumable run by re-executing from
+// the failing node (with checkpoint) or by restarting from the workflow
+// entry node (no checkpoint). The "no checkpoint" path matters when a
+// run failed on its very first node before any save_checkpoint fired —
+// network cuts during plan, claude_code subprocess crashes, etc. Without
+// it, those runs are dead-on-arrival because validateResumable lets
+// them through but the engine refuses to resume.
 func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 	runID := r.ID
 	if err := e.checkWorkflowHash(r); err != nil {
 		return err
 	}
-	if r.Checkpoint == nil {
-		return fmt.Errorf("runtime: run %q has no checkpoint", runID)
-	}
 
 	cp := r.Checkpoint
-	restartNodeID := cp.NodeID
+	restartNodeID := e.workflow.Entry
+	if cp != nil {
+		restartNodeID = cp.NodeID
+	}
 
 	// Update status to running and emit run_resumed.
 	if err := e.store.UpdateRunStatus(runID, store.RunStatusRunning, ""); err != nil {
 		return fmt.Errorf("runtime: update status running: %w", err)
 	}
-	if err := e.emit(runID, store.EventRunResumed, "", map[string]interface{}{
+	resumeData := map[string]interface{}{
 		"resumed_from": "failed",
 		"restart_node": restartNodeID,
-	}); err != nil {
+	}
+	if cp == nil {
+		resumeData["from_entry"] = true
+	}
+	if err := e.emit(runID, store.EventRunResumed, "", resumeData); err != nil {
 		return err
-	}
-
-	loopCounters := cp.LoopCounters
-	roundRobinCounters := cp.RoundRobinCounters
-	if roundRobinCounters == nil {
-		roundRobinCounters = make(map[string]int)
-	}
-	artifactVersions := cp.ArtifactVersions
-	if artifactVersions == nil {
-		artifactVersions = make(map[string]int)
 	}
 
 	// Restore the per-run env (workDir + executor wiring). cp.Vars is
@@ -274,13 +273,24 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 
 	rs := e.newRunState(runID, r.Inputs)
 	rs.vars = e.resolveVars(r.Inputs)
-	rs.outputs = cp.Outputs
-	rs.artifacts = e.rebuildArtifacts(cp.Outputs)
-	rs.loopCounters = loopCounters
-	rs.roundRobinCounters = roundRobinCounters
-	rs.artifactVersions = artifactVersions
-	rs.nodeAttempts = restoreNodeAttempts(cp.NodeAttempts)
-	restoreLoopSnapshots(rs, cp)
+
+	if cp != nil {
+		rs.outputs = cp.Outputs
+		rs.artifacts = e.rebuildArtifacts(cp.Outputs)
+		rs.loopCounters = cp.LoopCounters
+		if cp.RoundRobinCounters != nil {
+			rs.roundRobinCounters = cp.RoundRobinCounters
+		}
+		if cp.ArtifactVersions != nil {
+			rs.artifactVersions = cp.ArtifactVersions
+		}
+		rs.nodeAttempts = restoreNodeAttempts(cp.NodeAttempts)
+		restoreLoopSnapshots(rs, cp)
+	}
+	// When cp is nil, rs keeps the empty maps from newRunState — same
+	// state shape as a fresh launch, only the run_id is preserved so
+	// the editor's snapshot continuity stays intact.
+
 	e.pushExecutorVars(rs.vars)
 
 	loopErr := e.execLoop(ctx, rs, restartNodeID)

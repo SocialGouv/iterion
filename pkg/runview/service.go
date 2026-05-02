@@ -549,6 +549,19 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	if err != nil {
 		return nil, err
 	}
+	if r.Status == store.RunStatusRunning {
+		// Targeted reconcile: turn an orphan running run (server
+		// restart, abrupt goroutine exit) into a resumable status
+		// before validating, so the user doesn't have to wait for
+		// the next NewService call to clean it up.
+		reconciled, didReconcile, rcErr := s.reconcileRun(spec.RunID)
+		if rcErr != nil {
+			return nil, rcErr
+		}
+		if didReconcile {
+			r = reconciled
+		}
+	}
 	if err := validateResumable(r, spec.Answers); err != nil {
 		return nil, err
 	}
@@ -604,6 +617,71 @@ func validateResumable(r *store.Run, answers map[string]interface{}) error {
 	default:
 		return fmt.Errorf("run %q cannot be resumed (status: %s)", r.ID, r.Status)
 	}
+}
+
+// reconcileRun is the on-demand counterpart to reconcileOrphans: when a
+// resume request arrives for a run still flagged `running` and the
+// service has no active handle for it, the run is an orphan from a
+// previous server lifetime (or a goroutine that died abruptly). Trying
+// to grab the lock — which the OS auto-releases on process exit — proves
+// liveness; if it succeeds, the run is genuinely dead and we flip the
+// status so resume can proceed. If the lock is held (live goroutine in
+// this process or another), nothing happens and resume rejects normally.
+//
+// Returns the up-to-date run (post-reconcile if it fired) so the caller
+// doesn't have to re-load.
+func (s *Service) reconcileRun(runID string) (*store.Run, bool, error) {
+	r, err := s.store.LoadRun(runID)
+	if err != nil {
+		return nil, false, err
+	}
+	if r.Status != store.RunStatusRunning {
+		return r, false, nil
+	}
+	// If the manager already tracks this run, it's live in this
+	// process — leave it alone, resume will reject with the active
+	// status error.
+	if s.manager.Active(runID) {
+		return r, false, nil
+	}
+	lock, err := s.store.LockRun(runID)
+	if err != nil {
+		// Lock held by a real process — skip reconcile.
+		return r, false, nil
+	}
+	// Re-read under the lock in case another writer raced us.
+	r2, err := s.store.LoadRun(runID)
+	if err != nil || r2.Status != store.RunStatusRunning {
+		_ = lock.Unlock()
+		if err != nil {
+			return r, false, nil
+		}
+		return r2, false, nil
+	}
+	newStatus := store.RunStatusFailed
+	if r2.Checkpoint != nil {
+		newStatus = store.RunStatusFailedResumable
+	} else {
+		// No checkpoint means the run died before any node finished —
+		// resume from entry is now possible thanks to the engine-side
+		// permissive-restart path. Flag as resumable too so the editor
+		// can offer the resume button.
+		newStatus = store.RunStatusFailedResumable
+	}
+	const reason = "orphan reconciled on resume request: server had no live goroutine for run"
+	if err := s.store.UpdateRunStatus(runID, newStatus, reason); err != nil {
+		_ = lock.Unlock()
+		return r2, false, fmt.Errorf("reconcile %s: %w", runID, err)
+	}
+	_ = lock.Unlock()
+	if s.logger != nil {
+		s.logger.Info("runview: reconciled orphan run %s on demand → %s", runID, newStatus)
+	}
+	r3, _ := s.store.LoadRun(runID)
+	if r3 == nil {
+		return r2, true, nil
+	}
+	return r3, true, nil
 }
 
 // spawnRun owns the lock + register + goroutine + defer-cleanup
