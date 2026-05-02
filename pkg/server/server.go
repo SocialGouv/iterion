@@ -574,7 +574,19 @@ func (s *Server) safePath(relPath string) (string, error) {
 	}
 
 	// Compute the requested absolute path (without symlink resolution yet).
-	abs := filepath.Join(baseAbs, filepath.Clean("/"+relPath))
+	// Idempotent on absolute inputs: handleResumeRun passes the
+	// runMeta.FilePath value, which was already canonicalised at launch
+	// time. Naively re-joining baseAbs with an already-absolute path
+	// duplicates the workdir prefix (e.g. "/foo/bar" joined with "/foo/bar/x"
+	// yields "/foo/bar/foo/bar/x"). The containment check below remains
+	// the security boundary, so taking absolute inputs as-is is safe —
+	// any path that escapes baseReal will still be rejected.
+	var abs string
+	if filepath.IsAbs(relPath) {
+		abs = filepath.Clean(relPath)
+	} else {
+		abs = filepath.Join(baseAbs, filepath.Clean("/"+relPath))
+	}
 	abs, err = filepath.Abs(abs)
 	if err != nil {
 		return "", err
