@@ -31,6 +31,9 @@ export type ExecStatus =
 // Mirror of runview.RunSummary.
 export interface RunSummary {
   id: string;
+  // Deterministic, human-friendly run label. Empty for legacy runs
+  // persisted before this field existed; UI falls back to workflow_name.
+  name?: string;
   workflow_name: string;
   status: RunStatus;
   file_path?: string;
@@ -61,6 +64,9 @@ export interface ExecutionState {
 // Mirror of runview.RunHeader.
 export interface RunHeader {
   id: string;
+  // Deterministic, human-friendly run label. Empty for legacy runs
+  // persisted before this field existed; UI falls back to workflow_name.
+  name?: string;
   workflow_name: string;
   workflow_hash?: string;
   file_path?: string;

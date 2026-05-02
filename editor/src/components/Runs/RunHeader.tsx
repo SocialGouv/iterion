@@ -56,7 +56,16 @@ export default function RunHeader({ run, active, wsState }: Props) {
       >
         ← Runs
       </button>
-      <div className="font-medium truncate max-w-md">{run.workflow_name}</div>
+      <div className="flex flex-col leading-tight min-w-0 max-w-md">
+        <div className="font-medium truncate">
+          {run.name || run.workflow_name}
+        </div>
+        {run.name && (
+          <div className="text-[10px] text-fg-subtle truncate">
+            {run.workflow_name}
+          </div>
+        )}
+      </div>
       <StatusBadge status={run.status} />
       {active && (
         <span

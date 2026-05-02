@@ -65,6 +65,9 @@ func RunInspect(opts InspectOptions, p *Printer) error {
 
 	// Human output.
 	p.Header("Inspect: " + opts.RunID)
+	if r.Name != "" {
+		p.KV("Name", r.Name)
+	}
 	p.KV("Workflow", r.WorkflowName)
 	p.KV("Status", StatusIcon(string(r.Status))+" "+string(r.Status))
 	p.KV("Created", FormatTime(r.CreatedAt))
@@ -172,16 +175,21 @@ func listRuns(s *store.RunStore, p *Printer) error {
 	for _, id := range ids {
 		r, err := s.LoadRun(id)
 		if err != nil {
-			rows = append(rows, []string{id, "?", "?", "?"})
+			rows = append(rows, []string{"?", id, "?", "?", "?"})
 			continue
 		}
+		name := r.Name
+		if name == "" {
+			name = "—"
+		}
 		rows = append(rows, []string{
+			name,
 			r.ID,
 			string(r.Status),
 			r.WorkflowName,
 			FormatTime(r.CreatedAt),
 		})
 	}
-	p.Table([]string{"ID", "STATUS", "WORKFLOW", "CREATED"}, rows)
+	p.Table([]string{"NAME", "ID", "STATUS", "WORKFLOW", "CREATED"}, rows)
 	return nil
 }

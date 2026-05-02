@@ -43,7 +43,10 @@ type ResumeSpec struct {
 // Heavier fields (events, artifacts, checkpoint detail) live in
 // RunSnapshot — call Snapshot for the full view.
 type RunSummary struct {
-	ID           string          `json:"id"`
+	ID string `json:"id"`
+	// Name is the deterministic, human-friendly label for the run.
+	// Empty for legacy runs persisted before this field existed.
+	Name         string          `json:"name,omitempty"`
 	WorkflowName string          `json:"workflow_name"`
 	Status       store.RunStatus `json:"status"`
 	FilePath     string          `json:"file_path,omitempty"`
@@ -346,6 +349,7 @@ func (s *Service) List(f ListFilter) ([]RunSummary, error) {
 		}
 		out = append(out, RunSummary{
 			ID:           r.ID,
+			Name:         r.Name,
 			WorkflowName: r.WorkflowName,
 			Status:       r.Status,
 			FilePath:     r.FilePath,

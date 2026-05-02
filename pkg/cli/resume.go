@@ -135,6 +135,9 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 
 	if p.Format == OutputHuman {
 		p.Header("Resume: " + opts.RunID)
+		if r.Name != "" {
+			p.KV("Name", r.Name)
+		}
 		p.KV("Workflow", wf.Name)
 		if r.Checkpoint != nil {
 			p.KV("Node", r.Checkpoint.NodeID)

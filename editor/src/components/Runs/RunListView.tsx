@@ -131,10 +131,14 @@ export default function RunListView() {
                   onClick={() => setLocation(`/runs/${encodeURIComponent(r.id)}`)}
                 >
                   <td className="px-4 py-2">
-                    <div className="font-medium">{r.workflow_name}</div>
-                    {r.file_path && (
+                    <div className="font-medium">
+                      {r.name || r.workflow_name}
+                    </div>
+                    {(r.name || r.file_path) && (
                       <div className="text-fg-subtle text-[10px] truncate max-w-md">
-                        {r.file_path}
+                        {[r.name && r.workflow_name, r.file_path]
+                          .filter(Boolean)
+                          .join(" · ")}
                       </div>
                     )}
                   </td>

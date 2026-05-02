@@ -53,6 +53,7 @@ type Engine struct {
 	recoveryDispatch RecoveryDispatch      // optional; consulted on node execution failure
 	workflowHash     string                // SHA-256 of the .iter source, set via WithWorkflowHash
 	filePath         string                // absolute .iter source path, set via WithFilePath
+	runName          string                // deterministic human-friendly run label, set via WithRunName
 	validateOutputs  bool                  // when true, validate node outputs against declared schemas
 	forceResume      bool                  // when true, skip workflow hash check on resume
 	workDir          string                // working directory for subprocesses + PROJECT_DIR expansion; defaults to os.Getwd() at Run() time
@@ -104,6 +105,13 @@ func WithWorkflowHash(hash string) EngineOption {
 // API. Optional — empty string is ignored.
 func WithFilePath(path string) EngineOption {
 	return func(e *Engine) { e.filePath = path }
+}
+
+// WithRunName records a deterministic, human-friendly label on the
+// run metadata at creation. Display-only — the canonical identifier
+// remains the run ID. Optional — empty string is ignored.
+func WithRunName(name string) EngineOption {
+	return func(e *Engine) { e.runName = name }
 }
 
 // WithForceResume allows resuming a run even when the workflow source has
@@ -206,15 +214,18 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 	if err != nil {
 		return fmt.Errorf("runtime: create run: %w", err)
 	}
-	if e.workflowHash != "" || e.filePath != "" {
+	if e.workflowHash != "" || e.filePath != "" || e.runName != "" {
 		if e.workflowHash != "" {
 			run.WorkflowHash = e.workflowHash
 		}
 		if e.filePath != "" {
 			run.FilePath = e.filePath
 		}
+		if e.runName != "" {
+			run.Name = e.runName
+		}
 		if err := e.store.SaveRun(run); err != nil {
-			return fmt.Errorf("runtime: save workflow hash: %w", err)
+			return fmt.Errorf("runtime: save run metadata: %w", err)
 		}
 	}
 

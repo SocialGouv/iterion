@@ -56,7 +56,10 @@ type ExecutionState struct {
 
 // RunHeader is the run-level metadata embedded in a snapshot.
 type RunHeader struct {
-	ID           string                 `json:"id"`
+	ID string `json:"id"`
+	// Name is the deterministic, human-friendly label for the run.
+	// Empty for legacy runs persisted before this field existed.
+	Name         string                 `json:"name,omitempty"`
 	WorkflowName string                 `json:"workflow_name"`
 	WorkflowHash string                 `json:"workflow_hash,omitempty"`
 	FilePath     string                 `json:"file_path,omitempty"`
@@ -393,6 +396,7 @@ func ParseExecutionID(id string) (branch, nodeID string, iteration int, err erro
 func headerFromRun(r *store.Run) RunHeader {
 	return RunHeader{
 		ID:           r.ID,
+		Name:         r.Name,
 		WorkflowName: r.WorkflowName,
 		WorkflowHash: r.WorkflowHash,
 		FilePath:     r.FilePath,

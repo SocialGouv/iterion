@@ -111,6 +111,8 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		return err
 	}
 
+	runName := store.GenerateRunName(iterFile + ":" + runID)
+
 	storeDir := store.ResolveStoreDir(filepath.Dir(iterFile), opts.StoreDir)
 
 	s, err := store.New(storeDir, store.WithLogger(logger))
@@ -152,6 +154,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		append(engineOpts,
 			runtime.WithWorkflowHash(wfHash),
 			runtime.WithFilePath(iterFile),
+			runtime.WithRunName(runName),
 		)...,
 	)
 
@@ -178,6 +181,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	// Execute.
 	if p.Format == OutputHuman {
 		p.Header("Run: " + workflowName)
+		p.KV("Run name", runName)
 		p.KV("Run ID", runID)
 		p.KV("Store", storeDir)
 		p.KV("Log Level", level.String())

@@ -31,8 +31,14 @@ const RunFormatVersion = 1
 
 // Run is the top-level metadata for a single workflow invocation.
 type Run struct {
-	FormatVersion int                    `json:"format_version"`
-	ID            string                 `json:"id"`
+	FormatVersion int    `json:"format_version"`
+	ID            string `json:"id"`
+	// Name is a deterministic, human-friendly label derived from
+	// (file_path + run_id) at run creation. Display-only — the
+	// canonical identifier remains ID. Empty for runs persisted
+	// before this field existed; surfaces should fall back to
+	// WorkflowName in that case.
+	Name          string                 `json:"name,omitempty"`
 	WorkflowName  string                 `json:"workflow_name"`
 	WorkflowHash  string                 `json:"workflow_hash,omitempty"` // SHA-256 of the .iter source at run start
 	FilePath      string                 `json:"file_path,omitempty"`     // absolute .iter source path captured at launch (resume without re-supplying file)
