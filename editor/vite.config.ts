@@ -1,3 +1,4 @@
+/// <reference types="vitest" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -17,6 +18,13 @@ export default defineConfig({
     alias: {
       "@": path.resolve(__dirname, "src"),
     },
+  },
+  // Vitest runs pure-function tests under Node — no DOM needed for the
+  // FilePicker search helper. The `@/` alias above is reused by the
+  // test runner via the shared Vite config.
+  test: {
+    environment: "node",
+    include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
   },
   // Pre-bundle the run-console deps at boot so Vite doesn't trip on
   // its own race when discovering them on-the-fly (the "file does not
