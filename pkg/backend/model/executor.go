@@ -512,6 +512,15 @@ func (e *ClawExecutor) SetVars(vars map[string]interface{}) {
 	}
 }
 
+// SetWorkDir updates the working directory for backend subprocesses
+// (claude_code, codex) and tool node shell exec. The engine calls this
+// at run start when `worktree: auto` produces a per-run worktree path
+// that wasn't known at executor construction time. Safe to call before
+// Execute; not safe to call concurrently with an in-flight Execute.
+func (e *ClawExecutor) SetWorkDir(dir string) {
+	e.workDir = dir
+}
+
 // resolveBackendName returns the effective backend name for a node.
 // Resolution chain: node.Backend → workflow default → env ITERION_DEFAULT_BACKEND → "claw".
 func (e *ClawExecutor) resolveBackendName(node ir.Node) string {
@@ -1361,6 +1370,9 @@ func (e *ClawExecutor) executeToolNodeShell(ctx context.Context, node *ir.ToolNo
 
 	start := time.Now()
 	cmd := exec.CommandContext(ctx, "sh", "-c", resolved)
+	if e.workDir != "" {
+		cmd.Dir = e.workDir
+	}
 	out, err := cmd.CombinedOutput()
 	outputStr := string(out)
 	duration := time.Since(start)
@@ -1413,10 +1425,42 @@ func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]int
 		if val == nil {
 			continue
 		}
-		escaped := shellEscape(fmt.Sprint(val))
-		resolved = strings.ReplaceAll(resolved, ref.Raw, escaped)
+		resolved = strings.ReplaceAll(resolved, ref.Raw, shellEscapeValue(val))
 	}
 	return resolved
+}
+
+// shellEscapeValue formats val for safe interpolation into a sh -c command.
+// Slice values ([]string, []interface{}) become a space-separated list of
+// individually-shell-quoted tokens, so each element survives sh's
+// re-tokenization as its own argument — letting workflow authors pass file
+// lists or argument arrays via a single {{input.x}} reference. An empty
+// slice substitutes as empty string (the surrounding command will fail
+// naturally if it required at least one argument). Scalars fall back to
+// fmt.Sprint + shellEscape, preserving the prior single-value behavior.
+func shellEscapeValue(val interface{}) string {
+	switch v := val.(type) {
+	case []string:
+		if len(v) == 0 {
+			return ""
+		}
+		parts := make([]string, len(v))
+		for i, s := range v {
+			parts[i] = shellEscape(s)
+		}
+		return strings.Join(parts, " ")
+	case []interface{}:
+		if len(v) == 0 {
+			return ""
+		}
+		parts := make([]string, len(v))
+		for i, e := range v {
+			parts[i] = shellEscape(fmt.Sprint(e))
+		}
+		return strings.Join(parts, " ")
+	default:
+		return shellEscape(fmt.Sprint(v))
+	}
 }
 
 // shellEscape wraps a value in single quotes, escaping any embedded single
@@ -1641,7 +1685,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 //
 //	router -> agent with {_reasoning_effort: "high"}
 //
-// Valid values are defined in ir.ValidReasoningEfforts: low, medium, high, extra_high.
+// Valid values are defined in ir.ValidReasoningEfforts: low, medium, high, xhigh, max.
 // Invalid dynamic values are silently ignored (falls back to the static property).
 func resolveReasoningEffort(nodeEffort string, input map[string]interface{}) string {
 	if v, ok := input["_reasoning_effort"]; ok {

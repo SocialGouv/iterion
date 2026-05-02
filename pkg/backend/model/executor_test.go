@@ -850,6 +850,36 @@ func TestResolveCommandTemplate(t *testing.T) {
 			input:   map[string]interface{}{"msg": "'; rm -rf / #"},
 			want:    "echo ''\\''; rm -rf / #'",
 		},
+		{
+			name:    "string slice expands to space-separated args",
+			command: "git add -- {{input.files}}",
+			input:   map[string]interface{}{"files": []string{"a.go", "b.go"}},
+			want:    "git add -- 'a.go' 'b.go'",
+		},
+		{
+			name:    "interface slice (JSON-decoded) expands the same",
+			command: "git add -- {{input.files}}",
+			input:   map[string]interface{}{"files": []interface{}{"a.go", "b.go"}},
+			want:    "git add -- 'a.go' 'b.go'",
+		},
+		{
+			name:    "slice with shell metacharacters stays quoted",
+			command: "rm -- {{input.paths}}",
+			input:   map[string]interface{}{"paths": []string{"a b.go", "c'd.go", "$HOME/x"}},
+			want:    `rm -- 'a b.go' 'c'\''d.go' '$HOME/x'`,
+		},
+		{
+			name:    "empty slice substitutes as empty string",
+			command: "git add -- {{input.files}}",
+			input:   map[string]interface{}{"files": []string{}},
+			want:    "git add -- ",
+		},
+		{
+			name:    "slice with one element",
+			command: "echo {{input.files}}",
+			input:   map[string]interface{}{"files": []string{"only"}},
+			want:    "echo 'only'",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1546,10 +1576,16 @@ func TestResolveReasoningEffort(t *testing.T) {
 			expected:   "low",
 		},
 		{
-			name:       "dynamic extra_high",
+			name:       "dynamic xhigh",
 			nodeEffort: "low",
-			input:      map[string]interface{}{"_reasoning_effort": "extra_high"},
-			expected:   "extra_high",
+			input:      map[string]interface{}{"_reasoning_effort": "xhigh"},
+			expected:   "xhigh",
+		},
+		{
+			name:       "dynamic max",
+			nodeEffort: "low",
+			input:      map[string]interface{}{"_reasoning_effort": "max"},
+			expected:   "max",
 		},
 		{
 			name:       "invalid dynamic falls back to static",
