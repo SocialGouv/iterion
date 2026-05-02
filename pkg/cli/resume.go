@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -30,10 +31,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		return fmt.Errorf("--run-id is required")
 	}
 
-	storeDir := opts.StoreDir
-	if storeDir == "" {
-		storeDir = ".iterion"
-	}
+	storeDir := store.ResolveStoreDir(filepath.Dir(iterFile), opts.StoreDir)
 
 	// Resolve log level early so the logger is available for store creation.
 	level, err := iterlog.ResolveLevel(opts.LogLevel, "ITERION_LOG_LEVEL")

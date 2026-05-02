@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -41,7 +42,7 @@ type RunOptions struct {
 	Recipe        string               // recipe JSON file path (alternative to File)
 	Vars          map[string]string    // --var key=value overrides
 	RunID         string               // explicit run ID (auto-generated if empty)
-	StoreDir      string               // store directory (default: .iterion)
+	StoreDir      string               // store directory (default: nearest .iterion ancestor of the .iter file, or alongside it)
 	Timeout       time.Duration        // maximum run duration (0 = no limit)
 	LogLevel      string               // log level (default: "info", env: ITERION_LOG_LEVEL)
 	NoInteractive bool                 // disable interactive TTY prompting on human pause
@@ -50,22 +51,13 @@ type RunOptions struct {
 
 // RunRun executes a workflow or recipe and reports the outcome.
 func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
-	// Resolve store.
-	storeDir := opts.StoreDir
-	if storeDir == "" {
-		storeDir = ".iterion"
-	}
-	// Resolve log level early so the logger is available for store creation.
+	// Resolve log level early so the logger is available for store creation
+	// and downstream subsystems.
 	level, err := iterlog.ResolveLevel(opts.LogLevel, "ITERION_LOG_LEVEL")
 	if err != nil {
 		return err
 	}
 	logger := iterlog.New(level, os.Stderr)
-
-	s, err := store.New(storeDir, store.WithLogger(logger))
-	if err != nil {
-		return fmt.Errorf("cannot create store: %w", err)
-	}
 
 	// Resolve run ID.
 	runID := opts.RunID
@@ -117,6 +109,13 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	wf, wfHash, iterFile, workflowName, err := resolveWorkflow(opts)
 	if err != nil {
 		return err
+	}
+
+	storeDir := store.ResolveStoreDir(filepath.Dir(iterFile), opts.StoreDir)
+
+	s, err := store.New(storeDir, store.WithLogger(logger))
+	if err != nil {
+		return fmt.Errorf("cannot create store: %w", err)
 	}
 
 	executor := opts.Executor

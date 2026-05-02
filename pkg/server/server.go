@@ -24,6 +24,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 //go:embed all:static
@@ -76,15 +77,14 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 			go s.watcher.Start()
 		}
 	}
-	// Wire the run console service. Default the store dir to
-	// <WorkDir>/.iterion when the operator did not specify one — that
-	// matches the CLI default and keeps single-machine workflows
-	// (edit + run from the same dir) self-consistent. A failure here
-	// is non-fatal: we log a warning and leave s.runs == nil, which
-	// disables the /api/runs surface but keeps the editor usable.
-	storeDir := cfg.StoreDir
-	if storeDir == "" && cfg.WorkDir != "" {
-		storeDir = filepath.Join(cfg.WorkDir, ".iterion")
+	// Wire the run console service. A failure here is non-fatal: we log a
+	// warning and leave s.runs == nil, which disables /api/runs but keeps
+	// the editor usable. The guard preserves the prior behaviour of
+	// disabling runs entirely when neither StoreDir nor WorkDir are set
+	// (e.g. tests that build a Config{} directly).
+	var storeDir string
+	if cfg.StoreDir != "" || cfg.WorkDir != "" {
+		storeDir = store.ResolveStoreDir(cfg.WorkDir, cfg.StoreDir)
 	}
 	if storeDir != "" {
 		svc, svcErr := runview.NewService(storeDir, runview.WithLogger(logger))
@@ -183,6 +183,7 @@ func (s *Server) routes() {
 
 	// Run console endpoints (registered only when s.runs is wired).
 	s.registerRunRoutes()
+	s.registerRunLogRoutes()
 
 	// Serve static frontend files.
 	staticSub, err := fs.Sub(staticFS, "static")

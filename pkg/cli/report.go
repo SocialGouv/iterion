@@ -21,10 +21,8 @@ type ReportOptions struct {
 
 // RunReport generates a detailed chronological report for a run.
 func RunReport(opts ReportOptions, p *Printer) error {
-	storeDir := opts.StoreDir
-	if storeDir == "" {
-		storeDir = ".iterion"
-	}
+	cwd, _ := os.Getwd()
+	storeDir := store.ResolveStoreDir(cwd, opts.StoreDir)
 
 	s, err := store.New(storeDir)
 	if err != nil {

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -16,10 +17,8 @@ type InspectOptions struct {
 
 // RunInspect loads and displays a run's state.
 func RunInspect(opts InspectOptions, p *Printer) error {
-	storeDir := opts.StoreDir
-	if storeDir == "" {
-		storeDir = ".iterion"
-	}
+	cwd, _ := os.Getwd()
+	storeDir := store.ResolveStoreDir(cwd, opts.StoreDir)
 
 	s, err := store.New(storeDir)
 	if err != nil {

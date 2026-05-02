@@ -9,6 +9,7 @@ var editorOpts struct {
 	port      int
 	bind      string
 	dir       string
+	storeDir  string
 	noBrowser bool
 }
 
@@ -21,6 +22,7 @@ var editorCmd = &cobra.Command{
 			Port:      editorOpts.port,
 			Bind:      editorOpts.bind,
 			Dir:       editorOpts.dir,
+			StoreDir:  editorOpts.storeDir,
 			NoBrowser: editorOpts.noBrowser,
 		}, newPrinter())
 	},
@@ -35,6 +37,7 @@ func init() {
 	// interface IP to expose on the LAN.
 	f.StringVar(&editorOpts.bind, "bind", "127.0.0.1", "Bind address (default: 127.0.0.1; use 0.0.0.0 to expose on LAN)")
 	f.StringVar(&editorOpts.dir, "dir", "", "Working directory")
+	f.StringVar(&editorOpts.storeDir, "store-dir", "", "Run store directory (default: nearest .iterion ancestor of --dir, or <dir>/.iterion)")
 	f.BoolVar(&editorOpts.noBrowser, "no-browser", false, "Don't open browser automatically")
 	rootCmd.AddCommand(editorCmd)
 }

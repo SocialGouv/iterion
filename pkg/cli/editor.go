@@ -17,6 +17,7 @@ type EditorOptions struct {
 	Port      int
 	Bind      string // bind address (default "127.0.0.1"); use "0.0.0.0" to expose on LAN
 	Dir       string // working directory (for examples)
+	StoreDir  string // run store directory (default: nearest .iterion ancestor of Dir, or <Dir>/.iterion)
 	NoBrowser bool   // skip opening browser
 }
 
@@ -45,6 +46,7 @@ func RunEditor(ctx context.Context, opts EditorOptions, p *Printer) error {
 		Bind:        opts.Bind,
 		ExamplesDir: examplesDir,
 		WorkDir:     dir,
+		StoreDir:    opts.StoreDir,
 		OpenBrowser: !opts.NoBrowser,
 	}
 
