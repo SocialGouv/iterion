@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -169,17 +170,16 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 		roundRobinCounters = make(map[string]int)
 	}
 
-	// rs.outputs and rs.vars alias cp.Outputs and cp.Vars by reference,
-	// matching how buildCheckpoint assembles them (no copies on save
-	// either). Subsequent runtime mutations therefore land in both —
-	// fine because runState is single-goroutine-owned and the next
-	// SaveCheckpoint emits exactly the post-resume snapshot we want
-	// (a deep copy here would just churn allocator memory without
-	// changing observable behaviour). DO NOT introduce a parallel
-	// reader of cp.Outputs / cp.Vars after this point — if you need
-	// the pre-resume state, snapshot it before the alias.
+	// Restore the per-run env (workDir + executor wiring) before the
+	// runState is built so re-resolved vars use the right PROJECT_DIR.
+	// See restoreRunEnv for the rationale; in particular cp.Vars is
+	// NOT used as the source of truth — re-resolving from r.Inputs
+	// ensures any post-launch engine fix (env-expansion, new var
+	// defaults) applies on resume too.
+	e.restoreRunEnv(r)
+
 	rs := e.newRunState(runID, r.Inputs)
-	rs.vars = cp.Vars
+	rs.vars = e.resolveVars(r.Inputs)
 	rs.outputs = outputs
 	rs.artifacts = e.rebuildArtifacts(outputs)
 	rs.loopCounters = loopCounters
@@ -187,6 +187,11 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	rs.artifactVersions = artifactVersions
 	rs.nodeAttempts = restoreNodeAttempts(cp.NodeAttempts)
 	restoreLoopSnapshots(rs, cp)
+
+	// Push the freshly-resolved vars into the executor so substitutions
+	// in tool commands and prompt templates see the same map the engine
+	// just built.
+	e.pushExecutorVars(rs.vars)
 
 	// When the pause originated from a delegate (an agent/judge that
 	// emitted _needs_interaction or called the native ask_user tool),
@@ -258,8 +263,17 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 		artifactVersions = make(map[string]int)
 	}
 
+	// Restore the per-run env (workDir + executor wiring). cp.Vars is
+	// not the source of truth; we re-resolve from r.Inputs so any
+	// engine-side fix (e.g. env-var expansion of overrides, see commit
+	// e9bf189) applies on resume too. Without this, a run launched on
+	// an old binary that froze `${PROJECT_DIR}` literally in cp.Vars
+	// would re-fail at the same node even after a fixed binary takes
+	// over.
+	e.restoreRunEnv(r)
+
 	rs := e.newRunState(runID, r.Inputs)
-	rs.vars = cp.Vars
+	rs.vars = e.resolveVars(r.Inputs)
 	rs.outputs = cp.Outputs
 	rs.artifacts = e.rebuildArtifacts(cp.Outputs)
 	rs.loopCounters = loopCounters
@@ -267,10 +281,47 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 	rs.artifactVersions = artifactVersions
 	rs.nodeAttempts = restoreNodeAttempts(cp.NodeAttempts)
 	restoreLoopSnapshots(rs, cp)
+	e.pushExecutorVars(rs.vars)
 
 	loopErr := e.execLoop(ctx, rs, restartNodeID)
 	e.evictRunSessions(runID, loopErr)
 	return loopErr
+}
+
+// restoreRunEnv re-establishes the engine's working directory from the
+// persisted run record, then propagates it to the executor. Mirrors the
+// pre-loop initialisation in Run(): without this, resumed runs that
+// originally used `worktree: auto` would lose track of their per-run
+// worktree path and tool nodes / backend subprocesses would land in the
+// main checkout (or even the iterion process cwd) — fatal for
+// commit_changes which expects to operate inside the run's worktree.
+//
+// The persisted r.WorkDir was added by Run() after worktree creation, so
+// it always carries the right absolute path even when the worktree on
+// disk was removed (in which case the failing tool will produce a clear
+// error rather than silently ending up somewhere else).
+func (e *Engine) restoreRunEnv(r *store.Run) {
+	if r.WorkDir != "" {
+		e.workDir = r.WorkDir
+	} else if e.workDir == "" {
+		if cwd, err := os.Getwd(); err == nil {
+			e.workDir = cwd
+		}
+	}
+	type workDirSetter interface{ SetWorkDir(string) }
+	if s, ok := e.executor.(workDirSetter); ok {
+		s.SetWorkDir(e.workDir)
+	}
+}
+
+// pushExecutorVars refreshes the executor's vars map. Used after every
+// resolveVars on the resume path; the launch path does this inline in
+// Run().
+func (e *Engine) pushExecutorVars(vars map[string]interface{}) {
+	type varsSetter interface{ SetVars(map[string]interface{}) }
+	if sv, ok := e.executor.(varsSetter); ok {
+		sv.SetVars(vars)
+	}
 }
 
 // ---------------------------------------------------------------------------
