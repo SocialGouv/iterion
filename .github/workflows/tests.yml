@@ -33,8 +33,8 @@ jobs:
           corepack enable
           pnpm install --prefer-offline
           pnpm exec vite build
-          rm -rf ../server/static/assets ../server/static/index.html
-          cp -r dist/* ../server/static/
+          rm -rf ../pkg/server/static/assets ../pkg/server/static/index.html
+          cp -r dist/* ../pkg/server/static/
 
       - name: gofmt (check)
         shell: bash
