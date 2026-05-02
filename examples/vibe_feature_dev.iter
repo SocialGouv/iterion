@@ -113,6 +113,55 @@ prompt act_user:
 prompt simplify_user:
   /simplify
 
+## ─── Prompts : Commit ───────────────────────────────────────────
+
+prompt commit_namer_system:
+  Your job in this session is to commit the feature implemented in
+  this workflow run, and ONLY that feature, using a single git
+  commit with a semantic message.
+
+  Procedure (follow exactly, in order):
+    1. Run `git status` and `git diff HEAD` to enumerate all files
+       in the working tree.
+    2. Identify which of those files were created or modified to
+       implement the feature described to you. Cross-check with
+       the feature description in the user prompt.
+    3. EXCLUDE any file that does NOT belong to the feature, even
+       if it is dirty in the working tree. Pre-existing user WIP
+       (unrelated edits, in-flight work in other packages, etc.)
+       MUST NOT be staged. When in doubt, exclude.
+    4. Stage the feature files explicitly with `git add` listing
+       each path. NEVER use `git add -A`, `git add .`, or any
+       glob that could pick up unrelated files.
+    5. Run `git commit -m <subject>` with a semantic subject in
+       the format `<type>(<scope>): <subject>` (or
+       `<type>: <subject>` when scope is empty), where type is
+       one of feat, fix, refactor, test, docs, chore.
+
+  Subject rules: imperative mood, present tense, ≤ 72 chars, no
+  trailing period, no double or single quotes, single line.
+
+  After committing, output a structured JSON object describing
+  what you did. The fields are AUDIT signal — compare them to the
+  actual commit:
+    - type, scope, subject, full_message: the semantic parts of
+      the message you used.
+    - files: the exact list of paths you passed to `git add`.
+    - committed: true if `git commit` succeeded, false otherwise.
+
+  If `git commit` fails (no changes staged, hook rejection, etc.):
+  do not retry blindly — output `committed: false` with the error
+  in `subject` so the operator can intervene.
+
+prompt commit_namer_user:
+  Commit the feature below into the repository. Stage ONLY the
+  files belonging to this feature; ignore unrelated working-tree
+  edits.
+
+  Feature: {{vars.feature_prompt}}
+
+  Workspace: {{vars.workspace_dir}}
+
 ## ─── Prompts : Review / Fix (feature-focused) ──────────────────────
 
 prompt review_system:
@@ -421,6 +470,14 @@ schema fix_output:
   pushback: string[]
   pushback_justification: string
 
+schema commit_output:
+  type: string [enum: "feat", "fix", "refactor", "test", "docs", "chore"]
+  scope: string
+  subject: string
+  full_message: string
+  files: string[]
+  committed: bool
+
 ## ─── Nodes : Feature Dev Phase ──────────────────────────────────
 
 agent plan:
@@ -445,6 +502,36 @@ agent simplify:
   reasoning_effort: extra_high
   user: simplify_user
   session: inherit
+
+## ─── Nodes : Commit ─────────────────────────────────────────────
+
+## commit_namer forks the simplify session so it inherits the
+## conversation context (feature prompt, plan, implementation,
+## simplification). It then runs `git status`/`git diff HEAD` to
+## enumerate all working-tree files, picks the ones that belong
+## to this feature, stages them explicitly with `git add <paths>`
+## (NEVER `add -A`), and commits with a semantic message.
+##
+## NOT readonly — this node mutates the index and commits. The
+## structured output (`files`, `committed`) is for audit only.
+##
+## Why one node and not "commit_namer + tool commit_changes":
+## a deterministic shell tool would need iterion-side support for
+## `string[]` substitution in commands (currently only `string`
+## is shell-quoted; arrays would render as Go's `[a b]`). Until
+## that capability lands (see cross-improvement opportunities),
+## doing the commit inside the agent keeps iterion's core
+## prompting-agnostic and avoids the substitution gap. The
+## prompt's procedure section (steps 1-5) is the explicit guard
+## against `git add -A` and against staging unrelated WIP.
+agent commit_namer:
+  backend: "claude_code"
+  model: "claude-opus-4-7"
+  reasoning_effort: high
+  output: commit_output
+  system: commit_namer_system
+  user: commit_namer_user
+  session: fork
 
 ## ─── Nodes : Review / Fix Loop ──────────────────────────────────
 
@@ -620,8 +707,19 @@ workflow vibe_feature_dev:
     scanned_areas: "{{outputs.reviewer_gpt.scanned_areas}}"
   }
 
-  ## Stop when streak detected (cross-family double approval).
-  streak_check -> done when stop
+  ## ═══ Phase 3 : Commit on streak success ═══════════════════════
+  ## Cross-family double-approval reached → fork the simplify
+  ## session so the commit_namer inherits the full feature context
+  ## (plan, implementation, simplification) without spending a
+  ## fresh-session priming call. The agent itself stages the
+  ## feature files (NEVER add -A — see commit_namer_system) and
+  ## issues a single `git commit`. Working-tree files unrelated
+  ## to the feature stay unstaged.
+  streak_check -> commit_namer when stop with {
+    _session_id: "{{outputs.simplify._session_id}}"
+  }
+
+  commit_namer -> done
 
   ## Otherwise approved (no streak yet, OR low-confidence rejection
   ## treated as soft-approved, OR rejection without concrete blockers
