@@ -41,7 +41,7 @@ export default function InspectorEditItem() {
       </div>
       <div className="flex-1 overflow-y-auto">
         {kind === "schema" && <SchemaEditor filterName={name} />}
-        {kind === "prompt" && <PromptEditor filterName={name} />}
+        {kind === "prompt" && <PromptEditor filterName={name} compact={false} />}
         {kind === "var" && <VarsEditor filterName={name} />}
       </div>
     </div>

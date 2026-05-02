@@ -4,6 +4,7 @@ import { useSelectionStore } from "@/store/selection";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { useSchemaPromptCreators } from "@/hooks/useSchemaPromptCreators";
 import { useEffortCapabilities } from "@/hooks/useEffortCapabilities";
+import { usePromptEditorMount } from "@/hooks/usePromptEditorMount";
 import type { ReasoningEffort, RouterDecl, RouterMode } from "@/api/types";
 import { getAllNodeNames } from "@/lib/defaults";
 import {
@@ -12,7 +13,7 @@ import {
   REASONING_EFFORT_HELP,
   REASONING_EFFORT_OPTIONS,
 } from "@/lib/dslOptions";
-import { CommittedTextField, SelectField, SelectFieldWithCreate, TextField, CheckboxField } from "./FormField";
+import { CommittedTextField, SelectField, TextField, CheckboxField, PromptPickerField } from "./FormField";
 import { ProviderIcon, ProviderLabel } from "@/components/icons/ProviderIcon";
 import { detectProvider } from "@/components/icons/providerDetect";
 
@@ -34,6 +35,7 @@ export default function RouterForm({ decl }: Props) {
   }, [activeWorkflow, decl.name]);
 
   const promptOptions = (document?.prompts ?? []).map((p) => ({ value: p.name, label: p.name }));
+  const { openPromptEditor, lookupBody, promptModal } = usePromptEditorMount();
 
   // Mirror AgentForm: derive effort options from the model registry when
   // mode=llm, falling back to the static list while loading or when the
@@ -123,24 +125,26 @@ export default function RouterForm({ decl }: Props) {
             options={BACKEND_OPTIONS}
             help={BACKEND_HELP}
           />
-          <SelectFieldWithCreate
+          <PromptPickerField
             label="System Prompt"
             value={decl.system ?? ""}
             onChange={(v) => updateRouter(decl.name, { system: v })}
             options={promptOptions}
-            allowEmpty
-            emptyLabel="-- select prompt --"
             onCreate={createPrompt}
+            onEdit={openPromptEditor}
+            body={lookupBody(decl.system)}
+            allowEmpty
             help="Optional system prompt guiding the LLM's routing behavior."
           />
-          <SelectFieldWithCreate
+          <PromptPickerField
             label="User Prompt"
             value={decl.user ?? ""}
             onChange={(v) => updateRouter(decl.name, { user: v })}
             options={promptOptions}
-            allowEmpty
-            emptyLabel="-- select prompt --"
             onCreate={createPrompt}
+            onEdit={openPromptEditor}
+            body={lookupBody(decl.user)}
+            allowEmpty
             help="Optional user prompt template for the routing query."
           />
           <CheckboxField
@@ -199,6 +203,7 @@ export default function RouterForm({ decl }: Props) {
           Cycles through {outgoingEdges.length} target{outgoingEdges.length !== 1 ? "s" : ""} one at a time.
         </p>
       )}
+      {promptModal}
     </div>
   );
 }

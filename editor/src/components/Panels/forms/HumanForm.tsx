@@ -1,6 +1,7 @@
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { useSchemaPromptCreators } from "@/hooks/useSchemaPromptCreators";
+import { usePromptEditorMount } from "@/hooks/usePromptEditorMount";
 import type { HumanDecl, InteractionMode, AwaitMode } from "@/api/types";
 import { getAllNodeNames } from "@/lib/defaults";
 import {
@@ -9,7 +10,7 @@ import {
   HUMAN_INTERACTION_HELP,
   HUMAN_INTERACTION_OPTIONS,
 } from "@/lib/dslOptions";
-import { TextField, CommittedTextField, NumberField, SelectField, SelectFieldWithCreate } from "./FormField";
+import { TextField, CommittedTextField, NumberField, SelectField, SelectFieldWithCreate, PromptPickerField } from "./FormField";
 
 interface Props {
   decl: HumanDecl;
@@ -24,6 +25,7 @@ export default function HumanForm({ decl }: Props) {
 
   const schemaOptions = (document?.schemas ?? []).map((s) => ({ value: s.name, label: s.name }));
   const promptOptions = (document?.prompts ?? []).map((p) => ({ value: p.name, label: p.name }));
+  const { openPromptEditor, lookupBody, promptModal } = usePromptEditorMount();
 
   // The unified InteractionMode replaces the legacy editor-only field.
   // human-only modes from the old UI map onto:
@@ -81,14 +83,15 @@ export default function HumanForm({ decl }: Props) {
         placeholder="Artifact name"
         help="Publish this node's output as a persistent artifact, accessible downstream via {{artifacts.name}}."
       />
-      <SelectFieldWithCreate
+      <PromptPickerField
         label="Instructions Prompt"
         value={decl.instructions}
         onChange={(v) => updateHuman(decl.name, { instructions: v })}
         options={promptOptions}
-        allowEmpty
-        emptyLabel="-- select prompt --"
         onCreate={createPrompt}
+        onEdit={openPromptEditor}
+        body={lookupBody(decl.instructions)}
+        allowEmpty
       />
       <SelectField
         label="Interaction"
@@ -99,14 +102,15 @@ export default function HumanForm({ decl }: Props) {
       />
       {needsModel && (
         <>
-          <SelectFieldWithCreate
+          <PromptPickerField
             label="Interaction Prompt"
             value={decl.interaction_prompt ?? ""}
             onChange={(v) => updateHuman(decl.name, { interaction_prompt: v || undefined })}
             options={promptOptions}
-            allowEmpty
-            emptyLabel="-- select prompt --"
             onCreate={createPrompt}
+            onEdit={openPromptEditor}
+            body={lookupBody(decl.interaction_prompt)}
+            allowEmpty
           />
           <TextField
             label="Interaction Model"
@@ -140,15 +144,17 @@ export default function HumanForm({ decl }: Props) {
         onChange={(v) => updateHuman(decl.name, { model: v || undefined })}
         placeholder={needsModel ? "e.g. ${ANTHROPIC_MODEL}" : "Optional model override"}
       />
-      <SelectFieldWithCreate
+      <PromptPickerField
         label="System Prompt"
         value={decl.system ?? ""}
         onChange={(v) => updateHuman(decl.name, { system: v || undefined })}
         options={promptOptions}
-        allowEmpty
-        emptyLabel="-- select prompt --"
         onCreate={createPrompt}
+        onEdit={openPromptEditor}
+        body={lookupBody(decl.system)}
+        allowEmpty
       />
+      {promptModal}
     </div>
   );
 }

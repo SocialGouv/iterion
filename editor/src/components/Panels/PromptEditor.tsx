@@ -2,14 +2,22 @@ import { useCallback, useState } from "react";
 import { useDocumentStore } from "@/store/document";
 import { defaultPrompt } from "@/lib/defaults";
 import { TextField, CommittedTextField } from "./forms/FormField";
+import PromptBodyEditor from "./PromptBodyEditor";
 import ConfirmDialog from "../shared/ConfirmDialog";
 
 interface PromptEditorProps {
   /** When set, renders only that prompt's card (used by the Inspector "edit item" mode). */
   filterName?: string;
+  /**
+   * Compact mode renders the body as the historical 6-row textarea —
+   * appropriate for the cramped sidebar tab. When false, the body is
+   * rendered with the prompt-first highlighter editor (used by the
+   * full-size modal and the single-item edit pane).
+   */
+  compact?: boolean;
 }
 
-export default function PromptEditor({ filterName }: PromptEditorProps = {}) {
+export default function PromptEditor({ filterName, compact = true }: PromptEditorProps = {}) {
   const document = useDocumentStore((s) => s.document);
   const addPrompt = useDocumentStore((s) => s.addPrompt);
   const removePrompt = useDocumentStore((s) => s.removePrompt);
@@ -51,6 +59,7 @@ export default function PromptEditor({ filterName }: PromptEditorProps = {}) {
           name={prompt.name}
           body={prompt.body}
           allPromptNames={prompts.map((p) => p.name)}
+          compact={compact}
           onRename={(v) => renamePrompt(prompt.name, v)}
           onUpdateBody={(v) => updatePrompt(prompt.name, { body: v })}
           onRemove={() => removePrompt(prompt.name)}
@@ -64,6 +73,7 @@ function PromptCard({
   name,
   body,
   allPromptNames,
+  compact,
   onRename,
   onUpdateBody,
   onRemove,
@@ -71,6 +81,7 @@ function PromptCard({
   name: string;
   body: string;
   allPromptNames: string[];
+  compact: boolean;
   onRename: (v: string) => void;
   onUpdateBody: (v: string) => void;
   onRemove: () => void;
@@ -96,15 +107,28 @@ function PromptCard({
           Delete
         </button>
       </div>
-      <TextField
-        label="Body"
-        value={body}
-        onChange={onUpdateBody}
-        multiline
-        rows={6}
-        placeholder="Prompt template... use {{vars.x}} or {{outputs.node.field}}"
-        refContext={{ kind: "prompt-body" }}
-      />
+      {compact ? (
+        <TextField
+          label="Body"
+          value={body}
+          onChange={onUpdateBody}
+          multiline
+          rows={6}
+          placeholder="Prompt template... use {{vars.x}} or {{outputs.node.field}}"
+          refContext={{ kind: "prompt-body" }}
+        />
+      ) : (
+        <div className="mb-2">
+          <label className="block text-xs text-fg-subtle mb-1">Prompt body</label>
+          <PromptBodyEditor
+            value={body}
+            onChange={onUpdateBody}
+            rows={20}
+            placeholder="Prompt template... use {{vars.x}} or {{outputs.node.field}}"
+            refContext={{ kind: "prompt-body" }}
+          />
+        </div>
+      )}
       <ConfirmDialog
         open={confirmDelete}
         title="Delete Prompt"

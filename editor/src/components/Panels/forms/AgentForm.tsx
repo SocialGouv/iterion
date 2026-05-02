@@ -3,6 +3,7 @@ import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { useSchemaPromptCreators } from "@/hooks/useSchemaPromptCreators";
 import { useEffortCapabilities } from "@/hooks/useEffortCapabilities";
+import { usePromptEditorMount } from "@/hooks/usePromptEditorMount";
 import type { AgentDecl, JudgeDecl, AwaitMode, InteractionMode, ReasoningEffort } from "@/api/types";
 import { getAllNodeNames } from "@/lib/defaults";
 import {
@@ -17,7 +18,7 @@ import {
   SESSION_HELP,
   SESSION_OPTIONS,
 } from "@/lib/dslOptions";
-import { TextField, CommittedTextField, NumberField, CheckboxField, SelectField, SelectFieldWithCreate, TagListField } from "./FormField";
+import { TextField, CommittedTextField, NumberField, CheckboxField, SelectField, SelectFieldWithCreate, TagListField, PromptPickerField } from "./FormField";
 import { ProviderIcon, ProviderLabel } from "@/components/icons/ProviderIcon";
 import { detectProvider } from "@/components/icons/providerDetect";
 import CompactionFields from "./CompactionFields";
@@ -46,6 +47,7 @@ export default function AgentForm({ decl, kind }: Props) {
 
   const schemaOptions = (document?.schemas ?? []).map((s) => ({ value: s.name, label: s.name }));
   const promptOptions = (document?.prompts ?? []).map((p) => ({ value: p.name, label: p.name }));
+  const { openPromptEditor, lookupBody, promptModal } = usePromptEditorMount();
 
   // Effort levels are model+backend-dependent (per Anthropic docs:
   // Opus 4.7 has xhigh; Opus 4.6 / Sonnet 4.6 don't; Haiku has nothing).
@@ -167,23 +169,25 @@ export default function AgentForm({ decl, kind }: Props) {
         placeholder="Artifact name"
         help="Publish this node's output as a persistent artifact, accessible downstream via {{artifacts.name}}."
       />
-      <SelectFieldWithCreate
+      <PromptPickerField
         label="System Prompt"
         value={decl.system}
         onChange={(v) => update({ system: v })}
         options={promptOptions}
-        allowEmpty
-        emptyLabel="-- select prompt --"
         onCreate={createPrompt}
+        onEdit={openPromptEditor}
+        body={lookupBody(decl.system)}
+        allowEmpty
       />
-      <SelectFieldWithCreate
+      <PromptPickerField
         label="User Prompt"
         value={decl.user}
         onChange={(v) => update({ user: v })}
         options={promptOptions}
-        allowEmpty
-        emptyLabel="-- select prompt --"
         onCreate={createPrompt}
+        onEdit={openPromptEditor}
+        body={lookupBody(decl.user)}
+        allowEmpty
       />
       <SelectField
         label="Session"
@@ -235,14 +239,15 @@ export default function AgentForm({ decl, kind }: Props) {
       />
       {decl.interaction === "llm" || decl.interaction === "llm_or_human" ? (
         <>
-          <SelectFieldWithCreate
+          <PromptPickerField
             label="Interaction Prompt"
             value={decl.interaction_prompt ?? ""}
             onChange={(v) => update({ interaction_prompt: v || undefined })}
             options={promptOptions}
-            allowEmpty
-            emptyLabel="-- select prompt --"
             onCreate={createPrompt}
+            onEdit={openPromptEditor}
+            body={lookupBody(decl.interaction_prompt)}
+            allowEmpty
           />
           <TextField
             label="Interaction Model"
@@ -261,6 +266,7 @@ export default function AgentForm({ decl, kind }: Props) {
         value={decl.mcp}
         onChange={(c) => update({ mcp: c })}
       />
+      {promptModal}
     </div>
   );
 }

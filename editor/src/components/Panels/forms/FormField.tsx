@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { RefAwareInput, RefAwareTextarea } from "@/components/ui/RefAwareInput";
+import PromptOverlayHighlight from "@/components/ui/PromptOverlayHighlight";
 import type { RefContext } from "@/lib/refCompletion";
+import { Pencil1Icon } from "@radix-ui/react-icons";
 
 const labelClass = "block text-xs text-fg-subtle mb-1";
 const inputClass = "w-full bg-surface-1 border border-border-strong rounded px-2 py-1 text-sm text-fg-default focus:border-accent focus:outline-none";
@@ -238,6 +240,7 @@ export function SelectFieldWithCreate({ label, value, onChange, options, allowEm
           ))}
         </select>
         <button
+          type="button"
           className="bg-success hover:bg-success text-xs px-1.5 rounded shrink-0"
           onClick={() => {
             const newName = onCreate();
@@ -338,6 +341,110 @@ export function TagListField({ label, values, onChange, placeholder = "Add..." }
           +
         </button>
       </div>
+    </div>
+  );
+}
+
+interface PromptPickerFieldProps {
+  label: string;
+  /** Current selected prompt name (or "" for none). */
+  value: string;
+  onChange: (v: string) => void;
+  options: { value: string; label: string }[];
+  /** Returns the new prompt name when the user clicks the create button. */
+  onCreate: () => string;
+  /** Invoked when the user clicks the pencil to edit the selected prompt. */
+  onEdit: (promptName: string) => void;
+  /** Body of the currently-selected prompt — used for the inline preview. */
+  body: string;
+  allowEmpty?: boolean;
+  emptyLabel?: string;
+  help?: string;
+}
+
+/**
+ * Prompt-first picker: like `SelectFieldWithCreate` but adds a pencil
+ * button that opens the selected prompt in the prompt editor modal,
+ * plus a collapsed monospace preview of the body so authors can scan
+ * the prompt without leaving the node form. Used by the agent /
+ * judge / human / router forms for any prompt slot.
+ */
+export function PromptPickerField({
+  label,
+  value,
+  onChange,
+  options,
+  onCreate,
+  onEdit,
+  body,
+  allowEmpty,
+  emptyLabel = "-- select prompt --",
+  help,
+}: PromptPickerFieldProps) {
+  const previewLines = useMemo(() => {
+    if (!body) return "";
+    const lines = body.split("\n").slice(0, 3);
+    const truncated = lines.join("\n");
+    return body.split("\n").length > 3 ? truncated + "\n…" : truncated;
+  }, [body]);
+
+  return (
+    <div className="mb-2">
+      <FieldLabel label={label} help={help} />
+      <div className="flex gap-1">
+        <select
+          className={selectClass + " flex-1"}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+        >
+          {allowEmpty && <option value="">{emptyLabel}</option>}
+          {options.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          className="bg-surface-2 hover:bg-surface-3 text-xs px-1.5 rounded shrink-0 inline-flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
+          onClick={() => value && onEdit(value)}
+          disabled={!value}
+          title={value ? `Edit prompt "${value}"` : "Select a prompt to edit"}
+          aria-label={value ? `Edit prompt ${value}` : "Edit prompt"}
+        >
+          <Pencil1Icon />
+        </button>
+        <button
+          type="button"
+          className="bg-success hover:bg-success text-xs px-1.5 rounded shrink-0"
+          onClick={() => {
+            const newName = onCreate();
+            onChange(newName);
+            onEdit(newName);
+          }}
+          title={`Create new ${label.toLowerCase()}`}
+        >
+          +
+        </button>
+      </div>
+      {value && body && (
+        <button
+          type="button"
+          className="mt-1 w-full text-left rounded border border-border-default bg-surface-0 hover:border-accent transition-colors"
+          onClick={() => onEdit(value)}
+          title="Click to edit in large editor"
+        >
+          <PromptOverlayHighlight
+            value={previewLines}
+            inline
+            className="px-2 py-1 text-[11px] font-mono text-fg-muted leading-snug"
+            maxHeight="4.5em"
+          />
+        </button>
+      )}
+      {value && !body && (
+        <p className="mt-1 text-[10px] text-fg-subtle italic">Empty prompt body — click the pencil to write it.</p>
+      )}
     </div>
   );
 }

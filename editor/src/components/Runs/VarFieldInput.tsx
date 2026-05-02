@@ -2,6 +2,7 @@ import type { VarField } from "@/api/types";
 
 import { Input } from "@/components/ui/Input";
 import { Textarea } from "@/components/ui/Textarea";
+import { isPromptLikeVar, suggestRows } from "@/lib/promptVarHeuristics";
 
 interface Props {
   field: VarField;
@@ -60,6 +61,22 @@ export default function VarFieldInput({ field, value, onChange }: Props) {
       );
     case "string":
     default:
+      // Long-form prompt-like fields (suffix _prompt/_description, exact
+      // match on prompt/description/instructions, or any string var
+      // declared without a default) get a multi-row monospace textarea
+      // so authors can paste full prompt bodies comfortably.
+      if (isPromptLikeVar(field)) {
+        return (
+          <Textarea
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            rows={suggestRows(field)}
+            spellCheck={false}
+            className="font-mono text-[12px]"
+            placeholder={`Enter ${field.name}…`}
+          />
+        );
+      }
       return (
         <Input
           value={value}
