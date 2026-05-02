@@ -854,11 +854,15 @@ func drillPath(root interface{}, path []string) interface{} {
 // only on overrides.
 func (e *Engine) resolveVars(inputs map[string]interface{}) map[string]interface{} {
 	vars := make(map[string]interface{})
-	// expandFn lets var defaults reference ${PROJECT_DIR} (resolved to the
-	// engine's workDir, possibly the worktree path) and any other env var.
-	// Applied to string defaults only — typed defaults (int/float/bool/json)
-	// pass through unchanged. User-provided overrides further down are taken
-	// at face value.
+	// expandFn lets var values reference ${PROJECT_DIR} (resolved to the
+	// engine's workDir, possibly a worktree path) and any other env var.
+	// Applied to both string defaults AND string user-provided overrides:
+	// the editor's LaunchView pre-fills its form with the literal default
+	// (e.g. "${PROJECT_DIR}") so an unmodified submit re-sends it as an
+	// override, which would otherwise reach tool nodes verbatim and break
+	// `git -C '${PROJECT_DIR}'`. Expanding overrides in the same pass
+	// keeps `vars.workspace_dir` resolved to a real path regardless of
+	// whether it came from the workflow default or the form input.
 	expandFn := func(key string) string {
 		if key == "PROJECT_DIR" {
 			return e.workDir
@@ -889,6 +893,9 @@ func (e *Engine) resolveVars(inputs map[string]interface{}) map[string]interface
 			e.logger.Warn("runtime: var %q: coerce to %s failed: %v (using raw value)", k, decl.Type, err)
 			vars[k] = v
 			continue
+		}
+		if s, ok := coerced.(string); ok {
+			coerced = os.Expand(s, expandFn)
 		}
 		vars[k] = coerced
 	}

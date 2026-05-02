@@ -218,6 +218,52 @@ func TestNewFromRecipeNameMismatch(t *testing.T) {
 	}
 }
 
+// TestResolveVarsExpandsProjectDirInOverrides locks in the fix for a
+// regression where the editor's LaunchView pre-fills the form with the
+// literal default `${PROJECT_DIR}`, the user submits unchanged, and the
+// override reaches tool nodes verbatim — breaking commands like
+// `git -C '${PROJECT_DIR}' add ...` because the literal path doesn't
+// exist on disk.
+func TestResolveVarsExpandsProjectDirInOverrides(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:    "wf",
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars: map[string]*ir.Var{
+			"workspace_dir": {
+				Name:       "workspace_dir",
+				Type:       ir.VarString,
+				HasDefault: true,
+				Default:    "${PROJECT_DIR}",
+			},
+		},
+		Loops: map[string]*ir.Loop{},
+	}
+	exec := newStubExecutor()
+	s := tmpStore(t)
+	eng := New(wf, s, exec, WithWorkDir("/tmp/run-xyz"))
+
+	// Default-only path: PROJECT_DIR resolves to the engine's workDir.
+	got := eng.resolveVars(nil)
+	if got["workspace_dir"] != "/tmp/run-xyz" {
+		t.Errorf("default expansion: got %q, want %q", got["workspace_dir"], "/tmp/run-xyz")
+	}
+
+	// Override path: the editor re-sends the literal default. The same
+	// expansion must apply, otherwise tool nodes see `${PROJECT_DIR}`
+	// verbatim and shell-out fails.
+	got2 := eng.resolveVars(map[string]interface{}{"workspace_dir": "${PROJECT_DIR}"})
+	if got2["workspace_dir"] != "/tmp/run-xyz" {
+		t.Errorf("override expansion: got %q, want %q", got2["workspace_dir"], "/tmp/run-xyz")
+	}
+
+	// User explicitly setting an absolute path remains untouched.
+	got3 := eng.resolveVars(map[string]interface{}{"workspace_dir": "/some/other/path"})
+	if got3["workspace_dir"] != "/some/other/path" {
+		t.Errorf("explicit path passthrough: got %q, want %q", got3["workspace_dir"], "/some/other/path")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test: NewFromRecipe — run inputs override recipe presets
 // ---------------------------------------------------------------------------
