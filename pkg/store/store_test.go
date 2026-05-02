@@ -922,3 +922,42 @@ func TestWriteFileAtomic_PreservesPriorOnFailure(t *testing.T) {
 		t.Errorf("after recovery write: data = %v, want new", parsed["data"])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Self-ignoring .gitignore at store root
+// ---------------------------------------------------------------------------
+
+func TestNewWritesSelfIgnoringGitignore(t *testing.T) {
+	t.Run("creates .gitignore when absent", func(t *testing.T) {
+		dir := t.TempDir()
+		if _, err := New(dir); err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		got, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+		if err != nil {
+			t.Fatalf("read .gitignore: %v", err)
+		}
+		if string(got) != "**\n" {
+			t.Errorf(".gitignore = %q, want %q", string(got), "**\n")
+		}
+	})
+
+	t.Run("preserves existing .gitignore", func(t *testing.T) {
+		dir := t.TempDir()
+		custom := []byte("# user-managed\nfoo\n")
+		path := filepath.Join(dir, ".gitignore")
+		if err := os.WriteFile(path, custom, 0o644); err != nil {
+			t.Fatalf("seed .gitignore: %v", err)
+		}
+		if _, err := New(dir); err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read .gitignore: %v", err)
+		}
+		if string(got) != string(custom) {
+			t.Errorf("existing .gitignore was overwritten: got %q, want %q", string(got), string(custom))
+		}
+	})
+}

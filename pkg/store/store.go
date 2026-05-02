@@ -119,6 +119,10 @@ func New(root string, opts ...StoreOption) (*RunStore, error) {
 	if err := os.MkdirAll(filepath.Join(root, "runs"), dirPerm); err != nil {
 		return nil, fmt.Errorf("store: create root: %w", err)
 	}
+	// Best-effort: drop a self-ignoring .gitignore so the store dir is never
+	// accidentally committed even if the user skipped `iterion init`.
+	// Failures (read-only FS, permission, etc.) are non-fatal.
+	_ = ensureGitignore(root)
 	s := &RunStore{
 		root:    root,
 		seq:     make(map[string]int64),
@@ -128,6 +132,18 @@ func New(root string, opts ...StoreOption) (*RunStore, error) {
 		opt(s)
 	}
 	return s, nil
+}
+
+// ensureGitignore writes a self-ignoring .gitignore at the store root if none
+// exists. Existing files are left untouched so user customizations are kept.
+func ensureGitignore(root string) error {
+	path := filepath.Join(root, ".gitignore")
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return os.WriteFile(path, []byte("**\n"), filePerm)
 }
 
 // Root returns the store root directory.
