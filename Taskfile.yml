@@ -17,6 +17,7 @@ tasks:
 
   build:
     desc: Build the iterion binary
+    deps: [editor:build]
     env:
       CGO_ENABLED: "0"
     cmds:
@@ -24,6 +25,7 @@ tasks:
     sources:
       - "**/*.go"
       - go.mod
+      - pkg/server/static/**
     generates:
       - "{{.BINARY}}"
 
@@ -129,6 +131,7 @@ tasks:
 
   install:
     desc: Build and install iterion to $GOPATH/bin
+    deps: [editor:build]
     env:
       CGO_ENABLED: "0"
     cmds:
@@ -160,11 +163,24 @@ tasks:
   editor:build:
     desc: Build the editor frontend
     dir: editor
+    method: checksum
+    env:
+      CI: "true"
     cmds:
       - corepack pnpm install --prefer-offline
       - corepack pnpm exec vite build
       - rm -rf ../pkg/server/static/assets ../pkg/server/static/index.html
       - cp -r dist/* ../pkg/server/static/
+    sources:
+      - src/**/*
+      - index.html
+      - package.json
+      - pnpm-lock.yaml
+      - vite.config.ts
+      - tsconfig*.json
+    generates:
+      - ../pkg/server/static/index.html
+      - ../pkg/server/static/assets/**
 
   editor:dev:
     desc: Start editor in dev mode (Vite HMR + Go backend with auto-restart)
