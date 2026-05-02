@@ -23,6 +23,7 @@ import RunCanvasIR, { defaultIterationFor } from "./RunCanvasIR";
 import RunHeader from "./RunHeader";
 import RunLogPanel from "./RunLogPanel";
 import RunMetrics from "./RunMetrics";
+import ReportTab from "./ReportTab";
 import Scrubber from "./Scrubber";
 
 // Runtime override captured from llm_request events. Keyed by IR node id.
@@ -127,7 +128,9 @@ export default function RunView() {
   const [eventlogCollapsed, setEventlogCollapsed] = useState<boolean>(() =>
     readBooleanFlag(EVENTLOG_COLLAPSED_KEY),
   );
-  const [bottomTab, setBottomTab] = useState<"events" | "logs">("logs");
+  const [bottomTab, setBottomTab] = useState<"events" | "logs" | "report">(
+    "logs",
+  );
   const toggleDetailCollapsed = useCallback(() => {
     setDetailCollapsed((prev) => {
       const next = !prev;
@@ -348,10 +351,13 @@ export default function RunView() {
                   <div className="h-full border-t border-border-default min-h-0 overflow-hidden animate-fade-in-opacity flex flex-col bg-surface-1">
                     <Tabs
                       value={bottomTab}
-                      onValueChange={(v) => setBottomTab(v as "events" | "logs")}
+                      onValueChange={(v) =>
+                        setBottomTab(v as "events" | "logs" | "report")
+                      }
                       items={[
                         { value: "events", label: "Events" },
                         { value: "logs", label: "Logs" },
+                        { value: "report", label: "Report" },
                       ]}
                       variant="underline"
                       listClassName="px-3"
@@ -367,13 +373,15 @@ export default function RunView() {
                           onClearSelection={handleClearSelection}
                           onCollapse={toggleEventlogCollapsed}
                         />
-                      ) : (
+                      ) : bottomTab === "logs" ? (
                         <RunLogPanel
                           runId={runId}
                           subscribeLogs={wsHandle.subscribeLogs}
                           unsubscribeLogs={wsHandle.unsubscribeLogs}
                           onCollapse={toggleEventlogCollapsed}
                         />
+                      ) : (
+                        <ReportTab onSelectNode={handleSelectNode} />
                       )}
                     </div>
                   </div>

@@ -196,6 +196,7 @@ export default function NodeDetailPanel({
         runId={runId}
         filePath={filePath}
         exec={exec}
+        events={matching}
         followLive={followLive}
         onToggleFollowLive={onToggleFollowLive}
       />
@@ -271,17 +272,41 @@ function DetailHeader({
   runId,
   filePath,
   exec,
+  events,
   followLive,
   onToggleFollowLive,
 }: {
   runId: string;
   filePath?: string;
   exec: ExecutionState;
+  events: RunEvent[];
   followLive?: boolean;
   onToggleFollowLive?: () => void;
 }) {
   const [, setLocation] = useLocation();
   const duration = formatDurationBetween(exec.started_at, exec.finished_at);
+  // Per-execution cost + tokens are sourced from the node_finished
+  // event the runtime emits with the cost.Annotate output. A single
+  // execution emits at most one node_finished, so summing across the
+  // matching events is just to defensively merge if the engine ever
+  // emits multiple (e.g. on retry within a node) — the common case is
+  // exactly one row.
+  const { costUsd, tokens, model } = useMemo(() => {
+    let costUsd = 0;
+    let tokens = 0;
+    let model = "";
+    for (const e of events) {
+      if (e.type !== "node_finished" || !e.data) continue;
+      const c = e.data["_cost_usd"];
+      if (typeof c === "number") costUsd += c;
+      const t = e.data["_tokens"];
+      if (typeof t === "number") tokens += t;
+      const out = e.data["output"] as Record<string, unknown> | undefined;
+      const m = out?.["_model"];
+      if (typeof m === "string" && m && !model) model = m;
+    }
+    return { costUsd, tokens, model };
+  }, [events]);
   const [copied, setCopied] = useState(false);
   const onCopyError = async () => {
     if (!exec.error) return;
@@ -315,6 +340,13 @@ function DetailHeader({
             <span>branch: {exec.branch_id}</span>
             <span>iter: {exec.loop_iteration + 1}</span>
             {duration && <span>duration: {duration}</span>}
+            {tokens > 0 && <span>tokens: {tokens.toLocaleString()}</span>}
+            {costUsd > 0 && (
+              <span title={`$${costUsd.toFixed(6)}`}>
+                cost: ${costUsd.toFixed(4)}
+              </span>
+            )}
+            {model && <span className="font-mono">{model}</span>}
           </div>
         </div>
         {filePath && (
