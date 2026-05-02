@@ -72,6 +72,11 @@ export interface RunHeader {
   error?: string;
   // Checkpoint shape varies; opaque is fine for the UI.
   checkpoint?: unknown;
+  // Filesystem path the run executed in (worktree or cwd). Empty for
+  // pre-feature runs; the modified-files panel keys off this to decide
+  // whether to render at all.
+  work_dir?: string;
+  worktree?: boolean;
 }
 
 // Mirror of runview.RunSnapshot.
@@ -242,4 +247,54 @@ export async function resumeRun(
     method: "POST",
     body: JSON.stringify(req),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Modified-files panel — git status + diff for the run's working dir.
+// ---------------------------------------------------------------------------
+
+// Status code mirrored from pkg/git.FileStatus. "??" is git's untracked
+// marker; we keep it verbatim so the UI can pattern-match without any
+// translation layer.
+export type RunFileStatus = "M" | "A" | "D" | "R" | "??" | string;
+
+export interface RunFile {
+  path: string;
+  status: RunFileStatus;
+  old_path?: string;
+}
+
+// Mirror of server.runFilesResponse. `available` is the gate: when
+// false, `reason` is one of "no_workdir" | "not_git_repo" and the
+// editor renders an empty-state instead of a file list.
+export interface RunFiles {
+  work_dir?: string;
+  worktree?: boolean;
+  files: RunFile[];
+  available: boolean;
+  reason?: "no_workdir" | "not_git_repo" | string;
+}
+
+// Mirror of pkg/git.DiffPayload. before/after are nil for added/deleted
+// files respectively; binary suppresses both contents so the UI can
+// substitute a "binary file" placeholder. Status is not part of the
+// payload — the caller passes it through from the prior /files listing.
+export interface RunFileDiff {
+  path: string;
+  before: string | null;
+  after: string | null;
+  binary: boolean;
+}
+
+export async function listRunFiles(runId: string): Promise<RunFiles> {
+  return request(`/runs/${encodeURIComponent(runId)}/files`);
+}
+
+export async function getRunFileDiff(
+  runId: string,
+  path: string,
+): Promise<RunFileDiff> {
+  return request(
+    `/runs/${encodeURIComponent(runId)}/files/diff?path=${encodeURIComponent(path)}`,
+  );
 }

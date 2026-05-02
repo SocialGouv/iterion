@@ -44,6 +44,15 @@ type Run struct {
 	Error         string                 `json:"error,omitempty"`
 	Checkpoint    *Checkpoint            `json:"checkpoint,omitempty"`
 	ArtifactIndex map[string]int         `json:"artifact_index,omitempty"` // node_id → latest version written
+	// WorkDir is the absolute filesystem path the run executes in
+	// (the per-run git worktree when Worktree is true, otherwise the
+	// engine's resolved cwd at start). Persisted so editor surfaces
+	// (e.g. modified-files panel) can locate the run's working tree
+	// without re-deriving it from the runtime.
+	WorkDir string `json:"work_dir,omitempty"`
+	// Worktree is true when WorkDir was created by `worktree: auto`,
+	// false when WorkDir is the inherited cwd.
+	Worktree bool `json:"worktree,omitempty"`
 }
 
 // Checkpoint captures the runtime state at a pause point (human node or

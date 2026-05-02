@@ -3,7 +3,7 @@ import { ReactFlowProvider } from "@xyflow/react";
 import { useParams } from "wouter";
 import { Group, Panel, Separator } from "react-resizable-panels";
 
-import { getRun } from "@/api/runs";
+import { getRun, type RunFile } from "@/api/runs";
 import { Skeleton } from "@/components/ui";
 import { useRunStore } from "@/store/run";
 import { useRunWebSocket } from "@/hooks/useRunWebSocket";
@@ -14,6 +14,8 @@ import { useRunKeyboard } from "@/hooks/useRunKeyboard";
 import { buildExecutionsAt } from "@/lib/snapshotReducer";
 
 import EventLog from "./EventLog";
+import FileDiffDialog from "./FileDiffDialog";
+import FilesPanel from "./FilesPanel";
 import NodeDetailPanel from "./NodeDetailPanel";
 import RunCanvasIR, { defaultIterationFor } from "./RunCanvasIR";
 import RunHeader from "./RunHeader";
@@ -82,6 +84,8 @@ export default function RunView() {
   const handleClearSelection = useCallback(() => {
     setWfSelectedNodeId(null);
   }, []);
+
+  const [diffFile, setDiffFile] = useState<RunFile | null>(null);
 
   const verticalLayout = useLayoutPersistence("run-console-v1.vertical", {
     top: 70,
@@ -219,6 +223,8 @@ export default function RunView() {
           onChange={setScrubSeq}
           visible={liveSeq > 0}
         />
+      <div className="flex-1 min-h-0 flex">
+        <FilesPanel runId={runId} onSelectFile={setDiffFile} />
         <Group
           orientation="vertical"
           className="flex-1 min-h-0"
@@ -284,6 +290,12 @@ export default function RunView() {
             </div>
           </Panel>
         </Group>
+      </div>
+        <FileDiffDialog
+          runId={runId}
+          file={diffFile}
+          onClose={() => setDiffFile(null)}
+        />
       </div>
     </ReactFlowProvider>
   );

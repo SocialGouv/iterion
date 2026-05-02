@@ -240,6 +240,17 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 		worktreeCleanup = cleanup
 	}
 
+	// Persist the resolved working directory so editor surfaces (modified-
+	// files panel) can locate it without re-deriving it. Done after worktree
+	// setup so e.workDir reflects the per-run worktree path when applicable.
+	if e.workDir != "" {
+		run.WorkDir = e.workDir
+		run.Worktree = e.workflow.Worktree == "auto"
+		if err := e.store.SaveRun(run); err != nil {
+			return fmt.Errorf("runtime: save work dir: %w", err)
+		}
+	}
+
 	// Push workDir into the executor so backend subprocesses (claude_code,
 	// codex) and tool nodes see it. Type-assert because NodeExecutor is a
 	// minimal interface; only ClawExecutor implements SetWorkDir.

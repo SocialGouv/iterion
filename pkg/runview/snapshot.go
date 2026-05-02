@@ -67,6 +67,13 @@ type RunHeader struct {
 	FinishedAt   *time.Time             `json:"finished_at,omitempty"`
 	Error        string                 `json:"error,omitempty"`
 	Checkpoint   *store.Checkpoint      `json:"checkpoint,omitempty"`
+	// WorkDir is the absolute filesystem path the run executed in
+	// (per-run worktree when Worktree is true, otherwise inherited cwd).
+	// Empty for runs created before this field was persisted; the editor
+	// hides the modified-files panel in that case.
+	WorkDir string `json:"work_dir,omitempty"`
+	// Worktree is true when WorkDir was created by `worktree: auto`.
+	Worktree bool `json:"worktree,omitempty"`
 }
 
 // RunSnapshot is the structured view returned by GET /api/runs/{id} and
@@ -396,6 +403,8 @@ func headerFromRun(r *store.Run) RunHeader {
 		FinishedAt:   r.FinishedAt,
 		Error:        r.Error,
 		Checkpoint:   r.Checkpoint,
+		WorkDir:      r.WorkDir,
+		Worktree:     r.Worktree,
 	}
 }
 
