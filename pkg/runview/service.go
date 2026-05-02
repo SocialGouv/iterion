@@ -296,17 +296,21 @@ func (s *Service) List(f ListFilter) ([]RunSummary, error) {
 // least one node_started event for nodeID. Short-circuits on first
 // match. Errors loading events are treated as "didn't touch" — a
 // run we can't read shouldn't surface as a hit.
+//
+// Streams events through ScanEvents instead of materialising the full
+// slice via LoadEvents — long-running runs can have hundreds of MB of
+// events.jsonl, and a list filter pass that calls this for every
+// candidate run would otherwise be O(N*size) memory.
 func runTouchedNode(s *store.RunStore, runID, nodeID string) bool {
-	events, err := s.LoadEvents(runID)
-	if err != nil {
-		return false
-	}
-	for _, e := range events {
+	hit := false
+	_ = s.ScanEvents(runID, func(e *store.Event) bool {
 		if e.Type == store.EventNodeStarted && e.NodeID == nodeID {
-			return true
+			hit = true
+			return false
 		}
-	}
-	return false
+		return true
+	})
+	return hit
 }
 
 func matchesFilter(r *store.Run, f ListFilter) bool {
@@ -328,28 +332,23 @@ func (s *Service) Snapshot(runID string) (*RunSnapshot, error) {
 	return BuildSnapshot(s.store, runID)
 }
 
+// MaxEventsPerPage caps the number of events any single LoadEvents
+// response materialises. A 200MB events.jsonl from a long-running run
+// with hundreds of LLM I/O events would otherwise allocate the full
+// file into memory on every reconnect / scrubber drag — exhausting
+// memory in typical devcontainers. Callers paginate by passing the
+// next page's `from` as previous_last.Seq+1; len(out) == cap means
+// "more available".
+const MaxEventsPerPage = 5000
+
 // LoadEvents returns events in [from, to] (inclusive on from, exclusive
-// on to). Pass to=0 for "no upper bound". Used by the scrubber to
-// lazy-load segments of a long run.
+// on to), capped at MaxEventsPerPage. Pass to=0 for "no upper bound".
+// Used by the scrubber to lazy-load segments of a long run.
+//
+// Streams via store.LoadEventsRange so we never materialise more than
+// the page-cap worth of events at once; callers paginate.
 func (s *Service) LoadEvents(runID string, from, to int64) ([]*store.Event, error) {
-	all, err := s.store.LoadEvents(runID)
-	if err != nil {
-		return nil, err
-	}
-	if len(all) == 0 {
-		return nil, nil
-	}
-	out := make([]*store.Event, 0, len(all))
-	for _, e := range all {
-		if e.Seq < from {
-			continue
-		}
-		if to > 0 && e.Seq >= to {
-			continue
-		}
-		out = append(out, e)
-	}
-	return out, nil
+	return s.store.LoadEventsRange(runID, from, to, MaxEventsPerPage)
 }
 
 // ListArtifacts enumerates the persisted artifacts for one node by

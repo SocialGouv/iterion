@@ -356,6 +356,92 @@ func (s *RunStore) AppendEvent(runID string, evt Event) (*Event, error) {
 	return &evt, nil
 }
 
+// ScanEvents streams events for a run through visit, in file order, and
+// stops as soon as visit returns false. It allocates one *Event per
+// scanned line (decoded into a fresh struct) so the caller can retain
+// references freely, but it never materialises the full events.jsonl
+// slice — callers searching for a single match (e.g. node-touched
+// filter) or paginating a window can short-circuit without paying the
+// O(file) memory of LoadEvents.
+//
+// Errors decoding a single line are skipped (consistent with
+// LoadEvents). The returned error reflects file-open / scanner-buffer
+// failures, not per-line parse errors.
+//
+// runID is sanitised before path-joining (see LoadRun for rationale).
+func (s *RunStore) ScanEvents(runID string, visit func(*Event) bool) error {
+	if err := sanitizePathComponent("run ID", runID); err != nil {
+		return err
+	}
+	p := s.eventsPath(runID)
+	f, err := os.Open(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("store: open events: %w", err)
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxEventLineSize)
+	var skipped int
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		evt := &Event{}
+		if err := json.Unmarshal(line, evt); err != nil {
+			skipped++
+			continue
+		}
+		if !visit(evt) {
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("store: scan events: %w", err)
+	}
+	if skipped > 0 {
+		s.logger.Warn("skipped %d corrupt event line(s) in run %s", skipped, runID)
+	}
+	return nil
+}
+
+// LoadEventsRange streams events with seq in [from, to) (to == 0 means
+// "no upper bound") and caps the returned slice at limit (limit == 0
+// means "no cap"). Designed for paginating long events.jsonl tails
+// without allocating the whole file: a 200MB events.jsonl with limit=
+// 5000 returns at most 5000 entries instead of materialising every
+// event in memory just to slice the head.
+//
+// The caller can detect "more available" by passing limit and checking
+// whether len(out) == limit; the next page starts at out[len(out)-1].Seq+1.
+func (s *RunStore) LoadEventsRange(runID string, from, to int64, limit int) ([]*Event, error) {
+	var out []*Event
+	if limit > 0 {
+		out = make([]*Event, 0, limit)
+	}
+	err := s.ScanEvents(runID, func(e *Event) bool {
+		if e.Seq < from {
+			return true
+		}
+		if to > 0 && e.Seq >= to {
+			return false // events.jsonl is monotonic in Seq → safe to stop
+		}
+		out = append(out, e)
+		if limit > 0 && len(out) >= limit {
+			return false
+		}
+		return true
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LoadEvents reads all events for a run in sequence order.
 //
 // runID is sanitised before path-joining (see LoadRun for rationale).

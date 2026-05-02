@@ -400,19 +400,19 @@ func headerFromRun(r *store.Run) RunHeader {
 }
 
 // BuildSnapshot is the cold-read convenience: load run.json + events
-// from the store, then fold them into a RunSnapshot.
+// from the store, then fold them into a RunSnapshot. Events are
+// streamed via ScanEvents to keep memory bounded for long runs.
 func BuildSnapshot(s *store.RunStore, runID string) (*RunSnapshot, error) {
 	run, err := s.LoadRun(runID)
 	if err != nil {
 		return nil, err
 	}
-	events, err := s.LoadEvents(runID)
-	if err != nil {
-		return nil, err
-	}
 	b := NewSnapshotBuilder(run)
-	for _, evt := range events {
+	if err := s.ScanEvents(runID, func(evt *store.Event) bool {
 		b.Apply(evt)
+		return true
+	}); err != nil {
+		return nil, err
 	}
 	return b.Snapshot(), nil
 }

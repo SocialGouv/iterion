@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -47,10 +48,25 @@ type wsClient struct {
 // observe every file change in WorkDir. The previous "return true" was
 // justified as 'acceptable for a local-only editor server' but the threat
 // here is browser-side / drive-by, which a local-only bind does not stop.
+//
+// Empty-Origin policy: browsers always set Origin on cross-origin WS
+// handshakes, so a missing Origin means a non-browser local caller
+// (curl, websocat) — which on a shared host (CI runner, multi-user
+// devcontainer) is a different trust boundary than the operator's own
+// browser. /api/ws/runs/{id} accepts state-changing cmds (cancel,
+// answer, resume) post-upgrade with parity to HTTP cancel/resume; HTTP
+// counterparts gate via requireSafeOrigin which rejects unauthorised
+// origins but lets through empty-Origin (curl). The WS upgrader keeps
+// that parity by default but operators in hostile environments can
+// tighten it via ITERION_REQUIRE_WS_ORIGIN=1, which refuses any
+// upgrade without a valid Origin header.
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		origin := r.Header.Get("Origin")
 		if origin == "" {
+			if os.Getenv("ITERION_REQUIRE_WS_ORIGIN") == "1" {
+				return false
+			}
 			// Non-browser caller (curl, websocat without --origin) — allow.
 			// Browsers always send Origin on cross-origin WS handshakes.
 			return true
@@ -137,22 +153,51 @@ func (h *Hub) Broadcast(event FileEvent) {
 }
 
 // HandleWebSocket upgrades an HTTP connection to WebSocket and registers the client.
+//
+// Shutdown safety: if the hub has already been Stop()'d (h.done closed), the
+// Run() goroutine has exited and `h.register` has no receiver — a naive
+// `h.register <- c` here would block the HTTP handler goroutine forever and
+// leak its conn. We short-circuit on that and refuse the upgrade. We also
+// guard the register send itself with a select-on-done in case Stop fires
+// concurrently with this handler.
 func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
+	select {
+	case <-h.done:
+		http.Error(w, "server shutting down", http.StatusServiceUnavailable)
+		return
+	default:
+	}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		h.logger.Error("ws upgrade error: %v", err)
 		return
 	}
 	c := &wsClient{hub: h, conn: conn, send: make(chan []byte, sendBufferSize)}
-	h.register <- c
+	select {
+	case h.register <- c:
+	case <-h.done:
+		// Hub stopped between the entry check and now — close the conn
+		// and bail rather than leaking a goroutine on the unbuffered
+		// register channel.
+		_ = conn.Close()
+		return
+	}
 	go c.writePump()
 	go c.readPump()
 }
 
 // readPump reads and discards incoming messages, detecting disconnection.
+//
+// On exit, the client must be unregistered from the hub. If the hub has
+// already shut down (h.done closed), Run() has stopped consuming from
+// h.unregister, and a naive send would block this goroutine forever.
+// Guard the send with a select-on-done so shutdown unblocks it.
 func (c *wsClient) readPump() {
 	defer func() {
-		c.hub.unregister <- c
+		select {
+		case c.hub.unregister <- c:
+		case <-c.hub.done:
+		}
 		c.conn.Close()
 	}()
 	c.conn.SetReadLimit(maxMessageSize)

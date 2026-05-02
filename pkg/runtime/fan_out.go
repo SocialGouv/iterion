@@ -59,6 +59,23 @@ func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID stri
 	// Pre-compute convergence point so branches know where to stop.
 	preComputedConvergence := e.findConvergencePoint(routerNodeID, fanEdges)
 
+	// Decide the sibling-cancellation policy. Under wait_all (the default
+	// strategy at the convergence node) any branch failure dooms the
+	// whole run — so once one branch errors we should cancel siblings to
+	// stop them spending tokens/USD on work whose result will be
+	// discarded. Under best_effort, sibling failures are tolerated and
+	// the convergence aggregator can still consume successful branches,
+	// so we MUST NOT cancel siblings on a peer failure (only on budget
+	// exhaustion or parent ctx cancellation, which apply globally).
+	cancelOnFirstFailure := true
+	if preComputedConvergence != "" {
+		if convNode, ok := e.workflow.Nodes[preComputedConvergence]; ok {
+			if mode := nodeAwaitMode(convNode); mode == ir.AwaitBestEffort {
+				cancelOnFirstFailure = false
+			}
+		}
+	}
+
 	// Deep-copy parent outputs and artifacts so branches can't mutate shared state.
 	parentOutputs := copyOutputs(rs.outputs)
 	parentArtifacts := copyOutputs(rs.artifacts)
@@ -94,12 +111,19 @@ func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID stri
 			}()
 
 			result := e.execBranch(branchCtx, rs, branchID, edge, parentOutputs, parentArtifacts, preComputedConvergence)
-			// On budget overshoot in this branch, cancel siblings so they
-			// stop calling executor.Execute. Sibling branches see the
-			// cancellation via the ctx.Done() select at the top of their
-			// per-iteration loop and return a wrapped ctx error.
-			if result != nil && result.err != nil && errors.Is(result.err, ErrBudgetExceeded) {
-				cancelBranches()
+			// Cancel siblings to stop them calling executor.Execute when:
+			//   1. this branch tripped the global budget — applies to
+			//      every fan_out regardless of await mode; or
+			//   2. this branch failed for any other reason AND the
+			//      convergence is wait_all — siblings' results would be
+			//      discarded anyway, so paying for them is pure waste.
+			// Sibling branches see the cancellation via the ctx.Done()
+			// select at the top of their per-iteration loop and return
+			// a wrapped ctx error.
+			if result != nil && result.err != nil {
+				if errors.Is(result.err, ErrBudgetExceeded) || cancelOnFirstFailure {
+					cancelBranches()
+				}
 			}
 			resultsCh <- result
 		}(edge, branchID)
