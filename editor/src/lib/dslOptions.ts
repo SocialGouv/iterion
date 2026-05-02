@@ -9,14 +9,14 @@ export interface SelectOption {
 }
 
 export const BACKEND_OPTIONS: SelectOption[] = [
-  { value: "", label: "(direct LLM API)" },
+  { value: "", label: "(unset · resolves to claw)" },
   { value: "claw", label: "claw" },
   { value: "claude_code", label: "claude_code" },
   { value: "codex", label: "codex" },
 ];
 
 export const BACKEND_HELP =
-  "Execution backend. Empty = direct LLM API. claude_code/codex shell out to the corresponding CLI; claw runs in-process.";
+  "Execution backend. Empty resolves to the workflow default (claw if not set). claude_code/codex shell out to the corresponding CLI; claw runs in-process.";
 
 export const AWAIT_OPTIONS: SelectOption[] = [
   { value: "none", label: "none" },

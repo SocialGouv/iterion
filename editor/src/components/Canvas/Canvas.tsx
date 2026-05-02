@@ -394,6 +394,8 @@ export default function Canvas() {
         onDragOver={onDragOver}
         onDrop={onDrop}
         fitView
+        minZoom={0.05}
+        maxZoom={4}
         selectionOnDrag={canvasTool === "select"}
         panOnDrag={canvasTool === "select" ? [1, 2] : true}
         multiSelectionKeyCode="Shift"

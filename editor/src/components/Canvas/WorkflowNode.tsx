@@ -6,7 +6,9 @@ import { useGroupedDiagnostics } from "@/hooks/useGroupedDiagnostics";
 import { useSelectionStore } from "@/store/selection";
 import { dominantSeverity } from "@/lib/diagnostics";
 import { ProviderIcon } from "@/components/icons/ProviderIcon";
+import { BackendBadge } from "@/components/icons/BackendBadge";
 import DiagnosticBadge from "@/components/Diagnostics/DiagnosticBadge";
+import { EffortBar, isEffortLevel } from "@/components/ui/EffortBar";
 import { NODE_ICONS, SELECTED_BORDER, SELECTED_GLOW } from "@/lib/constants";
 import { SIDES, POS_MAP } from "./handlePositions";
 
@@ -29,45 +31,58 @@ export default function WorkflowNode({ data, selected }: NodeProps) {
   const hasError = severity === "error";
   const hasWarning = severity === "warning";
 
-  // Extract subtitle info from declaration
+  // Two-row meta layout for LLM-driving nodes (agent/judge/router-llm):
+  //   row 1: provider icon + model
+  //   row 2: backend + reasoning_effort + session/await indicators
+  // Other node kinds keep the legacy single-line subtitle.
   let subtitle = "";
   let providerModel: string | undefined;
   let providerDelegate: string | undefined;
+  let backendValue: string | undefined;
+  let effortLevel: string | undefined;
+  let sessionGlyph: string | undefined;
+  let awaitGlyph: string | undefined;
+  let isLLMNode = false;
+
   if (kind === "agent" || kind === "judge") {
     const d = decl as AgentDecl | undefined;
+    isLLMNode = !!(d?.model || d?.backend);
     providerModel = d?.model;
     providerDelegate = d?.backend;
-    if (d?.backend) subtitle = d.backend;
-    else if (d?.model) subtitle = d.model.replace(/\$\{.*?\}/g, "env");
-    // Append session indicator to subtitle
-    if (d?.session === "inherit") subtitle += subtitle ? " \u{1F517}" : "\u{1F517}";
-    else if (d?.session === "fork") subtitle += subtitle ? " \u{1F500}" : "\u{1F500}";
-    else if (d?.session === "artifacts_only") subtitle += subtitle ? " \u{1F4E6}" : "\u{1F4E6}";
+    backendValue = d?.backend;
+    effortLevel = d?.reasoning_effort;
+    if (d?.session === "inherit") sessionGlyph = "\u{1F517}";
+    else if (d?.session === "fork") sessionGlyph = "\u{1F500}";
+    else if (d?.session === "artifacts_only") sessionGlyph = "\u{1F4E6}";
+    if (d?.await && d.await !== "none") awaitGlyph = "\u{23F3}";
+  } else if (kind === "router") {
+    const d = decl as RouterDecl | undefined;
+    if (d?.mode === "llm") {
+      isLLMNode = true;
+      providerModel = d?.model;
+      providerDelegate = d?.backend;
+      backendValue = d?.backend;
+      // RouterDecl does not surface reasoning_effort in the editor wire
+      // format yet; the IR carries it but the form/JSON does not.
+    } else if (d?.mode) {
+      subtitle = d.mode;
+    }
   } else if (kind === "tool") {
     const d = decl as ToolNodeDecl | undefined;
     if (d?.command) subtitle = d.command.length > 20 ? d.command.slice(0, 20) + "..." : d.command;
+    if (d?.await && d.await !== "none") awaitGlyph = "\u{23F3}";
   } else if (kind === "human") {
     const d = decl as HumanDecl | undefined;
     if (d?.interaction) subtitle = d.interaction;
+    if (d?.await && d.await !== "none") awaitGlyph = "\u{23F3}";
   } else if (kind === "compute") {
     const d = decl as ComputeDecl | undefined;
     if (d?.expr?.length) subtitle = `${d.expr.length} expr`;
   }
 
-  // Append await indicator for nodes with await strategy
-  if (kind === "agent" || kind === "judge" || kind === "human" || kind === "tool") {
-    const awaitVal = (decl as AgentDecl | HumanDecl | ToolNodeDecl | undefined)?.await;
-    if (awaitVal && awaitVal !== "none") {
-      subtitle += subtitle ? ` \u{23F3}` : "\u{23F3}";
-    }
-  }
-
-  if (kind === "router") {
-    const d = decl as RouterDecl | undefined;
-    providerModel = d?.model;
-    if (d?.mode === "llm" && d?.model) subtitle = d.model.replace(/\$\{.*?\}/g, "env");
-    else if (d?.mode) subtitle = d.mode;
-  }
+  const modelLabel = providerModel
+    ? providerModel.replace(/\$\{.*?\}/g, "env")
+    : undefined;
 
   // Schema badges for nodes that have input/output
   let inputSchema = "";
@@ -137,10 +152,24 @@ export default function WorkflowNode({ data, selected }: NodeProps) {
       </div>
       <div className="font-semibold text-sm text-fg-default">{isStart ? "Start" : label}</div>
       {!isStart && <div className="text-xs text-fg-muted">{kind}</div>}
-      {subtitle && (
-        <div className="text-[10px] text-fg-subtle mt-0.5 max-w-[140px] flex items-center justify-center gap-1">
+      {isLLMNode && modelLabel && (
+        <div className="text-[10px] text-fg-subtle mt-0.5 max-w-[160px] flex items-center justify-center gap-1">
           <ProviderIcon model={providerModel} delegate={providerDelegate} size={10} className="shrink-0 opacity-70" />
+          <span className="truncate">{modelLabel}</span>
+        </div>
+      )}
+      {isLLMNode && (
+        <div className="text-[10px] text-fg-subtle mt-0.5 max-w-[160px] flex items-center justify-center gap-1.5 flex-wrap">
+          <BackendBadge backend={backendValue} size={10} />
+          {isEffortLevel(effortLevel) && <EffortBar level={effortLevel} />}
+          {sessionGlyph && <span aria-hidden>{sessionGlyph}</span>}
+          {awaitGlyph && <span aria-hidden>{awaitGlyph}</span>}
+        </div>
+      )}
+      {!isLLMNode && subtitle && (
+        <div className="text-[10px] text-fg-subtle mt-0.5 max-w-[160px] flex items-center justify-center gap-1">
           <span className="truncate">{subtitle}</span>
+          {awaitGlyph && <span aria-hidden>{awaitGlyph}</span>}
         </div>
       )}
       {/* Schema badges */}

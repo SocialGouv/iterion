@@ -5,6 +5,9 @@ import { Handle, Position } from "@xyflow/react";
 import type { ExecutionState } from "@/api/runs";
 import type { NodeKind } from "@/api/types";
 import { Popover } from "@/components/ui";
+import { EffortBar, isEffortLevel } from "@/components/ui/EffortBar";
+import { ProviderIcon } from "@/components/icons/ProviderIcon";
+import { BackendBadge } from "@/components/icons/BackendBadge";
 import { NODE_ICONS } from "@/lib/constants";
 
 import { statusClasses } from "./runStatusClasses";
@@ -31,6 +34,19 @@ export function iterationColor(index: number): string {
   return ITERATION_PALETTE[index % ITERATION_PALETTE.length]!;
 }
 
+// LLMMeta is the per-node LLM-call metadata projected onto the run
+// canvas. `model`/`backend`/`reasoningEffort` reflect the active value
+// (runtime override when present, declared value otherwise). The
+// `runtimeOverridden*` flags signal divergence from the declared value
+// so the UI can show a "live" badge.
+export interface LLMMeta {
+  model?: string;
+  backend?: string;
+  reasoningEffort?: string;
+  runtimeOverriddenModel?: boolean;
+  runtimeOverriddenEffort?: boolean;
+}
+
 interface IRNodeData {
   id: string;
   kind: string;
@@ -44,12 +60,20 @@ interface IRNodeData {
   isEntry: boolean;
   selected: boolean;
   onSelectIteration: (nodeId: string, iteration: number) => void;
+  // Optional LLM metadata for agent/judge/router-llm nodes. Absent for
+  // tool/human/compute/router-non-llm/done/fail.
+  meta?: LLMMeta;
 }
 
 export default function IRNode({ data }: NodeProps) {
-  const { id, kind, executions, selectedIteration, isEntry, selected, onSelectIteration } =
+  const { id, kind, executions, selectedIteration, isEntry, selected, onSelectIteration, meta } =
     data as unknown as IRNodeData;
   const glyph = NODE_ICONS[kind as NodeKind] ?? "";
+  const hasMeta =
+    !!meta && (!!meta.model || !!meta.backend || !!meta.reasoningEffort);
+  const modelLabel = meta?.model
+    ? meta.model.replace(/\$\{.*?\}/g, "env")
+    : undefined;
 
   const activeExec =
     executions.find((e) => e.loop_iteration === selectedIteration) ??
@@ -97,6 +121,41 @@ export default function IRNode({ data }: NodeProps) {
             : `${status} · iter ${selectedIteration + 1}/${executions.length}`}
         </span>
       </div>
+
+      {hasMeta && (
+        <>
+          {modelLabel && (
+            <div className="mt-1 flex items-center gap-1 text-[10px] text-fg-subtle min-w-0">
+              <ProviderIcon
+                model={meta?.model}
+                delegate={meta?.backend}
+                size={10}
+                className="shrink-0 opacity-70"
+              />
+              <span className="truncate" title={meta?.model}>
+                {modelLabel}
+              </span>
+              {meta?.runtimeOverriddenModel && (
+                <span
+                  className="ml-1 px-1 rounded bg-info-soft text-info-fg text-[8px] uppercase shrink-0"
+                  title="model overridden at runtime"
+                >
+                  live
+                </span>
+              )}
+            </div>
+          )}
+          <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-fg-subtle flex-wrap">
+            <BackendBadge backend={meta?.backend} size={10} />
+            {isEffortLevel(meta?.reasoningEffort) && (
+              <EffortBar
+                level={meta.reasoningEffort}
+                live={meta.runtimeOverriddenEffort}
+              />
+            )}
+          </div>
+        </>
+      )}
 
       {/* Iteration timeline: one pip per execution. Pip color =
           iteration palette (index-based). Filled when status is

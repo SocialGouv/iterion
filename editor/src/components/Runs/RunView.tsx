@@ -20,6 +20,13 @@ import RunHeader from "./RunHeader";
 import RunMetrics from "./RunMetrics";
 import Scrubber from "./Scrubber";
 
+// Runtime override captured from llm_request events. Keyed by IR node id.
+// Each value is the most-recent llm_request payload seen for that node.
+interface RuntimeLLMOverride {
+  model?: string;
+  reasoning_effort?: string;
+}
+
 export default function RunView() {
   const params = useParams<{ id: string }>();
   const runId = params.id ?? null;
@@ -147,6 +154,26 @@ export default function RunView() {
     return events.filter((e) => e.seq <= scrubSeq);
   }, [scrubSeq, events]);
 
+  // Fold llm_request events into a per-node "what was actually sent to
+  // the LLM" map. Latest event wins because seq is monotonic. We use
+  // displayedEvents rather than raw events so the time-travel scrubber
+  // also rewinds the runtime override.
+  const runtimeOverrideByNode = useMemo(() => {
+    const m = new Map<string, RuntimeLLMOverride>();
+    for (const e of displayedEvents) {
+      if (e.type !== "llm_request" || !e.node_id) continue;
+      const data = e.data ?? {};
+      const override: RuntimeLLMOverride = {};
+      if (typeof data.model === "string") override.model = data.model;
+      if (typeof data.reasoning_effort === "string")
+        override.reasoning_effort = data.reasoning_effort;
+      if (override.model || override.reasoning_effort) {
+        m.set(e.node_id, override);
+      }
+    }
+    return m;
+  }, [displayedEvents]);
+
   // Workflow view: detail panel reflects the selected node's currently-
   // picked iteration. If the user hasn't picked an iteration, fall back
   // to defaultIterationFor (running > paused > latest). No execution at
@@ -214,6 +241,7 @@ export default function RunView() {
                     onSelectNode={setWfSelectedNodeId}
                     iterationByNode={iterationByNode}
                     onSelectIteration={handleSelectIteration}
+                    runtimeOverrideByNode={runtimeOverrideByNode}
                   />
                 </div>
               </Panel>

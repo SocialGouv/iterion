@@ -156,7 +156,7 @@ export async function loadEvents(
 export interface WireWorkflow {
   name: string;
   entry: string;
-  nodes: Array<{ id: string; kind: string }>;
+  nodes: WireNode[];
   edges: Array<{
     from: string;
     to: string;
@@ -166,6 +166,16 @@ export interface WireWorkflow {
     loop?: string;
   }>;
   stale_hash?: boolean;
+}
+
+// Mirror of runview.WireNode. Model/backend/reasoning_effort are only
+// populated for LLM-driving nodes (Agent, Judge, Router-LLM).
+export interface WireNode {
+  id: string;
+  kind: string;
+  model?: string;
+  backend?: string;
+  reasoning_effort?: string;
 }
 
 export async function getRunWorkflow(runId: string): Promise<WireWorkflow> {

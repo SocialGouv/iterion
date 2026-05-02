@@ -3,6 +3,8 @@ package runview
 import (
 	"fmt"
 	"sync"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
 // WireWorkflow is the JSON projection of an IR workflow used by the
@@ -22,12 +24,17 @@ type WireWorkflow struct {
 	StaleHash bool `json:"stale_hash,omitempty"`
 }
 
-// WireNode is the minimal node projection: id + kind. Inspector-style
-// detail comes from the editor's existing forms (the user can click
-// "Open in editor" if they need to drill in).
+// WireNode is the minimal node projection used by the run-console canvas.
+// It carries id + kind plus the LLM-call metadata (model / backend /
+// reasoning_effort) for nodes that drive an LLM (Agent, Judge, Router-LLM)
+// so the canvas can render those fields next to the node without the
+// frontend having to parse the .iter source itself.
 type WireNode struct {
-	ID   string `json:"id"`
-	Kind string `json:"kind"`
+	ID              string `json:"id"`
+	Kind            string `json:"kind"`
+	Model           string `json:"model,omitempty"`
+	Backend         string `json:"backend,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // WireEdge mirrors the runtime-relevant fields of ir.Edge. Expression
@@ -117,7 +124,7 @@ func (s *Service) LoadWireWorkflow(runID string) (*WireWorkflow, error) {
 		StaleHash: staleHash,
 	}
 	for id, n := range wf.Nodes {
-		out.Nodes = append(out.Nodes, WireNode{ID: id, Kind: n.NodeKind().String()})
+		out.Nodes = append(out.Nodes, projectNode(id, n))
 	}
 	for _, e := range wf.Edges {
 		out.Edges = append(out.Edges, WireEdge{
@@ -140,3 +147,27 @@ func (s *Service) LoadWireWorkflow(runID string) (*WireWorkflow, error) {
 // IRWorkflowEndpointPath is exposed for symmetry with other runview
 // helpers; the server wires the handler manually.
 const IRWorkflowEndpointPath = "/api/runs/{id}/workflow"
+
+// projectNode builds a WireNode from an ir.Node, attaching LLM metadata
+// when the node drives an LLM call. Routers expose model/backend only in
+// LLM mode — the other modes don't have a model.
+func projectNode(id string, n ir.Node) WireNode {
+	out := WireNode{ID: id, Kind: n.NodeKind().String()}
+	switch v := n.(type) {
+	case *ir.AgentNode:
+		out.Model = v.Model
+		out.Backend = v.Backend
+		out.ReasoningEffort = v.ReasoningEffort
+	case *ir.JudgeNode:
+		out.Model = v.Model
+		out.Backend = v.Backend
+		out.ReasoningEffort = v.ReasoningEffort
+	case *ir.RouterNode:
+		if v.RouterMode == ir.RouterLLM {
+			out.Model = v.Model
+			out.Backend = v.Backend
+			out.ReasoningEffort = v.ReasoningEffort
+		}
+	}
+	return out
+}

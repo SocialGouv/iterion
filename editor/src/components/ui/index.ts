@@ -33,4 +33,7 @@ export type { ChipProps } from "./Chip";
 
 export { StatusBadge } from "./StatusBadge";
 
+export { EffortBar, isEffortLevel } from "./EffortBar";
+export type { EffortLevel } from "./EffortBar";
+
 export { Skeleton } from "./Skeleton";

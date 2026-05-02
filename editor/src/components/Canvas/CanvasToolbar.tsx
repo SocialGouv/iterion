@@ -82,21 +82,21 @@ export default function CanvasToolbar({
           }}
           title={layoutDirection === "DOWN" ? "Switch to horizontal layout (left\u2192right)" : "Switch to vertical layout (top\u2192bottom)"}
         >
-          {layoutDirection === "DOWN" ? "\u2194 Horizontal" : "\u2195 Vertical"}
+          {layoutDirection === "DOWN" ? "\u2194\ufe0f Horizontal" : "\u2195\ufe0f Vertical"}
         </button>
         <button
           className="bg-surface-1/90 hover:bg-surface-2 border border-border-strong text-xs px-2 py-1 rounded text-fg-muted"
           onClick={onArrange}
           title="Auto-arrange nodes chronologically"
         >
-          Arrange
+          {"\u{1F9ED} Arrange"}
         </button>
         <button
           className="bg-surface-1/90 hover:bg-surface-2 border border-border-strong text-xs px-2 py-1 rounded text-fg-muted"
           onClick={onFitView}
           title="Fit all nodes in view"
         >
-          Fit
+          {"\u{1F50D} Fit"}
         </button>
         {onFocusNode && (
           <button
@@ -104,7 +104,7 @@ export default function CanvasToolbar({
             onClick={onFocusNode}
             title="Zoom to selected node"
           >
-            Focus
+            {"\u{1F3AF} Focus"}
           </button>
         )}
         <button
@@ -116,7 +116,7 @@ export default function CanvasToolbar({
           onClick={() => { toggleExpanded(); onFitViewAfterDelay(); }}
           title={expanded ? "Collapse canvas (Esc)" : "Expand canvas (hide chrome)"}
         >
-          {expanded ? "Collapse" : "Expand"}
+          {expanded ? "\u{1F532} Collapse" : "\u{1F533} Expand"}
         </button>
         <button
           className={`border text-xs px-2 py-1 rounded ${
@@ -127,7 +127,7 @@ export default function CanvasToolbar({
           onClick={() => { onBrowserFullscreen(); onFitViewAfterDelay(); }}
           title={browserFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
         >
-          {browserFullscreen ? "Exit FS" : "Fullscreen"}
+          {browserFullscreen ? "\u21a9\ufe0f Exit FS" : "\u{1F5A5}\ufe0f Fullscreen"}
         </button>
       </div>
     </>

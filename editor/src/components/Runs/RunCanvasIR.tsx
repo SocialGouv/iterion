@@ -9,11 +9,16 @@ import {
   type Node as FlowNode,
 } from "@xyflow/react";
 
-import type { ExecStatus, ExecutionState, WireWorkflow } from "@/api/runs";
+import type {
+  ExecStatus,
+  ExecutionState,
+  WireNode,
+  WireWorkflow,
+} from "@/api/runs";
 import { getRunWorkflow } from "@/api/runs";
 import { autoLayout } from "@/lib/autoLayout";
 
-import IRNode, { iterationColor } from "./IRNode";
+import IRNode, { iterationColor, type LLMMeta } from "./IRNode";
 
 const nodeTypes = { ir: IRNode };
 
@@ -29,6 +34,41 @@ interface Props {
   // computed from `executions` (current > paused > latest).
   iterationByNode: Map<string, number>;
   onSelectIteration: (nodeId: string, iteration: number) => void;
+  // Latest model / reasoning_effort observed in llm_request events,
+  // keyed by IR node id. Empty before any LLM call has happened.
+  // Merged with WireNode declarative metadata to compute the node's
+  // displayed `meta` and the "live" badge flags.
+  runtimeOverrideByNode: Map<
+    string,
+    { model?: string; reasoning_effort?: string }
+  >;
+}
+
+function buildLLMMeta(
+  node: WireNode,
+  override: { model?: string; reasoning_effort?: string } | undefined,
+): LLMMeta | undefined {
+  const declared = {
+    model: node.model,
+    backend: node.backend,
+    effort: node.reasoning_effort,
+  };
+  if (!declared.model && !declared.backend && !declared.effort && !override) {
+    return undefined;
+  }
+  const activeModel = override?.model ?? declared.model;
+  const activeEffort = override?.reasoning_effort ?? declared.effort;
+  return {
+    model: activeModel,
+    backend: declared.backend,
+    reasoningEffort: activeEffort,
+    runtimeOverriddenModel:
+      !!override?.model && !!declared.model && override.model !== declared.model,
+    runtimeOverriddenEffort:
+      !!override?.reasoning_effort &&
+      !!declared.effort &&
+      override.reasoning_effort !== declared.effort,
+  };
 }
 
 function nodeMatchesFilters(
@@ -76,6 +116,7 @@ export default function RunCanvasIR({
   onSelectNode,
   iterationByNode,
   onSelectIteration,
+  runtimeOverrideByNode,
 }: Props) {
   const [wf, setWf] = useState<WireWorkflow | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -139,6 +180,7 @@ export default function RunCanvasIR({
       const execs = execsByNode.get(n.id) ?? [];
       const selectedIteration =
         iterationByNode.get(n.id) ?? defaultIterationFor(execs);
+      const meta = buildLLMMeta(n, runtimeOverrideByNode.get(n.id));
       return {
         id: n.id,
         type: "ir",
@@ -151,6 +193,7 @@ export default function RunCanvasIR({
           isEntry: n.id === wf.entry,
           selected: n.id === selectedNodeId,
           onSelectIteration: handleSelectIteration,
+          meta,
         },
       };
     });
@@ -211,6 +254,14 @@ export default function RunCanvasIR({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wf]);
 
+  // Index WireWorkflow nodes for the patch effect's meta refresh —
+  // avoids re-walking wf.nodes on every patch.
+  const wireNodeById = useMemo(() => {
+    const m = new Map<string, WireNode>();
+    if (wf) for (const n of wf.nodes) m.set(n.id, n);
+    return m;
+  }, [wf]);
+
   // Visual patch: rerun whenever executions, selection, or per-node
   // iteration changes. Cheap because it only mutates `data` — no
   // ELK relayout. Skipped when the layout effect hasn't completed.
@@ -223,6 +274,10 @@ export default function RunCanvasIR({
           iterationByNode.get(n.id) ?? defaultIterationFor(execs);
         const dimmed =
           activeFilters.size > 0 && !nodeMatchesFilters(execs, activeFilters);
+        const wireNode = wireNodeById.get(n.id);
+        const meta = wireNode
+          ? buildLLMMeta(wireNode, runtimeOverrideByNode.get(n.id))
+          : undefined;
         return {
           ...n,
           data: {
@@ -231,6 +286,7 @@ export default function RunCanvasIR({
             selectedIteration,
             selected: n.id === selectedNodeId,
             onSelectIteration: handleSelectIteration,
+            meta,
           },
           style: dimmed ? { opacity: 0.25 } : undefined,
         };
@@ -243,6 +299,8 @@ export default function RunCanvasIR({
     selectedNodeId,
     handleSelectIteration,
     activeFilters,
+    wireNodeById,
+    runtimeOverrideByNode,
   ]);
 
   // When the user invokes "jump to failed" (or any other external
@@ -363,6 +421,8 @@ export default function RunCanvasIR({
         elementsSelectable
         fitView
         fitViewOptions={{ padding: 0.2 }}
+        minZoom={0.05}
+        maxZoom={4}
         onNodeClick={(_e, n) => onSelectNode(n.id === selectedNodeId ? null : n.id)}
         onPaneClick={() => onSelectNode(null)}
         proOptions={{ hideAttribution: true }}
