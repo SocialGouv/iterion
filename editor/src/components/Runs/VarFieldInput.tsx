@@ -87,13 +87,28 @@ export default function VarFieldInput({ field, value, onChange }: Props) {
   }
 }
 
-/** Default-string for a var: render the literal default if present, else "". */
+/** Default-string for a var: render the literal default if present, else "".
+ *
+ * Dispatch is keyed off `lit.kind` (the source of truth) rather than the
+ * presence of value-fields: empty-string defaults like `scope_notes: string = ""`
+ * are encoded by the Go side without `str_val` (omitempty). Falling back on
+ * `raw` for those would yield the literal source representation `""` (two
+ * double-quote characters), pre-filling the form with garbage that then gets
+ * sent verbatim to the backend.
+ */
 export function defaultStringFor(field: VarField): string {
   const lit = field.default;
   if (!lit) return field.type === "bool" ? "false" : "";
-  if (lit.str_val !== undefined) return lit.str_val;
-  if (lit.int_val !== undefined) return String(lit.int_val);
-  if (lit.float_val !== undefined) return String(lit.float_val);
-  if (lit.bool_val !== undefined) return String(lit.bool_val);
-  return lit.raw ?? "";
+  switch (lit.kind) {
+    case "string":
+      return lit.str_val ?? "";
+    case "int":
+      return lit.int_val !== undefined ? String(lit.int_val) : "";
+    case "float":
+      return lit.float_val !== undefined ? String(lit.float_val) : "";
+    case "bool":
+      return lit.bool_val !== undefined ? String(lit.bool_val) : "false";
+    default:
+      return lit.raw ?? "";
+  }
 }
