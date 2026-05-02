@@ -185,6 +185,12 @@ func (s *RunStore) SaveRun(r *Run) error {
 // network-sourced ID cannot escape the store root. The write side
 // (CreateRun/WriteArtifact/WriteInteraction) already sanitises its inputs;
 // the read paths must do the same so the defence is symmetric.
+//
+// As a one-shot migration step, a legacy run with empty Name gets a
+// deterministic friendly label generated and persisted on read. After
+// the first call the field is on disk; subsequent LoadRuns skip the
+// fixup. The seed mirrors the CLI/launch path (file_path:run_id) so the
+// backfill produces the exact name a new launch would have produced.
 func (s *RunStore) LoadRun(id string) (*Run, error) {
 	if err := sanitizePathComponent("run ID", id); err != nil {
 		return nil, err
@@ -197,6 +203,15 @@ func (s *RunStore) LoadRun(id string) (*Run, error) {
 	var r Run
 	if err := json.Unmarshal(data, &r); err != nil {
 		return nil, fmt.Errorf("store: decode run %s: %w", id, err)
+	}
+	if r.Name == "" {
+		r.Name = GenerateRunName(r.FilePath + ":" + r.ID)
+		// Best-effort persist; a write failure (read-only fs, racing
+		// process) leaves the in-memory name set and lets the next
+		// successful write fix it up. Never fail LoadRun on this path.
+		if writeErr := s.writeRun(&r); writeErr != nil && s.logger != nil {
+			s.logger.Warn("store: backfill name for run %s failed: %v", id, writeErr)
+		}
 	}
 	return &r, nil
 }
