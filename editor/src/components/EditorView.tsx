@@ -237,16 +237,19 @@ export default function EditorView() {
                   className="absolute left-0 top-0 bottom-0 w-1 -translate-x-1/2 cursor-col-resize hover:bg-accent/50 z-10"
                   title="Drag to resize"
                 />
-                <IconButton
-                  label="Hide inspector"
-                  size="sm"
-                  variant="ghost"
-                  className="absolute top-1.5 right-1.5 z-20"
-                  onClick={toggleInspectorCollapsed}
-                >
-                  <ChevronRightIcon />
-                </IconButton>
-                <Inspector />
+                <div className="flex items-center justify-end px-1 py-0.5 border-b border-border-default shrink-0 bg-surface-1">
+                  <IconButton
+                    label="Hide inspector"
+                    size="sm"
+                    variant="ghost"
+                    onClick={toggleInspectorCollapsed}
+                  >
+                    <ChevronRightIcon />
+                  </IconButton>
+                </div>
+                <div className="flex-1 min-h-0 overflow-hidden">
+                  <Inspector />
+                </div>
               </>
             )}
           </div>
