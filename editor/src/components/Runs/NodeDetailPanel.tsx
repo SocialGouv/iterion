@@ -17,6 +17,12 @@ interface Props {
   filePath?: string;
   exec: ExecutionState | null;
   events: RunEvent[];
+  // followLive == true → the parent is auto-tracking the running
+  // execution; clicking the toggle off pins the panel on the current
+  // exec. Clicking it on again re-engages auto-tracking, which the
+  // parent implements by clearing the manual pin in handleToggle.
+  followLive?: boolean;
+  onToggleFollowLive?: () => void;
   onCollapse?: () => void;
 }
 
@@ -35,9 +41,54 @@ function CollapseButton({ onCollapse }: { onCollapse?: () => void }): ReactNode 
   );
 }
 
+// FollowLivePill toggles the parent's auto-tracking of the running
+// node. When active, the panel jumps to whatever the engine is
+// currently working on; when off, the user's manual selection stays
+// pinned. The visual is a pill with a pulsing dot when active so it
+// reads as "live" at a glance.
+function FollowLivePill({
+  followLive,
+  onToggle,
+}: {
+  followLive: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] border transition-colors ${
+        followLive
+          ? "bg-success-soft border-success text-success-fg"
+          : "bg-surface-1 border-border-default text-fg-subtle hover:text-fg-default"
+      }`}
+      title={
+        followLive
+          ? "Auto-following the running node. Click to pin on the current selection."
+          : "Pinned. Click to follow the running node."
+      }
+    >
+      <span
+        className={`inline-block w-1.5 h-1.5 rounded-full ${
+          followLive ? "bg-success animate-pulse" : "bg-fg-subtle"
+        }`}
+      />
+      live
+    </button>
+  );
+}
+
 type TabValue = "pause" | "trace" | "tools" | "artifact" | "events";
 
-export default function NodeDetailPanel({ runId, filePath, exec, events, onCollapse }: Props) {
+export default function NodeDetailPanel({
+  runId,
+  filePath,
+  exec,
+  events,
+  followLive,
+  onToggleFollowLive,
+  onCollapse,
+}: Props) {
   const [artifactVersions, setArtifactVersions] = useState<ArtifactSummary[]>([]);
   const [activeTab, setActiveTab] = useState<TabValue | null>(null);
 
@@ -87,7 +138,23 @@ export default function NodeDetailPanel({ runId, filePath, exec, events, onColla
     return (
       <div className="relative h-full p-4 text-xs text-fg-subtle">
         <CollapseButton onCollapse={onCollapse} />
-        Click a node to see its events, prompt, response, artifact, and error trace.
+        {onToggleFollowLive && (
+          <FollowLivePill
+            followLive={!!followLive}
+            onToggle={onToggleFollowLive}
+          />
+        )}
+        {followLive ? (
+          <p className="mt-8">
+            Following the running node. Nothing is executing right now —
+            this panel will jump in as soon as the engine starts a node.
+          </p>
+        ) : (
+          <p className="mt-8">
+            Click a node to see its events, prompt, response, artifact,
+            and error trace.
+          </p>
+        )}
       </div>
     );
   }
@@ -125,7 +192,13 @@ export default function NodeDetailPanel({ runId, filePath, exec, events, onColla
   return (
     <div className="relative h-full flex flex-col text-xs">
       <CollapseButton onCollapse={onCollapse} />
-      <DetailHeader runId={runId} filePath={filePath} exec={exec} />
+      <DetailHeader
+        runId={runId}
+        filePath={filePath}
+        exec={exec}
+        followLive={followLive}
+        onToggleFollowLive={onToggleFollowLive}
+      />
 
       <Tabs
         value={activeTab ?? "events"}
@@ -198,10 +271,14 @@ function DetailHeader({
   runId,
   filePath,
   exec,
+  followLive,
+  onToggleFollowLive,
 }: {
   runId: string;
   filePath?: string;
   exec: ExecutionState;
+  followLive?: boolean;
+  onToggleFollowLive?: () => void;
 }) {
   const [, setLocation] = useLocation();
   const duration = formatDurationBetween(exec.started_at, exec.finished_at);
@@ -226,6 +303,12 @@ function DetailHeader({
             <h2 className="text-sm font-semibold truncate" title={exec.ir_node_id}>
               {exec.ir_node_id}
             </h2>
+            {onToggleFollowLive && (
+              <FollowLivePill
+                followLive={!!followLive}
+                onToggle={onToggleFollowLive}
+              />
+            )}
           </div>
           <div className="text-fg-subtle text-[10px] flex flex-wrap gap-x-3 gap-y-0.5">
             {exec.kind && <span>kind: {exec.kind}</span>}

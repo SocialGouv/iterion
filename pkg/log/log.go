@@ -96,6 +96,16 @@ func (l *Logger) Level() Level {
 	return l.level
 }
 
+// Writer returns the underlying io.Writer. Useful for callers that
+// need to compose new loggers that tee output to additional sinks
+// (e.g. a per-run buffer) without losing the original destination.
+func (l *Logger) Writer() io.Writer {
+	if l == nil {
+		return io.Discard
+	}
+	return l.w
+}
+
 // IsEnabled returns true if the given level would produce output.
 func (l *Logger) IsEnabled(level Level) bool {
 	if l == nil {

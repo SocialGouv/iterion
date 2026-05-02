@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -105,6 +107,14 @@ type Service struct {
 	// request. Invalidated implicitly when the .iter source changes
 	// (hash mismatch). See workflow_export.go.
 	wireWFCache wireWorkflowCache
+
+	// runLogs holds a per-run log buffer for the lifetime of each
+	// in-process run. Created in spawnRun, removed when the run
+	// goroutine exits. The buffer captures the iterion logger output
+	// scoped to that run and fans it out to live WS subscribers; see
+	// runlog.go and the /api/runs/{id}/log endpoint.
+	runLogsMu sync.RWMutex
+	runLogs   map[string]*RunLogBuffer
 }
 
 // ServiceOption configures a Service at construction time.
@@ -163,6 +173,7 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 		broker:           NewEventBroker(),
 		manager:          NewManager(),
 		recoveryDispatch: recovery.Dispatch(recovery.DefaultRecipes()),
+		runLogs:          make(map[string]*RunLogBuffer),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -231,6 +242,68 @@ func (s *Service) reconcileOrphans() {
 // Broker exposes the event broker for transports that need to
 // subscribe directly (the WS handler).
 func (s *Service) Broker() *EventBroker { return s.broker }
+
+// StoreDir returns the on-disk store directory. Exposed so HTTP
+// handlers can fall back to persisted run.log when the in-memory
+// buffer is gone.
+func (s *Service) StoreDir() string { return s.storeDir }
+
+// GetLogBuffer returns the live log buffer for runID, or nil if the
+// run is not held by this process. Valid only while the run is
+// active; the buffer is Close'd and removed when the run goroutine
+// exits.
+func (s *Service) GetLogBuffer(runID string) *RunLogBuffer {
+	s.runLogsMu.RLock()
+	defer s.runLogsMu.RUnlock()
+	return s.runLogs[runID]
+}
+
+// prepareRunLog creates a per-run log buffer (also persisting to
+// <store-dir>/runs/<runID>/run.log when the store dir is writable)
+// and wraps the service's writer + buffer into a per-run logger.
+// Returns the buffer for cleanup and the logger to thread through
+// both BuildExecutor and runtime.WithLogger so every iterion log line
+// emitted during this run is captured for the WS subscribers.
+func (s *Service) prepareRunLog(runID string) (*RunLogBuffer, *iterlog.Logger) {
+	var filePath string
+	if s.storeDir != "" {
+		runDir := filepath.Join(s.storeDir, "runs", runID)
+		if err := os.MkdirAll(runDir, 0o755); err == nil {
+			filePath = filepath.Join(runDir, "run.log")
+		}
+	}
+	buf, fileErr := NewRunLogBuffer(filePath)
+	if fileErr != nil {
+		s.logger.Warn("runview: open run.log for %s: %v — proceeding without disk persistence", runID, fileErr)
+	}
+
+	s.runLogsMu.Lock()
+	if old, ok := s.runLogs[runID]; ok {
+		// Defensive: a previous run goroutine for this ID didn't
+		// fully clean up. The store lock should make this impossible,
+		// but if it ever happens we want the WS subscribers of the
+		// stale buffer to see EOF rather than dangle forever.
+		old.Close()
+	}
+	s.runLogs[runID] = buf
+	s.runLogsMu.Unlock()
+
+	perRunLogger := iterlog.New(s.logger.Level(), io.MultiWriter(s.logger.Writer(), buf))
+	return buf, perRunLogger
+}
+
+// dropRunLog tears down the per-run buffer at run-completion time:
+// closes any active subscribers, the persisted file, and removes the
+// map entry. Idempotent.
+func (s *Service) dropRunLog(runID string) {
+	s.runLogsMu.Lock()
+	buf := s.runLogs[runID]
+	delete(s.runLogs, runID)
+	s.runLogsMu.Unlock()
+	if buf != nil {
+		buf.Close()
+	}
+}
 
 // Stop drains every active run for graceful shutdown.
 func (s *Service) Stop(ctx context.Context) {
@@ -435,15 +508,18 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		return nil, err
 	}
 
+	_, runLogger := s.prepareRunLog(runID)
+
 	executor, err := BuildExecutor(ExecutorSpec{
 		Workflow: wf,
 		Vars:     spec.Vars,
 		Store:    s.store,
 		RunID:    runID,
-		Logger:   s.logger,
+		Logger:   runLogger,
 		StoreDir: s.storeDir,
 	})
 	if err != nil {
+		s.dropRunLog(runID)
 		return nil, err
 	}
 
@@ -452,7 +528,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		inputs[k] = v
 	}
 
-	return s.spawnRun(parent, runID, wf, hash, spec.FilePath, executor, spec.Timeout, false,
+	return s.spawnRun(parent, runID, wf, hash, spec.FilePath, executor, runLogger, spec.Timeout, false,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
 		})
@@ -482,21 +558,24 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		return nil, err
 	}
 
+	_, runLogger := s.prepareRunLog(spec.RunID)
+
 	executor, err := BuildExecutor(ExecutorSpec{
 		Workflow: wf,
 		Store:    s.store,
 		RunID:    spec.RunID,
-		Logger:   s.logger,
+		Logger:   runLogger,
 		StoreDir: s.storeDir,
 	})
 	if err != nil {
+		s.dropRunLog(spec.RunID)
 		return nil, err
 	}
 	if len(r.Inputs) > 0 {
 		executor.SetVars(r.Inputs)
 	}
 
-	return s.spawnRun(parent, spec.RunID, wf, hash, spec.FilePath, executor, spec.Timeout, spec.Force,
+	return s.spawnRun(parent, spec.RunID, wf, hash, spec.FilePath, executor, runLogger, spec.Timeout, spec.Force,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			// Re-validate under the lock acquired by spawnRun (TOCTOU
 			// guard against a concurrent resume / state change).
@@ -538,18 +617,21 @@ func (s *Service) spawnRun(
 	wf *ir.Workflow,
 	hash, filePath string,
 	executor runtime.NodeExecutor,
+	runLogger *iterlog.Logger,
 	timeout time.Duration,
 	force bool,
 	body func(ctx context.Context, eng *runtime.Engine) error,
 ) (*LaunchResult, error) {
 	lock, err := s.store.LockRun(runID)
 	if err != nil {
+		s.dropRunLog(runID)
 		return nil, fmt.Errorf("runview: lock run: %w", err)
 	}
 
 	ctx, regErr := s.manager.Register(parent, runID)
 	if regErr != nil {
 		_ = lock.Unlock()
+		s.dropRunLog(runID)
 		return nil, regErr
 	}
 
@@ -558,7 +640,7 @@ func (s *Service) spawnRun(
 		ctx, cancelTimeout = context.WithTimeout(ctx, timeout)
 	}
 
-	opts := s.engineOptions(hash, filePath)
+	opts := s.engineOptions(runLogger, hash, filePath)
 	if force {
 		opts = append(opts, runtime.WithForceResume(true))
 	}
@@ -567,6 +649,7 @@ func (s *Service) spawnRun(
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		defer s.dropRunLog(runID)
 		defer s.broker.CloseRun(runID)
 		defer s.manager.Deregister(runID)
 		defer func() { _ = lock.Unlock() }()
@@ -582,10 +665,15 @@ func (s *Service) spawnRun(
 
 // engineOptions builds the standard option set for both Launch and
 // Resume: logger, recovery dispatch, broker observer, extra observers,
-// workflow hash, and file path.
-func (s *Service) engineOptions(hash, filePath string) []runtime.EngineOption {
+// workflow hash, and file path. The logger is always per-run (built
+// by prepareRunLog) so every iterion log line is captured into the
+// run's log buffer for streaming to the editor.
+func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath string) []runtime.EngineOption {
+	if runLogger == nil {
+		runLogger = s.logger
+	}
 	opts := []runtime.EngineOption{
-		runtime.WithLogger(s.logger),
+		runtime.WithLogger(runLogger),
 		runtime.WithRecoveryDispatch(s.recoveryDispatch),
 		runtime.WithEventObserver(s.broker.Publish),
 	}

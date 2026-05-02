@@ -19,10 +19,20 @@ function deriveWsUrl(runId: string): string {
   return `${proto}//${window.location.host}${BASE_URL}/ws/runs/${encodeURIComponent(runId)}`;
 }
 
+interface LogChunkPayload {
+  offset: number;
+  text: string;
+  total?: number;
+}
+
 /** Imperative handle returned by useRunWebSocket — call send() for cancel
- *  and answer commands; the connection lifecycle is managed by the hook. */
+ *  and answer commands; the connection lifecycle is managed by the hook.
+ *  The log helpers are opt-in: the panel that wants live log output calls
+ *  subscribeLogs() once on mount and unsubscribeLogs() on unmount. */
 export interface RunWsHandle {
   send: (env: WsEnvelope) => void;
+  subscribeLogs: (fromOffset?: number) => void;
+  unsubscribeLogs: () => void;
 }
 
 /**
@@ -36,15 +46,23 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectDelay = useRef(1000);
   const aliveRef = useRef(false);
+  // Track whether we asked for log streaming on this connection so a
+  // reconnect can re-subscribe automatically — symmetric with the
+  // event from_seq replay below. Reset on runId change.
+  const logsRequestedRef = useRef(false);
 
   useEffect(() => {
     if (!runId) return;
     aliveRef.current = true;
     reconnectDelay.current = 1000;
+    logsRequestedRef.current = false;
 
     const setWsState = useRunStore.getState().setWsState;
     const applySnapshot = useRunStore.getState().applySnapshot;
     const applyEvent = useRunStore.getState().applyEvent;
+    const applyLogChunk = useRunStore.getState().applyLogChunk;
+    const markLogTerminated = useRunStore.getState().markLogTerminated;
+    const setLogSubscribed = useRunStore.getState().setLogSubscribed;
 
     const connect = () => {
       if (!aliveRef.current) return;
@@ -71,6 +89,22 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
             payload: fromSeq > 0 ? { from_seq: fromSeq } : undefined,
           } satisfies WsEnvelope),
         );
+
+        // Re-subscribe to logs if the user had opened the Logs tab
+        // before the disconnect. We resume from the byte after our
+        // last known position so the backend snapshot fills any gap
+        // that landed during the outage.
+        if (logsRequestedRef.current) {
+          const log = useRunStore.getState().log;
+          const fromOffset = log.start + log.text.length;
+          ws.send(
+            JSON.stringify({
+              type: "subscribe_logs",
+              payload: fromOffset > 0 ? { from_offset: fromOffset } : undefined,
+            } satisfies WsEnvelope),
+          );
+          setLogSubscribed(true);
+        }
       };
 
       ws.onmessage = (msgEv) => {
@@ -82,6 +116,12 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
               break;
             case "event":
               applyEvent(env.payload as RunEvent);
+              break;
+            case "log_chunk":
+              applyLogChunk(env.payload as LogChunkPayload);
+              break;
+            case "log_terminated":
+              markLogTerminated();
               break;
             case "terminated":
               // The run reached a terminal status; the broker has
@@ -157,6 +197,35 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(env));
       }
+    },
+    subscribeLogs: (fromOffset) => {
+      logsRequestedRef.current = true;
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      const offset =
+        typeof fromOffset === "number"
+          ? fromOffset
+          : (() => {
+              const log = useRunStore.getState().log;
+              return log.start + log.text.length;
+            })();
+      ws.send(
+        JSON.stringify({
+          type: "subscribe_logs",
+          payload: offset > 0 ? { from_offset: offset } : undefined,
+        } satisfies WsEnvelope),
+      );
+      useRunStore.getState().setLogSubscribed(true);
+    },
+    unsubscribeLogs: () => {
+      logsRequestedRef.current = false;
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(
+          JSON.stringify({ type: "unsubscribe_logs" } satisfies WsEnvelope),
+        );
+      }
+      useRunStore.getState().setLogSubscribed(false);
     },
   };
 }

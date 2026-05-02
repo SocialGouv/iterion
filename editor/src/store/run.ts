@@ -17,12 +17,39 @@ export const NO_EVENTS_SEQ = -1;
 // it needs them.
 const MAX_EVENTS = 5000;
 
+// MAX_LOG_BYTES caps the in-memory log tail so a verbose run doesn't
+// bloat the React heap. Older bytes fall off the front; the start
+// offset advances accordingly. Matches the backend ring of 1 MiB so
+// the WS replay window stays consistent.
+const MAX_LOG_BYTES = 1 << 20;
+// Truncate down to LOG_TRIM_TARGET (75% of cap) instead of the cap
+// itself so we don't pay an O(N) slice on every appended chunk once
+// the cap is reached — amortises the copy to one trim per ~256 KiB.
+const LOG_TRIM_TARGET = (MAX_LOG_BYTES * 3) >> 2;
+
 export type WsState = "idle" | "connecting" | "open" | "reconnecting" | "closed";
 
 export interface PendingHumanInput {
   interaction_id?: string;
   questions?: Record<string, unknown>;
   raw: RunEvent;
+}
+
+export interface RunLogState {
+  // start is the byte offset in the run's logical log stream where
+  // text begins. start > 0 means the older bytes were evicted.
+  start: number;
+  // total is the running write counter the backend reports — total
+  // bytes ever written for this run, even those that have rolled out
+  // of the in-memory tail. Used by the UI to detect drops.
+  total: number;
+  text: string;
+  // True once this client has subscribed to the live log stream for
+  // this run. Independent of whether bytes have arrived yet.
+  subscribed: boolean;
+  // Set when the backend emits log_terminated — the live stream is
+  // over, but the existing text remains for inspection.
+  terminated: boolean;
 }
 
 interface RunStoreState {
@@ -33,6 +60,7 @@ interface RunStoreState {
   pendingHumanInput: PendingHumanInput | null;
   wsState: WsState;
   followTail: boolean;
+  log: RunLogState;
 
   setRunId: (id: string | null) => void;
   setWsState: (state: WsState) => void;
@@ -41,8 +69,21 @@ interface RunStoreState {
   applySnapshot: (snap: RunSnapshot) => void;
   applyEvent: (evt: RunEvent) => void;
 
+  setLogSubscribed: (subscribed: boolean) => void;
+  applyLogChunk: (chunk: { offset: number; text: string; total?: number }) => void;
+  markLogTerminated: () => void;
+  clearLog: () => void;
+
   reset: () => void;
 }
+
+const initialLogState: RunLogState = {
+  start: 0,
+  total: 0,
+  text: "",
+  subscribed: false,
+  terminated: false,
+};
 
 const initialState = {
   runId: null,
@@ -52,6 +93,7 @@ const initialState = {
   pendingHumanInput: null as PendingHumanInput | null,
   wsState: "idle" as WsState,
   followTail: true,
+  log: initialLogState,
 };
 
 export const useRunStore = create<RunStoreState>((set, get) => ({
@@ -281,8 +323,86 @@ export const useRunStore = create<RunStoreState>((set, get) => ({
     set(next);
   },
 
-  reset: () => set({ ...initialState, executionsById: new Map() }),
+  setLogSubscribed: (subscribed) =>
+    set((s) => ({ log: { ...s.log, subscribed } })),
+
+  applyLogChunk: (chunk) =>
+    set((s) => {
+      if (!chunk.text) return s;
+      const { log } = s;
+      const incomingEnd = chunk.offset + chunk.text.length;
+      if (incomingEnd <= log.start) return s;
+
+      const currentEnd = log.start + log.text.length;
+      let appendText: string;
+      if (chunk.offset >= currentEnd) {
+        appendText = chunk.text;
+      } else {
+        const skip = currentEnd - chunk.offset;
+        if (skip >= chunk.text.length) {
+          if (chunk.total !== undefined && chunk.total > log.total) {
+            return { log: { ...log, total: chunk.total } };
+          }
+          return s;
+        }
+        appendText = chunk.text.slice(skip);
+      }
+
+      let nextText = log.text + appendText;
+      let nextStart = log.start;
+      if (nextText.length > MAX_LOG_BYTES) {
+        const drop = nextText.length - LOG_TRIM_TARGET;
+        nextText = nextText.slice(drop);
+        nextStart += drop;
+      }
+
+      const nextTotal =
+        chunk.total !== undefined && chunk.total > incomingEnd
+          ? chunk.total
+          : Math.max(log.total, incomingEnd);
+
+      return {
+        log: {
+          ...log,
+          start: nextStart,
+          text: nextText,
+          total: nextTotal,
+          terminated: false,
+        },
+      };
+    }),
+
+  markLogTerminated: () =>
+    set((s) => ({ log: { ...s.log, terminated: true, subscribed: false } })),
+
+  clearLog: () => set({ log: initialLogState }),
+
+  reset: () => set({ ...initialState, executionsById: new Map(), log: initialLogState }),
 }));
+
+// ---------------------------------------------------------------------------
+// Selectors
+// ---------------------------------------------------------------------------
+
+// selectRunningExecution picks the most-recently-started running
+// execution. Drives the "follow live" mode; returns null when nothing
+// is running. Ties broken by started_at so a fan-out feels intuitive.
+export function selectRunningExecution(
+  execs: Map<string, ExecutionState>,
+): ExecutionState | null {
+  let best: ExecutionState | null = null;
+  for (const e of execs.values()) {
+    if (e.status !== "running") continue;
+    if (!best) {
+      best = e;
+      continue;
+    }
+    const a = best.started_at ?? "";
+    const b = e.started_at ?? "";
+    if (b > a) best = e;
+  }
+  return best;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers (mirror of the Go reducer in pkg/runview/snapshot.go)

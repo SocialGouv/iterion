@@ -30,18 +30,39 @@ const (
 	wsTypeError      = "error"
 	wsTypeAck        = "ack"
 	wsTypeTerminated = "terminated"
+	wsTypeLogChunk   = "log_chunk"
+	// wsTypeLogTerminated signals end of the log stream for a run.
+	// Distinct from wsTypeTerminated which signals end of the event
+	// stream — a UI can keep its log panel rendered with the final
+	// content while the events panel transitions to "completed".
+	wsTypeLogTerminated = "log_terminated"
 )
 
 // Client→server message types.
 const (
-	wsTypeSubscribe   = "subscribe"
-	wsTypeUnsubscribe = "unsubscribe"
-	wsTypeCancel      = "cancel"
-	wsTypeAnswer      = "answer"
+	wsTypeSubscribe      = "subscribe"
+	wsTypeUnsubscribe    = "unsubscribe"
+	wsTypeCancel         = "cancel"
+	wsTypeAnswer         = "answer"
+	wsTypeSubscribeLogs  = "subscribe_logs"
+	wsTypeUnsubscribeLog = "unsubscribe_logs"
 )
 
 type wsSubscribeRequest struct {
 	FromSeq int64 `json:"from_seq,omitempty"`
+}
+
+type wsSubscribeLogsRequest struct {
+	FromOffset int64 `json:"from_offset,omitempty"`
+}
+
+type wsLogChunkPayload struct {
+	Offset int64  `json:"offset"`
+	Text   string `json:"text"`
+	// Total is the buffer's running write counter at the moment this
+	// chunk was emitted. Lets the client detect drops (offset gap)
+	// and decide to re-anchor via /api/runs/{id}/log.
+	Total int64 `json:"total,omitempty"`
 }
 
 type wsAnswerRequest struct {
@@ -90,11 +111,13 @@ type runConn struct {
 	runID  string
 	sendCh chan []byte
 
-	mu         sync.Mutex
-	subscribed bool
-	sub        *runview.EventSubscription
-	closeOnce  sync.Once
-	closed     chan struct{}
+	mu            sync.Mutex
+	subscribed    bool
+	sub           *runview.EventSubscription
+	logSubscribed bool
+	logSub        *runview.RunLogSubscription
+	closeOnce     sync.Once
+	closed        chan struct{}
 }
 
 func newRunConn(s *Server, conn *websocket.Conn, runID string) *runConn {
@@ -120,6 +143,10 @@ func (c *runConn) close() {
 		if c.sub != nil {
 			c.sub.Cancel()
 			c.sub = nil
+		}
+		if c.logSub != nil {
+			c.logSub.Cancel()
+			c.logSub = nil
 		}
 		c.mu.Unlock()
 		_ = c.conn.Close()
@@ -157,6 +184,10 @@ func (c *runConn) dispatch(env runWSEnvelope) {
 		c.handleSubscribe(env)
 	case wsTypeUnsubscribe:
 		c.handleUnsubscribe(env)
+	case wsTypeSubscribeLogs:
+		c.handleSubscribeLogs(env)
+	case wsTypeUnsubscribeLog:
+		c.handleUnsubscribeLogs(env)
 	case wsTypeCancel:
 		c.handleCancel(env)
 	case wsTypeAnswer:

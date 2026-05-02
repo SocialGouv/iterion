@@ -5,8 +5,8 @@ import { Group, Panel, Separator } from "react-resizable-panels";
 import { ChevronLeftIcon, ChevronUpIcon } from "@radix-ui/react-icons";
 
 import { getRun, type RunFile } from "@/api/runs";
-import { IconButton, Skeleton } from "@/components/ui";
-import { useRunStore } from "@/store/run";
+import { IconButton, Skeleton, Tabs } from "@/components/ui";
+import { selectRunningExecution, useRunStore } from "@/store/run";
 import { useRunWebSocket } from "@/hooks/useRunWebSocket";
 import { useLayoutPersistence } from "@/hooks/useLayoutPersistence";
 import { useRunToasts } from "@/hooks/useRunToasts";
@@ -21,6 +21,7 @@ import FilesPanel from "./FilesPanel";
 import NodeDetailPanel from "./NodeDetailPanel";
 import RunCanvasIR, { defaultIterationFor } from "./RunCanvasIR";
 import RunHeader from "./RunHeader";
+import RunLogPanel from "./RunLogPanel";
 import RunMetrics from "./RunMetrics";
 import Scrubber from "./Scrubber";
 
@@ -54,8 +55,12 @@ export default function RunView() {
   const [scrubSeq, setScrubSeq] = useState<number | null>(null);
   // Workflow view selects by IR node id (not execution id). The detail
   // panel is driven by the selected node's currently-picked iteration
-  // (per-node, default = "current").
-  const [wfSelectedNodeId, setWfSelectedNodeId] = useState<string | null>(null);
+  // (per-node, default = "current"). Manual picks live alongside a
+  // "follow live" toggle: when the toggle is on, the panel auto-shifts
+  // to whatever node is currently running; when the user clicks a node
+  // the toggle flips off so their pick stays pinned.
+  const [manualSelectedNodeId, setManualSelectedNodeId] = useState<string | null>(null);
+  const [followLiveNode, setFollowLiveNode] = useState<boolean>(true);
   // Per-IR-node iteration override. Empty map means "use the default
   // (running > paused > latest)". A user click on a timeline pip sets
   // the entry; we never auto-clear so the user's pick stays sticky.
@@ -70,24 +75,39 @@ export default function RunView() {
     });
   }, []);
 
-  const handleJumpToFailed = useCallback((nodeId: string) => {
-    setWfSelectedNodeId(nodeId);
+  const handleSelectNode = useCallback((nodeId: string | null) => {
+    setManualSelectedNodeId(nodeId);
+    if (nodeId !== null) setFollowLiveNode(false);
   }, []);
+
+  const handleJumpToFailed = useCallback((nodeId: string) => {
+    handleSelectNode(nodeId);
+  }, [handleSelectNode]);
 
   const handleEventSelect = useCallback(
     (nodeId: string, iteration: number) => {
-      setWfSelectedNodeId(nodeId);
+      handleSelectNode(nodeId);
       setIterationByNode((prev) => {
         const next = new Map(prev);
         next.set(nodeId, iteration);
         return next;
       });
     },
-    [],
+    [handleSelectNode],
   );
 
   const handleClearSelection = useCallback(() => {
-    setWfSelectedNodeId(null);
+    setManualSelectedNodeId(null);
+  }, []);
+
+  const handleToggleFollowLive = useCallback(() => {
+    setFollowLiveNode((prev) => {
+      const next = !prev;
+      // Re-engaging follow live: drop the manual pin so the panel
+      // jumps to the currently-running node on the next render.
+      if (next) setManualSelectedNodeId(null);
+      return next;
+    });
   }, []);
 
   const [diffFile, setDiffFile] = useState<RunFile | null>(null);
@@ -107,6 +127,7 @@ export default function RunView() {
   const [eventlogCollapsed, setEventlogCollapsed] = useState<boolean>(() =>
     readBooleanFlag(EVENTLOG_COLLAPSED_KEY),
   );
+  const [bottomTab, setBottomTab] = useState<"events" | "logs">("events");
   const toggleDetailCollapsed = useCallback(() => {
     setDetailCollapsed((prev) => {
       const next = !prev;
@@ -146,7 +167,7 @@ export default function RunView() {
     };
   }, [runId, applySnapshot]);
 
-  useRunWebSocket(runId);
+  const wsHandle = useRunWebSocket(runId);
   useRunToasts(events);
 
   const liveExecutions = useMemo(
@@ -160,15 +181,27 @@ export default function RunView() {
     return null;
   }, [liveExecutions]);
 
+  // When follow-live is on, override the manual pick with the
+  // currently-running execution. While scrubbing the timeline we
+  // disable the auto-track so the panel reflects the past, not the
+  // live tail.
+  const runningExec = useMemo(() => {
+    if (scrubSeq !== null) return null;
+    return selectRunningExecution(executionsById);
+  }, [scrubSeq, executionsById]);
+
+  const wfSelectedNodeId =
+    followLiveNode && runningExec ? runningExec.ir_node_id : manualSelectedNodeId;
+
   useRunKeyboard({
     selectedNodeId: wfSelectedNodeId,
     executions: liveExecutions,
     iterationByNode,
-    onSelectNode: setWfSelectedNodeId,
+    onSelectNode: handleSelectNode,
     onSelectIteration: handleSelectIteration,
     onScrubLive: () => setScrubSeq(null),
     onJumpToFailed: firstFailedNodeId
-      ? () => setWfSelectedNodeId(firstFailedNodeId)
+      ? () => handleSelectNode(firstFailedNodeId)
       : undefined,
   });
 
@@ -271,7 +304,7 @@ export default function RunView() {
                       runId={runId}
                       executions={displayedExecutions}
                       selectedNodeId={wfSelectedNodeId}
-                      onSelectNode={setWfSelectedNodeId}
+                      onSelectNode={handleSelectNode}
                       iterationByNode={iterationByNode}
                       onSelectIteration={handleSelectIteration}
                       runtimeOverrideByNode={runtimeOverrideByNode}
@@ -293,6 +326,8 @@ export default function RunView() {
                           filePath={snapshot.run.file_path}
                           exec={detailExec}
                           events={displayedEvents}
+                          followLive={followLiveNode}
+                          onToggleFollowLive={handleToggleFollowLive}
                           onCollapse={toggleDetailCollapsed}
                         />
                       </div>
@@ -310,16 +345,37 @@ export default function RunView() {
                   minSize={10}
                   className="min-h-0"
                 >
-                  <div className="h-full border-t border-border-default min-h-0 overflow-hidden animate-fade-in-opacity">
-                    <EventLog
-                      events={displayedEvents}
-                      selectedExecutionId={eventLogSelection}
-                      followTail={followTail && !scrubbing}
-                      onToggleFollow={setFollowTail}
-                      onSelectNodeIteration={handleEventSelect}
-                      onClearSelection={handleClearSelection}
-                      onCollapse={toggleEventlogCollapsed}
+                  <div className="h-full border-t border-border-default min-h-0 overflow-hidden animate-fade-in-opacity flex flex-col bg-surface-1">
+                    <Tabs
+                      value={bottomTab}
+                      onValueChange={(v) => setBottomTab(v as "events" | "logs")}
+                      items={[
+                        { value: "events", label: "Events" },
+                        { value: "logs", label: "Logs" },
+                      ]}
+                      variant="underline"
+                      listClassName="px-3"
                     />
+                    <div className="flex-1 min-h-0">
+                      {bottomTab === "events" ? (
+                        <EventLog
+                          events={displayedEvents}
+                          selectedExecutionId={eventLogSelection}
+                          followTail={followTail && !scrubbing}
+                          onToggleFollow={setFollowTail}
+                          onSelectNodeIteration={handleEventSelect}
+                          onClearSelection={handleClearSelection}
+                          onCollapse={toggleEventlogCollapsed}
+                        />
+                      ) : (
+                        <RunLogPanel
+                          runId={runId}
+                          subscribeLogs={wsHandle.subscribeLogs}
+                          unsubscribeLogs={wsHandle.unsubscribeLogs}
+                          onCollapse={toggleEventlogCollapsed}
+                        />
+                      )}
+                    </div>
                   </div>
                 </Panel>
               </>
