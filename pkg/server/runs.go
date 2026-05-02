@@ -237,6 +237,14 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
 		return
 	}
+	// Log cancel intent with source attribution. Mystery context-canceled
+	// failures during a run mid-flight typically trace back to either this
+	// HTTP endpoint or the WS `cancel` envelope (handleCancel in runs_ws.go);
+	// emitting a line per call site lets us tell the two apart without
+	// instrumenting the runtime itself.
+	if s.logger != nil {
+		s.logger.Info("server: cancel run %q via HTTP from %s", id, r.RemoteAddr)
+	}
 	if err := s.runs.Cancel(id); err != nil {
 		// If the run is not currently active in this process, surface
 		// the current persisted status so the client can still get a

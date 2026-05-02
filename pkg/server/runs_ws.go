@@ -297,6 +297,13 @@ func (c *runConn) handleUnsubscribe(env runWSEnvelope) {
 }
 
 func (c *runConn) handleCancel(env runWSEnvelope) {
+	// Source-attribute the cancel: pairs with the HTTP cancel log line
+	// in runs.go so a "context canceled" mid-run failure can be traced
+	// back to either an explicit user click (HTTP endpoint) or a WS
+	// envelope from a connected client.
+	if c.server.logger != nil {
+		c.server.logger.Info("server: cancel run %q via WS from %s", c.runID, c.conn.RemoteAddr())
+	}
 	if err := c.server.runs.Cancel(c.runID); err != nil && !errors.Is(err, runview.ErrRunNotActive) {
 		c.sendError("cancel_failed", err.Error(), env.AckID)
 		return

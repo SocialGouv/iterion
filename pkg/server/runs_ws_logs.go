@@ -2,6 +2,8 @@ package server
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 
 	"github.com/SocialGouv/iterion/pkg/runview"
 )
@@ -27,11 +29,17 @@ func (c *runConn) handleSubscribeLogs(env runWSEnvelope) {
 	}
 	buf := c.server.runs.GetLogBuffer(c.runID)
 	if buf == nil {
-		// Terminated run — historical bytes are reachable via
-		// GET /api/runs/{id}/log. Signal end-of-stream so the client
-		// doesn't dangle on the live channel.
+		// Terminated run — no live buffer. Replay the persisted log
+		// file via the same wsTypeLogChunk envelope so the client
+		// renders it identically to a live tail. Without this, the
+		// editor's RunLogPanel showed "No log captured" on opening
+		// any failed/finished run after-the-fact, even when run.log
+		// existed on disk. Skip silently if the file is missing
+		// (e.g. very early failure before any log was written) — the
+		// terminator still tells the client the stream is over.
 		c.mu.Unlock()
 		c.sendAck(env.AckID)
+		c.replayPersistedLog(req.FromOffset)
 		c.sendEnvelope(wsTypeLogTerminated, map[string]string{"run_id": c.runID}, "")
 		return
 	}
@@ -99,6 +107,35 @@ func (c *runConn) streamLogs(buf *runview.RunLogBuffer, fromOffset int64) {
 			cutoff = offset + int64(len(text))
 		}
 	}
+}
+
+// replayPersistedLog reads <store>/runs/<id>/run.log from `fromOffset`
+// and emits it as a single log_chunk envelope. Used when a client
+// subscribes to a terminated run that no longer has an in-memory tail.
+// Failures are best-effort: a missing file is treated as empty (the
+// caller still sends log_terminated afterwards).
+func (c *runConn) replayPersistedLog(fromOffset int64) {
+	storeDir := c.server.runs.StoreDir()
+	if storeDir == "" {
+		return
+	}
+	logPath := filepath.Join(storeDir, "runs", c.runID, "run.log")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		return
+	}
+	if fromOffset < 0 {
+		fromOffset = 0
+	}
+	if fromOffset >= int64(len(data)) {
+		return
+	}
+	tail := data[fromOffset:]
+	c.sendEnvelope(wsTypeLogChunk, wsLogChunkPayload{
+		Offset: fromOffset,
+		Text:   string(tail),
+		Total:  int64(len(data)),
+	}, "")
 }
 
 func (c *runConn) handleUnsubscribeLogs(env runWSEnvelope) {
