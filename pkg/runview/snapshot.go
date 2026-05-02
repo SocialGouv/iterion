@@ -177,6 +177,14 @@ func (b *SnapshotBuilder) Apply(evt *store.Event) {
 		// no per-execution effect.
 	case store.EventRunCancelled:
 		// Same as RunFinished — header reflects cancelled.
+	default:
+		// Node-scoped informational events (LLM prompts/requests/steps,
+		// retries/compactions, tool calls/errors, human answers, budget
+		// warnings, recovery/delegate events, etc.) still belong to the
+		// currently running execution. Advancing the exec's event window here
+		// lets live inspectors read trace/tools/events before the node later
+		// finishes, writes an artifact, or pauses.
+		b.touchCurrentExec(evt, branch)
 	}
 }
 
@@ -205,12 +213,24 @@ func (b *SnapshotBuilder) LastSeq() int64 { return b.lastSeq }
 // Per-event handlers
 // ---------------------------------------------------------------------------
 
+func (b *SnapshotBuilder) touchCurrentExec(evt *store.Event, branch string) {
+	if evt.NodeID == "" {
+		return
+	}
+	exec := b.currentExec(branch, evt.NodeID)
+	if exec == nil {
+		return
+	}
+	exec.CurrentEventSeq = evt.Seq
+	exec.LastSeq = evt.Seq
+}
+
 func (b *SnapshotBuilder) handleNodeStarted(evt *store.Event, branch string) {
 	if evt.NodeID == "" {
 		return
 	}
 	iter := b.allocIteration(branch, evt.NodeID)
-	id := makeExecutionID(branch, evt.NodeID, iter)
+	id := MakeExecutionID(branch, evt.NodeID, iter)
 	ts := evt.Timestamp
 	exec := &ExecutionState{
 		ExecutionID:     id,
@@ -350,21 +370,22 @@ func (b *SnapshotBuilder) currentExec(branch, nodeID string) *ExecutionState {
 	if iter < 0 {
 		return nil
 	}
-	id := makeExecutionID(branch, nodeID, iter)
+	id := MakeExecutionID(branch, nodeID, iter)
 	return b.execs[id]
 }
 
-// makeExecutionID composes a stable ID from (branch, node, iteration).
+// MakeExecutionID composes a stable ID from (branch, node, iteration).
 // The format is documented in the WS protocol; clients depend on it
-// for tab/anchor URLs and for matching events to executions.
-func makeExecutionID(branch, nodeID string, iteration int) string {
+// for tab/anchor URLs and for matching events to executions. Empty
+// branch is normalised to MainBranch.
+func MakeExecutionID(branch, nodeID string, iteration int) string {
 	if branch == "" {
 		branch = MainBranch
 	}
 	return fmt.Sprintf("exec:%s:%s:%d", branch, nodeID, iteration)
 }
 
-// ParseExecutionID is the inverse of makeExecutionID. It returns the
+// ParseExecutionID is the inverse of MakeExecutionID. It returns the
 // branch, node ID, and iteration. Returns an error if the input is not
 // a well-formed exec ID.
 func ParseExecutionID(id string) (branch, nodeID string, iteration int, err error) {

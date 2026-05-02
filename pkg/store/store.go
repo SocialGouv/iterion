@@ -627,6 +627,53 @@ func (s *RunStore) LoadLatestArtifact(runID, nodeID string) (*Artifact, error) {
 	return s.LoadArtifact(runID, nodeID, maxVersion)
 }
 
+// ArtifactVersionInfo is the lightweight (version, mtime) pair returned by
+// ListArtifactVersions — the directory enumeration without the full body
+// decode that LoadArtifact incurs.
+type ArtifactVersionInfo struct {
+	Version   int
+	WrittenAt time.Time
+}
+
+// ListArtifactVersions enumerates the persisted artifact versions for a
+// node in ascending order, returning each version's mtime without
+// decoding the body. Returns (nil, nil) when the node has no artifact
+// directory (a node that hasn't published anything yet).
+func (s *RunStore) ListArtifactVersions(runID, nodeID string) ([]ArtifactVersionInfo, error) {
+	if err := sanitizePathComponent("run ID", runID); err != nil {
+		return nil, err
+	}
+	if err := sanitizePathComponent("node ID", nodeID); err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(s.root, "runs", runID, "artifacts", nodeID)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("store: list artifact versions: %w", err)
+	}
+	out := make([]ArtifactVersionInfo, 0, len(entries))
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		v, err := strconv.Atoi(strings.TrimSuffix(name, ".json"))
+		if err != nil {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		out = append(out, ArtifactVersionInfo{Version: v, WrittenAt: info.ModTime().UTC()})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
+	return out, nil
+}
+
 // ---------------------------------------------------------------------------
 // Interactions (human input/output)
 // ---------------------------------------------------------------------------

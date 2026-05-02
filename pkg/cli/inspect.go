@@ -3,9 +3,32 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+// InspectSection enumerates the per-node report buckets the caller can
+// restrict to via --section. Empty value behaves as SectionAll.
+type InspectSection string
+
+const (
+	SectionAll          InspectSection = "all"
+	SectionSummary      InspectSection = "summary"
+	SectionEvents       InspectSection = "events"
+	SectionTrace        InspectSection = "trace"
+	SectionTools        InspectSection = "tools"
+	SectionArtifacts    InspectSection = "artifacts"
+	SectionInteractions InspectSection = "interactions"
+	SectionLog          InspectSection = "log"
+)
+
+// validSections is the source of truth for both --section validation
+// and the help string. Order is the documented preference.
+var validSections = []InspectSection{
+	SectionSummary, SectionEvents, SectionTrace, SectionTools,
+	SectionArtifacts, SectionInteractions, SectionLog, SectionAll,
+}
 
 // InspectOptions holds the configuration for the inspect command.
 type InspectOptions struct {
@@ -13,10 +36,30 @@ type InspectOptions struct {
 	StoreDir string
 	Events   bool // show event log
 	Full     bool // show all details
+
+	// Per-node selection (additive; absent = legacy run-level path).
+
+	Node      string
+	Branch    string
+	Iteration *int // nil = unset; -1 = latest started
+	// ExecutionID is the alternative single-string selector
+	// ("exec:<branch>:<node>:<iter>"). Mutually exclusive with --node.
+	ExecutionID string
+	Section     InspectSection
+	LogTail     int
+	ListNodes   bool
 }
+
+// IterationLatest is the sentinel value of *InspectOptions.Iteration
+// meaning "use the most recently started iteration of (branch, node)".
+const IterationLatest = -1
 
 // RunInspect loads and displays a run's state.
 func RunInspect(opts InspectOptions, p *Printer) error {
+	if err := validateInspectOptions(&opts); err != nil {
+		return err
+	}
+
 	cwd, _ := os.Getwd()
 	storeDir := store.ResolveStoreDir(cwd, opts.StoreDir)
 
@@ -28,6 +71,16 @@ func RunInspect(opts InspectOptions, p *Printer) error {
 	// If no run ID, list all runs.
 	if opts.RunID == "" {
 		return listRuns(s, p)
+	}
+
+	// Per-node / per-execution / list-nodes paths take priority over
+	// the legacy run-level summary so they're available alongside
+	// `--events` / `--full` for power users.
+	if opts.ListNodes {
+		return listNodeExecutions(s, opts.RunID, p)
+	}
+	if opts.Node != "" || opts.ExecutionID != "" {
+		return runInspectNode(s, storeDir, opts, p)
 	}
 
 	// Load run.
@@ -192,4 +245,48 @@ func listRuns(s *store.RunStore, p *Printer) error {
 	}
 	p.Table([]string{"NAME", "ID", "STATUS", "WORKFLOW", "CREATED"}, rows)
 	return nil
+}
+
+// validateInspectOptions enforces the mutually-exclusive flag
+// combinations cobra does not detect on its own.
+func validateInspectOptions(opts *InspectOptions) error {
+	if opts.Node != "" && opts.ExecutionID != "" {
+		return fmt.Errorf("--node and --exec are mutually exclusive")
+	}
+	if (opts.Branch != "" || opts.Iteration != nil) && opts.Node == "" {
+		return fmt.Errorf("--branch / --iteration require --node")
+	}
+	if opts.Section != "" && opts.Node == "" && opts.ExecutionID == "" {
+		return fmt.Errorf("--section requires --node or --exec")
+	}
+	if opts.LogTail < 0 {
+		return fmt.Errorf("--log-tail must be >= 0")
+	}
+	if opts.ListNodes && (opts.Node != "" || opts.ExecutionID != "" || opts.Section != "") {
+		return fmt.Errorf("--list-nodes is mutually exclusive with --node / --exec / --section")
+	}
+	if opts.ListNodes && opts.RunID == "" {
+		return fmt.Errorf("--list-nodes requires --run-id")
+	}
+	if opts.Section != "" && !isValidSection(opts.Section) {
+		return fmt.Errorf("invalid --section %q (valid: %s)", opts.Section, sectionList())
+	}
+	return nil
+}
+
+func isValidSection(s InspectSection) bool {
+	for _, v := range validSections {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+func sectionList() string {
+	out := make([]string, len(validSections))
+	for i, v := range validSections {
+		out[i] = string(v)
+	}
+	return strings.Join(out, ", ")
 }

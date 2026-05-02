@@ -176,6 +176,34 @@ func TestSnapshotReducer_NodeFailure(t *testing.T) {
 	}
 }
 
+func TestSnapshotReducer_RunningNodeTouchesLastSeqForStructuredEvents(t *testing.T) {
+	b := NewSnapshotBuilder(&store.Run{ID: "r1"})
+	events := []*store.Event{
+		evt(0, store.EventNodeStarted, "", "agent", map[string]interface{}{"kind": "agent"}),
+		evt(1, store.EventLLMPrompt, "", "agent", map[string]interface{}{"user_message": "hello"}),
+		evt(2, store.EventLLMRequest, "", "agent", map[string]interface{}{"model": "m"}),
+		evt(3, store.EventToolCalled, "", "agent", map[string]interface{}{"tool_name": "Read"}),
+		evt(4, store.EventBudgetWarning, "", "agent", map[string]interface{}{"message": "near limit"}),
+		// A node-scoped event for another branch must not advance the main
+		// branch execution window.
+		evt(5, store.EventToolCalled, "other", "agent", map[string]interface{}{"tool_name": "Write"}),
+	}
+	for _, e := range events {
+		b.Apply(e)
+	}
+	snap := b.Snapshot()
+	if len(snap.Executions) != 1 {
+		t.Fatalf("Executions = %d, want 1", len(snap.Executions))
+	}
+	ex := snap.Executions[0]
+	if ex.Status != ExecStatusRunning {
+		t.Errorf("Status = %q, want running", ex.Status)
+	}
+	if ex.CurrentEventSeq != 4 || ex.LastSeq != 4 {
+		t.Errorf("seqs = current %d last %d, want 4/4", ex.CurrentEventSeq, ex.LastSeq)
+	}
+}
+
 func TestSnapshotReducer_ArtifactVersion(t *testing.T) {
 	b := NewSnapshotBuilder(&store.Run{ID: "r1"})
 	events := []*store.Event{
@@ -260,7 +288,7 @@ func TestParseExecutionID_RoundTrip(t *testing.T) {
 		{"main", "compute_until_green", 12},
 	}
 	for _, c := range cases {
-		id := makeExecutionID(c.branch, c.node, c.iteration)
+		id := MakeExecutionID(c.branch, c.node, c.iteration)
 		gotBranch, gotNode, gotIter, err := ParseExecutionID(id)
 		if err != nil {
 			t.Errorf("ParseExecutionID(%q): %v", id, err)
