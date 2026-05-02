@@ -3,9 +3,12 @@ import { useLocation } from "wouter";
 
 import type { ArtifactSummary, ExecutionState, RunEvent } from "@/api/runs";
 import { listArtifacts } from "@/api/runs";
-import { Tabs } from "@/components/ui/Tabs";
+import { IconButton, Input, StatusBadge, Tabs } from "@/components/ui";
+import { stepIteration } from "@/lib/eventIter";
+import { formatDurationBetween, formatMs } from "@/lib/format";
 
 import ArtifactDiff from "./ArtifactDiff";
+import PauseForm from "./PauseForm";
 
 interface Props {
   runId: string;
@@ -15,18 +18,14 @@ interface Props {
   events: RunEvent[];
 }
 
-type TabValue = "trace" | "events" | "artifact" | "tools";
+type TabValue = "pause" | "trace" | "tools" | "artifact" | "events";
 
 export default function NodeDetailPanel({ runId, filePath, exec, events }: Props) {
-  const [, setLocation] = useLocation();
   const [artifactVersions, setArtifactVersions] = useState<ArtifactSummary[]>([]);
-  const [showRawData, setShowRawData] = useState(false);
   const [activeTab, setActiveTab] = useState<TabValue | null>(null);
 
   // Load only the version index here; ArtifactDiff handles fetching the
-  // body for each selected version on demand. This keeps the panel
-  // light and lets the diff tab decide whether to render a single
-  // version (no diff) or a real LCS diff between two of them.
+  // body for each selected version on demand.
   useEffect(() => {
     setArtifactVersions([]);
     if (!exec) return;
@@ -44,87 +43,10 @@ export default function NodeDetailPanel({ runId, filePath, exec, events }: Props
     };
   }, [runId, exec]);
 
-  // Filter events that match this execution by replaying the
-  // (branch, ir_node_id) iteration counter — same algorithm as the
-  // backend reducer. Memoised because the events array can be large.
-  const matching = useMemo<RunEvent[]>(() => {
-    if (!exec) return [];
-    const out: RunEvent[] = [];
-    const counts = new Map<string, number>();
-    for (const e of events) {
-      if (!e.node_id) continue;
-      const branch = e.branch_id || "main";
-      const key = `${branch} ${e.node_id}`;
-      let iter = counts.get(key);
-      if (iter === undefined) iter = -1;
-      if (e.type === "node_started") iter += 1;
-      counts.set(key, iter);
-      if (
-        branch === exec.branch_id &&
-        e.node_id === exec.ir_node_id &&
-        iter === exec.loop_iteration
-      ) {
-        out.push(e);
-      }
-    }
-    return out;
-  }, [events, exec]);
-
-  // Pull the LLM trace out of the matching events. We surface
-  // system_prompt / user_message from llm_prompt and response_text
-  // from the latest llm_step_finished — that's the round-trip an
-  // operator usually wants to see.
-  const llm = useMemo(() => {
-    const trace: {
-      systemPrompt?: string;
-      userMessage?: string;
-      response?: string;
-      model?: string;
-      inputTokens?: number;
-      outputTokens?: number;
-      finishReason?: string;
-      toolCalls?: Array<{ name: string; input?: string }>;
-    } = {};
-    for (const e of matching) {
-      if (e.type === "llm_prompt" && e.data) {
-        trace.systemPrompt = (e.data["system_prompt"] as string) ?? trace.systemPrompt;
-        trace.userMessage = (e.data["user_message"] as string) ?? trace.userMessage;
-      } else if (e.type === "llm_request" && e.data) {
-        trace.model = (e.data["model"] as string) ?? trace.model;
-      } else if (e.type === "llm_step_finished" && e.data) {
-        // Latest step wins — agent loops can have many steps;
-        // we show the final response.
-        trace.response = (e.data["response_text"] as string) ?? trace.response;
-        trace.inputTokens = (e.data["input_tokens"] as number) ?? trace.inputTokens;
-        trace.outputTokens = (e.data["output_tokens"] as number) ?? trace.outputTokens;
-        trace.finishReason = (e.data["finish_reason"] as string) ?? trace.finishReason;
-        const calls = e.data["tool_call_details"] as
-          | Array<Record<string, unknown>>
-          | undefined;
-        if (calls) {
-          trace.toolCalls = calls.map((c) => ({
-            name: (c["tool_name"] as string) ?? "",
-            input: c["input"] as string | undefined,
-          }));
-        }
-      }
-    }
-    const present =
-      trace.systemPrompt ||
-      trace.userMessage ||
-      trace.response ||
-      trace.model ||
-      trace.toolCalls?.length;
-    return present ? trace : null;
-  }, [matching]);
-
-  // Tool call/error events isolated for the Tools tab. Distinct from
-  // llm.toolCalls (which lives inside llm_step_finished payloads) — the
-  // top-level tool events carry full input/output payloads with timing.
-  const toolEvents = useMemo<RunEvent[]>(
-    () => matching.filter((e) => e.type === "tool_called" || e.type === "tool_error"),
-    [matching],
-  );
+  const matching = useExecutionEvents(events, exec);
+  const llmSteps = useLLMSteps(matching);
+  const toolCalls = useToolCalls(matching);
+  const pause = usePauseInfo(matching);
 
   // Tab default depends on what's most useful for the node kind. Reset
   // it on exec change so navigating between executions surfaces the
@@ -132,6 +54,10 @@ export default function NodeDetailPanel({ runId, filePath, exec, events }: Props
   useEffect(() => {
     if (!exec) {
       setActiveTab(null);
+      return;
+    }
+    if (exec.status === "paused_waiting_human") {
+      setActiveTab("pause");
       return;
     }
     const kind = exec.kind;
@@ -143,20 +69,30 @@ export default function NodeDetailPanel({ runId, filePath, exec, events }: Props
   if (!exec) {
     return (
       <div className="h-full p-4 text-xs text-fg-subtle">
-        Click an execution to see its events, prompt, response, artifact, and error trace.
+        Click a node to see its events, prompt, response, artifact, and error trace.
       </div>
     );
   }
 
   const hasArtifact = artifactVersions.length > 0;
+  const isPaused = exec.status === "paused_waiting_human";
 
-  // Tabs render eagerly (Radix mounts each <Content> only when active by
-  // default, so we don't pay for hidden trees). Default tab gates the
-  // initial mount; afterwards Radix preserves the tab tree across
-  // switches.
-  const tabItems = [
-    { value: "trace" as TabValue, label: "Trace", disabled: !llm },
-    { value: "events" as TabValue, label: `Events (${matching.length})` },
+  // Tab order: Pause first when paused (drives action), then Trace,
+  // Tools, Artifact, Events. Pause hidden when not paused.
+  const tabItems: Array<{ value: TabValue; label: string; disabled?: boolean }> = [
+    ...(isPaused
+      ? [{ value: "pause" as TabValue, label: "Pause" }]
+      : []),
+    {
+      value: "trace" as TabValue,
+      label: llmSteps.length > 1 ? `Trace (${llmSteps.length})` : "Trace",
+      disabled: llmSteps.length === 0,
+    },
+    {
+      value: "tools" as TabValue,
+      label: `Tools (${toolCalls.length})`,
+      disabled: toolCalls.length === 0,
+    },
     {
       value: "artifact" as TabValue,
       label:
@@ -165,56 +101,12 @@ export default function NodeDetailPanel({ runId, filePath, exec, events }: Props
           : "Artifact",
       disabled: !hasArtifact,
     },
-    {
-      value: "tools" as TabValue,
-      label: `Tools (${toolEvents.length})`,
-      disabled: toolEvents.length === 0,
-    },
+    { value: "events" as TabValue, label: `Events (${matching.length})` },
   ];
 
   return (
     <div className="h-full flex flex-col text-xs">
-      <div className="px-4 pt-3 pb-2 border-b border-border-default">
-        <h2 className="font-bold text-sm mb-1 truncate">{exec.ir_node_id}</h2>
-        <div className="text-fg-subtle text-[10px] space-y-0.5">
-          <div>
-            execution: <span className="font-mono">{exec.execution_id}</span>
-          </div>
-          <div>
-            branch: {exec.branch_id} · iteration: {exec.loop_iteration}
-          </div>
-          {exec.kind && <div>kind: {exec.kind}</div>}
-          <div>status: {exec.status}</div>
-          {exec.started_at && (
-            <div>started: {new Date(exec.started_at).toLocaleTimeString()}</div>
-          )}
-          {exec.finished_at && (
-            <div>finished: {new Date(exec.finished_at).toLocaleTimeString()}</div>
-          )}
-        </div>
-
-        {filePath && (
-          <button
-            type="button"
-            onClick={() =>
-              setLocation(
-                `/?file=${encodeURIComponent(filePath)}&node=${encodeURIComponent(exec.ir_node_id)}&from=${encodeURIComponent(runId)}`,
-              )
-            }
-            className="mt-2 text-[11px] px-2 py-1 rounded bg-surface-2 hover:bg-surface-3 text-fg-default"
-            title="Open the .iter source in the editor"
-          >
-            ↗ Open {exec.ir_node_id} in editor
-          </button>
-        )}
-
-        {exec.error && (
-          <div className="mt-2 px-2 py-1.5 rounded bg-danger-soft text-danger-fg">
-            <div className="font-medium mb-0.5">Error</div>
-            <div className="font-mono whitespace-pre-wrap">{exec.error}</div>
-          </div>
-        )}
-      </div>
+      <DetailHeader runId={runId} filePath={filePath} exec={exec} />
 
       <Tabs
         value={activeTab ?? "events"}
@@ -224,46 +116,34 @@ export default function NodeDetailPanel({ runId, filePath, exec, events }: Props
         listClassName="px-3"
         className="flex-1 min-h-0"
         panels={{
+          pause: (
+            <div className="overflow-auto px-4 py-3 h-full">
+              <PauseForm
+                runId={runId}
+                questions={pause?.questions ?? {}}
+                message={pause?.message}
+              />
+            </div>
+          ),
           trace: (
             <div className="overflow-auto px-4 py-3 h-full">
-              {!llm ? (
-                <p className="text-fg-subtle">No LLM activity recorded for this execution.</p>
+              {llmSteps.length === 0 ? (
+                <p className="text-fg-subtle">
+                  No LLM activity recorded for this execution.
+                </p>
               ) : (
-                <LLMTraceView trace={llm} />
+                <LLMTraceView steps={llmSteps} />
               )}
             </div>
           ),
-          events: (
+          tools: (
             <div className="overflow-auto px-4 py-3 h-full">
-              <div className="mb-2">
-                <button
-                  type="button"
-                  onClick={() => setShowRawData((v) => !v)}
-                  className="text-[10px] text-fg-subtle hover:text-fg-default"
-                >
-                  {showRawData ? "hide raw data" : "show raw data"}
-                </button>
-              </div>
-              {matching.length === 0 ? (
-                <div className="text-fg-subtle">No events for this execution.</div>
+              {toolCalls.length === 0 ? (
+                <div className="text-fg-subtle">
+                  No tool calls for this execution.
+                </div>
               ) : (
-                <ul className="space-y-0.5 font-mono text-[10px]">
-                  {matching.map((e) => (
-                    <li key={`${e.run_id}:${e.seq}`}>
-                      <div className="flex gap-2">
-                        <span className="text-fg-subtle">
-                          {e.seq.toString().padStart(4, "0")}
-                        </span>
-                        <span>{e.type}</span>
-                      </div>
-                      {showRawData && e.data && Object.keys(e.data).length > 0 && (
-                        <pre className="ml-12 my-0.5 text-fg-subtle whitespace-pre-wrap break-all">
-                          {JSON.stringify(e.data, null, 2)}
-                        </pre>
-                      )}
-                    </li>
-                  ))}
-                </ul>
+                <ToolCallList calls={toolCalls} />
               )}
             </div>
           ),
@@ -280,37 +160,9 @@ export default function NodeDetailPanel({ runId, filePath, exec, events }: Props
               )}
             </div>
           ),
-          tools: (
-            <div className="overflow-auto px-4 py-3 h-full">
-              {toolEvents.length === 0 ? (
-                <div className="text-fg-subtle">No tool calls for this execution.</div>
-              ) : (
-                <ul className="space-y-2">
-                  {toolEvents.map((e) => (
-                    <li
-                      key={`${e.run_id}:${e.seq}`}
-                      className={`rounded border ${
-                        e.type === "tool_error" ? "border-danger" : "border-border-default"
-                      } p-2`}
-                    >
-                      <div className="flex justify-between text-[10px] text-fg-subtle font-mono mb-1">
-                        <span>{e.type}</span>
-                        <span>seq {e.seq}</span>
-                      </div>
-                      <div className="font-medium text-[11px]">
-                        {(e.data?.["tool_name"] as string) ??
-                          (e.data?.["tool"] as string) ??
-                          "unknown tool"}
-                      </div>
-                      {e.data && Object.keys(e.data).length > 0 && (
-                        <pre className="mt-1 text-[10px] font-mono whitespace-pre-wrap break-all text-fg-subtle">
-                          {JSON.stringify(e.data, null, 2)}
-                        </pre>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              )}
+          events: (
+            <div className="overflow-hidden h-full">
+              <EventsTabContent events={matching} />
             </div>
           ),
         }}
@@ -319,72 +171,621 @@ export default function NodeDetailPanel({ runId, filePath, exec, events }: Props
   );
 }
 
-function LLMTraceView({
-  trace,
+// ---------------------------------------------------------------------------
+// Header
+// ---------------------------------------------------------------------------
+
+function DetailHeader({
+  runId,
+  filePath,
+  exec,
 }: {
-  trace: {
-    systemPrompt?: string;
-    userMessage?: string;
-    response?: string;
-    model?: string;
-    inputTokens?: number;
-    outputTokens?: number;
-    finishReason?: string;
-    toolCalls?: Array<{ name: string; input?: string }>;
-  };
+  runId: string;
+  filePath?: string;
+  exec: ExecutionState;
 }) {
+  const [, setLocation] = useLocation();
+  const duration = formatDurationBetween(exec.started_at, exec.finished_at);
+  const [copied, setCopied] = useState(false);
+  const onCopyError = async () => {
+    if (!exec.error) return;
+    try {
+      await navigator.clipboard.writeText(exec.error);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      // ignore — clipboard may be unavailable
+    }
+  };
+
   return (
-    <>
-      {(trace.model || trace.inputTokens !== undefined) && (
-        <div className="text-[10px] text-fg-subtle mb-2">
-          {trace.model && (
-            <span>
-              model: <span className="font-mono">{trace.model}</span>
-            </span>
-          )}
-          {trace.inputTokens !== undefined && (
-            <span className="ml-2">
-              in: {trace.inputTokens} · out: {trace.outputTokens ?? 0} tok
-            </span>
-          )}
-          {trace.finishReason && (
-            <span className="ml-2">finish: {trace.finishReason}</span>
-          )}
+    <div className="px-4 pt-3 pb-3 border-b border-border-default">
+      <div className="flex items-start gap-2">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1">
+            <StatusBadge status={exec.status} />
+            <h2 className="text-sm font-semibold truncate" title={exec.ir_node_id}>
+              {exec.ir_node_id}
+            </h2>
+          </div>
+          <div className="text-fg-subtle text-[10px] flex flex-wrap gap-x-3 gap-y-0.5">
+            {exec.kind && <span>kind: {exec.kind}</span>}
+            <span>branch: {exec.branch_id}</span>
+            <span>iter: {exec.loop_iteration + 1}</span>
+            {duration && <span>duration: {duration}</span>}
+          </div>
+        </div>
+        {filePath && (
+          <IconButton
+            label="Open in editor"
+            tooltip="Open this node in the editor"
+            size="sm"
+            variant="ghost"
+            onClick={() =>
+              setLocation(
+                `/?file=${encodeURIComponent(filePath)}&node=${encodeURIComponent(
+                  exec.ir_node_id,
+                )}&from=${encodeURIComponent(runId)}`,
+              )
+            }
+          >
+            ↗
+          </IconButton>
+        )}
+      </div>
+
+      {exec.error && (
+        <div className="mt-2 px-2 py-1.5 rounded bg-danger-soft text-danger-fg">
+          <div className="flex items-center justify-between gap-2 mb-0.5">
+            <span className="font-medium">Error</span>
+            <button
+              type="button"
+              onClick={() => void onCopyError()}
+              className="text-[10px] text-danger-fg/80 hover:text-danger-fg underline"
+            >
+              {copied ? "copied" : "copy"}
+            </button>
+          </div>
+          <div className="font-mono text-[11px] whitespace-pre-wrap break-words">
+            {exec.error}
+          </div>
         </div>
       )}
-      {trace.systemPrompt && <TraceBlock title="system prompt" body={trace.systemPrompt} />}
-      {trace.userMessage && <TraceBlock title="user message" body={trace.userMessage} />}
-      {trace.response && <TraceBlock title="response" body={trace.response} />}
-      {trace.toolCalls && trace.toolCalls.length > 0 && (
-        <details className="mb-1 rounded border border-border-default">
-          <summary className="px-2 py-1 cursor-pointer text-fg-muted bg-surface-2 rounded-t">
-            tool calls ({trace.toolCalls.length})
-          </summary>
-          <ul className="p-2 text-[10px] font-mono space-y-1">
-            {trace.toolCalls.map((c, i) => (
-              <li key={i}>
-                <span className="text-fg-default">{c.name}</span>
-                {c.input && (
-                  <pre className="text-fg-subtle whitespace-pre-wrap">{c.input}</pre>
-                )}
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
-    </>
+    </div>
   );
 }
 
-function TraceBlock({ title, body }: { title: string; body: string }) {
+// ---------------------------------------------------------------------------
+// Trace tab
+// ---------------------------------------------------------------------------
+
+interface LLMStep {
+  seq: number;
+  systemPrompt?: string;
+  userMessage?: string;
+  response?: string;
+  model?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  finishReason?: string;
+  toolCalls?: Array<{ name: string; input?: string }>;
+  // True for the in-flight step (request emitted, no finished event
+  // yet) — rendered as a "pending" card.
+  pending?: boolean;
+}
+
+function useLLMSteps(matching: RunEvent[]): LLMStep[] {
+  return useMemo<LLMStep[]>(() => {
+    const steps: LLMStep[] = [];
+    let current: LLMStep | null = null;
+    let lastModel: string | undefined;
+    for (const e of matching) {
+      if (e.type === "llm_prompt" && e.data) {
+        // A new step begins. If a previous step was still pending,
+        // close it as-is; the new prompt overrides what came before.
+        if (current) steps.push(current);
+        current = {
+          seq: e.seq,
+          systemPrompt: (e.data["system_prompt"] as string) ?? undefined,
+          userMessage: (e.data["user_message"] as string) ?? undefined,
+          model: lastModel,
+          pending: true,
+        };
+      } else if (e.type === "llm_request" && e.data) {
+        const model = (e.data["model"] as string) ?? undefined;
+        if (model) lastModel = model;
+        if (current) current.model = model ?? current.model;
+        else
+          current = {
+            seq: e.seq,
+            model: model ?? lastModel,
+            pending: true,
+          };
+      } else if (e.type === "llm_step_finished" && e.data) {
+        if (!current) current = { seq: e.seq, pending: false };
+        current.response = (e.data["response_text"] as string) ?? current.response;
+        current.inputTokens =
+          (e.data["input_tokens"] as number) ?? current.inputTokens;
+        current.outputTokens =
+          (e.data["output_tokens"] as number) ?? current.outputTokens;
+        current.finishReason =
+          (e.data["finish_reason"] as string) ?? current.finishReason;
+        const calls = e.data["tool_call_details"] as
+          | Array<Record<string, unknown>>
+          | undefined;
+        if (calls) {
+          current.toolCalls = calls.map((c) => ({
+            name: (c["tool_name"] as string) ?? "",
+            input: c["input"] as string | undefined,
+          }));
+        }
+        current.pending = false;
+        steps.push(current);
+        current = null;
+      }
+    }
+    if (current) steps.push(current);
+    return steps;
+  }, [matching]);
+}
+
+function LLMTraceView({ steps }: { steps: LLMStep[] }) {
+  const totalIn = steps.reduce((s, x) => s + (x.inputTokens ?? 0), 0);
+  const totalOut = steps.reduce((s, x) => s + (x.outputTokens ?? 0), 0);
   return (
-    <details className="mb-1 rounded border border-border-default" open>
-      <summary className="px-2 py-1 cursor-pointer text-fg-muted bg-surface-2 rounded-t">
-        {title}
+    <div className="space-y-2">
+      <div className="text-[10px] text-fg-subtle flex flex-wrap gap-x-3 gap-y-0.5">
+        <span>{steps.length} step{steps.length === 1 ? "" : "s"}</span>
+        {(totalIn > 0 || totalOut > 0) && (
+          <span>
+            tokens: in {totalIn} · out {totalOut}
+          </span>
+        )}
+      </div>
+      {steps.map((step, i) => (
+        <LLMStepCard
+          key={step.seq}
+          index={i}
+          step={step}
+          // Only the most recent step is open by default — older steps
+          // collapsed to keep the panel tight when a multi-step agent
+          // ran for many turns.
+          defaultOpen={i === steps.length - 1}
+        />
+      ))}
+    </div>
+  );
+}
+
+function LLMStepCard({
+  index,
+  step,
+  defaultOpen,
+}: {
+  index: number;
+  step: LLMStep;
+  defaultOpen: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const summary = step.pending ? "in flight…" : step.finishReason ?? "ok";
+  return (
+    <div className="rounded border border-border-default bg-surface-1">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-2 px-2 py-1.5 text-left hover:bg-surface-2 rounded-t"
+      >
+        <span className="text-[10px] font-mono text-fg-subtle">
+          step {index + 1}
+        </span>
+        {step.pending ? (
+          <span className="text-[10px] text-info-fg animate-pulse">
+            ⏳ in flight
+          </span>
+        ) : (
+          <span className="text-[10px] text-fg-muted">{summary}</span>
+        )}
+        {step.model && (
+          <span className="text-[10px] font-mono text-fg-subtle truncate">
+            {step.model}
+          </span>
+        )}
+        {(step.inputTokens !== undefined || step.outputTokens !== undefined) && (
+          <span className="text-[10px] text-fg-subtle">
+            {step.inputTokens ?? 0}↑/{step.outputTokens ?? 0}↓
+          </span>
+        )}
+        <span className="ml-auto text-fg-subtle text-[10px]">{open ? "▾" : "▸"}</span>
+      </button>
+      {open && (
+        <div className="border-t border-border-default p-2 space-y-1">
+          {step.systemPrompt && (
+            <TraceBlock title="system prompt" body={step.systemPrompt} />
+          )}
+          {step.userMessage && (
+            <TraceBlock title="user message" body={step.userMessage} />
+          )}
+          {step.response && (
+            <TraceBlock title="response" body={step.response} defaultOpen />
+          )}
+          {step.toolCalls && step.toolCalls.length > 0 && (
+            <details className="rounded border border-border-default" open>
+              <summary className="px-2 py-1 cursor-pointer text-fg-muted bg-surface-2 rounded-t">
+                tool calls ({step.toolCalls.length})
+              </summary>
+              <ul className="p-2 text-[10px] font-mono space-y-1">
+                {step.toolCalls.map((c, i) => (
+                  <li key={i}>
+                    <span className="text-fg-default">{c.name}</span>
+                    {c.input && (
+                      <pre className="text-fg-subtle whitespace-pre-wrap">
+                        {c.input}
+                      </pre>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TraceBlock({
+  title,
+  body,
+  defaultOpen = true,
+}: {
+  title: string;
+  body: string;
+  defaultOpen?: boolean;
+}) {
+  return (
+    <details className="rounded border border-border-default" open={defaultOpen}>
+      <summary className="px-2 py-1 cursor-pointer text-fg-muted bg-surface-2 rounded-t flex items-center justify-between">
+        <span>{title}</span>
+        <CopyButton value={body} />
       </summary>
-      <pre className="p-2 text-[10px] font-mono whitespace-pre-wrap max-h-48 overflow-auto">
+      <pre className="p-2 text-[10px] font-mono whitespace-pre-wrap max-h-60 overflow-auto">
         {body}
       </pre>
     </details>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Tools tab
+// ---------------------------------------------------------------------------
+
+interface ToolCall {
+  seq: number;
+  toolName: string;
+  isError: boolean;
+  duration?: number;
+  rawData: Record<string, unknown> | undefined;
+  input?: string;
+  output?: string;
+  errorMsg?: string;
+}
+
+function useToolCalls(matching: RunEvent[]): ToolCall[] {
+  return useMemo<ToolCall[]>(() => {
+    return matching
+      .filter((e) => e.type === "tool_called" || e.type === "tool_error")
+      .map((e) => {
+        const data = e.data ?? {};
+        const toolName =
+          (data["tool_name"] as string) ?? (data["tool"] as string) ?? "unknown";
+        const isError = e.type === "tool_error";
+        return {
+          seq: e.seq,
+          toolName,
+          isError,
+          duration:
+            typeof data["duration_ms"] === "number"
+              ? (data["duration_ms"] as number)
+              : undefined,
+          rawData: data,
+          input:
+            typeof data["input"] === "string"
+              ? (data["input"] as string)
+              : data["input"] !== undefined
+              ? safeJSON(data["input"])
+              : undefined,
+          output:
+            typeof data["output"] === "string"
+              ? (data["output"] as string)
+              : data["output"] !== undefined
+              ? safeJSON(data["output"])
+              : undefined,
+          errorMsg: isError
+            ? (data["error"] as string) ?? (data["message"] as string)
+            : undefined,
+        };
+      });
+  }, [matching]);
+}
+
+function ToolCallList({ calls }: { calls: ToolCall[] }) {
+  return (
+    <ul className="space-y-2">
+      {calls.map((c) => (
+        <ToolCallCard key={c.seq} call={c} />
+      ))}
+    </ul>
+  );
+}
+
+function ToolCallCard({ call }: { call: ToolCall }) {
+  const [showRaw, setShowRaw] = useState(false);
+  return (
+    <li
+      className={`rounded border p-2 ${
+        call.isError ? "border-danger/60 bg-danger-soft/30" : "border-border-default"
+      }`}
+    >
+      <div className="flex items-center gap-2 mb-1">
+        <span className="font-medium text-[11px]">{call.toolName}</span>
+        <StatusBadge
+          status={call.isError ? "failed" : "finished"}
+          label={call.isError ? "error" : "ok"}
+          showGlyph={false}
+        />
+        {call.duration !== undefined && (
+          <span className="text-[10px] text-fg-subtle">
+            {formatMs(call.duration)}
+          </span>
+        )}
+        <span className="ml-auto text-[10px] font-mono text-fg-subtle">
+          seq {call.seq}
+        </span>
+      </div>
+      {call.errorMsg && (
+        <div className="text-[10px] font-mono text-danger-fg whitespace-pre-wrap break-words mb-1">
+          {call.errorMsg}
+        </div>
+      )}
+      {call.input && (
+        <details className="mb-1">
+          <summary className="cursor-pointer text-[10px] text-fg-muted px-1 py-0.5 rounded hover:bg-surface-2 flex items-center justify-between">
+            <span>input</span>
+            <CopyButton value={call.input} />
+          </summary>
+          <pre className="mt-1 text-[10px] font-mono whitespace-pre-wrap break-words bg-surface-1 rounded p-1.5 max-h-40 overflow-auto">
+            {call.input}
+          </pre>
+        </details>
+      )}
+      {call.output && (
+        <details className="mb-1">
+          <summary className="cursor-pointer text-[10px] text-fg-muted px-1 py-0.5 rounded hover:bg-surface-2 flex items-center justify-between">
+            <span>output</span>
+            <CopyButton value={call.output} />
+          </summary>
+          <pre className="mt-1 text-[10px] font-mono whitespace-pre-wrap break-words bg-surface-1 rounded p-1.5 max-h-40 overflow-auto">
+            {call.output}
+          </pre>
+        </details>
+      )}
+      <button
+        type="button"
+        onClick={() => setShowRaw((v) => !v)}
+        className="text-[10px] text-fg-subtle hover:text-fg-default"
+      >
+        {showRaw ? "hide raw" : "show raw"}
+      </button>
+      {showRaw && call.rawData && (
+        <pre className="mt-1 text-[10px] font-mono whitespace-pre-wrap break-all bg-surface-1 rounded p-1.5 text-fg-subtle">
+          {JSON.stringify(call.rawData, null, 2)}
+        </pre>
+      )}
+    </li>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Pause tab
+// ---------------------------------------------------------------------------
+
+interface PauseInfo {
+  questions: Record<string, unknown>;
+  message?: string;
+}
+
+function usePauseInfo(matching: RunEvent[]): PauseInfo | null {
+  return useMemo<PauseInfo | null>(() => {
+    // Walk newest → oldest looking for the most recent
+    // human_input_requested for this execution. The reducer in the
+    // store flips status back to running on resume, so it's safe to
+    // assume the latest pause request is the active one.
+    for (let i = matching.length - 1; i >= 0; i--) {
+      const e = matching[i]!;
+      if (e.type === "human_input_requested" && e.data) {
+        return {
+          questions:
+            (e.data["questions"] as Record<string, unknown> | undefined) ?? {},
+          message:
+            (e.data["message"] as string | undefined) ??
+            (e.data["reason"] as string | undefined),
+        };
+      }
+    }
+    return null;
+  }, [matching]);
+}
+
+// ---------------------------------------------------------------------------
+// Events tab
+// ---------------------------------------------------------------------------
+
+function EventsTabContent({ events }: { events: RunEvent[] }) {
+  const [search, setSearch] = useState("");
+  const [activeTypes, setActiveTypes] = useState<Set<string>>(() => new Set());
+  const [showRawData, setShowRawData] = useState(false);
+
+  // Counts per type so the chip row can show occurrence numbers.
+  const typeCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const e of events) m.set(e.type, (m.get(e.type) ?? 0) + 1);
+    return m;
+  }, [events]);
+
+  const knownTypes = useMemo(
+    () => Array.from(typeCounts.keys()).sort(),
+    [typeCounts],
+  );
+
+  const filtered = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return events.filter((e) => {
+      if (activeTypes.size > 0 && !activeTypes.has(e.type)) return false;
+      if (!query) return true;
+      // Search type, node_id, and stringified data so users can grep
+      // for a substring (e.g. "rate_limit" or "tool_name=Bash").
+      if (e.type.toLowerCase().includes(query)) return true;
+      if (e.node_id?.toLowerCase().includes(query)) return true;
+      if (e.data && JSON.stringify(e.data).toLowerCase().includes(query))
+        return true;
+      return false;
+    });
+  }, [events, activeTypes, search]);
+
+  const toggleType = (t: string) => {
+    setActiveTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(t)) next.delete(t);
+      else next.add(t);
+      return next;
+    });
+  };
+
+  return (
+    <div className="h-full flex flex-col">
+      <div className="px-4 py-2 border-b border-border-default space-y-1.5">
+        <Input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search events…"
+          size="sm"
+          leadingIcon={<span className="text-[10px]">⌕</span>}
+        />
+        {knownTypes.length > 1 && (
+          <div className="flex flex-wrap gap-1">
+            {knownTypes.map((t) => {
+              const isActive = activeTypes.has(t);
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => toggleType(t)}
+                  className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
+                    isActive
+                      ? "bg-accent-soft border-accent text-fg-default"
+                      : "bg-surface-1 border-border-default text-fg-subtle hover:text-fg-default"
+                  }`}
+                >
+                  {t} <span className="text-fg-subtle">{typeCounts.get(t)}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-fg-subtle">
+            {filtered.length} / {events.length} events
+          </span>
+          <button
+            type="button"
+            onClick={() => setShowRawData((v) => !v)}
+            className="ml-auto text-[10px] text-fg-subtle hover:text-fg-default"
+          >
+            {showRawData ? "hide raw" : "show raw"}
+          </button>
+        </div>
+      </div>
+      <div className="flex-1 overflow-auto px-4 py-2">
+        {filtered.length === 0 ? (
+          <div className="text-fg-subtle">No events match.</div>
+        ) : (
+          <ul className="space-y-0.5 font-mono text-[10px]">
+            {filtered.map((e) => (
+              <li key={`${e.run_id}:${e.seq}`}>
+                <div className="flex gap-2">
+                  <span className="text-fg-subtle">
+                    {e.seq.toString().padStart(4, "0")}
+                  </span>
+                  <span>{e.type}</span>
+                </div>
+                {showRawData && e.data && Object.keys(e.data).length > 0 && (
+                  <pre className="ml-12 my-0.5 text-fg-subtle whitespace-pre-wrap break-all">
+                    {JSON.stringify(e.data, null, 2)}
+                  </pre>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function useExecutionEvents(events: RunEvent[], exec: ExecutionState | null) {
+  return useMemo<RunEvent[]>(() => {
+    if (!exec) return [];
+    const out: RunEvent[] = [];
+    const counts = new Map<string, number>();
+    for (const e of events) {
+      if (!e.node_id) continue;
+      const iter = stepIteration(counts, e);
+      if (
+        (e.branch_id || "main") === exec.branch_id &&
+        e.node_id === exec.ir_node_id &&
+        iter === exec.loop_iteration
+      ) {
+        out.push(e);
+      }
+    }
+    return out;
+  }, [events, exec]);
+}
+
+function CopyButton({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={async (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        try {
+          await navigator.clipboard.writeText(value);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1200);
+        } catch {
+          // ignore
+        }
+      }}
+      className="text-[9px] text-fg-subtle hover:text-fg-default px-1"
+    >
+      {copied ? "copied" : "copy"}
+    </button>
+  );
+}
+
+function safeJSON(v: unknown): string {
+  try {
+    return JSON.stringify(v, null, 2);
+  } catch {
+    return String(v);
+  }
+}
+
+// Re-export needed by EventLog (Phase 6 will own it).
+export type { TabValue };

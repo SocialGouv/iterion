@@ -18,6 +18,14 @@ export default defineConfig({
       "@": path.resolve(__dirname, "src"),
     },
   },
+  // Pre-bundle the run-console deps at boot so Vite doesn't trip on
+  // its own race when discovering them on-the-fly (the "file does not
+  // exist in optimize deps directory" reload loop). These were added
+  // in the Phase 4-7 run-console refonte; declaring them here keeps
+  // the optimizer cache stable across dep upgrades.
+  optimizeDeps: {
+    include: ["react-resizable-panels", "react-virtuoso"],
+  },
   server: {
     proxy: {
       "/api": {

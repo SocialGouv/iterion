@@ -9,7 +9,7 @@ import {
   type Node as FlowNode,
 } from "@xyflow/react";
 
-import type { ExecutionState, WireWorkflow } from "@/api/runs";
+import type { ExecStatus, ExecutionState, WireWorkflow } from "@/api/runs";
 import { getRunWorkflow } from "@/api/runs";
 import { autoLayout } from "@/lib/autoLayout";
 
@@ -29,6 +29,22 @@ interface Props {
   // computed from `executions` (current > paused > latest).
   iterationByNode: Map<string, number>;
   onSelectIteration: (nodeId: string, iteration: number) => void;
+}
+
+function nodeMatchesFilters(
+  execs: ExecutionState[],
+  filters: Set<StatusFilter>,
+): boolean {
+  if (filters.size === 0) return true;
+  const want: Record<StatusFilter, ExecStatus> = {
+    running: "running",
+    paused: "paused_waiting_human",
+    failed: "failed",
+  };
+  for (const f of filters) {
+    if (execs.some((e) => e.status === want[f])) return true;
+  }
+  return false;
 }
 
 // Compute the "current" iteration for an IR node — the one we want to
@@ -51,6 +67,8 @@ export function defaultIterationFor(execs: ExecutionState[]): number {
   return maxIter;
 }
 
+type StatusFilter = "running" | "paused" | "failed";
+
 export default function RunCanvasIR({
   runId,
   executions,
@@ -63,6 +81,9 @@ export default function RunCanvasIR({
   const [error, setError] = useState<string | null>(null);
   const [nodes, setNodes] = useState<FlowNode[]>([]);
   const [edges, setEdges] = useState<FlowEdge[]>([]);
+  const [activeFilters, setActiveFilters] = useState<Set<StatusFilter>>(
+    () => new Set(),
+  );
   const reactFlow = useReactFlow();
 
   useEffect(() => {
@@ -200,6 +221,8 @@ export default function RunCanvasIR({
         const execs = execsByNode.get(n.id) ?? [];
         const selectedIteration =
           iterationByNode.get(n.id) ?? defaultIterationFor(execs);
+        const dimmed =
+          activeFilters.size > 0 && !nodeMatchesFilters(execs, activeFilters);
         return {
           ...n,
           data: {
@@ -209,10 +232,56 @@ export default function RunCanvasIR({
             selected: n.id === selectedNodeId,
             onSelectIteration: handleSelectIteration,
           },
+          style: dimmed ? { opacity: 0.25 } : undefined,
         };
       }),
     );
-  }, [wf, execsByNode, iterationByNode, selectedNodeId, handleSelectIteration]);
+  }, [
+    wf,
+    execsByNode,
+    iterationByNode,
+    selectedNodeId,
+    handleSelectIteration,
+    activeFilters,
+  ]);
+
+  // When the user invokes "jump to failed" (or any other external
+  // navigation), centre the canvas on the selected node. Only triggers
+  // when the selection actually exists in the layout — otherwise the
+  // initial fitView (run open) is what handles it.
+  useEffect(() => {
+    if (!selectedNodeId) return;
+    const node = nodes.find((n) => n.id === selectedNodeId);
+    if (!node) return;
+    reactFlow.setCenter(
+      node.position.x + 100,
+      node.position.y + 40,
+      { zoom: 1, duration: 350 },
+    );
+  }, [selectedNodeId, nodes, reactFlow]);
+
+  const filterCounts = useMemo(() => {
+    let running = 0,
+      paused = 0,
+      failed = 0;
+    for (const execs of execsByNode.values()) {
+      for (const ex of execs) {
+        if (ex.status === "running") running += 1;
+        if (ex.status === "paused_waiting_human") paused += 1;
+        if (ex.status === "failed") failed += 1;
+      }
+    }
+    return { running, paused, failed };
+  }, [execsByNode]);
+
+  const toggleFilter = (f: StatusFilter) => {
+    setActiveFilters((prev) => {
+      const next = new Set(prev);
+      if (next.has(f)) next.delete(f);
+      else next.add(f);
+      return next;
+    });
+  };
 
   if (error) {
     return (
@@ -227,14 +296,64 @@ export default function RunCanvasIR({
     );
   }
 
+  const filterChips: Array<{ key: StatusFilter; label: string; count: number; tone: string }> =
+    [
+      {
+        key: "failed",
+        label: "Failed",
+        count: filterCounts.failed,
+        tone: "text-danger-fg border-danger/40",
+      },
+      {
+        key: "running",
+        label: "Running",
+        count: filterCounts.running,
+        tone: "text-info-fg border-info/40",
+      },
+      {
+        key: "paused",
+        label: "Paused",
+        count: filterCounts.paused,
+        tone: "text-warning-fg border-warning/40",
+      },
+    ];
+
   return (
-    <div className="h-full w-full">
+    <div className="h-full w-full relative">
       {wf.stale_hash && (
         <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 px-2 py-1 text-[10px] rounded bg-warning-soft text-warning-fg border border-warning/60 shadow">
           ⚠ The .iter source has changed since this run started; the
           structure shown may differ from what executed.
         </div>
       )}
+      <div className="absolute top-2 right-2 z-10 flex items-center gap-1">
+        {filterChips
+          .filter((c) => c.count > 0)
+          .map((c) => {
+            const isActive = activeFilters.has(c.key);
+            return (
+              <button
+                key={c.key}
+                type="button"
+                onClick={() => toggleFilter(c.key)}
+                className={`text-[10px] px-2 py-0.5 rounded border transition-colors bg-surface-1/90 backdrop-blur ${
+                  c.tone
+                } ${
+                  isActive
+                    ? "ring-1 ring-accent bg-surface-2"
+                    : "hover:bg-surface-2"
+                }`}
+                title={
+                  isActive
+                    ? `Stop highlighting ${c.label.toLowerCase()} nodes`
+                    : `Highlight ${c.label.toLowerCase()} nodes`
+                }
+              >
+                {c.label} <span className="font-mono">{c.count}</span>
+              </button>
+            );
+          })}
+      </div>
       <ReactFlow
         nodes={nodes}
         edges={edges}

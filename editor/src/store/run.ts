@@ -30,14 +30,12 @@ interface RunStoreState {
   snapshot: RunSnapshot | null;
   events: RunEvent[];
   executionsById: Map<string, ExecutionState>;
-  selectedExecutionId: string | null;
   pendingHumanInput: PendingHumanInput | null;
   wsState: WsState;
   followTail: boolean;
 
   setRunId: (id: string | null) => void;
   setWsState: (state: WsState) => void;
-  setSelectedExecution: (id: string | null) => void;
   setFollowTail: (follow: boolean) => void;
 
   applySnapshot: (snap: RunSnapshot) => void;
@@ -51,7 +49,6 @@ const initialState = {
   snapshot: null,
   events: [] as RunEvent[],
   executionsById: new Map<string, ExecutionState>(),
-  selectedExecutionId: null,
   pendingHumanInput: null as PendingHumanInput | null,
   wsState: "idle" as WsState,
   followTail: true,
@@ -62,7 +59,6 @@ export const useRunStore = create<RunStoreState>((set, get) => ({
 
   setRunId: (id) => set({ runId: id }),
   setWsState: (state) => set({ wsState: state }),
-  setSelectedExecution: (id) => set({ selectedExecutionId: id }),
   setFollowTail: (follow) => set({ followTail: follow }),
 
   applySnapshot: (snap) => {

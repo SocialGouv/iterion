@@ -1,16 +1,24 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { useParams } from "wouter";
+import { Group, Panel, Separator } from "react-resizable-panels";
 
 import { getRun } from "@/api/runs";
+import { Skeleton } from "@/components/ui";
 import { useRunStore } from "@/store/run";
 import { useRunWebSocket } from "@/hooks/useRunWebSocket";
+import { useLayoutPersistence } from "@/hooks/useLayoutPersistence";
+import { useRunToasts } from "@/hooks/useRunToasts";
+import { useRunKeyboard } from "@/hooks/useRunKeyboard";
+
+import { buildExecutionsAt } from "@/lib/snapshotReducer";
 
 import EventLog from "./EventLog";
 import NodeDetailPanel from "./NodeDetailPanel";
-import RunCanvas from "./RunCanvas";
 import RunCanvasIR, { defaultIterationFor } from "./RunCanvasIR";
-import RunHeader, { type RunViewMode } from "./RunHeader";
+import RunHeader from "./RunHeader";
+import RunMetrics from "./RunMetrics";
+import Scrubber from "./Scrubber";
 
 export default function RunView() {
   const params = useParams<{ id: string }>();
@@ -22,20 +30,21 @@ export default function RunView() {
   const snapshot = useRunStore((s) => s.snapshot);
   const events = useRunStore((s) => s.events);
   const executionsById = useRunStore((s) => s.executionsById);
-  const selectedExecutionId = useRunStore((s) => s.selectedExecutionId);
-  const setSelectedExecution = useRunStore((s) => s.setSelectedExecution);
   const wsState = useRunStore((s) => s.wsState);
   const followTail = useRunStore((s) => s.followTail);
   const setFollowTail = useRunStore((s) => s.setFollowTail);
-  const [viewMode, setViewMode] = useState<RunViewMode>("workflow");
-  // Workflow view selects by IR node id (not execution id). The
-  // detail panel is driven by the selected node's currently-picked
-  // iteration (per-node, default = "current").
+  // Time-travel scrubber: when non-null, the canvas/detail/event log
+  // render the run *as it was* at this seq. When null (the default),
+  // live data flows through. Lives in component state because it's
+  // purely UI-driven; the store remains the source of truth for live.
+  const [scrubSeq, setScrubSeq] = useState<number | null>(null);
+  // Workflow view selects by IR node id (not execution id). The detail
+  // panel is driven by the selected node's currently-picked iteration
+  // (per-node, default = "current").
   const [wfSelectedNodeId, setWfSelectedNodeId] = useState<string | null>(null);
   // Per-IR-node iteration override. Empty map means "use the default
-  // (running > paused > latest)". A user click on a timeline pip
-  // sets the entry; we never auto-clear so the user's pick stays
-  // sticky across new events.
+  // (running > paused > latest)". A user click on a timeline pip sets
+  // the entry; we never auto-clear so the user's pick stays sticky.
   const [iterationByNode, setIterationByNode] = useState<Map<string, number>>(
     () => new Map(),
   );
@@ -46,6 +55,35 @@ export default function RunView() {
       return next;
     });
   }, []);
+
+  const handleJumpToFailed = useCallback((nodeId: string) => {
+    setWfSelectedNodeId(nodeId);
+  }, []);
+
+  const handleEventSelect = useCallback(
+    (nodeId: string, iteration: number) => {
+      setWfSelectedNodeId(nodeId);
+      setIterationByNode((prev) => {
+        const next = new Map(prev);
+        next.set(nodeId, iteration);
+        return next;
+      });
+    },
+    [],
+  );
+
+  const handleClearSelection = useCallback(() => {
+    setWfSelectedNodeId(null);
+  }, []);
+
+  const verticalLayout = useLayoutPersistence("run-console-v1.vertical", {
+    top: 70,
+    eventlog: 30,
+  });
+  const horizontalLayout = useLayoutPersistence(
+    "run-console-v1.horizontal",
+    { canvas: 70, detail: 30 },
+  );
 
   useEffect(() => {
     setRunId(runId);
@@ -72,21 +110,50 @@ export default function RunView() {
   }, [runId, applySnapshot]);
 
   useRunWebSocket(runId);
+  useRunToasts(events);
 
-  // All hooks must run before any early return — pull selectedExec and
-  // detailExec resolution up here so the loading/missing-id branches
-  // below don't change the hook call order between renders.
-  const selectedExec = selectedExecutionId
-    ? executionsById.get(selectedExecutionId) ?? null
-    : null;
-  // Workflow view: detail panel reflects the selected node's
-  // currently-picked iteration. If the user hasn't picked an
-  // iteration, we fall back to defaultIterationFor (running > paused
-  // > latest). No execution at all → panel stays empty.
+  const liveExecutions = useMemo(
+    () => Array.from(executionsById.values()),
+    [executionsById],
+  );
+  const firstFailedNodeId = useMemo(() => {
+    for (const ex of liveExecutions) {
+      if (ex.status === "failed") return ex.ir_node_id;
+    }
+    return null;
+  }, [liveExecutions]);
+
+  useRunKeyboard({
+    selectedNodeId: wfSelectedNodeId,
+    executions: liveExecutions,
+    iterationByNode,
+    onSelectNode: setWfSelectedNodeId,
+    onSelectIteration: handleSelectIteration,
+    onScrubLive: () => setScrubSeq(null),
+    onJumpToFailed: firstFailedNodeId
+      ? () => setWfSelectedNodeId(firstFailedNodeId)
+      : undefined,
+  });
+
+  // When scrubbing, derive a virtual snapshot at the chosen seq.
+  // Otherwise use the live executions map.
+  const displayedExecutions = useMemo(() => {
+    if (scrubSeq === null) return liveExecutions;
+    return buildExecutionsAt(events, scrubSeq);
+  }, [scrubSeq, events, liveExecutions]);
+
+  const displayedEvents = useMemo(() => {
+    if (scrubSeq === null) return events;
+    return events.filter((e) => e.seq <= scrubSeq);
+  }, [scrubSeq, events]);
+
+  // Workflow view: detail panel reflects the selected node's currently-
+  // picked iteration. If the user hasn't picked an iteration, fall back
+  // to defaultIterationFor (running > paused > latest). No execution at
+  // all → panel stays empty.
   const detailExec = useMemo(() => {
-    if (viewMode === "execution") return selectedExec;
     if (!wfSelectedNodeId) return null;
-    const matching = Array.from(executionsById.values()).filter(
+    const matching = displayedExecutions.filter(
       (e) => e.ir_node_id === wfSelectedNodeId,
     );
     if (matching.length === 0) return null;
@@ -97,70 +164,150 @@ export default function RunView() {
       matching[matching.length - 1] ??
       null
     );
-  }, [viewMode, selectedExec, wfSelectedNodeId, iterationByNode, executionsById]);
+  }, [wfSelectedNodeId, iterationByNode, displayedExecutions]);
 
   if (!runId) {
     return <div className="p-4 text-xs text-fg-subtle">Missing run id.</div>;
   }
   if (!snapshot) {
-    return <div className="p-4 text-xs text-fg-subtle">Loading run…</div>;
+    return <RunViewSkeleton />;
   }
 
-  const executions = Array.from(executionsById.values());
-  // Server-bound active flag isn't in the per-run snapshot — Phase 1
-  // reconciliation guarantees status="running" is genuinely live, so
-  // we use it as the signal. The wsState pulse below disambiguates
-  // visually when a connection is interrupted.
   const active = snapshot.run.status === "running";
+  // Drive the EventLog filter from the canvas/detail selection so a
+  // click on a node implicitly narrows the event stream.
+  const eventLogSelection = detailExec?.execution_id ?? null;
+  const liveSeq = snapshot.last_seq;
+  const scrubbing = scrubSeq !== null;
 
   return (
     <ReactFlowProvider>
       <div className="h-screen w-screen flex flex-col bg-surface-0 text-fg-default">
-        <RunHeader
-          run={snapshot.run}
-          active={active}
-          wsState={wsState}
-          viewMode={viewMode}
-          onViewModeChange={setViewMode}
+        <RunHeader run={snapshot.run} active={active} wsState={wsState} />
+        <RunMetrics active={active} onJumpToFailed={handleJumpToFailed} />
+        <Scrubber
+          events={events}
+          liveSeq={liveSeq}
+          scrubSeq={scrubSeq}
+          onChange={setScrubSeq}
+          visible={liveSeq > 0}
         />
-        <div className="flex-1 grid min-h-0" style={{ gridTemplateColumns: "1fr 360px" }}>
-          <div className="relative min-h-0">
-            {viewMode === "execution" ? (
-              <RunCanvas
-                executions={executions}
-                events={events}
-                selectedExecutionId={selectedExecutionId}
-                onSelect={setSelectedExecution}
+        <Group
+          orientation="vertical"
+          className="flex-1 min-h-0"
+          defaultLayout={verticalLayout.layout}
+          onLayoutChanged={verticalLayout.onChange}
+        >
+          <Panel id="top" defaultSize={70} minSize={30} className="min-h-0">
+            <Group
+              orientation="horizontal"
+              className="h-full w-full"
+              defaultLayout={horizontalLayout.layout}
+              onLayoutChanged={horizontalLayout.onChange}
+            >
+              <Panel id="canvas" defaultSize={70} minSize={30} className="min-h-0">
+                <div className={scrubbing ? "h-full w-full saturate-50" : "h-full w-full"}>
+                  <RunCanvasIR
+                    runId={runId}
+                    executions={displayedExecutions}
+                    selectedNodeId={wfSelectedNodeId}
+                    onSelectNode={setWfSelectedNodeId}
+                    iterationByNode={iterationByNode}
+                    onSelectIteration={handleSelectIteration}
+                  />
+                </div>
+              </Panel>
+              <ResizeSeparator orientation="horizontal" />
+              <Panel
+                id="detail"
+                defaultSize={30}
+                minSize={18}
+                collapsible
+                className="min-h-0"
+              >
+                <div className="h-full border-l border-border-default min-h-0 overflow-hidden">
+                  <NodeDetailPanel
+                    runId={runId}
+                    filePath={snapshot.run.file_path}
+                    exec={detailExec}
+                    events={displayedEvents}
+                  />
+                </div>
+              </Panel>
+            </Group>
+          </Panel>
+          <ResizeSeparator orientation="vertical" />
+          <Panel
+            id="eventlog"
+            defaultSize={30}
+            minSize={10}
+            collapsible
+            className="min-h-0"
+          >
+            <div className="h-full border-t border-border-default min-h-0">
+              <EventLog
+                events={displayedEvents}
+                selectedExecutionId={eventLogSelection}
+                followTail={followTail && !scrubbing}
+                onToggleFollow={setFollowTail}
+                onSelectNodeIteration={handleEventSelect}
+                onClearSelection={handleClearSelection}
               />
-            ) : (
-              <RunCanvasIR
-                runId={runId}
-                executions={executions}
-                selectedNodeId={wfSelectedNodeId}
-                onSelectNode={setWfSelectedNodeId}
-                iterationByNode={iterationByNode}
-                onSelectIteration={handleSelectIteration}
-              />
-            )}
-          </div>
-          <div className="border-l border-border-default min-h-0 overflow-hidden">
-            <NodeDetailPanel
-              runId={runId}
-              filePath={snapshot.run.file_path}
-              exec={detailExec}
-              events={events}
-            />
-          </div>
-        </div>
-        <div className="h-48 border-t border-border-default min-h-0">
-          <EventLog
-            events={events}
-            selectedExecutionId={selectedExecutionId}
-            followTail={followTail}
-            onToggleFollow={setFollowTail}
-          />
-        </div>
+            </div>
+          </Panel>
+        </Group>
       </div>
     </ReactFlowProvider>
+  );
+}
+
+function ResizeSeparator({
+  orientation,
+}: {
+  orientation: "horizontal" | "vertical";
+}) {
+  // The Group's orientation defines the layout axis; the visible
+  // separator runs perpendicular to it. A horizontal Group lays out
+  // panels left-to-right, so the separator is a vertical bar (1px
+  // wide); a vertical Group stacks top-to-bottom, so it's a horizontal
+  // bar (1px tall).
+  const isHorizontalGroup = orientation === "horizontal";
+  return (
+    <Separator
+      className={
+        isHorizontalGroup
+          ? "w-1 bg-border-default/40 hover:bg-accent transition-colors data-[separator-state=drag]:bg-accent"
+          : "h-1 bg-border-default/40 hover:bg-accent transition-colors data-[separator-state=drag]:bg-accent"
+      }
+      aria-label={isHorizontalGroup ? "Resize detail panel" : "Resize event log"}
+    />
+  );
+}
+
+function RunViewSkeleton() {
+  return (
+    <div className="h-screen w-screen flex flex-col bg-surface-0">
+      <div className="border-b border-border-default px-4 py-2 flex items-center gap-3">
+        <Skeleton className="h-6 w-16" />
+        <Skeleton className="h-5 w-48" />
+        <Skeleton className="h-5 w-20" />
+        <div className="ml-auto">
+          <Skeleton className="h-5 w-32" />
+        </div>
+      </div>
+      <div className="flex-1 grid" style={{ gridTemplateColumns: "1fr 360px" }}>
+        <div className="p-4">
+          <Skeleton className="h-full w-full" />
+        </div>
+        <div className="p-4 border-l border-border-default space-y-2">
+          <Skeleton className="h-5 w-32" />
+          <Skeleton className="h-3 w-24" />
+          <Skeleton className="h-32 w-full" />
+        </div>
+      </div>
+      <div className="h-32 border-t border-border-default p-2">
+        <Skeleton className="h-full w-full" />
+      </div>
+    </div>
   );
 }

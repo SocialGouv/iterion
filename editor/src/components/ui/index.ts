@@ -30,3 +30,7 @@ export type { BadgeProps, BadgeVariant, BadgeSize } from "./Badge";
 
 export { Chip } from "./Chip";
 export type { ChipProps } from "./Chip";
+
+export { StatusBadge } from "./StatusBadge";
+
+export { Skeleton } from "./Skeleton";
