@@ -294,6 +294,7 @@ type jsonWorkflowDecl struct {
 	Budget         *jsonBudgetBlock     `json:"budget,omitempty"`
 	Compaction     *jsonCompactionBlock `json:"compaction,omitempty"`
 	Interaction    string               `json:"interaction,omitempty"`
+	Worktree       string               `json:"worktree,omitempty"`
 	Edges          []*jsonEdge          `json:"edges,omitempty"`
 }
 
@@ -566,6 +567,7 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 		ToolPolicy:     w.ToolPolicy,
 		MCP:            mcpConfigToJSON(w.MCP),
 		Compaction:     compactionToJSON(w.Compaction),
+		Worktree:       w.Worktree,
 	}
 	if w.Vars != nil {
 		jw.Vars = varsBlockToJSON(w.Vars)
@@ -958,6 +960,7 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 		ToolPolicy:     jw.ToolPolicy,
 		MCP:            mcpConfigFromJSON(jw.MCP),
 		Compaction:     compactionFromJSON(jw.Compaction),
+		Worktree:       jw.Worktree,
 	}
 	if jw.Vars != nil {
 		v, err := varsBlockFromJSON(jw.Vars)

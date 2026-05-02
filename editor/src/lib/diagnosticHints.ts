@@ -115,7 +115,7 @@ const HINTS: Record<string, DiagnosticHint> = {
   },
   C023: {
     title: "LLM-only property on non-llm router",
-    hint: "Properties like `model`, `backend`, `system`, `user`, `multi` apply only when `mode: llm`.",
+    hint: "Properties like `model`, `backend`, `system`, `user`, `multi`, `reasoning_effort` apply only when `mode: llm`.",
     docsAnchor: "c023",
   },
   C024: {
@@ -138,14 +138,9 @@ const HINTS: Record<string, DiagnosticHint> = {
     hint: "Multiple edges to the same target define the same `with` key. Resolve the conflict.",
     docsAnchor: "c028",
   },
-  C029: {
-    title: "Interaction set on non-backend LLM node",
-    hint: "Interaction forwarding only applies when a backend (claude_code/codex) is set.",
-    docsAnchor: "c029",
-  },
   C030: {
     title: "Codex backend discouraged",
-    hint: "Prefer `claude_code` for tool-using agents or `claw` with an OpenAI model for judges.",
+    hint: "Prefer `claude_code` for tool-using agents or `claw` with an OpenAI model for judges. (C030 is also emitted when `outputs.<node>` points at an unknown node — fix the reference if that's what you're seeing.)",
     docsAnchor: "c030",
   },
   C031: {
@@ -187,6 +182,26 @@ const HINTS: Record<string, DiagnosticHint> = {
     title: "Unsupported MCP auth type",
     hint: "Only `oauth2` is currently wired. Drop the `auth:` block or switch to a supported type.",
     docsAnchor: "c038",
+  },
+  C039: {
+    title: "Compute node has no expressions",
+    hint: "A `compute` node needs at least one `expr: key: \"<expression>\"` entry. Add one or remove the node.",
+    docsAnchor: "c039",
+  },
+  C040: {
+    title: "Expression failed to parse",
+    hint: "The expression is not valid. Use the supported namespaces (vars/input/outputs/artifacts/loop/run), comparison/boolean operators, and the built-ins (length, concat, unique, contains).",
+    docsAnchor: "c040",
+  },
+  C041: {
+    title: "Duplicate node id",
+    hint: "Two declarations share the same node name. Rename one — every node must be uniquely identified across agents/judges/routers/humans/tools/computes.",
+    docsAnchor: "c041",
+  },
+  C042: {
+    title: "Reserved node name",
+    hint: "`done` and `fail` are reserved terminal targets — do not use them as user node names. Pick a different name.",
+    docsAnchor: "c042",
   },
   C043: {
     title: "Invalid compaction values",

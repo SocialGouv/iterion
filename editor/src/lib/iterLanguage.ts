@@ -29,7 +29,7 @@ export const iterTokensProvider: languages.IMonarchLanguage = {
     "vars", "prompt", "schema", "agent", "judge", "router", "human", "tool", "compute", "workflow",
     "mcp_server",
     // Workflow + node fields
-    "entry", "default_backend", "budget", "compaction", "mcp",
+    "entry", "default_backend", "budget", "compaction", "mcp", "worktree",
     "model", "backend", "input", "output", "publish", "system", "user", "session",
     "tools", "tool_policy", "tool_max_steps", "max_tokens", "reasoning_effort", "readonly",
     "interaction", "interaction_prompt", "interaction_model",
@@ -55,6 +55,8 @@ export const iterTokensProvider: languages.IMonarchLanguage = {
     "fan_out_all", "condition", "round_robin",
     // Await
     "wait_all", "best_effort", "none",
+    // Worktree
+    "auto",
     // Interaction (replaces the legacy human "mode" values
     // pause_until_answers / auto_answer / auto_or_pause)
     "human", "llm", "llm_or_human",

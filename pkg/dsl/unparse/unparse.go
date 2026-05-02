@@ -247,6 +247,10 @@ func Unparse(f *ast.File) string {
 			fmt.Fprintf(&b, "  tool_policy: [%s]\n", strings.Join(w.ToolPolicy, ", "))
 		}
 
+		if w.Worktree != "" {
+			writeProp(&b, "worktree", w.Worktree)
+		}
+
 		if w.Entry != "" {
 			b.WriteString("\n")
 			fmt.Fprintf(&b, "  entry: %s\n", w.Entry)

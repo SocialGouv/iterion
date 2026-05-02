@@ -1,6 +1,6 @@
 import { useDocumentStore } from "@/store/document";
 import { useUIStore } from "@/store/ui";
-import type { BudgetBlock, InteractionMode } from "@/api/types";
+import type { BudgetBlock, InteractionMode, WorktreeMode } from "@/api/types";
 import { getAllNodeNames } from "@/lib/defaults";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import {
@@ -13,6 +13,8 @@ import {
 import {
   BACKEND_OPTIONS,
   INTERACTION_OPTIONS,
+  WORKTREE_OPTIONS,
+  WORKTREE_HELP,
 } from "@/lib/dslOptions";
 import CompactionFields from "./forms/CompactionFields";
 import MCPConfigFields from "./forms/MCPConfigFields";
@@ -90,11 +92,22 @@ export default function WorkflowSettingsForm() {
         options={[{ value: "", label: "(per-node default)" }, ...INTERACTION_OPTIONS]}
         help="Default interaction mode for ask_user / human-in-the-loop requests in this workflow."
       />
+      <SelectField
+        label="Worktree"
+        value={workflow.worktree ?? ""}
+        onChange={(v) =>
+          updateWorkflow(workflow.name, {
+            worktree: (v || undefined) as WorktreeMode | undefined,
+          })
+        }
+        options={[{ value: "", label: "(unset · run in place)" }, ...WORKTREE_OPTIONS]}
+        help={WORKTREE_HELP}
+      />
       <TagListField
         label="Tool Policy"
         values={workflow.tool_policy ?? []}
         onChange={(v) => updateWorkflow(workflow.name, { tool_policy: v.length > 0 ? v : undefined })}
-        placeholder="Add allow/deny pattern..."
+        placeholder="Add tool reference..."
       />
 
       <CompactionFields

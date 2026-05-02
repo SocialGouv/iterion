@@ -177,6 +177,8 @@ export interface JudgeDecl {
   compaction?: CompactionBlock;
 }
 
+export type WorktreeMode = "auto" | "none";
+
 export type RouterMode = "fan_out_all" | "condition" | "round_robin" | "llm";
 
 export interface RouterDecl {
@@ -252,6 +254,9 @@ export interface WorkflowDecl {
   budget?: BudgetBlock;
   compaction?: CompactionBlock;
   interaction?: InteractionMode;
+  // Worktree isolation mode. Omit or set to "none" to run in place;
+  // "auto" runs the workflow inside a per-run git worktree.
+  worktree?: WorktreeMode;
   edges: Edge[];
 }
 

@@ -72,3 +72,11 @@ export const REASONING_EFFORT_OPTIONS: SelectOption[] = [
 
 export const REASONING_EFFORT_HELP =
   "For reasoning-capable models (e.g. o-series, claude-extended-thinking).";
+
+export const WORKTREE_OPTIONS: SelectOption[] = [
+  { value: "auto", label: "auto (per-run worktree)" },
+  { value: "none", label: "none (run in place)" },
+];
+
+export const WORKTREE_HELP =
+  "auto creates a per-run git worktree at <store-dir>/worktrees/<run-id>/ so the workflow can mutate the repo without touching your main working tree. Omit or set 'none' to run in place.";

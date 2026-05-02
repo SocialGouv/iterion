@@ -16,6 +16,7 @@
 file = { top_level_decl } ;
 
 top_level_decl = vars_decl
+               | mcp_server_decl
                | prompt_decl
                | schema_decl
                | agent_decl
@@ -23,6 +24,7 @@ top_level_decl = vars_decl
                | router_decl
                | human_decl
                | tool_node_decl
+               | compute_decl
                | workflow_decl
                | comment ;
 
@@ -61,18 +63,28 @@ enum_constraint = "[" "enum" ":" STRING_LIT { "," STRING_LIT } "]" ;
 
 agent_decl = "agent" IDENT ":" NEWLINE INDENT { agent_prop } DEDENT ;
 
-agent_prop = "model"            ":" STRING_LIT              NEWLINE
-           | "input"            ":" IDENT                  NEWLINE
-           | "output"           ":" IDENT                  NEWLINE
-           | "publish"          ":" IDENT                  NEWLINE
-           | "system"           ":" IDENT                  NEWLINE
-           | "user"             ":" IDENT                  NEWLINE
-           | "session"          ":" session_mode            NEWLINE
-           | "tools"            ":" tool_list               NEWLINE
-           | "tool_max_steps"   ":" INT_LIT                NEWLINE
-           | "delegate"         ":" STRING_LIT              NEWLINE
-           | "reasoning_effort" ":" reasoning_effort_value  NEWLINE
-           | "await"            ":" await_mode              NEWLINE ;
+agent_prop = "model"              ":" STRING_LIT              NEWLINE
+           | "backend"            ":" STRING_LIT              NEWLINE
+           | "input"              ":" IDENT                   NEWLINE
+           | "output"             ":" IDENT                   NEWLINE
+           | "publish"            ":" IDENT                   NEWLINE
+           | "system"             ":" IDENT                   NEWLINE
+           | "user"               ":" IDENT                   NEWLINE
+           | "session"            ":" session_mode             NEWLINE
+           | "tools"              ":" tool_list                NEWLINE
+           | "tool_policy"        ":" tool_policy_list         NEWLINE
+           | "tool_max_steps"     ":" INT_LIT                 NEWLINE
+           | "max_tokens"         ":" INT_LIT                 NEWLINE
+           | "reasoning_effort"   ":" reasoning_effort_value   NEWLINE
+           | "readonly"           ":" BOOL_LIT                NEWLINE
+           | "interaction"        ":" interaction_mode          NEWLINE
+           | "interaction_prompt" ":" IDENT                    NEWLINE
+           | "interaction_model"  ":" STRING_LIT               NEWLINE
+           | "await"              ":" await_mode                NEWLINE
+           | mcp_config_block
+           | compaction_block ;
+
+tool_policy_list = "[" tool_ref { "," tool_ref } "]" ;
 
 session_mode = "fresh" | "inherit" | "fork" | "artifacts_only" ;
 
@@ -80,7 +92,7 @@ reasoning_effort_value = "low" | "medium" | "high" | "xhigh" | "max" ;
 
 tool_list = "[" tool_ref { "," tool_ref } "]" ;
 
-tool_ref = IDENT { "." IDENT } ;
+tool_ref = IDENT { "." IDENT } [ "." "*" ] ;
 
 (* ---- Nœuds : judge ---- *)
 (* Identique à agent mais avec le mot-clé "judge".
@@ -88,30 +100,46 @@ tool_ref = IDENT { "." IDENT } ;
 
 judge_decl = "judge" IDENT ":" NEWLINE INDENT { judge_prop } DEDENT ;
 
-judge_prop = "model"            ":" STRING_LIT              NEWLINE
-           | "input"            ":" IDENT                  NEWLINE
-           | "output"           ":" IDENT                  NEWLINE
-           | "publish"          ":" IDENT                  NEWLINE
-           | "system"           ":" IDENT                  NEWLINE
-           | "user"             ":" IDENT                  NEWLINE
-           | "session"          ":" session_mode            NEWLINE
-           | "tools"            ":" tool_list               NEWLINE
-           | "tool_max_steps"   ":" INT_LIT                NEWLINE
-           | "delegate"         ":" STRING_LIT              NEWLINE
-           | "reasoning_effort" ":" reasoning_effort_value  NEWLINE
-           | "await"            ":" await_mode              NEWLINE ;
+judge_prop = "model"              ":" STRING_LIT              NEWLINE
+           | "backend"            ":" STRING_LIT              NEWLINE
+           | "input"              ":" IDENT                   NEWLINE
+           | "output"             ":" IDENT                   NEWLINE
+           | "publish"            ":" IDENT                   NEWLINE
+           | "system"             ":" IDENT                   NEWLINE
+           | "user"               ":" IDENT                   NEWLINE
+           | "session"            ":" session_mode             NEWLINE
+           | "tools"              ":" tool_list                NEWLINE
+           | "tool_policy"        ":" tool_policy_list         NEWLINE
+           | "tool_max_steps"     ":" INT_LIT                 NEWLINE
+           | "max_tokens"         ":" INT_LIT                 NEWLINE
+           | "reasoning_effort"   ":" reasoning_effort_value   NEWLINE
+           | "readonly"           ":" BOOL_LIT                NEWLINE
+           | "interaction"        ":" interaction_mode          NEWLINE
+           | "interaction_prompt" ":" IDENT                    NEWLINE
+           | "interaction_model"  ":" STRING_LIT               NEWLINE
+           | "await"              ":" await_mode                NEWLINE
+           | mcp_config_block
+           | compaction_block ;
 
 (* ---- Nœuds : router ---- *)
 
 router_decl = "router" IDENT ":" NEWLINE INDENT { router_prop } DEDENT ;
 
-router_prop = "mode" ":" router_mode NEWLINE ;
+router_prop = "mode"             ":" router_mode             NEWLINE
+            | "model"            ":" STRING_LIT              NEWLINE  (* llm mode only *)
+            | "backend"          ":" STRING_LIT              NEWLINE  (* llm mode only *)
+            | "system"           ":" IDENT                   NEWLINE  (* llm mode only *)
+            | "user"             ":" IDENT                   NEWLINE  (* llm mode only *)
+            | "multi"            ":" BOOL_LIT                NEWLINE  (* llm mode only *)
+            | "reasoning_effort" ":" reasoning_effort_value  NEWLINE ;
 
-router_mode = "fan_out_all" | "condition" | "round_robin" ;
+router_mode = "fan_out_all" | "condition" | "round_robin" | "llm" ;
 
 (* Note: routers do not support "await" — they are fan-out sources, not
-   convergence targets. Only agent, judge, human, and tool nodes can
-   be convergence points. *)
+   convergence targets. Only agent, judge, human, tool, and compute
+   nodes can be convergence points. The LLM-mode-only properties
+   above are validated by C023; LLM routers also need >= 2 outgoing
+   edges (C021) and reject `when` clauses on edges (C022). *)
 
 (* ---- Await (convergence strategy) ---- *)
 (* When a node receives inputs from multiple parallel branches,
@@ -121,33 +149,56 @@ router_mode = "fan_out_all" | "condition" | "round_robin" ;
 
 await_mode = "wait_all" | "best_effort" ;
 
+interaction_mode = "none" | "human" | "llm" | "llm_or_human" ;
+
 (* ---- Nœuds : human ---- *)
 
 human_decl = "human" IDENT ":" NEWLINE INDENT { human_prop } DEDENT ;
 
-human_prop = "input"        ":" IDENT            NEWLINE
-           | "output"       ":" IDENT            NEWLINE
-           | "publish"      ":" IDENT            NEWLINE
-           | "instructions" ":" IDENT            NEWLINE
-           | "mode"         ":" human_mode        NEWLINE
-           | "model"        ":" STRING_LIT        NEWLINE
-           | "system"       ":" IDENT             NEWLINE
-           | "min_answers"  ":" INT_LIT           NEWLINE
-           | "await"        ":" await_mode         NEWLINE ;
+human_prop = "input"              ":" IDENT             NEWLINE
+           | "output"             ":" IDENT             NEWLINE
+           | "publish"            ":" IDENT             NEWLINE
+           | "instructions"       ":" IDENT             NEWLINE
+           | "interaction"        ":" interaction_mode    NEWLINE
+           | "interaction_prompt" ":" IDENT              NEWLINE
+           | "interaction_model"  ":" STRING_LIT         NEWLINE
+           | "model"              ":" STRING_LIT         NEWLINE
+           | "system"             ":" IDENT              NEWLINE
+           | "min_answers"        ":" INT_LIT            NEWLINE
+           | "await"              ":" await_mode          NEWLINE ;
 
-human_mode = "pause_until_answers" | "auto_answer" | "auto_or_pause" ;
-(* pause_until_answers : always pauses for human input (default).
-   auto_answer         : LLM generates answers — never pauses. Requires model + output.
-   auto_or_pause       : LLM decides whether to pause or auto-answer via a
-                         needs_human_input boolean. Requires model + output. *)
+(* The legacy `mode:` field with values pause_until_answers /
+   auto_answer / auto_or_pause is gone. Pause behaviour is unified
+   under `interaction:` (see interaction_mode below):
+     human       : always wait for input (default for human nodes).
+     llm         : LLM generates answers — never pauses. Requires model.
+     llm_or_human: LLM tries first, escalates to human if undecided. *)
 
 (* ---- Nœuds : tool (exécution directe) ---- *)
 
 tool_node_decl = "tool" IDENT ":" NEWLINE INDENT { tool_node_prop } DEDENT ;
 
 tool_node_prop = "command" ":" STRING_LIT NEWLINE
+               | "input"   ":" IDENT     NEWLINE
                | "output"  ":" IDENT     NEWLINE
                | "await"   ":" await_mode NEWLINE ;
+
+(* ---- Nœuds : compute (déterministe, sans LLM ni shell) ---- *)
+(* Évalue une liste d'expressions sur les namespaces vars / input /
+   outputs / artifacts / loop / run, et émet un output structuré.
+   Built-ins acceptés dans les expressions : length, concat, unique,
+   contains. *)
+
+compute_decl = "compute" IDENT ":" NEWLINE INDENT { compute_prop } DEDENT ;
+
+compute_prop = "input"  ":" IDENT       NEWLINE
+             | "output" ":" IDENT       NEWLINE
+             | "await"  ":" await_mode   NEWLINE
+             | compute_expr_block ;
+
+compute_expr_block = "expr" ":" NEWLINE INDENT { compute_expr_entry } DEDENT ;
+
+compute_expr_entry = IDENT ":" STRING_LIT NEWLINE ;
 
 (* ---- Nœuds terminaux ---- *)
 (* "done" et "fail" ne sont pas déclarés ; ils sont des identifiants réservés
@@ -156,15 +207,40 @@ tool_node_prop = "command" ":" STRING_LIT NEWLINE
 (* ---- Workflow ---- *)
 
 workflow_decl = "workflow" IDENT ":" NEWLINE INDENT
-                  [ workflow_vars ]
-                  workflow_entry
-                  [ workflow_budget ]
-                  { edge | comment }
+                  { workflow_prop | edge | comment }
                 DEDENT ;
+
+(* Workflow body entries are accepted in any order by the parser. Exactly one
+   usable entry is required semantically; a missing entry or an entry that does
+   not name a declared node is reported by C008 during IR compilation. *)
+
+workflow_prop = workflow_vars
+              | workflow_entry
+              | workflow_default_backend
+              | workflow_tool_policy
+              | workflow_worktree
+              | mcp_config_block
+              | workflow_budget
+              | compaction_block
+              | workflow_interaction ;
 
 workflow_vars = "vars" ":" NEWLINE INDENT { var_field } DEDENT ;
 
 workflow_entry = "entry" ":" IDENT NEWLINE ;
+
+workflow_default_backend = "default_backend" ":" STRING_LIT NEWLINE ;
+
+workflow_tool_policy = "tool_policy" ":" tool_policy_list NEWLINE ;
+
+workflow_worktree = "worktree" ":" worktree_mode NEWLINE ;
+
+worktree_mode = "auto" | "none" ;
+(* auto: run the workflow inside a per-run git worktree at
+         <store-dir>/worktrees/<run-id>/, leaving the user's main
+         working tree untouched.
+   none (or omit the field): run in place. *)
+
+workflow_interaction = "interaction" ":" interaction_mode NEWLINE ;
 
 workflow_budget = "budget" ":" NEWLINE INDENT { budget_prop } DEDENT ;
 
@@ -174,11 +250,53 @@ budget_prop = "max_parallel_branches" ":" INT_LIT    NEWLINE
             | "max_tokens"            ":" INT_LIT    NEWLINE
             | "max_iterations"        ":" INT_LIT    NEWLINE ;
 
+(* ---- MCP server declaration (top-level) + per-node config ---- *)
+
+mcp_server_decl = "mcp_server" IDENT ":" NEWLINE INDENT { mcp_server_prop } DEDENT ;
+
+mcp_server_prop = "transport" ":" mcp_transport               NEWLINE
+                | "command"   ":" STRING_LIT                  NEWLINE
+                | "args"      ":" "[" STRING_LIT { "," STRING_LIT } "]" NEWLINE
+                | "url"       ":" STRING_LIT                  NEWLINE
+                | "auth"      ":" NEWLINE INDENT { mcp_auth_prop } DEDENT ;
+
+mcp_auth_prop = "type"       ":" STRING_LIT NEWLINE
+              | "auth_url"   ":" STRING_LIT NEWLINE
+              | "token_url"  ":" STRING_LIT NEWLINE
+              | "revoke_url" ":" STRING_LIT NEWLINE
+              | "client_id"  ":" STRING_LIT NEWLINE
+              | "scopes"     ":" "[" STRING_LIT { "," STRING_LIT } "]" NEWLINE ;
+
+mcp_transport = "stdio" | "http" | "sse" ;
+
+mcp_config_block = "mcp" ":" NEWLINE INDENT { mcp_config_prop } DEDENT ;
+
+mcp_config_prop = "autoload_project" ":" BOOL_LIT             NEWLINE
+                | "inherit"          ":" BOOL_LIT             NEWLINE
+                | "servers"          ":" "[" IDENT { "," IDENT } "]" NEWLINE
+                | "disable"          ":" "[" IDENT { "," IDENT } "]" NEWLINE ;
+
+(* ---- Compaction block ---- *)
+(* Both workflow- and agent/judge-level. C043 enforces 0 < threshold <= 1
+   and preserve_recent >= 1; either property may be omitted to inherit. *)
+
+compaction_block = "compaction" ":" NEWLINE INDENT { compaction_prop } DEDENT ;
+
+compaction_prop = "threshold"        ":" NUMBER_LIT NEWLINE
+                | "preserve_recent"  ":" INT_LIT    NEWLINE ;
+
 (* ---- Edges (dans workflow) ---- *)
 
 edge = IDENT "->" IDENT [ when_clause ] [ loop_clause ] [ with_block ] NEWLINE ;
 
-when_clause = "when" [ "not" ] IDENT ;
+when_clause = "when" ( [ "not" ] IDENT | STRING_LIT ) ;
+(* Two forms:
+     - simple boolean field:  when [not] some_field
+     - quoted expression:     when "approved && batch_complete"
+   The expression form is parsed at compile time and may use the same
+   namespaces as compute (vars / input / outputs / artifacts / loop /
+   run) plus the comparison/boolean operators and built-ins (length,
+   concat, unique, contains). *)
 
 loop_clause = "as" IDENT "(" INT_LIT ")" ;
 
@@ -195,7 +313,11 @@ template_expr = "{{" template_ref "}}" ;
 template_ref = "vars"      "." IDENT
              | "input"     "." IDENT
              | "outputs"   "." IDENT [ "." IDENT ]
-             | "artifacts" "." IDENT ;
+             | "artifacts" "." IDENT
+             | "loop"      "." IDENT [ "." IDENT { "." IDENT } ]
+             | "run"       "." IDENT ;
+(* The `loop` and `run` namespaces are available to compute expressions
+   and to the quoted `when` form, in addition to template strings. *)
 
 (* ---- Types ---- *)
 
