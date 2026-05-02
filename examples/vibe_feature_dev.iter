@@ -39,7 +39,6 @@
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
-  scope_notes: string = ""
   feature_prompt: string
 
 ## ─── Prompts : Feature Dev Phase ─────────────────────────────────
@@ -75,9 +74,6 @@ prompt plan_user:
   Feature to implement:
   {{vars.feature_prompt}}
 
-  Scope notes:
-  {{vars.scope_notes}}
-
   Workspace: {{vars.workspace_dir}}
 
   Produce the implementation plan. Do not modify any file.
@@ -103,9 +99,8 @@ prompt act_system:
 
 prompt act_user:
   Implement the plan you just produced, in this same session.
-
-  Workspace: {{vars.workspace_dir}}
-  Feature (reminder): {{vars.feature_prompt}}
+  The feature description is already in your conversation
+  history (delivered to the plan node that you continue from).
 
   Edit the necessary files, run the tests, and iterate until the
   build is green and the new tests pass.
@@ -115,22 +110,26 @@ prompt simplify_user:
 
 ## ─── Prompts : Commit ───────────────────────────────────────────
 
-prompt commit_namer_system:
-  Your job in this session is to identify the EXACT set of files
-  that should be committed to capture the feature implemented in
-  this workflow run, and produce a semantic commit message for
-  them. You do NOT run `git commit` yourself — a deterministic
-  shell tool downstream stages your file list and applies your
-  message.
+prompt prepare_commit_system:
+  Your job in this session is to pick the EXACT set of files
+  that should be committed to capture the feature implemented
+  in this workflow run, and produce a semantic commit message
+  for them. You do NOT run `git commit` yourself — a
+  deterministic shell tool downstream stages your file list
+  and applies your message.
+
+  This session forks from the implementation session, so the
+  feature description, the plan, the implementation, and the
+  simplification are all in your conversation history. Use
+  that context, plus a fresh read of the working tree, to
+  decide.
 
   Procedure (follow exactly, in order):
     1. Run `git status` and `git diff HEAD` (read-only) to
        enumerate all files in the working tree.
-    2. Identify which of those files were created or modified to
-       implement the feature described to you. Cross-check with
-       the feature description in the user prompt and your own
-       conversation history (this session forks from the
-       implementation session, so you have its full context).
+    2. Cross-reference with your conversation history to keep
+       only the files that materialise the feature you have
+       been working on.
     3. EXCLUDE any file that does NOT belong to the feature,
        even if it is dirty in the working tree:
          - pre-existing user WIP in unrelated packages
@@ -154,12 +153,10 @@ prompt commit_namer_system:
   Subject rules: imperative mood, present tense, ≤ 72 chars, no
   trailing period, single line.
 
-prompt commit_namer_user:
-  Identify the files belonging to the feature below and produce
-  a semantic commit name for them. Do not run `git commit`
+prompt prepare_commit_user:
+  Pick the files and produce the semantic commit name for the
+  feature you just implemented. Do not run `git commit`
   yourself — only output the structured object.
-
-  Feature: {{vars.feature_prompt}}
 
   Workspace: {{vars.workspace_dir}}
 
@@ -264,9 +261,6 @@ prompt review_user_claude:
   Feature description (source of truth for scope):
   {{vars.feature_prompt}}
 
-  Scope notes:
-  {{vars.scope_notes}}
-
   Current iteration: {{loop.review_loop.iteration}}/{{loop.review_loop.max}}
 
   Previous reviewer's verdict (other family, iteration
@@ -306,9 +300,6 @@ prompt review_user_gpt:
 
   Feature description (source of truth for scope):
   {{vars.feature_prompt}}
-
-  Scope notes:
-  {{vars.scope_notes}}
 
   Current iteration: {{loop.review_loop.iteration}}/{{loop.review_loop.max}}
 
@@ -373,10 +364,9 @@ prompt fix_system:
 
 prompt fix_user:
   Apply concrete fixes to the blockers below, in
-  {{vars.workspace_dir}}. Stay within the feature scope.
-
-  Feature description (reminder of scope):
-  {{vars.feature_prompt}}
+  {{vars.workspace_dir}}. Stay within the feature scope (the
+  reviewer's user prompt — already in your conversation
+  history — is the source of truth for what the feature is).
 
   Reported blockers:
   {{input.blockers}}
@@ -515,11 +505,11 @@ agent simplify:
 
 ## ─── Nodes : Commit ─────────────────────────────────────────────
 
-## commit_namer forks the simplify session so it inherits the
+## prepare_commit forks the simplify session so it inherits the
 ## full feature context (plan, implementation, simplification).
 ## Read-only: it runs `git status` / `git diff HEAD` to identify
-## the file set, then emits structured output. It never stages
-## or commits.
+## the file set, then emits a structured commit plan (semantic
+## message + files to stage). It never stages or commits.
 ##
 ## The downstream `tool commit_changes` does the deterministic
 ## `git add -- <files> && git commit -m <msg>`. Splitting intent
@@ -527,18 +517,18 @@ agent simplify:
 ## output IS the audit record — the operator can replay or
 ## inspect what was supposed to be committed independently of
 ## what `git log` shows.
-agent commit_namer:
+agent prepare_commit:
   backend: "claude_code"
   model: "claude-opus-4-7"
   reasoning_effort: high
   output: commit_output
-  system: commit_namer_system
-  user: commit_namer_user
+  system: prepare_commit_system
+  user: prepare_commit_user
   session: fork
   readonly: true
 
 ## commit_changes is a deterministic shell tool — no LLM. It
-## stages exactly the file list produced by commit_namer (via
+## stages exactly the file list produced by prepare_commit (via
 ## `git add -- <files>`, leveraging iterion's string[]
 ## substitution from pkg/backend/model/executor.go's
 ## shellEscapeValue) and commits with the semantic message. The
@@ -656,11 +646,11 @@ workflow vibe_feature_dev:
 
   ## Run in an isolated git worktree at .iterion/worktrees/<run-id>/.
   ## This shields the user's main working tree from any mutations the
-  ## workflow makes, makes commit_namer's job structurally correct (no
+  ## workflow makes, makes prepare_commit's job structurally correct (no
   ## WIP visible to misclassify), and turns failure cleanup into a
   ## one-line `git worktree remove`. See docs / worktree-runs-plan.md
   ## for the artifact-pollution caveat: even in a fresh worktree, the
-  ## dev phase can introduce un-gitignored build outputs, so commit_namer
+  ## dev phase can introduce un-gitignored build outputs, so prepare_commit
   ## still has to discriminate — but on a much smaller noise floor.
   worktree: auto
 
@@ -735,16 +725,16 @@ workflow vibe_feature_dev:
   }
 
   ## ═══ Phase 3 : Commit on streak success ═══════════════════════
-  ## Cross-family double-approval reached. commit_namer (forked
+  ## Cross-family double-approval reached. prepare_commit (forked
   ## from simplify) emits the structured commit intent;
   ## commit_changes deterministically applies it.
-  streak_check -> commit_namer when stop with {
+  streak_check -> prepare_commit when stop with {
     _session_id: "{{outputs.simplify._session_id}}"
   }
 
-  commit_namer -> commit_changes with {
-    full_message: "{{outputs.commit_namer.full_message}}",
-    files: "{{outputs.commit_namer.files}}",
+  prepare_commit -> commit_changes with {
+    full_message: "{{outputs.prepare_commit.full_message}}",
+    files: "{{outputs.prepare_commit.files}}",
     workspace_dir: "{{vars.workspace_dir}}"
   }
 
