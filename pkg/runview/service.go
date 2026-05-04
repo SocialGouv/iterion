@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -308,7 +307,7 @@ func (s *Service) reattachDetached(runID string, pid int) {
 	var cancelOnce sync.Once
 	cancel := func() {
 		cancelOnce.Do(func() {
-			if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil {
+			if err := terminateProcessGroup(pid); err != nil {
 				s.logger.Warn("runview: reattach: signal pgrp %d: %v", pid, err)
 			}
 		})

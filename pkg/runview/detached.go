@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -166,8 +165,8 @@ func (s *Service) spawnDetached(parent context.Context, spec detachedSpec) (*Lau
 		cancelOnce.Do(func() {
 			// Send SIGTERM to the process group so the runner
 			// + any descendants (claude_code, codex, MCP servers)
-			// terminate together. Negative PID = group.
-			if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil {
+			// terminate together.
+			if err := terminateProcessGroup(pid); err != nil {
 				s.logger.Warn("runview: detached: signal pgrp %d: %v", pid, err)
 			}
 		})
@@ -176,7 +175,7 @@ func (s *Service) spawnDetached(parent context.Context, spec detachedSpec) (*Lau
 	if err := s.manager.RegisterDetached(spec.RunID, pid, cancel, done); err != nil {
 		// Manager already stopped — kill the runner we just started so
 		// we don't leak it.
-		_ = syscall.Kill(-pid, syscall.SIGTERM)
+		_ = terminateProcessGroup(pid)
 		return nil, err
 	}
 
@@ -292,13 +291,7 @@ func pidAlive(pid int) error {
 	if pid <= 0 {
 		return errProcessNotFound
 	}
-	if err := syscall.Kill(pid, 0); err != nil {
-		if errors.Is(err, syscall.ESRCH) {
-			return errProcessNotFound
-		}
-		return err
-	}
-	return nil
+	return pidAliveOS(pid)
 }
 
 // resumeAnswersToStrings narrows the runtime resume API's
