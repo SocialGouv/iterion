@@ -59,6 +59,17 @@ type Run struct {
 	// Worktree is true when WorkDir was created by `worktree: auto`,
 	// false when WorkDir is the inherited cwd.
 	Worktree bool `json:"worktree,omitempty"`
+	// RepoRoot is the absolute path of the main git repository the
+	// worktree was forked from. Used by the editor's modified-files
+	// panel after the worktree directory is gc'd to compute the diff
+	// against FinalCommit (the persistent branch lives in this repo's
+	// shared .git). Empty for non-worktree runs.
+	RepoRoot string `json:"repo_root,omitempty"`
+	// BaseCommit is the SHA of HEAD on the main repo at the moment the
+	// worktree was created — i.e. the run's baseline. The post-finalization
+	// diff renders FinalCommit relative to this commit. Empty for non-
+	// worktree runs and for legacy runs that predate this field.
+	BaseCommit string `json:"base_commit,omitempty"`
 	// FinalCommit is the SHA the worktree's HEAD pointed to when the
 	// run finished successfully, captured before the worktree was torn
 	// down. Empty when the run made no commits, didn't use a worktree,

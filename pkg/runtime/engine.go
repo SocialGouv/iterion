@@ -290,9 +290,16 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 	// Persist the resolved working directory so editor surfaces (modified-
 	// files panel) can locate it without re-deriving it. Done after worktree
 	// setup so e.workDir reflects the per-run worktree path when applicable.
+	// For worktree-active runs we also stash the baseline (RepoRoot +
+	// BaseCommit) so the modified-files panel can render a historical diff
+	// against FinalCommit after the worktree directory has been torn down.
 	if e.workDir != "" {
 		run.WorkDir = e.workDir
 		run.Worktree = e.workflow.Worktree == "auto"
+		if worktreeActive {
+			run.RepoRoot = wtCtx.repoRoot
+			run.BaseCommit = wtCtx.originalTip
+		}
 		if err := e.store.SaveRun(run); err != nil {
 			return fmt.Errorf("runtime: save work dir: %w", err)
 		}

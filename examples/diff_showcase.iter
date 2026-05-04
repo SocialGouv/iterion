@@ -1,0 +1,84 @@
+## Fixture : diff_showcase
+##
+## Visual end-to-end test for the run-view file-diff feature
+## (FilesPanel + FileDiffDialog with Monaco). A pure-tool workflow
+## (no LLM, no API keys) that finishes in seconds and produces three
+## kinds of git changes inside its auto-worktree, then commits them
+## so finalization persists `final_commit` / `final_branch` on
+## `run.json`.
+##
+## Validates the post-finalization diff path: even after the worktree
+## directory has been removed, the run view must still render the
+## file list and per-file Before/After diffs.
+##
+## Safe to run — `--merge-into none` keeps the demo commit confined
+## to a persistent branch `iterion/run/<friendly-name>`; the user's
+## checked-out branch is never touched.
+##
+##   devbox run -- ./iterion run examples/diff_showcase.iter --merge-into none
+##   devbox run -- ./iterion editor --port 8080
+##
+## What you should see in FilesPanel after the run finishes:
+##   - README.md                  (M — modified, multi-line append)
+##   - _diff_demo/HELLO_DIFF.md   (A — added, empty Before)
+##   - examples/FIXTURES.md       (D — deleted, empty After)
+##
+## NB on tool commands (mirrors run_console_demo.iter):
+##   - The .iter lexer keeps `\X` as two literal chars in quoted
+##     strings — `\n` is NOT a newline. We use `printf '%s\n' arg…`
+##     to inject real newlines (printf interprets \n in its format).
+##   - JSON output uses `echo \{\"ok\":true\}` so brace-expansion-aware
+##     shells (bash inside devbox) do not split the JSON.
+
+## ─── Schemas ────────────────────────────────────────────────────────
+
+schema setup_result:
+  ok: bool
+
+## ─── Tool nodes ─────────────────────────────────────────────────────
+
+## Phase 1 — append a multi-line block to a tracked file. The diff
+## view should render Monaco with the original README on the left and
+## the original-plus-trailing-block on the right.
+tool modify_existing:
+  command: "printf '%s\n' '' '---' '' '## Modified by diff_showcase.iter' '' 'This trailing block was appended inside the auto-worktree to' 'exercise the run-view diff renderer. Monaco shows the original' 'README on the left and this addition on the right.' '' 'The change lives only on the persistent branch created by run' 'finalization; --merge-into none keeps your working branch clean.' >> README.md && echo \{\"ok\":true\}"
+  output: setup_result
+
+## Phase 2 — create a brand-new file in a clearly-named demo dir.
+## FilesPanel item should carry the A icon; the diff renders with an
+## empty Before side and these lines on the After side.
+tool add_new:
+  command: "mkdir -p _diff_demo && printf '%s\n' '# Hello from diff_showcase' '' 'This file did not exist when the run started — git status' 'should list it as added (untracked), and the run view diff' 'should render with an empty Before side and these lines on' 'the After side.' '' 'Useful for visually confirming that:' '  - the FilesPanel item carries the A icon' '  - the FileDiffDialog renders without errors when the' '    original side is empty' > _diff_demo/HELLO_DIFF.md && echo \{\"ok\":true\}"
+  output: setup_result
+
+## Phase 3 — delete a small tracked file. examples/FIXTURES.md is a
+## static catalog whose absence does not break any other example.
+## Worktree-only deletion; the original in your branch is unchanged.
+tool delete_old:
+  command: "rm -f examples/FIXTURES.md && echo \{\"ok\":true\}"
+  output: setup_result
+
+## Phase 4 — single commit so finalizeWorktree captures a HEAD that
+## differs from originalTip and persists final_commit / final_branch.
+## Without this commit, finalization early-exits with "no commits
+## produced" and the run-view diff has no canonical reference once
+## the worktree dir is gc'd.
+tool commit_all:
+  command: "git add -A && git -c user.email=diff-showcase@iterion.local -c user.name='Diff Showcase' commit -m 'diff showcase: modify README, add HELLO_DIFF, delete FIXTURES' && echo \{\"ok\":true\}"
+  output: setup_result
+
+## ─── Workflow ───────────────────────────────────────────────────────
+
+workflow diff_showcase:
+  worktree: auto
+
+  budget:
+    max_duration: "2m"
+    max_iterations: 10
+
+  entry: modify_existing
+
+  modify_existing -> add_new
+  add_new -> delete_old
+  delete_old -> commit_all
+  commit_all -> done

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 )
 
@@ -74,32 +73,13 @@ func Diff(dir, relPath string) (DiffPayload, error) {
 	return payload, nil
 }
 
-// errNotInHead is the sentinel for "this path doesn't exist on HEAD"
-// (untracked or newly added). Callers map it to a nil `Before` rather
-// than propagating it as a hard error.
-var errNotInHead = errors.New("git: path not in HEAD")
+// errNotInHead is the sentinel for "this path doesn't exist at the requested
+// ref" (untracked, newly added, or deleted on the After side). Callers map it
+// to a nil Before/After rather than propagating it as a hard error.
+var errNotInHead = errors.New("git: path not at ref")
 
-// showHead runs `git show HEAD:relPath` and disambiguates the "missing
-// from HEAD" exit (which we treat as a nil `Before`) from real failures
-// (process spawn errors, other non-zero exits with unfamiliar stderr).
+// showHead is the HEAD-pinned form of showAt. Kept as a named wrapper so
+// Diff()'s caller stays readable.
 func showHead(dir, relPath string) ([]byte, error) {
-	cmd := exec.Command("git", "show", "HEAD:"+relPath)
-	cmd.Dir = dir
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err == nil {
-		return out, nil
-	}
-	msg := stderr.String()
-	// `git show` reports several phrasings depending on whether HEAD
-	// exists and whether the path was ever tracked. Treat them all as
-	// "no HEAD-side content" rather than hard errors.
-	if bytes.Contains([]byte(msg), []byte("does not exist")) ||
-		bytes.Contains([]byte(msg), []byte("exists on disk, but not in")) ||
-		bytes.Contains([]byte(msg), []byte("unknown revision")) ||
-		bytes.Contains([]byte(msg), []byte("bad revision")) {
-		return nil, errNotInHead
-	}
-	return nil, err
+	return showAt(dir, "HEAD", relPath)
 }
