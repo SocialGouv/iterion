@@ -61,6 +61,8 @@ type Engine struct {
 	runName          string                // deterministic human-friendly run label, set via WithRunName
 	mergeInto        string                // worktree finalization: FF target ("" = current branch, "none" = skip, or branch name); set via WithMergeInto
 	branchName       string                // worktree finalization: storage branch override ("" = iterion/run/<runName>); set via WithBranchName
+	mergeStrategy    string                // worktree finalization: "squash" (default) or "merge" (FF); set via WithMergeStrategy
+	autoMerge        bool                  // worktree finalization: when true, apply mergeStrategy at end of run; otherwise leave merge_status=pending for UI; set via WithAutoMerge
 	validateOutputs  bool                  // when true, validate node outputs against declared schemas
 	forceResume      bool                  // when true, skip workflow hash check on resume
 	workDir          string                // working directory for subprocesses + PROJECT_DIR expansion; defaults to os.Getwd() at Run() time
@@ -144,6 +146,28 @@ func WithMergeInto(target string) EngineOption {
 // No effect on runs without `worktree: auto`.
 func WithBranchName(name string) EngineOption {
 	return func(e *Engine) { e.branchName = name }
+}
+
+// WithMergeStrategy selects how the run's commits are landed on the
+// merge target when AutoMerge is on (or when triggered later via the
+// UI). Accepted values:
+//
+//   - "squash" (default) — collapse all run commits into one new commit
+//     on top of the target branch, with an aggregated message.
+//   - "merge"            — fast-forward the target onto the run's HEAD,
+//     preserving the per-iteration commit history (legacy behaviour).
+//
+// Empty string falls back to "squash".
+func WithMergeStrategy(strategy string) EngineOption {
+	return func(e *Engine) { e.mergeStrategy = strategy }
+}
+
+// WithAutoMerge controls whether the engine applies the merge strategy
+// synchronously at the end of the run (true) or stops after creating
+// the storage branch (false, default), leaving merge_status="pending"
+// so the editor can offer a deferred GitHub-style merge action.
+func WithAutoMerge(auto bool) EngineOption {
+	return func(e *Engine) { e.autoMerge = auto }
 }
 
 // WithForceResume allows resuming a run even when the workflow source has
@@ -246,7 +270,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 	if err != nil {
 		return fmt.Errorf("runtime: create run: %w", err)
 	}
-	if e.workflowHash != "" || e.filePath != "" || e.runName != "" {
+	if e.workflowHash != "" || e.filePath != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge {
 		if e.workflowHash != "" {
 			run.WorkflowHash = e.workflowHash
 		}
@@ -256,6 +280,10 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 		if e.runName != "" {
 			run.Name = e.runName
 		}
+		if e.mergeStrategy != "" {
+			run.MergeStrategy = store.MergeStrategy(e.mergeStrategy)
+		}
+		run.AutoMerge = e.autoMerge
 		if err := e.store.SaveRun(run); err != nil {
 			return fmt.Errorf("runtime: save run metadata: %w", err)
 		}
@@ -338,18 +366,26 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 	if worktreeActive {
 		if loopErr == nil {
 			finRes := finalizeWorktree(wtCtx, finalizeOptions{
-				runName:    e.runName,
-				runID:      runID,
-				branchName: e.branchName,
-				mergeInto:  e.mergeInto,
+				runName:       e.runName,
+				runID:         runID,
+				branchName:    e.branchName,
+				mergeInto:     e.mergeInto,
+				mergeStrategy: e.mergeStrategy,
+				autoMerge:     e.autoMerge,
 			}, e.logger)
 			// Persist whatever the finalization decided. Best-effort:
 			// a save failure logs but doesn't fail the run.
-			if finRes.FinalCommit != "" || finRes.FinalBranch != "" || finRes.MergedInto != "" {
+			if finRes.FinalCommit != "" || finRes.FinalBranch != "" || finRes.MergedInto != "" || finRes.MergeStatus != "" {
 				if r2, err := e.store.LoadRun(runID); err == nil {
 					r2.FinalCommit = finRes.FinalCommit
 					r2.FinalBranch = finRes.FinalBranch
 					r2.MergedInto = finRes.MergedInto
+					r2.MergeStatus = store.MergeStatus(finRes.MergeStatus)
+					r2.MergedCommit = finRes.MergedCommit
+					if e.mergeStrategy != "" {
+						r2.MergeStrategy = store.MergeStrategy(e.mergeStrategy)
+					}
+					r2.AutoMerge = e.autoMerge
 					if saveErr := e.store.SaveRun(r2); saveErr != nil && e.logger != nil {
 						e.logger.Warn("runtime: persist finalization metadata: %v", saveErr)
 					}

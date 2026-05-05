@@ -18,6 +18,8 @@ var runOpts struct {
 	background    bool
 	mergeInto     string
 	branchName    string
+	mergeStrategy string
+	autoMerge     bool
 }
 
 var runCmd = &cobra.Command{
@@ -36,6 +38,8 @@ var runCmd = &cobra.Command{
 			Background:    runOpts.background,
 			MergeInto:     runOpts.mergeInto,
 			BranchName:    runOpts.branchName,
+			MergeStrategy: runOpts.mergeStrategy,
+			AutoMerge:     runOpts.autoMerge,
 		}
 		if len(runOpts.varFlags) > 0 {
 			vars, err := cli.ParseVarFlags(runOpts.varFlags)
@@ -59,7 +63,9 @@ func init() {
 	f.BoolVar(&runOpts.noInteractive, "no-interactive", false, "Don't prompt on TTY; exit on human pause")
 	f.BoolVar(&runOpts.background, "background", false, "Internal: managed-runner mode for the editor server (writes .pid, suppresses interactive prompts)")
 	_ = f.MarkHidden("background")
-	f.StringVar(&runOpts.mergeInto, "merge-into", "", "For worktree:auto runs, branch to fast-forward after the run (\"\"/\"current\"=current branch, \"none\"=skip, or a branch name)")
+	f.StringVar(&runOpts.mergeInto, "merge-into", "", "For worktree:auto runs, branch to merge into after the run (\"\"/\"current\"=current branch, \"none\"=skip, or a branch name)")
 	f.StringVar(&runOpts.branchName, "branch-name", "", "For worktree:auto runs, override the storage branch name (default iterion/run/<friendly>)")
+	f.StringVar(&runOpts.mergeStrategy, "merge-strategy", "", "For worktree:auto runs, how to land commits when --auto-merge is on: \"squash\" (default) collapses all run commits into one, \"merge\" fast-forwards (preserves history)")
+	f.BoolVar(&runOpts.autoMerge, "auto-merge", true, "For worktree:auto runs, apply --merge-strategy at the end of the run (CLI default true preserves prior behaviour; the editor sets false by default to defer the merge to a UI action)")
 	rootCmd.AddCommand(runCmd)
 }

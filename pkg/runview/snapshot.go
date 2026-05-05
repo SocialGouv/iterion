@@ -80,9 +80,13 @@ type RunHeader struct {
 	// Worktree finalization summary (only populated for `worktree:
 	// auto` runs that reached a clean exit). The editor uses these to
 	// surface the persistent branch and FF status in the run header.
-	FinalCommit string `json:"final_commit,omitempty"`
-	FinalBranch string `json:"final_branch,omitempty"`
-	MergedInto  string `json:"merged_into,omitempty"`
+	FinalCommit   string              `json:"final_commit,omitempty"`
+	FinalBranch   string              `json:"final_branch,omitempty"`
+	MergedInto    string              `json:"merged_into,omitempty"`
+	MergedCommit  string              `json:"merged_commit,omitempty"`
+	MergeStrategy store.MergeStrategy `json:"merge_strategy,omitempty"`
+	MergeStatus   store.MergeStatus   `json:"merge_status,omitempty"`
+	AutoMerge     bool                `json:"auto_merge,omitempty"`
 }
 
 // RunSnapshot is the structured view returned by GET /api/runs/{id} and
@@ -422,23 +426,27 @@ func ParseExecutionID(id string) (branch, nodeID string, iteration int, err erro
 
 func headerFromRun(r *store.Run) RunHeader {
 	return RunHeader{
-		ID:           r.ID,
-		Name:         r.Name,
-		WorkflowName: r.WorkflowName,
-		WorkflowHash: r.WorkflowHash,
-		FilePath:     r.FilePath,
-		Status:       r.Status,
-		Inputs:       r.Inputs,
-		CreatedAt:    r.CreatedAt,
-		UpdatedAt:    r.UpdatedAt,
-		FinishedAt:   r.FinishedAt,
-		Error:        r.Error,
-		Checkpoint:   r.Checkpoint,
-		WorkDir:      r.WorkDir,
-		Worktree:     r.Worktree,
-		FinalCommit:  r.FinalCommit,
-		FinalBranch:  r.FinalBranch,
-		MergedInto:   r.MergedInto,
+		ID:            r.ID,
+		Name:          r.Name,
+		WorkflowName:  r.WorkflowName,
+		WorkflowHash:  r.WorkflowHash,
+		FilePath:      r.FilePath,
+		Status:        r.Status,
+		Inputs:        r.Inputs,
+		CreatedAt:     r.CreatedAt,
+		UpdatedAt:     r.UpdatedAt,
+		FinishedAt:    r.FinishedAt,
+		Error:         r.Error,
+		Checkpoint:    r.Checkpoint,
+		WorkDir:       r.WorkDir,
+		Worktree:      r.Worktree,
+		FinalCommit:   r.FinalCommit,
+		FinalBranch:   r.FinalBranch,
+		MergedInto:    r.MergedInto,
+		MergedCommit:  r.MergedCommit,
+		MergeStrategy: r.MergeStrategy,
+		MergeStatus:   r.MergeStatus,
+		AutoMerge:     r.AutoMerge,
 	}
 }
 

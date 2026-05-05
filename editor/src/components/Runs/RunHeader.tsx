@@ -120,7 +120,7 @@ export default function RunHeader({ run, active, wsState }: Props) {
 }
 
 // FinalizationRow surfaces the worktree-finalization outcome (commit
-// SHA, storage branch, FF target) under the main header bar so the
+// SHA, storage branch, merge target) under the main header bar so the
 // user can see at a glance whether the run's commits made it back to
 // their branch — and what to do if they didn't. Only rendered when
 // final_commit is set (i.e. the run produced commits in its worktree).
@@ -129,6 +129,9 @@ function FinalizationRow({ run }: { run: RunHeaderType }) {
   const shortSha = (run.final_commit ?? "").slice(0, 7);
   const branch = run.final_branch ?? "";
   const merged = run.merged_into ?? "";
+  const status = run.merge_status;
+  const strategy = run.merge_strategy;
+  const mergedShort = (run.merged_commit ?? "").slice(0, 7);
 
   const copy = async (text: string, key: string) => {
     try {
@@ -166,16 +169,82 @@ function FinalizationRow({ run }: { run: RunHeaderType }) {
           </button>
         </>
       )}
-      {merged ? (
-        <span className="ml-2 px-1.5 py-0.5 rounded bg-success-soft text-success-fg">
-          merged into {merged} ✓
-        </span>
-      ) : branch ? (
-        <span className="ml-2 text-fg-subtle">
-          not auto-merged — run{" "}
-          <code className="text-fg-default">git merge {branch}</code>
-        </span>
-      ) : null}
+      <MergeStatusBadge
+        status={status}
+        strategy={strategy}
+        merged={merged}
+        mergedShort={mergedShort}
+        branch={branch}
+      />
     </div>
   );
+}
+
+interface MergeStatusBadgeProps {
+  status: RunHeaderType["merge_status"];
+  strategy: RunHeaderType["merge_strategy"];
+  merged: string;
+  mergedShort: string;
+  branch: string;
+}
+
+function MergeStatusBadge({
+  status,
+  strategy,
+  merged,
+  mergedShort,
+  branch,
+}: MergeStatusBadgeProps) {
+  if (status === "merged" && merged) {
+    return (
+      <span className="ml-2 px-1.5 py-0.5 rounded bg-success-soft text-success-fg">
+        {strategy === "squash" ? "squashed" : "merged"} into {merged}
+        {mergedShort && (
+          <span className="ml-1 font-mono text-success-fg/80">
+            · {mergedShort}
+          </span>
+        )}
+      </span>
+    );
+  }
+  if (status === "pending") {
+    return (
+      <span className="ml-2 px-1.5 py-0.5 rounded bg-info-soft text-info-fg">
+        awaiting merge — open Commits tab
+      </span>
+    );
+  }
+  if (status === "failed") {
+    return (
+      <span className="ml-2 px-1.5 py-0.5 rounded bg-danger-soft text-danger-fg">
+        merge failed — retry from Commits tab
+      </span>
+    );
+  }
+  if (status === "skipped") {
+    return (
+      <span className="ml-2 text-fg-subtle">
+        merge skipped — branch{" "}
+        <code className="text-fg-default">{branch}</code> preserved
+      </span>
+    );
+  }
+  // Legacy runs (pre-merge_status) that recorded merged_into without a
+  // status field. Keep the old wording.
+  if (merged) {
+    return (
+      <span className="ml-2 px-1.5 py-0.5 rounded bg-success-soft text-success-fg">
+        merged into {merged} ✓
+      </span>
+    );
+  }
+  if (branch) {
+    return (
+      <span className="ml-2 text-fg-subtle">
+        not auto-merged — run{" "}
+        <code className="text-fg-default">git merge {branch}</code>
+      </span>
+    );
+  }
+  return null;
 }

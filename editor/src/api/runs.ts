@@ -52,12 +52,19 @@ export interface RunSummary {
   final_commit?: string;
   final_branch?: string;
   merged_into?: string;
+  merged_commit?: string;
+  merge_strategy?: MergeStrategy;
+  merge_status?: MergeStatus;
+  auto_merge?: boolean;
   // Cloud-only: 1-based queue position when status === "queued".
   // Computed server-side via Mongo aggregation; the UI uses it for the
   // queued banner copy ("3rd in queue"). See cloud-ready plan §F (T-03,
   // T-31).
   queue_position?: number;
 }
+
+export type MergeStrategy = "squash" | "merge";
+export type MergeStatus = "pending" | "merged" | "skipped" | "failed";
 
 // Mirror of runview.ExecutionState.
 export interface ExecutionState {
@@ -103,6 +110,10 @@ export interface RunHeader {
   final_commit?: string;
   final_branch?: string;
   merged_into?: string;
+  merged_commit?: string;
+  merge_strategy?: MergeStrategy;
+  merge_status?: MergeStatus;
+  auto_merge?: boolean;
 }
 
 // Mirror of runview.RunSnapshot.
@@ -238,15 +249,23 @@ export interface CreateRunRequest {
   run_id?: string;
   vars?: Record<string, string>;
   timeout?: string;
-  // For `worktree: auto` workflows: the branch the engine will
-  // fast-forward after the run. "" or "current" → current branch
-  // (default); "none" → skip FF; <branch> → that named branch (only
-  // honoured when it matches the currently-checked-out branch).
+  // For `worktree: auto` workflows: the branch the engine will merge
+  // into after the run. "" or "current" → current branch (default);
+  // "none" → skip merge; <branch> → that named branch (only honoured
+  // when it matches the currently-checked-out branch).
   merge_into?: string;
   // For `worktree: auto` workflows: override the storage branch
   // name (default `iterion/run/<friendly>`). Useful for landing
   // every run on a stable name (e.g. `feat/auto-fixes`).
   branch_name?: string;
+  // For `worktree: auto` workflows: how to land the run's commits
+  // when auto_merge is on. "squash" (default) collapses commits
+  // into one; "merge" fast-forwards (preserves history).
+  merge_strategy?: MergeStrategy;
+  // For `worktree: auto` workflows: when true, the engine performs
+  // the merge at end of run (GitLab-style "auto-merge"); when
+  // false (default), the merge is deferred to a UI action.
+  auto_merge?: boolean;
 }
 
 export interface CreateRunResponse {
@@ -332,4 +351,57 @@ export async function getRunFileDiff(
   return request(
     `/runs/${encodeURIComponent(runId)}/files/diff?path=${encodeURIComponent(path)}`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Commits panel — git log between BaseCommit and FinalCommit/HEAD.
+// ---------------------------------------------------------------------------
+
+// Mirror of pkg/git.CommitInfo. The frontend formats `date` relatively
+// and shows `subject` + `short` SHA.
+export interface RunCommit {
+  sha: string;
+  short: string;
+  subject: string;
+  author: string;
+  email?: string;
+  date: string; // RFC3339
+}
+
+// Mirror of server.runCommitsResponse.
+export interface RunCommits {
+  commits: RunCommit[];
+  count: number;
+  base_commit?: string;
+  head_commit?: string;
+  available: boolean;
+  reason?: "no_workdir" | "no_baseline" | "not_git_repo" | string;
+}
+
+export async function listRunCommits(runId: string): Promise<RunCommits> {
+  return request(`/runs/${encodeURIComponent(runId)}/commits`);
+}
+
+export interface MergeRunRequest {
+  merge_strategy?: MergeStrategy;
+  merge_into?: string;
+  commit_message?: string;
+}
+
+export interface MergeRunResponse {
+  run_id: string;
+  merged_commit: string;
+  merged_into: string;
+  merge_strategy: MergeStrategy;
+  merge_status: MergeStatus;
+}
+
+export async function mergeRun(
+  runId: string,
+  req: MergeRunRequest,
+): Promise<MergeRunResponse> {
+  return request(`/runs/${encodeURIComponent(runId)}/merge`, {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
 }

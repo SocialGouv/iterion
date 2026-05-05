@@ -3,6 +3,7 @@ import { useLocation } from "wouter";
 
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { listRuns, type RunStatus, type RunSummary } from "@/api/runs";
+import { formatRelative } from "@/lib/format";
 
 const POLL_INTERVAL_FAST_MS = 3000;
 const POLL_INTERVAL_SLOW_MS = 8000;
@@ -209,20 +210,6 @@ function labelForStatus(s: RunStatus): string {
     default:
       return s;
   }
-}
-
-function formatRelative(iso: string): string {
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return iso;
-  const delta = Date.now() - t;
-  const seconds = Math.round(delta / 1000);
-  if (seconds < 60) return `${seconds}s ago`;
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.round(hours / 24);
-  return `${days}d ago`;
 }
 
 function formatDuration(startISO: string, endISO?: string): string {

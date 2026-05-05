@@ -3,8 +3,10 @@ import { useLocation, useSearch } from "wouter";
 
 import * as filesApi from "@/api/client";
 import { createRun } from "@/api/runs";
+import type { MergeStrategy } from "@/api/runs";
 import type { IterDocument, VarField } from "@/api/types";
 import { Button } from "@/components/ui/Button";
+import { Select } from "@/components/ui/Select";
 
 import VarFieldInput, { defaultStringFor } from "./VarFieldInput";
 import { isPromptLikeVar } from "@/lib/promptVarHeuristics";
@@ -36,6 +38,11 @@ export default function LaunchView() {
   // the backend ignores them when worktree is off.
   const [mergeInto, setMergeInto] = useState<string>(""); // "" = current
   const [branchName, setBranchName] = useState<string>("");
+  const [mergeStrategy, setMergeStrategy] = useState<MergeStrategy>("squash");
+  // GitLab-style "auto-merge when run finishes". Default off so the
+  // run lands as a "pending merge" and the user picks the strategy
+  // after seeing the commits — GitHub-PR style.
+  const [autoMerge, setAutoMerge] = useState<boolean>(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   useEffect(() => {
@@ -73,6 +80,8 @@ export default function LaunchView() {
         vars: values,
         merge_into: mergeInto || undefined,
         branch_name: branchName || undefined,
+        merge_strategy: mergeStrategy,
+        auto_merge: autoMerge,
       });
       setLocation(`/runs/${encodeURIComponent(res.run_id)}`);
     } catch (e) {
@@ -220,6 +229,56 @@ export default function LaunchView() {
                       <div className="mt-1 text-[10px] text-fg-subtle">
                         Override the GC-guard branch name. On collision a numeric
                         suffix is appended.
+                      </div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-[160px_1fr] gap-3 items-start">
+                    <label htmlFor="launch-merge-strategy" className="pt-1">
+                      <div className="text-xs font-medium font-mono">merge_strategy</div>
+                      <div className="text-[10px] text-fg-subtle">
+                        Squash vs merge commit
+                      </div>
+                    </label>
+                    <div>
+                      <Select
+                        id="launch-merge-strategy"
+                        value={mergeStrategy}
+                        onChange={(e) =>
+                          setMergeStrategy(e.target.value as MergeStrategy)
+                        }
+                      >
+                        <option value="squash">Squash and merge (default)</option>
+                        <option value="merge">Merge commit (preserve history)</option>
+                      </Select>
+                      <div className="mt-1 text-[10px] text-fg-subtle">
+                        Used when the run is merged into the target branch — at
+                        end of run if auto_merge is on, otherwise from the
+                        Commits tab. The fast-forward path is used for "merge".
+                      </div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-[160px_1fr] gap-3 items-start">
+                    <label htmlFor="launch-auto-merge" className="pt-1">
+                      <div className="text-xs font-medium font-mono">auto_merge</div>
+                      <div className="text-[10px] text-fg-subtle">
+                        GitLab-style auto-merge
+                      </div>
+                    </label>
+                    <div className="pt-1">
+                      <label className="inline-flex items-center gap-2 text-xs">
+                        <input
+                          id="launch-auto-merge"
+                          type="checkbox"
+                          checked={autoMerge}
+                          onChange={(e) => setAutoMerge(e.target.checked)}
+                        />
+                        <span>Auto-merge when run finishes</span>
+                      </label>
+                      <div className="mt-1 text-[10px] text-fg-subtle">
+                        Off (default): commits land on the storage branch only;
+                        pick the strategy later from the run's Commits tab —
+                        GitHub-PR style. On: the engine applies merge_strategy
+                        synchronously at end of run.
                       </div>
                     </div>
                   </div>

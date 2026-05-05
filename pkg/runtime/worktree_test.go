@@ -102,7 +102,7 @@ func TestFinalizeWorktree_HappyPath_FFCurrent(t *testing.T) {
 		wtPath:         wt,
 		originalBranch: "main",
 		originalTip:    originalTip,
-	}, finalizeOptions{runName: "swift-cedar-a3f2", runID: "run_x"}, nil)
+	}, finalizeOptions{runName: "swift-cedar-a3f2", runID: "run_x", autoMerge: true, mergeStrategy: "merge"}, nil)
 
 	if res.FinalCommit != finalSHA {
 		t.Errorf("FinalCommit = %q, want %q", res.FinalCommit, finalSHA)
@@ -112,6 +112,9 @@ func TestFinalizeWorktree_HappyPath_FFCurrent(t *testing.T) {
 	}
 	if res.MergedInto != "main" {
 		t.Errorf("MergedInto = %q, want main", res.MergedInto)
+	}
+	if res.MergeStatus != "merged" {
+		t.Errorf("MergeStatus = %q, want merged", res.MergeStatus)
 	}
 	// And main really moved.
 	mainTip := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "main")))
@@ -139,7 +142,7 @@ func TestFinalizeWorktree_DirtyMain_SkipsFF(t *testing.T) {
 		wtPath:         wt,
 		originalBranch: "main",
 		originalTip:    originalTip,
-	}, finalizeOptions{runName: "swift-cedar-a3f2"}, nil)
+	}, finalizeOptions{runName: "swift-cedar-a3f2", autoMerge: true, mergeStrategy: "merge"}, nil)
 
 	if res.FinalCommit != finalSHA {
 		t.Errorf("FinalCommit = %q", res.FinalCommit)
@@ -149,6 +152,9 @@ func TestFinalizeWorktree_DirtyMain_SkipsFF(t *testing.T) {
 	}
 	if res.MergedInto != "" {
 		t.Errorf("MergedInto = %q, want empty (dirty main blocks FF)", res.MergedInto)
+	}
+	if res.MergeStatus != "failed" {
+		t.Errorf("MergeStatus = %q, want failed", res.MergeStatus)
 	}
 	// Main should still point at the original tip.
 	mainTip := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "main")))
@@ -178,7 +184,7 @@ func TestFinalizeWorktree_NonFF_SkipsFF(t *testing.T) {
 		wtPath:         wt,
 		originalBranch: "main",
 		originalTip:    originalTip,
-	}, finalizeOptions{runName: "swift-cedar-a3f2"}, nil)
+	}, finalizeOptions{runName: "swift-cedar-a3f2", autoMerge: true, mergeStrategy: "merge"}, nil)
 
 	if res.FinalCommit != finalSHA {
 		t.Errorf("FinalCommit = %q", res.FinalCommit)
@@ -188,6 +194,9 @@ func TestFinalizeWorktree_NonFF_SkipsFF(t *testing.T) {
 	}
 	if res.MergedInto != "" {
 		t.Errorf("MergedInto = %q, want empty (non-FF blocks merge)", res.MergedInto)
+	}
+	if res.MergeStatus != "failed" {
+		t.Errorf("MergeStatus = %q, want failed", res.MergeStatus)
 	}
 	// Main should still point at the side commit, not at the run's commit.
 	cur := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "main")))
@@ -211,13 +220,16 @@ func TestFinalizeWorktree_OptOutNone(t *testing.T) {
 		wtPath:         wt,
 		originalBranch: "main",
 		originalTip:    originalTip,
-	}, finalizeOptions{runName: "swift-cedar-a3f2", mergeInto: "none"}, nil)
+	}, finalizeOptions{runName: "swift-cedar-a3f2", mergeInto: "none", autoMerge: true, mergeStrategy: "merge"}, nil)
 
 	if res.FinalCommit != finalSHA || res.FinalBranch == "" {
 		t.Errorf("expected branch + commit, got %+v", res)
 	}
 	if res.MergedInto != "" {
 		t.Errorf("MergedInto should be empty with mergeInto=none, got %q", res.MergedInto)
+	}
+	if res.MergeStatus != "skipped" {
+		t.Errorf("MergeStatus = %q, want skipped", res.MergeStatus)
 	}
 	// Main untouched.
 	mainTip := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "main")))
@@ -241,7 +253,7 @@ func TestFinalizeWorktree_BranchNameOverride(t *testing.T) {
 		wtPath:         wt,
 		originalBranch: "main",
 		originalTip:    originalTip,
-	}, finalizeOptions{runName: "swift-cedar-a3f2", branchName: "feat/auto-fixes"}, nil)
+	}, finalizeOptions{runName: "swift-cedar-a3f2", branchName: "feat/auto-fixes", autoMerge: true, mergeStrategy: "merge"}, nil)
 
 	if res.FinalBranch != "feat/auto-fixes" {
 		t.Errorf("FinalBranch = %q, want feat/auto-fixes", res.FinalBranch)
@@ -271,7 +283,7 @@ func TestFinalizeWorktree_BranchNameCollision(t *testing.T) {
 		wtPath:         wt,
 		originalBranch: "main",
 		originalTip:    originalTip,
-	}, finalizeOptions{runName: "swift-cedar-a3f2"}, nil)
+	}, finalizeOptions{runName: "swift-cedar-a3f2", autoMerge: true, mergeStrategy: "merge"}, nil)
 
 	if res.FinalBranch == "" {
 		t.Fatal("expected fallback branch on collision")
@@ -304,13 +316,89 @@ func TestFinalizeWorktree_DetachedAtStart(t *testing.T) {
 		wtPath:         wt,
 		originalBranch: "", // detached
 		originalTip:    originalTip,
-	}, finalizeOptions{runName: "swift-cedar-a3f2"}, nil)
+	}, finalizeOptions{runName: "swift-cedar-a3f2", autoMerge: true, mergeStrategy: "merge"}, nil)
 
 	if res.FinalBranch == "" {
 		t.Errorf("branch should still be created as GC guard")
 	}
 	if res.MergedInto != "" {
 		t.Errorf("FF must be skipped when started detached, got merged into %q", res.MergedInto)
+	}
+}
+
+// TestFinalizeWorktree_DeferredMerge_AutoMergeOff — when autoMerge is
+// false (the editor's default), finalize creates the storage branch
+// but stops short of touching the user's main branch. The result
+// reports MergeStatus=pending so the editor can offer a UI action.
+func TestFinalizeWorktree_DeferredMerge_AutoMergeOff(t *testing.T) {
+	repo, originalTip := initBareishRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+
+	finalSHA := addCommit(t, wt, "feature.go", "package main\n", "feat: add feature")
+
+	res := finalizeWorktree(worktreeContext{
+		repoRoot:       repo,
+		wtPath:         wt,
+		originalBranch: "main",
+		originalTip:    originalTip,
+	}, finalizeOptions{runName: "swift-cedar-a3f2", runID: "run_x" /* autoMerge omitted = false */}, nil)
+
+	if res.FinalCommit != finalSHA {
+		t.Errorf("FinalCommit = %q, want %q", res.FinalCommit, finalSHA)
+	}
+	if res.FinalBranch == "" {
+		t.Errorf("FinalBranch should still be created as GC guard")
+	}
+	if res.MergedInto != "" {
+		t.Errorf("MergedInto = %q, want empty (deferred)", res.MergedInto)
+	}
+	if res.MergeStatus != "pending" {
+		t.Errorf("MergeStatus = %q, want pending", res.MergeStatus)
+	}
+	// Main untouched.
+	mainTip := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "main")))
+	if mainTip != originalTip {
+		t.Errorf("main tip moved despite deferred merge, %s != %s", mainTip, originalTip)
+	}
+}
+
+// TestFinalizeWorktree_SquashStrategy — autoMerge=true + squash
+// collapses the run's commits into one commit on top of main.
+func TestFinalizeWorktree_SquashStrategy(t *testing.T) {
+	repo, originalTip := initBareishRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+
+	addCommit(t, wt, "a.go", "package main\n// a\n", "feat: add a")
+	addCommit(t, wt, "b.go", "package main\n// b\n", "feat: add b")
+	finalSHA := addCommit(t, wt, "c.go", "package main\n// c\n", "feat: add c")
+
+	res := finalizeWorktree(worktreeContext{
+		repoRoot:       repo,
+		wtPath:         wt,
+		originalBranch: "main",
+		originalTip:    originalTip,
+	}, finalizeOptions{runName: "swift-cedar-a3f2", runID: "run_x", autoMerge: true, mergeStrategy: "squash"}, nil)
+
+	if res.FinalCommit != finalSHA {
+		t.Errorf("FinalCommit = %q, want %q", res.FinalCommit, finalSHA)
+	}
+	if res.MergedInto != "main" {
+		t.Errorf("MergedInto = %q, want main", res.MergedInto)
+	}
+	if res.MergeStatus != "merged" {
+		t.Errorf("MergeStatus = %q, want merged", res.MergeStatus)
+	}
+	if res.MergedCommit == "" || res.MergedCommit == finalSHA {
+		t.Errorf("MergedCommit should be a fresh squash SHA distinct from FinalCommit; got %q (final %q)", res.MergedCommit, finalSHA)
+	}
+	// Main should be one commit ahead of originalTip — not three.
+	count := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-list", "--count", originalTip+"..main")))
+	if count != "1" {
+		t.Errorf("main has %s commits past base, want 1 squash commit", count)
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
@@ -38,6 +39,16 @@ type LaunchSpec struct {
 	// BranchName overrides the default storage branch
 	// `iterion/run/<friendly>` created on the worktree's HEAD.
 	BranchName string
+	// MergeStrategy selects how the run's commits are landed on the
+	// merge target: "squash" (default — collapse into one commit) or
+	// "merge" (fast-forward, preserve history). Persisted on run.json
+	// so the deferred-merge UI can pre-fill the same choice.
+	MergeStrategy store.MergeStrategy
+	// AutoMerge captures the launch-time intent. When true, the engine
+	// applies MergeStrategy synchronously at end of run; when false the
+	// engine creates the storage branch only and leaves merge_status
+	// pending for the UI to drive via POST /api/runs/{id}/merge.
+	AutoMerge bool
 }
 
 // ResumeSpec describes a resume request.
@@ -72,9 +83,13 @@ type RunSummary struct {
 	// Worktree finalization summary (only populated for `worktree:
 	// auto` runs that reached a clean exit). See store.Run for the
 	// full semantics.
-	FinalCommit string `json:"final_commit,omitempty"`
-	FinalBranch string `json:"final_branch,omitempty"`
-	MergedInto  string `json:"merged_into,omitempty"`
+	FinalCommit   string              `json:"final_commit,omitempty"`
+	FinalBranch   string              `json:"final_branch,omitempty"`
+	MergedInto    string              `json:"merged_into,omitempty"`
+	MergedCommit  string              `json:"merged_commit,omitempty"`
+	MergeStrategy store.MergeStrategy `json:"merge_strategy,omitempty"`
+	MergeStatus   store.MergeStatus   `json:"merge_status,omitempty"`
+	AutoMerge     bool                `json:"auto_merge,omitempty"`
 	// QueuePosition is set only for cloud-mode runs whose Status is
 	// "queued"; nil otherwise. 1 means "next to be picked up". Computed
 	// by the server (Mongo aggregation), not persisted on the run doc.
@@ -566,19 +581,23 @@ func (s *Service) List(f ListFilter) ([]RunSummary, error) {
 			continue
 		}
 		out = append(out, RunSummary{
-			ID:           r.ID,
-			Name:         r.Name,
-			WorkflowName: r.WorkflowName,
-			Status:       r.Status,
-			FilePath:     r.FilePath,
-			CreatedAt:    r.CreatedAt,
-			UpdatedAt:    r.UpdatedAt,
-			FinishedAt:   r.FinishedAt,
-			Error:        r.Error,
-			Active:       s.manager.Active(r.ID),
-			FinalCommit:  r.FinalCommit,
-			FinalBranch:  r.FinalBranch,
-			MergedInto:   r.MergedInto,
+			ID:            r.ID,
+			Name:          r.Name,
+			WorkflowName:  r.WorkflowName,
+			Status:        r.Status,
+			FilePath:      r.FilePath,
+			CreatedAt:     r.CreatedAt,
+			UpdatedAt:     r.UpdatedAt,
+			FinishedAt:    r.FinishedAt,
+			Error:         r.Error,
+			Active:        s.manager.Active(r.ID),
+			FinalCommit:   r.FinalCommit,
+			FinalBranch:   r.FinalBranch,
+			MergedInto:    r.MergedInto,
+			MergedCommit:  r.MergedCommit,
+			MergeStrategy: r.MergeStrategy,
+			MergeStatus:   r.MergeStatus,
+			AutoMerge:     r.AutoMerge,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -704,6 +723,113 @@ func (s *Service) Cancel(runID string) error {
 	return s.manager.Cancel(runID)
 }
 
+// MergeRequest carries the parameters of a UI-driven merge action. The
+// HTTP handler builds it from the request body; the Service translates
+// it into a runtime.PerformDeferredMerge call and persists the outcome.
+type MergeRequest struct {
+	// Strategy is "squash" (default when empty) or "merge".
+	Strategy store.MergeStrategy
+	// MergeInto is the target branch override:
+	//   ""        → currently-checked-out branch (default)
+	//   "current" → same as default
+	//   <branch>  → that branch (must equal currently-checked-out)
+	MergeInto string
+	// CommitMessage overrides the squash commit message. Ignored for
+	// "merge" strategy. Empty falls back to a generated message that
+	// lists each squashed commit.
+	CommitMessage string
+}
+
+// MergeResponse mirrors the persisted Run fields after a successful
+// merge so the HTTP handler can return them without re-loading.
+type MergeResponse struct {
+	MergedCommit  string              `json:"merged_commit"`
+	MergedInto    string              `json:"merged_into"`
+	MergeStrategy store.MergeStrategy `json:"merge_strategy"`
+	MergeStatus   store.MergeStatus   `json:"merge_status"`
+}
+
+// PerformMerge runs the deferred merge for runID. Preconditions:
+//   - run.FinalCommit and run.FinalBranch must be set (the engine must
+//     have created the storage branch — runs without commits cannot be
+//     merged).
+//   - run.MergeStatus must not already be "merged" (idempotence; clients
+//     that want to redo a merge should explicitly reset state first).
+//
+// On success, the run.json is updated with the merge outcome and the
+// new state is returned.
+func (s *Service) PerformMerge(runID string, req MergeRequest) (*MergeResponse, error) {
+	if runID == "" {
+		return nil, errors.New("runview: run_id is required")
+	}
+	r, err := s.store.LoadRun(runID)
+	if err != nil {
+		return nil, err
+	}
+	if r.FinalCommit == "" || r.FinalBranch == "" {
+		return nil, fmt.Errorf("run %q has no storage branch — nothing to merge (FinalCommit=%q, FinalBranch=%q)", runID, r.FinalCommit, r.FinalBranch)
+	}
+	if r.MergeStatus == store.MergeStatusMerged {
+		return nil, fmt.Errorf("run %q is already merged into %q at %s", runID, r.MergedInto, r.MergedCommit)
+	}
+	repoRoot := r.RepoRoot
+	if repoRoot == "" {
+		// Mid-vintage runs may lack RepoRoot; fall back through the
+		// same chain runs_files.go uses.
+		repoRoot = gitlib.FindRepoRoot(r.WorkDir)
+	}
+	if repoRoot == "" {
+		return nil, fmt.Errorf("run %q has no resolvable repo root", runID)
+	}
+
+	strategy := req.Strategy
+	if strategy == "" {
+		strategy = store.MergeStrategySquash
+	}
+
+	message := req.CommitMessage
+	if message == "" && strategy == store.MergeStrategySquash {
+		title := r.Name
+		if title == "" {
+			title = r.WorkflowName
+		}
+		message = runtime.BuildSquashMessage(repoRoot, r.BaseCommit, r.FinalCommit, title)
+	}
+
+	res, mergeErr := runtime.PerformDeferredMerge(runtime.DeferredMergeRequest{
+		RepoRoot:      repoRoot,
+		Target:        req.MergeInto,
+		BranchToMerge: r.FinalBranch,
+		FinalSHA:      r.FinalCommit,
+		Strategy:      string(strategy),
+		Message:       message,
+	}, s.logger)
+	if mergeErr != nil {
+		// Persist the failure so the editor can show "Retry merge".
+		r.MergeStatus = store.MergeStatusFailed
+		if saveErr := s.store.SaveRun(r); saveErr != nil && s.logger != nil {
+			s.logger.Warn("runview: persist merge failure for %s: %v", runID, saveErr)
+		}
+		return nil, mergeErr
+	}
+
+	// Success: persist the new state.
+	r.MergedCommit = res.MergedCommit
+	r.MergedInto = res.MergedInto
+	r.MergeStrategy = store.MergeStrategy(res.Strategy)
+	r.MergeStatus = store.MergeStatusMerged
+	if err := s.store.SaveRun(r); err != nil {
+		return nil, fmt.Errorf("runview: persist merge result: %w", err)
+	}
+
+	return &MergeResponse{
+		MergedCommit:  r.MergedCommit,
+		MergedInto:    r.MergedInto,
+		MergeStrategy: r.MergeStrategy,
+		MergeStatus:   r.MergeStatus,
+	}, nil
+}
+
 // LaunchResult is returned by Launch on success.
 type LaunchResult struct {
 	RunID string
@@ -761,7 +887,12 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	}
 
 	runName := store.GenerateRunName(spec.FilePath + ":" + runID)
-	fin := finalizationOpts{mergeInto: spec.MergeInto, branchName: spec.BranchName}
+	fin := finalizationOpts{
+		mergeInto:     spec.MergeInto,
+		branchName:    spec.BranchName,
+		mergeStrategy: spec.MergeStrategy,
+		autoMerge:     spec.AutoMerge,
+	}
 
 	return s.spawnRun(parent, runID, wf, hash, spec.FilePath, runName, fin, executor, runLogger, spec.Timeout, false,
 		func(ctx context.Context, eng *runtime.Engine) error {
@@ -1002,8 +1133,10 @@ func (s *Service) spawnRun(
 // to thread through to the engine without inflating engineOptions's
 // signature for every callsite.
 type finalizationOpts struct {
-	mergeInto  string
-	branchName string
+	mergeInto     string
+	branchName    string
+	mergeStrategy store.MergeStrategy
+	autoMerge     bool
 }
 
 // engineOptions builds the standard option set for both Launch and
@@ -1038,6 +1171,12 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 	}
 	if fin.branchName != "" {
 		opts = append(opts, runtime.WithBranchName(fin.branchName))
+	}
+	if fin.mergeStrategy != "" {
+		opts = append(opts, runtime.WithMergeStrategy(string(fin.mergeStrategy)))
+	}
+	if fin.autoMerge {
+		opts = append(opts, runtime.WithAutoMerge(true))
 	}
 	return opts
 }

@@ -31,8 +31,10 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("GET /api/runs/{id}/artifacts/{node}/{version}", s.handleGetArtifact)
 	s.mux.HandleFunc("GET /api/runs/{id}/files", s.handleListRunFiles)
 	s.mux.HandleFunc("GET /api/runs/{id}/files/diff", s.handleGetRunFileDiff)
+	s.mux.HandleFunc("GET /api/runs/{id}/commits", s.handleListRunCommits)
 	s.mux.HandleFunc("POST /api/runs/{id}/cancel", s.handleCancelRun)
 	s.mux.HandleFunc("POST /api/runs/{id}/resume", s.handleResumeRun)
+	s.mux.HandleFunc("POST /api/runs/{id}/merge", s.handleMergeRun)
 	s.mux.HandleFunc("GET /api/ws/runs/{id}", s.handleRunWebSocket)
 }
 
@@ -44,12 +46,18 @@ type launchRunRequest struct {
 	Vars     map[string]string `json:"vars,omitempty"`
 	// Timeout is a Go-style duration string ("30m", "2h"). Empty disables.
 	Timeout string `json:"timeout,omitempty"`
-	// MergeInto is the worktree-finalization FF target. See
+	// MergeInto is the worktree-finalization merge target. See
 	// runview.LaunchSpec.MergeInto.
 	MergeInto string `json:"merge_into,omitempty"`
 	// BranchName overrides the storage branch name created on the
 	// worktree's HEAD. See runview.LaunchSpec.BranchName.
 	BranchName string `json:"branch_name,omitempty"`
+	// MergeStrategy is "squash" (default) or "merge". See
+	// runview.LaunchSpec.MergeStrategy.
+	MergeStrategy string `json:"merge_strategy,omitempty"`
+	// AutoMerge: when true, the engine performs the merge at end of
+	// run; when false (default), merge is deferred to a UI action.
+	AutoMerge bool `json:"auto_merge,omitempty"`
 }
 
 type launchRunResponse struct {
@@ -135,12 +143,14 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	ctx := context.Background()
 
 	res, err := s.runs.Launch(ctx, runview.LaunchSpec{
-		FilePath:   absPath,
-		RunID:      req.RunID,
-		Vars:       req.Vars,
-		Timeout:    timeout,
-		MergeInto:  req.MergeInto,
-		BranchName: req.BranchName,
+		FilePath:      absPath,
+		RunID:         req.RunID,
+		Vars:          req.Vars,
+		Timeout:       timeout,
+		MergeInto:     req.MergeInto,
+		BranchName:    req.BranchName,
+		MergeStrategy: store.MergeStrategy(req.MergeStrategy),
+		AutoMerge:     req.AutoMerge,
 	})
 	if err != nil {
 		if errors.Is(err, runtime.ErrServerDraining) {

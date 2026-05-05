@@ -125,12 +125,21 @@ type finalizeOptions struct {
 	// `iterion/run/<runName>` storage branch. Useful for landing each
 	// run on a stable name (e.g. `feat/auto-fixes`).
 	branchName string
-	// mergeInto controls the best-effort FF target:
-	//   ""        → fast-forward the originalBranch (default)
-	//   "none"    → skip the FF entirely
+	// mergeInto controls the best-effort merge target:
+	//   ""        → merge into the originalBranch (default)
+	//   "none"    → skip the merge entirely
 	//   "current" → same as default; explicit form
-	//   <branch>  → fast-forward this named branch instead of originalBranch
+	//   <branch>  → merge this named branch instead of originalBranch
 	mergeInto string
+	// mergeStrategy selects how the run's commits are applied to the
+	// merge target. "squash" collapses them into one commit; "merge"
+	// fast-forwards (preserves history). Empty defaults to "squash".
+	mergeStrategy string
+	// autoMerge gates whether the merge runs synchronously at the end
+	// of the run. When false, finalize stops after creating the storage
+	// branch and reports MergeStatus="pending" so the UI can drive a
+	// deferred merge.
+	autoMerge bool
 }
 
 // finalizeResult captures what the post-run promotion actually did so
@@ -142,9 +151,19 @@ type finalizeResult struct {
 	// FinalBranch is the persistent branch created on FinalCommit.
 	// Empty when no commits were produced (no branch needed).
 	FinalBranch string
-	// MergedInto is the branch the engine fast-forwarded to FinalCommit.
-	// Empty when the FF was skipped, opted out, or failed.
+	// MergedInto is the branch the engine merged into. Empty when the
+	// merge was skipped (autoMerge=false), opted out, or failed.
 	MergedInto string
+	// MergedCommit is the SHA on the target branch after the merge.
+	// Equals FinalCommit for the "merge" (FF) strategy; differs for
+	// "squash" (a fresh commit). Empty when no merge happened.
+	MergedCommit string
+	// MergeStatus mirrors store.MergeStatus values:
+	//   "pending"  — branch created, merge deferred to UI
+	//   "merged"   — merge succeeded
+	//   "skipped"  — explicit opt-out (mergeInto=none) or no commits
+	//   "failed"   — merge attempted but failed (logged, run still ok)
+	MergeStatus string
 }
 
 // finalizeWorktree promotes the worktree's HEAD onto a persistent
@@ -201,31 +220,81 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 		logger.Info("runtime: finalize: created branch %s → %s", finalName, shortSHA(finalSHA))
 	}
 
-	// 5. Decide the FF target branch.
+	// 5. Decide the merge target branch.
 	target := resolveMergeTarget(opts.mergeInto, wc.originalBranch)
 	if target == "" {
 		// Explicit opt-out, or no candidate (detached HEAD at start with
 		// no override). Branch alone is the result.
+		res.MergeStatus = "skipped"
 		if logger != nil {
-			logger.Info("runtime: finalize: skipping fast-forward (target empty); inspect %s and `git merge` when ready",
+			logger.Info("runtime: finalize: skipping merge (target empty); inspect %s and `git merge` when ready",
 				finalName)
 		}
 		return res
 	}
 
-	// 6. Run the guards + the FF itself.
-	if mergeErr := tryFastForward(wc.repoRoot, target, finalName, finalSHA, wc.originalBranch, logger); mergeErr != nil {
+	// 6. autoMerge gate: when false, leave the merge for a UI-driven
+	// action. Storage branch alone is the result with merge_status=pending.
+	if !opts.autoMerge {
+		res.MergeStatus = "pending"
 		if logger != nil {
-			logger.Warn("runtime: finalize: fast-forward of %s skipped: %v — `git merge %s` to bring it in",
-				target, mergeErr, finalName)
+			logger.Info("runtime: finalize: auto_merge disabled; merge of %s into %s pending UI confirmation",
+				finalName, target)
 		}
 		return res
 	}
-	res.MergedInto = target
-	if logger != nil {
-		logger.Info("runtime: finalize: fast-forwarded %s → %s", target, shortSHA(finalSHA))
+
+	// 7. Dispatch by strategy. Default empty → squash.
+	strategy := strings.ToLower(strings.TrimSpace(opts.mergeStrategy))
+	if strategy == "" {
+		strategy = "squash"
 	}
-	return res
+
+	switch strategy {
+	case "merge":
+		if mergeErr := tryFastForward(wc.repoRoot, target, finalName, finalSHA, wc.originalBranch, logger); mergeErr != nil {
+			res.MergeStatus = "failed"
+			if logger != nil {
+				logger.Warn("runtime: finalize: fast-forward of %s skipped: %v — `git merge %s` to bring it in",
+					target, mergeErr, finalName)
+			}
+			return res
+		}
+		res.MergedInto = target
+		res.MergedCommit = finalSHA
+		res.MergeStatus = "merged"
+		if logger != nil {
+			logger.Info("runtime: finalize: fast-forwarded %s → %s", target, shortSHA(finalSHA))
+		}
+		return res
+
+	case "squash":
+		message := buildSquashMessage(wc.repoRoot, wc.originalTip, finalSHA, opts.runName)
+		merged, mergeErr := trySquashMerge(wc.repoRoot, target, finalName, wc.originalBranch, message, logger)
+		if mergeErr != nil {
+			res.MergeStatus = "failed"
+			if logger != nil {
+				logger.Warn("runtime: finalize: squash of %s into %s failed: %v — branch %s preserved",
+					finalName, target, mergeErr, finalName)
+			}
+			return res
+		}
+		res.MergedInto = target
+		res.MergedCommit = merged
+		res.MergeStatus = "merged"
+		if logger != nil {
+			logger.Info("runtime: finalize: squashed %s into %s as %s", finalName, target, shortSHA(merged))
+		}
+		return res
+
+	default:
+		res.MergeStatus = "failed"
+		if logger != nil {
+			logger.Warn("runtime: finalize: unknown merge_strategy %q; storage branch %s preserved",
+				strategy, finalName)
+		}
+		return res
+	}
 }
 
 // resolveMergeTarget converts the launch-param merge_into value into a
@@ -270,8 +339,28 @@ func createBranchSafely(repoRoot, name, sha string, logger *iterlog.Logger) (boo
 // Returns nil on success; a descriptive error explaining why the FF was
 // skipped otherwise (callers log the reason).
 func tryFastForward(repoRoot, target, branchToMerge, finalSHA, originalBranch string, logger *iterlog.Logger) error {
-	// Guard 1: the user's currently-checked-out branch must still be
-	// originalBranch. If they switched mid-run, leave their state alone.
+	if err := guardMergeTarget(repoRoot, target, originalBranch, "FF"); err != nil {
+		return err
+	}
+
+	// FF must actually be possible (target is ancestor of finalSHA).
+	if err := gitCmd("-C", repoRoot, "merge-base", "--is-ancestor", "refs/heads/"+target, finalSHA).Run(); err != nil {
+		return fmt.Errorf("non-fast-forward (%q has commits not in run output)", target)
+	}
+
+	out, err := gitCmd("-C", repoRoot, "merge", "--ff-only", branchToMerge).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git merge --ff-only failed: %v\noutput: %s", err, string(out))
+	}
+	return nil
+}
+
+// guardMergeTarget enforces the prerequisites shared by every strategy
+// that touches the user's working tree: the originalBranch invariant
+// must hold, the target must equal the currently-checked-out branch,
+// and the working tree must be clean. opName is interpolated into error
+// messages so callers can distinguish FF / squash failures in logs.
+func guardMergeTarget(repoRoot, target, originalBranch, opName string) error {
 	currentBranch := ""
 	if out, err := gitCmd("-C", repoRoot, "symbolic-ref", "--quiet", "--short", "HEAD").Output(); err == nil {
 		currentBranch = strings.TrimSpace(string(out))
@@ -279,34 +368,196 @@ func tryFastForward(repoRoot, target, branchToMerge, finalSHA, originalBranch st
 	if originalBranch != "" && currentBranch != originalBranch {
 		return fmt.Errorf("checked-out branch changed from %q to %q since start", originalBranch, currentBranch)
 	}
-
-	// When the FF target is the currently-checked-out branch, we touch
-	// the working tree → require it to be clean. When the target is a
-	// different branch, we update its ref out-of-band via fetch-style
-	// — but that path is more invasive than the user asked for, so we
-	// skip non-current targets entirely with a clear error.
 	if target != currentBranch {
-		return fmt.Errorf("FF of %q skipped: only the currently-checked-out branch (%q) is supported", target, currentBranch)
+		return fmt.Errorf("%s of %q skipped: only the currently-checked-out branch (%q) is supported", opName, target, currentBranch)
 	}
-
-	// Guard 2: working tree must be clean.
 	if out, err := gitCmd("-C", repoRoot, "status", "--porcelain").Output(); err == nil {
 		if len(strings.TrimSpace(string(out))) > 0 {
 			return fmt.Errorf("main working tree has uncommitted changes")
 		}
 	}
-
-	// Guard 3: FF must actually be possible (target is ancestor of finalSHA).
-	if err := gitCmd("-C", repoRoot, "merge-base", "--is-ancestor", "refs/heads/"+target, finalSHA).Run(); err != nil {
-		return fmt.Errorf("non-fast-forward (%q has commits not in run output)", target)
-	}
-
-	// Run the merge.
-	out, err := gitCmd("-C", repoRoot, "merge", "--ff-only", branchToMerge).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("git merge --ff-only failed: %v\noutput: %s", err, string(out))
-	}
 	return nil
+}
+
+// trySquashMerge applies the storage branch's commits onto target as a
+// single squash commit. Returns the new commit SHA on the target branch
+// and nil on success, or "" + a descriptive error explaining why the
+// merge was skipped (callers log the reason).
+//
+// Guards mirror tryFastForward — see guardMergeTarget. Squash is
+// allowed even when target is not an ancestor of the source branch
+// (that's the whole point), so the FF-ancestry check is omitted.
+func trySquashMerge(repoRoot, target, branchToMerge, originalBranch, message string, logger *iterlog.Logger) (string, error) {
+	if err := guardMergeTarget(repoRoot, target, originalBranch, "squash"); err != nil {
+		return "", err
+	}
+
+	// Step 1: stage the squashed diff via `git merge --squash`. This
+	// updates the index + working tree to match branchToMerge but does
+	// NOT create a commit on its own; we follow up with `git commit`.
+	if out, err := gitCmd("-C", repoRoot, "merge", "--squash", branchToMerge).CombinedOutput(); err != nil {
+		// Best-effort cleanup so we don't leave a half-merged index
+		// behind. `git merge --abort` works on a half-applied non-FF
+		// merge; for `--squash` we use `git reset --merge` which
+		// restores index + working tree in the same shape.
+		_ = gitCmd("-C", repoRoot, "reset", "--merge").Run()
+		return "", fmt.Errorf("git merge --squash failed: %v\noutput: %s", err, string(out))
+	}
+
+	// Step 2: commit the squashed index. --no-edit prevents the editor
+	// from being invoked when MERGE_MSG was populated by --squash; -m
+	// supplies our aggregated message regardless.
+	if out, err := gitCmd("-C", repoRoot, "commit", "-m", message).CombinedOutput(); err != nil {
+		// `git commit` exits non-zero with "nothing to commit" if the
+		// squash diff was empty (e.g. branch already merged). Treat
+		// that as a soft success: nothing changed, target stays put.
+		// Anything else is a real failure — reset the index.
+		if strings.Contains(string(out), "nothing to commit") || strings.Contains(string(out), "no changes added to commit") {
+			return readHEAD(repoRoot), nil
+		}
+		_ = gitCmd("-C", repoRoot, "reset", "--merge").Run()
+		return "", fmt.Errorf("git commit (squash) failed: %v\noutput: %s", err, string(out))
+	}
+
+	// Read the new HEAD SHA — that's the squash commit on target.
+	newHead := readHEAD(repoRoot)
+	if newHead == "" {
+		return "", fmt.Errorf("squash succeeded but cannot read new HEAD")
+	}
+	return newHead, nil
+}
+
+// BuildSquashMessage is the public form of buildSquashMessage used by
+// the HTTP merge handler when the client did not supply its own message.
+// Identical semantics — see buildSquashMessage docs.
+func BuildSquashMessage(repoRoot, base, head, runName string) string {
+	return buildSquashMessage(repoRoot, base, head, runName)
+}
+
+// buildSquashMessage assembles the commit message for a squash merge:
+// title is the run/workflow label, body lists each squashed commit as
+// `- <shortSHA> <subject>` so the per-iteration history remains visible
+// even though the commits themselves are collapsed.
+func buildSquashMessage(repoRoot, base, head, runName string) string {
+	title := strings.TrimSpace(runName)
+	if title == "" {
+		title = "iterion run"
+	}
+
+	var body strings.Builder
+	body.WriteString(title)
+	body.WriteString("\n\n")
+
+	out, err := gitCmd("-C", repoRoot, "log", "--reverse", "--pretty=format:%h %s", base+".."+head).Output()
+	if err != nil {
+		body.WriteString("(squashed commits unavailable)\n")
+		return body.String()
+	}
+	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		body.WriteString("- ")
+		body.WriteString(line)
+		body.WriteString("\n")
+	}
+	return body.String()
+}
+
+// DeferredMergeRequest is the input for a UI-driven merge action: the
+// run is already finalized (worktree gone, storage branch created),
+// and the user picked the strategy + target after seeing the commits.
+//
+// Differs from finalizeOptions in that there is no run-time context
+// (no originalBranch invariant to check) — only the live state of the
+// repo at the moment of the click is relevant.
+type DeferredMergeRequest struct {
+	// RepoRoot is the absolute path of the main repo to merge into.
+	// The storage branch (BranchToMerge) must live inside it.
+	RepoRoot string
+	// Target is "current" / "" → currently-checked-out branch, or an
+	// explicit branch name (which must equal the currently-checked-out
+	// branch — see tryFastForward's guard rationale).
+	Target string
+	// BranchToMerge is the storage branch produced at finalization
+	// (e.g. "iterion/run/<friendly>"). Must point at a commit reachable
+	// from the run's FinalCommit.
+	BranchToMerge string
+	// FinalSHA is the SHA at the tip of BranchToMerge — passed in so
+	// the FF guard can verify ancestry without re-resolving it.
+	FinalSHA string
+	// Strategy is "squash" (default) or "merge". Empty → "squash".
+	Strategy string
+	// Message is the squash commit message. Ignored for "merge"
+	// strategy. Empty → caller-provided fallback applied below.
+	Message string
+}
+
+// DeferredMergeResult reports what happened. MergedCommit is the SHA on
+// the target branch after the merge (a fresh squash SHA or, for FF,
+// equal to FinalSHA).
+type DeferredMergeResult struct {
+	MergedCommit string
+	MergedInto   string
+	Strategy     string
+}
+
+// PerformDeferredMerge executes a UI-driven merge against a finalized
+// run's storage branch. Returns a populated result on success, or a
+// descriptive error explaining which guard rejected the merge — the
+// HTTP handler maps that error to a 4xx/5xx status without rescuing
+// partial state on the repo (the storage branch is preserved either
+// way).
+func PerformDeferredMerge(req DeferredMergeRequest, logger *iterlog.Logger) (DeferredMergeResult, error) {
+	if req.RepoRoot == "" {
+		return DeferredMergeResult{}, fmt.Errorf("repo root required")
+	}
+	if req.BranchToMerge == "" {
+		return DeferredMergeResult{}, fmt.Errorf("branch to merge required")
+	}
+	if req.FinalSHA == "" {
+		return DeferredMergeResult{}, fmt.Errorf("final SHA required")
+	}
+
+	currentBranch := ""
+	if out, err := gitCmd("-C", req.RepoRoot, "symbolic-ref", "--quiet", "--short", "HEAD").Output(); err == nil {
+		currentBranch = strings.TrimSpace(string(out))
+	}
+	target := resolveMergeTarget(req.Target, currentBranch)
+	if target == "" {
+		return DeferredMergeResult{}, fmt.Errorf("merge target empty (detached HEAD?)")
+	}
+
+	strategy := strings.ToLower(strings.TrimSpace(req.Strategy))
+	if strategy == "" {
+		strategy = "squash"
+	}
+
+	switch strategy {
+	case "merge":
+		// Pass currentBranch as originalBranch so the FF still requires
+		// the user to be on the merge target — same guard as in-engine.
+		if err := tryFastForward(req.RepoRoot, target, req.BranchToMerge, req.FinalSHA, currentBranch, logger); err != nil {
+			return DeferredMergeResult{}, err
+		}
+		return DeferredMergeResult{MergedCommit: req.FinalSHA, MergedInto: target, Strategy: strategy}, nil
+
+	case "squash":
+		message := req.Message
+		if message == "" {
+			message = "iterion run squash"
+		}
+		merged, err := trySquashMerge(req.RepoRoot, target, req.BranchToMerge, currentBranch, message, logger)
+		if err != nil {
+			return DeferredMergeResult{}, err
+		}
+		return DeferredMergeResult{MergedCommit: merged, MergedInto: target, Strategy: strategy}, nil
+
+	default:
+		return DeferredMergeResult{}, fmt.Errorf("unknown merge strategy %q", strategy)
+	}
 }
 
 // readHEAD returns the SHA of HEAD in the given worktree, or "" on error.

@@ -62,6 +62,14 @@ type RunOptions struct {
 	// branch is always created (GC guard); on collision a numeric
 	// suffix is appended.
 	BranchName string
+	// MergeStrategy selects how the run's commits are landed on the
+	// merge target when AutoMerge is on: "squash" (default) collapses
+	// into one commit; "merge" fast-forwards (preserves history).
+	MergeStrategy string
+	// AutoMerge toggles whether the engine performs the merge at end
+	// of run. CLI default is true (preserves prior behaviour); the
+	// editor sets false by default to defer merge to a UI action.
+	AutoMerge bool
 }
 
 // RunRun executes a workflow or recipe and reports the outcome.
@@ -177,6 +185,8 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 			runtime.WithRunName(runName),
 			runtime.WithMergeInto(opts.MergeInto),
 			runtime.WithBranchName(opts.BranchName),
+			runtime.WithMergeStrategy(opts.MergeStrategy),
+			runtime.WithAutoMerge(opts.AutoMerge),
 		)...,
 	)
 

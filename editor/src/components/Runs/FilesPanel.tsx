@@ -1,43 +1,23 @@
-import { useCallback, useMemo, useState } from "react";
-import {
-  ChevronLeftIcon,
-  FileTextIcon,
-  ReloadIcon,
-} from "@radix-ui/react-icons";
+import { useMemo } from "react";
+
+import { ReloadIcon } from "@radix-ui/react-icons";
 
 import { IconButton, Tooltip } from "@/components/ui";
 import { useRunFiles } from "@/hooks/useRunFiles";
-import { readBooleanFlag, writeBooleanFlag } from "@/lib/localStorageFlag";
 import type { RunFile, RunFileStatus } from "@/api/runs";
-
-// Collapsed mirrors VSCode's activity bar (~36px); expanded matches the
-// source-control panel's default. Drag-to-resize is deliberately omitted
-// — collapse/expand covers the 90% case and keeps the panel predictable.
-const COLLAPSED_PX = 36;
-const EXPANDED_PX = 280;
-const COLLAPSED_KEY = "run-console-v1.files-collapsed";
 
 interface FilesPanelProps {
   runId: string;
   onSelectFile: (file: RunFile) => void;
 }
 
+// FilesPanel renders just the modified-files list — wrapped by LeftPanel
+// which owns the collapse state, the panel chrome, and the tab strip.
+// Keep this component self-contained so it can be reused if we ever
+// want a "files" view outside the tabbed context.
 export default function FilesPanel({ runId, onSelectFile }: FilesPanelProps) {
   const { data, loading, error, refresh } = useRunFiles(runId);
-  const [collapsed, setCollapsed] = useState<boolean>(() =>
-    readBooleanFlag(COLLAPSED_KEY, true),
-  );
-  const toggleCollapsed = useCallback(() => {
-    setCollapsed((prev) => {
-      const next = !prev;
-      writeBooleanFlag(COLLAPSED_KEY, next);
-      return next;
-    });
-  }, []);
 
-  // Sort once per data change: untracked last, otherwise alphabetical.
-  // The grouping mirrors VSCode's behaviour where new files cluster at
-  // the bottom — easier to scan when the list is long.
   const sortedFiles = useMemo(() => {
     if (!data?.files) return [];
     return [...data.files].sort((a, b) => {
@@ -50,47 +30,15 @@ export default function FilesPanel({ runId, onSelectFile }: FilesPanelProps) {
 
   const fileCount = data?.files.length ?? 0;
 
-  if (collapsed) {
-    return (
-      <aside
-        style={{ width: COLLAPSED_PX }}
-        className="flex flex-col items-center border-r border-border-default bg-surface-1 py-2 gap-2 shrink-0"
-      >
-        <Tooltip content={`Show modified files (${fileCount})`}>
-          <button
-            type="button"
-            onClick={toggleCollapsed}
-            aria-label="Show modified files"
-            className="relative inline-flex h-7 w-7 items-center justify-center rounded-md text-fg-muted hover:bg-surface-2 hover:text-fg-default"
-          >
-            <FileTextIcon />
-            {fileCount > 0 && (
-              <span className="absolute -top-1 -right-1 inline-flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-accent px-1 text-[9px] font-semibold leading-none text-fg-onAccent">
-                {fileCount > 99 ? "99+" : fileCount}
-              </span>
-            )}
-          </button>
-        </Tooltip>
-      </aside>
-    );
-  }
-
   return (
-    <aside
-      style={{ width: EXPANDED_PX }}
-      className="flex flex-col border-r border-border-default bg-surface-1 shrink-0 min-h-0"
-    >
-      <header className="flex items-center gap-1 px-2 py-1.5 border-b border-border-default">
-        <FileTextIcon className="text-fg-muted shrink-0" />
-        <span className="text-xs font-semibold uppercase tracking-wide text-fg-default">
-          Files
-        </span>
+    <div className="flex flex-col min-h-0 flex-1">
+      <header className="flex items-center gap-1 px-2 py-1 border-b border-border-default">
         {fileCount > 0 && (
-          <span className="ml-1 inline-flex items-center justify-center rounded-md bg-surface-2 px-1.5 text-[10px] font-medium text-fg-muted">
+          <span className="inline-flex items-center justify-center rounded-md bg-surface-2 px-1.5 text-[10px] font-medium text-fg-muted">
             {fileCount}
           </span>
         )}
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto">
           <IconButton
             label="Refresh"
             size="sm"
@@ -99,14 +47,6 @@ export default function FilesPanel({ runId, onSelectFile }: FilesPanelProps) {
             disabled={loading}
           >
             <ReloadIcon className={loading ? "animate-spin" : undefined} />
-          </IconButton>
-          <IconButton
-            label="Hide files panel"
-            size="sm"
-            variant="ghost"
-            onClick={toggleCollapsed}
-          >
-            <ChevronLeftIcon />
           </IconButton>
         </div>
       </header>
@@ -141,7 +81,7 @@ export default function FilesPanel({ runId, onSelectFile }: FilesPanelProps) {
           </Tooltip>
         </footer>
       )}
-    </aside>
+    </div>
   );
 }
 
@@ -229,4 +169,3 @@ function dirname(path: string): string {
   const i = path.lastIndexOf("/");
   return i < 0 ? "" : path.slice(0, i);
 }
-

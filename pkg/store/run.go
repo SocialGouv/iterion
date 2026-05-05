@@ -89,7 +89,47 @@ type Run struct {
 	// after the run, or empty when the FF was skipped (dirty main,
 	// non-FF, branch divergence, opt-out, or detached HEAD at start).
 	MergedInto string `json:"merged_into,omitempty"`
+	// MergeStrategy is the strategy used (or planned) for landing the
+	// run's commits on the target branch: "squash" or "merge". "squash"
+	// collapses all run commits into one (default); "merge" fast-forwards
+	// the target onto FinalCommit, preserving history.
+	MergeStrategy MergeStrategy `json:"merge_strategy,omitempty"`
+	// AutoMerge captures the launch-time intent: when true, the engine
+	// applies MergeStrategy synchronously at end of run; when false, the
+	// merge is deferred to a UI-driven action (POST /api/runs/{id}/merge).
+	AutoMerge bool `json:"auto_merge,omitempty"`
+	// MergeStatus tracks whether the merge has happened yet:
+	//   "pending"  — storage branch created, merge awaiting user action
+	//   "merged"   — merge succeeded; MergedInto + MergedCommit are set
+	//   "skipped"  — explicit opt-out (merge_into="none") or no commits
+	//   "failed"   — auto-merge attempted but failed; user can retry
+	MergeStatus MergeStatus `json:"merge_status,omitempty"`
+	// MergedCommit is the SHA on the target branch after the merge.
+	// Equal to FinalCommit for "merge" (FF) strategy; a fresh squash
+	// commit SHA for "squash". Empty when not yet merged.
+	MergedCommit string `json:"merged_commit,omitempty"`
 }
+
+// MergeStrategy enumerates how the run's commits are landed on the
+// user's target branch at finalization (or via the deferred UI action).
+type MergeStrategy string
+
+const (
+	MergeStrategySquash MergeStrategy = "squash"
+	MergeStrategyMerge  MergeStrategy = "merge"
+)
+
+// MergeStatus enumerates the lifecycle of the merge step independently
+// from the overall RunStatus — a finished run may still have a pending
+// merge if AutoMerge was off.
+type MergeStatus string
+
+const (
+	MergeStatusPending MergeStatus = "pending"
+	MergeStatusMerged  MergeStatus = "merged"
+	MergeStatusSkipped MergeStatus = "skipped"
+	MergeStatusFailed  MergeStatus = "failed"
+)
 
 // Checkpoint captures the runtime state at a pause point (human node or
 // backend interaction), enabling exact resume without replaying upstream nodes.

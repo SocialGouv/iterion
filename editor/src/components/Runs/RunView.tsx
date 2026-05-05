@@ -17,7 +17,7 @@ import { buildExecutionsAt } from "@/lib/snapshotReducer";
 
 import EventLog from "./EventLog";
 import FileDiffDialog from "./FileDiffDialog";
-import FilesPanel from "./FilesPanel";
+import LeftPanel from "./LeftPanel";
 import NodeDetailPanel from "./NodeDetailPanel";
 import RunCanvasIR, { defaultIterationFor } from "./RunCanvasIR";
 import RunHeader from "./RunHeader";
@@ -170,6 +170,17 @@ export default function RunView() {
     };
   }, [runId, applySnapshot]);
 
+  // refreshSnapshot — used by post-merge UI to refetch run.json so
+  // RunHeader and the merge-state-driven UI catch up after a Commits-
+  // tab merge action lands. The WS pushes events but not run-meta
+  // updates, so a manual REST fetch is the simplest path.
+  const refreshSnapshot = useCallback(() => {
+    if (!runId) return;
+    getRun(runId)
+      .then(applySnapshot)
+      .catch(() => undefined);
+  }, [runId, applySnapshot]);
+
   const wsHandle = useRunWebSocket(runId);
   useRunToasts(events);
 
@@ -286,7 +297,12 @@ export default function RunView() {
           visible={liveSeq > 0}
         />
       <div className="flex-1 min-h-0 flex">
-        <FilesPanel runId={runId} onSelectFile={setDiffFile} />
+        <LeftPanel
+          runId={runId}
+          run={snapshot.run}
+          onSelectFile={setDiffFile}
+          onMergeComplete={refreshSnapshot}
+        />
         <div className="flex-1 min-h-0 flex flex-col">
           <Group
             orientation="vertical"
