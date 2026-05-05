@@ -65,7 +65,6 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.43.0 // indirect
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
-	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	golang.org/x/crypto v0.50.0 // indirect
 	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
@@ -91,6 +90,7 @@ require (
 )
 
 require (
-	github.com/SocialGouv/claw-code-go v0.0.0-20260502095427-4bab5403e2ec
+	github.com/SocialGouv/claw-code-go v0.0.0-20260505165300-23898a94af2e
 	github.com/prometheus/client_golang v1.23.2
+	go.yaml.in/yaml/v2 v2.4.4
 )
