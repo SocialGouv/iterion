@@ -74,21 +74,68 @@ export default function EventLog({
   // flight.
   const isScrollingRef = useRef<boolean>(false);
 
-  // Annotate every event with its iteration index up-front so the
-  // virtual list can filter/select in O(1) downstream.
-  const annotated = useMemo<AnnotatedEvent[]>(() => {
-    const counts = new Map<string, number>();
-    return events.map((e) => ({
-      event: e,
-      iteration: stepIteration(counts, e),
-      preview: previewData(e.data),
-    }));
-  }, [events]);
+  // Incremental cache: when `events` only grows by appending at the
+  // tail (the common live case once history is replayed), reuse the
+  // previously-annotated prefix and only annotate the new tail. Falls
+  // back to a full recompute when the array prefix changes (snapshot
+  // replay, MAX_EVENTS eviction, runId switch). This drops per-event
+  // cost from O(N) to O(K) where K is the number of new events.
+  const cacheRef = useRef<{
+    events: RunEvent[];
+    annotated: AnnotatedEvent[];
+    counts: Map<string, number>;
+    typeCounts: Map<string, number>;
+  } | null>(null);
 
-  const typeCounts = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const e of events) m.set(e.type, (m.get(e.type) ?? 0) + 1);
-    return m;
+  const { annotated, typeCounts } = useMemo(() => {
+    const cache = cacheRef.current;
+    let baseAnnotated: AnnotatedEvent[];
+    let counts: Map<string, number>;
+    let typeCountsMap: Map<string, number>;
+    let startIdx = 0;
+
+    // Reuse the cache when the live events array has only grown at the
+    // tail. A snapshot replay produces a fresh `events` array whose
+    // RunEvent objects are deserialized from scratch — the reference
+    // check at index 0 detects that boundary and forces a full
+    // recompute. The cached array is mutated in place below; nothing
+    // outside this useMemo retains it across renders.
+    const cachedLen = cache?.annotated.length ?? 0;
+    const reusable =
+      cache !== null &&
+      cachedLen > 0 &&
+      cachedLen <= events.length &&
+      cache.annotated[0]!.event === events[0] &&
+      cache.annotated[cachedLen - 1]!.event === events[cachedLen - 1];
+
+    if (reusable) {
+      baseAnnotated = cache.annotated;
+      counts = new Map(cache.counts);
+      typeCountsMap = new Map(cache.typeCounts);
+      startIdx = cachedLen;
+    } else {
+      baseAnnotated = [];
+      counts = new Map<string, number>();
+      typeCountsMap = new Map<string, number>();
+    }
+
+    for (let i = startIdx; i < events.length; i++) {
+      const e = events[i]!;
+      baseAnnotated.push({
+        event: e,
+        iteration: stepIteration(counts, e),
+        preview: previewData(e.data),
+      });
+      typeCountsMap.set(e.type, (typeCountsMap.get(e.type) ?? 0) + 1);
+    }
+
+    cacheRef.current = {
+      events,
+      annotated: baseAnnotated,
+      counts,
+      typeCounts: typeCountsMap,
+    };
+    return { annotated: baseAnnotated, typeCounts: typeCountsMap };
   }, [events]);
 
   const knownTypes = useMemo(
@@ -114,7 +161,10 @@ export default function EventLog({
         return true;
       return false;
     });
-  }, [annotated, selectedExecutionId, activeTypes, search]);
+    // `annotated` is mutated in place when the cache extends — depend
+    // on `events` so this memo invalidates on every batch flush even
+    // when the array reference is unchanged.
+  }, [annotated, events, selectedExecutionId, activeTypes, search]);
 
   const handleToggleFollow = (next: boolean) => {
     onToggleFollow(next);

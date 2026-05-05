@@ -68,6 +68,10 @@ interface RunStoreState {
 
   applySnapshot: (snap: RunSnapshot) => void;
   applyEvent: (evt: RunEvent) => void;
+  applyEventsBatch: (evts: RunEvent[]) => void;
+  // Optimistic header status flip — used after Resume/Cancel HTTP calls
+  // so the UI doesn't wait for the corresponding event to arrive.
+  setRunStatus: (status: RunHeader["status"]) => void;
 
   setLogSubscribed: (subscribed: boolean) => void;
   applyLogChunk: (chunk: { offset: number; text: string; total?: number }) => void;
@@ -96,7 +100,7 @@ const initialState = {
   log: initialLogState,
 };
 
-export const useRunStore = create<RunStoreState>((set, get) => ({
+export const useRunStore = create<RunStoreState>((set) => ({
   ...initialState,
 
   setRunId: (id) => set({ runId: id }),
@@ -126,201 +130,37 @@ export const useRunStore = create<RunStoreState>((set, get) => ({
   },
 
   applyEvent: (evt) => {
-    const state = get();
+    set((state) => reduceEvents(state, [evt]));
+  },
 
-    // Append to history (capped). Maintain seq-ascending order; reject
-    // out-of-order replays so the reducer stays deterministic.
-    const tail = state.events[state.events.length - 1];
-    if (tail && evt.seq <= tail.seq) {
-      return;
-    }
-    const events =
-      state.events.length >= MAX_EVENTS
-        ? [...state.events.slice(state.events.length - MAX_EVENTS + 1), evt]
-        : [...state.events, evt];
+  applyEventsBatch: (evts) => {
+    if (evts.length === 0) return;
+    set((state) => reduceEvents(state, evts));
+  },
 
-    const branch = evt.branch_id || "main";
-    const next: Partial<RunStoreState> = { events };
-    let executionsById = state.executionsById;
-    let snapshot = state.snapshot;
-    let pendingHumanInput = state.pendingHumanInput;
-
-    switch (evt.type) {
-      case "node_started": {
-        if (!evt.node_id) break;
-        const iter = nextIteration(executionsById, branch, evt.node_id);
-        const id = makeExecutionId(branch, evt.node_id, iter);
-        const kind = (evt.data?.kind as string) ?? undefined;
-        const exec: ExecutionState = {
-          execution_id: id,
-          ir_node_id: evt.node_id,
-          branch_id: branch,
-          loop_iteration: iter,
-          status: "running",
-          kind,
-          started_at: evt.timestamp,
-          current_event_seq: evt.seq,
-          first_seq: evt.seq,
-          last_seq: evt.seq,
-        };
-        executionsById = new Map(executionsById);
-        executionsById.set(id, exec);
-        break;
-      }
-      case "node_finished": {
-        const exec = currentExec(executionsById, branch, evt.node_id);
-        if (!exec) break;
-        executionsById = new Map(executionsById);
-        executionsById.set(exec.execution_id, {
-          ...exec,
-          status: exec.status === "running" ? "finished" : exec.status,
-          finished_at: evt.timestamp,
-          current_event_seq: evt.seq,
-          last_seq: evt.seq,
-        });
-        break;
-      }
-      case "artifact_written": {
-        const exec = currentExec(executionsById, branch, evt.node_id);
-        if (!exec) break;
-        const v = numericVersion(evt.data?.version);
-        executionsById = new Map(executionsById);
-        executionsById.set(exec.execution_id, {
-          ...exec,
-          last_artifact_version: v ?? exec.last_artifact_version,
-          current_event_seq: evt.seq,
-          last_seq: evt.seq,
-        });
-        break;
-      }
-      case "human_input_requested": {
-        const exec = currentExec(executionsById, branch, evt.node_id);
-        if (exec) {
-          executionsById = new Map(executionsById);
-          executionsById.set(exec.execution_id, {
-            ...exec,
-            status: "paused_waiting_human",
-            current_event_seq: evt.seq,
-            last_seq: evt.seq,
-          });
-        }
-        pendingHumanInput = {
-          interaction_id: evt.data?.interaction_id as string | undefined,
-          questions: evt.data?.questions as Record<string, unknown> | undefined,
-          raw: evt,
-        };
-        break;
-      }
-      case "run_resumed": {
-        // Flip the most recently paused execution back to running.
-        for (let i = snapshot ? snapshot.executions.length - 1 : -1; i >= 0; i--) {
-          // walk newest-first via Map iteration; cheaper than rebuilding order
-          break;
-        }
-        const last = lastPausedExec(executionsById);
-        if (last) {
-          executionsById = new Map(executionsById);
-          executionsById.set(last.execution_id, {
-            ...last,
-            status: "running",
-            current_event_seq: evt.seq,
-            last_seq: evt.seq,
-          });
-        }
-        pendingHumanInput = null;
-        break;
-      }
-      case "run_failed": {
-        const exec = currentExec(executionsById, branch, evt.node_id);
-        if (exec) {
-          executionsById = new Map(executionsById);
-          executionsById.set(exec.execution_id, {
-            ...exec,
-            status: "failed",
-            finished_at: exec.finished_at ?? evt.timestamp,
-            error: (evt.data?.error as string) ?? exec.error,
-            current_event_seq: evt.seq,
-            last_seq: evt.seq,
-          });
-        }
-        break;
-      }
-      case "run_started":
-      case "branch_started":
-      case "branch_finished":
-      case "edge_selected":
-      case "join_ready":
-      case "budget_warning":
-      case "budget_exceeded":
-      case "run_paused":
-      case "run_finished":
-      case "run_cancelled":
-      default:
-        break;
-    }
-
-    // Terminal-status reducer: the snapshot's run.status is set at
-    // subscribe time from disk and only the run-level events flip it
-    // afterwards. Without this branch, a run that finishes mid-WS
-    // session keeps showing "running" because the persisted status
-    // update lands too late for the catch-up snapshot but the live
-    // events arrive in-order.
-    let runStatusOverride: RunHeader["status"] | null = null;
-    let runErrorOverride: string | null = null;
-    switch (evt.type) {
-      case "run_finished":
-        runStatusOverride = "finished";
-        break;
-      case "run_failed":
-        runStatusOverride = "failed_resumable";
-        runErrorOverride = (evt.data?.error as string) ?? null;
-        break;
-      case "run_cancelled":
-        runStatusOverride = "cancelled";
-        break;
-      case "run_paused":
-        runStatusOverride = "paused_waiting_human";
-        break;
-      case "run_resumed":
-        runStatusOverride = "running";
-        break;
-      default:
-        break;
-    }
-
-    if (executionsById !== state.executionsById && snapshot) {
-      const orderedIds = orderedExecutionIds(state.snapshot, executionsById);
-      const run =
-        runStatusOverride !== null
-          ? {
-              ...snapshot.run,
-              status: runStatusOverride,
-              error: runErrorOverride ?? snapshot.run.error,
-            }
-          : snapshot.run;
-      snapshot = {
-        ...snapshot,
-        run,
-        executions: orderedIds.map((id) => executionsById.get(id)!),
-        last_seq: evt.seq,
+  setRunStatus: (status) => {
+    set((state) => {
+      if (!state.snapshot) return state;
+      const current = state.snapshot.run.status;
+      if (current === status) return state;
+      // Flipping back to "running" implies a fresh execution pass: clear
+      // the prior finished_at + error so the duration ticker (header)
+      // and status banners don't carry stale data.
+      const reset =
+        status === "running"
+          ? { finished_at: undefined, error: undefined }
+          : null;
+      return {
+        snapshot: {
+          ...state.snapshot,
+          run: {
+            ...state.snapshot.run,
+            status,
+            ...(reset ?? {}),
+          },
+        },
       };
-      next.snapshot = snapshot;
-      next.executionsById = executionsById;
-    } else if (snapshot) {
-      const run =
-        runStatusOverride !== null
-          ? {
-              ...snapshot.run,
-              status: runStatusOverride,
-              error: runErrorOverride ?? snapshot.run.error,
-            }
-          : snapshot.run;
-      next.snapshot = { ...snapshot, run, last_seq: evt.seq };
-    }
-    if (pendingHumanInput !== state.pendingHumanInput) {
-      next.pendingHumanInput = pendingHumanInput;
-    }
-    set(next);
+    });
   },
 
   setLogSubscribed: (subscribed) =>
@@ -407,6 +247,222 @@ export function selectRunningExecution(
 // ---------------------------------------------------------------------------
 // Helpers (mirror of the Go reducer in pkg/runview/snapshot.go)
 // ---------------------------------------------------------------------------
+
+type ReduceInput = Pick<
+  RunStoreState,
+  "events" | "executionsById" | "snapshot" | "pendingHumanInput"
+>;
+
+// reduceEvents applies a contiguous run of events in a single pass and
+// returns a partial state diff for zustand. Splitting the per-event
+// switch out of the store closure lets us batch live and replayed
+// events alike — replay used to thrash O(N²) due to `applyEvent` setting
+// state once per event.
+function reduceEvents(
+  state: ReduceInput,
+  evts: RunEvent[],
+): Partial<RunStoreState> {
+  // Drop out-of-order events relative to what's already in store, but
+  // keep processing the rest of the batch — each individual event
+  // remains an idempotent step on top of the running state.
+  const tail = state.events[state.events.length - 1];
+  let lastSeq = tail?.seq ?? -1;
+
+  let executionsById = state.executionsById;
+  let snapshot = state.snapshot;
+  let pendingHumanInput = state.pendingHumanInput;
+  // Clone the executions map only when the first mutation happens; if
+  // the whole batch only contains pass-through event types we keep the
+  // identity stable so React skips re-renders downstream.
+  let execMutated = false;
+  const ensureExecCopy = () => {
+    if (!execMutated) {
+      executionsById = new Map(executionsById);
+      execMutated = true;
+    }
+  };
+
+  let runStatusOverride: RunHeader["status"] | null = null;
+  let runErrorOverride: string | null = null;
+
+  // Accumulate appended events in a separate array so we only build the
+  // final history slice once (capped at MAX_EVENTS).
+  const appended: RunEvent[] = [];
+
+  for (const evt of evts) {
+    if (evt.seq <= lastSeq) continue;
+    lastSeq = evt.seq;
+    appended.push(evt);
+
+    const branch = evt.branch_id || "main";
+    switch (evt.type) {
+      case "node_started": {
+        if (!evt.node_id) break;
+        const iter = nextIteration(executionsById, branch, evt.node_id);
+        const id = makeExecutionId(branch, evt.node_id, iter);
+        const kind = (evt.data?.kind as string) ?? undefined;
+        ensureExecCopy();
+        executionsById.set(id, {
+          execution_id: id,
+          ir_node_id: evt.node_id,
+          branch_id: branch,
+          loop_iteration: iter,
+          status: "running",
+          kind,
+          started_at: evt.timestamp,
+          current_event_seq: evt.seq,
+          first_seq: evt.seq,
+          last_seq: evt.seq,
+        });
+        break;
+      }
+      case "node_finished": {
+        const exec = currentExec(executionsById, branch, evt.node_id);
+        if (!exec) break;
+        ensureExecCopy();
+        executionsById.set(exec.execution_id, {
+          ...exec,
+          status: exec.status === "running" ? "finished" : exec.status,
+          finished_at: evt.timestamp,
+          current_event_seq: evt.seq,
+          last_seq: evt.seq,
+        });
+        break;
+      }
+      case "artifact_written": {
+        const exec = currentExec(executionsById, branch, evt.node_id);
+        if (!exec) break;
+        const v = numericVersion(evt.data?.version);
+        ensureExecCopy();
+        executionsById.set(exec.execution_id, {
+          ...exec,
+          last_artifact_version: v ?? exec.last_artifact_version,
+          current_event_seq: evt.seq,
+          last_seq: evt.seq,
+        });
+        break;
+      }
+      case "human_input_requested": {
+        const exec = currentExec(executionsById, branch, evt.node_id);
+        if (exec) {
+          ensureExecCopy();
+          executionsById.set(exec.execution_id, {
+            ...exec,
+            status: "paused_waiting_human",
+            current_event_seq: evt.seq,
+            last_seq: evt.seq,
+          });
+        }
+        pendingHumanInput = {
+          interaction_id: evt.data?.interaction_id as string | undefined,
+          questions: evt.data?.questions as Record<string, unknown> | undefined,
+          raw: evt,
+        };
+        break;
+      }
+      case "run_resumed": {
+        const last = lastPausedExec(executionsById);
+        if (last) {
+          ensureExecCopy();
+          executionsById.set(last.execution_id, {
+            ...last,
+            status: "running",
+            current_event_seq: evt.seq,
+            last_seq: evt.seq,
+          });
+        }
+        pendingHumanInput = null;
+        runStatusOverride = "running";
+        break;
+      }
+      case "run_failed": {
+        const exec = currentExec(executionsById, branch, evt.node_id);
+        if (exec) {
+          ensureExecCopy();
+          executionsById.set(exec.execution_id, {
+            ...exec,
+            status: "failed",
+            finished_at: exec.finished_at ?? evt.timestamp,
+            error: (evt.data?.error as string) ?? exec.error,
+            current_event_seq: evt.seq,
+            last_seq: evt.seq,
+          });
+        }
+        runStatusOverride = "failed_resumable";
+        runErrorOverride = (evt.data?.error as string) ?? null;
+        break;
+      }
+      case "run_finished":
+        runStatusOverride = "finished";
+        break;
+      case "run_cancelled":
+        runStatusOverride = "cancelled";
+        break;
+      case "run_paused":
+        runStatusOverride = "paused_waiting_human";
+        break;
+      default:
+        break;
+    }
+  }
+
+  if (appended.length === 0) {
+    // Nothing new — keep the store identity stable so subscribers don't
+    // re-render. (Catches the all-stale-replay edge case.)
+    return {};
+  }
+
+  // Build the events array in a single allocation, applying the
+  // MAX_EVENTS cap once at the end of the batch.
+  let events: RunEvent[];
+  const total = state.events.length + appended.length;
+  if (total <= MAX_EVENTS) {
+    events = state.events.concat(appended);
+  } else {
+    const dropFromState = Math.min(state.events.length, total - MAX_EVENTS);
+    const carry = state.events.slice(dropFromState);
+    if (carry.length + appended.length > MAX_EVENTS) {
+      // Batch alone overshoots the cap — keep only its tail.
+      events = appended.slice(appended.length - MAX_EVENTS);
+    } else {
+      events = carry.concat(appended);
+    }
+  }
+
+  const next: Partial<RunStoreState> = { events };
+
+  if (snapshot) {
+    const lastEvt = appended[appended.length - 1]!;
+    const baseRun =
+      runStatusOverride !== null
+        ? {
+            ...snapshot.run,
+            status: runStatusOverride,
+            error: runErrorOverride ?? snapshot.run.error,
+          }
+        : snapshot.run;
+    if (execMutated) {
+      const orderedIds = orderedExecutionIds(state.snapshot, executionsById);
+      snapshot = {
+        ...snapshot,
+        run: baseRun,
+        executions: orderedIds.map((id) => executionsById.get(id)!),
+        last_seq: lastEvt.seq,
+      };
+      next.snapshot = snapshot;
+      next.executionsById = executionsById;
+    } else {
+      next.snapshot = { ...snapshot, run: baseRun, last_seq: lastEvt.seq };
+    }
+  } else if (execMutated) {
+    next.executionsById = executionsById;
+  }
+
+  if (pendingHumanInput !== state.pendingHumanInput) {
+    next.pendingHumanInput = pendingHumanInput;
+  }
+  return next;
+}
 
 function makeExecutionId(branch: string, nodeId: string, iteration: number): string {
   return `exec:${branch || "main"}:${nodeId}:${iteration}`;

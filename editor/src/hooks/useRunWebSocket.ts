@@ -59,10 +59,32 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
 
     const setWsState = useRunStore.getState().setWsState;
     const applySnapshot = useRunStore.getState().applySnapshot;
-    const applyEvent = useRunStore.getState().applyEvent;
+    const applyEventsBatch = useRunStore.getState().applyEventsBatch;
     const applyLogChunk = useRunStore.getState().applyLogChunk;
     const markLogTerminated = useRunStore.getState().markLogTerminated;
     const setLogSubscribed = useRunStore.getState().setLogSubscribed;
+
+    // Coalesce events that arrive in the same microtask before pushing
+    // them to the store. Replay (from_seq=0) on a long run can dump
+    // hundreds–thousands of envelopes onto the message queue back-to-back;
+    // committing them one-by-one through `applyEvent` triggered an
+    // O(N²) array spread plus a re-render per event. Batching turns
+    // that into a single state mutation per JS task.
+    const eventBuffer: RunEvent[] = [];
+    let flushScheduled = false;
+    const flushEvents = () => {
+      flushScheduled = false;
+      if (eventBuffer.length === 0) return;
+      const drained = eventBuffer.splice(0, eventBuffer.length);
+      applyEventsBatch(drained);
+    };
+    const queueEvent = (evt: RunEvent) => {
+      eventBuffer.push(evt);
+      if (!flushScheduled) {
+        flushScheduled = true;
+        queueMicrotask(flushEvents);
+      }
+    };
 
     const connect = () => {
       if (!aliveRef.current) return;
@@ -112,10 +134,13 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
           const env = JSON.parse(msgEv.data) as WsEnvelope;
           switch (env.type) {
             case "snapshot":
+              // Drain any queued events before swapping the snapshot
+              // so they aren't applied against the new (empty) base.
+              flushEvents();
               applySnapshot(env.payload as RunSnapshot);
               break;
             case "event":
-              applyEvent(env.payload as RunEvent);
+              queueEvent(env.payload as RunEvent);
               break;
             case "log_chunk":
               applyLogChunk(env.payload as LogChunkPayload);
@@ -173,6 +198,9 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
 
     return () => {
       aliveRef.current = false;
+      // Drain any events buffered for the next microtask so we don't
+      // lose them when React unmounts the hook before the flush fires.
+      flushEvents();
       if (reconnectTimer.current) {
         clearTimeout(reconnectTimer.current);
         reconnectTimer.current = null;

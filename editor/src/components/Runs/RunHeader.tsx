@@ -2,8 +2,10 @@ import { useState } from "react";
 import { useLocation } from "wouter";
 
 import type { RunHeader as RunHeaderType } from "@/api/runs";
-import { cancelRun, resumeRun } from "@/api/runs";
+import { cancelRun } from "@/api/runs";
 import { Button, StatusBadge } from "@/components/ui";
+
+import ResumeDialog from "./ResumeDialog";
 
 interface Props {
   run: RunHeaderType;
@@ -15,6 +17,7 @@ export default function RunHeader({ run, active, wsState }: Props) {
   const [, setLocation] = useLocation();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [resumeOpen, setResumeOpen] = useState(false);
 
   // canCancel includes "queued" so cloud-mode runs sitting on the NATS
   // queue can be aborted before a runner picks them up. The "active"
@@ -35,18 +38,6 @@ export default function RunHeader({ run, active, wsState }: Props) {
     setError(null);
     try {
       await cancelRun(run.id);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const onResume = async (force = false) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await resumeRun(run.id, { force });
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -104,29 +95,26 @@ export default function RunHeader({ run, active, wsState }: Props) {
             </Button>
           )}
           {canResume && (
-            <>
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => void onResume(false)}
-                disabled={busy}
-              >
-                Resume
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => void onResume(true)}
-                disabled={busy}
-                title="Resume even if the workflow file has changed since launch (--force)"
-              >
-                Force
-              </Button>
-            </>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => setResumeOpen(true)}
+              disabled={busy}
+              title="Resume this run from its last checkpoint"
+            >
+              Resume…
+            </Button>
           )}
         </div>
       </div>
       {showFinalization && <FinalizationRow run={run} />}
+      {canResume && (
+        <ResumeDialog
+          run={run}
+          open={resumeOpen}
+          onOpenChange={setResumeOpen}
+        />
+      )}
     </header>
   );
 }
