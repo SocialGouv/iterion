@@ -38,13 +38,17 @@ export function iterationColor(index: number): string {
 // canvas. `model`/`backend`/`reasoningEffort` reflect the active value
 // (runtime override when present, declared value otherwise). The
 // `runtimeOverridden*` flags signal divergence from the declared value
-// so the UI can show a "live" badge.
+// so the UI can show a "live" badge. `effortIsResolvedDefault` is true
+// when `reasoningEffort` was filled from the provider's documented
+// default (registry) rather than declared in the .iter or set at
+// runtime — used to render the badge in attenuated style.
 export interface LLMMeta {
   model?: string;
   backend?: string;
   reasoningEffort?: string;
   runtimeOverriddenModel?: boolean;
   runtimeOverriddenEffort?: boolean;
+  effortIsResolvedDefault?: boolean;
 }
 
 interface IRNodeData {
@@ -151,6 +155,7 @@ export default function IRNode({ data }: NodeProps) {
               <EffortBar
                 level={meta.reasoningEffort}
                 live={meta.runtimeOverriddenEffort}
+                muted={meta.effortIsResolvedDefault}
               />
             )}
           </div>

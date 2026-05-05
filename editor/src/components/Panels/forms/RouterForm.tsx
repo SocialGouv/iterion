@@ -3,7 +3,7 @@ import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { useSchemaPromptCreators } from "@/hooks/useSchemaPromptCreators";
-import { useEffortCapabilities } from "@/hooks/useEffortCapabilities";
+import { effortBackendKey, useEffortCapabilities } from "@/hooks/useEffortCapabilities";
 import { usePromptEditorMount } from "@/hooks/usePromptEditorMount";
 import type { ReasoningEffort, RouterDecl, RouterMode } from "@/api/types";
 import { getAllNodeNames } from "@/lib/defaults";
@@ -39,9 +39,8 @@ export default function RouterForm({ decl }: Props) {
 
   // Mirror AgentForm: derive effort options from the model registry when
   // mode=llm, falling back to the static list while loading or when the
-  // backend/model is empty. The endpoint accepts "claw" as the empty-backend
-  // alias since iterion routes there by default.
-  const effortBackend = decl.backend?.trim() || "claw";
+  // backend/model is empty.
+  const effortBackend = effortBackendKey(decl.backend);
   const { capabilities: effortCaps, loading: effortLoading } = useEffortCapabilities(
     decl.mode === "llm" ? effortBackend : undefined,
     decl.mode === "llm" ? decl.model : undefined,

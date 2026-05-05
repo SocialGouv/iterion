@@ -17,6 +17,11 @@ import type {
 } from "@/api/runs";
 import { getRunWorkflow } from "@/api/runs";
 import { autoLayout } from "@/lib/autoLayout";
+import {
+  effortBackendKey,
+  fetchAndCacheEffortCapabilities,
+  getCachedEffortCapabilities,
+} from "@/hooks/useEffortCapabilities";
 
 import IRNode, { iterationColor, type LLMMeta } from "./IRNode";
 
@@ -47,6 +52,7 @@ interface Props {
 function buildLLMMeta(
   node: WireNode,
   override: { model?: string; reasoning_effort?: string } | undefined,
+  defaultEffortByPair: Map<string, string>,
 ): LLMMeta | undefined {
   const declared = {
     model: node.model,
@@ -57,7 +63,23 @@ function buildLLMMeta(
     return undefined;
   }
   const activeModel = override?.model ?? declared.model;
-  const activeEffort = override?.reasoning_effort ?? declared.effort;
+  // Effective effort priority:
+  //   1. runtime override (event llm_request)
+  //   2. value declared in the .iter (post-expansion would only show up
+  //      via the override path, so a literal here is what the user wrote)
+  //   3. provider's documented default from the registry — flagged so
+  //      the badge renders attenuated.
+  let activeEffort = override?.reasoning_effort ?? declared.effort;
+  let effortIsResolvedDefault = false;
+  if (!activeEffort && activeModel) {
+    const fallback = defaultEffortByPair.get(
+      `${effortBackendKey(declared.backend)} ${activeModel}`,
+    );
+    if (fallback) {
+      activeEffort = fallback;
+      effortIsResolvedDefault = true;
+    }
+  }
   return {
     model: activeModel,
     backend: declared.backend,
@@ -68,6 +90,7 @@ function buildLLMMeta(
       !!override?.reasoning_effort &&
       !!declared.effort &&
       override.reasoning_effort !== declared.effort,
+    effortIsResolvedDefault,
   };
 }
 
@@ -125,6 +148,14 @@ export default function RunCanvasIR({
   const [activeFilters, setActiveFilters] = useState<Set<StatusFilter>>(
     () => new Set(),
   );
+  // Provider-documented default reasoning_effort, keyed by
+  // `${backend} ${model}`. Populated once the workflow lands by
+  // walking unique pairs and asking /api/effort-capabilities. Used
+  // by buildLLMMeta to render an attenuated badge when the .iter
+  // declares no effort.
+  const [defaultEffortByPair, setDefaultEffortByPair] = useState<
+    Map<string, string>
+  >(() => new Map());
   const reactFlow = useReactFlow();
 
   useEffect(() => {
@@ -144,6 +175,57 @@ export default function RunCanvasIR({
       cancelled = true;
     };
   }, [runId]);
+
+  // Prefetch provider effort defaults for each unique (backend, model)
+  // pair on the IR. Shares the cache populated by AgentForm so the
+  // editor side panel and the run canvas don't double-fetch. Already-
+  // cached pairs are seeded synchronously so the attenuated badge
+  // renders on first paint; the rest update as fetches resolve.
+  useEffect(() => {
+    if (!wf) return;
+    let cancelled = false;
+    const seen = new Set<string>();
+    const toFetch: Array<{ key: string; backend: string; model: string }> = [];
+    setDefaultEffortByPair((prev) => {
+      let mutated = false;
+      const next = new Map(prev);
+      for (const n of wf.nodes) {
+        if (!n.model) continue;
+        const backend = effortBackendKey(n.backend);
+        const key = `${backend} ${n.model}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const cached = getCachedEffortCapabilities(backend, n.model);
+        if (cached) {
+          if (cached.default && next.get(key) !== cached.default) {
+            next.set(key, cached.default);
+            mutated = true;
+          }
+        } else {
+          toFetch.push({ key, backend, model: n.model });
+        }
+      }
+      return mutated ? next : prev;
+    });
+    for (const { key, backend, model } of toFetch) {
+      // Capability lookup is best-effort; on failure the canvas
+      // simply renders no badge for unset effort.
+      fetchAndCacheEffortCapabilities(backend, model)
+        .then((caps) => {
+          if (cancelled || !caps.default) return;
+          setDefaultEffortByPair((prev) => {
+            if (prev.get(key) === caps.default) return prev;
+            const next = new Map(prev);
+            next.set(key, caps.default);
+            return next;
+          });
+        })
+        .catch(() => {});
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [wf]);
 
   // Group executions by IR node id once; both the layout and the
   // visual-patch effects below reuse this.
@@ -180,7 +262,11 @@ export default function RunCanvasIR({
       const execs = execsByNode.get(n.id) ?? [];
       const selectedIteration =
         iterationByNode.get(n.id) ?? defaultIterationFor(execs);
-      const meta = buildLLMMeta(n, runtimeOverrideByNode.get(n.id));
+      const meta = buildLLMMeta(
+        n,
+        runtimeOverrideByNode.get(n.id),
+        defaultEffortByPair,
+      );
       return {
         id: n.id,
         type: "ir",
@@ -249,8 +335,10 @@ export default function RunCanvasIR({
     return () => {
       cancelled = true;
     };
-    // wf is the only structural input. iterationByNode/executions are
-    // refreshed by the patch effect below.
+    // Layout runs once per `wf` change; iteration/execution flips,
+    // selection, dimming, and async-arriving effort defaults all flow
+    // through the patch effect below. Including those deps here would
+    // trigger a full ELK relayout per update.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wf]);
 
@@ -276,7 +364,11 @@ export default function RunCanvasIR({
           activeFilters.size > 0 && !nodeMatchesFilters(execs, activeFilters);
         const wireNode = wireNodeById.get(n.id);
         const meta = wireNode
-          ? buildLLMMeta(wireNode, runtimeOverrideByNode.get(n.id))
+          ? buildLLMMeta(
+              wireNode,
+              runtimeOverrideByNode.get(n.id),
+              defaultEffortByPair,
+            )
           : undefined;
         return {
           ...n,
@@ -301,6 +393,7 @@ export default function RunCanvasIR({
     activeFilters,
     wireNodeById,
     runtimeOverrideByNode,
+    defaultEffortByPair,
   ]);
 
   // When the user invokes "jump to failed" (or any other external

@@ -20,6 +20,11 @@ interface Props {
   // declared value. The bar itself reflects the active (override or
   // declared) level; this flag just appends the marker.
   live?: boolean;
+  // Render in attenuated style when the level was resolved from the
+  // provider's documented default rather than declared in the .iter
+  // or set at runtime. Lets the user distinguish "I chose this" from
+  // "this is what the provider would use anyway".
+  muted?: boolean;
   className?: string;
   title?: string;
 }
@@ -60,13 +65,18 @@ const TONE: Record<EffortLevel, { text: string; bar: string; cell: string }> = {
   },
 };
 
-export function EffortBar({ level, live, className, title }: Props) {
+export function EffortBar({ level, live, muted, className, title }: Props) {
   const filled = FILLED[level];
   const tone = TONE[level];
+  const defaultTitle = muted
+    ? `reasoning_effort: ${level} (provider default)`
+    : `reasoning_effort: ${level}`;
   return (
     <span
-      className={`inline-flex items-center gap-1 text-[9px] leading-none ${tone.text} ${className ?? ""}`}
-      title={title ?? `reasoning_effort: ${level}`}
+      className={`inline-flex items-center gap-1 text-[9px] leading-none ${tone.text} ${
+        muted ? "opacity-60 italic" : ""
+      } ${className ?? ""}`}
+      title={title ?? defaultTitle}
     >
       <span>{level}</span>
       <span className={`inline-flex gap-px rounded-sm p-px ${tone.bar}`}>
@@ -85,6 +95,14 @@ export function EffortBar({ level, live, className, title }: Props) {
           title="overridden at runtime"
         >
           live
+        </span>
+      )}
+      {muted && !live && (
+        <span
+          className="ml-0.5 text-[8px] uppercase tracking-wide"
+          title="provider default — no value declared in .iter"
+        >
+          default
         </span>
       )}
     </span>

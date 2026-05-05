@@ -2,7 +2,7 @@ import { useCallback, useMemo } from "react";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { useSchemaPromptCreators } from "@/hooks/useSchemaPromptCreators";
-import { useEffortCapabilities } from "@/hooks/useEffortCapabilities";
+import { effortBackendKey, useEffortCapabilities } from "@/hooks/useEffortCapabilities";
 import { usePromptEditorMount } from "@/hooks/usePromptEditorMount";
 import type { AgentDecl, JudgeDecl, AwaitMode, InteractionMode, ReasoningEffort } from "@/api/types";
 import { getAllNodeNames } from "@/lib/defaults";
@@ -51,9 +51,7 @@ export default function AgentForm({ decl, kind }: Props) {
 
   // Effort levels are model+backend-dependent (per Anthropic docs:
   // Opus 4.7 has xhigh; Opus 4.6 / Sonnet 4.6 don't; Haiku has nothing).
-  // When backend is unset iterion routes via the in-process `claw` client,
-  // so we query that path. Fetched lazily; cached in the hook.
-  const effortBackend = decl.backend?.trim() || "claw";
+  const effortBackend = effortBackendKey(decl.backend);
   const { capabilities: effortCaps, loading: effortLoading } = useEffortCapabilities(
     effortBackend,
     decl.model,
