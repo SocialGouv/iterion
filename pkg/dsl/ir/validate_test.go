@@ -1104,6 +1104,36 @@ workflow test:
 	expectNoDiag(t, r, DiagInvalidReasoningEffort)
 }
 
+// Env-substituted reasoning_effort cannot be evaluated at compile time:
+// the C024 check must defer to runtime instead of erroring on a literal
+// it doesn't recognise.
+func TestValidateReasoningEffort_EnvSubstDeferred(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent a1:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+  reasoning_effort: "${VIBE_EFFORT:-max}"
+
+workflow test:
+  entry: a1
+  a1 -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagInvalidReasoningEffort)
+}
+
 func readFixture(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)

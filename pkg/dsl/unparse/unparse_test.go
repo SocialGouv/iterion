@@ -180,6 +180,39 @@ func TestUnparseBasic(t *testing.T) {
 	}
 }
 
+// TestUnparseReasoningEffortEnvSubst checks that an env-substituted
+// reasoning_effort value is emitted as a quoted string, so the parser's
+// TokenString branch consumes it on a subsequent re-parse. Bare enum
+// values stay unquoted (covered by TestUnparseBasic).
+func TestUnparseReasoningEffortEnvSubst(t *testing.T) {
+	f := &ast.File{
+		Agents: []*ast.AgentDecl{{
+			Name:            "a",
+			Model:           "claude-opus-4-7",
+			ReasoningEffort: "${VIBE_EFFORT:-max}",
+		}},
+		Judges: []*ast.JudgeDecl{{
+			Name:            "j",
+			Model:           "openai/gpt-5.5",
+			ReasoningEffort: "${VIBE_EFFORT_GPT:-high}",
+		}},
+	}
+	got := Unparse(f)
+	wants := []string{
+		`reasoning_effort: "${VIBE_EFFORT:-max}"`,
+		`reasoning_effort: "${VIBE_EFFORT_GPT:-high}"`,
+	}
+	for _, w := range wants {
+		if !strings.Contains(got, w) {
+			t.Errorf("unparse missing %q, got:\n%s", w, got)
+		}
+	}
+	// Ensure the bare-ident path is NOT used when value contains '$'.
+	if strings.Contains(got, "reasoning_effort: ${") {
+		t.Errorf("env-substituted reasoning_effort must be quoted, got:\n%s", got)
+	}
+}
+
 func TestUnparseEmpty(t *testing.T) {
 	f := &ast.File{}
 	got := Unparse(f)

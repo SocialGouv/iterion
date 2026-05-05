@@ -516,6 +516,26 @@ func TestReasoningEffortInvalid(t *testing.T) {
 	}
 }
 
+func TestAgentReasoningEffortEnvSubst(t *testing.T) {
+	src := `agent planner:
+  model: "claude-4"
+  reasoning_effort: "${VIBE_EFFORT:-max}"
+`
+	res := parser.Parse("test.iter", src)
+	assertNoDiags(t, res)
+	assertEq(t, "ReasoningEffort", res.File.Agents[0].ReasoningEffort, "${VIBE_EFFORT:-max}")
+}
+
+func TestAgentReasoningEffortEnvSubstBare(t *testing.T) {
+	src := `agent planner:
+  model: "claude-4"
+  reasoning_effort: "${VIBE_EFFORT}"
+`
+	res := parser.Parse("test.iter", src)
+	assertNoDiags(t, res)
+	assertEq(t, "ReasoningEffort", res.File.Agents[0].ReasoningEffort, "${VIBE_EFFORT}")
+}
+
 func TestComments(t *testing.T) {
 	src := `## Top-level comment
 agent x:

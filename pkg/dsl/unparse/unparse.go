@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
 // Unparse renders an ast.File back to .iter DSL source text.
@@ -142,7 +143,7 @@ func Unparse(f *ast.File) string {
 				writeProp(&b, "multi", "true")
 			}
 			if r.ReasoningEffort != "" {
-				writeProp(&b, "reasoning_effort", r.ReasoningEffort)
+				writeReasoningEffortProp(&b, r.ReasoningEffort)
 			}
 		}
 	}
@@ -281,6 +282,18 @@ func writeQuotedProp(b *strings.Builder, key, value string) {
 	fmt.Fprintf(b, "  %s: %q\n", key, value)
 }
 
+// writeReasoningEffortProp emits a reasoning_effort field. Bare enum
+// values are written unquoted; env-substituted forms ("${VAR:-max}")
+// are quoted so the parser routes them through the TokenString branch
+// on a re-parse.
+func writeReasoningEffortProp(b *strings.Builder, value string) {
+	if ir.IsEnvSubstitutedEffort(value) {
+		writeQuotedProp(b, "reasoning_effort", value)
+		return
+	}
+	writeProp(b, "reasoning_effort", value)
+}
+
 func writeVarsBlock(b *strings.Builder, vars *ast.VarsBlock, indent string) {
 	fmt.Fprintf(b, "%svars:\n", indent)
 	for _, v := range vars.Fields {
@@ -404,7 +417,7 @@ func writeAgentFields(b *strings.Builder, model, backend, input, output, publish
 		fmt.Fprintf(b, "  max_tokens: %d\n", maxTokens)
 	}
 	if reasoningEffort != "" {
-		writeProp(b, "reasoning_effort", reasoningEffort)
+		writeReasoningEffortProp(b, reasoningEffort)
 	}
 	if readonly {
 		writeProp(b, "readonly", "true")

@@ -1617,6 +1617,87 @@ func TestResolveReasoningEffort(t *testing.T) {
 	}
 }
 
+// TestResolveReasoningEffortEnvSubst covers the env-substituted form
+// allowed by the parser: "${VAR}" / "${VAR:-default}". Expansion happens
+// at runtime; invalid expansions fall back to the empty string so the
+// provider applies its own default.
+func TestResolveReasoningEffortEnvSubst(t *testing.T) {
+	tests := []struct {
+		name       string
+		nodeEffort string
+		envKey     string
+		envValue   string
+		input      map[string]interface{}
+		expected   string
+	}{
+		{
+			name:       "default fallback when env unset",
+			nodeEffort: "${ITERION_TEST_EFFORT:-max}",
+			envKey:     "ITERION_TEST_EFFORT",
+			envValue:   "",
+			expected:   "max",
+		},
+		{
+			name:       "env wins over default",
+			nodeEffort: "${ITERION_TEST_EFFORT:-max}",
+			envKey:     "ITERION_TEST_EFFORT",
+			envValue:   "low",
+			expected:   "low",
+		},
+		{
+			name:       "bare env var, set",
+			nodeEffort: "${ITERION_TEST_EFFORT}",
+			envKey:     "ITERION_TEST_EFFORT",
+			envValue:   "high",
+			expected:   "high",
+		},
+		{
+			name:       "bare env var, unset, no default → empty (provider falls back)",
+			nodeEffort: "${ITERION_TEST_EFFORT}",
+			envKey:     "ITERION_TEST_EFFORT",
+			envValue:   "",
+			expected:   "",
+		},
+		{
+			name:       "invalid expanded value → empty",
+			nodeEffort: "${ITERION_TEST_EFFORT:-ultra}",
+			envKey:     "ITERION_TEST_EFFORT",
+			envValue:   "",
+			expected:   "",
+		},
+		{
+			name:       "invalid env value → empty",
+			nodeEffort: "${ITERION_TEST_EFFORT:-max}",
+			envKey:     "ITERION_TEST_EFFORT",
+			envValue:   "ludicrous",
+			expected:   "",
+		},
+		{
+			name:       "dynamic input override beats env-substituted default",
+			nodeEffort: "${ITERION_TEST_EFFORT:-max}",
+			envKey:     "ITERION_TEST_EFFORT",
+			envValue:   "low",
+			input:      map[string]interface{}{"_reasoning_effort": "high"},
+			expected:   "high",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(tt.envKey, tt.envValue)
+			input := tt.input
+			if input == nil {
+				input = map[string]interface{}{}
+			}
+			got := resolveReasoningEffort(tt.nodeEffort, input)
+			if got != tt.expected {
+				t.Errorf("resolveReasoningEffort(%q) = %q, want %q",
+					tt.nodeEffort, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestProviderOptsForNode(t *testing.T) {
 	if opts := providerOptsForNode(""); opts != nil {
 		t.Errorf("expected nil for empty effort, got %v", opts)

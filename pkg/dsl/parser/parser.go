@@ -1632,12 +1632,17 @@ func (p *parser) parseWithEntry() *ast.WithEntry {
 func (p *parser) parseReasoningEffort() string {
 	p.expect(TokenColon)
 	t := p.next()
+	// Quoted string form: env-overridable, e.g. "${VIBE_EFFORT:-max}".
+	// Stored as-is; resolved + validated at runtime.
+	if t.Type == TokenString {
+		return t.Value
+	}
 	value := tokenAsIdent(t)
 	switch value {
 	case "low", "medium", "high", "xhigh", "max":
 		return value
 	default:
-		p.addError(DiagInvalidValue, t, "expected reasoning effort (low, medium, high, xhigh, max), got '"+t.Value+"'")
+		p.addError(DiagInvalidValue, t, "expected reasoning effort (low, medium, high, xhigh, max) or a quoted env-substituted string, got '"+t.Value+"'")
 		return ""
 	}
 }

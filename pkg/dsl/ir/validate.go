@@ -752,6 +752,15 @@ var ValidReasoningEfforts = map[string]bool{
 	"max":    true,
 }
 
+// IsEnvSubstitutedEffort reports whether an effort literal is an
+// env-substituted form (e.g. "${VAR}" or "${VAR:-default}") that must
+// be resolved at runtime. The "$" guard is intentionally permissive —
+// the runtime resolver handles malformed forms by falling back to the
+// empty string.
+func IsEnvSubstitutedEffort(s string) bool {
+	return strings.ContainsRune(s, '$')
+}
+
 func (c *compiler) validateReasoningEffort(w *Workflow) {
 	for _, node := range w.Nodes {
 		var effort string
@@ -766,6 +775,13 @@ func (c *compiler) validateReasoningEffort(w *Workflow) {
 			continue
 		}
 		if effort == "" {
+			continue
+		}
+		// Env-substituted forms ("${VAR}", "${VAR:-default}") are
+		// resolved + validated at runtime. Skip the enum check here;
+		// the runtime resolver clamps invalid expansions to "" so
+		// the provider applies its own default.
+		if IsEnvSubstitutedEffort(effort) {
 			continue
 		}
 		if !ValidReasoningEfforts[effort] {
