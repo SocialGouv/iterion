@@ -32,12 +32,20 @@ var staticFS embed.FS
 
 // Config holds the server configuration.
 type Config struct {
-	Port        int    // HTTP port (default 4891)
+	Port        int    // HTTP port (default 4891). Pass 0 for an OS-assigned random port.
 	Bind        string // bind address (default "127.0.0.1"; use "0.0.0.0" only with explicit user opt-in)
 	ExamplesDir string // path to examples directory
 	WorkDir     string // root directory for file operations
 	StoreDir    string // run store directory (default: <WorkDir>/.iterion)
 	OpenBrowser bool   // open browser on start
+
+	// SessionToken, when non-empty, enables a session-cookie middleware that
+	// gates every request on a matching `iterion_session` HttpOnly cookie.
+	// The cookie is set by the bootstrap GET / when the request carries
+	// `?t=<token>` matching SessionToken — that is how the desktop window
+	// transitions from the bootstrap URL to a normal SPA load. CLI mode
+	// (`iterion editor`) leaves this empty and behaves identically to before.
+	SessionToken string
 }
 
 // Server is the editor HTTP server.
@@ -45,17 +53,29 @@ type Server struct {
 	cfg     Config
 	logger  *iterlog.Logger
 	mux     *http.ServeMux
+	handler http.Handler // mux wrapped with optional session-token middleware
 	server  *http.Server
 	hub     *Hub
 	watcher *Watcher
 	runs    *runview.Service // run console service; nil disables /api/runs endpoints
+
+	// listener is captured at ListenAndServe time so callers (notably the
+	// desktop host, which passes Port=0 for an OS-assigned port) can read
+	// the actual bind address. Read via Addr(). Mutated only inside
+	// ListenAndServe and read after addrReady is closed.
+	listener  net.Listener
+	addrReady chan struct{}
 }
 
 // New creates a new editor server.
+//
+// Port semantics: cfg.Port == 0 means "let the OS pick a free port"
+// (the desktop host depends on this). If you want the legacy default of
+// 4891, set it explicitly — pkg/cli.RunEditor does so when the caller
+// passes Port=0. Tests that construct Config{} directly previously got
+// 4891 by default; they now get a random port, which is what we want
+// to avoid cross-test bind conflicts.
 func New(cfg Config, logger *iterlog.Logger) *Server {
-	if cfg.Port == 0 {
-		cfg.Port = 4891
-	}
 	// Default to loopback. The previous behaviour was to leave Addr as ":<port>"
 	// which binds 0.0.0.0 — exposing the editor (which has unauthenticated
 	// /api/files/save and /api/files/open endpoints) to anyone on the LAN.
@@ -65,7 +85,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	if cfg.Bind == "" {
 		cfg.Bind = "127.0.0.1"
 	}
-	s := &Server{cfg: cfg, logger: logger, mux: http.NewServeMux()}
+	s := &Server{cfg: cfg, logger: logger, mux: http.NewServeMux(), addrReady: make(chan struct{})}
 	s.hub = NewHub(logger)
 	go s.hub.Run()
 	if cfg.WorkDir != "" {
@@ -98,20 +118,48 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	// upgrader so cross-origin browser tabs can't subscribe to file events.
 	SetWebSocketOriginCheck(s.isAllowedOrigin)
 	s.routes()
+	// Wrap the mux in the session-token middleware when a token is set.
+	// Empty token (the CLI default) means the middleware is a passthrough
+	// — no behavioural change for `iterion editor`.
+	s.handler = s.mux
+	if cfg.SessionToken != "" {
+		s.handler = s.sessionTokenMiddleware(s.mux)
+	}
 	s.server = &http.Server{
 		Addr:              net.JoinHostPort(cfg.Bind, fmt.Sprintf("%d", cfg.Port)),
-		Handler:           s.mux,
+		Handler:           s.handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return s
+}
+
+// Addr returns the actual bound address (host:port) once ListenAndServe has
+// successfully created its listener. It blocks until the listener is ready or
+// the context is cancelled. Used by the desktop host when Port=0 was passed
+// and the OS picks the port.
+func (s *Server) Addr() string {
+	<-s.addrReady
+	if s.listener == nil {
+		return ""
+	}
+	return s.listener.Addr().String()
 }
 
 // ListenAndServe starts the HTTP server.
 func (s *Server) ListenAndServe() error {
 	ln, err := net.Listen("tcp", s.server.Addr)
 	if err != nil {
+		// Even on error, signal Addr() so callers don't block forever.
+		close(s.addrReady)
 		return err
 	}
+	s.listener = ln
+	// Reflect the OS-chosen port back into the config so logging and the
+	// origin allowlist see the real port (Port=0 mode).
+	if tcpAddr, ok := ln.Addr().(*net.TCPAddr); ok {
+		s.cfg.Port = tcpAddr.Port
+	}
+	close(s.addrReady)
 	// Truthful URL in the log: if the operator chose a non-loopback bind we
 	// print the actual address so they know the editor is exposed beyond the
 	// local machine. Previously we always printed http://localhost:<port>
@@ -479,11 +527,30 @@ func (s *Server) isAllowedOrigin(origin string) bool {
 }
 
 func (s *Server) allowedOrigins() []string {
-	return []string{
+	origins := []string{
 		fmt.Sprintf("http://localhost:%d", s.cfg.Port),
 		fmt.Sprintf("http://127.0.0.1:%d", s.cfg.Port),
 		fmt.Sprintf("http://[::1]:%d", s.cfg.Port),
 	}
+	// Desktop mode: the editor SPA is hosted on the Wails AssetServer
+	// (wails:// on Mac/Linux, http://wails.localhost on Windows) so that
+	// `window.go.main.App.*` bindings + `/wails/runtime.js` injection are
+	// available. HTTP API calls reach the local server via Wails' reverse
+	// proxy (which rewrites Origin to the loopback target), but the
+	// editor's WebSocket clients dial the local server DIRECTLY (Wails'
+	// AssetServer returns 501 on WS upgrade). The dialer therefore arrives
+	// with the SPA's true origin in the upgrade handshake; without these
+	// entries the upgrader's CheckOrigin would reject every cross-origin
+	// WS handshake from the desktop window. Token-bearing requests are
+	// already authenticated by the session middleware (?t= query); origin
+	// allow-listing is defense-in-depth.
+	if s.cfg.SessionToken != "" {
+		origins = append(origins,
+			"wails://wails",
+			"http://wails.localhost",
+		)
+	}
+	return origins
 }
 
 // reflectAllowedOrigin sets ACAO to the request's Origin if (and only if) it

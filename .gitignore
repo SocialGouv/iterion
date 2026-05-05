@@ -42,3 +42,19 @@ pkg/server/static/index.html
 # Claude
 .claude/*.local.json
 .claude/scheduled_tasks.lock
+
+# Wails / Iterion Desktop
+build/bin/
+cmd/iterion-desktop/wailsjs/
+cmd/iterion-desktop/frontend-stub/dist/
+*.app/
+# Build artefacts only — patterns are anchored / scoped so they cannot
+# shadow the cmd/iterion-desktop/ source directory itself. An unanchored
+# `iterion-desktop` would match the source dir as a path component and
+# silently make ~30 .go files invisible to git.
+/iterion-desktop
+/iterion-desktop-darwin-*
+/iterion-desktop-linux-*
+/iterion-desktop-windows-*
+/build/bin/iterion-desktop
+/build/bin/iterion-desktop-*

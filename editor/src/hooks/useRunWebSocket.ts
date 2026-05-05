@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 
 import type { RunEvent, RunSnapshot } from "@/api/runs";
+import { getDesktopWsBase, isDesktop } from "@/lib/desktopBridge";
 import { useRunStore } from "@/store/run";
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? "/api";
@@ -11,7 +12,14 @@ interface WsEnvelope {
   ack_id?: string;
 }
 
-function deriveWsUrl(runId: string): string {
+// Desktop mode: SPA loads on the Wails AssetServer origin (wails:// or
+// http://wails.localhost), but Wails AssetServer rejects WS upgrades (501).
+// We dial the local server directly with the session token in the query.
+async function deriveWsUrl(runId: string): Promise<string> {
+  if (isDesktop()) {
+    const desktopUrl = await getDesktopWsBase(`/api/ws/runs/${encodeURIComponent(runId)}`);
+    if (desktopUrl) return desktopUrl;
+  }
   if (BASE_URL.startsWith("http")) {
     return BASE_URL.replace(/^http/, "ws") + `/ws/runs/${encodeURIComponent(runId)}`;
   }
@@ -90,10 +98,22 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
       }
     };
 
-    const connect = () => {
+    const connect = async () => {
       if (!aliveRef.current) return;
       setWsState("connecting");
-      const ws = new WebSocket(deriveWsUrl(runId));
+      let url: string;
+      try {
+        url = await deriveWsUrl(runId);
+      } catch {
+        // Could not resolve URL (e.g. desktop bindings not yet ready) — fall
+        // through to the reconnect timer rather than crashing the run view.
+        if (!aliveRef.current) return;
+        setWsState("reconnecting");
+        scheduleReconnect();
+        return;
+      }
+      if (!aliveRef.current) return; // tear-down raced the await
+      const ws = new WebSocket(url);
       wsRef.current = ws;
 
       ws.onopen = () => {
@@ -194,11 +214,11 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
       if (!aliveRef.current) return;
       reconnectTimer.current = setTimeout(() => {
         reconnectDelay.current = Math.min(reconnectDelay.current * 2, 30_000);
-        connect();
+        void connect();
       }, reconnectDelay.current);
     };
 
-    connect();
+    void connect();
 
     return () => {
       aliveRef.current = false;

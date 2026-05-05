@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Iterion
+GenericName=Workflow Orchestration
+Comment=Workflow orchestration engine for AI-powered automations
+Exec=iterion-desktop
+Icon=iterion-desktop
+Terminal=false
+Categories=Development;IDE;
+StartupWMClass=iterion-desktop

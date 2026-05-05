@@ -15,6 +15,7 @@ Define complex, multi-agent LLM workflows as readable `.iter` files — chain ag
 - [A Taste of the DSL](#a-taste-of-the-dsl)
 - [Features](#features)
 - [Visual Editor](#visual-editor)
+- [Desktop App](#desktop-app)
 - [The `.iter` DSL](#the-iter-dsl)
   - [Variables](#variables)
   - [Prompts](#prompts)
@@ -205,6 +206,24 @@ iterion editor --no-browser        # Don't auto-open browser
 - **Live diagnostics** — Real-time validation errors and warnings as you edit (codes C001–C029)
 - **File watching** — Detects external file changes via WebSocket and syncs automatically
 - **Undo/redo** — Full edit history
+
+---
+
+## 🪟 Desktop App
+
+A native desktop build (Wails v2) wraps the visual editor in a real
+window with multi-project switching, OS-keychain credential storage,
+first-run onboarding, and Ed25519-signed auto-update. Two binaries ship
+side-by-side: `iterion` (the CLI you've been reading about) and
+`iterion-desktop`.
+
+- Download from [GitHub Releases](https://github.com/SocialGouv/iterion/releases) (look for `iterion-desktop-*`).
+- Build locally: see [`docs/desktop-build.md`](docs/desktop-build.md).
+- Architecture: see [`docs/desktop-architecture.md`](docs/desktop-architecture.md).
+- Distribution / signing setup: see [`docs/desktop-distribution.md`](docs/desktop-distribution.md).
+
+V1 binaries are unsigned; the OS will warn on first launch (right-click
+→ Open on macOS, "More info → Run anyway" on Windows).
 
 ---
 

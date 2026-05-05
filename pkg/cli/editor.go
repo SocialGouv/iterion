@@ -20,12 +20,35 @@ type EditorOptions struct {
 	Dir       string // working directory (for examples)
 	StoreDir  string // run store directory (default: nearest .iterion ancestor of Dir, or <Dir>/.iterion)
 	NoBrowser bool   // skip opening browser
+
+	// SessionToken, when non-empty, enables a session-cookie middleware on
+	// the server. Used by the desktop host so other local processes can't
+	// hit the editor's filesystem-write endpoints. Empty in CLI mode.
+	SessionToken string
+
+	// OnReady, when non-nil, is invoked once the HTTP listener is up and
+	// the server has accepted its bind address. The argument is the actual
+	// host:port the listener is bound to (useful when Port=0 / random).
+	// Invoked from a goroutine; callers must be ready for it to fire
+	// concurrently with their own Run loop.
+	OnReady func(addr string)
 }
 
 // RunEditor starts the editor HTTP server.
+//
+// Port semantics:
+//   - opts.Port == 0  : default to 4891 (legacy CLI behaviour — the
+//     `iterion editor` cobra command relies on this when --port is omitted).
+//   - opts.Port == -1 : let the OS pick a free port. The actual bind address
+//     is delivered via opts.OnReady. Used by the desktop host so multiple
+//     instances/projects never fight for 4891.
+//   - opts.Port > 0   : use that exact port.
 func RunEditor(ctx context.Context, opts EditorOptions, p *Printer) error {
-	if opts.Port == 0 {
+	switch {
+	case opts.Port == 0:
 		opts.Port = 4891
+	case opts.Port == -1:
+		opts.Port = 0
 	}
 	if opts.Bind == "" {
 		opts.Bind = "127.0.0.1"
@@ -43,23 +66,25 @@ func RunEditor(ctx context.Context, opts EditorOptions, p *Printer) error {
 	}
 
 	cfg := server.Config{
-		Port:        opts.Port,
-		Bind:        opts.Bind,
-		ExamplesDir: examplesDir,
-		WorkDir:     dir,
-		StoreDir:    opts.StoreDir,
-		OpenBrowser: !opts.NoBrowser,
+		Port:         opts.Port,
+		Bind:         opts.Bind,
+		ExamplesDir:  examplesDir,
+		WorkDir:      dir,
+		StoreDir:     opts.StoreDir,
+		OpenBrowser:  !opts.NoBrowser,
+		SessionToken: opts.SessionToken,
 	}
 
 	logger := iterlog.New(iterlog.LevelInfo, os.Stderr)
 	srv := server.New(cfg, logger)
 
-	// Open browser in background.
-	if !opts.NoBrowser {
+	// Open browser in background — only meaningful when port is fixed
+	// upfront. For Port=0 (random) callers should use OnReady.
+	if !opts.NoBrowser && opts.Port != 0 {
 		go openBrowser(fmt.Sprintf("http://localhost:%d", opts.Port))
 	}
 
-	if p.Format == OutputHuman {
+	if p.Format == OutputHuman && opts.Port != 0 {
 		p.Header("Iterion Editor")
 		p.KV("URL", fmt.Sprintf("http://localhost:%d", opts.Port))
 		if examplesDir != "" {
@@ -74,6 +99,20 @@ func RunEditor(ctx context.Context, opts EditorOptions, p *Printer) error {
 	go func() {
 		errCh <- srv.ListenAndServe()
 	}()
+
+	// Notify the caller once the listener is bound. Addr() blocks until
+	// then. We run this in its own goroutine to avoid stalling shutdown
+	// if the listener never comes up — the addrReady channel is closed
+	// on bind failure too, so OnReady fires with the empty string and
+	// the caller can check.
+	if opts.OnReady != nil {
+		go func() {
+			addr := srv.Addr()
+			if addr != "" && opts.OnReady != nil {
+				opts.OnReady(addr)
+			}
+		}()
+	}
 
 	select {
 	case <-ctx.Done():

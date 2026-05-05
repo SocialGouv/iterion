@@ -238,3 +238,85 @@ tasks:
       - task: sdk:ts:build
       - task: sdk:ts:typecheck
       - task: sdk:ts:test
+
+  # ── Desktop (Wails v2) ────────────────────────────────────────────────
+  # The desktop binary wraps the editor server in a native window.
+  # Wails CLI is required for `desktop:dev` and `desktop:build`. Install
+  # it once with `task desktop:install-tools`. The Go code lives under
+  # cmd/iterion-desktop/ and is gated by `//go:build desktop` so the
+  # default `go test ./...` does not require Wails to be installed.
+
+  desktop:install-tools:
+    desc: Install Wails CLI and tools needed for desktop builds
+    cmds:
+      - go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+  desktop:dev:
+    desc: Run Iterion Desktop in dev mode (Wails)
+    deps: [editor:build]
+    cmds:
+      - wails dev -tags desktop
+
+  desktop:build:
+    desc: Build Iterion Desktop for the current platform (unsigned)
+    deps: [editor:build]
+    cmds:
+      - wails build -tags desktop -clean -trimpath -ldflags "{{.LDFLAGS}}"
+
+  desktop:build:darwin:arm64:
+    desc: Build Iterion Desktop for macOS arm64 (must run on macOS)
+    deps: [editor:build]
+    cmds:
+      - wails build -tags desktop -platform darwin/arm64 -clean -trimpath -ldflags "{{.LDFLAGS}}" -o iterion-desktop-darwin-arm64
+
+  desktop:build:darwin:amd64:
+    desc: Build Iterion Desktop for macOS amd64 (must run on macOS)
+    deps: [editor:build]
+    cmds:
+      - wails build -tags desktop -platform darwin/amd64 -clean -trimpath -ldflags "{{.LDFLAGS}}" -o iterion-desktop-darwin-amd64
+
+  desktop:build:windows:amd64:
+    desc: Build Iterion Desktop for Windows amd64 (must run on Windows)
+    deps: [editor:build]
+    cmds:
+      - wails build -tags desktop -platform windows/amd64 -clean -trimpath -ldflags "{{.LDFLAGS}}" -nsis -o iterion-desktop-windows-amd64.exe
+
+  desktop:build:windows:arm64:
+    desc: Build Iterion Desktop for Windows arm64 (must run on Windows)
+    deps: [editor:build]
+    cmds:
+      - wails build -tags desktop -platform windows/arm64 -clean -trimpath -ldflags "{{.LDFLAGS}}" -nsis -o iterion-desktop-windows-arm64.exe
+
+  desktop:build:linux:amd64:
+    desc: Build Iterion Desktop for Linux amd64
+    deps: [editor:build]
+    cmds:
+      - wails build -tags desktop -platform linux/amd64 -clean -trimpath -ldflags "{{.LDFLAGS}}" -o iterion-desktop-linux-amd64
+
+  desktop:build:linux:arm64:
+    desc: Build Iterion Desktop for Linux arm64
+    deps: [editor:build]
+    cmds:
+      - wails build -tags desktop -platform linux/arm64 -clean -trimpath -ldflags "{{.LDFLAGS}}" -o iterion-desktop-linux-arm64
+
+  desktop:package:linux:amd64:
+    desc: Package Linux amd64 build as AppImage
+    deps: [desktop:build:linux:amd64]
+    cmds:
+      - ./scripts/desktop/build-appimage.sh amd64
+
+  desktop:package:linux:arm64:
+    desc: Package Linux arm64 build as AppImage
+    deps: [desktop:build:linux:arm64]
+    cmds:
+      - ./scripts/desktop/build-appimage.sh arm64
+
+  desktop:sign-release:
+    desc: Sign all desktop release artefacts with Ed25519 (requires UPDATER_ED25519_PRIVATE)
+    cmds:
+      - ./scripts/desktop/sign-release.sh
+
+  desktop:test:
+    desc: Run desktop-only Go unit tests (build tag `desktop` excluded — just the platform-neutral subset)
+    cmds:
+      - go test ./cmd/iterion-desktop/...

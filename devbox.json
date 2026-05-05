@@ -2,13 +2,16 @@
   "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/main/.schema/devbox.schema.json",
   "packages": [
     "delve@latest",
-    "go@1.23",
+    "go@1.26",
     "go-task@latest",
     "nodejs_22@latest",
     "watchexec@latest",
     "xorg.xorgserver@latest",
     "xdotool@latest",
-    "imagemagick@latest"
+    "imagemagick@latest",
+    "pkg-config@latest",
+    "gtk3@latest",
+    "webkitgtk_4_1@latest"
   ],
   "shell": {
     "init_hook": [],

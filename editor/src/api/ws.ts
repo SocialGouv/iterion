@@ -1,8 +1,20 @@
+import { getDesktopWsBase, isDesktop } from "@/lib/desktopBridge";
 import type { FileEvent } from "./types";
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? "/api";
 
-function deriveWsUrl(): string {
+// deriveWsUrl resolves the absolute WebSocket URL for the file-watcher
+// stream. In CLI / browser mode the SPA shares an origin with the API, so a
+// relative URL works. In desktop mode the SPA is hosted on Wails'
+// AssetServer (wails:// or http://wails.localhost), but Wails rejects WS
+// upgrades — so we dial the local server directly with the session token in
+// the query (the only auth channel that survives this cross-origin
+// boundary; HttpOnly cookies set on the loopback domain are not sent).
+async function deriveWsUrl(): Promise<string> {
+  if (isDesktop()) {
+    const desktopUrl = await getDesktopWsBase("/api/ws");
+    if (desktopUrl) return desktopUrl;
+  }
   if (BASE_URL.startsWith("http")) {
     return BASE_URL.replace(/^http/, "ws") + "/ws";
   }
@@ -27,7 +39,7 @@ class FileWatcherClient {
     this.shouldConnect = true;
     this.everConnected = false;
     this.consecutiveFailures = 0;
-    this.doConnect();
+    void this.doConnect();
   }
 
   disconnect(): void {
@@ -47,9 +59,19 @@ class FileWatcherClient {
     return () => this.handlers.delete(handler);
   }
 
-  private doConnect(): void {
+  private async doConnect(): Promise<void> {
     if (!this.shouldConnect) return;
-    const url = deriveWsUrl();
+    let url: string;
+    try {
+      url = await deriveWsUrl();
+    } catch {
+      // Could not resolve URL (e.g. desktop bindings not ready) — schedule
+      // a retry rather than crashing the SPA.
+      this.consecutiveFailures++;
+      this.scheduleReconnect();
+      return;
+    }
+    if (!this.shouldConnect) return; // disconnect raced the await
     const ws = new WebSocket(url);
 
     ws.onopen = () => {
@@ -95,7 +117,7 @@ class FileWatcherClient {
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      this.doConnect();
+      void this.doConnect();
     }, this.reconnectDelay);
     this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxDelay);
   }

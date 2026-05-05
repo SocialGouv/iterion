@@ -1,0 +1,18 @@
+{
+  "fixed": {
+    "file_info": {
+      "product_version": "0.0.0.0",
+      "file_version": "0.0.0.0"
+    }
+  },
+  "info": {
+    "0000": {
+      "ProductVersion": "0.0.0",
+      "CompanyName": "Iterion",
+      "FileDescription": "Iterion Desktop",
+      "LegalCopyright": "Copyright © 2026",
+      "ProductName": "Iterion",
+      "Comments": "Workflow orchestration engine"
+    }
+  }
+}

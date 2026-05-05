@@ -1,0 +1,19 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "Iterion",
+  "outputfilename": "iterion-desktop",
+  "frontend:install": "true",
+  "frontend:build": "true",
+  "frontend:dev": "true",
+  "frontend:dev:serverUrl": "auto",
+  "wailsjsdir": "./cmd/iterion-desktop/wailsjs",
+  "version": "2",
+  "info": {
+    "companyName": "Iterion",
+    "productName": "Iterion",
+    "productVersion": "0.0.0",
+    "copyright": "Copyright © 2026",
+    "comments": "Workflow orchestration engine"
+  },
+  "_comment": "Frontend hooks are intentional no-ops: the editor SPA is built by `task editor:build` and embedded into the Go binary via pkg/server/static. Wails uses cmd/iterion-desktop/frontend-stub as a bootstrap page that redirects to the embedded HTTP server."
+}
