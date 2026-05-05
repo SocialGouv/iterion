@@ -43,6 +43,11 @@ export default function LaunchView() {
   // run lands as a "pending merge" and the user picks the strategy
   // after seeing the commits — GitHub-PR style.
   const [autoMerge, setAutoMerge] = useState<boolean>(false);
+  // showAdvanced opens the worktree finalization block. Default off,
+  // but auto-opens once the loaded workflow is detected to use
+  // `worktree: auto` so users see the squash/merge + auto-merge
+  // controls without having to click — they're meaningful options,
+  // not "advanced" in the obscure sense.
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   useEffect(() => {
@@ -95,6 +100,14 @@ export default function LaunchView() {
   // is inspected (matches pickVars's selection rule).
   const worktreeMode = doc?.workflows?.[0]?.worktree ?? "";
   const worktreeOn = worktreeMode === "auto";
+
+  // Auto-open the worktree-finalization block once the document loads
+  // and the workflow uses worktree:auto. Done in an effect so it only
+  // fires after `doc` is populated and doesn't fight a user who
+  // explicitly closed the section afterwards (we only flip false→true).
+  useEffect(() => {
+    if (worktreeOn) setShowAdvanced(true);
+  }, [worktreeOn]);
 
   return (
     <div className="h-full flex flex-col bg-surface-1 text-fg-default">
@@ -179,7 +192,7 @@ export default function LaunchView() {
                 onClick={() => setShowAdvanced((v) => !v)}
               >
                 <span>{showAdvanced ? "▼" : "▶"}</span>
-                <span>Advanced (worktree finalization)</span>
+                <span>Worktree finalization (squash / merge)</span>
                 {!worktreeOn && (
                   <span className="text-[10px] text-fg-subtle">
                     — workflow has no `worktree: auto`, fields are ignored

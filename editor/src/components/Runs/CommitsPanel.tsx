@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 
 import { ReloadIcon } from "@radix-ui/react-icons";
 
@@ -124,8 +124,6 @@ interface MergeFooterProps {
 }
 
 function MergeFooter({ runId, run, commitCount, onMergeComplete }: MergeFooterProps) {
-  // Only finished runs with a storage branch can be merged. Skipped
-  // (merge_into=none) is treated as terminal and shows a passive note.
   const finished = run.status === "finished";
   const hasBranch = Boolean(run.final_branch);
   const merged = run.merge_status === "merged";
@@ -140,17 +138,8 @@ function MergeFooter({ runId, run, commitCount, onMergeComplete }: MergeFooterPr
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  if (!hasBranch || !finished) {
-    if (skipped) {
-      return (
-        <div className="border-t border-border-default px-3 py-2 text-[10px] text-fg-subtle">
-          Merge skipped (no target branch — storage branch preserved).
-        </div>
-      );
-    }
-    return null;
-  }
-
+  // Already merged → show the merged badge regardless of how we got
+  // here (deferred UI action OR auto-merge at end of run).
   if (merged) {
     const shortMerged = (run.merged_commit ?? "").slice(0, 7);
     return (
@@ -165,6 +154,55 @@ function MergeFooter({ runId, run, commitCount, onMergeComplete }: MergeFooterPr
           <div className="font-mono text-[10px] mt-0.5">{shortMerged}</div>
         )}
       </div>
+    );
+  }
+
+  // Skipped (e.g. merge_into=none at launch). Storage branch is
+  // preserved; user can `git merge` from the CLI if they change their
+  // mind, but the UI exposes no action.
+  if (skipped) {
+    return (
+      <NoticeFooter tone="muted">
+        Merge skipped at launch (merge_into=none). Storage branch
+        {run.final_branch && (
+          <>
+            {" "}
+            <code className="text-fg-default">{run.final_branch}</code>
+          </>
+        )}{" "}
+        preserved.
+      </NoticeFooter>
+    );
+  }
+
+  // Run not yet finished — explain why no merge action is available
+  // and what state will unlock it.
+  if (!finished) {
+    return (
+      <NoticeFooter tone="muted">
+        Merge available once the run finishes. Current status:{" "}
+        <code className="text-fg-default">{run.status}</code>.
+      </NoticeFooter>
+    );
+  }
+
+  // Workflow doesn't use worktree:auto → no finalization to do; the
+  // run's edits land directly in the user's checkout.
+  if (!run.worktree) {
+    return (
+      <NoticeFooter tone="muted">
+        Workflow doesn't use <code className="text-fg-default">worktree: auto</code> —
+        edits land directly in your working tree, no merge needed.
+      </NoticeFooter>
+    );
+  }
+
+  // Worktree run finished but produced no commits → nothing to merge.
+  if (!hasBranch) {
+    return (
+      <NoticeFooter tone="muted">
+        Run produced no commits — nothing to merge.
+      </NoticeFooter>
     );
   }
 
@@ -247,6 +285,29 @@ function EmptyState({ message }: { message: string }) {
   return (
     <div className="flex h-full items-center justify-center px-3 py-8 text-center text-xs text-fg-subtle">
       {message}
+    </div>
+  );
+}
+
+// NoticeFooter renders the same border + padding shell as the merge
+// form so the panel's sticky-footer rhythm is preserved when no merge
+// action is available (run still running, no commits, etc).
+function NoticeFooter({
+  tone,
+  children,
+}: {
+  tone: "muted" | "warn";
+  children: ReactNode;
+}) {
+  const cls =
+    tone === "warn"
+      ? "bg-warning-soft text-warning-fg"
+      : "bg-surface-1 text-fg-subtle";
+  return (
+    <div
+      className={`border-t border-border-default px-3 py-2 text-[11px] ${cls}`}
+    >
+      {children}
     </div>
   );
 }

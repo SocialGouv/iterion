@@ -3,6 +3,7 @@ import {
   ChevronLeftIcon,
   CommitIcon,
   FileTextIcon,
+  InfoCircledIcon,
 } from "@radix-ui/react-icons";
 
 import { IconButton, Tabs, Tooltip } from "@/components/ui";
@@ -11,6 +12,7 @@ import type { RunFile, RunHeader } from "@/api/runs";
 
 import FilesPanel from "./FilesPanel";
 import CommitsPanel from "./CommitsPanel";
+import InfoPanel from "./InfoPanel";
 
 // Collapsed mirrors VSCode's activity bar (~36px); expanded matches the
 // source-control panel's default. Drag-to-resize is deliberately omitted
@@ -20,12 +22,14 @@ const EXPANDED_PX = 320;
 const COLLAPSED_KEY = "run-console-v1.left-collapsed";
 const ACTIVE_TAB_KEY = "run-console-v1.left-tab";
 
-type LeftTab = "files" | "commits";
+type LeftTab = "files" | "commits" | "info";
 
 function readActiveTab(): LeftTab {
   if (typeof window === "undefined") return "files";
   const raw = window.localStorage.getItem(ACTIVE_TAB_KEY);
-  return raw === "commits" ? "commits" : "files";
+  if (raw === "commits") return "commits";
+  if (raw === "info") return "info";
+  return "files";
 }
 
 interface LeftPanelProps {
@@ -60,7 +64,8 @@ export default function LeftPanel({
   }, []);
 
   const onTabChange = useCallback((next: string) => {
-    const v = next === "commits" ? "commits" : "files";
+    const v: LeftTab =
+      next === "commits" ? "commits" : next === "info" ? "info" : "files";
     setActiveTab(v);
     if (typeof window !== "undefined") {
       window.localStorage.setItem(ACTIVE_TAB_KEY, v);
@@ -99,6 +104,19 @@ export default function LeftPanel({
             <CommitIcon />
           </button>
         </Tooltip>
+        <Tooltip content="Show run info">
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab("info");
+              toggleCollapsed();
+            }}
+            aria-label="Show run info"
+            className="relative inline-flex h-7 w-7 items-center justify-center rounded-md text-fg-muted hover:bg-surface-2 hover:text-fg-default"
+          >
+            <InfoCircledIcon />
+          </button>
+        </Tooltip>
       </aside>
     );
   }
@@ -122,6 +140,11 @@ export default function LeftPanel({
               value: "commits",
               label: "Commits",
               icon: <CommitIcon className="h-3.5 w-3.5" />,
+            },
+            {
+              value: "info",
+              label: "Info",
+              icon: <InfoCircledIcon className="h-3.5 w-3.5" />,
             },
           ]}
           variant="underline"
@@ -166,6 +189,15 @@ export default function LeftPanel({
           run={run}
           onMergeComplete={onMergeComplete}
         />
+      </div>
+      <div
+        className={
+          activeTab === "info"
+            ? "flex-1 min-h-0 min-w-0 flex flex-col"
+            : "hidden"
+        }
+      >
+        <InfoPanel run={run} />
       </div>
     </aside>
   );
