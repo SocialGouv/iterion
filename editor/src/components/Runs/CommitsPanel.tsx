@@ -126,7 +126,11 @@ interface MergeFooterProps {
 function MergeFooter({ runId, run, commitCount, onMergeComplete }: MergeFooterProps) {
   const finished = run.status === "finished";
   const hasBranch = Boolean(run.final_branch);
-  const merged = run.merge_status === "merged";
+  // `merged_into` set without a status is the legacy auto-FF path
+  // (pre-deferred-merge engines). Treat it as merged so we don't offer
+  // a second merge action that would conflict on the storage branch.
+  const merged =
+    run.merge_status === "merged" || (!run.merge_status && Boolean(run.merged_into));
   const failed = run.merge_status === "failed";
   const skipped = run.merge_status === "skipped";
 
@@ -143,7 +147,7 @@ function MergeFooter({ runId, run, commitCount, onMergeComplete }: MergeFooterPr
   if (merged) {
     const shortMerged = (run.merged_commit ?? "").slice(0, 7);
     return (
-      <div className="border-t border-border-default px-3 py-2 bg-success-soft text-success-fg text-[11px]">
+      <div className="shrink-0 border-t border-border-default px-3 py-2 bg-success-soft text-success-fg text-[11px]">
         <div className="font-medium">
           {run.merge_strategy === "squash"
             ? "Squashed and merged"
@@ -229,7 +233,7 @@ function MergeFooter({ runId, run, commitCount, onMergeComplete }: MergeFooterPr
     strategy === "squash" ? "Squash and merge" : "Merge commit";
 
   return (
-    <div className="border-t border-border-default px-3 py-2 space-y-2 bg-surface-1">
+    <div className="shrink-0 border-t border-border-default px-3 py-2 space-y-2 bg-surface-1 max-h-[60%] overflow-y-auto">
       {failed && (
         <div className="text-[10px] text-danger-fg bg-danger-soft px-2 py-1 rounded">
           Previous merge failed — fix the underlying issue (clean working
@@ -305,7 +309,7 @@ function NoticeFooter({
       : "bg-surface-1 text-fg-subtle";
   return (
     <div
-      className={`border-t border-border-default px-3 py-2 text-[11px] ${cls}`}
+      className={`shrink-0 border-t border-border-default px-3 py-2 text-[11px] ${cls}`}
     >
       {children}
     </div>
