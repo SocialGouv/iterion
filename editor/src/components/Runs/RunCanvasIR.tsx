@@ -202,29 +202,36 @@ export default function RunCanvasIR({
   useEffect(() => {
     if (!wf) return;
     let cancelled = false;
+    // Compute pairs OUTSIDE the state updater. React StrictMode
+    // invokes the updater twice; mutating shared state (a Set) inside
+    // the updater would make the second invocation skip everything
+    // and commit an empty Map.
     const seen = new Set<string>();
+    const seedEntries: Array<[string, EffortCapabilities]> = [];
     const toFetch: Array<{ key: string; backend: string; model: string }> = [];
-    setEffortCapsByPair((prev) => {
-      let mutated = false;
-      const next = new Map(prev);
-      for (const n of wf.nodes) {
-        if (!n.model) continue;
-        const backend = effortBackendKey(n.backend);
-        const key = `${backend} ${n.model}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const cached = getCachedEffortCapabilities(backend, n.model);
-        if (cached) {
-          if (next.get(key) !== cached) {
-            next.set(key, cached);
+    for (const n of wf.nodes) {
+      if (!n.model) continue;
+      const backend = effortBackendKey(n.backend);
+      const key = `${backend} ${n.model}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const cached = getCachedEffortCapabilities(backend, n.model);
+      if (cached) seedEntries.push([key, cached]);
+      else toFetch.push({ key, backend, model: n.model });
+    }
+    if (seedEntries.length > 0) {
+      setEffortCapsByPair((prev) => {
+        let mutated = false;
+        const next = new Map(prev);
+        for (const [key, caps] of seedEntries) {
+          if (next.get(key) !== caps) {
+            next.set(key, caps);
             mutated = true;
           }
-        } else {
-          toFetch.push({ key, backend, model: n.model });
         }
-      }
-      return mutated ? next : prev;
-    });
+        return mutated ? next : prev;
+      });
+    }
     for (const { key, backend, model } of toFetch) {
       // Capability lookup is best-effort; on failure the canvas
       // simply renders no badge for unset effort.
