@@ -31,7 +31,7 @@ export default function FilesPanel({ runId, onSelectFile }: FilesPanelProps) {
   const fileCount = data?.files.length ?? 0;
 
   return (
-    <div className="flex flex-col min-h-0 flex-1">
+    <div className="flex flex-col min-h-0 min-w-0 flex-1 w-full">
       <header className="flex items-center gap-1 px-2 py-1 border-b border-border-default">
         {fileCount > 0 && (
           <span className="inline-flex items-center justify-center rounded-md bg-surface-2 px-1.5 text-[10px] font-medium text-fg-muted">
@@ -105,9 +105,9 @@ function FileRow({ file, onClick }: FileRowProps) {
           className="flex w-full items-center gap-2 px-2 py-1 text-left hover:bg-surface-2 focus:bg-surface-2 focus:outline-none"
         >
           <StatusBadge status={file.status} />
-          <span className="truncate text-xs text-fg-default">{base}</span>
+          <span className="truncate min-w-0 text-xs text-fg-default">{base}</span>
           {dir && (
-            <span className="ml-auto truncate pl-2 text-[10px] text-fg-subtle min-w-0">
+            <span className="ml-auto truncate pl-2 text-[10px] text-fg-subtle min-w-0 max-w-[55%]">
               {dir}
             </span>
           )}

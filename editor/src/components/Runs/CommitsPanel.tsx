@@ -41,7 +41,7 @@ export default function CommitsPanel({
   const commitCount = data?.commits.length ?? 0;
 
   return (
-    <div className="flex flex-col min-h-0 flex-1">
+    <div className="flex flex-col min-h-0 min-w-0 flex-1 w-full">
       <header className="flex items-center gap-1 px-2 py-1 border-b border-border-default">
         {commitCount > 0 && (
           <span className="inline-flex items-center justify-center rounded-md bg-surface-2 px-1.5 text-[10px] font-medium text-fg-muted">

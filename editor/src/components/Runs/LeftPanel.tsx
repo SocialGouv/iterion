@@ -106,7 +106,7 @@ export default function LeftPanel({
   return (
     <aside
       style={{ width: EXPANDED_PX }}
-      className="flex flex-col border-r border-border-default bg-surface-1 shrink-0 min-h-0"
+      className="flex flex-col border-r border-border-default bg-surface-1 shrink-0 min-h-0 overflow-hidden"
     >
       <div className="flex items-center border-b border-border-default">
         <Tabs
@@ -140,16 +140,26 @@ export default function LeftPanel({
         </div>
       </div>
       {/* Both tabs mount unconditionally so live refresh keeps running
-          on the inactive one. We just toggle visibility. */}
+          on the inactive one. The hidden panel is collapsed via `hidden`
+          (display: none) — using flex-col on the visible one so the
+          inner panel's `flex-1` grows on the column axis (height) and
+          its width is bounded by the aside's stretch (no horizontal
+          overflow when a file path is wider than the panel). */}
       <div
-        className="flex-1 min-h-0"
-        style={{ display: activeTab === "files" ? "flex" : "none" }}
+        className={
+          activeTab === "files"
+            ? "flex-1 min-h-0 min-w-0 flex flex-col"
+            : "hidden"
+        }
       >
         <FilesPanel runId={runId} onSelectFile={onSelectFile} />
       </div>
       <div
-        className="flex-1 min-h-0"
-        style={{ display: activeTab === "commits" ? "flex" : "none" }}
+        className={
+          activeTab === "commits"
+            ? "flex-1 min-h-0 min-w-0 flex flex-col"
+            : "hidden"
+        }
       >
         <CommitsPanel
           runId={runId}
