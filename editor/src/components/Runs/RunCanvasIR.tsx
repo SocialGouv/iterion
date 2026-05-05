@@ -64,9 +64,15 @@ function buildLLMMeta(
     return undefined;
   }
   const activeModel = override?.model ?? declared.model;
-  const caps = activeModel
+  // Caps lookup keys off the *declared* model because that's what
+  // the prefetch effect populates the cache with. Runtime events
+  // sometimes log a canonical alias (e.g. event "gpt-5.5" vs .iter
+  // "openai/gpt-5.5") — the registry returns identical caps for
+  // both, but the cache is keyed by the literal string.
+  const capsModel = declared.model ?? activeModel;
+  const caps = capsModel
     ? effortCapsByPair.get(
-        `${effortBackendKey(declared.backend)} ${activeModel}`,
+        `${effortBackendKey(declared.backend)} ${capsModel}`,
       )
     : undefined;
   // Effective effort priority:
