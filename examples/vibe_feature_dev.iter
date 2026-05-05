@@ -97,6 +97,38 @@ prompt act_system:
   Do NOT make any commit; do NOT push anything. Stop when the
   implementation is functional and tested.
 
+  ADR DOCUMENTATION:
+  1. When you make a non-trivial technical decision while
+     implementing the feature — choosing one approach over
+     alternatives, adopting a new pattern or library, accepting
+     a deliberate trade-off, or diverging from an existing
+     convention — you MUST add or update an ADR markdown file
+     under `docs/adr/`.
+  2. Decisions that DO warrant an ADR:
+       - Picking a library, SDK, or framework when alternatives
+         existed.
+       - Adopting an architecture pattern that future readers
+         would otherwise question (e.g., a sync-vs-async choice,
+         a layering boundary, a data ownership decision).
+       - Accepting a trade-off that the obvious reading of the
+         code would not justify (e.g., why we don't validate at
+         this boundary).
+  3. Decisions that DO NOT warrant an ADR:
+       - Mechanical refactors with no semantic change.
+       - Bug fixes whose rationale is obvious from the bug.
+       - Test additions, lint/style fixes, dependency bumps.
+  4. Follow the format of existing files in `docs/adr/` (Status,
+     Context, Decision, Consequences). Number the new ADR
+     sequentially (highest existing number + 1, zero-padded to
+     three digits).
+  5. The ADR MUST capture the trade-off that motivated the
+     decision — not just restate what the code does. If you
+     cannot articulate what would have been the alternative and
+     why you rejected it, the decision was probably not
+     ADR-worthy.
+  6. If you UPDATE an existing ADR (status flip, supersede), add
+     a dated entry rather than rewriting history.
+
 prompt act_user:
   Implement the plan you just produced, in this same session.
   The feature description is already in your conversation
@@ -218,6 +250,30 @@ prompt review_system:
       you actually audited this iteration (e.g. "pkg/log/format.go
       correctness + UTF-8 edge cases", "format_test.go coverage
       sufficiency", "log.go integration / naming consistency").
+
+  ADR TRACEABILITY (apply only to decisions made by the
+  implementer/fixer in this run):
+  1. Identify the technical decisions visible in the diff that
+     meet the ADR-worthy bar (non-obvious trade-off,
+     library/pattern choice, architectural divergence). Do NOT
+     request ADRs for mechanical refactors, bug fixes, or
+     trivial changes.
+  2. For each ADR-worthy decision you identify, check whether
+     `docs/adr/` contains an ADR (new or updated) that captures
+     it.
+  3. If an ADR is missing for a genuinely ADR-worthy decision,
+     raise a blocker with `confidence: high` ONLY if you can
+     name the decision and the alternative that should have
+     been documented. If you can't, lower confidence or treat
+     it as a non-blocking note instead.
+  4. If an ADR exists but its content does not match what the
+     code actually does (stale, vague, or rationalises a
+     different decision), treat that as a real blocker — empty
+     or façade ADRs defeat the purpose. Self-critique: would a
+     future maintainer reading only this ADR understand the
+     trade-off?
+  5. Add ADR coverage to `scanned_areas` when you audited it
+     (e.g. `docs/adr/003-foo.md vs pkg/foo accuracy`).
 
   ANTI-FALSE-POSITIVE RULES:
   1. Mark approved=false only for issues that are truly
@@ -362,6 +418,35 @@ prompt fix_system:
   your precise question. Do NOT use this for technical
   decisions you can make alone.
 
+  ADR DOCUMENTATION:
+  1. When fixing a blocker forces a non-trivial technical
+     decision — switching to a different approach than the
+     original implementer chose, adopting a new pattern or
+     library, accepting a new trade-off, or diverging from an
+     existing convention — you MUST add or update an ADR
+     markdown file under `docs/adr/`.
+  2. Decisions that DO warrant an ADR:
+       - Replacing one library/SDK/pattern with another.
+       - Restructuring an architectural boundary the original
+         implementation crossed.
+       - Choosing one of several reasonable fix strategies when
+         the trade-off is non-obvious.
+  3. Decisions that DO NOT warrant an ADR:
+       - Bug fixes whose rationale is obvious from the bug.
+       - Naming, style, or test-coverage tweaks.
+       - Reverting to behaviour the original spec already
+         described.
+  4. Follow the format of existing files in `docs/adr/` (Status,
+     Context, Decision, Consequences). Number the new ADR
+     sequentially (highest existing number + 1, zero-padded to
+     three digits).
+  5. The ADR MUST capture the trade-off that motivated the fix
+     — not just describe what changed. If you cannot articulate
+     the alternative you rejected, the fix was probably not
+     ADR-worthy.
+  6. If you UPDATE an existing ADR (status flip, supersede), add
+     a dated entry rather than rewriting history.
+
 prompt fix_user:
   Apply concrete fixes to the blockers below, in
   {{vars.workspace_dir}}. Stay within the feature scope (the
@@ -483,7 +568,7 @@ schema commit_result:
 agent plan:
   backend: "claude_code"
   model: "claude-opus-4-7"
-  reasoning_effort: xhigh
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-max}"
   system: plan_system
   user: plan_user
   session: fresh
@@ -491,7 +576,7 @@ agent plan:
 agent act:
   backend: "claude_code"
   model: "claude-opus-4-7"
-  reasoning_effort: xhigh
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-max}"
   system: act_system
   user: act_user
   session: inherit
@@ -499,7 +584,7 @@ agent act:
 agent simplify:
   backend: "claude_code"
   model: "claude-opus-4-7"
-  reasoning_effort: xhigh
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-max}"
   user: simplify_user
   session: inherit
 
@@ -520,7 +605,7 @@ agent simplify:
 agent prepare_commit:
   backend: "claude_code"
   model: "claude-opus-4-7"
-  reasoning_effort: high
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-max}"
   output: commit_output
   system: prepare_commit_system
   user: prepare_commit_user
@@ -548,7 +633,7 @@ router alt:
 judge reviewer_claude:
   backend: "claude_code"
   model: "claude-opus-4-7"
-  reasoning_effort: xhigh
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-max}"
   input: review_input
   output: verdict_output
   system: review_system
@@ -565,6 +650,7 @@ judge reviewer_claude:
 
 judge reviewer_gpt:
   model: "openai/gpt-5.5"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
   input: review_input
   output: verdict_output
   system: review_system
@@ -615,7 +701,7 @@ compute streak_check:
 agent fix_claude:
   backend: "claude_code"
   model: "claude-opus-4-7"
-  reasoning_effort: xhigh
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-max}"
   input: fix_input
   output: fix_output
   system: fix_system
@@ -628,6 +714,7 @@ agent fix_claude:
 
 agent fix_gpt:
   model: "openai/gpt-5.5"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
   input: fix_input
   output: fix_output
   system: fix_system
