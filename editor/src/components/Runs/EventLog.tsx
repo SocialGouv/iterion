@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { ChevronDownIcon } from "@radix-ui/react-icons";
 
@@ -22,6 +22,10 @@ interface Props {
   onClearSelection?: () => void;
   onCollapse?: () => void;
 }
+
+// Slack the bottom-detection threshold so dynamic-height row reflows
+// don't transiently report "not at bottom" while followOutput re-aligns.
+const AT_BOTTOM_THRESHOLD_PX = 48;
 
 const EVENT_BADGE: Record<string, string> = {
   run_started: "bg-info-soft text-info-fg",
@@ -64,6 +68,11 @@ export default function EventLog({
   const [search, setSearch] = useState("");
   const [activeTypes, setActiveTypes] = useState<Set<string>>(() => new Set());
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  // Tracks whether virtuoso is currently scrolling. atBottomStateChange
+  // also fires on data/filter changes; we only treat "left the bottom"
+  // as a user intent to disable follow-tail when an actual scroll is in
+  // flight.
+  const isScrollingRef = useRef<boolean>(false);
 
   // Annotate every event with its iteration index up-front so the
   // virtual list can filter/select in O(1) downstream.
@@ -106,18 +115,6 @@ export default function EventLog({
       return false;
     });
   }, [annotated, selectedExecutionId, activeTypes, search]);
-
-  // Auto-tail to the latest event when followTail is on. Virtuoso has
-  // a built-in followOutput prop; we just toggle it.
-  useEffect(() => {
-    if (!followTail) return;
-    if (filtered.length === 0) return;
-    virtuosoRef.current?.scrollToIndex({
-      index: filtered.length - 1,
-      align: "end",
-      behavior: "auto",
-    });
-  }, [filtered.length, followTail]);
 
   const toggleType = (t: string) => {
     setActiveTypes((prev) => {
@@ -210,8 +207,14 @@ export default function EventLog({
             className="h-full"
             data={filtered}
             followOutput={followTail ? "auto" : false}
+            atBottomThreshold={AT_BOTTOM_THRESHOLD_PX}
+            isScrolling={(s) => {
+              isScrollingRef.current = s;
+            }}
             atBottomStateChange={(atBottom) => {
-              if (!atBottom && followTail) onToggleFollow(false);
+              if (!atBottom && followTail && isScrollingRef.current) {
+                onToggleFollow(false);
+              }
             }}
             itemContent={(_, ann) => (
               <EventRow

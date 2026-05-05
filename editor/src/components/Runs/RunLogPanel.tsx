@@ -30,6 +30,10 @@ const LEVEL_GLYPHS: Array<{ key: string; emoji: string; label: string; cls: stri
 
 const BLOCK_INDENT = "         │ ";
 
+// Slack the bottom-detection threshold so dynamic-height row reflows
+// don't transiently report "not at bottom" while followOutput re-aligns.
+const AT_BOTTOM_THRESHOLD_PX = 48;
+
 interface AnnotatedLine {
   // Index in the lines[] array, used as a stable key for Virtuoso.
   idx: number;
@@ -48,6 +52,11 @@ export default function RunLogPanel({ runId, subscribeLogs, unsubscribeLogs, onC
   const [activeLevels, setActiveLevels] = useState<Set<string>>(() => new Set());
   const [followTail, setFollowTail] = useState(true);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  // Tracks whether virtuoso is currently scrolling. atBottomStateChange
+  // also fires on data/filter changes; we only treat "left the bottom"
+  // as a user intent to disable follow-tail when an actual scroll is in
+  // flight.
+  const isScrollingRef = useRef<boolean>(false);
 
   // Subscribe on mount (this component is mounted only when the Logs
   // tab is active) and unsubscribe on unmount.
@@ -93,17 +102,6 @@ export default function RunLogPanel({ runId, subscribeLogs, unsubscribeLogs, onC
       return true;
     });
   }, [annotated, search, activeLevels]);
-
-  // Auto-tail when followTail is on. Identical pattern to EventLog.
-  useEffect(() => {
-    if (!followTail) return;
-    if (filtered.length === 0) return;
-    virtuosoRef.current?.scrollToIndex({
-      index: filtered.length - 1,
-      align: "end",
-      behavior: "auto",
-    });
-  }, [filtered.length, followTail]);
 
   const toggleLevel = (lvl: string) => {
     setActiveLevels((prev) => {
@@ -212,8 +210,14 @@ export default function RunLogPanel({ runId, subscribeLogs, unsubscribeLogs, onC
             className="h-full"
             data={filtered}
             followOutput={followTail ? "auto" : false}
+            atBottomThreshold={AT_BOTTOM_THRESHOLD_PX}
+            isScrolling={(s) => {
+              isScrollingRef.current = s;
+            }}
             atBottomStateChange={(atBottom) => {
-              if (!atBottom && followTail) setFollowTail(false);
+              if (!atBottom && followTail && isScrollingRef.current) {
+                setFollowTail(false);
+              }
             }}
             itemContent={(_, line) => <LogLineRow line={line} />}
             computeItemKey={(_, line) => line.idx}
