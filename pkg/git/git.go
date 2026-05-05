@@ -50,6 +50,15 @@ type DiffPayload struct {
 	Binary bool    `json:"binary"`
 }
 
+// gitEnv returns an environment that pins git's user-facing messages to
+// English (LC_ALL=C / LANG=C). Required because callers branch on
+// stderr substrings like "not a git repository" or "exists on disk,
+// but not in" — those strings are localized when the user's locale is
+// non-English (e.g. fr_FR), and the substring match silently fails.
+func gitEnv() []string {
+	return append(os.Environ(), "LC_ALL=C", "LANG=C")
+}
+
 // run executes `git args...` with cwd=dir and returns combined stdout.
 // Stderr is captured separately to surface git's own diagnostics in
 // wrapped errors. Any error mentioning "not a git repository" is mapped
@@ -57,6 +66,7 @@ type DiffPayload struct {
 func run(dir string, args ...string) ([]byte, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	cmd.Env = gitEnv()
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

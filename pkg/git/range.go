@@ -126,6 +126,7 @@ func MergeBase(repoRoot, refA, refB string) string {
 func showAt(dir, ref, relPath string) ([]byte, error) {
 	cmd := exec.Command("git", "show", ref+":"+relPath)
 	cmd.Dir = dir
+	cmd.Env = gitEnv()
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

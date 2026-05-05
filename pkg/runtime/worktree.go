@@ -24,6 +24,16 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
+// gitCmd wraps exec.Command("git", args...) with LC_ALL=C / LANG=C so
+// callers can branch on stderr substrings ("already exists",
+// "exists on disk, but not in") without those substrings being
+// silently localized into the user's locale (fr_FR, etc).
+func gitCmd(args ...string) *exec.Cmd {
+	cmd := exec.Command("git", args...)
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
+	return cmd
+}
+
 // worktreeContext is the state captured at setupWorktree time and
 // consumed by finalizeWorktree to decide whether the run actually
 // produced new commits and whether a fast-forward of the user's branch
@@ -65,11 +75,11 @@ func setupWorktree(storeRoot, runID, repoHint string, logger *iterlog.Logger) (w
 	// `symbolic-ref --quiet HEAD` returns "" + non-zero on detached HEAD —
 	// that's intentional: we treat detached as "no branch to FF".
 	originalBranch := ""
-	if out, brErr := exec.Command("git", "-C", repoRoot, "symbolic-ref", "--quiet", "--short", "HEAD").Output(); brErr == nil {
+	if out, brErr := gitCmd("-C", repoRoot, "symbolic-ref", "--quiet", "--short", "HEAD").Output(); brErr == nil {
 		originalBranch = strings.TrimSpace(string(out))
 	}
 	originalTip := ""
-	if out, tipErr := exec.Command("git", "-C", repoRoot, "rev-parse", "HEAD").Output(); tipErr == nil {
+	if out, tipErr := gitCmd("-C", repoRoot, "rev-parse", "HEAD").Output(); tipErr == nil {
 		originalTip = strings.TrimSpace(string(out))
 	}
 
@@ -77,7 +87,7 @@ func setupWorktree(storeRoot, runID, repoHint string, logger *iterlog.Logger) (w
 	// HEAD commit. Any working-tree state (staged, unstaged, untracked)
 	// in the main checkout is intentionally NOT copied — that is the whole
 	// point of isolation.
-	cmd := exec.Command("git", "-C", repoRoot, "worktree", "add", wtPath, "HEAD")
+	cmd := gitCmd("-C", repoRoot, "worktree", "add", wtPath, "HEAD")
 	if out, addErr := cmd.CombinedOutput(); addErr != nil {
 		return worktreeContext{}, nil, fmt.Errorf("git worktree add %s: %w\noutput: %s", wtPath, addErr, string(out))
 	}
@@ -91,7 +101,7 @@ func setupWorktree(storeRoot, runID, repoHint string, logger *iterlog.Logger) (w
 		// `--force` overrides protections; we accept the risk because the
 		// engine owns the worktree's lifecycle. Best-effort: errors are
 		// logged but do not fail the run.
-		out, rmErr := exec.Command("git", "-C", repoRoot, "worktree", "remove", "--force", wtPath).CombinedOutput()
+		out, rmErr := gitCmd("-C", repoRoot, "worktree", "remove", "--force", wtPath).CombinedOutput()
 		if rmErr != nil && logger != nil {
 			logger.Warn("runtime: git worktree remove %s failed: %v\noutput: %s", wtPath, rmErr, string(out))
 		}
@@ -240,7 +250,7 @@ func createBranchSafely(repoRoot, name, sha string, logger *iterlog.Logger) (boo
 		candidates = append(candidates, fmt.Sprintf("%s-%d", name, i))
 	}
 	for _, candidate := range candidates {
-		out, err := exec.Command("git", "-C", repoRoot, "branch", candidate, sha).CombinedOutput()
+		out, err := gitCmd("-C", repoRoot, "branch", candidate, sha).CombinedOutput()
 		if err == nil {
 			return true, candidate
 		}
@@ -263,7 +273,7 @@ func tryFastForward(repoRoot, target, branchToMerge, finalSHA, originalBranch st
 	// Guard 1: the user's currently-checked-out branch must still be
 	// originalBranch. If they switched mid-run, leave their state alone.
 	currentBranch := ""
-	if out, err := exec.Command("git", "-C", repoRoot, "symbolic-ref", "--quiet", "--short", "HEAD").Output(); err == nil {
+	if out, err := gitCmd("-C", repoRoot, "symbolic-ref", "--quiet", "--short", "HEAD").Output(); err == nil {
 		currentBranch = strings.TrimSpace(string(out))
 	}
 	if originalBranch != "" && currentBranch != originalBranch {
@@ -280,19 +290,19 @@ func tryFastForward(repoRoot, target, branchToMerge, finalSHA, originalBranch st
 	}
 
 	// Guard 2: working tree must be clean.
-	if out, err := exec.Command("git", "-C", repoRoot, "status", "--porcelain").Output(); err == nil {
+	if out, err := gitCmd("-C", repoRoot, "status", "--porcelain").Output(); err == nil {
 		if len(strings.TrimSpace(string(out))) > 0 {
 			return fmt.Errorf("main working tree has uncommitted changes")
 		}
 	}
 
 	// Guard 3: FF must actually be possible (target is ancestor of finalSHA).
-	if err := exec.Command("git", "-C", repoRoot, "merge-base", "--is-ancestor", "refs/heads/"+target, finalSHA).Run(); err != nil {
+	if err := gitCmd("-C", repoRoot, "merge-base", "--is-ancestor", "refs/heads/"+target, finalSHA).Run(); err != nil {
 		return fmt.Errorf("non-fast-forward (%q has commits not in run output)", target)
 	}
 
 	// Run the merge.
-	out, err := exec.Command("git", "-C", repoRoot, "merge", "--ff-only", branchToMerge).CombinedOutput()
+	out, err := gitCmd("-C", repoRoot, "merge", "--ff-only", branchToMerge).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git merge --ff-only failed: %v\noutput: %s", err, string(out))
 	}
@@ -301,7 +311,7 @@ func tryFastForward(repoRoot, target, branchToMerge, finalSHA, originalBranch st
 
 // readHEAD returns the SHA of HEAD in the given worktree, or "" on error.
 func readHEAD(wtPath string) string {
-	out, err := exec.Command("git", "-C", wtPath, "rev-parse", "HEAD").Output()
+	out, err := gitCmd("-C", wtPath, "rev-parse", "HEAD").Output()
 	if err != nil {
 		return ""
 	}

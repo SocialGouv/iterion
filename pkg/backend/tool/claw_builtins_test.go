@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -25,6 +26,25 @@ import (
 func hasTool(r *Registry, name string) bool {
 	_, err := r.Resolve(name)
 	return err == nil
+}
+
+// skipIfComputerUseAvailable skips the test when the host actually has
+// the X11 stack the *Unavailable tests assume is missing. CI in stripped
+// containers genuinely is headless; a developer machine with xorg +
+// xdotool + ImageMagick (`import`) on PATH is not — letting these
+// tests run there asserts an error that legitimately won't fire.
+func skipIfComputerUseAvailable(t *testing.T) {
+	t.Helper()
+	if os.Getenv("DISPLAY") == "" {
+		return
+	}
+	if _, err := exec.LookPath("xdotool"); err != nil {
+		return
+	}
+	if _, err := exec.LookPath("import"); err != nil {
+		return
+	}
+	t.Skip("computer-use stack is available on this host (DISPLAY + xdotool + import) — skipping headless-only assertion")
 }
 
 func TestRegisterClawBuiltins_RegistersStandardSet(t *testing.T) {
@@ -146,6 +166,7 @@ func TestRegisterClawComputerUse_ReadImagePropagatesError(t *testing.T) {
 }
 
 func TestRegisterClawComputerUse_ScreenshotPropagatesUnavailable(t *testing.T) {
+	skipIfComputerUseAvailable(t)
 	r := NewRegistry()
 	if err := RegisterClawComputerUse(r); err != nil {
 		t.Fatalf("RegisterClawComputerUse: %v", err)
@@ -172,6 +193,7 @@ func TestRegisterClawComputerUse_ScreenshotPropagatesUnavailable(t *testing.T) {
 // the adapter must surface ErrComputerUseUnavailable instead of
 // silently returning a stub success.
 func TestRegisterClawComputerUse_ComputerUsePropagatesUnavailable(t *testing.T) {
+	skipIfComputerUseAvailable(t)
 	r := NewRegistry()
 	if err := RegisterClawComputerUse(r); err != nil {
 		t.Fatalf("RegisterClawComputerUse: %v", err)
