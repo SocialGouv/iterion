@@ -42,11 +42,11 @@ export default function RunHeader({ run, active, wsState }: Props) {
     }
   };
 
-  const onResume = async () => {
+  const onResume = async (force = false) => {
     setBusy(true);
     setError(null);
     try {
-      await resumeRun(run.id, {});
+      await resumeRun(run.id, { force });
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -104,14 +104,25 @@ export default function RunHeader({ run, active, wsState }: Props) {
             </Button>
           )}
           {canResume && (
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={() => void onResume()}
-              disabled={busy}
-            >
-              Resume
-            </Button>
+            <>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => void onResume(false)}
+                disabled={busy}
+              >
+                Resume
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void onResume(true)}
+                disabled={busy}
+                title="Resume even if the workflow file has changed since launch (--force)"
+              >
+                Force
+              </Button>
+            </>
           )}
         </div>
       </div>
