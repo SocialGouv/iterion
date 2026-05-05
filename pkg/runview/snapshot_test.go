@@ -310,3 +310,148 @@ func TestParseExecutionID_Invalid(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Active-duration timer reducer tests
+// ---------------------------------------------------------------------------
+//
+// The evt helper anchors timestamps on `seq` (Unix seconds), so the tests
+// below pick seqs that double as the wall-clock the run reached.
+
+func TestSnapshotReducer_Timer(t *testing.T) {
+	cases := []struct {
+		name             string
+		events           []*store.Event
+		wantActiveMs     int64
+		wantAnchorUnix   int64 // 0 means expect nil anchor
+		anchorIsExpected bool
+	}{
+		{
+			name: "start_then_finish",
+			events: []*store.Event{
+				evt(0, store.EventRunStarted, "", "", nil),
+				evt(10, store.EventRunFinished, "", "", nil),
+			},
+			wantActiveMs: 10_000,
+		},
+		{
+			name: "pause_resume_finish_excludes_pause_gap",
+			events: []*store.Event{
+				evt(0, store.EventRunStarted, "", "", nil),
+				evt(10, store.EventRunPaused, "", "", nil),
+				evt(40, store.EventRunResumed, "", "", nil),
+				evt(45, store.EventRunFinished, "", "", nil),
+			},
+			wantActiveMs: 15_000,
+		},
+		{
+			// run_failed terminates the active window without an explicit
+			// node id (engine emits a run-level failure on budget exceeded,
+			// for example). The subsequent run_resumed must re-anchor.
+			name: "failed_resumable_excludes_offline_gap",
+			events: []*store.Event{
+				evt(0, store.EventRunStarted, "", "", nil),
+				evt(5, store.EventRunFailed, "", "", map[string]interface{}{"error": "boom"}),
+				evt(100, store.EventRunResumed, "", "", nil),
+				evt(108, store.EventRunFinished, "", "", nil),
+			},
+			wantActiveMs: 13_000,
+		},
+		{
+			name: "interrupted_freezes_like_pause",
+			events: []*store.Event{
+				evt(0, store.EventRunStarted, "", "", nil),
+				evt(7, store.EventRunInterrupted, "", "", nil),
+			},
+			wantActiveMs: 7_000,
+		},
+		{
+			// No terminal event after resume — CurrentRunStart must be
+			// left anchored so the live frontend ticker keeps accruing.
+			name: "resume_without_terminal_keeps_anchor",
+			events: []*store.Event{
+				evt(0, store.EventRunStarted, "", "", nil),
+				evt(10, store.EventRunPaused, "", "", nil),
+				evt(30, store.EventRunResumed, "", "", nil),
+			},
+			wantActiveMs:     10_000,
+			wantAnchorUnix:   30,
+			anchorIsExpected: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := NewSnapshotBuilder(&store.Run{ID: "r1", Status: store.RunStatusRunning})
+			for _, e := range tc.events {
+				b.Apply(e)
+			}
+			snap := b.Snapshot()
+			if got := snap.Run.ActiveDurationMs; got != tc.wantActiveMs {
+				t.Errorf("ActiveDurationMs = %d, want %d", got, tc.wantActiveMs)
+			}
+			if !tc.anchorIsExpected {
+				if snap.Run.CurrentRunStart != nil {
+					t.Errorf("CurrentRunStart = %v, want nil", snap.Run.CurrentRunStart)
+				}
+				return
+			}
+			if snap.Run.CurrentRunStart == nil {
+				t.Fatalf("CurrentRunStart = nil, want anchor at t=%d", tc.wantAnchorUnix)
+			}
+			if got := snap.Run.CurrentRunStart.Unix(); got != tc.wantAnchorUnix {
+				t.Errorf("CurrentRunStart unix = %d, want %d", got, tc.wantAnchorUnix)
+			}
+		})
+	}
+}
+
+func TestSnapshotReducer_TimerColdLoadRunningFallback(t *testing.T) {
+	// Cold-load: header status=running but no events flushed yet.
+	// headerFromRun must seed CurrentRunStart from CreatedAt so the
+	// live ticker starts immediately rather than reading 0.
+	created := time.Unix(100, 0).UTC()
+	b := NewSnapshotBuilder(&store.Run{
+		ID:        "r1",
+		Status:    store.RunStatusRunning,
+		CreatedAt: created,
+	})
+	snap := b.Snapshot()
+	if snap.Run.CurrentRunStart == nil {
+		t.Fatalf("CurrentRunStart = nil, want fallback to CreatedAt")
+	}
+	if !snap.Run.CurrentRunStart.Equal(created) {
+		t.Errorf("CurrentRunStart = %v, want CreatedAt %v", snap.Run.CurrentRunStart, created)
+	}
+	if snap.Run.ActiveDurationMs != 0 {
+		t.Errorf("ActiveDurationMs = %d, want 0", snap.Run.ActiveDurationMs)
+	}
+}
+
+func TestSnapshotReducer_TimerSetRunPreservesCounters(t *testing.T) {
+	// SetRun is invoked on terminal-event paths to refresh the header
+	// from run.json. It must not clobber the accumulated active
+	// duration that the events already taught the reducer.
+	b := NewSnapshotBuilder(&store.Run{ID: "r1", Status: store.RunStatusRunning})
+	for _, e := range []*store.Event{
+		evt(0, store.EventRunStarted, "", "", nil),
+		evt(12, store.EventRunPaused, "", "", nil),
+	} {
+		b.Apply(e)
+	}
+	if got := b.Snapshot().Run.ActiveDurationMs; got != 12000 {
+		t.Fatalf("pre-SetRun ActiveDurationMs = %d, want 12000", got)
+	}
+	finished := time.Unix(20, 0).UTC()
+	b.SetRun(&store.Run{
+		ID:         "r1",
+		Status:     store.RunStatusPausedWaitingHuman,
+		FinishedAt: &finished,
+	})
+	snap := b.Snapshot()
+	if got := snap.Run.ActiveDurationMs; got != 12000 {
+		t.Errorf("post-SetRun ActiveDurationMs = %d, want 12000 preserved", got)
+	}
+	if snap.Run.CurrentRunStart != nil {
+		t.Errorf("CurrentRunStart = %v, want nil preserved (run is paused)", snap.Run.CurrentRunStart)
+	}
+}

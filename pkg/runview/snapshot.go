@@ -87,6 +87,18 @@ type RunHeader struct {
 	MergeStrategy store.MergeStrategy `json:"merge_strategy,omitempty"`
 	MergeStatus   store.MergeStatus   `json:"merge_status,omitempty"`
 	AutoMerge     bool                `json:"auto_merge,omitempty"`
+	// ActiveDurationMs is the wall-clock the run actually consumed —
+	// the sum of run_started/resumed → paused/failed/cancelled/
+	// interrupted/finished windows derived from events. Excludes time
+	// the run sat paused waiting for human input or sat failed_resumable
+	// between a crash and a resume.
+	ActiveDurationMs int64 `json:"active_duration_ms"`
+	// CurrentRunStart anchors the currently-accruing window. Non-nil
+	// while the run is actively executing; nil once it pauses, fails,
+	// is cancelled, is interrupted, or finishes. The frontend adds
+	// (now - CurrentRunStart) to ActiveDurationMs to drive the live
+	// timer and freezes the value once this clears.
+	CurrentRunStart *time.Time `json:"current_run_start,omitempty"`
 }
 
 // RunSnapshot is the structured view returned by GET /api/runs/{id} and
@@ -139,12 +151,23 @@ func NewSnapshotBuilder(run *store.Run) *SnapshotBuilder {
 }
 
 // SetRun refreshes the run-level header. Call this when a fresh
-// run.json was just persisted (e.g. on terminal events).
+// run.json was just persisted (e.g. on terminal events). The
+// event-derived timer fields (ActiveDurationMs, CurrentRunStart) are
+// preserved across the refresh — run.json carries CreatedAt/FinishedAt
+// but not the per-window accumulation, so we keep what events have
+// already taught us.
 func (b *SnapshotBuilder) SetRun(run *store.Run) {
 	if run == nil {
 		return
 	}
+	prevDuration := b.header.ActiveDurationMs
+	prevAnchor := b.header.CurrentRunStart
+	hadEventDerivedTimer := b.lastSeq != NoEventsSeq
 	b.header = headerFromRun(run)
+	if hadEventDerivedTimer {
+		b.header.ActiveDurationMs = prevDuration
+		b.header.CurrentRunStart = prevAnchor
+	}
 }
 
 // Apply folds a single event into the running snapshot. Events MUST be
@@ -181,12 +204,17 @@ func (b *SnapshotBuilder) Apply(evt *store.Event) {
 	case store.EventRunResumed:
 		b.handleRunResumed(evt)
 	case store.EventRunStarted:
-		// Status already set from run.json header; nothing to derive.
+		b.anchorActive(evt.Timestamp)
 	case store.EventRunFinished:
-		// Status update is read from run.json on next SetRun call;
-		// no per-execution effect.
+		b.accumulateActive(evt.Timestamp)
 	case store.EventRunCancelled:
-		// Same as RunFinished — header reflects cancelled.
+		b.accumulateActive(evt.Timestamp)
+	case store.EventRunInterrupted:
+		// Server drain — freeze the timer like a pause. The matching
+		// resume re-anchors. Without this case the event would fall
+		// through to the default branch and erroneously keep the
+		// run accruing across a drain → restart gap.
+		b.accumulateActive(evt.Timestamp)
 	default:
 		// Node-scoped informational events (LLM prompts/requests/steps,
 		// retries/compactions, tool calls/errors, human answers, budget
@@ -297,6 +325,9 @@ func (b *SnapshotBuilder) handleArtifactWritten(evt *store.Event, branch string)
 }
 
 func (b *SnapshotBuilder) handleRunFailed(evt *store.Event, branch string) {
+	// Always close the active window — a failure terminates execution
+	// regardless of which node id (if any) the event carries.
+	b.accumulateActive(evt.Timestamp)
 	if evt.NodeID == "" {
 		return
 	}
@@ -327,13 +358,17 @@ func (b *SnapshotBuilder) handleHumanInputRequested(evt *store.Event, branch str
 }
 
 func (b *SnapshotBuilder) handleRunPaused(evt *store.Event) {
-	// No per-exec mutation — the matching node was already marked
-	// paused by handleHumanInputRequested. The run-level status flips
-	// via SetRun on the next disk read.
-	_ = evt
+	// Close the active timer window. The matching node was already
+	// marked paused by handleHumanInputRequested; the run-level
+	// status flips via SetRun on the next disk read.
+	b.accumulateActive(evt.Timestamp)
 }
 
 func (b *SnapshotBuilder) handleRunResumed(evt *store.Event) {
+	// Re-anchor the active timer window. Covers both resume-from-pause
+	// and resume-from-failed_resumable — neither emits an explicit
+	// run_started, so this is the only place the second window opens.
+	b.anchorActive(evt.Timestamp)
 	// Find the most-recent paused execution and re-mark it running.
 	// In practice there is exactly one because resume can only target
 	// the checkpoint node, but iterating is cheap and avoids relying
@@ -350,6 +385,25 @@ func (b *SnapshotBuilder) handleRunResumed(evt *store.Event) {
 			return
 		}
 	}
+}
+
+// No-op when no window is open, so it's safe to call on every
+// terminal/pause event without tracking prior state.
+func (b *SnapshotBuilder) accumulateActive(at time.Time) {
+	if b.header.CurrentRunStart == nil {
+		return
+	}
+	if delta := at.Sub(*b.header.CurrentRunStart); delta > 0 {
+		b.header.ActiveDurationMs += delta.Milliseconds()
+	}
+	b.header.CurrentRunStart = nil
+}
+
+// If a window is already open (rare race like a missing pause event),
+// the prior interval is silently dropped — preferable to double-counting.
+func (b *SnapshotBuilder) anchorActive(at time.Time) {
+	ts := at
+	b.header.CurrentRunStart = &ts
 }
 
 // ---------------------------------------------------------------------------
@@ -425,7 +479,7 @@ func ParseExecutionID(id string) (branch, nodeID string, iteration int, err erro
 }
 
 func headerFromRun(r *store.Run) RunHeader {
-	return RunHeader{
+	h := RunHeader{
 		ID:            r.ID,
 		Name:          r.Name,
 		WorkflowName:  r.WorkflowName,
@@ -448,6 +502,16 @@ func headerFromRun(r *store.Run) RunHeader {
 		MergeStatus:   r.MergeStatus,
 		AutoMerge:     r.AutoMerge,
 	}
+	// Bootstrap fallback: when the run is already running but the WS
+	// catch-up hasn't yet seen the run_started event, anchor on
+	// CreatedAt so the live timer starts at 0 instead of staying frozen.
+	// Apply() will overwrite this with the real run_started timestamp
+	// once the event arrives.
+	if r.Status == store.RunStatusRunning {
+		ts := r.CreatedAt
+		h.CurrentRunStart = &ts
+	}
+	return h
 }
 
 // BuildSnapshot is the cold-read convenience: load run.json + events

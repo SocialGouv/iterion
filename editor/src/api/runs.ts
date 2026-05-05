@@ -114,6 +114,16 @@ export interface RunHeader {
   merge_strategy?: MergeStrategy;
   merge_status?: MergeStatus;
   auto_merge?: boolean;
+  // Wall-clock the run actually consumed: sum of run_started/resumed
+  // → paused/failed/cancelled/interrupted/finished windows. Excludes
+  // pause and failed_resumable gaps. Reducer-derived from events.
+  active_duration_ms: number;
+  // RFC3339 anchor of the currently-accruing window. Present only
+  // while the run is actively executing; absent once it pauses,
+  // fails, is cancelled, is interrupted, or finishes. The UI adds
+  // (now - current_run_start) to active_duration_ms for the live
+  // ticker and freezes the value once this clears.
+  current_run_start?: string;
 }
 
 // Mirror of runview.RunSnapshot.

@@ -80,25 +80,25 @@ export function useRunMetrics(nowMs: number): RunMetrics {
   const snapshot = useRunStore((s) => s.snapshot);
   const events = useEventDrivenMetrics();
 
+  // Parse the anchor only when the WS pushes a new value, not on every
+  // ticker fire — re-parsing the same RFC3339 string at 1Hz is wasted
+  // work and also causes the duration memo below to recompute even when
+  // an unrelated snapshot field changed.
+  const anchorMs = useMemo(() => {
+    const iso = snapshot?.run.current_run_start;
+    if (!iso) return null;
+    const ms = new Date(iso).getTime();
+    return Number.isFinite(ms) ? ms : null;
+  }, [snapshot?.run.current_run_start]);
+
+  const base = snapshot?.run.active_duration_ms ?? 0;
+
   const durationMs = useMemo(() => {
-    if (!snapshot?.run.created_at) return 0;
-    const start = new Date(snapshot.run.created_at).getTime();
-    // Status is the source of truth for "is this run still going?". A
-    // resumed run can briefly carry a stale finished_at if the backend
-    // ran an older binary; gate on terminal status so the duration
-    // doesn't freeze mid-run.
-    const status = snapshot.run.status;
-    const isTerminal =
-      status === "finished" ||
-      status === "failed" ||
-      status === "failed_resumable" ||
-      status === "cancelled";
-    const end = isTerminal && snapshot.run.finished_at
-      ? new Date(snapshot.run.finished_at).getTime()
-      : nowMs;
-    if (!Number.isFinite(start) || !Number.isFinite(end)) return 0;
-    return Math.max(0, end - start);
-  }, [snapshot, nowMs]);
+    if (anchorMs === null) return base;
+    // Math.max guards against backwards client/server clock skew —
+    // without the clamp, a skewed client could see the timer tick down.
+    return base + Math.max(0, nowMs - anchorMs);
+  }, [base, anchorMs, nowMs]);
 
   return {
     ...events,
