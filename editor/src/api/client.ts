@@ -110,3 +110,19 @@ export async function fetchEffortCapabilities(
   const params = new URLSearchParams({ backend, model });
   return request<EffortCapabilities>(`/effort-capabilities?${params.toString()}`, { signal });
 }
+
+// fetchResolvedEffort asks the server to env-substitute and validate
+// a reasoning_effort literal (e.g. "${VIBE_EFFORT:-max}"). Returns the
+// resolved enum value, or "" when the literal is empty / expansion
+// produced something not in low/medium/high/xhigh/max.
+export async function fetchResolvedEffort(
+  literal: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const params = new URLSearchParams({ literal });
+  const r = await request<{ resolved: string }>(
+    `/resolve-effort?${params.toString()}`,
+    { signal },
+  );
+  return r.resolved;
+}

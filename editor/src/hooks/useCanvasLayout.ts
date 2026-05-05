@@ -112,6 +112,28 @@ export function useCanvasLayout() {
     }
   }, [document, graphNodes, graphEdges, activeWorkflowName, layoutDirection, activeLayers, subNodeViewId, groups, collapsedGroups]);
 
+  // Property-edit patch: when graphNodes content changes without
+  // topology change (e.g., a form edit to model / reasoning_effort),
+  // the layout-on-topology-change effect above bails out and the
+  // canvas keeps stale `data`. Patch each existing layoutNode's
+  // `data` from the matching graphNode without disturbing position.
+  useEffect(() => {
+    if (graphNodes.length === 0) return;
+    const byId = new Map(graphNodes.map((n) => [n.id, n]));
+    setLayoutNodes((prev) => {
+      if (prev.length === 0) return prev;
+      let changed = false;
+      const next = prev.map((n) => {
+        const fresh = byId.get(n.id);
+        if (!fresh || fresh.data === n.data) return n;
+        changed = true;
+        return { ...n, data: fresh.data };
+      });
+      if (changed) layoutNodesRef.current = next;
+      return changed ? next : prev;
+    });
+  }, [graphNodes]);
+
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
       const hasPositionChange = changes.some((c) => c.type === "position" && c.position);

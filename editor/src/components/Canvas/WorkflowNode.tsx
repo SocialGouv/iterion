@@ -9,6 +9,8 @@ import { ProviderIcon } from "@/components/icons/ProviderIcon";
 import { BackendBadge } from "@/components/icons/BackendBadge";
 import DiagnosticBadge from "@/components/Diagnostics/DiagnosticBadge";
 import { EffortBar, isEffortLevel } from "@/components/ui/EffortBar";
+import { effortBackendKey, useEffortCapabilities } from "@/hooks/useEffortCapabilities";
+import { useResolvedEffort } from "@/hooks/useResolvedEffort";
 import { NODE_ICONS, SELECTED_BORDER, SELECTED_GLOW } from "@/lib/constants";
 import { SIDES, POS_MAP } from "./handlePositions";
 
@@ -83,6 +85,16 @@ export default function WorkflowNode({ data, selected }: NodeProps) {
   const modelLabel = providerModel
     ? providerModel.replace(/\$\{.*?\}/g, "env")
     : undefined;
+
+  // Substitute env-subst literals so the bar shows the actual level
+  // ("max") instead of the raw "${VAR:-max}". Capabilities feed the
+  // bar's normalisation: a gpt-5 node at "high" renders 4/4 cells.
+  const resolvedEffort = useResolvedEffort(effortLevel);
+  const { capabilities: effortCaps } = useEffortCapabilities(
+    isLLMNode && providerModel ? effortBackendKey(backendValue) : undefined,
+    isLLMNode ? providerModel : undefined,
+  );
+  const effortSupported = effortCaps?.supported ?? undefined;
 
   // Schema badges for nodes that have input/output
   let inputSchema = "";
@@ -161,9 +173,20 @@ export default function WorkflowNode({ data, selected }: NodeProps) {
       {isLLMNode && (
         <div className="text-[10px] text-fg-subtle mt-0.5 max-w-[160px] flex items-center justify-center gap-1.5 flex-wrap">
           <BackendBadge backend={backendValue} size={10} />
-          {isEffortLevel(effortLevel) ? (
-            <EffortBar level={effortLevel} />
+          {isEffortLevel(resolvedEffort) ? (
+            <EffortBar
+              level={resolvedEffort}
+              supported={effortSupported}
+              title={
+                effortLevel && effortLevel !== resolvedEffort
+                  ? `reasoning_effort: ${resolvedEffort} (resolved from ${effortLevel})`
+                  : undefined
+              }
+            />
           ) : effortLevel && effortLevel.includes("$") ? (
+            // Resolution failed (invalid env value, server unreachable);
+            // fall back to the literal so the author still sees what
+            // they wrote.
             <span
               className="font-mono text-[9px] text-fg-muted truncate max-w-[100px]"
               title={`reasoning_effort: ${effortLevel} (env-substituted at runtime)`}

@@ -177,6 +177,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/examples", s.handleListExamples)
 	s.mux.HandleFunc("GET /api/examples/{name...}", s.handleLoadExample)
 	s.mux.HandleFunc("GET /api/effort-capabilities", s.handleEffortCapabilities)
+	s.mux.HandleFunc("GET /api/resolve-effort", s.handleResolveEffort)
 
 	// WebSocket endpoint for file watching
 	s.mux.HandleFunc("GET /api/ws", s.hub.HandleWebSocket)

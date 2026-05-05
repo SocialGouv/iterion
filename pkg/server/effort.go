@@ -8,6 +8,8 @@ import (
 
 	apikit "github.com/SocialGouv/claw-code-go/pkg/apikit"
 	codexsdk "github.com/ethpandaops/codex-agent-sdk-go"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
 // effortCapabilitiesResponse is the JSON shape returned by
@@ -102,6 +104,32 @@ func codexCapabilities(ctx context.Context, model string) (effortCapabilitiesRes
 		Supported: codexEffortFallback,
 		Source:    "codex-fallback",
 	}, nil
+}
+
+// resolveEffortResponse is the JSON shape returned by
+// GET /api/resolve-effort. Lets the editor canvas display the
+// resolved value (e.g., "max") for env-substituted literals like
+// "${VIBE_EFFORT:-max}" without exposing process env over HTTP.
+type resolveEffortResponse struct {
+	// Resolved is the validated effort level after env substitution,
+	// or "" if the literal is empty / expansion produced an invalid
+	// value. Callers should fall back to displaying the literal in
+	// that case.
+	Resolved string `json:"resolved"`
+}
+
+// handleResolveEffort answers
+//
+//	GET /api/resolve-effort?literal=<effort-literal>
+//
+// with the env-resolved effort level for the supplied literal. The
+// canonical use case is "${VAR:-default}" / "${VAR}" forms in
+// reasoning_effort fields — the editor canvas reads these from the
+// AST and asks the server to expand them so the rendered bar matches
+// the runtime behaviour.
+func (s *Server) handleResolveEffort(w http.ResponseWriter, r *http.Request) {
+	literal := r.URL.Query().Get("literal")
+	writeJSON(w, resolveEffortResponse{Resolved: ir.ResolveEffortLiteral(literal)})
 }
 
 // handleEffortCapabilities answers
