@@ -118,19 +118,21 @@ func (r *ModelRegistry) ensureInit() {
 		{Canonical: "claude-haiku-4-5", Provider: ProviderAnthropic, MaxOutput: 64_000, ContextWindow: 200_000, Aliases: []string{"haiku", "claude-haiku-4-5-20251213"}, Metadata: anthropicMeta},
 		// OpenAI — gpt-5.x family (1M+ context). Reasoning effort is
 		// supported on the gpt-5 reasoning models with the standard
-		// minimal/low/medium/high enum (no provider-published default).
+		// minimal/low/medium/high enum. OpenAI's Responses API
+		// documents `medium` as the implicit default when the
+		// reasoning_effort parameter is omitted.
 		{Canonical: "gpt-5.5", Provider: ProviderOpenAI, MaxOutput: 128_000, ContextWindow: 1_050_000, Aliases: []string{"openai/gpt-5.5"}, Metadata: openaiMeta,
-			SupportedReasoningEfforts: openaiReasoningEffort},
+			SupportedReasoningEfforts: openaiReasoningEffort, DefaultReasoningEffort: "medium"},
 		{Canonical: "gpt-5.5-pro", Provider: ProviderOpenAI, MaxOutput: 128_000, ContextWindow: 1_050_000, Aliases: []string{"openai/gpt-5.5-pro"}, Metadata: openaiMeta,
-			SupportedReasoningEfforts: openaiReasoningEffort},
+			SupportedReasoningEfforts: openaiReasoningEffort, DefaultReasoningEffort: "medium"},
 		{Canonical: "gpt-5.4", Provider: ProviderOpenAI, MaxOutput: 128_000, ContextWindow: 1_050_000, Aliases: []string{"openai/gpt-5.4"}, Metadata: openaiMeta,
-			SupportedReasoningEfforts: openaiReasoningEffort},
+			SupportedReasoningEfforts: openaiReasoningEffort, DefaultReasoningEffort: "medium"},
 		{Canonical: "gpt-5.4-pro", Provider: ProviderOpenAI, MaxOutput: 128_000, ContextWindow: 1_050_000, Aliases: []string{"openai/gpt-5.4-pro"}, Metadata: openaiMeta,
-			SupportedReasoningEfforts: openaiReasoningEffort},
+			SupportedReasoningEfforts: openaiReasoningEffort, DefaultReasoningEffort: "medium"},
 		{Canonical: "gpt-5.4-mini", Provider: ProviderOpenAI, MaxOutput: 128_000, ContextWindow: 400_000, Aliases: []string{"openai/gpt-5.4-mini"}, Metadata: openaiMeta,
-			SupportedReasoningEfforts: openaiReasoningEffort},
+			SupportedReasoningEfforts: openaiReasoningEffort, DefaultReasoningEffort: "medium"},
 		{Canonical: "gpt-5.4-nano", Provider: ProviderOpenAI, MaxOutput: 128_000, ContextWindow: 400_000, Aliases: []string{"openai/gpt-5.4-nano"}, Metadata: openaiMeta,
-			SupportedReasoningEfforts: openaiReasoningEffort},
+			SupportedReasoningEfforts: openaiReasoningEffort, DefaultReasoningEffort: "medium"},
 		// xAI / DashScope — no documented effort matrix yet, leaving nil.
 		{Canonical: "grok-3", Provider: ProviderXai, MaxOutput: 64_000, ContextWindow: 131_072, Aliases: []string{"grok"}, Metadata: xaiMeta},
 		{Canonical: "grok-3-mini", Provider: ProviderXai, MaxOutput: 64_000, ContextWindow: 131_072, Aliases: []string{"grok-mini"}, Metadata: xaiMeta},
