@@ -19,6 +19,11 @@ const (
 	RunStatusFailed             RunStatus = "failed"
 	RunStatusFailedResumable    RunStatus = "failed_resumable"
 	RunStatusCancelled          RunStatus = "cancelled"
+	// RunStatusQueued is set on cloud-mode runs that have been submitted
+	// to the NATS queue but not yet picked up by a runner pod. Local
+	// runs never observe this state — they transition straight to
+	// running on Engine.Run(). See cloud-ready plan §A, §F (T-03).
+	RunStatusQueued RunStatus = "queued"
 )
 
 // ---------------------------------------------------------------------------

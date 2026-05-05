@@ -467,7 +467,7 @@ func TestInspect_NotFound(t *testing.T) {
 // seedSimpleRun creates a run with one node ("agent1") that started
 // and finished, plus an llm_prompt + llm_step_finished pair, a
 // tool_called, and an artifact. Returns the storeDir path.
-func seedSimpleRun(t *testing.T, runID string) (storeDir string, s *store.RunStore) {
+func seedSimpleRun(t *testing.T, runID string) (storeDir string, s store.RunStore) {
 	t.Helper()
 	dir := t.TempDir()
 	storeDir = filepath.Join(dir, "store")

@@ -101,7 +101,7 @@ type interactionSummary struct {
 type nodeLogSlice = runview.LogSlice
 
 // listNodeExecutions enumerates the ExecutionState rows of a run.
-func listNodeExecutions(s *store.RunStore, runID string, p *Printer) error {
+func listNodeExecutions(s store.RunStore, runID string, p *Printer) error {
 	snap, err := runview.BuildSnapshot(s, runID)
 	if err != nil {
 		return fmt.Errorf("cannot build snapshot: %w", err)
@@ -141,7 +141,7 @@ func listNodeExecutions(s *store.RunStore, runID string, p *Printer) error {
 	return nil
 }
 
-func runInspectNode(s *store.RunStore, storeDir string, opts InspectOptions, p *Printer) error {
+func runInspectNode(s store.RunStore, storeDir string, opts InspectOptions, p *Printer) error {
 	snap, err := runview.BuildSnapshot(s, opts.RunID)
 	if err != nil {
 		return fmt.Errorf("cannot build snapshot: %w", err)
@@ -258,7 +258,7 @@ func suggestExecs(snap *runview.RunSnapshot, nodeFilter string) string {
 }
 
 func buildNodeReport(
-	s *store.RunStore,
+	s store.RunStore,
 	storeDir string,
 	opts InspectOptions,
 	exec *runview.ExecutionState,
@@ -346,7 +346,7 @@ func buildNodeReport(
 // counter for the target (branch, node) pair — events for other
 // nodes/branches are skipped without touching state. Mirrors the
 // per-(branch,node) counting in runview.SnapshotBuilder.
-func loadExecEvents(s *store.RunStore, runID string, exec *runview.ExecutionState) ([]*store.Event, error) {
+func loadExecEvents(s store.RunStore, runID string, exec *runview.ExecutionState) ([]*store.Event, error) {
 	out := make([]*store.Event, 0, 32)
 	iter := -1
 	err := s.ScanEvents(runID, func(e *store.Event) bool {
@@ -499,7 +499,7 @@ func buildToolCalls(events []*store.Event) []toolCallReport {
 // so directory enumeration alone cannot distinguish loop iterations or
 // sibling branches of the same node. The per-execution event slice is the
 // source of truth for scope; bodies are loaded only when includeBodies is true.
-func buildArtifactList(s *store.RunStore, runID, nodeID string, events []*store.Event, includeBodies bool) ([]nodeArtifact, error) {
+func buildArtifactList(s store.RunStore, runID, nodeID string, events []*store.Event, includeBodies bool) ([]nodeArtifact, error) {
 	out := make([]nodeArtifact, 0, 2)
 	seen := make(map[int]bool)
 	for _, e := range events {
@@ -531,7 +531,7 @@ func buildArtifactList(s *store.RunStore, runID, nodeID string, events []*store.
 // or human_answers_recorded event referenced an interaction in the
 // window — that's the truthful answer ("no node-scoped interactions"),
 // not a signal to scan the whole run.
-func buildInteractionList(s *store.RunStore, runID, nodeID string, events []*store.Event) ([]interactionSummary, error) {
+func buildInteractionList(s store.RunStore, runID, nodeID string, events []*store.Event) ([]interactionSummary, error) {
 	seen := make(map[string]bool)
 	for _, e := range events {
 		if e.Type != store.EventHumanInputRequested && e.Type != store.EventHumanAnswersRecorded {

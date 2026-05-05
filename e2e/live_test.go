@@ -59,7 +59,7 @@ func loadDotEnv(t *testing.T) {
 }
 
 // newLiveExecutor creates a ClawExecutor with all standard backends registered.
-func newLiveExecutor(wf *ir.Workflow, s *store.RunStore, runID, workDir string) *model.ClawExecutor {
+func newLiveExecutor(wf *ir.Workflow, s store.RunStore, runID, workDir string) *model.ClawExecutor {
 	reg := model.NewRegistry()
 	logger := iterlog.New(iterlog.LevelDebug, os.Stderr)
 	hooks := model.NewStoreEventHooks(s, runID, logger)

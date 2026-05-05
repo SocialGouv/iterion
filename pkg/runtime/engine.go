@@ -50,7 +50,7 @@ type NodeExecutor interface {
 // parallel fan-out via bounded branch scheduling.
 type Engine struct {
 	workflow         *ir.Workflow
-	store            *store.RunStore
+	store            store.RunStore
 	executor         NodeExecutor
 	logger           *iterlog.Logger
 	onNodeFinished   func(nodeID string, output map[string]interface{})
@@ -169,7 +169,7 @@ func WithOutputValidation(enabled bool) EngineOption {
 }
 
 // New creates a new Engine for a raw workflow.
-func New(wf *ir.Workflow, s *store.RunStore, exec NodeExecutor, opts ...EngineOption) *Engine {
+func New(wf *ir.Workflow, s store.RunStore, exec NodeExecutor, opts ...EngineOption) *Engine {
 	e := &Engine{workflow: wf, store: s, executor: exec}
 	for _, opt := range opts {
 		opt(e)
@@ -180,7 +180,7 @@ func New(wf *ir.Workflow, s *store.RunStore, exec NodeExecutor, opts ...EngineOp
 // NewFromRecipe creates a new Engine by applying a recipe's presets onto
 // the given workflow. The recipe merges preset variables, prompt overrides,
 // and budget limits, producing a self-contained execution unit.
-func NewFromRecipe(r *recipe.RecipeSpec, wf *ir.Workflow, s *store.RunStore, exec NodeExecutor, opts ...EngineOption) (*Engine, error) {
+func NewFromRecipe(r *recipe.RecipeSpec, wf *ir.Workflow, s store.RunStore, exec NodeExecutor, opts ...EngineOption) (*Engine, error) {
 	applied, err := r.Apply(wf)
 	if err != nil {
 		return nil, fmt.Errorf("runtime: apply recipe %q: %w", r.Name, err)

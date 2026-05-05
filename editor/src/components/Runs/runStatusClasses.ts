@@ -85,6 +85,20 @@ const NONE: StatusClasses = {
   label: "Idle",
 };
 
+// Cloud-only state: run accepted by the server, sitting on the NATS
+// queue, awaiting a runner pod. Visually distinct from PAUSED (no
+// human action needed) and from RUNNING (no work happening yet) — a
+// neutral hourglass keeps the list scannable. See cloud-ready plan
+// §F (T-12).
+const QUEUED: StatusClasses = {
+  bg: "bg-surface-2",
+  border: "border-border-default",
+  text: "text-fg-muted",
+  badgeVariant: "neutral",
+  glyph: "⧗",
+  label: "Queued",
+};
+
 const TABLE: Record<UnifiedStatus, StatusClasses> = {
   running: RUNNING,
   finished: FINISHED,
@@ -93,6 +107,7 @@ const TABLE: Record<UnifiedStatus, StatusClasses> = {
   paused_waiting_human: PAUSED,
   cancelled: CANCELLED,
   skipped: SKIPPED,
+  queued: QUEUED,
   none: NONE,
 };
 

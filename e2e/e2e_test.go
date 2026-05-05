@@ -78,7 +78,7 @@ func compileFixtureStubSafe(t *testing.T, name string) *ir.Workflow {
 	return wf
 }
 
-func tmpStore(t *testing.T) *store.RunStore {
+func tmpStore(t *testing.T) store.RunStore {
 	t.Helper()
 	s, err := store.New(t.TempDir())
 	if err != nil {

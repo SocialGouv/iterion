@@ -196,7 +196,7 @@ func RunInspect(opts InspectOptions, p *Printer) error {
 }
 
 // listRuns shows all runs in the store.
-func listRuns(s *store.RunStore, p *Printer) error {
+func listRuns(s store.RunStore, p *Printer) error {
 	ids, err := s.ListRuns()
 	if err != nil {
 		return err

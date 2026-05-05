@@ -53,7 +53,7 @@ func NewRunner(cfg RunnerConfig) (*Runner, error) {
 type RecipeRun struct {
 	Recipe  *recipe.RecipeSpec
 	RunID   string
-	Store   *store.RunStore
+	Store   store.RunStore
 	Metrics *RunMetrics
 	Err     error
 }

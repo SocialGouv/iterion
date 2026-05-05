@@ -19,7 +19,12 @@ export type RunStatus =
   | "finished"
   | "failed"
   | "failed_resumable"
-  | "cancelled";
+  | "cancelled"
+  // Cloud-mode only: run accepted by the server, sitting on the NATS
+  // queue, awaiting a runner pod. Local mode never reaches this state
+  // — it transitions straight to "running" in-process. See cloud-ready
+  // plan §A and §F (T-03, T-31).
+  | "queued";
 
 export type ExecStatus =
   | "running"
@@ -47,6 +52,11 @@ export interface RunSummary {
   final_commit?: string;
   final_branch?: string;
   merged_into?: string;
+  // Cloud-only: 1-based queue position when status === "queued".
+  // Computed server-side via Mongo aggregation; the UI uses it for the
+  // queued banner copy ("3rd in queue"). See cloud-ready plan §F (T-03,
+  // T-31).
+  queue_position?: number;
 }
 
 // Mirror of runview.ExecutionState.

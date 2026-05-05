@@ -75,6 +75,11 @@ type RunSummary struct {
 	FinalCommit string `json:"final_commit,omitempty"`
 	FinalBranch string `json:"final_branch,omitempty"`
 	MergedInto  string `json:"merged_into,omitempty"`
+	// QueuePosition is set only for cloud-mode runs whose Status is
+	// "queued"; nil otherwise. 1 means "next to be picked up". Computed
+	// by the server (Mongo aggregation), not persisted on the run doc.
+	// See cloud-ready plan §F (T-03, T-31).
+	QueuePosition *int `json:"queue_position,omitempty"`
 }
 
 // ListFilter scopes a List request. Empty fields mean no filter.
@@ -105,7 +110,7 @@ type ArtifactSummary struct {
 // route through here — keeping a single source of truth for run
 // lifecycle, validation, and event fan-out.
 type Service struct {
-	store    *store.RunStore
+	store    store.RunStore
 	storeDir string
 	logger   *iterlog.Logger
 	broker   *EventBroker
@@ -275,7 +280,11 @@ func (s *Service) reconcileOrphans() {
 // reconcile). Removes a stale .pid as a side effect so the next
 // reconcile cycle doesn't false-positive on it.
 func (s *Service) tryReattachByPID(runID string) bool {
-	pid, err := s.store.ReadPIDFile(runID)
+	pidS := store.AsPIDStore(s.store)
+	if pidS == nil {
+		return false
+	}
+	pid, err := pidS.ReadPIDFile(runID)
 	if err != nil || pid <= 0 {
 		return false
 	}
@@ -283,7 +292,7 @@ func (s *Service) tryReattachByPID(runID string) bool {
 		s.reattachDetached(runID, pid)
 		return true
 	}
-	_ = s.store.RemovePIDFile(runID)
+	_ = pidS.RemovePIDFile(runID)
 	return false
 }
 
@@ -343,7 +352,9 @@ func watchDetachedExit(s *Service, runID string, pid int, done chan struct{}) {
 			return
 		case <-t.C:
 			if err := pidAlive(pid); err != nil {
-				_ = s.store.RemovePIDFile(runID)
+				if pidS := store.AsPIDStore(s.store); pidS != nil {
+					_ = pidS.RemovePIDFile(runID)
+				}
 				s.broker.CloseRun(runID)
 				s.dropRunLog(runID)
 				s.manager.Deregister(runID)
@@ -588,7 +599,7 @@ func (s *Service) List(f ListFilter) ([]RunSummary, error) {
 // slice via LoadEvents — long-running runs can have hundreds of MB of
 // events.jsonl, and a list filter pass that calls this for every
 // candidate run would otherwise be O(N*size) memory.
-func runTouchedNode(s *store.RunStore, runID, nodeID string) bool {
+func runTouchedNode(s store.RunStore, runID, nodeID string) bool {
 	hit := false
 	_ = s.ScanEvents(runID, func(e *store.Event) bool {
 		if e.Type == store.EventNodeStarted && e.NodeID == nodeID {
@@ -1050,15 +1061,8 @@ func (s *Service) logRunOutcome(runID string, err error) {
 	}
 }
 
-// validatePathComponent rejects empty / traversal / separator-bearing
-// path components. Mirrors the store's defensive check; we duplicate
-// it here for ListArtifacts which reads the directory directly.
+// validatePathComponent delegates to store.SanitizePathComponent so
+// the validation rules stay in lock-step with the storage layer.
 func validatePathComponent(name, component string) error {
-	if component == "" {
-		return fmt.Errorf("runview: %s must not be empty", name)
-	}
-	if strings.Contains(component, "..") || strings.ContainsAny(component, "/\\") || strings.ContainsRune(component, 0) {
-		return fmt.Errorf("runview: %s %q contains illegal characters", name, component)
-	}
-	return nil
+	return store.SanitizePathComponent(name, component)
 }

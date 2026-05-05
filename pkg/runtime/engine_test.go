@@ -42,7 +42,7 @@ func (s *stubExecutor) Execute(_ context.Context, node ir.Node, input map[string
 // tmpStore helper
 // ---------------------------------------------------------------------------
 
-func tmpStore(t *testing.T) *store.RunStore {
+func tmpStore(t *testing.T) store.RunStore {
 	t.Helper()
 	s, err := store.New(t.TempDir())
 	if err != nil {

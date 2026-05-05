@@ -71,21 +71,50 @@ func ResolveLevel(explicit string, envVar string) (Level, error) {
 	return LevelInfo, nil
 }
 
-// Logger is a leveled logger that writes emoji-rich formatted output.
+// Format selects between the human-readable console format and the
+// structured JSON format used by the cloud-mode server / runner.
+type Format int
+
+const (
+	// FormatHuman emits the legacy "HH:MM:SS emoji message" line. This
+	// is the default and preserves byte-for-byte compatibility with
+	// pre-cloud iterion output.
+	FormatHuman Format = iota
+	// FormatJSON emits one JSON object per line; see jsonRecord for the
+	// schema. Suitable for shipping logs into Loki / ELK / CloudWatch.
+	FormatJSON
+)
+
+// Logger is a leveled logger that writes either emoji-rich human
+// output (default) or structured JSON. Loggers may carry a fixed set
+// of fields via WithField/WithFields/WithError; the underlying writer
+// and mutex are shared between forks so concurrent log lines never
+// interleave.
 type Logger struct {
-	level Level
-	w     io.Writer
-	mu    sync.Mutex
+	level  Level
+	w      io.Writer
+	format Format
+	mu     *sync.Mutex
+	// fields is the inherited context. nil for the root logger; copied
+	// (not aliased) on each WithField call so a fork's mutations don't
+	// leak back to the parent.
+	fields map[string]any
 }
 
-// New creates a new Logger with the given level and writer.
+// New creates a new Logger with the given level and writer in the
+// human-readable format. Equivalent to NewWithFormat(level, w, FormatHuman).
 func New(level Level, w io.Writer) *Logger {
-	return &Logger{level: level, w: w}
+	return NewWithFormat(level, w, FormatHuman)
+}
+
+// NewWithFormat creates a new Logger with an explicit format.
+func NewWithFormat(level Level, w io.Writer, format Format) *Logger {
+	return &Logger{level: level, w: w, format: format, mu: &sync.Mutex{}}
 }
 
 // Nop returns a logger that discards all output (level below error).
 func Nop() *Logger {
-	return &Logger{level: LevelError - 1, w: io.Discard}
+	return &Logger{level: LevelError - 1, w: io.Discard, mu: &sync.Mutex{}}
 }
 
 // Level returns the configured log level.
@@ -150,12 +179,68 @@ func (l *Logger) log(level Level, emoji string, format string, args ...any) {
 		return
 	}
 	msg := fmt.Sprintf(format, args...)
+
+	if l.format == FormatJSON {
+		l.writeJSON(level, msg)
+		return
+	}
+
 	ts := time.Now().Format("15:04:05")
 	line := fmt.Sprintf("%s %s %s\n", ts, emoji, msg)
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	_, _ = io.WriteString(l.w, line)
+}
+
+// WithField returns a fork of l carrying the given (key, value) pair
+// in its context. The fork shares the underlying writer and mutex so
+// concurrent writes from parent + child interleave atomically.
+func (l *Logger) WithField(key string, value any) *Logger {
+	if l == nil {
+		return nil
+	}
+	return l.withFields(map[string]any{key: value})
+}
+
+// WithFields returns a fork of l carrying every (key, value) pair
+// from fields. nil and empty maps return a no-op fork (still safe to
+// call on a nil logger).
+func (l *Logger) WithFields(fields map[string]any) *Logger {
+	if l == nil {
+		return nil
+	}
+	return l.withFields(fields)
+}
+
+// WithError returns a fork carrying the given error under the "error"
+// field. nil errors are a no-op (the fork has no extra context).
+func (l *Logger) WithError(err error) *Logger {
+	if l == nil || err == nil {
+		return l
+	}
+	return l.withFields(map[string]any{"error": err.Error()})
+}
+
+func (l *Logger) withFields(extra map[string]any) *Logger {
+	out := &Logger{
+		level:  l.level,
+		w:      l.w,
+		format: l.format,
+		mu:     l.mu,
+	}
+	if len(l.fields) == 0 && len(extra) == 0 {
+		return out
+	}
+	merged := make(map[string]any, len(l.fields)+len(extra))
+	for k, v := range l.fields {
+		merged[k] = v
+	}
+	for k, v := range extra {
+		merged[k] = v
+	}
+	out.fields = merged
+	return out
 }
 
 // blockIndent is the prefix used for continuation lines in LogBlock output.
@@ -166,10 +251,24 @@ const blockIndent = "         │ "
 // The entire output is written in a single mutex-protected write to prevent
 // interleaving from concurrent goroutines. If body is empty, only the header
 // is printed.
+//
+// In JSON mode, the body is collapsed into the "body" field of the
+// record so downstream tooling sees a single structured event rather
+// than an indented blob.
 func (l *Logger) LogBlock(level Level, emoji string, header string, body string) {
 	if l == nil || level > l.level {
 		return
 	}
+
+	if l.format == FormatJSON {
+		fl := l
+		if body != "" {
+			fl = l.withFields(map[string]any{"body": body})
+		}
+		fl.writeJSON(level, header)
+		return
+	}
+
 	ts := time.Now().Format("15:04:05")
 
 	var buf strings.Builder

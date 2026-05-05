@@ -17,7 +17,7 @@ const pidFileName = ".pid"
 
 // PIDFilePath returns the canonical path to the .pid file for runID.
 // The file may or may not exist.
-func (s *RunStore) PIDFilePath(runID string) string {
+func (s *FilesystemRunStore) PIDFilePath(runID string) string {
 	return filepath.Join(s.root, "runs", runID, pidFileName)
 }
 
@@ -25,7 +25,7 @@ func (s *RunStore) PIDFilePath(runID string) string {
 // created if it doesn't exist. Writes are atomic via writeFileAtomic
 // (tmp + fsync + rename) so a crashed writer cannot leave a
 // half-written .pid that would confuse the reconciler.
-func (s *RunStore) WritePIDFile(runID string, pid int) error {
+func (s *FilesystemRunStore) WritePIDFile(runID string, pid int) error {
 	if err := sanitizePathComponent("run ID", runID); err != nil {
 		return err
 	}
@@ -39,7 +39,7 @@ func (s *RunStore) WritePIDFile(runID string, pid int) error {
 // ReadPIDFile returns the PID recorded for runID, or 0 + nil if no
 // .pid file exists. A malformed file returns 0 + an error so callers
 // can decide whether to clean it up.
-func (s *RunStore) ReadPIDFile(runID string) (int, error) {
+func (s *FilesystemRunStore) ReadPIDFile(runID string) (int, error) {
 	data, err := os.ReadFile(s.PIDFilePath(runID))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -64,7 +64,7 @@ func (s *RunStore) ReadPIDFile(runID string) (int, error) {
 // RemovePIDFile deletes the run's .pid file. Idempotent — missing
 // files are not errors. Called by the runner subprocess on exit and
 // by the reconciler when it detects a dead PID.
-func (s *RunStore) RemovePIDFile(runID string) error {
+func (s *FilesystemRunStore) RemovePIDFile(runID string) error {
 	err := os.Remove(s.PIDFilePath(runID))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("store: pid file: remove: %w", err)

@@ -16,7 +16,13 @@ export default function RunHeader({ run, active, wsState }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const canCancel = run.status === "running" && active;
+  // canCancel includes "queued" so cloud-mode runs sitting on the NATS
+  // queue can be aborted before a runner picks them up. The "active"
+  // flag is only meaningful for in-process runs (local mode); a queued
+  // run is never "active" in this server's process. See cloud-ready
+  // plan §F (T-14).
+  const canCancel =
+    (run.status === "running" && active) || run.status === "queued";
   // Resume from header is a "best-effort" trigger — for paused_waiting_human
   // runs the user normally fills the Pause form in the detail panel
   // (Phase 5). The header button stays for failed_resumable / cancelled

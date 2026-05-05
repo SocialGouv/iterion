@@ -18,7 +18,7 @@ type RunLock interface {
 // sync.Mutex which handles intra-process concurrency.
 //
 // Limitations: does not work over NFS (flock is local-only on Linux).
-func (s *RunStore) LockRun(runID string) (RunLock, error) {
+func (s *FilesystemRunStore) LockRun(runID string) (RunLock, error) {
 	if err := sanitizePathComponent("run ID", runID); err != nil {
 		return nil, err
 	}

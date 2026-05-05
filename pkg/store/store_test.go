@@ -12,7 +12,7 @@ import (
 // Helpers
 // ---------------------------------------------------------------------------
 
-func tmpStore(t *testing.T) *RunStore {
+func tmpStore(t *testing.T) *FilesystemRunStore {
 	t.Helper()
 	dir := t.TempDir()
 	s, err := New(dir)

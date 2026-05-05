@@ -453,7 +453,7 @@ func isTruthyEnv(name string) bool {
 // enrichPausedResult loads checkpoint and interaction details from the store
 // and populates the result map with interaction_id, node_id, and questions.
 // It is used by both run and resume to enrich paused-output for CI consumers.
-func enrichPausedResult(s *store.RunStore, runID string, result map[string]interface{}) {
+func enrichPausedResult(s store.RunStore, runID string, result map[string]interface{}) {
 	r, err := s.LoadRun(runID)
 	if err != nil || r.Checkpoint == nil {
 		return

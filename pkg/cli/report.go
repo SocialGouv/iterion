@@ -122,7 +122,7 @@ type reportArtifact struct {
 // Build report from events
 // ---------------------------------------------------------------------------
 
-func buildReport(r *store.Run, events []*store.Event, s *store.RunStore) *report {
+func buildReport(r *store.Run, events []*store.Event, s store.RunStore) *report {
 	rpt := &report{
 		RunID:     r.ID,
 		Workflow:  r.WorkflowName,

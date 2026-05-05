@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // envDetached opts the editor server into spawning each run as a
@@ -155,8 +157,10 @@ func (s *Service) spawnDetached(parent context.Context, spec detachedSpec) (*Lau
 	// the runner reaching its own deferred RemovePIDFile: a reconciler
 	// query in that window would otherwise see no .pid and treat the
 	// run as in-process.
-	if err := s.store.WritePIDFile(spec.RunID, pid); err != nil {
-		s.logger.Warn("runview: detached: write .pid for %s: %v", spec.RunID, err)
+	if pidS := store.AsPIDStore(s.store); pidS != nil {
+		if err := pidS.WritePIDFile(spec.RunID, pid); err != nil {
+			s.logger.Warn("runview: detached: write .pid for %s: %v", spec.RunID, err)
+		}
 	}
 
 	done := make(chan struct{})
@@ -185,7 +189,9 @@ func (s *Service) spawnDetached(parent context.Context, spec detachedSpec) (*Lau
 	// and Deregister — the last step closes done.
 	go func() {
 		_ = cmd.Wait()
-		_ = s.store.RemovePIDFile(spec.RunID)
+		if pidS := store.AsPIDStore(s.store); pidS != nil {
+			_ = pidS.RemovePIDFile(spec.RunID)
+		}
 		s.broker.CloseRun(spec.RunID)
 		s.dropRunLog(spec.RunID)
 		s.manager.Deregister(spec.RunID)

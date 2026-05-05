@@ -4,11 +4,31 @@ import { useLocation } from "wouter";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { listRuns, type RunStatus, type RunSummary } from "@/api/runs";
 
-const POLL_INTERVAL_MS = 3000;
+const POLL_INTERVAL_FAST_MS = 3000;
+const POLL_INTERVAL_SLOW_MS = 8000;
+// Threshold above which we slow polling to relieve the cloud server.
+// Plan §F (T-13) calls this out as the editor's only backpressure
+// signal — runners scale via NATS lag, not via WS connection count.
+const QUEUED_BACKOFF_THRESHOLD = 10;
+
+// computePollingInterval picks the list polling cadence based on the
+// queue depth visible in the most recent fetch. Exported (and pure) so
+// the unit test can lock the contract independently of the React tree.
+export function computePollingInterval(
+  counts: Partial<Record<RunStatus, number>>,
+): number {
+  const queued = counts.queued ?? 0;
+  return queued >= QUEUED_BACKOFF_THRESHOLD
+    ? POLL_INTERVAL_SLOW_MS
+    : POLL_INTERVAL_FAST_MS;
+}
 
 const STATUS_FILTERS: Array<{ value: RunStatus | ""; label: string }> = [
   { value: "", label: "All" },
   { value: "running", label: "Running" },
+  // queued sits between running and paused so the eye walks the
+  // progression naturally (cloud-ready plan §F T-13).
+  { value: "queued", label: "Queued" },
   { value: "paused_waiting_human", label: "Paused" },
   { value: "finished", label: "Finished" },
   { value: "failed", label: "Failed" },
@@ -23,6 +43,7 @@ const STATUS_VARIANT: Record<RunStatus, BadgeVariant> = {
   failed: "danger",
   failed_resumable: "danger",
   cancelled: "neutral",
+  queued: "neutral",
 };
 
 export default function RunListView() {
@@ -31,6 +52,17 @@ export default function RunListView() {
   const [status, setStatus] = useState<RunStatus | "">("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+
+  const counts = useMemo(() => {
+    const m: Partial<Record<RunStatus, number>> = {};
+    for (const r of runs) m[r.status] = (m[r.status] ?? 0) + 1;
+    return m;
+  }, [runs]);
+
+  // Polling cadence backs off when the queue is deep so we don't
+  // hammer the cloud server with list requests during a backlog. The
+  // useMemo on `counts` is the single source of truth for histograms.
+  const pollMs = computePollingInterval(counts);
 
   useEffect(() => {
     let cancelled = false;
@@ -50,18 +82,12 @@ export default function RunListView() {
       }
     };
     fetchRuns();
-    const id = setInterval(fetchRuns, POLL_INTERVAL_MS);
+    const id = setInterval(fetchRuns, pollMs);
     return () => {
       cancelled = true;
       clearInterval(id);
     };
-  }, [status]);
-
-  const counts = useMemo(() => {
-    const m: Partial<Record<RunStatus, number>> = {};
-    for (const r of runs) m[r.status] = (m[r.status] ?? 0) + 1;
-    return m;
-  }, [runs]);
+  }, [status, pollMs]);
 
   return (
     <div className="h-full flex flex-col overflow-hidden bg-surface-1 text-fg-default">
@@ -178,6 +204,8 @@ function labelForStatus(s: RunStatus): string {
       return "Paused";
     case "failed_resumable":
       return "Failed (resumable)";
+    case "queued":
+      return "Queued";
     default:
       return s;
   }

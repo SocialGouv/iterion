@@ -26,7 +26,7 @@ type RunMetrics struct {
 
 // CollectMetrics extracts aggregated metrics from a run's persisted events
 // and run metadata.
-func CollectMetrics(s *store.RunStore, runID, recipeName string, evalPrimary string) (*RunMetrics, error) {
+func CollectMetrics(s store.RunStore, runID, recipeName string, evalPrimary string) (*RunMetrics, error) {
 	run, err := s.LoadRun(runID)
 	if err != nil {
 		return nil, fmt.Errorf("benchmark: load run %s: %w", runID, err)
