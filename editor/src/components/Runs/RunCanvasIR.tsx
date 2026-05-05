@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -159,6 +159,14 @@ export default function RunCanvasIR({
   const [effortCapsByPair, setEffortCapsByPair] = useState<
     Map<string, EffortCapabilities>
   >(() => new Map());
+  // Ref mirror of effortCapsByPair so the async layout effect can read
+  // the latest caps when its autoLayout promise resolves. Without this,
+  // a fetch that completes mid-layout produces stale meta on first
+  // paint (the layout's setNodes overwrites the patch effect's update).
+  const effortCapsByPairRef = useRef(effortCapsByPair);
+  useEffect(() => {
+    effortCapsByPairRef.current = effortCapsByPair;
+  }, [effortCapsByPair]);
   const reactFlow = useReactFlow();
 
   useEffect(() => {
@@ -325,7 +333,25 @@ export default function RunCanvasIR({
     autoLayout(baseNodes, baseEdges, "DOWN")
       .then((laid) => {
         if (cancelled) return;
-        setNodes(laid);
+        // Re-derive meta with the latest caps: the prefetch effect
+        // may have populated effortCapsByPair while autoLayout was
+        // running. Otherwise the layout's setNodes would clobber the
+        // patch effect's normalised bar (gpt-5 high → 4/4 cells).
+        const finalNodes = laid.map((fn) => {
+          const wireNode = wireNodeById.get(fn.id);
+          const meta = wireNode
+            ? buildLLMMeta(
+                wireNode,
+                runtimeOverrideByNode.get(fn.id),
+                effortCapsByPairRef.current,
+              )
+            : undefined;
+          return {
+            ...fn,
+            data: { ...(fn.data as Record<string, unknown>), meta },
+          };
+        });
+        setNodes(finalNodes);
         setEdges(baseEdges);
         requestAnimationFrame(() => {
           reactFlow.fitView({ padding: 0.2, duration: 250 });
