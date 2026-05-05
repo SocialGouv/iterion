@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 )
 
 // processConfig holds parameters that map to CLI flags.
@@ -217,6 +219,12 @@ func spawnProcess(ctx context.Context, cliPath string, args []string, opts spawn
 		return nil, fmt.Errorf("claude: stderr pipe: %w", err)
 	}
 
+	// Make the subprocess the leader of its own process group so we can
+	// reliably terminate the entire subtree (MCP servers, bash background
+	// jobs spawned by `run_in_background` / Monitor) on close. Without this
+	// a hung subtree blocks cmd.Wait() indefinitely.
+	setProcessGroup(cmd)
+
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("claude: start: %w", err)
 	}
@@ -271,7 +279,47 @@ func (p *cliProcess) writeLine(v any) error {
 	return err
 }
 
-// close shuts down the subprocess gracefully.
+// Defaults for the close-time termination ladder. Overridable via env for
+// operators who need to tune the budget without rebuilding.
+//
+//   - closeGraceTimeout: window after stdin EOF for the subprocess to exit
+//     on its own. The CLI normally exits within milliseconds; we allow a
+//     few seconds for slow shutdown paths (final stdout flush, MCP
+//     teardown).
+//   - closeTermTimeout: how long we wait after SIGTERM before escalating
+//     to SIGKILL. Short — SIGTERM is best-effort; we don't block runs on
+//     well-behaved shutdown.
+const (
+	defaultCloseGraceTimeout = 3 * time.Second
+	defaultCloseTermTimeout  = 1 * time.Second
+)
+
+func resolveDuration(envName string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(envName); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return fallback
+}
+
+// close shuts down the subprocess. The contract is that close() must
+// return in bounded time even when the child or its descendants are
+// hung — otherwise the caller's `defer sess.Close()` deadlocks the
+// surrounding workflow (we hit this with the Claude CLI keeping bash
+// background loops alive after the agent had logically finished).
+//
+// The shutdown ladder:
+//  1. Close stdin to signal a graceful exit.
+//  2. Wait up to closeGraceTimeout for the child to exit on its own.
+//  3. Send SIGTERM to the whole process group, wait up to closeTermTimeout.
+//  4. Send SIGKILL to the whole process group and block on Wait — at this
+//     point the kernel guarantees a fast collection.
+//
+// We always block on cmd.Wait() somewhere so cmd.ProcessState is populated
+// and the OS reaps the child. If Wait surfaces a kill-induced exit error,
+// we discard it: a forced shutdown is the expected outcome on this path,
+// not a failure to report upstream.
 func (p *cliProcess) close() error {
 	p.mu.Lock()
 	if p.closed {
@@ -281,11 +329,61 @@ func (p *cliProcess) close() error {
 	p.closed = true
 	p.mu.Unlock()
 
-	// Close stdin to signal the process to exit (only if we opened it).
 	if p.stdin != nil {
 		_ = p.stdin.Close()
 	}
-	return p.cmd.Wait()
+
+	graceTimeout := resolveDuration("ITERION_CLAUDE_CODE_CLOSE_GRACE", defaultCloseGraceTimeout)
+	termTimeout := resolveDuration("ITERION_CLAUDE_CODE_CLOSE_TERM", defaultCloseTermTimeout)
+
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- p.cmd.Wait() }()
+
+	pid := 0
+	if p.cmd.Process != nil {
+		pid = p.cmd.Process.Pid
+	}
+
+	// Phase 1: graceful exit on stdin EOF.
+	if graceTimeout > 0 {
+		select {
+		case err := <-waitDone:
+			return err
+		case <-time.After(graceTimeout):
+		}
+	}
+
+	// Phase 2: SIGTERM the whole subtree, give it a moment to unwind.
+	if pid > 0 {
+		_ = killProcessGroup(pid, syscall.SIGTERM)
+	}
+	if termTimeout > 0 {
+		select {
+		case err := <-waitDone:
+			return ignoreSignalExit(err)
+		case <-time.After(termTimeout):
+		}
+	}
+
+	// Phase 3: SIGKILL — non-negotiable. Wait blocks until the kernel
+	// reaps the child, which is now imminent.
+	if pid > 0 {
+		_ = killProcessGroup(pid, syscall.SIGKILL)
+	}
+	return ignoreSignalExit(<-waitDone)
+}
+
+// ignoreSignalExit discards "exit status N" / "signal: killed" errors that
+// stem from our own forced shutdown. A real error path (e.g. ENOENT at
+// startup, broken pipe) still produces a non-ExitError that we propagate.
+func ignoreSignalExit(err error) error {
+	if err == nil {
+		return nil
+	}
+	if _, ok := err.(*exec.ExitError); ok {
+		return nil
+	}
+	return err
 }
 
 // exitCode returns the exit code after the process has exited.
