@@ -103,6 +103,19 @@ export default function RunLogPanel({ runId, subscribeLogs, unsubscribeLogs, onC
     });
   }, [annotated, search, activeLevels]);
 
+  const handleToggleFollow = (next: boolean) => {
+    setFollowTail(next);
+    // Re-engaging the toggle while scrolled up shouldn't wait for the
+    // next log line to arrive — jump to the tail immediately.
+    if (next && filtered.length > 0) {
+      virtuosoRef.current?.scrollToIndex({
+        index: filtered.length - 1,
+        align: "end",
+        behavior: "auto",
+      });
+    }
+  };
+
   const toggleLevel = (lvl: string) => {
     setActiveLevels((prev) => {
       const next = new Set(prev);
@@ -159,7 +172,7 @@ export default function RunLogPanel({ runId, subscribeLogs, unsubscribeLogs, onC
           <input
             type="checkbox"
             checked={followTail}
-            onChange={(e) => setFollowTail(e.target.checked)}
+            onChange={(e) => handleToggleFollow(e.target.checked)}
             className="accent-accent"
           />
           Follow tail

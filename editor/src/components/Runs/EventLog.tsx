@@ -116,6 +116,19 @@ export default function EventLog({
     });
   }, [annotated, selectedExecutionId, activeTypes, search]);
 
+  const handleToggleFollow = (next: boolean) => {
+    onToggleFollow(next);
+    // Re-engaging the toggle while scrolled up shouldn't wait for the
+    // next event to arrive — jump to the tail immediately.
+    if (next && filtered.length > 0) {
+      virtuosoRef.current?.scrollToIndex({
+        index: filtered.length - 1,
+        align: "end",
+        behavior: "auto",
+      });
+    }
+  };
+
   const toggleType = (t: string) => {
     setActiveTypes((prev) => {
       const next = new Set(prev);
@@ -155,7 +168,7 @@ export default function EventLog({
           <input
             type="checkbox"
             checked={followTail}
-            onChange={(e) => onToggleFollow(e.target.checked)}
+            onChange={(e) => handleToggleFollow(e.target.checked)}
             className="accent-accent"
           />
           Follow tail
