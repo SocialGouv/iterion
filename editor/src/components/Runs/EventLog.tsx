@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { ChevronDownIcon } from "@radix-ui/react-icons";
 
@@ -166,6 +166,23 @@ export default function EventLog({
     // when the array reference is unchanged.
   }, [annotated, events, selectedExecutionId, activeTypes, search]);
 
+  // Virtuoso's `followOutput="auto"` only fires when it considers the
+  // user "at bottom", which is unreliable on a live run where events
+  // arrive across multiple micro-tasks: between batches, dynamic-height
+  // measurement can briefly report not-at-bottom and skip the scroll.
+  // Drive the scroll explicitly from `filtered.length` while followTail
+  // is on; the `atBottomStateChange` disengage below still flips the
+  // toggle off when the user scrolls up.
+  useEffect(() => {
+    if (followTail && filtered.length > 0) {
+      virtuosoRef.current?.scrollToIndex({
+        index: filtered.length - 1,
+        align: "end",
+        behavior: "auto",
+      });
+    }
+  }, [followTail, filtered.length]);
+
   const handleToggleFollow = (next: boolean) => {
     onToggleFollow(next);
     // Re-engaging the toggle while scrolled up shouldn't wait for the
@@ -269,6 +286,11 @@ export default function EventLog({
             ref={virtuosoRef}
             className="h-full"
             data={filtered}
+            initialTopMostItemIndex={
+              followTail
+                ? { index: filtered.length - 1, align: "end" }
+                : 0
+            }
             followOutput={followTail ? "auto" : false}
             atBottomThreshold={AT_BOTTOM_THRESHOLD_PX}
             isScrolling={(s) => {

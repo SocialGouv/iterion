@@ -103,6 +103,21 @@ export default function RunLogPanel({ runId, subscribeLogs, unsubscribeLogs, onC
     });
   }, [annotated, search, activeLevels]);
 
+  // Virtuoso's `followOutput="auto"` only fires when it considers the
+  // user "at bottom", which is unreliable while logs stream in across
+  // multiple micro-tasks. Drive the scroll explicitly from
+  // `filtered.length` while followTail is on; `atBottomStateChange`
+  // below still disengages the toggle when the user scrolls up.
+  useEffect(() => {
+    if (followTail && filtered.length > 0) {
+      virtuosoRef.current?.scrollToIndex({
+        index: filtered.length - 1,
+        align: "end",
+        behavior: "auto",
+      });
+    }
+  }, [followTail, filtered.length]);
+
   const handleToggleFollow = (next: boolean) => {
     setFollowTail(next);
     // Re-engaging the toggle while scrolled up shouldn't wait for the
@@ -222,6 +237,11 @@ export default function RunLogPanel({ runId, subscribeLogs, unsubscribeLogs, onC
             ref={virtuosoRef}
             className="h-full"
             data={filtered}
+            initialTopMostItemIndex={
+              followTail
+                ? { index: filtered.length - 1, align: "end" }
+                : 0
+            }
             followOutput={followTail ? "auto" : false}
             atBottomThreshold={AT_BOTTOM_THRESHOLD_PX}
             isScrolling={(s) => {
