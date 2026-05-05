@@ -220,6 +220,16 @@ func (s *FilesystemRunStore) LoadRun(id string) (*Run, error) {
 			s.logger.Warn("store: backfill name for run %s failed: %v", id, writeErr)
 		}
 	}
+	// Heal runs persisted by an older binary that left FinishedAt set
+	// across a resume into Running. The duration ticker in the editor
+	// keys on finished_at, so a stale value freezes the displayed run
+	// time. Best-effort persist mirrors the name-backfill above.
+	if r.Status == RunStatusRunning && r.FinishedAt != nil {
+		r.FinishedAt = nil
+		if writeErr := s.writeRun(&r); writeErr != nil && s.logger != nil {
+			s.logger.Warn("store: heal stale finished_at on run %s failed: %v", id, writeErr)
+		}
+	}
 	return &r, nil
 }
 
@@ -236,9 +246,15 @@ func (s *FilesystemRunStore) UpdateRunStatus(id string, status RunStatus, runErr
 	r.Status = status
 	r.UpdatedAt = time.Now().UTC()
 	r.Error = runErr
-	if status == RunStatusFinished || status == RunStatusFailed || status == RunStatusFailedResumable || status == RunStatusCancelled {
+	switch status {
+	case RunStatusFinished, RunStatusFailed, RunStatusFailedResumable, RunStatusCancelled:
 		t := r.UpdatedAt
 		r.FinishedAt = &t
+	case RunStatusRunning, RunStatusPausedWaitingHuman:
+		// Resume paths (failed_resumable/cancelled → running) must clear
+		// FinishedAt — otherwise the editor's duration ticker uses the
+		// stale terminal timestamp and freezes mid-run.
+		r.FinishedAt = nil
 	}
 	// Clear checkpoint when leaving paused state (preserved for failed_resumable and cancelled).
 	if status == RunStatusRunning || status == RunStatusFinished || status == RunStatusFailed {

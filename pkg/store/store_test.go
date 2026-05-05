@@ -102,6 +102,93 @@ func TestUpdateRunStatusFailed(t *testing.T) {
 	}
 }
 
+// Resume from failed_resumable / cancelled must clear FinishedAt.
+// Otherwise the editor keys the duration ticker on a stale terminal
+// timestamp and the elapsed-time display freezes mid-run.
+func TestUpdateRunStatusClearsFinishedAtOnResume(t *testing.T) {
+	cases := []struct {
+		name     string
+		terminal RunStatus
+	}{
+		{"from_failed_resumable", RunStatusFailedResumable},
+		{"from_cancelled", RunStatusCancelled},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := tmpStore(t)
+			s.CreateRun("run-resume", "wf", nil)
+
+			if err := s.UpdateRunStatus("run-resume", tc.terminal, "transient"); err != nil {
+				t.Fatalf("UpdateRunStatus %s: %v", tc.terminal, err)
+			}
+			r, _ := s.LoadRun("run-resume")
+			if r.FinishedAt == nil {
+				t.Fatalf("precondition: FinishedAt should be set after %s", tc.terminal)
+			}
+
+			if err := s.UpdateRunStatus("run-resume", RunStatusRunning, ""); err != nil {
+				t.Fatalf("UpdateRunStatus running: %v", err)
+			}
+			r, _ = s.LoadRun("run-resume")
+			if r.Status != RunStatusRunning {
+				t.Errorf("Status = %q, want running", r.Status)
+			}
+			if r.FinishedAt != nil {
+				t.Errorf("FinishedAt should be cleared on resume, got %v", r.FinishedAt)
+			}
+			if r.Error != "" {
+				t.Errorf("Error should be cleared on resume, got %q", r.Error)
+			}
+		})
+	}
+}
+
+// LoadRun heals legacy runs persisted by an older binary that left
+// FinishedAt set across a resume into Running.
+func TestLoadRunHealsStaleFinishedAt(t *testing.T) {
+	s := tmpStore(t)
+	if _, err := s.CreateRun("run-stale", "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	// Simulate what an older binary would leave on disk: status=running
+	// with finished_at populated. Write directly to bypass the
+	// UpdateRunStatus normalization.
+	r, err := s.LoadRun("run-stale")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	terminal := time.Now().UTC().Add(-time.Hour)
+	r.Status = RunStatusRunning
+	r.FinishedAt = &terminal
+	if err := s.SaveRun(r); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+
+	// LoadRun must zero FinishedAt for status=running.
+	healed, err := s.LoadRun("run-stale")
+	if err != nil {
+		t.Fatalf("LoadRun (heal): %v", err)
+	}
+	if healed.FinishedAt != nil {
+		t.Errorf("FinishedAt should be cleared by LoadRun, got %v", healed.FinishedAt)
+	}
+
+	// And the heal must be persisted to disk so subsequent reloads stay
+	// clean even without going through LoadRun in the same process.
+	raw, err := os.ReadFile(s.runJSONPath("run-stale"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var onDisk Run
+	if err := json.Unmarshal(raw, &onDisk); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if onDisk.FinishedAt != nil {
+		t.Errorf("FinishedAt should be persisted as nil on disk, got %v", onDisk.FinishedAt)
+	}
+}
+
 func TestListRuns(t *testing.T) {
 	s := tmpStore(t)
 	s.CreateRun("alpha", "w1", nil)

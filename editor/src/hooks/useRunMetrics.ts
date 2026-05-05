@@ -83,7 +83,17 @@ export function useRunMetrics(nowMs: number): RunMetrics {
   const durationMs = useMemo(() => {
     if (!snapshot?.run.created_at) return 0;
     const start = new Date(snapshot.run.created_at).getTime();
-    const end = snapshot.run.finished_at
+    // Status is the source of truth for "is this run still going?". A
+    // resumed run can briefly carry a stale finished_at if the backend
+    // ran an older binary; gate on terminal status so the duration
+    // doesn't freeze mid-run.
+    const status = snapshot.run.status;
+    const isTerminal =
+      status === "finished" ||
+      status === "failed" ||
+      status === "failed_resumable" ||
+      status === "cancelled";
+    const end = isTerminal && snapshot.run.finished_at
       ? new Date(snapshot.run.finished_at).getTime()
       : nowMs;
     if (!Number.isFinite(start) || !Number.isFinite(end)) return 0;
