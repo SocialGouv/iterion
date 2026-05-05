@@ -90,7 +90,7 @@ require (
 )
 
 require (
-	github.com/SocialGouv/claw-code-go v0.0.0-20260505165300-23898a94af2e
+	github.com/SocialGouv/claw-code-go v0.0.0-20260505212658-d34b4abf553d
 	github.com/prometheus/client_golang v1.23.2
 	go.yaml.in/yaml/v2 v2.4.4
 )

@@ -67,11 +67,17 @@ type oaiResponsesMessage struct {
 	//   - "" (default): a regular role/content turn.
 	//   - "function_call":   prior assistant tool_use → CallID, Name, Arguments.
 	//   - "function_call_output": prior tool_result → CallID, Output.
-	Type      string `json:"type,omitempty"`
-	CallID    string `json:"call_id,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Arguments string `json:"arguments,omitempty"`
-	Output    string `json:"output,omitempty"`
+	//
+	// Output is a *string (not string) so that an empty tool result still
+	// serializes as `"output": ""` instead of being stripped by `omitempty`.
+	// The Responses API requires the `output` field on every
+	// `function_call_output` item, even when the tool produced no text
+	// (e.g. a successful shell command with empty stdout).
+	Type      string  `json:"type,omitempty"`
+	CallID    string  `json:"call_id,omitempty"`
+	Name      string  `json:"name,omitempty"`
+	Arguments string  `json:"arguments,omitempty"`
+	Output    *string `json:"output,omitempty"`
 }
 
 type oaiResponsesContentPart struct {
@@ -255,10 +261,11 @@ func convertMessagesToResponsesInput(messages []api.Message) []oaiResponsesMessa
 						})
 					}
 				case "tool_result":
+					output := httputil.ExtractText(block.Content)
 					out = append(out, oaiResponsesMessage{
 						Type:   "function_call_output",
 						CallID: block.ToolUseID,
-						Output: httputil.ExtractText(block.Content),
+						Output: &output,
 					})
 				}
 			}
