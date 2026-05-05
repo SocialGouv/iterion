@@ -22,6 +22,7 @@ import {
   fetchAndCacheEffortCapabilities,
   getCachedEffortCapabilities,
 } from "@/hooks/useEffortCapabilities";
+import type { EffortCapabilities } from "@/api/client";
 
 import IRNode, { iterationColor, type LLMMeta } from "./IRNode";
 
@@ -52,7 +53,7 @@ interface Props {
 function buildLLMMeta(
   node: WireNode,
   override: { model?: string; reasoning_effort?: string } | undefined,
-  defaultEffortByPair: Map<string, string>,
+  effortCapsByPair: Map<string, EffortCapabilities>,
 ): LLMMeta | undefined {
   const declared = {
     model: node.model,
@@ -63,6 +64,11 @@ function buildLLMMeta(
     return undefined;
   }
   const activeModel = override?.model ?? declared.model;
+  const caps = activeModel
+    ? effortCapsByPair.get(
+        `${effortBackendKey(declared.backend)} ${activeModel}`,
+      )
+    : undefined;
   // Effective effort priority:
   //   1. runtime override (event llm_request)
   //   2. value declared in the .iter (post-expansion would only show up
@@ -71,14 +77,9 @@ function buildLLMMeta(
   //      the badge renders attenuated.
   let activeEffort = override?.reasoning_effort ?? declared.effort;
   let effortIsResolvedDefault = false;
-  if (!activeEffort && activeModel) {
-    const fallback = defaultEffortByPair.get(
-      `${effortBackendKey(declared.backend)} ${activeModel}`,
-    );
-    if (fallback) {
-      activeEffort = fallback;
-      effortIsResolvedDefault = true;
-    }
+  if (!activeEffort && caps?.default) {
+    activeEffort = caps.default;
+    effortIsResolvedDefault = true;
   }
   return {
     model: activeModel,
@@ -91,6 +92,7 @@ function buildLLMMeta(
       !!declared.effort &&
       override.reasoning_effort !== declared.effort,
     effortIsResolvedDefault,
+    effortSupported: caps?.supported ?? undefined,
   };
 }
 
@@ -148,13 +150,14 @@ export default function RunCanvasIR({
   const [activeFilters, setActiveFilters] = useState<Set<StatusFilter>>(
     () => new Set(),
   );
-  // Provider-documented default reasoning_effort, keyed by
+  // Effort capabilities (supported levels + default) keyed by
   // `${backend} ${model}`. Populated once the workflow lands by
-  // walking unique pairs and asking /api/effort-capabilities. Used
-  // by buildLLMMeta to render an attenuated badge when the .iter
-  // declares no effort.
-  const [defaultEffortByPair, setDefaultEffortByPair] = useState<
-    Map<string, string>
+  // walking unique pairs and asking /api/effort-capabilities.
+  // buildLLMMeta uses `default` to render an attenuated badge when
+  // the .iter declares no effort, and `supported` to normalise the
+  // bar fill so a model's max always renders fully.
+  const [effortCapsByPair, setEffortCapsByPair] = useState<
+    Map<string, EffortCapabilities>
   >(() => new Map());
   const reactFlow = useReactFlow();
 
@@ -176,17 +179,18 @@ export default function RunCanvasIR({
     };
   }, [runId]);
 
-  // Prefetch provider effort defaults for each unique (backend, model)
+  // Prefetch effort capabilities for each unique (backend, model)
   // pair on the IR. Shares the cache populated by AgentForm so the
   // editor side panel and the run canvas don't double-fetch. Already-
-  // cached pairs are seeded synchronously so the attenuated badge
-  // renders on first paint; the rest update as fetches resolve.
+  // cached pairs are seeded synchronously so the bar normalises and
+  // the attenuated badge render on first paint; the rest update as
+  // fetches resolve.
   useEffect(() => {
     if (!wf) return;
     let cancelled = false;
     const seen = new Set<string>();
     const toFetch: Array<{ key: string; backend: string; model: string }> = [];
-    setDefaultEffortByPair((prev) => {
+    setEffortCapsByPair((prev) => {
       let mutated = false;
       const next = new Map(prev);
       for (const n of wf.nodes) {
@@ -197,8 +201,8 @@ export default function RunCanvasIR({
         seen.add(key);
         const cached = getCachedEffortCapabilities(backend, n.model);
         if (cached) {
-          if (cached.default && next.get(key) !== cached.default) {
-            next.set(key, cached.default);
+          if (next.get(key) !== cached) {
+            next.set(key, cached);
             mutated = true;
           }
         } else {
@@ -212,11 +216,11 @@ export default function RunCanvasIR({
       // simply renders no badge for unset effort.
       fetchAndCacheEffortCapabilities(backend, model)
         .then((caps) => {
-          if (cancelled || !caps.default) return;
-          setDefaultEffortByPair((prev) => {
-            if (prev.get(key) === caps.default) return prev;
+          if (cancelled) return;
+          setEffortCapsByPair((prev) => {
+            if (prev.get(key) === caps) return prev;
             const next = new Map(prev);
-            next.set(key, caps.default);
+            next.set(key, caps);
             return next;
           });
         })
@@ -265,7 +269,7 @@ export default function RunCanvasIR({
       const meta = buildLLMMeta(
         n,
         runtimeOverrideByNode.get(n.id),
-        defaultEffortByPair,
+        effortCapsByPair,
       );
       return {
         id: n.id,
@@ -367,7 +371,7 @@ export default function RunCanvasIR({
           ? buildLLMMeta(
               wireNode,
               runtimeOverrideByNode.get(n.id),
-              defaultEffortByPair,
+              effortCapsByPair,
             )
           : undefined;
         return {
@@ -393,7 +397,7 @@ export default function RunCanvasIR({
     activeFilters,
     wireNodeById,
     runtimeOverrideByNode,
-    defaultEffortByPair,
+    effortCapsByPair,
   ]);
 
   // When the user invokes "jump to failed" (or any other external

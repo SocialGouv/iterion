@@ -161,7 +161,16 @@ export default function WorkflowNode({ data, selected }: NodeProps) {
       {isLLMNode && (
         <div className="text-[10px] text-fg-subtle mt-0.5 max-w-[160px] flex items-center justify-center gap-1.5 flex-wrap">
           <BackendBadge backend={backendValue} size={10} />
-          {isEffortLevel(effortLevel) && <EffortBar level={effortLevel} />}
+          {isEffortLevel(effortLevel) ? (
+            <EffortBar level={effortLevel} />
+          ) : effortLevel && effortLevel.includes("$") ? (
+            <span
+              className="font-mono text-[9px] text-fg-muted truncate max-w-[100px]"
+              title={`reasoning_effort: ${effortLevel} (env-substituted at runtime)`}
+            >
+              {effortLevel}
+            </span>
+          ) : null}
           {sessionGlyph && <span aria-hidden>{sessionGlyph}</span>}
           {awaitGlyph && <span aria-hidden>{awaitGlyph}</span>}
         </div>

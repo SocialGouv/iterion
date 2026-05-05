@@ -42,6 +42,9 @@ export function iterationColor(index: number): string {
 // when `reasoningEffort` was filled from the provider's documented
 // default (registry) rather than declared in the .iter or set at
 // runtime — used to render the badge in attenuated style.
+// `effortSupported` carries the model's supported effort levels so
+// EffortBar can normalise to the model's max (a gpt-5 node at "high"
+// shows a full bar instead of 3/5).
 export interface LLMMeta {
   model?: string;
   backend?: string;
@@ -49,6 +52,7 @@ export interface LLMMeta {
   runtimeOverriddenModel?: boolean;
   runtimeOverriddenEffort?: boolean;
   effortIsResolvedDefault?: boolean;
+  effortSupported?: string[];
 }
 
 interface IRNodeData {
@@ -156,6 +160,7 @@ export default function IRNode({ data }: NodeProps) {
                 level={meta.reasoningEffort}
                 live={meta.runtimeOverriddenEffort}
                 muted={meta.effortIsResolvedDefault}
+                supported={meta.effortSupported}
               />
             )}
           </div>

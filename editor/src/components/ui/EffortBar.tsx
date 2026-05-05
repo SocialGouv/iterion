@@ -25,6 +25,12 @@ interface Props {
   // or set at runtime. Lets the user distinguish "I chose this" from
   // "this is what the provider would use anyway".
   muted?: boolean;
+  // Model's supported effort levels (low→high). When provided the
+  // bar normalises to this range so the model's top level always
+  // fills every cell — gpt-5 at "high" renders 4/4 instead of 3/5.
+  // Falls back to the global low/medium/high/xhigh/max scale when
+  // omitted or when level isn't in the list.
+  supported?: string[];
   className?: string;
   title?: string;
 }
@@ -65,11 +71,19 @@ const TONE: Record<EffortLevel, { text: string; bar: string; cell: string }> = {
   },
 };
 
-export function EffortBar({ level, live, muted, className, title }: Props) {
-  const filled = FILLED[level];
+export function EffortBar({ level, live, muted, supported, className, title }: Props) {
   const tone = TONE[level];
+  // Normalise to the model's supported range when known; "high" on a
+  // 4-level model fills 4/4. Else use the global low→max scale.
+  const supportedIdx = supported ? supported.indexOf(level) : -1;
+  const total = supported && supportedIdx >= 0 ? supported.length : 5;
+  const filled = supportedIdx >= 0 ? supportedIdx + 1 : FILLED[level];
+  const cells = Array.from({ length: total }, (_, i) => i);
+  const isModelMax = supportedIdx >= 0 && supportedIdx === total - 1;
   const defaultTitle = muted
     ? `reasoning_effort: ${level} (provider default)`
+    : isModelMax
+    ? `reasoning_effort: ${level} (model max)`
     : `reasoning_effort: ${level}`;
   return (
     <span
@@ -80,7 +94,7 @@ export function EffortBar({ level, live, muted, className, title }: Props) {
     >
       <span>{level}</span>
       <span className={`inline-flex gap-px rounded-sm p-px ${tone.bar}`}>
-        {[0, 1, 2, 3, 4].map((i) => (
+        {cells.map((i) => (
           <span
             key={i}
             className={`inline-block w-[3px] h-[6px] rounded-[1px] ${
