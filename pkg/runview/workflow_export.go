@@ -151,22 +151,28 @@ const IRWorkflowEndpointPath = "/api/runs/{id}/workflow"
 // projectNode builds a WireNode from an ir.Node, attaching LLM metadata
 // when the node drives an LLM call. Routers expose model/backend only in
 // LLM mode — the other modes don't have a model.
+//
+// Env-substituted reasoning_effort literals (e.g. "${VIBE_EFFORT:-max}")
+// are resolved against the iterion process env so the run console
+// displays the actual level rather than the unexpanded source. Invalid
+// expansions become "" — the run console treats that as "fall back to
+// the registry default" via its capability prefetch.
 func projectNode(id string, n ir.Node) WireNode {
 	out := WireNode{ID: id, Kind: n.NodeKind().String()}
 	switch v := n.(type) {
 	case *ir.AgentNode:
 		out.Model = v.Model
 		out.Backend = v.Backend
-		out.ReasoningEffort = v.ReasoningEffort
+		out.ReasoningEffort = ir.ResolveEffortLiteral(v.ReasoningEffort)
 	case *ir.JudgeNode:
 		out.Model = v.Model
 		out.Backend = v.Backend
-		out.ReasoningEffort = v.ReasoningEffort
+		out.ReasoningEffort = ir.ResolveEffortLiteral(v.ReasoningEffort)
 	case *ir.RouterNode:
 		if v.RouterMode == ir.RouterLLM {
 			out.Model = v.Model
 			out.Backend = v.Backend
-			out.ReasoningEffort = v.ReasoningEffort
+			out.ReasoningEffort = ir.ResolveEffortLiteral(v.ReasoningEffort)
 		}
 	}
 	return out

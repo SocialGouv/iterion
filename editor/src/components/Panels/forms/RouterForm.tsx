@@ -45,27 +45,51 @@ export default function RouterForm({ decl }: Props) {
     decl.mode === "llm" ? effortBackend : undefined,
     decl.mode === "llm" ? decl.model : undefined,
   );
+  // Mirror AgentForm: surface env-substituted literals as a synthetic
+  // dropdown option so the native <select> doesn't fall through to the
+  // placeholder ("default") for values like "${VAR:-max}".
+  const envSubstEffort =
+    decl.reasoning_effort && decl.reasoning_effort.includes("$")
+      ? decl.reasoning_effort
+      : null;
   const effortOptions = useMemo(() => {
-    if (effortLoading || !effortCaps) return REASONING_EFFORT_OPTIONS;
-    const supported = effortCaps.supported ?? [];
-    if (supported.length === 0) return [];
-    const defaultLabel = effortCaps.default ? `(default: ${effortCaps.default})` : "(default)";
-    return [
-      { value: "", label: defaultLabel },
-      ...supported.map((s) => ({ value: s, label: s })),
-    ];
-  }, [effortCaps, effortLoading]);
+    let base: { value: string; label: string }[];
+    if (effortLoading || !effortCaps) {
+      base = REASONING_EFFORT_OPTIONS;
+    } else {
+      const supported = effortCaps.supported ?? [];
+      base =
+        supported.length === 0
+          ? []
+          : [
+              {
+                value: "",
+                label: effortCaps.default
+                  ? `(default: ${effortCaps.default})`
+                  : "(default)",
+              },
+              ...supported.map((s) => ({ value: s, label: s })),
+            ];
+    }
+    if (envSubstEffort) {
+      return [{ value: envSubstEffort, label: envSubstEffort }, ...base];
+    }
+    return base;
+  }, [effortCaps, effortLoading, envSubstEffort]);
   const effortNotSupported =
     !effortLoading &&
     effortCaps !== null &&
     (effortCaps.supported ?? []).length === 0;
   const effortHelp = useMemo(() => {
+    if (envSubstEffort) {
+      return `Env-substituted at runtime. Pick a literal level to drop the substitution.`;
+    }
     if (effortLoading || !effortCaps) return REASONING_EFFORT_HELP;
     if (effortNotSupported) {
       return `${decl.model || "This model"} does not support reasoning_effort.`;
     }
     return `${REASONING_EFFORT_HELP} Levels available for ${decl.model}: ${(effortCaps.supported ?? []).join(", ")}.`;
-  }, [effortLoading, effortCaps, effortNotSupported, decl.model]);
+  }, [effortLoading, effortCaps, effortNotSupported, decl.model, envSubstEffort]);
 
   return (
     <div className="space-y-1">

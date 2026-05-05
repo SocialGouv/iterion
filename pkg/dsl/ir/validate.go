@@ -3,6 +3,7 @@ package ir
 import (
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 )
 
@@ -759,6 +760,39 @@ var ValidReasoningEfforts = map[string]bool{
 // empty string.
 func IsEnvSubstitutedEffort(s string) bool {
 	return strings.ContainsRune(s, '$')
+}
+
+// ResolveEffortLiteral expands env-substituted forms ("${VAR}",
+// "${VAR:-default}") against the process env and validates the result
+// against ValidReasoningEfforts. Non-env-substituted values are
+// returned unchanged. Invalid expansions return "" so callers can fall
+// back to the provider's documented default.
+func ResolveEffortLiteral(s string) string {
+	if !IsEnvSubstitutedEffort(s) {
+		return s
+	}
+	expanded := expandEnvWithDefault(s)
+	if ValidReasoningEfforts[expanded] {
+		return expanded
+	}
+	return ""
+}
+
+// expandEnvWithDefault expands ${VAR} and ${VAR:-default} forms in s.
+// Mirrors the shell parameter-expansion default-value syntax that
+// stdlib os.ExpandEnv does not support: when ${VAR} is unset or empty,
+// the part after :- is returned instead.
+func expandEnvWithDefault(s string) string {
+	return os.Expand(s, func(key string) string {
+		if i := strings.Index(key, ":-"); i >= 0 {
+			name, fallback := key[:i], key[i+2:]
+			if v := os.Getenv(name); v != "" {
+				return v
+			}
+			return fallback
+		}
+		return os.Getenv(key)
+	})
 }
 
 func (c *compiler) validateReasoningEffort(w *Workflow) {

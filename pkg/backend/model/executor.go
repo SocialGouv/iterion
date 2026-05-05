@@ -1677,7 +1677,8 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 
 // resolveReasoningEffort determines the effective reasoning effort for a node.
 // It checks for a dynamic override in the input map via the reserved key
-// "_reasoning_effort", then falls back to the static node property.
+// "_reasoning_effort", then falls back to the static node property
+// (resolving env-substituted forms via ir.ResolveEffortLiteral).
 //
 // The "_reasoning_effort" key uses an underscore prefix to distinguish it from
 // user-defined schema fields. It allows upstream nodes to dynamically control
@@ -1687,43 +1688,13 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 //
 // Valid values are defined in ir.ValidReasoningEfforts: low, medium, high, xhigh, max.
 // Invalid dynamic values are silently ignored (falls back to the static property).
-//
-// The static node value may also be an env-substituted form like
-// "${VIBE_EFFORT:-max}". Such values are expanded at runtime via
-// expandEnvWithDefault and validated against ir.ValidReasoningEfforts.
-// Expansion that yields an invalid value falls back to the empty string,
-// which lets the provider apply its own default.
 func resolveReasoningEffort(nodeEffort string, input map[string]interface{}) string {
 	if v, ok := input["_reasoning_effort"]; ok {
 		if s, ok := v.(string); ok && ir.ValidReasoningEfforts[s] {
 			return s
 		}
 	}
-	if ir.IsEnvSubstitutedEffort(nodeEffort) {
-		expanded := expandEnvWithDefault(nodeEffort)
-		if ir.ValidReasoningEfforts[expanded] {
-			return expanded
-		}
-		return ""
-	}
-	return nodeEffort
-}
-
-// expandEnvWithDefault expands ${VAR} and ${VAR:-default} forms in s.
-// Mirrors the shell parameter-expansion default-value syntax that
-// stdlib os.ExpandEnv does not support: when ${VAR} is unset or empty,
-// the part after :- is returned instead.
-func expandEnvWithDefault(s string) string {
-	return os.Expand(s, func(key string) string {
-		if i := strings.Index(key, ":-"); i >= 0 {
-			name, fallback := key[:i], key[i+2:]
-			if v := os.Getenv(name); v != "" {
-				return v
-			}
-			return fallback
-		}
-		return os.Getenv(key)
-	})
+	return ir.ResolveEffortLiteral(nodeEffort)
 }
 
 // providerOptsForNode builds the ProviderOptions map from the resolved

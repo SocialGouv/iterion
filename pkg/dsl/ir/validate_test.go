@@ -1104,6 +1104,49 @@ workflow test:
 	expectNoDiag(t, r, DiagInvalidReasoningEffort)
 }
 
+func TestResolveEffortLiteral(t *testing.T) {
+	tests := []struct {
+		name     string
+		literal  string
+		envKey   string
+		envValue string
+		want     string
+	}{
+		{name: "enum literal passes through", literal: "max", want: "max"},
+		{name: "empty stays empty", literal: "", want: ""},
+		{name: "env-subst with valid default",
+			literal:  "${ITERION_TEST_EFFORT:-max}",
+			envKey:   "ITERION_TEST_EFFORT",
+			envValue: "",
+			want:     "max"},
+		{name: "env wins over default",
+			literal:  "${ITERION_TEST_EFFORT:-max}",
+			envKey:   "ITERION_TEST_EFFORT",
+			envValue: "low",
+			want:     "low"},
+		{name: "invalid expanded value clamps to empty",
+			literal:  "${ITERION_TEST_EFFORT:-ultra}",
+			envKey:   "ITERION_TEST_EFFORT",
+			envValue: "",
+			want:     ""},
+		{name: "bare env var unset returns empty",
+			literal:  "${ITERION_TEST_EFFORT}",
+			envKey:   "ITERION_TEST_EFFORT",
+			envValue: "",
+			want:     ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.envKey != "" {
+				t.Setenv(tt.envKey, tt.envValue)
+			}
+			if got := ResolveEffortLiteral(tt.literal); got != tt.want {
+				t.Errorf("ResolveEffortLiteral(%q) = %q, want %q", tt.literal, got, tt.want)
+			}
+		})
+	}
+}
+
 // Env-substituted reasoning_effort cannot be evaluated at compile time:
 // the C024 check must defer to runtime instead of erroring on a literal
 // it doesn't recognise.
