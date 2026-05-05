@@ -61,10 +61,17 @@ interface RunStoreState {
   wsState: WsState;
   followTail: boolean;
   log: RunLogState;
+  // Increments to request a fresh WS dial. The broker drops a run's
+  // subscribers on terminal status (pkg/runview/service.go: CloseRun),
+  // so after Resume the still-open WS conn no longer receives events
+  // — bumping this token tears down the hook's effect and re-anchors
+  // a new subscription against the now-active run.
+  wsReconnectToken: number;
 
   setRunId: (id: string | null) => void;
   setWsState: (state: WsState) => void;
   setFollowTail: (follow: boolean) => void;
+  requestWsReconnect: () => void;
 
   applySnapshot: (snap: RunSnapshot) => void;
   applyEvent: (evt: RunEvent) => void;
@@ -98,6 +105,7 @@ const initialState = {
   wsState: "idle" as WsState,
   followTail: true,
   log: initialLogState,
+  wsReconnectToken: 0,
 };
 
 export const useRunStore = create<RunStoreState>((set) => ({
@@ -106,6 +114,8 @@ export const useRunStore = create<RunStoreState>((set) => ({
   setRunId: (id) => set({ runId: id }),
   setWsState: (state) => set({ wsState: state }),
   setFollowTail: (follow) => set({ followTail: follow }),
+  requestWsReconnect: () =>
+    set((s) => ({ wsReconnectToken: s.wsReconnectToken + 1 })),
 
   applySnapshot: (snap) => {
     const map = new Map<string, ExecutionState>();

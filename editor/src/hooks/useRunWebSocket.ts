@@ -50,6 +50,10 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
   // reconnect can re-subscribe automatically — symmetric with the
   // event from_seq replay below. Reset on runId change.
   const logsRequestedRef = useRef(false);
+  // Bump from the store after Resume/Cancel HTTP actions to redial the
+  // WS — the broker drops subscribers on terminal status, so the only
+  // way the resumed run reaches this client is a fresh subscribe.
+  const reconnectToken = useRunStore((s) => s.wsReconnectToken);
 
   useEffect(() => {
     if (!runId) return;
@@ -217,7 +221,7 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
       }
       useRunStore.getState().setWsState("closed");
     };
-  }, [runId]);
+  }, [runId, reconnectToken]);
 
   return {
     send: (env) => {

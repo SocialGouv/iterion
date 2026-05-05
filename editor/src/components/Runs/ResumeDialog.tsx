@@ -21,6 +21,7 @@ export default function ResumeDialog({ run, open, onOpenChange }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const setRunStatus = useRunStore((s) => s.setRunStatus);
+  const requestWsReconnect = useRunStore((s) => s.requestWsReconnect);
   const addToast = useUIStore((s) => s.addToast);
 
   // Reset transient state when the dialog re-opens for a different run
@@ -40,6 +41,11 @@ export default function ResumeDialog({ run, open, onOpenChange }: Props) {
     try {
       await resumeRun(run.id, { force });
       setRunStatus("running");
+      // The broker dropped this run's subscribers when the prior pass
+      // hit terminal status; without a fresh dial the resumed engine
+      // publishes into the void and the UI sees no events until the
+      // user reloads the page.
+      requestWsReconnect();
       addToast(
         force ? "Resume requested (force)" : "Resume requested",
         "info",
