@@ -188,10 +188,19 @@ func (c *Conn) PublishRun(ctx context.Context, msg *queue.RunMessage) (*jetstrea
 	headers := nats.Header{}
 	headers.Set("Nats-Msg-Id", msg.RunID)
 	headers.Set("iterion-schema-version", fmt.Sprintf("%d", msg.V))
+
+	// Plan §F (T-41): inject W3C traceparent + tracestate from the
+	// caller's ctx so the runner-side span inherits the parent. The
+	// queue.TraceContext mirror in the body is also populated for
+	// callers who decode the payload before the headers (defence in
+	// depth). EnsureDefaultPropagator wires propagation.TraceContext
+	// when nothing else has set a global propagator yet.
+	EnsureDefaultPropagator()
+	injectTrace(ctx, msg, headers)
+	// Convenience aliases — runners that don't want to drag in OTel
+	// can still read these directly. Kept after Inject so the W3C
+	// header takes precedence on conflict.
 	if msg.Trace.TraceID != "" {
-		// Plan §F T-41 makes this complete; here we set the alias
-		// header so a runner that wants to skip the body decode for
-		// trace propagation has the data it needs.
 		headers.Set("iterion-trace-id", msg.Trace.TraceID)
 		headers.Set("iterion-span-id", msg.Trace.SpanID)
 	}
@@ -342,6 +351,16 @@ func (d *Delivery) Subject() string { return d.raw.Subject() }
 
 // Headers returns the message headers.
 func (d *Delivery) Headers() nats.Header { return d.raw.Headers() }
+
+// PropagateTraceTo extracts the W3C traceparent header from this
+// delivery and returns a child context so the consumer's runtime
+// span inherits the publisher's trace. When no header is present
+// (legacy publisher, local-mode tests) the input ctx is returned
+// unchanged. Plan §F (T-41).
+func (d *Delivery) PropagateTraceTo(ctx context.Context) context.Context {
+	EnsureDefaultPropagator()
+	return extractTrace(ctx, d.Headers())
+}
 
 func applyDefaults(c Config) Config {
 	if c.StreamName == "" {

@@ -175,7 +175,10 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	logger := r.cfg.Logger
 	logger.Info("runner: processing run %s (workflow=%s)", msg.RunID, msg.WorkflowName)
 
-	runCtx, runCancel := context.WithCancel(parent)
+	// Inherit the publisher's trace so OTel spans created by the
+	// engine appear under the originating editor span (plan §F T-41).
+	traced := delivery.PropagateTraceTo(parent)
+	runCtx, runCancel := context.WithCancel(traced)
 	defer runCancel()
 
 	r.mu.Lock()

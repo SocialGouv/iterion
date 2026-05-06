@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
@@ -111,7 +112,18 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		_ = st.Close(closeCtx)
 	}()
 
-	// 4. Runner loop.
+	// 4. Prometheus metrics on a dedicated port. Bound before the
+	//    consumer loop starts so the kubelet readiness probe lands
+	//    on the same listener if we ever fold metrics into it.
+	mreg := metrics.New()
+	metricsAddr := fmt.Sprintf(":%d", cfg.Metrics.Port)
+	metricsSrv, err := mreg.StartServer(metricsAddr, logger)
+	if err != nil {
+		return fmt.Errorf("runner: start metrics: %w", err)
+	}
+	defer func() { _ = metrics.ShutdownServer(metricsSrv) }()
+
+	// 5. Runner loop.
 	r, err := runner.New(rootCtx, runner.Config{
 		NATS:              natsConn,
 		Store:             st,

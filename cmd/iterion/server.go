@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
+	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
@@ -160,6 +161,16 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		Store:           st,
 		LaunchPublisher: pub,
 	}, logger)
+
+	// Prometheus metrics on a dedicated port (plan §F T-40). Bound
+	// synchronously so a port-conflict surfaces at boot, not later.
+	mreg := metrics.New()
+	metricsAddr := fmt.Sprintf(":%d", cfg.Metrics.Port)
+	metricsSrv, err := mreg.StartServer(metricsAddr, logger)
+	if err != nil {
+		return fmt.Errorf("server: start metrics: %w", err)
+	}
+	defer func() { _ = metrics.ShutdownServer(metricsSrv) }()
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
