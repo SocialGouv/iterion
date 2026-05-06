@@ -17,17 +17,46 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/sandbox/devcontainer"
 	"github.com/SocialGouv/iterion/pkg/sandbox/docker"
+	"github.com/SocialGouv/iterion/pkg/sandbox/netproxy"
 	"github.com/SocialGouv/iterion/pkg/sandbox/noop"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// resolveAndStartSandbox produces a [sandbox.Run] for the workflow's
+// activeSandbox bundles a sandbox.Run with the optional network proxy
+// that backs it. Both lifecycle handles are owned by the engine and
+// must be shut down on Run() exit.
+type activeSandbox struct {
+	run   sandbox.Run
+	proxy *netproxy.Proxy
+}
+
+// shutdown tears down both handles best-effort. Safe to call multiple
+// times — the underlying drivers/proxy are themselves idempotent.
+func (a *activeSandbox) shutdown(ctx context.Context, logger *iterlog.Logger) {
+	if a == nil {
+		return
+	}
+	if a.run != nil {
+		if err := a.run.Cleanup(ctx); err != nil && logger != nil {
+			logger.Warn("runtime: sandbox cleanup: %v", err)
+		}
+	}
+	if a.proxy != nil {
+		if err := a.proxy.Shutdown(ctx); err != nil && logger != nil {
+			logger.Warn("runtime: sandbox proxy shutdown: %v", err)
+		}
+	}
+}
+
+// resolveAndStartSandbox produces an [activeSandbox] for the workflow's
 // active sandbox spec, or (nil, nil) when no sandbox is requested.
 //
 // Resolution order:
@@ -37,8 +66,11 @@ import (
 //     from repoRoot and converts to a sandbox.Spec.
 //  2. The factory selects the best driver for the host (docker > podman
 //     on local/desktop; kubernetes > noop on cloud).
-//  3. Driver.Prepare validates and resolves resources (pulls images).
-//  4. Driver.Start creates the container and returns the live Run.
+//  3. The network proxy is started (when policy is non-open) and its
+//     endpoint is threaded into Driver.Start so the container env
+//     carries HTTPS_PROXY / HTTP_PROXY pointing at it.
+//  4. Driver.Prepare validates and resolves resources (pulls images).
+//  5. Driver.Start creates the container and returns the live Run.
 //
 // When the resolved driver cannot honour the requested mode (typically:
 // the user wants a real sandbox but no docker/podman is on PATH), the
@@ -51,7 +83,8 @@ func resolveAndStartSandbox(
 	cliOverride string, // from --sandbox flag; "" means no override
 	globalDefault string, // from ITERION_SANDBOX_DEFAULT
 	emitEvent func(eventType store.EventType, data map[string]interface{}) error,
-) (sandbox.Run, error) {
+	logger *iterlog.Logger,
+) (*activeSandbox, error) {
 	spec, source, err := resolveSandboxSpec(wf, repoRoot, cliOverride, globalDefault)
 	if err != nil {
 		return nil, err
@@ -88,41 +121,163 @@ func resolveAndStartSandbox(
 		if err != nil {
 			return nil, fmt.Errorf("runtime: sandbox: noop prepare: %w", err)
 		}
-		return driver.Start(ctx, prepared, sandbox.RunInfo{
+		run, err := driver.Start(ctx, prepared, sandbox.RunInfo{
 			RunID:         runID,
 			FriendlyName:  friendlyName,
 			WorkspacePath: workspacePath,
 		})
+		if err != nil {
+			return nil, fmt.Errorf("runtime: sandbox: noop start: %w", err)
+		}
+		return &activeSandbox{run: run}, nil
 	}
 
-	// Install the engine logger on the docker driver so sandbox messages
-	// are interleaved with the rest of the run's output. Best-effort:
-	// drivers without a WithLogger method get the default discard sink.
-	type loggable interface {
-		WithLogger(*iterlogPlaceholder) sandbox.Driver
-	}
-	_ = loggable(nil) // documentation reference, not enforced at compile time
-
-	prepared, err := driver.Prepare(ctx, *spec)
+	// Optionally start the network proxy. When the workflow has no
+	// explicit network policy, default to the iterion-default
+	// allowlist preset so users get sensible defaults out of the box —
+	// this is the security-first posture the design plan §5 calls for.
+	proxy, proxyEndpoint, err := startNetworkProxy(spec, runID, emitEvent, logger)
 	if err != nil {
-		return nil, fmt.Errorf("runtime: sandbox: prepare: %w", err)
+		return nil, fmt.Errorf("runtime: sandbox: network proxy: %w", err)
 	}
 
-	run, err := driver.Start(ctx, prepared, sandbox.RunInfo{
+	info := sandbox.RunInfo{
 		RunID:         runID,
 		FriendlyName:  friendlyName,
 		WorkspacePath: workspacePath,
-	})
+		ProxyEndpoint: proxyEndpoint,
+	}
+
+	prepared, err := driver.Prepare(ctx, *spec)
 	if err != nil {
+		if proxy != nil {
+			_ = proxy.Shutdown(ctx)
+		}
+		return nil, fmt.Errorf("runtime: sandbox: prepare: %w", err)
+	}
+
+	run, err := driver.Start(ctx, prepared, info)
+	if err != nil {
+		if proxy != nil {
+			_ = proxy.Shutdown(ctx)
+		}
 		return nil, fmt.Errorf("runtime: sandbox: start: %w", err)
 	}
-	return run, nil
+	return &activeSandbox{run: run, proxy: proxy}, nil
 }
 
-// iterlogPlaceholder is referenced only in the doc-comment loggable
-// interface above to keep an import-free convention. It never appears
-// in real call paths.
-type iterlogPlaceholder = struct{}
+// startNetworkProxy compiles the spec's network policy (with sensible
+// defaults) and binds an HTTP CONNECT proxy on 127.0.0.1:0. Returns
+// (nil, "", nil) when policy mode is "open" — no proxy is needed.
+//
+// The returned endpoint is the URL the container should set as
+// HTTPS_PROXY / HTTP_PROXY. On Linux containers we use the docker
+// host-gateway alias so the container can reach the proxy on the
+// host's loopback interface; on Docker Desktop (macOS/Windows)
+// `host.docker.internal` is the canonical name.
+func startNetworkProxy(
+	spec *sandbox.Spec,
+	runID string,
+	emitEvent func(store.EventType, map[string]interface{}) error,
+	logger *iterlog.Logger,
+) (*netproxy.Proxy, string, error) {
+	mode, rules := resolveNetworkPolicy(spec)
+	if mode == netproxy.ModeOpen {
+		return nil, "", nil
+	}
+
+	policy, err := netproxy.Compile(mode, rules)
+	if err != nil {
+		return nil, "", fmt.Errorf("compile policy: %w", err)
+	}
+
+	token, err := netproxy.NewToken()
+	if err != nil {
+		return nil, "", fmt.Errorf("generate proxy token: %w", err)
+	}
+
+	prx, err := netproxy.New(netproxy.Options{
+		Policy: policy,
+		Token:  token,
+		OnBlocked: func(host, reason string) {
+			_ = emitEvent("network_blocked", map[string]interface{}{
+				"host":   host,
+				"reason": reason,
+				"run_id": runID,
+			})
+			if logger != nil {
+				logger.Warn("sandbox: network: blocked %s (%s)", host, reason)
+			}
+		},
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("new proxy: %w", err)
+	}
+	if err := prx.Start("127.0.0.1:0"); err != nil {
+		return nil, "", fmt.Errorf("start proxy: %w", err)
+	}
+
+	endpoint := prx.Endpoint(proxyHostnameForContainer())
+	if logger != nil {
+		logger.Info("sandbox: network proxy on %s (mode=%s, %d rules)",
+			prx.Addr(), mode, len(rules))
+	}
+	return prx, endpoint, nil
+}
+
+// resolveNetworkPolicy derives the (mode, rules) pair to compile from
+// the spec. Precedence:
+//
+//  1. spec.Network.Mode (when explicit) wins.
+//  2. spec.Network.Preset, when set, prefixes the rule list.
+//  3. spec.Network.Rules append after the preset.
+//
+// Default when spec.Network is nil: allowlist + iterion-default preset.
+// This makes "user enabled sandbox without thinking about network" land
+// on the security-first posture rather than open egress.
+func resolveNetworkPolicy(spec *sandbox.Spec) (netproxy.Mode, []string) {
+	mode := netproxy.ModeAllowlist
+	preset := netproxy.PresetIterionDefault
+	var extra []string
+
+	if spec != nil && spec.Network != nil {
+		switch spec.Network.Mode {
+		case sandbox.NetworkModeAllowlist:
+			mode = netproxy.ModeAllowlist
+		case sandbox.NetworkModeDenylist:
+			mode = netproxy.ModeDenylist
+		case sandbox.NetworkModeOpen:
+			mode = netproxy.ModeOpen
+		}
+		if spec.Network.Preset != "" {
+			preset = spec.Network.Preset
+		}
+		extra = spec.Network.Rules
+	}
+
+	rules := []string{}
+	if preset != "" {
+		if pr, ok := netproxy.PresetRules(preset); ok {
+			rules = append(rules, pr...)
+		}
+	}
+	rules = append(rules, extra...)
+	return mode, rules
+}
+
+// proxyHostnameForContainer returns the hostname the *container*
+// should use to reach the proxy on the host's loopback interface.
+// Linux containers see the host via `host.docker.internal` only when
+// the run command included `--add-host=host.docker.internal:host-gateway`
+// (docker driver does this). On macOS / Windows Docker Desktop, the
+// alias resolves natively.
+func proxyHostnameForContainer() string {
+	switch runtime.GOOS {
+	case "darwin", "windows":
+		return "host.docker.internal"
+	}
+	return "host.docker.internal"
+}
 
 // resolveSandboxSpec applies the precedence chain
 // (CLI > workflow > global default) and produces a [sandbox.Spec] plus

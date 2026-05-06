@@ -379,27 +379,25 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 	emitForSandbox := func(t store.EventType, data map[string]interface{}) error {
 		return e.emit(ctx, runID, t, "", data)
 	}
-	sandboxRun, sbErr := resolveAndStartSandbox(ctx, e.workflow, runID, e.runName, repoRoot, e.workDir,
-		e.sandboxOverride, e.sandboxDefault, emitForSandbox)
+	active, sbErr := resolveAndStartSandbox(ctx, e.workflow, runID, e.runName, repoRoot, e.workDir,
+		e.sandboxOverride, e.sandboxDefault, emitForSandbox, e.logger)
 	if sbErr != nil {
 		_ = e.store.UpdateRunStatus(ctx, runID, store.RunStatusFailed, sbErr.Error())
 		return fmt.Errorf("runtime: sandbox: %w", sbErr)
 	}
 	defer func() {
-		if sandboxRun != nil {
+		if active != nil {
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			if err := sandboxRun.Cleanup(cleanupCtx); err != nil && e.logger != nil {
-				e.logger.Warn("runtime: sandbox cleanup: %v", err)
-			}
+			active.shutdown(cleanupCtx, e.logger)
 		}
 	}()
-	if sandboxRun != nil {
+	if active != nil && active.run != nil {
 		if s, ok := e.executor.(sandboxSetter); ok {
-			s.SetSandbox(sandboxRun)
+			s.SetSandbox(active.run)
 		}
 		if e.logger != nil {
-			e.logger.Info("runtime: sandbox active (driver=%s)", sandboxRun.Driver())
+			e.logger.Info("runtime: sandbox active (driver=%s)", active.run.Driver())
 		}
 	}
 

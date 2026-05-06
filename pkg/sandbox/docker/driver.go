@@ -147,11 +147,18 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		args = append(args, "--env", k+"="+v)
 	}
 	if info.ProxyEndpoint != "" {
-		// Phase 3 wires this. Phase 1 leaves it empty so no proxy
-		// vars are injected unless the engine has set up a real
-		// proxy endpoint to honour.
+		// Inject proxy URL via standard env vars + a host-gateway alias
+		// so the container can reach the host's loopback interface
+		// where the iterion proxy is listening. On Docker Desktop the
+		// alias is built-in; on Linux we have to opt in via --add-host.
 		args = append(args, "--env", "HTTPS_PROXY="+info.ProxyEndpoint)
 		args = append(args, "--env", "HTTP_PROXY="+info.ProxyEndpoint)
+		// Allow inner clones / installs that talk to localhost-only
+		// services (rare, but legal — e.g. an inner devbox cache) to
+		// bypass the proxy. The container's own services on its loop-
+		// back interface should not be tunneled through the host.
+		args = append(args, "--env", "NO_PROXY=localhost,127.0.0.1")
+		args = append(args, "--add-host", "host.docker.internal:host-gateway")
 	}
 
 	// PID 1 is `sleep infinity` so the container stays alive while
