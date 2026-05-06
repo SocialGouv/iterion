@@ -28,13 +28,27 @@ if [ "$#" -eq 0 ]; then
   exit 1
 fi
 
+# `openssl pkeyutl -rawin` is an OpenSSL ≥ 3.0 extension required for
+# Ed25519's "sign the message bytes directly" semantics. macOS ships
+# LibreSSL at /usr/bin/openssl, which lacks that flag — so on mac runners
+# we route through Homebrew's openssl@3 (preinstalled on the standard
+# GitHub-hosted images). Linux/Windows have OpenSSL 3 on $PATH already.
+OPENSSL=openssl
+for cand in /opt/homebrew/opt/openssl@3/bin/openssl \
+            /usr/local/opt/openssl@3/bin/openssl; do
+  if [ -x "$cand" ]; then
+    OPENSSL="$cand"
+    break
+  fi
+done
+
 for f in "$@"; do
   [ -f "$f" ] || continue
   case "$f" in
     *.sig) continue ;;
   esac
   sig="${f}.sig"
-  openssl pkeyutl -sign -inkey "$KEYFILE" -rawin -in "$f" \
+  "$OPENSSL" pkeyutl -sign -inkey "$KEYFILE" -rawin -in "$f" \
     | xxd -p -c 0 \
     > "$sig"
   echo "Signed $f -> $sig"

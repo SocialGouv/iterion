@@ -109,6 +109,15 @@ jobs:
           go install github.com/go-task/task/v3/cmd/task@latest
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
+      - name: Enable corepack
+        shell: bash
+        run: |
+          # Node 22+ ships Corepack disabled by default; `corepack pnpm`
+          # commands silently fail without this on Windows runners. Linux
+          # and macOS runners typically have it pre-enabled, but running
+          # this is a no-op on those.
+          corepack enable
+
       - name: Build editor frontend
         shell: bash
         run: task editor:build
@@ -243,7 +252,12 @@ jobs:
           readelf -h "$appimage" | grep -q "Machine:.*${expected}"
           if [ "$PLATFORM" = "linux/arm64" ]; then
             chmod +x "$appimage"
-            "$appimage" --appimage-help >/dev/null
+            # --appimage-extract-and-run avoids the FUSE mount step.
+            # Ubuntu 24.04 (the arm64 runner image) ships libfuse2t64
+            # instead of libfuse2, and AppImage's bundled runtime still
+            # links against the older libfuse2 SOname — mounting fails
+            # otherwise.
+            "$appimage" --appimage-extract-and-run --appimage-help >/dev/null
           fi
 
       - name: Verify updater signing secret
