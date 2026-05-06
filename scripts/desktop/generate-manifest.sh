@@ -27,6 +27,13 @@ for f in "$DIR"/iterion-desktop-*; do
   case "$base" in
     *.sig|*.sha256) continue ;;
     *manifest*) continue ;;
+    # Linux ships both an AppImage (self-contained, the auto-updater
+    # target) and a .tar.gz containing the raw binary (smaller download
+    # for users who already have webkitgtk-4.1 / gtk-3 installed). Only
+    # the AppImage goes into the manifest — the auto-updater can swap
+    # an AppImage in place safely; replacing a system-installed binary
+    # would race against package managers.
+    iterion-desktop-linux-*.tar.gz) continue ;;
   esac
   key=""
   case "$base" in

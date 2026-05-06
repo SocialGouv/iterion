@@ -160,6 +160,67 @@ jobs:
               ;;
           esac
 
+      - name: Bundle Linux raw binary tarball
+        if: matrix.package == 'appimage'
+        shell: bash
+        env:
+          ARTIFACT_NAME: ${{ matrix.artifact_name }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          # Ship the raw binary alongside the AppImage. ~46 MB instead of
+          # ~110 MB; users on glibc >= 2.35 distros that already have
+          # libgtk-3 + libwebkit2gtk-4.1 + libsoup-3.0 (Mint 21+, Ubuntu
+          # 22.04+, Debian 12+, Fedora 38+, Pop!_OS 22.04+) can run it
+          # directly without unpacking an AppImage. Distro packagers can
+          # also pick the binary up from the tarball when assembling
+          # `.deb`/`.rpm`.
+          stage="$(mktemp -d)"
+          cp "build/bin/${ARTIFACT_NAME}" "$stage/iterion-desktop"
+          chmod +x "$stage/iterion-desktop"
+          cp build/linux/iterion.desktop "$stage/iterion-desktop.desktop"
+          [ -f build/appicon.png ] && cp build/appicon.png "$stage/iterion-desktop.png"
+          cat > "$stage/README.md" <<'EOF'
+          # Iterion Desktop — raw Linux binary
+
+          The same binary that powers the AppImage, distributed without
+          its bundled WebKitGTK runtime so it stays small (~46 MB vs
+          ~110 MB) and integrates with your distro's libraries.
+
+          ## System requirements
+
+          glibc >= 2.35 plus the WebKitGTK 4.1 runtime stack. On
+          Debian/Ubuntu/Mint/Pop!_OS:
+
+              sudo apt install libgtk-3-0 libwebkit2gtk-4.1-0 libsoup-3.0-0
+
+          On Fedora/RHEL:
+
+              sudo dnf install gtk3 webkit2gtk4.1 libsoup3
+
+          ## Run
+
+              chmod +x iterion-desktop
+              ./iterion-desktop
+
+          ## Install system-wide (optional)
+
+              sudo install -Dm755 iterion-desktop /usr/local/bin/iterion-desktop
+              sudo install -Dm644 iterion-desktop.desktop \
+                  /usr/share/applications/iterion-desktop.desktop
+              sudo install -Dm644 iterion-desktop.png \
+                  /usr/share/icons/hicolor/256x256/apps/iterion-desktop.png
+              sudo gtk-update-icon-cache /usr/share/icons/hicolor
+
+          ## Need a self-contained launcher instead?
+
+          Use the `iterion-desktop-linux-<arch>.AppImage` artefact from
+          the same release. No system dependencies, single executable.
+          EOF
+          tar -C "$stage" -czf "${ARTIFACT_NAME}.tar.gz" .
+          rm -rf "$stage"
+          ls -la "${ARTIFACT_NAME}.tar.gz"
+
       - name: Smoke check Linux AppImage architecture
         if: matrix.package == 'appimage'
         shell: bash
