@@ -267,7 +267,15 @@ tasks:
     dir: cmd/iterion-desktop
     cmds:
       - |
-        export PATH="/usr/bin:$PATH"
+        # In devbox: prepend /usr/bin so system gcc/ld + apt pkg-config
+        # are picked over the Nix-wrapped variants (which don't see system
+        # webkit2gtk-4.1 / gtk+-3.0). On CI runners DEVBOX_PROJECT_ROOT
+        # is unset, so we keep setup-go's Go ahead of /usr/bin/go (the
+        # runner's preinstalled Go is often older than go.mod's directive).
+        if [ -n "$DEVBOX_PROJECT_ROOT" ]; then
+          export PATH="/usr/bin:$PATH"
+        fi
+        export PKG_CONFIG="${PKG_CONFIG:-/usr/bin/pkg-config}"
         export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
         wails dev -tags desktop,webkit2_41 -skipbindings -s
 
@@ -312,7 +320,11 @@ tasks:
     dir: cmd/iterion-desktop
     cmds:
       - |
-        export PATH="/usr/bin:$PATH"
+        # See desktop:dev for the devbox vs CI PATH split.
+        if [ -n "$DEVBOX_PROJECT_ROOT" ]; then
+          export PATH="/usr/bin:$PATH"
+        fi
+        export PKG_CONFIG="${PKG_CONFIG:-/usr/bin/pkg-config}"
         export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
         # -devtools keeps Inspect Element / Ctrl+Shift+I available in release
         # builds so users can debug WebView issues before native devtools
@@ -325,7 +337,10 @@ tasks:
     dir: cmd/iterion-desktop
     cmds:
       - |
-        export PATH="/usr/bin:$PATH"
+        if [ -n "$DEVBOX_PROJECT_ROOT" ]; then
+          export PATH="/usr/bin:$PATH"
+        fi
+        export PKG_CONFIG="${PKG_CONFIG:-/usr/bin/pkg-config}"
         export PKG_CONFIG_PATH="/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
         wails build -tags desktop,webkit2_41 -platform linux/arm64 -clean -trimpath -skipbindings -s -devtools -ldflags "{{.LDFLAGS}}" -o iterion-desktop-linux-arm64
 
@@ -334,6 +349,10 @@ tasks:
     deps: [desktop:build:linux:amd64]
     cmds:
       - |
+        # PATH override matters only when running inside devbox: linuxdeploy
+        # invokes ldconfig/dpkg-query, which the Nix wrappers can't find.
+        # On CI runners the default PATH already has /usr/bin first; the
+        # prepend is a no-op there.
         export PATH="/usr/bin:$PATH"
         ./scripts/desktop/build-appimage.sh amd64
 

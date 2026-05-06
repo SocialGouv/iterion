@@ -79,9 +79,17 @@ func NewUpdater(cfg *Config) *Updater {
 	}
 }
 
+// errManifestNotPublished signals "the channel exists but no release has
+// been published yet" — i.e. GitHub Releases returns 404 on the manifest
+// URL. The caller treats it as "no update available" rather than a
+// hard error so the UI's manual "Check for updates" button can return
+// silently instead of surfacing a confusing 404 to the user.
+var errManifestNotPublished = errors.New("updater: manifest not yet published")
+
 // CheckForUpdate fetches the manifest, verifies its signature, and returns
 // the matching artefact if its version is greater than the running version.
-// Returns (nil, nil) when no update is available.
+// Returns (nil, nil) when no update is available — including the case
+// where the channel has no release yet (manifest 404 from GitHub).
 func (u *Updater) CheckForUpdate(ctx context.Context, channel string) (*Release, error) {
 	if len(u.pubkey) != ed25519.PublicKeySize {
 		return nil, errors.New("updater: public key not configured")
@@ -91,6 +99,9 @@ func (u *Updater) CheckForUpdate(ctx context.Context, channel string) (*Release,
 	}
 	url := manifestURL(channel)
 	body, sig, err := u.fetchManifestAndSig(ctx, url)
+	if errors.Is(err, errManifestNotPublished) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -201,6 +212,15 @@ func (u *Updater) httpGet(ctx context.Context, url string) ([]byte, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	// 404 on the manifest URL typically means no desktop release has been
+	// published yet (the /releases/latest/download/<file> endpoint returns
+	// 404 when the file is missing on the latest release, OR when no
+	// release exists at all). Bubble up a sentinel so CheckForUpdate can
+	// translate it to "no update available" rather than a user-facing
+	// error message.
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("%w: %s", errManifestNotPublished, url)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("updater: GET %s: %s", url, resp.Status)
 	}
