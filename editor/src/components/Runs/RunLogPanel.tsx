@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
-import { ChevronDownIcon } from "@radix-ui/react-icons";
+import { ChevronDownIcon, MixerHorizontalIcon } from "@radix-ui/react-icons";
 
-import { IconButton, Input } from "@/components/ui";
+import { IconButton, Input, Popover } from "@/components/ui";
 import { formatBytes } from "@/lib/format";
 import { useRunStore } from "@/store/run";
 
@@ -183,6 +183,64 @@ export default function RunLogPanel({ runId, subscribeLogs, unsubscribeLogs, onC
         >
           download
         </a>
+        <Popover
+          side="bottom"
+          align="end"
+          contentClassName="p-1 min-w-[140px]"
+          trigger={
+            <button
+              type="button"
+              title={
+                activeLevels.size > 0
+                  ? `${activeLevels.size} level filter(s) active`
+                  : "Filter by level"
+              }
+              className={`text-[10px] px-1.5 py-0.5 rounded border inline-flex items-center gap-1 transition-colors ${
+                activeLevels.size > 0
+                  ? "bg-surface-2 text-fg-default border-accent"
+                  : "bg-surface-1 border-border-default text-fg-subtle hover:text-fg-default"
+              }`}
+            >
+              <MixerHorizontalIcon className="w-3 h-3" />
+              Levels
+              {activeLevels.size > 0 && (
+                <span className="font-mono text-[9px] px-1 rounded bg-accent/20 text-accent-fg">
+                  {activeLevels.size}
+                </span>
+              )}
+            </button>
+          }
+        >
+          <div className="flex flex-col gap-0.5 p-1">
+            {LEVEL_GLYPHS.map((g) => {
+              const isActive = activeLevels.has(g.key);
+              return (
+                <button
+                  key={g.key}
+                  type="button"
+                  onClick={() => toggleLevel(g.key)}
+                  className={`text-[11px] px-2 py-1 rounded border text-left transition-colors ${
+                    isActive
+                      ? `bg-surface-2 ${g.cls} border-accent`
+                      : `bg-surface-1 border-border-default ${g.cls} hover:text-fg-default`
+                  }`}
+                  title={`Filter to ${g.label} only`}
+                >
+                  {g.emoji} {g.label}
+                </button>
+              );
+            })}
+            {activeLevels.size > 0 && (
+              <button
+                type="button"
+                onClick={() => setActiveLevels(new Set())}
+                className="text-[10px] text-fg-subtle hover:text-fg-default mt-1 px-2 py-0.5 text-left"
+              >
+                Clear filters
+              </button>
+            )}
+          </div>
+        </Popover>
         <label className="ml-auto inline-flex items-center gap-1.5 cursor-pointer">
           <input
             type="checkbox"
@@ -202,26 +260,6 @@ export default function RunLogPanel({ runId, subscribeLogs, unsubscribeLogs, onC
             <ChevronDownIcon />
           </IconButton>
         )}
-      </div>
-      <div className="px-3 py-1 border-b border-border-default flex flex-wrap gap-1">
-        {LEVEL_GLYPHS.map((g) => {
-          const isActive = activeLevels.has(g.key);
-          return (
-            <button
-              key={g.key}
-              type="button"
-              onClick={() => toggleLevel(g.key)}
-              className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
-                isActive
-                  ? `bg-surface-2 ${g.cls} border-accent`
-                  : `bg-surface-1 border-border-default ${g.cls} hover:text-fg-default`
-              }`}
-              title={`Filter to ${g.label} only`}
-            >
-              {g.emoji} {g.label}
-            </button>
-          );
-        })}
       </div>
       <div className="flex-1 min-h-0 px-3 py-1">
         {filtered.length === 0 ? (
