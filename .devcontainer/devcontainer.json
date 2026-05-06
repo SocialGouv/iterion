@@ -5,9 +5,14 @@
   "features": {
     "ghcr.io/devcontainers/features/node:1.6.1": {
       "version": "lts"
+    },
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "moby": true,
+      "version": "latest",
+      "dockerDashComposeVersion": "v2"
     }
   },
-  "runArgs": ["--security-opt=no-new-privileges=false"],
+  "runArgs": ["--security-opt=no-new-privileges=false", "--privileged"],
   "mounts": [
     "source=${localEnv:HOME}/.claude,target=/home/devbox/.claude,type=bind,consistency=cached"
   ],
@@ -16,6 +21,6 @@
     "HOST_WORKSPACE": "${localWorkspaceFolder}"
   },
   "initializeCommand": "mkdir -p ${localEnv:HOME}/.claude",
-  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y jq ripgrep fd-find bat tree htop file xxd bsdmainutils gh git-delta xmlstarlet && sudo ln -sf /usr/bin/fdfind /usr/local/bin/fd 2>/dev/null || true; sudo ln -sf /usr/bin/batcat /usr/local/bin/bat 2>/dev/null || true; YQ_ARCH=$(dpkg --print-architecture); sudo curl -fsSL \"https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${YQ_ARCH}\" -o /usr/local/bin/yq && sudo chmod +x /usr/local/bin/yq; devbox install && npm install -g @anthropic-ai/claude-code @mermaid-js/mermaid-cli && HOST_KEY=$(echo \"$HOST_WORKSPACE\" | tr '/' '-'); CONTAINER_KEY=$(echo \"$PWD\" | tr '/' '-'); if [ \"$HOST_KEY\" != \"$CONTAINER_KEY\" ] && [ -d \"$HOME/.claude/projects/$HOST_KEY\" ]; then ln -sfn \"$HOME/.claude/projects/$HOST_KEY\" \"$HOME/.claude/projects/$CONTAINER_KEY\"; fi",
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y jq ripgrep fd-find bat tree htop file xxd bsdmainutils gh git-delta xmlstarlet libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev xvfb fuse libfuse2t64 dpkg-dev patchelf desktop-file-utils gtk-update-icon-cache librsvg2-common && sudo ln -sf /usr/bin/fdfind /usr/local/bin/fd 2>/dev/null || true; sudo ln -sf /usr/bin/batcat /usr/local/bin/bat 2>/dev/null || true; YQ_ARCH=$(dpkg --print-architecture); sudo curl -fsSL \"https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${YQ_ARCH}\" -o /usr/local/bin/yq && sudo chmod +x /usr/local/bin/yq; devbox install && npm install -g @anthropic-ai/claude-code @mermaid-js/mermaid-cli && HOST_KEY=$(echo \"$HOST_WORKSPACE\" | tr '/' '-'); CONTAINER_KEY=$(echo \"$PWD\" | tr '/' '-'); if [ \"$HOST_KEY\" != \"$CONTAINER_KEY\" ] && [ -d \"$HOME/.claude/projects/$HOST_KEY\" ]; then ln -sfn \"$HOME/.claude/projects/$HOST_KEY\" \"$HOME/.claude/projects/$CONTAINER_KEY\"; fi",
   "remoteUser": "devbox"
 }
