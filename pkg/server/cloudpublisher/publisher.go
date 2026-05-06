@@ -77,19 +77,25 @@ func New(cfg Config) (*Publisher, error) {
 // the RunMessage to JetStream. The runner pool drains the queue and
 // transitions queued → running on pickup.
 func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview.LaunchSpec, wf *ir.Workflow, hash string) (int, error) {
-	// 1. Persist the run with status=queued so List endpoints see it
-	//    instantly (the editor's QueueDepthBar reads from /api/runs).
-	if _, err := p.store.CreateRun(ctx, runID, wf.Name, varsAsAny(spec.Vars)); err != nil {
-		return 0, fmt.Errorf("cloudpublisher: create run: %w", err)
+	// 1. Persist the run with status=queued + workflow_hash + file_path
+	//    so List endpoints see it instantly and Resume can reload the
+	//    workflow. Single SaveRun (upsert) avoids the CreateRun → LoadRun
+	//    → SaveRun round-trip the previous shape required.
+	now := time.Now().UTC()
+	r := &store.Run{
+		FormatVersion: store.RunFormatVersion,
+		ID:            runID,
+		WorkflowName:  wf.Name,
+		WorkflowHash:  hash,
+		FilePath:      spec.FilePath,
+		Status:        store.RunStatusQueued,
+		Inputs:        varsAsAny(spec.Vars),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		QueuedAt:      &now,
 	}
-	// CreateRun on the Mongo store sets QueuedAt + Status=queued; we
-	// also persist the workflow_hash + file_path so resume can reload
-	// the workflow without further plumbing.
-	r, err := p.store.LoadRun(ctx, runID)
-	if err == nil {
-		r.WorkflowHash = hash
-		r.FilePath = spec.FilePath
-		_ = p.store.SaveRun(ctx, r)
+	if err := p.store.SaveRun(ctx, r); err != nil {
+		return 0, fmt.Errorf("cloudpublisher: save run: %w", err)
 	}
 
 	// 2. Build the RunMessage. We marshal the AST inline; T-42 will
@@ -235,10 +241,6 @@ func marshalIRFromFile(path string) (json.RawMessage, error) {
 	return body, nil
 }
 
-// silence unused-import lint when ir.Workflow disappears from the
-// signature path (we still touch it via the LaunchPublisher
-// interface).
-var _ = ir.NodeAgent
 
 // varsAsAny upgrades a string-keyed map to interface{} so the wire
 // payload can carry richer types if the launch spec ever evolves.

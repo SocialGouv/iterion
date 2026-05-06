@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -177,7 +176,3 @@ func (s *mongoSubscription) Close() error {
 	}
 	return nil
 }
-
-// silence unused-import warning when Close() doesn't currently use
-// the time import directly — kept ready for future deadline plumbing.
-var _ = time.Second

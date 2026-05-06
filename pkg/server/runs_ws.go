@@ -306,18 +306,11 @@ func (c *runConn) streamEventsLocal(fromSeq, snapshotSeq int64) {
 // needed on this side — the source guarantees no gaps and no
 // duplicates. The subscription's Errors channel is drained but not
 // fatal: a transient change-stream blip is logged and the WS stays
-// open until c.closed fires.
+// open until c.closed fires. The source's underlying ctx is bound to
+// c.closed via Close() in the defer, so we don't need a separate
+// goroutine to translate the channel into a cancel.
 func (c *runConn) streamEventsCloud(fromSeq int64) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Tear the source subscription down when the WS closes.
-	go func() {
-		<-c.closed
-		cancel()
-	}()
-
-	sub, err := c.server.runs.SubscribeEventStream(ctx, c.runID, fromSeq)
+	sub, err := c.server.runs.SubscribeEventStream(context.Background(), c.runID, fromSeq)
 	if err != nil {
 		c.sendError("event_stream_failed", err.Error(), "")
 		return

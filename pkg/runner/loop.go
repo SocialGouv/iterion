@@ -259,14 +259,12 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 // JetStream will redeliver to a sibling pod after AckWait).
 func (r *Runner) heartbeat(ctx context.Context, lock store.RunLock, done chan<- struct{}) {
 	defer close(done)
-	t := time.NewTicker(r.cfg.HeartbeatInterval)
-	defer t.Stop()
-
 	natsLock, ok := lock.(*natsq.Lock)
 	if !ok {
 		return // no-op lock or non-NATS provider — nothing to refresh
 	}
-
+	t := time.NewTicker(r.cfg.HeartbeatInterval)
+	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():

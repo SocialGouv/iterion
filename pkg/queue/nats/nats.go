@@ -105,6 +105,10 @@ func Connect(ctx context.Context, cfg Config) (*Conn, error) {
 		nc.Close()
 		return nil, err
 	}
+	// Install the W3C TraceContext propagator once per process so
+	// PublishRun + Delivery.PropagateTraceTo can stay in the hot path
+	// (plan §F T-41).
+	EnsureDefaultPropagator()
 	return c, nil
 }
 
@@ -193,9 +197,8 @@ func (c *Conn) PublishRun(ctx context.Context, msg *queue.RunMessage) (*jetstrea
 	// caller's ctx so the runner-side span inherits the parent. The
 	// queue.TraceContext mirror in the body is also populated for
 	// callers who decode the payload before the headers (defence in
-	// depth). EnsureDefaultPropagator wires propagation.TraceContext
-	// when nothing else has set a global propagator yet.
-	EnsureDefaultPropagator()
+	// depth). The propagator is installed once at Connect time so
+	// this stays out of the per-publish hot path.
 	injectTrace(ctx, msg, headers)
 	// Convenience aliases — runners that don't want to drag in OTel
 	// can still read these directly. Kept after Inject so the W3C
@@ -356,9 +359,9 @@ func (d *Delivery) Headers() nats.Header { return d.raw.Headers() }
 // delivery and returns a child context so the consumer's runtime
 // span inherits the publisher's trace. When no header is present
 // (legacy publisher, local-mode tests) the input ctx is returned
-// unchanged. Plan §F (T-41).
+// unchanged. The propagator is installed at Connect time so this
+// stays out of the per-message hot path. Plan §F (T-41).
 func (d *Delivery) PropagateTraceTo(ctx context.Context) context.Context {
-	EnsureDefaultPropagator()
 	return extractTrace(ctx, d.Headers())
 }
 

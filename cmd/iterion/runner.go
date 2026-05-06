@@ -18,6 +18,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// parseLevel resolves a string level from the loader, falling back to
+// info on parse failure. Shared by the cloud-mode subcommands
+// (runner, server, migrate) so a typo in the env var doesn't break
+// boot.
 func parseLevel(s string) iterlog.Level {
 	if l, err := iterlog.ParseLevel(s); err == nil {
 		return l
