@@ -31,9 +31,10 @@ type LeaseInfo struct {
 // abruptly-terminated runner's lease evaporates within ~60s without
 // any cleanup.
 type Lock struct {
-	conn  *Conn
-	runID string
-	rev   uint64 // last observed revision for CAS Update
+	conn     *Conn
+	runID    string
+	runnerID string // identity stamped at acquire time, re-used on every refresh
+	rev      uint64 // last observed revision for CAS Update
 }
 
 // AcquireLock atomically claims the run lease in the KV bucket. The
@@ -65,7 +66,7 @@ func (c *Conn) AcquireLock(ctx context.Context, runID, runnerID string) (*Lock, 
 		}
 		return nil, fmt.Errorf("queue/nats: KV create %s: %w", runID, err)
 	}
-	return &Lock{conn: c, runID: runID, rev: rev}, nil
+	return &Lock{conn: c, runID: runID, runnerID: runnerID, rev: rev}, nil
 }
 
 // Refresh updates the lease (resets the bucket TTL) so a long-running
@@ -76,7 +77,7 @@ func (c *Conn) AcquireLock(ctx context.Context, runID, runnerID string) (*Lock, 
 // caller to abort the run.
 func (l *Lock) Refresh(ctx context.Context) error {
 	body, err := json.Marshal(LeaseInfo{
-		RunnerID:  "",
+		RunnerID:  l.runnerID,
 		StartedAt: time.Now().UTC(),
 		Status:    "running",
 	})

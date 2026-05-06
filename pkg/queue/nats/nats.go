@@ -54,16 +54,18 @@ const (
 
 // Config carries the connection settings for the cloud queue.
 type Config struct {
-	URL        string        // nats://host:port — required
-	StreamName string        // default StreamRuns
-	DLQStream  string        // default StreamRunsDLQ
-	KVBucket   string        // default KVRunLocks
-	MaxAge     time.Duration // default 24h
-	DLQMaxAge  time.Duration // default 7d
-	MaxDeliver int           // default 3
-	AckWait    time.Duration // default 5min
-	LockTTL    time.Duration // default 60s
-	Logger     *iterlog.Logger
+	URL          string        // nats://host:port — required
+	StreamName   string        // default StreamRuns
+	DLQStream    string        // default StreamRunsDLQ
+	KVBucket     string        // default KVRunLocks
+	ConsumerName string        // default ConsumerRunners
+	MaxAge       time.Duration // default 24h
+	DLQMaxAge    time.Duration // default 7d
+	MaxDeliver   int           // default 3
+	AckWait      time.Duration // default 5min
+	LockTTL      time.Duration // default 60s
+	MaxPayload   int           // default 0 → use server's negotiated MaxPayload
+	Logger       *iterlog.Logger
 }
 
 // Conn is the wired NATS layer. The publisher + consumer both consume
@@ -118,6 +120,25 @@ func (c *Conn) Close() {
 		return
 	}
 	c.nc.Close()
+}
+
+// Ping issues a round-trip ping on the NATS connection. Used by the
+// server's /readyz handler. Returns the wrapped client error on failure
+// (typically a timeout when the broker is unreachable).
+func (c *Conn) Ping(ctx context.Context) error {
+	if c == nil || c.nc == nil {
+		return fmt.Errorf("queue/nats: connection not initialised")
+	}
+	if !c.nc.IsConnected() {
+		return fmt.Errorf("queue/nats: not connected (status=%s)", c.nc.Status())
+	}
+	// nats.go has no native Ping that takes a context; RTT measures the
+	// round-trip latency to the connected server using a Flush + ping
+	// frame and respects the connection's reconnect state.
+	if _, err := c.nc.RTT(); err != nil {
+		return fmt.Errorf("queue/nats: rtt: %w", err)
+	}
+	return nil
 }
 
 // NATS exposes the underlying connection for callers that need raw
@@ -187,6 +208,16 @@ func (c *Conn) PublishRun(ctx context.Context, msg *queue.RunMessage) (*jetstrea
 	body, err := json.Marshal(msg)
 	if err != nil {
 		return nil, fmt.Errorf("queue/nats: marshal RunMessage: %w", err)
+	}
+
+	// NATS rejects messages larger than the server-negotiated
+	// max_payload (default 1 MiB). Catch the limit ourselves so the
+	// caller gets a clean, actionable error instead of an opaque
+	// runtime ErrMaxPayload after the IR has been built. The IRRef
+	// fallback for oversized workflows is tracked under T-42; until
+	// it lands, surface the gap explicitly.
+	if maxPayload := c.nc.MaxPayload(); maxPayload > 0 && int64(len(body)) > maxPayload {
+		return nil, fmt.Errorf("queue/nats: RunMessage size %d exceeds NATS max_payload %d for run %s — IRRef fallback (T-42) not yet implemented", len(body), maxPayload, msg.RunID)
 	}
 
 	headers := nats.Header{}
@@ -261,7 +292,7 @@ type Consumer struct {
 // (matters when a stale pod is replaced).
 func (c *Conn) NewConsumer(ctx context.Context) (*Consumer, error) {
 	cons, err := c.js.CreateOrUpdateConsumer(ctx, c.cfg.StreamName, jetstream.ConsumerConfig{
-		Durable:       ConsumerRunners,
+		Durable:       c.cfg.ConsumerName,
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		AckWait:       c.cfg.AckWait,
 		MaxAckPending: 1,
@@ -374,6 +405,9 @@ func applyDefaults(c Config) Config {
 	}
 	if c.KVBucket == "" {
 		c.KVBucket = KVRunLocks
+	}
+	if c.ConsumerName == "" {
+		c.ConsumerName = ConsumerRunners
 	}
 	if c.MaxAge == 0 {
 		c.MaxAge = DefaultStreamMaxAge
