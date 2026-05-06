@@ -176,17 +176,28 @@ jobs:
               ;;
             nsis-portable)
               # Wails runs from cmd/iterion-desktop/ (where wails.json lives)
-              # so artefacts land at cmd/iterion-desktop/build/bin/. On
-              # Linux/macOS the cmd/iterion-desktop/build symlink to
-              # ../../build resolves transparently, but the Windows runner's
-              # default git clone replaces it with a text file (Git for
-              # Windows requires core.symlinks=true + dev mode), so the
-              # repo-root build/bin/ is empty. Reference the artefact at
-              # the canonical Wails output path; works regardless of
-              # symlink resolution.
-              cp "cmd/iterion-desktop/build/bin/${ARTIFACT_NAME}.exe" "${ARTIFACT_NAME}.exe"
+              # so artefacts land at cmd/iterion-desktop/build/bin/. The
+              # symlink at cmd/iterion-desktop/build → ../../build doesn't
+              # resolve on Windows runners (Git for Windows materialises
+              # symlinks as text files unless core.symlinks=true).
+              #
+              # The exact .exe filename Wails picks for NSIS builds isn't
+              # always the `-o` value — when `-nsis` is set Wails sometimes
+              # falls back to wails.json's `outputfilename`. Be defensive
+              # so we surface a useful diagnostic instead of a silent
+              # exit-1 on cp.
+              bindir="cmd/iterion-desktop/build/bin"
+              if [ -f "$bindir/${ARTIFACT_NAME}.exe" ]; then
+                cp "$bindir/${ARTIFACT_NAME}.exe" "${ARTIFACT_NAME}.exe"
+              elif [ -f "$bindir/iterion-desktop.exe" ]; then
+                cp "$bindir/iterion-desktop.exe" "${ARTIFACT_NAME}.exe"
+              else
+                echo "ERROR: no portable .exe found under $bindir/" >&2
+                ls -la "$bindir" || true
+                exit 1
+              fi
               # Wails NSIS produces *-installer.exe alongside the binary.
-              for f in cmd/iterion-desktop/build/bin/*-installer.exe; do
+              for f in "$bindir"/*-installer.exe; do
                 [ -f "$f" ] && cp "$f" "${ARTIFACT_NAME}-installer.exe"
               done
               ;;
