@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -163,7 +164,15 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	eventSrc := runview.NewEventSourceAdapter(mongoSource)
 
 	if cfg.Server.SessionToken == "" {
-		logger.Warn("server: ITERION_SESSION_TOKEN is empty — /api/* endpoints are unauthenticated; set a token before exposing the server publicly")
+		// Cloud mode is the path that gets exposed via Ingress in prod,
+		// so a missing token is a deploy-time misconfiguration we refuse
+		// to start with. Operators who genuinely want an open server
+		// (single-node demo, internal cluster) can set
+		// ITERION_DISABLE_AUTH=true.
+		if os.Getenv("ITERION_DISABLE_AUTH") != "true" {
+			return fmt.Errorf("server: ITERION_SESSION_TOKEN is required in cloud mode — set the env var or override with ITERION_DISABLE_AUTH=true")
+		}
+		logger.Warn("server: ITERION_DISABLE_AUTH=true — /api/* endpoints are unauthenticated; do not expose the server publicly")
 	}
 	srv := server.New(server.Config{
 		Port:            serverOpts.port,
