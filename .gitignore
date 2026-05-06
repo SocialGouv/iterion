@@ -1,6 +1,10 @@
 # Build output
 /iterion
 *.exe
+# Vendored Wails ships the WebView2 bootstrapper as a real .exe under
+# vendor/. The global *.exe ignore otherwise hides it from `git add`,
+# and Windows desktop builds fail at //go:embed for the missing file.
+!vendor/**/*.exe
 
 # Store data
 .iterion/

@@ -290,7 +290,7 @@ jobs:
           shopt -s nullglob
           ./scripts/desktop/sign-release.sh ${ARTIFACT_NAME}*
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}
           if-no-files-found: warn
@@ -302,7 +302,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artefacts
           merge-multiple: true
@@ -324,7 +324,7 @@ jobs:
         run: ./scripts/desktop/generate-manifest.sh artefacts
 
       - name: Attach artefacts to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             artefacts/iterion-desktop-*
