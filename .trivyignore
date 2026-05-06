@@ -1,0 +1,16 @@
+# Trivy ignorelist — CVE IDs we have evaluated and explicitly accept.
+#
+# Format:   <CVE-ID>            # YYYY-MM-DD: <pkg> — short justification
+# Or:       <CVE-ID> exp:<YYYY-MM-DD>  # auto-expires after that date
+#
+# Each entry MUST include a justification comment. If a CVE later affects
+# a code path we actually exercise, remove it from this file and address
+# the underlying dependency.
+#
+# When you bump a dependency that fixed a CVE upstream, prune the entry
+# so the ignorelist stays an accurate audit trail rather than tech debt.
+#
+# Currently empty — add CVEs here when a transitive dep we don't exercise
+# at runtime keeps tripping the scanner and a real fix isn't feasible
+# (e.g. base-image CVEs without upstream patches; npm-bundled deps in
+# tooling we don't ship).

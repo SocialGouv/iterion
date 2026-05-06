@@ -90,13 +90,14 @@ jobs:
       # scan the freshly-pushed registry tag. This way a CVE in a new
       # base image or transitive dep blocks merge before it lands.
       #
-      # Severity gate is CRITICAL only — HIGH is reported but doesn't
-      # block (HIGHs in transitive Go stdlib / npm-vendored deps are
-      # frequent, and we'd rather merge a fix elsewhere than burn a
-      # CI cycle on every npm patch release). `.trivyignore` at repo
-      # root is the explicit allowlist when even a CRITICAL is
-      # evaluated as not-applicable to our code path; entries there
-      # require a justification comment.
+      # Gate: HIGH + CRITICAL fail the build, ignore-unfixed drops
+      # CVEs without an upstream patch. .trivyignore at repo root is
+      # the escape hatch — when a transitive-dep CVE turns out to be
+      # not exercised by our code path and a real fix isn't feasible,
+      # land an entry there with a justification comment instead of
+      # eternally re-running the build hoping the CVE goes away.
+      # Each .trivyignore entry should be revisited periodically;
+      # keep the file an accurate audit trail.
       - name: Trivy scan (registry image)
         if: github.event_name != 'pull_request'
         uses: aquasecurity/trivy-action@v0.36.0
