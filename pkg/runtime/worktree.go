@@ -28,9 +28,16 @@ import (
 // callers can branch on stderr substrings ("already exists",
 // "exists on disk, but not in") without those substrings being
 // silently localized into the user's locale (fr_FR, etc).
+//
+// Children are detached into their own process group (Unix) so a
+// SIGTERM delivered to the editor's PGID — typical when `watchexec -r`
+// rebuilds the dev-mode backend during an in-flight squash merge —
+// doesn't propagate and kill `git commit` mid-write with the
+// "signal: terminated" failure mode observed in run_1778021294883.
 func gitCmd(args ...string) *exec.Cmd {
 	cmd := exec.Command("git", args...)
 	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
+	detachGitProcessGroup(cmd)
 	return cmd
 }
 
@@ -434,36 +441,86 @@ func BuildSquashMessage(repoRoot, base, head, runName string) string {
 	return buildSquashMessage(repoRoot, base, head, runName)
 }
 
-// buildSquashMessage assembles the commit message for a squash merge:
-// title is the run/workflow label, body lists each squashed commit as
-// `- <shortSHA> <subject>` so the per-iteration history remains visible
-// even though the commits themselves are collapsed.
+// buildSquashMessage assembles the commit message for a squash merge.
+//
+// Title is the subject of the first commit the run produced — the
+// workflow's `prepare_commit` / `commit_changes` nodes already produce
+// conventional-commit-style subjects (`feat(privacy): ...`,
+// `fix(runview): ...`), so reusing the first one lands a
+// semantically-meaningful message on `main` rather than the run's
+// arbitrary friendly name (`plain-basalt-0d49`). Falls back to runName
+// then "iterion run" when no first-commit subject is recoverable.
+//
+// Body lists each squashed commit as `- <shortSHA> <subject>` so the
+// per-iteration history remains visible even though the commits
+// themselves are collapsed. Body is omitted when the run produced
+// only one commit (the title already says everything).
 func buildSquashMessage(repoRoot, base, head, runName string) string {
-	title := strings.TrimSpace(runName)
+	subjects := readCommitSubjects(repoRoot, base, head)
+
+	title := ""
+	if len(subjects) > 0 {
+		title = subjects[0].subject
+	}
+	if title == "" {
+		title = strings.TrimSpace(runName)
+	}
 	if title == "" {
 		title = "iterion run"
 	}
 
 	var body strings.Builder
 	body.WriteString(title)
-	body.WriteString("\n\n")
+	body.WriteString("\n")
 
-	out, err := gitCmd("-C", repoRoot, "log", "--reverse", "--pretty=format:%h %s", base+".."+head).Output()
-	if err != nil {
-		body.WriteString("(squashed commits unavailable)\n")
+	if len(subjects) <= 1 {
+		// One commit (or none readable): the title already conveys the
+		// change — no need for a body that re-states it as a list of one.
 		return body.String()
 	}
-	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
-	for _, line := range lines {
+
+	body.WriteString("\n")
+	for _, c := range subjects {
+		body.WriteString("- ")
+		body.WriteString(c.short)
+		body.WriteString(" ")
+		body.WriteString(c.subject)
+		body.WriteString("\n")
+	}
+	return body.String()
+}
+
+// commitEntry is the (shortSHA, subject) pair we extract for each commit
+// in the run's range. Kept as a tiny struct so the squash-message
+// assembler can index into the slice without re-parsing the git output.
+type commitEntry struct {
+	short   string
+	subject string
+}
+
+// readCommitSubjects returns the run's commits in chronological order
+// (oldest first). The format `%h %s` is null-safe enough for our needs:
+// `%s` is the first line of the message, so embedded newlines are not a
+// concern. Returns nil on any git failure — callers degrade to the
+// runName fallback.
+func readCommitSubjects(repoRoot, base, head string) []commitEntry {
+	out, err := gitCmd("-C", repoRoot, "log", "--reverse", "--pretty=format:%h %s", base+".."+head).Output()
+	if err != nil {
+		return nil
+	}
+	var entries []commitEntry
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		body.WriteString("- ")
-		body.WriteString(line)
-		body.WriteString("\n")
+		short, subject, ok := strings.Cut(line, " ")
+		if !ok {
+			continue
+		}
+		entries = append(entries, commitEntry{short: short, subject: subject})
 	}
-	return body.String()
+	return entries
 }
 
 // DeferredMergeRequest is the input for a UI-driven merge action: the

@@ -402,6 +402,82 @@ func TestFinalizeWorktree_SquashStrategy(t *testing.T) {
 	}
 }
 
+// TestBuildSquashMessage_SingleCommit — when the run produced one
+// commit, the squash title is that commit's subject (a meaningful
+// conventional-commit message), and the body is omitted because
+// re-listing the same line would be redundant.
+func TestBuildSquashMessage_SingleCommit(t *testing.T) {
+	repo, originalTip := initBareishRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+
+	finalSHA := addCommit(t, wt, "a.go", "package main\n// a\n", "feat(privacy): add pure-Go privacy_filter tools")
+
+	got := buildSquashMessage(repo, originalTip, finalSHA, "plain-basalt-0d49")
+	want := "feat(privacy): add pure-Go privacy_filter tools\n"
+	if got != want {
+		t.Errorf("squash message:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// TestBuildSquashMessage_MultipleCommitsListsAll — N commits → title is
+// the first commit's subject, body lists every commit chronologically.
+// This preserves the per-iteration audit trail when the workflow's
+// commit phase produced more than one logical step.
+func TestBuildSquashMessage_MultipleCommitsListsAll(t *testing.T) {
+	repo, originalTip := initBareishRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+
+	addCommit(t, wt, "a.go", "package main\n// a\n", "feat(api): add v2 endpoint")
+	addCommit(t, wt, "b.go", "package main\n// b\n", "test(api): cover v2 happy path")
+	finalSHA := addCommit(t, wt, "c.go", "package main\n// c\n", "docs(api): document v2 contract")
+
+	got := buildSquashMessage(repo, originalTip, finalSHA, "swift-cedar-a3f2")
+	if !strings.HasPrefix(got, "feat(api): add v2 endpoint\n\n") {
+		t.Errorf("first line should be the first commit's subject + blank, got:\n%s", got)
+	}
+	for _, want := range []string{
+		"- ",
+		" feat(api): add v2 endpoint\n",
+		" test(api): cover v2 happy path\n",
+		" docs(api): document v2 contract\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("body missing %q:\n%s", want, got)
+		}
+	}
+	// runName must NOT leak into the message when commits are readable.
+	if strings.Contains(got, "swift-cedar-a3f2") {
+		t.Errorf("runName leaked into message body:\n%s", got)
+	}
+}
+
+// TestBuildSquashMessage_FallsBackToRunName — when no commits are
+// readable in base..head (degenerate: empty range, bad refs), the
+// title degrades to the runName so the deferred-merge UI still produces
+// a non-empty commit message.
+func TestBuildSquashMessage_FallsBackToRunName(t *testing.T) {
+	repo, originalTip := initBareishRepo(t)
+	// Same SHA on both sides → empty `git log` output → fallback path.
+	got := buildSquashMessage(repo, originalTip, originalTip, "plain-basalt-0d49")
+	if got != "plain-basalt-0d49\n" {
+		t.Errorf("squash message: %q, want %q", got, "plain-basalt-0d49\n")
+	}
+}
+
+// TestBuildSquashMessage_FallsBackToDefault — no commits AND no runName
+// (both extremes degraded) → "iterion run" sentinel keeps git happy.
+func TestBuildSquashMessage_FallsBackToDefault(t *testing.T) {
+	repo, originalTip := initBareishRepo(t)
+	got := buildSquashMessage(repo, originalTip, originalTip, "")
+	if got != "iterion run\n" {
+		t.Errorf("squash message: %q, want %q", got, "iterion run\n")
+	}
+}
+
 // TestResolveMergeTarget — small unit test on the value parsing.
 func TestResolveMergeTarget(t *testing.T) {
 	cases := []struct {
