@@ -3,6 +3,7 @@ package kubernetes
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -207,11 +208,7 @@ func envMapToSlice(env map[string]string) []any {
 	for k := range env {
 		keys = append(keys, k)
 	}
-	for i := 1; i < len(keys); i++ {
-		for j := i; j > 0 && keys[j-1] > keys[j]; j-- {
-			keys[j-1], keys[j] = keys[j], keys[j-1]
-		}
-	}
+	sort.Strings(keys)
 	out := make([]any, 0, len(keys))
 	for _, k := range keys {
 		out = append(out, map[string]any{"name": k, "value": env[k]})

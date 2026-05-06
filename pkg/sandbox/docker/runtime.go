@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 )
 
 // Runtime identifies which container CLI we shell out to.
@@ -60,7 +62,7 @@ func Detect() (Runtime, error) {
 func runtimeCmd(rt Runtime, args ...string) *exec.Cmd {
 	cmd := exec.Command(string(rt), args...)
 	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C")
-	detachProcessGroup(cmd)
+	proc.DetachProcessGroup(cmd)
 	return cmd
 }
 
@@ -70,7 +72,7 @@ func runtimeCmd(rt Runtime, args ...string) *exec.Cmd {
 func runtimeCmdContext(ctx context.Context, rt Runtime, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, string(rt), args...)
 	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C")
-	detachProcessGroup(cmd)
+	proc.DetachProcessGroup(cmd)
 	return cmd
 }
 

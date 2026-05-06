@@ -17,17 +17,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/sandbox/devcontainer"
-	"github.com/SocialGouv/iterion/pkg/sandbox/docker"
-	"github.com/SocialGouv/iterion/pkg/sandbox/kubernetes"
 	"github.com/SocialGouv/iterion/pkg/sandbox/netproxy"
-	"github.com/SocialGouv/iterion/pkg/sandbox/noop"
+	"github.com/SocialGouv/iterion/pkg/sandbox/registry"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -102,7 +99,7 @@ func resolveAndStartSandbox(
 	// when the sandboxed claw path is in use, and can opt out by
 	// setting backend on the affected nodes.
 	if wf != nil && containsClawNode(wf) {
-		_ = emitEvent("sandbox_claw_routed_via_runner", map[string]interface{}{
+		_ = emitEvent(store.EventSandboxClawRoutedViaRunner, map[string]interface{}{
 			"reason":         "claw nodes will run via iterion-claw-runner inside the container",
 			"limitations_v1": "no MCP servers, no mid-tool-loop ask_user — see docs/sandbox.md",
 		})
@@ -210,7 +207,7 @@ func startNetworkProxy(
 		Policy: policy,
 		Token:  token,
 		OnBlocked: func(host, reason string) {
-			_ = emitEvent("network_blocked", map[string]interface{}{
+			_ = emitEvent(store.EventNetworkBlocked, map[string]interface{}{
 				"host":   host,
 				"reason": reason,
 				"run_id": runID,
@@ -277,15 +274,13 @@ func resolveNetworkPolicy(spec *sandbox.Spec) (netproxy.Mode, []string) {
 
 // proxyHostnameForContainer returns the hostname the *container*
 // should use to reach the proxy on the host's loopback interface.
-// Linux containers see the host via `host.docker.internal` only when
-// the run command included `--add-host=host.docker.internal:host-gateway`
-// (docker driver does this). On macOS / Windows Docker Desktop, the
-// alias resolves natively.
+// On macOS / Windows Docker Desktop the alias resolves natively;
+// on Linux the docker driver injects --add-host=host.docker.internal:
+// host-gateway when the proxy endpoint is non-empty (see
+// pkg/sandbox/docker/driver.go::Driver.Start), so the same name
+// works on every supported host. Kept as a function so V2 (k8s
+// per-pod proxy via cluster Service) can override.
 func proxyHostnameForContainer() string {
-	switch runtime.GOOS {
-	case "darwin", "windows":
-		return "host.docker.internal"
-	}
 	return "host.docker.internal"
 }
 
@@ -431,19 +426,11 @@ func backendIsClaw(name string) bool {
 	return false
 }
 
-// defaultDriverRegistry mirrors pkg/cli/sandbox.go's helper of the
-// same name. We duplicate it here rather than importing pkg/cli to
-// avoid a cli → runtime → cli cycle. Drift risk is low since both
-// must list every shippable driver — if a CI test catches a drift
-// (one knows about a driver the other doesn't), a sandbox driver was
-// added without registering it everywhere.
+// defaultDriverRegistry forwards to [registry.Default] so the engine
+// and the CLI share a single source of truth for which drivers ship
+// with iterion.
 func defaultDriverRegistry() map[string]sandbox.DriverConstructor {
-	return map[string]sandbox.DriverConstructor{
-		"docker":     docker.Constructor,
-		"podman":     docker.Constructor,
-		"kubernetes": kubernetes.Constructor,
-		"noop":       noop.Constructor,
-	}
+	return registry.Default()
 }
 
 // engineRepoRoot returns the path the sandbox should treat as the repo

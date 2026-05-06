@@ -37,6 +37,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 )
 
 // kubeBinaryName is the kubectl CLI iterion shells out to. Hardcoded
@@ -46,21 +48,17 @@ import (
 // the production image.
 const kubeBinaryName = "kubectl"
 
-// inClusterTokenPath is the canonical mount point for a pod's
-// service-account token. Existence of this file is the cheapest
-// "are we in-cluster" probe — the kubelet always mounts it for
-// pods that haven't opted out via automountServiceAccountToken: false.
-const inClusterTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-
 // inClusterNamespacePath holds the namespace the pod runs in. Used
 // to scope sibling pod creation when the engine doesn't pass an
-// explicit namespace.
+// explicit namespace, and as the cheapest "are we in-cluster" probe
+// — the kubelet mounts it for every pod that hasn't opted out via
+// automountServiceAccountToken: false.
 const inClusterNamespacePath = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 
 // Detect reports whether this process can act as the kubernetes
 // driver: kubectl on PATH and the in-cluster service-account token
-// present. Returns the resolved namespace too — used by Driver as
-// the default scope for new pods.
+// present + readable. Returns the resolved namespace too — used by
+// Driver as the default scope for new pods.
 //
 // Returns ("", "", error) when the host doesn't qualify as a k8s
 // runner, with the error explaining which check failed so the
@@ -70,11 +68,15 @@ func Detect() (kubectl string, namespace string, err error) {
 	if lookupErr != nil {
 		return "", "", fmt.Errorf("%s not found on PATH (did you build the runtime image with kubectl?)", kubeBinaryName)
 	}
-	if _, statErr := os.Stat(inClusterTokenPath); statErr != nil {
-		return "", "", fmt.Errorf("not running in a kubernetes pod (no service account token at %s)", inClusterTokenPath)
-	}
+	// Read the namespace file directly — its presence implies we're
+	// in a pod with the standard service-account mount, and an
+	// unreadable namespace surfaces a real error rather than a
+	// misleading "not in a pod" for an unrelated permission issue.
 	nsBytes, readErr := os.ReadFile(inClusterNamespacePath)
 	if readErr != nil {
+		if os.IsNotExist(readErr) {
+			return "", "", fmt.Errorf("not running in a kubernetes pod (no service account mount at %s)", inClusterNamespacePath)
+		}
 		return "", "", fmt.Errorf("read namespace from %s: %w", inClusterNamespacePath, readErr)
 	}
 	ns := strings.TrimSpace(string(nsBytes))
@@ -90,7 +92,7 @@ func Detect() (kubectl string, namespace string, err error) {
 func kubectlCmd(args ...string) *exec.Cmd {
 	cmd := exec.Command(kubeBinaryName, args...)
 	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C")
-	detachProcessGroup(cmd)
+	proc.DetachProcessGroup(cmd)
 	return cmd
 }
 
@@ -99,7 +101,7 @@ func kubectlCmd(args ...string) *exec.Cmd {
 func kubectlCmdContext(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, kubeBinaryName, args...)
 	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C")
-	detachProcessGroup(cmd)
+	proc.DetachProcessGroup(cmd)
 	return cmd
 }
 

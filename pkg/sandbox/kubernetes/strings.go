@@ -1,6 +1,9 @@
 package kubernetes
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // toLowerASCII returns a copy of s with ASCII upper-case letters
 // replaced by their lower-case equivalents. We avoid the stdlib
@@ -88,18 +91,13 @@ func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// sortedKeys returns keys of m in ascending order without pulling
-// in sort.Strings (and its sort.Sort indirection). Maps are small
-// here; an O(n²) insertion sort is fine.
+// sortedKeys returns keys of m in ascending order — used for stable
+// argv ordering in `kubectl describe` output across runs.
 func sortedKeys(m map[string]string) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
 	}
-	for i := 1; i < len(keys); i++ {
-		for j := i; j > 0 && keys[j-1] > keys[j]; j-- {
-			keys[j-1], keys[j] = keys[j], keys[j-1]
-		}
-	}
+	sort.Strings(keys)
 	return keys
 }

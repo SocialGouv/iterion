@@ -333,7 +333,15 @@ func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, resp.Body)
 }
 
-// tunnel pipes bytes bidirectionally until either side closes.
+// tunnel pipes bytes bidirectionally until either side closes,
+// then forces the peer connection shut so the second goroutine
+// unblocks promptly.
+//
+// Without the explicit Close + second receive, the losing goroutine
+// would stay parked in io.Copy until its peer's TCP FIN arrived,
+// which can take seconds — long enough that Proxy.Shutdown returns
+// while goroutines are still in flight. Closing both ends inside
+// tunnel turns "either side closes" into a deterministic teardown.
 func tunnel(a, b net.Conn) {
 	done := make(chan struct{}, 2)
 	go func() {
@@ -344,6 +352,9 @@ func tunnel(a, b net.Conn) {
 		_, _ = io.Copy(b, a)
 		done <- struct{}{}
 	}()
+	<-done
+	_ = a.Close()
+	_ = b.Close()
 	<-done
 }
 

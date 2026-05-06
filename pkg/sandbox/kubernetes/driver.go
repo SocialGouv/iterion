@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
@@ -20,12 +20,6 @@ var (
 	_ sandbox.Run          = (*Run)(nil)
 	_ sandbox.PreparedSpec = (*Prepared)(nil)
 )
-
-// Ensure strings is referenced so goimports doesn't drop the import
-// when this file is auto-formatted (used inside Command for the
-// custom-workdir branch via buildShellChdirExec — but the import is
-// here so future extensions can add string ops without flapping).
-var _ = strings.ReplaceAll
 
 // DefaultPodReadyTimeoutSecs caps how long the driver waits for a
 // freshly-applied pod to reach Ready. Image pulls dominate this in
@@ -244,7 +238,7 @@ func (r *Run) cmdContext(ctx context.Context, args []string, opts sandbox.ExecOp
 	if opts.Stdin != nil {
 		c.Stdin = opts.Stdin
 	}
-	detachProcessGroup(c)
+	proc.DetachProcessGroup(c)
 	return c
 }
 

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
@@ -269,7 +270,7 @@ func (r *Run) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) 
 	if opts.Stdin != nil {
 		c.Stdin = opts.Stdin
 	}
-	detachProcessGroup(c)
+	proc.DetachProcessGroup(c)
 	return c
 }
 
