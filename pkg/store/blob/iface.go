@@ -40,6 +40,17 @@ type Client interface {
 	// (plan §F T-42). Best-effort: partial failures must be logged
 	// but should not break the sweeper.
 	DeleteRun(ctx context.Context, runID string) error
+
+	// Ping verifies the backend is reachable and the configured bucket
+	// exists. Used by the server's /readyz handler. Cheap (HEAD) but
+	// not free — callers should wrap in a sub-second timeout.
+	Ping(ctx context.Context) error
+
+	// Close releases any pooled HTTP connections / SDK resources
+	// associated with the client. Safe to call multiple times.
+	// Boot paths that fail partway through a multi-component init
+	// rely on this to avoid leaking idle file descriptors.
+	Close() error
 }
 
 // Config carries the connection settings shared by every Client

@@ -78,6 +78,37 @@ func NewS3(ctx context.Context, cfg Config) (*S3Client, error) {
 	}, nil
 }
 
+// Ping verifies the configured bucket is reachable and the credentials
+// can read its metadata. Lightweight HEAD — no list, no read. Returns
+// the wrapped SDK error on failure.
+func (c *S3Client) Ping(ctx context.Context) error {
+	_, err := c.client.HeadBucket(ctx, &s3.HeadBucketInput{
+		Bucket: aws.String(c.bucket),
+	})
+	if err != nil {
+		return fmt.Errorf("blob: head bucket %s: %w", c.bucket, err)
+	}
+	return nil
+}
+
+// Close releases idle connections held by the underlying HTTP client.
+// AWS SDK v2 has no explicit client lifecycle, but each session keeps
+// a connection pool that survives until process exit unless we close
+// idle connections explicitly. Used by boot paths that need to clean
+// up on partial-init failure.
+func (c *S3Client) Close() error {
+	if c == nil || c.client == nil {
+		return nil
+	}
+	type idleConnCloser interface {
+		CloseIdleConnections()
+	}
+	if hc, ok := c.client.Options().HTTPClient.(idleConnCloser); ok {
+		hc.CloseIdleConnections()
+	}
+	return nil
+}
+
 // PutArtifact uploads body under the canonical artifact key. The
 // upload is idempotent — re-PUTting the same (run, node, version)
 // overwrites with byte-identical content per ArtifactKey contract.
@@ -161,20 +192,33 @@ func (c *S3Client) ListArtifactVersions(ctx context.Context, runID, nodeID strin
 
 // DeleteRun sweeps every artifact under artifacts/<runID>/. We page
 // through the list and batch-delete in chunks of 1000 (the S3
-// DeleteObjects ceiling). Best-effort: a single page failure logs and
-// continues so retention pressure doesn't pile up because of one
-// transient error.
+// DeleteObjects ceiling). Best-effort: page list AND delete failures
+// are accumulated rather than aborting the sweep — a single transient
+// blip would otherwise leave thousands of orphaned objects.
+//
+// Returns the joined error if anything failed (callers can errors.Is
+// against ctx.Err to distinguish cancellation from backend errors).
+// Returns nil only when every page listed and every delete batch
+// succeeded.
 func (c *S3Client) DeleteRun(ctx context.Context, runID string) error {
 	prefix := fmt.Sprintf("artifacts/%s/", runID)
 
+	var collected []error
 	pager := s3.NewListObjectsV2Paginator(c.client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(c.bucket),
 		Prefix: aws.String(prefix),
 	})
 	for pager.HasMorePages() {
+		// Honour cancellation eagerly so a SIGTERM doesn't try to
+		// drain the entire prefix.
+		if err := ctx.Err(); err != nil {
+			collected = append(collected, err)
+			break
+		}
 		page, err := pager.NextPage(ctx)
 		if err != nil {
-			return fmt.Errorf("blob: list %s for delete: %w", prefix, err)
+			collected = append(collected, fmt.Errorf("blob: list %s page: %w", prefix, err))
+			continue
 		}
 		if len(page.Contents) == 0 {
 			continue
@@ -189,13 +233,15 @@ func (c *S3Client) DeleteRun(ctx context.Context, runID string) error {
 		if len(ids) == 0 {
 			continue
 		}
-		_, err = c.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+		if _, err := c.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
 			Bucket: aws.String(c.bucket),
 			Delete: &types.Delete{Objects: ids, Quiet: aws.Bool(true)},
-		})
-		if err != nil {
-			return fmt.Errorf("blob: delete page under %s: %w", prefix, err)
+		}); err != nil {
+			collected = append(collected, fmt.Errorf("blob: delete page under %s: %w", prefix, err))
 		}
+	}
+	if len(collected) > 0 {
+		return errors.Join(collected...)
 	}
 	return nil
 }
