@@ -14,6 +14,8 @@ import (
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
+	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/runview/eventstream"
 	"github.com/SocialGouv/iterion/pkg/server"
 	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"github.com/SocialGouv/iterion/pkg/store/blob"
@@ -154,12 +156,19 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("server: build cloud publisher: %w", err)
 	}
 
+	// Mongo change-stream event source so the WS handler streams
+	// runner-pod events (the local broker would only see this
+	// process's writes). Plan §F (T-21, T-22).
+	mongoSource := eventstream.NewMongo(st.EventsCollection(), logger)
+	eventSrc := runview.NewEventSourceAdapter(mongoSource)
+
 	srv := server.New(server.Config{
 		Port:            serverOpts.port,
 		Bind:            serverOpts.bind,
 		WorkDir:         serverOpts.dir,
 		Store:           st,
 		LaunchPublisher: pub,
+		EventSource:     eventSrc,
 	}, logger)
 
 	// Prometheus metrics on a dedicated port (plan §F T-40). Bound

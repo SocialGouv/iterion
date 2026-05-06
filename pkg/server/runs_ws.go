@@ -217,10 +217,15 @@ func (c *runConn) handleSubscribe(env runWSEnvelope) {
 		c.sendAck(env.AckID)
 		return
 	}
-	// Register the broker subscription BEFORE replaying disk events so
-	// any event written during replay lands on the channel and is
-	// drained after the historical tail (deduped by seq).
-	c.sub = c.server.runs.Broker().Subscribe(c.runID)
+	// In cloud mode (Mongo change-stream source wired) we skip the
+	// in-process broker entirely — the Mongo source handles both
+	// historical replay and live tail in a single Subscribe call,
+	// and the broker only sees this process's writes anyway. In
+	// local mode we keep the broker so multi-WS clients on the same
+	// process share the same fan-out cursor.
+	if !c.server.runs.HasEventSource() {
+		c.sub = c.server.runs.Broker().Subscribe(c.runID)
+	}
 	c.subscribed = true
 	c.mu.Unlock()
 
@@ -234,18 +239,31 @@ func (c *runConn) handleSubscribe(env runWSEnvelope) {
 	go c.streamEvents(req.FromSeq, snap.LastSeq)
 }
 
-// streamEvents replays disk events with seq >= fromSeq up to
-// snapshotSeq, then drains the live channel. Events arriving on the
-// channel during replay are deduped by Seq vs the disk tail.
+// streamEvents replays historical events then tails the live source.
+// Two implementations behind the same WS contract:
 //
-// snapshotSeq == NoEventsSeq means the run had no events at snapshot
-// time; in that case we suppress nothing on the live channel — the
-// broker only delivers events Publish'd after Subscribe registered,
-// so the first live event is always genuinely new.
+//   - local broker mode: replay via store.LoadEvents(fromSeq, snap+1),
+//     then drain the in-process EventBroker channel until the run
+//     terminates (channel closes).
+//   - cloud event-source mode: a single eventstream.Source subscription
+//     handles both phases — the source emits historical first, then
+//     transitions to a Mongo change-stream tail, with no boundary
+//     dedup needed (the source itself avoids the gap).
+//
+// Plan §F (T-21).
 func (c *runConn) streamEvents(fromSeq, snapshotSeq int64) {
+	if c.server.runs.HasEventSource() {
+		c.streamEventsCloud(fromSeq)
+		return
+	}
+	c.streamEventsLocal(fromSeq, snapshotSeq)
+}
+
+// streamEventsLocal is the original broker-backed path: replay disk
+// events [fromSeq, snapshotSeq+1) then drain the broker channel,
+// dedup'ing against the replay window.
+func (c *runConn) streamEventsLocal(fromSeq, snapshotSeq int64) {
 	if snapshotSeq != runview.NoEventsSeq && (fromSeq > 0 || snapshotSeq > 0) {
-		// Replay events the client hasn't seen yet that are already
-		// on disk: [fromSeq, snapshotSeq+1).
 		events, err := c.server.runs.LoadEvents(c.runID, fromSeq, snapshotSeq+1)
 		if err == nil {
 			for _, ev := range events {
@@ -272,14 +290,60 @@ func (c *runConn) streamEvents(fromSeq, snapshotSeq int64) {
 				c.sendEnvelope(wsTypeTerminated, map[string]string{"run_id": c.runID}, "")
 				return
 			}
-			// Dedup against the disk replay window. NoEventsSeq means
-			// the snapshot reflected nothing, so every live event is
-			// new; suppress only when snapshotSeq is real.
 			if snapshotSeq != runview.NoEventsSeq && ev.Seq <= snapshotSeq {
 				continue
 			}
 			if !c.sendEnvelope(wsTypeEvent, ev, "") {
 				return
+			}
+		}
+	}
+}
+
+// streamEventsCloud subscribes to the Mongo change-stream source. The
+// source emits historical replay events (seq >= fromSeq) followed by
+// live ones from the change stream; no dedup or boundary tracking is
+// needed on this side — the source guarantees no gaps and no
+// duplicates. The subscription's Errors channel is drained but not
+// fatal: a transient change-stream blip is logged and the WS stays
+// open until c.closed fires.
+func (c *runConn) streamEventsCloud(fromSeq int64) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Tear the source subscription down when the WS closes.
+	go func() {
+		<-c.closed
+		cancel()
+	}()
+
+	sub, err := c.server.runs.SubscribeEventStream(ctx, c.runID, fromSeq)
+	if err != nil {
+		c.sendError("event_stream_failed", err.Error(), "")
+		return
+	}
+	defer func() { _ = sub.Close() }()
+
+	events := sub.Events()
+	errs := sub.Errors()
+	for {
+		select {
+		case <-c.closed:
+			return
+		case ev, ok := <-events:
+			if !ok {
+				c.sendEnvelope(wsTypeTerminated, map[string]string{"run_id": c.runID}, "")
+				return
+			}
+			if !c.sendEnvelope(wsTypeEvent, ev, "") {
+				return
+			}
+		case err, ok := <-errs:
+			if !ok {
+				continue
+			}
+			if c.server.logger != nil {
+				c.server.logger.Warn("server: ws event stream %s: %v", c.runID, err)
 			}
 		}
 	}

@@ -170,6 +170,27 @@ type Service struct {
 	// honour a caller-supplied store. nil → fall back to the
 	// filesystem auto-discovery path (local mode).
 	injectedStore store.RunStore
+
+	// eventSource, when non-nil, replaces the in-process EventBroker
+	// for live + historical event delivery. Cloud mode injects an
+	// eventstream.MongoSource via WithEventSource so the WS handler
+	// streams from change streams instead of relying on the local
+	// broker (which only sees this process's writes). Plan §F (T-21).
+	eventSource EventStreamSource
+}
+
+// EventStreamSource is the small subset of pkg/runview/eventstream.Source
+// the WS handler needs. Defined locally to avoid an import cycle —
+// the eventstream package can't depend back on runview.
+type EventStreamSource interface {
+	Subscribe(ctx context.Context, runID string, fromSeq int64) (EventStreamSubscription, error)
+}
+
+// EventStreamSubscription mirrors eventstream.Subscription's surface.
+type EventStreamSubscription interface {
+	Events() <-chan *store.Event
+	Errors() <-chan error
+	Close() error
 }
 
 // ServiceOption configures a Service at construction time.
@@ -908,6 +929,31 @@ func WithLaunchPublisher(p LaunchPublisher) ServiceOption {
 // (T-19, T-30).
 func WithStore(s store.RunStore) ServiceOption {
 	return func(svc *Service) { svc.injectedStore = s }
+}
+
+// WithEventSource installs an alternative event source (typically
+// eventstream.MongoSource) so the WS handler streams from change
+// streams instead of the in-process EventBroker. The argument must
+// satisfy the EventStreamSource interface — a thin shape over
+// pkg/runview/eventstream/Source. Plan §F (T-21).
+func WithEventSource(s EventStreamSource) ServiceOption {
+	return func(svc *Service) { svc.eventSource = s }
+}
+
+// HasEventSource reports whether an alternative event source has
+// been wired (i.e. cloud mode). The WS handler keys its branch
+// selection on this. Returns false for the default broker path.
+func (s *Service) HasEventSource() bool { return s.eventSource != nil }
+
+// SubscribeEventStream opens an eventstream.Source subscription
+// when one is installed. Returns nil + a typed error when the
+// service is in local broker mode — callers branch on HasEventSource
+// before calling this.
+func (s *Service) SubscribeEventStream(ctx context.Context, runID string, fromSeq int64) (EventStreamSubscription, error) {
+	if s.eventSource == nil {
+		return nil, errors.New("runview: no event source wired (local broker mode)")
+	}
+	return s.eventSource.Subscribe(ctx, runID, fromSeq)
 }
 
 // Launch starts a workflow asynchronously and returns once the run

@@ -59,6 +59,12 @@ type Config struct {
 	// runtime in-process. Used by `iterion server` in cloud mode
 	// (T-31, T-32, T-33).
 	LaunchPublisher runview.LaunchPublisher
+
+	// EventSource, when non-nil, replaces the in-process EventBroker
+	// for live + historical WS event delivery. Cloud mode wires a
+	// Mongo change-stream source so the WS handler sees runner-pod
+	// writes. Plan §F (T-21).
+	EventSource runview.EventStreamSource
 }
 
 // Server is the editor HTTP server.
@@ -130,6 +136,9 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		}
 		if cfg.LaunchPublisher != nil {
 			opts = append(opts, runview.WithLaunchPublisher(cfg.LaunchPublisher))
+		}
+		if cfg.EventSource != nil {
+			opts = append(opts, runview.WithEventSource(cfg.EventSource))
 		}
 		svc, svcErr := runview.NewService("", opts...)
 		if svcErr != nil {
