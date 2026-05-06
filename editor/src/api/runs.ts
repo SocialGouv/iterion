@@ -331,9 +331,17 @@ export interface RunFile {
 // Mirror of server.runFilesResponse. `available` is the gate: when
 // false, `reason` is one of "no_workdir" | "not_git_repo" and the
 // editor renders an empty-state instead of a file list.
+//
+// `live` distinguishes the source: true when files come from a
+// still-existing worktree (`git status --porcelain`, uncommitted
+// state), false when from `git diff BaseCommit..FinalCommit` after
+// the worktree was torn down (every entry is committed). The panel
+// labels itself accordingly so M/A/D badges over committed files
+// don't misread as uncommitted modifications.
 export interface RunFiles {
   work_dir?: string;
   worktree?: boolean;
+  live?: boolean;
   files: RunFile[];
   available: boolean;
   reason?: "no_workdir" | "not_git_repo" | string;

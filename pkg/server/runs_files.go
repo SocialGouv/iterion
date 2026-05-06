@@ -14,9 +14,22 @@ import (
 // panel: a falsy value paired with a `reason` lets the UI render a
 // neutral empty state ("Not a git repository", "No working directory")
 // rather than treating absence as an error.
+//
+// `Live` distinguishes the two source-of-truth modes: true when the file
+// list comes from `git status --porcelain` against a still-existing
+// worktree (uncommitted state), false when it comes from the historical
+// `git diff BaseCommit..FinalCommit` after the worktree has been torn
+// down (every entry is already committed on the storage branch). The
+// editor uses this to label the panel correctly — without it, M/A/D
+// badges over committed files read as "uncommitted modifications" and
+// confuse the merge story.
 type runFilesResponse struct {
-	WorkDir   string              `json:"work_dir,omitempty"`
-	Worktree  bool                `json:"worktree,omitempty"`
+	WorkDir  string `json:"work_dir,omitempty"`
+	Worktree bool   `json:"worktree,omitempty"`
+	// Live is always serialized (no omitempty): the frontend
+	// distinguishes "field absent → legacy backend" from "field present
+	// and false → historical-diff mode" to pick the right footer label.
+	Live      bool                `json:"live"`
 	Files     []gitlib.FileStatus `json:"files"`
 	Available bool                `json:"available"`
 	Reason    string              `json:"reason,omitempty"`
@@ -69,6 +82,7 @@ func (s *Server) handleListRunFiles(w http.ResponseWriter, r *http.Request) {
 			s.writeJSONFor(w, r, runFilesResponse{
 				WorkDir:   run.WorkDir,
 				Worktree:  run.Worktree,
+				Live:      true,
 				Files:     files,
 				Available: true,
 			})
@@ -89,6 +103,7 @@ func (s *Server) handleListRunFiles(w http.ResponseWriter, r *http.Request) {
 		s.writeJSONFor(w, r, runFilesResponse{
 			WorkDir:   run.WorkDir,
 			Worktree:  run.Worktree,
+			Live:      false,
 			Files:     files,
 			Available: true,
 		})
@@ -193,6 +208,14 @@ func (s *Server) historicalRefs(run *store.Run) (base, final, repo string, ok bo
 	}
 	final = run.FinalCommit
 	repo = run.RepoRoot
+	// Persisted RepoRoot can refer to a path that no longer resolves
+	// locally — common when the run record was rsync'd between a host
+	// and a devcontainer, or the user moved the repo. Demote it to "" so
+	// the fallbacks below get a chance instead of failing with
+	// ErrNotGitRepo on a stale absolute path.
+	if repo != "" && gitlib.FindRepoRoot(repo) != repo {
+		repo = ""
+	}
 	if repo == "" {
 		// Walk up from work_dir; works when run was launched from a
 		// `<repo>/.iterion/worktrees/<id>` layout that still exists locally.

@@ -73,11 +73,8 @@ export default function FilesPanel({ runId, onSelectFile }: FilesPanelProps) {
       </div>
       {data?.work_dir && (
         <footer className="border-t border-border-default px-2 py-1 text-[10px] text-fg-subtle truncate">
-          <Tooltip content={data.work_dir}>
-            <span className="truncate block">
-              {data.worktree ? "worktree: " : "cwd: "}
-              {basename(data.work_dir)}
-            </span>
+          <Tooltip content={footerTooltip(data)}>
+            <span className="truncate block">{footerLabel(data)}</span>
           </Tooltip>
         </footer>
       )}
@@ -158,6 +155,37 @@ function reasonLabel(reason: string | undefined): string {
     default:
       return reason ?? "Files unavailable";
   }
+}
+
+// footerLabel disambiguates the two source-of-truth modes:
+// - live=true → files come from `git status` against a still-existing
+//   worktree/cwd. Badges are uncommitted state.
+// - live=false → files come from `git diff base..final` against the
+//   storage branch (worktree gc'd). Badges are committed-in-this-run.
+//
+// Defaults to live=true for legacy responses missing the field, so
+// pre-feature backends keep their original wording.
+function footerLabel(data: { worktree?: boolean; live?: boolean; work_dir?: string }): string {
+  const live = data.live !== false;
+  const where = data.worktree ? "worktree" : "cwd";
+  if (live) {
+    return `Working tree (${where}): ${basename(data.work_dir ?? "")}`;
+  }
+  return "Committed in this run";
+}
+
+function footerTooltip(data: {
+  worktree?: boolean;
+  live?: boolean;
+  work_dir?: string;
+}): string {
+  const live = data.live !== false;
+  if (live) {
+    return data.work_dir ?? "";
+  }
+  return `Files committed by this run, diffed against the run's base commit. The worktree at ${
+    data.work_dir ?? "<unknown>"
+  } has been cleaned up; the storage branch is the source of truth.`;
 }
 
 function basename(path: string): string {
