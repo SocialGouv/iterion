@@ -54,6 +54,9 @@ func open(ctx context.Context, cfg store.OpenConfig) (store.RunStore, error) {
 		Blob:          bc,
 	})
 	if err != nil {
+		// Mongo init failed: drain the blob client's connection pool
+		// so we don't leak idle file descriptors on crash-loop boots.
+		_ = bc.Close()
 		return nil, err
 	}
 	return ms, nil
