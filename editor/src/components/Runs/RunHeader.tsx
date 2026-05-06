@@ -19,13 +19,23 @@ export default function RunHeader({ run, active, wsState }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [resumeOpen, setResumeOpen] = useState(false);
 
-  // canCancel includes "queued" so cloud-mode runs sitting on the NATS
-  // queue can be aborted before a runner picks them up. The "active"
-  // flag is only meaningful for in-process runs (local mode); a queued
-  // run is never "active" in this server's process. See cloud-ready
-  // plan §F (T-14).
+  // canCancel covers every state where a cancel is meaningful:
+  //   - running:               abort an in-flight execution (local mode
+  //                            additionally requires the engine to be
+  //                            "active" in this server's process).
+  //   - paused_waiting_human:  user gives up on the workflow without
+  //                            answering — engine drops the goroutine
+  //                            and the run terminates.
+  //   - queued:                cloud-mode run on the NATS queue;
+  //                            cancel removes the message before any
+  //                            runner picks it up.
+  // The "active" flag is only meaningful for in-process running runs
+  // (local mode); cloud and paused/queued runs are never "active" in
+  // this server's process. See cloud-ready plan §F (T-14).
   const canCancel =
-    (run.status === "running" && active) || run.status === "queued";
+    (run.status === "running" && active) ||
+    run.status === "paused_waiting_human" ||
+    run.status === "queued";
   // Resume from header is a "best-effort" trigger — for paused_waiting_human
   // runs the user normally fills the Pause form in the detail panel
   // (Phase 5). The header button stays for failed_resumable / cancelled

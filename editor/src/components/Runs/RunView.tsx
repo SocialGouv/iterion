@@ -19,6 +19,7 @@ import EventLog from "./EventLog";
 import FileDiffDialog from "./FileDiffDialog";
 import LeftPanel from "./LeftPanel";
 import NodeDetailPanel from "./NodeDetailPanel";
+import QueuedBanner from "./QueuedBanner";
 import RunCanvasIR, { defaultIterationFor } from "./RunCanvasIR";
 import RunHeader from "./RunHeader";
 import RunLogPanel from "./RunLogPanel";
@@ -284,18 +285,31 @@ export default function RunView() {
   const liveSeq = snapshot.last_seq;
   const scrubbing = scrubSeq !== null;
 
+  // Pre-pickup state: the run sits on the NATS queue. RunMetrics and
+  // Scrubber render nothing useful (no events yet, no budget consumed),
+  // so we swap them for the QueuedBanner that surfaces position and
+  // exposes a cancel button. The IR canvas stays mounted underneath so
+  // the workflow shape is still visible. See cloud-ready plan §F (T-15).
+  const isQueued = snapshot.run.status === "queued";
+
   return (
     <ReactFlowProvider>
       <div className="h-screen w-screen overflow-hidden flex flex-col bg-surface-0 text-fg-default">
         <RunHeader run={snapshot.run} active={active} wsState={wsState} />
-        <RunMetrics active={active} onJumpToFailed={handleJumpToFailed} />
-        <Scrubber
-          events={events}
-          liveSeq={liveSeq}
-          scrubSeq={scrubSeq}
-          onChange={setScrubSeq}
-          visible={liveSeq > 0}
-        />
+        {isQueued ? (
+          <QueuedBanner run={snapshot.run} />
+        ) : (
+          <>
+            <RunMetrics active={active} onJumpToFailed={handleJumpToFailed} />
+            <Scrubber
+              events={events}
+              liveSeq={liveSeq}
+              scrubSeq={scrubSeq}
+              onChange={setScrubSeq}
+              visible={liveSeq > 0}
+            />
+          </>
+        )}
       <div className="flex-1 min-h-0 flex">
         <LeftPanel
           runId={runId}

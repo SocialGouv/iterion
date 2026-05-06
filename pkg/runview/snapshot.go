@@ -100,6 +100,12 @@ type RunHeader struct {
 	// (now - CurrentRunStart) to ActiveDurationMs to drive the live
 	// timer and freezes the value once this clears.
 	CurrentRunStart *time.Time `json:"current_run_start,omitempty"`
+	// QueuePosition is the 1-based position of a queued cloud run on
+	// the NATS queue. Populated only while Status == "queued"; absent
+	// otherwise. Computed server-side (Mongo aggregation in T-17/T-31).
+	// The editor's QueuedBanner uses it to render the "3rd in queue"
+	// copy. See cloud-ready plan §F (T-03, T-15, T-31).
+	QueuePosition int `json:"queue_position,omitempty"`
 }
 
 // RunSnapshot is the structured view returned by GET /api/runs/{id} and

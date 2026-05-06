@@ -4,6 +4,7 @@ import { useLocation } from "wouter";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { listRuns, type RunStatus, type RunSummary } from "@/api/runs";
 import { formatRelative } from "@/lib/format";
+import QueueDepthBar from "./QueueDepthBar";
 
 const POLL_INTERVAL_FAST_MS = 3000;
 const POLL_INTERVAL_SLOW_MS = 8000;
@@ -102,6 +103,8 @@ export default function RunListView() {
           Back to editor
         </button>
       </header>
+
+      <QueueDepthBar counts={counts} />
 
       <div className="px-4 py-2 flex flex-wrap items-center gap-1.5 border-b border-border-default">
         {STATUS_FILTERS.map((f) => {

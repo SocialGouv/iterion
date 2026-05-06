@@ -124,6 +124,10 @@ export interface RunHeader {
   // (now - current_run_start) to active_duration_ms for the live
   // ticker and freezes the value once this clears.
   current_run_start?: string;
+  // Cloud-only: 1-based queue position when status === "queued".
+  // Computed server-side; the QueuedBanner uses it to render the
+  // "3rd in queue" copy. See cloud-ready plan §F (T-03, T-15, T-31).
+  queue_position?: number;
 }
 
 // Mirror of runview.RunSnapshot.
