@@ -255,7 +255,7 @@ to do with any partial commits.
 ## Building the desktop app
 
 The Wails desktop wrapper (`cmd/iterion-desktop/`) has its own pipeline
-documented in [docs/desktop_build.md](docs/desktop_build.md). Things the
+documented in [docs/desktop-build.md](docs/desktop-build.md). Things the
 default mental model won't surface:
 
 - `wails.json` lives at `cmd/iterion-desktop/wails.json` (not at repo

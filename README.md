@@ -11,11 +11,13 @@ Define complex, multi-agent LLM workflows as readable `.iter` files — chain ag
 ## Table of Contents
 
 - [What is Iterion?](#what-is-iterion)
+- [Four ways to use Iterion](#four-ways-to-use-iterion)
 - [Quickstart](#quickstart)
 - [A Taste of the DSL](#a-taste-of-the-dsl)
 - [Features](#features)
-- [Visual Editor](#visual-editor)
+- [Visual Editor (web)](#visual-editor-web)
 - [Desktop App](#desktop-app)
+- [Cloud Mode](#cloud-mode)
 - [The `.iter` DSL](#the-iter-dsl)
   - [Variables](#variables)
   - [Prompts](#prompts)
@@ -58,9 +60,24 @@ Think of it as a DAG runner purpose-built for LLM workflows — with first-class
 
 ---
 
+## 🎛️ Four ways to use Iterion
+
+Same engine, four delivery modes — pick the one that fits your workflow:
+
+| Mode | Best for | How to start |
+|---|---|---|
+| 🖥️ **CLI** | Scripted runs, CI/CD pipelines, quick iteration | `iterion run workflow.iter` |
+| 🌐 **Web editor** | Visual workflow design on your dev machine | `iterion editor` (opens browser) |
+| 🪟 **Desktop app** | Native window with multi-project, OS keychain, auto-update | Download `iterion-desktop` from Releases |
+| ☁️ **Cloud / server** | Multi-tenant deployment, shared run store, REST/WS API | Helm chart in `helm/iterion/` |
+
+All four invoke the same Go core. The DSL, runtime, persistence and observability are identical — they only differ in how you reach them. Pick CLI for automation, the visual editor for daily editing, the desktop app if you want a one-click install with managed credentials, or cloud mode when teams need a shared, always-on instance.
+
+---
+
 ## 🚀 Quickstart
 
-### Install
+### Install the CLI
 
 ```bash
 curl -fsSL https://socialgouv.github.io/iterion/install.sh | sh
@@ -82,6 +99,8 @@ Invoke-WebRequest -Uri "https://github.com/socialgouv/iterion/releases/latest/do
 </details>
 
 You can also download binaries from the [latest release](https://github.com/socialgouv/iterion/releases/latest). Builds are available for Linux, macOS (Intel + Apple Silicon), and Windows.
+
+> **Want a native window instead of a CLI + browser?** Skip to [Desktop App](#desktop-app) — it ships an installable `.AppImage` / `.app` / `.exe` with the editor pre-wired, OS-keychain credentials and auto-update.
 
 ### Your first workflow
 
@@ -186,12 +205,12 @@ From here you can add judges for multi-pass review, routers for parallel fan-out
 
 ---
 
-## 🖥️ Visual Editor
+## 🌐 Visual Editor (web)
 
-Iterion includes a browser-based visual workflow editor built with React and XYFlow.
+Iterion includes a browser-based visual workflow editor built with React and XYFlow. Served by your local `iterion` binary — no installation beyond the CLI.
 
 ```bash
-iterion editor                     # Launch on default port (4891)
+iterion editor                     # Launch on default port (4891), opens browser
 iterion editor --port 8080         # Custom port
 iterion editor --dir ./workflows   # Custom working directory
 iterion editor --no-browser        # Don't auto-open browser
@@ -206,24 +225,110 @@ iterion editor --no-browser        # Don't auto-open browser
 - **Live diagnostics** — Real-time validation errors and warnings as you edit (codes C001–C029)
 - **File watching** — Detects external file changes via WebSocket and syncs automatically
 - **Undo/redo** — Full edit history
+- **Run console** — Launch a workflow from the editor and watch events stream live
+
+This mode is the simplest way to design and iterate locally. If you want a packaged native window instead (no browser, OS-keychain credentials, auto-update), see the [Desktop App](#desktop-app).
 
 ---
 
 ## 🪟 Desktop App
 
-A native desktop build (Wails v2) wraps the visual editor in a real
-window with multi-project switching, OS-keychain credential storage,
-first-run onboarding, and Ed25519-signed auto-update. Two binaries ship
-side-by-side: `iterion` (the CLI you've been reading about) and
-`iterion-desktop`.
+A native desktop build (Wails v2) wraps the visual editor in its own window with multi-project switching, OS-keychain credential storage, first-run onboarding, and Ed25519-signed auto-update. Two binaries ship side-by-side: `iterion` (CLI) and `iterion-desktop` (this app).
 
-- Download from [GitHub Releases](https://github.com/SocialGouv/iterion/releases) (look for `iterion-desktop-*`).
-- Build locally: see [`docs/desktop-build.md`](docs/desktop-build.md).
-- Architecture: see [`docs/desktop-architecture.md`](docs/desktop-architecture.md).
-- Distribution / signing setup: see [`docs/desktop-distribution.md`](docs/desktop-distribution.md).
+### Install
 
-V1 binaries are unsigned; the OS will warn on first launch (right-click
-→ Open on macOS, "More info → Run anyway" on Windows).
+Pick the artefact that matches your OS from [the latest GitHub Release](https://github.com/SocialGouv/iterion/releases/latest) (filenames start with `iterion-desktop-`). Each tag publishes:
+
+| Platform | File | Size | Notes |
+|---|---|---|---|
+| Linux x86_64 | `iterion-desktop-linux-amd64.AppImage` | ~110 MB | Self-contained, click-to-run |
+| Linux x86_64 | `iterion-desktop-linux-amd64.tar.gz` | ~16 MB | Raw binary + README; needs `libwebkit2gtk-4.1-0` + `libgtk-3-0` + `libsoup-3.0-0` |
+| Linux arm64 | `iterion-desktop-linux-arm64.{AppImage,tar.gz}` | same | same |
+| macOS Intel + Apple Silicon | `iterion-desktop-darwin-universal.zip` | ~80 MB | Universal `.app` (lipo'd, runs natively on both archs) |
+| Windows x64 | `iterion-desktop-windows-amd64.exe` | ~50 MB | Portable single executable |
+| Windows x64 | `iterion-desktop-windows-amd64-installer.exe` | ~50 MB | NSIS installer (per-user, Start Menu integration) |
+| Windows arm64 | `iterion-desktop-windows-arm64.{exe,-installer.exe}` | same | same |
+
+#### Linux
+
+**AppImage** (no system deps):
+```bash
+chmod +x iterion-desktop-linux-amd64.AppImage
+./iterion-desktop-linux-amd64.AppImage
+```
+
+**Raw binary** (smaller, requires WebKit + GTK runtime):
+```bash
+# Debian/Ubuntu/Mint/Pop!_OS:
+sudo apt install libgtk-3-0 libwebkit2gtk-4.1-0 libsoup-3.0-0
+# Fedora/RHEL:
+sudo dnf install gtk3 webkit2gtk4.1 libsoup3
+
+tar -xzf iterion-desktop-linux-amd64.tar.gz
+chmod +x iterion-desktop
+./iterion-desktop
+```
+
+#### macOS
+
+```bash
+unzip iterion-desktop-darwin-universal.zip
+xattr -d com.apple.quarantine Iterion.app   # one-off Gatekeeper unblock (V1 builds are unsigned)
+open Iterion.app
+```
+
+You can also drag `Iterion.app` to `/Applications/` for a permanent install.
+
+#### Windows
+
+- **Portable** : double-click `iterion-desktop-windows-amd64.exe`. SmartScreen will warn ("Unknown publisher" — V1 is unsigned) → "More info" → "Run anyway".
+- **Installer** : run `iterion-desktop-windows-amd64-installer.exe` for a per-user install with Start Menu shortcut.
+
+### First launch
+
+The desktop app boots into a Welcome wizard that asks you to:
+1. Pick or create a project folder (a directory containing `.iter` files).
+2. Configure API keys (stored in the OS keychain — Keychain on macOS, Credential Manager on Windows, Secret Service on Linux). Skippable; you can also rely on environment variables in your shell.
+3. Verify external CLIs (`claude`, `codex`) detection — only needed if you use `delegate:` in your workflows.
+
+After onboarding the editor opens on your project. Multi-project switcher is in the top-left.
+
+### Auto-update
+
+The desktop app polls GitHub for new releases every 4 hours (configurable in Settings → Updater) and offers in-app update on detection. Manifests and artefacts are Ed25519-signed.
+
+### Build locally
+
+For contributors / power users :
+
+- [docs/desktop-build.md](docs/desktop-build.md) — local build flow + Docker reproducible builder + per-OS deps + cross-compile matrix
+- [docs/desktop-architecture.md](docs/desktop-architecture.md) — proxy-based AssetServer architecture
+- [docs/desktop-distribution.md](docs/desktop-distribution.md) — release signing + Ed25519 keypair setup
+- [docs/desktop-qa.md](docs/desktop-qa.md) — QA checklist for releases
+
+---
+
+## ☁️ Cloud Mode
+
+A long-running server deployment that targets multi-tenant teams. Same Go core as the CLI, but exposes the editor + run engine through HTTP/WS to a shared instance, persists runs to a Mongo + S3-compatible blob store, and (optionally) dispatches jobs to a runner pool via NATS.
+
+```yaml
+# helm/iterion/values.yaml — minimal example
+mongo:
+  uri: "mongodb://mongo:27017/iterion"
+blob:
+  endpoint: "https://s3.example.com"
+  bucket: "iterion-runs"
+queue:
+  nats: "nats://nats:4222"
+```
+
+- Deploy with `helm upgrade --install iterion helm/iterion -f values.yaml`.
+- Local cloud-mode test stack: `task cloud:up` brings up Mongo + NATS + MinIO + iterion via docker-compose.
+- Container image: `ghcr.io/socialgouv/iterion:latest` (built by `.github/workflows/image.yml` on every main push and tag).
+- Health probes: `GET /healthz` (always 200, liveness) and `GET /readyz` (200 when local-mode dependencies pass).
+
+This mode is still actively evolving. The CLI/web/desktop modes write run state to the local filesystem (`.iterion/`); cloud mode threads the same store interface to MongoDB + S3 + NATS so multiple workers can share state.
 
 ---
 
