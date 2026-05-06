@@ -102,7 +102,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	//    add the IRRef fallback for oversized workflows. The
 	//    runner side re-parses + re-compiles, so the wire payload
 	//    is the AST File, not the compiled IR.
-	body, err := marshalIRFromFile(spec.FilePath)
+	body, err := marshalIRFromSpec(spec.FilePath, spec.Source)
 	if err != nil {
 		return 0, err
 	}
@@ -163,14 +163,27 @@ func (p *Publisher) CancelRun(ctx context.Context, runID string) error {
 // SubmitResume republishes a RunMessage with ResumeSpec set. The
 // runner picks it up and dispatches to engine.Resume which threads
 // the answers in.
+//
+// On publish failure the run is reverted to failed_resumable so the
+// editor surfaces an actionable error instead of leaving a "queued"
+// row that no runner will ever pick up. Mirrors the rollback pattern
+// in SubmitLaunch.
 func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, wf *ir.Workflow, hash string) error {
-	body, err := marshalIRFromFile(spec.FilePath)
+	body, err := marshalIRFromSpec(spec.FilePath, spec.Source)
 	if err != nil {
 		return err
 	}
-	// Flip status back to queued so the runner doesn't short-circuit
-	// on the cooperative-cancel check + so the editor's QueueDepthBar
-	// reflects the in-flight resume.
+	// Capture the prior status so we can roll back to the right
+	// resumable state if publish fails — the user could be resuming
+	// from paused_waiting_human, failed_resumable, or cancelled.
+	prior, loadErr := p.store.LoadRun(ctx, spec.RunID)
+	if loadErr != nil {
+		return fmt.Errorf("cloudpublisher: load prior run %s: %w", spec.RunID, loadErr)
+	}
+	priorStatus := prior.Status
+	// Flip status to queued so the runner doesn't short-circuit on the
+	// cooperative-cancel check + so the editor's QueueDepthBar reflects
+	// the in-flight resume.
 	if err := p.store.UpdateRunStatus(ctx, spec.RunID, store.RunStatusQueued, ""); err != nil {
 		return fmt.Errorf("cloudpublisher: requeue %s: %w", spec.RunID, err)
 	}
@@ -188,6 +201,20 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	if _, err := p.nats.PublishRun(ctx, msg); err != nil {
+		// Revert to the prior resumable status — typically
+		// failed_resumable so the next user action is "Resume"
+		// again. Falling back to failed_resumable is conservative
+		// when the prior status wasn't itself resumable.
+		rollback := priorStatus
+		switch rollback {
+		case store.RunStatusPausedWaitingHuman, store.RunStatusFailedResumable, store.RunStatusCancelled:
+			// keep as-is
+		default:
+			rollback = store.RunStatusFailedResumable
+		}
+		if rbErr := p.store.UpdateRunStatus(ctx, spec.RunID, rollback, fmt.Sprintf("queue republish: %v", err)); rbErr != nil {
+			p.logger.Error("cloudpublisher: rollback %s after publish failure: %v", spec.RunID, rbErr)
+		}
 		return fmt.Errorf("cloudpublisher: republish: %w", err)
 	}
 	return nil
@@ -213,26 +240,38 @@ func (p *Publisher) queuePosition(ctx context.Context, runID string) (int, error
 	return int(count), nil
 }
 
-// marshalIRFromFile re-reads the .iter source and marshals its AST.
-// We don't ship the compiled ir.Workflow directly because Compile
-// is an in-memory transform with no stable wire format; AST.File is
-// the canonical serialisation surface (ast.MarshalFile/UnmarshalFile).
-func marshalIRFromFile(path string) (json.RawMessage, error) {
-	if path == "" {
-		return nil, fmt.Errorf("cloudpublisher: launch spec has no file_path; cannot serialise IR")
+// marshalIRFromSpec returns the AST.File bytes for the workflow.
+// Resolution order: inline `source` (preferred in cloud mode where
+// the editor SPA uploads source verbatim and the server pod has no
+// shared filesystem) → `path` on local disk (fallback for tests and
+// migration tooling). The runner re-parses + re-compiles, so the
+// wire payload is the AST File, not the compiled IR.
+func marshalIRFromSpec(path, source string) (json.RawMessage, error) {
+	var src string
+	parserPath := path
+	switch {
+	case source != "":
+		src = source
+		if parserPath == "" {
+			parserPath = "<inline>"
+		}
+	case path != "":
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("cloudpublisher: read %s: %w", path, err)
+		}
+		src = string(body)
+	default:
+		return nil, fmt.Errorf("cloudpublisher: launch spec has no source and no file_path; cannot serialise IR")
 	}
-	src, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("cloudpublisher: read %s: %w", path, err)
-	}
-	pr := parser.Parse(path, string(src))
+	pr := parser.Parse(parserPath, src)
 	for _, d := range pr.Diagnostics {
 		if d.Severity == parser.SeverityError {
-			return nil, fmt.Errorf("cloudpublisher: parse %s: %s", path, d.Error())
+			return nil, fmt.Errorf("cloudpublisher: parse %s: %s", parserPath, d.Error())
 		}
 	}
 	if pr.File == nil {
-		return nil, fmt.Errorf("cloudpublisher: empty AST for %s", path)
+		return nil, fmt.Errorf("cloudpublisher: empty AST for %s", parserPath)
 	}
 	body, err := ast.MarshalFile(pr.File)
 	if err != nil {

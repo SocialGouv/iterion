@@ -19,7 +19,7 @@ import (
 // MCP server resolution is finalised against the file's directory so
 // relative `command` paths in `mcp_server` blocks resolve correctly.
 func CompileWorkflow(path string) (*ir.Workflow, error) {
-	wf, _, err := compileWith(path, false)
+	wf, _, err := compileWith(path, "", false)
 	return wf, err
 }
 
@@ -30,13 +30,39 @@ func CompileWorkflow(path string) (*ir.Workflow, error) {
 // execution; CompileWorkflow is for static-only callers (validate,
 // diagram).
 func CompileWorkflowWithHash(path string) (*ir.Workflow, string, error) {
-	return compileWith(path, true)
+	return compileWith(path, "", true)
 }
 
-func compileWith(path string, withHash bool) (*ir.Workflow, string, error) {
-	src, err := os.ReadFile(path)
-	if err != nil {
-		return nil, "", fmt.Errorf("cannot read file: %w", err)
+// CompileWorkflowFromSource is the cloud-mode entry point: the .iter
+// content is supplied verbatim (uploaded by the editor SPA). Path is
+// retained as a logical label for diagnostics + MCP relative-path
+// resolution; when empty, MCP resolution falls back to the current
+// working directory.
+func CompileWorkflowFromSource(path, source string) (*ir.Workflow, string, error) {
+	return compileWith(path, source, true)
+}
+
+// compileForLaunch picks the right compile path for a Launch / Resume:
+// inline source when supplied, on-disk file otherwise. Used by the
+// cloud-mode publisher path so a missing FilePath isn't fatal as long
+// as the caller uploaded the source.
+func compileForLaunch(path, source string) (*ir.Workflow, string, error) {
+	if source != "" {
+		return CompileWorkflowFromSource(path, source)
+	}
+	return CompileWorkflowWithHash(path)
+}
+
+func compileWith(path, inline string, withHash bool) (*ir.Workflow, string, error) {
+	var src []byte
+	if inline != "" {
+		src = []byte(inline)
+	} else {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return nil, "", fmt.Errorf("cannot read file: %w", err)
+		}
+		src = body
 	}
 
 	hash := ""
@@ -45,14 +71,18 @@ func compileWith(path string, withHash bool) (*ir.Workflow, string, error) {
 		hash = hex.EncodeToString(sum[:])
 	}
 
-	pr := parser.Parse(path, string(src))
+	parserPath := path
+	if parserPath == "" {
+		parserPath = "<inline>"
+	}
+	pr := parser.Parse(parserPath, string(src))
 	for _, d := range pr.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			return nil, "", fmt.Errorf("parse error: %s", d.Error())
 		}
 	}
 	if pr.File == nil || len(pr.File.Workflows) == 0 {
-		return nil, "", fmt.Errorf("no workflow found in %s", path)
+		return nil, "", fmt.Errorf("no workflow found in %s", parserPath)
 	}
 
 	cr := ir.Compile(pr.File)
@@ -63,7 +93,11 @@ func compileWith(path string, withHash bool) (*ir.Workflow, string, error) {
 			}
 		}
 	}
-	if err := mcp.PrepareWorkflow(cr.Workflow, filepath.Dir(path)); err != nil {
+	mcpDir := "."
+	if path != "" {
+		mcpDir = filepath.Dir(path)
+	}
+	if err := mcp.PrepareWorkflow(cr.Workflow, mcpDir); err != nil {
 		return nil, "", err
 	}
 

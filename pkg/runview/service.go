@@ -26,10 +26,17 @@ import (
 // `iterion run` but framed as data so HTTP handlers (and any future
 // programmatic caller) construct it without going through cobra flags.
 type LaunchSpec struct {
-	FilePath string            // absolute .iter path; sandbox check is the caller's job
-	Vars     map[string]string // --var-style overrides
-	RunID    string            // optional explicit ID; auto-generated when empty
-	Timeout  time.Duration     // 0 disables
+	FilePath string // absolute .iter path; sandbox check is the caller's job
+	// Source carries the .iter source verbatim. Used by cloud-mode
+	// callers when the server pod has no local copy of the workflow
+	// (the editor SPA uploads the source inline). When non-empty it
+	// takes precedence over FilePath for parsing; FilePath is still
+	// retained for display and for the runner to recompile against
+	// the same logical workflow.
+	Source  string
+	Vars    map[string]string // --var-style overrides
+	RunID   string            // optional explicit ID; auto-generated when empty
+	Timeout time.Duration     // 0 disables
 	// MergeInto controls the worktree-finalization fast-forward target
 	// for `worktree: auto` runs. "" or "current" → FF the user's
 	// currently-checked-out branch (default); "none" → skip FF;
@@ -54,10 +61,14 @@ type LaunchSpec struct {
 // ResumeSpec describes a resume request.
 type ResumeSpec struct {
 	RunID    string
-	FilePath string                 // .iter file (loaded fresh; must match the run's WorkflowHash unless Force)
-	Answers  map[string]interface{} // answers for human nodes; ignored for failed_resumable
-	Force    bool                   // skip workflow hash check
-	Timeout  time.Duration          // 0 disables
+	FilePath string // .iter file (loaded fresh; must match the run's WorkflowHash unless Force)
+	// Source mirrors LaunchSpec.Source: cloud-mode callers can supply
+	// the .iter contents inline so the server pod does not need to
+	// resolve FilePath against a local filesystem.
+	Source  string
+	Answers map[string]interface{} // answers for human nodes; ignored for failed_resumable
+	Force   bool                   // skip workflow hash check
+	Timeout time.Duration          // 0 disables
 }
 
 // RunSummary is the lightweight per-row shape returned by List.
@@ -967,8 +978,8 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	if s.draining.Load() {
 		return nil, runtime.ErrServerDraining
 	}
-	if spec.FilePath == "" {
-		return nil, errors.New("runview: file_path is required")
+	if spec.FilePath == "" && spec.Source == "" {
+		return nil, errors.New("runview: file_path or source is required")
 	}
 	runID := spec.RunID
 	if runID == "" {
@@ -979,9 +990,12 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	// publisher persists the run in Mongo as queued + emits the
 	// RunMessage; the runner pod takes it from there. We compile
 	// the workflow here so the wire payload carries an inline IR
-	// (the runner currently doesn't support IRRef fallback).
+	// (the runner currently doesn't support IRRef fallback). When
+	// Source is supplied (cloud HTTP API) we compile from memory
+	// instead of reading from disk — the server pod has no shared
+	// filesystem with the client.
 	if s.publisher != nil {
-		wf, hash, err := CompileWorkflowWithHash(spec.FilePath)
+		wf, hash, err := compileForLaunch(spec.FilePath, spec.Source)
 		if err != nil {
 			return nil, err
 		}
@@ -1080,7 +1094,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// Plan §F (T-33). CAS protection on the Mongo checkpoint lives
 	// in MongoRunStore.SaveCheckpoint (CASVersion increment).
 	if s.publisher != nil {
-		wf, hash, err := CompileWorkflowWithHash(spec.FilePath)
+		wf, hash, err := compileForLaunch(spec.FilePath, spec.Source)
 		if err != nil {
 			return nil, err
 		}

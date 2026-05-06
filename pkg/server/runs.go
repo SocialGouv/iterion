@@ -41,9 +41,14 @@ func (s *Server) registerRunRoutes() {
 // --- Request / response shapes ---
 
 type launchRunRequest struct {
-	FilePath string            `json:"file_path"`
-	RunID    string            `json:"run_id,omitempty"`
-	Vars     map[string]string `json:"vars,omitempty"`
+	FilePath string `json:"file_path"`
+	// Source is the .iter contents uploaded inline. In cloud mode the
+	// editor SPA sends this so the server pod doesn't need a shared
+	// filesystem; FilePath is then advisory (used for display + as the
+	// AST parserPath). When both are set, Source wins.
+	Source string            `json:"source,omitempty"`
+	RunID  string            `json:"run_id,omitempty"`
+	Vars   map[string]string `json:"vars,omitempty"`
 	// Timeout is a Go-style duration string ("30m", "2h"). Empty disables.
 	Timeout string `json:"timeout,omitempty"`
 	// MergeInto is the worktree-finalization merge target. See
@@ -66,10 +71,14 @@ type launchRunResponse struct {
 }
 
 type resumeRunRequest struct {
-	FilePath string                 `json:"file_path,omitempty"` // optional; falls back to run.FilePath
-	Answers  map[string]interface{} `json:"answers,omitempty"`
-	Force    bool                   `json:"force,omitempty"`
-	Timeout  string                 `json:"timeout,omitempty"`
+	FilePath string `json:"file_path,omitempty"` // optional; falls back to run.FilePath
+	// Source carries the .iter contents inline. Used in cloud mode
+	// when the resumer (editor SPA) wants to push a possibly-modified
+	// workflow without depending on the server pod's filesystem.
+	Source  string                 `json:"source,omitempty"`
+	Answers map[string]interface{} `json:"answers,omitempty"`
+	Force   bool                   `json:"force,omitempty"`
+	Timeout string                 `json:"timeout,omitempty"`
 }
 
 type cancelRunResponse struct {
@@ -121,14 +130,24 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid request: %v", err)
 		return
 	}
-	if req.FilePath == "" {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "file_path is required")
+	if req.FilePath == "" && req.Source == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "file_path or source is required")
 		return
 	}
-	absPath, err := s.safePath(req.FilePath)
-	if err != nil {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid file_path: %v", err)
-		return
+	// FilePath is treated as a logical name when Source is supplied
+	// (no disk read). When Source is empty we fall back to safePath
+	// resolution against the server's WorkDir — the legacy local-mode
+	// flow.
+	var absPath string
+	if req.Source == "" {
+		var pathErr error
+		absPath, pathErr = s.safePath(req.FilePath)
+		if pathErr != nil {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "invalid file_path: %v", pathErr)
+			return
+		}
+	} else {
+		absPath = req.FilePath
 	}
 	timeout, err := parseTimeout(req.Timeout)
 	if err != nil {
@@ -144,6 +163,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 
 	res, err := s.runs.Launch(ctx, runview.LaunchSpec{
 		FilePath:      absPath,
+		Source:        req.Source,
 		RunID:         req.RunID,
 		Vars:          req.Vars,
 		Timeout:       timeout,
@@ -313,15 +333,23 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		filePath = runMeta.FilePath
-		if filePath == "" {
-			s.httpErrorFor(w, r, http.StatusBadRequest, "file_path is required (run has no persisted FilePath)")
+		if filePath == "" && req.Source == "" {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "file_path or source is required (run has no persisted FilePath)")
 			return
 		}
 	}
-	absPath, err := s.safePath(filePath)
-	if err != nil {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid file_path: %v", err)
-		return
+	// In cloud mode (Source supplied) skip the safePath disk check —
+	// FilePath is purely a label. Local mode keeps the legacy guard.
+	var absPath string
+	if req.Source == "" {
+		var pathErr error
+		absPath, pathErr = s.safePath(filePath)
+		if pathErr != nil {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "invalid file_path: %v", pathErr)
+			return
+		}
+	} else {
+		absPath = filePath
 	}
 	timeout, err := parseTimeout(req.Timeout)
 	if err != nil {
@@ -333,6 +361,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	res, err := s.runs.Resume(ctx, runview.ResumeSpec{
 		RunID:    id,
 		FilePath: absPath,
+		Source:   req.Source,
 		Answers:  req.Answers,
 		Force:    req.Force,
 		Timeout:  timeout,
