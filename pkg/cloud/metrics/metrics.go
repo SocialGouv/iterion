@@ -30,11 +30,11 @@ type Registry struct {
 	reg *prometheus.Registry
 
 	// --- Server-side metrics (plan §F T-40) ----------------------
-	RunsCreatedTotal       *prometheus.CounterVec   // by status
-	RunsActive             *prometheus.GaugeVec     // by status
-	RunDurationSeconds     *prometheus.HistogramVec // by status
-	WSConnections          prometheus.Gauge
-	MongoChangeStreamLagS  prometheus.Gauge
+	RunsCreatedTotal      *prometheus.CounterVec   // by status
+	RunsActive            *prometheus.GaugeVec     // by status
+	RunDurationSeconds    *prometheus.HistogramVec // by status
+	WSConnections         prometheus.Gauge
+	MongoChangeStreamLagS prometheus.Gauge
 
 	// --- Runner-side metrics -------------------------------------
 	NATSPendingMessages    prometheus.Gauge

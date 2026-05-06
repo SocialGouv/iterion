@@ -18,8 +18,8 @@ import (
 // Plan §F (T-41).
 type natsHeaderCarrier nats.Header
 
-func (c natsHeaderCarrier) Get(key string) string    { return nats.Header(c).Get(key) }
-func (c natsHeaderCarrier) Set(key, value string)    { nats.Header(c).Set(key, value) }
+func (c natsHeaderCarrier) Get(key string) string { return nats.Header(c).Get(key) }
+func (c natsHeaderCarrier) Set(key, value string) { nats.Header(c).Set(key, value) }
 func (c natsHeaderCarrier) Keys() []string {
 	out := make([]string, 0, len(c))
 	for k := range c {

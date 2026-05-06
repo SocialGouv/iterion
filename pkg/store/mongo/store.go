@@ -142,6 +142,12 @@ func (s *Store) Close(ctx context.Context) error {
 // access is a layering shortcut, not the long-term API.
 func (s *Store) RunsCollection() *mongo.Collection { return s.runs }
 
+// EventsCollection exposes the events collection so the runview
+// MongoSource (pkg/runview/eventstream/mongo.go) can open change
+// streams against the same database the store writes to. Same
+// caveat as RunsCollection — short-term shortcut, not the API.
+func (s *Store) EventsCollection() *mongo.Collection { return s.events }
+
 // Root returns an empty string in cloud mode: the Mongo store has no
 // filesystem root to expose. Callers that absolutely need a path
 // (engine worktree setup) gate on Capabilities().GitWorktree first.
