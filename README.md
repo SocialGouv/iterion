@@ -11,7 +11,7 @@ Define complex, multi-agent LLM workflows as readable `.iter` files — chain ag
 ## Table of Contents
 
 - [What is Iterion?](#what-is-iterion)
-- [Four ways to use Iterion](#four-ways-to-use-iterion)
+- [Five ways to use Iterion](#five-ways-to-use-iterion)
 - [Quickstart](#quickstart)
 - [A Taste of the DSL](#a-taste-of-the-dsl)
 - [Features](#features)
@@ -27,6 +27,7 @@ Define complex, multi-agent LLM workflows as readable `.iter` files — chain ag
   - [Template Expressions](#template-expressions)
   - [MCP Servers](#mcp-servers)
   - [Budget](#budget)
+  - [Worktree & Sandbox](#worktree--sandbox)
 - [CLI Reference](#cli-reference)
 - [Delegation](#delegation)
 - [AI Agent Skill](#ai-agent-skill)
@@ -60,9 +61,9 @@ Think of it as a DAG runner purpose-built for LLM workflows — with first-class
 
 ---
 
-## 🎛️ Four ways to use Iterion
+## 🎛️ Five ways to use Iterion
 
-Same engine, four delivery modes — pick the one that fits your workflow:
+Same engine, five delivery modes — pick the one that fits your workflow:
 
 | Mode | Best for | How to start |
 |---|---|---|
@@ -70,8 +71,9 @@ Same engine, four delivery modes — pick the one that fits your workflow:
 | 🌐 **Web editor** | Visual workflow design on your dev machine | `iterion editor` (opens browser) |
 | 🪟 **Desktop app** | Native window with multi-project, OS keychain, auto-update | Download `iterion-desktop` from Releases |
 | ☁️ **Cloud / server** | Multi-tenant deployment, shared run store, REST/WS API | Helm chart in `helm/iterion/` |
+| 📦 **TypeScript SDK** | Programmatic invocation from Node/Deno/Bun apps | `npm install @iterion/sdk` ([docs](sdks/typescript/)) |
 
-All four invoke the same Go core. The DSL, runtime, persistence and observability are identical — they only differ in how you reach them. Pick CLI for automation, the visual editor for daily editing, the desktop app if you want a one-click install with managed credentials, or cloud mode when teams need a shared, always-on instance.
+All five invoke the same Go core. The DSL, runtime, persistence and observability are identical — they only differ in how you reach them. Pick CLI for automation, the visual editor for daily editing, the desktop app if you want a one-click install with managed credentials, cloud mode when teams need a shared always-on instance, or the SDK to embed iterion inside another Node/Deno/Bun application.
 
 ---
 
@@ -183,6 +185,8 @@ From here you can add judges for multi-pass review, routers for parallel fan-out
 
 ## 📋 Features
 
+### Authoring & orchestration
+
 - 📝 **Declarative DSL** — Human-readable `.iter` files with indentation-based syntax
 - 🤖 **Multi-agent orchestration** — Chain agents, judges, routers, and joins into complex graphs
 - 🖥️ **Visual editor** — Browser-based workflow builder with drag-and-drop, live validation, and source view
@@ -190,18 +194,33 @@ From here you can add judges for multi-pass review, routers for parallel fan-out
 - 🔀 **Parallel branching** — Fan-out via routers, converge with join nodes (`wait_all` / `best_effort`)
 - 🧭 **4 routing modes** — `fan_out_all`, `condition`, `round_robin`, and `llm`-driven routing
 - 🔁 **Bounded loops** — Retry and refinement cycles with configurable iteration limits
-- 💰 **Budget enforcement** — Caps on tokens, cost (USD), duration, and iterations
-- 🔌 **Delegation** — Offload execution to external agents (Claude Code, Codex) with full tool access — works with Claude and ChatGPT/Codex subscriptions
 - 🔲 **Structured I/O** — Typed schemas for inputs and outputs with enum constraints
 - 🔗 **MCP support** — Declare MCP servers directly in `.iter` files (`stdio`, `http`)
-- 📦 **Artifact versioning** — Per-node, per-iteration versioned outputs persisted to disk
-- 📊 **Event sourcing** — Append-only JSONL event log for full observability and replay
-- ⏸️ **Pause/resume** — Checkpoint-based suspension and resumption of runs
-- 📐 **Mermaid diagrams** — Auto-generate visual workflow diagrams
 - 🧪 **Recipe system** — Bundle workflows with presets for comparison and benchmarking
+- 📐 **Mermaid diagrams** — Auto-generate visual workflow diagrams (compact / detailed / full)
+
+### Execution & runtime
+
+- 🔌 **Delegation** — Offload execution to external agents (Claude Code, Codex) with full tool access — works with Claude and ChatGPT/Codex subscriptions
+- 🌐 **Provider-agnostic** — In-process `claw` backend supports Anthropic and OpenAI (validated), plus Bedrock, Vertex, Foundry (via the vendored `claw-code-go` SDK)
+- 💰 **Budget enforcement** — Shared, mutex-protected caps on tokens, cost (USD), duration, parallel branches, and loop iterations
 - 🛡️ **Tool policies** — Allowlist-based access control with exact, namespace, and wildcard matching
-- 🌐 **Provider-agnostic** — Supports multiple LLM providers (Claude, OpenAI, Bedrock, Vertex, Foundry) via the vendored `claw-code-go` SDK
-- 🧠 **AI agent skill** — Install as a skill in Claude Code, Codex, Cursor, and other AI agents
+- 🌳 **Worktree auto-finalization** — `worktree: auto` runs the workflow in a fresh git worktree, persists commits to a named branch (`iterion/run/<friendly-name>`), and fast-forwards the current branch on success — see [docs/resume.md](docs/resume.md) and the run flags `--merge-into` / `--branch-name` / `--merge-strategy`
+- 🛡️ **Per-run sandbox** — `sandbox: auto` isolates each run inside a Docker/Podman container with the worktree bind-mounted at `/workspace` and an HTTP CONNECT proxy enforcing a network allowlist (LLM endpoints + npm/pypi/golang + git forges by default) — see [docs/sandbox.md](docs/sandbox.md)
+- 🔐 **Privacy filter** — Built-in Go-native `privacy_filter` / `privacy_unfilter` tools redact and restore PII (emails, phones, IBANs via mod-97, credit cards via Luhn, URLs, and ~25 secret patterns with Shannon-entropy filtering) — see [docs/privacy_filter.md](docs/privacy_filter.md)
+
+### Persistence & observability
+
+- 📦 **Artifact versioning** — Per-node, per-iteration versioned outputs persisted to disk
+- 📊 **Event sourcing** — Append-only JSONL event log for full replay and debugging
+- ⏯️ **Resumable runs** — Checkpoint-based resume from `failed_resumable` / `paused_waiting_human` / `cancelled` states, with `--force` for source drift — see [docs/resume.md](docs/resume.md)
+- 📈 **Observability stack** — Prometheus `/metrics` endpoint (cost / tokens / retries / latency p50/p95/p99 / parallel branches), OTLP traces, and a self-contained docker-compose stack with pre-built Grafana dashboards — see [docs/observability/README.md](docs/observability/README.md)
+
+### Distribution & integration
+
+- ☁️ **Cloud mode** — Multi-tenant Helm deployment with MongoDB + S3-compatible blob store + NATS JetStream queue; KEDA-scaled runner pool; per-run Kubernetes sandbox pods
+- 🧰 **TypeScript SDK** — [`@iterion/sdk`](sdks/typescript/) wraps the CLI with typed `run` / `resume` / `events` streaming for Node, Deno, and Bun apps
+- 🧠 **AI agent skill** — Install as a skill in Claude Code, Codex, Cursor, Windsurf, GitHub Copilot, Cline, Aider, and other AI coding agents
 
 ---
 
@@ -222,7 +241,7 @@ iterion editor --no-browser        # Don't auto-open browser
 - **Node library** — Drag pre-built node types (agent, judge, router, join, human, tool) onto the canvas
 - **Property editor** — Edit node properties, schemas, prompts, and edge conditions in a side panel
 - **Source view** — Split-pane view showing the raw `.iter` source alongside the visual graph
-- **Live diagnostics** — Real-time validation errors and warnings as you edit (codes C001–C029)
+- **Live diagnostics** — Real-time validation errors and warnings as you edit (codes C001–C043)
 - **File watching** — Detects external file changes via WebSocket and syncs automatically
 - **Undo/redo** — Full edit history
 - **Run console** — Launch a workflow from the editor and watch events stream live
@@ -317,7 +336,18 @@ For contributors / power users :
 
 ## ☁️ Cloud Mode
 
-A long-running server deployment that targets multi-tenant teams. Same Go core as the CLI, but exposes the editor + run engine through HTTP/WS to a shared instance, persists runs to a Mongo + S3-compatible blob store, and (optionally) dispatches jobs to a runner pool via NATS.
+A long-running server deployment that targets multi-tenant teams. Same Go core as the CLI, but exposes the editor + run engine through HTTP/WS to a shared instance, persists runs to a Mongo + S3-compatible blob store, and dispatches jobs to a runner pool via NATS JetStream.
+
+### Architecture at a glance
+
+| Component | Implementation | Role |
+|---|---|---|
+| **Server** | `iterion server` (`pkg/server/`) | HTTP/WS API + embedded editor SPA + dispatch of runs to the queue |
+| **Runner pod** | `iterion runner` (`pkg/runner/`) | Consumes the NATS queue, executes workflows, can launch a per-run sandbox pod via Kubernetes |
+| **Queue** | NATS JetStream (`pkg/queue/`) | At-least-once delivery, distributed lease coordination |
+| **Run store** | MongoDB + S3-compatible blob (`pkg/store/`) | Replaces the local `.iterion/` filesystem store |
+| **Config** | `pkg/config/` | Reads env vars + YAML for Mongo/NATS/S3/Sandbox/Runner sections |
+| **Metrics** | `pkg/cloud/metrics/` | Prometheus registry exposed on `/metrics` |
 
 ```yaml
 # helm/iterion/values.yaml — minimal example
@@ -330,12 +360,13 @@ queue:
   nats: "nats://nats:4222"
 ```
 
-- Deploy with `helm upgrade --install iterion helm/iterion -f values.yaml`.
-- Local cloud-mode test stack: `task cloud:up` brings up Mongo + NATS + MinIO + iterion via docker-compose.
-- Container image: `ghcr.io/socialgouv/iterion:latest` (built by `.github/workflows/image.yml` on every main push and tag).
-- Health probes: `GET /healthz` (always 200, liveness) and `GET /readyz` (200 when local-mode dependencies pass).
+### Deploy
 
-This mode is still actively evolving. The CLI/web/desktop modes write run state to the local filesystem (`.iterion/`); cloud mode threads the same store interface to MongoDB + S3 + NATS so multiple workers can share state.
+- **Helm**: `helm upgrade --install iterion helm/iterion -f values.yaml` — bundles server + runner Deployments, KEDA-based runner autoscaling on queue depth, and optional sandbox RBAC for per-run pods
+- **Local stack** for testing cloud mode end-to-end: `docker compose -f docker-compose.cloud.yml up` brings up Mongo + NATS + MinIO + iterion server + runner — see [docker/](docker/) for init scripts
+- **Container image**: `ghcr.io/socialgouv/iterion:latest` (built by `.github/workflows/image.yml` on every main push and tag, scanned with Trivy on PRs)
+- **Health probes**: `GET /healthz` (liveness, always 200) and `GET /readyz` (200 when Mongo/NATS/S3 are reachable in cloud mode)
+- **Auth**: `ITERION_SESSION_TOKEN` and `ITERION_AUTH_TOKEN` env vars gate the API; health endpoints are auth-exempt
 
 ---
 
@@ -614,6 +645,21 @@ budget:
 
 The budget is shared across all branches. When a limit is hit, the engine emits a `budget_exceeded` event and stops the run.
 
+### Worktree & Sandbox
+
+Two top-level workflow directives let a run isolate itself from the host:
+
+```iter
+workflow safe_pr_fix:
+  worktree: auto       # Run inside a fresh git worktree; persist commits to a branch on success
+  sandbox: auto        # Run all tool/agent calls inside a Docker/Podman container
+  entry: planner
+  ...
+```
+
+- **`worktree: auto`** — the engine creates `<store-dir>/worktrees/<run-id>`, executes the workflow there, then on a clean exit creates a persistent branch (default `iterion/run/<friendly-name>`) and fast-forwards the user's currently-checked-out branch to that HEAD. Override with `--merge-into`, `--branch-name`, `--merge-strategy`, or `--auto-merge=false`.
+- **`sandbox: auto`** — reads `.devcontainer/devcontainer.json` and runs each agent/tool node inside an isolated container with the worktree bind-mounted at `/workspace`, plus an HTTP CONNECT proxy enforcing a network allowlist. Use `iterion sandbox doctor` to verify host capabilities. The `claw` backend cannot yet be sandboxed (a future `cmd/iterion-claw-runner` binary will close that gap). See [docs/sandbox.md](docs/sandbox.md).
+
 ---
 
 ## ⌨️ CLI Reference
@@ -639,7 +685,7 @@ Parse, compile, and validate a workflow without running it:
 iterion validate workflow.iter
 ```
 
-Reports errors and warnings with diagnostic codes (C001–C029), file positions, and descriptions.
+Reports errors and warnings with diagnostic codes (C001–C043), file positions, and descriptions.
 
 ### `iterion run`
 
@@ -658,6 +704,11 @@ iterion run workflow.iter [flags]
 | `--timeout <duration>` | Global timeout (e.g. `30m`, `1h`) |
 | `--log-level <level>` | Log verbosity: `error`, `warn`, `info`, `debug`, `trace` |
 | `--no-interactive` | Don't prompt on TTY; exit on human pause |
+| `--sandbox <mode>` | Sandbox override: `auto` (read `.devcontainer/devcontainer.json`) or `none` (force off). Empty inherits `ITERION_SANDBOX_DEFAULT` then the workflow's `sandbox:` block |
+| `--merge-into <target>` | For `worktree: auto` runs — `current` (default), `none` (skip merge, branch only), or a branch name |
+| `--branch-name <name>` | For `worktree: auto` runs — override the storage branch name (default `iterion/run/<friendly-name>`) |
+| `--merge-strategy <mode>` | For `worktree: auto` runs — `squash` (default, collapses run commits into one) or `merge` (fast-forward, preserves history) |
+| `--auto-merge` | For `worktree: auto` runs — apply `--merge-strategy` at run end (default `true` on the CLI; the editor sets `false` and defers the merge to a UI action) |
 
 ### `iterion inspect`
 
@@ -715,6 +766,22 @@ iterion editor --port 8080         # Custom port
 iterion editor --dir ./workflows   # Custom directory
 iterion editor --no-browser        # Don't auto-open browser
 ```
+
+### `iterion sandbox`
+
+Inspect and configure the iterion sandbox subsystem (see [docs/sandbox.md](docs/sandbox.md)):
+
+```bash
+iterion sandbox doctor   # Report the active driver (Docker/Podman), image cache, and capabilities
+```
+
+### `iterion server`
+
+Start the long-running HTTP server (editor SPA + run console + cloud API). Used both for the local web editor and for cloud mode deployments via [helm/iterion/](helm/iterion/).
+
+### `iterion runner`
+
+Run a cloud-mode runner pod that consumes workflows from the NATS queue. Configured via `pkg/config/` env vars; deployed by the Helm chart with KEDA-based autoscaling.
 
 ### `iterion version`
 
@@ -777,7 +844,7 @@ npx skills add https://github.com/SocialGouv/iterion --skill iterion-dsl
 | [`SKILL-run-and-refine.md`](SKILL-run-and-refine.md) | Practice guide for running, debugging and iteratively refining `.iter` workflows against real data |
 | [`docs/references/dsl-grammar.md`](docs/references/dsl-grammar.md) | Formal grammar specification (EBNF) |
 | [`docs/references/patterns.md`](docs/references/patterns.md) | 10 reusable workflow patterns with annotated snippets |
-| [`docs/references/diagnostics.md`](docs/references/diagnostics.md) | All validation diagnostic codes (C001–C030) with causes and fixes |
+| [`docs/references/diagnostics.md`](docs/references/diagnostics.md) | All validation diagnostic codes (C001–C043) with causes and fixes |
 | [`examples/skill/`](examples/skill/) | 4 minimal, self-contained `.iter` examples |
 
 ### Usage
@@ -883,7 +950,7 @@ See [`examples/FIXTURES.md`](examples/FIXTURES.md) for detailed documentation on
 
 1. **Parse** (`pkg/dsl/parser/`) — Indent-sensitive lexer + recursive-descent parser produces an AST
 2. **Compile** (`pkg/dsl/ir/compile.go`) — Transforms AST to IR, resolves template references, binds schemas and prompts
-3. **Validate** (`pkg/dsl/ir/validate.go`) — Static analysis with 29 diagnostic codes: reachability, routing correctness, cycle detection, schema validation, and more
+3. **Validate** (`pkg/dsl/ir/validate.go`) — Static analysis with 43 diagnostic codes (C001–C043): reachability, routing correctness, cycle detection, schema validation, and more
 
 ### Runtime Engine
 
@@ -934,6 +1001,17 @@ All run state is persisted under a configurable store directory (default: `.iter
 
 See [`docs/persisted-formats.md`](docs/persisted-formats.md) for the full specification.
 
+### Architecture Decision Records
+
+Significant architectural choices are documented under [`docs/adr/`](docs/adr/):
+
+| ADR | Topic |
+|-----|-------|
+| [ADR-001](docs/adr/001-round-robin-router-mode.md) | Round-robin router mode semantics |
+| [ADR-002a](docs/adr/002-desktop-assetserver-proxy.md) | Desktop AssetServer proxy architecture (Wails v2 + embedded `pkg/server`) |
+| [ADR-002b](docs/adr/002-editor-runview-separation.md) | Editor runview separation (event broker vs. run store) |
+| [ADR-003](docs/adr/003-privacy-tools-pure-go.md) | Pure-Go privacy tools (regex + Luhn/mod-97 + entropy, no ONNX sidecar) |
+
 ---
 
 ## 🛠️ Development
@@ -979,33 +1057,45 @@ The Go code follows the standard `cmd/` + `pkg/` layout:
 
 ```
 iterion/
-├── cmd/iterion/         # CLI entry point (Cobra, one file per command)
+├── cmd/
+│   ├── iterion/         # CLI entry point (Cobra, one file per command — run, server, runner, sandbox, …)
+│   └── iterion-desktop/ # Wails v2 desktop wrapper (proxy AssetServer over pkg/server)
 ├── pkg/
 │   ├── dsl/             # DSL pipeline
 │   │   ├── parser/      # Lexer, recursive-descent parser, diagnostics
 │   │   ├── ast/         # AST definitions and JSON marshaling
-│   │   ├── ir/          # IR compilation and validation
+│   │   ├── ir/          # IR compilation and validation (43 diagnostic codes)
 │   │   ├── unparse/     # IR → .iter serialization
 │   │   └── types/       # Shared enums (transports, session/router modes…)
 │   ├── backend/         # Execution stack (LLM + tools)
 │   │   ├── model/       # Executor registry, schema validation, event hooks
 │   │   ├── delegate/    # Delegation backends (claude_code, codex, claw)
-│   │   ├── tool/        # Tool registry, policies, adapters
+│   │   ├── tool/        # Tool registry, policies, adapters (incl. privacy_filter / privacy_unfilter)
 │   │   ├── mcp/         # MCP server lifecycle, configuration, health checks
 │   │   ├── recipe/      # Recipe handling for tool adapters and policies
 │   │   ├── cost/        # Cost estimation and budgeting
 │   │   └── llmtypes/    # LLM SDK abstraction
-│   ├── runtime/         # Workflow execution engine (scheduling, budget, recovery)
-│   ├── store/           # File-backed persistence (runs, events, artifacts)
-│   ├── server/          # HTTP server for the editor backend (embedded UI)
+│   ├── runtime/         # Workflow execution engine (scheduling, budget, recovery, worktree finalization)
+│   ├── sandbox/         # Per-run container isolation (Docker/Podman/Kubernetes drivers + CONNECT proxy)
+│   ├── store/           # File-backed persistence (runs, events, artifacts) + Mongo/S3 in cloud mode
+│   ├── server/          # HTTP server: editor SPA + run console + cloud REST/WS API
+│   ├── runner/          # Cloud-mode runner pod consumer loop (NATS JetStream → execution)
+│   ├── queue/           # NATS JetStream message contract & dispatch schema
+│   ├── cloud/           # Cloud-mode helpers (Prometheus metrics registry, …)
+│   ├── runview/         # Editor backend: WS event broker for live run streaming
+│   ├── git/             # Editor backend: status / diff / log for the modified-files panel
+│   ├── config/          # Runtime config (env vars + YAML, Mongo/NATS/S3/Sandbox/Runner sections)
 │   ├── cli/             # CLI command implementations
 │   ├── benchmark/       # Metrics collection and reporting
 │   ├── log/             # Leveled logger
 │   └── internal/        # Internal utilities (e.g. appinfo)
 ├── editor/              # Web UI (React/Vite/TypeScript + XYFlow)
 ├── examples/            # Reference .iter workflows + companion docs
+├── sdks/typescript/     # @iterion/sdk — typed CLI wrapper for Node/Deno/Bun
 ├── e2e/                 # End-to-end test suite (stub + live)
-├── docs/                # Format specifications, references, ADRs, observability
+├── helm/iterion/        # Helm chart (server + runner Deployments, KEDA scaling, sandbox RBAC)
+├── docker/              # Cloud-mode container helpers (LLM CLI install, MinIO init)
+├── docs/                # Format specs, references, ADRs, sandbox, privacy, observability
 ├── scripts/             # Build helpers
 └── vendor/              # Vendored Go modules (incl. claw-code-go)
 ```
