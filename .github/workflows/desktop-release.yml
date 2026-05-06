@@ -117,10 +117,22 @@ jobs:
           # and macOS runners typically have it pre-enabled, but running
           # this is a no-op on those.
           corepack enable
+          corepack prepare --activate pnpm@$(node -p "require('./editor/package.json').packageManager.split('@')[1].split('+')[0]")
 
       - name: Build editor frontend
         shell: bash
-        run: task editor:build
+        working-directory: editor
+        run: |
+          # Cross-platform inline of the editor:build Taskfile target.
+          # On Windows runners go-task v3 falls back to mvdan/sh for POSIX
+          # commands, but the corepack shim resolution + pnpm version
+          # download under that shim has been flaky on the windows-2025
+          # image; running the steps directly under Git Bash sidesteps the
+          # extra shell layer.
+          corepack pnpm install --prefer-offline
+          corepack pnpm exec vite build
+          rm -rf ../pkg/server/static/assets ../pkg/server/static/index.html
+          cp -r dist/* ../pkg/server/static/
 
       - name: Build desktop binary
         shell: bash
