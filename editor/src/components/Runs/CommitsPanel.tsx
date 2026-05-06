@@ -151,10 +151,8 @@ function MergeFooter({
     (run.merge_strategy as MergeStrategy) ?? "squash";
 
   const [strategy, setStrategy] = useState<MergeStrategy>(initialStrategy);
-  // editingMessage is null while the user is still in preview mode (no
-  // override). Once they click Edit, we snapshot the current default
-  // into a string so subsequent default-message refreshes don't clobber
-  // their edits. Reset clears it back to null → preview reappears.
+  // null = preview mode (use backend default); string = user editing,
+  // snapshotted on first Edit so background refreshes don't clobber.
   const [editingMessage, setEditingMessage] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -258,8 +256,6 @@ function MergeFooter({
   const buttonLabel =
     strategy === "squash" ? "Squash and merge" : "Merge commit";
 
-  const isEditing = editingMessage !== null;
-
   return (
     <div className="shrink-0 border-t border-border-default px-3 py-2 space-y-2 bg-surface-1 max-h-[60%] overflow-y-auto">
       {failed && (
@@ -300,7 +296,7 @@ function MergeFooter({
         variant="primary"
         size="sm"
         onClick={() => void onSubmit()}
-        disabled={submitting || (strategy === "squash" && isEditing && editingMessage.trim() === "")}
+        disabled={submitting || (editingMessage !== null && editingMessage.trim() === "")}
         className="w-full"
       >
         {submitting ? "Merging…" : buttonLabel}

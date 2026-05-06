@@ -157,21 +157,24 @@ function reasonLabel(reason: string | undefined): string {
   }
 }
 
+// isLive defaults to true when the field is absent so pre-feature
+// backends keep their original wording (badges interpreted as
+// uncommitted state).
+function isLive(data: { live?: boolean }): boolean {
+  return data.live !== false;
+}
+
 // footerLabel disambiguates the two source-of-truth modes:
 // - live=true → files come from `git status` against a still-existing
 //   worktree/cwd. Badges are uncommitted state.
 // - live=false → files come from `git diff base..final` against the
 //   storage branch (worktree gc'd). Badges are committed-in-this-run.
-//
-// Defaults to live=true for legacy responses missing the field, so
-// pre-feature backends keep their original wording.
 function footerLabel(data: { worktree?: boolean; live?: boolean; work_dir?: string }): string {
-  const live = data.live !== false;
-  const where = data.worktree ? "worktree" : "cwd";
-  if (live) {
-    return `Working tree (${where}): ${basename(data.work_dir ?? "")}`;
+  if (!isLive(data)) {
+    return "Committed in this run";
   }
-  return "Committed in this run";
+  const where = data.worktree ? "worktree" : "cwd";
+  return `Working tree (${where}): ${basename(data.work_dir ?? "")}`;
 }
 
 function footerTooltip(data: {
@@ -179,8 +182,7 @@ function footerTooltip(data: {
   live?: boolean;
   work_dir?: string;
 }): string {
-  const live = data.live !== false;
-  if (live) {
+  if (isLive(data)) {
     return data.work_dir ?? "";
   }
   return `Files committed by this run, diffed against the run's base commit. The worktree at ${

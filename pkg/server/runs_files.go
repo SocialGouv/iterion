@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -210,11 +211,14 @@ func (s *Server) historicalRefs(run *store.Run) (base, final, repo string, ok bo
 	repo = run.RepoRoot
 	// Persisted RepoRoot can refer to a path that no longer resolves
 	// locally — common when the run record was rsync'd between a host
-	// and a devcontainer, or the user moved the repo. Demote it to "" so
-	// the fallbacks below get a chance instead of failing with
+	// and a devcontainer, or the user moved the repo. Cheap-stat the
+	// `.git` entry to validate (one syscall, no parent walk) and demote
+	// to "" so the fallbacks below get a chance instead of failing with
 	// ErrNotGitRepo on a stale absolute path.
-	if repo != "" && gitlib.FindRepoRoot(repo) != repo {
-		repo = ""
+	if repo != "" {
+		if _, statErr := os.Stat(filepath.Join(repo, ".git")); statErr != nil {
+			repo = ""
+		}
 	}
 	if repo == "" {
 		// Walk up from work_dir; works when run was launched from a

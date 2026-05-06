@@ -70,7 +70,7 @@ func (s *Server) handleListRunCommits(w http.ResponseWriter, r *http.Request) {
 				Count:                len(commits),
 				BaseCommit:           run.BaseCommit,
 				HeadCommit:           head,
-				DefaultSquashMessage: defaultSquashMessage(run.WorkDir, run.BaseCommit, head, runNameOrFallback(run)),
+				DefaultSquashMessage: runtime.BuildSquashMessageFromCommits(run.WorkDir, head, runtime.RunDisplayName(run), commits),
 				Available:            true,
 			})
 			return
@@ -92,7 +92,7 @@ func (s *Server) handleListRunCommits(w http.ResponseWriter, r *http.Request) {
 				Count:                len(commits),
 				BaseCommit:           base,
 				HeadCommit:           final,
-				DefaultSquashMessage: defaultSquashMessage(repo, base, final, runNameOrFallback(run)),
+				DefaultSquashMessage: runtime.BuildSquashMessageFromCommits(repo, final, runtime.RunDisplayName(run), commits),
 				Available:            true,
 			})
 			return
@@ -119,26 +119,4 @@ func reasonForCommits(run *store.Run) string {
 		return "no_baseline"
 	}
 	return "not_git_repo"
-}
-
-// defaultSquashMessage previews what the deferred-merge endpoint would
-// commit if the user submitted without an override. Shares the exact
-// runtime.BuildSquashMessage implementation so the preview cannot drift
-// from what the merge actually writes.
-func defaultSquashMessage(repoRoot, base, head, runName string) string {
-	if repoRoot == "" || base == "" || head == "" {
-		return ""
-	}
-	return runtime.BuildSquashMessage(repoRoot, base, head, runName)
-}
-
-// runNameOrFallback mirrors runview.PerformMerge's title-fallback chain:
-// the run's friendly name when present, else the workflow name. Single
-// source of truth would be ideal but the current layering means we
-// re-derive it here for the preview.
-func runNameOrFallback(run *store.Run) string {
-	if run.Name != "" {
-		return run.Name
-	}
-	return run.WorkflowName
 }

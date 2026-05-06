@@ -21,7 +21,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // gitCmd wraps exec.Command("git", args...) with LC_ALL=C / LANG=C so
@@ -441,7 +443,40 @@ func BuildSquashMessage(repoRoot, base, head, runName string) string {
 	return buildSquashMessage(repoRoot, base, head, runName)
 }
 
+// BuildSquashMessageFromCommits is the cached-input form for callers
+// that already fetched the commit slice (e.g. the /api/runs/{id}/commits
+// handler renders the same data and would otherwise re-shell `git log`
+// every time the merge-message preview refreshes).
+//
+// Single-commit runs still need one `git log -1 --pretty=format:%B`
+// to recover the body — gitlib.CommitInfo carries Subject only.
+func BuildSquashMessageFromCommits(repoRoot, head, runName string, commits []gitlib.CommitInfo) string {
+	if len(commits) == 1 {
+		if full := readFullCommitMessage(repoRoot, head); full != "" {
+			return full
+		}
+	}
+	return assembleSquashMessage(commits, runName)
+}
+
+// RunDisplayName returns the human-friendly label for a run: its
+// deterministic friendly name when set (e.g. "swift-cedar-a3f2"),
+// else the workflow name. Callers that build squash titles or
+// log lines share this fallback chain.
+func RunDisplayName(run *store.Run) string {
+	if run == nil {
+		return ""
+	}
+	if run.Name != "" {
+		return run.Name
+	}
+	return run.WorkflowName
+}
+
 // buildSquashMessage assembles the commit message for a squash merge.
+// Wrapper for callers that don't already have the commit slice — the
+// /commits handler does, so it routes through BuildSquashMessageFromCommits
+// directly to skip the redundant `git log`.
 //
 // Single-commit runs reuse that commit's full message (subject + body)
 // verbatim, so the squash on `main` carries the same conventional-
@@ -455,17 +490,20 @@ func BuildSquashMessage(repoRoot, base, head, runName string) string {
 // Falls back to runName then "iterion run" when no commits are
 // readable in base..head (degenerate ranges, bad refs).
 func buildSquashMessage(repoRoot, base, head, runName string) string {
-	subjects := readCommitSubjects(repoRoot, base, head)
+	commits, _ := gitlib.Log(repoRoot, base, head)
+	return BuildSquashMessageFromCommits(repoRoot, head, runName, commits)
+}
 
-	if len(subjects) == 1 {
-		if full := readFullCommitMessage(repoRoot, head); full != "" {
-			return full
-		}
-	}
-
+// assembleSquashMessage formats the multi-commit case: title is the
+// first subject, body is `- <shortSHA> <subject>` per commit. Single-
+// commit-with-full-body is handled upstream by
+// BuildSquashMessageFromCommits → readFullCommitMessage; this is the
+// subject-only path used for multi-commit runs and the
+// no-body-recoverable degraded single-commit case.
+func assembleSquashMessage(commits []gitlib.CommitInfo, runName string) string {
 	title := ""
-	if len(subjects) > 0 {
-		title = subjects[0].subject
+	if len(commits) > 0 {
+		title = commits[0].Subject
 	}
 	if title == "" {
 		title = strings.TrimSpace(runName)
@@ -478,18 +516,16 @@ func buildSquashMessage(repoRoot, base, head, runName string) string {
 	body.WriteString(title)
 	body.WriteString("\n")
 
-	if len(subjects) <= 1 {
-		// One commit but full body unrecoverable, OR no commits at all:
-		// the title already conveys what we know.
+	if len(commits) <= 1 {
 		return body.String()
 	}
 
 	body.WriteString("\n")
-	for _, c := range subjects {
+	for _, c := range commits {
 		body.WriteString("- ")
-		body.WriteString(c.short)
+		body.WriteString(c.Short)
 		body.WriteString(" ")
-		body.WriteString(c.subject)
+		body.WriteString(c.Subject)
 		body.WriteString("\n")
 	}
 	return body.String()
@@ -509,39 +545,6 @@ func readFullCommitMessage(repoRoot, ref string) string {
 		return ""
 	}
 	return msg + "\n"
-}
-
-// commitEntry is the (shortSHA, subject) pair we extract for each commit
-// in the run's range. Kept as a tiny struct so the squash-message
-// assembler can index into the slice without re-parsing the git output.
-type commitEntry struct {
-	short   string
-	subject string
-}
-
-// readCommitSubjects returns the run's commits in chronological order
-// (oldest first). The format `%h %s` is null-safe enough for our needs:
-// `%s` is the first line of the message, so embedded newlines are not a
-// concern. Returns nil on any git failure — callers degrade to the
-// runName fallback.
-func readCommitSubjects(repoRoot, base, head string) []commitEntry {
-	out, err := gitCmd("-C", repoRoot, "log", "--reverse", "--pretty=format:%h %s", base+".."+head).Output()
-	if err != nil {
-		return nil
-	}
-	var entries []commitEntry
-	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		short, subject, ok := strings.Cut(line, " ")
-		if !ok {
-			continue
-		}
-		entries = append(entries, commitEntry{short: short, subject: subject})
-	}
-	return entries
 }
 
 // DeferredMergeRequest is the input for a UI-driven merge action: the

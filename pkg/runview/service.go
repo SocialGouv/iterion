@@ -789,11 +789,7 @@ func (s *Service) PerformMerge(runID string, req MergeRequest) (*MergeResponse, 
 
 	message := req.CommitMessage
 	if message == "" && strategy == store.MergeStrategySquash {
-		title := r.Name
-		if title == "" {
-			title = r.WorkflowName
-		}
-		message = runtime.BuildSquashMessage(repoRoot, r.BaseCommit, r.FinalCommit, title)
+		message = runtime.BuildSquashMessage(repoRoot, r.BaseCommit, r.FinalCommit, runtime.RunDisplayName(r))
 	}
 
 	res, mergeErr := runtime.PerformDeferredMerge(runtime.DeferredMergeRequest{
