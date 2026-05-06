@@ -1,43 +1,53 @@
-package store
+// Package storetest exposes the conformance suite that every
+// store.RunStore backend must satisfy. It lives in its own package
+// (rather than as a *_test.go helper) so backend tests in sibling
+// packages — notably pkg/store/mongo — can plug a backend-specific
+// factory into the same assertions.
+//
+// The suite covers: CreateRun→LoadRun round-trip, status transitions
+// + FinishedAt clamping at terminals, AppendEvent monotone seq under
+// sequential AND concurrent writers, WriteArtifact version ordering,
+// LockRun exclusivity across an Unlock boundary, and Capabilities()
+// non-emptiness.
+package storetest
 
 import (
 	"context"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// Conformance is the minimum behaviour every RunStore impl must
-// honour, regardless of backend (filesystem today, Mongo+S3 in plan
-// §F T-17). The harness is parameterised on a factory function so a
-// future Mongo test can call exactly the same assertions and surface
-// any drift.
-//
-// Invariants checked:
-//   - CreateRun → LoadRun round-trip preserves the user-visible fields.
-//   - UpdateRunStatus rolls forward and clamps FinishedAt at terminals.
-//   - AppendEvent issues a strictly-monotonic seq starting at 1.
-//   - Concurrent AppendEvent calls each get a unique seq.
-//   - WriteArtifact versions are strictly increasing per node.
-//   - LockRun is exclusive — a second LockRun fails until Unlock.
-//   - Capabilities() reports a non-empty set for any real backend.
+// Factory returns a fresh, empty RunStore for one subtest. Cleanup
+// (t.TempDir, drop database, etc.) is the factory's job.
+type Factory func(t *testing.T) store.RunStore
 
-// runStoreFactory returns a fresh, empty store for one subtest.
-// Cleanup is the harness's responsibility (t.TempDir for FS).
-type runStoreFactory func(t *testing.T) RunStore
-
-func conformanceSuite(t *testing.T, factory runStoreFactory) {
-	conformanceSuiteWithOpts(t, factory, conformanceOpts{InitialStatus: RunStatusRunning})
+// Opts let backends declare what behaviour the harness should expect
+// when it differs from the filesystem default.
+type Opts struct {
+	// InitialStatus is the status CreateRun is expected to set. FS
+	// starts at "running" (engine takes ownership immediately);
+	// Mongo starts at "queued" because the runner pod claims the
+	// run asynchronously.
+	InitialStatus store.RunStatus
 }
 
-// conformanceOpts and conformanceSuiteWithOpts mirror the exported
-// names in pkg/store/storetest so the FS-side suite stays in lockstep
-// with the cross-backend harness.
-type conformanceOpts struct {
-	InitialStatus RunStatus
+// Default returns a sensible baseline matching the filesystem
+// backend. New backends override per-field as needed.
+func Default() Opts {
+	return Opts{InitialStatus: store.RunStatusRunning}
 }
 
-func conformanceSuiteWithOpts(t *testing.T, factory runStoreFactory, opts conformanceOpts) {
+// Run executes the full conformance suite against factory.
+func Run(t *testing.T, factory Factory) {
+	RunWithOpts(t, factory, Default())
+}
+
+// RunWithOpts executes the full conformance suite with backend-
+// specific overrides.
+func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("CreateLoadRoundTrip", func(t *testing.T) { testCreateLoad(t, factory(t), opts) })
 	t.Run("StatusTransitions", func(t *testing.T) { testStatusTransitions(t, factory(t)) })
 	t.Run("EventSeqMonotone", func(t *testing.T) { testEventSeqMonotone(t, factory(t)) })
@@ -47,7 +57,7 @@ func conformanceSuiteWithOpts(t *testing.T, factory runStoreFactory, opts confor
 	t.Run("CapabilitiesReported", func(t *testing.T) { testCapabilitiesReported(t, factory(t)) })
 }
 
-func testCreateLoad(t *testing.T, s RunStore, opts conformanceOpts) {
+func testCreateLoad(t *testing.T, s store.RunStore, opts Opts) {
 	t.Helper()
 	in := map[string]interface{}{"foo": "bar"}
 	r, err := s.CreateRun(context.Background(), "run_1", "demo", in)
@@ -72,16 +82,16 @@ func testCreateLoad(t *testing.T, s RunStore, opts conformanceOpts) {
 	}
 }
 
-func testStatusTransitions(t *testing.T, s RunStore) {
+func testStatusTransitions(t *testing.T, s store.RunStore) {
 	t.Helper()
 	if _, err := s.CreateRun(context.Background(), "run_2", "demo", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.UpdateRunStatus(context.Background(), "run_2", RunStatusFinished, ""); err != nil {
+	if err := s.UpdateRunStatus(context.Background(), "run_2", store.RunStatusFinished, ""); err != nil {
 		t.Fatal(err)
 	}
 	r, _ := s.LoadRun(context.Background(), "run_2")
-	if r.Status != RunStatusFinished {
+	if r.Status != store.RunStatusFinished {
 		t.Errorf("Status: got %q", r.Status)
 	}
 	if r.FinishedAt == nil {
@@ -89,7 +99,7 @@ func testStatusTransitions(t *testing.T, s RunStore) {
 	}
 }
 
-func testEventSeqMonotone(t *testing.T, s RunStore) {
+func testEventSeqMonotone(t *testing.T, s store.RunStore) {
 	t.Helper()
 	if _, err := s.CreateRun(context.Background(), "run_3", "demo", nil); err != nil {
 		t.Fatal(err)
@@ -97,14 +107,11 @@ func testEventSeqMonotone(t *testing.T, s RunStore) {
 	const N = 50
 	var prev int64 = -1
 	for i := 0; i < N; i++ {
-		ev := Event{Type: EventNodeStarted, Timestamp: time.Now().UTC()}
+		ev := store.Event{Type: store.EventNodeStarted, Timestamp: time.Now().UTC()}
 		written, err := s.AppendEvent(context.Background(), "run_3", ev)
 		if err != nil {
 			t.Fatalf("AppendEvent #%d: %v", i, err)
 		}
-		// The base seq value is implementation-defined (FS starts at 0,
-		// Mongo will start at 1) — what matters is the strictly-monotone
-		// invariant: every observation is greater than the previous.
 		if written.Seq <= prev {
 			t.Errorf("Seq #%d: %d not strictly greater than prev %d", i, written.Seq, prev)
 		}
@@ -119,7 +126,7 @@ func testEventSeqMonotone(t *testing.T, s RunStore) {
 	}
 }
 
-func testEventSeqConcurrent(t *testing.T, s RunStore) {
+func testEventSeqConcurrent(t *testing.T, s store.RunStore) {
 	t.Helper()
 	if _, err := s.CreateRun(context.Background(), "run_4", "demo", nil); err != nil {
 		t.Fatal(err)
@@ -132,7 +139,7 @@ func testEventSeqConcurrent(t *testing.T, s RunStore) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < perG; i++ {
-				ev := Event{Type: EventNodeStarted, Timestamp: time.Now().UTC()}
+				ev := store.Event{Type: store.EventNodeStarted, Timestamp: time.Now().UTC()}
 				if _, err := s.AppendEvent(context.Background(), "run_4", ev); err != nil {
 					t.Errorf("AppendEvent: %v", err)
 					return
@@ -154,23 +161,19 @@ func testEventSeqConcurrent(t *testing.T, s RunStore) {
 			t.Errorf("duplicate seq %d at index %d", ev.Seq, i)
 		}
 		seen[ev.Seq] = struct{}{}
-		// seq must be in a contiguous window of size N starting at the
-		// backend's chosen base. We don't assert the base — just the
-		// "no gaps, no duplicates" guarantee that downstream consumers
-		// (replay, dedup) rely on.
 		if ev.Seq < 0 || ev.Seq >= int64(goroutines*perG)+10 {
 			t.Errorf("seq out of plausible range at index %d: %d", i, ev.Seq)
 		}
 	}
 }
 
-func testArtifactVersions(t *testing.T, s RunStore) {
+func testArtifactVersions(t *testing.T, s store.RunStore) {
 	t.Helper()
 	if _, err := s.CreateRun(context.Background(), "run_5", "demo", nil); err != nil {
 		t.Fatal(err)
 	}
 	for v := 1; v <= 3; v++ {
-		if err := s.WriteArtifact(context.Background(), &Artifact{
+		if err := s.WriteArtifact(context.Background(), &store.Artifact{
 			RunID:     "run_5",
 			NodeID:    "node_a",
 			Version:   v,
@@ -201,7 +204,7 @@ func testArtifactVersions(t *testing.T, s RunStore) {
 	}
 }
 
-func testLockExclusive(t *testing.T, s RunStore) {
+func testLockExclusive(t *testing.T, s store.RunStore) {
 	t.Helper()
 	if _, err := s.CreateRun(context.Background(), "run_6", "demo", nil); err != nil {
 		t.Fatal(err)
@@ -213,8 +216,6 @@ func testLockExclusive(t *testing.T, s RunStore) {
 	if err := first.Unlock(); err != nil {
 		t.Errorf("Unlock: %v", err)
 	}
-	// Re-locking after a clean unlock must succeed — the lock is
-	// strictly advisory across the unlock boundary.
 	second, err := s.LockRun(context.Background(), "run_6")
 	if err != nil {
 		t.Fatalf("relock after unlock: %v", err)
@@ -224,28 +225,10 @@ func testLockExclusive(t *testing.T, s RunStore) {
 	}
 }
 
-func testCapabilitiesReported(t *testing.T, s RunStore) {
+func testCapabilitiesReported(t *testing.T, s store.RunStore) {
 	t.Helper()
 	caps := s.Capabilities()
-	// The non-regression we care about: any concrete backend exposes
-	// at least *one* capability. A struct full of false is a sign the
-	// impl forgot to override the method.
 	if !caps.LiveStream && !caps.CrossProcessLock && !caps.PIDFile && !caps.GitWorktree {
 		t.Errorf("Capabilities all-false; backend must report at least one")
 	}
-}
-
-// TestConformance_Filesystem validates that the locally-shipped backend
-// satisfies the conformance suite. The same factory shape will be used
-// in plan §F T-17 to validate MongoRunStore against the same harness.
-func TestConformance_Filesystem(t *testing.T) {
-	conformanceSuite(t, func(t *testing.T) RunStore {
-		t.Helper()
-		dir := t.TempDir()
-		s, err := New(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return s
-	})
 }
