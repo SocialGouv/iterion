@@ -35,16 +35,21 @@ for f in "$DIR"/iterion-desktop-*; do
     # would race against package managers.
     iterion-desktop-linux-*.tar.gz) continue ;;
   esac
-  key=""
+  # The auto-updater looks up artefacts by `runtime.GOOS+"/"+runtime.GOARCH`.
+  # darwin/universal must be exposed under BOTH darwin/amd64 and
+  # darwin/arm64 so Intel Macs and Apple Silicon Macs each find a
+  # match — the same lipo'd .app file serves both.
+  keys=()
   case "$base" in
-    iterion-desktop-darwin-arm64*)  key="darwin/arm64" ;;
-    iterion-desktop-darwin-amd64*)  key="darwin/amd64" ;;
-    iterion-desktop-windows-amd64*) key="windows/amd64" ;;
-    iterion-desktop-windows-arm64*) key="windows/arm64" ;;
-    iterion-desktop-linux-amd64*)   key="linux/amd64" ;;
-    iterion-desktop-linux-arm64*)   key="linux/arm64" ;;
+    iterion-desktop-darwin-universal*) keys=("darwin/amd64" "darwin/arm64") ;;
+    iterion-desktop-darwin-arm64*)     keys=("darwin/arm64") ;;
+    iterion-desktop-darwin-amd64*)     keys=("darwin/amd64") ;;
+    iterion-desktop-windows-amd64*)    keys=("windows/amd64") ;;
+    iterion-desktop-windows-arm64*)    keys=("windows/arm64") ;;
+    iterion-desktop-linux-amd64*)      keys=("linux/amd64") ;;
+    iterion-desktop-linux-arm64*)      keys=("linux/arm64") ;;
   esac
-  if [ -z "$key" ]; then
+  if [ "${#keys[@]}" -eq 0 ]; then
     continue
   fi
   size=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f")
@@ -59,10 +64,12 @@ for f in "$DIR"/iterion-desktop-*; do
     echo "Empty signature file for $f ($sigfile)" >&2
     exit 1
   fi
-  artifacts[$key]=$(
-    printf '"%s":{"url":"%s/%s","size":%s,"sha256":"%s","ed25519":"%s"}' \
-      "$key" "$RELEASE_BASE_URL" "$base" "$size" "$sha" "$sig"
-  )
+  for key in "${keys[@]}"; do
+    artifacts[$key]=$(
+      printf '"%s":{"url":"%s/%s","size":%s,"sha256":"%s","ed25519":"%s"}' \
+        "$key" "$RELEASE_BASE_URL" "$base" "$size" "$sha" "$sig"
+    )
+  done
 done
 
 if [ "${#artifacts[@]}" -eq 0 ]; then

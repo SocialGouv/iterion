@@ -66,7 +66,9 @@ These packages are wired into [.devcontainer/devcontainer.json](../.devcontainer
 ### macOS
 
 Xcode Command Line Tools provide everything Wails needs (WebKit lives in the
-SDK, no extra brew formulas required). The CI runs `macos-13`/`macos-14`.
+SDK, no extra brew formulas required). The CI runs `macos-14` (Apple
+Silicon) and produces a single `darwin/universal` .app via Wails'
+`-platform darwin/universal` (lipo'd amd64 + arm64).
 
 ### Windows
 
@@ -142,8 +144,7 @@ generally don't work. Each target must be built on a matching host:
 |-------------------|------------------|
 | `linux/amd64`     | any Linux x86_64 (devcontainer OK) |
 | `linux/arm64`     | Linux aarch64 (CI uses `ubuntu-24.04-arm`) |
-| `darwin/amd64`    | macOS x86_64 (CI uses `macos-13`) |
-| `darwin/arm64`    | macOS arm64 (CI uses `macos-14`) |
+| `darwin/universal`| macOS — single .app for Intel + Apple Silicon (CI uses `macos-14`; lipo via `-platform darwin/universal`) |
 | `windows/amd64`   | Windows x64 (CI uses `windows-latest`) |
 | `windows/arm64`   | Windows x64 cross to arm64 (Wails handles this) |
 

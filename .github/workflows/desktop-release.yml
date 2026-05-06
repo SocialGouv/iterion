@@ -27,13 +27,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Single macOS job builds a universal binary (lipo'd amd64 +
+          # arm64 in one .app). Replaces the previous two-job matrix:
+          # macos-13 (Intel) had a chronically backed-up runner pool
+          # that left release runs stuck for 30+ min waiting for a
+          # picker, while macos-14 (Apple Silicon) is fast and can
+          # cross-compile both slices via Wails' `-platform
+          # darwin/universal`. The resulting .app is ~30 MB heavier but
+          # works on every supported Mac (and Apple Silicon is the
+          # majority Mac in 2025+).
           - os: macos-14
-            platform: darwin/arm64
-            artifact_name: iterion-desktop-darwin-arm64
-            package: zip
-          - os: macos-13
-            platform: darwin/amd64
-            artifact_name: iterion-desktop-darwin-amd64
+            platform: darwin/universal
+            artifact_name: iterion-desktop-darwin-universal
             package: zip
           - os: windows-latest
             platform: windows/amd64
@@ -151,12 +156,11 @@ jobs:
           # -s (we ship a stub frontend, the real SPA is embedded in pkg/server)
           # and runs wails build from cmd/iterion-desktop where wails.json lives.
           case "$GOOS_GOARCH" in
-            linux/amd64)   task desktop:build:linux:amd64 ;;
-            linux/arm64)   task desktop:build:linux:arm64 ;;
-            darwin/amd64)  task desktop:build:darwin:amd64 ;;
-            darwin/arm64)  task desktop:build:darwin:arm64 ;;
-            windows/amd64) task desktop:build:windows:amd64 ;;
-            windows/arm64) task desktop:build:windows:arm64 ;;
+            linux/amd64)      task desktop:build:linux:amd64 ;;
+            linux/arm64)      task desktop:build:linux:arm64 ;;
+            darwin/universal) task desktop:build:darwin:universal ;;
+            windows/amd64)    task desktop:build:windows:amd64 ;;
+            windows/arm64)    task desktop:build:windows:arm64 ;;
             *) echo "Unsupported platform: $GOOS_GOARCH" >&2; exit 1 ;;
           esac
 

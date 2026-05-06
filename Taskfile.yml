@@ -307,6 +307,17 @@ tasks:
     cmds:
       - wails build -tags desktop -platform darwin/amd64 -clean -trimpath -skipbindings -s -ldflags "{{.LDFLAGS}}" -o iterion-desktop-darwin-amd64
 
+  desktop:build:darwin:universal:
+    desc: Build Iterion Desktop for macOS (universal binary, runs on Intel + Apple Silicon)
+    deps: [editor:build]
+    dir: cmd/iterion-desktop
+    cmds:
+      # `-platform darwin/universal` makes Wails build both arch slices
+      # and lipo them into a single .app. The CI matrix prefers this
+      # over two separate jobs to dodge the macos-13 runner-pool queue
+      # (Intel hosted runners are scarce and frequently >20 min queued).
+      - wails build -tags desktop -platform darwin/universal -clean -trimpath -skipbindings -s -ldflags "{{.LDFLAGS}}" -o iterion-desktop-darwin-universal
+
   desktop:build:windows:amd64:
     desc: Build Iterion Desktop for Windows amd64 (must run on Windows)
     deps: [editor:build]
