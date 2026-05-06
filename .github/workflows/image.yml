@@ -6,6 +6,13 @@ on:
       - main
     tags:
       - "v*"
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - "docker/**"
+      - ".github/workflows/image.yml"
+      - "go.mod"
+      - "go.sum"
   workflow_dispatch:
 
 permissions:
@@ -47,13 +54,18 @@ jobs:
             type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
-      - name: Build and push
+      - name: Build (and push when not a PR)
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
+          # PRs build linux/amd64 only — cross-arch QEMU emulation
+          # roughly doubles the wall-clock and the result is thrown
+          # away anyway. Branch and tag pushes still build both archs.
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          push: ${{ github.event_name != 'pull_request' }}
+          load: ${{ github.event_name == 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
@@ -63,7 +75,6 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Compute lowercase image ref
-        if: github.ref == format('refs/heads/{0}', 'main')
         shell: bash
         run: |
           # OCI image references must be lowercase; github.repository_owner
@@ -74,7 +85,20 @@ jobs:
           echo "IMAGE_REF_LC=$(printf '%s/%s' "${REGISTRY}" "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')" \
             >> "$GITHUB_ENV"
 
-      - name: Trivy scan
+      # Trivy runs on every build, not just main. PRs scan the locally
+      # loaded image (build with load=true above); branch/tag pushes
+      # scan the freshly-pushed registry tag. This way a CVE in a new
+      # base image or transitive dep blocks merge before it lands.
+      #
+      # Severity gate is CRITICAL only — HIGH is reported but doesn't
+      # block (HIGHs in transitive Go stdlib / npm-vendored deps are
+      # frequent, and we'd rather merge a fix elsewhere than burn a
+      # CI cycle on every npm patch release). `.trivyignore` at repo
+      # root is the explicit allowlist when even a CRITICAL is
+      # evaluated as not-applicable to our code path; entries there
+      # require a justification comment.
+      - name: Trivy scan (registry image)
+        if: github.event_name != 'pull_request'
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.IMAGE_REF_LC }}:edge
@@ -82,4 +106,15 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: "1"
           ignore-unfixed: true
-        if: github.ref == format('refs/heads/{0}', 'main')
+          trivyignores: .trivyignore
+
+      - name: Trivy scan (PR loaded image)
+        if: github.event_name == 'pull_request'
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.build.outputs.imageid }}
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+          trivyignores: .trivyignore

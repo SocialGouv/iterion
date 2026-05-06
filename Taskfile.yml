@@ -420,8 +420,32 @@ tasks:
       - watchexec -r -e go -w cmd -w pkg -- sh -c 'docker compose -f docker-compose.cloud.yml up -d --build iterion-server'
 
   # --- Helm chart targets (plan §F T-36, T-39) --------------------
+  chart:sync-version:
+    desc: Sync helm/iterion/Chart.yaml appVersion with package.json so `helm upgrade` picks up the right image tag
+    cmds:
+      - |
+        VERSION=$(node -p "require('./package.json').version")
+        # macOS / BSD sed and GNU sed disagree on -i; pipe through tee
+        # to avoid the portability headache.
+        awk -v v="$VERSION" '/^appVersion:/ {print "appVersion: \"" v "\""; next} {print}' helm/iterion/Chart.yaml > helm/iterion/Chart.yaml.tmp
+        mv helm/iterion/Chart.yaml.tmp helm/iterion/Chart.yaml
+        echo "Chart.yaml appVersion synced to $VERSION"
+
+  chart:check-version:
+    desc: Fail if Chart.yaml appVersion drifts from package.json (CI gate)
+    cmds:
+      - |
+        PKG=$(node -p "require('./package.json').version")
+        CHART=$(awk '/^appVersion:/ {gsub(/"/,""); print $2}' helm/iterion/Chart.yaml)
+        if [ "$PKG" != "$CHART" ]; then
+          echo "Chart.yaml appVersion ($CHART) does not match package.json version ($PKG)"
+          echo "Run 'task chart:sync-version' to align them."
+          exit 1
+        fi
+
   chart:lint:
     desc: helm lint the iterion chart against values-dev and values-prod
+    deps: [chart:check-version]
     cmds:
       - helm dependency update helm/iterion
       - helm lint helm/iterion -f helm/iterion/values-dev.yaml

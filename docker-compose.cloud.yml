@@ -122,7 +122,10 @@ services:
     ports:
       - "4891:4891"
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:4891/healthz"]
+      # /readyz pings Mongo+NATS+S3 with a 1s deadline per dep, so a
+      # backend hiccup flips the iterion-server container to unhealthy
+      # without restarting the pod.
+      test: ["CMD", "curl", "-fsS", "http://localhost:4891/readyz"]
       interval: 5s
       retries: 30
     command: ["server", "--port", "4891", "--bind", "0.0.0.0"]
