@@ -104,6 +104,32 @@ type run struct {
 // Driver returns "noop".
 func (r *run) Driver() string { return "noop" }
 
+// Command returns a host *exec.Cmd. The noop driver is a transparent
+// passthrough — the returned cmd is what callers would build with
+// exec.CommandContext, with WorkDir and Env folded in.
+func (r *run) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) *exec.Cmd {
+	if len(cmd) == 0 {
+		// Match exec.CommandContext's "Path is empty -> Err set on
+		// Start" behaviour by returning an exec.Cmd with no path. We
+		// cannot return nil because callers expect a usable cmd.
+		return exec.CommandContext(ctx, "")
+	}
+	c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
+	if opts.WorkDir != "" {
+		c.Dir = opts.WorkDir
+	} else if r.info.WorkspacePath != "" {
+		c.Dir = r.info.WorkspacePath
+	}
+	c.Env = os.Environ()
+	for k, v := range opts.Env {
+		c.Env = append(c.Env, k+"="+v)
+	}
+	if opts.Stdin != nil {
+		c.Stdin = opts.Stdin
+	}
+	return c
+}
+
 // Exec runs the command on the host via os/exec. Stdin/Stdout/Stderr
 // are wired through unchanged when provided; otherwise output is
 // captured into the returned [sandbox.ExecResult].
@@ -112,20 +138,7 @@ func (r *run) Exec(ctx context.Context, cmd []string, opts sandbox.ExecOpts) (sa
 		return sandbox.ExecResult{}, fmt.Errorf("noop.Exec: empty cmd")
 	}
 
-	c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
-
-	if opts.WorkDir != "" {
-		c.Dir = opts.WorkDir
-	} else if r.info.WorkspacePath != "" {
-		c.Dir = r.info.WorkspacePath
-	}
-
-	c.Env = os.Environ()
-	for k, v := range opts.Env {
-		c.Env = append(c.Env, k+"="+v)
-	}
-
-	c.Stdin = opts.Stdin
+	c := r.Command(ctx, cmd, opts)
 
 	var stdoutBuf, stderrBuf bytes.Buffer
 	if opts.Stdout != nil {

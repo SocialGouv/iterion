@@ -21,6 +21,7 @@ package sandbox
 import (
 	"context"
 	"io"
+	"os/exec"
 )
 
 // Driver is the abstraction over a concrete sandbox runtime.
@@ -71,15 +72,31 @@ type Run interface {
 	// telemetry and to short-circuit driver-specific code paths.
 	Driver() string
 
-	// Exec runs a command inside the sandbox and waits for it to
-	// finish. For drivers that need it, this is implemented as `docker
-	// exec` / `kubectl exec`; for noop, it is `os/exec`.
+	// Command returns an *exec.Cmd that, when [exec.Cmd.Start] is
+	// called, runs cmd inside the sandbox. Callers wire stdin/stdout/
+	// stderr on the returned cmd exactly as they would for a plain
+	// exec.CommandContext call.
 	//
-	// Stdin/Stdout/Stderr in [ExecOpts] are wired directly to the
-	// process — callers can stream large inputs/outputs without
-	// buffering. ExitCode is populated for both success and graceful
-	// failure; only infrastructure errors (container died, ctx
-	// cancelled) return a non-nil error.
+	// This is the integration surface for backends that already
+	// construct their own exec.Cmd (claudesdk, codexsdk): instead of
+	// `exec.CommandContext(ctx, "claude", args...)` they call
+	// `run.Command(ctx, append([]string{"claude"}, args...), opts)`
+	// and use the returned cmd identically.
+	//
+	// For the noop driver, Command is a transparent passthrough —
+	// the returned cmd runs on the host with the host's environment,
+	// preserving the pre-sandbox behaviour for unconfigured runs.
+	//
+	// For container drivers, Command rewrites the invocation to a
+	// `docker exec` / `kubectl exec` form and forwards Cwd/Env via
+	// the runtime-native flags so the inner process sees them.
+	Command(ctx context.Context, cmd []string, opts ExecOpts) *exec.Cmd
+
+	// Exec is a convenience wrapper around [Run.Command] +
+	// [exec.Cmd.Run] that captures stdout/stderr buffers (when not
+	// supplied via [ExecOpts]) and reports the exit code in
+	// [ExecResult]. Use [Run.Command] when you need streaming I/O or
+	// finer control over the subprocess lifecycle.
 	Exec(ctx context.Context, cmd []string, opts ExecOpts) (ExecResult, error)
 
 	// Stop initiates graceful shutdown. Implementations should send a

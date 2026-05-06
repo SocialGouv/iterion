@@ -1,6 +1,9 @@
 package sandbox
 
-import "context"
+import (
+	"context"
+	"os/exec"
+)
 
 // testDriver is a driver stub used by factory tests to satisfy the
 // Driver interface without pulling docker/k8s deps. It is build-tagged
@@ -39,6 +42,9 @@ func (t *testPrepared) DriverName() string { return t.driver }
 type testRun struct{ driver string }
 
 func (r *testRun) Driver() string { return r.driver }
+func (r *testRun) Command(ctx context.Context, _ []string, _ ExecOpts) *exec.Cmd {
+	return exec.CommandContext(ctx, "true")
+}
 func (r *testRun) Exec(_ context.Context, _ []string, _ ExecOpts) (ExecResult, error) {
 	return ExecResult{}, nil
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/sandbox/docker"
 	"github.com/SocialGouv/iterion/pkg/sandbox/noop"
 )
 
@@ -105,10 +106,17 @@ func RunSandboxDoctor(p *Printer) error {
 }
 
 // defaultDriverRegistry returns the side-effect-free registry of
-// driver constructors known to the CLI. Phase 0 only ships the noop
-// driver; Phase 1 adds docker, Phase 5 adds kubernetes.
+// driver constructors known to the CLI. Phase 1 ships docker + noop;
+// Phase 5 adds kubernetes.
+//
+// The factory walks this map in [sandbox.preferenceOrder] for the
+// detected host kind. On a host without docker/podman, the docker
+// constructor returns ErrUnavailable and the factory falls through
+// to noop.
 func defaultDriverRegistry() map[string]sandbox.DriverConstructor {
 	return map[string]sandbox.DriverConstructor{
-		"noop": noop.Constructor,
+		"docker": docker.Constructor,
+		"podman": docker.Constructor, // same code path; runtime detection picks
+		"noop":   noop.Constructor,
 	}
 }
