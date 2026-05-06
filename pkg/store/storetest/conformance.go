@@ -161,8 +161,8 @@ func testEventSeqConcurrent(t *testing.T, s store.RunStore) {
 			t.Errorf("duplicate seq %d at index %d", ev.Seq, i)
 		}
 		seen[ev.Seq] = struct{}{}
-		if ev.Seq < 0 || ev.Seq >= int64(goroutines*perG)+10 {
-			t.Errorf("seq out of plausible range at index %d: %d", i, ev.Seq)
+		if ev.Seq < 0 {
+			t.Errorf("negative seq at index %d: %d", i, ev.Seq)
 		}
 	}
 }

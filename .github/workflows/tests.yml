@@ -36,6 +36,23 @@ jobs:
           rm -rf ../pkg/server/static/assets ../pkg/server/static/index.html
           cp -r dist/* ../pkg/server/static/
 
+      - name: Helm chart version drift check
+        # Mirror of `task chart:check-version`, inlined so we don't pull
+        # go-task into the test job. release-it bumps package.json on
+        # release; if Chart.yaml's appVersion isn't synced (via
+        # `task chart:sync-version`), `helm upgrade` deploys the stale
+        # image tag silently. Fail the PR before that happens.
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG=$(node -p "require('./package.json').version")
+          CHART=$(awk '/^appVersion:/ {gsub(/"/,""); print $2}' helm/iterion/Chart.yaml)
+          if [ "$PKG" != "$CHART" ]; then
+            echo "::error::Chart.yaml appVersion ($CHART) does not match package.json version ($PKG)"
+            echo "Run 'task chart:sync-version' to align them, then commit the result."
+            exit 1
+          fi
+
       - name: gofmt (check)
         shell: bash
         run: |
@@ -58,3 +75,21 @@ jobs:
 
       - name: E2E tests
         run: go test -mod=vendor -v -timeout 120s ./e2e/...
+
+      # Filesystem CVE scan: catches vulnerabilities introduced via Go
+      # vendor changes (or any other source addition) on every PR,
+      # complementing the image scan in image.yml which only fires when
+      # Dockerfile/docker/go.mod/go.sum change. A PR that bumps a
+      # transitive dep through pkg/* edits would otherwise sneak past
+      # the security gate.
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          skip-dirs: vendor,editor/node_modules,node_modules
