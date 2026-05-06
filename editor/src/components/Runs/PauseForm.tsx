@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 
 import { resumeRun } from "@/api/runs";
 import { Button, Textarea } from "@/components/ui";
+import { useDocumentStore } from "@/store/document";
 
 interface Props {
   runId: string;
@@ -22,6 +23,10 @@ export default function PauseForm({ runId, questions, message, onSubmitted }: Pr
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Cloud mode requires the .iter source inline; the document store
+  // caches it on openFile/saveFile. Local mode ignores `source` and
+  // resolves the file via FilePath, so passing undefined is safe.
+  const currentSource = useDocumentStore((s) => s.currentSource);
 
   const onChange = (name: string, next: string) => {
     setValues((prev) => ({ ...prev, [name]: next }));
@@ -34,7 +39,7 @@ export default function PauseForm({ runId, questions, message, onSubmitted }: Pr
       // The runtime accepts a generic answers map; values are passed
       // through to the resumed node's inputs. Strings are the safest
       // common type for an ad-hoc pause UI.
-      await resumeRun(runId, { answers: values });
+      await resumeRun(runId, { answers: values, source: currentSource ?? undefined });
       onSubmitted?.();
     } catch (e) {
       setError((e as Error).message);

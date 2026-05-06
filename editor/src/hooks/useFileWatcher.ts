@@ -40,6 +40,7 @@ export function useFileWatcher() {
                 const store = useDocumentStore.getState();
                 store.setDocument(result.document);
                 store.setDiagnostics(result.diagnostics);
+                store.setCurrentSource(result.source);
                 store.markSaved();
                 useUIStore.getState().addToast("File reloaded", "info");
               }).catch((err) => {
@@ -59,6 +60,7 @@ export function useFileWatcher() {
                     const store = useDocumentStore.getState();
                     store.setDocument(result.document);
                     store.setDiagnostics(result.diagnostics);
+                    store.setCurrentSource(result.source);
                     store.markSaved();
                   }).catch((err) => {
                     console.error("Failed to reload file:", err);

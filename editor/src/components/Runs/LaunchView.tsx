@@ -29,6 +29,10 @@ export default function LaunchView() {
   }, [search]);
 
   const [doc, setDoc] = useState<IterDocument | null>(null);
+  // Raw .iter source captured at openFile-time so cloud-mode createRun
+  // can include it inline. Without source, the cloud server pod's
+  // safePath disk check fails (no shared FS with the editor).
+  const [source, setSource] = useState<string>("");
   const [values, setValues] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -61,6 +65,7 @@ export default function LaunchView() {
       .then((res) => {
         if (cancelled) return;
         setDoc(res.document);
+        setSource(res.source);
         const fields = pickVars(res.document);
         const initial: Record<string, string> = {};
         for (const f of fields) initial[f.name] = defaultStringFor(f);
@@ -82,6 +87,7 @@ export default function LaunchView() {
     try {
       const res = await createRun({
         file_path: filePath,
+        source: source || undefined,
         vars: values,
         merge_into: mergeInto || undefined,
         branch_name: branchName || undefined,

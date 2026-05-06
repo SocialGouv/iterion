@@ -43,6 +43,7 @@ export default function Toolbar() {
   const document = useDocumentStore((s) => s.document);
   const currentFilePath = useDocumentStore((s) => s.currentFilePath);
   const setCurrentFilePath = useDocumentStore((s) => s.setCurrentFilePath);
+  const setCurrentSource = useDocumentStore((s) => s.setCurrentSource);
   const undo = useDocumentStore((s) => s.undo);
   const redo = useDocumentStore((s) => s.redo);
   const canUndo = useDocumentStore((s) => s.canUndo);
@@ -88,8 +89,9 @@ export default function Toolbar() {
     setDocument(createEmptyDocument());
     setDiagnostics([], []);
     setCurrentFilePath(null);
+    setCurrentSource(null);
     markSaved();
-  }, [setDocument, setDiagnostics, setCurrentFilePath, markSaved, isDirty]);
+  }, [setDocument, setDiagnostics, setCurrentFilePath, setCurrentSource, markSaved, isDirty]);
 
   const handlePickFile = useCallback(
     async (kind: "file" | "example", path: string) => {
@@ -101,6 +103,7 @@ export default function Toolbar() {
           setDocument(result.document);
           setDiagnostics(result.diagnostics);
           setCurrentFilePath(result.path);
+          setCurrentSource(result.source);
           pushRecent(result.path);
           markSaved();
         } else {
@@ -114,6 +117,10 @@ export default function Toolbar() {
           // which would otherwise be disabled with "Save the workflow
           // first" on every example.
           setCurrentFilePath(`examples/${path}`);
+          // loadExample doesn't return raw .iter source (it returns the
+          // parsed document only). Cloud-mode resume after launching
+          // an example would need a re-open to populate currentSource.
+          setCurrentSource(null);
           markSaved();
         }
       } catch (err) {
@@ -140,12 +147,14 @@ export default function Toolbar() {
         setDocument(result.document);
         setDiagnostics(result.diagnostics);
         setCurrentFilePath(null);
+        // Imported files are off-disk; the original text is the source.
+        setCurrentSource(text);
       } catch (err) {
         console.error("Import failed:", err);
       }
       e.target.value = "";
     },
-    [setDocument, setDiagnostics, setCurrentFilePath, isDirty],
+    [setDocument, setDiagnostics, setCurrentFilePath, setCurrentSource, isDirty],
   );
 
   const handleValidate = useCallback(async () => {
@@ -170,7 +179,8 @@ export default function Toolbar() {
     if (!document) return;
     if (currentFilePath) {
       try {
-        await api.saveFile(currentFilePath, document);
+        const result = await api.saveFile(currentFilePath, document);
+        setCurrentSource(result.source);
         markSaved();
         addToast("Saved successfully", "success");
         pushRecent(currentFilePath);
@@ -183,7 +193,7 @@ export default function Toolbar() {
       setSaveFileName(`${name}.iter`);
       setShowSaveDialog(true);
     }
-  }, [document, currentFilePath, markSaved, addToast, pushRecent]);
+  }, [document, currentFilePath, setCurrentSource, markSaved, addToast, pushRecent]);
 
   const handleSaveAs = useCallback(async () => {
     if (!document || !saveFileName) return;
@@ -191,6 +201,7 @@ export default function Toolbar() {
     try {
       const result = await api.saveFile(fileName, document);
       setCurrentFilePath(result.path);
+      setCurrentSource(result.source);
       markSaved();
       pushRecent(result.path);
       addToast("Saved successfully", "success");
@@ -199,7 +210,7 @@ export default function Toolbar() {
       console.error("Save failed:", err);
       addToast("Save failed", "error");
     }
-  }, [document, saveFileName, setCurrentFilePath, markSaved, pushRecent, addToast]);
+  }, [document, saveFileName, setCurrentFilePath, setCurrentSource, markSaved, pushRecent, addToast]);
 
   // Keyboard shortcuts
   useEffect(() => {

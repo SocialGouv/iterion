@@ -78,6 +78,7 @@ export default function EditorView() {
           const ds = useDocumentStore.getState();
           ds.setDocument(result.document);
           ds.setCurrentFilePath(result.path);
+          ds.setCurrentSource(result.source);
           ds.markSaved();
           // Selection waits a tick so the new document's nodes have
           // been registered with React Flow before we attempt to

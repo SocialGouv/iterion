@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { resumeRun } from "@/api/runs";
 import type { RunHeader } from "@/api/runs";
 import { Button, Dialog } from "@/components/ui";
+import { useDocumentStore } from "@/store/document";
 import { useRunStore } from "@/store/run";
 import { useUIStore } from "@/store/ui";
 
@@ -23,6 +24,10 @@ export default function ResumeDialog({ run, open, onOpenChange }: Props) {
   const setRunStatus = useRunStore((s) => s.setRunStatus);
   const requestWsReconnect = useRunStore((s) => s.requestWsReconnect);
   const addToast = useUIStore((s) => s.addToast);
+  // Cloud mode requires the .iter source inline; the document store
+  // caches it on openFile/saveFile. Local mode ignores `source` and
+  // resolves the file via the run's persisted FilePath.
+  const currentSource = useDocumentStore((s) => s.currentSource);
 
   // Reset transient state when the dialog re-opens for a different run
   // or after a previous attempt: force defaults to off, and stale errors
@@ -39,7 +44,7 @@ export default function ResumeDialog({ run, open, onOpenChange }: Props) {
     setBusy(true);
     setError(null);
     try {
-      await resumeRun(run.id, { force });
+      await resumeRun(run.id, { force, source: currentSource ?? undefined });
       setRunStatus("running");
       // The broker dropped this run's subscribers when the prior pass
       // hit terminal status; without a fresh dial the resumed engine
