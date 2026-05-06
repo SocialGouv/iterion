@@ -78,6 +78,9 @@ ENV ITERION_VERSION=${VERSION} \
 #   procps    — `ps`, used by recovery dispatch + diagnostics.
 #   curl      — needed to fetch kubectl below; harmless to keep
 #               available for runtime use.
+#   passwd    — provides groupadd/useradd. debian:12-slim drops it
+#               from the default footprint; without it the non-root
+#               user setup below fails with `groupadd: not found`.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         git \
@@ -85,6 +88,7 @@ RUN apt-get update \
         tini \
         procps \
         curl \
+        passwd \
  && rm -rf /var/lib/apt/lists/*
 
 # kubectl — required by the kubernetes sandbox driver (Phase 5) when
