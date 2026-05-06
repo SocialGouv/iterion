@@ -392,6 +392,11 @@ export interface RunCommits {
   count: number;
   base_commit?: string;
   head_commit?: string;
+  // The message the deferred-merge endpoint would commit if no override
+  // is supplied. Pre-fills the Commits-tab squash editor so the user
+  // sees the proposal before clicking and only types in edit mode when
+  // they want to override. Empty when the merge action is unavailable.
+  default_squash_message?: string;
   available: boolean;
   reason?: "no_workdir" | "no_baseline" | "not_git_repo" | string;
 }

@@ -403,19 +403,24 @@ func TestFinalizeWorktree_SquashStrategy(t *testing.T) {
 }
 
 // TestBuildSquashMessage_SingleCommit — when the run produced one
-// commit, the squash title is that commit's subject (a meaningful
-// conventional-commit message), and the body is omitted because
-// re-listing the same line would be redundant.
+// commit, the squash uses that commit's full message (subject + body)
+// verbatim. No information is lost vs. a non-squash merge: the
+// detailed conventional-commit body the workflow authored survives
+// the squash onto main.
 func TestBuildSquashMessage_SingleCommit(t *testing.T) {
 	repo, originalTip := initBareishRepo(t)
 	wt := filepath.Join(t.TempDir(), "wt")
 	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
 	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
 
-	finalSHA := addCommit(t, wt, "a.go", "package main\n// a\n", "feat(privacy): add pure-Go privacy_filter tools")
+	fullMessage := "feat(privacy): add pure-Go privacy_filter tools\n\nDetect and redact 5 PII categories.\nNo Python, no ONNX."
+	writeFile(t, filepath.Join(wt, "a.go"), "package main\n// a\n")
+	mustRun(t, wt, "git", "add", "a.go")
+	mustRun(t, wt, "git", "commit", "-m", fullMessage)
+	finalSHA := strings.TrimSpace(string(mustOutput(t, wt, "git", "rev-parse", "HEAD")))
 
 	got := buildSquashMessage(repo, originalTip, finalSHA, "plain-basalt-0d49")
-	want := "feat(privacy): add pure-Go privacy_filter tools\n"
+	want := fullMessage + "\n"
 	if got != want {
 		t.Errorf("squash message:\n got: %q\nwant: %q", got, want)
 	}

@@ -443,20 +443,25 @@ func BuildSquashMessage(repoRoot, base, head, runName string) string {
 
 // buildSquashMessage assembles the commit message for a squash merge.
 //
-// Title is the subject of the first commit the run produced — the
-// workflow's `prepare_commit` / `commit_changes` nodes already produce
-// conventional-commit-style subjects (`feat(privacy): ...`,
-// `fix(runview): ...`), so reusing the first one lands a
-// semantically-meaningful message on `main` rather than the run's
-// arbitrary friendly name (`plain-basalt-0d49`). Falls back to runName
-// then "iterion run" when no first-commit subject is recoverable.
+// Single-commit runs reuse that commit's full message (subject + body)
+// verbatim, so the squash on `main` carries the same conventional-
+// commit description the workflow's `commit_changes` node authored —
+// no information loss vs. a non-squash merge.
 //
-// Body lists each squashed commit as `- <shortSHA> <subject>` so the
-// per-iteration history remains visible even though the commits
-// themselves are collapsed. Body is omitted when the run produced
-// only one commit (the title already says everything).
+// Multi-commit runs use the first commit's subject as the title, then
+// a `- <shortSHA> <subject>` body list to preserve the per-iteration
+// audit trail in collapsed form.
+//
+// Falls back to runName then "iterion run" when no commits are
+// readable in base..head (degenerate ranges, bad refs).
 func buildSquashMessage(repoRoot, base, head, runName string) string {
 	subjects := readCommitSubjects(repoRoot, base, head)
+
+	if len(subjects) == 1 {
+		if full := readFullCommitMessage(repoRoot, head); full != "" {
+			return full
+		}
+	}
 
 	title := ""
 	if len(subjects) > 0 {
@@ -474,8 +479,8 @@ func buildSquashMessage(repoRoot, base, head, runName string) string {
 	body.WriteString("\n")
 
 	if len(subjects) <= 1 {
-		// One commit (or none readable): the title already conveys the
-		// change — no need for a body that re-states it as a list of one.
+		// One commit but full body unrecoverable, OR no commits at all:
+		// the title already conveys what we know.
 		return body.String()
 	}
 
@@ -488,6 +493,22 @@ func buildSquashMessage(repoRoot, base, head, runName string) string {
 		body.WriteString("\n")
 	}
 	return body.String()
+}
+
+// readFullCommitMessage returns the full commit message (subject + body)
+// for ref, normalised to a single trailing newline so the output is
+// safe to feed into `git commit -m`. Returns "" on any git failure;
+// callers degrade to the subject-only fallback chain.
+func readFullCommitMessage(repoRoot, ref string) string {
+	out, err := gitCmd("-C", repoRoot, "log", "-1", "--pretty=format:%B", ref).Output()
+	if err != nil {
+		return ""
+	}
+	msg := strings.TrimRight(string(out), "\n")
+	if msg == "" {
+		return ""
+	}
+	return msg + "\n"
 }
 
 // commitEntry is the (shortSHA, subject) pair we extract for each commit

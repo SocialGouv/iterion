@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -13,13 +14,20 @@ import (
 // with `reason` lets the editor render an empty-state without parsing
 // error envelopes (e.g. legacy runs without BaseCommit, or worktree dirs
 // torn down before the commits could be promoted).
+//
+// `default_squash_message` is the message the deferred-merge endpoint
+// would use if the user submitted "Squash and merge" without an
+// override. The Commits-tab UI pre-fills its message editor with this
+// value so the user sees the proposed message before clicking, and
+// toggles into edit mode only when they want to override.
 type runCommitsResponse struct {
-	Commits    []gitlib.CommitInfo `json:"commits"`
-	Count      int                 `json:"count"`
-	BaseCommit string              `json:"base_commit,omitempty"`
-	HeadCommit string              `json:"head_commit,omitempty"`
-	Available  bool                `json:"available"`
-	Reason     string              `json:"reason,omitempty"`
+	Commits              []gitlib.CommitInfo `json:"commits"`
+	Count                int                 `json:"count"`
+	BaseCommit           string              `json:"base_commit,omitempty"`
+	HeadCommit           string              `json:"head_commit,omitempty"`
+	DefaultSquashMessage string              `json:"default_squash_message,omitempty"`
+	Available            bool                `json:"available"`
+	Reason               string              `json:"reason,omitempty"`
 }
 
 // handleListRunCommits returns the per-iteration commits the workflow
@@ -58,11 +66,12 @@ func (s *Server) handleListRunCommits(w http.ResponseWriter, r *http.Request) {
 		if logErr == nil {
 			head, _ := gitlib.RevParseHead(run.WorkDir)
 			s.writeJSONFor(w, r, runCommitsResponse{
-				Commits:    commits,
-				Count:      len(commits),
-				BaseCommit: run.BaseCommit,
-				HeadCommit: head,
-				Available:  true,
+				Commits:              commits,
+				Count:                len(commits),
+				BaseCommit:           run.BaseCommit,
+				HeadCommit:           head,
+				DefaultSquashMessage: defaultSquashMessage(run.WorkDir, run.BaseCommit, head, runNameOrFallback(run)),
+				Available:            true,
 			})
 			return
 		}
@@ -79,11 +88,12 @@ func (s *Server) handleListRunCommits(w http.ResponseWriter, r *http.Request) {
 		commits, logErr := gitlib.Log(repo, base, final)
 		if logErr == nil {
 			s.writeJSONFor(w, r, runCommitsResponse{
-				Commits:    commits,
-				Count:      len(commits),
-				BaseCommit: base,
-				HeadCommit: final,
-				Available:  true,
+				Commits:              commits,
+				Count:                len(commits),
+				BaseCommit:           base,
+				HeadCommit:           final,
+				DefaultSquashMessage: defaultSquashMessage(repo, base, final, runNameOrFallback(run)),
+				Available:            true,
 			})
 			return
 		}
@@ -109,4 +119,26 @@ func reasonForCommits(run *store.Run) string {
 		return "no_baseline"
 	}
 	return "not_git_repo"
+}
+
+// defaultSquashMessage previews what the deferred-merge endpoint would
+// commit if the user submitted without an override. Shares the exact
+// runtime.BuildSquashMessage implementation so the preview cannot drift
+// from what the merge actually writes.
+func defaultSquashMessage(repoRoot, base, head, runName string) string {
+	if repoRoot == "" || base == "" || head == "" {
+		return ""
+	}
+	return runtime.BuildSquashMessage(repoRoot, base, head, runName)
+}
+
+// runNameOrFallback mirrors runview.PerformMerge's title-fallback chain:
+// the run's friendly name when present, else the workflow name. Single
+// source of truth would be ideal but the current layering means we
+// re-derive it here for the preview.
+func runNameOrFallback(run *store.Run) string {
+	if run.Name != "" {
+		return run.Name
+	}
+	return run.WorkflowName
 }

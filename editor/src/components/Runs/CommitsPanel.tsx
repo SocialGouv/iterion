@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 
-import { ReloadIcon } from "@radix-ui/react-icons";
+import { Pencil1Icon, ReloadIcon, ResetIcon } from "@radix-ui/react-icons";
 
 import {
   Button,
@@ -39,6 +39,7 @@ export default function CommitsPanel({
   const { data, loading, error, refresh } = useRunCommits(runId);
 
   const commitCount = data?.commits.length ?? 0;
+  const defaultSquashMessage = data?.default_squash_message ?? "";
 
   return (
     <div className="flex flex-col min-h-0 min-w-0 flex-1 w-full">
@@ -86,6 +87,7 @@ export default function CommitsPanel({
           runId={runId}
           run={run}
           commitCount={commitCount}
+          defaultSquashMessage={defaultSquashMessage}
           onMergeComplete={onMergeComplete}
         />
       )}
@@ -120,10 +122,21 @@ interface MergeFooterProps {
   runId: string;
   run: RunHeader;
   commitCount: number;
+  // The message the backend would commit if no override is supplied.
+  // Pre-rendered into the readonly preview; copied into the textarea
+  // on first Edit so the user starts from the proposal rather than a
+  // blank box.
+  defaultSquashMessage: string;
   onMergeComplete?: () => void;
 }
 
-function MergeFooter({ runId, run, commitCount, onMergeComplete }: MergeFooterProps) {
+function MergeFooter({
+  runId,
+  run,
+  commitCount,
+  defaultSquashMessage,
+  onMergeComplete,
+}: MergeFooterProps) {
   const finished = run.status === "finished";
   const hasBranch = Boolean(run.final_branch);
   // `merged_into` set without a status is the legacy auto-FF path
@@ -138,7 +151,11 @@ function MergeFooter({ runId, run, commitCount, onMergeComplete }: MergeFooterPr
     (run.merge_strategy as MergeStrategy) ?? "squash";
 
   const [strategy, setStrategy] = useState<MergeStrategy>(initialStrategy);
-  const [message, setMessage] = useState<string>("");
+  // editingMessage is null while the user is still in preview mode (no
+  // override). Once they click Edit, we snapshot the current default
+  // into a string so subsequent default-message refreshes don't clobber
+  // their edits. Reset clears it back to null → preview reappears.
+  const [editingMessage, setEditingMessage] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -215,10 +232,18 @@ function MergeFooter({ runId, run, commitCount, onMergeComplete }: MergeFooterPr
     setSubmitting(true);
     setErr(null);
     try {
+      // Only send commit_message when the user actually edited. Sending
+      // undefined lets the backend recompute fresh at merge time —
+      // safer than echoing back a default that may have shifted between
+      // page load and click.
+      const override =
+        strategy === "squash" && editingMessage !== null
+          ? editingMessage
+          : undefined;
       const res = await mergeRun(runId, {
         merge_strategy: strategy,
         merge_into: undefined, // backend defaults to current branch
-        commit_message: strategy === "squash" ? message || undefined : undefined,
+        commit_message: override,
       });
       if (res.merge_status === "merged") {
         onMergeComplete?.();
@@ -232,6 +257,8 @@ function MergeFooter({ runId, run, commitCount, onMergeComplete }: MergeFooterPr
 
   const buttonLabel =
     strategy === "squash" ? "Squash and merge" : "Merge commit";
+
+  const isEditing = editingMessage !== null;
 
   return (
     <div className="shrink-0 border-t border-border-default px-3 py-2 space-y-2 bg-surface-1 max-h-[60%] overflow-y-auto">
@@ -255,13 +282,13 @@ function MergeFooter({ runId, run, commitCount, onMergeComplete }: MergeFooterPr
         <option value="merge">Merge commit (preserve history)</option>
       </Select>
       {strategy === "squash" && (
-        <Textarea
-          rows={3}
-          placeholder="Optional override for the squash commit message — leave empty to use an auto-generated summary listing each squashed commit."
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
+        <SquashMessageEditor
+          defaultMessage={defaultSquashMessage}
+          editingMessage={editingMessage}
+          onStartEdit={() => setEditingMessage(defaultSquashMessage)}
+          onChange={(v) => setEditingMessage(v)}
+          onReset={() => setEditingMessage(null)}
           disabled={submitting}
-          className="text-[11px] font-mono"
         />
       )}
       {err && (
@@ -273,7 +300,7 @@ function MergeFooter({ runId, run, commitCount, onMergeComplete }: MergeFooterPr
         variant="primary"
         size="sm"
         onClick={() => void onSubmit()}
-        disabled={submitting}
+        disabled={submitting || (strategy === "squash" && isEditing && editingMessage.trim() === "")}
         className="w-full"
       >
         {submitting ? "Merging…" : buttonLabel}
@@ -282,6 +309,77 @@ function MergeFooter({ runId, run, commitCount, onMergeComplete }: MergeFooterPr
         Target: currently-checked-out branch. The merge fails fast if the
         working tree is dirty or the storage branch is not fast-forwardable.
       </div>
+    </div>
+  );
+}
+
+// SquashMessageEditor renders the proposed squash commit message in two
+// modes: a readonly `<pre>` preview with a small Edit button (default),
+// or an editable Textarea with a Reset button (after first edit).
+// Behaves like GitHub's PR-merge dialog so the user sees what will
+// land on `main` before clicking and only types when they need to
+// override the workflow's auto-generated message.
+function SquashMessageEditor({
+  defaultMessage,
+  editingMessage,
+  onStartEdit,
+  onChange,
+  onReset,
+  disabled,
+}: {
+  defaultMessage: string;
+  editingMessage: string | null;
+  onStartEdit: () => void;
+  onChange: (v: string) => void;
+  onReset: () => void;
+  disabled: boolean;
+}) {
+  const isEditing = editingMessage !== null;
+  const previewText = defaultMessage.trim();
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] text-fg-subtle uppercase tracking-wide">
+          Commit message
+        </span>
+        {isEditing ? (
+          <button
+            type="button"
+            onClick={onReset}
+            disabled={disabled}
+            className="inline-flex items-center gap-1 text-[10px] text-fg-subtle hover:text-fg-default disabled:opacity-50"
+          >
+            <ResetIcon /> Reset
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onStartEdit}
+            disabled={disabled || !previewText}
+            className="inline-flex items-center gap-1 text-[10px] text-fg-subtle hover:text-fg-default disabled:opacity-50"
+          >
+            <Pencil1Icon /> Edit
+          </button>
+        )}
+      </div>
+      {isEditing ? (
+        <Textarea
+          rows={5}
+          value={editingMessage}
+          onChange={(e) => onChange(e.target.value)}
+          disabled={disabled}
+          className="text-[11px] font-mono"
+          autoFocus
+        />
+      ) : (
+        <pre className="m-0 max-h-32 overflow-y-auto whitespace-pre-wrap break-words rounded border border-border-default bg-surface-0 px-2 py-1 text-[11px] font-mono text-fg-default">
+          {previewText || (
+            <span className="text-fg-subtle italic">
+              (no commits — message will be derived at merge time)
+            </span>
+          )}
+        </pre>
+      )}
     </div>
   );
 }
