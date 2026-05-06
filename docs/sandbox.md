@@ -161,15 +161,50 @@ iterion sandbox doctor                 # report driver + capabilities
 | ------------- | ----------------------------------------------------- |
 | `claude_code` | **fully sandboxed** (CLI runs inside the container)   |
 | `codex`       | partially sandboxed (host CLI; codex has its own internal sandbox) |
-| `claw`        | **incompatible** — refuses to start when sandbox is active |
+| `claw`        | **sandboxed via runner sub-process** (Phase 4 V1) — see below |
 | Tool nodes    | **fully sandboxed** (`sh -c` runs inside the container) |
 | MCP servers   | partially sandboxed (host-side stdio; container-side MCP servers in V2) |
 
-The `claw` backend runs LLM + tools in-process and would require
-sandboxing the iterion engine itself. The Phase 4 plan covers the
-sub-binary split (`cmd/iterion-claw-runner/`) that would make `claw +
-sandbox` work; until then, mixing the two is a hard error with a
-clear message pointing the user to alternatives.
+### Claw backend in sandbox
+
+The `claw` backend runs LLM + tools in-process by default. When a
+sandbox is active, iterion forwards each claw call to a hidden
+`iterion __claw-runner` sub-process inside the container, so the
+LLM's tool calls (Bash, file edits) execute inside the sandbox
+boundary instead of escaping to the host.
+
+**Container requirement**: the container image must ship the
+`iterion` binary on PATH. The production Dockerfile installs it; for
+local sandboxes built from third-party images you can mount the host
+binary in (subject to architecture matching) via `runArgs`:
+
+```jsonc
+// .devcontainer/devcontainer.json
+{
+  "image": "node:20-bookworm",
+  "runArgs": [
+    "-v", "/usr/local/bin/iterion:/usr/local/bin/iterion:ro"
+  ]
+}
+```
+
+**V1 limitations** (tracked for V2):
+
+- The runner registers iterion's standard claw tool set on its own
+  side. `delegate.ToolDef.Execute` closures (which capture executor
+  state) cannot be serialized across the IPC boundary, so:
+  - **MCP-routed tools** declared by the workflow are not visible
+    to claw nodes inside the sandbox.
+  - The **mid-tool-loop ask_user** resume path is not supported on
+    the sandboxed claw path. ask_user calls in the prompt-side
+    fallback form still work.
+- Session state (the conversation history captured for resume) is
+  preserved across the IPC, but rehydration requires the same
+  iterion binary version on both sides.
+
+If your workflow uses claw nodes that depend on MCP or mid-loop
+ask_user, switch them to `claude_code` (which routes natively
+through the sandbox) or run without `--sandbox` until V2.
 
 ## Drivers
 

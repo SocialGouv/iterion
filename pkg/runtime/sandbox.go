@@ -94,8 +94,17 @@ func resolveAndStartSandbox(
 		return nil, nil
 	}
 
+	// Phase 4 V1: claw nodes are forwarded to the iterion-claw-runner
+	// sub-process inside the container so their tool calls (Bash,
+	// file edits) execute inside the sandbox. The hard error from
+	// earlier phases is replaced by an event so operators can see
+	// when the sandboxed claw path is in use, and can opt out by
+	// setting backend on the affected nodes.
 	if wf != nil && containsClawNode(wf) {
-		return nil, fmt.Errorf("runtime: sandbox: workflow contains a node using backend=claw which Phase 4 will split into a sub-binary; until then a sandboxed run cannot host claw nodes. Either drop the sandbox: block, switch the affected nodes to backend=claude_code, or run the workflow without --sandbox")
+		_ = emitEvent("sandbox_claw_routed_via_runner", map[string]interface{}{
+			"reason":         "claw nodes will run via iterion-claw-runner inside the container",
+			"limitations_v1": "no MCP servers, no mid-tool-loop ask_user — see docs/sandbox.md",
+		})
 	}
 
 	factory := sandbox.NewFactory(sandbox.FactoryOptions{
