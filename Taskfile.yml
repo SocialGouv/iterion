@@ -170,7 +170,14 @@ tasks:
       - corepack pnpm install --prefer-offline
       - corepack pnpm exec vite build
       - rm -rf ../pkg/server/static/assets ../pkg/server/static/index.html
-      - cp -r dist/* ../pkg/server/static/
+      # `cp -r dist/. <dest>` is the POSIX-portable form — works in
+      # bash, in zsh, AND in go-task's mvdan/sh interpreter (the
+      # `dist/*` glob was failing on Windows runners with
+      # "coreutils: target ... is not a directory" because mvdan/sh's
+      # built-in cp on Windows rejects the trailing-slash-with-glob
+      # combo even though the dir exists).
+      - mkdir -p ../pkg/server/static
+      - cp -R dist/. ../pkg/server/static
     sources:
       - src/**/*
       - index.html
