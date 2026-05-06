@@ -228,8 +228,13 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	defer func() { _ = lock.Unlock() }()
 
 	// Heartbeat goroutine: refresh the NATS lease while we own it.
+	// On refresh failure the heartbeat cancels runCtx so engine.Run
+	// unwinds via handleContextDoneWithCheckpoint — better to lose
+	// progress than to let the lease expire while the engine is still
+	// writing to Mongo (which would invite split-brain when JetStream
+	// redelivers to a sibling pod).
 	hbDone := make(chan struct{})
-	go r.heartbeat(runCtx, lock, hbDone)
+	go r.heartbeat(runCtx, runCancel, lock, hbDone)
 	defer func() { <-hbDone }()
 
 	if err := r.executeRun(runCtx, msg); err != nil {
@@ -254,10 +259,13 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 
 // heartbeat refreshes the NATS KV lease so a long-running run keeps
 // holding the lock past the 60s default TTL. Returns when ctx is
-// cancelled (run finished) or a refresh failure exhausts retries (in
-// which case the run continues — the lock will simply expire and
-// JetStream will redeliver to a sibling pod after AckWait).
-func (r *Runner) heartbeat(ctx context.Context, lock store.RunLock, done chan<- struct{}) {
+// cancelled (run finished). On refresh failure the heartbeat triggers
+// runCancel so the engine unwinds proactively before the lease expires
+// — without that signal, the lease would silently lapse and JetStream
+// would redeliver to a sibling pod, two writers ending up on the same
+// run state. Better to abort cleanly and re-deliver the original
+// message via Nak.
+func (r *Runner) heartbeat(ctx context.Context, runCancel context.CancelFunc, lock store.RunLock, done chan<- struct{}) {
 	defer close(done)
 	natsLock, ok := lock.(*natsq.Lock)
 	if !ok {
@@ -271,7 +279,11 @@ func (r *Runner) heartbeat(ctx context.Context, lock store.RunLock, done chan<- 
 			return
 		case <-t.C:
 			if err := natsLock.Refresh(ctx); err != nil {
-				r.cfg.Logger.Warn("runner: heartbeat refresh failed: %v", err)
+				if errors.Is(err, context.Canceled) {
+					return // run already exiting
+				}
+				r.cfg.Logger.Error("runner: heartbeat refresh failed: %v — cancelling run to avoid split-brain", err)
+				runCancel()
 				return
 			}
 		}
@@ -292,21 +304,20 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 		return err
 	}
 
-	engine := runtime.New(wf, r.cfg.Store, executor,
+	engineOpts := []runtime.EngineOption{
 		runtime.WithLogger(r.cfg.Logger),
 		runtime.WithWorkflowHash(msg.WorkflowHash),
 		runtime.WithWorkDir(r.cfg.WorkDir),
-	)
+	}
+	if msg.Resume != nil && msg.Resume.Force {
+		// Force-resume must be applied at engine construction so the
+		// hash-mismatch guard in pkg/runtime/resume.go reads the flag.
+		// This was previously dropped on the floor.
+		engineOpts = append(engineOpts, runtime.WithForceResume(true))
+	}
+	engine := runtime.New(wf, r.cfg.Store, executor, engineOpts...)
 
 	if msg.Resume != nil {
-		opts := []runtime.EngineOption{}
-		if msg.Resume.Force {
-			opts = append(opts, runtime.WithForceResume(true))
-		}
-		// Resume engine settings are layered on top of the existing
-		// engine via WithForceResume; runtime.Engine.Resume threads
-		// the answers from the message.
-		_ = opts
 		return engine.Resume(ctx, msg.RunID, msg.Resume.Answers)
 	}
 	return engine.Run(ctx, msg.RunID, msg.Vars)
