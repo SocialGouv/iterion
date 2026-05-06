@@ -59,7 +59,27 @@ spec:
           {{- if .Values.metrics.enabled }}
           ports:
             - name: metrics
-              containerPort: {{ .Values.server.metricsPort }}
+              containerPort: {{ default .Values.server.metricsPort .Values.runner.metricsPort }}
               protocol: TCP
+          # The runner exposes a Prometheus /metrics endpoint on the
+          # configured port (plan §F T-40). We reuse it as a liveness
+          # probe — any process that can serve metrics is by
+          # definition still in its consume loop. A stuck runner that
+          # drops the goroutine returns 0 / connection-refused and
+          # the kubelet restarts the pod.
+          livenessProbe:
+            tcpSocket:
+              port: metrics
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
           {{- end }}
 {{- end -}}

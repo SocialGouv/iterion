@@ -21,8 +21,10 @@ spec:
   triggers:
     - type: nats-jetstream
       metadata:
-        natsServerMonitoringEndpoint: "{{ .Values.config.nats.url }}"
+        # KEDA scrapes /jsz on the NATS monitoring port (default 8222),
+        # NOT the client URL. See _helpers.tpl for resolution order.
+        natsServerMonitoringEndpoint: {{ include "iterion.nats.monitoringEndpoint" . | quote }}
         stream: {{ .Values.config.nats.stream | quote }}
-        consumer: iterion-runners
+        consumer: {{ default "iterion-runners" .Values.runner.keda.consumerName | quote }}
         lagThreshold: {{ .Values.runner.keda.lagThreshold | quote }}
 {{- end -}}

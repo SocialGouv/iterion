@@ -70,6 +70,43 @@ minio:
 
 networkPolicy:
   enabled: true
+  # NetworkPolicy egress is deny-all-by-default. Without entries
+  # below, server + runner pods can only resolve DNS — every Mongo,
+  # NATS, S3, and LLM endpoint call will time out. Uncomment and
+  # tune the examples for your environment, OR set
+  # networkPolicy.enabled=false to skip the policy entirely.
+  egress:
+    extraAllow: []
+      # === Example 1: allow same-namespace pods (in-cluster Mongo,
+      # NATS, MinIO, BuildKit, etc.) ===
+      # - to:
+      #     - podSelector: {}
+      #
+      # === Example 2: allow a specific external API by CIDR + port
+      # (e.g. AWS S3 endpoint, Anthropic, OpenAI) ===
+      # - to:
+      #     - ipBlock:
+      #         cidr: 0.0.0.0/0
+      #         except:
+      #           - 10.0.0.0/8
+      #           - 172.16.0.0/12
+      #           - 192.168.0.0/16
+      #   ports:
+      #     - protocol: TCP
+      #       port: 443
+      #
+      # === Example 3: allow another namespace (e.g. shared Mongo)
+      # by namespaceSelector + podSelector ===
+      # - to:
+      #     - namespaceSelector:
+      #         matchLabels:
+      #           kubernetes.io/metadata.name: data
+      #       podSelector:
+      #         matchLabels:
+      #           app.kubernetes.io/name: mongodb
+      #   ports:
+      #     - protocol: TCP
+      #       port: 27017
 
 metrics:
   enabled: true

@@ -52,6 +52,10 @@ runner:
   replicas: 1
   command: ["runner"]
   args: []
+  # Prometheus metrics port for the runner. Defaults to the same
+  # value as server.metricsPort to keep dashboards uniform; override
+  # if your platform requires distinct ports per component.
+  metricsPort: 9090
   resources:
     requests:
       cpu: 200m
@@ -66,6 +70,10 @@ runner:
     cooldownPeriod: 60
     pollingInterval: 5
     lagThreshold: 1
+    # JetStream consumer name. Override per-release in multi-tenant
+    # installs to avoid collision when several iterion releases share
+    # a NATS cluster.
+    consumerName: iterion-runners
   # Sandbox toggle for the runner pod. When enabled, the chart
   # provisions the additional RBAC the runner needs to create per-run
   # sibling pods via the kubernetes sandbox driver (Phase 5 V1).
@@ -109,6 +117,12 @@ config:
     eventsTtlDays: 90
   nats:
     url: ""           # required when mode=cloud and nats.enabled=false
+    # KEDA NATS JetStream scaler scrapes the HTTP monitoring endpoint
+    # (default port 8222), NOT the client URL above. Format is
+    # "host:port" — no scheme. When using the bundled nats sub-chart,
+    # the default `<release>-nats:8222` works out of the box; with
+    # external NATS, override here.
+    monitoringEndpoint: ""
     stream: ITERION_RUNS
     kvBucket: iterion-run-locks
     dlqStream: ITERION_RUNS_DLQ
@@ -223,7 +237,10 @@ nats:
       enabled: true
 minio:
   enabled: false
+  # Credentials intentionally left empty — values-dev.yaml supplies
+  # the dev-only minioadmin/minioadmin pair. In prod set these via
+  # an existing Secret referenced from secrets.storage.existingSecret.
   auth:
-    rootUser: minioadmin
-    rootPassword: minioadmin
+    rootUser: ""
+    rootPassword: ""
   defaultBuckets: iterion-artifacts

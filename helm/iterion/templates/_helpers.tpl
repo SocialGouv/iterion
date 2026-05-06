@@ -61,3 +61,20 @@ from the release.
 {{- default "default" .Values.serviceAccount.name -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+NATS monitoring endpoint for the KEDA scaler. The scaler scrapes the
+HTTP `/jsz` endpoint, which lives on a separate port from the client
+protocol. Resolution order:
+  1. Explicit override via .Values.config.nats.monitoringEndpoint
+  2. Bundled nats sub-chart (default port 8222 on `<release>-nats`)
+  3. Empty string — caller must set the value or the ScaledObject
+     will fail to scrape and KEDA will hold replicas at minReplicas.
+*/}}
+{{- define "iterion.nats.monitoringEndpoint" -}}
+{{- if .Values.config.nats.monitoringEndpoint -}}
+{{- .Values.config.nats.monitoringEndpoint -}}
+{{- else if .Values.nats.enabled -}}
+{{- printf "%s-nats:8222" .Release.Name -}}
+{{- end -}}
+{{- end -}}
