@@ -20,6 +20,7 @@ var runOpts struct {
 	branchName    string
 	mergeStrategy string
 	autoMerge     bool
+	sandbox       string
 }
 
 var runCmd = &cobra.Command{
@@ -40,6 +41,7 @@ var runCmd = &cobra.Command{
 			BranchName:    runOpts.branchName,
 			MergeStrategy: runOpts.mergeStrategy,
 			AutoMerge:     runOpts.autoMerge,
+			Sandbox:       runOpts.sandbox,
 		}
 		if len(runOpts.varFlags) > 0 {
 			vars, err := cli.ParseVarFlags(runOpts.varFlags)
@@ -67,5 +69,6 @@ func init() {
 	f.StringVar(&runOpts.branchName, "branch-name", "", "For worktree:auto runs, override the storage branch name (default iterion/run/<friendly>)")
 	f.StringVar(&runOpts.mergeStrategy, "merge-strategy", "", "For worktree:auto runs, how to land commits when --auto-merge is on: \"squash\" (default) collapses all run commits into one, \"merge\" fast-forwards (preserves history)")
 	f.BoolVar(&runOpts.autoMerge, "auto-merge", true, "For worktree:auto runs, apply --merge-strategy at the end of the run (CLI default true preserves prior behaviour; the editor sets false by default to defer the merge to a UI action)")
+	f.StringVar(&runOpts.sandbox, "sandbox", "", "Run-level sandbox override: \"none\" (force off), \"auto\" (read .devcontainer/devcontainer.json). Empty inherits ITERION_SANDBOX_DEFAULT then the workflow's own sandbox: block. See pkg/sandbox.")
 	rootCmd.AddCommand(runCmd)
 }

@@ -176,6 +176,16 @@ type spawnOptions struct {
 	Cwd            string
 	Env            map[string]string
 	StderrCallback func(string)
+	// CommandBuilder, when non-nil, replaces the default
+	// exec.CommandContext invocation with the caller's constructor.
+	// Iterion's sandbox driver uses this to route the claude CLI
+	// through `docker exec` — see [CommandBuilder] in option.go.
+	//
+	// When set, the SDK does NOT apply Cwd/Env to the returned cmd
+	// directly: the builder is responsible for passing them through
+	// the runtime-native channels (e.g. `--workdir` / `--env` flags
+	// to `docker exec`).
+	CommandBuilder CommandBuilder
 	// OpenStdin opens a writable pipe to the child stdin (required by the
 	// streaming Session: NDJSON messages are written there). When false,
 	// cmd.Stdin is left nil so Go attaches /dev/null to the child stdin —
@@ -188,16 +198,24 @@ type spawnOptions struct {
 
 // spawnProcess starts a new Claude CLI subprocess with the given arguments.
 func spawnProcess(ctx context.Context, cliPath string, args []string, opts spawnOptions) (*cliProcess, error) {
-	cmd := exec.CommandContext(ctx, cliPath, args...)
-
-	if opts.Cwd != "" {
-		cmd.Dir = opts.Cwd
-	}
-
-	// Build environment
-	cmd.Env = os.Environ()
-	for k, v := range opts.Env {
-		cmd.Env = append(cmd.Env, k+"="+v)
+	var cmd *exec.Cmd
+	if opts.CommandBuilder != nil {
+		// Sandbox-routed path: the builder owns Cwd/Env propagation
+		// (typically via --workdir / --env flags to `docker exec`),
+		// so the SDK does not apply them to the returned cmd.
+		cmd = opts.CommandBuilder(ctx, cliPath, args, opts.Cwd, opts.Env)
+		if cmd == nil {
+			return nil, fmt.Errorf("claude: CommandBuilder returned nil cmd")
+		}
+	} else {
+		cmd = exec.CommandContext(ctx, cliPath, args...)
+		if opts.Cwd != "" {
+			cmd.Dir = opts.Cwd
+		}
+		cmd.Env = os.Environ()
+		for k, v := range opts.Env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
 	}
 
 	var stdin io.WriteCloser

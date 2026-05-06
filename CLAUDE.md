@@ -161,6 +161,10 @@ Three backends are wired:
 - `claude_code` — recommended for nodes that need real tool/shell access (implementers, fixers).
 - `codex` — **supported but discouraged**. The IR compiler emits `C030` for any node using it. Reasons: codex SDK cannot configure its tool set (`AllowedTools`/`CanUseTool` don't gate the built-in shell), it tends to fill its own context window, and its iterion integration is less ergonomic. Live tests (`task test:live`) still exercise codex for compatibility coverage; new workflows should not adopt it.
 
+### Sandbox
+
+Workflows can opt into per-run container isolation via `sandbox: auto` (reads `.devcontainer/devcontainer.json`) or `sandbox: none` (explicit opt-out). When active, claude_code and tool nodes execute through `docker exec` against a long-lived container that bind-mounts the worktree at `/workspace`; an HTTP CONNECT proxy on the host enforces a network allowlist (default preset: LLM endpoints + npm/pypi/golang + github/gitlab/bitbucket). The `claw` backend cannot be sandboxed yet — Phase 4 will split it via a `cmd/iterion-claw-runner/` sub-binary. See [docs/sandbox.md](docs/sandbox.md) for the full reference and `iterion sandbox doctor` for host diagnostics.
+
 ### Key Interfaces
 
 - `NodeExecutor` (`pkg/runtime/engine.go`) — `Execute(ctx, node, input) → (output, error)`, abstraction between engine and execution backend

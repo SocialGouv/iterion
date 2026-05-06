@@ -70,6 +70,12 @@ type RunOptions struct {
 	// of run. CLI default is true (preserves prior behaviour); the
 	// editor sets false by default to defer merge to a UI action.
 	AutoMerge bool
+	// Sandbox is the run-level override for the sandbox activation
+	// mode ("", "none", "auto"). "" inherits the project default
+	// (ITERION_SANDBOX_DEFAULT) which itself defaults to "" (no
+	// sandbox). The workflow's own `sandbox:` block is the next layer
+	// of precedence; per-node overrides win above all. See pkg/sandbox.
+	Sandbox string
 }
 
 // RunRun executes a workflow or recipe and reports the outcome.
@@ -178,6 +184,8 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		return err
 	}
 
+	sandboxDefault := strings.ToLower(os.Getenv("ITERION_SANDBOX_DEFAULT"))
+
 	eng := runtime.New(wf, s, executor,
 		append(engineOpts,
 			runtime.WithWorkflowHash(wfHash),
@@ -187,6 +195,8 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 			runtime.WithBranchName(opts.BranchName),
 			runtime.WithMergeStrategy(opts.MergeStrategy),
 			runtime.WithAutoMerge(opts.AutoMerge),
+			runtime.WithSandboxOverride(opts.Sandbox),
+			runtime.WithSandboxDefault(sandboxDefault),
 		)...,
 	)
 

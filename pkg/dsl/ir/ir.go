@@ -32,6 +32,7 @@ type Workflow struct {
 	ToolPolicy     []string           // workflow-level tool policy patterns (nil = open)
 	Interaction    *InteractionMode   // workflow-level default interaction mode (nil = not set)
 	Worktree       string             // "auto" runs in a per-run git worktree; "" or "none" runs in-place
+	Sandbox        *SandboxSpec       // workflow-level sandbox spec (nil = inherit global / no sandbox)
 	// MCPServers contains the explicit top-level declarations from the .iter file.
 	MCPServers map[string]*MCPServer
 	// ActiveMCPServers and ResolvedMCPServers are populated after project config
@@ -142,7 +143,8 @@ type AgentNode struct {
 	ToolPolicy       []string // per-node tool policy patterns (nil = inherit workflow)
 	ToolMaxSteps     int      // max tool-use iterations (0 = not set)
 	AwaitMode        AwaitMode
-	Compaction       *Compaction // per-node compaction overrides (nil = inherit workflow)
+	Compaction       *Compaction  // per-node compaction overrides (nil = inherit workflow)
+	Sandbox          *SandboxSpec // node-level sandbox override (nil = inherit workflow)
 }
 
 // NodeKind implements Node.
@@ -162,7 +164,8 @@ type JudgeNode struct {
 	ToolPolicy       []string // per-node tool policy patterns (nil = inherit workflow)
 	ToolMaxSteps     int
 	AwaitMode        AwaitMode
-	Compaction       *Compaction // per-node compaction overrides (nil = inherit workflow)
+	Compaction       *Compaction  // per-node compaction overrides (nil = inherit workflow)
+	Sandbox          *SandboxSpec // node-level sandbox override (nil = inherit workflow)
 }
 
 // NodeKind implements Node.
@@ -204,6 +207,7 @@ type ToolNode struct {
 	CommandRefs []*Ref // parsed template references in Command (resolved at runtime)
 	Session     SessionMode
 	AwaitMode   AwaitMode
+	Sandbox     *SandboxSpec // node-level sandbox override (nil = inherit workflow)
 }
 
 // NodeKind implements Node.

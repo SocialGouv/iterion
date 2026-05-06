@@ -1,10 +1,12 @@
 package model
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
 
 // ClawBackend implements delegate.Backend by calling GenerateTextDirect and
@@ -48,7 +51,22 @@ func NewClawBackend(registry *Registry, hk EventHooks, retry RetryPolicy, opts .
 }
 
 // Execute implements delegate.Backend.
+//
+// When the run is sandboxed (task.Sandbox != nil), the call is
+// forwarded to the iterion-claw-runner sub-process inside the
+// container — see [executeViaSandboxRunner]. This keeps the LLM's
+// in-process tool execution (Bash, file edits) inside the sandbox
+// rather than escaping to the host. The unsandboxed path below is
+// the historical in-process implementation.
+//
+// V1 limitations of the sandbox-routed path are documented on
+// [delegate.IOTask] and in docs/sandbox.md: no MCP servers, no
+// mid-tool-loop ask_user resume.
 func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate.Result, error) {
+	if task.Sandbox != nil {
+		return b.executeViaSandboxRunner(ctx, task)
+	}
+
 	// Resolve API client.
 	client, err := b.registry.Resolve(task.Model)
 	if err != nil {
@@ -363,6 +381,106 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		BackendName:   delegate.BackendClaw,
 		ParseFallback: true,
 	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Sandboxed execution — Phase 4 V1
+// ---------------------------------------------------------------------------
+
+// executeViaSandboxRunner forwards the task to the iterion-claw-runner
+// sub-process inside the sandbox container.
+//
+// Wire format (NDJSON over stdin/stdout):
+//
+//	stdin  : one [delegate.IOTask] line
+//	stdout : one [delegate.IOResult] line
+//
+// The runner re-builds the claw backend in-container with a default
+// tool set, executes the task, and returns the structured result.
+// Errors come back two ways: a non-zero exit code and a non-empty
+// IOResult.Error field — both are surfaced to the caller.
+//
+// V1 deliberately drops task.ToolDefs from the wire form because the
+// Execute closures aren't serializable. The runner registers
+// iterion's standard claw tool set on its own. This means MCP tools
+// and the ask_user mid-tool-loop callback aren't reachable on the
+// sandboxed path — see docs/sandbox.md.
+func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate.Task) (delegate.Result, error) {
+	run := task.Sandbox
+	if run == nil {
+		return delegate.Result{}, fmt.Errorf("claw backend: executeViaSandboxRunner called without a sandbox handle")
+	}
+
+	// The runner is the same iterion binary inside the container,
+	// invoked via a hidden subcommand. The container image is
+	// expected to ship `iterion` on PATH (the production Dockerfile
+	// installs it; bind-mount workflows on local hosts can mount
+	// the host binary into /usr/local/bin/iterion when arches match).
+	cmd := run.Command(ctx, []string{"iterion", "__claw-runner"}, sandbox.ExecOpts{})
+
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		return delegate.Result{}, fmt.Errorf("claw backend: stdin pipe: %w", err)
+	}
+	var stdoutBuf, stderrBuf bytes.Buffer
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
+
+	if err := cmd.Start(); err != nil {
+		return delegate.Result{}, fmt.Errorf("claw backend: spawn runner: %w", err)
+	}
+
+	taskJSON, err := json.Marshal(delegate.ToIOTask(task))
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return delegate.Result{}, fmt.Errorf("claw backend: marshal task: %w", err)
+	}
+	if _, err := stdinPipe.Write(append(taskJSON, '\n')); err != nil {
+		_ = stdinPipe.Close()
+		_ = cmd.Wait()
+		return delegate.Result{}, fmt.Errorf("claw backend: write stdin: %w", err)
+	}
+	_ = stdinPipe.Close()
+
+	waitErr := cmd.Wait()
+
+	var ioRes delegate.IOResult
+	if stdoutBuf.Len() > 0 {
+		// Decode the LAST JSON line on stdout — the runner may emit
+		// progress lines in future versions; we only consume the
+		// terminal IOResult today.
+		dec := json.NewDecoder(&stdoutBuf)
+		for {
+			var candidate delegate.IOResult
+			if decErr := dec.Decode(&candidate); decErr != nil {
+				if decErr == io.EOF {
+					break
+				}
+				return delegate.Result{}, fmt.Errorf("claw backend: decode runner output: %w (stderr: %s)", decErr, stderrBuf.String())
+			}
+			ioRes = candidate
+		}
+	}
+	if waitErr != nil && ioRes.Error == "" {
+		return delegate.Result{}, fmt.Errorf("claw backend: runner exited with error: %w (stderr: %s)", waitErr, stderrBuf.String())
+	}
+	if ioRes.Error != "" {
+		// Preserve waitErr for errors.Is / errors.As consumers when
+		// the runner emitted a structured error AND exited non-zero
+		// (the normal error path). Without %w on waitErr, downstream
+		// classifiers would lose the exec.ExitError typing.
+		if waitErr != nil {
+			return delegate.FromIOResult(ioRes), fmt.Errorf("claw backend: runner: %s (exit: %w)", ioRes.Error, waitErr)
+		}
+		return delegate.FromIOResult(ioRes), fmt.Errorf("claw backend: runner: %s", ioRes.Error)
+	}
+
+	res := delegate.FromIOResult(ioRes)
+	if res.BackendName == "" {
+		res.BackendName = delegate.BackendClaw
+	}
+	return res, nil
 }
 
 // ---------------------------------------------------------------------------

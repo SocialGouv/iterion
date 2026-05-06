@@ -177,6 +177,7 @@ type AgentDecl struct {
 	InteractionModel  string           // model for llm/llm_or_human modes (fallback to Model)
 	Await             AwaitMode        // convergence strategy (none/wait_all/best_effort)
 	Compaction        *CompactionBlock // per-node compaction overrides (nil = inherit workflow)
+	Sandbox           *SandboxBlock    // node-level sandbox override; nil inherits from workflow (see pkg/sandbox)
 	Span              Span
 }
 
@@ -209,6 +210,7 @@ type JudgeDecl struct {
 	InteractionModel  string           // model for llm/llm_or_human modes (fallback to Model)
 	Await             AwaitMode        // convergence strategy (none/wait_all/best_effort)
 	Compaction        *CompactionBlock // per-node compaction overrides (nil = inherit workflow)
+	Sandbox           *SandboxBlock    // node-level sandbox override; nil inherits from workflow (see pkg/sandbox)
 	Span              Span
 }
 
@@ -299,10 +301,11 @@ type HumanDecl struct {
 // a command directly without an LLM call.
 type ToolNodeDecl struct {
 	Name    string
-	Command string    // command to execute, may contain ${...} env refs and {{...}} template refs
-	Input   string    // optional input schema reference name
-	Output  string    // schema reference name
-	Await   AwaitMode // convergence strategy (none/wait_all/best_effort)
+	Command string        // command to execute, may contain ${...} env refs and {{...}} template refs
+	Input   string        // optional input schema reference name
+	Output  string        // schema reference name
+	Await   AwaitMode     // convergence strategy (none/wait_all/best_effort)
+	Sandbox *SandboxBlock // node-level sandbox override; nil inherits from workflow
 	Span    Span
 }
 
@@ -355,6 +358,7 @@ type WorkflowDecl struct {
 	Compaction     *CompactionBlock // session compaction defaults for all nodes (optional)
 	Interaction    *InteractionMode // workflow-level default interaction mode (nil = not set)
 	Worktree       string           // "auto" creates a per-run git worktree; "" or "none" runs in-place
+	Sandbox        *SandboxBlock    // sandbox: short or block form (nil = inherit global default)
 	Edges          []*Edge          // directed edges between nodes
 	Span           Span
 }
@@ -376,6 +380,46 @@ type CompactionBlock struct {
 	Threshold      *float64 // ratio of model context window (0 < t <= 1); nil = inherit
 	PreserveRecent *int     // recent messages kept verbatim (>= 1); nil = inherit
 	Span           Span
+}
+
+// SandboxBlock is the AST representation of a `sandbox:` block. Two
+// surface forms compile down to this same struct:
+//
+//	sandbox: auto                # short form → Mode="auto", everything else zero
+//	sandbox: none                # short form → Mode="none"
+//	sandbox:                     # block form → Mode="inline" (or explicit)
+//	  image: "alpine:3"
+//	  env:
+//	    KEY: value
+//	  mounts: [...]
+//	  network:
+//	    mode: allowlist
+//	    rules: [...]
+//
+// Mode is the activation discriminator the IR + runtime consume. The
+// remaining fields are populated only by the block form; the short
+// form leaves them empty.
+type SandboxBlock struct {
+	Mode            string               // "auto" | "none" | "inline" | "" (inherit when on a node)
+	Image           string               // when Mode=inline
+	User            string               // remoteUser
+	WorkspaceFolder string               // absolute path inside the container
+	PostCreate      string               // shell snippet
+	Env             map[string]string    // containerEnv
+	Mounts          []string             // devcontainer mount syntax
+	Network         *SandboxNetworkBlock // egress filtering
+	Span            Span
+}
+
+// SandboxNetworkBlock is the AST representation of a `network:`
+// sub-block under `sandbox:`. The fields mirror pkg/sandbox.Network
+// 1:1 — the IR compiler converts to the runtime shape.
+type SandboxNetworkBlock struct {
+	Mode    string   // "allowlist" | "denylist" | "open" | ""
+	Preset  string   // "iterion-default" or named preset
+	Rules   []string // glob patterns + "!exclusions"
+	Inherit string   // "merge" | "replace" | "append" — node scope only
+	Span    Span
 }
 
 // ---------------------------------------------------------------------------

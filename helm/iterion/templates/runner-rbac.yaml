@@ -1,0 +1,55 @@
+{{- if and .Values.serviceAccount.create .Values.runner.sandbox.enabled -}}
+# RBAC for the iterion runner to manage per-run sandbox sibling pods.
+#
+# Phase 5 V1 grants the minimum surface needed for the kubernetes
+# sandbox driver (pkg/sandbox/kubernetes) to:
+#
+#   - kubectl apply  → create the per-run pod manifest
+#   - kubectl wait   → block until the pod becomes Ready
+#   - kubectl exec   → run delegate commands inside the pod
+#   - kubectl delete → clean up on run exit
+#
+# All verbs are scoped to the runner's own namespace via Role +
+# RoleBinding (NOT ClusterRole) so a compromised runner can't
+# enumerate or mutate resources outside its blast radius.
+#
+# Phase 5 V2 will add `networkpolicies` to the verbs list so the
+# runner can synthesise per-run NetworkPolicy resources for
+# fine-grained egress filtering. Today the engine's CONNECT proxy
+# (Phase 3) handles egress at the application layer.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "iterion.serviceAccountName" . }}-sandbox
+  labels:
+    {{- include "iterion.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "get"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list"]
+  # Status read so `kubectl wait --for=condition=Ready` can resolve.
+  - apiGroups: [""]
+    resources: ["pods/status"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "iterion.serviceAccountName" . }}-sandbox
+  labels:
+    {{- include "iterion.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "iterion.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "iterion.serviceAccountName" . }}-sandbox
+{{- end -}}

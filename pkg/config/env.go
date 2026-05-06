@@ -114,6 +114,10 @@ func loadEnv(cfg *Config) error {
 		cfg.Log.Level = strings.ToLower(v)
 	}
 
+	if v, ok := lookup("ITERION_SANDBOX_DEFAULT"); ok {
+		cfg.Sandbox.Default = strings.ToLower(v)
+	}
+
 	return nil
 }
 

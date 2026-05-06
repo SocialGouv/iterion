@@ -1,0 +1,258 @@
+package kubernetes
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/sandbox"
+)
+
+func TestCapabilitiesAdvertisedFeatures(t *testing.T) {
+	d := &Driver{namespace: "test"}
+	caps := d.Capabilities()
+
+	if !caps.SupportsImage {
+		t.Error("kubernetes driver must advertise SupportsImage")
+	}
+	if !caps.SupportsPostCreate {
+		t.Error("kubernetes driver must advertise SupportsPostCreate")
+	}
+	if !caps.SupportsRemoteUser {
+		t.Error("kubernetes driver must advertise SupportsRemoteUser")
+	}
+	// Phase 5 V1 explicitly defers these.
+	if caps.SupportsBuild {
+		t.Error("Phase 5 V1 must NOT advertise SupportsBuild")
+	}
+	if caps.SupportsMounts {
+		t.Error("Phase 5 V1 must NOT advertise SupportsMounts (PVCs land in V2)")
+	}
+	if caps.SupportsNetworkPolicy {
+		t.Error("Phase 5 V1 must NOT advertise SupportsNetworkPolicy (proxy handles egress today)")
+	}
+}
+
+func TestPrepareRejectsBuild(t *testing.T) {
+	d := &Driver{namespace: "test"}
+	_, err := d.Prepare(context.Background(), sandbox.Spec{
+		Mode:  sandbox.ModeInline,
+		Build: &sandbox.Build{Dockerfile: "Dockerfile"},
+	})
+	if err == nil {
+		t.Fatal("expected rejection of sandbox.Build")
+	}
+}
+
+func TestPrepareRejectsMounts(t *testing.T) {
+	d := &Driver{namespace: "test"}
+	_, err := d.Prepare(context.Background(), sandbox.Spec{
+		Mode:   sandbox.ModeInline,
+		Image:  "alpine:3",
+		Mounts: []string{"type=bind,source=/a,target=/b"},
+	})
+	if err == nil {
+		t.Fatal("expected rejection of sandbox.Mounts (V1 deferred)")
+	}
+}
+
+func TestPrepareRejectsMissingImage(t *testing.T) {
+	d := &Driver{namespace: "test"}
+	_, err := d.Prepare(context.Background(), sandbox.Spec{Mode: sandbox.ModeInline})
+	if err == nil {
+		t.Fatal("expected rejection of inline spec without image")
+	}
+}
+
+func TestPodNameDeterministic(t *testing.T) {
+	a := podNameFor("run_123")
+	b := podNameFor("run_123")
+	if a != b {
+		t.Errorf("podNameFor not deterministic: %q vs %q", a, b)
+	}
+	if !strings.HasPrefix(a, "iterion-run-") {
+		t.Errorf("name = %q, want prefix iterion-run-", a)
+	}
+	if strings.Contains(a, "_") {
+		t.Errorf("name = %q must not contain underscores (DNS-1123 violation)", a)
+	}
+}
+
+func TestPodNameFitsDNS1123Limit(t *testing.T) {
+	long := "run_" + strings.Repeat("x", 200)
+	got := podNameFor(long)
+	if len(got) > 63 {
+		t.Errorf("name length = %d, exceeds DNS-1123 label limit of 63", len(got))
+	}
+}
+
+func TestPodManifestStructure(t *testing.T) {
+	manifest, err := BuildPodManifest(PodManifestInput{
+		Namespace:    "iterion",
+		Name:         "iterion-run-test",
+		RunID:        "test-1",
+		FriendlyName: "swift-cedar",
+		Spec: sandbox.Spec{
+			Mode:  sandbox.ModeInline,
+			Image: "alpine:3",
+			Env:   map[string]string{"FOO": "bar"},
+		},
+		ProxyEndpoint: "http://t:tok@host:8080",
+	})
+	if err != nil {
+		t.Fatalf("BuildPodManifest: %v", err)
+	}
+
+	var pod map[string]any
+	if err := json.Unmarshal(manifest, &pod); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	meta := pod["metadata"].(map[string]any)
+	if meta["name"] != "iterion-run-test" {
+		t.Errorf("metadata.name = %v", meta["name"])
+	}
+	if meta["namespace"] != "iterion" {
+		t.Errorf("metadata.namespace = %v", meta["namespace"])
+	}
+	labels := meta["labels"].(map[string]any)
+	if labels[LabelManaged] != "true" {
+		t.Errorf("missing managed label: %v", labels)
+	}
+	if labels[LabelRunID] != "test-1" {
+		t.Errorf("missing run-id label: %v", labels)
+	}
+	if labels[LabelRunName] != "swift-cedar" {
+		t.Errorf("missing run-name label: %v", labels)
+	}
+
+	spec := pod["spec"].(map[string]any)
+	if spec["restartPolicy"] != "Never" {
+		t.Errorf("restartPolicy = %v, want Never", spec["restartPolicy"])
+	}
+	if v, _ := spec["automountServiceAccountToken"].(bool); v {
+		t.Error("automountServiceAccountToken must be false (sibling pods don't need cluster API access)")
+	}
+	psc := spec["securityContext"].(map[string]any)
+	if v, _ := psc["runAsNonRoot"].(bool); !v {
+		t.Error("pod securityContext.runAsNonRoot must be true")
+	}
+	containers := spec["containers"].([]any)
+	if len(containers) != 1 {
+		t.Fatalf("containers len = %d, want 1", len(containers))
+	}
+	c0 := containers[0].(map[string]any)
+	if c0["image"] != "alpine:3" {
+		t.Errorf("container image = %v", c0["image"])
+	}
+	cmd := c0["command"].([]any)
+	if len(cmd) != 2 || cmd[0] != "sleep" || cmd[1] != "infinity" {
+		t.Errorf("command = %v, want [sleep infinity]", cmd)
+	}
+	csc := c0["securityContext"].(map[string]any)
+	if v, _ := csc["allowPrivilegeEscalation"].(bool); v {
+		t.Error("container allowPrivilegeEscalation must be false")
+	}
+	caps := csc["capabilities"].(map[string]any)
+	dropped := caps["drop"].([]any)
+	if len(dropped) != 1 || dropped[0] != "ALL" {
+		t.Errorf("capabilities.drop = %v, want [ALL]", dropped)
+	}
+
+	envSlice := c0["env"].([]any)
+	gotEnv := map[string]string{}
+	for _, e := range envSlice {
+		m := e.(map[string]any)
+		gotEnv[m["name"].(string)] = m["value"].(string)
+	}
+	if gotEnv["FOO"] != "bar" {
+		t.Errorf("env FOO = %q", gotEnv["FOO"])
+	}
+	if gotEnv["HTTPS_PROXY"] != "http://t:tok@host:8080" {
+		t.Errorf("HTTPS_PROXY = %q", gotEnv["HTTPS_PROXY"])
+	}
+	if gotEnv["NO_PROXY"] == "" {
+		t.Error("NO_PROXY must be set when proxy endpoint is provided")
+	}
+}
+
+func TestPodManifestRequiresImage(t *testing.T) {
+	_, err := BuildPodManifest(PodManifestInput{
+		Namespace: "ns",
+		Name:      "n",
+		Spec:      sandbox.Spec{Mode: sandbox.ModeInline},
+	})
+	if err == nil {
+		t.Fatal("expected error for missing image")
+	}
+}
+
+func TestParseUserSpec(t *testing.T) {
+	cases := []struct {
+		in       string
+		uid, gid int64
+		ok       bool
+	}{
+		{"1000", 1000, 0, true},
+		{"1000:2000", 1000, 2000, true},
+		{"node", 0, 0, false},       // names not supported by securityContext
+		{"", 0, 0, false},           // empty
+		{"-1", 0, 0, false},         // negative refused
+		{"1000:foo", 1000, 0, true}, // gid skipped, uid kept
+	}
+	for _, c := range cases {
+		uid, gid, ok := parseUserSpec(c.in)
+		if ok != c.ok {
+			t.Errorf("parseUserSpec(%q) ok = %v, want %v", c.in, ok, c.ok)
+			continue
+		}
+		if !c.ok {
+			continue
+		}
+		if uid != c.uid {
+			t.Errorf("parseUserSpec(%q) uid = %d, want %d", c.in, uid, c.uid)
+		}
+		if gid != c.gid {
+			t.Errorf("parseUserSpec(%q) gid = %d, want %d", c.in, gid, c.gid)
+		}
+	}
+}
+
+func TestShellSingleQuote(t *testing.T) {
+	cases := map[string]string{
+		"":            "''",
+		"hello":       "hello", // no special chars → no quoting
+		"hello world": "'hello world'",
+		"it's":        "'it'\\''s'",
+		"a$b":         "'a$b'",
+		"/workspace":  "/workspace", // no special chars
+	}
+	for in, want := range cases {
+		if got := shellSingleQuote(in); got != want {
+			t.Errorf("shellSingleQuote(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestUpsertEnvReplacesExisting(t *testing.T) {
+	env := []any{
+		map[string]any{"name": "FOO", "value": "1"},
+		map[string]any{"name": "BAR", "value": "2"},
+	}
+	got := upsertEnv(env, "FOO", "99")
+	if len(got) != 2 {
+		t.Errorf("len = %d, want 2 (replace, not append)", len(got))
+	}
+	first := got[0].(map[string]any)
+	if first["value"] != "99" {
+		t.Errorf("FOO = %v, want 99", first["value"])
+	}
+}
+
+func TestUpsertEnvAppendsNew(t *testing.T) {
+	env := []any{map[string]any{"name": "FOO", "value": "1"}}
+	got := upsertEnv(env, "BAR", "2")
+	if len(got) != 2 {
+		t.Errorf("len = %d, want 2", len(got))
+	}
+}

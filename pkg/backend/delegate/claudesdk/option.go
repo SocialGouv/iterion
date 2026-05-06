@@ -1,6 +1,28 @@
 package claudesdk
 
-import "encoding/json"
+import (
+	"context"
+	"encoding/json"
+	"os/exec"
+)
+
+// CommandBuilder, when set via [WithCommandBuilder], replaces the
+// SDK's default `exec.CommandContext` call with a caller-supplied
+// constructor.
+//
+// This is the integration hook iterion's sandbox driver uses to route
+// the claude CLI through `docker exec` (or `kubectl exec` in cloud
+// mode) without modifying claudesdk's spawn pipeline.
+//
+// Implementations MUST honour cwd and env on the returned cmd in a
+// way the inner process actually sees them — for sandbox drivers,
+// that means passing them as `--workdir` / `--env` flags to the
+// container runtime, not as Go-level cmd.Dir/cmd.Env (which would
+// only configure the outer `docker exec` driver process).
+//
+// Stdin/Stdout/Stderr on the returned cmd are wired by claudesdk
+// after this function returns; builders should not set them.
+type CommandBuilder func(ctx context.Context, path string, args []string, cwd string, env map[string]string) *exec.Cmd
 
 // Option configures a Session or Prompt call.
 type Option func(*config)
@@ -78,6 +100,12 @@ type config struct {
 	stderrCallback  func(string)
 	messageCallback MessageCallbackFunc
 	addDirs         []string
+
+	// commandBuilder, when non-nil, replaces the default
+	// exec.CommandContext invocation with a caller-supplied builder.
+	// Used by iterion's sandbox driver to route the claude CLI
+	// through `docker exec`. See [CommandBuilder] for the contract.
+	commandBuilder CommandBuilder
 }
 
 // WithModel sets the Claude model (e.g. "claude-sonnet-4-6", "claude-opus-4-6").
@@ -113,6 +141,18 @@ func WithEnv(key, value string) Option {
 		}
 		c.env[key] = value
 	}
+}
+
+// WithCommandBuilder replaces the SDK's default exec.CommandContext
+// call with a caller-supplied constructor — the integration point for
+// sandbox routing. See [CommandBuilder] for the contract.
+//
+// When unset, the SDK uses the historical host-execution path
+// (exec.CommandContext + cmd.Dir + cmd.Env). Setting this disables
+// the SDK's own Cwd/Env application: the builder is responsible for
+// honouring those values.
+func WithCommandBuilder(b CommandBuilder) Option {
+	return func(c *config) { c.commandBuilder = b }
 }
 
 // WithVerbose enables verbose CLI output (turn-by-turn).

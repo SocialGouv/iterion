@@ -125,6 +125,8 @@ const (
 	TokenPreserveRecent
 	// Worktree
 	TokenWorktree
+	// Sandbox (Phase 0: simple "sandbox: ident" form for none|auto)
+	TokenSandbox
 	// Terminal node names (reserved identifiers)
 	TokenDone
 	TokenFail
@@ -236,6 +238,7 @@ var tokenNames = map[TokenType]string{
 	TokenThreshold:      "threshold",
 	TokenPreserveRecent: "preserve_recent",
 	TokenWorktree:       "worktree",
+	TokenSandbox:        "sandbox",
 
 	TokenDone: "done",
 	TokenFail: "fail",
@@ -328,6 +331,7 @@ var keywords = map[string]TokenType{
 	"threshold":             TokenThreshold,
 	"preserve_recent":       TokenPreserveRecent,
 	"worktree":              TokenWorktree,
+	"sandbox":               TokenSandbox,
 	"done":                  TokenDone,
 	"fail":                  TokenFail,
 }

@@ -52,6 +52,28 @@ const (
 	EventDelegateFinished EventType = "delegate_finished"
 	EventDelegateError    EventType = "delegate_error"
 	EventDelegateRetry    EventType = "delegate_retry"
+
+	// EventSandboxSkipped is emitted at run start when the workflow or a
+	// node requested an active sandbox mode (auto/inline) but the
+	// resolved driver cannot honour it — typically the noop driver on a
+	// host without docker, or the cloud V1 fallback where the runner
+	// pod is the de-facto sandbox. The Data field carries:
+	//   - driver: the driver that handled the request
+	//   - mode: the requested mode ("auto" or "inline")
+	//   - reason: human-readable explanation
+	EventSandboxSkipped EventType = "sandbox_skipped"
+	// EventSandboxClawRoutedViaRunner fires when a sandboxed run
+	// contains a node using backend=claw — the engine forwards the
+	// call to iterion __claw-runner inside the container. Data:
+	//   - reason: short summary
+	//   - limitations_v1: known V1 caveats
+	EventSandboxClawRoutedViaRunner EventType = "sandbox_claw_routed_via_runner"
+	// EventNetworkBlocked fires every time the iterion CONNECT proxy
+	// rejects a request. Data:
+	//   - host: blocked hostname
+	//   - reason: rule that fired
+	//   - run_id: the run scope
+	EventNetworkBlocked EventType = "network_blocked"
 )
 
 // Event is a single timestamped fact persisted in events.jsonl.

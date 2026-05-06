@@ -23,6 +23,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
 
 // ErrCompactionUnsupported is the sentinel ClawExecutor.Compact returns
@@ -317,6 +318,12 @@ type ClawExecutor struct {
 	wfCompaction    *ir.Compaction
 	lifecycleHooks  *hooks.Runner
 
+	// sandbox is the live [sandbox.Run] for the current iterion run,
+	// or nil when the workflow doesn't activate a sandbox. The engine
+	// calls SetSandbox after the run starts; backends and tool nodes
+	// route their subprocess invocations through it when set.
+	sandbox sandbox.Run
+
 	// sessions holds per-(runID, nodeID) accumulated message lists
 	// so the recovery dispatcher's CompactAndRetry path has
 	// something to actually compact. The claw backend reads this
@@ -326,6 +333,16 @@ type ClawExecutor struct {
 	// and cleared at the bottom. Compact reads it because the
 	// runtime.Compactor structural interface only carries nodeID.
 	currentRunID string
+}
+
+// SetSandbox installs the live sandbox handle on the executor. The
+// engine calls this once per run, after [resolveAndStartSandbox]
+// returns. Subsequent tool node and backend invocations consult the
+// handle to route through the sandbox transparently.
+//
+// Passing nil clears the previous handle (used between runs).
+func (e *ClawExecutor) SetSandbox(run sandbox.Run) {
+	e.sandbox = run
 }
 
 // ClawExecutorOption configures a ClawExecutor.
@@ -707,6 +724,7 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 		InteractionEnabled:    f.interaction != ir.InteractionNone,
 		CompactThresholdRatio: compactRatio,
 		CompactPreserveRecent: compactPreserve,
+		Sandbox:               e.sandbox,
 	}
 
 	// When interaction is enabled, ensure `ask_user` is in the node's
@@ -1383,10 +1401,7 @@ func (e *ClawExecutor) executeToolNodeShell(ctx context.Context, node *ir.ToolNo
 	toolName := "shell:" + node.ID
 
 	start := time.Now()
-	cmd := exec.CommandContext(ctx, "sh", "-c", resolved)
-	if e.workDir != "" {
-		cmd.Dir = e.workDir
-	}
+	cmd := e.toolNodeCommand(ctx, resolved)
 	out, err := cmd.CombinedOutput()
 	outputStr := string(out)
 	duration := time.Since(start)
@@ -1412,6 +1427,49 @@ func (e *ClawExecutor) executeToolNodeShell(ctx context.Context, node *ir.ToolNo
 	}
 
 	return output, nil
+}
+
+// toolNodeCommand returns a configured *exec.Cmd for a tool node's
+// shell snippet. When the run is sandboxed and the node has not opted
+// out (`sandbox: none` at node scope), the command is routed through
+// the sandbox via [sandbox.Run.Command]; otherwise it is the
+// pre-sandbox host invocation.
+//
+// Per-node opt-out lets a workflow run mostly sandboxed but cherry-pick
+// a tool node that needs host access (e.g. `gh` configured against
+// the host's keychain).
+func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string) *exec.Cmd {
+	if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
+		return e.sandbox.Command(ctx, []string{"sh", "-c", resolved}, sandbox.ExecOpts{})
+	}
+	cmd := exec.CommandContext(ctx, "sh", "-c", resolved)
+	if e.workDir != "" {
+		cmd.Dir = e.workDir
+	}
+	return cmd
+}
+
+// nodeOptOut classifies the kind of node being inspected for sandbox
+// opt-out purposes. The current callers all examine the tool-node
+// path, but the broadcast-style API leaves room for agent/judge
+// routing later.
+type nodeOptOut int
+
+const (
+	toolNodeOptOut nodeOptOut = iota
+)
+
+// nodeOptsOutOfSandbox reports whether the node currently being
+// executed declared `sandbox: none` and therefore wants to run on
+// the host even though the workflow has an active sandbox.
+//
+// Phase 1 keeps this simple: there is no per-call node context, so
+// the executor cannot consult per-node overrides here. The hook is
+// in place for Phase 2 where engine + executor pass the in-flight
+// node identifier through. Returning false today preserves the
+// "sandbox active = everything sandboxed" guarantee.
+func (e *ClawExecutor) nodeOptsOutOfSandbox(_ nodeOptOut) bool {
+	return false
 }
 
 // looksLikeShellCommand returns true if the command string looks like a shell
@@ -1611,6 +1669,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 		Model:           expanded,
 		WorkDir:         e.workDir,
 		ReasoningEffort: resolveReasoningEffort(node.ReasoningEffort, input),
+		Sandbox:         e.sandbox,
 	}
 
 	// Emit backend started event.
