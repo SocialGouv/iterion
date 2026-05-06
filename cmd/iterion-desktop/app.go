@@ -151,21 +151,37 @@ func (a *App) onShutdown(_ context.Context) {
 
 // currentProjectServerDirs returns the editor working directory/store pair
 // for the project currently selected in config. On first-run / empty config
-// it uses the user's home directory as the working dir; the SPA's onboarding
-// flow then prompts for a real project.
+// it uses a small, sandboxed directory under the user config dir so the
+// editor server can start (the SPA's onboarding flow then prompts for a
+// real project). Falling back to $HOME makes the recursive file watcher
+// crawl the entire home tree, exhausting inotify limits and stalling the
+// SPA's initial bootstrap behind permission-denied warnings.
 func (a *App) currentProjectServerDirsLocked() (dir, storeDir string) {
 	if p := a.config.CurrentProject(); p != nil {
 		dir = p.Dir
 		storeDir = p.StoreDir
 	}
 	if dir == "" {
-		// Fallback: home dir (so the SPA can mount and onboarding can run).
-		home, err := os.UserHomeDir()
-		if err == nil {
-			dir = home
-		}
+		dir = defaultFallbackProjectDir()
 	}
 	return dir, storeDir
+}
+
+// defaultFallbackProjectDir returns the directory the editor server points
+// to when no project is selected. We anchor it inside the user config dir
+// (e.g. ~/.config/Iterion on Linux) so it's small, writable, and never
+// leaks the user's home tree to the file watcher.
+func defaultFallbackProjectDir() string {
+	cfgDir, err := os.UserConfigDir()
+	if err == nil {
+		fallback := cfgDir + string(os.PathSeparator) + "Iterion" + string(os.PathSeparator) + "default-project"
+		if mkErr := os.MkdirAll(fallback, 0o755); mkErr == nil {
+			return fallback
+		}
+	}
+	// Last-resort fallback: empty string. server.go runs without WorkDir,
+	// the SPA stays on /welcome until the user picks a project.
+	return ""
 }
 
 // startServerForCurrentProject brings up the HTTP server for the project

@@ -251,65 +251,99 @@ tasks:
     cmds:
       - go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
+  desktop:package:linux:amd64:docker:
+    desc: Package Linux amd64 AppImage inside an Ubuntu 22.04 container (portable across distros)
+    cmds:
+      - ./scripts/desktop/build-appimage-in-docker.sh amd64
+
+  desktop:package:linux:arm64:docker:
+    desc: Package Linux arm64 AppImage inside an Ubuntu 22.04 container (portable across distros)
+    cmds:
+      - ./scripts/desktop/build-appimage-in-docker.sh arm64
+
   desktop:dev:
     desc: Run Iterion Desktop in dev mode (Wails)
     deps: [editor:build]
+    dir: cmd/iterion-desktop
     cmds:
-      - wails dev -tags desktop
+      - |
+        export PATH="/usr/bin:$PATH"
+        export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
+        wails dev -tags desktop,webkit2_41 -skipbindings -s
 
   desktop:build:
     desc: Build Iterion Desktop for the current platform (unsigned)
     deps: [editor:build]
+    dir: cmd/iterion-desktop
     cmds:
-      - wails build -tags desktop -clean -trimpath -ldflags "{{.LDFLAGS}}"
+      - wails build -tags desktop,webkit2_41 -clean -trimpath -skipbindings -s -ldflags "{{.LDFLAGS}}"
 
   desktop:build:darwin:arm64:
     desc: Build Iterion Desktop for macOS arm64 (must run on macOS)
     deps: [editor:build]
+    dir: cmd/iterion-desktop
     cmds:
-      - wails build -tags desktop -platform darwin/arm64 -clean -trimpath -ldflags "{{.LDFLAGS}}" -o iterion-desktop-darwin-arm64
+      - wails build -tags desktop -platform darwin/arm64 -clean -trimpath -skipbindings -s -ldflags "{{.LDFLAGS}}" -o iterion-desktop-darwin-arm64
 
   desktop:build:darwin:amd64:
     desc: Build Iterion Desktop for macOS amd64 (must run on macOS)
     deps: [editor:build]
+    dir: cmd/iterion-desktop
     cmds:
-      - wails build -tags desktop -platform darwin/amd64 -clean -trimpath -ldflags "{{.LDFLAGS}}" -o iterion-desktop-darwin-amd64
+      - wails build -tags desktop -platform darwin/amd64 -clean -trimpath -skipbindings -s -ldflags "{{.LDFLAGS}}" -o iterion-desktop-darwin-amd64
 
   desktop:build:windows:amd64:
     desc: Build Iterion Desktop for Windows amd64 (must run on Windows)
     deps: [editor:build]
+    dir: cmd/iterion-desktop
     cmds:
-      - wails build -tags desktop -platform windows/amd64 -clean -trimpath -ldflags "{{.LDFLAGS}}" -nsis -o iterion-desktop-windows-amd64.exe
+      - wails build -tags desktop -platform windows/amd64 -clean -trimpath -skipbindings -s -ldflags "{{.LDFLAGS}}" -nsis -o iterion-desktop-windows-amd64.exe
 
   desktop:build:windows:arm64:
     desc: Build Iterion Desktop for Windows arm64 (must run on Windows)
     deps: [editor:build]
+    dir: cmd/iterion-desktop
     cmds:
-      - wails build -tags desktop -platform windows/arm64 -clean -trimpath -ldflags "{{.LDFLAGS}}" -nsis -o iterion-desktop-windows-arm64.exe
+      - wails build -tags desktop -platform windows/arm64 -clean -trimpath -skipbindings -s -ldflags "{{.LDFLAGS}}" -nsis -o iterion-desktop-windows-arm64.exe
 
   desktop:build:linux:amd64:
-    desc: Build Iterion Desktop for Linux amd64
+    desc: Build Iterion Desktop for Linux amd64 (production with DevTools enabled)
     deps: [editor:build]
+    dir: cmd/iterion-desktop
     cmds:
-      - wails build -tags desktop -platform linux/amd64 -clean -trimpath -ldflags "{{.LDFLAGS}}" -o iterion-desktop-linux-amd64
+      - |
+        export PATH="/usr/bin:$PATH"
+        export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
+        # -devtools keeps Inspect Element / Ctrl+Shift+I available in release
+        # builds so users can debug WebView issues before native devtools
+        # menus are wired up. Stripping it later is a one-line change.
+        wails build -tags desktop,webkit2_41 -platform linux/amd64 -clean -trimpath -skipbindings -s -devtools -ldflags "{{.LDFLAGS}}" -o iterion-desktop-linux-amd64
 
   desktop:build:linux:arm64:
-    desc: Build Iterion Desktop for Linux arm64
+    desc: Build Iterion Desktop for Linux arm64 (production with DevTools enabled)
     deps: [editor:build]
+    dir: cmd/iterion-desktop
     cmds:
-      - wails build -tags desktop -platform linux/arm64 -clean -trimpath -ldflags "{{.LDFLAGS}}" -o iterion-desktop-linux-arm64
+      - |
+        export PATH="/usr/bin:$PATH"
+        export PKG_CONFIG_PATH="/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
+        wails build -tags desktop,webkit2_41 -platform linux/arm64 -clean -trimpath -skipbindings -s -devtools -ldflags "{{.LDFLAGS}}" -o iterion-desktop-linux-arm64
 
   desktop:package:linux:amd64:
     desc: Package Linux amd64 build as AppImage
     deps: [desktop:build:linux:amd64]
     cmds:
-      - ./scripts/desktop/build-appimage.sh amd64
+      - |
+        export PATH="/usr/bin:$PATH"
+        ./scripts/desktop/build-appimage.sh amd64
 
   desktop:package:linux:arm64:
     desc: Package Linux arm64 build as AppImage
     deps: [desktop:build:linux:arm64]
     cmds:
-      - ./scripts/desktop/build-appimage.sh arm64
+      - |
+        export PATH="/usr/bin:$PATH"
+        ./scripts/desktop/build-appimage.sh arm64
 
   desktop:sign-release:
     desc: Sign all desktop release artefacts with Ed25519 (requires UPDATER_ED25519_PRIVATE)

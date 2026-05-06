@@ -18,4 +18,14 @@ export GSETTINGS_SCHEMA_DIR="$HERE/usr/share/glib-2.0/schemas"
 export WEBKIT_DISABLE_COMPOSITING_MODE=1
 export WEBKIT_EXEC_PATH="$HERE/usr/lib/webkit2gtk-4.1"
 
+# Disable WebKit's bubblewrap sandbox: it can't traverse the AppImage's
+# read-only squashfs mount + bundled libs path mapping reliably across
+# distros. The AppImage already executes inside the user's UID with no
+# extra privileges, so the security delta is minimal in practice — the
+# WebKit upstream guidance is "drop the sandbox if the host integration
+# can't be trusted to provide /proc, /dev/shm and the matching seccomp
+# profile". Without this the WebView reaches "ready" but renders a grey
+# rectangle on Ubuntu 24.04-derived distros (Mint 22, Pop!_OS 24).
+export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
+
 exec "$HERE/usr/bin/iterion-desktop" "$@"

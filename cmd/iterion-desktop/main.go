@@ -53,7 +53,7 @@ func main() {
 		// runs on http://127.0.0.1:* in the desktop binary (only the
 		// proxy's outbound calls do).
 		BindingsAllowedOrigins: "http://127.0.0.1:*,http://localhost:*",
-		BackgroundColour:       &options.RGBA{R: 10, G: 10, B: 10, A: 1},
+		BackgroundColour:       &options.RGBA{R: 10, G: 10, B: 10, A: 255},
 		OnStartup:              app.onStartup,
 		OnShutdown:             app.onShutdown,
 		OnDomReady:             app.onDomReady,

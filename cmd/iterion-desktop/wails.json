@@ -6,7 +6,7 @@
   "frontend:build": "true",
   "frontend:dev": "true",
   "frontend:dev:serverUrl": "auto",
-  "wailsjsdir": "./cmd/iterion-desktop/wailsjs",
+  "wailsjsdir": "./wailsjs",
   "version": "2",
   "info": {
     "companyName": "Iterion",
@@ -15,5 +15,5 @@
     "copyright": "Copyright © 2026",
     "comments": "Workflow orchestration engine"
   },
-  "_comment": "Frontend hooks are intentional no-ops: the editor SPA is built by `task editor:build` and embedded into the Go binary via pkg/server/static. Wails uses cmd/iterion-desktop/frontend-stub as a bootstrap page that redirects to the embedded HTTP server."
+  "_comment": "Wails build runs from this directory (Taskfile sets dir: cmd/iterion-desktop). The editor SPA is built by `task editor:build` and embedded into the Go binary via pkg/server/static; -skipbindings + -s skip Wails frontend hooks. The build/ directory is a symlink to ../../build at repo root."
 }

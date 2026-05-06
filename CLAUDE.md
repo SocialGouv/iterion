@@ -248,6 +248,27 @@ On error, the worktree is preserved at `<store-dir>/worktrees/<run-id>`
 for inspection and finalization is skipped — the operator decides what
 to do with any partial commits.
 
+## Building the desktop app
+
+The Wails desktop wrapper (`cmd/iterion-desktop/`) has its own pipeline
+documented in [docs/desktop_build.md](docs/desktop_build.md). Things the
+default mental model won't surface:
+
+- `wails.json` lives at `cmd/iterion-desktop/wails.json` (not at repo
+  root); the Taskfile's `desktop:*` targets set `dir: cmd/iterion-desktop`
+  accordingly. `cmd/iterion-desktop/build/` is a symlink to `../../build/`
+  so packaging configs stay in one place.
+- Linux builds need apt headers (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`,
+  `libsoup-3.0-dev`, plus `dpkg-dev`/`patchelf`/`libfuse2t64`/`fuse` for
+  AppImage). Devbox/Nix doesn't expose `.pc` files — use the host
+  package manager. Devcontainers wire this into `postCreateCommand`.
+- The Linux build tag is `desktop,webkit2_41` (already wired in the
+  Taskfile) so Wails uses the modern WebKit ABI shipped by current distros.
+- `-skipbindings -s` flags are intentional: the SPA reads runtime-injected
+  `window.go.main.App.*` globals, and the embedded `pkg/server` proxy
+  serves it — Wails neither generates JS bindings nor processes a
+  frontend dir.
+
 ## Authoring `.iter` workflows that touch real code
 
 **Before writing or amending any `.iter` workflow that has the power to
