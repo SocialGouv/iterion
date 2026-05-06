@@ -62,10 +62,22 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Compute lowercase image ref
+        if: github.ref == format('refs/heads/{0}', 'main')
+        shell: bash
+        run: |
+          # OCI image references must be lowercase; github.repository_owner
+          # returns case-preserved (e.g. SocialGouv). docker/metadata-action
+          # lowercases internally for the push step but the trivy step
+          # references env.IMAGE_NAME directly, so do the lowercase here
+          # once and reuse via $GITHUB_ENV.
+          echo "IMAGE_REF_LC=$(printf '%s/%s' "${REGISTRY}" "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')" \
+            >> "$GITHUB_ENV"
+
       - name: Trivy scan
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:edge
+          image-ref: ${{ env.IMAGE_REF_LC }}:edge
           format: table
           severity: HIGH,CRITICAL
           exit-code: "1"
