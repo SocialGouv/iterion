@@ -97,15 +97,20 @@ RUN apt-get update \
 # within ±1 minor for the verbs we use (apply, exec, wait, delete).
 # ~50 MB at this version, which is small relative to the Node + Go
 # + LLM CLIs already in the image.
-ARG KUBECTL_VERSION=v1.31.4
+ARG KUBECTL_VERSION=v1.36.0
 RUN ARCH="$(dpkg --print-architecture)" \
  && case "$ARCH" in \
         amd64) KARCH=amd64 ;; \
         arm64) KARCH=arm64 ;; \
         *) echo "unsupported arch for kubectl: $ARCH" >&2; exit 1 ;; \
     esac \
- && curl -fsSL -o /usr/local/bin/kubectl \
+ && curl -fsSL -o /tmp/kubectl \
         "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${KARCH}/kubectl" \
+ && curl -fsSL -o /tmp/kubectl.sha256 \
+        "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${KARCH}/kubectl.sha256" \
+ && echo "$(cat /tmp/kubectl.sha256)  /tmp/kubectl" | sha256sum -c - \
+ && mv /tmp/kubectl /usr/local/bin/kubectl \
+ && rm /tmp/kubectl.sha256 \
  && chmod +x /usr/local/bin/kubectl \
  && /usr/local/bin/kubectl version --client --output=yaml > /dev/null
 
