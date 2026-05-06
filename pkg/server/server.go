@@ -46,6 +46,19 @@ type Config struct {
 	// transitions from the bootstrap URL to a normal SPA load. CLI mode
 	// (`iterion editor`) leaves this empty and behaves identically to before.
 	SessionToken string
+
+	// Store overrides the default filesystem store with a caller-
+	// supplied implementation (typically the cloud Mongo+S3 store).
+	// When non-nil, StoreDir + the .iterion auto-discovery are
+	// ignored and the supplied store is wired into runview.NewService
+	// directly. Plan §F (T-30).
+	Store store.RunStore
+
+	// LaunchPublisher, when non-nil, routes the run console's Launch /
+	// Resume / Cancel through the cloud queue instead of spawning the
+	// runtime in-process. Used by `iterion server` in cloud mode
+	// (T-31, T-32, T-33).
+	LaunchPublisher runview.LaunchPublisher
 }
 
 // Server is the editor HTTP server.
@@ -106,7 +119,25 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	if cfg.StoreDir != "" || cfg.WorkDir != "" {
 		storeDir = store.ResolveStoreDir(cfg.WorkDir, cfg.StoreDir)
 	}
-	if storeDir != "" {
+	// When a caller-supplied Store is wired (cloud mode), bypass the
+	// filesystem .iterion discovery and inject the store directly so
+	// runview.NewService talks to Mongo+S3.
+	switch {
+	case cfg.Store != nil:
+		opts := []runview.ServiceOption{
+			runview.WithLogger(logger),
+			runview.WithStore(cfg.Store),
+		}
+		if cfg.LaunchPublisher != nil {
+			opts = append(opts, runview.WithLaunchPublisher(cfg.LaunchPublisher))
+		}
+		svc, svcErr := runview.NewService("", opts...)
+		if svcErr != nil {
+			logger.Warn("run console disabled: %v", svcErr)
+		} else {
+			s.runs = svc
+		}
+	case storeDir != "":
 		svc, svcErr := runview.NewService(storeDir, runview.WithLogger(logger))
 		if svcErr != nil {
 			logger.Warn("run console disabled: %v", svcErr)

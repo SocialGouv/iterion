@@ -1,59 +1,62 @@
 package main
 
 import (
-	"github.com/SocialGouv/iterion/pkg/cli"
+	"context"
+	"fmt"
+	"os/signal"
+	"syscall"
+	"time"
+
 	"github.com/spf13/cobra"
+
+	"github.com/SocialGouv/iterion/pkg/cli"
+	iterconfig "github.com/SocialGouv/iterion/pkg/config"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
+	"github.com/SocialGouv/iterion/pkg/server"
+	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
+	"github.com/SocialGouv/iterion/pkg/store/blob"
+	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
 )
 
-// `iterion server` is the cloud-mode HTTP server entry point. Today
-// it shares the same handler tree as `iterion editor` — the only
-// behavioural deltas are:
-//   - default --bind is 0.0.0.0 (cloud pods need LAN exposure to be
-//     reachable behind a Service / Ingress; loopback is the wrong
-//     default for a Helm-deployed pod);
-//   - --no-browser is forced on (no display in a container);
-//   - the command Long string spells out that this is the cloud
-//     subcommand so an operator scanning `iterion --help` sees the
-//     intent.
+// `iterion server` is the cloud-mode HTTP server entry point. In
+// local mode it delegates to cli.RunEditor (same handler tree as
+// `iterion editor`). In cloud mode it builds a Mongo+S3 store + a
+// NATS-backed LaunchPublisher and feeds them into pkg/server.Server
+// so handleLaunchRun publishes to the queue instead of spawning the
+// runtime in-process.
 //
-// When T-31 splits the cloud-side launch handler from the local
-// `editor` handler tree, this command picks up the divergent code
-// path; until then both subcommands route through cli.RunEditor.
+// Differences from `iterion editor` regardless of mode:
+//   - default --bind is 0.0.0.0 (cloud pods need LAN exposure);
+//   - --no-browser is forced on (no display in a container).
 //
-// Cloud-ready plan §F (T-30).
+// Cloud-ready plan §F (T-30, T-31, T-32, T-33).
 
 var serverOpts struct {
-	port     int
-	bind     string
-	dir      string
-	storeDir string
+	port       int
+	bind       string
+	dir        string
+	storeDir   string
+	configPath string
 }
 
 var serverCmd = &cobra.Command{
 	Use:   "server",
-	Short: "Start the cloud-mode HTTP server (editor SPA + run console + cloud API)",
+	Short: "Start the iterion HTTP server (editor SPA + run console + cloud API)",
 	Long: `iterion server is the cloud-deployment HTTP entry point. It serves the
 editor SPA, the run console (REST + WebSocket), and the launch /
 resume / cancel API on a single port. Health endpoints (/healthz,
 /readyz) live alongside the API.
 
-Differences from 'iterion editor':
-  - Defaults --bind to 0.0.0.0 (cloud pods are reached via Service/Ingress).
-  - Forces --no-browser on (no display).
-  - Reads cloud config via env (ITERION_MODE, ITERION_MONGO_URI, etc.).
+Mode is chosen by ITERION_MODE:
+  - local (default): in-process engine; same as 'iterion editor'.
+  - cloud: persists to Mongo+S3, publishes runs onto NATS for the
+    runner pool to consume.
 
 For local dev, prefer 'iterion editor' which keeps the loopback bind
 default and opens the browser.`,
 	Args: cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return cli.RunEditor(cmd.Context(), cli.EditorOptions{
-			Port:      serverOpts.port,
-			Bind:      serverOpts.bind,
-			Dir:       serverOpts.dir,
-			StoreDir:  serverOpts.storeDir,
-			NoBrowser: true,
-		}, newPrinter())
-	},
+	RunE: runServer,
 }
 
 func init() {
@@ -61,6 +64,112 @@ func init() {
 	f.IntVar(&serverOpts.port, "port", 4891, "HTTP port")
 	f.StringVar(&serverOpts.bind, "bind", "0.0.0.0", "Bind address (default 0.0.0.0 for cloud pods)")
 	f.StringVar(&serverOpts.dir, "dir", "", "Working directory")
-	f.StringVar(&serverOpts.storeDir, "store-dir", "", "Run store directory (cloud mode ignores; uses Mongo+S3)")
+	f.StringVar(&serverOpts.storeDir, "store-dir", "", "Run store directory (local mode only)")
+	f.StringVar(&serverOpts.configPath, "config", "", "Path to YAML config (env vars take precedence)")
 	rootCmd.AddCommand(serverCmd)
+}
+
+func runServer(cmd *cobra.Command, _ []string) error {
+	cfg, err := iterconfig.Load(iterconfig.LoadOptions{
+		YAMLPath:         serverOpts.configPath,
+		DefaultLogFormat: iterconfig.LogFormatJSON,
+	})
+	if err != nil {
+		return fmt.Errorf("server: load config: %w", err)
+	}
+
+	// Local mode: keep the existing editor handlers; only difference
+	// from `iterion editor` is the cloud-friendly --bind default.
+	if cfg.Mode == iterconfig.ModeLocal {
+		return cli.RunEditor(cmd.Context(), cli.EditorOptions{
+			Port:      serverOpts.port,
+			Bind:      serverOpts.bind,
+			Dir:       serverOpts.dir,
+			StoreDir:  serverOpts.storeDir,
+			NoBrowser: true,
+		}, newPrinter())
+	}
+
+	// Cloud mode: build Mongo+S3 store + NATS publisher + server
+	// directly. We bypass cli.RunEditor because it auto-discovers a
+	// filesystem store, which doesn't make sense when persistence
+	// lives in Mongo.
+	logger := iterlog.New(parseLevel(cfg.Log.Level), cmd.ErrOrStderr())
+	logger.Info("server: starting (mode=cloud)")
+
+	rootCtx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	natsConn, err := natsq.Connect(rootCtx, natsq.Config{
+		URL:        cfg.NATS.URL,
+		StreamName: cfg.NATS.Stream,
+		DLQStream:  cfg.NATS.DLQStream,
+		KVBucket:   cfg.NATS.KVBucket,
+		Logger:     logger,
+	})
+	if err != nil {
+		return fmt.Errorf("server: connect NATS: %w", err)
+	}
+	defer natsConn.Close()
+
+	bc, err := blob.NewS3(rootCtx, blob.Config{
+		Endpoint:        cfg.S3.Endpoint,
+		Region:          cfg.S3.Region,
+		Bucket:          cfg.S3.Bucket,
+		AccessKeyID:     cfg.S3.AccessKeyID,
+		SecretAccessKey: cfg.S3.SecretAccessKey,
+		UsePathStyle:    cfg.S3.UsePathStyle,
+	})
+	if err != nil {
+		return fmt.Errorf("server: build blob client: %w", err)
+	}
+
+	// Server-side store: no NATS lock provider — the server never
+	// executes runs, only publishes them. The runner pod is the
+	// only place that takes leases.
+	st, err := mongostore.New(rootCtx, mongostore.Config{
+		URI:           cfg.Mongo.URI,
+		Database:      cfg.Mongo.DB,
+		EventsTTLDays: cfg.Mongo.EventsTTLDays,
+		Logger:        logger,
+		Blob:          bc,
+	})
+	if err != nil {
+		return fmt.Errorf("server: build mongo store: %w", err)
+	}
+	defer func() {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer closeCancel()
+		_ = st.Close(closeCtx)
+	}()
+
+	pub, err := cloudpublisher.New(cloudpublisher.Config{
+		NATS:      natsConn,
+		Store:     st,
+		MongoColl: st.RunsCollection(),
+		Logger:    logger,
+	})
+	if err != nil {
+		return fmt.Errorf("server: build cloud publisher: %w", err)
+	}
+
+	srv := server.New(server.Config{
+		Port:            serverOpts.port,
+		Bind:            serverOpts.bind,
+		WorkDir:         serverOpts.dir,
+		Store:           st,
+		LaunchPublisher: pub,
+	}, logger)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.ListenAndServe() }()
+
+	select {
+	case <-rootCtx.Done():
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer shutdownCancel()
+		return srv.Shutdown(shutdownCtx)
+	case err := <-errCh:
+		return err
+	}
 }

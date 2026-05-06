@@ -136,6 +136,12 @@ func (s *Store) Close(ctx context.Context) error {
 	return s.client.Disconnect(ctx)
 }
 
+// RunsCollection exposes the underlying Mongo collection so callers
+// (e.g. cloudpublisher.queuePosition) can run aggregations the
+// store.RunStore interface doesn't surface. Use with care — direct
+// access is a layering shortcut, not the long-term API.
+func (s *Store) RunsCollection() *mongo.Collection { return s.runs }
+
 // Root returns an empty string in cloud mode: the Mongo store has no
 // filesystem root to expose. Callers that absolutely need a path
 // (engine worktree setup) gate on Capabilities().GitWorktree first.

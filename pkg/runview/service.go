@@ -159,6 +159,17 @@ type Service struct {
 	// Once true, Launch and Resume early-return runtime.ErrServerDraining
 	// so the HTTP layer can map it to 503 Service Unavailable.
 	draining atomic.Bool
+
+	// publisher, when non-nil, intercepts Launch/Resume/Cancel and
+	// routes them through the cloud queue. When nil the service runs
+	// the engine in-process (local mode). See LaunchPublisher and
+	// WithLaunchPublisher.
+	publisher LaunchPublisher
+
+	// injectedStore captures the WithStore option so NewService can
+	// honour a caller-supplied store. nil → fall back to the
+	// filesystem auto-discovery path (local mode).
+	injectedStore store.RunStore
 }
 
 // ServiceOption configures a Service at construction time.
@@ -200,18 +211,13 @@ func WithExtraEventObservers(observers ...func(store.Event)) ServiceOption {
 	return func(s *Service) { s.extraObservers = append(s.extraObservers, observers...) }
 }
 
-// NewService constructs a Service rooted at storeDir.
+// NewService constructs a Service rooted at storeDir. When the
+// caller wires WithStore, storeDir may be "" — the service uses the
+// injected store directly without resolving a filesystem path.
 func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
-	if storeDir == "" {
-		storeDir = ".iterion"
-	}
 	logger := iterlog.New(iterlog.LevelInfo, os.Stderr)
-	st, err := store.New(storeDir, store.WithLogger(logger))
-	if err != nil {
-		return nil, fmt.Errorf("runview: open store: %w", err)
-	}
+
 	s := &Service{
-		store:            st,
 		storeDir:         storeDir,
 		logger:           logger,
 		broker:           NewEventBroker(),
@@ -222,6 +228,27 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 	for _, opt := range opts {
 		opt(s)
 	}
+
+	switch {
+	case s.injectedStore != nil:
+		s.store = s.injectedStore
+	case storeDir != "":
+		st, err := store.New(storeDir, store.WithLogger(s.logger))
+		if err != nil {
+			return nil, fmt.Errorf("runview: open store: %w", err)
+		}
+		s.store = st
+	default:
+		// Fall back to the prior implicit ".iterion" behaviour so
+		// pre-existing local callers keep working.
+		st, err := store.New(".iterion", store.WithLogger(s.logger))
+		if err != nil {
+			return nil, fmt.Errorf("runview: open store: %w", err)
+		}
+		s.store = st
+		s.storeDir = ".iterion"
+	}
+
 	s.reconcileOrphans()
 	return s, nil
 }
@@ -720,6 +747,16 @@ func (s *Service) LoadArtifact(runID, nodeID string, version int) (*store.Artifa
 // run is not held by this process — cross-process cancel is not
 // supported in the current design.
 func (s *Service) Cancel(runID string) error {
+	if s.publisher != nil {
+		// Cloud-mode: the runner pool owns the lifecycle. The
+		// publisher flips the Mongo doc to cancelled so the
+		// runner's cooperative-cancel check (pkg/runner/loop.go)
+		// acks the next delivery without executing; if a runner
+		// is currently holding the lease, the cancel subject
+		// `iterion.cancel.<run_id>` unwinds engine.Run via
+		// handleContextDoneWithCheckpoint.
+		return s.publisher.CancelRun(context.Background(), runID)
+	}
 	return s.manager.Cancel(runID)
 }
 
@@ -830,8 +867,47 @@ func (s *Service) PerformMerge(runID string, req MergeRequest) (*MergeResponse, 
 type LaunchResult struct {
 	RunID string
 	// Done is closed when the run goroutine exits (success or
-	// failure). Callers that want to wait can `<-result.Done`.
+	// failure). Callers that want to wait can `<-result.Done`. Cloud-
+	// mode launches return a Done channel that is already closed —
+	// the runner pod owns the lifecycle, not this server.
 	Done <-chan struct{}
+	// QueuePosition is the 1-based position on the cloud queue at
+	// the moment of submission. Zero when launching in-process.
+	QueuePosition int
+}
+
+// LaunchPublisher routes Launch / Resume / Cancel to the cloud
+// queue + Mongo store instead of spawning the runtime in-process.
+// When NewService is called with WithLaunchPublisher, every Launch
+// becomes a "submit + return queue_position"; the runner pool drains
+// the queue separately. Plan §F (T-31, T-32, T-33).
+type LaunchPublisher interface {
+	// SubmitLaunch persists the run as queued in the cloud store
+	// and publishes a RunMessage. Returns the 1-based queue position
+	// at submission time.
+	SubmitLaunch(ctx context.Context, runID string, spec LaunchSpec, wf *ir.Workflow, hash string) (int, error)
+	// CancelRun signals the runner pool to abort the run. Idempotent —
+	// flips the Mongo doc to cancelled regardless of whether a runner
+	// is currently holding the lease.
+	CancelRun(ctx context.Context, runID string) error
+	// SubmitResume republishes a RunMessage with ResumeSpec set so
+	// the runner picks the run back up.
+	SubmitResume(ctx context.Context, spec ResumeSpec, wf *ir.Workflow, hash string) error
+}
+
+// WithLaunchPublisher wires the cloud-mode publisher; when nil the
+// service stays in local-mode (in-process engine).
+func WithLaunchPublisher(p LaunchPublisher) ServiceOption {
+	return func(s *Service) { s.publisher = p }
+}
+
+// WithStore replaces the default filesystem store with a caller-
+// supplied implementation. When set, NewService skips the store
+// auto-discovery and uses the supplied store directly. Used by
+// cloud-mode entry points to inject the Mongo+S3 store. Plan §F
+// (T-19, T-30).
+func WithStore(s store.RunStore) ServiceOption {
+	return func(svc *Service) { svc.injectedStore = s }
 }
 
 // Launch starts a workflow asynchronously and returns once the run
@@ -851,6 +927,28 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	runID := spec.RunID
 	if runID == "" {
 		runID = fmt.Sprintf("run_%d", time.Now().UnixMilli())
+	}
+
+	// Cloud-mode: hand off to the runner pool via the queue. The
+	// publisher persists the run in Mongo as queued + emits the
+	// RunMessage; the runner pod takes it from there. We compile
+	// the workflow here so the wire payload carries an inline IR
+	// (the runner currently doesn't support IRRef fallback).
+	if s.publisher != nil {
+		wf, hash, err := CompileWorkflowWithHash(spec.FilePath)
+		if err != nil {
+			return nil, err
+		}
+		pos, err := s.publisher.SubmitLaunch(parent, runID, spec, wf, hash)
+		if err != nil {
+			return nil, err
+		}
+		// Synthesise a closed Done channel — the cloud handler is
+		// fire-and-forget. UI consumers track lifecycle via the WS
+		// event stream the runner pod populates.
+		closed := make(chan struct{})
+		close(closed)
+		return &LaunchResult{RunID: runID, Done: closed, QueuePosition: pos}, nil
 	}
 
 	if detachedEnabled() {
@@ -929,6 +1027,23 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	}
 	if err := validateResumable(r, spec.Answers); err != nil {
 		return nil, err
+	}
+
+	// Cloud-mode resume: republish the RunMessage with ResumeSpec
+	// set so the runner pool re-enters the engine via Engine.Resume.
+	// Plan §F (T-33). CAS protection on the Mongo checkpoint lives
+	// in MongoRunStore.SaveCheckpoint (CASVersion increment).
+	if s.publisher != nil {
+		wf, hash, err := CompileWorkflowWithHash(spec.FilePath)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.publisher.SubmitResume(parent, spec, wf, hash); err != nil {
+			return nil, err
+		}
+		closed := make(chan struct{})
+		close(closed)
+		return &LaunchResult{RunID: spec.RunID, Done: closed}, nil
 	}
 
 	if detachedEnabled() {
