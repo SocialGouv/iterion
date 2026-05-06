@@ -123,8 +123,14 @@ COPY --from=go-builder /out/iterion /usr/local/bin/iterion
 
 # Non-root runtime user (UID/GID 10001 — high enough to avoid host
 # overlap, matches Helm chart securityContext.runAsUser).
-RUN groupadd --system --gid 10001 iterion \
- && useradd  --system --uid 10001 --gid iterion --home /home/iterion --create-home iterion \
+#
+# Absolute paths to /usr/sbin/{groupadd,useradd}: the runtime PATH set
+# above intentionally excludes /usr/sbin (sbin tools shouldn't appear
+# in the iterion process's PATH at runtime), so the shell can't find
+# groupadd by name during this build step. Hard-coding the path is
+# cleaner than mutating PATH back and forth around the user setup.
+RUN /usr/sbin/groupadd --system --gid 10001 iterion \
+ && /usr/sbin/useradd  --system --uid 10001 --gid iterion --home /home/iterion --create-home iterion \
  && mkdir -p /var/lib/iterion /var/run/iterion \
  && chown -R iterion:iterion /var/lib/iterion /var/run/iterion /home/iterion
 
