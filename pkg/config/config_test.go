@@ -51,6 +51,38 @@ func TestLoad_DefaultsApplied(t *testing.T) {
 	}
 }
 
+func TestLoad_SandboxDefaultEnv(t *testing.T) {
+	cases := []struct {
+		env     string
+		want    string
+		wantErr bool
+	}{
+		{"", "", false},
+		{"none", "none", false},
+		{"auto", "auto", false},
+		{"AUTO", "auto", false}, // env loader normalises to lowercase
+		{"docker", "", true},    // not a Phase 0 mode
+	}
+	for _, c := range cases {
+		t.Run(c.env, func(t *testing.T) {
+			clearITERION(t)
+			if c.env != "" {
+				t.Setenv("ITERION_SANDBOX_DEFAULT", c.env)
+			}
+			cfg, err := Load(LoadOptions{})
+			if (err != nil) != c.wantErr {
+				t.Fatalf("Load() err = %v, wantErr = %v", err, c.wantErr)
+			}
+			if c.wantErr {
+				return
+			}
+			if cfg.Sandbox.Default != c.want {
+				t.Errorf("Sandbox.Default = %q, want %q", cfg.Sandbox.Default, c.want)
+			}
+		})
+	}
+}
+
 func TestLoad_DefaultLogFormatOverride(t *testing.T) {
 	clearITERION(t)
 	cfg, err := Load(LoadOptions{DefaultLogFormat: LogFormatJSON})

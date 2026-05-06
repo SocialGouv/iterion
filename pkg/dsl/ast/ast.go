@@ -177,6 +177,7 @@ type AgentDecl struct {
 	InteractionModel  string           // model for llm/llm_or_human modes (fallback to Model)
 	Await             AwaitMode        // convergence strategy (none/wait_all/best_effort)
 	Compaction        *CompactionBlock // per-node compaction overrides (nil = inherit workflow)
+	Sandbox           string           // node-level sandbox override; "" inherits from workflow, "none" forces opt-out, "auto" forces opt-in (see pkg/sandbox)
 	Span              Span
 }
 
@@ -209,6 +210,7 @@ type JudgeDecl struct {
 	InteractionModel  string           // model for llm/llm_or_human modes (fallback to Model)
 	Await             AwaitMode        // convergence strategy (none/wait_all/best_effort)
 	Compaction        *CompactionBlock // per-node compaction overrides (nil = inherit workflow)
+	Sandbox           string           // node-level sandbox override; "" inherits from workflow, "none" forces opt-out, "auto" forces opt-in (see pkg/sandbox)
 	Span              Span
 }
 
@@ -303,6 +305,7 @@ type ToolNodeDecl struct {
 	Input   string    // optional input schema reference name
 	Output  string    // schema reference name
 	Await   AwaitMode // convergence strategy (none/wait_all/best_effort)
+	Sandbox string    // node-level sandbox override; "" inherits from workflow, "none" forces opt-out, "auto" forces opt-in (see pkg/sandbox)
 	Span    Span
 }
 
@@ -355,6 +358,7 @@ type WorkflowDecl struct {
 	Compaction     *CompactionBlock // session compaction defaults for all nodes (optional)
 	Interaction    *InteractionMode // workflow-level default interaction mode (nil = not set)
 	Worktree       string           // "auto" creates a per-run git worktree; "" or "none" runs in-place
+	Sandbox        string           // "auto" reads .devcontainer/devcontainer.json; "none" or "" disables; future: "inline" with block (Phase 1+)
 	Edges          []*Edge          // directed edges between nodes
 	Span           Span
 }

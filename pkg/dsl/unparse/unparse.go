@@ -104,6 +104,9 @@ func Unparse(f *ast.File) string {
 		if a.Compaction != nil {
 			writeCompaction(&b, a.Compaction, "  ", false)
 		}
+		if a.Sandbox != "" {
+			writeProp(&b, "sandbox", a.Sandbox)
+		}
 	}
 
 	// --- Judges ---
@@ -118,6 +121,9 @@ func Unparse(f *ast.File) string {
 			j.Interaction, j.InteractionPrompt, j.InteractionModel, j.Await)
 		if j.Compaction != nil {
 			writeCompaction(&b, j.Compaction, "  ", false)
+		}
+		if j.Sandbox != "" {
+			writeProp(&b, "sandbox", j.Sandbox)
 		}
 	}
 
@@ -201,6 +207,9 @@ func Unparse(f *ast.File) string {
 		if t.Await != ast.AwaitNone {
 			writeProp(&b, "await", t.Await.String())
 		}
+		if t.Sandbox != "" {
+			writeProp(&b, "sandbox", t.Sandbox)
+		}
 	}
 
 	// --- Computes ---
@@ -250,6 +259,10 @@ func Unparse(f *ast.File) string {
 
 		if w.Worktree != "" {
 			writeProp(&b, "worktree", w.Worktree)
+		}
+
+		if w.Sandbox != "" {
+			writeProp(&b, "sandbox", w.Sandbox)
 		}
 
 		if w.Entry != "" {

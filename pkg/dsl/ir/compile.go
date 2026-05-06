@@ -32,6 +32,8 @@ const (
 	DiagBadExpr               DiagCode = "C040" // expression failed to parse
 	DiagDuplicateNodeID       DiagCode = "C041" // two declarations share a node ID
 	DiagReservedNodeName      DiagCode = "C042" // user node uses reserved name (done/fail)
+	DiagInvalidSandboxMode    DiagCode = "C044" // sandbox mode value is not one of "", none, auto
+	DiagSandboxAutoNoConfig   DiagCode = "C045" // sandbox: auto requested but no .devcontainer/devcontainer.json found
 )
 
 // codexBackendName is the literal value of the discouraged backend.
@@ -182,6 +184,25 @@ func (c *compiler) warnCodexDiscouraged(kind, name, backend string) {
 	c.warnfAt(DiagCodexDiscouraged, name, "",
 		"%s %q uses 'codex' backend which is supported but discouraged: codex cannot configure its tool set, tends to fill its context window, and has weaker integration; prefer 'claude_code' for tool-using agents or 'claw' with an OpenAI model (e.g. model: \"openai/gpt-5.4-mini\") for judges/reviewers",
 		kind, name)
+}
+
+// compileSandboxIdent translates the simple `sandbox: <ident>` DSL form
+// into an IR SandboxSpec. Phase 0 only accepts "", "none", and "auto";
+// "inline" requires a block body which the Phase 0 parser does not yet
+// emit. An unknown identifier is reported as DiagInvalidSandboxMode and
+// the function returns nil so the rest of compilation proceeds.
+//
+// scope/name describe the surrounding declaration ("workflow main",
+// "agent reviewer") and are used only in the diagnostic message.
+func (c *compiler) compileSandboxIdent(ident, scope, name string) *SandboxSpec {
+	spec, ok := FromIdent(ident)
+	if !ok {
+		c.errorfAt(DiagInvalidSandboxMode, name, "",
+			"%s %q has invalid sandbox %q (want \"none\", \"auto\", or unset)",
+			scope, name, ident)
+		return nil
+	}
+	return spec
 }
 
 // validateNodeNames enforces two cross-kind invariants on the AST node
@@ -369,6 +390,7 @@ func (c *compiler) compile() *Workflow {
 		MCPServers:     c.mcp,
 		Interaction:    interaction,
 		Worktree:       wf.Worktree,
+		Sandbox:        c.compileSandboxIdent(wf.Sandbox, "workflow", wf.Name),
 	}
 
 	// Static validation pass (P2-02).
@@ -569,6 +591,7 @@ func (c *compiler) compileAgents() {
 			ToolMaxSteps: a.ToolMaxSteps,
 			AwaitMode:    a.Await,
 			Compaction:   compileCompaction(a.Compaction),
+			Sandbox:      c.compileSandboxIdent(a.Sandbox, "agent", a.Name),
 		}
 	}
 }
@@ -629,6 +652,7 @@ func (c *compiler) compileJudges() {
 			ToolMaxSteps: j.ToolMaxSteps,
 			AwaitMode:    j.Await,
 			Compaction:   compileCompaction(j.Compaction),
+			Sandbox:      c.compileSandboxIdent(j.Sandbox, "judge", j.Name),
 		}
 	}
 }
@@ -796,6 +820,7 @@ func (c *compiler) compileTools() {
 			Command:     t.Command,
 			CommandRefs: cmdRefs,
 			AwaitMode:   t.Await,
+			Sandbox:     c.compileSandboxIdent(t.Sandbox, "tool", t.Name),
 		}
 	}
 }

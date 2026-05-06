@@ -795,6 +795,9 @@ func (p *parser) parseAgentProp(ad *ast.AgentDecl, propTok Token) {
 	case TokenCompaction:
 		p.backup()
 		ad.Compaction = p.parseCompactionBlock()
+	case TokenSandbox:
+		p.expect(TokenColon)
+		ad.Sandbox = p.expectIdent()
 	default:
 		p.addError(DiagUnknownProperty, propTok, "unknown agent property '"+propTok.Value+"'")
 		p.skipToNewline()
@@ -902,6 +905,9 @@ func (p *parser) parseJudgeProp(jd *ast.JudgeDecl, propTok Token) {
 	case TokenCompaction:
 		p.backup()
 		jd.Compaction = p.parseCompactionBlock()
+	case TokenSandbox:
+		p.expect(TokenColon)
+		jd.Sandbox = p.expectIdent()
 	default:
 		p.addError(DiagUnknownProperty, propTok, "unknown judge property '"+propTok.Value+"'")
 		p.skipToNewline()
@@ -1167,6 +1173,9 @@ func (p *parser) parseToolNodeProp(td *ast.ToolNodeDecl, propTok Token) {
 	case TokenAwait:
 		p.expect(TokenColon)
 		td.Await = p.parseAwaitMode()
+	case TokenSandbox:
+		p.expect(TokenColon)
+		td.Sandbox = p.expectIdent()
 	default:
 		p.addError(DiagUnknownProperty, propTok, "unknown tool property '"+propTok.Value+"'")
 		p.skipToNewline()
@@ -1340,6 +1349,12 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 			p.next() // consume "worktree"
 			p.expect(TokenColon)
 			wd.Worktree = p.expectIdent()
+			p.skipNewlines()
+
+		case TokenSandbox:
+			p.next() // consume "sandbox"
+			p.expect(TokenColon)
+			wd.Sandbox = p.expectIdent()
 			p.skipNewlines()
 
 		case TokenDefaultBackend:
@@ -1835,6 +1850,7 @@ func isKeywordToken(tt TokenType) bool {
 		TokenMaxTokens, TokenMaxIterations,
 		TokenCompaction, TokenThreshold, TokenPreserveRecent,
 		TokenWorktree,
+		TokenSandbox,
 		TokenDone, TokenFail:
 		return true
 	}

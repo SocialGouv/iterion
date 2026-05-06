@@ -211,6 +211,7 @@ type jsonAgentDecl struct {
 	InteractionModel  string               `json:"interaction_model,omitempty"`
 	Await             string               `json:"await,omitempty"`
 	Compaction        *jsonCompactionBlock `json:"compaction,omitempty"`
+	Sandbox           string               `json:"sandbox,omitempty"`
 }
 
 type jsonJudgeDecl struct {
@@ -235,6 +236,7 @@ type jsonJudgeDecl struct {
 	InteractionModel  string               `json:"interaction_model,omitempty"`
 	Await             string               `json:"await,omitempty"`
 	Compaction        *jsonCompactionBlock `json:"compaction,omitempty"`
+	Sandbox           string               `json:"sandbox,omitempty"`
 }
 
 type jsonRouterDecl struct {
@@ -269,6 +271,7 @@ type jsonToolNodeDecl struct {
 	Input   string `json:"input,omitempty"`
 	Output  string `json:"output,omitempty"`
 	Await   string `json:"await,omitempty"`
+	Sandbox string `json:"sandbox,omitempty"`
 }
 
 type jsonComputeDecl struct {
@@ -295,6 +298,7 @@ type jsonWorkflowDecl struct {
 	Compaction     *jsonCompactionBlock `json:"compaction,omitempty"`
 	Interaction    string               `json:"interaction,omitempty"`
 	Worktree       string               `json:"worktree,omitempty"`
+	Sandbox        string               `json:"sandbox,omitempty"`
 	Edges          []*jsonEdge          `json:"edges,omitempty"`
 }
 
@@ -388,6 +392,7 @@ func toJSON(f *File) *jsonFile {
 			Input:   t.Input,
 			Output:  t.Output,
 			Await:   awaitModeToStr[t.Await],
+			Sandbox: t.Sandbox,
 		})
 	}
 	for _, c := range f.Computes {
@@ -513,6 +518,7 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		InteractionModel:  a.InteractionModel,
 		Await:             awaitModeToStr[a.Await],
 		Compaction:        compactionToJSON(a.Compaction),
+		Sandbox:           a.Sandbox,
 	}
 }
 
@@ -539,6 +545,7 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		InteractionModel:  j.InteractionModel,
 		Await:             awaitModeToStr[j.Await],
 		Compaction:        compactionToJSON(j.Compaction),
+		Sandbox:           j.Sandbox,
 	}
 }
 
@@ -568,6 +575,7 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 		MCP:            mcpConfigToJSON(w.MCP),
 		Compaction:     compactionToJSON(w.Compaction),
 		Worktree:       w.Worktree,
+		Sandbox:        w.Sandbox,
 	}
 	if w.Vars != nil {
 		jw.Vars = varsBlockToJSON(w.Vars)
@@ -713,6 +721,7 @@ func fromJSON(jf *jsonFile) (*File, error) {
 			Input:   jt.Input,
 			Output:  jt.Output,
 			Await:   aw,
+			Sandbox: jt.Sandbox,
 		})
 	}
 
@@ -878,6 +887,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 		InteractionModel:  ja.InteractionModel,
 		Await:             aw,
 		Compaction:        compactionFromJSON(ja.Compaction),
+		Sandbox:           ja.Sandbox,
 	}, nil
 }
 
@@ -916,6 +926,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 		InteractionModel:  jj.InteractionModel,
 		Await:             aw,
 		Compaction:        compactionFromJSON(jj.Compaction),
+		Sandbox:           jj.Sandbox,
 	}, nil
 }
 
@@ -961,6 +972,7 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 		MCP:            mcpConfigFromJSON(jw.MCP),
 		Compaction:     compactionFromJSON(jw.Compaction),
 		Worktree:       jw.Worktree,
+		Sandbox:        jw.Sandbox,
 	}
 	if jw.Vars != nil {
 		v, err := varsBlockFromJSON(jw.Vars)

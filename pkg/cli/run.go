@@ -70,6 +70,12 @@ type RunOptions struct {
 	// of run. CLI default is true (preserves prior behaviour); the
 	// editor sets false by default to defer merge to a UI action.
 	AutoMerge bool
+	// Sandbox is the run-level override for the sandbox activation
+	// mode ("", "none", "auto"). "" inherits the project default
+	// (ITERION_SANDBOX_DEFAULT) which itself defaults to "" (no
+	// sandbox). The workflow's own `sandbox:` block is the next layer
+	// of precedence; per-node overrides win above all. See pkg/sandbox.
+	Sandbox string
 }
 
 // RunRun executes a workflow or recipe and reports the outcome.

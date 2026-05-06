@@ -45,6 +45,25 @@ type Config struct {
 	Server  ServerConfig  `yaml:"server"`
 	Metrics MetricsConfig `yaml:"metrics"`
 	Log     LogConfig     `yaml:"log"`
+	Sandbox SandboxConfig `yaml:"sandbox"`
+}
+
+// SandboxConfig is the global sandbox default. The empty string means
+// "no sandbox" — the factory will pick the noop driver. Workflows
+// that declare their own `sandbox:` block override this value; this
+// is the lowest-precedence fallback per the design plan.
+//
+// See pkg/sandbox/precedence.go for resolution rules and
+// .plans/on-va-tudier-la-snappy-lemon.md §0 for the user-facing
+// activation model.
+type SandboxConfig struct {
+	// Default is one of "" (no sandbox), "none" (explicit opt-out
+	// across all workflows — useful when you want every workflow to
+	// have to opt back in explicitly), or "auto" (every workflow
+	// reads .devcontainer/devcontainer.json by default). Phase 0
+	// accepts these three; "inline" requires a block body which the
+	// CLI cannot express.
+	Default string `yaml:"default"`
 }
 
 // NATSConfig holds the NATS JetStream connection + stream/bucket names.
@@ -230,6 +249,12 @@ func (c *Config) Validate() error {
 
 	if c.Runner.Concurrency < 1 {
 		return fmt.Errorf("ITERION_RUNNER_CONCURRENCY %d invalid (want >= 1)", c.Runner.Concurrency)
+	}
+
+	switch c.Sandbox.Default {
+	case "", "none", "auto":
+	default:
+		return fmt.Errorf("ITERION_SANDBOX_DEFAULT %q invalid (want \"\", \"none\", or \"auto\")", c.Sandbox.Default)
 	}
 
 	return nil

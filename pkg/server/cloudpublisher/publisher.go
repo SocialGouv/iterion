@@ -241,7 +241,6 @@ func marshalIRFromFile(path string) (json.RawMessage, error) {
 	return body, nil
 }
 
-
 // varsAsAny upgrades a string-keyed map to interface{} so the wire
 // payload can carry richer types if the launch spec ever evolves.
 func varsAsAny(in map[string]string) map[string]interface{} {
