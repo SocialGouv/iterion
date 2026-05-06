@@ -16,11 +16,17 @@
 # ---------------------------------------------------------------------
 FROM node:22-bookworm-slim AS editor-builder
 WORKDIR /app
-COPY editor/package.json editor/pnpm-lock.yaml editor/.npmrc* ./editor/
+# pnpm-workspace.yaml + pnpm-lock.yaml live at the repo root; the
+# editor/ directory is a workspace member that doesn't carry its own
+# lockfile. Copy the workspace anchor first so `pnpm install` can
+# resolve from the locked deps tree, then layer the editor sources.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY editor/package.json editor/.npmrc* ./editor/
 RUN corepack enable && \
-    cd editor && corepack pnpm install --frozen-lockfile --prefer-offline
+    corepack pnpm install --frozen-lockfile --prefer-offline \
+        --filter ./editor...
 COPY editor ./editor
-RUN cd editor && corepack pnpm exec vite build
+RUN corepack pnpm --filter ./editor exec vite build
 
 # ---------------------------------------------------------------------
 # Stage 2 — Go binary
