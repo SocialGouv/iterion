@@ -43,12 +43,12 @@ func TestAllowlistAllowsListedHosts(t *testing.T) {
 		t.Fatal(err)
 	}
 	cases := map[string]bool{
-		"api.anthropic.com":    true,
-		"github.com":           true,           // **.github.com matches the bare host
-		"raw.github.com":       true,
-		"a.b.github.com":       true,
-		"evil.site":            false,
-		"":                     false,
+		"api.anthropic.com":     true,
+		"github.com":            true, // **.github.com matches the bare host
+		"raw.github.com":        true,
+		"a.b.github.com":        true,
+		"evil.site":             false,
+		"":                      false,
 		"api.anthropic.com:443": true, // port stripped
 	}
 	for host, want := range cases {
@@ -61,10 +61,10 @@ func TestAllowlistAllowsListedHosts(t *testing.T) {
 func TestSingleStarMatchesOneLabel(t *testing.T) {
 	p, _ := Compile(ModeAllowlist, []string{"*.example.com"})
 	cases := map[string]bool{
-		"foo.example.com":     true,
-		"bar.example.com":     true,
-		"a.b.example.com":     false, // two labels
-		"example.com":         false, // zero labels
+		"foo.example.com": true,
+		"bar.example.com": true,
+		"a.b.example.com": false, // two labels
+		"example.com":     false, // zero labels
 	}
 	for host, want := range cases {
 		if got := p.Allow(host); got != want {
@@ -91,11 +91,11 @@ func TestDoubleStarMatchesAnyLabels(t *testing.T) {
 func TestDenylistDefaultsToAllow(t *testing.T) {
 	p, _ := Compile(ModeDenylist, []string{"!**.evil.site", "!169.254.169.254"})
 	cases := map[string]bool{
-		"github.com":       true,
-		"evil.site":        false,
-		"sub.evil.site":    false,
-		"169.254.169.254":  false,
-		"169.254.169.255":  true, // not in the denylist
+		"github.com":      true,
+		"evil.site":       false,
+		"sub.evil.site":   false,
+		"169.254.169.254": false,
+		"169.254.169.255": true, // not in the denylist
 	}
 	for host, want := range cases {
 		if got := p.Allow(host); got != want {
@@ -129,10 +129,10 @@ func TestOpenModeAcceptsEverything(t *testing.T) {
 func TestCIDRMatching(t *testing.T) {
 	p, _ := Compile(ModeDenylist, []string{"!10.0.0.0/8"})
 	cases := map[string]bool{
-		"10.0.0.1":    false,
+		"10.0.0.1":       false,
 		"10.255.255.255": false,
-		"11.0.0.0":    true,
-		"github.com":  true, // not an IP
+		"11.0.0.0":       true,
+		"github.com":     true, // not an IP
 	}
 	for host, want := range cases {
 		if got := p.Allow(host); got != want {
