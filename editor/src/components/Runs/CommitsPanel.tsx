@@ -190,19 +190,20 @@ function MergeFooter({ runId, run, commitCount, onMergeComplete }: MergeFooterPr
     );
   }
 
-  // Workflow doesn't use worktree:auto → no finalization to do; the
-  // run's edits land directly in the user's checkout.
-  if (!run.worktree) {
-    return (
-      <NoticeFooter tone="muted">
-        Workflow doesn't use <code className="text-fg-default">worktree: auto</code> —
-        edits land directly in your working tree, no merge needed.
-      </NoticeFooter>
-    );
-  }
-
-  // Worktree run finished but produced no commits → nothing to merge.
+  // No storage branch means there's nothing for the user to merge,
+  // regardless of how the run got there. Disambiguate the two reasons
+  // — workflow didn't opt into a worktree vs. worktree run produced no
+  // commits — so the user knows whether they need to change the
+  // workflow or just re-run with code that actually commits.
   if (!hasBranch) {
+    if (!run.worktree) {
+      return (
+        <NoticeFooter tone="muted">
+          Workflow doesn't use <code className="text-fg-default">worktree: auto</code> —
+          edits land directly in your working tree, no merge needed.
+        </NoticeFooter>
+      );
+    }
     return (
       <NoticeFooter tone="muted">
         Run produced no commits — nothing to merge.

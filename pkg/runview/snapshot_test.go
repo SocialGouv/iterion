@@ -427,6 +427,39 @@ func TestSnapshotReducer_TimerColdLoadRunningFallback(t *testing.T) {
 	}
 }
 
+func TestSnapshotReducer_WorktreeFinalizationFieldsPropagate(t *testing.T) {
+	// The Commits-tab merge UI keys off run.worktree, run.final_branch,
+	// and run.merge_status to decide between "no merge needed" and the
+	// merge form. Regression for run_1778021294883: every field a
+	// finalized worktree run carries on store.Run must round-trip into
+	// the snapshot's RunHeader untouched.
+	finished := time.Unix(100, 0).UTC()
+	b := NewSnapshotBuilder(&store.Run{
+		ID:            "r-finalized",
+		Status:        store.RunStatusFinished,
+		FinishedAt:    &finished,
+		Worktree:      true,
+		WorkDir:       "/some/path/.iterion/worktrees/r-finalized",
+		FinalCommit:   "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+		FinalBranch:   "iterion/run/swift-cedar-a3f2",
+		MergeStrategy: store.MergeStrategySquash,
+		MergeStatus:   store.MergeStatusPending,
+	})
+	h := b.Snapshot().Run
+	if !h.Worktree {
+		t.Errorf("RunHeader.Worktree = false, want true")
+	}
+	if h.FinalBranch != "iterion/run/swift-cedar-a3f2" {
+		t.Errorf("RunHeader.FinalBranch = %q, want iterion/run/swift-cedar-a3f2", h.FinalBranch)
+	}
+	if h.MergeStatus != store.MergeStatusPending {
+		t.Errorf("RunHeader.MergeStatus = %q, want pending", h.MergeStatus)
+	}
+	if h.MergeStrategy != store.MergeStrategySquash {
+		t.Errorf("RunHeader.MergeStrategy = %q, want squash", h.MergeStrategy)
+	}
+}
+
 func TestSnapshotReducer_TimerSetRunPreservesCounters(t *testing.T) {
 	// SetRun is invoked on terminal-event paths to refresh the header
 	// from run.json. It must not clobber the accumulated active
