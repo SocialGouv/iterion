@@ -288,6 +288,76 @@ jobs:
           rm -rf "$stage"
           ls -la "${ARTIFACT_NAME}.tar.gz"
 
+      - name: Bundle Linux .deb package
+        if: matrix.package == 'appimage'
+        shell: bash
+        env:
+          ARTIFACT_NAME: ${{ matrix.artifact_name }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          # Native .deb for Debian/Ubuntu/Mint users who'd rather have
+          # apt manage the install + uninstall + dependency check than
+          # extract a tarball or run an AppImage. The runtime payload is
+          # the same raw binary as the .tar.gz; only the surrounding
+          # metadata + dpkg dep-resolution differs.
+          ARCH="${PLATFORM##*/}"
+          version="$(node -p "require('./package.json').version")"
+          stage="$(mktemp -d)"
+          mkdir -p \
+            "$stage/DEBIAN" \
+            "$stage/usr/bin" \
+            "$stage/usr/share/applications" \
+            "$stage/usr/share/icons/hicolor/256x256/apps" \
+            "$stage/usr/share/doc/iterion-desktop"
+          install -m 755 "build/bin/${ARTIFACT_NAME}" "$stage/usr/bin/iterion-desktop"
+          install -m 644 build/linux/iterion.desktop \
+            "$stage/usr/share/applications/iterion-desktop.desktop"
+          if [ -f build/appicon.png ]; then
+            install -m 644 build/appicon.png \
+              "$stage/usr/share/icons/hicolor/256x256/apps/iterion-desktop.png"
+          fi
+          cat > "$stage/usr/share/doc/iterion-desktop/copyright" <<'EOF'
+          Iterion Desktop
+          Upstream: https://github.com/SocialGouv/iterion
+          License: Apache-2.0
+          EOF
+          # Compute installed-size in KiB for control metadata.
+          installed_size="$(du -sk "$stage" | awk '{print $1}')"
+          cat > "$stage/DEBIAN/control" <<EOF
+          Package: iterion-desktop
+          Version: ${version}
+          Section: devel
+          Priority: optional
+          Architecture: ${ARCH}
+          Depends: libgtk-3-0 | libgtk-3-0t64, libwebkit2gtk-4.1-0, libsoup-3.0-0
+          Recommends: gtk-update-icon-cache
+          Maintainer: SocialGouv <opensource@social.gouv.fr>
+          Homepage: https://github.com/SocialGouv/iterion
+          Installed-Size: ${installed_size}
+          Description: Iterion Desktop — workflow orchestration for AI agents
+           Native desktop wrapper around the iterion editor and runtime.
+           Runs against the system WebKitGTK 4.1 stack (smaller than the
+           AppImage variant).
+          EOF
+          # Refresh GTK icon cache after install/remove so the .desktop
+          # entry's icon resolves without a logout.
+          cat > "$stage/DEBIAN/postinst" <<'EOF'
+          #!/bin/sh
+          set -e
+          if [ -x "$(command -v gtk-update-icon-cache)" ]; then
+            gtk-update-icon-cache -q /usr/share/icons/hicolor || true
+          fi
+          if [ -x "$(command -v update-desktop-database)" ]; then
+            update-desktop-database -q /usr/share/applications || true
+          fi
+          EOF
+          cp "$stage/DEBIAN/postinst" "$stage/DEBIAN/postrm"
+          chmod 755 "$stage/DEBIAN/postinst" "$stage/DEBIAN/postrm"
+          dpkg-deb --build --root-owner-group "$stage" "${ARTIFACT_NAME}.deb"
+          rm -rf "$stage"
+          ls -la "${ARTIFACT_NAME}.deb"
+
       - name: Smoke check Linux AppImage architecture
         if: matrix.package == 'appimage'
         shell: bash

@@ -27,13 +27,14 @@ for f in "$DIR"/iterion-desktop-*; do
   case "$base" in
     *.sig|*.sha256) continue ;;
     *manifest*) continue ;;
-    # Linux ships both an AppImage (self-contained, the auto-updater
-    # target) and a .tar.gz containing the raw binary (smaller download
-    # for users who already have webkitgtk-4.1 / gtk-3 installed). Only
-    # the AppImage goes into the manifest — the auto-updater can swap
-    # an AppImage in place safely; replacing a system-installed binary
-    # would race against package managers.
+    # Linux ships an AppImage (the auto-updater target), a .tar.gz
+    # containing the raw binary, and a .deb for Debian/Ubuntu/Mint.
+    # Only the AppImage goes into the manifest — the auto-updater can
+    # swap an AppImage in place safely, but replacing a system-
+    # installed binary or apt-managed package would race against the
+    # local package manager.
     iterion-desktop-linux-*.tar.gz) continue ;;
+    iterion-desktop-linux-*.deb)    continue ;;
   esac
   # The auto-updater looks up artefacts by `runtime.GOOS+"/"+runtime.GOARCH`.
   # darwin/universal must be exposed under BOTH darwin/amd64 and

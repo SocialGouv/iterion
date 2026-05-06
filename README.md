@@ -242,8 +242,9 @@ Pick the artefact that matches your OS from [the latest GitHub Release](https://
 | Platform | File | Size | Notes |
 |---|---|---|---|
 | Linux x86_64 | `iterion-desktop-linux-amd64.AppImage` | ~110 MB | Self-contained, click-to-run |
+| Linux x86_64 | `iterion-desktop-linux-amd64.deb` | ~16 MB | Debian/Ubuntu/Mint package — `apt`-managed install + uninstall, declares deps |
 | Linux x86_64 | `iterion-desktop-linux-amd64.tar.gz` | ~16 MB | Raw binary + README; needs `libwebkit2gtk-4.1-0` + `libgtk-3-0` + `libsoup-3.0-0` |
-| Linux arm64 | `iterion-desktop-linux-arm64.{AppImage,tar.gz}` | same | same |
+| Linux arm64 | `iterion-desktop-linux-arm64.{AppImage,deb,tar.gz}` | same | same |
 | macOS Intel + Apple Silicon | `iterion-desktop-darwin-universal.zip` | ~80 MB | Universal `.app` (lipo'd, runs natively on both archs) |
 | Windows x64 | `iterion-desktop-windows-amd64.exe` | ~50 MB | Portable single executable |
 | Windows x64 | `iterion-desktop-windows-amd64-installer.exe` | ~50 MB | NSIS installer (per-user, Start Menu integration) |
@@ -255,6 +256,12 @@ Pick the artefact that matches your OS from [the latest GitHub Release](https://
 ```bash
 chmod +x iterion-desktop-linux-amd64.AppImage
 ./iterion-desktop-linux-amd64.AppImage
+```
+
+**Debian/Ubuntu/Mint** (.deb — apt manages deps + uninstall):
+```bash
+sudo apt install ./iterion-desktop-linux-amd64.deb
+iterion-desktop
 ```
 
 **Raw binary** (smaller, requires WebKit + GTK runtime):
