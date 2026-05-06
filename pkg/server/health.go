@@ -1,8 +1,10 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 )
@@ -15,6 +17,10 @@ type healthResponse struct {
 	Commit  string            `json:"commit,omitempty"`  // build commit
 	Checks  map[string]string `json:"checks,omitempty"`  // per-dependency status (cloud only)
 }
+
+// defaultReadinessTimeout caps each individual readiness check when the
+// caller did not set Config.ReadinessTimeout.
+const defaultReadinessTimeout = 1 * time.Second
 
 // handleHealthz is the liveness probe. Always returns 200 — its only
 // promise is that the HTTP server's mux loop is responsive. Cloud
@@ -32,29 +38,60 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// handleReadyz is the readiness probe. Returns 200 when the server is
-// ready to take traffic, 503 otherwise. For local mode there is
-// nothing to ping (filesystem store), so the answer is always 200.
-// Cloud mode will ping Mongo, NATS, and S3 with short (1s) timeouts
-// once T-25/T-26 wire the cloud-side store dependencies into the
-// server. Until then we surface a "ready" answer with mode tagged so
-// smoke tests can still gate on the endpoint.
+// handleReadyz is the readiness probe. Returns 200 when every external
+// dependency wired via Config.ReadinessChecks responds within
+// ReadinessTimeout, 503 with a per-dep status map otherwise. Local
+// mode has no dependencies and always returns 200.
 //
 // Cloud-ready plan §F (T-37).
-func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
-	writeHealthJSON(w, http.StatusOK, healthResponse{
+func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	checks := s.cfg.ReadinessChecks
+	resp := healthResponse{
 		Status:  "ok",
 		Mode:    s.deployMode(),
 		Version: appinfo.Version,
 		Commit:  appinfo.Commit,
-	})
+	}
+	if len(checks) == 0 {
+		writeHealthJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	timeout := s.cfg.ReadinessTimeout
+	if timeout <= 0 {
+		timeout = defaultReadinessTimeout
+	}
+
+	results := make(map[string]string, len(checks))
+	allOK := true
+	for name, check := range checks {
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		err := check(ctx)
+		cancel()
+		if err != nil {
+			results[name] = "error: " + err.Error()
+			allOK = false
+			continue
+		}
+		results[name] = "ok"
+	}
+	resp.Checks = results
+	if !allOK {
+		resp.Status = "degraded"
+		writeHealthJSON(w, http.StatusServiceUnavailable, resp)
+		return
+	}
+	writeHealthJSON(w, http.StatusOK, resp)
 }
 
-// deployMode reports the persistence backend in use. The editor
-// server is the local-mode entry point today; once T-30 (cmd/
-// iterion/server.go) lands a cloud-aware server, that path will pass
-// a Capabilities()-aware store and we'll learn the mode from there.
+// deployMode reports the persistence backend in use. Reads Config.Mode
+// when set (cloud bootstrap path), otherwise falls back to the
+// store-directory heuristic so existing local-only callers keep
+// working without a Config update.
 func (s *Server) deployMode() string {
+	if s.cfg.Mode != "" {
+		return s.cfg.Mode
+	}
 	if s.runs == nil {
 		return "local"
 	}

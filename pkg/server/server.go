@@ -65,7 +65,28 @@ type Config struct {
 	// Mongo change-stream source so the WS handler sees runner-pod
 	// writes. Plan §F (T-21).
 	EventSource runview.EventStreamSource
+
+	// ReadinessChecks, when non-nil, are invoked by /readyz to verify
+	// every external dependency (Mongo, NATS, S3) is reachable. Each
+	// entry is run with a sub-context bounded by ReadinessTimeout (1s
+	// by default) so a slow dependency cannot stall the probe past
+	// the kubelet's readiness window. Empty in local mode.
+	ReadinessChecks map[string]ReadinessCheck
+
+	// ReadinessTimeout caps each ReadinessCheck individually. Defaults
+	// to 1s when zero.
+	ReadinessTimeout time.Duration
+
+	// Mode advertises the deployment mode in the health response.
+	// Defaults to "local" when empty for backward compat with callers
+	// that don't set it.
+	Mode string
 }
+
+// ReadinessCheck is the contract /readyz invokes on each external
+// dependency. It MUST be cheap (HEAD/ping) and MUST respect the
+// supplied context's deadline.
+type ReadinessCheck func(ctx context.Context) error
 
 // Server is the editor HTTP server.
 type Server struct {

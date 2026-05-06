@@ -36,6 +36,13 @@ const sessionCookieName = "iterion_session"
 // before.
 func (s *Server) sessionTokenMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Health endpoints must remain reachable without a session
+		// cookie — kubelet probes do not carry one. The endpoints
+		// reveal only build version + dependency status, no run data.
+		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
+			next.ServeHTTP(w, r)
+			return
+		}
 		// Token query path: takes precedence over the cookie. Constant-time
 		// compare to avoid leaking the token via timing.
 		if t := r.URL.Query().Get("t"); t != "" {
