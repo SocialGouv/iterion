@@ -134,20 +134,10 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "file_path or source is required")
 		return
 	}
-	// FilePath is treated as a logical name when Source is supplied
-	// (no disk read). When Source is empty we fall back to safePath
-	// resolution against the server's WorkDir — the legacy local-mode
-	// flow.
-	var absPath string
-	if req.Source == "" {
-		var pathErr error
-		absPath, pathErr = s.safePath(req.FilePath)
-		if pathErr != nil {
-			s.httpErrorFor(w, r, http.StatusBadRequest, "invalid file_path: %v", pathErr)
-			return
-		}
-	} else {
-		absPath = req.FilePath
+	absPath, pathErr := s.resolveWorkflowPath(req.FilePath, req.Source)
+	if pathErr != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid file_path: %v", pathErr)
+		return
 	}
 	timeout, err := parseTimeout(req.Timeout)
 	if err != nil {
@@ -338,18 +328,10 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// In cloud mode (Source supplied) skip the safePath disk check —
-	// FilePath is purely a label. Local mode keeps the legacy guard.
-	var absPath string
-	if req.Source == "" {
-		var pathErr error
-		absPath, pathErr = s.safePath(filePath)
-		if pathErr != nil {
-			s.httpErrorFor(w, r, http.StatusBadRequest, "invalid file_path: %v", pathErr)
-			return
-		}
-	} else {
-		absPath = filePath
+	absPath, pathErr := s.resolveWorkflowPath(filePath, req.Source)
+	if pathErr != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid file_path: %v", pathErr)
+		return
 	}
 	timeout, err := parseTimeout(req.Timeout)
 	if err != nil {
@@ -376,6 +358,18 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusAccepted)
 	s.writeJSONFor(w, r, launchRunResponse{RunID: res.RunID, Status: string(store.RunStatusRunning)})
+}
+
+// resolveWorkflowPath returns the absolute path the engine should
+// associate with a launch / resume / answer call. When source is
+// supplied (cloud mode — server pod has no shared FS with the editor)
+// filePath is treated as a logical label and returned as-is. When
+// source is empty (local mode) the path is run through safePath.
+func (s *Server) resolveWorkflowPath(filePath, source string) (string, error) {
+	if source != "" {
+		return filePath, nil
+	}
+	return s.safePath(filePath)
 }
 
 // parseTimeout accepts an empty string (no timeout) or a Go duration

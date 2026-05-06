@@ -23,9 +23,6 @@ export default function PauseForm({ runId, questions, message, onSubmitted }: Pr
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Cloud mode requires the .iter source inline; the document store
-  // caches it on openFile/saveFile. Local mode ignores `source` and
-  // resolves the file via FilePath, so passing undefined is safe.
   const currentSource = useDocumentStore((s) => s.currentSource);
 
   const onChange = (name: string, next: string) => {

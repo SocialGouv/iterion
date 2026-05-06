@@ -7,6 +7,7 @@ import type { MergeStrategy } from "@/api/runs";
 import type { IterDocument, VarField } from "@/api/types";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
+import { useDocumentStore } from "@/store/document";
 
 import VarFieldInput, { defaultStringFor } from "./VarFieldInput";
 import { isPromptLikeVar } from "@/lib/promptVarHeuristics";
@@ -29,10 +30,8 @@ export default function LaunchView() {
   }, [search]);
 
   const [doc, setDoc] = useState<IterDocument | null>(null);
-  // Raw .iter source captured at openFile-time so cloud-mode createRun
-  // can include it inline. Without source, the cloud server pod's
-  // safePath disk check fails (no shared FS with the editor).
-  const [source, setSource] = useState<string>("");
+  const currentSource = useDocumentStore((s) => s.currentSource);
+  const setCurrentSource = useDocumentStore((s) => s.setCurrentSource);
   const [values, setValues] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -65,7 +64,7 @@ export default function LaunchView() {
       .then((res) => {
         if (cancelled) return;
         setDoc(res.document);
-        setSource(res.source);
+        setCurrentSource(res.source);
         const fields = pickVars(res.document);
         const initial: Record<string, string> = {};
         for (const f of fields) initial[f.name] = defaultStringFor(f);
@@ -87,7 +86,7 @@ export default function LaunchView() {
     try {
       const res = await createRun({
         file_path: filePath,
-        source: source || undefined,
+        source: currentSource || undefined,
         vars: values,
         merge_into: mergeInto || undefined,
         branch_name: branchName || undefined,

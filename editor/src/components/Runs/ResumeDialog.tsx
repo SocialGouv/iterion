@@ -24,9 +24,6 @@ export default function ResumeDialog({ run, open, onOpenChange }: Props) {
   const setRunStatus = useRunStore((s) => s.setRunStatus);
   const requestWsReconnect = useRunStore((s) => s.requestWsReconnect);
   const addToast = useUIStore((s) => s.addToast);
-  // Cloud mode requires the .iter source inline; the document store
-  // caches it on openFile/saveFile. Local mode ignores `source` and
-  // resolves the file via the run's persisted FilePath.
   const currentSource = useDocumentStore((s) => s.currentSource);
 
   // Reset transient state when the dialog re-opens for a different run

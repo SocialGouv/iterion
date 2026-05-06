@@ -55,10 +55,9 @@ type inFlight struct {
 	runID    string
 	delivery *natsq.Delivery
 	cancelFn context.CancelFunc
-	// done is closed by processOne's defer once the delivery has been
-	// Ack'd or Nak'd. Shutdown waits on it so it doesn't re-Nak a
-	// delivery that has already been acted on by processOne (the NATS
-	// client tolerates double-acks but it's a misuse of the contract).
+	// done is closed once processOne has Ack'd or Nak'd the delivery.
+	// Shutdown selects on it to avoid double-acting on a delivery
+	// processOne already finalised.
 	done chan struct{}
 }
 
@@ -196,10 +195,8 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	r.current = &inFlight{runID: msg.RunID, delivery: delivery, cancelFn: runCancel, done: done}
 	r.mu.Unlock()
 	defer func() {
-		// Signal Shutdown that the delivery has been acted on (Ack or
-		// Nak) before we clear r.current. Order matters: close before
-		// nilling so a Shutdown that captured cur is guaranteed to see
-		// the channel close.
+		// Close before nilling: a Shutdown that captured the cur
+		// pointer must always observe the channel close.
 		close(done)
 		r.mu.Lock()
 		r.current = nil

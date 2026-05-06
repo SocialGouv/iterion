@@ -68,14 +68,10 @@ spec:
             {{- end }}
           resources:
             {{- toYaml .Values.runner.resources | nindent 12 }}
-          # The runner always binds a Prometheus /metrics listener on
-          # the configured port (plan §F T-40) regardless of the chart
-          # `metrics.enabled` flag (which only gates the PodMonitor
-          # scrape config). We reuse the listener as a liveness probe
-          # — any process that can serve metrics is by definition still
-          # in its consume loop. A stuck runner that drops the goroutine
-          # returns 0 / connection-refused and the kubelet restarts the
-          # pod.
+          # The metrics listener is bound unconditionally by the runner
+          # binary (the chart `metrics.enabled` flag only gates the
+          # PodMonitor scrape config), so it doubles as a liveness probe
+          # for the consume loop. Plan §F T-40.
           ports:
             - name: metrics
               containerPort: {{ default .Values.server.metricsPort .Values.runner.metricsPort }}

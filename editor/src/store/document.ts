@@ -54,10 +54,8 @@ interface DocumentState {
    *  `warnings`. Empty for parser-only responses. */
   issues: DiagnosticIssue[];
   currentFilePath: string | null;
-  // Raw .iter source as returned by /api/files/open. Cached so cloud-mode
-  // resume calls can pass it inline (the server pod has no shared FS with
-  // the editor pod). Updated on openFile and saveFile; null when no file
-  // is open. Local mode never reads it.
+  // Cached so cloud-mode launch/resume can pass it inline. Updated on
+  // openFile / saveFile / parseSource; null otherwise.
   currentSource: string | null;
   _generation: number;
   _savedGeneration: number;
@@ -230,7 +228,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       issues: issues ?? [],
     }),
   setCurrentFilePath: (currentFilePath) => set({ currentFilePath }),
-  setCurrentSource: (currentSource) => set({ currentSource }),
+  setCurrentSource: (currentSource) => set((s) => (s.currentSource === currentSource ? s : { currentSource })),
   markSaved: () => set((s) => ({ _savedGeneration: s._generation })),
   isDirty: () => {
     const s = get();

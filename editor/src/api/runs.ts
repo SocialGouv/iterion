@@ -260,9 +260,8 @@ export async function getArtifact(
 
 export interface CreateRunRequest {
   file_path: string;
-  // Inline workflow source. Cloud mode (no shared FS between editor pod
-  // and server pod) requires this — without it the server's safePath
-  // check fails. Local mode tolerates either source or file_path.
+  // Inline .iter source — required in cloud mode (no shared FS),
+  // ignored in local mode where file_path resolves on disk.
   source?: string;
   run_id?: string;
   vars?: Record<string, string>;
@@ -306,10 +305,7 @@ export async function cancelRun(
 
 export interface ResumeRunRequest {
   file_path?: string;
-  // Inline workflow source. Cloud mode (no shared FS between editor
-  // pod and server pod) requires this — without it the server's
-  // safePath check fails. Local mode tolerates either source or
-  // file_path.
+  // See CreateRunRequest.source.
   source?: string;
   answers?: Record<string, unknown>;
   force?: boolean;

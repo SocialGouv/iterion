@@ -66,12 +66,9 @@ type wsLogChunkPayload struct {
 }
 
 type wsAnswerRequest struct {
-	FilePath string `json:"file_path,omitempty"` // optional; falls back to run.FilePath
-	// Source carries the .iter file contents inline so cloud mode (no
-	// shared filesystem between editor and server pod) can resume
-	// without depending on safePath. Mirrors resumeRunRequest.Source.
-	Source  string                 `json:"source,omitempty"`
-	Answers map[string]interface{} `json:"answers"`
+	FilePath string                 `json:"file_path,omitempty"` // optional; falls back to run.FilePath
+	Source   string                 `json:"source,omitempty"`    // see resumeRunRequest.Source
+	Answers  map[string]interface{} `json:"answers"`
 }
 
 type wsErrorPayload struct {
@@ -395,18 +392,10 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 			return
 		}
 	}
-	// Cloud mode (Source supplied) skips the safePath disk check —
-	// FilePath is purely a label. Local mode keeps the legacy guard.
-	var absPath string
-	if req.Source == "" {
-		var pathErr error
-		absPath, pathErr = c.server.safePath(filePath)
-		if pathErr != nil {
-			c.sendError("invalid_file_path", pathErr.Error(), env.AckID)
-			return
-		}
-	} else {
-		absPath = filePath
+	absPath, err := c.server.resolveWorkflowPath(filePath, req.Source)
+	if err != nil {
+		c.sendError("invalid_file_path", err.Error(), env.AckID)
+		return
 	}
 	// Detach from WS-connection ctx: closing the browser tab must not
 	// cancel an in-flight resume. The service's manager owns lifecycle.
