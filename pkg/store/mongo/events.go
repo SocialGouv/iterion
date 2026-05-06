@@ -13,34 +13,47 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
+// appendEventMaxRetries caps the seq-collision retry loop. Three is
+// generous: the engine is single-writer per run so a real collision
+// only happens during a server-runner handoff. Anything beyond three
+// is more likely a misconfiguration than transient contention.
+const appendEventMaxRetries = 3
+
 // AppendEvent allocates a monotonic per-run sequence via run_seq,
 // then inserts the event document. The (run_id, seq) UNIQUE index on
 // `events` is the safety net against two processes racing on seq
-// allocation; on conflict the caller can retry.
+// allocation; on conflict we retry up to appendEventMaxRetries times,
+// reallocating seq each iteration so a transient race does not surface
+// as a hard run failure.
 //
 // Plan §D.3.
 func (s *Store) AppendEvent(ctx context.Context, runID string, evt store.Event) (*store.Event, error) {
-	seq, err := s.allocSeq(ctx, runID)
-	if err != nil {
-		return nil, err
-	}
-
 	if evt.Timestamp.IsZero() {
 		evt.Timestamp = time.Now().UTC()
 	}
 	evt.RunID = runID
-	evt.Seq = seq
 
-	if _, err := s.events.InsertOne(ctx, evt); err != nil {
-		// Duplicate seq → another process beat us; surface the error
-		// so the caller can re-allocate. The current engine is
-		// single-writer per run so this should be vanishingly rare.
-		if mongo.IsDuplicateKeyError(err) {
-			return nil, fmt.Errorf("store/mongo: race on seq for run %s seq %d: %w", runID, seq, err)
+	var lastSeq int64
+	var lastErr error
+	for attempt := 0; attempt < appendEventMaxRetries; attempt++ {
+		seq, err := s.allocSeq(ctx, runID)
+		if err != nil {
+			return nil, err
 		}
-		return nil, fmt.Errorf("store/mongo: insert event %s/%d: %w", runID, seq, err)
+		evt.Seq = seq
+		lastSeq = seq
+
+		if _, err := s.events.InsertOne(ctx, evt); err != nil {
+			if mongo.IsDuplicateKeyError(err) {
+				// Another writer beat us at this seq; reallocate.
+				lastErr = err
+				continue
+			}
+			return nil, fmt.Errorf("store/mongo: insert event %s/%d: %w", runID, seq, err)
+		}
+		return &evt, nil
 	}
-	return &evt, nil
+	return nil, fmt.Errorf("store/mongo: race on seq for run %s seq %d after %d attempts: %w", runID, lastSeq, appendEventMaxRetries, lastErr)
 }
 
 // allocSeq is the FindOneAndUpdate $inc pattern from plan §D.3. The

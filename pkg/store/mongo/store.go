@@ -136,6 +136,16 @@ func (s *Store) Close(ctx context.Context) error {
 	return s.client.Disconnect(ctx)
 }
 
+// Ping checks the Mongo client can talk to the primary. Used by the
+// server's /readyz handler. Caller is expected to wrap in a
+// sub-second timeout.
+func (s *Store) Ping(ctx context.Context) error {
+	if s == nil || s.client == nil {
+		return fmt.Errorf("store/mongo: client not initialised")
+	}
+	return s.client.Ping(ctx, readpref.Primary())
+}
+
 // RunsCollection exposes the underlying Mongo collection so callers
 // (e.g. cloudpublisher.queuePosition) can run aggregations the
 // store.RunStore interface doesn't surface. Use with care — direct
@@ -154,13 +164,15 @@ func (s *Store) EventsCollection() *mongo.Collection { return s.events }
 func (s *Store) Root() string { return "" }
 
 // Capabilities advertises the cloud-store feature set: live events
-// will come via Mongo change streams (LiveStream), distributed locks
-// are the runner's responsibility (CrossProcessLock), and worktrees
-// are not handled at the store level (ephemeral runner clone instead).
+// come via Mongo change streams (LiveStream), distributed locks are
+// the runner's responsibility (CrossProcessLock — only true when a
+// LockProvider is wired; the server-side store has none and reports
+// false so callers don't act on a noop lock), and worktrees are not
+// handled at the store level (ephemeral runner clone instead).
 func (s *Store) Capabilities() store.Capabilities {
 	return store.Capabilities{
 		LiveStream:       true,
-		CrossProcessLock: true, // implemented in T-26 via NATS KV
+		CrossProcessLock: s.lockProv != nil,
 		PIDFile:          false,
 		GitWorktree:      false,
 	}
