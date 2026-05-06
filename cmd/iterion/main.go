@@ -12,6 +12,11 @@ import (
 	"syscall"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
+	// Register the cloud-mode store opener (Mongo + S3) so
+	// ITERION_MODE=cloud works out of the box. The package's init()
+	// calls store.RegisterCloudOpener; no other reference is needed.
+	// Cloud-ready plan §F (T-19).
+	_ "github.com/SocialGouv/iterion/pkg/store/cloud"
 	"github.com/spf13/cobra"
 )
 

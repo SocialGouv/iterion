@@ -355,6 +355,19 @@ github.com/jchv/go-winloader/internal/memloader
 github.com/jchv/go-winloader/internal/pe
 github.com/jchv/go-winloader/internal/vmem
 github.com/jchv/go-winloader/internal/winloader
+# github.com/klauspost/compress v1.18.0
+## explicit; go 1.22
+github.com/klauspost/compress
+github.com/klauspost/compress/fse
+github.com/klauspost/compress/huff0
+github.com/klauspost/compress/internal/cpuinfo
+github.com/klauspost/compress/internal/le
+github.com/klauspost/compress/internal/race
+github.com/klauspost/compress/internal/snapref
+github.com/klauspost/compress/s2
+github.com/klauspost/compress/snappy
+github.com/klauspost/compress/zstd
+github.com/klauspost/compress/zstd/internal/xxhash
 # github.com/kylelemons/godebug v1.1.0
 ## explicit; go 1.11
 github.com/kylelemons/godebug/diff
@@ -530,14 +543,77 @@ github.com/wailsapp/wails/v2/pkg/options/linux
 github.com/wailsapp/wails/v2/pkg/options/mac
 github.com/wailsapp/wails/v2/pkg/options/windows
 github.com/wailsapp/wails/v2/pkg/runtime
+# github.com/xdg-go/pbkdf2 v1.0.0
+## explicit; go 1.9
+github.com/xdg-go/pbkdf2
+# github.com/xdg-go/scram v1.2.0
+## explicit; go 1.18
+github.com/xdg-go/scram
+# github.com/xdg-go/stringprep v1.0.4
+## explicit; go 1.11
+github.com/xdg-go/stringprep
 # github.com/yosida95/uritemplate/v3 v3.0.2
 ## explicit; go 1.14
 github.com/yosida95/uritemplate/v3
+# github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78
+## explicit; go 1.17
+github.com/youmark/pkcs8
 # github.com/zalando/go-keyring v0.2.8
 ## explicit; go 1.18
 github.com/zalando/go-keyring
 github.com/zalando/go-keyring/internal/shellescape
 github.com/zalando/go-keyring/secret_service
+# go.mongodb.org/mongo-driver/v2 v2.6.0
+## explicit; go 1.19
+go.mongodb.org/mongo-driver/v2/bson
+go.mongodb.org/mongo-driver/v2/event
+go.mongodb.org/mongo-driver/v2/internal/aws
+go.mongodb.org/mongo-driver/v2/internal/aws/awserr
+go.mongodb.org/mongo-driver/v2/internal/aws/credentials
+go.mongodb.org/mongo-driver/v2/internal/aws/signer/v4
+go.mongodb.org/mongo-driver/v2/internal/binaryutil
+go.mongodb.org/mongo-driver/v2/internal/bsoncoreutil
+go.mongodb.org/mongo-driver/v2/internal/bsonutil
+go.mongodb.org/mongo-driver/v2/internal/codecutil
+go.mongodb.org/mongo-driver/v2/internal/credproviders
+go.mongodb.org/mongo-driver/v2/internal/csfle
+go.mongodb.org/mongo-driver/v2/internal/csot
+go.mongodb.org/mongo-driver/v2/internal/decimal128
+go.mongodb.org/mongo-driver/v2/internal/driverutil
+go.mongodb.org/mongo-driver/v2/internal/handshake
+go.mongodb.org/mongo-driver/v2/internal/httputil
+go.mongodb.org/mongo-driver/v2/internal/logger
+go.mongodb.org/mongo-driver/v2/internal/mongoutil
+go.mongodb.org/mongo-driver/v2/internal/optionsutil
+go.mongodb.org/mongo-driver/v2/internal/ptrutil
+go.mongodb.org/mongo-driver/v2/internal/rand
+go.mongodb.org/mongo-driver/v2/internal/randutil
+go.mongodb.org/mongo-driver/v2/internal/serverselector
+go.mongodb.org/mongo-driver/v2/internal/uuid
+go.mongodb.org/mongo-driver/v2/mongo
+go.mongodb.org/mongo-driver/v2/mongo/address
+go.mongodb.org/mongo-driver/v2/mongo/options
+go.mongodb.org/mongo-driver/v2/mongo/readconcern
+go.mongodb.org/mongo-driver/v2/mongo/readpref
+go.mongodb.org/mongo-driver/v2/mongo/writeconcern
+go.mongodb.org/mongo-driver/v2/tag
+go.mongodb.org/mongo-driver/v2/version
+go.mongodb.org/mongo-driver/v2/x/bsonx/bsoncore
+go.mongodb.org/mongo-driver/v2/x/mongo/driver
+go.mongodb.org/mongo-driver/v2/x/mongo/driver/auth
+go.mongodb.org/mongo-driver/v2/x/mongo/driver/auth/creds
+go.mongodb.org/mongo-driver/v2/x/mongo/driver/auth/internal/gssapi
+go.mongodb.org/mongo-driver/v2/x/mongo/driver/connstring
+go.mongodb.org/mongo-driver/v2/x/mongo/driver/description
+go.mongodb.org/mongo-driver/v2/x/mongo/driver/dns
+go.mongodb.org/mongo-driver/v2/x/mongo/driver/mnet
+go.mongodb.org/mongo-driver/v2/x/mongo/driver/mongocrypt
+go.mongodb.org/mongo-driver/v2/x/mongo/driver/mongocrypt/options
+go.mongodb.org/mongo-driver/v2/x/mongo/driver/ocsp
+go.mongodb.org/mongo-driver/v2/x/mongo/driver/operation
+go.mongodb.org/mongo-driver/v2/x/mongo/driver/session
+go.mongodb.org/mongo-driver/v2/x/mongo/driver/topology
+go.mongodb.org/mongo-driver/v2/x/mongo/driver/wiremessage
 # go.opentelemetry.io/auto/sdk v1.2.1
 ## explicit; go 1.24.0
 go.opentelemetry.io/auto/sdk
@@ -622,8 +698,11 @@ go.yaml.in/yaml/v2
 ## explicit; go 1.25.0
 golang.org/x/crypto/acme
 golang.org/x/crypto/acme/autocert
+golang.org/x/crypto/ocsp
+golang.org/x/crypto/pbkdf2
 golang.org/x/crypto/pkcs12
 golang.org/x/crypto/pkcs12/internal/rc2
+golang.org/x/crypto/scrypt
 # golang.org/x/net v0.53.0
 ## explicit; go 1.25.0
 golang.org/x/net/html
@@ -652,6 +731,7 @@ golang.org/x/oauth2/jwt
 # golang.org/x/sync v0.20.0
 ## explicit; go 1.25.0
 golang.org/x/sync/errgroup
+golang.org/x/sync/singleflight
 # golang.org/x/sys v0.43.0
 ## explicit; go 1.25.0
 golang.org/x/sys/cpu

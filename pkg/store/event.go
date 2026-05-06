@@ -57,12 +57,16 @@ const (
 // Event is a single timestamped fact persisted in events.jsonl.
 // The Data field carries event-specific payload; its concrete shape
 // depends on Type.
+//
+// bson tags align with plan §D.2: monotonic per-run seq + ts (Mongo
+// time field) + run_id partition key. The Mongo backend assigns _id
+// itself (ObjectId), so we don't expose one here.
 type Event struct {
-	Seq       int64                  `json:"seq"`       // monotonic sequence within the run
-	Timestamp time.Time              `json:"timestamp"` // wall-clock time
-	Type      EventType              `json:"type"`
-	RunID     string                 `json:"run_id"`
-	BranchID  string                 `json:"branch_id,omitempty"`
-	NodeID    string                 `json:"node_id,omitempty"`
-	Data      map[string]interface{} `json:"data,omitempty"`
+	Seq       int64                  `json:"seq" bson:"seq"`             // monotonic sequence within the run
+	Timestamp time.Time              `json:"timestamp" bson:"ts"`        // wall-clock time
+	Type      EventType              `json:"type" bson:"type"`
+	RunID     string                 `json:"run_id" bson:"run_id"`
+	BranchID  string                 `json:"branch_id,omitempty" bson:"branch_id,omitempty"`
+	NodeID    string                 `json:"node_id,omitempty" bson:"node_id,omitempty"`
+	Data      map[string]interface{} `json:"data,omitempty" bson:"data,omitempty"`
 }
