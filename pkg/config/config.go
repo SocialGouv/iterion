@@ -102,6 +102,11 @@ type RunnerConfig struct {
 // ServerConfig holds server-specific settings (HTTP API + healthz port).
 type ServerConfig struct {
 	HealthzPort int `yaml:"healthz_port"`
+	// SessionToken, when non-empty, gates every /api/* request on a
+	// matching `iterion_session` cookie. Required in cloud mode when
+	// the server is reachable from an Ingress; without it any
+	// network-adjacent client can publish runs to NATS.
+	SessionToken string `yaml:"session_token"`
 }
 
 // MetricsConfig holds the Prometheus metrics endpoint port.

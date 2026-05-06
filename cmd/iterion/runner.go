@@ -29,6 +29,16 @@ func parseLevel(s string) iterlog.Level {
 	return iterlog.LevelInfo
 }
 
+// parseLogFormat resolves the iterlog.Format from the validated config.
+// Validation upstream guarantees only "human" and "json" reach this
+// path, so the fallback to FormatHuman is purely defensive.
+func parseLogFormat(f iterconfig.LogFormat) iterlog.Format {
+	if f == iterconfig.LogFormatJSON {
+		return iterlog.FormatJSON
+	}
+	return iterlog.FormatHuman
+}
+
 var runnerConfigPath string
 
 var runnerCmd = &cobra.Command{
@@ -61,7 +71,7 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("runner: ITERION_MODE must be 'cloud' (got %q)", cfg.Mode)
 	}
 
-	logger := iterlog.New(parseLevel(cfg.Log.Level), cmd.ErrOrStderr())
+	logger := iterlog.NewWithFormat(parseLevel(cfg.Log.Level), cmd.ErrOrStderr(), parseLogFormat(cfg.Log.Format))
 	logger.Info("runner: starting")
 
 	rootCtx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)

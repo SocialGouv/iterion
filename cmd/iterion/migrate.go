@@ -70,7 +70,7 @@ func runMigrateToCloud(cmd *cobra.Command, _ []string) error {
 		return errors.New("migrate: ITERION_MONGO_URI and ITERION_S3_BUCKET are required")
 	}
 
-	logger := iterlog.New(parseLevel(cfg.Log.Level), cmd.ErrOrStderr())
+	logger := iterlog.NewWithFormat(parseLevel(cfg.Log.Level), cmd.ErrOrStderr(), parseLogFormat(cfg.Log.Format))
 
 	ctx, cancel := context.WithCancel(cmd.Context())
 	defer cancel()

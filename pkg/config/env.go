@@ -106,6 +106,9 @@ func loadEnv(cfg *Config) error {
 		}
 		cfg.Metrics.Port = n
 	}
+	if v, ok := lookup("ITERION_SESSION_TOKEN"); ok {
+		cfg.Server.SessionToken = v
+	}
 
 	if v, ok := lookup("ITERION_LOG_FORMAT"); ok {
 		cfg.Log.Format = LogFormat(strings.ToLower(v))

@@ -97,7 +97,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// directly. We bypass cli.RunEditor because it auto-discovers a
 	// filesystem store, which doesn't make sense when persistence
 	// lives in Mongo.
-	logger := iterlog.New(parseLevel(cfg.Log.Level), cmd.ErrOrStderr())
+	logger := iterlog.NewWithFormat(parseLevel(cfg.Log.Level), cmd.ErrOrStderr(), parseLogFormat(cfg.Log.Format))
 	logger.Info("server: starting (mode=cloud)")
 
 	rootCtx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
@@ -162,6 +162,9 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	mongoSource := eventstream.NewMongo(st.EventsCollection(), logger)
 	eventSrc := runview.NewEventSourceAdapter(mongoSource)
 
+	if cfg.Server.SessionToken == "" {
+		logger.Warn("server: ITERION_SESSION_TOKEN is empty — /api/* endpoints are unauthenticated; set a token before exposing the server publicly")
+	}
 	srv := server.New(server.Config{
 		Port:            serverOpts.port,
 		Bind:            serverOpts.bind,
@@ -169,6 +172,16 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		Store:           st,
 		LaunchPublisher: pub,
 		EventSource:     eventSrc,
+		Mode:            string(iterconfig.ModeCloud),
+		SessionToken:    cfg.Server.SessionToken,
+		// /readyz pings each dependency under a 1s deadline so kubelet
+		// readiness probes flip to "not ready" the moment a backend
+		// drops, instead of returning 200 against a stub.
+		ReadinessChecks: map[string]server.ReadinessCheck{
+			"mongo": st.Ping,
+			"nats":  natsConn.Ping,
+			"s3":    bc.Ping,
+		},
 	}, logger)
 
 	// Prometheus metrics on a dedicated port (plan §F T-40). Bound
