@@ -54,6 +54,26 @@ func (a *activeSandbox) shutdown(ctx context.Context, logger *iterlog.Logger) {
 	}
 }
 
+// SandboxParams bundles the resolution inputs for
+// [resolveAndStartSandbox]. Keeping these in a struct avoids long
+// positional arg lists at call sites and makes the contract explicit.
+//
+// Required: Workflow (may carry a sandbox: block), RunID, FriendlyName,
+// RepoRoot, WorkspacePath, EmitEvent, Logger. Optional: CLIOverride
+// (from --sandbox flag) and GlobalDefault (from
+// ITERION_SANDBOX_DEFAULT).
+type SandboxParams struct {
+	Workflow      *ir.Workflow
+	RunID         string
+	FriendlyName  string
+	RepoRoot      string
+	WorkspacePath string
+	CLIOverride   string // "" means no override
+	GlobalDefault string // "" means no global default
+	EmitEvent     func(store.EventType, map[string]interface{}) error
+	Logger        *iterlog.Logger
+}
+
 // resolveAndStartSandbox produces an [activeSandbox] for the workflow's
 // active sandbox spec, or (nil, nil) when no sandbox is requested.
 //
@@ -74,16 +94,14 @@ func (a *activeSandbox) shutdown(ctx context.Context, logger *iterlog.Logger) {
 // the user wants a real sandbox but no docker/podman is on PATH), the
 // function emits a `sandbox_skipped` event and returns a noop Run so
 // callers can keep using the same code paths without nil-checking.
-func resolveAndStartSandbox(
-	ctx context.Context,
-	wf *ir.Workflow,
-	runID, friendlyName, repoRoot, workspacePath string,
-	cliOverride string, // from --sandbox flag; "" means no override
-	globalDefault string, // from ITERION_SANDBOX_DEFAULT
-	emitEvent func(eventType store.EventType, data map[string]interface{}) error,
-	logger *iterlog.Logger,
-) (*activeSandbox, error) {
-	spec, source, err := resolveSandboxSpec(wf, repoRoot, cliOverride, globalDefault)
+func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbox, error) {
+	wf := p.Workflow
+	runID := p.RunID
+	friendlyName := p.FriendlyName
+	workspacePath := p.WorkspacePath
+	emitEvent := p.EmitEvent
+	logger := p.Logger
+	spec, source, err := resolveSandboxSpec(wf, p.RepoRoot, p.CLIOverride, p.GlobalDefault)
 	if err != nil {
 		return nil, err
 	}
@@ -143,7 +161,7 @@ func resolveAndStartSandbox(
 	// explicit network policy, default to the iterion-default
 	// allowlist preset so users get sensible defaults out of the box —
 	// this is the security-first posture the design plan §5 calls for.
-	proxy, proxyEndpoint, err := startNetworkProxy(spec, runID, emitEvent, logger)
+	proxy, proxyEndpoint, err := startNetworkProxy(spec, driver, runID, emitEvent, logger)
 	if err != nil {
 		return nil, fmt.Errorf("runtime: sandbox: network proxy: %w", err)
 	}
@@ -184,6 +202,7 @@ func resolveAndStartSandbox(
 // `host.docker.internal` is the canonical name.
 func startNetworkProxy(
 	spec *sandbox.Spec,
+	driver sandbox.Driver,
 	runID string,
 	emitEvent func(store.EventType, map[string]interface{}) error,
 	logger *iterlog.Logger,
@@ -203,6 +222,11 @@ func startNetworkProxy(
 		return nil, "", fmt.Errorf("generate proxy token: %w", err)
 	}
 
+	bind, advertise, err := proxyAddressesForDriver(driver)
+	if err != nil {
+		return nil, "", fmt.Errorf("driver proxy config: %w", err)
+	}
+
 	prx, err := netproxy.New(netproxy.Options{
 		Policy: policy,
 		Token:  token,
@@ -220,16 +244,27 @@ func startNetworkProxy(
 	if err != nil {
 		return nil, "", fmt.Errorf("new proxy: %w", err)
 	}
-	if err := prx.Start("127.0.0.1:0"); err != nil {
+	if err := prx.Start(bind); err != nil {
 		return nil, "", fmt.Errorf("start proxy: %w", err)
 	}
 
-	endpoint := prx.Endpoint(proxyHostnameForContainer())
+	endpoint := prx.Endpoint(advertise)
 	if logger != nil {
-		logger.Info("sandbox: network proxy on %s (mode=%s, %d rules)",
-			prx.Addr(), mode, len(rules))
+		logger.Info("sandbox: network proxy on %s advertised as %s (mode=%s, %d rules)",
+			prx.Addr(), advertise, mode, len(rules))
 	}
 	return prx, endpoint, nil
+}
+
+// proxyAddressesForDriver consults the optional [sandbox.ProxyConfigurer]
+// interface so each driver can override the proxy bind address and the
+// hostname injected into containers. Drivers that don't implement it
+// fall back to the docker-friendly defaults.
+func proxyAddressesForDriver(d sandbox.Driver) (bind, advertise string, err error) {
+	if pc, ok := d.(sandbox.ProxyConfigurer); ok {
+		return pc.ProxyConfig()
+	}
+	return "127.0.0.1:0", "host.docker.internal", nil
 }
 
 // resolveNetworkPolicy derives the (mode, rules) pair to compile from
@@ -270,18 +305,6 @@ func resolveNetworkPolicy(spec *sandbox.Spec) (netproxy.Mode, []string) {
 	}
 	rules = append(rules, extra...)
 	return mode, rules
-}
-
-// proxyHostnameForContainer returns the hostname the *container*
-// should use to reach the proxy on the host's loopback interface.
-// On macOS / Windows Docker Desktop the alias resolves natively;
-// on Linux the docker driver injects --add-host=host.docker.internal:
-// host-gateway when the proxy endpoint is non-empty (see
-// pkg/sandbox/docker/driver.go::Driver.Start), so the same name
-// works on every supported host. Kept as a function so V2 (k8s
-// per-pod proxy via cluster Service) can override.
-func proxyHostnameForContainer() string {
-	return "host.docker.internal"
 }
 
 // resolveSandboxSpec applies the precedence chain
@@ -334,7 +357,22 @@ func resolveSandboxSpec(
 
 // pickMode walks the precedence chain and returns the first
 // non-empty mode along with a human-readable source label.
+//
+// Special case: a CLI override of "auto" expresses intent ("turn the
+// sandbox on, read devcontainer.json") but is less specific than a
+// workflow-level block-form `sandbox:` declaration that already
+// carries an image/user/etc. In that case the workflow wins, since
+// its block is the more specific expression of the same intent —
+// and forcing CLI auto would break with "no devcontainer.json found"
+// on workflows that don't ship one. CLI "none" still wins everywhere
+// (explicit opt-out is non-overridable).
 func pickMode(wf *ir.Workflow, cli, global string) (string, string) {
+	hasInlineBlock := wf != nil && wf.Sandbox != nil &&
+		wf.Sandbox.Mode == string(sandbox.ModeInline) && wf.Sandbox.Image != ""
+
+	if cli == string(sandbox.ModeAuto) && hasInlineBlock {
+		return wf.Sandbox.Mode, "workflow sandbox: block (overrides --sandbox=auto)"
+	}
 	if cli != "" {
 		return cli, "cli flag --sandbox"
 	}

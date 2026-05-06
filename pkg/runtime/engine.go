@@ -379,8 +379,17 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 	emitForSandbox := func(t store.EventType, data map[string]interface{}) error {
 		return e.emit(ctx, runID, t, "", data)
 	}
-	active, sbErr := resolveAndStartSandbox(ctx, e.workflow, runID, e.runName, repoRoot, e.workDir,
-		e.sandboxOverride, e.sandboxDefault, emitForSandbox, e.logger)
+	active, sbErr := resolveAndStartSandbox(ctx, SandboxParams{
+		Workflow:      e.workflow,
+		RunID:         runID,
+		FriendlyName:  e.runName,
+		RepoRoot:      repoRoot,
+		WorkspacePath: e.workDir,
+		CLIOverride:   e.sandboxOverride,
+		GlobalDefault: e.sandboxDefault,
+		EmitEvent:     emitForSandbox,
+		Logger:        e.logger,
+	})
 	if sbErr != nil {
 		_ = e.store.UpdateRunStatus(ctx, runID, store.RunStatusFailed, sbErr.Error())
 		return fmt.Errorf("runtime: sandbox: %w", sbErr)

@@ -1,7 +1,6 @@
 package netproxy
 
 import (
-	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -40,6 +39,13 @@ type Proxy struct {
 	// dialer used for upstream connections; tests can swap it.
 	dial func(ctx context.Context, network, addr string) (net.Conn, error)
 
+	// forwardTransport pools idle connections for plain-HTTP forwards.
+	// Built once in [New] over the same dialer so policy enforcement
+	// at the dial layer still applies. CONNECT tunnels keep their own
+	// fresh dial per request — keep-alive pooling is meaningless once
+	// the bytes are opaque TLS.
+	forwardTransport *http.Transport
+
 	mu      sync.Mutex
 	running bool
 }
@@ -75,12 +81,24 @@ func New(opts Options) (*Proxy, error) {
 		d := &net.Dialer{Timeout: 10 * time.Second}
 		dial = d.DialContext
 	}
-	return &Proxy{
+	p := &Proxy{
 		policy:    opts.Policy,
 		token:     opts.Token,
 		onBlocked: opts.OnBlocked,
 		dial:      dial,
-	}, nil
+	}
+	p.forwardTransport = &http.Transport{
+		DialContext:           dial,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   8,
+		IdleConnTimeout:       90 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		// We set DisableCompression=true so the upstream's
+		// Content-Encoding (if any) reaches the client unchanged —
+		// the proxy is byte-transparent for non-CONNECT traffic.
+		DisableCompression: true,
+	}
+	return p, nil
 }
 
 // NewToken generates a random opaque token suitable for [Options.Token].
@@ -156,6 +174,9 @@ func (p *Proxy) Shutdown(ctx context.Context) error {
 	}
 	if p.listener != nil {
 		_ = p.listener.Close()
+	}
+	if p.forwardTransport != nil {
+		p.forwardTransport.CloseIdleConnections()
 	}
 	return nil
 }
@@ -281,9 +302,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	tunnel(clientConn, upstream)
 }
 
-// handleForward proxies plain-HTTP requests by re-dialling the
-// upstream and copying the request through. The response is streamed
-// back unchanged. We strip hop-by-hop headers per RFC 7230.
+// handleForward proxies plain-HTTP requests through the pooled
+// [http.Transport] so keep-alive connections to the same upstream are
+// reused across requests. Hop-by-hop headers are stripped per RFC 7230.
 func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 	target := r.URL
 	if target.Host == "" {
@@ -293,32 +314,16 @@ func (p *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 		target.Scheme = "http"
 	}
 
-	hostport := target.Host
-	if !strings.Contains(hostport, ":") {
-		hostport += ":80"
-	}
-
-	upstream, err := p.dial(r.Context(), "tcp", hostport)
-	if err != nil {
-		http.Error(w, "upstream dial: "+err.Error(), http.StatusBadGateway)
-		return
-	}
-	defer upstream.Close()
-
-	// Rewrite request to use the path-only form (origin form).
 	outReq := r.Clone(r.Context())
-	outReq.URL.Scheme = ""
-	outReq.URL.Host = ""
+	outReq.URL.Scheme = "http"
+	outReq.URL.Host = target.Host
+	outReq.Host = target.Host
 	outReq.RequestURI = ""
 	stripHopByHop(outReq.Header)
 
-	if err := outReq.Write(upstream); err != nil {
-		http.Error(w, "write upstream: "+err.Error(), http.StatusBadGateway)
-		return
-	}
-	resp, err := http.ReadResponse(bufio.NewReader(upstream), outReq)
+	resp, err := p.forwardTransport.RoundTrip(outReq)
 	if err != nil {
-		http.Error(w, "read upstream: "+err.Error(), http.StatusBadGateway)
+		http.Error(w, "upstream: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()

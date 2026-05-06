@@ -1,0 +1,98 @@
+# Minimal manifest for V1 e2e of the kubernetes sandbox driver.
+#
+# Purpose: stand up a single iterion pod with the RBAC the
+# KubernetesDriver needs (pods, pods/exec, pods/log, pods/status), then
+# exec `iterion run --sandbox=auto` inside it. The iterion process
+# detects KUBERNETES_SERVICE_HOST → host=cloud → kubernetes driver →
+# creates sibling sandbox pods next to itself.
+#
+# We deliberately bypass the full helm chart here: the chart wires the
+# `runner` subcommand which assumes cloud mode (Mongo/NATS/S3). For
+# just exercising the sandbox driver, none of that is needed.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: iterion
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: iterion
+  namespace: iterion
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: iterion-sandbox
+  namespace: iterion
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "get"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/status"]
+    verbs: ["get"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: iterion-sandbox
+  namespace: iterion
+subjects:
+  - kind: ServiceAccount
+    name: iterion
+    namespace: iterion
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: iterion-sandbox
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: iterion-runner
+  namespace: iterion
+  labels:
+    app: iterion
+    component: runner
+spec:
+  serviceAccountName: iterion
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: iterion
+      image: ghcr.io/socialgouv/iterion:dev
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        readOnlyRootFilesystem: false
+      env:
+        - name: HOME
+          value: /home/iterion
+        # Downward API: required for the kubernetes sandbox driver's
+        # ProxyConfig() so the network proxy advertises a routable
+        # address to sibling sandbox pods.
+        - name: ITERION_POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+      workingDir: /home/iterion

@@ -37,6 +37,12 @@ rules:
   - apiGroups: [""]
     resources: ["pods/status"]
     verbs: ["get"]
+  # V2-5: per-run NetworkPolicy synthesis. Enforcement requires a
+  # NetworkPolicy-aware CNI (Calico, Cilium, weave-net, kube-router…);
+  # without one the resource still applies but is silently ignored.
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "create", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

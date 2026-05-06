@@ -1,0 +1,27 @@
+## Fixture : sandbox_cloud_observe
+## Purpose : Same as sandbox_cloud_smoke but with sleep 25s so we can
+## observe the sibling pod's labels + security context while it's
+## running. Used only for invariant 2 + 3 verification.
+
+vars:
+  delay: string = "25"
+
+schema observe_output:
+  output: string
+
+tool observe:
+  command: "echo 'I am about to sleep' && sleep {{vars.delay}} && echo 'awake' && id"
+  output: observe_output
+
+workflow sandbox_cloud_observe:
+  entry: observe
+
+  sandbox:
+    image: "alpine:3.20"
+    user: "1000:1000"
+    workspace_folder: "/workspace"
+
+  budget:
+    max_duration: "5m"
+
+  observe -> done

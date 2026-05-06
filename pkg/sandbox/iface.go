@@ -154,6 +154,27 @@ type PreparedSpec interface {
 	DriverName() string
 }
 
+// ProxyConfigurer is an optional interface a [Driver] may implement to
+// override the network proxy's bind address and the hostname injected
+// into sandboxed containers as HTTPS_PROXY.
+//
+// Drivers that don't implement this fall back to the engine defaults:
+// bind on 127.0.0.1:0, advertise "host.docker.internal" (the alias the
+// docker driver wires via --add-host on Linux and that Docker Desktop
+// resolves natively on macOS/Windows). The kubernetes driver implements
+// this to bind on 0.0.0.0:0 and advertise the runner pod's IP (read from
+// the ITERION_POD_IP env var injected via downward API), since the
+// "host.docker.internal" alias does not exist in a pure k8s pod network.
+type ProxyConfigurer interface {
+	// ProxyConfig returns (bindAddr, advertiseHost, err). bindAddr is
+	// passed verbatim to net.Listen — use ":0" / "0.0.0.0:0" to bind
+	// all interfaces, "127.0.0.1:0" for loopback. advertiseHost is
+	// the hostname or IP injected into HTTPS_PROXY/HTTP_PROXY env vars
+	// of sandboxed containers; an empty string falls back to the
+	// listener IP.
+	ProxyConfig() (bindAddr, advertiseHost string, err error)
+}
+
 // RunInfo carries per-run metadata that drivers may need to label
 // containers/pods, scope mounts, or compute run-specific paths.
 type RunInfo struct {

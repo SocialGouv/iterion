@@ -43,6 +43,18 @@ spec:
             {{- toYaml .Values.runner.command | nindent 12 }}
           args:
             {{- toYaml .Values.runner.args | nindent 12 }}
+          {{- if .Values.runner.sandbox.enabled }}
+          # Downward API: ITERION_POD_IP is required for the kubernetes
+          # sandbox driver's ProxyConfig() (pkg/sandbox/kubernetes), so
+          # the network proxy advertises a routable address to sibling
+          # sandbox pods. The "host.docker.internal" alias used by the
+          # docker driver does not exist in pure k8s pod networking.
+          env:
+            - name: ITERION_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          {{- end }}
           envFrom:
             - configMapRef:
                 name: {{ include "iterion.fullname" . }}-config

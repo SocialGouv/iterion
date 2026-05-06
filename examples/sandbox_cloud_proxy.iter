@@ -1,0 +1,38 @@
+## Fixture : sandbox_cloud_proxy
+## Purpose : Verify the network proxy is reachable from a sibling pod
+## and enforces the iterion-default allowlist:
+##   - github.com — allowed → curl returns 200
+##   - example.com — not in preset → proxy returns 403, curl exits non-zero
+##
+## This proves gap #2 fix end-to-end: the kubernetes driver advertises
+## the runner pod's IP (downward API) and the proxy listens on
+## 0.0.0.0, so cross-pod traffic actually reaches the proxy.
+
+vars:
+  allowed: string = "github.com"
+  denied: string = "example.com"
+
+schema curl_output:
+  output: string
+
+tool curl_allowed:
+  command: "curl -sfI -m 10 --proxy-anyauth https://{{vars.allowed}}/ | head -1 || (echo 'curl_allowed FAILED'; exit 1)"
+  output: curl_output
+
+tool curl_denied:
+  command: "curl -sI -m 10 --proxy-anyauth https://{{vars.denied}}/ | grep -q '^HTTP/1.1 403 Forbidden' && echo 'curl_denied REJECTED (expected)' || (echo 'curl_denied UNEXPECTEDLY SUCCEEDED'; exit 1)"
+  output: curl_output
+
+workflow sandbox_cloud_proxy:
+  entry: curl_allowed
+
+  sandbox:
+    image: "curlimages/curl:8.10.1"
+    user: "1000:1000"
+    workspace_folder: "/tmp/work"
+
+  budget:
+    max_duration: "5m"
+
+  curl_allowed -> curl_denied
+  curl_denied -> done

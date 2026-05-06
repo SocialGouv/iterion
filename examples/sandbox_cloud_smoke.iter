@@ -1,0 +1,27 @@
+## Fixture : sandbox_cloud_smoke
+## Purpose : Minimal end-to-end exercise of the cloud (Kubernetes) sandbox tier.
+## A single tool node runs inside a sibling pod created by the KubernetesDriver.
+## No LLM, no claude_code — focus is the driver, not the model.
+
+vars:
+  greeting: string = "hello from the sibling pod"
+
+schema greet_output:
+  output: string
+
+tool greet:
+  command: "echo '{{vars.greeting}}' && hostname && id && uname -a"
+  output: greet_output
+
+workflow sandbox_cloud_smoke:
+  entry: greet
+
+  sandbox:
+    image: "alpine:3.20"
+    user: "1000:1000"
+    workspace_folder: "/workspace"
+
+  budget:
+    max_duration: "5m"
+
+  greet -> done

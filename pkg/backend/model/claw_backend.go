@@ -422,13 +422,45 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	if err != nil {
 		return delegate.Result{}, fmt.Errorf("claw backend: stdin pipe: %w", err)
 	}
-	var stdoutBuf, stderrBuf bytes.Buffer
-	cmd.Stdout = &stdoutBuf
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return delegate.Result{}, fmt.Errorf("claw backend: stdout pipe: %w", err)
+	}
+	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
 
 	if err := cmd.Start(); err != nil {
 		return delegate.Result{}, fmt.Errorf("claw backend: spawn runner: %w", err)
 	}
+
+	// Stream-decode IOResult envelopes from the runner's stdout while
+	// the process is running. The runner today emits a single terminal
+	// IOResult; V2's multiplexed protocol (.plans/sandbox-v2-plan.md
+	// V2-1) will fan out many envelope types over the same channel,
+	// so we keep the loop and retain the latest IOResult — if the
+	// runner adds progress lines later, they slot in without changing
+	// the consumer here.
+	type decodeOutcome struct {
+		ioRes delegate.IOResult
+		err   error
+	}
+	decoded := make(chan decodeOutcome, 1)
+	go func() {
+		var latest delegate.IOResult
+		dec := json.NewDecoder(stdoutPipe)
+		for {
+			var candidate delegate.IOResult
+			if decErr := dec.Decode(&candidate); decErr != nil {
+				if decErr == io.EOF {
+					decoded <- decodeOutcome{ioRes: latest}
+					return
+				}
+				decoded <- decodeOutcome{ioRes: latest, err: decErr}
+				return
+			}
+			latest = candidate
+		}
+	}()
 
 	taskJSON, err := json.Marshal(delegate.ToIOTask(task))
 	if err != nil {
@@ -444,24 +476,12 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	_ = stdinPipe.Close()
 
 	waitErr := cmd.Wait()
-
-	var ioRes delegate.IOResult
-	if stdoutBuf.Len() > 0 {
-		// Decode the LAST JSON line on stdout — the runner may emit
-		// progress lines in future versions; we only consume the
-		// terminal IOResult today.
-		dec := json.NewDecoder(&stdoutBuf)
-		for {
-			var candidate delegate.IOResult
-			if decErr := dec.Decode(&candidate); decErr != nil {
-				if decErr == io.EOF {
-					break
-				}
-				return delegate.Result{}, fmt.Errorf("claw backend: decode runner output: %w (stderr: %s)", decErr, stderrBuf.String())
-			}
-			ioRes = candidate
-		}
+	out := <-decoded // stdout is closed by Wait, so the goroutine has returned
+	if out.err != nil {
+		return delegate.Result{}, fmt.Errorf("claw backend: decode runner output: %w (stderr: %s)", out.err, stderrBuf.String())
 	}
+	ioRes := out.ioRes
+
 	if waitErr != nil && ioRes.Error == "" {
 		return delegate.Result{}, fmt.Errorf("claw backend: runner exited with error: %w (stderr: %s)", waitErr, stderrBuf.String())
 	}

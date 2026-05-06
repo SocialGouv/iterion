@@ -1,10 +1,10 @@
 package kubernetes
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -16,10 +16,17 @@ import (
 
 // Compile-time interface checks.
 var (
-	_ sandbox.Driver       = (*Driver)(nil)
-	_ sandbox.Run          = (*Run)(nil)
-	_ sandbox.PreparedSpec = (*Prepared)(nil)
+	_ sandbox.Driver          = (*Driver)(nil)
+	_ sandbox.Run             = (*Run)(nil)
+	_ sandbox.PreparedSpec    = (*Prepared)(nil)
+	_ sandbox.ProxyConfigurer = (*Driver)(nil)
 )
+
+// PodIPEnvVar is the downward-API env var the runner pod must inject so
+// the kubernetes driver can advertise a routable proxy address to
+// sibling sandbox pods (the default "host.docker.internal" alias does
+// not exist in pure k8s pod networking).
+const PodIPEnvVar = "ITERION_POD_IP"
 
 // DefaultPodReadyTimeoutSecs caps how long the driver waits for a
 // freshly-applied pod to reach Ready. Image pulls dominate this in
@@ -72,16 +79,38 @@ func (d *Driver) WithLogger(l *iterlog.Logger) *Driver {
 // Name returns "kubernetes".
 func (d *Driver) Name() string { return "kubernetes" }
 
+// ProxyConfig binds the network proxy on all interfaces (so sibling
+// sandbox pods can reach it across the cluster network) and advertises
+// the runner pod's own IP, read from the [PodIPEnvVar] env var. The
+// runner pod manifest must inject this via the downward API:
+//
+//	env:
+//	  - name: ITERION_POD_IP
+//	    valueFrom:
+//	      fieldRef:
+//	        fieldPath: status.podIP
+//
+// The proxy enforces a per-run bearer token in every CONNECT request,
+// so binding 0.0.0.0 doesn't open the proxy to unauthenticated
+// in-cluster traffic — only callers that received the token (i.e. the
+// sibling pods this driver creates) can use it.
+func (d *Driver) ProxyConfig() (string, string, error) {
+	podIP := os.Getenv(PodIPEnvVar)
+	if podIP == "" {
+		return "", "", fmt.Errorf("kubernetes: %s env var is empty; the runner pod manifest must inject it via downward API (status.podIP) so the network proxy can advertise a routable address to sibling sandbox pods", PodIPEnvVar)
+	}
+	return "0.0.0.0:0", podIP, nil
+}
+
 // Capabilities advertises the feature set the V1 driver supports.
-// Per-run NetworkPolicy synthesis is deferred to V2; today the
-// engine's CONNECT proxy provides egress filtering for both docker
-// and kubernetes drivers.
+// NetworkPolicy synthesis is on (V2-5); enforcement still requires a
+// CNI that honours NetworkPolicy resources (Calico, Cilium, …).
 func (d *Driver) Capabilities() sandbox.Capabilities {
 	return sandbox.Capabilities{
 		SupportsImage:         true,
-		SupportsBuild:         false, // Phase 2 of the broader plan; would need Kaniko in-cluster
+		SupportsBuild:         false, // V2 — needs BuildKit in-cluster
 		SupportsMounts:        false, // V2 — needs PVC/CSI plumbing
-		SupportsNetworkPolicy: false, // V2 — proxy handles egress today
+		SupportsNetworkPolicy: true,  // V2-5 — synthesised per-run; CNI must enforce
 		SupportsPostCreate:    true,
 		SupportsRemoteUser:    true,
 	}
@@ -96,13 +125,19 @@ func (d *Driver) Prepare(_ context.Context, spec sandbox.Spec) (sandbox.Prepared
 		return nil, err
 	}
 	if spec.Build != nil {
-		return nil, fmt.Errorf("kubernetes: sandbox.build is not supported in-cluster (V2 will wire Kaniko); use a pre-built image: instead")
+		return nil, fmt.Errorf("kubernetes: sandbox.build is not supported in-cluster (V2 will wire BuildKit); use a pre-built image: instead")
 	}
 	if spec.Image == "" {
 		return nil, fmt.Errorf("kubernetes: sandbox.image is required; declare an image: field or use mode=auto with a .devcontainer/devcontainer.json")
 	}
 	if len(spec.Mounts) > 0 {
 		return nil, fmt.Errorf("kubernetes: sandbox.mounts is not supported in V1 (V2 will wire PVCs); the workspace is provided via emptyDir")
+	}
+	if spec.User == "" {
+		return nil, fmt.Errorf("kubernetes: sandbox.user is required (form: \"uid\" or \"uid:gid\", numeric); the driver enforces runAsNonRoot=true and most base images (alpine, debian) default to root, so kubelet will refuse the container with a cryptic error if no non-zero user is specified")
+	}
+	if _, _, ok := parseUserSpec(spec.User); !ok {
+		return nil, fmt.Errorf("kubernetes: sandbox.user %q must be numeric (form: \"uid\" or \"uid:gid\"); image USER is not introspected", spec.User)
 	}
 	workspace := spec.WorkspaceFolder
 	if workspace == "" {
@@ -145,6 +180,35 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		info:      info,
 	}
 
+	// V2-5: synthesise a per-run NetworkPolicy when the proxy is
+	// active. The policy locks the sibling pod's egress to the runner
+	// pod (proxy) + kube-dns. Skipped silently when the proxy isn't
+	// in play (network mode=open) or the runner can't introspect its
+	// own IP. Enforcement requires a NetworkPolicy-aware CNI (Calico,
+	// Cilium, ...) — see docs/sandbox.md § cloud.
+	if info.ProxyEndpoint != "" {
+		if runnerIP := os.Getenv(PodIPEnvVar); runnerIP != "" {
+			netpolicy, err := BuildNetworkPolicy(NetworkPolicyInput{
+				Namespace:    d.namespace,
+				Name:         podName,
+				RunID:        info.RunID,
+				FriendlyName: info.FriendlyName,
+				RunnerPodIP:  runnerIP,
+			})
+			if err != nil {
+				_ = r.Cleanup(ctx)
+				return nil, fmt.Errorf("kubernetes: build netpolicy: %w", err)
+			}
+			if err := applyManifest(ctx, d.namespace, netpolicy); err != nil {
+				_ = r.Cleanup(ctx)
+				return nil, fmt.Errorf("kubernetes: apply netpolicy: %w", err)
+			}
+			r.networkPolicyApplied = true
+		} else {
+			d.logger.Warn("sandbox: kubernetes: %s unset, skipping per-run NetworkPolicy synthesis (egress relies on proxy alone)", PodIPEnvVar)
+		}
+	}
+
 	if err := waitForPodRunning(ctx, d.namespace, podName, DefaultPodReadyTimeoutSecs); err != nil {
 		_ = r.Cleanup(ctx)
 		return nil, fmt.Errorf("kubernetes: wait for pod ready: %w", err)
@@ -182,6 +246,10 @@ type Run struct {
 	namespace string
 	prepared  *Prepared
 	info      sandbox.RunInfo
+
+	// networkPolicyApplied tracks whether a per-run NetworkPolicy was
+	// created in [Driver.Start] so [Run.Cleanup] knows to delete it.
+	networkPolicyApplied bool
 
 	mu      sync.Mutex
 	stopped bool
@@ -247,33 +315,7 @@ func (r *Run) Exec(ctx context.Context, cmd []string, opts sandbox.ExecOpts) (sa
 	if len(cmd) == 0 {
 		return sandbox.ExecResult{}, fmt.Errorf("kubernetes.Exec: empty cmd")
 	}
-	c := r.Command(ctx, cmd, opts)
-	var stdoutBuf, stderrBuf bytes.Buffer
-	if opts.Stdout != nil {
-		c.Stdout = opts.Stdout
-	} else {
-		c.Stdout = &stdoutBuf
-	}
-	if opts.Stderr != nil {
-		c.Stderr = opts.Stderr
-	} else {
-		c.Stderr = &stderrBuf
-	}
-	err := c.Run()
-	res := sandbox.ExecResult{}
-	if c.ProcessState != nil {
-		res.ExitCode = c.ProcessState.ExitCode()
-	}
-	if opts.Stdout == nil {
-		res.Stdout = stdoutBuf.Bytes()
-	}
-	if opts.Stderr == nil {
-		res.Stderr = stderrBuf.Bytes()
-	}
-	if _, isExit := err.(*exec.ExitError); isExit {
-		err = nil
-	}
-	return res, err
+	return sandbox.ExecCmd(r.Command(ctx, cmd, opts), opts)
 }
 
 // Stop is a no-op for the kubernetes driver: pod lifecycle is
@@ -307,21 +349,19 @@ func (r *Run) Cleanup(_ context.Context) error {
 		// "AlreadyDeleted" or transient API hiccups.
 		r.driver.logger.Debug("sandbox: kubernetes cleanup of %s/%s reported: %v", r.namespace, r.podName, err)
 	}
+	if r.networkPolicyApplied {
+		if err := deleteResource(deleteCtx, r.namespace, "networkpolicy", r.podName); err != nil {
+			r.driver.logger.Debug("sandbox: kubernetes netpolicy cleanup of %s/%s reported: %v", r.namespace, r.podName, err)
+		}
+	}
 	return nil
 }
 
 // runPostCreate executes the spec's post-create command inside the
-// freshly started pod. Mirrors the docker driver's helper.
+// freshly started pod.
 func (r *Run) runPostCreate(ctx context.Context, snippet string) error {
 	r.driver.logger.Info("sandbox: running postCreateCommand in pod %s", r.podName)
-	res, err := r.Exec(ctx, []string{"sh", "-c", snippet}, sandbox.ExecOpts{})
-	if err != nil {
-		return fmt.Errorf("postCreateCommand: %w", err)
-	}
-	if res.ExitCode != 0 {
-		return fmt.Errorf("postCreateCommand exited %d:\nstdout:\n%s\nstderr:\n%s", res.ExitCode, string(res.Stdout), string(res.Stderr))
-	}
-	return nil
+	return sandbox.RunPostCreate(ctx, r, snippet)
 }
 
 // podNameFor maps a run ID to a deterministic pod name. The k8s API

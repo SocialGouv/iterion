@@ -273,20 +273,38 @@ runner:
     enabled: true
 ```
 
-V1 limitations (Phase 5 V2):
+V1 limitations (deferred to V2):
 
-- **Per-run NetworkPolicy** is not yet synthesised — the engine's
-  CONNECT proxy on the host runner pod handles egress filtering
-  for both docker and kubernetes drivers (the same allow/deny
-  rules apply).
+- **Per-run NetworkPolicy** is now synthesised (V2-5): every sibling
+  pod gets a NetworkPolicy locking egress to the runner pod's IP
+  (proxy) plus DNS to `kube-system / k8s-app=kube-dns`. **Enforcement
+  requires a NetworkPolicy-aware CNI** — Calico, Cilium, weave-net,
+  kube-router. Default kindnetd / EKS VPC CNI without policy add-on
+  do **not** enforce; the resource still applies cleanly but is a
+  no-op. The CONNECT proxy continues to enforce hostname allowlist
+  at the application layer regardless of CNI.
 - **`sandbox.mounts`** is rejected in cloud mode — extra bind
-  mounts need PVC plumbing which V2 will wire.
-- **`sandbox.build`** (Dockerfile-at-run-start) is rejected — V2
-  will use Kaniko in-cluster.
+  mounts need PVC plumbing which V2-7 will wire.
+- **`sandbox.build`** (Dockerfile-at-run-start) is rejected — V2-6
+  will use BuildKit in-cluster.
 - **Image-pull secrets** for private registries beyond the
   runner's own image are not propagated; declare them on the
   pod's namespace ServiceAccount as `imagePullSecrets` and they
   will apply to sibling pods automatically.
+
+The kubernetes runner pod must inject the downward API env var
+`ITERION_POD_IP` (sourced from `status.podIP`) so the engine knows
+its own IP for both the network proxy advertisement and the
+NetworkPolicy egress rule. The Helm chart wires this automatically
+when `runner.sandbox.enabled=true`; raw manifests must declare:
+
+```yaml
+env:
+  - name: ITERION_POD_IP
+    valueFrom:
+      fieldRef:
+        fieldPath: status.podIP
+```
 
 ## Troubleshooting
 

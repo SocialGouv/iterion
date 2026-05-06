@@ -22,15 +22,15 @@ func TestCapabilitiesAdvertisedFeatures(t *testing.T) {
 	if !caps.SupportsRemoteUser {
 		t.Error("kubernetes driver must advertise SupportsRemoteUser")
 	}
-	// Phase 5 V1 explicitly defers these.
+	if !caps.SupportsNetworkPolicy {
+		t.Error("V2-5 must advertise SupportsNetworkPolicy (per-run policy synthesis is wired)")
+	}
+	// Still deferred.
 	if caps.SupportsBuild {
-		t.Error("Phase 5 V1 must NOT advertise SupportsBuild")
+		t.Error("Phase 5 V1 must NOT advertise SupportsBuild (BuildKit lands in V2-6)")
 	}
 	if caps.SupportsMounts {
-		t.Error("Phase 5 V1 must NOT advertise SupportsMounts (PVCs land in V2)")
-	}
-	if caps.SupportsNetworkPolicy {
-		t.Error("Phase 5 V1 must NOT advertise SupportsNetworkPolicy (proxy handles egress today)")
+		t.Error("Phase 5 V1 must NOT advertise SupportsMounts (PVCs land in V2-7)")
 	}
 }
 
@@ -62,6 +62,121 @@ func TestPrepareRejectsMissingImage(t *testing.T) {
 	_, err := d.Prepare(context.Background(), sandbox.Spec{Mode: sandbox.ModeInline})
 	if err == nil {
 		t.Fatal("expected rejection of inline spec without image")
+	}
+}
+
+func TestPrepareRequiresUser(t *testing.T) {
+	d := &Driver{namespace: "test"}
+	_, err := d.Prepare(context.Background(), sandbox.Spec{
+		Mode:  sandbox.ModeInline,
+		Image: "alpine:3.20",
+	})
+	if err == nil {
+		t.Fatal("expected rejection of spec with empty User (runAsNonRoot would fail at kubelet)")
+	}
+	if !strings.Contains(err.Error(), "sandbox.user") {
+		t.Errorf("error should mention sandbox.user, got: %v", err)
+	}
+}
+
+func TestPrepareRejectsNonNumericUser(t *testing.T) {
+	d := &Driver{namespace: "test"}
+	_, err := d.Prepare(context.Background(), sandbox.Spec{
+		Mode:  sandbox.ModeInline,
+		Image: "alpine:3.20",
+		User:  "root",
+	})
+	if err == nil {
+		t.Fatal("expected rejection of non-numeric user")
+	}
+	if !strings.Contains(err.Error(), "must be numeric") {
+		t.Errorf("error should mention numeric requirement, got: %v", err)
+	}
+}
+
+func TestPrepareAcceptsValidUser(t *testing.T) {
+	d := &Driver{namespace: "test"}
+	for _, user := range []string{"1000", "1000:1000", "10001:10001"} {
+		_, err := d.Prepare(context.Background(), sandbox.Spec{
+			Mode:  sandbox.ModeInline,
+			Image: "alpine:3.20",
+			User:  user,
+		})
+		if err != nil {
+			t.Errorf("Prepare with user=%q failed: %v", user, err)
+		}
+	}
+}
+
+func TestProxyConfigRequiresPodIP(t *testing.T) {
+	t.Setenv(PodIPEnvVar, "")
+	d := &Driver{namespace: "test"}
+	_, _, err := d.ProxyConfig()
+	if err == nil {
+		t.Fatal("expected error when ITERION_POD_IP is unset")
+	}
+	if !strings.Contains(err.Error(), PodIPEnvVar) {
+		t.Errorf("error should mention %s, got: %v", PodIPEnvVar, err)
+	}
+}
+
+func TestProxyConfigReturnsBindAndPodIP(t *testing.T) {
+	t.Setenv(PodIPEnvVar, "10.42.0.7")
+	d := &Driver{namespace: "test"}
+	bind, advertise, err := d.ProxyConfig()
+	if err != nil {
+		t.Fatalf("ProxyConfig: %v", err)
+	}
+	if bind != "0.0.0.0:0" {
+		t.Errorf("bind = %q, want 0.0.0.0:0 (sibling pods reach the proxy across the cluster network)", bind)
+	}
+	if advertise != "10.42.0.7" {
+		t.Errorf("advertise = %q, want 10.42.0.7 (read from %s downward API)", advertise, PodIPEnvVar)
+	}
+}
+
+func TestBuildNetworkPolicyValidates(t *testing.T) {
+	cases := []struct {
+		name string
+		in   NetworkPolicyInput
+	}{
+		{"missing namespace", NetworkPolicyInput{Name: "x", RunID: "r1", RunnerPodIP: "10.0.0.1"}},
+		{"missing name", NetworkPolicyInput{Namespace: "ns", RunID: "r1", RunnerPodIP: "10.0.0.1"}},
+		{"missing runID", NetworkPolicyInput{Namespace: "ns", Name: "x", RunnerPodIP: "10.0.0.1"}},
+		{"missing runnerIP", NetworkPolicyInput{Namespace: "ns", Name: "x", RunID: "r1"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := BuildNetworkPolicy(c.in); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
+	}
+}
+
+func TestBuildNetworkPolicyShape(t *testing.T) {
+	out, err := BuildNetworkPolicy(NetworkPolicyInput{
+		Namespace:    "iterion",
+		Name:         "iterion-run-r1",
+		RunID:        "run_1",
+		FriendlyName: "happy-axe-1234",
+		RunnerPodIP:  "10.42.0.7",
+	})
+	if err != nil {
+		t.Fatalf("BuildNetworkPolicy: %v", err)
+	}
+	s := string(out)
+	for _, want := range []string{
+		`"apiVersion": "networking.k8s.io/v1"`,
+		`"kind": "NetworkPolicy"`,
+		`"iterion.io/run-id": "run_1"`,
+		`"cidr": "10.42.0.7/32"`,
+		`"k8s-app": "kube-dns"`,
+		`"port": 53`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("manifest missing %q\nfull:\n%s", want, s)
+		}
 	}
 }
 

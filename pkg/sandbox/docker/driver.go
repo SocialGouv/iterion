@@ -1,7 +1,6 @@
 package docker
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -280,35 +279,7 @@ func (r *Run) Exec(ctx context.Context, cmd []string, opts sandbox.ExecOpts) (sa
 	if len(cmd) == 0 {
 		return sandbox.ExecResult{}, fmt.Errorf("docker.Exec: empty cmd")
 	}
-	c := r.Command(ctx, cmd, opts)
-
-	var stdoutBuf, stderrBuf bytes.Buffer
-	if opts.Stdout != nil {
-		c.Stdout = opts.Stdout
-	} else {
-		c.Stdout = &stdoutBuf
-	}
-	if opts.Stderr != nil {
-		c.Stderr = opts.Stderr
-	} else {
-		c.Stderr = &stderrBuf
-	}
-
-	err := c.Run()
-	res := sandbox.ExecResult{}
-	if c.ProcessState != nil {
-		res.ExitCode = c.ProcessState.ExitCode()
-	}
-	if opts.Stdout == nil {
-		res.Stdout = stdoutBuf.Bytes()
-	}
-	if opts.Stderr == nil {
-		res.Stderr = stderrBuf.Bytes()
-	}
-	if _, isExit := err.(*exec.ExitError); isExit {
-		err = nil
-	}
-	return res, err
+	return sandbox.ExecCmd(r.Command(ctx, cmd, opts), opts)
 }
 
 // Stop sends SIGTERM via `docker stop` with a short grace period.
@@ -376,14 +347,7 @@ func (r *Run) Cleanup(ctx context.Context) error {
 // driver's logger so users see install progress.
 func (r *Run) runPostCreate(ctx context.Context, snippet string) error {
 	r.driver.logger.Info("sandbox: running postCreateCommand")
-	res, err := r.Exec(ctx, []string{"sh", "-c", snippet}, sandbox.ExecOpts{})
-	if err != nil {
-		return fmt.Errorf("postCreateCommand: %w", err)
-	}
-	if res.ExitCode != 0 {
-		return fmt.Errorf("postCreateCommand exited %d:\nstdout:\n%s\nstderr:\n%s", res.ExitCode, string(res.Stdout), string(res.Stderr))
-	}
-	return nil
+	return sandbox.RunPostCreate(ctx, r, snippet)
 }
 
 // containerNameFor maps a run ID to a deterministic container name.
