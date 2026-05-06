@@ -211,6 +211,7 @@ func (s *Session) ensureStarted(ctx context.Context) error {
 		Cwd:            s.cfg.cwd,
 		Env:            s.cfg.env,
 		StderrCallback: s.cfg.stderrCallback,
+		CommandBuilder: s.cfg.commandBuilder,
 		// Streaming Session: NDJSON user/control messages are written via
 		// proc.writeLine, so the child stdin must be a writable pipe.
 		OpenStdin: true,

@@ -184,6 +184,8 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		return err
 	}
 
+	sandboxDefault := strings.ToLower(os.Getenv("ITERION_SANDBOX_DEFAULT"))
+
 	eng := runtime.New(wf, s, executor,
 		append(engineOpts,
 			runtime.WithWorkflowHash(wfHash),
@@ -193,6 +195,8 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 			runtime.WithBranchName(opts.BranchName),
 			runtime.WithMergeStrategy(opts.MergeStrategy),
 			runtime.WithAutoMerge(opts.AutoMerge),
+			runtime.WithSandboxOverride(opts.Sandbox),
+			runtime.WithSandboxDefault(sandboxDefault),
 		)...,
 	)
 

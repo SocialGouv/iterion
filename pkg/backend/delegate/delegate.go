@@ -10,6 +10,8 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
 
 // Backend name constants used for registration and dispatch.
@@ -138,6 +140,16 @@ type Task struct {
 	// ResumeAnswer is the human-supplied answer to the captured
 	// ask_user call, sent back to the LLM as the tool_result content.
 	ResumeAnswer string
+
+	// Sandbox is the live sandbox handle for the run, or nil when the
+	// workflow runs without isolation. Backends route their CLI
+	// subprocess calls through it (via the SDK's CommandBuilder hook
+	// for claude_code, or directly via Run.Command for shell-out
+	// backends) so the agent's tools execute inside the container.
+	//
+	// In-process backends (claw) refuse to start when this is set —
+	// see runtime.containsClawNode for the compile-time guard.
+	Sandbox sandbox.Run
 }
 
 // SystemPromptWithInteraction returns the task's SystemPrompt augmented

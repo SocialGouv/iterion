@@ -13,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/recipe"
@@ -66,6 +67,8 @@ type Engine struct {
 	validateOutputs  bool                  // when true, validate node outputs against declared schemas
 	forceResume      bool                  // when true, skip workflow hash check on resume
 	workDir          string                // working directory for subprocesses + PROJECT_DIR expansion; defaults to os.Getwd() at Run() time
+	sandboxOverride  string                // CLI/Launch-level sandbox mode override; "" means "no override" (workflow + global default win); set via WithSandboxOverride
+	sandboxDefault   string                // global ITERION_SANDBOX_DEFAULT value snapshot; set via WithSandboxDefault
 }
 
 // EngineOption configures an Engine.
@@ -74,6 +77,21 @@ type EngineOption func(*Engine)
 // WithLogger sets a leveled logger for console output during execution.
 func WithLogger(l *iterlog.Logger) EngineOption {
 	return func(e *Engine) { e.logger = l }
+}
+
+// WithSandboxOverride sets the CLI / Launch-modal level sandbox mode.
+// Highest precedence in the resolution chain (CLI > workflow > global
+// default). The value is one of "", "none", or "auto". An empty
+// string means "no override".
+func WithSandboxOverride(mode string) EngineOption {
+	return func(e *Engine) { e.sandboxOverride = mode }
+}
+
+// WithSandboxDefault sets the global default sandbox mode (the
+// snapshot of ITERION_SANDBOX_DEFAULT or the project config). Lowest
+// precedence in the resolution chain — workflow and CLI override it.
+func WithSandboxDefault(mode string) EngineOption {
+	return func(e *Engine) { e.sandboxDefault = mode }
 }
 
 // WithOnNodeFinished registers a callback invoked after each node finishes
@@ -346,6 +364,43 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 	type workDirSetter interface{ SetWorkDir(string) }
 	if s, ok := e.executor.(workDirSetter); ok {
 		s.SetWorkDir(e.workDir)
+	}
+
+	// Sandbox lifecycle: when the workflow opts in, start a long-lived
+	// container that hosts every delegate invocation for this run. The
+	// resolver consults workflow > global default > CLI override; an
+	// active mode that the host can't honour (no docker/podman) emits
+	// a sandbox_skipped event and falls back to a noop run so the
+	// rest of the engine code stays uniform.
+	repoRoot := wtCtx.repoRoot
+	if repoRoot == "" {
+		repoRoot = engineRepoRoot(e.workDir)
+	}
+	emitForSandbox := func(t store.EventType, data map[string]interface{}) error {
+		return e.emit(ctx, runID, t, "", data)
+	}
+	sandboxRun, sbErr := resolveAndStartSandbox(ctx, e.workflow, runID, e.runName, repoRoot, e.workDir,
+		e.sandboxOverride, e.sandboxDefault, emitForSandbox)
+	if sbErr != nil {
+		_ = e.store.UpdateRunStatus(ctx, runID, store.RunStatusFailed, sbErr.Error())
+		return fmt.Errorf("runtime: sandbox: %w", sbErr)
+	}
+	defer func() {
+		if sandboxRun != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := sandboxRun.Cleanup(cleanupCtx); err != nil && e.logger != nil {
+				e.logger.Warn("runtime: sandbox cleanup: %v", err)
+			}
+		}
+	}()
+	if sandboxRun != nil {
+		if s, ok := e.executor.(sandboxSetter); ok {
+			s.SetSandbox(sandboxRun)
+		}
+		if e.logger != nil {
+			e.logger.Info("runtime: sandbox active (driver=%s)", sandboxRun.Driver())
+		}
 	}
 
 	// Emit run_started.

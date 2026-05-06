@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
@@ -87,6 +89,22 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 
 	if b.Command != "" {
 		opts = append(opts, claudesdk.WithCLIPath(b.Command))
+	}
+
+	// When the run is sandboxed, route the claude CLI subprocess
+	// through the sandbox driver so the agent's bash/edit tools
+	// execute inside the container, not on the host. Cwd/Env are
+	// passed via the runtime-native channels (e.g. `docker exec
+	// --workdir / --env`); the SDK disables its own cmd.Dir / cmd.Env
+	// application when a builder is set.
+	if task.Sandbox != nil {
+		run := task.Sandbox
+		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string) *exec.Cmd {
+			return run.Command(ctx, append([]string{path}, args...), sandbox.ExecOpts{
+				WorkDir: cwd,
+				Env:     env,
+			})
+		}))
 	}
 
 	effort := task.ReasoningEffort
