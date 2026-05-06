@@ -21,7 +21,7 @@ server:
     targetCPUUtilizationPercentage: 70
 
 runner:
-  enabled: false  # T-25/T-27/T-29 not landed yet
+  enabled: true
   replicas: 2
   resources:
     requests:

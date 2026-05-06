@@ -164,14 +164,22 @@ func (s *Store) ListArtifactVersions(ctx context.Context, runID, nodeID string) 
 	return out, nil
 }
 
-// LockRun is a placeholder until plan §F T-26 wires NATS-KV-backed
-// distributed locks. Returning a no-op lock keeps the runtime engine
-// happy while single-runner deployments work; in multi-runner cloud
-// the runner pod uses NATS KV directly via pkg/queue/nats and never
-// reaches this method.
+// LockRun delegates to the configured LockProvider when present so a
+// runner-side store gets a real distributed lease (NATS KV TTL +
+// CAS), and falls back to a no-op lock for server-side instances
+// where the runtime engine never executes runs and locking is
+// pointless. The plan §F T-26 contract is "fail-fast on contention" —
+// if the provider returns an error (the lease is held elsewhere),
+// surface it to the caller so the engine refuses to proceed.
 func (s *Store) LockRun(ctx context.Context, runID string) (store.RunLock, error) {
-	_ = ctx
-	return noopLock{}, nil
+	if s.lockProv == nil {
+		return noopLock{}, nil
+	}
+	lock, err := s.lockProv.AcquireLock(ctx, runID, s.lockProv.RunnerID())
+	if err != nil {
+		return nil, fmt.Errorf("store/mongo: acquire lock %s: %w", runID, err)
+	}
+	return lock, nil
 }
 
 type noopLock struct{}

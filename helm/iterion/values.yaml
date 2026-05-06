@@ -14,13 +14,15 @@ fullnameOverride: ""
 # --- Server (HTTP API + editor SPA) ---------------------------------
 server:
   replicas: 1
-  command: ["editor"] # T-30 will switch this to ["server"]
+  # Cloud-mode HTTP entry point — `iterion server` (T-30). Reads
+  # ITERION_MODE + ITERION_MONGO_URI / ITERION_NATS_URL / ITERION_S3_*
+  # from envFrom so no extra args are needed for the cloud wiring.
+  command: ["server"]
   args:
     - "--port"
     - "4891"
     - "--bind"
     - "0.0.0.0"
-    - "--no-browser"
   port: 4891
   metricsPort: 9090
   resources:
@@ -46,7 +48,7 @@ server:
 # the chart will deploy the pool with a KEDA ScaledObject keyed on
 # JetStream lag.
 runner:
-  enabled: false
+  enabled: true
   replicas: 1
   command: ["runner"]
   args: []

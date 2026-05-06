@@ -12,7 +12,10 @@ server:
     enabled: false  # disable HPA in dev, predictable single-pod
 
 runner:
-  enabled: false  # T-25/T-27/T-29 not landed yet
+  enabled: true
+  replicas: 1
+  keda:
+    enabled: false  # KEDA optional; the dev stack doesn't ship it
 
 ingress:
   enabled: false  # rely on `kubectl port-forward svc/iterion 4891`

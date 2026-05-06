@@ -46,7 +46,27 @@ type Config struct {
 	Database      string
 	EventsTTLDays int
 	Logger        *iterlog.Logger
-	Blob          blob.Client // S3 / blob backend for artifact bodies
+	Blob          blob.Client  // S3 / blob backend for artifact bodies
+	LockProvider  LockProvider // optional NATS KV-backed lock; nil → no-op
+}
+
+// LockProvider is the abstraction MongoRunStore consults for
+// distributed run locks. The runner injects a NATS-KV-backed
+// implementation (pkg/queue/nats); the server constructs the store
+// without one because it never executes the run itself (locks belong
+// to runner pods).
+//
+// Plan §F T-26.
+type LockProvider interface {
+	// AcquireLock claims a lease keyed on runID. Returns the abstract
+	// store.RunLock the engine consumes; the underlying value also
+	// satisfies refresh / release semantics on the lock provider's
+	// side (NATS KV TTL refresh).
+	AcquireLock(ctx context.Context, runID, runnerID string) (store.RunLock, error)
+	// RunnerID returns the identity the provider stamps into each
+	// lease record. Surfaced separately so the store can log it on
+	// contention without re-resolving the value.
+	RunnerID() string
 }
 
 // Store implements store.RunStore on top of Mongo + a blob backend.
@@ -59,6 +79,7 @@ type Store struct {
 	interactions *mongo.Collection
 	blob         blob.Client
 	logger       *iterlog.Logger
+	lockProv     LockProvider
 }
 
 // New connects to Mongo, pings to validate credentials, then ensures
@@ -98,6 +119,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		interactions: db.Collection(colInteractions),
 		blob:         cfg.Blob,
 		logger:       cfg.Logger,
+		lockProv:     cfg.LockProvider,
 	}
 	if err := s.EnsureSchema(ctx, cfg.EventsTTLDays); err != nil {
 		_ = cli.Disconnect(context.Background())

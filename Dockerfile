@@ -100,14 +100,13 @@ RUN groupadd --system --gid 10001 iterion \
 USER iterion
 WORKDIR /home/iterion
 
-# Default exposed port matches the editor server bind. Helm chart
-# overrides via `--port`. /healthz and /readyz are served on the same
-# port so the kubelet probes hit the same listener.
+# Default exposed port matches the server bind. Helm chart overrides
+# via `--port`. /healthz and /readyz are served on the same port so
+# the kubelet probes hit the same listener.
 EXPOSE 4891
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/iterion"]
-# Default command runs the editor (currently the only HTTP server).
-# When T-30 lands the dedicated `server` subcommand the Helm chart
-# will override this to `["server"]`; until then the editor is the
-# canonical HTTP entry point.
-CMD ["editor", "--port", "4891", "--bind", "0.0.0.0", "--no-browser"]
+# Default command runs the cloud-mode `server` subcommand (T-30).
+# Helm chart server.command / runner.command override this for the
+# runner pool. Override at `docker run` time for ad-hoc CLI use.
+CMD ["server", "--port", "4891", "--bind", "0.0.0.0"]
