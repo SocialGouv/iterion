@@ -253,8 +253,16 @@ jobs:
           appimage="${ARTIFACT_NAME}.AppImage"
           test -s "$appimage"
           file "$appimage"
-          # AppImages are self-extracting ELF launchers; verify the runtime
-          # header itself is for the requested CPU before signing/uploading.
+          # AppImages are self-extracting ELF launchers; verify the
+          # runtime header is for the requested CPU before signing &
+          # uploading. We deliberately stop at the ELF check — running
+          # `--appimage-help` against the inner Wails binary would just
+          # forward the flag (it isn't a recognised iterion-desktop CLI
+          # arg) and the FUSE-less Ubuntu 24.04 runners can't mount the
+          # outer AppImage anyway. ELF arch + non-zero size is enough to
+          # catch the regression that historically motivated this step
+          # (a wrong-arch linuxdeploy producing an x86_64 wrapper around
+          # an aarch64 binary).
           case "$PLATFORM" in
             linux/amd64) expected="Advanced Micro Devices X86-64" ;;
             linux/arm64) expected="AArch64" ;;
@@ -262,15 +270,6 @@ jobs:
           esac
           readelf -h "$appimage" | tee appimage-elf-header.txt
           readelf -h "$appimage" | grep -q "Machine:.*${expected}"
-          if [ "$PLATFORM" = "linux/arm64" ]; then
-            chmod +x "$appimage"
-            # --appimage-extract-and-run avoids the FUSE mount step.
-            # Ubuntu 24.04 (the arm64 runner image) ships libfuse2t64
-            # instead of libfuse2, and AppImage's bundled runtime still
-            # links against the older libfuse2 SOname — mounting fails
-            # otherwise.
-            "$appimage" --appimage-extract-and-run --appimage-help >/dev/null
-          fi
 
       - name: Verify updater signing secret
         env:
