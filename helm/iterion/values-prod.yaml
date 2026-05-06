@@ -50,6 +50,14 @@ config:
   log:
     format: json
     level: info
+  # When runner.keda.enabled=true with an external NATS (no bundled
+  # sub-chart), KEDA's nats-jetstream scaler needs the monitoring
+  # endpoint (port 8222 by default), NOT the client URL. Leaving this
+  # empty makes the ScaledObject silently fail to scrape — runners
+  # stay at minReplicas regardless of queue depth. Format: host:port
+  # (no scheme).
+  # nats:
+  #   monitoringEndpoint: "your-nats-host:8222"
 
 # Always reference an existing Secret in prod — never inline credentials.
 secrets:
