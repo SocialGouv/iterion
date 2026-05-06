@@ -175,7 +175,11 @@ jobs:
               cd ../..
               ;;
             nsis-portable)
-              cp build/bin/iterion-desktop.exe "${ARTIFACT_NAME}.exe"
+              # Wails build was invoked with `-o ${ARTIFACT_NAME}.exe`, so
+              # the portable binary is already correctly named under
+              # build/bin/. Copy it to the workflow root for
+              # upload-artifact's glob to pick up.
+              cp "build/bin/${ARTIFACT_NAME}.exe" "${ARTIFACT_NAME}.exe"
               # Wails NSIS produces *-installer.exe in build/bin; copy if present.
               for f in build/bin/*-installer.exe; do
                 [ -f "$f" ] && cp "$f" "${ARTIFACT_NAME}-installer.exe"
