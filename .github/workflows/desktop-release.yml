@@ -345,6 +345,10 @@ jobs:
 
   publish:
     needs: build
+    # Tag pushes attach artefacts to the matching GitHub Release; manual
+    # workflow_dispatch runs are validation-only — the build artefacts
+    # are still available under the run's "Artifacts" UI for download.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
