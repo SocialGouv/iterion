@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -123,11 +124,57 @@ func (m *MongoSource) replay(ctx context.Context, runID string, fromSeq int64, o
 }
 
 // tail runs the change-stream phase. Closes sub.events + sub.errors
-// when ctx is cancelled or the stream errors out.
+// when ctx is cancelled. On a transient stream error we surface it
+// (so the WS layer can react if it cares) AND reconnect with
+// exponential backoff up to a 30s ceiling. fromSeq is bumped after
+// each event so a reconnect doesn't replay events the consumer
+// already saw.
 func (m *MongoSource) tail(ctx context.Context, runID string, fromSeq int64, sub *mongoSubscription) {
 	defer close(sub.events)
 	defer close(sub.errors)
 
+	const baseBackoff = 250 * time.Millisecond
+	const maxBackoff = 30 * time.Second
+	backoff := baseBackoff
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		nextSeq, err := m.runChangeStream(ctx, runID, fromSeq, sub)
+		if err == nil {
+			// runChangeStream returned because ctx is done — exit.
+			return
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		// Surface the error (non-fatal) and reconnect.
+		select {
+		case sub.errors <- fmt.Errorf("eventstream/mongo: stream (will reconnect in %s): %w", backoff, err):
+		default:
+			// errors channel saturated — drop oldest by skipping.
+			m.logger.Warn("eventstream/mongo: errors channel full; dropping reconnect notice")
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+		fromSeq = nextSeq
+	}
+}
+
+// runChangeStream opens the change-stream and pumps events into the
+// subscription. Returns the highest seq observed so a reconnect can
+// resume past it. A nil error means ctx was cancelled cleanly; a
+// non-nil error means the stream failed and the caller should
+// backoff + reconnect.
+func (m *MongoSource) runChangeStream(ctx context.Context, runID string, fromSeq int64, sub *mongoSubscription) (int64, error) {
 	pipeline := mongo.Pipeline{
 		bson.D{{Key: "$match", Value: bson.M{
 			"operationType":       "insert",
@@ -137,29 +184,38 @@ func (m *MongoSource) tail(ctx context.Context, runID string, fromSeq int64, sub
 	}
 	stream, err := m.events.Watch(ctx, pipeline, options.ChangeStream().SetFullDocument(options.UpdateLookup))
 	if err != nil {
-		sub.errors <- fmt.Errorf("eventstream/mongo: open change stream: %w", err)
-		return
+		return fromSeq, fmt.Errorf("open change stream: %w", err)
 	}
 	defer stream.Close(ctx)
 
+	maxSeq := fromSeq
 	for stream.Next(ctx) {
 		var doc struct {
 			FullDocument store.Event `bson:"fullDocument"`
 		}
 		if err := stream.Decode(&doc); err != nil {
-			sub.errors <- fmt.Errorf("eventstream/mongo: decode change: %w", err)
+			// A single bad doc is not fatal — log and continue
+			// rather than tearing down the whole stream.
+			select {
+			case sub.errors <- fmt.Errorf("eventstream/mongo: decode change: %w", err):
+			default:
+			}
 			continue
 		}
 		select {
 		case sub.events <- &doc.FullDocument:
 		case <-ctx.Done():
-			return
+			return maxSeq, nil
+		}
+		if doc.FullDocument.Seq > maxSeq {
+			maxSeq = doc.FullDocument.Seq
 		}
 	}
 	if err := stream.Err(); err != nil && !errors.Is(err, context.Canceled) {
-		// Surface as non-fatal — the WS layer will reconnect.
-		sub.errors <- fmt.Errorf("eventstream/mongo: stream: %w", err)
+		return maxSeq, err
 	}
+	// Stream exited cleanly — usually means ctx was cancelled.
+	return maxSeq, nil
 }
 
 type mongoSubscription struct {
