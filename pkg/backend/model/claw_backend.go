@@ -466,6 +466,13 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 		return delegate.Result{}, fmt.Errorf("claw backend: runner exited with error: %w (stderr: %s)", waitErr, stderrBuf.String())
 	}
 	if ioRes.Error != "" {
+		// Preserve waitErr for errors.Is / errors.As consumers when
+		// the runner emitted a structured error AND exited non-zero
+		// (the normal error path). Without %w on waitErr, downstream
+		// classifiers would lose the exec.ExitError typing.
+		if waitErr != nil {
+			return delegate.FromIOResult(ioRes), fmt.Errorf("claw backend: runner: %s (exit: %w)", ioRes.Error, waitErr)
+		}
 		return delegate.FromIOResult(ioRes), fmt.Errorf("claw backend: runner: %s", ioRes.Error)
 	}
 

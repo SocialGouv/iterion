@@ -198,6 +198,15 @@ binary in (subject to architecture matching) via `runArgs`:
   - The **mid-tool-loop ask_user** resume path is not supported on
     the sandboxed claw path. ask_user calls in the prompt-side
     fallback form still work.
+- **Compaction retry recovery is unavailable**. The engine's
+  `CompactAndRetry` dispatcher relies on a per-(runID, nodeID)
+  message store that lives in the host process. The runner writes
+  to its own in-container store which is destroyed when the
+  sub-process exits. On context-window exhaustion, the retry
+  restarts from scratch rather than from a compacted history.
+  Workflows that rely on automatic compaction recovery for long
+  claw nodes should either run unsandboxed or switch the affected
+  nodes to `claude_code` (which does its own in-CLI compaction).
 - Session state (the conversation history captured for resume) is
   preserved across the IPC, but rehydration requires the same
   iterion binary version on both sides.

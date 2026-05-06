@@ -18,6 +18,7 @@ func TestIOTaskRoundTrip(t *testing.T) {
 		ToolMaxSteps:          10,
 		MaxTokens:             8192,
 		WorkDir:               "/workspace",
+		BaseDir:               "/workspace",
 		ReasoningEffort:       "high",
 		CompactThresholdRatio: 0.85,
 		CompactPreserveRecent: 4,
@@ -40,6 +41,12 @@ func TestIOTaskRoundTrip(t *testing.T) {
 
 	if got.NodeID != original.NodeID {
 		t.Errorf("NodeID = %q, want %q", got.NodeID, original.NodeID)
+	}
+	if got.BaseDir != original.BaseDir {
+		t.Errorf("BaseDir = %q, want %q", got.BaseDir, original.BaseDir)
+	}
+	if got.WorkDir != original.WorkDir {
+		t.Errorf("WorkDir = %q, want %q", got.WorkDir, original.WorkDir)
 	}
 	if got.Model != original.Model {
 		t.Errorf("Model = %q, want %q", got.Model, original.Model)
