@@ -175,13 +175,18 @@ jobs:
               cd ../..
               ;;
             nsis-portable)
-              # Wails build was invoked with `-o ${ARTIFACT_NAME}.exe`, so
-              # the portable binary is already correctly named under
-              # build/bin/. Copy it to the workflow root for
-              # upload-artifact's glob to pick up.
-              cp "build/bin/${ARTIFACT_NAME}.exe" "${ARTIFACT_NAME}.exe"
-              # Wails NSIS produces *-installer.exe in build/bin; copy if present.
-              for f in build/bin/*-installer.exe; do
+              # Wails runs from cmd/iterion-desktop/ (where wails.json lives)
+              # so artefacts land at cmd/iterion-desktop/build/bin/. On
+              # Linux/macOS the cmd/iterion-desktop/build symlink to
+              # ../../build resolves transparently, but the Windows runner's
+              # default git clone replaces it with a text file (Git for
+              # Windows requires core.symlinks=true + dev mode), so the
+              # repo-root build/bin/ is empty. Reference the artefact at
+              # the canonical Wails output path; works regardless of
+              # symlink resolution.
+              cp "cmd/iterion-desktop/build/bin/${ARTIFACT_NAME}.exe" "${ARTIFACT_NAME}.exe"
+              # Wails NSIS produces *-installer.exe alongside the binary.
+              for f in cmd/iterion-desktop/build/bin/*-installer.exe; do
                 [ -f "$f" ] && cp "$f" "${ARTIFACT_NAME}-installer.exe"
               done
               ;;
