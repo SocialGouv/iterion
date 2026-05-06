@@ -216,7 +216,7 @@ func TestRun_Success(t *testing.T) {
 
 	// Verify run is persisted.
 	s, _ := store.New(storeDir)
-	r, err := s.LoadRun("test-run-1")
+	r, err := s.LoadRun(context.Background(), "test-run-1")
 	if err != nil {
 		t.Fatalf("cannot load run: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestRun_WithVars(t *testing.T) {
 
 	// Verify inputs were persisted.
 	s, _ := store.New(storeDir)
-	r, err := s.LoadRun("test-run-vars")
+	r, err := s.LoadRun(context.Background(), "test-run-vars")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +330,7 @@ func TestRun_HumanPause(t *testing.T) {
 
 	// Verify run state.
 	s, _ := store.New(storeDir)
-	r, err := s.LoadRun("test-run-pause")
+	r, err := s.LoadRun(context.Background(), "test-run-pause")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,8 +347,8 @@ func TestInspect_ListRuns(t *testing.T) {
 	dir := t.TempDir()
 	storeDir := filepath.Join(dir, "store")
 	s, _ := store.New(storeDir)
-	_, _ = s.CreateRun("run-a", "wf1", nil)
-	_, _ = s.CreateRun("run-b", "wf2", nil)
+	_, _ = s.CreateRun(context.Background(), "run-a", "wf1", nil)
+	_, _ = s.CreateRun(context.Background(), "run-b", "wf2", nil)
 
 	p, buf := newTestPrinter(cli.OutputHuman)
 	err := cli.RunInspect(cli.InspectOptions{StoreDir: storeDir}, p)
@@ -366,7 +366,7 @@ func TestInspect_ListRunsJSON(t *testing.T) {
 	dir := t.TempDir()
 	storeDir := filepath.Join(dir, "store")
 	s, _ := store.New(storeDir)
-	_, _ = s.CreateRun("run-x", "wf1", nil)
+	_, _ = s.CreateRun(context.Background(), "run-x", "wf1", nil)
 
 	p, buf := newTestPrinter(cli.OutputJSON)
 	err := cli.RunInspect(cli.InspectOptions{StoreDir: storeDir}, p)
@@ -387,7 +387,7 @@ func TestInspect_SingleRun(t *testing.T) {
 	dir := t.TempDir()
 	storeDir := filepath.Join(dir, "store")
 	s, _ := store.New(storeDir)
-	_, _ = s.CreateRun("run-1", "my_workflow", map[string]interface{}{"key": "val"})
+	_, _ = s.CreateRun(context.Background(), "run-1", "my_workflow", map[string]interface{}{"key": "val"})
 
 	p, buf := newTestPrinter(cli.OutputHuman)
 	err := cli.RunInspect(cli.InspectOptions{StoreDir: storeDir, RunID: "run-1"}, p)
@@ -408,7 +408,7 @@ func TestInspect_SingleRunJSON(t *testing.T) {
 	dir := t.TempDir()
 	storeDir := filepath.Join(dir, "store")
 	s, _ := store.New(storeDir)
-	_, _ = s.CreateRun("run-json", "wf1", nil)
+	_, _ = s.CreateRun(context.Background(), "run-json", "wf1", nil)
 
 	p, buf := newTestPrinter(cli.OutputJSON)
 	err := cli.RunInspect(cli.InspectOptions{StoreDir: storeDir, RunID: "run-json"}, p)
@@ -429,9 +429,9 @@ func TestInspect_WithEvents(t *testing.T) {
 	dir := t.TempDir()
 	storeDir := filepath.Join(dir, "store")
 	s, _ := store.New(storeDir)
-	_, _ = s.CreateRun("run-ev", "wf1", nil)
-	_, _ = s.AppendEvent("run-ev", store.Event{Type: store.EventRunStarted})
-	_, _ = s.AppendEvent("run-ev", store.Event{Type: store.EventNodeStarted, NodeID: "agent1"})
+	_, _ = s.CreateRun(context.Background(), "run-ev", "wf1", nil)
+	_, _ = s.AppendEvent(context.Background(), "run-ev", store.Event{Type: store.EventRunStarted})
+	_, _ = s.AppendEvent(context.Background(), "run-ev", store.Event{Type: store.EventNodeStarted, NodeID: "agent1"})
 
 	p, buf := newTestPrinter(cli.OutputHuman)
 	err := cli.RunInspect(cli.InspectOptions{StoreDir: storeDir, RunID: "run-ev", Events: true}, p)
@@ -476,16 +476,16 @@ func seedSimpleRun(t *testing.T, runID string) (storeDir string, s store.RunStor
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreateRun(runID, "wf1", nil); err != nil {
+	if _, err := s.CreateRun(context.Background(), runID, "wf1", nil); err != nil {
 		t.Fatal(err)
 	}
-	_, _ = s.AppendEvent(runID, store.Event{Type: store.EventRunStarted})
-	_, _ = s.AppendEvent(runID, store.Event{
+	_, _ = s.AppendEvent(context.Background(), runID, store.Event{Type: store.EventRunStarted})
+	_, _ = s.AppendEvent(context.Background(), runID, store.Event{
 		Type:   store.EventNodeStarted,
 		NodeID: "agent1",
 		Data:   map[string]interface{}{"kind": "agent"},
 	})
-	_, _ = s.AppendEvent(runID, store.Event{
+	_, _ = s.AppendEvent(context.Background(), runID, store.Event{
 		Type:   store.EventLLMPrompt,
 		NodeID: "agent1",
 		Data: map[string]interface{}{
@@ -493,7 +493,7 @@ func seedSimpleRun(t *testing.T, runID string) (storeDir string, s store.RunStor
 			"user_message":  "review the diff",
 		},
 	})
-	_, _ = s.AppendEvent(runID, store.Event{
+	_, _ = s.AppendEvent(context.Background(), runID, store.Event{
 		Type:   store.EventLLMStepFinished,
 		NodeID: "agent1",
 		Data: map[string]interface{}{
@@ -503,7 +503,7 @@ func seedSimpleRun(t *testing.T, runID string) (storeDir string, s store.RunStor
 			"finish_reason": "stop",
 		},
 	})
-	_, _ = s.AppendEvent(runID, store.Event{
+	_, _ = s.AppendEvent(context.Background(), runID, store.Event{
 		Type:   store.EventToolCalled,
 		NodeID: "agent1",
 		Data: map[string]interface{}{
@@ -512,12 +512,12 @@ func seedSimpleRun(t *testing.T, runID string) (storeDir string, s store.RunStor
 			"duration_ms": float64(42),
 		},
 	})
-	_, _ = s.AppendEvent(runID, store.Event{
+	_, _ = s.AppendEvent(context.Background(), runID, store.Event{
 		Type:   store.EventArtifactWritten,
 		NodeID: "agent1",
 		Data:   map[string]interface{}{"version": float64(0)},
 	})
-	_, _ = s.AppendEvent(runID, store.Event{
+	_, _ = s.AppendEvent(context.Background(), runID, store.Event{
 		Type:   store.EventNodeFinished,
 		NodeID: "agent1",
 		Data: map[string]interface{}{
@@ -526,7 +526,7 @@ func seedSimpleRun(t *testing.T, runID string) (storeDir string, s store.RunStor
 			"output":    map[string]interface{}{"summary": "ok"},
 		},
 	})
-	if err := s.WriteArtifact(&store.Artifact{
+	if err := s.WriteArtifact(context.Background(), &store.Artifact{
 		RunID:   runID,
 		NodeID:  "agent1",
 		Version: 0,
@@ -545,16 +545,16 @@ func seedRunningNodeRun(t *testing.T, runID string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreateRun(runID, "wf1", nil); err != nil {
+	if _, err := s.CreateRun(context.Background(), runID, "wf1", nil); err != nil {
 		t.Fatal(err)
 	}
-	_, _ = s.AppendEvent(runID, store.Event{Type: store.EventRunStarted})
-	_, _ = s.AppendEvent(runID, store.Event{
+	_, _ = s.AppendEvent(context.Background(), runID, store.Event{Type: store.EventRunStarted})
+	_, _ = s.AppendEvent(context.Background(), runID, store.Event{
 		Type:   store.EventNodeStarted,
 		NodeID: "agent1",
 		Data:   map[string]interface{}{"kind": "agent"},
 	})
-	_, _ = s.AppendEvent(runID, store.Event{
+	_, _ = s.AppendEvent(context.Background(), runID, store.Event{
 		Type:   store.EventLLMPrompt,
 		NodeID: "agent1",
 		Data: map[string]interface{}{
@@ -562,7 +562,7 @@ func seedRunningNodeRun(t *testing.T, runID string) string {
 			"user_message":  "continue",
 		},
 	})
-	_, _ = s.AppendEvent(runID, store.Event{
+	_, _ = s.AppendEvent(context.Background(), runID, store.Event{
 		Type:   store.EventToolCalled,
 		NodeID: "agent1",
 		Data: map[string]interface{}{
@@ -686,14 +686,14 @@ func TestInspect_NodeWithBranchIter(t *testing.T) {
 	dir := t.TempDir()
 	storeDir := filepath.Join(dir, "store")
 	s, _ := store.New(storeDir)
-	if _, err := s.CreateRun("run-iter", "wf", nil); err != nil {
+	if _, err := s.CreateRun(context.Background(), "run-iter", "wf", nil); err != nil {
 		t.Fatal(err)
 	}
 	// Two iterations of the same node on main branch.
-	_, _ = s.AppendEvent("run-iter", store.Event{Type: store.EventNodeStarted, NodeID: "loop", Data: map[string]interface{}{"kind": "agent"}})
-	_, _ = s.AppendEvent("run-iter", store.Event{Type: store.EventNodeFinished, NodeID: "loop"})
-	_, _ = s.AppendEvent("run-iter", store.Event{Type: store.EventNodeStarted, NodeID: "loop", Data: map[string]interface{}{"kind": "agent"}})
-	_, _ = s.AppendEvent("run-iter", store.Event{Type: store.EventNodeFinished, NodeID: "loop"})
+	_, _ = s.AppendEvent(context.Background(), "run-iter", store.Event{Type: store.EventNodeStarted, NodeID: "loop", Data: map[string]interface{}{"kind": "agent"}})
+	_, _ = s.AppendEvent(context.Background(), "run-iter", store.Event{Type: store.EventNodeFinished, NodeID: "loop"})
+	_, _ = s.AppendEvent(context.Background(), "run-iter", store.Event{Type: store.EventNodeStarted, NodeID: "loop", Data: map[string]interface{}{"kind": "agent"}})
+	_, _ = s.AppendEvent(context.Background(), "run-iter", store.Event{Type: store.EventNodeFinished, NodeID: "loop"})
 
 	// Iter 0 must resolve.
 	iter0 := 0
@@ -773,10 +773,10 @@ func TestInspect_NodeAmbiguousBranches(t *testing.T) {
 	dir := t.TempDir()
 	storeDir := filepath.Join(dir, "store")
 	s, _ := store.New(storeDir)
-	_, _ = s.CreateRun("run-ambig", "wf", nil)
+	_, _ = s.CreateRun(context.Background(), "run-ambig", "wf", nil)
 	// Same node on two branches.
-	_, _ = s.AppendEvent("run-ambig", store.Event{Type: store.EventNodeStarted, NodeID: "n", BranchID: "b1", Data: map[string]interface{}{"kind": "agent"}})
-	_, _ = s.AppendEvent("run-ambig", store.Event{Type: store.EventNodeStarted, NodeID: "n", BranchID: "b2", Data: map[string]interface{}{"kind": "agent"}})
+	_, _ = s.AppendEvent(context.Background(), "run-ambig", store.Event{Type: store.EventNodeStarted, NodeID: "n", BranchID: "b1", Data: map[string]interface{}{"kind": "agent"}})
+	_, _ = s.AppendEvent(context.Background(), "run-ambig", store.Event{Type: store.EventNodeStarted, NodeID: "n", BranchID: "b2", Data: map[string]interface{}{"kind": "agent"}})
 
 	p, _ := newTestPrinter(cli.OutputJSON)
 	err := cli.RunInspect(cli.InspectOptions{
@@ -893,7 +893,7 @@ func TestInspect_ArtifactsScopedToSelectedExecution(t *testing.T) {
 	dir := t.TempDir()
 	storeDir := filepath.Join(dir, "store")
 	s, _ := store.New(storeDir)
-	if _, err := s.CreateRun("run-art-scope", "wf", nil); err != nil {
+	if _, err := s.CreateRun(context.Background(), "run-art-scope", "wf", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -901,26 +901,26 @@ func TestInspect_ArtifactsScopedToSelectedExecution(t *testing.T) {
 	// sibling branch. The inspector must report only versions referenced by
 	// the selected execution's artifact_written events, not every persisted
 	// version under artifacts/<node>/.
-	_, _ = s.AppendEvent("run-art-scope", store.Event{Type: store.EventNodeStarted, NodeID: "loop", Data: map[string]interface{}{"kind": "agent"}})
-	if err := s.WriteArtifact(&store.Artifact{RunID: "run-art-scope", NodeID: "loop", Version: 0, Data: map[string]interface{}{"summary": "main iter 0"}}); err != nil {
+	_, _ = s.AppendEvent(context.Background(), "run-art-scope", store.Event{Type: store.EventNodeStarted, NodeID: "loop", Data: map[string]interface{}{"kind": "agent"}})
+	if err := s.WriteArtifact(context.Background(), &store.Artifact{RunID: "run-art-scope", NodeID: "loop", Version: 0, Data: map[string]interface{}{"summary": "main iter 0"}}); err != nil {
 		t.Fatal(err)
 	}
-	_, _ = s.AppendEvent("run-art-scope", store.Event{Type: store.EventArtifactWritten, NodeID: "loop", Data: map[string]interface{}{"version": float64(0)}})
-	_, _ = s.AppendEvent("run-art-scope", store.Event{Type: store.EventNodeFinished, NodeID: "loop"})
+	_, _ = s.AppendEvent(context.Background(), "run-art-scope", store.Event{Type: store.EventArtifactWritten, NodeID: "loop", Data: map[string]interface{}{"version": float64(0)}})
+	_, _ = s.AppendEvent(context.Background(), "run-art-scope", store.Event{Type: store.EventNodeFinished, NodeID: "loop"})
 
-	_, _ = s.AppendEvent("run-art-scope", store.Event{Type: store.EventNodeStarted, NodeID: "loop", BranchID: "feature", Data: map[string]interface{}{"kind": "agent"}})
-	if err := s.WriteArtifact(&store.Artifact{RunID: "run-art-scope", NodeID: "loop", Version: 1, Data: map[string]interface{}{"summary": "feature iter 0"}}); err != nil {
+	_, _ = s.AppendEvent(context.Background(), "run-art-scope", store.Event{Type: store.EventNodeStarted, NodeID: "loop", BranchID: "feature", Data: map[string]interface{}{"kind": "agent"}})
+	if err := s.WriteArtifact(context.Background(), &store.Artifact{RunID: "run-art-scope", NodeID: "loop", Version: 1, Data: map[string]interface{}{"summary": "feature iter 0"}}); err != nil {
 		t.Fatal(err)
 	}
-	_, _ = s.AppendEvent("run-art-scope", store.Event{Type: store.EventArtifactWritten, NodeID: "loop", BranchID: "feature", Data: map[string]interface{}{"version": float64(1)}})
-	_, _ = s.AppendEvent("run-art-scope", store.Event{Type: store.EventNodeFinished, NodeID: "loop", BranchID: "feature"})
+	_, _ = s.AppendEvent(context.Background(), "run-art-scope", store.Event{Type: store.EventArtifactWritten, NodeID: "loop", BranchID: "feature", Data: map[string]interface{}{"version": float64(1)}})
+	_, _ = s.AppendEvent(context.Background(), "run-art-scope", store.Event{Type: store.EventNodeFinished, NodeID: "loop", BranchID: "feature"})
 
-	_, _ = s.AppendEvent("run-art-scope", store.Event{Type: store.EventNodeStarted, NodeID: "loop", Data: map[string]interface{}{"kind": "agent"}})
-	if err := s.WriteArtifact(&store.Artifact{RunID: "run-art-scope", NodeID: "loop", Version: 2, Data: map[string]interface{}{"summary": "main iter 1"}}); err != nil {
+	_, _ = s.AppendEvent(context.Background(), "run-art-scope", store.Event{Type: store.EventNodeStarted, NodeID: "loop", Data: map[string]interface{}{"kind": "agent"}})
+	if err := s.WriteArtifact(context.Background(), &store.Artifact{RunID: "run-art-scope", NodeID: "loop", Version: 2, Data: map[string]interface{}{"summary": "main iter 1"}}); err != nil {
 		t.Fatal(err)
 	}
-	_, _ = s.AppendEvent("run-art-scope", store.Event{Type: store.EventArtifactWritten, NodeID: "loop", Data: map[string]interface{}{"version": float64(2)}})
-	_, _ = s.AppendEvent("run-art-scope", store.Event{Type: store.EventNodeFinished, NodeID: "loop"})
+	_, _ = s.AppendEvent(context.Background(), "run-art-scope", store.Event{Type: store.EventArtifactWritten, NodeID: "loop", Data: map[string]interface{}{"version": float64(2)}})
+	_, _ = s.AppendEvent(context.Background(), "run-art-scope", store.Event{Type: store.EventNodeFinished, NodeID: "loop"})
 
 	assertArtifacts := func(name string, opts cli.InspectOptions, wantVersion float64, wantSummary string) {
 		t.Helper()
@@ -967,7 +967,7 @@ func TestInspect_NodeWithLogSlice(t *testing.T) {
 	dir := t.TempDir()
 	storeDir := filepath.Join(dir, "store")
 	s, _ := store.New(storeDir)
-	if _, err := s.CreateRun("run-log", "wf", nil); err != nil {
+	if _, err := s.CreateRun(context.Background(), "run-log", "wf", nil); err != nil {
 		t.Fatal(err)
 	}
 	// Use explicit timestamps so the log slice window is deterministic.
@@ -977,13 +977,13 @@ func TestInspect_NodeWithLogSlice(t *testing.T) {
 	// from .Local() to keep this test correct on non-UTC hosts too.
 	startedAt := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	finishedAt := time.Date(2026, 1, 1, 12, 0, 30, 0, time.UTC)
-	_, _ = s.AppendEvent("run-log", store.Event{
+	_, _ = s.AppendEvent(context.Background(), "run-log", store.Event{
 		Type:      store.EventNodeStarted,
 		NodeID:    "agent1",
 		Timestamp: startedAt,
 		Data:      map[string]interface{}{"kind": "agent"},
 	})
-	_, _ = s.AppendEvent("run-log", store.Event{
+	_, _ = s.AppendEvent(context.Background(), "run-log", store.Event{
 		Type:      store.EventNodeFinished,
 		NodeID:    "agent1",
 		Timestamp: finishedAt,
@@ -1053,18 +1053,18 @@ func TestInspect_LogSliceNonUTCTimezone(t *testing.T) {
 	dir := t.TempDir()
 	storeDir := filepath.Join(dir, "store")
 	s, _ := store.New(storeDir)
-	if _, err := s.CreateRun("run-tz", "wf", nil); err != nil {
+	if _, err := s.CreateRun(context.Background(), "run-tz", "wf", nil); err != nil {
 		t.Fatal(err)
 	}
 	startedAt := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	finishedAt := time.Date(2026, 1, 1, 12, 0, 30, 0, time.UTC)
-	_, _ = s.AppendEvent("run-tz", store.Event{
+	_, _ = s.AppendEvent(context.Background(), "run-tz", store.Event{
 		Type:      store.EventNodeStarted,
 		NodeID:    "agent1",
 		Timestamp: startedAt,
 		Data:      map[string]interface{}{"kind": "agent"},
 	})
-	_, _ = s.AppendEvent("run-tz", store.Event{
+	_, _ = s.AppendEvent(context.Background(), "run-tz", store.Event{
 		Type:      store.EventNodeFinished,
 		NodeID:    "agent1",
 		Timestamp: finishedAt,
@@ -1115,19 +1115,19 @@ func TestInspect_LogSliceCrossesMidnight(t *testing.T) {
 	dir := t.TempDir()
 	storeDir := filepath.Join(dir, "store")
 	s, _ := store.New(storeDir)
-	if _, err := s.CreateRun("run-midnight", "wf", nil); err != nil {
+	if _, err := s.CreateRun(context.Background(), "run-midnight", "wf", nil); err != nil {
 		t.Fatal(err)
 	}
 	loc := time.Local
 	startedAt := time.Date(2026, 1, 1, 23, 59, 50, 0, loc)
 	finishedAt := time.Date(2026, 1, 2, 0, 0, 10, 0, loc)
-	_, _ = s.AppendEvent("run-midnight", store.Event{
+	_, _ = s.AppendEvent(context.Background(), "run-midnight", store.Event{
 		Type:      store.EventNodeStarted,
 		NodeID:    "agent1",
 		Timestamp: startedAt,
 		Data:      map[string]interface{}{"kind": "agent"},
 	})
-	_, _ = s.AppendEvent("run-midnight", store.Event{
+	_, _ = s.AppendEvent(context.Background(), "run-midnight", store.Event{
 		Type:      store.EventNodeFinished,
 		NodeID:    "agent1",
 		Timestamp: finishedAt,
@@ -1248,7 +1248,7 @@ func TestInspect_LegacyPathUnchanged(t *testing.T) {
 	dir := t.TempDir()
 	storeDir := filepath.Join(dir, "store")
 	s, _ := store.New(storeDir)
-	_, _ = s.CreateRun("run-legacy", "wf", nil)
+	_, _ = s.CreateRun(context.Background(), "run-legacy", "wf", nil)
 
 	p, buf := newTestPrinter(cli.OutputHuman)
 	if err := cli.RunInspect(cli.InspectOptions{
@@ -1286,7 +1286,7 @@ func TestResume_Success(t *testing.T) {
 
 	// Verify it's paused.
 	s, _ := store.New(storeDir)
-	r, _ := s.LoadRun("resume-test")
+	r, _ := s.LoadRun(context.Background(), "resume-test")
 	if r.Status != store.RunStatusPausedWaitingHuman {
 		t.Fatalf("expected paused, got %s", r.Status)
 	}
@@ -1315,7 +1315,7 @@ func TestResume_Success(t *testing.T) {
 	}
 
 	// Verify run is finished.
-	r, _ = s.LoadRun("resume-test")
+	r, _ = s.LoadRun(context.Background(), "resume-test")
 	if r.Status != store.RunStatusFinished {
 		t.Errorf("expected finished, got %s", r.Status)
 	}
@@ -1326,7 +1326,7 @@ func TestResume_NotPaused(t *testing.T) {
 	iterPath := writeFixture(t, dir, "test.iter", humanWorkflow)
 	storeDir := filepath.Join(dir, "store")
 	s, _ := store.New(storeDir)
-	_, _ = s.CreateRun("not-paused", "wf", nil)
+	_, _ = s.CreateRun(context.Background(), "not-paused", "wf", nil)
 
 	p, _ := newTestPrinter(cli.OutputHuman)
 	err := cli.RunResumeWithFile(context.Background(), iterPath, cli.ResumeOptions{
@@ -1348,9 +1348,9 @@ func TestResume_NoAnswers(t *testing.T) {
 	iterPath := writeFixture(t, dir, "test.iter", humanWorkflow)
 	storeDir := filepath.Join(dir, "store")
 	s, _ := store.New(storeDir)
-	r, _ := s.CreateRun("no-answers", "test_human_workflow", nil)
-	_ = s.UpdateRunStatus(r.ID, store.RunStatusPausedWaitingHuman, "")
-	_ = s.SaveCheckpoint(r.ID, &store.Checkpoint{NodeID: "clarify", InteractionID: "int-1"})
+	r, _ := s.CreateRun(context.Background(), "no-answers", "test_human_workflow", nil)
+	_ = s.UpdateRunStatus(context.Background(), r.ID, store.RunStatusPausedWaitingHuman, "")
+	_ = s.SaveCheckpoint(context.Background(), r.ID, &store.Checkpoint{NodeID: "clarify", InteractionID: "int-1"})
 
 	p, _ := newTestPrinter(cli.OutputHuman)
 	err := cli.RunResumeWithFile(context.Background(), iterPath, cli.ResumeOptions{

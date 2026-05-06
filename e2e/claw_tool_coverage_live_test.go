@@ -276,12 +276,12 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 	if runErr := eng.Run(ctx, runID, map[string]interface{}{}); runErr != nil {
 		t.Fatalf("Run error: %v", runErr)
 	}
-	r, _ := s.LoadRun(runID)
+	r, _ := s.LoadRun(context.Background(), runID)
 	if r.Status != store.RunStatusFinished {
 		t.Fatalf("Expected run status 'finished', got %q", r.Status)
 	}
 
-	events, evtErr := s.LoadEvents(runID)
+	events, evtErr := s.LoadEvents(context.Background(), runID)
 	if evtErr != nil {
 		t.Fatalf("LoadEvents: %v", evtErr)
 	}

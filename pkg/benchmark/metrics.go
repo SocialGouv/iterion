@@ -3,6 +3,7 @@
 package benchmark
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -26,13 +27,13 @@ type RunMetrics struct {
 
 // CollectMetrics extracts aggregated metrics from a run's persisted events
 // and run metadata.
-func CollectMetrics(s store.RunStore, runID, recipeName string, evalPrimary string) (*RunMetrics, error) {
-	run, err := s.LoadRun(runID)
+func CollectMetrics(ctx context.Context, s store.RunStore, runID, recipeName string, evalPrimary string) (*RunMetrics, error) {
+	run, err := s.LoadRun(ctx, runID)
 	if err != nil {
 		return nil, fmt.Errorf("benchmark: load run %s: %w", runID, err)
 	}
 
-	events, err := s.LoadEvents(runID)
+	events, err := s.LoadEvents(ctx, runID)
 	if err != nil {
 		return nil, fmt.Errorf("benchmark: load events %s: %w", runID, err)
 	}

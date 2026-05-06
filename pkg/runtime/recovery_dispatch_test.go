@@ -108,7 +108,7 @@ func TestRecoveryDispatch_FailTerminalCallsCheckpoint(t *testing.T) {
 		t.Errorf("expected exactly 1 execution before terminal fail, got %d", exec.calls)
 	}
 	// Run should be persisted as failed_resumable (checkpoint preserved).
-	r, _ := s.LoadRun("run-3")
+	r, _ := s.LoadRun(context.Background(), "run-3")
 	if r == nil || r.Status != store.RunStatusFailedResumable {
 		t.Errorf("expected failed_resumable status, got %v", r)
 	}
@@ -131,14 +131,14 @@ func TestRecoveryDispatch_PauseForHumanProducesInteraction(t *testing.T) {
 	if err != ErrRunPaused {
 		t.Fatalf("expected ErrRunPaused, got %v", err)
 	}
-	r, _ := s.LoadRun("run-4")
+	r, _ := s.LoadRun(context.Background(), "run-4")
 	if r == nil || r.Status != store.RunStatusPausedWaitingHuman {
 		t.Errorf("expected paused_waiting_human, got %v", r)
 	}
 	if r.Checkpoint == nil || r.Checkpoint.InteractionID == "" {
 		t.Fatal("expected synthetic recovery interaction in checkpoint")
 	}
-	interaction, err := s.LoadInteraction("run-4", r.Checkpoint.InteractionID)
+	interaction, err := s.LoadInteraction(context.Background(), "run-4", r.Checkpoint.InteractionID)
 	if err != nil {
 		t.Fatalf("load interaction: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestRecoveryDispatch_PreservesNodeAttemptsAcrossResume(t *testing.T) {
 	if len(priorSeen) != 1 || priorSeen[0] != 0 {
 		t.Fatalf("run 1 prior view: want [0], got %v", priorSeen)
 	}
-	r, _ := s.LoadRun("run-resume")
+	r, _ := s.LoadRun(context.Background(), "run-resume")
 	if r == nil || r.Status != store.RunStatusFailedResumable {
 		t.Fatalf("expected failed_resumable, got %+v", r)
 	}
@@ -193,7 +193,7 @@ func TestRecoveryDispatch_PreservesNodeAttemptsAcrossResume(t *testing.T) {
 	if len(priorSeen) != 2 || priorSeen[1] != 1 {
 		t.Fatalf("resume prior view: want [0 1], got %v", priorSeen)
 	}
-	r, _ = s.LoadRun("run-resume")
+	r, _ = s.LoadRun(context.Background(), "run-resume")
 	if got := r.Checkpoint.NodeAttempts["agent_a"][string(ErrCodeRateLimited)]; got != 2 {
 		t.Errorf("after resume want bucket=2, got %d", got)
 	}

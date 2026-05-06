@@ -218,6 +218,13 @@ func NewFromRecipe(r *recipe.RecipeSpec, wf *ir.Workflow, s store.RunStore, exec
 
 // runState holds the mutable runtime state passed through the execution loop.
 type runState struct {
+	// ctx is the per-run context. Stored on runState (despite the
+	// usual "no context in struct" rule) because helpers.go threads
+	// `rs *runState` deeply through emit/failRun*/checkpoint paths
+	// where adding ctx to every signature would 80+ call sites with
+	// no semantic gain — the lifetime of rs IS the lifetime of ctx.
+	// Set in Run() before execLoop().
+	ctx          context.Context
 	runID        string
 	runInputs    map[string]interface{}
 	vars         map[string]interface{}
@@ -266,7 +273,7 @@ func (e *Engine) newRunState(runID string, inputs map[string]interface{}) *runSt
 // is hit (ErrRunPaused), or an error occurs.
 func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interface{}) error {
 	// Create run in store.
-	run, err := e.store.CreateRun(runID, e.workflow.Name, inputs)
+	run, err := e.store.CreateRun(ctx, runID, e.workflow.Name, inputs)
 	if err != nil {
 		return fmt.Errorf("runtime: create run: %w", err)
 	}
@@ -284,7 +291,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 			run.MergeStrategy = store.MergeStrategy(e.mergeStrategy)
 		}
 		run.AutoMerge = e.autoMerge
-		if err := e.store.SaveRun(run); err != nil {
+		if err := e.store.SaveRun(ctx, run); err != nil {
 			return fmt.Errorf("runtime: save run metadata: %w", err)
 		}
 	}
@@ -304,14 +311,14 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 	var wtCtx worktreeContext
 	worktreeActive := false
 	if e.workflow.Worktree == "auto" {
-		ctx, cleanup, wtErr := setupWorktree(e.store.Root(), runID, e.workDir, e.logger)
+		wtc, cleanup, wtErr := setupWorktree(e.store.Root(), runID, e.workDir, e.logger)
 		if wtErr != nil {
-			_ = e.store.UpdateRunStatus(runID, store.RunStatusFailed, wtErr.Error())
+			_ = e.store.UpdateRunStatus(ctx, runID, store.RunStatusFailed, wtErr.Error())
 			return fmt.Errorf("runtime: worktree setup: %w", wtErr)
 		}
-		e.workDir = ctx.wtPath
+		e.workDir = wtc.wtPath
 		worktreeCleanup = cleanup
-		wtCtx = ctx
+		wtCtx = wtc
 		worktreeActive = true
 	}
 
@@ -328,7 +335,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 			run.RepoRoot = wtCtx.repoRoot
 			run.BaseCommit = wtCtx.originalTip
 		}
-		if err := e.store.SaveRun(run); err != nil {
+		if err := e.store.SaveRun(ctx, run); err != nil {
 			return fmt.Errorf("runtime: save work dir: %w", err)
 		}
 	}
@@ -342,11 +349,12 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 	}
 
 	// Emit run_started.
-	if err := e.emit(runID, store.EventRunStarted, "", nil); err != nil {
+	if err := e.emit(ctx, runID, store.EventRunStarted, "", nil); err != nil {
 		return err
 	}
 
 	rs := e.newRunState(runID, inputs)
+	rs.ctx = ctx
 	rs.vars = e.resolveVars(inputs)
 
 	// Refresh executor vars: PROJECT_DIR-aware expansion may have changed
@@ -376,7 +384,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 			// Persist whatever the finalization decided. Best-effort:
 			// a save failure logs but doesn't fail the run.
 			if finRes.FinalCommit != "" || finRes.FinalBranch != "" || finRes.MergedInto != "" || finRes.MergeStatus != "" {
-				if r2, err := e.store.LoadRun(runID); err == nil {
+				if r2, err := e.store.LoadRun(ctx, runID); err == nil {
 					r2.FinalCommit = finRes.FinalCommit
 					r2.FinalBranch = finRes.FinalBranch
 					r2.MergedInto = finRes.MergedInto
@@ -386,7 +394,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 						r2.MergeStrategy = store.MergeStrategy(e.mergeStrategy)
 					}
 					r2.AutoMerge = e.autoMerge
-					if saveErr := e.store.SaveRun(r2); saveErr != nil && e.logger != nil {
+					if saveErr := e.store.SaveRun(ctx, r2); saveErr != nil && e.logger != nil {
 						e.logger.Warn("runtime: persist finalization metadata: %v", saveErr)
 					}
 				}
@@ -436,24 +444,24 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 		// --- Terminal nodes ---
 		switch node.(type) {
 		case *ir.DoneNode:
-			if err := e.emit(rs.runID, store.EventNodeStarted, currentNodeID, nil); err != nil {
+			if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, currentNodeID, nil); err != nil {
 				return err
 			}
-			if err := e.emit(rs.runID, store.EventNodeFinished, currentNodeID, nil); err != nil {
+			if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, currentNodeID, nil); err != nil {
 				return err
 			}
-			if err := e.store.UpdateRunStatus(rs.runID, store.RunStatusFinished, ""); err != nil {
+			if err := e.store.UpdateRunStatus(rs.ctx, rs.runID, store.RunStatusFinished, ""); err != nil {
 				return err
 			}
-			return e.emit(rs.runID, store.EventRunFinished, "", nil)
+			return e.emit(rs.ctx, rs.runID, store.EventRunFinished, "", nil)
 		case *ir.FailNode:
-			if err := e.emit(rs.runID, store.EventNodeStarted, currentNodeID, nil); err != nil {
+			if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, currentNodeID, nil); err != nil {
 				return err
 			}
-			if err := e.emit(rs.runID, store.EventNodeFinished, currentNodeID, nil); err != nil {
+			if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, currentNodeID, nil); err != nil {
 				return err
 			}
-			return e.failRun(rs.runID, currentNodeID, "workflow reached fail node")
+			return e.failRun(rs.ctx, rs.runID, currentNodeID, "workflow reached fail node")
 		default:
 			// non-terminal — continue below
 		}
@@ -529,7 +537,7 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 		}
 
 		// --- Emit node_started ---
-		if err := e.emit(rs.runID, store.EventNodeStarted, currentNodeID, map[string]interface{}{
+		if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, currentNodeID, map[string]interface{}{
 			"kind": node.NodeKind().String(),
 		}); err != nil {
 			return err
@@ -603,13 +611,13 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 				Version: version,
 				Data:    output,
 			}
-			if err := e.store.WriteArtifact(artifact); err != nil {
+			if err := e.store.WriteArtifact(ctx, artifact); err != nil {
 				return fmt.Errorf("runtime: write artifact: %w", err)
 			}
 			rs.artifactVersions[currentNodeID] = version + 1
 			rs.artifacts[pub] = output
 
-			if err := e.emit(rs.runID, store.EventArtifactWritten, currentNodeID, map[string]interface{}{
+			if err := e.emit(rs.ctx, rs.runID, store.EventArtifactWritten, currentNodeID, map[string]interface{}{
 				"publish": pub,
 				"version": version,
 			}); err != nil {
@@ -619,7 +627,7 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 
 		// --- Emit node_finished with usage data ---
 		nodeFinishedData := buildNodeFinishedData(sanitizeOutputForEvent(node, output))
-		if err := e.emit(rs.runID, store.EventNodeFinished, currentNodeID, nodeFinishedData); err != nil {
+		if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, currentNodeID, nodeFinishedData); err != nil {
 			return err
 		}
 		if e.onNodeFinished != nil {
@@ -627,7 +635,7 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 		}
 
 		// Best-effort checkpoint for resume-from-failed.
-		if err := e.store.SaveCheckpoint(rs.runID, buildCheckpoint(rs, currentNodeID)); err != nil {
+		if err := e.store.SaveCheckpoint(rs.ctx, rs.runID, buildCheckpoint(rs, currentNodeID)); err != nil {
 			e.logger.Error("failed to save checkpoint after node %q: %v", currentNodeID, err)
 		}
 
@@ -650,7 +658,7 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 // envelope (node_started → output → node_finished → checkpoint → edge select)
 // without invoking the executor backend.
 func (e *Engine) execCompute(rs *runState, nodeID string, cn *ir.ComputeNode) (string, error) {
-	if err := e.emit(rs.runID, store.EventNodeStarted, nodeID, map[string]interface{}{
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, nodeID, map[string]interface{}{
 		"kind": "compute",
 	}); err != nil {
 		return "", err
@@ -680,14 +688,14 @@ func (e *Engine) execCompute(rs *runState, nodeID string, cn *ir.ComputeNode) (s
 		return "", err
 	}
 
-	if err := e.emit(rs.runID, store.EventNodeFinished, nodeID, buildNodeFinishedData(sanitizeOutputForEvent(cn, output))); err != nil {
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, nodeID, buildNodeFinishedData(sanitizeOutputForEvent(cn, output))); err != nil {
 		return "", err
 	}
 	if e.onNodeFinished != nil {
 		e.onNodeFinished(nodeID, output)
 	}
 
-	if err := e.store.SaveCheckpoint(rs.runID, buildCheckpoint(rs, nodeID)); err != nil {
+	if err := e.store.SaveCheckpoint(rs.ctx, rs.runID, buildCheckpoint(rs, nodeID)); err != nil {
 		e.logger.Error("failed to save checkpoint after compute %q: %v", nodeID, err)
 	}
 
@@ -751,7 +759,7 @@ func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string
 		data["loop"] = selected.LoopName
 		data["iteration"] = rs.loopCounters[selected.LoopName]
 	}
-	if err := e.emit(rs.runID, store.EventEdgeSelected, "", data); err != nil {
+	if err := e.emit(rs.ctx, rs.runID, store.EventEdgeSelected, "", data); err != nil {
 		e.logger.Warn("failed to emit edge_selected: %v", err)
 	}
 

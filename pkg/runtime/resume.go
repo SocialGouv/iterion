@@ -27,7 +27,7 @@ import (
 // failed-resumable runs, execution restarts from the node after the last
 // successfully completed one (re-executing the failed node).
 func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]interface{}) error {
-	r, err := e.store.LoadRun(runID)
+	r, err := e.store.LoadRun(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("runtime: load run for resume: %w", err)
 	}
@@ -95,7 +95,7 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 
 	// Record answers on the interaction. Fall back to the checkpoint's
 	// embedded questions if the interaction file has been deleted.
-	interaction, err := e.store.LoadInteraction(runID, cp.InteractionID)
+	interaction, err := e.store.LoadInteraction(ctx, runID, cp.InteractionID)
 	if err != nil && cp.InteractionQuestions != nil {
 		interaction = &store.Interaction{
 			ID:          cp.InteractionID,
@@ -110,12 +110,12 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	now := time.Now().UTC()
 	interaction.AnsweredAt = &now
 	interaction.Answers = answers
-	if err := e.store.WriteInteraction(interaction); err != nil {
+	if err := e.store.WriteInteraction(ctx, interaction); err != nil {
 		return fmt.Errorf("runtime: write answered interaction: %w", err)
 	}
 
 	// Emit human_answers_recorded.
-	if err := e.emit(runID, store.EventHumanAnswersRecorded, humanNodeID, map[string]interface{}{
+	if err := e.emit(ctx, runID, store.EventHumanAnswersRecorded, humanNodeID, map[string]interface{}{
 		"interaction_id": cp.InteractionID,
 		"answers":        answers,
 	}); err != nil {
@@ -140,26 +140,26 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 			Version: version,
 			Data:    answers,
 		}
-		if err := e.store.WriteArtifact(artifact); err != nil {
+		if err := e.store.WriteArtifact(ctx, artifact); err != nil {
 			return fmt.Errorf("runtime: write human artifact: %w", err)
 		}
 		artifactVersions[humanNodeID] = version + 1
-		_ = e.emit(runID, store.EventArtifactWritten, humanNodeID, map[string]interface{}{
+		_ = e.emit(ctx, runID, store.EventArtifactWritten, humanNodeID, map[string]interface{}{
 			"publish": pub,
 			"version": version,
 		})
 	}
 
 	// Mark human node as finished.
-	if err := e.emit(runID, store.EventNodeFinished, humanNodeID, nil); err != nil {
+	if err := e.emit(ctx, runID, store.EventNodeFinished, humanNodeID, nil); err != nil {
 		return err
 	}
 
 	// Update status to running and emit run_resumed.
-	if err := e.store.UpdateRunStatus(runID, store.RunStatusRunning, ""); err != nil {
+	if err := e.store.UpdateRunStatus(ctx, runID, store.RunStatusRunning, ""); err != nil {
 		return fmt.Errorf("runtime: update status running: %w", err)
 	}
-	if err := e.emit(runID, store.EventRunResumed, "", nil); err != nil {
+	if err := e.emit(ctx, runID, store.EventRunResumed, "", nil); err != nil {
 		return err
 	}
 
@@ -248,7 +248,7 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 	}
 
 	// Update status to running and emit run_resumed.
-	if err := e.store.UpdateRunStatus(runID, store.RunStatusRunning, ""); err != nil {
+	if err := e.store.UpdateRunStatus(ctx, runID, store.RunStatusRunning, ""); err != nil {
 		return fmt.Errorf("runtime: update status running: %w", err)
 	}
 	resumeData := map[string]interface{}{
@@ -258,7 +258,7 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 	if cp == nil {
 		resumeData["from_entry"] = true
 	}
-	if err := e.emit(runID, store.EventRunResumed, "", resumeData); err != nil {
+	if err := e.emit(ctx, runID, store.EventRunResumed, "", resumeData); err != nil {
 		return err
 	}
 
@@ -343,7 +343,7 @@ func (e *Engine) pushExecutorVars(vars map[string]interface{}) {
 // Returns (true, nil) if the run was paused, (false, nil) if the LLM answered.
 func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID string, node ir.Node) (bool, error) {
 	// Emit node_started.
-	if err := e.emit(rs.runID, store.EventNodeStarted, nodeID, map[string]interface{}{
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, nodeID, map[string]interface{}{
 		"kind": node.NodeKind().String(),
 	}); err != nil {
 		return false, err
@@ -401,12 +401,12 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 			Version: version,
 			Data:    output,
 		}
-		if err := e.store.WriteArtifact(artifact); err != nil {
+		if err := e.store.WriteArtifact(ctx, artifact); err != nil {
 			return false, fmt.Errorf("runtime: write artifact: %w", err)
 		}
 		rs.artifactVersions[nodeID] = version + 1
 		rs.artifacts[pub] = output
-		_ = e.emit(rs.runID, store.EventArtifactWritten, nodeID, map[string]interface{}{
+		_ = e.emit(rs.ctx, rs.runID, store.EventArtifactWritten, nodeID, map[string]interface{}{
 			"publish": pub,
 			"version": version,
 		})
@@ -414,7 +414,7 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 
 	// Emit node_finished.
 	nodeFinishedData := buildNodeFinishedData(sanitizeOutputForEvent(node, output))
-	if err := e.emit(rs.runID, store.EventNodeFinished, nodeID, nodeFinishedData); err != nil {
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, nodeID, nodeFinishedData); err != nil {
 		return false, err
 	}
 	if e.onNodeFinished != nil {
@@ -432,7 +432,7 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 // saves checkpoint state, and returns ErrRunPaused.
 func (e *Engine) pauseAtHuman(rs *runState, nodeID string, node ir.Node) error {
 	// Emit node_started for the human node.
-	if err := e.emit(rs.runID, store.EventNodeStarted, nodeID, map[string]interface{}{
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, nodeID, map[string]interface{}{
 		"kind": node.NodeKind().String(),
 	}); err != nil {
 		return err
@@ -616,12 +616,12 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 			Version: version,
 			Data:    output,
 		}
-		if err := e.store.WriteArtifact(artifact); err != nil {
+		if err := e.store.WriteArtifact(ctx, artifact); err != nil {
 			return fmt.Errorf("runtime: write artifact: %w", err)
 		}
 		rs.artifactVersions[nodeID] = version + 1
 		rs.artifacts[pub] = output
-		_ = e.emit(rs.runID, store.EventArtifactWritten, nodeID, map[string]interface{}{
+		_ = e.emit(rs.ctx, rs.runID, store.EventArtifactWritten, nodeID, map[string]interface{}{
 			"publish": pub,
 			"version": version,
 		})
@@ -629,7 +629,7 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 
 	// Emit node_finished.
 	nodeFinishedData := buildNodeFinishedData(sanitizeOutputForEvent(node, output))
-	if err := e.emit(rs.runID, store.EventNodeFinished, nodeID, nodeFinishedData); err != nil {
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, nodeID, nodeFinishedData); err != nil {
 		return err
 	}
 	if e.onNodeFinished != nil {
@@ -637,7 +637,7 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 	}
 
 	// Checkpoint.
-	if err := e.store.SaveCheckpoint(rs.runID, buildCheckpoint(rs, nodeID)); err != nil {
+	if err := e.store.SaveCheckpoint(rs.ctx, rs.runID, buildCheckpoint(rs, nodeID)); err != nil {
 		e.logger.Error("failed to save checkpoint after re-invocation of node %q: %v", nodeID, err)
 	}
 
@@ -712,7 +712,7 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]inter
 		RequestedAt: time.Now().UTC(),
 		Questions:   questions,
 	}
-	if err := e.store.WriteInteraction(interaction); err != nil {
+	if err := e.store.WriteInteraction(rs.ctx, interaction); err != nil {
 		return fmt.Errorf("runtime: write interaction: %w", err)
 	}
 
@@ -724,12 +724,12 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]inter
 	for k, v := range eventExtra {
 		eventData[k] = v
 	}
-	if err := e.emit(rs.runID, store.EventHumanInputRequested, nodeID, eventData); err != nil {
+	if err := e.emit(rs.ctx, rs.runID, store.EventHumanInputRequested, nodeID, eventData); err != nil {
 		return err
 	}
 
 	// Emit run_paused.
-	if err := e.emit(rs.runID, store.EventRunPaused, nodeID, nil); err != nil {
+	if err := e.emit(rs.ctx, rs.runID, store.EventRunPaused, nodeID, nil); err != nil {
 		return err
 	}
 
@@ -741,7 +741,7 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]inter
 	cp.BackendName = info.BackendName
 	cp.BackendConversation = info.BackendConversation
 	cp.BackendPendingToolUseID = info.BackendPendingToolUseID
-	if err := e.store.PauseRun(rs.runID, cp); err != nil {
+	if err := e.store.PauseRun(rs.ctx, rs.runID, cp); err != nil {
 		return fmt.Errorf("runtime: pause run: %w", err)
 	}
 

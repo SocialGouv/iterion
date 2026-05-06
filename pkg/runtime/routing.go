@@ -45,7 +45,7 @@ func (e *Engine) execRoundRobin(ctx context.Context, rs *runState, routerNodeID 
 	}
 
 	// Emit router node_started with round-robin metadata.
-	if err := e.emit(rs.runID, store.EventNodeStarted, routerNodeID, map[string]interface{}{
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, routerNodeID, map[string]interface{}{
 		"kind":              "router",
 		"mode":              "round_robin",
 		"round_robin_index": counter,
@@ -59,7 +59,7 @@ func (e *Engine) execRoundRobin(ctx context.Context, rs *runState, routerNodeID 
 	rs.outputs[routerNodeID] = routerInput
 
 	// Emit router node_finished.
-	if err := e.emit(rs.runID, store.EventNodeFinished, routerNodeID, nil); err != nil {
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, routerNodeID, nil); err != nil {
 		return "", err
 	}
 
@@ -81,7 +81,7 @@ func (e *Engine) execLLMRouter(ctx context.Context, rs *runState, routerNodeID s
 	}
 
 	// Emit node_started.
-	if err := e.emit(rs.runID, store.EventNodeStarted, routerNodeID, map[string]interface{}{
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, routerNodeID, map[string]interface{}{
 		"kind": "router",
 		"mode": "llm",
 	}); err != nil {
@@ -163,7 +163,7 @@ func (e *Engine) execLLMRouterSingle(rs *runState, routerNodeID string, output m
 	reasoning, _ := output["reasoning"].(string)
 
 	// Emit node_finished.
-	if err := e.emit(rs.runID, store.EventNodeFinished, routerNodeID, map[string]interface{}{
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, routerNodeID, map[string]interface{}{
 		"selected_route": selected,
 		"reasoning":      reasoning,
 	}); err != nil {
@@ -171,7 +171,7 @@ func (e *Engine) execLLMRouterSingle(rs *runState, routerNodeID string, output m
 	}
 
 	// Emit edge_selected.
-	if err := e.emit(rs.runID, store.EventEdgeSelected, routerNodeID, map[string]interface{}{
+	if err := e.emit(rs.ctx, rs.runID, store.EventEdgeSelected, routerNodeID, map[string]interface{}{
 		"from": routerNodeID,
 		"to":   selected,
 	}); err != nil {
@@ -244,7 +244,7 @@ func (e *Engine) execLLMRouterMulti(ctx context.Context, rs *runState, routerNod
 	reasoning, _ := output["reasoning"].(string)
 
 	// Emit node_finished.
-	if err := e.emit(rs.runID, store.EventNodeFinished, routerNodeID, map[string]interface{}{
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, routerNodeID, map[string]interface{}{
 		"selected_routes": selected,
 		"reasoning":       reasoning,
 	}); err != nil {

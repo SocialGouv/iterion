@@ -32,7 +32,7 @@ func TestService_Drain_FlipsStatusAndEmitsEvent(t *testing.T) {
 	// what spawnRun's body would do.
 	ids := []string{"run-drain-1", "run-drain-2"}
 	for _, id := range ids {
-		if _, err := svc.store.CreateRun(id, "wf", nil); err != nil {
+		if _, err := svc.store.CreateRun(context.Background(), id, "wf", nil); err != nil {
 			t.Fatalf("CreateRun %s: %v", id, err)
 		}
 		ctx, regErr := svc.manager.Register(context.Background(), id)
@@ -50,14 +50,14 @@ func TestService_Drain_FlipsStatusAndEmitsEvent(t *testing.T) {
 	svc.Drain(drainCtx)
 
 	for _, id := range ids {
-		r, err := svc.store.LoadRun(id)
+		r, err := svc.store.LoadRun(context.Background(), id)
 		if err != nil {
 			t.Fatalf("LoadRun %s: %v", id, err)
 		}
 		if r.Status != store.RunStatusFailedResumable {
 			t.Errorf("%s: status = %q, want %q", id, r.Status, store.RunStatusFailedResumable)
 		}
-		evts, err := svc.store.LoadEvents(id)
+		evts, err := svc.store.LoadEvents(context.Background(), id)
 		if err != nil {
 			t.Fatalf("LoadEvents %s: %v", id, err)
 		}
@@ -96,7 +96,7 @@ func TestService_Drain_DeadlineExceededStillFlipsStatus(t *testing.T) {
 	}
 
 	const id = "run-stuck"
-	if _, err := svc.store.CreateRun(id, "wf", nil); err != nil {
+	if _, err := svc.store.CreateRun(context.Background(), id, "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
 	if _, regErr := svc.manager.Register(context.Background(), id); regErr != nil {
@@ -112,7 +112,7 @@ func TestService_Drain_DeadlineExceededStillFlipsStatus(t *testing.T) {
 	defer cancel()
 	svc.Drain(drainCtx)
 
-	r, err := svc.store.LoadRun(id)
+	r, err := svc.store.LoadRun(context.Background(), id)
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestService_Stop_DoesNotFlipStatus(t *testing.T) {
 	}
 
 	const id = "run-stop"
-	if _, err := svc.store.CreateRun(id, "wf", nil); err != nil {
+	if _, err := svc.store.CreateRun(context.Background(), id, "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
 	ctx, regErr := svc.manager.Register(context.Background(), id)
@@ -153,7 +153,7 @@ func TestService_Stop_DoesNotFlipStatus(t *testing.T) {
 	defer cancel()
 	svc.Stop(stopCtx)
 
-	r, err := svc.store.LoadRun(id)
+	r, err := svc.store.LoadRun(context.Background(), id)
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http/httptest"
 	"strings"
@@ -87,7 +88,7 @@ func TestRunsWS_LiveEventReachesSubscriber(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	if _, err := st.CreateRun("run-live", "wf", nil); err != nil {
+	if _, err := st.CreateRun(context.Background(), "run-live", "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
 

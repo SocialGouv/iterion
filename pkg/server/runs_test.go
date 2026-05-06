@@ -53,10 +53,10 @@ func seedRun(t *testing.T, srv *Server, runID, workflowName string, status store
 	if err != nil {
 		t.Fatalf("open seed store: %v", err)
 	}
-	if _, err := st.CreateRun(runID, workflowName, map[string]interface{}{"k": "v"}); err != nil {
+	if _, err := st.CreateRun(context.Background(), runID, workflowName, map[string]interface{}{"k": "v"}); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	if err := st.UpdateRunStatus(runID, status, ""); err != nil {
+	if err := st.UpdateRunStatus(context.Background(), runID, status, ""); err != nil {
 		t.Fatalf("UpdateRunStatus: %v", err)
 	}
 	for i, evt := range []store.Event{
@@ -64,7 +64,7 @@ func seedRun(t *testing.T, srv *Server, runID, workflowName string, status store
 		{Type: store.EventNodeStarted, RunID: runID, NodeID: "analyze", Data: map[string]interface{}{"kind": "agent"}},
 		{Type: store.EventNodeFinished, RunID: runID, NodeID: "analyze"},
 	} {
-		if _, err := st.AppendEvent(runID, evt); err != nil {
+		if _, err := st.AppendEvent(context.Background(), runID, evt); err != nil {
 			t.Fatalf("seed event %d: %v", i, err)
 		}
 	}

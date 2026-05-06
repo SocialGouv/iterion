@@ -44,7 +44,7 @@ func TestVibeReviewAlternating_HappyPath(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	run, err := s.LoadRun("run-vibe-happy")
+	run, err := s.LoadRun(context.Background(), "run-vibe-happy")
 	if err != nil {
 		t.Fatalf("GetRun: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestVibeReviewAlternating_FixThenApprove(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	run, err := s.LoadRun("run-vibe-fix")
+	run, err := s.LoadRun(context.Background(), "run-vibe-fix")
 	if err != nil {
 		t.Fatalf("GetRun: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestVibeReviewAlternating_LoopExhausted(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	run, err := s.LoadRun("run-vibe-exhausted")
+	run, err := s.LoadRun(context.Background(), "run-vibe-exhausted")
 	if err != nil {
 		t.Fatalf("GetRun: %v", err)
 	}

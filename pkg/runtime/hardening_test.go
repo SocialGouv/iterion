@@ -54,7 +54,7 @@ func TestCancelProducesCancelledStatus(t *testing.T) {
 	}
 
 	// Run status should be "cancelled", not "failed".
-	r, err := s.LoadRun("run-cancel-status")
+	r, err := s.LoadRun(context.Background(), "run-cancel-status")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestCancelProducesCancelledStatus(t *testing.T) {
 	}
 
 	// Should have run_cancelled event.
-	events, err := s.LoadEvents("run-cancel-status")
+	events, err := s.LoadEvents(context.Background(), "run-cancel-status")
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestCancelDuringExecution(t *testing.T) {
 		t.Fatalf("expected ErrRunCancelled, got: %v", err)
 	}
 
-	r, _ := s.LoadRun("run-cancel-mid")
+	r, _ := s.LoadRun(context.Background(), "run-cancel-mid")
 	if r.Status != store.RunStatusCancelled {
 		t.Errorf("expected status cancelled, got %s", r.Status)
 	}
@@ -164,7 +164,7 @@ func TestTimeoutProducesFailedStatus(t *testing.T) {
 	}
 
 	// Run status should be "failed_resumable" for timeouts (all execLoop failures are resumable).
-	r, err := s.LoadRun("run-timeout")
+	r, err := s.LoadRun(context.Background(), "run-timeout")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestFormatVersionPersisted(t *testing.T) {
 		t.Fatalf("run failed: %v", err)
 	}
 
-	r, err := s.LoadRun("run-fmt")
+	r, err := s.LoadRun(context.Background(), "run-fmt")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -424,7 +424,7 @@ func TestLoopExhaustionFallback(t *testing.T) {
 		t.Errorf("expected fix to run 2 times, got %d", fixCount)
 	}
 
-	r, err := s.LoadRun("run-loop-fallback")
+	r, err := s.LoadRun(context.Background(), "run-loop-fallback")
 	if err != nil {
 		t.Fatalf("failed to load run: %v", err)
 	}
@@ -507,7 +507,7 @@ func TestCancelledRunHasFinishedAt(t *testing.T) {
 
 	_ = eng.Run(ctx, "run-cancel-fin", nil)
 
-	r, _ := s.LoadRun("run-cancel-fin")
+	r, _ := s.LoadRun(context.Background(), "run-cancel-fin")
 	if r.FinishedAt == nil {
 		t.Error("cancelled run should have FinishedAt set")
 	}

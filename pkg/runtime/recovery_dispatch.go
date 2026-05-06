@@ -48,7 +48,7 @@ func (e *Engine) handleNodeFailure(ctx context.Context, rs *runState, nodeID str
 	if execErr != nil {
 		emitData["error"] = execErr.Error()
 	}
-	if err := e.emit(rs.runID, store.EventNodeRecovery, nodeID, emitData); err != nil {
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeRecovery, nodeID, emitData); err != nil {
 		e.logger.Warn("recovery: failed to emit recovery event: %v", err)
 	}
 
@@ -104,7 +104,7 @@ func (e *Engine) tryCompact(ctx context.Context, nodeID string) {
 // operator inspecting the interaction or run.json sees the full
 // context, not just a flattened message.
 func (e *Engine) pauseForRecovery(rs *runState, nodeID string, code ErrorCode, reason string, execErr error) error {
-	if err := e.emit(rs.runID, store.EventNodeStarted, nodeID, map[string]interface{}{
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, nodeID, map[string]interface{}{
 		"kind":            "recovery_pause",
 		"recovery_code":   string(code),
 		"recovery_reason": reason,

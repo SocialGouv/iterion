@@ -1,6 +1,7 @@
 package runview
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -23,7 +24,7 @@ func TestFileEventSource_TailsAppendsToBroker(t *testing.T) {
 	}
 
 	const runID = "run-tail"
-	if _, err := svc.store.CreateRun(runID, "wf", nil); err != nil {
+	if _, err := svc.store.CreateRun(context.Background(), runID, "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
 
@@ -98,7 +99,7 @@ func TestFileEventSource_DrainsExistingBacklogOnStart(t *testing.T) {
 	}
 
 	const runID = "run-backlog"
-	if _, err := svc.store.CreateRun(runID, "wf", nil); err != nil {
+	if _, err := svc.store.CreateRun(context.Background(), runID, "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
 
@@ -150,7 +151,7 @@ func TestFileEventSource_HandlesPartialLine(t *testing.T) {
 	}
 
 	const runID = "run-partial"
-	if _, err := svc.store.CreateRun(runID, "wf", nil); err != nil {
+	if _, err := svc.store.CreateRun(context.Background(), runID, "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
 

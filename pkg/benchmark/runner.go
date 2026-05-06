@@ -130,7 +130,7 @@ func (r *Runner) runRecipe(ctx context.Context, storeRoot, benchID string, rec *
 	if rec.EvaluationPolicy.PrimaryMetric != "" {
 		primaryMetric = rec.EvaluationPolicy.PrimaryMetric
 	}
-	metrics, err := CollectMetrics(isoStore, runID, rec.Name, primaryMetric)
+	metrics, err := CollectMetrics(ctx, isoStore, runID, rec.Name, primaryMetric)
 	if err != nil && result.Err == nil {
 		result.Err = fmt.Errorf("collect metrics for recipe %q: %w", rec.Name, err)
 		return result

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strings"
@@ -15,7 +16,7 @@ func TestPIDFile_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := s.CreateRun("run-pid", "wf", nil); err != nil {
+	if _, err := s.CreateRun(context.Background(), "run-pid", "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
 
@@ -65,7 +66,7 @@ func TestPIDFile_RejectsMalformedContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := s.CreateRun("run-bad", "wf", nil); err != nil {
+	if _, err := s.CreateRun(context.Background(), "run-bad", "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
 
@@ -95,7 +96,7 @@ func TestPIDFile_AtomicReplace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := s.CreateRun("run-atom", "wf", nil); err != nil {
+	if _, err := s.CreateRun(context.Background(), "run-atom", "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
 
@@ -146,7 +147,7 @@ func TestPIDFile_ReadIgnoresWhitespace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := s.CreateRun("run-ws", "wf", nil); err != nil {
+	if _, err := s.CreateRun(context.Background(), "run-ws", "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
 	pidPath := s.PIDFilePath("run-ws")

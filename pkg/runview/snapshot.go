@@ -7,6 +7,7 @@
 package runview
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -517,13 +518,13 @@ func headerFromRun(r *store.Run) RunHeader {
 // BuildSnapshot is the cold-read convenience: load run.json + events
 // from the store, then fold them into a RunSnapshot. Events are
 // streamed via ScanEvents to keep memory bounded for long runs.
-func BuildSnapshot(s store.RunStore, runID string) (*RunSnapshot, error) {
-	run, err := s.LoadRun(runID)
+func BuildSnapshot(ctx context.Context, s store.RunStore, runID string) (*RunSnapshot, error) {
+	run, err := s.LoadRun(ctx, runID)
 	if err != nil {
 		return nil, err
 	}
 	b := NewSnapshotBuilder(run)
-	if err := s.ScanEvents(runID, func(evt *store.Event) bool {
+	if err := s.ScanEvents(ctx, runID, func(evt *store.Event) bool {
 		b.Apply(evt)
 		return true
 	}); err != nil {

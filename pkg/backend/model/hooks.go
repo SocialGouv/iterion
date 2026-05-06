@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -15,7 +16,7 @@ const maxFieldSize = 1 << 20 // 1 MB
 
 // EventEmitter is the subset of store.RunStore used by the event bridge.
 type EventEmitter interface {
-	AppendEvent(runID string, evt store.Event) (*store.Event, error)
+	AppendEvent(ctx context.Context, runID string, evt store.Event) (*store.Event, error)
 }
 
 // NewStoreEventHooks returns EventHooks that emit store events for a given run
@@ -23,14 +24,18 @@ type EventEmitter interface {
 // The logger controls which content fields are included in events:
 //   - debug+: prompts, response text
 //   - trace:  tool call inputs/outputs, tool call details
-func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logger) EventHooks {
+//
+// ctx is captured by the returned hook closures: filesystem stores ignore
+// it but cloud (Mongo) stores honor cancellation/timeout. The hook lifetime
+// is bounded by the engine.Run call that constructed it.
+func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string, logger *iterlog.Logger) EventHooks {
 	return EventHooks{
 		OnLLMPrompt: func(nodeID string, systemPrompt string, userMessage string) {
 			data := map[string]interface{}{
 				"system_prompt": iterlog.Truncate(systemPrompt, maxFieldSize),
 				"user_message":  iterlog.Truncate(userMessage, maxFieldSize),
 			}
-			_, _ = emitter.AppendEvent(runID, store.Event{
+			_, _ = emitter.AppendEvent(ctx, runID, store.Event{
 				Type:   store.EventLLMPrompt,
 				RunID:  runID,
 				NodeID: nodeID,
@@ -54,7 +59,7 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 			if info.ReasoningEffort != "" {
 				data["reasoning_effort"] = info.ReasoningEffort
 			}
-			_, _ = emitter.AppendEvent(runID, store.Event{
+			_, _ = emitter.AppendEvent(ctx, runID, store.Event{
 				Type:   store.EventLLMRequest,
 				RunID:  runID,
 				NodeID: nodeID,
@@ -87,7 +92,7 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 			if info.StatusCode != 0 {
 				data["status_code"] = info.StatusCode
 			}
-			_, _ = emitter.AppendEvent(runID, store.Event{
+			_, _ = emitter.AppendEvent(ctx, runID, store.Event{
 				Type:   store.EventLLMRetry,
 				RunID:  runID,
 				NodeID: nodeID,
@@ -134,7 +139,7 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 				data["tool_call_details"] = calls
 			}
 
-			_, _ = emitter.AppendEvent(runID, store.Event{
+			_, _ = emitter.AppendEvent(ctx, runID, store.Event{
 				Type:   store.EventLLMStepFinished,
 				RunID:  runID,
 				NodeID: nodeID,
@@ -172,7 +177,7 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 				"after_messages":        info.AfterMessages,
 				"removed_message_count": info.RemovedMessageCount,
 			}
-			_, _ = emitter.AppendEvent(runID, store.Event{
+			_, _ = emitter.AppendEvent(ctx, runID, store.Event{
 				Type:   store.EventLLMCompacted,
 				RunID:  runID,
 				NodeID: nodeID,
@@ -195,7 +200,7 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 				evtType = store.EventToolError
 				data["error"] = info.Error.Error()
 			}
-			_, _ = emitter.AppendEvent(runID, store.Event{
+			_, _ = emitter.AppendEvent(ctx, runID, store.Event{
 				Type:   evtType,
 				RunID:  runID,
 				NodeID: nodeID,
@@ -213,7 +218,7 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 		},
 
 		OnDelegateStarted: func(nodeID string, backendName string) {
-			_, _ = emitter.AppendEvent(runID, store.Event{
+			_, _ = emitter.AppendEvent(ctx, runID, store.Event{
 				Type:   store.EventDelegateStarted,
 				RunID:  runID,
 				NodeID: nodeID,
@@ -235,7 +240,7 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 			if logger.IsEnabled(iterlog.LevelTrace) && info.Stderr != "" {
 				data["stderr"] = iterlog.Truncate(info.Stderr, maxFieldSize)
 			}
-			_, _ = emitter.AppendEvent(runID, store.Event{
+			_, _ = emitter.AppendEvent(ctx, runID, store.Event{
 				Type:   store.EventDelegateFinished,
 				RunID:  runID,
 				NodeID: nodeID,
@@ -267,7 +272,7 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 			if logger.IsEnabled(iterlog.LevelTrace) && info.Stderr != "" {
 				data["stderr"] = iterlog.Truncate(info.Stderr, maxFieldSize)
 			}
-			_, _ = emitter.AppendEvent(runID, store.Event{
+			_, _ = emitter.AppendEvent(ctx, runID, store.Event{
 				Type:   store.EventDelegateError,
 				RunID:  runID,
 				NodeID: nodeID,
@@ -290,7 +295,7 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 			if info.Error != nil {
 				data["error"] = info.Error.Error()
 			}
-			_, _ = emitter.AppendEvent(runID, store.Event{
+			_, _ = emitter.AppendEvent(ctx, runID, store.Event{
 				Type:   store.EventDelegateRetry,
 				RunID:  runID,
 				NodeID: nodeID,
@@ -327,7 +332,7 @@ func NewStoreEventHooks(emitter EventEmitter, runID string, logger *iterlog.Logg
 				evtType = store.EventToolError
 				data["error"] = err.Error()
 			}
-			_, _ = emitter.AppendEvent(runID, store.Event{
+			_, _ = emitter.AppendEvent(ctx, runID, store.Event{
 				Type:   evtType,
 				RunID:  runID,
 				NodeID: nodeID,

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -84,7 +85,7 @@ func RunInspect(opts InspectOptions, p *Printer) error {
 	}
 
 	// Load run.
-	r, err := s.LoadRun(opts.RunID)
+	r, err := s.LoadRun(context.Background(), opts.RunID)
 	if err != nil {
 		return fmt.Errorf("cannot load run: %w", err)
 	}
@@ -94,17 +95,17 @@ func RunInspect(opts InspectOptions, p *Printer) error {
 			"run": r,
 		}
 		if opts.Events || opts.Full {
-			events, err := s.LoadEvents(opts.RunID)
+			events, err := s.LoadEvents(context.Background(), opts.RunID)
 			if err == nil {
 				result["events"] = events
 			}
 		}
 		if opts.Full {
-			interactions, _ := s.ListInteractions(opts.RunID)
+			interactions, _ := s.ListInteractions(context.Background(), opts.RunID)
 			if len(interactions) > 0 {
 				var ints []interface{}
 				for _, id := range interactions {
-					inter, err := s.LoadInteraction(opts.RunID, id)
+					inter, err := s.LoadInteraction(context.Background(), opts.RunID, id)
 					if err == nil {
 						ints = append(ints, inter)
 					}
@@ -141,7 +142,7 @@ func RunInspect(opts InspectOptions, p *Printer) error {
 		p.KV("Interaction", r.Checkpoint.InteractionID)
 
 		// Show pending interaction questions.
-		inter, err := s.LoadInteraction(opts.RunID, r.Checkpoint.InteractionID)
+		inter, err := s.LoadInteraction(context.Background(), opts.RunID, r.Checkpoint.InteractionID)
 		if err == nil && len(inter.Questions) > 0 {
 			p.Blank()
 			p.Line("  Questions:")
@@ -153,7 +154,7 @@ func RunInspect(opts InspectOptions, p *Printer) error {
 
 	// Events.
 	if opts.Events || opts.Full {
-		events, err := s.LoadEvents(opts.RunID)
+		events, err := s.LoadEvents(context.Background(), opts.RunID)
 		if err == nil && len(events) > 0 {
 			p.Blank()
 			p.Header("Events")
@@ -172,12 +173,12 @@ func RunInspect(opts InspectOptions, p *Printer) error {
 
 	// Interactions.
 	if opts.Full {
-		interIDs, _ := s.ListInteractions(opts.RunID)
+		interIDs, _ := s.ListInteractions(context.Background(), opts.RunID)
 		if len(interIDs) > 0 {
 			p.Blank()
 			p.Header("Interactions")
 			for _, id := range interIDs {
-				inter, err := s.LoadInteraction(opts.RunID, id)
+				inter, err := s.LoadInteraction(context.Background(), opts.RunID, id)
 				if err != nil {
 					continue
 				}
@@ -197,7 +198,7 @@ func RunInspect(opts InspectOptions, p *Printer) error {
 
 // listRuns shows all runs in the store.
 func listRuns(s store.RunStore, p *Printer) error {
-	ids, err := s.ListRuns()
+	ids, err := s.ListRuns(context.Background())
 	if err != nil {
 		return err
 	}
@@ -214,7 +215,7 @@ func listRuns(s store.RunStore, p *Printer) error {
 	if p.Format == OutputJSON {
 		var runs []interface{}
 		for _, id := range ids {
-			r, err := s.LoadRun(id)
+			r, err := s.LoadRun(context.Background(), id)
 			if err == nil {
 				runs = append(runs, r)
 			}
@@ -226,7 +227,7 @@ func listRuns(s store.RunStore, p *Printer) error {
 	p.Header("Runs")
 	rows := make([][]string, 0, len(ids))
 	for _, id := range ids {
-		r, err := s.LoadRun(id)
+		r, err := s.LoadRun(context.Background(), id)
 		if err != nil {
 			rows = append(rows, []string{"?", id, "?", "?", "?"})
 			continue

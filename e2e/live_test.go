@@ -273,7 +273,7 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 	}
 
 	// Load run metadata.
-	r, loadErr := s.LoadRun(runID)
+	r, loadErr := s.LoadRun(context.Background(), runID)
 	if loadErr != nil {
 		t.Fatalf("Failed to load run: %v", loadErr)
 	}
@@ -284,7 +284,7 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 	}
 
 	// Load events.
-	events, evtErr := s.LoadEvents(runID)
+	events, evtErr := s.LoadEvents(context.Background(), runID)
 	if evtErr != nil {
 		t.Fatalf("Failed to load events: %v", evtErr)
 	}
@@ -360,7 +360,7 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 	}
 
 	// Collect and log metrics.
-	metrics, mErr := benchmark.CollectMetrics(s, runID, "live-plan-impl-review", "")
+	metrics, mErr := benchmark.CollectMetrics(context.Background(), s, runID, "live-plan-impl-review", "")
 	if mErr != nil {
 		t.Fatalf("Failed to collect metrics: %v", mErr)
 	}
@@ -393,7 +393,7 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 		}
 		if !verdictFound {
 			// Fallback: try artifact
-			verdict, vErr := s.LoadLatestArtifact(runID, "review_judge")
+			verdict, vErr := s.LoadLatestArtifact(context.Background(), runID, "review_judge")
 			if vErr != nil {
 				t.Logf("WARNING: Workflow finished but could not find review_judge approved=true verdict in events or artifacts")
 			} else {
@@ -426,7 +426,7 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 
 	// Published artifact versions
 	for _, nodeID := range []string{"claude_plan", "gpt_plan", "merge_plans", "claude_val", "gpt_val", "val_judge", "claude_implement", "gpt_implement", "claude_review", "gpt_review", "review_judge"} {
-		art, artErr := s.LoadLatestArtifact(runID, nodeID)
+		art, artErr := s.LoadLatestArtifact(context.Background(), runID, nodeID)
 		if artErr != nil {
 			continue
 		}
@@ -614,7 +614,7 @@ func TestLive_Lite_SessionContinuity_ReviewFix(t *testing.T) {
 		}
 	}
 
-	r, loadErr := s.LoadRun(runID)
+	r, loadErr := s.LoadRun(context.Background(), runID)
 	if loadErr != nil {
 		t.Fatalf("Failed to load run: %v", loadErr)
 	}
@@ -624,7 +624,7 @@ func TestLive_Lite_SessionContinuity_ReviewFix(t *testing.T) {
 		t.Errorf("Unexpected run status: %s (expected finished or failed)", r.Status)
 	}
 
-	events, evtErr := s.LoadEvents(runID)
+	events, evtErr := s.LoadEvents(context.Background(), runID)
 	if evtErr != nil {
 		t.Fatalf("Failed to load events: %v", evtErr)
 	}
@@ -705,7 +705,7 @@ func TestLive_Lite_SessionContinuity_ReviewFix(t *testing.T) {
 	}
 
 	// Collect metrics.
-	metrics, mErr := benchmark.CollectMetrics(s, runID, "live-session-review-fix", "")
+	metrics, mErr := benchmark.CollectMetrics(context.Background(), s, runID, "live-session-review-fix", "")
 	if mErr != nil {
 		t.Fatalf("Failed to collect metrics: %v", mErr)
 	}
@@ -834,13 +834,13 @@ func TestLive_Full_ExhaustiveDSLCoverage(t *testing.T) {
 		}
 	}
 
-	r, loadErr := s.LoadRun(runID)
+	r, loadErr := s.LoadRun(context.Background(), runID)
 	if loadErr != nil {
 		t.Fatalf("Failed to load run: %v", loadErr)
 	}
 	t.Logf("Run status: %s", r.Status)
 
-	events, evtErr := s.LoadEvents(runID)
+	events, evtErr := s.LoadEvents(context.Background(), runID)
 	if evtErr != nil {
 		t.Fatalf("Failed to load events: %v", evtErr)
 	}
@@ -974,7 +974,7 @@ func TestLive_Full_ExhaustiveDSLCoverage(t *testing.T) {
 
 	// === I. Artifacts ===
 	for _, artNode := range []string{"writer_a", "writer_b", "extract_meta", "quality_judge"} {
-		art, artErr := s.LoadLatestArtifact(runID, artNode)
+		art, artErr := s.LoadLatestArtifact(context.Background(), runID, artNode)
 		if artErr != nil {
 			if nodeSet[artNode] {
 				t.Errorf("COVERAGE: node %q finished but artifact not found", artNode)
@@ -985,7 +985,7 @@ func TestLive_Full_ExhaustiveDSLCoverage(t *testing.T) {
 	}
 
 	// === J. Metrics ===
-	metrics, mErr := benchmark.CollectMetrics(s, runID, "live-exhaustive", "")
+	metrics, mErr := benchmark.CollectMetrics(context.Background(), s, runID, "live-exhaustive", "")
 	if mErr != nil {
 		t.Fatalf("Failed to collect metrics: %v", mErr)
 	}
@@ -1151,7 +1151,7 @@ func TestLive_Lite_SessionInheritValidation(t *testing.T) {
 		t.Fatalf("Unexpected run error: %v", runErr)
 	}
 
-	r, loadErr := s.LoadRun(runID)
+	r, loadErr := s.LoadRun(context.Background(), runID)
 	if loadErr != nil {
 		t.Fatalf("Failed to load run: %v", loadErr)
 	}
@@ -1159,7 +1159,7 @@ func TestLive_Lite_SessionInheritValidation(t *testing.T) {
 		t.Fatalf("Expected run status 'finished', got %q", r.Status)
 	}
 
-	events, evtErr := s.LoadEvents(runID)
+	events, evtErr := s.LoadEvents(context.Background(), runID)
 	if evtErr != nil {
 		t.Fatalf("Failed to load events: %v", evtErr)
 	}
@@ -1224,7 +1224,7 @@ func TestLive_Lite_SessionInheritValidation(t *testing.T) {
 		t.Logf("result.txt content: %q (%d bytes)", string(content), len(content))
 	}
 
-	metrics, mErr := benchmark.CollectMetrics(s, runID, "live-session-inherit", "")
+	metrics, mErr := benchmark.CollectMetrics(context.Background(), s, runID, "live-session-inherit", "")
 	if mErr == nil {
 		t.Logf("Metrics: tokens=%d cost=$%.4f model_calls=%d iterations=%d duration=%s",
 			metrics.TotalTokens, metrics.TotalCostUSD, metrics.ModelCalls,
@@ -1371,7 +1371,7 @@ func TestLive_Lite_ClawComprehensive(t *testing.T) {
 		t.Fatalf("Unexpected run error: %v", runErr)
 	}
 
-	r, loadErr := s.LoadRun(runID)
+	r, loadErr := s.LoadRun(context.Background(), runID)
 	if loadErr != nil {
 		t.Fatalf("Failed to load run: %v", loadErr)
 	}
@@ -1379,7 +1379,7 @@ func TestLive_Lite_ClawComprehensive(t *testing.T) {
 		t.Fatalf("Expected run status 'finished', got %q", r.Status)
 	}
 
-	events, evtErr := s.LoadEvents(runID)
+	events, evtErr := s.LoadEvents(context.Background(), runID)
 	if evtErr != nil {
 		t.Fatalf("Failed to load events: %v", evtErr)
 	}
@@ -1537,7 +1537,7 @@ func TestLive_Lite_ClawComprehensive(t *testing.T) {
 		t.Logf("note: cache_warm did not report cache_write_tokens > 0 (cache may have already existed from a prior run)")
 	}
 
-	metrics, mErr := benchmark.CollectMetrics(s, runID, "live-claw-comprehensive", "")
+	metrics, mErr := benchmark.CollectMetrics(context.Background(), s, runID, "live-claw-comprehensive", "")
 	if mErr == nil {
 		t.Logf("Metrics: tokens=%d cost=$%.4f model_calls=%d iterations=%d duration=%s",
 			metrics.TotalTokens, metrics.TotalCostUSD, metrics.ModelCalls,
@@ -1647,7 +1647,7 @@ func TestLive_Lite_ClawBuiltinTools(t *testing.T) {
 	if runErr != nil {
 		t.Fatalf("Unexpected run error: %v", runErr)
 	}
-	r, loadErr := s.LoadRun(runID)
+	r, loadErr := s.LoadRun(context.Background(), runID)
 	if loadErr != nil {
 		t.Fatalf("Failed to load run: %v", loadErr)
 	}
@@ -1655,7 +1655,7 @@ func TestLive_Lite_ClawBuiltinTools(t *testing.T) {
 		t.Fatalf("Expected run status 'finished', got %q", r.Status)
 	}
 
-	events, evtErr := s.LoadEvents(runID)
+	events, evtErr := s.LoadEvents(context.Background(), runID)
 	if evtErr != nil {
 		t.Fatalf("Failed to load events: %v", evtErr)
 	}
@@ -1718,7 +1718,7 @@ func TestLive_Lite_ClawBuiltinTools(t *testing.T) {
 		break
 	}
 
-	metrics, mErr := benchmark.CollectMetrics(s, runID, "live-claw-builtin-tools", "")
+	metrics, mErr := benchmark.CollectMetrics(context.Background(), s, runID, "live-claw-builtin-tools", "")
 	if mErr == nil {
 		t.Logf("Metrics: tokens=%d cost=$%.4f model_calls=%d iterations=%d duration=%s",
 			metrics.TotalTokens, metrics.TotalCostUSD, metrics.ModelCalls,
@@ -1820,7 +1820,7 @@ func TestLive_Lite_ClawReadImage(t *testing.T) {
 	if runErr != nil {
 		t.Fatalf("Unexpected run error: %v", runErr)
 	}
-	r, loadErr := s.LoadRun(runID)
+	r, loadErr := s.LoadRun(context.Background(), runID)
 	if loadErr != nil {
 		t.Fatalf("Failed to load run: %v", loadErr)
 	}
@@ -1828,7 +1828,7 @@ func TestLive_Lite_ClawReadImage(t *testing.T) {
 		t.Fatalf("Expected run status 'finished', got %q", r.Status)
 	}
 
-	events, evtErr := s.LoadEvents(runID)
+	events, evtErr := s.LoadEvents(context.Background(), runID)
 	if evtErr != nil {
 		t.Fatalf("Failed to load events: %v", evtErr)
 	}
@@ -1885,7 +1885,7 @@ func TestLive_Lite_ClawReadImage(t *testing.T) {
 		t.Error("never saw a finished visioner node with structured output")
 	}
 
-	metrics, mErr := benchmark.CollectMetrics(s, runID, "live-claw-read-image", "")
+	metrics, mErr := benchmark.CollectMetrics(context.Background(), s, runID, "live-claw-read-image", "")
 	if mErr == nil {
 		t.Logf("Metrics: tokens=%d cost=$%.4f model_calls=%d iterations=%d duration=%s",
 			metrics.TotalTokens, metrics.TotalCostUSD, metrics.ModelCalls,
@@ -1960,7 +1960,7 @@ func TestLive_Lite_ClawReasoningEffort(t *testing.T) {
 		t.Logf("note: run did not finish cleanly (%v) — checking propagation via events anyway", runErr)
 	}
 
-	events, evtErr := s.LoadEvents(runID)
+	events, evtErr := s.LoadEvents(context.Background(), runID)
 	if evtErr != nil {
 		t.Fatalf("LoadEvents: %v", evtErr)
 	}
@@ -2087,12 +2087,12 @@ func TestLive_Lite_ClawMCP(t *testing.T) {
 	if runErr := eng.Run(ctx, runID, map[string]interface{}{}); runErr != nil {
 		t.Fatalf("Run error: %v", runErr)
 	}
-	r, _ := s.LoadRun(runID)
+	r, _ := s.LoadRun(context.Background(), runID)
 	if r.Status != store.RunStatusFinished {
 		t.Fatalf("Expected run status 'finished', got %q", r.Status)
 	}
 
-	events, evtErr := s.LoadEvents(runID)
+	events, evtErr := s.LoadEvents(context.Background(), runID)
 	if evtErr != nil {
 		t.Fatalf("LoadEvents: %v", evtErr)
 	}
@@ -2225,12 +2225,12 @@ func TestLive_Lite_ClawLongContext(t *testing.T) {
 	}
 	t.Logf("Run completed in %s", time.Since(start).Round(time.Second))
 
-	r, _ := s.LoadRun(runID)
+	r, _ := s.LoadRun(context.Background(), runID)
 	if r.Status != store.RunStatusFinished {
 		t.Fatalf("Expected run status 'finished', got %q", r.Status)
 	}
 
-	events, evtErr := s.LoadEvents(runID)
+	events, evtErr := s.LoadEvents(context.Background(), runID)
 	if evtErr != nil {
 		t.Fatalf("LoadEvents: %v", evtErr)
 	}
@@ -2378,7 +2378,7 @@ func TestLive_Lite_ClawSubagents(t *testing.T) {
 	if runErr != nil {
 		t.Fatalf("Unexpected run error: %v", runErr)
 	}
-	r, loadErr := s.LoadRun(runID)
+	r, loadErr := s.LoadRun(context.Background(), runID)
 	if loadErr != nil {
 		t.Fatalf("Failed to load run: %v", loadErr)
 	}
@@ -2386,7 +2386,7 @@ func TestLive_Lite_ClawSubagents(t *testing.T) {
 		t.Fatalf("Expected run status 'finished', got %q", r.Status)
 	}
 
-	events, evtErr := s.LoadEvents(runID)
+	events, evtErr := s.LoadEvents(context.Background(), runID)
 	if evtErr != nil {
 		t.Fatalf("Failed to load events: %v", evtErr)
 	}
@@ -2455,7 +2455,7 @@ func TestLive_Lite_ClawSubagents(t *testing.T) {
 		break
 	}
 
-	metrics, mErr := benchmark.CollectMetrics(s, runID, "live-claw-subagents", "")
+	metrics, mErr := benchmark.CollectMetrics(context.Background(), s, runID, "live-claw-subagents", "")
 	if mErr == nil {
 		t.Logf("Metrics: tokens=%d cost=$%.4f model_calls=%d iterations=%d duration=%s",
 			metrics.TotalTokens, metrics.TotalCostUSD, metrics.ModelCalls,

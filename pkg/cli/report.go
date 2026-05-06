@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -35,12 +36,12 @@ func RunReport(opts ReportOptions, p *Printer) error {
 
 	// LoadRun / LoadEvents now sanitise the run ID, so any traversal
 	// attempt (e.g. "../etc/cron.d") fails closed before touching the FS.
-	r, err := s.LoadRun(opts.RunID)
+	r, err := s.LoadRun(context.Background(), opts.RunID)
 	if err != nil {
 		return fmt.Errorf("cannot load run: %w", err)
 	}
 
-	events, err := s.LoadEvents(opts.RunID)
+	events, err := s.LoadEvents(context.Background(), opts.RunID)
 	if err != nil {
 		return fmt.Errorf("cannot load events: %w", err)
 	}
@@ -314,7 +315,7 @@ func buildReport(r *store.Run, events []*store.Event, s store.RunStore) *report 
 				continue
 			}
 			nodeID := entry.Name()
-			art, err := s.LoadLatestArtifact(r.ID, nodeID)
+			art, err := s.LoadLatestArtifact(context.Background(), r.ID, nodeID)
 			if err != nil {
 				continue
 			}

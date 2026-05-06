@@ -50,7 +50,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	}
 
 	// Load run to validate state.
-	r, err := s.LoadRun(opts.RunID)
+	r, err := s.LoadRun(context.Background(), opts.RunID)
 	if err != nil {
 		return fmt.Errorf("cannot load run: %w", err)
 	}
@@ -122,7 +122,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	eng := runtime.New(wf, s, executor, runtime.WithLogger(logger), runtime.WithWorkflowHash(wfHash), runtime.WithFilePath(iterFile), runtime.WithForceResume(opts.Force))
 
 	// Acquire exclusive run lock to prevent concurrent processes.
-	lock, err := s.LockRun(opts.RunID)
+	lock, err := s.LockRun(context.Background(), opts.RunID)
 	if err != nil {
 		return fmt.Errorf("cannot acquire run lock: %w", err)
 	}
@@ -139,7 +139,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	}
 
 	// Re-check run status under the lock to prevent TOCTOU race.
-	r, err = s.LoadRun(opts.RunID)
+	r, err = s.LoadRun(context.Background(), opts.RunID)
 	if err != nil {
 		return fmt.Errorf("cannot reload run: %w", err)
 	}

@@ -226,13 +226,13 @@ func TestSingleModel_HappyPath(t *testing.T) {
 	}
 
 	// Verify run finished.
-	r, _ := s.LoadRun("e2e-single-happy")
+	r, _ := s.LoadRun(context.Background(), "e2e-single-happy")
 	if r.Status != store.RunStatusFinished {
 		t.Errorf("status = %s, want finished", r.Status)
 	}
 
 	// Verify events contain the full sequence.
-	events, _ := s.LoadEvents("e2e-single-happy")
+	events, _ := s.LoadEvents(context.Background(), "e2e-single-happy")
 	if !hasEvent(events, store.EventRunStarted) {
 		t.Error("missing run_started event")
 	}
@@ -241,7 +241,7 @@ func TestSingleModel_HappyPath(t *testing.T) {
 	}
 
 	// Verify artifacts for published nodes.
-	art, err := s.LoadArtifact("e2e-single-happy", "context_builder", 0)
+	art, err := s.LoadArtifact(context.Background(), "e2e-single-happy", "context_builder", 0)
 	if err != nil {
 		t.Fatalf("load pr_context artifact: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestSingleModel_HappyPath(t *testing.T) {
 		t.Errorf("pr_context artifact pr_title = %v", art.Data["pr_title"])
 	}
 
-	actArt, err := s.LoadArtifact("e2e-single-happy", "act_on_plan", 0)
+	actArt, err := s.LoadArtifact(context.Background(), "e2e-single-happy", "act_on_plan", 0)
 	if err != nil {
 		t.Fatalf("load act_report artifact: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestSingleModel_HappyPath(t *testing.T) {
 		t.Errorf("act_report artifact applied = %v", actArt.Data["applied"])
 	}
 
-	verdictArt, err := s.LoadArtifact("e2e-single-happy", "final_verify", 0)
+	verdictArt, err := s.LoadArtifact(context.Background(), "e2e-single-happy", "final_verify", 0)
 	if err != nil {
 		t.Fatalf("load final_verdict artifact: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestSingleModel_HappyPath(t *testing.T) {
 	}
 
 	// Verify metrics via benchmark.CollectMetrics.
-	m, err := benchmark.CollectMetrics(s, "e2e-single-happy", "single_model", "approved")
+	m, err := benchmark.CollectMetrics(context.Background(), s, "e2e-single-happy", "single_model", "approved")
 	if err != nil {
 		t.Fatalf("CollectMetrics: %v", err)
 	}
@@ -371,7 +371,7 @@ func TestSingleModel_RefineLoop(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	r, _ := s.LoadRun("e2e-single-refine")
+	r, _ := s.LoadRun(context.Background(), "e2e-single-refine")
 	if r.Status != store.RunStatusFinished {
 		t.Errorf("status = %s, want finished", r.Status)
 	}
@@ -382,7 +382,7 @@ func TestSingleModel_RefineLoop(t *testing.T) {
 	}
 
 	// Verify loop edge events exist.
-	events, _ := s.LoadEvents("e2e-single-refine")
+	events, _ := s.LoadEvents(context.Background(), "e2e-single-refine")
 	loopEdges := 0
 	for _, evt := range events {
 		if evt.Type == store.EventEdgeSelected && evt.Data != nil {
@@ -463,7 +463,7 @@ func TestSingleModel_GlobalReloop(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	r, _ := s.LoadRun("e2e-single-reloop")
+	r, _ := s.LoadRun(context.Background(), "e2e-single-reloop")
 	if r.Status != store.RunStatusFinished {
 		t.Errorf("status = %s, want finished", r.Status)
 	}
@@ -474,7 +474,7 @@ func TestSingleModel_GlobalReloop(t *testing.T) {
 	}
 
 	// Verify artifact versioning: context_builder should have version 0 and 1.
-	art1, err := s.LoadArtifact("e2e-single-reloop", "context_builder", 1)
+	art1, err := s.LoadArtifact(context.Background(), "e2e-single-reloop", "context_builder", 1)
 	if err != nil {
 		t.Fatalf("load context_builder artifact v1: %v", err)
 	}
@@ -483,7 +483,7 @@ func TestSingleModel_GlobalReloop(t *testing.T) {
 	}
 
 	// Verify final verdict is approved.
-	verdictArt, _ := s.LoadLatestArtifact("e2e-single-reloop", "final_verify")
+	verdictArt, _ := s.LoadLatestArtifact(context.Background(), "e2e-single-reloop", "final_verify")
 	if verdictArt == nil {
 		t.Fatal("missing final_verdict artifact")
 	}
@@ -584,13 +584,13 @@ func TestDualParallel_HappyPath(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	r, _ := s.LoadRun("e2e-dual-happy")
+	r, _ := s.LoadRun(context.Background(), "e2e-dual-happy")
 	if r.Status != store.RunStatusFinished {
 		t.Errorf("status = %s, want finished", r.Status)
 	}
 
 	// Verify parallel branches were used (branch_started events).
-	events, _ := s.LoadEvents("e2e-dual-happy")
+	events, _ := s.LoadEvents(context.Background(), "e2e-dual-happy")
 	branchEvents := countEventType(events, store.EventBranchStarted)
 	if branchEvents == 0 {
 		t.Error("expected branch_started events for parallel execution")
@@ -611,7 +611,7 @@ func TestDualParallel_HappyPath(t *testing.T) {
 	}
 
 	// Verify published artifacts.
-	prCtx, err := s.LoadArtifact("e2e-dual-happy", "context_builder", 0)
+	prCtx, err := s.LoadArtifact(context.Background(), "e2e-dual-happy", "context_builder", 0)
 	if err != nil {
 		t.Fatalf("missing pr_context artifact: %v", err)
 	}
@@ -619,7 +619,7 @@ func TestDualParallel_HappyPath(t *testing.T) {
 		t.Errorf("pr_context.pr_title = %v", prCtx.Data["pr_title"])
 	}
 
-	mergedPlan, err := s.LoadArtifact("e2e-dual-happy", "final_plan_merge", 0)
+	mergedPlan, err := s.LoadArtifact(context.Background(), "e2e-dual-happy", "final_plan_merge", 0)
 	if err != nil {
 		t.Fatalf("missing final_merged_plan artifact: %v", err)
 	}
@@ -627,7 +627,7 @@ func TestDualParallel_HappyPath(t *testing.T) {
 		t.Errorf("merged_plan.summary = %v", mergedPlan.Data["summary"])
 	}
 
-	verdict, err := s.LoadArtifact("e2e-dual-happy", "final_compliance_check", 0)
+	verdict, err := s.LoadArtifact(context.Background(), "e2e-dual-happy", "final_compliance_check", 0)
 	if err != nil {
 		t.Fatalf("missing final_verdict artifact: %v", err)
 	}
@@ -636,7 +636,7 @@ func TestDualParallel_HappyPath(t *testing.T) {
 	}
 
 	// Verify metrics.
-	m, _ := benchmark.CollectMetrics(s, "e2e-dual-happy", "dual_parallel", "approved")
+	m, _ := benchmark.CollectMetrics(context.Background(), s, "e2e-dual-happy", "dual_parallel", "approved")
 	if m.TotalTokens == 0 {
 		t.Error("metrics tokens should be > 0")
 	}
@@ -731,7 +731,7 @@ func TestDualParallel_GlobalReloop(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	r, _ := s.LoadRun("e2e-dual-reloop")
+	r, _ := s.LoadRun(context.Background(), "e2e-dual-reloop")
 	if r.Status != store.RunStatusFinished {
 		t.Errorf("status = %s, want finished", r.Status)
 	}
@@ -835,7 +835,7 @@ func TestCompliance_HappyPath_NoHumanGate(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	r, _ := s.LoadRun("e2e-comp-nohuman")
+	r, _ := s.LoadRun(context.Background(), "e2e-comp-nohuman")
 	if r.Status != store.RunStatusFinished {
 		t.Errorf("status = %s, want finished", r.Status)
 	}
@@ -950,7 +950,7 @@ func TestCompliance_HumanGate(t *testing.T) {
 		t.Fatalf("expected ErrRunPaused, got: %v", err)
 	}
 
-	run, _ := s.LoadRun("e2e-comp-human")
+	run, _ := s.LoadRun(context.Background(), "e2e-comp-human")
 	if run.Status != store.RunStatusPausedWaitingHuman {
 		t.Fatalf("status = %s, want paused_waiting_human", run.Status)
 	}
@@ -962,7 +962,7 @@ func TestCompliance_HumanGate(t *testing.T) {
 	}
 
 	// Verify human_input_requested event.
-	events, _ := s.LoadEvents("e2e-comp-human")
+	events, _ := s.LoadEvents(context.Background(), "e2e-comp-human")
 	if !hasEvent(events, store.EventHumanInputRequested) {
 		t.Error("missing human_input_requested event")
 	}
@@ -986,7 +986,7 @@ func TestCompliance_HumanGate(t *testing.T) {
 		t.Fatalf("resume error: %v", err)
 	}
 
-	run, _ = s.LoadRun("e2e-comp-human")
+	run, _ = s.LoadRun(context.Background(), "e2e-comp-human")
 	if run.Status != store.RunStatusFinished {
 		t.Errorf("status after resume = %s, want finished", run.Status)
 	}
@@ -997,7 +997,7 @@ func TestCompliance_HumanGate(t *testing.T) {
 	}
 
 	// Verify post-resume events.
-	events, _ = s.LoadEvents("e2e-comp-human")
+	events, _ = s.LoadEvents(context.Background(), "e2e-comp-human")
 	if !hasEvent(events, store.EventHumanAnswersRecorded) {
 		t.Error("missing human_answers_recorded event")
 	}
@@ -1009,7 +1009,7 @@ func TestCompliance_HumanGate(t *testing.T) {
 	}
 
 	// Verify human_decisions artifact was persisted.
-	humanArt, err := s.LoadArtifact("e2e-comp-human", "technical_decision_human_checkpoint", 0)
+	humanArt, err := s.LoadArtifact(context.Background(), "e2e-comp-human", "technical_decision_human_checkpoint", 0)
 	if err != nil {
 		t.Fatalf("load human_decisions artifact: %v", err)
 	}
@@ -1115,7 +1115,7 @@ func TestCompliance_RefineLoop(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	r, _ := s.LoadRun("e2e-comp-refine")
+	r, _ := s.LoadRun(context.Background(), "e2e-comp-refine")
 	if r.Status != store.RunStatusFinished {
 		t.Errorf("status = %s, want finished", r.Status)
 	}
@@ -1126,7 +1126,7 @@ func TestCompliance_RefineLoop(t *testing.T) {
 	}
 
 	// Verify loop edge events.
-	events, _ := s.LoadEvents("e2e-comp-refine")
+	events, _ := s.LoadEvents(context.Background(), "e2e-comp-refine")
 	loopEdges := 0
 	for _, evt := range events {
 		if evt.Type == store.EventEdgeSelected && evt.Data != nil {
@@ -1193,7 +1193,7 @@ func TestCIFix_HappyPath(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	r, _ := s.LoadRun("e2e-ci-happy")
+	r, _ := s.LoadRun(context.Background(), "e2e-ci-happy")
 	if r.Status != store.RunStatusFinished {
 		t.Errorf("status = %s, want finished", r.Status)
 	}
@@ -1204,7 +1204,7 @@ func TestCIFix_HappyPath(t *testing.T) {
 	}
 
 	// Verify published artifacts.
-	diag, err := s.LoadArtifact("e2e-ci-happy", "diagnose", 0)
+	diag, err := s.LoadArtifact(context.Background(), "e2e-ci-happy", "diagnose", 0)
 	if err != nil {
 		t.Fatalf("missing diagnosis artifact: %v", err)
 	}
@@ -1212,7 +1212,7 @@ func TestCIFix_HappyPath(t *testing.T) {
 		t.Errorf("diagnosis.root_cause = %v", diag.Data["root_cause"])
 	}
 
-	fixReport, err := s.LoadArtifact("e2e-ci-happy", "act_fix", 0)
+	fixReport, err := s.LoadArtifact(context.Background(), "e2e-ci-happy", "act_fix", 0)
 	if err != nil {
 		t.Fatalf("missing fix_report artifact: %v", err)
 	}
@@ -1220,7 +1220,7 @@ func TestCIFix_HappyPath(t *testing.T) {
 		t.Errorf("fix_report.applied = %v", fixReport.Data["applied"])
 	}
 
-	ciVerdict, err := s.LoadArtifact("e2e-ci-happy", "verify_ci", 0)
+	ciVerdict, err := s.LoadArtifact(context.Background(), "e2e-ci-happy", "verify_ci", 0)
 	if err != nil {
 		t.Fatalf("missing ci_verdict artifact: %v", err)
 	}
@@ -1229,7 +1229,7 @@ func TestCIFix_HappyPath(t *testing.T) {
 	}
 
 	// No loops should have been entered.
-	events, _ := s.LoadEvents("e2e-ci-happy")
+	events, _ := s.LoadEvents(context.Background(), "e2e-ci-happy")
 	for _, evt := range events {
 		if evt.Type == store.EventEdgeSelected && evt.Data != nil {
 			if _, ok := evt.Data["loop"]; ok {
@@ -1239,7 +1239,7 @@ func TestCIFix_HappyPath(t *testing.T) {
 	}
 
 	// Verify metrics.
-	m, _ := benchmark.CollectMetrics(s, "e2e-ci-happy", "ci_fix", "green")
+	m, _ := benchmark.CollectMetrics(context.Background(), s, "e2e-ci-happy", "ci_fix", "green")
 	if m.Status != "finished" {
 		t.Errorf("metrics status = %q", m.Status)
 	}
@@ -1306,7 +1306,7 @@ func TestCIFix_FixLoop(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	r, _ := s.LoadRun("e2e-ci-loop")
+	r, _ := s.LoadRun(context.Background(), "e2e-ci-loop")
 	if r.Status != store.RunStatusFinished {
 		t.Errorf("status = %s, want finished", r.Status)
 	}
@@ -1317,7 +1317,7 @@ func TestCIFix_FixLoop(t *testing.T) {
 	}
 
 	// Verify loop edge events.
-	events, _ := s.LoadEvents("e2e-ci-loop")
+	events, _ := s.LoadEvents(context.Background(), "e2e-ci-loop")
 	loopEdges := 0
 	for _, evt := range events {
 		if evt.Type == store.EventEdgeSelected && evt.Data != nil {
@@ -1331,7 +1331,7 @@ func TestCIFix_FixLoop(t *testing.T) {
 	}
 
 	// Verify artifact versioning for diagnose (ran twice with publish).
-	latestDiag, err := s.LoadLatestArtifact("e2e-ci-loop", "diagnose")
+	latestDiag, err := s.LoadLatestArtifact(context.Background(), "e2e-ci-loop", "diagnose")
 	if err != nil {
 		t.Fatalf("load latest diagnose artifact: %v", err)
 	}
@@ -1340,7 +1340,7 @@ func TestCIFix_FixLoop(t *testing.T) {
 	}
 
 	// Verify ci_verdict artifact shows green on final iteration.
-	latestVerdict, err := s.LoadLatestArtifact("e2e-ci-loop", "verify_ci")
+	latestVerdict, err := s.LoadLatestArtifact(context.Background(), "e2e-ci-loop", "verify_ci")
 	if err != nil {
 		t.Fatalf("load latest ci_verdict: %v", err)
 	}
@@ -1395,7 +1395,7 @@ func TestCIFix_LoopExhaustion(t *testing.T) {
 		t.Fatal("expected error from loop exhaustion")
 	}
 
-	r, _ := s.LoadRun("e2e-ci-exhaust")
+	r, _ := s.LoadRun(context.Background(), "e2e-ci-exhaust")
 	if r.Status != store.RunStatusFailedResumable {
 		t.Errorf("status = %s, want failed_resumable", r.Status)
 	}
@@ -1407,7 +1407,7 @@ func TestCIFix_LoopExhaustion(t *testing.T) {
 	}
 
 	// Verify run_failed event.
-	events, _ := s.LoadEvents("e2e-ci-exhaust")
+	events, _ := s.LoadEvents(context.Background(), "e2e-ci-exhaust")
 	if !hasEvent(events, store.EventRunFailed) {
 		t.Error("missing run_failed event")
 	}
@@ -1530,7 +1530,7 @@ func TestEventSequenceCoherence(t *testing.T) {
 		t.Fatalf("run error: %v", err)
 	}
 
-	events, _ := s.LoadEvents("e2e-events")
+	events, _ := s.LoadEvents(context.Background(), "e2e-events")
 
 	// Rule 1: First event must be run_started.
 	if events[0].Type != store.EventRunStarted {

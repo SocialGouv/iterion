@@ -91,7 +91,7 @@ func TestLLMRouterSingleRoute(t *testing.T) {
 	}
 
 	// Verify run finished.
-	r, err := s.LoadRun("run-llm-single")
+	r, err := s.LoadRun(context.Background(), "run-llm-single")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestLLMRouterInvalidSelection(t *testing.T) {
 	}
 
 	// Verify the run failed.
-	r, err := s.LoadRun("run-llm-invalid")
+	r, err := s.LoadRun(context.Background(), "run-llm-invalid")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestLLMRouterMultiMode(t *testing.T) {
 	}
 
 	// Verify run finished.
-	r, err := s.LoadRun("run-llm-multi")
+	r, err := s.LoadRun(context.Background(), "run-llm-multi")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -321,7 +321,7 @@ func TestLLMRouterEvents(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	events, err := s.LoadEvents("run-llm-events")
+	events, err := s.LoadEvents(context.Background(), "run-llm-events")
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}
@@ -426,7 +426,7 @@ func TestLLMRouterMultiModePartialSelection(t *testing.T) {
 		t.Error("expected final node to be called after partial LLM selection")
 	}
 
-	r, err := s.LoadRun("run-llm-partial")
+	r, err := s.LoadRun(context.Background(), "run-llm-partial")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -500,7 +500,7 @@ func TestLLMRouterNoExplicitModel(t *testing.T) {
 		t.Error("expected agent_a to be called")
 	}
 
-	r, err := s.LoadRun("run-llm-no-model")
+	r, err := s.LoadRun(context.Background(), "run-llm-no-model")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}

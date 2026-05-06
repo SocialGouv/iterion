@@ -18,7 +18,7 @@ import (
 // It returns the next node ID to continue from (after the join).
 func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID string) (string, error) {
 	// Emit router node_started.
-	if err := e.emit(rs.runID, store.EventNodeStarted, routerNodeID, map[string]interface{}{
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, routerNodeID, map[string]interface{}{
 		"kind": "router",
 		"mode": "fan_out_all",
 	}); err != nil {
@@ -30,7 +30,7 @@ func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID stri
 	rs.outputs[routerNodeID] = routerInput
 
 	// Emit router node_finished.
-	if err := e.emit(rs.runID, store.EventNodeFinished, routerNodeID, nil); err != nil {
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, routerNodeID, nil); err != nil {
 		return "", err
 	}
 
@@ -222,7 +222,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 	runInputs := rs.runInputs
 
 	// Emit branch_started (best-effort — branch can proceed without the event).
-	if err := e.emitBranch(runID, branchID, store.EventBranchStarted, startEdge.To, nil); err != nil {
+	if err := e.emitBranch(ctx, runID, branchID, store.EventBranchStarted, startEdge.To, nil); err != nil {
 		e.logger.Warn("branch %s: failed to emit branch_started: %v", branchID, err)
 		result.eventErrors++
 	}
@@ -238,7 +238,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		if result.joinNodeID != "" {
 			data["join_node"] = result.joinNodeID
 		}
-		if err := e.emitBranch(runID, branchID, store.EventBranchFinished, startEdge.To, data); err != nil {
+		if err := e.emitBranch(ctx, runID, branchID, store.EventBranchFinished, startEdge.To, data); err != nil {
 			e.logger.Warn("branch %s: failed to emit branch_finished: %v", branchID, err)
 			result.eventErrors++
 		}
@@ -280,7 +280,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		if rs.budget != nil {
 			checks := rs.budget.Check()
 			if exc := findExceeded(checks); exc != nil {
-				if err := e.emitBranch(runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]interface{}{
+				if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]interface{}{
 					"dimension": exc.dimension,
 					"used":      exc.used,
 					"limit":     exc.limit,
@@ -292,7 +292,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 				return result
 			}
 			if hl := findHardLimited(checks); hl != nil {
-				if err := e.emitBranch(runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]interface{}{
+				if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]interface{}{
 					"dimension":  hl.dimension,
 					"used":       hl.used,
 					"limit":      hl.limit,
@@ -307,7 +307,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		}
 
 		// Emit node_started.
-		if err := e.emitBranch(runID, branchID, store.EventNodeStarted, currentNodeID, map[string]interface{}{
+		if err := e.emitBranch(ctx, runID, branchID, store.EventNodeStarted, currentNodeID, map[string]interface{}{
 			"kind": node.NodeKind().String(),
 		}); err != nil {
 			e.logger.Warn("branch %s: failed to emit node_started: %v", branchID, err)
@@ -326,7 +326,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		output, err := e.executor.Execute(ctx, node, nodeInput)
 		if err != nil {
 			result.err = fmt.Errorf("node %q in branch %s: %w", currentNodeID, branchID, err)
-			if emitErr := e.emitBranch(runID, branchID, store.EventNodeFinished, currentNodeID, map[string]interface{}{
+			if emitErr := e.emitBranch(ctx, runID, branchID, store.EventNodeFinished, currentNodeID, map[string]interface{}{
 				"error": err.Error(),
 			}); emitErr != nil {
 				e.logger.Warn("branch %s: failed to emit node_finished: %v", branchID, emitErr)
@@ -350,7 +350,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 
 			// Emit warnings.
 			for _, w := range findWarnings(checks) {
-				if err := e.emitBranch(runID, branchID, store.EventBudgetWarning, currentNodeID, map[string]interface{}{
+				if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetWarning, currentNodeID, map[string]interface{}{
 					"dimension": w.dimension,
 					"used":      w.used,
 					"limit":     w.limit,
@@ -362,7 +362,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 
 			// Fail on exceeded.
 			if exc := findExceeded(checks); exc != nil {
-				if err := e.emitBranch(runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]interface{}{
+				if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]interface{}{
 					"dimension": exc.dimension,
 					"used":      exc.used,
 					"limit":     exc.limit,
@@ -384,13 +384,13 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 				Version: version,
 				Data:    output,
 			}
-			if err := e.store.WriteArtifact(artifact); err != nil {
+			if err := e.store.WriteArtifact(ctx, artifact); err != nil {
 				result.err = fmt.Errorf("node %q in branch %s: write artifact: %w", currentNodeID, branchID, err)
 				return result
 			}
 			result.artifactVersions[currentNodeID] = version + 1
 			result.artifacts[pub] = output
-			if err := e.emitBranch(runID, branchID, store.EventArtifactWritten, currentNodeID, map[string]interface{}{
+			if err := e.emitBranch(ctx, runID, branchID, store.EventArtifactWritten, currentNodeID, map[string]interface{}{
 				"publish": pub,
 				"version": version,
 			}); err != nil {
@@ -400,7 +400,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		}
 
 		// Emit node_finished with usage data.
-		if err := e.emitBranch(runID, branchID, store.EventNodeFinished, currentNodeID, buildNodeFinishedData(sanitizeOutputForEvent(node, output))); err != nil {
+		if err := e.emitBranch(ctx, runID, branchID, store.EventNodeFinished, currentNodeID, buildNodeFinishedData(sanitizeOutputForEvent(node, output))); err != nil {
 			e.logger.Warn("branch %s: failed to emit node_finished: %v", branchID, err)
 			result.eventErrors++
 		}
@@ -409,7 +409,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		}
 
 		// Select next edge (branch-local, no loop counters needed in branches).
-		nextNodeID, err := e.selectEdgeBranch(runID, branchID, currentNodeID, output)
+		nextNodeID, err := e.selectEdgeBranch(ctx, runID, branchID, currentNodeID, output)
 		if err != nil {
 			result.err = err
 			return result
@@ -421,13 +421,13 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 
 // selectEdgeBranch picks the next node for a branch. It is simpler than
 // selectEdge: no loop counter enforcement, events carry a branch ID.
-func (e *Engine) selectEdgeBranch(runID, branchID, fromNodeID string, output map[string]interface{}) (string, error) {
+func (e *Engine) selectEdgeBranch(ctx context.Context, runID, branchID, fromNodeID string, output map[string]interface{}) (string, error) {
 	selected := e.evaluateEdges(fromNodeID, fmt.Sprintf("branch %s", branchID), output)
 	if selected == nil {
 		return "", fmt.Errorf("no outgoing edge from node %q in branch %s", fromNodeID, branchID)
 	}
 
-	if err := e.emitBranch(runID, branchID, store.EventEdgeSelected, "", map[string]interface{}{
+	if err := e.emitBranch(ctx, runID, branchID, store.EventEdgeSelected, "", map[string]interface{}{
 		"from": selected.From,
 		"to":   selected.To,
 	}); err != nil {
@@ -511,7 +511,7 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 	if len(failedBranches) > 0 {
 		convData["failed_branches"] = failedBranches
 	}
-	if err := e.emit(rs.runID, store.EventJoinReady, convergenceNodeID, convData); err != nil {
+	if err := e.emit(rs.ctx, rs.runID, store.EventJoinReady, convergenceNodeID, convData); err != nil {
 		e.logger.Warn("failed to emit convergence_ready: %v", err)
 	}
 

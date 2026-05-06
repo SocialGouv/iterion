@@ -31,13 +31,13 @@ var (
 // ---------------------------------------------------------------------------
 
 // emit is a convenience wrapper for appending an event.
-func (e *Engine) emit(runID string, typ store.EventType, nodeID string, data map[string]interface{}) error {
+func (e *Engine) emit(ctx context.Context, runID string, typ store.EventType, nodeID string, data map[string]interface{}) error {
 	evt := store.Event{
 		Type:   typ,
 		NodeID: nodeID,
 		Data:   data,
 	}
-	persisted, err := e.store.AppendEvent(runID, evt)
+	persisted, err := e.store.AppendEvent(ctx, runID, evt)
 	if err != nil {
 		return fmt.Errorf("runtime: emit %s: %w", typ, err)
 	}
@@ -49,14 +49,14 @@ func (e *Engine) emit(runID string, typ store.EventType, nodeID string, data map
 }
 
 // emitBranch appends an event with a branch ID.
-func (e *Engine) emitBranch(runID, branchID string, typ store.EventType, nodeID string, data map[string]interface{}) error {
+func (e *Engine) emitBranch(ctx context.Context, runID, branchID string, typ store.EventType, nodeID string, data map[string]interface{}) error {
 	evt := store.Event{
 		Type:     typ,
 		BranchID: branchID,
 		NodeID:   nodeID,
 		Data:     data,
 	}
-	persisted, err := e.store.AppendEvent(runID, evt)
+	persisted, err := e.store.AppendEvent(ctx, runID, evt)
 	if err != nil {
 		return fmt.Errorf("runtime: emit %s (branch %s): %w", typ, branchID, err)
 	}
@@ -165,20 +165,20 @@ func (e *Engine) logEvent(typ store.EventType, nodeID, branchID string, data map
 
 // failRun marks a run as failed and emits the run_failed event.
 // If reason is already a RuntimeError it preserves the code and hint.
-func (e *Engine) failRun(runID, nodeID, reason string) error {
-	return e.failRunWithCode(runID, nodeID, reason, ErrCodeExecutionFailed, "")
+func (e *Engine) failRun(ctx context.Context, runID, nodeID, reason string) error {
+	return e.failRunWithCode(ctx, runID, nodeID, reason, ErrCodeExecutionFailed, "")
 }
 
 // failRunErr marks a run as failed, preserving a structured error if present.
 // Store/event errors are propagated so callers know whether the failure was persisted.
-func (e *Engine) failRunErr(runID, nodeID string, origErr error) error {
+func (e *Engine) failRunErr(ctx context.Context, runID, nodeID string, origErr error) error {
 	var rtErr *RuntimeError
 	if errors.As(origErr, &rtErr) {
-		if storeErr := e.store.UpdateRunStatus(runID, store.RunStatusFailed, rtErr.Message); storeErr != nil {
+		if storeErr := e.store.UpdateRunStatus(ctx, runID, store.RunStatusFailed, rtErr.Message); storeErr != nil {
 			e.logger.Error("failed to persist run failure status: %v", storeErr)
 			return fmt.Errorf("runtime: node %q failed (%s) and could not persist failure: %w", nodeID, rtErr.Message, storeErr)
 		}
-		if err := e.emit(runID, store.EventRunFailed, nodeID, map[string]interface{}{
+		if err := e.emit(ctx, runID, store.EventRunFailed, nodeID, map[string]interface{}{
 			"error": rtErr.Message,
 			"code":  string(rtErr.Code),
 		}); err != nil {
@@ -189,18 +189,18 @@ func (e *Engine) failRunErr(runID, nodeID string, origErr error) error {
 		}
 		return rtErr
 	}
-	return e.failRun(runID, nodeID, origErr.Error())
+	return e.failRun(ctx, runID, nodeID, origErr.Error())
 }
 
 // failRunWithCode marks a run as failed and returns a structured RuntimeError.
 // If the store update fails, the store error is returned instead of the runtime
 // error so callers know the failure state was not persisted.
-func (e *Engine) failRunWithCode(runID, nodeID, reason string, code ErrorCode, hint string) error {
-	if storeErr := e.store.UpdateRunStatus(runID, store.RunStatusFailed, reason); storeErr != nil {
+func (e *Engine) failRunWithCode(ctx context.Context, runID, nodeID, reason string, code ErrorCode, hint string) error {
+	if storeErr := e.store.UpdateRunStatus(ctx, runID, store.RunStatusFailed, reason); storeErr != nil {
 		e.logger.Error("failed to persist run failure status: %v", storeErr)
 		return fmt.Errorf("runtime: node %q failed (%s) and could not persist failure: %w", nodeID, reason, storeErr)
 	}
-	if err := e.emit(runID, store.EventRunFailed, nodeID, map[string]interface{}{
+	if err := e.emit(ctx, runID, store.EventRunFailed, nodeID, map[string]interface{}{
 		"error": reason,
 		"code":  string(code),
 	}); err != nil {
@@ -294,11 +294,11 @@ func restoreNodeAttempts(src map[string]map[string]int) map[string]map[ErrorCode
 // (non-resumable) failure if the checkpoint write fails.
 func (e *Engine) failRunWithCheckpoint(rs *runState, nodeID, reason string) error {
 	cp := buildCheckpoint(rs, nodeID)
-	if storeErr := e.store.FailRunResumable(rs.runID, cp, reason); storeErr != nil {
+	if storeErr := e.store.FailRunResumable(rs.ctx, rs.runID, cp, reason); storeErr != nil {
 		e.logger.Error("failed to persist resumable failure: %v", storeErr)
-		return e.failRun(rs.runID, nodeID, reason)
+		return e.failRun(rs.ctx, rs.runID, nodeID, reason)
 	}
-	if err := e.emit(rs.runID, store.EventRunFailed, nodeID, map[string]interface{}{
+	if err := e.emit(rs.ctx, rs.runID, store.EventRunFailed, nodeID, map[string]interface{}{
 		"error":     reason,
 		"code":      string(ErrCodeExecutionFailed),
 		"resumable": true,
@@ -317,11 +317,11 @@ func (e *Engine) failRunErrWithCheckpoint(rs *runState, nodeID string, origErr e
 	var rtErr *RuntimeError
 	if errors.As(origErr, &rtErr) {
 		cp := buildCheckpoint(rs, nodeID)
-		if storeErr := e.store.FailRunResumable(rs.runID, cp, rtErr.Message); storeErr != nil {
+		if storeErr := e.store.FailRunResumable(rs.ctx, rs.runID, cp, rtErr.Message); storeErr != nil {
 			e.logger.Error("failed to persist resumable failure: %v", storeErr)
-			return e.failRunErr(rs.runID, nodeID, origErr)
+			return e.failRunErr(rs.ctx, rs.runID, nodeID, origErr)
 		}
-		if err := e.emit(rs.runID, store.EventRunFailed, nodeID, map[string]interface{}{
+		if err := e.emit(rs.ctx, rs.runID, store.EventRunFailed, nodeID, map[string]interface{}{
 			"error":     rtErr.Message,
 			"code":      string(rtErr.Code),
 			"resumable": true,
@@ -346,14 +346,14 @@ func (e *Engine) handleContextDoneWithCheckpoint(rs *runState, nodeID string, ct
 	if errors.Is(ctxErr, context.Canceled) {
 		// Save checkpoint so the cancelled run can be resumed.
 		cp := buildCheckpoint(rs, nodeID)
-		if err := e.store.SaveCheckpoint(rs.runID, cp); err != nil {
+		if err := e.store.SaveCheckpoint(rs.ctx, rs.runID, cp); err != nil {
 			e.logger.Error("failed to save checkpoint on cancellation: %v", err)
 		}
 		// Keep "cancelled" status but with checkpoint preserved.
-		if err := e.store.UpdateRunStatus(rs.runID, store.RunStatusCancelled, "run cancelled"); err != nil {
+		if err := e.store.UpdateRunStatus(rs.ctx, rs.runID, store.RunStatusCancelled, "run cancelled"); err != nil {
 			e.logger.Error("failed to persist cancellation status: %v", err)
 		}
-		if err := e.emit(rs.runID, store.EventRunCancelled, nodeID, map[string]interface{}{
+		if err := e.emit(rs.ctx, rs.runID, store.EventRunCancelled, nodeID, map[string]interface{}{
 			"reason": "context cancelled",
 		}); err != nil {
 			e.logger.Warn("failed to emit run_cancelled event: %v", err)
@@ -387,7 +387,7 @@ func (e *Engine) checkBudgetBeforeExec(rs *runState, nodeID string) error {
 
 	// Hard exceeded (100%+).
 	if exc := findExceeded(checks); exc != nil {
-		_ = e.emit(rs.runID, store.EventBudgetExceeded, nodeID, map[string]interface{}{
+		_ = e.emit(rs.ctx, rs.runID, store.EventBudgetExceeded, nodeID, map[string]interface{}{
 			"dimension": exc.dimension,
 			"used":      exc.used,
 			"limit":     exc.limit,
@@ -402,7 +402,7 @@ func (e *Engine) checkBudgetBeforeExec(rs *runState, nodeID string) error {
 
 	// Hard limit (90%+) — refuse new node executions to prevent concurrent overage.
 	if hl := findHardLimited(checks); hl != nil {
-		_ = e.emit(rs.runID, store.EventBudgetExceeded, nodeID, map[string]interface{}{
+		_ = e.emit(rs.ctx, rs.runID, store.EventBudgetExceeded, nodeID, map[string]interface{}{
 			"dimension":  hl.dimension,
 			"used":       hl.used,
 			"limit":      hl.limit,
@@ -431,7 +431,7 @@ func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[st
 
 	// Emit warnings.
 	for _, w := range findWarnings(checks) {
-		_ = e.emit(rs.runID, store.EventBudgetWarning, nodeID, map[string]interface{}{
+		_ = e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, nodeID, map[string]interface{}{
 			"dimension": w.dimension,
 			"used":      w.used,
 			"limit":     w.limit,
@@ -440,7 +440,7 @@ func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[st
 
 	// Fail on exceeded.
 	if exc := findExceeded(checks); exc != nil {
-		_ = e.emit(rs.runID, store.EventBudgetExceeded, nodeID, map[string]interface{}{
+		_ = e.emit(rs.ctx, rs.runID, store.EventBudgetExceeded, nodeID, map[string]interface{}{
 			"dimension": exc.dimension,
 			"used":      exc.used,
 			"limit":     exc.limit,

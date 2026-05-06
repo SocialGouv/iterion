@@ -1,6 +1,9 @@
 package store
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // RunLock represents an exclusive advisory lock on a run directory.
 // The lock prevents concurrent processes from modifying the same run.
@@ -18,7 +21,7 @@ type RunLock interface {
 // sync.Mutex which handles intra-process concurrency.
 //
 // Limitations: does not work over NFS (flock is local-only on Linux).
-func (s *FilesystemRunStore) LockRun(runID string) (RunLock, error) {
+func (s *FilesystemRunStore) LockRun(_ context.Context, runID string) (RunLock, error) {
 	if err := sanitizePathComponent("run ID", runID); err != nil {
 		return nil, err
 	}

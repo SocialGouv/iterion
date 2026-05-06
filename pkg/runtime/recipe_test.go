@@ -63,7 +63,7 @@ func TestNewFromRecipePresetVars(t *testing.T) {
 	}
 
 	// Verify run completed.
-	r, err := s.LoadRun("recipe-run-001")
+	r, err := s.LoadRun(context.Background(), "recipe-run-001")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestNewFromRecipePromptPack(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	r, _ := s.LoadRun("recipe-run-002")
+	r, _ := s.LoadRun(context.Background(), "recipe-run-002")
 	if r.Status != store.RunStatusFinished {
 		t.Errorf("status = %s, want finished", r.Status)
 	}

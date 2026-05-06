@@ -2,6 +2,7 @@ package store
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -168,7 +169,7 @@ func (s *FilesystemRunStore) Root() string { return s.root }
 // ---------------------------------------------------------------------------
 
 // CreateRun persists a new run with status "running".
-func (s *FilesystemRunStore) CreateRun(id, workflowName string, inputs map[string]interface{}) (*Run, error) {
+func (s *FilesystemRunStore) CreateRun(_ context.Context, id, workflowName string, inputs map[string]interface{}) (*Run, error) {
 	if err := sanitizePathComponent("run ID", id); err != nil {
 		return nil, err
 	}
@@ -189,7 +190,7 @@ func (s *FilesystemRunStore) CreateRun(id, workflowName string, inputs map[strin
 }
 
 // SaveRun persists the run metadata to disk.
-func (s *FilesystemRunStore) SaveRun(r *Run) error {
+func (s *FilesystemRunStore) SaveRun(_ context.Context, r *Run) error {
 	return s.writeRun(r)
 }
 
@@ -205,7 +206,7 @@ func (s *FilesystemRunStore) SaveRun(r *Run) error {
 // the first call the field is on disk; subsequent LoadRuns skip the
 // fixup. The seed mirrors the CLI/launch path (file_path:run_id) so the
 // backfill produces the exact name a new launch would have produced.
-func (s *FilesystemRunStore) LoadRun(id string) (*Run, error) {
+func (s *FilesystemRunStore) LoadRun(_ context.Context, id string) (*Run, error) {
 	if err := sanitizePathComponent("run ID", id); err != nil {
 		return nil, err
 	}
@@ -242,11 +243,11 @@ func (s *FilesystemRunStore) LoadRun(id string) (*Run, error) {
 
 // UpdateRunStatus updates the status (and optional error) of a run.
 // Protected by mu to prevent concurrent read-modify-write races.
-func (s *FilesystemRunStore) UpdateRunStatus(id string, status RunStatus, runErr string) error {
+func (s *FilesystemRunStore) UpdateRunStatus(ctx context.Context, id string, status RunStatus, runErr string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	r, err := s.LoadRun(id)
+	r, err := s.LoadRun(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -272,11 +273,11 @@ func (s *FilesystemRunStore) UpdateRunStatus(id string, status RunStatus, runErr
 
 // SaveCheckpoint persists a checkpoint on a paused run.
 // Protected by mu to prevent concurrent read-modify-write races.
-func (s *FilesystemRunStore) SaveCheckpoint(id string, cp *Checkpoint) error {
+func (s *FilesystemRunStore) SaveCheckpoint(ctx context.Context, id string, cp *Checkpoint) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	r, err := s.LoadRun(id)
+	r, err := s.LoadRun(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -288,11 +289,11 @@ func (s *FilesystemRunStore) SaveCheckpoint(id string, cp *Checkpoint) error {
 // PauseRun atomically sets the checkpoint and updates the status to paused
 // in a single write, preventing inconsistency if one of two separate
 // operations were to fail.
-func (s *FilesystemRunStore) PauseRun(id string, cp *Checkpoint) error {
+func (s *FilesystemRunStore) PauseRun(ctx context.Context, id string, cp *Checkpoint) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	r, err := s.LoadRun(id)
+	r, err := s.LoadRun(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -305,11 +306,11 @@ func (s *FilesystemRunStore) PauseRun(id string, cp *Checkpoint) error {
 // FailRunResumable atomically sets the checkpoint, error message, and status
 // to failed_resumable in a single write, enabling resume from the last
 // successfully completed node.
-func (s *FilesystemRunStore) FailRunResumable(id string, cp *Checkpoint, runErr string) error {
+func (s *FilesystemRunStore) FailRunResumable(ctx context.Context, id string, cp *Checkpoint, runErr string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	r, err := s.LoadRun(id)
+	r, err := s.LoadRun(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -323,7 +324,7 @@ func (s *FilesystemRunStore) FailRunResumable(id string, cp *Checkpoint, runErr 
 }
 
 // ListRuns returns the IDs of all persisted runs.
-func (s *FilesystemRunStore) ListRuns() ([]string, error) {
+func (s *FilesystemRunStore) ListRuns(_ context.Context) ([]string, error) {
 	runsDir := filepath.Join(s.root, "runs")
 	entries, err := os.ReadDir(runsDir)
 	if err != nil {
@@ -348,7 +349,7 @@ func (s *FilesystemRunStore) ListRuns() ([]string, error) {
 // The entire operation is serialized under mu to prevent interleaved writes
 // from concurrent branches. The sequence counter is only incremented after
 // a successful write to avoid gaps in the event stream.
-func (s *FilesystemRunStore) AppendEvent(runID string, evt Event) (*Event, error) {
+func (s *FilesystemRunStore) AppendEvent(_ context.Context, runID string, evt Event) (*Event, error) {
 	evt.RunID = runID
 	if evt.Timestamp.IsZero() {
 		evt.Timestamp = time.Now().UTC()
@@ -430,7 +431,7 @@ func (s *FilesystemRunStore) AppendEvent(runID string, evt Event) (*Event, error
 // failures, not per-line parse errors.
 //
 // runID is sanitised before path-joining (see LoadRun for rationale).
-func (s *FilesystemRunStore) ScanEvents(runID string, visit func(*Event) bool) error {
+func (s *FilesystemRunStore) ScanEvents(_ context.Context, runID string, visit func(*Event) bool) error {
 	if err := sanitizePathComponent("run ID", runID); err != nil {
 		return err
 	}
@@ -479,12 +480,12 @@ func (s *FilesystemRunStore) ScanEvents(runID string, visit func(*Event) bool) e
 //
 // The caller can detect "more available" by passing limit and checking
 // whether len(out) == limit; the next page starts at out[len(out)-1].Seq+1.
-func (s *FilesystemRunStore) LoadEventsRange(runID string, from, to int64, limit int) ([]*Event, error) {
+func (s *FilesystemRunStore) LoadEventsRange(ctx context.Context, runID string, from, to int64, limit int) ([]*Event, error) {
 	var out []*Event
 	if limit > 0 {
 		out = make([]*Event, 0, limit)
 	}
-	err := s.ScanEvents(runID, func(e *Event) bool {
+	err := s.ScanEvents(ctx, runID, func(e *Event) bool {
 		if e.Seq < from {
 			return true
 		}
@@ -506,7 +507,7 @@ func (s *FilesystemRunStore) LoadEventsRange(runID string, from, to int64, limit
 // LoadEvents reads all events for a run in sequence order.
 //
 // runID is sanitised before path-joining (see LoadRun for rationale).
-func (s *FilesystemRunStore) LoadEvents(runID string) ([]*Event, error) {
+func (s *FilesystemRunStore) LoadEvents(_ context.Context, runID string) ([]*Event, error) {
 	if err := sanitizePathComponent("run ID", runID); err != nil {
 		return nil, err
 	}
@@ -553,7 +554,7 @@ func (s *FilesystemRunStore) LoadEvents(runID string) ([]*Event, error) {
 
 // WriteArtifact persists an artifact for a node at the given version and
 // updates the run's artifact index for O(1) latest-version lookups.
-func (s *FilesystemRunStore) WriteArtifact(a *Artifact) error {
+func (s *FilesystemRunStore) WriteArtifact(ctx context.Context, a *Artifact) error {
 	if err := sanitizePathComponent("run ID", a.RunID); err != nil {
 		return err
 	}
@@ -586,7 +587,7 @@ func (s *FilesystemRunStore) WriteArtifact(a *Artifact) error {
 	// degradation. Callers can decide to retry or fail the run.
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	r, err := s.LoadRun(a.RunID)
+	r, err := s.LoadRun(ctx, a.RunID)
 	if err != nil {
 		if os.IsNotExist(err) || strings.Contains(err.Error(), "no such file") {
 			// No run.json yet (e.g. early CreateRun race) — artifact written,
@@ -608,7 +609,7 @@ func (s *FilesystemRunStore) WriteArtifact(a *Artifact) error {
 }
 
 // LoadArtifact reads a specific artifact version.
-func (s *FilesystemRunStore) LoadArtifact(runID, nodeID string, version int) (*Artifact, error) {
+func (s *FilesystemRunStore) LoadArtifact(_ context.Context, runID, nodeID string, version int) (*Artifact, error) {
 	if err := sanitizePathComponent("run ID", runID); err != nil {
 		return nil, err
 	}
@@ -630,7 +631,7 @@ func (s *FilesystemRunStore) LoadArtifact(runID, nodeID string, version int) (*A
 // LoadLatestArtifact returns the artifact with the highest version for a node.
 // It first checks the run's artifact index for an O(1) lookup and falls back
 // to a directory scan for backward compatibility with older run formats.
-func (s *FilesystemRunStore) LoadLatestArtifact(runID, nodeID string) (*Artifact, error) {
+func (s *FilesystemRunStore) LoadLatestArtifact(ctx context.Context, runID, nodeID string) (*Artifact, error) {
 	if err := sanitizePathComponent("run ID", runID); err != nil {
 		return nil, err
 	}
@@ -639,9 +640,9 @@ func (s *FilesystemRunStore) LoadLatestArtifact(runID, nodeID string) (*Artifact
 	}
 
 	// Fast path: use artifact index if available.
-	if r, err := s.LoadRun(runID); err == nil && r.ArtifactIndex != nil {
+	if r, err := s.LoadRun(ctx, runID); err == nil && r.ArtifactIndex != nil {
 		if v, ok := r.ArtifactIndex[nodeID]; ok {
-			return s.LoadArtifact(runID, nodeID, v)
+			return s.LoadArtifact(ctx, runID, nodeID, v)
 		}
 	}
 
@@ -669,7 +670,7 @@ func (s *FilesystemRunStore) LoadLatestArtifact(runID, nodeID string) (*Artifact
 	if maxVersion < 0 {
 		return nil, fmt.Errorf("store: no artifacts for node %s in run %s", nodeID, runID)
 	}
-	return s.LoadArtifact(runID, nodeID, maxVersion)
+	return s.LoadArtifact(ctx, runID, nodeID, maxVersion)
 }
 
 // ArtifactVersionInfo is the lightweight (version, mtime) pair returned by
@@ -684,7 +685,7 @@ type ArtifactVersionInfo struct {
 // node in ascending order, returning each version's mtime without
 // decoding the body. Returns (nil, nil) when the node has no artifact
 // directory (a node that hasn't published anything yet).
-func (s *FilesystemRunStore) ListArtifactVersions(runID, nodeID string) ([]ArtifactVersionInfo, error) {
+func (s *FilesystemRunStore) ListArtifactVersions(_ context.Context, runID, nodeID string) ([]ArtifactVersionInfo, error) {
 	if err := sanitizePathComponent("run ID", runID); err != nil {
 		return nil, err
 	}
@@ -724,7 +725,7 @@ func (s *FilesystemRunStore) ListArtifactVersions(runID, nodeID string) ([]Artif
 // ---------------------------------------------------------------------------
 
 // WriteInteraction persists a human interaction.
-func (s *FilesystemRunStore) WriteInteraction(i *Interaction) error {
+func (s *FilesystemRunStore) WriteInteraction(_ context.Context, i *Interaction) error {
 	if err := sanitizePathComponent("run ID", i.RunID); err != nil {
 		return err
 	}
@@ -744,7 +745,7 @@ func (s *FilesystemRunStore) WriteInteraction(i *Interaction) error {
 }
 
 // LoadInteraction reads a specific interaction by ID.
-func (s *FilesystemRunStore) LoadInteraction(runID, interactionID string) (*Interaction, error) {
+func (s *FilesystemRunStore) LoadInteraction(_ context.Context, runID, interactionID string) (*Interaction, error) {
 	if err := sanitizePathComponent("run ID", runID); err != nil {
 		return nil, err
 	}
@@ -766,7 +767,7 @@ func (s *FilesystemRunStore) LoadInteraction(runID, interactionID string) (*Inte
 // ListInteractions returns all interaction IDs for a run.
 //
 // runID is sanitised before path-joining (see LoadRun for rationale).
-func (s *FilesystemRunStore) ListInteractions(runID string) ([]string, error) {
+func (s *FilesystemRunStore) ListInteractions(_ context.Context, runID string) ([]string, error) {
 	if err := sanitizePathComponent("run ID", runID); err != nil {
 		return nil, err
 	}

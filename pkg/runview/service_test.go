@@ -1,6 +1,7 @@
 package runview
 
 import (
+	"context"
 	"testing"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -23,31 +24,31 @@ func TestReconcileOrphans(t *testing.T) {
 	}
 
 	// run-orphan-no-cp: status=running, no checkpoint → expect failed
-	if _, err := seed.CreateRun("run-orphan-no-cp", "wf", nil); err != nil {
+	if _, err := seed.CreateRun(context.Background(), "run-orphan-no-cp", "wf", nil); err != nil {
 		t.Fatalf("create no-cp: %v", err)
 	}
 
 	// run-orphan-cp: status=running, with checkpoint → expect failed_resumable
-	if _, err := seed.CreateRun("run-orphan-cp", "wf", nil); err != nil {
+	if _, err := seed.CreateRun(context.Background(), "run-orphan-cp", "wf", nil); err != nil {
 		t.Fatalf("create cp: %v", err)
 	}
-	if err := seed.SaveCheckpoint("run-orphan-cp", &store.Checkpoint{NodeID: "n1"}); err != nil {
+	if err := seed.SaveCheckpoint(context.Background(), "run-orphan-cp", &store.Checkpoint{NodeID: "n1"}); err != nil {
 		t.Fatalf("save checkpoint: %v", err)
 	}
 
 	// run-finished: should be untouched
-	if _, err := seed.CreateRun("run-finished", "wf", nil); err != nil {
+	if _, err := seed.CreateRun(context.Background(), "run-finished", "wf", nil); err != nil {
 		t.Fatalf("create finished: %v", err)
 	}
-	if err := seed.UpdateRunStatus("run-finished", store.RunStatusFinished, ""); err != nil {
+	if err := seed.UpdateRunStatus(context.Background(), "run-finished", store.RunStatusFinished, ""); err != nil {
 		t.Fatalf("update finished: %v", err)
 	}
 
 	// run-paused: paused_waiting_human, should also be untouched
-	if _, err := seed.CreateRun("run-paused", "wf", nil); err != nil {
+	if _, err := seed.CreateRun(context.Background(), "run-paused", "wf", nil); err != nil {
 		t.Fatalf("create paused: %v", err)
 	}
-	if err := seed.PauseRun("run-paused", &store.Checkpoint{NodeID: "n1"}); err != nil {
+	if err := seed.PauseRun(context.Background(), "run-paused", &store.Checkpoint{NodeID: "n1"}); err != nil {
 		t.Fatalf("pause: %v", err)
 	}
 
@@ -72,7 +73,7 @@ func TestReconcileOrphans(t *testing.T) {
 		{"run-paused", store.RunStatusPausedWaitingHuman},
 	}
 	for _, c := range cases {
-		r, err := verify.LoadRun(c.id)
+		r, err := verify.LoadRun(context.Background(), c.id)
 		if err != nil {
 			t.Errorf("LoadRun %s: %v", c.id, err)
 			continue
@@ -94,12 +95,12 @@ func TestReconcileOrphans_LiveProcessLeftAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed store: %v", err)
 	}
-	if _, err := seed.CreateRun("run-live", "wf", nil); err != nil {
+	if _, err := seed.CreateRun(context.Background(), "run-live", "wf", nil); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
 	// "Process A" holds the lock — keep it open through the test.
-	lock, err := seed.LockRun("run-live")
+	lock, err := seed.LockRun(context.Background(), "run-live")
 	if err != nil {
 		t.Fatalf("LockRun: %v", err)
 	}
@@ -110,7 +111,7 @@ func TestReconcileOrphans_LiveProcessLeftAlone(t *testing.T) {
 		t.Fatalf("NewService: %v", err)
 	}
 
-	r, err := seed.LoadRun("run-live")
+	r, err := seed.LoadRun(context.Background(), "run-live")
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}

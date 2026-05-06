@@ -243,13 +243,13 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 // untouched, so a second iterion instance running in the same store
 // dir cannot clobber the first instance's in-flight work.
 func (s *Service) reconcileOrphans() {
-	ids, err := s.store.ListRuns()
+	ids, err := s.store.ListRuns(context.Background())
 	if err != nil {
 		s.logger.Warn("runview: reconcile: list runs: %v", err)
 		return
 	}
 	for _, id := range ids {
-		r, err := s.store.LoadRun(id)
+		r, err := s.store.LoadRun(context.Background(), id)
 		if err != nil {
 			continue
 		}
@@ -265,14 +265,14 @@ func (s *Service) reconcileOrphans() {
 		}
 		// Try to grab the lock; non-blocking semantics mean we
 		// either own it instantly (orphan) or fail fast (live).
-		lock, err := s.store.LockRun(id)
+		lock, err := s.store.LockRun(context.Background(), id)
 		if err != nil {
 			continue
 		}
 		// Re-load under the lock — another process could have
 		// just released between ListRuns and LockRun and updated
 		// the status to a terminal state.
-		r2, err := s.store.LoadRun(id)
+		r2, err := s.store.LoadRun(context.Background(), id)
 		if err != nil || r2.Status != store.RunStatusRunning {
 			_ = lock.Unlock()
 			continue
@@ -281,7 +281,7 @@ func (s *Service) reconcileOrphans() {
 		if r2.Checkpoint != nil {
 			newStatus = store.RunStatusFailedResumable
 		}
-		if err := s.store.UpdateRunStatus(id, newStatus, "process orphaned: server restart found run in 'running' state"); err != nil {
+		if err := s.store.UpdateRunStatus(context.Background(), id, newStatus, "process orphaned: server restart found run in 'running' state"); err != nil {
 			s.logger.Warn("runview: reconcile %s: %v", id, err)
 		} else {
 			s.logger.Info("runview: reconciled orphan run %s → %s", id, newStatus)
@@ -534,14 +534,14 @@ func (s *Service) markRemainingInterrupted(handles []HandleSnapshot) {
 // at warn level — drain must not abort over a single run's bookkeeping.
 func (s *Service) markInterrupted(runID string) {
 	const reason = "server drained: editor process shutting down"
-	if _, err := s.store.AppendEvent(runID, store.Event{
+	if _, err := s.store.AppendEvent(context.Background(), runID, store.Event{
 		Type:  store.EventRunInterrupted,
 		RunID: runID,
 		Data:  map[string]interface{}{"reason": reason},
 	}); err != nil {
 		s.logger.Warn("runview: drain: append run_interrupted for %s: %v", runID, err)
 	}
-	if err := s.store.UpdateRunStatus(runID, store.RunStatusFailedResumable, reason); err != nil {
+	if err := s.store.UpdateRunStatus(context.Background(), runID, store.RunStatusFailedResumable, reason); err != nil {
 		s.logger.Warn("runview: drain: update status for %s: %v", runID, err)
 	}
 }
@@ -552,20 +552,20 @@ func (s *Service) markInterrupted(runID string) {
 
 // LoadRun returns the persisted Run metadata for runID.
 func (s *Service) LoadRun(runID string) (*store.Run, error) {
-	return s.store.LoadRun(runID)
+	return s.store.LoadRun(context.Background(), runID)
 }
 
 // List returns every run in the store filtered by f. The result is
 // sorted by CreatedAt descending (newest first); Limit truncates after
 // sort.
 func (s *Service) List(f ListFilter) ([]RunSummary, error) {
-	ids, err := s.store.ListRuns()
+	ids, err := s.store.ListRuns(context.Background())
 	if err != nil {
 		return nil, err
 	}
 	out := make([]RunSummary, 0, len(ids))
 	for _, id := range ids {
-		r, err := s.store.LoadRun(id)
+		r, err := s.store.LoadRun(context.Background(), id)
 		if err != nil {
 			// A single corrupt run.json shouldn't break the whole listing.
 			s.logger.Warn("runview: skip run %s: %v", id, err)
@@ -577,7 +577,7 @@ func (s *Service) List(f ListFilter) ([]RunSummary, error) {
 		// Node filter is more expensive (loads events.jsonl for each
 		// candidate). Run it last so cheaper rejection criteria above
 		// short-circuit first.
-		if f.Node != "" && !runTouchedNode(s.store, r.ID, f.Node) {
+		if f.Node != "" && !runTouchedNode(context.Background(), s.store, r.ID, f.Node) {
 			continue
 		}
 		out = append(out, RunSummary{
@@ -618,9 +618,9 @@ func (s *Service) List(f ListFilter) ([]RunSummary, error) {
 // slice via LoadEvents — long-running runs can have hundreds of MB of
 // events.jsonl, and a list filter pass that calls this for every
 // candidate run would otherwise be O(N*size) memory.
-func runTouchedNode(s store.RunStore, runID, nodeID string) bool {
+func runTouchedNode(ctx context.Context, s store.RunStore, runID, nodeID string) bool {
 	hit := false
-	_ = s.ScanEvents(runID, func(e *store.Event) bool {
+	_ = s.ScanEvents(ctx, runID, func(e *store.Event) bool {
 		if e.Type == store.EventNodeStarted && e.NodeID == nodeID {
 			hit = true
 			return false
@@ -646,7 +646,7 @@ func matchesFilter(r *store.Run, f ListFilter) bool {
 // Snapshot returns the structured RunSnapshot for runID by folding the
 // persisted events through the canonical reducer.
 func (s *Service) Snapshot(runID string) (*RunSnapshot, error) {
-	return BuildSnapshot(s.store, runID)
+	return BuildSnapshot(context.Background(), s.store, runID)
 }
 
 // MaxEventsPerPage caps the number of events any single LoadEvents
@@ -665,7 +665,7 @@ const MaxEventsPerPage = 5000
 // Streams via store.LoadEventsRange so we never materialise more than
 // the page-cap worth of events at once; callers paginate.
 func (s *Service) LoadEvents(runID string, from, to int64) ([]*store.Event, error) {
-	return s.store.LoadEventsRange(runID, from, to, MaxEventsPerPage)
+	return s.store.LoadEventsRange(context.Background(), runID, from, to, MaxEventsPerPage)
 }
 
 // ListArtifacts enumerates the persisted artifacts for one node by
@@ -709,7 +709,7 @@ func (s *Service) ListArtifacts(runID, nodeID string) ([]ArtifactSummary, error)
 
 // LoadArtifact returns one persisted artifact body.
 func (s *Service) LoadArtifact(runID, nodeID string, version int) (*store.Artifact, error) {
-	return s.store.LoadArtifact(runID, nodeID, version)
+	return s.store.LoadArtifact(context.Background(), runID, nodeID, version)
 }
 
 // ---------------------------------------------------------------------------
@@ -762,7 +762,7 @@ func (s *Service) PerformMerge(runID string, req MergeRequest) (*MergeResponse, 
 	if runID == "" {
 		return nil, errors.New("runview: run_id is required")
 	}
-	r, err := s.store.LoadRun(runID)
+	r, err := s.store.LoadRun(context.Background(), runID)
 	if err != nil {
 		return nil, err
 	}
@@ -803,7 +803,7 @@ func (s *Service) PerformMerge(runID string, req MergeRequest) (*MergeResponse, 
 	if mergeErr != nil {
 		// Persist the failure so the editor can show "Retry merge".
 		r.MergeStatus = store.MergeStatusFailed
-		if saveErr := s.store.SaveRun(r); saveErr != nil && s.logger != nil {
+		if saveErr := s.store.SaveRun(context.Background(), r); saveErr != nil && s.logger != nil {
 			s.logger.Warn("runview: persist merge failure for %s: %v", runID, saveErr)
 		}
 		return nil, mergeErr
@@ -814,7 +814,7 @@ func (s *Service) PerformMerge(runID string, req MergeRequest) (*MergeResponse, 
 	r.MergedInto = res.MergedInto
 	r.MergeStrategy = store.MergeStrategy(res.Strategy)
 	r.MergeStatus = store.MergeStatusMerged
-	if err := s.store.SaveRun(r); err != nil {
+	if err := s.store.SaveRun(context.Background(), r); err != nil {
 		return nil, fmt.Errorf("runview: persist merge result: %w", err)
 	}
 
@@ -910,7 +910,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		return nil, errors.New("runview: file_path is required")
 	}
 
-	r, err := s.store.LoadRun(spec.RunID)
+	r, err := s.store.LoadRun(context.Background(), spec.RunID)
 	if err != nil {
 		return nil, err
 	}
@@ -974,7 +974,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		func(ctx context.Context, eng *runtime.Engine) error {
 			// Re-validate under the lock acquired by spawnRun (TOCTOU
 			// guard against a concurrent resume / state change).
-			r2, err := s.store.LoadRun(spec.RunID)
+			r2, err := s.store.LoadRun(context.Background(), spec.RunID)
 			if err != nil {
 				return err
 			}
@@ -1013,7 +1013,7 @@ func validateResumable(r *store.Run, answers map[string]interface{}) error {
 // Returns the up-to-date run (post-reconcile if it fired) so the caller
 // doesn't have to re-load.
 func (s *Service) reconcileRun(runID string) (*store.Run, bool, error) {
-	r, err := s.store.LoadRun(runID)
+	r, err := s.store.LoadRun(context.Background(), runID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1026,13 +1026,13 @@ func (s *Service) reconcileRun(runID string) (*store.Run, bool, error) {
 	if s.manager.Active(runID) {
 		return r, false, nil
 	}
-	lock, err := s.store.LockRun(runID)
+	lock, err := s.store.LockRun(context.Background(), runID)
 	if err != nil {
 		// Lock held by a real process — skip reconcile.
 		return r, false, nil
 	}
 	// Re-read under the lock in case another writer raced us.
-	r2, err := s.store.LoadRun(runID)
+	r2, err := s.store.LoadRun(context.Background(), runID)
 	if err != nil || r2.Status != store.RunStatusRunning {
 		_ = lock.Unlock()
 		if err != nil {
@@ -1051,7 +1051,7 @@ func (s *Service) reconcileRun(runID string) (*store.Run, bool, error) {
 		newStatus = store.RunStatusFailedResumable
 	}
 	const reason = "orphan reconciled on resume request: server had no live goroutine for run"
-	if err := s.store.UpdateRunStatus(runID, newStatus, reason); err != nil {
+	if err := s.store.UpdateRunStatus(context.Background(), runID, newStatus, reason); err != nil {
 		_ = lock.Unlock()
 		return r2, false, fmt.Errorf("reconcile %s: %w", runID, err)
 	}
@@ -1059,7 +1059,7 @@ func (s *Service) reconcileRun(runID string) (*store.Run, bool, error) {
 	if s.logger != nil {
 		s.logger.Info("runview: reconciled orphan run %s on demand → %s", runID, newStatus)
 	}
-	r3, _ := s.store.LoadRun(runID)
+	r3, _ := s.store.LoadRun(context.Background(), runID)
 	if r3 == nil {
 		return r2, true, nil
 	}
@@ -1083,7 +1083,7 @@ func (s *Service) spawnRun(
 	force bool,
 	body func(ctx context.Context, eng *runtime.Engine) error,
 ) (*LaunchResult, error) {
-	lock, err := s.store.LockRun(runID)
+	lock, err := s.store.LockRun(context.Background(), runID)
 	if err != nil {
 		s.dropRunLog(runID)
 		return nil, fmt.Errorf("runview: lock run: %w", err)

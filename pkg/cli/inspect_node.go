@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -102,7 +103,7 @@ type nodeLogSlice = runview.LogSlice
 
 // listNodeExecutions enumerates the ExecutionState rows of a run.
 func listNodeExecutions(s store.RunStore, runID string, p *Printer) error {
-	snap, err := runview.BuildSnapshot(s, runID)
+	snap, err := runview.BuildSnapshot(context.Background(), s, runID)
 	if err != nil {
 		return fmt.Errorf("cannot build snapshot: %w", err)
 	}
@@ -142,7 +143,7 @@ func listNodeExecutions(s store.RunStore, runID string, p *Printer) error {
 }
 
 func runInspectNode(s store.RunStore, storeDir string, opts InspectOptions, p *Printer) error {
-	snap, err := runview.BuildSnapshot(s, opts.RunID)
+	snap, err := runview.BuildSnapshot(context.Background(), s, opts.RunID)
 	if err != nil {
 		return fmt.Errorf("cannot build snapshot: %w", err)
 	}
@@ -349,7 +350,7 @@ func buildNodeReport(
 func loadExecEvents(s store.RunStore, runID string, exec *runview.ExecutionState) ([]*store.Event, error) {
 	out := make([]*store.Event, 0, 32)
 	iter := -1
-	err := s.ScanEvents(runID, func(e *store.Event) bool {
+	err := s.ScanEvents(context.Background(), runID, func(e *store.Event) bool {
 		if e == nil {
 			return true
 		}
@@ -514,7 +515,7 @@ func buildArtifactList(s store.RunStore, runID, nodeID string, events []*store.E
 
 		entry := nodeArtifact{Version: version, WrittenAt: e.Timestamp}
 		if includeBodies {
-			a, err := s.LoadArtifact(runID, nodeID, version)
+			a, err := s.LoadArtifact(context.Background(), runID, nodeID, version)
 			if err != nil {
 				continue
 			}
@@ -554,7 +555,7 @@ func buildInteractionList(s store.RunStore, runID, nodeID string, events []*stor
 	sort.Strings(keys)
 	out := make([]interactionSummary, 0, len(keys))
 	for _, id := range keys {
-		inter, err := s.LoadInteraction(runID, id)
+		inter, err := s.LoadInteraction(context.Background(), runID, id)
 		if err != nil {
 			continue
 		}

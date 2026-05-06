@@ -100,7 +100,7 @@ func TestLinearPath(t *testing.T) {
 	}
 
 	// Verify run status.
-	r, err := s.LoadRun("run-001")
+	r, err := s.LoadRun(context.Background(), "run-001")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestLinearPath(t *testing.T) {
 	}
 
 	// Verify events.
-	events, err := s.LoadEvents("run-001")
+	events, err := s.LoadEvents(context.Background(), "run-001")
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestLinearPath(t *testing.T) {
 	}
 
 	// Verify artifact was persisted for "analyze" (has publish).
-	art, err := s.LoadArtifact("run-001", "analyze", 0)
+	art, err := s.LoadArtifact(context.Background(), "run-001", "analyze", 0)
 	if err != nil {
 		t.Fatalf("load artifact: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestBoundedLoop(t *testing.T) {
 	}
 
 	// Verify run finished successfully.
-	r, err := s.LoadRun("run-loop")
+	r, err := s.LoadRun(context.Background(), "run-loop")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestBoundedLoop(t *testing.T) {
 	}
 
 	// Check that edge_selected events include loop iteration info.
-	events, err := s.LoadEvents("run-loop")
+	events, err := s.LoadEvents(context.Background(), "run-loop")
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestBoundedLoop(t *testing.T) {
 	}
 
 	// Verify artifact versions: verify ran 3 times with publish.
-	art, err := s.LoadLatestArtifact("run-loop", "verify")
+	art, err := s.LoadLatestArtifact(context.Background(), "run-loop", "verify")
 	if err != nil {
 		t.Fatalf("load latest artifact: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestLoopExhaustion(t *testing.T) {
 		t.Fatal("expected error from loop exhaustion")
 	}
 
-	r, err := s.LoadRun("run-exhaust")
+	r, err := s.LoadRun(context.Background(), "run-exhaust")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -326,7 +326,7 @@ func TestFailNode(t *testing.T) {
 		t.Fatal("expected error from fail node")
 	}
 
-	r, err := s.LoadRun("run-fail")
+	r, err := s.LoadRun(context.Background(), "run-fail")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -335,7 +335,7 @@ func TestFailNode(t *testing.T) {
 	}
 
 	// Verify run_failed event emitted.
-	events, err := s.LoadEvents("run-fail")
+	events, err := s.LoadEvents(context.Background(), "run-fail")
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}
@@ -379,7 +379,7 @@ func TestContextCancellation(t *testing.T) {
 		t.Fatal("expected error from context cancellation")
 	}
 
-	r, err := s.LoadRun("run-cancel")
+	r, err := s.LoadRun(context.Background(), "run-cancel")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -495,7 +495,7 @@ func TestHumanPause(t *testing.T) {
 	}
 
 	// Verify run status is paused.
-	r, err := s.LoadRun("run-human")
+	r, err := s.LoadRun(context.Background(), "run-human")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -512,7 +512,7 @@ func TestHumanPause(t *testing.T) {
 	}
 
 	// Verify interaction was created.
-	interaction, err := s.LoadInteraction("run-human", r.Checkpoint.InteractionID)
+	interaction, err := s.LoadInteraction(context.Background(), "run-human", r.Checkpoint.InteractionID)
 	if err != nil {
 		t.Fatalf("load interaction: %v", err)
 	}
@@ -528,7 +528,7 @@ func TestHumanPause(t *testing.T) {
 	}
 
 	// Verify events.
-	events, err := s.LoadEvents("run-human")
+	events, err := s.LoadEvents(context.Background(), "run-human")
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}
@@ -590,7 +590,7 @@ func TestHumanPauseAndResume(t *testing.T) {
 	}
 
 	// Verify run finished.
-	r, err := s.LoadRun("run-resume")
+	r, err := s.LoadRun(context.Background(), "run-resume")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -618,14 +618,14 @@ func TestHumanPauseAndResume(t *testing.T) {
 	}
 
 	// Verify interaction was answered.
-	ids, err := s.ListInteractions("run-resume")
+	ids, err := s.ListInteractions(context.Background(), "run-resume")
 	if err != nil {
 		t.Fatalf("list interactions: %v", err)
 	}
 	if len(ids) != 1 {
 		t.Fatalf("expected 1 interaction, got %d", len(ids))
 	}
-	interaction, err := s.LoadInteraction("run-resume", ids[0])
+	interaction, err := s.LoadInteraction(context.Background(), "run-resume", ids[0])
 	if err != nil {
 		t.Fatalf("load interaction: %v", err)
 	}
@@ -637,7 +637,7 @@ func TestHumanPauseAndResume(t *testing.T) {
 	}
 
 	// Verify human artifact was persisted (review has publish: human_decisions).
-	art, err := s.LoadArtifact("run-resume", "review", 0)
+	art, err := s.LoadArtifact(context.Background(), "run-resume", "review", 0)
 	if err != nil {
 		t.Fatalf("load human artifact: %v", err)
 	}
@@ -646,7 +646,7 @@ func TestHumanPauseAndResume(t *testing.T) {
 	}
 
 	// Verify full event sequence.
-	events, err := s.LoadEvents("run-resume")
+	events, err := s.LoadEvents(context.Background(), "run-resume")
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}
@@ -782,7 +782,7 @@ func TestCheckpointPreservesUpstreamOutputs(t *testing.T) {
 		t.Fatalf("expected ErrRunPaused, got: %v", err)
 	}
 
-	r, err := s.LoadRun("run-cp")
+	r, err := s.LoadRun(context.Background(), "run-cp")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -851,7 +851,7 @@ func TestHumanPausePreservesLoopCounters(t *testing.T) {
 	}
 
 	// Checkpoint should preserve loop counters.
-	r, _ := s.LoadRun("run-loop-human")
+	r, _ := s.LoadRun(context.Background(), "run-loop-human")
 	if r.Checkpoint.LoopCounters["retry"] != 2 {
 		t.Errorf("expected loop counter retry=2, got %d", r.Checkpoint.LoopCounters["retry"])
 	}
@@ -862,7 +862,7 @@ func TestHumanPausePreservesLoopCounters(t *testing.T) {
 		t.Fatalf("resume failed: %v", err)
 	}
 
-	r, _ = s.LoadRun("run-loop-human")
+	r, _ = s.LoadRun(context.Background(), "run-loop-human")
 	if r.Status != store.RunStatusFinished {
 		t.Errorf("expected finished, got %s", r.Status)
 	}
@@ -908,7 +908,7 @@ func TestFailedRunIsResumable(t *testing.T) {
 	}
 
 	// Run should be failed_resumable.
-	r, err := s.LoadRun("run-fail-1")
+	r, err := s.LoadRun(context.Background(), "run-fail-1")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -971,7 +971,7 @@ func TestResumeFromFailed(t *testing.T) {
 		t.Fatal("expected error from failed node")
 	}
 
-	r, _ := s.LoadRun("run-resume-fail")
+	r, _ := s.LoadRun(context.Background(), "run-resume-fail")
 	if r.Status != store.RunStatusFailedResumable {
 		t.Fatalf("expected failed_resumable, got %s", r.Status)
 	}
@@ -982,7 +982,7 @@ func TestResumeFromFailed(t *testing.T) {
 		t.Fatalf("resume failed: %v", err)
 	}
 
-	r, _ = s.LoadRun("run-resume-fail")
+	r, _ = s.LoadRun(context.Background(), "run-resume-fail")
 	if r.Status != store.RunStatusFinished {
 		t.Fatalf("expected finished after resume, got %s", r.Status)
 	}
@@ -1055,7 +1055,7 @@ func TestForceResumeBypassesHashCheck(t *testing.T) {
 		t.Fatalf("force resume failed: %v", err)
 	}
 
-	r, _ := s.LoadRun("run-force")
+	r, _ := s.LoadRun(context.Background(), "run-force")
 	if r.Status != store.RunStatusFinished {
 		t.Fatalf("expected finished, got %s", r.Status)
 	}
@@ -1131,7 +1131,7 @@ func TestHumanAutoAnswer(t *testing.T) {
 	}
 
 	// Run should complete without pausing.
-	r, err := s.LoadRun("run-auto")
+	r, err := s.LoadRun(context.Background(), "run-auto")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -1164,7 +1164,7 @@ func TestHumanAutoAnswerPublishArtifact(t *testing.T) {
 	}
 
 	// Verify artifact was persisted.
-	art, err := s.LoadArtifact("run-auto-pub", "review", 0)
+	art, err := s.LoadArtifact(context.Background(), "run-auto-pub", "review", 0)
 	if err != nil {
 		t.Fatalf("load artifact: %v", err)
 	}
@@ -1202,7 +1202,7 @@ func TestHumanAutoOrPause_Proceeds(t *testing.T) {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 
-	r, err := s.LoadRun("run-aop-proceed")
+	r, err := s.LoadRun(context.Background(), "run-aop-proceed")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -1211,7 +1211,7 @@ func TestHumanAutoOrPause_Proceeds(t *testing.T) {
 	}
 
 	// Verify needs_human_input was stripped from output.
-	events, err := s.LoadEvents("run-aop-proceed")
+	events, err := s.LoadEvents(context.Background(), "run-aop-proceed")
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}
@@ -1246,7 +1246,7 @@ func TestHumanAutoOrPause_Pauses(t *testing.T) {
 	}
 
 	// Verify run is paused.
-	r, err := s.LoadRun("run-aop-pause")
+	r, err := s.LoadRun(context.Background(), "run-aop-pause")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -1265,7 +1265,7 @@ func TestHumanAutoOrPause_Pauses(t *testing.T) {
 		t.Fatalf("resume failed: %v", err)
 	}
 
-	r, err = s.LoadRun("run-aop-pause")
+	r, err = s.LoadRun(context.Background(), "run-aop-pause")
 	if err != nil {
 		t.Fatalf("load run after resume: %v", err)
 	}
@@ -1468,7 +1468,7 @@ func TestInteractionHumanPauses(t *testing.T) {
 	}
 
 	// Verify run status is paused.
-	r, err := s.LoadRun("run-interact-human")
+	r, err := s.LoadRun(context.Background(), "run-interact-human")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -1480,7 +1480,7 @@ func TestInteractionHumanPauses(t *testing.T) {
 	if r.Checkpoint == nil {
 		t.Fatal("expected checkpoint")
 	}
-	interaction, err := s.LoadInteraction("run-interact-human", r.Checkpoint.InteractionID)
+	interaction, err := s.LoadInteraction(context.Background(), "run-interact-human", r.Checkpoint.InteractionID)
 	if err != nil {
 		t.Fatalf("load interaction: %v", err)
 	}
@@ -1489,7 +1489,7 @@ func TestInteractionHumanPauses(t *testing.T) {
 	}
 
 	// Verify human_input_requested event has delegate source info.
-	events, err := s.LoadEvents("run-interact-human")
+	events, err := s.LoadEvents(context.Background(), "run-interact-human")
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}
@@ -1538,7 +1538,7 @@ func TestInteractionLLMAutoRespond(t *testing.T) {
 		t.Fatalf("expected ErrRunPaused (fallback), got: %v", err)
 	}
 
-	r, err := s.LoadRun("run-interact-llm")
+	r, err := s.LoadRun(context.Background(), "run-interact-llm")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -1572,7 +1572,7 @@ func TestInteractionLLMOrHumanEscalation(t *testing.T) {
 		t.Fatalf("expected ErrRunPaused (fallback), got: %v", err)
 	}
 
-	r, err := s.LoadRun("run-interact-llm-or-human")
+	r, err := s.LoadRun(context.Background(), "run-interact-llm-or-human")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -1584,7 +1584,7 @@ func TestInteractionLLMOrHumanEscalation(t *testing.T) {
 	if r.Checkpoint == nil {
 		t.Fatal("expected checkpoint")
 	}
-	interaction, err := s.LoadInteraction("run-interact-llm-or-human", r.Checkpoint.InteractionID)
+	interaction, err := s.LoadInteraction(context.Background(), "run-interact-llm-or-human", r.Checkpoint.InteractionID)
 	if err != nil {
 		t.Fatalf("load interaction: %v", err)
 	}
@@ -1735,7 +1735,7 @@ func TestInteractionAskUserPersistsConversation(t *testing.T) {
 	}
 
 	// Checkpoint should carry the conversation + pending tool_use ID.
-	r, err := s.LoadRun("run-ask-user-persist")
+	r, err := s.LoadRun(context.Background(), "run-ask-user-persist")
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}
@@ -1785,7 +1785,7 @@ func TestInteractionDepthGuardFailsRunaway(t *testing.T) {
 
 	// Bootstrap a runState the same way Run() would so failRunWithCheckpoint
 	// has a coherent state to persist. The store needs the run to exist.
-	if _, err := s.CreateRun("run-depth-guard", wf.Name, nil); err != nil {
+	if _, err := s.CreateRun(context.Background(), "run-depth-guard", wf.Name, nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
 	rs := eng.newRunState("run-depth-guard", nil)
@@ -1802,7 +1802,7 @@ func TestInteractionDepthGuardFailsRunaway(t *testing.T) {
 		t.Errorf("error should mention recursion depth, got: %v", err)
 	}
 
-	r, loadErr := s.LoadRun("run-depth-guard")
+	r, loadErr := s.LoadRun(context.Background(), "run-depth-guard")
 	if loadErr != nil {
 		t.Fatalf("LoadRun: %v", loadErr)
 	}

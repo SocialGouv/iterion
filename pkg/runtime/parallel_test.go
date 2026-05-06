@@ -95,7 +95,7 @@ func TestFanOutWaitAllSuccess(t *testing.T) {
 	}
 
 	// Verify run finished.
-	r, err := s.LoadRun("run-fanout-ok")
+	r, err := s.LoadRun(context.Background(), "run-fanout-ok")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestFanOutWaitAllSuccess(t *testing.T) {
 	}
 
 	// Verify events contain branch_started events.
-	events, err := s.LoadEvents("run-fanout-ok")
+	events, err := s.LoadEvents(context.Background(), "run-fanout-ok")
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestFanOutWaitAllPartialFailure(t *testing.T) {
 		t.Fatal("expected error from wait_all with failed branch")
 	}
 
-	r, err := s.LoadRun("run-fanout-fail")
+	r, err := s.LoadRun(context.Background(), "run-fanout-fail")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestFanOutBestEffortPartialFailure(t *testing.T) {
 	}
 
 	// Run should finish successfully.
-	r, err := s.LoadRun("run-best-effort")
+	r, err := s.LoadRun(context.Background(), "run-best-effort")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestFanOutBestEffortPartialFailure(t *testing.T) {
 	}
 
 	// Verify join_ready event includes failed_branches info.
-	events, err := s.LoadEvents("run-best-effort")
+	events, err := s.LoadEvents(context.Background(), "run-best-effort")
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}
@@ -368,7 +368,7 @@ func TestFanOutBoundedParallelism(t *testing.T) {
 	}
 
 	// Verify run succeeded.
-	r, err := s.LoadRun("run-bounded")
+	r, err := s.LoadRun(context.Background(), "run-bounded")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -460,7 +460,7 @@ func TestFanOutMultiStepBranches(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	r, err := s.LoadRun("run-multistep")
+	r, err := s.LoadRun(context.Background(), "run-multistep")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -488,7 +488,7 @@ func TestFanOutMultiStepBranches(t *testing.T) {
 	}
 
 	// Verify artifact was written for context_builder.
-	art, err := s.LoadArtifact("run-multistep", "context_builder", 0)
+	art, err := s.LoadArtifact(context.Background(), "run-multistep", "context_builder", 0)
 	if err != nil {
 		t.Fatalf("load artifact: %v", err)
 	}
@@ -529,7 +529,7 @@ func TestFanOutContextCancellation(t *testing.T) {
 		t.Fatal("expected error from context cancellation")
 	}
 
-	r, err := s.LoadRun("run-cancel-fanout")
+	r, err := s.LoadRun(context.Background(), "run-cancel-fanout")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -566,7 +566,7 @@ func TestFanOutBranchEventIDs(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	events, err := s.LoadEvents("run-branch-ids")
+	events, err := s.LoadEvents(context.Background(), "run-branch-ids")
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}
@@ -625,7 +625,7 @@ func TestFanOutBestEffortAllFail(t *testing.T) {
 		t.Fatalf("unexpected error: %v (best_effort should tolerate all failures)", err)
 	}
 
-	r, err := s.LoadRun("run-all-fail")
+	r, err := s.LoadRun(context.Background(), "run-all-fail")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -699,7 +699,7 @@ func TestDualReviewParallelToMerge(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	r, err := s.LoadRun("run-dual-review")
+	r, err := s.LoadRun(context.Background(), "run-dual-review")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -720,7 +720,7 @@ func TestDualReviewParallelToMerge(t *testing.T) {
 	}
 
 	// Verify artifacts for branch nodes.
-	artClaude, err := s.LoadArtifact("run-dual-review", "claude_review", 0)
+	artClaude, err := s.LoadArtifact(context.Background(), "run-dual-review", "claude_review", 0)
 	if err != nil {
 		t.Fatalf("load claude artifact: %v", err)
 	}
@@ -728,7 +728,7 @@ func TestDualReviewParallelToMerge(t *testing.T) {
 		t.Errorf("claude artifact approved = %v", artClaude.Data["approved"])
 	}
 
-	artGPT, err := s.LoadArtifact("run-dual-review", "gpt_review", 0)
+	artGPT, err := s.LoadArtifact(context.Background(), "run-dual-review", "gpt_review", 0)
 	if err != nil {
 		t.Fatalf("load gpt artifact: %v", err)
 	}
@@ -765,7 +765,7 @@ func TestFanOutEventOrdering(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	events, err := s.LoadEvents("run-evt-order")
+	events, err := s.LoadEvents(context.Background(), "run-evt-order")
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}
@@ -931,7 +931,7 @@ func TestSequentialFanOuts(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	r, err := s.LoadRun("run-seq-fanout")
+	r, err := s.LoadRun(context.Background(), "run-seq-fanout")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}

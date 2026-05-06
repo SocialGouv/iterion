@@ -1,5 +1,7 @@
 package store
 
+import "context"
+
 // Capabilities expose les caractéristiques optionnelles d'un backend
 // pour permettre aux consommateurs (runview, server) de choisir le bon
 // chemin de code (par exemple : utiliser fsnotify ou les change streams
@@ -27,46 +29,46 @@ type Capabilities struct {
 // JSON sur disque). L'implémentation cloud sera *MongoRunStore (à
 // venir, plan §F T-17).
 //
-// Note : cette interface reflète la signature actuelle des méthodes
-// — sans ctx context.Context. La migration vers des méthodes
-// ctx-aware (plan §F T-07) est prévue en parallèle de la migration
-// des call sites externes (T-09). Tant que les deux ne sont pas
-// faites en même temps, l'interface reste sur les signatures
-// existantes pour préserver la compilation.
+// Toutes les méthodes I/O prennent un ctx context.Context pour
+// permettre la cancellation/timeout côté cloud (Mongo+S3+NATS). Les
+// implémentations filesystem ignorent ctx (ops synchrones disque)
+// mais doivent quand même l'accepter pour respecter l'interface.
+// Root() et Capabilities() sont des accesseurs déclaratifs et n'ont
+// pas besoin de ctx.
 type RunStore interface {
 	// Lifecycle
 	Root() string
-	CreateRun(id, workflowName string, inputs map[string]interface{}) (*Run, error)
-	LoadRun(id string) (*Run, error)
-	SaveRun(r *Run) error
-	ListRuns() ([]string, error)
+	CreateRun(ctx context.Context, id, workflowName string, inputs map[string]interface{}) (*Run, error)
+	LoadRun(ctx context.Context, id string) (*Run, error)
+	SaveRun(ctx context.Context, r *Run) error
+	ListRuns(ctx context.Context) ([]string, error)
 
 	// Status & checkpoint
-	UpdateRunStatus(id string, status RunStatus, runErr string) error
-	SaveCheckpoint(id string, cp *Checkpoint) error
-	PauseRun(id string, cp *Checkpoint) error
-	FailRunResumable(id string, cp *Checkpoint, runErr string) error
+	UpdateRunStatus(ctx context.Context, id string, status RunStatus, runErr string) error
+	SaveCheckpoint(ctx context.Context, id string, cp *Checkpoint) error
+	PauseRun(ctx context.Context, id string, cp *Checkpoint) error
+	FailRunResumable(ctx context.Context, id string, cp *Checkpoint, runErr string) error
 
 	// Events (append-only, monotonic seq per run)
-	AppendEvent(runID string, evt Event) (*Event, error)
-	LoadEvents(runID string) ([]*Event, error)
-	LoadEventsRange(runID string, from, to int64, limit int) ([]*Event, error)
-	ScanEvents(runID string, visit func(*Event) bool) error
+	AppendEvent(ctx context.Context, runID string, evt Event) (*Event, error)
+	LoadEvents(ctx context.Context, runID string) ([]*Event, error)
+	LoadEventsRange(ctx context.Context, runID string, from, to int64, limit int) ([]*Event, error)
+	ScanEvents(ctx context.Context, runID string, visit func(*Event) bool) error
 
 	// Artifacts (versionnés)
-	WriteArtifact(a *Artifact) error
-	LoadArtifact(runID, nodeID string, version int) (*Artifact, error)
-	LoadLatestArtifact(runID, nodeID string) (*Artifact, error)
-	ListArtifactVersions(runID, nodeID string) ([]ArtifactVersionInfo, error)
+	WriteArtifact(ctx context.Context, a *Artifact) error
+	LoadArtifact(ctx context.Context, runID, nodeID string, version int) (*Artifact, error)
+	LoadLatestArtifact(ctx context.Context, runID, nodeID string) (*Artifact, error)
+	ListArtifactVersions(ctx context.Context, runID, nodeID string) ([]ArtifactVersionInfo, error)
 
 	// Interactions
-	WriteInteraction(i *Interaction) error
-	LoadInteraction(runID, interactionID string) (*Interaction, error)
-	ListInteractions(runID string) ([]string, error)
+	WriteInteraction(ctx context.Context, i *Interaction) error
+	LoadInteraction(ctx context.Context, runID, interactionID string) (*Interaction, error)
+	ListInteractions(ctx context.Context, runID string) ([]string, error)
 
 	// Locks (advisory ; cross-process en local via flock,
 	// distribué en cloud via NATS KV)
-	LockRun(runID string) (RunLock, error)
+	LockRun(ctx context.Context, runID string) (RunLock, error)
 
 	// Capabilities — déclarées par chaque impl pour que les
 	// consommateurs (runview, server) puissent brancher le bon code.

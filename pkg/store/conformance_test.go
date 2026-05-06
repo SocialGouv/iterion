@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -39,7 +40,7 @@ func conformanceSuite(t *testing.T, factory runStoreFactory) {
 func testCreateLoad(t *testing.T, s RunStore) {
 	t.Helper()
 	in := map[string]interface{}{"foo": "bar"}
-	r, err := s.CreateRun("run_1", "demo", in)
+	r, err := s.CreateRun(context.Background(), "run_1", "demo", in)
 	if err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
@@ -49,7 +50,7 @@ func testCreateLoad(t *testing.T, s RunStore) {
 	if r.Status != RunStatusRunning {
 		t.Errorf("Status: got %q want running", r.Status)
 	}
-	r2, err := s.LoadRun("run_1")
+	r2, err := s.LoadRun(context.Background(), "run_1")
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}
@@ -63,13 +64,13 @@ func testCreateLoad(t *testing.T, s RunStore) {
 
 func testStatusTransitions(t *testing.T, s RunStore) {
 	t.Helper()
-	if _, err := s.CreateRun("run_2", "demo", nil); err != nil {
+	if _, err := s.CreateRun(context.Background(), "run_2", "demo", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.UpdateRunStatus("run_2", RunStatusFinished, ""); err != nil {
+	if err := s.UpdateRunStatus(context.Background(), "run_2", RunStatusFinished, ""); err != nil {
 		t.Fatal(err)
 	}
-	r, _ := s.LoadRun("run_2")
+	r, _ := s.LoadRun(context.Background(), "run_2")
 	if r.Status != RunStatusFinished {
 		t.Errorf("Status: got %q", r.Status)
 	}
@@ -80,14 +81,14 @@ func testStatusTransitions(t *testing.T, s RunStore) {
 
 func testEventSeqMonotone(t *testing.T, s RunStore) {
 	t.Helper()
-	if _, err := s.CreateRun("run_3", "demo", nil); err != nil {
+	if _, err := s.CreateRun(context.Background(), "run_3", "demo", nil); err != nil {
 		t.Fatal(err)
 	}
 	const N = 50
 	var prev int64 = -1
 	for i := 0; i < N; i++ {
 		ev := Event{Type: EventNodeStarted, Timestamp: time.Now().UTC()}
-		written, err := s.AppendEvent("run_3", ev)
+		written, err := s.AppendEvent(context.Background(), "run_3", ev)
 		if err != nil {
 			t.Fatalf("AppendEvent #%d: %v", i, err)
 		}
@@ -99,7 +100,7 @@ func testEventSeqMonotone(t *testing.T, s RunStore) {
 		}
 		prev = written.Seq
 	}
-	all, err := s.LoadEvents("run_3")
+	all, err := s.LoadEvents(context.Background(), "run_3")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +111,7 @@ func testEventSeqMonotone(t *testing.T, s RunStore) {
 
 func testEventSeqConcurrent(t *testing.T, s RunStore) {
 	t.Helper()
-	if _, err := s.CreateRun("run_4", "demo", nil); err != nil {
+	if _, err := s.CreateRun(context.Background(), "run_4", "demo", nil); err != nil {
 		t.Fatal(err)
 	}
 	const goroutines = 8
@@ -122,7 +123,7 @@ func testEventSeqConcurrent(t *testing.T, s RunStore) {
 			defer wg.Done()
 			for i := 0; i < perG; i++ {
 				ev := Event{Type: EventNodeStarted, Timestamp: time.Now().UTC()}
-				if _, err := s.AppendEvent("run_4", ev); err != nil {
+				if _, err := s.AppendEvent(context.Background(), "run_4", ev); err != nil {
 					t.Errorf("AppendEvent: %v", err)
 					return
 				}
@@ -130,7 +131,7 @@ func testEventSeqConcurrent(t *testing.T, s RunStore) {
 		}()
 	}
 	wg.Wait()
-	all, err := s.LoadEvents("run_4")
+	all, err := s.LoadEvents(context.Background(), "run_4")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,11 +156,11 @@ func testEventSeqConcurrent(t *testing.T, s RunStore) {
 
 func testArtifactVersions(t *testing.T, s RunStore) {
 	t.Helper()
-	if _, err := s.CreateRun("run_5", "demo", nil); err != nil {
+	if _, err := s.CreateRun(context.Background(), "run_5", "demo", nil); err != nil {
 		t.Fatal(err)
 	}
 	for v := 1; v <= 3; v++ {
-		if err := s.WriteArtifact(&Artifact{
+		if err := s.WriteArtifact(context.Background(), &Artifact{
 			RunID:     "run_5",
 			NodeID:    "node_a",
 			Version:   v,
@@ -169,7 +170,7 @@ func testArtifactVersions(t *testing.T, s RunStore) {
 			t.Fatalf("WriteArtifact v=%d: %v", v, err)
 		}
 	}
-	versions, err := s.ListArtifactVersions("run_5", "node_a")
+	versions, err := s.ListArtifactVersions(context.Background(), "run_5", "node_a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +182,7 @@ func testArtifactVersions(t *testing.T, s RunStore) {
 			t.Errorf("Version[%d]: got %d want %d", i, vinfo.Version, i+1)
 		}
 	}
-	latest, err := s.LoadLatestArtifact("run_5", "node_a")
+	latest, err := s.LoadLatestArtifact(context.Background(), "run_5", "node_a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,10 +193,10 @@ func testArtifactVersions(t *testing.T, s RunStore) {
 
 func testLockExclusive(t *testing.T, s RunStore) {
 	t.Helper()
-	if _, err := s.CreateRun("run_6", "demo", nil); err != nil {
+	if _, err := s.CreateRun(context.Background(), "run_6", "demo", nil); err != nil {
 		t.Fatal(err)
 	}
-	first, err := s.LockRun("run_6")
+	first, err := s.LockRun(context.Background(), "run_6")
 	if err != nil {
 		t.Fatalf("first LockRun: %v", err)
 	}
@@ -204,7 +205,7 @@ func testLockExclusive(t *testing.T, s RunStore) {
 	}
 	// Re-locking after a clean unlock must succeed — the lock is
 	// strictly advisory across the unlock boundary.
-	second, err := s.LockRun("run_6")
+	second, err := s.LockRun(context.Background(), "run_6")
 	if err != nil {
 		t.Fatalf("relock after unlock: %v", err)
 	}

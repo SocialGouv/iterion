@@ -1,14 +1,15 @@
 package store
 
 import (
+	"context"
 	"testing"
 )
 
 func TestLockAndUnlock(t *testing.T) {
 	s := tmpStore(t)
-	s.CreateRun("run-lock", "wf", nil)
+	s.CreateRun(context.Background(), "run-lock", "wf", nil)
 
-	lock, err := s.LockRun("run-lock")
+	lock, err := s.LockRun(context.Background(), "run-lock")
 	if err != nil {
 		t.Fatalf("LockRun: %v", err)
 	}
@@ -20,17 +21,17 @@ func TestLockAndUnlock(t *testing.T) {
 
 func TestLockBlocksConcurrent(t *testing.T) {
 	s := tmpStore(t)
-	s.CreateRun("run-block", "wf", nil)
+	s.CreateRun(context.Background(), "run-block", "wf", nil)
 
 	// Acquire the first lock.
-	lock1, err := s.LockRun("run-block")
+	lock1, err := s.LockRun(context.Background(), "run-block")
 	if err != nil {
 		t.Fatalf("LockRun 1: %v", err)
 	}
 	defer lock1.Unlock()
 
 	// Second lock attempt should fail (non-blocking on Unix, exclusive on Windows).
-	_, err = s.LockRun("run-block")
+	_, err = s.LockRun(context.Background(), "run-block")
 	if err == nil {
 		t.Fatal("expected error for concurrent lock, got nil")
 	}
@@ -38,10 +39,10 @@ func TestLockBlocksConcurrent(t *testing.T) {
 
 func TestLockReleasedAfterUnlock(t *testing.T) {
 	s := tmpStore(t)
-	s.CreateRun("run-relock", "wf", nil)
+	s.CreateRun(context.Background(), "run-relock", "wf", nil)
 
 	// Acquire and release.
-	lock1, err := s.LockRun("run-relock")
+	lock1, err := s.LockRun(context.Background(), "run-relock")
 	if err != nil {
 		t.Fatalf("LockRun 1: %v", err)
 	}
@@ -50,7 +51,7 @@ func TestLockReleasedAfterUnlock(t *testing.T) {
 	}
 
 	// Should be able to re-acquire.
-	lock2, err := s.LockRun("run-relock")
+	lock2, err := s.LockRun(context.Background(), "run-relock")
 	if err != nil {
 		t.Fatalf("LockRun 2 after unlock: %v", err)
 	}
@@ -59,7 +60,7 @@ func TestLockReleasedAfterUnlock(t *testing.T) {
 
 func TestLockRejectsPathTraversal(t *testing.T) {
 	s := tmpStore(t)
-	_, err := s.LockRun("../../../etc")
+	_, err := s.LockRun(context.Background(), "../../../etc")
 	if err == nil {
 		t.Fatal("expected error for path traversal")
 	}

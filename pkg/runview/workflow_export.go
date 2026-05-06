@@ -1,6 +1,7 @@
 package runview
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
@@ -97,7 +98,7 @@ func (c *wireWorkflowCache) put(filePath, hash string, wf *WireWorkflow) {
 // freshly-computed hash against the one persisted in run.json at
 // launch.
 func (s *Service) LoadWireWorkflow(runID string) (*WireWorkflow, error) {
-	r, err := s.store.LoadRun(runID)
+	r, err := s.store.LoadRun(context.Background(), runID)
 	if err != nil {
 		return nil, err
 	}

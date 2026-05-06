@@ -79,7 +79,7 @@ func TestChaos_FailMidFanOut_WaitAll(t *testing.T) {
 		t.Fatal("expected error from wait_all with chaos failure")
 	}
 
-	r, err := s.LoadRun("run-chaos-waitall")
+	r, err := s.LoadRun(context.Background(), "run-chaos-waitall")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestChaos_FailMidFanOut_BestEffort(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	r, err := s.LoadRun("run-chaos-besteffort")
+	r, err := s.LoadRun(context.Background(), "run-chaos-besteffort")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestChaos_AllBranchesFail(t *testing.T) {
 				t.Fatal("expected error when all branches fail")
 			}
 
-			r, err := s.LoadRun("run-chaos-allfail")
+			r, err := s.LoadRun(context.Background(), "run-chaos-allfail")
 			if err != nil {
 				t.Fatalf("load run: %v", err)
 			}
@@ -217,7 +217,7 @@ func TestChaos_FailInLoopIteration(t *testing.T) {
 		t.Fatal("expected error from chaos failure in loop")
 	}
 
-	r, err := s.LoadRun("run-chaos-loop")
+	r, err := s.LoadRun(context.Background(), "run-chaos-loop")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestChaos_FailInLoopIteration(t *testing.T) {
 	}
 
 	// Verify some nodes were executed before the failure.
-	events, err := s.LoadEvents("run-chaos-loop")
+	events, err := s.LoadEvents(context.Background(), "run-chaos-loop")
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}

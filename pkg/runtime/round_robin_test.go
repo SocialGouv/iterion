@@ -101,7 +101,7 @@ func TestRoundRobinAlternation(t *testing.T) {
 	}
 
 	// Verify run finished.
-	r, err := s.LoadRun("run-rr-alt")
+	r, err := s.LoadRun(context.Background(), "run-rr-alt")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestRoundRobinCounterPersistence(t *testing.T) {
 		t.Fatal("expected ErrRunPaused")
 	}
 
-	r, err := s.LoadRun("run-rr-persist")
+	r, err := s.LoadRun(context.Background(), "run-rr-persist")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestRoundRobinEvents(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	events, err := s.LoadEvents("run-rr-events")
+	events, err := s.LoadEvents(context.Background(), "run-rr-events")
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}

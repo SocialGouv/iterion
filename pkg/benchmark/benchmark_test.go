@@ -400,7 +400,7 @@ func TestCollectMetrics(t *testing.T) {
 	}
 
 	// Create a run.
-	run, err := s.CreateRun("run-m1", "test_wf", nil)
+	run, err := s.CreateRun(context.Background(), "run-m1", "test_wf", nil)
 	if err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
@@ -426,18 +426,18 @@ func TestCollectMetrics(t *testing.T) {
 		{Type: store.EventRunFinished},
 	}
 	for _, evt := range events {
-		if _, err := s.AppendEvent("run-m1", evt); err != nil {
+		if _, err := s.AppendEvent(context.Background(), "run-m1", evt); err != nil {
 			t.Fatalf("AppendEvent: %v", err)
 		}
 	}
 
 	// Finish the run.
-	if err := s.UpdateRunStatus("run-m1", store.RunStatusFinished, ""); err != nil {
+	if err := s.UpdateRunStatus(context.Background(), "run-m1", store.RunStatusFinished, ""); err != nil {
 		t.Fatalf("UpdateRunStatus: %v", err)
 	}
 
 	// Collect.
-	m, err := CollectMetrics(s, "run-m1", "test_recipe", "approved")
+	m, err := CollectMetrics(context.Background(), s, "run-m1", "test_recipe", "approved")
 	if err != nil {
 		t.Fatalf("CollectMetrics: %v", err)
 	}

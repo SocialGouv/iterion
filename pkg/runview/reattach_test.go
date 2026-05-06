@@ -30,7 +30,7 @@ func TestReconcileOrphans_ReattachesLiveDetachedRunner(t *testing.T) {
 		t.Fatalf("seed store: %v", err)
 	}
 	const id = "run-detached-live"
-	if _, err := seed.CreateRun(id, "wf", nil); err != nil {
+	if _, err := seed.CreateRun(context.Background(), id, "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
 	// Status is already "running" by default after CreateRun.
@@ -74,7 +74,7 @@ func TestReconcileOrphans_ReattachesLiveDetachedRunner(t *testing.T) {
 
 	// Status must remain "running" — the legacy reconcile path would
 	// have flipped it.
-	r, err := svc.store.LoadRun(id)
+	r, err := svc.store.LoadRun(context.Background(), id)
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}
@@ -115,12 +115,12 @@ func TestReconcileOrphans_StalePIDFlipsStatus(t *testing.T) {
 		t.Fatalf("seed store: %v", err)
 	}
 	const id = "run-stale-pid"
-	if _, err := seed.CreateRun(id, "wf", nil); err != nil {
+	if _, err := seed.CreateRun(context.Background(), id, "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
 	// Save a checkpoint so the resulting status is failed_resumable
 	// (otherwise the orphan path lands on plain failed).
-	if err := seed.SaveCheckpoint(id, &store.Checkpoint{NodeID: "n1"}); err != nil {
+	if err := seed.SaveCheckpoint(context.Background(), id, &store.Checkpoint{NodeID: "n1"}); err != nil {
 		t.Fatalf("SaveCheckpoint: %v", err)
 	}
 
@@ -148,7 +148,7 @@ func TestReconcileOrphans_StalePIDFlipsStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify store: %v", err)
 	}
-	r, err := verify.LoadRun(id)
+	r, err := verify.LoadRun(context.Background(), id)
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}

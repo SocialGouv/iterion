@@ -93,7 +93,7 @@ func TestBudgetWarningEmitted(t *testing.T) {
 	}
 
 	// Check that a budget_warning event was emitted.
-	events, err := s.LoadEvents("run-budget-warn")
+	events, err := s.LoadEvents(context.Background(), "run-budget-warn")
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestBudgetExceededFailsRun(t *testing.T) {
 	}
 
 	// Verify run failed.
-	r, err := s.LoadRun("run-budget-exceeded")
+	r, err := s.LoadRun(context.Background(), "run-budget-exceeded")
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestBudgetExceededFailsRun(t *testing.T) {
 	}
 
 	// Verify budget_exceeded event was emitted.
-	events, err := s.LoadEvents("run-budget-exceeded")
+	events, err := s.LoadEvents(context.Background(), "run-budget-exceeded")
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestBudgetTokensExceeded(t *testing.T) {
 	}
 
 	// Should have a warning event (80/100 = 80%) then an exceeded event (130/100).
-	events, err := s.LoadEvents("run-token-budget")
+	events, err := s.LoadEvents(context.Background(), "run-token-budget")
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}
@@ -357,7 +357,7 @@ func TestBudgetSharedFirstComeFirstServed(t *testing.T) {
 	// But we want to verify that budget events were emitted.
 	_ = err
 
-	events, err := s.LoadEvents("run-shared-budget")
+	events, err := s.LoadEvents(context.Background(), "run-shared-budget")
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}
@@ -465,7 +465,7 @@ func TestNoBudgetNoInterference(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	r, _ := s.LoadRun("run-no-budget")
+	r, _ := s.LoadRun(context.Background(), "run-no-budget")
 	if r.Status != store.RunStatusFinished {
 		t.Errorf("expected finished, got %s", r.Status)
 	}
@@ -521,7 +521,7 @@ func TestWorkspaceSafetyRejectsDualMutation(t *testing.T) {
 		t.Errorf("expected 'workspace safety' in error, got: %v", err)
 	}
 
-	r, _ := s.LoadRun("run-unsafe")
+	r, _ := s.LoadRun(context.Background(), "run-unsafe")
 	if r.Status != store.RunStatusFailedResumable {
 		t.Errorf("expected failed_resumable, got %s", r.Status)
 	}
@@ -576,7 +576,7 @@ func TestWorkspaceSafetyAllowsMutationPlusReadonly(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	r, _ := s.LoadRun("run-safe-mutation")
+	r, _ := s.LoadRun(context.Background(), "run-safe-mutation")
 	if r.Status != store.RunStatusFinished {
 		t.Errorf("expected finished, got %s", r.Status)
 	}
@@ -631,7 +631,7 @@ func TestWorkspaceSafetyAllowsParallelReadonly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	r, _ := s.LoadRun("run-readonly")
+	r, _ := s.LoadRun(context.Background(), "run-readonly")
 	if r.Status != store.RunStatusFinished {
 		t.Errorf("expected finished, got %s", r.Status)
 	}
@@ -733,7 +733,7 @@ func TestWorkspaceSafetyAllowsParallelReadonlyTools(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	r, _ := s.LoadRun("run-readonly-tools")
+	r, _ := s.LoadRun(context.Background(), "run-readonly-tools")
 	if r.Status != store.RunStatusFinished {
 		t.Errorf("expected finished, got %s", r.Status)
 	}
@@ -789,7 +789,7 @@ func TestWorkspaceSafetyOneMutatingOneReadonlyTools(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	r, _ := s.LoadRun("run-one-mutating-one-readonly")
+	r, _ := s.LoadRun(context.Background(), "run-one-mutating-one-readonly")
 	if r.Status != store.RunStatusFinished {
 		t.Errorf("expected finished, got %s", r.Status)
 	}
@@ -874,7 +874,7 @@ func TestBudgetExceededInBranchBestEffort(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	r, _ := s.LoadRun("run-branch-budget")
+	r, _ := s.LoadRun(context.Background(), "run-branch-budget")
 	if r.Status != store.RunStatusFinished {
 		t.Errorf("expected finished, got %s", r.Status)
 	}
@@ -1030,7 +1030,7 @@ func TestHardBudgetBlocksAt90Percent(t *testing.T) {
 	}
 
 	// Verify that exactly 9 nodes executed (n1 through n9).
-	events, _ := s.LoadEvents("run-hard-budget")
+	events, _ := s.LoadEvents(context.Background(), "run-hard-budget")
 	nodeFinished := 0
 	for _, ev := range events {
 		if ev.Type == store.EventNodeFinished {

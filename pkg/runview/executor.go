@@ -27,6 +27,10 @@ import (
 // the HTTP service layer in sync as new options accrue (compactor
 // callbacks, recipe overrides, etc.).
 type ExecutorSpec struct {
+	// Ctx is captured by the store-backed event hooks for AppendEvent
+	// calls during execution. Filesystem stores ignore it; cloud
+	// (Mongo) stores honor it for cancellation/timeout.
+	Ctx      context.Context
 	Workflow *ir.Workflow
 	Vars     map[string]string
 	Store    model.EventEmitter // typically *store.RunStore
@@ -63,7 +67,11 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	reg := model.NewRegistry()
 	backendReg := delegate.DefaultRegistry(spec.Logger)
 
-	hooks := model.NewStoreEventHooks(spec.Store, spec.RunID, spec.Logger)
+	ctx := spec.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	hooks := model.NewStoreEventHooks(ctx, spec.Store, spec.RunID, spec.Logger)
 	for _, extra := range spec.ExtraHooks {
 		hooks = model.ChainHooks(hooks, extra)
 	}

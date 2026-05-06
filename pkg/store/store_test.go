@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -30,7 +31,7 @@ func TestCreateAndLoadRun(t *testing.T) {
 	s := tmpStore(t)
 
 	inputs := map[string]interface{}{"repo": "iterion", "branch": "main"}
-	r, err := s.CreateRun("run-001", "pr_refine", inputs)
+	r, err := s.CreateRun(context.Background(), "run-001", "pr_refine", inputs)
 	if err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
@@ -42,7 +43,7 @@ func TestCreateAndLoadRun(t *testing.T) {
 	}
 
 	// Reload from disk.
-	loaded, err := s.LoadRun("run-001")
+	loaded, err := s.LoadRun(context.Background(), "run-001")
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}
@@ -56,13 +57,13 @@ func TestCreateAndLoadRun(t *testing.T) {
 
 func TestUpdateRunStatus(t *testing.T) {
 	s := tmpStore(t)
-	s.CreateRun("run-002", "ci_fix", nil)
+	s.CreateRun(context.Background(), "run-002", "ci_fix", nil)
 
 	// Pause.
-	if err := s.UpdateRunStatus("run-002", RunStatusPausedWaitingHuman, ""); err != nil {
+	if err := s.UpdateRunStatus(context.Background(), "run-002", RunStatusPausedWaitingHuman, ""); err != nil {
 		t.Fatalf("UpdateRunStatus pause: %v", err)
 	}
-	r, _ := s.LoadRun("run-002")
+	r, _ := s.LoadRun(context.Background(), "run-002")
 	if r.Status != RunStatusPausedWaitingHuman {
 		t.Errorf("Status = %q, want paused_waiting_human", r.Status)
 	}
@@ -71,10 +72,10 @@ func TestUpdateRunStatus(t *testing.T) {
 	}
 
 	// Finish.
-	if err := s.UpdateRunStatus("run-002", RunStatusFinished, ""); err != nil {
+	if err := s.UpdateRunStatus(context.Background(), "run-002", RunStatusFinished, ""); err != nil {
 		t.Fatalf("UpdateRunStatus finish: %v", err)
 	}
-	r, _ = s.LoadRun("run-002")
+	r, _ = s.LoadRun(context.Background(), "run-002")
 	if r.Status != RunStatusFinished {
 		t.Errorf("Status = %q, want finished", r.Status)
 	}
@@ -85,12 +86,12 @@ func TestUpdateRunStatus(t *testing.T) {
 
 func TestUpdateRunStatusFailed(t *testing.T) {
 	s := tmpStore(t)
-	s.CreateRun("run-003", "ci_fix", nil)
+	s.CreateRun(context.Background(), "run-003", "ci_fix", nil)
 
-	if err := s.UpdateRunStatus("run-003", RunStatusFailed, "budget_exceeded"); err != nil {
+	if err := s.UpdateRunStatus(context.Background(), "run-003", RunStatusFailed, "budget_exceeded"); err != nil {
 		t.Fatalf("UpdateRunStatus fail: %v", err)
 	}
-	r, _ := s.LoadRun("run-003")
+	r, _ := s.LoadRun(context.Background(), "run-003")
 	if r.Status != RunStatusFailed {
 		t.Errorf("Status = %q, want failed", r.Status)
 	}
@@ -116,20 +117,20 @@ func TestUpdateRunStatusClearsFinishedAtOnResume(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := tmpStore(t)
-			s.CreateRun("run-resume", "wf", nil)
+			s.CreateRun(context.Background(), "run-resume", "wf", nil)
 
-			if err := s.UpdateRunStatus("run-resume", tc.terminal, "transient"); err != nil {
+			if err := s.UpdateRunStatus(context.Background(), "run-resume", tc.terminal, "transient"); err != nil {
 				t.Fatalf("UpdateRunStatus %s: %v", tc.terminal, err)
 			}
-			r, _ := s.LoadRun("run-resume")
+			r, _ := s.LoadRun(context.Background(), "run-resume")
 			if r.FinishedAt == nil {
 				t.Fatalf("precondition: FinishedAt should be set after %s", tc.terminal)
 			}
 
-			if err := s.UpdateRunStatus("run-resume", RunStatusRunning, ""); err != nil {
+			if err := s.UpdateRunStatus(context.Background(), "run-resume", RunStatusRunning, ""); err != nil {
 				t.Fatalf("UpdateRunStatus running: %v", err)
 			}
-			r, _ = s.LoadRun("run-resume")
+			r, _ = s.LoadRun(context.Background(), "run-resume")
 			if r.Status != RunStatusRunning {
 				t.Errorf("Status = %q, want running", r.Status)
 			}
@@ -147,26 +148,26 @@ func TestUpdateRunStatusClearsFinishedAtOnResume(t *testing.T) {
 // FinishedAt set across a resume into Running.
 func TestLoadRunHealsStaleFinishedAt(t *testing.T) {
 	s := tmpStore(t)
-	if _, err := s.CreateRun("run-stale", "wf", nil); err != nil {
+	if _, err := s.CreateRun(context.Background(), "run-stale", "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
 
 	// Simulate what an older binary would leave on disk: status=running
 	// with finished_at populated. Write directly to bypass the
 	// UpdateRunStatus normalization.
-	r, err := s.LoadRun("run-stale")
+	r, err := s.LoadRun(context.Background(), "run-stale")
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}
 	terminal := time.Now().UTC().Add(-time.Hour)
 	r.Status = RunStatusRunning
 	r.FinishedAt = &terminal
-	if err := s.SaveRun(r); err != nil {
+	if err := s.SaveRun(context.Background(), r); err != nil {
 		t.Fatalf("SaveRun: %v", err)
 	}
 
 	// LoadRun must zero FinishedAt for status=running.
-	healed, err := s.LoadRun("run-stale")
+	healed, err := s.LoadRun(context.Background(), "run-stale")
 	if err != nil {
 		t.Fatalf("LoadRun (heal): %v", err)
 	}
@@ -191,11 +192,11 @@ func TestLoadRunHealsStaleFinishedAt(t *testing.T) {
 
 func TestListRuns(t *testing.T) {
 	s := tmpStore(t)
-	s.CreateRun("alpha", "w1", nil)
-	s.CreateRun("beta", "w2", nil)
-	s.CreateRun("gamma", "w3", nil)
+	s.CreateRun(context.Background(), "alpha", "w1", nil)
+	s.CreateRun(context.Background(), "beta", "w2", nil)
+	s.CreateRun(context.Background(), "gamma", "w3", nil)
 
-	ids, err := s.ListRuns()
+	ids, err := s.ListRuns(context.Background())
 	if err != nil {
 		t.Fatalf("ListRuns: %v", err)
 	}
@@ -214,7 +215,7 @@ func TestListRuns(t *testing.T) {
 
 func TestAppendAndLoadEvents(t *testing.T) {
 	s := tmpStore(t)
-	s.CreateRun("run-evt", "wf", nil)
+	s.CreateRun(context.Background(), "run-evt", "wf", nil)
 
 	types := []EventType{
 		EventRunStarted,
@@ -228,7 +229,7 @@ func TestAppendAndLoadEvents(t *testing.T) {
 	}
 
 	for _, typ := range types {
-		_, err := s.AppendEvent("run-evt", Event{
+		_, err := s.AppendEvent(context.Background(), "run-evt", Event{
 			Type:   typ,
 			NodeID: "agent_a",
 			Data:   map[string]interface{}{"info": string(typ)},
@@ -238,7 +239,7 @@ func TestAppendAndLoadEvents(t *testing.T) {
 		}
 	}
 
-	events, err := s.LoadEvents("run-evt")
+	events, err := s.LoadEvents(context.Background(), "run-evt")
 	if err != nil {
 		t.Fatalf("LoadEvents: %v", err)
 	}
@@ -265,7 +266,7 @@ func TestAppendAndLoadEvents(t *testing.T) {
 
 func TestAllEventTypesPersistable(t *testing.T) {
 	s := tmpStore(t)
-	s.CreateRun("run-all-evt", "wf", nil)
+	s.CreateRun(context.Background(), "run-all-evt", "wf", nil)
 
 	allTypes := []EventType{
 		EventRunStarted,
@@ -293,7 +294,7 @@ func TestAllEventTypesPersistable(t *testing.T) {
 	}
 
 	for _, typ := range allTypes {
-		_, err := s.AppendEvent("run-all-evt", Event{
+		_, err := s.AppendEvent(context.Background(), "run-all-evt", Event{
 			Type:     typ,
 			BranchID: "branch-0",
 			NodeID:   "node-x",
@@ -304,7 +305,7 @@ func TestAllEventTypesPersistable(t *testing.T) {
 		}
 	}
 
-	events, err := s.LoadEvents("run-all-evt")
+	events, err := s.LoadEvents(context.Background(), "run-all-evt")
 	if err != nil {
 		t.Fatalf("LoadEvents: %v", err)
 	}
@@ -320,7 +321,7 @@ func TestAllEventTypesPersistable(t *testing.T) {
 
 func TestLoadEventsEmpty(t *testing.T) {
 	s := tmpStore(t)
-	events, err := s.LoadEvents("nonexistent")
+	events, err := s.LoadEvents(context.Background(), "nonexistent")
 	if err != nil {
 		t.Fatalf("LoadEvents: %v", err)
 	}
@@ -331,7 +332,7 @@ func TestLoadEventsEmpty(t *testing.T) {
 
 func TestEventDataRoundTrip(t *testing.T) {
 	s := tmpStore(t)
-	s.CreateRun("run-data", "wf", nil)
+	s.CreateRun(context.Background(), "run-data", "wf", nil)
 
 	data := map[string]interface{}{
 		"model":         "claude-opus-4-20250514",
@@ -340,7 +341,7 @@ func TestEventDataRoundTrip(t *testing.T) {
 		"cost_usd":      0.042,
 		"tools_used":    []interface{}{"read_file", "edit_file"},
 	}
-	_, err := s.AppendEvent("run-data", Event{
+	_, err := s.AppendEvent(context.Background(), "run-data", Event{
 		Type: EventLLMStepFinished,
 		Data: data,
 	})
@@ -348,7 +349,7 @@ func TestEventDataRoundTrip(t *testing.T) {
 		t.Fatalf("AppendEvent: %v", err)
 	}
 
-	events, _ := s.LoadEvents("run-data")
+	events, _ := s.LoadEvents(context.Background(), "run-data")
 	if len(events) != 1 {
 		t.Fatalf("len = %d, want 1", len(events))
 	}
@@ -367,7 +368,7 @@ func TestEventDataRoundTrip(t *testing.T) {
 
 func TestWriteAndLoadArtifact(t *testing.T) {
 	s := tmpStore(t)
-	s.CreateRun("run-art", "wf", nil)
+	s.CreateRun(context.Background(), "run-art", "wf", nil)
 
 	a := &Artifact{
 		RunID:   "run-art",
@@ -375,11 +376,11 @@ func TestWriteAndLoadArtifact(t *testing.T) {
 		Version: 0,
 		Data:    map[string]interface{}{"verdict": "approved", "comments": "LGTM"},
 	}
-	if err := s.WriteArtifact(a); err != nil {
+	if err := s.WriteArtifact(context.Background(), a); err != nil {
 		t.Fatalf("WriteArtifact: %v", err)
 	}
 
-	loaded, err := s.LoadArtifact("run-art", "reviewer", 0)
+	loaded, err := s.LoadArtifact(context.Background(), "run-art", "reviewer", 0)
 	if err != nil {
 		t.Fatalf("LoadArtifact: %v", err)
 	}
@@ -396,7 +397,7 @@ func TestWriteAndLoadArtifact(t *testing.T) {
 
 func TestArtifactVersioning(t *testing.T) {
 	s := tmpStore(t)
-	s.CreateRun("run-ver", "wf", nil)
+	s.CreateRun(context.Background(), "run-ver", "wf", nil)
 
 	for v := 0; v < 3; v++ {
 		a := &Artifact{
@@ -405,13 +406,13 @@ func TestArtifactVersioning(t *testing.T) {
 			Version: v,
 			Data:    map[string]interface{}{"iteration": float64(v)},
 		}
-		if err := s.WriteArtifact(a); err != nil {
+		if err := s.WriteArtifact(context.Background(), a); err != nil {
 			t.Fatalf("WriteArtifact v%d: %v", v, err)
 		}
 	}
 
 	// Load specific version.
-	a1, err := s.LoadArtifact("run-ver", "planner", 1)
+	a1, err := s.LoadArtifact(context.Background(), "run-ver", "planner", 1)
 	if err != nil {
 		t.Fatalf("LoadArtifact v1: %v", err)
 	}
@@ -420,7 +421,7 @@ func TestArtifactVersioning(t *testing.T) {
 	}
 
 	// Load latest.
-	latest, err := s.LoadLatestArtifact("run-ver", "planner")
+	latest, err := s.LoadLatestArtifact(context.Background(), "run-ver", "planner")
 	if err != nil {
 		t.Fatalf("LoadLatestArtifact: %v", err)
 	}
@@ -435,7 +436,7 @@ func TestArtifactVersioning(t *testing.T) {
 
 func TestWriteAndLoadInteraction(t *testing.T) {
 	s := tmpStore(t)
-	s.CreateRun("run-human", "wf", nil)
+	s.CreateRun(context.Background(), "run-human", "wf", nil)
 
 	now := time.Now().UTC()
 	i := &Interaction{
@@ -448,11 +449,11 @@ func TestWriteAndLoadInteraction(t *testing.T) {
 			"comment": "Any comments?",
 		},
 	}
-	if err := s.WriteInteraction(i); err != nil {
+	if err := s.WriteInteraction(context.Background(), i); err != nil {
 		t.Fatalf("WriteInteraction: %v", err)
 	}
 
-	loaded, err := s.LoadInteraction("run-human", "int-001")
+	loaded, err := s.LoadInteraction(context.Background(), "run-human", "int-001")
 	if err != nil {
 		t.Fatalf("LoadInteraction: %v", err)
 	}
@@ -470,11 +471,11 @@ func TestWriteAndLoadInteraction(t *testing.T) {
 		"approve": true,
 		"comment": "Ship it!",
 	}
-	if err := s.WriteInteraction(loaded); err != nil {
+	if err := s.WriteInteraction(context.Background(), loaded); err != nil {
 		t.Fatalf("WriteInteraction update: %v", err)
 	}
 
-	reloaded, _ := s.LoadInteraction("run-human", "int-001")
+	reloaded, _ := s.LoadInteraction(context.Background(), "run-human", "int-001")
 	if reloaded.AnsweredAt == nil {
 		t.Fatal("AnsweredAt should be set")
 	}
@@ -485,10 +486,10 @@ func TestWriteAndLoadInteraction(t *testing.T) {
 
 func TestListInteractions(t *testing.T) {
 	s := tmpStore(t)
-	s.CreateRun("run-li", "wf", nil)
+	s.CreateRun(context.Background(), "run-li", "wf", nil)
 
 	for _, id := range []string{"int-a", "int-b", "int-c"} {
-		s.WriteInteraction(&Interaction{
+		s.WriteInteraction(context.Background(), &Interaction{
 			ID:          id,
 			RunID:       "run-li",
 			NodeID:      "human",
@@ -496,7 +497,7 @@ func TestListInteractions(t *testing.T) {
 		})
 	}
 
-	ids, err := s.ListInteractions("run-li")
+	ids, err := s.ListInteractions(context.Background(), "run-li")
 	if err != nil {
 		t.Fatalf("ListInteractions: %v", err)
 	}
@@ -510,7 +511,7 @@ func TestListInteractions(t *testing.T) {
 
 func TestListInteractionsEmpty(t *testing.T) {
 	s := tmpStore(t)
-	ids, err := s.ListInteractions("nonexistent")
+	ids, err := s.ListInteractions(context.Background(), "nonexistent")
 	if err != nil {
 		t.Fatalf("ListInteractions: %v", err)
 	}
@@ -527,22 +528,22 @@ func TestFullRunReplay(t *testing.T) {
 	s := tmpStore(t)
 
 	// 1. Create run.
-	run, _ := s.CreateRun("replay-001", "pr_refine_single_model", map[string]interface{}{
+	run, _ := s.CreateRun(context.Background(), "replay-001", "pr_refine_single_model", map[string]interface{}{
 		"repo":   "iterion",
 		"branch": "feat/store",
 	})
 
 	// 2. Emit events through a typical lifecycle.
-	s.AppendEvent(run.ID, Event{Type: EventRunStarted})
-	s.AppendEvent(run.ID, Event{Type: EventNodeStarted, NodeID: "context_builder"})
-	s.AppendEvent(run.ID, Event{Type: EventLLMRequest, NodeID: "context_builder"})
-	s.AppendEvent(run.ID, Event{Type: EventLLMStepFinished, NodeID: "context_builder", Data: map[string]interface{}{"tokens": float64(500)}})
-	s.AppendEvent(run.ID, Event{Type: EventArtifactWritten, NodeID: "context_builder"})
-	s.AppendEvent(run.ID, Event{Type: EventNodeFinished, NodeID: "context_builder"})
-	s.AppendEvent(run.ID, Event{Type: EventEdgeSelected, Data: map[string]interface{}{"from": "context_builder", "to": "reviewer"}})
+	s.AppendEvent(context.Background(), run.ID, Event{Type: EventRunStarted})
+	s.AppendEvent(context.Background(), run.ID, Event{Type: EventNodeStarted, NodeID: "context_builder"})
+	s.AppendEvent(context.Background(), run.ID, Event{Type: EventLLMRequest, NodeID: "context_builder"})
+	s.AppendEvent(context.Background(), run.ID, Event{Type: EventLLMStepFinished, NodeID: "context_builder", Data: map[string]interface{}{"tokens": float64(500)}})
+	s.AppendEvent(context.Background(), run.ID, Event{Type: EventArtifactWritten, NodeID: "context_builder"})
+	s.AppendEvent(context.Background(), run.ID, Event{Type: EventNodeFinished, NodeID: "context_builder"})
+	s.AppendEvent(context.Background(), run.ID, Event{Type: EventEdgeSelected, Data: map[string]interface{}{"from": "context_builder", "to": "reviewer"}})
 
 	// 3. Write artifact.
-	s.WriteArtifact(&Artifact{
+	s.WriteArtifact(context.Background(), &Artifact{
 		RunID:   run.ID,
 		NodeID:  "context_builder",
 		Version: 0,
@@ -550,12 +551,12 @@ func TestFullRunReplay(t *testing.T) {
 	})
 
 	// 4. Human pause.
-	s.AppendEvent(run.ID, Event{Type: EventNodeStarted, NodeID: "human_review"})
-	s.AppendEvent(run.ID, Event{Type: EventHumanInputRequested, NodeID: "human_review"})
-	s.AppendEvent(run.ID, Event{Type: EventRunPaused})
-	s.UpdateRunStatus(run.ID, RunStatusPausedWaitingHuman, "")
+	s.AppendEvent(context.Background(), run.ID, Event{Type: EventNodeStarted, NodeID: "human_review"})
+	s.AppendEvent(context.Background(), run.ID, Event{Type: EventHumanInputRequested, NodeID: "human_review"})
+	s.AppendEvent(context.Background(), run.ID, Event{Type: EventRunPaused})
+	s.UpdateRunStatus(context.Background(), run.ID, RunStatusPausedWaitingHuman, "")
 
-	s.WriteInteraction(&Interaction{
+	s.WriteInteraction(context.Background(), &Interaction{
 		ID:          "int-replay",
 		RunID:       run.ID,
 		NodeID:      "human_review",
@@ -565,7 +566,7 @@ func TestFullRunReplay(t *testing.T) {
 
 	// 5. Resume.
 	answered := time.Now().UTC()
-	s.WriteInteraction(&Interaction{
+	s.WriteInteraction(context.Background(), &Interaction{
 		ID:          "int-replay",
 		RunID:       run.ID,
 		NodeID:      "human_review",
@@ -574,16 +575,16 @@ func TestFullRunReplay(t *testing.T) {
 		Questions:   map[string]interface{}{"approve": "Approve?"},
 		Answers:     map[string]interface{}{"approve": true},
 	})
-	s.AppendEvent(run.ID, Event{Type: EventHumanAnswersRecorded, NodeID: "human_review"})
-	s.AppendEvent(run.ID, Event{Type: EventRunResumed})
-	s.AppendEvent(run.ID, Event{Type: EventNodeFinished, NodeID: "human_review"})
-	s.AppendEvent(run.ID, Event{Type: EventRunFinished})
-	s.UpdateRunStatus(run.ID, RunStatusFinished, "")
+	s.AppendEvent(context.Background(), run.ID, Event{Type: EventHumanAnswersRecorded, NodeID: "human_review"})
+	s.AppendEvent(context.Background(), run.ID, Event{Type: EventRunResumed})
+	s.AppendEvent(context.Background(), run.ID, Event{Type: EventNodeFinished, NodeID: "human_review"})
+	s.AppendEvent(context.Background(), run.ID, Event{Type: EventRunFinished})
+	s.UpdateRunStatus(context.Background(), run.ID, RunStatusFinished, "")
 
 	// --- Verify full reload ---
 
 	// Run.
-	reRun, err := s.LoadRun(run.ID)
+	reRun, err := s.LoadRun(context.Background(), run.ID)
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}
@@ -592,7 +593,7 @@ func TestFullRunReplay(t *testing.T) {
 	}
 
 	// Events.
-	events, err := s.LoadEvents(run.ID)
+	events, err := s.LoadEvents(context.Background(), run.ID)
 	if err != nil {
 		t.Fatalf("LoadEvents: %v", err)
 	}
@@ -608,7 +609,7 @@ func TestFullRunReplay(t *testing.T) {
 	}
 
 	// Artifact.
-	art, err := s.LoadArtifact(run.ID, "context_builder", 0)
+	art, err := s.LoadArtifact(context.Background(), run.ID, "context_builder", 0)
 	if err != nil {
 		t.Fatalf("LoadArtifact: %v", err)
 	}
@@ -617,7 +618,7 @@ func TestFullRunReplay(t *testing.T) {
 	}
 
 	// Interaction.
-	inter, err := s.LoadInteraction(run.ID, "int-replay")
+	inter, err := s.LoadInteraction(context.Background(), run.ID, "int-replay")
 	if err != nil {
 		t.Fatalf("LoadInteraction: %v", err)
 	}
@@ -649,15 +650,15 @@ func TestReloadFromDisk(t *testing.T) {
 
 	// First store instance: write data.
 	s1, _ := New(dir)
-	s1.CreateRun("reload-001", "wf", nil)
-	s1.AppendEvent("reload-001", Event{Type: EventRunStarted})
-	s1.AppendEvent("reload-001", Event{Type: EventNodeStarted, NodeID: "a"})
-	s1.WriteArtifact(&Artifact{RunID: "reload-001", NodeID: "a", Version: 0, Data: map[string]interface{}{"x": "y"}})
+	s1.CreateRun(context.Background(), "reload-001", "wf", nil)
+	s1.AppendEvent(context.Background(), "reload-001", Event{Type: EventRunStarted})
+	s1.AppendEvent(context.Background(), "reload-001", Event{Type: EventNodeStarted, NodeID: "a"})
+	s1.WriteArtifact(context.Background(), &Artifact{RunID: "reload-001", NodeID: "a", Version: 0, Data: map[string]interface{}{"x": "y"}})
 
 	// Second store instance: read data back (fresh seq counters).
 	s2, _ := New(dir)
 
-	run, err := s2.LoadRun("reload-001")
+	run, err := s2.LoadRun(context.Background(), "reload-001")
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}
@@ -665,12 +666,12 @@ func TestReloadFromDisk(t *testing.T) {
 		t.Errorf("WorkflowName = %q", run.WorkflowName)
 	}
 
-	events, _ := s2.LoadEvents("reload-001")
+	events, _ := s2.LoadEvents(context.Background(), "reload-001")
 	if len(events) != 2 {
 		t.Fatalf("events = %d, want 2", len(events))
 	}
 
-	art, _ := s2.LoadArtifact("reload-001", "a", 0)
+	art, _ := s2.LoadArtifact(context.Background(), "reload-001", "a", 0)
 	if art.Data["x"] != "y" {
 		t.Errorf("artifact data = %v", art.Data)
 	}
@@ -680,7 +681,7 @@ func TestReloadFromDisk(t *testing.T) {
 	// duplicate sequence numbers (which would break monotonic ordering and
 	// any consumer that dedups by Seq). Two events were appended above with
 	// Seq 0 and 1, so the next append must be Seq 2.
-	evt, _ := s2.AppendEvent("reload-001", Event{Type: EventRunFinished})
+	evt, _ := s2.AppendEvent(context.Background(), "reload-001", Event{Type: EventRunFinished})
 	if evt.Seq != 2 {
 		t.Errorf("seeded seq after reload = %d, want 2", evt.Seq)
 	}
@@ -694,14 +695,14 @@ func TestPathTraversalRejected(t *testing.T) {
 	s := tmpStore(t)
 
 	// CreateRun with traversal in ID.
-	_, err := s.CreateRun("../../etc", "wf", nil)
+	_, err := s.CreateRun(context.Background(), "../../etc", "wf", nil)
 	if err == nil {
 		t.Fatal("expected error for path traversal in run ID")
 	}
 
 	// WriteArtifact with traversal in NodeID.
-	s.CreateRun("safe-run", "wf", nil)
-	err = s.WriteArtifact(&Artifact{
+	s.CreateRun(context.Background(), "safe-run", "wf", nil)
+	err = s.WriteArtifact(context.Background(), &Artifact{
 		RunID:  "safe-run",
 		NodeID: "../../../etc",
 		Data:   map[string]interface{}{},
@@ -711,7 +712,7 @@ func TestPathTraversalRejected(t *testing.T) {
 	}
 
 	// WriteInteraction with slash in ID.
-	err = s.WriteInteraction(&Interaction{
+	err = s.WriteInteraction(context.Background(), &Interaction{
 		ID:    "foo/bar",
 		RunID: "safe-run",
 	})
@@ -720,13 +721,13 @@ func TestPathTraversalRejected(t *testing.T) {
 	}
 
 	// LoadArtifact with traversal.
-	_, err = s.LoadArtifact("safe-run", "../../secret", 0)
+	_, err = s.LoadArtifact(context.Background(), "safe-run", "../../secret", 0)
 	if err == nil {
 		t.Fatal("expected error for path traversal in LoadArtifact")
 	}
 
 	// LoadInteraction with traversal.
-	_, err = s.LoadInteraction("safe-run", "../../../etc/passwd")
+	_, err = s.LoadInteraction(context.Background(), "safe-run", "../../../etc/passwd")
 	if err == nil {
 		t.Fatal("expected error for path traversal in LoadInteraction")
 	}
@@ -738,11 +739,11 @@ func TestPathTraversalRejected(t *testing.T) {
 
 func TestArtifactIndexUpdatedOnWrite(t *testing.T) {
 	s := tmpStore(t)
-	s.CreateRun("run-idx", "wf", nil)
+	s.CreateRun(context.Background(), "run-idx", "wf", nil)
 
 	// Write two versions for the same node.
 	for v := 0; v < 3; v++ {
-		if err := s.WriteArtifact(&Artifact{
+		if err := s.WriteArtifact(context.Background(), &Artifact{
 			RunID:   "run-idx",
 			NodeID:  "analyzer",
 			Version: v,
@@ -752,7 +753,7 @@ func TestArtifactIndexUpdatedOnWrite(t *testing.T) {
 		}
 	}
 
-	r, err := s.LoadRun("run-idx")
+	r, err := s.LoadRun(context.Background(), "run-idx")
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}
@@ -766,10 +767,10 @@ func TestArtifactIndexUpdatedOnWrite(t *testing.T) {
 
 func TestLoadLatestArtifactUsesIndex(t *testing.T) {
 	s := tmpStore(t)
-	s.CreateRun("run-fast", "wf", nil)
+	s.CreateRun(context.Background(), "run-fast", "wf", nil)
 
 	for v := 0; v < 3; v++ {
-		s.WriteArtifact(&Artifact{
+		s.WriteArtifact(context.Background(), &Artifact{
 			RunID:   "run-fast",
 			NodeID:  "planner",
 			Version: v,
@@ -777,7 +778,7 @@ func TestLoadLatestArtifactUsesIndex(t *testing.T) {
 		})
 	}
 
-	latest, err := s.LoadLatestArtifact("run-fast", "planner")
+	latest, err := s.LoadLatestArtifact(context.Background(), "run-fast", "planner")
 	if err != nil {
 		t.Fatalf("LoadLatestArtifact: %v", err)
 	}
@@ -791,11 +792,11 @@ func TestLoadLatestArtifactUsesIndex(t *testing.T) {
 
 func TestLoadLatestArtifactFallbackWithoutIndex(t *testing.T) {
 	s := tmpStore(t)
-	s.CreateRun("run-noindex", "wf", nil)
+	s.CreateRun(context.Background(), "run-noindex", "wf", nil)
 
 	// Write artifacts then manually clear the index to simulate an old-format run.
 	for v := 0; v < 2; v++ {
-		s.WriteArtifact(&Artifact{
+		s.WriteArtifact(context.Background(), &Artifact{
 			RunID:   "run-noindex",
 			NodeID:  "reviewer",
 			Version: v,
@@ -804,12 +805,12 @@ func TestLoadLatestArtifactFallbackWithoutIndex(t *testing.T) {
 	}
 
 	// Clear the index in run.json.
-	r, _ := s.LoadRun("run-noindex")
+	r, _ := s.LoadRun(context.Background(), "run-noindex")
 	r.ArtifactIndex = nil
-	s.SaveRun(r)
+	s.SaveRun(context.Background(), r)
 
 	// LoadLatestArtifact should still work via directory scan.
-	latest, err := s.LoadLatestArtifact("run-noindex", "reviewer")
+	latest, err := s.LoadLatestArtifact(context.Background(), "run-noindex", "reviewer")
 	if err != nil {
 		t.Fatalf("LoadLatestArtifact fallback: %v", err)
 	}
@@ -820,13 +821,13 @@ func TestLoadLatestArtifactFallbackWithoutIndex(t *testing.T) {
 
 func TestArtifactIndexMultipleNodes(t *testing.T) {
 	s := tmpStore(t)
-	s.CreateRun("run-multi", "wf", nil)
+	s.CreateRun(context.Background(), "run-multi", "wf", nil)
 
-	s.WriteArtifact(&Artifact{RunID: "run-multi", NodeID: "a", Version: 0, Data: map[string]interface{}{"n": "a"}})
-	s.WriteArtifact(&Artifact{RunID: "run-multi", NodeID: "b", Version: 0, Data: map[string]interface{}{"n": "b"}})
-	s.WriteArtifact(&Artifact{RunID: "run-multi", NodeID: "a", Version: 1, Data: map[string]interface{}{"n": "a2"}})
+	s.WriteArtifact(context.Background(), &Artifact{RunID: "run-multi", NodeID: "a", Version: 0, Data: map[string]interface{}{"n": "a"}})
+	s.WriteArtifact(context.Background(), &Artifact{RunID: "run-multi", NodeID: "b", Version: 0, Data: map[string]interface{}{"n": "b"}})
+	s.WriteArtifact(context.Background(), &Artifact{RunID: "run-multi", NodeID: "a", Version: 1, Data: map[string]interface{}{"n": "a2"}})
 
-	r, _ := s.LoadRun("run-multi")
+	r, _ := s.LoadRun(context.Background(), "run-multi")
 	if r.ArtifactIndex["a"] != 1 {
 		t.Errorf("ArtifactIndex[a] = %d, want 1", r.ArtifactIndex["a"])
 	}
@@ -841,7 +842,7 @@ func TestArtifactIndexMultipleNodes(t *testing.T) {
 
 func TestCheckpointInteractionQuestionsRoundTrip(t *testing.T) {
 	s := tmpStore(t)
-	s.CreateRun("run-cp", "wf", nil)
+	s.CreateRun(context.Background(), "run-cp", "wf", nil)
 
 	questions := map[string]interface{}{
 		"approve": "Do you approve?",
@@ -857,11 +858,11 @@ func TestCheckpointInteractionQuestionsRoundTrip(t *testing.T) {
 		InteractionQuestions: questions,
 	}
 
-	if err := s.PauseRun("run-cp", cp); err != nil {
+	if err := s.PauseRun(context.Background(), "run-cp", cp); err != nil {
 		t.Fatalf("PauseRun: %v", err)
 	}
 
-	r, err := s.LoadRun("run-cp")
+	r, err := s.LoadRun(context.Background(), "run-cp")
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}

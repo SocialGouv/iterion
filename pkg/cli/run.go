@@ -204,7 +204,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	}
 
 	// Acquire exclusive run lock to prevent concurrent processes.
-	lock, err := s.LockRun(runID)
+	lock, err := s.LockRun(context.Background(), runID)
 	if err != nil {
 		return fmt.Errorf("cannot acquire run lock: %w", err)
 	}
@@ -246,7 +246,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		// leaving the user with a paused_waiting_human status that hid
 		// the real issue (corrupt checkpoint, missing interaction file,
 		// stdin closed mid-prompt, etc.).
-		r, loadErr := s.LoadRun(runID)
+		r, loadErr := s.LoadRun(context.Background(), runID)
 		if loadErr != nil {
 			err = fmt.Errorf("interactive resume: load run: %w", loadErr)
 			break
@@ -255,7 +255,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 			err = fmt.Errorf("interactive resume: run %q has no checkpoint", runID)
 			break
 		}
-		interaction, loadErr := s.LoadInteraction(runID, r.Checkpoint.InteractionID)
+		interaction, loadErr := s.LoadInteraction(context.Background(), runID, r.Checkpoint.InteractionID)
 		if loadErr != nil {
 			err = fmt.Errorf("interactive resume: load interaction: %w", loadErr)
 			break
@@ -464,13 +464,13 @@ func isTruthyEnv(name string) bool {
 // and populates the result map with interaction_id, node_id, and questions.
 // It is used by both run and resume to enrich paused-output for CI consumers.
 func enrichPausedResult(s store.RunStore, runID string, result map[string]interface{}) {
-	r, err := s.LoadRun(runID)
+	r, err := s.LoadRun(context.Background(), runID)
 	if err != nil || r.Checkpoint == nil {
 		return
 	}
 	result["interaction_id"] = r.Checkpoint.InteractionID
 	result["node_id"] = r.Checkpoint.NodeID
-	if interaction, err := s.LoadInteraction(runID, r.Checkpoint.InteractionID); err == nil {
+	if interaction, err := s.LoadInteraction(context.Background(), runID, r.Checkpoint.InteractionID); err == nil {
 		result["questions"] = interaction.Questions
 	}
 }

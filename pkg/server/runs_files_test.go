@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"os/exec"
@@ -20,13 +21,13 @@ func seedRunWithWorkDir(t *testing.T, srv *Server, runID, workDir string, worktr
 	if err != nil {
 		t.Fatalf("open seed store: %v", err)
 	}
-	r, err := st.CreateRun(runID, "wf", nil)
+	r, err := st.CreateRun(context.Background(), runID, "wf", nil)
 	if err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
 	r.WorkDir = workDir
 	r.Worktree = worktree
-	if err := st.SaveRun(r); err != nil {
+	if err := st.SaveRun(context.Background(), r); err != nil {
 		t.Fatalf("SaveRun: %v", err)
 	}
 }
@@ -216,7 +217,7 @@ func TestRunFiles_Historical_RepoRootStaleFallsBackToCWD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := st.CreateRun("hist", "wf", nil)
+	r, err := st.CreateRun(context.Background(), "hist", "wf", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +226,7 @@ func TestRunFiles_Historical_RepoRootStaleFallsBackToCWD(t *testing.T) {
 	r.Worktree = true
 	r.BaseCommit = baseSHA
 	r.FinalCommit = finalSHA
-	if err := st.SaveRun(r); err != nil {
+	if err := st.SaveRun(context.Background(), r); err != nil {
 		t.Fatal(err)
 	}
 

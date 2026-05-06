@@ -37,7 +37,7 @@ func TestE2E_PrivacyPipeline(t *testing.T) {
 	}
 
 	const runID = "e2e-privacy-1"
-	if _, err := s.CreateRun(runID, wf.Name, nil); err != nil {
+	if _, err := s.CreateRun(context.Background(), runID, wf.Name, nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
 
@@ -63,7 +63,7 @@ func TestE2E_PrivacyPipeline(t *testing.T) {
 	}
 
 	// 1. Run finished successfully.
-	r, err := s.LoadRun(runID)
+	r, err := s.LoadRun(context.Background(), runID)
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestE2E_PrivacyPipeline(t *testing.T) {
 	// 5. The restore node's output text round-trips to the original
 	// (read via the events log; we don't publish the artifact since
 	// publish: is not a tool-node property).
-	events, err := s.LoadEvents(runID)
+	events, err := s.LoadEvents(context.Background(), runID)
 	if err != nil {
 		t.Fatalf("LoadEvents: %v", err)
 	}
