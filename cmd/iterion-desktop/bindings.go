@@ -166,12 +166,20 @@ func (a *App) AddProject(dir string) (*Project, error) {
 	return p, nil
 }
 
-// AddProjectSilently registers the given directory as the current project and
-// restarts the embedded editor server without emitting project:switched. This
-// is intentionally scoped to first-run onboarding: selecting/scaffolding a
-// project must not reload the Welcome SPA before FirstRunDone is persisted.
+// AddProjectSilently registers the given directory as the current project,
+// persisting it without restarting the embedded editor server. Scoped to
+// first-run onboarding: the Welcome flow needs to keep its React state
+// (current step, picked dir, configured API keys) until FirstRunDone is
+// persisted at the end of the wizard. A WindowReloadApp triggered mid-flow
+// resets the Welcome state to step 1 and the user perceives "nothing
+// happened" after picking/scaffolding a folder. The actual server restart
+// + reload is deferred to MarkFirstRunDone.
 func (a *App) AddProjectSilently(dir string) (*Project, error) {
-	return a.addAndSwitchProject(dir)
+	abs, err := validateProjectDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	return a.addProject(abs)
 }
 
 func validateProjectDir(dir string) (string, error) {
@@ -371,12 +379,31 @@ func (a *App) IsFirstRunPending() bool {
 	return !a.config.FirstRunDone
 }
 
-// MarkFirstRunDone flips the FirstRunDone flag and persists.
+// MarkFirstRunDone flips the FirstRunDone flag, persists config, and (if a
+// project is now selected) restarts the embedded editor server pointing at
+// it before issuing the single re-bootstrap of the SPA. AddProjectSilently
+// intentionally skipped this restart so the Welcome wizard could keep its
+// React state through API-keys / CLI-check steps; this is the unique point
+// where the deferred restart fires.
 func (a *App) MarkFirstRunDone() error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.config.FirstRunDone = true
-	return a.config.Save()
+	if err := a.config.Save(); err != nil {
+		a.mu.Unlock()
+		return err
+	}
+	hasProject := a.config.CurrentProject() != nil
+	a.mu.Unlock()
+
+	if !hasProject {
+		// User somehow finished onboarding without picking a project.
+		// Nothing to switch to — leave the server on its fallback dir.
+		return nil
+	}
+	if _, err := a.restartServerForCurrentProject(a.ctx); err != nil {
+		return err
+	}
+	return nil
 }
 
 // ── Updater bindings ─────────────────────────────────────────────────────

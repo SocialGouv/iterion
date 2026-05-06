@@ -11,6 +11,10 @@ import (
 )
 
 func main() {
+	// Prime GTK with the system's color-scheme preference (Linux only)
+	// before Wails boots the GTK runtime. No-op on macOS / Windows.
+	applyLinuxSystemTheme()
+
 	app := NewApp()
 
 	// AssetServer architecture (see docs/adr/004-desktop-asset-proxy.md):

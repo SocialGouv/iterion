@@ -58,12 +58,17 @@ func withStubWindowReloader(t *testing.T) *int {
 	return &reloads
 }
 
-func TestAddProjectSilentlyRestartsServerForSelectedDir(t *testing.T) {
+// TestAddProjectSilently_PersistsWithoutRestart pins the contract that
+// onboarding's silent project add only persists config: no server restart,
+// no WindowReloadApp. This keeps the Welcome wizard's React state intact
+// (current step, picked dir, configured API keys) until MarkFirstRunDone
+// fires the deferred restart at the end of the flow.
+func TestAddProjectSilently_PersistsWithoutRestart(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
 	cfg := NewConfig()
 	cfg.path = cfgPath
-	srv := &recordingServer{addrs: []string{"127.0.0.1:50001", "127.0.0.1:50002"}}
+	srv := &recordingServer{addrs: []string{"127.0.0.1:50001"}}
 	reloads := withStubWindowReloader(t)
 	app := &App{
 		ctx:          context.Background(),
@@ -82,14 +87,54 @@ func TestAddProjectSilentlyRestartsServerForSelectedDir(t *testing.T) {
 	if p.Dir != dir {
 		t.Fatalf("project dir = %q, want %q", p.Dir, dir)
 	}
+	if got := len(srv.starts); got != 0 {
+		t.Fatalf("server starts = %d, want 0 (deferred to MarkFirstRunDone)", got)
+	}
+	if srv.stops != 0 {
+		t.Fatalf("server stops = %d, want 0 (deferred to MarkFirstRunDone)", srv.stops)
+	}
+	if cfg.CurrentProjectID != p.ID {
+		t.Fatalf("CurrentProjectID = %q, want %q", cfg.CurrentProjectID, p.ID)
+	}
+	if *reloads != 0 {
+		t.Fatalf("WindowReloadApp invocations = %d, want 0 (silent onboarding must not reset Welcome state)", *reloads)
+	}
+}
+
+// TestMarkFirstRunDone_RestartsAndReloadsWhenProjectIsSet covers the
+// deferred-restart path: AddProjectSilently leaves the embedded server
+// pointing at the fallback dir, and MarkFirstRunDone is the unique caller
+// that flips the flag and runs the project switch + WindowReloadApp.
+func TestMarkFirstRunDone_RestartsAndReloadsWhenProjectIsSet(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	cfg := NewConfig()
+	cfg.path = cfgPath
+	srv := &recordingServer{addrs: []string{"127.0.0.1:50001"}}
+	reloads := withStubWindowReloader(t)
+	app := &App{
+		ctx:          context.Background(),
+		config:       cfg,
+		server:       srv,
+		sessionToken: "test-token",
+	}
+
+	if _, err := app.AddProjectSilently(dir); err != nil {
+		t.Fatalf("AddProjectSilently: %v", err)
+	}
+
+	if err := app.MarkFirstRunDone(); err != nil {
+		t.Fatalf("MarkFirstRunDone: %v", err)
+	}
+
+	if !cfg.FirstRunDone {
+		t.Fatalf("FirstRunDone = false after MarkFirstRunDone")
+	}
 	if got := len(srv.starts); got != 1 {
 		t.Fatalf("server starts = %d, want 1", got)
 	}
 	if srv.starts[0].dir != dir {
 		t.Fatalf("server started with dir = %q, want %q", srv.starts[0].dir, dir)
-	}
-	if srv.starts[0].sessionToken != "test-token" {
-		t.Fatalf("server token = %q, want test-token", srv.starts[0].sessionToken)
 	}
 	if srv.stops != 1 {
 		t.Fatalf("server stops = %d, want 1", srv.stops)
@@ -97,11 +142,40 @@ func TestAddProjectSilentlyRestartsServerForSelectedDir(t *testing.T) {
 	if app.serverURL != "http://127.0.0.1:50001/" {
 		t.Fatalf("serverURL = %q, want http://127.0.0.1:50001/", app.serverURL)
 	}
-	if cfg.CurrentProjectID != p.ID {
-		t.Fatalf("CurrentProjectID = %q, want %q", cfg.CurrentProjectID, p.ID)
-	}
 	if *reloads != 1 {
-		t.Fatalf("WindowReloadApp invocations = %d, want 1 (silent onboarding still needs to drive re-bootstrap)", *reloads)
+		t.Fatalf("WindowReloadApp invocations = %d, want 1 (single reload at end of onboarding)", *reloads)
+	}
+}
+
+// TestMarkFirstRunDone_NoOpWhenNoProject covers the edge case where the
+// user finishes onboarding without ever picking a project (e.g. a future
+// Welcome flow that skips the project step). We still flip the flag but
+// don't restart the server — there's nowhere to point it at.
+func TestMarkFirstRunDone_NoOpWhenNoProject(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	cfg := NewConfig()
+	cfg.path = cfgPath
+	srv := &recordingServer{addrs: []string{"127.0.0.1:50001"}}
+	reloads := withStubWindowReloader(t)
+	app := &App{
+		ctx:          context.Background(),
+		config:       cfg,
+		server:       srv,
+		sessionToken: "test-token",
+	}
+
+	if err := app.MarkFirstRunDone(); err != nil {
+		t.Fatalf("MarkFirstRunDone: %v", err)
+	}
+
+	if !cfg.FirstRunDone {
+		t.Fatalf("FirstRunDone = false after MarkFirstRunDone")
+	}
+	if got := len(srv.starts); got != 0 {
+		t.Fatalf("server starts = %d, want 0 (no project to switch to)", got)
+	}
+	if *reloads != 0 {
+		t.Fatalf("WindowReloadApp invocations = %d, want 0", *reloads)
 	}
 }
 
