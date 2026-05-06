@@ -55,6 +55,11 @@ type inFlight struct {
 	runID    string
 	delivery *natsq.Delivery
 	cancelFn context.CancelFunc
+	// done is closed by processOne's defer once the delivery has been
+	// Ack'd or Nak'd. Shutdown waits on it so it doesn't re-Nak a
+	// delivery that has already been acted on by processOne (the NATS
+	// client tolerates double-acks but it's a misuse of the contract).
+	done chan struct{}
 }
 
 // New builds a runner from the supplied dependencies and creates the
@@ -143,19 +148,24 @@ func (r *Runner) Shutdown(ctx context.Context) error {
 	if r.cancel != nil {
 		r.cancel()
 	}
-	if cur != nil {
-		// Cancel the in-flight context so engine.Run unwinds via
-		// handleContextDoneWithCheckpoint (preserving the
-		// checkpoint). The delivery is then InProgress'd one last
-		// time + Nak'd so JetStream redelivers it.
-		cur.cancelFn()
-		_ = cur.delivery.InProgress()
-		// Wait for the engine to finish its checkpoint write before
-		// nak'ing. Bounded by the SIGTERM grace period propagated
-		// via ctx so the pod doesn't deadlock past terminationGracePeriod.
-		<-ctx.Done()
+	if cur == nil {
+		return nil
+	}
+	// Cancel the in-flight context so engine.Run unwinds via
+	// handleContextDoneWithCheckpoint (preserving the checkpoint),
+	// and extend the ack window while we wait for it to finish.
+	cur.cancelFn()
+	_ = cur.delivery.InProgress()
+	select {
+	case <-cur.done:
+		// processOne already Ack'd (paused/cancelled checkpoint) or
+		// Nak'd (transient failure) the delivery. Nothing more to do.
+		r.cfg.Logger.Info("runner: in-flight run %s drained during shutdown", cur.runID)
+	case <-ctx.Done():
+		// Grace period expired before the engine finished checkpointing.
+		// Best-effort Nak so JetStream redelivers to a sibling pod.
 		_ = cur.delivery.Nak()
-		r.cfg.Logger.Info("runner: drained in-flight run %s — JetStream will redeliver", cur.runID)
+		r.cfg.Logger.Warn("runner: shutdown grace expired for run %s — naking for redelivery", cur.runID)
 	}
 	return nil
 }
@@ -181,10 +191,16 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	runCtx, runCancel := context.WithCancel(traced)
 	defer runCancel()
 
+	done := make(chan struct{})
 	r.mu.Lock()
-	r.current = &inFlight{runID: msg.RunID, delivery: delivery, cancelFn: runCancel}
+	r.current = &inFlight{runID: msg.RunID, delivery: delivery, cancelFn: runCancel, done: done}
 	r.mu.Unlock()
 	defer func() {
+		// Signal Shutdown that the delivery has been acted on (Ack or
+		// Nak) before we clear r.current. Order matters: close before
+		// nilling so a Shutdown that captured cur is guaranteed to see
+		// the channel close.
+		close(done)
 		r.mu.Lock()
 		r.current = nil
 		r.mu.Unlock()
