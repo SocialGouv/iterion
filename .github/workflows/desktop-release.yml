@@ -12,7 +12,11 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  # Tag pushes serialise (we never want a v1.2.0 build to clobber a still
+  # running v1.1.0 release), but manual workflow_dispatch invocations
+  # cancel the previous one — typical iteration flow during desktop
+  # packaging troubleshooting.
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
 
 permissions:
   contents: write
