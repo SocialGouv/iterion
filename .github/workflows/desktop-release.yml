@@ -48,12 +48,23 @@ jobs:
             artifact_name: iterion-desktop-linux-arm64
             package: appimage
     runs-on: ${{ matrix.os }}
+    env:
+      # Allow Go to auto-download a newer toolchain when go.mod's `go`
+      # directive bumps past the preinstalled version on the runner. With
+      # GOTOOLCHAIN=local (setup-go default), `go build` would refuse to
+      # run instead of fetching the requested toolchain.
+      GOTOOLCHAIN: auto
     steps:
       - uses: actions/checkout@v6
 
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          # Pin to the major Go version our go.mod requires. setup-go's
+          # go-version-file mode can fall back to a runner-preinstalled Go
+          # when the exact version isn't in its tool cache, and that
+          # silently lands us on a Go too old for go.mod's `go 1.26.0`.
+          go-version: "1.26"
+          check-latest: true
 
       - uses: actions/setup-node@v6
         with:

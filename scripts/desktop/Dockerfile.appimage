@@ -35,8 +35,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
  && apt-get install -y --no-install-recommends nodejs \
  && rm -rf /var/lib/apt/lists/*
 
-# Go toolchain. Pinned to a recent stable; bump in lockstep with go.mod.
-ARG GO_VERSION=1.25.0
+# Go toolchain. Pinned to a recent stable; bump in lockstep with go.mod's
+# `go` directive (currently 1.26.0).
+ARG GO_VERSION=1.26.0
 RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
         | tar -C /usr/local -xz
 
