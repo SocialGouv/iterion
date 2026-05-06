@@ -110,10 +110,18 @@ RUN ARCH="$(dpkg --print-architecture)" \
  && /usr/local/bin/kubectl version --client --output=yaml > /dev/null
 
 # Copy the Node 22 runtime + the pinned LLM CLIs from stage 3.
+#
+# We deliberately do NOT carry over `npm` / `npx` nor the system
+# /usr/local/lib/node_modules from the build image:
+#  - npm itself isn't invoked at runtime (the CLIs `claude` and
+#    `codex` are standalone Node apps that only need the `node`
+#    binary + their own node_modules under /opt/iterion/llm-clis/).
+#  - npm bundles its own copy of dependencies (picomatch, glob, …),
+#    and Trivy was flagging at least one HIGH CVE in those bundled
+#    deps that we'd otherwise inherit despite never executing.
+# Dropping the system node_modules cuts ~30 MB and a long tail of
+# transitive npm-vendored vuln noise.
 COPY --from=llm-clis /usr/local/bin/node /usr/local/bin/node
-COPY --from=llm-clis /usr/local/bin/npm /usr/local/bin/npm
-COPY --from=llm-clis /usr/local/bin/npx /usr/local/bin/npx
-COPY --from=llm-clis /usr/local/lib/node_modules /usr/local/lib/node_modules
 COPY --from=llm-clis /llm/node_modules /opt/iterion/llm-clis/node_modules
 RUN ln -s /opt/iterion/llm-clis/node_modules/.bin/claude /usr/local/bin/claude && \
     ln -s /opt/iterion/llm-clis/node_modules/.bin/codex  /usr/local/bin/codex
