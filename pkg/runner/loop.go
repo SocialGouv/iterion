@@ -195,6 +195,20 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		logger.Warn("runner: subscribe cancel %s: %v (continuing without)", msg.RunID, err)
 	}
 
+	// Cooperative cancel check: if the server flipped the run to
+	// cancelled before we picked it up (T-32 cancel-queued path),
+	// ack the JetStream delivery without doing any work — we do
+	// not lock, do not touch the engine, and the queue position
+	// for sibling runs collapses immediately. The server's cancel
+	// handler is responsible for flipping the Mongo doc; the
+	// JetStream message becomes a no-op signal.
+	preRun, preErr := r.cfg.Store.LoadRun(runCtx, msg.RunID)
+	if preErr == nil && preRun != nil && preRun.Status == store.RunStatusCancelled {
+		logger.Info("runner: run %s already cancelled — skipping", msg.RunID)
+		_ = delivery.Ack()
+		return
+	}
+
 	// Acquire the distributed lock. Two competing runners on the
 	// same run is the contention this guards against.
 	lock, err := r.cfg.Store.LockRun(runCtx, msg.RunID)
