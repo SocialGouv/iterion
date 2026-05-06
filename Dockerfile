@@ -70,13 +70,34 @@ ENV ITERION_VERSION=${VERSION} \
 #   tini      — PID 1 reaper so SIGTERM propagates correctly to the
 #               iterion process and to any child shells/CLIs.
 #   procps    — `ps`, used by recovery dispatch + diagnostics.
+#   curl      — needed to fetch kubectl below; harmless to keep
+#               available for runtime use.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         git \
         ca-certificates \
         tini \
         procps \
+        curl \
  && rm -rf /var/lib/apt/lists/*
+
+# kubectl — required by the kubernetes sandbox driver (Phase 5) when
+# the runner pod creates per-run sibling pods. Pinned to a recent
+# stable release; Kubernetes guarantees client/server compatibility
+# within ±1 minor for the verbs we use (apply, exec, wait, delete).
+# ~50 MB at this version, which is small relative to the Node + Go
+# + LLM CLIs already in the image.
+ARG KUBECTL_VERSION=v1.31.4
+RUN ARCH="$(dpkg --print-architecture)" \
+ && case "$ARCH" in \
+        amd64) KARCH=amd64 ;; \
+        arm64) KARCH=arm64 ;; \
+        *) echo "unsupported arch for kubectl: $ARCH" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSL -o /usr/local/bin/kubectl \
+        "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${KARCH}/kubectl" \
+ && chmod +x /usr/local/bin/kubectl \
+ && /usr/local/bin/kubectl version --client --output=yaml > /dev/null
 
 # Copy the Node 22 runtime + the pinned LLM CLIs from stage 3.
 COPY --from=llm-clis /usr/local/bin/node /usr/local/bin/node

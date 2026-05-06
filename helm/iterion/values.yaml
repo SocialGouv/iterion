@@ -66,6 +66,13 @@ runner:
     cooldownPeriod: 60
     pollingInterval: 5
     lagThreshold: 1
+  # Sandbox toggle for the runner pod. When enabled, the chart
+  # provisions the additional RBAC the runner needs to create per-run
+  # sibling pods via the kubernetes sandbox driver (Phase 5 V1).
+  # Disabled by default for clusters that haven't opted into the
+  # sandbox feature; turn on per-environment via values-prod.yaml.
+  sandbox:
+    enabled: false
 
 # --- HTTP exposure --------------------------------------------------
 service:

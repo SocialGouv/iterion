@@ -25,6 +25,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/sandbox/devcontainer"
 	"github.com/SocialGouv/iterion/pkg/sandbox/docker"
+	"github.com/SocialGouv/iterion/pkg/sandbox/kubernetes"
 	"github.com/SocialGouv/iterion/pkg/sandbox/netproxy"
 	"github.com/SocialGouv/iterion/pkg/sandbox/noop"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -438,9 +439,10 @@ func backendIsClaw(name string) bool {
 // added without registering it everywhere.
 func defaultDriverRegistry() map[string]sandbox.DriverConstructor {
 	return map[string]sandbox.DriverConstructor{
-		"docker": docker.Constructor,
-		"podman": docker.Constructor,
-		"noop":   noop.Constructor,
+		"docker":     docker.Constructor,
+		"podman":     docker.Constructor,
+		"kubernetes": kubernetes.Constructor,
+		"noop":       noop.Constructor,
 	}
 }
 

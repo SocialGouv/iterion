@@ -229,14 +229,64 @@ current host and what capabilities it advertises.
 
 ## Cloud (`ITERION_MODE=cloud`)
 
-The runner pod itself is the de-facto sandbox in cloud V1: the
-KubernetesDriver is stubbed and the resolver falls back to noop.
-NetworkPolicy + securityContext defined in the Helm chart provide
-isolation at the pod level, which iterion does not currently
-augment with per-run policy. Phase 5 ships per-run Pod siblings
-with NetworkPolicy generated from the workflow's spec. Until then,
-declaring `sandbox: auto` in cloud mode emits `sandbox_skipped`
-with `driver=noop` so operators see the gap explicitly.
+When iterion runs in-cluster (`iterion server` + `iterion runner`
+deployed via the Helm chart) and `runner.sandbox.enabled: true` is
+set, each sandboxed run is hosted in its own **sibling pod** in the
+runner's namespace.
+
+Architecture:
+
+- The runner pod detects the in-cluster service-account token and
+  selects the `kubernetes` driver. The factory's preference order
+  on `HostCloud` is `kubernetes → noop`.
+- For each iterion run, the driver renders a Pod manifest from
+  the resolved `sandbox.Spec` (image, env, user, workspaceFolder,
+  postCreate) and applies it via `kubectl apply -f -`.
+- The pod's PID 1 is `sleep infinity`; subsequent delegate calls
+  (claude_code / claw / tool nodes) reach in via `kubectl exec`.
+- Workspace is provided by an `emptyDir` volume mounted at
+  `/workspace`. Phase 5 V1 doesn't clone source from a remote;
+  the runner's WorkDir is the bind-mount source.
+- Cleanup deletes the pod (and its emptyDir) on run exit.
+
+Security defaults applied to every sibling pod:
+
+| Setting                          | Value                              |
+| -------------------------------- | ---------------------------------- |
+| `restartPolicy`                  | `Never`                            |
+| `automountServiceAccountToken`   | `false`                            |
+| pod `securityContext.runAsNonRoot` | `true`                           |
+| `seccompProfile.type`            | `RuntimeDefault`                   |
+| container `allowPrivilegeEscalation` | `false`                          |
+| container `capabilities.drop`    | `[ALL]`                            |
+| `runAsUser` / `runAsGroup`       | from `sandbox.user` (numeric form) |
+
+RBAC: the chart provisions a `Role` (namespace-scoped, NOT
+ClusterRole) granting the runner `pods:get/list/watch/create/delete`,
+`pods/exec:create/get`, `pods/log:get/list`, `pods/status:get`.
+Enable via:
+
+```yaml
+# values-prod.yaml
+runner:
+  sandbox:
+    enabled: true
+```
+
+V1 limitations (Phase 5 V2):
+
+- **Per-run NetworkPolicy** is not yet synthesised — the engine's
+  CONNECT proxy on the host runner pod handles egress filtering
+  for both docker and kubernetes drivers (the same allow/deny
+  rules apply).
+- **`sandbox.mounts`** is rejected in cloud mode — extra bind
+  mounts need PVC plumbing which V2 will wire.
+- **`sandbox.build`** (Dockerfile-at-run-start) is rejected — V2
+  will use Kaniko in-cluster.
+- **Image-pull secrets** for private registries beyond the
+  runner's own image are not propagated; declare them on the
+  pod's namespace ServiceAccount as `imagePullSecrets` and they
+  will apply to sibling pods automatically.
 
 ## Troubleshooting
 

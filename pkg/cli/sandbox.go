@@ -8,6 +8,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/sandbox/docker"
+	"github.com/SocialGouv/iterion/pkg/sandbox/kubernetes"
 	"github.com/SocialGouv/iterion/pkg/sandbox/noop"
 )
 
@@ -112,11 +113,13 @@ func RunSandboxDoctor(p *Printer) error {
 // The factory walks this map in [sandbox.preferenceOrder] for the
 // detected host kind. On a host without docker/podman, the docker
 // constructor returns ErrUnavailable and the factory falls through
-// to noop.
+// to noop. In-cluster runners pick kubernetes first and fall through
+// to noop if the runner pod is mis-configured (no token, no kubectl).
 func defaultDriverRegistry() map[string]sandbox.DriverConstructor {
 	return map[string]sandbox.DriverConstructor{
-		"docker": docker.Constructor,
-		"podman": docker.Constructor, // same code path; runtime detection picks
-		"noop":   noop.Constructor,
+		"docker":     docker.Constructor,
+		"podman":     docker.Constructor,     // same code path; runtime detection picks
+		"kubernetes": kubernetes.Constructor, // selected when ITERION_MODE=cloud + in-cluster
+		"noop":       noop.Constructor,
 	}
 }
