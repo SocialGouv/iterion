@@ -618,7 +618,7 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 		}
 
 		// --- Emit node_finished with usage data ---
-		nodeFinishedData := buildNodeFinishedData(output)
+		nodeFinishedData := buildNodeFinishedData(sanitizeOutputForEvent(node, output))
 		if err := e.emit(rs.runID, store.EventNodeFinished, currentNodeID, nodeFinishedData); err != nil {
 			return err
 		}
@@ -680,7 +680,7 @@ func (e *Engine) execCompute(rs *runState, nodeID string, cn *ir.ComputeNode) (s
 		return "", err
 	}
 
-	if err := e.emit(rs.runID, store.EventNodeFinished, nodeID, buildNodeFinishedData(output)); err != nil {
+	if err := e.emit(rs.runID, store.EventNodeFinished, nodeID, buildNodeFinishedData(sanitizeOutputForEvent(cn, output))); err != nil {
 		return "", err
 	}
 	if e.onNodeFinished != nil {

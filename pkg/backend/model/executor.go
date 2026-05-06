@@ -20,6 +20,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
@@ -1331,9 +1332,22 @@ func (e *ClawExecutor) executeToolNode(ctx context.Context, node *ir.ToolNode, i
 			Error:     err,
 		})
 	}
+	// Persistence-aware redaction: privacy_filter/unfilter carry raw
+	// PII through the tool boundary, but the persisted event log
+	// must not. Strip the sensitive `text` field on the way to the
+	// hook; the in-memory output passed to downstream nodes is
+	// untouched.
+	inputForEvent := inputJSON
+	outputForEvent := outputStr
+	switch toolName {
+	case privacy.FilterToolName:
+		inputForEvent = redactJSONTextField(inputJSON)
+	case privacy.UnfilterToolName:
+		outputForEvent = string(redactJSONTextField([]byte(outputStr)))
+	}
 	// Emit detailed tool I/O via the prompt hook (reused for tool node logging).
 	if e.hooks.OnToolNodeResult != nil {
-		e.hooks.OnToolNodeResult(node.ID, toolName, inputJSON, outputStr, duration, err)
+		e.hooks.OnToolNodeResult(node.ID, toolName, inputForEvent, outputForEvent, duration, err)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("model: tool node %q: execute: %w", node.ID, err)
@@ -2196,4 +2210,35 @@ func prependPriorAskUser(userText string, input map[string]interface{}) string {
 	}
 	a, _ := input[delegate.PriorAskUserAnswerKey].(string)
 	return fmt.Sprintf("[PRIOR INTERACTION]\nYou previously called ask_user with question: %q\nThe user answered: %q\nUse this answer to complete your task. Do NOT call ask_user with the same question again.\n\n%s", q, a, userText)
+}
+
+// redactJSONTextField returns a sanitized copy of a JSON object
+// with the `text` field replaced by privacy.EventTextMarker. Other
+// fields (mode, categories, substituted, missing, ...) are
+// preserved so operators can still see how the call was
+// parameterised and which placeholders the unfilter saw. Decode
+// failure or absent `text` field → input returned unchanged
+// (best-effort: a malformed payload is already going to surface
+// via the tool's own error path).
+func redactJSONTextField(in []byte) []byte {
+	if len(in) == 0 {
+		return in
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(in, &m); err != nil {
+		return in
+	}
+	if _, ok := m["text"]; !ok {
+		return in
+	}
+	body, err := json.Marshal(privacy.EventTextMarker)
+	if err != nil {
+		return in
+	}
+	m["text"] = body
+	out, err := json.Marshal(m)
+	if err != nil {
+		return in
+	}
+	return out
 }

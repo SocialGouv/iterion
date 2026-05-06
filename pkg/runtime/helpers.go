@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -531,6 +532,41 @@ func buildNodeFinishedData(output map[string]interface{}) map[string]interface{}
 		data["_cost_usd"] = v
 	}
 	return data
+}
+
+// sanitizeOutputForEvent returns a copy of output with PII fields
+// scrubbed before the runtime emits a node_finished event. The
+// rule set is hard-coded to the two privacy tools — same trade-off
+// as the executor's switch on toolName: a generic mechanism would
+// require a registry pass-through in v1 that no other tool needs.
+//
+// privacy_filter's output is already safe (the `redacted` field
+// contains the placeholder form, not raw text), so the helper is
+// a no-op for it.
+//
+// privacy_unfilter's output carries the restored text in the
+// `text` field — that must not enter the persisted event stream.
+// Returns the original map when sanitisation is unnecessary.
+func sanitizeOutputForEvent(node ir.Node, output map[string]interface{}) map[string]interface{} {
+	if output == nil {
+		return nil
+	}
+	toolNode, ok := node.(*ir.ToolNode)
+	if !ok {
+		return output
+	}
+	if toolNode.Command != privacy.UnfilterToolName {
+		return output
+	}
+	if _, has := output["text"]; !has {
+		return output
+	}
+	sanitized := make(map[string]interface{}, len(output))
+	for k, v := range output {
+		sanitized[k] = v
+	}
+	sanitized["text"] = privacy.EventTextMarker
+	return sanitized
 }
 
 // formatOutputPreview builds a human-readable single-line summary of a

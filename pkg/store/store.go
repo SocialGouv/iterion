@@ -26,7 +26,7 @@ const (
 	filePerm os.FileMode = 0o600
 )
 
-// writeFileAtomic writes data to path atomically by first writing to a sibling
+// WriteFileAtomic writes data to path atomically by first writing to a sibling
 // temp file (path+".tmp"), fsyncing, and then renaming over the destination.
 // On POSIX, rename(2) is atomic for paths on the same filesystem, so a reader
 // observes either the prior contents or the new contents — never a torn write.
@@ -38,7 +38,10 @@ const (
 // unresumable.
 //
 // On error, the temp file is best-effort removed so we don't leak it.
-func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+//
+// Exported so other on-disk subsystems (e.g. the privacy vault) can reuse
+// the same write semantics without duplicating the algorithm.
+func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	tmp := path + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
 	if err != nil {
@@ -92,6 +95,10 @@ func SanitizePathComponent(name, component string) error {
 // sites within pkg/store don't need to be touched. Prefer the
 // exported name for new code.
 var sanitizePathComponent = SanitizePathComponent
+
+// writeFileAtomic is the legacy private alias; new code should call
+// the exported WriteFileAtomic directly.
+var writeFileAtomic = WriteFileAtomic
 
 // ---------------------------------------------------------------------------
 // FilesystemRunStore — file-backed persistence for runs

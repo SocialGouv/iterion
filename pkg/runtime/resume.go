@@ -413,7 +413,7 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 	}
 
 	// Emit node_finished.
-	nodeFinishedData := buildNodeFinishedData(output)
+	nodeFinishedData := buildNodeFinishedData(sanitizeOutputForEvent(node, output))
 	if err := e.emit(rs.runID, store.EventNodeFinished, nodeID, nodeFinishedData); err != nil {
 		return false, err
 	}
@@ -628,7 +628,7 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 	}
 
 	// Emit node_finished.
-	nodeFinishedData := buildNodeFinishedData(output)
+	nodeFinishedData := buildNodeFinishedData(sanitizeOutputForEvent(node, output))
 	if err := e.emit(rs.runID, store.EventNodeFinished, nodeID, nodeFinishedData); err != nil {
 		return err
 	}

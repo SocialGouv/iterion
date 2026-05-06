@@ -1,0 +1,43 @@
+## Fixture: privacy_pipeline
+##
+## End-to-end exercise of privacy_filter (redact mode) and
+## privacy_unfilter (restore mode). Pure tool nodes — no LLM —
+## so the test runs in `task test:e2e` without any API keys.
+##
+## Nominal path: redact -> restore -> done
+##
+##   1. The run starts with `text` injected as the entry node's
+##      input (via runtime.Run's third argument).
+##   2. `redact` calls privacy_filter (default mode = redact),
+##      producing { redacted, placeholders, ... }.
+##   3. `restore` calls privacy_unfilter on outputs.redact.redacted,
+##      producing { text, substituted, missing } where text matches
+##      the original input.
+##   4. The vault file at <store>/runs/<run-id>/pii_vault.json holds
+##      the placeholder→value mapping.
+
+schema redacted_out:
+  redacted: string
+
+schema restore_out:
+  text: string
+
+tool redact:
+  command: "privacy_filter"
+  output: redacted_out
+
+tool restore:
+  command: "privacy_unfilter"
+  output: restore_out
+
+workflow privacy_pipeline:
+  budget:
+    max_duration: "30s"
+    max_iterations: 10
+
+  entry: redact
+
+  redact -> restore with {
+    text: "{{outputs.redact.redacted}}"
+  }
+  restore -> done

@@ -21,6 +21,8 @@ import (
 	clawworker "github.com/SocialGouv/claw-code-go/pkg/api/worker"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
+	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy/detector"
 )
 
 func hasTool(r *Registry, name string) bool {
@@ -471,6 +473,38 @@ func TestRegisterClawAll_RegistersFullSet(t *testing.T) {
 	for _, name := range []string{"enter_plan_mode", "exit_plan_mode"} {
 		if hasTool(r, name) {
 			t.Errorf("%q should require explicit PlanModeState; got registered without one", name)
+		}
+	}
+}
+
+func TestRegisterClawAll_NoPrivacyByDefault(t *testing.T) {
+	r := NewRegistry()
+	if err := RegisterClawAll(r, ClawDefaults{Workspace: t.TempDir()}); err != nil {
+		t.Fatalf("RegisterClawAll: %v", err)
+	}
+	for _, name := range []string{"privacy_filter", "privacy_unfilter"} {
+		if hasTool(r, name) {
+			t.Errorf("%q should require explicit Privacy config; got registered without one", name)
+		}
+	}
+}
+
+func TestRegisterClawAll_RegistersPrivacyWhenConfigured(t *testing.T) {
+	r := NewRegistry()
+	cfg := &privacy.Config{
+		StoreDir:     t.TempDir(),
+		Detector:     detector.New(),
+		RunIDFromCtx: func(ctx context.Context) string { return "test-run" },
+	}
+	if err := RegisterClawAll(r, ClawDefaults{
+		Workspace: t.TempDir(),
+		Privacy:   cfg,
+	}); err != nil {
+		t.Fatalf("RegisterClawAll: %v", err)
+	}
+	for _, name := range []string{"privacy_filter", "privacy_unfilter"} {
+		if !hasTool(r, name) {
+			t.Errorf("expected %q registered when Privacy config is set", name)
 		}
 	}
 }

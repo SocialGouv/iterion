@@ -14,6 +14,7 @@ import (
 	clawworker "github.com/SocialGouv/claw-code-go/pkg/api/worker"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
 )
 
 // RegisterClawBuiltins registers the standard claw-code-go built-in tools
@@ -560,6 +561,13 @@ type ClawDefaults struct {
 	// even when the operator did not prefix the iterion launch with
 	// `devbox run --`. Nil/empty means plain os.Environ() inheritance.
 	BashExtraEnv []string
+
+	// Privacy, when non-nil, registers the privacy_filter and
+	// privacy_unfilter built-in tools backed by a pure-Go regex+
+	// heuristics detector. Config.StoreDir + Config.Detector +
+	// Config.RunIDFromCtx must all be set so per-run vaults can
+	// be persisted at <StoreDir>/runs/<runID>/pii_vault.json.
+	Privacy *privacy.Config
 }
 
 // RegisterClawAll registers the full curated set of claw tools
@@ -653,6 +661,14 @@ func RegisterClawAll(reg *Registry, defaults ClawDefaults) error {
 	}
 	if err := RegisterClawLSP(reg, defaults.LSP); err != nil {
 		return err
+	}
+	if defaults.Privacy != nil {
+		if err := privacy.RegisterFilter(reg, defaults.Privacy); err != nil {
+			return err
+		}
+		if err := privacy.RegisterUnfilter(reg, defaults.Privacy); err != nil {
+			return err
+		}
 	}
 
 	// tool_search is registered last so its snapshot closure observes

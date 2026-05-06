@@ -15,6 +15,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
+	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy/detector"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -119,6 +121,18 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	}
 	if mcpManager != nil {
 		clawDefaults.MCPProvider = mcpManager.ClawProvider(oauthBroker)
+	}
+	// Privacy tools — pure-Go detector, always available when a
+	// store directory is wired. No external process or model
+	// download; activating the pair surfaces privacy_filter and
+	// privacy_unfilter to every workflow that allows them via
+	// tool_policy.
+	if spec.StoreDir != "" {
+		clawDefaults.Privacy = &privacy.Config{
+			StoreDir:     spec.StoreDir,
+			Detector:     detector.New(),
+			RunIDFromCtx: model.RunIDFromContext,
+		}
 	}
 	if err := tool.RegisterClawAll(toolReg, clawDefaults); err != nil {
 		spec.Logger.Warn("runview: RegisterClawAll: %v", err)
