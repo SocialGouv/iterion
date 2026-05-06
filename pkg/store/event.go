@@ -62,8 +62,8 @@ const (
 // time field) + run_id partition key. The Mongo backend assigns _id
 // itself (ObjectId), so we don't expose one here.
 type Event struct {
-	Seq       int64                  `json:"seq" bson:"seq"`             // monotonic sequence within the run
-	Timestamp time.Time              `json:"timestamp" bson:"ts"`        // wall-clock time
+	Seq       int64                  `json:"seq" bson:"seq"`      // monotonic sequence within the run
+	Timestamp time.Time              `json:"timestamp" bson:"ts"` // wall-clock time
 	Type      EventType              `json:"type" bson:"type"`
 	RunID     string                 `json:"run_id" bson:"run_id"`
 	BranchID  string                 `json:"branch_id,omitempty" bson:"branch_id,omitempty"`

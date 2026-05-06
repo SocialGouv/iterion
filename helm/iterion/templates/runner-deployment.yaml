@@ -1,0 +1,65 @@
+{{- if .Values.runner.enabled -}}
+# The runner Deployment is rendered only when runner.enabled=true.
+# The runner subcommand (T-29) and NATS consumer (T-25, T-27) must
+# ship before this can be turned on in production.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "iterion.fullname" . }}-runner
+  labels:
+    {{- include "iterion.labels" . | nindent 4 }}
+    app.kubernetes.io/component: runner
+spec:
+  {{- if not .Values.runner.keda.enabled }}
+  replicas: {{ .Values.runner.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "iterion.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: runner
+  template:
+    metadata:
+      labels:
+        {{- include "iterion.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: runner
+    spec:
+      serviceAccountName: {{ include "iterion.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # SIGTERM grace: runner drains its in-flight run + republishes
+      # to NATS before exiting (T-28).
+      terminationGracePeriodSeconds: 90
+      containers:
+        - name: iterion-runner
+          image: {{ include "iterion.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          command:
+            {{- toYaml .Values.runner.command | nindent 12 }}
+          args:
+            {{- toYaml .Values.runner.args | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "iterion.fullname" . }}-config
+            {{- if or .Values.secrets.llm.create .Values.secrets.llm.existingSecret }}
+            - secretRef:
+                name: {{ default (printf "%s-llm" (include "iterion.fullname" .)) .Values.secrets.llm.existingSecret }}
+            {{- end }}
+            {{- if or .Values.secrets.storage.create .Values.secrets.storage.existingSecret }}
+            - secretRef:
+                name: {{ default (printf "%s-storage" (include "iterion.fullname" .)) .Values.secrets.storage.existingSecret }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.runner.resources | nindent 12 }}
+          {{- if .Values.metrics.enabled }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.server.metricsPort }}
+              protocol: TCP
+          {{- end }}
+{{- end -}}

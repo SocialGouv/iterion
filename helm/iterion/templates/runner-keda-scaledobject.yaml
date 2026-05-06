@@ -1,0 +1,28 @@
+{{- if and .Values.runner.enabled .Values.runner.keda.enabled -}}
+# KEDA scales the runner pool from JetStream consumer lag. Pulled
+# only when runner.keda.enabled=true so the chart degrades gracefully
+# on clusters without KEDA installed.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "iterion.fullname" . }}-runner
+  labels:
+    {{- include "iterion.labels" . | nindent 4 }}
+    app.kubernetes.io/component: runner
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "iterion.fullname" . }}-runner
+  pollingInterval: {{ .Values.runner.keda.pollingInterval }}
+  cooldownPeriod: {{ .Values.runner.keda.cooldownPeriod }}
+  minReplicaCount: {{ .Values.runner.keda.minReplicas }}
+  maxReplicaCount: {{ .Values.runner.keda.maxReplicas }}
+  triggers:
+    - type: nats-jetstream
+      metadata:
+        natsServerMonitoringEndpoint: "{{ .Values.config.nats.url }}"
+        stream: {{ .Values.config.nats.stream | quote }}
+        consumer: iterion-runners
+        lagThreshold: {{ .Values.runner.keda.lagThreshold | quote }}
+{{- end -}}

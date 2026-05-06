@@ -1,0 +1,66 @@
+# Local-development values: bundle Mongo + NATS + MinIO sub-charts so
+# `helm install iterion ./helm/iterion -f values-dev.yaml` brings up a
+# fully self-contained cloud-mode stack. Use this for `task chart:kind`
+# and ad-hoc experiments. **Not for production** — the credentials are
+# hard-coded and the persistence is single-replica.
+
+mode: cloud
+
+server:
+  replicas: 1
+  hpa:
+    enabled: false  # disable HPA in dev, predictable single-pod
+
+runner:
+  enabled: false  # T-25/T-27/T-29 not landed yet
+
+ingress:
+  enabled: false  # rely on `kubectl port-forward svc/iterion 4891`
+
+config:
+  log:
+    format: human
+    level: debug
+  mongo:
+    uri: mongodb://iterion-mongodb:27017
+    database: iterion
+  nats:
+    url: nats://iterion-nats:4222
+  s3:
+    endpoint: http://iterion-minio:9000
+    region: us-east-1
+    bucket: iterion-artifacts
+    usePathStyle: true
+
+secrets:
+  llm:
+    create: true
+    # Override at install time: `--set secrets.llm.anthropicApiKey=...`
+    anthropicApiKey: ""
+    openaiApiKey: ""
+  storage:
+    create: true
+    s3AccessKeyId: minioadmin
+    s3SecretAccessKey: minioadmin
+
+mongodb:
+  enabled: true
+  architecture: replicaset
+  replicaCount: 1
+  auth:
+    enabled: false
+nats:
+  enabled: true
+  config:
+    jetstream:
+      enabled: true
+      memoryStore:
+        enabled: true
+        size: 1Gi
+minio:
+  enabled: true
+  mode: standalone
+  auth:
+    rootUser: minioadmin
+    rootPassword: minioadmin
+  defaultBuckets: iterion-artifacts

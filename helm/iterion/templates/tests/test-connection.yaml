@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "iterion.fullname" . }}-test-connection"
+  labels:
+    {{- include "iterion.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: wget
+      image: busybox:1.36
+      command:
+        - sh
+        - -c
+        - |
+          set -e
+          wget -qO- "http://{{ include "iterion.fullname" . }}:{{ .Values.service.port }}/healthz"
+          echo
+          wget -qO- "http://{{ include "iterion.fullname" . }}:{{ .Values.service.port }}/readyz"

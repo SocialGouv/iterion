@@ -184,10 +184,10 @@ const (
 // event replay. The separate interaction file (interactions/<id>.json) is a
 // convenience for tooling; InteractionQuestions is embedded here for resilience.
 type Checkpoint struct {
-	NodeID             string                            `json:"node_id" bson:"node_id"`                                          // the node where we paused
-	InteractionID      string                            `json:"interaction_id" bson:"interaction_id,omitempty"`                  // pending interaction ID
-	Outputs            map[string]map[string]interface{} `json:"outputs" bson:"outputs"`                                          // per-node outputs accumulated so far
-	LoopCounters       map[string]int                    `json:"loop_counters" bson:"loop_counters"`                              // current loop iteration counts
+	NodeID             string                            `json:"node_id" bson:"node_id"`                                               // the node where we paused
+	InteractionID      string                            `json:"interaction_id" bson:"interaction_id,omitempty"`                       // pending interaction ID
+	Outputs            map[string]map[string]interface{} `json:"outputs" bson:"outputs"`                                               // per-node outputs accumulated so far
+	LoopCounters       map[string]int                    `json:"loop_counters" bson:"loop_counters"`                                   // current loop iteration counts
 	RoundRobinCounters map[string]int                    `json:"round_robin_counters,omitempty" bson:"round_robin_counters,omitempty"` // round-robin router counters (keyed by router node ID)
 	// LoopPreviousOutput / LoopCurrentOutput preserve the rotating snapshot
 	// of source-node outputs at each loop-edge traversal so that

@@ -1,0 +1,22 @@
+{{- if and .Values.server.hpa.enabled (ne .Values.mode "local") -}}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "iterion.fullname" . }}
+  labels:
+    {{- include "iterion.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "iterion.fullname" . }}
+  minReplicas: {{ .Values.server.hpa.minReplicas }}
+  maxReplicas: {{ .Values.server.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.server.hpa.targetCPUUtilizationPercentage }}
+{{- end -}}

@@ -1,0 +1,146 @@
+# Local-dev cloud stack: Mongo + NATS (with JetStream + KV) + MinIO +
+# iterion server, exercising the full ITERION_MODE=cloud path. Boots
+# MinIO with a single bucket via docker/minio-init.sh.
+#
+# Quick start:
+#   task cloud:up           # bring everything up
+#   curl localhost:4891/healthz
+#   task cloud:down         # tear it down (removes volumes)
+#
+# Cloud-ready plan §F (T-38, T-39).
+
+name: iterion-cloud
+
+services:
+  mongo:
+    image: mongo:8.0
+    command:
+      - --replSet
+      - rs0
+      - --bind_ip_all
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      # Initiate the replica set on first boot so change streams (the
+      # runview event subscription pivot in T-22) work without manual
+      # mongosh steps. The check itself just confirms the server is up.
+      test: |
+        mongosh --quiet --eval '
+          try { rs.status() } catch (e) {
+            rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "mongo:27017" }] });
+          }
+        '
+      interval: 5s
+      retries: 20
+
+  nats:
+    image: nats:2.10-alpine
+    command:
+      - -js                # JetStream on (run queue + KV store live here)
+      - -m
+      - "8222"            # monitoring port
+      - --store_dir=/data
+    ports:
+      - "4222:4222"        # client
+      - "8222:8222"        # monitoring
+    volumes:
+      - nats-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
+      interval: 5s
+      retries: 20
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z
+    command:
+      - server
+      - /data
+      - --console-address
+      - ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"        # S3 API
+      - "9001:9001"        # web console
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      retries: 20
+
+  minio-init:
+    image: minio/mc:RELEASE.2024-11-21T17-21-54Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      ITERION_S3_ENDPOINT: http://minio:9000
+      ITERION_S3_ACCESS_KEY_ID: minioadmin
+      ITERION_S3_SECRET_ACCESS_KEY: minioadmin
+      ITERION_S3_BUCKET: iterion-artifacts
+    volumes:
+      - ./docker/minio-init.sh:/usr/local/bin/minio-init.sh:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/minio-init.sh"]
+
+  iterion-server:
+    image: ghcr.io/socialgouv/iterion:edge
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: dev
+        COMMIT: docker-compose
+    depends_on:
+      mongo:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      # Mode + persistence
+      ITERION_MODE: cloud
+      ITERION_MONGO_URI: mongodb://mongo:27017/?replicaSet=rs0
+      ITERION_MONGO_DB: iterion
+      ITERION_NATS_URL: nats://nats:4222
+      ITERION_S3_ENDPOINT: http://minio:9000
+      ITERION_S3_REGION: us-east-1
+      ITERION_S3_BUCKET: iterion-artifacts
+      ITERION_S3_ACCESS_KEY_ID: minioadmin
+      ITERION_S3_SECRET_ACCESS_KEY: minioadmin
+      ITERION_S3_USE_PATH_STYLE: "true"
+      ITERION_LOG_FORMAT: json
+      ITERION_LOG_LEVEL: info
+      # LLM credentials forwarded from the host shell so workflows can
+      # actually call out to Anthropic / OpenAI without re-typing keys.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    ports:
+      - "4891:4891"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:4891/healthz"]
+      interval: 5s
+      retries: 30
+    # Until T-30 ships the dedicated `iterion server` subcommand, the
+    # default CMD (`editor`) IS the cloud-mode HTTP server: it serves
+    # the editor SPA + the run console + /healthz + /readyz on a
+    # single port.
+
+  # iterion-runner is intentionally absent: the runner subcommand
+  # (T-29) and NATS consumer (T-25, T-27) haven't shipped yet. When
+  # they do, this file gains:
+  #   iterion-runner:
+  #     image: ghcr.io/socialgouv/iterion:edge
+  #     command: ["runner"]
+  #     environment: { ITERION_MODE: cloud, ... }
+  #     depends_on: [mongo, nats, minio-init]
+  # Until then, workflows execute in-process inside iterion-server.
+
+volumes:
+  mongo-data:
+  nats-data:
+  minio-data:

@@ -1,0 +1,77 @@
+# Production values: external Mongo / NATS / S3 (no bundled
+# sub-charts), HPA on, NetworkPolicy on, secrets from a separately-
+# managed Kubernetes Secret. Tune resources and replica counts to the
+# target cluster.
+
+mode: cloud
+
+server:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
+runner:
+  enabled: false  # T-25/T-27/T-29 not landed yet
+  replicas: 2
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 4000m
+      memory: 8Gi
+  keda:
+    enabled: true
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: iterion.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: iterion-tls
+      hosts:
+        - iterion.example.com
+
+config:
+  log:
+    format: json
+    level: info
+
+# Always reference an existing Secret in prod — never inline credentials.
+secrets:
+  llm:
+    create: false
+    existingSecret: iterion-llm
+  storage:
+    create: false
+    existingSecret: iterion-storage
+
+# Sub-charts disabled — bring your own managed services.
+mongodb:
+  enabled: false
+nats:
+  enabled: false
+minio:
+  enabled: false
+
+networkPolicy:
+  enabled: true
+
+metrics:
+  enabled: true
+  podMonitor:
+    enabled: true

@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "iterion.fullname" . }}-config
+  labels:
+    {{- include "iterion.labels" . | nindent 4 }}
+data:
+  ITERION_MODE: {{ .Values.mode | quote }}
+  ITERION_LOG_FORMAT: {{ .Values.config.log.format | quote }}
+  ITERION_LOG_LEVEL: {{ .Values.config.log.level | quote }}
+  {{- if eq .Values.mode "cloud" }}
+  ITERION_MONGO_URI: {{ .Values.config.mongo.uri | quote }}
+  ITERION_MONGO_DB: {{ .Values.config.mongo.database | quote }}
+  ITERION_MONGO_EVENTS_TTL_DAYS: {{ .Values.config.mongo.eventsTtlDays | quote }}
+  ITERION_NATS_URL: {{ .Values.config.nats.url | quote }}
+  ITERION_NATS_STREAM: {{ .Values.config.nats.stream | quote }}
+  ITERION_NATS_KV_BUCKET: {{ .Values.config.nats.kvBucket | quote }}
+  ITERION_NATS_DLQ_STREAM: {{ .Values.config.nats.dlqStream | quote }}
+  ITERION_S3_ENDPOINT: {{ .Values.config.s3.endpoint | quote }}
+  ITERION_S3_REGION: {{ .Values.config.s3.region | quote }}
+  ITERION_S3_BUCKET: {{ .Values.config.s3.bucket | quote }}
+  ITERION_S3_USE_PATH_STYLE: {{ .Values.config.s3.usePathStyle | quote }}
+  {{- end }}
+  ITERION_RUNNER_WORKDIR: {{ .Values.config.runner.workdir | quote }}
+  ITERION_RUNNER_CONCURRENCY: {{ .Values.config.runner.concurrency | quote }}
+  ITERION_HEARTBEAT_INTERVAL: {{ .Values.config.runner.heartbeat | quote }}
+  ITERION_LOCK_TTL: {{ .Values.config.runner.lockTtl | quote }}

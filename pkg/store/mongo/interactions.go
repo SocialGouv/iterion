@@ -19,7 +19,7 @@ type interactionID struct {
 }
 
 type interactionDoc struct {
-	ID interactionID `bson:"_id"`
+	ID                interactionID `bson:"_id"`
 	store.Interaction `bson:",inline"`
 }
 

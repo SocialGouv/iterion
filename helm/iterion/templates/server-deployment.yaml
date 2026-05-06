@@ -1,0 +1,120 @@
+apiVersion: apps/v1
+kind: {{ if eq .Values.mode "local" }}StatefulSet{{ else }}Deployment{{ end }}
+metadata:
+  name: {{ include "iterion.fullname" . }}
+  labels:
+    {{- include "iterion.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  {{- if eq .Values.mode "local" }}
+  serviceName: {{ include "iterion.fullname" . }}-headless
+  replicas: 1
+  {{- else }}
+  {{- if not .Values.server.hpa.enabled }}
+  replicas: {{ .Values.server.replicas }}
+  {{- end }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "iterion.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        {{- include "iterion.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: server
+      {{- with .Values.server.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "iterion.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: iterion
+          image: {{ include "iterion.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          command:
+            {{- toYaml .Values.server.command | nindent 12 }}
+          args:
+            {{- toYaml .Values.server.args | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.server.port }}
+              protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.server.metricsPort }}
+              protocol: TCP
+            {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "iterion.fullname" . }}-config
+            {{- if or .Values.secrets.llm.create .Values.secrets.llm.existingSecret }}
+            - secretRef:
+                name: {{ default (printf "%s-llm" (include "iterion.fullname" .)) .Values.secrets.llm.existingSecret }}
+            {{- end }}
+            {{- if or .Values.secrets.storage.create .Values.secrets.storage.existingSecret }}
+            - secretRef:
+                name: {{ default (printf "%s-storage" (include "iterion.fullname" .)) .Values.secrets.storage.existingSecret }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          resources:
+            {{- toYaml .Values.server.resources | nindent 12 }}
+          {{- if eq .Values.mode "local" }}
+          volumeMounts:
+            - name: iterion-state
+              mountPath: /var/lib/iterion
+          {{- end }}
+      {{- with .Values.server.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if and (eq .Values.mode "local") .Values.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: iterion-state
+        {{- with .Values.persistence.annotations }}
+        annotations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      spec:
+        accessModes:
+          {{- toYaml .Values.persistence.accessModes | nindent 10 }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}
+        {{- if .Values.persistence.storageClass }}
+        storageClassName: {{ .Values.persistence.storageClass }}
+        {{- end }}
+  {{- end }}

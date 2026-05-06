@@ -1,0 +1,39 @@
+# Build artefacts
+iterion
+iterion-desktop
+build/
+cmd/iterion-desktop/build/
+
+# IDE / editors
+.vscode/
+.idea/
+
+# Local state — never bake into the image
+.iterion/
+.devbox/
+.works/
+.plans/
+
+# Editor build output (we rebuild fresh in the image)
+editor/dist/
+editor/node_modules/
+pkg/server/static/
+
+# Test caches
+*.coverprofile
+*.test
+testdata/
+
+# Git
+.git/
+.gitignore
+.github/
+
+# OS
+.DS_Store
+*.swp
+
+# Docs that don't change image behaviour
+docs/
+README.md
+CHANGELOG.md

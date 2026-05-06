@@ -320,3 +320,68 @@ tasks:
     desc: Run desktop-only Go unit tests (build tag `desktop` excluded — just the platform-neutral subset)
     cmds:
       - go test ./cmd/iterion-desktop/...
+
+  # --- Cloud-mode docker-compose (plan §F T-38, T-39) -------------
+  cloud:up:
+    desc: Bring up the cloud-mode local stack (Mongo + NATS + MinIO + iterion)
+    cmds:
+      - docker compose -f docker-compose.cloud.yml up -d --build
+
+  cloud:down:
+    desc: Tear down the cloud-mode stack including volumes
+    cmds:
+      - docker compose -f docker-compose.cloud.yml down -v
+
+  cloud:logs:
+    desc: Tail logs from every cloud-mode service
+    cmds:
+      - docker compose -f docker-compose.cloud.yml logs -f --tail=100
+
+  cloud:up:deps:
+    desc: Bring up only the backing services (Mongo + NATS + MinIO) without iterion
+    cmds:
+      - docker compose -f docker-compose.cloud.yml up -d mongo nats minio minio-init
+
+  cloud:dev:
+    desc: Hot-reload iterion in the cloud stack via watchexec rebuild + container restart
+    deps: [cloud:up:deps]
+    cmds:
+      - watchexec -r -e go -w cmd -w pkg -- sh -c 'docker compose -f docker-compose.cloud.yml up -d --build iterion-server'
+
+  # --- Helm chart targets (plan §F T-36, T-39) --------------------
+  chart:lint:
+    desc: helm lint the iterion chart against values-dev and values-prod
+    cmds:
+      - helm dependency update helm/iterion
+      - helm lint helm/iterion -f helm/iterion/values-dev.yaml
+      - helm lint helm/iterion -f helm/iterion/values-prod.yaml
+
+  chart:template:
+    desc: Render the chart templates with values-dev to stdout
+    cmds:
+      - helm template iterion helm/iterion -f helm/iterion/values-dev.yaml
+
+  chart:kind:
+    desc: Smoke-test the chart on a kind cluster (helm install + helm test)
+    cmds:
+      - kind create cluster --name iterion-chart-test --wait 60s || true
+      - helm dependency update helm/iterion
+      - helm upgrade --install iterion ./helm/iterion -f helm/iterion/values-dev.yaml --wait --timeout 5m
+      - helm test iterion
+      - kind delete cluster --name iterion-chart-test
+
+  # --- Docker image plumbing (plan §F T-39) -----------------------
+  docker:pin-llm-clis:
+    desc: Refresh docker/llm-clis/package.json to the latest stable claude-code + codex versions
+    cmds:
+      - |
+        CLAUDE_VERSION=$(npm view @anthropic-ai/claude-code version)
+        CODEX_VERSION=$(npm view @openai/codex version)
+        echo "claude=$CLAUDE_VERSION codex=$CODEX_VERSION"
+        printf '{\n  "name": "iterion-llm-clis",\n  "private": true,\n  "description": "Pinned npm dependencies for the LLM CLIs baked into the iterion container image. Refresh via `task docker:pin-llm-clis` (T-39).",\n  "dependencies": {\n    "@anthropic-ai/claude-code": "%s",\n    "@openai/codex": "%s"\n  }\n}\n' "$CLAUDE_VERSION" "$CODEX_VERSION" > docker/llm-clis/package.json
+        echo "Updated docker/llm-clis/package.json — review and commit."
+
+  docker:build:
+    desc: Build the iterion container image locally (tagged ghcr.io/socialgouv/iterion:dev)
+    cmds:
+      - docker build --build-arg VERSION={{.VERSION}} --build-arg COMMIT={{.COMMIT}} -t ghcr.io/socialgouv/iterion:dev .

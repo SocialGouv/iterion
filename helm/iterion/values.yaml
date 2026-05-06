@@ -1,0 +1,220 @@
+# Default values for the iterion Helm chart. Documented inline so an
+# operator skimming this file can size a deployment without cross-
+# referencing the README. values-dev.yaml / values-prod.yaml override.
+
+image:
+  repository: ghcr.io/socialgouv/iterion
+  tag: ""              # defaults to .Chart.AppVersion when empty
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# --- Server (HTTP API + editor SPA) ---------------------------------
+server:
+  replicas: 1
+  command: ["editor"] # T-30 will switch this to ["server"]
+  args:
+    - "--port"
+    - "4891"
+    - "--bind"
+    - "0.0.0.0"
+    - "--no-browser"
+  port: 4891
+  metricsPort: 9090
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  hpa:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+
+# --- Runner (workflow execution pool) -------------------------------
+# The runner subcommand and NATS consumer are not yet implemented
+# (T-25, T-27, T-29). When they land, set runner.enabled=true and
+# the chart will deploy the pool with a KEDA ScaledObject keyed on
+# JetStream lag.
+runner:
+  enabled: false
+  replicas: 1
+  command: ["runner"]
+  args: []
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+  keda:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 50
+    cooldownPeriod: 60
+    pollingInterval: 5
+    lagThreshold: 1
+
+# --- HTTP exposure --------------------------------------------------
+service:
+  type: ClusterIP
+  port: 4891
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations:
+    # Long-running WS for the run console (event stream + log tail).
+    # 1h matches the value the cloud-ready plan §H pins for parity
+    # with the Cloud Run / nginx defaults seen in production.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  hosts:
+    - host: iterion.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# --- Mode + cloud dependencies --------------------------------------
+mode: cloud   # "local" or "cloud"; "local" pins replicas=1 + PVC
+
+config:
+  log:
+    format: json
+    level: info
+  mongo:
+    uri: ""           # required when mode=cloud and mongodb.enabled=false
+    database: iterion
+    eventsTtlDays: 90
+  nats:
+    url: ""           # required when mode=cloud and nats.enabled=false
+    stream: ITERION_RUNS
+    kvBucket: iterion-run-locks
+    dlqStream: ITERION_RUNS_DLQ
+  s3:
+    endpoint: ""      # required when mode=cloud and minio.enabled=false
+    region: us-east-1
+    bucket: iterion-artifacts
+    usePathStyle: true
+  runner:
+    workdir: /tmp/iterion
+    concurrency: 1
+    heartbeat: 20s
+    lockTtl: 60s
+
+# --- Secrets --------------------------------------------------------
+# Two opt-in patterns:
+#   1. secrets.create=true: the chart renders a Secret with the
+#      values you pass below. Convenient for local dev but
+#      discouraged in prod (state in values.yaml or in the release
+#      record).
+#   2. secrets.existingSecret=<name>: reference an out-of-band
+#      Secret you manage with sealed-secrets / external-secrets /
+#      etc. The chart wires SecretKeyRef envFrom entries.
+secrets:
+  llm:
+    create: false
+    existingSecret: ""
+    anthropicApiKey: ""
+    openaiApiKey: ""
+  storage:
+    create: false
+    existingSecret: ""
+    s3AccessKeyId: ""
+    s3SecretAccessKey: ""
+
+# --- Local-mode persistence (PVC for .iterion/) ---------------------
+# Only consulted when mode=local. Cloud mode keeps state in Mongo+S3
+# and the pod is ephemeral.
+persistence:
+  enabled: true
+  accessModes:
+    - ReadWriteOnce
+  size: 10Gi
+  storageClass: ""    # empty → cluster default
+  annotations: {}
+
+# --- Health probes --------------------------------------------------
+probes:
+  liveness:
+    path: /healthz
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readiness:
+    path: /readyz
+    initialDelaySeconds: 3
+    periodSeconds: 5
+    timeoutSeconds: 1
+    failureThreshold: 3
+
+# --- Pod security ---------------------------------------------------
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}     # IRSA / Workload Identity annotations land here
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: false  # node_modules + git index need rw
+
+# --- Network policy (egress allowlist) ------------------------------
+networkPolicy:
+  enabled: false
+  egress:
+    # Chart users add their LLM endpoints, Mongo URI host, NATS host,
+    # S3 endpoint host here. Empty list = deny-all egress (rarely
+    # what you want; opt-out of NetworkPolicy entirely instead).
+    extraAllow: []
+
+# --- Observability --------------------------------------------------
+metrics:
+  enabled: false
+  podMonitor:
+    enabled: false
+    namespace: ""
+    interval: 30s
+    labels: {}
+
+# --- Sub-charts (off by default; values-dev.yaml turns them on) ----
+mongodb:
+  enabled: false
+  architecture: replicaset
+  replicaCount: 1
+  auth:
+    enabled: false
+nats:
+  enabled: false
+  config:
+    jetstream:
+      enabled: true
+minio:
+  enabled: false
+  auth:
+    rootUser: minioadmin
+    rootPassword: minioadmin
+  defaultBuckets: iterion-artifacts

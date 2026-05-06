@@ -227,6 +227,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/effort-capabilities", s.handleEffortCapabilities)
 	s.mux.HandleFunc("GET /api/resolve-effort", s.handleResolveEffort)
 
+	// Health endpoints — liveness (always 200 if the mux is alive)
+	// and readiness (cloud-mode dependency pings come via T-26 when
+	// Mongo/NATS/S3 ping handles are threaded into the server). Used
+	// by the Helm chart probes (plan §F T-36, T-37).
+	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
+	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
+
 	// WebSocket endpoint for file watching
 	s.mux.HandleFunc("GET /api/ws", s.hub.HandleWebSocket)
 

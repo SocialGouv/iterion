@@ -42,11 +42,11 @@ const (
 
 // Config bundles the connection settings for a MongoRunStore.
 type Config struct {
-	URI            string
-	Database       string
-	EventsTTLDays  int
-	Logger         *iterlog.Logger
-	Blob           blob.Client // S3 / blob backend for artifact bodies
+	URI           string
+	Database      string
+	EventsTTLDays int
+	Logger        *iterlog.Logger
+	Blob          blob.Client // S3 / blob backend for artifact bodies
 }
 
 // Store implements store.RunStore on top of Mongo + a blob backend.

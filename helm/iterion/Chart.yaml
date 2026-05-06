@@ -1,0 +1,40 @@
+apiVersion: v2
+name: iterion
+description: |
+  Iterion workflow orchestration engine — Kubernetes deployment.
+  Server (HTTP API + editor SPA) plus an optional runner pool that
+  pulls work from NATS JetStream and persists state to MongoDB + S3.
+type: application
+# Chart version is bumped manually on every release-it cut so Helm
+# repo consumers can pin a known artifact even when appVersion (the
+# iterion binary tag) moves.
+version: 0.1.0
+appVersion: "0.3.2"
+home: https://github.com/SocialGouv/iterion
+sources:
+  - https://github.com/SocialGouv/iterion
+maintainers:
+  - name: SocialGouv
+keywords:
+  - workflow
+  - orchestration
+  - llm
+  - iterion
+icon: https://raw.githubusercontent.com/SocialGouv/iterion/main/build/appicon.png
+
+# Sub-charts are bundled to make `task chart:kind` self-contained:
+# values-dev.yaml turns them on, values-prod.yaml leaves them off so
+# operators bring their own MongoDB Atlas / S3 / managed NATS.
+dependencies:
+  - name: mongodb
+    version: "16.5.x"
+    repository: oci://registry-1.docker.io/bitnamicharts
+    condition: mongodb.enabled
+  - name: nats
+    version: "1.2.x"
+    repository: https://nats-io.github.io/k8s/helm/charts/
+    condition: nats.enabled
+  - name: minio
+    version: "14.7.x"
+    repository: oci://registry-1.docker.io/bitnamicharts
+    condition: minio.enabled
