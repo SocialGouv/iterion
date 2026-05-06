@@ -104,9 +104,7 @@ func Unparse(f *ast.File) string {
 		if a.Compaction != nil {
 			writeCompaction(&b, a.Compaction, "  ", false)
 		}
-		if a.Sandbox != "" {
-			writeProp(&b, "sandbox", a.Sandbox)
-		}
+		writeSandboxBlock(&b, a.Sandbox, "  ")
 	}
 
 	// --- Judges ---
@@ -122,9 +120,7 @@ func Unparse(f *ast.File) string {
 		if j.Compaction != nil {
 			writeCompaction(&b, j.Compaction, "  ", false)
 		}
-		if j.Sandbox != "" {
-			writeProp(&b, "sandbox", j.Sandbox)
-		}
+		writeSandboxBlock(&b, j.Sandbox, "  ")
 	}
 
 	// --- Routers ---
@@ -207,9 +203,7 @@ func Unparse(f *ast.File) string {
 		if t.Await != ast.AwaitNone {
 			writeProp(&b, "await", t.Await.String())
 		}
-		if t.Sandbox != "" {
-			writeProp(&b, "sandbox", t.Sandbox)
-		}
+		writeSandboxBlock(&b, t.Sandbox, "  ")
 	}
 
 	// --- Computes ---
@@ -261,9 +255,7 @@ func Unparse(f *ast.File) string {
 			writeProp(&b, "worktree", w.Worktree)
 		}
 
-		if w.Sandbox != "" {
-			writeProp(&b, "sandbox", w.Sandbox)
-		}
+		writeSandboxBlock(&b, w.Sandbox, "  ")
 
 		if w.Entry != "" {
 			b.WriteString("\n")
@@ -447,6 +439,122 @@ func writeAgentFields(b *strings.Builder, model, backend, input, output, publish
 	if await != ast.AwaitNone {
 		writeProp(b, "await", await.String())
 	}
+}
+
+// writeSandboxBlock serializes an [ast.SandboxBlock] back to its
+// canonical .iter source. Empty / nil blocks emit nothing. The short
+// form (`sandbox: ident`) is used when only Mode is set; otherwise
+// the full block form is rendered with each populated field on its
+// own line.
+//
+// Round-trip stability: parser → IR → unparse → parser must produce
+// the same AST. Tests in pkg/dsl/unparse/unparse_test.go and
+// pkg/dsl/ir/sandbox_test.go pin the contract.
+func writeSandboxBlock(b *strings.Builder, sb *ast.SandboxBlock, indent string) {
+	if sb == nil {
+		return
+	}
+	if sandboxBlockIsShort(sb) {
+		// Short form — Mode-only.
+		if sb.Mode != "" {
+			fmt.Fprintf(b, "%ssandbox: %s\n", indent, sb.Mode)
+		}
+		return
+	}
+	fmt.Fprintf(b, "%ssandbox:\n", indent)
+	inner := indent + "  "
+	if sb.Mode != "" && sb.Mode != "inline" {
+		fmt.Fprintf(b, "%smode: %s\n", inner, sb.Mode)
+	}
+	if sb.Image != "" {
+		fmt.Fprintf(b, "%simage: %q\n", inner, sb.Image)
+	}
+	if sb.User != "" {
+		fmt.Fprintf(b, "%suser: %q\n", inner, sb.User)
+	}
+	if sb.WorkspaceFolder != "" {
+		fmt.Fprintf(b, "%sworkspace_folder: %q\n", inner, sb.WorkspaceFolder)
+	}
+	if sb.PostCreate != "" {
+		fmt.Fprintf(b, "%spost_create: %q\n", inner, sb.PostCreate)
+	}
+	if len(sb.Env) > 0 {
+		fmt.Fprintf(b, "%senv:\n", inner)
+		for _, k := range sortedKeys(sb.Env) {
+			fmt.Fprintf(b, "%s  %s: %q\n", inner, k, sb.Env[k])
+		}
+	}
+	if len(sb.Mounts) > 0 {
+		fmt.Fprintf(b, "%smounts: [", inner)
+		for i, m := range sb.Mounts {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(b, "%q", m)
+		}
+		b.WriteString("]\n")
+	}
+	if sb.Network != nil {
+		writeSandboxNetworkBlock(b, sb.Network, inner)
+	}
+}
+
+// sandboxBlockIsShort reports whether the block can be unparsed as
+// the single-line `sandbox: <mode>` form. True when Mode is set and
+// no body fields are populated.
+func sandboxBlockIsShort(sb *ast.SandboxBlock) bool {
+	if sb == nil {
+		return false
+	}
+	if sb.Image != "" || sb.User != "" || sb.WorkspaceFolder != "" || sb.PostCreate != "" {
+		return false
+	}
+	if len(sb.Env) > 0 || len(sb.Mounts) > 0 {
+		return false
+	}
+	if sb.Network != nil {
+		return false
+	}
+	return true
+}
+
+func writeSandboxNetworkBlock(b *strings.Builder, n *ast.SandboxNetworkBlock, indent string) {
+	fmt.Fprintf(b, "%snetwork:\n", indent)
+	inner := indent + "  "
+	if n.Mode != "" {
+		fmt.Fprintf(b, "%smode: %s\n", inner, n.Mode)
+	}
+	if n.Preset != "" {
+		fmt.Fprintf(b, "%spreset: %s\n", inner, n.Preset)
+	}
+	if n.Inherit != "" {
+		fmt.Fprintf(b, "%sinherit: %s\n", inner, n.Inherit)
+	}
+	if len(n.Rules) > 0 {
+		fmt.Fprintf(b, "%srules: [", inner)
+		for i, r := range n.Rules {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(b, "%q", r)
+		}
+		b.WriteString("]\n")
+	}
+}
+
+// sortedKeys returns the keys of m in ascending order — used for
+// deterministic unparse output.
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	for i := 1; i < len(keys); i++ {
+		for j := i; j > 0 && keys[j-1] > keys[j]; j-- {
+			keys[j-1], keys[j] = keys[j], keys[j-1]
+		}
+	}
+	return keys
 }
 
 func writeCompaction(b *strings.Builder, compaction *ast.CompactionBlock, indent string, leadingBlank bool) {

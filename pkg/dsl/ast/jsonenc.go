@@ -211,7 +211,7 @@ type jsonAgentDecl struct {
 	InteractionModel  string               `json:"interaction_model,omitempty"`
 	Await             string               `json:"await,omitempty"`
 	Compaction        *jsonCompactionBlock `json:"compaction,omitempty"`
-	Sandbox           string               `json:"sandbox,omitempty"`
+	Sandbox           *jsonSandboxBlock    `json:"sandbox,omitempty"`
 }
 
 type jsonJudgeDecl struct {
@@ -236,7 +236,7 @@ type jsonJudgeDecl struct {
 	InteractionModel  string               `json:"interaction_model,omitempty"`
 	Await             string               `json:"await,omitempty"`
 	Compaction        *jsonCompactionBlock `json:"compaction,omitempty"`
-	Sandbox           string               `json:"sandbox,omitempty"`
+	Sandbox           *jsonSandboxBlock    `json:"sandbox,omitempty"`
 }
 
 type jsonRouterDecl struct {
@@ -266,12 +266,89 @@ type jsonHumanDecl struct {
 }
 
 type jsonToolNodeDecl struct {
-	Name    string `json:"name,omitempty"`
-	Command string `json:"command,omitempty"`
-	Input   string `json:"input,omitempty"`
-	Output  string `json:"output,omitempty"`
-	Await   string `json:"await,omitempty"`
-	Sandbox string `json:"sandbox,omitempty"`
+	Name    string            `json:"name,omitempty"`
+	Command string            `json:"command,omitempty"`
+	Input   string            `json:"input,omitempty"`
+	Output  string            `json:"output,omitempty"`
+	Await   string            `json:"await,omitempty"`
+	Sandbox *jsonSandboxBlock `json:"sandbox,omitempty"`
+}
+
+// jsonSandboxBlock is the JSON form of an ast.SandboxBlock. The
+// editor consumes this shape.
+type jsonSandboxBlock struct {
+	Mode            string                   `json:"mode,omitempty"`
+	Image           string                   `json:"image,omitempty"`
+	User            string                   `json:"user,omitempty"`
+	WorkspaceFolder string                   `json:"workspace_folder,omitempty"`
+	PostCreate      string                   `json:"post_create,omitempty"`
+	Env             map[string]string        `json:"env,omitempty"`
+	Mounts          []string                 `json:"mounts,omitempty"`
+	Network         *jsonSandboxNetworkBlock `json:"network,omitempty"`
+}
+
+// jsonSandboxNetworkBlock is the JSON form of an ast.SandboxNetworkBlock.
+type jsonSandboxNetworkBlock struct {
+	Mode    string   `json:"mode,omitempty"`
+	Preset  string   `json:"preset,omitempty"`
+	Rules   []string `json:"rules,omitempty"`
+	Inherit string   `json:"inherit,omitempty"`
+}
+
+func sandboxBlockToJSON(s *SandboxBlock) *jsonSandboxBlock {
+	if s == nil {
+		return nil
+	}
+	return &jsonSandboxBlock{
+		Mode:            s.Mode,
+		Image:           s.Image,
+		User:            s.User,
+		WorkspaceFolder: s.WorkspaceFolder,
+		PostCreate:      s.PostCreate,
+		Env:             s.Env,
+		Mounts:          s.Mounts,
+		Network:         sandboxNetworkBlockToJSON(s.Network),
+	}
+}
+
+func sandboxNetworkBlockToJSON(n *SandboxNetworkBlock) *jsonSandboxNetworkBlock {
+	if n == nil {
+		return nil
+	}
+	return &jsonSandboxNetworkBlock{
+		Mode:    n.Mode,
+		Preset:  n.Preset,
+		Rules:   n.Rules,
+		Inherit: n.Inherit,
+	}
+}
+
+func sandboxBlockFromJSON(j *jsonSandboxBlock) *SandboxBlock {
+	if j == nil {
+		return nil
+	}
+	return &SandboxBlock{
+		Mode:            j.Mode,
+		Image:           j.Image,
+		User:            j.User,
+		WorkspaceFolder: j.WorkspaceFolder,
+		PostCreate:      j.PostCreate,
+		Env:             j.Env,
+		Mounts:          j.Mounts,
+		Network:         sandboxNetworkBlockFromJSON(j.Network),
+	}
+}
+
+func sandboxNetworkBlockFromJSON(j *jsonSandboxNetworkBlock) *SandboxNetworkBlock {
+	if j == nil {
+		return nil
+	}
+	return &SandboxNetworkBlock{
+		Mode:    j.Mode,
+		Preset:  j.Preset,
+		Rules:   j.Rules,
+		Inherit: j.Inherit,
+	}
 }
 
 type jsonComputeDecl struct {
@@ -298,7 +375,7 @@ type jsonWorkflowDecl struct {
 	Compaction     *jsonCompactionBlock `json:"compaction,omitempty"`
 	Interaction    string               `json:"interaction,omitempty"`
 	Worktree       string               `json:"worktree,omitempty"`
-	Sandbox        string               `json:"sandbox,omitempty"`
+	Sandbox        *jsonSandboxBlock    `json:"sandbox,omitempty"`
 	Edges          []*jsonEdge          `json:"edges,omitempty"`
 }
 
@@ -392,7 +469,7 @@ func toJSON(f *File) *jsonFile {
 			Input:   t.Input,
 			Output:  t.Output,
 			Await:   awaitModeToStr[t.Await],
-			Sandbox: t.Sandbox,
+			Sandbox: sandboxBlockToJSON(t.Sandbox),
 		})
 	}
 	for _, c := range f.Computes {
@@ -518,7 +595,7 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		InteractionModel:  a.InteractionModel,
 		Await:             awaitModeToStr[a.Await],
 		Compaction:        compactionToJSON(a.Compaction),
-		Sandbox:           a.Sandbox,
+		Sandbox:           sandboxBlockToJSON(a.Sandbox),
 	}
 }
 
@@ -545,7 +622,7 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		InteractionModel:  j.InteractionModel,
 		Await:             awaitModeToStr[j.Await],
 		Compaction:        compactionToJSON(j.Compaction),
-		Sandbox:           j.Sandbox,
+		Sandbox:           sandboxBlockToJSON(j.Sandbox),
 	}
 }
 
@@ -575,7 +652,7 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 		MCP:            mcpConfigToJSON(w.MCP),
 		Compaction:     compactionToJSON(w.Compaction),
 		Worktree:       w.Worktree,
-		Sandbox:        w.Sandbox,
+		Sandbox:        sandboxBlockToJSON(w.Sandbox),
 	}
 	if w.Vars != nil {
 		jw.Vars = varsBlockToJSON(w.Vars)
@@ -721,7 +798,7 @@ func fromJSON(jf *jsonFile) (*File, error) {
 			Input:   jt.Input,
 			Output:  jt.Output,
 			Await:   aw,
-			Sandbox: jt.Sandbox,
+			Sandbox: sandboxBlockFromJSON(jt.Sandbox),
 		})
 	}
 
@@ -887,7 +964,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 		InteractionModel:  ja.InteractionModel,
 		Await:             aw,
 		Compaction:        compactionFromJSON(ja.Compaction),
-		Sandbox:           ja.Sandbox,
+		Sandbox:           sandboxBlockFromJSON(ja.Sandbox),
 	}, nil
 }
 
@@ -926,7 +1003,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 		InteractionModel:  jj.InteractionModel,
 		Await:             aw,
 		Compaction:        compactionFromJSON(jj.Compaction),
-		Sandbox:           jj.Sandbox,
+		Sandbox:           sandboxBlockFromJSON(jj.Sandbox),
 	}, nil
 }
 
@@ -972,7 +1049,7 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 		MCP:            mcpConfigFromJSON(jw.MCP),
 		Compaction:     compactionFromJSON(jw.Compaction),
 		Worktree:       jw.Worktree,
-		Sandbox:        jw.Sandbox,
+		Sandbox:        sandboxBlockFromJSON(jw.Sandbox),
 	}
 	if jw.Vars != nil {
 		v, err := varsBlockFromJSON(jw.Vars)

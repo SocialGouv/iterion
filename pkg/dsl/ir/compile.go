@@ -186,20 +186,71 @@ func (c *compiler) warnCodexDiscouraged(kind, name, backend string) {
 		kind, name)
 }
 
-// compileSandboxIdent translates the simple `sandbox: <ident>` DSL form
-// into an IR SandboxSpec. Phase 0 only accepts "", "none", and "auto";
-// "inline" requires a block body which the Phase 0 parser does not yet
-// emit. An unknown identifier is reported as DiagInvalidSandboxMode and
-// the function returns nil so the rest of compilation proceeds.
+// compileSandboxBlock translates an AST SandboxBlock (which represents
+// either the short form `sandbox: <ident>` or the full block form)
+// into an IR SandboxSpec.
+//
+// Mode validity:
+//
+//   - ""      → returns (nil, no diagnostic) — caller treats this as
+//     "inherit". Used by node-level blocks that only override
+//     network rules without changing the activation mode.
+//   - "none"  → opt-out, no body fields propagate
+//   - "auto"  → reads .devcontainer/devcontainer.json at runtime;
+//     body fields are accepted but only Network is meaningful
+//   - "inline"→ body fields are the spec source
+//
+// Unknown modes raise DiagInvalidSandboxMode and the function returns
+// nil so the rest of compilation proceeds.
 //
 // scope/name describe the surrounding declaration ("workflow main",
-// "agent reviewer") and are used only in the diagnostic message.
-func (c *compiler) compileSandboxIdent(ident, scope, name string) *SandboxSpec {
-	spec, ok := FromIdent(ident)
-	if !ok {
+// "agent reviewer") and are used only in diagnostic messages.
+func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string) *SandboxSpec {
+	if blk == nil {
+		return nil
+	}
+	switch blk.Mode {
+	case "", "none", "auto", "inline":
+	default:
 		c.errorfAt(DiagInvalidSandboxMode, name, "",
-			"%s %q has invalid sandbox %q (want \"none\", \"auto\", or unset)",
-			scope, name, ident)
+			"%s %q has invalid sandbox mode %q (want \"\", \"none\", \"auto\", or \"inline\")",
+			scope, name, blk.Mode)
+		return nil
+	}
+
+	spec := &SandboxSpec{
+		Mode:            blk.Mode,
+		Image:           blk.Image,
+		User:            blk.User,
+		WorkspaceFolder: blk.WorkspaceFolder,
+		PostCreate:      blk.PostCreate,
+	}
+	if len(blk.Env) > 0 {
+		spec.Env = make(map[string]string, len(blk.Env))
+		for k, v := range blk.Env {
+			spec.Env[k] = v
+		}
+	}
+	if len(blk.Mounts) > 0 {
+		spec.Mounts = append([]string(nil), blk.Mounts...)
+	}
+	if blk.Network != nil {
+		spec.Network = &SandboxNetwork{
+			Mode:    blk.Network.Mode,
+			Preset:  blk.Network.Preset,
+			Rules:   append([]string(nil), blk.Network.Rules...),
+			Inherit: blk.Network.Inherit,
+		}
+	}
+
+	// Inline mode requires either an image or (V2) build to be set —
+	// otherwise the spec is incoherent and the runtime would error
+	// out at Driver.Prepare time. Surface it as a compile-time
+	// diagnostic so the user fixes the workflow source.
+	if spec.Mode == "inline" && spec.Image == "" {
+		c.errorfAt(DiagInvalidSandboxMode, name, "",
+			"%s %q has sandbox mode=inline but no image: declare an image or use mode=auto with a .devcontainer/devcontainer.json",
+			scope, name)
 		return nil
 	}
 	return spec
@@ -390,7 +441,7 @@ func (c *compiler) compile() *Workflow {
 		MCPServers:     c.mcp,
 		Interaction:    interaction,
 		Worktree:       wf.Worktree,
-		Sandbox:        c.compileSandboxIdent(wf.Sandbox, "workflow", wf.Name),
+		Sandbox:        c.compileSandboxBlock(wf.Sandbox, "workflow", wf.Name),
 	}
 
 	// Static validation pass (P2-02).
@@ -591,7 +642,7 @@ func (c *compiler) compileAgents() {
 			ToolMaxSteps: a.ToolMaxSteps,
 			AwaitMode:    a.Await,
 			Compaction:   compileCompaction(a.Compaction),
-			Sandbox:      c.compileSandboxIdent(a.Sandbox, "agent", a.Name),
+			Sandbox:      c.compileSandboxBlock(a.Sandbox, "agent", a.Name),
 		}
 	}
 }
@@ -652,7 +703,7 @@ func (c *compiler) compileJudges() {
 			ToolMaxSteps: j.ToolMaxSteps,
 			AwaitMode:    j.Await,
 			Compaction:   compileCompaction(j.Compaction),
-			Sandbox:      c.compileSandboxIdent(j.Sandbox, "judge", j.Name),
+			Sandbox:      c.compileSandboxBlock(j.Sandbox, "judge", j.Name),
 		}
 	}
 }
@@ -820,7 +871,7 @@ func (c *compiler) compileTools() {
 			Command:     t.Command,
 			CommandRefs: cmdRefs,
 			AwaitMode:   t.Await,
-			Sandbox:     c.compileSandboxIdent(t.Sandbox, "tool", t.Name),
+			Sandbox:     c.compileSandboxBlock(t.Sandbox, "tool", t.Name),
 		}
 	}
 }
