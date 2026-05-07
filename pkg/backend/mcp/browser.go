@@ -13,12 +13,12 @@ import (
 // from inside the runtime, the manager spawns Chromium and registers
 // the resulting session here so the editor's WS proxy can dial in.
 //
-// CDPConn is an io.ReadWriteCloser carrying CDP wire frames. Today's
-// production transport (PR 4) is `docker exec` on a long-lived
-// `chromium --remote-debugging-pipe` process, multiplexed over the
-// container's stdin/stdout file descriptors. The underlying
-// ChromiumRunner abstraction lets tests substitute an in-memory
-// ReadWriteCloser without touching Docker.
+// CDPConn is an io.ReadWriteCloser carrying CDP wire frames. The
+// production transport is a long-lived
+// `chromium --remote-debugging-pipe` process driven via stdio; the
+// pipe contract is one JSON-RPC message followed by a single `\0`
+// byte in either direction. The ChromiumRunner abstraction lets
+// tests substitute an in-memory ReadWriteCloser.
 type BrowserSession struct {
 	SessionID string
 	RunID     string
@@ -44,8 +44,8 @@ type BrowserSession struct {
 //
 // The default implementation is in-memory and process-local; cloud
 // deployments where the editor and runtime live in different pods
-// will (in PR 4 / cloud V2) front this with a Mongo-backed registry
-// keyed by tenant + run + node.
+// would front this with a Mongo-backed registry keyed by
+// tenant + run + node.
 type BrowserRegistry interface {
 	Attach(session BrowserSession) error
 	Get(runID, sessionID string) (BrowserSession, bool)
@@ -147,12 +147,10 @@ func (r *memoryBrowserRegistry) Detach(runID, sessionID string) error {
 }
 
 // ChromiumRunner is the abstraction over "how do we spawn a Chromium
-// the runtime can drive over CDP". Today's only production
-// implementation is `docker exec` of `chromium --remote-debugging-pipe`
-// against the run's sandbox container — see pkg/sandbox/docker
-// (deferred to PR 4 for the real exec wiring; PR 3 ships the
-// interface and a NotImplemented stub so the registry + WS proxy
-// have something to compile against).
+// the runtime can drive over CDP". The host runner uses a direct
+// `chromium --remote-debugging-pipe` process; a Docker variant
+// would shell out to `docker exec` against the run's sandbox
+// container.
 type ChromiumRunner interface {
 	// Start launches a Chromium attached to the given run and
 	// returns a CDP wire-protocol pipe. The runtime is responsible
@@ -160,19 +158,15 @@ type ChromiumRunner interface {
 	Start(runID, nodeID string) (io.ReadWriteCloser, error)
 }
 
-// ErrChromiumNotImplemented is returned by the stub runner so the
-// rest of the stack can compile while the real Docker / k8s exec
-// path lands in PR 4.
+// ErrChromiumNotImplemented is returned by the stub runner. Wired
+// when no real runner is configured so the WS proxy surfaces a
+// clean 503 to the editor instead of crashing.
 var ErrChromiumNotImplemented = errors.New("browser: chromium runner not yet implemented")
 
 // stubChromiumRunner returns ErrChromiumNotImplemented unconditionally.
-// Wire it into the manager when no real runner is configured; the WS
-// proxy then surfaces a clean 503 to the editor instead of crashing.
 type stubChromiumRunner struct{}
 
-// NewStubChromiumRunner returns a runner that always errors. Useful
-// in PR 3 builds + tests; replaced by the real Docker exec runner
-// in PR 4.
+// NewStubChromiumRunner returns a runner that always errors.
 func NewStubChromiumRunner() ChromiumRunner {
 	return stubChromiumRunner{}
 }

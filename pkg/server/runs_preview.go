@@ -12,6 +12,12 @@ import (
 	"time"
 )
 
+// previewProxyMaxBytes caps how much upstream body the proxy will
+// stream to the editor before EOF. 32 MB covers any reasonable
+// preview page (HTML + inline assets) while bounding the worst case
+// when an operator points the proxy at a large download URL.
+const previewProxyMaxBytes = 32 << 20
+
 // handlePreviewProxy serves GET /api/runs/{id}/preview?target=<url>.
 // It is the back-channel that lets the editor's Browser pane embed
 // a URL whose origin would otherwise reject framing via
@@ -161,7 +167,7 @@ func (s *Server) handlePreviewProxy(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Security-Policy", "sandbox allow-scripts allow-forms allow-same-origin; frame-ancestors 'self'")
 	w.Header().Set("X-Iterion-Preview-Proxy", "1")
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	_, _ = io.Copy(w, io.LimitReader(resp.Body, previewProxyMaxBytes))
 }
 
 // resolvePreviewHost resolves host and returns a single IP that is

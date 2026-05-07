@@ -399,9 +399,9 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 // non-fatal — a missing or unreadable file should never abort a tool
 // node, since the directive is a best-effort hint.
 //
-// PR 3 will add a Playwright-driven fast path that bypasses the
-// stdout directive and writes screenshots from inside the runtime —
-// this helper stays useful for tools that already shell out to
+// A future Playwright-driven fast path can bypass the stdout
+// directive and write screenshots from inside the runtime; this
+// helper stays useful for tools that already shell out to
 // puppeteer/wkhtmltoimage/etc.
 func captureBrowserScreenshot(
 	ctx context.Context,

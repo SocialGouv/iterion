@@ -51,10 +51,10 @@ export type PreviewSource = "tool-stdout" | "manual" | "runtime";
 export type PreviewScope = "internal" | "external";
 
 // BrowserScreenshot is a single saved frame, persisted as a run
-// attachment by the runtime (PR 2: tool-stdout directive; PR 3:
-// Playwright). The list lives sorted ascending by seq so the
-// scrubber can binary-search "show the latest frame with seq <=
-// scrubSeq" without copying.
+// attachment by the runtime (tool-stdout directive today, Playwright
+// auto-capture once that path is wired). The list stays sorted
+// ascending by seq so the scrubber can pick the latest frame with
+// seq <= scrubSeq without copying.
 export interface BrowserScreenshot {
   seq: number;
   attachmentName: string;
@@ -79,27 +79,32 @@ export interface BrowserPaneState {
   scope: PreviewScope;
   source: PreviewSource | null;
   kind?: string;
-  // Seq of the last preview_url_available event reflected in
-  // currentUrl. Used by the time-travel logic in BrowserPane.
-  lastEventSeq: number | null;
-  // Latest preview_url event seq seen in the run, regardless of
-  // current selection. Lets the RunView decide when to auto-show
+  // Latest preview_url event seq the reducer has consumed,
+  // regardless of whether it became `currentUrl` (a manual URL
+  // takes precedence). Lets the RunView decide when to auto-show
   // the Browser tab.
   lastEventSeqSeen: number | null;
-  // Captured screenshots, ascending by seq. PR 2 — tool-stdout
-  // directive only; PR 3 will append on every Playwright action.
+  // Captured screenshots, ascending by seq. Backed by tool-stdout
+  // directives today and Playwright tool calls when that path is
+  // wired. Capped by MAX_BROWSER_SCREENSHOTS to bound memory on
+  // long-running sessions.
   screenshots: BrowserScreenshot[];
-  // Active live-mode session, if any. PR 4 — set by the runtime
-  // when a Chromium attaches via the BrowserRegistry.
+  // Active live-mode session, if any. Set by the runtime when a
+  // Chromium attaches via the BrowserRegistry, or by the debug
+  // attach button.
   liveSession: BrowserSessionInfo | null;
 }
+
+// MAX_BROWSER_SCREENSHOTS bounds the in-memory history. The scrubber
+// re-fetches via attachment URLs, so dropping older frames is safe;
+// only the most-recent N stays available for scrub-without-network.
+const MAX_BROWSER_SCREENSHOTS = 200;
 
 const initialBrowserState: BrowserPaneState = {
   currentUrl: null,
   scope: "external",
   source: null,
   kind: undefined,
-  lastEventSeq: null,
   lastEventSeqSeen: null,
   screenshots: [],
   liveSession: null,
@@ -162,9 +167,9 @@ interface RunStoreState {
   setManualPreviewUrl: (url: string | null) => void;
 
   // Live-mode session toggle from the BrowserPane debug-attach
-  // button. PR 5 will replace this with auto-driven state from the
-  // EventBrowserSessionStarted/Ended pair the Playwright MCP
-  // integration emits. Pass `null` to drop back to viewer mode.
+  // button. Pass `null` to drop back to viewer mode. The
+  // browser_session_started / _ended event pair drives the same
+  // field automatically when the runtime auto-attaches.
   setLiveSession: (info: BrowserSessionInfo | null) => void;
 
   reset: () => void;
@@ -269,26 +274,11 @@ export const useRunStore = create<RunStoreState>((set) => ({
         scope: "external",
         source: url ? "manual" : null,
         kind: undefined,
-        // Manual entries don't bind to an event seq — keep
-        // lastEventSeqSeen so RunView's auto-show tab logic still
-        // honours workflow-emitted URLs that arrived earlier.
-        lastEventSeq: null,
       },
     })),
 
   setLiveSession: (info) =>
-    set((s) => ({
-      browser: {
-        ...s.browser,
-        liveSession: info,
-        // Bumping lastEventSeqSeen ensures the RunView auto-shows
-        // the Browser tab on debug attach even before any
-        // workflow-emitted preview URL.
-        lastEventSeqSeen: info
-          ? (s.browser.lastEventSeqSeen ?? -1) + 1
-          : s.browser.lastEventSeqSeen,
-      },
-    })),
+    set((s) => ({ browser: { ...s.browser, liveSession: info } })),
 
   setLogSubscribed: (subscribed) =>
     set((s) => ({ log: { ...s.log, subscribed } })),
@@ -581,9 +571,9 @@ function reduceEvents(
         const shot: BrowserScreenshot = {
           seq: evt.seq,
           attachmentName,
-          url: (evt.data?.url as string | undefined) ?? undefined,
+          url: evt.data?.url as string | undefined,
           nodeId: evt.node_id,
-          toolCallId: (evt.data?.tool_call_id as string | undefined) ?? undefined,
+          toolCallId: evt.data?.tool_call_id as string | undefined,
         };
         // Append in seq order (events arrive monotonically; preserve
         // the invariant explicitly so a future late event doesn't
@@ -596,6 +586,9 @@ function reduceEvents(
           next = list.slice();
           next.push(shot);
           next.sort((a, b) => a.seq - b.seq);
+        }
+        if (next.length > MAX_BROWSER_SCREENSHOTS) {
+          next = next.slice(next.length - MAX_BROWSER_SCREENSHOTS);
         }
         browser = { ...browser, screenshots: next };
         break;
@@ -617,8 +610,7 @@ function reduceEvents(
           currentUrl: url,
           scope,
           source: rawSource === "tool-stdout" ? "tool-stdout" : "runtime",
-          kind: (evt.data?.kind as string | undefined) ?? undefined,
-          lastEventSeq: evt.seq,
+          kind: evt.data?.kind as string | undefined,
           lastEventSeqSeen: evt.seq,
         };
         break;

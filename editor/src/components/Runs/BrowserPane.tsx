@@ -33,15 +33,17 @@ function pickScreenshotAt(
 }
 
 // BrowserPane renders a URL inside an iframe, picking the source URL
-// from the zustand store's browser state. Two flavours of URL today
-// (PR 1): workflow-emitted via `preview_url_available` events, and
-// manual URLs typed into the URL bar. Internal-scope URLs are routed
-// through the backend preview proxy to strip frame-blocking headers;
+// from the zustand store's browser state. URLs come from two places:
+// workflow-emitted `preview_url_available` events, and manual URLs
+// typed into the URL bar. Internal-scope URLs are routed through the
+// backend preview proxy to strip frame-blocking headers;
 // external-scope URLs load directly (and degrade to "open in new tab"
 // when the target site refuses framing).
 //
-// PR 2 will layer a time-travel mode (screenshot artefact for the
-// current scrub seq) and PR 3 will add a live CDP screencast mode.
+// The pane has three modes: live CDP screencast (when liveSession is
+// set), time-travel screenshot (when the run-console scrubber is
+// parked), or viewer iframe (the default). Mode priority is
+// live > time-travel > viewer.
 export default function BrowserPane({ runId, scrubSeq = null }: BrowserPaneProps) {
   const browser = useRunStore((s) => s.browser);
   const setManualPreviewUrl = useRunStore((s) => s.setManualPreviewUrl);

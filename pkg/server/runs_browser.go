@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -100,26 +101,35 @@ func (s *Server) handleBrowserCDP(w http.ResponseWriter, r *http.Request) {
 	// one WS BinaryMessage per CDP message. The pipe contract from
 	// `--remote-debugging-pipe` is: one JSON-RPC object followed by
 	// a single `\0` byte, both directions.
+	//
+	// scanOffset tracks how far we've already searched for `\0` in
+	// the carry buffer, so a multi-MB CDP frame arriving in many
+	// small reads doesn't degrade to O(N²) re-scans of the prefix.
 	go func() {
 		defer closeOnce()
 		buf := make([]byte, 0, 32*1024)
 		chunk := make([]byte, 32*1024)
+		var scanOffset int
 		for {
 			n, readErr := sess.CDPConn.Read(chunk)
 			if n > 0 {
 				buf = append(buf, chunk[:n]...)
 				for {
-					i := indexByteZero(buf)
-					if i < 0 {
+					rel := bytes.IndexByte(buf[scanOffset:], 0)
+					if rel < 0 {
+						scanOffset = len(buf)
 						break
 					}
-					message := buf[:i]
+					i := scanOffset + rel
 					_ = conn.SetWriteDeadline(time.Now().Add(browserCDPWriteDeadline))
-					if writeErr := conn.WriteMessage(websocket.BinaryMessage, message); writeErr != nil {
+					if writeErr := conn.WriteMessage(websocket.BinaryMessage, buf[:i]); writeErr != nil {
 						return
 					}
-					// Drop the message + the `\0` separator from the buffer.
+					// Drop the message + the `\0` separator and reset
+					// the search head — the new prefix has not been
+					// scanned yet.
 					buf = buf[i+1:]
+					scanOffset = 0
 				}
 			}
 			if readErr != nil {
@@ -165,18 +175,6 @@ func (s *Server) handleBrowserCDP(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	<-stop
-}
-
-// indexByteZero returns the index of the first `\0` in buf, or -1.
-// Mirrors bytes.IndexByte but kept inline so the hot path doesn't
-// pay an extra package import.
-func indexByteZero(buf []byte) int {
-	for i, b := range buf {
-		if b == 0 {
-			return i
-		}
-	}
-	return -1
 }
 
 // handleBrowserAttach spawns a host Chromium via HostChromiumRunner
@@ -243,8 +241,8 @@ func (s *Server) handleBrowserAttach(w http.ResponseWriter, r *http.Request) {
 	// 200 response (sets liveSession in the zustand store). We
 	// intentionally do NOT persist a `browser_session_started`
 	// event here: this debug-attach is a developer tool, not part
-	// of the run's authoritative timeline. PR 5 (Playwright MCP
-	// auto-wire) will emit the event from inside the runtime where
+	// of the run's authoritative timeline. The Playwright MCP
+	// auto-wire path emits the event from inside the runtime where
 	// it has store access alongside the rest of the run's events.
 
 	s.reflectAllowedOrigin(w, r)

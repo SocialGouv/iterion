@@ -15,39 +15,46 @@ const previewURLDirective = "[iterion] preview_url="
 // the runtime will read it and persist it as a versioned attachment.
 const previewScreenshotDirective = "[iterion] preview_screenshot="
 
+// scanDirectiveLines walks tool stdout and yields the token list of
+// each line that starts with directive. The first token is whatever
+// comes after `directive=`; subsequent tokens are space-separated
+// `key=value` pairs the caller can interpret. Lines that don't match
+// (or whose first token is empty) are skipped silently — tools can
+// freely interleave their own log output.
+func scanDirectiveLines(output, directive string) [][]string {
+	if output == "" || !strings.Contains(output, directive) {
+		return nil
+	}
+	var found [][]string
+	for _, raw := range strings.Split(output, "\n") {
+		line := strings.TrimSpace(raw)
+		if !strings.HasPrefix(line, directive) {
+			continue
+		}
+		tokens := strings.Fields(line[len(directive):])
+		if len(tokens) == 0 || tokens[0] == "" {
+			continue
+		}
+		found = append(found, tokens)
+	}
+	return found
+}
+
 // scanPreviewURLs walks the captured stdout of a tool node and returns
 // one event payload per directive line. Each payload is shaped to drop
 // directly into a store.EventPreviewURLAvailable.Data map: required
 // `url`, optional `kind` and `scope` (defaulting to "external"), plus
 // `source: "tool-stdout"` so consumers can distinguish manual user
 // entry from workflow-emitted URLs.
-//
-// The scanner ignores lines that don't start with the prefix, so a
-// tool can mix the directive with its own logging output without
-// extra escaping.
 func scanPreviewURLs(output string) []map[string]interface{} {
-	if output == "" || !strings.Contains(output, previewURLDirective) {
+	lines := scanDirectiveLines(output, previewURLDirective)
+	if len(lines) == 0 {
 		return nil
 	}
-
-	var found []map[string]interface{}
-	for _, raw := range strings.Split(output, "\n") {
-		line := strings.TrimSpace(raw)
-		if !strings.HasPrefix(line, previewURLDirective) {
-			continue
-		}
-
-		tokens := strings.Fields(line[len(previewURLDirective):])
-		if len(tokens) == 0 {
-			continue
-		}
-		url := tokens[0]
-		if url == "" {
-			continue
-		}
-
+	found := make([]map[string]interface{}, 0, len(lines))
+	for _, tokens := range lines {
 		data := map[string]interface{}{
-			"url":    url,
+			"url":    tokens[0],
 			"source": "tool-stdout",
 			"scope":  "external",
 		}
@@ -81,24 +88,13 @@ type ScreenshotDirective struct {
 // ScreenshotDirective per matching line. The runtime hook is
 // responsible for actually reading the file and persisting it.
 func scanPreviewScreenshots(output string) []ScreenshotDirective {
-	if output == "" || !strings.Contains(output, previewScreenshotDirective) {
+	lines := scanDirectiveLines(output, previewScreenshotDirective)
+	if len(lines) == 0 {
 		return nil
 	}
-	var found []ScreenshotDirective
-	for _, raw := range strings.Split(output, "\n") {
-		line := strings.TrimSpace(raw)
-		if !strings.HasPrefix(line, previewScreenshotDirective) {
-			continue
-		}
-		tokens := strings.Fields(line[len(previewScreenshotDirective):])
-		if len(tokens) == 0 {
-			continue
-		}
-		path := tokens[0]
-		if path == "" {
-			continue
-		}
-		dir := ScreenshotDirective{Path: path}
+	found := make([]ScreenshotDirective, 0, len(lines))
+	for _, tokens := range lines {
+		dir := ScreenshotDirective{Path: tokens[0]}
 		for _, kv := range tokens[1:] {
 			eq := strings.IndexByte(kv, '=')
 			if eq <= 0 {

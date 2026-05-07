@@ -55,7 +55,9 @@ export default function RunView() {
   const browserPreview = useRunStore((s) => s.browser);
   const browserAvailable =
     browserPreview.currentUrl !== null ||
-    browserPreview.lastEventSeqSeen !== null;
+    browserPreview.lastEventSeqSeen !== null ||
+    browserPreview.screenshots.length > 0 ||
+    browserPreview.liveSession !== null;
   // Time-travel scrubber: when non-null, the canvas/detail/event log
   // render the run *as it was* at this seq. When null (the default),
   // live data flows through. Lives in component state because it's
