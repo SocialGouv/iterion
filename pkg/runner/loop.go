@@ -34,6 +34,7 @@ import (
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -55,6 +56,12 @@ type Config struct {
 	// metrics emission without changing the loop's behaviour, useful
 	// for unit tests and the local-mode dev runner.
 	Metrics *metrics.Registry
+
+	// RunSecrets + Sealer carry the BYOK / OAuth bundle the
+	// publisher pre-resolved. Both nil → runner falls back to env
+	// vars at the LLM call site (Phase A/B compatibility). Phase C.
+	RunSecrets secrets.RunSecretsStore
+	Sealer     secrets.Sealer
 }
 
 // Runner is the long-running consumer loop.
@@ -455,10 +462,63 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 	}
 	engine := runtime.New(wf, r.cfg.Store, executor, engineOpts...)
 
+	// Phase C: fetch + decrypt the per-run sealed credentials bundle
+	// when the publisher attached one. The result lives only in ctx —
+	// the runner process itself stays clean of plaintext keys.
+	ctx, cleanup, credErr := r.injectCredentials(ctx, msg)
+	if credErr != nil {
+		r.cfg.Logger.Warn("runner: credentials inject %s: %v (continuing without)", msg.RunID, credErr)
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+
 	if msg.Resume != nil {
 		return engine.Resume(ctx, msg.RunID, msg.Resume.Answers)
 	}
 	return engine.Run(ctx, msg.RunID, msg.Vars)
+}
+
+// injectCredentials resolves the run's sealed bundle, decrypts it,
+// stamps the plaintext into ctx via secrets.WithCredentials, and
+// returns a cleanup func that wipes the bundle at the call site.
+// When no bundle is attached or the runner has no Sealer wired,
+// returns the original ctx unchanged.
+func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (context.Context, func(), error) {
+	if msg.SecretsRef == "" {
+		return ctx, nil, nil
+	}
+	if r.cfg.RunSecrets == nil || r.cfg.Sealer == nil {
+		return ctx, nil, fmt.Errorf("runner: SecretsRef set but RunSecrets/Sealer not wired")
+	}
+	rec, err := r.cfg.RunSecrets.Get(ctx, msg.SecretsRef)
+	if err != nil {
+		return ctx, nil, fmt.Errorf("fetch run_secrets %s: %w", msg.SecretsRef, err)
+	}
+	if rec.TenantID != "" && rec.TenantID != msg.TenantID {
+		return ctx, nil, fmt.Errorf("run_secrets tenant mismatch (msg=%q sealed=%q)", msg.TenantID, rec.TenantID)
+	}
+	bundle, err := secrets.OpenRunBundle(r.cfg.Sealer, msg.RunID, rec.SealedBundle)
+	if err != nil {
+		return ctx, nil, fmt.Errorf("unseal run_secrets %s: %w", msg.SecretsRef, err)
+	}
+	creds := secrets.Credentials{
+		APIKeys: bundle.APIKeys,
+	}
+	cleanup := func() {
+		// Best-effort delete: a missing record is fine (TTL already
+		// got it). The runner deletes on every exit so a redelivered
+		// message gets a fresh ref from the publisher.
+		ctxDel, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = r.cfg.RunSecrets.Delete(ctxDel, msg.SecretsRef)
+		// Wipe plaintext (best-effort; Go gives no secure-erase
+		// guarantee but this reduces window of exposure).
+		for k := range bundle.APIKeys {
+			bundle.APIKeys[k] = ""
+		}
+	}
+	return secrets.WithCredentials(ctx, creds), cleanup, nil
 }
 
 // loadWorkflow decodes the AST embedded in the message and compiles

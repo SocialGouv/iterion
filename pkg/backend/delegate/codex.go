@@ -15,6 +15,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 //go:embed codex_output_discipline.txt
@@ -83,6 +84,15 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 
 	// Stream stderr for live observability and capture for diagnostics.
 	var stderrBuf strings.Builder
+	// Phase C: per-run BYOK injection. Codex CLI reads OPENAI_API_KEY
+	// (and falls back to ChatGPT OAuth) — for Phase C we plumb the
+	// API-key path; OAuth-forfait is Phase D.
+	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
+		if k := creds.APIKey(secrets.ProviderOpenAI); k != "" {
+			opts = append(opts, codexsdk.WithEnv(map[string]string{"OPENAI_API_KEY": k}))
+		}
+	}
+
 	opts = append(opts, codexsdk.WithStderr(func(line string) {
 		stderrBuf.WriteString(line)
 		stderrBuf.WriteString("\n")

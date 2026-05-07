@@ -3,6 +3,7 @@
 package model
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -20,6 +21,11 @@ import (
 // The factory is called once per unique model ID; results are cached.
 type ProviderFactory func(modelID string) (api.APIClient, error)
 
+// KeyedProviderFactory builds an APIClient given an explicit API key.
+// Used by ResolveWithContext when a per-run BYOK plaintext is
+// available — the result is NOT cached (multi-tenant safety).
+type KeyedProviderFactory func(modelID, apiKey string) (api.APIClient, error)
+
 // cacheEntry holds a per-key sync.Once so concurrent resolves for the same
 // spec only invoke the factory once, without holding the registry lock for
 // the duration of slow factory I/O (e.g. AWS IMDS, Google ADC).
@@ -32,16 +38,18 @@ type cacheEntry struct {
 // Registry resolves model specs of the form "provider/model-id" to
 // APIClient instances. It caches resolved clients for reuse.
 type Registry struct {
-	mu        sync.Mutex
-	providers map[string]ProviderFactory
-	cache     map[string]*cacheEntry
+	mu               sync.Mutex
+	providers        map[string]ProviderFactory
+	providersWithKey map[string]KeyedProviderFactory
+	cache            map[string]*cacheEntry
 }
 
 // NewRegistry creates a model registry pre-loaded with built-in providers.
 func NewRegistry() *Registry {
 	r := &Registry{
-		providers: make(map[string]ProviderFactory),
-		cache:     make(map[string]*cacheEntry),
+		providers:        make(map[string]ProviderFactory),
+		providersWithKey: make(map[string]KeyedProviderFactory),
+		cache:            make(map[string]*cacheEntry),
 	}
 	r.registerDefaults()
 	return r
@@ -59,12 +67,20 @@ func (r *Registry) registerDefaults() {
 			Model:  modelID,
 		})
 	}
+	r.providersWithKey["anthropic"] = func(modelID, apiKey string) (api.APIClient, error) {
+		p := anthropicprovider.New()
+		return p.NewClient(api.ProviderConfig{APIKey: apiKey, Model: modelID})
+	}
 	r.providers["openai"] = func(modelID string) (api.APIClient, error) {
 		p := openaiprovider.New()
 		return p.NewClient(api.ProviderConfig{
 			APIKey: os.Getenv("OPENAI_API_KEY"),
 			Model:  modelID,
 		})
+	}
+	r.providersWithKey["openai"] = func(modelID, apiKey string) (api.APIClient, error) {
+		p := openaiprovider.New()
+		return p.NewClient(api.ProviderConfig{APIKey: apiKey, Model: modelID})
 	}
 	// AWS Bedrock — auth via aws-sdk-go-v2 standard credential chain
 	// (AWS_REGION, AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, profile,
@@ -89,6 +105,10 @@ func (r *Registry) registerDefaults() {
 			APIKey: os.Getenv("AZURE_OPENAI_API_KEY"),
 			Model:  modelID,
 		})
+	}
+	r.providersWithKey["foundry"] = func(modelID, apiKey string) (api.APIClient, error) {
+		p := foundryprovider.New()
+		return p.NewClient(api.ProviderConfig{APIKey: apiKey, Model: modelID})
 	}
 }
 
@@ -188,4 +208,69 @@ func ParseModelSpec(spec string) (providerName, modelID string, err error) {
 		return "", "", fmt.Errorf("model: invalid spec %q (expected \"provider/model-id\")", spec)
 	}
 	return spec[:idx], spec[idx+1:], nil
+}
+
+// ResolveWithContext is the BYOK-aware variant of Resolve.
+//
+// When ctx carries per-run secrets.Credentials with a non-empty key
+// for the requested provider, this method bypasses the cache and
+// constructs a fresh APIClient using the override key. This is
+// crucial in cloud mode: a single runner pod serially handles runs
+// for many tenants, so caching one tenant's API key against a
+// modelID would leak it across tenants.
+//
+// When ctx has no credentials (local mode, or no BYOK configured),
+// this falls through to Resolve(spec) which uses the env-var fallback
+// + per-process cache.
+func (r *Registry) ResolveWithContext(ctx context.Context, spec string) (api.APIClient, error) {
+	providerName, modelID, err := ParseModelSpec(spec)
+	if err != nil {
+		return nil, err
+	}
+	creds, hasCreds := credentialsLookup(ctx)
+	if !hasCreds {
+		return r.Resolve(spec)
+	}
+	overrideKey := creds(providerName)
+	if overrideKey == "" {
+		// No tenant-scoped key for this provider — fall back to the
+		// shared resolver (env vars + cache).
+		return r.Resolve(spec)
+	}
+	r.mu.Lock()
+	factory, hasFactory := r.providersWithKey[providerName]
+	r.mu.Unlock()
+	if !hasFactory {
+		// Provider doesn't expose a BYOK factory; fall back.
+		return r.Resolve(spec)
+	}
+	return factory(modelID, overrideKey)
+}
+
+// credentialsLookup returns a closure that maps a provider name to
+// its per-run plaintext API key, or an empty string when ctx carries
+// no credentials. Defined as a function so the model package doesn't
+// import pkg/secrets directly (the credentials lookup is wired by
+// the runner via SetCredentialsLookup).
+type credentialsResolver func(provider string) string
+
+// credentialsLookupFn is the indirection that lets pkg/runner inject
+// a Credentials reader at boot. Default: no-op (no per-run keys).
+var credentialsLookupFn = func(ctx context.Context) (credentialsResolver, bool) {
+	return nil, false
+}
+
+// SetCredentialsLookup wires a per-ctx credentials lookup. The
+// runner calls this at boot once with a closure that reads from
+// secrets.CredentialsFromContext and returns the per-provider key.
+// Idempotent; the latest call wins.
+func SetCredentialsLookup(fn func(ctx context.Context) (func(provider string) string, bool)) {
+	credentialsLookupFn = func(ctx context.Context) (credentialsResolver, bool) {
+		f, ok := fn(ctx)
+		return credentialsResolver(f), ok
+	}
+}
+
+func credentialsLookup(ctx context.Context) (credentialsResolver, bool) {
+	return credentialsLookupFn(ctx)
 }

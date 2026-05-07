@@ -8,12 +8,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/cloud/tracing"
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runner"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store/blob"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
 	"github.com/spf13/cobra"
@@ -149,6 +151,30 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	}
 	defer func() { _ = metrics.ShutdownServer(metricsSrv) }()
 
+	// 4b. BYOK / OAuth wire-up. The runner consumes sealed bundles
+	//     keyed by RunMessage.SecretsRef; the master key MUST match
+	//     the publisher's. Phase C.
+	sealer, err := secrets.NewAESGCMSealerFromBase64(cfg.Auth.SecretsKey)
+	if err != nil {
+		return fmt.Errorf("runner: build sealer: %w", err)
+	}
+	runSecretsStore := secrets.NewMongoRunSecretsStore(st.DB())
+	if err := runSecretsStore.EnsureSchema(rootCtx); err != nil {
+		return fmt.Errorf("runner: ensure run_secrets schema: %w", err)
+	}
+	// Tell pkg/backend/model how to read per-run credentials from
+	// ctx. We translate provider names (string) ↔ secrets.Provider
+	// enum here so the model package stays free of pkg/secrets imports.
+	model.SetCredentialsLookup(func(ctx context.Context) (func(string) string, bool) {
+		creds, ok := secrets.CredentialsFromContext(ctx)
+		if !ok {
+			return nil, false
+		}
+		return func(provider string) string {
+			return creds.APIKey(secrets.Provider(provider))
+		}, true
+	})
+
 	// 5. Runner loop.
 	r, err := runner.New(rootCtx, runner.Config{
 		NATS:              natsConn,
@@ -158,6 +184,8 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		HeartbeatInterval: cfg.Runner.Heartbeat,
 		Logger:            logger,
 		Metrics:           mreg,
+		RunSecrets:        runSecretsStore,
+		Sealer:            sealer,
 	})
 	if err != nil {
 		return fmt.Errorf("runner: build: %w", err)

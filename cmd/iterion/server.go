@@ -24,6 +24,7 @@ import (
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runview/eventstream"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/server"
 	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"github.com/SocialGouv/iterion/pkg/store/blob"
@@ -169,12 +170,30 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// + the run-console WS handler all share the same registry.
 	mreg := metrics.New()
 
+	// AES-GCM master key for sealing BYOK + OAuth credentials at
+	// rest. Built early so the publisher can pick up the BYOK store.
+	sealer, err := secrets.NewAESGCMSealerFromBase64(cfg.Auth.SecretsKey)
+	if err != nil {
+		return fmt.Errorf("server: build sealer: %w", err)
+	}
+	apiKeysStore := secrets.NewMongoApiKeyStore(st.DB())
+	if err := apiKeysStore.EnsureSchema(rootCtx); err != nil {
+		return fmt.Errorf("server: ensure api_keys schema: %w", err)
+	}
+	runSecretsStore := secrets.NewMongoRunSecretsStore(st.DB())
+	if err := runSecretsStore.EnsureSchema(rootCtx); err != nil {
+		return fmt.Errorf("server: ensure run_secrets schema: %w", err)
+	}
+
 	pub, err := cloudpublisher.New(cloudpublisher.Config{
-		NATS:      natsConn,
-		Store:     st,
-		MongoColl: st.RunsCollection(),
-		Logger:    logger,
-		Metrics:   mreg,
+		NATS:       natsConn,
+		Store:      st,
+		MongoColl:  st.RunsCollection(),
+		Logger:     logger,
+		Metrics:    mreg,
+		ApiKeys:    apiKeysStore,
+		RunSecrets: runSecretsStore,
+		Sealer:     sealer,
 	})
 	if err != nil {
 		return fmt.Errorf("server: build cloud publisher: %w", err)
@@ -259,6 +278,9 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		AuthService:     authSvc,
 		AuthSigner:      signer,
 		OIDCRegistry:    registry,
+		ApiKeys:         apiKeysStore,
+		RunSecrets:      runSecretsStore,
+		Sealer:          sealer,
 		AccessTTL:       cfg.Auth.AccessTTL,
 		RefreshTTL:      cfg.Auth.RefreshTTL,
 		PublicURL:       cfg.Auth.PublicURL,

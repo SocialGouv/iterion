@@ -27,6 +27,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -85,6 +86,19 @@ type Config struct {
 
 	// DisableAuth bypasses every auth check — DEV ONLY.
 	DisableAuth bool
+
+	// ApiKeys is the BYOK store. When non-nil, the server registers
+	// /api/teams/:id/api-keys + /api/me/api-keys and the cloud
+	// publisher resolves keys at launch time (Phase C).
+	ApiKeys secrets.ApiKeyStore
+
+	// RunSecrets is the per-run sealed bundle store. Required when
+	// ApiKeys is set.
+	RunSecrets secrets.RunSecretsStore
+
+	// Sealer is the AES-GCM sealer used to encrypt API keys at rest
+	// and run-scoped bundles in flight. Required when ApiKeys is set.
+	Sealer secrets.Sealer
 
 	// Store overrides the default filesystem store with a caller-
 	// supplied implementation (typically the cloud Mongo+S3 store).
@@ -166,6 +180,9 @@ type Server struct {
 	signer       *auth.JWTSigner
 	oidcRegistry *oidc.Registry
 	oidcStates   oidc.StateStore
+	apiKeys      secrets.ApiKeyStore
+	runSecrets   secrets.RunSecretsStore
+	sealer       secrets.Sealer
 
 	// listener is captured at ListenAndServe time so callers (notably the
 	// desktop host, which passes Port=0 for an OS-assigned port) can read
@@ -212,6 +229,9 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		signer:       cfg.AuthSigner,
 		oidcRegistry: cfg.OIDCRegistry,
 		oidcStates:   cfg.OIDCStates,
+		apiKeys:      cfg.ApiKeys,
+		runSecrets:   cfg.RunSecrets,
+		sealer:       cfg.Sealer,
 	}
 	s.hub = NewHub(logger)
 	go s.hub.Run()
@@ -403,6 +423,13 @@ func (s *Server) routes() {
 	// local mode without an auth service skips them.
 	if s.authSvc != nil {
 		s.registerAuthRoutes()
+	}
+
+	// BYOK endpoints (Phase C). Requires the auth+identity stack
+	// already in place — caller must wire AuthService + ApiKeys
+	// + Sealer together.
+	if s.apiKeys != nil && s.sealer != nil && s.authSvc != nil {
+		s.registerBYOKRoutes()
 	}
 
 	// Serve static frontend files.

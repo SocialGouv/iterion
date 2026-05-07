@@ -13,6 +13,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
@@ -112,6 +113,16 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		effort = defaultClaudeCodeEffort
 	}
 	opts = append(opts, claudesdk.WithEnv("CLAUDE_CODE_EFFORT_LEVEL", effort))
+
+	// Phase C: inject per-run BYOK credentials into the spawned
+	// CLI's environment when ctx carries them. The plaintext never
+	// touches the runner process's own env — only the child sees it,
+	// and the runner cleans up after the run completes.
+	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
+		if k := creds.APIKey(secrets.ProviderAnthropic); k != "" {
+			opts = append(opts, claudesdk.WithEnv("ANTHROPIC_API_KEY", k))
+		}
+	}
 
 	if task.SessionID != "" {
 		opts = append(opts, claudesdk.WithResume(task.SessionID))

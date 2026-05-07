@@ -67,8 +67,11 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 		return b.executeViaSandboxRunner(ctx, task)
 	}
 
-	// Resolve API client.
-	client, err := b.registry.Resolve(task.Model)
+	// Resolve API client. Phase C: in cloud mode the runner stamps
+	// per-tenant BYOK credentials into ctx, ResolveWithContext then
+	// builds a fresh APIClient with the override key (no cache hit
+	// across tenants). Local mode keeps the env-fallback path.
+	client, err := b.registry.ResolveWithContext(ctx, task.Model)
 	if err != nil {
 		return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
 	}

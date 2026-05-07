@@ -29,6 +29,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -45,15 +46,29 @@ type Config struct {
 	// Metrics, when non-nil, increments iterion_runs_created_total
 	// after every successful Launch / Resume publish.
 	Metrics *metrics.Registry
+
+	// ApiKeys is the BYOK store. When non-nil, the publisher
+	// resolves per-tenant credentials at launch time and seals
+	// them into a per-run RunSecrets record. The runner unseals
+	// and injects them into the engine ctx. Phase C.
+	ApiKeys secrets.ApiKeyStore
+	// RunSecrets persists the sealed bundle keyed by SecretsRef.
+	RunSecrets secrets.RunSecretsStore
+	// Sealer is the AES-GCM master-key sealer (shared with the
+	// REST handlers).
+	Sealer secrets.Sealer
 }
 
 // Publisher is a runview.LaunchPublisher backed by NATS + Mongo.
 type Publisher struct {
-	nats    *natsq.Conn
-	store   store.RunStore
-	runs    *mongo.Collection
-	logger  *iterlog.Logger
-	metrics *metrics.Registry
+	nats       *natsq.Conn
+	store      store.RunStore
+	runs       *mongo.Collection
+	logger     *iterlog.Logger
+	metrics    *metrics.Registry
+	apiKeys    secrets.ApiKeyStore
+	runSecrets secrets.RunSecretsStore
+	sealer     secrets.Sealer
 }
 
 // New builds a Publisher.
@@ -71,12 +86,83 @@ func New(cfg Config) (*Publisher, error) {
 		cfg.Logger = iterlog.New(iterlog.LevelInfo, nil)
 	}
 	return &Publisher{
-		nats:    cfg.NATS,
-		store:   cfg.Store,
-		runs:    cfg.MongoColl,
-		logger:  cfg.Logger,
-		metrics: cfg.Metrics,
+		nats:       cfg.NATS,
+		store:      cfg.Store,
+		runs:       cfg.MongoColl,
+		logger:     cfg.Logger,
+		metrics:    cfg.Metrics,
+		apiKeys:    cfg.ApiKeys,
+		runSecrets: cfg.RunSecrets,
+		sealer:     cfg.Sealer,
 	}, nil
+}
+
+// allKnownProviders is the static set the publisher tries to resolve
+// for every run. Providers without a configured key are simply
+// omitted from the bundle; the runner falls back to env or surfaces
+// "no credentials" at the LLM call site.
+var allKnownProviders = []secrets.Provider{
+	secrets.ProviderAnthropic,
+	secrets.ProviderOpenAI,
+	secrets.ProviderBedrock,
+	secrets.ProviderVertex,
+	secrets.ProviderAzure,
+	secrets.ProviderOpenRouter,
+	secrets.ProviderXAI,
+}
+
+// resolveAndSealCredentials looks up every provider key visible to
+// (tenantID, ownerID), seals the resulting bundle, and persists it
+// under a fresh secrets ref. Returns the ref or an empty string when
+// no BYOK store is wired (Phase A/B compatibility).
+func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, tenantID, ownerID string) (string, error) {
+	if p.apiKeys == nil || p.runSecrets == nil || p.sealer == nil {
+		return "", nil
+	}
+	if tenantID == "" {
+		// Without a tenant we cannot resolve scoped keys; let the
+		// runner fall back to env.
+		return "", nil
+	}
+	resolved, err := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, allKnownProviders, nil, p.sealer)
+	if err != nil {
+		return "", fmt.Errorf("cloudpublisher: resolve creds: %w", err)
+	}
+	if len(resolved) == 0 {
+		return "", nil
+	}
+	bundle := secrets.RunBundle{APIKeys: make(map[secrets.Provider]string, len(resolved))}
+	for prov, r := range resolved {
+		if len(r.Plaintext) == 0 {
+			continue
+		}
+		bundle.APIKeys[prov] = string(r.Plaintext)
+	}
+	if len(bundle.APIKeys) == 0 {
+		return "", nil
+	}
+	sealed, err := secrets.SealRunBundle(p.sealer, runID, bundle)
+	if err != nil {
+		return "", fmt.Errorf("cloudpublisher: seal bundle: %w", err)
+	}
+	ref := secrets.NewSecretsRef()
+	now := time.Now().UTC()
+	rec := secrets.RunSecretsRecord{
+		ID:           ref,
+		TenantID:     tenantID,
+		RunID:        runID,
+		SealedBundle: sealed,
+		CreatedAt:    now,
+		ExpiresAt:    now.Add(secrets.DefaultRunSecretsTTL),
+	}
+	if err := p.runSecrets.Put(ctx, rec); err != nil {
+		return "", fmt.Errorf("cloudpublisher: persist run secrets: %w", err)
+	}
+	// Mark each contributing key as recently used (best effort).
+	for _, r := range resolved {
+		_ = p.apiKeys.MarkUsed(ctx, r.KeyID, now)
+	}
+	return ref, nil
 }
 
 // SubmitLaunch persists the run as queued in Mongo, then publishes
@@ -112,6 +198,14 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		return 0, fmt.Errorf("cloudpublisher: save run: %w", err)
 	}
 
+	// 1b. Resolve BYOK credentials and seal them under a fresh
+	//     secrets_ref. Empty ref means "no team-scoped credentials
+	//     configured" — the runner falls back to env.
+	secretsRef, err := p.resolveAndSealCredentials(ctx, runID, tenantID, ownerID)
+	if err != nil {
+		return 0, err
+	}
+
 	// 2. Build the RunMessage. We marshal the AST inline; T-42 will
 	//    add the IRRef fallback for oversized workflows. The
 	//    runner side re-parses + re-compiles, so the wire payload
@@ -127,6 +221,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		WorkflowHash:   hash,
 		IRCompiled:     body,
 		Vars:           varsAsAny(spec.Vars),
+		SecretsRef:     secretsRef,
 		BackendConfig:  queue.BackendConfig{Default: queue.BackendClaw},
 		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),
 		TenantID:       tenantID,
@@ -206,6 +301,13 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	if err := p.store.UpdateRunStatus(ctx, spec.RunID, store.RunStatusQueued, ""); err != nil {
 		return fmt.Errorf("cloudpublisher: requeue %s: %w", spec.RunID, err)
 	}
+	// Re-resolve BYOK credentials for the resume publication. Keys
+	// may have rotated between launch and resume; using the prior
+	// run's secrets ref blindly would inject stale plaintext.
+	secretsRef, secretsErr := p.resolveAndSealCredentials(ctx, spec.RunID, prior.TenantID, prior.OwnerID)
+	if secretsErr != nil {
+		return secretsErr
+	}
 	msg := &queue.RunMessage{
 		V:            queue.SchemaVersion,
 		RunID:        spec.RunID,
@@ -216,6 +318,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 			Answers: spec.Answers,
 			Force:   spec.Force,
 		},
+		SecretsRef:     secretsRef,
 		BackendConfig:  queue.BackendConfig{Default: queue.BackendClaw},
 		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),
 		// Carry the prior run's tenant onto the resume publication so
