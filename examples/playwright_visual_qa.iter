@@ -259,7 +259,13 @@ prompt report_user:
 
 ## ─── Nodes ────────────────────────────────────────────────────────
 
+## NOTE: every LLM-driving node sets backend: "claw" explicitly.
+## Without it, the runtime's default may resolve to claude-code in
+## desktop / IDE deployments where the CLI is auto-discovered, and
+## claude-code rejects an "openai/…" model id.
+
 agent plan_qa:
+  backend: "claw"
   model: "openai/gpt-5.4-mini"
   output: qa_plan_output
   system: plan_qa_system
@@ -267,6 +273,7 @@ agent plan_qa:
   session: fresh
 
 agent browse:
+  backend: "claw"
   model: "openai/gpt-5.4"
   input: browse_input
   output: ui_observation
@@ -279,6 +286,7 @@ agent browse:
     servers: [playwright]
 
 judge judge_qa:
+  backend: "claw"
   model: "openai/gpt-5.4"
   input: judge_input
   output: qa_verdict
@@ -298,6 +306,7 @@ human human_signoff:
   interaction: human
 
 agent report:
+  backend: "claw"
   model: "openai/gpt-5.4-mini"
   input: report_input
   output: report_output
