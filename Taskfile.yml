@@ -423,13 +423,7 @@ tasks:
   chart:sync-version:
     desc: Sync helm/iterion/Chart.yaml appVersion with package.json so `helm upgrade` picks up the right image tag
     cmds:
-      - |
-        VERSION=$(node -p "require('./package.json').version")
-        # macOS / BSD sed and GNU sed disagree on -i; pipe through tee
-        # to avoid the portability headache.
-        awk -v v="$VERSION" '/^appVersion:/ {print "appVersion: \"" v "\""; next} {print}' helm/iterion/Chart.yaml > helm/iterion/Chart.yaml.tmp
-        mv helm/iterion/Chart.yaml.tmp helm/iterion/Chart.yaml
-        echo "Chart.yaml appVersion synced to $VERSION"
+      - bash scripts/sync-chart-version.sh
 
   chart:check-version:
     desc: Fail if Chart.yaml appVersion drifts from package.json (CI gate)

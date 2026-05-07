@@ -9,7 +9,7 @@ type: application
 # repo consumers can pin a known artifact even when appVersion (the
 # iterion binary tag) moves.
 version: 0.1.0
-appVersion: "0.4.0"
+appVersion: "0.5.0"
 home: https://github.com/SocialGouv/iterion
 sources:
   - https://github.com/SocialGouv/iterion

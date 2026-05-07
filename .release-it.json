@@ -11,7 +11,10 @@
     "releaseName": "v${version}"
   },
   "hooks": {
-    "after:bump": "bash scripts/build.sh"
+    "after:bump": [
+      "bash scripts/sync-chart-version.sh",
+      "bash scripts/build.sh"
+    ]
   },
   "plugins": {
     "@release-it/conventional-changelog": {
