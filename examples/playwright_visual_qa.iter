@@ -58,7 +58,7 @@ vars:
 mcp_server playwright:
   transport: stdio
   command: "npx"
-  args: ["-y", "@playwright/mcp@latest"]
+  args: ["-y", "@playwright/mcp@latest", "--headless", "--isolated"]
 
 ## ─── Schemas ──────────────────────────────────────────────────────
 
@@ -194,9 +194,14 @@ prompt judge_qa_system:
   2. For each item in success_criteria (recoverable from
      plan_summary), verify a matching dom_assertion or
      interaction_performed exists. Missing coverage → blocker.
-  3. console_errors non-empty → approved=false, ui_quality=broken
-     unless every error is clearly off-feature noise (3rd-party
-     analytics, ad blockers).
+  3. console_errors only justify approved=false when they impact
+     the feature under test. Treat the following as cosmetic noise
+     and IGNORE them: missing favicon.ico (404), third-party
+     analytics/tracker failures, ad-blocker / browser-extension
+     errors, mixed-content warnings on already-rendered content,
+     CORS preflight failures on non-essential endpoints.
+     Approve when the page loaded, the documented assertions hold,
+     and the only console errors are cosmetic.
   4. network_failures with status >= 500 → approved=false.
   5. If ui_quality is genuinely undecidable from the screenshots
      and DOM evidence (e.g. visual polish, accessibility contrast,
