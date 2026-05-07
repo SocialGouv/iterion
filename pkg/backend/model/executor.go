@@ -1872,105 +1872,95 @@ func (e *ClawExecutor) buildUserMessage(userPrompt string, input map[string]inte
 // references {{attachments.<name>}} (or .path) for an image-typed
 // attachment, the helper splits the prompt around that reference and
 // emits a separate ContentBlock carrying the image bytes, leaving the
-// rest of the text intact. Returns:
-//   - text: the fully resolved text-only fallback (matches buildUserMessage)
-//   - blocks: ordered ContentBlocks alternating text + image. Empty when
-//     no image attachments are referenced — backends should keep using
-//     UserPrompt in that case.
+// rest of the text intact.
 //
-// imageAttachments restricts emission to attachments declared as `image`
-// in the workflow's `attachments:` block; non-image attachments fall
-// through to plain text (their path is interpolated normally).
+// Single-pass: walks the prompt body once and builds the textual
+// fallback AND the multimodal blocks in lockstep. Returns (text, nil)
+// when no image was actually inlined, so the caller falls back to
+// UserPrompt without bothering with multimodal wrapping.
 func (e *ClawExecutor) buildUserContent(
 	userPrompt string,
 	input map[string]interface{},
 	td *TemplateData,
 	imageAttachments map[string]bool,
 ) (string, []delegate.ContentBlock) {
-	text := e.buildUserMessage(userPrompt, input, td)
-
-	if td == nil || len(td.Attachments) == 0 || len(imageAttachments) == 0 {
-		return text, nil
+	if userPrompt == "" || td == nil || len(td.Attachments) == 0 || len(imageAttachments) == 0 {
+		return e.buildUserMessage(userPrompt, input, td), nil
+	}
+	p, ok := e.prompts[userPrompt]
+	if !ok {
+		return e.buildUserMessage(userPrompt, input, td), nil
 	}
 
-	// Collect the prompt body verbatim (pre-interpolation) so we can
-	// detect attachment refs by scanning the placeholder positions.
-	body := ""
-	if userPrompt != "" {
-		if p, ok := e.prompts[userPrompt]; ok {
-			body = p.Body
+	var (
+		text   strings.Builder
+		blocks []delegate.ContentBlock
+		buf    strings.Builder // accumulates text since last image block
+		body   = p.Body
+		hasImg = false
+	)
+	flush := func() {
+		if buf.Len() == 0 {
+			return
 		}
-	}
-	if body == "" {
-		return text, nil
+		blocks = append(blocks, delegate.ContentBlock{Type: "text", Text: buf.String()})
+		buf.Reset()
 	}
 
-	var blocks []delegate.ContentBlock
-	pending := body
-	hasImage := false
 	for {
-		start := strings.Index(pending, "{{")
+		start := strings.Index(body, "{{")
 		if start == -1 {
-			if pending != "" {
-				blocks = append(blocks, delegate.ContentBlock{
-					Type: "text",
-					Text: e.resolveTemplate(pending, input, td),
-				})
-			}
+			text.WriteString(body)
+			buf.WriteString(body)
 			break
 		}
-		end := strings.Index(pending[start:], "}}")
+		// Static prefix before the next placeholder.
+		text.WriteString(body[:start])
+		buf.WriteString(body[:start])
+
+		end := strings.Index(body[start:], "}}")
 		if end == -1 {
-			blocks = append(blocks, delegate.ContentBlock{
-				Type: "text",
-				Text: e.resolveTemplate(pending, input, td),
-			})
+			text.WriteString(body[start:])
+			buf.WriteString(body[start:])
 			break
 		}
 		end += start + 2
-		ref := strings.TrimSpace(pending[start+2 : end-2])
-		// Slice that precedes the reference (resolved separately so any
-		// non-attachment refs inside it are interpolated normally).
-		if start > 0 {
-			blocks = append(blocks, delegate.ContentBlock{
-				Type: "text",
-				Text: e.resolveTemplate(pending[:start], input, td),
-			})
-		}
-		if isImageAttachmentRef(ref, imageAttachments) {
-			info, ok := td.Attachments[attachmentRefName(ref)]
-			if ok {
-				blk, err := e.imageContentBlock(info)
-				if err == nil {
-					blocks = append(blocks, blk)
-					hasImage = true
-				} else {
-					// Failed to load bytes — fall back to a textual
-					// path reference so the agent can still try to
-					// reach the file via the read_image tool.
-					blocks = append(blocks, delegate.ContentBlock{
-						Type: "text",
-						Text: info.Path,
-					})
-				}
-			}
-		} else {
-			// Non-image ref: substitute via the regular resolver and
-			// emit as text.
-			val, resolved := e.resolveTemplateRef(ref, input, td)
-			if resolved {
-				blocks = append(blocks, delegate.ContentBlock{Type: "text", Text: val})
-			} else {
-				blocks = append(blocks, delegate.ContentBlock{Type: "text", Text: pending[start:end]})
-			}
-		}
-		pending = pending[end:]
-	}
+		ref := strings.TrimSpace(body[start+2 : end-2])
 
-	if !hasImage {
-		return text, nil
+		if isImageAttachmentRef(ref, imageAttachments) {
+			info, infoOK := td.Attachments[attachmentRefName(ref)]
+			if infoOK {
+				if blk, err := e.imageContentBlock(info); err == nil {
+					flush()
+					blocks = append(blocks, blk)
+					text.WriteString(info.Path)
+					hasImg = true
+					body = body[end:]
+					continue
+				}
+				// Failed to load bytes — interpolate as text path so
+				// the agent can still reach the file via read_image.
+				text.WriteString(info.Path)
+				buf.WriteString(info.Path)
+				body = body[end:]
+				continue
+			}
+		}
+		val, resolved := e.resolveTemplateRef(ref, input, td)
+		if resolved {
+			text.WriteString(val)
+			buf.WriteString(val)
+		} else {
+			text.WriteString(body[start:end])
+			buf.WriteString(body[start:end])
+		}
+		body = body[end:]
 	}
-	return text, blocks
+	if !hasImg {
+		return text.String(), nil
+	}
+	flush()
+	return text.String(), blocks
 }
 
 // isImageAttachmentRef reports whether the given template reference

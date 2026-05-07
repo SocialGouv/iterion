@@ -236,20 +236,17 @@ func (s *Server) promoteStaged(ctx context.Context, runID string, mapping map[st
 			return nil, 0, fmt.Errorf("persist attachment %q: %w", name, err)
 		}
 		body.Close()
-		// Refresh from store so we capture the canonical StorageRef +
-		// any meta the store recomputed.
-		if list, err := s.runs.ListAttachments(ctx, runID); err == nil {
-			for _, a := range list {
-				if a.Name == name {
-					rec = a
-					break
-				}
+		out[name] = rec
+		_ = os.RemoveAll(dir)
+	}
+	// Refresh once after the loop so the returned map carries the
+	// canonical StorageRef + any meta WriteAttachment recomputed.
+	if list, err := s.runs.ListAttachments(ctx, runID); err == nil {
+		for _, a := range list {
+			if _, ok := out[a.Name]; ok {
+				out[a.Name] = a
 			}
 		}
-		out[name] = rec
-		// Best-effort cleanup of staging — failure is non-fatal since
-		// the TTL sweeper would catch it.
-		_ = os.RemoveAll(dir)
 	}
 	return out, cumulative, nil
 }

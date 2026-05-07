@@ -87,17 +87,6 @@ export default function LaunchView() {
     };
   }, []);
 
-  // Revoke preview ObjectURLs when leaving the modal.
-  useEffect(() => {
-    return () => {
-      Object.values(attachments).forEach((a) => {
-        if (a?.previewUrl) URL.revokeObjectURL(a.previewUrl);
-      });
-    };
-    // Intentionally only run on unmount.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   useEffect(() => {
     if (!filePath) {
       setError("Missing ?file=<path> query parameter");

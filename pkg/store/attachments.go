@@ -27,10 +27,14 @@ var readRandom = rand.Read
 // errors.Is to discriminate from other I/O errors.
 var ErrAttachmentNotFound = errors.New("store: attachment not found")
 
-// attachmentMetaFilename is the on-disk meta sidecar for the
-// filesystem backend. Stored alongside the bytes so DeleteRunAttachments
-// is a single rm -rf and ListAttachments is a single dir scan.
+// Sidecar stored next to each attachment so DeleteRunAttachments is
+// one rm -rf and ListAttachments is one directory scan.
 const attachmentMetaFilename = "meta.json"
+
+// HMAC signing key for presigned attachment URLs, generated lazily and
+// cached at the store root. Survives process restarts so URLs minted
+// before a reboot remain valid until their `exp` lapses.
+const attachmentSigningKeyFile = ".attachment-signing-key"
 
 // attachmentDir returns the on-disk directory for an attachment under
 // the FilesystemRunStore root.
@@ -277,7 +281,7 @@ func (s *FilesystemRunStore) presignKey() []byte {
 	if len(s.signingKey) > 0 {
 		return s.signingKey
 	}
-	keyPath := filepath.Join(s.root, ".attachment-signing-key")
+	keyPath := filepath.Join(s.root, attachmentSigningKeyFile)
 	if data, err := os.ReadFile(keyPath); err == nil && len(data) >= 32 {
 		s.signingKey = data
 		return s.signingKey
