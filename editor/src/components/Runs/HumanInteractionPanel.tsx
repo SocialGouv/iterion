@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { resumeRun } from "@/api/runs";
 import { Button } from "@/components/ui";
@@ -180,7 +180,8 @@ interface ReviewBlockProps {
 }
 
 function ReviewBlock({ questions, runOutputs }: ReviewBlockProps) {
-  const entries = Object.entries(questions).filter(([, v]) => v !== undefined);
+  const entries = Object.entries(questions)
+    .filter(([k, v]) => v !== undefined && !k.startsWith("_"));
   if (entries.length === 0 && !runOutputs) return null;
   return (
     <div className="space-y-2">
@@ -190,14 +191,7 @@ function ReviewBlock({ questions, runOutputs }: ReviewBlockProps) {
             Review:
           </div>
           <div className="rounded border border-border-subtle bg-surface-0 p-2 space-y-2">
-            {entries.map(([k, v]) => (
-              <div key={k} className="text-[12px]">
-                <div className="text-[10px] font-mono text-fg-subtle mb-0.5">{k}</div>
-                <div className="whitespace-pre-wrap break-words">
-                  {renderValue(v)}
-                </div>
-              </div>
-            ))}
+            {entries.flatMap(([k, v]) => flattenForDisplay(k, v))}
           </div>
         </>
       )}
@@ -237,6 +231,47 @@ function renderValue(v: unknown): string {
   } catch {
     return String(v);
   }
+}
+
+// flattenForDisplay turns one (key, value) pair from the review map
+// into one or more rendered rows, hiding `_*` metadata keys (added
+// by the iterion runtime: _backend, _cost_usd, _model, _tokens, …)
+// and unwrapping single-key objects so the operator sees the actual
+// content rather than nested braces. For multi-field objects, each
+// non-meta field becomes a labelled row.
+function flattenForDisplay(label: string, value: unknown): ReactNode[] {
+  const stripped = stripMeta(value);
+  if (stripped === undefined) return [];
+  if (isPlainObject(stripped)) {
+    const inner = Object.entries(stripped);
+    if (inner.length === 0) return [];
+    return inner.map(([k, v]) => (
+      <ReviewRow key={`${label}.${k}`} label={k} value={v} />
+    ));
+  }
+  return [<ReviewRow key={label} label={label} value={stripped} />];
+}
+
+function ReviewRow({ label, value }: { label: string; value: unknown }) {
+  return (
+    <div className="text-[12px]">
+      <div className="text-[10px] font-mono text-fg-subtle mb-0.5">{label}</div>
+      <div className="whitespace-pre-wrap break-words">{renderValue(value)}</div>
+    </div>
+  );
+}
+
+function stripMeta(v: unknown): unknown {
+  if (!isPlainObject(v)) return v;
+  const out: Record<string, unknown> = {};
+  for (const [k, val] of Object.entries(v)) {
+    if (!k.startsWith("_") && val !== undefined) out[k] = val;
+  }
+  return out;
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
 // extractReview returns checkpoint.outputs as a typed map. Returns
