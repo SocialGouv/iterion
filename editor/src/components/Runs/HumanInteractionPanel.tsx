@@ -196,47 +196,154 @@ interface ReviewBlockProps {
 }
 
 function ReviewBlock({ questions, runOutputs }: ReviewBlockProps) {
-  const entries = Object.entries(questions)
-    .filter(([k, v]) => v !== undefined && !k.startsWith("_"));
-  if (entries.length === 0 && !runOutputs) return null;
+  const filtered = Object.fromEntries(
+    Object.entries(questions).filter(
+      ([k, v]) => v !== undefined && !k.startsWith("_"),
+    ),
+  );
+  const summary = summarizeForReview(filtered);
+  const hasFiltered = Object.keys(filtered).length > 0;
+  if (!hasFiltered && !runOutputs) return null;
+
   return (
     <div className="space-y-2">
-      {entries.length > 0 && (
-        <>
-          <div className="text-[11px] font-medium text-fg-default">
-            Review:
-          </div>
-          <div className="rounded border border-border-subtle bg-surface-0 p-2 space-y-2">
-            {entries.flatMap(([k, v]) => flattenForDisplay(k, v))}
-          </div>
-        </>
+      {summary.objective && (
+        <div className="text-[12px]">
+          <span className="text-[10px] uppercase tracking-wide text-fg-subtle mr-1">
+            Objective
+          </span>
+          <span className="text-fg-default">{summary.objective}</span>
+        </div>
       )}
-      {runOutputs && (
+      {summary.verdict && (
+        <div className="text-[12px] flex items-baseline gap-2">
+          <span className="text-[10px] uppercase tracking-wide text-fg-subtle">
+            Verdict
+          </span>
+          <span
+            className={
+              summary.verdict.approved
+                ? "text-success-fg font-medium"
+                : "text-danger-fg font-medium"
+            }
+          >
+            {summary.verdict.approved ? "✓ approved" : "✗ rejected"}
+          </span>
+          {summary.verdict.confidence && (
+            <span className="text-fg-muted">
+              · confidence {summary.verdict.confidence}
+            </span>
+          )}
+          {summary.verdict.uiQuality && (
+            <span className="text-fg-muted">· {summary.verdict.uiQuality}</span>
+          )}
+        </div>
+      )}
+      {summary.blockers && summary.blockers.length > 0 && (
+        <ul className="text-[11px] text-danger-fg list-disc ml-5 space-y-0.5">
+          {summary.blockers.map((b, i) => (
+            <li key={i}>{b}</li>
+          ))}
+        </ul>
+      )}
+      {(summary.hasMore || runOutputs) && (
         <details className="rounded border border-border-subtle bg-surface-0">
           <summary className="cursor-pointer px-2 py-1 text-[10px] text-fg-subtle select-none">
-            All run outputs (debug)
+            Show full context
           </summary>
           <div className="px-2 pb-2 space-y-2">
-            {Object.entries(runOutputs).map(([nodeId, fields]) => (
-              <div key={nodeId} className="text-[11px]">
-                <div className="text-[10px] font-mono text-fg-muted mb-0.5">
-                  from {nodeId}
+            {summary.hasMore && (
+              <div className="space-y-1">
+                {Object.entries(filtered)
+                  .filter(([k]) => !summary.handled.has(k))
+                  .flatMap(([k, v]) => flattenForDisplay(k, v))}
+              </div>
+            )}
+            {runOutputs && (
+              <div className="pt-2 border-t border-border-subtle space-y-1">
+                <div className="text-[10px] uppercase tracking-wide text-fg-subtle">
+                  All run outputs
                 </div>
-                {Object.entries(fields).map(([k, v]) => (
-                  <div key={k}>
-                    <span className="font-mono text-fg-subtle">{k}: </span>
-                    <span className="whitespace-pre-wrap break-words">
-                      {renderValue(v)}
-                    </span>
+                {Object.entries(runOutputs).map(([nodeId, fields]) => (
+                  <div key={nodeId} className="text-[11px]">
+                    <div className="text-[10px] font-mono text-fg-muted">
+                      from {nodeId}
+                    </div>
+                    {Object.entries(fields).map(([k, v]) => (
+                      <div key={k}>
+                        <span className="font-mono text-fg-subtle">{k}: </span>
+                        <span className="whitespace-pre-wrap break-words">
+                          {renderValue(v)}
+                        </span>
+                      </div>
+                    ))}
                   </div>
                 ))}
               </div>
-            ))}
+            )}
           </div>
         </details>
       )}
     </div>
   );
+}
+
+interface ReviewSummary {
+  objective?: string;
+  verdict?: {
+    approved: boolean;
+    confidence?: string;
+    uiQuality?: string;
+  };
+  blockers?: string[];
+  handled: Set<string>;
+  hasMore: boolean;
+}
+
+// summarizeForReview extracts the few highlights an operator actually
+// needs to decide: a one-line objective, a one-line verdict (approved
+// + confidence + ui_quality), and the list of blockers if rejected.
+// Anything else (full plan, full observation, additional_instructions)
+// stays behind the "Show full context" details. Heuristics keyed off
+// conventional field names — workflows that don't follow them fall
+// back to the generic flatten path.
+function summarizeForReview(
+  questions: Record<string, unknown>,
+): ReviewSummary {
+  const handled = new Set<string>();
+  const out: ReviewSummary = { handled, hasMore: false };
+
+  if (typeof questions.objective === "string") {
+    out.objective = questions.objective;
+    handled.add("objective");
+  }
+
+  const verdict = questions.verdict;
+  if (isPlainObject(verdict)) {
+    const v = stripMeta(verdict) as Record<string, unknown>;
+    if (typeof v.approved === "boolean") {
+      out.verdict = {
+        approved: v.approved,
+        confidence: typeof v.confidence === "string" ? v.confidence : undefined,
+        uiQuality:
+          typeof v.ui_quality === "string" ? v.ui_quality : undefined,
+      };
+      if (Array.isArray(v.blockers) && v.blockers.length > 0) {
+        out.blockers = v.blockers.filter(
+          (b): b is string => typeof b === "string",
+        );
+      }
+      handled.add("verdict");
+    }
+  }
+
+  for (const k of Object.keys(questions)) {
+    if (!handled.has(k)) {
+      out.hasMore = true;
+      break;
+    }
+  }
+  return out;
 }
 
 function renderValue(v: unknown): string {
