@@ -10,6 +10,14 @@
 .iterion/
 .iterion-*/
 
+# Playwright MCP scratch (console logs + page snapshots written under
+# cwd by the @playwright/mcp server; per-run, not committed). Also
+# catches stray screenshots Playwright drops at the repo root when an
+# agent prompt forgets to give it an explicit path.
+.playwright-mcp/
+/*-screenshot.png
+/example-*.png
+
 # IDE
 .idea/
 *.swp
