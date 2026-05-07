@@ -261,6 +261,65 @@ func TestVarsWithDefaults(t *testing.T) {
 	assertEq(t, "debug.Default", vb.Fields[3].Default.BoolVal, false)
 }
 
+func TestAttachmentsBlock_Short(t *testing.T) {
+	src := `attachments:
+  logo: image
+  spec: file
+`
+	res := parser.Parse("test.iter", src)
+	assertNoDiags(t, res)
+
+	ab := res.File.Attachments
+	if ab == nil || len(ab.Fields) != 2 {
+		t.Fatalf("expected 2 attachments, got %v", ab)
+	}
+	assertEq(t, "logo.Name", ab.Fields[0].Name, "logo")
+	assertEq(t, "logo.Type", ab.Fields[0].Type.String(), "image")
+	assertEq(t, "spec.Name", ab.Fields[1].Name, "spec")
+	assertEq(t, "spec.Type", ab.Fields[1].Type.String(), "file")
+}
+
+func TestAttachmentsBlock_FullProps(t *testing.T) {
+	src := `attachments:
+  spec: file
+    description: "Spec PDF"
+    accept_mime: ["application/pdf", "text/markdown"]
+    required: true
+`
+	res := parser.Parse("test.iter", src)
+	assertNoDiags(t, res)
+
+	ab := res.File.Attachments
+	if ab == nil || len(ab.Fields) != 1 {
+		t.Fatalf("expected 1 attachment, got %v", ab)
+	}
+	f := ab.Fields[0]
+	assertEq(t, "Name", f.Name, "spec")
+	assertEq(t, "Description", f.Description, "Spec PDF")
+	if len(f.AcceptMIME) != 2 || f.AcceptMIME[0] != "application/pdf" || f.AcceptMIME[1] != "text/markdown" {
+		t.Errorf("AcceptMIME = %v", f.AcceptMIME)
+	}
+	if f.Required == nil || !*f.Required {
+		t.Errorf("Required not set true: %v", f.Required)
+	}
+}
+
+func TestAttachmentsBlock_WorkflowLevel(t *testing.T) {
+	src := `workflow demo:
+  attachments:
+    logo: image
+  entry: done
+`
+	res := parser.Parse("test.iter", src)
+	assertNoDiags(t, res)
+
+	wd := res.File.Workflows[0]
+	if wd.Attachments == nil || len(wd.Attachments.Fields) != 1 {
+		t.Fatalf("expected workflow-level attachments, got %v", wd.Attachments)
+	}
+	assertEq(t, "Name", wd.Attachments.Fields[0].Name, "logo")
+}
+
 func TestEdgeWithAllClauses(t *testing.T) {
 	src := `workflow test:
   entry: a

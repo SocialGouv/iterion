@@ -8,19 +8,20 @@ import "github.com/SocialGouv/iterion/pkg/dsl/types"
 
 // File is the root AST node representing an entire .iter source file.
 type File struct {
-	Vars       *VarsBlock       // top-level vars (optional, at most one)
-	MCPServers []*MCPServerDecl // top-level reusable MCP server declarations
-	Prompts    []*PromptDecl    // prompt declarations
-	Schemas    []*SchemaDecl    // schema declarations
-	Agents     []*AgentDecl     // agent node declarations
-	Judges     []*JudgeDecl     // judge node declarations
-	Routers    []*RouterDecl    // router node declarations
-	Humans     []*HumanDecl     // human node declarations
-	Tools      []*ToolNodeDecl  // tool node declarations (direct execution, no LLM)
-	Computes   []*ComputeDecl   // deterministic compute node declarations (no LLM, no shell)
-	Workflows  []*WorkflowDecl  // workflow declarations
-	Comments   []*Comment       // top-level comments (## ...)
-	Span       Span
+	Vars        *VarsBlock        // top-level vars (optional, at most one)
+	Attachments *AttachmentsBlock // top-level attachments (optional, at most one)
+	MCPServers  []*MCPServerDecl  // top-level reusable MCP server declarations
+	Prompts     []*PromptDecl     // prompt declarations
+	Schemas     []*SchemaDecl     // schema declarations
+	Agents      []*AgentDecl      // agent node declarations
+	Judges      []*JudgeDecl      // judge node declarations
+	Routers     []*RouterDecl     // router node declarations
+	Humans      []*HumanDecl      // human node declarations
+	Tools       []*ToolNodeDecl   // tool node declarations (direct execution, no LLM)
+	Computes    []*ComputeDecl    // deterministic compute node declarations (no LLM, no shell)
+	Workflows   []*WorkflowDecl   // workflow declarations
+	Comments    []*Comment        // top-level comments (## ...)
+	Span        Span
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +97,57 @@ type VarField struct {
 	Type    TypeExpr
 	Default *Literal // nil if no default
 	Span    Span
+}
+
+// ---------------------------------------------------------------------------
+// Attachments
+// ---------------------------------------------------------------------------
+
+// AttachmentTypeExpr enumerates the binary input types that can appear in
+// an `attachments:` block. Distinct from TypeExpr because attachments are
+// not string-coerceable scalars: they are persisted blobs and the SPA
+// renders a file picker for them.
+type AttachmentTypeExpr int
+
+const (
+	AttachmentTypeFile AttachmentTypeExpr = iota
+	AttachmentTypeImage
+)
+
+func (a AttachmentTypeExpr) String() string {
+	switch a {
+	case AttachmentTypeFile:
+		return "file"
+	case AttachmentTypeImage:
+		return "image"
+	}
+	return "unknown"
+}
+
+// AttachmentsBlock represents a top-level or workflow-level
+// `attachments:` block. Attachments are binary inputs (files, images)
+// uploaded from the Launch modal and persisted under the run.
+type AttachmentsBlock struct {
+	Fields []*AttachmentField
+	Span   Span
+}
+
+// AttachmentField is a single attachment declaration. The short form is
+// `name: type` (e.g. `logo: image`). The block form additionally accepts
+// `description`, `accept_mime`, and `required` as nested properties:
+//
+//	attachments:
+//	  spec: file
+//	    description: "PDF de spec produit"
+//	    accept_mime: ["application/pdf"]
+//	    required: true
+type AttachmentField struct {
+	Name        string
+	Type        AttachmentTypeExpr
+	Required    *bool    // nil = false (default)
+	AcceptMIME  []string // nil = inherit server allowlist
+	Description string
+	Span        Span
 }
 
 // ---------------------------------------------------------------------------
@@ -349,17 +401,18 @@ type ComputeExpr struct {
 // WorkflowDecl represents a `workflow <name>:` declaration.
 type WorkflowDecl struct {
 	Name           string
-	Vars           *VarsBlock       // workflow-level variable declarations
-	Entry          string           // entry node name
-	DefaultBackend string           // workflow-level default backend (empty = not set)
-	ToolPolicy     []string         // workflow-level tool policy patterns (nil = open)
-	MCP            *MCPConfigDecl   // workflow-level MCP activation/filtering
-	Budget         *BudgetBlock     // execution limits (optional)
-	Compaction     *CompactionBlock // session compaction defaults for all nodes (optional)
-	Interaction    *InteractionMode // workflow-level default interaction mode (nil = not set)
-	Worktree       string           // "auto" creates a per-run git worktree; "" or "none" runs in-place
-	Sandbox        *SandboxBlock    // sandbox: short or block form (nil = inherit global default)
-	Edges          []*Edge          // directed edges between nodes
+	Vars           *VarsBlock        // workflow-level variable declarations
+	Attachments    *AttachmentsBlock // workflow-level attachments declarations
+	Entry          string            // entry node name
+	DefaultBackend string            // workflow-level default backend (empty = not set)
+	ToolPolicy     []string          // workflow-level tool policy patterns (nil = open)
+	MCP            *MCPConfigDecl    // workflow-level MCP activation/filtering
+	Budget         *BudgetBlock      // execution limits (optional)
+	Compaction     *CompactionBlock  // session compaction defaults for all nodes (optional)
+	Interaction    *InteractionMode  // workflow-level default interaction mode (nil = not set)
+	Worktree       string            // "auto" creates a per-run git worktree; "" or "none" runs in-place
+	Sandbox        *SandboxBlock     // sandbox: short or block form (nil = inherit global default)
+	Edges          []*Edge           // directed edges between nodes
 	Span           Span
 }
 

@@ -106,18 +106,19 @@ func reverseMap[K comparable, V comparable](m map[K]V) map[V]K {
 // ---------------------------------------------------------------------------
 
 type jsonFile struct {
-	Vars       *jsonVarsBlock       `json:"vars,omitempty"`
-	MCPServers []*jsonMCPServerDecl `json:"mcp_servers,omitempty"`
-	Prompts    []*jsonPromptDecl    `json:"prompts,omitempty"`
-	Schemas    []*jsonSchemaDecl    `json:"schemas,omitempty"`
-	Agents     []*jsonAgentDecl     `json:"agents,omitempty"`
-	Judges     []*jsonJudgeDecl     `json:"judges,omitempty"`
-	Routers    []*jsonRouterDecl    `json:"routers,omitempty"`
-	Humans     []*jsonHumanDecl     `json:"humans,omitempty"`
-	Tools      []*jsonToolNodeDecl  `json:"tools,omitempty"`
-	Computes   []*jsonComputeDecl   `json:"computes,omitempty"`
-	Workflows  []*jsonWorkflowDecl  `json:"workflows,omitempty"`
-	Comments   []*jsonComment       `json:"comments,omitempty"`
+	Vars        *jsonVarsBlock        `json:"vars,omitempty"`
+	Attachments *jsonAttachmentsBlock `json:"attachments,omitempty"`
+	MCPServers  []*jsonMCPServerDecl  `json:"mcp_servers,omitempty"`
+	Prompts     []*jsonPromptDecl     `json:"prompts,omitempty"`
+	Schemas     []*jsonSchemaDecl     `json:"schemas,omitempty"`
+	Agents      []*jsonAgentDecl      `json:"agents,omitempty"`
+	Judges      []*jsonJudgeDecl      `json:"judges,omitempty"`
+	Routers     []*jsonRouterDecl     `json:"routers,omitempty"`
+	Humans      []*jsonHumanDecl      `json:"humans,omitempty"`
+	Tools       []*jsonToolNodeDecl   `json:"tools,omitempty"`
+	Computes    []*jsonComputeDecl    `json:"computes,omitempty"`
+	Workflows   []*jsonWorkflowDecl   `json:"workflows,omitempty"`
+	Comments    []*jsonComment        `json:"comments,omitempty"`
 }
 
 type jsonComment struct {
@@ -132,6 +133,18 @@ type jsonVarField struct {
 	Name    string       `json:"name,omitempty"`
 	Type    string       `json:"type,omitempty"`
 	Default *jsonLiteral `json:"default,omitempty"`
+}
+
+type jsonAttachmentsBlock struct {
+	Fields []*jsonAttachmentField `json:"fields,omitempty"`
+}
+
+type jsonAttachmentField struct {
+	Name        string   `json:"name,omitempty"`
+	Type        string   `json:"type,omitempty"` // "file" | "image"
+	Required    *bool    `json:"required,omitempty"`
+	AcceptMIME  []string `json:"accept_mime,omitempty"`
+	Description string   `json:"description,omitempty"`
 }
 
 type jsonLiteral struct {
@@ -397,18 +410,19 @@ type jsonComputeExpr struct {
 }
 
 type jsonWorkflowDecl struct {
-	Name           string               `json:"name,omitempty"`
-	Vars           *jsonVarsBlock       `json:"vars,omitempty"`
-	Entry          string               `json:"entry,omitempty"`
-	DefaultBackend string               `json:"default_backend,omitempty"`
-	ToolPolicy     []string             `json:"tool_policy,omitempty"`
-	MCP            *jsonMCPConfigDecl   `json:"mcp,omitempty"`
-	Budget         *jsonBudgetBlock     `json:"budget,omitempty"`
-	Compaction     *jsonCompactionBlock `json:"compaction,omitempty"`
-	Interaction    string               `json:"interaction,omitempty"`
-	Worktree       string               `json:"worktree,omitempty"`
-	Sandbox        *jsonSandboxBlock    `json:"sandbox,omitempty"`
-	Edges          []*jsonEdge          `json:"edges,omitempty"`
+	Name           string                `json:"name,omitempty"`
+	Vars           *jsonVarsBlock        `json:"vars,omitempty"`
+	Attachments    *jsonAttachmentsBlock `json:"attachments,omitempty"`
+	Entry          string                `json:"entry,omitempty"`
+	DefaultBackend string                `json:"default_backend,omitempty"`
+	ToolPolicy     []string              `json:"tool_policy,omitempty"`
+	MCP            *jsonMCPConfigDecl    `json:"mcp,omitempty"`
+	Budget         *jsonBudgetBlock      `json:"budget,omitempty"`
+	Compaction     *jsonCompactionBlock  `json:"compaction,omitempty"`
+	Interaction    string                `json:"interaction,omitempty"`
+	Worktree       string                `json:"worktree,omitempty"`
+	Sandbox        *jsonSandboxBlock     `json:"sandbox,omitempty"`
+	Edges          []*jsonEdge           `json:"edges,omitempty"`
 }
 
 type jsonBudgetBlock struct {
@@ -462,6 +476,9 @@ func toJSON(f *File) *jsonFile {
 
 	if f.Vars != nil {
 		jf.Vars = varsBlockToJSON(f.Vars)
+	}
+	if f.Attachments != nil {
+		jf.Attachments = attachmentsBlockToJSON(f.Attachments)
 	}
 
 	for _, s := range f.MCPServers {
@@ -564,6 +581,56 @@ func compactionToJSON(c *CompactionBlock) *jsonCompactionBlock {
 		return nil
 	}
 	return &jsonCompactionBlock{Threshold: c.Threshold, PreserveRecent: c.PreserveRecent}
+}
+
+func attachmentsBlockToJSON(a *AttachmentsBlock) *jsonAttachmentsBlock {
+	if a == nil {
+		return nil
+	}
+	jb := &jsonAttachmentsBlock{}
+	for _, f := range a.Fields {
+		jf := &jsonAttachmentField{
+			Name:        f.Name,
+			Type:        f.Type.String(),
+			AcceptMIME:  f.AcceptMIME,
+			Description: f.Description,
+		}
+		if f.Required != nil {
+			jf.Required = f.Required
+		}
+		jb.Fields = append(jb.Fields, jf)
+	}
+	return jb
+}
+
+func attachmentsBlockFromJSON(jb *jsonAttachmentsBlock) (*AttachmentsBlock, error) {
+	if jb == nil {
+		return nil, nil
+	}
+	a := &AttachmentsBlock{}
+	for _, jf := range jb.Fields {
+		var t AttachmentTypeExpr
+		switch jf.Type {
+		case "file":
+			t = AttachmentTypeFile
+		case "image":
+			t = AttachmentTypeImage
+		default:
+			return nil, fmt.Errorf("astjson: unknown attachment type %q", jf.Type)
+		}
+		af := &AttachmentField{
+			Name:        jf.Name,
+			Type:        t,
+			AcceptMIME:  jf.AcceptMIME,
+			Description: jf.Description,
+		}
+		if jf.Required != nil {
+			v := *jf.Required
+			af.Required = &v
+		}
+		a.Fields = append(a.Fields, af)
+	}
+	return a, nil
 }
 
 func varsBlockToJSON(v *VarsBlock) *jsonVarsBlock {
@@ -689,6 +756,9 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 	if w.Vars != nil {
 		jw.Vars = varsBlockToJSON(w.Vars)
 	}
+	if w.Attachments != nil {
+		jw.Attachments = attachmentsBlockToJSON(w.Attachments)
+	}
 	if w.Interaction != nil {
 		jw.Interaction = interactionModeToStr[*w.Interaction]
 	}
@@ -750,6 +820,13 @@ func UnmarshalFile(data []byte) (*File, error) {
 func fromJSON(jf *jsonFile) (*File, error) {
 	f := &File{}
 
+	if jf.Attachments != nil {
+		a, err := attachmentsBlockFromJSON(jf.Attachments)
+		if err != nil {
+			return nil, err
+		}
+		f.Attachments = a
+	}
 	if jf.Vars != nil {
 		v, err := varsBlockFromJSON(jf.Vars)
 		if err != nil {
@@ -1089,6 +1166,13 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 			return nil, err
 		}
 		w.Vars = v
+	}
+	if jw.Attachments != nil {
+		a, err := attachmentsBlockFromJSON(jw.Attachments)
+		if err != nil {
+			return nil, err
+		}
+		w.Attachments = a
 	}
 	if jw.Interaction != "" {
 		interaction, ok := strToInteractionMode[jw.Interaction]

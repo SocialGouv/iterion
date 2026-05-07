@@ -148,6 +148,12 @@ func (p *parser) parseFile() *ast.File {
 				f.Vars = vb
 			}
 
+		case TokenAttachments:
+			ab := p.parseAttachmentsBlock()
+			if ab != nil {
+				f.Attachments = ab
+			}
+
 		case TokenMCPServer:
 			md := p.parseMCPServerDecl()
 			if md != nil {
@@ -306,6 +312,110 @@ func (p *parser) parseVarField() *ast.VarField {
 		Type:    te,
 		Default: def,
 		Span:    ast.Span{Start: p.pos(nameT), End: p.pos(nameT)},
+	}
+}
+
+// ---- attachments ----
+
+func (p *parser) parseAttachmentsBlock() *ast.AttachmentsBlock {
+	start := p.next() // consume "attachments"
+	p.expect(TokenColon)
+	p.skipNewlines()
+	if _, ok := p.expect(TokenIndent); !ok {
+		return nil
+	}
+
+	ab := &ast.AttachmentsBlock{Span: ast.Span{Start: p.pos(start)}}
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		af := p.parseAttachmentField()
+		if af != nil {
+			ab.Fields = append(ab.Fields, af)
+		}
+	}
+	if len(ab.Fields) > 0 {
+		ab.Span.End = ab.Fields[len(ab.Fields)-1].Span.End
+	} else {
+		ab.Span.End = ab.Span.Start
+	}
+	return ab
+}
+
+func (p *parser) parseAttachmentField() *ast.AttachmentField {
+	nameT := p.next()
+	if nameT.Type != TokenIdent && !isKeywordToken(nameT.Type) {
+		p.addError(DiagExpectedToken, nameT, "expected attachment name, got "+nameT.Type.String())
+		p.skipToNewline()
+		return nil
+	}
+	name := nameT.Value
+	p.expect(TokenColon)
+	at := p.parseAttachmentType()
+
+	af := &ast.AttachmentField{
+		Name: name,
+		Type: at,
+		Span: ast.Span{Start: p.pos(nameT), End: p.pos(nameT)},
+	}
+	p.skipNewlines()
+
+	// Optional indented sub-block with description, accept_mime, required.
+	if p.peek().Type != TokenIndent {
+		return af
+	}
+	p.next() // consume indent
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		// Property name (ident or keyword used as ident).
+		if t.Type != TokenIdent && !isKeywordToken(t.Type) {
+			p.addError(DiagUnexpectedToken, t, "unexpected token in attachment block: "+t.Value)
+			p.next()
+			p.skipToNewline()
+			continue
+		}
+		propName := t.Value
+		p.next()
+		p.expect(TokenColon)
+		switch propName {
+		case "description":
+			af.Description = p.expectString()
+		case "accept_mime":
+			af.AcceptMIME = p.parseStringList()
+		case "required":
+			af.Required = p.parseBool()
+		default:
+			p.addError(DiagUnknownProperty, t, "unknown attachment property '"+propName+"'")
+			p.skipToNewline()
+		}
+		p.skipNewlines()
+	}
+	return af
+}
+
+func (p *parser) parseAttachmentType() ast.AttachmentTypeExpr {
+	t := p.next()
+	switch t.Type {
+	case TokenTypeFile:
+		return ast.AttachmentTypeFile
+	case TokenTypeImage:
+		return ast.AttachmentTypeImage
+	default:
+		p.addError(DiagInvalidType, t, "expected attachment type (file, image), got '"+t.Value+"'")
+		return ast.AttachmentTypeFile
 	}
 }
 
@@ -1330,6 +1440,9 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 		case TokenVars:
 			wd.Vars = p.parseVarsBlock()
 
+		case TokenAttachments:
+			wd.Attachments = p.parseAttachmentsBlock()
+
 		case TokenMCP:
 			wd.MCP = p.parseMCPConfigBlock()
 
@@ -2147,6 +2260,7 @@ func isKeywordToken(tt TokenType) bool {
 		TokenCompaction, TokenThreshold, TokenPreserveRecent,
 		TokenWorktree,
 		TokenSandbox,
+		TokenAttachments, TokenTypeFile, TokenTypeImage,
 		TokenDone, TokenFail:
 		return true
 	}

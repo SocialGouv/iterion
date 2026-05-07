@@ -39,6 +39,7 @@ const (
 
 	// Keywords (contextual — also valid as identifiers in some positions)
 	TokenVars
+	TokenAttachments
 	TokenMCPServer
 	TokenPrompt
 	TokenSchema
@@ -113,6 +114,9 @@ const (
 	TokenTypeFloat
 	TokenTypeJSON
 	TokenTypeStringArray
+	// Attachment type keywords
+	TokenTypeFile
+	TokenTypeImage
 	// Budget properties
 	TokenMaxParallelBranches
 	TokenMaxDuration
@@ -160,6 +164,9 @@ var tokenNames = map[TokenType]string{
 	TokenComment: "Comment",
 
 	TokenVars:              "vars",
+	TokenAttachments:       "attachments",
+	TokenTypeFile:          "file",
+	TokenTypeImage:         "image",
 	TokenMCPServer:         "mcp_server",
 	TokenPrompt:            "prompt",
 	TokenSchema:            "schema",
@@ -255,6 +262,9 @@ func (t TokenType) String() string {
 // The lexer uses this to distinguish keywords from plain identifiers.
 var keywords = map[string]TokenType{
 	"vars":                  TokenVars,
+	"attachments":           TokenAttachments,
+	"file":                  TokenTypeFile,
+	"image":                 TokenTypeImage,
 	"mcp_server":            TokenMCPServer,
 	"prompt":                TokenPrompt,
 	"schema":                TokenSchema,

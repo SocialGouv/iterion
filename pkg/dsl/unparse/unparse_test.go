@@ -7,6 +7,38 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 )
 
+func TestUnparseAttachments(t *testing.T) {
+	required := true
+	f := &ast.File{
+		Attachments: &ast.AttachmentsBlock{
+			Fields: []*ast.AttachmentField{
+				{Name: "logo", Type: ast.AttachmentTypeImage},
+				{
+					Name:        "spec",
+					Type:        ast.AttachmentTypeFile,
+					Description: "Spec PDF",
+					AcceptMIME:  []string{"application/pdf"},
+					Required:    &required,
+				},
+			},
+		},
+	}
+	out := Unparse(f)
+	want := []string{
+		"attachments:",
+		"  logo: image",
+		"  spec: file",
+		`    description: "Spec PDF"`,
+		`    accept_mime: ["application/pdf"]`,
+		"    required: true",
+	}
+	for _, w := range want {
+		if !strings.Contains(out, w) {
+			t.Errorf("output missing %q\nfull output:\n%s", w, out)
+		}
+	}
+}
+
 func TestUnparseBasic(t *testing.T) {
 	f := &ast.File{
 		Comments: []*ast.Comment{

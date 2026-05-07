@@ -52,6 +52,8 @@ func parseRef(expr, raw string) (*Ref, error) {
 		kind = RefOutputs
 	case "artifacts":
 		kind = RefArtifacts
+	case "attachments":
+		kind = RefAttachments
 	case "loop":
 		kind = RefLoop
 	case "run":

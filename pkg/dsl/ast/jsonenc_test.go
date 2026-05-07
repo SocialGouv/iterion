@@ -171,6 +171,41 @@ func buildTestFile() *ast.File {
 	}
 }
 
+func TestAttachmentsRoundtrip(t *testing.T) {
+	required := true
+	original := &ast.File{
+		Attachments: &ast.AttachmentsBlock{
+			Fields: []*ast.AttachmentField{
+				{Name: "logo", Type: ast.AttachmentTypeImage},
+				{
+					Name:        "spec",
+					Type:        ast.AttachmentTypeFile,
+					Required:    &required,
+					AcceptMIME:  []string{"application/pdf"},
+					Description: "Spec PDF",
+				},
+			},
+		},
+	}
+	data, err := ast.MarshalFile(original)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	restored, err := ast.UnmarshalFile(data)
+	if err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if !reflect.DeepEqual(original, restored) {
+		t.Errorf("roundtrip mismatch:\noriginal=%#v\nrestored=%#v", original, restored)
+	}
+	// Sanity: emitted JSON contains the expected keys.
+	if !strings.Contains(string(data), `"attachments"`) ||
+		!strings.Contains(string(data), `"image"`) ||
+		!strings.Contains(string(data), `"file"`) {
+		t.Errorf("unexpected JSON: %s", data)
+	}
+}
+
 func TestRoundtrip(t *testing.T) {
 	original := buildTestFile()
 

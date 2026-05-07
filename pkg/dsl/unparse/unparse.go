@@ -37,6 +37,12 @@ func Unparse(f *ast.File) string {
 		writeVarsBlock(&b, f.Vars, "")
 	}
 
+	// --- Attachments ---
+	if f.Attachments != nil && len(f.Attachments.Fields) > 0 {
+		blankLine()
+		writeAttachmentsBlock(&b, f.Attachments, "")
+	}
+
 	// --- MCP servers ---
 	for _, s := range f.MCPServers {
 		blankLine()
@@ -236,6 +242,9 @@ func Unparse(f *ast.File) string {
 		if w.Vars != nil && len(w.Vars.Fields) > 0 {
 			writeVarsBlock(&b, w.Vars, "  ")
 		}
+		if w.Attachments != nil && len(w.Attachments.Fields) > 0 {
+			writeAttachmentsBlock(&b, w.Attachments, "  ")
+		}
 		if w.MCP != nil {
 			writeMCPConfigBlock(&b, w.MCP, "  ")
 		}
@@ -313,6 +322,33 @@ func writeVarsBlock(b *strings.Builder, vars *ast.VarsBlock, indent string) {
 			writeLiteral(b, v.Default)
 		}
 		b.WriteByte('\n')
+	}
+}
+
+func writeAttachmentsBlock(b *strings.Builder, ab *ast.AttachmentsBlock, indent string) {
+	fmt.Fprintf(b, "%sattachments:\n", indent)
+	for _, f := range ab.Fields {
+		// Short form when no extra props are set.
+		hasProps := f.Description != "" || len(f.AcceptMIME) > 0 || f.Required != nil
+		b.WriteString(indent)
+		b.WriteString("  ")
+		b.WriteString(f.Name)
+		b.WriteString(": ")
+		b.WriteString(f.Type.String())
+		b.WriteByte('\n')
+		if !hasProps {
+			continue
+		}
+		// Block form sub-properties (4-space indent under the field).
+		if f.Description != "" {
+			fmt.Fprintf(b, "%s    description: %q\n", indent, f.Description)
+		}
+		if len(f.AcceptMIME) > 0 {
+			fmt.Fprintf(b, "%s    accept_mime: [%s]\n", indent, quoteList(f.AcceptMIME))
+		}
+		if f.Required != nil {
+			fmt.Fprintf(b, "%s    required: %t\n", indent, *f.Required)
+		}
 	}
 }
 

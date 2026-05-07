@@ -38,6 +38,13 @@ const (
 	DiagNodeMaxTokensVsBudget   DiagCode = "C037" // node-level max_tokens exceeds workflow.budget.max_tokens
 	DiagUnsupportedMCPAuth      DiagCode = "C038" // MCP server Auth.Type not supported (only "oauth2" is wired)
 	DiagInvalidCompaction       DiagCode = "C043" // compaction.threshold or compaction.preserve_recent out of range
+
+	// Attachments diagnostics
+	DiagDuplicateAttachment       DiagCode = "C050" // attachment name declared more than once
+	DiagAttachmentVarConflict     DiagCode = "C051" // attachment name collides with a declared var
+	DiagInvalidAttachmentMIME     DiagCode = "C052" // accept_mime entry not in type/subtype form
+	DiagUnknownAttachment         DiagCode = "C053" // {{attachments.X}} but X not declared
+	DiagAttachmentSubfieldUnknown DiagCode = "C054" // attachments.<name>.<subfield> sub-field unknown
 )
 
 // validate performs static validation on a compiled workflow.
@@ -981,6 +988,29 @@ func (c *compiler) validateTemplateRefs(w *Workflow) {
 			c.validateInputRef(w, rc)
 		case RefArtifacts:
 			c.validateArtifactsRef(w, rc, predecessors, artifactProducers)
+		case RefAttachments:
+			c.validateAttachmentsRef(w, rc)
+		}
+	}
+}
+
+func (c *compiler) validateAttachmentsRef(w *Workflow, rc refContext) {
+	if len(rc.Ref.Path) == 0 {
+		return
+	}
+	name := rc.Ref.Path[0]
+	if _, ok := w.Attachments[name]; !ok {
+		c.errorf(DiagUnknownAttachment,
+			"%s: reference %s targets undeclared attachment %q",
+			rc.Location, rc.Ref.Raw, name)
+		return
+	}
+	if len(rc.Ref.Path) >= 2 {
+		sub := rc.Ref.Path[1]
+		if _, ok := AttachmentSubFields[sub]; !ok {
+			c.errorf(DiagAttachmentSubfieldUnknown,
+				"%s: reference %s uses unknown sub-field %q (expected one of: path, url, mime, size, sha256)",
+				rc.Location, rc.Ref.Raw, sub)
 		}
 	}
 }

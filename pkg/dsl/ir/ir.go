@@ -18,21 +18,22 @@ import (
 // loops and budget.
 type Workflow struct {
 	Name           string
-	Entry          string             // entry node ID
-	Nodes          map[string]Node    // node ID → node
-	Edges          []*Edge            // ordered list of edges
-	Schemas        map[string]*Schema // schema name → resolved schema
-	Prompts        map[string]*Prompt // prompt name → resolved prompt
-	Vars           map[string]*Var    // var name → resolved variable
-	Loops          map[string]*Loop   // loop name → loop definition
-	Budget         *Budget            // workflow budget (nil if not set)
-	Compaction     *Compaction        // workflow-level compaction overrides (nil = no override)
-	MCP            *MCPConfig         // workflow-level MCP activation/filtering
-	DefaultBackend string             // workflow-level default backend (empty = not set)
-	ToolPolicy     []string           // workflow-level tool policy patterns (nil = open)
-	Interaction    *InteractionMode   // workflow-level default interaction mode (nil = not set)
-	Worktree       string             // "auto" runs in a per-run git worktree; "" or "none" runs in-place
-	Sandbox        *SandboxSpec       // workflow-level sandbox spec (nil = inherit global / no sandbox)
+	Entry          string                 // entry node ID
+	Nodes          map[string]Node        // node ID → node
+	Edges          []*Edge                // ordered list of edges
+	Schemas        map[string]*Schema     // schema name → resolved schema
+	Prompts        map[string]*Prompt     // prompt name → resolved prompt
+	Vars           map[string]*Var        // var name → resolved variable
+	Attachments    map[string]*Attachment // attachment name → resolved attachment
+	Loops          map[string]*Loop       // loop name → loop definition
+	Budget         *Budget                // workflow budget (nil if not set)
+	Compaction     *Compaction            // workflow-level compaction overrides (nil = no override)
+	MCP            *MCPConfig             // workflow-level MCP activation/filtering
+	DefaultBackend string                 // workflow-level default backend (empty = not set)
+	ToolPolicy     []string               // workflow-level tool policy patterns (nil = open)
+	Interaction    *InteractionMode       // workflow-level default interaction mode (nil = not set)
+	Worktree       string                 // "auto" runs in a per-run git worktree; "" or "none" runs in-place
+	Sandbox        *SandboxSpec           // workflow-level sandbox spec (nil = inherit global / no sandbox)
 	// MCPServers contains the explicit top-level declarations from the .iter file.
 	MCPServers map[string]*MCPServer
 	// ActiveMCPServers and ResolvedMCPServers are populated after project config
@@ -560,12 +561,13 @@ func (e *Edge) IsConditional() bool {
 type RefKind int
 
 const (
-	RefVars      RefKind = iota // {{vars.x}}
-	RefInput                    // {{input.field}}
-	RefOutputs                  // {{outputs.node}} or {{outputs.node.field}}
-	RefArtifacts                // {{artifacts.name}}
-	RefLoop                     // {{loop.<name>.iteration}} / .max / .previous_output[.field]
-	RefRun                      // {{run.id}}
+	RefVars        RefKind = iota // {{vars.x}}
+	RefInput                      // {{input.field}}
+	RefOutputs                    // {{outputs.node}} or {{outputs.node.field}}
+	RefArtifacts                  // {{artifacts.name}}
+	RefAttachments                // {{attachments.name[.path|.url|.mime|.size|.sha256]}}
+	RefLoop                       // {{loop.<name>.iteration}} / .max / .previous_output[.field]
+	RefRun                        // {{run.id}}
 )
 
 func (rk RefKind) String() string {
@@ -578,6 +580,8 @@ func (rk RefKind) String() string {
 		return "outputs"
 	case RefArtifacts:
 		return "artifacts"
+	case RefAttachments:
+		return "attachments"
 	case RefLoop:
 		return "loop"
 	case RefRun:
@@ -683,6 +687,52 @@ func (vt VarType) String() string {
 	default:
 		return "unknown"
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Attachment — resolved workflow attachment (binary input)
+// ---------------------------------------------------------------------------
+
+// Attachment is a resolved attachment declaration. The bytes themselves
+// are persisted by the run store; this struct only carries the schema
+// (name, type, validation hints) consumed by the parser, runtime and
+// editor frontend.
+type Attachment struct {
+	Name        string
+	Type        AttachmentType
+	Required    bool
+	AcceptMIME  []string // nil = inherit server allowlist
+	Description string
+}
+
+// AttachmentType enumerates the supported attachment binary types.
+type AttachmentType int
+
+const (
+	AttachmentFile AttachmentType = iota
+	AttachmentImage
+)
+
+func (a AttachmentType) String() string {
+	switch a {
+	case AttachmentFile:
+		return "file"
+	case AttachmentImage:
+		return "image"
+	}
+	return "unknown"
+}
+
+// AttachmentSubFields enumerates the sub-fields that may appear after
+// `attachments.<name>.` in a template reference.
+//
+// Example: `{{attachments.logo.url}}` has SubField "url".
+var AttachmentSubFields = map[string]struct{}{
+	"path":   {},
+	"url":    {},
+	"mime":   {},
+	"size":   {},
+	"sha256": {},
 }
 
 // ---------------------------------------------------------------------------

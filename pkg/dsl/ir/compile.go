@@ -3,6 +3,7 @@ package ir
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
@@ -423,6 +424,9 @@ func (c *compiler) compile() *Workflow {
 	// Compile vars (merge top-level + workflow-level).
 	vars := c.compileVars(c.file.Vars, wf.Vars)
 
+	// Compile attachments (merge top-level + workflow-level).
+	attachments := c.compileAttachments(c.file.Attachments, wf.Attachments, vars)
+
 	// Compile edges.
 	edges, loops := c.compileEdges(wf.Edges)
 
@@ -452,6 +456,7 @@ func (c *compiler) compile() *Workflow {
 		Schemas:        c.schemas,
 		Prompts:        c.prompts,
 		Vars:           vars,
+		Attachments:    attachments,
 		Loops:          loops,
 		Budget:         budget,
 		Compaction:     compaction,
@@ -1062,6 +1067,71 @@ func (c *compiler) compileVars(topLevel *ast.VarsBlock, workflowLevel *ast.VarsB
 }
 
 // ---------------------------------------------------------------------------
+// Attachments
+// ---------------------------------------------------------------------------
+
+func (c *compiler) compileAttachments(topLevel, workflowLevel *ast.AttachmentsBlock, vars map[string]*Var) map[string]*Attachment {
+	attachments := make(map[string]*Attachment)
+
+	addAttachments := func(ab *ast.AttachmentsBlock) {
+		if ab == nil {
+			return
+		}
+		for _, f := range ab.Fields {
+			// C051: name must not collide with a declared var.
+			if _, conflict := vars[f.Name]; conflict {
+				c.errorf(DiagAttachmentVarConflict,
+					"attachment %q shares its name with a declared variable; rename one",
+					f.Name)
+				continue
+			}
+			// C050: duplicate within attachments block (workflow overrides top-level silently).
+			if _, dup := attachments[f.Name]; dup {
+				c.errorf(DiagDuplicateAttachment,
+					"attachment %q declared more than once", f.Name)
+				continue
+			}
+			a := &Attachment{
+				Name:        f.Name,
+				Type:        convertAttachmentType(f.Type),
+				AcceptMIME:  f.AcceptMIME,
+				Description: f.Description,
+			}
+			if f.Required != nil {
+				a.Required = *f.Required
+			}
+			// C052: each accept_mime entry must look like type/subtype.
+			for _, m := range a.AcceptMIME {
+				if !isValidMIME(m) {
+					c.errorf(DiagInvalidAttachmentMIME,
+						"attachment %q has invalid accept_mime entry %q (expected type/subtype)",
+						f.Name, m)
+				}
+			}
+			attachments[f.Name] = a
+		}
+	}
+
+	addAttachments(topLevel)
+	addAttachments(workflowLevel)
+
+	return attachments
+}
+
+// isValidMIME accepts a permissive MIME pattern: `type/subtype` with
+// optional `*` glob (e.g. `image/*`). Empty type or subtype is rejected.
+func isValidMIME(m string) bool {
+	parts := strings.SplitN(m, "/", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	if parts[0] == "" || parts[1] == "" {
+		return false
+	}
+	return true
+}
+
+// ---------------------------------------------------------------------------
 // Budget
 // ---------------------------------------------------------------------------
 
@@ -1120,6 +1190,15 @@ func (c *compiler) validatePromptRef(node, prop, ref string) {
 // ---------------------------------------------------------------------------
 // Type converters (AST → IR)
 // ---------------------------------------------------------------------------
+
+func convertAttachmentType(at ast.AttachmentTypeExpr) AttachmentType {
+	switch at {
+	case ast.AttachmentTypeImage:
+		return AttachmentImage
+	default:
+		return AttachmentFile
+	}
+}
 
 func convertVarType(te ast.TypeExpr) VarType {
 	switch te {
