@@ -33,10 +33,7 @@ export interface PendingHumanInput {
   interaction_id?: string;
   node_id?: string;
   questions?: Record<string, unknown>;
-  // raw is the source human_input_requested event, when available.
-  // Absent on snapshot rehydration (page reload mid-pause): in that
-  // case the fields above are sourced from RunHeader.checkpoint
-  // instead, and consumers should treat raw as a debugging aid only.
+  // Absent when rehydrated from RunHeader.checkpoint (reload mid-pause).
   raw?: RunEvent;
 }
 
@@ -127,12 +124,6 @@ export const useRunStore = create<RunStoreState>((set) => ({
     for (const e of snap.executions) {
       map.set(e.execution_id, e);
     }
-    // When the run is paused mid-interaction, rehydrate
-    // pendingHumanInput from the checkpoint embedded in run.json.
-    // Without this, a page reload while the run is paused would
-    // leave the answer panel empty even though the runtime is
-    // genuinely waiting for input. The event-driven path
-    // (case "human_input_requested") still wins for live runs.
     const rehydrated = rehydratePendingHumanInput(snap);
     set((state) => {
       // Keep already-applied events that fall within the snapshot's
@@ -266,12 +257,9 @@ export function selectRunningExecution(
   return best;
 }
 
-// rehydratePendingHumanInput reads the checkpoint embedded in
-// RunHeader (mirror of pkg/store.Checkpoint) and produces a
-// PendingHumanInput when the run is paused waiting for human input.
-// The checkpoint shape is "opaque" at the type level; we narrow
-// defensively because older runs persisted by previous iterion
-// versions may omit some fields.
+// rehydratePendingHumanInput rebuilds the panel state from
+// RunHeader.checkpoint when the WS event stream isn't available
+// (page reload mid-pause). Mirror of pkg/store.Checkpoint subset.
 function rehydratePendingHumanInput(
   snap: RunSnapshot,
 ): PendingHumanInput | null {
@@ -283,14 +271,10 @@ function rehydratePendingHumanInput(
     interaction_id?: string;
     interaction_questions?: Record<string, unknown>;
   };
-  const questions = checkpoint.interaction_questions;
-  // An empty questions map is valid (the human node may pause
-  // without specific fields). What matters is that the run is
-  // paused — we surface a panel even when the form is empty.
   return {
     interaction_id: checkpoint.interaction_id,
     node_id: checkpoint.node_id,
-    questions: questions ?? {},
+    questions: checkpoint.interaction_questions ?? {},
   };
 }
 

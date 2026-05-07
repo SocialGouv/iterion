@@ -13,16 +13,6 @@ interface Props {
   runId: string;
 }
 
-/** Top-level "Répondre" panel for paused runs.
- *
- *  Renders only when the run is paused waiting for human input.
- *  Reads `pendingHumanInput` from the store (live: from the
- *  `human_input_requested` event; reload: rehydrated from
- *  RunHeader.checkpoint.interaction_questions).
- *
- *  Submission posts to POST /api/runs/{id}/resume (HTTP). The WS
- *  `run_resumed` event then flips the run status, which makes the
- *  panel unmount automatically — no explicit teardown here. */
 export default function HumanInteractionPanel({ runId }: Props) {
   const status = useRunStore((s) => s.snapshot?.run.status);
   const pending = useRunStore((s) => s.pendingHumanInput);
@@ -46,8 +36,7 @@ export default function HumanInteractionPanel({ runId }: Props) {
         answers,
         source: currentSource ?? undefined,
       });
-      // Optimistic flip — the WS run_resumed event will confirm and
-      // also clear pendingHumanInput, unmounting this panel.
+      // Optimistic flip; the WS run_resumed event clears pendingHumanInput.
       setRunStatus("running");
     } catch (e) {
       setError((e as Error).message);
@@ -56,10 +45,6 @@ export default function HumanInteractionPanel({ runId }: Props) {
     }
   };
 
-  // Free-text fallback: a Human node without a declared output schema
-  // (or whose schema couldn't be loaded — e.g. stale workflow file)
-  // gets the legacy textarea-per-question form. Preserves
-  // backward-compat with runs paused before this panel was built.
   const useFallback = fields === null || fields.length === 0;
 
   return (

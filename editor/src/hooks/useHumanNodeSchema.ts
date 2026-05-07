@@ -10,14 +10,9 @@ interface State {
 
 const initial: State = { fields: null, staleHash: false, error: null };
 
-/** Fetches the run's compiled workflow and extracts the output_schema
- *  for the given human node. Returns null fields when the workflow is
- *  unavailable or the node has no schema — the panel falls back to a
- *  free-text PauseForm in that case.
- *
- *  Cache is implicit: the backend memoises wire workflows by file
- *  hash (pkg/runview/workflow_export.go), so repeat calls across
- *  paused→resumed→paused cycles are cheap. */
+// useHumanNodeSchema returns the output_schema fields for the paused
+// human node, or null fields when the workflow is unavailable or the
+// node has no schema (panel falls back to free-text PauseForm).
 export function useHumanNodeSchema(
   runId: string | null,
   nodeId: string | undefined,

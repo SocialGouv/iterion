@@ -7,25 +7,13 @@ import { Button } from "@/components/ui";
 import HumanInteractionField, { coerceField } from "./HumanInteractionField";
 
 interface Props {
-  // The schema fields declared on the paused HumanNode. May be empty:
-  // a node without `output:` schema gets a free-text fallback handled
-  // by HumanInteractionPanel, not here.
   fields: WireSchemaField[];
-  // Per-field question text from the runtime's interaction_questions
-  // map. Indexed by field name. Falls back to the field name itself
-  // when absent.
   questions: Record<string, unknown>;
-  // Optional one-line node-level guidance from HumanNode.Instructions
-  // (rendered above the form by the panel, not here).
   busy?: boolean;
   errorMessage?: string | null;
   onSubmit: (answers: Record<string, unknown>) => void;
 }
 
-/** Schema-driven form generator. Collects strings while editing,
- *  coerces them to the runtime types on submit, and posts a
- *  Record<string, unknown> matching the answers contract of
- *  POST /api/runs/{id}/resume. */
 export default function HumanInteractionForm({
   fields,
   questions,
@@ -61,8 +49,6 @@ export default function HumanInteractionForm({
         errs[f.name] = error;
         continue;
       }
-      // value === undefined means "user left it blank" — omit
-      // from the answers map. The runtime accepts partial answers.
       if (value !== undefined) {
         answers[f.name] = value;
       }

@@ -26,15 +26,9 @@ type WireWorkflow struct {
 }
 
 // WireNode is the minimal node projection used by the run-console canvas.
-// It carries id + kind plus the LLM-call metadata (model / backend /
-// reasoning_effort) for nodes that drive an LLM (Agent, Judge, Router-LLM)
-// so the canvas can render those fields next to the node without the
-// frontend having to parse the .iter source itself.
-//
-// OutputFields is populated for HumanNode so the run console can build a
-// typed answer form when the run pauses on that node. Other node kinds
-// don't need it: their outputs are produced by LLM/tool execution, not
-// by user input, so the schema is invisible to the operator.
+// Model/backend/reasoning_effort are populated for LLM-driving nodes
+// (Agent, Judge, Router-LLM); OutputFields is populated for HumanNode so
+// the run console can render a typed answer form on pause.
 type WireNode struct {
 	ID              string            `json:"id"`
 	Kind            string            `json:"kind"`
@@ -44,10 +38,9 @@ type WireNode struct {
 	OutputFields    []WireSchemaField `json:"output_schema,omitempty"`
 }
 
-// WireSchemaField is the JSON projection of an ir.SchemaField. The Type
-// field carries the canonical string form ("string", "bool", "int",
-// "float", "json", "string[]") so the frontend can switch on it without
-// tracking the iota values from the ir package.
+// WireSchemaField projects an ir.SchemaField as JSON. Type uses the
+// canonical string form ("string", "bool", "int", "float", "json",
+// "string[]") so the frontend doesn't track ir's iota values.
 type WireSchemaField struct {
 	Name       string   `json:"name"`
 	Type       string   `json:"type"`
@@ -175,8 +168,8 @@ const IRWorkflowEndpointPath = "/api/runs/{id}/workflow"
 // expansions become "" — the run console treats that as "fall back to
 // the registry default" via its capability prefetch.
 //
-// The wf parameter is needed to resolve schema names (HumanNode references
-// schemas by name; the actual fields live on wf.Schemas[name]).
+// wf is needed to resolve HumanNode output_schema names against
+// wf.Schemas; pass nil when only LLM nodes are projected.
 func projectNode(id string, n ir.Node, wf *ir.Workflow) WireNode {
 	out := WireNode{ID: id, Kind: n.NodeKind().String()}
 	switch v := n.(type) {
@@ -200,9 +193,8 @@ func projectNode(id string, n ir.Node, wf *ir.Workflow) WireNode {
 	return out
 }
 
-// projectSchemaFields resolves a schema name to its WireSchemaField slice.
-// Returns nil when the name is empty or absent from wf.Schemas — the
-// frontend treats nil as "no schema, fall back to free-text PauseForm".
+// projectSchemaFields resolves a schema name. Returns nil for empty
+// or unknown names; frontend treats nil as "free-text fallback".
 func projectSchemaFields(schemaName string, wf *ir.Workflow) []WireSchemaField {
 	if schemaName == "" || wf == nil {
 		return nil
