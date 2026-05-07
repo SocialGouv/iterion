@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
-import { resumeRun } from "@/api/runs";
+import { getRun, resumeRun } from "@/api/runs";
 import { Button } from "@/components/ui";
 import { useHumanNodeSchema } from "@/hooks/useHumanNodeSchema";
 import { useDocumentStore } from "@/store/document";
@@ -22,6 +22,7 @@ export default function HumanInteractionPanel({ runId }: Props) {
   const pending = useRunStore((s) => s.pendingHumanInput);
   const setRunStatus = useRunStore((s) => s.setRunStatus);
   const requestWsReconnect = useRunStore((s) => s.requestWsReconnect);
+  const applySnapshot = useRunStore((s) => s.applySnapshot);
   const currentSource = useDocumentStore((s) => s.currentSource);
 
   const { fields, loading, staleHash } = useHumanNodeSchema(runId, pending?.node_id);
@@ -65,6 +66,15 @@ export default function HumanInteractionPanel({ runId }: Props) {
       // engine publishes node updates into the void and the canvas
       // stays frozen until the user reloads. Mirrors ResumeDialog.tsx.
       requestWsReconnect();
+      // Belt-and-braces: fetch a REST snapshot ~600ms later so a
+      // short-lived run (resume → done in <2s) that finishes before
+      // the WS redial completes still surfaces in the canvas. The WS
+      // tail catches up afterwards for longer-running runs.
+      window.setTimeout(() => {
+        getRun(runId)
+          .then(applySnapshot)
+          .catch(() => {});
+      }, 600);
     } catch (e) {
       setError((e as Error).message);
     } finally {
