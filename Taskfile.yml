@@ -208,7 +208,7 @@ tasks:
   editor:dev:backend:
     desc: Run Go editor backend with auto-restart on changes
     cmds:
-      - watchexec -r -e go -w cmd -w pkg -- go run {{.CMD}} editor --no-browser --port 4891
+      - watchexec -r -e go -w cmd -w pkg -w vendor -- go run {{.CMD}} editor --no-browser --port 4891
     interactive: true
 
   editor:dev:frontend:
