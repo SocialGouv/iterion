@@ -23,6 +23,20 @@ npx -y @playwright/mcp@latest --help            # warms the npm cache
 echo "$OPENAI_API_KEY" | grep -q . && echo OK   # confirm the key is exported
 ```
 
+**Important:** the iterion process spawning the MCP server must
+have `npx` on its PATH. The cleanest way is to launch iterion
+through `devbox run --` so Node 22 is in scope:
+
+```bash
+set -a; source .env; set +a
+devbox run -- ./iterion editor --port 8080
+```
+
+Without `devbox run --`, a minimal launcher PATH (e.g. running
+iterion from a non-shell-driven process manager) won't see nvm's
+Node and the MCP connect call fails with
+`fork/exec npx -y @playwright/mcp@latest: no such file or directory`.
+
 The workflow defaults to OpenAI (`openai/gpt-5.4` for the heavy
 nodes, `openai/gpt-5.4-mini` for plan/report). Swap the model
 literals if you have a different provider — claw supports any
