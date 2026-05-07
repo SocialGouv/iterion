@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -309,6 +310,7 @@ type ClawExecutor struct {
 	toolPolicy      tool.ToolChecker   // allowlist policy for tool execution (nil = open)
 	prompts         map[string]*ir.Prompt
 	schemas         map[string]*ir.Schema
+	imageAttachs    map[string]bool // names of image-typed attachments declared in the workflow
 	vars            map[string]interface{}
 	hooks           EventHooks
 	retry           RetryPolicy
@@ -478,10 +480,17 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 			}
 		}
 	}
+	imageAttachs := map[string]bool{}
+	for name, a := range wf.Attachments {
+		if a != nil && a.Type == ir.AttachmentImage {
+			imageAttachs[name] = true
+		}
+	}
 	e := &ClawExecutor{
 		registry:       registry,
 		prompts:        wf.Prompts,
 		schemas:        wf.Schemas,
+		imageAttachs:   imageAttachs,
 		defaultBackend: wf.DefaultBackend,
 		wfCompaction:   wf.Compaction,
 		sessions:       newNodeSessionStore(),
@@ -686,6 +695,12 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 
 	// Build user message.
 	userText := e.buildUserMessage(f.userPrompt, input, td)
+	// And the multimodal variant when this backend supports it AND the
+	// resolved prompt references at least one image attachment.
+	var userContent []delegate.ContentBlock
+	if backendName == delegate.BackendClaw {
+		_, userContent = e.buildUserContent(f.userPrompt, input, td, e.imageAttachs)
+	}
 
 	// On re-invocation after an ask_user pause, prepend the prior
 	// question and the user's answer so the (stateless) LLM doesn't
@@ -713,6 +728,7 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 		NodeID:                f.id,
 		SystemPrompt:          systemText,
 		UserPrompt:            userText,
+		UserContent:           userContent,
 		AllowedTools:          f.tools,
 		OutputSchema:          outputSchema,
 		Model:                 os.ExpandEnv(f.model),
@@ -734,7 +750,16 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	effectiveTools := f.tools
 	if f.interaction != ir.InteractionNone {
 		effectiveTools = ensureAskUser(effectiveTools)
+	}
+	// CLI-based backends can't accept inline images on stdin: forward
+	// the image path via {{attachments.X}} text interpolation and
+	// auto-enable `read_image` so the agent can pull the bytes itself.
+	if backendName != delegate.BackendClaw && len(e.imageAttachs) > 0 && promptReferencesImage(f.userPrompt, e.prompts, e.imageAttachs) {
+		effectiveTools = ensureReadImage(effectiveTools)
+	}
+	if !sameStringSlice(effectiveTools, f.tools) {
 		task.AllowedTools = effectiveTools // CLI backends read this
+		task.HasTools = len(effectiveTools) > 0
 	}
 
 	// Resolve full tool definitions for backends that manage tool loops
@@ -1842,6 +1867,185 @@ func (e *ClawExecutor) buildUserMessage(userPrompt string, input map[string]inte
 	return string(b)
 }
 
+// buildUserContent extends buildUserMessage with multimodal output for
+// backends that support image inputs (claw). When the resolved prompt
+// references {{attachments.<name>}} (or .path) for an image-typed
+// attachment, the helper splits the prompt around that reference and
+// emits a separate ContentBlock carrying the image bytes, leaving the
+// rest of the text intact. Returns:
+//   - text: the fully resolved text-only fallback (matches buildUserMessage)
+//   - blocks: ordered ContentBlocks alternating text + image. Empty when
+//     no image attachments are referenced — backends should keep using
+//     UserPrompt in that case.
+//
+// imageAttachments restricts emission to attachments declared as `image`
+// in the workflow's `attachments:` block; non-image attachments fall
+// through to plain text (their path is interpolated normally).
+func (e *ClawExecutor) buildUserContent(
+	userPrompt string,
+	input map[string]interface{},
+	td *TemplateData,
+	imageAttachments map[string]bool,
+) (string, []delegate.ContentBlock) {
+	text := e.buildUserMessage(userPrompt, input, td)
+
+	if td == nil || len(td.Attachments) == 0 || len(imageAttachments) == 0 {
+		return text, nil
+	}
+
+	// Collect the prompt body verbatim (pre-interpolation) so we can
+	// detect attachment refs by scanning the placeholder positions.
+	body := ""
+	if userPrompt != "" {
+		if p, ok := e.prompts[userPrompt]; ok {
+			body = p.Body
+		}
+	}
+	if body == "" {
+		return text, nil
+	}
+
+	var blocks []delegate.ContentBlock
+	pending := body
+	hasImage := false
+	for {
+		start := strings.Index(pending, "{{")
+		if start == -1 {
+			if pending != "" {
+				blocks = append(blocks, delegate.ContentBlock{
+					Type: "text",
+					Text: e.resolveTemplate(pending, input, td),
+				})
+			}
+			break
+		}
+		end := strings.Index(pending[start:], "}}")
+		if end == -1 {
+			blocks = append(blocks, delegate.ContentBlock{
+				Type: "text",
+				Text: e.resolveTemplate(pending, input, td),
+			})
+			break
+		}
+		end += start + 2
+		ref := strings.TrimSpace(pending[start+2 : end-2])
+		// Slice that precedes the reference (resolved separately so any
+		// non-attachment refs inside it are interpolated normally).
+		if start > 0 {
+			blocks = append(blocks, delegate.ContentBlock{
+				Type: "text",
+				Text: e.resolveTemplate(pending[:start], input, td),
+			})
+		}
+		if isImageAttachmentRef(ref, imageAttachments) {
+			info, ok := td.Attachments[attachmentRefName(ref)]
+			if ok {
+				blk, err := e.imageContentBlock(info)
+				if err == nil {
+					blocks = append(blocks, blk)
+					hasImage = true
+				} else {
+					// Failed to load bytes — fall back to a textual
+					// path reference so the agent can still try to
+					// reach the file via the read_image tool.
+					blocks = append(blocks, delegate.ContentBlock{
+						Type: "text",
+						Text: info.Path,
+					})
+				}
+			}
+		} else {
+			// Non-image ref: substitute via the regular resolver and
+			// emit as text.
+			val, resolved := e.resolveTemplateRef(ref, input, td)
+			if resolved {
+				blocks = append(blocks, delegate.ContentBlock{Type: "text", Text: val})
+			} else {
+				blocks = append(blocks, delegate.ContentBlock{Type: "text", Text: pending[start:end]})
+			}
+		}
+		pending = pending[end:]
+	}
+
+	if !hasImage {
+		return text, nil
+	}
+	return text, blocks
+}
+
+// isImageAttachmentRef reports whether the given template reference
+// (without the "{{" "}}" delimiters) targets an image attachment whose
+// rendered position should become a separate ContentBlock. Matches the
+// default form `attachments.<name>` and the explicit `attachments.<name>.path`.
+func isImageAttachmentRef(ref string, imageNames map[string]bool) bool {
+	parts := strings.Split(ref, ".")
+	if len(parts) < 2 || parts[0] != "attachments" {
+		return false
+	}
+	if len(parts) >= 3 && parts[2] != "path" {
+		return false
+	}
+	return imageNames[parts[1]]
+}
+
+func attachmentRefName(ref string) string {
+	parts := strings.Split(ref, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	return parts[1]
+}
+
+// imageContentBlock loads the bytes for an image attachment and
+// builds a base64-inline ContentBlock. Files larger than
+// imageInlineByteLimit fall back to a URL block so the LLM API
+// receives a remote URL instead of an oversized payload.
+const imageInlineByteLimit = 5 * 1024 * 1024 // 5 MiB
+
+func (e *ClawExecutor) imageContentBlock(info AttachmentInfo) (delegate.ContentBlock, error) {
+	if info.Path == "" {
+		// No local bytes available — emit a URL block when the
+		// store can presign one, otherwise return an error so the
+		// caller falls back to text.
+		url, err := info.URL()
+		if err != nil || url == "" {
+			return delegate.ContentBlock{}, fmt.Errorf("attachment %q: no local path or URL", info.Name)
+		}
+		return delegate.ContentBlock{
+			Type:      "image",
+			MediaType: info.MIME,
+			URL:       url,
+			Path:      info.Path,
+			Name:      info.Name,
+		}, nil
+	}
+	if info.Size > imageInlineByteLimit {
+		url, err := info.URL()
+		if err == nil && url != "" {
+			return delegate.ContentBlock{
+				Type:      "image",
+				MediaType: info.MIME,
+				URL:       url,
+				Path:      info.Path,
+				Name:      info.Name,
+			}, nil
+		}
+		// No URL backend — fall through and inline anyway. The
+		// runtime will surface the API's size error to the user.
+	}
+	body, err := os.ReadFile(info.Path)
+	if err != nil {
+		return delegate.ContentBlock{}, fmt.Errorf("read image %q: %w", info.Path, err)
+	}
+	return delegate.ContentBlock{
+		Type:      "image",
+		MediaType: info.MIME,
+		Data:      base64.StdEncoding.EncodeToString(body),
+		Path:      info.Path,
+		Name:      info.Name,
+	}, nil
+}
+
 // maxTemplateExpansionSize is the maximum allowed size of a resolved template.
 // Prevents OOM from extremely large input values injected into prompts.
 const maxTemplateExpansionSize = 5 * 1024 * 1024 // 5 MB
@@ -2287,6 +2491,62 @@ func ensureAskUser(tools []string) []string {
 		}
 	}
 	return append(append([]string(nil), tools...), askUserToolName)
+}
+
+// ensureReadImage augments a tool list with "read_image" so CLI-based
+// backends (claude_code, codex) can reach image attachments via their
+// vision tool. Idempotent.
+func ensureReadImage(tools []string) []string {
+	for _, t := range tools {
+		if t == "read_image" {
+			return tools
+		}
+	}
+	return append(append([]string(nil), tools...), "read_image")
+}
+
+// promptReferencesImage returns true when promptName resolves to a
+// prompt body containing a {{attachments.<name>}} reference where
+// <name> is in imageNames. Used to decide whether the CLI-backend
+// fallback should auto-enable read_image.
+func promptReferencesImage(promptName string, prompts map[string]*ir.Prompt, imageNames map[string]bool) bool {
+	if promptName == "" || len(imageNames) == 0 {
+		return false
+	}
+	p, ok := prompts[promptName]
+	if !ok {
+		return false
+	}
+	body := p.Body
+	for {
+		i := strings.Index(body, "{{")
+		if i < 0 {
+			return false
+		}
+		j := strings.Index(body[i:], "}}")
+		if j < 0 {
+			return false
+		}
+		ref := strings.TrimSpace(body[i+2 : i+j])
+		parts := strings.Split(ref, ".")
+		if len(parts) >= 2 && parts[0] == "attachments" && imageNames[parts[1]] {
+			return true
+		}
+		body = body[i+j+2:]
+	}
+}
+
+// sameStringSlice reports element-wise equality.
+func sameStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // prependPriorAskUser injects an explicit "[PRIOR INTERACTION]" block

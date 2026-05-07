@@ -40,6 +40,32 @@ type Backend interface {
 	Execute(ctx context.Context, task Task) (Result, error)
 }
 
+// ContentBlock is a backend-agnostic representation of a single
+// content block in a multimodal user message. Mirrors the relevant
+// fields of api.ContentBlock without leaking the claw-code-go
+// dependency to the rest of the codebase.
+type ContentBlock struct {
+	// Type is one of "text" or "image".
+	Type string
+	// Text carries the textual content for Type=="text" blocks.
+	Text string
+	// MediaType is the MIME type for image blocks (e.g. "image/png").
+	MediaType string
+	// Data is the base64-encoded payload for image blocks. Mutually
+	// exclusive with URL — a backend should populate exactly one.
+	Data string
+	// URL is the direct image URL (when the backend prefers a URL
+	// source over inline base64). Mutually exclusive with Data.
+	URL string
+	// Path is the host filesystem path to the image, retained as a
+	// fallback for CLI-based backends that load via the read_image
+	// tool when neither Data nor a working URL is available.
+	Path string
+	// Name carries the workflow-declared attachment name for
+	// observability and prompt-fallback annotation.
+	Name string
+}
+
 // ToolDef is a fully resolved tool definition for backends that execute tools
 // internally (e.g. claw). CLI-based backends use AllowedTools (string names) instead.
 type ToolDef struct {
@@ -59,6 +85,14 @@ type Task struct {
 
 	// UserPrompt is the fully resolved user message text.
 	UserPrompt string
+
+	// UserContent, when non-empty, replaces UserPrompt for backends
+	// that support multimodal input (claw). The first text block is
+	// expected to carry the resolved prompt; image blocks carry
+	// multimodal attachments. CLI-based backends (claude_code, codex)
+	// fall back to UserPrompt and rely on the read_image tool to
+	// reach the bytes via Path.
+	UserContent []ContentBlock
 
 	// AllowedTools is the list of tool names the CLI agent may use.
 	// Used by CLI-based backends; API-based backends use ToolDefs instead.

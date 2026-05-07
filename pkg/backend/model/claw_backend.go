@@ -121,7 +121,51 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 		)
 	}
 
-	if userText != "" {
+	if len(task.UserContent) > 0 {
+		// Multimodal path: forward image + text blocks directly to the
+		// Anthropic Messages API. Text blocks are concatenated where
+		// adjacent so the receiver sees the same prompt structure as
+		// the buildUserMessage fallback.
+		blocks := make([]api.ContentBlock, 0, len(task.UserContent))
+		for _, c := range task.UserContent {
+			switch c.Type {
+			case "text":
+				if c.Text == "" {
+					continue
+				}
+				blocks = append(blocks, api.ContentBlock{Type: "text", Text: c.Text})
+			case "image":
+				switch {
+				case c.Data != "":
+					blocks = append(blocks, api.ContentBlock{
+						Type: "image",
+						Source: &api.ImageSource{
+							Type:      "base64",
+							MediaType: c.MediaType,
+							Data:      c.Data,
+						},
+					})
+				case c.URL != "":
+					blocks = append(blocks, api.ContentBlock{
+						Type: "image",
+						Source: &api.ImageSource{
+							Type: "url",
+							URL:  c.URL,
+						},
+					})
+				}
+			}
+		}
+		// When the prompt was ONLY {{attachments.X}} the schema injection
+		// above appended text to userText; surface it as a trailing text
+		// block so the schema instruction reaches the model.
+		if userText != "" && task.UserPrompt != userText {
+			blocks = append(blocks, api.ContentBlock{Type: "text", Text: userText[len(task.UserPrompt):]})
+		}
+		if len(blocks) > 0 {
+			opts.Messages = []api.Message{{Role: "user", Content: blocks}}
+		}
+	} else if userText != "" {
 		opts.Messages = []api.Message{
 			{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: userText}}},
 		}
