@@ -66,7 +66,7 @@ github.com/AzureAD/microsoft-authentication-library-for-go/apps/internal/shared
 github.com/AzureAD/microsoft-authentication-library-for-go/apps/internal/version
 github.com/AzureAD/microsoft-authentication-library-for-go/apps/managedidentity
 github.com/AzureAD/microsoft-authentication-library-for-go/apps/public
-# github.com/SocialGouv/claw-code-go v0.0.0-20260505212658-d34b4abf553d
+# github.com/SocialGouv/claw-code-go v0.1.0
 ## explicit; go 1.25.0
 github.com/SocialGouv/claw-code-go/hooks
 github.com/SocialGouv/claw-code-go/internal/api
