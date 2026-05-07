@@ -1,5 +1,5 @@
 # Local-development values: bundle Mongo + NATS + MinIO sub-charts so
-# `helm install iterion ./helm/iterion -f values-dev.yaml` brings up a
+# `helm install iterion ./charts/iterion -f values-dev.yaml` brings up a
 # fully self-contained cloud-mode stack. Use this for `task chart:kind`
 # and ad-hoc experiments. **Not for production** — the credentials are
 # hard-coded and the persistence is single-replica.

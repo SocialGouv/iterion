@@ -5,9 +5,36 @@ This document is the operator runbook for the cloud-mode topology
 It covers prerequisites, secret + token lifecycle, NetworkPolicy
 egress, observability, resume, and migration from a filesystem store.
 
-The Helm chart at [helm/iterion/](../helm/iterion/) renders the full
-stack; values-dev.yaml bundles in-cluster Mongo / NATS / MinIO for
-smoke tests, values-prod.yaml expects external dependencies.
+The Helm chart is published to GHCR as an OCI artifact at
+`oci://ghcr.io/socialgouv/charts/iterion` (sources in
+[charts/iterion/](../charts/iterion/)). It renders the full stack;
+values-dev.yaml bundles in-cluster Mongo / NATS / MinIO for smoke
+tests, values-prod.yaml expects external dependencies.
+
+## Install
+
+```bash
+helm install iterion oci://ghcr.io/socialgouv/charts/iterion \
+  --version <semver> \
+  --namespace iterion --create-namespace \
+  -f values.yaml
+```
+
+Pick `<semver>` from the [iterion releases](https://github.com/SocialGouv/iterion/releases);
+the chart `version` is kept in lock-step with the binary `appVersion`,
+so `helm install --version 0.5.3` deploys the iterion 0.5.3 image.
+
+OCI registries do not expose a `helm search repo` index; to inspect a
+chart before installing, pull it explicitly:
+
+```bash
+helm pull oci://ghcr.io/socialgouv/charts/iterion --version <semver>
+tar -tzf iterion-<semver>.tgz | head
+```
+
+For chart hacking against unreleased changes, install from a checkout:
+`helm install iterion ./charts/iterion -f values.yaml`. `task chart:kind`
+exercises this path end-to-end on a kind cluster.
 
 ## Topology
 

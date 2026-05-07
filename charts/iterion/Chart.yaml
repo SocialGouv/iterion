@@ -5,10 +5,12 @@ description: |
   Server (HTTP API + editor SPA) plus an optional runner pool that
   pulls work from NATS JetStream and persists state to MongoDB + S3.
 type: application
-# Chart version is bumped manually on every release-it cut so Helm
-# repo consumers can pin a known artifact even when appVersion (the
-# iterion binary tag) moves.
-version: 0.1.0
+# Chart `version` and `appVersion` are both kept in sync with package.json
+# by scripts/sync-chart-version.sh (release-it after:bump hook) so that
+# the OCI artifact published by .github/workflows/release.yml carries the
+# same semver as the iterion binary it deploys. Consumers pin via
+# `helm install ... --version <semver>`.
+version: 0.5.3
 appVersion: "0.5.3"
 home: https://github.com/SocialGouv/iterion
 sources:

@@ -421,41 +421,52 @@ tasks:
 
   # --- Helm chart targets (plan §F T-36, T-39) --------------------
   chart:sync-version:
-    desc: Sync helm/iterion/Chart.yaml appVersion with package.json so `helm upgrade` picks up the right image tag
+    desc: Sync charts/iterion/Chart.yaml version + appVersion with package.json so `helm upgrade` picks up the right image tag
     cmds:
       - bash scripts/sync-chart-version.sh
 
   chart:check-version:
-    desc: Fail if Chart.yaml appVersion drifts from package.json (CI gate)
+    desc: Fail if Chart.yaml version or appVersion drifts from package.json (CI gate)
     cmds:
       - |
         PKG=$(node -p "require('./package.json').version")
-        CHART=$(awk '/^appVersion:/ {gsub(/"/,""); print $2}' helm/iterion/Chart.yaml)
-        if [ "$PKG" != "$CHART" ]; then
-          echo "Chart.yaml appVersion ($CHART) does not match package.json version ($PKG)"
+        CHART_VER=$(awk '/^version:/ {print $2; exit}' charts/iterion/Chart.yaml)
+        CHART_APP=$(awk '/^appVersion:/ {gsub(/"/,""); print $2; exit}' charts/iterion/Chart.yaml)
+        if [ "$PKG" != "$CHART_VER" ] || [ "$PKG" != "$CHART_APP" ]; then
+          echo "Chart.yaml drift: version=$CHART_VER appVersion=$CHART_APP package.json=$PKG"
           echo "Run 'task chart:sync-version' to align them."
           exit 1
         fi
 
+  chart:dep-update:
+    desc: Fetch sub-chart archives declared in Chart.yaml dependencies (idempotent)
+    cmds:
+      - helm dependency update charts/iterion
+
   chart:lint:
     desc: helm lint the iterion chart against values-dev and values-prod
-    deps: [chart:check-version]
+    deps: [chart:check-version, chart:dep-update]
     cmds:
-      - helm dependency update helm/iterion
-      - helm lint helm/iterion -f helm/iterion/values-dev.yaml
-      - helm lint helm/iterion -f helm/iterion/values-prod.yaml
+      - helm lint charts/iterion -f charts/iterion/values-dev.yaml
+      - helm lint charts/iterion -f charts/iterion/values-prod.yaml
 
   chart:template:
     desc: Render the chart templates with values-dev to stdout
     cmds:
-      - helm template iterion helm/iterion -f helm/iterion/values-dev.yaml
+      - helm template iterion charts/iterion -f charts/iterion/values-dev.yaml
+
+  chart:package:
+    desc: Package the chart into dist/ (mirrors what release.yml publishes to OCI)
+    deps: [chart:check-version, chart:dep-update]
+    cmds:
+      - helm package charts/iterion --destination dist/
 
   chart:kind:
     desc: Smoke-test the chart on a kind cluster (helm install + helm test)
+    deps: [chart:dep-update]
     cmds:
       - kind create cluster --name iterion-chart-test --wait 60s || true
-      - helm dependency update helm/iterion
-      - helm upgrade --install iterion ./helm/iterion -f helm/iterion/values-dev.yaml --wait --timeout 5m
+      - helm upgrade --install iterion ./charts/iterion -f charts/iterion/values-dev.yaml --wait --timeout 5m
       - helm test iterion
       - kind delete cluster --name iterion-chart-test
 

@@ -110,3 +110,38 @@ jobs:
           # token-bureau App token bypasses that, letting brew-update.yml
           # pick the release up automatically.
           token: ${{ steps.token.outputs.token }}
+
+  # No `needs:` — chart packaging is independent of the binary build, so
+  # this job runs in parallel with build-binaries / release.
+  publish-chart:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: azure/setup-helm@v4
+
+      - name: Login to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Compute lowercase repo owner
+        # OCI references must be lowercase; github.repository_owner preserves
+        # case (e.g. SocialGouv → socialgouv).
+        env:
+          REPO_OWNER: ${{ github.repository_owner }}
+        run: |
+          echo "REPO_LC=$(printf '%s' "${REPO_OWNER}" | tr '[:upper:]' '[:lower:]')" \
+            >> "$GITHUB_ENV"
+
+      - name: Package chart
+        run: |
+          helm dependency update charts/iterion
+          helm package charts/iterion --destination dist/
+
+      - name: Push chart to OCI
+        run: |
+          helm push dist/iterion-*.tgz "oci://ghcr.io/${REPO_LC}/charts"

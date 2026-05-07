@@ -39,16 +39,18 @@ jobs:
       - name: Helm chart version drift check
         # Mirror of `task chart:check-version`, inlined so we don't pull
         # go-task into the test job. release-it bumps package.json on
-        # release; if Chart.yaml's appVersion isn't synced (via
-        # `task chart:sync-version`), `helm upgrade` deploys the stale
-        # image tag silently. Fail the PR before that happens.
+        # release; if Chart.yaml's `version` or `appVersion` isn't synced
+        # (via `task chart:sync-version`), the OCI publish ships a chart
+        # whose image tag points to a stale build. Fail the PR before that
+        # happens.
         shell: bash
         run: |
           set -euo pipefail
           PKG=$(node -p "require('./package.json').version")
-          CHART=$(awk '/^appVersion:/ {gsub(/"/,""); print $2}' helm/iterion/Chart.yaml)
-          if [ "$PKG" != "$CHART" ]; then
-            echo "::error::Chart.yaml appVersion ($CHART) does not match package.json version ($PKG)"
+          CHART_VER=$(awk '/^version:/ {print $2; exit}' charts/iterion/Chart.yaml)
+          CHART_APP=$(awk '/^appVersion:/ {gsub(/"/,""); print $2; exit}' charts/iterion/Chart.yaml)
+          if [ "$PKG" != "$CHART_VER" ] || [ "$PKG" != "$CHART_APP" ]; then
+            echo "::error::Chart.yaml drift: version=$CHART_VER appVersion=$CHART_APP package.json=$PKG"
             echo "Run 'task chart:sync-version' to align them, then commit the result."
             exit 1
           fi
@@ -233,18 +235,18 @@ jobs:
 
       - name: Build chart dependencies
         # Sub-charts (mongodb, nats, minio) are declared in Chart.yaml but
-        # not vendored in git (helm/iterion/charts/ is gitignored). Mirror
+        # not vendored in git (charts/iterion/charts/ is gitignored). Mirror
         # what `task chart:kind` does locally so values-dev.yaml's bundled
         # stack resolves at install time.
-        run: helm dependency update ./helm/iterion
+        run: helm dependency update ./charts/iterion
 
       - name: Helm install (values-dev.yaml)
         run: |
           set -euo pipefail
           kubectl create namespace "${NS}"
-          helm install "${RELEASE}" ./helm/iterion \
+          helm install "${RELEASE}" ./charts/iterion \
             --namespace "${NS}" \
-            --values ./helm/iterion/values-dev.yaml \
+            --values ./charts/iterion/values-dev.yaml \
             --set "image.repository=$(echo ${IMG} | cut -d: -f1)" \
             --set "image.tag=$(echo ${IMG} | cut -d: -f2)" \
             --set "image.pullPolicy=Never" \

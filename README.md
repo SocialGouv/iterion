@@ -71,7 +71,7 @@ Same engine, six delivery modes — pick the one that fits your workflow:
 | 🌐 **Web editor** | Visual workflow design on your dev machine | `iterion editor` (opens browser) |
 | 🪟 **Desktop app** | Native window with multi-project, OS keychain, auto-update | Download `iterion-desktop` from Releases |
 | 🐳 **Docker** | Zero-install runs, reproducible CI, isolated environments | `docker run --rm ghcr.io/socialgouv/iterion:latest` |
-| ☁️ **Cloud / server** | Multi-tenant deployment, shared run store, REST/WS API | Helm chart in `helm/iterion/` |
+| ☁️ **Cloud / server** | Multi-tenant deployment, shared run store, REST/WS API | `helm install iterion oci://ghcr.io/socialgouv/charts/iterion` |
 | 📦 **TypeScript SDK** | Programmatic invocation from Node/Deno/Bun apps | `npm install @iterion/sdk` ([docs](sdks/typescript/)) |
 
 All six invoke the same Go core. The DSL, runtime, persistence and observability are identical — they only differ in how you reach them. Pick CLI for automation, the visual editor for daily editing, the desktop app if you want a one-click install with managed credentials, Docker when you want to run iterion without installing it on the host, cloud mode when teams need a shared always-on instance, or the SDK to embed iterion inside another Node/Deno/Bun application.
@@ -389,7 +389,7 @@ A long-running server deployment that targets multi-tenant teams. Same Go core a
 | **Metrics** | `pkg/cloud/metrics/` | Prometheus registry exposed on `/metrics` |
 
 ```yaml
-# helm/iterion/values.yaml — minimal example
+# values.yaml — minimal example (see charts/iterion/values.yaml for the full schema)
 mongo:
   uri: "mongodb://mongo:27017/iterion"
 blob:
@@ -401,7 +401,16 @@ queue:
 
 ### Deploy
 
-- **Helm**: `helm upgrade --install iterion helm/iterion -f values.yaml` — bundles server + runner Deployments, KEDA-based runner autoscaling on queue depth, and optional sandbox RBAC for per-run pods
+- **Helm (OCI registry)**:
+
+  ```bash
+  helm upgrade --install iterion \
+    oci://ghcr.io/socialgouv/charts/iterion \
+    --version <semver> \
+    -f values.yaml
+  ```
+
+  The chart is published to GHCR on every release (job `publish-chart` in `.github/workflows/release.yml`); pick a `--version` from the [iterion releases](https://github.com/SocialGouv/iterion/releases). It bundles server + runner Deployments, KEDA-based runner autoscaling on queue depth, and optional sandbox RBAC for per-run pods. To install from a local checkout instead (chart hacking, unreleased fixes), use `helm upgrade --install iterion ./charts/iterion -f values.yaml`.
 - **Local stack** for testing cloud mode end-to-end: `docker compose -f docker-compose.cloud.yml up` brings up Mongo + NATS + MinIO + iterion server + runner — see [docker/](docker/) for init scripts
 - **Container image**: `ghcr.io/socialgouv/iterion:latest` (built by `.github/workflows/image.yml` on every main push and tag, scanned with Trivy on PRs)
 - **Health probes**: `GET /healthz` (liveness, always 200) and `GET /readyz` (200 when Mongo/NATS/S3 are reachable in cloud mode)
@@ -816,7 +825,7 @@ iterion sandbox doctor   # Report the active driver (Docker/Podman), image cache
 
 ### `iterion server`
 
-Start the long-running HTTP server (editor SPA + run console + cloud API). Used both for the local web editor and for cloud mode deployments via [helm/iterion/](helm/iterion/).
+Start the long-running HTTP server (editor SPA + run console + cloud API). Used both for the local web editor and for cloud mode deployments — install via [`oci://ghcr.io/socialgouv/charts/iterion`](https://github.com/SocialGouv/iterion/pkgs/container/charts%2Fiterion) (chart sources in [charts/iterion/](charts/iterion/)).
 
 ### `iterion runner`
 
@@ -1132,7 +1141,7 @@ iterion/
 ├── examples/            # Reference .iter workflows + companion docs
 ├── sdks/typescript/     # @iterion/sdk — typed CLI wrapper for Node/Deno/Bun
 ├── e2e/                 # End-to-end test suite (stub + live)
-├── helm/iterion/        # Helm chart (server + runner Deployments, KEDA scaling, sandbox RBAC)
+├── charts/iterion/      # Helm chart (server + runner Deployments, KEDA scaling, sandbox RBAC) — published to oci://ghcr.io/socialgouv/charts/iterion
 ├── docker/              # Cloud-mode container helpers (LLM CLI install, MinIO init)
 ├── docs/                # Format specs, references, ADRs, sandbox, privacy, observability
 ├── scripts/             # Build helpers
