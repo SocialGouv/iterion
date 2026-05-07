@@ -7,6 +7,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/identity"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // authCookieName is the HttpOnly cookie carrying the access JWT for
@@ -30,7 +31,10 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		if s.cfg.DisableAuth {
 			// Dev mode: synthesize a super-admin identity so handlers
 			// behave as if the request was authenticated. Never use
-			// in production.
+			// in production. The store-level tenant ctx remains empty
+			// so DisableAuth=true reads/writes are not scoped — that
+			// matches the local-mode "single user, single tenant"
+			// expectation.
 			next.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), auth.Identity{
 				UserID:       "dev",
 				Email:        "dev@local",
@@ -57,7 +61,13 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			}
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), id)))
+		// Stamp both the auth identity (for handlers + RBAC checks)
+		// and the store-level tenant_id / user_id (for the Mongo
+		// query filters in pkg/store/mongo). The store layer keeps
+		// its own keys so it can stay independent of pkg/auth.
+		ctx := auth.WithIdentity(r.Context(), id)
+		ctx = store.WithIdentity(ctx, id.TeamID, id.UserID)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 

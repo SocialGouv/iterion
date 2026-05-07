@@ -190,11 +190,15 @@ func (s *Store) Capabilities() store.Capabilities {
 //
 // eventsTTLDays==0 disables the TTL.
 func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
-	// runs collection indexes (plan §D.1).
+	// runs collection indexes (plan §D.1). Compound (tenant_id, …)
+	// indexes accelerate per-tenant filters; single-field indexes
+	// remain for cross-tenant admin views.
 	_, err := s.runs.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "created_at", Value: 1}}, Options: options.Index().SetName("status_created")},
 		{Keys: bson.D{{Key: "workflow_name", Value: 1}, {Key: "created_at", Value: -1}}, Options: options.Index().SetName("workflow_created_desc")},
 		{Keys: bson.D{{Key: "updated_at", Value: -1}}, Options: options.Index().SetName("updated_desc")},
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "status", Value: 1}, {Key: "created_at", Value: -1}}, Options: options.Index().SetName("tenant_status_created").SetPartialFilterExpression(bson.M{"tenant_id": bson.M{"$exists": true}})},
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "owner_id", Value: 1}, {Key: "created_at", Value: -1}}, Options: options.Index().SetName("tenant_owner_created").SetPartialFilterExpression(bson.M{"tenant_id": bson.M{"$exists": true}})},
 		{
 			Keys:    bson.D{{Key: "runner_id", Value: 1}},
 			Options: options.Index().SetName("runner_id_partial").SetPartialFilterExpression(bson.M{"runner_id": bson.M{"$exists": true}}),
@@ -205,9 +209,12 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 	}
 
 	// events collection: unique (run_id, seq) is the race safety net.
+	// (tenant_id, run_id, seq) accelerates change-stream filters
+	// without breaking the existing seq-only sort.
 	eventIdx := []mongo.IndexModel{
 		{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "seq", Value: 1}}, Options: options.Index().SetUnique(true).SetName("run_seq_unique")},
 		{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "type", Value: 1}}, Options: options.Index().SetName("run_type")},
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "run_id", Value: 1}, {Key: "seq", Value: 1}}, Options: options.Index().SetName("tenant_run_seq").SetPartialFilterExpression(bson.M{"tenant_id": bson.M{"$exists": true}})},
 	}
 	if eventsTTLDays > 0 {
 		// MongoDB requires the TTL to be on a top-level date field.

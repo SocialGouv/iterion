@@ -111,4 +111,8 @@ type Event struct {
 	BranchID  string                 `json:"branch_id,omitempty" bson:"branch_id,omitempty"`
 	NodeID    string                 `json:"node_id,omitempty" bson:"node_id,omitempty"`
 	Data      map[string]interface{} `json:"data,omitempty" bson:"data,omitempty"`
+	// TenantID partitions events for change-stream + RBAC filtering.
+	// Stamped from ctx at write time in cloud mode; empty for local
+	// runs and legacy filesystem events.
+	TenantID string `json:"tenant_id,omitempty" bson:"tenant_id,omitempty"`
 }

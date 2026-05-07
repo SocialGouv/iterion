@@ -230,6 +230,12 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// Inherit the publisher's trace so OTel spans created by the
 	// engine appear under the originating editor span (plan §F T-41).
 	traced := delivery.PropagateTraceTo(parent)
+	// Stamp tenant + owner from the message into ctx so every
+	// downstream Mongo write picks them up and every Mongo read
+	// stays scoped to the run's tenant. The runner trusts the
+	// publisher to have set these from a verified Identity; we
+	// re-validate against the loaded run doc below.
+	traced = store.WithIdentity(traced, msg.TenantID, msg.OwnerID)
 	// Root span for the runner-side execution. Per-node spans created
 	// inside engine.Run hang off this one, so a single trace covers
 	// API → queue → runner → node graph. The span ends in the deferred
@@ -239,6 +245,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 			attribute.String("iterion.run_id", msg.RunID),
 			attribute.String("iterion.workflow_name", msg.WorkflowName),
 			attribute.String("iterion.workflow_hash", msg.WorkflowHash),
+			attribute.String("iterion.tenant_id", msg.TenantID),
 		),
 	)
 	runCtx, runCancel := context.WithCancel(spanCtx)
@@ -284,6 +291,17 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		logger.Info("runner: run %s already cancelled — skipping", msg.RunID)
 		finalStatus = "cancelled"
 		_ = delivery.Ack()
+		return
+	}
+	// Verify the message's tenant matches the persisted document.
+	// A mismatch implies either a corrupted publish (publisher
+	// stamped the wrong tenant) or a malicious / replayed message.
+	// Either way the run is unsafe to execute under either tenant's
+	// scope; term the delivery so it doesn't redeliver.
+	if preErr == nil && preRun != nil && preRun.TenantID != msg.TenantID {
+		logger.Error("runner: tenant mismatch for run %s (msg=%q stored=%q) — terming", msg.RunID, msg.TenantID, preRun.TenantID)
+		finalStatus = "tenant_mismatch"
+		_ = delivery.Term()
 		return
 	}
 

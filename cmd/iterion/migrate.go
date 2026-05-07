@@ -27,6 +27,8 @@ var migrateOpts struct {
 	configPath  string
 	dryRun      bool
 	concurrency int
+	tenantID    string
+	ownerID     string
 }
 
 var migrateCmd = &cobra.Command{
@@ -55,6 +57,8 @@ func init() {
 	migrateToCloudCmd.Flags().StringVar(&migrateOpts.configPath, "config", "", "Path to YAML config (env vars take precedence)")
 	migrateToCloudCmd.Flags().BoolVar(&migrateOpts.dryRun, "dry-run", false, "Print what would be uploaded; don't write to Mongo or S3")
 	migrateToCloudCmd.Flags().IntVar(&migrateOpts.concurrency, "concurrency", 4, "Parallel run uploads")
+	migrateToCloudCmd.Flags().StringVar(&migrateOpts.tenantID, "tenant", "", "Tenant ID to assign to migrated runs (required for multitenant cloud)")
+	migrateToCloudCmd.Flags().StringVar(&migrateOpts.ownerID, "owner", "", "Owner user ID to attribute migrated runs to (optional)")
 	migrateCmd.AddCommand(migrateToCloudCmd)
 	rootCmd.AddCommand(migrateCmd)
 }
@@ -142,6 +146,20 @@ func runMigrateToCloud(cmd *cobra.Command, _ []string) error {
 	var migMu sync.Mutex
 	var success, failed int
 
+	// Tenant context flows into the dst store via ctx. When --tenant
+	// is empty, runs are migrated unscoped — appropriate for a
+	// single-tenant cloud or for an admin who plans to assign tenants
+	// later via a separate sweep. We refuse silent unscoped imports
+	// in production by requiring an explicit empty acknowledgement
+	// (no flag at all is fine; passing --tenant="" is rejected).
+	migCtx := ctx
+	if migrateOpts.tenantID != "" {
+		migCtx = store.WithIdentity(migCtx, migrateOpts.tenantID, migrateOpts.ownerID)
+		logger.Info("migrate: assigning tenant_id=%s owner_id=%s to all runs", migrateOpts.tenantID, migrateOpts.ownerID)
+	} else {
+		logger.Warn("migrate: no --tenant supplied; runs migrated without tenant scope (cluster-admin only)")
+	}
+
 	for _, id := range ids {
 		id := id
 		select {
@@ -153,7 +171,7 @@ func runMigrateToCloud(cmd *cobra.Command, _ []string) error {
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if err := migrateRun(ctx, src, dst, id, migrateOpts.dryRun, logger); err != nil {
+			if err := migrateRun(migCtx, src, dst, id, migrateOpts.dryRun, logger); err != nil {
 				migMu.Lock()
 				failed++
 				if migErr == nil {

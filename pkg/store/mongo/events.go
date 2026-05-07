@@ -32,6 +32,7 @@ func (s *Store) AppendEvent(ctx context.Context, runID string, evt store.Event) 
 		evt.Timestamp = time.Now().UTC()
 	}
 	evt.RunID = runID
+	stampTenantOnEvent(ctx, &evt)
 
 	var lastSeq int64
 	var lastErr error
@@ -90,7 +91,7 @@ func (s *Store) allocSeq(ctx context.Context, runID string) (int64, error) {
 func (s *Store) LoadEvents(ctx context.Context, runID string) ([]*store.Event, error) {
 	cur, err := s.events.Find(
 		ctx,
-		bson.M{"run_id": runID},
+		withTenantFilter(ctx, bson.M{"run_id": runID}),
 		options.Find().SetSort(bson.D{{Key: "seq", Value: 1}}),
 	)
 	if err != nil {
@@ -116,10 +117,10 @@ func (s *Store) LoadEvents(ctx context.Context, runID string) ([]*store.Event, e
 // bound when to == 0), capped at limit (or unbounded when limit == 0).
 // Mirrors the FilesystemRunStore semantics for paginated reads.
 func (s *Store) LoadEventsRange(ctx context.Context, runID string, from, to int64, limit int) ([]*store.Event, error) {
-	filter := bson.M{
+	filter := withTenantFilter(ctx, bson.M{
 		"run_id": runID,
 		"seq":    bson.M{"$gte": from},
-	}
+	})
 	if to > 0 {
 		filter["seq"].(bson.M)["$lt"] = to
 	}
@@ -150,7 +151,7 @@ func (s *Store) LoadEventsRange(ctx context.Context, runID string, from, to int6
 func (s *Store) ScanEvents(ctx context.Context, runID string, visit func(*store.Event) bool) error {
 	cur, err := s.events.Find(
 		ctx,
-		bson.M{"run_id": runID},
+		withTenantFilter(ctx, bson.M{"run_id": runID}),
 		options.Find().SetSort(bson.D{{Key: "seq", Value: 1}}),
 	)
 	if err != nil {

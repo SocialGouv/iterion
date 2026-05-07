@@ -20,7 +20,9 @@ import (
 // consumers reject any V they don't recognise so that a
 // rolling-upgrade always upgrades the server first (which then never
 // emits an unsupported version).
-const SchemaVersion = 1
+//
+// v=2 (2026-05-07): added TenantID + OwnerID for multitenant isolation.
+const SchemaVersion = 2
 
 // RunMessage is the JSON envelope published on
 // `iterion.queue.runs`. The runner deserialises it, takes the
@@ -44,6 +46,14 @@ type RunMessage struct {
 	Resume         *ResumeSpec            `json:"resume,omitempty"`
 	Trace          TraceContext           `json:"trace"`
 	PublishedAtRFC string                 `json:"published_at"`
+	// TenantID is the team_id the run belongs to. Required in v=2.
+	// Runners verify the loaded run document's tenant_id matches
+	// before claiming the lock; a mismatch is treated as a corrupted
+	// queue entry and the run is naked.
+	TenantID string `json:"tenant_id"`
+	// OwnerID is the user_id of the principal who initiated the run.
+	// Used for audit logging; runners do NOT gate execution on it.
+	OwnerID string `json:"owner_id,omitempty"`
 }
 
 // IRBackend is the storage backend an IRRef points at.

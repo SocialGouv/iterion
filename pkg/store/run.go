@@ -153,6 +153,15 @@ type Run struct {
 	// mode (filesystem flock guards single-writer semantics).
 	CASVersion int64 `json:"-" bson:"version,omitempty"`
 
+	// TenantID is the team_id the run belongs to. Set on every cloud
+	// run at Launch from the JWT's active team. Local-mode runs leave
+	// it empty — the filesystem store is implicitly single-tenant.
+	TenantID string `json:"tenant_id,omitempty" bson:"tenant_id,omitempty"`
+	// OwnerID is the user_id of the principal who launched the run.
+	// Empty for local mode (TTY user) and for legacy runs predating
+	// multitenancy.
+	OwnerID string `json:"owner_id,omitempty" bson:"owner_id,omitempty"`
+
 	// Attachments holds the metadata for binary inputs declared in
 	// the workflow's `attachments:` block and uploaded at launch.
 	// Bytes live in the storage backend keyed by Name; this map
@@ -297,4 +306,8 @@ type Interaction struct {
 	AnsweredAt  *time.Time             `json:"answered_at,omitempty" bson:"answered_at,omitempty"`
 	Questions   map[string]interface{} `json:"questions,omitempty" bson:"questions,omitempty"`
 	Answers     map[string]interface{} `json:"answers,omitempty" bson:"answers,omitempty"`
+	// TenantID mirrors Run.TenantID so cross-tenant access checks can
+	// be enforced at the interaction layer too. Empty for legacy
+	// filesystem records.
+	TenantID string `json:"tenant_id,omitempty" bson:"tenant_id,omitempty"`
 }

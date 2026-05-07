@@ -30,6 +30,7 @@ func (s *Store) CreateRun(ctx context.Context, id, workflowName string, inputs m
 		SchemaVersion: SchemaVersion,
 		CASVersion:    1,
 	}
+	stampTenant(ctx, r)
 	if _, err := s.runs.InsertOne(ctx, r); err != nil {
 		if mongo.IsDuplicateKeyError(err) {
 			return nil, fmt.Errorf("store/mongo: run %s already exists", id)
@@ -39,12 +40,14 @@ func (s *Store) CreateRun(ctx context.Context, id, workflowName string, inputs m
 	return r, nil
 }
 
-// LoadRun fetches the run document by _id. Refuses documents written
-// by a future schema version so an older binary can't silently mangle
-// data (plan §D.5).
+// LoadRun fetches the run document by _id. The query is implicitly
+// scoped by tenant_id when the ctx carries one — a tenant-scoped
+// caller asking for a run that belongs to another tenant gets a
+// not-found, never a leak. Refuses documents written by a future
+// schema version (plan §D.5).
 func (s *Store) LoadRun(ctx context.Context, id string) (*store.Run, error) {
 	var r store.Run
-	err := s.runs.FindOne(ctx, bson.M{"_id": id}).Decode(&r)
+	err := s.runs.FindOne(ctx, withTenantFilter(ctx, bson.M{"_id": id})).Decode(&r)
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, fmt.Errorf("store/mongo: run %s not found", id)
@@ -57,15 +60,13 @@ func (s *Store) LoadRun(ctx context.Context, id string) (*store.Run, error) {
 	return &r, nil
 }
 
-// SaveRun replaces the run document atomically. Used for legacy paths
-// (engine.execLoop SaveRun calls); the cloud runner prefers the
-// targeted UpdateRunStatus / SaveCheckpoint paths because they bump
-// CASVersion. Falls back to a non-CAS replace here so a single-runner
-// deployment still works.
+// SaveRun replaces the run document atomically. Tenant-scoped
+// callers can only overwrite documents belonging to their tenant.
 func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	r.UpdatedAt = time.Now().UTC()
 	r.SchemaVersion = SchemaVersion
-	_, err := s.runs.ReplaceOne(ctx, bson.M{"_id": r.ID}, r, options.Replace().SetUpsert(true))
+	stampTenant(ctx, r)
+	_, err := s.runs.ReplaceOne(ctx, withTenantFilter(ctx, bson.M{"_id": r.ID}), r, options.Replace().SetUpsert(true))
 	if err != nil {
 		return fmt.Errorf("store/mongo: replace run %s: %w", r.ID, err)
 	}
@@ -73,11 +74,12 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 }
 
 // ListRuns returns every run id sorted by created_at ascending. The
-// caller filters in higher layers (runview.Service.List).
+// caller filters in higher layers (runview.Service.List). Tenant
+// scope is enforced when ctx carries a tenant_id.
 func (s *Store) ListRuns(ctx context.Context) ([]string, error) {
 	cur, err := s.runs.Find(
 		ctx,
-		bson.M{},
+		withTenantFilter(ctx, bson.M{}),
 		options.Find().SetProjection(bson.M{"_id": 1}).SetSort(bson.D{{Key: "created_at", Value: 1}}),
 	)
 	if err != nil {
@@ -125,7 +127,7 @@ func (s *Store) UpdateRunStatus(ctx context.Context, id string, status store.Run
 	if len(unset) > 0 {
 		update["$unset"] = unset
 	}
-	res, err := s.runs.UpdateOne(ctx, bson.M{"_id": id}, update)
+	res, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": id}), update)
 	if err != nil {
 		return fmt.Errorf("store/mongo: update status %s: %w", id, err)
 	}
@@ -141,7 +143,7 @@ func (s *Store) UpdateRunStatus(ctx context.Context, id string, status store.Run
 func (s *Store) SaveCheckpoint(ctx context.Context, id string, cp *store.Checkpoint) error {
 	res, err := s.runs.UpdateOne(
 		ctx,
-		bson.M{"_id": id},
+		withTenantFilter(ctx, bson.M{"_id": id}),
 		bson.M{
 			"$set": bson.M{
 				"checkpoint": cp,
@@ -163,7 +165,7 @@ func (s *Store) SaveCheckpoint(ctx context.Context, id string, cp *store.Checkpo
 // and stamps updated_at. Single-document update is naturally atomic.
 func (s *Store) PauseRun(ctx context.Context, id string, cp *store.Checkpoint) error {
 	now := time.Now().UTC()
-	res, err := s.runs.UpdateOne(ctx, bson.M{"_id": id}, bson.M{
+	res, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": id}), bson.M{
 		"$set": bson.M{
 			"status":     store.RunStatusPausedWaitingHuman,
 			"checkpoint": cp,
@@ -186,7 +188,7 @@ func (s *Store) PauseRun(ctx context.Context, id string, cp *store.Checkpoint) e
 // re-pick up at NodeID without replaying upstream work.
 func (s *Store) FailRunResumable(ctx context.Context, id string, cp *store.Checkpoint, runErr string) error {
 	now := time.Now().UTC()
-	res, err := s.runs.UpdateOne(ctx, bson.M{"_id": id}, bson.M{
+	res, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": id}), bson.M{
 		"$set": bson.M{
 			"status":      store.RunStatusFailedResumable,
 			"checkpoint":  cp,

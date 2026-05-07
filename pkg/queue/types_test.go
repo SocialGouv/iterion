@@ -156,8 +156,9 @@ func TestRunMessage_ValidateNilReceiver(t *testing.T) {
 
 func TestSchemaVersionConstant(t *testing.T) {
 	// Pinning the constant is a deliberate guard: bumping it should be a
-	// conscious commit, not an accident.
-	if SchemaVersion != 1 {
-		t.Errorf("SchemaVersion = %d, want 1 (bump intentionally)", SchemaVersion)
+	// conscious commit, not an accident. v=2 (2026-05-07) added the
+	// TenantID + OwnerID fields for multitenant isolation.
+	if SchemaVersion != 2 {
+		t.Errorf("SchemaVersion = %d, want 2 (bump intentionally)", SchemaVersion)
 	}
 }

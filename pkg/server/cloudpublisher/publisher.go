@@ -82,12 +82,18 @@ func New(cfg Config) (*Publisher, error) {
 // SubmitLaunch persists the run as queued in Mongo, then publishes
 // the RunMessage to JetStream. The runner pool drains the queue and
 // transitions queued → running on pickup.
+//
+// Tenant and owner identifiers are pulled from ctx (stamped by the
+// server's auth middleware) and propagate to both the persisted Run
+// document and the NATS message so the runner can verify isolation.
 func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview.LaunchSpec, wf *ir.Workflow, hash string) (int, error) {
 	// 1. Persist the run with status=queued + workflow_hash + file_path
 	//    so List endpoints see it instantly and Resume can reload the
 	//    workflow. Single SaveRun (upsert) avoids the CreateRun → LoadRun
 	//    → SaveRun round-trip the previous shape required.
 	now := time.Now().UTC()
+	tenantID, _ := store.TenantFromContext(ctx)
+	ownerID, _ := store.OwnerFromContext(ctx)
 	r := &store.Run{
 		FormatVersion: store.RunFormatVersion,
 		ID:            runID,
@@ -99,6 +105,8 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		CreatedAt:     now,
 		UpdatedAt:     now,
 		QueuedAt:      &now,
+		TenantID:      tenantID,
+		OwnerID:       ownerID,
 	}
 	if err := p.store.SaveRun(ctx, r); err != nil {
 		return 0, fmt.Errorf("cloudpublisher: save run: %w", err)
@@ -121,6 +129,8 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		Vars:           varsAsAny(spec.Vars),
 		BackendConfig:  queue.BackendConfig{Default: queue.BackendClaw},
 		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),
+		TenantID:       tenantID,
+		OwnerID:        ownerID,
 	}
 	if _, err := p.nats.PublishRun(ctx, msg); err != nil {
 		// Best-effort: roll the run doc back to failed so the editor
@@ -208,6 +218,12 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		},
 		BackendConfig:  queue.BackendConfig{Default: queue.BackendClaw},
 		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),
+		// Carry the prior run's tenant onto the resume publication so
+		// the runner re-acquires the lease in the right scope. We trust
+		// the loaded prior doc rather than ctx: a super-admin resuming
+		// from another team's UI must still target that team's tenant.
+		TenantID: prior.TenantID,
+		OwnerID:  prior.OwnerID,
 	}
 	if _, err := p.nats.PublishRun(ctx, msg); err != nil {
 		// Revert to the prior resumable status — typically

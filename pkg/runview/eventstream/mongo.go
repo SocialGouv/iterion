@@ -99,12 +99,16 @@ func (m *MongoSource) Subscribe(ctx context.Context, runID string, fromSeq int64
 // out. Returns the highest seq observed (so the change-stream phase
 // can filter strictly above it).
 func (m *MongoSource) replay(ctx context.Context, runID string, fromSeq int64, out chan<- *store.Event) (int64, error) {
+	filter := bson.M{
+		"run_id": runID,
+		"seq":    bson.M{"$gte": fromSeq},
+	}
+	if tenantID, ok := store.TenantFromContext(ctx); ok {
+		filter["tenant_id"] = tenantID
+	}
 	cur, err := m.events.Find(
 		ctx,
-		bson.M{
-			"run_id": runID,
-			"seq":    bson.M{"$gte": fromSeq},
-		},
+		filter,
 		options.Find().SetSort(bson.D{{Key: "seq", Value: 1}}),
 	)
 	if err != nil {
@@ -185,12 +189,20 @@ func (m *MongoSource) tail(ctx context.Context, runID string, fromSeq int64, sub
 // non-nil error means the stream failed and the caller should
 // backoff + reconnect.
 func (m *MongoSource) runChangeStream(ctx context.Context, runID string, fromSeq int64, sub *mongoSubscription) (int64, error) {
+	matchExpr := bson.M{
+		"operationType":       "insert",
+		"fullDocument.run_id": runID,
+		"fullDocument.seq":    bson.M{"$gt": fromSeq},
+	}
+	// Scope the stream to the caller's tenant when ctx carries one
+	// (server WS handlers stamp tenant via auth middleware). When
+	// the caller is privileged (cluster-admin diagnostics, runner
+	// trace viewer), pass through unscoped.
+	if tenantID, ok := store.TenantFromContext(ctx); ok {
+		matchExpr["fullDocument.tenant_id"] = tenantID
+	}
 	pipeline := mongo.Pipeline{
-		bson.D{{Key: "$match", Value: bson.M{
-			"operationType":       "insert",
-			"fullDocument.run_id": runID,
-			"fullDocument.seq":    bson.M{"$gt": fromSeq},
-		}}},
+		bson.D{{Key: "$match", Value: matchExpr}},
 	}
 	stream, err := m.events.Watch(ctx, pipeline, options.ChangeStream().SetFullDocument(options.UpdateLookup))
 	if err != nil {
