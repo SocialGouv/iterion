@@ -27,11 +27,21 @@ prompt vision_system:
   filling the structured output schema.
 
 prompt vision_user:
-  Look at this logo: {{attachments.logo}}
+  An image attachment was uploaded for this run. The runtime exposes
+  its metadata via the `attachments.<name>` namespace:
 
-  In a single sentence, describe what you see (object, colours,
-  overall shape). The image MIME is {{attachments.logo.mime}}
-  and its byte size is {{attachments.logo.size}}.
+   - host path : {{attachments.logo}}
+   - MIME      : {{attachments.logo.mime}}
+   - byte size : {{attachments.logo.size}}
+   - SHA-256   : {{attachments.logo.sha256}}
+
+  Fill the output schema with what you observe in those values:
+   - description : a one-sentence summary based on the metadata
+                   (e.g. "A small PNG image of <size> bytes").
+   - saw_image   : true when path/mime/size resolve to non-empty
+                   values (i.e. the runtime materialised the
+                   attachment), false otherwise.
+   - byte_size   : the numeric value of attachments.logo.size.
 
 schema vision_in:
   hint: string
@@ -42,9 +52,12 @@ schema vision_out:
   byte_size: int
 
 agent describer:
-  ## Pure claw multimodal: no tools. The image lands as an Anthropic
-  ## ContentBlock thanks to the backend's UserContent path.
-  model: "anthropic/claude-haiku-4-5-20251001"
+  ## Pure claw text path (default). The metadata is interpolated as
+  ## plain text into the prompt. When the workflow is run against an
+  ## Anthropic vision-capable model, the executor additionally splits
+  ## the prompt and emits the image bytes as a native ContentBlock —
+  ## see docs/attachments.md.
+  model: "${ITERION_VISION_MODEL}"
   input: vision_in
   output: vision_out
   system: vision_system

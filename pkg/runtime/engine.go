@@ -361,11 +361,16 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 	// (when set by the launch path) writes the bytes via the store
 	// and reflects metadata into Run.Attachments. A failure here
 	// transitions the run to failed since downstream nodes would
-	// see undeclared {{attachments.X}} refs.
+	// see undeclared {{attachments.X}} refs. Reload the in-memory
+	// `run` after promote so the next SaveRun below doesn't clobber
+	// the freshly-persisted Run.Attachments.
 	if e.attachmentPromote != nil {
 		if err := e.attachmentPromote(ctx, runID); err != nil {
 			_ = e.store.UpdateRunStatus(ctx, runID, store.RunStatusFailed, fmt.Sprintf("attachment promote: %v", err))
 			return fmt.Errorf("runtime: promote attachments: %w", err)
+		}
+		if reloaded, err := e.store.LoadRun(ctx, runID); err == nil {
+			run = reloaded
 		}
 	}
 

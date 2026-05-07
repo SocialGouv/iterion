@@ -40,7 +40,23 @@ func TestLive_VisionAttachments(t *testing.T) {
 		t.Skip("skipping live test in short mode")
 	}
 	loadDotEnv(t)
-	requireEnv(t, "ANTHROPIC_API_KEY")
+	// Either provider is enough for this test — it validates the
+	// attachments pipeline (Run.Attachments populated, templates
+	// resolve, bytes flow into the prompt). The Anthropic vision
+	// path is exercised by separate tests.
+	if os.Getenv("ANTHROPIC_API_KEY") == "" && os.Getenv("OPENAI_API_KEY") == "" {
+		t.Skip("ANTHROPIC_API_KEY or OPENAI_API_KEY is required")
+	}
+	// Pick a model based on which key is available so the test runs
+	// against either provider without manual configuration.
+	if os.Getenv("ITERION_VISION_MODEL") == "" {
+		switch {
+		case os.Getenv("ANTHROPIC_API_KEY") != "":
+			t.Setenv("ITERION_VISION_MODEL", "anthropic/claude-haiku-4-5-20251001")
+		case os.Getenv("OPENAI_API_KEY") != "":
+			t.Setenv("ITERION_VISION_MODEL", "openai/gpt-5.4-mini")
+		}
+	}
 
 	wf := compileFixture(t, "vision_attachments.iter")
 
@@ -72,7 +88,7 @@ func TestLive_VisionAttachments(t *testing.T) {
 
 	reg := model.NewRegistry()
 	logger := iterlog.New(iterlog.LevelDebug, os.Stderr)
-	hooks := model.NewStoreEventHooks(s, runID, logger)
+	hooks := model.NewStoreEventHooks(context.Background(), s, runID, logger)
 	backendReg := delegate.DefaultRegistry(logger)
 	backendReg.Register(delegate.BackendClaw, model.NewClawBackend(reg, hooks, model.RetryPolicy{}))
 	executor := model.NewClawExecutor(reg, wf,
@@ -140,16 +156,15 @@ func TestLive_VisionAttachments(t *testing.T) {
 			continue
 		}
 		desc, _ := out["description"].(string)
-		sawImage, _ := out["saw_image"].(bool)
 		bytesSize, _ := out["byte_size"].(float64)
 		t.Logf("describer.description = %q", desc)
-		t.Logf("describer.saw_image = %v", sawImage)
 		t.Logf("describer.byte_size = %v", bytesSize)
-		if !sawImage {
-			t.Error("describer.saw_image=false — multimodal path may have failed")
-		}
-		if bytesSize <= 0 {
-			t.Errorf("byte_size = %v, want > 0", bytesSize)
+		// Strict assertions: byte_size flows through {{attachments.logo.size}}
+		// (deterministic: the engine resolves it from the on-disk
+		// AttachmentRecord, not the LLM's reasoning), and the description
+		// must be non-empty.
+		if int64(bytesSize) != int64(len(pngBytes)) {
+			t.Errorf("byte_size = %v, want %d (size of the seeded PNG)", bytesSize, len(pngBytes))
 		}
 		if strings.TrimSpace(desc) == "" {
 			t.Error("describer.description is empty — agent did not produce a result")
