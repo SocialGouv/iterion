@@ -11,35 +11,17 @@ Define complex, multi-agent LLM workflows as readable `.iter` files — chain ag
 ## Table of Contents
 
 - [What is Iterion?](#what-is-iterion)
-- [Six ways to use Iterion](#six-ways-to-use-iterion)
-- [Quickstart](#quickstart)
-- [A Taste of the DSL](#a-taste-of-the-dsl)
 - [Features](#features)
-- [Visual Editor (web)](#visual-editor-web)
-- [Desktop App](#desktop-app)
-- [Cloud Mode](#cloud-mode)
-- [The `.iter` DSL](#the-iter-dsl)
-  - [Variables](#variables)
-  - [Prompts](#prompts)
-  - [Schemas](#schemas)
-  - [Node Types](#node-types)
-  - [Workflows, Edges & Control Flow](#workflows-edges--control-flow)
-  - [Template Expressions](#template-expressions)
-  - [MCP Servers](#mcp-servers)
-  - [Budget](#budget)
-  - [Worktree & Sandbox](#worktree--sandbox)
-- [CLI Reference](#cli-reference)
-- [Delegation](#delegation)
-- [AI Agent Skill](#ai-agent-skill)
-- [Recipes](#recipes)
-- [Examples](#examples)
-- [Architecture](#architecture)
-- [Development](#development)
+- [Quick Start](#quick-start)
+- [A Taste of the DSL](#a-taste-of-the-dsl)
+- [Documentation](#documentation)
 - [License](#license)
 
 ---
 
 ## 🧩 What is Iterion?
+
+*If you've ever noticed yourself repeating the same prompt-and-review patterns while vibe-coding with an LLM — "ask the model, eyeball the diff, ask it to fix what it missed, run the tests, ask again" — and wondered how to **automate and optimize** that loop, Iterion is built for you.* Capture the pattern once as an `.iter` workflow, give it budget caps, parallel reviewers, judges and human gates, and let the engine run it deterministically every time.
 
 Iterion is a workflow engine that turns `.iter` files into executable AI pipelines. You describe *what* your agents should do — review code, plan fixes, check compliance, ask a human — and Iterion handles *how*: scheduling branches in parallel, enforcing budgets, persisting state, and routing between nodes.
 
@@ -61,79 +43,63 @@ Think of it as a DAG runner purpose-built for LLM workflows — with first-class
 
 ---
 
-## 🎛️ Six ways to use Iterion
+## 📋 Features
 
-Same engine, six delivery modes — pick the one that fits your workflow:
+### Authoring & orchestration
 
-| Mode | Best for | How to start |
-|---|---|---|
-| 🖥️ **CLI** | Scripted runs, CI/CD pipelines, quick iteration | `iterion run workflow.iter` |
-| 🌐 **Web editor** | Visual workflow design on your dev machine | `iterion editor` (opens browser) |
-| 🪟 **Desktop app** | Native window with multi-project, OS keychain, auto-update | Download `iterion-desktop` from Releases |
-| 🐳 **Docker** | Zero-install runs, reproducible CI, isolated environments | `docker run --rm ghcr.io/socialgouv/iterion:latest` |
-| ☁️ **Cloud / server** | Multi-tenant deployment, shared run store, REST/WS API | `helm install iterion oci://ghcr.io/socialgouv/charts/iterion` |
-| 📦 **TypeScript SDK** | Programmatic invocation from Node/Deno/Bun apps | `npm install @iterion/sdk` ([docs](sdks/typescript/)) |
+- 📝 **Declarative DSL** — Human-readable `.iter` files with indentation-based syntax
+- 🤖 **Multi-agent orchestration** — Chain agents, judges, routers, and joins into complex graphs
+- 🖥️ **Visual editor** — Browser-based workflow builder with drag-and-drop, live validation, and source view
+- 🙋 **Human-in-the-loop** — Pause for human input, auto-answer via LLM, or let the LLM decide when to ask
+- 🔀 **Parallel branching** — Fan-out via routers, converge with join nodes (`wait_all` / `best_effort`)
+- 🧭 **4 routing modes** — `fan_out_all`, `condition`, `round_robin`, and `llm`-driven routing
+- 🔁 **Bounded loops** — Retry and refinement cycles with configurable iteration limits
+- 🔲 **Structured I/O** — Typed schemas for inputs and outputs with enum constraints
+- 🔗 **MCP support** — Declare MCP servers directly in `.iter` files (`stdio`, `http`)
+- 🧪 **Recipe system** — Bundle workflows with presets for comparison and benchmarking
+- 📐 **Mermaid diagrams** — Auto-generate visual workflow diagrams (compact / detailed / full)
 
-All six invoke the same Go core. The DSL, runtime, persistence and observability are identical — they only differ in how you reach them. Pick CLI for automation, the visual editor for daily editing, the desktop app if you want a one-click install with managed credentials, Docker when you want to run iterion without installing it on the host, cloud mode when teams need a shared always-on instance, or the SDK to embed iterion inside another Node/Deno/Bun application.
+### Execution & runtime
 
-The published image (`ghcr.io/socialgouv/iterion:latest`) bundles the `iterion` binary, `git`, Node 22 and the pinned `claude` / `codex` CLIs. Override the default `server` command for ad-hoc runs:
+- 🔌 **Delegation** — Offload execution to external agents (Claude Code, Codex) with full tool access — works with Claude and ChatGPT/Codex subscriptions
+- 🌐 **Provider-agnostic** — In-process `claw` backend supports Anthropic and OpenAI (validated), plus Bedrock, Vertex, Foundry (via the vendored `claw-code-go` SDK)
+- 💰 **Budget enforcement** — Shared, mutex-protected caps on tokens, cost (USD), duration, parallel branches, and loop iterations
+- 🛡️ **Tool policies** — Allowlist-based access control with exact, namespace, and wildcard matching
+- 🌳 **Worktree auto-finalization** — `worktree: auto` runs the workflow in a fresh git worktree, persists commits to a named branch, and fast-forwards the current branch on success — see [docs/resume.md](docs/resume.md)
+- 🛡️ **Per-run sandbox** — `sandbox: auto` isolates each run inside a Docker/Podman container with the worktree bind-mounted at `/workspace` and an HTTP CONNECT proxy enforcing a network allowlist — see [docs/sandbox.md](docs/sandbox.md)
+- 🔐 **Privacy filter** — Built-in Go-native `privacy_filter` / `privacy_unfilter` tools redact and restore PII (emails, phones, IBANs, credit cards, URLs, ~25 secret patterns) — see [docs/privacy_filter.md](docs/privacy_filter.md)
 
-```bash
-# One-off workflow run, mounting your project at /work
-docker run --rm \
-  -v "$PWD:/work" -w /work \
-  -e ANTHROPIC_API_KEY \
-  ghcr.io/socialgouv/iterion:latest \
-  run workflow.iter --var pr_title="..."
+### Persistence & observability
 
-# Editor/server on http://localhost:4891
-docker run --rm -p 4891:4891 -v "$PWD:/work" -w /work \
-  -e ANTHROPIC_API_KEY \
-  ghcr.io/socialgouv/iterion:latest
-```
+- 📦 **Artifact versioning** — Per-node, per-iteration versioned outputs persisted to disk
+- 📊 **Event sourcing** — Append-only JSONL event log for full replay and debugging
+- ⏯️ **Resumable runs** — Checkpoint-based resume from `failed_resumable` / `paused_waiting_human` / `cancelled` states — see [docs/resume.md](docs/resume.md)
+- 📈 **Observability stack** — Prometheus `/metrics`, OTLP traces, and a self-contained docker-compose stack with pre-built Grafana dashboards — see [docs/observability/README.md](docs/observability/README.md)
+
+### Distribution & integration
+
+- ☁️ **Cloud mode** — Multi-tenant Helm deployment with MongoDB + S3-compatible blob store + NATS JetStream queue; KEDA-scaled runner pool; per-run Kubernetes sandbox pods
+- 🧰 **TypeScript SDK** — [`@iterion/sdk`](sdks/typescript/) wraps the CLI with typed `run` / `resume` / `events` streaming for Node, Deno, and Bun apps
+- 🧠 **AI agent skill** — Install as a skill in Claude Code, Codex, Cursor, Windsurf, GitHub Copilot, Cline, Aider, and other AI coding agents
 
 ---
 
-## 🚀 Quickstart
+## 🚀 Quick Start
 
-### Install the CLI
+### Pick your install
 
-```bash
-curl -fsSL https://socialgouv.github.io/iterion/install.sh | sh
-```
+Same engine, six delivery modes — pick the one that fits your workflow:
 
-Or install to a custom directory (no sudo needed):
+| Mode | Best for | Install | Docs |
+|---|---|---|---|
+| 🖥️ **CLI** | Scripted runs, CI/CD pipelines | `curl -fsSL https://socialgouv.github.io/iterion/install.sh \| sh` | [install.md](docs/install.md) |
+| 🌐 **Web editor** | Visual workflow design (browser-based) | Bundled with the CLI: `iterion editor` | [visual-editor.md](docs/visual-editor.md) |
+| 🪟 **Desktop app** | Native window, multi-project, OS keychain, auto-update | Download `iterion-desktop` from [Releases](https://github.com/SocialGouv/iterion/releases/latest) | [desktop.md](docs/desktop.md) |
+| 🐳 **Docker** | Zero-install runs, reproducible CI | `docker run --rm ghcr.io/socialgouv/iterion:latest` | [install.md#docker](docs/install.md#docker) |
+| ☁️ **Cloud / server** | Multi-tenant deployment, shared run store, REST/WS API | `helm install iterion oci://ghcr.io/socialgouv/charts/iterion` | [cloud.md](docs/cloud.md) |
+| 📦 **TypeScript SDK** | Programmatic invocation from Node/Deno/Bun | `npm install @iterion/sdk` | [sdks/typescript/](sdks/typescript/) |
 
-```bash
-INSTALL_DIR=. curl -fsSL https://socialgouv.github.io/iterion/install.sh | sh
-```
-
-<details>
-<summary>Homebrew (macOS, Linux)</summary>
-
-```bash
-brew tap socialgouv/iterion https://github.com/SocialGouv/iterion
-brew install iterion
-# Desktop app (macOS only):
-brew install --cask iterion-desktop
-```
-
-Updates: `brew upgrade iterion` (and/or `brew upgrade --cask iterion-desktop`).
-
-</details>
-
-<details>
-<summary>Windows (PowerShell)</summary>
-
-```powershell
-Invoke-WebRequest -Uri "https://github.com/socialgouv/iterion/releases/latest/download/iterion-windows-amd64.exe" -OutFile iterion.exe
-```
-
-</details>
-
-You can also download binaries from the [latest release](https://github.com/socialgouv/iterion/releases/latest). Builds are available for Linux, macOS (Intel + Apple Silicon), and Windows.
-
-> **Want a native window instead of a CLI + browser?** Skip to [Desktop App](#desktop-app) — it ships an installable `.AppImage` / `.app` / `.exe` with the editor pre-wired, OS-keychain credentials and auto-update.
+All six invoke the same Go core. The DSL, runtime, persistence and observability are identical — they only differ in how you reach them.
 
 ### Your first workflow
 
@@ -161,14 +127,9 @@ iterion run pr_refine_single_model.iter \
 ### Inspect results
 
 ```bash
-# List all runs
-iterion inspect
-
-# View a specific run with events
-iterion inspect --run-id <id> --events
-
-# Generate a detailed report
-iterion report --run-id <id>
+iterion inspect                          # List all runs
+iterion inspect --run-id <id> --events   # View a specific run with events
+iterion report --run-id <id>             # Generate a detailed report
 ```
 
 All run data (events, artifacts, interactions) is stored in `.iterion/runs/`.
@@ -210,945 +171,48 @@ workflow minimal:
 
 That's it — 28 lines. The agent gets a code input, produces a structured `{approved, summary}` output, and the workflow routes to `done` or `fail` based on the verdict.
 
-From here you can add judges for multi-pass review, routers for parallel fan-out, human gates for approval, bounded loops for retry, budget caps for cost control, and more.
+From here you can add judges for multi-pass review, routers for parallel fan-out, human gates for approval, bounded loops for retry, budget caps for cost control, and more — see [docs/dsl.md](docs/dsl.md) for the full reference.
 
 ---
 
-## 📋 Features
-
-### Authoring & orchestration
-
-- 📝 **Declarative DSL** — Human-readable `.iter` files with indentation-based syntax
-- 🤖 **Multi-agent orchestration** — Chain agents, judges, routers, and joins into complex graphs
-- 🖥️ **Visual editor** — Browser-based workflow builder with drag-and-drop, live validation, and source view
-- 🙋 **Human-in-the-loop** — Pause for human input, auto-answer via LLM, or let the LLM decide when to ask
-- 🔀 **Parallel branching** — Fan-out via routers, converge with join nodes (`wait_all` / `best_effort`)
-- 🧭 **4 routing modes** — `fan_out_all`, `condition`, `round_robin`, and `llm`-driven routing
-- 🔁 **Bounded loops** — Retry and refinement cycles with configurable iteration limits
-- 🔲 **Structured I/O** — Typed schemas for inputs and outputs with enum constraints
-- 🔗 **MCP support** — Declare MCP servers directly in `.iter` files (`stdio`, `http`)
-- 🧪 **Recipe system** — Bundle workflows with presets for comparison and benchmarking
-- 📐 **Mermaid diagrams** — Auto-generate visual workflow diagrams (compact / detailed / full)
-
-### Execution & runtime
-
-- 🔌 **Delegation** — Offload execution to external agents (Claude Code, Codex) with full tool access — works with Claude and ChatGPT/Codex subscriptions
-- 🌐 **Provider-agnostic** — In-process `claw` backend supports Anthropic and OpenAI (validated), plus Bedrock, Vertex, Foundry (via the vendored `claw-code-go` SDK)
-- 💰 **Budget enforcement** — Shared, mutex-protected caps on tokens, cost (USD), duration, parallel branches, and loop iterations
-- 🛡️ **Tool policies** — Allowlist-based access control with exact, namespace, and wildcard matching
-- 🌳 **Worktree auto-finalization** — `worktree: auto` runs the workflow in a fresh git worktree, persists commits to a named branch (`iterion/run/<friendly-name>`), and fast-forwards the current branch on success — see [docs/resume.md](docs/resume.md) and the run flags `--merge-into` / `--branch-name` / `--merge-strategy`
-- 🛡️ **Per-run sandbox** — `sandbox: auto` isolates each run inside a Docker/Podman container with the worktree bind-mounted at `/workspace` and an HTTP CONNECT proxy enforcing a network allowlist (LLM endpoints + npm/pypi/golang + git forges by default) — see [docs/sandbox.md](docs/sandbox.md)
-- 🔐 **Privacy filter** — Built-in Go-native `privacy_filter` / `privacy_unfilter` tools redact and restore PII (emails, phones, IBANs via mod-97, credit cards via Luhn, URLs, and ~25 secret patterns with Shannon-entropy filtering) — see [docs/privacy_filter.md](docs/privacy_filter.md)
-
-### Persistence & observability
-
-- 📦 **Artifact versioning** — Per-node, per-iteration versioned outputs persisted to disk
-- 📊 **Event sourcing** — Append-only JSONL event log for full replay and debugging
-- ⏯️ **Resumable runs** — Checkpoint-based resume from `failed_resumable` / `paused_waiting_human` / `cancelled` states, with `--force` for source drift — see [docs/resume.md](docs/resume.md)
-- 📈 **Observability stack** — Prometheus `/metrics` endpoint (cost / tokens / retries / latency p50/p95/p99 / parallel branches), OTLP traces, and a self-contained docker-compose stack with pre-built Grafana dashboards — see [docs/observability/README.md](docs/observability/README.md)
-
-### Distribution & integration
-
-- ☁️ **Cloud mode** — Multi-tenant Helm deployment with MongoDB + S3-compatible blob store + NATS JetStream queue; KEDA-scaled runner pool; per-run Kubernetes sandbox pods
-- 🧰 **TypeScript SDK** — [`@iterion/sdk`](sdks/typescript/) wraps the CLI with typed `run` / `resume` / `events` streaming for Node, Deno, and Bun apps
-- 🧠 **AI agent skill** — Install as a skill in Claude Code, Codex, Cursor, Windsurf, GitHub Copilot, Cline, Aider, and other AI coding agents
-
----
-
-## 🌐 Visual Editor (web)
-
-Iterion includes a browser-based visual workflow editor built with React and XYFlow. Served by your local `iterion` binary — no installation beyond the CLI.
-
-```bash
-iterion editor                     # Launch on default port (4891), opens browser
-iterion editor --port 8080         # Custom port
-iterion editor --dir ./workflows   # Custom working directory
-iterion editor --no-browser        # Don't auto-open browser
-```
-
-**What you get:**
-
-- **Canvas** — Drag-and-drop node graph with auto-layout, zoom, search, and keyboard shortcuts
-- **Node library** — Drag pre-built node types (agent, judge, router, join, human, tool) onto the canvas
-- **Property editor** — Edit node properties, schemas, prompts, and edge conditions in a side panel
-- **Source view** — Split-pane view showing the raw `.iter` source alongside the visual graph
-- **Live diagnostics** — Real-time validation errors and warnings as you edit (codes C001–C043)
-- **File watching** — Detects external file changes via WebSocket and syncs automatically
-- **Undo/redo** — Full edit history
-- **Run console** — Launch a workflow from the editor and watch events stream live
-
-This mode is the simplest way to design and iterate locally. If you want a packaged native window instead (no browser, OS-keychain credentials, auto-update), see the [Desktop App](#desktop-app).
-
----
-
-## 🪟 Desktop App
-
-A native desktop build (Wails v2) wraps the visual editor in its own window with multi-project switching, OS-keychain credential storage, first-run onboarding, and Ed25519-signed auto-update. Two binaries ship side-by-side: `iterion` (CLI) and `iterion-desktop` (this app).
-
-### Install
-
-Pick the artefact that matches your OS from [the latest GitHub Release](https://github.com/SocialGouv/iterion/releases/latest) (filenames start with `iterion-desktop-`). Each tag publishes:
-
-| Platform | File | Size | Notes |
-|---|---|---|---|
-| Linux x86_64 | `iterion-desktop-linux-amd64.AppImage` | ~110 MB | Self-contained, click-to-run |
-| Linux x86_64 | `iterion-desktop-linux-amd64.deb` | ~16 MB | Debian/Ubuntu/Mint package — `apt`-managed install + uninstall, declares deps |
-| Linux x86_64 | `iterion-desktop-linux-amd64.tar.gz` | ~16 MB | Raw binary + README; needs `libwebkit2gtk-4.1-0` + `libgtk-3-0` + `libsoup-3.0-0` |
-| Linux arm64 | `iterion-desktop-linux-arm64.{AppImage,deb,tar.gz}` | same | same |
-| macOS Intel + Apple Silicon | `iterion-desktop-darwin-universal.zip` | ~80 MB | Universal `.app` (lipo'd, runs natively on both archs) |
-| Windows x64 | `iterion-desktop-windows-amd64.exe` | ~50 MB | Portable single executable |
-| Windows x64 | `iterion-desktop-windows-amd64-installer.exe` | ~50 MB | NSIS installer (per-user, Start Menu integration) |
-| Windows arm64 | `iterion-desktop-windows-arm64.{exe,-installer.exe}` | same | same |
-
-#### Linux
-
-**AppImage** (no system deps):
-```bash
-chmod +x iterion-desktop-linux-amd64.AppImage
-./iterion-desktop-linux-amd64.AppImage
-```
-
-**Debian/Ubuntu/Mint** (.deb — apt manages deps + uninstall):
-```bash
-sudo apt install ./iterion-desktop-linux-amd64.deb
-iterion-desktop
-```
-
-**Raw binary** (smaller, requires WebKit + GTK runtime):
-```bash
-# Debian/Ubuntu/Mint/Pop!_OS:
-sudo apt install libgtk-3-0 libwebkit2gtk-4.1-0 libsoup-3.0-0
-# Fedora/RHEL:
-sudo dnf install gtk3 webkit2gtk4.1 libsoup3
-
-tar -xzf iterion-desktop-linux-amd64.tar.gz
-chmod +x iterion-desktop
-./iterion-desktop
-```
-
-#### macOS
-
-The simplest path is Homebrew:
-```bash
-brew tap socialgouv/iterion https://github.com/SocialGouv/iterion
-brew install --cask iterion-desktop
-open -a Iterion
-```
-
-Or install manually from the release ZIP:
-```bash
-unzip iterion-desktop-darwin-universal.zip
-xattr -d com.apple.quarantine Iterion.app   # one-off Gatekeeper unblock (V1 builds are unsigned)
-open Iterion.app
-```
-
-You can also drag `Iterion.app` to `/Applications/` for a permanent install.
-
-#### Windows
-
-- **Portable** : double-click `iterion-desktop-windows-amd64.exe`. SmartScreen will warn ("Unknown publisher" — V1 is unsigned) → "More info" → "Run anyway".
-- **Installer** : run `iterion-desktop-windows-amd64-installer.exe` for a per-user install with Start Menu shortcut.
-
-### First launch
-
-The desktop app boots into a Welcome wizard that asks you to:
-1. Pick or create a project folder (a directory containing `.iter` files).
-2. Configure API keys (stored in the OS keychain — Keychain on macOS, Credential Manager on Windows, Secret Service on Linux). Skippable; you can also rely on environment variables in your shell.
-3. Verify external CLIs (`claude`, `codex`) detection — only needed if you use `delegate:` in your workflows.
-
-After onboarding the editor opens on your project. Multi-project switcher is in the top-left.
-
-### Auto-update
-
-The desktop app polls GitHub for new releases every 4 hours (configurable in Settings → Updater) and offers in-app update on detection. Manifests and artefacts are Ed25519-signed.
-
-### Build locally
-
-For contributors / power users :
-
-- [docs/desktop-build.md](docs/desktop-build.md) — local build flow + Docker reproducible builder + per-OS deps + cross-compile matrix
-- [docs/desktop-architecture.md](docs/desktop-architecture.md) — proxy-based AssetServer architecture
-- [docs/desktop-distribution.md](docs/desktop-distribution.md) — release signing + Ed25519 keypair setup
-- [docs/desktop-qa.md](docs/desktop-qa.md) — QA checklist for releases
-
----
-
-## ☁️ Cloud Mode
-
-A long-running server deployment that targets multi-tenant teams. Same Go core as the CLI, but exposes the editor + run engine through HTTP/WS to a shared instance, persists runs to a Mongo + S3-compatible blob store, and dispatches jobs to a runner pool via NATS JetStream.
-
-### Architecture at a glance
-
-| Component | Implementation | Role |
-|---|---|---|
-| **Server** | `iterion server` (`pkg/server/`) | HTTP/WS API + embedded editor SPA + dispatch of runs to the queue |
-| **Runner pod** | `iterion runner` (`pkg/runner/`) | Consumes the NATS queue, executes workflows, can launch a per-run sandbox pod via Kubernetes |
-| **Queue** | NATS JetStream (`pkg/queue/`) | At-least-once delivery, distributed lease coordination |
-| **Run store** | MongoDB + S3-compatible blob (`pkg/store/`) | Replaces the local `.iterion/` filesystem store |
-| **Config** | `pkg/config/` | Reads env vars + YAML for Mongo/NATS/S3/Sandbox/Runner sections |
-| **Metrics** | `pkg/cloud/metrics/` | Prometheus registry exposed on `/metrics` |
-
-```yaml
-# values.yaml — minimal example (see charts/iterion/values.yaml for the full schema)
-mongo:
-  uri: "mongodb://mongo:27017/iterion"
-blob:
-  endpoint: "https://s3.example.com"
-  bucket: "iterion-runs"
-queue:
-  nats: "nats://nats:4222"
-```
-
-### Deploy
-
-- **Helm (OCI registry)**:
-
-  ```bash
-  helm upgrade --install iterion \
-    oci://ghcr.io/socialgouv/charts/iterion \
-    --version <semver> \
-    -f values.yaml
-  ```
-
-  The chart is published to GHCR on every release (job `publish-chart` in `.github/workflows/release.yml`); pick a `--version` from the [iterion releases](https://github.com/SocialGouv/iterion/releases). It bundles server + runner Deployments, KEDA-based runner autoscaling on queue depth, and optional sandbox RBAC for per-run pods. To install from a local checkout instead (chart hacking, unreleased fixes), use `helm upgrade --install iterion ./charts/iterion -f values.yaml`.
-- **Local stack** for testing cloud mode end-to-end: `docker compose -f docker-compose.cloud.yml up` brings up Mongo + NATS + MinIO + iterion server + runner — see [docker/](docker/) for init scripts
-- **Container image**: `ghcr.io/socialgouv/iterion:latest` (built by `.github/workflows/image.yml` on every main push and tag; scanned by `.github/workflows/trivy.yml` post-build and weekly — non-blocking, findings land in the repo Security tab)
-- **Health probes**: `GET /healthz` (liveness, always 200) and `GET /readyz` (200 when Mongo/NATS/S3 are reachable in cloud mode)
-- **Auth**: `ITERION_SESSION_TOKEN` and `ITERION_AUTH_TOKEN` env vars gate the API; health endpoints are auth-exempt
-
----
-
-## 📝 The `.iter` DSL
-
-Workflows are written in a declarative, indentation-significant language. The formal grammar is in [`docs/grammar/iterion_v1.ebnf`](docs/grammar/iterion_v1.ebnf).
-
-### Variables
-
-Define typed variables at the top level. These can be set at runtime with `--var key=value`:
-
-```iter
-vars:
-  pr_title: string
-  max_retries: int = 3
-  verbose: bool = false
-  config: json = { "key": "value" }
-  tags: string[] = ["security", "performance"]
-```
-
-Supported types: `string`, `bool`, `int`, `float`, `json`, `string[]`.
-
-### Prompts
-
-Reusable prompt templates with `{{...}}` interpolation:
-
-```iter
-prompt review_system:
-  You are a code reviewer specializing in {{vars.language}}.
-  Focus on: {{vars.review_rules}}
-
-prompt review_user:
-  Review this code:
-  {{input.code}}
-  Previous feedback: {{outputs.prior_review.summary}}
-```
-
-### Schemas
-
-Typed data contracts for structured agent I/O:
-
-```iter
-schema review_result:
-  approved: bool
-  summary: string
-  issues: string[]
-  confidence: string [enum: "low", "medium", "high"]
-  score: float
-  metadata: json
-```
-
-Supported field types: `string`, `bool`, `int`, `float`, `json`, `string[]`. Strings support `[enum: ...]` constraints.
-
-### Node Types
-
-#### Agent
-
-The primary execution unit. Calls an LLM with prompts, optionally uses tools, and returns structured output:
-
-```iter
-agent reviewer:
-  model: "claude-sonnet-4-20250514"
-  input: review_request
-  output: review_result
-  system: review_system
-  user: review_user
-  session: fresh
-  tools: [git_diff, read_file, search_codebase]
-  tool_max_steps: 10
-  publish: review_artifact
-  reasoning_effort: high
-  readonly: true
-```
-
-| Property | Description |
-|----------|-------------|
-| `model` | LLM model identifier (supports `${ENV_VAR}`) |
-| `delegate` | Offload to external agent: `claude_code` (recommended) or `codex` (discouraged, see [Delegation](#delegation)) |
-| `input` / `output` | Schema references for structured I/O |
-| `publish` | Persist output as a named artifact |
-| `system` / `user` | Prompt references |
-| `session` | Context mode: `fresh` (default), `inherit`, `fork`, or `artifacts_only` |
-| `tools` | List of allowed tool names |
-| `tool_max_steps` | Max tool-use iterations (0 = unlimited) |
-| `reasoning_effort` | Extended thinking: `low`, `medium`, `high`, `xhigh`, `max` |
-| `readonly` | If `true`, prevents tool side effects (workspace safety) |
-
-#### Judge
-
-Structurally identical to agents, but semantically intended for evaluation — typically no tools:
-
-```iter
-judge compliance_check:
-  model: "claude-sonnet-4-20250514"
-  input: plan_schema
-  output: verdict_schema
-  system: compliance_system
-  user: compliance_user
-```
-
-#### Router
-
-Branches execution into parallel or conditional paths. Four modes are available:
-
-```iter
-router dispatch:
-  mode: fan_out_all      # Send to ALL outgoing edges in parallel
-
-router branch:
-  mode: condition        # Route based on `when` clauses on edges
-
-router alternate:
-  mode: round_robin      # Cycle through targets one per iteration
-
-router smart:
-  mode: llm              # LLM decides which target(s) to route to
-  model: "claude-sonnet-4-20250514"
-  system: routing_prompt
-  multi: true            # Allow selecting multiple targets
-```
-
-> For a deep dive on routing modes, edge rules, and convergence patterns, see [`docs/routers.md`](docs/routers.md).
-
-#### Join
-
-Converges parallel branches back into a single path:
-
-```iter
-join merge:
-  strategy: wait_all     # Wait for all branches (or: best_effort)
-  require: [branch_a, branch_b]
-  output: merged_result
-```
-
-- `wait_all` — waits for every incoming branch
-- `best_effort` — proceeds when required branches finish, tolerates failures on others
-
-#### Human
-
-Pauses the workflow for human input, or lets an LLM handle it:
-
-```iter
-## Always pause for human answers
-human approval:
-  input: approval_request
-  output: approval_response
-  instructions: approval_prompt
-  mode: pause_until_answers
-  min_answers: 1
-
-## LLM auto-answers (never pauses)
-human auto_review:
-  mode: auto_answer
-  model: "claude-sonnet-4-20250514"
-  system: auto_review_prompt
-  output: review_decision
-
-## LLM decides whether to pause or auto-answer
-human conditional:
-  mode: auto_or_pause
-  model: "claude-sonnet-4-20250514"
-  system: decision_guidance
-  instructions: review_questions
-  output: review_decision
-```
-
-Resume a paused run with `iterion resume --run-id <id> --file <file> --answer key=value`.
-
-#### Tool
-
-Direct shell command execution — no LLM involved:
-
-```iter
-tool run_tests:
-  command: "make test"
-  output: test_result
-```
-
-Supports `${ENV_VAR}` in the command string.
-
-#### Terminal Nodes
-
-Every workflow must end at `done` (success) or `fail` (failure). These are built-in — you don't declare them.
-
-### Workflows, Edges & Control Flow
-
-A workflow ties nodes together with an entry point, optional budget, and edges:
-
-```iter
-workflow pr_review:
-  entry: context_builder
-
-  budget:
-    max_duration: "30m"
-    max_cost_usd: 10
-    max_tokens: 400000
-
-  context_builder -> reviewer
-  reviewer -> done when approved
-  reviewer -> context_builder when not approved as retry(3)
-```
-
-**Edge syntax:**
-
-```iter
-src -> dst                              # Unconditional
-src -> dst when approved                # Conditional (bool field from src output)
-src -> dst when not approved            # Negated condition
-src -> dst as loop_name(5)              # Bounded loop (max 5 iterations)
-src -> dst with {                       # Data mapping
-  context: "{{outputs.src}}",
-  config: "{{vars.my_var}}"
-}
-```
-
-**Edge rules:**
-
-- Non-router nodes can have at most one unconditional edge
-- Conditional edges must be exhaustive (`when X` + `when not X`) or have an unconditional fallback
-- All cycles must be declared with `as name(N)` — undeclared cycles are a compile error
-- Inside loops, you can access iteration history with `{{outputs.node_id.history}}`
-
-### Template Expressions
-
-Templates use `{{...}}` interpolation:
-
-| Reference | Description |
-|-----------|-------------|
-| `{{vars.name}}` | Workflow variable |
-| `{{input.field}}` | Current node's input field |
-| `{{outputs.node_id}}` | Full output of a previously executed node |
-| `{{outputs.node_id.field}}` | Specific field from a node's output |
-| `{{outputs.node_id.history}}` | Array of all outputs across loop iterations |
-| `{{artifacts.name}}` | Published artifact by name |
-
-Environment variables are supported with `${ENV_VAR}` syntax (resolved at compile time).
-
-### MCP Servers
-
-You can declare MCP (Model Context Protocol) servers directly in your `.iter` files:
-
-```iter
-mcp_server code_tools:
-  transport: stdio
-  command: "npx"
-  args: ["-y", "@anthropic-ai/claude-code-mcp"]
-
-mcp_server api_server:
-  transport: http
-  url: "http://localhost:3000/mcp"
-```
-
-Agents can then reference these servers:
-
-```iter
-agent worker:
-  model: "claude-sonnet-4-20250514"
-  mcp:
-    servers: [code_tools, api_server]
-```
-
-Supported transports: `stdio` (requires `command`), `http` (requires `url`).
-
-### Budget
-
-Control costs and prevent runaway execution:
-
-```iter
-budget:
-  max_parallel_branches: 4    # Concurrent branch limit
-  max_duration: "30m"         # Global timeout
-  max_cost_usd: 10.0          # Cost cap in USD
-  max_tokens: 500000          # Total token budget
-  max_iterations: 50          # Loop iteration limit
-```
-
-The budget is shared across all branches. When a limit is hit, the engine emits a `budget_exceeded` event and stops the run.
-
-### Worktree & Sandbox
-
-Two top-level workflow directives let a run isolate itself from the host:
-
-```iter
-workflow safe_pr_fix:
-  worktree: auto       # Run inside a fresh git worktree; persist commits to a branch on success
-  sandbox: auto        # Run all tool/agent calls inside a Docker/Podman container
-  entry: planner
-  ...
-```
-
-- **`worktree: auto`** — the engine creates `<store-dir>/worktrees/<run-id>`, executes the workflow there, then on a clean exit creates a persistent branch (default `iterion/run/<friendly-name>`) and fast-forwards the user's currently-checked-out branch to that HEAD. Override with `--merge-into`, `--branch-name`, `--merge-strategy`, or `--auto-merge=false`.
-- **`sandbox: auto`** — reads `.devcontainer/devcontainer.json` and runs each agent/tool node inside an isolated container with the worktree bind-mounted at `/workspace`, plus an HTTP CONNECT proxy enforcing a network allowlist. Use `iterion sandbox doctor` to verify host capabilities. The `claw` backend cannot yet be sandboxed (a future `cmd/iterion-claw-runner` binary will close that gap). See [docs/sandbox.md](docs/sandbox.md).
-
----
-
-## ⌨️ CLI Reference
-
-All commands support `--json` for machine-readable output and `--help` for usage details.
-
-### `iterion init`
-
-Scaffold a new project with an example workflow:
-
-```bash
-iterion init              # Current directory
-iterion init my-project   # New directory
-```
-
-Creates `pr_refine_single_model.iter`, `.env.example`, and `.gitignore`. Idempotent — won't overwrite existing files.
-
-### `iterion validate`
-
-Parse, compile, and validate a workflow without running it:
-
-```bash
-iterion validate workflow.iter
-```
-
-Reports errors and warnings with diagnostic codes (C001–C043), file positions, and descriptions.
-
-### `iterion run`
-
-Execute a workflow:
-
-```bash
-iterion run workflow.iter [flags]
-```
-
-| Flag | Description |
-|------|-------------|
-| `--var key=value` | Set workflow variable (repeatable) |
-| `--recipe <file>` | Apply a recipe preset (JSON) |
-| `--run-id <id>` | Use a specific run ID (default: auto-generated) |
-| `--store-dir <dir>` | Run store directory (default: `.iterion`) |
-| `--timeout <duration>` | Global timeout (e.g. `30m`, `1h`) |
-| `--log-level <level>` | Log verbosity: `error`, `warn`, `info`, `debug`, `trace` |
-| `--no-interactive` | Don't prompt on TTY; exit on human pause |
-| `--sandbox <mode>` | Sandbox override: `auto` (read `.devcontainer/devcontainer.json`) or `none` (force off). Empty inherits `ITERION_SANDBOX_DEFAULT` then the workflow's `sandbox:` block |
-| `--merge-into <target>` | For `worktree: auto` runs — `current` (default), `none` (skip merge, branch only), or a branch name |
-| `--branch-name <name>` | For `worktree: auto` runs — override the storage branch name (default `iterion/run/<friendly-name>`) |
-| `--merge-strategy <mode>` | For `worktree: auto` runs — `squash` (default, collapses run commits into one) or `merge` (fast-forward, preserves history) |
-| `--auto-merge` | For `worktree: auto` runs — apply `--merge-strategy` at run end (default `true` on the CLI; the editor sets `false` and defers the merge to a UI action) |
-
-### `iterion inspect`
-
-View run state and history:
-
-```bash
-iterion inspect                          # List all runs
-iterion inspect --run-id <id>            # View a specific run
-iterion inspect --run-id <id> --events   # Include event log
-iterion inspect --run-id <id> --full     # Show full artifact contents
-```
-
-### `iterion resume`
-
-Resume a paused workflow run with human answers:
-
-```bash
-iterion resume --run-id <id> --file workflow.iter --answer key=value
-iterion resume --run-id <id> --file workflow.iter --answers-file answers.json
-```
-
-### `iterion diagram`
-
-Generate a Mermaid diagram from a workflow:
-
-```bash
-iterion diagram workflow.iter              # Compact view (default)
-iterion diagram workflow.iter --detailed   # Include node properties
-iterion diagram workflow.iter --full       # Include templates and loop details
-```
-
-Paste the output into any Mermaid-compatible renderer (GitHub Markdown, [Mermaid Live Editor](https://mermaid.live), etc.).
-
-### `iterion report`
-
-Generate a chronological report for a completed run:
-
-```bash
-iterion report --run-id <id>
-iterion report --run-id <id> --output report.md
-```
-
-The report includes:
-- **Summary table** — workflow name, status, duration, tokens, cost, model calls
-- **Artifacts table** — all published artifacts with versions
-- **Timeline** — chronological reconstruction of every node execution, edge selection, verdict, branch lifecycle, and budget warning
-
-### `iterion editor`
-
-Launch the visual workflow editor:
-
-```bash
-iterion editor                     # Default port 4891
-iterion editor --port 8080         # Custom port
-iterion editor --dir ./workflows   # Custom directory
-iterion editor --no-browser        # Don't auto-open browser
-```
-
-### `iterion sandbox`
-
-Inspect and configure the iterion sandbox subsystem (see [docs/sandbox.md](docs/sandbox.md)):
-
-```bash
-iterion sandbox doctor   # Report the active driver (Docker/Podman), image cache, and capabilities
-```
-
-### `iterion server`
-
-Start the long-running HTTP server (editor SPA + run console + cloud API). Used both for the local web editor and for cloud mode deployments — install via [`oci://ghcr.io/socialgouv/charts/iterion`](https://github.com/SocialGouv/iterion/pkgs/container/charts%2Fiterion) (chart sources in [charts/iterion/](charts/iterion/)).
-
-### `iterion runner`
-
-Run a cloud-mode runner pod that consumes workflows from the NATS queue. Configured via `pkg/config/` env vars; deployed by the Helm chart with KEDA-based autoscaling.
-
-### `iterion version`
-
-Print version and commit hash.
-
----
-
-## 🔌 Delegation
-
-For tasks that need full tool access (file editing, shell commands, git operations), you can delegate agent execution to an external CLI agent instead of making direct LLM API calls:
-
-```iter
-agent implementer:
-  delegate: "claude_code"          # recommended (codex is supported but discouraged)
-  input: plan_schema
-  output: result_schema
-  system: implementation_prompt
-  tools: [read_file, write_file, run_command, git_diff]
-```
-
-| Backend | Status | What it does |
-|---------|--------|-------------|
-| `claude_code` | recommended | Runs the `claude` CLI as a subprocess with full tool access |
-| `claw` (default) | recommended for read-only / judges | In-process multi-provider LLM client (Anthropic, OpenAI, …) — use with `model: "openai/gpt-5.4-mini"` etc. |
-| `codex` | **discouraged** | Runs the `codex` CLI as a subprocess. Cannot configure its tool set, tends to fill its own context window, and has weaker iterion integration. The compiler emits a `C030` warning per node. Kept for compatibility — prefer `claude_code` or `claw`+OpenAI in new workflows. |
-
-> 💡 `claude_code` works with your Claude subscription (Pro/Max/Team/Enterprise) — no separate API key required. `claw` calls provider APIs directly and needs the corresponding API key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …).
-
-Delegation is useful for agents that need to *act* on the codebase (write files, run tests, execute commands). For agents that only need to *think* (review, judge, plan), use `model:` directly — it's lighter weight and faster.
-
-You can mix both in the same workflow. A common pattern is using `model:` for reviewers and judges, and `delegate:` for implementers:
-
-```iter
-agent reviewer:
-  model: "claude-sonnet-4-20250514"    # Direct API call — fast, read-only
-  readonly: true
-
-agent implementer:
-  delegate: "claude_code"              # Full agent — can edit files
-  tools: [read_file, write_file, patch, run_command]
-```
-
----
-
-## 🧠 AI Agent Skill
-
-Iterion ships as an **Agent Skill** compatible with Claude Code, Codex, Cursor, Windsurf, GitHub Copilot, Cline, Aider, and other AI coding agents. Once installed, your agent knows the full `.iter` DSL and can write correct workflows for you.
-
-### Install the skill
-
-```bash
-npx skills add https://github.com/SocialGouv/iterion --skill iterion-dsl
-```
-
-### What the skill provides
-
-| File | Content |
-|------|---------|
-| [`SKILL.md`](SKILL.md) | Complete DSL reference — node types, properties, edge syntax, templates, budget, MCP |
-| [`SKILL-run-and-refine.md`](SKILL-run-and-refine.md) | Practice guide for running, debugging and iteratively refining `.iter` workflows against real data |
-| [`docs/references/dsl-grammar.md`](docs/references/dsl-grammar.md) | Formal grammar specification (EBNF) |
-| [`docs/references/patterns.md`](docs/references/patterns.md) | 10 reusable workflow patterns with annotated snippets |
-| [`docs/references/diagnostics.md`](docs/references/diagnostics.md) | All validation diagnostic codes (C001–C043) with causes and fixes |
-| [`examples/skill/`](examples/skill/) | 4 minimal, self-contained `.iter` examples |
-
-### Usage
-
-Once installed, just ask your agent to write workflows:
-
-- *"Write an .iter workflow that reviews a PR with two parallel reviewers"*
-- *"Create an iterion pipeline that fixes CI failures in a loop"*
-- *"Add a human approval gate before the deployment step"*
-
-The agent will use the skill reference to produce valid `.iter` files that pass `iterion validate`.
-
----
-
-## 🧪 Recipes
-
-Recipes let you run the same workflow with different configurations without editing the `.iter` file. They're useful for benchmarking models, comparing prompts, or creating reusable presets:
-
-```json
-{
-  "name": "fast_review",
-  "workflow_ref": {
-    "name": "pr_refine_single_model",
-    "path": "examples/pr_refine_single_model.iter"
-  },
-  "preset_vars": {
-    "review_rules": "Focus on security only"
-  },
-  "prompt_pack": {
-    "review_system": "You are a security-focused reviewer."
-  },
-  "budget": {
-    "max_duration": "10m",
-    "max_cost_usd": 5.0
-  },
-  "evaluation_policy": {
-    "primary_metric": "approved",
-    "success_value": "true"
-  }
-}
-```
-
-```bash
-iterion run workflow.iter --recipe fast_review.json
-```
-
-Recipes can override variables, prompts, budgets, and define success criteria for automated evaluation.
-
----
-
-## 📚 Examples
-
-The [`examples/`](examples/) directory contains workflows of increasing complexity. Start simple and work your way up:
-
-### 🟢 Starter
-
-| File | Description |
-|------|-------------|
-| [`skill/minimal_linear.iter`](examples/skill/minimal_linear.iter) | 28 lines — single agent with conditional pass/fail |
-| [`skill/human_gate.iter`](examples/skill/human_gate.iter) | Human approval gate pattern |
-| [`skill/loop_with_judge.iter`](examples/skill/loop_with_judge.iter) | Simple bounded loop with judge evaluation |
-| [`skill/parallel_fan_out_join.iter`](examples/skill/parallel_fan_out_join.iter) | Basic fan-out/join parallelism |
-
-### 🟡 Intermediate
-
-| File | Description |
-|------|-------------|
-| [`pr_refine_single_model.iter`](examples/pr_refine_single_model.iter) | PR refinement: review → plan → compliance → act → verify loop |
-| [`ci_fix_until_green.iter`](examples/ci_fix_until_green.iter) | Automated CI fix loop: diagnose → plan → fix → rerun tests |
-| [`session_review_fix.iter`](examples/session_review_fix.iter) | Session continuity with `inherit` and `fork` modes |
-| [`llm_router_task_dispatch.iter`](examples/llm_router_task_dispatch.iter) | LLM-driven routing decisions |
-
-### 🔴 Advanced
-
-| File | Description |
-|------|-------------|
-| [`pr_review.iter`](examples/pr_review.iter) | Parallel dual-reviewer PR analysis with judge synthesis |
-| [`pr_refine_dual_model_parallel.iter`](examples/pr_refine_dual_model_parallel.iter) | Dual-model parallel review with router/join |
-| [`dual_model_plan_implement_review.iter`](examples/dual_model_plan_implement_review.iter) | Enterprise dual-LLM orchestration with round-robin routing and delegation |
-| [`recipe_benchmark.iter`](examples/recipe_benchmark.iter) | Model/prompt benchmarking with recipe presets |
-
-See [`examples/FIXTURES.md`](examples/FIXTURES.md) for detailed documentation on each example.
-
----
-
-## 🏗️ Architecture
-
-### Compiler Pipeline
-
-```
-.iter file
-    │
-    ▼
-┌─────────┐     ┌─────────┐     ┌──────────┐
-│  PARSE  │────▶│ COMPILE │────▶│ VALIDATE │
-│ Lexer + │     │ AST→IR  │     │  Static  │
-│ Parser  │     │ Resolve │     │  Checks  │
-└─────────┘     └─────────┘     └──────────┘
-    │                │                │
-    ▼                ▼                ▼
-   AST              IR          Diagnostics
-```
-
-1. **Parse** (`pkg/dsl/parser/`) — Indent-sensitive lexer + recursive-descent parser produces an AST
-2. **Compile** (`pkg/dsl/ir/compile.go`) — Transforms AST to IR, resolves template references, binds schemas and prompts
-3. **Validate** (`pkg/dsl/ir/validate.go`) — Static analysis with 43 diagnostic codes (C001–C043): reachability, routing correctness, cycle detection, schema validation, and more
-
-### Runtime Engine
-
-```
-┌─────────────────────────────────────────────────┐
-│                 Runtime Engine                   │
-│                                                  │
-│  ┌──────┐   ┌───────┐   ┌────────┐   ┌──────┐  │
-│  │Agent │   │ Judge │   │ Router │   │ Join │  │
-│  │      │   │       │   │        │   │      │  │
-│  │ LLM  │   │ LLM   │   │fan_out │   │merge │  │
-│  │+tools│   │verdict│   │  cond  │   │wait  │  │
-│  └──────┘   └───────┘   └────────┘   └──────┘  │
-│                                                  │
-│  ┌──────┐   ┌───────┐   ┌────────┐   ┌──────┐  │
-│  │Human │   │ Tool  │   │  Done  │   │ Fail │  │
-│  │pause/│   │ exec  │   │terminal│   │error │  │
-│  │ auto │   │       │   │        │   │      │  │
-│  └──────┘   └───────┘   └────────┘   └──────┘  │
-│                                                  │
-│  Budget Tracker │ Event Emitter │ Artifact Store │
-└─────────────────────────────────────────────────┘
-```
-
-The engine walks the IR graph, executing nodes and selecting edges. Key runtime features:
-
-- **Parallel branches** — router `fan_out_all` spawns concurrent branches, limited by `max_parallel_branches`
-- **Workspace safety** — only one mutating branch at a time; multiple read-only branches are OK
-- **Shared budget** — mutex-protected token/cost/duration tracking across all branches
-- **Checkpoint-based pause/resume** — the checkpoint in `run.json` is the authoritative resume source
-- **Event sourcing** — every step is recorded in `events.jsonl` for observability and debugging
-
-**Run lifecycle:** `running` → `paused_waiting_human` → `running` → `finished` | `failed` | `cancelled`
-
-### Persistence
-
-All run state is persisted under a configurable store directory (default: `.iterion/`):
-
-```
-.iterion/runs/<run_id>/
-  run.json                     # Run metadata & checkpoint
-  events.jsonl                 # Append-only event log
-  artifacts/<node_id>/
-    0.json, 1.json, ...       # Versioned node outputs
-  interactions/<id>.json       # Human Q&A exchanges
-  report.md                    # Generated run report
-```
-
-See [`docs/persisted-formats.md`](docs/persisted-formats.md) for the full specification.
-
-### Architecture Decision Records
-
-Significant architectural choices are documented under [`docs/adr/`](docs/adr/):
-
-| ADR | Topic |
-|-----|-------|
-| [ADR-001](docs/adr/001-round-robin-router-mode.md) | Round-robin router mode semantics |
-| [ADR-002a](docs/adr/002-desktop-assetserver-proxy.md) | Desktop AssetServer proxy architecture (Wails v2 + embedded `pkg/server`) |
-| [ADR-002b](docs/adr/002-editor-runview-separation.md) | Editor runview separation (event broker vs. run store) |
-| [ADR-003](docs/adr/003-privacy-tools-pure-go.md) | Pure-Go privacy tools (regex + Luhn/mod-97 + entropy, no ONNX sidecar) |
-
----
-
-## 🛠️ Development
-
-This section is for contributors working on the Iterion codebase itself.
-
-### Prerequisites
-
-- [Devbox](https://www.jetify.com/devbox) — portable dev environment (installs Go, Task, Node)
-- [direnv](https://direnv.net/) — auto-activates the Devbox shell
-
-```bash
-eval "$(direnv hook bash)"   # or: eval "$(direnv hook zsh)"
-direnv allow
-```
-
-The repository also includes a `.devcontainer/` configuration for VS Code / GitHub Codespaces.
-
-### Build & Test
-
-```bash
-task build          # → ./iterion
-task test           # Unit tests
-task test:e2e       # End-to-end tests (stub executor)
-task test:live      # Live e2e tests (requires API keys)
-task test:race      # Tests with race detector
-task lint           # go fmt + go vet
-task check          # lint + test
-task editor:dev     # Start editor in dev mode (HMR)
-task editor:build   # Build editor frontend
-```
-
-Or directly with Go:
-
-```bash
-go build -o iterion ./cmd/iterion
-go test ./...
-```
-
-### Project Structure
-
-The Go code follows the standard `cmd/` + `pkg/` layout:
-
-```
-iterion/
-├── cmd/
-│   ├── iterion/         # CLI entry point (Cobra, one file per command — run, server, runner, sandbox, …)
-│   └── iterion-desktop/ # Wails v2 desktop wrapper (proxy AssetServer over pkg/server)
-├── pkg/
-│   ├── dsl/             # DSL pipeline
-│   │   ├── parser/      # Lexer, recursive-descent parser, diagnostics
-│   │   ├── ast/         # AST definitions and JSON marshaling
-│   │   ├── ir/          # IR compilation and validation (43 diagnostic codes)
-│   │   ├── unparse/     # IR → .iter serialization
-│   │   └── types/       # Shared enums (transports, session/router modes…)
-│   ├── backend/         # Execution stack (LLM + tools)
-│   │   ├── model/       # Executor registry, schema validation, event hooks
-│   │   ├── delegate/    # Delegation backends (claude_code, codex, claw)
-│   │   ├── tool/        # Tool registry, policies, adapters (incl. privacy_filter / privacy_unfilter)
-│   │   ├── mcp/         # MCP server lifecycle, configuration, health checks
-│   │   ├── recipe/      # Recipe handling for tool adapters and policies
-│   │   ├── cost/        # Cost estimation and budgeting
-│   │   └── llmtypes/    # LLM SDK abstraction
-│   ├── runtime/         # Workflow execution engine (scheduling, budget, recovery, worktree finalization)
-│   ├── sandbox/         # Per-run container isolation (Docker/Podman/Kubernetes drivers + CONNECT proxy)
-│   ├── store/           # File-backed persistence (runs, events, artifacts) + Mongo/S3 in cloud mode
-│   ├── server/          # HTTP server: editor SPA + run console + cloud REST/WS API
-│   ├── runner/          # Cloud-mode runner pod consumer loop (NATS JetStream → execution)
-│   ├── queue/           # NATS JetStream message contract & dispatch schema
-│   ├── cloud/           # Cloud-mode helpers (Prometheus metrics registry, …)
-│   ├── runview/         # Editor backend: WS event broker for live run streaming
-│   ├── git/             # Editor backend: status / diff / log for the modified-files panel
-│   ├── config/          # Runtime config (env vars + YAML, Mongo/NATS/S3/Sandbox/Runner sections)
-│   ├── cli/             # CLI command implementations
-│   ├── benchmark/       # Metrics collection and reporting
-│   ├── log/             # Leveled logger
-│   └── internal/        # Internal utilities (e.g. appinfo)
-├── editor/              # Web UI (React/Vite/TypeScript + XYFlow)
-├── examples/            # Reference .iter workflows + companion docs
-├── sdks/typescript/     # @iterion/sdk — typed CLI wrapper for Node/Deno/Bun
-├── e2e/                 # End-to-end test suite (stub + live)
-├── charts/iterion/      # Helm chart (server + runner Deployments, KEDA scaling, sandbox RBAC) — published to oci://ghcr.io/socialgouv/charts/iterion
-├── docker/              # Cloud-mode container helpers (LLM CLI install, MinIO init)
-├── docs/                # Format specs, references, ADRs, sandbox, privacy, observability
-├── scripts/             # Build helpers
-└── vendor/              # Vendored Go modules (incl. claw-code-go)
-```
-
-**Key dependencies:** Go 1.25.0 and [`claw-code-go`](https://github.com/ethpandaops/claw-code-go) (vendored under `vendor/claw-code-go/`) — a multi-provider LLM client. iterion uses `claw-code-go/pkg/api.Client.StreamResponse` directly for in-process LLM calls (Anthropic and OpenAI validated; Bedrock/Vertex/Foundry available).
+## 📚 Documentation
+
+The full documentation lives under [`docs/`](docs/) — start with the [documentation index](docs/README.md). Highlights:
+
+**Get going**
+- [docs/install.md](docs/install.md) — every install method (CLI, desktop, Docker, Helm, SDK)
+- [docs/visual-editor.md](docs/visual-editor.md) — browser-based workflow editor
+- [docs/desktop.md](docs/desktop.md) — native desktop app
+- [docs/examples.md](docs/examples.md) — workflows of increasing complexity (starter → advanced)
+- [docs/skill.md](docs/skill.md) — install Iterion as an AI agent skill (Claude Code, Cursor, Copilot…)
+
+**Author workflows**
+- [docs/dsl.md](docs/dsl.md) — full `.iter` DSL reference
+- [docs/routers.md](docs/routers.md) — routing modes deep dive
+- [docs/recipes.md](docs/recipes.md) — preset-driven runs (benchmarking, prompt comparison)
+- [docs/delegation.md](docs/delegation.md) — `model:` vs `delegate:` (claude_code, codex)
+- [docs/attachments.md](docs/attachments.md) — file/image attachments in prompts
+- [docs/privacy_filter.md](docs/privacy_filter.md) — built-in PII redaction tools
+- [docs/workflow_authoring_pitfalls.md](docs/workflow_authoring_pitfalls.md) — required reading before authoring workflows that commit code
+
+**Run & operate**
+- [docs/cli-reference.md](docs/cli-reference.md) — every `iterion` subcommand and flag
+- [docs/resume.md](docs/resume.md) — resume / failure / cancellation matrix
+- [docs/sandbox.md](docs/sandbox.md) — per-run container isolation
+- [docs/observability/README.md](docs/observability/README.md) — Prometheus, OTLP, Grafana
+- [docs/persisted-formats.md](docs/persisted-formats.md) — on-disk format spec
+- [docs/cloud.md](docs/cloud.md) + [docs/cloud-deployment.md](docs/cloud-deployment.md) — cloud mode overview + operator runbook
+
+**Architecture & contributing**
+- [docs/architecture.md](docs/architecture.md) — compiler pipeline, runtime engine, persistence
+- [docs/adr/](docs/adr/) — architecture decision records
+- [docs/development.md](docs/development.md) — build, test, project structure for contributors
+
+**References**
+- [docs/references/dsl-grammar.md](docs/references/dsl-grammar.md) — readable grammar
+- [docs/references/diagnostics.md](docs/references/diagnostics.md) — all C001–C043 codes
+- [docs/references/patterns.md](docs/references/patterns.md) — 10 reusable workflow patterns
+- [docs/grammar/iterion_v1.ebnf](docs/grammar/iterion_v1.ebnf) — formal EBNF grammar
 
 ---
 
