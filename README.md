@@ -218,4 +218,4 @@ The full documentation lives under [`docs/`](docs/) — start with the [document
 
 ## 📄 License
 
-Apache-2.0. See `LICENSE` for the full text. Copyright © SocialGouv.
+MIT. See `LICENSE` for the full text. Copyright © SocialGouv.

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Write correct .iter workflow files for the Iterion orchestration engine",
   "author": "SocialGouv",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "repository": "https://github.com/SocialGouv/iterion",
   "skills": [
     {
