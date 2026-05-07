@@ -46,6 +46,8 @@ Welcome to the Iterion docs. Pages are organised by audience and topic.
 |---|---|
 | [cloud.md](cloud.md) | Architecture overview — server + runner + Mongo + NATS + S3. |
 | [cloud-deployment.md](cloud-deployment.md) | Operator runbook: secrets, NetworkPolicy, observability, resume, migration. |
+| [cloud-admin.md](cloud-admin.md) | Multitenant admin guide: bootstrap super-admin, SSO config, BYOK + OAuth-forfait, secret rotation. |
+| [cloud-user.md](cloud-user.md) | User-facing guide: login, teams, BYOK, OAuth subscriptions, invitations. |
 
 ## Architecture & contributing
 

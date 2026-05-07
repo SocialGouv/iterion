@@ -25,3 +25,33 @@ data:
   ITERION_RUNNER_CONCURRENCY: {{ .Values.config.runner.concurrency | quote }}
   ITERION_HEARTBEAT_INTERVAL: {{ .Values.config.runner.heartbeat | quote }}
   ITERION_LOCK_TTL: {{ .Values.config.runner.lockTtl | quote }}
+  {{- if eq .Values.mode "cloud" }}
+  # --- Auth (Phase A) ---------------------------------------------
+  ITERION_PUBLIC_URL: {{ .Values.config.auth.publicUrl | quote }}
+  ITERION_COOKIE_DOMAIN: {{ .Values.config.auth.cookieDomain | quote }}
+  ITERION_COOKIE_SECURE: {{ .Values.config.auth.cookieSecure | quote }}
+  ITERION_ACCESS_TTL: {{ .Values.config.auth.accessTtl | quote }}
+  ITERION_REFRESH_TTL: {{ .Values.config.auth.refreshTtl | quote }}
+  ITERION_SIGNUP_MODE: {{ .Values.config.auth.signupMode | quote }}
+  {{- if .Values.secrets.auth.oidc.google.enabled }}
+  ITERION_OIDC_GOOGLE_ENABLED: "true"
+  ITERION_OIDC_GOOGLE_CLIENT_ID: {{ .Values.config.auth.oidc.google.clientId | quote }}
+  {{- end }}
+  {{- if .Values.secrets.auth.oidc.github.enabled }}
+  ITERION_OIDC_GITHUB_ENABLED: "true"
+  ITERION_OIDC_GITHUB_CLIENT_ID: {{ .Values.config.auth.oidc.github.clientId | quote }}
+  {{- end }}
+  {{- if .Values.secrets.auth.oidc.generic.enabled }}
+  ITERION_OIDC_GENERIC_ENABLED: "true"
+  ITERION_OIDC_GENERIC_ISSUER_URL: {{ .Values.config.auth.oidc.generic.issuerUrl | quote }}
+  ITERION_OIDC_GENERIC_CLIENT_ID: {{ .Values.config.auth.oidc.generic.clientId | quote }}
+  ITERION_OIDC_GENERIC_DISPLAY_NAME: {{ .Values.config.auth.oidc.generic.displayName | quote }}
+  ITERION_OIDC_GENERIC_SCOPES: {{ .Values.config.auth.oidc.generic.scopes | quote }}
+  {{- end }}
+  {{- with .Values.config.auth.oauthForfait.anthropicClientId }}
+  ITERION_OAUTH_FORFAIT_ANTHROPIC_CLIENT_ID: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.auth.oauthForfait.codexClientId }}
+  ITERION_OAUTH_FORFAIT_CODEX_CLIENT_ID: {{ . | quote }}
+  {{- end }}
+  {{- end }}

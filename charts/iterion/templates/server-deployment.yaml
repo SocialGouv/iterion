@@ -67,9 +67,9 @@ spec:
             - secretRef:
                 name: {{ default (printf "%s-storage" (include "iterion.fullname" .)) .Values.secrets.storage.existingSecret }}
             {{- end }}
-            {{- if and (eq .Values.mode "cloud") (or .Values.secrets.session.create .Values.secrets.session.existingSecret) }}
+            {{- if and (eq .Values.mode "cloud") (or .Values.secrets.auth.create .Values.secrets.auth.existingSecret) }}
             - secretRef:
-                name: {{ default (printf "%s-session" (include "iterion.fullname" .)) .Values.secrets.session.existingSecret }}
+                name: {{ default (printf "%s-auth" (include "iterion.fullname" .)) .Values.secrets.auth.existingSecret }}
             {{- end }}
           livenessProbe:
             httpGet:

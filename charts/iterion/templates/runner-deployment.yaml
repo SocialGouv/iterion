@@ -68,6 +68,13 @@ spec:
             - secretRef:
                 name: {{ default (printf "%s-storage" (include "iterion.fullname" .)) .Values.secrets.storage.existingSecret }}
             {{- end }}
+            {{- if or .Values.secrets.auth.create .Values.secrets.auth.existingSecret }}
+            # The runner needs ITERION_SECRETS_KEY (same value as
+            # the server's) to unseal the per-run RunBundle that
+            # cloudpublisher writes. Phase C+D.
+            - secretRef:
+                name: {{ default (printf "%s-auth" (include "iterion.fullname" .)) .Values.secrets.auth.existingSecret }}
+            {{- end }}
           resources:
             {{- toYaml .Values.runner.resources | nindent 12 }}
           # The metrics listener is bound unconditionally by the runner

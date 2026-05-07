@@ -51,13 +51,17 @@ secrets:
     create: true
     s3AccessKeyId: minioadmin
     s3SecretAccessKey: minioadmin
-  session:
-    # Dev-only: bake a deterministic token so `kubectl port-forward` +
-    # curl works out of the box. Production deployments should manage
-    # the secret out-of-band via `existingSecret` and rotate via
-    # `helm upgrade`.
+  auth:
+    # Dev-only: bake fixed JWT/master keys so port-forward + curl
+    # works out of the box and the seal/unseal across server +
+    # runner agrees. Production should manage the secret out-of-
+    # band via `existingSecret` and rotate via `helm upgrade`.
     create: true
-    token: "dev-session-token"
+    # 48-byte deterministic dev string (base64 of "dev-jwt-secret-please-rotate-...").
+    jwtSecret: "ZGV2LWp3dC1zZWNyZXQtcGxlYXNlLXJvdGF0ZS1iZWZvcmUtcHJvZHVjdGlvbi11c2U="
+    # 32-byte deterministic dev key (base64 of "dev-secrets-key-rotate-in-prod-").
+    secretsKey: "ZGV2LXNlY3JldHMta2V5LXJvdGF0ZS1pbi1wcm9kLQ=="
+    bootstrapAdminEmail: "admin@dev.local"
 
 mongodb:
   enabled: true

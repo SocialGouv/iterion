@@ -115,8 +115,30 @@ services:
       ITERION_S3_USE_PATH_STYLE: "true"
       ITERION_LOG_FORMAT: json
       ITERION_LOG_LEVEL: info
-      # LLM credentials forwarded from the host shell so workflows can
-      # actually call out to Anthropic / OpenAI without re-typing keys.
+      # --- Auth (Phase A–D) ----------------------------------------
+      # Required in cloud mode. Override via .env at the repo root.
+      ITERION_JWT_SECRET: ${ITERION_JWT_SECRET:-ZGV2LWp3dC1zZWNyZXQtcGxlYXNlLXJvdGF0ZS1iZWZvcmUtcHJvZHVjdGlvbi11c2U=}
+      ITERION_SECRETS_KEY: ${ITERION_SECRETS_KEY:-ZGV2LXNlY3JldHMta2V5LXJvdGF0ZS1pbi1wcm9kLQ==}
+      ITERION_BOOTSTRAP_ADMIN_EMAIL: ${ITERION_BOOTSTRAP_ADMIN_EMAIL:-admin@dev.local}
+      ITERION_SIGNUP_MODE: ${ITERION_SIGNUP_MODE:-invite_only}
+      ITERION_PUBLIC_URL: ${ITERION_PUBLIC_URL:-http://localhost:4891}
+      ITERION_COOKIE_SECURE: ${ITERION_COOKIE_SECURE:-false}
+      ITERION_OIDC_GOOGLE_ENABLED: ${ITERION_OIDC_GOOGLE_ENABLED:-false}
+      ITERION_OIDC_GOOGLE_CLIENT_ID: ${ITERION_OIDC_GOOGLE_CLIENT_ID:-}
+      ITERION_OIDC_GOOGLE_CLIENT_SECRET: ${ITERION_OIDC_GOOGLE_CLIENT_SECRET:-}
+      ITERION_OIDC_GITHUB_ENABLED: ${ITERION_OIDC_GITHUB_ENABLED:-false}
+      ITERION_OIDC_GITHUB_CLIENT_ID: ${ITERION_OIDC_GITHUB_CLIENT_ID:-}
+      ITERION_OIDC_GITHUB_CLIENT_SECRET: ${ITERION_OIDC_GITHUB_CLIENT_SECRET:-}
+      ITERION_OIDC_GENERIC_ENABLED: ${ITERION_OIDC_GENERIC_ENABLED:-false}
+      ITERION_OIDC_GENERIC_ISSUER_URL: ${ITERION_OIDC_GENERIC_ISSUER_URL:-}
+      ITERION_OIDC_GENERIC_CLIENT_ID: ${ITERION_OIDC_GENERIC_CLIENT_ID:-}
+      ITERION_OIDC_GENERIC_CLIENT_SECRET: ${ITERION_OIDC_GENERIC_CLIENT_SECRET:-}
+      ITERION_OAUTH_FORFAIT_ANTHROPIC_CLIENT_ID: ${ITERION_OAUTH_FORFAIT_ANTHROPIC_CLIENT_ID:-}
+      ITERION_OAUTH_FORFAIT_CODEX_CLIENT_ID: ${ITERION_OAUTH_FORFAIT_CODEX_CLIENT_ID:-}
+      # LLM credentials. In cloud mode these are env-fallbacks only —
+      # tenants register their keys in the admin UI (BYOK) and the
+      # publisher seals them per-run. The env value is consulted only
+      # when no team-scoped key is configured for a provider.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     ports:
@@ -156,6 +178,10 @@ services:
       ITERION_RUNNER_WORKDIR: /var/lib/iterion/work
       ITERION_LOG_FORMAT: json
       ITERION_LOG_LEVEL: info
+      # The runner needs the same ITERION_SECRETS_KEY as the server so
+      # it can unseal the per-run RunBundle (BYOK + OAuth-forfait).
+      # Phase C+D.
+      ITERION_SECRETS_KEY: ${ITERION_SECRETS_KEY:-ZGV2LXNlY3JldHMta2V5LXJvdGF0ZS1pbi1wcm9kLQ==}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     volumes:

@@ -146,6 +146,43 @@ config:
     concurrency: 1
     heartbeat: 20s
     lockTtl: 60s
+  # --- Auth (cloud only) -------------------------------------------
+  # Public, non-secret half of the multitenant auth surface. The
+  # secret half (JWT signing key, AES master key, OIDC client
+  # secrets) lives in secrets.auth below.
+  auth:
+    # Externally reachable origin used to build OIDC redirect URIs
+    # and as the CookieDomain default. Empty disables OIDC.
+    publicUrl: ""
+    # Cookie scoping. Empty = host-only (recommended). Set when
+    # the SPA is served from a different host than the API.
+    cookieDomain: ""
+    cookieSecure: true
+    # Access JWT lifetime. Refresh rotates on every use and lives
+    # for refreshTtl.
+    accessTtl: 15m
+    refreshTtl: 720h
+    # invite_only (default) requires an invitation token to register.
+    # open allows public sign-up — provisions a personal team per
+    # new user.
+    signupMode: invite_only
+    oidc:
+      google:
+        clientId: ""           # secret lives in secrets.auth.oidc.google
+      github:
+        clientId: ""
+      generic:
+        issuerUrl: ""          # https://idp.example/realms/iterion
+        clientId: ""
+        displayName: "SSO"
+        scopes: "openid,email,profile"
+    # OAuth-forfait (Phase D) — public client ids the server uses
+    # to refresh user-supplied Claude Code / Codex subscription
+    # tokens. Empty disables refresh of that kind (the user must
+    # re-paste credentials.json on expiry).
+    oauthForfait:
+      anthropicClientId: ""
+      codexClientId: ""
 
 # --- Secrets --------------------------------------------------------
 # Two opt-in patterns:
@@ -167,15 +204,39 @@ secrets:
     existingSecret: ""
     s3AccessKeyId: ""
     s3SecretAccessKey: ""
-  # Session token for the cloud-mode HTTP API. The server pod refuses to
-  # boot in cloud mode without ITERION_SESSION_TOKEN set (override only
-  # via ITERION_DISABLE_AUTH=true for smoke tests). Production should
-  # keep create=false and reference an externally-managed Secret. Only
-  # rendered + wired to the server pod when mode=cloud.
-  session:
+  # Auth bundle for the cloud-mode HTTP API + JWT signing + BYOK seal.
+  # The server pod refuses to boot in cloud mode without
+  # ITERION_JWT_SECRET + ITERION_SECRETS_KEY set (override only via
+  # ITERION_DISABLE_AUTH=true for smoke tests). Production should keep
+  # create=false and reference an externally-managed Secret holding
+  # the same env-var keys. Only rendered + wired in when mode=cloud.
+  auth:
     create: false
     existingSecret: ""
-    token: ""
+    # Base64 of >=32 random bytes — `openssl rand -base64 48`
+    jwtSecret: ""
+    # Base64 of exactly 32 random bytes — `openssl rand -base64 32`
+    secretsKey: ""
+    # First-boot super-admin email. When set on an empty users
+    # collection the server creates the account with a one-time
+    # random password printed at WARN level in the boot logs. Leave
+    # empty in established deployments where users have been
+    # provisioned through the admin UI.
+    bootstrapAdminEmail: ""
+    # OIDC client_secrets. Public client_ids and discovery URLs go
+    # into the ConfigMap (values.config.auth.oidc) — the secret
+    # bundle only carries the secrets that should not be readable
+    # by anyone with `kubectl get configmap`.
+    oidc:
+      google:
+        enabled: false
+        clientSecret: ""
+      github:
+        enabled: false
+        clientSecret: ""
+      generic:
+        enabled: false
+        clientSecret: ""
 
 # --- Local-mode persistence (PVC for .iterion/) ---------------------
 # Only consulted when mode=local. Cloud mode keeps state in Mongo+S3
