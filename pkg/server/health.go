@@ -65,7 +65,11 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	results := make(map[string]string, len(checks))
 	allOK := true
 	for name, check := range checks {
-		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		// Detached from r.Context() so a kubelet probe timeout/cancel
+		// doesn't propagate into the dependency check and falsely
+		// report it as failing — that would briefly remove the pod
+		// from the LB on every transient network hiccup.
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		err := check(ctx)
 		cancel()
 		if err != nil {

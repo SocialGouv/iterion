@@ -94,6 +94,7 @@ func runMigrateToCloud(cmd *cobra.Command, _ []string) error {
 		if err != nil {
 			return fmt.Errorf("migrate: build blob: %w", err)
 		}
+		defer func() { _ = bc.Close() }()
 		ms, err := mongostore.New(ctx, mongostore.Config{
 			URI:           cfg.Mongo.URI,
 			Database:      cfg.Mongo.DB,
@@ -139,6 +140,7 @@ func runMigrateToCloud(cmd *cobra.Command, _ []string) error {
 	var wg sync.WaitGroup
 	var migErr error
 	var migMu sync.Mutex
+	var success, failed int
 
 	for _, id := range ids {
 		id := id
@@ -153,18 +155,30 @@ func runMigrateToCloud(cmd *cobra.Command, _ []string) error {
 			defer func() { <-sem }()
 			if err := migrateRun(ctx, src, dst, id, migrateOpts.dryRun, logger); err != nil {
 				migMu.Lock()
+				failed++
 				if migErr == nil {
 					migErr = err
 				}
 				migMu.Unlock()
 				logger.Error("migrate: run %s: %v", id, err)
 			} else {
+				migMu.Lock()
+				success++
+				migMu.Unlock()
 				logger.Info("migrate: run %s ok", id)
 			}
 		}()
 	}
 	wg.Wait()
-	return migErr
+	// Aggregate summary so the operator sees the full failure count
+	// even when only the first error is returned. Without this, large
+	// migrations could complete with dozens of silent failures hidden
+	// across per-run Error log lines.
+	logger.Info("migrate: completed: %d ok, %d failed (of %d total)", success, failed, len(ids))
+	if failed > 0 {
+		return fmt.Errorf("migrate: %d/%d runs failed (first: %w)", failed, len(ids), migErr)
+	}
+	return nil
 }
 
 // migrateRun uploads a single run's metadata + events + artifacts.

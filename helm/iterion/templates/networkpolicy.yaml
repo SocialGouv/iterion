@@ -23,9 +23,16 @@ spec:
           protocol: TCP
         {{- end }}
   egress:
-    # Always allow DNS so service discovery resolves.
+    # Allow DNS to kube-system (where coredns/kube-dns lives) so service
+    # discovery resolves without exposing namespace topology to every
+    # other namespace in a multi-tenant cluster. The
+    # kubernetes.io/metadata.name label is stamped on every namespace by
+    # the kube-apiserver since 1.22 (GA in 1.24), so the selector works
+    # on any modern cluster without operator setup.
     - to:
-        - namespaceSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
       ports:
         - port: 53
           protocol: UDP

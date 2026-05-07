@@ -139,6 +139,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("server: build blob client: %w", err)
 	}
+	defer func() { _ = bc.Close() }()
 
 	// Server-side store: no NATS lock provider — the server never
 	// executes runs, only publishes them. The runner pod is the

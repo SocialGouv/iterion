@@ -68,13 +68,19 @@ HTTP `/jsz` endpoint, which lives on a separate port from the client
 protocol. Resolution order:
   1. Explicit override via .Values.config.nats.monitoringEndpoint
   2. Bundled nats sub-chart (default port 8222 on `<release>-nats`)
-  3. Empty string — caller must set the value or the ScaledObject
-     will fail to scrape and KEDA will hold replicas at minReplicas.
+  3. Fail-fast via `required` when KEDA is enabled but no endpoint
+     can be resolved — silently rendering an empty string used to
+     leave the ScaledObject unable to scrape lag, which KEDA accepts
+     without surfacing an error and runners stayed pinned at
+     minReplicas. Caller must either enable the bundled NATS sub-chart
+     or set config.nats.monitoringEndpoint explicitly.
 */}}
 {{- define "iterion.nats.monitoringEndpoint" -}}
 {{- if .Values.config.nats.monitoringEndpoint -}}
 {{- .Values.config.nats.monitoringEndpoint -}}
 {{- else if .Values.nats.enabled -}}
 {{- printf "%s-nats:8222" .Release.Name -}}
+{{- else if .Values.runner.keda.enabled -}}
+{{- required "runner.keda.enabled=true requires either nats.enabled=true or config.nats.monitoringEndpoint to be set so the JetStream lag scaler can scrape the monitoring port" "" -}}
 {{- end -}}
 {{- end -}}

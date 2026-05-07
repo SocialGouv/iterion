@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -300,16 +301,30 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		_ = delivery.Nak()
 		return
 	}
-	defer func() { _ = lock.Unlock() }()
+	defer func() {
+		// Surface release errors at warn level so a stuck KV entry
+		// (network partition, permissions) shows up in the runner
+		// logs instead of being silently dropped — without this, an
+		// expired-but-not-deleted lease blocks siblings for the full
+		// LockTTL window with no operator visibility.
+		if err := lock.Unlock(); err != nil {
+			logger.Warn("runner: lock release for %s: %v", msg.RunID, err)
+		}
+	}()
 
 	// Heartbeat goroutine: refresh the NATS lease while we own it.
 	// On refresh failure the heartbeat cancels runCtx so engine.Run
 	// unwinds via handleContextDoneWithCheckpoint — better to lose
 	// progress than to let the lease expire while the engine is still
 	// writing to Mongo (which would invite split-brain when JetStream
-	// redelivers to a sibling pod).
+	// redelivers to a sibling pod). hbFailed flips to true before the
+	// cancel so processOne can distinguish heartbeat-induced cancel
+	// from a legitimate user cancel and Nak instead of Ack — without
+	// that, JetStream considers the run done and no sibling picks it
+	// up automatically.
+	var hbFailed atomic.Bool
 	hbDone := make(chan struct{})
-	go r.heartbeat(runCtx, runCancel, lock, hbDone)
+	go r.heartbeat(runCtx, runCancel, lock, hbDone, &hbFailed)
 	defer func() { <-hbDone }()
 
 	if err := r.executeRun(runCtx, msg); err != nil {
@@ -324,6 +339,16 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 			return
 		}
 		if errors.Is(err, runtime.ErrRunCancelled) {
+			// Heartbeat-induced cancel: the lease is gone, so a sibling
+			// runner is free to pick this up via JetStream redelivery.
+			// Nak (not Ack) so the message stays queued instead of
+			// being marked done and forcing manual user intervention.
+			if hbFailed.Load() {
+				logger.Warn("runner: run %s heartbeat lost — naking for sibling redelivery", msg.RunID)
+				finalStatus = "lock_held"
+				_ = delivery.Nak()
+				return
+			}
 			logger.Info("runner: run %s checkpointed (%v)", msg.RunID, err)
 			finalStatus = "cancelled"
 			_ = delivery.Ack()
@@ -342,13 +367,14 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 
 // heartbeat refreshes the NATS KV lease so a long-running run keeps
 // holding the lock past the 60s default TTL. Returns when ctx is
-// cancelled (run finished). On refresh failure the heartbeat triggers
-// runCancel so the engine unwinds proactively before the lease expires
-// — without that signal, the lease would silently lapse and JetStream
-// would redeliver to a sibling pod, two writers ending up on the same
-// run state. Better to abort cleanly and re-deliver the original
-// message via Nak.
-func (r *Runner) heartbeat(ctx context.Context, runCancel context.CancelFunc, lock store.RunLock, done chan<- struct{}) {
+// cancelled (run finished). On refresh failure the heartbeat sets
+// hbFailed and triggers runCancel so the engine unwinds proactively
+// before the lease expires — without that signal, the lease would
+// silently lapse and JetStream would redeliver to a sibling pod, two
+// writers ending up on the same run state. processOne reads hbFailed
+// to Nak (not Ack) the delivery so the message stays queued for sibling
+// redelivery instead of requiring manual user resume.
+func (r *Runner) heartbeat(ctx context.Context, runCancel context.CancelFunc, lock store.RunLock, done chan<- struct{}, hbFailed *atomic.Bool) {
 	defer close(done)
 	natsLock, ok := lock.(*natsq.Lock)
 	if !ok {
@@ -369,6 +395,7 @@ func (r *Runner) heartbeat(ctx context.Context, runCancel context.CancelFunc, lo
 					r.cfg.Metrics.RunnerHeartbeatErrors.Inc()
 				}
 				r.cfg.Logger.Error("runner: heartbeat refresh failed: %v — cancelling run to avoid split-brain", err)
+				hbFailed.Store(true)
 				runCancel()
 				return
 			}

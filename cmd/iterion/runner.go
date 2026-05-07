@@ -114,6 +114,7 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("runner: build blob client: %w", err)
 	}
+	defer func() { _ = bc.Close() }()
 
 	// 3. Mongo store with NATS-KV-backed lock provider so LockRun
 	//    returns a real distributed lease (vs the no-op in

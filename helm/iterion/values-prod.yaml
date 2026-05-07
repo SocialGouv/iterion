@@ -31,7 +31,12 @@ runner:
       cpu: 4000m
       memory: 8Gi
   keda:
-    enabled: true
+    # Off by default in the prod template — operators flip this on
+    # AFTER setting config.nats.monitoringEndpoint below (or enabling
+    # the bundled NATS sub-chart). The chart now fails to render when
+    # KEDA is enabled without a resolvable endpoint, instead of
+    # silently producing a ScaledObject that never scales.
+    enabled: false
 
 ingress:
   enabled: true
