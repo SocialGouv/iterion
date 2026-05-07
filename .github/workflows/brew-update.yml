@@ -5,18 +5,34 @@ name: 🍺 Brew tap update
 # second one regenerates identical values and the final `git diff --staged
 # --quiet` check skips the commit. Re-running for the same tag is therefore
 # safe and surfaces the desktop SHA only once it lands.
+#
+# `release: published` only fans out to other workflows if the release was
+# created/edited with a non-`GITHUB_TOKEN` identity. Both release.yml and
+# desktop-release.yml therefore call softprops/action-gh-release with a
+# token-bureau App token; without that, this workflow stays silent.
+#
+# `workflow_dispatch` is exposed for backfill — pick a tag and re-run the
+# tap update by hand without retagging.
 
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to backfill (e.g. v0.5.0)"
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 jobs:
   update:
-    if: startsWith(github.event.release.tag_name, 'v')
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v')
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
       - name: Get GitHub App Token
         id: token
@@ -33,7 +49,6 @@ jobs:
       - name: Download release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.release.tag_name }}
         run: |
           mkdir -p artifacts
           # CLI binaries ship with .sha256 sidecars (see release.yml).
@@ -48,15 +63,11 @@ jobs:
           ls -la artifacts/
 
       - name: Update tap
-        env:
-          TAG: ${{ github.event.release.tag_name }}
         run: |
           VERSION="${TAG#v}"
           bash scripts/update-brew-tap.sh "$VERSION" artifacts
 
       - name: Commit & push
-        env:
-          TAG: ${{ github.event.release.tag_name }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

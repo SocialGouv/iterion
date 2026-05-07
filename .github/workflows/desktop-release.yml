@@ -421,6 +421,13 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
+      - name: Get GitHub App Token
+        id: token
+        uses: SocialGouv/token-bureau@main
+        with:
+          token-bureau-url: https://token-bureau.fabrique.social.gouv.fr
+          audience: socialgouv
+
       - uses: actions/checkout@v6
       - uses: actions/download-artifact@v8
         with:
@@ -449,3 +456,9 @@ jobs:
           files: |
             artefacts/iterion-desktop-*
           fail_on_unmatched_files: false
+          # See release.yml: a `GITHUB_TOKEN`-created/edited release does
+          # not fan out `release: published` to other workflows. Using the
+          # token-bureau App token here lets brew-update.yml fire on the
+          # second pass (when the desktop ZIP lands) so the cask SHA gets
+          # patched alongside the CLI formula.
+          token: ${{ steps.token.outputs.token }}

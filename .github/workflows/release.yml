@@ -85,6 +85,13 @@ jobs:
     needs: build-binaries
     runs-on: ubuntu-latest
     steps:
+      - name: Get GitHub App Token
+        id: token
+        uses: SocialGouv/token-bureau@main
+        with:
+          token-bureau-url: https://token-bureau.fabrique.social.gouv.fr
+          audience: socialgouv
+
       - uses: actions/checkout@v6
 
       - uses: actions/download-artifact@v8
@@ -97,3 +104,8 @@ jobs:
         with:
           generate_release_notes: true
           files: artifacts/*
+          # GITHUB_TOKEN-created releases do not fire `release: published`
+          # for downstream workflows (GitHub blocks the recursion). The
+          # token-bureau App token bypasses that, letting brew-update.yml
+          # pick the release up automatically.
+          token: ${{ steps.token.outputs.token }}
