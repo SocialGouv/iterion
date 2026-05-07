@@ -92,6 +92,20 @@ INSTALL_DIR=. curl -fsSL https://socialgouv.github.io/iterion/install.sh | sh
 ```
 
 <details>
+<summary>Homebrew (macOS, Linux)</summary>
+
+```bash
+brew tap socialgouv/iterion https://github.com/SocialGouv/iterion
+brew install iterion
+# Desktop app (macOS only):
+brew install --cask iterion-desktop
+```
+
+Updates: `brew upgrade iterion` (and/or `brew upgrade --cask iterion-desktop`).
+
+</details>
+
+<details>
 <summary>Windows (PowerShell)</summary>
 
 ```powershell
@@ -297,6 +311,14 @@ chmod +x iterion-desktop
 
 #### macOS
 
+The simplest path is Homebrew:
+```bash
+brew tap socialgouv/iterion https://github.com/SocialGouv/iterion
+brew install --cask iterion-desktop
+open -a Iterion
+```
+
+Or install manually from the release ZIP:
 ```bash
 unzip iterion-desktop-darwin-universal.zip
 xattr -d com.apple.quarantine Iterion.app   # one-off Gatekeeper unblock (V1 builds are unsigned)
