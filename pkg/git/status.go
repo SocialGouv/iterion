@@ -11,15 +11,62 @@ import (
 //
 // Renames are reported with both the new path (Path) and the original path
 // (OldPath); other entries leave OldPath empty.
+//
+// Added/Deleted line counts are merged from `git diff --numstat HEAD` for
+// tracked changes and from a direct file scan for untracked entries
+// (which numstat does not report). A numstat failure degrades silently —
+// the panel keeps working with zeroed counts rather than 5xx-ing.
 func Status(dir string) ([]FileStatus, error) {
 	if !isGitDir(dir) {
 		return nil, ErrNotGitRepo
 	}
+
+	// `git status` and `git diff --numstat HEAD` are independent — kick
+	// numstat off in parallel so its 50–150ms doesn't serialize behind
+	// the porcelain status call. A failure on the numstat side is
+	// non-fatal; we degrade to zeroed counts for the UI rather than
+	// 5xx-ing on what is purely an annotation.
+	type nsResult struct {
+		stats []NumStat
+		err   error
+	}
+	nsCh := make(chan nsResult, 1)
+	go func() {
+		stats, err := NumStatHEAD(dir)
+		nsCh <- nsResult{stats, err}
+	}()
+
 	out, err := run(dir, "status", "--porcelain=v1", "-z", "--untracked-files=all")
 	if err != nil {
+		<-nsCh
 		return nil, err
 	}
-	return parseStatusZ(out)
+	files, err := parseStatusZ(out)
+	if err != nil {
+		<-nsCh
+		return nil, err
+	}
+
+	if ns := <-nsCh; ns.err == nil {
+		applyNumStats(files, ns.stats)
+	}
+	// Untracked entries don't appear in numstat; scan the file directly
+	// for line counts and binary detection.
+	for i := range files {
+		f := &files[i]
+		if f.Status != "??" {
+			continue
+		}
+		added, binary := CountUntrackedLines(dir, f.Path)
+		if binary {
+			f.Added = -1
+			f.Deleted = -1
+			f.Binary = true
+		} else {
+			f.Added = added
+		}
+	}
+	return files, nil
 }
 
 // parseStatusZ walks NUL-separated porcelain entries. The format is:

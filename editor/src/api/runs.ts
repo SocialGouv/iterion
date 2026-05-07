@@ -335,6 +335,14 @@ export interface RunFile {
   path: string;
   status: RunFileStatus;
   old_path?: string;
+  // Line counts from `git diff --numstat`, populated by the backend.
+  // Sentinel: added/deleted = -1 alongside binary=true means the file
+  // is binary and the FilesPanel should render "(binary)" instead of
+  // "+N | -N". Otherwise both fields are real line counts; 0 is
+  // meaningful for pure renames or whitespace-only diffs.
+  added: number;
+  deleted: number;
+  binary?: boolean;
 }
 
 // Mirror of server.runFilesResponse. `available` is the gate: when

@@ -28,10 +28,21 @@ var ErrNotGitRepo = errors.New("git: not a git repository")
 // effective change per path. The on-disk reality (worktree) wins over the
 // index when both columns disagree — the editor cares about "what would I
 // see if I opened the file right now" more than the staging state.
+//
+// Added/Deleted carry the line counts from `git diff --numstat`, merged
+// in by Status/StatusBetween so the editor can render Git-Graph-style
+// "+N | -N" badges without a second round trip. Binary files set
+// Binary=true and Added=Deleted=-1 (sentinel) so the UI shows
+// "(binary)" instead of misleading zeros. Both numeric fields are
+// always serialized — `(+0 | -0)` is meaningful for pure renames or
+// whitespace-only diffs and we don't want JSON omission to hide it.
 type FileStatus struct {
 	Path    string `json:"path"`
 	Status  string `json:"status"`             // "M" | "A" | "D" | "R" | "??"
 	OldPath string `json:"old_path,omitempty"` // populated only when Status == "R"
+	Added   int    `json:"added"`              // -1 when Binary
+	Deleted int    `json:"deleted"`            // -1 when Binary
+	Binary  bool   `json:"binary,omitempty"`
 }
 
 // DiffPayload carries the two sides of a file diff for the Monaco

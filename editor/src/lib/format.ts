@@ -59,6 +59,14 @@ export function formatRelative(iso: string): string {
   return `${days}d ago`;
 }
 
+// basename returns the trailing path segment after the last "/", or
+// the whole string if there is no slash. Suitable for slash-only paths
+// (git uses "/" everywhere); not a drop-in for os.path.basename.
+export function basename(path: string): string {
+  const i = path.lastIndexOf("/");
+  return i < 0 ? path : path.slice(i + 1);
+}
+
 export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;

@@ -3,7 +3,7 @@ import { useState, type ReactNode } from "react";
 import { CopyIcon } from "@radix-ui/react-icons";
 
 import { StatusBadge, Tooltip } from "@/components/ui";
-import { formatDurationBetween, formatRelative } from "@/lib/format";
+import { basename, formatDurationBetween, formatRelative } from "@/lib/format";
 import type { RunHeader } from "@/api/runs";
 
 interface InfoPanelProps {
@@ -207,11 +207,6 @@ function Mono({ children, copyable, title }: MonoProps) {
       </button>
     </Tooltip>
   );
-}
-
-function basename(path: string): string {
-  const i = path.lastIndexOf("/");
-  return i < 0 ? path : path.slice(i + 1);
 }
 
 function truncate(s: string, n: number): string {

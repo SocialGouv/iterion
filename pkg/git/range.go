@@ -25,11 +25,34 @@ func StatusBetween(repoRoot, baseRef, finalRef string) ([]FileStatus, error) {
 	if !isGitDir(repoRoot) {
 		return nil, ErrNotGitRepo
 	}
+
+	// Run --name-status and --numstat in parallel; both are independent
+	// `git diff` invocations against the same ref pair.
+	type nsResult struct {
+		stats []NumStat
+		err   error
+	}
+	nsCh := make(chan nsResult, 1)
+	go func() {
+		stats, err := NumStatBetween(repoRoot, baseRef, finalRef)
+		nsCh <- nsResult{stats, err}
+	}()
+
 	out, err := run(repoRoot, "diff", "--name-status", "-z", baseRef, finalRef)
 	if err != nil {
+		<-nsCh
 		return nil, err
 	}
-	return parseDiffNameStatusZ(out)
+	files, err := parseDiffNameStatusZ(out)
+	if err != nil {
+		<-nsCh
+		return nil, err
+	}
+
+	if ns := <-nsCh; ns.err == nil {
+		applyNumStats(files, ns.stats)
+	}
+	return files, nil
 }
 
 // DiffBetween returns the Before (baseRef) and After (finalRef) blob contents

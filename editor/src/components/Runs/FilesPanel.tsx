@@ -1,9 +1,20 @@
-import { useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 
-import { ReloadIcon } from "@radix-ui/react-icons";
+import {
+  ChevronDownIcon,
+  ChevronRightIcon,
+  ReloadIcon,
+} from "@radix-ui/react-icons";
 
 import { IconButton, Tooltip } from "@/components/ui";
 import { useRunFiles } from "@/hooks/useRunFiles";
+import {
+  buildFileTree,
+  type TreeFile,
+  type TreeFolder,
+  type TreeNode,
+} from "@/lib/fileTree";
+import { basename } from "@/lib/format";
 import type { RunFile, RunFileStatus } from "@/api/runs";
 
 interface FilesPanelProps {
@@ -11,24 +22,35 @@ interface FilesPanelProps {
   onSelectFile: (file: RunFile) => void;
 }
 
-// FilesPanel renders just the modified-files list — wrapped by LeftPanel
+// FilesPanel renders the modified-files tree — wrapped by LeftPanel
 // which owns the collapse state, the panel chrome, and the tab strip.
-// Keep this component self-contained so it can be reused if we ever
-// want a "files" view outside the tabbed context.
+// The list is presented as a Git-Graph-style tree: folders compact
+// single-child chains into breadcrumb labels (".github / workflows"),
+// each file shows "+N | -N" line counts in green/red, and folders show
+// the same aggregate when they are collapsed (so a folded directory
+// still tells you how much churn lives below).
 export default function FilesPanel({ runId, onSelectFile }: FilesPanelProps) {
   const { data, loading, error, refresh } = useRunFiles(runId);
 
-  const sortedFiles = useMemo(() => {
-    if (!data?.files) return [];
-    return [...data.files].sort((a, b) => {
-      const ua = a.status === "??" ? 1 : 0;
-      const ub = b.status === "??" ? 1 : 0;
-      if (ua !== ub) return ua - ub;
-      return a.path.localeCompare(b.path);
-    });
-  }, [data?.files]);
-
+  const tree = useMemo(() => buildFileTree(data?.files ?? []), [data?.files]);
   const fileCount = data?.files.length ?? 0;
+
+  // Default state: every folder expanded. Set tracks pathKeys the user
+  // has *explicitly* collapsed — this way new files arriving live (the
+  // panel auto-refreshes on node_finished events) appear under
+  // already-expanded ancestors instead of being hidden.
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const toggle = useCallback((pathKey: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(pathKey)) {
+        next.delete(pathKey);
+      } else {
+        next.add(pathKey);
+      }
+      return next;
+    });
+  }, []);
 
   return (
     <div className="flex flex-col min-h-0 min-w-0 flex-1 w-full">
@@ -61,14 +83,20 @@ export default function FilesPanel({ runId, onSelectFile }: FilesPanelProps) {
           )
         ) : !data.available ? (
           <EmptyState message={reasonLabel(data.reason)} />
-        ) : sortedFiles.length === 0 ? (
+        ) : tree.length === 0 ? (
           <EmptyState message="No changes" />
         ) : (
-          <ul className="py-1">
-            {sortedFiles.map((f) => (
-              <FileRow key={f.path + f.status} file={f} onClick={onSelectFile} />
+          <div className="py-1 text-xs">
+            {tree.map((node) => (
+              <TreeRow
+                key={node.pathKey}
+                node={node}
+                collapsed={collapsed}
+                onToggle={toggle}
+                onSelectFile={onSelectFile}
+              />
             ))}
-          </ul>
+          </div>
         )}
       </div>
       {data?.work_dir && (
@@ -82,61 +110,154 @@ export default function FilesPanel({ runId, onSelectFile }: FilesPanelProps) {
   );
 }
 
-interface FileRowProps {
-  file: RunFile;
-  onClick: (file: RunFile) => void;
+interface TreeRowProps {
+  node: TreeNode;
+  collapsed: Set<string>;
+  onToggle: (pathKey: string) => void;
+  onSelectFile: (file: RunFile) => void;
 }
 
-function FileRow({ file, onClick }: FileRowProps) {
-  const dir = dirname(file.path);
-  const base = basename(file.path);
-  const tooltip = file.old_path
-    ? `${file.old_path} → ${file.path}`
-    : file.path;
+function TreeRow({ node, collapsed, onToggle, onSelectFile }: TreeRowProps) {
+  if (node.kind === "folder") {
+    const isCollapsed = collapsed.has(node.pathKey);
+    return (
+      <>
+        <FolderRow
+          folder={node}
+          collapsed={isCollapsed}
+          onToggle={() => onToggle(node.pathKey)}
+        />
+        {!isCollapsed &&
+          node.children.map((child) => (
+            <TreeRow
+              key={child.pathKey}
+              node={child}
+              collapsed={collapsed}
+              onToggle={onToggle}
+              onSelectFile={onSelectFile}
+            />
+          ))}
+      </>
+    );
+  }
+  return <FileRow node={node} onSelectFile={onSelectFile} />;
+}
+
+// Pixel offsets for indentation. We use inline styles instead of
+// Tailwind utility classes because Tailwind's `pl-N` doesn't compose
+// for arbitrary depth — each level needs a class that JIT can pick up
+// at build time, which doesn't work with a runtime-driven number.
+const INDENT_BASE = 8; // left padding of the outermost row
+const INDENT_PER_LEVEL = 12; // matches VS Code tree density
+const CHEVRON_SLOT = 14; // h-3 chevron + gap reserved for files
+
+function FolderRow({
+  folder,
+  collapsed,
+  onToggle,
+}: {
+  folder: TreeFolder;
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  // Aggregates show only when collapsed: an expanded folder's children
+  // already render their own counts, so summing them again on the
+  // header is just visual noise.
+  const showAggregate =
+    collapsed && (folder.added > 0 || folder.deleted > 0);
   return (
-    <li>
-      <Tooltip content={tooltip}>
-        <button
-          type="button"
-          onClick={() => onClick(file)}
-          className="flex w-full items-center gap-2 px-2 py-1 text-left hover:bg-surface-2 focus:bg-surface-2 focus:outline-none"
-        >
-          <StatusBadge status={file.status} />
-          <span className="truncate min-w-0 text-xs text-fg-default">{base}</span>
-          {dir && (
-            <span className="ml-auto truncate pl-2 text-[10px] text-fg-subtle min-w-0 max-w-[55%]">
-              {dir}
-            </span>
+    <button
+      type="button"
+      onClick={onToggle}
+      style={{ paddingLeft: INDENT_BASE + folder.depth * INDENT_PER_LEVEL }}
+      className="flex w-full items-center gap-1 py-0.5 pr-2 text-left hover:bg-surface-2 focus:bg-surface-2 focus:outline-none"
+    >
+      {collapsed ? (
+        <ChevronRightIcon className="h-3 w-3 shrink-0 text-fg-subtle" />
+      ) : (
+        <ChevronDownIcon className="h-3 w-3 shrink-0 text-fg-subtle" />
+      )}
+      <span className="truncate text-fg-muted">{folder.label}</span>
+      {showAggregate && (
+        <span className="ml-auto shrink-0 pl-2 text-[10px] tabular-nums">
+          {folder.added > 0 && (
+            <span className="text-emerald-500">+{folder.added}</span>
           )}
-        </button>
-      </Tooltip>
-    </li>
+          {folder.added > 0 && folder.deleted > 0 && (
+            <span className="text-fg-subtle"> </span>
+          )}
+          {folder.deleted > 0 && (
+            <span className="text-rose-500">-{folder.deleted}</span>
+          )}
+        </span>
+      )}
+    </button>
   );
 }
 
-// VSCode-style colour palette: modified=yellow, added=green,
-// deleted=red, untracked=green-muted, renamed=blue. The badge is a
-// fixed 14px square so columns align even with multi-letter codes.
-function StatusBadge({ status }: { status: RunFileStatus }) {
+function FileRow({
+  node,
+  onSelectFile,
+}: {
+  node: TreeFile;
+  onSelectFile: (file: RunFile) => void;
+}) {
+  const f = node.file;
+  const tooltip = f.old_path ? `${f.old_path} → ${f.path}` : f.path;
+  return (
+    <Tooltip content={tooltip}>
+      <button
+        type="button"
+        onClick={() => onSelectFile(f)}
+        style={{
+          paddingLeft:
+            INDENT_BASE + node.depth * INDENT_PER_LEVEL + CHEVRON_SLOT,
+        }}
+        className="flex w-full items-center gap-2 py-0.5 pr-2 text-left hover:bg-surface-2 focus:bg-surface-2 focus:outline-none"
+      >
+        <StatusDot status={f.status} />
+        <span className="truncate min-w-0 text-fg-default">{node.label}</span>
+        <span className="ml-auto shrink-0 pl-2 text-[10px] tabular-nums">
+          {f.binary ? (
+            <span className="text-fg-subtle">(binary)</span>
+          ) : (
+            <>
+              <span className="text-emerald-500">+{f.added}</span>
+              <span className="text-fg-subtle"> | </span>
+              <span className="text-rose-500">-{f.deleted}</span>
+            </>
+          )}
+        </span>
+      </button>
+    </Tooltip>
+  );
+}
+
+// VSCode-style palette. Compared to the previous flat-list `StatusBadge`,
+// the dot is leaner (no filled background) so the row chrome doesn't
+// compete with the line-count column on the right. The letter form is
+// kept rather than a shape so screen readers can announce status
+// without aria gymnastics.
+const STATUS_CLASS: Record<string, string> = {
+  M: "text-amber-500",
+  A: "text-emerald-500",
+  D: "text-rose-500",
+  R: "text-sky-500",
+  "??": "text-emerald-400/70",
+};
+
+function StatusDot({ status }: { status: RunFileStatus }) {
   const cls = STATUS_CLASS[status] ?? "text-fg-muted";
   const letter = status === "??" ? "U" : status;
   return (
     <span
-      className={`inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[10px] font-bold leading-none ${cls}`}
+      className={`inline-flex h-3 w-3 shrink-0 items-center justify-center text-[10px] font-bold leading-none ${cls}`}
       aria-label={`status ${status}`}
     >
       {letter}
     </span>
   );
 }
-
-const STATUS_CLASS: Record<string, string> = {
-  M: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
-  A: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
-  D: "bg-rose-500/15 text-rose-600 dark:text-rose-400",
-  R: "bg-sky-500/15 text-sky-600 dark:text-sky-400",
-  "??": "bg-emerald-500/10 text-emerald-700/80 dark:text-emerald-400/70",
-};
 
 function EmptyState({ message }: { message: string }) {
   return (
@@ -169,7 +290,11 @@ function isLive(data: { live?: boolean }): boolean {
 //   worktree/cwd. Badges are uncommitted state.
 // - live=false → files come from `git diff base..final` against the
 //   storage branch (worktree gc'd). Badges are committed-in-this-run.
-function footerLabel(data: { worktree?: boolean; live?: boolean; work_dir?: string }): string {
+function footerLabel(data: {
+  worktree?: boolean;
+  live?: boolean;
+  work_dir?: string;
+}): string {
   if (!isLive(data)) {
     return "Committed in this run";
   }
@@ -190,12 +315,3 @@ function footerTooltip(data: {
   } has been cleaned up; the storage branch is the source of truth.`;
 }
 
-function basename(path: string): string {
-  const i = path.lastIndexOf("/");
-  return i < 0 ? path : path.slice(i + 1);
-}
-
-function dirname(path: string): string {
-  const i = path.lastIndexOf("/");
-  return i < 0 ? "" : path.slice(0, i);
-}
