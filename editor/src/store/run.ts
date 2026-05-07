@@ -158,21 +158,25 @@ export const useRunStore = create<RunStoreState>((set) => ({
       if (current === status) return state;
       // Flipping back to "running" implies a fresh execution pass: clear
       // the prior finished_at + error so the duration ticker (header)
-      // and status banners don't carry stale data.
-      const reset =
-        status === "running"
-          ? { finished_at: undefined, error: undefined }
-          : null;
-      return {
+      // and status banners don't carry stale data, and drop
+      // pendingHumanInput so the answer panel unmounts immediately
+      // after submit (don't wait for the run_resumed WS event).
+      const next: Partial<RunStoreState> = {
         snapshot: {
           ...state.snapshot,
           run: {
             ...state.snapshot.run,
             status,
-            ...(reset ?? {}),
+            ...(status === "running"
+              ? { finished_at: undefined, error: undefined }
+              : {}),
           },
         },
       };
+      if (status === "running" && state.pendingHumanInput) {
+        next.pendingHumanInput = null;
+      }
+      return next;
     });
   },
 
