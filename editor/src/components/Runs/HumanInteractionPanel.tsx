@@ -21,6 +21,7 @@ export default function HumanInteractionPanel({ runId }: Props) {
   const checkpoint = useRunStore((s) => s.snapshot?.run.checkpoint);
   const pending = useRunStore((s) => s.pendingHumanInput);
   const setRunStatus = useRunStore((s) => s.setRunStatus);
+  const requestWsReconnect = useRunStore((s) => s.requestWsReconnect);
   const currentSource = useDocumentStore((s) => s.currentSource);
 
   const { fields, loading, staleHash } = useHumanNodeSchema(runId, pending?.node_id);
@@ -59,6 +60,11 @@ export default function HumanInteractionPanel({ runId }: Props) {
       });
       setSubmitted(true);
       setRunStatus("running");
+      // The broker dropped this run's subscribers when the prior pass
+      // hit paused_waiting_human; without a fresh dial the resumed
+      // engine publishes node updates into the void and the canvas
+      // stays frozen until the user reloads. Mirrors ResumeDialog.tsx.
+      requestWsReconnect();
     } catch (e) {
       setError((e as Error).message);
     } finally {
