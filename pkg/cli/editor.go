@@ -32,6 +32,21 @@ type EditorOptions struct {
 	// Invoked from a goroutine; callers must be ready for it to fire
 	// concurrently with their own Run loop.
 	OnReady func(addr string)
+
+	// Mode, when set, advertises the deployment context in
+	// /api/server/info and tunes upload defaults ("desktop" raises
+	// the per-file cap to 1 GB; "" / "local" / "web" keep the 50 MB
+	// cap). The server's Config.Mode owns the same field.
+	Mode string
+
+	// MaxUploadSize / MaxTotalUploadSize / MaxUploadsPerRun /
+	// AllowUploadMime override the server's upload limits. Zero
+	// values fall through to mode-specific defaults applied by
+	// pkg/server.applyUploadDefaults.
+	MaxUploadSize      int64
+	MaxTotalUploadSize int64
+	MaxUploadsPerRun   int
+	AllowUploadMime    []string
 }
 
 // RunEditor starts the editor HTTP server.
@@ -66,13 +81,18 @@ func RunEditor(ctx context.Context, opts EditorOptions, p *Printer) error {
 	}
 
 	cfg := server.Config{
-		Port:         opts.Port,
-		Bind:         opts.Bind,
-		ExamplesDir:  examplesDir,
-		WorkDir:      dir,
-		StoreDir:     opts.StoreDir,
-		OpenBrowser:  !opts.NoBrowser,
-		SessionToken: opts.SessionToken,
+		Port:               opts.Port,
+		Bind:               opts.Bind,
+		ExamplesDir:        examplesDir,
+		WorkDir:            dir,
+		StoreDir:           opts.StoreDir,
+		OpenBrowser:        !opts.NoBrowser,
+		SessionToken:       opts.SessionToken,
+		Mode:               opts.Mode,
+		MaxUploadSize:      opts.MaxUploadSize,
+		MaxTotalUploadSize: opts.MaxTotalUploadSize,
+		MaxUploadsPerRun:   opts.MaxUploadsPerRun,
+		AllowedUploadMIMEs: opts.AllowUploadMime,
 	}
 
 	logger := iterlog.New(iterlog.LevelInfo, os.Stderr)

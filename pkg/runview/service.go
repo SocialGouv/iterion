@@ -56,6 +56,12 @@ type LaunchSpec struct {
 	// engine creates the storage branch only and leaves merge_status
 	// pending for the UI to drive via POST /api/runs/{id}/merge.
 	AutoMerge bool
+	// AttachmentPromote, when set, is invoked after CreateRun and
+	// before the engine starts. It is expected to materialise every
+	// attachment declared in `attachments:` into the run-scoped store
+	// (typically by promoting uploads from a staging area). Errors
+	// abort the launch.
+	AttachmentPromote runtime.AttachmentPromoteFunc
 }
 
 // ResumeSpec describes a resume request.
@@ -446,6 +452,54 @@ func (s *Service) Broker() *EventBroker { return s.broker }
 // handlers can fall back to persisted run.log when the in-memory
 // buffer is gone.
 func (s *Service) StoreDir() string { return s.storeDir }
+
+// StoreRoot returns the filesystem root the underlying RunStore
+// operates on, or empty when the store has no filesystem (cloud
+// stores). Used by the upload handlers to materialise a staging
+// directory.
+func (s *Service) StoreRoot() string {
+	if s == nil || s.store == nil {
+		return ""
+	}
+	return s.store.Root()
+}
+
+// WriteAttachment forwards to the underlying RunStore.
+func (s *Service) WriteAttachment(ctx context.Context, runID string, rec store.AttachmentRecord, body io.Reader) error {
+	return s.store.WriteAttachment(ctx, runID, rec, body)
+}
+
+// OpenAttachment forwards to the underlying RunStore.
+func (s *Service) OpenAttachment(ctx context.Context, runID, name string) (io.ReadCloser, store.AttachmentRecord, error) {
+	return s.store.OpenAttachment(ctx, runID, name)
+}
+
+// ListAttachments forwards to the underlying RunStore.
+func (s *Service) ListAttachments(ctx context.Context, runID string) ([]store.AttachmentRecord, error) {
+	return s.store.ListAttachments(ctx, runID)
+}
+
+// PresignAttachment forwards to the underlying RunStore.
+func (s *Service) PresignAttachment(ctx context.Context, runID, name string, ttl time.Duration) (string, error) {
+	return s.store.PresignAttachment(ctx, runID, name, ttl)
+}
+
+// VerifyAttachmentSignature checks an HMAC-signed presign URL when
+// the underlying store implements signature verification (filesystem
+// only — cloud stores rely on AWS SigV4). Returns false on cloud /
+// non-FS stores.
+func (s *Service) VerifyAttachmentSignature(runID, name, exp, sig string) bool {
+	if s == nil || s.store == nil {
+		return false
+	}
+	type verifier interface {
+		VerifyAttachmentSignature(runID, name, exp, sig string) bool
+	}
+	if v, ok := s.store.(verifier); ok {
+		return v.VerifyAttachmentSignature(runID, name, exp, sig)
+	}
+	return false
+}
 
 // GetLogBuffer returns the live log buffer for runID, or nil if the
 // run is not held by this process. Valid only while the run is
@@ -1049,6 +1103,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	}
 
 	return s.spawnRun(parent, runID, wf, hash, spec.FilePath, runName, fin, executor, runLogger, spec.Timeout, false,
+		spec.AttachmentPromote,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
 		})
@@ -1146,6 +1201,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// engine defaults. If we ever surface "edit finalization on
 	// resume" we'd plumb a ResumeSpec field here.
 	return s.spawnRun(parent, spec.RunID, wf, hash, spec.FilePath, runName, finalizationOpts{}, executor, runLogger, spec.Timeout, spec.Force,
+		nil,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			// Re-validate under the lock acquired by spawnRun (TOCTOU
 			// guard against a concurrent resume / state change).
@@ -1256,6 +1312,7 @@ func (s *Service) spawnRun(
 	runLogger *iterlog.Logger,
 	timeout time.Duration,
 	force bool,
+	promote runtime.AttachmentPromoteFunc,
 	body func(ctx context.Context, eng *runtime.Engine) error,
 ) (*LaunchResult, error) {
 	lock, err := s.store.LockRun(context.Background(), runID)
@@ -1279,6 +1336,9 @@ func (s *Service) spawnRun(
 	opts := s.engineOptions(runLogger, hash, filePath, runName, fin)
 	if force {
 		opts = append(opts, runtime.WithForceResume(true))
+	}
+	if promote != nil {
+		opts = append(opts, runtime.WithAttachmentPromote(promote))
 	}
 	eng := runtime.New(wf, s.store, executor, opts...)
 

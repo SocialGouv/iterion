@@ -34,6 +34,10 @@ func (s *Server) registerRunRoutes() {
 	}
 	s.mux.HandleFunc("GET /api/runs", s.handleListRuns)
 	s.mux.HandleFunc("POST /api/runs", s.handleLaunchRun)
+	s.mux.HandleFunc("POST /api/runs/uploads", s.handleUploadAttachment)
+	s.mux.HandleFunc("GET /api/runs/{id}/attachments/{name}", s.handleServeAttachment)
+	s.mux.HandleFunc("GET /api/runs/{id}/attachments/{name}/url", s.handlePresignAttachment)
+	s.mux.HandleFunc("GET /api/server/info", s.handleServerInfo)
 	s.mux.HandleFunc("GET /api/runs/{id}", s.handleGetRun)
 	s.mux.HandleFunc("GET /api/runs/{id}/events", s.handleGetRunEvents)
 	s.mux.HandleFunc("GET /api/runs/{id}/workflow", s.handleGetRunWorkflow)
@@ -73,6 +77,11 @@ type launchRunRequest struct {
 	// AutoMerge: when true, the engine performs the merge at end of
 	// run; when false (default), merge is deferred to a UI action.
 	AutoMerge bool `json:"auto_merge,omitempty"`
+	// Attachments maps the workflow's attachment names to upload IDs
+	// returned by POST /api/runs/uploads. The launch handler promotes
+	// each upload from the staging area into the run-scoped store
+	// before kicking off execution.
+	Attachments map[string]string `json:"attachments,omitempty"`
 }
 
 type launchRunResponse struct {
@@ -183,16 +192,26 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	// (Go 1.21+) gives us exactly that combination.
 	ctx := context.WithoutCancel(spanCtx)
 
+	var promote runtime.AttachmentPromoteFunc
+	if len(req.Attachments) > 0 {
+		mapping := req.Attachments
+		promote = func(promoteCtx context.Context, runID string) error {
+			_, _, err := s.promoteStaged(promoteCtx, runID, mapping)
+			return err
+		}
+	}
+
 	res, err := s.runs.Launch(ctx, runview.LaunchSpec{
-		FilePath:      absPath,
-		Source:        req.Source,
-		RunID:         req.RunID,
-		Vars:          req.Vars,
-		Timeout:       timeout,
-		MergeInto:     req.MergeInto,
-		BranchName:    req.BranchName,
-		MergeStrategy: store.MergeStrategy(req.MergeStrategy),
-		AutoMerge:     req.AutoMerge,
+		FilePath:          absPath,
+		Source:            req.Source,
+		RunID:             req.RunID,
+		Vars:              req.Vars,
+		Timeout:           timeout,
+		MergeInto:         req.MergeInto,
+		BranchName:        req.BranchName,
+		MergeStrategy:     store.MergeStrategy(req.MergeStrategy),
+		AutoMerge:         req.AutoMerge,
+		AttachmentPromote: promote,
 	})
 	if err != nil {
 		if errors.Is(err, runtime.ErrServerDraining) {

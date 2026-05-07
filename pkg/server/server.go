@@ -87,6 +87,25 @@ type Config struct {
 	// gauge updates as run-console clients connect / disconnect. Other
 	// cloud metrics live on the runner / publisher side.
 	Metrics *metrics.Registry
+
+	// MaxUploadSize bounds the bytes the upload endpoint will accept
+	// per attachment. Zero is replaced with a mode-specific default
+	// (1 GB desktop, 50 MB web/cloud) at registration time.
+	MaxUploadSize int64
+	// MaxTotalUploadSize bounds the cumulative bytes per run across
+	// every attachment. Zero defaults to 5x MaxUploadSize.
+	MaxTotalUploadSize int64
+	// MaxUploadsPerRun caps how many distinct attachments may
+	// reference a single run. Zero defaults to 20.
+	MaxUploadsPerRun int
+	// AllowedUploadMIMEs is the server-side allowlist applied to
+	// every upload's sniffed MIME. Each entry is a `type/subtype`
+	// pattern with optional `*` wildcards (e.g. `image/*`). Empty
+	// means "use the built-in safe defaults" (image/png, image/jpeg,
+	// image/gif, image/webp, application/pdf, application/json,
+	// text/plain, text/markdown, text/csv, application/yaml,
+	// application/zip, application/gzip, application/x-tar).
+	AllowedUploadMIMEs []string
 }
 
 // ReadinessCheck is the contract /readyz invokes on each external
@@ -131,6 +150,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	if cfg.Bind == "" {
 		cfg.Bind = "127.0.0.1"
 	}
+	cfg = applyUploadDefaults(cfg)
 	s := &Server{cfg: cfg, logger: logger, mux: http.NewServeMux(), addrReady: make(chan struct{})}
 	s.hub = NewHub(logger)
 	go s.hub.Run()

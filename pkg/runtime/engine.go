@@ -80,7 +80,15 @@ type Engine struct {
 	sandboxOverride     string                // CLI/Launch-level sandbox mode override; "" means "no override" (workflow + global default win); set via WithSandboxOverride
 	sandboxDefault      string                // global ITERION_SANDBOX_DEFAULT value snapshot; set via WithSandboxDefault
 	sandboxDefaultImage string                // image ref used as fallback when sandbox: auto and no .devcontainer/devcontainer.json is found; "" lets the runtime pick the built-in pinned to the iterion version; set via WithSandboxDefaultImage
+	attachmentPromote   AttachmentPromoteFunc // optional: invoked after CreateRun to materialise attachments
 }
+
+// AttachmentPromoteFunc is invoked once at the start of a run, right
+// after the run is created in the store but before the engine walks
+// the graph. It is expected to populate Run.Attachments by calling
+// store.WriteAttachment for each attachment declared in the
+// workflow's `attachments:` block.
+type AttachmentPromoteFunc func(ctx context.Context, runID string) error
 
 // EngineOption configures an Engine.
 type EngineOption func(*Engine)
@@ -111,6 +119,15 @@ func WithSandboxDefault(mode string) EngineOption {
 // (`ghcr.io/socialgouv/iterion-sandbox-slim:<iterion-version>`).
 func WithSandboxDefaultImage(ref string) EngineOption {
 	return func(e *Engine) { e.sandboxDefaultImage = ref }
+}
+
+// WithAttachmentPromote registers a callback invoked right after
+// CreateRun to materialise attachments declared in the workflow's
+// `attachments:` block. The callback is responsible for writing the
+// bytes (typically via store.WriteAttachment) so that
+// Run.Attachments is populated before the first node runs.
+func WithAttachmentPromote(fn AttachmentPromoteFunc) EngineOption {
+	return func(e *Engine) { e.attachmentPromote = fn }
 }
 
 // WithOnNodeFinished registers a callback invoked after each node finishes
@@ -330,6 +347,18 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 		run.AutoMerge = e.autoMerge
 		if err := e.store.SaveRun(ctx, run); err != nil {
 			return fmt.Errorf("runtime: save run metadata: %w", err)
+		}
+	}
+
+	// Materialise attachments before walking the graph. The callback
+	// (when set by the launch path) writes the bytes via the store
+	// and reflects metadata into Run.Attachments. A failure here
+	// transitions the run to failed since downstream nodes would
+	// see undeclared {{attachments.X}} refs.
+	if e.attachmentPromote != nil {
+		if err := e.attachmentPromote(ctx, runID); err != nil {
+			_ = e.store.UpdateRunStatus(ctx, runID, store.RunStatusFailed, fmt.Sprintf("attachment promote: %v", err))
+			return fmt.Errorf("runtime: promote attachments: %w", err)
 		}
 	}
 
