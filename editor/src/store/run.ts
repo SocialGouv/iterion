@@ -31,8 +31,13 @@ export type WsState = "idle" | "connecting" | "open" | "reconnecting" | "closed"
 
 export interface PendingHumanInput {
   interaction_id?: string;
+  node_id?: string;
   questions?: Record<string, unknown>;
-  raw: RunEvent;
+  // raw is the source human_input_requested event, when available.
+  // Absent on snapshot rehydration (page reload mid-pause): in that
+  // case the fields above are sourced from RunHeader.checkpoint
+  // instead, and consumers should treat raw as a debugging aid only.
+  raw?: RunEvent;
 }
 
 export interface RunLogState {
@@ -122,6 +127,13 @@ export const useRunStore = create<RunStoreState>((set) => ({
     for (const e of snap.executions) {
       map.set(e.execution_id, e);
     }
+    // When the run is paused mid-interaction, rehydrate
+    // pendingHumanInput from the checkpoint embedded in run.json.
+    // Without this, a page reload while the run is paused would
+    // leave the answer panel empty even though the runtime is
+    // genuinely waiting for input. The event-driven path
+    // (case "human_input_requested") still wins for live runs.
+    const rehydrated = rehydratePendingHumanInput(snap);
     set((state) => {
       // Keep already-applied events that fall within the snapshot's
       // window. Wiping them broke edge rendering on revisit of finished
@@ -134,7 +146,7 @@ export const useRunStore = create<RunStoreState>((set) => ({
         snapshot: snap,
         executionsById: map,
         events: trimmed,
-        pendingHumanInput: null,
+        pendingHumanInput: rehydrated,
       };
     });
   },
@@ -254,6 +266,34 @@ export function selectRunningExecution(
   return best;
 }
 
+// rehydratePendingHumanInput reads the checkpoint embedded in
+// RunHeader (mirror of pkg/store.Checkpoint) and produces a
+// PendingHumanInput when the run is paused waiting for human input.
+// The checkpoint shape is "opaque" at the type level; we narrow
+// defensively because older runs persisted by previous iterion
+// versions may omit some fields.
+function rehydratePendingHumanInput(
+  snap: RunSnapshot,
+): PendingHumanInput | null {
+  if (snap.run.status !== "paused_waiting_human") return null;
+  const cp = snap.run.checkpoint;
+  if (!cp || typeof cp !== "object") return null;
+  const checkpoint = cp as {
+    node_id?: string;
+    interaction_id?: string;
+    interaction_questions?: Record<string, unknown>;
+  };
+  const questions = checkpoint.interaction_questions;
+  // An empty questions map is valid (the human node may pause
+  // without specific fields). What matters is that the run is
+  // paused — we surface a panel even when the form is empty.
+  return {
+    interaction_id: checkpoint.interaction_id,
+    node_id: checkpoint.node_id,
+    questions: questions ?? {},
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Helpers (mirror of the Go reducer in pkg/runview/snapshot.go)
 // ---------------------------------------------------------------------------
@@ -365,6 +405,7 @@ function reduceEvents(
         }
         pendingHumanInput = {
           interaction_id: evt.data?.interaction_id as string | undefined,
+          node_id: evt.node_id,
           questions: evt.data?.questions as Record<string, unknown> | undefined,
           raw: evt,
         };

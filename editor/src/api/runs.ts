@@ -226,12 +226,24 @@ export interface WireWorkflow {
 
 // Mirror of runview.WireNode. Model/backend/reasoning_effort are only
 // populated for LLM-driving nodes (Agent, Judge, Router-LLM).
+// output_schema is populated for HumanNode so the run console can
+// build a typed answer form on pause.
 export interface WireNode {
   id: string;
   kind: string;
   model?: string;
   backend?: string;
   reasoning_effort?: string;
+  output_schema?: WireSchemaField[];
+}
+
+// Mirror of runview.WireSchemaField. Type carries the canonical string
+// form ("string", "bool", "int", "float", "json", "string[]"); the form
+// generator switches on this string.
+export interface WireSchemaField {
+  name: string;
+  type: string;
+  enum_values?: string[];
 }
 
 export async function getRunWorkflow(runId: string): Promise<WireWorkflow> {

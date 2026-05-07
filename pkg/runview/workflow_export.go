@@ -30,12 +30,28 @@ type WireWorkflow struct {
 // reasoning_effort) for nodes that drive an LLM (Agent, Judge, Router-LLM)
 // so the canvas can render those fields next to the node without the
 // frontend having to parse the .iter source itself.
+//
+// OutputFields is populated for HumanNode so the run console can build a
+// typed answer form when the run pauses on that node. Other node kinds
+// don't need it: their outputs are produced by LLM/tool execution, not
+// by user input, so the schema is invisible to the operator.
 type WireNode struct {
-	ID              string `json:"id"`
-	Kind            string `json:"kind"`
-	Model           string `json:"model,omitempty"`
-	Backend         string `json:"backend,omitempty"`
-	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	ID              string            `json:"id"`
+	Kind            string            `json:"kind"`
+	Model           string            `json:"model,omitempty"`
+	Backend         string            `json:"backend,omitempty"`
+	ReasoningEffort string            `json:"reasoning_effort,omitempty"`
+	OutputFields    []WireSchemaField `json:"output_schema,omitempty"`
+}
+
+// WireSchemaField is the JSON projection of an ir.SchemaField. The Type
+// field carries the canonical string form ("string", "bool", "int",
+// "float", "json", "string[]") so the frontend can switch on it without
+// tracking the iota values from the ir package.
+type WireSchemaField struct {
+	Name       string   `json:"name"`
+	Type       string   `json:"type"`
+	EnumValues []string `json:"enum_values,omitempty"`
 }
 
 // WireEdge mirrors the runtime-relevant fields of ir.Edge. Expression
@@ -125,7 +141,7 @@ func (s *Service) LoadWireWorkflow(runID string) (*WireWorkflow, error) {
 		StaleHash: staleHash,
 	}
 	for id, n := range wf.Nodes {
-		out.Nodes = append(out.Nodes, projectNode(id, n))
+		out.Nodes = append(out.Nodes, projectNode(id, n, wf))
 	}
 	for _, e := range wf.Edges {
 		out.Edges = append(out.Edges, WireEdge{
@@ -158,7 +174,10 @@ const IRWorkflowEndpointPath = "/api/runs/{id}/workflow"
 // displays the actual level rather than the unexpanded source. Invalid
 // expansions become "" — the run console treats that as "fall back to
 // the registry default" via its capability prefetch.
-func projectNode(id string, n ir.Node) WireNode {
+//
+// The wf parameter is needed to resolve schema names (HumanNode references
+// schemas by name; the actual fields live on wf.Schemas[name]).
+func projectNode(id string, n ir.Node, wf *ir.Workflow) WireNode {
 	out := WireNode{ID: id, Kind: n.NodeKind().String()}
 	switch v := n.(type) {
 	case *ir.AgentNode:
@@ -175,6 +194,30 @@ func projectNode(id string, n ir.Node) WireNode {
 			out.Backend = v.Backend
 			out.ReasoningEffort = ir.ResolveEffortLiteral(v.ReasoningEffort)
 		}
+	case *ir.HumanNode:
+		out.OutputFields = projectSchemaFields(v.OutputSchema, wf)
+	}
+	return out
+}
+
+// projectSchemaFields resolves a schema name to its WireSchemaField slice.
+// Returns nil when the name is empty or absent from wf.Schemas — the
+// frontend treats nil as "no schema, fall back to free-text PauseForm".
+func projectSchemaFields(schemaName string, wf *ir.Workflow) []WireSchemaField {
+	if schemaName == "" || wf == nil {
+		return nil
+	}
+	schema, ok := wf.Schemas[schemaName]
+	if !ok || schema == nil || len(schema.Fields) == 0 {
+		return nil
+	}
+	out := make([]WireSchemaField, 0, len(schema.Fields))
+	for _, f := range schema.Fields {
+		out = append(out, WireSchemaField{
+			Name:       f.Name,
+			Type:       f.Type.String(),
+			EnumValues: f.EnumValues,
+		})
 	}
 	return out
 }

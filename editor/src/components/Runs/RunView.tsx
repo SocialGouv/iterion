@@ -17,6 +17,7 @@ import { buildExecutionsAt } from "@/lib/snapshotReducer";
 
 import EventLog from "./EventLog";
 import FileDiffDialog from "./FileDiffDialog";
+import HumanInteractionPanel from "./HumanInteractionPanel";
 import LeftPanel from "./LeftPanel";
 import NodeDetailPanel from "./NodeDetailPanel";
 import QueuedBanner from "./QueuedBanner";
@@ -301,6 +302,7 @@ export default function RunView() {
         ) : (
           <>
             <RunMetrics active={active} onJumpToFailed={handleJumpToFailed} />
+            <HumanInteractionPanel runId={runId} />
             <Scrubber
               events={events}
               liveSeq={liveSeq}
