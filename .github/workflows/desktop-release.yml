@@ -1,4 +1,4 @@
-name: 📦 Desktop Release
+name: 🖥️ Desktop Release
 
 # Triggers on the same v* tags as release.yml. The two workflows run in
 # parallel and attach distinct (iterion-* vs iterion-desktop-*) artefacts

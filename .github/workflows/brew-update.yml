@@ -1,4 +1,4 @@
-name: 🍺 Brew tap update
+name: 🍺 Brew Tap Update
 
 # Runs after a GitHub Release is published — once for the CLI release.yml
 # upload, again for desktop-release.yml. Both passes are idempotent: the

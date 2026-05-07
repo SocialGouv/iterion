@@ -1,4 +1,4 @@
-name: container-image
+name: 🐳 Container Image
 
 on:
   push:
