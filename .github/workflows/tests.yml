@@ -78,24 +78,6 @@ jobs:
       - name: E2E tests
         run: go test -mod=vendor -v -timeout 120s ./e2e/...
 
-      # Filesystem CVE scan: catches vulnerabilities introduced via Go
-      # vendor changes (or any other source addition) on every PR,
-      # complementing the image scan in image.yml which only fires when
-      # Dockerfile/docker/go.mod/go.sum change. A PR that bumps a
-      # transitive dep through pkg/* edits would otherwise sneak past
-      # the security gate.
-      - name: Trivy filesystem scan
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          format: table
-          severity: HIGH,CRITICAL
-          exit-code: "1"
-          ignore-unfixed: true
-          trivyignores: .trivyignore
-          skip-dirs: vendor,editor/node_modules,node_modules
-
   mongo-conformance:
     # Runs the pkg/store/mongo conformance harness against a real Mongo
     # replica set (change-streams + transactions). The harness is gated

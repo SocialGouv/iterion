@@ -75,52 +75,6 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Compute lowercase image ref
-        shell: bash
-        run: |
-          # OCI image references must be lowercase; github.repository_owner
-          # returns case-preserved (e.g. SocialGouv). docker/metadata-action
-          # lowercases internally for the push step but the trivy step
-          # references env.IMAGE_NAME directly, so do the lowercase here
-          # once and reuse via $GITHUB_ENV.
-          echo "IMAGE_REF_LC=$(printf '%s/%s' "${REGISTRY}" "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')" \
-            >> "$GITHUB_ENV"
-
-      # Trivy runs on every build, not just main. PRs scan the locally
-      # loaded image (build with load=true above); branch/tag pushes
-      # scan the freshly-pushed registry tag. This way a CVE in a new
-      # base image or transitive dep blocks merge before it lands.
-      #
-      # Gate: HIGH + CRITICAL fail the build, ignore-unfixed drops
-      # CVEs without an upstream patch. .trivyignore at repo root is
-      # the escape hatch — when a transitive-dep CVE turns out to be
-      # not exercised by our code path and a real fix isn't feasible,
-      # land an entry there with a justification comment instead of
-      # eternally re-running the build hoping the CVE goes away.
-      # Each .trivyignore entry should be revisited periodically;
-      # keep the file an accurate audit trail.
-      - name: Trivy scan (registry image)
-        if: github.event_name != 'pull_request'
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ${{ env.IMAGE_REF_LC }}:edge
-          format: table
-          severity: HIGH,CRITICAL
-          exit-code: "1"
-          ignore-unfixed: true
-          trivyignores: .trivyignore
-
-      - name: Trivy scan (PR loaded image)
-        if: github.event_name == 'pull_request'
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ${{ steps.build.outputs.imageid }}
-          format: table
-          severity: HIGH,CRITICAL
-          exit-code: "1"
-          ignore-unfixed: true
-          trivyignores: .trivyignore
-
   # ----------------------------------------------------------------------
   # iterion-sandbox-slim — default image used by `sandbox: auto` when no
   # .devcontainer/devcontainer.json is found. Pinned to the iterion
@@ -171,34 +125,6 @@ jobs:
           labels: ${{ steps.meta-slim.outputs.labels }}
           cache-from: type=gha,scope=sandbox-slim
           cache-to: type=gha,mode=max,scope=sandbox-slim
-
-      - name: Compute lowercase image ref
-        shell: bash
-        run: |
-          echo "SANDBOX_SLIM_REF_LC=$(printf '%s/%s' "${REGISTRY}" "${SANDBOX_IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')" \
-            >> "$GITHUB_ENV"
-
-      - name: Trivy scan (registry image)
-        if: github.event_name != 'pull_request'
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ${{ env.SANDBOX_SLIM_REF_LC }}:edge
-          format: table
-          severity: HIGH,CRITICAL
-          exit-code: "1"
-          ignore-unfixed: true
-          trivyignores: .trivyignore
-
-      - name: Trivy scan (PR loaded image)
-        if: github.event_name == 'pull_request'
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ${{ steps.build-slim.outputs.imageid }}
-          format: table
-          severity: HIGH,CRITICAL
-          exit-code: "1"
-          ignore-unfixed: true
-          trivyignores: .trivyignore
 
   # ----------------------------------------------------------------------
   # iterion-sandbox-full — opt-in richer variant FROM the slim image.
@@ -270,30 +196,3 @@ jobs:
           cache-from: type=gha,scope=sandbox-full
           cache-to: type=gha,mode=max,scope=sandbox-full
 
-      - name: Compute lowercase image ref
-        shell: bash
-        run: |
-          echo "SANDBOX_FULL_REF_LC=$(printf '%s/%s' "${REGISTRY}" "${SANDBOX_IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')" \
-            >> "$GITHUB_ENV"
-
-      - name: Trivy scan (registry image)
-        if: github.event_name != 'pull_request'
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ${{ env.SANDBOX_FULL_REF_LC }}:edge
-          format: table
-          severity: HIGH,CRITICAL
-          exit-code: "1"
-          ignore-unfixed: true
-          trivyignores: .trivyignore
-
-      - name: Trivy scan (PR loaded image)
-        if: github.event_name == 'pull_request'
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ${{ steps.build-full.outputs.imageid }}
-          format: table
-          severity: HIGH,CRITICAL
-          exit-code: "1"
-          ignore-unfixed: true
-          trivyignores: .trivyignore

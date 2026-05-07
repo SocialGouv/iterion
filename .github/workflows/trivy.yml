@@ -1,0 +1,171 @@
+name: 🛡️ Trivy
+
+# Dedicated security workflow — kept separate from build/test pipelines so
+# a newly-disclosed CVE never blocks an image release or a PR. Findings are
+# published to the GitHub Security tab (Code scanning) via SARIF instead of
+# failing the run.
+#
+# Triggers:
+#   - pull_request / push on main → fs-scan only (fast, source tree).
+#   - workflow_run after image.yml succeeds on main → image-scan on the
+#     freshly-pushed :edge tags.
+#   - schedule (weekly) → both jobs, to catch CVEs disclosed since last run.
+#   - workflow_dispatch → manual trigger, with optional image_ref override.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_run:
+    workflows: ["🐳 Container Image"]
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      image_ref:
+        description: "Optional image ref to scan (default: all 3 :edge tags)"
+        required: false
+
+permissions:
+  contents: read
+  packages: read
+  security-events: write
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fs-scan:
+    # Skip on workflow_run (image-scan is the relevant job there).
+    if: github.event_name != 'workflow_run'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Trivy filesystem scan (SARIF)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-fs.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          skip-dirs: vendor,editor/node_modules,node_modules
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+      - name: Trivy filesystem scan (summary)
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          skip-dirs: vendor,editor/node_modules,node_modules
+          output: trivy-fs.txt
+
+      - name: Append summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Trivy filesystem scan"
+            echo ""
+            echo '```'
+            cat trivy-fs.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  image-scan:
+    # Run on workflow_run (after image.yml succeeded), schedule, or manual
+    # dispatch. Skip on PR/push events — those don't push registry images.
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+      || github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - iterion
+          - iterion-sandbox-slim
+          - iterion-sandbox-full
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve image ref
+        id: ref
+        shell: bash
+        env:
+          OWNER: ${{ github.repository_owner }}
+          IMAGE: ${{ matrix.image }}
+          OVERRIDE: ${{ inputs.image_ref }}
+        run: |
+          if [ -n "${OVERRIDE:-}" ]; then
+            ref="${OVERRIDE}"
+          else
+            owner_lc="$(printf '%s' "${OWNER}" | tr '[:upper:]' '[:lower:]')"
+            ref="ghcr.io/${owner_lc}/${IMAGE}:edge"
+          fi
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+
+      - name: Trivy image scan (SARIF)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.ref.outputs.ref }}
+          format: sarif
+          output: trivy-${{ matrix.image }}.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-${{ matrix.image }}.sarif
+          category: ${{ matrix.image }}
+
+      - name: Trivy image scan (summary)
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.ref.outputs.ref }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          output: trivy-${{ matrix.image }}.txt
+
+      - name: Append summary
+        if: always()
+        shell: bash
+        env:
+          IMAGE: ${{ matrix.image }}
+          REF: ${{ steps.ref.outputs.ref }}
+        run: |
+          {
+            echo "## Trivy image scan — ${IMAGE}"
+            echo ""
+            echo "ref: \`${REF}\`"
+            echo ""
+            echo '```'
+            cat "trivy-${IMAGE}.txt" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
