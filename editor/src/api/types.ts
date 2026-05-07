@@ -4,6 +4,7 @@
 
 export interface IterDocument {
   vars?: VarsBlock;
+  attachments?: AttachmentsBlock;
   mcp_servers?: MCPServerDecl[];
   prompts: PromptDecl[];
   schemas: SchemaDecl[];
@@ -47,6 +48,49 @@ export interface Literal {
 }
 
 export type LiteralKind = "string" | "int" | "float" | "bool";
+
+// ---------------------------------------------------------------------------
+// Attachments
+// ---------------------------------------------------------------------------
+
+export type AttachmentType = "file" | "image";
+
+export interface AttachmentsBlock {
+  fields: AttachmentField[];
+}
+
+export interface AttachmentField {
+  name: string;
+  type: AttachmentType;
+  required?: boolean;
+  accept_mime?: string[];
+  description?: string;
+}
+
+// Server-info upload limits (mirrors pkg/server.uploadLimitsBlock).
+export interface UploadLimits {
+  max_file_size: number;
+  max_total_size: number;
+  max_files_per_run: number;
+  allowed_mime: string[];
+}
+
+export interface ServerInfo {
+  mode: string;
+  version: string;
+  commit?: string;
+  limits: { upload: UploadLimits };
+}
+
+// Response shape of POST /api/runs/uploads.
+export interface StagedUpload {
+  upload_id: string;
+  original_filename: string;
+  mime: string;
+  size: number;
+  sha256: string;
+  created_at: string;
+}
 
 // ---------------------------------------------------------------------------
 // MCP
@@ -247,6 +291,7 @@ export interface ComputeExpr {
 export interface WorkflowDecl {
   name: string;
   vars?: VarsBlock;
+  attachments?: AttachmentsBlock;
   entry: string;
   default_backend?: string;
   tool_policy?: string[];

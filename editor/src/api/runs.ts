@@ -283,6 +283,11 @@ export interface CreateRunRequest {
   // the merge at end of run (GitLab-style "auto-merge"); when
   // false (default), the merge is deferred to a UI action.
   auto_merge?: boolean;
+  // Attachments uploaded via POST /api/runs/uploads. Map of the
+  // workflow's attachment name → upload_id returned by the staging
+  // endpoint. The server promotes each upload into the run-scoped
+  // store before the engine starts.
+  attachments?: Record<string, string>;
 }
 
 export interface CreateRunResponse {
@@ -443,5 +448,73 @@ export async function mergeRun(
   return request(`/runs/${encodeURIComponent(runId)}/merge`, {
     method: "POST",
     body: JSON.stringify(req),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Attachments — staged uploads + server info.
+// ---------------------------------------------------------------------------
+
+import type { ServerInfo, StagedUpload } from "./types";
+
+/** GET /api/server/info — mode, version, upload limits. */
+export async function getServerInfo(): Promise<ServerInfo> {
+  return request("/server/info");
+}
+
+export interface UploadOptions {
+  onProgress?: (loaded: number, total: number) => void;
+  signal?: AbortSignal;
+  declaredMime?: string;
+}
+
+/**
+ * POST /api/runs/uploads — upload a single attachment to the server's
+ * staging area. Uses XMLHttpRequest because fetch() in browsers does
+ * not yet expose request-side upload progress (ReadableStream upload
+ * is half-duplex and Chromium-only).
+ */
+export function uploadAttachment(
+  file: File,
+  opts: UploadOptions = {},
+): Promise<StagedUpload> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const fd = new FormData();
+    fd.append("file", file, file.name);
+    if (opts.declaredMime) fd.append("declared_mime", opts.declaredMime);
+
+    xhr.open("POST", `${BASE_URL}/runs/uploads`, true);
+    xhr.responseType = "json";
+
+    xhr.upload.onprogress = (evt) => {
+      if (opts.onProgress && evt.lengthComputable) {
+        opts.onProgress(evt.loaded, evt.total);
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(xhr.response as StagedUpload);
+      } else {
+        const body = xhr.response;
+        const message =
+          body && typeof body === "object" && "error" in body
+            ? (body as { error: string }).error
+            : `HTTP ${xhr.status}`;
+        reject(new Error(message));
+      }
+    };
+    xhr.onerror = () => reject(new Error("network error"));
+    xhr.onabort = () => reject(new DOMException("aborted", "AbortError"));
+
+    if (opts.signal) {
+      if (opts.signal.aborted) {
+        xhr.abort();
+        return;
+      }
+      opts.signal.addEventListener("abort", () => xhr.abort(), { once: true });
+    }
+
+    xhr.send(fd);
   });
 }

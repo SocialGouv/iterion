@@ -2,15 +2,24 @@ import { useEffect, useMemo, useState } from "react";
 import { useLocation, useSearch } from "wouter";
 
 import * as filesApi from "@/api/client";
-import { createRun } from "@/api/runs";
+import { createRun, getServerInfo, uploadAttachment } from "@/api/runs";
 import type { MergeStrategy } from "@/api/runs";
-import type { IterDocument, VarField } from "@/api/types";
+import type {
+  AttachmentField,
+  IterDocument,
+  ServerInfo,
+  VarField,
+} from "@/api/types";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
 import { useDocumentStore } from "@/store/document";
 
+import AttachmentFieldInput, {
+  type AttachmentValue,
+} from "./AttachmentFieldInput";
 import VarFieldInput, { defaultStringFor } from "./VarFieldInput";
 import { isPromptLikeVar } from "@/lib/promptVarHeuristics";
+import { formatBytes, totalSize } from "@/lib/attachmentValidation";
 
 /** Read the workflow's vars (workflow-level if a single workflow is
  *  declared, else the file-level `vars:` block). */
@@ -19,6 +28,14 @@ function pickVars(doc: IterDocument | null): VarField[] {
   const wf = doc.workflows?.[0];
   if (wf?.vars?.fields?.length) return wf.vars.fields;
   return doc.vars?.fields ?? [];
+}
+
+/** Read the workflow's attachments — same precedence as vars. */
+function pickAttachments(doc: IterDocument | null): AttachmentField[] {
+  if (!doc) return [];
+  const wf = doc.workflows?.[0];
+  if (wf?.attachments?.fields?.length) return wf.attachments.fields;
+  return doc.attachments?.fields ?? [];
 }
 
 export default function LaunchView() {
@@ -33,6 +50,8 @@ export default function LaunchView() {
   const currentSource = useDocumentStore((s) => s.currentSource);
   const setCurrentSource = useDocumentStore((s) => s.setCurrentSource);
   const [values, setValues] = useState<Record<string, string>>({});
+  const [attachments, setAttachments] = useState<Record<string, AttachmentValue | null>>({});
+  const [serverInfo, setServerInfo] = useState<ServerInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   // Worktree finalization overrides — only meaningful when the
@@ -52,6 +71,32 @@ export default function LaunchView() {
   // controls without having to click — they're meaningful options,
   // not "advanced" in the obscure sense.
   const [showAdvanced, setShowAdvanced] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getServerInfo()
+      .then((info) => {
+        if (!cancelled) setServerInfo(info);
+      })
+      .catch(() => {
+        // Non-fatal: limits remain unknown; UI shows no bandeau and the
+        // server still rejects oversized uploads on the wire.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Revoke preview ObjectURLs when leaving the modal.
+  useEffect(() => {
+    return () => {
+      Object.values(attachments).forEach((a) => {
+        if (a?.previewUrl) URL.revokeObjectURL(a.previewUrl);
+      });
+    };
+    // Intentionally only run on unmount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (!filePath) {
@@ -79,11 +124,79 @@ export default function LaunchView() {
   }, [filePath]);
 
   const fields = pickVars(doc);
+  const attachmentFields = pickAttachments(doc);
+  const limits = serverInfo?.limits.upload ?? null;
+
+  // Required attachments must have a successful upload (uploadId present).
+  const missingRequired = attachmentFields.some(
+    (f) => f.required && !attachments[f.name]?.uploadId,
+  );
+
+  // Auto-upload as soon as a file is selected. The upload runs in the
+  // background and the launch button stays disabled until every entry
+  // either has an uploadId or is optional and absent.
+  const handleAttachmentChange = async (
+    field: AttachmentField,
+    next: AttachmentValue | null,
+  ) => {
+    setAttachments((prev) => ({ ...prev, [field.name]: next }));
+    if (!next || next.error || next.uploadId) return;
+    // Kick off the upload.
+    setAttachments((prev) => ({
+      ...prev,
+      [field.name]: { ...next, progress: 0 },
+    }));
+    try {
+      const staged = await uploadAttachment(next.file, {
+        declaredMime: next.file.type || undefined,
+        onProgress: (loaded, total) => {
+          setAttachments((prev) => {
+            const cur = prev[field.name];
+            if (!cur || cur.file !== next.file) return prev;
+            return {
+              ...prev,
+              [field.name]: { ...cur, progress: total > 0 ? loaded / total : 0 },
+            };
+          });
+        },
+      });
+      setAttachments((prev) => {
+        const cur = prev[field.name];
+        if (!cur || cur.file !== next.file) return prev;
+        return {
+          ...prev,
+          [field.name]: {
+            ...cur,
+            uploadId: staged.upload_id,
+            progress: undefined,
+          },
+        };
+      });
+    } catch (err) {
+      setAttachments((prev) => {
+        const cur = prev[field.name];
+        if (!cur || cur.file !== next.file) return prev;
+        return {
+          ...prev,
+          [field.name]: {
+            ...cur,
+            error: (err as Error).message,
+            progress: undefined,
+          },
+        };
+      });
+    }
+  };
 
   const onSubmit = async () => {
     setSubmitting(true);
     setError(null);
     try {
+      const attachmentsPayload: Record<string, string> = {};
+      for (const f of attachmentFields) {
+        const a = attachments[f.name];
+        if (a?.uploadId) attachmentsPayload[f.name] = a.uploadId;
+      }
       const res = await createRun({
         file_path: filePath,
         source: currentSource || undefined,
@@ -92,6 +205,8 @@ export default function LaunchView() {
         branch_name: branchName || undefined,
         merge_strategy: mergeStrategy,
         auto_merge: autoMerge,
+        attachments:
+          Object.keys(attachmentsPayload).length > 0 ? attachmentsPayload : undefined,
       });
       setLocation(`/runs/${encodeURIComponent(res.run_id)}`);
     } catch (e) {
@@ -135,10 +250,52 @@ export default function LaunchView() {
           <div className="text-xs text-fg-subtle">Loading workflow…</div>
         ) : (
           <>
+            {attachmentFields.length > 0 && (
+              <section className="mb-6">
+                <h2 className="text-xs font-medium text-fg-muted mb-2">Attachments</h2>
+                {limits && (
+                  <p className="mb-3 text-[10px] text-fg-subtle font-mono">
+                    Max {formatBytes(limits.max_file_size)} per file ·{" "}
+                    {formatBytes(limits.max_total_size)} total · up to{" "}
+                    {limits.max_files_per_run} files ·{" "}
+                    {limits.allowed_mime.slice(0, 4).join(" ")}
+                    {limits.allowed_mime.length > 4 ? " …" : ""}
+                  </p>
+                )}
+                <div className="space-y-4">
+                  {attachmentFields.map((f) => (
+                    <div key={f.name} className="grid grid-cols-[160px_1fr] gap-3 items-start">
+                      <label className="pt-1">
+                        <div className="text-xs font-medium font-mono">{f.name}</div>
+                        <div className="text-[10px] text-fg-subtle">
+                          {f.type}
+                          {f.required ? " · required" : ""}
+                        </div>
+                      </label>
+                      <AttachmentFieldInput
+                        field={f}
+                        value={attachments[f.name] ?? null}
+                        onChange={(next) => void handleAttachmentChange(f, next)}
+                        serverLimits={limits}
+                        disabled={submitting}
+                      />
+                    </div>
+                  ))}
+                </div>
+                {Object.values(attachments).some((a) => a?.file) && (
+                  <p className="mt-2 text-[10px] text-fg-subtle">
+                    {Object.values(attachments).filter((a) => a?.file).length} file(s),{" "}
+                    {formatBytes(totalSize(attachments))} total
+                  </p>
+                )}
+              </section>
+            )}
             {fields.length === 0 ? (
-              <p className="text-xs text-fg-subtle">
-                This workflow declares no input vars. You can launch it as-is.
-              </p>
+              attachmentFields.length === 0 && (
+                <p className="text-xs text-fg-subtle">
+                  This workflow declares no input vars. You can launch it as-is.
+                </p>
+              )
             ) : (
               <form
                 onSubmit={(e) => {
@@ -308,7 +465,8 @@ export default function LaunchView() {
               <Button
                 variant="primary"
                 onClick={() => void onSubmit()}
-                disabled={submitting || !doc}
+                disabled={submitting || !doc || missingRequired}
+                title={missingRequired ? "Provide every required attachment first" : undefined}
               >
                 {submitting ? "Launching…" : "Launch"}
               </Button>
