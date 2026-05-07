@@ -25,6 +25,15 @@ on:
         required: true
         type: string
 
+concurrency:
+  # Serialise tap updates: this workflow does `git push origin main` and
+  # the two release pipelines (release.yml + desktop-release.yml) each
+  # trigger a separate run for the same tag, so concurrent runs would
+  # race on the push. Never cancel — every run carries artefacts that
+  # need to land in the tap.
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
   id-token: write   # required by SocialGouv/token-bureau (OIDC exchange)

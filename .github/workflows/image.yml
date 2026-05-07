@@ -16,6 +16,12 @@ on:
       - "go.sum"
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Cancel obsolete iterations on PRs; serialise on main/tag pushes so
+  # concurrent builds never clobber a `:edge` or `:vX.Y.Z` tag mid-push.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
   packages: write
