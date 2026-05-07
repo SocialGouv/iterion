@@ -20,7 +20,7 @@ type Credentials struct {
 	// absolute path of a temp directory holding the materialised
 	// credentials.json or auth.json. The delegate backends pass
 	// this directory via CLAUDE_CONFIG_DIR / CODEX_HOME to the
-	// CLI subprocess. Phase D wires this; Phase C leaves it nil.
+	// CLI subprocess. Empty when no OAuth-forfait is in play.
 	OAuthCredentialFiles map[string]string
 }
 

@@ -14,7 +14,7 @@ import (
 )
 
 // registerOAuthForfaitRoutes wires the per-user OAuth subscription
-// management endpoints. Phase D.
+// management endpoints.
 func (s *Server) registerOAuthForfaitRoutes() {
 	s.mux.Handle("GET /api/me/oauth/connections", s.requireAuth(http.HandlerFunc(s.handleListOAuthConnections)))
 	s.mux.Handle("POST /api/me/oauth/{kind}/credentials", s.requireAuth(http.HandlerFunc(s.handleUploadOAuthCredentials)))
@@ -34,21 +34,14 @@ type oauthConnectionView struct {
 }
 
 func toOAuthView(r secrets.OAuthRecord) oauthConnectionView {
-	v := oauthConnectionView{
-		Kind:      string(r.Kind),
-		Scopes:    r.Scopes,
-		CreatedAt: r.CreatedAt.Format(time.RFC3339),
-		UpdatedAt: r.UpdatedAt.Format(time.RFC3339),
+	return oauthConnectionView{
+		Kind:                 string(r.Kind),
+		Scopes:               r.Scopes,
+		CreatedAt:            r.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:            r.UpdatedAt.Format(time.RFC3339),
+		AccessTokenExpiresAt: optRFC3339(r.AccessTokenExpiresAt),
+		LastRefreshedAt:      optRFC3339(r.LastRefreshedAt),
 	}
-	if r.AccessTokenExpiresAt != nil {
-		t := r.AccessTokenExpiresAt.Format(time.RFC3339)
-		v.AccessTokenExpiresAt = &t
-	}
-	if r.LastRefreshedAt != nil {
-		t := r.LastRefreshedAt.Format(time.RFC3339)
-		v.LastRefreshedAt = &t
-	}
-	return v
 }
 
 func (s *Server) handleListOAuthConnections(w http.ResponseWriter, r *http.Request) {
@@ -86,7 +79,8 @@ func (s *Server) handleUploadOAuthCredentials(w http.ResponseWriter, r *http.Req
 
 	now := time.Now().UTC()
 	rec := secrets.OAuthRecord{
-		ID:        fmt.Sprintf("%s|%s", id.UserID, kind),
+		// ID is derived in the OAuth store's Upsert (memory + Mongo
+		// agree on `<userID>|<kind>`), so we leave it empty here.
 		UserID:    id.UserID,
 		Kind:      kind,
 		CreatedAt: now,

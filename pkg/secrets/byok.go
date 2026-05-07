@@ -13,6 +13,8 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
 )
 
 // Provider enumerates the supported LLM credential providers. The
@@ -373,13 +375,7 @@ func (s *MongoApiKeyStore) EnsureSchema(ctx context.Context) error {
 		{Keys: bson.D{{Key: "scope_team", Value: 1}, {Key: "scope_user", Value: 1}, {Key: "provider", Value: 1}}, Options: options.Index().SetName("team_user_provider")},
 		{Keys: bson.D{{Key: "scope_team", Value: 1}, {Key: "provider", Value: 1}, {Key: "is_default", Value: 1}}, Options: options.Index().SetName("team_provider_default")},
 	})
-	if err != nil {
-		var cmd mongo.CommandError
-		if errors.As(err, &cmd) {
-			if cmd.Code == 85 || cmd.Code == 86 {
-				return nil
-			}
-		}
+	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("secrets: ensure api_keys indexes: %w", err)
 	}
 	return nil

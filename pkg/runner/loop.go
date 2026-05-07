@@ -60,7 +60,7 @@ type Config struct {
 
 	// RunSecrets + Sealer carry the BYOK / OAuth bundle the
 	// publisher pre-resolved. Both nil → runner falls back to env
-	// vars at the LLM call site (Phase A/B compatibility). Phase C.
+	// vars at the LLM call site.
 	RunSecrets secrets.RunSecretsStore
 	Sealer     secrets.Sealer
 }

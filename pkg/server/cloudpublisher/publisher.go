@@ -50,18 +50,18 @@ type Config struct {
 	// ApiKeys is the BYOK store. When non-nil, the publisher
 	// resolves per-tenant credentials at launch time and seals
 	// them into a per-run RunSecrets record. The runner unseals
-	// and injects them into the engine ctx. Phase C.
+	// and injects them into the engine ctx.
 	ApiKeys secrets.ApiKeyStore
 	// RunSecrets persists the sealed bundle keyed by SecretsRef.
 	RunSecrets secrets.RunSecretsStore
 	// Sealer is the AES-GCM master-key sealer (shared with the
 	// REST handlers).
 	Sealer secrets.Sealer
-	// OAuthForfait is the per-user OAuth credential store (Phase D).
-	// When non-nil and a run's owner has connected an OAuth
-	// subscription, the publisher embeds the verbatim
-	// credentials.json / auth.json into the run bundle so the runner
-	// can materialise it for the CLI subprocess.
+	// OAuthForfait is the per-user OAuth credential store. When
+	// non-nil and a run's owner has connected an OAuth subscription,
+	// the publisher embeds the verbatim credentials.json / auth.json
+	// into the run bundle so the runner can materialise it for the
+	// CLI subprocess.
 	OAuthForfait secrets.OAuthStore
 }
 
@@ -123,8 +123,7 @@ var allKnownProviders = []secrets.Provider{
 // (tenantID, ownerID), pairs it with any OAuth-forfait the owner has
 // connected, seals the resulting bundle, and persists it under a
 // fresh secrets ref. Returns the ref or an empty string when no
-// credentials are available (Phase A/B compatibility — runner falls
-// back to env).
+// credentials are available — the runner then falls back to env.
 func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, tenantID, ownerID string) (string, error) {
 	if p.runSecrets == nil || p.sealer == nil {
 		return "", nil
@@ -137,25 +136,39 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, tenant
 		OAuthCredentials: map[string][]byte{},
 	}
 
-	// 1. BYOK API keys (Phase C).
+	// 1. BYOK API keys.
 	if p.apiKeys != nil {
 		resolved, err := secrets.Resolve(ctx, p.apiKeys, tenantID, ownerID, allKnownProviders, nil, p.sealer)
 		if err != nil {
 			return "", fmt.Errorf("cloudpublisher: resolve creds: %w", err)
 		}
 		now := time.Now().UTC()
+		usedIDs := make([]string, 0, len(resolved))
 		for prov, r := range resolved {
 			if len(r.Plaintext) == 0 {
 				continue
 			}
 			bundle.APIKeys[prov] = string(r.Plaintext)
-			_ = p.apiKeys.MarkUsed(ctx, r.KeyID, now)
+			usedIDs = append(usedIDs, r.KeyID)
+		}
+		// Bumping last_used_at is best-effort observability, not on
+		// the launch's critical path. Fire it detached with a short
+		// timeout so a slow Mongo write doesn't block the NATS
+		// publish.
+		if len(usedIDs) > 0 {
+			go func(ids []string, t time.Time) {
+				bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				for _, id := range ids {
+					_ = p.apiKeys.MarkUsed(bg, id, t)
+				}
+			}(usedIDs, now)
 		}
 	}
 
-	// 2. OAuth-forfait blobs (Phase D). Only embed the kinds the
-	//    owner has actively connected; the runner falls back to env
-	//    when neither an API key nor an OAuth bundle is present.
+	// 2. OAuth-forfait blobs. Only embed the kinds the owner has
+	//    actively connected; the runner falls back to env when
+	//    neither an API key nor an OAuth bundle is present.
 	if p.oauthForfait != nil && ownerID != "" {
 		records, err := p.oauthForfait.ListByUser(ctx, ownerID)
 		if err != nil {

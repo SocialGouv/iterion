@@ -326,7 +326,7 @@ func (s *Service) registerOpen(ctx context.Context, email, password, name, userA
 		return LoginResult{}, err
 	}
 	// Auto-create a personal team so the user has somewhere to land.
-	teamID, role, err := s.createPersonalTeam(ctx, u)
+	teamID, err := s.createPersonalTeam(ctx, u)
 	if err != nil {
 		return LoginResult{}, err
 	}
@@ -334,7 +334,6 @@ func (s *Service) registerOpen(ctx context.Context, email, password, name, userA
 	if err := s.store.UpdateUser(ctx, u); err != nil {
 		return LoginResult{}, err
 	}
-	_ = role
 	return s.issueLogin(ctx, u, userAgent, ip)
 }
 
@@ -567,7 +566,7 @@ func (s *Service) CreateUserAndPersonalTeam(ctx context.Context, email, name, pa
 	if err != nil {
 		return identity.User{}, identity.Team{}, err
 	}
-	teamID, _, err := s.createPersonalTeam(ctx, u)
+	teamID, err := s.createPersonalTeam(ctx, u)
 	if err != nil {
 		return identity.User{}, identity.Team{}, err
 	}
@@ -580,9 +579,10 @@ func (s *Service) CreateUserAndPersonalTeam(ctx context.Context, email, name, pa
 }
 
 // createPersonalTeam provisions a Team with Personal=true for the
-// given user and adds an Owner membership. Slug is derived from the
-// email local-part with a numeric suffix on collision.
-func (s *Service) createPersonalTeam(ctx context.Context, u identity.User) (string, identity.Role, error) {
+// given user, adds an Owner membership, and returns the team id.
+// Slug is derived from the email local-part with a numeric suffix
+// on collision.
+func (s *Service) createPersonalTeam(ctx context.Context, u identity.User) (string, error) {
 	base := identity.SlugifyTeamName(u.Email)
 	if base == "" {
 		base = "team"
@@ -607,7 +607,7 @@ func (s *Service) createPersonalTeam(ctx context.Context, u identity.User) (stri
 			continue
 		}
 		if err != nil {
-			return "", "", err
+			return "", err
 		}
 		if err := s.store.UpsertMembership(ctx, identity.Membership{
 			UserID:   u.ID,
@@ -615,11 +615,11 @@ func (s *Service) createPersonalTeam(ctx context.Context, u identity.User) (stri
 			Role:     identity.RoleOwner,
 			JoinedAt: now,
 		}); err != nil {
-			return "", "", err
+			return "", err
 		}
-		return t.ID, identity.RoleOwner, nil
+		return t.ID, nil
 	}
-	return "", "", errors.New("auth: could not allocate slug for personal team")
+	return "", errors.New("auth: could not allocate slug for personal team")
 }
 
 func defaultPersonalTeamName(u identity.User) string {

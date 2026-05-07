@@ -89,7 +89,7 @@ type Config struct {
 
 	// ApiKeys is the BYOK store. When non-nil, the server registers
 	// /api/teams/:id/api-keys + /api/me/api-keys and the cloud
-	// publisher resolves keys at launch time (Phase C).
+	// publisher resolves keys at launch time.
 	ApiKeys secrets.ApiKeyStore
 
 	// RunSecrets is the per-run sealed bundle store. Required when
@@ -100,9 +100,9 @@ type Config struct {
 	// and run-scoped bundles in flight. Required when ApiKeys is set.
 	Sealer secrets.Sealer
 
-	// OAuthForfait is the per-user OAuth credential store (Phase D).
-	// When non-nil, the server registers /api/me/oauth/* endpoints
-	// and the cloud publisher injects sealed credentials.json /
+	// OAuthForfait is the per-user OAuth credential store. When
+	// non-nil, the server registers /api/me/oauth/* endpoints and
+	// the cloud publisher injects sealed credentials.json /
 	// auth.json blobs into the run bundle for runs that don't have
 	// a BYOK API key for the relevant provider.
 	OAuthForfait secrets.OAuthStore
@@ -443,15 +443,14 @@ func (s *Server) routes() {
 		s.registerAuthRoutes()
 	}
 
-	// BYOK endpoints (Phase C). Requires the auth+identity stack
-	// already in place — caller must wire AuthService + ApiKeys
-	// + Sealer together.
+	// BYOK endpoints. Requires the auth+identity stack already in
+	// place — caller must wire AuthService + ApiKeys + Sealer.
 	if s.apiKeys != nil && s.sealer != nil && s.authSvc != nil {
 		s.registerBYOKRoutes()
 	}
 
-	// OAuth-forfait endpoints (Phase D). Same gating as BYOK plus
-	// the per-user OAuthForfait store.
+	// OAuth-forfait endpoints. Same gating as BYOK plus the per-
+	// user OAuthForfait store.
 	if s.oauthStore != nil && s.sealer != nil && s.authSvc != nil {
 		s.registerOAuthForfaitRoutes()
 	}

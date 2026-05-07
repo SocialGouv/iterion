@@ -115,22 +115,27 @@ func extractBearer(r *http.Request) string {
 
 // isPublicPath reports whether the path is reachable without auth.
 // Health probes + the auth/oidc bootstrap routes live here.
+//
+// Leaf endpoints use exact match so e.g. `/api/auth/loginXYZ` cannot
+// sneak in. Namespace prefixes (`/api/auth/oidc/`, `/assets/`) keep
+// HasPrefix because they intentionally cover every sub-path.
 func isPublicPath(path string) bool {
-	switch {
-	case path == "/healthz", path == "/readyz":
-		return true
-	case strings.HasPrefix(path, "/api/auth/login"),
-		strings.HasPrefix(path, "/api/auth/register"),
-		strings.HasPrefix(path, "/api/auth/refresh"),
-		strings.HasPrefix(path, "/api/auth/logout"),
-		strings.HasPrefix(path, "/api/auth/oidc/"),
-		strings.HasPrefix(path, "/api/auth/invitations/lookup"),
-		strings.HasPrefix(path, "/api/auth/invitations/accept"),
-		strings.HasPrefix(path, "/api/auth/providers"):
+	switch path {
+	case "/healthz", "/readyz",
+		"/api/auth/login",
+		"/api/auth/register",
+		"/api/auth/refresh",
+		"/api/auth/logout",
+		"/api/auth/providers",
+		"/api/auth/invitations/lookup",
+		"/api/auth/invitations/accept",
+		"/", "/index.html":
 		return true
 	}
-	// Static files / SPA bundle.
-	if path == "/" || strings.HasPrefix(path, "/assets/") || strings.HasPrefix(path, "/static/") {
+	if strings.HasPrefix(path, "/api/auth/oidc/") {
+		return true
+	}
+	if strings.HasPrefix(path, "/assets/") || strings.HasPrefix(path, "/static/") {
 		return true
 	}
 	if !strings.HasPrefix(path, "/api/") {
@@ -140,15 +145,16 @@ func isPublicPath(path string) bool {
 }
 
 // authMiddleware is the umbrella middleware applied to every
-// request. It bypasses auth for public paths, otherwise enforces
-// requireAuth (which puts the Identity in ctx). Per-handler role
-// gates (requireRole / requireSuperAdmin) re-wrap inside.
+// request. It bypasses auth for public paths, otherwise dispatches
+// to a pre-built authenticated handler so the per-request hot path
+// allocates no closures.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
+	authed := s.requireAuth(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if isPublicPath(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		s.requireAuth(next).ServeHTTP(w, r)
+		authed.ServeHTTP(w, r)
 	})
 }

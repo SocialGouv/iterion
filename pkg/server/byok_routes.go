@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"time"
@@ -51,7 +52,7 @@ type updateApiKeyReq struct {
 }
 
 func (s *Server) toApiKeyView(k secrets.ApiKey) apiKeyView {
-	v := apiKeyView{
+	return apiKeyView{
 		ID:          k.ID,
 		Provider:    string(k.Provider),
 		Name:        k.Name,
@@ -60,12 +61,27 @@ func (s *Server) toApiKeyView(k secrets.ApiKey) apiKeyView {
 		IsDefault:   k.IsDefault,
 		ScopeUserID: k.ScopeUserID,
 		CreatedAt:   k.CreatedAt.Format(time.RFC3339),
+		LastUsedAt:  optRFC3339(k.LastUsedAt),
 	}
-	if k.LastUsedAt != nil {
-		t := k.LastUsedAt.Format(time.RFC3339)
-		v.LastUsedAt = &t
+}
+
+// writeApiKeyList serialises a slice of ApiKey records into the
+// {"keys":[...]} envelope shared by the team and user-scoped list
+// endpoints. On error it writes a 500 and returns false so the
+// caller can early-out.
+func (s *Server) writeApiKeyList(w http.ResponseWriter, keys []secrets.ApiKey, err error) bool {
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return false
 	}
-	return v
+	views := make([]apiKeyView, 0, len(keys))
+	for _, k := range keys {
+		views = append(views, s.toApiKeyView(k))
+	}
+	writeJSON(w, struct {
+		Keys []apiKeyView `json:"keys"`
+	}{Keys: views})
+	return true
 }
 
 func (s *Server) handleListTeamApiKeys(w http.ResponseWriter, r *http.Request) {
@@ -78,17 +94,7 @@ func (s *Server) handleListTeamApiKeys(w http.ResponseWriter, r *http.Request) {
 	// Team admins see all team-wide keys + their own user-scoped
 	// keys (matches BYOK plan). Members only see what's visible.
 	keys, err := s.apiKeys.ListByTeam(r.Context(), teamID, id.UserID)
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "%s", err.Error())
-		return
-	}
-	views := make([]apiKeyView, 0, len(keys))
-	for _, k := range keys {
-		views = append(views, s.toApiKeyView(k))
-	}
-	writeJSON(w, struct {
-		Keys []apiKeyView `json:"keys"`
-	}{Keys: views})
+	s.writeApiKeyList(w, keys, err)
 }
 
 func (s *Server) handleCreateTeamApiKey(w http.ResponseWriter, r *http.Request) {
@@ -108,17 +114,7 @@ func (s *Server) handleListMyApiKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	keys, err := s.apiKeys.ListByUser(r.Context(), id.TeamID, id.UserID)
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "%s", err.Error())
-		return
-	}
-	views := make([]apiKeyView, 0, len(keys))
-	for _, k := range keys {
-		views = append(views, s.toApiKeyView(k))
-	}
-	writeJSON(w, struct {
-		Keys []apiKeyView `json:"keys"`
-	}{Keys: views})
+	s.writeApiKeyList(w, keys, err)
 }
 
 func (s *Server) handleCreateMyApiKey(w http.ResponseWriter, r *http.Request) {
@@ -251,7 +247,7 @@ func (s *Server) handleDeleteApiKey(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) canMutateApiKey(ctx contextWithDeadline, id auth.Identity, k secrets.ApiKey) bool {
+func (s *Server) canMutateApiKey(ctx context.Context, id auth.Identity, k secrets.ApiKey) bool {
 	if id.IsSuperAdmin {
 		return true
 	}
@@ -264,14 +260,4 @@ func (s *Server) canMutateApiKey(ctx contextWithDeadline, id auth.Identity, k se
 		return false
 	}
 	return mb.Role.AtLeast(identity.RoleAdmin)
-}
-
-// contextWithDeadline is a tiny alias used to make the helper accept
-// either a plain context.Context or *http.Request.Context() without a
-// dedicated import. Both satisfy this shape.
-type contextWithDeadline interface {
-	Deadline() (time.Time, bool)
-	Done() <-chan struct{}
-	Err() error
-	Value(any) any
 }

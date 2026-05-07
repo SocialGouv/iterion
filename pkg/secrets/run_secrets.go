@@ -11,6 +11,8 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
 )
 
 // RunBundle is the per-run sealed payload the runner needs in order
@@ -24,8 +26,7 @@ type RunBundle struct {
 	APIKeys map[Provider]string `json:"api_keys,omitempty"`
 	// OAuthCredentials maps "claude_code" / "codex" → opaque blob
 	// that the runner materialises as a credentials.json /
-	// auth.json before spawning the CLI subprocess. Phase D wires
-	// the OAuth path; Phase C leaves the map empty.
+	// auth.json before spawning the CLI subprocess.
 	OAuthCredentials map[string][]byte `json:"oauth_credentials,omitempty"`
 }
 
@@ -119,13 +120,7 @@ func (s *MongoRunSecretsStore) EnsureSchema(ctx context.Context) error {
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "run_id", Value: 1}}, Options: options.Index().SetName("tenant_run")},
 		{Keys: bson.D{{Key: "expires_at", Value: 1}}, Options: options.Index().SetName("run_secrets_ttl").SetExpireAfterSeconds(0)},
 	})
-	if err != nil {
-		var cmd mongo.CommandError
-		if errors.As(err, &cmd) {
-			if cmd.Code == 85 || cmd.Code == 86 {
-				return nil
-			}
-		}
+	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("secrets: ensure run_secrets indexes: %w", err)
 	}
 	return nil

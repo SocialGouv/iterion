@@ -84,7 +84,7 @@ func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 	if err != nil {
 		return LoginResult{}, err
 	}
-	teamID, _, err := s.createPersonalTeam(ctx, u)
+	teamID, err := s.createPersonalTeam(ctx, u)
 	if err != nil {
 		return LoginResult{}, err
 	}

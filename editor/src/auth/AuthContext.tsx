@@ -29,6 +29,10 @@ interface AuthState {
 }
 
 interface AuthCtx extends AuthState {
+  // activeTeam is the MembershipView whose team_id matches
+  // activeTeamID, or undefined when no team is active. Derived in
+  // the provider so consumers don't re-search the teams array.
+  activeTeam: MembershipView | undefined;
   signIn: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
   selectTeam: (teamID: string) => Promise<void>;
@@ -110,6 +114,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<AuthCtx>(() => ({
     ...state,
+    activeTeam: state.teams.find((t) => t.team_id === state.activeTeamID),
     signIn,
     signOut,
     selectTeam,

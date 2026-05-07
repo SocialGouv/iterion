@@ -13,6 +13,8 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
 )
 
 // Session is a stored refresh token. The plaintext token is never
@@ -229,13 +231,7 @@ func (s *MongoSessionStore) EnsureSchema(ctx context.Context) error {
 		{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "issued_at", Value: -1}}, Options: options.Index().SetName("user_issued")},
 		{Keys: bson.D{{Key: "expires_at", Value: 1}}, Options: options.Index().SetName("sessions_ttl").SetExpireAfterSeconds(0)},
 	})
-	if err != nil {
-		var cmd mongo.CommandError
-		if errors.As(err, &cmd) {
-			if cmd.Code == 85 || cmd.Code == 86 {
-				return nil
-			}
-		}
+	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("auth: ensure sessions indexes: %w", err)
 	}
 	return nil

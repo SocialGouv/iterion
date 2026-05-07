@@ -122,10 +122,9 @@ function AuthedApp() {
 // teams / account pages. Drawn as a fixed top-right cluster so it
 // doesn't disrupt the editor's own toolbars.
 function EditorViewWithChrome() {
-  const { user, teams, activeTeamID, signOut, selectTeam } = useAuth();
+  const { user, teams, activeTeamID, activeTeam, signOut, selectTeam } = useAuth();
   const [, navigate] = useLocation();
   const [open, setOpen] = useState(false);
-  const active = teams.find((t) => t.team_id === activeTeamID);
 
   return (
     <div className="relative">
@@ -134,7 +133,7 @@ function EditorViewWithChrome() {
           onClick={() => setOpen((v) => !v)}
           className="bg-surface-1/95 border border-border-subtle rounded px-3 py-1 text-xs flex items-center gap-2 shadow"
         >
-          <span className="font-medium">{active?.team_name ?? "No team"}</span>
+          <span className="font-medium">{activeTeam?.team_name ?? "No team"}</span>
           <span className="text-fg-muted">{user?.email}</span>
           <span>▾</span>
         </button>
@@ -165,15 +164,15 @@ function EditorViewWithChrome() {
               </button>
             ))}
             <div className="my-1 border-t border-border-subtle" />
-            {active && (
+            {activeTeam && (
               <button
                 onClick={() => {
-                  navigate(`/teams/${active.team_id}`);
+                  navigate(`/teams/${activeTeam.team_id}`);
                   setOpen(false);
                 }}
                 className="w-full text-left px-2 py-1.5 rounded hover:bg-surface-2"
               >
-                Manage {active.team_name}
+                Manage {activeTeam.team_name}
               </button>
             )}
             <button

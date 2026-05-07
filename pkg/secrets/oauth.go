@@ -11,6 +11,8 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
 )
 
 // OAuthKind enumerates the third-party CLIs whose OAuth subscription
@@ -219,13 +221,7 @@ func (s *MongoOAuthStore) EnsureSchema(ctx context.Context) error {
 		{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "kind", Value: 1}}, Options: options.Index().SetUnique(true).SetName("user_kind_unique")},
 		{Keys: bson.D{{Key: "access_token_expires_at", Value: 1}}, Options: options.Index().SetName("access_expiry_partial").SetPartialFilterExpression(bson.M{"access_token_expires_at": bson.M{"$exists": true}})},
 	})
-	if err != nil {
-		var cmd mongo.CommandError
-		if errors.As(err, &cmd) {
-			if cmd.Code == 85 || cmd.Code == 86 {
-				return nil
-			}
-		}
+	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("secrets: ensure oauth indexes: %w", err)
 	}
 	return nil
