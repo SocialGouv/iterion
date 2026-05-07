@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { Components } from "react-virtuoso";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { ChevronDownIcon, MixerHorizontalIcon } from "@radix-ui/react-icons";
 
 import { IconButton, Input, Popover } from "@/components/ui";
 import { formatBytes } from "@/lib/format";
 import { useRunStore } from "@/store/run";
+
+import { ThinkingFooter } from "./ThinkingFooter";
 
 interface Props {
   runId: string;
@@ -48,6 +51,14 @@ interface AnnotatedLine {
 
 export default function RunLogPanel({ runId, subscribeLogs, unsubscribeLogs, onCollapse }: Props) {
   const log = useRunStore((s) => s.log);
+  const runStatus = useRunStore((s) => s.snapshot?.run.status);
+  const anyExecutionRunning = useRunStore((s) => {
+    for (const e of s.executionsById.values()) {
+      if (e.status === "running") return true;
+    }
+    return false;
+  });
+  const active = runStatus === "running" && anyExecutionRunning;
   const [search, setSearch] = useState("");
   const [activeLevels, setActiveLevels] = useState<Set<string>>(() => new Set());
   const [followTail, setFollowTail] = useState(true);
@@ -89,6 +100,13 @@ export default function RunLogPanel({ runId, subscribeLogs, unsubscribeLogs, onC
     }
     return out;
   }, [log.text]);
+
+  const virtuosoComponents = useMemo<Components<AnnotatedLine>>(
+    () => ({
+      Footer: () => <ThinkingFooter active={active} />,
+    }),
+    [active],
+  );
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -292,6 +310,7 @@ export default function RunLogPanel({ runId, subscribeLogs, unsubscribeLogs, onC
             }}
             itemContent={(_, line) => <LogLineRow line={line} />}
             computeItemKey={(_, line) => line.idx}
+            components={virtuosoComponents}
           />
         )}
       </div>
