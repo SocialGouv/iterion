@@ -158,6 +158,12 @@ func (s *Store) RunsCollection() *mongo.Collection { return s.runs }
 // caveat as RunsCollection — short-term shortcut, not the API.
 func (s *Store) EventsCollection() *mongo.Collection { return s.events }
 
+// DB exposes the underlying *mongo.Database so adjacent packages
+// (pkg/identity, pkg/auth, pkg/secrets) can build their own
+// collection handles without re-dialing Mongo. Same caveat as
+// RunsCollection — layering shortcut, not the long-term API.
+func (s *Store) DB() *mongo.Database { return s.db }
+
 // Root returns an empty string in cloud mode: the Mongo store has no
 // filesystem root to expose. Callers that absolutely need a path
 // (engine worktree setup) gate on Capabilities().GitWorktree first.

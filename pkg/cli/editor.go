@@ -21,11 +21,6 @@ type EditorOptions struct {
 	StoreDir  string // run store directory (default: nearest .iterion ancestor of Dir, or <Dir>/.iterion)
 	NoBrowser bool   // skip opening browser
 
-	// SessionToken, when non-empty, enables a session-cookie middleware on
-	// the server. Used by the desktop host so other local processes can't
-	// hit the editor's filesystem-write endpoints. Empty in CLI mode.
-	SessionToken string
-
 	// OnReady, when non-nil, is invoked once the HTTP listener is up and
 	// the server has accepted its bind address. The argument is the actual
 	// host:port the listener is bound to (useful when Port=0 / random).
@@ -87,12 +82,16 @@ func RunEditor(ctx context.Context, opts EditorOptions, p *Printer) error {
 		WorkDir:            dir,
 		StoreDir:           opts.StoreDir,
 		OpenBrowser:        !opts.NoBrowser,
-		SessionToken:       opts.SessionToken,
 		Mode:               opts.Mode,
 		MaxUploadSize:      opts.MaxUploadSize,
 		MaxTotalUploadSize: opts.MaxTotalUploadSize,
 		MaxUploadsPerRun:   opts.MaxUploadsPerRun,
 		AllowedUploadMIMEs: opts.AllowUploadMime,
+		// Local mode: the editor process is implicitly trusted to
+		// its TTY user. CSRF protection still gates write endpoints
+		// via Origin allowlisting; cross-tenant isolation does not
+		// apply because there is exactly one local user.
+		DisableAuth: true,
 	}
 
 	logger := iterlog.New(iterlog.LevelInfo, os.Stderr)

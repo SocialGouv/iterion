@@ -116,6 +116,9 @@ runner:
 log:
   format: json
   level: debug
+auth:
+  jwt_secret: "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE="
+  secrets_key: "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE="
 `
 	if err := os.WriteFile(yamlPath, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -225,6 +228,8 @@ func TestLoad_ValidationCloudHappyPath(t *testing.T) {
 	t.Setenv("ITERION_NATS_URL", "nats://nats:4222")
 	t.Setenv("ITERION_MONGO_URI", "mongodb://mongo:27017")
 	t.Setenv("ITERION_S3_ENDPOINT", "http://minio:9000")
+	t.Setenv("ITERION_JWT_SECRET", "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=")  // 36 bytes (>32)
+	t.Setenv("ITERION_SECRETS_KEY", "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=") // 36 bytes
 	cfg, err := Load(LoadOptions{})
 	if err != nil {
 		t.Fatalf("Load: %v", err)

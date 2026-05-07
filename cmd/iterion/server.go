@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/signal"
@@ -11,10 +13,13 @@ import (
 
 	"github.com/spf13/cobra"
 
+	iterauth "github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/auth/oidc"
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/cloud/tracing"
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -181,13 +186,68 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	mongoSource := eventstream.NewMongo(st.EventsCollection(), logger).WithMetrics(mreg)
 	eventSrc := runview.NewEventSourceAdapter(mongoSource)
 
-	if cfg.Server.SessionToken == "" {
-		disableAuth, _ := strconv.ParseBool(os.Getenv("ITERION_DISABLE_AUTH"))
-		if !disableAuth {
-			return fmt.Errorf("server: ITERION_SESSION_TOKEN is required in cloud mode — set the env var or override with ITERION_DISABLE_AUTH=true")
+	disableAuth, _ := strconv.ParseBool(os.Getenv("ITERION_DISABLE_AUTH"))
+
+	// Wire auth (identity store, JWT signer, refresh sessions) and
+	// the OIDC connector registry. Bootstrap a super-admin if the
+	// env var is set and no user matches yet.
+	identityStore := identity.NewMongoStore(st.DB())
+	if err := identityStore.EnsureSchema(rootCtx); err != nil {
+		return fmt.Errorf("server: ensure identity schema: %w", err)
+	}
+	sessions := iterauth.NewMongoSessionStore(st.DB())
+	if err := sessions.EnsureSchema(rootCtx); err != nil {
+		return fmt.Errorf("server: ensure sessions schema: %w", err)
+	}
+
+	signer, err := iterauth.NewJWTSigner(cfg.Auth.JWTSecret, cfg.Auth.AccessTTL)
+	if err != nil {
+		return fmt.Errorf("server: build jwt signer: %w", err)
+	}
+	authSvc, err := iterauth.NewService(iterauth.Config{
+		Store:      identityStore,
+		Sessions:   sessions,
+		Signer:     signer,
+		SignupMode: iterauth.SignupMode(cfg.Auth.SignupMode),
+		RefreshTTL: cfg.Auth.RefreshTTL,
+	})
+	if err != nil {
+		return fmt.Errorf("server: build auth service: %w", err)
+	}
+
+	if email := cfg.Auth.BootstrapAdminEmail; email != "" && !disableAuth {
+		count, err := identityStore.UserCount(rootCtx)
+		if err != nil {
+			return fmt.Errorf("server: user count: %w", err)
 		}
+		if count == 0 {
+			pwBytes := make([]byte, 18)
+			if _, err := rand.Read(pwBytes); err != nil {
+				return fmt.Errorf("server: bootstrap password: %w", err)
+			}
+			pw := base64.RawURLEncoding.EncodeToString(pwBytes)
+			if _, _, err := authSvc.CreateUserAndPersonalTeam(rootCtx, email, "Bootstrap admin", pw, true, identity.UserStatusPendingPasswordChange); err != nil {
+				return fmt.Errorf("server: bootstrap admin: %w", err)
+			}
+			logger.Warn("server: BOOTSTRAP super-admin created — email=%s temp_password=%s (change on first login)", email, pw)
+		}
+	}
+
+	registry := oidc.NewRegistry()
+	if cfg.Auth.OIDC.Google.Enabled {
+		registry.Register(oidc.NewGoogleConnector(cfg.Auth.OIDC.Google.ClientID, cfg.Auth.OIDC.Google.ClientSecret, cfg.Auth.OIDC.Google.DisplayName))
+	}
+	if cfg.Auth.OIDC.GitHub.Enabled {
+		registry.Register(oidc.NewGitHubConnector(cfg.Auth.OIDC.GitHub.ClientID, cfg.Auth.OIDC.GitHub.ClientSecret, cfg.Auth.OIDC.GitHub.DisplayName))
+	}
+	if cfg.Auth.OIDC.Generic.Enabled {
+		registry.Register(oidc.NewGenericConnector(cfg.Auth.OIDC.Generic.IssuerURL, cfg.Auth.OIDC.Generic.ClientID, cfg.Auth.OIDC.Generic.ClientSecret, cfg.Auth.OIDC.Generic.DisplayName, cfg.Auth.OIDC.Generic.Scopes))
+	}
+
+	if disableAuth {
 		logger.Warn("server: ITERION_DISABLE_AUTH set — /api/* endpoints are unauthenticated; do not expose the server publicly")
 	}
+
 	srv := server.New(server.Config{
 		Port:            serverOpts.port,
 		Bind:            serverOpts.bind,
@@ -196,7 +256,16 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		LaunchPublisher: pub,
 		EventSource:     eventSrc,
 		Mode:            string(iterconfig.ModeCloud),
-		SessionToken:    cfg.Server.SessionToken,
+		AuthService:     authSvc,
+		AuthSigner:      signer,
+		OIDCRegistry:    registry,
+		AccessTTL:       cfg.Auth.AccessTTL,
+		RefreshTTL:      cfg.Auth.RefreshTTL,
+		PublicURL:       cfg.Auth.PublicURL,
+		SignupMode:      cfg.Auth.SignupMode,
+		CookieDomain:    cfg.Auth.CookieDomain,
+		CookieSecure:    cfg.Auth.CookieSecure,
+		DisableAuth:     disableAuth,
 		Metrics:         mreg,
 		// /readyz pings each dependency under a 1s deadline so kubelet
 		// readiness probes flip to "not ready" the moment a backend

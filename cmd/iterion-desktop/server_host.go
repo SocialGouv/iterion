@@ -15,7 +15,7 @@ import (
 // the editor server when the user switches projects. Stop blocks until
 // RunEditor's drain budget elapses or the goroutine returns.
 type serverController interface {
-	Start(parent context.Context, dir, storeDir, sessionToken string) (string, error)
+	Start(parent context.Context, dir, storeDir string) (string, error)
 	Stop()
 }
 
@@ -34,7 +34,7 @@ func NewServerHost() *ServerHost {
 // project and returns the bound "host:port" once the listener is ready.
 // Calling Start while a server is already running is an error — the
 // desktop App always calls Stop first.
-func (h *ServerHost) Start(parent context.Context, dir, storeDir, sessionToken string) (string, error) {
+func (h *ServerHost) Start(parent context.Context, dir, storeDir string) (string, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.cancel != nil {
@@ -53,12 +53,11 @@ func (h *ServerHost) Start(parent context.Context, dir, storeDir, sessionToken s
 		// Use a noop printer — the desktop has no stdout for the user.
 		printer := cli.NewPrinter(cli.OutputJSON)
 		opts := cli.EditorOptions{
-			Port:         -1, // random
-			Bind:         "127.0.0.1",
-			Dir:          dir,
-			StoreDir:     storeDir,
-			NoBrowser:    true,
-			SessionToken: sessionToken,
+			Port:      -1, // random
+			Bind:      "127.0.0.1",
+			Dir:       dir,
+			StoreDir:  storeDir,
+			NoBrowser: true,
 			OnReady: func(addr string) {
 				select {
 				case addrCh <- addr:

@@ -18,6 +18,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/auth/oidc"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -40,13 +42,49 @@ type Config struct {
 	StoreDir    string // run store directory (default: <WorkDir>/.iterion)
 	OpenBrowser bool   // open browser on start
 
-	// SessionToken, when non-empty, enables a session-cookie middleware that
-	// gates every request on a matching `iterion_session` HttpOnly cookie.
-	// The cookie is set by the bootstrap GET / when the request carries
-	// `?t=<token>` matching SessionToken — that is how the desktop window
-	// transitions from the bootstrap URL to a normal SPA load. CLI mode
-	// (`iterion editor`) leaves this empty and behaves identically to before.
-	SessionToken string
+	// AuthService is the multitenant authentication service. When
+	// non-nil, every /api/* request is gated by authMiddleware. CLI
+	// local mode leaves this nil and DisableAuth=true so the editor
+	// process trusts its TTY user (legacy behaviour).
+	AuthService *auth.Service
+
+	// AuthSigner is the JWT verifier used by middleware to validate
+	// access tokens. Required when AuthService is set.
+	AuthSigner *auth.JWTSigner
+
+	// OIDCRegistry maps provider slugs ("google", "github", "sso")
+	// to their connectors. nil disables every OIDC route.
+	OIDCRegistry *oidc.Registry
+
+	// OIDCStates persists per-flow PendingAuth records between
+	// /start and /callback. Defaults to an in-memory store when nil.
+	OIDCStates oidc.StateStore
+
+	// CookieDomain narrows the auth cookies' Domain attribute. Empty
+	// means host-only cookie (recommended).
+	CookieDomain string
+
+	// CookieSecure forces the Secure flag on auth cookies. Should
+	// always be true in production. Defaults to false in test/dev.
+	CookieSecure bool
+
+	// AccessTTL is the access JWT lifetime; the auth cookie's
+	// MaxAge mirrors it. Defaults to AuthSigner.AccessTTL().
+	AccessTTL time.Duration
+
+	// RefreshTTL is the refresh cookie / session lifetime.
+	// Defaults to 30d.
+	RefreshTTL time.Duration
+
+	// PublicURL is the externally-reachable origin (e.g.
+	// https://iterion.example) used to build OIDC redirect URIs.
+	PublicURL string
+
+	// SignupMode is "open" or "invite_only"; surfaced to the SPA.
+	SignupMode string
+
+	// DisableAuth bypasses every auth check — DEV ONLY.
+	DisableAuth bool
 
 	// Store overrides the default filesystem store with a caller-
 	// supplied implementation (typically the cloud Mongo+S3 store).
@@ -118,11 +156,16 @@ type Server struct {
 	cfg     Config
 	logger  *iterlog.Logger
 	mux     *http.ServeMux
-	handler http.Handler // mux wrapped with optional session-token middleware
+	handler http.Handler // mux wrapped with auth middleware
 	server  *http.Server
 	hub     *Hub
 	watcher *Watcher
 	runs    *runview.Service // run console service; nil disables /api/runs endpoints
+
+	authSvc      *auth.Service
+	signer       *auth.JWTSigner
+	oidcRegistry *oidc.Registry
+	oidcStates   oidc.StateStore
 
 	// listener is captured at ListenAndServe time so callers (notably the
 	// desktop host, which passes Port=0 for an OS-assigned port) can read
@@ -151,7 +194,25 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		cfg.Bind = "127.0.0.1"
 	}
 	cfg = applyUploadDefaults(cfg)
-	s := &Server{cfg: cfg, logger: logger, mux: http.NewServeMux(), addrReady: make(chan struct{})}
+	if cfg.AccessTTL <= 0 && cfg.AuthSigner != nil {
+		cfg.AccessTTL = cfg.AuthSigner.AccessTTL()
+	}
+	if cfg.RefreshTTL <= 0 {
+		cfg.RefreshTTL = 30 * 24 * time.Hour
+	}
+	if cfg.OIDCStates == nil {
+		cfg.OIDCStates = oidc.NewMemoryStateStore(10 * time.Minute)
+	}
+	s := &Server{
+		cfg:          cfg,
+		logger:       logger,
+		mux:          http.NewServeMux(),
+		addrReady:    make(chan struct{}),
+		authSvc:      cfg.AuthService,
+		signer:       cfg.AuthSigner,
+		oidcRegistry: cfg.OIDCRegistry,
+		oidcStates:   cfg.OIDCStates,
+	}
 	s.hub = NewHub(logger)
 	go s.hub.Run()
 	// File watcher is only meaningful in local mode where the editor
@@ -210,13 +271,12 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	// upgrader so cross-origin browser tabs can't subscribe to file events.
 	SetWebSocketOriginCheck(s.isAllowedOrigin)
 	s.routes()
-	// Wrap the mux in the session-token middleware when a token is set.
-	// Empty token (the CLI default) means the middleware is a passthrough
-	// — no behavioural change for `iterion editor`.
-	s.handler = s.mux
-	if cfg.SessionToken != "" {
-		s.handler = s.sessionTokenMiddleware(s.mux)
-	}
+	// Always wrap in authMiddleware. Public paths (health probes,
+	// auth endpoints, static SPA) bypass the JWT check internally;
+	// every /api/* call requires a valid bearer / cookie. DEV
+	// override: cfg.DisableAuth synthesizes a super-admin Identity
+	// instead of rejecting unauthenticated requests.
+	s.handler = s.authMiddleware(s.mux)
 	s.server = &http.Server{
 		Addr:              net.JoinHostPort(cfg.Bind, fmt.Sprintf("%d", cfg.Port)),
 		Handler:           s.handler,
@@ -337,6 +397,13 @@ func (s *Server) routes() {
 	// Run console endpoints (registered only when s.runs is wired).
 	s.registerRunRoutes()
 	s.registerRunLogRoutes()
+
+	// Auth + identity endpoints (login, logout, refresh, OIDC,
+	// teams, invitations). Registered only when authSvc is wired —
+	// local mode without an auth service skips them.
+	if s.authSvc != nil {
+		s.registerAuthRoutes()
+	}
 
 	// Serve static frontend files.
 	staticSub, err := fs.Sub(staticFS, "static")
@@ -641,14 +708,12 @@ func (s *Server) allowedOrigins() []string {
 	// with the SPA's true origin in the upgrade handshake; without these
 	// entries the upgrader's CheckOrigin would reject every cross-origin
 	// WS handshake from the desktop window. Token-bearing requests are
-	// already authenticated by the session middleware (?t= query); origin
-	// allow-listing is defense-in-depth.
-	if s.cfg.SessionToken != "" {
-		origins = append(origins,
-			"wails://wails",
-			"http://wails.localhost",
-		)
-	}
+	// already authenticated by the auth middleware; origin allow-listing
+	// is defense-in-depth.
+	origins = append(origins,
+		"wails://wails",
+		"http://wails.localhost",
+	)
 	return origins
 }
 

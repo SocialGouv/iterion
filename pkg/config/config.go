@@ -46,6 +46,81 @@ type Config struct {
 	Metrics MetricsConfig `yaml:"metrics"`
 	Log     LogConfig     `yaml:"log"`
 	Sandbox SandboxConfig `yaml:"sandbox"`
+	Auth    AuthConfig    `yaml:"auth"`
+}
+
+// AuthConfig groups multitenant auth settings: JWT signing, secrets
+// master key, bootstrap admin, signup policy, and configured OIDC
+// providers (Google, GitHub, generic).
+//
+// Required in cloud mode; ignored in local mode (the editor process
+// is implicitly trusted to its TTY user).
+type AuthConfig struct {
+	// JWTSecret is a base64-encoded HS256 signing key (>=32 bytes).
+	// Required in cloud mode.
+	JWTSecret string `yaml:"jwt_secret"`
+
+	// SecretsKey is a base64-encoded AES-256-GCM master key (32
+	// bytes). Used by pkg/secrets to seal API keys / OAuth blobs at
+	// rest. Required in cloud mode.
+	SecretsKey string `yaml:"secrets_key"`
+
+	// AccessTTL is the lifetime of an access JWT. Default 15m.
+	AccessTTL time.Duration `yaml:"access_ttl"`
+
+	// RefreshTTL is the lifetime of a refresh token. Default 720h
+	// (30 days). Refresh tokens rotate on every use.
+	RefreshTTL time.Duration `yaml:"refresh_ttl"`
+
+	// BootstrapAdminEmail, when set on first boot of an empty users
+	// collection, creates a super-admin account with that email and
+	// a randomly generated one-time password printed to the server
+	// log. The user is required to change it on first login.
+	BootstrapAdminEmail string `yaml:"bootstrap_admin_email"`
+
+	// SignupMode controls who may create new users without an
+	// invitation. "invite_only" (default) — registration requires a
+	// matching invitation token. "open" — anyone can register; first
+	// login lands them in their own personal team.
+	SignupMode string `yaml:"signup_mode"`
+
+	// PublicURL is the externally-reachable origin of the server,
+	// used to build OIDC redirect URIs (e.g. https://iterion.example).
+	// Required when any OIDC provider is enabled.
+	PublicURL string `yaml:"public_url"`
+
+	// CookieDomain narrows the auth cookie's Domain attribute when
+	// the SPA is served from a different host than the API (rare).
+	// Empty means host-only cookie (recommended).
+	CookieDomain string `yaml:"cookie_domain"`
+
+	// CookieSecure forces the Secure flag on auth cookies. Defaults
+	// to true; only set false for HTTP local dev.
+	CookieSecure bool `yaml:"cookie_secure"`
+
+	OIDC OIDCConfig `yaml:"oidc"`
+}
+
+// OIDCConfig holds the three supported SSO providers. Each is opt-in
+// via the Enabled flag; client_id/secret default to env override.
+type OIDCConfig struct {
+	Google  OIDCProviderConfig `yaml:"google"`
+	GitHub  OIDCProviderConfig `yaml:"github"`
+	Generic OIDCProviderConfig `yaml:"generic"`
+}
+
+// OIDCProviderConfig is the per-provider config block. For Google the
+// IssuerURL defaults to https://accounts.google.com; for GitHub the
+// IssuerURL is unused (GitHub is OAuth2 not OIDC). For Generic the
+// operator must provide IssuerURL pointing to a discovery doc.
+type OIDCProviderConfig struct {
+	Enabled      bool     `yaml:"enabled"`
+	IssuerURL    string   `yaml:"issuer_url"`
+	ClientID     string   `yaml:"client_id"`
+	ClientSecret string   `yaml:"client_secret"`
+	Scopes       []string `yaml:"scopes"`
+	// DisplayName is shown on the SPA login page button.
+	DisplayName string `yaml:"display_name"`
 }
 
 // SandboxConfig is the global sandbox default. The empty string means
@@ -102,11 +177,6 @@ type RunnerConfig struct {
 // ServerConfig holds server-specific settings (HTTP API + healthz port).
 type ServerConfig struct {
 	HealthzPort int `yaml:"healthz_port"`
-	// SessionToken, when non-empty, gates every /api/* request on a
-	// matching `iterion_session` cookie. Required in cloud mode when
-	// the server is reachable from an Ingress; without it any
-	// network-adjacent client can publish runs to NATS.
-	SessionToken string `yaml:"session_token"`
 }
 
 // MetricsConfig holds the Prometheus metrics endpoint port.
@@ -157,6 +227,27 @@ func Defaults() Config {
 		Log: LogConfig{
 			Format: LogFormatHuman,
 			Level:  "info",
+		},
+		Auth: AuthConfig{
+			AccessTTL:    15 * time.Minute,
+			RefreshTTL:   30 * 24 * time.Hour,
+			SignupMode:   "invite_only",
+			CookieSecure: true,
+			OIDC: OIDCConfig{
+				Google: OIDCProviderConfig{
+					IssuerURL:   "https://accounts.google.com",
+					Scopes:      []string{"openid", "email", "profile"},
+					DisplayName: "Google",
+				},
+				GitHub: OIDCProviderConfig{
+					Scopes:      []string{"read:user", "user:email"},
+					DisplayName: "GitHub",
+				},
+				Generic: OIDCProviderConfig{
+					Scopes:      []string{"openid", "email", "profile"},
+					DisplayName: "SSO",
+				},
+			},
 		},
 	}
 }
@@ -250,6 +341,31 @@ func (c *Config) Validate() error {
 		}
 		// Access key + secret are conditionally required (IRSA can fill
 		// them from the pod environment); we don't enforce them here.
+		if c.Auth.JWTSecret == "" {
+			return fmt.Errorf("ITERION_JWT_SECRET required when mode=cloud (base64 of >=32 random bytes)")
+		}
+		if c.Auth.SecretsKey == "" {
+			return fmt.Errorf("ITERION_SECRETS_KEY required when mode=cloud (base64 of 32 random bytes)")
+		}
+		switch c.Auth.SignupMode {
+		case "invite_only", "open":
+		default:
+			return fmt.Errorf("ITERION_SIGNUP_MODE %q invalid (want invite_only|open)", c.Auth.SignupMode)
+		}
+		if c.Auth.AccessTTL <= 0 {
+			return fmt.Errorf("ITERION_ACCESS_TTL %s invalid (want > 0)", c.Auth.AccessTTL)
+		}
+		if c.Auth.RefreshTTL <= 0 {
+			return fmt.Errorf("ITERION_REFRESH_TTL %s invalid (want > 0)", c.Auth.RefreshTTL)
+		}
+		// Public URL is required only when at least one OIDC provider
+		// is enabled — without it we can't form a redirect URI.
+		if (c.Auth.OIDC.Google.Enabled || c.Auth.OIDC.GitHub.Enabled || c.Auth.OIDC.Generic.Enabled) && c.Auth.PublicURL == "" {
+			return fmt.Errorf("ITERION_PUBLIC_URL required when an OIDC provider is enabled")
+		}
+		if c.Auth.OIDC.Generic.Enabled && c.Auth.OIDC.Generic.IssuerURL == "" {
+			return fmt.Errorf("ITERION_OIDC_GENERIC_ISSUER_URL required when generic OIDC is enabled")
+		}
 	}
 
 	if c.Runner.Concurrency < 1 {

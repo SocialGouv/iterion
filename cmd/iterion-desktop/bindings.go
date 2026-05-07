@@ -38,18 +38,6 @@ func (a *App) GetServerURL() string {
 	return a.serverURL
 }
 
-// GetSessionToken returns the one-time-per-launch session token. The
-// AssetServer reverse-proxy attaches this as the iterion_session cookie
-// on every forwarded HTTP request, so the SPA never has to learn it for
-// same-origin proxied calls. The SPA does need it for cross-origin
-// WebSocket connections (it goes on the ?t=<token> query string the
-// session middleware accepts on non-bootstrap paths).
-func (a *App) GetSessionToken() string {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.sessionToken
-}
-
 // GetAppInfo returns version + commit + platform metadata for the About tab.
 func (a *App) GetAppInfo() AppInfo {
 	return AppInfo{

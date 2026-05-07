@@ -106,10 +106,6 @@ func loadEnv(cfg *Config) error {
 		}
 		cfg.Metrics.Port = n
 	}
-	if v, ok := lookup("ITERION_SESSION_TOKEN"); ok {
-		cfg.Server.SessionToken = v
-	}
-
 	if v, ok := lookup("ITERION_LOG_FORMAT"); ok {
 		cfg.Log.Format = LogFormat(strings.ToLower(v))
 	}
@@ -121,7 +117,111 @@ func loadEnv(cfg *Config) error {
 		cfg.Sandbox.Default = strings.ToLower(v)
 	}
 
+	if v, ok := lookup("ITERION_JWT_SECRET"); ok {
+		cfg.Auth.JWTSecret = v
+	}
+	if v, ok := lookup("ITERION_SECRETS_KEY"); ok {
+		cfg.Auth.SecretsKey = v
+	}
+	if v, ok := lookup("ITERION_ACCESS_TTL"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("ITERION_ACCESS_TTL: %w", err)
+		}
+		cfg.Auth.AccessTTL = d
+	}
+	if v, ok := lookup("ITERION_REFRESH_TTL"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("ITERION_REFRESH_TTL: %w", err)
+		}
+		cfg.Auth.RefreshTTL = d
+	}
+	if v, ok := lookup("ITERION_BOOTSTRAP_ADMIN_EMAIL"); ok {
+		cfg.Auth.BootstrapAdminEmail = strings.ToLower(strings.TrimSpace(v))
+	}
+	if v, ok := lookup("ITERION_SIGNUP_MODE"); ok {
+		cfg.Auth.SignupMode = strings.ToLower(v)
+	}
+	if v, ok := lookup("ITERION_PUBLIC_URL"); ok {
+		cfg.Auth.PublicURL = strings.TrimRight(v, "/")
+	}
+	if v, ok := lookup("ITERION_COOKIE_DOMAIN"); ok {
+		cfg.Auth.CookieDomain = v
+	}
+	if v, ok := lookup("ITERION_COOKIE_SECURE"); ok {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("ITERION_COOKIE_SECURE: %w", err)
+		}
+		cfg.Auth.CookieSecure = b
+	}
+
+	if v, ok := lookup("ITERION_OIDC_GOOGLE_ENABLED"); ok {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("ITERION_OIDC_GOOGLE_ENABLED: %w", err)
+		}
+		cfg.Auth.OIDC.Google.Enabled = b
+	}
+	if v, ok := lookup("ITERION_OIDC_GOOGLE_CLIENT_ID"); ok {
+		cfg.Auth.OIDC.Google.ClientID = v
+	}
+	if v, ok := lookup("ITERION_OIDC_GOOGLE_CLIENT_SECRET"); ok {
+		cfg.Auth.OIDC.Google.ClientSecret = v
+	}
+
+	if v, ok := lookup("ITERION_OIDC_GITHUB_ENABLED"); ok {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("ITERION_OIDC_GITHUB_ENABLED: %w", err)
+		}
+		cfg.Auth.OIDC.GitHub.Enabled = b
+	}
+	if v, ok := lookup("ITERION_OIDC_GITHUB_CLIENT_ID"); ok {
+		cfg.Auth.OIDC.GitHub.ClientID = v
+	}
+	if v, ok := lookup("ITERION_OIDC_GITHUB_CLIENT_SECRET"); ok {
+		cfg.Auth.OIDC.GitHub.ClientSecret = v
+	}
+
+	if v, ok := lookup("ITERION_OIDC_GENERIC_ENABLED"); ok {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("ITERION_OIDC_GENERIC_ENABLED: %w", err)
+		}
+		cfg.Auth.OIDC.Generic.Enabled = b
+	}
+	if v, ok := lookup("ITERION_OIDC_GENERIC_ISSUER_URL"); ok {
+		cfg.Auth.OIDC.Generic.IssuerURL = strings.TrimRight(v, "/")
+	}
+	if v, ok := lookup("ITERION_OIDC_GENERIC_CLIENT_ID"); ok {
+		cfg.Auth.OIDC.Generic.ClientID = v
+	}
+	if v, ok := lookup("ITERION_OIDC_GENERIC_CLIENT_SECRET"); ok {
+		cfg.Auth.OIDC.Generic.ClientSecret = v
+	}
+	if v, ok := lookup("ITERION_OIDC_GENERIC_DISPLAY_NAME"); ok {
+		cfg.Auth.OIDC.Generic.DisplayName = v
+	}
+	if v, ok := lookup("ITERION_OIDC_GENERIC_SCOPES"); ok {
+		cfg.Auth.OIDC.Generic.Scopes = splitCSV(v)
+	}
+
 	return nil
+}
+
+// splitCSV trims and splits a comma-separated env var value, dropping
+// empty entries. Used by env vars like ITERION_OIDC_GENERIC_SCOPES.
+func splitCSV(v string) []string {
+	parts := strings.Split(v, ",")
+	out := parts[:0]
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // lookup returns (value, true) only when the env var is both set and

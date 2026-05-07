@@ -39,6 +39,19 @@ type yamlConfig struct {
 	Server  *yamlServerConfig  `yaml:"server"`
 	Metrics *yamlMetricsConfig `yaml:"metrics"`
 	Log     *yamlLogConfig     `yaml:"log"`
+	Auth    *yamlAuthConfig    `yaml:"auth"`
+}
+
+type yamlAuthConfig struct {
+	JWTSecret           *string `yaml:"jwt_secret"`
+	SecretsKey          *string `yaml:"secrets_key"`
+	AccessTTL           *string `yaml:"access_ttl"`
+	RefreshTTL          *string `yaml:"refresh_ttl"`
+	BootstrapAdminEmail *string `yaml:"bootstrap_admin_email"`
+	SignupMode          *string `yaml:"signup_mode"`
+	PublicURL           *string `yaml:"public_url"`
+	CookieDomain        *string `yaml:"cookie_domain"`
+	CookieSecure        *bool   `yaml:"cookie_secure"`
 }
 
 type yamlNATSConfig struct {
@@ -137,6 +150,31 @@ func (y *yamlConfig) applyTo(cfg *Config) error {
 			cfg.Log.Format = LogFormat(*y.Log.Format)
 		}
 		applyString(y.Log.Level, &cfg.Log.Level)
+	}
+	if y.Auth != nil {
+		applyString(y.Auth.JWTSecret, &cfg.Auth.JWTSecret)
+		applyString(y.Auth.SecretsKey, &cfg.Auth.SecretsKey)
+		if y.Auth.AccessTTL != nil {
+			d, err := time.ParseDuration(*y.Auth.AccessTTL)
+			if err != nil {
+				return fmt.Errorf("auth.access_ttl: %w", err)
+			}
+			cfg.Auth.AccessTTL = d
+		}
+		if y.Auth.RefreshTTL != nil {
+			d, err := time.ParseDuration(*y.Auth.RefreshTTL)
+			if err != nil {
+				return fmt.Errorf("auth.refresh_ttl: %w", err)
+			}
+			cfg.Auth.RefreshTTL = d
+		}
+		applyString(y.Auth.BootstrapAdminEmail, &cfg.Auth.BootstrapAdminEmail)
+		applyString(y.Auth.SignupMode, &cfg.Auth.SignupMode)
+		applyString(y.Auth.PublicURL, &cfg.Auth.PublicURL)
+		applyString(y.Auth.CookieDomain, &cfg.Auth.CookieDomain)
+		if y.Auth.CookieSecure != nil {
+			cfg.Auth.CookieSecure = *y.Auth.CookieSecure
+		}
 	}
 	return nil
 }

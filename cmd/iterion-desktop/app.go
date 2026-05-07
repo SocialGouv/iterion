@@ -4,8 +4,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"log"
 	"os"
 	"sync"
@@ -21,10 +19,9 @@ import (
 // onShutdown. The HTTP server is brought up in onStartup and torn down in
 // onShutdown.
 type App struct {
-	ctx          context.Context
-	server       serverController
-	serverURL    string
-	sessionToken string
+	ctx       context.Context
+	server    serverController
+	serverURL string
 
 	mu       sync.RWMutex
 	config   *Config
@@ -48,18 +45,6 @@ func NewApp() *App {
 
 func (a *App) onStartup(ctx context.Context) {
 	a.ctx = ctx
-
-	// Generate a one-time session token for the HTTP server. Used by the
-	// frontend stub to set the HttpOnly cookie and by every subsequent
-	// request to authorise itself. 32 bytes hex = 64 chars, ~256 bits of
-	// entropy. crypto/rand.Read on Linux/macOS uses getrandom(2);
-	// non-fatal on a flaky read because we'd rather crash loudly than
-	// run unauthenticated.
-	tok := make([]byte, 32)
-	if _, err := rand.Read(tok); err != nil {
-		log.Fatalf("desktop: failed to generate session token: %v", err)
-	}
-	a.sessionToken = hex.EncodeToString(tok)
 
 	// Apply macOS PATH fix BEFORE looking up external CLIs. On Finder/Dock
 	// launches PATH is minimal; without this fix `claude`/`codex`/`git`
@@ -191,7 +176,7 @@ func (a *App) startServerForCurrentProject(ctx context.Context) error {
 	dir, storeDir := a.currentProjectServerDirsLocked()
 	a.mu.Unlock()
 
-	addr, err := a.server.Start(ctx, dir, storeDir, a.sessionToken)
+	addr, err := a.server.Start(ctx, dir, storeDir)
 	if err != nil {
 		return err
 	}
@@ -230,7 +215,7 @@ func (a *App) restartServerForCurrentProject(ctx context.Context) (*Project, err
 	a.mu.Unlock()
 
 	a.server.Stop()
-	addr, err := a.server.Start(ctx, dir, storeDir, a.sessionToken)
+	addr, err := a.server.Start(ctx, dir, storeDir)
 	if err != nil {
 		return nil, err
 	}
