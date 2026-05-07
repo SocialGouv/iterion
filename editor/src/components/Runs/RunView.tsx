@@ -15,6 +15,7 @@ import { readBooleanFlag, writeBooleanFlag } from "@/lib/localStorageFlag";
 
 import { buildExecutionsAt } from "@/lib/snapshotReducer";
 
+import BrowserPane from "./BrowserPane";
 import EventLog from "./EventLog";
 import FileDiffDialog from "./FileDiffDialog";
 import HumanInteractionPanel from "./HumanInteractionPanel";
@@ -51,6 +52,10 @@ export default function RunView() {
   const wsState = useRunStore((s) => s.wsState);
   const followTail = useRunStore((s) => s.followTail);
   const setFollowTail = useRunStore((s) => s.setFollowTail);
+  const browserPreview = useRunStore((s) => s.browser);
+  const browserAvailable =
+    browserPreview.currentUrl !== null ||
+    browserPreview.lastEventSeqSeen !== null;
   // Time-travel scrubber: when non-null, the canvas/detail/event log
   // render the run *as it was* at this seq. When null (the default),
   // live data flows through. Lives in component state because it's
@@ -130,8 +135,19 @@ export default function RunView() {
   const [eventlogCollapsed, setEventlogCollapsed] = useState<boolean>(() =>
     readBooleanFlag(EVENTLOG_COLLAPSED_KEY),
   );
-  const [bottomTab, setBottomTab] = useState<"events" | "logs" | "report">(
-    "logs",
+  const [bottomTab, setBottomTab] = useState<
+    "events" | "logs" | "report" | "browser"
+  >("logs");
+  // Tracks whether the user has manually changed the bottom tab during
+  // this run view, so we don't yank the tab back to "browser" on every
+  // new preview_url event after they explicitly picked another panel.
+  const [bottomTabPinned, setBottomTabPinned] = useState<boolean>(false);
+  const handleSetBottomTab = useCallback(
+    (tab: "events" | "logs" | "report" | "browser") => {
+      setBottomTab(tab);
+      setBottomTabPinned(true);
+    },
+    [],
   );
   const toggleDetailCollapsed = useCallback(() => {
     setDetailCollapsed((prev) => {
@@ -147,6 +163,19 @@ export default function RunView() {
       return next;
     });
   }, []);
+
+  // Auto-reveal the Browser tab the first time a preview URL becomes
+  // available, but only if the user hasn't already pinned a different
+  // tab during this view.
+  useEffect(() => {
+    if (
+      !bottomTabPinned &&
+      browserAvailable &&
+      bottomTab !== "browser"
+    ) {
+      setBottomTab("browser");
+    }
+  }, [browserAvailable, bottomTab, bottomTabPinned]);
 
   useEffect(() => {
     setRunId(runId);
@@ -384,12 +413,17 @@ export default function RunView() {
                     <Tabs
                       value={bottomTab}
                       onValueChange={(v) =>
-                        setBottomTab(v as "events" | "logs" | "report")
+                        handleSetBottomTab(
+                          v as "events" | "logs" | "report" | "browser",
+                        )
                       }
                       items={[
                         { value: "events", label: "Events" },
                         { value: "logs", label: "Logs" },
                         { value: "report", label: "Report" },
+                        ...(browserAvailable
+                          ? [{ value: "browser", label: "Browser" }]
+                          : []),
                       ]}
                       variant="underline"
                       listClassName="px-3"
@@ -412,6 +446,8 @@ export default function RunView() {
                           unsubscribeLogs={wsHandle.unsubscribeLogs}
                           onCollapse={toggleEventlogCollapsed}
                         />
+                      ) : bottomTab === "browser" && runId ? (
+                        <BrowserPane runId={runId} />
                       ) : (
                         <ReportTab onSelectNode={handleSelectNode} />
                       )}

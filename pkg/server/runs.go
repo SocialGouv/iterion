@@ -50,6 +50,7 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("POST /api/runs/{id}/resume", s.handleResumeRun)
 	s.mux.HandleFunc("POST /api/runs/{id}/merge", s.handleMergeRun)
 	s.mux.HandleFunc("GET /api/ws/runs/{id}", s.handleRunWebSocket)
+	s.mux.HandleFunc("GET /api/runs/{id}/preview", s.handlePreviewProxy)
 }
 
 // --- Request / response shapes ---

@@ -350,6 +350,17 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 						fmt.Sprintf("Tool output [%s/%s]:", nodeID, toolName),
 						iterlog.BlockPreview(output, 1500))
 				}
+				for _, payload := range scanPreviewURLs(output) {
+					_, _ = emitter.AppendEvent(ctx, runID, store.Event{
+						Type:   store.EventPreviewURLAvailable,
+						RunID:  runID,
+						NodeID: nodeID,
+						Data:   payload,
+					})
+					if url, _ := payload["url"].(string); url != "" {
+						logger.Logf(iterlog.LevelInfo, "🌐", "Preview URL [%s]: %s", nodeID, url)
+					}
+				}
 			}
 		},
 	}

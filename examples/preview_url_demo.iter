@@ -1,0 +1,53 @@
+## Fixture : preview_url_demo
+##
+## Visual end-to-end test for the run-view Browser pane (PR 1 of the
+## "browser simulation" feature). A pure-tool workflow with no LLM and
+## no network egress beyond the iframe, designed to finish in
+## sub-second so the run console renders the Browser tab as soon as
+## the page loads.
+##
+## What you should see in the run console:
+##   - A new "Browser" tab appears in the bottom panel as soon as the
+##     `announce` tool finishes (auto-revealed; switch tabs to
+##     dismiss).
+##   - The iframe loads https://example.com directly (scope=external),
+##     using the target site's own framing permissions.
+##   - The URL bar shows the preview URL and the footer says
+##     "from tool stdout · docs".
+##   - You can manually type a different URL in the bar and press
+##     Enter to override the workflow URL until you click "clear".
+##
+##   devbox run -- ./iterion run examples/preview_url_demo.iter --merge-into none
+##   devbox run -- ./iterion editor --port 8080
+##
+## Try this next: append `scope=internal` to the directive line below
+## to route the iframe through /api/runs/:id/preview, which strips
+## X-Frame-Options and frame-ancestors. The proxy refuses RFC1918 and
+## cluster-internal addresses in cloud mode (see runs_preview_test.go).
+##
+## NB on tool commands: brackets `[…]` are protected from shell glob
+## expansion by single quotes, which the .iter lexer leaves untouched
+## as part of the string value.
+
+## ─── Schemas ────────────────────────────────────────────────────────
+
+schema announce_result:
+  ok: bool
+
+## ─── Tool nodes ─────────────────────────────────────────────────────
+
+tool announce:
+  command: "echo '[iterion] preview_url=https://example.com kind=docs scope=external' && echo \\{\\\"ok\\\":true\\}"
+  output: announce_result
+
+## ─── Workflow ───────────────────────────────────────────────────────
+
+workflow preview_url_demo:
+  entry: announce
+
+  ## Single-edge happy path. The runtime emits
+  ## EventPreviewURLAvailable as soon as `announce` flushes its
+  ## stdout; the editor reducer flips browser.currentUrl and the
+  ## RunView auto-focuses the Browser tab unless another tab is
+  ## already pinned.
+  announce -> done

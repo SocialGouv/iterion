@@ -37,6 +37,44 @@ export interface PendingHumanInput {
   raw?: RunEvent;
 }
 
+// PreviewSource tracks where the current preview URL came from. The
+// distinction matters for the Browser pane UI: workflow-emitted URLs
+// auto-show the pane and refresh on every new event, while manual
+// URLs entered by the user persist until they clear them.
+export type PreviewSource = "tool-stdout" | "manual" | "runtime";
+
+// PreviewScope tells the Browser pane whether to embed the URL
+// directly (`external` — relies on the target site's framing
+// permissions) or proxy it through `/api/runs/:id/preview` to strip
+// frame-blocking headers (`internal` — only safe for URLs the run
+// itself published or for content the editor controls).
+export type PreviewScope = "internal" | "external";
+
+export interface BrowserPaneState {
+  currentUrl: string | null;
+  scope: PreviewScope;
+  source: PreviewSource | null;
+  kind?: string;
+  // Seq of the last preview_url_available event reflected here.
+  // Used by the Browser pane to scrub-aware redraw — the time-travel
+  // mode in PR 2 will pick the latest event with seq <= scrubSeq
+  // instead of the live tail.
+  lastEventSeq: number | null;
+  // Latest preview_url event seq seen in the run, regardless of
+  // current selection. Lets the RunView decide when to auto-show
+  // the Browser tab.
+  lastEventSeqSeen: number | null;
+}
+
+const initialBrowserState: BrowserPaneState = {
+  currentUrl: null,
+  scope: "external",
+  source: null,
+  kind: undefined,
+  lastEventSeq: null,
+  lastEventSeqSeen: null,
+};
+
 export interface RunLogState {
   // start is the byte offset in the run's logical log stream where
   // text begins. start > 0 means the older bytes were evicted.
@@ -63,6 +101,7 @@ interface RunStoreState {
   wsState: WsState;
   followTail: boolean;
   log: RunLogState;
+  browser: BrowserPaneState;
   // Increments to request a fresh WS dial. The broker drops a run's
   // subscribers on terminal status (pkg/runview/service.go: CloseRun),
   // so after Resume the still-open WS conn no longer receives events
@@ -87,6 +126,11 @@ interface RunStoreState {
   markLogTerminated: () => void;
   clearLog: () => void;
 
+  // Manual URL entry from the Browser pane URL bar. Cleared by `null`.
+  // A manual URL takes precedence over workflow-emitted URLs until
+  // explicitly cleared.
+  setManualPreviewUrl: (url: string | null) => void;
+
   reset: () => void;
 }
 
@@ -107,6 +151,7 @@ const initialState = {
   wsState: "idle" as WsState,
   followTail: true,
   log: initialLogState,
+  browser: initialBrowserState,
   wsReconnectToken: 0,
 };
 
@@ -179,6 +224,21 @@ export const useRunStore = create<RunStoreState>((set) => ({
       return next;
     });
   },
+
+  setManualPreviewUrl: (url) =>
+    set((s) => ({
+      browser: {
+        ...s.browser,
+        currentUrl: url,
+        scope: "external",
+        source: url ? "manual" : null,
+        kind: undefined,
+        // Manual entries don't bind to an event seq — keep
+        // lastEventSeqSeen so RunView's auto-show tab logic still
+        // honours workflow-emitted URLs that arrived earlier.
+        lastEventSeq: null,
+      },
+    })),
 
   setLogSubscribed: (subscribed) =>
     set((s) => ({ log: { ...s.log, subscribed } })),
@@ -288,7 +348,7 @@ function rehydratePendingHumanInput(
 
 type ReduceInput = Pick<
   RunStoreState,
-  "events" | "executionsById" | "snapshot" | "pendingHumanInput"
+  "events" | "executionsById" | "snapshot" | "pendingHumanInput" | "browser"
 >;
 
 // reduceEvents applies a contiguous run of events in a single pass and
@@ -309,6 +369,7 @@ function reduceEvents(
   let executionsById = state.executionsById;
   let snapshot = state.snapshot;
   let pendingHumanInput = state.pendingHumanInput;
+  let browser = state.browser;
   // Clone the executions map only when the first mutation happens; if
   // the whole batch only contains pass-through event types we keep the
   // identity stable so React skips re-renders downstream.
@@ -440,6 +501,28 @@ function reduceEvents(
       case "run_paused":
         runStatusOverride = "paused_waiting_human";
         break;
+      case "preview_url_available": {
+        const url = (evt.data?.url as string) ?? "";
+        if (!url) break;
+        const rawScope = evt.data?.scope as string | undefined;
+        const scope: PreviewScope = rawScope === "internal" ? "internal" : "external";
+        const rawSource = evt.data?.source as string | undefined;
+        // Manual URLs from setManualPreviewUrl take precedence: don't
+        // overwrite an active manual selection with a workflow event.
+        if (browser.source === "manual" && browser.currentUrl) {
+          browser = { ...browser, lastEventSeqSeen: evt.seq };
+          break;
+        }
+        browser = {
+          currentUrl: url,
+          scope,
+          source: rawSource === "tool-stdout" ? "tool-stdout" : "runtime",
+          kind: (evt.data?.kind as string | undefined) ?? undefined,
+          lastEventSeq: evt.seq,
+          lastEventSeqSeen: evt.seq,
+        };
+        break;
+      }
       default:
         break;
     }
@@ -499,6 +582,9 @@ function reduceEvents(
 
   if (pendingHumanInput !== state.pendingHumanInput) {
     next.pendingHumanInput = pendingHumanInput;
+  }
+  if (browser !== state.browser) {
+    next.browser = browser;
   }
   return next;
 }

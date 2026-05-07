@@ -94,6 +94,20 @@ const (
 	//   - error: short error summary including the last ~4 KB of
 	//     stderr (the "ERROR: failed to solve" footer)
 	EventSandboxBuildFailed EventType = "sandbox_build_failed"
+	// EventPreviewURLAvailable signals that the run has a URL worth
+	// rendering in the editor's Browser pane (dev server, deploy preview,
+	// HTML artifact). Emitted by the runtime when a tool node prints
+	// the convention line `[iterion] preview_url=<url>` on stdout, or
+	// directly by the runtime/sandbox when it knows about a forwarded
+	// dev-server port. Data:
+	//   - url: the URL to render
+	//   - kind: optional hint ("dev-server", "deploy", "artifact-html")
+	//   - scope: "internal" (route through /api/runs/:id/preview to
+	//     strip frame-ancestors / X-Frame-Options) or "external"
+	//     (load directly in iframe — only works if the target site
+	//     allows embedding). Defaults to "external" when unset.
+	//   - source: optional, "tool-stdout" or "runtime"
+	EventPreviewURLAvailable EventType = "preview_url_available"
 )
 
 // Event is a single timestamped fact persisted in events.jsonl.
