@@ -8,10 +8,20 @@ import (
 	"strconv"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+// tracerName is the OTel instrumentation name for server spans. Both
+// the launch and resume handlers create root spans here so the runner
+// pod can hang per-node spans off of them via NATS trace propagation.
+const tracerName = "github.com/SocialGouv/iterion/pkg/server"
 
 // registerRunRoutes wires the /api/runs surface onto the server's
 // mux. Called from routes() after the editor endpoints so the run
@@ -125,31 +135,53 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSafeOrigin(w, r) {
 		return
 	}
+	// Root span for the launch path. Keeping it on the request ctx
+	// means the OTel HTTP middleware (when wired) sees it as a child
+	// of the inbound HTTP server span. The detached ctx below
+	// preserves the span context so the runner-side trace remains a
+	// single connected trace.
+	spanCtx, span := otel.Tracer(tracerName).Start(r.Context(), "iterion.api.launch_run")
+	defer span.End()
+
 	var req launchRunRequest
 	if err := readJSON(r, &req); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid request: %v", err)
+		span.SetStatus(codes.Error, "invalid request")
 		return
 	}
 	if req.FilePath == "" && req.Source == "" {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "file_path or source is required")
+		span.SetStatus(codes.Error, "missing file_path/source")
+		return
+	}
+	// Cloud mode rejects bare FilePath because the server pod has no
+	// shared filesystem with the operator. Inline Source is the only
+	// path that works cloud-side; document it explicitly so the editor
+	// SPA / CLI / curl users see an actionable 400 instead of a
+	// silent file-not-found further down the publish chain.
+	if s.cfg.Mode == "cloud" && req.Source == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "cloud mode: source is required (file_path is not portable across the server pod's filesystem)")
+		span.SetStatus(codes.Error, "cloud mode requires source")
 		return
 	}
 	absPath, pathErr := s.resolveWorkflowPath(req.FilePath, req.Source)
 	if pathErr != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid file_path: %v", pathErr)
+		span.SetStatus(codes.Error, "invalid file_path")
 		return
 	}
 	timeout, err := parseTimeout(req.Timeout)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid timeout: %v", err)
+		span.SetStatus(codes.Error, "invalid timeout")
 		return
 	}
 
-	// Detach from the request context so cancellation of the HTTP
-	// request (client disconnect, timeout) does not abort the
-	// workflow goroutine. The run is its own lifecycle managed by
-	// the service's manager; clients cancel via POST /cancel.
-	ctx := context.Background()
+	// Detach lifecycle from the HTTP request context so a client
+	// disconnect doesn't abort the run, but keep the trace span so
+	// the runner-side span chains under this one. context.WithoutCancel
+	// (Go 1.21+) gives us exactly that combination.
+	ctx := context.WithoutCancel(spanCtx)
 
 	res, err := s.runs.Launch(ctx, runview.LaunchSpec{
 		FilePath:      absPath,
@@ -165,11 +197,15 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, runtime.ErrServerDraining) {
 			s.httpErrorFor(w, r, http.StatusServiceUnavailable, "server is draining: %v", err)
+			span.SetStatus(codes.Error, "server draining")
 			return
 		}
 		s.httpErrorFor(w, r, http.StatusBadRequest, "launch: %v", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "launch failed")
 		return
 	}
+	span.SetAttributes(attribute.String("iterion.run_id", res.RunID))
 	w.WriteHeader(http.StatusAccepted)
 	s.writeJSONFor(w, r, launchRunResponse{RunID: res.RunID, Status: string(store.RunStatusRunning)})
 }
@@ -308,9 +344,21 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
 		return
 	}
+	spanCtx, span := otel.Tracer(tracerName).Start(r.Context(), "iterion.api.resume_run",
+		trace.WithAttributes(attribute.String("iterion.run_id", id)))
+	defer span.End()
 	var req resumeRunRequest
 	if err := readJSON(r, &req); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid request: %v", err)
+		span.SetStatus(codes.Error, "invalid request")
+		return
+	}
+	// Cloud mode rejects bare FilePath for the same reason as launch:
+	// the server pod has no operator filesystem. Resume must carry an
+	// inline source (or have one persisted on the original launch).
+	if s.cfg.Mode == "cloud" && req.Source == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "cloud mode: source is required (file_path is not portable across the server pod's filesystem)")
+		span.SetStatus(codes.Error, "cloud mode requires source")
 		return
 	}
 	// Resolve file path: explicit body wins, falling back to the
@@ -320,26 +368,30 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		runMeta, err := s.runs.LoadRun(id)
 		if err != nil {
 			s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
+			span.SetStatus(codes.Error, "run not found")
 			return
 		}
 		filePath = runMeta.FilePath
 		if filePath == "" && req.Source == "" {
 			s.httpErrorFor(w, r, http.StatusBadRequest, "file_path or source is required (run has no persisted FilePath)")
+			span.SetStatus(codes.Error, "missing file_path/source")
 			return
 		}
 	}
 	absPath, pathErr := s.resolveWorkflowPath(filePath, req.Source)
 	if pathErr != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid file_path: %v", pathErr)
+		span.SetStatus(codes.Error, "invalid file_path")
 		return
 	}
 	timeout, err := parseTimeout(req.Timeout)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid timeout: %v", err)
+		span.SetStatus(codes.Error, "invalid timeout")
 		return
 	}
 
-	ctx := context.Background()
+	ctx := context.WithoutCancel(spanCtx)
 	res, err := s.runs.Resume(ctx, runview.ResumeSpec{
 		RunID:    id,
 		FilePath: absPath,
@@ -351,9 +403,12 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, runtime.ErrServerDraining) {
 			s.httpErrorFor(w, r, http.StatusServiceUnavailable, "server is draining: %v", err)
+			span.SetStatus(codes.Error, "server draining")
 			return
 		}
 		s.httpErrorFor(w, r, http.StatusBadRequest, "resume: %v", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "resume failed")
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)

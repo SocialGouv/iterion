@@ -15,12 +15,22 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/recipe"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+// tracerName is the OTel instrumentation name for runtime spans. The
+// global tracer is a no-op until cmd/iterion configures a provider, so
+// instrumentation here costs nothing in local mode and unit tests.
+const tracerName = "github.com/SocialGouv/iterion/pkg/runtime"
 
 // ErrRunPaused is returned by Run or Resume when execution is suspended
 // at a human node. This is not a failure — the run can be resumed via
@@ -624,7 +634,23 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 		// fields populated by edge `with`-mappings and the workflow-
 		// level `vars.*`.
 		execCtx = model.WithTemplateData(execCtx, e.buildTemplateData(rs))
-		output, err := e.executor.Execute(execCtx, node, nodeInput)
+		// Per-node span: inherits the runner-side or server-side root
+		// span via ctx (W3C trace propagated through NATS in cloud
+		// mode). Attributes mirror the node_started event payload so
+		// trace + event log stay aligned.
+		spanCtx, span := otel.Tracer(tracerName).Start(execCtx, "iterion.node.execute",
+			trace.WithAttributes(
+				attribute.String("iterion.run_id", rs.runID),
+				attribute.String("iterion.node_id", currentNodeID),
+				attribute.String("iterion.node_kind", node.NodeKind().String()),
+			),
+		)
+		output, err := e.executor.Execute(spanCtx, node, nodeInput)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
 		if err != nil {
 			// Check if the delegate needs user interaction.
 			var needsInput *model.ErrNeedsInteraction

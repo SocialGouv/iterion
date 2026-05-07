@@ -19,7 +19,13 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -30,6 +36,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
+const tracerName = "github.com/SocialGouv/iterion/pkg/runner"
+
 // Config is the runner bootstrap.
 type Config struct {
 	NATS              *natsq.Conn
@@ -37,8 +45,15 @@ type Config struct {
 	RunnerID          string
 	WorkDir           string        // base directory for per-run workspaces
 	HeartbeatInterval time.Duration // how often to refresh the NATS KV lease
+	PendingPoll       time.Duration // how often to refresh nats_pending_messages (0 = 15s)
 	FetchWait         time.Duration // long-poll wait per fetch
 	Logger            *iterlog.Logger
+	// Metrics, when non-nil, receives counters/gauges updates from the
+	// runner loop (in-flight runs, durations, heartbeat errors, NATS
+	// queue depth, LLM token usage). Nil-safe: passing nil disables
+	// metrics emission without changing the loop's behaviour, useful
+	// for unit tests and the local-mode dev runner.
+	Metrics *metrics.Registry
 }
 
 // Runner is the long-running consumer loop.
@@ -80,6 +95,9 @@ func New(ctx context.Context, cfg Config) (*Runner, error) {
 	if cfg.HeartbeatInterval == 0 {
 		cfg.HeartbeatInterval = 20 * time.Second
 	}
+	if cfg.PendingPoll == 0 {
+		cfg.PendingPoll = 15 * time.Second
+	}
 	if cfg.FetchWait == 0 {
 		cfg.FetchWait = 5 * time.Second
 	}
@@ -106,6 +124,15 @@ func (r *Runner) Run(ctx context.Context) error {
 	defer cancel()
 
 	r.cfg.Logger.Info("runner: started, runnerID=%s workdir=%s", r.cfg.RunnerID, r.cfg.WorkDir)
+
+	// NATS queue depth gauge: every PendingPoll the runner samples the
+	// JetStream consumer info and publishes the Pending count to the
+	// Prometheus registry. KEDA scales on the same value via the
+	// nats-jetstream scaler — this gauge gives operators a parallel
+	// signal in their own dashboards without competing with the scaler.
+	if r.cfg.Metrics != nil {
+		go r.pollPending(loopCtx)
+	}
 
 	for {
 		select {
@@ -184,11 +211,44 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	logger := r.cfg.Logger
 	logger.Info("runner: processing run %s (workflow=%s)", msg.RunID, msg.WorkflowName)
 
+	// runs_active{status=running}: incremented as soon as the runner
+	// commits to executing this delivery (post-decode), decremented in
+	// the deferred block below regardless of outcome. run_duration_seconds
+	// is observed once with the final terminal status so percentile
+	// dashboards stay clean even when a run nak's mid-flight.
+	start := time.Now()
+	finalStatus := "failed"
+	if r.cfg.Metrics != nil {
+		r.cfg.Metrics.RunsActive.WithLabelValues("running").Inc()
+		defer func() {
+			r.cfg.Metrics.RunsActive.WithLabelValues("running").Dec()
+			r.cfg.Metrics.RunDurationSeconds.WithLabelValues(finalStatus).Observe(time.Since(start).Seconds())
+		}()
+	}
+
 	// Inherit the publisher's trace so OTel spans created by the
 	// engine appear under the originating editor span (plan §F T-41).
 	traced := delivery.PropagateTraceTo(parent)
-	runCtx, runCancel := context.WithCancel(traced)
+	// Root span for the runner-side execution. Per-node spans created
+	// inside engine.Run hang off this one, so a single trace covers
+	// API → queue → runner → node graph. The span ends in the deferred
+	// block below; finalStatus is set at every exit path.
+	spanCtx, span := otel.Tracer(tracerName).Start(traced, "iterion.runner.process_one",
+		trace.WithAttributes(
+			attribute.String("iterion.run_id", msg.RunID),
+			attribute.String("iterion.workflow_name", msg.WorkflowName),
+			attribute.String("iterion.workflow_hash", msg.WorkflowHash),
+		),
+	)
+	runCtx, runCancel := context.WithCancel(spanCtx)
 	defer runCancel()
+	defer func() {
+		span.SetAttributes(attribute.String("iterion.run.status", finalStatus))
+		if finalStatus == "failed" || finalStatus == "lock_held" {
+			span.SetStatus(codes.Error, finalStatus)
+		}
+		span.End()
+	}()
 
 	done := make(chan struct{})
 	r.mu.Lock()
@@ -221,6 +281,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	preRun, preErr := r.cfg.Store.LoadRun(runCtx, msg.RunID)
 	if preErr == nil && preRun != nil && preRun.Status == store.RunStatusCancelled {
 		logger.Info("runner: run %s already cancelled — skipping", msg.RunID)
+		finalStatus = "cancelled"
 		_ = delivery.Ack()
 		return
 	}
@@ -231,6 +292,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	if err != nil {
 		if errors.Is(err, natsq.ErrLockHeld) {
 			logger.Warn("runner: lock held for %s — naking for sibling", msg.RunID)
+			finalStatus = "lock_held"
 			_ = delivery.Nak()
 			return
 		}
@@ -255,8 +317,15 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		// runtime.ErrRunPaused / ErrRunCancelled are not "the
 		// delivery failed" — they're successful checkpoint writes
 		// and we ack accordingly.
-		if errors.Is(err, runtime.ErrRunPaused) || errors.Is(err, runtime.ErrRunCancelled) {
+		if errors.Is(err, runtime.ErrRunPaused) {
 			logger.Info("runner: run %s checkpointed (%v)", msg.RunID, err)
+			finalStatus = "paused"
+			_ = delivery.Ack()
+			return
+		}
+		if errors.Is(err, runtime.ErrRunCancelled) {
+			logger.Info("runner: run %s checkpointed (%v)", msg.RunID, err)
+			finalStatus = "cancelled"
 			_ = delivery.Ack()
 			return
 		}
@@ -267,6 +336,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	}
 
 	logger.Info("runner: run %s completed", msg.RunID)
+	finalStatus = "finished"
 	_ = delivery.Ack()
 }
 
@@ -295,6 +365,9 @@ func (r *Runner) heartbeat(ctx context.Context, runCancel context.CancelFunc, lo
 				if errors.Is(err, context.Canceled) {
 					return // run already exiting
 				}
+				if r.cfg.Metrics != nil {
+					r.cfg.Metrics.RunnerHeartbeatErrors.Inc()
+				}
 				r.cfg.Logger.Error("runner: heartbeat refresh failed: %v — cancelling run to avoid split-brain", err)
 				runCancel()
 				return
@@ -312,7 +385,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 		return err
 	}
 
-	executor, err := buildExecutor(ctx, msg, wf, r.cfg.Store, r.cfg.Logger, r.cfg.WorkDir)
+	executor, err := r.buildExecutor(ctx, msg, wf)
 	if err != nil {
 		return err
 	}
@@ -362,10 +435,17 @@ func loadWorkflow(msg *queue.RunMessage) (*ir.Workflow, error) {
 // exactly the same backend / tool / MCP wiring as the editor server
 // and the CLI run path. Vars from the message are forwarded so
 // {{vars.X}} expansion works without re-resolving from disk.
-func buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, st store.RunStore, logger *iterlog.Logger, storeDir string) (runtime.NodeExecutor, error) {
-	emitter, ok := st.(model.EventEmitter)
+func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow) (runtime.NodeExecutor, error) {
+	emitter, ok := r.cfg.Store.(model.EventEmitter)
 	if !ok {
 		return nil, fmt.Errorf("runner: store does not satisfy model.EventEmitter")
+	}
+	// Wrap the emitter so LLM step + delegate events update the
+	// iterion_llm_tokens_total / iterion_llm_cost_usd_total counters
+	// as they are written to Mongo. Wrapping at the runner boundary
+	// keeps pkg/backend/model free of any metrics dependency.
+	if r.cfg.Metrics != nil {
+		emitter = newMetricsEmitter(emitter, r.cfg.Metrics)
 	}
 	vars := stringifyVars(msg.Vars)
 	return runview.BuildExecutor(runview.ExecutorSpec{
@@ -374,9 +454,130 @@ func buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, 
 		Vars:     vars,
 		Store:    emitter,
 		RunID:    msg.RunID,
-		Logger:   logger,
-		StoreDir: storeDir,
+		Logger:   r.cfg.Logger,
+		StoreDir: r.cfg.WorkDir,
 	})
+}
+
+// pollPending samples the JetStream consumer info on a fixed cadence
+// and republishes the Pending count to nats_pending_messages. Exits
+// when ctx is cancelled. Errors are logged at debug level — the
+// scaler is the source of truth for autoscaling, so a transient miss
+// here is observability noise, not a correctness issue.
+func (r *Runner) pollPending(ctx context.Context) {
+	t := time.NewTicker(r.cfg.PendingPoll)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			pending, err := r.consumer.Pending(ctx)
+			if err != nil {
+				r.cfg.Logger.Debug("runner: pending poll: %v", err)
+				continue
+			}
+			r.cfg.Metrics.NATSPendingMessages.Set(float64(pending))
+		}
+	}
+}
+
+// metricsEmitter wraps a model.EventEmitter and taps llm_step_finished
+// / delegate_finished events to keep the LLM token + cost counters
+// up-to-date. The forward call to the underlying emitter happens
+// regardless of metric outcome so write durability is unaffected.
+type metricsEmitter struct {
+	inner model.EventEmitter
+	reg   *metrics.Registry
+
+	// modelByNode caches the last model name reported by an
+	// llm_request event for a given node, so the subsequent
+	// llm_step_finished events can be labelled even though the step
+	// payload itself doesn't repeat the model field.
+	mu          sync.Mutex
+	modelByNode map[string]string
+}
+
+func newMetricsEmitter(inner model.EventEmitter, reg *metrics.Registry) *metricsEmitter {
+	return &metricsEmitter{inner: inner, reg: reg, modelByNode: make(map[string]string)}
+}
+
+func (m *metricsEmitter) AppendEvent(ctx context.Context, runID string, evt store.Event) (*store.Event, error) {
+	m.observe(evt)
+	return m.inner.AppendEvent(ctx, runID, evt)
+}
+
+func (m *metricsEmitter) observe(evt store.Event) {
+	switch evt.Type {
+	case store.EventLLMRequest:
+		if model, _ := evt.Data["model"].(string); model != "" && evt.NodeID != "" {
+			m.mu.Lock()
+			m.modelByNode[evt.NodeID] = model
+			m.mu.Unlock()
+		}
+	case store.EventLLMStepFinished:
+		modelName := m.lookupModel(evt.NodeID)
+		if modelName == "" {
+			modelName = "unknown"
+		}
+		const backend = "claw"
+		m.addTokens(backend, modelName, "input", evt.Data["input_tokens"])
+		m.addTokens(backend, modelName, "output", evt.Data["output_tokens"])
+		m.addTokens(backend, modelName, "cache_read", evt.Data["cache_read_tokens"])
+		m.addTokens(backend, modelName, "cache_write", evt.Data["cache_write_tokens"])
+	case store.EventDelegateFinished:
+		backend, _ := evt.Data["backend"].(string)
+		if backend == "" {
+			backend = "delegate"
+		}
+		// Delegate events report a single aggregated token count;
+		// label as input so a sum across directions stays meaningful.
+		m.addTokens(backend, m.lookupModel(evt.NodeID), "input", evt.Data["tokens"])
+	}
+}
+
+func (m *metricsEmitter) lookupModel(nodeID string) string {
+	if nodeID == "" {
+		return ""
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.modelByNode[nodeID]
+}
+
+func (m *metricsEmitter) addTokens(backend, modelName, direction string, raw interface{}) {
+	n := toFloat(raw)
+	if n <= 0 || backend == "" {
+		return
+	}
+	if modelName == "" {
+		modelName = "unknown"
+	}
+	m.reg.LLMTokensTotal.WithLabelValues(backend, modelName, direction).Add(n)
+}
+
+// toFloat coerces the JSON-decoded scalar (always float64 in Go's
+// encoding/json) to a non-negative float64, returning 0 when the
+// value is missing, nil, or not a number.
+func toFloat(raw interface{}) float64 {
+	switch v := raw.(type) {
+	case float64:
+		if v < 0 {
+			return 0
+		}
+		return v
+	case int:
+		if v < 0 {
+			return 0
+		}
+		return float64(v)
+	case int64:
+		if v < 0 {
+			return 0
+		}
+		return float64(v)
+	}
+	return 0
 }
 
 // stringifyVars converts the wire payload's free-form vars into the

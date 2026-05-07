@@ -345,6 +345,18 @@ func (cons *Consumer) Fetch(ctx context.Context, wait time.Duration) (*Delivery,
 // failure (the runner does).
 var ErrNoMessage = errors.New("queue/nats: no message ready")
 
+// Pending returns the number of messages currently waiting on the
+// durable consumer. Used by the runner's metrics goroutine to publish
+// the iterion_nats_pending_messages gauge — the same value KEDA pulls
+// via the JetStream scaler.
+func (cons *Consumer) Pending(ctx context.Context) (uint64, error) {
+	info, err := cons.cons.Info(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("queue/nats: consumer info: %w", err)
+	}
+	return info.NumPending, nil
+}
+
 // Delivery bundles a JetStream message with helpers to ack / nak /
 // term and to decode the body into a queue.RunMessage. Wrapping the
 // raw jetstream.Msg keeps the consumer-facing surface narrow.

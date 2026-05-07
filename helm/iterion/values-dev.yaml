@@ -45,6 +45,13 @@ secrets:
     create: true
     s3AccessKeyId: minioadmin
     s3SecretAccessKey: minioadmin
+  session:
+    # Dev-only: bake a deterministic token so `kubectl port-forward` +
+    # curl works out of the box. Production deployments should manage
+    # the secret out-of-band via `existingSecret` and rotate via
+    # `helm upgrade`.
+    create: true
+    token: "dev-session-token"
 
 mongodb:
   enabled: true

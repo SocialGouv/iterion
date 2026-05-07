@@ -10,6 +10,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
+	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -32,8 +33,9 @@ import (
 // MongoDB requires a replica set for change streams; the
 // docker-compose.cloud.yml stack initiates `rs0` automatically.
 type MongoSource struct {
-	events *mongo.Collection
-	logger *iterlog.Logger
+	events  *mongo.Collection
+	logger  *iterlog.Logger
+	metrics *metrics.Registry
 }
 
 // NewMongo builds a Source backed by the supplied events collection.
@@ -44,6 +46,14 @@ func NewMongo(events *mongo.Collection, logger *iterlog.Logger) *MongoSource {
 		logger = iterlog.New(iterlog.LevelInfo, nil)
 	}
 	return &MongoSource{events: events, logger: logger}
+}
+
+// WithMetrics attaches a Prometheus registry so each delivered event
+// updates iterion_mongo_change_stream_lag_seconds. Optional — passing
+// no metrics keeps the source silent.
+func (m *MongoSource) WithMetrics(reg *metrics.Registry) *MongoSource {
+	m.metrics = reg
+	return m
 }
 
 // Capabilities advertises live tail + historical range backed by the
@@ -209,6 +219,12 @@ func (m *MongoSource) runChangeStream(ctx context.Context, runID string, fromSeq
 		}
 		if doc.FullDocument.Seq > maxSeq {
 			maxSeq = doc.FullDocument.Seq
+		}
+		// Lag is wall-clock latency from event creation (set by the
+		// store at AppendEvent time) to delivery on the change-stream
+		// pipeline. Operators alert on sustained lag > a few seconds.
+		if m.metrics != nil && !doc.FullDocument.Timestamp.IsZero() {
+			m.metrics.MongoChangeStreamLagS.Set(time.Since(doc.FullDocument.Timestamp).Seconds())
 		}
 	}
 	if err := stream.Err(); err != nil && !errors.Is(err, context.Canceled) {

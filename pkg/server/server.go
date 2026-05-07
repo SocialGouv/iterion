@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
@@ -81,6 +82,11 @@ type Config struct {
 	// Defaults to "local" when empty for backward compat with callers
 	// that don't set it.
 	Mode string
+
+	// Metrics, when non-nil, lets the server publish iterion_ws_connections
+	// gauge updates as run-console clients connect / disconnect. Other
+	// cloud metrics live on the runner / publisher side.
+	Metrics *metrics.Registry
 }
 
 // ReadinessCheck is the contract /readyz invokes on each external
@@ -128,7 +134,12 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	s := &Server{cfg: cfg, logger: logger, mux: http.NewServeMux(), addrReady: make(chan struct{})}
 	s.hub = NewHub(logger)
 	go s.hub.Run()
-	if cfg.WorkDir != "" {
+	// File watcher is only meaningful in local mode where the editor
+	// SPA is editing files on disk that the server should hot-reload.
+	// In cloud mode the server pod has no local source tree (workflows
+	// arrive inline on the wire) and starting the watcher there would
+	// generate noise events on whatever transient WorkDir was passed.
+	if cfg.WorkDir != "" && cfg.Mode != "cloud" {
 		var err error
 		s.watcher, err = NewWatcher(cfg.WorkDir, s.hub, logger)
 		if err != nil {

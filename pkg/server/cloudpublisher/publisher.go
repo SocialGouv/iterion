@@ -21,6 +21,7 @@ import (
 
 	"os"
 
+	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
@@ -41,14 +42,18 @@ type Config struct {
 	// re-resolve it from the store interface.
 	MongoColl *mongo.Collection
 	Logger    *iterlog.Logger
+	// Metrics, when non-nil, increments iterion_runs_created_total
+	// after every successful Launch / Resume publish.
+	Metrics *metrics.Registry
 }
 
 // Publisher is a runview.LaunchPublisher backed by NATS + Mongo.
 type Publisher struct {
-	nats   *natsq.Conn
-	store  store.RunStore
-	runs   *mongo.Collection
-	logger *iterlog.Logger
+	nats    *natsq.Conn
+	store   store.RunStore
+	runs    *mongo.Collection
+	logger  *iterlog.Logger
+	metrics *metrics.Registry
 }
 
 // New builds a Publisher.
@@ -66,10 +71,11 @@ func New(cfg Config) (*Publisher, error) {
 		cfg.Logger = iterlog.New(iterlog.LevelInfo, nil)
 	}
 	return &Publisher{
-		nats:   cfg.NATS,
-		store:  cfg.Store,
-		runs:   cfg.MongoColl,
-		logger: cfg.Logger,
+		nats:    cfg.NATS,
+		store:   cfg.Store,
+		runs:    cfg.MongoColl,
+		logger:  cfg.Logger,
+		metrics: cfg.Metrics,
 	}, nil
 }
 
@@ -122,6 +128,9 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// row that never moves.
 		_ = p.store.UpdateRunStatus(ctx, runID, store.RunStatusFailed, fmt.Sprintf("queue publish: %v", err))
 		return 0, fmt.Errorf("cloudpublisher: publish: %w", err)
+	}
+	if p.metrics != nil {
+		p.metrics.RunsCreatedTotal.WithLabelValues(string(store.RunStatusQueued)).Inc()
 	}
 
 	// 3. Compute queue position: count of runs with status=queued
@@ -216,6 +225,9 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 			p.logger.Error("cloudpublisher: rollback %s after publish failure: %v", spec.RunID, rbErr)
 		}
 		return fmt.Errorf("cloudpublisher: republish: %w", err)
+	}
+	if p.metrics != nil {
+		p.metrics.RunsCreatedTotal.WithLabelValues("resumed").Inc()
 	}
 	return nil
 }

@@ -157,6 +157,15 @@ secrets:
     existingSecret: ""
     s3AccessKeyId: ""
     s3SecretAccessKey: ""
+  # Session token for the cloud-mode HTTP API. The server pod refuses to
+  # boot in cloud mode without ITERION_SESSION_TOKEN set (override only
+  # via ITERION_DISABLE_AUTH=true for smoke tests). Production should
+  # keep create=false and reference an externally-managed Secret. Only
+  # rendered + wired to the server pod when mode=cloud.
+  session:
+    create: false
+    existingSecret: ""
+    token: ""
 
 # --- Local-mode persistence (PVC for .iterion/) ---------------------
 # Only consulted when mode=local. Cloud mode keeps state in Mongo+S3

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"go.mongodb.org/mongo-driver/v2/bson"
 
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -109,6 +110,19 @@ func runMigrateToCloud(cmd *cobra.Command, _ []string) error {
 			_ = ms.Close(closeCtx)
 		}()
 		dst = ms
+	}
+
+	// Pre-flight before iterating runs: a misconfigured Mongo (no
+	// replicaset → no change-streams) or a non-writable S3 bucket
+	// would surface as a partial migration after thousands of runs
+	// were already processed. Catch the gaps up-front.
+	if !migrateOpts.dryRun {
+		preflightCtx, preflightCancel := context.WithTimeout(ctx, 30*time.Second)
+		if err := preflightCloudTargets(preflightCtx, cfg, logger); err != nil {
+			preflightCancel()
+			return fmt.Errorf("migrate: preflight: %w", err)
+		}
+		preflightCancel()
 	}
 
 	ids, err := src.ListRuns(ctx)
@@ -234,4 +248,71 @@ func mustListInteractions(ctx context.Context, src store.RunStore, runID string,
 		return nil
 	}
 	return ids
+}
+
+// preflightCloudTargets verifies the cloud destination is usable before
+// the loop starts processing runs. Two failure modes are too costly to
+// hit mid-migration:
+//
+//  1. Mongo without a replica set — the migration writes succeed, but
+//     the cloud server's change-stream subscription (downstream
+//     consumer of these events) silently fails. Operators don't notice
+//     until the editor's run console stays empty.
+//
+//  2. S3 bucket without write permission — every artifact PUT fails;
+//     the migration runs to completion reporting "0 artifacts written"
+//     per run because the per-artifact errors are logged but don't
+//     abort the loop.
+//
+// The probes are scoped to the supplied ctx so a hung backend can't
+// stall the migration past the caller's deadline.
+func preflightCloudTargets(ctx context.Context, cfg iterconfig.Config, logger *iterlog.Logger) error {
+	// Mongo: rs.status() — succeeds only on a replica-set member.
+	bc, err := blob.NewS3(ctx, blob.Config{
+		Endpoint:        cfg.S3.Endpoint,
+		Region:          cfg.S3.Region,
+		Bucket:          cfg.S3.Bucket,
+		AccessKeyID:     cfg.S3.AccessKeyID,
+		SecretAccessKey: cfg.S3.SecretAccessKey,
+		UsePathStyle:    cfg.S3.UsePathStyle,
+	})
+	if err != nil {
+		return fmt.Errorf("s3 client: %w", err)
+	}
+	defer func() { _ = bc.Close() }()
+	probeKey := fmt.Sprintf("preflight/%d", time.Now().UnixNano())
+	if err := bc.PutArtifact(ctx, "preflight", probeKey, 0, []byte("ok")); err != nil {
+		return fmt.Errorf("s3 write probe failed (bucket=%q): %w", cfg.S3.Bucket, err)
+	}
+	if err := bc.DeleteRun(ctx, "preflight"); err != nil {
+		// Best-effort cleanup; log + continue. The probe key will fall
+		// out via lifecycle policy if the bucket has one configured.
+		logger.Warn("migrate: preflight S3 cleanup: %v", err)
+	}
+	logger.Info("migrate: preflight S3 ok (bucket=%s)", cfg.S3.Bucket)
+
+	// Mongo replSet probe via a dedicated short-lived store. We don't
+	// reuse `dst` from the caller because the conformance check only
+	// makes sense before the loop; dst stays the workhorse store.
+	probeStore, err := mongostore.New(ctx, mongostore.Config{
+		URI:           cfg.Mongo.URI,
+		Database:      cfg.Mongo.DB,
+		EventsTTLDays: cfg.Mongo.EventsTTLDays,
+		Logger:        logger,
+		Blob:          bc,
+	})
+	if err != nil {
+		return fmt.Errorf("mongo connect: %w", err)
+	}
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = probeStore.Close(closeCtx)
+	}()
+	var status bson.M
+	if err := probeStore.RunsCollection().Database().RunCommand(ctx, bson.D{{Key: "replSetGetStatus", Value: 1}}).Decode(&status); err != nil {
+		return fmt.Errorf("mongo replSetGetStatus failed (the cloud server requires a replica set for change-streams): %w", err)
+	}
+	logger.Info("migrate: preflight Mongo ok (replSet=%v)", status["set"])
+	return nil
 }

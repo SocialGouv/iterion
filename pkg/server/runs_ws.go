@@ -97,6 +97,9 @@ func (s *Server) handleRunWebSocket(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("ws upgrade error: %v", err)
 		return
 	}
+	if s.cfg.Metrics != nil {
+		s.cfg.Metrics.WSConnections.Inc()
+	}
 	rc := newRunConn(s, conn, runID)
 	go rc.run()
 }
@@ -151,6 +154,9 @@ func (c *runConn) close() {
 		}
 		c.mu.Unlock()
 		_ = c.conn.Close()
+		if c.server.cfg.Metrics != nil {
+			c.server.cfg.Metrics.WSConnections.Dec()
+		}
 	})
 }
 

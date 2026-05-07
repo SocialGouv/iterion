@@ -13,6 +13,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
+	"github.com/SocialGouv/iterion/pkg/cloud/tracing"
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
@@ -105,6 +106,16 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	rootCtx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	traceShutdown, err := tracing.Init(rootCtx, "iterion-server", logger)
+	if err != nil {
+		return fmt.Errorf("server: init tracing: %w", err)
+	}
+	defer func() {
+		shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutCancel()
+		_ = traceShutdown(shutCtx)
+	}()
+
 	natsConn, err := natsq.Connect(rootCtx, natsq.Config{
 		URL:        cfg.NATS.URL,
 		StreamName: cfg.NATS.Stream,
@@ -148,11 +159,16 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		_ = st.Close(closeCtx)
 	}()
 
+	// Prometheus registry: built early so cloudpublisher + eventstream
+	// + the run-console WS handler all share the same registry.
+	mreg := metrics.New()
+
 	pub, err := cloudpublisher.New(cloudpublisher.Config{
 		NATS:      natsConn,
 		Store:     st,
 		MongoColl: st.RunsCollection(),
 		Logger:    logger,
+		Metrics:   mreg,
 	})
 	if err != nil {
 		return fmt.Errorf("server: build cloud publisher: %w", err)
@@ -161,7 +177,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// Mongo change-stream event source so the WS handler streams
 	// runner-pod events (the local broker would only see this
 	// process's writes). Plan §F (T-21, T-22).
-	mongoSource := eventstream.NewMongo(st.EventsCollection(), logger)
+	mongoSource := eventstream.NewMongo(st.EventsCollection(), logger).WithMetrics(mreg)
 	eventSrc := runview.NewEventSourceAdapter(mongoSource)
 
 	if cfg.Server.SessionToken == "" {
@@ -180,6 +196,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		EventSource:     eventSrc,
 		Mode:            string(iterconfig.ModeCloud),
 		SessionToken:    cfg.Server.SessionToken,
+		Metrics:         mreg,
 		// /readyz pings each dependency under a 1s deadline so kubelet
 		// readiness probes flip to "not ready" the moment a backend
 		// drops, instead of returning 200 against a stub.
@@ -192,7 +209,6 @@ func runServer(cmd *cobra.Command, _ []string) error {
 
 	// Prometheus metrics on a dedicated port (plan §F T-40). Bound
 	// synchronously so a port-conflict surfaces at boot, not later.
-	mreg := metrics.New()
 	metricsAddr := fmt.Sprintf(":%d", cfg.Metrics.Port)
 	metricsSrv, err := mreg.StartServer(metricsAddr, logger)
 	if err != nil {

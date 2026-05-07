@@ -93,3 +93,230 @@ jobs:
           ignore-unfixed: true
           trivyignores: .trivyignore
           skip-dirs: vendor,editor/node_modules,node_modules
+
+  mongo-conformance:
+    # Runs the pkg/store/mongo conformance harness against a real Mongo
+    # replica set (change-streams + transactions). The harness is gated
+    # on ITERION_TEST_MONGO_URI in-tree so a developer's plain `go test
+    # ./...` skips it; CI provides the URI explicitly so the contract
+    # stays enforced. Without this job, every store/mongo + queue/nats
+    # change ships untested.
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 15
+    services:
+      # Plain mongo here because GitHub-Actions service containers can't
+      # run `rs.initiate()` ergonomically. The init step below brings up
+      # the replica set explicitly via docker exec on the same container.
+      mongo:
+        image: mongo:8.0
+        ports:
+          - 27017:27017
+        options: --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 })'" --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Reconfigure mongo as a replica set
+        # The default service container starts plain mongod. We restart
+        # it with --replSet rs0 + run rs.initiate() so change-streams
+        # and transactions work — both required by the conformance suite
+        # (event seq monotonicity + LockExclusivity).
+        run: |
+          set -euo pipefail
+          # Find the running mongo container started by the service block.
+          CID=$(docker ps -q --filter "ancestor=mongo:8.0")
+          docker stop "$CID"
+          docker rm "$CID"
+          docker run -d --name mongo-rs \
+            -p 27017:27017 \
+            mongo:8.0 \
+            --replSet rs0 --bind_ip_all
+          for i in $(seq 1 30); do
+            if docker exec mongo-rs mongosh --quiet --eval 'db.runCommand({ping:1})' >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+          docker exec mongo-rs mongosh --quiet --eval '
+            try { rs.status() } catch(e) {
+              rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "localhost:27017" }] });
+            }
+          '
+          # Wait for primary election before letting tests connect.
+          for i in $(seq 1 30); do
+            STATE=$(docker exec mongo-rs mongosh --quiet --eval 'rs.status().members[0].stateStr' 2>/dev/null || true)
+            if [ "$STATE" = "PRIMARY" ]; then
+              echo "rs0 primary elected"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Mongo conformance harness
+        env:
+          ITERION_TEST_MONGO_URI: mongodb://localhost:27017/?replicaSet=rs0
+        run: |
+          go test -mod=vendor -v -timeout 5m ./pkg/store/mongo/...
+
+  cloud-e2e:
+    # Builds the iterion image, spins kind + Helm-installs the cloud
+    # stack with bundled Mongo + NATS + MinIO (values-dev.yaml), then
+    # exercises the full chain (server → NATS → runner → Mongo →
+    # /metrics). Catches regressions that helm lint cannot — wrong
+    # ConfigMap key, broken probe path, RBAC drift, missing image,
+    # /readyz logic. Runs after unit/e2e because if those fail the
+    # binary is broken anyway.
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 25
+    env:
+      KIND_CLUSTER: iterion-e2e
+      IMG: iterion-e2e:ci
+      NS: iterion
+      RELEASE: ci
+      # Mirror values-dev.yaml secrets.session.token — the dev profile
+      # bakes a deterministic token so port-forward + curl works without
+      # extra secret plumbing in CI.
+      SESSION_TOKEN: dev-session-token
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Build editor frontend
+        working-directory: editor
+        run: |
+          corepack enable
+          pnpm install --prefer-offline
+          pnpm exec vite build
+          rm -rf ../pkg/server/static/assets ../pkg/server/static/index.html
+          cp -r dist/* ../pkg/server/static/
+
+      - name: Build iterion image (local)
+        # Build the local image only — no push. kind loads it directly
+        # via `kind load docker-image` so the test is hermetic and
+        # doesn't depend on image.yml succeeding first.
+        run: |
+          docker build -t "${IMG}" .
+
+      - name: Set up kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: ${{ env.KIND_CLUSTER }}
+          wait: 120s
+
+      - name: Load image into kind
+        run: |
+          kind load docker-image "${IMG}" --name "${KIND_CLUSTER}"
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Helm install (values-dev.yaml)
+        run: |
+          set -euo pipefail
+          kubectl create namespace "${NS}"
+          helm install "${RELEASE}" ./helm/iterion \
+            --namespace "${NS}" \
+            --values ./helm/iterion/values-dev.yaml \
+            --set "image.repository=$(echo ${IMG} | cut -d: -f1)" \
+            --set "image.tag=$(echo ${IMG} | cut -d: -f2)" \
+            --set "image.pullPolicy=Never" \
+            --set "metrics.enabled=true" \
+            --wait --timeout 5m
+
+      - name: Wait for /readyz on server
+        run: |
+          set -euo pipefail
+          kubectl -n "${NS}" wait --for=condition=Available --timeout=180s \
+            deployment/${RELEASE}-iterion-server
+          kubectl -n "${NS}" wait --for=condition=Available --timeout=180s \
+            deployment/${RELEASE}-iterion-runner
+
+      - name: Port-forward server
+        run: |
+          kubectl -n "${NS}" port-forward svc/${RELEASE}-iterion-server 4891:4891 &
+          # Give port-forward a moment to come up before curl-ing.
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:4891/readyz; then
+              echo
+              echo "ready after $i tries"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Launch tool-only workflow inline
+        # Exercises server → NATS → runner → Mongo end-to-end. Tool node
+        # avoids any LLM dependency so the test stays hermetic.
+        run: |
+          set -euo pipefail
+          SOURCE='workflow ci_smoke:
+  start: t1
+tool t1:
+  command: "echo hello cloud"
+  outputs: { stdout: string }
+  edges:
+    - to: done
+done'
+          BODY=$(jq -n --arg src "$SOURCE" '{source: $src}')
+          RUN_ID=$(curl -sf \
+            -H "Authorization: Bearer ${SESSION_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -X POST http://localhost:4891/api/runs \
+            -d "$BODY" | jq -r '.run_id')
+          echo "run_id=$RUN_ID"
+          # Poll until the run reaches a terminal status (or 90s).
+          for i in $(seq 1 30); do
+            STATUS=$(curl -sf -H "Authorization: Bearer ${SESSION_TOKEN}" \
+              http://localhost:4891/api/runs/$RUN_ID | jq -r '.run.status // .status')
+            echo "iter $i: status=$STATUS"
+            case "$STATUS" in
+              finished) exit 0 ;;
+              failed|cancelled|failed_resumable) echo "::error::run terminated as $STATUS"; exit 1 ;;
+            esac
+            sleep 3
+          done
+          echo "::error::run did not finish within 90s"
+          exit 1
+
+      - name: Verify metrics emission
+        # Confirms N1 wiring (post-fix from cloud_ready_review.md): the
+        # registered counters are actually incremented by the live
+        # cloudpublisher / runner code paths, not just declared.
+        run: |
+          set -euo pipefail
+          kubectl -n "${NS}" port-forward svc/${RELEASE}-iterion-server 9090:9090 &
+          sleep 3
+          if ! curl -sf http://localhost:9090/metrics | grep -E '^iterion_runs_created_total\{' | grep -v ' 0$'; then
+            echo "::error::iterion_runs_created_total never incremented (server-side metrics regression)"
+            curl -sf http://localhost:9090/metrics | grep -E '^iterion_' || true
+            exit 1
+          fi
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          kubectl -n "${NS}" get pods -o wide
+          kubectl -n "${NS}" describe pods
+          for d in ${RELEASE}-iterion-server ${RELEASE}-iterion-runner; do
+            echo "=== logs $d ==="
+            kubectl -n "${NS}" logs deployment/$d --tail=200 || true
+          done
+          kubectl -n "${NS}" logs --tail=200 -l app.kubernetes.io/name=mongodb || true
+          kubectl -n "${NS}" logs --tail=200 -l app.kubernetes.io/name=nats || true

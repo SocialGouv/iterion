@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
+	"github.com/SocialGouv/iterion/pkg/cloud/tracing"
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
@@ -76,6 +77,16 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 
 	rootCtx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	traceShutdown, err := tracing.Init(rootCtx, "iterion-runner", logger)
+	if err != nil {
+		return fmt.Errorf("runner: init tracing: %w", err)
+	}
+	defer func() {
+		shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutCancel()
+		_ = traceShutdown(shutCtx)
+	}()
 
 	// 1. NATS layer — provides the queue + KV lock bucket.
 	natsConn, err := natsq.Connect(rootCtx, natsq.Config{
@@ -145,6 +156,7 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		WorkDir:           cfg.Runner.WorkDir,
 		HeartbeatInterval: cfg.Runner.Heartbeat,
 		Logger:            logger,
+		Metrics:           mreg,
 	})
 	if err != nil {
 		return fmt.Errorf("runner: build: %w", err)
