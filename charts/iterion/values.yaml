@@ -146,6 +146,14 @@ config:
     concurrency: 1
     heartbeat: 20s
     lockTtl: 60s
+  # --- Auth disable (DEV / smoke tests ONLY) -----------------------
+  # When true, the server synthesizes a super-admin identity for
+  # every request and skips JWT verification — no login flow needed.
+  # Equivalent to ITERION_DISABLE_AUTH=true. Never enable in
+  # production; multi-tenant scoping is bypassed too. Used by the
+  # cloud-e2e smoke test to launch a tool-only run without going
+  # through the full auth bootstrap.
+  disableAuth: false
   # --- Auth (cloud only) -------------------------------------------
   # Public, non-secret half of the multitenant auth surface. The
   # secret half (JWT signing key, AES master key, OIDC client

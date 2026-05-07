@@ -25,6 +25,9 @@ data:
   ITERION_RUNNER_CONCURRENCY: {{ .Values.config.runner.concurrency | quote }}
   ITERION_HEARTBEAT_INTERVAL: {{ .Values.config.runner.heartbeat | quote }}
   ITERION_LOCK_TTL: {{ .Values.config.runner.lockTtl | quote }}
+  {{- if .Values.config.disableAuth }}
+  ITERION_DISABLE_AUTH: "true"
+  {{- end }}
   {{- if eq .Values.mode "cloud" }}
   # --- Auth (Phase A) ---------------------------------------------
   ITERION_PUBLIC_URL: {{ .Values.config.auth.publicUrl | quote }}

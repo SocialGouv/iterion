@@ -168,10 +168,6 @@ jobs:
       IMG: iterion-e2e:ci
       NS: iterion
       RELEASE: ci
-      # Mirror values-dev.yaml secrets.session.token — the dev profile
-      # bakes a deterministic token so port-forward + curl works without
-      # extra secret plumbing in CI.
-      SESSION_TOKEN: dev-session-token
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -245,6 +241,7 @@ jobs:
             --set "mongodb.arbiter.enabled=false" \
             --set "mongodb.persistence.enabled=false" \
             --set "minio.persistence.enabled=false" \
+            --set "config.disableAuth=true" \
             --wait --timeout 10m
 
       - name: Wait for /readyz on server
@@ -274,7 +271,9 @@ jobs:
 
       - name: Launch tool-only workflow inline
         # Exercises server → NATS → runner → Mongo end-to-end. Tool node
-        # avoids any LLM dependency so the test stays hermetic.
+        # avoids any LLM dependency so the test stays hermetic. Auth is
+        # disabled at install time (config.disableAuth=true) so we don't
+        # need to bootstrap a user + JWT just to launch a smoke run.
         # DSL shape (see docs/grammar/iter.ebnf + examples/*.iter):
         #   - top-level node decls, schemas, then `workflow` block
         #   - tool nodes use `output: <schema>` (singular) referencing a
@@ -290,15 +289,14 @@ jobs:
           SOURCE=$'schema result:\n  stdout: string\n\ntool t1:\n  command: "echo hello cloud"\n  output: result\n\nworkflow ci_smoke:\n  entry: t1\n  t1 -> done\n'
           BODY=$(jq -n --arg src "$SOURCE" '{source: $src}')
           RUN_ID=$(curl -sf \
-            -H "Authorization: Bearer ${SESSION_TOKEN}" \
             -H "Content-Type: application/json" \
             -X POST http://localhost:4891/api/runs \
             -d "$BODY" | jq -r '.run_id')
           echo "run_id=$RUN_ID"
           # Poll until the run reaches a terminal status (or 90s).
           for i in $(seq 1 30); do
-            STATUS=$(curl -sf -H "Authorization: Bearer ${SESSION_TOKEN}" \
-              http://localhost:4891/api/runs/$RUN_ID | jq -r '.run.status // .status')
+            STATUS=$(curl -sf http://localhost:4891/api/runs/$RUN_ID \
+              | jq -r '.run.status // .status')
             echo "iter $i: status=$STATUS"
             case "$STATUS" in
               finished) exit 0 ;;
