@@ -51,5 +51,10 @@ jobs:
 
       - name: Run release-it
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Use the token-bureau App token so the GitHub Release that
+          # release-it creates carries an App identity. Releases created
+          # under the default GITHUB_TOKEN do not fan out `release:
+          # published` to other workflows (GitHub blocks the recursion),
+          # which silently breaks brew-update.yml.
+          GITHUB_TOKEN: ${{ steps.token.outputs.token }}
         run: pnpm release-it --ci
