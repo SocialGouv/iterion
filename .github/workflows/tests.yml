@@ -231,6 +231,13 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@v4
 
+      - name: Build chart dependencies
+        # Sub-charts (mongodb, nats, minio) are declared in Chart.yaml but
+        # not vendored in git (helm/iterion/charts/ is gitignored). Mirror
+        # what `task chart:kind` does locally so values-dev.yaml's bundled
+        # stack resolves at install time.
+        run: helm dependency update ./helm/iterion
+
       - name: Helm install (values-dev.yaml)
         run: |
           set -euo pipefail

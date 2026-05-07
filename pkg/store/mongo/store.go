@@ -191,7 +191,7 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 		{Keys: bson.D{{Key: "updated_at", Value: -1}}, Options: options.Index().SetName("updated_desc")},
 		{
 			Keys:    bson.D{{Key: "runner_id", Value: 1}},
-			Options: options.Index().SetName("runner_id_partial").SetPartialFilterExpression(bson.M{"runner_id": bson.M{"$exists": true, "$ne": nil}}),
+			Options: options.Index().SetName("runner_id_partial").SetPartialFilterExpression(bson.M{"runner_id": bson.M{"$exists": true}}),
 		},
 	})
 	if err != nil && !isIndexConflict(err) {
