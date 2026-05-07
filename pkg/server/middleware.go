@@ -129,6 +129,10 @@ func isPublicPath(path string) bool {
 		"/api/auth/providers",
 		"/api/auth/invitations/lookup",
 		"/api/auth/invitations/accept",
+		// /api/server/info carries the AuthRequired flag the SPA
+		// reads before deciding whether to show Login. It must
+		// always be reachable.
+		"/api/server/info",
 		"/", "/index.html":
 		return true
 	}

@@ -51,6 +51,38 @@ const initial: AuthState = {
   activeRole: null,
 };
 
+const BASE_URL = (import.meta.env.VITE_API_URL ?? "/api").replace(/\/$/, "");
+
+// probeAuthRequired hits the unauthenticated /api/server/info to
+// learn whether the deployment requires sign-in. Local / desktop
+// returns auth_required=false and we render the editor as a
+// synthetic super-admin so the no-login UX is preserved.
+async function probeAuthRequired(): Promise<boolean> {
+  try {
+    const res = await fetch(`${BASE_URL}/server/info`, { credentials: "include" });
+    if (!res.ok) return true;
+    const body = (await res.json()) as { auth_required?: boolean };
+    return body.auth_required !== false;
+  } catch {
+    return true;
+  }
+}
+
+// localIdentity mirrors the synthetic principal the server's
+// requireAuth middleware injects when DisableAuth=true.
+const localIdentity: AuthState = {
+  status: "authenticated",
+  user: {
+    id: "dev",
+    email: "dev@local",
+    status: "active",
+    is_super_admin: true,
+  },
+  teams: [],
+  activeTeamID: "",
+  activeRole: null,
+};
+
 function applyResponse(prev: AuthState, res: AuthResponse): AuthState {
   return {
     status: "authenticated",
@@ -65,6 +97,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>(initial);
 
   const bootstrap = useCallback(async () => {
+    if (!(await probeAuthRequired())) {
+      setState(localIdentity);
+      return;
+    }
     try {
       const me = await getMe();
       setState((prev) => applyResponse(prev, me));

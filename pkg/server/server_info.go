@@ -8,12 +8,18 @@ import (
 
 // serverInfoResponse describes the running server to the SPA. Used by
 // the Launch modal to render appropriate upload limits before any
-// upload is attempted.
+// upload is attempted, and by the AuthProvider to decide whether to
+// gate the editor on a sign-in flow.
 type serverInfoResponse struct {
-	Mode    string            `json:"mode"`
-	Version string            `json:"version"`
-	Commit  string            `json:"commit,omitempty"`
-	Limits  serverLimitsBlock `json:"limits"`
+	Mode    string `json:"mode"`
+	Version string `json:"version"`
+	Commit  string `json:"commit,omitempty"`
+	// AuthRequired is false in local / desktop mode (single-user TTY,
+	// no JWT) and true in cloud mode (multitenant). The SPA short-
+	// circuits its bootstrap when false and renders the editor as a
+	// synthetic super-admin so the existing local UX is preserved.
+	AuthRequired bool              `json:"auth_required"`
+	Limits       serverLimitsBlock `json:"limits"`
 }
 
 type serverLimitsBlock struct {
@@ -35,9 +41,10 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 		mode = "local"
 	}
 	resp := serverInfoResponse{
-		Mode:    mode,
-		Version: appinfo.Version,
-		Commit:  appinfo.Commit,
+		Mode:         mode,
+		Version:      appinfo.Version,
+		Commit:       appinfo.Commit,
+		AuthRequired: s.authSvc != nil && !s.cfg.DisableAuth,
 		Limits: serverLimitsBlock{
 			Upload: uploadLimitsBlock{
 				MaxFileSize:    s.cfg.MaxUploadSize,
