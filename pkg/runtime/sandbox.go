@@ -61,8 +61,10 @@ func (a *activeSandbox) shutdown(ctx context.Context, logger *iterlog.Logger) {
 //
 // Required: Workflow (may carry a sandbox: block), RunID, FriendlyName,
 // RepoRoot, WorkspacePath, EmitEvent, Logger. Optional: CLIOverride
-// (from --sandbox flag) and GlobalDefault (from
-// ITERION_SANDBOX_DEFAULT).
+// (from --sandbox flag), GlobalDefault (from
+// ITERION_SANDBOX_DEFAULT), and DefaultImage (override of the
+// fallback image used when sandbox: auto and no devcontainer.json
+// is found).
 type SandboxParams struct {
 	Workflow      *ir.Workflow
 	RunID         string
@@ -71,6 +73,7 @@ type SandboxParams struct {
 	WorkspacePath string
 	CLIOverride   string // "" means no override
 	GlobalDefault string // "" means no global default
+	DefaultImage  string // "" lets the runtime pick the built-in default
 	EmitEvent     func(store.EventType, map[string]interface{}) error
 	Logger        *iterlog.Logger
 }
@@ -102,7 +105,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	workspacePath := p.WorkspacePath
 	emitEvent := p.EmitEvent
 	logger := p.Logger
-	spec, source, err := resolveSandboxSpec(wf, p.RepoRoot, p.CLIOverride, p.GlobalDefault)
+	spec, source, err := resolveSandboxSpec(wf, p.RepoRoot, p.CLIOverride, p.GlobalDefault, resolveDefaultSandboxImage(p.DefaultImage))
 	if err != nil {
 		return nil, err
 	}
@@ -356,7 +359,7 @@ func resolveNetworkPolicy(spec *sandbox.Spec) (netproxy.Mode, []string) {
 // block and so cannot be expressed via the flag.
 func resolveSandboxSpec(
 	wf *ir.Workflow,
-	repoRoot, cliOverride, globalDefault string,
+	repoRoot, cliOverride, globalDefault, defaultImage string,
 ) (*sandbox.Spec, string, error) {
 	mode, source := pickMode(wf, cliOverride, globalDefault)
 	if mode == "" || mode == string(sandbox.ModeNone) {
@@ -371,6 +374,13 @@ func resolveSandboxSpec(
 		dc, path, err := devcontainer.ReadFromRepo(repoRoot)
 		if err != nil {
 			if err == devcontainer.ErrNotFound {
+				if defaultImage != "" {
+					spec := sandbox.Spec{
+						Mode:  sandbox.ModeAuto,
+						Image: defaultImage,
+					}
+					return &spec, source + " (default image: " + defaultImage + ")", nil
+				}
 				return nil, source, fmt.Errorf("runtime: sandbox: mode=auto but no .devcontainer/devcontainer.json found at %s — add one or switch to inline mode", repoRoot)
 			}
 			return nil, source, fmt.Errorf("runtime: sandbox: read devcontainer.json: %w", err)

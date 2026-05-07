@@ -8,19 +8,20 @@ import (
 )
 
 var runOpts struct {
-	recipe        string
-	runID         string
-	storeDir      string
-	timeout       time.Duration
-	logLevel      string
-	noInteractive bool
-	varFlags      []string
-	background    bool
-	mergeInto     string
-	branchName    string
-	mergeStrategy string
-	autoMerge     bool
-	sandbox       string
+	recipe              string
+	runID               string
+	storeDir            string
+	timeout             time.Duration
+	logLevel            string
+	noInteractive       bool
+	varFlags            []string
+	background          bool
+	mergeInto           string
+	branchName          string
+	mergeStrategy       string
+	autoMerge           bool
+	sandbox             string
+	sandboxDefaultImage string
 }
 
 var runCmd = &cobra.Command{
@@ -29,19 +30,20 @@ var runCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		opts := cli.RunOptions{
-			File:          args[0],
-			Recipe:        runOpts.recipe,
-			RunID:         runOpts.runID,
-			StoreDir:      runOpts.storeDir,
-			Timeout:       runOpts.timeout,
-			LogLevel:      runOpts.logLevel,
-			NoInteractive: runOpts.noInteractive,
-			Background:    runOpts.background,
-			MergeInto:     runOpts.mergeInto,
-			BranchName:    runOpts.branchName,
-			MergeStrategy: runOpts.mergeStrategy,
-			AutoMerge:     runOpts.autoMerge,
-			Sandbox:       runOpts.sandbox,
+			File:                args[0],
+			Recipe:              runOpts.recipe,
+			RunID:               runOpts.runID,
+			StoreDir:            runOpts.storeDir,
+			Timeout:             runOpts.timeout,
+			LogLevel:            runOpts.logLevel,
+			NoInteractive:       runOpts.noInteractive,
+			Background:          runOpts.background,
+			MergeInto:           runOpts.mergeInto,
+			BranchName:          runOpts.branchName,
+			MergeStrategy:       runOpts.mergeStrategy,
+			AutoMerge:           runOpts.autoMerge,
+			Sandbox:             runOpts.sandbox,
+			SandboxDefaultImage: runOpts.sandboxDefaultImage,
 		}
 		if len(runOpts.varFlags) > 0 {
 			vars, err := cli.ParseVarFlags(runOpts.varFlags)
@@ -70,5 +72,6 @@ func init() {
 	f.StringVar(&runOpts.mergeStrategy, "merge-strategy", "", "For worktree:auto runs, how to land commits when --auto-merge is on: \"squash\" (default) collapses all run commits into one, \"merge\" fast-forwards (preserves history)")
 	f.BoolVar(&runOpts.autoMerge, "auto-merge", true, "For worktree:auto runs, apply --merge-strategy at the end of the run (CLI default true preserves prior behaviour; the editor sets false by default to defer the merge to a UI action)")
 	f.StringVar(&runOpts.sandbox, "sandbox", "", "Run-level sandbox override: \"none\" (force off), \"auto\" (read .devcontainer/devcontainer.json). Empty inherits ITERION_SANDBOX_DEFAULT then the workflow's own sandbox: block. See pkg/sandbox.")
+	f.StringVar(&runOpts.sandboxDefaultImage, "sandbox-default-image", "", "Image ref used by sandbox: auto when no .devcontainer/devcontainer.json is found (env: ITERION_SANDBOX_DEFAULT_IMAGE; built-in: ghcr.io/socialgouv/iterion-sandbox-slim:<iterion-version>)")
 	rootCmd.AddCommand(runCmd)
 }

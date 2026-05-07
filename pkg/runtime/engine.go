@@ -60,25 +60,26 @@ type NodeExecutor interface {
 // Engine executes workflows. It supports sequential execution and
 // parallel fan-out via bounded branch scheduling.
 type Engine struct {
-	workflow         *ir.Workflow
-	store            store.RunStore
-	executor         NodeExecutor
-	logger           *iterlog.Logger
-	onNodeFinished   func(nodeID string, output map[string]interface{})
-	onEvent          func(evt store.Event) // optional observer fired after every successful append
-	recoveryDispatch RecoveryDispatch      // optional; consulted on node execution failure
-	workflowHash     string                // SHA-256 of the .iter source, set via WithWorkflowHash
-	filePath         string                // absolute .iter source path, set via WithFilePath
-	runName          string                // deterministic human-friendly run label, set via WithRunName
-	mergeInto        string                // worktree finalization: FF target ("" = current branch, "none" = skip, or branch name); set via WithMergeInto
-	branchName       string                // worktree finalization: storage branch override ("" = iterion/run/<runName>); set via WithBranchName
-	mergeStrategy    string                // worktree finalization: "squash" (default) or "merge" (FF); set via WithMergeStrategy
-	autoMerge        bool                  // worktree finalization: when true, apply mergeStrategy at end of run; otherwise leave merge_status=pending for UI; set via WithAutoMerge
-	validateOutputs  bool                  // when true, validate node outputs against declared schemas
-	forceResume      bool                  // when true, skip workflow hash check on resume
-	workDir          string                // working directory for subprocesses + PROJECT_DIR expansion; defaults to os.Getwd() at Run() time
-	sandboxOverride  string                // CLI/Launch-level sandbox mode override; "" means "no override" (workflow + global default win); set via WithSandboxOverride
-	sandboxDefault   string                // global ITERION_SANDBOX_DEFAULT value snapshot; set via WithSandboxDefault
+	workflow            *ir.Workflow
+	store               store.RunStore
+	executor            NodeExecutor
+	logger              *iterlog.Logger
+	onNodeFinished      func(nodeID string, output map[string]interface{})
+	onEvent             func(evt store.Event) // optional observer fired after every successful append
+	recoveryDispatch    RecoveryDispatch      // optional; consulted on node execution failure
+	workflowHash        string                // SHA-256 of the .iter source, set via WithWorkflowHash
+	filePath            string                // absolute .iter source path, set via WithFilePath
+	runName             string                // deterministic human-friendly run label, set via WithRunName
+	mergeInto           string                // worktree finalization: FF target ("" = current branch, "none" = skip, or branch name); set via WithMergeInto
+	branchName          string                // worktree finalization: storage branch override ("" = iterion/run/<runName>); set via WithBranchName
+	mergeStrategy       string                // worktree finalization: "squash" (default) or "merge" (FF); set via WithMergeStrategy
+	autoMerge           bool                  // worktree finalization: when true, apply mergeStrategy at end of run; otherwise leave merge_status=pending for UI; set via WithAutoMerge
+	validateOutputs     bool                  // when true, validate node outputs against declared schemas
+	forceResume         bool                  // when true, skip workflow hash check on resume
+	workDir             string                // working directory for subprocesses + PROJECT_DIR expansion; defaults to os.Getwd() at Run() time
+	sandboxOverride     string                // CLI/Launch-level sandbox mode override; "" means "no override" (workflow + global default win); set via WithSandboxOverride
+	sandboxDefault      string                // global ITERION_SANDBOX_DEFAULT value snapshot; set via WithSandboxDefault
+	sandboxDefaultImage string                // image ref used as fallback when sandbox: auto and no .devcontainer/devcontainer.json is found; "" lets the runtime pick the built-in pinned to the iterion version; set via WithSandboxDefaultImage
 }
 
 // EngineOption configures an Engine.
@@ -102,6 +103,14 @@ func WithSandboxOverride(mode string) EngineOption {
 // precedence in the resolution chain — workflow and CLI override it.
 func WithSandboxDefault(mode string) EngineOption {
 	return func(e *Engine) { e.sandboxDefault = mode }
+}
+
+// WithSandboxDefaultImage sets the image ref used as fallback when
+// `sandbox: auto` is active but no .devcontainer/devcontainer.json is
+// found. Empty string lets the runtime pick the built-in default
+// (`ghcr.io/socialgouv/iterion-sandbox-slim:<iterion-version>`).
+func WithSandboxDefaultImage(ref string) EngineOption {
+	return func(e *Engine) { e.sandboxDefaultImage = ref }
 }
 
 // WithOnNodeFinished registers a callback invoked after each node finishes
@@ -397,6 +406,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 		WorkspacePath: e.workDir,
 		CLIOverride:   e.sandboxOverride,
 		GlobalDefault: e.sandboxDefault,
+		DefaultImage:  e.sandboxDefaultImage,
 		EmitEvent:     emitForSandbox,
 		Logger:        e.logger,
 	})

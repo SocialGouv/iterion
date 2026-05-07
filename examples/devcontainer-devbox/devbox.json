@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/main/.schema/devbox.schema.json",
+  "packages": [
+    "go@1.25",
+    "python@3.12",
+    "jq@latest"
+  ],
+  "shell": {
+    "init_hook": [
+      "echo 'devbox: workspace toolchain ready'"
+    ]
+  }
+}

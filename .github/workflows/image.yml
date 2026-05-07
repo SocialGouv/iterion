@@ -10,6 +10,7 @@ on:
     paths:
       - "Dockerfile"
       - "docker/**"
+      - "sandbox/**"
       - ".github/workflows/image.yml"
       - "go.mod"
       - "go.sum"
@@ -114,6 +115,183 @@ jobs:
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ steps.build.outputs.imageid }}
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+
+  # ----------------------------------------------------------------------
+  # iterion-sandbox-slim — default image used by `sandbox: auto` when no
+  # .devcontainer/devcontainer.json is found. Pinned to the iterion
+  # release tag, with a rolling `edge` tag tracking main.
+  # ----------------------------------------------------------------------
+  build-sandbox-slim:
+    runs-on: ubuntu-latest
+    env:
+      SANDBOX_IMAGE_NAME: ${{ github.repository_owner }}/iterion-sandbox-slim
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: meta-slim
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.SANDBOX_IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=raw,value=edge,enable=${{ github.ref == format('refs/heads/{0}', 'main') }}
+            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Build (and push when not a PR)
+        id: build-slim
+        uses: docker/build-push-action@v7
+        with:
+          context: sandbox/slim
+          file: sandbox/slim/Dockerfile
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          push: ${{ github.event_name != 'pull_request' }}
+          load: ${{ github.event_name == 'pull_request' }}
+          tags: ${{ steps.meta-slim.outputs.tags }}
+          labels: ${{ steps.meta-slim.outputs.labels }}
+          cache-from: type=gha,scope=sandbox-slim
+          cache-to: type=gha,mode=max,scope=sandbox-slim
+
+      - name: Compute lowercase image ref
+        shell: bash
+        run: |
+          echo "SANDBOX_SLIM_REF_LC=$(printf '%s/%s' "${REGISTRY}" "${SANDBOX_IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')" \
+            >> "$GITHUB_ENV"
+
+      - name: Trivy scan (registry image)
+        if: github.event_name != 'pull_request'
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.SANDBOX_SLIM_REF_LC }}:edge
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+
+      - name: Trivy scan (PR loaded image)
+        if: github.event_name == 'pull_request'
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.build-slim.outputs.imageid }}
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+
+  # ----------------------------------------------------------------------
+  # iterion-sandbox-full — opt-in richer variant FROM the slim image.
+  # Chained on build-sandbox-slim so it picks up the freshly-built base
+  # for the same ref. Users select it via --sandbox-default-image or the
+  # ITERION_SANDBOX_DEFAULT_IMAGE env var.
+  # ----------------------------------------------------------------------
+  build-sandbox-full:
+    runs-on: ubuntu-latest
+    needs: build-sandbox-slim
+    env:
+      SANDBOX_IMAGE_NAME: ${{ github.repository_owner }}/iterion-sandbox-full
+      SANDBOX_SLIM_NAME: ${{ github.repository_owner }}/iterion-sandbox-slim
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: meta-full
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.SANDBOX_IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=raw,value=edge,enable=${{ github.ref == format('refs/heads/{0}', 'main') }}
+            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Resolve slim base ref
+        shell: bash
+        run: |
+          # Pick the slim tag that matches the current build context: a
+          # release tag or the rolling `edge` tag on main; PRs build a
+          # short-lived ephemeral image and reference it by short tag.
+          SLIM_LC="$(printf '%s/%s' "${REGISTRY}" "${SANDBOX_SLIM_NAME}" | tr '[:upper:]' '[:lower:]')"
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            BASE_TAG="${GITHUB_REF_NAME}"
+          else
+            BASE_TAG="edge"
+          fi
+          echo "SANDBOX_FULL_BASE=${SLIM_LC}:${BASE_TAG}" >> "$GITHUB_ENV"
+
+      - name: Build (and push when not a PR)
+        id: build-full
+        uses: docker/build-push-action@v7
+        with:
+          context: sandbox/full
+          file: sandbox/full/Dockerfile
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          push: ${{ github.event_name != 'pull_request' }}
+          load: ${{ github.event_name == 'pull_request' }}
+          tags: ${{ steps.meta-full.outputs.tags }}
+          labels: ${{ steps.meta-full.outputs.labels }}
+          build-args: |
+            BASE=${{ env.SANDBOX_FULL_BASE }}
+          cache-from: type=gha,scope=sandbox-full
+          cache-to: type=gha,mode=max,scope=sandbox-full
+
+      - name: Compute lowercase image ref
+        shell: bash
+        run: |
+          echo "SANDBOX_FULL_REF_LC=$(printf '%s/%s' "${REGISTRY}" "${SANDBOX_IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')" \
+            >> "$GITHUB_ENV"
+
+      - name: Trivy scan (registry image)
+        if: github.event_name != 'pull_request'
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.SANDBOX_FULL_REF_LC }}:edge
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+
+      - name: Trivy scan (PR loaded image)
+        if: github.event_name == 'pull_request'
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.build-full.outputs.imageid }}
           format: table
           severity: HIGH,CRITICAL
           exit-code: "1"

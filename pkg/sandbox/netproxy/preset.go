@@ -69,5 +69,18 @@ func iterionDefaultRules() []string {
 		// --- Linux package mirrors (apt-get inside the container) -
 		"deb.debian.org",
 		"security.debian.org",
+
+		// --- Nix store / devbox -----------------------------------
+		// Required by the iterion-sandbox-{slim,full} images, which
+		// ship devbox + Nix; `devbox install` against a workspace
+		// devbox.json reaches the Nix binary cache and the upstream
+		// Devbox catalog through these hosts.
+		"cache.nixos.org",
+		"channels.nixos.org",
+		"releases.nixos.org",
+		"nix-community.cachix.org",
+		"devbox.sh",
+		"**.devbox.sh",
+		"get.jetify.com",
 	}
 }

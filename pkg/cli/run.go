@@ -76,6 +76,11 @@ type RunOptions struct {
 	// sandbox). The workflow's own `sandbox:` block is the next layer
 	// of precedence; per-node overrides win above all. See pkg/sandbox.
 	Sandbox string
+	// SandboxDefaultImage overrides the image ref used by `sandbox: auto`
+	// when no .devcontainer/devcontainer.json is found in the workspace.
+	// Empty inherits ITERION_SANDBOX_DEFAULT_IMAGE then the built-in
+	// default (`ghcr.io/socialgouv/iterion-sandbox-slim:<iterion-version>`).
+	SandboxDefaultImage string
 }
 
 // RunRun executes a workflow or recipe and reports the outcome.
@@ -197,6 +202,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 			runtime.WithAutoMerge(opts.AutoMerge),
 			runtime.WithSandboxOverride(opts.Sandbox),
 			runtime.WithSandboxDefault(sandboxDefault),
+			runtime.WithSandboxDefaultImage(opts.SandboxDefaultImage),
 		)...,
 	)
 

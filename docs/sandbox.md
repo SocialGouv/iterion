@@ -116,9 +116,17 @@ Today only the simple form is parsed:
 ```iter
 workflow x:
   sandbox: auto      # read .devcontainer/devcontainer.json
+                     # (or fall back to the default image — see below)
   # OR
   sandbox: none      # explicit opt-out (overrides global default)
 ```
+
+`sandbox: auto` reads `.devcontainer/devcontainer.json` from the
+workspace if present; otherwise it falls back to the published
+**iterion-sandbox-slim** image pinned to the running iterion version.
+That fallback ships with `git`, Node 22, devbox, and Nix preinstalled,
+so the typical "agent installs deps, edits code, opens a PR" workflow
+runs out of the box. See [Default image](#default-image) below.
 
 Per-node overrides accept the same simple form on `agent`, `judge`,
 `tool`:
@@ -139,6 +147,9 @@ but not yet shipped — use `sandbox: auto` with a
 iterion run foo.iter --sandbox=auto    # one-shot override
 iterion run foo.iter --sandbox=none    # force off
 iterion run foo.iter                   # use workflow + global default
+iterion run foo.iter \
+    --sandbox-default-image ghcr.io/socialgouv/iterion-sandbox-full:edge
+                                       # override the auto-mode fallback image
 iterion sandbox doctor                 # report driver + capabilities
 ```
 
@@ -146,6 +157,10 @@ iterion sandbox doctor                 # report driver + capabilities
 
 - `ITERION_SANDBOX_DEFAULT` — global default (`""`, `none`, or `auto`).
   Lowest precedence. Workflows and CLI override.
+- `ITERION_SANDBOX_DEFAULT_IMAGE` — image ref used by `sandbox: auto`
+  when no `.devcontainer/devcontainer.json` is found. Falls back to
+  `ghcr.io/socialgouv/iterion-sandbox-slim:<iterion-version>` when
+  unset. Overridden per-run by `--sandbox-default-image`.
 
 ### Precedence (highest → lowest)
 
@@ -154,6 +169,54 @@ iterion sandbox doctor                 # report driver + capabilities
 3. Workflow-level `sandbox:` declaration (DSL)
 4. `ITERION_SANDBOX_DEFAULT` env var
 5. Implicit `none` (no sandbox)
+
+## Default image
+
+When `sandbox: auto` is in effect but no `.devcontainer/devcontainer.json`
+is found in the workspace, iterion falls back to a published image
+pinned to the running iterion version:
+
+| Variant | Image                                                       | Contents                                       |
+| ------- | ----------------------------------------------------------- | ---------------------------------------------- |
+| **slim** (default) | `ghcr.io/socialgouv/iterion-sandbox-slim:<version>` | git, curl, jq, Node 22, devbox + Nix          |
+| **full** (opt-in)  | `ghcr.io/socialgouv/iterion-sandbox-full:<version>` | slim + Go, Python 3, pnpm                     |
+
+Tags track iterion releases (`v1.2.3`) plus a rolling `edge` for main.
+Snapshot/dev binaries pull the `:edge` tag.
+
+**Why two variants?** The slim image is small enough to pull on
+demand and supports the common workflow (the agent calls `devbox install`
+against the workspace `devbox.json` to materialise its toolchain). The
+full image trades extra MB at first pull for not having to install
+common toolchains via Nix every run.
+
+**Selecting the full variant per-run:**
+
+```bash
+iterion run foo.iter \
+  --sandbox-default-image ghcr.io/socialgouv/iterion-sandbox-full:edge
+```
+
+**Or globally:**
+
+```bash
+export ITERION_SANDBOX_DEFAULT_IMAGE=ghcr.io/socialgouv/iterion-sandbox-full:edge
+```
+
+**Bringing your own:** if neither variant fits, point the override at
+your own image (must support `sleep infinity` as PID 1 — i.e. provide
+`/bin/sh` and `sleep`). Or commit a `.devcontainer/devcontainer.json`
+to the repo to disable the fallback for that workspace; iterion will
+read the devcontainer instead.
+
+### Devbox-ready devcontainer template
+
+If you want a project-pinned toolchain instead of relying on the
+implicit fallback, use the
+[`examples/devcontainer-devbox/`](../examples/devcontainer-devbox/)
+template: a `.devcontainer/devcontainer.json` extending
+`iterion-sandbox-slim` plus a workspace `devbox.json`. Drop both at
+your repo root and `sandbox: auto` will pick them up.
 
 ## Backend compatibility
 
@@ -416,9 +479,14 @@ rootless podman.
 
 ### `mode=auto but no .devcontainer/devcontainer.json found`
 
-The `auto` mode reads `.devcontainer/devcontainer.json` (or the
-sibling `.devcontainer.json` in the repo root). Add one (the same
-file VS Code Remote — Containers reads), or switch to `sandbox: none`.
+You should not see this error from normal CLI / editor use. The CLI
+always supplies a non-empty fallback image
+(`iterion-sandbox-slim:<version>` by default), so the error path only
+fires when iterion is embedded programmatically and
+`runtime.WithSandboxDefaultImage("")` is invoked while passing no
+devcontainer. The fix is to either supply an image ref or commit a
+`.devcontainer/devcontainer.json` (see
+[`examples/devcontainer-devbox/`](../examples/devcontainer-devbox/)).
 
 ### `sandbox: workflow contains a node using backend=claw`
 

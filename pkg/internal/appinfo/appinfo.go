@@ -51,3 +51,16 @@ func FullVersion() string {
 	}
 	return v + "+" + c
 }
+
+// SandboxImageTag returns the tag to use when picking a default
+// iterion-sandbox-{slim,full} image. Release builds (Version like
+// "v1.2.3") return the version verbatim so a v1.2.3 binary always
+// pulls iterion-sandbox-*:v1.2.3. Snapshot/dev builds return "edge"
+// to track the rolling main-branch tag published by CI.
+func SandboxImageTag() string {
+	v := strings.TrimSpace(Version)
+	if strings.HasPrefix(v, "v") && len(v) > 1 {
+		return v
+	}
+	return "edge"
+}

@@ -189,6 +189,12 @@ func TestPresetIterionDefault(t *testing.T) {
 		"raw.github.com",
 		"pypi.org",
 		"proxy.golang.org",
+		"cache.nixos.org",
+		"channels.nixos.org",
+		"nix-community.cachix.org",
+		"get.jetify.com",
+		"devbox.sh",
+		"docs.devbox.sh",
 	}
 	for _, h := range allowed {
 		if !p.Allow(h) {

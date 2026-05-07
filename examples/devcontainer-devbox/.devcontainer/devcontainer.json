@@ -1,0 +1,26 @@
+{
+  // Example devcontainer.json that extends the iterion-sandbox-slim
+  // base (devbox + Nix + git + Node 22) with workflow-specific tools
+  // installed via devbox.json under postCreateCommand.
+  //
+  // When this file lives at <repo-root>/.devcontainer/devcontainer.json,
+  // a workflow with `sandbox: auto` will pick this image instead of the
+  // implicit default. Drop the file and `sandbox: auto` will fall back
+  // to the iterion-sandbox-slim default for the iterion version in use.
+  "name": "iterion sandbox + devbox.json",
+  "image": "ghcr.io/socialgouv/iterion-sandbox-slim:edge",
+
+  // The bind-mount target — keep aligned with iterion's docker driver
+  // DefaultWorkspace. Override only when the workflow explicitly needs
+  // a different layout.
+  "workspaceFolder": "/workspace",
+
+  "containerEnv": {
+    "DEVBOX_NO_PROMPT": "1"
+  },
+
+  // Initialize the devbox environment from the workspace's devbox.json.
+  // Idempotent; safe to re-run on container restart.
+  // Requires a `devbox.json` at the workspace root.
+  "postCreateCommand": "test -f /workspace/devbox.json && devbox install --quiet || true"
+}
