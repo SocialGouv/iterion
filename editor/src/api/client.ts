@@ -2,11 +2,24 @@ import type { IterDocument, FileEntry, ListFilesResponse, SaveFileResponse } fro
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? "/api";
 
+// onUnauthorized fires when the editor server returns 401 on any
+// /api/* call. The AuthProvider registers a handler that flips its
+// state to `anonymous` so the App swaps in the Login view.
+let onUnauthorized: (() => void) | null = null;
+
+export function setUnauthorizedHandler(fn: (() => void) | null) {
+  onUnauthorized = fn;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`, {
-    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
     ...init,
   });
+  if (res.status === 401 && onUnauthorized) {
+    onUnauthorized();
+  }
   if (!res.ok) {
     throw new Error(`API error ${res.status}: ${await res.text()}`);
   }
