@@ -1,22 +1,23 @@
 name: 🍺 Brew Tap Update
 
-# Runs after a GitHub Release is published — once for the CLI release.yml
-# upload, again for desktop-release.yml. Both passes are idempotent: the
-# second one regenerates identical values and the final `git diff --staged
-# --quiet` check skips the commit. Re-running for the same tag is therefore
-# safe and surfaces the desktop SHA only once it lands.
+# release-it creates an empty GitHub Release as soon as version.yml runs,
+# which fires `release: published` long before release.yml/desktop-release.yml
+# have uploaded the build artefacts. Listening on that event made
+# `gh release download` find an empty release and fail.
 #
-# `release: published` only fans out to other workflows if the release was
-# created/edited with a non-`GITHUB_TOKEN` identity. Both release.yml and
-# desktop-release.yml therefore call softprops/action-gh-release with a
-# token-bureau App token; without that, this workflow stays silent.
+# Instead, hook on `workflow_run` so this job runs once each release pipeline
+# completes. Each pipeline's completion fires a separate run; the script is
+# idempotent and tolerates partial artefacts (CLI binaries land first, the
+# desktop ZIP appears on the second pass).
 #
-# `workflow_dispatch` is exposed for backfill — pick a tag and re-run the
-# tap update by hand without retagging.
+# `workflow_dispatch` stays for backfill — replay an old tag without retagging.
 
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows:
+      - "📦 Release"
+      - "📦 Desktop Release"
+    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
@@ -30,10 +31,10 @@ permissions:
 
 jobs:
   update:
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v')
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    env:
-      TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
       - name: Get GitHub App Token
         id: token
@@ -46,29 +47,73 @@ jobs:
         with:
           ref: main
           token: ${{ steps.token.outputs.token }}
+          # Need tags for `git tag --points-at` to resolve the release tag
+          # from the workflow_run head SHA.
+          fetch-depth: 0
+
+      - name: Resolve tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_TAG:-}" ]; then
+            tag="$INPUT_TAG"
+          elif [[ "${HEAD_BRANCH:-}" == v* ]]; then
+            # workflow_run sometimes exposes the tag name as head_branch
+            # for tag-triggered source workflows.
+            tag="$HEAD_BRANCH"
+          else
+            git fetch --tags origin >/dev/null
+            tag="$(git tag --points-at "$HEAD_SHA" | grep '^v' | head -n1 || true)"
+          fi
+          if [ -z "$tag" ]; then
+            echo "no v* tag found for sha ${HEAD_SHA:-?} (branch=${HEAD_BRANCH:-?}); the upstream run was probably not a tag release — skipping"
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "resolved tag=$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Download release assets
+        if: steps.tag.outputs.skip != '1'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           mkdir -p artifacts
           # CLI binaries ship with .sha256 sidecars (see release.yml).
           # The desktop ZIP does not — update-brew-tap.sh computes the
           # hash locally when the sidecar is missing.
+          #
+          # Tolerate the partial state: the first workflow_run (whichever
+          # of release.yml / desktop-release.yml finishes first) sees only
+          # its own artefacts; the second sees both. The script skips the
+          # file family it can't find and the diff guard prevents a no-op
+          # commit on the second pass.
           gh release download "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --dir artifacts \
             --pattern 'iterion-darwin-*' \
             --pattern 'iterion-linux-*' \
-            --pattern 'iterion-desktop-darwin-universal.zip'
-          ls -la artifacts/
+            --pattern 'iterion-desktop-darwin-universal.zip' \
+            || true
+          ls -la artifacts/ || true
 
       - name: Update tap
+        if: steps.tag.outputs.skip != '1'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           VERSION="${TAG#v}"
           bash scripts/update-brew-tap.sh "$VERSION" artifacts
 
       - name: Commit & push
+        if: steps.tag.outputs.skip != '1'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
