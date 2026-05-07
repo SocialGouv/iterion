@@ -55,12 +55,20 @@ secrets:
 
 mongodb:
   enabled: true
+  # Pin the subchart resource names so config.mongo.uri above resolves
+  # regardless of the Helm release name. Without this, `helm install ci
+  # ./charts/iterion -f values-dev.yaml` deploys the StatefulSet as
+  # `ci-mongodb` while the iterion server still reads
+  # `mongodb://iterion-mongodb:27017` from the ConfigMap → NXDOMAIN →
+  # /readyz never goes green. Same rationale for nats/minio below.
+  fullnameOverride: iterion-mongodb
   architecture: replicaset
   replicaCount: 1
   auth:
     enabled: false
 nats:
   enabled: true
+  fullnameOverride: iterion-nats
   config:
     jetstream:
       enabled: true
@@ -69,6 +77,7 @@ nats:
         size: 1Gi
 minio:
   enabled: true
+  fullnameOverride: iterion-minio
   mode: standalone
   auth:
     rootUser: minioadmin

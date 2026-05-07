@@ -317,10 +317,26 @@ jobs:
         if: failure()
         run: |
           kubectl -n "${NS}" get pods -o wide
+          # Events sorted by timestamp surface image-pull, probe, and
+          # scheduling failures before having to read pod descriptions.
+          kubectl -n "${NS}" get events --sort-by='.lastTimestamp' | tail -50
+          # Echo the rendered ITERION_* keys so a service-name mismatch
+          # between the ConfigMap and the actual subchart Service shows
+          # up immediately (the failure mode the d80c66d follow-up fix
+          # addresses).
+          kubectl -n "${NS}" get cm "${RELEASE}-iterion-config" -o yaml \
+            | grep -E "ITERION_(MONGO|NATS|S3)" || true
           kubectl -n "${NS}" describe pods
           for d in ${RELEASE}-iterion ${RELEASE}-iterion-runner; do
-            echo "=== logs $d ==="
+            echo "=== logs $d (current) ==="
             kubectl -n "${NS}" logs deployment/$d --tail=200 || true
+            # --previous catches the actual startup error from a
+            # CrashLoopBackOff'd container (e.g. runner's nats.Connect
+            # failure) — the message is gone after restart otherwise.
+            echo "=== logs $d (previous) ==="
+            kubectl -n "${NS}" logs deployment/$d --tail=200 --previous || true
           done
-          kubectl -n "${NS}" logs --tail=200 -l app.kubernetes.io/name=mongodb || true
-          kubectl -n "${NS}" logs --tail=200 -l app.kubernetes.io/name=nats || true
+          for app in mongodb nats minio; do
+            echo "=== logs label app.kubernetes.io/name=$app ==="
+            kubectl -n "${NS}" logs --tail=200 -l "app.kubernetes.io/name=$app" || true
+          done
