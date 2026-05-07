@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { NodeKind } from "@/api/types";
-import { NODE_ICONS } from "@/lib/constants";
+import { NodeIcon } from "@/components/icons/NodeIcon";
 
 const QUICK_ADD_TYPES: { kind: NodeKind; label: string }[] = [
   { kind: "agent", label: "Agent" },
@@ -55,7 +55,7 @@ export default function QuickAddMenu({ x, y, onAddNode, onConnectTerminal, onClo
           className="w-full text-left px-3 py-1.5 hover:bg-surface-2 text-xs text-fg-default flex items-center gap-2"
           onClick={() => onAddNode(kind)}
         >
-          <span>{NODE_ICONS[kind]}</span>
+          <NodeIcon kind={kind} size={14} />
           {label}
         </button>
       ))}
@@ -65,14 +65,14 @@ export default function QuickAddMenu({ x, y, onAddNode, onConnectTerminal, onClo
         className="w-full text-left px-3 py-1.5 hover:bg-surface-2 text-xs text-fg-default flex items-center gap-2"
         onClick={() => onConnectTerminal("done")}
       >
-        <span>{"\u{2705}"}</span>
+        <NodeIcon kind="done" size={14} />
         done
       </button>
       <button
         className="w-full text-left px-3 py-1.5 hover:bg-surface-2 text-xs text-fg-default flex items-center gap-2"
         onClick={() => onConnectTerminal("fail")}
       >
-        <span>{"\u{274C}"}</span>
+        <NodeIcon kind="fail" size={14} />
         fail
       </button>
       <div className="border-t border-border-default my-1" />

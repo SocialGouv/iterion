@@ -8,7 +8,7 @@ import { Popover } from "@/components/ui";
 import { EffortBar, isEffortLevel } from "@/components/ui/EffortBar";
 import { ProviderIcon } from "@/components/icons/ProviderIcon";
 import { BackendBadge } from "@/components/icons/BackendBadge";
-import { NODE_ICONS } from "@/lib/constants";
+import { NodeIcon } from "@/components/icons/NodeIcon";
 
 import { statusClasses } from "./runStatusClasses";
 
@@ -76,7 +76,6 @@ interface IRNodeData {
 export default function IRNode({ data }: NodeProps) {
   const { id, kind, executions, selectedIteration, isEntry, selected, onSelectIteration, meta } =
     data as unknown as IRNodeData;
-  const glyph = NODE_ICONS[kind as NodeKind] ?? "";
   const hasMeta =
     !!meta && (!!meta.model || !!meta.backend || !!meta.reasoningEffort);
   const modelLabel = meta?.model
@@ -92,7 +91,7 @@ export default function IRNode({ data }: NodeProps) {
 
   return (
     <div
-      className={`relative rounded-md border px-3 py-2 shadow-sm w-[200px] text-xs transition-colors duration-300 ${c.bg} ${c.border} ${c.text} ${
+      className={`relative rounded-xl border px-3 py-2 shadow-sm w-[200px] text-xs transition-colors duration-300 ${c.bg} ${c.border} ${c.text} ${
         selected ? "ring-2 ring-accent" : ""
       }`}
       // Inner ring tinted by the selected iteration index so the user
@@ -106,7 +105,7 @@ export default function IRNode({ data }: NodeProps) {
     >
       <Handle type="target" position={Position.Top} className="!bg-fg-subtle" />
       <div className="flex items-center gap-1.5 font-medium truncate">
-        <span aria-hidden>{glyph}</span>
+        <NodeIcon kind={kind as NodeKind} size={14} className="shrink-0" />
         <span className="truncate" title={id}>
           {id}
         </span>

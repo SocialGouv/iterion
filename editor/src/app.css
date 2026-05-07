@@ -50,16 +50,19 @@
   --color-info-soft: rgba(8, 145, 178, 0.18);
   --color-info-fg: #a5f3fc;
 
-  /* Node kind palette (kept in sync with lib/constants.ts NODE_COLORS) */
-  --color-node-agent: #4a90d9;
-  --color-node-judge: #7b68ee;
-  --color-node-router: #e67e22;
-  --color-node-join: #14b8a6;
-  --color-node-human: #e74c3c;
-  --color-node-tool: #8b6914;
-  --color-node-done: #2ecc71;
-  --color-node-fail: #e74c3c;
-  --color-node-start: #10b981;
+  /* Node kind palette (kept in sync with lib/constants.ts NODE_COLORS).
+   * Aligned on Tailwind-500 family. Red (#ef4444) is reserved for
+   * fail + diagnostic-error styling. */
+  --color-node-agent: #3b82f6;   /* blue-500 */
+  --color-node-judge: #8b5cf6;   /* violet-500 */
+  --color-node-router: #f97316;  /* orange-500 */
+  --color-node-join: #0d9488;    /* teal-600 (kept distinct from human) */
+  --color-node-human: #14b8a6;   /* teal-500 — was red */
+  --color-node-tool: #71717a;    /* zinc-500 */
+  --color-node-compute: #0ea5e9; /* sky-500 */
+  --color-node-done: #22c55e;    /* green-500 */
+  --color-node-fail: #ef4444;    /* red-500 */
+  --color-node-start: #10b981;   /* emerald-500 */
 
   /* Radii */
   --radius-sm: 4px;

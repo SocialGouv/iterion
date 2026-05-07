@@ -1,7 +1,8 @@
 import { type DragEvent, useMemo } from "react";
 import type { NodeKind } from "@/api/types";
 import type { LibraryCategory } from "@/lib/library/types";
-import { NODE_ICONS, NODE_COLORS } from "@/lib/constants";
+import { NODE_COLORS } from "@/lib/constants";
+import { NodeIcon } from "@/components/icons/NodeIcon";
 import { useUIStore } from "@/store/ui";
 import { useLibraryStore, selectAllItems } from "@/store/library";
 import { useAddFromLibrary } from "@/hooks/useAddFromLibrary";
@@ -44,11 +45,11 @@ function CollapsedPalette({ onExpand }: { onExpand: () => void }) {
           key={kind}
           draggable
           onDragStart={(e) => onDragStart(e, kind)}
-          className="w-12 h-12 flex flex-col items-center justify-center rounded cursor-grab hover:brightness-125 transition-all border border-border-strong"
+          className="w-12 h-12 flex flex-col items-center justify-center gap-0.5 rounded cursor-grab hover:brightness-125 transition-all border border-border-strong"
           style={{ backgroundColor: NODE_COLORS[kind] + "33", borderColor: NODE_COLORS[kind] }}
           title={label}
         >
-          <span className="text-base">{NODE_ICONS[kind]}</span>
+          <NodeIcon kind={kind} size={16} />
           <span className="text-[9px] text-fg-muted">{label}</span>
         </div>
       ))}
@@ -147,11 +148,11 @@ function ExpandedPanel({ onCollapse }: { onCollapse: () => void }) {
                 key={kind}
                 draggable
                 onDragStart={(e) => onDragStart(e, kind)}
-                className="h-10 flex flex-col items-center justify-center rounded cursor-grab hover:brightness-125 transition-all border border-border-strong"
+                className="h-10 flex flex-col items-center justify-center gap-0.5 rounded cursor-grab hover:brightness-125 transition-all border border-border-strong"
                 style={{ backgroundColor: NODE_COLORS[kind] + "33", borderColor: NODE_COLORS[kind] }}
                 title={label}
               >
-                <span className="text-sm">{NODE_ICONS[kind]}</span>
+                <NodeIcon kind={kind} size={14} />
                 <span className="text-[8px] text-fg-muted">{label}</span>
               </div>
             ))}

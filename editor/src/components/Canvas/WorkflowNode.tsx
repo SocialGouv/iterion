@@ -11,7 +11,8 @@ import DiagnosticBadge from "@/components/Diagnostics/DiagnosticBadge";
 import { EffortBar, isEffortLevel } from "@/components/ui/EffortBar";
 import { effortBackendKey, useEffortCapabilities } from "@/hooks/useEffortCapabilities";
 import { useResolvedEffort } from "@/hooks/useResolvedEffort";
-import { NODE_ICONS, SELECTED_BORDER, SELECTED_GLOW } from "@/lib/constants";
+import { SELECTED_BORDER, SELECTED_GLOW } from "@/lib/constants";
+import { NodeIcon } from "@/components/icons/NodeIcon";
 import { SIDES, POS_MAP } from "./handlePositions";
 
 interface WorkflowNodeData extends Record<string, unknown> {
@@ -141,10 +142,10 @@ export default function WorkflowNode({ data, selected }: NodeProps) {
 
   return (
     <div
-      className={`relative rounded-lg border-2 px-4 py-2 min-w-[140px] text-center shadow-lg ${isTerminal || isStart ? "opacity-80" : ""}`}
+      className={`relative rounded-xl border-2 px-4 py-2 min-w-[140px] text-center shadow-lg ${isTerminal || isStart ? "opacity-80" : ""}`}
       style={{
         borderColor,
-        background: `${color}22`,
+        background: `${color}1A`,
         boxShadow: glow,
       }}
     >
@@ -160,7 +161,7 @@ export default function WorkflowNode({ data, selected }: NodeProps) {
         <Handle key={`target-${s}`} id={`target-${s}`} type="target" position={POS_MAP[s]} className="!bg-surface-3 !w-1.5 !h-1.5 !opacity-0" />
       ))}
       <div className="flex items-center justify-center gap-1">
-        <span className="text-lg">{NODE_ICONS[kind]}</span>
+        <NodeIcon kind={kind} size={20} />
       </div>
       <div className="font-semibold text-sm text-fg-default">{isStart ? "Start" : label}</div>
       {!isStart && <div className="text-xs text-fg-muted">{kind}</div>}

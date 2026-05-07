@@ -71,6 +71,7 @@ interface UIState {
   setActiveTab: (tab: SidebarTab) => void;
   toggleSourceView: () => void;
   toggleDiagnosticsPanel: () => void;
+  openDiagnosticsPanel: () => void;
   toggleExpanded: () => void;
   setBrowserFullscreen: (value: boolean) => void;
   setActiveWorkflowName: (name: string | null) => void;
@@ -104,7 +105,7 @@ interface UIState {
 export const useUIStore = create<UIState>((set) => ({
   activeTab: "properties",
   sourceViewOpen: false,
-  diagnosticsPanelOpen: true,
+  diagnosticsPanelOpen: false,
   expanded: false,
   browserFullscreen: false,
   activeWorkflowName: null,
@@ -124,6 +125,7 @@ export const useUIStore = create<UIState>((set) => ({
   setActiveTab: (activeTab) => set({ activeTab }),
   toggleSourceView: () => set((s) => ({ sourceViewOpen: !s.sourceViewOpen })),
   toggleDiagnosticsPanel: () => set((s) => ({ diagnosticsPanelOpen: !s.diagnosticsPanelOpen })),
+  openDiagnosticsPanel: () => set((s) => (s.diagnosticsPanelOpen ? s : { diagnosticsPanelOpen: true })),
   toggleExpanded: () => set((s) => ({ expanded: !s.expanded })),
   setBrowserFullscreen: (value) => set({ browserFullscreen: value }),
   setActiveWorkflowName: (activeWorkflowName) => set({ activeWorkflowName }),

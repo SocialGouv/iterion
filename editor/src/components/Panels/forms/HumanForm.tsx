@@ -11,6 +11,8 @@ import {
   HUMAN_INTERACTION_OPTIONS,
 } from "@/lib/dslOptions";
 import { TextField, CommittedTextField, NumberField, SelectField, SelectFieldWithCreate, PromptPickerField } from "./FormField";
+import { NODE_COLORS } from "@/lib/constants";
+import { NodeIcon } from "@/components/icons/NodeIcon";
 
 interface Props {
   decl: HumanDecl;
@@ -39,10 +41,10 @@ export default function HumanForm({ decl }: Props) {
     <div className="space-y-1">
       <div
         className="flex items-center gap-2 px-2 py-1.5 rounded mb-2 -mx-1"
-        style={{ backgroundColor: "#E74C3C22", borderLeft: "3px solid #E74C3C" }}
+        style={{ backgroundColor: `${NODE_COLORS.human}22`, borderLeft: `3px solid ${NODE_COLORS.human}` }}
       >
-        <span className="text-base">{"\u{1F464}"}</span>
-        <span className="text-xs font-bold uppercase tracking-wide" style={{ color: "#E74C3C" }}>Human</span>
+        <NodeIcon kind="human" size={16} />
+        <span className="text-xs font-bold uppercase tracking-wide" style={{ color: NODE_COLORS.human }}>Human</span>
       </div>
       <CommittedTextField
         label="Name"

@@ -1,6 +1,20 @@
 import type { NodeKind } from "@/api/types";
+import type { LucideIcon } from "lucide-react";
+import {
+  Bot,
+  Scale,
+  GitBranch,
+  User,
+  Wrench,
+  Sigma,
+  CheckCircle2,
+  XCircle,
+  Play,
+} from "lucide-react";
 
-/** Canonical icon for each node kind — single source of truth */
+/** Unicode glyphs for text-only contexts (breadcrumbs, mermaid exports,
+ *  dropdown labels). For canvas rendering prefer NODE_LUCIDE_ICONS which
+ *  gives consistent SVG output across OSes. */
 export const NODE_ICONS: Record<NodeKind, string> = {
   agent: "\u{1F916}",
   judge: "\u{2696}\u{FE0F}",
@@ -13,17 +27,31 @@ export const NODE_ICONS: Record<NodeKind, string> = {
   start: "\u{25B6}\u{FE0F}",
 };
 
-/** Canonical color for each node kind — single source of truth */
+/** Lucide icon component for each node kind — used for canvas rendering. */
+export const NODE_LUCIDE_ICONS: Record<NodeKind, LucideIcon> = {
+  agent: Bot,
+  judge: Scale,
+  router: GitBranch,
+  human: User,
+  tool: Wrench,
+  compute: Sigma,
+  done: CheckCircle2,
+  fail: XCircle,
+  start: Play,
+};
+
+/** Tailwind-500 family for consistent saturation. Red is reserved for
+ *  `fail` + diagnostic-error styling — no other semantic meaning maps to red. */
 export const NODE_COLORS: Record<NodeKind, string> = {
-  agent: "#4A90D9",
-  judge: "#7B68EE",
-  router: "#E67E22",
-  human: "#E74C3C",
-  tool: "#8B6914",
-  compute: "#0EA5E9",
-  done: "#2ECC71",
-  fail: "#E74C3C",
-  start: "#10B981",
+  agent: "#3B82F6",   // blue-500
+  judge: "#8B5CF6",   // violet-500
+  router: "#F97316",  // orange-500 (distinct from amber-warning)
+  human: "#14B8A6",   // teal-500 — was #E74C3C, moved off red to free that color for errors
+  tool: "#71717A",    // zinc-500
+  compute: "#0EA5E9", // sky-500
+  done: "#22C55E",    // green-500
+  fail: "#EF4444",    // red-500 — error semantics
+  start: "#10B981",   // emerald-500
 };
 
 /** Default node dimensions for layout and edge handle computation */

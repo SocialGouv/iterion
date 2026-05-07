@@ -15,6 +15,7 @@ import { useUIStore } from "@/store/ui";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { useAutoValidation } from "@/hooks/useAutoValidation";
+import { useAutoOpenDiagnosticsOnError } from "@/hooks/useAutoOpenDiagnosticsOnError";
 import { useFileWatcher } from "@/hooks/useFileWatcher";
 import * as api from "@/api/client";
 
@@ -42,6 +43,7 @@ export default function EditorView() {
   const handledSearch = useRef<string | null>(null);
 
   useAutoValidation();
+  useAutoOpenDiagnosticsOnError();
   useFileWatcher();
 
   // Honor deep links from the run console: /?file=<workspace-relative>&node=<ir_node_id>&from=<runId>.
