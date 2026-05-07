@@ -23,23 +23,27 @@ func TestCapabilitiesAdvertisedFeatures(t *testing.T) {
 	if !caps.SupportsRemoteUser {
 		t.Error("docker driver must advertise SupportsRemoteUser")
 	}
-	// Phase 1 explicitly defers these.
-	if caps.SupportsBuild {
-		t.Error("Phase 1 docker driver must NOT advertise SupportsBuild")
+	if !caps.SupportsBuild {
+		t.Error("V2-6 docker driver must advertise SupportsBuild (docker buildx)")
 	}
+	// Phase 1 explicitly defers these.
 	if caps.SupportsNetworkPolicy {
 		t.Error("Phase 1 docker driver must NOT advertise SupportsNetworkPolicy")
 	}
 }
 
-func TestPrepareRejectsBuild(t *testing.T) {
+func TestPrepareAcceptsBuild(t *testing.T) {
 	d := &Driver{rt: RuntimeDocker}
-	_, err := d.Prepare(context.Background(), sandbox.Spec{
+	prepared, err := d.Prepare(context.Background(), sandbox.Spec{
 		Mode:  sandbox.ModeInline,
 		Build: &sandbox.Build{Dockerfile: "Dockerfile"},
+		User:  "1000:1000",
 	})
-	if err == nil {
-		t.Fatal("expected rejection of sandbox.Build (Phase 1 unsupported)")
+	if err != nil {
+		t.Fatalf("Prepare must accept sandbox.Build (V2-6): %v", err)
+	}
+	if prepared == nil {
+		t.Fatal("expected non-nil PreparedSpec")
 	}
 }
 

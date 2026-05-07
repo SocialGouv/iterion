@@ -22,6 +22,13 @@ var (
 	_ sandbox.ProxyConfigurer = (*Driver)(nil)
 )
 
+// NOTE: the kubernetes driver intentionally does NOT implement
+// [sandbox.Builder]. `sandbox.build:` (Dockerfile-at-run-start) is a
+// local-docker-only feature in V2-6: cloud workflows must reference
+// pre-built image refs via `sandbox.image:` (typically built by CI
+// and pinned by digest). Reasoning is documented in
+// docs/sandbox.md § "BuildKit (local docker only)".
+
 // PodIPEnvVar is the downward-API env var the runner pod must inject so
 // the kubernetes driver can advertise a routable proxy address to
 // sibling sandbox pods (the default "host.docker.internal" alias does
@@ -103,13 +110,17 @@ func (d *Driver) ProxyConfig() (string, string, error) {
 }
 
 // Capabilities advertises the feature set the V1 driver supports.
-// NetworkPolicy synthesis is on (V2-5); enforcement still requires a
-// CNI that honours NetworkPolicy resources (Calico, Cilium, …).
+// NetworkPolicy synthesis is on (V2-5). `sandbox.build:` is local-only
+// (docker driver, V2-6) — cloud workflows reference pre-built images
+// instead. `sandbox.mounts:` honours PVC/ConfigMap/Secret entries
+// (V2-7); bind mounts are rejected because cloud pods have no host
+// filesystem. Enforcement of NetworkPolicy still requires a CNI that
+// honours the resource (Calico, Cilium, …).
 func (d *Driver) Capabilities() sandbox.Capabilities {
 	return sandbox.Capabilities{
 		SupportsImage:         true,
-		SupportsBuild:         false, // V2 — needs BuildKit in-cluster
-		SupportsMounts:        false, // V2 — needs PVC/CSI plumbing
+		SupportsBuild:         false, // local-only feature; cloud users build via CI + sandbox.image:
+		SupportsMounts:        true,  // V2-7 — type=pvc / type=configmap / type=secret
 		SupportsNetworkPolicy: true,  // V2-5 — synthesised per-run; CNI must enforce
 		SupportsPostCreate:    true,
 		SupportsRemoteUser:    true,
@@ -120,19 +131,26 @@ func (d *Driver) Capabilities() sandbox.Capabilities {
 // kubernetes driver does not pre-pull the image — kubelet handles
 // the pull when the pod is admitted, with image-pull policies
 // already configured at the cluster level.
+//
+// `sandbox.build:` is rejected here. Building images at run-start
+// is a local-only feature (V2-6, docker driver via `docker buildx`).
+// Cloud workflows must reference pre-built image refs via
+// `sandbox.image:` — build via CI, pin by digest, point iterion at
+// the result. See docs/sandbox.md.
 func (d *Driver) Prepare(_ context.Context, spec sandbox.Spec) (sandbox.PreparedSpec, error) {
 	if err := spec.Validate(); err != nil {
 		return nil, err
 	}
 	if spec.Build != nil {
-		return nil, fmt.Errorf("kubernetes: sandbox.build is not supported in-cluster (V2 will wire BuildKit); use a pre-built image: instead")
+		return nil, fmt.Errorf("kubernetes: sandbox.build is local-only; cloud workflows must reference a pre-built image via sandbox.image (build via CI and pin by digest)")
 	}
 	if spec.Image == "" {
 		return nil, fmt.Errorf("kubernetes: sandbox.image is required; declare an image: field or use mode=auto with a .devcontainer/devcontainer.json")
 	}
-	if len(spec.Mounts) > 0 {
-		return nil, fmt.Errorf("kubernetes: sandbox.mounts is not supported in V1 (V2 will wire PVCs); the workspace is provided via emptyDir")
-	}
+	// V2-7: sandbox.mounts entries are validated lazily — translateMounts
+	// at manifest-render time produces a clear error pointing at the
+	// offending entry. Keep the surface here minimal so authors see the
+	// offending mount string verbatim in the diagnostic.
 	if spec.User == "" {
 		return nil, fmt.Errorf("kubernetes: sandbox.user is required (form: \"uid\" or \"uid:gid\", numeric); the driver enforces runAsNonRoot=true and most base images (alpine, debian) default to root, so kubelet will refuse the container with a cryptic error if no non-zero user is specified")
 	}

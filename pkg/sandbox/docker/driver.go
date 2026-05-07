@@ -64,12 +64,13 @@ func (d *Driver) Name() string { return string(d.rt) }
 
 // Capabilities advertises the features the driver supports today.
 // Phase 1 implements image, mounts, env, remote user, and post-create.
-// Build (Dockerfile-at-run-start) and network policy land in later
-// phases.
+// V2-6 adds Build (Dockerfile-at-run-start) via `docker buildx build`
+// — BuildKit is already wired into the Docker daemon, no separate
+// service needed.
 func (d *Driver) Capabilities() sandbox.Capabilities {
 	return sandbox.Capabilities{
 		SupportsImage:         true,
-		SupportsBuild:         false, // Phase 2
+		SupportsBuild:         true, // V2-6 — docker buildx build
 		SupportsMounts:        true,
 		SupportsNetworkPolicy: false, // Phase 3
 		SupportsPostCreate:    true,
@@ -85,18 +86,18 @@ func (d *Driver) Prepare(ctx context.Context, spec sandbox.Spec) (sandbox.Prepar
 	if err := spec.Validate(); err != nil {
 		return nil, err
 	}
-	if spec.Build != nil {
-		return nil, fmt.Errorf("docker: sandbox.build is not yet supported (Phase 2 will land Dockerfile builds); use a pre-built image: instead")
-	}
-	if spec.Image == "" {
-		return nil, fmt.Errorf("docker: sandbox.image is required when mode=inline; declare an image: field or use mode=auto with a .devcontainer/devcontainer.json")
+	if spec.Image == "" && spec.Build == nil {
+		return nil, fmt.Errorf("docker: sandbox.image is required when mode=inline (or declare a build: block); use mode=auto with a .devcontainer/devcontainer.json to read it from there")
 	}
 	workspace := spec.WorkspaceFolder
 	if workspace == "" {
 		workspace = DefaultWorkspace
 	}
 
-	if !imageExists(ctx, d.rt, spec.Image) {
+	// Pull is only meaningful when we have a pre-built image ref.
+	// Build-driven specs materialize the image at Build() time and
+	// always end up local — no pull required.
+	if spec.Image != "" && !imageExists(ctx, d.rt, spec.Image) {
 		d.logger.Info("sandbox: pulling image %s via %s", spec.Image, d.rt)
 		if err := pullImage(ctx, d.rt, spec.Image); err != nil {
 			return nil, err

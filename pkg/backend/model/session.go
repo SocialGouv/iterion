@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
@@ -28,6 +29,44 @@ func newNodeSessionStore() *nodeSessionStore {
 
 func sessionKey(runID, nodeID string) string {
 	return runID + "\x00" + nodeID
+}
+
+// SaveSnapshot decodes a JSON-serialized [[]api.Message] snapshot and
+// writes it under (runID, nodeID). Used by the claw runner sub-binary
+// at startup to seed its local store from a [delegate.EnvelopeSessionReplay]
+// snapshot (V2-4). Empty snapshots evict the entry.
+func (s *nodeSessionStore) SaveSnapshot(runID, nodeID string, snapshot []byte) error {
+	if s == nil {
+		return nil
+	}
+	if len(snapshot) == 0 {
+		s.save(runID, nodeID, nil)
+		return nil
+	}
+	var messages []api.Message
+	if err := json.Unmarshal(snapshot, &messages); err != nil {
+		return err
+	}
+	s.save(runID, nodeID, messages)
+	return nil
+}
+
+// LoadSnapshot returns the JSON-serialized snapshot for (runID,
+// nodeID), or nil when no session exists. Used by the launcher's
+// pre-spawn check (V2-4) to seed [delegate.EnvelopeSessionReplay].
+func (s *nodeSessionStore) LoadSnapshot(runID, nodeID string) []byte {
+	if s == nil {
+		return nil
+	}
+	msgs := s.load(runID, nodeID)
+	if len(msgs) == 0 {
+		return nil
+	}
+	buf, err := json.Marshal(msgs)
+	if err != nil {
+		return nil
+	}
+	return buf
 }
 
 // load returns a copy of the stored messages for the given key, or nil
@@ -157,6 +196,24 @@ type runtimeContextKey struct{}
 type runtimeContext struct {
 	runID string
 	store *nodeSessionStore
+	// sink, when non-nil, fires whenever captureSessionMessages saves
+	// a fresh per-node session — it relays the snapshot to a side
+	// channel for V2-4's mirror-runner-store-back-to-host wiring.
+	sink SessionCaptureSink
+}
+
+// SessionCaptureSink mirrors per-(runID, nodeID) message snapshots out
+// of the local store into a side channel as they are saved. V2-4 uses
+// it on the runner side: the sink emits [delegate.EnvelopeSessionCapture]
+// envelopes so the launcher's host nodeSessionStore stays in sync with
+// the runner's, enabling CompactAndRetry to compact the LATEST history
+// rather than the last-known-good one. The host side leaves this nil
+// — it owns the canonical store directly.
+type SessionCaptureSink interface {
+	// Capture is called after the local store has saved the snapshot.
+	// Implementations should not block — the caller is on the LLM
+	// loop's hot path.
+	Capture(runID, nodeID string, snapshot []byte)
 }
 
 // withRuntimeContext returns a derived ctx carrying the runID and
@@ -169,12 +226,42 @@ func withRuntimeContext(ctx context.Context, runID string, store *nodeSessionSto
 	return context.WithValue(ctx, runtimeContextKey{}, runtimeContext{runID: runID, store: store})
 }
 
+// WithSandboxRunnerSession is the runner-side entry point (V2-4) that
+// hooks a freshly-built session store + capture sink into ctx so the
+// in-runner ClawBackend mirrors every saved snapshot back across the
+// IPC. The runner constructs the store via [NewNodeSessionStore] and
+// the sink as a thin wrapper over the [delegate.EnvelopeWriter].
+//
+// Exported (where [withRuntimeContext] stays unexported) because the
+// runner lives in `cmd/iterion` which can't reach package-private
+// helpers — and we don't want every executor caller to discover a
+// "sink" parameter they'd have to thread nil through.
+func WithSandboxRunnerSession(ctx context.Context, runID string, store *NodeSessionStore, sink SessionCaptureSink) context.Context {
+	return context.WithValue(ctx, runtimeContextKey{}, runtimeContext{runID: runID, store: store, sink: sink})
+}
+
 // runtimeContextFrom extracts the runID + session store from ctx. The
 // returned store is nil when no executor wired one in.
 func runtimeContextFrom(ctx context.Context) (string, *nodeSessionStore) {
 	rc, _ := ctx.Value(runtimeContextKey{}).(runtimeContext)
 	return rc.runID, rc.store
 }
+
+// runtimeContextFull returns the (runID, store, sink) triple. Used by
+// captureSessionMessages to fire the sink in addition to saving
+// locally.
+func runtimeContextFull(ctx context.Context) (string, *nodeSessionStore, SessionCaptureSink) {
+	rc, _ := ctx.Value(runtimeContextKey{}).(runtimeContext)
+	return rc.runID, rc.store, rc.sink
+}
+
+// NodeSessionStore is the public alias the runner uses to construct a
+// store (the unexported alias preserves the in-package call-sites).
+type NodeSessionStore = nodeSessionStore
+
+// NewNodeSessionStore exposes the internal store constructor for the
+// claw runner sub-binary (V2-4).
+func NewNodeSessionStore() *NodeSessionStore { return newNodeSessionStore() }
 
 // applySessionMessages prepends any prior-attempt messages stored for
 // (runID, nodeID) to opts.Messages. When no session is wired or empty,
@@ -202,13 +289,25 @@ func applySessionMessages(ctx context.Context, nodeID string, opts GenerationOpt
 // resume from there. A nil result (failed call) is a no-op so we
 // don't trample any prior session state — meaning compaction can
 // run against the still-stored last-good state.
+//
+// V2-4: when a [SessionCaptureSink] is wired into ctx (the runner-side
+// path), this also fires the sink with a JSON-serialized snapshot so
+// the host's nodeSessionStore can mirror the in-runner state.
 func captureSessionMessages(ctx context.Context, nodeID string, result *TextResult) {
 	if result == nil || len(result.Messages) == 0 {
 		return
 	}
-	runID, store := runtimeContextFrom(ctx)
-	if store == nil || runID == "" || nodeID == "" {
+	runID, store, sink := runtimeContextFull(ctx)
+	if runID == "" || nodeID == "" {
 		return
 	}
-	store.save(runID, nodeID, result.Messages)
+	if store != nil {
+		store.save(runID, nodeID, result.Messages)
+	}
+	if sink != nil {
+		snapshot, err := json.Marshal(result.Messages)
+		if err == nil {
+			sink.Capture(runID, nodeID, snapshot)
+		}
+	}
 }

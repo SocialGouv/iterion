@@ -92,6 +92,35 @@ func BuildPodManifest(in PodManifestInput) ([]byte, error) {
 		envSlice = upsertEnv(envSlice, "NO_PROXY", "localhost,127.0.0.1,.svc,.cluster.local")
 	}
 
+	// V2-7: parse spec.Mounts (devcontainer-style strings) into k8s
+	// Volumes + VolumeMounts. Bind mounts are rejected at the driver
+	// layer (cloud pods don't have host filesystem access) so we only
+	// see PVC / ConfigMap / Secret types here.
+	extraVolumes, extraVolumeMounts, mountErr := translateMounts(in.Spec.Mounts)
+	if mountErr != nil {
+		return nil, fmt.Errorf("kubernetes: %w", mountErr)
+	}
+
+	volumeMounts := []any{
+		map[string]any{
+			"name":      "workspace",
+			"mountPath": workspace,
+		},
+	}
+	for _, vm := range extraVolumeMounts {
+		volumeMounts = append(volumeMounts, vm)
+	}
+
+	volumes := []any{
+		map[string]any{
+			"name":     "workspace",
+			"emptyDir": map[string]any{},
+		},
+	}
+	for _, v := range extraVolumes {
+		volumes = append(volumes, v)
+	}
+
 	pod := map[string]any{
 		"apiVersion": "v1",
 		"kind":       "Pod",
@@ -116,20 +145,10 @@ func BuildPodManifest(in PodManifestInput) ([]byte, error) {
 					"workingDir":      workspace,
 					"env":             envSlice,
 					"securityContext": defaultContainerSecurityContext(in.Spec.User),
-					"volumeMounts": []any{
-						map[string]any{
-							"name":      "workspace",
-							"mountPath": workspace,
-						},
-					},
+					"volumeMounts":    volumeMounts,
 				},
 			},
-			"volumes": []any{
-				map[string]any{
-					"name":     "workspace",
-					"emptyDir": map[string]any{},
-				},
-			},
+			"volumes": volumes,
 		},
 	}
 

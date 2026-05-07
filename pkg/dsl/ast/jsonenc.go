@@ -279,12 +279,20 @@ type jsonToolNodeDecl struct {
 type jsonSandboxBlock struct {
 	Mode            string                   `json:"mode,omitempty"`
 	Image           string                   `json:"image,omitempty"`
+	Build           *jsonSandboxBuildBlock   `json:"build,omitempty"`
 	User            string                   `json:"user,omitempty"`
 	WorkspaceFolder string                   `json:"workspace_folder,omitempty"`
 	PostCreate      string                   `json:"post_create,omitempty"`
 	Env             map[string]string        `json:"env,omitempty"`
 	Mounts          []string                 `json:"mounts,omitempty"`
 	Network         *jsonSandboxNetworkBlock `json:"network,omitempty"`
+}
+
+// jsonSandboxBuildBlock is the JSON form of an ast.SandboxBuildBlock.
+type jsonSandboxBuildBlock struct {
+	Dockerfile string            `json:"dockerfile,omitempty"`
+	Context    string            `json:"context,omitempty"`
+	Args       map[string]string `json:"args,omitempty"`
 }
 
 // jsonSandboxNetworkBlock is the JSON form of an ast.SandboxNetworkBlock.
@@ -302,12 +310,24 @@ func sandboxBlockToJSON(s *SandboxBlock) *jsonSandboxBlock {
 	return &jsonSandboxBlock{
 		Mode:            s.Mode,
 		Image:           s.Image,
+		Build:           sandboxBuildBlockToJSON(s.Build),
 		User:            s.User,
 		WorkspaceFolder: s.WorkspaceFolder,
 		PostCreate:      s.PostCreate,
 		Env:             s.Env,
 		Mounts:          s.Mounts,
 		Network:         sandboxNetworkBlockToJSON(s.Network),
+	}
+}
+
+func sandboxBuildBlockToJSON(b *SandboxBuildBlock) *jsonSandboxBuildBlock {
+	if b == nil {
+		return nil
+	}
+	return &jsonSandboxBuildBlock{
+		Dockerfile: b.Dockerfile,
+		Context:    b.Context,
+		Args:       b.Args,
 	}
 }
 
@@ -330,12 +350,24 @@ func sandboxBlockFromJSON(j *jsonSandboxBlock) *SandboxBlock {
 	return &SandboxBlock{
 		Mode:            j.Mode,
 		Image:           j.Image,
+		Build:           sandboxBuildBlockFromJSON(j.Build),
 		User:            j.User,
 		WorkspaceFolder: j.WorkspaceFolder,
 		PostCreate:      j.PostCreate,
 		Env:             j.Env,
 		Mounts:          j.Mounts,
 		Network:         sandboxNetworkBlockFromJSON(j.Network),
+	}
+}
+
+func sandboxBuildBlockFromJSON(j *jsonSandboxBuildBlock) *SandboxBuildBlock {
+	if j == nil {
+		return nil
+	}
+	return &SandboxBuildBlock{
+		Dockerfile: j.Dockerfile,
+		Context:    j.Context,
+		Args:       j.Args,
 	}
 }
 

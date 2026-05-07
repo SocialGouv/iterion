@@ -1559,11 +1559,60 @@ func (p *parser) parseSandboxProp(sb *ast.SandboxBlock, propTok Token) {
 		// pass the propTok span directly to keep diagnostics
 		// pointing at the right position.
 		sb.Network = p.parseSandboxNetworkBody(propTok)
+	case "build":
+		// V2-6: Dockerfile-based image build. Mutually exclusive with
+		// `image:` (enforced at IR compile time, not the parser).
+		sb.Build = p.parseSandboxBuildBody(propTok)
 	default:
 		p.addError(DiagUnknownProperty, propTok, "unknown sandbox property '"+name+"'")
 		p.skipToNewline()
 	}
 	p.skipNewlines()
+}
+
+// parseSandboxBuildBody parses the body of a `build:` sub-block under
+// `sandbox:` (V2-6). The opening "build:" tokens have already been
+// consumed by parseSandboxProp; we go straight to the indent + body
+// loop. Recognised properties: dockerfile (string), context (string),
+// args (string map). Unknown properties produce DiagUnknownProperty.
+func (p *parser) parseSandboxBuildBody(startTok Token) *ast.SandboxBuildBlock {
+	p.skipNewlines()
+	if _, ok := p.expect(TokenIndent); !ok {
+		return nil
+	}
+	bb := &ast.SandboxBuildBlock{Span: ast.Span{Start: p.pos(startTok)}}
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		if t.Type != TokenIdent && !isKeywordToken(t.Type) {
+			p.addError(DiagUnexpectedToken, t, "unexpected token '"+t.Value+"' in sandbox.build block")
+			p.next()
+			p.skipToNewline()
+			continue
+		}
+		name := t.Value
+		p.next()
+		p.expect(TokenColon)
+		switch name {
+		case "dockerfile":
+			bb.Dockerfile = p.expectString()
+		case "context":
+			bb.Context = p.expectString()
+		case "args":
+			bb.Args = p.parseStringMapBlock()
+		default:
+			p.addError(DiagUnknownProperty, t, "unknown sandbox.build property '"+name+"'")
+			p.skipToNewline()
+		}
+		p.skipNewlines()
+	}
+	return bb
 }
 
 // parseSandboxNetworkBody parses the body of a `network:` sub-block

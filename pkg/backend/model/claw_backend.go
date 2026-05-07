@@ -390,21 +390,25 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 // executeViaSandboxRunner forwards the task to the iterion-claw-runner
 // sub-process inside the sandbox container.
 //
-// Wire format (NDJSON over stdin/stdout):
+// Wire format (V2-1+, NDJSON envelopes on stdin/stdout — see
+// [delegate.Envelope]):
 //
-//	stdin  : one [delegate.IOTask] line
-//	stdout : one [delegate.IOResult] line
+//	stdin  : EnvelopeTask, then EnvelopeToolResult / EnvelopeAskUserAnswer
+//	         / EnvelopeSessionReplay as the multiplexer drives them in
+//	         response to runner-initiated envelopes
+//	stdout : intermediate envelopes (tool_call / ask_user /
+//	         session_capture / event), terminated by EnvelopeResult
 //
 // The runner re-builds the claw backend in-container with a default
 // tool set, executes the task, and returns the structured result.
 // Errors come back two ways: a non-zero exit code and a non-empty
 // IOResult.Error field — both are surfaced to the caller.
 //
-// V1 deliberately drops task.ToolDefs from the wire form because the
-// Execute closures aren't serializable. The runner registers
-// iterion's standard claw tool set on its own. This means MCP tools
-// and the ask_user mid-tool-loop callback aren't reachable on the
-// sandboxed path — see docs/sandbox.md.
+// V2-1 ships the multiplexer with a no-op handler set; the runner
+// today emits only the terminal result envelope. V2-2 wires
+// OnToolCall to the in-process tool registry + MCP manager so MCP
+// tools become reachable across the IPC; V2-3 wires OnAskUser to the
+// engine pause path; V2-4 wires OnSessionCapture for compaction-retry.
 func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate.Task) (delegate.Result, error) {
 	run := task.Sandbox
 	if run == nil {
@@ -433,54 +437,61 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 		return delegate.Result{}, fmt.Errorf("claw backend: spawn runner: %w", err)
 	}
 
-	// Stream-decode IOResult envelopes from the runner's stdout while
-	// the process is running. The runner today emits a single terminal
-	// IOResult; V2's multiplexed protocol (.plans/sandbox-v2-plan.md
-	// V2-1) will fan out many envelope types over the same channel,
-	// so we keep the loop and retain the latest IOResult — if the
-	// runner adds progress lines later, they slot in without changing
-	// the consumer here.
-	type decodeOutcome struct {
-		ioRes delegate.IOResult
-		err   error
-	}
-	decoded := make(chan decodeOutcome, 1)
-	go func() {
-		var latest delegate.IOResult
-		dec := json.NewDecoder(stdoutPipe)
-		for {
-			var candidate delegate.IOResult
-			if decErr := dec.Decode(&candidate); decErr != nil {
-				if decErr == io.EOF {
-					decoded <- decodeOutcome{ioRes: latest}
-					return
-				}
-				decoded <- decodeOutcome{ioRes: latest, err: decErr}
-				return
-			}
-			latest = candidate
-		}
-	}()
+	mux := delegate.NewMultiplexer(stdoutPipe, stdinPipe, b.multiplexerHandler(ctx, task))
 
-	taskJSON, err := json.Marshal(delegate.ToIOTask(task))
+	// V2-4: when the host's session store has prior messages for this
+	// (runID, nodeID), seed the runner with a session_replay envelope
+	// BEFORE the task envelope. The runner stashes the snapshot until
+	// the task arrives, then loads it into its local store so
+	// applySessionMessages prepends the replayed history to the LLM's
+	// first call. This preserves CompactAndRetry semantics across the
+	// sandbox boundary.
+	hostRunID, hostStore := runtimeContextFrom(ctx)
+	if hostStore != nil && hostRunID != "" && task.NodeID != "" {
+		if snapshot := hostStore.LoadSnapshot(hostRunID, task.NodeID); len(snapshot) > 0 {
+			replayEnv := delegate.NewSessionReplayEnvelope(snapshot)
+			if err := mux.Send(replayEnv); err != nil {
+				_ = cmd.Process.Kill()
+				_ = cmd.Wait()
+				return delegate.Result{}, fmt.Errorf("claw backend: send session_replay: %w", err)
+			}
+		}
+	}
+
+	// Send the task envelope. The runner blocks on its
+	// EnvelopeReader.Read() until this arrives.
+	taskEnv, err := delegate.NewTaskEnvelope(delegate.ToIOTask(task))
 	if err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		return delegate.Result{}, fmt.Errorf("claw backend: marshal task: %w", err)
+		return delegate.Result{}, fmt.Errorf("claw backend: build task envelope: %w", err)
 	}
-	if _, err := stdinPipe.Write(append(taskJSON, '\n')); err != nil {
-		_ = stdinPipe.Close()
+	if err := mux.Send(taskEnv); err != nil {
+		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		return delegate.Result{}, fmt.Errorf("claw backend: write stdin: %w", err)
+		return delegate.Result{}, fmt.Errorf("claw backend: send task envelope: %w", err)
 	}
+
+	// Drive the multiplexer loop. Returns the terminal IOResult.
+	ioRes, runErr := mux.Run(ctx)
+
+	// Close stdin so the runner sees EOF if it's still reading; the
+	// terminal result envelope is supposed to be its last write, so
+	// closing stdin after Run returns is purely belt-and-suspenders.
 	_ = stdinPipe.Close()
 
 	waitErr := cmd.Wait()
-	out := <-decoded // stdout is closed by Wait, so the goroutine has returned
-	if out.err != nil {
-		return delegate.Result{}, fmt.Errorf("claw backend: decode runner output: %w (stderr: %s)", out.err, stderrBuf.String())
+
+	if runErr != nil && !errors.Is(runErr, io.EOF) {
+		return delegate.Result{}, fmt.Errorf("claw backend: multiplexer: %w (stderr: %s)", runErr, stderrBuf.String())
 	}
-	ioRes := out.ioRes
+	if errors.Is(runErr, io.EOF) && ioRes.Error == "" && waitErr == nil {
+		// Runner closed stdout without sending a result envelope and
+		// exited cleanly — this should not happen with a well-formed
+		// runner, but surface a clear diagnostic instead of a misleading
+		// success.
+		return delegate.Result{}, fmt.Errorf("claw backend: runner exited without sending result envelope (stderr: %s)", stderrBuf.String())
+	}
 
 	if waitErr != nil && ioRes.Error == "" {
 		return delegate.Result{}, fmt.Errorf("claw backend: runner exited with error: %w (stderr: %s)", waitErr, stderrBuf.String())
@@ -501,6 +512,49 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 		res.BackendName = delegate.BackendClaw
 	}
 	return res, nil
+}
+
+// multiplexerHandler builds the launcher-side envelope dispatch table
+// for a specific task.
+//
+//   - V2-2: OnToolCall dispatches via the task's ToolDefs map. The
+//     runner emits a tool_call envelope for each LLM-driven tool
+//     invocation; the launcher invokes the original closure (which has
+//     access to the engine's tool registry, MCP manager, ask_user
+//     channel, etc.) and forwards the result. *ErrAskUser returns are
+//     preserved typed by the multiplexer (V2-3).
+//   - V2-4: OnSessionCapture mirrors runner-emitted session snapshots
+//     into the host's nodeSessionStore so CompactAndRetry compacts the
+//     latest history. Pre-spawn, the launcher seeds a session_replay
+//     envelope from the host store (see [executeViaSandboxRunner]).
+func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task) delegate.MultiplexerHandler {
+	// Index ToolDefs by name once so OnToolCall is O(1) instead of
+	// scanning the slice on each runner-initiated tool_call.
+	toolByName := make(map[string]delegate.ToolDef, len(task.ToolDefs))
+	for _, td := range task.ToolDefs {
+		toolByName[td.Name] = td
+	}
+	hostRunID, hostStore := runtimeContextFrom(ctx)
+	return delegate.MultiplexerHandler{
+		OnToolCall: func(toolCtx context.Context, name string, input json.RawMessage) (string, error) {
+			td, ok := toolByName[name]
+			if !ok {
+				return "", fmt.Errorf("launcher: tool %q not in task.ToolDefs (runner asked for an unknown tool)", name)
+			}
+			if td.Execute == nil {
+				return "", fmt.Errorf("launcher: tool %q has no Execute closure (engine misconfiguration)", name)
+			}
+			return td.Execute(toolCtx, input)
+		},
+		OnSessionCapture: func(snapshot json.RawMessage) {
+			if hostStore == nil || hostRunID == "" || task.NodeID == "" {
+				return
+			}
+			// Best-effort mirror — failures keep the host store one
+			// snapshot behind but the next capture will reconcile.
+			_ = hostStore.SaveSnapshot(hostRunID, task.NodeID, snapshot)
+		},
+	}
 }
 
 // ---------------------------------------------------------------------------

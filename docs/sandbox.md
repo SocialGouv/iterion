@@ -188,32 +188,43 @@ binary in (subject to architecture matching) via `runArgs`:
 }
 ```
 
-**V1 limitations** (tracked for V2):
+**V2-1+ wire format**: bidirectional NDJSON envelopes between
+launcher and runner (see `pkg/backend/delegate/envelope.go`). Each
+line is one envelope of typed payload (`task`, `tool_call`,
+`tool_result`, `ask_user`, `ask_user_answer`, `session_capture`,
+`session_replay`, `event`, `result`). The launcher's
+[delegate.Multiplexer] dispatches runner-initiated envelopes
+(tool_call, ask_user, …) to handlers wired against the engine's
+existing tool registry / MCP manager / ask_user channel; the runner
+builds proxy ToolDef closures that round-trip each invocation back
+across the channel.
 
-- The runner registers iterion's standard claw tool set on its own
-  side. `delegate.ToolDef.Execute` closures (which capture executor
-  state) cannot be serialized across the IPC boundary, so:
-  - **MCP-routed tools** declared by the workflow are not visible
-    to claw nodes inside the sandbox.
-  - The **mid-tool-loop ask_user** resume path is not supported on
-    the sandboxed claw path. ask_user calls in the prompt-side
-    fallback form still work.
-- **Compaction retry recovery is unavailable**. The engine's
-  `CompactAndRetry` dispatcher relies on a per-(runID, nodeID)
-  message store that lives in the host process. The runner writes
-  to its own in-container store which is destroyed when the
-  sub-process exits. On context-window exhaustion, the retry
-  restarts from scratch rather than from a compacted history.
-  Workflows that rely on automatic compaction recovery for long
-  claw nodes should either run unsandboxed or switch the affected
-  nodes to `claude_code` (which does its own in-CLI compaction).
-- Session state (the conversation history captured for resume) is
-  preserved across the IPC, but rehydration requires the same
-  iterion binary version on both sides.
+**Status of V1 limitations** (tracked in `.plans/sandbox-v2-plan.md`):
 
-If your workflow uses claw nodes that depend on MCP or mid-loop
-ask_user, switch them to `claude_code` (which routes natively
-through the sandbox) or run without `--sandbox` until V2.
+- ✅ **MCP-routed tools** are now visible to claw nodes inside the
+  sandbox (V2-2). The launcher passes ToolDef metadata over the
+  wire as [delegate.IOToolDef]; the runner builds proxy ToolDefs
+  whose Execute closures emit `tool_call` envelopes; the launcher's
+  multiplexer dispatches each call back to the original closure
+  (which may close over the MCP manager, the engine's tool
+  registry, or any custom dispatcher).
+- ✅ **Mid-tool-loop ask_user** resume now works inside the sandbox
+  (V2-3). The launcher-side ask_user ToolDef returns
+  [*delegate.ErrAskUser] as it always has; the multiplexer encodes
+  the typed payload into a [delegate.AskUserToolFail] field on the
+  tool_result envelope; the runner-side proxy rebuilds a typed
+  *ErrAskUser so the LLM loop's existing pause/resume path triggers
+  identically inside and outside the sandbox.
+- ✅ **Compaction-retry across the IPC** now works (V2-4). The
+  runner ships a [model.SessionCaptureSink] that emits
+  `session_capture` envelopes after every save into its local
+  nodeSessionStore; the launcher's [delegate.MultiplexerHandler.OnSessionCapture]
+  mirrors the snapshots into the host's nodeSessionStore so
+  CompactAndRetry sees the latest history. On the retry spawn, the
+  launcher seeds a `session_replay` envelope before the task
+  envelope, the runner stashes the snapshot, then loads it into its
+  local store once the task arrives so applySessionMessages
+  prepends the replayed prior messages to the LLM's first call.
 
 ## Drivers
 
@@ -221,7 +232,7 @@ through the sandbox) or run without `--sandbox` until V2.
 | ------------ | ------------------------------------------ | -------- |
 | `docker`     | host has `docker` on PATH                  | Phase 1 ✅ |
 | `podman`     | host has `podman` on PATH (no `docker`)    | Phase 1 ✅ (shares the docker code path) |
-| `kubernetes` | running in-cluster (`ITERION_MODE=cloud`)  | Phase 5 ⏳ |
+| `kubernetes` | running in-cluster (`ITERION_MODE=cloud`)  | Phase 5 V1 ✅ + V2-5 NetworkPolicy |
 | `noop`       | always available; emits `sandbox_skipped` event when an active mode is requested but no real driver is usable | ✅ |
 
 `iterion sandbox doctor` reports which driver is selected on the
@@ -283,14 +294,103 @@ V1 limitations (deferred to V2):
   do **not** enforce; the resource still applies cleanly but is a
   no-op. The CONNECT proxy continues to enforce hostname allowlist
   at the application layer regardless of CNI.
-- **`sandbox.mounts`** is rejected in cloud mode — extra bind
-  mounts need PVC plumbing which V2-7 will wire.
-- **`sandbox.build`** (Dockerfile-at-run-start) is rejected — V2-6
-  will use BuildKit in-cluster.
+- **`sandbox.build`** (Dockerfile-at-run-start) is **rejected in
+  cloud mode** — see "BuildKit (local docker only)" below for the
+  rationale and the cloud-side workaround.
+- ✅ **`sandbox.mounts`** now honours PVC / ConfigMap / Secret
+  entries (V2-7). Mount string format mirrors the docker driver
+  with k8s-native types:
+  ```
+  mounts:
+    - "type=pvc,source=cargo-cache,target=/cargo"
+    - "type=configmap,source=app-cfg,target=/etc/app.json,key=app.json,readonly"
+    - "type=secret,source=db-creds,target=/secrets"
+  ```
+  Bind mounts are explicitly rejected — pods have no host
+  filesystem; the error message points authors at the PVC
+  alternative. PVCs must exist in the namespace before the run pod
+  is admitted; iterion does not provision them. Secrets always
+  mount with `defaultMode=0400`.
 - **Image-pull secrets** for private registries beyond the
   runner's own image are not propagated; declare them on the
   pod's namespace ServiceAccount as `imagePullSecrets` and they
   will apply to sibling pods automatically.
+
+### BuildKit (local docker only) — V2-6
+
+`sandbox.build:` is wired only on the docker driver. The driver
+invokes `docker buildx build --load` against the host's Docker
+daemon — BuildKit is already part of the daemon, so no separate
+service is deployed; the resulting image lands in the local Docker
+image store and the sibling container of the run consumes it via
+`docker run` like any pre-built ref.
+
+```iter
+sandbox:
+  build:
+    dockerfile: "examples/sandbox_build.dockerfile"
+    context: "examples"
+    args:
+      VERSION: "1.2.3"   # forwarded as --build-arg
+  user: "1000:1000"
+```
+
+Runtime flow:
+
+1. Engine calls `docker.Driver.Prepare(spec)` — only validates.
+2. Engine sees `spec.Build != nil` and the driver implements
+   `sandbox.Builder`, emits `sandbox_build_started`, and calls
+   `Driver.Build(prepared, info)`.
+3. `docker.Build()` shells out to `docker buildx build -f
+   <ws/dockerfile> -t iterion-sandbox-build:<run-id> --load
+   [--build-arg K=V ...] <ws/context>`.
+4. On success, `sandbox_build_finished` fires (with `target` and
+   `duration_ms`); `prepared.Spec.Image` is mutated to the
+   freshly-built tag and `prepared.Spec.Build` is cleared.
+5. `Driver.Start()` proceeds normally, pulling the tag from the
+   local Docker image store.
+
+Failure modes (definitive `failed`, no checkpoint):
+
+- `RunInfo.WorkspacePath` empty — engine bug; should not happen.
+- `docker buildx build` exits non-zero → the last 4 KB of stderr
+  (typically the `ERROR: failed to solve` footer) is surfaced into
+  the `sandbox_build_failed` event payload and the wrapping run
+  error.
+
+#### Why cloud doesn't have this
+
+The kubernetes driver intentionally rejects `sandbox.build:`. Cloud
+deployments already use sibling pods (V1) or the runner pod itself
+as their isolation unit; building images at run-start in cloud
+would require a buildkitd Deployment, an in-cluster registry, RBAC,
+NetworkPolicy, rootless seccomp/AppArmor relaxation, etc. — significant
+operational complexity for a use case that production cloud users
+already cover via CI:
+
+- Build the workflow's image in CI (GitHub Actions, GitLab CI…),
+  push to a registry, pin by digest.
+- Reference the digest from the workflow:
+  ```iter
+  sandbox:
+    image: "ghcr.io/myorg/myimage@sha256:<digest>"
+  ```
+
+This pattern is more reproducible (the digest is signed and immutable),
+faster (no per-run build), and uses existing operational infrastructure
+(registries, CI cache, signing). `sandbox.build:` is therefore a
+local-development convenience for iterating on the Dockerfile alongside
+the workflow; cloud is the production path with pre-built artifacts.
+
+Out-of-scope for V2-6 (tracked for V2-7+):
+
+- **Tag-by-content-hash + cleanup** — the `iterion-sandbox-build:*`
+  repo accumulates one tag per run on the host. V1 leaves cleanup
+  to `docker image prune` against that repo; V2 may swap to
+  digest-based reuse so identical Dockerfiles share an image.
+- **podman support** — the docker driver also handles podman, but
+  `podman build` lacks the `--load` semantics buildx provides; we'd
+  need a small shim to mirror the local-image-store contract.
 
 The kubernetes runner pod must inject the downward API env var
 `ITERION_POD_IP` (sourced from `status.podIP`) so the engine knows

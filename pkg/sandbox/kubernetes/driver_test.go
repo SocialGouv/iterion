@@ -27,10 +27,10 @@ func TestCapabilitiesAdvertisedFeatures(t *testing.T) {
 	}
 	// Still deferred.
 	if caps.SupportsBuild {
-		t.Error("Phase 5 V1 must NOT advertise SupportsBuild (BuildKit lands in V2-6)")
+		t.Error("kubernetes driver must NOT advertise SupportsBuild — sandbox.build is a local-only V2-6 feature; cloud workflows reference pre-built images")
 	}
-	if caps.SupportsMounts {
-		t.Error("Phase 5 V1 must NOT advertise SupportsMounts (PVCs land in V2-7)")
+	if !caps.SupportsMounts {
+		t.Error("V2-7 must advertise SupportsMounts (PVC/ConfigMap/Secret are wired)")
 	}
 }
 
@@ -39,21 +39,34 @@ func TestPrepareRejectsBuild(t *testing.T) {
 	_, err := d.Prepare(context.Background(), sandbox.Spec{
 		Mode:  sandbox.ModeInline,
 		Build: &sandbox.Build{Dockerfile: "Dockerfile"},
+		User:  "1000:1000",
 	})
 	if err == nil {
-		t.Fatal("expected rejection of sandbox.Build")
+		t.Fatal("kubernetes driver must reject sandbox.build (local-only feature)")
+	}
+	if !strings.Contains(err.Error(), "local-only") {
+		t.Errorf("rejection should explain local-only constraint, got: %v", err)
 	}
 }
 
-func TestPrepareRejectsMounts(t *testing.T) {
+func TestPrepareAcceptsMountsRejectionDeferredToManifest(t *testing.T) {
+	// V2-7: Prepare no longer rejects sandbox.Mounts up-front. The
+	// translation (and any per-entry validation) happens inside
+	// BuildPodManifest so the operator sees the offending mount string
+	// verbatim in the error. Verify Prepare lets PVC mounts through
+	// AND that bind mounts only fail at manifest render time.
 	d := &Driver{namespace: "test"}
-	_, err := d.Prepare(context.Background(), sandbox.Spec{
+	prepared, err := d.Prepare(context.Background(), sandbox.Spec{
 		Mode:   sandbox.ModeInline,
 		Image:  "alpine:3",
-		Mounts: []string{"type=bind,source=/a,target=/b"},
+		User:   "1000:1000",
+		Mounts: []string{"type=pvc,source=cargo-cache,target=/cargo"},
 	})
-	if err == nil {
-		t.Fatal("expected rejection of sandbox.Mounts (V1 deferred)")
+	if err != nil {
+		t.Fatalf("Prepare must accept type=pvc mounts (V2-7): %v", err)
+	}
+	if prepared == nil {
+		t.Fatal("expected non-nil PreparedSpec")
 	}
 }
 

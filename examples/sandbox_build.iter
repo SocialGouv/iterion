@@ -1,0 +1,37 @@
+## Fixture : sandbox_build
+## Purpose : End-to-end exercise of `sandbox.build:` via the docker
+## driver's BuildKit path (V2-6). The driver invokes `docker buildx
+## build` against the local Docker daemon's built-in BuildKit; the
+## image lands in the local Docker image cache (no registry); the
+## sibling container of the run pulls it from the cache and executes
+## a single tool node that reads a marker file embedded in the image
+## at build time. Validates the full Prepare → Build → Start lifecycle
+## without any LLM dependency.
+##
+## V2-6 scope: this is local-only. Cloud workflows must reference a
+## pre-built image via sandbox.image: (build via CI, pin by digest).
+
+vars:
+  marker_path: string = "/etc/iterion-build-marker"
+
+schema marker_output:
+  output: string
+
+tool show_marker:
+  command: "cat {{vars.marker_path}}"
+  output: marker_output
+
+workflow sandbox_build:
+  entry: show_marker
+
+  sandbox:
+    build:
+      dockerfile: "examples/sandbox_build.dockerfile"
+      context: "examples"
+    user: "1000:1000"
+    workspace_folder: "/workspace"
+
+  budget:
+    max_duration: "10m"
+
+  show_marker -> done

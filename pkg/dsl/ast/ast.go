@@ -401,7 +401,8 @@ type CompactionBlock struct {
 // form leaves them empty.
 type SandboxBlock struct {
 	Mode            string               // "auto" | "none" | "inline" | "" (inherit when on a node)
-	Image           string               // when Mode=inline
+	Image           string               // when Mode=inline (mutually exclusive with Build)
+	Build           *SandboxBuildBlock   // when Mode=inline (V2-6, mutually exclusive with Image)
 	User            string               // remoteUser
 	WorkspaceFolder string               // absolute path inside the container
 	PostCreate      string               // shell snippet
@@ -409,6 +410,16 @@ type SandboxBlock struct {
 	Mounts          []string             // devcontainer mount syntax
 	Network         *SandboxNetworkBlock // egress filtering
 	Span            Span
+}
+
+// SandboxBuildBlock is the AST representation of a `build:` sub-block
+// under `sandbox:`. The fields mirror pkg/sandbox.Build 1:1 — the IR
+// compiler converts to the runtime shape via [ir.SandboxBuild].
+type SandboxBuildBlock struct {
+	Dockerfile string            // relative path; defaults to "Dockerfile"
+	Context    string            // relative path; defaults to dir of Dockerfile
+	Args       map[string]string // build-arg overrides (--opt build-arg:K=V)
+	Span       Span
 }
 
 // SandboxNetworkBlock is the AST representation of a `network:`

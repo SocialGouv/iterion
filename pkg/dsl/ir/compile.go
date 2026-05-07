@@ -242,14 +242,32 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 			Inherit: blk.Network.Inherit,
 		}
 	}
+	if blk.Build != nil {
+		spec.Build = &SandboxBuild{
+			Dockerfile: blk.Build.Dockerfile,
+			Context:    blk.Build.Context,
+		}
+		if len(blk.Build.Args) > 0 {
+			spec.Build.Args = make(map[string]string, len(blk.Build.Args))
+			for k, v := range blk.Build.Args {
+				spec.Build.Args[k] = v
+			}
+		}
+	}
 
-	// Inline mode requires either an image or (V2) build to be set —
-	// otherwise the spec is incoherent and the runtime would error
-	// out at Driver.Prepare time. Surface it as a compile-time
+	// Inline mode requires either an image or a build (V2-6) to be
+	// set — otherwise the spec is incoherent and the runtime would
+	// error out at Driver.Prepare time. Surface it as a compile-time
 	// diagnostic so the user fixes the workflow source.
-	if spec.Mode == "inline" && spec.Image == "" {
+	if spec.Mode == "inline" && spec.Image == "" && spec.Build == nil {
 		c.errorfAt(DiagInvalidSandboxMode, name, "",
-			"%s %q has sandbox mode=inline but no image: declare an image or use mode=auto with a .devcontainer/devcontainer.json",
+			"%s %q has sandbox mode=inline but no image: declare an image or build, or use mode=auto with a .devcontainer/devcontainer.json",
+			scope, name)
+		return nil
+	}
+	if spec.Image != "" && spec.Build != nil {
+		c.errorfAt(DiagInvalidSandboxMode, name, "",
+			"%s %q has both sandbox.image and sandbox.build set; they are mutually exclusive (use image: for a pre-built ref or build: for a Dockerfile)",
 			scope, name)
 		return nil
 	}

@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -179,6 +180,44 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 			_ = proxy.Shutdown(ctx)
 		}
 		return nil, fmt.Errorf("runtime: sandbox: prepare: %w", err)
+	}
+
+	// V2-6: when the spec asks for a Dockerfile build and the driver
+	// implements the optional [sandbox.Builder] interface, materialize
+	// the image now (between Prepare and Start) and substitute the
+	// freshly-built ref into the prepared spec. Drivers that don't
+	// implement Builder must reject Spec.Build in their Prepare so the
+	// engine surfaces a clear error rather than silently ignoring.
+	if spec.Build != nil {
+		if b, ok := driver.(sandbox.Builder); ok {
+			buildStart := time.Now()
+			_ = emitEvent(store.EventSandboxBuildStarted, map[string]interface{}{
+				"driver":     driver.Name(),
+				"dockerfile": spec.Build.Dockerfile,
+				"context":    spec.Build.Context,
+			})
+			built, buildErr := b.Build(ctx, prepared, info)
+			if buildErr != nil {
+				_ = emitEvent(store.EventSandboxBuildFailed, map[string]interface{}{
+					"driver": driver.Name(),
+					"error":  buildErr.Error(),
+				})
+				if proxy != nil {
+					_ = proxy.Shutdown(ctx)
+				}
+				return nil, fmt.Errorf("runtime: sandbox: build: %w", buildErr)
+			}
+			prepared = built
+			builtImage := ""
+			if sp, ok := prepared.(interface{ Spec() sandbox.Spec }); ok {
+				builtImage = sp.Spec().Image
+			}
+			_ = emitEvent(store.EventSandboxBuildFinished, map[string]interface{}{
+				"driver":      driver.Name(),
+				"target":      builtImage,
+				"duration_ms": time.Since(buildStart).Milliseconds(),
+			})
+		}
 	}
 
 	run, err := driver.Start(ctx, prepared, info)

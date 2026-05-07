@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,23 +17,22 @@ import (
 // clawRunnerCmd is the hidden sub-command that runs the claw backend
 // inside an iterion sandbox container.
 //
-// The command reads exactly one [delegate.IOTask] line from stdin,
-// runs it through a minimally-configured ClawBackend (no MCP, no
-// ask_user routing — see the V1 limitations in docs/sandbox.md), and
-// writes one [delegate.IOResult] line to stdout. Any execution error
-// is encoded into the IOResult.Error field AND surfaced via a
-// non-zero exit code, so the launcher can detect protocol-level
+// Wire format (V2-1+): bidirectional NDJSON envelopes over stdin /
+// stdout (see [delegate.Envelope]). The launcher seeds the runner
+// with one [delegate.EnvelopeTask] envelope; the runner emits any
+// number of intermediate envelopes (tool_call / ask_user /
+// session_capture / event) and finishes with a terminal
+// [delegate.EnvelopeResult]. Errors during execution are encoded into
+// the result envelope's [delegate.IOResult].Error field AND surfaced
+// via a non-zero exit code so the launcher can detect protocol-level
 // failures distinctly from typed-result failures.
 //
-// The "__" prefix marks this as an internal subcommand — hidden from
-// `iterion --help`, not user-facing. The same convention is used by
-// __mcp-ask-user.
-//
-// Phase 4 V1 scope: standard claw tool set (Bash, file edits)
-// inside the container; no MCP servers; no mid-tool-loop ask_user
-// resume. These limitations are documented in docs/sandbox.md and
-// fall out of the "ToolDefs aren't serializable" constraint
-// described on [delegate.IOTask].
+// V2-2: tools execute on the LAUNCHER side via the IPC. The runner
+// builds proxy [delegate.ToolDef] entries whose Execute closures
+// emit tool_call envelopes; the launcher's multiplexer dispatches
+// to the original ToolDef (bound to the engine's tool registry, MCP
+// manager, etc.) and returns the result. This unblocks the MCP-tools-
+// in-sandbox path V1 couldn't support.
 var clawRunnerCmd = &cobra.Command{
 	Use:    "__claw-runner",
 	Short:  "Internal: run the claw backend inside an iterion sandbox container",
@@ -47,28 +47,80 @@ func init() {
 	rootCmd.AddCommand(clawRunnerCmd)
 }
 
+// sandboxRunnerSessionID is the runID half of the (runID, nodeID) key
+// the in-runner session store uses. Fixed because each runner process
+// has exactly one store and no real runID travels over the IPC wire
+// (it's a launcher-side concept). The value is opaque to the host
+// store — the launcher's OnSessionCapture mirrors snapshots into the
+// host store under the launcher's own runID.
+const sandboxRunnerSessionID = "sandbox-runner"
+
 // runClawRunner is the testable entry point — separated from the
 // Cobra glue so tests can pipe synthetic stdin/stdout pairs without
 // invoking the binary.
 func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer) error {
-	// Read exactly one IOTask from stdin. The launcher writes a
-	// single line of JSON; we don't want to keep the runner alive
-	// for a multi-task session because each iterion node spawn is
-	// already isolated.
-	var ioTask delegate.IOTask
-	dec := json.NewDecoder(stdin)
-	if err := dec.Decode(&ioTask); err != nil {
-		writeRunnerError(stdout, fmt.Errorf("decode IOTask: %w", err))
-		return err
+	dispatcher := newProxyDispatcher(stdin, stdout)
+
+	// Pre-result phase: read envelopes synchronously until we have a
+	// task. session_replay envelopes (V2-4) seed the in-runner session
+	// store before the LLM loop starts. Anything else before the task
+	// envelope is a protocol error.
+	var (
+		ioTask          delegate.IOTask
+		replaySnapshots [][]byte
+	)
+	for {
+		env, err := dispatcher.readNextEnvelope()
+		if err != nil {
+			return emitFatal(dispatcher, stderr, fmt.Errorf("read pre-task envelope: %w", err))
+		}
+		if env.Type == delegate.EnvelopeTask {
+			if uerr := unmarshalTaskEnvelope(env, &ioTask); uerr != nil {
+				return emitFatal(dispatcher, stderr, uerr)
+			}
+			break
+		}
+		if env.Type == delegate.EnvelopeSessionReplay {
+			// V2-4: stash the snapshot; we'll load it into the local
+			// store once the task envelope arrives (NodeID is the key
+			// half of the store entry).
+			replaySnapshots = append(replaySnapshots, append([]byte(nil), env.Data...))
+			continue
+		}
+		return emitFatal(dispatcher, stderr, fmt.Errorf("unexpected envelope %q before task", env.Type))
 	}
+
+	// start() must run AFTER the synchronous bootstrap loop above:
+	// EnvelopeReader is not goroutine-safe, so the boot loop must
+	// drain the pre-task envelopes (task + optional session_replay)
+	// before handing the reader to the background reader goroutine.
+	dispatcher.start()
 
 	task := delegate.FromIOTask(ioTask)
 	// Sandbox is intentionally nil — we ARE the sandbox now.
 	task.Sandbox = nil
+	// V2-2: hydrate task.ToolDefs from the wire-form IOToolDef list,
+	// wrapping each in a proxy that forwards execution to the launcher.
+	task.ToolDefs = makeProxyToolDefs(ioTask.ToolDefs, dispatcher)
+
+	// V2-4: build a local session store, seed it from any
+	// session_replay snapshots the launcher sent, and wire a sink that
+	// mirrors every save back across the IPC. The runner-local store
+	// is required so applySessionMessages prepends the replayed prior
+	// messages to the LLM's first call (preserves compaction-retry
+	// semantics across the sandbox boundary).
+	sessionStore := model.NewNodeSessionStore()
+	for _, snap := range replaySnapshots {
+		if err := sessionStore.SaveSnapshot(sandboxRunnerSessionID, ioTask.NodeID, snap); err != nil {
+			fmt.Fprintf(stderr, "iterion-claw-runner: warn: decode session_replay: %v\n", err)
+		}
+	}
+	captureSink := &dispatcherCaptureSink{dispatcher: dispatcher}
+	ctx = model.WithSandboxRunnerSession(ctx, sandboxRunnerSessionID, sessionStore, captureSink)
 
 	// Build a minimal ClawBackend. The registry resolves the API
 	// client from the standard ITERION_*_KEY env vars, which the
-	// docker driver inherits from the host (subject to the env
+	// sandbox driver inherits from the host (subject to the env
 	// scrubbing the engine applies before container start).
 	registry := model.NewRegistry()
 	backend := model.NewClawBackend(registry, model.EventHooks{}, model.RetryPolicy{})
@@ -80,29 +132,51 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 		result.Duration = duration
 	}
 
+	ioRes := delegate.ToIOResult(result)
 	if err != nil {
-		ior := delegate.ToIOResult(result)
-		ior.Error = err.Error()
-		writeRunnerOutput(stdout, ior)
+		ioRes.Error = err.Error()
+	}
+	resultEnv, marshalErr := delegate.NewResultEnvelope(ioRes)
+	if marshalErr != nil {
+		return emitFatal(dispatcher, stderr, marshalErr)
+	}
+	if writeErr := dispatcher.write(resultEnv); writeErr != nil {
+		// Already losing the channel — best-effort stderr report.
+		fmt.Fprintf(stderr, "iterion-claw-runner: write result envelope: %v\n", writeErr)
+		return writeErr
+	}
+	if err != nil {
 		fmt.Fprintf(stderr, "iterion-claw-runner: %v\n", err)
 		return err
 	}
-
-	writeRunnerOutput(stdout, delegate.ToIOResult(result))
 	return nil
 }
 
-// writeRunnerOutput emits a single-line JSON-encoded IOResult on
-// stdout. Failures here are silent (we already lost the channel) but
-// we Flush via os.Stdout's buffered Encoder anyway.
-func writeRunnerOutput(w io.Writer, r delegate.IOResult) {
-	enc := json.NewEncoder(w)
-	_ = enc.Encode(r)
+// unmarshalTaskEnvelope decodes a [delegate.EnvelopeTask] envelope
+// into ioTask. Wraps the JSON error with a clear protocol-level
+// message so the launcher's stderr surfaces a debuggable failure.
+func unmarshalTaskEnvelope(env delegate.Envelope, ioTask *delegate.IOTask) error {
+	if len(env.Data) == 0 {
+		return errors.New("task envelope has empty Data field")
+	}
+	if err := json.Unmarshal(env.Data, ioTask); err != nil {
+		return fmt.Errorf("decode task envelope: %w", err)
+	}
+	return nil
 }
 
-// writeRunnerError is a convenience for fatal-pre-execute failures
-// (decode error, registry init failure). It emits a minimal
-// IOResult carrying just the Error field.
-func writeRunnerError(w io.Writer, err error) {
-	writeRunnerOutput(w, delegate.IOResult{Error: err.Error()})
+// emitFatal writes a terminal result envelope carrying the given
+// error and returns it. Used for protocol-level failures (decode
+// errors, missing task envelope) where the runner can't continue.
+func emitFatal(dispatcher *proxyDispatcher, stderr io.Writer, err error) error {
+	resultEnv, marshalErr := delegate.NewResultEnvelope(delegate.IOResult{Error: err.Error()})
+	if marshalErr != nil {
+		fmt.Fprintf(stderr, "iterion-claw-runner: marshal fatal: %v\n", marshalErr)
+		return err
+	}
+	if writeErr := dispatcher.write(resultEnv); writeErr != nil {
+		fmt.Fprintf(stderr, "iterion-claw-runner: write fatal: %v\n", writeErr)
+	}
+	fmt.Fprintf(stderr, "iterion-claw-runner: %v\n", err)
+	return err
 }

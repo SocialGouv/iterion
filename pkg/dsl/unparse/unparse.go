@@ -495,6 +495,9 @@ func writeSandboxBlock(b *strings.Builder, sb *ast.SandboxBlock, indent string) 
 		}
 		b.WriteString("]\n")
 	}
+	if sb.Build != nil {
+		writeSandboxBuildBlock(b, sb.Build, inner)
+	}
 	if sb.Network != nil {
 		writeSandboxNetworkBlock(b, sb.Network, inner)
 	}
@@ -513,10 +516,27 @@ func sandboxBlockIsShort(sb *ast.SandboxBlock) bool {
 	if len(sb.Env) > 0 || len(sb.Mounts) > 0 {
 		return false
 	}
-	if sb.Network != nil {
+	if sb.Network != nil || sb.Build != nil {
 		return false
 	}
 	return true
+}
+
+func writeSandboxBuildBlock(b *strings.Builder, bb *ast.SandboxBuildBlock, indent string) {
+	fmt.Fprintf(b, "%sbuild:\n", indent)
+	inner := indent + "  "
+	if bb.Dockerfile != "" {
+		fmt.Fprintf(b, "%sdockerfile: %q\n", inner, bb.Dockerfile)
+	}
+	if bb.Context != "" {
+		fmt.Fprintf(b, "%scontext: %q\n", inner, bb.Context)
+	}
+	if len(bb.Args) > 0 {
+		fmt.Fprintf(b, "%sargs:\n", inner)
+		for _, k := range sortedKeys(bb.Args) {
+			fmt.Fprintf(b, "%s  %s: %q\n", inner, k, bb.Args[k])
+		}
+	}
 }
 
 func writeSandboxNetworkBlock(b *strings.Builder, n *ast.SandboxNetworkBlock, indent string) {

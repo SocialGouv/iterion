@@ -8,27 +8,30 @@ import (
 // IOTask is the on-the-wire form of a [Task] used by the claw
 // runner sub-binary IPC.
 //
-// It mirrors [Task] with two intentional omissions:
+// It mirrors [Task] with one intentional omission:
 //
 //   - Sandbox: the [sandbox.Run] handle is not portable across
 //     processes (it wraps a live container). The runner is, by
 //     definition, *already inside* the sandbox so it doesn't need it.
-//   - ToolDefs: the [ToolDef.Execute] field is a Go closure with
-//     captured state (executor, MCP manager, ask_user channel) that
-//     cannot be serialized. The runner registers iterion's default
-//     tool set on its own — Phase 4 V1 supports the standard claw
-//     tools (Bash, FileEdit, …); MCP-routed and ask_user tools land
-//     in V2.
 //
-// The wire format is JSON. The launcher writes one IOTask line on
-// stdin; the runner writes one [IORunnerOutput] line per significant
-// event (tool call, intermediate message) followed by the final
-// [IOResult] line. NDJSON keeps stream parsing simple on both sides.
+// V2-1+ wire format: NDJSON envelopes (see [Envelope]). The launcher
+// emits one [EnvelopeTask] wrapping an IOTask; the runner emits any
+// number of intermediate envelopes (tool_call / ask_user /
+// session_capture / event) and finishes with one [EnvelopeResult]
+// wrapping an [IOResult].
+//
+// V2-2: the [Task.ToolDefs] slice is now carried over the wire as
+// [IOToolDef] entries — the [ToolDef.Execute] closure is dropped (it
+// captures launcher-side state like the MCP manager) and the runner
+// builds proxy ToolDefs whose Execute emits [EnvelopeToolCall] and
+// blocks on the matching [EnvelopeToolResult]. This unblocks the
+// MCP-tools-in-sandbox path that V1 couldn't support.
 type IOTask struct {
 	NodeID                 string          `json:"node_id"`
 	SystemPrompt           string          `json:"system_prompt,omitempty"`
 	UserPrompt             string          `json:"user_prompt,omitempty"`
 	AllowedTools           []string        `json:"allowed_tools,omitempty"`
+	ToolDefs               []IOToolDef     `json:"tool_defs,omitempty"`
 	OutputSchema           json.RawMessage `json:"output_schema,omitempty"`
 	Model                  string          `json:"model,omitempty"`
 	HasTools               bool            `json:"has_tools,omitempty"`
@@ -45,6 +48,16 @@ type IOTask struct {
 	ResumeConversation     json.RawMessage `json:"resume_conversation,omitempty"`
 	ResumePendingToolUseID string          `json:"resume_pending_tool_use_id,omitempty"`
 	ResumeAnswer           string          `json:"resume_answer,omitempty"`
+}
+
+// IOToolDef is the wire form of a [ToolDef]. The Execute closure is
+// dropped — Go closures don't survive process boundaries — and the
+// runner builds proxies whose Execute round-trips through the
+// envelope channel back to the launcher's original ToolDef. V2-2.
+type IOToolDef struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	InputSchema json.RawMessage `json:"input_schema,omitempty"`
 }
 
 // IOResult is the on-the-wire form of a [Result] returned by the
@@ -68,14 +81,28 @@ type IOResult struct {
 	Error               string                 `json:"error,omitempty"`
 }
 
-// ToIOTask converts a [Task] to its wire form. The Sandbox handle
-// and ToolDefs slice are dropped per the design above.
+// ToIOTask converts a [Task] to its wire form. The Sandbox handle is
+// dropped (the runner is inside the sandbox already); the
+// [ToolDef.Execute] closures are dropped and replaced by metadata-only
+// [IOToolDef] entries (V2-2 — the runner builds proxy ToolDefs).
 func ToIOTask(t Task) IOTask {
+	var ioToolDefs []IOToolDef
+	if len(t.ToolDefs) > 0 {
+		ioToolDefs = make([]IOToolDef, len(t.ToolDefs))
+		for i, td := range t.ToolDefs {
+			ioToolDefs[i] = IOToolDef{
+				Name:        td.Name,
+				Description: td.Description,
+				InputSchema: td.InputSchema,
+			}
+		}
+	}
 	return IOTask{
 		NodeID:                 t.NodeID,
 		SystemPrompt:           t.SystemPrompt,
 		UserPrompt:             t.UserPrompt,
 		AllowedTools:           t.AllowedTools,
+		ToolDefs:               ioToolDefs,
 		OutputSchema:           t.OutputSchema,
 		Model:                  t.Model,
 		HasTools:               t.HasTools,

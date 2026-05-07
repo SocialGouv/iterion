@@ -175,6 +175,29 @@ type ProxyConfigurer interface {
 	ProxyConfig() (bindAddr, advertiseHost string, err error)
 }
 
+// Builder is an optional interface a [Driver] may implement to support
+// `sandbox.build:` (V2-6). The engine probes for it via type assertion
+// between [Driver.Prepare] and [Driver.Start]: when the spec carries a
+// non-nil [Spec.Build] and the driver is a Builder, the engine calls
+// [Builder.Build] to materialize the image and update the prepared
+// spec's image reference. Drivers that don't implement Builder must
+// reject `Spec.Build != nil` in their Prepare so the engine surfaces a
+// clear error rather than silently ignoring the build.
+//
+// The kubernetes driver implements this by shelling out to `buildctl`
+// against an in-cluster buildkitd Deployment (helm value
+// `buildkit.enabled=true`); the runner pod streams the build context
+// over gRPC. See pkg/sandbox/kubernetes/build.go.
+type Builder interface {
+	// Build produces an image for the prepared spec and returns a new
+	// PreparedSpec whose image reference is the freshly-built image.
+	// The returned PreparedSpec is consumed by [Driver.Start] in place
+	// of the original. Implementations should keep [Driver.Prepare]
+	// side-effect-free and concentrate the build work here, where
+	// per-run metadata (RunID, WorkspacePath) is available via info.
+	Build(ctx context.Context, prepared PreparedSpec, info RunInfo) (PreparedSpec, error)
+}
+
 // RunInfo carries per-run metadata that drivers may need to label
 // containers/pods, scope mounts, or compute run-specific paths.
 type RunInfo struct {

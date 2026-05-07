@@ -74,6 +74,26 @@ const (
 	//   - reason: rule that fired
 	//   - run_id: the run scope
 	EventNetworkBlocked EventType = "network_blocked"
+	// EventSandboxBuildStarted fires when the engine calls
+	// [sandbox.Builder.Build] between Prepare and Start (V2-6, docker
+	// driver via `docker buildx build --load`). Data:
+	//   - driver: the driver name (e.g. "docker")
+	//   - dockerfile: spec.Build.Dockerfile (relative path)
+	//   - context: spec.Build.Context (relative path)
+	EventSandboxBuildStarted EventType = "sandbox_build_started"
+	// EventSandboxBuildFinished fires when the build completed
+	// successfully and the freshly-tagged ref is plumbed into the
+	// sibling container's spec.Image. Data:
+	//   - driver: the driver name
+	//   - target: locally-tagged image ref
+	//   - duration_ms: end-to-end build time
+	EventSandboxBuildFinished EventType = "sandbox_build_finished"
+	// EventSandboxBuildFailed fires when the build tool (e.g. docker
+	// buildx) exits non-zero. Data:
+	//   - driver: the driver name
+	//   - error: short error summary including the last ~4 KB of
+	//     stderr (the "ERROR: failed to solve" footer)
+	EventSandboxBuildFailed EventType = "sandbox_build_failed"
 )
 
 // Event is a single timestamped fact persisted in events.jsonl.
