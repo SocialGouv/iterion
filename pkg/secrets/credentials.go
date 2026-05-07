@@ -1,6 +1,9 @@
 package secrets
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // Credentials carries the resolved per-run BYOK plaintext keyed by
 // provider. Stamped into context by the runner right before the
@@ -37,6 +40,39 @@ func (c Credentials) OAuthDir(kind string) string {
 		return ""
 	}
 	return c.OAuthCredentialFiles[kind]
+}
+
+// ErrOAuthForfaitInThirdParty is the sentinel error guarding the
+// claw backend (and any other in-process LLM SDK consumer) from
+// using a Claude Pro/Max OAuth bearer token. Reusing the forfait
+// outside the official Claude Code CLI surface violates Anthropic's
+// Consumer Terms — see memory feedback_no_anthropic_oauth_in_third_party.
+//
+// Callers should invoke GuardThirdPartyOAuth right before consuming
+// a credential for an in-process LLM call. The delegate backends
+// (claude_code, codex) which spawn the upstream CLI are exempt: the
+// CLI itself remains the authorised consumer in that path.
+var ErrOAuthForfaitInThirdParty = errors.New("secrets: refusing to use Claude Code OAuth-forfait via third-party SDK (CGU violation)")
+
+// GuardThirdPartyOAuth returns ErrOAuthForfaitInThirdParty when the
+// given ctx has an OAuth-forfait connection for kind but no
+// matching API key for provider — i.e. the only available
+// credential is the forfait, which is forbidden in this code path.
+//
+// Returns nil when the ctx has no credentials, when an API key IS
+// available, or when no OAuth credential of that kind is present.
+func GuardThirdPartyOAuth(ctx context.Context, provider Provider, kind OAuthKind) error {
+	creds, ok := CredentialsFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	if creds.APIKey(provider) != "" {
+		return nil
+	}
+	if creds.OAuthDir(string(kind)) == "" {
+		return nil
+	}
+	return ErrOAuthForfaitInThirdParty
 }
 
 type credentialsCtxKey struct{}

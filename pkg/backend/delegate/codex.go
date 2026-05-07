@@ -84,12 +84,21 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 
 	// Stream stderr for live observability and capture for diagnostics.
 	var stderrBuf strings.Builder
-	// Phase C: per-run BYOK injection. Codex CLI reads OPENAI_API_KEY
-	// (and falls back to ChatGPT OAuth) — for Phase C we plumb the
-	// API-key path; OAuth-forfait is Phase D.
+	// Phase C+D: per-run credential injection. Order of preference:
+	//   1. Tenant-scoped OPENAI_API_KEY (BYOK) — direct API billing.
+	//   2. User OAuth-forfait — auth.json materialised in tmp by the
+	//      runner; we point CODEX_HOME at it.
+	// At most one is set so the CLI's auth source is unambiguous.
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
-		if k := creds.APIKey(secrets.ProviderOpenAI); k != "" {
-			opts = append(opts, codexsdk.WithEnv(map[string]string{"OPENAI_API_KEY": k}))
+		envOverride := map[string]string{}
+		switch {
+		case creds.APIKey(secrets.ProviderOpenAI) != "":
+			envOverride["OPENAI_API_KEY"] = creds.APIKey(secrets.ProviderOpenAI)
+		case creds.OAuthDir(string(secrets.OAuthKindCodex)) != "":
+			envOverride["CODEX_HOME"] = creds.OAuthDir(string(secrets.OAuthKindCodex))
+		}
+		if len(envOverride) > 0 {
+			opts = append(opts, codexsdk.WithEnv(envOverride))
 		}
 	}
 

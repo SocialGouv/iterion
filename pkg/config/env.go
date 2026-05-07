@@ -208,6 +208,13 @@ func loadEnv(cfg *Config) error {
 		cfg.Auth.OIDC.Generic.Scopes = splitCSV(v)
 	}
 
+	if v, ok := lookup("ITERION_OAUTH_FORFAIT_ANTHROPIC_CLIENT_ID"); ok {
+		cfg.Auth.OAuthForfait.AnthropicClientID = v
+	}
+	if v, ok := lookup("ITERION_OAUTH_FORFAIT_CODEX_CLIENT_ID"); ok {
+		cfg.Auth.OAuthForfait.CodexClientID = v
+	}
+
 	return nil
 }
 

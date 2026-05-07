@@ -99,6 +99,21 @@ type AuthConfig struct {
 	CookieSecure bool `yaml:"cookie_secure"`
 
 	OIDC OIDCConfig `yaml:"oidc"`
+
+	// OAuthForfait carries the per-deployment OAuth client ids used
+	// to refresh user-provided Claude Code / Codex subscription
+	// tokens. Empty disables refresh of the corresponding kind.
+	OAuthForfait OAuthForfaitConfig `yaml:"oauth_forfait"`
+}
+
+// OAuthForfaitConfig carries OAuth client ids the server uses when
+// refreshing user-supplied subscription tokens. Per memory
+// `feedback_no_anthropic_oauth_in_third_party.md`, this code path is
+// for the official CLI surface only — the claw backend never reaches
+// here.
+type OAuthForfaitConfig struct {
+	AnthropicClientID string `yaml:"anthropic_client_id"`
+	CodexClientID     string `yaml:"codex_client_id"`
 }
 
 // OIDCConfig holds the three supported SSO providers. Each is opt-in

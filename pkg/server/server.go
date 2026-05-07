@@ -100,6 +100,20 @@ type Config struct {
 	// and run-scoped bundles in flight. Required when ApiKeys is set.
 	Sealer secrets.Sealer
 
+	// OAuthForfait is the per-user OAuth credential store (Phase D).
+	// When non-nil, the server registers /api/me/oauth/* endpoints
+	// and the cloud publisher injects sealed credentials.json /
+	// auth.json blobs into the run bundle for runs that don't have
+	// a BYOK API key for the relevant provider.
+	OAuthForfait secrets.OAuthStore
+
+	// AnthropicOAuthClientID is the OAuth client id used to refresh
+	// Claude Code subscription tokens. Empty disables refresh of
+	// the claude_code kind (the user must re-upload on expiry).
+	AnthropicOAuthClientID string
+	// CodexOAuthClientID is the equivalent for Codex.
+	CodexOAuthClientID string
+
 	// Store overrides the default filesystem store with a caller-
 	// supplied implementation (typically the cloud Mongo+S3 store).
 	// When non-nil, StoreDir + the .iterion auto-discovery are
@@ -183,6 +197,8 @@ type Server struct {
 	apiKeys      secrets.ApiKeyStore
 	runSecrets   secrets.RunSecretsStore
 	sealer       secrets.Sealer
+	oauthStore   secrets.OAuthStore
+	httpClient   *http.Client
 
 	// listener is captured at ListenAndServe time so callers (notably the
 	// desktop host, which passes Port=0 for an OS-assigned port) can read
@@ -232,6 +248,8 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		apiKeys:      cfg.ApiKeys,
 		runSecrets:   cfg.RunSecrets,
 		sealer:       cfg.Sealer,
+		oauthStore:   cfg.OAuthForfait,
+		httpClient:   &http.Client{Timeout: 15 * time.Second},
 	}
 	s.hub = NewHub(logger)
 	go s.hub.Run()
@@ -430,6 +448,12 @@ func (s *Server) routes() {
 	// + Sealer together.
 	if s.apiKeys != nil && s.sealer != nil && s.authSvc != nil {
 		s.registerBYOKRoutes()
+	}
+
+	// OAuth-forfait endpoints (Phase D). Same gating as BYOK plus
+	// the per-user OAuthForfait store.
+	if s.oauthStore != nil && s.sealer != nil && s.authSvc != nil {
+		s.registerOAuthForfaitRoutes()
 	}
 
 	// Serve static frontend files.

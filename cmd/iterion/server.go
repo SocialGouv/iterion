@@ -184,16 +184,21 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err := runSecretsStore.EnsureSchema(rootCtx); err != nil {
 		return fmt.Errorf("server: ensure run_secrets schema: %w", err)
 	}
+	oauthStore := secrets.NewMongoOAuthStore(st.DB())
+	if err := oauthStore.EnsureSchema(rootCtx); err != nil {
+		return fmt.Errorf("server: ensure oauth schema: %w", err)
+	}
 
 	pub, err := cloudpublisher.New(cloudpublisher.Config{
-		NATS:       natsConn,
-		Store:      st,
-		MongoColl:  st.RunsCollection(),
-		Logger:     logger,
-		Metrics:    mreg,
-		ApiKeys:    apiKeysStore,
-		RunSecrets: runSecretsStore,
-		Sealer:     sealer,
+		NATS:         natsConn,
+		Store:        st,
+		MongoColl:    st.RunsCollection(),
+		Logger:       logger,
+		Metrics:      mreg,
+		ApiKeys:      apiKeysStore,
+		RunSecrets:   runSecretsStore,
+		Sealer:       sealer,
+		OAuthForfait: oauthStore,
 	})
 	if err != nil {
 		return fmt.Errorf("server: build cloud publisher: %w", err)
@@ -268,27 +273,30 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	}
 
 	srv := server.New(server.Config{
-		Port:            serverOpts.port,
-		Bind:            serverOpts.bind,
-		WorkDir:         serverOpts.dir,
-		Store:           st,
-		LaunchPublisher: pub,
-		EventSource:     eventSrc,
-		Mode:            string(iterconfig.ModeCloud),
-		AuthService:     authSvc,
-		AuthSigner:      signer,
-		OIDCRegistry:    registry,
-		ApiKeys:         apiKeysStore,
-		RunSecrets:      runSecretsStore,
-		Sealer:          sealer,
-		AccessTTL:       cfg.Auth.AccessTTL,
-		RefreshTTL:      cfg.Auth.RefreshTTL,
-		PublicURL:       cfg.Auth.PublicURL,
-		SignupMode:      cfg.Auth.SignupMode,
-		CookieDomain:    cfg.Auth.CookieDomain,
-		CookieSecure:    cfg.Auth.CookieSecure,
-		DisableAuth:     disableAuth,
-		Metrics:         mreg,
+		Port:                   serverOpts.port,
+		Bind:                   serverOpts.bind,
+		WorkDir:                serverOpts.dir,
+		Store:                  st,
+		LaunchPublisher:        pub,
+		EventSource:            eventSrc,
+		Mode:                   string(iterconfig.ModeCloud),
+		AuthService:            authSvc,
+		AuthSigner:             signer,
+		OIDCRegistry:           registry,
+		ApiKeys:                apiKeysStore,
+		RunSecrets:             runSecretsStore,
+		Sealer:                 sealer,
+		OAuthForfait:           oauthStore,
+		AnthropicOAuthClientID: cfg.Auth.OAuthForfait.AnthropicClientID,
+		CodexOAuthClientID:     cfg.Auth.OAuthForfait.CodexClientID,
+		AccessTTL:              cfg.Auth.AccessTTL,
+		RefreshTTL:             cfg.Auth.RefreshTTL,
+		PublicURL:              cfg.Auth.PublicURL,
+		SignupMode:             cfg.Auth.SignupMode,
+		CookieDomain:           cfg.Auth.CookieDomain,
+		CookieSecure:           cfg.Auth.CookieSecure,
+		DisableAuth:            disableAuth,
+		Metrics:                mreg,
 		// /readyz pings each dependency under a 1s deadline so kubelet
 		// readiness probes flip to "not ready" the moment a backend
 		// drops, instead of returning 200 against a stub.

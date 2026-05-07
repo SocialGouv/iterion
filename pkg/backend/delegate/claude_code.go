@@ -118,9 +118,18 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 	// CLI's environment when ctx carries them. The plaintext never
 	// touches the runner process's own env — only the child sees it,
 	// and the runner cleans up after the run completes.
+	//
+	// Phase D: when no API key is present but an OAuth-forfait
+	// credentials.json was materialised, point the CLI at it via
+	// CLAUDE_CONFIG_DIR. The CLI prefers a credentials.json over
+	// any ANTHROPIC_API_KEY, so we deliberately set ONE of the two
+	// — never both — to make the auth source unambiguous.
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
-		if k := creds.APIKey(secrets.ProviderAnthropic); k != "" {
-			opts = append(opts, claudesdk.WithEnv("ANTHROPIC_API_KEY", k))
+		switch {
+		case creds.APIKey(secrets.ProviderAnthropic) != "":
+			opts = append(opts, claudesdk.WithEnv("ANTHROPIC_API_KEY", creds.APIKey(secrets.ProviderAnthropic)))
+		case creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "":
+			opts = append(opts, claudesdk.WithEnv("CLAUDE_CONFIG_DIR", creds.OAuthDir(string(secrets.OAuthKindClaudeCode))))
 		}
 	}
 

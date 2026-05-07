@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // ClawBackend implements delegate.Backend by calling GenerateTextDirect and
@@ -65,6 +66,19 @@ func NewClawBackend(registry *Registry, hk EventHooks, retry RetryPolicy, opts .
 func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate.Result, error) {
 	if task.Sandbox != nil {
 		return b.executeViaSandboxRunner(ctx, task)
+	}
+
+	// CGU guard: claw is an in-process Anthropic SDK consumer.
+	// Anthropic's Consumer Terms scope the Claude Pro/Max OAuth
+	// forfait to the official Claude Code CLI surface, so iterion
+	// MUST refuse to drive an Anthropic call from claw using a
+	// stored OAuth-forfait credential when no API key is available.
+	// The claude_code delegate backend (which spawns the official
+	// CLI) is exempt and lives in pkg/backend/delegate.
+	if providerName, _, perr := ParseModelSpec(task.Model); perr == nil && providerName == "anthropic" {
+		if err := secrets.GuardThirdPartyOAuth(ctx, secrets.ProviderAnthropic, secrets.OAuthKindClaudeCode); err != nil {
+			return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
+		}
 	}
 
 	// Resolve API client. Phase C: in cloud mode the runner stamps

@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -484,6 +485,12 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 // returns a cleanup func that wipes the bundle at the call site.
 // When no bundle is attached or the runner has no Sealer wired,
 // returns the original ctx unchanged.
+//
+// OAuth-forfait blobs are materialised in fresh temp directories
+// (CLAUDE_CONFIG_DIR / CODEX_HOME-shaped) and wired through
+// Credentials.OAuthCredentialFiles so the delegate backends point
+// the spawned CLI at them. The cleanup func tears the dirs down on
+// every exit path.
 func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (context.Context, func(), error) {
 	if msg.SecretsRef == "" {
 		return ctx, nil, nil
@@ -502,23 +509,67 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 	if err != nil {
 		return ctx, nil, fmt.Errorf("unseal run_secrets %s: %w", msg.SecretsRef, err)
 	}
+
 	creds := secrets.Credentials{
-		APIKeys: bundle.APIKeys,
+		APIKeys:              bundle.APIKeys,
+		OAuthCredentialFiles: map[string]string{},
 	}
+	tmpDirs := make([]string, 0, len(bundle.OAuthCredentials))
 	cleanup := func() {
-		// Best-effort delete: a missing record is fine (TTL already
-		// got it). The runner deletes on every exit so a redelivered
-		// message gets a fresh ref from the publisher.
 		ctxDel, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = r.cfg.RunSecrets.Delete(ctxDel, msg.SecretsRef)
-		// Wipe plaintext (best-effort; Go gives no secure-erase
-		// guarantee but this reduces window of exposure).
 		for k := range bundle.APIKeys {
 			bundle.APIKeys[k] = ""
 		}
+		for _, dir := range tmpDirs {
+			_ = os.RemoveAll(dir)
+		}
+	}
+	for kind, payload := range bundle.OAuthCredentials {
+		dir, fname, err := materializeOAuthCredentials(kind, payload)
+		if err != nil {
+			r.cfg.Logger.Warn("runner: oauth materialise %s for run %s: %v", kind, msg.RunID, err)
+			continue
+		}
+		tmpDirs = append(tmpDirs, dir)
+		creds.OAuthCredentialFiles[kind] = dir
+		r.cfg.Logger.Info("runner: oauth-forfait active run=%s tenant=%s kind=%s file=%s/%s", msg.RunID, msg.TenantID, kind, dir, fname)
 	}
 	return secrets.WithCredentials(ctx, creds), cleanup, nil
+}
+
+// materializeOAuthCredentials writes the sealed payload to a fresh
+// temp dir under the file name the corresponding CLI expects.
+//
+//   - claude_code → <dir>/.credentials.json (CLAUDE_CONFIG_DIR=<dir>)
+//   - codex       → <dir>/auth.json         (CODEX_HOME=<dir>)
+//
+// The directory is mode 0o700, the file 0o600 so other local users
+// (including a sandbox host's UID-shifted writer) cannot read.
+func materializeOAuthCredentials(kind string, payload []byte) (dir string, fname string, err error) {
+	switch secrets.OAuthKind(kind) {
+	case secrets.OAuthKindClaudeCode:
+		fname = ".credentials.json"
+	case secrets.OAuthKindCodex:
+		fname = "auth.json"
+	default:
+		return "", "", fmt.Errorf("unknown oauth kind %q", kind)
+	}
+	dir, err = os.MkdirTemp("", "iter-oauth-")
+	if err != nil {
+		return "", "", err
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		_ = os.RemoveAll(dir)
+		return "", "", err
+	}
+	full := filepath.Join(dir, fname)
+	if err := os.WriteFile(full, payload, 0o600); err != nil {
+		_ = os.RemoveAll(dir)
+		return "", "", err
+	}
+	return dir, fname, nil
 }
 
 // loadWorkflow decodes the AST embedded in the message and compiles
