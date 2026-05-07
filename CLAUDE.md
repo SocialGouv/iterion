@@ -139,7 +139,7 @@ Other top-level directories: `editor/` (React/Vite frontend), `examples/` (.iter
 
 ### DSL Quick Reference
 
-**Top-level blocks:** `vars:`, `prompt <name>:`, `schema <name>:`, node declarations (`agent`, `judge`, `router`, `join`, `human`, `tool`), `workflow <name>:`
+**Top-level blocks:** `vars:`, `attachments:`, `prompt <name>:`, `schema <name>:`, node declarations (`agent`, `judge`, `router`, `join`, `human`, `tool`), `workflow <name>:`
 
 **Edge syntax:**
 ```

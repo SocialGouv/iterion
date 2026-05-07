@@ -109,6 +109,11 @@ tasks:
     cmds:
       - go test -v -tags live -count=1 -run TestLive_Lite_ClawReadImage -timeout 5m ./e2e/...
 
+  test:live:vision-attachments:
+    desc: Run the attachments multimodal live e2e test (requires ANTHROPIC_API_KEY)
+    cmds:
+      - go test -v -tags live -count=1 -run TestLive_VisionAttachments -timeout 5m ./e2e/...
+
   fmt:
     desc: Format Go source files
     cmds:

@@ -1,0 +1,63 @@
+## Fixture : vision_attachments
+##
+## But : prouver le bloc `attachments:` end-to-end — l'editor (ou le
+## CLI via curl + /api/runs/uploads) attache une image au lancement,
+## le runtime materialise Run.Attachments, le moteur multimodal
+## (backend claw) injecte l'image en `api.ContentBlock` et l'agent
+## decrit ce qu'il voit. Aucun outil supplementaire n'est declare ;
+## c'est la voie multimodale native qui fait le travail.
+##
+## Lancement :
+##   1. curl -F file=@logo.png http://localhost:4891/api/runs/uploads
+##      → recupere "upload_id"
+##   2. curl -X POST http://localhost:4891/api/runs \
+##         -H "Content-Type: application/json" \
+##         -d '{"file_path":"examples/vision_attachments.iter",
+##              "attachments":{"logo":"<upload_id>"}}'
+
+attachments:
+  logo: image
+    description: "Logo a analyser"
+    accept_mime: ["image/png", "image/jpeg", "image/webp"]
+    required: true
+
+prompt vision_system:
+  You are a careful visual analyst. The user message contains an
+  image and a question. Look at the image and answer concisely,
+  filling the structured output schema.
+
+prompt vision_user:
+  Look at this logo: {{attachments.logo}}
+
+  In a single sentence, describe what you see (object, colours,
+  overall shape). The image MIME is {{attachments.logo.mime}}
+  and its byte size is {{attachments.logo.size}}.
+
+schema vision_in:
+  hint: string
+
+schema vision_out:
+  description: string
+  saw_image: bool
+  byte_size: int
+
+agent describer:
+  ## Pure claw multimodal: no tools. The image lands as an Anthropic
+  ## ContentBlock thanks to the backend's UserContent path.
+  model: "anthropic/claude-haiku-4-5-20251001"
+  input: vision_in
+  output: vision_out
+  system: vision_system
+  user: vision_user
+  session: fresh
+
+workflow vision_attachments:
+  entry: describer
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "5m"
+    max_cost_usd: 1
+    max_tokens: 50000
+
+  describer -> done
