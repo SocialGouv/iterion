@@ -115,9 +115,10 @@ type FilesystemRunStore struct {
 	root   string // base directory
 	logger *iterlog.Logger
 
-	mu      sync.Mutex
-	seq     map[string]int64 // run_id → next event sequence number
-	seqSeed map[string]bool  // run_id → seq has been seeded from disk
+	mu         sync.Mutex
+	seq        map[string]int64 // run_id → next event sequence number
+	seqSeed    map[string]bool  // run_id → seq has been seeded from disk
+	signingKey []byte           // HMAC key for presigned attachment URLs (lazy)
 }
 
 // StoreOption configures a FilesystemRunStore.

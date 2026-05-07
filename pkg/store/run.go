@@ -152,6 +152,13 @@ type Run struct {
 	// signals two runners raced and one must back off. Zero in local
 	// mode (filesystem flock guards single-writer semantics).
 	CASVersion int64 `json:"-" bson:"version,omitempty"`
+
+	// Attachments holds the metadata for binary inputs declared in
+	// the workflow's `attachments:` block and uploaded at launch.
+	// Bytes live in the storage backend keyed by Name; this map
+	// stays light enough that a Mongo document with attachments
+	// remains well under the 16 MB BSON ceiling.
+	Attachments map[string]AttachmentRecord `json:"attachments,omitempty" bson:"attachments,omitempty"`
 }
 
 // MergeStrategy enumerates how the run's commits are landed on the
@@ -233,6 +240,48 @@ type Artifact struct {
 	Version   int                    `json:"version" bson:"version"`
 	Data      map[string]interface{} `json:"data" bson:"data"`
 	WrittenAt time.Time              `json:"written_at" bson:"written_at"`
+}
+
+// ---------------------------------------------------------------------------
+// Interaction — human input/output exchange
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// AttachmentRecord — per-run binary input metadata
+// ---------------------------------------------------------------------------
+
+// AttachmentRecord is the lightweight metadata persisted for one
+// attachment uploaded as part of a run. The bytes themselves live
+// in the storage backend (filesystem or S3). Only metadata is
+// attached to Run.Attachments so run.json / Mongo documents stay
+// compact and replayable.
+type AttachmentRecord struct {
+	// Name is the declared attachment name from the .iter
+	// `attachments:` block (e.g. "logo", "spec").
+	Name string `json:"name" bson:"name"`
+	// OriginalFilename is the filename provided by the uploader
+	// before the server normalised it. Preserved so the resolved
+	// path stays human-readable to agents inspecting the file.
+	OriginalFilename string `json:"original_filename" bson:"original_filename"`
+	// MIME is the validated content type after server-side sniff
+	// (http.DetectContentType on the first 512 bytes).
+	MIME string `json:"mime" bson:"mime"`
+	// Size is the byte length of the upload as stored.
+	Size int64 `json:"size" bson:"size"`
+	// SHA256 is the hex-encoded SHA-256 of the upload, computed
+	// streaming during ingestion.
+	SHA256 string `json:"sha256" bson:"sha256"`
+	// CreatedAt is the time the upload was promoted to the run
+	// (i.e. moved out of the staging area into the run-scoped
+	// storage).
+	CreatedAt time.Time `json:"created_at" bson:"created_at"`
+	// StorageRef is the canonical key in the storage backend.
+	// For the filesystem backend this is the path relative to the
+	// store root (e.g. "runs/<id>/attachments/<name>/<filename>").
+	// For the S3 backend it is the object key
+	// (e.g. "attachments/<id>/<name>/<filename>"). Callers should
+	// not parse this — go through RunStore.OpenAttachment instead.
+	StorageRef string `json:"storage_ref" bson:"storage_ref"`
 }
 
 // ---------------------------------------------------------------------------

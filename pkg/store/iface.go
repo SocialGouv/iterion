@@ -1,6 +1,10 @@
 package store
 
-import "context"
+import (
+	"context"
+	"io"
+	"time"
+)
 
 // Capabilities expose les caractéristiques optionnelles d'un backend
 // pour permettre aux consommateurs (runview, server) de choisir le bon
@@ -65,6 +69,23 @@ type RunStore interface {
 	WriteInteraction(ctx context.Context, i *Interaction) error
 	LoadInteraction(ctx context.Context, runID, interactionID string) (*Interaction, error)
 	ListInteractions(ctx context.Context, runID string) ([]string, error)
+
+	// Attachments — binary inputs declared by `attachments:` in the
+	// workflow and uploaded at launch. Streaming I/O keeps large
+	// uploads off the heap. Implementations persist bytes in their
+	// native storage (filesystem dir, S3 object) and reflect the
+	// metadata into Run.Attachments.
+	WriteAttachment(ctx context.Context, runID string, rec AttachmentRecord, body io.Reader) error
+	OpenAttachment(ctx context.Context, runID, name string) (io.ReadCloser, AttachmentRecord, error)
+	ListAttachments(ctx context.Context, runID string) ([]AttachmentRecord, error)
+	DeleteRunAttachments(ctx context.Context, runID string) error
+	// PresignAttachment returns a URL the caller can hand to a third
+	// party (browser, agent's HTTP fetch) to retrieve the bytes
+	// without going through this process. Local backends emit an
+	// HMAC-signed `/api/runs/<id>/attachments/<name>` URL; cloud
+	// backends emit a presigned S3 URL. ttl bounds the URL's
+	// validity. The URL form is opaque to callers.
+	PresignAttachment(ctx context.Context, runID, name string, ttl time.Duration) (string, error)
 
 	// Locks (advisory ; cross-process en local via flock,
 	// distribué en cloud via NATS KV)

@@ -8,6 +8,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -266,6 +267,119 @@ func isS3NotFound(err error) bool {
 		}
 	}
 	return false
+}
+
+// ---------------------------------------------------------------------------
+// Attachments
+// ---------------------------------------------------------------------------
+
+// PutAttachment uploads attachment bytes under the canonical key.
+// Idempotent: re-PUTting the same key replaces the bytes.
+func (c *S3Client) PutAttachment(ctx context.Context, runID, name, filename, contentType string, body []byte) error {
+	key := attachmentKey(runID, name, filename)
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	_, err := c.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(c.bucket),
+		Key:         aws.String(key),
+		Body:        bytes.NewReader(body),
+		ContentType: aws.String(contentType),
+	})
+	if err != nil {
+		return fmt.Errorf("blob: put attachment %s: %w", key, err)
+	}
+	return nil
+}
+
+// GetAttachment streams the attachment bytes back. Callers must Close.
+func (c *S3Client) GetAttachment(ctx context.Context, runID, name, filename string) (io.ReadCloser, AttachmentMeta, error) {
+	key := attachmentKey(runID, name, filename)
+	out, err := c.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(c.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		if isS3NotFound(err) {
+			return nil, AttachmentMeta{}, fmt.Errorf("%w: %s", ErrArtifactNotFound, key)
+		}
+		return nil, AttachmentMeta{}, fmt.Errorf("blob: get attachment %s: %w", key, err)
+	}
+	meta := AttachmentMeta{}
+	if out.ContentType != nil {
+		meta.ContentType = *out.ContentType
+	}
+	if out.ContentLength != nil {
+		meta.Size = *out.ContentLength
+	}
+	if out.LastModified != nil {
+		meta.LastModified = *out.LastModified
+	}
+	return out.Body, meta, nil
+}
+
+// PresignAttachment emits a SigV4 GET URL valid for ttl. The presign
+// expiry is clamped by S3 to 7 days (SigV4 ceiling).
+func (c *S3Client) PresignAttachment(ctx context.Context, runID, name, filename string, ttl time.Duration) (string, error) {
+	if ttl <= 0 {
+		ttl = 10 * time.Minute
+	}
+	key := attachmentKey(runID, name, filename)
+	presigner := s3.NewPresignClient(c.client)
+	req, err := presigner.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(c.bucket),
+		Key:    aws.String(key),
+	}, s3.WithPresignExpires(ttl))
+	if err != nil {
+		return "", fmt.Errorf("blob: presign attachment %s: %w", key, err)
+	}
+	return req.URL, nil
+}
+
+// DeleteRunAttachments sweeps every blob under attachments/<runID>/.
+// Mirrors DeleteRun's batched, best-effort semantics.
+func (c *S3Client) DeleteRunAttachments(ctx context.Context, runID string) error {
+	prefix := attachmentRunPrefix(runID)
+
+	var collected []error
+	pager := s3.NewListObjectsV2Paginator(c.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(c.bucket),
+		Prefix: aws.String(prefix),
+	})
+	for pager.HasMorePages() {
+		if err := ctx.Err(); err != nil {
+			collected = append(collected, err)
+			break
+		}
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			collected = append(collected, fmt.Errorf("blob: list %s page: %w", prefix, err))
+			continue
+		}
+		if len(page.Contents) == 0 {
+			continue
+		}
+		ids := make([]types.ObjectIdentifier, 0, len(page.Contents))
+		for _, obj := range page.Contents {
+			if obj.Key == nil {
+				continue
+			}
+			ids = append(ids, types.ObjectIdentifier{Key: obj.Key})
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		if _, err := c.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+			Bucket: aws.String(c.bucket),
+			Delete: &types.Delete{Objects: ids, Quiet: aws.Bool(true)},
+		}); err != nil {
+			collected = append(collected, fmt.Errorf("blob: delete attachment page under %s: %w", prefix, err))
+		}
+	}
+	if len(collected) > 0 {
+		return errors.Join(collected...)
+	}
+	return nil
 }
 
 // Compile-time assertion that *S3Client implements Client.

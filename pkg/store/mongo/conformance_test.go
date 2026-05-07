@@ -1,7 +1,9 @@
 package mongo
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"os"
 	"testing"
 	"time"
@@ -139,3 +141,32 @@ func (b *inMemoryBlob) DeleteRun(_ context.Context, runID string) error {
 func (b *inMemoryBlob) Ping(_ context.Context) error { return nil }
 
 func (b *inMemoryBlob) Close() error { return nil }
+
+func (b *inMemoryBlob) PutAttachment(_ context.Context, runID, name, filename, contentType string, body []byte) error {
+	b.data[blob.AttachmentKey(runID, name, filename)] = append([]byte{}, body...)
+	return nil
+}
+
+func (b *inMemoryBlob) GetAttachment(_ context.Context, runID, name, filename string) (io.ReadCloser, blob.AttachmentMeta, error) {
+	key := blob.AttachmentKey(runID, name, filename)
+	body, ok := b.data[key]
+	if !ok {
+		return nil, blob.AttachmentMeta{}, blob.ErrArtifactNotFound
+	}
+	rc := io.NopCloser(bytes.NewReader(body))
+	return rc, blob.AttachmentMeta{Size: int64(len(body))}, nil
+}
+
+func (b *inMemoryBlob) PresignAttachment(_ context.Context, runID, name, filename string, _ time.Duration) (string, error) {
+	return "memory://" + blob.AttachmentKey(runID, name, filename), nil
+}
+
+func (b *inMemoryBlob) DeleteRunAttachments(_ context.Context, runID string) error {
+	prefix := blob.AttachmentRunPrefix(runID)
+	for k := range b.data {
+		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
+			delete(b.data, k)
+		}
+	}
+	return nil
+}
