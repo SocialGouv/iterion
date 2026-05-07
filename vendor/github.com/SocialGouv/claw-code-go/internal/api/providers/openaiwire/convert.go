@@ -103,14 +103,35 @@ func ConvertMessages(system string, messages []api.Message) []Message {
 // rather than silently dropping the tool — silently skipping a tool causes
 // the model to emit tool_use calls for an undeclared name, which derails
 // the conversation when the runtime can't dispatch them.
+//
+// We normalise the schema before marshalling because OpenAI's function
+// validator rejects null for fields it expects as arrays/objects:
+//   - omit `required` when nil or empty (a nil []string would marshal
+//     as JSON null and OpenAI errors with "None is not of type 'array'")
+//   - default `properties` to {} rather than null for tools that
+//     declare no parameters (e.g. an MCP `browser_snapshot` taking no
+//     input)
+//   - default `type` to "object" when empty so the schema parses as a
+//     valid JSON-Schema object descriptor.
 func ConvertTools(provider string, tools []api.Tool) ([]Tool, error) {
 	result := make([]Tool, 0, len(tools))
 	for _, t := range tools {
-		params, err := json.Marshal(map[string]interface{}{
-			"type":       t.InputSchema.Type,
-			"properties": t.InputSchema.Properties,
-			"required":   t.InputSchema.Required,
-		})
+		schemaType := t.InputSchema.Type
+		if schemaType == "" {
+			schemaType = "object"
+		}
+		properties := t.InputSchema.Properties
+		if properties == nil {
+			properties = map[string]api.Property{}
+		}
+		schema := map[string]interface{}{
+			"type":       schemaType,
+			"properties": properties,
+		}
+		if len(t.InputSchema.Required) > 0 {
+			schema["required"] = t.InputSchema.Required
+		}
+		params, err := json.Marshal(schema)
 		if err != nil {
 			return nil, fmt.Errorf("%s: marshal input schema for tool %q: %w", provider, t.Name, err)
 		}

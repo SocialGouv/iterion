@@ -97,7 +97,8 @@ vars:
 ## context7) — the manager namespaces tools by server.
 mcp_server playwright:
   transport: stdio
-  command: "npx -y @playwright/mcp@latest"
+  command: "npx"
+  args: ["-y", "@playwright/mcp@latest"]
 
 ## ─── Schemas ──────────────────────────────────────────────────────
 

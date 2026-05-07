@@ -49,9 +49,16 @@ vars:
   workspace_dir: string = "${PROJECT_DIR}"
 
 ## ─── MCP server : Playwright ──────────────────────────────────────
+##
+## Note: `command:` is a single binary name, `args:` is the list of
+## flags / package spec to pass to it. Stuffing the full
+## "npx -y @playwright/mcp@latest" into `command:` leads to
+## fork/exec on a literal binary of that name and fails with
+## "no such file or directory".
 mcp_server playwright:
   transport: stdio
-  command: "npx -y @playwright/mcp@latest"
+  command: "npx"
+  args: ["-y", "@playwright/mcp@latest"]
 
 ## ─── Schemas ──────────────────────────────────────────────────────
 
