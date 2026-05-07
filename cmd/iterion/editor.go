@@ -11,6 +11,7 @@ var editorOpts struct {
 	dir                string
 	storeDir           string
 	noBrowser          bool
+	noBrowserPane      bool
 	maxUploadSize      int64
 	maxTotalUploadSize int64
 	maxUploadsPerRun   int
@@ -28,6 +29,7 @@ var editorCmd = &cobra.Command{
 			Dir:                editorOpts.dir,
 			StoreDir:           editorOpts.storeDir,
 			NoBrowser:          editorOpts.noBrowser,
+			NoBrowserPane:      editorOpts.noBrowserPane,
 			MaxUploadSize:      editorOpts.maxUploadSize,
 			MaxTotalUploadSize: editorOpts.maxTotalUploadSize,
 			MaxUploadsPerRun:   editorOpts.maxUploadsPerRun,
@@ -47,6 +49,7 @@ func init() {
 	f.StringVar(&editorOpts.dir, "dir", "", "Working directory")
 	f.StringVar(&editorOpts.storeDir, "store-dir", "", "Run store directory (default: nearest .iterion ancestor of --dir, or <dir>/.iterion)")
 	f.BoolVar(&editorOpts.noBrowser, "no-browser", false, "Don't open browser automatically")
+	f.BoolVar(&editorOpts.noBrowserPane, "no-browser-pane", false, "Disable the run console's Browser pane (no preview proxy, no CDP WS, no live Chromium)")
 	f.Int64Var(&editorOpts.maxUploadSize, "max-upload-size", 0, "Max bytes per attachment upload (0 = mode default: 50MB web, 1GB desktop)")
 	f.Int64Var(&editorOpts.maxTotalUploadSize, "max-total-upload-size", 0, "Max cumulative bytes per run across attachments (0 = 5x max-upload-size)")
 	f.IntVar(&editorOpts.maxUploadsPerRun, "max-uploads-per-run", 0, "Max distinct attachments per run (0 = 20)")

@@ -122,6 +122,19 @@ const (
 	//   - tool_call_id: optional, used by PR 3 to correlate with the
 	//     Playwright tool call that produced the frame
 	EventBrowserScreenshot EventType = "browser_screenshot"
+	// EventBrowserSessionStarted fires when the runtime attaches a
+	// Chromium instance to a node and registers it in the
+	// BrowserRegistry. The editor uses this signal to flip the
+	// Browser pane to live mode and dial the CDP WS proxy. Data:
+	//   - session_id: BrowserSession.SessionID, also the WS query arg
+	//   - node_id: which node the session is bound to
+	EventBrowserSessionStarted EventType = "browser_session_started"
+	// EventBrowserSessionEnded fires when Detach is called — either
+	// because the node finished, the run was cancelled, or the
+	// runtime tore the registry down on Manager.Close. The editor
+	// closes the CDP WS and falls back to viewer mode. Data:
+	//   - session_id: matches the prior _started event
+	EventBrowserSessionEnded EventType = "browser_session_ended"
 )
 
 // Event is a single timestamped fact persisted in events.jsonl.

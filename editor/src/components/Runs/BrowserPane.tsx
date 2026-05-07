@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useRunStore, type BrowserScreenshot } from "@/store/run";
+import BrowserLivePane from "./BrowserLivePane";
 
 interface BrowserPaneProps {
   runId: string;
@@ -44,14 +45,51 @@ function pickScreenshotAt(
 export default function BrowserPane({ runId, scrubSeq = null }: BrowserPaneProps) {
   const browser = useRunStore((s) => s.browser);
   const setManualPreviewUrl = useRunStore((s) => s.setManualPreviewUrl);
+  const setLiveSession = useRunStore((s) => s.setLiveSession);
 
   const [draftUrl, setDraftUrl] = useState<string>(browser.currentUrl ?? "");
+  const [attachBusy, setAttachBusy] = useState<boolean>(false);
+  const [attachError, setAttachError] = useState<string | null>(null);
+
+  const handleAttach = useCallback(async () => {
+    setAttachBusy(true);
+    setAttachError(null);
+    try {
+      const res = await fetch(
+        `/api/runs/${encodeURIComponent(runId)}/browser/attach`,
+        { method: "POST" },
+      );
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`HTTP ${res.status}: ${text}`);
+      }
+      const body = (await res.json()) as { session_id: string };
+      setLiveSession({ sessionId: body.session_id, startedAt: new Date().toISOString() });
+    } catch (err) {
+      setAttachError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAttachBusy(false);
+    }
+  }, [runId, setLiveSession]);
+
+  const handleDetach = useCallback(() => {
+    setLiveSession(null);
+  }, [setLiveSession]);
 
   const scrubbedShot = useMemo(() => {
     if (scrubSeq == null) return null;
     return pickScreenshotAt(browser.screenshots, scrubSeq);
   }, [scrubSeq, browser.screenshots]);
   const isScrubbing = scrubSeq != null;
+
+  // Live Chromium session takes priority over the iframe viewer when
+  // not scrubbing: it's the strongest UX signal that the workflow is
+  // actively driving a browser. The viewer mode remains the fallback
+  // for runs that only publish preview URLs.
+  const showLive =
+    !isScrubbing &&
+    browser.liveSession != null &&
+    browser.liveSession.sessionId !== "";
 
   // Re-sync the URL bar when a new workflow event lands while the
   // user hasn't typed anything. We avoid clobbering an in-progress
@@ -144,9 +182,36 @@ export default function BrowserPane({ runId, scrubSeq = null }: BrowserPaneProps
         >
           clear
         </button>
+        {showLive ? (
+          <button
+            type="button"
+            onClick={handleDetach}
+            className="text-xs text-amber-500 hover:text-amber-400"
+            title="Stop the live Chromium session and return to viewer mode"
+          >
+            stop live
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={handleAttach}
+            disabled={attachBusy}
+            className="text-xs text-emerald-500 hover:text-emerald-400 disabled:opacity-50"
+            title="Spawn a host Chromium and stream it here (requires chromium installed on PATH)"
+          >
+            {attachBusy ? "attaching…" : "attach live"}
+          </button>
+        )}
       </div>
+      {attachError ? (
+        <div className="border-b border-red-700 bg-red-950/40 px-3 py-1 text-[11px] text-red-300">
+          {attachError}
+        </div>
+      ) : null}
       <div className="flex-1 min-h-0 bg-surface-0">
-        {isScrubbing ? (
+        {showLive && browser.liveSession ? (
+          <BrowserLivePane runId={runId} sessionId={browser.liveSession.sessionId} />
+        ) : isScrubbing ? (
           scrubbedShot ? (
             <img
               key={scrubbedShot.attachmentName}
@@ -178,7 +243,7 @@ export default function BrowserPane({ runId, scrubSeq = null }: BrowserPaneProps
           </div>
         )}
       </div>
-      {isScrubbing ? (
+      {showLive ? null : isScrubbing ? (
         <div className="border-t border-border-default px-3 py-1 text-[11px] text-amber-500">
           scrubbed at seq {scrubSeq}
           {scrubbedShot

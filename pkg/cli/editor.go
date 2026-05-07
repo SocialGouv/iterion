@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/server"
 )
@@ -20,6 +21,12 @@ type EditorOptions struct {
 	Dir       string // working directory (for examples)
 	StoreDir  string // run store directory (default: nearest .iterion ancestor of Dir, or <Dir>/.iterion)
 	NoBrowser bool   // skip opening browser
+	// NoBrowserPane disables every Browser-pane code path: the
+	// preview proxy, the CDP WS endpoint, and the Chromium runner.
+	// Useful for emergency lockdown (security incident) or for
+	// shaving startup latency when the operator never needs the
+	// pane. Defaults to false (pane enabled).
+	NoBrowserPane bool
 
 	// OnReady, when non-nil, is invoked once the HTTP listener is up and
 	// the server has accepted its bind address. The argument is the actual
@@ -92,6 +99,13 @@ func RunEditor(ctx context.Context, opts EditorOptions, p *Printer) error {
 		// via Origin allowlisting; cross-tenant isolation does not
 		// apply because there is exactly one local user.
 		DisableAuth: true,
+	}
+	// Wire the in-memory BrowserRegistry unless the operator
+	// explicitly disabled the pane. The registry is process-local;
+	// the runtime + iterion __browser-attach command share it via
+	// the Server reference exposed below.
+	if !opts.NoBrowserPane {
+		cfg.BrowserRegistry = mcp.NewMemoryBrowserRegistry()
 	}
 
 	logger := iterlog.New(iterlog.LevelInfo, os.Stderr)

@@ -1,6 +1,9 @@
 package server
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -93,23 +96,34 @@ func (s *Server) handleBrowserCDP(w http.ResponseWriter, r *http.Request) {
 		once.Do(func() { close(stop) })
 	}
 
-	// CDP → editor: read raw bytes, push as BinaryMessage.
+	// CDP → editor: re-frame the null-terminated pipe stream into
+	// one WS BinaryMessage per CDP message. The pipe contract from
+	// `--remote-debugging-pipe` is: one JSON-RPC object followed by
+	// a single `\0` byte, both directions.
 	go func() {
 		defer closeOnce()
-		buf := make([]byte, 32*1024)
+		buf := make([]byte, 0, 32*1024)
+		chunk := make([]byte, 32*1024)
 		for {
-			n, readErr := sess.CDPConn.Read(buf)
+			n, readErr := sess.CDPConn.Read(chunk)
 			if n > 0 {
-				_ = conn.SetWriteDeadline(time.Now().Add(browserCDPWriteDeadline))
-				if writeErr := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); writeErr != nil {
-					return
+				buf = append(buf, chunk[:n]...)
+				for {
+					i := indexByteZero(buf)
+					if i < 0 {
+						break
+					}
+					message := buf[:i]
+					_ = conn.SetWriteDeadline(time.Now().Add(browserCDPWriteDeadline))
+					if writeErr := conn.WriteMessage(websocket.BinaryMessage, message); writeErr != nil {
+						return
+					}
+					// Drop the message + the `\0` separator from the buffer.
+					buf = buf[i+1:]
 				}
 			}
 			if readErr != nil {
 				if !errors.Is(readErr, io.EOF) {
-					// Send a final close frame with an error reason
-					// so the client surfaces a meaningful disconnect
-					// rather than a generic "ws closed".
 					_ = conn.WriteMessage(
 						websocket.CloseMessage,
 						websocket.FormatCloseMessage(
@@ -123,9 +137,10 @@ func (s *Server) handleBrowserCDP(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Editor → CDP: read BinaryMessage frames, forward to the pipe.
-	// Text frames from the editor are tolerated (the cdpClient may
-	// send JSON commands as Text), but converted to bytes verbatim.
+	// Editor → CDP: each WS message is one CDP request; append `\0`
+	// before forwarding to the pipe so Chromium's pipe parser can
+	// find the boundary. Text frames are tolerated for clients that
+	// don't pre-encode their JSON.
 	go func() {
 		defer closeOnce()
 		for {
@@ -137,13 +152,105 @@ func (s *Server) handleBrowserCDP(w http.ResponseWriter, r *http.Request) {
 			if mt != websocket.BinaryMessage && mt != websocket.TextMessage {
 				continue
 			}
-			if _, writeErr := sess.CDPConn.Write(payload); writeErr != nil {
+			// Append the framing byte. The pipe contract guarantees
+			// that one Write() with a complete message + `\0` is
+			// atomic from the kernel's perspective for buffer sizes
+			// well under PIPE_BUF (4096 on Linux), which CDP messages
+			// almost always are. For very large outgoing messages
+			// the kernel may split — Chromium handles that fine.
+			if _, writeErr := sess.CDPConn.Write(append(payload, 0)); writeErr != nil {
 				return
 			}
 		}
 	}()
 
 	<-stop
+}
+
+// indexByteZero returns the index of the first `\0` in buf, or -1.
+// Mirrors bytes.IndexByte but kept inline so the hot path doesn't
+// pay an extra package import.
+func indexByteZero(buf []byte) int {
+	for i, b := range buf {
+		if b == 0 {
+			return i
+		}
+	}
+	return -1
+}
+
+// handleBrowserAttach spawns a host Chromium via HostChromiumRunner
+// and registers it as a BrowserSession on the given run, then emits
+// the corresponding EventBrowserSessionStarted so the editor's
+// reducer flips the Browser pane to live mode. Useful for testing
+// the live pipeline end-to-end without wiring Playwright MCP
+// detection at the manager level (a separate, larger workstream).
+//
+// POST /api/runs/{id}/browser/attach
+//
+// Origin-gated like the other mutating endpoints. Returns the
+// session id so the caller can correlate or detach later.
+func (s *Server) handleBrowserAttach(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSafeOrigin(w, r) {
+		return
+	}
+	runID := r.PathValue("id")
+	if runID == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "run id required")
+		return
+	}
+	if s.runs == nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "run console disabled")
+		return
+	}
+	if _, err := s.runs.LoadRun(runID); err != nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
+		return
+	}
+	if s.browserSessions == nil {
+		s.httpErrorFor(w, r, http.StatusServiceUnavailable, "browser pane disabled")
+		return
+	}
+
+	// Generate a session id. 8 random bytes hex-encoded keeps it
+	// short for the URL bar but uniquely-named across concurrent
+	// attaches.
+	var idBytes [8]byte
+	if _, err := rand.Read(idBytes[:]); err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "session id: %v", err)
+		return
+	}
+	sessionID := hex.EncodeToString(idBytes[:])
+
+	runner := mcp.NewHostChromiumRunner()
+	conn, err := runner.Start(runID, "")
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "chromium: %v", err)
+		return
+	}
+
+	if err := s.browserSessions.Attach(mcp.BrowserSession{
+		SessionID: sessionID,
+		RunID:     runID,
+		CDPConn:   conn,
+	}); err != nil {
+		_ = conn.Close()
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "attach: %v", err)
+		return
+	}
+
+	// The editor's BrowserPane handles state-update locally on the
+	// 200 response (sets liveSession in the zustand store). We
+	// intentionally do NOT persist a `browser_session_started`
+	// event here: this debug-attach is a developer tool, not part
+	// of the run's authoritative timeline. PR 5 (Playwright MCP
+	// auto-wire) will emit the event from inside the runtime where
+	// it has store access alongside the rest of the run's events.
+
+	s.reflectAllowedOrigin(w, r)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{"session_id": sessionID})
 }
 
 // requireBrowserRegistry is the small dependency-injection point used

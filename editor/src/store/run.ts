@@ -63,6 +63,17 @@ export interface BrowserScreenshot {
   toolCallId?: string;
 }
 
+// BrowserSessionInfo is the live-mode session reference. Set by the
+// reducer when an EventBrowserSessionStarted lands; cleared on
+// EventBrowserSessionEnded. Drives the BrowserPane's mode toggle:
+// when present, the pane defaults to live (canvas screencast); when
+// absent, it stays in viewer mode (iframe of currentUrl).
+export interface BrowserSessionInfo {
+  sessionId: string;
+  nodeId?: string;
+  startedAt?: string;
+}
+
 export interface BrowserPaneState {
   currentUrl: string | null;
   scope: PreviewScope;
@@ -78,6 +89,9 @@ export interface BrowserPaneState {
   // Captured screenshots, ascending by seq. PR 2 — tool-stdout
   // directive only; PR 3 will append on every Playwright action.
   screenshots: BrowserScreenshot[];
+  // Active live-mode session, if any. PR 4 — set by the runtime
+  // when a Chromium attaches via the BrowserRegistry.
+  liveSession: BrowserSessionInfo | null;
 }
 
 const initialBrowserState: BrowserPaneState = {
@@ -88,6 +102,7 @@ const initialBrowserState: BrowserPaneState = {
   lastEventSeq: null,
   lastEventSeqSeen: null,
   screenshots: [],
+  liveSession: null,
 };
 
 export interface RunLogState {
@@ -145,6 +160,12 @@ interface RunStoreState {
   // A manual URL takes precedence over workflow-emitted URLs until
   // explicitly cleared.
   setManualPreviewUrl: (url: string | null) => void;
+
+  // Live-mode session toggle from the BrowserPane debug-attach
+  // button. PR 5 will replace this with auto-driven state from the
+  // EventBrowserSessionStarted/Ended pair the Playwright MCP
+  // integration emits. Pass `null` to drop back to viewer mode.
+  setLiveSession: (info: BrowserSessionInfo | null) => void;
 
   reset: () => void;
 }
@@ -252,6 +273,20 @@ export const useRunStore = create<RunStoreState>((set) => ({
         // lastEventSeqSeen so RunView's auto-show tab logic still
         // honours workflow-emitted URLs that arrived earlier.
         lastEventSeq: null,
+      },
+    })),
+
+  setLiveSession: (info) =>
+    set((s) => ({
+      browser: {
+        ...s.browser,
+        liveSession: info,
+        // Bumping lastEventSeqSeen ensures the RunView auto-shows
+        // the Browser tab on debug attach even before any
+        // workflow-emitted preview URL.
+        lastEventSeqSeen: info
+          ? (s.browser.lastEventSeqSeen ?? -1) + 1
+          : s.browser.lastEventSeqSeen,
       },
     })),
 
@@ -516,6 +551,30 @@ function reduceEvents(
       case "run_paused":
         runStatusOverride = "paused_waiting_human";
         break;
+      case "browser_session_started": {
+        const sessionId = (evt.data?.session_id as string) ?? "";
+        if (!sessionId) break;
+        browser = {
+          ...browser,
+          liveSession: {
+            sessionId,
+            nodeId: evt.node_id,
+            startedAt: evt.timestamp,
+          },
+          lastEventSeqSeen: evt.seq,
+        };
+        break;
+      }
+      case "browser_session_ended": {
+        const sessionId = (evt.data?.session_id as string) ?? "";
+        // Clear only if the ended session matches the active one;
+        // otherwise a stale-old end event would clobber a fresh
+        // session.
+        if (browser.liveSession && browser.liveSession.sessionId === sessionId) {
+          browser = { ...browser, liveSession: null };
+        }
+        break;
+      }
       case "browser_screenshot": {
         const attachmentName = (evt.data?.attachment_name as string) ?? "";
         if (!attachmentName) break;
