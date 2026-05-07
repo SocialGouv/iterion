@@ -1,17 +1,17 @@
 ## Human gate: agent produces a plan, human reviews and approves or rejects.
 
+vars:
+  task_description: string
+
 prompt planner_system:
   You are a project planner. Create a detailed implementation plan.
 
 prompt planner_user:
   Create an implementation plan for:
-  {{input.task_description}}
+  {{vars.task_description}}
 
 prompt gate_instructions:
   Review the proposed plan. Approve if it meets requirements, reject otherwise.
-
-schema plan_input:
-  task_description: string
 
 schema plan_output:
   plan: string
@@ -26,7 +26,6 @@ schema gate_output:
 
 agent planner:
   model: "openai/gpt-5.4-mini"
-  input: plan_input
   output: plan_output
   publish: implementation_plan
   system: planner_system
@@ -42,7 +41,7 @@ workflow human_gated:
   entry: planner
 
   planner -> approval with {
-    plan: "{{outputs.planner}}"
+    plan: "{{outputs.planner.plan}}"
   }
 
   approval -> done when approved
