@@ -19,6 +19,7 @@ import (
 	clawrt "github.com/SocialGouv/claw-code-go/pkg/runtime"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
@@ -335,6 +336,11 @@ type ClawExecutor struct {
 	// and cleared at the bottom. Compact reads it because the
 	// runtime.Compactor structural interface only carries nodeID.
 	currentRunID string
+
+	// detector lazily probes host credentials (claude_code OAuth,
+	// codex OAuth, ANTHROPIC_API_KEY, …) so resolveBackendName can
+	// auto-select a backend when neither node nor workflow specifies one.
+	detector *detect.CachedDetector
 }
 
 // SetSandbox installs the live sandbox handle on the executor. The
@@ -495,6 +501,7 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 		wfCompaction:   wf.Compaction,
 		sessions:       newNodeSessionStore(),
 		vars:           seed,
+		detector:       detect.NewCachedDetector(5 * time.Minute),
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -549,7 +556,18 @@ func (e *ClawExecutor) SetWorkDir(dir string) {
 }
 
 // resolveBackendName returns the effective backend name for a node.
-// Resolution chain: node.Backend → workflow default → env ITERION_DEFAULT_BACKEND → "claw".
+//
+// Resolution chain (first non-empty wins):
+//  1. node.Backend (set on AgentNode/JudgeNode/RouterNode)
+//  2. workflow-level default (e.defaultBackend, from `default_backend:` or
+//     IR Preferences.BackendOrder[0])
+//  3. ITERION_DEFAULT_BACKEND env var (legacy explicit override)
+//  4. detect.Resolve over ITERION_BACKEND_PREFERENCE (auto-selection based
+//     on credentials present on the host)
+//  5. delegate.BackendClaw (hardcoded last-resort fallback)
+//
+// Step 4 is what makes the editor's empty default template "just work" when
+// the user has any credential configured.
 func (e *ClawExecutor) resolveBackendName(node ir.Node) string {
 	var backend string
 	switch n := node.(type) {
@@ -560,7 +578,7 @@ func (e *ClawExecutor) resolveBackendName(node ir.Node) string {
 	case *ir.RouterNode:
 		backend = n.Backend
 	}
-	if backend != "" {
+	if backend != "" && backend != "auto" {
 		return backend
 	}
 	if e.defaultBackend != "" {
@@ -569,7 +587,25 @@ func (e *ClawExecutor) resolveBackendName(node ir.Node) string {
 	if env := os.Getenv("ITERION_DEFAULT_BACKEND"); env != "" {
 		return env
 	}
+	if resolved := e.detectorResolve(); resolved != "" {
+		return resolved
+	}
 	return delegate.BackendClaw
+}
+
+// detectorResolve picks the first available backend in
+// ITERION_BACKEND_PREFERENCE order, or "" when nothing is available.
+func (e *ClawExecutor) detectorResolve() string {
+	report := e.detector.Get(context.Background())
+	return detect.Resolve(report.PreferenceOrder, report.Backends)
+}
+
+// detectorSuggestedModel returns the model spec for claw based on
+// detected providers, or "" when none are available (the registry then
+// emits a clear "no model" error).
+func (e *ClawExecutor) detectorSuggestedModel() string {
+	report := e.detector.Get(context.Background())
+	return detect.SuggestedModel(detect.BackendClaw, report.Providers)
 }
 
 // Execute implements runtime.NodeExecutor.
@@ -724,6 +760,11 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	effort := resolveReasoningEffort(f.reasoningEffort, input)
 	compactRatio, compactPreserve := resolveCompaction(f.compaction, e.wfCompaction)
 
+	resolvedModel := os.ExpandEnv(f.model)
+	if resolvedModel == "" && backendName == delegate.BackendClaw {
+		resolvedModel = e.detectorSuggestedModel()
+	}
+
 	task := delegate.Task{
 		NodeID:                f.id,
 		SystemPrompt:          systemText,
@@ -731,7 +772,7 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 		UserContent:           userContent,
 		AllowedTools:          f.tools,
 		OutputSchema:          outputSchema,
-		Model:                 os.ExpandEnv(f.model),
+		Model:                 resolvedModel,
 		HasTools:              len(f.tools) > 0,
 		ToolMaxSteps:          f.toolMaxSteps,
 		MaxTokens:             f.maxTokens,

@@ -929,6 +929,21 @@ workflow test:
 
 func TestCompileSupervisorModelFallbackMissing(t *testing.T) {
 	t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "")
+	// Also scrub the credentials the detect-based auto-resolution would
+	// see — without this, a dev box with ANTHROPIC_API_KEY set would
+	// suppress the C018 diagnostic this test verifies.
+	for _, k := range []string{
+		"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+		"OPENAI_API_KEY",
+		"AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT",
+		"AWS_REGION", "AWS_DEFAULT_REGION",
+		"GOOGLE_CLOUD_PROJECT",
+		"CLAUDE_CONFIG_DIR", "CODEX_HOME",
+		"ITERION_BACKEND_PREFERENCE",
+	} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("HOME", t.TempDir())
 
 	src := `
 schema s:

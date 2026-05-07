@@ -2,11 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useDocumentStore } from "@/store/document";
 import { useUIStore } from "@/store/ui";
 import { useRecentsStore } from "@/store/recents";
+import { useBackendDetectStore } from "@/store/backendDetect";
 import { createEmptyDocument } from "@/lib/defaults";
 import * as api from "@/api/client";
 import ConfirmDialog from "../shared/ConfirmDialog";
 import ShortcutsHelp from "../shared/ShortcutsHelp";
 import FilePicker from "../FilePicker/FilePicker";
+import BackendStatusPill from "./BackendStatusPill";
 import {
   Button,
   IconButton,
@@ -63,6 +65,8 @@ export default function Toolbar() {
 
   const filePickerOpen = useUIStore((s) => s.filePickerOpen);
   const setFilePickerOpen = useUIStore((s) => s.setFilePickerOpen);
+  const backendReport = useBackendDetectStore((s) => s.report);
+  const hasResolvedBackend = !!backendReport?.resolved_default;
   const [loading, setLoading] = useState(false);
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [saveFileName, setSaveFileName] = useState("");
@@ -287,6 +291,7 @@ export default function Toolbar() {
   return (
     <div className="flex items-center gap-1 px-3 h-full text-sm">
       <span className="font-bold tracking-wide mr-2">ITERION</span>
+      <BackendStatusPill />
 
       {/* File ops */}
       <ToolbarGroup>
@@ -456,15 +461,17 @@ export default function Toolbar() {
         <IconButton
           label="Launch run"
           tooltip={
-            currentFilePath
-              ? `Launch ${currentFilePath}`
-              : "Save the workflow first to launch a run"
+            !currentFilePath
+              ? "Save the workflow first to launch a run"
+              : !hasResolvedBackend
+              ? "No LLM credentials detected — click the status pill on the left to configure."
+              : `Launch ${currentFilePath}`
           }
           size="sm"
           onClick={() =>
             setLocation(`/runs/new?file=${encodeURIComponent(currentFilePath ?? "")}`)
           }
-          disabled={!currentFilePath}
+          disabled={!currentFilePath || !hasResolvedBackend}
         >
           <PlayIcon />
         </IconButton>

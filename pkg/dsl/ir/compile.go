@@ -1,10 +1,13 @@
 package ir
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
+	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 )
@@ -113,6 +116,9 @@ type compiler struct {
 	schemas map[string]*Schema
 	prompts map[string]*Prompt
 	mcp     map[string]*MCPServer
+
+	autoBackendOnce   sync.Once
+	autoBackendCached bool
 }
 
 // workflowInteractionDefault returns the workflow-level interaction default,
@@ -586,6 +592,19 @@ func resolveSupervisorModel(explicit string) string {
 	return os.Getenv("ITERION_DEFAULT_SUPERVISOR_MODEL")
 }
 
+// canAutoResolveBackend reports whether the detect package can pick a
+// backend from the host environment, allowing an agent/judge with
+// neither `model:` nor `backend:` to validate. Cached per-compile —
+// 20-agent workflows would otherwise re-stat credentials.json and
+// re-LookPath the CLIs 40 times.
+func (c *compiler) canAutoResolveBackend() bool {
+	c.autoBackendOnce.Do(func() {
+		report := detect.Detect(context.Background())
+		c.autoBackendCached = detect.Resolve(report.PreferenceOrder, report.Backends) != ""
+	})
+	return c.autoBackendCached
+}
+
 // ---------------------------------------------------------------------------
 // Prompts
 // ---------------------------------------------------------------------------
@@ -626,8 +645,8 @@ func (c *compiler) compileAgents() {
 		c.validatePromptRef(a.Name, "system", a.System)
 		c.validatePromptRef(a.Name, "user", a.User)
 		model := resolveSupervisorModel(a.Model)
-		if model == "" && a.Backend == "" {
-			c.errorfAt(DiagMissingModelOrBackend, a.Name, "", "agent %q must set 'model' or 'backend', or define ITERION_DEFAULT_SUPERVISOR_MODEL", a.Name)
+		if model == "" && a.Backend == "" && !c.canAutoResolveBackend() {
+			c.errorfAt(DiagMissingModelOrBackend, a.Name, "", "agent %q must set 'model' or 'backend' (or configure a credential the runtime can detect — see docs/backends.md)", a.Name)
 		}
 		c.warnCodexDiscouraged("agent", a.Name, a.Backend)
 
@@ -687,8 +706,8 @@ func (c *compiler) compileJudges() {
 		c.validatePromptRef(j.Name, "system", j.System)
 		c.validatePromptRef(j.Name, "user", j.User)
 		model := resolveSupervisorModel(j.Model)
-		if model == "" && j.Backend == "" {
-			c.errorfAt(DiagMissingModelOrBackend, j.Name, "", "judge %q must set 'model' or 'backend', or define ITERION_DEFAULT_SUPERVISOR_MODEL", j.Name)
+		if model == "" && j.Backend == "" && !c.canAutoResolveBackend() {
+			c.errorfAt(DiagMissingModelOrBackend, j.Name, "", "judge %q must set 'model' or 'backend' (or configure a credential the runtime can detect — see docs/backends.md)", j.Name)
 		}
 		c.warnCodexDiscouraged("judge", j.Name, j.Backend)
 

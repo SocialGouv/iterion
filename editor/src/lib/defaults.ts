@@ -11,16 +11,27 @@ import type {
   PromptDecl,
 } from "@/api/types";
 
+// model and backend are intentionally empty so the runtime resolver
+// auto-detects on first execution (see docs/backends.md).
 export function createEmptyDocument(): IterDocument {
   return {
-    prompts: [{ name: "system_prompt", body: "You are a helpful assistant." }],
+    prompts: [
+      { name: "system_prompt", body: "You are a helpful assistant." },
+      { name: "user_prompt", body: "{{input.query}}" },
+    ],
     schemas: [
       { name: "input", fields: [{ name: "query", type: "string" as const }] },
       { name: "output", fields: [{ name: "response", type: "string" as const }] },
     ],
     agents: [{
-      name: "agent_1", model: "${ANTHROPIC_MODEL}", input: "input", output: "output",
-      system: "system_prompt", user: "", session: "fresh",
+      name: "agent_1",
+      model: "",
+      backend: "",
+      input: "input",
+      output: "output",
+      system: "system_prompt",
+      user: "user_prompt",
+      session: "fresh",
     }],
     judges: [],
     routers: [],

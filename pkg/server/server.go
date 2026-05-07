@@ -16,10 +16,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/auth/oidc"
+	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -199,6 +201,11 @@ type Server struct {
 	sealer       secrets.Sealer
 	oauthStore   secrets.OAuthStore
 	httpClient   *http.Client
+
+	// detector is the cached LLM credential detector backing
+	// /api/backends/detect. Lazily constructed on first request.
+	detector     *detect.CachedDetector
+	detectorOnce sync.Once
 
 	// listener is captured at ListenAndServe time so callers (notably the
 	// desktop host, which passes Port=0 for an OS-assigned port) can read
@@ -416,6 +423,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/examples/{name...}", s.handleLoadExample)
 	s.mux.HandleFunc("GET /api/effort-capabilities", s.handleEffortCapabilities)
 	s.mux.HandleFunc("GET /api/resolve-effort", s.handleResolveEffort)
+	s.mux.HandleFunc("GET /api/backends/detect", s.handleBackendsDetect)
 
 	// Health endpoints — liveness (always 200 if the mux is alive)
 	// and readiness (cloud-mode dependency pings come via T-26 when
