@@ -26,6 +26,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write   # required by SocialGouv/token-bureau (OIDC exchange)
 
 jobs:
   update:
