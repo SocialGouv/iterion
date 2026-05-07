@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { resumeRun } from "@/api/runs";
-import { Badge, Button } from "@/components/ui";
+import { Button } from "@/components/ui";
 import { useHumanNodeSchema } from "@/hooks/useHumanNodeSchema";
 import { useDocumentStore } from "@/store/document";
 import { useRunStore } from "@/store/run";
 
-import HumanInteractionForm from "./HumanInteractionForm";
+import HumanInteractionForm, {
+  buildInitialDrafts,
+  coerceDrafts,
+} from "./HumanInteractionForm";
 import PauseForm from "./PauseForm";
 
 interface Props {
@@ -24,20 +27,23 @@ export default function HumanInteractionPanel({ runId }: Props) {
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [showContext, setShowContext] = useState(false);
-  // Local guard: once a submit succeeds, keep the panel hidden even if
-  // a stale snapshot or a delayed checkpoint fetch briefly re-asserts
-  // pendingHumanInput before the WS run_resumed event lands.
   const [submitted, setSubmitted] = useState(false);
   const interactionId = pending?.interaction_id;
   useEffect(() => {
     if (interactionId) setSubmitted(false);
   }, [interactionId]);
 
-  const contextOutputs = useMemo(
-    () => extractOutputs(checkpoint),
-    [checkpoint],
-  );
+  // drafts live up here so the quick-action buttons (Approve / Reject)
+  // can read the user's comments even though the form internally just
+  // reflects them.
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (fields) setDrafts(buildInitialDrafts(fields));
+  }, [fields, interactionId]);
+  const setDraft = (name: string, next: string) =>
+    setDrafts((prev) => ({ ...prev, [name]: next }));
+
+  const review = useMemo(() => extractReview(checkpoint), [checkpoint]);
 
   if (status !== "paused_waiting_human" || !pending || submitted) {
     return null;
@@ -64,40 +70,44 @@ export default function HumanInteractionPanel({ runId }: Props) {
   const approveField = fields?.find(
     (f) => f.type === "bool" && f.name === "approved",
   );
+  // When we have a typed approved bool, drive submission entirely from
+  // the Approve/Reject buttons and hide the redundant checkbox row.
+  const visibleFields = approveField
+    ? (fields ?? []).filter((f) => f.name !== approveField.name)
+    : fields ?? [];
+
+  const submitWithApproved = (approved: boolean) => {
+    if (!fields) return;
+    const { answers, errors } = coerceDrafts(visibleFields, drafts);
+    if (Object.keys(errors).length > 0) {
+      setError(
+        "Fix invalid fields: " + Object.keys(errors).join(", "),
+      );
+      return;
+    }
+    void submit({ ...answers, [approveField!.name]: approved });
+  };
+
+  const submitForm = () => {
+    if (!fields) return;
+    const { answers, errors } = coerceDrafts(fields, drafts);
+    if (Object.keys(errors).length > 0) {
+      setError("Fix invalid fields: " + Object.keys(errors).join(", "));
+      return;
+    }
+    void submit(answers);
+  };
 
   return (
     <div className="fixed bottom-0 left-0 right-0 z-40 border-t-2 border-warning shadow-2xl bg-surface-1 max-h-[60vh] overflow-y-auto">
       <div className="mx-auto max-w-3xl px-4 py-3 space-y-3">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <Badge variant="warning">Awaiting input</Badge>
-            {pending.node_id && (
-              <span className="text-[11px] font-mono text-fg-muted">
-                node: {pending.node_id}
-              </span>
-            )}
+        {staleHash && (
+          <div className="text-[10px] text-warning-fg" role="status">
+            workflow source changed since launch — submitting may fail
           </div>
-          {staleHash && (
-            <span className="text-[10px] text-warning-fg" role="status">
-              workflow source changed since launch — submitting may fail
-            </span>
-          )}
-        </div>
-
-        {contextOutputs && (
-          <details
-            open={showContext}
-            onToggle={(e) => setShowContext((e.target as HTMLDetailsElement).open)}
-            className="rounded border border-border-subtle bg-surface-0"
-          >
-            <summary className="cursor-pointer px-2 py-1.5 text-[11px] font-medium text-fg-default select-none">
-              Context (outputs from previous nodes)
-            </summary>
-            <pre className="px-2 pb-2 text-[10px] font-mono text-fg-muted whitespace-pre-wrap break-all max-h-64 overflow-y-auto">
-              {contextOutputs}
-            </pre>
-          </details>
         )}
+
+        {review && <ReviewBlock outputs={review} />}
 
         {loading ? (
           <p className="text-[11px] text-fg-subtle">Loading schema…</p>
@@ -112,19 +122,41 @@ export default function HumanInteractionPanel({ runId }: Props) {
           />
         ) : (
           <>
-            <HumanInteractionForm
-              fields={fields!}
-              questions={pending.questions ?? {}}
-              busy={busy}
-              errorMessage={error}
-              onSubmit={(a) => void submit(a)}
-            />
-            {approveField && (
-              <ApproveRejectActions
-                approveFieldName={approveField.name}
+            {visibleFields.length > 0 && (
+              <HumanInteractionForm
+                fields={visibleFields}
+                questions={pending.questions ?? {}}
+                drafts={drafts}
+                onDraftChange={setDraft}
                 busy={busy}
-                onSubmit={submit}
+                errorMessage={error}
+                onSubmit={approveField ? undefined : submitForm}
               />
+            )}
+            {error && !visibleFields.length && (
+              <p className="text-danger-fg text-[11px]" role="alert">
+                {error}
+              </p>
+            )}
+            {approveField && (
+              <div className="flex items-center gap-2 pt-2 border-t border-border-subtle">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => submitWithApproved(true)}
+                >
+                  {busy ? "…" : "Approve"}
+                </Button>
+                <Button
+                  variant="danger"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => submitWithApproved(false)}
+                >
+                  {busy ? "…" : "Reject"}
+                </Button>
+              </div>
             )}
           </>
         )}
@@ -133,50 +165,60 @@ export default function HumanInteractionPanel({ runId }: Props) {
   );
 }
 
-interface ApproveRejectActionsProps {
-  approveFieldName: string;
-  busy: boolean;
-  onSubmit: (answers: Record<string, unknown>) => void;
+interface ReviewBlockProps {
+  outputs: Record<string, Record<string, unknown>>;
 }
 
-function ApproveRejectActions({
-  approveFieldName,
-  busy,
-  onSubmit,
-}: ApproveRejectActionsProps) {
-  // Quick-action shortcuts: send only the approved bool, ignoring
-  // any comments the user typed in the form. To attach comments,
-  // users tick the form's checkbox and click the form's Submit.
+function ReviewBlock({ outputs }: ReviewBlockProps) {
+  const entries = Object.entries(outputs);
   return (
-    <div className="flex items-center gap-2 pt-2 border-t border-border-subtle">
-      <span className="text-[10px] text-fg-subtle">Quick action (no comments):</span>
-      <Button
-        variant="primary"
-        size="sm"
-        disabled={busy}
-        onClick={() => onSubmit({ [approveFieldName]: true })}
-      >
-        {busy ? "…" : "Approve"}
-      </Button>
-      <Button
-        variant="danger"
-        size="sm"
-        disabled={busy}
-        onClick={() => onSubmit({ [approveFieldName]: false })}
-      >
-        {busy ? "…" : "Reject"}
-      </Button>
+    <div className="space-y-2">
+      <div className="text-[11px] font-medium text-fg-default">
+        Review the output of the previous node{entries.length > 1 ? "s" : ""}:
+      </div>
+      <div className="space-y-2">
+        {entries.map(([nodeId, fields]) => (
+          <div
+            key={nodeId}
+            className="rounded border border-border-subtle bg-surface-0 p-2"
+          >
+            <div className="text-[10px] font-mono text-fg-muted mb-1">
+              from {nodeId}
+            </div>
+            <div className="space-y-1">
+              {Object.entries(fields).map(([k, v]) => (
+                <div key={k} className="text-[11px]">
+                  <span className="font-mono text-fg-subtle">{k}: </span>
+                  <span className="whitespace-pre-wrap break-words">
+                    {renderValue(v)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
 
-function extractOutputs(checkpoint: unknown): string | null {
-  if (!checkpoint || typeof checkpoint !== "object") return null;
-  const cp = checkpoint as { outputs?: Record<string, unknown> };
-  if (!cp.outputs || Object.keys(cp.outputs).length === 0) return null;
+function renderValue(v: unknown): string {
+  if (typeof v === "string") return v;
+  if (v == null) return "—";
   try {
-    return JSON.stringify(cp.outputs, null, 2);
+    return JSON.stringify(v, null, 2);
   } catch {
-    return null;
+    return String(v);
   }
+}
+
+// extractReview returns checkpoint.outputs as a typed map. Returns
+// null when there's nothing to review (no outputs accumulated yet).
+function extractReview(
+  checkpoint: unknown,
+): Record<string, Record<string, unknown>> | null {
+  if (!checkpoint || typeof checkpoint !== "object") return null;
+  const cp = checkpoint as { outputs?: Record<string, Record<string, unknown>> };
+  if (!cp.outputs || Object.keys(cp.outputs).length === 0) return null;
+  return cp.outputs;
 }

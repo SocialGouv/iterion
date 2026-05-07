@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 import type { WireSchemaField } from "@/api/runs";
 
@@ -9,27 +9,30 @@ import HumanInteractionField, { coerceField } from "./HumanInteractionField";
 interface Props {
   fields: WireSchemaField[];
   questions: Record<string, unknown>;
+  drafts: Record<string, string>;
+  onDraftChange: (name: string, next: string) => void;
   busy?: boolean;
   errorMessage?: string | null;
-  onSubmit: (answers: Record<string, unknown>) => void;
+  // When provided, renders a Submit button at the bottom; the parent
+  // is responsible for coercing `drafts` and posting. Omit when an
+  // outer component (e.g. quick-action Approve/Reject buttons) drives
+  // submission instead.
+  onSubmit?: () => void;
 }
 
 export default function HumanInteractionForm({
   fields,
   questions,
+  drafts,
+  onDraftChange,
   busy = false,
   errorMessage,
   onSubmit,
 }: Props) {
-  const initialDrafts = useMemo(
-    () => Object.fromEntries(fields.map((f) => [f.name, defaultDraft(f)])),
-    [fields],
-  );
-  const [drafts, setDrafts] = useState<Record<string, string>>(initialDrafts);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   const setDraft = (name: string, next: string) => {
-    setDrafts((prev) => ({ ...prev, [name]: next }));
+    onDraftChange(name, next);
     if (fieldErrors[name]) {
       setFieldErrors((prev) => {
         const { [name]: _, ...rest } = prev;
@@ -40,24 +43,13 @@ export default function HumanInteractionForm({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const errs: Record<string, string> = {};
-    const answers: Record<string, unknown> = {};
-    for (const f of fields) {
-      const raw = drafts[f.name] ?? "";
-      const { value, error } = coerceField(f, raw);
-      if (error) {
-        errs[f.name] = error;
-        continue;
-      }
-      if (value !== undefined) {
-        answers[f.name] = value;
-      }
-    }
+    if (!onSubmit) return;
+    const errs = validateDrafts(fields, drafts);
     if (Object.keys(errs).length > 0) {
       setFieldErrors(errs);
       return;
     }
-    onSubmit(answers);
+    onSubmit();
   };
 
   return (
@@ -99,18 +91,56 @@ export default function HumanInteractionForm({
           {errorMessage}
         </p>
       )}
-      <div className="flex gap-2">
-        <Button type="submit" variant="primary" size="sm" disabled={busy}>
-          {busy ? "Resuming…" : "Submit & Resume"}
-        </Button>
-      </div>
+      {onSubmit && (
+        <div className="flex gap-2">
+          <Button type="submit" variant="primary" size="sm" disabled={busy}>
+            {busy ? "Resuming…" : "Submit & Resume"}
+          </Button>
+        </div>
+      )}
     </form>
   );
 }
 
-function defaultDraft(field: WireSchemaField): string {
+export function defaultDraft(field: WireSchemaField): string {
   if (field.type === "bool") return "false";
   return "";
+}
+
+export function buildInitialDrafts(
+  fields: WireSchemaField[],
+): Record<string, string> {
+  return Object.fromEntries(fields.map((f) => [f.name, defaultDraft(f)]));
+}
+
+// coerceDrafts walks every field and produces the typed answers map
+// the runtime expects. Returns errors when any draft fails coercion;
+// callers should refuse to submit until errors is empty.
+export function coerceDrafts(
+  fields: WireSchemaField[],
+  drafts: Record<string, string>,
+): { answers: Record<string, unknown>; errors: Record<string, string> } {
+  const answers: Record<string, unknown> = {};
+  const errors: Record<string, string> = {};
+  for (const f of fields) {
+    const raw = drafts[f.name] ?? "";
+    const { value, error } = coerceField(f, raw);
+    if (error) {
+      errors[f.name] = error;
+      continue;
+    }
+    if (value !== undefined) {
+      answers[f.name] = value;
+    }
+  }
+  return { answers, errors };
+}
+
+function validateDrafts(
+  fields: WireSchemaField[],
+  drafts: Record<string, string>,
+): Record<string, string> {
+  return coerceDrafts(fields, drafts).errors;
 }
 
 function stringifyQuestion(q: unknown): string {
