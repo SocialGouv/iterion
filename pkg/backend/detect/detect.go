@@ -250,8 +250,8 @@ func codexHomeDir() string {
 
 // findClaudeBinary duplicates pkg/backend/delegate/claudesdk/process.go:findCLI
 // (no-explicit-path branch) to avoid widening the claudesdk export surface
-// for a 5-line probe.
-func findClaudeBinary() (string, bool) {
+// for a 5-line probe. Declared as a var so tests can stub host probing.
+var findClaudeBinary = func() (string, bool) {
 	if path, err := exec.LookPath("claude"); err == nil {
 		return path, true
 	}
@@ -266,7 +266,8 @@ func findClaudeBinary() (string, bool) {
 
 // findCodexBinary duplicates codex-agent-sdk-go/internal/cli/discovery.go;
 // the upstream helper is unexported and the search list is small.
-func findCodexBinary() (string, bool) {
+// Declared as a var so tests can stub host probing.
+var findCodexBinary = func() (string, bool) {
 	if path, err := exec.LookPath("codex"); err == nil {
 		return path, true
 	}

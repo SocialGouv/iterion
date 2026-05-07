@@ -10,6 +10,9 @@ import (
 // isolateEnv unsets all env vars that influence detection so subtests start
 // from a known empty state. Each test then re-sets only the vars it cares
 // about via t.Setenv (which is automatically rolled back at test end).
+// Binary probes are also stubbed to "not found" so tests don't depend on
+// whether `claude` / `codex` happen to be installed on the host (CI runners
+// have neither; dev machines often have one or both).
 func isolateEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
@@ -27,6 +30,22 @@ func isolateEnv(t *testing.T) {
 	// Use a fresh empty HOME so legacy ~/.claude / ~/.codex on the dev
 	// machine don't leak into tests.
 	t.Setenv("HOME", t.TempDir())
+	stubBinary(t, &findClaudeBinary, "")
+	stubBinary(t, &findCodexBinary, "")
+}
+
+// stubBinary swaps a binary-probe var for the duration of the test.
+// path == "" means "not installed". Restored on test cleanup.
+func stubBinary(t *testing.T, target *func() (string, bool), path string) {
+	t.Helper()
+	prev := *target
+	*target = func() (string, bool) {
+		if path == "" {
+			return "", false
+		}
+		return path, true
+	}
+	t.Cleanup(func() { *target = prev })
 }
 
 func writeFile(t *testing.T, path, body string) {
@@ -117,6 +136,7 @@ func TestDetect_AnthropicAPIKey(t *testing.T) {
 
 func TestDetect_ClaudeCodeOAuth(t *testing.T) {
 	isolateEnv(t)
+	stubBinary(t, &findClaudeBinary, "/fake/claude")
 	dir := t.TempDir()
 	t.Setenv("CLAUDE_CONFIG_DIR", dir)
 	writeFile(t, filepath.Join(dir, "credentials.json"), `{"claudeAiOauth":{"accessToken":"x"}}`)
@@ -137,6 +157,7 @@ func TestDetect_ClaudeCodeOAuth(t *testing.T) {
 
 func TestDetect_BothClaudeOAuthAndAnthropic_PrefersClaudeCode(t *testing.T) {
 	isolateEnv(t)
+	stubBinary(t, &findClaudeBinary, "/fake/claude")
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
 	dir := t.TempDir()
 	t.Setenv("CLAUDE_CONFIG_DIR", dir)
@@ -150,6 +171,7 @@ func TestDetect_BothClaudeOAuthAndAnthropic_PrefersClaudeCode(t *testing.T) {
 
 func TestDetect_OverridePreferenceFavorsClaw(t *testing.T) {
 	isolateEnv(t)
+	stubBinary(t, &findClaudeBinary, "/fake/claude")
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
 	dir := t.TempDir()
 	t.Setenv("CLAUDE_CONFIG_DIR", dir)
@@ -164,6 +186,7 @@ func TestDetect_OverridePreferenceFavorsClaw(t *testing.T) {
 
 func TestDetect_CodexNotAutoSelected(t *testing.T) {
 	isolateEnv(t)
+	stubBinary(t, &findCodexBinary, "/fake/codex")
 	dir := t.TempDir()
 	t.Setenv("CODEX_HOME", dir)
 	writeFile(t, filepath.Join(dir, "auth.json"), `{}`)
@@ -182,6 +205,7 @@ func TestDetect_CodexNotAutoSelected(t *testing.T) {
 
 func TestDetect_CodexExplicitlyEnabled(t *testing.T) {
 	isolateEnv(t)
+	stubBinary(t, &findCodexBinary, "/fake/codex")
 	dir := t.TempDir()
 	t.Setenv("CODEX_HOME", dir)
 	writeFile(t, filepath.Join(dir, "auth.json"), `{}`)
