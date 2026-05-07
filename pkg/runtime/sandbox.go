@@ -76,6 +76,13 @@ type SandboxParams struct {
 	DefaultImage  string // "" lets the runtime pick the built-in default
 	EmitEvent     func(store.EventType, map[string]interface{}) error
 	Logger        *iterlog.Logger
+	// AttachmentsHostDir, when non-empty, is bind-mounted read-only
+	// into the container at AttachmentsContainerPath so {{attachments.X}}
+	// path references resolve inside the sandbox. Empty disables the
+	// mount (e.g. cloud mode where attachments are pulled by the
+	// runner pod via blob.GetAttachment instead).
+	AttachmentsHostDir       string
+	AttachmentsContainerPath string
 }
 
 // resolveAndStartSandbox produces an [activeSandbox] for the workflow's
@@ -112,6 +119,22 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	if spec == nil || !spec.Mode.IsActive() {
 		// User opted out (Mode=none) or never opted in.
 		return nil, nil
+	}
+
+	// Inject the attachments bind-mount BEFORE the driver prepares
+	// resources. Read-only so an agent inside the sandbox can never
+	// corrupt the run store. Skipped when the host dir does not
+	// exist yet (no attachments declared).
+	if p.AttachmentsHostDir != "" {
+		if _, statErr := os.Stat(p.AttachmentsHostDir); statErr == nil {
+			containerPath := p.AttachmentsContainerPath
+			if containerPath == "" {
+				containerPath = "/run/iterion/attachments"
+			}
+			spec.Mounts = append(spec.Mounts,
+				fmt.Sprintf("source=%s,target=%s,type=bind,readonly", p.AttachmentsHostDir, containerPath),
+			)
+		}
 	}
 
 	// Phase 4 V1: claw nodes are forwarded to the iterion-claw-runner

@@ -434,17 +434,23 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 	emitForSandbox := func(t store.EventType, data map[string]interface{}) error {
 		return e.emit(ctx, runID, t, "", data)
 	}
+	var attachHost string
+	if e.store != nil && e.store.Root() != "" {
+		attachHost = filepath.Join(e.store.Root(), "runs", runID, "attachments")
+	}
 	active, sbErr := resolveAndStartSandbox(ctx, SandboxParams{
-		Workflow:      e.workflow,
-		RunID:         runID,
-		FriendlyName:  e.runName,
-		RepoRoot:      repoRoot,
-		WorkspacePath: e.workDir,
-		CLIOverride:   e.sandboxOverride,
-		GlobalDefault: e.sandboxDefault,
-		DefaultImage:  e.sandboxDefaultImage,
-		EmitEvent:     emitForSandbox,
-		Logger:        e.logger,
+		Workflow:                 e.workflow,
+		RunID:                    runID,
+		FriendlyName:             e.runName,
+		RepoRoot:                 repoRoot,
+		WorkspacePath:            e.workDir,
+		CLIOverride:              e.sandboxOverride,
+		GlobalDefault:            e.sandboxDefault,
+		DefaultImage:             e.sandboxDefaultImage,
+		EmitEvent:                emitForSandbox,
+		Logger:                   e.logger,
+		AttachmentsHostDir:       attachHost,
+		AttachmentsContainerPath: "/run/iterion/attachments",
 	})
 	if sbErr != nil {
 		_ = e.store.UpdateRunStatus(ctx, runID, store.RunStatusFailed, sbErr.Error())
