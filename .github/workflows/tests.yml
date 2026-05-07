@@ -241,6 +241,15 @@ jobs:
         run: helm dependency update ./charts/iterion
 
       - name: Helm install (values-dev.yaml)
+        # CI-specific overrides on top of values-dev.yaml:
+        #   - mongodb.arbiter.enabled=false: a 1-data-replica set doesn't
+        #     need an arbiter; bitnami's chart spawns one by default in
+        #     architecture=replicaset, which adds a pod that waits forever.
+        #   - {mongodb,minio}.persistence.enabled=false: PVC binding via
+        #     kind's local-path-provisioner adds 30-60s for no benefit
+        #     in a hermetic test.
+        # Combined with --timeout 10m these eliminated the 5m install
+        # deadline overruns observed in CI.
         run: |
           set -euo pipefail
           kubectl create namespace "${NS}"
@@ -251,19 +260,26 @@ jobs:
             --set "image.tag=$(echo ${IMG} | cut -d: -f2)" \
             --set "image.pullPolicy=Never" \
             --set "metrics.enabled=true" \
-            --wait --timeout 5m
+            --set "mongodb.arbiter.enabled=false" \
+            --set "mongodb.persistence.enabled=false" \
+            --set "minio.persistence.enabled=false" \
+            --wait --timeout 10m
 
       - name: Wait for /readyz on server
+        # `iterion.fullname` renders as `<release>-iterion` for the
+        # server (no `-server` suffix); the runner template appends
+        # `-runner`. Mismatched names here would silently hang for the
+        # full --timeout before erroring.
         run: |
           set -euo pipefail
           kubectl -n "${NS}" wait --for=condition=Available --timeout=180s \
-            deployment/${RELEASE}-iterion-server
+            deployment/${RELEASE}-iterion
           kubectl -n "${NS}" wait --for=condition=Available --timeout=180s \
             deployment/${RELEASE}-iterion-runner
 
       - name: Port-forward server
         run: |
-          kubectl -n "${NS}" port-forward svc/${RELEASE}-iterion-server 4891:4891 &
+          kubectl -n "${NS}" port-forward svc/${RELEASE}-iterion 4891:4891 &
           # Give port-forward a moment to come up before curl-ing.
           for i in $(seq 1 30); do
             if curl -sf http://localhost:4891/readyz; then
@@ -307,7 +323,7 @@ jobs:
         # cloudpublisher / runner code paths, not just declared.
         run: |
           set -euo pipefail
-          kubectl -n "${NS}" port-forward svc/${RELEASE}-iterion-server 9090:9090 &
+          kubectl -n "${NS}" port-forward svc/${RELEASE}-iterion 9090:9090 &
           sleep 3
           if ! curl -sf http://localhost:9090/metrics | grep -E '^iterion_runs_created_total\{' | grep -v ' 0$'; then
             echo "::error::iterion_runs_created_total never incremented (server-side metrics regression)"
@@ -320,7 +336,7 @@ jobs:
         run: |
           kubectl -n "${NS}" get pods -o wide
           kubectl -n "${NS}" describe pods
-          for d in ${RELEASE}-iterion-server ${RELEASE}-iterion-runner; do
+          for d in ${RELEASE}-iterion ${RELEASE}-iterion-runner; do
             echo "=== logs $d ==="
             kubectl -n "${NS}" logs deployment/$d --tail=200 || true
           done
