@@ -304,7 +304,11 @@ func (b *SnapshotBuilder) handleNodeFinished(evt *store.Event, branch string) {
 	exec.FinishedAt = &ts
 	exec.CurrentEventSeq = evt.Seq
 	exec.LastSeq = evt.Seq
-	if exec.Status == ExecStatusRunning {
+	// Human nodes pass through Paused before they finish (the status
+	// is flipped by handleHumanInputRequested, then a resume → answer
+	// path emits node_finished). Allow the transition from Paused too,
+	// otherwise the canvas stays stuck on the human node after answer.
+	if exec.Status == ExecStatusRunning || exec.Status == ExecStatusPaused {
 		exec.Status = ExecStatusFinished
 	}
 }
