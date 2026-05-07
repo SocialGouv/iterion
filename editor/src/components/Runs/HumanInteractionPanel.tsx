@@ -107,7 +107,7 @@ export default function HumanInteractionPanel({ runId }: Props) {
           </div>
         )}
 
-        {review && <ReviewBlock outputs={review} />}
+        <ReviewBlock questions={pending.questions ?? {}} runOutputs={review} />
 
         {loading ? (
           <p className="text-[11px] text-fg-subtle">Loading schema…</p>
@@ -166,38 +166,65 @@ export default function HumanInteractionPanel({ runId }: Props) {
 }
 
 interface ReviewBlockProps {
-  outputs: Record<string, Record<string, unknown>>;
+  // questions is the human node's resolved input (via {{outputs.X}}
+  // references in the inbound edges' `with {}` clauses). For
+  // `planner -> approval with { plan: "{{outputs.planner}}" }`, this
+  // is { plan: <full planner output> } — i.e. the actual content
+  // the operator must accept or reject. Surfacing it inline is the
+  // whole point of the panel.
+  questions: Record<string, unknown>;
+  // runOutputs is the full checkpoint.outputs map (every prior node's
+  // structured output). Useful as broader context when the inbound
+  // edge mapping doesn't bring everything; tucked behind a <details>.
+  runOutputs: Record<string, Record<string, unknown>> | null;
 }
 
-function ReviewBlock({ outputs }: ReviewBlockProps) {
-  const entries = Object.entries(outputs);
+function ReviewBlock({ questions, runOutputs }: ReviewBlockProps) {
+  const entries = Object.entries(questions).filter(([, v]) => v !== undefined);
+  if (entries.length === 0 && !runOutputs) return null;
   return (
     <div className="space-y-2">
-      <div className="text-[11px] font-medium text-fg-default">
-        Review the output of the previous node{entries.length > 1 ? "s" : ""}:
-      </div>
-      <div className="space-y-2">
-        {entries.map(([nodeId, fields]) => (
-          <div
-            key={nodeId}
-            className="rounded border border-border-subtle bg-surface-0 p-2"
-          >
-            <div className="text-[10px] font-mono text-fg-muted mb-1">
-              from {nodeId}
-            </div>
-            <div className="space-y-1">
-              {Object.entries(fields).map(([k, v]) => (
-                <div key={k} className="text-[11px]">
-                  <span className="font-mono text-fg-subtle">{k}: </span>
-                  <span className="whitespace-pre-wrap break-words">
-                    {renderValue(v)}
-                  </span>
-                </div>
-              ))}
-            </div>
+      {entries.length > 0 && (
+        <>
+          <div className="text-[11px] font-medium text-fg-default">
+            Review:
           </div>
-        ))}
-      </div>
+          <div className="rounded border border-border-subtle bg-surface-0 p-2 space-y-2">
+            {entries.map(([k, v]) => (
+              <div key={k} className="text-[12px]">
+                <div className="text-[10px] font-mono text-fg-subtle mb-0.5">{k}</div>
+                <div className="whitespace-pre-wrap break-words">
+                  {renderValue(v)}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      {runOutputs && (
+        <details className="rounded border border-border-subtle bg-surface-0">
+          <summary className="cursor-pointer px-2 py-1 text-[10px] text-fg-subtle select-none">
+            All run outputs (debug)
+          </summary>
+          <div className="px-2 pb-2 space-y-2">
+            {Object.entries(runOutputs).map(([nodeId, fields]) => (
+              <div key={nodeId} className="text-[11px]">
+                <div className="text-[10px] font-mono text-fg-muted mb-0.5">
+                  from {nodeId}
+                </div>
+                {Object.entries(fields).map(([k, v]) => (
+                  <div key={k}>
+                    <span className="font-mono text-fg-subtle">{k}: </span>
+                    <span className="whitespace-pre-wrap break-words">
+                      {renderValue(v)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
     </div>
   );
 }
