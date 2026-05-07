@@ -1,0 +1,565 @@
+## ─────────────────────────────────────────────────────────────────
+## dogfood_editor_ui_loop
+##
+## Dogfooding workflow: implement a feature on iterion's editor
+## (editor/, React + Vite), then verify the running UI through
+## Playwright MCP. The judge can escalate to a human via ask_user
+## when the visual verdict is ambiguous, and a final human gate
+## confirms before the run terminates successfully.
+##
+## Pipeline:
+##   1. plan          — Claude Code, opus 4.7. session=fresh, read-only.
+##                      Reads editor/src/, identifies React components,
+##                      API client (editor/src/api/), backend endpoint
+##                      hooks. Produces a structured plan.
+##   2. act           — Claude Code, opus 4.7. session=inherit.
+##                      Implements the plan. NEVER touches pkg/ or cmd/
+##                      unless the plan explicitly requires it. Verifies
+##                      `pnpm --filter editor exec tsc --noEmit`.
+##   3. playwright_run — Claude Code, opus 4.7. session=fresh,
+##                      mcp.playwright.* enabled.
+##                      Launches `pnpm --filter editor exec vite` in the
+##                      background, navigates with Playwright, snapshots
+##                      DOM + console + network, ALWAYS kills the dev
+##                      server on exit (success or failure).
+##   4. judge         — Claude Code, opus 4.7. session=fresh,
+##                      interaction: human.
+##                      Anti-façade audit: checks `git diff --name-only`
+##                      against the plan's declared file set, console
+##                      errors, feature_visible. Calls ask_user when
+##                      ui_quality is borderline.
+##   5. fixer         — Claude Code, opus 4.7. session=inherit (from
+##                      judge). Applies fix_plan. Stays inside editor/.
+##   6. human_gate    — Final approval. interaction: human.
+##                      Default exit when both judge AND human approve.
+##
+## Loop bound: ui_loop(3). On exhaustion the workflow falls through
+## to `fail` via the unconditional reviewer→fail edges.
+##
+## Anti-façade rules baked into judge_system (after the goai →
+## claw-code-go incident, see docs/workflow_authoring_pitfalls.md):
+##   - diff_touches_correct_files: every changed path MUST match
+##     `editor/.*` OR be in plan_output.files_to_modify. Otherwise
+##     `approved=false` with a "scope drift" blocker.
+##   - console_errors non empty → `approved=false`.
+##   - feature_visible=false → `approved=false`.
+##   - When ui_quality cannot be decided from the screenshot, the
+##     judge MUST call ask_user instead of inventing a verdict.
+##
+## Operator pre-requisites (host machine):
+##   1. `npx -y @playwright/mcp@latest --help` works (auto-installs
+##      via npx on first run; subsequent runs hit the npm cache).
+##   2. `npx playwright install chromium` once on the host. The MCP
+##      server reuses ~/.cache/ms-playwright/.
+##   3. Port {{vars.dev_port}} (default 5173) is free. The
+##      playwright_run prompt kills any leftover vite process before
+##      starting its own.
+##   4. The host has bash 5.x (devbox). `sh` portability isn't
+##      required here — all bash invocations are made by Claude Code,
+##      which uses bash directly.
+##
+## Sandbox: forced to `none` in V1. The editor dev server binds to
+## 127.0.0.1:{{vars.dev_port}} and the CONNECT proxy doesn't
+## currently route loopback traffic. Phase 4 (proxy bypass for
+## localhost) will allow `sandbox: auto` here.
+##
+## Worktree: `auto` + `merge_into: none`. The run produces a commit
+## on a branch `iterion/run/<friendly>` for inspection. Operator
+## decides whether to fast-forward main themselves.
+##
+## Run example:
+##   devbox run -- iterion run examples/dogfood_editor_ui_loop.iter \
+##     --var feature_prompt='Add a "Pause run" button under the run
+##                            header that POSTs /api/runs/{id}/pause'
+## ─────────────────────────────────────────────────────────────────
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+  feature_prompt: string
+  dev_port: string = "5173"
+
+## ─── MCP server : Playwright ──────────────────────────────────────
+##
+## stdio transport: the bridge runs as a subprocess of the iterion
+## MCP manager and exits with the run. `npx -y` auto-installs on
+## first invocation and uses the cached package after that.
+##
+## Tools that get registered under `mcp.playwright.*`:
+##   browser_navigate, browser_snapshot, browser_click,
+##   browser_type, browser_fill_form, browser_press_key,
+##   browser_take_screenshot, browser_console_messages,
+##   browser_network_requests, browser_wait_for, browser_resize,
+##   browser_close, browser_evaluate, browser_select_option, ...
+##
+## We only allowlist the subset playwright_run actually needs (see
+## the agent's `tools:` list below). Other servers can be added at
+## the same top level later (e.g. mcp_server github, mcp_server
+## context7) — the manager namespaces tools by server.
+mcp_server playwright:
+  transport: stdio
+  command: "npx -y @playwright/mcp@latest"
+
+## ─── Schemas ──────────────────────────────────────────────────────
+
+schema plan_output:
+  objective: string
+  files_to_modify: string[]
+  components_touched: string[]
+  api_endpoints: string[]
+  test_plan: string
+
+schema ui_observation:
+  url_visited: string
+  dom_assertions: string[]
+  console_errors: string[]
+  network_failures: string[]
+  screenshot_paths: string[]
+  feature_visible: bool
+  notes: string
+
+## verdict_output is the contract between judge and the rest of the
+## graph. `family` is constant ("dogfood") here — kept for symmetry
+## with vibe_review_alternating's enum-validated structured output.
+##
+## diff_touches_correct_files is the load-bearing anti-façade flag:
+## the judge runs `git diff --name-only` and verifies every changed
+## path matches editor/.* OR is in plan_output.files_to_modify.
+schema verdict_output:
+  approved: bool
+  family: string [enum: "dogfood"]
+  blockers: string[]
+  fix_plan: string
+  confidence: string [enum: "low", "medium", "high"]
+  ui_quality: string [enum: "broken", "rough", "polished"]
+  diff_touches_correct_files: bool
+  human_check_required: bool
+
+schema fix_input:
+  blockers: string[]
+  fix_plan: string
+
+schema fix_output:
+  applied: bool
+  summary: string
+
+schema gate_input:
+  plan: json
+  ui_observed: json
+  verdict: json
+
+schema gate_output:
+  approved: bool
+  comments: string
+
+## ─── Prompts : Plan ───────────────────────────────────────────────
+
+prompt plan_system:
+  Plan mode is active. You MUST NOT make any edits, run any
+  non-readonly tools (no Write, Edit, mkdir, touch, mv, rm, npm
+  install, git add, git commit), or otherwise mutate the system.
+  This supersedes any "implement" or "add" instruction in the user
+  prompt.
+
+  You should:
+  1. Explore {{vars.workspace_dir}}/editor/ with read-only tools
+     (Read, Glob, Grep, and bash limited to readonly commands such
+     as ls, cat, head, git status, git log).
+  2. Identify the React components, the API client (under
+     editor/src/api/), and the backend endpoint(s) the feature
+     requires. If the feature needs a new HTTP route, name the
+     pkg/server/ file that handles it — but DO NOT plan to write
+     it unless the user prompt explicitly calls for backend work.
+  3. Produce a structured plan. `files_to_modify` MUST list paths
+     relative to {{vars.workspace_dir}} (e.g.
+     "editor/src/components/Runs/RunHeader.tsx"). The judge will
+     enforce the diff against this list — keep it accurate.
+
+  The next node inherits this Claude Code session and will
+  implement the plan you produce here.
+
+prompt plan_user:
+  Feature to implement on the iterion editor:
+  {{vars.feature_prompt}}
+
+  Workspace: {{vars.workspace_dir}}
+  Editor entry: {{vars.workspace_dir}}/editor/
+  Editor dev script: pnpm --filter editor exec vite
+
+  Produce the structured plan. Do not modify any file.
+
+## ─── Prompts : Act ────────────────────────────────────────────────
+
+prompt act_system:
+  Act mode is active. The plan you produced in the previous turn
+  of this same Claude Code session is authoritative. Implement it.
+
+  You should:
+  1. Apply each change from the plan using Write, Edit, and bash.
+  2. NEVER touch files outside `editor/` unless the plan explicitly
+     listed them in `files_to_modify`. The downstream judge enforces
+     this with `git diff --name-only` — scope drift is rejected.
+  3. After your edits, verify TypeScript compiles:
+        cd {{vars.workspace_dir}}/editor && \
+          corepack pnpm exec tsc --noEmit
+     If types fail, fix them before stopping.
+  4. Do NOT run `pnpm dev` or `pnpm build` here — the next node
+     (playwright_run) owns the dev server lifecycle. Starting one
+     here would leak a process into its workspace.
+  5. Do NOT commit. The workflow runs inside an isolated git
+     worktree; the operator inspects the diff after the run.
+
+prompt act_user:
+  Implement the plan you produced in the previous turn, in this
+  same session. The feature description is already in your
+  conversation history.
+
+  Workspace: {{vars.workspace_dir}}
+
+  Edit the necessary files under editor/, run `tsc --noEmit` until
+  green, and stop. Do not commit, do not start the dev server.
+
+## ─── Prompts : Playwright ─────────────────────────────────────────
+
+prompt playwright_system:
+  You are a UI integration tester. You have access to Playwright
+  MCP tools (mcp.playwright.browser_*) and bash for process
+  management.
+
+  Procedure (MUST follow in order):
+  1. Pre-flight cleanup. Kill any leftover vite process bound to
+     {{vars.dev_port}}:
+        pgrep -f "vite.*--port {{vars.dev_port}}" \
+          | xargs -r kill -9 || true
+  2. Start the editor dev server in background:
+        cd {{vars.workspace_dir}}/editor && \
+          corepack pnpm exec vite \
+            --port {{vars.dev_port}} \
+            --host 127.0.0.1 \
+            --strictPort \
+            > /tmp/iterion-vite-{{vars.dev_port}}.log 2>&1 &
+        echo $! > /tmp/iterion-vite-{{vars.dev_port}}.pid
+     Then wait up to 30s for "Local:" to appear in the log:
+        for i in $(seq 1 30); do
+          grep -q "Local:" /tmp/iterion-vite-{{vars.dev_port}}.log \
+            && break
+          sleep 1
+        done
+     If "Local:" never appears, abort: tail the log into
+     `console_errors` and skip the rest. The judge will reject.
+  3. Call mcp.playwright.browser_navigate with url
+     http://127.0.0.1:{{vars.dev_port}}/.
+  4. Call mcp.playwright.browser_snapshot to capture the
+     accessibility tree. Record the relevant DOM landmarks for the
+     feature (selectors, roles, text). Add them to dom_assertions.
+  5. Exercise the feature: click the new control, fill forms,
+     assert the expected state change. Use browser_click,
+     browser_type, browser_fill_form, browser_press_key,
+     browser_select_option, browser_wait_for as appropriate.
+  6. Call mcp.playwright.browser_console_messages and capture any
+     entry whose level is "error" into console_errors. Also call
+     mcp.playwright.browser_network_requests and capture non-2xx
+     entries into network_failures.
+  7. Call mcp.playwright.browser_take_screenshot. Save to
+     {{vars.workspace_dir}}/.iterion/dogfood-screenshot.png and
+     record the path in screenshot_paths.
+  8. ALWAYS kill the dev server before returning, even on failure:
+        kill "$(cat /tmp/iterion-vite-{{vars.dev_port}}.pid)" \
+          2>/dev/null || true
+        pgrep -f "vite.*--port {{vars.dev_port}}" \
+          | xargs -r kill -9 || true
+     Skipping this leaks a port and breaks the next iteration.
+
+  You MUST populate ui_observation with concrete evidence.
+  Descriptive prose alone (without DOM assertions, screenshot,
+  and console capture) is rejected by the judge.
+
+prompt playwright_user:
+  The feature was just implemented in
+  {{vars.workspace_dir}}/editor/. Your job is to verify it works
+  in a real browser.
+
+  Plan that was implemented:
+  {{input.plan}}
+
+  Run the procedure described in your system prompt. Populate
+  ui_observation with the evidence you collected and stop.
+
+## ─── Prompts : Judge ──────────────────────────────────────────────
+
+prompt judge_system:
+  You are a UI-aware production-readiness judge. You have bash and
+  read tools. USE THE TOOLS — never infer from prose alone.
+
+  Procedure:
+  1. Read the plan (input.plan) and the UI observation
+     (input.ui_observed). Note the declared
+     plan.files_to_modify list.
+  2. Run `git -C {{vars.workspace_dir}} diff --name-only` and
+     enumerate the changed paths. For each path, verify it is in
+     plan.files_to_modify OR matches `editor/.*`. If ANY path
+     fails this check, set diff_touches_correct_files=false and
+     add a blocker:
+        "Scope drift: <path> is outside editor/ and not in the
+         plan's files_to_modify list. The implementation does not
+         match what was planned."
+  3. If ui_observed.console_errors is non-empty, set
+     approved=false and add each error as a blocker.
+  4. If ui_observed.feature_visible is false, set approved=false
+     and add a blocker:
+        "Feature not visible in the rendered DOM (DOM assertions:
+         <list>). The change either failed to render or was not
+         routed correctly."
+  5. If the screenshot suggests the feature is implemented but
+     visually broken/rough (overlapping elements, contrast
+     issues, alignment off), set ui_quality accordingly:
+        - "broken"   → approved=false, blocker required
+        - "rough"    → approved=false only if blocker concrete,
+                       otherwise approved=true with low confidence
+        - "polished" → approved candidate
+  6. If ui_quality is genuinely ambiguous from the screenshot
+     alone (e.g. accessibility/contrast judgement, brand
+     consistency, "is this visually correct for the user's
+     intent"), set human_check_required=true,
+     confidence="low", and call the ask_user tool with a precise
+     question quoting the screenshot path. Do NOT invent a
+     verdict.
+
+  ANTI-FAÇADE RULE (load-bearing):
+  diff_touches_correct_files=false is ALWAYS an immediate
+  approved=false. Do not soften this. Past incidents (the
+  goai → claw-code-go migration) have shown that LLM agents
+  produce convincing fake implementations when scanners are
+  gameable. The diff scan is the structural anchor — never bypass
+  it because the screenshot looks plausible.
+
+  family is fixed to "dogfood" in your output (the enum has only
+  one value here — kept for symmetry with the cross-family review
+  workflows).
+
+prompt judge_user:
+  Plan: {{input.plan}}
+  UI observed: {{input.ui_observed}}
+  Iteration: {{loop.ui_loop.iteration}}
+
+  Workspace: {{vars.workspace_dir}}
+
+  Run the audit procedure described in your system prompt and
+  produce verdict_output.
+
+## ─── Prompts : Fix ────────────────────────────────────────────────
+
+prompt fix_system:
+  You are inheriting the judge's session, so the plan, the
+  implementation, the UI observation, and the verdict are all in
+  your conversation history. Apply the fix_plan against the
+  current `editor/` working tree.
+
+  Rules:
+  1. Stay inside editor/. Do NOT touch pkg/ or cmd/ unless the
+     verdict's blocker explicitly calls for a backend change AND
+     the original plan listed it in files_to_modify.
+  2. After your edits, verify `corepack pnpm exec tsc --noEmit`
+     in editor/ still passes.
+  3. Do NOT start the dev server. The next playwright_run node
+     owns it.
+  4. Do NOT commit. Stop when types are green and the blockers
+     are addressed.
+
+prompt fix_user:
+  Apply the fix_plan to address these blockers, in
+  {{vars.workspace_dir}}/editor/.
+
+  Blockers:
+  {{input.blockers}}
+
+  Fix plan:
+  {{input.fix_plan}}
+
+  Output applied=true and a 1-2 sentence summary of what changed.
+
+## ─── Prompts : Human gate ────────────────────────────────────────
+
+prompt human_gate_instructions:
+  The judge approved the run and called for a final human review.
+  Inspect the screenshot, the UI observation summary, and the
+  diff. Approve to land the changes (the workflow will return a
+  commit on its branch); reject to terminate without merge.
+
+## ─── Nodes : Plan / Act ──────────────────────────────────────────
+
+agent plan:
+  backend: "claude_code"
+  model: "claude-opus-4-7"
+  reasoning_effort: "max"
+  output: plan_output
+  system: plan_system
+  user: plan_user
+  session: fresh
+
+agent act:
+  backend: "claude_code"
+  model: "claude-opus-4-7"
+  reasoning_effort: "max"
+  system: act_system
+  user: act_user
+  session: inherit
+
+## ─── Nodes : Playwright ──────────────────────────────────────────
+
+## playwright_run is the only node that activates the playwright
+## MCP server. The `tools:` allowlist is intentional: we expose
+## just the subset needed for navigate / interact / observe. Any
+## other mcp.playwright.* tool stays unreachable for this node.
+##
+## tool_max_steps is sized to allow the dev-server bootstrap
+## (1-2 bash calls), several browser interactions, screenshot,
+## and the cleanup. 40 steps is generous; the LLM tends to
+## complete in ~15-20.
+agent playwright_run:
+  backend: "claude_code"
+  model: "claude-opus-4-7"
+  reasoning_effort: "max"
+  output: ui_observation
+  system: playwright_system
+  user: playwright_user
+  session: fresh
+  tools: [bash, mcp.playwright.browser_navigate, mcp.playwright.browser_snapshot, mcp.playwright.browser_click, mcp.playwright.browser_type, mcp.playwright.browser_fill_form, mcp.playwright.browser_press_key, mcp.playwright.browser_select_option, mcp.playwright.browser_wait_for, mcp.playwright.browser_take_screenshot, mcp.playwright.browser_console_messages, mcp.playwright.browser_network_requests, mcp.playwright.browser_resize, mcp.playwright.browser_close]
+  tool_max_steps: 40
+  mcp:
+    servers: [playwright]
+
+## ─── Nodes : Judge / Fix ─────────────────────────────────────────
+
+## interaction: human enables ask_user escalation. When the model
+## emits the ask_user tool call (e.g. "is this UI visually correct
+## for the user's intent?"), the runtime pauses, asks the operator
+## via the run console / CLI / Telegram bridge, and re-invokes the
+## judge with the answer mapped into its conversation. Session
+## continuity is preserved across the pause.
+judge judge:
+  backend: "claude_code"
+  model: "claude-opus-4-7"
+  reasoning_effort: "max"
+  output: verdict_output
+  system: judge_system
+  user: judge_user
+  session: fresh
+  interaction: human
+
+agent fixer:
+  backend: "claude_code"
+  model: "claude-opus-4-7"
+  reasoning_effort: "max"
+  input: fix_input
+  output: fix_output
+  system: fix_system
+  user: fix_user
+  session: inherit
+  interaction: human
+
+## Final approval gate. The judge's verdict is consultative; the
+## human has the last word before the run lands its commit. Set
+## interaction: human so the runtime pauses here every time and
+## the operator answers via whichever channel they prefer (run
+## console panel, CLI --answers-file, or Telegram bridge).
+human human_gate:
+  input: gate_input
+  output: gate_output
+  instructions: human_gate_instructions
+  interaction: human
+
+## ─── Workflow ────────────────────────────────────────────────────
+
+workflow dogfood_editor_ui_loop:
+  entry: plan
+
+  ## Isolated git worktree at .iterion/worktrees/<run-id>/. Mutations
+  ## (act, fixer) stay scoped to it; the judge's `git diff` only sees
+  ## the run's own changes, not the operator's WIP. On clean exit
+  ## iterion creates `iterion/run/<friendly-name>` as a GC guard.
+  ##
+  ## To opt out of the auto fast-forward and inspect the branch
+  ## manually before merging, pass `--merge-into none` on the CLI
+  ## (recommended for this workflow — the diff is the artifact).
+  worktree: auto
+
+  ## Sandbox forced off in V1: the dev server binds to 127.0.0.1 and
+  ## the sandbox CONNECT proxy doesn't currently route loopback. See
+  ## the docstring for the Phase 4 follow-up.
+  sandbox: none
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "1h"
+    max_cost_usd: 30
+
+  compaction:
+    threshold: 0.85
+    preserve_recent: 6
+
+  mcp:
+    servers: [playwright]
+
+  ## ─── Phase 1 : Plan → Act ────────────────────────────────────
+  ## Both nodes share one Claude Code session via session: inherit
+  ## on act. Plan emits a structured plan; act executes it in the
+  ## same conversation (continuity of reasoning + workspace cache).
+  plan -> act with {
+    _session_id: "{{outputs.plan._session_id}}"
+  }
+
+  ## ─── Phase 2 : Playwright run → Judge ────────────────────────
+  ## Fresh session for playwright_run: the dev session shouldn't
+  ## bias the UI tester (they're functionally separate concerns —
+  ## "did I write the code" vs "does the running app behave").
+  act -> playwright_run
+
+  playwright_run -> judge with {
+    plan: "{{outputs.plan}}",
+    ui_observed: "{{outputs.playwright_run}}"
+  }
+
+  ## ─── Phase 3 : Loop on rejection ─────────────────────────────
+  ## Edge order matters: iterion evaluates conditions top-down,
+  ## first match wins.
+  ##
+  ## 3a. Approved AND ui_quality not broken → final human gate.
+  judge -> human_gate when "approved && ui_quality != 'broken'" with {
+    plan: "{{outputs.plan}}",
+    ui_observed: "{{outputs.playwright_run}}",
+    verdict: "{{outputs.judge}}"
+  }
+
+  ## 3b. Rejected with concrete blockers → fixer (same Claude Code
+  ## session as the judge so the fixer reuses the prompt cache and
+  ## the workspace files already loaded). The fixer runs once per
+  ## loop iteration; cap is enforced by ui_loop on the inbound edge.
+  judge -> fixer when "!approved && length(blockers) > 0" as ui_loop(3) with {
+    blockers: "{{outputs.judge.blockers}}",
+    fix_plan: "{{outputs.judge.fix_plan}}",
+    _session_id: "{{outputs.judge._session_id}}"
+  }
+
+  ## 3c. Rejected without concrete blockers BUT confidence is low
+  ## → re-run the playwright probe (could be transient flake:
+  ## screenshot saved before render settled, dev server slow to
+  ## hot-reload). Doesn't burn a fix iteration. Same loop counter
+  ## so the cycle is still bounded.
+  judge -> playwright_run when "!approved && confidence == 'low' && length(blockers) == 0" as ui_loop(3)
+
+  ## After fix, re-run playwright_run to verify. Same loop counter
+  ## so fix-then-test cycles are capped together.
+  fixer -> playwright_run as ui_loop(3)
+
+  ## ─── Phase 4 : Human gate ────────────────────────────────────
+  human_gate -> done when approved
+  human_gate -> fail
+
+  ## ─── Loop exhaustion / catch-all fallthroughs ────────────────
+  ## When ui_loop hits its bound the loop-bearing edges above are
+  ## skipped and we fall through to these terminal edges. The
+  ## judge→fail catches "judge ran but exhausted retries"; the
+  ## fixer→fail catches "fixer ran on the last iteration and
+  ## couldn't get to playwright_run".
+  judge -> fail
+  fixer -> fail

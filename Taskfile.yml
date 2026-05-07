@@ -114,6 +114,13 @@ tasks:
     cmds:
       - go test -v -tags live -count=1 -run TestLive_VisionAttachments -timeout 5m ./e2e/...
 
+  dogfood:editor:
+    desc: 'Run the editor UI feedback loop on a feature prompt (requires CLAUDE_CODE_USE_BEDROCK or claude-code login + npx playwright install chromium). Pass the prompt via FEATURE_PROMPT env var.'
+    deps: [build]
+    cmds:
+      - test -n "$FEATURE_PROMPT" || (echo 'set FEATURE_PROMPT=...' >&2 && exit 1)
+      - ./{{.BINARY}} run examples/dogfood_editor_ui_loop.iter --var feature_prompt="$FEATURE_PROMPT" --merge-into none
+
   fmt:
     desc: Format Go source files
     cmds:
