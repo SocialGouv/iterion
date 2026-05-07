@@ -1,0 +1,74 @@
+## Fixture : playwright_demo
+##
+## Scaffolding for the run-view Browser pane "live mode" (PR 3 of the
+## browser-simulation feature). PR 3 ships the architecture: the
+## BrowserRegistry, the /api/runs/:id/browser/cdp WS proxy, and the
+## C060 IR diagnostic that refuses runs whose sandbox image lacks
+## Chromium. PR 4 will land the Docker exec --remote-debugging-pipe
+## runner that actually drives the browser.
+##
+## Today this workflow:
+##   - Validates clean ONLY when sandbox.image points at
+##     iterion-sandbox-browser (or a fork). Without it the IR emits
+##     C060 — by design.
+##   - Cannot run end-to-end yet: BrowserRegistry has no real
+##     ChromiumRunner wired (returns ErrChromiumNotImplemented).
+##     Use this file as a template for PR 4 once the runner lands.
+##
+## When PR 4 ships:
+##   - The agent below issues `browser_navigate` / `browser_snapshot`
+##     calls; the runtime spawns a Chromium per session and pipes
+##     CDP to the editor's BrowserPane.
+##   - The pane auto-switches to Live mode and renders the
+##     Page.startScreencast frames.
+##
+## Run instructions (post-PR 4):
+##   devbox run -- ./iterion run examples/playwright_demo.iter \
+##     --merge-into none
+##   devbox run -- ./iterion editor --port 8080
+##   # Open the run, watch the Browser tab show example.com.
+
+mcp_server playwright:
+  transport: stdio
+  command: "npx"
+  args: ["-y", "@playwright/mcp@latest"]
+
+## ─── Schemas ────────────────────────────────────────────────────────
+
+schema page_check:
+  ok: bool
+  title: string
+
+## ─── Agent ──────────────────────────────────────────────────────────
+
+agent visual_check:
+  model: "anthropic/claude-sonnet-4-6"
+  output: page_check
+  mcp:
+    servers: [playwright]
+  user: visual_check_user
+
+prompt visual_check_user:
+  Use the Playwright MCP browser tools to:
+    1. Navigate to https://example.com
+    2. Take a snapshot of the page
+    3. Confirm the page title contains the word "Example"
+    4. Return {ok: true, title: <observed page title>}
+
+## ─── Workflow ───────────────────────────────────────────────────────
+
+workflow playwright_demo:
+  ## Browser-capable image. Without this, `iterion validate` emits
+  ## C060 because the Playwright MCP server above cannot run on a
+  ## Chromium-less image. The :edge tag tracks main; pin a digest
+  ## in production.
+  sandbox:
+    mode: inline
+    image: "ghcr.io/socialgouv/iterion-sandbox-browser:edge"
+
+  budget:
+    max_duration: "5m"
+
+  entry: visual_check
+
+  visual_check -> done

@@ -22,6 +22,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/auth/oidc"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
+	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -156,6 +157,15 @@ type Config struct {
 	// cloud metrics live on the runner / publisher side.
 	Metrics *metrics.Registry
 
+	// BrowserRegistry tracks active Chromium CDP sessions for the
+	// editor's Browser pane (PR 3 of the browser-simulation feature).
+	// When non-nil, the server registers GET
+	// /api/runs/{id}/browser/cdp and proxies CDP frames to the
+	// matching session. Local + cloud builds wire an in-memory
+	// registry shared with the runtime; tests can pass a hand-rolled
+	// mock to validate the WS proxy independently of Chromium.
+	BrowserRegistry mcp.BrowserRegistry
+
 	// MaxUploadSize bounds the bytes the upload endpoint will accept
 	// per attachment. Zero is replaced with a mode-specific default
 	// (1 GB desktop, 50 MB web/cloud) at registration time.
@@ -213,6 +223,11 @@ type Server struct {
 	// ListenAndServe and read after addrReady is closed.
 	listener  net.Listener
 	addrReady chan struct{}
+
+	// browserSessions is the per-run Chromium CDP session registry,
+	// shared with the runtime. Nil disables the Browser pane's live
+	// mode (the iframe + screenshot scrubber paths still work).
+	browserSessions mcp.BrowserRegistry
 }
 
 // New creates a new editor server.
@@ -244,19 +259,20 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		cfg.OIDCStates = oidc.NewMemoryStateStore(10 * time.Minute)
 	}
 	s := &Server{
-		cfg:          cfg,
-		logger:       logger,
-		mux:          http.NewServeMux(),
-		addrReady:    make(chan struct{}),
-		authSvc:      cfg.AuthService,
-		signer:       cfg.AuthSigner,
-		oidcRegistry: cfg.OIDCRegistry,
-		oidcStates:   cfg.OIDCStates,
-		apiKeys:      cfg.ApiKeys,
-		runSecrets:   cfg.RunSecrets,
-		sealer:       cfg.Sealer,
-		oauthStore:   cfg.OAuthForfait,
-		httpClient:   &http.Client{Timeout: 15 * time.Second},
+		cfg:             cfg,
+		logger:          logger,
+		mux:             http.NewServeMux(),
+		addrReady:       make(chan struct{}),
+		authSvc:         cfg.AuthService,
+		signer:          cfg.AuthSigner,
+		oidcRegistry:    cfg.OIDCRegistry,
+		oidcStates:      cfg.OIDCStates,
+		apiKeys:         cfg.ApiKeys,
+		runSecrets:      cfg.RunSecrets,
+		sealer:          cfg.Sealer,
+		oauthStore:      cfg.OAuthForfait,
+		httpClient:      &http.Client{Timeout: 15 * time.Second},
+		browserSessions: cfg.BrowserRegistry,
 	}
 	s.hub = NewHub(logger)
 	go s.hub.Run()

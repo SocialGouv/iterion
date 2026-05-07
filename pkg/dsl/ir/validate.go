@@ -45,6 +45,10 @@ const (
 	DiagInvalidAttachmentMIME     DiagCode = "C052" // accept_mime entry not in type/subtype form
 	DiagUnknownAttachment         DiagCode = "C053" // {{attachments.X}} but X not declared
 	DiagAttachmentSubfieldUnknown DiagCode = "C054" // attachments.<name>.<subfield> sub-field unknown
+
+	// Browser-pane diagnostics (PR 3 of the browser-simulation
+	// feature). Reserve C060+ for future browser/Playwright checks.
+	DiagPlaywrightNeedsBrowserImage DiagCode = "C060" // Playwright MCP server requires a browser-capable sandbox image
 )
 
 // validate performs static validation on a compiled workflow.
@@ -69,6 +73,92 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateNodeMaxTokensVsBudget(w)
 	c.validateMCPAuth(w)
 	c.validateCompaction(w)
+	c.validatePlaywrightMCP(w)
+}
+
+// validatePlaywrightMCP checks that any declared MCP server which
+// resembles the Playwright MCP package (npx + @playwright/mcp, or
+// a `playwright-mcp`/`playwright_mcp` binary) is paired with a
+// sandbox image that ships Chromium — but only when the workflow
+// has actually opted into a sandbox. Workflows running on the host
+// rely on the operator's own Chromium install (typical for
+// dev-loop examples that use playwright_visual_qa or
+// dogfood_editor_ui_loop) and we don't second-guess that.
+//
+// Catching the sandboxed case at compile time keeps the failure
+// loud and obvious instead of surfacing as a cryptic mid-run error
+// when the MCP child crashes on the first `browser_*` call.
+func (c *compiler) validatePlaywrightMCP(w *Workflow) {
+	// Skip when the workflow doesn't use a sandbox: host runs are
+	// the operator's responsibility (they presumably ran
+	// `playwright install chromium` ahead of time).
+	if !w.Sandbox.IsActive() {
+		return
+	}
+	for name, srv := range w.MCPServers {
+		if srv == nil || !looksLikePlaywrightMCP(srv) {
+			continue
+		}
+		if !sandboxHasBrowserImage(w.Sandbox) {
+			c.errorf(
+				DiagPlaywrightNeedsBrowserImage,
+				"mcp_servers.%s: Playwright MCP requires a sandbox image that bundles Chromium "+
+					"(e.g. ghcr.io/socialgouv/iterion-sandbox-browser); "+
+					"workflow.sandbox.image is %q",
+				name, sandboxImageOrEmpty(w.Sandbox),
+			)
+		}
+	}
+}
+
+// looksLikePlaywrightMCP returns true when the server config looks
+// like the official Playwright MCP package, or a wrapper that runs
+// it. The matcher is conservative: false negatives are fine (the
+// real failure happens at run time anyway), false positives would be
+// disruptive (workflows that legitimately use a different "browser"
+// MCP would be flagged), so we look for the very specific package
+// signature.
+func looksLikePlaywrightMCP(srv *MCPServer) bool {
+	if srv == nil {
+		return false
+	}
+	cmd := strings.ToLower(srv.Command)
+	if strings.Contains(cmd, "playwright-mcp") || strings.Contains(cmd, "playwright_mcp") {
+		return true
+	}
+	if cmd == "npx" {
+		for _, arg := range srv.Args {
+			lower := strings.ToLower(arg)
+			if strings.Contains(lower, "@playwright/mcp") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// sandboxHasBrowserImage returns true when the sandbox image name
+// suggests a browser-capable variant. The matcher is intentionally
+// loose so internal forks (`my-corp-iterion-sandbox-browser:edge`)
+// also satisfy it. Setting `image:` empty (or omitting the sandbox
+// block entirely) yields false — Phase 0 sandbox modes (none/auto)
+// don't ship Chromium today.
+func sandboxHasBrowserImage(spec *SandboxSpec) bool {
+	if spec == nil {
+		return false
+	}
+	img := strings.ToLower(spec.Image)
+	if img == "" {
+		return false
+	}
+	return strings.Contains(img, "sandbox-browser") || strings.Contains(img, "sandbox-full-browser")
+}
+
+func sandboxImageOrEmpty(spec *SandboxSpec) string {
+	if spec == nil {
+		return ""
+	}
+	return spec.Image
 }
 
 // validateCompaction enforces the value ranges for the compaction block at
