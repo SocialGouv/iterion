@@ -7,8 +7,9 @@ export interface BackendStatus {
   name: "claude_code" | "codex" | "claw";
   available: boolean;
   auth: "oauth" | "api_key" | "none";
-  sources: string[];
-  hints?: string[];
+  // Go serialises nil slices as `null`, so the field may be missing or null.
+  sources?: string[] | null;
+  hints?: string[] | null;
 }
 
 export interface ProviderStatus {

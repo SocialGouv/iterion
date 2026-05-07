@@ -94,14 +94,9 @@ export default function BackendStatusPill() {
         >
           Refresh
         </button>
-        <a
-          className="text-[10px] underline text-fg-subtle hover:text-fg-default"
-          href="https://github.com/SocialGouv/iterion/blob/main/docs/backends.md"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          How to configure
-        </a>
+        <span className="text-[10px] text-fg-subtle">
+          See <code>docs/backends.md</code>
+        </span>
       </div>
     </Popover>
   );
@@ -122,14 +117,14 @@ function BackendRow({ status }: { status: BackendStatus }) {
             <span className="text-fg-subtle text-[10px]">· {status.auth}</span>
           )}
         </div>
-        {status.sources.length > 0 && (
+        {(status.sources?.length ?? 0) > 0 && (
           <div className="text-fg-subtle text-[10px] truncate">
-            {status.sources.join(", ")}
+            {status.sources!.join(", ")}
           </div>
         )}
-        {!status.available && status.hints && status.hints.length > 0 && (
+        {!status.available && (status.hints?.length ?? 0) > 0 && (
           <ul className="text-fg-subtle text-[10px] list-disc list-inside">
-            {status.hints.map((h, i) => (
+            {status.hints!.map((h, i) => (
               <li key={i}>{h}</li>
             ))}
           </ul>

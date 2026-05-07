@@ -151,9 +151,16 @@ func (m *alwaysFailClient) StreamResponse(_ context.Context, _ api.CreateMessage
 	}
 }
 
-// newTestClawExecutor creates a ClawExecutor with the claw backend pre-registered.
+// newTestClawExecutor creates a ClawExecutor with the claw backend
+// pre-registered. WithDefaultBackend("claw") is prepended so the
+// host-credential detector — which now runs as a fallback in
+// resolveBackendName — does not pick up real OAuth files on the dev
+// machine and route a test node to a backend the test never
+// registered. Tests that genuinely want to exercise auto-resolution
+// can pass an overriding WithDefaultBackend("") in opts.
 func newTestClawExecutor(reg *Registry, wf *ir.Workflow, opts ...ClawExecutorOption) *ClawExecutor {
-	e := NewClawExecutor(reg, wf, opts...)
+	all := append([]ClawExecutorOption{WithDefaultBackend(delegate.BackendClaw)}, opts...)
+	e := NewClawExecutor(reg, wf, all...)
 	e.backendRegistry.Register(delegate.BackendClaw, NewClawBackend(reg, e.hooks, e.retry))
 	return e
 }

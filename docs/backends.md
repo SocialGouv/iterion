@@ -11,7 +11,7 @@ to override the auto-selection.
 
 If you have **at least one** of:
 
-- a `~/.claude/credentials.json` (Claude Code OAuth — "forfait")
+- a `~/.claude/.credentials.json` (Claude Code OAuth — "forfait")
 - `ANTHROPIC_API_KEY` set in your environment
 - `OPENAI_API_KEY` set in your environment
 - `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT`
@@ -81,7 +81,7 @@ actually make calls.
 
 | Credential | Source |
 |---|---|
-| OAuth (forfait) | `$CLAUDE_CONFIG_DIR/credentials.json` (default `~/.claude/credentials.json`) |
+| OAuth (forfait) | `$CLAUDE_CONFIG_DIR/.credentials.json` (default `~/.claude/.credentials.json`; non-hidden `credentials.json` also accepted) |
 | Binary | `claude` in `$PATH`, or `~/.claude/local/claude` |
 
 For auto-resolution, **OAuth is required**. If you only have

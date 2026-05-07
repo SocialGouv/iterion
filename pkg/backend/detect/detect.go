@@ -101,9 +101,22 @@ func PreferenceFromEnv() []string {
 
 func detectBackends(prov []ProviderStatus) []BackendStatus {
 	return []BackendStatus{
-		detectOAuthCLI(BackendClaudeCode, findClaudeBinary, claudeConfigDir, "credentials.json", "claude CLI", "~/.claude/credentials.json (Claude Code OAuth)"),
+		detectOAuthCLI(
+			BackendClaudeCode, findClaudeBinary, claudeConfigDir,
+			// Linux/WSL ships Claude Code OAuth as `.credentials.json`
+			// (hidden); older docs/macOS keychain export use the
+			// non-hidden form. Probe both.
+			[]string{".credentials.json", "credentials.json"},
+			"claude CLI",
+			"~/.claude/.credentials.json (Claude Code OAuth)",
+		),
 		detectClaw(prov),
-		detectOAuthCLI(BackendCodex, findCodexBinary, codexHomeDir, "auth.json", "codex CLI", "$CODEX_HOME/auth.json (Codex OAuth)"),
+		detectOAuthCLI(
+			BackendCodex, findCodexBinary, codexHomeDir,
+			[]string{"auth.json"},
+			"codex CLI",
+			"$CODEX_HOME/auth.json (Codex OAuth)",
+		),
 	}
 }
 
@@ -116,7 +129,8 @@ func detectOAuthCLI(
 	name string,
 	findBin func() (string, bool),
 	configDir func() string,
-	credFile, binDesc, oauthDesc string,
+	credFiles []string,
+	binDesc, oauthDesc string,
 ) BackendStatus {
 	st := BackendStatus{Name: name, Auth: AuthNone}
 	binPath, hasBin := findBin()
@@ -125,12 +139,14 @@ func detectOAuthCLI(
 		return st
 	}
 	if dir := configDir(); dir != "" {
-		credPath := filepath.Join(dir, credFile)
-		if fileExists(credPath) {
-			st.Available = true
-			st.Auth = AuthOAuth
-			st.Sources = []string{credPath, "PATH:" + binPath}
-			return st
+		for _, credFile := range credFiles {
+			credPath := filepath.Join(dir, credFile)
+			if fileExists(credPath) {
+				st.Available = true
+				st.Auth = AuthOAuth
+				st.Sources = []string{credPath, "PATH:" + binPath}
+				return st
+			}
 		}
 	}
 	st.Hints = []string{
