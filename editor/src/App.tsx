@@ -126,8 +126,15 @@ function EditorViewWithChrome() {
   const [, navigate] = useLocation();
   const [open, setOpen] = useState(false);
 
+  // Synthesised local user — there's no team / account / sign-out
+  // surface to land on, so we don't render the chip at all. The
+  // built-in Settings / ProjectSwitcher dialogs (desktop menu)
+  // remain the local-mode entry points.
+  const isLocal = user?.id === "dev";
+
   return (
     <div className="relative">
+      {!isLocal && (
       <div className="fixed top-2 right-3 z-50">
         <button
           onClick={() => setOpen((v) => !v)}
@@ -204,6 +211,7 @@ function EditorViewWithChrome() {
           </div>
         )}
       </div>
+      )}
       <EditorView />
     </div>
   );
