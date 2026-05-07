@@ -59,8 +59,8 @@ secrets:
     create: true
     # 48-byte deterministic dev string (base64 of "dev-jwt-secret-please-rotate-...").
     jwtSecret: "ZGV2LWp3dC1zZWNyZXQtcGxlYXNlLXJvdGF0ZS1iZWZvcmUtcHJvZHVjdGlvbi11c2U="
-    # 32-byte deterministic dev key (base64 of "dev-secrets-key-rotate-in-prod-").
-    secretsKey: "ZGV2LXNlY3JldHMta2V5LXJvdGF0ZS1pbi1wcm9kLQ=="
+    # 32-byte deterministic dev key (base64 of "dev-secrets-key-rotate-in-prod!!").
+    secretsKey: "ZGV2LXNlY3JldHMta2V5LXJvdGF0ZS1pbi1wcm9kISE="
     bootstrapAdminEmail: "admin@dev.local"
 
 mongodb:

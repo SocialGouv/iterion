@@ -118,7 +118,7 @@ services:
       # --- Auth (Phase A–D) ----------------------------------------
       # Required in cloud mode. Override via .env at the repo root.
       ITERION_JWT_SECRET: ${ITERION_JWT_SECRET:-ZGV2LWp3dC1zZWNyZXQtcGxlYXNlLXJvdGF0ZS1iZWZvcmUtcHJvZHVjdGlvbi11c2U=}
-      ITERION_SECRETS_KEY: ${ITERION_SECRETS_KEY:-ZGV2LXNlY3JldHMta2V5LXJvdGF0ZS1pbi1wcm9kLQ==}
+      ITERION_SECRETS_KEY: ${ITERION_SECRETS_KEY:-ZGV2LXNlY3JldHMta2V5LXJvdGF0ZS1pbi1wcm9kISE=}
       ITERION_BOOTSTRAP_ADMIN_EMAIL: ${ITERION_BOOTSTRAP_ADMIN_EMAIL:-admin@dev.local}
       ITERION_SIGNUP_MODE: ${ITERION_SIGNUP_MODE:-invite_only}
       ITERION_PUBLIC_URL: ${ITERION_PUBLIC_URL:-http://localhost:4891}
@@ -181,7 +181,7 @@ services:
       # The runner needs the same ITERION_SECRETS_KEY as the server so
       # it can unseal the per-run RunBundle (BYOK + OAuth-forfait).
       # Phase C+D.
-      ITERION_SECRETS_KEY: ${ITERION_SECRETS_KEY:-ZGV2LXNlY3JldHMta2V5LXJvdGF0ZS1pbi1wcm9kLQ==}
+      ITERION_SECRETS_KEY: ${ITERION_SECRETS_KEY:-ZGV2LXNlY3JldHMta2V5LXJvdGF0ZS1pbi1wcm9kISE=}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     volumes:
