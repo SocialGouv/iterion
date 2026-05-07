@@ -112,7 +112,11 @@ jobs:
         image: mongo:8.0
         ports:
           - 27017:27017
-        options: --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 })'" --health-interval 10s --health-timeout 5s --health-retries 5
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1})'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -266,14 +270,7 @@ jobs:
         # avoids any LLM dependency so the test stays hermetic.
         run: |
           set -euo pipefail
-          SOURCE='workflow ci_smoke:
-  start: t1
-tool t1:
-  command: "echo hello cloud"
-  outputs: { stdout: string }
-  edges:
-    - to: done
-done'
+          SOURCE=$'workflow ci_smoke:\n  start: t1\ntool t1:\n  command: "echo hello cloud"\n  outputs: { stdout: string }\n  edges:\n    - to: done\ndone\n'
           BODY=$(jq -n --arg src "$SOURCE" '{source: $src}')
           RUN_ID=$(curl -sf \
             -H "Authorization: Bearer ${SESSION_TOKEN}" \
