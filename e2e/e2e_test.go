@@ -1434,6 +1434,7 @@ func TestAllFixturesCompile(t *testing.T) {
 		"rust_to_go_port.iter",
 		"exhaustive_dsl_coverage.iter",
 		"dogfood_editor_ui_loop.iter",
+		"playwright_visual_qa.iter",
 	}
 
 	for _, name := range fixtures {

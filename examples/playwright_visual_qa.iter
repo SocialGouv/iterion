@@ -1,0 +1,364 @@
+## ─────────────────────────────────────────────────────────────────
+## playwright_visual_qa
+##
+## Visual + functional QA pipeline against any public web URL,
+## demonstrating four iterion primitives in one workflow:
+##   - MCP Playwright integration (browser_navigate / snapshot /
+##     click / take_screenshot / console_messages / network_requests)
+##   - LLM-driven planning + observation + verdict
+##   - Judge ask_user escalation when the visual decision is ambiguous
+##     (`interaction: human` on the judge → mid-tool-loop pause)
+##   - Final human sign-off gate with Approve / Reject buttons in the
+##     run console (the schema's `approved: bool` triggers the panel's
+##     quick-action shortcut)
+##
+## Pipeline:
+##   1. plan_qa     — produce a numbered test plan from the objective
+##   2. browse      — execute the plan in a real browser, capture
+##                    screenshots + DOM + console + network into the
+##                    structured ui_observation
+##   3. judge_qa    — verdict: approved / retry / fail. May call
+##                    ask_user when the screenshot evidence is
+##                    insufficient
+##   4. human_signoff — operator inspects observations + verdict and
+##                    Approves or Rejects (run console panel)
+##   5. report      — markdown summary written into
+##                    .iterion/qa-report.md
+##
+## Loop: judge_qa → browse (retry) is bounded to qa_loop(3); on
+## exhaustion the run terminates `failed`.
+##
+## Operator pre-requisites (host machine):
+##   1. `npx -y @playwright/mcp@latest --help` works (auto-installs
+##      via npx on first invocation)
+##   2. `npx playwright install chromium` once on the host
+##   3. OPENAI_API_KEY exported (the workflow defaults to OpenAI;
+##      swap the model literals to a provider/model-id of your choice
+##      if you have a different key)
+##
+## Run example:
+##   set -a; source .env; set +a
+##   ./iterion run examples/playwright_visual_qa.iter \
+##     --var target_url=https://playwright.dev \
+##     --var objective='Verify the homepage loads, the docs link in the navbar opens the docs, and the search box is reachable from the homepage'
+## ─────────────────────────────────────────────────────────────────
+
+vars:
+  target_url: string = "https://playwright.dev"
+  objective: string
+  workspace_dir: string = "${PROJECT_DIR}"
+
+## ─── MCP server : Playwright ──────────────────────────────────────
+mcp_server playwright:
+  transport: stdio
+  command: "npx -y @playwright/mcp@latest"
+
+## ─── Schemas ──────────────────────────────────────────────────────
+
+schema qa_plan_output:
+  test_steps: string[]
+  success_criteria: string[]
+  notes: string
+
+schema browse_input:
+  plan_summary: string
+  additional_instructions: string
+
+schema ui_observation:
+  url_visited: string
+  screenshot_paths: string[]
+  dom_assertions: string[]
+  console_errors: string[]
+  network_failures: string[]
+  interactions_performed: string[]
+  notes: string
+
+schema judge_input:
+  plan_summary: string
+  ui_observed: json
+
+schema qa_verdict:
+  approved: bool
+  blockers: string[]
+  confidence: string [enum: "low", "medium", "high"]
+  ui_quality: string [enum: "broken", "rough", "polished"]
+  retry_recommended: bool
+  additional_instructions: string
+
+schema signoff_input:
+  objective: string
+  plan: json
+  observation: json
+  verdict: json
+
+schema signoff_output:
+  approved: bool
+  comments: string
+
+schema report_input:
+  objective: string
+  plan: json
+  observation: json
+  verdict: json
+  signoff: json
+
+schema report_output:
+  report_markdown: string
+
+## ─── Prompts : Plan ───────────────────────────────────────────────
+
+prompt plan_qa_system:
+  You are a QA engineer producing a concise, executable test plan
+  for a manual + automated UI walkthrough.
+
+  Rules:
+  1. Read the objective. Translate it into a numbered list of
+     concrete browser actions (navigate, click, type, wait_for).
+  2. Each test_step MUST be unambiguous enough that a Playwright
+     MCP tool call can implement it directly: name the URL, the
+     selector or text content, and the expected outcome.
+  3. Produce success_criteria as observable signals (DOM landmark
+     present, console clean, network 2xx) — NOT subjective ones.
+  4. If the objective is too vague to plan against, emit a single
+     test_step "INSUFFICIENT OBJECTIVE" and explain in `notes`.
+
+prompt plan_qa_user:
+  Target URL: {{vars.target_url}}
+
+  Objective:
+  {{vars.objective}}
+
+  Produce the structured QA plan.
+
+## ─── Prompts : Browse ─────────────────────────────────────────────
+
+prompt browse_system:
+  You are a UI walker driving a real browser through the
+  `mcp.playwright.*` tool family.
+
+  Procedure (MUST follow in order):
+  1. Call mcp.playwright.browser_navigate to {{vars.target_url}}.
+  2. Call mcp.playwright.browser_snapshot to capture the
+     accessibility tree. Record relevant landmarks (selectors,
+     text, roles) into ui_observation.dom_assertions.
+  3. For each step in input.plan_summary, perform the browser
+     interaction (browser_click / browser_type / browser_fill_form
+     / browser_press_key / browser_select_option / browser_wait_for)
+     and append a one-line summary to interactions_performed.
+  4. After each meaningful state change, call
+     mcp.playwright.browser_take_screenshot and save the path to
+     screenshot_paths. Use the screenshots filesystem location
+     suggested by the MCP tool — DO NOT invent paths.
+  5. Before returning, call mcp.playwright.browser_console_messages
+     and capture entries whose level is "error" into console_errors;
+     call mcp.playwright.browser_network_requests and capture
+     non-2xx entries into network_failures.
+
+  Rules:
+  - You MUST exercise every step from input.plan_summary even if
+     an early step fails — partial coverage with concrete error
+     evidence is more useful than no evidence at all.
+  - If input.additional_instructions is non-empty, treat it as
+     priority guidance from a previous judge iteration: do whatever
+     the judge asks BEFORE re-running the plan steps.
+  - Populate ui_observation with concrete evidence. Descriptive
+     prose alone (without screenshots, DOM assertions, console
+     captures) is rejected by the judge.
+
+prompt browse_user:
+  Walk through this QA plan in the browser.
+
+  Plan summary:
+  {{input.plan_summary}}
+
+  Additional instructions (from prior iteration, may be empty):
+  {{input.additional_instructions}}
+
+  Return the populated ui_observation.
+
+## ─── Prompts : Judge ──────────────────────────────────────────────
+
+prompt judge_qa_system:
+  You are a QA judge. Your job is to decide whether the captured
+  browser observations satisfy the test plan.
+
+  Procedure:
+  1. Read input.plan_summary and input.ui_observed.
+  2. For each item in success_criteria (recoverable from
+     plan_summary), verify a matching dom_assertion or
+     interaction_performed exists. Missing coverage → blocker.
+  3. console_errors non-empty → approved=false, ui_quality=broken
+     unless every error is clearly off-feature noise (3rd-party
+     analytics, ad blockers).
+  4. network_failures with status >= 500 → approved=false.
+  5. If ui_quality is genuinely undecidable from the screenshots
+     and DOM evidence (e.g. visual polish, accessibility contrast,
+     "is this what the user meant"), CALL ask_user with a precise
+     question — do NOT invent a verdict.
+  6. retry_recommended=true means "another browse pass with the
+     additional_instructions you produce here is likely to converge".
+     Use sparingly; runaway loops burn tokens for no signal.
+
+  ANTI-FAÇADE RULE:
+  - "I read the plan and it looks complete" is NOT evidence; the
+    only valid evidence comes from input.ui_observed.
+  - If ui_observed.screenshot_paths is empty, the browse node failed
+    to capture anything. approved=false unconditionally.
+
+prompt judge_qa_user:
+  Plan summary:
+  {{input.plan_summary}}
+
+  Observed:
+  {{input.ui_observed}}
+
+  Iteration: {{loop.qa_loop.iteration}}/{{loop.qa_loop.max}}
+
+  Produce qa_verdict.
+
+## ─── Prompts : Sign-off ───────────────────────────────────────────
+
+prompt human_signoff_instructions:
+  Visual QA pass complete. Inspect the recorded observations
+  and the LLM judge's verdict, then approve to land the run with a
+  generated report, or reject to terminate without a report.
+  Comments are appended to the report when approved.
+
+## ─── Prompts : Report ────────────────────────────────────────────
+
+prompt report_system:
+  You are a technical writer producing a concise post-run report.
+
+  Use markdown. Sections:
+   1. Summary — one paragraph: what was tested, the outcome.
+   2. Plan executed — bullet list extracted from input.plan.
+   3. Observations — selected highlights from input.observation
+      (screenshot paths, key DOM assertions, console errors).
+   4. Verdict — input.verdict's decision, blockers, confidence.
+   5. Operator sign-off — input.signoff.approved + comments.
+
+  Stay factual; do not editorialize. Total length ≤ 500 words.
+
+prompt report_user:
+  Generate the report markdown for this QA run.
+
+  Objective:
+  {{input.objective}}
+
+  Plan: {{input.plan}}
+  Observation: {{input.observation}}
+  Verdict: {{input.verdict}}
+  Sign-off: {{input.signoff}}
+
+## ─── Nodes ────────────────────────────────────────────────────────
+
+agent plan_qa:
+  model: "openai/gpt-5.4-mini"
+  output: qa_plan_output
+  system: plan_qa_system
+  user: plan_qa_user
+  session: fresh
+
+agent browse:
+  model: "openai/gpt-5.4"
+  input: browse_input
+  output: ui_observation
+  system: browse_system
+  user: browse_user
+  session: fresh
+  tools: [mcp.playwright.browser_navigate, mcp.playwright.browser_snapshot, mcp.playwright.browser_click, mcp.playwright.browser_type, mcp.playwright.browser_fill_form, mcp.playwright.browser_press_key, mcp.playwright.browser_select_option, mcp.playwright.browser_wait_for, mcp.playwright.browser_take_screenshot, mcp.playwright.browser_console_messages, mcp.playwright.browser_network_requests, mcp.playwright.browser_resize, mcp.playwright.browser_close]
+  tool_max_steps: 40
+  mcp:
+    servers: [playwright]
+
+judge judge_qa:
+  model: "openai/gpt-5.4"
+  input: judge_input
+  output: qa_verdict
+  system: judge_qa_system
+  user: judge_qa_user
+  session: fresh
+  ## Mid-tool-loop ask_user: when the verdict is undecidable, the
+  ## judge calls ask_user → runtime pauses → operator answers via
+  ## the run console panel / CLI / Telegram bridge → judge resumes
+  ## with the answer in its conversation.
+  interaction: human
+
+human human_signoff:
+  input: signoff_input
+  output: signoff_output
+  instructions: human_signoff_instructions
+  interaction: human
+
+agent report:
+  model: "openai/gpt-5.4-mini"
+  input: report_input
+  output: report_output
+  system: report_system
+  user: report_user
+  session: fresh
+
+## ─── Workflow ────────────────────────────────────────────────────
+
+workflow playwright_visual_qa:
+  entry: plan_qa
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "30m"
+    max_cost_usd: 5
+
+  compaction:
+    threshold: 0.85
+    preserve_recent: 6
+
+  mcp:
+    servers: [playwright]
+
+  ## ─── Phase 1 : Plan → Browse ─────────────────────────────────
+  ## additional_instructions starts empty on the first browse pass;
+  ## the judge fills it on retry to steer the next iteration.
+  plan_qa -> browse with {
+    plan_summary: "{{outputs.plan_qa}}",
+    additional_instructions: ""
+  }
+
+  browse -> judge_qa with {
+    plan_summary: "{{outputs.plan_qa}}",
+    ui_observed: "{{outputs.browse}}"
+  }
+
+  ## ─── Phase 2 : Loop on retry ─────────────────────────────────
+  ## Edge order matters: top-down, first-match-wins.
+
+  ## 2a. Approved AND quality not broken → human sign-off.
+  judge_qa -> human_signoff when "approved && ui_quality != 'broken'" with {
+    objective: "{{vars.objective}}",
+    plan: "{{outputs.plan_qa}}",
+    observation: "{{outputs.browse}}",
+    verdict: "{{outputs.judge_qa}}"
+  }
+
+  ## 2b. Rejected with retry recommendation → run browse again
+  ## with the judge's additional_instructions. Loop counter on this
+  ## edge bounds the cycle.
+  judge_qa -> browse when "!approved && retry_recommended" as qa_loop(3) with {
+    plan_summary: "{{outputs.plan_qa}}",
+    additional_instructions: "{{outputs.judge_qa.additional_instructions}}"
+  }
+
+  ## 2c. Loop exhaustion catch-all: rejected and no retry → fail.
+  judge_qa -> fail
+
+  ## ─── Phase 3 : Sign-off → Report ─────────────────────────────
+  human_signoff -> report when approved with {
+    objective: "{{vars.objective}}",
+    plan: "{{outputs.plan_qa}}",
+    observation: "{{outputs.browse}}",
+    verdict: "{{outputs.judge_qa}}",
+    signoff: "{{outputs.human_signoff}}"
+  }
+
+  human_signoff -> fail
+
+  report -> done
