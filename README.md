@@ -11,7 +11,7 @@ Define complex, multi-agent LLM workflows as readable `.iter` files — chain ag
 ## Table of Contents
 
 - [What is Iterion?](#what-is-iterion)
-- [Five ways to use Iterion](#five-ways-to-use-iterion)
+- [Six ways to use Iterion](#six-ways-to-use-iterion)
 - [Quickstart](#quickstart)
 - [A Taste of the DSL](#a-taste-of-the-dsl)
 - [Features](#features)
@@ -61,19 +61,36 @@ Think of it as a DAG runner purpose-built for LLM workflows — with first-class
 
 ---
 
-## 🎛️ Five ways to use Iterion
+## 🎛️ Six ways to use Iterion
 
-Same engine, five delivery modes — pick the one that fits your workflow:
+Same engine, six delivery modes — pick the one that fits your workflow:
 
 | Mode | Best for | How to start |
 |---|---|---|
 | 🖥️ **CLI** | Scripted runs, CI/CD pipelines, quick iteration | `iterion run workflow.iter` |
 | 🌐 **Web editor** | Visual workflow design on your dev machine | `iterion editor` (opens browser) |
 | 🪟 **Desktop app** | Native window with multi-project, OS keychain, auto-update | Download `iterion-desktop` from Releases |
+| 🐳 **Docker** | Zero-install runs, reproducible CI, isolated environments | `docker run --rm ghcr.io/socialgouv/iterion:latest` |
 | ☁️ **Cloud / server** | Multi-tenant deployment, shared run store, REST/WS API | Helm chart in `helm/iterion/` |
 | 📦 **TypeScript SDK** | Programmatic invocation from Node/Deno/Bun apps | `npm install @iterion/sdk` ([docs](sdks/typescript/)) |
 
-All five invoke the same Go core. The DSL, runtime, persistence and observability are identical — they only differ in how you reach them. Pick CLI for automation, the visual editor for daily editing, the desktop app if you want a one-click install with managed credentials, cloud mode when teams need a shared always-on instance, or the SDK to embed iterion inside another Node/Deno/Bun application.
+All six invoke the same Go core. The DSL, runtime, persistence and observability are identical — they only differ in how you reach them. Pick CLI for automation, the visual editor for daily editing, the desktop app if you want a one-click install with managed credentials, Docker when you want to run iterion without installing it on the host, cloud mode when teams need a shared always-on instance, or the SDK to embed iterion inside another Node/Deno/Bun application.
+
+The published image (`ghcr.io/socialgouv/iterion:latest`) bundles the `iterion` binary, `git`, Node 22 and the pinned `claude` / `codex` CLIs. Override the default `server` command for ad-hoc runs:
+
+```bash
+# One-off workflow run, mounting your project at /work
+docker run --rm \
+  -v "$PWD:/work" -w /work \
+  -e ANTHROPIC_API_KEY \
+  ghcr.io/socialgouv/iterion:latest \
+  run workflow.iter --var pr_title="..."
+
+# Editor/server on http://localhost:4891
+docker run --rm -p 4891:4891 -v "$PWD:/work" -w /work \
+  -e ANTHROPIC_API_KEY \
+  ghcr.io/socialgouv/iterion:latest
+```
 
 ---
 
