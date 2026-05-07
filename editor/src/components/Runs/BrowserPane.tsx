@@ -1,9 +1,34 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { useRunStore } from "@/store/run";
+import { useRunStore, type BrowserScreenshot } from "@/store/run";
 
 interface BrowserPaneProps {
   runId: string;
+  // When non-null, the run console's scrubber is parked at this seq.
+  // The pane swaps the live iframe for the most-recent stored
+  // screenshot whose seq <= scrubSeq, so users can rewind through
+  // the run's visual timeline. Live iframe returns when scrubSeq
+  // becomes null again.
+  scrubSeq?: number | null;
+}
+
+// pickScreenshotAt returns the latest screenshot with seq <= target,
+// or null if none. The list is sorted ascending so binary search
+// would be fine; the linear scan is simpler and the list is small
+// (a screenshot per browser action, capped at the event window).
+function pickScreenshotAt(
+  list: BrowserScreenshot[],
+  target: number,
+): BrowserScreenshot | null {
+  let best: BrowserScreenshot | null = null;
+  for (const s of list) {
+    if (s.seq <= target) {
+      best = s;
+    } else {
+      break;
+    }
+  }
+  return best;
 }
 
 // BrowserPane renders a URL inside an iframe, picking the source URL
@@ -16,11 +41,17 @@ interface BrowserPaneProps {
 //
 // PR 2 will layer a time-travel mode (screenshot artefact for the
 // current scrub seq) and PR 3 will add a live CDP screencast mode.
-export default function BrowserPane({ runId }: BrowserPaneProps) {
+export default function BrowserPane({ runId, scrubSeq = null }: BrowserPaneProps) {
   const browser = useRunStore((s) => s.browser);
   const setManualPreviewUrl = useRunStore((s) => s.setManualPreviewUrl);
 
   const [draftUrl, setDraftUrl] = useState<string>(browser.currentUrl ?? "");
+
+  const scrubbedShot = useMemo(() => {
+    if (scrubSeq == null) return null;
+    return pickScreenshotAt(browser.screenshots, scrubSeq);
+  }, [scrubSeq, browser.screenshots]);
+  const isScrubbing = scrubSeq != null;
 
   // Re-sync the URL bar when a new workflow event lands while the
   // user hasn't typed anything. We avoid clobbering an in-progress
@@ -115,7 +146,21 @@ export default function BrowserPane({ runId }: BrowserPaneProps) {
         </button>
       </div>
       <div className="flex-1 min-h-0 bg-surface-0">
-        {iframeSrc ? (
+        {isScrubbing ? (
+          scrubbedShot ? (
+            <img
+              key={scrubbedShot.attachmentName}
+              src={`/api/runs/${encodeURIComponent(runId)}/attachments/${encodeURIComponent(scrubbedShot.attachmentName)}`}
+              alt={`Screenshot at seq ${scrubbedShot.seq}`}
+              className="h-full w-full object-contain"
+            />
+          ) : (
+            <div className="flex h-full items-center justify-center p-6 text-center text-sm text-text-2">
+              No screenshot captured before seq {scrubSeq}. The workflow
+              had not yet published a frame at this point.
+            </div>
+          )
+        ) : iframeSrc ? (
           <iframe
             key={iframeSrc}
             src={iframeSrc}
@@ -133,13 +178,20 @@ export default function BrowserPane({ runId }: BrowserPaneProps) {
           </div>
         )}
       </div>
-      {sourceLabel && (
+      {isScrubbing ? (
+        <div className="border-t border-border-default px-3 py-1 text-[11px] text-amber-500">
+          scrubbed at seq {scrubSeq}
+          {scrubbedShot
+            ? ` · screenshot from ${scrubbedShot.nodeId ?? "unknown"} (seq ${scrubbedShot.seq})`
+            : ""}
+        </div>
+      ) : sourceLabel ? (
         <div className="border-t border-border-default px-3 py-1 text-[11px] text-text-2">
           {sourceLabel}
           {browser.kind ? ` · ${browser.kind}` : null}
           {browser.scope === "internal" ? " · proxied" : null}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

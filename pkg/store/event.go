@@ -108,6 +108,20 @@ const (
 	//     allows embedding). Defaults to "external" when unset.
 	//   - source: optional, "tool-stdout" or "runtime"
 	EventPreviewURLAvailable EventType = "preview_url_available"
+	// EventBrowserScreenshot is emitted whenever the runtime captures
+	// a static screenshot of a preview URL — either via the tool-node
+	// directive `[iterion] preview_screenshot=<path> [url=<u>]` or,
+	// in PR 3, on every Playwright `browser_*` action. The bytes
+	// themselves are persisted as a regular attachment (PNG/JPEG via
+	// store.WriteAttachment); this event carries only the pointer plus
+	// the URL the screenshot is *of* so the editor's scrubber can
+	// pick the right artefact for a given seq. Data:
+	//   - attachment_name: store.AttachmentRecord.Name
+	//   - url: optional, the URL the screenshot represents
+	//   - source: "tool-stdout" or "playwright" (PR 3)
+	//   - tool_call_id: optional, used by PR 3 to correlate with the
+	//     Playwright tool call that produced the frame
+	EventBrowserScreenshot EventType = "browser_screenshot"
 )
 
 // Event is a single timestamped fact persisted in events.jsonl.

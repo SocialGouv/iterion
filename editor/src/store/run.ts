@@ -50,20 +50,34 @@ export type PreviewSource = "tool-stdout" | "manual" | "runtime";
 // itself published or for content the editor controls).
 export type PreviewScope = "internal" | "external";
 
+// BrowserScreenshot is a single saved frame, persisted as a run
+// attachment by the runtime (PR 2: tool-stdout directive; PR 3:
+// Playwright). The list lives sorted ascending by seq so the
+// scrubber can binary-search "show the latest frame with seq <=
+// scrubSeq" without copying.
+export interface BrowserScreenshot {
+  seq: number;
+  attachmentName: string;
+  url?: string;
+  nodeId?: string;
+  toolCallId?: string;
+}
+
 export interface BrowserPaneState {
   currentUrl: string | null;
   scope: PreviewScope;
   source: PreviewSource | null;
   kind?: string;
-  // Seq of the last preview_url_available event reflected here.
-  // Used by the Browser pane to scrub-aware redraw — the time-travel
-  // mode in PR 2 will pick the latest event with seq <= scrubSeq
-  // instead of the live tail.
+  // Seq of the last preview_url_available event reflected in
+  // currentUrl. Used by the time-travel logic in BrowserPane.
   lastEventSeq: number | null;
   // Latest preview_url event seq seen in the run, regardless of
   // current selection. Lets the RunView decide when to auto-show
   // the Browser tab.
   lastEventSeqSeen: number | null;
+  // Captured screenshots, ascending by seq. PR 2 — tool-stdout
+  // directive only; PR 3 will append on every Playwright action.
+  screenshots: BrowserScreenshot[];
 }
 
 const initialBrowserState: BrowserPaneState = {
@@ -73,6 +87,7 @@ const initialBrowserState: BrowserPaneState = {
   kind: undefined,
   lastEventSeq: null,
   lastEventSeqSeen: null,
+  screenshots: [],
 };
 
 export interface RunLogState {
@@ -501,6 +516,31 @@ function reduceEvents(
       case "run_paused":
         runStatusOverride = "paused_waiting_human";
         break;
+      case "browser_screenshot": {
+        const attachmentName = (evt.data?.attachment_name as string) ?? "";
+        if (!attachmentName) break;
+        const shot: BrowserScreenshot = {
+          seq: evt.seq,
+          attachmentName,
+          url: (evt.data?.url as string | undefined) ?? undefined,
+          nodeId: evt.node_id,
+          toolCallId: (evt.data?.tool_call_id as string | undefined) ?? undefined,
+        };
+        // Append in seq order (events arrive monotonically; preserve
+        // the invariant explicitly so a future late event doesn't
+        // break binary search).
+        const list = browser.screenshots;
+        let next: BrowserScreenshot[];
+        if (list.length === 0 || list[list.length - 1]!.seq <= shot.seq) {
+          next = list.concat(shot);
+        } else {
+          next = list.slice();
+          next.push(shot);
+          next.sort((a, b) => a.seq - b.seq);
+        }
+        browser = { ...browser, screenshots: next };
+        break;
+      }
       case "preview_url_available": {
         const url = (evt.data?.url as string) ?? "";
         if (!url) break;
@@ -514,6 +554,7 @@ function reduceEvents(
           break;
         }
         browser = {
+          ...browser,
           currentUrl: url,
           scope,
           source: rawSource === "tool-stdout" ? "tool-stdout" : "runtime",

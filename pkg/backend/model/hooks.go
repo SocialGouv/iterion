@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -19,6 +23,17 @@ type EventEmitter interface {
 	AppendEvent(ctx context.Context, runID string, evt store.Event) (*store.Event, error)
 }
 
+// AttachmentWriter is the optional capability the Browser pane uses to
+// persist binary captures (PNG/JPEG screenshots) as run attachments
+// reachable through `GET /api/runs/:id/attachments/:name`. The
+// production EventEmitter is `*store.FilesystemRunStore` (or its
+// Mongo equivalent), both of which already implement WriteAttachment.
+// Mocks/tests that pass an emitter without this method silently skip
+// screenshot capture.
+type AttachmentWriter interface {
+	WriteAttachment(ctx context.Context, runID string, rec store.AttachmentRecord, body io.Reader) error
+}
+
 // NewStoreEventHooks returns EventHooks that emit store events for a given run
 // and log emoji-rich console output via the provided logger.
 // The logger controls which content fields are included in events:
@@ -29,6 +44,7 @@ type EventEmitter interface {
 // it but cloud (Mongo) stores honor cancellation/timeout. The hook lifetime
 // is bounded by the engine.Run call that constructed it.
 func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string, logger *iterlog.Logger) EventHooks {
+	attachmentSink, _ := emitter.(AttachmentWriter)
 	return EventHooks{
 		OnLLMPrompt: func(nodeID string, systemPrompt string, userMessage string) {
 			data := map[string]interface{}{
@@ -361,9 +377,128 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 						logger.Logf(iterlog.LevelInfo, "🌐", "Preview URL [%s]: %s", nodeID, url)
 					}
 				}
+				if attachmentSink != nil {
+					for _, dir := range scanPreviewScreenshots(output) {
+						captureBrowserScreenshot(
+							ctx, attachmentSink, emitter,
+							runID, nodeID, dir, logger,
+						)
+					}
+				}
 			}
 		},
 	}
+}
+
+// captureBrowserScreenshot reads a screenshot file from the host
+// filesystem (the path was emitted by a tool node via the
+// `[iterion] preview_screenshot=<path>` directive) and persists it as
+// a run attachment, then emits an `EventBrowserScreenshot` so the
+// editor's Browser pane can fetch it through the existing
+// `/api/runs/:id/attachments/:name` route. Failures are logged but
+// non-fatal — a missing or unreadable file should never abort a tool
+// node, since the directive is a best-effort hint.
+//
+// PR 3 will add a Playwright-driven fast path that bypasses the
+// stdout directive and writes screenshots from inside the runtime —
+// this helper stays useful for tools that already shell out to
+// puppeteer/wkhtmltoimage/etc.
+func captureBrowserScreenshot(
+	ctx context.Context,
+	sink AttachmentWriter,
+	emitter EventEmitter,
+	runID, nodeID string,
+	dir ScreenshotDirective,
+	logger *iterlog.Logger,
+) {
+	f, err := os.Open(dir.Path)
+	if err != nil {
+		logger.Warn("Browser screenshot [%s]: open %s: %v", nodeID, dir.Path, err)
+		return
+	}
+	defer f.Close()
+
+	mime := detectScreenshotMIME(dir.Path)
+	// Sanitised attachment name. `/` is forbidden; nano-second timestamp
+	// keeps captures from a single run unique without coordinating a
+	// counter (events.jsonl seq isn't visible from this layer).
+	safeNode := sanitizeAttachmentSegment(nodeID)
+	if safeNode == "" {
+		safeNode = "node"
+	}
+	name := fmt.Sprintf("browser-%s-%d", safeNode, time.Now().UnixNano())
+	rec := store.AttachmentRecord{
+		Name:             name,
+		OriginalFilename: filepath.Base(dir.Path),
+		MIME:             mime,
+	}
+	if err := sink.WriteAttachment(ctx, runID, rec, f); err != nil {
+		logger.Warn("Browser screenshot [%s]: write %s: %v", nodeID, name, err)
+		return
+	}
+
+	data := map[string]interface{}{
+		"attachment_name": name,
+		"source":          "tool-stdout",
+		"mime":            mime,
+	}
+	if dir.URL != "" {
+		data["url"] = dir.URL
+	}
+	if dir.ToolCallID != "" {
+		data["tool_call_id"] = dir.ToolCallID
+	}
+	_, _ = emitter.AppendEvent(ctx, runID, store.Event{
+		Type:   store.EventBrowserScreenshot,
+		RunID:  runID,
+		NodeID: nodeID,
+		Data:   data,
+	})
+	logger.Logf(iterlog.LevelInfo, "📸", "Browser screenshot [%s]: %s", nodeID, name)
+}
+
+// detectScreenshotMIME picks an image MIME from the file extension.
+// We trust the tool author's choice rather than sniffing the body so
+// we don't have to buffer the file twice (read once for the sniff,
+// read once for the upload).
+func detectScreenshotMIME(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".webp":
+		return "image/webp"
+	case ".gif":
+		return "image/gif"
+	default:
+		return "image/png"
+	}
+}
+
+// sanitizeAttachmentSegment strips characters that store.sanitizePathComponent
+// would reject (/, \, :, NUL, control, leading dot) and limits length so
+// the eventual attachment dir name stays well-formed.
+func sanitizeAttachmentSegment(s string) string {
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	out := b.String()
+	out = strings.TrimLeft(out, "-")
+	if len(out) > 64 {
+		out = out[:64]
+	}
+	return out
 }
 
 // preview returns the first n bytes of s, adding "..." if truncated.

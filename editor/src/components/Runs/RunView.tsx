@@ -447,7 +447,7 @@ export default function RunView() {
                           onCollapse={toggleEventlogCollapsed}
                         />
                       ) : bottomTab === "browser" && runId ? (
-                        <BrowserPane runId={runId} />
+                        <BrowserPane runId={runId} scrubSeq={scrubSeq} />
                       ) : (
                         <ReportTab onSelectNode={handleSelectNode} />
                       )}
