@@ -17,8 +17,16 @@ server:
   # Cloud-mode HTTP entry point — `iterion server` (T-30). Reads
   # ITERION_MODE + ITERION_MONGO_URI / ITERION_NATS_URL / ITERION_S3_*
   # from envFrom so no extra args are needed for the cloud wiring.
-  command: ["server"]
+  #
+  # Leave command empty so the image's ENTRYPOINT (`iterion`) stays
+  # active. In Kubernetes `command:` overrides ENTRYPOINT (unlike
+  # docker-compose where it overrides CMD), so passing ["server"]
+  # would make kubelet exec a binary named `server` that doesn't
+  # exist in the image. The args list below is appended to the
+  # ENTRYPOINT, yielding `iterion server --port 4891 --bind 0.0.0.0`.
+  command: []
   args:
+    - "server"
     - "--port"
     - "4891"
     - "--bind"
@@ -50,8 +58,10 @@ server:
 runner:
   enabled: true
   replicas: 1
-  command: ["runner"]
-  args: []
+  # Same rationale as server.command above: keep command empty so the
+  # image's `iterion` ENTRYPOINT runs and `args` becomes the subcommand.
+  command: []
+  args: ["runner"]
   # Prometheus metrics port for the runner. Defaults to the same
   # value as server.metricsPort to keep dashboards uniform; override
   # if your platform requires distinct ports per component.

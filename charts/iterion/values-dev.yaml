@@ -25,7 +25,13 @@ config:
     format: human
     level: debug
   mongo:
-    uri: mongodb://iterion-mongodb:27017
+    # Bitnami's mongodb subchart only creates a Service named
+    # `<fullname>` when architecture=replicaset with replicaCount>=2;
+    # for standalone or single-replica configs it ships only the
+    # headless Service (`<fullname>-headless`). Point the client at the
+    # headless one — DNS returns the pod IP directly and the driver
+    # opens the same connection it would to a normal ClusterIP.
+    uri: mongodb://iterion-mongodb-headless:27017
     database: iterion
   nats:
     url: nats://iterion-nats:4222
@@ -59,13 +65,22 @@ mongodb:
   # regardless of the Helm release name. Without this, `helm install ci
   # ./charts/iterion -f values-dev.yaml` deploys the StatefulSet as
   # `ci-mongodb` while the iterion server still reads
-  # `mongodb://iterion-mongodb:27017` from the ConfigMap → NXDOMAIN →
-  # /readyz never goes green. Same rationale for nats/minio below.
+  # `mongodb://iterion-mongodb-headless:27017` from the ConfigMap →
+  # NXDOMAIN → /readyz never goes green. Same rationale for nats/minio
+  # below.
   fullnameOverride: iterion-mongodb
   architecture: replicaset
   replicaCount: 1
   auth:
     enabled: false
+  # Bitnami deprecated their public Docker Hub catalogue in 2025; the
+  # versioned tags pinned by the subchart are now only published under
+  # `bitnamilegacy/*`. Override the registry so kind can pull. Tracking
+  # a longer-term move to an upstream image (mongo:8 official) but the
+  # subchart's init scripts assume the bitnami layout for now.
+  image:
+    registry: docker.io
+    repository: bitnamilegacy/mongodb
 nats:
   enabled: true
   fullnameOverride: iterion-nats
@@ -83,3 +98,8 @@ minio:
     rootUser: minioadmin
     rootPassword: minioadmin
   defaultBuckets: iterion-artifacts
+  # See mongodb.image note above — Bitnami deprecated docker.io/bitnami/*
+  # in 2025; tags now live under bitnamilegacy/*.
+  image:
+    registry: docker.io
+    repository: bitnamilegacy/minio

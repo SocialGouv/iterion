@@ -41,8 +41,10 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          {{- with .Values.server.command }}
           command:
-            {{- toYaml .Values.server.command | nindent 12 }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           args:
             {{- toYaml .Values.server.args | nindent 12 }}
           ports:

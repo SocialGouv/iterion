@@ -39,8 +39,10 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          {{- with .Values.runner.command }}
           command:
-            {{- toYaml .Values.runner.command | nindent 12 }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           args:
             {{- toYaml .Values.runner.args | nindent 12 }}
           {{- if .Values.runner.sandbox.enabled }}

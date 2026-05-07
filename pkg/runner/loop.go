@@ -325,7 +325,14 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	var hbFailed atomic.Bool
 	hbDone := make(chan struct{})
 	go r.heartbeat(runCtx, runCancel, lock, hbDone, &hbFailed)
-	defer func() { <-hbDone }()
+	// Cancel runCtx *before* waiting on hbDone, otherwise we deadlock:
+	// heartbeat only exits on ctx.Done(), and the outer `defer
+	// runCancel()` at function entry is LIFO-last so it would run
+	// after this defer. Calling runCancel() here is idempotent.
+	defer func() {
+		runCancel()
+		<-hbDone
+	}()
 
 	if err := r.executeRun(runCtx, msg); err != nil {
 		// Distinguish transient (resumable) vs terminal failures.

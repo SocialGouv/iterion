@@ -12,7 +12,7 @@ import (
 const sessionCookieName = "iterion_session"
 
 // sessionTokenMiddleware wraps the inner handler and enforces a session
-// token. Two authentication paths exist:
+// token. Three authentication paths exist:
 //
 //  1. **Cookie path** (default for proxied / same-origin traffic): the
 //     desktop AssetServer reverse-proxy attaches the iterion_session cookie
@@ -30,6 +30,10 @@ const sessionCookieName = "iterion_session"
 //     CLI flow). On any other path we just authorise the single request and
 //     do not set a cookie — keeping the token off-disk for non-bootstrap
 //     callers.
+//  3. **Bearer header path** (for non-browser clients — CI scripts, curl,
+//     SDKs): `Authorization: Bearer <token>` is recognised as equivalent
+//     to the query-param path. Lets ops paths avoid leaking tokens in URLs
+//     (cf. server access logs and proxy buffers).
 //
 // CLI mode (`iterion editor`) leaves SessionToken empty, so this middleware
 // is never installed by Server.New and the behaviour is byte-identical to
@@ -40,6 +44,17 @@ func (s *Server) sessionTokenMiddleware(next http.Handler) http.Handler {
 		// cookie — kubelet probes do not carry one. The endpoints
 		// reveal only build version + dependency status, no run data.
 		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// Bearer header path: same auth strength as ?t=, no cookie set.
+		// Constant-time compare to avoid leaking via timing.
+		if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+			token := strings.TrimPrefix(h, "Bearer ")
+			if subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.SessionToken)) != 1 {
+				http.Error(w, "invalid session token", http.StatusUnauthorized)
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}

@@ -332,11 +332,58 @@ func (e *Engine) newRunState(runID string, inputs map[string]interface{}) *runSt
 // Run executes the workflow. It creates a run, walks the graph from the
 // entry node, and returns when a terminal node is reached, a human pause
 // is hit (ErrRunPaused), or an error occurs.
+//
+// Two entry shapes are accepted:
+//
+//   - **Direct** (CLI / single-process): no doc exists yet, CreateRun
+//     inserts a fresh row.
+//   - **Cloud pickup** (runner pool): the cloudpublisher already
+//     persisted the run with status=queued before publishing on
+//     JetStream. The runner calls Run with the same runID, expecting
+//     us to claim the existing row and transition it to running. A
+//     plain CreateRun would error with "already exists".
+//
+// LoadRun + transition is attempted first; if no doc exists we fall
+// back to CreateRun. Any other status (running, finished, …) is a
+// programming error — refuse to clobber state.
 func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interface{}) error {
-	// Create run in store.
-	run, err := e.store.CreateRun(ctx, runID, e.workflow.Name, inputs)
-	if err != nil {
-		return fmt.Errorf("runtime: create run: %w", err)
+	var run *store.Run
+	if existing, loadErr := e.store.LoadRun(ctx, runID); loadErr == nil {
+		// Pickup path: the doc already exists.
+		//   - queued: cloudpublisher pre-created the row before
+		//     publishing on JetStream; transition to running here.
+		//   - running: either FilesystemRunStore.CreateRun (which
+		//     creates with running) was invoked first by a CLI or
+		//     test setup, or a sibling runner is already executing
+		//     this run. The contention case is supposed to be guarded
+		//     at the queue level (NATS distributed lock), not here.
+		// Other statuses (finished/failed/cancelled/paused/failed_resumable)
+		// are terminal or resume-only and must not be silently restarted.
+		switch existing.Status {
+		case store.RunStatusQueued:
+			if err := e.store.UpdateRunStatus(ctx, runID, store.RunStatusRunning, ""); err != nil {
+				return fmt.Errorf("runtime: pickup transition: %w", err)
+			}
+			existing.Status = store.RunStatusRunning
+		case store.RunStatusRunning:
+			// Already running — assume legitimate claim.
+		default:
+			return fmt.Errorf("runtime: run %s already in status %s, refusing to restart", runID, existing.Status)
+		}
+		if len(inputs) > 0 {
+			existing.Inputs = inputs
+		}
+		run = existing
+	} else {
+		// Direct path: no doc yet, create one. CreateRun is strict
+		// (InsertOne) so a parallel pickup would lose this race —
+		// acceptable: the only callers here are the CLI and tests, both
+		// single-writer.
+		var err error
+		run, err = e.store.CreateRun(ctx, runID, e.workflow.Name, inputs)
+		if err != nil {
+			return fmt.Errorf("runtime: create run: %w", err)
+		}
 	}
 	if e.workflowHash != "" || e.filePath != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge {
 		if e.workflowHash != "" {
