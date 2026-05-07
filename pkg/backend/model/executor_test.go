@@ -1494,6 +1494,56 @@ func TestResolveTemplateJSONValue(t *testing.T) {
 	}
 }
 
+func TestResolveTemplateAttachments(t *testing.T) {
+	exec := &ClawExecutor{}
+	urlCalls := 0
+	td := &TemplateData{
+		Attachments: map[string]AttachmentInfo{
+			"logo": {
+				Name:             "logo",
+				Path:             "/store/runs/r1/attachments/logo/logo.png",
+				OriginalFilename: "logo.png",
+				MIME:             "image/png",
+				Size:             4096,
+				SHA256:           "abc123",
+				PresignURL: func() (string, error) {
+					urlCalls++
+					return "/api/runs/r1/attachments/logo?sig=xyz", nil
+				},
+			},
+		},
+	}
+	cases := []struct {
+		body string
+		want string
+	}{
+		{"Path: {{attachments.logo}}", "Path: /store/runs/r1/attachments/logo/logo.png"},
+		{"Path: {{attachments.logo.path}}", "Path: /store/runs/r1/attachments/logo/logo.png"},
+		{"Mime: {{attachments.logo.mime}}", "Mime: image/png"},
+		{"Size: {{attachments.logo.size}}", "Size: 4096"},
+		{"Hash: {{attachments.logo.sha256}}", "Hash: abc123"},
+		{"URL: {{attachments.logo.url}}", "URL: /api/runs/r1/attachments/logo?sig=xyz"},
+	}
+	for _, tc := range cases {
+		got := exec.resolveTemplate(tc.body, nil, td)
+		if got != tc.want {
+			t.Errorf("body %q: got %q want %q", tc.body, got, tc.want)
+		}
+	}
+	if urlCalls < 1 {
+		t.Errorf("PresignURL called %d times; want >=1", urlCalls)
+	}
+}
+
+func TestResolveTemplateAttachments_Unknown(t *testing.T) {
+	exec := &ClawExecutor{}
+	td := &TemplateData{Attachments: map[string]AttachmentInfo{}}
+	got := exec.resolveTemplate("X={{attachments.missing}}", nil, td)
+	if got != "X={{attachments.missing}}" {
+		t.Errorf("unknown attachment should pass through, got %q", got)
+	}
+}
+
 func TestSetVars(t *testing.T) {
 	exec := &ClawExecutor{}
 	vars := map[string]interface{}{"key": "value"}

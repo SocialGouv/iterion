@@ -34,6 +34,45 @@ type TemplateData struct {
 	// RunID is the current run identifier, exposed to prompts as
 	// `{{run.id}}`.
 	RunID string
+
+	// Attachments maps the workflow's attachment names to their
+	// resolved per-run metadata. Populated from Run.Attachments at
+	// the start of every node execution. Resolvers expose:
+	//
+	//	{{attachments.<name>}}        → host filesystem path
+	//	{{attachments.<name>.path}}   → host filesystem path (explicit)
+	//	{{attachments.<name>.url}}    → presigned URL (lazy: filled on demand)
+	//	{{attachments.<name>.mime}}   → sniffed MIME
+	//	{{attachments.<name>.size}}   → byte length as decimal string
+	//	{{attachments.<name>.sha256}} → hex SHA-256
+	Attachments map[string]AttachmentInfo
+}
+
+// AttachmentInfo is the resolved per-attachment view consumed by
+// template references. Built once per node execution from the
+// store's AttachmentRecord plus a lazy presign hook so prompts that
+// never touch `.url` don't pay the URL signing cost.
+type AttachmentInfo struct {
+	Name             string
+	Path             string // absolute host path; empty in cloud unless prefetched
+	OriginalFilename string
+	MIME             string
+	Size             int64
+	SHA256           string
+	// PresignURL, when set, is invoked lazily the first time a
+	// `.url` reference is resolved. Returns "" when no presigner
+	// is wired (e.g. unit-test stubs).
+	PresignURL func() (string, error)
+}
+
+// URL evaluates the presign hook. Each call re-runs the hook because
+// AttachmentInfo is stored by value in TemplateData.Attachments and
+// cache mutation wouldn't be visible across map lookups.
+func (a AttachmentInfo) URL() (string, error) {
+	if a.PresignURL == nil {
+		return "", nil
+	}
+	return a.PresignURL()
 }
 
 // templateDataKey is the ctx key for the optional TemplateData

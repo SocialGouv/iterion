@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -301,6 +302,12 @@ type runState struct {
 	// so the recovery dispatcher can apply per-class retry budgets and
 	// reset them after a successful execution. Keys are created lazily.
 	nodeAttempts map[string]map[ErrorCode]int
+
+	// attachments holds the resolved per-attachment view exposed to
+	// templates as {{attachments.X[.path|.url|.mime|.size|.sha256]}}.
+	// Populated once at run start from Run.Attachments and the
+	// store's PresignAttachment helper.
+	attachments map[string]model.AttachmentInfo
 }
 
 // newRunState builds a runState with all maps allocated. Resume paths
@@ -467,6 +474,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 	rs := e.newRunState(runID, inputs)
 	rs.ctx = ctx
 	rs.vars = e.resolveVars(inputs)
+	rs.attachments = e.loadAttachmentInfos(ctx, runID)
 
 	// Refresh executor vars: PROJECT_DIR-aware expansion may have changed
 	// values from what the CLI/server originally seeded.
@@ -1068,7 +1076,54 @@ func (e *Engine) buildTemplateData(rs *runState) *model.TemplateData {
 		LoopPreviousOutput: rs.loopPreviousOutput,
 		Artifacts:          rs.artifacts,
 		RunID:              rs.runID,
+		Attachments:        rs.attachments,
 	}
+}
+
+// loadAttachmentInfos populates the per-run attachment view consumed
+// by template references. Called once after CreateRun (and any
+// promote callback) so Run.Attachments is authoritative.
+//
+// Path computation:
+//   - Filesystem stores: <root>/runs/<id>/attachments/<name>/<filename>
+//     pre-resolved into the AttachmentRecord.StorageRef.
+//   - Cloud / non-FS stores: Path is left empty; nodes that need bytes
+//     access them via the URL accessor (presigned).
+func (e *Engine) loadAttachmentInfos(ctx context.Context, runID string) map[string]model.AttachmentInfo {
+	if e.store == nil {
+		return nil
+	}
+	list, err := e.store.ListAttachments(ctx, runID)
+	if err != nil || len(list) == 0 {
+		return nil
+	}
+	storeRoot := e.store.Root()
+	out := make(map[string]model.AttachmentInfo, len(list))
+	for _, rec := range list {
+		info := model.AttachmentInfo{
+			Name:             rec.Name,
+			OriginalFilename: rec.OriginalFilename,
+			MIME:             rec.MIME,
+			Size:             rec.Size,
+			SHA256:           rec.SHA256,
+		}
+		// FS stores keep StorageRef as a path relative to Root(); join
+		// it back into an absolute host path so prompts/tools can open
+		// the file directly.
+		if storeRoot != "" && rec.StorageRef != "" {
+			info.Path = filepath.Join(storeRoot, filepath.FromSlash(rec.StorageRef))
+		}
+		// Lazy presign — capture the loop var by value so each closure
+		// targets its own attachment.
+		recCopy := rec
+		runIDCopy := runID
+		store := e.store
+		info.PresignURL = func() (string, error) {
+			return store.PresignAttachment(ctx, runIDCopy, recCopy.Name, 10*time.Minute)
+		}
+		out[rec.Name] = info
+	}
+	return out
 }
 
 // drillPath walks a nested map[string]interface{} structure by the given

@@ -2003,6 +2003,37 @@ func (e *ClawExecutor) resolveTemplateRef(ref string, input map[string]interface
 		if key == "id" {
 			return td.RunID, true
 		}
+	case "attachments":
+		if td == nil {
+			return "", false
+		}
+		segs := strings.Split(key, ".")
+		info, ok := td.Attachments[segs[0]]
+		if !ok {
+			return "", false
+		}
+		// Default sub-field is the path so {{attachments.X}} reads as
+		// the local file path the agent / tool can open.
+		sub := "path"
+		if len(segs) >= 2 {
+			sub = segs[1]
+		}
+		switch sub {
+		case "path":
+			return info.Path, true
+		case "url":
+			url, err := info.URL()
+			if err != nil {
+				return "", true
+			}
+			return url, true
+		case "mime":
+			return info.MIME, true
+		case "size":
+			return formatValue(info.Size), true
+		case "sha256":
+			return info.SHA256, true
+		}
 	}
 
 	return "", false
