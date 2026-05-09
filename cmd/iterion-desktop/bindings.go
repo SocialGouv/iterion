@@ -38,6 +38,24 @@ func (a *App) GetServerURL() string {
 	return a.serverURL
 }
 
+// GetSessionToken returns the JWT the SPA should attach as `?t=<jwt>` on
+// cross-origin WS dials. The desktop binary runs the embedded server with
+// DisableAuth=true (see asset_proxy.go) so the middleware short-circuits
+// auth checks and the token isn't actually consumed — but the SPA's
+// desktopBridge.getDesktopWsBase() calls Promise.all([GetServerURL,
+// GetSessionToken]) and rejects the whole pair if EITHER binding is
+// missing, which used to leave the run console stuck on "reconnecting"
+// because Wails rejected the call to a method that didn't exist on the
+// Go side. Returning "" satisfies the Promise contract and the SPA's
+// `if (token) u.searchParams.set("t", token)` check skips the param
+// for empty strings, so no spurious query is appended either.
+//
+// When auth is wired in for hosted desktop builds, this should return
+// the actual session JWT minted at login.
+func (a *App) GetSessionToken() string {
+	return ""
+}
+
 // GetAppInfo returns version + commit + platform metadata for the About tab.
 func (a *App) GetAppInfo() AppInfo {
 	return AppInfo{
