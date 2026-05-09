@@ -402,6 +402,12 @@ tasks:
 
   cli:build:linux:amd64:
     desc: Build the iterion CLI for Linux amd64 (output build/bin/iterion-linux-amd64)
+    # Intentionally no sources/generates: the up-to-date heuristic
+    # mis-fires when the generated binary is removed out-of-band
+    # (clean checkouts, manual rm, CI artifacts purge), causing
+    # downstream `desktop:package:linux:*:deb` to fail with a
+    # "iterion-linux-amd64 not found" before the dep had a chance to
+    # rebuild it. A 10-second always-rebuild is the cheap fix.
     deps: [editor:build]
     env:
       CGO_ENABLED: "0"
@@ -409,12 +415,6 @@ tasks:
       GOARCH: amd64
     cmds:
       - go build -trimpath -ldflags "{{.LDFLAGS}}" -o build/bin/iterion-linux-amd64 {{.CMD}}
-    sources:
-      - "**/*.go"
-      - go.mod
-      - pkg/server/static/**
-    generates:
-      - build/bin/iterion-linux-amd64
 
   cli:build:linux:arm64:
     desc: Build the iterion CLI for Linux arm64 (output build/bin/iterion-linux-arm64)
@@ -425,12 +425,6 @@ tasks:
       GOARCH: arm64
     cmds:
       - go build -trimpath -ldflags "{{.LDFLAGS}}" -o build/bin/iterion-linux-arm64 {{.CMD}}
-    sources:
-      - "**/*.go"
-      - go.mod
-      - pkg/server/static/**
-    generates:
-      - build/bin/iterion-linux-arm64
 
   desktop:package:linux:amd64:deb:
     desc: Package Linux amd64 build as a Debian .deb (ships desktop + CLI; also produces AppImage)
