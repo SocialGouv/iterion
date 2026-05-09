@@ -4,6 +4,13 @@
 
 Welcome to the Iterion docs. Pages are organised by audience and topic.
 
+## Background
+
+| Page | Read this if… |
+|---|---|
+| [why-iterion.md](why-iterion.md) | …you want the origin story, the patterns we've seen work, the asymptote lens that motivated the engine, and the workflow-lab dimension. Helps you decide whether Iterion fits how you work. |
+| [asymptote-bench.md](asymptote-bench.md) | …you want to measure a workflow's inter-session reliability curve via `iterion bench asymptote`. |
+
 ## Getting started
 
 | Page | Read this if… |

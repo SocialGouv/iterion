@@ -6,10 +6,13 @@ Define complex, multi-agent LLM workflows as readable `.iter` files — chain ag
 
 > ⚠️ **This project is highly experimental.** APIs, DSL syntax, and storage formats may change without notice. Use at your own risk in production environments. Feedback and contributions are welcome!
 
+> 📖 **New here? Read [Why Iterion?](docs/why-iterion.md)** — the origin story, the patterns we've seen work, the asymptote lens that motivated the engine, and the workflow-lab dimension. Helps you decide whether Iterion fits how you work before you install anything.
+
 ---
 
 ## Table of Contents
 
+- [Why Iterion?](docs/why-iterion.md) — origin + recipe + asymptote + lab
 - [What is Iterion?](#what-is-iterion)
 - [Features](#features)
 - [Quick Start](#quick-start)
