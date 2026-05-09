@@ -61,5 +61,7 @@ Welcome to the Iterion docs. Pages are organised by audience and topic.
 | [desktop-architecture.md](desktop-architecture.md) | Desktop app's proxy-based AssetServer architecture (Wails v2 + embedded `pkg/server`). |
 | [desktop-build.md](desktop-build.md) | Local build flow + Docker reproducible builder + per-OS deps. |
 | [desktop-distribution.md](desktop-distribution.md) | Release signing + Ed25519 keypair setup. |
-| [desktop-qa.md](desktop-qa.md) | QA checklist for releases. |
+| [desktop-qa.md](desktop-qa.md) | Developer-facing smoke checklist (AssetServer / runtime-injection regressions). |
+| [desktop-qa-checklist.md](desktop-qa-checklist.md) | Per-platform release QA matrix (Boot, Multi-proj, Settings, Onboarding, Run, Browser, Auto-update, Crash, Disconnect) with assignment grid for human testers. |
+| [desktop-release-checklist.md](desktop-release-checklist.md) | Pre-tag sign-off: code freeze, versioning, signing prerequisites, dry run, trigger, post-publish verification, rollback, Ed25519 key rotation. |
 | [e2e_coverage.md](e2e_coverage.md) | End-to-end test coverage map. |
