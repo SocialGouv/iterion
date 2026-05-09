@@ -213,7 +213,14 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	// work is acceptable: it gives the caller a synchronous error for
 	// the common case of a typo-laden workflow without forcing them to
 	// poll events.jsonl for a compile failure.
-	if _, _, err := CompileWorkflowWithHash(spec.FilePath); err != nil {
+	//
+	// Honour spec.Source when supplied: the editor SPA bundles the
+	// in-memory buffer alongside file_path for imports / freshly-saved
+	// recipes. The server materialises it to a real file before this
+	// point (see server.resolveWorkflowPath), so the spawned subprocess
+	// can read it from disk; we use the inline copy here to avoid an
+	// extra ReadFile for the pre-flight compile.
+	if _, _, err := compileForLaunch(spec.FilePath, spec.Source); err != nil {
 		return nil, err
 	}
 

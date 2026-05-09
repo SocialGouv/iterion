@@ -441,21 +441,33 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 }
 
 // resolveWorkflowPath returns the absolute path the engine should
-// associate with a launch / resume / answer call. When source is
-// supplied (cloud mode — server pod has no shared FS with the editor)
-// filePath is treated as a logical label and returned as-is. When
-// source is empty (local mode) the path is run through safePath.
+// associate with a launch / resume / answer call.
 //
-// On a safePath miss in local mode, when the request's filePath is a
-// bare basename (no directory component) and matches an embedded
-// recipe shipped with the binary, the embedded content is materialised
-// into the run store and that absolute path is returned. This makes
-// `iterion run secured-renovacy.iter` work from any working directory
-// — including the desktop, where the launch button on a built-in
-// recipe sends just the basename.
+// Resolution rules:
+//   - cloud mode + source set: return filePath as a logical label;
+//     the publisher carries Source inline to the runner pod.
+//   - local mode + source set: the SPA bundles the editor buffer
+//     alongside file_path (e.g. for imported / freshly-saved
+//     recipes — see editor/src/components/Toolbar/Toolbar.tsx).
+//     The downstream subprocess (`iterion run <path>`) reads from
+//     disk, so a relative basename relative to the desktop
+//     process cwd would ENOENT. We materialise Source into a
+//     stable per-store cache and return that absolute path.
+//   - local mode without source: run through safePath as before;
+//     on miss, fall back to embedded recipes shipped with the
+//     binary (see materializeEmbeddedRecipe).
 func (s *Server) resolveWorkflowPath(filePath, source string) (string, error) {
 	if source != "" {
-		return filePath, nil
+		if s.cfg.Mode == "cloud" {
+			return filePath, nil
+		}
+		if materialised, ok := s.materializeInlineSource(filePath, source); ok {
+			return materialised, nil
+		}
+		// Materialisation failed (no writable cache dir) — surface a
+		// clear error rather than letting the subprocess ENOENT
+		// further down the chain.
+		return "", fmt.Errorf("cannot materialise inline source: no writable store/work directory configured")
 	}
 	abs, err := s.safePath(filePath)
 	if err == nil {
@@ -465,6 +477,54 @@ func (s *Server) resolveWorkflowPath(filePath, source string) (string, error) {
 		return cached, nil
 	}
 	return "", err
+}
+
+// materializeInlineSource writes the SPA-provided inline .iter content
+// into a stable per-store cache directory and returns its absolute
+// path. The cache lives at <storeDir>/inline-sources/<basename> so:
+//   - the file persists for the lifetime of the run store (resume,
+//     inspect, report all keep working without needing the original
+//     buffer to still be open in the editor);
+//   - launches that re-import the same buffer overwrite the cached
+//     copy idempotently, never leaking stale duplicates.
+//
+// When filePath is empty (an editor-only buffer that was never
+// saved on disk), we synthesise a basename of "inline.iter" so the
+// cache layout stays predictable.
+//
+// Returns ok=false when no writable cache dir can be derived — the
+// caller surfaces a 400 rather than letting the subprocess ENOENT.
+func (s *Server) materializeInlineSource(filePath, source string) (string, bool) {
+	base := filepath.Base(filePath)
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		base = "inline.iter"
+	}
+	cacheRoot := s.inlineSourceCacheDir()
+	if cacheRoot == "" {
+		return "", false
+	}
+	if err := os.MkdirAll(cacheRoot, 0o755); err != nil {
+		return "", false
+	}
+	dst := filepath.Join(cacheRoot, base)
+	if err := os.WriteFile(dst, []byte(source), 0o644); err != nil {
+		return "", false
+	}
+	return dst, true
+}
+
+// inlineSourceCacheDir picks the directory under which inline-source
+// recipes are materialised. Order: configured StoreDir, then a
+// .iterion subdir under WorkDir, then a process-temp fallback.
+func (s *Server) inlineSourceCacheDir() string {
+	storeDir := s.cfg.StoreDir
+	if storeDir == "" && s.cfg.WorkDir != "" {
+		storeDir = filepath.Join(s.cfg.WorkDir, ".iterion")
+	}
+	if storeDir == "" {
+		storeDir = filepath.Join(os.TempDir(), "iterion-inline-sources")
+	}
+	return filepath.Join(storeDir, "inline-sources")
 }
 
 // materializeEmbeddedRecipe writes an embedded recipe into a stable

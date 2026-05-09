@@ -1069,7 +1069,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		return s.launchDetached(parent, runID, spec)
 	}
 
-	wf, hash, err := CompileWorkflowWithHash(spec.FilePath)
+	wf, hash, err := compileForLaunch(spec.FilePath, spec.Source)
 	if err != nil {
 		return nil, err
 	}
