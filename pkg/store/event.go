@@ -62,6 +62,19 @@ const (
 	//   - mode: the requested mode ("auto" or "inline")
 	//   - reason: human-readable explanation
 	EventSandboxSkipped EventType = "sandbox_skipped"
+	// EventSandboxStarted fires after the active sandbox driver finishes
+	// `Start` (container running, postCreate executed). The data block
+	// makes the resolved spec visible to operators without parsing
+	// `run.log` — useful for diagnosing "ran with the wrong image" or
+	// "postCreate didn't fire" symptoms after the fact. Data:
+	//   - driver: docker / podman / kubernetes / noop
+	//   - mode: auto / inline / none
+	//   - source: how the spec was chosen ("workflow sandbox: block",
+	//     "(default image: ...)", "(.devcontainer/devcontainer.json)", ...)
+	//   - image: resolved image ref
+	//   - has_post_create: whether the spec carries a non-empty
+	//     postCreateCommand
+	EventSandboxStarted EventType = "sandbox_started"
 	// EventSandboxClawRoutedViaRunner fires when a sandboxed run
 	// contains a node using backend=claw — the engine forwards the
 	// call to iterion __claw-runner inside the container. Data:

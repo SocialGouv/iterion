@@ -24,6 +24,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/sandbox/devcontainer"
+	"github.com/SocialGouv/iterion/pkg/sandbox/docker"
 	"github.com/SocialGouv/iterion/pkg/sandbox/netproxy"
 	"github.com/SocialGouv/iterion/pkg/sandbox/registry"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -158,6 +159,21 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		return nil, fmt.Errorf("runtime: sandbox: select driver: %w", err)
 	}
 
+	// Wire the engine's logger into the driver so messages from the
+	// docker run, postCreate execution, and container start surface in
+	// the run.log alongside the rest of the run. The factory hands back
+	// a sandbox.Driver whose default logger discards output (see
+	// docker.New); without this swap, useful diagnostics like
+	// "running postCreateCommand" or "container started" disappear,
+	// and silent-failure modes (postCreate skipped because spec was
+	// empty, image pull stalled, etc.) become impossible to debug
+	// from logs alone.
+	if logger != nil {
+		if dd, ok := driver.(*docker.Driver); ok {
+			driver = dd.WithLogger(logger)
+		}
+	}
+
 	if driver.Name() == "noop" {
 		// Active mode requested but no real driver available — emit the
 		// skip event so operators can see in events.jsonl that the run
@@ -253,6 +269,26 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		}
 		return nil, fmt.Errorf("runtime: sandbox: start: %w", err)
 	}
+	// Diagnostic event so operators can tell from events.jsonl which
+	// spec actually backed the sandbox. Without this we only see
+	// "sandbox active (driver=docker)" in the log, which doesn't
+	// reveal whether `auto` resolved to the project's devcontainer or
+	// to the slim fallback (the silent-fallback bug that ate the
+	// modjo postCreate).
+	resolvedImage := ""
+	if sp, ok := prepared.(interface{ Spec() sandbox.Spec }); ok {
+		resolvedImage = sp.Spec().Image
+	}
+	if resolvedImage == "" {
+		resolvedImage = spec.Image
+	}
+	_ = emitEvent(store.EventSandboxStarted, map[string]interface{}{
+		"driver":          driver.Name(),
+		"mode":            string(spec.Mode),
+		"source":          source,
+		"image":           resolvedImage,
+		"has_post_create": spec.PostCreate != "",
+	})
 	return &activeSandbox{run: run, proxy: proxy}, nil
 }
 
