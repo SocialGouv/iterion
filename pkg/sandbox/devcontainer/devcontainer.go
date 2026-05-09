@@ -152,6 +152,11 @@ func ReadFromRepo(repoRoot string) (*File, string, error) {
 			if err != nil {
 				return nil, path, fmt.Errorf("devcontainer: parse %s: %w", path, err)
 			}
+			// Expand `${localEnv:VAR}` / `${localWorkspaceFolder}`
+			// before the spec leaves the parser; otherwise mounts and
+			// runArgs reach docker with literal `${localEnv:HOME}` and
+			// docker run errors with "mount path must be absolute".
+			ExpandLocalVarsInFile(f, repoRoot)
 			return f, path, nil
 		}
 		if !errors.Is(err, os.ErrNotExist) {
