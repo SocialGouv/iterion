@@ -54,6 +54,7 @@ export interface Release {
 interface WailsBindings {
   GetServerURL: () => Promise<string>;
   GetSessionToken: () => Promise<string>;
+  SaveTextFile: (suggestedFilename: string, content: string) => Promise<string>;
   GetAppInfo: () => Promise<AppInfo>;
   Quit: () => Promise<void>;
   OpenExternal: (url: string) => Promise<void>;
@@ -141,6 +142,8 @@ export const desktop = {
 
   getServerURL: () => call("GetServerURL"),
   getSessionToken: () => call("GetSessionToken"),
+  saveTextFile: (suggestedFilename: string, content: string) =>
+    call("SaveTextFile", suggestedFilename, content),
   getAppInfo: () => call("GetAppInfo"),
   quit: () => call("Quit"),
   openExternal: (url: string) => call("OpenExternal", url),

@@ -56,6 +56,34 @@ func (a *App) GetSessionToken() string {
 	return ""
 }
 
+// SaveTextFile pops the OS-native save dialog seeded with
+// suggestedFilename and writes content to the chosen path. Returns
+// the absolute path of the saved file, or "" if the user cancelled.
+//
+// The SPA's "download log" affordance routes through this binding in
+// desktop mode because Wails' embedded WebKit doesn't trigger a real
+// download from `<a download>` clicks (it just renders text/plain
+// inline in a popup that the runtime then closes). Going through a
+// Wails dialog gives the user a native save UX and writes via Go.
+func (a *App) SaveTextFile(suggestedFilename string, content string) (string, error) {
+	path, err := wruntime.SaveFileDialog(a.ctx, wruntime.SaveDialogOptions{
+		Title:                "Save file",
+		DefaultFilename:      suggestedFilename,
+		CanCreateDirectories: true,
+	})
+	if err != nil {
+		return "", fmt.Errorf("save dialog: %w", err)
+	}
+	if path == "" {
+		// User cancelled.
+		return "", nil
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return "", fmt.Errorf("write %s: %w", path, err)
+	}
+	return path, nil
+}
+
 // GetAppInfo returns version + commit + platform metadata for the About tab.
 func (a *App) GetAppInfo() AppInfo {
 	return AppInfo{

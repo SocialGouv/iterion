@@ -4,6 +4,7 @@ import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { ChevronDownIcon, MixerHorizontalIcon } from "@radix-ui/react-icons";
 
 import { IconButton, Input, Popover } from "@/components/ui";
+import { desktop, isDesktop } from "@/lib/desktopBridge";
 import { formatBytes } from "@/lib/format";
 import { useRunStore } from "@/store/run";
 
@@ -195,17 +196,22 @@ export default function RunLogPanel({ runId, subscribeLogs, unsubscribeLogs, onC
         <button
           type="button"
           onClick={() => {
-            // target="_blank" on a Wails desktop AssetServer origin spawns
-            // a new WebView window that the Wails runtime can't manage and
-            // closes immediately, so we trigger a programmatic download
-            // via blob+anchor.click(). Works identically in browser/CLI
-            // mode where the same path resolves through the relative URL.
+            // Two paths because the embedded WebKit in Wails desktop
+            // ignores synthetic <a download> clicks (text/plain renders
+            // inline) — we go through a native Save-As dialog via a
+            // Wails Go binding. Browser / CLI modes use the standard
+            // blob trick which is well supported by full browsers.
             void (async () => {
               try {
                 const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/log`, {
                   credentials: "include",
                 });
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                if (isDesktop()) {
+                  const text = await res.text();
+                  await desktop.saveTextFile(`${runId}.log`, text);
+                  return;
+                }
                 const blob = await res.blob();
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement("a");
@@ -214,7 +220,10 @@ export default function RunLogPanel({ runId, subscribeLogs, unsubscribeLogs, onC
                 document.body.appendChild(a);
                 a.click();
                 a.remove();
-                URL.revokeObjectURL(url);
+                // Give the browser a tick to pick up the click before
+                // we revoke — some engines drop the in-flight download
+                // if the URL goes away too fast.
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
               } catch (err) {
                 // eslint-disable-next-line no-console
                 console.error("[RunLogPanel] download log failed:", err);
