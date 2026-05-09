@@ -1015,7 +1015,10 @@ judge reviewer_gpt:
   system: review_system
   user: review_user_gpt
   session: fresh
-  tools: [bash, read_file, glob, grep, git_diff, git_log, git_status]
+  ## claw backend has no first-class git_diff/git_log/git_status tools
+  ## (those are claude_code-only — see pkg/backend/tool/claw_builtins.go).
+  ## bash + standard git invocations cover the same reviewer needs.
+  tools: [bash, read_file, glob, grep]
   tool_max_steps: 25
 
 compute streak_check:
@@ -1049,7 +1052,8 @@ agent fix_gpt:
   system: fix_system
   user: fix_user
   session: inherit
-  tools: [bash, read_file, write_file, file_edit, glob, grep, git_diff, git_status]
+  ## claw backend: bash subsumes git_diff/git_status (see reviewer_gpt note).
+  tools: [bash, read_file, write_file, file_edit, glob, grep]
   tool_max_steps: 30
 
 ## Deterministic auto-commit for review fixes. We don't fork an LLM
