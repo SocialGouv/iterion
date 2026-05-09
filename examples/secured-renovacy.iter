@@ -1,0 +1,1222 @@
+## ─────────────────────────────────────────────────────────────────
+## secured-renovacy
+##
+## Autonomous, security-aware dependency upgrades for ANY repository.
+## Project-agnostic: detects the stack (yarn/npm/pnpm/pip/poetry/uv/
+## cargo/go/bundler/composer/maven) on entry; nothing project-specific
+## is hardcoded. An optional `user_prompt` var lets the caller inject
+## free-form context (zones to avoid, version policy, etc.).
+##
+## Pipeline
+##   Phase 0: detect_stack, capture_start_sha
+##   Phase 1: per-package loop
+##     discover_outdated → select_candidate → security_audit
+##       → changelog_review → upgrade → install → align_code
+##       → validate_upgrade → fix_after_upgrade (fix_loop)
+##       → prepare_commit → commit_changes → loop back
+##     (revert + mark_failed_and_continue on hard failures)
+##   Phase 2: alternating Claude/GPT review/fix on cumulative diff
+##            (vibe_review_alternating pattern, with per-fix commits)
+##
+## Stops when
+##   - all candidates exhausted in scope, OR
+##   - cross-family double-approval in Phase 2 (streak), OR
+##   - review_loop / recovery_loop exhausted, OR
+##   - budget exceeded (resumable via `iterion resume`).
+##
+## Token economy
+##   - Deterministic tools/compute on hot paths (discover, select,
+##     install, audit, upgrade, commit, revert).
+##   - Aggressive session inheritance: changelog_review → align_code
+##     → validate_upgrade → fix_after_upgrade → prepare_commit (fork)
+##     all share one Claude session. The chain extends across
+##     iterations via _session_id passthrough on the loop edge.
+##   - Sonnet 4.6 for orchestration / changelog / verdict / commit
+##     formatting; Opus 4.7 only on code-mutating nodes.
+##   - Soft-approve on low confidence to avoid false-positive fix
+##     cycles (vibe_review_alternating pattern).
+##
+## Human-in-the-loop
+##   `interaction: llm_or_human` at workflow scope — every agent /
+##   judge can decide on its own to escalate via `ask_user`. The
+##   `escalation_guidance` prompt scopes WHEN to ask: major + low
+##   coverage, undocumented breaking change on legacy code, conflicts
+##   between two upgrades, persistent fix-loop stagnation.
+## ─────────────────────────────────────────────────────────────────
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+  ## Free-form context the operator can pass at run time. Empty
+  ## by default — when empty, the prompt blocks render an empty
+  ## "Project context" section.
+  user_prompt: string = ""
+
+  ## Optional overrides — empty strings let detect_stack provide
+  ## the canonical commands. These exist mainly as escape hatches
+  ## for unusual setups (custom registries, monorepo wrappers, …).
+  override_outdated_cmd: string = ""
+  override_install_cmd:  string = ""
+  override_upgrade_cmd:  string = ""
+  override_audit_cmd:    string = ""
+
+  ## Policy
+  scope: string = "patch,minor,major"
+  max_packages_per_run: int = 30
+  major_policy: string = "attempt"   ## skip | gate | attempt
+  fix_loop_default: int = 3
+  fix_loop_major:   int = 5
+
+## ─── Prompts : workflow-level escalation policy ────────────────────
+
+prompt escalation_guidance:
+  You are a careful but autonomous package-upgrade agent. Decide
+  for yourself whether to call `ask_user` to pause for human
+  judgement, or to proceed.
+
+  ESCALATE when:
+    - You are about to apply a MAJOR upgrade on a package whose
+      changelog or release notes describe semantic removals you
+      cannot confidently align in code, AND repo tests cover only
+      a small fraction of the impacted surface.
+    - The diff between current and target version reveals an
+      undocumented breaking change that touches code you cannot
+      confidently rewrite.
+    - Two outdated packages have mutually incompatible peer or
+      resolution constraints and you cannot pick one without
+      breaking the other.
+    - A review verdict is borderline (`confidence == "low"` with
+      concrete blockers) AND the blocker requires a product / UX /
+      security / legal judgement that cannot be resolved from the
+      diff alone.
+    - A fix loop or recovery loop has burnt half its budget without
+      measurable progress (the same blocker keeps re-appearing).
+
+  DO NOT escalate for:
+    - Routine type errors, lint warnings, build failures, broken
+      imports, missing exports — fix them yourself.
+    - Tests that pass locally but feel suspicious — accept with
+      `confidence: medium`.
+    - Stylistic preferences or refactoring opportunities — never.
+    - "Should I commit?" — the workflow already decides; follow
+      the recipe.
+
+  When you escalate, ask ONE precise question with the minimum
+  context the operator needs to decide. Do not dump entire diffs.
+
+## ─── Prompts : Phase 0 — detect_stack ──────────────────────────────
+
+prompt detect_stack_system:
+  You are a stack-detection agent. Your job is to inspect the
+  repository at {{vars.workspace_dir}} (read-only) and emit a
+  structured profile of its package manager and the canonical
+  shell commands needed to discover outdated packages, install,
+  upgrade, and audit them.
+
+  Procedure (follow exactly, in order):
+    1. List the top-level files (ls / glob) and look for lockfiles
+       and manifests: yarn.lock, package-lock.json, pnpm-lock.yaml,
+       bun.lockb, Cargo.lock, go.sum, go.mod, requirements.txt,
+       pyproject.toml, poetry.lock, uv.lock, Gemfile.lock,
+       composer.lock, pom.xml, build.gradle*, Pipfile.lock.
+    2. Read package.json / pyproject.toml / Cargo.toml /
+       composer.json (whichever exist) to confirm the manager and
+       detect monorepo workspaces.
+    3. Decide the canonical commands. Prefer commands that emit
+       JSON or easily-parsed output. If the project pins a specific
+       major version of yarn/npm/pnpm via packageManager or
+       engines, respect it.
+    4. If the user provided overrides via vars
+       (override_outdated_cmd, override_install_cmd,
+       override_upgrade_cmd, override_audit_cmd), USE THEM verbatim
+       and ignore your own derivation for that field. Empty string
+       means no override.
+
+  CRITICAL command-shape rules:
+    - outdated_cmd: produces a JSON array on stdout with at least
+      {name, current, target} per entry. If the native tool emits
+      another shape, wrap it with jq. Each entry SHOULD also expose
+      `risk` ∈ {patch, minor, major} when derivable from semver
+      diff; emit "unknown" otherwise. Suggested wrappers:
+        yarn 4: yarn outdated --json | jq -c '[.[] | {name:.name,current:.current,target:.latest}]'
+        npm:    npm outdated --json | jq -c '[to_entries[] | {name:.key,current:.value.current,target:.value.latest}]'
+        pnpm:   pnpm outdated --format json | jq -c '...'
+        cargo:  cargo outdated --format=json | jq -c '...'
+        poetry: poetry show -o --no-ansi | awk ...
+    - install_cmd: must run with --immutable=false equivalent —
+      installing fresh after an upgrade.
+    - upgrade_cmd: a TEMPLATE string that the workflow appends a
+      single argument to, of the form `<pkg>@<target_version>`.
+      Example for yarn: `yarn up --exact` (workflow appends ` <pkg>@<v>`).
+    - audit_cmd: emits machine-readable security audit output. If
+      the native tool covers vulnerabilities only, prefer combining
+      with `osv-scanner` for malware detection. Suggested:
+        yarn 4: `yarn npm audit --json --severity moderate`
+        npm:    `npm audit --json`
+        cargo:  `cargo audit --json`
+        always: also try `npx --yes osv-scanner --lockfile=<lock>`
+    - lock_files: absolute or repo-relative paths to lock files
+      relevant to security_audit.
+    - workspaces: list of monorepo sub-package directories
+      (relative paths). Empty list for non-monorepo.
+    - notes: short free-form text capturing peculiarities the rest
+      of the pipeline must respect (e.g., yarn resolutions block,
+      strict peerDependencies, presence of a pre-commit hook that
+      may rewrite commits).
+
+  ### Project context (operator)
+  {{vars.user_prompt}}
+
+prompt detect_stack_user:
+  Inspect {{vars.workspace_dir}} and emit the stack profile JSON.
+  Run only readonly commands. Do not modify any file.
+
+  Operator overrides (apply VERBATIM where non-empty):
+    override_outdated_cmd: "{{vars.override_outdated_cmd}}"
+    override_install_cmd:  "{{vars.override_install_cmd}}"
+    override_upgrade_cmd:  "{{vars.override_upgrade_cmd}}"
+    override_audit_cmd:    "{{vars.override_audit_cmd}}"
+
+## ─── Prompts : Phase 1 — changelog_review ──────────────────────────
+
+prompt changelog_review_system:
+  You analyse the upcoming version bump for ONE package and decide
+  whether it is likely to break the consuming repository. You do
+  NOT modify any file in this node — your output is a structured
+  summary the next phase will act on.
+
+  Procedure:
+    1. Identify the package's source: npm registry, PyPI, crates.io,
+       GitHub releases. Use bash to fetch the relevant CHANGELOG /
+       release notes between {{input.current_version}} and
+       {{input.target_version}}. Prefer CHANGELOG.md inside the
+       installed package directory if reachable; otherwise fetch
+       from the registry (e.g. `npm view <pkg>@<v> repository`,
+       then `curl` the changelog) or from the GitHub
+       /releases/tag/<v> page.
+    2. Cross-check by skimming the diff of the package's exposed
+       API between the two versions if accessible (e.g. `git log`
+       in the installed module, or its release-tagged tarball).
+       This catches breaking changes the changelog forgot.
+    3. Decide `has_breaking`: true iff there is a non-cosmetic API
+       change, removed export, signature change, behaviour change
+       on a documented surface, or hard runtime requirement
+       (engine, peer dep) that the consuming repo currently fails
+       to satisfy.
+    4. If `has_breaking` is true, list `alignment_steps` —
+       concrete, ordered actions to keep the consuming repo
+       compiling and behaviourally correct (e.g. "rename
+       `oldExport` → `newExport` everywhere", "add the new peer
+       dep `redis@^5`", "switch from positional to named args in
+       all callers of `client.query`"). Prefer 3–10 specific
+       items over a vague paragraph. Empty list when
+       `has_breaking` is false.
+    5. Set `confidence` based on how authoritative your sources
+       were: high (changelog explicit + diff confirms),
+       medium (changelog only, diff inconclusive), low
+       (no changelog found, inferring from version delta).
+
+  ### Project context (operator)
+  {{vars.user_prompt}}
+
+prompt changelog_review_user:
+  Package: {{input.selected_package}}
+  Current version: {{input.current_version}}
+  Target version:  {{input.target_version}}
+  Risk class:      {{input.risk}}
+
+  Workspace: {{vars.workspace_dir}}
+
+  Produce the structured changelog summary. Read-only.
+
+## ─── Prompts : Phase 1 — align_code ────────────────────────────────
+
+prompt align_code_system:
+  You apply the alignment steps produced by changelog_review for
+  the package upgrade currently in progress. The package has
+  already been upgraded and reinstalled — your job is ONLY to
+  modify the consuming repository's source code so it stays
+  compatible.
+
+  Procedure:
+    1. Read each step in `input.alignment_steps`.
+    2. For each step:
+       a. Locate the affected files (grep / glob).
+       b. Apply the minimal correct change.
+       c. Run a focused check immediately after if cheap (e.g.,
+          `tsc --noEmit <file>`, `pyflakes <file>`, `cargo check
+          -p <crate>`) to catch obvious failures fast.
+    3. Stop when all steps are applied, OR when one step turns
+       out to be impossible / ambiguous and an `ask_user`
+       escalation is warranted (see escalation_guidance).
+    4. Do NOT run the full test suite here — validate_upgrade
+       handles that next.
+    5. Do NOT commit anything. The commit happens in
+       prepare_commit downstream.
+
+  Stay tight: only changes required by the alignment steps. No
+  drive-by refactors, lint cleanup, or unrelated fixes — those
+  pollute the per-package commit and confuse the review phase.
+
+  ### Project context (operator)
+  {{vars.user_prompt}}
+
+prompt align_code_user:
+  Apply the alignment for {{input.selected_package}}
+  ({{input.current_version}} → {{input.target_version}}) in
+  {{vars.workspace_dir}}.
+
+  Has breaking changes: {{input.has_breaking}}
+  Breaking changes summary: {{input.breaking_changes}}
+  Alignment steps:
+  {{input.alignment_steps}}
+
+  If `has_breaking` is false, your output should still be
+  structured: `applied: false`, empty `files_changed`, summary
+  "no alignment needed". Do not modify anything in that case.
+
+## ─── Prompts : Phase 1 — validate_upgrade ──────────────────────────
+
+prompt validate_upgrade_system:
+  You determine whether the upgrade currently in progress is
+  STABLE — i.e. the repository still compiles, lints clean, and
+  its existing tests pass. You CHOOSE which validation commands
+  to run based on the project's stack and the nature of the
+  package upgraded; there is no fixed test command.
+
+  Procedure:
+    1. Inspect the project (you already have its layout in your
+       inherited session). Identify the relevant validation
+       layers: lint, type-check, unit tests, build / compile
+       smoke. Prefer a fast smoke before slow full tests:
+         JS: yarn lint || npm run lint, then yarn test, then yarn
+             build for affected sub-packages.
+         Python: ruff/flake8, then pytest, then `python -c "import
+                 <pkg>"` smoke.
+         Rust: cargo check, cargo clippy --all-targets,
+               cargo test (when fast), cargo build.
+         Go: go vet ./..., go test ./....
+    2. Skip e2e / android emulator / browser tests unless they
+       are the only meaningful guard for this package — they are
+       slow and flaky in headless CI.
+    3. Run commands via bash. Capture exit codes. Stop early on
+       a clear failure that you can describe — but include the
+       failing command's tail in the verdict.
+    4. Emit:
+         stable: true iff all chosen commands passed (or the only
+                 failures are known-flaky and unrelated to the
+                 package upgraded).
+         blockers: concrete, specific issues with file paths and
+                 error excerpts. Empty when stable.
+         fix_plan: short ordered plan the next agent can apply.
+                 Empty when stable.
+         confidence: low/medium/high based on how thorough your
+                 validation was relative to the package's surface.
+                 A pure dev-dep with full lint pass = high. A
+                 production lib with skipped tests = medium.
+         commands_run: the EXACT shell commands you executed,
+                 one per element, so the operator can reproduce.
+
+  ### Project context (operator)
+  {{vars.user_prompt}}
+
+prompt validate_upgrade_user:
+  Validate the upgrade of {{input.selected_package}}
+  ({{input.current_version}} → {{input.target_version}}) in
+  {{vars.workspace_dir}}.
+
+  Risk class: {{input.risk}}
+  Alignment applied: {{input.align_summary}}
+
+  Run the validations you judge appropriate. Emit the structured
+  verdict.
+
+## ─── Prompts : Phase 1 — fix_after_upgrade ─────────────────────────
+
+prompt fix_after_upgrade_system:
+  You apply concrete fixes to the blockers raised by
+  validate_upgrade. Stay strictly within the surface of the
+  package currently being upgraded — do NOT refactor unrelated
+  code or fix pre-existing tech debt.
+
+  For each blocker:
+    - If it is a real failure caused by the upgrade: apply the
+      smallest correct fix, then re-run only the failing
+      validation command to confirm.
+    - If it is pre-existing (failed before the upgrade) or out
+      of scope: do nothing and explain in your `summary`. The
+      next validate_upgrade pass will see no progress on it; if
+      the loop exhausts, the package is reverted.
+
+  Do NOT commit. Do NOT run the entire test suite — one targeted
+  re-run per blocker is enough; validate_upgrade re-runs the full
+  suite next.
+
+  Iteration: {{loop.fix_loop.iteration}}/{{loop.fix_loop.max}}.
+  Previous attempt's outcome:
+  {{loop.fix_loop.previous_output}}
+
+  ### Project context (operator)
+  {{vars.user_prompt}}
+
+prompt fix_after_upgrade_user:
+  Fix the blockers below for the upgrade of
+  {{input.selected_package}} in {{vars.workspace_dir}}.
+
+  Blockers:
+  {{input.blockers}}
+
+  Fix plan:
+  {{input.fix_plan}}
+
+## ─── Prompts : Phase 1 — prepare_commit ────────────────────────────
+
+prompt prepare_commit_system:
+  You select the EXACT files that should be staged and produce a
+  commit message that captures the upgrade of ONE package.
+
+  Procedure:
+    1. Run `git status --porcelain` and `git diff HEAD` (read-only)
+       to enumerate dirty files.
+    2. Cross-reference with the alignment session's history: keep
+       only files modified by the upgrade and its alignment.
+    3. EXCLUDE pre-existing WIP, scratch files, build outputs not
+       caused by the upgrade. When in doubt, EXCLUDE.
+    4. Read the project's recent `git log --pretty=oneline -20` to
+       infer the existing commit-message convention (conventional
+       commits? gitmoji? plain prose?). Match it.
+    5. Build the structured output:
+         type: pick the best-matching type from
+               {chore, fix, refactor, feat, perf, build, ci,
+                docs, test} — prefer "chore" with scope "deps"
+               for routine bumps.
+         scope: "deps" for any dependency upgrade (override only
+               if the project's existing convention differs).
+         subject: imperative, ≤ 72 chars, no trailing period.
+                  Example: "update <pkg> to <version>".
+         full_message: rendered message ready for `git commit -m`.
+                       Include a short body explaining what
+                       changed (security fix, breaking change
+                       handled, etc.) when relevant.
+         files: exact list of repo-relative paths to stage.
+         committed: false (the downstream tool commits).
+
+prompt prepare_commit_user:
+  Workspace: {{vars.workspace_dir}}
+  Package: {{input.selected_package}}
+              ({{input.current_version}} → {{input.target_version}})
+
+  Produce the structured commit object. Do not commit yourself.
+
+## ─── Prompts : Phase 2 — review (cumulative) ───────────────────────
+
+prompt review_system:
+  You are a meticulous reviewer running a PRODUCTION-READY review
+  of the FULL set of dependency upgrades produced in this
+  workflow run. The diff to review is everything since
+  {{input.start_sha}} — i.e. the cumulative effect of every
+  package upgrade and alignment commit so far.
+
+  Scope:
+    - In-scope: regressions introduced by the upgrades, missing
+      alignment for breaking changes, security implications of
+      the new versions, lockfile / resolution coherence,
+      coverage gaps that hide a real risk.
+    - Out-of-scope: stylistic preferences, refactor opportunities,
+      pre-existing issues unrelated to the upgrades.
+
+  Use bash, read_file, glob, grep, git_diff, git_log to inspect.
+  Run lint / typecheck / tests as needed to back your verdict
+  with evidence.
+
+  Confidence:
+    high  — direct evidence (failed test, broken type, removed API
+            still referenced).
+    medium — strong inference from changelog + code, no executed
+            evidence.
+    low   — gut feeling without backing.
+
+  Pushback: a fixer in the OPPOSITE family may have refused some
+  items in the previous round. Their refusals are in
+  {{input.prior_pushback}} with rationale
+  {{input.prior_pushback_justification}}. Do NOT re-flag them
+  unless new evidence has emerged.
+
+  ### Project context (operator)
+  {{vars.user_prompt}}
+
+prompt review_user_claude:
+  Iteration {{loop.review_loop.iteration}}/{{loop.review_loop.max}}.
+  You are the CLAUDE reviewer (family: "claude").
+
+  Previous reviewer's verdict (other family, immediately before —
+  empty on first iteration):
+  {{loop.review_loop.previous_output}}
+
+  Cumulative scanned areas so far:
+  {{input.previous_scanned_areas}}
+
+  Workspace: {{vars.workspace_dir}}
+  Diff base: {{input.start_sha}}
+
+  Produce the structured verdict. Set `family: "claude"`.
+
+prompt review_user_gpt:
+  Iteration {{loop.review_loop.iteration}}/{{loop.review_loop.max}}.
+  You are the GPT reviewer (family: "gpt").
+
+  Previous reviewer's verdict (other family, immediately before —
+  empty on first iteration):
+  {{loop.review_loop.previous_output}}
+
+  Cumulative scanned areas so far:
+  {{input.previous_scanned_areas}}
+
+  Workspace: {{vars.workspace_dir}}
+  Diff base: {{input.start_sha}}
+
+  Produce the structured verdict. Set `family: "gpt"`.
+
+## ─── Prompts : Phase 2 — fix (cumulative) ──────────────────────────
+
+prompt fix_system:
+  You apply concrete fixes to the blockers raised by the cumulative
+  review. Operate on {{vars.workspace_dir}}. Stay within the
+  upgrade scope of this run; do NOT refactor pre-existing code.
+
+  For each blocker:
+    - Real production-blocking issue → apply the smallest correct
+      fix, run a targeted check.
+    - Non-blocking (style, micro-optimisation) OR pre-existing
+      outside the upgrade scope → add to `pushback` with a clear
+      justification.
+
+  Output:
+    applied: true if at least one fix was applied
+    summary: short summary
+    pushback: list of refused blocker descriptions
+    pushback_justification: rationale
+
+  ### Project context (operator)
+  {{vars.user_prompt}}
+
+prompt fix_user:
+  Apply fixes to the blockers below.
+
+  Blockers:
+  {{input.blockers}}
+
+  Fix plan:
+  {{input.fix_plan}}
+
+## ─── Prompts : Phase 2 — review_commit ─────────────────────────────
+
+prompt prepare_review_commit_system:
+  You produce a commit message for ONE round of review-driven
+  fixes. The diff is the working tree's current dirty state.
+
+  Procedure:
+    1. `git status --porcelain` to enumerate dirty files.
+    2. Match the project's commit-message convention (read recent
+       `git log`).
+    3. Use type "fix" or "refactor" with scope "review" by default
+       (override if project convention differs). Subject ≤ 72
+       chars, imperative.
+    4. files: ALL dirty paths (review fixes typically touch
+       multiple files; over-scoping is acceptable here).
+
+prompt prepare_review_commit_user:
+  Workspace: {{vars.workspace_dir}}
+  Round: review fix iteration.
+
+  Produce the structured commit object. Do not commit yourself.
+
+## ─── Schemas ───────────────────────────────────────────────────────
+
+schema stack_profile:
+  pkg_manager: string
+  repo_kind: string
+  workspaces: string[]
+  outdated_cmd: string
+  upgrade_cmd: string
+  install_cmd: string
+  audit_cmd: string
+  lock_files: string[]
+  notes: string
+
+schema sha_input:
+  workspace_dir: string
+
+schema sha_output:
+  sha: string
+
+schema discover_input:
+  workspace_dir: string
+  outdated_cmd: string
+
+schema outdated_list:
+  packages: json
+  count: int
+  raw: string
+
+schema select_input:
+  packages: json
+  scope: string
+  attempted: json
+  max_packages: int
+  workspace_dir: string
+
+schema candidate:
+  selected_package: string
+  current_version: string
+  target_version: string
+  risk: string [enum: "patch", "minor", "major", "unknown"]
+  has_more: bool
+  attempted_count: int
+  cumulative_attempted: json
+  fix_loop_max: int
+
+schema audit_input:
+  workspace_dir: string
+  selected_package: string
+  target_version: string
+  audit_cmd: string
+  lock_files: string[]
+
+schema security_report:
+  safe: bool
+  cves: string[]
+  malware_signals: string[]
+  source: string
+  raw: string
+
+schema changelog_input:
+  selected_package: string
+  current_version: string
+  target_version: string
+  risk: string
+  workspace_dir: string
+
+schema changelog_summary:
+  has_breaking: bool
+  breaking_changes: string[]
+  alignment_steps: string[]
+  references: string[]
+  confidence: string [enum: "low", "medium", "high"]
+
+schema upgrade_input:
+  workspace_dir: string
+  upgrade_cmd: string
+  selected_package: string
+  target_version: string
+
+schema upgrade_result:
+  success: bool
+  exit_code: int
+  output: string
+
+schema install_input:
+  workspace_dir: string
+  install_cmd: string
+
+schema install_result:
+  success: bool
+  exit_code: int
+  output: string
+
+schema align_input:
+  selected_package: string
+  current_version: string
+  target_version: string
+  has_breaking: bool
+  breaking_changes: string[]
+  alignment_steps: string[]
+  workspace_dir: string
+
+schema align_result:
+  applied: bool
+  summary: string
+  files_changed: string[]
+
+schema validate_input:
+  selected_package: string
+  current_version: string
+  target_version: string
+  risk: string
+  align_summary: string
+  workspace_dir: string
+
+schema verdict:
+  stable: bool
+  blockers: string[]
+  fix_plan: string
+  confidence: string [enum: "low", "medium", "high"]
+  commands_run: string[]
+
+schema fix_after_input:
+  selected_package: string
+  blockers: string[]
+  fix_plan: string
+  workspace_dir: string
+
+schema fix_after_result:
+  applied: bool
+  summary: string
+  files_changed: string[]
+
+schema commit_intent_input:
+  selected_package: string
+  current_version: string
+  target_version: string
+  workspace_dir: string
+
+schema commit_intent:
+  type: string
+  scope: string
+  subject: string
+  full_message: string
+  files: string[]
+  committed: bool
+
+schema commit_tool_input:
+  full_message: string
+  files: string[]
+  workspace_dir: string
+
+schema commit_result:
+  success: bool
+  output: string
+
+schema revert_input:
+  workspace_dir: string
+  install_cmd: string
+
+schema revert_result:
+  success: bool
+  output: string
+
+schema mark_failed_input:
+  selected_package: string
+  reason: string
+
+schema mark_failed_result:
+  package: string
+  reason: string
+
+schema review_input:
+  start_sha: string
+  prior_pushback: string[]
+  prior_pushback_justification: string
+  previous_scanned_areas: string[]
+  workspace_dir: string
+
+schema review_verdict:
+  approved: bool
+  family: string [enum: "claude", "gpt"]
+  blockers: string[]
+  fix_plan: string
+  confidence: string [enum: "low", "medium", "high"]
+  scanned_areas: string[]
+
+schema streak_state:
+  stop: bool
+  approved: bool
+  family: string
+  blockers: string[]
+  fix_plan: string
+  cumulative_scanned_areas: string[]
+
+schema review_fix_input:
+  blockers: string[]
+  fix_plan: string
+
+schema review_fix_result:
+  applied: bool
+  summary: string
+  pushback: string[]
+  pushback_justification: string
+
+schema review_commit_input:
+  workspace_dir: string
+
+schema review_commit_intent:
+  type: string
+  scope: string
+  subject: string
+  full_message: string
+  files: string[]
+  committed: bool
+
+## ─── Nodes : Phase 0 ───────────────────────────────────────────────
+
+agent detect_stack:
+  backend: "claude_code"
+  model: "claude-sonnet-4-6"
+  reasoning_effort: "medium"
+  output: stack_profile
+  publish: stack_profile_artifact
+  system: detect_stack_system
+  user: detect_stack_user
+  session: fresh
+  readonly: true
+  tools: [bash, read_file, list_files, glob, grep]
+  tool_max_steps: 15
+
+tool capture_start_sha:
+  command: "git -C {{input.workspace_dir}} rev-parse HEAD"
+  input: sha_input
+  output: sha_output
+
+## ─── Nodes : Phase 1 — discover & select ───────────────────────────
+
+## discover_outdated runs the stack-specific outdated command and
+## emits a normalised JSON list of {name, current, target, risk}.
+## We don't enforce schema in the tool — the downstream
+## select_candidate trusts whatever shape detect_stack produced.
+tool discover_outdated:
+  command: "bash -lc 'cd {{input.workspace_dir}} && OUT=$({{input.outdated_cmd}} 2>&1 || true); CNT=$(echo \"$OUT\" | jq -c \"if type == \\\"array\\\" then . else [] end | length\" 2>/dev/null || echo 0); jq -nc --arg raw \"$OUT\" --argjson cnt \"$CNT\" \"{packages: (\\$raw | fromjson? // []), count: \\$cnt, raw: \\$raw}\"'"
+  input: discover_input
+  output: outdated_list
+
+## select_candidate picks the next non-attempted package, ranked by
+## risk (patch < minor < major), within the requested scope. It
+## accumulates `cumulative_attempted` across iterations and exposes
+## `has_more=false` when nothing remains in scope or
+## max_packages_per_run is hit.
+tool select_candidate:
+  command: "bash -lc 'jq -nc --argjson pkgs \"{{input.packages}}\" --argjson att \"{{input.attempted}}\" --arg scope \"{{input.scope}}\" --argjson maxp {{input.max_packages}} \"def rank(r): if r==\\\"patch\\\" then 0 elif r==\\\"minor\\\" then 1 elif r==\\\"major\\\" then 2 else 3 end; def attempted_names: \\$att | map(.name); def scope_arr: \\$scope | split(\\\",\\\"); def in_scope(p): scope_arr | index((p.risk // \\\"unknown\\\")) != null; def remaining: \\$pkgs | map(select(in_scope(.)) | select(attempted_names | index(.name) | not)) | sort_by(rank(.risk // \\\"unknown\\\")); def attempted_count: \\$att | length; if (attempted_count >= \\$maxp) or (remaining | length == 0) then {selected_package:\\\"\\\",current_version:\\\"\\\",target_version:\\\"\\\",risk:\\\"unknown\\\",has_more:false,attempted_count:attempted_count,cumulative_attempted:\\$att,fix_loop_max:0} else (remaining[0]) as \\$p | {selected_package:\\$p.name,current_version:(\\$p.current // \\\"\\\"),target_version:(\\$p.target // \\\"\\\"),risk:(\\$p.risk // \\\"unknown\\\"),has_more:true,attempted_count:attempted_count,cumulative_attempted:(\\$att + [{name:\\$p.name}]),fix_loop_max:(if (\\$p.risk // \\\"unknown\\\") == \\\"major\\\" then 5 else 3 end)} end\"'"
+  input: select_input
+  output: candidate
+
+## ─── Nodes : Phase 1 — security_audit ──────────────────────────────
+
+## security_audit composes the project's audit command with osv-scanner
+## (when a lockfile is known) and emits a `safe` boolean. Hard failures
+## of the audit command itself are treated as `safe: false` — we don't
+## upgrade what we can't audit. The agent then decides per-package
+## (using the raw output) whether the SPECIFIC target version is safe.
+tool security_audit:
+  command: "bash -lc 'cd {{input.workspace_dir}} && PROJ_AUDIT=$({{input.audit_cmd}} 2>&1 || true); LOCK={{input.lock_files}}; OSV=$(npx --yes osv-scanner --lockfile=\"${LOCK%% *}\" 2>&1 || true); RAW=\"--- project audit ---\\n$PROJ_AUDIT\\n--- osv scanner ---\\n$OSV\"; SAFE=true; CVES=\"[]\"; MALWARE=\"[]\"; if echo \"$PROJ_AUDIT\" | grep -qiE \"high|critical|malware|malicious\"; then SAFE=false; fi; if echo \"$OSV\" | grep -qiE \"malware|malicious\"; then SAFE=false; MALWARE=\"[\\\"osv flagged malicious\\\"]\"; fi; jq -nc --arg raw \"$RAW\" --arg safe \"$SAFE\" --argjson cves \"$CVES\" --argjson mw \"$MALWARE\" \"{safe:(\\$safe == \\\"true\\\"),cves:\\$cves,malware_signals:\\$mw,source:\\\"composite\\\",raw:\\$raw}\"'"
+  input: audit_input
+  output: security_report
+
+## ─── Nodes : Phase 1 — changelog_review ────────────────────────────
+
+agent changelog_review:
+  backend: "claude_code"
+  model: "claude-sonnet-4-6"
+  reasoning_effort: "medium"
+  input: changelog_input
+  output: changelog_summary
+  system: changelog_review_system
+  user: changelog_review_user
+  session: inherit
+  readonly: true
+  tools: [bash, read_file, list_files, glob, grep]
+  tool_max_steps: 20
+
+## ─── Nodes : Phase 1 — upgrade & install ───────────────────────────
+
+tool upgrade:
+  command: "bash -lc 'cd {{input.workspace_dir}} && {{input.upgrade_cmd}} {{input.selected_package}}@{{input.target_version}} 2>&1; ec=$?; jq -nc --arg out \"$(cat)\" --arg ec \"$ec\" \"{success:(\\$ec == \\\"0\\\"),exit_code:(\\$ec | tonumber),output:\\$out}\" <<< \"$(cd {{input.workspace_dir}} && {{input.upgrade_cmd}} {{input.selected_package}}@{{input.target_version}} 2>&1; echo $?)\"'"
+  input: upgrade_input
+  output: upgrade_result
+
+tool install:
+  command: "bash -lc 'cd {{input.workspace_dir}} && OUT=$({{input.install_cmd}} 2>&1); ec=$?; jq -nc --arg out \"$OUT\" --arg ec \"$ec\" \"{success:(\\$ec == \\\"0\\\"),exit_code:(\\$ec | tonumber),output:\\$out}\"'"
+  input: install_input
+  output: install_result
+
+## ─── Nodes : Phase 1 — align_code ──────────────────────────────────
+
+agent align_code:
+  backend: "claude_code"
+  model: "claude-opus-4-7"
+  reasoning_effort: "high"
+  input: align_input
+  output: align_result
+  system: align_code_system
+  user: align_code_user
+  session: inherit
+  tools: [bash, read_file, write_file, file_edit, glob, grep, git_diff, git_status]
+  tool_max_steps: 30
+
+## ─── Nodes : Phase 1 — validate_upgrade ────────────────────────────
+
+agent validate_upgrade:
+  backend: "claude_code"
+  model: "claude-sonnet-4-6"
+  reasoning_effort: "medium"
+  input: validate_input
+  output: verdict
+  system: validate_upgrade_system
+  user: validate_upgrade_user
+  session: inherit
+  tools: [bash, read_file, list_files, glob, grep, git_diff, git_status]
+  tool_max_steps: 25
+
+## ─── Nodes : Phase 1 — fix_after_upgrade ───────────────────────────
+
+agent fix_after_upgrade:
+  backend: "claude_code"
+  model: "claude-opus-4-7"
+  reasoning_effort: "high"
+  input: fix_after_input
+  output: fix_after_result
+  system: fix_after_upgrade_system
+  user: fix_after_upgrade_user
+  session: inherit
+  tools: [bash, read_file, write_file, file_edit, glob, grep, git_diff, git_status]
+  tool_max_steps: 30
+
+## ─── Nodes : Phase 1 — prepare_commit & commit ─────────────────────
+
+agent prepare_commit:
+  backend: "claude_code"
+  model: "claude-sonnet-4-6"
+  reasoning_effort: "medium"
+  input: commit_intent_input
+  output: commit_intent
+  system: prepare_commit_system
+  user: prepare_commit_user
+  session: fork
+  readonly: true
+  tools: [bash, read_file, list_files, git_diff, git_status, git_log]
+  tool_max_steps: 10
+
+tool commit_changes:
+  command: "git -C {{input.workspace_dir}} add -- {{input.files}} && (git -C {{input.workspace_dir}} diff --cached --quiet || git -C {{input.workspace_dir}} commit -m {{input.full_message}}) && (! git -C {{input.workspace_dir}} status --porcelain | grep -q . || (git -C {{input.workspace_dir}} add -- {{input.files}} && git -C {{input.workspace_dir}} commit --amend --no-edit)) ; echo '{\"success\":true,\"output\":\"committed\"}'"
+  input: commit_tool_input
+  output: commit_result
+
+## ─── Nodes : Phase 1 — revert + mark_failed ────────────────────────
+
+tool revert_changes:
+  command: "bash -lc 'cd {{input.workspace_dir}} && git checkout -- . && git clean -fd && {{input.install_cmd}} 2>&1; echo \"{\\\"success\\\":true,\\\"output\\\":\\\"reverted\\\"}\"'"
+  input: revert_input
+  output: revert_result
+
+tool mark_failed_and_continue:
+  command: "echo '{\"package\":\"{{input.selected_package}}\",\"reason\":\"{{input.reason}}\"}'"
+  input: mark_failed_input
+  output: mark_failed_result
+
+## ─── Nodes : Phase 2 — review/fix loop ─────────────────────────────
+
+router alt_review:
+  mode: round_robin
+
+judge reviewer_claude:
+  backend: "claude_code"
+  model: "claude-opus-4-7"
+  reasoning_effort: "high"
+  input: review_input
+  output: review_verdict
+  system: review_system
+  user: review_user_claude
+  session: inherit
+  tools: [bash, read_file, glob, grep, git_diff, git_log, git_status]
+  tool_max_steps: 25
+
+judge reviewer_gpt:
+  backend: "claw"
+  model: "openai/gpt-5.5"
+  reasoning_effort: "high"
+  input: review_input
+  output: review_verdict
+  system: review_system
+  user: review_user_gpt
+  session: fresh
+  tools: [bash, read_file, glob, grep, git_diff, git_log, git_status]
+  tool_max_steps: 25
+
+compute streak_check:
+  output: streak_state
+  expr:
+    stop: "input.approved && loop.review_loop.previous_output.approved && input.family != loop.review_loop.previous_output.family"
+    approved: "input.approved || input.confidence == 'low'"
+    family: "input.family"
+    blockers: "input.blockers"
+    fix_plan: "input.fix_plan"
+    cumulative_scanned_areas: "unique(concat(outputs.streak_check.cumulative_scanned_areas, input.scanned_areas))"
+
+agent fix_claude:
+  backend: "claude_code"
+  model: "claude-opus-4-7"
+  reasoning_effort: "high"
+  input: review_fix_input
+  output: review_fix_result
+  system: fix_system
+  user: fix_user
+  session: inherit
+  tools: [bash, read_file, write_file, file_edit, glob, grep, git_diff, git_status]
+  tool_max_steps: 30
+
+agent fix_gpt:
+  backend: "claw"
+  model: "openai/gpt-5.5"
+  reasoning_effort: "high"
+  input: review_fix_input
+  output: review_fix_result
+  system: fix_system
+  user: fix_user
+  session: inherit
+  tools: [bash, read_file, write_file, file_edit, glob, grep, git_diff, git_status]
+  tool_max_steps: 30
+
+## Deterministic auto-commit for review fixes. We don't fork an LLM
+## session here — fix_X may converge from either family (claude or
+## gpt) into this single tool, and `session: fork` would be forbidden
+## on a convergence point. The commit message is a stable template
+## with the recovery_loop iteration counter for traceability; the
+## per-package commits in Phase 1 already carry the rich semantic
+## messages.
+tool review_commit_auto:
+  command: "bash -lc 'cd {{input.workspace_dir}} && git add -A && (git diff --cached --quiet || git commit -m \"fix(review): cumulative review fix\") ; echo \"{\\\"success\\\":true,\\\"output\\\":\\\"committed\\\"}\"'"
+  input: review_commit_input
+  output: commit_result
+
+## ─── Workflow ──────────────────────────────────────────────────────
+
+workflow secured_renovacy:
+  entry: detect_stack
+
+  worktree: auto
+
+  default_backend: "claude_code"
+
+  interaction: llm_or_human
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "12h"
+    max_cost_usd: 100.0
+    max_iterations: 500
+    max_tokens: 5000000
+
+  compaction:
+    threshold: 0.9
+    preserve_recent: 8
+
+  ## ═══ Phase 0 : Detect stack + capture base SHA ════════════════════
+
+  detect_stack -> capture_start_sha with {
+    workspace_dir: "{{vars.workspace_dir}}"
+  }
+
+  capture_start_sha -> discover_outdated with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    outdated_cmd: "{{outputs.detect_stack.outdated_cmd}}"
+  }
+
+  ## ═══ Phase 1 : Per-package loop ══════════════════════════════════
+
+  discover_outdated -> select_candidate with {
+    packages: "{{outputs.discover_outdated.packages}}",
+    scope: "{{vars.scope}}",
+    attempted: "[]",
+    max_packages: "{{vars.max_packages_per_run}}",
+    workspace_dir: "{{vars.workspace_dir}}"
+  }
+
+  ## No more candidates → exit Phase 1, enter Phase 2.
+  select_candidate -> alt_review when not has_more
+
+  ## More candidates → audit the next one.
+  select_candidate -> security_audit when has_more with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    selected_package: "{{outputs.select_candidate.selected_package}}",
+    target_version: "{{outputs.select_candidate.target_version}}",
+    audit_cmd: "{{outputs.detect_stack.audit_cmd}}",
+    lock_files: "{{outputs.detect_stack.lock_files}}"
+  }
+
+  ## Unsafe → mark and skip (no revert needed: nothing applied yet).
+  security_audit -> mark_failed_and_continue when not safe with {
+    selected_package: "{{outputs.select_candidate.selected_package}}",
+    reason: "security audit flagged the package"
+  }
+
+  ## Safe → fetch changelog and decide if alignment is needed.
+  security_audit -> changelog_review when safe with {
+    selected_package: "{{outputs.select_candidate.selected_package}}",
+    current_version: "{{outputs.select_candidate.current_version}}",
+    target_version: "{{outputs.select_candidate.target_version}}",
+    risk: "{{outputs.select_candidate.risk}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    _session_id: "{{outputs.detect_stack._session_id}}"
+  }
+
+  changelog_review -> upgrade with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    upgrade_cmd: "{{outputs.detect_stack.upgrade_cmd}}",
+    selected_package: "{{outputs.select_candidate.selected_package}}",
+    target_version: "{{outputs.select_candidate.target_version}}"
+  }
+
+  upgrade -> revert_changes when not success with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    install_cmd: "{{outputs.detect_stack.install_cmd}}"
+  }
+
+  upgrade -> install when success with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    install_cmd: "{{outputs.detect_stack.install_cmd}}"
+  }
+
+  install -> revert_changes when not success with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    install_cmd: "{{outputs.detect_stack.install_cmd}}"
+  }
+
+  install -> align_code when success with {
+    selected_package: "{{outputs.select_candidate.selected_package}}",
+    current_version: "{{outputs.select_candidate.current_version}}",
+    target_version: "{{outputs.select_candidate.target_version}}",
+    has_breaking: "{{outputs.changelog_review.has_breaking}}",
+    breaking_changes: "{{outputs.changelog_review.breaking_changes}}",
+    alignment_steps: "{{outputs.changelog_review.alignment_steps}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    _session_id: "{{outputs.changelog_review._session_id}}"
+  }
+
+  align_code -> validate_upgrade with {
+    selected_package: "{{outputs.select_candidate.selected_package}}",
+    current_version: "{{outputs.select_candidate.current_version}}",
+    target_version: "{{outputs.select_candidate.target_version}}",
+    risk: "{{outputs.select_candidate.risk}}",
+    align_summary: "{{outputs.align_code.summary}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    _session_id: "{{outputs.align_code._session_id}}"
+  }
+
+  validate_upgrade -> prepare_commit when stable with {
+    selected_package: "{{outputs.select_candidate.selected_package}}",
+    current_version: "{{outputs.select_candidate.current_version}}",
+    target_version: "{{outputs.select_candidate.target_version}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    _session_id: "{{outputs.validate_upgrade._session_id}}"
+  }
+
+  validate_upgrade -> fix_after_upgrade when not stable with {
+    selected_package: "{{outputs.select_candidate.selected_package}}",
+    blockers: "{{outputs.validate_upgrade.blockers}}",
+    fix_plan: "{{outputs.validate_upgrade.fix_plan}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    _session_id: "{{outputs.validate_upgrade._session_id}}"
+  }
+
+  fix_after_upgrade -> validate_upgrade as fix_loop(5) with {
+    selected_package: "{{outputs.select_candidate.selected_package}}",
+    current_version: "{{outputs.select_candidate.current_version}}",
+    target_version: "{{outputs.select_candidate.target_version}}",
+    risk: "{{outputs.select_candidate.risk}}",
+    align_summary: "{{outputs.fix_after_upgrade.summary}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    _session_id: "{{outputs.fix_after_upgrade._session_id}}"
+  }
+
+  ## fix_loop exhausted → revert + skip
+  fix_after_upgrade -> revert_changes with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    install_cmd: "{{outputs.detect_stack.install_cmd}}"
+  }
+
+  ## Successful upgrade path → prepare commit, then commit.
+  prepare_commit -> commit_changes with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    full_message: "{{outputs.prepare_commit.full_message}}",
+    files: "{{outputs.prepare_commit.files}}"
+  }
+
+  ## Loop back: pick the next package.
+  commit_changes -> select_candidate as package_loop(50) with {
+    packages: "{{outputs.discover_outdated.packages}}",
+    scope: "{{vars.scope}}",
+    attempted: "{{outputs.select_candidate.cumulative_attempted}}",
+    max_packages: "{{vars.max_packages_per_run}}",
+    workspace_dir: "{{vars.workspace_dir}}"
+  }
+
+  ## Failure path: revert (or already reverted) → mark failed → loop back.
+  revert_changes -> mark_failed_and_continue with {
+    selected_package: "{{outputs.select_candidate.selected_package}}",
+    reason: "fix_loop exhausted or install/upgrade failed"
+  }
+
+  mark_failed_and_continue -> select_candidate as package_loop(50) with {
+    packages: "{{outputs.discover_outdated.packages}}",
+    scope: "{{vars.scope}}",
+    attempted: "{{outputs.select_candidate.cumulative_attempted}}",
+    max_packages: "{{vars.max_packages_per_run}}",
+    workspace_dir: "{{vars.workspace_dir}}"
+  }
+
+  ## ═══ Phase 2 : Alternating review/fix on cumulative diff ═════════
+
+  alt_review -> reviewer_claude with {
+    start_sha: "{{outputs.capture_start_sha.sha}}",
+    prior_pushback: "{{outputs.fix_gpt.pushback}}",
+    prior_pushback_justification: "{{outputs.fix_gpt.pushback_justification}}",
+    previous_scanned_areas: "{{outputs.streak_check.cumulative_scanned_areas}}",
+    workspace_dir: "{{vars.workspace_dir}}"
+  }
+
+  alt_review -> reviewer_gpt with {
+    start_sha: "{{outputs.capture_start_sha.sha}}",
+    prior_pushback: "{{outputs.fix_claude.pushback}}",
+    prior_pushback_justification: "{{outputs.fix_claude.pushback_justification}}",
+    previous_scanned_areas: "{{outputs.streak_check.cumulative_scanned_areas}}",
+    workspace_dir: "{{vars.workspace_dir}}"
+  }
+
+  reviewer_claude -> streak_check as review_loop(15) with {
+    approved: "{{outputs.reviewer_claude.approved}}",
+    family: "{{outputs.reviewer_claude.family}}",
+    blockers: "{{outputs.reviewer_claude.blockers}}",
+    fix_plan: "{{outputs.reviewer_claude.fix_plan}}",
+    confidence: "{{outputs.reviewer_claude.confidence}}",
+    scanned_areas: "{{outputs.reviewer_claude.scanned_areas}}"
+  }
+  reviewer_gpt -> streak_check as review_loop(15) with {
+    approved: "{{outputs.reviewer_gpt.approved}}",
+    family: "{{outputs.reviewer_gpt.family}}",
+    blockers: "{{outputs.reviewer_gpt.blockers}}",
+    fix_plan: "{{outputs.reviewer_gpt.fix_plan}}",
+    confidence: "{{outputs.reviewer_gpt.confidence}}",
+    scanned_areas: "{{outputs.reviewer_gpt.scanned_areas}}"
+  }
+
+  streak_check -> done when stop
+
+  streak_check -> alt_review when "approved"
+
+  streak_check -> fix_claude when "!approved && family == 'claude' && length(blockers) > 0" with {
+    blockers: "{{outputs.streak_check.blockers}}",
+    fix_plan: "{{outputs.streak_check.fix_plan}}",
+    _session_id: "{{outputs.reviewer_claude._session_id}}"
+  }
+  streak_check -> fix_gpt when "!approved && family == 'gpt' && length(blockers) > 0" with {
+    blockers: "{{outputs.streak_check.blockers}}",
+    fix_plan: "{{outputs.streak_check.fix_plan}}",
+    _session_id: "{{outputs.reviewer_gpt._session_id}}"
+  }
+
+  ## After each fix round, commit (deterministic) then resume
+  ## alternation. fix_claude and fix_gpt both feed into the same
+  ## tool — that's a convergence point, but tool nodes have no
+  ## session inheritance so C009 does not apply.
+  fix_claude -> review_commit_auto with {
+    workspace_dir: "{{vars.workspace_dir}}"
+  }
+  fix_gpt -> review_commit_auto with {
+    workspace_dir: "{{vars.workspace_dir}}"
+  }
+
+  review_commit_auto -> alt_review as recovery_loop(20)
+
+  ## Loop-exhaustion fallthroughs (when bounded loops hit max).
+  reviewer_claude    -> done
+  reviewer_gpt       -> done
+  review_commit_auto -> done
+  streak_check       -> alt_review
