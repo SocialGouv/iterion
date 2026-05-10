@@ -192,6 +192,7 @@ tasks:
       - cp -R dist/. ../pkg/server/static
     sources:
       - src/**/*
+      - public/**/*
       - index.html
       - package.json
       - pnpm-lock.yaml

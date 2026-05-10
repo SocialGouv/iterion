@@ -1,4 +1,8 @@
-# 🔄 Iterion
+<p align="center">
+  <img src="docs/images/iterion-logo.png" alt="Iterion logo" height="160" />
+</p>
+
+# Iterion
 
 **Declarative workflow orchestration for AI agents.**
 
