@@ -875,11 +875,16 @@ func ResolveEffortLiteral(s string) string {
 	return ""
 }
 
-// expandEnvWithDefault expands ${VAR} and ${VAR:-default} forms in s.
+// ExpandEnvWithDefault expands ${VAR} and ${VAR:-default} forms in s.
 // Mirrors the shell parameter-expansion default-value syntax that
 // stdlib os.ExpandEnv does not support: when ${VAR} is unset or empty,
-// the part after :- is returned instead.
-func expandEnvWithDefault(s string) string {
+// the part after :- is returned instead. Exported so the executor and
+// other callers stay in sync with the validator's expansion semantics
+// — anything that defaults a model spec or env-tunable field via
+// `${VAR:-default}` in a recipe relies on this rather than the bare
+// stdlib helper, which would expand `${X:-y}` to "" (treating the
+// whole `X:-y` as the variable name).
+func ExpandEnvWithDefault(s string) string {
 	return os.Expand(s, func(key string) string {
 		if i := strings.Index(key, ":-"); i >= 0 {
 			name, fallback := key[:i], key[i+2:]
@@ -891,6 +896,10 @@ func expandEnvWithDefault(s string) string {
 		return os.Getenv(key)
 	})
 }
+
+// expandEnvWithDefault is the unexported alias kept for in-package
+// callers; all of them already pass through ExpandEnvWithDefault.
+func expandEnvWithDefault(s string) string { return ExpandEnvWithDefault(s) }
 
 func (c *compiler) validateReasoningEffort(w *Workflow) {
 	for _, node := range w.Nodes {

@@ -760,7 +760,7 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	effort := resolveReasoningEffort(f.reasoningEffort, input)
 	compactRatio, compactPreserve := resolveCompaction(f.compaction, e.wfCompaction)
 
-	resolvedModel := os.ExpandEnv(f.model)
+	resolvedModel := ir.ExpandEnvWithDefault(f.model)
 	if resolvedModel == "" && backendName == delegate.BackendClaw {
 		resolvedModel = e.detectorSuggestedModel()
 	}
@@ -969,8 +969,10 @@ func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, 
 		return nil, fmt.Errorf("model: human node %q in %s interaction mode should not be executed by the model layer", node.ID, node.Interaction)
 	}
 
-	// Resolve API client (expand env var references).
-	modelSpec := os.ExpandEnv(node.Model)
+	// Resolve API client (expand env var references, including
+	// ${VAR:-default} forms — recipes use those for model fallbacks
+	// like "openai/${ITERION_RENOVACY_MODEL_GPT:-gpt-5.5}").
+	modelSpec := ir.ExpandEnvWithDefault(node.Model)
 	client, err := e.registry.Resolve(modelSpec)
 	if err != nil {
 		return nil, fmt.Errorf("model: human node %q: %w", node.ID, err)
@@ -1808,8 +1810,11 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 		return nil, fmt.Errorf("model: llm router %q: schema: %w", node.ID, err)
 	}
 
-	// Resolve model for the router (with fallback chain).
-	expanded := os.ExpandEnv(node.Model)
+	// Resolve model for the router (with fallback chain). Use
+	// ExpandEnvWithDefault so `${VAR:-default}` syntax in recipes
+	// resolves to the default when VAR is unset, instead of the
+	// stdlib's silent collapse to "".
+	expanded := ir.ExpandEnvWithDefault(node.Model)
 	if expanded == "" {
 		expanded = os.Getenv("ITERION_DEFAULT_SUPERVISOR_MODEL")
 	}
