@@ -60,7 +60,7 @@ if ! command -v dpkg-deb >/dev/null 2>&1; then
   exit 1
 fi
 
-VERSION="$(node -p "require('./package.json').version")"
+VERSION="${VERSION:-$(node -p "require('./package.json').version")}"
 
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT

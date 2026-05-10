@@ -135,6 +135,40 @@ export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
 The Taskfile entries already invoke wails through the system PATH; this hint
 only matters for ad-hoc `wails build` runs.
 
+## Fast `.deb` build (local iteration only)
+
+For tight inner loops where you want a real `.deb` to `dpkg -i` but don't care
+about minification or the AppImage:
+
+```bash
+devbox run -- task desktop:package:linux:amd64:deb:fast
+sudo dpkg -i build/bin/iterion-desktop-linux-amd64.deb
+```
+
+Cold build runs in ~50–60s (vs 90–150s for the prod task), warm rebuild
+~10–20s. The `.deb` file path and contents layout are identical to the prod
+build — only the bundle inside changes.
+
+Tradeoffs vs `desktop:package:linux:amd64:deb`:
+
+- SPA bundle is unminified (~3–4× larger; embedded in the binary, so the
+  `.deb` itself is also bigger).
+- The `Version:` field is stamped `<semver>+fast.<commit>` — visible in
+  `dpkg -l iterion-desktop` so you can't confuse it with a prod build.
+- No AppImage is produced (the prod `:deb` task produces one as a side-effect;
+  the fast variant skips it because `build-deb.sh` doesn't consume it).
+
+After running any `:fast` task, `pkg/server/static/` contains the unminified
+bundle. Before producing release artefacts, wipe it and rebuild:
+
+```bash
+rm -rf pkg/server/static
+devbox run -- task editor:build
+```
+
+DO NOT distribute a fast-built `.deb`. The CI release path remains the source
+of truth for shipped artefacts.
+
 ## Cross-compiling
 
 Wails relies on platform-specific WebView toolchains and CGO, so cross-builds

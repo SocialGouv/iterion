@@ -460,6 +460,74 @@ tasks:
         export PATH="/usr/bin:$PATH"
         ./scripts/desktop/build-deb.sh arm64
 
+  # ── Fast .deb build (local dev only) ──────────────────────────────────
+  # Mirrors the desktop:package:linux:amd64:deb chain but skips the
+  # AppImage step (build-deb.sh consumes the raw binaries, not the
+  # AppImage) and disables Vite minification. Total wall time drops
+  # from ~90-150s to ~50-60s cold (~10-20s warm). The resulting .deb
+  # is stamped <semver>+fast.<commit> so it cannot be confused with a
+  # prod artifact via `dpkg -l`. See docs/desktop-build.md.
+
+  editor:build:fast:
+    desc: Build editor frontend WITHOUT minification — local dev only, do NOT ship
+    dir: editor
+    env:
+      CI: "true"
+    cmds:
+      - corepack pnpm install --prefer-offline
+      # Direct vite call (matches prod editor:build, which also bypasses
+      # `pnpm run build` and so already skips tsc -b). --minify false
+      # saves ~30-50s on cold builds; sourcemaps stay on (set in vite
+      # config) for debuggability.
+      - corepack pnpm exec vite build --minify false
+      - rm -rf ../pkg/server/static/assets ../pkg/server/static/index.html
+      - mkdir -p ../pkg/server/static
+      - cp -R dist/. ../pkg/server/static
+    # No method: checksum — Vite's incremental cache makes warm rebuild
+    # ~3-5s, and avoiding shared-output collisions with prod editor:build
+    # (same pkg/server/static dir) is worth more than 5s.
+
+  desktop:build:linux:amd64:fast:
+    desc: Build Iterion Desktop for Linux amd64 with the unminified SPA (local dev variant)
+    deps: [editor:build:fast]
+    dir: cmd/iterion-desktop
+    cmds:
+      - |
+        if [ -n "$DEVBOX_PROJECT_ROOT" ]; then
+          export PATH="/usr/bin:$PATH"
+        fi
+        export PKG_CONFIG="${PKG_CONFIG:-/usr/bin/pkg-config}"
+        export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
+        wails build -tags desktop,webkit2_41 -platform linux/amd64 -trimpath -skipbindings -s -devtools -ldflags "{{.LDFLAGS}}" -o iterion-desktop-linux-amd64
+
+  cli:build:linux:amd64:fast:
+    desc: Build the iterion CLI for Linux amd64 with the unminified SPA embedded (local dev variant)
+    # Mirrors cli:build:linux:amd64 but deps on editor:build:fast so the
+    # whole :fast subgraph hits editor:build:fast exactly once. Without
+    # this, Task would invoke both editor:build and editor:build:fast
+    # (different task names = no dedup) and they would race on
+    # pkg/server/static/.
+    deps: [editor:build:fast]
+    env:
+      CGO_ENABLED: "0"
+      GOOS: linux
+      GOARCH: amd64
+    cmds:
+      - go build -trimpath -ldflags "{{.LDFLAGS}}" -o build/bin/iterion-linux-amd64 {{.CMD}}
+
+  desktop:package:linux:amd64:deb:fast:
+    desc: Package Linux amd64 .deb without AppImage, unminified SPA, version-stamped +fast.<commit> (local dev only)
+    deps: [desktop:build:linux:amd64:fast, cli:build:linux:amd64:fast]
+    vars:
+      DEB_VERSION:
+        sh: 'echo "$(node -p "require(''./package.json'').version")+fast.{{.COMMIT}}"'
+    env:
+      VERSION: "{{.DEB_VERSION}}"
+    cmds:
+      - |
+        export PATH="/usr/bin:$PATH"
+        ./scripts/desktop/build-deb.sh amd64
+
   desktop:sign-release:
     desc: Sign all desktop release artefacts with Ed25519 (requires UPDATER_ED25519_PRIVATE)
     cmds:
