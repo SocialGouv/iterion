@@ -139,6 +139,33 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		}
 	}
 
+	// When a worktree is active AND the host repo's .git lives outside
+	// the bind-mounted workspace (the common case: worktrees are stored
+	// under the iterion data dir, not inside the source repo), bind-
+	// mount the parent .git into the container at the SAME host path so
+	// the worktree's `.git` pointer file (containing
+	// `gitdir: <repoRoot>/.git/worktrees/<runID>`) resolves. Without
+	// this, every git command run by tool nodes inside the sandbox
+	// (capture_start_sha, discover_outdated, commit_changes, etc.)
+	// fails with "fatal: not a git repository: <repoRoot>/.git/...":
+	// the git pointer is absolute and references a path the container
+	// can't see.
+	//
+	// Read-only by default — agents that need to write commits use
+	// `git -C /workspace` which writes through the worktree-side
+	// machinery (the worktree's gitdir under .git/worktrees/<id> needs
+	// rw access, and that's part of the parent .git tree we mount). So
+	// we mount rw here; if a recipe wants stricter isolation it can
+	// override the mount via `sandbox: { mounts: [...] }`.
+	if p.RepoRoot != "" && p.RepoRoot != workspacePath {
+		gitDir := filepath.Join(p.RepoRoot, ".git")
+		if info, statErr := os.Stat(gitDir); statErr == nil && info.IsDir() {
+			spec.Mounts = append(spec.Mounts,
+				fmt.Sprintf("source=%s,target=%s,type=bind", gitDir, gitDir),
+			)
+		}
+	}
+
 	// Phase 4 V1: claw nodes are forwarded to the iterion-claw-runner
 	// sub-process inside the container so their tool calls (Bash,
 	// file edits) execute inside the sandbox. The hard error from
