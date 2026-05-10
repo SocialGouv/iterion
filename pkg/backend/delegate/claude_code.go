@@ -630,6 +630,11 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 				if (result.Result == nil || *result.Result == "") && lastAssistantText != "" {
 					txt := lastAssistantText
 					result.Result = &txt
+					b.Logger.Info("[%s/claude-code] ↩️  backfilled empty Result with last assistant text at stream close", task.NodeID)
+				} else if result.Result != nil {
+					b.Logger.Info("[%s/claude-code] 🏁 stream close: Result already populated (%d chars)", task.NodeID, len(*result.Result))
+				} else {
+					b.Logger.Info("[%s/claude-code] 🏁 stream close: Result nil and no assistant text captured", task.NodeID)
 				}
 				return result, nil
 			}

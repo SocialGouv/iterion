@@ -11,17 +11,28 @@ import (
 // It prioritizes structuredOutput over resultText, falling back to JSON extraction
 // from markdown and finally plain text wrapping.
 func parseSDKOutput(resultText *string, structuredOutput any, outputSchema json.RawMessage) (output map[string]interface{}, rawLen int, fallback bool) {
-	// Priority 1: structured output from SDK.
+	// Priority 1: structured output from SDK — only when non-empty.
+	// claude-code's stream-json emits `structured_output: {}` for
+	// tool-using sessions where no second-pass formatter ran (i.e.
+	// the sandboxed two-pass case where formatOutput can't resume the
+	// in-container session). Treating an empty map as a valid result
+	// wedged the runtime into "raw_output_len=0, parse_fallback=false"
+	// with all required fields missing — fall through to the
+	// resultText path so the assistant's final markdown JSON block
+	// can be extracted instead.
 	if structuredOutput != nil {
 		if obj, ok := structuredOutput.(map[string]interface{}); ok {
-			return obj, 0, false
-		}
-		// Round-trip via JSON for non-map types.
-		b, err := json.Marshal(structuredOutput)
-		if err == nil {
-			var obj map[string]interface{}
-			if json.Unmarshal(b, &obj) == nil {
-				return obj, len(b), false
+			if len(obj) > 0 {
+				return obj, 0, false
+			}
+		} else {
+			// Non-map types: round-trip via JSON.
+			b, err := json.Marshal(structuredOutput)
+			if err == nil {
+				var obj map[string]interface{}
+				if json.Unmarshal(b, &obj) == nil && len(obj) > 0 {
+					return obj, len(b), false
+				}
 			}
 		}
 	}
