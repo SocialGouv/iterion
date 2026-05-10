@@ -127,6 +127,24 @@ func buildMCPConfigJSON(servers map[string]any) ([]byte, error) {
 	return json.Marshal(cfg)
 }
 
+// resolveCLIPath returns the cliPath to hand to spawnProcess. When a
+// CommandBuilder is configured, the binary is resolved by the builder's
+// runtime (e.g. `docker exec` looking up PATH inside the container) — the
+// host-side findCLI checks (os.Stat, exec.LookPath, ~/.claude/local) would
+// reject a perfectly valid in-container path like "claude" because it
+// doesn't exist on the host. In that case we pass the configured path
+// through unchanged, defaulting to the bare name so the container PATH
+// lookup wins.
+func resolveCLIPath(cfg *config) (string, error) {
+	if cfg.commandBuilder != nil {
+		if cfg.cliPath != "" {
+			return cfg.cliPath, nil
+		}
+		return "claude", nil
+	}
+	return findCLI(cfg.cliPath)
+}
+
 // findCLI locates the claude binary. It checks:
 // 1. Explicit path (if provided)
 // 2. PATH lookup

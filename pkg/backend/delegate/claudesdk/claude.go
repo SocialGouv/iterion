@@ -15,7 +15,7 @@ func Prompt(ctx context.Context, prompt string, opts ...Option) (*ResultMessage,
 
 	cfg := applyOptions(opts)
 
-	cliPath, err := findCLI(cfg.cliPath)
+	cliPath, err := resolveCLIPath(cfg)
 	if err != nil {
 		return nil, ErrCLINotFound
 	}

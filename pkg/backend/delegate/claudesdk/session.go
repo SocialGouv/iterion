@@ -192,7 +192,7 @@ func (s *Session) ensureStarted(ctx context.Context) error {
 		return nil
 	}
 
-	cliPath, err := findCLI(s.cfg.cliPath)
+	cliPath, err := resolveCLIPath(s.cfg)
 	if err != nil {
 		return ErrCLINotFound
 	}
