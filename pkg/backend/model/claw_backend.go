@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -484,7 +485,19 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// dies with "read pre-task envelope: EOF (exit: exit status 1)"
 	// — the same class of failure the claudesdk Session path hit
 	// before 0ab267c.
-	cmd := run.Command(ctx, []string{"iterion", "__claw-runner"}, sandbox.ExecOpts{KeepStdinOpen: true})
+	//
+	// Forward provider credentials from the host iterion-desktop
+	// process env into the runner. The runner re-builds its own
+	// model registry inside the container, which calls
+	// os.Getenv("OPENAI_API_KEY") etc. — without forwarding, it
+	// finds nothing and bails with "API key required for OpenAI-
+	// compatible provider". Pass through only the keys we know
+	// providers consume: anything else stays on the host.
+	runnerEnv := forwardableProviderEnv()
+	cmd := run.Command(ctx, []string{"iterion", "__claw-runner"}, sandbox.ExecOpts{
+		KeepStdinOpen: true,
+		Env:           runnerEnv,
+	})
 
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
@@ -591,6 +604,48 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 //     into the host's nodeSessionStore so CompactAndRetry compacts the
 //     latest history. Pre-spawn, the launcher seeds a session_replay
 //     envelope from the host store (see [executeViaSandboxRunner]).
+// providerCredentialEnvVars enumerates the env-var names the in-runner
+// model registry consults to authenticate against each provider. Listed
+// explicitly (rather than forwarding the full host env) so the sandbox
+// stays isolated from the operator's shell — only the keys the runner
+// actually needs cross the boundary.
+//
+// Keep this in sync with pkg/backend/model/registry.go's per-provider
+// auth code: any new provider whose Resolve() reads os.Getenv(...) for
+// credentials must append its env-var name here, otherwise the runner
+// inside the sandbox will surface "API key required for <provider>".
+var providerCredentialEnvVars = []string{
+	"OPENAI_API_KEY",
+	"AZURE_OPENAI_API_KEY",
+	"AZURE_OPENAI_ENDPOINT",
+	"ANTHROPIC_API_KEY",
+	"GEMINI_API_KEY",
+	"GOOGLE_API_KEY",
+	"GROQ_API_KEY",
+	"DEEPSEEK_API_KEY",
+	"MISTRAL_API_KEY",
+	"BEDROCK_REGION",
+	"AWS_REGION",
+	"AWS_ACCESS_KEY_ID",
+	"AWS_SECRET_ACCESS_KEY",
+	"AWS_SESSION_TOKEN",
+}
+
+// forwardableProviderEnv builds the env map ClawBackend hands to
+// sandbox.Run.Command so the in-container runner can reach the same
+// provider APIs as the host. Empty entries are skipped — we never
+// inject a name=<empty> pair, since some providers treat that as
+// "auth attempted but invalid" instead of "no auth".
+func forwardableProviderEnv() map[string]string {
+	env := map[string]string{}
+	for _, name := range providerCredentialEnvVars {
+		if v := os.Getenv(name); v != "" {
+			env[name] = v
+		}
+	}
+	return env
+}
+
 func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task) delegate.MultiplexerHandler {
 	// Index ToolDefs by name once so OnToolCall is O(1) instead of
 	// scanning the slice on each runner-initiated tool_call.
