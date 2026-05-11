@@ -153,6 +153,52 @@ agent reviewer:
   model: anthropic/claude-haiku-4-5-20251001
 ```
 
+## Using a non-Anthropic provider via the Anthropic wire format (z.ai / GLM)
+
+Some providers ship an Anthropic-compatible HTTP endpoint so existing
+Claude Code clients can talk to them with zero code change. The most
+common case today is **z.ai's Coding Plan**, which serves GLM-4.5 /
+GLM-4.6 through `https://api.z.ai/api/anthropic` (or whatever endpoint
+your z.ai dashboard lists — confirm there). Anthropic itself encourages
+this kind of integration for partner providers; z.ai's own docs
+describe the Claude Code wiring.
+
+Iterion-desktop sources `~/.iterion/env` at startup (commit `84a7fc2`)
+and `claudesdk/process.go` forwards the entire host env to the spawned
+Claude Code subprocess. So the configuration is just two env vars:
+
+```bash
+# ~/.iterion/env
+ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic
+ANTHROPIC_AUTH_TOKEN=<bearer token from your z.ai dashboard>
+# Leave ANTHROPIC_API_KEY UNSET — if both are present, Claude Code
+# prefers the API key and routes back to Anthropic, defeating the
+# purpose.
+```
+
+Restart iterion-desktop after editing the file so the launcher
+re-sources it. Workflows then run unchanged: `backend: claude_code`
+still selects the same delegate, but the network destination is z.ai
+and the underlying model is GLM. Model strings stay Anthropic-shaped
+(`claude-opus-4-7`, …); z.ai's gateway maps them to its own GLM
+families internally.
+
+**Important caveats**
+
+- This only works when Anthropic's wire-format aliasing exists at the
+  provider side. If you're pointing at OpenRouter, Ollama, or another
+  OpenAI-shaped endpoint, use `backend: claw` with `model: openai/…`
+  + `OPENAI_BASE_URL` instead.
+- Anthropic's Consumer Terms (Pro/Max plans) restrict resale and
+  multi-tenant use of the Claude Code OAuth-forfait. The z.ai path is
+  the recommended alternative for any shared-infrastructure deployment;
+  the in-cloud OAuth-forfait path (`pkg/server/oauth_routes.go::OAuthKindClaudeCode`)
+  is scheduled for removal — see `.plans/zai-glm-oauth.md`.
+- Cost: iterion's token-usage panels currently price against an
+  Anthropic rate card. When you route to z.ai the wire shape is
+  unchanged so token counts are still reported, but the dollar
+  estimates are not accurate until a per-provider rate card lands.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |

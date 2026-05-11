@@ -62,25 +62,50 @@ func NewRegistry() *Registry {
 func (r *Registry) registerDefaults() {
 	r.providers["anthropic"] = func(modelID string) (api.APIClient, error) {
 		p := anthropicprovider.New()
+		// ANTHROPIC_BASE_URL forwards to claw the same redirect the
+		// Anthropic SDK and the Claude Code CLI already honour. This is
+		// what enables `backend: claw` workflows to reach z.ai's
+		// Anthropic-compatible endpoint (GLM-4.5/4.6 via the Coding
+		// Plan): set ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic
+		// and ANTHROPIC_AUTH_TOKEN (claw's Anthropic provider treats
+		// either ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN as auth).
 		return p.NewClient(api.ProviderConfig{
-			APIKey: os.Getenv("ANTHROPIC_API_KEY"),
-			Model:  modelID,
+			APIKey:  os.Getenv("ANTHROPIC_API_KEY"),
+			Model:   modelID,
+			BaseURL: os.Getenv("ANTHROPIC_BASE_URL"),
 		})
 	}
 	r.providersWithKey["anthropic"] = func(modelID, apiKey string) (api.APIClient, error) {
 		p := anthropicprovider.New()
-		return p.NewClient(api.ProviderConfig{APIKey: apiKey, Model: modelID})
+		// BYOK path still honours ANTHROPIC_BASE_URL for now. A
+		// per-tenant base-URL override should ride alongside the BYOK
+		// key record once the cloud-side z.ai BYOK lands — see
+		// .plans/zai-glm-oauth.md.
+		return p.NewClient(api.ProviderConfig{
+			APIKey:  apiKey,
+			Model:   modelID,
+			BaseURL: os.Getenv("ANTHROPIC_BASE_URL"),
+		})
 	}
 	r.providers["openai"] = func(modelID string) (api.APIClient, error) {
 		p := openaiprovider.New()
+		// OPENAI_BASE_URL forwards for OpenRouter / Ollama / vLLM /
+		// any other OpenAI-shaped backend. Same shape as ANTHROPIC_BASE_URL
+		// above; not iterion-specific behaviour, just plumbing the env
+		// var through to the provider config.
 		return p.NewClient(api.ProviderConfig{
-			APIKey: os.Getenv("OPENAI_API_KEY"),
-			Model:  modelID,
+			APIKey:  os.Getenv("OPENAI_API_KEY"),
+			Model:   modelID,
+			BaseURL: os.Getenv("OPENAI_BASE_URL"),
 		})
 	}
 	r.providersWithKey["openai"] = func(modelID, apiKey string) (api.APIClient, error) {
 		p := openaiprovider.New()
-		return p.NewClient(api.ProviderConfig{APIKey: apiKey, Model: modelID})
+		return p.NewClient(api.ProviderConfig{
+			APIKey:  apiKey,
+			Model:   modelID,
+			BaseURL: os.Getenv("OPENAI_BASE_URL"),
+		})
 	}
 	// AWS Bedrock — auth via aws-sdk-go-v2 standard credential chain
 	// (AWS_REGION, AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, profile,
