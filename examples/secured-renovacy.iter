@@ -1064,6 +1064,12 @@ schema candidate:
   attempted_count: int
   cumulative_attempted: json
   fix_loop_max: int
+  ## only_patches_attempted is true iff at least one upgrade has been
+  ## attempted AND every attempt was a patch-tier bump. Used by the
+  ## "skip Phase 2 cumulative review" short-circuit: a run that only
+  ## moved patch versions doesn't earn the cost of an LLM-driven review
+  ## loop, the batch_validate gate already covers it.
+  only_patches_attempted: bool
 
 schema audit_input:
   workspace_dir: string
@@ -1253,6 +1259,115 @@ schema review_commit_input:
   iteration: int
   summary: string
 
+## ─── Schemas : audit-trail + patch-batching paths ────────────────────
+
+## audit_md_input drives write_audit_md, which materialises a
+## per-package markdown trail under docs/renovacy/ so humans (and
+## downstream LLMs reading the repo on a later run) can reconstruct
+## the *why* of every upgrade without spelunking through the run log.
+## All fields are JSON-typed so structured upstream outputs (verdicts,
+## blockers, scanned areas) round-trip without lossy stringification.
+schema audit_md_input:
+  workspace_dir: string
+  package_name: string
+  current_version: string
+  target_version: string
+  risk: string
+  changelog_summary: json
+  security_report: json
+  align_summary: string
+  validate_report: json
+  commit_sha: string
+  batch_packages: json
+
+schema audit_md_result:
+  success: bool
+  output: string
+  ## was_batch is true when write_audit_md was called from the patch
+  ## fast-track (batch_packages array non-empty). Drives the
+  ## downstream routing back to select_candidate: batch path passes
+  ## `attempted: outputs.bucket_patches.attempted_after_batch` so the
+  ## per-package loop skips already-bumped patches; per-package path
+  ## passes `outputs.select_candidate.cumulative_attempted` (the
+  ## iteratively-grown ledger).
+  was_batch: bool
+
+## bucket_patches_input is the single shape consumed by the
+## bucket_patches compute node: it forwards discover_outdated.packages
+## verbatim so the deterministic JS can filter to risk=="patch"
+## without re-discovering.
+schema bucket_patches_input:
+  packages: json
+  scope: string
+
+## bucket_patches_output exposes the patches[] subset plus the
+## auxiliary fields the workflow needs: has_patches gates the
+## fast-track edge; attempted_after_batch is the name → metadata map
+## ready to drop into the next select_candidate's `attempted` slot so
+## the per-package loop skips every patch the batch already moved.
+schema bucket_patches_output:
+  patches: json
+  has_patches: bool
+  patches_count: int
+  attempted_after_batch: json
+
+## batch_upgrade_input drives batch_upgrade_patches: the yarn up tool
+## invocation takes the array of `{name, current, target}` triples and
+## the manager hint from detect_stack.
+schema batch_upgrade_input:
+  workspace_dir: string
+  pkg_manager: string
+  patches: json
+  notes: string
+
+schema batch_upgrade_result:
+  success: bool
+  output: string
+  upgraded_specs: string[]
+
+## batch_validate_input keeps it deterministic — a shell-based health
+## check is enough for the patch tier (lint + tests + typecheck;
+## changelog review is skipped by design since patches are
+## non-breaking).
+schema batch_validate_input:
+  workspace_dir: string
+  pkg_manager: string
+  notes: string
+
+schema batch_validate_result:
+  stable: bool
+  blockers: string[]
+  commands_run: string[]
+
+## batch_commit packs the patches into one conventional-commit message
+## ("chore(deps): batch update N patches") and amends the audit-md
+## into the same commit so a single git revert can roll back the
+## whole batch atomically.
+schema batch_commit_input:
+  workspace_dir: string
+  patches: json
+  audit_summary: string
+
+schema batch_commit_result:
+  success: bool
+  output: string
+  sha: string
+
+## batch_revert undoes a failed batch: hard-reset to the worktree's
+## start_sha for staged/working changes, then yarn install to restore
+## node_modules. The mark_failed_and_continue downstream node then
+## records every patch as attempted so the run doesn't retry them
+## individually (they'd hit the same failure, just slower).
+schema batch_revert_input:
+  workspace_dir: string
+  pkg_manager: string
+  patches: json
+  start_sha: string
+
+schema batch_revert_result:
+  success: bool
+  output: string
+
 schema review_commit_intent:
   type: string
   scope: string
@@ -1265,6 +1380,7 @@ schema review_commit_intent:
 
 agent detect_stack:
   backend: "claude_code"
+  provider: "${RESCUE_PROVIDER:-zai}"
   model: "claude-opus-4-7"
   reasoning_effort: "${ITERION_RENOVACY_EFFORT_CLAUDE:-max}"
   output: stack_profile
@@ -1297,6 +1413,7 @@ tool capture_start_sha:
 ## return count=0 on yarn berry monorepos and similar setups.
 agent discover_outdated:
   backend: "claude_code"
+  provider: "${RESCUE_PROVIDER:-zai}"
   model: "claude-opus-4-7"
   reasoning_effort: "${ITERION_RENOVACY_EFFORT_CLAUDE:-max}"
   input: discover_input
@@ -1394,6 +1511,15 @@ tool select_candidate:
       .filter((p) => allowed.includes(p.risk))
       .sort((a, b) => (rank[a.risk] || 4) - (rank[b.risk] || 4));
 
+    // only_patches_attempted: drives the Phase 2 short-circuit. True
+    // iff we've attempted at least one upgrade AND every attempt was
+    // patch-tier. Computed from cumulative_attempted entries' .risk.
+    function computeOnlyPatches(cum) {
+      const entries = Object.values(cum || {});
+      if (entries.length === 0) return false;
+      return entries.every((v) => v && v.risk === "patch");
+    }
+
     let result;
     if (attemptedCount >= maxPackages || survivors.length === 0) {
       result = {
@@ -1405,6 +1531,7 @@ tool select_candidate:
         attempted_count: attemptedCount,
         cumulative_attempted: attempted,
         fix_loop_max: 0,
+        only_patches_attempted: computeOnlyPatches(attempted),
       };
     } else {
       const p = survivors[0];
@@ -1418,6 +1545,7 @@ tool select_candidate:
         attempted_count: attemptedCount,
         cumulative_attempted: cumulative,
         fix_loop_max: p.risk === "major" ? 5 : 3,
+        only_patches_attempted: computeOnlyPatches(cumulative),
       };
     }
 
@@ -1435,6 +1563,7 @@ tool select_candidate:
 ## instead of returning a project-wide boolean.
 agent security_audit:
   backend: "claude_code"
+  provider: "${RESCUE_PROVIDER:-zai}"
   model: "claude-opus-4-7"
   reasoning_effort: "${ITERION_RENOVACY_EFFORT_CLAUDE:-max}"
   input: audit_input
@@ -1450,6 +1579,7 @@ agent security_audit:
 
 agent changelog_review:
   backend: "claude_code"
+  provider: "${RESCUE_PROVIDER:-zai}"
   model: "claude-opus-4-7"
   reasoning_effort: "${ITERION_RENOVACY_EFFORT_CLAUDE:-max}"
   input: changelog_input
@@ -1471,6 +1601,7 @@ agent changelog_review:
 ## `node .yarn/releases/yarn-X.Y.Z.cjs`, …) using `notes` as guidance.
 agent upgrade:
   backend: "claude_code"
+  provider: "${RESCUE_PROVIDER:-zai}"
   model: "claude-opus-4-7"
   reasoning_effort: "${ITERION_RENOVACY_EFFORT_CLAUDE:-max}"
   input: upgrade_input
@@ -1483,6 +1614,7 @@ agent upgrade:
 
 agent install:
   backend: "claude_code"
+  provider: "${RESCUE_PROVIDER:-zai}"
   model: "claude-opus-4-7"
   reasoning_effort: "${ITERION_RENOVACY_EFFORT_CLAUDE:-max}"
   input: install_input
@@ -1497,6 +1629,7 @@ agent install:
 
 agent align_code:
   backend: "claude_code"
+  provider: "${RESCUE_PROVIDER:-zai}"
   model: "claude-opus-4-7"
   reasoning_effort: "${ITERION_RENOVACY_EFFORT_CLAUDE:-max}"
   input: align_input
@@ -1511,6 +1644,7 @@ agent align_code:
 
 agent validate_upgrade:
   backend: "claude_code"
+  provider: "${RESCUE_PROVIDER:-zai}"
   model: "claude-opus-4-7"
   reasoning_effort: "${ITERION_RENOVACY_EFFORT_CLAUDE:-max}"
   input: validate_input
@@ -1525,6 +1659,7 @@ agent validate_upgrade:
 
 agent fix_after_upgrade:
   backend: "claude_code"
+  provider: "${RESCUE_PROVIDER:-zai}"
   model: "claude-opus-4-7"
   reasoning_effort: "${ITERION_RENOVACY_EFFORT_CLAUDE:-max}"
   input: fix_after_input
@@ -1539,6 +1674,7 @@ agent fix_after_upgrade:
 
 agent prepare_commit:
   backend: "claude_code"
+  provider: "${RESCUE_PROVIDER:-zai}"
   model: "claude-opus-4-7"
   reasoning_effort: "${ITERION_RENOVACY_EFFORT_CLAUDE:-max}"
   input: commit_intent_input
@@ -1604,6 +1740,7 @@ printf '{"success":true,"output":"committed %s"}\n' "$SHA"
 ## reinstalls dependencies fresh.
 agent revert_changes:
   backend: "claude_code"
+  provider: "${RESCUE_PROVIDER:-zai}"
   model: "claude-opus-4-7"
   reasoning_effort: "${ITERION_RENOVACY_EFFORT_CLAUDE:-max}"
   input: revert_input
@@ -1631,6 +1768,7 @@ router alt_review:
 
 judge reviewer_claude:
   backend: "claude_code"
+  provider: "${RESCUE_PROVIDER:-zai}"
   model: "claude-opus-4-7"
   reasoning_effort: "${ITERION_RENOVACY_EFFORT_CLAUDE:-max}"
   input: review_input
@@ -1668,6 +1806,7 @@ compute streak_check:
 
 agent fix_claude:
   backend: "claude_code"
+  provider: "${RESCUE_PROVIDER:-zai}"
   model: "claude-opus-4-7"
   reasoning_effort: "${ITERION_RENOVACY_EFFORT_CLAUDE:-max}"
   input: review_fix_input
@@ -1729,6 +1868,463 @@ fi
 `
   input: review_commit_input
   output: commit_result
+
+## ─── Nodes : audit-trail (markdown materialisation) ────────────────
+
+## write_audit_md persists a per-package upgrade record under
+## docs/renovacy/<pkg>-<from>-to-<to>.md and appends a row to
+## docs/renovacy/INDEX.md, then amends the previous commit so the
+## audit doc travels with the upgrade. Keeps the run's rationale
+## inspectable by humans (and downstream LLMs reading the repo on a
+## later iteration) without re-deriving it from run.log.
+##
+## Tool node (deterministic JS) — no LLM call. The cost is a few ms
+## per package; the value is a permanent paper trail that survives
+## the run.
+tool write_audit_md:
+  language: js
+  script: |
+    const fs = require("fs");
+    const path = require("path");
+    const wd = {{!input.workspace_dir}};
+    const pkg = {{!input.package_name}};
+    const from = {{!input.current_version}};
+    const to = {{!input.target_version}};
+    const risk = {{!input.risk}};
+    const changelog = {{!input.changelog_summary}};
+    const security = {{!input.security_report}};
+    const align = {{!input.align_summary}};
+    const validate = {{!input.validate_report}};
+    const sha = {{!input.commit_sha}};
+    const batchPackages = {{!input.batch_packages}};
+
+    const sanitize = (s) => String(s || "")
+      .replace(/^@/, "")
+      .replace(/[^a-zA-Z0-9._-]/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
+
+    const dir = path.join(wd, "docs", "renovacy");
+    fs.mkdirSync(dir, { recursive: true });
+
+    function renderSummary(v) {
+      if (!v) return "(none)";
+      if (typeof v === "string") return v;
+      if (typeof v === "object") {
+        return "```json\n" + JSON.stringify(v, null, 2) + "\n```";
+      }
+      return String(v);
+    }
+
+    const isBatch = Array.isArray(batchPackages) && batchPackages.length > 0;
+    const fnameBase = isBatch
+      ? `batch-${batchPackages.length}-patches-${sha.slice(0, 7)}`
+      : `${sanitize(pkg)}-${sanitize(from)}-to-${sanitize(to)}`;
+    const fname = `${fnameBase}.md`;
+    const fpath = path.join(dir, fname);
+
+    const lines = [];
+    if (isBatch) {
+      lines.push(`# Batch patch upgrade (${batchPackages.length} packages)`);
+      lines.push("");
+      lines.push(`- **Commit**: \`${sha}\``);
+      lines.push(`- **Date**: ${new Date().toISOString().slice(0, 10)}`);
+      lines.push("");
+      lines.push("## Packages");
+      lines.push("");
+      lines.push("| Package | From | To |");
+      lines.push("|---|---|---|");
+      for (const p of batchPackages) {
+        lines.push(`| ${p.name} | ${p.current || "?"} | ${p.target || "?"} |`);
+      }
+      lines.push("");
+      lines.push("## Validation");
+      lines.push(renderSummary(validate));
+    } else {
+      lines.push(`# ${pkg} ${from} → ${to}`);
+      lines.push("");
+      lines.push(`- **Risk**: ${risk}`);
+      lines.push(`- **Commit**: \`${sha}\``);
+      lines.push(`- **Date**: ${new Date().toISOString().slice(0, 10)}`);
+      lines.push("");
+      lines.push("## Changelog");
+      lines.push(renderSummary(changelog));
+      lines.push("");
+      lines.push("## Security audit");
+      lines.push(renderSummary(security));
+      lines.push("");
+      lines.push("## Code adaptations");
+      lines.push(align || "(none required)");
+      lines.push("");
+      lines.push("## Validation");
+      lines.push(renderSummary(validate));
+    }
+    lines.push("");
+
+    fs.writeFileSync(fpath, lines.join("\n"));
+
+    // Append/maintain INDEX.md row(s) so a single file is enough to
+    // see every upgrade applied so far.
+    const indexPath = path.join(dir, "INDEX.md");
+    const today = new Date().toISOString().slice(0, 10);
+    const indexHeader = [
+      "# Renovacy upgrade trail",
+      "",
+      "| Package | From | To | Risk | Date | Commit | File |",
+      "|---|---|---|---|---|---|---|",
+      "",
+    ].join("\n");
+
+    if (!fs.existsSync(indexPath)) fs.writeFileSync(indexPath, indexHeader);
+
+    let appendRows = "";
+    if (isBatch) {
+      for (const p of batchPackages) {
+        appendRows += `| ${p.name} | ${p.current || "?"} | ${p.target || "?"} | patch | ${today} | \`${sha.slice(0, 7)}\` | [${fname}](./${fname}) |\n`;
+      }
+    } else {
+      appendRows += `| ${pkg} | ${from} | ${to} | ${risk} | ${today} | \`${sha.slice(0, 7)}\` | [${fname}](./${fname}) |\n`;
+    }
+    fs.appendFileSync(indexPath, appendRows);
+
+    // Amend the upgrade commit so the audit md ships in the same SHA.
+    // git add the new/updated files, then `commit --amend --no-edit`.
+    const { execSync } = require("child_process");
+    try {
+      execSync("git add docs/renovacy/", { cwd: wd, stdio: "pipe" });
+      execSync("git commit --amend --no-edit", { cwd: wd, stdio: "pipe" });
+      process.stdout.write(JSON.stringify({ success: true, output: `audit md amended into ${sha.slice(0, 7)} (${fname})`, was_batch: isBatch }));
+    } catch (e) {
+      // Treat amend failure as soft — the audit doc still landed on
+      // disk; the operator can manually fold it into the next commit.
+      process.stdout.write(JSON.stringify({ success: true, output: `audit md written to ${fname}; amend failed: ${e.message}`, was_batch: isBatch }));
+    }
+  input: audit_md_input
+  output: audit_md_result
+
+## ─── Nodes : patch fast-track (bucket + batch upgrade) ──────────────
+
+## bucket_patches splits discover_outdated.packages into a patches[]
+## subset (risk == "patch") and emits the auxiliary fields the patch
+## fast-track edges need (has_patches gate + attempted_after_batch
+## map ready to drop into select_candidate's `attempted` slot so the
+## per-package loop downstream skips every patch we batched).
+##
+## Implemented as a tool with `language: js` rather than a compute
+## because iterion's compute expression language doesn't ship `filter`
+## / lambda / dict-from-entries primitives — and patching it for this
+## one recipe would be over-engineering. The script runs in ~ms; cost
+## is negligible.
+tool bucket_patches:
+  language: js
+  script: |
+    const raw = {{!input.packages}};
+    const scopeStr = "{{!input.scope}}";
+
+    function unwrap(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+      const keys = Object.keys(value);
+      if (keys.length === 1 && Array.isArray(value[keys[0]])) return value[keys[0]];
+      for (const k of ["list", "items", "packages", "data", "outdated"]) {
+        if (Array.isArray(value[k])) return value[k];
+      }
+      return value;
+    }
+
+    // Operator-side scope filter. When scope excludes "patch" (e.g. a
+    // run pinned to scope: major), the fast-track must yield an empty
+    // batch — even if discover_outdated found patches, the operator
+    // explicitly chose not to bump them.
+    const allowedRisks = (!scopeStr || scopeStr === "all")
+      ? ["patch", "minor", "major", "unknown"]
+      : scopeStr.split(",").map((s) => s.trim()).filter(Boolean);
+    const patchesAllowed = allowedRisks.includes("patch");
+
+    const list = Array.isArray(raw) ? raw : Array.isArray(unwrap(raw)) ? unwrap(raw) : [];
+
+    let patches = [];
+    if (patchesAllowed) {
+      for (const p of list) {
+        if (!p || typeof p !== "object") continue;
+        if ((p.risk || "unknown") !== "patch") continue;
+        patches.push({
+          name: p.name || "",
+          current: p.current || "",
+          target: p.target || "",
+          risk: "patch",
+        });
+      }
+    }
+
+    // attempted_after_batch is a name → {current, target, risk} map,
+    // ready to be passed verbatim as select_candidate's `attempted`
+    // input. When the batch lands (or even when it gets reverted),
+    // every patch must be marked as attempted so the per-package
+    // loop downstream doesn't retry them one-by-one.
+    const attemptedAfterBatch = {};
+    for (const p of patches) {
+      if (p.name) attemptedAfterBatch[p.name] = { current: p.current, target: p.target, risk: "patch" };
+    }
+
+    process.stdout.write(JSON.stringify({
+      patches: patches,
+      has_patches: patches.length > 0,
+      patches_count: patches.length,
+      attempted_after_batch: attemptedAfterBatch,
+    }));
+  input: bucket_patches_input
+  output: bucket_patches_output
+
+## batch_upgrade_patches bumps every patch in one yarn up invocation.
+## Patches are non-breaking by definition; bundling them saves 30+
+## yarn-install round-trips on a typical repo and lets a single test
+## pass cover them all. If yarn refuses a spec it fails the whole
+## batch — the recipe then falls back to batch_revert and the patches
+## are marked attempted so the per-package loop doesn't retry them.
+##
+## yarn up auto-installs after resolving, so no separate install step
+## is needed. The spec list is built defensively (skip entries with
+## empty target) and split on whitespace to keep `yarn up` happy with
+## a single shell line.
+tool batch_upgrade_patches:
+  command: `set -euo pipefail
+cd {{input.workspace_dir}}
+PKG_MGR={{input.pkg_manager}}
+PATCHES={{input.patches}}
+NOTES={{input.notes}}
+# Build the spec list (name@target) from the patches JSON.
+SPECS=$(printf '%s' "$PATCHES" | node -e "
+  let s='';
+  try {
+    const arr = JSON.parse(require('fs').readFileSync(0,'utf8'));
+    for (const p of arr) {
+      if (!p || !p.name || !p.target) continue;
+      s += (s ? ' ' : '') + p.name + '@' + p.target;
+    }
+  } catch (e) { process.exit(2); }
+  process.stdout.write(s);
+")
+if [ -z "$SPECS" ]; then
+  printf '{"success":true,"output":"no specs to upgrade","upgraded_specs":[]}\n'
+  exit 0
+fi
+case "$PKG_MGR" in
+  yarn|yarn3|yarn4) CMD="yarn up $SPECS" ;;
+  npm)              CMD="npm install $SPECS" ;;
+  pnpm)             CMD="pnpm update $SPECS" ;;
+  *)                CMD="yarn up $SPECS" ;;
+esac
+if ! eval "$CMD"; then
+  printf '{"success":false,"output":"batch upgrade failed: %s","upgraded_specs":[]}\n' "$CMD"
+  exit 1
+fi
+# Emit upgraded_specs as a JSON array for downstream nodes.
+UPGRADED_JSON=$(printf '%s' "$SPECS" | node -e "
+  const raw = require('fs').readFileSync(0, 'utf8').trim();
+  const arr = raw ? raw.split(/\s+/) : [];
+  process.stdout.write(JSON.stringify(arr));
+")
+printf '{"success":true,"output":"batch upgrade succeeded","upgraded_specs":%s}\n' "$UPGRADED_JSON"
+`
+  input: batch_upgrade_input
+  output: batch_upgrade_result
+
+## batch_validate runs a shell-based health check (tests + lint +
+## typecheck when relevant) on the post-batch workspace. Deliberately
+## NOT an agent: patches are by construction safe enough that LLM
+## review adds ~0 value; the cost-saving point of the fast-track is
+## precisely to skip those LLM calls. blockers[] captures the failing
+## command tails so the operator can diagnose without re-running.
+##
+## Detection is conservative: only commands that the manager
+## advertises are run. A missing `lint` script is NOT a failure; only
+## a non-zero exit code from a run command marks the batch unstable.
+tool batch_validate:
+  command: `set -euo pipefail
+cd {{input.workspace_dir}}
+PKG_MGR={{input.pkg_manager}}
+LOGDIR=/tmp/iterion-batch-validate
+mkdir -p "$LOGDIR"
+STABLE=true
+BLOCKERS=()
+CMDS=()
+
+run_check() {
+  local name="$1"; shift
+  local log="$LOGDIR/$name.out"
+  CMDS+=("$*")
+  if eval "$*" >"$log" 2>&1; then
+    return 0
+  else
+    STABLE=false
+    local tail
+    tail=$(tail -c 800 "$log" | tr '\n' ' ' | sed 's/"/\\"/g')
+    BLOCKERS+=("$name: $tail")
+    return 1
+  fi
+}
+
+# Tests: try the canonical script for each manager. Missing-script
+# exit code 1 with a recognisable message is NOT a failure; a real
+# test failure (non-1 exit OR script ran with assertions failing) is.
+case "$PKG_MGR" in
+  yarn|yarn3|yarn4)
+    if grep -q '"test"' package.json 2>/dev/null; then
+      run_check tests "yarn test" || true
+    fi
+    if grep -q '"lint"' package.json 2>/dev/null; then
+      run_check lint "yarn lint" || true
+    fi
+    if grep -q '"typecheck"' package.json 2>/dev/null; then
+      run_check typecheck "yarn typecheck" || true
+    fi ;;
+  npm)
+    grep -q '"test"' package.json && run_check tests "npm test --silent" || true
+    grep -q '"lint"' package.json && run_check lint "npm run lint --silent" || true
+    grep -q '"typecheck"' package.json && run_check typecheck "npm run typecheck --silent" || true ;;
+  pnpm)
+    grep -q '"test"' package.json && run_check tests "pnpm test" || true
+    grep -q '"lint"' package.json && run_check lint "pnpm lint" || true
+    grep -q '"typecheck"' package.json && run_check typecheck "pnpm typecheck" || true ;;
+esac
+
+BLOCKERS_JSON=$(printf '%s\n' "${BLOCKERS[@]:-}" | node -e "
+  const lines = require('fs').readFileSync(0,'utf8').split('\n').filter(Boolean);
+  process.stdout.write(JSON.stringify(lines));
+")
+CMDS_JSON=$(printf '%s\n' "${CMDS[@]:-}" | node -e "
+  const lines = require('fs').readFileSync(0,'utf8').split('\n').filter(Boolean);
+  process.stdout.write(JSON.stringify(lines));
+")
+printf '{"stable":%s,"blockers":%s,"commands_run":%s}\n' "$STABLE" "$BLOCKERS_JSON" "$CMDS_JSON"
+`
+  input: batch_validate_input
+  output: batch_validate_result
+
+## batch_commit lands the bundled patch upgrade as a single
+## conventional-commit commit. The subject summarises the count, the
+## body lists every package@from→to so git log readers see what
+## moved.
+tool batch_commit:
+  command: `set -euo pipefail
+cd {{input.workspace_dir}}
+PATCHES={{input.patches}}
+AUDIT={{input.audit_summary}}
+COUNT=$(printf '%s' "$PATCHES" | node -e "
+  try { process.stdout.write(String(JSON.parse(require('fs').readFileSync(0,'utf8')).length)); }
+  catch { process.stdout.write('0'); }
+")
+SUBJECT="chore(deps): batch update ${COUNT} patch upgrades"
+BODY=$(printf '%s' "$PATCHES" | node -e "
+  let lines = '';
+  try {
+    const arr = JSON.parse(require('fs').readFileSync(0,'utf8'));
+    for (const p of arr) {
+      if (!p || !p.name) continue;
+      lines += '- ' + p.name + ' ' + (p.current || '?') + ' -> ' + (p.target || '?') + '\n';
+    }
+  } catch (e) {}
+  process.stdout.write(lines);
+")
+git add -A
+if git diff --cached --quiet; then
+  printf '{"success":false,"output":"nothing staged to commit","sha":""}\n'
+  exit 1
+fi
+COMMIT_MSG=$(printf '%s\n\n%s\n\n%s' "$SUBJECT" "$BODY" "$AUDIT")
+if ! printf '%s' "$COMMIT_MSG" | git commit -F -; then
+  printf '{"success":false,"output":"git commit failed","sha":""}\n'
+  exit 1
+fi
+SHA=$(git rev-parse HEAD)
+printf '{"success":true,"output":"batch committed %s","sha":"%s"}\n' "$SHA" "$SHA"
+`
+  input: batch_commit_input
+  output: batch_commit_result
+
+## batch_revert rolls the batch back atomically when batch_validate
+## says unstable. Strategy: hard-reset to the run's start_sha so both
+## the manifest changes AND the lockfile / node_modules side-effects
+## of `yarn up` disappear; then a fresh install restores a clean
+## node_modules. Slower than per-file revert but guarantees a
+## consistent state.
+tool batch_revert:
+  command: `set -euo pipefail
+cd {{input.workspace_dir}}
+PKG_MGR={{input.pkg_manager}}
+START_SHA={{input.start_sha}}
+PATCHES={{input.patches}}
+if [ -z "$START_SHA" ]; then
+  printf '{"success":false,"output":"missing start_sha; cannot revert atomically"}\n'
+  exit 1
+fi
+git reset --hard "$START_SHA" || {
+  printf '{"success":false,"output":"git reset --hard failed"}\n'
+  exit 1
+}
+case "$PKG_MGR" in
+  yarn|yarn3|yarn4) yarn install || true ;;
+  npm)              npm install || true ;;
+  pnpm)             pnpm install || true ;;
+esac
+printf '{"success":true,"output":"reverted batch to %s"}\n' "$START_SHA"
+`
+  input: batch_revert_input
+  output: batch_revert_result
+
+## ─── Nodes : parallel intel (security + changelog in parallel) ──────
+
+## intel_fanout is the entry point for the parallel security + changelog
+## investigation. Both downstream agents are read-only and independent;
+## running them sequentially as before paid for waiting on the slower of
+## the two (~30-90s per package). fan_out_all dispatches both branches
+## simultaneously; intel_join awaits both before deciding routing.
+##
+## Trade-off: when security_audit says "unsafe", we already paid for
+## changelog_review tokens (~$1-3). Acceptable because unsafe verdicts
+## are rare in practice (most upgrades clear); the time saved on the
+## safe path dominates.
+router intel_fanout:
+  mode: fan_out_all
+
+## intel_join converges the parallel intel branches and exposes a
+## flat view downstream nodes can read for routing + prompt context.
+## await: wait_all blocks until both security_audit and changelog_review
+## have completed. The expr block re-projects the relevant fields so
+## the downstream upgrade edge doesn't need to know which agent
+## produced which key.
+compute intel_join:
+  await: wait_all
+  output: intel_join_output
+  expr:
+    safe: "outputs.security_audit.safe"
+    security_blockers: "outputs.security_audit.blockers"
+    security_fix_plan: "outputs.security_audit.fix_plan"
+    changelog_summary: "outputs.changelog_review"
+
+## intel_join_output is consumed by the upgrade edge for routing
+## (safe?) and prompt-context (changelog_summary). Defined late
+## because the schema references existing types only.
+schema intel_join_output:
+  safe: bool
+  security_blockers: string[]
+  security_fix_plan: string
+  changelog_summary: json
+
+## phase2_decider routes select_candidate's "no more candidates"
+## verdict to the right terminal. Splitting the decision into a
+## dedicated compute lets us keep select_candidate's outbound edges
+## simple-form ({when has_more, when not has_more}) which satisfies
+## the iterion validator's C012 exhaustiveness check (expression-form
+## conditions can't be statically proved exhaustive, so the validator
+## demands a default — which we'd rather not have).
+compute phase2_decider:
+  output: phase2_decider_output
+  expr:
+    go_done: "input.attempted_count == 0 || input.only_patches_attempted"
+
+schema phase2_decider_output:
+  go_done: bool
 
 ## ─── Workflow ──────────────────────────────────────────────────────
 
@@ -1841,9 +2437,32 @@ workflow secured_renovacy:
     notes: "{{outputs.detect_stack.notes}}"
   }
 
-  ## ═══ Phase 1 : Per-package loop ══════════════════════════════════
+  ## ═══ Phase 1 : Patch fast-track + per-package loop ══════════════
 
-  discover_outdated -> select_candidate with {
+  ## bucket_patches splits the discover_outdated.packages list into
+  ## patches[] (for the fast-track) and "the rest" (left in the
+  ## discover_outdated output for the per-package loop downstream).
+  ## When patches.length > 0 we batch them all in a single
+  ## yarn-up / validate / commit cycle; the per-package loop then
+  ## picks up only minors and majors. The split is gated by `scope`:
+  ## a run with scope=major skips the fast-track entirely.
+  discover_outdated -> bucket_patches with {
+    packages: "{{outputs.discover_outdated.packages}}",
+    scope: "{{vars.scope}}"
+  }
+
+  ## has_patches → enter the fast-track. yarn up bundles every patch
+  ## in one invocation; install side-effects are bundled too.
+  bucket_patches -> batch_upgrade_patches when has_patches with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    pkg_manager: "{{outputs.detect_stack.pkg_manager}}",
+    patches: "{{outputs.bucket_patches.patches}}",
+    notes: "{{outputs.detect_stack.notes}}"
+  }
+
+  ## !has_patches → go straight to per-package loop with an empty
+  ## attempted slot (legacy entry shape preserved).
+  bucket_patches -> select_candidate when not has_patches with {
     packages: "{{outputs.discover_outdated.packages}}",
     scope: "{{vars.scope}}",
     attempted: "[]",
@@ -1851,23 +2470,88 @@ workflow secured_renovacy:
     workspace_dir: "{{vars.workspace_dir}}"
   }
 
-  ## First-iteration short-circuit: when `discover_outdated` finds 0
-  ## upgradable packages AND no upgrade has been attempted yet, route
-  ## directly to `done` instead of running the cumulative review loop.
-  ## Without this guard, a "nothing to upgrade" run still spends ~$3 of
-  ## LLM time polishing pre-existing state for no useful diff — entirely
-  ## wasted cycles. attempted_count==0 distinguishes "genuinely empty"
-  ## from "we did N upgrades, the (N+1)th iteration has nothing left to
-  ## try" — the latter SHOULD still enter Phase 2 to validate the
-  ## cumulative diff produced by the loop's earlier passes.
-  select_candidate -> done when "!has_more && attempted_count == 0"
+  batch_upgrade_patches -> batch_validate with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    pkg_manager: "{{outputs.detect_stack.pkg_manager}}",
+    notes: "{{outputs.detect_stack.notes}}"
+  }
 
-  ## No more candidates after at least one attempt → exit Phase 1,
-  ## enter Phase 2 (cumulative review on the upgrades we just made).
-  select_candidate -> alt_review when not has_more
+  ## stable → commit the bundle, materialise the audit md, then
+  ## proceed to the per-package loop with all patches marked
+  ## attempted so it won't retry them.
+  batch_validate -> batch_commit when stable with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    patches: "{{outputs.bucket_patches.patches}}",
+    audit_summary: "{{outputs.batch_validate.commands_run}}"
+  }
 
-  ## More candidates → audit the next one.
-  select_candidate -> security_audit when has_more with {
+  batch_commit -> write_audit_md with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    package_name: "",
+    current_version: "",
+    target_version: "",
+    risk: "patch",
+    changelog_summary: "",
+    security_report: "",
+    align_summary: "",
+    validate_report: "{{outputs.batch_validate}}",
+    commit_sha: "{{outputs.batch_commit.sha}}",
+    batch_packages: "{{outputs.bucket_patches.patches}}"
+  }
+
+  ## !stable → atomic revert (hard reset to start_sha + reinstall)
+  ## then continue with non-patches. The patches are flagged in
+  ## attempted_after_batch so we don't retry them.
+  batch_validate -> batch_revert when not stable with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    pkg_manager: "{{outputs.detect_stack.pkg_manager}}",
+    patches: "{{outputs.bucket_patches.patches}}",
+    start_sha: "{{outputs.capture_start_sha.sha}}"
+  }
+
+  ## After batch_revert: go to select_candidate with all patches
+  ## marked attempted, so the per-package loop only sees non-patches.
+  batch_revert -> select_candidate with {
+    packages: "{{outputs.discover_outdated.packages}}",
+    scope: "{{vars.scope}}",
+    attempted: "{{outputs.bucket_patches.attempted_after_batch}}",
+    max_packages: "{{vars.max_packages_per_run}}",
+    workspace_dir: "{{vars.workspace_dir}}"
+  }
+
+  ## No more candidates → phase2_decider picks the right terminal
+  ## (done vs alt_review) based on attempted_count + only_patches_attempted.
+  ## Going through a separate compute keeps select_candidate's edges
+  ## simple-form so the validator can prove exhaustiveness — see the
+  ## phase2_decider declaration for the rationale.
+  select_candidate -> phase2_decider when not has_more with {
+    attempted_count: "{{outputs.select_candidate.attempted_count}}",
+    only_patches_attempted: "{{outputs.select_candidate.only_patches_attempted}}"
+  }
+
+  ## phase2_decider routes either to terminal `done` (no useful Phase 2
+  ## work to do — either zero attempts or patches-only) or to Phase 2's
+  ## cumulative review loop.
+  phase2_decider -> done when go_done
+  phase2_decider -> alt_review when not go_done
+
+  ## More candidates → parallel intel: security_audit and
+  ## changelog_review run simultaneously instead of sequentially.
+  ## intel_join converges both and routes based on safety verdict.
+  select_candidate -> intel_fanout when has_more with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    selected_package: "{{outputs.select_candidate.selected_package}}",
+    current_version: "{{outputs.select_candidate.current_version}}",
+    target_version: "{{outputs.select_candidate.target_version}}",
+    risk: "{{outputs.select_candidate.risk}}",
+    pkg_manager: "{{outputs.detect_stack.pkg_manager}}",
+    lock_files: "{{outputs.detect_stack.lock_files}}",
+    notes: "{{outputs.detect_stack.notes}}"
+  }
+
+  ## Fan-out to the two read-only analyses. Both fire concurrently;
+  ## intel_join awaits wait_all before routing.
+  intel_fanout -> security_audit with {
     workspace_dir: "{{vars.workspace_dir}}",
     selected_package: "{{outputs.select_candidate.selected_package}}",
     target_version: "{{outputs.select_candidate.target_version}}",
@@ -1876,14 +2560,7 @@ workflow secured_renovacy:
     notes: "{{outputs.detect_stack.notes}}"
   }
 
-  ## Unsafe → mark and skip (no revert needed: nothing applied yet).
-  security_audit -> mark_failed_and_continue when not safe with {
-    selected_package: "{{outputs.select_candidate.selected_package}}",
-    reason: "security audit flagged the package"
-  }
-
-  ## Safe → fetch changelog and decide if alignment is needed.
-  security_audit -> changelog_review when safe with {
+  intel_fanout -> changelog_review with {
     selected_package: "{{outputs.select_candidate.selected_package}}",
     current_version: "{{outputs.select_candidate.current_version}}",
     target_version: "{{outputs.select_candidate.target_version}}",
@@ -1892,7 +2569,20 @@ workflow secured_renovacy:
     _session_id: "{{outputs.detect_stack._session_id}}"
   }
 
-  changelog_review -> upgrade with {
+  ## Both converge on intel_join. Routing decision (safe vs unsafe)
+  ## happens AFTER both finish, so we never waste tokens by going
+  ## straight to upgrade when security flagged the package.
+  security_audit -> intel_join
+  changelog_review -> intel_join
+
+  ## Unsafe → mark and skip. No revert needed: nothing was applied
+  ## (intel_join precedes upgrade).
+  intel_join -> mark_failed_and_continue when not safe with {
+    selected_package: "{{outputs.select_candidate.selected_package}}",
+    reason: "security audit flagged the package"
+  }
+
+  intel_join -> upgrade when safe with {
     workspace_dir: "{{vars.workspace_dir}}",
     pkg_manager: "{{outputs.detect_stack.pkg_manager}}",
     upgrade_cmd_hint: "{{outputs.detect_stack.upgrade_cmd}}",
@@ -2001,11 +2691,43 @@ workflow secured_renovacy:
     files_lines: "{{outputs.join_files.files_lines}}"
   }
 
-  ## Loop back: pick the next package.
-  commit_changes -> select_candidate as package_loop(50) with {
+  ## Per-package audit trail: write docs/renovacy/<pkg>-<from>-to-<to>.md,
+  ## update INDEX.md, and `git commit --amend --no-edit` so the audit
+  ## doc ships with the upgrade SHA. batch_packages is empty for this
+  ## per-package edge — write_audit_md detects single-vs-batch from
+  ## the array length.
+  commit_changes -> write_audit_md with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    package_name: "{{outputs.select_candidate.selected_package}}",
+    current_version: "{{outputs.select_candidate.current_version}}",
+    target_version: "{{outputs.select_candidate.target_version}}",
+    risk: "{{outputs.select_candidate.risk}}",
+    changelog_summary: "{{outputs.changelog_review}}",
+    security_report: "{{outputs.security_audit}}",
+    align_summary: "{{outputs.align_code.summary}}",
+    validate_report: "{{outputs.validate_upgrade}}",
+    commit_sha: "{{outputs.commit_changes.output}}",
+    batch_packages: "[]"
+  }
+
+  ## Loop back to select_candidate. The attempted slot differs per
+  ## context:
+  ##   per-package path → outputs.select_candidate.cumulative_attempted
+  ##     (the iteratively-grown ledger).
+  ##   batch path → outputs.bucket_patches.attempted_after_batch
+  ##     (every patch flagged so the loop skips them).
+  write_audit_md -> select_candidate when not was_batch as package_loop(50) with {
     packages: "{{outputs.discover_outdated.packages}}",
     scope: "{{vars.scope}}",
     attempted: "{{outputs.select_candidate.cumulative_attempted}}",
+    max_packages: "{{vars.max_packages_per_run}}",
+    workspace_dir: "{{vars.workspace_dir}}"
+  }
+
+  write_audit_md -> select_candidate when was_batch with {
+    packages: "{{outputs.discover_outdated.packages}}",
+    scope: "{{vars.scope}}",
+    attempted: "{{outputs.bucket_patches.attempted_after_batch}}",
     max_packages: "{{vars.max_packages_per_run}}",
     workspace_dir: "{{vars.workspace_dir}}"
   }
