@@ -1822,13 +1822,28 @@ func resolveBracedEnvBody(body string) string {
 }
 
 // shellEscapeValue formats val for safe interpolation into a sh -c command.
-// Slice values ([]string, []interface{}) become a space-separated list of
-// individually-shell-quoted tokens, so each element survives sh's
-// re-tokenization as its own argument — letting workflow authors pass file
-// lists or argument arrays via a single {{input.x}} reference. An empty
-// slice substitutes as empty string (the surrounding command will fail
-// naturally if it required at least one argument). Scalars fall back to
-// fmt.Sprint + shellEscape, preserving the prior single-value behavior.
+//
+// Homogeneous scalar slices ([]string, or []interface{} of strings /
+// numbers / bools) become a space-separated list of individually-shell-
+// quoted tokens, so each element survives sh's re-tokenization as its
+// own argument — letting workflow authors pass file lists or argument
+// arrays via a single {{input.x}} reference. An empty slice substitutes
+// as empty string (the surrounding command will fail naturally if it
+// required at least one argument).
+//
+// Complex slices (containing maps / slices) and bare maps are JSON-
+// encoded and the resulting string is shell-escaped as a single token.
+// This matches what the {{!input.x}} raw-substitution form does via
+// formatValue, so authors get the same JSON wire shape across both
+// forms — the default form just adds shell-escaping so the JSON can be
+// safely captured into a shell variable (e.g. `X={{input.x}}` then
+// `printf '%s' "$X" | jq ...`). Without this, `fmt.Sprint(map)` would
+// render Go's native `map[k:v ...]` representation into the command,
+// breaking the shell parse with `command not found` (exit 127) on the
+// `[`/`map[...]` fragments.
+//
+// Scalars fall back to fmt.Sprint + shellEscape, preserving the prior
+// single-value behaviour for strings, numbers, and booleans.
 func shellEscapeValue(val interface{}) string {
 	switch v := val.(type) {
 	case []string:
@@ -1844,14 +1859,46 @@ func shellEscapeValue(val interface{}) string {
 		if len(v) == 0 {
 			return ""
 		}
+		if sliceHasComplexElement(v) {
+			// Mixed or complex slice → JSON-encode as a single shell token.
+			b, err := json.Marshal(v)
+			if err == nil {
+				return shellEscape(string(b))
+			}
+			// json.Marshal essentially never fails on []interface{} built
+			// from JSON input; fall through to the per-element path so the
+			// caller at least sees something rather than empty string.
+		}
 		parts := make([]string, len(v))
 		for i, e := range v {
 			parts[i] = shellEscape(fmt.Sprint(e))
 		}
 		return strings.Join(parts, " ")
+	case map[string]interface{}:
+		// Maps don't have a sensible space-separated representation;
+		// JSON is the only round-trippable shape.
+		b, err := json.Marshal(v)
+		if err == nil {
+			return shellEscape(string(b))
+		}
+		return shellEscape(fmt.Sprint(v))
 	default:
 		return shellEscape(fmt.Sprint(v))
 	}
+}
+
+// sliceHasComplexElement reports whether s contains at least one
+// non-scalar element (map or nested slice). Used to decide between
+// space-separated shell tokens (scalar-only slices) and a single
+// JSON-encoded token (anything else).
+func sliceHasComplexElement(s []interface{}) bool {
+	for _, e := range s {
+		switch e.(type) {
+		case map[string]interface{}, []interface{}, []string, []map[string]interface{}:
+			return true
+		}
+	}
+	return false
 }
 
 // shellEscape wraps a value in single quotes, escaping any embedded single

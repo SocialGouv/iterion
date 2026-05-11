@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1850,4 +1851,79 @@ func TestProviderOptsForNode(t *testing.T) {
 	if opts["reasoning_effort"] != "high" {
 		t.Errorf("expected reasoning_effort 'high', got %v", opts["reasoning_effort"])
 	}
+}
+
+// TestShellEscapeValue_ComplexTypes pins the JSON-encoding behaviour for
+// maps and slices-of-maps. Before the fix, fmt.Sprint(map[...]) rendered
+// the Go-native `map[k:v ...]` representation into shell commands, which
+// the shell parsed as `map[...]` invocations → exit 127. Regression case
+// surfaced in secured-renovacy's batch_upgrade_patches tool node which
+// consumed bucket_patches' []map[string]interface{} output via
+// `PATCHES={{input.patches}}`.
+func TestShellEscapeValue_ComplexTypes(t *testing.T) {
+	t.Run("string slice still space-separated", func(t *testing.T) {
+		got := shellEscapeValue([]string{"a", "b c", "d"})
+		want := `'a' 'b c' 'd'`
+		if got != want {
+			t.Errorf("[]string: got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("scalar interface slice still space-separated", func(t *testing.T) {
+		got := shellEscapeValue([]interface{}{"foo", 42, true})
+		want := `'foo' '42' 'true'`
+		if got != want {
+			t.Errorf("scalar []interface{}: got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("slice of maps JSON-encoded as single token", func(t *testing.T) {
+		patches := []interface{}{
+			map[string]interface{}{"name": "@types/express", "current": "5.0.0", "target": "5.0.6", "risk": "patch"},
+		}
+		got := shellEscapeValue(patches)
+		// Single shell-quoted JSON token (json.Marshal sorts map keys).
+		want := `'[{"current":"5.0.0","name":"@types/express","risk":"patch","target":"5.0.6"}]'`
+		if got != want {
+			t.Errorf("slice-of-map: got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("bare map JSON-encoded", func(t *testing.T) {
+		m := map[string]interface{}{"sha": "deadbeef", "branch": "main"}
+		got := shellEscapeValue(m)
+		want := `'{"branch":"main","sha":"deadbeef"}'`
+		if got != want {
+			t.Errorf("map: got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("empty complex slice still empty string", func(t *testing.T) {
+		got := shellEscapeValue([]interface{}{})
+		if got != "" {
+			t.Errorf("empty slice: got %q, want empty", got)
+		}
+	})
+
+	t.Run("nested slice JSON-encoded", func(t *testing.T) {
+		nested := []interface{}{[]interface{}{"a", "b"}, []interface{}{"c"}}
+		got := shellEscapeValue(nested)
+		want := `'[["a","b"],["c"]]'`
+		if got != want {
+			t.Errorf("nested slice: got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("single quote in JSON value survives shell-escape", func(t *testing.T) {
+		// A package whose name contains a single quote (rare but legal in
+		// some ecosystems) must not break out of the shell-quoted JSON
+		// token. shellEscape replaces ' with '\''.
+		patches := []interface{}{
+			map[string]interface{}{"name": "Bob's package"},
+		}
+		got := shellEscapeValue(patches)
+		if !strings.Contains(got, `'\''s package`) {
+			t.Errorf("single-quote escape failed in JSON token: got %q", got)
+		}
+	})
 }
