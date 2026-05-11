@@ -1922,7 +1922,12 @@ workflow secured_renovacy:
   review_commit_auto -> alt_review as recovery_loop(20)
 
   ## Loop-exhaustion fallthroughs (when bounded loops hit max).
-  reviewer_claude    -> done
-  reviewer_gpt       -> done
-  review_commit_auto -> done
+  ## review_loop / recovery_loop running out means we never converged
+  ## on cross-family approval and the cumulative diff still carries
+  ## blockers. Route to `fail` so the run terminates with a non-success
+  ## status — the operator sees unresolved blockers in
+  ## outputs.streak_check.blockers rather than a silent "done".
+  reviewer_claude    -> fail
+  reviewer_gpt       -> fail
+  review_commit_auto -> fail
   streak_check       -> alt_review

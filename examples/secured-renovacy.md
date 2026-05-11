@@ -60,15 +60,17 @@ Phase 0 (`detect_stack` + `capture_start_sha`) identifies the project's package 
 **Reverted (lesson: less structure is more).**
 - `manager_version`, `command_prefix`, `registry_config` were promoted out of `notes` into typed fields. Reverted: forcing structured exchange between agents adds rigidity without proportional benefit. Downstream agents handle toolchain reality from `notes` fine.
 
-## Open critiques to address next
+## Open critiques: addressed in this pass
 
-From the 2026-05-11 codex GPT-5.5 review (see `memory/project_secured_renovacy_codex_review.md`):
+- **Phase 2 silent finish (codex #13)** — done. Loop-exhaust edges from `reviewer_claude` / `reviewer_gpt` / `review_commit_auto` now route to `fail` instead of `done`. A run that can't converge on cross-family approval surfaces as failure with the unresolved blockers in `outputs.streak_check.blockers`.
 
-- **Multi-ecosystem (codex #3):** the recipe assumes a single `pkg_manager`. Real repos commonly have Maven + Docker tooling, Go + JS frontend, Python + JS build glue. Solution direction: `stack_profile.ecosystems: [...]` (one entry per detected stack); Phase 1 either fans out per ecosystem or iterates serially.
-- **Multi-workspace identity (codex #4):** `discover_outdated`'s package map keys by name only. Same package in two workspaces with different ranges collapses. Solution direction: include `workspace` and `manifest_path` in the package record; `select_candidate` and `upgrade` carry workspace through.
-- **Stale snapshot (codex #5):** the initial `discover_outdated` snapshot is reused for every loop iteration. After a commit, target versions can shift (transitive constraints relax). Solution direction: re-run discover after each commit or maintain a per-package ledger of "fresh as of commit X".
-- **Phase 2 silent finish (codex #13):** `review_loop` exhaustion routes to `done` instead of escalating unresolved blockers. Solution direction: add a `fail_with_blockers` node + route loop-exhausted edges there.
-- **Reproducibility pin (codex #14):** sandbox image is `:latest`; claude-code is installed `@latest` in post_create. Operators upgrading to production should pin to digests / versions.
+## Open critiques: deliberately deferred
+
+- **Multi-ecosystem (codex #3):** the recipe assumes a single `pkg_manager`. Real repos commonly have Maven + Docker tooling, Go + JS frontend, Python + JS build glue. Direction if/when we tackle it: `stack_profile.ecosystems: [...]` (one entry per detected stack); Phase 1 either fans out per ecosystem or iterates serially. Defer because: it adds another layer of structured exchange between agents (the user feedback is to be sparing about that), and current iteration's banc d'essai (modjo) is single-manager.
+- **Multi-workspace identity (codex #4):** `discover_outdated`'s package map keys by name only. Same package in two workspaces with different ranges collapses. Direction if/when we tackle it: include `workspace` and `manifest_path` in each package record; `select_candidate` and `upgrade` carry workspace through. Defer because: hasn't actually surfaced in modjo runs — the `upgrade` agent figured out which workspace owned `@opentelemetry/api` on its own from notes + bash inspection. The risk is theoretical until we hit a multi-workspace clash.
+- **Stale snapshot (codex #5):** the initial `discover_outdated` snapshot is reused for every loop iteration. After a commit, target versions can shift (transitive constraints relax). Direction if/when we tackle it: either re-run discover after each commit (costly — ~$1.50 per discover on modjo), or maintain a per-package ledger of "fresh as of commit X" and re-discover lazily. Defer because: the cost of re-discovering each iteration is significant and the risk (attempting an already-transitively-satisfied upgrade) is wasted work rather than incorrect output.
+- **Reproducibility pin (codex #14):** sandbox image is `:latest`; claude-code is installed `@latest` in post_create. The recipe has comments explaining how to pin, but doesn't force a specific digest because operator environments vary. When this recipe ships to a production pipeline, pin both deliberately.
+- **Typed-array DSL for `json` field (codex #1+#2):** the current `packages: json` flexes between object-keyed-by-name and array shapes; `select_candidate`'s jq filter normalises both. A typed `<schema>[]` in the iterion DSL would let the schema enforce array, but it's a parser + IR + structured-output change with cascading impact. Defer because: the agentified normalisation works in practice and we don't want to push the design toward more rigid contracts.
 
 ## Open invariants the runtime enforces
 
