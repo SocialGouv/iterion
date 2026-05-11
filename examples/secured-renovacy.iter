@@ -1849,8 +1849,8 @@ agent fix_gpt:
 ## fail the node, not silently report committed.
 tool review_commit_auto:
   command: `set -euo pipefail
-cd {{input.workspace_dir}}
-git add -A
+cd {{input.workspace_dir}} >&2
+git add -A >&2
 if git diff --cached --quiet; then
   printf '{"success":true,"output":"no review fix changes"}\n'
 else
@@ -1863,7 +1863,7 @@ else
   [ -n "$SUBJECT" ] || SUBJECT="cumulative review fix"
   [ -n "$FAMILY" ] || FAMILY="unknown"
   [ -n "$ITER" ] || ITER="0"
-  if ! git commit -m "fix(review/${FAMILY}#${ITER}): ${SUBJECT}" -m "${SUMMARY}"; then
+  if ! git commit -m "fix(review/${FAMILY}#${ITER}): ${SUBJECT}" -m "${SUMMARY}" >&2; then
     printf '{"success":false,"output":"git commit failed"}\n'
     exit 1
   fi
