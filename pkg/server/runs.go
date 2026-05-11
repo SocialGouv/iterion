@@ -473,10 +473,46 @@ func (s *Server) resolveWorkflowPath(filePath, source string) (string, error) {
 	if err == nil {
 		return abs, nil
 	}
+	// safePath rejected the input. On resume of an inline-launched run
+	// (where the SPA uploaded source on launch but not on resume), the
+	// persisted FilePath points at the server's inline-source cache —
+	// which lives next to the run store, OUTSIDE the current WorkDir.
+	// Trust paths in our own cache: the materialised file is the same
+	// content the run was launched with, by construction.
+	if cached, ok := s.resolveCachedInlineSource(filePath); ok {
+		return cached, nil
+	}
 	if cached, ok := s.materializeEmbeddedRecipe(filePath); ok {
 		return cached, nil
 	}
 	return "", err
+}
+
+// resolveCachedInlineSource returns filePath unchanged when it points at an
+// existing file under the server's inline-source cache directory. Used as a
+// fallback in resolveWorkflowPath when safePath rejects an absolute path
+// that the server itself wrote during a previous inline launch.
+func (s *Server) resolveCachedInlineSource(filePath string) (string, bool) {
+	if !filepath.IsAbs(filePath) {
+		return "", false
+	}
+	cacheRoot := s.inlineSourceCacheDir()
+	if cacheRoot == "" {
+		return "", false
+	}
+	cacheAbs, err := filepath.Abs(cacheRoot)
+	if err != nil {
+		return "", false
+	}
+	clean := filepath.Clean(filePath)
+	if !pathContains(cacheAbs, clean) {
+		return "", false
+	}
+	info, err := os.Stat(clean)
+	if err != nil || info.IsDir() {
+		return "", false
+	}
+	return clean, true
 }
 
 // materializeInlineSource writes the SPA-provided inline .iter content

@@ -307,3 +307,53 @@ func TestLaunch_RejectsPathOutsideWorkDir(t *testing.T) {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
 	}
 }
+
+// TestResolveWorkflowPath_InlineCacheFallback covers the resume case
+// where the persisted FilePath points at the server's own inline-source
+// cache (outside the current WorkDir, because the operator switched
+// projects between launch and resume). safePath would reject the path;
+// resolveCachedInlineSource trusts files it wrote into its own cache.
+func TestResolveWorkflowPath_InlineCacheFallback(t *testing.T) {
+	// WorkDir and StoreDir live in separate temp trees on purpose: this
+	// reproduces the production failure mode where the current project's
+	// WorkDir is *not* an ancestor of the inline-source cache.
+	workDir := t.TempDir()
+	storeDir := filepath.Join(t.TempDir(), ".iterion")
+	logger := iterlog.New(iterlog.LevelError, os.Stderr)
+	srv := New(Config{WorkDir: workDir, StoreDir: storeDir}, logger)
+
+	cacheRoot := srv.inlineSourceCacheDir()
+	if cacheRoot == "" {
+		t.Fatalf("inlineSourceCacheDir returned empty")
+	}
+	if err := os.MkdirAll(cacheRoot, 0o755); err != nil {
+		t.Fatalf("mkdir cache root: %v", err)
+	}
+	cached := filepath.Join(cacheRoot, "resume.iter")
+	if err := os.WriteFile(cached, []byte("workflow x:\n"), 0o644); err != nil {
+		t.Fatalf("write cached source: %v", err)
+	}
+
+	// safePath SHOULD reject this path (it escapes WorkDir). The fallback
+	// must rescue it because we wrote the file ourselves.
+	if _, err := srv.safePath(cached); err == nil {
+		t.Fatalf("test setup invalid: safePath unexpectedly accepted cached path %q", cached)
+	}
+	got, err := srv.resolveWorkflowPath(cached, "")
+	if err != nil {
+		t.Fatalf("resolveWorkflowPath(%q, \"\") = err %v, want success via inline-cache fallback", cached, err)
+	}
+	if got != cached {
+		t.Errorf("resolved = %q, want %q", got, cached)
+	}
+
+	// An absolute path that escapes both WorkDir AND the inline cache
+	// stays rejected — the fallback must not become a host-FS opener.
+	outside := filepath.Join(t.TempDir(), "evil.iter")
+	if err := os.WriteFile(outside, []byte("workflow x:\n"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	if _, err := srv.resolveWorkflowPath(outside, ""); err == nil {
+		t.Errorf("resolveWorkflowPath(%q, \"\") expected reject for path outside workdir+cache", outside)
+	}
+}
