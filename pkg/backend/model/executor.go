@@ -1,6 +1,7 @@
 package model
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -1532,31 +1533,73 @@ func (e *ClawExecutor) executeToolNodeShell(ctx context.Context, node *ir.ToolNo
 
 	start := time.Now()
 	cmd := e.toolNodeCommand(ctx, resolved)
-	out, err := cmd.CombinedOutput()
-	outputStr := string(out)
+	// Separate stdout (for structured JSON parsing) from stderr (for
+	// diagnostic logging). Tools that emit a JSON result on stdout MUST
+	// be able to use stderr for prose (yarn's resolution output, git's
+	// `[detached HEAD ...]` line, etc.) without that prose breaking the
+	// JSON parse downstream. CombinedOutput() conflated the two and
+	// poisoned the parse.
+	stdoutBytes, runErr, stderrStr := runWithSeparateStreams(cmd)
+	outputStr := string(stdoutBytes)
 	duration := time.Since(start)
 
 	if e.hooks.OnToolCall != nil {
 		e.hooks.OnToolCall(node.ID, LLMToolCallInfo{
 			ToolName: toolName,
 			Duration: duration,
-			Error:    err,
+			Error:    runErr,
 		})
 	}
 	if e.hooks.OnToolNodeResult != nil {
-		e.hooks.OnToolNodeResult(node.ID, toolName, []byte(resolved), outputStr, duration, err)
+		// Log both streams concatenated so run.log still surfaces what
+		// the operator would see in an interactive shell. Stdout first
+		// so the structured payload is visible at the top of long
+		// stderr dumps from yarn/npm/git.
+		logged := combineStreamsForLog(outputStr, stderrStr)
+		e.hooks.OnToolNodeResult(node.ID, toolName, []byte(resolved), logged, duration, runErr)
 	}
-	if err != nil {
-		return nil, fmt.Errorf("model: tool node %q: shell command failed: %w\noutput: %s", node.ID, err, outputStr)
+	if runErr != nil {
+		return nil, fmt.Errorf("model: tool node %q: shell command failed: %w\nstdout: %s\nstderr: %s", node.ID, runErr, outputStr, stderrStr)
 	}
 
-	// Try to parse output as JSON, otherwise wrap as text.
+	// Try to parse stdout as JSON, otherwise wrap as text.
 	var output map[string]interface{}
 	if jsonErr := json.Unmarshal([]byte(outputStr), &output); jsonErr != nil {
 		output = map[string]interface{}{"result": strings.TrimSpace(outputStr)}
 	}
 
 	return output, nil
+}
+
+// runWithSeparateStreams runs cmd with stdout and stderr captured into
+// distinct buffers. Returns (stdout bytes, run error, stderr string).
+// Use this for tool nodes where downstream needs to parse stdout as a
+// structured payload while leaving stderr free for diagnostic chatter.
+func runWithSeparateStreams(cmd *exec.Cmd) ([]byte, error, string) {
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
+	stdoutBytes, runErr := cmd.Output()
+	// exec.ExitError carries stderr it captured before we set ours; the
+	// buffer we provided is still the source of truth in our path.
+	return stdoutBytes, runErr, stderrBuf.String()
+}
+
+// combineStreamsForLog formats stdout + stderr into a single string for
+// run.log display. Empty streams are elided so the common
+// "JSON on stdout, nothing on stderr" case stays compact.
+func combineStreamsForLog(stdout, stderr string) string {
+	stdout = strings.TrimRight(stdout, "\n")
+	stderr = strings.TrimRight(stderr, "\n")
+	switch {
+	case stdout == "" && stderr == "":
+		return ""
+	case stderr == "":
+		return stdout
+	case stdout == "":
+		return stderr
+	default:
+		return stdout + "\n--- stderr ---\n" + stderr
+	}
 }
 
 // executeToolNodeScript handles tool nodes declared with `script:` +
@@ -1609,8 +1652,11 @@ func (e *ClawExecutor) executeToolNodeScript(ctx context.Context, node *ir.ToolN
 
 	start := time.Now()
 	cmd := e.toolNodeScriptCommand(ctx, interp, scriptBasename)
-	out, runErr := cmd.CombinedOutput()
-	outputStr := string(out)
+	// Same stdout/stderr separation as executeToolNodeShell — a
+	// `script: js` body can console.error() freely without breaking
+	// the JSON.parse on stdout.
+	stdoutBytes, runErr, stderrStr := runWithSeparateStreams(cmd)
+	outputStr := string(stdoutBytes)
 	duration := time.Since(start)
 
 	if e.hooks.OnToolCall != nil {
@@ -1621,10 +1667,11 @@ func (e *ClawExecutor) executeToolNodeScript(ctx context.Context, node *ir.ToolN
 		})
 	}
 	if e.hooks.OnToolNodeResult != nil {
-		e.hooks.OnToolNodeResult(node.ID, toolName, []byte(resolved), outputStr, duration, runErr)
+		logged := combineStreamsForLog(outputStr, stderrStr)
+		e.hooks.OnToolNodeResult(node.ID, toolName, []byte(resolved), logged, duration, runErr)
 	}
 	if runErr != nil {
-		return nil, fmt.Errorf("model: tool node %q: script failed: %w\noutput: %s", node.ID, runErr, outputStr)
+		return nil, fmt.Errorf("model: tool node %q: script failed: %w\nstdout: %s\nstderr: %s", node.ID, runErr, outputStr, stderrStr)
 	}
 
 	var output map[string]interface{}
