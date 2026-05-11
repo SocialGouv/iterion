@@ -215,11 +215,15 @@ families internally.
   provider side. If you're pointing at OpenRouter, Ollama, or another
   OpenAI-shaped endpoint, use `backend: claw` with `model: openai/…`
   + `OPENAI_BASE_URL` instead.
-- Anthropic's Consumer Terms (Pro/Max plans) restrict resale and
-  multi-tenant use of the Claude Code OAuth-forfait. The z.ai path is
-  the recommended alternative for any shared-infrastructure deployment;
-  the in-cloud OAuth-forfait path (`pkg/server/oauth_routes.go::OAuthKindClaudeCode`)
-  is scheduled for removal — see `.plans/zai-glm-oauth.md`.
+- **API keys only — no forfait via iterion.** Both Anthropic's Consumer
+  Terms (Pro/Max plans) and z.ai's Coding Plan terms restrict
+  subscription benefits to *officially supported tools*. Driving either
+  provider's subscription/OAuth forfait through iterion (or any other
+  third-party orchestrator) is a ToS violation. Always use a BYOK API
+  key path: `ANTHROPIC_API_KEY`, `ZAI_API_KEY`, or the BYOK panel in the
+  cloud UI. The legacy in-cloud OAuth-forfait wiring
+  (`pkg/server/oauth_routes.go::OAuthKindClaudeCode`) is scheduled for
+  removal — see `.plans/zai-glm-byok.md`.
 - Cost: iterion's token-usage panels currently price against an
   Anthropic rate card. When you route to z.ai the wire shape is
   unchanged so token counts are still reported, but the dollar
