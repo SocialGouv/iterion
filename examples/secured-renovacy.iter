@@ -1639,6 +1639,16 @@ workflow secured_renovacy:
     image: "ghcr.io/socialgouv/iterion-sandbox-slim:latest"
     user: "devbox"
     workspace_folder: "/workspace"
+    ## R&D phase: egress is fully open. Every domain the
+    ## downstream agents actually hit (registries, OSV API,
+    ## raw.githubusercontent.com, github.com/releases, deps.dev,
+    ## telemetry from the SDKs, …) is allowed. Once we've collected
+    ## the real domain set from a few production runs, convert
+    ## this to `mode: allowlist` with an explicit, observed-and-
+    ## safe rule list (probably built on top of the
+    ## `iterion-default` preset + project-specific additions).
+    network:
+      mode: open
     env:
       CLAUDE_CONFIG_DIR: "/home/devbox/.claude"
       ## Git identity for in-sandbox `git commit` calls. Without

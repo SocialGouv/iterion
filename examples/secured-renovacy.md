@@ -60,6 +60,22 @@ Phase 0 (`detect_stack` + `capture_start_sha`) identifies the project's package 
 **Reverted (lesson: less structure is more).**
 - `manager_version`, `command_prefix`, `registry_config` were promoted out of `notes` into typed fields. Reverted: forcing structured exchange between agents adds rigidity without proportional benefit. Downstream agents handle toolchain reality from `notes` fine.
 
+## Sandbox network policy
+
+Currently `mode: open` — egress to every host is allowed. This is the
+R&D posture: collect the real set of domains the pipeline actually
+needs (registries, OSV API, advisory DBs, raw.githubusercontent.com
+for changelogs, deps.dev, telemetry endpoints, …) from a few real
+runs, then convert to `mode: allowlist` with an observed-and-safe
+rule list. Pre-open-mode runs were polluted with `network: blocked
+http-intake.logs.us5.datadoghq.com` events (claude-code SDK
+telemetry); they were harmless but noisy and would have masked any
+real block that actually mattered.
+
+When tightening: build on top of the `iterion-default` preset (LLM
+endpoints + major registries + GitHub) and append project-specific
+extensions discovered during R&D runs.
+
 ## Open critiques: addressed in this pass
 
 - **Phase 2 silent finish (codex #13)** — done. Loop-exhaust edges from `reviewer_claude` / `reviewer_gpt` / `review_commit_auto` now route to `fail` instead of `done`. A run that can't converge on cross-family approval surfaces as failure with the unresolved blockers in `outputs.streak_check.blockers`.
