@@ -61,7 +61,7 @@ func BashTool() api.Tool { return intl.BashTool() }
 // whose bin path is absent from the parent shell's PATH, use
 // ExecuteBashWithEnv to surface it explicitly.
 func ExecuteBash(ctx context.Context, input map[string]any, workspace string) (string, error) {
-	return intl.ExecuteBash(input, permissions.ModeAllow, workspace)
+	return intl.ExecuteBash(ctx, input, permissions.ModeAllow, workspace)
 }
 
 // ExecuteBashWithEnv runs the bash command with extra environment
@@ -74,7 +74,7 @@ func ExecuteBash(ctx context.Context, input map[string]any, workspace string) (s
 // can run `go test` / `gofmt` against the project toolchain even when
 // the operator forgot to prefix the run with `devbox run --`.
 func ExecuteBashWithEnv(ctx context.Context, input map[string]any, workspace string, extraEnv []string) (string, error) {
-	return intl.ExecuteBashWithEnv(input, permissions.ModeAllow, workspace, extraEnv)
+	return intl.ExecuteBashWithEnv(ctx, input, permissions.ModeAllow, workspace, extraEnv)
 }
 
 // ----- glob -----

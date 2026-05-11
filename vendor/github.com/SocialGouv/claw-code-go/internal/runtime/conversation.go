@@ -880,7 +880,7 @@ func (loop *ConversationLoop) ExecuteToolQuiet(ctx context.Context, name string,
 
 	switch name {
 	case "bash":
-		result, err = tools.ExecuteBash(input, loop.currentPermMode(), loop.workspaceRoot())
+		result, err = tools.ExecuteBash(ctx, input, loop.currentPermMode(), loop.workspaceRoot())
 	case "read_file":
 		result, err = tools.ExecuteReadFile(input)
 	case "write_file":
@@ -1212,7 +1212,7 @@ func (loop *ConversationLoop) ExecuteTool(ctx context.Context, name string, inpu
 
 	switch name {
 	case "bash":
-		result, err = tools.ExecuteBash(input, loop.currentPermMode(), loop.workspaceRoot())
+		result, err = tools.ExecuteBash(ctx, input, loop.currentPermMode(), loop.workspaceRoot())
 	case "read_file":
 		result, err = tools.ExecuteReadFile(input)
 	case "write_file":

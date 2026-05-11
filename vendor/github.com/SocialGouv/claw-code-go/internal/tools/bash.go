@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"syscall"
 	"time"
 )
 
@@ -50,12 +51,16 @@ func BashTool() api.Tool {
 // It validates the command against the current permission mode and workspace
 // path before execution. Pass permissions.ModeAllow and "" to skip validation.
 //
+// callerCtx is the caller's context — cancelling it (e.g. from an outer
+// run-cancel signal) aborts the bash process group promptly. Pass
+// context.Background() if no upstream cancellation is needed.
+//
 // The spawned bash inherits os.Environ() of the calling process. Use
 // ExecuteBashWithEnv when the caller needs to surface a project-managed
 // toolchain (devbox, nix, asdf) whose bin path is not in the parent
 // shell's PATH.
-func ExecuteBash(input map[string]any, mode permissions.PermissionMode, workspace string) (string, error) {
-	return ExecuteBashWithEnv(input, mode, workspace, nil)
+func ExecuteBash(callerCtx context.Context, input map[string]any, mode permissions.PermissionMode, workspace string) (string, error) {
+	return ExecuteBashWithEnv(callerCtx, input, mode, workspace, nil)
 }
 
 // ExecuteBashWithEnv runs a bash command with extra environment
@@ -72,7 +77,13 @@ func ExecuteBash(input map[string]any, mode permissions.PermissionMode, workspac
 //
 // Pass nil to inherit only the parent process's environment (same
 // behaviour as the legacy ExecuteBash entry point).
-func ExecuteBashWithEnv(input map[string]any, mode permissions.PermissionMode, workspace string, extraEnv []string) (string, error) {
+//
+// bash and all its descendants run in a dedicated process group so the
+// timeout (or callerCtx cancellation) reaches grandchildren too. Without
+// this, a `bash -c "node …"` whose node child spawned workers would
+// orphan those workers to init on SIGKILL, and they'd keep the stdout
+// pipe open — wedging cmd.Wait() forever.
+func ExecuteBashWithEnv(callerCtx context.Context, input map[string]any, mode permissions.PermissionMode, workspace string, extraEnv []string) (string, error) {
 	command, ok := input["command"].(string)
 	if !ok || command == "" {
 		return "", fmt.Errorf("bash: 'command' input is required and must be a string")
@@ -91,13 +102,32 @@ func ExecuteBashWithEnv(input map[string]any, mode permissions.PermissionMode, w
 		fmt.Fprintf(bashStderr(), "bash warning: %s\n", result.Message)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), bashTimeout)
+	if callerCtx == nil {
+		callerCtx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(callerCtx, bashTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "bash", "-c", command)
 	if len(extraEnv) > 0 {
 		cmd.Env = append(os.Environ(), extraEnv...)
 	}
+	// Put bash and every descendant in a fresh process group so a single
+	// signal reaches the whole tree (default exec.CommandContext only
+	// signals the immediate child).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			// Negative PID = signal the group, not just the leader.
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return os.ErrProcessDone
+	}
+	// Safety net: if a descendant somehow survives the group kill and
+	// keeps stdout/stderr open, Go force-closes the pipes after
+	// WaitDelay so cmd.Wait — and the io.Copy goroutines feeding buf —
+	// unblock instead of hanging the entire runner.
+	cmd.WaitDelay = 2 * time.Second
 
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
@@ -116,6 +146,9 @@ func ExecuteBashWithEnv(input map[string]any, mode permissions.PermissionMode, w
 		// Return output + error description; the caller decides if it's a hard error
 		if ctx.Err() == context.DeadlineExceeded {
 			return output, fmt.Errorf("command timed out after %s", bashTimeout)
+		}
+		if ctx.Err() == context.Canceled {
+			return output, fmt.Errorf("command cancelled: %w", ctx.Err())
 		}
 		// For non-zero exit codes, return output with error appended
 		return output, fmt.Errorf("command exited with error: %v", err)
