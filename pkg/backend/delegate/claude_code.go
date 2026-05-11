@@ -326,12 +326,10 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 	}
 
 	// Two-pass execution: when tools + schema are both present, Pass 1 output
-	// is free-form text. We try Pass 2 (WithOutputFormat via session resume)
-	// to get a guaranteed-structured output, but FIRST we keep Pass 1's parse
-	// as a baseline so a Pass 2 failure (e.g. sandboxed runs where the host
-	// claude can't resume the in-container session: "No conversation found")
-	// can fall back to it instead of dropping the agent's work entirely.
-	pass1Output, pass1RawLen, pass1Fallback := parseSDKOutput(rm.Result, rm.StructuredOutput, task.OutputSchema)
+	// is free-form text. Pass 2 resumes the session with WithOutputFormat to
+	// extract a structured output. Both passes route through the sandbox
+	// command builder when sandboxed, so the resumed session is found inside
+	// the container where Pass 1 created it.
 	if needsTwoPass && rm.SessionID != "" {
 		const maxFmtAttempts = 2
 		for attempt := 1; attempt <= maxFmtAttempts; attempt++ {
@@ -356,16 +354,6 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 				b.Logger.Warn("claude-code [formatting pass %d/%d] produced fallback text, retrying", attempt, maxFmtAttempts)
 				continue
 			}
-			// Pass 2 produced empty output (typical for sandboxed runs where
-			// the host claude can't resume the in-container session). Use
-			// Pass 1's parse if it has anything usable rather than failing
-			// the run with no output at all.
-			if len(output) == 0 && len(pass1Output) > 0 {
-				b.Logger.Warn("claude-code [formatting pass %d/%d] produced empty output — falling back to Pass 1 parse (%d chars)", attempt, maxFmtAttempts, pass1RawLen)
-				output = pass1Output
-				rawLen = pass1RawLen
-				fallback = pass1Fallback
-			}
 			result.Output = output
 			result.RawOutputLen = rawLen
 			result.ParseFallback = fallback
@@ -374,9 +362,8 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		}
 	}
 
-	// Single-pass path: same parse, distinct call so the variables aren't
-	// shadowed across the two-pass branch above.
-	output, rawLen, fallback := pass1Output, pass1RawLen, pass1Fallback
+	// Single-pass path: parse Pass 1 directly.
+	output, rawLen, fallback := parseSDKOutput(rm.Result, rm.StructuredOutput, task.OutputSchema)
 	result.Output = output
 	result.RawOutputLen = rawLen
 	result.ParseFallback = fallback
@@ -439,9 +426,17 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 			}
 		}),
 	}
-	if task.WorkDir != "" {
+
+	// Cwd / CLI path handling mirrors Execute(): on the host, pass workdir
+	// through; in the sandbox, leave cwd unset (the docker driver picks the
+	// spec's WorkspaceFolder) and pin the CLI to the bare in-container name.
+	if task.WorkDir != "" && task.Sandbox == nil {
 		opts = append(opts, claudesdk.WithCwd(task.WorkDir))
 	}
+	if task.Sandbox != nil {
+		opts = append(opts, claudesdk.WithCLIPath("claude"))
+	}
+
 	model := task.Model
 	if model == "" {
 		model = defaultClaudeCodeModel
@@ -450,6 +445,42 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	if b.Command != "" {
 		opts = append(opts, claudesdk.WithCLIPath(b.Command))
 	}
+
+	// When sandboxed, route the CLI subprocess through the sandbox driver so
+	// it resumes the session inside the container (where the session file
+	// lives) rather than spawning a host claude that can't see it. Without
+	// this, Pass 2 always returned empty output on sandboxed runs because the
+	// host CLI emitted "No conversation found".
+	if task.Sandbox != nil {
+		run := task.Sandbox
+		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
+			if b.Logger != nil {
+				preview := append([]string{path}, args...)
+				b.Logger.Info("claude-code [fmt]: exec %v (cwd=%s, env_keys=%d, stdin=%v)", preview, cwd, len(env), openStdin)
+			}
+			return run.Command(ctx, append([]string{path}, args...), sandbox.ExecOpts{
+				WorkDir:       cwd,
+				Env:           env,
+				KeepStdinOpen: openStdin,
+			})
+		}))
+	}
+
+	// Forward BYOK credentials and effort level into the formatting pass so
+	// the resumed session uses the same auth path as Pass 1.
+	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
+		switch {
+		case creds.APIKey(secrets.ProviderAnthropic) != "":
+			opts = append(opts, claudesdk.WithEnv("ANTHROPIC_API_KEY", creds.APIKey(secrets.ProviderAnthropic)))
+		case creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "":
+			opts = append(opts, claudesdk.WithEnv("CLAUDE_CONFIG_DIR", creds.OAuthDir(string(secrets.OAuthKindClaudeCode))))
+		}
+	}
+	effort := task.ReasoningEffort
+	if effort == "" {
+		effort = defaultClaudeCodeEffort
+	}
+	opts = append(opts, claudesdk.WithEnv("CLAUDE_CODE_EFFORT_LEVEL", effort))
 
 	prompt := "Format your complete findings as JSON matching the required output schema."
 
