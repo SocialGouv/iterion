@@ -2095,22 +2095,15 @@ tool bucket_patches:
 ## a single shell line.
 tool batch_upgrade_patches:
   command: `set -euo pipefail
-cd {{input.workspace_dir}}
+cd {{input.workspace_dir}} >&2
 PKG_MGR={{input.pkg_manager}}
 PATCHES={{input.patches}}
 NOTES={{input.notes}}
-# Build the spec list (name@target) from the patches JSON.
-SPECS=$(printf '%s' "$PATCHES" | node -e "
-  let s='';
-  try {
-    const arr = JSON.parse(require('fs').readFileSync(0,'utf8'));
-    for (const p of arr) {
-      if (!p || !p.name || !p.target) continue;
-      s += (s ? ' ' : '') + p.name + '@' + p.target;
-    }
-  } catch (e) { process.exit(2); }
-  process.stdout.write(s);
-")
+# Build the spec list (name@target) using jq — shape-tolerant and
+# present in iterion-sandbox-slim's toolchain. Skip entries that lack
+# either name or target so a half-formed row can't break the whole
+# upgrade.
+SPECS=$(printf '%s' "$PATCHES" | jq -r '.[] | select(.name and .target) | "\(.name)@\(.target)"' 2>/dev/null | tr '\n' ' ' | sed 's/ $//')
 if [ -z "$SPECS" ]; then
   printf '{"success":true,"output":"no specs to upgrade","upgraded_specs":[]}\n'
   exit 0
@@ -2122,16 +2115,15 @@ case "$PKG_MGR" in
   bun)              CMD="bun update $SPECS" ;;
   *)                printf '{"success":false,"output":"batch_upgrade_patches: unsupported pkg_manager %s — extend the case block to add it","upgraded_specs":[]}\n' "$PKG_MGR"; exit 1 ;;
 esac
-if ! eval "$CMD"; then
+# Run the upgrade with stdout piped to stderr — keeps the tool's
+# stdout dedicated to the final JSON line. The yarn/npm/pnpm/bun
+# output is still in run.log via stderr capture.
+if ! eval "$CMD" >&2; then
   printf '{"success":false,"output":"batch upgrade failed: %s","upgraded_specs":[]}\n' "$CMD"
   exit 1
 fi
-# Emit upgraded_specs as a JSON array for downstream nodes.
-UPGRADED_JSON=$(printf '%s' "$SPECS" | node -e "
-  const raw = require('fs').readFileSync(0, 'utf8').trim();
-  const arr = raw ? raw.split(/\s+/) : [];
-  process.stdout.write(JSON.stringify(arr));
-")
+# Emit upgraded_specs as a JSON array via jq.
+UPGRADED_JSON=$(printf '%s' "$SPECS" | jq -R 'split(" ") | map(select(length > 0))' 2>/dev/null || echo '[]')
 printf '{"success":true,"output":"batch upgrade succeeded","upgraded_specs":%s}\n' "$UPGRADED_JSON"
 `
   input: batch_upgrade_input
@@ -2143,26 +2135,19 @@ printf '{"success":true,"output":"batch upgrade succeeded","upgraded_specs":%s}\
 ## moved.
 tool batch_commit:
   command: `set -euo pipefail
-cd {{input.workspace_dir}}
+cd {{input.workspace_dir}} >&2
 PATCHES={{input.patches}}
 AUDIT={{input.audit_summary}}
-COUNT=$(printf '%s' "$PATCHES" | node -e "
-  try { process.stdout.write(String(JSON.parse(require('fs').readFileSync(0,'utf8')).length)); }
-  catch { process.stdout.write('0'); }
-")
+
+# Use jq for shape-tolerant count + body construction. Falls back to
+# graceful defaults if patches isn't a JSON array (shouldn't happen
+# given upstream is bucket_patches, but defensive). jq is in
+# iterion-sandbox-slim's toolchain.
+COUNT=$(printf '%s' "$PATCHES" | jq 'length' 2>/dev/null || echo '?')
+BODY=$(printf '%s' "$PATCHES" | jq -r '.[] | "- \(.name // "?") \(.current // "?") -> \(.target // "?")"' 2>/dev/null || true)
 SUBJECT="chore(deps): batch update ${COUNT} patch upgrades"
-BODY=$(printf '%s' "$PATCHES" | node -e "
-  let lines = '';
-  try {
-    const arr = JSON.parse(require('fs').readFileSync(0,'utf8'));
-    for (const p of arr) {
-      if (!p || !p.name) continue;
-      lines += '- ' + p.name + ' ' + (p.current || '?') + ' -> ' + (p.target || '?') + '\n';
-    }
-  } catch (e) {}
-  process.stdout.write(lines);
-")
-git add -A
+
+git add -A >&2
 if git diff --cached --quiet; then
   # yarn up resolved nothing (everything already at target). Soft
   # success: downstream routes to select_candidate via "not committed".
@@ -2170,9 +2155,11 @@ if git diff --cached --quiet; then
   exit 0
 fi
 COMMIT_MSG=$(printf '%s\n\n%s\n\n%s' "$SUBJECT" "$BODY" "$AUDIT")
-if ! printf '%s' "$COMMIT_MSG" | git commit -F -; then
-  # Hard git failure (e.g. pre-commit hook rejected). Surface as a
-  # tool error so iterion flips to failed_resumable.
+# Redirect git commit's "[detached HEAD ...]" stdout to stderr so the
+# only thing on this tool's stdout is the final printf JSON. Without
+# this, iterion sees mixed text + JSON, fails to parse, and the
+# "when committed" edge match drops to nil — "no outgoing edge".
+if ! printf '%s' "$COMMIT_MSG" | git commit -F - >&2; then
   printf '{"success":false,"committed":false,"output":"git commit failed","sha":""}\n'
   exit 1
 fi
