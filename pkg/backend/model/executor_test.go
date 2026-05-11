@@ -976,6 +976,34 @@ func TestExpandBracedEnv(t *testing.T) {
 			in:   "${ITERION_TEST_MODEL} -- script.sh \"$@\"",
 			want: `claude-opus-4-7 -- script.sh "$@"`,
 		},
+		{
+			// JS template literal `${X.Y}` must NOT be treated as an
+			// env var — its body has a `.` which isn't valid in a
+			// shell identifier. The old behaviour erased it (env var
+			// lookup misses + default-less = "") which silently broke
+			// any script: js tool that used template literals.
+			name: "JS template literal pass-through (dotted)",
+			in:   "const x = `n=${batchPackages.length}`;",
+			want: "const x = `n=${batchPackages.length}`;",
+		},
+		{
+			// JS method call inside template literal: parentheses and
+			// spaces are also not valid in shell idents.
+			name: "JS template literal pass-through (method call)",
+			in:   "const x = `${sha.slice(0, 7)}.md`;",
+			want: "const x = `${sha.slice(0, 7)}.md`;",
+		},
+		{
+			// JS bare identifier in template literal — a legitimate
+			// env-var lookup form. If a real env var ITERION_TEST_MODEL
+			// exists we DO expand (since this could be either a JS
+			// template literal referencing a runtime env var, or a
+			// shell-form env ref — the recipe author needs to disable
+			// expansion explicitly if they don't want this).
+			name: "single-identifier expands when env var exists",
+			in:   "const x = `${ITERION_TEST_MODEL}`;",
+			want: "const x = `claude-opus-4-7`;",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -985,6 +1013,66 @@ func TestExpandBracedEnv(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestResolveScriptTemplate(t *testing.T) {
+	// resolveScriptTemplate uses JSON-literal rendering instead of
+	// shell-escape, so values land as valid JS/Python/Ruby literals.
+	// Critically, apostrophes inside strings don't trip the
+	// script-language string-literal parser the way shell-escape's
+	// `'\''` sequence does.
+	t.Run("string JSON-quoted", func(t *testing.T) {
+		refs := []*ir.Ref{{Kind: ir.RefInput, Path: []string{"name"}, Raw: "{{input.name}}"}}
+		input := map[string]interface{}{"name": "@types/express"}
+		got := resolveScriptTemplate("const n = {{input.name}};", refs, input, nil)
+		want := `const n = "@types/express";`
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+	t.Run("string with apostrophe survives", func(t *testing.T) {
+		refs := []*ir.Ref{{Kind: ir.RefInput, Path: []string{"msg"}, Raw: "{{input.msg}}"}}
+		input := map[string]interface{}{"msg": "Bob's note"}
+		got := resolveScriptTemplate("const m = {{input.msg}};", refs, input, nil)
+		want := `const m = "Bob's note";`
+		if got != want {
+			t.Errorf("got %q, want %q (shell-escape would have produced 'Bob'\\''s note' breaking JS)", got, want)
+		}
+	})
+	t.Run("map as object literal", func(t *testing.T) {
+		refs := []*ir.Ref{{Kind: ir.RefInput, Path: []string{"obj"}, Raw: "{{input.obj}}"}}
+		input := map[string]interface{}{"obj": map[string]interface{}{"k": "v"}}
+		got := resolveScriptTemplate("const o = {{input.obj}};", refs, input, nil)
+		want := `const o = {"k":"v"};`
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+	t.Run("slice of maps as array literal", func(t *testing.T) {
+		refs := []*ir.Ref{{Kind: ir.RefInput, Path: []string{"arr"}, Raw: "{{input.arr}}"}}
+		input := map[string]interface{}{
+			"arr": []interface{}{
+				map[string]interface{}{"name": "@types/express", "target": "5.0.6"},
+			},
+		}
+		got := resolveScriptTemplate("const a = {{input.arr}};", refs, input, nil)
+		want := `const a = [{"name":"@types/express","target":"5.0.6"}];`
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+	t.Run("bang form still raw", func(t *testing.T) {
+		refs := []*ir.Ref{{Kind: ir.RefInput, Path: []string{"name"}, Raw: "{{!input.name}}", Unquoted: true}}
+		input := map[string]interface{}{"name": "foo"}
+		got := resolveScriptTemplate("var x = {{!input.name}};", refs, input, nil)
+		// Bang form returns the string verbatim — author is
+		// responsible for any wrapping. Mirrors the shell-context
+		// bang behaviour.
+		want := `var x = foo;`
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
 }
 
 func TestExecutorUnknownModel(t *testing.T) {

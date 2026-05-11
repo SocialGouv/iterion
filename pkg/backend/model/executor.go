@@ -1612,9 +1612,14 @@ func combineStreamsForLog(stdout, stderr string) string {
 func (e *ClawExecutor) executeToolNodeScript(ctx context.Context, node *ir.ToolNode, input map[string]interface{}) (map[string]interface{}, error) {
 	// Same env-then-substitution ordering as executeToolNodeShell: only
 	// the author-controlled `${NAME}` braces are env-expanded so injected
-	// values from inputs/vars stay inert.
+	// values from inputs/vars stay inert. But where the shell path uses
+	// shell-escape, script: tools use resolveScriptTemplate (JSON literal
+	// rendering) so values land as valid JS/Python/Ruby literals —
+	// shell-escape's single-quote wrapping breaks script-language string
+	// parsers when the value contains embedded apostrophes (e.g. an
+	// agent output blob with `yarn workspaces foreach ... '\''…'\''`).
 	expanded := expandBracedEnv(node.Script)
-	resolved := resolveCommandTemplate(expanded, node.ScriptRefs, input, e.vars)
+	resolved := resolveScriptTemplate(expanded, node.ScriptRefs, input, e.vars)
 
 	interp, ext := scriptInterpreter(node.Language)
 	if interp == "" {
@@ -1788,7 +1793,32 @@ func looksLikeShellCommand(cmd string) bool {
 // pass as a single quoted token). Untrusted external inputs MUST keep the
 // default escaping.
 func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]interface{}, vars map[string]interface{}) string {
-	resolved := command
+	return resolveTemplateWith(command, refs, input, vars, shellEscapeValue)
+}
+
+// resolveScriptTemplate substitutes refs in a tool node's `script:` body.
+// SCRIPT contexts (JS / Python / Ruby / any JSON-superset language) want
+// JSON-encoded values, not shell-escaped ones — shell-escape wraps
+// strings in single quotes (and renders embedded apostrophes as the
+// shell-only `'\''` escape sequence) which then breaks the script
+// language's string-literal parser. JSON encoding produces valid
+// literals in all major scripting languages: `"foo"` is a JS / Python /
+// Ruby string, `{"k":"v"}` is an object/dict literal, `[1,2,3]` is an
+// array/list literal.
+//
+// The bang form `{{!input.X}}` keeps the legacy raw-passthrough
+// behaviour (strings inserted unquoted) for authors who need to drop
+// a snippet of source directly into the script body.
+func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]interface{}, vars map[string]interface{}) string {
+	return resolveTemplateWith(script, refs, input, vars, jsonLiteralValue)
+}
+
+// resolveTemplateWith is the shared core: walk refs, look up each value,
+// dispatch to rawTemplateValue (bang form) or the renderer the caller
+// provided (default form). Keeps shell- and script-mode template logic
+// in one place.
+func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]interface{}, vars map[string]interface{}, defaultRender func(interface{}) string) string {
+	resolved := template
 	for _, ref := range refs {
 		var val interface{}
 		switch {
@@ -1804,11 +1834,30 @@ func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]int
 		if ref.Unquoted {
 			rendered = rawTemplateValue(val)
 		} else {
-			rendered = shellEscapeValue(val)
+			rendered = defaultRender(val)
 		}
 		resolved = strings.ReplaceAll(resolved, ref.Raw, rendered)
 	}
 	return resolved
+}
+
+// jsonLiteralValue renders val as a valid JSON literal suitable for
+// pasting into a script-language source file. Strings get JSON-quoted
+// (`"foo"`, with embedded quotes escaped as `\"`); maps and slices get
+// JSON-encoded as object/array literals. Numbers, bools, and nil are
+// rendered as JSON's natural form. The result is a valid expression
+// in JavaScript, Python, Ruby, and any modern language that accepts
+// JSON-superset literal syntax — no further wrapping needed.
+func jsonLiteralValue(val interface{}) string {
+	b, err := json.Marshal(val)
+	if err != nil {
+		// json.Marshal effectively never fails on values we accept
+		// (interface{} of map/slice/string/number/bool/nil), but if
+		// it ever did, emit a JSON null so the script parses rather
+		// than aborting at a bare unquoted identifier.
+		return "null"
+	}
+	return string(b)
 }
 
 // rawTemplateValue renders a value verbatim (without shell-escaping) for
@@ -1848,7 +1897,23 @@ func expandBracedEnv(s string) string {
 				continue
 			}
 			body := s[i+2 : i+2+end]
-			out.WriteString(resolveBracedEnvBody(body))
+			// Only treat the body as an env var reference when it
+			// LOOKS like one (`NAME` or `NAME:-default` where NAME is
+			// a valid C-style identifier). Without this guard, a
+			// script: js body's `${batchPackages.length}` or
+			// `${sha.slice(0, 7)}` would be eaten — the body matches
+			// no env var, no default, and the function used to return
+			// "" which silently erased the JS template literal. Same
+			// hazard for `${p.name}`, `${process.env.X}`, etc. inside
+			// any script-language source we substitute into.
+			if looksLikeEnvRef(body) {
+				out.WriteString(resolveBracedEnvBody(body))
+				i += 2 + end + 1
+				continue
+			}
+			// Pass the literal `${body}` through unchanged so the
+			// downstream language parser sees what the author wrote.
+			out.WriteString(s[i : i+2+end+1])
 			i += 2 + end + 1
 			continue
 		}
@@ -1856,6 +1921,36 @@ func expandBracedEnv(s string) string {
 		i++
 	}
 	return out.String()
+}
+
+// looksLikeEnvRef reports whether body matches the shell convention
+// for a `${NAME}` or `${NAME:-default}` reference: NAME is a valid
+// C-style identifier (`[A-Za-z_][A-Za-z0-9_]*`), nothing else allowed
+// before the optional `:-default` suffix. This separates "real env
+// var lookups" from script-language template literals (`.`, `(`,
+// `[`, spaces, etc.) which we must NOT eat.
+func looksLikeEnvRef(body string) bool {
+	name := body
+	if idx := strings.Index(body, ":-"); idx != -1 {
+		name = body[:idx]
+	}
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		isLetter := (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || r == '_'
+		isDigit := r >= '0' && r <= '9'
+		if i == 0 {
+			if !isLetter {
+				return false
+			}
+		} else {
+			if !isLetter && !isDigit {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // resolveBracedEnvBody handles the body of a ${...} reference. Supports
