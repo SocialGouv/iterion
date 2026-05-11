@@ -1906,13 +1906,25 @@ func expandBracedEnv(s string) string {
 			// "" which silently erased the JS template literal. Same
 			// hazard for `${p.name}`, `${process.env.X}`, etc. inside
 			// any script-language source we substitute into.
-			if looksLikeEnvRef(body) {
+			// Expand only when:
+			//   - the body lexically looks like a shell env ref, AND
+			//   - either the ref has an explicit `:-default` (which is
+			//     unambiguously a shell-style env ref — JS template
+			//     literals don't have that syntax), OR the named env
+			//     var is actually set on the process.
+			// Otherwise (e.g. `${fname}` in a JS template literal where
+			// no FNAME env var is set, or `${sha.slice(0, 7)}` whose
+			// body doesn't even look like an env name), we pass the
+			// `${body}` through verbatim so the downstream language
+			// parser sees what the author wrote. The old behaviour was
+			// to erase unset-no-default refs which silently broke JS
+			// template literal interpolations.
+			if looksLikeEnvRef(body) && bracedEnvWouldExpand(body) {
 				out.WriteString(resolveBracedEnvBody(body))
 				i += 2 + end + 1
 				continue
 			}
-			// Pass the literal `${body}` through unchanged so the
-			// downstream language parser sees what the author wrote.
+			// Pass the literal `${body}` through unchanged.
 			out.WriteString(s[i : i+2+end+1])
 			i += 2 + end + 1
 			continue
@@ -1921,6 +1933,27 @@ func expandBracedEnv(s string) string {
 		i++
 	}
 	return out.String()
+}
+
+// bracedEnvWouldExpand reports whether expandBracedEnv would produce a
+// non-empty, non-passthrough result for this body. Used to decide
+// whether `${body}` should be substituted at all: a body that
+// lexically resembles an env ref (looksLikeEnvRef) is only treated as
+// one when either the author wrote an explicit `:-default` (a syntax
+// that script languages don't use, so this is unambiguously shell) OR
+// the named env var is actually set on the process. Otherwise the
+// `${body}` is preserved verbatim so a script-language interpolation
+// like `${fname}` doesn't get silently erased.
+func bracedEnvWouldExpand(body string) bool {
+	if strings.Contains(body, ":-") {
+		return true
+	}
+	name := body
+	if idx := strings.Index(body, ":-"); idx != -1 {
+		name = body[:idx]
+	}
+	_, ok := os.LookupEnv(name)
+	return ok
 }
 
 // looksLikeEnvRef reports whether body matches the shell convention

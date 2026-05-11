@@ -1004,6 +1004,26 @@ func TestExpandBracedEnv(t *testing.T) {
 			in:   "const x = `${ITERION_TEST_MODEL}`;",
 			want: "const x = `claude-opus-4-7`;",
 		},
+		{
+			// JS bare identifier in template literal where no env var
+			// of that name exists — pass through verbatim so the JS
+			// runtime can interpolate its own local variable. The old
+			// behaviour erased it ("" silently). Critical fix for
+			// script: js bodies referencing local consts like fname,
+			// sha, p, etc.
+			name: "single-identifier passes through when env var unset",
+			in:   "const m = `audit md (${fname})`;",
+			want: "const m = `audit md (${fname})`;",
+		},
+		{
+			// Even an UPPERCASE single identifier passes through if
+			// not actually set in env — the author who wanted shell
+			// semantics for an unset var can write ${X:-} (empty
+			// default) explicitly.
+			name: "uppercase single-identifier passes through when env var unset",
+			in:   "echo ${UNSET_VAR_NOBODY_DEFINES}",
+			want: "echo ${UNSET_VAR_NOBODY_DEFINES}",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
