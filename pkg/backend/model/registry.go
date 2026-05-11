@@ -15,6 +15,8 @@ import (
 	foundryprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/foundry"
 	openaiprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/openai"
 	vertexprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/vertex"
+
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // ProviderFactory creates an APIClient for a given model ID.
@@ -69,10 +71,28 @@ func (r *Registry) registerDefaults() {
 		// Plan): set ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic
 		// and ANTHROPIC_AUTH_TOKEN (claw's Anthropic provider treats
 		// either ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN as auth).
+		//
+		// ZAI_API_KEY env-fallback: when no Anthropic env auth is
+		// present but ZAI_API_KEY is, treat the request as targeting
+		// z.ai and synthesise the bearer + base URL automatically.
+		// Mirrors the Claude-Code delegate's anthropicCredOptsForCLI
+		// so `backend: claw` and `backend: claude_code` behave the
+		// same way for desktop users who just dropped a ZAI_API_KEY
+		// line in ~/.iterion/env.
+		apiKey := os.Getenv("ANTHROPIC_API_KEY")
+		baseURL := os.Getenv("ANTHROPIC_BASE_URL")
+		if apiKey == "" && os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
+			if zai := os.Getenv("ZAI_API_KEY"); zai != "" {
+				apiKey = zai
+				if baseURL == "" {
+					baseURL = secrets.ZAIDefaultBaseURL
+				}
+			}
+		}
 		return p.NewClient(api.ProviderConfig{
-			APIKey:  os.Getenv("ANTHROPIC_API_KEY"),
+			APIKey:  apiKey,
 			Model:   modelID,
-			BaseURL: os.Getenv("ANTHROPIC_BASE_URL"),
+			BaseURL: baseURL,
 		})
 	}
 	r.providersWithKey["anthropic"] = func(modelID, apiKey string) (api.APIClient, error) {

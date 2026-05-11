@@ -165,7 +165,34 @@ describe the Claude Code wiring.
 
 Iterion-desktop sources `~/.iterion/env` at startup (commit `84a7fc2`)
 and `claudesdk/process.go` forwards the entire host env to the spawned
-Claude Code subprocess. So the configuration is just two env vars:
+Claude Code subprocess. There are two equivalent ways to wire it.
+
+### Shortcut: `ZAI_API_KEY` alone
+
+Recommended path — drop a single line in `~/.iterion/env`:
+
+```bash
+# ~/.iterion/env
+ZAI_API_KEY=<bearer token from your z.ai dashboard>
+```
+
+When iterion sees `ZAI_API_KEY` set AND no `ANTHROPIC_API_KEY` /
+`ANTHROPIC_AUTH_TOKEN` set, it automatically configures
+`ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic` and
+`ANTHROPIC_AUTH_TOKEN=$ZAI_API_KEY` for both the spawned Claude Code
+subprocess (`backend: claude_code`) and the in-process claw provider
+factory (`backend: claw`). Restart iterion-desktop after editing the
+file so the launcher re-sources it.
+
+If `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) is also set, that
+takes precedence — the shortcut is intentionally "auto-route only
+when no Anthropic auth is configured". This lets a user keep a
+fallback Anthropic key for some workflows without losing the z.ai
+default.
+
+### Explicit form: `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`
+
+For full control, set the two env vars directly:
 
 ```bash
 # ~/.iterion/env
@@ -176,10 +203,9 @@ ANTHROPIC_AUTH_TOKEN=<bearer token from your z.ai dashboard>
 # purpose.
 ```
 
-Restart iterion-desktop after editing the file so the launcher
-re-sources it. Workflows then run unchanged: `backend: claude_code`
-still selects the same delegate, but the network destination is z.ai
-and the underlying model is GLM. Model strings stay Anthropic-shaped
+Workflows then run unchanged: `backend: claude_code` still selects
+the same delegate, but the network destination is z.ai and the
+underlying model is GLM. Model strings stay Anthropic-shaped
 (`claude-opus-4-7`, …); z.ai's gateway maps them to its own GLM
 families internally.
 

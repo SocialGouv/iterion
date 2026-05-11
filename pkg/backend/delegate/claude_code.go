@@ -159,24 +159,9 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 	}
 	opts = append(opts, claudesdk.WithEnv("CLAUDE_CODE_EFFORT_LEVEL", effort))
 
-	// Phase C: inject per-run BYOK credentials into the spawned
-	// CLI's environment when ctx carries them. The plaintext never
-	// touches the runner process's own env — only the child sees it,
-	// and the runner cleans up after the run completes.
-	//
-	// Phase D: when no API key is present but an OAuth-forfait
-	// credentials.json was materialised, point the CLI at it via
-	// CLAUDE_CONFIG_DIR. The CLI prefers a credentials.json over
-	// any ANTHROPIC_API_KEY, so we deliberately set ONE of the two
-	// — never both — to make the auth source unambiguous.
-	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
-		switch {
-		case creds.APIKey(secrets.ProviderAnthropic) != "":
-			opts = append(opts, claudesdk.WithEnv("ANTHROPIC_API_KEY", creds.APIKey(secrets.ProviderAnthropic)))
-		case creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "":
-			opts = append(opts, claudesdk.WithEnv("CLAUDE_CONFIG_DIR", creds.OAuthDir(string(secrets.OAuthKindClaudeCode))))
-		}
-	}
+	// Inject Anthropic-flavoured credentials into the CLI subprocess.
+	// Single helper so Pass 1 and Pass 2 (formatter) stay symmetric.
+	opts = append(opts, anthropicCredOptsForCLI(ctx)...)
 
 	if task.SessionID != "" {
 		opts = append(opts, claudesdk.WithResume(task.SessionID))
@@ -468,14 +453,7 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 
 	// Forward BYOK credentials and effort level into the formatting pass so
 	// the resumed session uses the same auth path as Pass 1.
-	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
-		switch {
-		case creds.APIKey(secrets.ProviderAnthropic) != "":
-			opts = append(opts, claudesdk.WithEnv("ANTHROPIC_API_KEY", creds.APIKey(secrets.ProviderAnthropic)))
-		case creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "":
-			opts = append(opts, claudesdk.WithEnv("CLAUDE_CONFIG_DIR", creds.OAuthDir(string(secrets.OAuthKindClaudeCode))))
-		}
-	}
+	opts = append(opts, anthropicCredOptsForCLI(ctx)...)
 	effort := task.ReasoningEffort
 	if effort == "" {
 		effort = defaultClaudeCodeEffort
@@ -799,4 +777,56 @@ func toolUseDetail(name string, input map[string]any) string {
 		return truncate(c, 100)
 	}
 	return ""
+}
+
+// anthropicCredOptsForCLI returns claudesdk.WithEnv options that point
+// the spawned Claude Code subprocess at the right credentials.
+//
+// Resolution order (first match wins, returned options are mutually
+// exclusive — never set both ANTHROPIC_API_KEY and CLAUDE_CONFIG_DIR):
+//
+//  1. Per-run BYOK z.ai key: ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN
+//     (z.ai's Coding-Plan token routes through Anthropic-shaped wire to
+//     z.ai's gateway, which aliases the model to GLM-4.5/4.6 internally).
+//  2. Per-run BYOK Anthropic key: ANTHROPIC_API_KEY.
+//  3. Per-run OAuth-forfait credentials.json (desktop): CLAUDE_CONFIG_DIR.
+//     NB: on the cloud the same kind is scheduled for removal under
+//     Anthropic Consumer Terms — see .plans/zai-glm-oauth.md.
+//  4. Process-env fallback ZAI_API_KEY: same shape as case 1, lets
+//     desktop users put `ZAI_API_KEY=...` in ~/.iterion/env without
+//     also having to set ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN by
+//     hand. ANTHROPIC_API_KEY in env (if present) takes precedence
+//     via the CLI's own resolution; we don't set anything in that
+//     case so the inherited env wins.
+func anthropicCredOptsForCLI(ctx context.Context) []claudesdk.Option {
+	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
+		switch {
+		case creds.APIKey(secrets.ProviderZAI) != "":
+			return []claudesdk.Option{
+				claudesdk.WithEnv("ANTHROPIC_BASE_URL", secrets.ZAIDefaultBaseURL),
+				claudesdk.WithEnv("ANTHROPIC_AUTH_TOKEN", creds.APIKey(secrets.ProviderZAI)),
+			}
+		case creds.APIKey(secrets.ProviderAnthropic) != "":
+			return []claudesdk.Option{claudesdk.WithEnv("ANTHROPIC_API_KEY", creds.APIKey(secrets.ProviderAnthropic))}
+		case creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "":
+			return []claudesdk.Option{claudesdk.WithEnv("CLAUDE_CONFIG_DIR", creds.OAuthDir(string(secrets.OAuthKindClaudeCode)))}
+		}
+	}
+	// Env-fallback: ZAI_API_KEY is the convenience knob for desktop
+	// users. Only honoured when no Anthropic-flavoured creds are
+	// already wired by env — ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN
+	// from the inherited env stays authoritative.
+	if os.Getenv("ANTHROPIC_API_KEY") == "" && os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
+		if zai := os.Getenv("ZAI_API_KEY"); zai != "" {
+			baseURL := os.Getenv("ANTHROPIC_BASE_URL")
+			if baseURL == "" {
+				baseURL = secrets.ZAIDefaultBaseURL
+			}
+			return []claudesdk.Option{
+				claudesdk.WithEnv("ANTHROPIC_BASE_URL", baseURL),
+				claudesdk.WithEnv("ANTHROPIC_AUTH_TOKEN", zai),
+			}
+		}
+	}
+	return nil
 }

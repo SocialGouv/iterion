@@ -30,13 +30,26 @@ const (
 	ProviderAzure      Provider = "azure"
 	ProviderOpenRouter Provider = "openrouter"
 	ProviderXAI        Provider = "xai"
+	// ProviderZAI is z.ai's Coding-Plan token. The provider exposes an
+	// Anthropic-compatible HTTP surface, so credentials flow through the
+	// existing Anthropic codepath with ANTHROPIC_BASE_URL pointed at
+	// z.ai's endpoint and the ZAI token used as ANTHROPIC_AUTH_TOKEN.
+	// Kept as a distinct Provider so per-tenant BYOK can pick "z.ai"
+	// vs "anthropic" explicitly.
+	ProviderZAI Provider = "zai"
 )
+
+// ZAIDefaultBaseURL is the Anthropic-compatible endpoint z.ai's Coding
+// Plan publishes. Centralised here so the delegate and the model
+// registry agree without re-deriving the URL.
+const ZAIDefaultBaseURL = "https://api.z.ai/api/anthropic"
 
 // Valid reports whether p is one of the known providers.
 func (p Provider) Valid() bool {
 	switch p {
 	case ProviderAnthropic, ProviderOpenAI, ProviderBedrock,
-		ProviderVertex, ProviderAzure, ProviderOpenRouter, ProviderXAI:
+		ProviderVertex, ProviderAzure, ProviderOpenRouter, ProviderXAI,
+		ProviderZAI:
 		return true
 	}
 	return false
