@@ -787,17 +787,23 @@ func logAssistantContent(logger *iterlog.Logger, nodeID string, blocks []claudes
 }
 
 // rateLimitSignals are case-insensitive substrings of assistant text
-// that indicate the upstream provider has cut us off — primarily the
-// Anthropic forfait quota ("You've hit your limit · resets …"), which
-// surfaces as a short standalone assistant text rather than a 429.
-// Kept narrow on purpose: generic substrings like "rate_limit_error"
-// were dropped because security-audit agents legitimately mention
-// them in prose. The 200-char length cap is the second guard against
-// agents quoting these phrases mid-paragraph.
+// that indicate the upstream provider has cut us off. Two observed
+// shapes so far:
+//   - Anthropic forfait quota: "You've hit your limit · resets …" —
+//     short standalone assistant text, no HTTP 429.
+//   - ZAI / Anthropic-shaped facade: "API Error: Request rejected (429)
+//     · Usage limit reached for 5 hour. Your limit will reset at …" —
+//     the CLI relays the upstream 429 into assistant text.
+// Kept narrow: generic substrings like "rate_limit_error" were dropped
+// because security-audit agents legitimately mention them in prose.
+// The 200-char length cap is the second guard against agents quoting
+// these phrases mid-paragraph.
 var rateLimitSignals = []string{
 	"hit your limit",
 	"rate limit exceeded",
 	"quota exceeded",
+	"usage limit reached",
+	"request rejected (429)",
 }
 
 // isRateLimitMessage reports whether an assistant text block carries

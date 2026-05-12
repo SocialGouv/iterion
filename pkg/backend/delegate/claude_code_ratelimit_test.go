@@ -37,6 +37,21 @@ func TestIsRateLimitMessage(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "zai (anthropic-shaped facade) 429 relay (real-world)",
+			text: "API Error: Request rejected (429) · Usage limit reached for 5 hour. Your limit will reset at 2026-05-13 07:38:08",
+			want: true,
+		},
+		{
+			name: "usage limit reached alone",
+			text: "Usage limit reached. Try again later.",
+			want: true,
+		},
+		{
+			name: "case-insensitive (429) match",
+			text: "API ERROR: REQUEST REJECTED (429)",
+			want: true,
+		},
+		{
 			name: "empty text never matches",
 			text: "",
 			want: false,
