@@ -1370,7 +1370,7 @@ agent detect_stack:
   session: fresh
   readonly: true
   tools: [bash, read_file, list_files, glob, grep]
-  tool_max_steps: 15
+  tool_max_steps: 25
 
 ## Emit JSON so the runtime maps the SHA onto the declared
 ## `sha` field. A bare stdout string gets auto-wrapped as
@@ -1403,7 +1403,7 @@ agent discover_outdated:
   session: inherit
   readonly: true
   tools: [bash, read_file, list_files, glob, grep]
-  tool_max_steps: 25
+  tool_max_steps: 60
 
 ## select_candidate is a deterministic Node tool — selection is pure
 ## filter/sort/slice with no need for an LLM. The previous Sonnet
@@ -1573,7 +1573,7 @@ agent security_audit:
   session: inherit
   readonly: true
   tools: [bash, read_file, list_files, glob, grep]
-  tool_max_steps: 25
+  tool_max_steps: 45
 
 ## ─── Nodes : Phase 1 — changelog_review ────────────────────────────
 
@@ -1589,7 +1589,7 @@ agent changelog_review:
   session: inherit
   readonly: true
   tools: [bash, read_file, list_files, glob, grep]
-  tool_max_steps: 20
+  tool_max_steps: 35
 
 ## ─── Nodes : Phase 1 — upgrade & install ───────────────────────────
 
@@ -1610,7 +1610,7 @@ agent upgrade:
   user: upgrade_user
   session: inherit
   tools: [bash, read_file, list_files, glob, grep]
-  tool_max_steps: 15
+  tool_max_steps: 30
 
 agent install:
   backend: "claude_code"
@@ -1623,7 +1623,7 @@ agent install:
   user: install_user
   session: inherit
   tools: [bash, read_file, list_files, glob, grep]
-  tool_max_steps: 15
+  tool_max_steps: 25
 
 ## ─── Nodes : Phase 1 — align_code ──────────────────────────────────
 
@@ -1638,7 +1638,7 @@ agent align_code:
   user: align_code_user
   session: inherit
   tools: [bash, read_file, write_file, file_edit, glob, grep, git_diff, git_status]
-  tool_max_steps: 30
+  tool_max_steps: 50
 
 ## ─── Nodes : Phase 1 — validate_upgrade ────────────────────────────
 
@@ -1653,7 +1653,7 @@ agent validate_upgrade:
   user: validate_upgrade_user
   session: inherit
   tools: [bash, read_file, list_files, glob, grep, git_diff, git_status]
-  tool_max_steps: 25
+  tool_max_steps: 40
 
 ## ─── Nodes : Phase 1 — fix_after_upgrade ───────────────────────────
 
@@ -1668,7 +1668,7 @@ agent fix_after_upgrade:
   user: fix_after_upgrade_user
   session: inherit
   tools: [bash, read_file, write_file, file_edit, glob, grep, git_diff, git_status]
-  tool_max_steps: 30
+  tool_max_steps: 50
 
 ## ─── Nodes : Phase 1 — prepare_commit & commit ─────────────────────
 
@@ -1684,7 +1684,7 @@ agent prepare_commit:
   session: fork
   readonly: true
   tools: [bash, read_file, list_files, git_diff, git_status, git_log]
-  tool_max_steps: 10
+  tool_max_steps: 20
 
 ## join_files turns the agent-emitted `files: string[]` into a single
 ## newline-delimited string so the tool below can pipe it through
@@ -1754,7 +1754,7 @@ agent revert_changes:
   user: revert_changes_user
   session: inherit
   tools: [bash, read_file, list_files, glob, grep]
-  tool_max_steps: 12
+  tool_max_steps: 25
 
 ## mark_failed_and_continue is a deterministic passthrough — it just
 ## relays the package name + reason for the next select_candidate
@@ -1782,7 +1782,7 @@ judge reviewer_claude:
   user: review_user_claude
   session: inherit
   tools: [bash, read_file, glob, grep, git_diff, git_log, git_status]
-  tool_max_steps: 25
+  tool_max_steps: 40
 
 judge reviewer_gpt:
   backend: "claw"
@@ -1797,7 +1797,7 @@ judge reviewer_gpt:
   ## (those are claude_code-only — see pkg/backend/tool/claw_builtins.go).
   ## bash + standard git invocations cover the same reviewer needs.
   tools: [bash, read_file, glob, grep]
-  tool_max_steps: 25
+  tool_max_steps: 40
 
 compute streak_check:
   output: streak_state
@@ -1820,7 +1820,7 @@ agent fix_claude:
   user: fix_user
   session: inherit
   tools: [bash, read_file, write_file, file_edit, glob, grep, git_diff, git_status]
-  tool_max_steps: 30
+  tool_max_steps: 50
 
 agent fix_gpt:
   backend: "claw"
@@ -1833,7 +1833,7 @@ agent fix_gpt:
   session: inherit
   ## claw backend: bash subsumes git_diff/git_status (see reviewer_gpt note).
   tools: [bash, read_file, write_file, file_edit, glob, grep]
-  tool_max_steps: 30
+  tool_max_steps: 50
 
 ## Deterministic auto-commit for review fixes. We don't fork an LLM
 ## session here — fix_X may converge from either family (claude or
