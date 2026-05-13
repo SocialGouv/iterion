@@ -161,35 +161,30 @@ prompt detect_stack_system:
          verbatim and skip the derivation for that field. Empty
          string means no override.
 
-    2. REPO EXPLORATION (do this — downstream agents need it):
-       - Read README.md and any top-level CONTRIBUTING.md /
-         ARCHITECTURE.md / docs/index.md if present.
-       - Skim 5-10 of the most-touched source files (use git log
-         --pretty=format: --name-only HEAD~50..HEAD | sort | uniq -c
-         | sort -rn | head -20 to find them). Read them, not just
-         their existence.
-       - Identify the test runner / command (look at scripts in
-         package.json, or `test:`-prefixed scripts; in pyproject.toml
-         look at [tool.pytest], etc.). Note the command and roughly
-         what it covers (unit / integration / e2e split).
-       - Identify the build command, the lint command, the typecheck
-         command if applicable. Sample one file each to confirm
-         conventions (TS strictness, prettier config, eslint rules,
-         pyright/mypy strictness).
-       - Look for ecosystem families heavily used: a search like
-         `grep -l '@opentelemetry' src/ packages/ plugins/ | head` or
-         scanning the dependencies list — note which scopes have
-         many members (these will likely be batched as a "family"
-         upgrade by downstream nodes).
-       - Note pre-commit / git hooks (`ls .husky/`, look at
-         lint-staged config) and CI workflows (`.github/workflows/*`).
+    2. REPO EXPLORATION (lean — downstream agents inherit your
+       conversation so every token you spend here is paid by every
+       fork; aim for a tight mental model, not a full reading):
+       - Read README.md headline + the install/run/test section
+         only (skim the rest).
+       - Note the test / build / typecheck script names from
+         package.json's `scripts` field. You don't need to read the
+         scripts themselves — just identify which ones exist.
+       - Glance at `dependencies` + `devDependencies` to spot
+         multi-member ecosystem families (@opentelemetry/*, @sentry/*,
+         eslint-*, etc.). The bucket_families node downstream will
+         actually group them; you just need to confirm presence.
+       - Note pre-commit / git hooks (`ls .husky/`) and `.github/
+         workflows/` filenames — don't read their contents.
+       - SKIP reading individual source files. Downstream forks
+         (align_code, fix_after_upgrade, validate_upgrade) read what
+         they need on-demand. Pre-loading source files into the head
+         session bloats every fork's input cost without proportional
+         signal.
 
-    3. KEEP IT BOUNDED. tool_max_steps is generous but not infinite.
-       Aim for a working mental model, not exhaustive coverage:
-       you've read the structure, you know the test command, you
-       have a feel for the major dep families, you know what
-       triggers a pre-commit/CI failure. Stop there. Downstream
-       forks can read more if they need to.
+    3. STOP CAP. Aim for ≤30 tool calls in this exploration phase.
+       Your tool_max_steps is generous but downstream forks pay your
+       context cost on every input. A focused 5KB of notes is worth
+       more to them than a 150KB stream-of-consciousness.
 
   Field semantics:
     - install_cmd: hint for the post-upgrade fresh install (yarn:
@@ -1566,7 +1561,10 @@ agent discover_outdated:
   session: fork
   readonly: true
   tools: [bash, read_file, list_files, glob, grep]
-  tool_max_steps: 60
+  ## 120 covers a worst-case repo with ~60 deps where the agent
+  ## probes each package's registry latest individually (observed
+  ## with GLM on modjo: ~70 tool calls vs Claude's ~30).
+  tool_max_steps: 120
 
 ## select_candidate is a deterministic Node tool — selection is pure
 ## filter/sort/slice with no need for an LLM. The previous Sonnet
