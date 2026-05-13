@@ -113,43 +113,83 @@ prompt escalation_guidance:
 ## ─── Prompts : Phase 0 — detect_stack ──────────────────────────────
 
 prompt detect_stack_system:
-  You are a stack-identification agent. Inspect the repository at
-  {{vars.workspace_dir}} (read-only) and emit a structured profile
-  of its package manager, layout, and best-guess hint commands
-  for install and upgrade.
+  You are a stack-identification AND repo-exploration agent.
+  Inspect the repository at {{vars.workspace_dir}} (read-only) and
+  emit a structured profile of its package manager, layout, and
+  best-guess hint commands. Additionally, build a working mental
+  model of the codebase so downstream per-package agents that
+  FORK this session can skip redundant exploration.
+
+  WHY exploration matters: this run will iterate through
+  potentially 50+ dependency upgrades. Every per-package agent
+  (changelog_review, security_audit, upgrade, install,
+  align_code, validate_upgrade, fix_after_upgrade, prepare_commit,
+  revert_changes, reviewer_claude, fix_claude) FORKS your session
+  via `session: fork` + `_session_id: outputs.detect_stack._session_id`.
+  They inherit your conversational context — what you've read,
+  what you've reasoned about — and don't re-pay that cost. A
+  thorough head exploration once amortizes across all packages.
 
   Every downstream node that runs a manager command is itself an
-  agent (discover_outdated, security_audit, upgrade, install,
-  revert_changes). They consume your `install_cmd` and
-  `upgrade_cmd` as HINTS — starting points they may adapt at
-  runtime — and they read `notes` for the operational details
-  (vendored releases, corepack shims, peer constraints, registry
-  setup). Your job is to give them the most informative profile
-  you can, NOT to deliver verbatim-runnable shell strings.
+  agent. They consume your `install_cmd` and `upgrade_cmd` as
+  HINTS — starting points they may adapt at runtime — and they
+  read `notes` for the operational details (vendored releases,
+  corepack shims, peer constraints, registry setup).
 
   Procedure:
-    1. List the top-level files (ls / glob) and look for lockfiles
-       and manifests: yarn.lock, package-lock.json, pnpm-lock.yaml,
-       bun.lockb, Cargo.lock, go.sum, go.mod, requirements.txt,
-       pyproject.toml, poetry.lock, uv.lock, Gemfile.lock,
-       composer.lock, pom.xml, build.gradle*, Pipfile.lock.
-    2. Read package.json / pyproject.toml / Cargo.toml /
-       composer.json (whichever exist) to confirm the manager and
-       detect monorepo workspaces. If the project pins a specific
-       major version of yarn/npm/pnpm via packageManager or
-       engines, respect it.
-    3. Decide best-guess hint commands for install + upgrade. The
-       canonical native form is fine even if the bare binary is
-       not on PATH right now (e.g. `yarn install` / `yarn up
-       --exact` for any yarn project) — downstream agents handle
-       toolchain shimming. If the situation is unusual (no global
-       binary, vendored release, corepack required, private
-       registry), describe the workaround in `notes` so the
-       downstream agent picks it up.
-    4. If the user provided overrides via vars
-       (override_install_cmd, override_upgrade_cmd), USE THEM
-       verbatim and skip the derivation for that field. Empty
-       string means no override.
+    1. STACK ID (must-do — drives the output schema):
+       - List the top-level files (ls / glob) and look for lockfiles
+         and manifests: yarn.lock, package-lock.json, pnpm-lock.yaml,
+         bun.lockb, Cargo.lock, go.sum, go.mod, requirements.txt,
+         pyproject.toml, poetry.lock, uv.lock, Gemfile.lock,
+         composer.lock, pom.xml, build.gradle*, Pipfile.lock.
+       - Read package.json / pyproject.toml / Cargo.toml /
+         composer.json (whichever exist) to confirm the manager and
+         detect monorepo workspaces. If the project pins a specific
+         major version of yarn/npm/pnpm via packageManager or
+         engines, respect it.
+       - Decide best-guess hint commands for install + upgrade. The
+         canonical native form is fine even if the bare binary is
+         not on PATH right now (e.g. `yarn install` / `yarn up
+         --exact` for any yarn project) — downstream agents handle
+         toolchain shimming. If the situation is unusual (no global
+         binary, vendored release, corepack required, private
+         registry), describe the workaround in `notes` so the
+         downstream agent picks it up.
+       - If the user provided overrides via vars
+         (override_install_cmd, override_upgrade_cmd), USE THEM
+         verbatim and skip the derivation for that field. Empty
+         string means no override.
+
+    2. REPO EXPLORATION (do this — downstream agents need it):
+       - Read README.md and any top-level CONTRIBUTING.md /
+         ARCHITECTURE.md / docs/index.md if present.
+       - Skim 5-10 of the most-touched source files (use git log
+         --pretty=format: --name-only HEAD~50..HEAD | sort | uniq -c
+         | sort -rn | head -20 to find them). Read them, not just
+         their existence.
+       - Identify the test runner / command (look at scripts in
+         package.json, or `test:`-prefixed scripts; in pyproject.toml
+         look at [tool.pytest], etc.). Note the command and roughly
+         what it covers (unit / integration / e2e split).
+       - Identify the build command, the lint command, the typecheck
+         command if applicable. Sample one file each to confirm
+         conventions (TS strictness, prettier config, eslint rules,
+         pyright/mypy strictness).
+       - Look for ecosystem families heavily used: a search like
+         `grep -l '@opentelemetry' src/ packages/ plugins/ | head` or
+         scanning the dependencies list — note which scopes have
+         many members (these will likely be batched as a "family"
+         upgrade by downstream nodes).
+       - Note pre-commit / git hooks (`ls .husky/`, look at
+         lint-staged config) and CI workflows (`.github/workflows/*`).
+
+    3. KEEP IT BOUNDED. tool_max_steps is generous but not infinite.
+       Aim for a working mental model, not exhaustive coverage:
+       you've read the structure, you know the test command, you
+       have a feel for the major dep families, you know what
+       triggers a pre-commit/CI failure. Stop there. Downstream
+       forks can read more if they need to.
 
   Field semantics:
     - install_cmd: hint for the post-upgrade fresh install (yarn:
@@ -204,7 +244,11 @@ prompt detect_stack_system:
   {{vars.user_prompt}}
 
 prompt detect_stack_user:
-  Inspect {{vars.workspace_dir}} and emit the stack profile JSON.
+  Inspect {{vars.workspace_dir}}, explore the codebase enough to
+  build a working mental model (README, key source files, test
+  command, lint/typecheck, common dep families, CI/git hooks),
+  then emit the stack profile JSON.
+
   Run only readonly commands. Do not modify any file.
 
   Operator overrides (apply VERBATIM where non-empty):
@@ -1358,6 +1402,13 @@ schema review_commit_intent:
 
 ## ─── Nodes : Phase 0 ───────────────────────────────────────────────
 
+## detect_stack doubles as the head-session for the run: it does
+## stack identification AND a mission-aware repo exploration so
+## downstream per-package agents can `session: fork` from its
+## _session_id and skip redundant exploration. The expanded
+## tool_max_steps gives it room for the deeper read pass (README,
+## key source files, test/lint/typecheck commands, dep families,
+## CI/git hooks).
 agent detect_stack:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
@@ -1370,7 +1421,7 @@ agent detect_stack:
   session: fresh
   readonly: true
   tools: [bash, read_file, list_files, glob, grep]
-  tool_max_steps: 25
+  tool_max_steps: 50
 
 ## Emit JSON so the runtime maps the SHA onto the declared
 ## `sha` field. A bare stdout string gets auto-wrapped as
@@ -1400,7 +1451,7 @@ agent discover_outdated:
   output: outdated_list
   system: discover_outdated_system
   user: discover_outdated_user
-  session: inherit
+  session: fork
   readonly: true
   tools: [bash, read_file, list_files, glob, grep]
   tool_max_steps: 60
@@ -1600,7 +1651,7 @@ agent security_audit:
   output: security_report
   system: security_audit_system
   user: security_audit_user
-  session: inherit
+  session: fork
   readonly: true
   tools: [bash, read_file, list_files, glob, grep]
   tool_max_steps: 45
@@ -1616,7 +1667,7 @@ agent changelog_review:
   output: changelog_summary
   system: changelog_review_system
   user: changelog_review_user
-  session: inherit
+  session: fork
   readonly: true
   tools: [bash, read_file, list_files, glob, grep]
   tool_max_steps: 35
@@ -1638,7 +1689,7 @@ agent upgrade:
   output: upgrade_result
   system: upgrade_system
   user: upgrade_user
-  session: inherit
+  session: fork
   tools: [bash, read_file, list_files, glob, grep]
   tool_max_steps: 30
 
@@ -1651,7 +1702,7 @@ agent install:
   output: install_result
   system: install_system
   user: install_user
-  session: inherit
+  session: fork
   tools: [bash, read_file, list_files, glob, grep]
   tool_max_steps: 25
 
@@ -1666,7 +1717,7 @@ agent align_code:
   output: align_result
   system: align_code_system
   user: align_code_user
-  session: inherit
+  session: fork
   tools: [bash, read_file, write_file, file_edit, glob, grep, git_diff, git_status]
   tool_max_steps: 50
 
@@ -1681,7 +1732,7 @@ agent validate_upgrade:
   output: verdict
   system: validate_upgrade_system
   user: validate_upgrade_user
-  session: inherit
+  session: fork
   tools: [bash, read_file, list_files, glob, grep, git_diff, git_status]
   tool_max_steps: 40
 
@@ -1696,7 +1747,7 @@ agent fix_after_upgrade:
   output: fix_after_result
   system: fix_after_upgrade_system
   user: fix_after_upgrade_user
-  session: inherit
+  session: fork
   tools: [bash, read_file, write_file, file_edit, glob, grep, git_diff, git_status]
   tool_max_steps: 50
 
@@ -1789,7 +1840,7 @@ agent revert_changes:
   output: revert_result
   system: revert_changes_system
   user: revert_changes_user
-  session: inherit
+  session: fork
   tools: [bash, read_file, list_files, glob, grep]
   tool_max_steps: 25
 
@@ -1817,7 +1868,7 @@ judge reviewer_claude:
   output: review_verdict
   system: review_system
   user: review_user_claude
-  session: inherit
+  session: fork
   tools: [bash, read_file, glob, grep, git_diff, git_log, git_status]
   tool_max_steps: 40
 
@@ -1855,7 +1906,7 @@ agent fix_claude:
   output: review_fix_result
   system: fix_system
   user: fix_user
-  session: inherit
+  session: fork
   tools: [bash, read_file, write_file, file_edit, glob, grep, git_diff, git_status]
   tool_max_steps: 50
 
@@ -2433,7 +2484,8 @@ workflow secured_renovacy:
     pkg_manager: "{{outputs.detect_stack.pkg_manager}}",
     workspaces: "{{outputs.detect_stack.workspaces}}",
     lock_files: "{{outputs.detect_stack.lock_files}}",
-    notes: "{{outputs.detect_stack.notes}}"
+    notes: "{{outputs.detect_stack.notes}}",
+    _session_id: "{{outputs.detect_stack._session_id}}"
   }
 
   ## ═══ Phase 1 : Patch fast-track + per-package loop ══════════════
@@ -2545,7 +2597,8 @@ workflow secured_renovacy:
     target_version: "{{outputs.select_candidate.target_version}}",
     pkg_manager: "{{outputs.detect_stack.pkg_manager}}",
     lock_files: "{{outputs.detect_stack.lock_files}}",
-    notes: "{{outputs.detect_stack.notes}}"
+    notes: "{{outputs.detect_stack.notes}}",
+    _session_id: "{{outputs.detect_stack._session_id}}"
   }
 
   intel_fanout -> changelog_review with {
@@ -2578,7 +2631,8 @@ workflow secured_renovacy:
     selected_package: "{{outputs.select_candidate.selected_package}}",
     target_version: "{{outputs.select_candidate.target_version}}",
     workspaces: "{{outputs.detect_stack.workspaces}}",
-    notes: "{{outputs.detect_stack.notes}}"
+    notes: "{{outputs.detect_stack.notes}}",
+    _session_id: "{{outputs.detect_stack._session_id}}"
   }
 
   upgrade -> revert_changes when not success with {
@@ -2586,7 +2640,8 @@ workflow secured_renovacy:
     pkg_manager: "{{outputs.detect_stack.pkg_manager}}",
     install_cmd_hint: "{{outputs.detect_stack.install_cmd}}",
     workspaces: "{{outputs.detect_stack.workspaces}}",
-    notes: "{{outputs.detect_stack.notes}}"
+    notes: "{{outputs.detect_stack.notes}}",
+    _session_id: "{{outputs.detect_stack._session_id}}"
   }
 
   upgrade -> install when success with {
@@ -2594,7 +2649,8 @@ workflow secured_renovacy:
     pkg_manager: "{{outputs.detect_stack.pkg_manager}}",
     install_cmd_hint: "{{outputs.detect_stack.install_cmd}}",
     workspaces: "{{outputs.detect_stack.workspaces}}",
-    notes: "{{outputs.detect_stack.notes}}"
+    notes: "{{outputs.detect_stack.notes}}",
+    _session_id: "{{outputs.detect_stack._session_id}}"
   }
 
   install -> revert_changes when not success with {
@@ -2602,7 +2658,8 @@ workflow secured_renovacy:
     pkg_manager: "{{outputs.detect_stack.pkg_manager}}",
     install_cmd_hint: "{{outputs.detect_stack.install_cmd}}",
     workspaces: "{{outputs.detect_stack.workspaces}}",
-    notes: "{{outputs.detect_stack.notes}}"
+    notes: "{{outputs.detect_stack.notes}}",
+    _session_id: "{{outputs.detect_stack._session_id}}"
   }
 
   install -> align_code when success with {
@@ -2613,7 +2670,7 @@ workflow secured_renovacy:
     breaking_changes: "{{outputs.changelog_review.breaking_changes}}",
     alignment_steps: "{{outputs.changelog_review.alignment_steps}}",
     workspace_dir: "{{vars.workspace_dir}}",
-    _session_id: "{{outputs.changelog_review._session_id}}"
+    _session_id: "{{outputs.detect_stack._session_id}}"
   }
 
   align_code -> validate_upgrade with {
@@ -2623,7 +2680,7 @@ workflow secured_renovacy:
     risk: "{{outputs.select_candidate.risk}}",
     align_summary: "{{outputs.align_code.summary}}",
     workspace_dir: "{{vars.workspace_dir}}",
-    _session_id: "{{outputs.align_code._session_id}}"
+    _session_id: "{{outputs.detect_stack._session_id}}"
   }
 
   validate_upgrade -> prepare_commit when stable with {
@@ -2631,7 +2688,7 @@ workflow secured_renovacy:
     current_version: "{{outputs.select_candidate.current_version}}",
     target_version: "{{outputs.select_candidate.target_version}}",
     workspace_dir: "{{vars.workspace_dir}}",
-    _session_id: "{{outputs.validate_upgrade._session_id}}"
+    _session_id: "{{outputs.detect_stack._session_id}}"
   }
 
   validate_upgrade -> fix_after_upgrade when not stable with {
@@ -2639,7 +2696,7 @@ workflow secured_renovacy:
     blockers: "{{outputs.validate_upgrade.blockers}}",
     fix_plan: "{{outputs.validate_upgrade.fix_plan}}",
     workspace_dir: "{{vars.workspace_dir}}",
-    _session_id: "{{outputs.validate_upgrade._session_id}}"
+    _session_id: "{{outputs.detect_stack._session_id}}"
   }
 
   ## fix_loop is per-package: the runtime resets the counter on the
@@ -2667,7 +2724,8 @@ workflow secured_renovacy:
     pkg_manager: "{{outputs.detect_stack.pkg_manager}}",
     install_cmd_hint: "{{outputs.detect_stack.install_cmd}}",
     workspaces: "{{outputs.detect_stack.workspaces}}",
-    notes: "{{outputs.detect_stack.notes}}"
+    notes: "{{outputs.detect_stack.notes}}",
+    _session_id: "{{outputs.detect_stack._session_id}}"
   }
 
   ## Successful upgrade path → prepare commit → join files → commit.
@@ -2743,7 +2801,8 @@ workflow secured_renovacy:
     prior_pushback: "{{outputs.fix_gpt.pushback}}",
     prior_pushback_justification: "{{outputs.fix_gpt.pushback_justification}}",
     previous_scanned_areas: "{{outputs.streak_check.cumulative_scanned_areas}}",
-    workspace_dir: "{{vars.workspace_dir}}"
+    workspace_dir: "{{vars.workspace_dir}}",
+    _session_id: "{{outputs.detect_stack._session_id}}"
   }
 
   alt_review -> reviewer_gpt with {
@@ -2778,7 +2837,7 @@ workflow secured_renovacy:
   streak_check -> fix_claude when "!approved && family == 'claude' && length(blockers) > 0" with {
     blockers: "{{outputs.streak_check.blockers}}",
     fix_plan: "{{outputs.streak_check.fix_plan}}",
-    _session_id: "{{outputs.reviewer_claude._session_id}}"
+    _session_id: "{{outputs.detect_stack._session_id}}"
   }
   streak_check -> fix_gpt when "!approved && family == 'gpt' && length(blockers) > 0" with {
     blockers: "{{outputs.streak_check.blockers}}",
