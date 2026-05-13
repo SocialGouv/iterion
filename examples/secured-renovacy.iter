@@ -779,6 +779,77 @@ prompt align_code_user:
   structured: `applied: false`, empty `files_changed`, summary
   "no alignment needed". Do not modify anything in that case.
 
+## ─── Prompts : Phase 2 — family_align_code (batch alignment) ───────
+
+prompt family_align_code_system:
+  You handle breaking-change alignment for a WHOLE FAMILY of
+  packages that just got batch-upgraded together (e.g. all
+  `@apollo/*`, all `@sentry/*`). The package manager has already
+  resolved the new versions; your job is to (1) decide which
+  members carry breaking changes that require consuming-repo
+  edits and (2) apply those edits in one shot.
+
+  ## Budget discipline (mandatory)
+
+  Aim for a tight, evidence-driven pass. For each non-patch
+  member: at most 2-3 probes to find authoritative breaking-change
+  info (CHANGELOG.md, release notes, migration guide, tag diff).
+  Skip members whose `risk == "patch"` entirely — semver
+  guarantees no breaking surface there. For minors, scan headers
+  for "BREAKING" markers and stop unless something flags. For
+  majors, do the study.
+
+  When the authoritative changelog is not findable in 2 probes
+  for a given member, prefer to apply NO changes for that member
+  (record it in `members_studied` with `verdict: "low-confidence,
+  no alignment applied"`) rather than guess — the downstream
+  `family_validate` smoke catches actual breaking surfaces, and
+  a low-confidence false-positive code edit is harder to undo
+  than a no-op.
+
+  ## Procedure
+
+  1. Read `input.members`. For each member:
+     a. Compare `risk`. Patch → skip entirely. Minor → quick scan.
+        Major / unknown → full study.
+     b. For studied members, fetch the relevant changelog or
+        release notes between `current` and `target`. Identify
+        any breaking changes that the consuming repo actually
+        uses (grep / glob across the workspace to confirm).
+     c. Apply the minimal correct alignment edits across the
+        consuming repo. Run a focused smoke after each member
+        if cheap (e.g. `node --check <file>`, `tsc --noEmit`,
+        `python -c "import <pkg>"`).
+  2. Stop when all studied members are aligned, OR when a
+     specific edit turns ambiguous → record the member with
+     `verdict: "needs human review"` and continue with the rest.
+  3. Do NOT run the full test suite — `family_validate`
+     downstream re-runs install + typecheck/build/test.
+  4. Do NOT commit — `family_commit` handles git.
+
+  ## Output
+
+  Emit a structured summary covering every studied member, the
+  files changed (deduplicated across the family), and the
+  overall `applied` flag (true iff any edit was made).
+
+  ### Project context (operator)
+  {{vars.user_prompt}}
+
+prompt family_align_code_user:
+  Family: {{input.family_name}}
+  Members (name, current, target, risk):
+  {{input.members}}
+
+  Workspace: {{input.workspace_dir}}
+
+  Study breaking changes for each non-patch member and apply
+  required consuming-repo alignments in this single pass. Read-
+  apply-smoke per member; emit the structured summary at the
+  end. If every member is `risk: patch`, emit `applied: false`
+  with an empty `files_changed` and `summary: "all patches, no
+  alignment needed"`.
+
 ## ─── Prompts : Phase 1 — validate_upgrade ──────────────────────────
 
 prompt validate_upgrade_system:
@@ -1455,6 +1526,23 @@ schema family_validate_input:
 schema family_validate_result:
   stable: bool
   output: string
+
+## family_align_input drives the agentic per-family alignment pass.
+## It studies breaking changes for every non-patch member of the
+## family AND applies the resulting code adaptations across the
+## consuming repo in one shot — replacing the missing intel for
+## majors/minors that the shell-only family path used to land
+## without any breaking-change study.
+schema family_align_input:
+  workspace_dir: string
+  family_name: string
+  members: json
+
+schema family_align_output:
+  applied: bool
+  members_studied: json
+  files_changed: json
+  summary: string
 
 ## family_commit_input — same shape as batch_commit_input but writes a
 ## family-themed commit subject.
@@ -2795,6 +2883,32 @@ printf '{"success":true,"committed":true,"output":"family %s committed %s","sha"
   input: family_commit_input
   output: family_commit_result
 
+## family_align_code studies breaking changes for every non-patch
+## family member and applies the required consuming-repo edits in one
+## agentic pass — closing the gap between the shell-only family fast-
+## path (which used to land majors with zero breaking-change study)
+## and the per-package solo path's intel_fanout + align_code coverage.
+## Runs AFTER family_upgrade succeeds (the new versions are resolved
+## on disk) and BEFORE family_validate so the downstream smoke gates
+## the upgrade + alignment together.
+agent family_align_code:
+  backend: "claude_code"
+  provider: "${RESCUE_PROVIDER:-zai}"
+  model: "claude-opus-4-7"
+  reasoning_effort: "${ITERION_RENOVACY_EFFORT_CLAUDE:-max}"
+  input: family_align_input
+  output: family_align_output
+  system: family_align_code_system
+  user: family_align_code_user
+  session: fork
+  tools: [bash, read_file, write_file, file_edit, glob, grep, git_diff, git_status]
+  ## 120 covers a worst-case family of 5+ majors each needing changelog
+  ## probing + grep+edit across the workspace. The prompt's Budget
+  ## discipline caps per-member probes at 2-3 so the median is far
+  ## lower; this ceiling is the safety margin for rich families like
+  ## a major Apollo / Sentry / OpenTelemetry bump.
+  tool_max_steps: 120
+
 ## family_revert undoes a broken family bump: hard-reset the worktree
 ## to its pre-upgrade HEAD, then reinstall to clean the resolved
 ## dependency tree. The pre-family SHA is whatever HEAD was when this
@@ -3141,13 +3255,30 @@ workflow secured_renovacy:
   }
 
   ## family_upgrade ok → validate (cheap shell smoke). Failed → revert.
-  family_upgrade -> family_validate when success with {
+  ## Successful yarn-up → agentic per-family alignment pass. Studies
+  ## breaking changes for every non-patch member and applies the
+  ## corresponding consuming-repo edits before the smoke validate.
+  ## This closes the historical gap where the family fast-path could
+  ## land majors with zero breaking-change study (observed on a real
+  ## modjo run: @apollo/client 3 → 4 + @apollo/server 4 → 5 committed
+  ## touching only package.json + yarn.lock).
+  family_upgrade -> family_align_code when success with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    family_name: "{{outputs.select_family.selected_family}}",
+    members: "{{outputs.select_family.selected_members}}"
+  }
+
+  family_upgrade -> family_revert when not success with {
     workspace_dir: "{{vars.workspace_dir}}",
     pkg_manager: "{{outputs.detect_stack.pkg_manager}}",
     family_name: "{{outputs.select_family.selected_family}}"
   }
 
-  family_upgrade -> family_revert when not success with {
+  ## After alignment (potentially modified consuming-repo code), the
+  ## shell smoke gates install + typecheck/build/test on the combined
+  ## state. A failure here triggers family_revert which now also
+  ## undoes the alignment edits via `git reset --hard HEAD`.
+  family_align_code -> family_validate with {
     workspace_dir: "{{vars.workspace_dir}}",
     pkg_manager: "{{outputs.detect_stack.pkg_manager}}",
     family_name: "{{outputs.select_family.selected_family}}"
