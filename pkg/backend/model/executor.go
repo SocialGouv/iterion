@@ -1877,7 +1877,11 @@ func looksLikeShellCommand(cmd string) bool {
 // pass as a single quoted token). Untrusted external inputs MUST keep the
 // default escaping.
 func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]interface{}, vars map[string]interface{}) string {
-	return resolveTemplateWith(command, refs, input, vars, shellEscapeValue)
+	// Shell commands preserve `{{input.X}}` literal text for missing
+	// values — sh -c sees the placeholder and either fails informatively
+	// or the operator notices. Substituting silently would lose that
+	// signal and could mask wiring bugs.
+	return resolveTemplateWith(command, refs, input, vars, shellEscapeValue, false)
 }
 
 // resolveScriptTemplate substitutes refs in a tool node's `script:` body.
@@ -1894,24 +1898,43 @@ func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]int
 // behaviour (strings inserted unquoted) for authors who need to drop
 // a snippet of source directly into the script body.
 func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]interface{}, vars map[string]interface{}) string {
-	return resolveTemplateWith(script, refs, input, vars, jsonLiteralValue)
+	// Script bodies (JS/Python/Ruby/…) must always parse — a nil-valued
+	// ref left as raw `{{input.X}}` text crashes the interpreter at
+	// parse time before any user logic can react. Substitute with the
+	// language's null literal (rendered as JSON null = "null") so the
+	// script can still run and handle the missing input itself.
+	return resolveTemplateWith(script, refs, input, vars, jsonLiteralValue, true)
 }
 
 // resolveTemplateWith is the shared core: walk refs, look up each value,
 // dispatch to rawTemplateValue (bang form) or the renderer the caller
 // provided (default form). Keeps shell- and script-mode template logic
 // in one place.
-func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]interface{}, vars map[string]interface{}, defaultRender func(interface{}) string) string {
+func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]interface{}, vars map[string]interface{}, defaultRender func(interface{}) string, substituteNil bool) string {
 	resolved := template
 	for _, ref := range refs {
 		var val interface{}
+		var handled bool
 		switch {
 		case ref.Kind == ir.RefInput && len(ref.Path) > 0:
 			val = input[ref.Path[0]]
+			handled = true
 		case ref.Kind == ir.RefVars && len(ref.Path) > 0:
 			val = vars[ref.Path[0]]
+			handled = true
 		}
-		if val == nil {
+		// Skip refs we don't resolve here (e.g. outputs.* refs handled
+		// upstream by the edge-binding renderer).
+		if !handled {
+			continue
+		}
+		// substituteNil controls whether a recognised-but-nil ref gets
+		// rendered or left as raw template text. Shell contexts keep
+		// the raw `{{input.X}}` placeholder so a missing wiring is
+		// visible; script contexts MUST render (renderer turns nil into
+		// "null") because a JS/Python/Ruby parser otherwise crashes on
+		// the literal braces before any script logic runs.
+		if val == nil && !substituteNil {
 			continue
 		}
 		var rendered string
@@ -1949,6 +1972,9 @@ func jsonLiteralValue(val interface{}) string {
 // are JSON-encoded (matches formatValue's prompt-rendering convention so
 // authors can reason about both contexts uniformly).
 func rawTemplateValue(val interface{}) string {
+	if val == nil {
+		return "null"
+	}
 	if s, ok := val.(string); ok {
 		return s
 	}
@@ -2115,6 +2141,9 @@ func resolveBracedEnvBody(body string) string {
 // Scalars fall back to fmt.Sprint + shellEscape, preserving the prior
 // single-value behaviour for strings, numbers, and booleans.
 func shellEscapeValue(val interface{}) string {
+	if val == nil {
+		return ""
+	}
 	switch v := val.(type) {
 	case []string:
 		if len(v) == 0 {

@@ -1093,6 +1093,33 @@ func TestResolveScriptTemplate(t *testing.T) {
 			t.Errorf("got %q, want %q", got, want)
 		}
 	})
+	t.Run("missing input renders null literal (default form)", func(t *testing.T) {
+		// Previously a nil-valued input ref was silently skipped,
+		// leaving the raw `{{input.X}}` text in the rendered script.
+		// JS then choked on `const x = {{input.X}};` at parse time.
+		// The fix renders nil as the JSON null literal — valid in
+		// JS / Python / Ruby — so the script always parses.
+		refs := []*ir.Ref{{Kind: ir.RefInput, Path: []string{"attempted"}, Raw: "{{input.attempted}}"}}
+		input := map[string]interface{}{} // attempted missing
+		got := resolveScriptTemplate("const x = {{input.attempted}};", refs, input, nil)
+		want := `const x = null;`
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+	t.Run("missing input renders null literal (bang form)", func(t *testing.T) {
+		// Same hazard applies to {{!input.X}} (used for verbatim
+		// substitution of complex objects into script bodies). A nil
+		// value must become a valid script literal, not vanish into
+		// an empty expression.
+		refs := []*ir.Ref{{Kind: ir.RefInput, Path: []string{"attempted"}, Raw: "{{!input.attempted}}", Unquoted: true}}
+		input := map[string]interface{}{} // attempted missing
+		got := resolveScriptTemplate("const x = {{!input.attempted}};", refs, input, nil)
+		want := `const x = null;`
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
 }
 
 func TestExecutorUnknownModel(t *testing.T) {
