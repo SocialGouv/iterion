@@ -156,3 +156,66 @@ func TestAnthropicCredEnv_HintZAIFallsToEnvKey(t *testing.T) {
 		t.Errorf("ANTHROPIC_AUTH_TOKEN: got %q, want env-zai-test", got["ANTHROPIC_AUTH_TOKEN"])
 	}
 }
+
+// --- provider fingerprint (cross-provider session fork guard) -------
+
+func TestProviderFingerprint_FacadeBaseURL(t *testing.T) {
+	got := providerFingerprint(map[string]string{
+		"ANTHROPIC_BASE_URL":   "https://api.z.ai/api/anthropic",
+		"ANTHROPIC_AUTH_TOKEN": "redacted",
+	})
+	want := "facade:https://api.z.ai/api/anthropic"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestProviderFingerprint_AnthropicDirect(t *testing.T) {
+	got := providerFingerprint(map[string]string{"ANTHROPIC_API_KEY": "sk-..."})
+	if got != "anthropic-direct" {
+		t.Errorf("got %q, want anthropic-direct", got)
+	}
+}
+
+func TestProviderFingerprint_AnthropicOAuth(t *testing.T) {
+	got := providerFingerprint(map[string]string{"CLAUDE_CONFIG_DIR": "/some/dir"})
+	if got != "anthropic-oauth" {
+		t.Errorf("got %q, want anthropic-oauth", got)
+	}
+}
+
+func TestProviderFingerprint_ClearedEnvIsAnthropic(t *testing.T) {
+	// The providerHint==anthropic path actively clears BASE_URL +
+	// AUTH_TOKEN so a stale z.ai value can't leak in. The fingerprint
+	// must reflect "Anthropic-direct (env)" in that shape so a session
+	// produced under it doesn't trigger a false cross-provider drop on
+	// a follow-up node that lands in the same shape.
+	got := providerFingerprint(map[string]string{
+		"ANTHROPIC_BASE_URL":   "",
+		"ANTHROPIC_AUTH_TOKEN": "",
+	})
+	if got != "anthropic-env" {
+		t.Errorf("got %q, want anthropic-env", got)
+	}
+}
+
+func TestProviderFingerprint_DifferentFacadesDiffer(t *testing.T) {
+	// Two facades on different gateways must not collide — the parent
+	// session signature won't validate on the other gateway either.
+	a := providerFingerprint(map[string]string{"ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic"})
+	b := providerFingerprint(map[string]string{"ANTHROPIC_BASE_URL": "https://other.proxy/anthropic"})
+	if a == b {
+		t.Errorf("facades on different hosts collided: both %q", a)
+	}
+}
+
+func TestProviderFingerprint_DirectVsFacadeDiffer(t *testing.T) {
+	direct := providerFingerprint(map[string]string{"ANTHROPIC_API_KEY": "sk-..."})
+	facade := providerFingerprint(map[string]string{
+		"ANTHROPIC_BASE_URL":   "https://api.z.ai/api/anthropic",
+		"ANTHROPIC_AUTH_TOKEN": "redacted",
+	})
+	if direct == facade {
+		t.Errorf("anthropic-direct vs z.ai facade fingerprints collided: %q", direct)
+	}
+}

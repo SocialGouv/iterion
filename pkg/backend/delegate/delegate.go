@@ -158,6 +158,19 @@ type Task struct {
 	// a new ID and does not mutate the original session.
 	ForkSession bool
 
+	// SessionFingerprint carries the provider fingerprint that the
+	// parent SessionID was created against (e.g. "anthropic-direct",
+	// "facade:api.z.ai"). The backend uses it to detect a cross-provider
+	// fork attempt — resuming or forking a session built by a different
+	// provider triggers HTTP 400 "Invalid signature in thinking block"
+	// because thinking blocks are provider-signed. On mismatch the
+	// backend drops the resume/fork and starts a fresh session instead,
+	// surfacing a warning so the operator sees the discontinuity.
+	// Empty when the parent session never recorded a fingerprint
+	// (legacy outputs, or first launch on a daemon without prior session
+	// history).
+	SessionFingerprint string
+
 	// InteractionEnabled, when true, instructs the delegate to signal when
 	// it needs user input by including _needs_interaction and
 	// _interaction_questions fields in its output.
@@ -339,6 +352,12 @@ type Result struct {
 
 	// SessionID is the session ID returned by the CLI agent (empty if unavailable).
 	SessionID string
+
+	// SessionFingerprint is the provider fingerprint that produced this
+	// session. Stamped onto the node output alongside SessionID so
+	// downstream forks can detect a cross-provider switch and fall back
+	// to a fresh session instead of failing on signed thinking blocks.
+	SessionFingerprint string
 
 	// PendingConversation is the persisted LLM conversation captured at
 	// the moment the agent loop was suspended by an ask_user call. The

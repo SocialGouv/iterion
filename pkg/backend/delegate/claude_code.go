@@ -173,12 +173,27 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 
 	// Inject Anthropic-flavoured credentials into the CLI subprocess.
 	// Single helper so Pass 1 and Pass 2 (formatter) stay symmetric.
-	opts = append(opts, anthropicCredOptsForCLI(ctx, task.ProviderHint)...)
+	credEnv := anthropicCredEnvForCLI(ctx, task.ProviderHint)
+	opts = append(opts, credEnvToOpts(credEnv)...)
+	currentFingerprint := providerFingerprint(credEnv)
 
 	if task.SessionID != "" {
-		opts = append(opts, claudesdk.WithResume(task.SessionID))
-		if task.ForkSession {
-			opts = append(opts, claudesdk.WithForkSession(true))
+		// Cross-provider safety check: thinking blocks in a Claude
+		// session carry provider-specific signatures. Resuming or
+		// forking a session that originated on a different provider
+		// surfaces HTTP 400 "Invalid signature in thinking block" the
+		// moment the new provider tries to read the prior conversation.
+		// Drop the session and start fresh — losing continuity is the
+		// expected outcome of a deliberate provider switch.
+		if task.SessionFingerprint != "" && currentFingerprint != "" &&
+			task.SessionFingerprint != currentFingerprint {
+			b.Logger.Warn("[%s#%d/claude-code] dropping session fork: parent session was built on %q but current provider is %q (signed thinking blocks would 400 on cross-provider reuse)",
+				task.NodeID, task.Iteration, task.SessionFingerprint, currentFingerprint)
+		} else {
+			opts = append(opts, claudesdk.WithResume(task.SessionID))
+			if task.ForkSession {
+				opts = append(opts, claudesdk.WithForkSession(true))
+			}
 		}
 	}
 
@@ -286,11 +301,12 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 					AskUserQuestionKey: q,
 				},
 			},
-			Duration:    duration,
-			ExitCode:    0,
-			Stderr:      stderrBuf.String(),
-			BackendName: BackendClaudeCode,
-			SessionID:   sessID,
+			Duration:           duration,
+			ExitCode:           0,
+			Stderr:             stderrBuf.String(),
+			BackendName:        BackendClaudeCode,
+			SessionID:          sessID,
+			SessionFingerprint: currentFingerprint,
 		}
 		applyClaudeCodeSessionMeta(&askResult, rm, sessMeta)
 		return askResult, nil
@@ -308,11 +324,12 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 	}
 
 	result := Result{
-		Duration:    duration,
-		ExitCode:    0,
-		Stderr:      stderrBuf.String(),
-		BackendName: BackendClaudeCode,
-		SessionID:   rm.SessionID,
+		Duration:           duration,
+		ExitCode:           0,
+		Stderr:             stderrBuf.String(),
+		BackendName:        BackendClaudeCode,
+		SessionID:          rm.SessionID,
+		SessionFingerprint: currentFingerprint,
 	}
 	applyClaudeCodeSessionMeta(&result, rm, sessMeta)
 
@@ -1003,14 +1020,17 @@ func firstLine(s string) string {
 //     via the CLI's own resolution; we don't set anything in that
 //     case so the inherited env wins.
 func anthropicCredOptsForCLI(ctx context.Context, providerHint string) []claudesdk.Option {
-	env := anthropicCredEnvForCLI(ctx, providerHint)
+	return credEnvToOpts(anthropicCredEnvForCLI(ctx, providerHint))
+}
+
+// credEnvToOpts converts a credential env map into claudesdk.Option
+// values with a stable key order. Extracted so the cross-provider
+// fingerprint path can compute the env map once, derive a fingerprint,
+// and pass the same map to the SDK without recomputing.
+func credEnvToOpts(env map[string]string) []claudesdk.Option {
 	if len(env) == 0 {
 		return nil
 	}
-	// Stable key order so the resulting options apply deterministically
-	// (claudesdk.WithEnv replaces values key-by-key; the order doesn't
-	// matter functionally but a deterministic emit makes test diffs
-	// and log inspection simpler).
 	keys := make([]string, 0, len(env))
 	for k := range env {
 		keys = append(keys, k)
@@ -1021,6 +1041,32 @@ func anthropicCredOptsForCLI(ctx context.Context, providerHint string) []claudes
 		opts = append(opts, claudesdk.WithEnv(k, env[k]))
 	}
 	return opts
+}
+
+// providerFingerprint derives a stable identifier for the routing
+// decision encoded by a cred env map. Two calls to anthropicCredEnvForCLI
+// with the same provider precedence return the same fingerprint, so
+// sessions produced under one provider can be detected (and dropped)
+// when a later run targets a different one. Key values are NOT
+// included — fingerprints are safe to log and to ferry through the
+// recipe output map.
+func providerFingerprint(env map[string]string) string {
+	if env == nil {
+		return "anthropic-env"
+	}
+	if base := env["ANTHROPIC_BASE_URL"]; base != "" {
+		return "facade:" + base
+	}
+	if env["ANTHROPIC_API_KEY"] != "" {
+		return "anthropic-direct"
+	}
+	if env["CLAUDE_CONFIG_DIR"] != "" {
+		return "anthropic-oauth"
+	}
+	// Explicit zeroing of BASE_URL/AUTH_TOKEN (the providerHint==anthropic
+	// path) lands here too — it means "use the inherited ANTHROPIC_API_KEY
+	// from the process env", which is also Anthropic-direct semantically.
+	return "anthropic-env"
 }
 
 // anthropicCredEnvForCLI is the testable core: it returns the env

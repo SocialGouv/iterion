@@ -808,6 +808,9 @@ func stampDelegateOutputMeta(output map[string]interface{}, result delegate.Resu
 	if result.SessionID != "" {
 		output["_session_id"] = result.SessionID
 	}
+	if result.SessionFingerprint != "" {
+		output["_session_fingerprint"] = result.SessionFingerprint
+	}
 	if result.EffectiveModel != "" {
 		output["_model"] = result.EffectiveModel
 	}
@@ -942,6 +945,15 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 			task.SessionID = sid
 			if f.session == ir.SessionFork {
 				task.ForkSession = true
+			}
+			// Forward the provider fingerprint that produced the parent
+			// session so the backend can detect cross-provider forks
+			// (which fail with 400 "Invalid signature in thinking block"
+			// because thinking blocks carry provider-specific
+			// signatures). Empty when the parent output predates this
+			// field — backends treat absent as "unknown, proceed".
+			if fp, ok := input["_session_fingerprint"].(string); ok && fp != "" {
+				task.SessionFingerprint = fp
 			}
 		}
 	}
