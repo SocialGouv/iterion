@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { listRunFiles, type RunFiles } from "@/api/runs";
+import { listRunFiles, type RunFiles, type RunFilesMode } from "@/api/runs";
 import { useRunStore } from "@/store/run";
 
 // useRunFiles fetches the modified-files listing for runId and auto-
@@ -9,6 +9,10 @@ import { useRunStore } from "@/store/run";
 // A single fetch is debounced over a 300ms window to coalesce bursts —
 // fan-out branches finishing back-to-back would otherwise trigger a
 // flurry of identical requests.
+//
+// `mode` selects the view (uncommitted vs branch range). Changing the
+// mode triggers an immediate refetch — it's part of the cache key so
+// the previous mode's payload doesn't leak through.
 //
 // Callers also receive a `refresh()` callback for explicit reload after
 // the user clicks the "refresh" button in the panel.
@@ -22,7 +26,10 @@ const REFRESH_EVENTS = new Set([
 
 const DEBOUNCE_MS = 300;
 
-export function useRunFiles(runId: string | null): {
+export function useRunFiles(
+  runId: string | null,
+  mode: RunFilesMode = "",
+): {
   data: RunFiles | null;
   loading: boolean;
   error: string | null;
@@ -45,7 +52,7 @@ export function useRunFiles(runId: string | null): {
     if (!runId) return;
     const myGen = ++genRef.current;
     setLoading(true);
-    listRunFiles(runId)
+    listRunFiles(runId, { mode })
       .then((res) => {
         if (myGen !== genRef.current) return;
         setData(res);
@@ -59,7 +66,7 @@ export function useRunFiles(runId: string | null): {
         if (myGen !== genRef.current) return;
         setLoading(false);
       });
-  }, [runId]);
+  }, [runId, mode]);
 
   useEffect(() => {
     if (!runId) {

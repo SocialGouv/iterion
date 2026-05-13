@@ -10,6 +10,37 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
+// fileMode selects the source-of-truth for /api/runs/{id}/files:
+//
+//   - modeUncommitted (default, live worktree only): `git status` against
+//     the worktree — captures changes that have not been committed yet.
+//   - modeBranch: range diff between Run.BaseCommit and the current tip
+//     (HEAD when the worktree is live, FinalCommit when finalized).
+//     Equivalent to "branch vs. source branch" — every entry is a change
+//     introduced by a commit during the run.
+//
+// Once the worktree is gc'd, only modeBranch is meaningful: the
+// uncommitted view returns available=false with reason="worktree_gone".
+type fileMode string
+
+const (
+	modeUncommitted fileMode = "uncommitted"
+	modeBranch      fileMode = "branch"
+)
+
+// parseFileMode reads the ?mode= query param. Unknown values fall back
+// to "" so the handler picks the default based on worktree presence.
+func parseFileMode(raw string) fileMode {
+	switch fileMode(raw) {
+	case modeUncommitted:
+		return modeUncommitted
+	case modeBranch:
+		return modeBranch
+	default:
+		return ""
+	}
+}
+
 // runFilesResponse is the wire shape of GET /api/runs/{id}/files. The
 // `available` flag is the editor's gate for showing the modified-files
 // panel: a falsy value paired with a `reason` lets the UI render a
@@ -17,13 +48,11 @@ import (
 // rather than treating absence as an error.
 //
 // `Live` distinguishes the two source-of-truth modes: true when the file
-// list comes from `git status --porcelain` against a still-existing
-// worktree (uncommitted state), false when it comes from the historical
-// `git diff BaseCommit..FinalCommit` after the worktree has been torn
-// down (every entry is already committed on the storage branch). The
-// editor uses this to label the panel correctly — without it, M/A/D
-// badges over committed files read as "uncommitted modifications" and
-// confuse the merge story.
+// list comes from a still-existing worktree (uncommitted or live branch
+// range), false when it comes from the historical post-finalization
+// diff. `Mode` reflects the effective view ("uncommitted"|"branch")
+// regardless of liveness so the frontend can render the segmented
+// control without re-deriving from `Live`.
 type runFilesResponse struct {
 	WorkDir  string `json:"work_dir,omitempty"`
 	Worktree bool   `json:"worktree,omitempty"`
@@ -31,6 +60,7 @@ type runFilesResponse struct {
 	// distinguishes "field absent → legacy backend" from "field present
 	// and false → historical-diff mode" to pick the right footer label.
 	Live      bool                `json:"live"`
+	Mode      fileMode            `json:"mode"`
 	Files     []gitlib.FileStatus `json:"files"`
 	Available bool                `json:"available"`
 	Reason    string              `json:"reason,omitempty"`
@@ -40,14 +70,20 @@ type runFilesResponse struct {
 // directory. The handler has two sources of truth depending on lifecycle:
 //
 //   - **Live worktree** (run is running, paused, or failed-resumable): the
-//     worktree directory still exists at run.WorkDir, so we read uncommitted
-//     state via `git status --porcelain`. This captures changes that have
-//     not yet been committed by the workflow.
+//     worktree directory still exists at run.WorkDir. The view depends
+//     on `?mode=`:
 //
-//   - **Finalized run** (worktree gc'd by the engine cleanup): the worktree
-//     directory is gone but the run's commits live on Run.FinalCommit /
-//     FinalBranch in the main repo. We synthesize the file list from
-//     `git diff --name-status BaseCommit..FinalCommit` against repoRoot.
+//   - `uncommitted` (default): `git status --porcelain` — changes
+//     not yet committed by the workflow.
+//
+//   - `branch`: `git diff BaseCommit..HEAD` — commits the run has
+//     produced so far (excludes uncommitted state).
+//
+//   - **Finalized run** (worktree gc'd by the engine cleanup): only
+//     `mode=branch` is meaningful; we synthesize the file list from
+//     `git diff BaseCommit..FinalCommit` against repoRoot. A request
+//     with `mode=uncommitted` returns available=false with
+//     reason="worktree_gone" so the UI can disable that segment.
 //
 // The endpoint never 5xx's on the expected "no panel" outcomes (missing
 // WorkDir, non-git directory, no finalization metadata) — it returns 200
@@ -59,6 +95,7 @@ func (s *Server) handleListRunFiles(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
 		return
 	}
+	requested := parseFileMode(r.URL.Query().Get("mode"))
 	run, err := s.runs.LoadRun(id)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
@@ -73,9 +110,28 @@ func (s *Server) handleListRunFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Live-worktree path: try `git status` against WorkDir first.
+	// Live-worktree path: branch or uncommitted view against the worktree.
 	if dirExists(run.WorkDir) {
-		files, statusErr := gitlib.Status(run.WorkDir)
+		effective := requested
+		if effective == "" {
+			effective = modeUncommitted
+		}
+		// `branch` mode without a baseline is unrenderable — the worktree
+		// exists but we have no anchor for the range. Surface that as
+		// no_baseline so the UI can prompt for a different mode, instead
+		// of falling through to historical and returning not_git_repo.
+		if effective == modeBranch && run.BaseCommit == "" {
+			s.writeJSONFor(w, r, runFilesResponse{
+				WorkDir:   run.WorkDir,
+				Worktree:  run.Worktree,
+				Mode:      modeBranch,
+				Files:     []gitlib.FileStatus{},
+				Available: false,
+				Reason:    "no_baseline",
+			})
+			return
+		}
+		files, statusErr := liveFiles(run, effective)
 		if statusErr == nil {
 			if files == nil {
 				files = []gitlib.FileStatus{}
@@ -84,18 +140,35 @@ func (s *Server) handleListRunFiles(w http.ResponseWriter, r *http.Request) {
 				WorkDir:   run.WorkDir,
 				Worktree:  run.Worktree,
 				Live:      true,
+				Mode:      effective,
 				Files:     files,
 				Available: true,
 			})
 			return
 		}
 		if !errors.Is(statusErr, gitlib.ErrNotGitRepo) {
-			s.httpErrorFor(w, r, http.StatusInternalServerError, "git status: %v", statusErr)
+			s.httpErrorFor(w, r, http.StatusInternalServerError, "git: %v", statusErr)
 			return
 		}
 		// Falls through to the historical-diff path on ErrNotGitRepo. A
 		// directory that exists but is not a git repository is the same
 		// failure mode as a removed worktree from the editor's POV.
+	}
+
+	// Past this point the worktree is gone (or never was a git repo).
+	// Uncommitted view is meaningless without a worktree: signal that
+	// to the UI so it can disable the segment instead of showing an
+	// empty list.
+	if requested == modeUncommitted {
+		s.writeJSONFor(w, r, runFilesResponse{
+			WorkDir:   run.WorkDir,
+			Worktree:  run.Worktree,
+			Mode:      modeUncommitted,
+			Files:     []gitlib.FileStatus{},
+			Available: false,
+			Reason:    "worktree_gone",
+		})
+		return
 	}
 
 	// Finalized-run path: derive the file list from BaseCommit..FinalCommit
@@ -105,6 +178,7 @@ func (s *Server) handleListRunFiles(w http.ResponseWriter, r *http.Request) {
 			WorkDir:   run.WorkDir,
 			Worktree:  run.Worktree,
 			Live:      false,
+			Mode:      modeBranch,
 			Files:     files,
 			Available: true,
 		})
@@ -118,6 +192,16 @@ func (s *Server) handleListRunFiles(w http.ResponseWriter, r *http.Request) {
 		Available: false,
 		Reason:    "not_git_repo",
 	})
+}
+
+// liveFiles returns the live-worktree file list for the requested mode.
+// modeUncommitted reads `git status`; modeBranch ranges BaseCommit..HEAD
+// inside the worktree (commits not yet finalized).
+func liveFiles(run *store.Run, mode fileMode) ([]gitlib.FileStatus, error) {
+	if mode == modeBranch {
+		return gitlib.StatusBetween(run.WorkDir, run.BaseCommit, "HEAD")
+	}
+	return gitlib.Status(run.WorkDir)
 }
 
 // handleGetRunFileDiff returns the Before/After contents of one path inside
@@ -134,6 +218,7 @@ func (s *Server) handleGetRunFileDiff(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid path: %v", err)
 		return
 	}
+	requested := parseFileMode(r.URL.Query().Get("mode"))
 	run, err := s.runs.LoadRun(id)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
@@ -146,7 +231,15 @@ func (s *Server) handleGetRunFileDiff(w http.ResponseWriter, r *http.Request) {
 
 	// Live-worktree path.
 	if dirExists(run.WorkDir) {
-		payload, diffErr := gitlib.Diff(run.WorkDir, path)
+		effective := requested
+		if effective == "" {
+			effective = modeUncommitted
+		}
+		if effective == modeBranch && run.BaseCommit == "" {
+			s.httpErrorFor(w, r, http.StatusConflict, "branch diff requires base commit")
+			return
+		}
+		payload, diffErr := liveDiff(run, effective, path)
 		if diffErr == nil {
 			s.writeJSONFor(w, r, payload)
 			return
@@ -170,6 +263,15 @@ func (s *Server) handleGetRunFileDiff(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.httpErrorFor(w, r, http.StatusConflict, "working directory is not a git repository")
+}
+
+// liveDiff selects between the uncommitted (`git status` family) and the
+// branch-range diff for a single file. Mirrors liveFiles.
+func liveDiff(run *store.Run, mode fileMode, path string) (gitlib.DiffPayload, error) {
+	if mode == modeBranch {
+		return gitlib.DiffBetween(run.WorkDir, run.BaseCommit, "HEAD", path)
+	}
+	return gitlib.Diff(run.WorkDir, path)
 }
 
 // historicalFiles produces the modified-files list for a run whose worktree

@@ -8,7 +8,7 @@ import {
 
 import { IconButton, Tabs, Tooltip } from "@/components/ui";
 import { readBooleanFlag, writeBooleanFlag } from "@/lib/localStorageFlag";
-import type { RunFile, RunHeader } from "@/api/runs";
+import type { RunFile, RunFilesMode, RunHeader } from "@/api/runs";
 
 import FilesPanel from "./FilesPanel";
 import CommitsPanel from "./CommitsPanel";
@@ -35,7 +35,7 @@ function readActiveTab(): LeftTab {
 interface LeftPanelProps {
   runId: string;
   run: RunHeader | null;
-  onSelectFile: (file: RunFile) => void;
+  onSelectFile: (file: RunFile, mode: RunFilesMode) => void;
   onMergeComplete?: () => void;
 }
 

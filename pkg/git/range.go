@@ -142,6 +142,78 @@ func MergeBase(repoRoot, refA, refB string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// emptyTreeSHA is the well-known SHA-1 of an empty tree object. Used as
+// a synthetic "before" ref when diffing a root commit (no parent): every
+// file in the commit appears as Added against this baseline.
+const emptyTreeSHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+// CommitParent resolves the first-parent SHA of sha in repo. Returns "" + nil
+// when sha is a root commit (no parents). A genuine error (unknown ref,
+// not-a-git-repo) is returned unwrapped.
+//
+// Used by ShowCommit and DiffOfCommit to pick the right baseline:
+// <parent> for the common case, the empty-tree SHA for root commits.
+func CommitParent(repo, sha string) (string, error) {
+	if !isGitDir(repo) {
+		return "", ErrNotGitRepo
+	}
+	// `rev-list --parents -n 1 <sha>` emits "<sha> <parent1> <parent2>..."
+	// on a single line — the format is uniform whether the commit has 0,
+	// 1, or many parents, so the empty-parent root case is just "len==1".
+	out, err := run(repo, "rev-list", "--parents", "-n", "1", sha)
+	if err != nil {
+		return "", err
+	}
+	parts := strings.Fields(string(out))
+	if len(parts) < 2 {
+		return "", nil
+	}
+	return parts[1], nil
+}
+
+// ShowCommit returns the files touched by a single commit, shaped like the
+// porcelain Status() output so the editor can render them through the same
+// FilesPanel code path. Equivalent to "what does `git show <sha>` change".
+//
+// For root commits (no parent), every file appears as Added against the
+// empty tree — this lets the UI render the first-commit-of-a-run without
+// special-casing.
+func ShowCommit(repo, sha string) ([]FileStatus, error) {
+	if !isGitDir(repo) {
+		return nil, ErrNotGitRepo
+	}
+	parent, err := CommitParent(repo, sha)
+	if err != nil {
+		return nil, err
+	}
+	base := parent
+	if base == "" {
+		base = emptyTreeSHA
+	}
+	return StatusBetween(repo, base, sha)
+}
+
+// DiffOfCommit returns the Before/After contents for relPath as introduced
+// by commit sha in repo. Parent is resolved via CommitParent; root commits
+// produce Before=nil (the file didn't exist before the run began).
+//
+// Mirrors DiffBetween's binary/missing-side semantics so the editor can
+// feed the payload straight into Monaco.
+func DiffOfCommit(repo, sha, relPath string) (DiffPayload, error) {
+	if !isGitDir(repo) {
+		return DiffPayload{}, ErrNotGitRepo
+	}
+	parent, err := CommitParent(repo, sha)
+	if err != nil {
+		return DiffPayload{}, err
+	}
+	base := parent
+	if base == "" {
+		base = emptyTreeSHA
+	}
+	return DiffBetween(repo, base, sha, relPath)
+}
+
 // showAt runs `git show <ref>:<relPath>` and disambiguates "missing at ref"
 // (mapped to errNotInHead so callers can render it as a nil side) from
 // genuine failures. Used directly by DiffBetween and via showHead for the

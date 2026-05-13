@@ -4,7 +4,7 @@ import { useParams } from "wouter";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { ChevronLeftIcon, ChevronUpIcon } from "@radix-ui/react-icons";
 
-import { getRun, type RunFile } from "@/api/runs";
+import { getRun, type RunFile, type RunFilesMode } from "@/api/runs";
 import { IconButton, Skeleton, Tabs } from "@/components/ui";
 import { selectRunningExecution, useRunStore } from "@/store/run";
 import { useRunWebSocket } from "@/hooks/useRunWebSocket";
@@ -140,6 +140,16 @@ export default function RunView() {
   }, []);
 
   const [diffFile, setDiffFile] = useState<RunFile | null>(null);
+  // Mode the FilesPanel was in when the user clicked the row; forwarded
+  // to FileDiffDialog so it requests the same range from the backend.
+  const [diffMode, setDiffMode] = useState<RunFilesMode>("");
+  const handleSelectFile = useCallback(
+    (file: RunFile, mode: RunFilesMode) => {
+      setDiffMode(mode);
+      setDiffFile(file);
+    },
+    [],
+  );
 
   const verticalLayout = useLayoutPersistence("run-console-v1.vertical", {
     top: 70,
@@ -301,8 +311,62 @@ export default function RunView() {
     return selectRunningExecution(executionsById);
   }, [scrubSeq, executionsById]);
 
+  // Sticky follow-live cache: bridges the transient gap between
+  // `node_finished` (previous exec flips to finished) and `node_started`
+  // (next exec arrives). Those events are emitted by the engine across
+  // separate WS messages — with a `SaveCheckpoint` disk I/O + edge
+  // selection in between — so the client sees a brief window where no
+  // execution carries status="running" even though the run is still
+  // active and producing logs.
+  //
+  // Without this cache, `runningExec` flips to null during the window,
+  // `wfSelectedNodeId` collapses to `manualSelectedNodeId` (null when
+  // follow-live is engaged), and the detail panel + per-node log
+  // filter both blank out until the next node_started lands. With it,
+  // we hold the last known running node id so the UI stays anchored
+  // through the gap and only updates once the new running exec
+  // materialises.
+  const [lastRunningNodeId, setLastRunningNodeId] = useState<string | null>(
+    null,
+  );
+  useEffect(() => {
+    if (runningExec) {
+      setLastRunningNodeId(runningExec.ir_node_id);
+    }
+  }, [runningExec]);
+  // Clear the cache when the run reaches a terminal state so we don't
+  // keep showing a stale "live" node after finish/fail/cancel. Paused
+  // intentionally keeps the cached node — the user is mid-interaction.
+  useEffect(() => {
+    const status = snapshot?.run?.status;
+    if (
+      status === "finished" ||
+      status === "failed" ||
+      status === "failed_resumable" ||
+      status === "cancelled"
+    ) {
+      setLastRunningNodeId(null);
+    }
+  }, [snapshot?.run?.status]);
+
+  // Live-follow node id with sticky fallback. When `runningExec` is
+  // non-null we always use its node id (truth). When it's null but the
+  // run is still active, we fall back to `lastRunningNodeId` — typically
+  // the just-finished node — so the follow-live UI doesn't blank out
+  // mid-transition. Scrubbing already null-ed `runningExec` above, so
+  // we don't double-check `scrubSeq` here.
+  const followLiveNodeId = useMemo(() => {
+    if (runningExec) return runningExec.ir_node_id;
+    if (scrubSeq !== null) return null;
+    const status = snapshot?.run?.status;
+    if (status === "running" || status === "paused_waiting_human") {
+      return lastRunningNodeId;
+    }
+    return null;
+  }, [runningExec, scrubSeq, snapshot?.run?.status, lastRunningNodeId]);
+
   const wfSelectedNodeId =
-    followLiveNode && runningExec ? runningExec.ir_node_id : manualSelectedNodeId;
+    followLiveNode && followLiveNodeId ? followLiveNodeId : manualSelectedNodeId;
 
   useRunKeyboard({
     selectedNodeId: wfSelectedNodeId,
@@ -429,7 +493,7 @@ export default function RunView() {
         <LeftPanel
           runId={runId}
           run={snapshot.run}
-          onSelectFile={setDiffFile}
+          onSelectFile={handleSelectFile}
           onMergeComplete={refreshSnapshot}
         />
         <div className="flex-1 min-h-0 flex flex-col">
@@ -605,6 +669,7 @@ export default function RunView() {
         <FileDiffDialog
           runId={runId}
           file={diffFile}
+          mode={diffMode}
           onClose={() => setDiffFile(null)}
         />
       </div>

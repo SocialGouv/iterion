@@ -18,6 +18,8 @@ import {
 } from "@/api/runs";
 import { formatRelative } from "@/lib/format";
 
+import CommitDetailDialog from "./CommitDetailDialog";
+
 interface CommitsPanelProps {
   runId: string;
   run: RunHeader | null;
@@ -37,6 +39,10 @@ export default function CommitsPanel({
   onMergeComplete,
 }: CommitsPanelProps) {
   const { data, loading, error, refresh } = useRunCommits(runId);
+  // Clicking a commit row mounts CommitDetailDialog with this commit;
+  // the dialog clears the selection through onClose, which collapses
+  // the modal back to nothing.
+  const [selectedCommit, setSelectedCommit] = useState<RunCommit | null>(null);
 
   const commitCount = data?.commits.length ?? 0;
   const defaultSquashMessage = data?.default_squash_message ?? "";
@@ -77,7 +83,11 @@ export default function CommitsPanel({
         ) : (
           <ul className="py-1">
             {data.commits.map((c) => (
-              <CommitRow key={c.sha} commit={c} />
+              <CommitRow
+                key={c.sha}
+                commit={c}
+                onSelect={setSelectedCommit}
+              />
             ))}
           </ul>
         )}
@@ -91,16 +101,31 @@ export default function CommitsPanel({
           onMergeComplete={onMergeComplete}
         />
       )}
+      <CommitDetailDialog
+        runId={runId}
+        commit={selectedCommit}
+        onClose={() => setSelectedCommit(null)}
+      />
     </div>
   );
 }
 
-function CommitRow({ commit }: { commit: RunCommit }) {
+function CommitRow({
+  commit,
+  onSelect,
+}: {
+  commit: RunCommit;
+  onSelect: (commit: RunCommit) => void;
+}) {
   const relative = useMemo(() => formatRelative(commit.date), [commit.date]);
   return (
     <li>
       <Tooltip content={`${commit.subject}\n\n${commit.author} · ${commit.date}`}>
-        <div className="flex w-full items-start gap-2 px-2 py-1.5 hover:bg-surface-2">
+        <button
+          type="button"
+          onClick={() => onSelect(commit)}
+          className="flex w-full items-start gap-2 px-2 py-1.5 text-left hover:bg-surface-2 focus:bg-surface-2 focus:outline-none"
+        >
           <code className="text-[10px] font-mono text-fg-subtle pt-0.5 shrink-0">
             {commit.short}
           </code>
@@ -112,7 +137,7 @@ function CommitRow({ commit }: { commit: RunCommit }) {
               {commit.author} · {relative}
             </div>
           </div>
-        </div>
+        </button>
       </Tooltip>
     </li>
   );

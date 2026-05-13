@@ -262,6 +262,129 @@ func revParse(t *testing.T, dir, ref string) string {
 	return string(out[:len(out)-1]) // strip trailing newline
 }
 
+// TestRunFiles_ModeBranch verifies that mode=branch on a live worktree
+// returns committed-during-the-run changes (BaseCommit..HEAD) and skips
+// uncommitted worktree state. The fixture commits a.txt + b.txt onto the
+// run worktree but leaves c.txt uncommitted: only a.txt + b.txt should
+// appear in branch mode.
+func TestRunFiles_ModeBranch(t *testing.T) {
+	srv, hs := newTestServer(t)
+	dir := initRepo(t)
+	baseSHA := revParse(t, dir, "HEAD")
+
+	// One committed change inside the "run".
+	if err := os.WriteFile(filepath.Join(dir, "b.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "b.txt"}, {"commit", "-q", "-m", "add b"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	// One uncommitted change that must be excluded in branch mode.
+	if err := os.WriteFile(filepath.Join(dir, "c.txt"), []byte("uncommitted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := store.New(srv.cfg.StoreDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := st.CreateRun(context.Background(), "branch-mode", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.WorkDir = dir
+	r.Worktree = true
+	r.BaseCommit = baseSHA
+	if err := st.SaveRun(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.Get(hs.URL + "/api/runs/branch-mode/files?mode=branch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out runFilesResponse
+	decodeJSON(t, resp, &out)
+	if !out.Available || !out.Live {
+		t.Fatalf("Available=%v Live=%v reason=%q", out.Available, out.Live, out.Reason)
+	}
+	if out.Mode != modeBranch {
+		t.Errorf("Mode: want branch, got %q", out.Mode)
+	}
+	got := map[string]string{}
+	for _, f := range out.Files {
+		got[f.Path] = f.Status
+	}
+	if got["b.txt"] != "A" {
+		t.Errorf("b.txt should be A in branch range, got %+v", got)
+	}
+	if _, has := got["c.txt"]; has {
+		t.Errorf("c.txt (uncommitted) leaked into branch mode: %+v", got)
+	}
+}
+
+// TestRunFiles_ModeBranchNoBaseline returns no_baseline when mode=branch
+// is requested but the run has no BaseCommit recorded — the worktree
+// exists but the range is unanchored.
+func TestRunFiles_ModeBranchNoBaseline(t *testing.T) {
+	srv, hs := newTestServer(t)
+	dir := initRepo(t)
+	seedRunWithWorkDir(t, srv, "no-base", dir, true)
+
+	resp, err := http.Get(hs.URL + "/api/runs/no-base/files?mode=branch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out runFilesResponse
+	decodeJSON(t, resp, &out)
+	if out.Available {
+		t.Errorf("Available should be false")
+	}
+	if out.Reason != "no_baseline" {
+		t.Errorf("Reason: want no_baseline, got %q", out.Reason)
+	}
+}
+
+// TestRunFiles_ModeUncommittedAfterFinalization returns worktree_gone
+// when the worktree directory is missing and mode=uncommitted is
+// requested — the UI uses this to disable the segment.
+func TestRunFiles_ModeUncommittedAfterFinalization(t *testing.T) {
+	srv, hs := newTestServer(t)
+	st, err := store.New(srv.cfg.StoreDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := st.CreateRun(context.Background(), "wt-gone", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.WorkDir = "/nonexistent/host/worktree"
+	r.RepoRoot = "/nonexistent/host"
+	r.Worktree = true
+	r.BaseCommit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	r.FinalCommit = "feedfacefeedfacefeedfacefeedfacefeedface"
+	if err := st.SaveRun(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.Get(hs.URL + "/api/runs/wt-gone/files?mode=uncommitted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out runFilesResponse
+	decodeJSON(t, resp, &out)
+	if out.Available {
+		t.Errorf("Available should be false")
+	}
+	if out.Reason != "worktree_gone" {
+		t.Errorf("Reason: want worktree_gone, got %q", out.Reason)
+	}
+}
+
 func TestRunFileDiff_PathTraversal(t *testing.T) {
 	srv, hs := newTestServer(t)
 	dir := initRepo(t)

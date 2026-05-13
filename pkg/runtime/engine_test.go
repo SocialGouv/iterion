@@ -316,10 +316,10 @@ func TestCoerceToInt(t *testing.T) {
 	// outputs/vars — the JSON decoder lands floats, JS-tool outputs
 	// land strings, and some compute nodes pass through native ints.
 	for _, tc := range []struct {
-		name  string
-		in    interface{}
-		want  int
-		ok    bool
+		name string
+		in   interface{}
+		want int
+		ok   bool
 	}{
 		{"int", 7, 7, true},
 		{"int64", int64(8), 8, true},

@@ -2,13 +2,21 @@ import { useEffect, useState } from "react";
 import { DiffEditor } from "@monaco-editor/react";
 
 import { Dialog } from "@/components/ui";
-import { getRunFileDiff, type RunFile, type RunFileDiff } from "@/api/runs";
+import {
+  getRunFileDiff,
+  type RunFile,
+  type RunFileDiff,
+  type RunFilesMode,
+} from "@/api/runs";
 import { useThemeStore } from "@/store/theme";
 import { inferMonacoLanguage } from "@/lib/inferMonacoLanguage";
 
 interface FileDiffDialogProps {
   runId: string;
   file: RunFile | null;
+  // Forwarded to /files/diff so the backend picks the same range used
+  // by the listing (uncommitted vs branch). Omitted → backend default.
+  mode?: RunFilesMode;
   onClose: () => void;
 }
 
@@ -18,6 +26,7 @@ interface FileDiffDialogProps {
 export default function FileDiffDialog({
   runId,
   file,
+  mode,
   onClose,
 }: FileDiffDialogProps) {
   const [diff, setDiff] = useState<RunFileDiff | null>(null);
@@ -36,7 +45,7 @@ export default function FileDiffDialog({
     setLoading(true);
     setError(null);
     setDiff(null);
-    getRunFileDiff(runId, path)
+    getRunFileDiff(runId, path, { mode })
       .then((res) => {
         if (cancelled) return;
         setDiff(res);
@@ -52,7 +61,7 @@ export default function FileDiffDialog({
     return () => {
       cancelled = true;
     };
-  }, [runId, path]);
+  }, [runId, path, mode]);
 
   const open = file !== null;
   const language = path ? inferMonacoLanguage(path) : "plaintext";

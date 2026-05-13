@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   ChevronDownIcon,
@@ -15,11 +15,33 @@ import {
   type TreeNode,
 } from "@/lib/fileTree";
 import { basename } from "@/lib/format";
-import type { RunFile, RunFileStatus } from "@/api/runs";
+import type { RunFile, RunFileStatus, RunFilesMode } from "@/api/runs";
+
+type ViewMode = "uncommitted" | "branch";
+
+const MODE_STORAGE_KEY = "run-console-v1.files-mode";
+
+// readPersistedMode pulls the user's last segmented-control selection
+// from localStorage. Scoped globally (not per-runId) because the
+// preference is about *how* the user reads diffs, not *which* run —
+// across runs we want the same view.
+function readPersistedMode(): ViewMode {
+  if (typeof window === "undefined") return "uncommitted";
+  const raw = window.localStorage.getItem(MODE_STORAGE_KEY);
+  if (raw === "branch") return "branch";
+  return "uncommitted";
+}
+
+function writePersistedMode(mode: ViewMode) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(MODE_STORAGE_KEY, mode);
+}
 
 interface FilesPanelProps {
   runId: string;
-  onSelectFile: (file: RunFile) => void;
+  // onSelectFile carries the current mode so FileDiffDialog can request
+  // the right range from the backend (uncommitted vs branch).
+  onSelectFile: (file: RunFile, mode: RunFilesMode) => void;
 }
 
 // FilesPanel renders the modified-files tree — wrapped by LeftPanel
@@ -30,10 +52,31 @@ interface FilesPanelProps {
 // the same aggregate when they are collapsed (so a folded directory
 // still tells you how much churn lives below).
 export default function FilesPanel({ runId, onSelectFile }: FilesPanelProps) {
-  const { data, loading, error, refresh } = useRunFiles(runId);
+  const [mode, setMode] = useState<ViewMode>(() => readPersistedMode());
+  // Persist mode changes (writePersistedMode is a no-op on SSR; the
+  // initializer above handles the cold-load case).
+  useEffect(() => {
+    writePersistedMode(mode);
+  }, [mode]);
+
+  const { data, loading, error, refresh } = useRunFiles(runId, mode);
+
+  // When the backend signals worktree_gone (uncommitted requested but
+  // worktree was torn down), fall back to branch view automatically so
+  // the user sees something rather than an empty placeholder. Only
+  // applies on data refresh, so manual toggles still work in any state.
+  useEffect(() => {
+    if (data?.reason === "worktree_gone" && mode === "uncommitted") {
+      setMode("branch");
+    }
+  }, [data?.reason, mode]);
 
   const tree = useMemo(() => buildFileTree(data?.files ?? []), [data?.files]);
   const fileCount = data?.files.length ?? 0;
+  // Disable the uncommitted segment when no worktree exists — the
+  // backend can't compute it. Same condition the auto-fallback above
+  // keys off, surfaced visually so the user understands the constraint.
+  const uncommittedDisabled = data?.reason === "worktree_gone";
 
   // Default state: every folder expanded. Set tracks pathKeys the user
   // has *explicitly* collapsed — this way new files arriving live (the
@@ -52,24 +95,34 @@ export default function FilesPanel({ runId, onSelectFile }: FilesPanelProps) {
     });
   }, []);
 
+  const handleSelectFile = useCallback(
+    (file: RunFile) => {
+      onSelectFile(file, mode);
+    },
+    [onSelectFile, mode],
+  );
+
   return (
     <div className="flex flex-col min-h-0 min-w-0 flex-1 w-full">
-      <header className="flex items-center gap-1 px-2 py-1 border-b border-border-default">
-        {fileCount > 0 && (
-          <span className="inline-flex items-center justify-center rounded-md bg-surface-2 px-1.5 text-[10px] font-medium text-fg-muted">
-            {fileCount}
-          </span>
-        )}
-        <div className="ml-auto">
-          <IconButton
-            label="Refresh"
-            size="sm"
-            variant="ghost"
-            onClick={refresh}
-            disabled={loading}
-          >
-            <ReloadIcon className={loading ? "animate-spin" : undefined} />
-          </IconButton>
+      <header className="flex flex-col gap-1 border-b border-border-default px-2 py-1">
+        <div className="flex items-center gap-1">
+          <ModeSegmented
+            mode={mode}
+            onChange={setMode}
+            uncommittedDisabled={uncommittedDisabled}
+            count={fileCount}
+          />
+          <div className="ml-auto">
+            <IconButton
+              label="Refresh"
+              size="sm"
+              variant="ghost"
+              onClick={refresh}
+              disabled={loading}
+            >
+              <ReloadIcon className={loading ? "animate-spin" : undefined} />
+            </IconButton>
+          </div>
         </div>
       </header>
       <div className="flex-1 min-h-0 overflow-y-auto">
@@ -84,7 +137,7 @@ export default function FilesPanel({ runId, onSelectFile }: FilesPanelProps) {
         ) : !data.available ? (
           <EmptyState message={reasonLabel(data.reason)} />
         ) : tree.length === 0 ? (
-          <EmptyState message="No changes" />
+          <EmptyState message={emptyMessage(mode)} />
         ) : (
           <div className="py-1 text-xs">
             {tree.map((node) => (
@@ -93,7 +146,7 @@ export default function FilesPanel({ runId, onSelectFile }: FilesPanelProps) {
                 node={node}
                 collapsed={collapsed}
                 onToggle={toggle}
-                onSelectFile={onSelectFile}
+                onSelectFile={handleSelectFile}
               />
             ))}
           </div>
@@ -101,12 +154,91 @@ export default function FilesPanel({ runId, onSelectFile }: FilesPanelProps) {
       </div>
       {data?.work_dir && (
         <footer className="border-t border-border-default px-2 py-1 text-[10px] text-fg-subtle truncate">
-          <Tooltip content={footerTooltip(data)}>
-            <span className="truncate block">{footerLabel(data)}</span>
+          <Tooltip content={footerTooltip(data, mode)}>
+            <span className="truncate block">{footerLabel(data, mode)}</span>
           </Tooltip>
         </footer>
       )}
     </div>
+  );
+}
+
+interface ModeSegmentedProps {
+  mode: ViewMode;
+  onChange: (mode: ViewMode) => void;
+  uncommittedDisabled: boolean;
+  count: number;
+}
+
+// ModeSegmented is the two-pill segmented control above the tree.
+// "Uncommitted" maps to git status, "Branch" to BaseCommit..HEAD.
+// The count badge tracks the currently-visible mode so the active pill
+// stays consistent with the tree below.
+function ModeSegmented({
+  mode,
+  onChange,
+  uncommittedDisabled,
+  count,
+}: ModeSegmentedProps) {
+  return (
+    <div className="inline-flex overflow-hidden rounded-md border border-border-default text-[10px]">
+      <SegmentButton
+        active={mode === "uncommitted"}
+        disabled={uncommittedDisabled}
+        onClick={() => onChange("uncommitted")}
+        label="Uncommitted"
+        tooltip={
+          uncommittedDisabled
+            ? "Worktree no longer available — only the branch view is reachable."
+            : "Files modified but not yet committed (git status)."
+        }
+        count={mode === "uncommitted" ? count : undefined}
+      />
+      <SegmentButton
+        active={mode === "branch"}
+        onClick={() => onChange("branch")}
+        label="Branch"
+        tooltip="All changes this run introduced, vs. the source branch (base..HEAD)."
+        count={mode === "branch" ? count : undefined}
+      />
+    </div>
+  );
+}
+
+function SegmentButton({
+  active,
+  disabled,
+  onClick,
+  label,
+  tooltip,
+  count,
+}: {
+  active: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  label: string;
+  tooltip: string;
+  count?: number;
+}) {
+  const cls = active
+    ? "bg-surface-2 text-fg-default"
+    : "bg-transparent text-fg-muted hover:bg-surface-2";
+  return (
+    <Tooltip content={tooltip}>
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={disabled}
+        className={`px-2 py-0.5 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none ${cls}`}
+      >
+        <span>{label}</span>
+        {typeof count === "number" && (
+          <span className="ml-1 inline-flex items-center justify-center rounded-md bg-surface-3 px-1 text-[9px] font-medium text-fg-muted">
+            {count}
+          </span>
+        )}
+      </button>
+    </Tooltip>
   );
 }
 
@@ -273,9 +405,17 @@ function reasonLabel(reason: string | undefined): string {
       return "No working directory recorded for this run";
     case "not_git_repo":
       return "Not a git repository";
+    case "no_baseline":
+      return "This run has no base commit — branch diff unavailable";
+    case "worktree_gone":
+      return "Worktree was cleaned up — switch to Branch view";
     default:
       return reason ?? "Files unavailable";
   }
+}
+
+function emptyMessage(mode: ViewMode): string {
+  return mode === "branch" ? "No committed changes yet" : "No changes";
 }
 
 // isLive defaults to true when the field is absent so pre-feature
@@ -285,33 +425,47 @@ function isLive(data: { live?: boolean }): boolean {
   return data.live !== false;
 }
 
-// footerLabel disambiguates the two source-of-truth modes:
-// - live=true → files come from `git status` against a still-existing
-//   worktree/cwd. Badges are uncommitted state.
-// - live=false → files come from `git diff base..final` against the
-//   storage branch (worktree gc'd). Badges are committed-in-this-run.
-function footerLabel(data: {
-  worktree?: boolean;
-  live?: boolean;
-  work_dir?: string;
-}): string {
-  if (!isLive(data)) {
+// footerLabel disambiguates the visible mode + lifecycle:
+// - uncommitted on a live worktree → "Working tree (worktree): name"
+// - branch on a live worktree → "Branch vs. source: BaseCommit..HEAD"
+// - branch on a finalized run → "Committed in this run"
+function footerLabel(
+  data: {
+    worktree?: boolean;
+    live?: boolean;
+    work_dir?: string;
+  },
+  mode: ViewMode,
+): string {
+  if (mode === "branch") {
+    if (isLive(data)) {
+      const where = data.worktree ? "worktree" : "cwd";
+      return `Branch vs. source · ${where}: ${basename(data.work_dir ?? "")}`;
+    }
     return "Committed in this run";
   }
   const where = data.worktree ? "worktree" : "cwd";
   return `Working tree (${where}): ${basename(data.work_dir ?? "")}`;
 }
 
-function footerTooltip(data: {
-  worktree?: boolean;
-  live?: boolean;
-  work_dir?: string;
-}): string {
-  if (isLive(data)) {
-    return data.work_dir ?? "";
+function footerTooltip(
+  data: {
+    worktree?: boolean;
+    live?: boolean;
+    work_dir?: string;
+  },
+  mode: ViewMode,
+): string {
+  if (mode === "branch") {
+    if (isLive(data)) {
+      return `All changes this run has committed so far, vs. the source branch (BaseCommit..HEAD). Worktree: ${
+        data.work_dir ?? "<unknown>"
+      }`;
+    }
+    return `Files committed by this run, diffed against the run's base commit. The worktree at ${
+      data.work_dir ?? "<unknown>"
+    } has been cleaned up; the storage branch is the source of truth.`;
   }
-  return `Files committed by this run, diffed against the run's base commit. The worktree at ${
-    data.work_dir ?? "<unknown>"
-  } has been cleaned up; the storage branch is the source of truth.`;
+  return data.work_dir ?? "";
 }
 

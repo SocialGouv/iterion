@@ -356,23 +356,36 @@ export interface RunFile {
   binary?: boolean;
 }
 
+// File listing source-of-truth selector. Mirrors the server's fileMode:
+//   - "uncommitted": worktree `git status` (changes pending commit).
+//   - "branch": BaseCommit..HEAD range (commits introduced by the run).
+// Empty string means "let the backend pick the default" (the live
+// uncommitted view when a worktree exists, branch otherwise).
+export type RunFilesMode = "uncommitted" | "branch" | "";
+
 // Mirror of server.runFilesResponse. `available` is the gate: when
-// false, `reason` is one of "no_workdir" | "not_git_repo" and the
-// editor renders an empty-state instead of a file list.
+// false, `reason` is one of "no_workdir" | "not_git_repo" |
+// "no_baseline" | "worktree_gone" and the editor renders an empty-
+// state instead of a file list.
 //
 // `live` distinguishes the source: true when files come from a
-// still-existing worktree (`git status --porcelain`, uncommitted
-// state), false when from `git diff BaseCommit..FinalCommit` after
-// the worktree was torn down (every entry is committed). The panel
-// labels itself accordingly so M/A/D badges over committed files
-// don't misread as uncommitted modifications.
+// still-existing worktree (uncommitted or live branch range), false
+// when from the post-finalization historical diff. `mode` reflects
+// the effective view so the segmented control can highlight the
+// active option without re-deriving from `live`.
 export interface RunFiles {
   work_dir?: string;
   worktree?: boolean;
   live?: boolean;
+  mode?: RunFilesMode;
   files: RunFile[];
   available: boolean;
-  reason?: "no_workdir" | "not_git_repo" | string;
+  reason?:
+    | "no_workdir"
+    | "not_git_repo"
+    | "no_baseline"
+    | "worktree_gone"
+    | string;
 }
 
 // Mirror of pkg/git.DiffPayload. before/after are nil for added/deleted
@@ -386,16 +399,27 @@ export interface RunFileDiff {
   binary: boolean;
 }
 
-export async function listRunFiles(runId: string): Promise<RunFiles> {
-  return request(`/runs/${encodeURIComponent(runId)}/files`);
+export async function listRunFiles(
+  runId: string,
+  opts: { mode?: RunFilesMode } = {},
+): Promise<RunFiles> {
+  const qs = new URLSearchParams();
+  if (opts.mode) qs.set("mode", opts.mode);
+  const suffix = qs.toString();
+  return request(
+    `/runs/${encodeURIComponent(runId)}/files${suffix ? `?${suffix}` : ""}`,
+  );
 }
 
 export async function getRunFileDiff(
   runId: string,
   path: string,
+  opts: { mode?: RunFilesMode } = {},
 ): Promise<RunFileDiff> {
+  const qs = new URLSearchParams({ path });
+  if (opts.mode) qs.set("mode", opts.mode);
   return request(
-    `/runs/${encodeURIComponent(runId)}/files/diff?path=${encodeURIComponent(path)}`,
+    `/runs/${encodeURIComponent(runId)}/files/diff?${qs.toString()}`,
   );
 }
 
@@ -431,6 +455,43 @@ export interface RunCommits {
 
 export async function listRunCommits(runId: string): Promise<RunCommits> {
   return request(`/runs/${encodeURIComponent(runId)}/commits`);
+}
+
+// Mirror of server.runCommitDetailResponse. `available` mirrors the
+// listing endpoints' contract: when false, `reason` is "not_in_range"
+// and the UI renders a "commit not part of this run" empty state.
+export interface RunCommitDetail {
+  sha: string;
+  short: string;
+  parent?: string;
+  subject?: string;
+  author?: string;
+  email?: string;
+  date?: string; // RFC3339
+  files: RunFile[];
+  available: boolean;
+  reason?: "not_in_range" | string;
+}
+
+export async function getRunCommit(
+  runId: string,
+  sha: string,
+): Promise<RunCommitDetail> {
+  return request(
+    `/runs/${encodeURIComponent(runId)}/commits/${encodeURIComponent(sha)}`,
+  );
+}
+
+export async function getRunCommitFileDiff(
+  runId: string,
+  sha: string,
+  path: string,
+): Promise<RunFileDiff> {
+  return request(
+    `/runs/${encodeURIComponent(runId)}/commits/${encodeURIComponent(
+      sha,
+    )}/diff?path=${encodeURIComponent(path)}`,
+  );
 }
 
 export interface MergeRunRequest {

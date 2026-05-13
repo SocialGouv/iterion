@@ -49,6 +49,8 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("GET /api/runs/{id}/files", s.handleListRunFiles)
 	s.mux.HandleFunc("GET /api/runs/{id}/files/diff", s.handleGetRunFileDiff)
 	s.mux.HandleFunc("GET /api/runs/{id}/commits", s.handleListRunCommits)
+	s.mux.HandleFunc("GET /api/runs/{id}/commits/{sha}", s.handleGetRunCommit)
+	s.mux.HandleFunc("GET /api/runs/{id}/commits/{sha}/diff", s.handleGetRunCommitFileDiff)
 	s.mux.HandleFunc("POST /api/runs/{id}/cancel", s.handleCancelRun)
 	s.mux.HandleFunc("POST /api/runs/{id}/resume", s.handleResumeRun)
 	s.mux.HandleFunc("POST /api/runs/{id}/merge", s.handleMergeRun)
