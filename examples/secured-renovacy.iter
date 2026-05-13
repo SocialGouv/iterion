@@ -2158,11 +2158,26 @@ if ! printf '%s' "$MSG" | git commit -F - >&2; then
   printf '{"success":false,"output":"git commit failed"}\n'
   exit 1
 fi
+# Amend pass: when an upstream hook (lint --fix, prettier, husky)
+# re-rewrites files between our initial stage and the resulting
+# commit, those changes land back in the workdir. Re-stage and
+# amend so they ride along with the same commit.
+#
+# We re-discover the file set at amend time rather than reusing
+# the prepare_commit-supplied FILES_LINES: between the initial
+# commit and now, the file set on disk has changed (the just-
+# committed deletions / renames are no longer tracked at HEAD),
+# and a literal re-run of the same path list will hit
+# "pathspec did not match any files" on any path that was deleted
+# in the just-created commit. git add -A stages every dirty
+# path in the workspace without us having to guess.
 if git status --porcelain | grep -q .; then
-  printf '%s' "$FILES_LINES" | tr '\n' '\0' | xargs -0 git add -- >&2
-  if ! git commit --amend --no-edit >&2; then
-    printf '{"success":false,"output":"git commit --amend failed"}\n'
-    exit 1
+  git add -A >&2
+  if ! git diff --cached --quiet; then
+    if ! git commit --amend --no-edit >&2; then
+      printf '{"success":false,"output":"git commit --amend failed"}\n'
+      exit 1
+    fi
   fi
 fi
 SHA=$(git rev-parse HEAD)
