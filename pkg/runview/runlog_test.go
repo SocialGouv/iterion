@@ -213,3 +213,60 @@ func mustNewRunLogBuffer(t *testing.T, filePath string) *RunLogBuffer {
 	}
 	return b
 }
+
+func TestRunLogBuffer_SeedsFromExistingFile(t *testing.T) {
+	// Regression: NewRunLogBuffer reopening an existing run.log (the
+	// daemon-resume / restart-on-active-run case) used to start the
+	// ring's logical stream at offset 0 even though the file already
+	// had pre-restart history. Snapshot(from=0) returned offset=0
+	// → the editor's /log gap-fill helper (handleGetRunLog) and the
+	// WS subscribe_logs replayer both saw offset == from and did
+	// nothing — the per-node Logs tab went empty for any node that
+	// ran before the restart.
+	//
+	// The fix seeds start/written from f.Stat().Size() so:
+	//   - Snapshot(from=0) returns offset = pre-existing size
+	//   - the handler reads [0, pre-existing-size) from disk and
+	//     prepends it to whatever the ring grows to post-reopen.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "run.log")
+	if err := os.WriteFile(path, []byte("old history bytes "), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	preSize := int64(len("old history bytes "))
+
+	b := mustNewRunLogBuffer(t, path)
+	defer b.Close()
+
+	off, data, total := b.Snapshot(0)
+	if off != preSize {
+		t.Errorf("Snapshot offset before any new write: got %d, want %d (pre-existing file size)", off, preSize)
+	}
+	if len(data) != 0 {
+		t.Errorf("Snapshot data before any new write: got %d bytes, want 0 (ring is empty; pre-existing content lives on disk and gets gap-filled by the handler)", len(data))
+	}
+	if total != preSize {
+		t.Errorf("Snapshot total before any new write: got %d, want %d", total, preSize)
+	}
+
+	// New write extends the stream past the seeded baseline.
+	if _, err := b.Write([]byte("new ")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	off, data, total = b.Snapshot(0)
+	if off != preSize {
+		t.Errorf("Snapshot offset after one new write: got %d, want %d (ring still starts at seed)", off, preSize)
+	}
+	if string(data) != "new " {
+		t.Errorf("Snapshot data after one new write: got %q, want %q", data, "new ")
+	}
+	if total != preSize+4 {
+		t.Errorf("Snapshot total after one new write: got %d, want %d", total, preSize+4)
+	}
+
+	// Mid-stream snapshot starting INSIDE the ring window works as before.
+	off, data, total = b.Snapshot(preSize)
+	if off != preSize || string(data) != "new " || total != preSize+4 {
+		t.Errorf("mid-stream snapshot: got off=%d data=%q total=%d", off, data, total)
+	}
+}

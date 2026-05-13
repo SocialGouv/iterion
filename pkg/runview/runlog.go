@@ -96,6 +96,22 @@ func NewRunLogBuffer(filePath string) (*RunLogBuffer, error) {
 		return b, err
 	}
 	b.file = f
+	// Seed the ring's "logical stream offset" from any existing on-disk
+	// content. A resumed run reopens an existing run.log via O_APPEND;
+	// without this seed, the buffer's start/written would be 0 and
+	// Snapshot(from=0) would return offset=0 — the editor's HTTP /log
+	// gap-fill (handleGetRunLog) and the WS subscribe_logs replayer
+	// both gate on `offset > from`, so neither would ever read the
+	// pre-restart history off disk. Symptom: per-node Logs tab empty
+	// in the editor for any node that ran before the daemon restart.
+	// Seeding start = written = file-size leaves the ring empty for now
+	// (subsequent Writes append normally) but tells consumers the gap
+	// `[0, file-size)` lives on disk.
+	if stat, err := f.Stat(); err == nil {
+		size := stat.Size()
+		b.start = size
+		b.written = size
+	}
 	return b, nil
 }
 
