@@ -219,3 +219,58 @@ func TestProviderFingerprint_DirectVsFacadeDiffer(t *testing.T) {
 		t.Errorf("anthropic-direct vs z.ai facade fingerprints collided: %q", direct)
 	}
 }
+
+// --- shouldDropSessionFork (cross-provider fork guard) -----------
+
+func TestShouldDropSessionFork_NotForking(t *testing.T) {
+	// Bare resume (no fork) is always same-process continuation — no
+	// drop, regardless of fingerprint state.
+	for _, fp := range []string{"", "anthropic-direct", "facade:https://api.z.ai/api/anthropic"} {
+		task := Task{SessionID: "s1", ForkSession: false, SessionFingerprint: fp}
+		if drop, _ := shouldDropSessionFork(task, "anthropic-direct"); drop {
+			t.Errorf("fp=%q: bare resume should not drop", fp)
+		}
+	}
+}
+
+func TestShouldDropSessionFork_EmptyParentLegacyDataDrops(t *testing.T) {
+	// The actual production-observed scenario: detect_stack ran on an
+	// older binary that did not stamp _session_fingerprint. The
+	// downstream fork on a new (post-T2.3) binary would otherwise
+	// proceed and 400 on the thinking-block signature. The conservative
+	// drop is what the new policy enforces.
+	task := Task{SessionID: "s1", ForkSession: true, SessionFingerprint: ""}
+	drop, reason := shouldDropSessionFork(task, "anthropic-direct")
+	if !drop {
+		t.Fatal("expected drop on empty parent fingerprint")
+	}
+	if reason == "" {
+		t.Error("expected a reason string")
+	}
+}
+
+func TestShouldDropSessionFork_MatchingFingerprintKeepsFork(t *testing.T) {
+	task := Task{SessionID: "s1", ForkSession: true, SessionFingerprint: "anthropic-direct"}
+	if drop, _ := shouldDropSessionFork(task, "anthropic-direct"); drop {
+		t.Error("matching fingerprints should NOT drop")
+	}
+}
+
+func TestShouldDropSessionFork_MismatchDrops(t *testing.T) {
+	task := Task{SessionID: "s1", ForkSession: true,
+		SessionFingerprint: "facade:https://api.z.ai/api/anthropic"}
+	if drop, _ := shouldDropSessionFork(task, "anthropic-direct"); !drop {
+		t.Error("mismatch should drop")
+	}
+}
+
+func TestShouldDropSessionFork_UnknownCurrentKeepsForkWithParentSet(t *testing.T) {
+	// When the current provider is unresolved (env not wired) we
+	// can't classify the request; keep the fork rather than drop
+	// pre-emptively. If a mismatch exists it surfaces the same 400
+	// either way — dropping wouldn't have helped.
+	task := Task{SessionID: "s1", ForkSession: true, SessionFingerprint: "anthropic-direct"}
+	if drop, _ := shouldDropSessionFork(task, ""); drop {
+		t.Error("unknown current fingerprint should NOT trigger a drop when parent fingerprint is set")
+	}
+}

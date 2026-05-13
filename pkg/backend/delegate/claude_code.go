@@ -178,17 +178,10 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 	currentFingerprint := providerFingerprint(credEnv)
 
 	if task.SessionID != "" {
-		// Cross-provider safety check: thinking blocks in a Claude
-		// session carry provider-specific signatures. Resuming or
-		// forking a session that originated on a different provider
-		// surfaces HTTP 400 "Invalid signature in thinking block" the
-		// moment the new provider tries to read the prior conversation.
-		// Drop the session and start fresh — losing continuity is the
-		// expected outcome of a deliberate provider switch.
-		if task.SessionFingerprint != "" && currentFingerprint != "" &&
-			task.SessionFingerprint != currentFingerprint {
-			b.Logger.Warn("[%s#%d/claude-code] dropping session fork: parent session was built on %q but current provider is %q (signed thinking blocks would 400 on cross-provider reuse)",
-				task.NodeID, task.Iteration, task.SessionFingerprint, currentFingerprint)
+		drop, reason := shouldDropSessionFork(task, currentFingerprint)
+		if drop {
+			b.Logger.Warn("[%s#%d/claude-code] dropping session fork: %s",
+				task.NodeID, task.Iteration, reason)
 		} else {
 			opts = append(opts, claudesdk.WithResume(task.SessionID))
 			if task.ForkSession {
@@ -1041,6 +1034,47 @@ func credEnvToOpts(env map[string]string) []claudesdk.Option {
 		opts = append(opts, claudesdk.WithEnv(k, env[k]))
 	}
 	return opts
+}
+
+// shouldDropSessionFork decides whether to skip --resume + --fork-session
+// for the incoming task. Thinking blocks in a Claude session carry
+// provider-specific signatures; reusing a session built on a different
+// provider surfaces HTTP 400 "Invalid signature in thinking block"
+// the moment the new provider reads the prior conversation.
+//
+// Drop policy (forks only — a bare resume from the same daemon process
+// is always same-provider continuation, so signatures are trustworthy):
+//
+//   - parent fingerprint set AND differs from current → drop.
+//   - parent fingerprint EMPTY (legacy output produced by a binary
+//     that predates the stamp, or by a daemon restarted across a
+//     provider switch) → drop conservatively. The alternative —
+//     "proceed when unknown" — was the actual observed failure mode:
+//     a fresh Anthropic daemon attempting to fork a session-id
+//     produced by an older ZAI-side binary blew up on the 400 with
+//     nothing flagging the mismatch. Losing head-session continuity
+//     for one node is recoverable; a 400 is not.
+//   - parent fingerprint set, current fingerprint EMPTY (provider
+//     env is currently unresolved — e.g. cred ctx not wired) → keep
+//     the fork. The CLI subprocess will fall back to inherited env,
+//     and if that's a mismatch the surface error is the same 400 we
+//     started with; we don't gain anything by dropping pre-emptively
+//     when we can't classify ourselves.
+//
+// Returns (drop, reason). The reason string carries no secrets and is
+// safe to log verbatim.
+func shouldDropSessionFork(task Task, currentFingerprint string) (bool, string) {
+	if !task.ForkSession {
+		return false, ""
+	}
+	if task.SessionFingerprint == "" {
+		return true, "parent session has no recorded provider fingerprint (legacy output or pre-stamp binary) — starting fresh to avoid cross-provider thinking-block 400s"
+	}
+	if currentFingerprint != "" && task.SessionFingerprint != currentFingerprint {
+		return true, fmt.Sprintf("parent session was built on %q but current provider is %q (signed thinking blocks would 400 on cross-provider reuse)",
+			task.SessionFingerprint, currentFingerprint)
+	}
+	return false, ""
 }
 
 // providerFingerprint derives a stable identifier for the routing
