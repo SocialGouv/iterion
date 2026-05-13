@@ -2686,28 +2686,64 @@ tool bucket_families:
     const attemptedList = attemptedNames(attemptedRaw);
     const attemptedSet = new Set(attemptedList);
 
-    // Group candidates by `@scope` prefix. Drop names without a `@`
-    // namespace (covered by the solo path) and packages already
-    // attempted or outside the active scope.
+    // Known lockstep ecosystems whose member packages typically share
+    // a release cadence and a coordinated breaking-change strategy.
+    // Batching them via family_align_code + family_validate amortises
+    // intel + install + smoke across the family instead of paying N
+    // independent solo cycles. We only batch when ≥2 members of the
+    // ecosystem are actually in the upgrade list — singletons fall
+    // through to the solo path where intel_join's per-pkg routing
+    // applies. Add prefixes here when the bench surfaces a new family
+    // (e.g. `@types/*` is covered by the scope path; this list is for
+    // the non-`@scope` ecosystems).
+    const ECOSYSTEM_PREFIXES = [
+      "eslint",      // eslint + eslint-config-* + eslint-plugin-*
+      "graphql",     // graphql + graphql-subscriptions + graphql-ws + graphql-tag
+      "babel",       // babel-core + babel-loader + babel-preset-*
+      "typescript",  // typescript + typescript-eslint variants
+      "react",       // react + react-dom + react-router (when not @scope)
+      "asyncapi",    // asyncapi-validator + asyncapi-parser (when not @scope)
+      "remark",      // remark + remark-* plugins
+      "rehype",      // rehype + rehype-* plugins
+      "postcss",     // postcss + postcss-* plugins
+    ];
+
+    function ecosystemKey(name) {
+      // @scope/X wins first — that's the canonical lockstep signal.
+      const scopeMatch = name.match(/^(@[^/]+)\//);
+      if (scopeMatch) return scopeMatch[1];
+      // Non-scoped ecosystem prefix: `<prefix>` or `<prefix>-<rest>`.
+      // The exact-name match catches the bare anchor pkg (e.g.
+      // `eslint` itself joining the `eslint-*` family).
+      for (const p of ECOSYSTEM_PREFIXES) {
+        if (name === p || name.startsWith(p + "-")) return p;
+      }
+      return null;
+    }
+
+    // Group candidates by ecosystem (scope or kebab-prefix). Packages
+    // without a recognised ecosystem and packages already attempted or
+    // outside the active scope fall through to the solo path.
     const groups = {};
     const solos = [];
     for (const p of list) {
       if (!p || !p.name || !p.target) continue;
       if (attemptedSet.has(p.name)) continue;
       if (!allowedRisks.includes(p.risk)) continue;
-      const m = p.name.match(/^(@[^/]+)\//);
-      if (!m) { solos.push(p); continue; }
-      const scope = m[1];
-      if (!groups[scope]) groups[scope] = [];
-      groups[scope].push({ name: p.name, current: p.current || "", target: p.target, risk: p.risk });
+      const key = ecosystemKey(p.name);
+      if (!key) { solos.push(p); continue; }
+      if (!groups[key]) groups[key] = [];
+      groups[key].push({ name: p.name, current: p.current || "", target: p.target, risk: p.risk });
     }
 
     // Families with ≥2 members are eligible for batching; single-member
     // "families" collapse to solo path.
     const families = [];
-    for (const [scope, members] of Object.entries(groups)) {
+    for (const [key, members] of Object.entries(groups)) {
       if (members.length >= 2) {
-        families.push({ name: scope, members: members });
+        // Display name: keep @scope as-is; prefix-stars for kebab-form.
+        const displayName = key.startsWith("@") ? key : (key + "-*");
+        families.push({ name: displayName, members: members });
       } else {
         for (const m of members) solos.push(m);
       }
