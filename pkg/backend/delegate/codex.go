@@ -383,8 +383,8 @@ func (b *CodexBackend) logAssistantActivity(nodeID string, iteration int, msg *c
 	for _, block := range msg.Content {
 		switch blk := block.(type) {
 		case *codexsdk.ToolUseBlock:
-			detail := toolUseDetail(blk.Name, blk.Input)
-			b.Logger.Info("[%s#%d/codex] 🔧 %s %s", nodeID, iteration, blk.Name, detail)
+			header := fmt.Sprintf("[%s#%d/codex] 🔧 %s %s", nodeID, iteration, blk.Name, toolUseDetail(blk.Name, blk.Input))
+			b.Logger.LogBlock(iterlog.LevelInfo, "ℹ️ ", header, toolUseBody(blk.Name, blk.Input))
 		case *codexsdk.ToolResultBlock:
 			if blk.IsError {
 				b.Logger.Info("[%s#%d/codex] ❌ tool error: %s", nodeID, iteration, contentBlocksText(blk.Content))

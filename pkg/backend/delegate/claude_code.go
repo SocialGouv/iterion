@@ -875,7 +875,8 @@ func logAssistantContent(logger *iterlog.Logger, nodeID string, iteration int, b
 					break
 				}
 			}
-			logger.Info("[%s#%d/claude-code] 🔧 %s %s", nodeID, iteration, displayName, toolUseDetail(bl.Name, bl.Input))
+			header := fmt.Sprintf("[%s#%d/claude-code] 🔧 %s %s", nodeID, iteration, displayName, toolUseDetail(bl.Name, bl.Input))
+			logger.LogBlock(iterlog.LevelInfo, "ℹ️ ", header, toolUseBody(bl.Name, bl.Input))
 		case *claudesdk.ToolResultBlock:
 			if bl.IsError {
 				logger.Info("[%s#%d/claude-code] ❌ tool error: %v", nodeID, iteration, bl.Content)
@@ -927,7 +928,10 @@ func isRateLimitMessage(text string) bool {
 	return false
 }
 
-// toolUseDetail extracts a human-readable detail from tool input.
+// toolUseDetail extracts a short single-line summary from tool input for
+// the log header. Multi-line commands are clipped at the first newline so
+// the header stays on one log line; the full body is emitted separately
+// via toolUseBody + LogBlock.
 func toolUseDetail(name string, input map[string]any) string {
 	// File-related tools: show the path
 	if p, ok := input["file_path"].(string); ok {
@@ -938,13 +942,34 @@ func toolUseDetail(name string, input map[string]any) string {
 	}
 	// Search/grep: show the pattern
 	if p, ok := input["pattern"].(string); ok {
-		return truncate(p, 80)
+		return truncate(firstLine(p), 80)
 	}
-	// Bash: show the command (truncated)
+	// Bash: show the first line of the command (truncated)
 	if c, ok := input["command"].(string); ok {
-		return truncate(c, 100)
+		return truncate(firstLine(c), 100)
 	}
 	return ""
+}
+
+// toolUseBody returns the full multi-line body to attach under the log
+// header when the tool's input has content the operator typically wants
+// to read whole. Empty for tools where the header already says it all.
+func toolUseBody(name string, input map[string]any) string {
+	if c, ok := input["command"].(string); ok {
+		if strings.ContainsRune(c, '\n') {
+			return c
+		}
+	}
+	return ""
+}
+
+// firstLine returns s up to (but excluding) the first newline. Useful
+// for header lines that must stay single-line.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 // anthropicCredOptsForCLI returns claudesdk.WithEnv options that point

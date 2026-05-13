@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useLocation } from "wouter";
 import { ChevronRightIcon } from "@radix-ui/react-icons";
 
@@ -685,6 +692,56 @@ function ToolCallList({ calls }: { calls: ToolCall[] }) {
   );
 }
 
+function ToolPayloadBlock({ label, value }: { label: string; value: string }) {
+  const [open, setOpen] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [overflow, setOverflow] = useState(false);
+  const preRef = useRef<HTMLPreElement>(null);
+
+  useLayoutEffect(() => {
+    if (!open || expanded) {
+      setOverflow(false);
+      return;
+    }
+    const el = preRef.current;
+    if (!el) return;
+    setOverflow(el.scrollHeight > el.clientHeight + 1);
+  }, [open, expanded, value]);
+
+  return (
+    <details
+      className="mb-1"
+      onToggle={(e) => {
+        const next = (e.currentTarget as HTMLDetailsElement).open;
+        setOpen(next);
+        if (!next) setExpanded(false);
+      }}
+    >
+      <summary className="cursor-pointer text-[10px] text-fg-muted px-1 py-0.5 rounded hover:bg-surface-2 flex items-center justify-between">
+        <span>{label}</span>
+        <CopyButton value={value} />
+      </summary>
+      <pre
+        ref={preRef}
+        className={`mt-1 text-[10px] font-mono whitespace-pre-wrap break-words bg-surface-1 rounded p-1.5 ${
+          expanded ? "" : "max-h-40 overflow-auto"
+        }`}
+      >
+        {value}
+      </pre>
+      {(overflow || expanded) && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-1 text-[10px] text-fg-subtle hover:text-fg-default px-1 py-0.5 rounded hover:bg-surface-2"
+        >
+          {expanded ? "réduire" : "voir tout"}
+        </button>
+      )}
+    </details>
+  );
+}
+
 function ToolCallCard({ call }: { call: ToolCall }) {
   const [showRaw, setShowRaw] = useState(false);
   return (
@@ -714,28 +771,8 @@ function ToolCallCard({ call }: { call: ToolCall }) {
           {call.errorMsg}
         </div>
       )}
-      {call.input && (
-        <details className="mb-1">
-          <summary className="cursor-pointer text-[10px] text-fg-muted px-1 py-0.5 rounded hover:bg-surface-2 flex items-center justify-between">
-            <span>input</span>
-            <CopyButton value={call.input} />
-          </summary>
-          <pre className="mt-1 text-[10px] font-mono whitespace-pre-wrap break-words bg-surface-1 rounded p-1.5 max-h-40 overflow-auto">
-            {call.input}
-          </pre>
-        </details>
-      )}
-      {call.output && (
-        <details className="mb-1">
-          <summary className="cursor-pointer text-[10px] text-fg-muted px-1 py-0.5 rounded hover:bg-surface-2 flex items-center justify-between">
-            <span>output</span>
-            <CopyButton value={call.output} />
-          </summary>
-          <pre className="mt-1 text-[10px] font-mono whitespace-pre-wrap break-words bg-surface-1 rounded p-1.5 max-h-40 overflow-auto">
-            {call.output}
-          </pre>
-        </details>
-      )}
+      {call.input && <ToolPayloadBlock label="input" value={call.input} />}
+      {call.output && <ToolPayloadBlock label="output" value={call.output} />}
       <button
         type="button"
         onClick={() => setShowRaw((v) => !v)}
