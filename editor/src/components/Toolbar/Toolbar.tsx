@@ -9,6 +9,7 @@ import ConfirmDialog from "../shared/ConfirmDialog";
 import ShortcutsHelp from "../shared/ShortcutsHelp";
 import FilePicker from "../FilePicker/FilePicker";
 import BackendStatusPill from "./BackendStatusPill";
+import ProjectLabel from "@/components/shared/ProjectLabel";
 import {
   Button,
   IconButton,
@@ -306,6 +307,7 @@ export default function Toolbar() {
     <div className="flex items-center gap-1 px-3 h-full text-sm">
       <span className="font-bold tracking-wide mr-2">ITERION</span>
       <BackendStatusPill />
+      <ProjectLabel variant="toolbar" />
 
       {/* File ops */}
       <ToolbarGroup>

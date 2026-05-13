@@ -80,6 +80,12 @@ export interface ServerInfo {
   version: string;
   commit?: string;
   limits: { upload: UploadLimits };
+  // Absolute working directory the server was launched with. Empty in
+  // cloud mode (no per-server folder concept).
+  work_dir?: string;
+  // Human-friendly label derived from work_dir (basename). Empty when
+  // work_dir is empty or root-ish.
+  project_name?: string;
 }
 
 // Response shape of POST /api/runs/uploads.

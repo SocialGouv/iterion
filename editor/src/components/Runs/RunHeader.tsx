@@ -4,6 +4,7 @@ import { useLocation } from "wouter";
 import type { RunHeader as RunHeaderType } from "@/api/runs";
 import { cancelRun } from "@/api/runs";
 import { Button, StatusBadge } from "@/components/ui";
+import ProjectLabel from "@/components/shared/ProjectLabel";
 
 import ResumeDialog from "./ResumeDialog";
 
@@ -66,6 +67,7 @@ export default function RunHeader({ run, active, wsState }: Props) {
         >
           ← Runs
         </button>
+        <ProjectLabel variant="header" />
         <div className="flex flex-col leading-tight min-w-0 max-w-md">
           <div className="font-medium truncate">
             {run.name || run.workflow_name}

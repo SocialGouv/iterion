@@ -5,9 +5,11 @@ import App from "./App";
 import "./app.css";
 import { initializeTheme } from "./store/theme";
 import { initializeBackendDetect } from "./store/backendDetect";
+import { initializeServerInfo } from "./store/serverInfo";
 
 initializeTheme();
 initializeBackendDetect();
+initializeServerInfo();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

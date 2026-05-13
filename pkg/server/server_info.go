@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"path/filepath"
 
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 )
@@ -20,6 +21,14 @@ type serverInfoResponse struct {
 	// synthetic super-admin so the existing local UX is preserved.
 	AuthRequired bool              `json:"auth_required"`
 	Limits       serverLimitsBlock `json:"limits"`
+	// WorkDir is the absolute working directory the server was launched
+	// with (`iterion editor --dir`). Empty in cloud mode where there is
+	// no per-server folder concept.
+	WorkDir string `json:"work_dir,omitempty"`
+	// ProjectName is a human-friendly label derived from WorkDir
+	// (typically its basename). The SPA surfaces it in the Toolbar and
+	// RunHeader so the user always sees which project they're editing.
+	ProjectName string `json:"project_name,omitempty"`
 }
 
 type serverLimitsBlock struct {
@@ -54,5 +63,23 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 	}
+	if mode == "local" {
+		resp.WorkDir = s.cfg.WorkDir
+		resp.ProjectName = deriveProjectName(s.cfg.WorkDir)
+	}
 	s.writeJSONFor(w, r, resp)
+}
+
+// deriveProjectName picks a human-friendly label from the working
+// directory. Returns "" for empty / root-ish inputs so the SPA can fall
+// back to no-label rendering.
+func deriveProjectName(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	base := filepath.Base(filepath.Clean(dir))
+	if base == "." || base == "/" || base == string(filepath.Separator) {
+		return ""
+	}
+	return base
 }

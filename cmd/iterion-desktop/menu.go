@@ -28,9 +28,6 @@ func buildMenu(a *App) *menu.Menu {
 	fileMenu.AddText("New project…", keys.CmdOrCtrl("n"), func(_ *menu.CallbackData) {
 		wruntime.EventsEmit(a.ctx, eventMenuNewProject)
 	})
-	fileMenu.AddText("Open project…", keys.CmdOrCtrl("o"), func(_ *menu.CallbackData) {
-		wruntime.EventsEmit(a.ctx, eventMenuOpenProject)
-	})
 	fileMenu.AddText("Switch project…", keys.CmdOrCtrl("p"), func(_ *menu.CallbackData) {
 		wruntime.EventsEmit(a.ctx, eventMenuSwitchProject)
 	})

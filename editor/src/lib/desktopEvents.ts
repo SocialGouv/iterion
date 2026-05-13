@@ -7,7 +7,6 @@ export const DesktopEvent = {
 
   MenuSettings: "menu:settings",
   MenuSwitchProject: "menu:switch-project",
-  MenuOpenProject: "menu:open-project",
   MenuNewProject: "menu:new-project",
   MenuAbout: "menu:about",
   MenuUndo: "menu:undo",

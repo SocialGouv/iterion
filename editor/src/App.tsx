@@ -14,6 +14,7 @@ import Login from "@/views/Login";
 import SettingsPage from "@/views/settings/SettingsPage";
 import TeamPage from "@/views/teams/TeamPage";
 import { useDesktop } from "@/hooks/useDesktop";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { onDesktopEvent } from "@/lib/desktopBridge";
 import { DesktopEvent } from "@/lib/desktopEvents";
 import { AuthProvider, useAuth } from "@/auth/AuthContext";
@@ -61,6 +62,8 @@ function AuthedApp() {
   const [settingsTab, setSettingsTab] = useState<string>("api-keys");
   const [switcherOpen, setSwitcherOpen] = useState(false);
 
+  useDocumentTitle();
+
   useEffect(() => {
     const offs = [
       onDesktopEvent(DesktopEvent.MenuSettings, () => {
@@ -68,7 +71,6 @@ function AuthedApp() {
         setSettingsOpen(true);
       }),
       onDesktopEvent(DesktopEvent.MenuSwitchProject, () => setSwitcherOpen(true)),
-      onDesktopEvent(DesktopEvent.MenuOpenProject, () => setSwitcherOpen(true)),
       onDesktopEvent(DesktopEvent.MenuNewProject, () => setSwitcherOpen(true)),
       onDesktopEvent(DesktopEvent.MenuAbout, () => {
         setSettingsTab("about");
@@ -77,7 +79,14 @@ function AuthedApp() {
       onDesktopEvent(DesktopEvent.MenuUndo, () => useDocumentStore.getState().undo()),
       onDesktopEvent(DesktopEvent.MenuRedo, () => useDocumentStore.getState().redo()),
     ];
-    return () => offs.forEach((off) => off());
+    // Listen for the SPA-emitted open-switcher event from ProjectLabel
+    // (clicking the project chip in the toolbar / run header).
+    const onOpenSwitcher = () => setSwitcherOpen(true);
+    window.addEventListener("iterion:open-project-switcher", onOpenSwitcher);
+    return () => {
+      offs.forEach((off) => off());
+      window.removeEventListener("iterion:open-project-switcher", onOpenSwitcher);
+    };
   }, []);
 
   useEffect(() => {

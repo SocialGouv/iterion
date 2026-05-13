@@ -7,7 +7,6 @@ const (
 
 	eventMenuSettings      = "menu:settings"
 	eventMenuSwitchProject = "menu:switch-project"
-	eventMenuOpenProject   = "menu:open-project"
 	eventMenuNewProject    = "menu:new-project"
 	eventMenuAbout         = "menu:about"
 	eventMenuUndo          = "menu:undo"
