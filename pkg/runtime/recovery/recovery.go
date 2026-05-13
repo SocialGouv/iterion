@@ -155,6 +155,34 @@ func PermanentToolRecipe() Recipe {
 	})
 }
 
+// ExecutionFailedRecipe: the catch-all bucket for unclassified node
+// failures. Tries one retry with a short delay (covers transient
+// subprocess crashes, flaky network blips, momentary fs races), then
+// falls through to FailTerminal so the engine produces a
+// failed_resumable checkpoint that the operator can /resume after
+// fixing the root cause. Without this recipe registered, the first
+// failure of any unclassified node short-circuits to FailTerminal
+// with no retry attempted at all.
+func ExecutionFailedRecipe(maxRetries int) Recipe {
+	if maxRetries <= 0 {
+		maxRetries = 1
+	}
+	return RecipeFunc(func(_ context.Context, _ *runtime.RuntimeError, attempts int) Action {
+		if attempts >= maxRetries {
+			return Action{
+				Kind:   ActionFailTerminal,
+				Reason: "node execution kept failing after retries; surfacing as failed_resumable so the operator can /resume after fixing the cause",
+			}
+		}
+		return Action{
+			Kind:         ActionRetrySameNode,
+			Delay:        2 * time.Second,
+			AttemptsLeft: maxRetries - attempts - 1,
+			Reason:       "node execution failed; retrying once before surfacing as failed_resumable",
+		}
+	})
+}
+
 // DefaultRecipes maps each well-known error code to its default
 // recipe. Hosts can override individual entries before installing.
 func DefaultRecipes() map[runtime.ErrorCode]Recipe {
@@ -164,6 +192,7 @@ func DefaultRecipes() map[runtime.ErrorCode]Recipe {
 		runtime.ErrCodeBudgetExceeded:        BudgetRecipe(),
 		runtime.ErrCodeToolFailedTransient:   TransientToolRecipe(2),
 		runtime.ErrCodeToolFailedPermanent:   PermanentToolRecipe(),
+		runtime.ErrCodeExecutionFailed:       ExecutionFailedRecipe(1),
 	}
 }
 

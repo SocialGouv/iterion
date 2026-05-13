@@ -73,6 +73,35 @@ func TestPermanentToolRecipe(t *testing.T) {
 	}
 }
 
+func TestExecutionFailedRecipe_RetryThenTerminal(t *testing.T) {
+	// First failure: retry. Second: fail terminal (engine converts to
+	// failed_resumable via failRunWithCheckpoint, so the operator can
+	// /resume after fixing the cause).
+	r := ExecutionFailedRecipe(1)
+	act := r.Apply(context.Background(), &runtime.RuntimeError{Code: runtime.ErrCodeExecutionFailed}, 0)
+	if act.Kind != ActionRetrySameNode {
+		t.Errorf("first failure: expected RetrySameNode, got %v", act.Kind)
+	}
+	if act.Delay <= 0 {
+		t.Errorf("first failure: expected positive delay, got %v", act.Delay)
+	}
+	act = r.Apply(context.Background(), &runtime.RuntimeError{Code: runtime.ErrCodeExecutionFailed}, 1)
+	if act.Kind != ActionFailTerminal {
+		t.Errorf("after one retry: expected FailTerminal, got %v", act.Kind)
+	}
+}
+
+func TestExecutionFailedRecipe_WiredInDefaults(t *testing.T) {
+	// Regression guard: without a recipe registered for
+	// ErrCodeExecutionFailed, Dispatch falls through to FailTerminal
+	// with reason "no recipe registered", and the first unclassified
+	// node failure is unrecoverable.
+	recipes := DefaultRecipes()
+	if _, ok := recipes[runtime.ErrCodeExecutionFailed]; !ok {
+		t.Fatal("DefaultRecipes must register a recipe for ErrCodeExecutionFailed so generic node failures get a retry before going terminal")
+	}
+}
+
 func TestClassify_RuntimeError(t *testing.T) {
 	rerr := &runtime.RuntimeError{Code: runtime.ErrCodeBudgetExceeded}
 	if got := Classify(rerr); got != runtime.ErrCodeBudgetExceeded {
