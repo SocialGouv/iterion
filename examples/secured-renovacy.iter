@@ -2568,12 +2568,33 @@ tool bucket_families:
     // Group candidates by `@scope` prefix. Drop names without a `@`
     // namespace (covered by the solo path) and packages already
     // attempted or outside the active scope.
+    //
+    // CRITICAL: family path is a fast-path for SAFE bumps only. It runs
+    // `yarn up` then a shell smoke (install + typecheck/build/test)
+    // with NO changelog_review or align_code. That's fine for patches
+    // (semver-safe by definition) and minors (additive by convention),
+    // but landing a major via the family path means committing
+    // breaking-change-bearing code with zero alignment study — observed
+    // on a real run where @apollo/client 3 → 4 + @apollo/server 4 → 5
+    // batch-committed touching ONLY package.json + yarn.lock, while
+    // the consuming repo's `ApolloServer`/`createApolloClient` callers
+    // would in many real codebases need adapter changes.
+    //
+    // So: risk == "major" or "unknown" → route to solos[], where
+    // intel_fanout (changelog_review + security_audit) + align_code +
+    // agentic validate_upgrade catch breaking changes before commit.
+    // Family batching stays a pure-win optimisation: only when there
+    // is nothing semantically risky to study.
+    const FAMILY_SAFE_RISKS = new Set(["patch", "minor"]);
     const groups = {};
     const solos = [];
     for (const p of list) {
       if (!p || !p.name || !p.target) continue;
       if (attemptedSet.has(p.name)) continue;
       if (!allowedRisks.includes(p.risk)) continue;
+      // Members whose risk class is not family-safe go to solos
+      // regardless of @scope prefix.
+      if (!FAMILY_SAFE_RISKS.has(p.risk)) { solos.push(p); continue; }
       const m = p.name.match(/^(@[^/]+)\//);
       if (!m) { solos.push(p); continue; }
       const scope = m[1];
