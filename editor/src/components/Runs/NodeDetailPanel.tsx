@@ -21,7 +21,7 @@ import { iterationColor } from "./IRNode";
 import LogLinesView from "./LogLinesView";
 import PauseForm from "./PauseForm";
 import { statusClasses } from "./runStatusClasses";
-import { formatToolCall, type ToolField } from "./toolFormatters";
+import { formatToolCall, type ToolField, type TodoItem } from "./toolFormatters";
 
 interface Props {
   runId: string;
@@ -736,38 +736,66 @@ interface ToolCall {
   errorMsg?: string;
 }
 
+// useToolCalls merges `tool_started` (now carrying the JSON input for
+// whitelisted tools — see backend pkg/backend/tooldisplay.StructuredInputTools)
+// with `tool_called` / `tool_error` events by `tool_use_id`, so the per-node
+// Tools tab can render the tool's target (URL, query, todo list, …) without
+// the post-execution `tool_called` event needing to duplicate it.
+//
+// Falls back to no-merge when `tool_use_id` is absent on either side (legacy
+// events from runs that predate the structured-input change). The
+// `tool_called`/`tool_error` event remains the entry's identity (its seq is
+// used as the key), so already-rendered cards don't disappear from older
+// runs and the in-flight state is not surfaced here (a separate concern).
 function useToolCalls(matching: RunEvent[]): ToolCall[] {
   return useMemo<ToolCall[]>(() => {
+    const startedByID = new Map<string, RunEvent>();
+    for (const e of matching) {
+      if (e.type !== "tool_started") continue;
+      const id = e.data?.["tool_use_id"];
+      if (typeof id === "string" && id !== "") {
+        startedByID.set(id, e);
+      }
+    }
     return matching
       .filter((e) => e.type === "tool_called" || e.type === "tool_error")
       .map((e) => {
         const data = e.data ?? {};
+        const toolUseID = data["tool_use_id"];
+        const startedData =
+          typeof toolUseID === "string" && toolUseID !== ""
+            ? startedByID.get(toolUseID)?.data ?? {}
+            : {};
+        // Merge: post-execution event wins for duration/error; pre-execution
+        // event provides the input payload for structured rendering. Use
+        // Object.assign to keep the merged object as a fresh map.
+        const merged: Record<string, unknown> = { ...startedData, ...data };
         const toolName =
-          (data["tool_name"] as string) ?? (data["tool"] as string) ?? "unknown";
+          (merged["tool_name"] as string) ?? (merged["tool"] as string) ?? "unknown";
         const isError = e.type === "tool_error";
         return {
           seq: e.seq,
           toolName,
           isError,
           duration:
-            typeof data["duration_ms"] === "number"
-              ? (data["duration_ms"] as number)
+            typeof merged["duration_ms"] === "number"
+              ? (merged["duration_ms"] as number)
               : undefined,
-          rawData: data,
+          rawData: merged,
           input:
-            typeof data["input"] === "string"
-              ? (data["input"] as string)
-              : data["input"] !== undefined
-              ? safeJSON(data["input"])
+            typeof merged["input"] === "string"
+              ? (merged["input"] as string)
+              : merged["input"] !== undefined
+              ? safeJSON(merged["input"])
               : undefined,
           output:
-            typeof data["output"] === "string"
-              ? (data["output"] as string)
-              : data["output"] !== undefined
-              ? safeJSON(data["output"])
+            typeof merged["output"] === "string"
+              ? (merged["output"] as string)
+              : merged["output"] !== undefined
+              ? safeJSON(merged["output"])
               : undefined,
           errorMsg: isError
-            ? (data["error"] as string) ?? (data["message"] as string)
+            ? (merged["error"] as string) ?? (merged["message"] as string)
             : undefined,
         };
       });
@@ -834,6 +862,66 @@ function ToolPayloadBlock({ label, value }: { label: string; value: string }) {
   );
 }
 
+// TodoChecklist renders the TodoWrite payload as a checkbox list:
+//   - pending      : ☐  (empty checkbox)
+//   - in_progress  : ☐ with ★ overlaid inside the box (the star *is*
+//                    the check mark)
+//   - completed    : ☑  with strikethrough on the task text
+//
+// Mirrors how Claude Code itself surfaces todo state — the active task's
+// checkbox is filled with a star instead of the usual check, finished
+// tasks are checked + struck through.
+function TodoChecklist({ todos }: { todos: TodoItem[] }) {
+  return (
+    <ul className="mb-1.5 space-y-0.5 text-[11px] font-mono leading-tight">
+      {todos.map((t, i) => {
+        let textClasses: string;
+        let box: ReactNode;
+        switch (t.status) {
+          case "in_progress":
+            // Overlay ★ inside an empty ☐ so the star reads as the
+            // checkbox's "check". The relative+absolute pairing keeps
+            // them perfectly stacked across font sizes; the warning
+            // color makes the active task pop out of the list.
+            box = (
+              <span className="relative inline-flex w-3 h-3 items-center justify-center select-none">
+                <span className="absolute inset-0 text-fg-subtle leading-none">☐</span>
+                <span className="relative text-warning-fg text-[9px] leading-none font-bold">
+                  ★
+                </span>
+              </span>
+            );
+            textClasses = "text-fg-default font-semibold";
+            break;
+          case "completed":
+            box = (
+              <span className="select-none text-success-fg" aria-hidden>
+                ☑
+              </span>
+            );
+            textClasses = "text-fg-subtle line-through";
+            break;
+          default:
+            box = (
+              <span className="select-none text-fg-subtle" aria-hidden>
+                ☐
+              </span>
+            );
+            textClasses = "text-fg-default";
+        }
+        return (
+          <li key={i} className="flex items-start gap-1.5 break-words">
+            {box}
+            <span className={`flex-1 ${textClasses}`}>
+              {t.status === "in_progress" && t.activeForm ? t.activeForm : t.content}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 // ToolFieldList renders the curated key/value pairs produced by
 // formatToolCall() — path, pattern, command, etc. — as a compact grid
 // at the top of each tool card. Always visible (unlike the raw
@@ -890,6 +978,9 @@ function ToolCallCard({ call }: { call: ToolCall }) {
         </span>
       </div>
       {summary.fields.length > 0 && <ToolFieldList fields={summary.fields} />}
+      {summary.todos && summary.todos.length > 0 && (
+        <TodoChecklist todos={summary.todos} />
+      )}
       {call.errorMsg && (
         <div className="text-[10px] font-mono text-danger-fg whitespace-pre-wrap break-words mb-1">
           {call.errorMsg}

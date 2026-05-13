@@ -14,8 +14,21 @@ export interface ToolField {
   mono?: boolean;
 }
 
+export type TodoStatus = "pending" | "in_progress" | "completed";
+
+export interface TodoItem {
+  content: string;
+  status: TodoStatus;
+  activeForm?: string;
+}
+
 export interface ToolSummary {
   fields: ToolField[];
+  // Structured payload for tools that benefit from a richer rendering
+  // than label/value pairs. `todos` is populated by the TodoWrite parser
+  // so the Tools tab can show the full task list (status + content) as
+  // a visual checklist rather than a bare count.
+  todos?: TodoItem[];
   // True when the input couldn't be parsed (non-JSON string, missing,
   // or empty object). Callers can fall back to the raw view.
   unparsed: boolean;
@@ -169,14 +182,54 @@ const PARSERS: Record<string, Parser> = {
     return out;
   },
   TodoWrite: (i) => {
+    // The full list is surfaced via summary.todos (see formatToolCall);
+    // here we add a single compact field with the per-status counts so
+    // the header line still gives an at-a-glance picture before the
+    // checklist is rendered below.
     const out: ToolField[] = [];
     const todos = i["todos"];
-    if (Array.isArray(todos)) {
-      out.push({ label: "todos", value: String(todos.length), mono: true });
+    if (!Array.isArray(todos)) return out;
+    let pending = 0;
+    let inProgress = 0;
+    let done = 0;
+    for (const raw of todos) {
+      const status = (raw as { status?: string } | null)?.status;
+      if (status === "in_progress") inProgress++;
+      else if (status === "completed" || status === "done") done++;
+      else pending++;
     }
+    const parts: string[] = [`${todos.length} total`];
+    if (inProgress) parts.push(`${inProgress} in progress`);
+    if (done) parts.push(`${done} done`);
+    if (pending) parts.push(`${pending} pending`);
+    out.push({ label: "todos", value: parts.join(", "), mono: true });
     return out;
   },
 };
+
+// extractTodos pulls the well-formed TodoItem[] out of a TodoWrite input.
+// Returns an empty array when the shape doesn't match, leaving the card
+// to fall back to its standard fields-only rendering.
+function extractTodos(input: Record<string, unknown>): TodoItem[] {
+  const todos = input["todos"];
+  if (!Array.isArray(todos)) return [];
+  const out: TodoItem[] = [];
+  for (const raw of todos) {
+    if (raw === null || typeof raw !== "object") continue;
+    const obj = raw as Record<string, unknown>;
+    const content = typeof obj["content"] === "string" ? obj["content"] : "";
+    if (!content) continue;
+    let status: TodoStatus;
+    const rawStatus = obj["status"];
+    if (rawStatus === "in_progress") status = "in_progress";
+    else if (rawStatus === "completed" || rawStatus === "done") status = "completed";
+    else status = "pending";
+    const activeForm =
+      typeof obj["activeForm"] === "string" ? (obj["activeForm"] as string) : undefined;
+    out.push({ content, status, activeForm });
+  }
+  return out;
+}
 
 // Generic fallback: pick the most informative top-level fields.
 // Strings come first (truncated), numbers/booleans next, and we cap
@@ -233,5 +286,14 @@ export function formatToolCall(toolName: string, rawInput: unknown): ToolSummary
     fields = parser ? parser(obj) : [];
     if (fields.length === 0) fields = genericFields(obj);
   }
-  return { fields, unparsed: false };
+  const summary: ToolSummary = { fields, unparsed: false };
+  // TodoWrite gets a rich rendering: the full task list shows below the
+  // count field as a visual checklist. Both CamelCase (claude_code) and
+  // snake_case (claw) tool names are accepted because both backends
+  // route through this formatter.
+  if (toolName === "TodoWrite" || toolName === "todo_write") {
+    const todos = extractTodos(obj);
+    if (todos.length > 0) summary.todos = todos;
+  }
+  return summary;
 }

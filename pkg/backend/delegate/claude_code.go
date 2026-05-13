@@ -13,6 +13,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
+	"github.com/SocialGouv/iterion/pkg/backend/tooldisplay"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 
@@ -860,7 +861,13 @@ func emitToolHooks(hooks TaskHooks, blocks []claudesdk.ContentBlock, inFlight ma
 		case *claudesdk.ToolUseBlock:
 			inFlight[bl.ID] = bl.Name
 			if hooks.OnToolStarted != nil {
-				hooks.OnToolStarted(bl.Name, bl.ID)
+				var raw json.RawMessage
+				if len(bl.Input) > 0 {
+					if b, err := json.Marshal(bl.Input); err == nil {
+						raw = b
+					}
+				}
+				hooks.OnToolStarted(bl.Name, bl.ID, raw)
 			}
 		case *claudesdk.ToolResultBlock:
 			name := inFlight[bl.ToolUseID]
@@ -942,44 +949,42 @@ func isRateLimitMessage(text string) bool {
 // the log header. Multi-line commands are clipped at the first newline so
 // the header stays on one log line; the full body is emitted separately
 // via toolUseBody + LogBlock.
+//
+// Both helpers delegate to the shared pkg/backend/tooldisplay so the
+// claude_code and claw paths render identical detail given identical
+// input, and so the dispatch table for new tools lives in one place.
 func toolUseDetail(name string, input map[string]any) string {
-	// File-related tools: show the path
-	if p, ok := input["file_path"].(string); ok {
-		return p
+	raw, ok := marshalToolInput(input)
+	if !ok {
+		return ""
 	}
-	if p, ok := input["path"].(string); ok {
-		return p
-	}
-	// Search/grep: show the pattern
-	if p, ok := input["pattern"].(string); ok {
-		return truncate(firstLine(p), 80)
-	}
-	// Bash: show the first line of the command (truncated)
-	if c, ok := input["command"].(string); ok {
-		return truncate(firstLine(c), 100)
-	}
-	return ""
+	return tooldisplay.HeaderDetail(name, raw, tooldisplay.CamelCaseKeys)
 }
 
 // toolUseBody returns the full multi-line body to attach under the log
 // header when the tool's input has content the operator typically wants
 // to read whole. Empty for tools where the header already says it all.
 func toolUseBody(name string, input map[string]any) string {
-	if c, ok := input["command"].(string); ok {
-		if strings.ContainsRune(c, '\n') {
-			return c
-		}
+	raw, ok := marshalToolInput(input)
+	if !ok {
+		return ""
 	}
-	return ""
+	return tooldisplay.BlockBody(name, raw)
 }
 
-// firstLine returns s up to (but excluding) the first newline. Useful
-// for header lines that must stay single-line.
-func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
+// marshalToolInput re-serializes a tool input map for the tooldisplay
+// helpers, which work in JSON bytes (so they can be reused by paths
+// that have already-marshalled input). Returns (nil, false) for nil or
+// empty maps so callers skip the parse.
+func marshalToolInput(input map[string]any) ([]byte, bool) {
+	if len(input) == 0 {
+		return nil, false
 	}
-	return s
+	b, err := json.Marshal(input)
+	if err != nil {
+		return nil, false
+	}
+	return b, true
 }
 
 // anthropicCredOptsForCLI returns claudesdk.WithEnv options that point

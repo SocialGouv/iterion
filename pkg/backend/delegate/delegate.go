@@ -235,7 +235,14 @@ type TaskHooks struct {
 	// ToolUseBlock is decoded — the tool then executes inside the CLI
 	// subprocess and the engine has no other way to know it has begun.
 	// ToolUseID identifies the call so OnToolCalled can correlate.
-	OnToolStarted func(toolName string, toolUseID string)
+	//
+	// input carries the raw JSON arguments the LLM produced for the
+	// tool. The engine uses it to log the tool target (URL, file path,
+	// query…) and to persist a structured payload on the tool_started
+	// event for select tools (TodoWrite, WebFetch, …) so the editor's
+	// per-node Tools tab can render rich cards. May be nil for backends
+	// that cannot surface the input (legacy path).
+	OnToolStarted func(toolName string, toolUseID string, input json.RawMessage)
 
 	// OnToolCalled fires when the matching ToolResultBlock arrives,
 	// indicating the tool has returned (successfully or with an error).

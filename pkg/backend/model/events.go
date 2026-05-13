@@ -53,6 +53,14 @@ type ToolCallEntry struct {
 type LLMToolCallInfo struct {
 	ToolName  string
 	InputSize int
+	// ToolUseID correlates this completion event with the matching
+	// tool_started event. The editor merges the two by this id so the
+	// post-execution event (duration + error) lines up with the
+	// pre-execution event (structured input payload for whitelisted
+	// tools). Empty when the path can't provide one — the merge then
+	// falls through and the card renders with whatever data the
+	// tool_called event alone carries.
+	ToolUseID string
 	Duration  time.Duration
 	Error     error
 }
@@ -69,6 +77,13 @@ type LLMToolStartedInfo struct {
 	// with several tool_use blocks). Empty when the path can't provide
 	// one (direct tool nodes, claw single tool loop).
 	ToolUseID string
+	// Input is the raw JSON arguments the LLM produced for this call.
+	// May be empty when the backend cannot surface it. The hooks layer
+	// uses it to persist a structured payload on the tool_started event
+	// for tools whitelisted by pkg/backend/tooldisplay.StructuredInputTools
+	// (TodoWrite, WebFetch, WebSearch, …) so the editor's Tools tab can
+	// render rich cards instead of bare names.
+	Input json.RawMessage
 }
 
 // LLMCompactInfo describes a mid-tool-loop compaction round, passed to the
@@ -133,6 +148,7 @@ func toLLMToolCallInfo(info ToolCallInfo) LLMToolCallInfo {
 	return LLMToolCallInfo{
 		ToolName:  info.ToolName,
 		InputSize: info.InputSize,
+		ToolUseID: info.ToolUseID,
 		Duration:  info.Duration,
 		Error:     info.Error,
 	}
@@ -143,6 +159,7 @@ func toLLMToolStartedInfo(info ToolCallInfo) LLMToolStartedInfo {
 		ToolName:  info.ToolName,
 		InputSize: info.InputSize,
 		ToolUseID: info.ToolUseID,
+		Input:     info.Input,
 	}
 }
 

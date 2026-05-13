@@ -391,6 +391,7 @@ func executeToolsDirect(
 				ToolName:  tu.Name,
 				InputSize: len(tu.PartialJSON),
 				ToolUseID: tu.ID,
+				Input:     json.RawMessage(tu.PartialJSON),
 			})
 		}
 
@@ -402,6 +403,7 @@ func executeToolsDirect(
 			onToolCall(ToolCallInfo{
 				ToolName:  tu.Name,
 				InputSize: len(tu.PartialJSON),
+				ToolUseID: tu.ID,
 				Duration:  dur,
 				Error:     err,
 			})

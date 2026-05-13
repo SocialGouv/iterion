@@ -589,10 +589,12 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string) delegate.TaskHooks {
 	var h delegate.TaskHooks
 	if e.hooks.OnToolStarted != nil {
 		fn := e.hooks.OnToolStarted
-		h.OnToolStarted = func(toolName string, toolUseID string) {
+		h.OnToolStarted = func(toolName string, toolUseID string, input json.RawMessage) {
 			fn(nodeID, LLMToolStartedInfo{
 				ToolName:  toolName,
 				ToolUseID: toolUseID,
+				InputSize: len(input),
+				Input:     input,
 			})
 		}
 	}
@@ -600,7 +602,8 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string) delegate.TaskHooks {
 		fn := e.hooks.OnToolCall
 		h.OnToolCalled = func(toolName string, toolUseID string, isError bool) {
 			info := LLMToolCallInfo{
-				ToolName: toolName,
+				ToolName:  toolName,
+				ToolUseID: toolUseID,
 			}
 			if isError {
 				info.Error = fmt.Errorf("tool error")
@@ -1540,6 +1543,7 @@ func (e *ClawExecutor) executeToolNode(ctx context.Context, node *ir.ToolNode, i
 		e.hooks.OnToolStarted(node.ID, LLMToolStartedInfo{
 			ToolName:  toolName,
 			InputSize: len(inputJSON),
+			Input:     json.RawMessage(inputJSON),
 		})
 	}
 

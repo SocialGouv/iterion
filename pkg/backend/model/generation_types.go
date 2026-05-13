@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // RequestInfo is passed to the OnRequest hook before a generation call.
 type RequestInfo struct {
@@ -86,6 +89,13 @@ type ToolCallInfo struct {
 	// calls share a node. Populated for OnToolStarted; the post-execution
 	// OnToolCall path leaves it empty (existing callers don't need it).
 	ToolUseID string
+
+	// Input is the raw JSON arguments passed to the tool. Populated for
+	// OnToolStarted so observers can render the tool's target (URL, file
+	// path, query, …) and persist structured input for whitelisted tools.
+	// Empty on the post-execution OnToolCall path to avoid duplicating
+	// payloads in events.jsonl.
+	Input json.RawMessage
 
 	// Duration is how long the tool execution took.
 	Duration time.Duration
