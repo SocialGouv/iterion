@@ -48,9 +48,16 @@ function readLayout(key: string): Layout | null {
 
 function isLayout(v: unknown): v is Layout {
   if (!v || typeof v !== "object") return false;
-  for (const k of Object.keys(v)) {
-    const value = (v as Record<string, unknown>)[k];
-    if (typeof value !== "number" || !Number.isFinite(value)) return false;
+  const entries = Object.entries(v as Record<string, unknown>);
+  if (entries.length === 0) return false;
+  for (const [, value] of entries) {
+    // react-resizable-panels expects positive flexGrow shares. Reject
+    // negative/zero/non-finite values so a corrupted entry falls back
+    // to the supplied defaults instead of producing a collapsed pane
+    // the user can't drag back open.
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+      return false;
+    }
   }
   return true;
 }
