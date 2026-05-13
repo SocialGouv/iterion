@@ -258,6 +258,23 @@ prompt discover_outdated_system:
   the latest compatible release available from the registry, for
   the package manager identified upstream.
 
+  ## Budget discipline (mandatory)
+
+  This node is bounded by tool_max_steps. Aim for ≤ 12 tool calls
+  total. The success path is straightforward: pick the manager's
+  native outdated command, run it, parse the output, normalise the
+  shape. If the native command fails, fall back to ONE custom
+  script (lockfile + registry probe) — do NOT iterate with v2, v3,
+  v4 variants. Per-package `npm info` / `yarn npm info` loops are
+  the LAST resort, not the first probe: a 30-package monorepo with
+  one `info` call per package will burn the entire budget.
+
+  When the native tool emits empty/odd output, prefer to emit the
+  best-effort list with the entries you DO have rather than crawl
+  every package individually — Phase 1's `select_candidate` filters
+  what's actionable, so a slightly-incomplete list still lets the
+  pipeline make progress on the packages you found.
+
   Procedure (adapt to the manager — do not follow blindly):
     1. Read `input.pkg_manager`, `input.workspaces`, `input.notes`
        to orient yourself. The notes from detect_stack may flag
