@@ -247,13 +247,42 @@ func validateProjectDir(dir string) (string, error) {
 }
 
 // RemoveProject drops the project from recents. Filesystem unaffected.
+//
+// If the removed project was the current one, the editor server must
+// be restarted to point at the new CurrentProjectID (the MRU head, as
+// chosen by config.RemoveProject). Without this restart the WebView's
+// serverURL keeps pointing at the now-orphan daemon of the deleted
+// project, and follow-up API calls show "errors un peu partout dans
+// l'interface" — observed in production when a project switch from
+// modjo to git-ai-trace was followed by deleting git-ai-trace: the
+// silent CurrentProjectID flip left modjo's WebView talking to the
+// dead git-ai-trace daemon URL.
 func (a *App) RemoveProject(id string) error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
+	prevCurrent := a.config.CurrentProjectID
 	if !a.config.RemoveProject(id) {
+		a.mu.Unlock()
 		return fmt.Errorf("project not found: %s", id)
 	}
-	return a.config.Save()
+	newCurrent := a.config.CurrentProjectID
+	if err := a.config.Save(); err != nil {
+		a.mu.Unlock()
+		return err
+	}
+	a.mu.Unlock()
+
+	// Only restart the editor server when the delete actually changed
+	// the current project (i.e. operator deleted the one they were
+	// looking at). Deleting any other project leaves the GUI's
+	// serverURL untouched and is a pure config write.
+	if prevCurrent == id && newCurrent != "" {
+		current, err := a.restartServerForCurrentProject(a.ctx)
+		if err != nil {
+			return err
+		}
+		wruntime.EventsEmit(a.ctx, eventProjectSwitched, current)
+	}
+	return nil
 }
 
 // SwitchProject restarts the editor server pointing at the given project.
