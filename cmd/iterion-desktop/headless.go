@@ -7,10 +7,23 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
 )
+
+// attachDaemonEnabled reports whether the GUI should auto-attach to an
+// existing headless daemon at startup. Opt-in via ITERION_DESKTOP_ATTACH_DAEMON
+// because Phase 1 daemon mode disables project switching from the GUI;
+// surprising operators with that limitation just because a daemon was
+// running broke too much muscle memory. Phase 2 (daemon-side
+// project-switch HTTP API) will make auto-attach safe to flip back to
+// opt-out.
+func attachDaemonEnabled() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("ITERION_DESKTOP_ATTACH_DAEMON")))
+	return v == "1" || v == "true" || v == "yes" || v == "on"
+}
 
 // runHeadless is the entry point when `iterion-desktop --server-only`
 // (or `--headless`) is set. It runs the HTTP server in the foreground

@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"os"
 	"sync"
@@ -98,16 +97,30 @@ func (a *App) onStartup(ctx context.Context) {
 	a.keychain = NewKeychain()
 	a.applyKeychainToEnv()
 
-	// If a headless daemon (iterion-desktop --server-only) is already
-	// running, the GUI piggy-backs on its server instead of starting its
-	// own. This is what makes runs survive GUI rebuild + relaunch cycles:
-	// the daemon owns the runtime; the GUI is a UI shell. Detection runs
-	// before our own server start so we never spawn a duplicate.
-	if url, ok := detectDaemonURL(); ok {
-		a.serverURL = url
-		a.usingDaemon = true
-		log.Printf("desktop: attached to existing daemon at %s", url)
+	// Phase 1 daemon attach is OPT-IN: the GUI only piggy-backs on a
+	// running `iterion-desktop --server-only` when ITERION_DESKTOP_ATTACH_DAEMON=1
+	// (or =true). Default behaviour stays "own embedded server" so
+	// project switching keeps working out of the box.
+	//
+	// Why opt-in: Phase 1 daemon mode disables project switching from the
+	// GUI (the daemon doesn't yet expose a HTTP API for switch — Phase 2).
+	// Auto-attaching whenever a daemon was visible silently broke
+	// everyday workflows for operators who started a daemon for one
+	// purpose and then forgot it was running. Phase 2 will lift the
+	// project-switch limitation and we can flip this to opt-out.
+	if attachDaemonEnabled() {
+		if url, ok := detectDaemonURL(); ok {
+			a.serverURL = url
+			a.usingDaemon = true
+			log.Printf("desktop: attached to existing daemon at %s", url)
+		}
 	} else {
+		if url, ok := detectDaemonURL(); ok {
+			log.Printf("desktop: headless daemon detected at %s (ignored — set ITERION_DESKTOP_ATTACH_DAEMON=1 to attach)", url)
+		}
+	}
+
+	if !a.usingDaemon {
 		// No daemon — bring up the embedded server for the current project
 		// (or no project on first run — the editor SPA's useDesktop hook
 		// routes to /welcome based on IsFirstRunPending).
@@ -238,21 +251,23 @@ func (a *App) startServerForCurrentProject(ctx context.Context) error {
 // since the page origin doesn't change between restarts).
 func (a *App) restartServerForCurrentProject(ctx context.Context) (*Project, error) {
 	// In daemon-attached mode, the server lives in a separate process
-	// that the GUI doesn't own — bouncing it from here would crash the
-	// nil a.server, and even if we plumbed it the daemon would lose any
-	// in-flight run. Project switching against a daemon requires a
-	// daemon-side HTTP API (not yet wired in Phase 1); for now we error
-	// loudly so the user knows to restart the daemon explicitly.
-	if a.usingDaemon {
-		return nil, fmt.Errorf("project switching not supported while attached to a headless daemon — restart the daemon to change project")
-	}
-
+	// the GUI doesn't own. Soft no-op: return the daemon's current
+	// project (read from shared config) and skip the server bounce —
+	// the SPA's on-mount sync calls this and would otherwise fail
+	// every GUI launch with a hard error. A genuine project change
+	// against a daemon still requires restarting the daemon (Phase 2
+	// will add a daemon-side HTTP API for this).
 	a.mu.Lock()
 	p := a.config.CurrentProject()
 	var current *Project
 	if p != nil {
 		cp := *p
 		current = &cp
+	}
+	if a.usingDaemon {
+		a.mu.Unlock()
+		log.Printf("desktop: restartServerForCurrentProject is a no-op in daemon mode; restart daemon to change project")
+		return current, nil
 	}
 	dir, storeDir := a.currentProjectServerDirsLocked()
 	a.mu.Unlock()
