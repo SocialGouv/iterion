@@ -297,13 +297,14 @@ func (a *App) RemoveProject(id string) error {
 	}
 
 	// Cascade: stop the orphaned daemon (if any) for the removed project.
-	// A daemon spawned for it survives indefinitely — without this, the
-	// next time the operator re-adds the same project the registry
-	// shows a stale URL pointing at a corpse port and the GUI can't
-	// attach. The in-process server case (prevCurrent==id) is handled
-	// by restartServerForCurrentProject above, which Stops it cleanly
-	// and writes the new project's daemon.json; nothing extra to do.
-	if removed != nil && (prevCurrent != id || newCurrent == "") {
+	// Always runs — even when the removed project was current. In daemon-
+	// attached mode, restartServerForCurrentProject above only attaches
+	// the GUI to the NEW project's daemon; it does not stop the old one
+	// (other projects' daemons survive a SwitchProject by design so their
+	// in-flight runs keep going). On RemoveProject the operator's intent
+	// is for the project to be GONE, so its daemon must be cleaned up
+	// regardless of whether it was the one the GUI was pointing at.
+	if removed != nil {
 		a.stopDaemonForRemovedProject(removed.Dir)
 	}
 	return nil
