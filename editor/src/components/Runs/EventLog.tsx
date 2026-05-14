@@ -15,8 +15,10 @@ interface Props {
   followTail: boolean;
   onToggleFollow: (next: boolean) => void;
   // Wired by RunView so a click on an event jumps to the matching
-  // node + iteration in the canvas + detail panel.
-  onSelectNodeIteration?: (nodeId: string, iteration: number) => void;
+  // node + attempt in the canvas + detail panel. The second arg is a
+  // 0-based ARRAY INDEX into the node's executions list (not a scalar
+  // loop_iteration — those aren't unique under Option 3 nested loops).
+  onSelectNodeIteration?: (nodeId: string, index: number) => void;
   // Clear the execution filter (typically a "Clear" affordance shown
   // in the toolbar when an execution is selected).
   onClearSelection?: () => void;
@@ -48,9 +50,20 @@ const EVENT_BADGE: Record<string, string> = {
 
 interface AnnotatedEvent {
   event: RunEvent;
-  // Iteration as derived from node_started ordering. Used to drive
-  // cross-highlighting when the user clicks the row.
+  // Scalar `iteration` from the event's data (for display in the row
+  // header). NOT unique post-Option-3 — the runtime's
+  // currentLoopIteration can return the same max() across multiple
+  // attempts when an outer loop counter dominates the inner.
   iteration: number;
+  // 0-based count of node_started events for this (branch, node) up to
+  // and including this row. Used as the array index in the per-node
+  // executions list when the user clicks the row to jump to its exec.
+  executionIndex: number;
+  // execution_id of the exec this event belongs to (the most recent
+  // node_started for this branch+node, or this event's own id if it
+  // IS a node_started). Used by the selection filter when cross-
+  // highlighting from the canvas.
+  executionId: string | null;
   // Pre-computed match against the current filters; cached so the
   // virtual list doesn't recompute per scroll frame.
   preview: string;
@@ -89,6 +102,12 @@ export default function EventLog({
     annotated: AnnotatedEvent[];
     counts: Map<string, number>;
     typeCounts: Map<string, number>;
+    // Per-(branch, node) counters and last-seen exec_id, paralleling
+    // the live store's lastExecIDByNode. Threading these across cache
+    // invocations is what makes the annotation pass O(K) on the new
+    // tail rather than O(N) on every batch flush.
+    execIndexCounts: Map<string, number>;
+    lastExecID: Map<string, string>;
   } | null>(null);
 
   const { annotated, typeCounts } = useMemo(() => {
@@ -96,6 +115,8 @@ export default function EventLog({
     let baseAnnotated: AnnotatedEvent[];
     let counts: Map<string, number>;
     let typeCountsMap: Map<string, number>;
+    let execIndexCounts: Map<string, number>;
+    let lastExecID: Map<string, string>;
     let startIdx = 0;
 
     // Reuse the cache when the live events array has only grown at the
@@ -116,18 +137,50 @@ export default function EventLog({
       baseAnnotated = cache.annotated;
       counts = new Map(cache.counts);
       typeCountsMap = new Map(cache.typeCounts);
+      execIndexCounts = new Map(cache.execIndexCounts);
+      lastExecID = new Map(cache.lastExecID);
       startIdx = cachedLen;
     } else {
       baseAnnotated = [];
       counts = new Map<string, number>();
       typeCountsMap = new Map<string, number>();
+      execIndexCounts = new Map<string, number>();
+      lastExecID = new Map<string, string>();
     }
 
     for (let i = startIdx; i < events.length; i++) {
       const e = events[i]!;
+      const iteration = stepIteration(counts, e);
+      // Track exec_id per (branch, node) so non-node_started events
+      // attribute to the right exec for the selection filter, and so
+      // node_started's own count gives a stable 0-based array index.
+      const branch = e.branch_id || "main";
+      const key = e.node_id ? `${branch}\t${e.node_id}` : "";
+      let executionId: string | null = null;
+      let executionIndex = -1;
+      if (e.node_id) {
+        if (e.type === "node_started") {
+          // New exec_id, prefer iteration_path when present (mirror of
+          // the live store reducer and pkg/runview/snapshot.go).
+          const rawPath = e.data?.iteration_path;
+          executionId =
+            typeof rawPath === "string" && rawPath.length > 0
+              ? `exec:${branch}:${e.node_id}:${rawPath}`
+              : `exec:${branch}:${e.node_id}:${iteration}`;
+          lastExecID.set(key, executionId);
+          const prevIdx = execIndexCounts.get(key);
+          executionIndex = prevIdx === undefined ? 0 : prevIdx + 1;
+          execIndexCounts.set(key, executionIndex);
+        } else {
+          executionId = lastExecID.get(key) ?? null;
+          executionIndex = execIndexCounts.get(key) ?? 0;
+        }
+      }
       baseAnnotated.push({
         event: e,
-        iteration: stepIteration(counts, e),
+        iteration,
+        executionIndex,
+        executionId,
         preview: previewData(e.data),
       });
       typeCountsMap.set(e.type, (typeCountsMap.get(e.type) ?? 0) + 1);
@@ -138,6 +191,8 @@ export default function EventLog({
       annotated: baseAnnotated,
       counts,
       typeCounts: typeCountsMap,
+      execIndexCounts,
+      lastExecID,
     };
     return { annotated: baseAnnotated, typeCounts: typeCountsMap };
   }, [events]);
@@ -149,13 +204,13 @@ export default function EventLog({
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
-    return annotated.filter(({ event: e, iteration }) => {
+    return annotated.filter(({ event: e, executionId }) => {
       // Execution selection filter (cross-highlight from the canvas).
+      // Match on the annotated executionId, which already accounts for
+      // iteration_path-keyed exec_ids and inherits the right exec for
+      // non-node_started events.
       if (selectedExecutionId) {
-        if (!e.node_id) return false;
-        const branch = e.branch_id || "main";
-        const id = `exec:${branch}:${e.node_id}:${iteration}`;
-        if (id !== selectedExecutionId) return false;
+        if (executionId !== selectedExecutionId) return false;
       }
       if (activeTypes.size > 0 && !activeTypes.has(e.type)) return false;
       if (!query) return true;
@@ -324,8 +379,8 @@ export default function EventLog({
               <EventRow
                 ann={ann}
                 onSelect={() => {
-                  if (ann.event.node_id && onSelectNodeIteration) {
-                    onSelectNodeIteration(ann.event.node_id, ann.iteration);
+                  if (ann.event.node_id && onSelectNodeIteration && ann.executionIndex >= 0) {
+                    onSelectNodeIteration(ann.event.node_id, ann.executionIndex);
                   }
                 }}
               />
@@ -356,7 +411,7 @@ function EventRow({
       className="w-full grid grid-cols-[auto_auto_auto_1fr] gap-2 py-0.5 text-left font-mono text-[10px] hover:bg-surface-2 rounded px-1"
       title={
         e.node_id
-          ? `Jump to ${e.node_id} (iteration ${ann.iteration + 1})`
+          ? `Jump to ${e.node_id} (attempt ${ann.executionIndex + 1})`
           : undefined
       }
     >
