@@ -118,8 +118,16 @@ func main() {
 		// DE upgrades. ProgramName sets g_set_prgname() so window
 		// grouping matches the .desktop filename across compositors.
 		Linux: &linux.Options{
-			Icon:        appIcon,
-			ProgramName: "iterion-desktop",
+			Icon: appIcon,
+			// Use "iterion" (not "iterion-desktop") so GTK's auto-
+			// capitalised WM_CLASS class becomes "Iterion" — a string
+			// the local Cinnamon matcher has no stale cache for after
+			// the 2026-05-14 upgrade cascade poisoned the previous
+			// "Iterion-desktop" association into a generic-icon
+			// fallback that survives reboots + cinnamon --replace. A
+			// fresh class forces Cinnamon to re-read _NET_WM_ICON +
+			// resolve the .desktop StartupWMClass from scratch.
+			ProgramName: "iterion",
 		},
 		OnStartup:     app.onStartup,
 		OnShutdown:    app.onShutdown,

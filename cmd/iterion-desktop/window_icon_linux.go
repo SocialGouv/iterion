@@ -24,10 +24,12 @@ package main
 //       the slot for future error handling)
 //
 // Match logic walks _NET_CLIENT_LIST on the root window and inspects
-// each child's WM_CLASS, looking for the class string "Iterion-desktop"
-// (the StartupWMClass-equivalent the Wails GTK runtime stamps). On
-// multiple matches we set on each — covers the rare case where a
-// secondary window inherits the same WM_CLASS.
+// each child's WM_CLASS, looking for the class string "Iterion" (the
+// StartupWMClass-equivalent stamped by the Wails GTK runtime via
+// Linux.ProgramName="iterion"; GTK auto-capitalises the first letter
+// for the WM_CLASS class field). On multiple matches we set on each
+// — covers the rare case where a secondary window inherits the same
+// WM_CLASS.
 static int install_iterion_icon(unsigned long *data, unsigned long count) {
 	Display *dpy = XOpenDisplay(NULL);
 	if (!dpy) return 1;
@@ -48,7 +50,7 @@ static int install_iterion_icon(unsigned long *data, unsigned long count) {
 	for (unsigned long i = 0; i < nitems; i++) {
 		XClassHint hint;
 		if (XGetClassHint(dpy, clients[i], &hint) == 0) continue;
-		int match = (hint.res_class != NULL && strcmp(hint.res_class, "Iterion-desktop") == 0);
+		int match = (hint.res_class != NULL && strcmp(hint.res_class, "Iterion") == 0);
 		if (hint.res_name)  XFree(hint.res_name);
 		if (hint.res_class) XFree(hint.res_class);
 		if (!match) continue;
@@ -131,7 +133,7 @@ import (
 
 // installWindowIcon is invoked from app.onDomReady on Linux. It
 // posts a fresh _NET_WM_ICON property on every X window whose WM_CLASS
-// matches "Iterion-desktop" (the Wails runtime's StartupWMClass), so
+// matches "Iterion" (the Wails runtime's StartupWMClass), so
 // the WM stops falling back to the StartupWMClass → .desktop → hicolor
 // lookup that Cinnamon's matcher gets wrong post the 2026-05-14
 // upstream upgrade cascade.
