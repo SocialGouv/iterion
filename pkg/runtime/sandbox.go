@@ -85,6 +85,18 @@ type SandboxParams struct {
 	// runner pod via blob.GetAttachment instead).
 	AttachmentsHostDir       string
 	AttachmentsContainerPath string
+
+	// RunFilesHostDir, when non-empty, is bind-mounted READ-WRITE into
+	// the container at RunFilesContainerPath, and surfaced to in-sandbox
+	// tool scripts via the ITERION_ARTIFACT_FILES_DIR env var. Tools
+	// (write_audit_md, emit_sbom, …) write report/SBOM/manifest files
+	// here; iterion lists + serves them via /api/runs/<id>/artifact-
+	// files endpoints + the editor's Artifacts panel — without polluting
+	// the bench repo's worktree with `docs/renovacy/` commits. Empty
+	// disables the mount (cloud mode: cross-machine bind isn't
+	// supportable; needs an S3-backed scratch area instead).
+	RunFilesHostDir       string
+	RunFilesContainerPath string
 }
 
 // resolveAndStartSandbox produces an [activeSandbox] for the workflow's
@@ -136,6 +148,29 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 			spec.Mounts = append(spec.Mounts,
 				fmt.Sprintf("source=%s,target=%s,type=bind,readonly", p.AttachmentsHostDir, containerPath),
 			)
+		}
+	}
+
+	// Inject the run-files bind-mount (READ-WRITE) so in-sandbox tools
+	// can drop arbitrary report/SBOM files there for iterion to surface
+	// via the Artifacts UI. Same skip-on-missing-host-dir behaviour as
+	// attachments. Mounted via a single bind entry; tool scripts find
+	// the path via $ITERION_ARTIFACT_FILES_DIR (set on the spec env
+	// below so it lands on every `docker exec` and the recipe author
+	// doesn't have to remember the container path string).
+	if p.RunFilesHostDir != "" {
+		if _, statErr := os.Stat(p.RunFilesHostDir); statErr == nil {
+			containerPath := p.RunFilesContainerPath
+			if containerPath == "" {
+				containerPath = "/iterion/artifact-files"
+			}
+			spec.Mounts = append(spec.Mounts,
+				fmt.Sprintf("source=%s,target=%s,type=bind", p.RunFilesHostDir, containerPath),
+			)
+			if spec.Env == nil {
+				spec.Env = map[string]string{}
+			}
+			spec.Env["ITERION_ARTIFACT_FILES_DIR"] = containerPath
 		}
 	}
 
@@ -757,6 +792,25 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 	if e.store != nil && e.store.Root() != "" {
 		attachHost = filepath.Join(e.store.Root(), "runs", runID, "attachments")
 	}
+
+	// Pre-create the per-run artifact-files directory so the bind mount
+	// has a source to point at. RunFilesStore is filesystem-only — when
+	// the store doesn't satisfy it (cloud / Mongo), runFilesHost stays
+	// empty and resolveAndStartSandbox skips the mount silently. Errors
+	// from EnsureRunFilesDir are logged but not fatal: the worst case is
+	// in-sandbox tools see ITERION_ARTIFACT_FILES_DIR unset and either
+	// fall back to a tmpdir or skip writing — far less disruptive than
+	// failing the whole sandbox boot over a feature one tool may not use.
+	var runFilesHost string
+	if rfs := store.AsRunFilesStore(e.store); rfs != nil {
+		dir, ensureErr := rfs.EnsureRunFilesDir(ctx, runID)
+		if ensureErr != nil {
+			e.logger.Warn("runtime: ensure run-files dir failed for run %s: %v", runID, ensureErr)
+		} else {
+			runFilesHost = dir
+		}
+	}
+
 	active, sbErr := resolveAndStartSandbox(ctx, SandboxParams{
 		Workflow:                 e.workflow,
 		RunID:                    runID,
@@ -770,6 +824,8 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		Logger:                   e.logger,
 		AttachmentsHostDir:       attachHost,
 		AttachmentsContainerPath: "/run/iterion/attachments",
+		RunFilesHostDir:          runFilesHost,
+		RunFilesContainerPath:    "/iterion/artifact-files",
 	})
 	if sbErr != nil {
 		return noopCleanup, sbErr

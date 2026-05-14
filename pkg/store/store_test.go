@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -1046,6 +1048,134 @@ func TestNewWritesSelfIgnoringGitignore(t *testing.T) {
 		}
 		if string(got) != string(custom) {
 			t.Errorf("existing .gitignore was overwritten: got %q, want %q", string(got), string(custom))
+		}
+	})
+}
+
+func TestRunFilesStore(t *testing.T) {
+	ctx := context.Background()
+	s := tmpStore(t)
+	if _, err := s.CreateRun(ctx, "run-files-1", "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	t.Run("EnsureRunFilesDir is idempotent + returns absolute path under runs/<id>/", func(t *testing.T) {
+		dir1, err := s.EnsureRunFilesDir(ctx, "run-files-1")
+		if err != nil {
+			t.Fatalf("EnsureRunFilesDir: %v", err)
+		}
+		if !filepath.IsAbs(dir1) {
+			t.Errorf("expected absolute path, got %q", dir1)
+		}
+		if !strings.Contains(dir1, "runs/run-files-1/artifact_files") && !strings.Contains(dir1, "runs\\run-files-1\\artifact_files") {
+			t.Errorf("expected per-run subpath, got %q", dir1)
+		}
+		dir2, err := s.EnsureRunFilesDir(ctx, "run-files-1")
+		if err != nil {
+			t.Fatalf("EnsureRunFilesDir (second call): %v", err)
+		}
+		if dir1 != dir2 {
+			t.Errorf("EnsureRunFilesDir not idempotent: %q vs %q", dir1, dir2)
+		}
+	})
+
+	t.Run("ListRunFiles returns empty when nothing has been written", func(t *testing.T) {
+		got, err := s.ListRunFiles(ctx, "run-files-1")
+		if err != nil {
+			t.Fatalf("ListRunFiles: %v", err)
+		}
+		if len(got) != 0 {
+			t.Errorf("expected empty list, got %d entries: %v", len(got), got)
+		}
+	})
+
+	t.Run("ListRunFiles returns nil for a run that never created the dir", func(t *testing.T) {
+		if _, err := s.CreateRun(ctx, "run-files-empty", "wf", nil); err != nil {
+			t.Fatalf("CreateRun: %v", err)
+		}
+		got, err := s.ListRunFiles(ctx, "run-files-empty")
+		if err != nil {
+			t.Fatalf("ListRunFiles: %v", err)
+		}
+		if got != nil {
+			t.Errorf("expected nil, got %v", got)
+		}
+	})
+
+	t.Run("Round-trip: write a file via direct fs + read via OpenRunFile", func(t *testing.T) {
+		dir, err := s.EnsureRunFilesDir(ctx, "run-files-1")
+		if err != nil {
+			t.Fatalf("EnsureRunFilesDir: %v", err)
+		}
+		// Tools write through the bind-mount; in tests we write directly.
+		nested := filepath.Join(dir, "renovacy", "dbug-1.0-to-1.7.md")
+		if err := os.MkdirAll(filepath.Dir(nested), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(nested, []byte("# upgrade notes\nbreaking: none\n"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		// List finds it.
+		listed, err := s.ListRunFiles(ctx, "run-files-1")
+		if err != nil {
+			t.Fatalf("ListRunFiles: %v", err)
+		}
+		if len(listed) != 1 || listed[0].Path != "renovacy/dbug-1.0-to-1.7.md" {
+			t.Fatalf("ListRunFiles = %v, want 1 entry renovacy/dbug-1.0-to-1.7.md", listed)
+		}
+		if listed[0].Size != int64(len("# upgrade notes\nbreaking: none\n")) {
+			t.Errorf("size = %d, want %d", listed[0].Size, len("# upgrade notes\nbreaking: none\n"))
+		}
+		// Open returns content.
+		rc, info, err := s.OpenRunFile(ctx, "run-files-1", "renovacy/dbug-1.0-to-1.7.md")
+		if err != nil {
+			t.Fatalf("OpenRunFile: %v", err)
+		}
+		defer rc.Close()
+		body, err := io.ReadAll(rc)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if string(body) != "# upgrade notes\nbreaking: none\n" {
+			t.Errorf("body = %q", string(body))
+		}
+		if info.Path != "renovacy/dbug-1.0-to-1.7.md" {
+			t.Errorf("info.Path = %q", info.Path)
+		}
+	})
+
+	t.Run("OpenRunFile rejects path traversal", func(t *testing.T) {
+		// Plant a sensitive file outside the area to make the test
+		// concrete. If escape succeeds, OpenRunFile would read it.
+		runDir := s.runDir("run-files-1")
+		secret := filepath.Join(runDir, "events.jsonl")
+		_ = os.WriteFile(secret, []byte("SHOULD-NOT-LEAK"), 0o644)
+
+		// Various escape attempts.
+		for _, attempt := range []string{
+			"../events.jsonl",
+			"../../events.jsonl",
+			"renovacy/../../events.jsonl",
+			"/etc/passwd",
+			"renovacy/../../../etc/passwd",
+		} {
+			if _, _, err := s.OpenRunFile(ctx, "run-files-1", attempt); err == nil {
+				t.Errorf("path %q should have been rejected", attempt)
+			}
+		}
+	})
+
+	t.Run("OpenRunFile returns not-found on non-existent path", func(t *testing.T) {
+		if _, _, err := s.OpenRunFile(ctx, "run-files-1", "no-such-file.md"); err == nil {
+			t.Errorf("expected error for missing file")
+		}
+	})
+
+	t.Run("AsRunFilesStore returns the FilesystemRunStore", func(t *testing.T) {
+		var rs RunStore = s
+		fs := AsRunFilesStore(rs)
+		if fs == nil {
+			t.Fatalf("AsRunFilesStore returned nil for FilesystemRunStore")
 		}
 	})
 }

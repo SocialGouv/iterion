@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -796,6 +798,122 @@ func (s *FilesystemRunStore) ListInteractions(_ context.Context, runID string) (
 	}
 	sort.Strings(ids)
 	return ids, nil
+}
+
+// ---------------------------------------------------------------------------
+// Run files (tool-produced artifact files surfaced via the editor)
+// ---------------------------------------------------------------------------
+
+// runFilesDir returns the per-run scratch directory where tool-produced
+// artifact files live. The path is bind-mounted into the sandbox at
+// ITERION_ARTIFACT_FILES_DIR so in-container tools can write files
+// without going through the worktree (and committing them into the
+// bench repo).
+func (s *FilesystemRunStore) runFilesDir(runID string) string {
+	return filepath.Join(s.runDir(runID), "artifact_files")
+}
+
+// EnsureRunFilesDir satisfies RunFilesStore. Idempotent.
+func (s *FilesystemRunStore) EnsureRunFilesDir(_ context.Context, runID string) (string, error) {
+	if err := sanitizePathComponent("run ID", runID); err != nil {
+		return "", err
+	}
+	dir := s.runFilesDir(runID)
+	if err := os.MkdirAll(dir, dirPerm); err != nil {
+		return "", fmt.Errorf("store: mkdir run files dir: %w", err)
+	}
+	// Loosen perms so the in-sandbox container user (devbox, typically
+	// uid 1000) can write here even when the host daemon owner is also
+	// uid 1000 — explicit 0o775 + setting the dir as group-writable
+	// covers the common case and keeps a future "container user is
+	// 1001" deployment from silently failing the bind-mount writes.
+	_ = os.Chmod(dir, 0o775)
+	return dir, nil
+}
+
+// ListRunFiles satisfies RunFilesStore. Returns a sorted slice (by path)
+// for stable output; empty (no error) when no files exist.
+func (s *FilesystemRunStore) ListRunFiles(_ context.Context, runID string) ([]RunFileInfo, error) {
+	if err := sanitizePathComponent("run ID", runID); err != nil {
+		return nil, err
+	}
+	root := s.runFilesDir(runID)
+	var out []RunFileInfo
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if os.IsNotExist(walkErr) {
+				return filepath.SkipAll
+			}
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, infoErr := d.Info()
+		if infoErr != nil {
+			return infoErr
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		out = append(out, RunFileInfo{
+			Path:       filepath.ToSlash(rel),
+			Size:       info.Size(),
+			ModifiedAt: info.ModTime().UTC(),
+		})
+		return nil
+	})
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("store: list run files: %w", err)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out, nil
+}
+
+// OpenRunFile satisfies RunFilesStore. Implements path-traversal
+// protection: the cleaned absolute path MUST stay strictly under the
+// per-run files area. Any escape attempt (`..`, absolute paths, symlinks
+// pointing outside the area) is rejected with a clean "not found" error
+// — callers and HTTP clients can't distinguish those cases (both are
+// 404), which keeps probing attacks blind.
+func (s *FilesystemRunStore) OpenRunFile(_ context.Context, runID, relPath string) (io.ReadCloser, RunFileInfo, error) {
+	if err := sanitizePathComponent("run ID", runID); err != nil {
+		return nil, RunFileInfo{}, err
+	}
+	root := s.runFilesDir(runID)
+	rootReal, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		// Files dir doesn't exist yet → no files to open.
+		return nil, RunFileInfo{}, fmt.Errorf("store: run file not found")
+	}
+	cleaned := filepath.Clean("/" + filepath.ToSlash(relPath))
+	abs := filepath.Join(rootReal, cleaned)
+	absReal, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return nil, RunFileInfo{}, fmt.Errorf("store: run file not found")
+	}
+	// Containment check on the symlink-resolved paths.
+	rel, err := filepath.Rel(rootReal, absReal)
+	if err != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+		return nil, RunFileInfo{}, fmt.Errorf("store: run file not found")
+	}
+	info, err := os.Stat(absReal)
+	if err != nil || info.IsDir() {
+		return nil, RunFileInfo{}, fmt.Errorf("store: run file not found")
+	}
+	f, err := os.Open(absReal)
+	if err != nil {
+		return nil, RunFileInfo{}, fmt.Errorf("store: open run file: %w", err)
+	}
+	return f, RunFileInfo{
+		Path:       filepath.ToSlash(rel),
+		Size:       info.Size(),
+		ModifiedAt: info.ModTime().UTC(),
+	}, nil
 }
 
 // ---------------------------------------------------------------------------

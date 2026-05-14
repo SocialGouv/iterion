@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -48,6 +50,8 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("GET /api/runs/{id}/workflow", s.handleGetRunWorkflow)
 	s.mux.HandleFunc("GET /api/runs/{id}/artifacts/{node}", s.handleListArtifacts)
 	s.mux.HandleFunc("GET /api/runs/{id}/artifacts/{node}/{version}", s.handleGetArtifact)
+	s.mux.HandleFunc("GET /api/runs/{id}/artifact-files", s.handleListArtifactFiles)
+	s.mux.HandleFunc("GET /api/runs/{id}/artifact-files/{path...}", s.handleGetArtifactFile)
 	s.mux.HandleFunc("GET /api/runs/{id}/files", s.handleListRunFiles)
 	s.mux.HandleFunc("GET /api/runs/{id}/files/diff", s.handleGetRunFileDiff)
 	s.mux.HandleFunc("GET /api/runs/{id}/commits", s.handleListRunCommits)
@@ -324,6 +328,92 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSONFor(w, r, a)
+}
+
+// handleListArtifactFiles returns the manifest of tool-produced files
+// (run reports, SBOMs, …) dropped under runs/<id>/artifact_files by
+// in-sandbox tools. Returns an empty array (not 404) when the run
+// produced no files — distinguishes "valid run, nothing to download"
+// from "no such run", which the editor's Artifacts panel renders as
+// an empty state.
+func (s *Server) handleListArtifactFiles(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
+		return
+	}
+	files, err := s.runs.ListArtifactFiles(id)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "list artifact files: %v", err)
+		return
+	}
+	if files == nil {
+		files = []store.RunFileInfo{}
+	}
+	s.writeJSONFor(w, r, map[string]interface{}{"files": files})
+}
+
+// handleGetArtifactFile streams one tool-produced file by relative
+// path. Path-traversal guards live in the store layer; this handler
+// just unwraps the wildcard path component and sets a Content-
+// Disposition + best-effort Content-Type. Errors map to 404 to keep
+// path-probing attacks from distinguishing missing-file vs traversal-
+// rejected vs non-RunFilesStore (cloud) backends.
+func (s *Server) handleGetArtifactFile(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	relPath := r.PathValue("path")
+	if id == "" || relPath == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id or file path")
+		return
+	}
+	rc, info, err := s.runs.OpenArtifactFile(id, relPath)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "artifact file not found")
+		return
+	}
+	defer rc.Close()
+	w.Header().Set("Content-Type", artifactFileContentType(info.Path))
+	if info.Size > 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(info.Size, 10))
+	}
+	// Inline disposition lets browsers preview .md / .json / images
+	// directly. The filename hint is the basename of the path so a
+	// "Save As" picks something readable.
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename=%q`, filepath.Base(info.Path)))
+	if _, copyErr := io.Copy(w, rc); copyErr != nil {
+		// Body partially written by now — can't surface a clean error
+		// status. Log via the standard server error path; the client
+		// will see a truncated response.
+		s.logger.Warn("artifact file copy failed for run %s path %s: %v", id, info.Path, copyErr)
+	}
+}
+
+// artifactFileContentType picks a sensible MIME type by extension.
+// Conservative — falls back to application/octet-stream for unknown
+// extensions to keep browsers from auto-executing untrusted payloads
+// (an in-sandbox tool could emit anything; the recipe's name doesn't
+// guarantee semantic content).
+func artifactFileContentType(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".md", ".markdown":
+		return "text/markdown; charset=utf-8"
+	case ".json":
+		return "application/json; charset=utf-8"
+	case ".txt", ".log":
+		return "text/plain; charset=utf-8"
+	case ".csv":
+		return "text/csv; charset=utf-8"
+	case ".html", ".htm":
+		return "text/html; charset=utf-8"
+	case ".yaml", ".yml":
+		return "application/yaml; charset=utf-8"
+	case ".png":
+		return "image/png"
+	case ".svg":
+		return "image/svg+xml"
+	default:
+		return "application/octet-stream"
+	}
 }
 
 func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {

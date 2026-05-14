@@ -558,7 +558,6 @@ func sanitizeAttachmentSegment(s string) string {
 	return out
 }
 
-
 // humanSize formats a byte count as a human-readable string.
 func humanSize(bytes int) string {
 	switch {

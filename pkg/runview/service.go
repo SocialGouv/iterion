@@ -894,6 +894,39 @@ func (s *Service) LoadArtifact(runID, nodeID string, version int) (*store.Artifa
 	return s.store.LoadArtifact(context.Background(), runID, nodeID, version)
 }
 
+// ListArtifactFiles enumerates the tool-produced files dropped under
+// runs/<id>/artifact_files by in-sandbox tools (write_audit_md,
+// emit_sbom, …). Returns nil when the store doesn't satisfy
+// RunFilesStore (cloud mode) so the HTTP handler can surface an empty
+// list cleanly without leaking the backend choice. Validates the run
+// ID before delegating, mirroring ListArtifacts.
+func (s *Service) ListArtifactFiles(runID string) ([]store.RunFileInfo, error) {
+	if err := validatePathComponent("run ID", runID); err != nil {
+		return nil, err
+	}
+	rfs := store.AsRunFilesStore(s.store)
+	if rfs == nil {
+		return nil, nil
+	}
+	return rfs.ListRunFiles(context.Background(), runID)
+}
+
+// OpenArtifactFile streams one tool-produced file from the run's
+// artifact_files area. Path-traversal protection lives in
+// store.OpenRunFile (caller-side defence); the runview wrapper only
+// validates the run-id component and delegates. Returns a nil reader
+// when the store doesn't satisfy RunFilesStore.
+func (s *Service) OpenArtifactFile(runID, relPath string) (io.ReadCloser, store.RunFileInfo, error) {
+	if err := validatePathComponent("run ID", runID); err != nil {
+		return nil, store.RunFileInfo{}, err
+	}
+	rfs := store.AsRunFilesStore(s.store)
+	if rfs == nil {
+		return nil, store.RunFileInfo{}, fmt.Errorf("runview: artifact files unavailable for this store")
+	}
+	return rfs.OpenRunFile(context.Background(), runID, relPath)
+}
+
 // ---------------------------------------------------------------------------
 // Write-side API: lifecycle
 // ---------------------------------------------------------------------------

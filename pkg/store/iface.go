@@ -118,3 +118,57 @@ func AsPIDStore(s RunStore) PIDStore {
 	p, _ := s.(PIDStore)
 	return p
 }
+
+// RunFilesStore is an optional interface implemented by stores that
+// can host arbitrary tool-produced files alongside a run. Tools running
+// inside the sandbox write into a per-run scratch directory bind-mounted
+// from the host (see ITERION_ARTIFACT_FILES_DIR in the runtime sandbox
+// wiring); iterion surfaces the contents via the editor's Artifacts
+// panel + the /api/runs/<id>/artifact-files endpoints.
+//
+// FilesystemRunStore implements it because it owns a real on-disk
+// runs/<id>/ tree. Cloud stores currently do NOT implement it: the
+// sandbox runs on a different machine from the Mongo/S3 backend, so
+// the tool can't write directly to a shared mount; cloud-mode artifact-
+// files would need an S3-backed scratch area + a sandbox-side uploader.
+// AsRunFilesStore returns nil for stores that don't implement this
+// interface — callers MUST nil-check.
+type RunFilesStore interface {
+	// EnsureRunFilesDir creates the per-run files area if missing
+	// and returns its absolute path on the local filesystem. Called
+	// at run-start, BEFORE the sandbox container is created so the
+	// bind-mount source exists.
+	EnsureRunFilesDir(ctx context.Context, runID string) (string, error)
+	// ListRunFiles enumerates files under the area recursively.
+	// Returns an empty slice (no error) when the area doesn't exist
+	// — i.e. the run never produced any artifact files.
+	ListRunFiles(ctx context.Context, runID string) ([]RunFileInfo, error)
+	// OpenRunFile returns a reader + metadata for a single file at
+	// the given area-relative path. Implementations MUST reject
+	// paths that escape the area (`..`, absolute paths, symlink
+	// traversal) before opening. Errors out with a clean
+	// "not found" when the path is invalid OR doesn't exist —
+	// callers don't need to distinguish the two cases for the HTTP
+	// surface (both 404 to the client).
+	OpenRunFile(ctx context.Context, runID, path string) (io.ReadCloser, RunFileInfo, error)
+}
+
+// RunFileInfo is the metadata returned by RunFilesStore.ListRunFiles
+// and OpenRunFile. Path is area-relative (e.g. "renovacy/dbug-1.0-to-
+// 1.7.md"), never absolute, never starts with "/".
+type RunFileInfo struct {
+	Path       string    `json:"path" bson:"path"`
+	Size       int64     `json:"size" bson:"size"`
+	ModifiedAt time.Time `json:"modified_at" bson:"modified_at"`
+}
+
+// AsRunFilesStore returns s as RunFilesStore when the backend supports
+// per-run file artifacts, or nil otherwise. Filesystem stores satisfy
+// it; cloud (Mongo) stores currently do not.
+func AsRunFilesStore(s RunStore) RunFilesStore {
+	if s == nil {
+		return nil
+	}
+	f, _ := s.(RunFilesStore)
+	return f
+}
