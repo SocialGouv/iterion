@@ -208,6 +208,7 @@ func (a *App) AddProject(dir string) (*Project, error) {
 	if err != nil {
 		return nil, err
 	}
+	wruntime.EventsEmit(a.ctx, eventProjectsChanged)
 	wruntime.EventsEmit(a.ctx, eventProjectSwitched, p)
 	return p, nil
 }
@@ -271,7 +272,14 @@ func (a *App) RemoveProject(id string) error {
 	}
 	a.mu.Unlock()
 
-	// Only restart the editor server when the delete actually changed
+	// Always fire projects:changed so every mounted useDesktop instance
+	// re-reads ListProjects/GetCurrentProject. Without this, a
+	// non-current-project delete only refreshes the component that
+	// called removeProject — the rest of the SPA keeps showing the
+	// deleted project in their lists until the next manual refresh.
+	wruntime.EventsEmit(a.ctx, eventProjectsChanged)
+
+	// Restart the editor server only when the delete actually changed
 	// the current project (i.e. operator deleted the one they were
 	// looking at). Deleting any other project leaves the GUI's
 	// serverURL untouched and is a pure config write.
@@ -305,6 +313,7 @@ func (a *App) SwitchProject(id string) error {
 	if err != nil {
 		return err
 	}
+	wruntime.EventsEmit(a.ctx, eventProjectsChanged)
 	wruntime.EventsEmit(a.ctx, eventProjectSwitched, current)
 	return nil
 }

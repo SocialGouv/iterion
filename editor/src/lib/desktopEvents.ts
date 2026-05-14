@@ -4,6 +4,10 @@
 
 export const DesktopEvent = {
   ProjectSwitched: "project:switched",
+  // Fires on every config mutation (add / remove / switch). Useful
+  // for refreshing list views without depending on the current
+  // project pointer also flipping.
+  ProjectsChanged: "projects:changed",
 
   MenuSettings: "menu:settings",
   MenuSwitchProject: "menu:switch-project",
