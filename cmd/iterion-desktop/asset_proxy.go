@@ -74,23 +74,28 @@ func (h *assetProxyHandler) proxyFor(serverURL string) (*httputil.ReverseProxy, 
 	if err != nil {
 		return nil, fmt.Errorf("invalid serverURL: %w", err)
 	}
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	originalDirector := proxy.Director
+	// Use the Rewrite hook instead of the deprecated Director field
+	// (deprecated Go 1.26; Rewrite has been available since 1.20).
+	// SetURL replicates NewSingleHostReverseProxy's URL/scheme/host
+	// stitching; the extra Out.Host + Origin tweaks are the same as
+	// the old Director path.
 	targetHost := target.Host
-	proxy.Director = func(req *http.Request) {
-		originalDirector(req)
-		// Force the Host so the inner server logs and Origin allowlist see
-		// its own loopback host, not the AssetServer's "wails.localhost".
-		req.Host = targetHost
-		// Rewrite the Origin header to match the proxy target. Without this,
-		// pkg/server/server.go requireSafeOrigin (and CORS reflection) would
-		// reject every state-changing API call because the SPA's true Origin
-		// is the AssetServer's wails:// origin, which is not in the
-		// loopback allowlist. Origin rewriting is the same trick editor's
-		// vite dev proxy uses (editor/vite.config.ts).
-		if req.Header.Get("Origin") != "" {
-			req.Header.Set("Origin", "http://"+targetHost)
-		}
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(r *httputil.ProxyRequest) {
+			r.SetURL(target)
+			// Force the Host so the inner server logs and Origin allowlist see
+			// its own loopback host, not the AssetServer's "wails.localhost".
+			r.Out.Host = targetHost
+			// Rewrite the Origin header to match the proxy target. Without this,
+			// pkg/server/server.go requireSafeOrigin (and CORS reflection) would
+			// reject every state-changing API call because the SPA's true Origin
+			// is the AssetServer's wails:// origin, which is not in the
+			// loopback allowlist. Origin rewriting is the same trick editor's
+			// vite dev proxy uses (editor/vite.config.ts).
+			if r.In.Header.Get("Origin") != "" {
+				r.Out.Header.Set("Origin", "http://"+targetHost)
+			}
+		},
 	}
 	h.cached = &cachedProxy{target: target, proxy: proxy}
 	return proxy, nil

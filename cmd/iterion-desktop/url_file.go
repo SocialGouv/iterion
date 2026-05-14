@@ -4,11 +4,9 @@ package main
 
 import (
 	"encoding/json"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -69,55 +67,6 @@ func removeDesktopURLFile() {
 		return
 	}
 	_ = os.Remove(filepath.Join(dir, desktopURLFileName))
-}
-
-// detectDaemonURL reads ~/.iterion/desktop.json and returns its URL if
-// the recorded pid is still alive AND the TCP port still accepts a
-// connection. This is the GUI's "is a headless daemon already running?"
-// probe: when true, the GUI attaches to the daemon's server instead of
-// spawning its own, so runs survive GUI close/rebuild/relaunch cycles.
-//
-// We deliberately combine the pid check (kill(pid, 0)) with a tiny
-// TCP dial: pid-only checks let a half-crashed daemon (kernel hasn't
-// reaped yet) appear alive, while dial-only checks would attach to a
-// totally unrelated process that grabbed the same port after a crash.
-// Both must agree → false positives are vanishingly rare.
-func detectDaemonURL() (string, bool) {
-	dir := desktopDataDir()
-	if dir == "" {
-		return "", false
-	}
-	raw, err := os.ReadFile(filepath.Join(dir, desktopURLFileName))
-	if err != nil {
-		return "", false
-	}
-	var st desktopURLState
-	if err := json.Unmarshal(raw, &st); err != nil {
-		return "", false
-	}
-	if st.URL == "" || st.PID == 0 {
-		return "", false
-	}
-	// Signal 0 doesn't deliver — it just checks whether the kernel still
-	// has a process slot for that pid. Useful as a liveness probe that
-	// works for processes we don't own.
-	proc, err := os.FindProcess(st.PID)
-	if err != nil {
-		return "", false
-	}
-	if err := proc.Signal(syscall.Signal(0)); err != nil {
-		return "", false
-	}
-	// TCP probe — strip the scheme/path off st.URL so we can dial the
-	// raw host:port.
-	hostPort := strings.TrimPrefix(strings.TrimPrefix(st.URL, "http://"), "https://")
-	hostPort = strings.TrimRight(hostPort, "/")
-	conn, err := net.DialTimeout("tcp", hostPort, 500*time.Millisecond)
-	if err != nil {
-		return "", false
-	}
-	_ = conn.Close()
-	return st.URL, true
 }
 
 // desktopDataDir mirrors store.globalIterionDataDir without importing
