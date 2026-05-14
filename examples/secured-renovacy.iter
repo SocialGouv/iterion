@@ -1062,8 +1062,16 @@ prompt review_system:
       pre-existing issues unrelated to the upgrades.
 
   Use bash, read_file, glob, grep, git_diff, git_log to inspect.
-  Run lint / typecheck / tests as needed to back your verdict
-  with evidence.
+
+  EFFICIENCY: prefer diff / code-analysis first. Run lint /
+  typecheck / tests ONLY as a TARGETED probe when a specific
+  blocker hypothesis warrants it (e.g. "this changelog says X removed
+  → grep the codebase for X → if found, run the relevant test
+  file"). Do NOT run the full suite exhaustively across packages —
+  that is the fixer's responsibility, and a 14-commit cumulative
+  review at exhaustive-tests granularity will hit tool_max_steps
+  before producing a verdict. A "medium" confidence verdict on
+  diff+changelog evidence is preferable to a max_turns timeout.
 
   Confidence:
     high  — direct evidence (failed test, broken type, removed API
