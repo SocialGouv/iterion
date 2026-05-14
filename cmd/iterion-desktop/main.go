@@ -3,13 +3,31 @@
 package main
 
 import (
+	_ "embed"
 	"log"
 	"os"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/linux"
 )
+
+// Window icon for Linux. Wails calls gtk_window_set_icon with these
+// bytes at window creation, which posts _NET_WM_ICON on the X window.
+// Without this, Linux WMs fall back to the StartupWMClass → .desktop
+// → hicolor theme lookup — fragile across DE upgrades (Cinnamon 6.6.3
+// → 6.6.4 + mutter / gnome-shell upgrades broke the lookup on Mint,
+// leaving every iterion window with a generic icon). Embedding bypasses
+// the matcher entirely.
+//
+// The canonical appicon source is build/appicon.png at the repo root;
+// the file here is a copy because cmd/iterion-desktop/build is a
+// symlink and //go:embed cannot traverse symlinks. Keep the two
+// in sync — see scripts/desktop/build-deb.sh for the packaging side.
+//
+//go:embed appicon.png
+var appIcon []byte
 
 func main() {
 	// Source ~/.iterion/env (or $ITERION_ENV_FILE) BEFORE the editor
@@ -93,12 +111,22 @@ func main() {
 		// option Wails calls DisableContextMenu() and right-click is a no-op.
 		EnableDefaultContextMenu: true,
 		BackgroundColour:         &options.RGBA{R: 10, G: 10, B: 10, A: 255},
-		OnStartup:                app.onStartup,
-		OnShutdown:               app.onShutdown,
-		OnDomReady:               app.onDomReady,
-		OnBeforeClose:            app.onBeforeClose,
-		Bind:                     []interface{}{app},
-		Menu:                     buildMenu(app),
+		// Linux: embed the appicon bytes so Wails calls
+		// gtk_window_set_icon at window creation. Without this Wails
+		// leaves _NET_WM_ICON unset and the WM has to fall back to a
+		// StartupWMClass → .desktop → theme lookup that breaks across
+		// DE upgrades. ProgramName sets g_set_prgname() so window
+		// grouping matches the .desktop filename across compositors.
+		Linux: &linux.Options{
+			Icon:        appIcon,
+			ProgramName: "iterion-desktop",
+		},
+		OnStartup:     app.onStartup,
+		OnShutdown:    app.onShutdown,
+		OnDomReady:    app.onDomReady,
+		OnBeforeClose: app.onBeforeClose,
+		Bind:          []interface{}{app},
+		Menu:          buildMenu(app),
 	})
 	if err != nil {
 		log.Fatalf("iterion-desktop: wails run failed: %v", err)
