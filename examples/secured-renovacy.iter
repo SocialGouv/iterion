@@ -327,10 +327,23 @@ prompt discover_outdated_system:
        - `risk` is the semver diff between `current` and `target`
          (patch / minor / major). Use "unknown" only when versions
          are non-semver or genuinely indeterminate. Do not invent.
-    5. Include BOTH runtime and dev-only dependencies — the
-       downstream scope filter is the single source of truth for
-       which packages get attempted. Skipping dev deps here would
-       silently exclude them from major-bump policy too.
+    5. **EXHAUSTIVE COVERAGE (non-negotiable):** include EVERY
+       outdated entry the manager surfaces — runtime deps, dev-only
+       deps, peer deps (when the manager lists them), optional deps,
+       bundled deps. The downstream scope filter is the single source
+       of truth for what gets attempted; quietly dropping any class
+       here would silently exclude it from the major-bump policy
+       AND from the security audit. If you're tempted to "filter
+       out a category to keep the list manageable", STOP — that's
+       the operator's `update_scope` var's job, not yours.
+    6. Tooling & build-config bumps count as outdated too if the
+       manager tracks them: `eslint`, `typescript`, `vitest`,
+       bundlers, type-only `@types/*`, lint plugins. Same for
+       devops surfaces the manager owns (e.g. `husky`, `lint-
+       staged`, `simple-git-hooks`). When the manager does NOT
+       track a tool (e.g. a binary installed via devbox / Nix /
+       OS package), do not invent it — it's out of scope for this
+       node.
 
   Tools at your disposal: bash, read_file, list_files, glob, grep.
   Read-only. Use bash freely to retry candidates and probe the
@@ -449,6 +462,42 @@ prompt security_audit_system:
     4. Populate `cves` (string IDs, e.g. "CVE-2024-12345",
        "GHSA-xxxx-yyyy-zzzz") and `malware_signals` (short text
        per signal, e.g. "osv: known typosquat of <real_pkg>").
+    5. Cross-check with at least ONE secondary source where the
+       ecosystem has one available. Don't trust a single auditor —
+       supply-chain malware databases update at different cadences,
+       and a recent compromise may be flagged by source B but not
+       yet source A. Practical pairings (try the secondary if it's
+       available on the sandbox; otherwise note it in `auditors_
+       consulted` as "not_available" so the operator can wire it):
+         - JS:     retire.js (`npx --yes retire --outputformat json`)
+                   for known-vulnerable JS libs, AND socket.dev's
+                   public API for typosquat / install-script risk
+                   if `SOCKET_API_KEY` is set in env.
+         - Python: safety (`pip install safety && safety check
+                   --json`) cross-checks pip-audit's findings.
+         - Rust:   `cargo deny check advisories` cross-checks
+                   cargo audit. Both consume the rustsec advisory
+                   db but cargo-deny adds licence + duplicate
+                   gates.
+         - Go:     `golang.org/x/vuln/cmd/govulncheck` IS the
+                   primary; a second source is osv-scanner against
+                   `go.sum` for breadth.
+         - PHP / Ruby / Maven / Gradle / mix: osv-scanner serves
+                   as the cross-check for every ecosystem.
+       Don't burn turns chasing every secondary — if the primary
+       auditor was unequivocal (no CVEs + no malware) you can call
+       it with one cross-check at the secondary. Spend the budget
+       only when the primary surfaced something to confirm or
+       refute.
+    6. Build `advisory_chains` for every NON-direct vulnerability:
+       trace the dependency path from `input.selected_package`
+       through the chain that exposes the flagged sub-package.
+       Format: "<flagged_pkg>@<v> via <selected_package> → <mid> →
+       <flagged_pkg>". Operators use this to understand whether
+       upgrading `selected_package` resolves the chain or whether
+       the vulnerability is reachable only through ANOTHER edge of
+       the graph. Empty array when every CVE is on the direct
+       package itself.
 
   Tools at your disposal: bash, read_file, list_files, glob, grep.
   Read-only.
@@ -461,10 +510,31 @@ prompt security_audit_system:
                                  indicators from osv-scanner or
                                  the native auditor. Empty array
                                  if none.
-    source            string   — short label of the tools used
-                                 (e.g. "yarn npm audit + osv").
+    blockers          string[] — when safe=false, the concrete
+                                 reasons the upgrade was rejected
+                                 (one short bullet per reason).
+                                 Downstream `revert_changes` /
+                                 `mark_failed_and_continue` quote
+                                 these verbatim. Empty when safe=true.
+    fix_plan          string   — when safe=false, what an operator
+                                 (or a follow-up agent) could do
+                                 to make this upgrade attemptable
+                                 — e.g. "wait for upstream patch
+                                 X.Y.Z" or "audit override only
+                                 the form-data sub-dep". Empty
+                                 string when safe=true.
+    source            string   — short label of the PRIMARY tool
+                                 used (e.g. "yarn npm audit + osv").
     raw               string   — condensed raw output, sized for
                                  a human to skim. Trim noise.
+    advisory_chains   string[] — transitive-vuln paths, see step 6.
+                                 Empty when N/A.
+    auditors_consulted string[]— every source you cross-referenced
+                                 (e.g. ["yarn npm audit", "osv-
+                                 scanner", "retire.js"]). Mark
+                                 unavailable secondaries as
+                                 "<name>:not_available" so the
+                                 operator can wire them later.
 
   ### Project context (operator)
   {{vars.user_prompt}}
@@ -548,6 +618,21 @@ prompt changelog_review_system:
        were: high (changelog explicit + diff confirms),
        medium (changelog only, diff inconclusive), low
        (no changelog found, inferring from version delta).
+    6. Surface peer-dep + engine bumps the upgrade introduces.
+       These are CHEAP to flag here and EXPENSIVE to discover at
+       install/validate time. From the package manifest of the
+       TARGET version (`npm view <pkg>@<target> peerDependencies`,
+       `cargo info <pkg>` for `[dependencies]` requirements,
+       PyPI `pyproject.toml`'s `[project]` requires-python, etc.):
+         - peer_dependency_changes: short strings like
+           "react@^19 (was ^18)" when the target version requires
+           a new or stricter peer dep that the current peers do
+           not satisfy. Empty when no change.
+         - engine_requirement_changes: short strings like
+           "node >=22 (was >=20)" when the target bumps the
+           engine floor. Empty when no change.
+       Cap each list at 5 entries; if the package's matrix is
+       larger, summarise as "peer matrix expanded: see <link>".
 
   ### Project context (operator)
   {{vars.user_prompt}}
@@ -746,21 +831,84 @@ prompt align_code_system:
   modify the consuming repository's source code so it stays
   compatible.
 
-  Procedure:
+  ## Tool discipline (mandatory)
+
+  Prefer the STRUCTURED file-editing tools over raw bash:
+    - file_edit / write_file: tracked diffs, syntax-aware,
+      preserve indentation. Use these for EVERY in-place edit.
+    - bash sed / cat > /  echo >>: shell escape pitfalls, no
+      undo, no diff. Only use bash when the change is a true
+      shell concern (renaming a file, deleting a directory,
+      running a codemod script).
+  Using sed/cat for code edits is a common LLM tar-pit — every
+  off-by-one quote breaks the file and burns a fix_loop iteration.
+
+  ## Two-pass discipline (mandatory)
+
+  Each `input.alignment_steps[i]` is one of two kinds, and the
+  ordering matters:
+    a. **STRUCTURAL** — pure rename / import path / signature
+       reshape. No behaviour change. Examples: "rename oldFoo →
+       newFoo", "split `import {a,b}` into two lines for the new
+       barrel layout", "add the new generic type param".
+       Apply structural steps FIRST as a batch — they're cheap
+       (mechanical replace) and putting them ahead exposes
+       structural mismatches to the per-step focused check
+       without behavioural noise.
+    b. **BEHAVIOURAL** — semantic change at call site. Examples:
+       "switch from positional to named args in callers of
+       client.query", "the listener callback now receives an
+       AbortSignal — wire it through". Behavioural steps need
+       the LLM's judgement on each call site; do them one at a
+       time AFTER the structural pass is clean.
+  When a single step mixes both, split it mentally and treat the
+  structural sub-part first.
+
+  ## Per-step procedure (mandatory)
+
     1. Read each step in `input.alignment_steps`.
-    2. For each step:
+    2. Classify it (structural vs behavioural) per the two-pass
+       discipline above.
+    3. For each step:
        a. Locate the affected files (grep / glob).
-       b. Apply the minimal correct change.
-       c. Run a focused check immediately after if cheap (e.g.,
-          `tsc --noEmit <file>`, `pyflakes <file>`, `cargo check
-          -p <crate>`) to catch obvious failures fast.
-    3. Stop when all steps are applied, OR when one step turns
+       b. Apply the minimal correct change via file_edit /
+          write_file (NOT bash sed/cat).
+       c. **Run a focused syntactic check IMMEDIATELY AFTER**
+          each modified file. This is non-negotiable — it
+          catches LLM transcription errors before they cascade.
+          Per-language probes:
+            - TS/JS: `tsc --noEmit <file>` if a tsconfig touches
+                     it; else `node --check <file>` for .js/.cjs/
+                     .mjs, `node -e "require('typescript')
+                     .createSourceFile(...)"` for ts when tsc is
+                     unavailable.
+            - Python: `python -m py_compile <file>` (built-in,
+                     no install required).
+            - Rust: `cargo check -p <crate>` if the file is in
+                    a workspace; else `rustc --emit=metadata
+                    --crate-type lib <file>`.
+            - Go: `gofmt -e -l <file>` for syntactic, `go vet
+                  <pkg>` for semantic.
+            - Ruby: `ruby -c <file>`.
+            - PHP: `php -l <file>`.
+            - Elixir: `elixir -c <file>` or `mix compile
+                      --warnings-as-errors`.
+            - JSON/YAML config: `jq . <file>` / `yq . <file>`.
+          If the check fails, FIX YOUR OWN EDIT before moving
+          on — don't leave broken syntax for validate_upgrade
+          to discover.
+    4. Stop when all steps are applied, OR when one step turns
        out to be impossible / ambiguous and an `ask_user`
        escalation is warranted (see escalation_guidance).
-    4. Do NOT run the full test suite here — validate_upgrade
+    5. Do NOT run the full test suite here — validate_upgrade
        handles that next.
-    5. Do NOT commit anything. The commit happens in
-       prepare_commit downstream.
+    6. **Do NOT commit anything under any circumstance.** The
+       commit happens in prepare_commit downstream. You don't
+       even need to git-add — the downstream pipeline picks up
+       every tracked + untracked change automatically. Any
+       `git commit` invocation here breaks the per-package
+       commit's content (you'd be committing on top of
+       prepare_commit's commit later) and the audit trail.
 
   Stay tight: only changes required by the alignment steps. No
   drive-by refactors, lint cleanup, or unrelated fixes — those
@@ -1283,6 +1431,28 @@ schema security_report:
   malware_signals: string[]
   source: string
   raw: string
+  ## blockers + fix_plan: intel_join flattens these onto its
+  ## security_blockers / security_fix_plan fields, which downstream
+  ## revert/mark_failed prompts consume. Both were referenced by
+  ## intel_join long before this schema declared them — security_audit
+  ## emitted them in `raw` instead, leaving the structured fields
+  ## empty and intel_join's `outputs.security_audit.blockers` resolving
+  ## to nothing. Now declared explicitly so the prompt populates them.
+  blockers: string[]
+  fix_plan: string
+  ## advisory_chains carries the transitive vulnerability paths the
+  ## auditor reported (e.g. "axios → form-data → DEEP_LIB" where the
+  ## flagged CVE lives in DEEP_LIB). Each entry is a free-form short
+  ## string for human reading; the operator uses it to understand
+  ## WHY this candidate is blocked, not just THAT it's blocked. Empty
+  ## array when no transitive chains are involved.
+  advisory_chains: string[]
+  ## auditors_consulted lists every tool/source the agent crossed-
+  ## referenced for this verdict (e.g. ["yarn npm audit", "osv-scanner",
+  ## "retire.js", "socket.dev API"]). Distinct from `source` (the
+  ## single primary tool used) — this captures the cross-checking
+  ## footprint so an operator can audit coverage.
+  auditors_consulted: string[]
 
 schema changelog_input:
   selected_package: string
@@ -1297,6 +1467,20 @@ schema changelog_summary:
   alignment_steps: string[]
   references: string[]
   confidence: string [enum: "low", "medium", "high"]
+  ## peer_dependency_changes captures new/changed peer-dep requirements
+  ## the upgrade introduces. Format: each entry is a short string like
+  ## "@react/X requires now react@^19 (was ^18)". An empty array means
+  ## the upgrade does not change peer-dep requirements. Used by
+  ## intel_join to gate-fail early when the consuming repo can't
+  ## satisfy a new peer dep without ANOTHER upgrade — cheaper to flag
+  ## here than to discover at install/validate.
+  peer_dependency_changes: string[]
+  ## engine_requirement_changes captures bumps to the package's
+  ## declared `engines` (Node version, Python version, Rust MSRV, etc.).
+  ## Format: "node >=22 (was >=20)". An empty array means the upgrade
+  ## does not raise the engine floor. Same intel_join early-gate
+  ## rationale as peer_dependency_changes.
+  engine_requirement_changes: string[]
 
 schema upgrade_input:
   workspace_dir: string
@@ -3293,10 +3477,13 @@ compute intel_join:
     safe: "outputs.security_audit.safe"
     security_blockers: "outputs.security_audit.blockers"
     security_fix_plan: "outputs.security_audit.fix_plan"
+    advisory_chains: "outputs.security_audit.advisory_chains"
     changelog_summary: "outputs.changelog_review"
     has_breaking: "outputs.changelog_review.has_breaking"
     breaking_changes: "outputs.changelog_review.breaking_changes"
     alignment_steps: "outputs.changelog_review.alignment_steps"
+    peer_dependency_changes: "outputs.changelog_review.peer_dependency_changes"
+    engine_requirement_changes: "outputs.changelog_review.engine_requirement_changes"
     effective_risk: "if(outputs.changelog_review.has_breaking && length(outputs.changelog_review.alignment_steps) >= 3, 'major', outputs.select_candidate.risk)"
     fix_loop_max: "if(outputs.changelog_review.has_breaking && length(outputs.changelog_review.alignment_steps) >= 3, 5, 3)"
 
@@ -3307,10 +3494,13 @@ schema intel_join_output:
   safe: bool
   security_blockers: string[]
   security_fix_plan: string
+  advisory_chains: string[]
   changelog_summary: json
   has_breaking: bool
   breaking_changes: json
   alignment_steps: json
+  peer_dependency_changes: string[]
+  engine_requirement_changes: string[]
   effective_risk: string
   fix_loop_max: int
 
