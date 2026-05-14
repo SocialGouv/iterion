@@ -471,6 +471,18 @@ tasks:
   editor:build:fast:
     desc: Build editor frontend WITHOUT minification — local dev only, do NOT ship
     dir: editor
+    # `desktop:package:linux:amd64:deb:fast` deps on both
+    # `desktop:build:linux:amd64:fast` and `cli:build:linux:amd64:fast`,
+    # and both list `editor:build:fast` in their own `deps:`. Task v3
+    # parallelises sibling deps by default, and the default `run:` mode
+    # treats each invocation as independent — so without `run: once`
+    # editor:build:fast fires TWICE in parallel and the two
+    # `cp -R dist/. ../pkg/server/static` calls race on the same path,
+    # producing `cp: cannot create regular file …: File exists` from
+    # whichever cp lost. `run: once` collapses the two invocations into
+    # one (Task waits for the first to finish, then the second
+    # consumer reuses the result instead of re-running).
+    run: once
     env:
       CI: "true"
     cmds:
