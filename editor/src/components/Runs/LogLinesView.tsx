@@ -620,20 +620,29 @@ function LogBlockRow({
   const bodyWidthCls = wrap
     ? "whitespace-pre-wrap break-all"
     : "whitespace-pre min-w-max";
+  const toggle = () => setOpen((v) => !v);
   return (
     <div className={`font-mono text-[10px] py-0.5 ${cls}`}>
-      <div className="flex items-baseline gap-2">
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
+        onClick={toggle}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            toggle();
+          }
+        }}
+        title={open ? "Replier le corps" : "Déplier le corps"}
+        className="flex items-baseline gap-2 pr-3 rounded cursor-pointer hover:bg-surface-2"
+      >
         <div className={`flex-1 min-w-0 ${bodyWidthCls}`}>
           {header.text || " "}
         </div>
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          className="shrink-0 text-fg-subtle hover:text-fg-default px-1 rounded hover:bg-surface-2"
-          title={open ? "Replier le corps" : "Déplier le corps"}
-        >
+        <span className="shrink-0 text-fg-subtle">
           {open ? "▾" : `▸ +${body.length}`}
-        </button>
+        </span>
       </div>
       {open &&
         body.map((line) => (
