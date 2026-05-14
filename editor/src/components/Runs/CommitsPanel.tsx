@@ -162,7 +162,12 @@ function MergeFooter({
   defaultSquashMessage,
   onMergeComplete,
 }: MergeFooterProps) {
-  const finished = run.status === "finished";
+  // Terminal-with-commits states the deferred merge action applies to.
+  // Cancelled runs are included alongside finished because RecoverFinalize
+  // populates FinalCommit / FinalBranch for them too (pkg/runtime/worktree.go),
+  // so the operator can merge the partial work via the same UI button.
+  const mergeable =
+    run.status === "finished" || run.status === "cancelled";
   const hasBranch = Boolean(run.final_branch);
   // `merged_into` set without a status is the legacy auto-FF path
   // (pre-deferred-merge engines). Treat it as merged so we don't offer
@@ -170,7 +175,13 @@ function MergeFooter({
   const merged =
     run.merge_status === "merged" || (!run.merge_status && Boolean(run.merged_into));
   const failed = run.merge_status === "failed";
-  const skipped = run.merge_status === "skipped";
+  // `skipped` status is also set by RecoverFinalize when it auto-runs on
+  // a cancelled run (mergeInto:"none"). The "skipped at launch" notice
+  // below is only the right framing for FINISHED runs (where the user
+  // explicitly set merge_into=none); for cancelled runs we want to expose
+  // the merge form because the operator's intent is to merge the partial
+  // commits, not opt out.
+  const skipped = run.merge_status === "skipped" && run.status === "finished";
 
   const initialStrategy: MergeStrategy =
     (run.merge_strategy as MergeStrategy) ?? "squash";
@@ -219,12 +230,12 @@ function MergeFooter({
     );
   }
 
-  // Run not yet finished — explain why no merge action is available
-  // and what state will unlock it.
-  if (!finished) {
+  // Run is still in flight or in an unmergeable terminal state (failed /
+  // failed_resumable). Explain what unlocks the action.
+  if (!mergeable) {
     return (
       <NoticeFooter tone="muted">
-        Merge available once the run finishes. Current status:{" "}
+        Merge available once the run finishes or is cancelled. Current status:{" "}
         <code className="text-fg-default">{run.status}</code>.
       </NoticeFooter>
     );
