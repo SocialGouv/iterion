@@ -238,6 +238,21 @@ func (c *Config) AddProject(absDir string) Project {
 	return p
 }
 
+// ProjectByID returns a copy of the project entry with the given id, or
+// nil when there's no match. The copy is intentional — callers shouldn't
+// hold a pointer into the slice after a subsequent mutation rebuckets it.
+func (c *Config) ProjectByID(id string) *Project {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range c.RecentProjects {
+		if c.RecentProjects[i].ID == id {
+			p := c.RecentProjects[i]
+			return &p
+		}
+	}
+	return nil
+}
+
 // RemoveProject drops the project with the given ID. Returns true if it
 // was present. If the removed project was current, CurrentProjectID is
 // cleared and the new MRU head (if any) becomes current.

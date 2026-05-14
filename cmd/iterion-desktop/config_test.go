@@ -85,6 +85,29 @@ func TestRemoveProject_PromotesNewCurrent(t *testing.T) {
 	}
 }
 
+func TestProjectByID(t *testing.T) {
+	c := NewConfig()
+	a := c.AddProject("/tmp/a")
+	b := c.AddProject("/tmp/b")
+	got := c.ProjectByID(a.ID)
+	if got == nil || got.Dir != "/tmp/a" {
+		t.Fatalf("ProjectByID(a) = %+v, want Dir=/tmp/a", got)
+	}
+	got = c.ProjectByID(b.ID)
+	if got == nil || got.Dir != "/tmp/b" {
+		t.Fatalf("ProjectByID(b) = %+v, want Dir=/tmp/b", got)
+	}
+	if c.ProjectByID("nonexistent") != nil {
+		t.Errorf("ProjectByID(nonexistent) should return nil")
+	}
+	// Returned value must be a copy: mutating it does not affect the slice.
+	got.Dir = "/tmp/MUTATED"
+	again := c.ProjectByID(a.ID)
+	if again.Dir != "/tmp/a" {
+		t.Errorf("ProjectByID returned a live pointer, got Dir=%q after mutation", again.Dir)
+	}
+}
+
 func TestSetCurrentProject_BumpsLastOpened(t *testing.T) {
 	c := NewConfig()
 	a := c.AddProject("/tmp/a")

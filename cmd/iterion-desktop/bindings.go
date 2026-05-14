@@ -3,11 +3,13 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
+	"syscall"
 
 	cli "github.com/SocialGouv/iterion/pkg/cli"
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -259,6 +261,9 @@ func validateProjectDir(dir string) (string, error) {
 // silent CurrentProjectID flip left modjo's WebView talking to the
 // dead git-ai-trace daemon URL.
 func (a *App) RemoveProject(id string) error {
+	// Snapshot the project's Dir before mutation so we can stop its
+	// daemon and clear its discovery file after the config write.
+	removed := a.config.ProjectByID(id)
 	a.mu.Lock()
 	prevCurrent := a.config.CurrentProjectID
 	if !a.config.RemoveProject(id) {
@@ -290,7 +295,48 @@ func (a *App) RemoveProject(id string) error {
 		}
 		wruntime.EventsEmit(a.ctx, eventProjectSwitched, current)
 	}
+
+	// Cascade: stop the orphaned daemon (if any) for the removed project.
+	// A daemon spawned for it survives indefinitely — without this, the
+	// next time the operator re-adds the same project the registry
+	// shows a stale URL pointing at a corpse port and the GUI can't
+	// attach. The in-process server case (prevCurrent==id) is handled
+	// by restartServerForCurrentProject above, which Stops it cleanly
+	// and writes the new project's daemon.json; nothing extra to do.
+	if removed != nil && (prevCurrent != id || newCurrent == "") {
+		a.stopDaemonForRemovedProject(removed.Dir)
+	}
 	return nil
+}
+
+// stopDaemonForRemovedProject SIGTERMs the per-project daemon (if any)
+// and removes its discovery file. Best-effort — the daemon's signal
+// handler also removes the file on graceful shutdown, but doing it here
+// makes the post-condition explicit and survives a daemon that fails
+// to clean up on its way down.
+func (a *App) stopDaemonForRemovedProject(projectDir string) {
+	if projectDir == "" {
+		return
+	}
+	target := daemonInfoPath(projectDir)
+	if target == "" {
+		return
+	}
+	raw, err := os.ReadFile(target)
+	if err != nil {
+		return
+	}
+	var info daemonInfo
+	if err := json.Unmarshal(raw, &info); err != nil {
+		_ = os.Remove(target)
+		return
+	}
+	if info.PID > 0 {
+		if proc, perr := os.FindProcess(info.PID); perr == nil {
+			_ = proc.Signal(syscall.SIGTERM)
+		}
+	}
+	_ = os.Remove(target)
 }
 
 // SwitchProject restarts the editor server pointing at the given project.
