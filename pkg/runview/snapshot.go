@@ -140,6 +140,26 @@ type SnapshotBuilder struct {
 	order     []string                  // execution_id in first-seen order; defines snapshot.Executions order
 	nodeCount map[string]map[string]int // branch_id → ir_node_id → next iteration index
 	lastSeq   int64
+	// lastResumedSeq is the seq of the most recent EventRunResumed.
+	// The monotonic guard in handleNodeStarted refuses to downgrade a
+	// terminal exec back to running on a duplicate node_started, which
+	// is the right behaviour for WS-history replay and runtime re-
+	// emission within the same execution. It is the WRONG behaviour for
+	// a genuine post-resume re-execution: when the runtime resumes from
+	// a `failed_resumable` checkpoint, it re-runs the failed node with
+	// the SAME (branch, node, iter) and therefore the same exec_id, and
+	// the guard would otherwise lock the canvas on the pre-resume
+	// terminal status forever (observed live across 10+ session-fix
+	// attempts as "pipeline running but no node currently running").
+	//
+	// We disambiguate by seq: an existing terminal exec whose LastSeq
+	// is BEFORE the last run_resumed is a pre-resume artefact, and a
+	// node_started arriving AFTER the run_resumed is a fresh attempt
+	// allowed to flip it back to running. The WS-replay scenario is
+	// preserved — those duplicate node_starteds all have seq ≤
+	// lastResumedSeq (no resume happened during the replay), so the
+	// existing.LastSeq comparison fails and the guard still kicks in.
+	lastResumedSeq int64
 }
 
 // NewSnapshotBuilder seeds a builder from the persisted Run metadata.
@@ -147,9 +167,10 @@ type SnapshotBuilder struct {
 // races run.json creation).
 func NewSnapshotBuilder(run *store.Run) *SnapshotBuilder {
 	b := &SnapshotBuilder{
-		execs:     make(map[string]*ExecutionState),
-		nodeCount: make(map[string]map[string]int),
-		lastSeq:   NoEventsSeq,
+		execs:          make(map[string]*ExecutionState),
+		nodeCount:      make(map[string]map[string]int),
+		lastSeq:        NoEventsSeq,
+		lastResumedSeq: NoEventsSeq,
 	}
 	if run != nil {
 		b.header = headerFromRun(run)
@@ -309,10 +330,40 @@ func (b *SnapshotBuilder) handleNodeStarted(evt *store.Event, branch string) {
 		if exec.Kind == "" {
 			exec.Kind = existing.Kind
 		}
-		if isTerminalExecStatus(existing.Status) {
+		// Disambiguate "stale duplicate node_started for an already-
+		// finished exec" (WS replay, runtime re-emission inside the
+		// same execution attempt) from "genuine re-execution after a
+		// run_resumed". For a post-resume re-run the runtime emits a
+		// node_started with the SAME (branch, node, iter) and therefore
+		// the same exec_id, and the existing exec — its last event
+		// landed BEFORE the resume — should not lock the canvas on its
+		// pre-resume terminal status. The seq comparison handles both
+		// cases with one rule:
+		//
+		//   existing.LastSeq < lastResumedSeq  →  pre-resume artefact,
+		//   the current node_started (seq > lastResumedSeq by construction
+		//   since we only get here after applying it) is a fresh attempt
+		//   that gets a fresh "running" status + a fresh StartedAt.
+		//
+		// Conversely, when no resume has happened (lastResumedSeq is
+		// NoEventsSeq) or the existing exec's LastSeq is already past
+		// the resume (it's the same execution stream as the duplicate),
+		// the monotonic guard kicks in as before.
+		preResumeArtefact := b.lastResumedSeq != NoEventsSeq && existing.LastSeq < b.lastResumedSeq
+		if isTerminalExecStatus(existing.Status) && !preResumeArtefact {
 			exec.Status = existing.Status
 			exec.FinishedAt = existing.FinishedAt
 			exec.Error = existing.Error
+		}
+		// On a post-resume re-execution we want a fresh started_at
+		// (the user-visible "this node has been running for Xs" timer)
+		// while still keeping FirstSeq anchored on the original event
+		// for scrubbing / log-window calculations.
+		if preResumeArtefact {
+			ts := evt.Timestamp
+			exec.StartedAt = &ts
+			exec.FinishedAt = nil
+			exec.Error = ""
 		}
 		b.execs[id] = exec
 		// Already in b.order — don't re-append, otherwise Snapshot()
@@ -457,6 +508,12 @@ func (b *SnapshotBuilder) handleRunResumed(evt *store.Event) {
 	// and resume-from-failed_resumable — neither emits an explicit
 	// run_started, so this is the only place the second window opens.
 	b.anchorActive(evt.Timestamp)
+	// Stash the resume seq so subsequent handleNodeStarted calls can
+	// distinguish "duplicate of an already-finished exec" (WS replay,
+	// pre-resume artefact) from "fresh re-execution of the checkpoint
+	// node" (resume-from-failed_resumable). See SnapshotBuilder
+	// .lastResumedSeq for the rationale.
+	b.lastResumedSeq = evt.Seq
 	// Find the most-recent paused execution and re-mark it running.
 	// In practice there is exactly one because resume can only target
 	// the checkpoint node, but iterating is cheap and avoids relying

@@ -479,6 +479,21 @@ function reduceEvents(
   // remains an idempotent step on top of the running state.
   const tail = state.events[state.events.length - 1];
   let lastSeq = tail?.seq ?? -1;
+  // Seq of the most recent run_resumed across the historical event
+  // stream plus this batch. The node_started monotonic guard uses
+  // this to recognise a post-resume re-execution (existing terminal
+  // exec_id last touched BEFORE the resume) and let it flip back to
+  // "running" — without this the canvas locks on the pre-resume
+  // terminal status forever, the long-standing "pipeline running
+  // but no node currently running" bug operators kept reporting.
+  // Pure WS-history replays carry no run_resumed past the original
+  // and therefore keep the guard intact.
+  let lastResumedSeq = -1;
+  for (const e of state.events) {
+    if (e.type === "run_resumed" && e.seq > lastResumedSeq) {
+      lastResumedSeq = e.seq;
+    }
+  }
 
   let executionsById = state.executionsById;
   let inFlightToolsByExec = state.inFlightToolsByExec;
@@ -554,23 +569,44 @@ function reduceEvents(
         // on WS reconnect, REST snapshot landing after the WS already
         // saw node_finished, runtime re-emitting the same iter for any
         // reason) must NEVER downgrade a terminal state back to
-        // "running". Preserve the full terminal snapshot and just bump
-        // the event seq markers — that fixes the "finished node keeps
-        // showing as running" glitch the operator reported as a
-        // recurring UI issue.
-        if (
-          existing &&
+        // "running" — the original "finished node keeps showing as
+        // running" glitch.
+        //
+        // EXCEPT after a run_resumed: the runtime re-executes the
+        // failed checkpoint node with the SAME (branch, node, iter),
+        // so the exec_id collides with the pre-resume terminal entry.
+        // If we blindly preserve "finished" the canvas locks on the
+        // pre-resume snapshot forever — the long-standing "pipeline
+        // running but no node currently running" bug. Compare
+        // existing.last_seq vs lastResumedSeq: when the terminal
+        // entry was last touched BEFORE the most recent run_resumed
+        // event, it is a pre-resume artefact and a node_started
+        // arriving now is a fresh attempt that gets to flip status.
+        const isTerminal =
+          existing !== undefined &&
           (existing.status === "finished" ||
             existing.status === "failed" ||
-            existing.status === "paused_waiting_human")
-        ) {
+            existing.status === "paused_waiting_human");
+        const preResumeArtefact =
+          isTerminal &&
+          lastResumedSeq >= 0 &&
+          existing!.last_seq < lastResumedSeq;
+        if (isTerminal && !preResumeArtefact) {
           executionsById.set(id, {
-            ...existing,
+            ...existing!,
             current_event_seq: evt.seq,
             last_seq: evt.seq,
           });
           break;
         }
+        // Fresh execution or post-resume re-run: issue a clean
+        // running entry. On post-resume we keep first_seq anchored
+        // on the original event (scrubber + log-window still find
+        // the historical attempt) but reset started_at / finished_at /
+        // error so the user-visible "running for Xs" timer restarts.
+        const baseStartedAt = preResumeArtefact
+          ? evt.timestamp
+          : existing?.started_at ?? evt.timestamp;
         executionsById.set(id, {
           execution_id: id,
           ir_node_id: evt.node_id,
@@ -578,7 +614,7 @@ function reduceEvents(
           loop_iteration: iter,
           status: "running",
           kind: existing?.kind ?? kind,
-          started_at: existing?.started_at ?? evt.timestamp,
+          started_at: baseStartedAt,
           current_event_seq: evt.seq,
           first_seq: existing?.first_seq ?? evt.seq,
           last_seq: evt.seq,
@@ -677,6 +713,12 @@ function reduceEvents(
         break;
       }
       case "run_resumed": {
+        // Update lastResumedSeq so subsequent node_started events in
+        // this same batch recognise the post-resume re-execution
+        // pattern (see comment on lastResumedSeq above).
+        if (evt.seq > lastResumedSeq) {
+          lastResumedSeq = evt.seq;
+        }
         const last = lastPausedExec(executionsById);
         if (last) {
           ensureExecCopy();

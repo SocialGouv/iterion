@@ -16,6 +16,18 @@ export function buildExecutionsAt(
 ): ExecutionState[] {
   const execs = new Map<string, ExecutionState>();
   const counts = new Map<string, number>();
+  // Seq of the most recent run_resumed seen during this fold. The
+  // monotonic guard in the node_started case below refuses to flip
+  // a terminal exec back to "running" on a duplicate node_started,
+  // which is correct for WS-history replay and runtime re-emissions
+  // inside the same execution attempt. It is wrong for a true
+  // post-resume re-execution: the runtime re-runs the failed node
+  // with the SAME (branch, node, iter) so the exec_id collides, and
+  // the guard would otherwise lock the canvas on the pre-resume
+  // terminal status. The seq comparison disambiguates: an existing
+  // terminal exec whose last_seq predates the latest run_resumed is
+  // a pre-resume artefact and the new node_started is a fresh attempt.
+  let lastResumedSeq = -1;
 
   const currentExecFor = (
     branch: string,
@@ -47,19 +59,30 @@ export function buildExecutionsAt(
         // "running". The time-travel scrubber would otherwise lose
         // finished_at when replaying a stream that includes a recovery
         // retry that the runtime emitted as a fresh node_started.
-        if (
+        const isTerminal =
           existing &&
           (existing.status === "finished" ||
             existing.status === "failed" ||
-            existing.status === "paused_waiting_human")
-        ) {
+            existing.status === "paused_waiting_human");
+        const preResumeArtefact =
+          isTerminal && lastResumedSeq >= 0 && existing!.last_seq < lastResumedSeq;
+        if (isTerminal && !preResumeArtefact) {
           execs.set(id, {
-            ...existing,
+            ...existing!,
             current_event_seq: evt.seq,
             last_seq: evt.seq,
           });
           break;
         }
+        // Fresh execution (no existing entry) OR post-resume re-run of a
+        // previously-finished exec. In the post-resume case we keep
+        // first_seq anchored on the original event (so the scrubber
+        // still finds the historical log window) but issue a fresh
+        // started_at and clear finished_at / error since this is a new
+        // attempt the user wants to watch from now.
+        const baseStartedAt = preResumeArtefact
+          ? evt.timestamp
+          : existing?.started_at ?? evt.timestamp;
         execs.set(id, {
           execution_id: id,
           ir_node_id: evt.node_id,
@@ -67,7 +90,7 @@ export function buildExecutionsAt(
           loop_iteration: iter,
           status: "running",
           kind: existing?.kind ?? kind,
-          started_at: existing?.started_at ?? evt.timestamp,
+          started_at: baseStartedAt,
           current_event_seq: evt.seq,
           first_seq: existing?.first_seq ?? evt.seq,
           last_seq: evt.seq,
@@ -113,6 +136,10 @@ export function buildExecutionsAt(
         break;
       }
       case "run_resumed": {
+        // Stash the resume seq so subsequent node_started events can
+        // recognise a post-resume re-execution and override the
+        // monotonic terminal guard. See lastResumedSeq above.
+        lastResumedSeq = evt.seq;
         // Flip the latest paused execution back to running.
         let last: ExecutionState | null = null;
         for (const e of execs.values()) {

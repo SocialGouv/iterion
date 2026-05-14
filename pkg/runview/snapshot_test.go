@@ -162,6 +162,82 @@ func TestSnapshotReducer_MonotonicGuardAgainstStaleStartAfterFailure(t *testing.
 	}
 }
 
+func TestSnapshotReducer_PostResumeReExecutionFlipsBackToRunning(t *testing.T) {
+	// Long-standing recurring bug: after a `failed_resumable` resume,
+	// the runtime re-executes the failed checkpoint node with the SAME
+	// (branch, node, iter) — therefore the same exec_id. The monotonic
+	// guard in handleNodeStarted refuses to downgrade terminal → running
+	// on a duplicate, which is correct for WS-history replay but locks
+	// the canvas on the pre-resume terminal status when a true re-
+	// execution arrives. Operators report it as "pipeline running but
+	// no node currently running" across many sessions.
+	//
+	// The fix tracks lastResumedSeq: an existing terminal exec whose
+	// LastSeq predates the latest run_resumed is a pre-resume artefact
+	// and a node_started with seq > lastResumedSeq must flip it back
+	// to running with fresh started_at / cleared finished_at / cleared
+	// error.
+	b := NewSnapshotBuilder(&store.Run{ID: "r1", Status: store.RunStatusRunning})
+	events := []*store.Event{
+		evt(0, store.EventNodeStarted, "", "commit_changes", map[string]interface{}{"iteration": 5}),
+		evt(1, store.EventRunFailed, "", "commit_changes", map[string]interface{}{"error": "git add failed"}),
+		evt(2, store.EventRunResumed, "", "", nil),
+		evt(3, store.EventNodeStarted, "", "commit_changes", map[string]interface{}{"iteration": 5}),
+	}
+	for _, e := range events {
+		b.Apply(e)
+	}
+	snap := b.Snapshot()
+	if got := len(snap.Executions); got != 1 {
+		t.Fatalf("Executions = %d, want 1 (post-resume re-run keeps the same exec_id)", got)
+	}
+	ex := snap.Executions[0]
+	if ex.Status != ExecStatusRunning {
+		t.Errorf("Status = %q, want running (post-resume re-execution must flip back)", ex.Status)
+	}
+	if ex.Error != "" {
+		t.Errorf("Error = %q, want empty (cleared on fresh attempt)", ex.Error)
+	}
+	if ex.FinishedAt != nil {
+		t.Errorf("FinishedAt = %v, want nil (cleared on fresh attempt)", ex.FinishedAt)
+	}
+	// FirstSeq stays anchored on the original event (the pre-resume
+	// attempt) so scrubbing / log-window calculations still find the
+	// historical execution.
+	if ex.FirstSeq != 0 {
+		t.Errorf("FirstSeq = %d, want 0 (anchored on first attempt)", ex.FirstSeq)
+	}
+	// LastSeq is bumped to the new attempt's seq.
+	if ex.LastSeq != 3 {
+		t.Errorf("LastSeq = %d, want 3 (latest event)", ex.LastSeq)
+	}
+}
+
+func TestSnapshotReducer_PreResumeDuplicateStillGuarded(t *testing.T) {
+	// Defense-in-depth for the post-resume fix: a duplicate
+	// node_started that arrives BEFORE any run_resumed (e.g. classic
+	// WS history replay) must STILL preserve the terminal status.
+	// The lastResumedSeq comparison handles both cases with one rule.
+	b := NewSnapshotBuilder(&store.Run{ID: "r1", Status: store.RunStatusRunning})
+	events := []*store.Event{
+		evt(0, store.EventNodeStarted, "", "build", map[string]interface{}{"iteration": 0}),
+		evt(1, store.EventNodeFinished, "", "build", nil),
+		// Stale duplicate from a WS replay — no resume in between.
+		evt(2, store.EventNodeStarted, "", "build", map[string]interface{}{"iteration": 0}),
+	}
+	for _, e := range events {
+		b.Apply(e)
+	}
+	snap := b.Snapshot()
+	if len(snap.Executions) != 1 {
+		t.Fatalf("Executions = %d, want 1", len(snap.Executions))
+	}
+	if snap.Executions[0].Status != ExecStatusFinished {
+		t.Errorf("Status = %q, want finished (no run_resumed between, guard still applies)",
+			snap.Executions[0].Status)
+	}
+}
+
 func TestSnapshotReducer_MonotonicGuardAgainstStaleStartAfterPause(t *testing.T) {
 	// A node paused waiting for human input must not flip back to
 	// running on a stale node_started — only run_resumed transitions
