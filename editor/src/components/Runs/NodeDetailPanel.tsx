@@ -208,15 +208,23 @@ export default function NodeDetailPanel({
   const toolCalls = useToolCalls(matching);
   const pause = usePauseInfo(matching);
 
-  // Tab default depends on what's most useful for the node kind. Reset
-  // it on exec change so navigating between executions surfaces the
-  // primary view first; let the user override afterwards.
+  // Tab default depends on what's most useful for the node kind.
+  // We only reset on *node* change (not iteration change within the
+  // same node) so flipping between iterations keeps whichever tab the
+  // user was reading. Each iteration's tab content rerenders against
+  // the new exec via the `matching` events feed.
+  //
+  // Exception: a paused exec auto-focuses the Pause tab — that one is
+  // load-bearing for the human-input flow, so we promote it whenever
+  // the active iteration's status is paused (even mid-node).
+  const nodeId = exec?.ir_node_id ?? null;
+  const isPausedExec = exec?.status === "paused_waiting_human";
   useEffect(() => {
     if (!exec) {
       setActiveTab(null);
       return;
     }
-    if (exec.status === "paused_waiting_human") {
+    if (isPausedExec) {
       setActiveTab("pause");
       return;
     }
@@ -224,7 +232,11 @@ export default function NodeDetailPanel({
     if (kind === "agent" || kind === "judge") setActiveTab("trace");
     else if (kind === "tool") setActiveTab("tools");
     else setActiveTab("events");
-  }, [exec]);
+    // exec is referenced for kind/status reads above, but we only want
+    // the default-tab logic to fire on node identity change — not on
+    // every exec swap (iteration flips reuse the user's pick).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodeId, isPausedExec]);
 
   if (!exec) {
     return (
