@@ -27,14 +27,15 @@ interface Props {
   runId: string;
   // The .iter source path for this run; used to wire "Open in editor".
   filePath?: string;
-  // All executions of the selected IR node, ordered by loop_iteration.
+  // All executions of the selected IR node, ordered by start time.
   // Empty array = no node selected. The active `exec` is derived from
-  // this list + `selectedIteration` inside the panel so the iteration
-  // pills can switch which exec drives every tab without round-trip
-  // through the parent.
+  // this list + `selectedIteration` (a 0-based array index) inside the
+  // panel so the iteration pills can switch which exec drives every
+  // tab without round-trip through the parent.
   executions: ExecutionState[];
+  // 0-based index into `executions` of the currently selected attempt.
   selectedIteration: number;
-  onSelectIteration: (nodeId: string, iteration: number) => void;
+  onSelectIteration: (nodeId: string, index: number) => void;
   events: RunEvent[];
   // followLive == true → the parent is auto-tracking the running
   // execution; clicking the toggle off pins the panel on the current
@@ -114,16 +115,18 @@ function IterationPills({
   onSelect,
 }: {
   executions: ExecutionState[];
+  // 0-based index into `executions` of the currently selected attempt.
   selectedIteration: number;
-  onSelect: (iteration: number) => void;
+  // Callback receives the selected attempt's array index.
+  onSelect: (index: number) => void;
 }) {
   return (
     <div className="mt-1 flex flex-wrap items-center gap-1">
       <span className="text-[9px] text-fg-subtle mr-0.5">iter:</span>
-      {executions.map((e) => {
-        const isSelected = e.loop_iteration === selectedIteration;
+      {executions.map((e, idx) => {
+        const isSelected = idx === selectedIteration;
         const s = statusClasses(e.status);
-        const color = iterationColor(e.loop_iteration);
+        const color = iterationColor(idx);
         // Selection is rendered as a thicker ring in accent color so
         // the active pill pops; the iteration color stays as the
         // fill. Status drives extra cues:
@@ -140,12 +143,12 @@ function IterationPills({
           <button
             key={e.execution_id}
             type="button"
-            onClick={() => onSelect(e.loop_iteration)}
-            title={`iter ${e.loop_iteration + 1} · ${s.label}`}
+            onClick={() => onSelect(idx)}
+            title={`iter ${idx + 1} · ${s.label}`}
             className={`inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[9px] font-mono text-fg-default transition-all ${pulse} ${opacity} ${selectedRing} ${failedRing}`}
             style={{ backgroundColor: `${color}66` }}
           >
-            {e.loop_iteration + 1}
+            {idx + 1}
           </button>
         );
       })}
@@ -171,17 +174,15 @@ export default function NodeDetailPanel({
   const [artifactVersions, setArtifactVersions] = useState<ArtifactSummary[]>([]);
   const [activeTab, setActiveTab] = useState<TabValue | null>(null);
 
-  // The active execution drives every tab. Prefer the user-selected
-  // iteration; fall back to the latest available exec so the panel
-  // stays useful when the selection points to an iteration that
-  // hasn't been emitted yet (e.g. transient race during a fan-in).
+  // The active execution drives every tab. selectedIteration is the
+  // 0-based index in `executions` (NOT a scalar loop_iteration — see
+  // RunCanvasIR.defaultIterationFor comment). Clamp on out-of-range
+  // so the panel stays useful when the selection points past the
+  // current array length (e.g. transient race during a fan-in).
   const exec = useMemo<ExecutionState | null>(() => {
     if (executions.length === 0) return null;
-    return (
-      executions.find((e) => e.loop_iteration === selectedIteration) ??
-      executions[executions.length - 1] ??
-      null
-    );
+    const i = Math.min(Math.max(selectedIteration, 0), executions.length - 1);
+    return executions[i] ?? null;
   }, [executions, selectedIteration]);
 
   // Load only the version index here; ArtifactDiff handles fetching the
@@ -401,8 +402,9 @@ function DetailHeader({
   filePath?: string;
   exec: ExecutionState;
   executions: ExecutionState[];
+  // 0-based index into `executions` of the currently selected attempt.
   selectedIteration: number;
-  onSelectIteration: (nodeId: string, iteration: number) => void;
+  onSelectIteration: (nodeId: string, index: number) => void;
   events: RunEvent[];
   followLive?: boolean;
   onToggleFollowLive?: () => void;
@@ -470,7 +472,22 @@ function DetailHeader({
           <div className="text-fg-subtle text-[10px] flex flex-wrap gap-x-3 gap-y-0.5">
             {exec.kind && <span>kind: {exec.kind}</span>}
             <span>branch: {exec.branch_id}</span>
-            <span>iter: {exec.loop_iteration + 1}</span>
+            <span>
+              iter:{" "}
+              {(() => {
+                // Display 1-based position in the start-ordered
+                // executions array. Scalar `loop_iteration` is no
+                // longer unique post-Option-3 (the runtime's
+                // currentLoopIteration returns max() across containing
+                // loops so an outer-loop counter can dominate every
+                // attempt of an inner loop), so it cannot be shown
+                // raw here.
+                const idx = executions.findIndex(
+                  (e) => e.execution_id === exec.execution_id,
+                );
+                return idx >= 0 ? idx + 1 : 1;
+              })()}
+            </span>
             {duration && <span>duration: {duration}</span>}
             {tokens > 0 && <span>tokens: {tokens.toLocaleString()}</span>}
             {costUsd > 0 && (

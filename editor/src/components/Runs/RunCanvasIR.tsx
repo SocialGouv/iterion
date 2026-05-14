@@ -276,9 +276,13 @@ export default function RunCanvasIR({
       if (list) list.push(ex);
       else m.set(ex.ir_node_id, [ex]);
     }
-    // Keep iteration order so the timeline pips render left-to-right.
+    // Order pips left-to-right by START time (first_seq). Scalar
+    // `loop_iteration` is no longer monotonic post-Option-3 — the
+    // runtime's currentLoopIteration returns max() across containing
+    // loops so an outer-loop counter can dominate every attempt of an
+    // inner loop, scrambling the pip order if we sorted on it.
     for (const list of m.values()) {
-      list.sort((a, b) => a.loop_iteration - b.loop_iteration);
+      list.sort((a, b) => a.first_seq - b.first_seq);
     }
     return m;
   }, [executions]);

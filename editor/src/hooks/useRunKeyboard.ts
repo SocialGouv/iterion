@@ -77,20 +77,22 @@ export function useRunKeyboard({
 
       if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
         if (!selectedNodeId) return;
+        // Sort by first_seq (start order) to match RunCanvasIR /
+        // RunView ordering. Stepping is by INDEX in this list, the
+        // same semantic iterationByNode stores — see RunCanvasIR's
+        // defaultIterationFor comment for the motivation.
         const matching = executions
           .filter((ex) => ex.ir_node_id === selectedNodeId)
-          .map((ex) => ex.loop_iteration)
-          .sort((a, b) => a - b);
+          .sort((a, b) => a.first_seq - b.first_seq);
         if (matching.length === 0) return;
         e.preventDefault();
-        const current = iterationByNode.get(selectedNodeId) ?? matching[matching.length - 1]!;
-        const idx = matching.indexOf(current);
-        if (idx < 0) return;
-        const nextIdx =
+        const last = matching.length - 1;
+        const current = iterationByNode.get(selectedNodeId) ?? last;
+        const clamped = Math.min(Math.max(current, 0), last);
+        const next =
           e.key === "ArrowLeft"
-            ? Math.max(0, idx - 1)
-            : Math.min(matching.length - 1, idx + 1);
-        const next = matching[nextIdx]!;
+            ? Math.max(0, clamped - 1)
+            : Math.min(last, clamped + 1);
         if (next !== current) onSelectIteration(selectedNodeId, next);
       }
     };

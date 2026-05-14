@@ -461,14 +461,22 @@ export default function RunView() {
   // picked iteration. We expose the full per-node execution list plus
   // the resolved iteration so the panel can render an in-place pill
   // strip and switch which exec drives the tabs without round-tripping
-  // through the parent. Executions are sorted ascending by
-  // loop_iteration to keep pip order stable.
+  // through the parent. Sort by `first_seq` (start order) — `loop_iteration`
+  // is no longer monotonic post-Option-3 (outer-loop counters can
+  // dominate inner ones for many iterations), so sorting on it would
+  // scramble the pill order vs. canvas pill order.
+  //
+  // Note: `selectedIteration` here (and in iterationByNode) is a
+  // 0-based array INDEX, not the scalar `loop_iteration` field on
+  // ExecutionState. See RunCanvasIR.defaultIterationFor for the
+  // motivation (nested loops produce multiple execs with the same
+  // `loop_iteration`).
   const selectedNodeExecutions = useMemo(() => {
     if (!wfSelectedNodeId) return [] as ExecutionState[];
     return displayedExecutions
       .filter((e) => e.ir_node_id === wfSelectedNodeId)
       .slice()
-      .sort((a, b) => a.loop_iteration - b.loop_iteration);
+      .sort((a, b) => a.first_seq - b.first_seq);
   }, [wfSelectedNodeId, displayedExecutions]);
 
   const selectedNodeIteration = useMemo(() => {
@@ -481,16 +489,16 @@ export default function RunView() {
 
   // Kept as a local resolved value for the EventLog filter + queued
   // banner predicate below. Mirrors the resolution the detail panel
-  // does internally.
+  // does internally. Clamps so the panel stays useful when the index
+  // points past the current array length (e.g. transient race
+  // during a fan-in).
   const detailExec = useMemo(() => {
     if (selectedNodeExecutions.length === 0) return null;
-    return (
-      selectedNodeExecutions.find(
-        (e) => e.loop_iteration === selectedNodeIteration,
-      ) ??
-      selectedNodeExecutions[selectedNodeExecutions.length - 1] ??
-      null
+    const i = Math.min(
+      Math.max(selectedNodeIteration, 0),
+      selectedNodeExecutions.length - 1,
     );
+    return selectedNodeExecutions[i] ?? null;
   }, [selectedNodeExecutions, selectedNodeIteration]);
 
   if (!runId) {
