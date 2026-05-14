@@ -64,12 +64,13 @@ export interface LLMMeta {
 interface IRNodeData {
   id: string;
   kind: string;
-  // All executions of this IR node, sorted by loop_iteration ascending.
-  // Empty list = node hasn't been visited yet in this run.
+  // All executions of this IR node, ordered by start time. Empty list
+  // = node hasn't been visited yet in this run.
   executions: ExecutionState[];
-  // Currently selected iteration index. When >0 executions exist and
-  // selectedIteration matches one of them, that exec drives the
-  // border + status; otherwise we fall back to the latest.
+  // 0-based index into `executions` of the currently selected attempt.
+  // NOT a scalar `loop_iteration` — multiple executions can share that
+  // (see comment on RunCanvasIR.defaultIterationFor). Clamped to the
+  // valid range when the executions array grows.
   selectedIteration: number;
   isEntry: boolean;
   selected: boolean;
@@ -88,10 +89,9 @@ export default function IRNode({ data }: NodeProps) {
     ? meta.model.replace(/\$\{.*?\}/g, "env")
     : undefined;
 
-  const activeExec =
-    executions.find((e) => e.loop_iteration === selectedIteration) ??
-    executions[executions.length - 1] ??
-    null;
+  // Clamp the index in case the executions array shrunk (run reset).
+  const activeIdx = Math.min(Math.max(selectedIteration, 0), executions.length - 1);
+  const activeExec = executions[activeIdx] ?? null;
   const status = activeExec?.status ?? "none";
   const c = statusClasses(status);
 
@@ -105,7 +105,7 @@ export default function IRNode({ data }: NodeProps) {
       // borders". Subtle so it doesn't fight the status color.
       style={
         executions.length > 0
-          ? { boxShadow: `inset 0 0 0 2px ${iterationColor(selectedIteration)}33` }
+          ? { boxShadow: `inset 0 0 0 2px ${iterationColor(activeIdx)}33` }
           : undefined
       }
     >
@@ -131,7 +131,7 @@ export default function IRNode({ data }: NodeProps) {
             ? "—"
             : executions.length === 1
             ? status
-            : `${status} · iter ${selectedIteration + 1}/${executions.length}`}
+            : `${status} · iter ${activeIdx + 1}/${executions.length}`}
         </span>
       </div>
 
@@ -201,36 +201,44 @@ function IterationTimeline({
   onSelectIteration,
 }: {
   nodeId: string;
-  // Already sorted by loop_iteration ascending — RunCanvasIR.execsByNode
-  // does the sort once at grouping time so we don't re-sort per render.
+  // Ordered by start time — RunCanvasIR groups + the snapshot reducer
+  // preserves start order. Indexing into this array is the per-attempt
+  // identifier the UI uses (scalar loop_iteration is not unique under
+  // Option 3 nested-loop exec_ids).
   executions: ExecutionState[];
+  // 0-based index into `executions` of the currently selected attempt.
   selectedIteration: number;
-  onSelectIteration: (nodeId: string, iteration: number) => void;
+  // Callback receives the selected attempt's array index.
+  onSelectIteration: (nodeId: string, index: number) => void;
 }) {
   const overflow = executions.length > INLINE_PIPS_MAX;
   // When overflowing, show INLINE_PIPS_MAX-1 most-recent pips + the
-  // "+N" affordance. If the selected iteration falls outside that
+  // "+N" affordance. If the selected attempt falls outside that
   // window, also pin it inline so the user always sees what they
   // currently have selected.
-  let inline: ExecutionState[];
-  let extra: ExecutionState[];
+  let inline: Array<{ exec: ExecutionState; index: number }>;
+  let extra: Array<{ exec: ExecutionState; index: number }>;
+  const indexed = executions.map((exec, index) => ({ exec, index }));
   if (!overflow) {
-    inline = executions;
+    inline = indexed;
     extra = [];
   } else {
-    const tail = executions.slice(-(INLINE_PIPS_MAX - 1));
-    const tailSet = new Set(tail.map((e) => e.execution_id));
-    const selectedExec = executions.find(
-      (e) => e.loop_iteration === selectedIteration,
-    );
-    if (selectedExec && !tailSet.has(selectedExec.execution_id)) {
+    const tail = indexed.slice(-(INLINE_PIPS_MAX - 1));
+    const tailSet = new Set(tail.map((e) => e.index));
+    if (selectedIteration >= 0 && !tailSet.has(selectedIteration)) {
       // Insert the selected pip at the front, dropping the oldest
       // tail entry to keep the strip width bounded.
-      inline = [selectedExec, ...tail.slice(1)];
+      const sel = indexed[selectedIteration];
+      if (sel) {
+        inline = [sel, ...tail.slice(1)];
+      } else {
+        inline = tail;
+      }
     } else {
       inline = tail;
     }
-    extra = executions.filter((e) => !inline.includes(e));
+    const inlineIdxSet = new Set(inline.map((e) => e.index));
+    extra = indexed.filter((e) => !inlineIdxSet.has(e.index));
   }
 
   return (
@@ -242,12 +250,13 @@ function IterationTimeline({
         e.stopPropagation();
       }}
     >
-      {inline.map((exec) => (
+      {inline.map(({ exec, index }) => (
         <IterationPip
           key={exec.execution_id}
           exec={exec}
-          selected={exec.loop_iteration === selectedIteration}
-          onClick={() => onSelectIteration(nodeId, exec.loop_iteration)}
+          index={index}
+          selected={index === selectedIteration}
+          onClick={() => onSelectIteration(nodeId, index)}
         />
       ))}
       {extra.length > 0 && (
@@ -255,7 +264,7 @@ function IterationTimeline({
           label={`+${extra.length}`}
           executions={extra}
           selectedIteration={selectedIteration}
-          onSelectIteration={(it) => onSelectIteration(nodeId, it)}
+          onSelectIteration={(idx) => onSelectIteration(nodeId, idx)}
         />
       )}
     </div>
@@ -264,15 +273,16 @@ function IterationTimeline({
 
 function IterationPip({
   exec,
+  index,
   selected,
   onClick,
 }: {
   exec: ExecutionState;
+  index: number;
   selected: boolean;
   onClick: () => void;
 }) {
-  const iter = exec.loop_iteration;
-  const palette = iterationColor(iter);
+  const palette = iterationColor(index);
   const statusGlyph = statusClasses(exec.status).glyph;
   return (
     <button
@@ -291,9 +301,9 @@ function IterationPip({
         height: 16,
         padding: "0 3px",
       }}
-      title={`Iteration ${iter + 1} · ${exec.status}`}
+      title={`Iteration ${index + 1} · ${exec.status}`}
     >
-      {iter + 1}
+      {index + 1}
       <span className="ml-0.5">{statusGlyph}</span>
     </button>
   );
@@ -306,9 +316,10 @@ function OverflowPopover({
   onSelectIteration,
 }: {
   label: string;
-  executions: ExecutionState[];
+  // Pre-indexed so we can pass the array position straight through.
+  executions: Array<{ exec: ExecutionState; index: number }>;
   selectedIteration: number;
-  onSelectIteration: (iteration: number) => void;
+  onSelectIteration: (index: number) => void;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -331,13 +342,14 @@ function OverflowPopover({
       }
     >
       <div className="grid grid-cols-4 gap-1 p-2 max-w-[180px]">
-        {executions.map((exec) => (
+        {executions.map(({ exec, index }) => (
           <IterationPip
             key={exec.execution_id}
             exec={exec}
-            selected={exec.loop_iteration === selectedIteration}
+            index={index}
+            selected={index === selectedIteration}
             onClick={() => {
-              onSelectIteration(exec.loop_iteration);
+              onSelectIteration(index);
               setOpen(false);
             }}
           />

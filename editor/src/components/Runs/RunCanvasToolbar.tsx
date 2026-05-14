@@ -25,6 +25,8 @@ interface Props {
 // editor's CanvasToolbar (Fit / layout direction) plus a run-only
 // Focus-running action. Kept inline (no popover) since the action set
 // is small and discoverability matters more than chrome economy here.
+// Positioning is owned by the caller (sits next to the status filter
+// chips in RunCanvasIR's top-right strip) so this is just a flex row.
 export default function RunCanvasToolbar({
   onFitView,
   onFocusRunning,
@@ -43,7 +45,7 @@ export default function RunCanvasToolbar({
       ? "Center on the running node"
       : `Center on the ${runningCount} running nodes`;
   return (
-    <div className="absolute top-2 right-2 z-40 flex gap-1">
+    <div className="flex items-center gap-1">
       <IconButton
         size="sm"
         variant="secondary"

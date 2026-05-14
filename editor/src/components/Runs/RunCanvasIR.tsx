@@ -121,24 +121,31 @@ function nodeMatchesFilters(
   return false;
 }
 
-// Compute the "current" iteration for an IR node — the one we want to
+// Compute the "current" iteration INDEX for an IR node — i.e. the
+// 0-based position in the (start-ordered) executions array we want to
 // land on when the user first opens the run console. Priority is the
-// in-flight iteration first, then a paused one, then the most recent
-// finished. Returns 0 when there are no executions yet.
+// in-flight execution first, then a paused one, then the latest
+// (last-started) one. Returns 0 when there are no executions yet.
+//
+// Index semantics — NOT scalar `loop_iteration` — because Option 3
+// nested-loop exec_ids can produce multiple executions of the same node
+// sharing the same scalar `loop_iteration` (e.g., the runtime's
+// `currentLoopIteration` returns max() across containing loops and an
+// outer loop counter can stay stuck dominating the inner counter for
+// many iterations). Indexing into the start-ordered array is the only
+// stable per-execution identifier the UI can key on.
 export function defaultIterationFor(execs: ExecutionState[]): number {
   if (execs.length === 0) return 0;
-  // Index iterations so we can scan once and return the most relevant.
-  let running: number | undefined;
-  let paused: number | undefined;
-  let maxIter = 0;
-  for (const e of execs) {
-    if (e.status === "running" && running === undefined) running = e.loop_iteration;
-    if (e.status === "paused_waiting_human" && paused === undefined) paused = e.loop_iteration;
-    if (e.loop_iteration > maxIter) maxIter = e.loop_iteration;
+  let runningIdx: number | undefined;
+  let pausedIdx: number | undefined;
+  for (let i = 0; i < execs.length; i++) {
+    const e = execs[i]!;
+    if (e.status === "running" && runningIdx === undefined) runningIdx = i;
+    if (e.status === "paused_waiting_human" && pausedIdx === undefined) pausedIdx = i;
   }
-  if (running !== undefined) return running;
-  if (paused !== undefined) return paused;
-  return maxIter;
+  if (runningIdx !== undefined) return runningIdx;
+  if (pausedIdx !== undefined) return pausedIdx;
+  return execs.length - 1;
 }
 
 type StatusFilter = "running" | "paused" | "failed";
