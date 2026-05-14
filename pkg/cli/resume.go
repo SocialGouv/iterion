@@ -30,12 +30,14 @@ type ResumeOptions struct {
 }
 
 // RunResumeWithFile resumes a paused run using a workflow file and answers.
+// iterFile is optional: when empty, the run's persisted FilePath (recorded at
+// launch — for inline launches, this is the server's inline-source cache
+// path) is used. This lets the CLI resume an inline-launched run without
+// the caller re-supplying the source.
 func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions, p *Printer) error {
 	if opts.RunID == "" {
 		return fmt.Errorf("--run-id is required")
 	}
-
-	storeDir := store.ResolveStoreDir(filepath.Dir(iterFile), opts.StoreDir)
 
 	// Resolve log level early so the logger is available for store creation.
 	level, err := iterlog.ResolveLevel(opts.LogLevel, "ITERION_LOG_LEVEL")
@@ -43,6 +45,18 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		return err
 	}
 	logger := iterlog.New(level, os.Stderr)
+
+	// When --file is omitted, the store dir cannot be discovered from its
+	// parent; the caller must pass --store-dir or be in a directory whose
+	// ancestor contains a .iterion.
+	storeAnchor := filepath.Dir(iterFile)
+	if iterFile == "" {
+		cwd, cwdErr := os.Getwd()
+		if cwdErr == nil {
+			storeAnchor = cwd
+		}
+	}
+	storeDir := store.ResolveStoreDir(storeAnchor, opts.StoreDir)
 
 	s, err := store.New(storeDir, store.WithLogger(logger))
 	if err != nil {
@@ -53,6 +67,16 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	r, err := s.LoadRun(context.Background(), opts.RunID)
 	if err != nil {
 		return fmt.Errorf("cannot load run: %w", err)
+	}
+
+	// Fall back to the FilePath persisted at launch when --file was omitted.
+	// Inline-launched runs have this pointing at the server's inline-source
+	// cache, so resume replays the exact bytes the run was launched with.
+	if iterFile == "" {
+		iterFile = r.FilePath
+		if iterFile == "" {
+			return fmt.Errorf("--file is required: run %q has no persisted workflow path", opts.RunID)
+		}
 	}
 
 	resumingFromFailure := false

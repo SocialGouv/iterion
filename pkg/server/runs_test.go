@@ -357,3 +357,46 @@ func TestResolveWorkflowPath_InlineCacheFallback(t *testing.T) {
 		t.Errorf("resolveWorkflowPath(%q, \"\") expected reject for path outside workdir+cache", outside)
 	}
 }
+
+// TestMaterializeInlineSource_NoOverwriteAcrossContent ensures that two
+// different source bodies for the same basename do NOT overwrite each
+// other's cache file. Before the content-hashed filename, run A's
+// persisted FilePath would silently start pointing at run B's bytes
+// after a fresh launch of the same recipe, so resume of A failed the
+// workflow-hash check unless the caller passed --force or re-supplied
+// source.
+func TestMaterializeInlineSource_NoOverwriteAcrossContent(t *testing.T) {
+	workDir := t.TempDir()
+	storeDir := filepath.Join(t.TempDir(), ".iterion")
+	logger := iterlog.New(iterlog.LevelError, os.Stderr)
+	srv := New(Config{WorkDir: workDir, StoreDir: storeDir}, logger)
+
+	srcA := "workflow a:\n  entry: x\n"
+	srcB := "workflow b:\n  entry: y\n"
+
+	pathA, okA := srv.materializeInlineSource("/some/where/recipe.iter", srcA)
+	if !okA {
+		t.Fatalf("materialize A failed")
+	}
+	pathB, okB := srv.materializeInlineSource("/some/where/recipe.iter", srcB)
+	if !okB {
+		t.Fatalf("materialize B failed")
+	}
+	if pathA == pathB {
+		t.Fatalf("different content must produce different cache paths: %q", pathA)
+	}
+	gotA, err := os.ReadFile(pathA)
+	if err != nil || string(gotA) != srcA {
+		t.Fatalf("cache file A content mismatch: %v %q", err, gotA)
+	}
+	gotB, err := os.ReadFile(pathB)
+	if err != nil || string(gotB) != srcB {
+		t.Fatalf("cache file B content mismatch: %v %q", err, gotB)
+	}
+
+	// Same content re-materialized → idempotent (same path).
+	pathA2, okA2 := srv.materializeInlineSource("/some/where/recipe.iter", srcA)
+	if !okA2 || pathA2 != pathA {
+		t.Fatalf("idempotent re-materialize: got (%q, %v), want %q", pathA2, okA2, pathA)
+	}
+}

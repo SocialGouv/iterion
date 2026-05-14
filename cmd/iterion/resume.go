@@ -43,7 +43,7 @@ var resumeCmd = &cobra.Command{
 func init() {
 	f := resumeCmd.Flags()
 	f.StringVar(&resumeOpts.runID, "run-id", "", "Run to resume")
-	f.StringVar(&resumeOpts.file, "file", "", "Workflow file (.iter or .bot)")
+	f.StringVar(&resumeOpts.file, "file", "", "Workflow file (.iter or .bot); defaults to the path persisted at launch")
 	f.StringVar(&resumeOpts.storeDir, "store-dir", "", "Store directory (default: .iterion)")
 	f.StringVar(&resumeOpts.answersFile, "answers-file", "", "JSON file with answers")
 	f.StringArrayVar(&resumeOpts.answerFlags, "answer", nil, "Set answer (key=value, repeatable)")
@@ -51,6 +51,6 @@ func init() {
 	f.BoolVar(&resumeOpts.force, "force", false, "Resume even if workflow source has changed")
 	f.BoolVar(&resumeOpts.background, "background", false, "Internal: managed-runner mode for the editor server (writes .pid, suppresses interactive prompts)")
 	_ = f.MarkHidden("background")
-	mustMarkRequired(resumeCmd, "run-id", "file")
+	mustMarkRequired(resumeCmd, "run-id")
 	rootCmd.AddCommand(resumeCmd)
 }

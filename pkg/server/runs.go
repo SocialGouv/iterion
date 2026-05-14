@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -519,16 +521,19 @@ func (s *Server) resolveCachedInlineSource(filePath string) (string, bool) {
 
 // materializeInlineSource writes the SPA-provided inline .iter content
 // into a stable per-store cache directory and returns its absolute
-// path. The cache lives at <storeDir>/inline-sources/<basename> so:
+// path. The cache lives at <storeDir>/inline-sources/<sha12>-<basename>:
 //   - the file persists for the lifetime of the run store (resume,
 //     inspect, report all keep working without needing the original
 //     buffer to still be open in the editor);
-//   - launches that re-import the same buffer overwrite the cached
-//     copy idempotently, never leaking stale duplicates.
+//   - identical source content reuses the same cache file (idempotent);
+//   - different content for the same basename does NOT overwrite —
+//     each run's persisted FilePath uniquely identifies the bytes it
+//     was launched with, so resume always replays the original source
+//     even when a newer launch of the same recipe touched the cache.
 //
-// When filePath is empty (an editor-only buffer that was never
-// saved on disk), we synthesise a basename of "inline.iter" so the
-// cache layout stays predictable.
+// When filePath is empty (an editor-only buffer that was never saved on
+// disk), we synthesise a basename of "inline.iter" so the cache layout
+// stays predictable.
 //
 // Returns ok=false when no writable cache dir can be derived — the
 // caller surfaces a 400 rather than letting the subprocess ENOENT.
@@ -544,7 +549,9 @@ func (s *Server) materializeInlineSource(filePath, source string) (string, bool)
 	if err := os.MkdirAll(cacheRoot, 0o755); err != nil {
 		return "", false
 	}
-	dst := filepath.Join(cacheRoot, base)
+	sum := sha256.Sum256([]byte(source))
+	prefix := hex.EncodeToString(sum[:6])
+	dst := filepath.Join(cacheRoot, prefix+"-"+base)
 	if err := os.WriteFile(dst, []byte(source), 0o644); err != nil {
 		return "", false
 	}
