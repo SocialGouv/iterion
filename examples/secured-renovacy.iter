@@ -2088,6 +2088,17 @@ tool prepare_commit:
     for (const raw of (tracked + "\n" + untracked).split("\n")) {
       const p = raw.replace(/\r?$/, "").trim();
       if (!p) continue;
+      // Filter iterion's own ephemeral artefacts. The script:js tool
+      // executor creates `.iterion-script-<random>.<ext>` temp files
+      // in the workspace (see pkg/backend/model/executor.go
+      // executeToolNodeScript: os.CreateTemp(wd, ".iterion-script-*"+ext))
+      // so the bind-mount in the sandbox sees them. They are removed
+      // on tool exit, but during prepare_commit's own run they ARE
+      // listed by `git ls-files --others`, and a subsequent commit_
+      // changes that tries `git add` after the temp file has been
+      // cleaned up errors with "pathspec did not match any files".
+      // Drop them defensively.
+      if (/^\.iterion-script-/.test(p)) continue;
       if (seen.has(p)) continue;
       seen.add(p);
       files.push(p);
