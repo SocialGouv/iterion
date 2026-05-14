@@ -5,6 +5,7 @@ package main
 import (
 	"encoding/json"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -175,6 +176,60 @@ func daemonAlive(pid int, url string) bool {
 	}
 	_ = conn.Close()
 	return true
+}
+
+// activeRunsOnDaemon probes a daemon's HTTP surface for in-flight runs
+// and returns the count of entries flagged Active=true (i.e. runs held by
+// the daemon's runview.Manager — the only ones that would actually be
+// interrupted by SIGTERM). Returns -1 on any probe failure so callers fall
+// back to the safe path (don't auto-stop a daemon we can't introspect).
+//
+// Timeout is intentionally tight: this blocks the GUI shutdown path.
+func activeRunsOnDaemon(url string) int {
+	if url == "" {
+		return -1
+	}
+	base := strings.TrimRight(url, "/")
+	client := &http.Client{Timeout: 1500 * time.Millisecond}
+	resp, err := client.Get(base + "/api/runs?status=running")
+	if err != nil {
+		return -1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return -1
+	}
+	var body struct {
+		Runs []struct {
+			Active bool `json:"active"`
+		} `json:"runs"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return -1
+	}
+	n := 0
+	for _, r := range body.Runs {
+		if r.Active {
+			n++
+		}
+	}
+	return n
+}
+
+// totalActiveRunsAcrossDaemons sums activeRunsOnDaemon for every entry. As
+// soon as a single probe fails (returns -1), the function bails with -1 so
+// onBeforeClose falls back to the confirmation dialog rather than silently
+// killing a daemon we can't verify.
+func totalActiveRunsAcrossDaemons(daemons []daemonInfo) int {
+	total := 0
+	for _, d := range daemons {
+		n := activeRunsOnDaemon(d.URL)
+		if n < 0 {
+			return -1
+		}
+		total += n
+	}
+	return total
 }
 
 // encodeProjectDirKey mirrors pkg/store/storedir.go's encodeWorkDirKey

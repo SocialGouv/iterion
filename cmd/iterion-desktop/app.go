@@ -167,6 +167,15 @@ func (a *App) onBeforeClose(ctx context.Context) bool {
 		return false
 	}
 
+	// Silent auto-stop path: if no daemon holds an in-flight run, SIGTERM
+	// them all and let the GUI exit without prompting. Probe failure (-1)
+	// falls through to the dialog — we don't want to kill a daemon whose
+	// HTTP surface is wedged but might still be processing work.
+	if totalActiveRunsAcrossDaemons(daemons) == 0 {
+		stopAllDaemons(daemons)
+		return false
+	}
+
 	// Build a human-readable project list ("proj-a, proj-b" style).
 	// The discovery file doesn't carry a friendly name; use the
 	// project dir's basename, which is what the SPA's project picker
