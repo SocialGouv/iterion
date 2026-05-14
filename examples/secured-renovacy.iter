@@ -1256,6 +1256,18 @@ schema candidate:
   ## review loop (patches are semver-safe; the operator's CI catches
   ## anything that slipped through at PR time).
   only_patches_attempted: bool
+  ## remaining_count is the number of survivor candidates left untouched
+  ## when the loop exits. Distinguishes two reasons the loop ends:
+  ##   remaining_count = 0  → run reached natural completion
+  ##   remaining_count > 0  → max_packages_per_run cap hit; operator
+  ##                          should bump the cap or schedule another
+  ##                          run to finish the backlog.
+  ## Surfaced verbatim in `mark_failed_and_continue` output so the
+  ## operator sees it in the run summary without diffing two outputs.
+  remaining_count: int
+  ## cap_reason explains why the loop is stopping. Free-form short
+  ## label so the operator can grep / report on it later.
+  cap_reason: string
 
 schema audit_input:
   workspace_dir: string
@@ -1685,7 +1697,12 @@ agent detect_stack:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
   model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-7}"
-  reasoning_effort: "${ITERION_RENOVACY_EFFORT_CLAUDE:-max}"
+  ## Effort precedence: per-stage > recipe global > stage-specific default.
+  ## detect_stack is exploration-bounded (≤30 tool calls), tractable at
+  ## `high`. Operators can force `max` globally via
+  ## ITERION_RENOVACY_EFFORT_CLAUDE for the whole recipe, or override just
+  ## this node via ITERION_RENOVACY_EFFORT_DETECT.
+  reasoning_effort: "${ITERION_RENOVACY_EFFORT_DETECT:-${ITERION_RENOVACY_EFFORT_CLAUDE:-high}}"
   output: stack_profile
   publish: stack_profile_artifact
   system: detect_stack_system
@@ -1718,7 +1735,11 @@ agent discover_outdated:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
   model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-7}"
-  reasoning_effort: "${ITERION_RENOVACY_EFFORT_CLAUDE:-max}"
+  ## Discovery is mostly tool-calls + JSON shape normalisation, not deep
+  ## reasoning. `high` is the cost-optimal default; override via
+  ## ITERION_RENOVACY_EFFORT_DISCOVER if a project's outdated listing
+  ## consistently confuses the agent.
+  reasoning_effort: "${ITERION_RENOVACY_EFFORT_DISCOVER:-${ITERION_RENOVACY_EFFORT_CLAUDE:-high}}"
   input: discover_input
   output: outdated_list
   system: discover_outdated_system
@@ -1879,6 +1900,19 @@ tool select_candidate:
 
     let result;
     if (attemptedCount >= maxPackages || survivors.length === 0) {
+      // Loop exit. Distinguish "ran out of survivors" (natural completion)
+      // from "hit the per-run cap" (operator should re-launch or bump
+      // max_packages_per_run) so the run summary tells the operator
+      // whether work remains.
+      let capReason;
+      let remaining;
+      if (survivors.length === 0) {
+        capReason = "exhausted";
+        remaining = 0;
+      } else {
+        capReason = "max_packages_per_run reached (" + maxPackages + " of " + (attemptedCount + survivors.length) + " attempted; " + survivors.length + " remaining)";
+        remaining = survivors.length;
+      }
       result = {
         selected_package: "",
         current_version: "",
@@ -1889,6 +1923,8 @@ tool select_candidate:
         cumulative_attempted: attempted,
         fix_loop_max: 0,
         only_patches_attempted: computeOnlyPatches(attempted),
+        remaining_count: remaining,
+        cap_reason: capReason,
       };
     } else {
       const p = survivors[0];
@@ -1903,6 +1939,12 @@ tool select_candidate:
         cumulative_attempted: cumulative,
         fix_loop_max: p.risk === "major" ? 5 : 3,
         only_patches_attempted: computeOnlyPatches(cumulative),
+        // While we're still picking candidates: remaining = all surviving
+        // candidates we haven't touched yet (the current pick included
+        // in the cumulative bag below). Operator can watch the run
+        // and read this on each select_candidate output to gauge ETA.
+        remaining_count: survivors.length - 1,
+        cap_reason: "",
       };
     }
 
@@ -1922,7 +1964,10 @@ agent security_audit:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
   model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-7}"
-  reasoning_effort: "${ITERION_RENOVACY_EFFORT_CLAUDE:-max}"
+  ## Per-package; runs in parallel with changelog_review via intel_fanout.
+  ## Output drives the safe/unsafe gate, so quality matters — `high` keeps
+  ## the verdict reliable without the `max` premium.
+  reasoning_effort: "${ITERION_RENOVACY_EFFORT_AUDIT:-${ITERION_RENOVACY_EFFORT_CLAUDE:-high}}"
   input: audit_input
   output: security_report
   system: security_audit_system
@@ -1938,7 +1983,11 @@ agent changelog_review:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
   model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-7}"
-  reasoning_effort: "${ITERION_RENOVACY_EFFORT_CLAUDE:-max}"
+  ## Per-package; runs in parallel with security_audit. Inference quality
+  ## matters (breaking-change classification feeds align_code), `high` is
+  ## the sensible default; bump to max via ITERION_RENOVACY_EFFORT_CHANGELOG
+  ## for runs against packages with notoriously cryptic changelogs.
+  reasoning_effort: "${ITERION_RENOVACY_EFFORT_CHANGELOG:-${ITERION_RENOVACY_EFFORT_CLAUDE:-high}}"
   input: changelog_input
   output: changelog_summary
   system: changelog_review_system
@@ -1964,7 +2013,10 @@ agent upgrade:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
   model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-7}"
-  reasoning_effort: "${ITERION_RENOVACY_EFFORT_CLAUDE:-max}"
+  ## Mechanical: invoke `yarn up <pkg>@<v>` (or equivalent). `medium`
+  ## suffices for the success path; the budget caps ensure failures
+  ## surface fast regardless.
+  reasoning_effort: "${ITERION_RENOVACY_EFFORT_UPGRADE:-${ITERION_RENOVACY_EFFORT_CLAUDE:-medium}}"
   input: upgrade_input
   output: upgrade_result
   system: upgrade_system
@@ -1977,7 +2029,9 @@ agent install:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
   model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-7}"
-  reasoning_effort: "${ITERION_RENOVACY_EFFORT_CLAUDE:-max}"
+  ## Even more mechanical than upgrade: just `yarn install` (or equivalent).
+  ## `medium` works; failures are obvious (non-zero exit code).
+  reasoning_effort: "${ITERION_RENOVACY_EFFORT_INSTALL:-${ITERION_RENOVACY_EFFORT_CLAUDE:-medium}}"
   input: install_input
   output: install_result
   system: install_system
@@ -1992,7 +2046,11 @@ agent align_code:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
   model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-7}"
-  reasoning_effort: "${ITERION_RENOVACY_EFFORT_CLAUDE:-max}"
+  ## Touches source code. Precision matters more than depth-of-reasoning,
+  ## and the per-step focused check (tsc/cargo-check) keeps the LLM
+  ## honest. `high` is right for the default; bump per ITERION_RENOVACY_
+  ## EFFORT_ALIGN if a particular project's surface is unusually subtle.
+  reasoning_effort: "${ITERION_RENOVACY_EFFORT_ALIGN:-${ITERION_RENOVACY_EFFORT_CLAUDE:-high}}"
   input: align_input
   output: align_result
   system: align_code_system
@@ -2007,7 +2065,11 @@ agent validate_upgrade:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
   model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-7}"
-  reasoning_effort: "${ITERION_RENOVACY_EFFORT_CLAUDE:-max}"
+  ## The per-pkg verdict gate. `high` matches changelog_review/security_audit
+  ## quality bar without paying for `max`. Override per ITERION_RENOVACY_
+  ## EFFORT_VALIDATE when validation needs to scrutinise non-trivial
+  ## behaviour (perf regressions, subtle API contract checks).
+  reasoning_effort: "${ITERION_RENOVACY_EFFORT_VALIDATE:-${ITERION_RENOVACY_EFFORT_CLAUDE:-high}}"
   input: validate_input
   output: verdict
   ## validate_upgrade is the per-pkg gate. Cap headroom: 60 covers
@@ -2027,7 +2089,12 @@ agent fix_after_upgrade:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
   model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-7}"
-  reasoning_effort: "${ITERION_RENOVACY_EFFORT_CLAUDE:-max}"
+  ## Recovery path — when validation fails, this agent tries to land the
+  ## smallest correct fix in a tight retry budget (fix_loop_max = 3 for
+  ## minor, 5 for major). Quality at this stage rescues the package; we
+  ## pay `max` so the recovery rate is high. Operators rarely want to
+  ## drop below `high` here.
+  reasoning_effort: "${ITERION_RENOVACY_EFFORT_FIX_AFTER:-${ITERION_RENOVACY_EFFORT_CLAUDE:-max}}"
   input: fix_after_input
   output: fix_after_result
   system: fix_after_upgrade_system
@@ -2250,7 +2317,11 @@ judge reviewer_claude:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
   model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-7}"
-  reasoning_effort: "${ITERION_RENOVACY_EFFORT_CLAUDE:-max}"
+  ## Phase 2 cross-family review — verdict quality directly gates ship.
+  ## `max` is the right default; cost is bounded by the recovery_loop
+  ## cap (20). Operators iterating on the recipe itself can drop to
+  ## `high` via ITERION_RENOVACY_EFFORT_REVIEW for cheap rounds.
+  reasoning_effort: "${ITERION_RENOVACY_EFFORT_REVIEW:-${ITERION_RENOVACY_EFFORT_CLAUDE:-max}}"
   input: review_input
   output: review_verdict
   system: review_system
@@ -2267,7 +2338,10 @@ judge reviewer_claude:
 judge reviewer_gpt:
   backend: "claw"
   model: "openai/${ITERION_RENOVACY_MODEL_GPT:-gpt-5.5}"
-  reasoning_effort: "${ITERION_RENOVACY_EFFORT_GPT:-max}"
+  ## Mirror of reviewer_claude on the GPT family — same `max` default,
+  ## same override pattern. Override per ITERION_RENOVACY_EFFORT_REVIEW_GPT
+  ## or globally via ITERION_RENOVACY_EFFORT_GPT.
+  reasoning_effort: "${ITERION_RENOVACY_EFFORT_REVIEW_GPT:-${ITERION_RENOVACY_EFFORT_GPT:-max}}"
   input: review_input
   output: review_verdict
   system: review_system
@@ -2294,7 +2368,10 @@ agent fix_claude:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
   model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-7}"
-  reasoning_effort: "${ITERION_RENOVACY_EFFORT_CLAUDE:-max}"
+  ## Phase 2 fixer — applies blockers raised by the cross-family reviewer.
+  ## Defaulted to `max`: each fix lands a commit that the next reviewer
+  ## scrutinises, so getting it right once is cheaper than a re-roll.
+  reasoning_effort: "${ITERION_RENOVACY_EFFORT_FIX_REVIEW:-${ITERION_RENOVACY_EFFORT_CLAUDE:-max}}"
   input: review_fix_input
   output: review_fix_result
   system: fix_system
@@ -2306,7 +2383,9 @@ agent fix_claude:
 agent fix_gpt:
   backend: "claw"
   model: "openai/${ITERION_RENOVACY_MODEL_GPT:-gpt-5.5}"
-  reasoning_effort: "${ITERION_RENOVACY_EFFORT_GPT:-max}"
+  ## Mirror of fix_claude on the GPT family — `max` default; override via
+  ## ITERION_RENOVACY_EFFORT_FIX_REVIEW_GPT.
+  reasoning_effort: "${ITERION_RENOVACY_EFFORT_FIX_REVIEW_GPT:-${ITERION_RENOVACY_EFFORT_GPT:-max}}"
   input: review_fix_input
   output: review_fix_result
   system: fix_system
@@ -3083,7 +3162,11 @@ agent family_align_code:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
   model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-7}"
-  reasoning_effort: "${ITERION_RENOVACY_EFFORT_CLAUDE:-max}"
+  ## Same reasoning as per-package align_code, but for a whole batch of
+  ## family members at once. `high` is the right default; bump per
+  ## ITERION_RENOVACY_EFFORT_FAMILY_ALIGN for families with intricate
+  ## cross-member contracts.
+  reasoning_effort: "${ITERION_RENOVACY_EFFORT_FAMILY_ALIGN:-${ITERION_RENOVACY_EFFORT_CLAUDE:-high}}"
   input: family_align_input
   output: family_align_output
   system: family_align_code_system
@@ -3319,7 +3402,15 @@ workflow secured_renovacy:
       GIT_AUTHOR_EMAIL: "iterion@noreply.local"
       GIT_COMMITTER_NAME: "iterion-secured-renovacy"
       GIT_COMMITTER_EMAIL: "iterion@noreply.local"
-    mounts: ["type=bind,source=${localEnv:HOME}/.claude,target=/home/devbox/.claude,consistency=cached"]
+    ## Read-only bind: the sandbox needs to READ the operator's OAuth /
+    ## credential files for claude_code, but it MUST NOT be able to
+    ## modify them. A malicious package postinstall could otherwise
+    ## tamper with stored tokens (exfiltrate, rotate keys, plant a
+    ## fake credential to phish a later run). claude_code only writes
+    ## to its config dir for refresh-token rotation — that's handled
+    ## by the host claude CLI between iterion runs, not inside the
+    ## sandbox.
+    mounts: ["type=bind,source=${localEnv:HOME}/.claude,target=/home/devbox/.claude,readonly,consistency=cached"]
     ## post_create:
     ##   - install claude-code CLI (the agentic backbone). Pin to
     ##     a known-good version (currently 2.1.138 per `npm view

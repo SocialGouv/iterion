@@ -894,17 +894,74 @@ func ResolveEffortLiteral(s string) string {
 // `${VAR:-default}` in a recipe relies on this rather than the bare
 // stdlib helper, which would expand `${X:-y}` to "" (treating the
 // whole `X:-y` as the variable name).
+//
+// Supports nested fallbacks (`${A:-${B:-c}}`): we parse `${...}`
+// segments with brace-counting so nested defaults are resolved
+// inside-out. os.Expand isn't recursive and would stop at the first
+// `}`, leaving a trailing brace literal — so we cannot rely on it.
 func ExpandEnvWithDefault(s string) string {
-	return os.Expand(s, func(key string) string {
-		if i := strings.Index(key, ":-"); i >= 0 {
-			name, fallback := key[:i], key[i+2:]
-			if v := os.Getenv(name); v != "" {
-				return v
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		// Bare `$NAME` form (no braces) — delegate to os.Expand for
+		// just this fragment.
+		if s[i] == '$' && i+1 < len(s) && s[i+1] != '{' {
+			end := i + 1
+			for end < len(s) && (isAlnum(s[end]) || s[end] == '_') {
+				end++
 			}
-			return fallback
+			if end > i+1 {
+				b.WriteString(os.Getenv(s[i+1 : end]))
+				i = end
+				continue
+			}
 		}
-		return os.Getenv(key)
-	})
+		// `${...}` form — scan to the matching closing brace with
+		// depth counting so nested ${...} segments stay paired.
+		if i+1 < len(s) && s[i] == '$' && s[i+1] == '{' {
+			depth := 1
+			j := i + 2
+			for j < len(s) && depth > 0 {
+				if j+1 < len(s) && s[j] == '$' && s[j+1] == '{' {
+					depth++
+					j += 2
+					continue
+				}
+				if s[j] == '}' {
+					depth--
+					if depth == 0 {
+						break
+					}
+				}
+				j++
+			}
+			if depth == 0 {
+				inner := s[i+2 : j]
+				// Recurse so a nested ${...} inside the fallback
+				// gets expanded before we apply the default-value
+				// rule on this level.
+				expanded := ExpandEnvWithDefault(inner)
+				if idx := strings.Index(expanded, ":-"); idx >= 0 {
+					name, fallback := expanded[:idx], expanded[idx+2:]
+					if v := os.Getenv(name); v != "" {
+						b.WriteString(v)
+					} else {
+						b.WriteString(fallback)
+					}
+				} else {
+					b.WriteString(os.Getenv(expanded))
+				}
+				i = j + 1
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
+func isAlnum(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }
 
 // expandEnvWithDefault is the unexported alias kept for in-package
