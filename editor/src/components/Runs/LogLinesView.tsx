@@ -1,5 +1,6 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import type { Components } from "react-virtuoso";
+import { forwardRef, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import type { ComponentPropsWithRef } from "react";
+import type { Components, ScrollerProps } from "react-virtuoso";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { ChevronDownIcon, MixerHorizontalIcon } from "@radix-ui/react-icons";
 
@@ -148,6 +149,12 @@ export default function LogLinesView({
   const [search, setSearch] = useState("");
   const [activeLevels, setActiveLevels] = useState<Set<string>>(() => new Set());
   const [followTail, setFollowTail] = useState(true);
+  // Word wrap toggle: when off (default), long lines extend horizontally
+  // and the Virtuoso scroller carries a single horizontal scrollbar at
+  // the bottom — replaces the per-row scrollbars the original code
+  // grew on every line. When on, lines wrap to the next visible line
+  // and no horizontal scroll is needed.
+  const [wordWrap, setWordWrap] = useState(false);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const isScrollingRef = useRef<boolean>(false);
   const disabledByScrollRef = useRef<boolean>(false);
@@ -219,6 +226,11 @@ export default function LogLinesView({
     return out;
   }, [annotated, filterNodeId, filterIteration]);
 
+  // Custom Scroller for Virtuoso so we can opt in to horizontal scroll
+  // alongside the default vertical scroll. Rows render at their natural
+  // width (whitespace-pre, min-w-max), the Scroller carries the
+  // horizontal scrollbar at the bottom of the panel — one bar for the
+  // whole list instead of one per row.
   const virtuosoComponents = useMemo<Components<LogItem>>(
     () => ({
       Footer: () =>
@@ -230,8 +242,9 @@ export default function LogLinesView({
         ) : (
           <ThinkingFooter active={active} />
         ),
+      Scroller: wordWrap ? WrapScroller : HScroller,
     }),
-    [active, inFlightTool],
+    [active, inFlightTool, wordWrap],
   );
 
   // useDeferredValue keeps keystrokes responsive on runs with very long
@@ -464,6 +477,15 @@ export default function LogLinesView({
         <label className="ml-auto inline-flex items-center gap-1.5 cursor-pointer">
           <input
             type="checkbox"
+            checked={wordWrap}
+            onChange={(e) => setWordWrap(e.target.checked)}
+            className="accent-accent"
+          />
+          Wrap
+        </label>
+        <label className="inline-flex items-center gap-1.5 cursor-pointer">
+          <input
+            type="checkbox"
             checked={followTail}
             onChange={(e) => handleToggleFollow(e.target.checked)}
             className="accent-accent"
@@ -516,9 +538,13 @@ export default function LogLinesView({
             }}
             itemContent={(_, item) =>
               item.kind === "line" ? (
-                <LogLineRow line={item.line} />
+                <LogLineRow line={item.line} wrap={wordWrap} />
               ) : (
-                <LogBlockRow header={item.header} body={item.body} />
+                <LogBlockRow
+                  header={item.header}
+                  body={item.body}
+                  wrap={wordWrap}
+                />
               )
             }
             computeItemKey={(_, item) => item.key}
@@ -530,14 +556,49 @@ export default function LogLinesView({
   );
 }
 
-function LogLineRow({ line }: { line: AnnotatedLine }) {
+// HScroller swaps Virtuoso's default Scroller for one that also lets
+// horizontal overflow scroll. Rows below opt into `min-w-max` so the
+// Scroller's content extends past the viewport and a single horizontal
+// bar appears at the bottom. The `data-virtuoso-scroller` attribute is
+// preserved so Virtuoso's internal scroll-position tracking keeps
+// working.
+const HScroller = forwardRef<HTMLDivElement, ScrollerProps>(
+  function HScroller({ style, ...rest }, ref) {
+    return (
+      <div
+        ref={ref}
+        {...(rest as ComponentPropsWithRef<"div">)}
+        style={{ ...style, overflowX: "auto" }}
+      />
+    );
+  },
+);
+
+const WrapScroller = forwardRef<HTMLDivElement, ScrollerProps>(
+  function WrapScroller({ style, ...rest }, ref) {
+    return (
+      <div
+        ref={ref}
+        {...(rest as ComponentPropsWithRef<"div">)}
+        style={{ ...style, overflowX: "hidden" }}
+      />
+    );
+  },
+);
+
+function LogLineRow({ line, wrap }: { line: AnnotatedLine; wrap: boolean }) {
   const cls = line.level
     ? LEVEL_GLYPHS.find((g) => g.key === line.level)?.cls ?? "text-fg-default"
     : "text-fg-default";
+  // No-wrap mode: keep `whitespace-pre` + `min-w-max` so the row
+  // contributes to the Scroller's horizontal extent (single global
+  // scrollbar). Wrap mode: pre-wrap with word-break so long tokens
+  // (paths, tool inputs) don't bust the viewport.
+  const widthCls = wrap
+    ? "whitespace-pre-wrap break-all"
+    : "whitespace-pre min-w-max";
   return (
-    <div
-      className={`font-mono text-[10px] whitespace-pre overflow-x-auto py-0.5 ${cls}`}
-    >
+    <div className={`font-mono text-[10px] py-0.5 ${widthCls} ${cls}`}>
       {line.text || " "}
     </div>
   );
@@ -546,18 +607,23 @@ function LogLineRow({ line }: { line: AnnotatedLine }) {
 function LogBlockRow({
   header,
   body,
+  wrap,
 }: {
   header: AnnotatedLine;
   body: AnnotatedLine[];
+  wrap: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const cls = header.level
     ? LEVEL_GLYPHS.find((g) => g.key === header.level)?.cls ?? "text-fg-default"
     : "text-fg-default";
+  const bodyWidthCls = wrap
+    ? "whitespace-pre-wrap break-all"
+    : "whitespace-pre min-w-max";
   return (
     <div className={`font-mono text-[10px] py-0.5 ${cls}`}>
       <div className="flex items-baseline gap-2">
-        <div className="whitespace-pre overflow-x-auto flex-1 min-w-0">
+        <div className={`flex-1 min-w-0 ${bodyWidthCls}`}>
           {header.text || " "}
         </div>
         <button
@@ -571,10 +637,7 @@ function LogBlockRow({
       </div>
       {open &&
         body.map((line) => (
-          <div
-            key={line.idx}
-            className="whitespace-pre overflow-x-auto"
-          >
+          <div key={line.idx} className={bodyWidthCls}>
             {line.text || " "}
           </div>
         ))}
