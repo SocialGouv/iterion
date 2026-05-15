@@ -1809,6 +1809,14 @@ schema commit_tool_input:
 schema commit_result:
   success: bool
   output: string
+  ## sha is the workspace HEAD AFTER the commit operation. Distinct
+  ## from `output` (which is a free-form human-readable line like
+  ## "committed <SHA>" or "noop: nothing staged (HEAD=<SHA>)") so
+  ## downstream consumers that need ONLY the SHA can read it cleanly
+  ## instead of substring-parsing the `output` string. write_audit_md
+  ## previously did `output.slice(0, 7)` and got "committ" (the first
+  ## 7 chars of the literal string "committed ...") in INDEX.md.
+  sha: string
 
 schema revert_input:
   workspace_dir: string
@@ -2761,11 +2769,11 @@ if git diff --cached --quiet; then
   ## HEAD lets the loop continue with write_audit_md (which detects
   ## the no-op marker) instead of hard-failing the whole run.
   SHA=$(git rev-parse HEAD)
-  printf '{"success":true,"output":"noop: nothing staged (HEAD=%s)"}\n' "$SHA"
+  printf '{"success":true,"output":"noop: nothing staged (HEAD=%s)","sha":"%s"}\n' "$SHA" "$SHA"
   exit 0
 fi
 if ! printf '%s' "$MSG" | git commit -F - >&2; then
-  printf '{"success":false,"output":"git commit failed"}\n'
+  printf '{"success":false,"output":"git commit failed","sha":""}\n'
   exit 1
 fi
 # Amend pass: when an upstream hook (lint --fix, prettier, husky)
@@ -2785,13 +2793,13 @@ if git status --porcelain | grep -q .; then
   git add -A >&2
   if ! git diff --cached --quiet; then
     if ! git commit --amend --no-edit >&2; then
-      printf '{"success":false,"output":"git commit --amend failed"}\n'
+      printf '{"success":false,"output":"git commit --amend failed","sha":""}\n'
       exit 1
     fi
   fi
 fi
 SHA=$(git rev-parse HEAD)
-printf '{"success":true,"output":"committed %s"}\n' "$SHA"
+printf '{"success":true,"output":"committed %s","sha":"%s"}\n' "$SHA" "$SHA"
 `
   input: commit_tool_input
   output: commit_result
@@ -4703,7 +4711,7 @@ workflow secured_renovacy:
     security_report: "{{outputs.security_audit}}",
     align_summary: "{{outputs.align_code.summary}}",
     validate_report: "{{outputs.validate_upgrade}}",
-    commit_sha: "{{outputs.commit_changes.output}}",
+    commit_sha: "{{outputs.commit_changes.sha}}",
     batch_packages: "[]"
   }
 
