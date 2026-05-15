@@ -179,10 +179,22 @@ func daemonAlive(pid int, url string) bool {
 }
 
 // activeRunsOnDaemon probes a daemon's HTTP surface for in-flight runs
-// and returns the count of entries flagged Active=true (i.e. runs held by
-// the daemon's runview.Manager — the only ones that would actually be
-// interrupted by SIGTERM). Returns -1 on any probe failure so callers fall
-// back to the safe path (don't auto-stop a daemon we can't introspect).
+// and returns the count of entries with status=="running". Returns -1
+// on any probe failure so callers fall back to the safe path (don't
+// auto-stop a daemon we can't introspect).
+//
+// We count by `status` rather than the daemon's `Active` flag because
+// `Active` only flags runs the daemon's own runview.Manager is driving
+// — i.e. runs the daemon spawned. CLI-launched runs (`iterion run …`
+// against the same store-dir) write status=running but never appear
+// in the manager's handle map, so an `Active`-only filter undercounts
+// them and the close-confirmation dialog gets skipped: the operator
+// closes the GUI window, the daemon SIGTERMs silently, the CLI run
+// keeps progressing on its own subprocess but loses HTTP visibility
+// (no live log stream, no runs list refresh) until the daemon comes
+// back. Counting by status preserves the dialog for both flavours;
+// the dialog message already speaks to "background daemons" rather
+// than the runs themselves.
 //
 // Timeout is intentionally tight: this blocks the GUI shutdown path.
 func activeRunsOnDaemon(url string) int {
@@ -201,7 +213,7 @@ func activeRunsOnDaemon(url string) int {
 	}
 	var body struct {
 		Runs []struct {
-			Active bool `json:"active"`
+			Status string `json:"status"`
 		} `json:"runs"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
@@ -209,7 +221,7 @@ func activeRunsOnDaemon(url string) int {
 	}
 	n := 0
 	for _, r := range body.Runs {
-		if r.Active {
+		if r.Status == "running" {
 			n++
 		}
 	}

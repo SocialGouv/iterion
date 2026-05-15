@@ -161,6 +161,30 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 
 	storeDir := store.ResolveStoreDir(filepath.Dir(iterFile), opts.StoreDir)
 
+	// Tee the logger output into <storeDir>/runs/<runID>/run.log so the
+	// editor's Logs tab and the per-run log buffer (used by the WS
+	// subscription that drives RunLogPanel) see the same content as the
+	// CLI's stderr. Without this, CLI-launched runs show "No log
+	// captured." in the editor — the daemon-launched path tees via
+	// runview.Service.prepareRunLog, but a direct `iterion run`
+	// invocation bypasses runview entirely. Errors are warned-and-
+	// continue: a CLI run with no writable store dir still works (logs
+	// go to stderr only) instead of failing the boot over a feature
+	// the operator may not be using right now.
+	runDir := filepath.Join(storeDir, "runs", runID)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		logger.Warn("cli: mkdir run dir for log tee: %v", err)
+	} else if logFile, openErr := os.OpenFile(filepath.Join(runDir, "run.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); openErr != nil {
+		logger.Warn("cli: open run.log for tee: %v", openErr)
+	} else {
+		defer logFile.Close()
+		logger = iterlog.New(level, io.MultiWriter(os.Stderr, logFile))
+		// Re-emit the engineOpts entries that captured the stderr-only
+		// logger so the engine sees the tee'd one. WithLogger overwrites
+		// e.logger on each call, so appending is sufficient.
+		engineOpts = append(engineOpts, runtime.WithLogger(logger))
+	}
+
 	s, err := store.New(storeDir, store.WithLogger(logger))
 	if err != nil {
 		return fmt.Errorf("cannot create store: %w", err)
