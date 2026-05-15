@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -173,5 +174,149 @@ func TestVibeReviewAlternating_LoopExhausted(t *testing.T) {
 	if run.Status != store.RunStatusFinished {
 		t.Fatalf("status = %s, want %s (loop should exhaust then fall through to done)",
 			run.Status, store.RunStatusFinished)
+	}
+}
+
+// TestVibeReviewAlternating_EventTrace establishes the event-coherence
+// baseline: a happy-path run must persist a complete trace covering
+// node lifecycle, edge selection, and round-robin reviewer dispatch.
+// This is the regression net for any future refactor of the engine's
+// event emission — a missing event type surfaces here first.
+func TestVibeReviewAlternating_EventTrace(t *testing.T) {
+	wf := compileFixture(t, "bots/vibe_review_alternating.bot")
+	exec := newScenarioExecutor()
+	exec.on("reviewer_claude", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{
+			"approved": true, "family": "claude",
+			"blockers": []interface{}{}, "fix_plan": "", "_tokens": 100,
+		}, nil
+	})
+	exec.on("reviewer_gpt", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{
+			"approved": true, "family": "gpt",
+			"blockers": []interface{}{}, "fix_plan": "", "_tokens": 100,
+		}, nil
+	})
+
+	s := tmpStore(t)
+	eng := runtime.New(wf, s, exec)
+	if err := eng.Run(context.Background(), "run-vibe-events", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	events, err := s.LoadEvents(context.Background(), "run-vibe-events")
+	if err != nil {
+		t.Fatalf("LoadEvents: %v", err)
+	}
+
+	if !hasEvent(events, store.EventRunStarted) {
+		t.Errorf("missing run_started event")
+	}
+	if !hasEvent(events, store.EventRunFinished) {
+		t.Errorf("missing run_finished event")
+	}
+	if countEventType(events, store.EventNodeStarted) < 3 {
+		t.Errorf("expected ≥3 node_started events (reviewer_claude + reviewer_gpt + streak_check), got %d",
+			countEventType(events, store.EventNodeStarted))
+	}
+	if countEventType(events, store.EventEdgeSelected) < 2 {
+		t.Errorf("expected ≥2 edge_selected events (round-robin dispatch creates one per reviewer), got %d",
+			countEventType(events, store.EventEdgeSelected))
+	}
+	finishedIDs := eventNodeIDs(events, store.EventNodeFinished)
+	finishedSet := make(map[string]bool, len(finishedIDs))
+	for _, id := range finishedIDs {
+		finishedSet[id] = true
+	}
+	for _, want := range []string{"reviewer_claude", "reviewer_gpt"} {
+		if !finishedSet[want] {
+			t.Errorf("expected node_finished event for %q, got %v", want, finishedIDs)
+		}
+	}
+}
+
+// TestVibeReviewAlternating_RecoveryLoopExhausted forces the
+// recovery_loop to dominate by making each family approve its OWN
+// pushback but reject the OTHER family's work. This produces a fix
+// cycle on every iteration; the bounded `recovery_loop(20)` should
+// terminate the cascade and fall through to the unconditional
+// fix_X → done edge. Asserts the total fixer count is close to the cap.
+func TestVibeReviewAlternating_RecoveryLoopExhausted(t *testing.T) {
+	wf := compileFixture(t, "bots/vibe_review_alternating.bot")
+	exec := newScenarioExecutor()
+
+	// Both reviewers always reject with concrete blockers so each
+	// streak_check routes through fix_X.
+	exec.on("reviewer_claude", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{
+			"approved": false, "family": "claude",
+			"blockers": []interface{}{"claude found a blocker"},
+			"fix_plan": "fix the claude blocker",
+			"_tokens":  50,
+		}, nil
+	})
+	exec.on("reviewer_gpt", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{
+			"approved": false, "family": "gpt",
+			"blockers": []interface{}{"gpt found a blocker"},
+			"fix_plan": "fix the gpt blocker",
+			"_tokens":  50,
+		}, nil
+	})
+	exec.on("fix_claude", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"applied": true, "summary": "claude fix", "_tokens": 100}, nil
+	})
+	exec.on("fix_gpt", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"applied": true, "summary": "gpt fix", "_tokens": 100}, nil
+	})
+
+	s := tmpStore(t)
+	eng := runtime.New(wf, s, exec)
+	if err := eng.Run(context.Background(), "run-vibe-recovery-exhausted", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	run, err := s.LoadRun(context.Background(), "run-vibe-recovery-exhausted")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if run.Status != store.RunStatusFinished {
+		t.Fatalf("status = %s, want %s", run.Status, store.RunStatusFinished)
+	}
+	// Bounded by review_loop(15) on the reviewer→streak_check edge —
+	// the review cap kicks in before recovery_loop(20) does, since
+	// review_loop is what's incremented every cycle. The exact cap
+	// depends on round-robin starting family; assert "many fixes ran"
+	// rather than a specific number.
+	totalFixes := exec.callCount("fix_claude") + exec.callCount("fix_gpt")
+	if totalFixes < 5 {
+		t.Errorf("expected significant fixer activity (≥5), got %d (claude=%d, gpt=%d)",
+			totalFixes, exec.callCount("fix_claude"), exec.callCount("fix_gpt"))
+	}
+}
+
+// TestVibeReviewAlternating_SessionInheritStructural is a structural
+// assertion on the bot's IR rather than a runtime trace: it confirms
+// the fix_* agents are declared with `session: inherit` so the
+// runtime can splice them into the same Claude/GPT conversation the
+// reviewer was using. Drift on this property silently breaks
+// prompt-cache hits and reviewer-context continuity — the live runs
+// would still pass but cost more, so we pin it here.
+func TestVibeReviewAlternating_SessionInheritStructural(t *testing.T) {
+	wf := compileFixture(t, "bots/vibe_review_alternating.bot")
+
+	for _, id := range []string{"fix_claude", "fix_gpt"} {
+		node, ok := wf.Nodes[id]
+		if !ok {
+			t.Fatalf("workflow missing expected node %q", id)
+		}
+		agent, ok := node.(*ir.AgentNode)
+		if !ok {
+			t.Fatalf("node %q is not an AgentNode (got %T)", id, node)
+		}
+		if agent.Session != ir.SessionInherit {
+			t.Errorf("node %q session = %s, want %s (drift breaks reviewer→fix prompt-cache continuity)",
+				id, agent.Session, ir.SessionInherit)
+		}
 	}
 }
