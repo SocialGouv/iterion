@@ -442,36 +442,20 @@ prompt discover_outdated_system:
        to orient yourself. The notes from detect_stack may flag
        peculiarities (private registries, monorepo wrappers, peer
        constraints) that change the right approach.
-    2. Choose the most reliable native tool for this manager.
-       Plausible starting points by ecosystem (NOT prescriptive):
-         - yarn classic / berry: `yarn outdated --json` (classic),
-           or for berry where it does not exist, query the lock
-           file + `npm view` per package, or `yarn npm info`.
-         - npm:      `npm outdated --json` (object-keyed by name).
-         - pnpm:     `pnpm outdated --format=json`.
-         - bun:      `bun outdated --json` if available, else lock
-                     + registry probe.
-         - cargo:    `cargo outdated --format=json` (cargo-outdated
-                     plugin); install if missing or fall back to
-                     `cargo update --dry-run` parsing.
-         - pip:      `pip list --outdated --format=json`.
-         - poetry:   `poetry show --outdated --top-level --json`.
-         - uv:       `uv pip list --outdated --format=json`.
-         - composer: `composer outdated --format=json`.
-         - bundler:  `bundle outdated --parseable`.
-         - go:       `go list -u -m -json all` (filter Update !=
-                     null).
-         - maven:    `mvn versions:display-dependency-updates`.
-         - gradle:   `gradle dependencyUpdates` (with the
-                     com.github.ben-manes.versions plugin).
-       Whichever you pick: run it via bash, inspect the output,
-       and iterate if the result is empty, errors out, or has an
-       unexpected shape. Treat the first try as a hypothesis.
-    3. For monorepo (`workspaces` non-empty): either run the
-       manager's monorepo-aware variant (e.g. `yarn workspaces
-       foreach ...`), or iterate the workspaces yourself. Merge
-       duplicates by package name, keeping the entry whose
-       `current` lags the most.
+    2. For each ecosystem the workspace contains, choose the most
+       reliable native "outdated" tool. The
+       `.claude/skills/package-managers.md` skill's
+       "Discover outdated packages" section is a starting point;
+       adapt to the actual manager variant you find (the skill's
+       "Detection by lockfile" table maps lockfile/shim → manager).
+       Run via bash, inspect the output, and iterate if the result
+       is empty, errors out, or has an unexpected shape. Treat the
+       first try as a hypothesis.
+    3. For monorepo (`workspaces` non-empty): use the manager's
+       monorepo-aware variant (`workspace <ws>` / `--filter <ws>`
+       form — the skill notes where it applies) or iterate the
+       workspaces yourself. Merge duplicates by package name,
+       keeping the entry whose `current` lags the most.
     4. Normalise every entry to the exact shape:
          {name: string, current: string, target: string,
           risk: "patch"|"minor"|"major"|"unknown"}
@@ -584,35 +568,19 @@ prompt security_audit_system:
   that introduces a critical vulnerability the upgrade does not
   resolve.
 
+  The ecosystem-specific auditor commands (per-manager JSON output
+  forms, install requirements, fallbacks) live in the
+  `.claude/skills/package-managers.md` skill — see its
+  "Vulnerability audit" section. Consult it; if the workspace uses
+  an ecosystem not covered, follow the abstract procedure below and
+  surface what you discovered.
+
   Procedure:
     1. Read `input.pkg_manager`, `input.lock_files`, `input.notes`
-       to pick the right native auditor. Plausible starting points
-       (NOT prescriptive):
-         - yarn:     `yarn npm audit --json --recursive` (berry)
-                     or `yarn audit --json` (classic).
-         - npm:      `npm audit --json`.
-         - pnpm:     `pnpm audit --json`.
-         - bun:      `bun audit --json` (Bun 1.2+); otherwise
-                     `bun pm pack --dry-run` + osv lookup, or
-                     fall back to npm-audit semantics on the
-                     bun.lockb companion package-lock.json.
-         - cargo:    `cargo audit --json` (install if needed).
-         - pip:      `pip-audit --format json`.
-         - poetry:   `poetry export -f requirements.txt | pip-audit
-                     --requirement /dev/stdin --format json`.
-         - uv:       `uv export --format requirements-txt |
-                     pip-audit --requirement /dev/stdin
-                     --format json`.
-         - composer: `composer audit --format json`.
-         - bundler:  `bundle audit check --update`.
-         - go:       `govulncheck -json ./...`.
-         - maven:    `mvn -q org.owasp:dependency-check-maven:check
-                     -Dformats=JSON -DfailBuildOnCVSS=11` (use 11
-                     to never fail-on-find; we read the report).
-         - gradle:   `gradle dependencyCheckAnalyze
-                     -PoutputFormat=JSON` with the OWASP plugin.
-         - mix:      `mix deps.audit` (hex_audit). Combine with
-                     `mix hex.audit` for retired packages.
+       to pick the right native auditor. Identify the manager
+       variant from the workspace (the skill's "Detection by
+       lockfile" table is a starting point), then run its
+       canonical JSON-emitting auditor.
        Run via bash, parse the JSON/NDJSON output, iterate if
        the tool errors or produces an unexpected shape. If the
        native auditor is unavailable in this sandbox, fall back
@@ -644,32 +612,17 @@ prompt security_audit_system:
        "GHSA-xxxx-yyyy-zzzz") and `malware_signals` (short text
        per signal, e.g. "osv: known typosquat of <real_pkg>").
     5. Cross-check with at least ONE secondary source where the
-       ecosystem has one available. Don't trust a single auditor —
-       supply-chain malware databases update at different cadences,
-       and a recent compromise may be flagged by source B but not
-       yet source A. Practical pairings (try the secondary if it's
-       available on the sandbox; otherwise note it in `auditors_
-       consulted` as "not_available" so the operator can wire it):
-         - JS:     retire.js (`npx --yes retire --outputformat json`)
-                   for known-vulnerable JS libs, AND socket.dev's
-                   public API for typosquat / install-script risk
-                   if `SOCKET_API_KEY` is set in env.
-         - Python: safety (`pip install safety && safety check
-                   --json`) cross-checks pip-audit's findings.
-         - Rust:   `cargo deny check advisories` cross-checks
-                   cargo audit. Both consume the rustsec advisory
-                   db but cargo-deny adds licence + duplicate
-                   gates.
-         - Go:     `golang.org/x/vuln/cmd/govulncheck` IS the
-                   primary; a second source is osv-scanner against
-                   `go.sum` for breadth.
-         - PHP / Ruby / Maven / Gradle / mix: osv-scanner serves
-                   as the cross-check for every ecosystem.
+       ecosystem has one available — supply-chain malware databases
+       update at different cadences, and a recent compromise may be
+       flagged by source B but not yet source A. The skill's
+       "Secondary sources" subsection (under "Vulnerability audit")
+       lists the practical pairings per ecosystem. If the secondary
+       isn't available on the sandbox, note "not_available" in
+       `auditors_consulted` so the operator can wire it.
        Don't burn turns chasing every secondary — if the primary
-       auditor was unequivocal (no CVEs + no malware) you can call
-       it with one cross-check at the secondary. Spend the budget
-       only when the primary surfaced something to confirm or
-       refute.
+       auditor was unequivocal (no CVEs + no malware) one
+       cross-check suffices. Spend the budget only when the primary
+       surfaced something to confirm or refute.
     6. Build `advisory_chains` for every NON-direct vulnerability:
        trace the dependency path from `input.selected_package`
        through the chain that exposes the flagged sub-package.
@@ -835,50 +788,33 @@ prompt upgrade_system:
   the target version, using whatever invocation works in THIS
   sandbox right now. You then emit a structured result.
 
+  Ecosystem-specific commands (manager detection, command shape,
+  workspace flags, shim fallbacks) live in the
+  `.claude/skills/package-managers.md` skill. Consult it; if the
+  workspace uses an ecosystem not covered, follow the abstract
+  procedure below and surface what you discovered so the operator
+  can extend the skill.
+
   Procedure:
     1. Read `input.pkg_manager`, `input.notes`, `input.upgrade_cmd_hint`
        (a best-guess command from detect_stack — treat as a hint,
        not a contract). `input.notes` often flags shim requirements
-       (e.g. yarn berry with no global binary on PATH, corepack
-       activation needed, vendored `.yarn/releases/yarn-X.Y.Z.cjs`).
-    2. Test the candidate invocation cheaply BEFORE running the
-       upgrade — `<manager> --version` or equivalent — to confirm
-       the binary resolves. If it does not, try the alternates:
-         - yarn berry: `corepack yarn ...` (after `corepack enable`
-           if missing) or `node .yarn/releases/yarn-<version>.cjs ...`
-         - npm/pnpm: corepack-prepared shim or direct npm
-         - cargo:    `cargo --version` to confirm rustup activation
-         - poetry/uv: invoke through `python -m poetry` or `uvx` if
-           the bare binary is unavailable
+       (vendored manager releases, corepack activation, virtualenv
+       layout, etc.).
+    2. Identify the manager variant from the workspace
+       (lockfile / manifest / vendored shim — the skill's
+       "Detection by lockfile" table is a good starting point).
+       Probe the candidate CLI cheaply (`<manager> --version` or
+       equivalent) before running the upgrade. If the binary
+       doesn't resolve, try the shim fallbacks listed in the skill
+       (corepack, vendored release, `python -m`, `uvx`, …).
        Iterate until you find an invocation that runs end-to-end.
-    3. Execute the upgrade for exactly ONE package. Per-manager
-       syntax (NOT verbatim — adapt to the actual binary):
-         - yarn:     `yarn up --exact <pkg>@<version>`
-         - npm:      `npm install <pkg>@<version> --save-exact`
-         - pnpm:     `pnpm update <pkg>@<version>` (or
-                     `pnpm add <pkg>@<version>` if not present)
-         - bun:      `bun update <pkg>@<version>`
-         - pip:      edit pyproject.toml / requirements.txt to
-                     `<pkg>==<version>`, then let install resolve;
-                     or `pip install <pkg>==<version>` for direct
-         - poetry:   `poetry add <pkg>@<version>` (preserves group)
-         - uv:       `uv add <pkg>==<version>` (preserves group)
-         - cargo:    edit Cargo.toml to `<pkg> = "=<version>"`,
-                     then `cargo update -p <pkg> --precise <version>`
-         - go:       `go get <module>@v<version>` (handle the `v`
-                     prefix per go module convention)
-         - composer: `composer require <pkg>:<version>` (preserves
-                     "require-dev" if it was there)
-         - bundler:  edit Gemfile to pin the version, then
-                     `bundle update <pkg> --conservative`
-         - maven:    edit pom.xml `<version>` element (in-place);
-                     verify with `mvn -q dependency:tree`
-         - gradle:   edit build.gradle dependency line; verify
-                     with `gradle dependencies --refresh-dependencies`
-       Some managers require workspace-targeted invocations in a
-       monorepo (e.g. yarn berry's `yarn workspace <ws> up …`).
-       Use `input.workspaces` to pick the right scope if the
-       package only lives in one workspace.
+    3. Execute the upgrade for exactly ONE package using the
+       ecosystem's pinning convention (the skill's "Upgrade one
+       or many packages" section lists the canonical syntax per
+       manager). Adapt to the actual binary path; respect any
+       workspace flag the manager requires for a monorepo (use
+       `input.workspaces` to pick the right scope).
     4. Capture stdout+stderr of the upgrade command. Note the exit
        code. Do NOT chain the install step here — `install` is a
        separate downstream node.
@@ -938,7 +874,7 @@ prompt batch_upgrade_system:
     2. For EACH ecosystem group:
        a. Identify the manager variant in use by inspecting the
           workspace (lockfiles, manifest files, vendored shims).
-          The skill at `.claude/skills/package-manager-upgrades.md`
+          The skill at `.claude/skills/package-managers.md`
           has a lockfile → manager mapping that's a good starting
           point.
        b. Probe the candidate CLI cheaply (`<manager> --version`
@@ -997,7 +933,7 @@ prompt batch_upgrade_user:
   Notes:             {{input.notes}}
 
   Group by ecosystem, dispatch the right native invocation per
-  group (consult `.claude/skills/package-manager-upgrades.md` if
+  group (consult `.claude/skills/package-managers.md` if
   unsure of the convention), emit the structured result.
 
 prompt install_system:
@@ -1005,20 +941,24 @@ prompt install_system:
   AFTER an upgrade so the manager picks up the new version's
   transitive deps and rewrites the lockfile). Same toolchain-resolution
   approach as upgrade: pick whatever invocation actually runs in
-  this sandbox, using `input.notes` for guidance.
+  this sandbox.
+
+  Ecosystem-specific install commands (including the immutable / dev
+  flags each manager honours) live in the
+  `.claude/skills/package-managers.md` skill — see its
+  "Install / refresh lockfile after a manifest change" section.
 
   Procedure:
     1. Read `input.pkg_manager`, `input.notes`, `input.install_cmd_hint`.
-    2. Verify the candidate invocation runs (`--version` probe).
-       Fall back to corepack/vendored-release shims if the bare
-       binary is missing — same fallbacks as the upgrade prompt.
-    3. Run the install with --immutable=false equivalent (yarn:
-       `yarn install`; yarn berry honours .yarnrc.yml's
-       `enableImmutableInstalls: false` by default in dev; pnpm:
-       `pnpm install --no-frozen-lockfile`; npm: `npm install`;
-       pip: `pip install -r requirements.txt --upgrade` if the
-       upgrade touched a lock file; cargo: `cargo build` to
-       resolve fresh).
+    2. Identify the manager variant from the workspace (the skill's
+       "Detection by lockfile" table is a good starting point).
+       Verify the candidate invocation runs (`<manager> --version`
+       probe). Fall back to the shim path the skill lists if the
+       bare binary is missing.
+    3. Run the install in NON-frozen mode so the lockfile gets
+       rewritten to reflect the upgrade we just applied (the
+       skill's install section notes which flag each manager
+       uses for that).
     4. Capture stdout+stderr + exit code.
     5. Stay inside `input.workspace_dir`.
 
