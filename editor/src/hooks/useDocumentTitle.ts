@@ -42,22 +42,28 @@ export function useDocumentTitle() {
       context = "Account";
     } else if (location.startsWith("/teams/")) {
       context = "Team";
-    } else if (currentFilePath) {
-      context = basename(currentFilePath);
+    } else if (location === "/editor") {
+      // Editor route: show the open file name, or "untitled.bot" only
+      // when a fresh document is being authored.
+      context = currentFilePath ? basename(currentFilePath) : "untitled.bot";
     } else {
-      context = "untitled.bot";
+      // Home and any unmatched route: no per-page context, just the
+      // project name (or bare app name when no project is resolved).
+      context = "";
     }
 
-    const parts = [context];
-    if (projectName) parts.push(projectName);
-    parts.push(APP);
-    // First two segments are joined with em-dash for readability;
-    // the trailing app name is bullet-separated.
+    // Compose: "<context> — <project> · iterion", dropping any segment
+    // that's empty. context is "" on Home and unmatched routes; project
+    // is null in cloud mode.
     let title: string;
-    if (parts.length === 3) {
-      title = `${parts[0]} — ${parts[1]} · ${parts[2]}`;
+    if (context && projectName) {
+      title = `${context} — ${projectName} · ${APP}`;
+    } else if (context) {
+      title = `${context} · ${APP}`;
+    } else if (projectName) {
+      title = `${projectName} · ${APP}`;
     } else {
-      title = `${parts[0]} · ${parts[1]}`;
+      title = APP;
     }
     document.title = title;
     // On Linux WebKit2GTK the window manager doesn't pick up
