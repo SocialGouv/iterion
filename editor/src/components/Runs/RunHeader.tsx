@@ -1,8 +1,10 @@
 import { useState } from "react";
+import { useLocation } from "wouter";
+import { Pencil1Icon } from "@radix-ui/react-icons";
 
 import type { RunHeader as RunHeaderType } from "@/api/runs";
 import { cancelRun } from "@/api/runs";
-import { Button, StatusBadge } from "@/components/ui";
+import { Button, IconButton, StatusBadge } from "@/components/ui";
 import ProjectLabel from "@/components/shared/ProjectLabel";
 import NavLinks from "@/components/shared/NavLinks";
 import WSStatusDot from "@/components/shared/WSStatusDot";
@@ -19,6 +21,7 @@ export default function RunHeader({ run, active, wsState }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [resumeOpen, setResumeOpen] = useState(false);
+  const [, setLocation] = useLocation();
 
   // canCancel covers every state where a cancel is meaningful:
   //   - running:               abort an in-flight execution (local mode
@@ -79,6 +82,21 @@ export default function RunHeader({ run, active, wsState }: Props) {
             </div>
           )}
         </div>
+        {run.file_path && (
+          <IconButton
+            label="Open workflow in editor"
+            tooltip={`Open ${run.file_path} in the editor`}
+            size="sm"
+            variant="ghost"
+            onClick={() =>
+              setLocation(
+                `/editor?file=${encodeURIComponent(run.file_path!)}&from=${encodeURIComponent(run.id)}`,
+              )
+            }
+          >
+            <Pencil1Icon />
+          </IconButton>
+        )}
         <StatusBadge status={run.status} />
         {active && (
           <span

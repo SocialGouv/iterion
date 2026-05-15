@@ -519,7 +519,7 @@ function DetailHeader({
             variant="ghost"
             onClick={() =>
               setLocation(
-                `/?file=${encodeURIComponent(filePath)}&node=${encodeURIComponent(
+                `/editor?file=${encodeURIComponent(filePath)}&node=${encodeURIComponent(
                   exec.ir_node_id,
                 )}&from=${encodeURIComponent(runId)}`,
               )
