@@ -1,12 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { computePollingInterval } from "./RunListView";
+import { computePollingInterval } from "./useRuns";
 
-// Lightweight unit test for the cadence helper. The full RunListView
-// is a React tree we don't need to mount to lock the contract — the
-// only behavioural switch is "fewer queued runs → fast polling, many
-// queued → slow polling" which the helper isolates from JSX so the
-// effect can stay readable.
+// The cadence helper is pure so the contract — "fewer queued runs →
+// fast polling, many queued → slow polling" — can be locked without
+// mounting the hook.
 describe("computePollingInterval", () => {
   it("returns the fast cadence when no runs are queued", () => {
     expect(computePollingInterval({})).toBe(3000);

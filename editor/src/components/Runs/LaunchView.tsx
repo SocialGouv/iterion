@@ -272,7 +272,7 @@ export default function LaunchView() {
         <span className="text-xs text-fg-subtle font-mono truncate">{filePath}</span>
         <button
           className="ml-auto text-xs px-2 py-1 rounded bg-surface-2 hover:bg-surface-3"
-          onClick={() => setLocation("/edit")}
+          onClick={() => setLocation("/editor")}
         >
           Cancel
         </button>

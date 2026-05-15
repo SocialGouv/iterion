@@ -101,7 +101,7 @@ export default function EditorView() {
     setBannerRunId(null);
     // Strip the query params so refresh / share-link doesn't re-trigger
     // the deep-link logic (and shows a clean URL to the user).
-    setLocation("/", { replace: true });
+    setLocation("/editor", { replace: true });
   };
 
   useEffect(() => {

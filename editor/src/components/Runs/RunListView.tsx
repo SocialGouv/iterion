@@ -1,30 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 import { useLocation } from "wouter";
 
-import { Badge, type BadgeVariant } from "@/components/ui/Badge";
-import { listRuns, type RunStatus, type RunSummary } from "@/api/runs";
+import { Badge } from "@/components/ui/Badge";
+import { type RunStatus } from "@/api/runs";
 import { formatRelative } from "@/lib/format";
 import ProjectLabel from "@/components/shared/ProjectLabel";
+import { useRuns } from "@/hooks/useRuns";
+import { STATUS_VARIANT, labelForStatus } from "./runStatusMeta";
 import QueueDepthBar from "./QueueDepthBar";
-
-const POLL_INTERVAL_FAST_MS = 3000;
-const POLL_INTERVAL_SLOW_MS = 8000;
-// Threshold above which we slow polling to relieve the cloud server.
-// Plan §F (T-13) calls this out as the editor's only backpressure
-// signal — runners scale via NATS lag, not via WS connection count.
-const QUEUED_BACKOFF_THRESHOLD = 10;
-
-// computePollingInterval picks the list polling cadence based on the
-// queue depth visible in the most recent fetch. Exported (and pure) so
-// the unit test can lock the contract independently of the React tree.
-export function computePollingInterval(
-  counts: Partial<Record<RunStatus, number>>,
-): number {
-  const queued = counts.queued ?? 0;
-  return queued >= QUEUED_BACKOFF_THRESHOLD
-    ? POLL_INTERVAL_SLOW_MS
-    : POLL_INTERVAL_FAST_MS;
-}
 
 const STATUS_FILTERS: Array<{ value: RunStatus | ""; label: string }> = [
   { value: "", label: "All" },
@@ -39,58 +22,10 @@ const STATUS_FILTERS: Array<{ value: RunStatus | ""; label: string }> = [
   { value: "cancelled", label: "Cancelled" },
 ];
 
-const STATUS_VARIANT: Record<RunStatus, BadgeVariant> = {
-  running: "info",
-  paused_waiting_human: "warning",
-  finished: "success",
-  failed: "danger",
-  failed_resumable: "danger",
-  cancelled: "neutral",
-  queued: "neutral",
-};
-
 export default function RunListView() {
   const [, setLocation] = useLocation();
-  const [runs, setRuns] = useState<RunSummary[]>([]);
   const [status, setStatus] = useState<RunStatus | "">("");
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  const counts = useMemo(() => {
-    const m: Partial<Record<RunStatus, number>> = {};
-    for (const r of runs) m[r.status] = (m[r.status] ?? 0) + 1;
-    return m;
-  }, [runs]);
-
-  // Polling cadence backs off when the queue is deep so we don't
-  // hammer the cloud server with list requests during a backlog. The
-  // useMemo on `counts` is the single source of truth for histograms.
-  const pollMs = computePollingInterval(counts);
-
-  useEffect(() => {
-    let cancelled = false;
-    const fetchRuns = async () => {
-      try {
-        const out = await listRuns({ status: status || undefined });
-        if (!cancelled) {
-          setRuns(out);
-          setError(null);
-          setLoading(false);
-        }
-      } catch (e) {
-        if (!cancelled) {
-          setError((e as Error).message);
-          setLoading(false);
-        }
-      }
-    };
-    fetchRuns();
-    const id = setInterval(fetchRuns, pollMs);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, [status, pollMs]);
+  const { runs, counts, loading, error } = useRuns({ status });
 
   return (
     <div className="h-full flex flex-col overflow-hidden bg-surface-1 text-fg-default">
@@ -100,7 +35,7 @@ export default function RunListView() {
         <span className="text-xs text-fg-subtle">{runs.length} total</span>
         <button
           className="ml-auto text-xs px-2 py-1 rounded bg-surface-2 hover:bg-surface-3 text-fg-default"
-          onClick={() => setLocation("/edit")}
+          onClick={() => setLocation("/editor")}
         >
           Back to editor
         </button>
@@ -202,19 +137,6 @@ export default function RunListView() {
       </div>
     </div>
   );
-}
-
-function labelForStatus(s: RunStatus): string {
-  switch (s) {
-    case "paused_waiting_human":
-      return "Paused";
-    case "failed_resumable":
-      return "Failed (resumable)";
-    case "queued":
-      return "Queued";
-    default:
-      return s;
-  }
 }
 
 function formatDuration(startISO: string, endISO?: string): string {

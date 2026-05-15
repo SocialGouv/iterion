@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
-import { Route, Switch, useLocation } from "wouter";
+import { Route, Switch } from "wouter";
 
 import EditorView from "@/components/EditorView";
+import HomeView from "@/components/Home/HomeView";
 import LaunchView from "@/components/Runs/LaunchView";
 import RunListView from "@/components/Runs/RunListView";
 import RunView from "@/components/Runs/RunView";
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
+import UserTeamChip from "@/components/shared/UserTeamChip";
 import ToastContainer from "@/components/shared/Toast";
 import MissingCLIBanner from "@/components/MissingCLIBanner";
 import Welcome from "@/views/Welcome";
@@ -146,7 +148,9 @@ function AuthedApp() {
         </Route>
         <Route path="/account" component={SettingsPage} />
         <Route path="/teams/:id" component={TeamPage} />
-        <Route component={EditorViewWithChrome} />
+        <Route path="/editor" component={EditorViewWithChrome} />
+        <Route path="/" component={HomeViewWithChrome} />
+        <Route component={HomeViewWithChrome} />
       </Switch>
       <ToastContainer />
       {isDesktop && (
@@ -164,102 +168,25 @@ function AuthedApp() {
   );
 }
 
-// EditorViewWithChrome wraps the existing editor with a small header
-// chip that surfaces the current user + active team and opens the
-// teams / account pages. Drawn as a fixed top-right cluster so it
-// doesn't disrupt the editor's own toolbars.
+// EditorViewWithChrome wraps the editor with the floating top-right
+// team/account chip. The chip is in a fixed-position layer so it
+// floats above the editor's own toolbars without disrupting layout.
 function EditorViewWithChrome() {
-  const { user, teams, activeTeamID, activeTeam, signOut, selectTeam } = useAuth();
-  const [, navigate] = useLocation();
-  const [open, setOpen] = useState(false);
-
-  // Synthesised local user — there's no team / account / sign-out
-  // surface to land on, so we don't render the chip at all. The
-  // built-in Settings / ProjectSwitcher dialogs (desktop menu)
-  // remain the local-mode entry points.
-  const isLocal = user?.id === "dev";
-
   return (
-    <div className="relative">
-      {!isLocal && (
-      <div className="fixed top-2 right-3 z-50">
-        <button
-          onClick={() => setOpen((v) => !v)}
-          className="bg-surface-1/95 border border-border-subtle rounded px-3 py-1 text-xs flex items-center gap-2 shadow"
-        >
-          <span className="font-medium">{activeTeam?.team_name ?? "No team"}</span>
-          <span className="text-fg-muted">{user?.email}</span>
-          <span>▾</span>
-        </button>
-        {open && (
-          <div
-            className="absolute right-0 mt-1 w-72 bg-surface-1 border border-border-subtle rounded shadow-lg p-2 text-sm"
-            onMouseLeave={() => setOpen(false)}
-          >
-            <div className="px-2 py-1 text-xs uppercase tracking-wider text-fg-muted">
-              Switch team
-            </div>
-            {teams.map((t) => (
-              <button
-                key={t.team_id}
-                onClick={() => {
-                  void selectTeam(t.team_id);
-                  setOpen(false);
-                }}
-                className={`w-full text-left px-2 py-1.5 rounded hover:bg-surface-2 ${
-                  t.team_id === activeTeamID ? "bg-surface-2" : ""
-                }`}
-              >
-                <div className="font-medium">{t.team_name}</div>
-                <div className="text-xs text-fg-muted">
-                  {t.role}
-                  {t.personal && " · personal"}
-                </div>
-              </button>
-            ))}
-            <div className="my-1 border-t border-border-subtle" />
-            {activeTeam && (
-              <button
-                onClick={() => {
-                  navigate(`/teams/${activeTeam.team_id}`);
-                  setOpen(false);
-                }}
-                className="w-full text-left px-2 py-1.5 rounded hover:bg-surface-2"
-              >
-                Manage {activeTeam.team_name}
-              </button>
-            )}
-            <button
-              onClick={() => {
-                navigate("/account");
-                setOpen(false);
-              }}
-              className="w-full text-left px-2 py-1.5 rounded hover:bg-surface-2"
-            >
-              Account settings
-            </button>
-            {user?.is_super_admin && (
-              <button
-                onClick={() => {
-                  navigate("/admin");
-                  setOpen(false);
-                }}
-                className="w-full text-left px-2 py-1.5 rounded hover:bg-surface-2 text-fg-warn"
-              >
-                Platform admin
-              </button>
-            )}
-            <button
-              onClick={() => void signOut()}
-              className="w-full text-left px-2 py-1.5 rounded hover:bg-surface-2 text-fg-error"
-            >
-              Sign out
-            </button>
-          </div>
-        )}
-      </div>
-      )}
+    <div className="relative h-full">
+      <UserTeamChip />
       <EditorView />
+    </div>
+  );
+}
+
+// HomeViewWithChrome mirrors EditorViewWithChrome: same floating chip,
+// different body. Keeps team-switching reachable from the landing page.
+function HomeViewWithChrome() {
+  return (
+    <div className="relative h-full">
+      <UserTeamChip />
+      <HomeView />
     </div>
   );
 }
