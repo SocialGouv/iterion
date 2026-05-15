@@ -36,6 +36,10 @@ type LaunchSpec struct {
 	// the same logical workflow.
 	Source  string
 	Vars    map[string]string // --var-style overrides
+	// Preset is the name of an in-source preset (presets: block) to
+	// apply before Vars. Unknown name → launch error. Empty means no
+	// preset.
+	Preset  string
 	RunID   string            // optional explicit ID; auto-generated when empty
 	Timeout time.Duration     // 0 disables
 	// MergeInto controls the worktree-finalization fast-forward target
@@ -1229,6 +1233,24 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	}
 
 	inputs := make(map[string]interface{}, len(spec.Vars))
+	if spec.Preset != "" {
+		preset, ok := wf.Presets[spec.Preset]
+		if !ok {
+			s.dropRunLog(runID)
+			available := make([]string, 0, len(wf.Presets))
+			for name := range wf.Presets {
+				available = append(available, name)
+			}
+			sort.Strings(available)
+			if len(available) == 0 {
+				return nil, fmt.Errorf("preset %q: workflow has no presets declared", spec.Preset)
+			}
+			return nil, fmt.Errorf("preset %q: unknown preset (available: %s)", spec.Preset, strings.Join(available, ", "))
+		}
+		for k, v := range preset.Values {
+			inputs[k] = v
+		}
+	}
 	for k, v := range spec.Vars {
 		inputs[k] = v
 	}
@@ -1242,7 +1264,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	}
 
 	return s.spawnRun(parent, runID, wf, hash, spec.FilePath, runName, fin, executor, runLogger, spec.Timeout, false,
-		spec.AttachmentPromote,
+		spec.AttachmentPromote, spec.Preset,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
 		})
@@ -1340,7 +1362,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// engine defaults. If we ever surface "edit finalization on
 	// resume" we'd plumb a ResumeSpec field here.
 	return s.spawnRun(parent, spec.RunID, wf, hash, spec.FilePath, runName, finalizationOpts{}, executor, runLogger, spec.Timeout, spec.Force,
-		nil,
+		nil, r.Preset,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			// Re-validate under the lock acquired by spawnRun (TOCTOU
 			// guard against a concurrent resume / state change).
@@ -1452,6 +1474,7 @@ func (s *Service) spawnRun(
 	timeout time.Duration,
 	force bool,
 	promote runtime.AttachmentPromoteFunc,
+	preset string,
 	body func(ctx context.Context, eng *runtime.Engine) error,
 ) (*LaunchResult, error) {
 	lock, err := s.store.LockRun(context.Background(), runID)
@@ -1478,6 +1501,9 @@ func (s *Service) spawnRun(
 	}
 	if promote != nil {
 		opts = append(opts, runtime.WithAttachmentPromote(promote))
+	}
+	if preset != "" {
+		opts = append(opts, runtime.WithPreset(preset))
 	}
 	eng := runtime.New(wf, s.store, executor, opts...)
 

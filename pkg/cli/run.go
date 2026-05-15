@@ -18,6 +18,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/recipe"
 	"github.com/SocialGouv/iterion/pkg/benchmark"
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -41,6 +42,7 @@ type RunOptions struct {
 	File          string               // .iter file path
 	Recipe        string               // recipe JSON file path (alternative to File)
 	Vars          map[string]string    // --var key=value overrides
+	Preset        string               // --preset <name>: applies an in-source named preset before --var
 	RunID         string               // explicit run ID (auto-generated if empty)
 	StoreDir      string               // store directory (default: nearest .iterion ancestor of the .iter file, or alongside it)
 	Timeout       time.Duration        // maximum run duration (0 = no limit)
@@ -145,10 +147,15 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	// executor snapshots Prompts/Schemas/ToolPolicy/Budget/Compaction
 	// at construction time, so feeding it the raw workflow would make
 	// the recipe's overrides invisible to the model/tool layer.
-	wf, wfHash, iterFile, workflowName, err := resolveWorkflow(opts)
+	wf, wfHash, iterFile, workflowName, bundleHandle, bundleCleanup, err := resolveWorkflow(opts)
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if cerr := bundleCleanup(); cerr != nil {
+			logger.Warn("bundle cleanup: %v", cerr)
+		}
+	}()
 
 	runName := store.GenerateRunName(iterFile + ":" + runID)
 
@@ -203,11 +210,34 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 			runtime.WithSandboxOverride(opts.Sandbox),
 			runtime.WithSandboxDefault(sandboxDefault),
 			runtime.WithSandboxDefaultImage(opts.SandboxDefaultImage),
+			runtime.WithBundle(bundleHandle),
+			runtime.WithPreset(opts.Preset),
 		)...,
 	)
 
-	// Build run inputs from vars.
+	// Build run inputs. Precedence (lowest → highest):
+	//   1. vars: defaults (applied by the engine when a key is unset here)
+	//   2. --preset <name>: in-source named preset values
+	//   3. --var key=value: CLI overrides
+	// Recipe presets are applied earlier in resolveWorkflow.
 	inputs := make(map[string]interface{})
+	if opts.Preset != "" {
+		preset, ok := wf.Presets[opts.Preset]
+		if !ok {
+			available := make([]string, 0, len(wf.Presets))
+			for name := range wf.Presets {
+				available = append(available, name)
+			}
+			sort.Strings(available)
+			if len(available) == 0 {
+				return fmt.Errorf("--preset %q: workflow has no presets declared", opts.Preset)
+			}
+			return fmt.Errorf("--preset %q: unknown preset (available: %s)", opts.Preset, strings.Join(available, ", "))
+		}
+		for k, v := range preset.Values {
+			inputs[k] = v
+		}
+	}
 	for k, v := range opts.Vars {
 		inputs[k] = v
 	}
@@ -340,44 +370,88 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	return nil
 }
 
-// resolveWorkflow loads the workflow either via a recipe or directly
-// from a .iter file. When a recipe is given, its overrides are applied
-// before the workflow is returned so the caller can hand a fully-
-// realised workflow to BuildExecutor (which snapshots the policy
-// fields at construction time).
-func resolveWorkflow(opts RunOptions) (wf *ir.Workflow, hash, filePath, displayName string, err error) {
+// resolveWorkflow loads the workflow either via a recipe, a `.botz`
+// bundle, or directly from a .iter file. When a recipe is given, its
+// overrides are applied before the workflow is returned so the caller
+// can hand a fully-realised workflow to BuildExecutor (which snapshots
+// the policy fields at construction time). When the input is a
+// bundle, the workflow source is extracted and any `prompts/*.md`
+// files are merged into the compiled IR before any other consumer
+// sees it.
+//
+// The returned bundle pointer is non-nil only for bundle inputs; the
+// caller wires it into the engine via runtime.WithBundle and is also
+// responsible for the cleanup function (no-op for cache-hit paths but
+// reserved for future per-run extraction modes).
+func resolveWorkflow(opts RunOptions) (wf *ir.Workflow, hash, filePath, displayName string, b *bundle.Bundle, cleanup func() error, err error) {
+	cleanup = func() error { return nil }
 	if opts.Recipe != "" {
 		spec, recipeErr := recipe.LoadFile(opts.Recipe)
 		if recipeErr != nil {
-			return nil, "", "", "", fmt.Errorf("cannot load recipe: %w", recipeErr)
+			return nil, "", "", "", nil, cleanup, fmt.Errorf("cannot load recipe: %w", recipeErr)
 		}
 		filePath = opts.File
 		if filePath == "" {
 			filePath = spec.WorkflowRef.Path
 		}
 		if filePath == "" {
-			return nil, "", "", "", fmt.Errorf("recipe %q does not specify a workflow path; provide --file", spec.Name)
+			return nil, "", "", "", nil, cleanup, fmt.Errorf("recipe %q does not specify a workflow path; provide --file", spec.Name)
 		}
 		filePath = ResolveRecipePath(filePath)
 		raw, h, compileErr := runview.CompileWorkflowWithHash(filePath)
 		if compileErr != nil {
-			return nil, "", "", "", compileErr
+			return nil, "", "", "", nil, cleanup, compileErr
 		}
 		applied, applyErr := spec.Apply(raw)
 		if applyErr != nil {
-			return nil, "", "", "", fmt.Errorf("runtime: apply recipe %q: %w", spec.Name, applyErr)
+			return nil, "", "", "", nil, cleanup, fmt.Errorf("runtime: apply recipe %q: %w", spec.Name, applyErr)
 		}
-		return applied, h, filePath, spec.Name + " (" + applied.Name + ")", nil
+		return applied, h, filePath, spec.Name + " (" + applied.Name + ")", nil, cleanup, nil
 	}
 	if opts.File == "" {
-		return nil, "", "", "", fmt.Errorf("provide a .iter file or --recipe")
+		return nil, "", "", "", nil, cleanup, fmt.Errorf("provide a .iter file, .botz bundle, or --recipe")
 	}
 	resolved := ResolveRecipePath(opts.File)
+	kind, detectErr := bundle.Detect(resolved)
+	if detectErr != nil {
+		return nil, "", "", "", nil, cleanup, detectErr
+	}
+	switch kind {
+	case bundle.KindBundle:
+		opened, c, openErr := bundle.Open(resolved, "")
+		if openErr != nil {
+			return nil, "", "", "", nil, cleanup, openErr
+		}
+		cleanup = c
+		raw, h, compileErr := runview.CompileBundleWorkflow(opened.IterPath, opened)
+		if compileErr != nil {
+			return nil, "", "", "", opened, cleanup, compileErr
+		}
+		display := raw.Name
+		if opened.Manifest != nil && opened.Manifest.Name != "" {
+			display = opened.Manifest.Name + " (" + raw.Name + ")"
+		}
+		return raw, h, opened.IterPath, display, opened, cleanup, nil
+	case bundle.KindBundleDir:
+		opened, openErr := bundle.OpenDir(resolved)
+		if openErr != nil {
+			return nil, "", "", "", nil, cleanup, openErr
+		}
+		raw, h, compileErr := runview.CompileBundleWorkflow(opened.IterPath, opened)
+		if compileErr != nil {
+			return nil, "", "", "", opened, cleanup, compileErr
+		}
+		display := raw.Name
+		if opened.Manifest != nil && opened.Manifest.Name != "" {
+			display = opened.Manifest.Name + " (" + raw.Name + ")"
+		}
+		return raw, h, opened.IterPath, display, opened, cleanup, nil
+	}
 	raw, h, compileErr := runview.CompileWorkflowWithHash(resolved)
 	if compileErr != nil {
-		return nil, "", "", "", compileErr
+		return nil, "", "", "", nil, cleanup, compileErr
 	}
-	return raw, h, resolved, raw.Name, nil
+	return raw, h, resolved, raw.Name, nil, cleanup, nil
 }
 
 // startPrometheusFromEnv builds a PrometheusExporter and serves /metrics

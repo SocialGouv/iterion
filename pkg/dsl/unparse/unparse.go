@@ -37,6 +37,12 @@ func Unparse(f *ast.File) string {
 		writeVarsBlock(&b, f.Vars, "")
 	}
 
+	// --- Presets ---
+	if f.Presets != nil && len(f.Presets.Entries) > 0 {
+		blankLine()
+		writePresetsBlock(&b, f.Presets, "")
+	}
+
 	// --- Attachments ---
 	if f.Attachments != nil && len(f.Attachments.Fields) > 0 {
 		blankLine()
@@ -331,6 +337,29 @@ func writeVarsBlock(b *strings.Builder, vars *ast.VarsBlock, indent string) {
 			writeLiteral(b, v.Default)
 		}
 		b.WriteByte('\n')
+	}
+}
+
+func writePresetsBlock(b *strings.Builder, pb *ast.PresetsBlock, indent string) {
+	fmt.Fprintf(b, "%spresets:\n", indent)
+	// Sort preset names alphabetically for deterministic output.
+	names := make([]string, 0, len(pb.Entries))
+	byName := make(map[string]*ast.Preset, len(pb.Entries))
+	for _, e := range pb.Entries {
+		names = append(names, e.Name)
+		byName[e.Name] = e
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		e := byName[name]
+		fmt.Fprintf(b, "%s  %s:\n", indent, e.Name)
+		for _, pv := range e.Values {
+			fmt.Fprintf(b, "%s    %s: ", indent, pv.Key)
+			if pv.Value != nil {
+				writeLiteral(b, pv.Value)
+			}
+			b.WriteByte('\n')
+		}
 	}
 }
 

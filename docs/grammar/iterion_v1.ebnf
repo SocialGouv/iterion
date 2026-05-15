@@ -16,6 +16,8 @@
 file = { top_level_decl } ;
 
 top_level_decl = vars_decl
+               | presets_decl
+               | attachments_decl
                | mcp_server_decl
                | prompt_decl
                | schema_decl
@@ -39,6 +41,32 @@ comment = "##" REST_OF_LINE ;
 vars_decl = "vars" ":" NEWLINE INDENT { var_field } DEDENT ;
 
 var_field = IDENT ":" type_expr [ "=" literal ] NEWLINE ;
+
+(* ---- Presets : jeux de valeurs nommés (dev / staging / prod) ----
+   Sélectionnables via `iterion run … --preset <name>`. Précédence :
+   --var > --preset > recipe.PresetVars > vars: defaults. *)
+
+presets_decl = "presets" ":" NEWLINE INDENT { preset_entry } DEDENT ;
+
+preset_entry = IDENT ":" NEWLINE INDENT { preset_value } DEDENT ;
+
+preset_value = IDENT ":" literal NEWLINE ;
+
+(* ---- Attachments : entrées binaires uploadées au runtime ----
+   Le bloc déclare des noms, types et contraintes ; les fichiers eux-mêmes
+   sont uploadés depuis le Launch modal de l'éditeur et persistés sous le
+   run. Référencés via {{attachments.<name>}} ou {{attachments.<name>.path}}. *)
+
+attachments_decl = "attachments" ":" NEWLINE INDENT { attachment_field } DEDENT ;
+
+attachment_field = IDENT ":" attachment_type NEWLINE
+                   [ INDENT { attachment_prop } DEDENT ] ;
+
+attachment_type = "file" | "image" ;
+
+attachment_prop = "description" ":" STRING_LIT NEWLINE
+                | "accept_mime"  ":" "[" STRING_LIT { "," STRING_LIT } "]" NEWLINE
+                | "required"     ":" BOOL_LIT NEWLINE ;
 
 (* ---- Prompts ---- *)
 

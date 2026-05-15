@@ -97,6 +97,13 @@ type SandboxParams struct {
 	// supportable; needs an S3-backed scratch area instead).
 	RunFilesHostDir       string
 	RunFilesContainerPath string
+
+	// BundleHostDir, when non-empty, is bind-mounted read-only into
+	// the container at BundleContainerPath so bundle resources
+	// (skills/, prompts/) stay reachable inside the sandbox even when
+	// the cache lives outside the workspace bind-mount.
+	BundleHostDir       string
+	BundleContainerPath string
 }
 
 // resolveAndStartSandbox produces an [activeSandbox] for the workflow's
@@ -171,6 +178,22 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 				spec.Env = map[string]string{}
 			}
 			spec.Env["ITERION_ARTIFACT_FILES_DIR"] = containerPath
+		}
+	}
+
+	// Bundle mount: read-only bind of the resolved bundle directory
+	// so the in-container view of skills/ and prompts/ matches the
+	// host. Independent of workspace bind-mount because the cache
+	// slot lives under the user cache dir, not the workspace.
+	if p.BundleHostDir != "" {
+		if _, statErr := os.Stat(p.BundleHostDir); statErr == nil {
+			containerPath := p.BundleContainerPath
+			if containerPath == "" {
+				containerPath = "/run/iterion/bundle"
+			}
+			spec.Mounts = append(spec.Mounts,
+				fmt.Sprintf("source=%s,target=%s,type=bind,readonly", p.BundleHostDir, containerPath),
+			)
 		}
 	}
 
@@ -792,7 +815,6 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 	if e.store != nil && e.store.Root() != "" {
 		attachHost = filepath.Join(e.store.Root(), "runs", runID, "attachments")
 	}
-
 	// Pre-create the per-run artifact-files directory so the bind mount
 	// has a source to point at. RunFilesStore is filesystem-only — when
 	// the store doesn't satisfy it (cloud / Mongo), runFilesHost stays
@@ -811,6 +833,10 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		}
 	}
 
+	var bundleHost string
+	if e.bundle != nil {
+		bundleHost = e.bundle.Dir
+	}
 	active, sbErr := resolveAndStartSandbox(ctx, SandboxParams{
 		Workflow:                 e.workflow,
 		RunID:                    runID,
@@ -826,6 +852,8 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		AttachmentsContainerPath: "/run/iterion/attachments",
 		RunFilesHostDir:          runFilesHost,
 		RunFilesContainerPath:    "/iterion/artifact-files",
+		BundleHostDir:            bundleHost,
+		BundleContainerPath:      "/run/iterion/bundle",
 	})
 	if sbErr != nil {
 		return noopCleanup, sbErr

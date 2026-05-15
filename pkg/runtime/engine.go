@@ -23,6 +23,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/recipe"
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -70,6 +71,7 @@ type Engine struct {
 	recoveryDispatch    RecoveryDispatch      // optional; consulted on node execution failure
 	workflowHash        string                // SHA-256 of the .iter source, set via WithWorkflowHash
 	filePath            string                // absolute .iter source path, set via WithFilePath
+	preset              string                // in-source preset name selected at launch, set via WithPreset
 	runName             string                // deterministic human-friendly run label, set via WithRunName
 	mergeInto           string                // worktree finalization: FF target ("" = current branch, "none" = skip, or branch name); set via WithMergeInto
 	branchName          string                // worktree finalization: storage branch override ("" = iterion/run/<runName>); set via WithBranchName
@@ -83,6 +85,7 @@ type Engine struct {
 	sandboxDefault      string                // global ITERION_SANDBOX_DEFAULT value snapshot; set via WithSandboxDefault
 	sandboxDefaultImage string                // image ref used as fallback when sandbox: auto and no .devcontainer/devcontainer.json is found; "" lets the runtime pick the built-in pinned to the iterion version; set via WithSandboxDefaultImage
 	attachmentPromote   AttachmentPromoteFunc // optional: invoked after CreateRun to materialise attachments
+	bundle              *bundle.Bundle        // optional: bundle backing this run; nil for plain .iter/.bot runs
 }
 
 // AttachmentPromoteFunc is invoked once at the start of a run, right
@@ -179,6 +182,14 @@ func WithRunName(name string) EngineOption {
 	return func(e *Engine) { e.runName = name }
 }
 
+// WithPreset records the in-source preset name selected at launch
+// (`--preset <name>`) on the run metadata so resume re-applies the
+// same parameter set without re-typing it. Empty when no preset was
+// selected.
+func WithPreset(name string) EngineOption {
+	return func(e *Engine) { e.preset = name }
+}
+
 // WithMergeInto controls the worktree-finalization fast-forward target
 // for `worktree: auto` runs. Values:
 //   - "" or "current" → fast-forward the user's currently-checked-out
@@ -239,6 +250,15 @@ func WithForceResume(force bool) EngineOption {
 // the workflow, the engine overrides this with the per-run worktree path.
 func WithWorkDir(dir string) EngineOption {
 	return func(e *Engine) { e.workDir = dir }
+}
+
+// WithBundle attaches a resolved `.botz` bundle to the engine. The
+// runtime mirrors the bundle's `skills/` directory into the workDir's
+// `.claude/skills/` so claude_code and the claw skill registry pick
+// them up transparently. Pass nil (the default) for plain .iter/.bot
+// runs without a backing bundle.
+func WithBundle(b *bundle.Bundle) EngineOption {
+	return func(e *Engine) { e.bundle = b }
 }
 
 // WithOutputValidation enables post-execution validation of node outputs
@@ -386,7 +406,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 			return fmt.Errorf("runtime: create run: %w", err)
 		}
 	}
-	if e.workflowHash != "" || e.filePath != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge {
+	if e.workflowHash != "" || e.filePath != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || e.bundle != nil {
 		if e.workflowHash != "" {
 			run.WorkflowHash = e.workflowHash
 		}
@@ -400,9 +420,23 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 			run.MergeStrategy = store.MergeStrategy(e.mergeStrategy)
 		}
 		run.AutoMerge = e.autoMerge
+		if e.preset != "" {
+			run.Preset = e.preset
+		}
+		if e.bundle != nil {
+			run.BundleHash = e.bundle.Hash
+			run.BundlePath = e.bundle.SourcePath
+		}
 		if err := e.store.SaveRun(ctx, run); err != nil {
 			return fmt.Errorf("runtime: save run metadata: %w", err)
 		}
+	}
+
+	// Bundle attachment defaults land first so any runtime upload
+	// processed by attachmentPromote below overwrites them.
+	if err := promoteBundleAttachmentDefaults(ctx, e.store, runID, e.workflow, e.bundle, e.logger); err != nil {
+		_ = e.store.UpdateRunStatus(ctx, runID, store.RunStatusFailed, fmt.Sprintf("bundle attachment defaults: %v", err))
+		return fmt.Errorf("runtime: bundle attachment defaults: %w", err)
 	}
 
 	// Reload `run` after the promote callback so the next SaveRun
@@ -413,9 +447,9 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 			_ = e.store.UpdateRunStatus(ctx, runID, store.RunStatusFailed, fmt.Sprintf("attachment promote: %v", err))
 			return fmt.Errorf("runtime: promote attachments: %w", err)
 		}
-		if reloaded, err := e.store.LoadRun(ctx, runID); err == nil {
-			run = reloaded
-		}
+	}
+	if reloaded, err := e.store.LoadRun(ctx, runID); err == nil {
+		run = reloaded
 	}
 
 	// Default workDir to process cwd if not set explicitly.
@@ -468,6 +502,16 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 	type workDirSetter interface{ SetWorkDir(string) }
 	if s, ok := e.executor.(workDirSetter); ok {
 		s.SetWorkDir(e.workDir)
+	}
+
+	// Bundle skill mirroring: when a .botz backs this run, copy the
+	// bundle's skills/ entries into <workDir>/.claude/skills/ so both
+	// claude_code's native skill lookup and the claw `skill` tool
+	// discover them transparently. Workspace files always win on
+	// collision (see runtime/bundle.go for the rule).
+	if err := mirrorBundleSkills(e.workDir, e.bundle, e.logger); err != nil {
+		_ = e.store.UpdateRunStatus(ctx, runID, store.RunStatusFailed, err.Error())
+		return fmt.Errorf("runtime: bundle skills: %w", err)
 	}
 
 	// Sandbox lifecycle: when the workflow opts in, start a long-lived

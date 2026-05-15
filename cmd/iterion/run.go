@@ -9,6 +9,7 @@ import (
 
 var runOpts struct {
 	recipe              string
+	preset              string
 	runID               string
 	storeDir            string
 	timeout             time.Duration
@@ -32,6 +33,7 @@ var runCmd = &cobra.Command{
 		opts := cli.RunOptions{
 			File:                args[0],
 			Recipe:              runOpts.recipe,
+			Preset:              runOpts.preset,
 			RunID:               runOpts.runID,
 			StoreDir:            runOpts.storeDir,
 			Timeout:             runOpts.timeout,
@@ -60,6 +62,7 @@ func init() {
 	f := runCmd.Flags()
 	f.StringArrayVar(&runOpts.varFlags, "var", nil, "Set workflow variable (key=value, repeatable)")
 	f.StringVar(&runOpts.recipe, "recipe", "", "Recipe JSON file")
+	f.StringVar(&runOpts.preset, "preset", "", "Apply a named in-source preset (presets: block) before --var overrides")
 	f.StringVar(&runOpts.runID, "run-id", "", "Explicit run ID")
 	f.StringVar(&runOpts.storeDir, "store-dir", "", "Store directory (default: .iterion)")
 	f.DurationVar(&runOpts.timeout, "timeout", 0, "Maximum run duration (e.g. 30s, 5m, 1h)")

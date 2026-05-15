@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -18,19 +19,64 @@ type ValidateResult struct {
 	WorkflowName       string   `json:"workflow_name,omitempty"`
 	NodeCount          int      `json:"node_count,omitempty"`
 	EdgeCount          int      `json:"edge_count,omitempty"`
+	BundleName         string   `json:"bundle_name,omitempty"`
+	BundleVersion      string   `json:"bundle_version,omitempty"`
 	ParseDiagnostics   []string `json:"parse_diagnostics,omitempty"`
 	CompileDiagnostics []string `json:"compile_diagnostics,omitempty"`
 }
 
-// RunValidate parses, compiles, and validates an .iter file.
+// RunValidate parses, compiles, and validates an .iter file or `.botz`
+// archive. For bundles, the workflow source is extracted to a cache
+// directory and validated; bundle metadata (name, version) is reported
+// alongside the workflow result.
 func RunValidate(path string, p *Printer) error {
 	path = ResolveRecipePath(path)
+
+	// Bundle dispatch: detect .botz or directory bundles and unpack
+	// before validating. Plain .iter/.bot paths fall through unchanged.
+	kind, err := bundle.Detect(path)
+	if err != nil {
+		return fmt.Errorf("cannot inspect %s: %w", path, err)
+	}
+	var bundleName, bundleVersion string
+	var bundleHandle *bundle.Bundle
+	switch kind {
+	case bundle.KindBundle:
+		b, cleanup, openErr := bundle.Open(path, "")
+		if openErr != nil {
+			return fmt.Errorf("cannot open bundle: %w", openErr)
+		}
+		defer cleanup()
+		if b.Manifest != nil {
+			bundleName = b.Manifest.Name
+			bundleVersion = b.Manifest.Version
+		}
+		path = b.IterPath
+		bundleHandle = b
+	case bundle.KindBundleDir:
+		b, openErr := bundle.OpenDir(path)
+		if openErr != nil {
+			return fmt.Errorf("cannot open bundle dir: %w", openErr)
+		}
+		if b.Manifest != nil {
+			bundleName = b.Manifest.Name
+			bundleVersion = b.Manifest.Version
+		}
+		path = b.IterPath
+		bundleHandle = b
+	}
+
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("cannot read file: %w", err)
 	}
 
-	result := &ValidateResult{File: path, Valid: true}
+	result := &ValidateResult{
+		File:          path,
+		Valid:         true,
+		BundleName:    bundleName,
+		BundleVersion: bundleVersion,
+	}
 
 	// Parse.
 	pr := parser.Parse(path, string(src))
@@ -38,6 +84,14 @@ func RunValidate(path string, p *Printer) error {
 		result.ParseDiagnostics = append(result.ParseDiagnostics, d.Error())
 		if d.Severity == parser.SeverityError {
 			result.Valid = false
+		}
+	}
+
+	// Bundle prompts must merge into the AST before ir.Compile validates
+	// node-level prompt references.
+	if bundleHandle != nil && pr.File != nil {
+		if err := runview.MergeBundlePrompts(pr.File, bundleHandle); err != nil {
+			return fmt.Errorf("bundle: merge prompts: %w", err)
 		}
 	}
 
@@ -78,6 +132,9 @@ func RunValidate(path string, p *Printer) error {
 		p.JSON(result)
 	} else {
 		p.Header("Validate: " + path)
+		if bundleName != "" || bundleVersion != "" {
+			p.KV("Bundle", bundleName+" "+bundleVersion)
+		}
 		if cr.Workflow != nil {
 			p.KV("Workflow", result.WorkflowName)
 			p.KV("Nodes", fmt.Sprintf("%d", result.NodeCount))

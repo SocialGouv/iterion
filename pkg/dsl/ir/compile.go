@@ -430,6 +430,9 @@ func (c *compiler) compile() *Workflow {
 	// Compile vars (merge top-level + workflow-level).
 	vars := c.compileVars(c.file.Vars, wf.Vars)
 
+	// Compile presets (depend on vars for type coercion + name validation).
+	presets := c.compilePresets(c.file.Presets, vars)
+
 	// Compile attachments (merge top-level + workflow-level).
 	attachments := c.compileAttachments(c.file.Attachments, wf.Attachments, vars)
 
@@ -462,6 +465,7 @@ func (c *compiler) compile() *Workflow {
 		Schemas:        c.schemas,
 		Prompts:        c.prompts,
 		Vars:           vars,
+		Presets:        presets,
 		Attachments:    attachments,
 		Loops:          loops,
 		Budget:         budget,
@@ -1143,6 +1147,80 @@ func (c *compiler) compileVars(topLevel *ast.VarsBlock, workflowLevel *ast.VarsB
 	addVars(workflowLevel)
 
 	return vars
+}
+
+// ---------------------------------------------------------------------------
+// Presets
+// ---------------------------------------------------------------------------
+
+// compilePresets converts the AST `presets:` block to its IR map form,
+// validating that each value targets a declared variable and coercing the
+// literal to the variable's declared type. Type mismatches and unknown
+// var references emit diagnostics; the offending entry is dropped from
+// the resulting preset.
+func (c *compiler) compilePresets(pb *ast.PresetsBlock, vars map[string]*Var) map[string]Preset {
+	if pb == nil || len(pb.Entries) == 0 {
+		return nil
+	}
+	out := make(map[string]Preset, len(pb.Entries))
+	for _, entry := range pb.Entries {
+		if _, dup := out[entry.Name]; dup {
+			c.errorf(DiagDuplicatePreset, "preset %q declared more than once", entry.Name)
+			continue
+		}
+		values := make(map[string]interface{}, len(entry.Values))
+		for _, pv := range entry.Values {
+			v, ok := vars[pv.Key]
+			if !ok {
+				c.errorf(DiagPresetUnknownVar,
+					"preset %q references unknown variable %q (declare it in vars:)",
+					entry.Name, pv.Key)
+				continue
+			}
+			coerced, ok := coercePresetLiteral(pv.Value, v.Type)
+			if !ok {
+				c.errorf(DiagPresetTypeMismatch,
+					"preset %q: value for variable %q has wrong type (expected %s)",
+					entry.Name, pv.Key, v.Type.String())
+				continue
+			}
+			values[pv.Key] = coerced
+		}
+		out[entry.Name] = Preset{Name: entry.Name, Values: values}
+	}
+	return out
+}
+
+// coercePresetLiteral converts an ast.Literal to the runtime Go type
+// matching the declared VarType. Returns (value, true) on success and
+// (nil, false) on a type mismatch. VarJSON and VarStringArray accept
+// string literals (the runtime parses them on demand).
+func coercePresetLiteral(lit *ast.Literal, vt VarType) (interface{}, bool) {
+	if lit == nil {
+		return nil, false
+	}
+	switch vt {
+	case VarString, VarJSON, VarStringArray:
+		if lit.Kind == ast.LitString {
+			return lit.StrVal, true
+		}
+	case VarInt:
+		if lit.Kind == ast.LitInt {
+			return lit.IntVal, true
+		}
+	case VarFloat:
+		if lit.Kind == ast.LitFloat {
+			return lit.FloatVal, true
+		}
+		if lit.Kind == ast.LitInt {
+			return float64(lit.IntVal), true
+		}
+	case VarBool:
+		if lit.Kind == ast.LitBool {
+			return lit.BoolVal, true
+		}
+	}
+	return nil, false
 }
 
 // ---------------------------------------------------------------------------

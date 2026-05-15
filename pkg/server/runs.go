@@ -77,6 +77,10 @@ type launchRunRequest struct {
 	Source string            `json:"source,omitempty"`
 	RunID  string            `json:"run_id,omitempty"`
 	Vars   map[string]string `json:"vars,omitempty"`
+	// Preset is the name of an in-source preset (presets: block) to
+	// apply before Vars. Maps directly to LaunchSpec.Preset; the engine
+	// records it on Run.Preset for resume.
+	Preset string `json:"preset,omitempty"`
 	// Timeout is a Go-style duration string ("30m", "2h"). Empty disables.
 	Timeout string `json:"timeout,omitempty"`
 	// MergeInto is the worktree-finalization merge target. See
@@ -220,6 +224,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		Source:            req.Source,
 		RunID:             req.RunID,
 		Vars:              req.Vars,
+		Preset:            req.Preset,
 		Timeout:           timeout,
 		MergeInto:         req.MergeInto,
 		BranchName:        req.BranchName,

@@ -9,6 +9,7 @@ import "github.com/SocialGouv/iterion/pkg/dsl/types"
 // File is the root AST node representing an entire .iter source file.
 type File struct {
 	Vars        *VarsBlock        // top-level vars (optional, at most one)
+	Presets     *PresetsBlock     // top-level named preset value sets (optional, at most one)
 	Attachments *AttachmentsBlock // top-level attachments (optional, at most one)
 	MCPServers  []*MCPServerDecl  // top-level reusable MCP server declarations
 	Prompts     []*PromptDecl     // prompt declarations
@@ -97,6 +98,32 @@ type VarField struct {
 	Type    TypeExpr
 	Default *Literal // nil if no default
 	Span    Span
+}
+
+// ---------------------------------------------------------------------------
+// Presets
+// ---------------------------------------------------------------------------
+
+// PresetsBlock represents a top-level `presets:` block. Each preset is a
+// named bundle of variable values (typically `dev` / `staging` / `prod`)
+// selected at run time via `--preset <name>`.
+type PresetsBlock struct {
+	Entries []*Preset
+	Span    Span
+}
+
+// Preset is one named entry inside a `presets:` block.
+type Preset struct {
+	Name   string
+	Values []*PresetValue
+	Span   Span
+}
+
+// PresetValue is a single `<var>: <literal>` pair inside a preset.
+type PresetValue struct {
+	Key   string
+	Value *Literal
+	Span  Span
 }
 
 // ---------------------------------------------------------------------------

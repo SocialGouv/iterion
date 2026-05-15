@@ -55,6 +55,23 @@ type Run struct {
 	WorkflowName  string                 `json:"workflow_name" bson:"workflow_name"`
 	WorkflowHash  string                 `json:"workflow_hash,omitempty" bson:"workflow_hash,omitempty"` // SHA-256 of the .iter source at run start
 	FilePath      string                 `json:"file_path,omitempty" bson:"file_path,omitempty"`         // absolute .iter source path captured at launch (resume without re-supplying file)
+	// Preset is the in-source preset name selected at launch via
+	// `--preset <name>` (or the editor Launch modal). Persisted so
+	// `iterion resume` re-applies the same parameter set without the
+	// caller having to re-supply it. Empty when no preset was selected
+	// or the workflow declares none.
+	Preset string `json:"preset,omitempty" bson:"preset,omitempty"`
+	// BundleHash is the SHA-256 of the uncompressed tar stream of the
+	// `.botz` archive backing this run. Used by resume to re-locate
+	// the same cache slot (and detect when the archive has changed
+	// out from under the run). Empty when the run was launched from a
+	// plain .iter/.bot file or a directory bundle (no archive).
+	BundleHash string `json:"bundle_hash,omitempty" bson:"bundle_hash,omitempty"`
+	// BundlePath is the absolute path of the source `.botz` archive
+	// or directory bundle captured at launch. Used by resume to
+	// re-extract the archive when the cache has been GC'd between
+	// runs. Empty for plain .iter/.bot runs.
+	BundlePath string `json:"bundle_path,omitempty" bson:"bundle_path,omitempty"`
 	Status        RunStatus              `json:"status" bson:"status"`
 	Inputs        map[string]interface{} `json:"inputs,omitempty" bson:"inputs,omitempty"`
 	CreatedAt     time.Time              `json:"created_at" bson:"created_at"`

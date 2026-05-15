@@ -107,6 +107,7 @@ func reverseMap[K comparable, V comparable](m map[K]V) map[V]K {
 
 type jsonFile struct {
 	Vars        *jsonVarsBlock        `json:"vars,omitempty"`
+	Presets     *jsonPresetsBlock     `json:"presets,omitempty"`
 	Attachments *jsonAttachmentsBlock `json:"attachments,omitempty"`
 	MCPServers  []*jsonMCPServerDecl  `json:"mcp_servers,omitempty"`
 	Prompts     []*jsonPromptDecl     `json:"prompts,omitempty"`
@@ -133,6 +134,20 @@ type jsonVarField struct {
 	Name    string       `json:"name,omitempty"`
 	Type    string       `json:"type,omitempty"`
 	Default *jsonLiteral `json:"default,omitempty"`
+}
+
+type jsonPresetsBlock struct {
+	Entries []*jsonPreset `json:"entries,omitempty"`
+}
+
+type jsonPreset struct {
+	Name   string              `json:"name,omitempty"`
+	Values []*jsonPresetValue `json:"values,omitempty"`
+}
+
+type jsonPresetValue struct {
+	Key   string       `json:"key,omitempty"`
+	Value *jsonLiteral `json:"value,omitempty"`
 }
 
 type jsonAttachmentsBlock struct {
@@ -483,6 +498,9 @@ func toJSON(f *File) *jsonFile {
 	if f.Vars != nil {
 		jf.Vars = varsBlockToJSON(f.Vars)
 	}
+	if f.Presets != nil {
+		jf.Presets = presetsBlockToJSON(f.Presets)
+	}
 	if f.Attachments != nil {
 		jf.Attachments = attachmentsBlockToJSON(f.Attachments)
 	}
@@ -640,6 +658,42 @@ func attachmentsBlockFromJSON(jb *jsonAttachmentsBlock) (*AttachmentsBlock, erro
 		a.Fields = append(a.Fields, af)
 	}
 	return a, nil
+}
+
+func presetsBlockToJSON(p *PresetsBlock) *jsonPresetsBlock {
+	jp := &jsonPresetsBlock{}
+	for _, e := range p.Entries {
+		je := &jsonPreset{Name: e.Name}
+		for _, v := range e.Values {
+			jv := &jsonPresetValue{Key: v.Key}
+			if v.Value != nil {
+				jv.Value = literalToJSON(v.Value)
+			}
+			je.Values = append(je.Values, jv)
+		}
+		jp.Entries = append(jp.Entries, je)
+	}
+	return jp
+}
+
+func presetsBlockFromJSON(jp *jsonPresetsBlock) (*PresetsBlock, error) {
+	p := &PresetsBlock{}
+	for _, je := range jp.Entries {
+		e := &Preset{Name: je.Name}
+		for _, jv := range je.Values {
+			pv := &PresetValue{Key: jv.Key}
+			if jv.Value != nil {
+				lit, err := literalFromJSON(jv.Value)
+				if err != nil {
+					return nil, err
+				}
+				pv.Value = lit
+			}
+			e.Values = append(e.Values, pv)
+		}
+		p.Entries = append(p.Entries, e)
+	}
+	return p, nil
 }
 
 func varsBlockToJSON(v *VarsBlock) *jsonVarsBlock {
@@ -845,6 +899,13 @@ func fromJSON(jf *jsonFile) (*File, error) {
 			return nil, err
 		}
 		f.Vars = v
+	}
+	if jf.Presets != nil {
+		p, err := presetsBlockFromJSON(jf.Presets)
+		if err != nil {
+			return nil, err
+		}
+		f.Presets = p
 	}
 
 	for _, js := range jf.MCPServers {

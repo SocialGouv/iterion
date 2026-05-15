@@ -49,6 +49,11 @@ const (
 	// Browser-pane diagnostics (PR 3 of the browser-simulation
 	// feature). Reserve C060+ for future browser/Playwright checks.
 	DiagPlaywrightNeedsBrowserImage DiagCode = "C060" // Playwright MCP server requires a browser-capable sandbox image
+
+	// Presets diagnostics (in-source `presets:` block).
+	DiagPresetUnknownVar   DiagCode = "C070" // preset references a variable not declared in vars:
+	DiagPresetTypeMismatch DiagCode = "C071" // preset value type does not match the declared variable type
+	DiagDuplicatePreset    DiagCode = "C072" // preset name declared more than once
 )
 
 // validate performs static validation on a compiled workflow.

@@ -148,6 +148,12 @@ func (p *parser) parseFile() *ast.File {
 				f.Vars = vb
 			}
 
+		case TokenPresets:
+			pb := p.parsePresetsBlock()
+			if pb != nil {
+				f.Presets = pb
+			}
+
 		case TokenAttachments:
 			ab := p.parseAttachmentsBlock()
 			if ab != nil {
@@ -313,6 +319,83 @@ func (p *parser) parseVarField() *ast.VarField {
 		Default: def,
 		Span:    ast.Span{Start: p.pos(nameT), End: p.pos(nameT)},
 	}
+}
+
+// ---- presets ----
+
+func (p *parser) parsePresetsBlock() *ast.PresetsBlock {
+	start := p.next() // consume "presets"
+	p.expect(TokenColon)
+	p.skipNewlines()
+	if _, ok := p.expect(TokenIndent); !ok {
+		return nil
+	}
+
+	pb := &ast.PresetsBlock{Span: ast.Span{Start: p.pos(start)}}
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		pe := p.parsePresetEntry()
+		if pe != nil {
+			pb.Entries = append(pb.Entries, pe)
+		}
+	}
+	if len(pb.Entries) > 0 {
+		pb.Span.End = pb.Entries[len(pb.Entries)-1].Span.End
+	} else {
+		pb.Span.End = pb.Span.Start
+	}
+	return pb
+}
+
+func (p *parser) parsePresetEntry() *ast.Preset {
+	nameT := p.next()
+	if nameT.Type != TokenIdent && !isKeywordToken(nameT.Type) {
+		p.addError(DiagExpectedToken, nameT, "expected preset name, got "+nameT.Type.String())
+		p.skipToNewline()
+		return nil
+	}
+	pe := &ast.Preset{
+		Name: nameT.Value,
+		Span: ast.Span{Start: p.pos(nameT), End: p.pos(nameT)},
+	}
+	p.expect(TokenColon)
+	p.skipNewlines()
+	if _, ok := p.expect(TokenIndent); !ok {
+		return pe
+	}
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		if t.Type != TokenIdent && !isKeywordToken(t.Type) {
+			p.addError(DiagUnexpectedToken, t, "expected variable name in preset entry, got "+t.Value)
+			p.next()
+			p.skipToNewline()
+			continue
+		}
+		keyT := p.next()
+		p.expect(TokenColon)
+		lit := p.parseLiteral()
+		p.skipNewlines()
+		pe.Values = append(pe.Values, &ast.PresetValue{
+			Key:   keyT.Value,
+			Value: lit,
+			Span:  ast.Span{Start: p.pos(keyT), End: p.pos(keyT)},
+		})
+	}
+	return pe
 }
 
 // ---- attachments ----

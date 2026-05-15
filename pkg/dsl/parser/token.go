@@ -39,6 +39,7 @@ const (
 
 	// Keywords (contextual — also valid as identifiers in some positions)
 	TokenVars
+	TokenPresets
 	TokenAttachments
 	TokenMCPServer
 	TokenPrompt
@@ -167,6 +168,7 @@ var tokenNames = map[TokenType]string{
 	TokenComment: "Comment",
 
 	TokenVars:              "vars",
+	TokenPresets:           "presets",
 	TokenAttachments:       "attachments",
 	TokenTypeFile:          "file",
 	TokenTypeImage:         "image",
@@ -268,6 +270,7 @@ func (t TokenType) String() string {
 // The lexer uses this to distinguish keywords from plain identifiers.
 var keywords = map[string]TokenType{
 	"vars":                  TokenVars,
+	"presets":               TokenPresets,
 	"attachments":           TokenAttachments,
 	"file":                  TokenTypeFile,
 	"image":                 TokenTypeImage,

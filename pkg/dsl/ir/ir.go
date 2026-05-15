@@ -24,6 +24,7 @@ type Workflow struct {
 	Schemas        map[string]*Schema     // schema name → resolved schema
 	Prompts        map[string]*Prompt     // prompt name → resolved prompt
 	Vars           map[string]*Var        // var name → resolved variable
+	Presets        map[string]Preset      // preset name → resolved preset values (var name → typed value)
 	Attachments    map[string]*Attachment // attachment name → resolved attachment
 	Loops          map[string]*Loop       // loop name → loop definition
 	Budget         *Budget                // workflow budget (nil if not set)
@@ -704,6 +705,20 @@ func (vt VarType) String() string {
 	default:
 		return "unknown"
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Preset — resolved named bundle of variable values
+// ---------------------------------------------------------------------------
+
+// Preset is a resolved named bundle of variable values. Values are stored
+// with their coerced Go types (string, int64, float64, bool) matching the
+// declared Var's type. Workflow authors select a preset at run time via
+// `--preset <name>`; the runtime overlays these values onto the default
+// vars before applying any `--var` flag.
+type Preset struct {
+	Name   string
+	Values map[string]interface{}
 }
 
 // ---------------------------------------------------------------------------

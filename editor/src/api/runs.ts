@@ -306,6 +306,8 @@ export interface CreateRunRequest {
   source?: string;
   run_id?: string;
   vars?: Record<string, string>;
+  // Name of an in-source preset (presets: block) to apply before vars.
+  preset?: string;
   timeout?: string;
   // For `worktree: auto` workflows: the branch the engine will merge
   // into after the run. "" or "current" → current branch (default);

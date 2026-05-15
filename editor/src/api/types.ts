@@ -4,6 +4,7 @@
 
 export interface IterDocument {
   vars?: VarsBlock;
+  presets?: PresetsBlock;
   attachments?: AttachmentsBlock;
   mcp_servers?: MCPServerDecl[];
   prompts: PromptDecl[];
@@ -48,6 +49,25 @@ export interface Literal {
 }
 
 export type LiteralKind = "string" | "int" | "float" | "bool";
+
+// ---------------------------------------------------------------------------
+// Presets — named bundles of variable values selected at launch time.
+// Mirrors pkg/dsl/ast.PresetsBlock.
+// ---------------------------------------------------------------------------
+
+export interface PresetsBlock {
+  entries: Preset[];
+}
+
+export interface Preset {
+  name: string;
+  values: PresetValue[];
+}
+
+export interface PresetValue {
+  key: string;
+  value: Literal;
+}
 
 // ---------------------------------------------------------------------------
 // Attachments

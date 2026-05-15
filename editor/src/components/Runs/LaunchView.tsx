@@ -7,6 +7,8 @@ import type { MergeStrategy } from "@/api/runs";
 import type {
   AttachmentField,
   IterDocument,
+  Literal,
+  Preset,
   ServerInfo,
   VarField,
 } from "@/api/types";
@@ -30,6 +32,30 @@ function pickVars(doc: IterDocument | null): VarField[] {
   return doc.vars?.fields ?? [];
 }
 
+/** Read the workflow's presets (top-level only — they apply to the
+ *  whole file, no workflow-level scope today). */
+function pickPresets(doc: IterDocument | null): Preset[] {
+  return doc?.presets?.entries ?? [];
+}
+
+/** Stringify a preset literal so it can feed the existing var form
+ *  (which holds every value as a string and coerces server-side). */
+function literalToString(lit: Literal | undefined): string {
+  if (!lit) return "";
+  switch (lit.kind) {
+    case "string":
+      return lit.str_val ?? "";
+    case "int":
+      return String(lit.int_val ?? 0);
+    case "float":
+      return String(lit.float_val ?? 0);
+    case "bool":
+      return lit.bool_val ? "true" : "false";
+    default:
+      return lit.raw ?? "";
+  }
+}
+
 /** Read the workflow's attachments — same precedence as vars. */
 function pickAttachments(doc: IterDocument | null): AttachmentField[] {
   if (!doc) return [];
@@ -50,6 +76,7 @@ export default function LaunchView() {
   const currentSource = useDocumentStore((s) => s.currentSource);
   const setCurrentSource = useDocumentStore((s) => s.setCurrentSource);
   const [values, setValues] = useState<Record<string, string>>({});
+  const [selectedPreset, setSelectedPreset] = useState<string>("");
   const [attachments, setAttachments] = useState<Record<string, AttachmentValue | null>>({});
   const [serverInfo, setServerInfo] = useState<ServerInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -113,8 +140,27 @@ export default function LaunchView() {
   }, [filePath]);
 
   const fields = pickVars(doc);
+  const presets = pickPresets(doc);
   const attachmentFields = pickAttachments(doc);
   const limits = serverInfo?.limits.upload ?? null;
+
+  // Apply a named preset by overlaying its values onto the current form
+  // state. Existing values for keys not in the preset are preserved, so
+  // switching from "prod" to "dev" updates only the overlapping keys —
+  // which is the same precedence as the engine.
+  const applyPreset = (name: string) => {
+    setSelectedPreset(name);
+    if (!name) return;
+    const preset = presets.find((p) => p.name === name);
+    if (!preset) return;
+    setValues((prev) => {
+      const next = { ...prev };
+      for (const pv of preset.values) {
+        next[pv.key] = literalToString(pv.value);
+      }
+      return next;
+    });
+  };
 
   // Required attachments must have a successful upload (uploadId present).
   const missingRequired = attachmentFields.some(
@@ -190,6 +236,7 @@ export default function LaunchView() {
         file_path: filePath,
         source: currentSource || undefined,
         vars: values,
+        preset: selectedPreset || undefined,
         merge_into: mergeInto || undefined,
         branch_name: branchName || undefined,
         merge_strategy: mergeStrategy,
@@ -277,6 +324,28 @@ export default function LaunchView() {
                     {formatBytes(totalSize(attachments))} total
                   </p>
                 )}
+              </section>
+            )}
+            {presets.length > 0 && (
+              <section className="mb-6">
+                <h2 className="text-xs font-medium text-fg-muted mb-2">Preset</h2>
+                <Select
+                  value={selectedPreset}
+                  onChange={(e) => applyPreset(e.target.value)}
+                  disabled={submitting}
+                >
+                  <option value="">— none —</option>
+                  {presets.map((p) => (
+                    <option key={p.name} value={p.name}>
+                      {p.name}
+                    </option>
+                  ))}
+                </Select>
+                <p className="mt-1 text-[10px] text-fg-subtle">
+                  Selecting a preset overlays its values onto the inputs
+                  below. Any further edits override the preset; the engine
+                  applies the same precedence (preset &lt; vars).
+                </p>
               </section>
             )}
             {fields.length === 0 ? (

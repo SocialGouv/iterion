@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -111,9 +113,52 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	}
 
 	// Compile workflow and compute hash for change detection.
-	wf, wfHash, err := runview.CompileWorkflowWithHash(iterFile)
-	if err != nil {
-		return err
+	// When the run was launched from a `.botz` bundle, re-open the
+	// archive (cache hit on the same hash, or re-extract from the
+	// original path on cache miss) so bundle prompts/skills/attachments
+	// are wired back into the resumed engine.
+	var bundleHandle *bundle.Bundle
+	bundleCleanup := func() error { return nil }
+	defer func() {
+		if cerr := bundleCleanup(); cerr != nil {
+			logger.Warn("bundle cleanup: %v", cerr)
+		}
+	}()
+	var wf *ir.Workflow
+	var wfHash string
+	if r != nil && r.BundlePath != "" {
+		kind, detectErr := bundle.Detect(r.BundlePath)
+		if detectErr != nil {
+			return fmt.Errorf("resume: re-detect bundle: %w", detectErr)
+		}
+		switch kind {
+		case bundle.KindBundle:
+			opened, c, openErr := bundle.Open(r.BundlePath, "")
+			if openErr != nil {
+				return fmt.Errorf("resume: re-open bundle %s: %w (original archive may have moved — re-supply with --file)", r.BundlePath, openErr)
+			}
+			bundleCleanup = c
+			bundleHandle = opened
+		case bundle.KindBundleDir:
+			opened, openErr := bundle.OpenDir(r.BundlePath)
+			if openErr != nil {
+				return fmt.Errorf("resume: re-open bundle dir %s: %w", r.BundlePath, openErr)
+			}
+			bundleHandle = opened
+		}
+		if bundleHandle != nil {
+			iterFile = bundleHandle.IterPath
+			wf, wfHash, err = runview.CompileBundleWorkflow(bundleHandle.IterPath, bundleHandle)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	if wf == nil {
+		wf, wfHash, err = runview.CompileWorkflowWithHash(iterFile)
+		if err != nil {
+			return err
+		}
 	}
 
 	executor := opts.Executor
@@ -143,7 +188,14 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		executor = exec
 	}
 
-	eng := runtime.New(wf, s, executor, runtime.WithLogger(logger), runtime.WithWorkflowHash(wfHash), runtime.WithFilePath(iterFile), runtime.WithForceResume(opts.Force))
+	eng := runtime.New(wf, s, executor,
+		runtime.WithLogger(logger),
+		runtime.WithWorkflowHash(wfHash),
+		runtime.WithFilePath(iterFile),
+		runtime.WithForceResume(opts.Force),
+		runtime.WithBundle(bundleHandle),
+		runtime.WithPreset(r.Preset),
+	)
 
 	// Acquire exclusive run lock to prevent concurrent processes.
 	lock, err := s.LockRun(context.Background(), opts.RunID)

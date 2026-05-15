@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
@@ -19,7 +20,7 @@ import (
 // MCP server resolution is finalised against the file's directory so
 // relative `command` paths in `mcp_server` blocks resolve correctly.
 func CompileWorkflow(path string) (*ir.Workflow, error) {
-	wf, _, err := compileWith(path, "", false)
+	wf, _, err := compileWith(path, "", false, nil)
 	return wf, err
 }
 
@@ -30,7 +31,15 @@ func CompileWorkflow(path string) (*ir.Workflow, error) {
 // execution; CompileWorkflow is for static-only callers (validate,
 // diagram).
 func CompileWorkflowWithHash(path string) (*ir.Workflow, string, error) {
-	return compileWith(path, "", true)
+	return compileWith(path, "", true, nil)
+}
+
+// CompileBundleWorkflow is CompileWorkflowWithHash specialised for bundle
+// inputs: it merges the bundle's prompts/*.md into the AST File before
+// compilation, so node-level prompt references resolve against bundle
+// resources during static validation.
+func CompileBundleWorkflow(path string, b *bundle.Bundle) (*ir.Workflow, string, error) {
+	return compileWith(path, "", true, b)
 }
 
 // CompileWorkflowFromSource is the cloud-mode entry point: the .iter
@@ -39,7 +48,7 @@ func CompileWorkflowWithHash(path string) (*ir.Workflow, string, error) {
 // resolution; when empty, MCP resolution falls back to the current
 // working directory.
 func CompileWorkflowFromSource(path, source string) (*ir.Workflow, string, error) {
-	return compileWith(path, source, true)
+	return compileWith(path, source, true, nil)
 }
 
 // compileForLaunch picks the right compile path for a Launch / Resume:
@@ -53,7 +62,7 @@ func compileForLaunch(path, source string) (*ir.Workflow, string, error) {
 	return CompileWorkflowWithHash(path)
 }
 
-func compileWith(path, inline string, withHash bool) (*ir.Workflow, string, error) {
+func compileWith(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Workflow, string, error) {
 	var src []byte
 	if inline != "" {
 		src = []byte(inline)
@@ -83,6 +92,14 @@ func compileWith(path, inline string, withHash bool) (*ir.Workflow, string, erro
 	}
 	if pr.File == nil || len(pr.File.Workflows) == 0 {
 		return nil, "", fmt.Errorf("no workflow found in %s", parserPath)
+	}
+
+	// Bundle prompts must merge into the AST before ir.Compile so the
+	// validator sees them when resolving node-level prompt references.
+	if b != nil {
+		if err := MergeBundlePrompts(pr.File, b); err != nil {
+			return nil, "", err
+		}
 	}
 
 	cr := ir.Compile(pr.File)
