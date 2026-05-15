@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { RunEvent } from "@/api/runs";
 import { timelineMarks } from "@/lib/snapshotReducer";
@@ -14,6 +14,17 @@ interface Props {
   // Keeps the run header tidy on freshly-launched runs.
   visible: boolean;
 }
+
+// Replay speeds: how many seqs to advance per tick, paired with the
+// tick period in ms. Picked to feel "fast enough not to wait, slow
+// enough to read": a 5k-event run finishes in ~10s on 5×, ~2s on 25×.
+// The user can hit pause + drag at any time; dragging implicitly
+// pauses to keep the interaction predictable.
+const REPLAY_SPEEDS: ReadonlyArray<{ label: string; step: number; tickMs: number }> = [
+  { label: "1×", step: 1, tickMs: 50 },
+  { label: "5×", step: 5, tickMs: 50 },
+  { label: "25×", step: 25, tickMs: 50 },
+];
 
 const MARK_COLORS: Record<string, string> = {
   run_started: "bg-info",
@@ -37,10 +48,68 @@ export default function Scrubber({
   const value = scrubSeq ?? liveSeq;
   const max = Math.max(0, liveSeq);
 
+  // Replay state. Lives in the Scrubber rather than RunView because
+  // it's purely a UI affordance: the actual time-travel happens by
+  // mutating scrubSeq (via onChange), which the rest of the app
+  // already renders correctly. Pause-on-drag keeps the slider's
+  // direct manipulation responsive.
+  const [playing, setPlaying] = useState(false);
+  const [speedIdx, setSpeedIdx] = useState(1); // default 5×
+  const scrubSeqRef = useRef(scrubSeq);
+  useEffect(() => {
+    scrubSeqRef.current = scrubSeq;
+  }, [scrubSeq]);
+  useEffect(() => {
+    if (!playing) return;
+    const { step, tickMs } = REPLAY_SPEEDS[speedIdx]!;
+    const handle = window.setInterval(() => {
+      const cur = scrubSeqRef.current ?? -1;
+      const next = cur + step;
+      if (next >= max) {
+        onChange(null); // back to live
+        setPlaying(false);
+        return;
+      }
+      onChange(next);
+    }, tickMs);
+    return () => window.clearInterval(handle);
+  }, [playing, speedIdx, max, onChange]);
+
   if (!visible || liveSeq <= 0) return null;
 
   return (
     <div className="px-4 py-1.5 border-b border-border-default flex items-center gap-3 bg-surface-1">
+      <button
+        type="button"
+        onClick={() => {
+          if (playing) {
+            setPlaying(false);
+            return;
+          }
+          // Starting from live: rewind to the beginning. Starting
+          // from a scrubbed position: resume from there.
+          if (scrubSeq === null) onChange(0);
+          setPlaying(true);
+        }}
+        title={playing ? "Pause replay" : "Play replay from current position"}
+        className="text-[10px] px-2 py-0.5 rounded bg-surface-2 hover:bg-surface-3 border border-border-default font-mono"
+        aria-label={playing ? "Pause replay" : "Play replay"}
+      >
+        {playing ? "⏸" : "▶"}
+      </button>
+      <select
+        value={speedIdx}
+        onChange={(e) => setSpeedIdx(Number(e.target.value))}
+        title="Replay speed"
+        className="text-[10px] px-1 py-0.5 rounded bg-surface-2 border border-border-default font-mono"
+        aria-label="Replay speed"
+      >
+        {REPLAY_SPEEDS.map((s, i) => (
+          <option key={s.label} value={i}>
+            {s.label}
+          </option>
+        ))}
+      </select>
       <span className="text-[10px] text-fg-subtle font-mono whitespace-nowrap">
         seq
       </span>
@@ -53,6 +122,9 @@ export default function Scrubber({
           value={value}
           onChange={(e) => {
             const next = Number(e.target.value);
+            // Direct manipulation always pauses an in-progress replay
+            // so the slider doesn't fight the user's drag.
+            if (playing) setPlaying(false);
             onChange(next === max ? null : next);
           }}
           aria-label="Time-travel scrubber"
