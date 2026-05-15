@@ -172,3 +172,38 @@ func AsRunFilesStore(s RunStore) RunFilesStore {
 	f, _ := s.(RunFilesStore)
 	return f
 }
+
+// ToolBlobStore is an optional interface implemented by stores that
+// host per-tool-call I/O blobs (the bytes the LLM sent to and received
+// from a tool). Used by the editor's per-node Tools tab to render full
+// command outputs / large inputs without materialising them in
+// events.jsonl. Events carry a small inline preview plus a `ref` that
+// names the (run_id, tool_use_id, kind) tuple; the editor fetches the
+// rest from the server's paginated endpoint on demand.
+//
+// Filesystem stores satisfy it (`<root>/runs/<id>/tools/<toolUseID>/{input,output}`).
+// Cloud (Mongo) stores currently do NOT — the hooks layer falls back to
+// inline-only persistence when this interface is not implemented.
+type ToolBlobStore interface {
+	// WriteToolBlob writes body under runs/<id>/tools/<toolUseID>/<kind>.
+	// kind ∈ {"input", "output"}. Returns the total byte size written.
+	// Idempotent: re-writing the same key replaces the prior bytes.
+	WriteToolBlob(ctx context.Context, runID, toolUseID, kind string, body []byte) (int64, error)
+	// ReadToolBlob reads up to `limit` bytes starting at `offset`.
+	// limit == 0 means "all from offset". Returns the bytes read, the
+	// full blob size, and eof=true when offset+len(data) == size. A
+	// missing blob returns (nil, 0, true, error) with an os.IsNotExist-
+	// compatible error.
+	ReadToolBlob(ctx context.Context, runID, toolUseID, kind string, offset, limit int64) (data []byte, total int64, eof bool, err error)
+}
+
+// AsToolBlobStore returns s as ToolBlobStore when the backend supports
+// per-tool-call blob persistence, or nil otherwise. Callers MUST
+// nil-check (cloud stores return nil today).
+func AsToolBlobStore(s RunStore) ToolBlobStore {
+	if s == nil {
+		return nil
+	}
+	t, _ := s.(ToolBlobStore)
+	return t
+}

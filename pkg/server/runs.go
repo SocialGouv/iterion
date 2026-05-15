@@ -50,6 +50,7 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("GET /api/runs/{id}/workflow", s.handleGetRunWorkflow)
 	s.mux.HandleFunc("GET /api/runs/{id}/artifacts/{node}", s.handleListArtifacts)
 	s.mux.HandleFunc("GET /api/runs/{id}/artifacts/{node}/{version}", s.handleGetArtifact)
+	s.mux.HandleFunc("GET /api/runs/{id}/tools/{toolUseID}/{kind}", s.handleGetToolBlob)
 	s.mux.HandleFunc("GET /api/runs/{id}/artifact-files", s.handleListArtifactFiles)
 	s.mux.HandleFunc("GET /api/runs/{id}/artifact-files/{path...}", s.handleGetArtifactFile)
 	s.mux.HandleFunc("GET /api/runs/{id}/files", s.handleListRunFiles)
@@ -333,6 +334,78 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSONFor(w, r, a)
+}
+
+// handleGetToolBlob streams a slice of a per-tool-call I/O sidecar
+// blob (written by the hooks layer when an input/output exceeded the
+// inline threshold). Used by the editor's Tools tab to lazy-fetch
+// large bodies on demand: events carry only a 4 KB preview + a ref,
+// the rest is served paginated from here.
+//
+// Query params:
+//   - offset (int64, default 0): byte offset to start at
+//   - limit  (int64, default 0 = "all from offset"): cap bytes returned
+//
+// Response: raw bytes (Content-Type: text/plain; charset=utf-8) plus
+//   - X-Tool-Total-Size: full blob size in bytes
+//   - X-Tool-Eof: "true" when offset+len(body) == total, "false" otherwise
+//
+// Errors:
+//   - 400 missing id/toolUseID/kind or kind not in {input,output}
+//   - 404 blob not found (call never produced one — i.e. fit inline)
+//   - 503 store doesn't satisfy ToolBlobStore (cloud mode today)
+func (s *Server) handleGetToolBlob(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	toolUseID := r.PathValue("toolUseID")
+	kind := r.PathValue("kind")
+	if id == "" || toolUseID == "" || kind == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "missing id, toolUseID, or kind")
+		return
+	}
+	if kind != "input" && kind != "output" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "kind must be input or output")
+		return
+	}
+	q := r.URL.Query()
+	var offset, limit int64
+	if v := q.Get("offset"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "invalid offset")
+			return
+		}
+		offset = n
+	}
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "invalid limit")
+			return
+		}
+		limit = n
+	}
+	body, total, eof, err := s.runs.ReadToolBlob(id, toolUseID, kind, offset, limit)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			s.httpErrorFor(w, r, http.StatusNotFound, "tool blob not found")
+			return
+		}
+		if strings.Contains(err.Error(), "unavailable for this store") {
+			s.httpErrorFor(w, r, http.StatusServiceUnavailable, "tool blobs unavailable in this backend")
+			return
+		}
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "read tool blob: %v", err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Tool-Total-Size", strconv.FormatInt(total, 10))
+	if eof {
+		w.Header().Set("X-Tool-Eof", "true")
+	} else {
+		w.Header().Set("X-Tool-Eof", "false")
+	}
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	_, _ = w.Write(body)
 }
 
 // handleListArtifactFiles returns the manifest of tool-produced files

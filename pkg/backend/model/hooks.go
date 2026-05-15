@@ -18,6 +18,16 @@ import (
 // Fields exceeding this limit are truncated to stay within the 10 MB event line limit.
 const maxFieldSize = 1 << 20 // 1 MB
 
+// toolInlineThreshold is the byte size up to which tool inputs/outputs
+// are stored inline in the event payload. Above this, the full content
+// lands in a sidecar blob (runs/<id>/tools/<tool_use_id>/{input,output}),
+// and the event carries a 4 KB head preview + a `ref` so the editor can
+// fetch the rest paginated on demand. Keeping the threshold equal to the
+// preview size means small calls are zero-fetch (the editor sees the
+// full content inline) while large outputs (Bash on big files, LLM-
+// authored Write/Edit) don't bloat events.jsonl or flood the WS stream.
+const toolInlineThreshold = 4096 // 4 KB
+
 // EventEmitter is the subset of store.RunStore used by the event bridge.
 type EventEmitter interface {
 	AppendEvent(ctx context.Context, runID string, evt store.Event) (*store.Event, error)
@@ -34,6 +44,56 @@ type AttachmentWriter interface {
 	WriteAttachment(ctx context.Context, runID string, rec store.AttachmentRecord, body io.Reader) error
 }
 
+// ToolBlobWriter is the optional capability filesystem stores satisfy
+// for the per-tool-call sidecar I/O persistence path. When present, tool
+// inputs/outputs exceeding `toolInlineThreshold` are written through it
+// and the event carries a small head preview + a ref instead of the
+// full body. Mongo (cloud) stores don't satisfy it today; the hook
+// layer falls back to inline truncation in that case.
+type ToolBlobWriter interface {
+	WriteToolBlob(ctx context.Context, runID, toolUseID, kind string, body []byte) (int64, error)
+}
+
+// persistToolPayload writes the given content into the event `data` map
+// under the given key (`input` or `output`):
+//   - if content fits inline (≤ toolInlineThreshold), `data[key]` carries
+//     the full bytes;
+//   - otherwise the full bytes go to a sidecar blob via blobSink, and the
+//     event carries `data[key+"_preview"]` (first 4 KB), `data[key+"_size"]`
+//     (total bytes), and `data[key+"_ref"]` (= toolUseID — the path is
+//     deterministic from run_id + tool_use_id + kind).
+//
+// When blobSink is nil or toolUseID is empty (legacy paths, cloud
+// stores), falls back to capped inline persistence so the editor still
+// shows *something*.
+func persistToolPayload(ctx context.Context, blobSink ToolBlobWriter, runID, toolUseID, key string, content []byte, data map[string]interface{}) {
+	if len(content) == 0 {
+		return
+	}
+	if len(content) <= toolInlineThreshold {
+		data[key] = string(content)
+		return
+	}
+	if blobSink == nil || toolUseID == "" {
+		// Fallback: cap inline at maxFieldSize so events.jsonl stays
+		// readable even without sidecar support.
+		data[key] = iterlog.Truncate(string(content), maxFieldSize)
+		data[key+"_size"] = len(content)
+		return
+	}
+	size, err := blobSink.WriteToolBlob(ctx, runID, toolUseID, key, content)
+	if err != nil {
+		// Sidecar write failed — fall back to capped inline so the
+		// event still carries the data (degraded preview only).
+		data[key] = iterlog.Truncate(string(content), maxFieldSize)
+		data[key+"_size"] = len(content)
+		return
+	}
+	data[key+"_preview"] = string(content[:toolInlineThreshold])
+	data[key+"_size"] = size
+	data[key+"_ref"] = toolUseID
+}
+
 // NewStoreEventHooks returns EventHooks that emit store events for a given run
 // and log emoji-rich console output via the provided logger.
 // The logger controls which content fields are included in events:
@@ -45,6 +105,7 @@ type AttachmentWriter interface {
 // is bounded by the engine.Run call that constructed it.
 func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string, logger *iterlog.Logger) EventHooks {
 	attachmentSink, _ := emitter.(AttachmentWriter)
+	toolBlobSink, _ := emitter.(ToolBlobWriter)
 	return EventHooks{
 		OnLLMPrompt: func(nodeID string, systemPrompt string, userMessage string) {
 			data := map[string]interface{}{
@@ -236,14 +297,12 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 			if info.ToolUseID != "" {
 				data["tool_use_id"] = info.ToolUseID
 			}
-			// Persist the raw JSON input so the editor's per-node Tools
-			// tab can render parameters (command, file_path, todos, …)
-			// for every call. Truncated to maxFieldSize (1 MB) to bound
-			// events.jsonl growth — matches the symmetric `output`
-			// treatment on OnToolCall below.
-			if len(info.Input) > 0 {
-				data["input"] = iterlog.Truncate(string(info.Input), maxFieldSize)
-			}
+			// Persist the raw JSON input. Small inputs land inline
+			// (`data.input`); large inputs go to a sidecar blob so the
+			// event stream stays bounded, with the event carrying a
+			// 4 KB preview + a ref the editor uses to fetch the rest
+			// paginated.
+			persistToolPayload(ctx, toolBlobSink, runID, info.ToolUseID, "input", info.Input, data)
 			_, _ = emitter.AppendEvent(ctx, runID, store.Event{
 				Type:   store.EventToolStarted,
 				RunID:  runID,
@@ -268,11 +327,10 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 			}
 			// Persist the tool's result so the editor's per-node Tools
 			// tab renders in+out side-by-side (matching Claude Code's
-			// inline display). Truncated to maxFieldSize (1 MB) to bound
-			// events.jsonl growth for chatty Bash/Read calls.
-			if info.Output != "" {
-				data["output"] = iterlog.Truncate(info.Output, maxFieldSize)
-			}
+			// inline display). Small outputs inline; large outputs go
+			// to a sidecar blob with a 4 KB preview + ref, fetched
+			// paginated on demand.
+			persistToolPayload(ctx, toolBlobSink, runID, info.ToolUseID, "output", []byte(info.Output), data)
 
 			evtType := store.EventToolCalled
 			if info.Error != nil {

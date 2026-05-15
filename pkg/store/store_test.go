@@ -1,8 +1,10 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -1176,6 +1178,112 @@ func TestRunFilesStore(t *testing.T) {
 		fs := AsRunFilesStore(rs)
 		if fs == nil {
 			t.Fatalf("AsRunFilesStore returned nil for FilesystemRunStore")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Tool blobs (sidecar per-tool-call I/O bodies)
+// ---------------------------------------------------------------------------
+
+func TestToolBlobRoundtrip(t *testing.T) {
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-tools-1"
+
+	// Build a 32 KB body so we exercise both partial and full reads.
+	body := make([]byte, 32*1024)
+	for i := range body {
+		body[i] = byte('a' + (i % 26))
+	}
+
+	size, err := s.WriteToolBlob(ctx, runID, "toolu_abc", "output", body)
+	if err != nil {
+		t.Fatalf("WriteToolBlob: %v", err)
+	}
+	if size != int64(len(body)) {
+		t.Errorf("WriteToolBlob size = %d, want %d", size, len(body))
+	}
+
+	t.Run("read full", func(t *testing.T) {
+		got, total, eof, err := s.ReadToolBlob(ctx, runID, "toolu_abc", "output", 0, 0)
+		if err != nil {
+			t.Fatalf("ReadToolBlob: %v", err)
+		}
+		if total != int64(len(body)) {
+			t.Errorf("total = %d, want %d", total, len(body))
+		}
+		if !eof {
+			t.Errorf("eof = false, want true on full read")
+		}
+		if !bytes.Equal(got, body) {
+			t.Errorf("bytes mismatch")
+		}
+	})
+
+	t.Run("read paginated", func(t *testing.T) {
+		const chunk = 8 * 1024
+		var assembled []byte
+		var offset int64
+		for {
+			got, total, eof, err := s.ReadToolBlob(ctx, runID, "toolu_abc", "output", offset, chunk)
+			if err != nil {
+				t.Fatalf("ReadToolBlob chunk: %v", err)
+			}
+			if total != int64(len(body)) {
+				t.Errorf("total = %d, want %d", total, len(body))
+			}
+			assembled = append(assembled, got...)
+			offset += int64(len(got))
+			if eof {
+				break
+			}
+			if len(got) == 0 {
+				t.Fatalf("zero-length non-eof read at offset %d", offset)
+			}
+		}
+		if !bytes.Equal(assembled, body) {
+			t.Errorf("paginated reassembly mismatch")
+		}
+	})
+
+	t.Run("read past end returns eof", func(t *testing.T) {
+		got, total, eof, err := s.ReadToolBlob(ctx, runID, "toolu_abc", "output", int64(len(body))+10, 1024)
+		if err != nil {
+			t.Fatalf("ReadToolBlob past end: %v", err)
+		}
+		if len(got) != 0 || !eof {
+			t.Errorf("past end: got %d bytes, eof=%v, want 0 bytes + eof=true", len(got), eof)
+		}
+		if total != int64(len(body)) {
+			t.Errorf("total = %d, want %d", total, len(body))
+		}
+	})
+
+	t.Run("rejects invalid kind", func(t *testing.T) {
+		if _, err := s.WriteToolBlob(ctx, runID, "toolu_abc", "stdout", []byte("x")); err == nil {
+			t.Error("expected error for kind=stdout")
+		}
+		if _, _, _, err := s.ReadToolBlob(ctx, runID, "toolu_abc", "stdout", 0, 0); err == nil {
+			t.Error("expected read error for kind=stdout")
+		}
+	})
+
+	t.Run("missing blob returns wrapped ErrNotExist", func(t *testing.T) {
+		_, _, _, err := s.ReadToolBlob(ctx, runID, "toolu_nope", "input", 0, 0)
+		if err == nil {
+			t.Fatal("expected error for missing blob")
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("err = %v, want one wrapping os.ErrNotExist", err)
+		}
+	})
+
+	t.Run("AsToolBlobStore returns the FilesystemRunStore", func(t *testing.T) {
+		var rs RunStore = s
+		tbs := AsToolBlobStore(rs)
+		if tbs == nil {
+			t.Fatalf("AsToolBlobStore returned nil for FilesystemRunStore")
 		}
 	})
 }

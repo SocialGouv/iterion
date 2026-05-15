@@ -10,7 +10,8 @@ import { useLocation } from "wouter";
 import { ChevronRightIcon } from "@radix-ui/react-icons";
 
 import type { ArtifactSummary, ExecutionState, RunEvent } from "@/api/runs";
-import { listArtifacts } from "@/api/runs";
+import { fetchToolBlob, listArtifacts } from "@/api/runs";
+import { formatBytes } from "@/lib/format";
 import { IconButton, Input, StatusBadge, Tabs } from "@/components/ui";
 import { stepIteration } from "@/lib/eventIter";
 import { formatContextUsage, formatDurationBetween, formatMs } from "@/lib/format";
@@ -345,7 +346,7 @@ export default function NodeDetailPanel({
                   No tool calls for this execution.
                 </div>
               ) : (
-                <ToolCallList calls={toolCalls} />
+                <ToolCallList calls={toolCalls} runId={runId} />
               )}
             </div>
           ),
@@ -760,9 +761,61 @@ interface ToolCall {
   isError: boolean;
   duration?: number;
   rawData: Record<string, unknown> | undefined;
+  // input/output: present when the call fit inline OR carries a head
+  // preview from the sidecar blob. Always renderable as the initial
+  // payload view.
   input?: string;
   output?: string;
+  // {input,output}Ref: when set, the full body lives in a sidecar blob
+  // addressable via fetchToolBlob(runId, ref, kind). The editor renders
+  // a "Load more" affordance below the preview that paginates through
+  // the rest of the bytes (infinite scroll).
+  inputRef?: string;
+  outputRef?: string;
+  // {input,output}Size: total byte size of the original body. Used to
+  // size progress affordances and decide whether to offer Load more.
+  inputSize?: number;
+  outputSize?: number;
   errorMsg?: string;
+}
+
+// pickInlinePayload returns whatever string form of the tool call's
+// `kind` payload is available on the merged event data: the full inline
+// body if the call fit under the threshold, otherwise the 4 KB head
+// preview the backend included alongside the sidecar blob ref. Returns
+// undefined when neither is set (e.g. an empty input/output).
+function pickInlinePayload(
+  data: Record<string, unknown>,
+  kind: "input" | "output",
+): string | undefined {
+  const inline = data[kind];
+  if (typeof inline === "string") return inline;
+  if (inline !== undefined) return safeJSON(inline);
+  const preview = data[`${kind}_preview`];
+  if (typeof preview === "string") return preview;
+  return undefined;
+}
+
+// pickRef returns the sidecar blob ref (= tool_use_id) when present.
+// The presence of a ref tells the editor "there's more to fetch beyond
+// the preview" — render the Load more affordance.
+function pickRef(
+  data: Record<string, unknown>,
+  kind: "input" | "output",
+): string | undefined {
+  const ref = data[`${kind}_ref`];
+  return typeof ref === "string" && ref !== "" ? ref : undefined;
+}
+
+// pickSize returns the total byte size of the original tool payload as
+// declared on the event (`{kind}_size`). Used to size Load more progress
+// affordances. Returns undefined when the event predates this plumbing.
+function pickSize(
+  data: Record<string, unknown>,
+  kind: "input" | "output",
+): number | undefined {
+  const size = data[`${kind}_size`];
+  return typeof size === "number" ? size : undefined;
 }
 
 // useToolCalls merges `tool_started` (carrying the JSON input) with
@@ -810,18 +863,12 @@ function useToolCalls(matching: RunEvent[]): ToolCall[] {
               ? (merged["duration_ms"] as number)
               : undefined,
           rawData: merged,
-          input:
-            typeof merged["input"] === "string"
-              ? (merged["input"] as string)
-              : merged["input"] !== undefined
-              ? safeJSON(merged["input"])
-              : undefined,
-          output:
-            typeof merged["output"] === "string"
-              ? (merged["output"] as string)
-              : merged["output"] !== undefined
-              ? safeJSON(merged["output"])
-              : undefined,
+          input: pickInlinePayload(merged, "input"),
+          output: pickInlinePayload(merged, "output"),
+          inputRef: pickRef(merged, "input"),
+          outputRef: pickRef(merged, "output"),
+          inputSize: pickSize(merged, "input"),
+          outputSize: pickSize(merged, "output"),
           errorMsg: isError
             ? (merged["error"] as string) ?? (merged["message"] as string)
             : undefined,
@@ -830,21 +877,64 @@ function useToolCalls(matching: RunEvent[]): ToolCall[] {
   }, [matching]);
 }
 
-function ToolCallList({ calls }: { calls: ToolCall[] }) {
+function ToolCallList({ calls, runId }: { calls: ToolCall[]; runId: string }) {
   return (
     <ul className="space-y-2">
       {calls.map((c) => (
-        <ToolCallCard key={c.seq} call={c} />
+        <ToolCallCard key={c.seq} call={c} runId={runId} />
       ))}
     </ul>
   );
 }
 
-function ToolPayloadBlock({ label, value }: { label: string; value: string }) {
+// FETCH_CHUNK_BYTES is the page size for lazy tool-blob reads. 64 KB is
+// large enough that "voir plus" feels responsive (one chunk fully fills
+// the visible expanded pane), small enough that a megabyte-scale output
+// streams in ~16 round trips rather than one giant request that blocks
+// the user's first paint.
+const FETCH_CHUNK_BYTES = 64 * 1024;
+
+// ToolPayloadBlock renders the preview (or full inline body) of a tool's
+// I/O payload as a collapsible <details>. When the call exceeded the
+// backend's inline threshold, props `toolUseID` + `totalSize` are set:
+// expanding the details shows the 4 KB preview plus a "voir plus / load
+// more" button that paginates through the sidecar blob via
+// fetchToolBlob. The fetched bytes are appended in-component (not in
+// the run store) so reopening the same card later re-fetches — keeps
+// the in-memory event cache lean.
+function ToolPayloadBlock({
+  label,
+  value,
+  runId,
+  toolUseID,
+  kind,
+  totalSize,
+}: {
+  label: string;
+  value: string;
+  runId: string;
+  toolUseID?: string;
+  kind: "input" | "output";
+  totalSize?: number;
+}) {
   const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [overflow, setOverflow] = useState(false);
+  // Fetched extras concatenated after the preview. Empty until the user
+  // hits "voir plus" / triggers an infinite-scroll boundary. Re-set on
+  // collapse so the next expansion starts fresh — avoids unbounded
+  // retention of MBs of stdout in the editor heap.
+  const [extra, setExtra] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [fetchErr, setFetchErr] = useState<string | null>(null);
   const preRef = useRef<HTMLPreElement>(null);
+
+  const hasMore =
+    toolUseID !== undefined &&
+    totalSize !== undefined &&
+    value.length + extra.length < totalSize;
+  const loaded = value.length + extra.length;
+  const fullValue = extra ? value + extra : value;
 
   useLayoutEffect(() => {
     if (!open || expanded) {
@@ -854,7 +944,39 @@ function ToolPayloadBlock({ label, value }: { label: string; value: string }) {
     const el = preRef.current;
     if (!el) return;
     setOverflow(el.scrollHeight > el.clientHeight + 1);
-  }, [open, expanded, value]);
+  }, [open, expanded, fullValue]);
+
+  const loadMore = async () => {
+    if (loading || !hasMore || !toolUseID) return;
+    setLoading(true);
+    setFetchErr(null);
+    try {
+      const chunk = await fetchToolBlob(
+        runId,
+        toolUseID,
+        kind,
+        loaded,
+        FETCH_CHUNK_BYTES,
+      );
+      setExtra((prev) => prev + chunk.data);
+    } catch (err) {
+      setFetchErr(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Infinite-scroll: when expanded and the user scrolls within ~200 px of
+  // the bottom of the <pre>, kick off the next chunk fetch automatically.
+  // Falls through cleanly when there's no more to fetch.
+  const handleScroll = () => {
+    const el = preRef.current;
+    if (!el || !expanded || !hasMore || loading) return;
+    const remaining = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (remaining < 200) {
+      void loadMore();
+    }
+  };
 
   return (
     <details
@@ -862,30 +984,61 @@ function ToolPayloadBlock({ label, value }: { label: string; value: string }) {
       onToggle={(e) => {
         const next = (e.currentTarget as HTMLDetailsElement).open;
         setOpen(next);
-        if (!next) setExpanded(false);
+        if (!next) {
+          setExpanded(false);
+          setExtra("");
+          setFetchErr(null);
+        }
       }}
     >
       <summary className="cursor-pointer text-[10px] text-fg-muted px-1 py-0.5 rounded hover:bg-surface-2 flex items-center justify-between">
-        <span>{label}</span>
-        <CopyButton value={value} />
+        <span>
+          {label}
+          {totalSize !== undefined && totalSize > value.length && (
+            <span className="ml-1 text-fg-subtle">
+              ({formatBytes(loaded)} / {formatBytes(totalSize)})
+            </span>
+          )}
+        </span>
+        <CopyButton value={fullValue} />
       </summary>
       <pre
         ref={preRef}
+        onScroll={handleScroll}
         className={`mt-1 text-[10px] font-mono whitespace-pre-wrap break-words bg-surface-1 rounded p-1.5 ${
-          expanded ? "" : "max-h-40 overflow-auto"
+          expanded ? "max-h-[60vh] overflow-auto" : "max-h-40 overflow-auto"
         }`}
       >
-        {value}
+        {fullValue}
       </pre>
-      {(overflow || expanded) && (
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          className="mt-1 text-[10px] text-fg-subtle hover:text-fg-default px-1 py-0.5 rounded hover:bg-surface-2"
-        >
-          {expanded ? "réduire" : "voir tout"}
-        </button>
+      {fetchErr && (
+        <div className="mt-1 text-[10px] text-danger-fg px-1">
+          fetch error: {fetchErr}
+        </div>
       )}
+      <div className="mt-1 flex gap-1.5 items-center">
+        {(overflow || expanded) && (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="text-[10px] text-fg-subtle hover:text-fg-default px-1 py-0.5 rounded hover:bg-surface-2"
+          >
+            {expanded ? "réduire" : "voir tout"}
+          </button>
+        )}
+        {hasMore && (
+          <button
+            type="button"
+            onClick={() => void loadMore()}
+            disabled={loading}
+            className="text-[10px] text-fg-subtle hover:text-fg-default px-1 py-0.5 rounded hover:bg-surface-2 disabled:opacity-50"
+          >
+            {loading
+              ? "chargement…"
+              : `voir plus (+${formatBytes(Math.min(FETCH_CHUNK_BYTES, (totalSize ?? loaded) - loaded))})`}
+          </button>
+        )}
+      </div>
     </details>
   );
 }
@@ -973,7 +1126,7 @@ function ToolFieldList({ fields }: { fields: ToolField[] }) {
   );
 }
 
-function ToolCallCard({ call }: { call: ToolCall }) {
+function ToolCallCard({ call, runId }: { call: ToolCall; runId: string }) {
   const [showRaw, setShowRaw] = useState(false);
   // The tool input lives on event.data.input — already on the
   // ToolCall via `input` (stringified). Parsers expect a parsable
@@ -1014,8 +1167,26 @@ function ToolCallCard({ call }: { call: ToolCall }) {
           {call.errorMsg}
         </div>
       )}
-      {call.input && <ToolPayloadBlock label="raw input" value={call.input} />}
-      {call.output && <ToolPayloadBlock label="output" value={call.output} />}
+      {call.input && (
+        <ToolPayloadBlock
+          label="raw input"
+          value={call.input}
+          runId={runId}
+          toolUseID={call.inputRef}
+          kind="input"
+          totalSize={call.inputSize}
+        />
+      )}
+      {call.output && (
+        <ToolPayloadBlock
+          label="output"
+          value={call.output}
+          runId={runId}
+          toolUseID={call.outputRef}
+          kind="output"
+          totalSize={call.outputSize}
+        />
+      )}
       <button
         type="button"
         onClick={() => setShowRaw((v) => !v)}

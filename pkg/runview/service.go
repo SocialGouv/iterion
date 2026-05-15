@@ -931,6 +931,28 @@ func (s *Service) OpenArtifactFile(runID, relPath string) (io.ReadCloser, store.
 	return rfs.OpenRunFile(context.Background(), runID, relPath)
 }
 
+// ReadToolBlob streams a slice of a tool's stored I/O body (sidecar
+// blob written by the hooks layer when the call exceeded the inline
+// threshold). offset is the byte offset to start at; limit caps the
+// bytes returned (0 = "all from offset"). Returns the bytes read, the
+// full blob size, eof when offset+len(data) == total, and an error
+// wrapping os.ErrNotExist when the blob doesn't exist.
+//
+// Returns a clear "unavailable" error when the store doesn't satisfy
+// ToolBlobStore (cloud mode today — the hooks layer falls back to
+// inline-only persistence in that case, so the editor doesn't issue
+// the fetch).
+func (s *Service) ReadToolBlob(runID, toolUseID, kind string, offset, limit int64) ([]byte, int64, bool, error) {
+	if err := validatePathComponent("run ID", runID); err != nil {
+		return nil, 0, false, err
+	}
+	tbs := store.AsToolBlobStore(s.store)
+	if tbs == nil {
+		return nil, 0, false, fmt.Errorf("runview: tool blobs unavailable for this store")
+	}
+	return tbs.ReadToolBlob(context.Background(), runID, toolUseID, kind, offset, limit)
+}
+
 // ---------------------------------------------------------------------------
 // Write-side API: lifecycle
 // ---------------------------------------------------------------------------

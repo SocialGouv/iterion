@@ -216,6 +216,44 @@ export async function loadEvents(
   return res.events ?? [];
 }
 
+export interface ToolBlobChunk {
+  data: string;
+  total: number;
+  eof: boolean;
+}
+
+// fetchToolBlob streams a slice of a tool's stored I/O sidecar (written
+// by the backend hooks layer when an input/output exceeded the inline
+// threshold). offset is the byte offset to start at; limit caps bytes
+// returned (0 = "all from offset"). Returns the bytes as a UTF-8 string
+// plus the full size and an eof flag so the UI can keep fetching until
+// the end. Throws on network / status errors; a 404 means the call's
+// payload fit inline (no sidecar) — callers should fall back to the
+// preview field in that case.
+export async function fetchToolBlob(
+  runId: string,
+  toolUseID: string,
+  kind: "input" | "output",
+  offset = 0,
+  limit = 0,
+): Promise<ToolBlobChunk> {
+  const qs = new URLSearchParams();
+  if (offset > 0) qs.set("offset", String(offset));
+  if (limit > 0) qs.set("limit", String(limit));
+  const suffix = qs.toString();
+  const url = `${BASE_URL}/runs/${encodeURIComponent(runId)}/tools/${encodeURIComponent(toolUseID)}/${kind}${suffix ? `?${suffix}` : ""}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`API error ${res.status}: ${await res.text()}`);
+  }
+  const data = await res.text();
+  const totalHeader = res.headers.get("X-Tool-Total-Size") ?? "0";
+  const total = Number.parseInt(totalHeader, 10) || data.length;
+  const eofHeader = res.headers.get("X-Tool-Eof") ?? "";
+  const eof = eofHeader === "true";
+  return { data, total, eof };
+}
+
 // Mirror of runview.WireWorkflow — minimal IR projection for the
 // "IR overlay" view. Heavier fields (schemas, prompts, vars, full
 // expression ASTs) intentionally omitted.
