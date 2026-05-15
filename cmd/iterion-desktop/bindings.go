@@ -41,6 +41,45 @@ func (a *App) GetServerURL() string {
 	return a.serverURL
 }
 
+// GetDaemonURLForStore returns the live daemon URL serving the given
+// iterion store path. The Home banner's cross-store active-runs widget
+// uses this to deep-link into a run that may be served by a different
+// daemon than the one the SPA is currently attached to.
+//
+// Lookup chain:
+//  1. Per-project store (~/.iterion/projects/<key>) → look up
+//     ~/.iterion/daemons/<key>.json, return URL if live.
+//  2. Per-project store with no live daemon → spawn one via the same
+//     code path as the project switcher.
+//  3. Global store (~/.iterion) OR an unrecognised path → fall back to
+//     the current daemon (a.serverURL). The current daemon serves the
+//     global slot, so the same URL is still correct.
+//
+// Returns "" when no fallback is available (e.g. spawn timed out + no
+// current daemon URL). The SPA treats "" as "stay where you are and
+// just navigate with relative links" so the worst case is the old
+// same-daemon behaviour, not a hard error.
+func (a *App) GetDaemonURLForStore(storePath string) (string, error) {
+	if url, ok := findDaemonForStorePath(storePath); ok {
+		return url, nil
+	}
+	// Try to spawn a daemon for the project if the store is per-project
+	// but no live daemon exists yet. Skipped for the global slot — we'd
+	// have no project dir to seed the spawn.
+	if key, ok := projectKeyForStorePath(storePath); ok {
+		if projectDir := projectDirFromKey(key); projectDir != "" {
+			if url, err := spawnDaemonForProject(projectDir); err == nil {
+				return url, nil
+			}
+		}
+	}
+	// Fallback: current daemon. Returns "" when the embedded server
+	// hasn't bound yet, which the SPA reads as "use relative links".
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.serverURL, nil
+}
+
 // GetSessionToken returns the JWT the SPA should attach as `?t=<jwt>` on
 // cross-origin WS dials. The desktop binary runs the embedded server with
 // DisableAuth=true (see asset_proxy.go) so the middleware short-circuits

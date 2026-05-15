@@ -244,6 +244,67 @@ func totalActiveRunsAcrossDaemons(daemons []daemonInfo) int {
 	return total
 }
 
+// projectKeyForStorePath extracts the encoded project key from an iterion
+// store path. Returns ("", false) when the path is the global ~/.iterion
+// slot (no project dimension) or otherwise can't be parsed.
+//
+// Store paths come from `pkg/server/runs_global.go` and have one of two
+// shapes (mirroring globalStoreRoots()):
+//
+//	$HOME/.iterion                          → ("", false)  // global slot
+//	$HOME/.iterion/projects/<encoded-key>   → (<encoded-key>, true)
+//
+// Anything else returns false too, so callers can safely fall back to
+// "use the current daemon" for unrecognised shapes.
+func projectKeyForStorePath(storePath string) (string, bool) {
+	if storePath == "" {
+		return "", false
+	}
+	cleaned := filepath.Clean(storePath)
+	parent := filepath.Base(filepath.Dir(cleaned))
+	if parent != "projects" {
+		return "", false
+	}
+	key := filepath.Base(cleaned)
+	if !strings.HasPrefix(key, "-") {
+		return "", false
+	}
+	return key, true
+}
+
+// projectDirFromKey reverses encodeProjectDirKey. It's a best-effort
+// decode used to give spawnDaemonForProject something to launch when we
+// don't already have a live daemon for the project. The encoding is
+// lossy in principle (a literal "-" in the original path becomes "-",
+// indistinguishable from a separator), so the caller should treat the
+// returned path as a hint that needs validating before use.
+func projectDirFromKey(key string) string {
+	if !strings.HasPrefix(key, "-") {
+		return ""
+	}
+	return "/" + strings.ReplaceAll(strings.TrimPrefix(key, "-"), "-", "/")
+}
+
+// findDaemonForStorePath returns the live daemon URL serving the given
+// iterion store path, or ("", false) when:
+//   - the path is the global ~/.iterion slot (no per-project daemon
+//     concept applies; the caller should use its current daemon URL)
+//   - the per-project daemon discovery file is missing
+//   - the recorded daemon is dead (pid gone or port not accepting)
+//
+// Stale discovery entries are pruned in-place by findDaemonForProject.
+func findDaemonForStorePath(storePath string) (string, bool) {
+	key, ok := projectKeyForStorePath(storePath)
+	if !ok {
+		return "", false
+	}
+	dir := projectDirFromKey(key)
+	if dir == "" {
+		return "", false
+	}
+	return findDaemonForProject(dir)
+}
+
 // encodeProjectDirKey mirrors pkg/store/storedir.go's encodeWorkDirKey
 // without importing the store package (which would drag the runtime in
 // via init chains). Same encoding rules: forward + backward separators
