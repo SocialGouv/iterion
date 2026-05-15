@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,6 +60,22 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		}
 	}
 	storeDir := store.ResolveStoreDir(storeAnchor, opts.StoreDir)
+
+	// Tee logger output to <storeDir>/runs/<runID>/run.log so the editor's
+	// Logs panel sees output for resumed runs (same rationale + pattern as
+	// pkg/cli/run.go::RunRun). Resume re-uses the same file via O_APPEND
+	// so the original run.log + resume sessions stack into one timeline,
+	// matching what the daemon-launched path produces via runview's
+	// prepareRunLog. Errors are warned-and-continue.
+	runDir := filepath.Join(storeDir, "runs", opts.RunID)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		logger.Warn("cli: mkdir run dir for log tee: %v", err)
+	} else if logFile, openErr := os.OpenFile(filepath.Join(runDir, "run.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); openErr != nil {
+		logger.Warn("cli: open run.log for tee: %v", openErr)
+	} else {
+		defer logFile.Close()
+		logger = iterlog.New(level, io.MultiWriter(os.Stderr, logFile))
+	}
 
 	s, err := store.New(storeDir, store.WithLogger(logger))
 	if err != nil {
