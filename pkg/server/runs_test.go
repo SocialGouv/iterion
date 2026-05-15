@@ -400,3 +400,58 @@ func TestMaterializeInlineSource_NoOverwriteAcrossContent(t *testing.T) {
 		t.Fatalf("idempotent re-materialize: got (%q, %v), want %q", pathA2, okA2, pathA)
 	}
 }
+
+// TestArtifactFile_DispositionToggle pins the contract that the editor's
+// Artifacts panel relies on: the route serves files inline by default
+// (so previewable types render in the browser) and switches to
+// `attachment` when `?download=1` is set (so the Download button
+// triggers a save dialog regardless of the response's content type or
+// the embedding WebView's handling of the HTML5 `download` attribute).
+func TestArtifactFile_DispositionToggle(t *testing.T) {
+	srv, hs := newTestServer(t)
+	const runID = "art-run"
+	seedRun(t, srv, runID, "wf", store.RunStatusFinished)
+
+	dir := filepath.Join(srv.cfg.StoreDir, "runs", runID, "artifact_files")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir artifact_files: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "report.json"), []byte(`{"ok":true}`), 0o644); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name        string
+		query       string
+		wantPrefix  string // disposition before "; filename=..."
+		wantBodyHas string
+	}{
+		{name: "default inline", query: "", wantPrefix: "inline; ", wantBodyHas: `"ok":true`},
+		{name: "download flag attaches", query: "?download=1", wantPrefix: "attachment; ", wantBodyHas: `"ok":true`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := http.Get(hs.URL + "/api/runs/" + runID + "/artifact-files/report.json" + tc.query)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200", resp.StatusCode)
+			}
+			disp := resp.Header.Get("Content-Disposition")
+			if !bytes.HasPrefix([]byte(disp), []byte(tc.wantPrefix)) {
+				t.Errorf("Content-Disposition = %q, want prefix %q", disp, tc.wantPrefix)
+			}
+			if !bytes.Contains([]byte(disp), []byte(`filename="report.json"`)) {
+				t.Errorf("Content-Disposition missing filename: %q", disp)
+			}
+			b, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			if !bytes.Contains(b, []byte(tc.wantBodyHas)) {
+				t.Errorf("body = %q, want to contain %q", b, tc.wantBodyHas)
+			}
+		})
+	}
+}

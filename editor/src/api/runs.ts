@@ -299,6 +299,51 @@ export function artifactFileURL(runId: string, relPath: string): string {
   return apiURL(`/runs/${encodeURIComponent(runId)}/artifact-files/${segments}`);
 }
 
+// fetchArtifactFile downloads one artifact file body via the same
+// auth-aware fetch surface as every other API call (cookies + Bearer).
+// `download=true` flips the backend's Content-Disposition to
+// `attachment` so previewable content types (json, md) still trigger
+// a real download instead of an inline render.
+export async function fetchArtifactFile(
+  runId: string,
+  relPath: string,
+  opts: { download?: boolean } = {},
+): Promise<{ blob: Blob; contentType: string }> {
+  const url = artifactFileURL(runId, relPath) + (opts.download ? "?download=1" : "");
+  const res = await fetch(url, { credentials: "include" });
+  if (!res.ok) {
+    throw new Error(`API error ${res.status}: ${await res.text()}`);
+  }
+  return {
+    blob: await res.blob(),
+    contentType: res.headers.get("Content-Type") ?? "application/octet-stream",
+  };
+}
+
+// downloadArtifactFile fetches the file and triggers a browser save
+// via a transient blob URL. Bypasses two failure modes of the bare
+// `<a download>` approach: (1) the HTML5 `download` attribute is
+// silently ignored by some browsers when the response sets
+// `Content-Disposition: inline`; (2) embedded WebViews (Wails
+// webkit2gtk on Linux, WebView2 on Windows) often have no download
+// handler wired, so plain anchor clicks act as no-ops.
+export async function downloadArtifactFile(
+  runId: string,
+  relPath: string,
+): Promise<void> {
+  const { blob } = await fetchArtifactFile(runId, relPath, { download: true });
+  const blobURL = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = blobURL;
+  a.download = relPath.includes("/") ? relPath.slice(relPath.lastIndexOf("/") + 1) : relPath;
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Defer revoke so the browser has a tick to start the download.
+  setTimeout(() => URL.revokeObjectURL(blobURL), 0);
+}
+
 export interface CreateRunRequest {
   file_path: string;
   // Inline .iter source — required in cloud mode (no shared FS),

@@ -381,10 +381,16 @@ func (s *Server) handleGetArtifactFile(w http.ResponseWriter, r *http.Request) {
 	if info.Size > 0 {
 		w.Header().Set("Content-Length", strconv.FormatInt(info.Size, 10))
 	}
-	// Inline disposition lets browsers preview .md / .json / images
-	// directly. The filename hint is the basename of the path so a
-	// "Save As" picks something readable.
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename=%q`, filepath.Base(info.Path)))
+	// Disposition: `inline` by default lets browsers preview .md /
+	// .json / images directly; `?download=1` switches to `attachment`
+	// for the editor's Download button (the HTML5 `download` attribute
+	// alone is unreliable across embedded WebViews + same-origin
+	// previewable types). Filename hint is the basename of the path.
+	disposition := "inline"
+	if r.URL.Query().Get("download") == "1" {
+		disposition = "attachment"
+	}
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`%s; filename=%q`, disposition, filepath.Base(info.Path)))
 	if _, copyErr := io.Copy(w, rc); copyErr != nil {
 		// Body partially written by now — can't surface a clean error
 		// status. Log via the standard server error path; the client
