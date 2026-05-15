@@ -8,5 +8,5 @@ description: |
   detection on the new versions + transitively-introduced libs. Phase 2
   closes with an alternating Claude/GPT review/fix loop until cross-
   family approval.
-author: SocialGouv (devthejo) — secured-renovacy.iter
+author: SocialGouv (devthejo) — secured-renovacy/bot.bot
 schema_version: 1

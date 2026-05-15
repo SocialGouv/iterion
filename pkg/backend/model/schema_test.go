@@ -8,7 +8,7 @@ import (
 )
 
 // TestSchemaToJSON_JSONFieldIsAnyType is a regression for a live bug seen
-// on secured-renovacy.iter run_1778786106222 (sonnet+high) and
+// on secured-renovacy/bot.bot run_1778786106222 (sonnet+high) and
 // run_1778784391171 (opus+max). detect_stack populated the recipe's
 // `ecosystems: json` field as a JSON array (the only sensible shape for
 // "list of per-ecosystem profiles"). The model-formatter pass invoked

@@ -11,7 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundle"
 )
 
-//go:embed templates/bundle_bot.iter
+//go:embed templates/bundle_bot.bot
 var bundleStubBotIter []byte
 
 //go:embed templates/bundle_manifest.yaml
@@ -51,7 +51,7 @@ func RunBundleInit(dir string, p *Printer) error {
 		path string
 		body []byte
 	}{
-		{"bot.iter", bundleStubBotIter},
+		{"bot.bot", bundleStubBotIter},
 		{"manifest.yaml", bundleStubManifest},
 		{"README.md", bundleStubReadme},
 	}
@@ -104,7 +104,7 @@ func RunBundleInit(dir string, p *Printer) error {
 	}
 	p.Blank()
 	p.Line("  Next steps:")
-	p.Line("    1. Edit bot.iter to match your workflow.")
+	p.Line("    1. Edit bot.bot to match your workflow.")
 	p.Line("    2. Drop skills/prompts under skills/ and prompts/ (optional).")
 	p.Line("    3. Build the archive:")
 	p.Line("         iterion bundle pack %s", absDir)

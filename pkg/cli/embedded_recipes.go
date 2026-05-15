@@ -16,7 +16,7 @@ import (
 //
 // work from any working directory — the user does not have to
 // explicitly point at `<repo>/examples/...`. Bundle directories
-// (`examples/<name>/bot.iter`) and `.botz` archives are NOT in the
+// (`examples/<name>/bot.bot`) and `.botz` archives are NOT in the
 // embed glob; resolve them by explicit path or by `iterion run
 // <name>.botz` when packed adjacent to the source.
 //

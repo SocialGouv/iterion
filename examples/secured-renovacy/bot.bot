@@ -2589,7 +2589,12 @@ agent align_code:
   user: align_code_user
   session: fork
   tools: [bash, read_file, write_file, file_edit, glob, grep, git_diff, git_status]
-  tool_max_steps: 50
+  ## 100 leaves headroom for multi-major-version skips where a single
+  ## anchor pkg's upgrade cascades into peer-dep / plugin compatibility
+  ## chains (lint/format/typecheck plugins are a common offender).
+  ## 50 was observed insufficient for that class. Higher caps invite
+  ## unbounded exploration; rely on the prompt's budget-discipline.
+  tool_max_steps: 100
 
 ## ─── Nodes : Phase 1 — validate_upgrade ────────────────────────────
 

@@ -39,7 +39,7 @@ import (
 var Files embed.FS
 
 // Get returns the contents of the embedded example with the given
-// basename (e.g. "secured-renovacy.iter" or "skill/human_gate.bot").
+// basename (e.g. "bots/vibe_feature_dev.bot" or "skill/human_gate.bot").
 // Returns ok=false if no such embedded recipe exists.
 func Get(name string) ([]byte, bool) {
 	data, err := Files.ReadFile(name)
