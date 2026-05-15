@@ -8,6 +8,7 @@ import {
 } from "@/components/Runs/runStatusMeta";
 import { useGlobalActiveRuns } from "@/hooks/useGlobalActiveRuns";
 import type { GlobalActiveRun } from "@/api/runs";
+import { desktop, isDesktop } from "@/lib/desktopBridge";
 
 // GlobalActiveRunsBanner surfaces active runs from EVERY iterion
 // store on the host — the global ~/.iterion slot plus every per-
@@ -63,6 +64,28 @@ interface RowProps {
   run: GlobalActiveRun;
 }
 
+// openRunCrossDaemon resolves the daemon URL serving the given run's
+// store and navigates to its /runs/<id> route. Empty URL → same daemon
+// (graceful fallback for the global slot served by the current daemon
+// itself). Errors fall back to a same-daemon navigation so the worst
+// case is the historical 404, not a swallowed click.
+async function openRunCrossDaemon(run: GlobalActiveRun): Promise<void> {
+  const target = `/runs/${encodeURIComponent(run.id)}`;
+  try {
+    const daemonURL = await desktop.getDaemonURLForStore(run.store_path);
+    if (daemonURL) {
+      window.location.replace(daemonURL.replace(/\/$/, "") + target);
+      return;
+    }
+  } catch (err) {
+    if (typeof console !== "undefined") {
+      console.warn("openRunCrossDaemon: GetDaemonURLForStore failed:", err);
+    }
+  }
+  // Fallback: current daemon, relative.
+  window.location.assign(target);
+}
+
 function GlobalRunRow({ run }: RowProps) {
   const variant = STATUS_VARIANT[run.status] ?? "info";
   const label = labelForStatus(run.status);
@@ -93,16 +116,28 @@ function GlobalRunRow({ run }: RowProps) {
       <span className="text-[10px] text-fg-subtle shrink-0">
         {formatRelative(run.updated_at)}
       </span>
-      {/* Same-daemon links use wouter; cross-daemon would need a separate
-          target which we don't yet expose. The Run ID is shown via the
-          row's name; deep-link works only when the active daemon happens
-          to be serving this store. */}
-      <Link
-        href={`/runs/${encodeURIComponent(run.id)}`}
-        className="text-xs text-info-fg hover:underline shrink-0"
-      >
-        Open →
-      </Link>
+      {/* In desktop mode we resolve the correct daemon for this store
+          (a per-project daemon for project slots, the current daemon
+          for the global slot or any unrecognised path) and navigate via
+          window.location so the SPA re-bootstraps against the right
+          backend. In browser / non-Wails mode we fall back to the
+          existing wouter same-daemon link. */}
+      {isDesktop() ? (
+        <button
+          type="button"
+          onClick={() => void openRunCrossDaemon(run)}
+          className="text-xs text-info-fg hover:underline shrink-0"
+        >
+          Open →
+        </button>
+      ) : (
+        <Link
+          href={`/runs/${encodeURIComponent(run.id)}`}
+          className="text-xs text-info-fg hover:underline shrink-0"
+        >
+          Open →
+        </Link>
+      )}
     </li>
   );
 }
