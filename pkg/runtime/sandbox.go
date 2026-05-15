@@ -538,10 +538,17 @@ func resolveSandboxSpec(
 		if err != nil {
 			if err == devcontainer.ErrNotFound {
 				if defaultImage != "" {
-					spec := sandbox.Spec{
-						Mode:  sandbox.ModeAuto,
-						Image: defaultImage,
+					// Carry over Mounts/Env/PostCreate/User/WorkspaceFolder/Build/Network
+					// from the block when present — they're equally meaningful when the
+					// fallback image runs, and silently dropping them was the cause of
+					// the inline-only workaround for vibe bots (sandbox.go pre-fix).
+					var spec sandbox.Spec
+					if wf != nil && wf.Sandbox != nil {
+						spec = fromIRSpec(wf.Sandbox)
 					}
+					spec.Mode = sandbox.ModeAuto
+					spec.Image = defaultImage
+					expandSandboxSpec(&spec, repoRoot)
 					return &spec, source + " (default image: " + defaultImage + ")", nil
 				}
 				return nil, source, fmt.Errorf("runtime: sandbox: mode=auto but no .devcontainer/devcontainer.json found at %s — add one or switch to inline mode", repoRoot)

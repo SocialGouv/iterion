@@ -112,6 +112,55 @@ func TestResolveSandboxSpecAutoFallbackToDefaultImage(t *testing.T) {
 			t.Errorf("Image = %q, want alpine:3.20 (devcontainer wins over default image)", spec.Image)
 		}
 	})
+
+	t.Run("auto + no devcontainer + default image -> block Mounts/Env/PostCreate carry through", func(t *testing.T) {
+		richWf := &ir.Workflow{Sandbox: &ir.SandboxSpec{
+			Mode: string(sandbox.ModeAuto),
+			Mounts: []string{
+				"type=bind,source=${localEnv:HOME}/.claude,target=/root/.claude",
+			},
+			Env:             map[string]string{"CLAUDE_CONFIG_DIR": "/root/.claude"},
+			PostCreate:      "npm install -g @anthropic-ai/claude-code@latest",
+			User:            "node",
+			WorkspaceFolder: "/workspace",
+		}}
+		spec, source, err := resolveSandboxSpec(richWf, repoNoDC, "", "", "ghcr.io/test/sandbox:v1")
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if spec == nil {
+			t.Fatal("expected spec, got nil")
+		}
+		if spec.Image != "ghcr.io/test/sandbox:v1" {
+			t.Errorf("Image = %q, want ghcr.io/test/sandbox:v1", spec.Image)
+		}
+		if spec.Mode != sandbox.ModeAuto {
+			t.Errorf("Mode = %q, want auto", spec.Mode)
+		}
+		if len(spec.Mounts) != 1 {
+			t.Fatalf("Mounts = %v, want 1 entry", spec.Mounts)
+		}
+		homeDir, _ := os.UserHomeDir()
+		wantMount := "type=bind,source=" + homeDir + "/.claude,target=/root/.claude"
+		if spec.Mounts[0] != wantMount {
+			t.Errorf("Mounts[0] = %q, want %q (expandSandboxSpec should resolve ${localEnv:HOME})", spec.Mounts[0], wantMount)
+		}
+		if spec.Env["CLAUDE_CONFIG_DIR"] != "/root/.claude" {
+			t.Errorf("Env[CLAUDE_CONFIG_DIR] = %q, want /root/.claude", spec.Env["CLAUDE_CONFIG_DIR"])
+		}
+		if spec.PostCreate != "npm install -g @anthropic-ai/claude-code@latest" {
+			t.Errorf("PostCreate = %q, want the npm install string", spec.PostCreate)
+		}
+		if spec.User != "node" {
+			t.Errorf("User = %q, want node", spec.User)
+		}
+		if spec.WorkspaceFolder != "/workspace" {
+			t.Errorf("WorkspaceFolder = %q, want /workspace", spec.WorkspaceFolder)
+		}
+		if !strings.Contains(source, "default image: ghcr.io/test/sandbox:v1") {
+			t.Errorf("source = %q, want it to mention the default image", source)
+		}
+	})
 }
 
 func TestResolveDefaultSandboxImage(t *testing.T) {
