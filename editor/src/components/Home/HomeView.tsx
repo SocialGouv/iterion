@@ -1,7 +1,6 @@
 import ProjectLabel from "@/components/shared/ProjectLabel";
 import NavLinks from "@/components/shared/NavLinks";
 import { useRuns } from "@/hooks/useRuns";
-import GlobalActiveRunsBanner from "./GlobalActiveRunsBanner";
 import RecentFilesPanel from "./RecentFilesPanel";
 import RunsPanel from "./RunsPanel";
 
@@ -18,11 +17,10 @@ export default function HomeView() {
 
       <main className="flex-1 overflow-auto p-4 sm:p-6">
         <div className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Surfaces active runs from every iterion store on the
-              host (the global ~/.iterion slot + per-project slots).
-              Spans both columns since it's a cross-store summary;
-              self-hides when nothing is active. */}
-          <GlobalActiveRunsBanner />
+          {/* Both panels span one column each. Cross-store running
+              runs are folded into RunsPanel's "In other locations"
+              section so the operator sees everything in-flight in a
+              single box. */}
           <RecentFilesPanel />
           <RunsPanel runs={runs} loading={loading} error={error} />
         </div>

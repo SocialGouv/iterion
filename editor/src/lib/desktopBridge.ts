@@ -146,9 +146,10 @@ export const desktop = {
   getServerURL: () => call("GetServerURL"),
   getSessionToken: () => call("GetSessionToken"),
   // getDaemonURLForStore resolves the daemon URL serving the given iterion
-  // store path. Used by GlobalActiveRunsBanner to deep-link cross-daemon
-  // runs without 404ing. Returns "" when no live daemon is found and no
-  // fallback is available — the SPA reads "" as "stay on current daemon".
+  // store path. Used by RunsPanel's "in other locations" section to deep-link
+  // cross-daemon runs without 404ing. Returns "" when no live daemon is found
+  // and no fallback is available — the SPA reads "" as "stay on current
+  // daemon".
   getDaemonURLForStore: (storePath: string) =>
     call("GetDaemonURLForStore", storePath),
   saveTextFile: (suggestedFilename: string, content: string) =>
