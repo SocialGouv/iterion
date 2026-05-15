@@ -311,7 +311,7 @@ export default function Toolbar() {
     <div className="flex items-center gap-1 px-3 h-full text-sm">
       <span className="font-bold tracking-wide mr-1">ITERION</span>
       <NavLinks active="editor" />
-      <ProjectLabel variant="toolbar" />
+      <ProjectLabel />
       <BackendStatusPill />
 
       {/* File ops */}

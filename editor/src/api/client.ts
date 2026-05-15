@@ -11,7 +11,11 @@ export function setUnauthorizedHandler(fn: (() => void) | null) {
   onUnauthorized = fn;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+// request is exported so other api/*.ts modules (api/projects.ts,
+// future per-domain clients) share the same 401-handling and
+// JSON-decoding semantics. Existing callers in this file continue to
+// use the unprefixed name.
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`, {
     credentials: "include",
     headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
@@ -23,6 +27,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     throw new Error(`API error ${res.status}: ${await res.text()}`);
   }
+  // 204 No Content (e.g. DELETE endpoints) has an empty body. Don't
+  // try to parse it — return undefined and let the typed caller cast.
+  if (res.status === 204) return undefined as unknown as T;
   return res.json() as Promise<T>;
 }
 

@@ -106,6 +106,14 @@ export interface ServerInfo {
   // Human-friendly label derived from work_dir (basename). Empty when
   // work_dir is empty or root-ish.
   project_name?: string;
+  // ID of the project entry from the registry that matches `work_dir`
+  // (set by ProjectSwitcher). Empty when the registry has never been
+  // written or in cloud mode.
+  current_project_id?: string;
+  // Absolute path of the server-side directory browser root. Empty
+  // when ITERION_BROWSE_ROOT is unset — the SPA shows the Browse
+  // button in AddProjectDialog only when this is non-empty.
+  browse_root?: string;
 }
 
 // Response shape of POST /api/runs/uploads.
@@ -405,3 +413,21 @@ export interface FileEvent {
   type: "file_created" | "file_modified" | "file_deleted";
   path: string;
 }
+
+// Global server-pushed event signalling a project hot-swap. Shares the
+// same WebSocket channel as FileEvent (/api/ws); consumers discriminate
+// on `type`. The `current` payload lets the SPA refresh the active
+// label without a follow-up HTTP round-trip.
+export interface ProjectSwitchedEvent {
+  type: "project_switched";
+  current: {
+    id: string;
+    name: string;
+    dir: string;
+    store_dir?: string;
+    last_opened: string;
+    color?: string;
+  };
+}
+
+export type ServerWsEvent = FileEvent | ProjectSwitchedEvent;

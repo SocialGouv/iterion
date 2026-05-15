@@ -3,7 +3,7 @@ import { useDocumentStore } from "@/store/document";
 import { useUIStore } from "@/store/ui";
 import { fileWatcher } from "@/api/ws";
 import * as api from "@/api/client";
-import type { FileEvent } from "@/api/types";
+import type { ServerWsEvent } from "@/api/types";
 
 const RELOAD_DEBOUNCE_MS = 500;
 
@@ -13,7 +13,10 @@ export function useFileWatcher() {
   useEffect(() => {
     fileWatcher.connect();
 
-    const unsubscribe = fileWatcher.subscribe((event: FileEvent) => {
+    const unsubscribe = fileWatcher.subscribe((event: ServerWsEvent) => {
+      if (event.type !== "file_created" && event.type !== "file_modified" && event.type !== "file_deleted") {
+        return;
+      }
       const { currentFilePath, isDirty } = useDocumentStore.getState();
       const { addToast, notifyFilesChanged } = useUIStore.getState();
       const filePath = currentFilePath;

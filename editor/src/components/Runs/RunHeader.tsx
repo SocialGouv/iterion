@@ -68,7 +68,7 @@ export default function RunHeader({ run, active, wsState }: Props) {
     <header className="border-b border-border-default">
       <div className="px-4 py-2 flex items-center gap-3 text-sm">
         <NavLinks active="runs" />
-        <ProjectLabel variant="header" />
+        <ProjectLabel />
         <div className="flex flex-col leading-tight min-w-0 max-w-md">
           <div className="font-medium truncate">
             {run.name || run.workflow_name}

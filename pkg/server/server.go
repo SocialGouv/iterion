@@ -201,14 +201,25 @@ type ReadinessCheck func(ctx context.Context) error
 
 // Server is the editor HTTP server.
 type Server struct {
-	cfg     Config
-	logger  *iterlog.Logger
-	mux     *http.ServeMux
-	handler http.Handler // mux wrapped with auth middleware
-	server  *http.Server
-	hub     *Hub
-	watcher *Watcher
-	runs    *runview.Service // run console service; nil disables /api/runs endpoints
+	// stateMu guards the hot-swappable fields used by ProjectSwitcher
+	// (cfg.WorkDir, cfg.StoreDir, runs, watcher). Acquired write-side
+	// only during a project switch — handlers that read these fields
+	// during a swap may briefly see one half of the swap, which is
+	// acceptable: the SPA reset on `project_switched` invalidates any
+	// inflight request data before it's surfaced.
+	stateMu sync.RWMutex
+	// currentProjectID is the id of the registry entry matching
+	// cfg.WorkDir. Surfaced by /api/server/info (polled by the SPA);
+	// caching it here avoids a disk read on every poll.
+	currentProjectID string
+	cfg              Config
+	logger           *iterlog.Logger
+	mux              *http.ServeMux
+	handler          http.Handler // mux wrapped with auth middleware
+	server           *http.Server
+	hub              *Hub
+	watcher          *Watcher
+	runs             *runview.Service // run console service; nil disables /api/runs endpoints
 
 	authSvc      *auth.Service
 	signer       *auth.JWTSigner
@@ -361,6 +372,11 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		Handler:           s.handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	// Auto-register the boot workdir in the shared project registry so
+	// it shows up in the SPA's ProjectSwitcher — mirrors the desktop
+	// app's AddProjectSilently call on first launch. Best-effort: a
+	// registry I/O failure is logged but never blocks startup.
+	s.registerInitialProject()
 	return s
 }
 
@@ -491,6 +507,22 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/files", s.handleListFiles)
 	s.mux.HandleFunc("POST /api/files/open", s.handleOpenFile)
 	s.mux.HandleFunc("POST /api/files/save", s.handleSaveFile)
+
+	// Project registry — lets the SPA list MRU projects, switch
+	// between them, and add/remove entries. The same on-disk file
+	// (<UserConfigDir>/Iterion/config.json) is shared with the desktop
+	// (Wails) app via pkg/server/projects.
+	s.mux.HandleFunc("GET /api/projects", s.handleListProjects)
+	s.mux.HandleFunc("GET /api/projects/current", s.handleCurrentProject)
+	s.mux.HandleFunc("POST /api/projects", s.handleAddProject)
+	s.mux.HandleFunc("POST /api/projects/switch", s.handleSwitchProject)
+	s.mux.HandleFunc("DELETE /api/projects/{id}", s.handleRemoveProject)
+	// Server-side directory browser, gated by the ITERION_BROWSE_ROOT
+	// env var. Used by the web-mode AddProject dialog so the user can
+	// pick a folder without typing its absolute path. Disabled (403)
+	// when the env var is unset, so a default deployment never exposes
+	// the filesystem.
+	s.mux.HandleFunc("GET /api/filesystem/list", s.handleFilesystemList)
 
 	// Run console endpoints (registered only when s.runs is wired).
 	s.registerRunRoutes()

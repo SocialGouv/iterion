@@ -174,6 +174,15 @@ func (h *Hub) Broadcast(event FileEvent) {
 		h.logger.Error("hub: marshal error: %v", err)
 		return
 	}
+	h.broadcastBytes(data)
+}
+
+// broadcastBytes pushes an already-JSON-encoded payload through the
+// same client fan-out as Broadcast. Used by sibling files in this
+// package (projects.go) to emit non-FileEvent payloads on the same
+// WebSocket channel; the marshaling and typing stay at the call site
+// so the Hub itself stays agnostic about payload shape.
+func (h *Hub) broadcastBytes(data []byte) {
 	select {
 	case h.broadcast <- data:
 	case <-h.done:

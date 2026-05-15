@@ -1,5 +1,5 @@
 import { getDesktopWsBase, isDesktop, isWailsHosted } from "@/lib/desktopBridge";
-import type { FileEvent } from "./types";
+import type { ServerWsEvent } from "./types";
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? "/api";
 
@@ -29,11 +29,15 @@ async function deriveWsUrl(): Promise<string> {
   return `${proto}//${window.location.host}${BASE_URL}/ws`;
 }
 
-type FileEventHandler = (event: FileEvent) => void;
+// The /api/ws channel now carries both file-change events and the
+// global `project_switched` broadcast (and any future single-channel
+// signals). Subscribers receive the discriminated union; they're
+// expected to filter on `event.type`.
+type ServerWsHandler = (event: ServerWsEvent) => void;
 
 class FileWatcherClient {
   private ws: WebSocket | null = null;
-  private handlers = new Set<FileEventHandler>();
+  private handlers = new Set<ServerWsHandler>();
   private reconnectDelay = 1000;
   private maxDelay = 30000;
   private shouldConnect = false;
@@ -41,8 +45,17 @@ class FileWatcherClient {
   private everConnected = false;
   private consecutiveFailures = 0;
   private maxInitialRetries = 3;
+  // refCount allows multiple consumers (useFileWatcher, useProjectSwitchListener)
+  // to call connect/disconnect independently without trampling each other:
+  // the WS dials on the first acquire and tears down only on the last release.
+  // Without this, navigating between editor and run views (which mount
+  // useFileWatcher conditionally) would race the always-on project_switched
+  // listener and silently drop its connection.
+  private refCount = 0;
 
   connect(): void {
+    this.refCount++;
+    if (this.refCount > 1) return;
     this.shouldConnect = true;
     this.everConnected = false;
     this.consecutiveFailures = 0;
@@ -50,6 +63,9 @@ class FileWatcherClient {
   }
 
   disconnect(): void {
+    if (this.refCount === 0) return;
+    this.refCount--;
+    if (this.refCount > 0) return;
     this.shouldConnect = false;
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
@@ -61,7 +77,7 @@ class FileWatcherClient {
     }
   }
 
-  subscribe(handler: FileEventHandler): () => void {
+  subscribe(handler: ServerWsHandler): () => void {
     this.handlers.add(handler);
     return () => this.handlers.delete(handler);
   }
@@ -89,7 +105,7 @@ class FileWatcherClient {
 
     ws.onmessage = (ev) => {
       try {
-        const event = JSON.parse(ev.data) as FileEvent;
+        const event = JSON.parse(ev.data) as ServerWsEvent;
         for (const handler of this.handlers) {
           handler(event);
         }

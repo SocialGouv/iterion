@@ -18,11 +18,13 @@ import SettingsPage from "@/views/settings/SettingsPage";
 import TeamPage from "@/views/teams/TeamPage";
 import { useDesktop } from "@/hooks/useDesktop";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { useProjectSwitchListener } from "@/hooks/useProjectSwitchListener";
 import { onDesktopEvent } from "@/lib/desktopBridge";
 import { DesktopEvent } from "@/lib/desktopEvents";
 import { AuthProvider, useAuth } from "@/auth/AuthContext";
 import { setUnauthorizedHandler } from "@/api/client";
 import { useDocumentStore } from "@/store/document";
+import { useServerInfoStore } from "@/store/serverInfo";
 
 export default function App() {
   return (
@@ -62,11 +64,16 @@ function AuthGate() {
 function AuthedApp() {
   const { isDesktop, ready, firstRunPending, refresh, pickAndAddProject } =
     useDesktop();
+  const serverInfo = useServerInfoStore((s) => s.info);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<string>("api-keys");
   const [switcherOpen, setSwitcherOpen] = useState(false);
 
   useDocumentTitle();
+  // Reset SPA state on a server-side project hot-swap so the new
+  // project's empty home view replaces whatever the user was looking
+  // at. No-op in desktop (server-mode WS) and cloud modes.
+  useProjectSwitchListener();
 
   useEffect(() => {
     const offs = [
@@ -154,15 +161,19 @@ function AuthedApp() {
       </Switch>
       <ToastContainer />
       {isDesktop && (
-        <>
-          <Settings
-            open={settingsOpen}
-            onClose={() => setSettingsOpen(false)}
-            tab={settingsTab}
-            onTabChange={setSettingsTab}
-          />
-          <ProjectSwitcher open={switcherOpen} onClose={() => setSwitcherOpen(false)} />
-        </>
+        <Settings
+          open={settingsOpen}
+          onClose={() => setSettingsOpen(false)}
+          tab={settingsTab}
+          onTabChange={setSettingsTab}
+        />
+      )}
+      {/* ProjectSwitcher renders in both desktop and local-server modes.
+          Cloud mode (no work_dir) renders nothing useful; we still mount
+          it so the Ctrl+P shortcut and ProjectLabel chip have somewhere
+          to dispatch — the dialog just shows an empty list there. */}
+      {serverInfo?.mode !== "cloud" && (
+        <ProjectSwitcher open={switcherOpen} onClose={() => setSwitcherOpen(false)} />
       )}
     </>
   );

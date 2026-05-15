@@ -32,7 +32,7 @@ export default function RunListView() {
     <div className="h-full flex flex-col overflow-hidden bg-surface-1 text-fg-default">
       <header className="border-b border-border-default px-4 py-2.5 flex items-center gap-3">
         <NavLinks active="runs" />
-        <ProjectLabel variant="header" />
+        <ProjectLabel />
         <span className="text-xs text-fg-subtle">{runs.length} total</span>
       </header>
 

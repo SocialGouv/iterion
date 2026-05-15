@@ -29,6 +29,15 @@ type serverInfoResponse struct {
 	// (typically its basename). The SPA surfaces it in the Toolbar and
 	// RunHeader so the user always sees which project they're editing.
 	ProjectName string `json:"project_name,omitempty"`
+	// CurrentProjectID matches the registry entry currently selected
+	// (when the SPA wants to highlight it in the ProjectSwitcher).
+	// Empty in cloud mode or when the registry has never been written.
+	CurrentProjectID string `json:"current_project_id,omitempty"`
+	// BrowseRoot is the absolute path under which the server-side
+	// directory browser (/api/filesystem/list) is allowed to traverse,
+	// or "" when the feature is disabled. The SPA shows the Browse
+	// button in the AddProject dialog only when this is non-empty.
+	BrowseRoot string `json:"browse_root,omitempty"`
 }
 
 type serverLimitsBlock struct {
@@ -66,6 +75,8 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 	if mode == "local" {
 		resp.WorkDir = s.cfg.WorkDir
 		resp.ProjectName = deriveProjectName(s.cfg.WorkDir)
+		resp.BrowseRoot = browseRoot()
+		resp.CurrentProjectID = s.CurrentProjectID()
 	}
 	s.writeJSONFor(w, r, resp)
 }
