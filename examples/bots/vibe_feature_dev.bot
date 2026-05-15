@@ -783,11 +783,13 @@ workflow vibe_feature_dev:
     env:
       CLAUDE_CONFIG_DIR: "/home/devbox/.claude"
     ## post_create installs claude_code if absent (the sandbox images
-    ## don't ship it). If the workspace has a devbox.json, also
-    ## materialise its toolchain so any extra packages (rust, php,
-    ## elixir, …) beyond full's defaults are on PATH for the agent's
-    ## docker exec calls.
-    post_create: "set -e; command -v claude >/dev/null 2>&1 || sudo npm install -g @anthropic-ai/claude-code@latest; if [ -f /workspace/devbox.json ]; then cd /workspace && devbox install >/tmp/devbox-install.log 2>&1 || echo 'devbox install failed — see /tmp/devbox-install.log'; fi"
+    ## don't ship it). Kept minimal on purpose: anything heavier (a
+    ## `devbox install` pulling Nix packages for the workspace's
+    ## toolchain, an `npm install` against the project's
+    ## package.json, etc.) belongs in the agent's `act` step where
+    ## it's observable + has the run's budget rather than dying
+    ## silently here on a post_create timeout.
+    post_create: "set -e; command -v claude >/dev/null 2>&1 || sudo npm install -g @anthropic-ai/claude-code@latest"
 
   budget:
     max_parallel_branches: 1

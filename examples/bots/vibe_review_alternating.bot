@@ -536,7 +536,7 @@ workflow vibe_review_alternating:
     mounts: ["type=bind,source=${localEnv:HOME}/.claude,target=/home/devbox/.claude,consistency=cached"]
     env:
       CLAUDE_CONFIG_DIR: "/home/devbox/.claude"
-    post_create: "set -e; command -v claude >/dev/null 2>&1 || sudo npm install -g @anthropic-ai/claude-code@latest; if [ -f /workspace/devbox.json ]; then cd /workspace && devbox install >/tmp/devbox-install.log 2>&1 || echo 'devbox install failed — see /tmp/devbox-install.log'; fi"
+    post_create: "set -e; command -v claude >/dev/null 2>&1 || sudo npm install -g @anthropic-ai/claude-code@latest"
 
   budget:
     max_parallel_branches: 1
