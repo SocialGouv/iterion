@@ -12,12 +12,17 @@ job, not something the maintainer should do here.
 
 ## Stacks present
 
-| Dir | Manifest | Vulnerable pins (representative) |
-|------|---------|-----------------------------------|
-| `npm-app/` | `package.json`, `package-lock.json` | `axios@0.21.1` (CVE-2021-3749), `lodash@4.17.4` (CVE-2018-3721), `node-ipc@10.1.1` (protestware/sabotage) |
-| `py-app/` | `requirements.txt` | `urllib3@1.26.4` (CVE-2021-33503), `pyyaml@5.1` (CVE-2020-1747), `requests@2.25.0` |
-| `go-app/` | `go.mod` | `github.com/gin-gonic/gin@v1.6.0` (CVE-2023-26125) |
-| `rust-app/` | `Cargo.toml` | `tokio@1.7.1` (RUSTSEC-2021-0072) |
+| Dir | Manifest | Lockfile | Vulnerable pins (representative) |
+|------|---------|----------|-----------------------------------|
+| `npm-app/` | `package.json` | `package-lock.json` (hand-crafted — `node-ipc@10.1.1` was un-published from the registry after the peacenotwar incident, so `npm install` can't regenerate it) | `axios@0.21.1` (CVE-2021-3749), `lodash@4.17.4` (CVE-2018-3721), `node-ipc@10.1.1` (protestware/sabotage) |
+| `py-app/` | `requirements.txt` (already exact `==` pins) | — | `urllib3@1.26.4` (CVE-2021-33503), `pyyaml@5.1` (CVE-2020-1747), `requests@2.25.0` |
+| `go-app/` | `go.mod` | `go.sum` | `github.com/gin-gonic/gin@v1.6.0` (CVE-2023-26125) |
+| `rust-app/` | `Cargo.toml` | `Cargo.lock` | `tokio@1.7.1` (RUSTSEC-2021-0072) |
+
+The lockfiles are present so the bot's `security_audit` node can run
+`osv-scanner --lockfile=<path>` and the native `npm/cargo/go outdated`
+commands can compare installed-vs-latest. Without them the smoke run
+vacuous-PASSed (no outdated state detected).
 
 ## Anti-malware heuristic test
 
