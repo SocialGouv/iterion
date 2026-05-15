@@ -148,6 +148,8 @@ All run data (events, artifacts, interactions) is stored in `.iterion/runs/`.
 
 Iterion accepts two interchangeable file extensions: **`.iter`** for raw or experimental DSL (didactic examples, coverage tests, single-purpose scripts) and **`.bot`** for productized, operational bots (with human gates, mitigation steps, reports, and a documented runbook). The parser, compiler, runtime, and editor treat them identically — the distinction is narrative only. `iterion init` produces a `.bot` file by default; the `examples/` directory ships both, with `.bot` reserved for examples meant to be run unmodified against real systems.
 
+Bots can also be shipped as **`.botz`** — a tar.gz packaging the workflow with adjacent resources (Claude Code skills, reusable prompts, default attachments, manifest). Scaffold with `iterion bundle init`, build with `iterion bundle pack`, run with `iterion run my.botz`. See [docs/bundles.md](docs/bundles.md).
+
 ---
 
 ## ✨ A Taste of the DSL

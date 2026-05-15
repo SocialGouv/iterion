@@ -1,0 +1,11 @@
+name: my-bot
+version: 0.1.0
+description: A packaged iterion workflow.
+schema_version: 1
+
+# Optional: declare default attachments. Each entry maps an attachment
+# name (matching the bot.iter `attachments:` block) to a file inside
+# this bundle's attachments/ directory.
+#
+# attachments:
+#   logo: branding/logo.png

@@ -1,0 +1,31 @@
+## Bundle scaffold — replace this with your own workflow.
+## Reference: docs/bundles.md
+
+vars:
+  topic: string = "general workflow design"
+
+presets:
+  quick:
+    topic: "rate limiting"
+  deep:
+    topic: "distributed consensus protocols"
+
+schema empty:
+  ok: bool
+
+prompt sys:
+  You are a concise technical writer. Reply in 2-3 sentences.
+
+prompt usr:
+  Summarise {{vars.topic}} for an engineer who has never encountered it.
+
+agent summarise:
+  model: "anthropic/claude-haiku-4-5"
+  input: empty
+  output: empty
+  system: sys
+  user: usr
+
+workflow demo:
+  entry: summarise
+  summarise -> done
