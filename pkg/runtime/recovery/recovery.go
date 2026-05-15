@@ -342,15 +342,15 @@ func Classify(err error) runtime.ErrorCode {
 // the matcher logic. ALL entries MUST be lowercase — Classify lowercases
 // the err string before checking.
 var networkTransientNeedles = []string{
-	"failedtoopensocket",       // anthropic claude CLI verbatim ("Unable to connect to API (FailedToOpenSocket)")
-	"unable to connect to api", // anthropic claude CLI prefix
-	"connection refused",       // tcp refused (host present, port closed / firewall)
-	"connection reset",         // tcp reset by peer (mid-request drop)
-	"no such host",             // dns failure (transient resolver outage)
-	"i/o timeout",              // go net package timeouts (dial / read / write)
+	"failedtoopensocket",        // anthropic claude CLI verbatim ("Unable to connect to API (FailedToOpenSocket)")
+	"unable to connect to api",  // anthropic claude CLI prefix
+	"connection refused",        // tcp refused (host present, port closed / firewall)
+	"connection reset",          // tcp reset by peer (mid-request drop)
+	"no such host",              // dns failure (transient resolver outage)
+	"i/o timeout",               // go net package timeouts (dial / read / write)
 	"context deadline exceeded", // request-level timeout in upstream client
-	"network is unreachable",   // host has no route (eg vpn dropped)
-	"no route to host",         // routing-table drop (often transient)
-	"tls handshake timeout",    // tls negotiation hung (proxy / mitm flap)
-	"eof",                      // bare EOF mid-stream — usually peer dropped during sse
+	"network is unreachable",    // host has no route (eg vpn dropped)
+	"no route to host",          // routing-table drop (often transient)
+	"tls handshake timeout",     // tls negotiation hung (proxy / mitm flap)
+	"eof",                       // bare EOF mid-stream — usually peer dropped during sse
 }

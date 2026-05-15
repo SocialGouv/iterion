@@ -123,4 +123,3 @@ presets:
 	r := compileFile(t, src)
 	expectDiag(t, r, DiagDuplicatePreset)
 }
-

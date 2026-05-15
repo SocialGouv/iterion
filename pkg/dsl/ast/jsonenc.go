@@ -141,7 +141,7 @@ type jsonPresetsBlock struct {
 }
 
 type jsonPreset struct {
-	Name   string              `json:"name,omitempty"`
+	Name   string             `json:"name,omitempty"`
 	Values []*jsonPresetValue `json:"values,omitempty"`
 }
 

@@ -34,14 +34,14 @@ type LaunchSpec struct {
 	// takes precedence over FilePath for parsing; FilePath is still
 	// retained for display and for the runner to recompile against
 	// the same logical workflow.
-	Source  string
-	Vars    map[string]string // --var-style overrides
+	Source string
+	Vars   map[string]string // --var-style overrides
 	// Preset is the name of an in-source preset (presets: block) to
 	// apply before Vars. Unknown name → launch error. Empty means no
 	// preset.
 	Preset  string
-	RunID   string            // optional explicit ID; auto-generated when empty
-	Timeout time.Duration     // 0 disables
+	RunID   string        // optional explicit ID; auto-generated when empty
+	Timeout time.Duration // 0 disables
 	// MergeInto controls the worktree-finalization fast-forward target
 	// for `worktree: auto` runs. "" or "current" → FF the user's
 	// currently-checked-out branch (default); "none" → skip FF;
