@@ -2877,6 +2877,62 @@ func writeLiveTestReport(t *testing.T, runID, workspaceDir, storeDir string, s s
 	}
 }
 
+// captureSandboxDiagnostics dumps everything docker still knows about
+// the run's sandbox container — `events` history for the run-id label
+// (alive across container removal) and `inspect` / `logs` if a
+// stopped-but-not-pruned container is still around. Used by `_Real`
+// tests when the engine errors out with a sandbox-shaped failure
+// (claude-code formatting pass failed, EXECUTION_FAILED on a node
+// after `delegate_started`, etc.) so the failure log carries enough
+// breadcrumbs to root-cause the SIGKILL pattern observed across
+// session iterations 2026-05-15 → 2026-05-16.
+//
+// Cheap: docker events history is in-memory on the daemon, capped at
+// a few hours. If docker isn't reachable the helper just logs and
+// returns — never fails the test on diagnostic gathering.
+func captureSandboxDiagnostics(t *testing.T, runID string) {
+	t.Helper()
+	if _, err := exec.LookPath("docker"); err != nil {
+		return
+	}
+	// 1. Events history. `--until 0s` means "up to now"; the daemon
+	//    retains events for ~hours so dead containers still show up.
+	evCmd := exec.Command(
+		"docker", "events",
+		"--filter", "label=iterion.io/run-id="+runID,
+		"--since", "6h",
+		"--until", "0s",
+	)
+	if out, err := evCmd.CombinedOutput(); err == nil && len(out) > 0 {
+		t.Logf("=== docker events for run %s ===\n%s", runID, string(out))
+	}
+	// 2. Any surviving container with the run-id label (in case
+	//    --rm didn't fire because the container died abnormally).
+	psCmd := exec.Command(
+		"docker", "ps", "-a",
+		"--filter", "label=iterion.io/run-id="+runID,
+		"--format", "{{.ID}} {{.Status}} {{.Names}}",
+	)
+	psOut, _ := psCmd.CombinedOutput()
+	psLines := strings.TrimSpace(string(psOut))
+	if psLines == "" {
+		return
+	}
+	t.Logf("=== docker ps for run %s ===\n%s", runID, psLines)
+	// 3. For each surviving container, last 200 log lines.
+	for _, line := range strings.Split(psLines, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		cid := fields[0]
+		logCmd := exec.Command("docker", "logs", "--tail", "200", cid)
+		if out, err := logCmd.CombinedOutput(); err == nil && len(out) > 0 {
+			t.Logf("=== docker logs %s (tail 200) ===\n%s", cid[:12], string(out))
+		}
+	}
+}
+
 // liveRunResultAcceptable mirrors the lenient policy used by
 // TestLive_Lite_DualModel_PlanImplementReview: a runtime error that
 // is BudgetExceeded / LoopExhausted / ExecutionFailed (context
@@ -3477,6 +3533,7 @@ func TestLive_VibeFeatureDev_Real(t *testing.T) {
 
 	acceptable, reason := liveRunResultAcceptableReal(runErr)
 	if !acceptable {
+		captureSandboxDiagnostics(t, runID)
 		t.Fatalf("unacceptable run error: %v", runErr)
 	}
 	t.Logf("Run result: %s", reason)
@@ -3548,6 +3605,7 @@ func TestLive_VibeReviewAlternating_Real(t *testing.T) {
 
 	acceptable, reason := liveRunResultAcceptableReal(runErr)
 	if !acceptable {
+		captureSandboxDiagnostics(t, runID)
 		t.Fatalf("unacceptable run error: %v", runErr)
 	}
 	t.Logf("Run result: %s", reason)
@@ -3653,6 +3711,7 @@ func TestLive_SecuredRenovacy_Real(t *testing.T) {
 
 	acceptable, reason := liveRunResultAcceptableReal(runErr)
 	if !acceptable {
+		captureSandboxDiagnostics(t, runID)
 		t.Fatalf("unacceptable run error: %v", runErr)
 	}
 	t.Logf("Run result: %s", reason)
