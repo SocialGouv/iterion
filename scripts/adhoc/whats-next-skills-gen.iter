@@ -1,0 +1,153 @@
+## ─────────────────────────────────────────────────────────────────
+## whats-next-skills-gen (ad-hoc, throwaway)
+##
+## DOGFOOD TEST. Runs ONE agent node on claw + openai/gpt-5.5 with
+## the full agentic tool-use loop (read + write filesystem, shell).
+## Goal: produce 5 SKILL.md files under the whats-next bundle.
+##
+## This is intentionally a single-node workflow so the dogfood signal
+## is unambiguous: if claw-code-go's OpenAI agentic loop works, the
+## agent will call read_file/glob/grep many times, then write_file at
+## least 5 times. If it fails (e.g. tool dispatch on /v1/responses,
+## reasoning_effort + tools interaction, stream aggregation), the
+## events.jsonl will show exactly where.
+##
+## Run:
+##   devbox run -- iterion run scripts/adhoc/whats-next-skills-gen.iter
+##
+## Tail (in a second terminal):
+##   tail -F .iterion/runs/<run-id>/events.jsonl | jq '.'
+##
+## After a green run, commit the produced skills/*.md files. This
+## .iter file stays in scripts/adhoc/ as the seed for a future
+## examples/whats-next/generate-skills.bot (formalised version, run
+## any time we want to refresh / add a skill).
+## ─────────────────────────────────────────────────────────────────
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+  skills_dir:    string = "examples/whats-next/skills"
+
+schema gen_output:
+  summary:    string
+  generated:  json
+
+prompt gen_skills_system:
+  You are generating a small set of Claude Code skills (SKILL.md
+  files) that will ship inside an iterion .botz bundle named
+  whats-next. The skills are markdown reference documents Claude
+  Code will load on demand to help an orchestrator bot decide what
+  to do next on a given repository.
+
+  Each skill MUST be a single markdown file. Start the file with a
+  YAML frontmatter block delimited by lines containing only three
+  hyphens. The frontmatter MUST contain exactly two keys:
+    - name: a kebab-case slug
+    - description: one short, specific sentence. Claude Code uses
+      this description to decide whether to load the skill at
+      runtime, so be concrete — say what the skill is for, not just
+      what topic it covers.
+
+  After the closing frontmatter delimiter, write the body of the
+  skill: a level-1 markdown heading with a human-readable title,
+  then imperative-voice instructions with numbered lists where
+  helpful, and concrete examples drawn from the actual codebase you
+  explored. No filler. No marketing prose.
+
+  Target directory for the files: the value of skills_dir below.
+
+  Write exactly these 5 files. Use the listed filename for each.
+
+  1. repo-survey.md — a systematic checklist for surveying an
+     unknown repository. Cover: top-level directory map; build /
+     dependency files (Taskfile.yml, devbox.json, go.mod,
+     package.json, etc.); recent commit activity via
+     git log -n 20 --oneline; ADRs under docs/adr/ if present; open
+     TODO and FIXME markers; conventions (CLAUDE.md, README.md,
+     CONTRIBUTING.md).
+
+  2. iterion-bot-catalog.md — an index of the iterion bots that
+     ship in examples/. Inspect these three files in particular:
+       - examples/bots/vibe_review_alternating.bot
+       - examples/bots/vibe_feature_dev.bot
+       - examples/secured-renovacy/bot.bot
+     For each: one-line purpose, key inputs from the workflow vars
+     block, the shape of its iterion run invocation, and a "use
+     this when …" recommendation rule. This skill is
+     iterion-specific.
+
+  3. roadmap-synthesis.md — how to compose a roadmap recommendation
+     with three components (long_term, short_term, next_action)
+     from a repo survey plus the user's stated priorities. Cover:
+     how to weigh urgency vs importance; when to defer; how to pick
+     exactly ONE next action — the bot should never recommend more
+     than one immediate action.
+
+  4. priority-elicitation.md — question patterns for drawing out a
+     user's real priorities in a free-text exchange. Cover: open
+     versus forced-choice questions; surfacing blockers; what to do
+     when the user is vague; how to mirror back the priorities for
+     confirmation.
+
+  5. iterion-dsl-quickref.md — distilled iterion DSL cheatsheet.
+     Cover: node types (agent, judge, router, join, human, tool,
+     compute, done, fail); edge syntax (the arrow, when conditions,
+     bounded loop counters with the "as" keyword, the with-mapping
+     form for passing data); reference syntax for accessing vars,
+     node outputs, input fields, and loop history (you'll find the
+     truth in docs/dsl.md); the budget block; the sandbox modes.
+     Cite docs/dsl.md and the example bots as source of truth.
+
+  Approach:
+  1. Explore the workspace first with read-only tools (bash, glob,
+     grep, read_file). Do NOT write from memory — every claim in a
+     skill must trace to a real file you read.
+  2. Once you have enough material per skill, call write_file to
+     emit it into the skills_dir directory.
+  3. Keep each skill under ~150 lines. Concise beats exhaustive.
+  4. Do NOT modify any file outside the skills_dir directory.
+
+  When all 5 files are written, return a final structured response
+  matching the gen_output schema with a one-paragraph summary and a
+  generated array listing one entry per skill produced (filename
+  and a short summary of what's in it).
+
+prompt gen_skills_user:
+  Generate the 5 skill files now.
+
+  Workspace to explore: {{vars.workspace_dir}}
+
+  Target directory (write each SKILL.md into this directory using
+  write_file): {{vars.skills_dir}}
+
+  Begin by listing the top-level directories of the workspace, then
+  drill into the relevant areas per skill. Do not skip exploration —
+  the dogfood test measures whether you actually use the agentic
+  tool loop on real files.
+
+agent generate_skills:
+  ## Pinned to claw backend because the dogfood test is specifically
+  ## "does claw-code-go's OpenAI agentic loop work on a real
+  ## multi-step file-mutation task". Don't fall back to claude_code.
+  backend: "claw"
+  model: "openai/gpt-5.5"
+  reasoning_effort: "high"
+  output: gen_output
+  system: gen_skills_system
+  user: gen_skills_user
+  ## Snake_case is the claw convention. write_file is the mutation
+  ## tool the agent needs to emit each skill file.
+  tools: [bash, read_file, write_file, glob, grep]
+  ## Skill exploration is multi-step (~30-40 reads/greps before each
+  ## write). 60 leaves headroom for retries / re-reads.
+  tool_max_steps: 60
+
+workflow whats_next_skills_gen:
+  entry: generate_skills
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "30m"
+    max_cost_usd: 8.0
+
+  generate_skills -> done

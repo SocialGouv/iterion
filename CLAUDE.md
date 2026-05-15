@@ -307,6 +307,47 @@ default mental model won't surface:
   serves it — Wails neither generates JS bindings nor processes a
   frontend dir.
 
+## Skills (Claude Code SKILL.md) live with their bundle
+
+Claude Code-style skills ship inside the `.botz` bundle they
+support, not at a repo-global location. Iterion's runtime mirrors
+`<bundle>/skills/*.md` into `<workspace>/.claude/skills/` for the
+duration of a run on `backend: claude_code`, so each bundle gets
+exactly the skills it ships — no implicit dependency on the host
+filesystem.
+
+Current bundles and their skills:
+- [examples/whats-next/skills/](examples/whats-next/skills/) —
+  6 skills: `whats-next` (operating playbook), `iterion-bot-catalog`,
+  `iterion-dsl-quickref`, `repo-survey`, `roadmap-synthesis`,
+  `priority-elicitation`. The five iterion-domain ones were
+  produced by a dogfood run of claw + `openai/gpt-5.5` against
+  this repo — see
+  [scripts/adhoc/whats-next-skills-gen.iter](scripts/adhoc/whats-next-skills-gen.iter)
+  for the generator (the seed for a future formalised
+  `generate-skills.bot`).
+
+**Maintain skills inline with the code they describe.** Each time
+you touch a skill's subject area and notice the skill is wrong,
+incomplete, or out of date, fix it in the same change — the cost
+of a small inline correction is much lower than the cost of an
+agent later following stale guidance. Concrete examples:
+- Renamed a bot or moved its file → update `iterion-bot-catalog`
+  in every bundle that ships it (currently only `examples/whats-next/`).
+- Added a new DSL primitive or changed edge syntax → update
+  `iterion-dsl-quickref`.
+- Discovered a better survey heuristic → fold it into `repo-survey`.
+
+When adding a new skill, place it under the bundle's `skills/`
+directory with the standard frontmatter (`name`, `description`)
+plus an imperative-voice body grounded in real files. Skills must
+be self-contained: a reader who lands on one should not have to
+chase context across the repo.
+
+If a skill ends up duplicated across multiple bundles, accept the
+duplication for now (iterion has no skill-sharing primitive yet)
+and add a TODO comment in each copy pointing to its peers.
+
 ## Authoring `.iter` workflows that touch real code
 
 **Before writing or amending any `.iter` workflow that has the power to

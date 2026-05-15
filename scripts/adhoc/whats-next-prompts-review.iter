@@ -1,0 +1,120 @@
+## ─────────────────────────────────────────────────────────────────
+## whats-next-prompts-review (ad-hoc, throwaway)
+##
+## Second dogfood pass. The prompts in examples/whats-next/bot.bot
+## were written by Claude Opus. Three of the four LLM nodes in that
+## bot run on `claw + openai/gpt-5.5`, so the *consumer* is GPT-5.5
+## — and the producer (Claude) cannot reliably introspect what the
+## consumer will misread. Have GPT-5.5 review its own future input.
+##
+## Single agent, read-only, structured output. The reviewer must:
+##   - read examples/whats-next/bot.bot
+##   - evaluate EACH `prompt X:` block
+##   - report only real, concrete issues (no "could be clearer"
+##     filler); for each, propose a one-paragraph revision
+##   - be honest about prompts that are fine
+##
+## Run:
+##   devbox run -- iterion run scripts/adhoc/whats-next-prompts-review.iter
+##
+## After a green run, read the structured output and apply targeted
+## fixes by hand. Don't auto-rewrite — prompt diffs deserve human
+## review before they ship.
+## ─────────────────────────────────────────────────────────────────
+
+vars:
+  bot_file: string = "examples/whats-next/bot.bot"
+
+schema review_finding:
+  prompt_name:        string
+  severity:           string
+  issues:             json
+  suggested_revision: string
+
+schema review_output:
+  summary:           string
+  overall_verdict:   string
+  findings:          json
+
+prompt review_system:
+  You are doing a prompt-engineering review of an iterion bot's
+  prompts. The bot is called whats-next.bot; three of its four LLM
+  nodes (explore, propose_roadmap, revise_roadmap) run on the same
+  model family as you — claw + openai/gpt-5.5 with high reasoning
+  effort. The fourth (emit_action) runs on claude_code. You are
+  best-positioned to spot ambiguities and biases the original
+  author (a different model family) would not notice.
+
+  Your job:
+  1. Read {{vars.bot_file}} carefully. Identify every `prompt X:`
+     block (there are roughly 10). Optionally also read the
+     companion README.md and the whats-next skill in the bundle
+     for context.
+  2. For EACH prompt block, evaluate it against these axes:
+       - Goal clarity: is the agent's job stated unambiguously?
+       - Input correctness: are the double-brace template
+         references valid? Do they match the input schema declared
+         on the consuming node?
+       - Output discipline: does the prompt sufficiently constrain
+         the structured output the node must produce?
+       - Bias / over-prescription: does it nudge the agent toward
+         a specific answer instead of guiding the method?
+       - Anti-patterns: prescription that doesn't trust the model,
+         hidden assumptions, missing constraints, redundant
+         scaffolding.
+       - Tool / model fit: are the constraints realistic for a
+         GPT-5.5 agent with high reasoning and a small tool set?
+  3. Emit findings ONLY for prompts that have real issues. If a
+     prompt is fine, skip it — do NOT pad the review.
+  4. For each issue, write a `suggested_revision` of one
+     paragraph maximum showing the concrete edit you would make.
+     Quote the offending text inline so the operator can locate
+     it.
+  5. Pick a severity for each finding:
+       - "high"   — likely to cause wrong output on common inputs
+       - "medium" — likely to degrade quality on edge cases
+       - "low"    — stylistic / minor improvement, optional
+
+  Constraints:
+  - Read-only. Do NOT modify the bot file.
+  - "Could be clearer" is not a finding. Be specific: name what is
+    unclear and to whom.
+  - Match severity honestly. If everything is fine, return an
+    empty findings array and an `overall_verdict` saying so.
+  - Do NOT propose stylistic rewrites of prompts that work. Focus
+    on issues that would cause a real consumer (GPT-5.5) to
+    misbehave.
+
+  When done, return the review_output structured object with:
+  - summary: 2-4 lines describing what you reviewed and how
+  - overall_verdict: one short paragraph (your overall take)
+  - findings: array of review_finding objects (possibly empty)
+
+prompt review_user:
+  Review the prompts in {{vars.bot_file}}. Optionally consult
+  examples/whats-next/README.md and
+  examples/whats-next/skills/whats-next.md for context (they
+  describe the bot's intended behaviour).
+
+  Return the structured review_output. Empty findings are
+  acceptable if the prompts hold up.
+
+agent review_prompts:
+  backend: "claw"
+  model: "openai/gpt-5.5"
+  reasoning_effort: "high"
+  output: review_output
+  system: review_system
+  user: review_user
+  tools: [bash, read_file, glob, grep]
+  tool_max_steps: 25
+
+workflow whats_next_prompts_review:
+  entry: review_prompts
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "20m"
+    max_cost_usd: 5.0
+
+  review_prompts -> done

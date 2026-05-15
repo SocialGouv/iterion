@@ -1,0 +1,16 @@
+name: whats-next
+version: 0.1.0
+description: |
+  Orchestrator bot. Surveys the target repo agentically (claw +
+  openai/gpt-5.5), elicits user priorities (free-text human node),
+  proposes a long-term roadmap + short-term roadmap + next action +
+  recommended bots, iterates on free-text human feedback until
+  approval (bounded revise loop), records the validated plan to disk
+  (claude_code, native Skill access to the bundled skills), then
+  asks the human once more whether to auto-invoke the recommended
+  next bot.
+
+  Ships claw + openai/gpt-5.5-generated skills as a dogfood test of
+  claw-code-go's agentic loop against OpenAI.
+author: SocialGouv (devthejo) — whats-next/bot.bot
+schema_version: 1
