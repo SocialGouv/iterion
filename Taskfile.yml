@@ -114,6 +114,38 @@ tasks:
     cmds:
       - go test -v -tags live -count=1 -run TestLive_VisionAttachments -timeout 5m ./e2e/...
 
+  test:live:vibe-feature-dev:
+    desc: Live e2e for vibe_feature_dev bot (requires claude CLI + OPENAI_API_KEY)
+    cmds:
+      - go test -v -tags live -count=1 -run TestLive_VibeFeatureDev -timeout 90m ./e2e/...
+
+  test:live:vibe-review-alternating:
+    desc: Live e2e for vibe_review_alternating bot (requires claude CLI + OPENAI_API_KEY)
+    cmds:
+      - go test -v -tags live -count=1 -run TestLive_VibeReviewAlternating -timeout 45m ./e2e/...
+
+  test:live:secured-renovacy:
+    desc: Live e2e for secured-renovacy bundle (requires claude CLI + docker + OPENAI_API_KEY; ~$10-50, up to 3h)
+    cmds:
+      - go test -v -tags live -count=1 -run "TestLive_SecuredRenovacy$" -timeout 3h ./e2e/...
+
+  test:live:bots:
+    desc: Run all three example-bot live tests in sequence (slow + costly)
+    cmds:
+      - task: test:live:vibe-review-alternating
+      - task: test:live:vibe-feature-dev
+      - task: test:live:secured-renovacy
+
+  test:bundle:
+    desc: Bundle pack/open/compile integration tests (no live)
+    cmds:
+      - go test -v -count=1 -run TestBundle_ -timeout 60s ./e2e/...
+
+  test:repack-examples:
+    desc: Verify examples/*.botz match their source dirs (drift detector)
+    cmds:
+      - go test -v -count=1 -run TestBundle_SecuredRenovacy_RepackMatchesShippedBotz -timeout 30s ./e2e/...
+
   dogfood:editor:
     desc: 'Run the editor UI feedback loop on a feature prompt (requires CLAUDE_CODE_USE_BEDROCK or claude-code login + npx playwright install chromium). Pass the prompt via FEATURE_PROMPT env var.'
     deps: [build]

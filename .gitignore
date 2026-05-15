@@ -50,6 +50,10 @@ pkg/server/static/*.xml
 
 .task/
 
+# Live-test workspace symlinks — created by writeLiveTestReport so
+# the user can find recent runs via `ls e2e/.workspaces/`.
+e2e/.workspaces/
+
 *.tsbuildinfo
 
 # Local user state (consolidated under .local/)

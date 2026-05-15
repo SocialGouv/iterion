@@ -16,15 +16,18 @@ import (
 	"testing"
 	"time"
 
+	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/benchmark"
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -58,8 +61,14 @@ func loadDotEnv(t *testing.T) {
 	}
 }
 
-// newLiveExecutor creates a ClawExecutor with all standard backends registered.
-func newLiveExecutor(wf *ir.Workflow, s store.RunStore, runID, workDir string) *model.ClawExecutor {
+// newLiveExecutor creates a ClawExecutor with all standard backends registered
+// AND the standard claw built-in tool set (bash, read_file, write_file,
+// file_edit, glob, grep, web_fetch, …) wired into a tool registry rooted at
+// workDir. Without the tool registration step, any workflow node that
+// declares `backend: claw` plus `tools: [bash, ...]` errors out at runtime
+// with "unknown tool 'bash'" — observed in vibe_review_alternating run3.
+func newLiveExecutor(t *testing.T, wf *ir.Workflow, s store.RunStore, runID, workDir string) *model.ClawExecutor {
+	t.Helper()
 	reg := model.NewRegistry()
 	logger := iterlog.New(iterlog.LevelDebug, os.Stderr)
 	hooks := model.NewStoreEventHooks(context.Background(), s, runID, logger)
@@ -67,9 +76,28 @@ func newLiveExecutor(wf *ir.Workflow, s store.RunStore, runID, workDir string) *
 	backendReg := delegate.DefaultRegistry(logger)
 	backendReg.Register(delegate.BackendClaw, model.NewClawBackend(reg, hooks, model.RetryPolicy{}))
 
+	toolReg := tool.NewRegistry()
+	if err := tool.RegisterClawBuiltins(toolReg, workDir); err != nil {
+		t.Fatalf("RegisterClawBuiltins: %v", err)
+	}
+	// Register ask_user with an auto-answer so claw-backed nodes that
+	// have interaction:human don't block the test waiting for a real
+	// human prompt. The default RegisterAskUser handler raises
+	// delegate.ErrAskUser → runtime pause; in a headless test that
+	// hangs indefinitely. The claude_code backend ships its own
+	// ask_user via the CLI; only claw needs explicit wiring here.
+	if err := tool.RegisterAskUser(toolReg, func(_ context.Context, q clawtools.Question) (clawtools.Answer, error) {
+		t.Logf("ask_user auto-answered: %s", q.Prompt)
+		return clawtools.Answer{
+			FreeText: "Auto-answer (live e2e test, no human available). Use your best judgment based on the available context, prioritise correctness over speed, and continue.",
+		}, nil
+	}); err != nil {
+		t.Fatalf("RegisterAskUser: %v", err)
+	}
+
 	return model.NewClawExecutor(reg, wf,
 		model.WithBackendRegistry(backendReg),
-		model.WithToolRegistry(tool.NewRegistry()),
+		model.WithToolRegistry(toolReg),
 		model.WithWorkDir(workDir),
 		model.WithEventHooks(hooks),
 	)
@@ -166,7 +194,7 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 
-	executor := newLiveExecutor(wf, s, runID, workspaceDir)
+	executor := newLiveExecutor(t, wf, s, runID, workspaceDir)
 	defer executor.Close()
 
 	taskDescription := "An interactive Kanban task board in a single index.html file. " +
@@ -517,7 +545,7 @@ func TestLive_Lite_SessionContinuity_ReviewFix(t *testing.T) {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 
-	executor := newLiveExecutor(wf, s, runID, workspaceDir)
+	executor := newLiveExecutor(t, wf, s, runID, workspaceDir)
 	defer executor.Close()
 
 	taskDescription := "A 'Code Review Roulette' game in a single index.html file. " +
@@ -790,7 +818,7 @@ func TestLive_Full_ExhaustiveDSLCoverage(t *testing.T) {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 
-	executor := newLiveExecutor(wf, s, runID, workspaceDir)
+	executor := newLiveExecutor(t, wf, s, runID, workspaceDir)
 	defer executor.Close()
 
 	executor.SetVars(map[string]interface{}{
@@ -1124,7 +1152,7 @@ func TestLive_Lite_SessionInheritValidation(t *testing.T) {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 
-	executor := newLiveExecutor(wf, s, runID, workspaceDir)
+	executor := newLiveExecutor(t, wf, s, runID, workspaceDir)
 	defer executor.Close()
 
 	executor.SetVars(map[string]interface{}{
@@ -1936,7 +1964,7 @@ func TestLive_Lite_ClawReasoningEffort(t *testing.T) {
 	}
 
 	runID := "live-claw-reasoning"
-	executor := newLiveExecutor(wf, s, runID, workspaceDir)
+	executor := newLiveExecutor(t, wf, s, runID, workspaceDir)
 	defer executor.Close()
 
 	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
@@ -2188,7 +2216,7 @@ func TestLive_Lite_ClawLongContext(t *testing.T) {
 	}
 	runID := "live-claw-long-context"
 
-	executor := newLiveExecutor(wf, s, runID, workspaceDir)
+	executor := newLiveExecutor(t, wf, s, runID, workspaceDir)
 	defer executor.Close()
 	executor.SetVars(map[string]interface{}{
 		"workspace_dir": workspaceDir,
@@ -2655,4 +2683,553 @@ func indentTruncate(text string, maxLineLen, maxTotal int) string {
 		total += len(line)
 	}
 	return sb.String()
+}
+
+// ---------------------------------------------------------------------------
+// Live-test plumbing for the 3 example bots
+// ---------------------------------------------------------------------------
+
+// runCmd runs an external command in dir and t.Fatalf's on non-zero
+// exit. Used for the git init / git config / git commit sequences that
+// every bot live test sets up before invoking the runtime.
+func runCmd(t *testing.T, dir, name string, args ...string) {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("%s %v: %v\n%s", name, args, err, out)
+	}
+}
+
+// seedGitRepo initialises a fresh git repo at dir with a deterministic
+// identity + one initial commit, so prepare_commit-style nodes always
+// have a HEAD to diff against. Returns nothing — the function Fatal's
+// on any setup failure.
+func seedGitRepo(t *testing.T, dir string) {
+	t.Helper()
+	runCmd(t, "", "git", "init", dir)
+	runCmd(t, dir, "git", "config", "user.email", "iterion-live@test.local")
+	runCmd(t, dir, "git", "config", "user.name", "iterion-live")
+	// A non-empty .gitignore at HEAD is enough to make `git log` happy.
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(".iterion/\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+	runCmd(t, dir, "git", "add", ".gitignore")
+	runCmd(t, dir, "git", "commit", "-m", "chore: seed repo")
+}
+
+// seedNpmProject scaffolds a minimal npm project at dir referencing the
+// supplied deps (name → installed-version map). Writes a package.json,
+// a lockfile that satisfies `npm install --dry-run`, and seeds a tiny
+// index.js consumer so security_audit / changelog_review have a real
+// file to inspect. Used by TestLive_SecuredRenovacy.
+func seedNpmProject(t *testing.T, dir string, deps map[string]string) {
+	t.Helper()
+	depsJSON := strings.Builder{}
+	depsJSON.WriteString("{\n")
+	first := true
+	for name, ver := range deps {
+		if !first {
+			depsJSON.WriteString(",\n")
+		}
+		depsJSON.WriteString(fmt.Sprintf("    %q: %q", name, "^"+ver))
+		first = false
+	}
+	depsJSON.WriteString("\n  }")
+	pkg := fmt.Sprintf(`{
+  "name": "iterion-renovacy-fixture",
+  "version": "0.0.1",
+  "description": "minimal npm fixture for secured-renovacy live test",
+  "main": "index.js",
+  "scripts": {
+    "test": "node -e \"console.log('ok')\"",
+    "lint": "node -e \"console.log('ok')\"",
+    "typecheck": "node -e \"console.log('ok')\"",
+    "build": "node -e \"console.log('ok')\""
+  },
+  "dependencies": %s
+}
+`, depsJSON.String())
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(pkg), 0o644); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "index.js"), []byte(
+		"// minimal consumer — secured-renovacy reads this for changelog/align context\n"+
+			"const main = () => console.log('iterion renovacy fixture');\nmain();\n",
+	), 0o644); err != nil {
+		t.Fatalf("write index.js: %v", err)
+	}
+	// No package-lock — secured-renovacy detect_stack will run npm install
+	// itself if it needs one (sandbox: open networking). Leaving it absent
+	// surfaces a more representative real-repo state.
+}
+
+// liveWorkspacesDir returns the canonical sticky-symlink directory:
+// e2e/.workspaces/. Each TestLive_* test writes a symlink here pointing
+// to its scratch workspace dir, so `ls e2e/.workspaces/` enumerates
+// recent runs without remembering random tempdirs.
+func liveWorkspacesDir(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(".workspaces")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatalf("abs %s: %v", dir, err)
+	}
+	return abs
+}
+
+// writeLiveTestReport persists a uniform diagnostic bundle for a live
+// test run:
+//
+//  1. report.md generated via cli.RunReport — chronological event log.
+//  2. metrics.json — { tokens, cost_usd, model_calls, iterations, duration }.
+//  3. logRunRecap(events) — boxed step-by-step report to stdout.
+//  4. Symlink e2e/.workspaces/<TestName> → workspaceDir for easy lookup.
+//
+// Errors during reporting are logged rather than failing the test —
+// the run itself already passed its assertions; report generation is
+// best-effort observability for post-mortem analysis of the bot.
+func writeLiveTestReport(t *testing.T, runID, workspaceDir, storeDir string, s store.RunStore, events []*store.Event) {
+	t.Helper()
+
+	// 1. report.md
+	reportPath := filepath.Join(workspaceDir, "report.md")
+	opts := cli.ReportOptions{RunID: runID, StoreDir: storeDir, Output: reportPath}
+	if err := cli.RunReport(opts, cli.NewPrinter(cli.OutputHuman)); err != nil {
+		t.Logf("WARN: report generation: %v", err)
+	} else {
+		t.Logf("Report: file://%s", reportPath)
+	}
+
+	// 2. metrics.json
+	metrics, mErr := benchmark.CollectMetrics(context.Background(), s, runID, t.Name(), "")
+	if mErr == nil {
+		if b, jErr := json.Marshal(metrics); jErr == nil {
+			_ = os.WriteFile(filepath.Join(workspaceDir, "metrics.json"), b, 0o644)
+		}
+		t.Logf("Metrics: tokens=%d cost=$%.4f model_calls=%d iterations=%d duration=%s",
+			metrics.TotalTokens, metrics.TotalCostUSD, metrics.ModelCalls,
+			metrics.Iterations, metrics.DurationStr)
+	} else {
+		t.Logf("WARN: benchmark.CollectMetrics: %v", mErr)
+	}
+
+	// 3. Boxed run recap
+	logRunRecap(t, events)
+
+	// 4. Symlink for grep-friendly inspection
+	linkDir := liveWorkspacesDir(t)
+	safeName := strings.ReplaceAll(t.Name(), "/", "_")
+	link := filepath.Join(linkDir, safeName)
+	_ = os.Remove(link) // remove stale symlink from previous run
+	if err := os.Symlink(workspaceDir, link); err != nil {
+		t.Logf("WARN: workspace symlink: %v", err)
+	} else {
+		t.Logf("Workspace symlink: %s -> %s", link, workspaceDir)
+	}
+}
+
+// liveRunResultAcceptable mirrors the lenient policy used by
+// TestLive_Lite_DualModel_PlanImplementReview: a runtime error that
+// is BudgetExceeded / LoopExhausted / ExecutionFailed (context
+// cancel) is treated as a graceful exit — the bot did meaningful work
+// even if it didn't reach `done`. Returns (acceptable, reason).
+func liveRunResultAcceptable(err error) (bool, string) {
+	if err == nil {
+		return true, "no error"
+	}
+	if errors.Is(err, runtime.ErrBudgetExceeded) {
+		return true, "ErrBudgetExceeded"
+	}
+	var rtErr *runtime.RuntimeError
+	if errors.As(err, &rtErr) {
+		switch rtErr.Code {
+		case runtime.ErrCodeBudgetExceeded, runtime.ErrCodeLoopExhausted:
+			return true, string(rtErr.Code)
+		case runtime.ErrCodeExecutionFailed:
+			// Context deadline exceeded surfaces as ExecutionFailed
+			// because the delegate subprocess gets SIGKILL'd.
+			return true, "ExecutionFailed (likely context deadline)"
+		}
+	}
+	return false, fmt.Sprintf("%v", err)
+}
+
+// ---------------------------------------------------------------------------
+// Live E2E — vibe_feature_dev.bot
+// ---------------------------------------------------------------------------
+
+// TestLive_VibeFeatureDev runs the vibe_feature_dev bot against a real
+// LLM. The bot orchestrates plan → act → simplify → alternating
+// review/fix → commit, so success means: at least one new commit
+// landed in the workspace's git history beyond the seed commit.
+//
+// Requires:
+//   - `claude` CLI installed (and OAuth-authenticated OR ZAI_API_KEY in env).
+//   - OPENAI_API_KEY for the GPT reviewer/fixer branches (claw backend).
+//
+// The workspace dir is NOT removed after the test so the user can
+// inspect the resulting code + report.md + metrics.json. The
+// workspace also gets symlinked into e2e/.workspaces/<test-name>/.
+func TestLive_VibeFeatureDev(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live test in short mode")
+	}
+	loadDotEnv(t)
+	requireCLI(t, "claude")
+	requireEnv(t, "OPENAI_API_KEY")
+
+	wf := compileFixture(t, "bots/vibe_feature_dev.bot")
+
+	workspaceDir, err := os.MkdirTemp("", "iterion-vibe-feature-dev-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Logf("Workspace (persists): %s", workspaceDir)
+	seedGitRepo(t, workspaceDir)
+
+	storeDir := filepath.Join(workspaceDir, ".iterion")
+	s, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	runID := "live-vibe-feature-dev"
+
+	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+		t.Fatalf("mcp.PrepareWorkflow: %v", err)
+	}
+	executor := newLiveExecutor(t, wf, s, runID, workspaceDir)
+	defer executor.Close()
+	executor.SetVars(map[string]interface{}{
+		"workspace_dir":  workspaceDir,
+		"feature_prompt": "Add a function `Answer() int` returning 42 in answer.go at the repository root, plus a Go test in answer_test.go that asserts the return value. The repo currently has no Go files; create a minimal go.mod (`module iterion-live-fixture`, go 1.25) alongside.",
+	})
+
+	eng := runtime.New(wf, s, executor)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Minute)
+	defer cancel()
+	inputs := map[string]interface{}{
+		"feature_prompt": "Add a function `Answer() int` returning 42 in answer.go at the repository root, plus a Go test in answer_test.go that asserts the return value. The repo currently has no Go files; create a minimal go.mod (`module iterion-live-fixture`, go 1.25) alongside.",
+		"workspace_dir":  workspaceDir,
+	}
+
+	t.Log("Starting vibe_feature_dev live run…")
+	start := time.Now()
+	runErr := eng.Run(ctx, runID, inputs)
+	elapsed := time.Since(start)
+	t.Logf("Run finished in %s", elapsed.Round(time.Second))
+
+	acceptable, reason := liveRunResultAcceptable(runErr)
+	if !acceptable {
+		t.Fatalf("unacceptable run error: %v", runErr)
+	}
+	t.Logf("Run result: %s", reason)
+
+	r, err := s.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	t.Logf("Status: %s", r.Status)
+
+	events, err := s.LoadEvents(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("LoadEvents: %v", err)
+	}
+
+	finished := eventNodeIDs(events, store.EventNodeFinished)
+	finishedSet := map[string]bool{}
+	for _, id := range finished {
+		finishedSet[id] = true
+	}
+	for _, phase := range []string{"plan", "act", "simplify"} {
+		if !finishedSet[phase] {
+			t.Errorf("dev phase %q never finished — bot may have failed before review loop", phase)
+		}
+	}
+
+	// The acceptance criterion: at least one new commit beyond the seed.
+	cmd := exec.Command("git", "-C", workspaceDir, "rev-list", "--count", "HEAD")
+	out, err := cmd.CombinedOutput()
+	commitCount := strings.TrimSpace(string(out))
+	if err != nil {
+		t.Errorf("git rev-list failed: %v\n%s", err, out)
+	} else if commitCount == "1" {
+		t.Errorf("expected at least 2 commits (seed + one feature commit), got %s — commit_changes likely never landed", commitCount)
+	} else {
+		t.Logf("Commits: %s (seed + features)", commitCount)
+	}
+
+	// Probe for the expected artefact (answer.go) — informational only;
+	// the bot may legitimately put it elsewhere in a worktree run.
+	if _, err := os.Stat(filepath.Join(workspaceDir, "answer.go")); err == nil {
+		t.Logf("answer.go present at workspace root")
+	} else {
+		t.Logf("answer.go not at workspace root (worktree run may have committed elsewhere — see report.md)")
+	}
+
+	writeLiveTestReport(t, runID, workspaceDir, storeDir, s, events)
+}
+
+// ---------------------------------------------------------------------------
+// Live E2E — vibe_review_alternating.bot
+// ---------------------------------------------------------------------------
+
+// TestLive_VibeReviewAlternating runs the alternating review/fix loop
+// against a real Claude + GPT pairing. Workspace is seeded with two
+// .go files: one clean, one with a deliberate bug (off-by-one). The
+// bot's loop should either reach cross-family approval (streak stop) OR
+// exhaust the loop budget — both are graceful terminations.
+//
+// Requires:
+//   - `claude` CLI installed.
+//   - OPENAI_API_KEY for the GPT branch (claw).
+func TestLive_VibeReviewAlternating(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live test in short mode")
+	}
+	loadDotEnv(t)
+	requireCLI(t, "claude")
+	requireEnv(t, "OPENAI_API_KEY")
+
+	wf := compileFixture(t, "bots/vibe_review_alternating.bot")
+
+	workspaceDir, err := os.MkdirTemp("", "iterion-vibe-review-alt-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Logf("Workspace (persists): %s", workspaceDir)
+	seedGitRepo(t, workspaceDir)
+
+	// One clean file + one with a subtle bug. The bug is real but small,
+	// so reviewers won't trivially refuse to converge.
+	clean := `package fixture
+
+// Add returns the sum of a and b.
+func Add(a, b int) int { return a + b }
+`
+	buggy := `package fixture
+
+// Multiply returns a multiplied by b. Has an off-by-one in the loop bound:
+// the result is (a-1)*b instead of a*b for positive a.
+func Multiply(a, b int) int {
+	result := 0
+	for i := 0; i < a-1; i++ {
+		result += b
+	}
+	return result
+}
+`
+	if err := os.WriteFile(filepath.Join(workspaceDir, "add.go"), []byte(clean), 0o644); err != nil {
+		t.Fatalf("write add.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceDir, "multiply.go"), []byte(buggy), 0o644); err != nil {
+		t.Fatalf("write multiply.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceDir, "go.mod"), []byte("module iterion-live-fixture\n\ngo 1.25\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	runCmd(t, workspaceDir, "git", "add", "add.go", "multiply.go", "go.mod")
+	runCmd(t, workspaceDir, "git", "commit", "-m", "chore: seed code under review")
+
+	storeDir := filepath.Join(workspaceDir, ".iterion")
+	s, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	runID := "live-vibe-review-alternating"
+
+	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+		t.Fatalf("mcp.PrepareWorkflow: %v", err)
+	}
+	executor := newLiveExecutor(t, wf, s, runID, workspaceDir)
+	defer executor.Close()
+	executor.SetVars(map[string]interface{}{
+		"workspace_dir": workspaceDir,
+		"scope_notes":   "Review every .go file at the repository root for correctness, focus on logic bugs.",
+	})
+
+	eng := runtime.New(wf, s, executor)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+	defer cancel()
+	inputs := map[string]interface{}{
+		"workspace_dir": workspaceDir,
+		"scope_notes":   "Review every .go file at the repository root for correctness, focus on logic bugs.",
+	}
+
+	t.Log("Starting vibe_review_alternating live run…")
+	start := time.Now()
+	runErr := eng.Run(ctx, runID, inputs)
+	elapsed := time.Since(start)
+	t.Logf("Run finished in %s", elapsed.Round(time.Second))
+
+	acceptable, reason := liveRunResultAcceptable(runErr)
+	if !acceptable {
+		t.Fatalf("unacceptable run error: %v", runErr)
+	}
+	t.Logf("Run result: %s", reason)
+
+	events, err := s.LoadEvents(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("LoadEvents: %v", err)
+	}
+
+	finished := eventNodeIDs(events, store.EventNodeFinished)
+	claudeReviewed, gptReviewed := 0, 0
+	streakChecks := 0
+	for _, id := range finished {
+		switch id {
+		case "reviewer_claude":
+			claudeReviewed++
+		case "reviewer_gpt":
+			gptReviewed++
+		case "streak_check":
+			streakChecks++
+		}
+	}
+	t.Logf("Counts: reviewer_claude=%d reviewer_gpt=%d streak_check=%d",
+		claudeReviewed, gptReviewed, streakChecks)
+	if claudeReviewed == 0 || gptReviewed == 0 {
+		t.Errorf("expected both reviewers to fire at least once (claude=%d gpt=%d)",
+			claudeReviewed, gptReviewed)
+	}
+	if streakChecks < 2 {
+		t.Errorf("expected ≥2 streak_check invocations (loop ran), got %d", streakChecks)
+	}
+
+	writeLiveTestReport(t, runID, workspaceDir, storeDir, s, events)
+}
+
+// ---------------------------------------------------------------------------
+// Live E2E — secured-renovacy bundle
+// ---------------------------------------------------------------------------
+
+// TestLive_SecuredRenovacy runs the secured-renovacy bundle against a
+// real LLM, exercising the patch-fast-track end-to-end on a tiny seeded
+// npm project. The bot is compiled via bundle.OpenDir so prompts/skills
+// merge correctly.
+//
+// Requires:
+//   - `claude` CLI in PATH (OAuth or ZAI_API_KEY in env).
+//   - `docker` in PATH (the bot declares sandbox: image:).
+//   - OPENAI_API_KEY for the GPT branches.
+//
+// Heavy test — Docker container startup, npm/yarn installs, real LLM
+// reasoning. Expect 30 min – 2 h, $5–50. The bot itself caps at 12 h /
+// $100; the test context wraps at 3 h.
+func TestLive_SecuredRenovacy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live test in short mode")
+	}
+	loadDotEnv(t)
+	requireCLI(t, "claude")
+	requireBinaryInPath(t, "docker")
+	requireEnv(t, "OPENAI_API_KEY")
+
+	// Compile via bundle.OpenDir so manifest + prompts + skills are
+	// wired into the workflow exactly as `iterion run secured-renovacy/`
+	// would do.
+	bDir, err := filepath.Abs("../examples/secured-renovacy")
+	if err != nil {
+		t.Fatalf("abs bundle dir: %v", err)
+	}
+	b, err := bundle.OpenDir(bDir)
+	if err != nil {
+		t.Fatalf("bundle.OpenDir: %v", err)
+	}
+	wf, _, err := runview.CompileBundleWorkflow(b.IterPath, b)
+	if err != nil {
+		t.Fatalf("CompileBundleWorkflow: %v", err)
+	}
+
+	workspaceDir, err := os.MkdirTemp("", "iterion-secured-renovacy-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Logf("Workspace (persists): %s", workspaceDir)
+	seedGitRepo(t, workspaceDir)
+	// One patch-tier outdated dep is enough to exercise the fast-track.
+	seedNpmProject(t, workspaceDir, map[string]string{
+		"left-pad": "1.0.0",
+	})
+	runCmd(t, workspaceDir, "git", "add", "package.json", "index.js")
+	runCmd(t, workspaceDir, "git", "commit", "-m", "chore: seed npm fixture")
+
+	storeDir := filepath.Join(workspaceDir, ".iterion")
+	s, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	runID := "live-secured-renovacy"
+
+	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
+		t.Fatalf("mcp.PrepareWorkflow: %v", err)
+	}
+	executor := newLiveExecutor(t, wf, s, runID, workspaceDir)
+	defer executor.Close()
+	// Do NOT override workspace_dir here. The bot declares
+	// `workspace_dir: "${PROJECT_DIR}"` and the engine remaps
+	// ${PROJECT_DIR} to /workspace (the container bind-mount target)
+	// once the sandbox is up. Passing the host tempdir path would
+	// break that remap — every in-container shell tool would receive
+	// a path that exists only on the host and fails with "no such
+	// directory".
+	executor.SetVars(map[string]interface{}{
+		"scope":                "patch",
+		"max_packages_per_run": 1,
+		"major_policy":         "skip",
+		"fix_loop_default":     1,
+		"update_scope":         "libraries",
+	})
+
+	// WithWorkDir is required for sandbox-backed workflows: the docker
+	// driver bind-mounts engine.workDir → /workspace inside the
+	// container. Without it, engine.workDir defaults to os.Getwd() — the
+	// iterion repo root — so the container mounts the wrong tree and
+	// the bot inspects iterion source instead of the seeded fixture.
+	// Also affects worktree:auto's repo-root resolution.
+	eng := runtime.New(wf, s, executor, runtime.WithWorkDir(workspaceDir))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Hour)
+	defer cancel()
+	inputs := map[string]interface{}{
+		"user_prompt":          "",
+		"scope":                "patch",
+		"max_packages_per_run": 1,
+		"major_policy":         "skip",
+		"fix_loop_default":     1,
+		"update_scope":         "libraries",
+	}
+
+	t.Log("Starting secured-renovacy live run…")
+	start := time.Now()
+	runErr := eng.Run(ctx, runID, inputs)
+	elapsed := time.Since(start)
+	t.Logf("Run finished in %s", elapsed.Round(time.Second))
+
+	acceptable, reason := liveRunResultAcceptable(runErr)
+	if !acceptable {
+		t.Fatalf("unacceptable run error: %v", runErr)
+	}
+	t.Logf("Run result: %s", reason)
+
+	events, err := s.LoadEvents(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("LoadEvents: %v", err)
+	}
+
+	// Probe whether ANY upgrade landed: count commits beyond the seed.
+	cmd := exec.Command("git", "-C", workspaceDir, "rev-list", "--count", "HEAD")
+	out, err := cmd.CombinedOutput()
+	commitCount := strings.TrimSpace(string(out))
+	if err != nil {
+		t.Errorf("git rev-list failed: %v\n%s", err, out)
+	} else {
+		t.Logf("Commits in workspace: %s (≥3 expected: seed + npm-fixture + ≥1 upgrade)", commitCount)
+	}
+
+	writeLiveTestReport(t, runID, workspaceDir, storeDir, s, events)
 }
