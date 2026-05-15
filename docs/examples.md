@@ -23,7 +23,7 @@ proven, productized bots and one actively-developed workflow.
 
 | File | Description |
 |------|-------------|
-| [`secured-renovacy.iter`](../examples/secured-renovacy.iter) | Autonomous, security-aware dependency upgrades for any stack (yarn/npm/pnpm/pip/poetry/uv/cargo/go/bundler/composer/maven) — will graduate to a `.bot` once stabilized |
+| [`secured-renovacy/`](../examples/secured-renovacy/) (`.botz` bundle) | Autonomous, security-aware dependency upgrades for any stack (yarn/npm/pnpm/pip/poetry/uv/cargo/go/bundler/composer/maven). Run via `iterion run examples/secured-renovacy/` or against the packed archive `iterion bundle pack examples/secured-renovacy && iterion run examples/secured-renovacy.botz`. |
 
 ## 📦 Archived
 

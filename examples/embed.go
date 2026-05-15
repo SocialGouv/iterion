@@ -13,7 +13,13 @@
 // journals and large non-recipe assets (images, mcp test servers,
 // github-actions YAML) are intentionally excluded to keep the binary
 // slim. Archived legacy examples live under `.archive/examples/` and
-// are NOT embedded.
+// are NOT embedded. Bundle directories (`<name>/bot.iter` + manifest
+// + skills + prompts + attachments) are NOT embedded either — they
+// have to be loaded by explicit path (`iterion run examples/<name>/`
+// or against the packed `<name>.botz`); embedding them would lose
+// the adjacent skills/prompts/attachments resources that make a
+// bundle a bundle, plus encoding the whole tree as embedded bytes
+// inflates the binary far more than a single .iter does.
 package examples
 
 import (
@@ -22,7 +28,14 @@ import (
 	"sort"
 )
 
-//go:embed *.iter bots/*.bot
+// embed glob covers ONLY `bots/*.bot` for now. The previous `*.iter`
+// pattern is dropped because no top-level .iter currently ships
+// (secured-renovacy graduated to a `.botz` bundle under
+// secured-renovacy/, which is not in this embed). Re-add `*.iter`
+// the moment a new top-level standalone recipe lands — Go's embed
+// fails the build when a pattern matches zero files.
+//
+//go:embed bots/*.bot
 var Files embed.FS
 
 // Get returns the contents of the embedded example with the given

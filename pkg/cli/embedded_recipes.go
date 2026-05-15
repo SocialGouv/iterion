@@ -11,11 +11,14 @@ import (
 // falling back to the recipes shipped embedded in the binary when the
 // requested path does not exist on disk. This makes commands like
 //
-//	iterion run secured-renovacy.iter
 //	iterion run skill/minimal_linear.iter
+//	iterion run bots/vibe_review_alternating.bot
 //
 // work from any working directory — the user does not have to
-// explicitly point at `<repo>/examples/...`.
+// explicitly point at `<repo>/examples/...`. Bundle directories
+// (`examples/<name>/bot.iter`) and `.botz` archives are NOT in the
+// embed glob; resolve them by explicit path or by `iterion run
+// <name>.botz` when packed adjacent to the source.
 //
 // Resolution order:
 //  1. If the path exists on disk, return it as-is.

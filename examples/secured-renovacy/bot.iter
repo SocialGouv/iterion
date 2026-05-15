@@ -4106,7 +4106,7 @@ tool emit_sbom:
 
     const sbom = {
       $schema: "https://github.com/SocialGouv/iterion/sbom/v1.json",
-      generator: "iterion secured-renovacy.iter",
+      generator: "iterion secured-renovacy",
       iterion_version: iterionVersion,
       generated_at: new Date().toISOString(),
       base_sha: startSha,
