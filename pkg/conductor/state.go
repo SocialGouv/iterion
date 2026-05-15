@@ -73,11 +73,11 @@ type retryEntry struct {
 // demand from inside the actor so callers always see a consistent
 // snapshot of running/retries/slots.
 type Snapshot struct {
-	Name             string        `json:"name"`
-	Tracker          string        `json:"tracker"`
-	GeneratedAt      time.Time     `json:"generated_at"`
-	PollingIntervalS float64       `json:"polling_interval_seconds"`
-	StallTimeoutS    float64       `json:"stall_timeout_seconds"`
+	Name             string    `json:"name"`
+	Tracker          string    `json:"tracker"`
+	GeneratedAt      time.Time `json:"generated_at"`
+	PollingIntervalS float64   `json:"polling_interval_seconds"`
+	StallTimeoutS    float64   `json:"stall_timeout_seconds"`
 	// Paused is true when new dispatches are currently suspended via
 	// Pause(); runs in flight are not affected.
 	Paused  bool          `json:"paused"`

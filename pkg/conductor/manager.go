@@ -52,13 +52,13 @@ type Manager struct {
 	nativeStore *native.Store
 	logger      *iterlog.Logger
 
-	mu     sync.Mutex
-	cfg    *Config
-	state  ManagerState
-	cur    *Conductor
-	runner *EngineRunner
-	cancel context.CancelFunc
-	lastErr error
+	mu        sync.Mutex
+	cfg       *Config
+	state     ManagerState
+	cur       *Conductor
+	runner    *EngineRunner
+	cancel    context.CancelFunc
+	lastErr   error
 	startedAt time.Time
 }
 
@@ -302,7 +302,7 @@ func buildTracker(cfg *Config, ns *native.Store) (tracker.Tracker, error) {
 // — declared here as variables so the package compiles when pkg/cli
 // isn't wired. Production wiring overrides them in package init.
 var (
-	buildGitHubTracker  = func(*GitHubTrackerConfig) (tracker.Tracker, error) {
+	buildGitHubTracker = func(*GitHubTrackerConfig) (tracker.Tracker, error) {
 		return nil, errors.New("github tracker factory not registered")
 	}
 	buildForgejoTracker = func(*ForgejoTrackerConfig) (tracker.Tracker, error) {

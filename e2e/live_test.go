@@ -149,7 +149,7 @@ func uniqueRunID(base string) string {
 // Override by exporting `ITERION_TEST_STORE_DIR=<path>`:
 //   - empty / unset      → ~/.iterion
 //   - "workspace"        → fall back to <workspaceDir>/.iterion (the
-//                          historical isolated-per-test layout)
+//     historical isolated-per-test layout)
 //   - any absolute path  → used verbatim
 //
 // Falls back to <workspaceDir>/.iterion when $HOME is unset (CI
