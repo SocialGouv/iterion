@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import ConductorControlBar from "@/components/shared/ConductorControlBar";
 import NavLinks from "@/components/shared/NavLinks";
 import ProjectLabel from "@/components/shared/ProjectLabel";
+import {
+  cancelIssue,
+  getState,
+  type RetryView,
+  type RunningView,
+} from "@/api/conductor";
 import {
   createIssue,
   deleteIssue,
@@ -13,6 +20,7 @@ import {
   type NativeIssue,
 } from "@/api/native";
 import IssueModal from "./IssueModal";
+import SettingsDrawer from "@/views/Conductor/SettingsDrawer";
 
 export default function BoardView() {
   const [board, setBoard] = useState<NativeBoard | null>(null);
@@ -21,6 +29,46 @@ export default function BoardView() {
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<NativeIssue | null>(null);
   const [creating, setCreating] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [runningByIssue, setRunningByIssue] = useState<Map<string, RunningView>>(new Map());
+  const [retryingByIssue, setRetryingByIssue] = useState<Map<string, RetryView>>(new Map());
+
+  // Poll the conductor snapshot every 2s so each card can show a
+  // running/retrying badge + cancel button. We ignore failures: when
+  // the conductor is idle the snapshot is still returned (empty
+  // running/retries), and a 5xx is rare enough that flashing the maps
+  // empty would be more disruptive than keeping stale data.
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      try {
+        const snap = await getState();
+        if (!alive) return;
+        const rmap = new Map<string, RunningView>();
+        for (const r of snap.running ?? []) rmap.set(r.issue_id, r);
+        const xmap = new Map<string, RetryView>();
+        for (const r of snap.retries ?? []) xmap.set(r.issue_id, r);
+        setRunningByIssue(rmap);
+        setRetryingByIssue(xmap);
+      } catch {
+        // swallow: conductor may be unreachable / not wired
+      }
+    };
+    void tick();
+    const id = setInterval(() => void tick(), 2000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
+
+  const onCancelRun = useCallback(async (issueID: string) => {
+    try {
+      await cancelIssue(issueID);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     setError(null);
@@ -145,7 +193,7 @@ export default function BoardView() {
       <header className="border-b border-border-default px-4 py-2.5 flex items-center gap-3 bg-surface-1">
         <span className="text-sm font-bold tracking-wide">ITERION</span>
         <NavLinks active="board" />
-        <ProjectLabel variant="header" />
+        <ProjectLabel />
         <div className="ml-auto flex items-center gap-2">
           <button
             className="text-xs px-2 py-1 rounded border border-border-default hover:bg-surface-2"
@@ -161,6 +209,13 @@ export default function BoardView() {
           </button>
         </div>
       </header>
+
+      <ConductorControlBar onOpenSettings={() => setSettingsOpen(true)} />
+      <SettingsDrawer
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        onSaved={() => void refresh()}
+      />
 
       {error && (
         <div className="bg-red-500/10 border-b border-red-500/40 px-4 py-2 text-xs text-red-200">
@@ -178,8 +233,11 @@ export default function BoardView() {
               terminal={!!s.terminal}
               eligible={!!s.eligible}
               issues={byState.get(s.name) ?? []}
+              runningByIssue={runningByIssue}
+              retryingByIssue={retryingByIssue}
               onDrop={onDrop}
               onClickCard={(iss) => setEditing(iss)}
+              onCancelRun={onCancelRun}
             />
           ))}
           {(byState.get("__unmapped__")?.length ?? 0) > 0 && (
@@ -189,8 +247,11 @@ export default function BoardView() {
               terminal={false}
               eligible={false}
               issues={byState.get("__unmapped__") ?? []}
+              runningByIssue={runningByIssue}
+              retryingByIssue={retryingByIssue}
               onDrop={onDrop}
               onClickCard={(iss) => setEditing(iss)}
+              onCancelRun={onCancelRun}
             />
           )}
         </div>
@@ -227,11 +288,25 @@ interface ColumnProps {
   terminal: boolean;
   eligible: boolean;
   issues: NativeIssue[];
+  runningByIssue: Map<string, RunningView>;
+  retryingByIssue: Map<string, RetryView>;
   onDrop: (issueID: string, toState: string) => void;
   onClickCard: (iss: NativeIssue) => void;
+  onCancelRun: (issueID: string) => void;
 }
 
-function Column({ name, display, terminal, eligible, issues, onDrop, onClickCard }: ColumnProps) {
+function Column({
+  name,
+  display,
+  terminal,
+  eligible,
+  issues,
+  runningByIssue,
+  retryingByIssue,
+  onDrop,
+  onClickCard,
+  onCancelRun,
+}: ColumnProps) {
   const [dragOver, setDragOver] = useState(false);
   return (
     <div
@@ -260,7 +335,14 @@ function Column({ name, display, terminal, eligible, issues, onDrop, onClickCard
       </div>
       <div className="p-2 flex-1 flex flex-col gap-2 overflow-auto">
         {issues.map((iss) => (
-          <IssueCard key={iss.id} iss={iss} onClick={() => onClickCard(iss)} />
+          <IssueCard
+            key={iss.id}
+            iss={iss}
+            running={runningByIssue.get(iss.id)}
+            retrying={retryingByIssue.get(iss.id)}
+            onClick={() => onClickCard(iss)}
+            onCancelRun={() => onCancelRun(iss.id)}
+          />
         ))}
         {issues.length === 0 && (
           <div className="text-xs text-fg-muted text-center py-4">drop here</div>
@@ -270,7 +352,15 @@ function Column({ name, display, terminal, eligible, issues, onDrop, onClickCard
   );
 }
 
-function IssueCard({ iss, onClick }: { iss: NativeIssue; onClick: () => void }) {
+interface IssueCardProps {
+  iss: NativeIssue;
+  running?: RunningView;
+  retrying?: RetryView;
+  onClick: () => void;
+  onCancelRun: () => void;
+}
+
+function IssueCard({ iss, running, retrying, onClick, onCancelRun }: IssueCardProps) {
   return (
     <div
       role="button"
@@ -307,6 +397,31 @@ function IssueCard({ iss, onClick }: { iss: NativeIssue; onClick: () => void }) 
         {iss.assignee && <span>@{iss.assignee}</span>}
         {iss.claim && <span className="text-amber-300">claimed</span>}
       </div>
+      {running && (
+        <div className="mt-1 flex items-center justify-between gap-2 rounded bg-green-500/10 px-1.5 py-1 text-[10px] text-green-300">
+          <span>
+            ● running
+            {running.last_event_name && (
+              <span className="ml-1 text-green-200/70">— {running.last_event_name}</span>
+            )}
+          </span>
+          <button
+            className="rounded border border-green-500/40 px-1.5 py-0.5 text-[10px] hover:bg-green-500/20"
+            onClick={(e) => {
+              e.stopPropagation();
+              onCancelRun();
+            }}
+            title="Cancel this in-flight run"
+          >
+            cancel
+          </button>
+        </div>
+      )}
+      {!running && retrying && (
+        <div className="mt-1 rounded bg-amber-500/10 px-1.5 py-1 text-[10px] text-amber-300">
+          ⏳ retrying (attempt {retrying.attempt})
+        </div>
+      )}
     </div>
   );
 }

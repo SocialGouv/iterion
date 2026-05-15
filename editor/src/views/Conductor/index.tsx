@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import ConductorControlBar from "@/components/shared/ConductorControlBar";
 import NavLinks from "@/components/shared/NavLinks";
 import ProjectLabel from "@/components/shared/ProjectLabel";
 import {
@@ -10,11 +11,13 @@ import {
   reload as reloadConfig,
   type ConductorSnapshot,
 } from "@/api/conductor";
+import SettingsDrawer from "./SettingsDrawer";
 
 export default function ConductorView() {
   const [snap, setSnap] = useState<ConductorSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
 
   const reload = useCallback(async () => {
@@ -105,7 +108,7 @@ export default function ConductorView() {
       <header className="border-b border-border-default px-4 py-2.5 flex items-center gap-3 bg-surface-1">
         <span className="text-sm font-bold tracking-wide">ITERION</span>
         <NavLinks active="conductor" />
-        <ProjectLabel variant="header" />
+        <ProjectLabel />
         <div className="ml-auto flex items-center gap-2">
           <button
             className="text-xs px-2 py-1 rounded border border-border-default hover:bg-surface-2"
@@ -121,6 +124,13 @@ export default function ConductorView() {
           </button>
         </div>
       </header>
+
+      <ConductorControlBar onOpenSettings={() => setSettingsOpen(true)} />
+      <SettingsDrawer
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        onSaved={() => void reload()}
+      />
 
       {error && (
         <div className="bg-red-500/10 border-b border-red-500/40 px-4 py-2 text-xs text-red-200">

@@ -202,3 +202,23 @@ select:focus:not(:focus-visible) {
 .react-flow__nodesselection-rect {
   display: none;
 }
+
+/* Form control utility shared by SettingsDrawer + future forms. */
+.input {
+  display: block;
+  width: 100%;
+  border-radius: 0.25rem;
+  border: 1px solid var(--color-border-default);
+  background: var(--color-surface-2);
+  color: var(--color-fg-default);
+  padding: 0.375rem 0.5rem;
+  font-size: 0.75rem;
+  line-height: 1.1rem;
+}
+.input:focus {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -1px;
+}
+.input::placeholder {
+  color: var(--color-fg-subtle);
+}
