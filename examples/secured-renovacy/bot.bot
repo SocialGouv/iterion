@@ -916,6 +916,90 @@ prompt upgrade_user:
 
   Apply the upgrade. Emit the structured result.
 
+prompt batch_upgrade_system:
+  You apply a batch of patch-tier (semver-safe) version bumps to a
+  workspace. The batch may span multiple ecosystems — iterate per
+  ecosystem, run the right native invocation for each.
+
+  Skills available in `.claude/skills/` cover the ecosystem-specific
+  conventions (manager detection, command shape, workspace flags,
+  shim fallbacks). Consult them; if the workspace uses an ecosystem
+  not covered, fall back to the abstract procedure below and surface
+  what you discovered so the operator can extend the skill.
+
+  Procedure:
+    1. Read `input.patches`: a JSON array of objects each carrying
+       at least `name`, `current`, `target`, `ecosystem`, `risk`
+       (always "patch" here). Group by `ecosystem`. Rows with an
+       empty `ecosystem` fall into the group keyed by
+       `input.pkg_manager` (the fallback hint from detect_stack —
+       for single-ecosystem repos and legacy LLM output that
+       didn't fill the field).
+    2. For EACH ecosystem group:
+       a. Identify the manager variant in use by inspecting the
+          workspace (lockfiles, manifest files, vendored shims).
+          The skill at `.claude/skills/package-manager-upgrades.md`
+          has a lockfile → manager mapping that's a good starting
+          point.
+       b. Probe the candidate CLI cheaply (`<manager> --version`
+          or equivalent) before running the upgrade. If the binary
+          doesn't resolve, try the shim fallbacks the skill lists.
+       c. Run the batch upgrade for this ecosystem. Most managers
+          accept a multi-spec argument list in one invocation;
+          some require per-spec calls (the skill notes which).
+          Capture stdout+stderr.
+    3. If a group's command fails, STOP. Don't retry with a "looks
+       similar" command — the most-correct CLI failing is a
+       meaningful signal the operator needs to see. Prior
+       ecosystems' changes remain in the workspace; batch_commit
+       picks them up via git diff so the partial progress isn't
+       lost.
+    4. Do NOT chain the install step, breaking-change fix, or any
+       other downstream node here. This is patch-tier only.
+    5. Stay inside `input.workspace_dir`. Only the manifests /
+       lockfiles the manager touches on its own may be modified.
+
+  Tools: bash, read_file, list_files, glob, grep. WRITE-capable via
+  bash (running the upgrades IS the write action).
+
+  REQUIRED JSON OUTPUT SCHEMA (exact field names):
+    success         bool      — true iff EVERY ecosystem group's
+                                 upgrade command exited 0 AND the
+                                 manifest/lockfile reflects the new
+                                 versions (spot-check at least one
+                                 representative pin per group).
+    output          string    — concise human-readable summary,
+                                 grouped by ecosystem. Head + tail
+                                 of the most-informative tool
+                                 output; preserve any error line
+                                 that helps diagnose a failed
+                                 group. If you discovered a manager
+                                 variant the skill didn't cover,
+                                 note it here so the operator can
+                                 fold it back into the skill.
+    upgraded_specs  string[]  — flat list of pin-form spec strings
+                                 ("name@target", "name==target", or
+                                 whatever the ecosystem's natural
+                                 pinning syntax is) for every patch
+                                 that actually landed. Failed
+                                 groups do NOT contribute. Order
+                                 doesn't matter.
+
+  ### Project context (operator)
+  {{vars.user_prompt}}
+
+prompt batch_upgrade_user:
+  Apply this batch of patch-tier upgrades.
+
+  Workspace:         {{vars.workspace_dir}}
+  Pkg manager hint:  {{input.pkg_manager}}
+  Patches:           {{input.patches}}
+  Notes:             {{input.notes}}
+
+  Group by ecosystem, dispatch the right native invocation per
+  group (consult `.claude/skills/package-manager-upgrades.md` if
+  unsure of the convention), emit the structured result.
+
 prompt install_system:
   You perform a fresh dependency install for the repository (called
   AFTER an upgrade so the manager picks up the new version's
@@ -3406,133 +3490,36 @@ tool resolve_pkg_ecosystem:
   input: resolve_pkg_eco_input
   output: resolve_pkg_eco_output
 
-## batch_upgrade_patches bumps every patch in one invocation per
-## ecosystem. Patches are non-breaking by definition; bundling them
-## saves 30+ install round-trips on a typical repo.
+## batch_upgrade_patches bumps every patch in one pass, language-
+## agnostic. Patches are non-breaking by definition; bundling them
+## per ecosystem saves install round-trips on a typical repo.
 ##
-## Multi-ecosystem: each patch carries its own `ecosystem` field
-## (preserved through bucket_patches from discover_outdated, which is
-## instructed to fill it from stack_profile.ecosystems[i].id). We
-## group patches by ecosystem and run ONE command per group with the
-## right CLI — passing Go module names to `npm install` (as happened
-## before this fix) fails with cryptic "npm ERR! 128 git permission
-## denied" because npm tries to git-clone the Go path.
+## Each patch carries its own `ecosystem` field (preserved through
+## bucket_patches from discover_outdated, which is instructed to fill
+## it from stack_profile.ecosystems[i].id). The agent inspects the
+## workspace, picks the right native CLI per ecosystem, and runs it.
+## No hardcoded per-language case block — the bot is meant to handle
+## arbitrary tech stacks, including frameworks and devops surfaces
+## the operator brings in. The mirror is `agent upgrade` (per-package
+## single-spec equivalent), with the same "Plausible starting points
+## (NOT prescriptive)" pattern.
 ##
-## Fallback: when patches have no ecosystem (legacy LLM output or
-## single-ecosystem run), use input.pkg_manager as the group key.
-##
-## If ANY ecosystem command fails the tool node fails and the run
-## flips to failed_resumable — the operator decides whether to retry,
-## narrow the spec set, or skip patches for this run. Prior groups
-## that succeeded leave their modifications in the workspace; the
-## subsequent batch_commit step will see them in git diff and commit
-## the partial progress.
-tool batch_upgrade_patches:
-  command: `set -euo pipefail
-cd {{input.workspace_dir}} >&2
-PKG_MGR={{input.pkg_manager}}
-PATCHES={{input.patches}}
-NOTES={{input.notes}}
-# Group patches by ecosystem. Missing/empty ecosystem falls back to
-# input.pkg_manager so single-ecosystem repos and legacy LLM output
-# (no per-patch ecosystem) keep working unchanged.
-GROUPS=$(printf '%s' "$PATCHES" | jq -r --arg fallback "$PKG_MGR" '
-  [ .[]
-    | select(.name and .target)
-    | { name: .name, target: .target, ecosystem: ((.ecosystem // "") | ascii_downcase | if . == "" then $fallback else . end) }
-  ]
-  | group_by(.ecosystem)
-  | .[] | { ecosystem: .[0].ecosystem, specs: [.[] | { name, target }] }
-  | @json
-' 2>/dev/null)
-if [ -z "$GROUPS" ]; then
-  printf '{"success":true,"output":"no specs to upgrade","upgraded_specs":[]}\n'
-  exit 0
-fi
-# Map ecosystem id to install command form. Spec format varies:
-# name@target for npm-family + go + cargo (cargo handled
-# per-spec below); name==target for pip-family.
-spec_format_for() {
-  case "$1" in
-    pip|pip-poetry|pip-uv|poetry|uv|python|pip-pipenv|pipenv) echo "pip" ;;
-    cargo|rust)                                               echo "cargo" ;;
-    *)                                                        echo "npm" ;; # the @-form covers npm/yarn/pnpm/bun/go
-  esac
-}
-build_specs() {
-  ECO="$1"
-  GROUP_JSON="$2"
-  case "$(spec_format_for "$ECO")" in
-    pip)  printf '%s' "$GROUP_JSON" | jq -r '.specs[] | "\(.name)==\(.target)"' | tr '\n' ' ' | sed 's/ $//' ;;
-    *)    printf '%s' "$GROUP_JSON" | jq -r '.specs[] | "\(.name)@\(.target)"' | tr '\n' ' ' | sed 's/ $//' ;;
-  esac
-}
-run_for_eco() {
-  ECO="$1"
-  SPECS="$2"
-  GROUP_JSON="$3"
-  [ -z "$SPECS" ] && return 0
-  case "$ECO" in
-    yarn-classic)                       CMD="yarn upgrade $SPECS" ;;
-    yarn|yarn3|yarn4|yarn-berry)        CMD="yarn up $SPECS" ;;
-    npm)                                CMD="npm install $SPECS" ;;
-    pnpm)                               CMD="pnpm update $SPECS" ;;
-    bun)                                CMD="bun update $SPECS" ;;
-    go|go-modules|gomod)                CMD="go get $SPECS" ;;
-    pip)                                CMD="pip install --upgrade $SPECS" ;;
-    pip-poetry|poetry)                  CMD="poetry add $SPECS" ;;
-    pip-uv|uv)                          CMD="uv pip install --upgrade $SPECS" ;;
-    pip-pipenv|pipenv)                  CMD="pipenv install $SPECS" ;;
-    cargo|rust)
-      # cargo update wants "-p name --precise version" per crate; chain them.
-      CMD=$(printf '%s' "$GROUP_JSON" | jq -r '.specs[] | "cargo update -p \(.name) --precise \(.target)"' | paste -sd' && ' -)
-      ;;
-    composer|php)                       CMD="composer require $SPECS" ;;
-    bundler|ruby|gem)                   CMD="bundle update $SPECS" ;;
-    *)
-      printf '{"success":false,"output":"batch_upgrade_patches: unsupported ecosystem %s — extend run_for_eco to add it","upgraded_specs":[]}\n' "$ECO"
-      exit 1
-      ;;
-  esac
-  echo ">>> batch_upgrade [$ECO]: $CMD" >&2
-  eval "$CMD" >&2
-}
-# Stage groups in a temp file so the per-line loop reads from a real
-# fd (NOT a pipe). Piped "while ... done" runs in a subshell on POSIX
-# shells, which would silently swallow our "exit 1" on failure.
-TMPF=$(mktemp -t batch_upgrade.XXXXXX)
-printf '%s\n' "$GROUPS" > "$TMPF"
-ALL_UPGRADED=""
-FAILED_ECO=""
-while IFS= read -r GROUP_JSON; do
-  [ -z "$GROUP_JSON" ] && continue
-  ECO=$(printf '%s' "$GROUP_JSON" | jq -r '.ecosystem')
-  SPECS=$(build_specs "$ECO" "$GROUP_JSON")
-  if ! run_for_eco "$ECO" "$SPECS" "$GROUP_JSON"; then
-    FAILED_ECO="$ECO"
-    break
-  fi
-  if [ -z "$ALL_UPGRADED" ]; then
-    ALL_UPGRADED="$SPECS"
-  else
-    ALL_UPGRADED="$ALL_UPGRADED $SPECS"
-  fi
-done < "$TMPF"
-rm -f "$TMPF"
-if [ -n "$FAILED_ECO" ]; then
-  # Prior ecosystems (if any) left their changes in the workspace —
-  # batch_commit's git diff will see them and the run becomes
-  # failed_resumable so the operator can decide. Report what landed.
-  UPGRADED_JSON=$(printf '%s' "$ALL_UPGRADED" | jq -R 'split(" ") | map(select(length > 0))' 2>/dev/null || echo '[]')
-  printf '{"success":false,"output":"batch upgrade failed for ecosystem %s — partial upgrades may be in the workspace","upgraded_specs":%s}\n' "$FAILED_ECO" "$UPGRADED_JSON"
-  exit 1
-fi
-# Emit upgraded_specs as a JSON array via jq.
-UPGRADED_JSON=$(printf '%s' "$ALL_UPGRADED" | jq -R 'split(" ") | map(select(length > 0))' 2>/dev/null || echo '[]')
-printf '{"success":true,"output":"batch upgrade succeeded across all ecosystems","upgraded_specs":%s}\n' "$UPGRADED_JSON"
-`
+## On failure: success=false, the run flips to failed_resumable. The
+## agent must report what partial-state landed (changes already in
+## the workspace) so batch_commit can capture the partial progress
+## and the operator decides whether to retry, narrow, or skip.
+agent batch_upgrade_patches:
+  backend: "claude_code"
+  provider: "${RESCUE_PROVIDER:-zai}"
+  model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-7}"
+  reasoning_effort: "${ITERION_RENOVACY_EFFORT_BATCH_UPGRADE:-${ITERION_RENOVACY_EFFORT_CLAUDE:-medium}}"
   input: batch_upgrade_input
   output: batch_upgrade_result
+  system: batch_upgrade_system
+  user: batch_upgrade_user
+  session: fork
+  tools: [bash, read_file, list_files, glob, grep]
+  tool_max_steps: 40
 
 ## batch_commit lands the bundled patch upgrade as a single
 ## conventional-commit commit. The subject summarises the count, the
