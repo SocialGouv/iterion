@@ -152,7 +152,7 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		}
 		filter.Limit = n
 	}
-	out, err := s.runs.List(filter)
+	out, err := s.runs.ListCtx(r.Context(), filter)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "list runs: %v", err)
 		return
@@ -330,7 +330,7 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		s.writeJSONFor(w, r, snap)
 		return
 	}
-	snap, err := s.runs.Snapshot(id)
+	snap, err := s.runs.SnapshotCtx(r.Context(), id)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		return
@@ -362,7 +362,7 @@ func (s *Server) handleGetRunEvents(w http.ResponseWriter, r *http.Request) {
 		s.writeJSONFor(w, r, map[string]interface{}{"events": events})
 		return
 	}
-	events, err := s.runs.LoadEvents(id, from, to)
+	events, err := s.runs.LoadEventsCtx(r.Context(), id, from, to)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "load events: %v", err)
 		return
@@ -395,7 +395,7 @@ func (s *Server) handleGetRunWorkflow(w http.ResponseWriter, r *http.Request) {
 		s.writeJSONFor(w, r, wf)
 		return
 	}
-	wf, err := s.runs.LoadWireWorkflow(id)
+	wf, err := s.runs.LoadWireWorkflowCtx(r.Context(), id)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "load workflow: %v", err)
 		return
@@ -434,7 +434,7 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid version")
 		return
 	}
-	a, err := s.runs.LoadArtifact(id, node, version)
+	a, err := s.runs.LoadArtifactCtx(r.Context(), id, node, version)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "artifact not found: %v", err)
 		return
@@ -490,7 +490,7 @@ func (s *Server) handleGetToolBlob(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = n
 	}
-	body, total, eof, err := s.runs.ReadToolBlob(id, toolUseID, kind, offset, limit)
+	body, total, eof, err := s.runs.ReadToolBlobCtx(r.Context(), id, toolUseID, kind, offset, limit)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			s.httpErrorFor(w, r, http.StatusNotFound, "tool blob not found")
@@ -526,7 +526,7 @@ func (s *Server) handleListArtifactFiles(w http.ResponseWriter, r *http.Request)
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
 		return
 	}
-	files, err := s.runs.ListArtifactFiles(id)
+	files, err := s.runs.ListArtifactFilesCtx(r.Context(), id)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "list artifact files: %v", err)
 		return
@@ -550,7 +550,7 @@ func (s *Server) handleGetArtifactFile(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id or file path")
 		return
 	}
-	rc, info, err := s.runs.OpenArtifactFile(id, relPath)
+	rc, info, err := s.runs.OpenArtifactFileCtx(r.Context(), id, relPath)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "artifact file not found")
 		return
@@ -637,12 +637,12 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 		//     worktree so the editor's merge UI can act on whatever
 		//     commits the run produced before it stalled.
 		if errors.Is(err, runview.ErrRunNotActive) {
-			r2, loadErr := s.runs.LoadRun(id)
+			r2, loadErr := s.runs.LoadRunCtx(r.Context(), id)
 			if loadErr != nil {
 				s.httpErrorFor(w, r, http.StatusNotFound, "run not active and not on disk: %v", loadErr)
 				return
 			}
-			if cancelled, cancelErr := s.runs.CancelInactive(id); cancelErr == nil && cancelled {
+			if cancelled, cancelErr := s.runs.CancelInactiveCtx(r.Context(), id); cancelErr == nil && cancelled {
 				w.WriteHeader(http.StatusAccepted)
 				s.writeJSONFor(w, r, cancelRunResponse{RunID: id, Status: string(store.RunStatusCancelled)})
 				return
@@ -693,7 +693,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	// FilePath persisted at launch.
 	filePath := req.FilePath
 	if filePath == "" {
-		runMeta, err := s.runs.LoadRun(id)
+		runMeta, err := s.runs.LoadRunCtx(r.Context(), id)
 		if err != nil {
 			s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 			span.SetStatus(codes.Error, "run not found")

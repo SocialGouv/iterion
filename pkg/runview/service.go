@@ -787,17 +787,32 @@ func (s *Service) LoadRunCtx(ctx context.Context, runID string) (*store.Run, err
 // List returns every run in the store filtered by f. The result is
 // sorted by CreatedAt descending (newest first); Limit truncates after
 // sort.
+//
+// Uses context.Background — does NOT carry caller identity. Cloud
+// HTTP handlers must call ListCtx so the mongo tenant_id filter
+// applies; CLI / system paths (single-tenant) can keep using this.
 func (s *Service) List(f ListFilter) ([]RunSummary, error) {
-	ids, err := s.store.ListRuns(context.Background())
+	return s.ListCtx(context.Background(), f)
+}
+
+// ListCtx is the tenant-aware variant of List: propagates the caller's
+// ctx so mongo's tenant_id filter (stamped by requireAuth via
+// store.WithIdentity) applies to both the ListRuns and per-id LoadRun
+// calls. A cross-tenant caller sees an empty list instead of leaking
+// other tenants' run summaries.
+func (s *Service) ListCtx(ctx context.Context, f ListFilter) ([]RunSummary, error) {
+	ids, err := s.store.ListRuns(ctx)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]RunSummary, 0, len(ids))
 	for _, id := range ids {
-		r, err := s.store.LoadRun(context.Background(), id)
+		r, err := s.store.LoadRun(ctx, id)
 		if err != nil {
 			// A single corrupt run.json shouldn't break the whole listing.
-			s.logger.Warn("runview: skip run %s: %v", id, err)
+			if s.logger != nil {
+				s.logger.Warn("runview: skip run %s: %v", id, err)
+			}
 			continue
 		}
 		if !matchesFilter(r, f) {
@@ -806,7 +821,7 @@ func (s *Service) List(f ListFilter) ([]RunSummary, error) {
 		// Node filter is more expensive (loads events.jsonl for each
 		// candidate). Run it last so cheaper rejection criteria above
 		// short-circuit first.
-		if f.Node != "" && !runTouchedNode(context.Background(), s.store, r.ID, f.Node) {
+		if f.Node != "" && !runTouchedNode(ctx, s.store, r.ID, f.Node) {
 			continue
 		}
 		out = append(out, RunSummary{
@@ -874,8 +889,17 @@ func matchesFilter(r *store.Run, f ListFilter) bool {
 
 // Snapshot returns the structured RunSnapshot for runID by folding the
 // persisted events through the canonical reducer.
+//
+// Uses context.Background — does NOT carry caller identity. Use
+// SnapshotCtx from cloud HTTP/WS handlers so the mongo tenant filter
+// applies.
 func (s *Service) Snapshot(runID string) (*RunSnapshot, error) {
 	return BuildSnapshot(context.Background(), s.store, runID)
+}
+
+// SnapshotCtx is the tenant-aware variant of Snapshot.
+func (s *Service) SnapshotCtx(ctx context.Context, runID string) (*RunSnapshot, error) {
+	return BuildSnapshot(ctx, s.store, runID)
 }
 
 // MaxEventsPerPage caps the number of events any single LoadEvents
@@ -901,8 +925,16 @@ const MaxEventsPerPage = 25000
 //
 // Streams via store.LoadEventsRange so we never materialise more than
 // the page-cap worth of events at once; callers paginate.
+//
+// Uses context.Background — does NOT carry caller identity. Use
+// LoadEventsCtx from cloud HTTP/WS handlers.
 func (s *Service) LoadEvents(runID string, from, to int64) ([]*store.Event, error) {
 	return s.store.LoadEventsRange(context.Background(), runID, from, to, MaxEventsPerPage)
+}
+
+// LoadEventsCtx is the tenant-aware variant of LoadEvents.
+func (s *Service) LoadEventsCtx(ctx context.Context, runID string, from, to int64) ([]*store.Event, error) {
+	return s.store.LoadEventsRange(ctx, runID, from, to, MaxEventsPerPage)
 }
 
 // ListArtifacts enumerates the persisted artifacts for one node by
@@ -945,8 +977,17 @@ func (s *Service) ListArtifacts(runID, nodeID string) ([]ArtifactSummary, error)
 }
 
 // LoadArtifact returns one persisted artifact body.
+//
+// Uses context.Background — does NOT carry caller identity. Use
+// LoadArtifactCtx from cloud HTTP handlers so the mongo tenant_id
+// filter applies (cross-tenant LoadArtifact today leaks bodies).
 func (s *Service) LoadArtifact(runID, nodeID string, version int) (*store.Artifact, error) {
 	return s.store.LoadArtifact(context.Background(), runID, nodeID, version)
+}
+
+// LoadArtifactCtx is the tenant-aware variant of LoadArtifact.
+func (s *Service) LoadArtifactCtx(ctx context.Context, runID, nodeID string, version int) (*store.Artifact, error) {
+	return s.store.LoadArtifact(ctx, runID, nodeID, version)
 }
 
 // ListArtifactFiles enumerates the tool-produced files dropped under
@@ -956,6 +997,11 @@ func (s *Service) LoadArtifact(runID, nodeID string, version int) (*store.Artifa
 // list cleanly without leaking the backend choice. Validates the run
 // ID before delegating, mirroring ListArtifacts.
 func (s *Service) ListArtifactFiles(runID string) ([]store.RunFileInfo, error) {
+	return s.ListArtifactFilesCtx(context.Background(), runID)
+}
+
+// ListArtifactFilesCtx is the tenant-aware variant of ListArtifactFiles.
+func (s *Service) ListArtifactFilesCtx(ctx context.Context, runID string) ([]store.RunFileInfo, error) {
 	if err := validatePathComponent("run ID", runID); err != nil {
 		return nil, err
 	}
@@ -963,7 +1009,7 @@ func (s *Service) ListArtifactFiles(runID string) ([]store.RunFileInfo, error) {
 	if rfs == nil {
 		return nil, nil
 	}
-	return rfs.ListRunFiles(context.Background(), runID)
+	return rfs.ListRunFiles(ctx, runID)
 }
 
 // OpenArtifactFile streams one tool-produced file from the run's
@@ -972,6 +1018,11 @@ func (s *Service) ListArtifactFiles(runID string) ([]store.RunFileInfo, error) {
 // validates the run-id component and delegates. Returns a nil reader
 // when the store doesn't satisfy RunFilesStore.
 func (s *Service) OpenArtifactFile(runID, relPath string) (io.ReadCloser, store.RunFileInfo, error) {
+	return s.OpenArtifactFileCtx(context.Background(), runID, relPath)
+}
+
+// OpenArtifactFileCtx is the tenant-aware variant of OpenArtifactFile.
+func (s *Service) OpenArtifactFileCtx(ctx context.Context, runID, relPath string) (io.ReadCloser, store.RunFileInfo, error) {
 	if err := validatePathComponent("run ID", runID); err != nil {
 		return nil, store.RunFileInfo{}, err
 	}
@@ -979,7 +1030,7 @@ func (s *Service) OpenArtifactFile(runID, relPath string) (io.ReadCloser, store.
 	if rfs == nil {
 		return nil, store.RunFileInfo{}, fmt.Errorf("runview: artifact files unavailable for this store")
 	}
-	return rfs.OpenRunFile(context.Background(), runID, relPath)
+	return rfs.OpenRunFile(ctx, runID, relPath)
 }
 
 // ReadToolBlob streams a slice of a tool's stored I/O body (sidecar
@@ -994,6 +1045,11 @@ func (s *Service) OpenArtifactFile(runID, relPath string) (io.ReadCloser, store.
 // inline-only persistence in that case, so the editor doesn't issue
 // the fetch).
 func (s *Service) ReadToolBlob(runID, toolUseID, kind string, offset, limit int64) ([]byte, int64, bool, error) {
+	return s.ReadToolBlobCtx(context.Background(), runID, toolUseID, kind, offset, limit)
+}
+
+// ReadToolBlobCtx is the tenant-aware variant of ReadToolBlob.
+func (s *Service) ReadToolBlobCtx(ctx context.Context, runID, toolUseID, kind string, offset, limit int64) ([]byte, int64, bool, error) {
 	if err := validatePathComponent("run ID", runID); err != nil {
 		return nil, 0, false, err
 	}
@@ -1001,7 +1057,7 @@ func (s *Service) ReadToolBlob(runID, toolUseID, kind string, offset, limit int6
 	if tbs == nil {
 		return nil, 0, false, fmt.Errorf("runview: tool blobs unavailable for this store")
 	}
-	return tbs.ReadToolBlob(context.Background(), runID, toolUseID, kind, offset, limit)
+	return tbs.ReadToolBlob(ctx, runID, toolUseID, kind, offset, limit)
 }
 
 // ---------------------------------------------------------------------------
@@ -1036,10 +1092,15 @@ func (s *Service) Cancel(runID string) error {
 // on whatever commits the run produced before it stalled (counterpart to
 // the post-cancel finalize in spawnRun).
 func (s *Service) CancelInactive(runID string) (bool, error) {
+	return s.CancelInactiveCtx(context.Background(), runID)
+}
+
+// CancelInactiveCtx is the tenant-aware variant of CancelInactive.
+func (s *Service) CancelInactiveCtx(ctx context.Context, runID string) (bool, error) {
 	if runID == "" {
 		return false, errors.New("runview: run_id is required")
 	}
-	r, err := s.store.LoadRun(context.Background(), runID)
+	r, err := s.store.LoadRun(ctx, runID)
 	if err != nil {
 		return false, fmt.Errorf("load run: %w", err)
 	}
@@ -1049,13 +1110,13 @@ func (s *Service) CancelInactive(runID string) (bool, error) {
 	default:
 		return false, nil // already terminal — no-op
 	}
-	if err := s.store.UpdateRunStatus(context.Background(), runID, store.RunStatusCancelled, "cancelled by operator (was "+string(r.Status)+")"); err != nil {
+	if err := s.store.UpdateRunStatus(ctx, runID, store.RunStatusCancelled, "cancelled by operator (was "+string(r.Status)+")"); err != nil {
 		return false, fmt.Errorf("update status: %w", err)
 	}
 	// Re-load post-flip so RecoverFinalize sees the new status.
-	r, err = s.store.LoadRun(context.Background(), runID)
+	r, err = s.store.LoadRun(ctx, runID)
 	if err == nil {
-		if recErr := runtime.RecoverFinalize(context.Background(), s.store, r, s.logger); recErr != nil {
+		if recErr := runtime.RecoverFinalize(ctx, s.store, r, s.logger); recErr != nil && s.logger != nil {
 			s.logger.Warn("runview: post-cancel-inactive finalize for %s: %v", runID, recErr)
 		}
 	}
@@ -1098,10 +1159,15 @@ type MergeResponse struct {
 // On success, the run.json is updated with the merge outcome and the
 // new state is returned.
 func (s *Service) PerformMerge(runID string, req MergeRequest) (*MergeResponse, error) {
+	return s.PerformMergeCtx(context.Background(), runID, req)
+}
+
+// PerformMergeCtx is the tenant-aware variant of PerformMerge.
+func (s *Service) PerformMergeCtx(ctx context.Context, runID string, req MergeRequest) (*MergeResponse, error) {
 	if runID == "" {
 		return nil, errors.New("runview: run_id is required")
 	}
-	r, err := s.store.LoadRun(context.Background(), runID)
+	r, err := s.store.LoadRun(ctx, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -1142,7 +1208,7 @@ func (s *Service) PerformMerge(runID string, req MergeRequest) (*MergeResponse, 
 	if mergeErr != nil {
 		// Persist the failure so the editor can show "Retry merge".
 		r.MergeStatus = store.MergeStatusFailed
-		if saveErr := s.store.SaveRun(context.Background(), r); saveErr != nil && s.logger != nil {
+		if saveErr := s.store.SaveRun(ctx, r); saveErr != nil && s.logger != nil {
 			s.logger.Warn("runview: persist merge failure for %s: %v", runID, saveErr)
 		}
 		return nil, mergeErr
@@ -1153,7 +1219,7 @@ func (s *Service) PerformMerge(runID string, req MergeRequest) (*MergeResponse, 
 	r.MergedInto = res.MergedInto
 	r.MergeStrategy = store.MergeStrategy(res.Strategy)
 	r.MergeStatus = store.MergeStatusMerged
-	if err := s.store.SaveRun(context.Background(), r); err != nil {
+	if err := s.store.SaveRun(ctx, r); err != nil {
 		return nil, fmt.Errorf("runview: persist merge result: %w", err)
 	}
 

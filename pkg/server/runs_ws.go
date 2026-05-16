@@ -159,6 +159,18 @@ func (s *Server) handleRunWebSocket(w http.ResponseWriter, r *http.Request) {
 	rc := newRunConn(s, conn, runID)
 	rc.xStore = xStore
 	rc.xStorePath = xStorePath
+	// Snapshot the authenticated tenant identity so every per-WS store
+	// call (Snapshot, LoadEvents, CancelInactive, LoadRun) carries the
+	// same tenant_id that requireAuth stamped on the upgrade request.
+	// r.Context() itself can't be reused after Upgrade returns, but
+	// the tenant/user identity it carried is what mongo's filter keys
+	// on; stamping them onto a fresh background ctx preserves
+	// isolation across the WS lifetime.
+	if tenantID, ok := store.TenantFromContext(r.Context()); ok {
+		userID, _ := store.OwnerFromContext(r.Context())
+		rc.tenantID = tenantID
+		rc.userID = userID
+	}
 	go rc.run()
 }
 
@@ -182,6 +194,12 @@ type runConn struct {
 	xStore     store.RunStore
 	xStorePath string
 
+	// tenantID / userID snapshot the auth identity at upgrade time
+	// so per-WS store calls keep mongo's tenant_id filter applied.
+	// Both empty in DisableAuth dev mode.
+	tenantID string
+	userID   string
+
 	mu            sync.Mutex
 	subscribed    bool
 	sub           *runview.EventSubscription
@@ -189,6 +207,17 @@ type runConn struct {
 	logSub        *runview.RunLogSubscription
 	closeOnce     sync.Once
 	closed        chan struct{}
+}
+
+// authCtx returns a fresh background ctx with the tenant/user
+// identity captured at WS upgrade time stamped on it, so every per-
+// WS store call applies the mongo tenant_id filter even though
+// r.Context() from the upgrade isn't reusable.
+func (c *runConn) authCtx() context.Context {
+	if c.tenantID == "" {
+		return context.Background()
+	}
+	return store.WithIdentity(context.Background(), c.tenantID, c.userID)
 }
 
 func newRunConn(s *Server, conn *websocket.Conn, runID string) *runConn {
@@ -313,7 +342,7 @@ func (c *runConn) handleSubscribe(env runWSEnvelope) {
 	if c.xStore != nil {
 		snap, err = runview.BuildSnapshot(context.Background(), c.xStore, c.runID)
 	} else {
-		snap, err = c.server.runs.Snapshot(c.runID)
+		snap, err = c.server.runs.SnapshotCtx(c.authCtx(), c.runID)
 	}
 	if err != nil {
 		c.sendError("snapshot_failed", err.Error(), env.AckID)
@@ -624,7 +653,7 @@ func (c *runConn) streamEventsLocal(fromSeq, snapshotSeq int64) {
 	if snapshotSeq != runview.NoEventsSeq && (fromSeq > 0 || snapshotSeq > 0) {
 		next := fromSeq
 		for {
-			events, err := c.server.runs.LoadEvents(c.runID, next, snapshotSeq+1)
+			events, err := c.server.runs.LoadEventsCtx(c.authCtx(), c.runID, next, snapshotSeq+1)
 			if err != nil {
 				break
 			}
@@ -747,7 +776,7 @@ func (c *runConn) handleCancel(env runWSEnvelope) {
 		// cancelled + runs RecoverFinalize so the editor's merge UI
 		// surfaces whatever commits the run produced. Already-terminal
 		// statuses are a silent no-op.
-		if _, ciErr := c.server.runs.CancelInactive(c.runID); ciErr != nil && c.server.logger != nil {
+		if _, ciErr := c.server.runs.CancelInactiveCtx(c.authCtx(), c.runID); ciErr != nil && c.server.logger != nil {
 			c.server.logger.Warn("server: ws cancel of inactive run %s: %v", c.runID, ciErr)
 		}
 		err = nil
@@ -775,7 +804,7 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 	}
 	filePath := req.FilePath
 	if filePath == "" {
-		runMeta, err := c.server.runs.LoadRun(c.runID)
+		runMeta, err := c.server.runs.LoadRunCtx(c.authCtx(), c.runID)
 		if err != nil {
 			c.sendError("run_not_found", err.Error(), env.AckID)
 			return

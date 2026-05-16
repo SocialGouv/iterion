@@ -96,7 +96,7 @@ func (s *Server) handleListRunFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	requested := parseFileMode(r.URL.Query().Get("mode"))
-	run, err := s.runs.LoadRun(id)
+	run, err := s.runs.LoadRunCtx(r.Context(), id)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		return
@@ -219,7 +219,7 @@ func (s *Server) handleGetRunFileDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	requested := parseFileMode(r.URL.Query().Get("mode"))
-	run, err := s.runs.LoadRun(id)
+	run, err := s.runs.LoadRunCtx(r.Context(), id)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		return

@@ -51,7 +51,7 @@ func (s *Server) handleMergeRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := s.runs.PerformMerge(id, runview.MergeRequest{
+	res, err := s.runs.PerformMergeCtx(r.Context(), id, runview.MergeRequest{
 		Strategy:      store.MergeStrategy(req.MergeStrategy),
 		MergeInto:     req.MergeInto,
 		CommitMessage: req.CommitMessage,

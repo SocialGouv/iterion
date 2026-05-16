@@ -108,8 +108,16 @@ func (c *wireWorkflowCache) put(filePath, hash string, wf *WireWorkflow) {
 // don't re-parse. The stale_hash flag is derived by comparing the
 // freshly-computed hash against the one persisted in run.json at
 // launch.
+//
+// Uses context.Background — does NOT carry caller identity. Cloud
+// HTTP handlers must use LoadWireWorkflowCtx.
 func (s *Service) LoadWireWorkflow(runID string) (*WireWorkflow, error) {
-	r, err := s.store.LoadRun(context.Background(), runID)
+	return s.LoadWireWorkflowCtx(context.Background(), runID)
+}
+
+// LoadWireWorkflowCtx is the tenant-aware variant of LoadWireWorkflow.
+func (s *Service) LoadWireWorkflowCtx(ctx context.Context, runID string) (*WireWorkflow, error) {
+	r, err := s.store.LoadRun(ctx, runID)
 	if err != nil {
 		return nil, err
 	}
