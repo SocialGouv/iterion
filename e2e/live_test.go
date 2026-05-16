@@ -3841,7 +3841,7 @@ func TestLive_SecuredRenovacy_Protestware(t *testing.T) {
 		writeLiveTestReport(t, runID, workspaceDir, storeDir, s, events)
 		t.Fatalf("security_audit artifact missing — bot did not reach the audit step: %v", aErr)
 	}
-	verdict, _ := auditArtifact.Output.(map[string]interface{})
+	verdict := auditArtifact.Data
 	safe, _ := verdict["safe"].(bool)
 	malware, _ := verdict["malware_signals"].([]interface{})
 	cves, _ := verdict["cves"].([]interface{})
