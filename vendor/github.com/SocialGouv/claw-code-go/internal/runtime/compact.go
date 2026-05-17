@@ -110,6 +110,16 @@ func CountRealUserTurns(messages []api.Message) int {
 // premature compaction.
 const minRealTurnsForCompaction = 2
 
+// compactSystemPrompt instructs the model to summarise the supplied
+// conversation transcript instead of continuing it. Without an explicit
+// system prompt the model gets the transcript alone and routinely
+// produces "I'll continue..." completions, defeating the compactor's
+// whole purpose.
+const compactSystemPrompt = "You are summarising a long developer-assistant conversation so it can be replaced with a compact <summary> block in a continued session. " +
+	"Read the [USER]/[ASSISTANT] transcript between ---CONVERSATION--- and ---END CONVERSATION--- and produce: a single paragraph capturing the user's goals and the current state, " +
+	"a short bulleted list of decisions made, tools invoked, and pending work. " +
+	"Do not continue the conversation; do not address the user. Output the summary only."
+
 // ShouldCompact returns true when the session should be compacted.
 // It uses the actual API-reported input token count when available (> 0),
 // falling back to EstimateTokens. Additionally, it requires at least
@@ -196,9 +206,18 @@ func CompactSession(ctx context.Context, client api.APIClient, cfg *Config, sess
 
 	transcript := buildTranscript(session.Messages)
 
+	// The transcript is the data to be summarised — it belongs in the
+	// user turn. The summarisation directive belongs in the system
+	// prompt so providers that route system separately (Anthropic
+	// system block, OpenAI system role) treat it as an instruction
+	// rather than as content to be condensed. The previous shape sent
+	// the transcript alone with no instruction at all and relied on
+	// the model inferring "summarize" — inconsistent across providers
+	// and prone to "I'll continue this conversation" completions.
 	req := api.CreateMessageRequest{
 		Model:     cfg.Model,
 		MaxTokens: 2048,
+		System:    compactSystemPrompt,
 		Messages: []api.Message{
 			{
 				Role: "user",
@@ -469,7 +488,14 @@ func CompactSessionPure(messages []api.Message, cfg CompactionConfig) *Compactio
 	}
 
 	toSummarize := compactable[:len(compactable)-keepCount]
-	recent := compactable[len(compactable)-keepCount:]
+	// Copy the recent slice instead of aliasing the caller's backing
+	// array. Otherwise the returned CompactionResult.NewMessages keeps
+	// a window onto the caller's []api.Message: subsequent caller-side
+	// mutations (append, slice re-assignment) reach into the returned
+	// value, producing very confusing "the compacted session keeps
+	// changing" debugging sessions.
+	recent := make([]api.Message, keepCount)
+	copy(recent, compactable[len(compactable)-keepCount:])
 
 	summary := SummarizeMessages(toSummarize)
 

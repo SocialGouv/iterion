@@ -141,41 +141,40 @@ func (c *PromptCache) Stats() PromptCacheStats {
 
 // LookupCompletion checks for a cached completion matching the request.
 // Returns the cached response if found and not expired, nil otherwise.
+//
+// The lock is held across the entire function. The previous pattern
+// (lock → unlock for the file read → re-lock to update stats) was a
+// stat-vs-cache TOCTOU magnet: a concurrent RecordResponse could land
+// between the read and the stats update, leaving the stats keyed to a
+// stale-by-the-time-we-wrote-them response. The file read is a small
+// JSON deserialisation; serialising on it costs little next to the
+// correctness guarantee.
 func (c *PromptCache) LookupCompletion(request *CacheRequest) *CacheResponse {
 	requestHash := requestHashHex(request)
 
 	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	entryPath := c.paths.CompletionEntryPath(requestHash)
 	ttl := c.config.CompletionTTL
-	c.mu.Unlock()
+
+	c.stats.LastCompletionCacheKey = requestHash
 
 	entry := readJSONFilePtr[completionCacheEntry](entryPath)
 	if entry == nil {
-		c.mu.Lock()
 		c.stats.CompletionCacheMisses++
-		c.stats.LastCompletionCacheKey = requestHash
 		c.persistState()
-		c.mu.Unlock()
 		return nil
 	}
 
 	if entry.FingerprintVersion != currentFingerprintVersion {
-		c.mu.Lock()
 		c.stats.CompletionCacheMisses++
-		c.stats.LastCompletionCacheKey = requestHash
 		_ = os.Remove(entryPath)
 		c.persistState()
-		c.mu.Unlock()
 		return nil
 	}
 
-	expired := nowUnixSecs()-entry.CachedAtUnixSecs >= uint64(ttl.Seconds())
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.stats.LastCompletionCacheKey = requestHash
-
-	if expired {
+	if nowUnixSecs()-entry.CachedAtUnixSecs >= uint64(ttl.Seconds()) {
 		c.stats.CompletionCacheMisses++
 		_ = os.Remove(entryPath)
 		c.persistState()

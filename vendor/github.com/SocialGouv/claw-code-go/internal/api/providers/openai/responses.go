@@ -450,6 +450,7 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 		return send(api.StreamEvent{Type: api.EventContentBlockStop, Index: t.blockIndex})
 	}
 
+	var completed bool
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" || strings.HasPrefix(line, "event:") || strings.HasPrefix(line, ":") {
@@ -619,6 +620,7 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 			// to emit. The block is closed in the post-loop sweep.
 
 		case "response.completed":
+			completed = true
 			if ev.Response != nil && ev.Response.Usage != nil {
 				outputTokens = ev.Response.Usage.OutputTokens
 			}
@@ -662,6 +664,13 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 			}
 			send(api.StreamEvent{Type: api.EventError, ErrorMessage: fmt.Sprintf("openai response incomplete: %s", reason)})
 			return
+		}
+		// response.completed marks the terminal event for this stream.
+		// Exit the loop once handled so any trailing chunks the
+		// upstream might emit (keepalive heartbeats, stray comments)
+		// don't get misinterpreted as continuation events.
+		if completed {
+			break
 		}
 	}
 
