@@ -240,7 +240,8 @@ func mapAuthErrorStatus(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, identity.ErrInvitationExpired):
 		return http.StatusGone
-	case errors.Is(err, auth.ErrNotAMember):
+	case errors.Is(err, auth.ErrNotAMember),
+		errors.Is(err, auth.ErrPasswordChangeRequired):
 		return http.StatusForbidden
 	}
 	return http.StatusInternalServerError
@@ -266,6 +267,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// stays available in logs.
 		if errors.Is(err, auth.ErrAccountDisabled) || errors.Is(err, auth.ErrInvalidCredentials) {
 			httpError(w, http.StatusUnauthorized, "invalid credentials")
+			return
+		}
+		// Password verified but pending_password_change status: surface
+		// the explicit signal so the SPA routes to the change-password
+		// flow. Don't mint cookies here — issuing tokens before the
+		// password is rotated would defeat the gate entirely.
+		if errors.Is(err, auth.ErrPasswordChangeRequired) {
+			httpError(w, http.StatusForbidden, "password change required")
 			return
 		}
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())

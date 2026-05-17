@@ -15,15 +15,30 @@ import (
 // Sentinel errors raised by Service. Handlers map them to HTTP
 // statuses (Unauthorized, Forbidden, NotFound, Conflict).
 var (
-	ErrInvalidCredentials = errors.New("auth: invalid credentials")
-	ErrAccountDisabled    = errors.New("auth: account disabled")
-	ErrPasswordWeak       = errors.New("auth: password too weak")
-	ErrSignupClosed       = errors.New("auth: signup is invite-only")
-	ErrInvitationNotFound = errors.New("auth: invitation not found")
-	ErrInvitationMismatch = errors.New("auth: invitation does not match user")
-	ErrTeamNotFound       = errors.New("auth: team not found")
-	ErrNotAMember         = errors.New("auth: user is not a member of the team")
+	ErrInvalidCredentials     = errors.New("auth: invalid credentials")
+	ErrAccountDisabled        = errors.New("auth: account disabled")
+	ErrPasswordChangeRequired = errors.New("auth: password change required")
+	ErrPasswordWeak           = errors.New("auth: password too weak")
+	ErrSignupClosed           = errors.New("auth: signup is invite-only")
+	ErrInvitationNotFound     = errors.New("auth: invitation not found")
+	ErrInvitationMismatch     = errors.New("auth: invitation does not match user")
+	ErrTeamNotFound           = errors.New("auth: team not found")
+	ErrNotAMember             = errors.New("auth: user is not a member of the team")
 )
+
+// LockoutThreshold is the number of consecutive failed password
+// attempts that triggers a temporary account lockout. The counter
+// resets to zero on any successful Login. Tuned conservatively: high
+// enough that a typo cluster doesn't lock a legitimate user, low
+// enough that an attacker can't credential-stuff at full rate.
+const LockoutThreshold = 5
+
+// LockoutDuration is the wall-clock window a lockout lasts. While
+// active, the gate at the top of Login short-circuits with
+// ErrInvalidCredentials regardless of the password supplied — the
+// constant-time dummy-hash check still runs so timing doesn't leak
+// the lockout state.
+const LockoutDuration = 15 * time.Minute
 
 // SignupMode controls who may register without an invitation.
 type SignupMode string
@@ -151,7 +166,31 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, ip stri
 		return LoginResult{}, ErrInvalidCredentials
 	}
 	if !ok {
+		// Brute-force lockout: increment the failed counter and lock
+		// the account when it reaches LockoutThreshold. The gate at
+		// the top of Login then short-circuits subsequent attempts
+		// during LockoutDuration. The counter persistence is
+		// best-effort — a write failure logs at error but doesn't
+		// surface to the caller, since the response shape must remain
+		// indistinguishable from a non-locked invalid-credentials
+		// case (per the comment on dummyHash above).
+		u.FailedLogins++
+		if u.FailedLogins >= LockoutThreshold {
+			lockUntil := s.now().UTC().Add(LockoutDuration)
+			u.LockedUntil = &lockUntil
+		}
+		if persistErr := s.store.UpdateUser(ctx, u); persistErr != nil && s.logger != nil {
+			s.logger.Error("auth: persist failed-login counter for %s: %v", u.ID, persistErr)
+		}
 		return LoginResult{}, ErrInvalidCredentials
+	}
+
+	// Password verified — but a pending_password_change status must
+	// not yield a fully-privileged session. Returning the dedicated
+	// sentinel lets the HTTP layer / SPA route to a change-password
+	// flow without first minting access + refresh tokens.
+	if u.Status == identity.UserStatusPendingPasswordChange {
+		return LoginResult{}, ErrPasswordChangeRequired
 	}
 
 	now := s.now().UTC()
