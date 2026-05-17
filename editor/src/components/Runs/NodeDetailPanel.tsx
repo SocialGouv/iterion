@@ -193,22 +193,32 @@ export default function NodeDetailPanel({
 
   // Load only the version index here; ArtifactDiff handles fetching the
   // body for each selected version on demand.
+  //
+  // Depending on `exec` as a whole would refire on every WS event
+  // (the parent rebuilds the executions array on each event, which
+  // re-derives `exec` to a fresh object identity even for the same
+  // logical iteration). Pin the effect to the stable scalars only —
+  // a node change OR an iteration switch — and abort the in-flight
+  // request when those keys change so we never thrash the network
+  // pool with redundant /artifacts fetches.
+  const execNodeId = exec?.ir_node_id ?? null;
+  const executionId = exec?.execution_id ?? null;
   useEffect(() => {
     setArtifactVersions([]);
-    if (!exec) return;
-    let cancelled = false;
-    listArtifacts(runId, exec.ir_node_id)
+    if (!execNodeId) return;
+    const ctrl = new AbortController();
+    listArtifacts(runId, execNodeId, { signal: ctrl.signal })
       .then((summaries) => {
-        if (cancelled) return;
+        if (ctrl.signal.aborted) return;
         setArtifactVersions(summaries);
       })
       .catch(() => {
         // Artifacts are best-effort — silent fall-through.
       });
     return () => {
-      cancelled = true;
+      ctrl.abort();
     };
-  }, [runId, exec]);
+  }, [runId, execNodeId, executionId]);
 
   const matching = useExecutionEvents(events, exec);
   const llmSteps = useLLMSteps(matching);

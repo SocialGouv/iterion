@@ -365,9 +365,11 @@ export async function getRunWorkflow(runId: string): Promise<WireWorkflow> {
 export async function listArtifacts(
   runId: string,
   nodeId: string,
+  opts?: { signal?: AbortSignal },
 ): Promise<ArtifactSummary[]> {
   const res = await request<{ artifacts: ArtifactSummary[] }>(
     `/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(nodeId)}`,
+    { signal: opts?.signal },
   );
   return res.artifacts ?? [];
 }
