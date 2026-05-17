@@ -212,10 +212,19 @@ func (a *App) OpenExternal(rawURL string) error {
 }
 
 // RevealInFinder reveals the given path in the OS file manager (Finder /
-// Explorer / xdg-open).
+// Explorer / xdg-open). The path must resolve under the current project
+// directory or its store directory; otherwise the request is rejected
+// (defence-in-depth against a hostile WebView script — XSS, leaked
+// artifact path handler, etc. — that could otherwise enumerate or
+// surface arbitrary host paths to the OS shell, with knock-on effects
+// like thumbnail handlers, virus scanners, and explorer/select pinning
+// a sensitive file path in the UI).
 func (a *App) RevealInFinder(path string) error {
 	if path == "" {
 		return fmt.Errorf("empty path")
+	}
+	if err := a.checkRevealPath(path); err != nil {
+		return err
 	}
 	var cmd *exec.Cmd
 	switch goruntime.GOOS {
@@ -230,6 +239,51 @@ func (a *App) RevealInFinder(path string) error {
 		cmd = exec.Command("xdg-open", filepath.Dir(path))
 	}
 	return cmd.Start()
+}
+
+// checkRevealPath enforces that `path` resolves (after Abs + EvalSymlinks
+// on the longest existing prefix) under the current project's Dir or its
+// StoreDir. Returns nil on success; an error otherwise. Designed to fail
+// closed: if the project config is unavailable, the call is rejected.
+func (a *App) checkRevealPath(path string) error {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolve path: %w", err)
+	}
+	abs = filepath.Clean(abs)
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = real
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.config == nil {
+		return fmt.Errorf("reveal: project config unavailable")
+	}
+	p := a.config.CurrentProject()
+	if p == nil {
+		return fmt.Errorf("reveal: no current project")
+	}
+	roots := []string{p.Dir}
+	if p.StoreDir != "" {
+		roots = append(roots, p.StoreDir)
+	}
+	for _, root := range roots {
+		rootAbs, err := filepath.Abs(root)
+		if err != nil {
+			continue
+		}
+		if r, err := filepath.EvalSymlinks(rootAbs); err == nil {
+			rootAbs = r
+		}
+		rel, err := filepath.Rel(rootAbs, abs)
+		if err != nil {
+			continue
+		}
+		if rel == "." || (!strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel)) {
+			return nil
+		}
+	}
+	return fmt.Errorf("reveal: path %q is outside the current project / store", abs)
 }
 
 // ── Project bindings ─────────────────────────────────────────────────────
