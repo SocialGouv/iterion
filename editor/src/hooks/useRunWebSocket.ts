@@ -108,11 +108,27 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
   // way the resumed run reaches this client is a fresh subscribe.
   const reconnectToken = useRunStore((s) => s.wsReconnectToken);
 
+  // Track the runId the previous effect run was bound to. The effect
+  // re-runs on either runId or reconnectToken change; we use this ref
+  // to distinguish them. On a runId switch the consumer panels for
+  // the old run will unmount → safe to reset subscription refs. On a
+  // reconnectToken bump (post-Resume/Cancel) the same panels stay
+  // mounted, so their ref-counted intent must survive — otherwise
+  // the new WS opens with count=0 and re-subscribe in onopen is
+  // silently skipped, leaving the live log stream dead until the user
+  // navigates away and back.
+  const prevRunIdRef = useRef<string | null>(null);
+
   useEffect(() => {
     if (!runId) return;
     aliveRef.current = true;
     reconnectDelay.current = 1000;
-    logsRequestedRef.current = false;
+    if (prevRunIdRef.current !== runId) {
+      // Run changed — wipe inherited subscriber state.
+      logSubscriberCountRef.current = 0;
+      logsRequestedRef.current = false;
+    }
+    prevRunIdRef.current = runId;
 
     const setWsState = useRunStore.getState().setWsState;
     const applySnapshot = useRunStore.getState().applySnapshot;
@@ -310,12 +326,14 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
         ws.close();
         wsRef.current = null;
       }
-      // Reset log subscription state so a navigation to a different
-      // run starts with a clean slate. Without this, a count >0 from
-      // the previous run leaks into the new WS and unsubscribe_logs
-      // never fires when the user closes the tab.
-      logSubscriberCountRef.current = 0;
-      logsRequestedRef.current = false;
+      // Don't reset subscriber refs here: the next effect body owns
+      // that decision via prevRunIdRef. The cleanup runs for both
+      // unmount (refs become unreachable → GC) and dependency change
+      // (next effect re-evaluates). Resetting unconditionally was the
+      // bug — a reconnectToken bump cleared the refs while the same
+      // RunLogPanel + NodeDetailPanel Logs consumers were still
+      // mounted, then the new ws.onopen saw logsRequestedRef=false
+      // and never re-subscribed.
       useRunStore.getState().setWsState("closed");
     };
   }, [runId, reconnectToken]);
