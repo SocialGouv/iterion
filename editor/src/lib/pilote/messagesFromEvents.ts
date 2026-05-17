@@ -29,6 +29,7 @@ import {
   asSurveyOutput,
   type PiloteMessage,
   type BannerMessage,
+  type BannerStatus,
   type HumanQuestionMessage,
   type RoadmapCardMessage,
   type IssuesSummaryMessage,
@@ -368,6 +369,11 @@ export function messagesFromEvents({
       }
 
       case "run_finished":
+        // No active banners expected here (every node should have
+        // fired node_finished first), but if one is still flagged
+        // running we coerce it to done — a perpetual spinner under a
+        // "session finished" footer looks broken.
+        finalizeActiveBanners(out, activeBannerByNode, "done");
         out.push({
           kind: "session-closed",
           id: `closed:${evt.seq}`,
@@ -375,6 +381,13 @@ export function messagesFromEvents({
         });
         break;
       case "run_failed":
+        // The runtime emits run_failed without a node_failed companion
+        // for the in-flight node (no node_failed event type exists),
+        // so any active banner stayed at status:"running" forever —
+        // appearing as a perpetual spinner alongside the "session
+        // failed" footer. Coerce them to failed and surface the run
+        // error message if the event carried one.
+        finalizeActiveBanners(out, activeBannerByNode, "failed", asString(evt.data?.error));
         out.push({
           kind: "session-closed",
           id: `closed:${evt.seq}`,
@@ -382,6 +395,7 @@ export function messagesFromEvents({
         });
         break;
       case "run_cancelled":
+        finalizeActiveBanners(out, activeBannerByNode, "failed");
         out.push({
           kind: "session-closed",
           id: `closed:${evt.seq}`,
@@ -395,4 +409,36 @@ export function messagesFromEvents({
   }
 
   return out;
+}
+
+// finalizeActiveBanners coerces every banner still flagged as running
+// (i.e. its node never emitted node_finished) to a terminal status.
+// Used on run_finished / run_failed / run_cancelled so the chat
+// doesn't end with a spinning banner under the session-closed marker.
+// The runtime has no node_failed event type, so the only signal that
+// a node in flight is dead is the run-level termination event.
+function finalizeActiveBanners(
+  out: PiloteMessage[],
+  active: Map<string, number>,
+  status: BannerStatus,
+  errorMessage?: string,
+): void {
+  for (const idx of active.values()) {
+    const b = out[idx];
+    if (!b || b.kind !== "banner") continue;
+    const updated: BannerMessage = {
+      ...b,
+      status,
+      progress: undefined,
+    };
+    if (status === "failed" && errorMessage) {
+      updated.errorMessage = errorMessage;
+    }
+    out[idx] = updated;
+  }
+  active.clear();
+}
+
+function asString(v: unknown): string | undefined {
+  return typeof v === "string" && v !== "" ? v : undefined;
 }
