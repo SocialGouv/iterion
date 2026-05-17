@@ -137,17 +137,13 @@ func (b *EventBroker) Publish(evt store.Event) {
 		return
 	}
 
-	// Heap-allocate one Event per subscriber so each receiver holds
-	// its own pointer without aliasing. A single `out := evt` outside
-	// the loop would hand the same address to every subscriber — fine
-	// as long as nobody mutates the payload, but a latent race the
-	// detector surfaces and a real corruption vector if any consumer
-	// gains a Data-rewrite path. The allocation cost is negligible vs
-	// the JSON marshalling that already happened upstream.
 	for _, sub := range subs {
 		if sub.closed {
 			continue
 		}
+		// Copy per subscriber: a shared pointer would let any consumer
+		// that mutates Data corrupt the others. Allocation cost is
+		// negligible against the upstream JSON marshalling.
 		out := evt
 		select {
 		case sub.ch <- &out:

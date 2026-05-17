@@ -291,18 +291,12 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 
 	// Cooperative cancel check: if the server flipped the run to
 	// cancelled before we picked it up (T-32 cancel-queued path),
-	// ack the JetStream delivery without doing any work — we do
-	// not lock, do not touch the engine, and the queue position
-	// for sibling runs collapses immediately. The server's cancel
-	// handler is responsible for flipping the Mongo doc; the
-	// JetStream message becomes a no-op signal.
+	// ack the JetStream delivery without doing any work.
 	//
-	// Detached context: runCtx descends from r.cancel(); if Shutdown
-	// fires between the cancel-subscribe above and this LoadRun, the
-	// store would return context.Canceled and the current code would
-	// Term a perfectly valid delivery (losing the run). Use a fresh
-	// background-rooted ctx with a 5s budget for the pre-lock read,
-	// carrying the tenant identity LoadRun needs.
+	// Detach from runCtx: it descends from r.cancel(), so a Shutdown
+	// firing between SubscribeCancel and this LoadRun would yield
+	// context.Canceled and Term a live delivery. The detached ctx
+	// still carries tenant identity for the store filter.
 	loadCtx, loadCancel := context.WithTimeout(
 		store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID),
 		5*time.Second)
@@ -707,12 +701,52 @@ type metricsEmitter struct {
 	// llm_request event for a given node, so the subsequent
 	// llm_step_finished events can be labelled even though the step
 	// payload itself doesn't repeat the model field.
-	mu          sync.Mutex
-	modelByNode map[string]string
+	//
+	// priceByModel caches the resolved per-token rates so the
+	// cost.EstimateUSD path (which hits claw's live registry — a disk
+	// read + JSON parse each call) doesn't fire on every step event.
+	// A workflow with 50 steps × 10 parallel branches would otherwise
+	// serialise 500 disk hits through the metrics emitter mutex.
+	mu           sync.Mutex
+	modelByNode  map[string]string
+	priceByModel map[string]modelRate
+}
+
+// modelRate is the per-token cost (USD) for a given model, derived
+// once via cost.EstimateUSD and cached. `known` distinguishes
+// "table doesn't know this model" (skip the counter) from
+// "rates are genuinely zero".
+type modelRate struct {
+	inputUSDPerToken  float64
+	outputUSDPerToken float64
+	known             bool
 }
 
 func newMetricsEmitter(inner model.EventEmitter, reg *metrics.Registry) *metricsEmitter {
-	return &metricsEmitter{inner: inner, reg: reg, modelByNode: make(map[string]string)}
+	return &metricsEmitter{
+		inner:        inner,
+		reg:          reg,
+		modelByNode:  make(map[string]string),
+		priceByModel: make(map[string]modelRate),
+	}
+}
+
+// rateFor returns the cached per-token rates for the given model,
+// resolving once via cost.EstimateUSD. Called under m.mu.
+func (m *metricsEmitter) rateForLocked(modelName string) modelRate {
+	if r, ok := m.priceByModel[modelName]; ok {
+		return r
+	}
+	const probe = 1_000_000
+	inUSD := cost.EstimateUSD(modelName, probe, 0)
+	outUSD := cost.EstimateUSD(modelName, 0, probe)
+	r := modelRate{
+		inputUSDPerToken:  inUSD / float64(probe),
+		outputUSDPerToken: outUSD / float64(probe),
+		known:             inUSD > 0 || outUSD > 0,
+	}
+	m.priceByModel[modelName] = r
+	return r
 }
 
 func (m *metricsEmitter) AppendEvent(ctx context.Context, runID string, evt store.Event) (*store.Event, error) {
@@ -738,18 +772,20 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		m.addTokens(backend, modelName, "output", evt.Data["output_tokens"])
 		m.addTokens(backend, modelName, "cache_read", evt.Data["cache_read_tokens"])
 		m.addTokens(backend, modelName, "cache_write", evt.Data["cache_write_tokens"])
-		// LLMCostUSDTotal counter: until Sprint-8 the counter was
-		// registered but never updated, so the cost Prometheus tap
-		// was permanently zero. Compute the step's USD cost from the
-		// same pricing table the runtime uses for `_cost_usd`; a
-		// model the table doesn't recognise yields 0 and the counter
-		// stays untouched — observers can distinguish "no data" from
-		// "$0" via the absence of samples.
+		// LLMCostUSDTotal: apply the cached per-token rates for this
+		// model. Unknown models leave the counter untouched so
+		// observers can tell "no data" from "$0" via the absence of
+		// samples.
 		if modelName != "" && modelName != "unknown" {
-			inputT := int(toFloat(evt.Data["input_tokens"]))
-			outputT := int(toFloat(evt.Data["output_tokens"]))
-			if c := cost.EstimateUSD(modelName, inputT, outputT); c > 0 {
-				m.reg.LLMCostUSDTotal.WithLabelValues(backend, normalizeModelLabel(modelName)).Add(c)
+			inputT := toFloat(evt.Data["input_tokens"])
+			outputT := toFloat(evt.Data["output_tokens"])
+			m.mu.Lock()
+			rate := m.rateForLocked(modelName)
+			m.mu.Unlock()
+			if rate.known {
+				if c := inputT*rate.inputUSDPerToken + outputT*rate.outputUSDPerToken; c > 0 {
+					m.reg.LLMCostUSDTotal.WithLabelValues(backend, normalizeModelLabel(modelName)).Add(c)
+				}
 			}
 		}
 	case store.EventDelegateFinished:

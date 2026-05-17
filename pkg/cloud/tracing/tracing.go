@@ -131,11 +131,9 @@ func envSampler() tracesdk.Sampler {
 		return tracesdk.ParentBased(tracesdk.NeverSample())
 	case "parentbased_traceidratio":
 		return tracesdk.ParentBased(tracesdk.TraceIDRatioBased(parseRatio(arg, 1.0)))
-	case "parentbased_always_on", "":
-		return tracesdk.ParentBased(tracesdk.AlwaysSample())
-	default:
-		return tracesdk.ParentBased(tracesdk.AlwaysSample())
 	}
+	// Unset or unrecognised → parent-based always-on (the OTel SDK default).
+	return tracesdk.ParentBased(tracesdk.AlwaysSample())
 }
 
 func parseRatio(s string, fallback float64) float64 {
