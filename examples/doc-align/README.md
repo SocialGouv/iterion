@@ -1,8 +1,27 @@
-# doc-align (v0.9.0)
+# doc-align (v0.10.0)
 
 A dogfood-friendly iterion bot that detects mismatches between
 project documentation and actual code state, then fixes the
 **documentation** (never the code) and auto-commits on convergence.
+
+**v0.10.0 changes** (telemetry trailer for post-run analysis):
+- `prepare_commit` now requires the commit message to end with a
+  `Bot: doc-align` trailer line. Auto-commits become findable
+  via `git log --grep "^Bot: doc-align"`. Combined with
+  `iterion report --run-id <id>` for per-run cost data, this
+  makes both cost telemetry and revert tracking trivial:
+  ```bash
+  # All doc-align auto-commits across history
+  git log --grep "^Bot: doc-align" --oneline
+
+  # Reverts of doc-align commits (false-positive signal)
+  git log --grep "^Revert" --grep "Bot: doc-align" --all-match --oneline
+  ```
+- This closes the v0.3.0 telemetry gap noted in the
+  "limitations" section: we couldn't tell which fixes survived
+  vs got reverted. Now you can `git log --grep` to find every
+  doc-align run's commit, then check if any of them were
+  subsequently reverted.
 
 **v0.9.0 changes** (reviewer discipline tightening):
 - New `STEP 0b — First-iteration triage` in the verification

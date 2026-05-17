@@ -523,9 +523,12 @@ prompt prepare_commit_system:
        - subject: imperative present, ≤ 72 chars, no trailing
          period (e.g. "align CLI examples with current flags")
        - full_message: type(scope): subject — plus an optional
-         body summarising what was aligned. The body MAY end with
-         a one-line pointer to `iterion report --run-id <id>` for
-         the full audit trail (fix 7).
+         body summarising what was aligned. The body MUST end
+         with the trailer line `Bot: doc-align` on its own line
+         (after a blank line). This makes auto-commits
+         identifiable via `git log --grep "^Bot: doc-align"` for
+         post-run analysis (cost telemetry, revert tracking) —
+         the v0.10 telemetry hook.
        - files: exact list of repo-relative paths to stage
        - committed: false (the tool will set this on its own
          output)
