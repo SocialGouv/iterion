@@ -1,8 +1,20 @@
-# doc-align (v0.13.0)
+# doc-align (v0.13.1)
 
 A dogfood-friendly iterion bot that detects mismatches between
 project documentation and actual code state, then fixes the
 **documentation** (never the code) and auto-commits on convergence.
+
+**v0.13.1 hotfix** — enforce_fix_scope argv handling:
+The v0.13.0 rewrite passed `declared_paths` and `cumulative_so_far`
+to enforce_fix_scope via shell env vars
+(`DECLARED={{input.declared_paths}}`), expecting the substituted
+value to be a single token. But iterion shell-tokenises string[]
+inputs into space-separated quoted entries (`'a.md' 'b.md'`), so
+only the first token landed in `DECLARED` and the rest became
+orphan argv. The script then tried to `json.loads('')` and the
+node failed on iter 1 of the v0.13.0 retest. v0.13.1 switches to
+positional argv with a `--` sentinel between the two arrays —
+the established pattern that already works in update_audit_cache.
 
 **v0.13.0 changes** (Goodhart-proof scope-honesty gate — threshold
 moved from prompt rule into the deterministic tool):

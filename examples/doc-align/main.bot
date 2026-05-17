@@ -1111,12 +1111,25 @@ tool commit_changes:
 ## stream is the signal that the fixer needs prompt-side
 ## reinforcement (or the agent occasionally over-reaches).
 tool enforce_fix_scope:
-  command: `WS={{input.workspace_dir}} DECLARED={{input.declared_paths}} CUMULATIVE_SO_FAR={{input.cumulative_so_far}} python3 -c "
-import os, json, subprocess
+  ## v0.13.0: positional argv with a `--` sentinel between
+  ## declared_paths and cumulative_so_far. iterion shell-tokenises
+  ## string[] inputs into space-separated quoted tokens
+  ## (`'a.md' 'b.md'`) so they land as separate argv entries —
+  ## env-var passing collided (first token wins, rest become argv).
+  ## Layout: <workspace_dir> <declared...> -- <cumulative_so_far...>
+  command: `python3 -c "
+import os, json, subprocess, sys
 from collections import Counter
-ws = os.environ.get('WS','')
-declared = set(json.loads(os.environ.get('DECLARED','[]') or '[]'))
-cumulative_so_far = json.loads(os.environ.get('CUMULATIVE_SO_FAR','[]') or '[]')
+args = sys.argv[1:]
+ws = args[0] if args else ''
+rest = args[1:]
+try:
+    i = rest.index('--')
+    declared = set(rest[:i])
+    cumulative_so_far = rest[i+1:]
+except ValueError:
+    declared = set(rest)
+    cumulative_so_far = []
 os.chdir(ws)
 try:
     proc = subprocess.run(['git', 'diff', '--name-only'], capture_output=True, text=True, check=True)
@@ -1131,8 +1144,6 @@ for path in out_of_scope:
         reverted.append(path)
     except subprocess.CalledProcessError:
         pass
-# v0.13.0: compute chronic_paths from cumulative_so_far + this iter's reverts.
-# A path is chronic when its total revert count across the run is >= 3.
 counts = Counter(cumulative_so_far) + Counter(reverted)
 chronic = sorted([p for p, c in counts.items() if c >= 3])
 print(json.dumps({
@@ -1142,7 +1153,7 @@ print(json.dumps({
     'changed_count': len(changed),
     'chronic_paths': chronic,
 }))
-"`
+" {{input.workspace_dir}} {{input.declared_paths}} -- {{input.cumulative_so_far}}`
   input: enforce_fix_scope_input
   output: enforce_fix_scope_output
 
