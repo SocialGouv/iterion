@@ -134,5 +134,3 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4
 	golang.org/x/crypto v0.50.0
 )
-
-replace github.com/SocialGouv/claw-code-go => ../../.works/claw-code-go
