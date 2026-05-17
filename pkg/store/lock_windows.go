@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"golang.org/x/sys/windows"
 )
 
 type pidLock struct {
@@ -56,20 +58,50 @@ func tryCreateLockfile(path string, pid int) error {
 	return err
 }
 
-// removeStaleLock reads the PID from the lockfile and removes it if the
-// content is corrupt (non-numeric). On Windows, reliably checking whether a
-// PID is alive without CGO or x/sys/windows is not possible (FindProcess
-// always succeeds), so we only remove clearly corrupt lockfiles.
-// If a process crashes, the user must delete .lock manually.
+// removeStaleLock removes the lockfile when the PID it names is no
+// longer running or the content is corrupt. The previous incarnation
+// only removed corrupt lockfiles because Go's os.FindProcess always
+// "succeeds" on Windows; we now ask Windows directly via
+// OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION) — the call returns
+// ERROR_INVALID_PARAMETER for an unknown PID, which is the signal we
+// use to declare the lockfile stale and reclaim it.
 func removeStaleLock(path string) bool {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return false
 	}
-	if _, err := strconv.Atoi(strings.TrimSpace(string(data))); err != nil {
+	pidStr := strings.TrimSpace(string(data))
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil {
 		// Corrupt lockfile (non-numeric content) — safe to remove.
 		os.Remove(path)
 		return true
 	}
+	if pid <= 0 {
+		os.Remove(path)
+		return true
+	}
+	if !pidAliveWindows(uint32(pid)) {
+		os.Remove(path)
+		return true
+	}
 	return false
+}
+
+// pidAliveWindows reports whether a process with the given PID exists.
+// Uses OpenProcess with PROCESS_QUERY_LIMITED_INFORMATION (the minimum
+// access right that lets a non-admin process probe an arbitrary PID
+// for liveness). A successful open means the PID is live; an
+// ERROR_INVALID_PARAMETER means it never existed or has fully exited
+// and been reaped from the kernel's process table.
+func pidAliveWindows(pid uint32) bool {
+	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		// Conservative: anything other than the explicit "no such PID"
+		// signal is treated as "still alive" so we never reclaim a
+		// lockfile by accident on access-denied or transient errors.
+		return err != windows.ERROR_INVALID_PARAMETER
+	}
+	windows.CloseHandle(handle)
+	return true
 }

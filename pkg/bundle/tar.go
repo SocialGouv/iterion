@@ -84,8 +84,14 @@ func extractTarGz(r io.Reader, dest string) (int, error) {
 			}
 			// O_TRUNC because we may be extracting into a cache dir that
 			// was partially populated by an earlier failed run; we want
-			// the new bytes, not an append.
-			f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fileMode(hdr.Mode))
+			// the new bytes, not an append. O_NOFOLLOW closes the TOCTOU
+			// gap between assertNoEscapingSymlink (which checks at safeJoin
+			// time) and this open — a process with write access to the
+			// destination dir could otherwise drop a symlink at `target`
+			// in the interim and redirect the write out of the dest.
+			// The exported extractTarGz contract is also documented as
+			// "dest must be exclusively owned by the caller".
+			f, err := openFileNoFollow(target, fileMode(hdr.Mode))
 			if err != nil {
 				return written, fmt.Errorf("bundle: create %s: %w", target, err)
 			}

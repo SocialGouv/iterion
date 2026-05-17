@@ -95,10 +95,24 @@ func backoffOrCancel(ctx context.Context, attempt int) error {
 // allocSeq is the FindOneAndUpdate $inc pattern from plan §D.3. The
 // pre-image's next_seq is the seq we'll use; the post-image's
 // next_seq is what the next caller will see.
+//
+// The _id is a {tenant_id, run_id} compound. Keying on run_id alone
+// would let two tenants that happened to mint the same run_id (NewRunID
+// uses time + crockford32 + 6 random chars — collision rare but not
+// impossible across millions of runs) share a seq counter and stamp
+// duplicate seq values on each other's events.
+//
+// Backfill: existing documents with the plain-string _id keep working
+// through the ErrNoDocuments path — the first allocSeq on the compound
+// key creates a fresh counter starting at 0, which is correct as long
+// as the legacy run is no longer emitting events. For runs that are
+// still actively writing, the migration tool needs to copy the
+// next_seq value across; see scripts/migrate/run-seq-tenant-backfill.go.
 func (s *Store) allocSeq(ctx context.Context, runID string) (int64, error) {
+	tenantID, _ := store.TenantFromContext(ctx)
 	res := s.runSeq.FindOneAndUpdate(
 		ctx,
-		bson.M{"_id": runID},
+		bson.M{"_id": bson.M{"tenant_id": tenantID, "run_id": runID}},
 		bson.M{"$inc": bson.M{"next_seq": 1}},
 		options.FindOneAndUpdate().SetUpsert(true).SetReturnDocument(options.Before),
 	)
