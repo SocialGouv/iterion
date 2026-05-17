@@ -1,8 +1,49 @@
-# doc-align (v0.12.0)
+# doc-align (v0.13.0)
 
 A dogfood-friendly iterion bot that detects mismatches between
 project documentation and actual code state, then fixes the
 **documentation** (never the code) and auto-commits on convergence.
+
+**v0.13.0 changes** (Goodhart-proof scope-honesty gate — threshold
+moved from prompt rule into the deterministic tool):
+- v0.12.0 exposed the raw revert history (`cumulative_reverted_paths`,
+  duplicates preserved) to the reviewer and asked it to apply a
+  `≥3 reverts → blocker, <3 → silence` rule. The v0.12 dogfood
+  showed the reviewer being **adaptive** — at threshold=1-2 it
+  embedded scope hints inline in unrelated blockers' `suggested_fix`
+  ("**Declare docs/cli-reference.md in modified_doc_files this
+  iteration** — it has been silently reverted twice"). The
+  silence-below-threshold rule was respected in the LETTER but
+  not the SPIRIT, and the inline hints didn't change fixer
+  behaviour anyway (iter 3 fix_claude over-reached MORE on the
+  hinted paths). Net effect: Goodhart-prone reviewer side-talk
+  with zero behavioural change.
+- v0.13 fixes this by construction. The threshold now lives in
+  `enforce_fix_scope`'s Python script: it receives the cumulative
+  revert history from `streak_check` each iteration and emits a
+  `chronic_paths[]` output containing only paths that have crossed
+  ≥3 reverts. `streak_check` accumulates this into
+  `cumulative_chronic_paths` (deduplicated). The `alt → reviewer`
+  edges pass ONLY this thresholded list — `cumulative_reverted_paths`
+  and `previous_reverted_paths` are no longer in `review_input`.
+  The reviewer cannot raise scope-honesty blockers on a
+  sub-threshold path because the data for that decision is no
+  longer in its inputs.
+- The system-prompt rule 6 is also simpler: "if
+  cumulative_chronic_paths is non-empty, raise one blocker per
+  element; if empty, say absolutely nothing about scope". No more
+  per-path counting in the prompt.
+- The raw `cumulative_reverted_paths` accumulator stays in
+  `streak_state` (kept for telemetry / events and re-fed to
+  enforce_fix_scope each iter for the threshold computation),
+  but it is **internal**: not exposed to the reviewer.
+- Schema changes: `enforce_fix_scope_input.cumulative_so_far`
+  (new), `enforce_fix_scope_output.chronic_paths` (new),
+  `streak_state.cumulative_chronic_paths` (new),
+  `review_input` loses `previous_reverted_paths` and
+  `cumulative_reverted_paths`, gains `cumulative_chronic_paths`.
+- Bot graph unchanged (14 nodes, 21 edges) — pure
+  schema + prompt + edge-mapping + Python-tool change.
 
 **v0.12.0 changes** (scope-honesty gate — reviewer-mediated
 feedback on repeated over-reach):

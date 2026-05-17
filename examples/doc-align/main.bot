@@ -194,26 +194,24 @@ prompt review_system:
       `approved=true` on a partial audit when you're confident in
       what you have, but the workflow won't terminate until
       coverage meets the threshold across both families.
-   6. **SCOPE-HONESTY GATE (new in v0.12.0)** — read
-      `input.cumulative_reverted_paths`. It is the running
-      history of doc paths the deterministic `enforce_fix_scope`
-      tool has had to revert because the previous fixer edited
-      them WITHOUT declaring them in its
-      `fix_output.modified_doc_files`. Duplicates are preserved
-      so you can count per-path repeats.
+   6. **SCOPE-HONESTY GATE (v0.13.0 — threshold gated in the
+      tool, not the prompt)** — `input.cumulative_chronic_paths`
+      is a (possibly empty) DEDUPLICATED list of doc paths the
+      deterministic `enforce_fix_scope` tool has had to revert
+      ≥ 3 times across the run so far. The threshold is computed
+      inside the tool; you receive ONLY the thresholded result.
 
-      Rules — apply MECHANICALLY, do NOT exercise discretion:
-       a. Count occurrences of each distinct path in
-          `cumulative_reverted_paths`. For any path appearing
-          **≥ 3 times**, raise ONE blocker with:
+      Rules:
+       a. If `cumulative_chronic_paths` is non-empty, raise ONE
+          blocker per element with:
             mismatch_kind:   `stale_behavior_description`
             severity:        high
             confidence:      high
-            doc_path:        the offending path
+            doc_path:        the chronic path
             code_anchor:     "fixer scope contract"
             anchor_kind:     "filesystem_path"
-            code_state:      "fixer modified this path on N iters
-                             without declaring it in
+            code_state:      "fixer has modified this path on
+                             ≥3 iters without declaring it in
                              modified_doc_files; enforce_fix_scope
                              reverted each time. The fix
                              declaration is the writeable-set
@@ -224,29 +222,24 @@ prompt review_system:
                              needs the edit) OR leave it untouched.
                              Silent edits are mechanically
                              reverted."
-       b. Do NOT raise scope-honesty blockers for first or
-          second-time reverts — those are within the filet's
-          normal catchment and the fixer may simply have
-          mis-declared on a one-off basis.
-       c. Do NOT lecture the fixer about the OVERALL revert count
-          or the SUM of reverts across distinct paths. The
-          discipline gap is per-path repetition, not aggregate
-          volume.
-       d. Do NOT modify your other blockers based on this signal.
-          A chronic-scope-violation blocker is in ADDITION to
-          your normal audit findings, not in place of them.
-       e. If `cumulative_reverted_paths` is empty or contains only
-          singletons / pairs, mention nothing about scope in your
-          verdict. Silence is the default state.
+       b. If `cumulative_chronic_paths` is EMPTY, say absolutely
+          NOTHING about scope, reverts, modified_doc_files, or
+          fixer discipline. Do NOT embed scope hints in other
+          blockers' `suggested_fix` or `code_state`. Do NOT
+          mention enforce_fix_scope. The information you would
+          need to talk about scope is not present in your
+          inputs — TREAT IT AS IF IT DOESN'T EXIST.
 
-      Rationale: the filet (enforce_fix_scope) already prevents
-      bad commits from landing. This gate exists ONLY to surface
-      a behavioural pattern (chronic over-reach on specific
-      paths) to the next fix cycle via the legitimate critique
-      channel. Direct "you got reverted" feedback to the fixer
-      would risk Goodhart's law — pre-declare-everything games
-      the contract. Routing through the reviewer as a structured
-      blocker keeps the contract intact.
+          (Why this rule is strict: v0.12 exposed raw revert
+          counts to the reviewer. The reviewer used them
+          adaptively, hinting at threshold=1-2 inline inside
+          unrelated blockers. The fixer ignored the hints. The
+          net effect was Goodhart-prone reviewer side-talk
+          with zero behavioural change. v0.13 fixes this by
+          construction — the raw counts are no longer in
+          your inputs.)
+       c. A scope-honesty blocker is in ADDITION to your normal
+          audit findings, never in place of them.
 
   HOW TO USE `input.recently_changed_code_files` (fix 5):
    This list contains the code files modified since
@@ -344,18 +337,14 @@ prompt review_user_claude:
    - claude fixer: {{input.prior_code_files_touched_claude}}
    - gpt fixer:    {{input.prior_code_files_touched_gpt}}
 
-  SCOPE-HONESTY CHECK (v0.12.0) — apply the rule in
-  review_system point 6 MECHANICALLY. Count how many times each
-  distinct path appears in cumulative_reverted_paths; raise a
-  blocker for every path with count ≥ 3.
+  SCOPE-HONESTY CHECK (v0.13.0) — `cumulative_chronic_paths` is
+  the deduplicated list of paths the fixer has tried to silently
+  edit ≥3 times. If non-empty: raise one structured
+  scope-honesty blocker per element per review_system rule 6a.
+  If empty: stay silent on the topic per rule 6b.
 
-  Previous iteration's enforce_fix_scope reverts (informational
-  only — single-iter signal, not the gate trigger):
-  {{input.previous_reverted_paths}}
-
-  Cumulative enforce_fix_scope reverts across the whole run
-  (duplicates preserved — this is the gate input):
-  {{input.cumulative_reverted_paths}}
+  Chronic scope-violation paths so far (gate trigger):
+  {{input.cumulative_chronic_paths}}
 
   Now run STEP 0 through STEP 6 of `doc-verification-checklist.md`
   and emit a verdict with these fields:
@@ -459,18 +448,14 @@ prompt review_user_gpt:
    - claude fixer: {{input.prior_code_files_touched_claude}}
    - gpt fixer:    {{input.prior_code_files_touched_gpt}}
 
-  SCOPE-HONESTY CHECK (v0.12.0) — apply the rule in
-  review_system point 6 MECHANICALLY. Count how many times each
-  distinct path appears in cumulative_reverted_paths; raise a
-  blocker for every path with count ≥ 3.
+  SCOPE-HONESTY CHECK (v0.13.0) — `cumulative_chronic_paths` is
+  the deduplicated list of paths the fixer has tried to silently
+  edit ≥3 times. If non-empty: raise one structured
+  scope-honesty blocker per element per review_system rule 6a.
+  If empty: stay silent on the topic per rule 6b.
 
-  Previous iteration's enforce_fix_scope reverts (informational
-  only — single-iter signal, not the gate trigger):
-  {{input.previous_reverted_paths}}
-
-  Cumulative enforce_fix_scope reverts across the whole run
-  (duplicates preserved — this is the gate input):
-  {{input.cumulative_reverted_paths}}
+  Chronic scope-violation paths so far (gate trigger):
+  {{input.cumulative_chronic_paths}}
 
   Now run STEP 0 through STEP 6 of `doc-verification-checklist.md`
   and emit a verdict with these fields:
@@ -680,15 +665,20 @@ schema review_input:
   previous_audited_docs: string[]
   coverage_pct: int
   coverage_target_pct: int
-  ## v0.12.0 scope-honesty gate inputs.
-  ## previous_reverted_paths: just the last fix iteration's reverts
-  ## (empty on iter 1, or when the prior fix declared honestly).
-  ## cumulative_reverted_paths: every revert seen across the run,
-  ## WITH duplicates preserved so the reviewer can count how many
-  ## times the SAME path got reverted. A path appearing ≥3 times
-  ## signals the fixer is chronically dishonest about its scope.
-  previous_reverted_paths: string[]
-  cumulative_reverted_paths: string[]
+  ## v0.13.0 scope-honesty gate input.
+  ## cumulative_chronic_paths: the deduplicated list of paths the
+  ## enforce_fix_scope tool has had to revert ≥3 times across the
+  ## run so far. EMPTY by default — the threshold is computed
+  ## inside enforce_fix_scope from the cumulative history, and
+  ## streak_check accumulates only paths that have crossed the
+  ## threshold. The raw revert history is INTENTIONALLY hidden
+  ## from the reviewer: v0.12 exposed it and the reviewer over-
+  ## reacted at threshold=1-2 via inline hints, defeating the
+  ## strict-threshold design. Goodhart-proof by construction:
+  ## the reviewer cannot raise scope-honesty blockers on a
+  ## sub-threshold path because the data for that decision is
+  ## no longer in its inputs.
+  cumulative_chronic_paths: string[]
 
 ## verdict_output: the blockers field stays JSON (DSL schema
 ## parser doesn't support nested object arrays). The per-blocker
@@ -732,12 +722,18 @@ schema streak_state:
   cumulative_audited_pairs: string[]
   cumulative_audited_docs: string[]
   coverage_pct: int
-  ## v0.12.0 scope-honesty: every path the enforce_fix_scope tool
-  ## had to revert this run, in the order the reverts happened,
-  ## duplicates intentional. The next reviewer reads this to
-  ## detect chronic per-path scope violations (≥3 occurrences of
-  ## the SAME path). See the SCOPE-HONESTY GATE in review_system.
+  ## v0.12.0: every path the enforce_fix_scope tool had to revert
+  ## this run (with duplicates). Kept for telemetry — feeds
+  ## enforce_fix_scope's own threshold computation on each iter
+  ## via the fix→enforce edge, and exposed in events/reports
+  ## for post-run debugging. NOT passed to the reviewer (v0.13).
   cumulative_reverted_paths: string[]
+  ## v0.13.0: deduplicated list of paths that have crossed the
+  ## ≥3-revert chronic threshold. Computed inside enforce_fix_scope
+  ## each iter, accumulated here, and exposed to the reviewer as
+  ## the SOLE scope-honesty signal. Empty until any path has been
+  ## reverted 3+ times.
+  cumulative_chronic_paths: string[]
 
 schema fix_input:
   blockers: json
@@ -795,12 +791,23 @@ schema update_audit_cache_output:
 schema enforce_fix_scope_input:
   workspace_dir: string
   declared_paths: string[]
+  ## v0.13.0: the full revert history from streak_check so the
+  ## tool can compute per-path counts AT THIS ITERATION and emit
+  ## `chronic_paths` itself — keeps the threshold logic in
+  ## deterministic-tool land rather than in expression DSL.
+  cumulative_so_far: string[]
 
 schema enforce_fix_scope_output:
   reverted_paths: string[]
   kept_paths: int
   declared_count: int
   changed_count: int
+  ## v0.13.0: paths that, after folding THIS iter's reverts into
+  ## the prior cumulative_so_far history, have been reverted ≥3
+  ## times. Deduplicated. Empty until any path crosses the
+  ## threshold. Routed through streak_check.cumulative_chronic_paths
+  ## to the next reviewer's input.
+  chronic_paths: string[]
 
 
 ## ─── Nodes ──────────────────────────────────────────────────────
@@ -1029,11 +1036,18 @@ compute streak_check:
     cumulative_audited_docs: "unique(concat(outputs.scan_docs.pre_verified_docs, outputs.streak_check.cumulative_audited_docs, input.audited_docs))"
     coverage_pct: "if(outputs.scan_docs.doc_count > 0, if(length(unique(concat(outputs.scan_docs.pre_verified_docs, outputs.streak_check.cumulative_audited_docs, input.audited_docs))) * 100 / outputs.scan_docs.doc_count > 100, 100, length(unique(concat(outputs.scan_docs.pre_verified_docs, outputs.streak_check.cumulative_audited_docs, input.audited_docs))) * 100 / outputs.scan_docs.doc_count), 0)"
     ## v0.12.0: accumulate every enforce_fix_scope revert across
-    ## the run. NO unique() — duplicates are the SIGNAL (same path
-    ## reverted 3+ times = chronic scope dishonesty). The next
-    ## reviewer reads input.cumulative_reverted_paths and raises
-    ## a blocker per per-path repeat (see review_system gate).
+    ## the run, WITH duplicates. Kept for telemetry / events,
+    ## and re-fed to enforce_fix_scope each iter so it can
+    ## compute the per-path count and emit `chronic_paths`
+    ## without re-counting in expr DSL. NOT exposed to reviewer
+    ## in v0.13 — the reviewer only sees cumulative_chronic_paths.
     cumulative_reverted_paths: "concat(outputs.streak_check.cumulative_reverted_paths, input.enforce_reverted_paths)"
+    ## v0.13.0: deduplicated accumulation of paths that have
+    ## crossed the chronic threshold (≥3 reverts). Source of
+    ## truth for the reviewer's SCOPE-HONESTY blocker. Once a
+    ## path lands here it stays — the reviewer keeps surfacing
+    ## the blocker until convergence.
+    cumulative_chronic_paths: "unique(concat(outputs.streak_check.cumulative_chronic_paths, input.enforce_chronic_paths))"
 
 agent fix_claude:
   backend: "claude_code"
@@ -1097,10 +1111,12 @@ tool commit_changes:
 ## stream is the signal that the fixer needs prompt-side
 ## reinforcement (or the agent occasionally over-reaches).
 tool enforce_fix_scope:
-  command: `python3 -c "
-import os, json, subprocess, sys
-ws = sys.argv[1]
-declared = set(sys.argv[2:])
+  command: `WS={{input.workspace_dir}} DECLARED={{input.declared_paths}} CUMULATIVE_SO_FAR={{input.cumulative_so_far}} python3 -c "
+import os, json, subprocess
+from collections import Counter
+ws = os.environ.get('WS','')
+declared = set(json.loads(os.environ.get('DECLARED','[]') or '[]'))
+cumulative_so_far = json.loads(os.environ.get('CUMULATIVE_SO_FAR','[]') or '[]')
 os.chdir(ws)
 try:
     proc = subprocess.run(['git', 'diff', '--name-only'], capture_output=True, text=True, check=True)
@@ -1115,13 +1131,18 @@ for path in out_of_scope:
         reverted.append(path)
     except subprocess.CalledProcessError:
         pass
+# v0.13.0: compute chronic_paths from cumulative_so_far + this iter's reverts.
+# A path is chronic when its total revert count across the run is >= 3.
+counts = Counter(cumulative_so_far) + Counter(reverted)
+chronic = sorted([p for p, c in counts.items() if c >= 3])
 print(json.dumps({
     'reverted_paths': reverted,
     'kept_paths': len(changed) - len(reverted),
     'declared_count': len(declared),
     'changed_count': len(changed),
+    'chronic_paths': chronic,
 }))
-" {{input.workspace_dir}} {{input.declared_paths}}`
+"`
   input: enforce_fix_scope_input
   output: enforce_fix_scope_output
 
@@ -1232,9 +1253,13 @@ workflow doc_align:
     previous_audited_docs: "{{outputs.streak_check.cumulative_audited_docs}}",
     coverage_pct: "{{outputs.streak_check.coverage_pct}}",
     coverage_target_pct: "{{vars.coverage_target_pct}}",
-    ## v0.12.0 scope-honesty feed.
-    previous_reverted_paths: "{{outputs.enforce_fix_scope.reverted_paths}}",
-    cumulative_reverted_paths: "{{outputs.streak_check.cumulative_reverted_paths}}"
+    ## v0.13.0 scope-honesty feed — ONLY the thresholded list.
+    ## The raw + last-iter signals were exposed in v0.12 and the
+    ## reviewer over-reacted at threshold=1-2, hint-leaking the
+    ## scope info inline. v0.13 fixes the gate by construction:
+    ## without the sub-threshold data the reviewer can't talk
+    ## about scope until a path has crossed ≥3 reverts.
+    cumulative_chronic_paths: "{{outputs.streak_check.cumulative_chronic_paths}}"
   }
   alt -> reviewer_gpt with {
     doc_files: "{{outputs.scan_docs.doc_files}}",
@@ -1254,9 +1279,8 @@ workflow doc_align:
     previous_audited_docs: "{{outputs.streak_check.cumulative_audited_docs}}",
     coverage_pct: "{{outputs.streak_check.coverage_pct}}",
     coverage_target_pct: "{{vars.coverage_target_pct}}",
-    ## v0.12.0 scope-honesty feed.
-    previous_reverted_paths: "{{outputs.enforce_fix_scope.reverted_paths}}",
-    cumulative_reverted_paths: "{{outputs.streak_check.cumulative_reverted_paths}}",
+    ## v0.13.0 scope-honesty feed — thresholded list only.
+    cumulative_chronic_paths: "{{outputs.streak_check.cumulative_chronic_paths}}",
     ## v0.7.0: inherit fix_gpt's session on iter 2+ to ride its
     ## prompt cache. Empty on iter 1 (fix_gpt hasn't run);
     ## inherit_if_available tolerates that with a fresh fallback.
@@ -1272,10 +1296,11 @@ workflow doc_align:
     confidence: "{{outputs.reviewer_claude.confidence}}",
     audited_pairs: "{{outputs.reviewer_claude.audited_pairs}}",
     audited_docs: "{{outputs.reviewer_claude.audited_docs}}",
-    ## v0.12.0: carry the last enforce_fix_scope reverts so
-    ## streak_check can fold them into cumulative_reverted_paths.
-    ## Empty on iter 1 (enforce hasn't run yet).
-    enforce_reverted_paths: "{{outputs.enforce_fix_scope.reverted_paths}}"
+    ## v0.12.0+v0.13.0: carry the last enforce_fix_scope reverts
+    ## (raw history, kept for telemetry) AND its chronic_paths
+    ## (thresholded, fed forward to next reviewer).
+    enforce_reverted_paths: "{{outputs.enforce_fix_scope.reverted_paths}}",
+    enforce_chronic_paths: "{{outputs.enforce_fix_scope.chronic_paths}}"
   }
   reviewer_gpt -> streak_check as review_loop(15) with {
     approved: "{{outputs.reviewer_gpt.approved}}",
@@ -1286,7 +1311,8 @@ workflow doc_align:
     confidence: "{{outputs.reviewer_gpt.confidence}}",
     audited_pairs: "{{outputs.reviewer_gpt.audited_pairs}}",
     audited_docs: "{{outputs.reviewer_gpt.audited_docs}}",
-    enforce_reverted_paths: "{{outputs.enforce_fix_scope.reverted_paths}}"
+    enforce_reverted_paths: "{{outputs.enforce_fix_scope.reverted_paths}}",
+    enforce_chronic_paths: "{{outputs.enforce_fix_scope.chronic_paths}}"
   }
 
   ## Stop on (cross-family double approval) AND (coverage gate met).
@@ -1335,13 +1361,17 @@ workflow doc_align:
   ## so out-of-declaration edits are reverted before the next
   ## reviewer sees them. The loop counter follows the inbound
   ## edge — recovery_loop still bounds total fix attempts at 20.
+  ## v0.13.0: also feed the cumulative revert history forward so
+  ## the tool can compute chronic_paths itself.
   fix_claude -> enforce_fix_scope as recovery_loop(20) with {
     workspace_dir: "{{vars.workspace_dir}}",
-    declared_paths: "{{outputs.fix_claude.modified_doc_files}}"
+    declared_paths: "{{outputs.fix_claude.modified_doc_files}}",
+    cumulative_so_far: "{{outputs.streak_check.cumulative_reverted_paths}}"
   }
   fix_gpt -> enforce_fix_scope as recovery_loop(20) with {
     workspace_dir: "{{vars.workspace_dir}}",
-    declared_paths: "{{outputs.fix_gpt.modified_doc_files}}"
+    declared_paths: "{{outputs.fix_gpt.modified_doc_files}}",
+    cumulative_so_far: "{{outputs.streak_check.cumulative_reverted_paths}}"
   }
   enforce_fix_scope -> alt
 
