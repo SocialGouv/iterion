@@ -52,6 +52,12 @@ type runningEntry struct {
 	Attempt       int
 	Cancel        context.CancelFunc
 
+	// CancelIssuedAt is non-zero once reconcileStalled has called
+	// Cancel(); subsequent ticks suppress the cancel + warn re-spam
+	// while the worker drains (F-CD-12). The actor goroutine is the
+	// single writer so no mutex is needed.
+	CancelIssuedAt time.Time
+
 	// issueSnapshot is the tracker.Issue snapshot used to render
 	// dispatch.vars. Kept so the conductor can render a fresh prompt
 	// on retry without re-fetching from the tracker.

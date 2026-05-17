@@ -136,10 +136,18 @@ func (m *Manager) SaveConfig(cfg *Config) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	// Serialise the disk write + in-memory swap under m.mu so two
+	// concurrent SaveConfig calls don't end with disk reflecting one
+	// race winner and m.cfg the other (F-CD-8). The actor's Reload is
+	// fired after the lock release because Reload itself locks; we
+	// snapshot the running conductor pointer under the lock so a
+	// concurrent Stop+Start doesn't make us call Reload on a freshly-
+	// killed actor.
+	m.mu.Lock()
 	if err := saveConfigJSON(m.configPath, cfg); err != nil {
+		m.mu.Unlock()
 		return err
 	}
-	m.mu.Lock()
 	m.cfg = cfg
 	cur := m.cur
 	m.mu.Unlock()

@@ -77,13 +77,23 @@ func (c *Conductor) reconcileStalled(_ context.Context, cfg *Config) {
 	}
 	now := time.Now()
 	for id, r := range c.state.running {
-		if now.Sub(r.LastEventAt) > timeout {
-			c.logger.Warn("conductor: %s stalled (no event for %s) — cancelling", r.Identifier, now.Sub(r.LastEventAt))
-			if r.Cancel != nil {
-				r.Cancel()
-			}
-			_ = id // keep entry; cmdRunFinished will remove it
+		if now.Sub(r.LastEventAt) <= timeout {
+			continue
 		}
+		if !r.CancelIssuedAt.IsZero() {
+			// Already cancelled on a previous tick; the worker is
+			// draining. Log at debug so operators still see the
+			// progress trace without filling the warn channel with
+			// "stalled" entries every poll cadence.
+			c.logger.Debug("conductor: %s still draining (cancel issued %s ago)", r.Identifier, now.Sub(r.CancelIssuedAt))
+			continue
+		}
+		c.logger.Warn("conductor: %s stalled (no event for %s) — cancelling", r.Identifier, now.Sub(r.LastEventAt))
+		if r.Cancel != nil {
+			r.Cancel()
+		}
+		r.CancelIssuedAt = now
+		_ = id // keep entry; cmdRunFinished will remove it
 	}
 }
 

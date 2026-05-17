@@ -136,15 +136,22 @@ func (s *Store) Board() *Board {
 	return cloneBoard(s.board)
 }
 
-// SetBoard validates and replaces the board configuration.
+// SetBoard validates and replaces the board configuration. The disk
+// write happens BEFORE the in-memory swap so a write failure leaves
+// both the live store and on-disk state consistent on the old board
+// — the previous order (swap → write) silently diverged in-memory
+// from disk on EIO / quota / permission errors (F-CD-9).
 func (s *Store) SetBoard(b *Board) error {
 	if err := b.Validate(); err != nil {
 		return err
 	}
+	clone := cloneBoard(b)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.board = cloneBoard(b)
+	prev := s.board
+	s.board = clone
 	if err := s.writeBoardLocked(); err != nil {
+		s.board = prev
 		return err
 	}
 	return s.emitPostCommitEvent(Event{Type: EvtBoardUpdated})
