@@ -60,7 +60,7 @@ export default function PreFlightPanel({
               className="inline-flex items-center gap-1 text-[11px] text-accent hover:underline"
             >
               <ExternalLinkIcon className="w-3 h-3" />
-              Run console
+              console
             </Link>
           )}
         </div>

@@ -1,4 +1,6 @@
 import { useCallback } from "react";
+import { Link } from "wouter";
+import { ExternalLinkIcon } from "@radix-ui/react-icons";
 
 import AppHeader from "@/components/shared/AppHeader";
 import {
@@ -131,8 +133,19 @@ function SessionHeader({
           </span>
         )}
       </h2>
-      <div className="text-[10px] uppercase tracking-wide text-fg-subtle">
-        {humanStatus(session.status, session.runStatus)}
+      <div className="flex items-baseline gap-3">
+        {session.runId && (
+          <Link
+            href={`/runs/${encodeURIComponent(session.runId)}`}
+            className="inline-flex items-center gap-1 text-[11px] text-accent hover:underline"
+          >
+            <ExternalLinkIcon className="w-3 h-3" />
+            console
+          </Link>
+        )}
+        <div className="text-[10px] uppercase tracking-wide text-fg-subtle">
+          {humanStatus(session.status, session.runStatus)}
+        </div>
       </div>
     </div>
   );
