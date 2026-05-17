@@ -127,9 +127,9 @@ Fix:
 - Pass the right node ID. The IR node ID is the value after `judge` / `agent` in the `.iter` source (e.g. `judge reviewer:` → `--judge-node reviewer`).
 - If your workflow has no bounded loop (no `-> as loop_name(N)` edges), the bench has nothing to iterate over. Add a loop or measure a different recipe.
 
-### Trivy CI blocks a PR with HIGH CVE
+### Trivy CI reports a HIGH CVE
 
-**Probable cause**: a dependency (Go module, npm package, or base image layer) has a newly-published HIGH-severity advisory.
+**Probable cause**: a dependency (Go module, npm package, or base image layer) has a newly-published HIGH-severity advisory. The Trivy workflow publishes SARIF and summaries; it does not fail PRs by itself unless your repository adds a separate hard gate through code scanning or branch protection.
 
 Diagnose:
 1. Read the SARIF output uploaded to the PR's "Code scanning" tab.

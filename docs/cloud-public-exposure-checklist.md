@@ -24,7 +24,7 @@ How to verify: try `curl https://<host>/api/runs` with no token — must return 
 
 - [ ] **All Mongo queries** include the active tenant filter. Sample by inspecting the access log: every query line should show a `tenantID=<id>` matching the JWT.
 - [ ] **All blob keys** are namespaced under `runs/<run-id>/...` and the run-id is itself a tenant-scoped value. No cross-tenant prefix collision possible.
-- [ ] **Audit log** captures every login, every run launch, every API key issuance, every team-membership change, and is retained for ≥ 90 days. See `pkg/server/audit/`.
+- [ ] **Audit trail requirement** is covered for your deployment: collect the server/runner structured logs plus Mongo auth-store records in your log aggregator, retain them for ≥ 90 days, and verify they cover login, run launch, API-key issuance, and team-membership changes. There is no dedicated persistent audit-log package in the current tree, so treat this as an operator control/backlog item rather than an in-repo subsystem.
 - [ ] **Admin-only endpoints** (`/api/admin/*`) require both `requireAuth` AND a role check (`requireSuperAdmin`).
 
 How to verify: log in as user A on tenant A, take their JWT, try to call `/api/runs/<a-run-id-from-tenant-B>` — must return 404 or 403, never 200.
@@ -50,7 +50,7 @@ How to verify: `kubectl describe pod <iterion-server-pod> | grep -i secret` — 
 
 ## 5. Image supply chain
 
-- [ ] **Trivy CI** runs on every PR (not just `main`) and blocks on HIGH/CRITICAL. See [.github/workflows/trivy.yml](../.github/workflows/trivy.yml).
+- [ ] **Trivy CI** runs on PRs, pushes to `main`, weekly schedule, and post-image builds; the workflow publishes SARIF/results summaries for HIGH/CRITICAL findings but intentionally does **not** fail the PR or image release by itself. If you require a hard gate, configure branch protection or a code-scanning rule outside the current workflow. See [.github/workflows/trivy.yml](../.github/workflows/trivy.yml).
 - [ ] **Image references** in production values use `image: ghcr.io/socialgouv/iterion:<digest>@sha256:…`, not floating tags like `:latest` or `:v1`.
 - [ ] **Sandbox image** is pre-built and digest-pinned. The Kubernetes driver rejects `sandbox.build:` by design — production deployments reference a CI-built `iterion-sandbox-slim:<version>` digest.
 - [ ] **Cosign / sigstore** signatures verified at admission for production. (Optional but recommended; falls outside the chart's scope.)
@@ -60,7 +60,7 @@ How to verify: `helm template ./charts/iterion -f values-prod.yaml | grep image:
 ## 6. Observability + alerting
 
 - [ ] **Prometheus** scrapes `/metrics` on the server. The chart's `metrics.podMonitor.enabled` switch wires this when prometheus-operator is installed.
-- [ ] **OTLP traces** exported to a collector if you have one. `OTLP_EXPORTER_ENDPOINT` set on server + runner.
+- [ ] **OTLP traces** exported to a collector if you have one. Set `OTEL_EXPORTER_OTLP_ENDPOINT` (or the traces-specific `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) on server + runner.
 - [ ] **Log format** is JSON in production. `ITERION_LOG_FORMAT=json` set on server + runner; verified by piping a server log line through `jq`.
 - [ ] **Alert rules** exist for: `/readyz` 503 > 1m, NATS queue depth > 100 sustained, runner OOM kills, Trivy failed scan, JWT signing-key proximity to expiry.
 - [ ] **Runbook** linked from each alert. The runbook is `cloud-troubleshooting.md` plus alert-specific notes.

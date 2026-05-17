@@ -16,7 +16,7 @@ Welcome to the Iterion docs. Pages are organised by audience and topic.
 
 | Page | Read this if… |
 |---|---|
-| [install.md](install.md) | …you want to install Iterion. Covers all six delivery modes (CLI, web editor, desktop, Docker, cloud, SDK). |
+| [install.md](install.md) | …you want to install Iterion. Covers all seven delivery modes (CLI, web editor, desktop, Docker, cloud, conductor, SDK). |
 | [visual-editor.md](visual-editor.md) | …you want a browser-based drag-and-drop workflow editor. |
 | [desktop.md](desktop.md) | …you want the native window app with multi-project + OS keychain + auto-update. |
 | [examples.md](examples.md) | …you want to learn from working `.iter` files. |
@@ -57,7 +57,7 @@ Welcome to the Iterion docs. Pages are organised by audience and topic.
 | [cloud-deployment.md](cloud-deployment.md) | Operator runbook: secrets, NetworkPolicy, observability, resume, migration. |
 | [cloud-admin.md](cloud-admin.md) | Multitenant admin guide: bootstrap super-admin, SSO config, BYOK + OAuth-forfait, secret rotation. |
 | [cloud-user.md](cloud-user.md) | User-facing guide: login, teams, BYOK, OAuth subscriptions, invitations. |
-| [cloud-troubleshooting.md](cloud-troubleshooting.md) | Symptoms-first reference: queued runs not starting, hangs, /readyz 503s, WS streaming, budget overruns, Trivy CVE blocks. |
+| [cloud-troubleshooting.md](cloud-troubleshooting.md) | Symptoms-first reference: queued runs not starting, hangs, /readyz 503s, WS streaming, budget overruns, Trivy CVE findings. |
 | [cloud-public-exposure-checklist.md](cloud-public-exposure-checklist.md) | 10-section checklist before opening a deployment to public traffic. Hard prerequisites: auth, multitenancy, NetworkPolicy, secrets, image supply chain, observability, probes, budgets, backups, runbooks. |
 
 ## Architecture & contributing

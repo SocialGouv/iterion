@@ -110,31 +110,52 @@ One JSON object per line, append-only. Events are ordered by `seq` (monotonic wi
 
 ### Event Types
 
-| Type                      | Node? | Data keys                              |
-|---------------------------|-------|----------------------------------------|
-| `run_started`             | no    | —                                      |
-| `run_resumed`             | no    | —                                      |
-| `run_paused`              | yes   | —                                      |
-| `run_finished`            | no    | —                                      |
-| `run_failed`              | yes   | `error`, `code`, `resumable?`          |
-| `run_cancelled`           | yes   | `reason`                               |
-| `run_interrupted`         | no    | `reason` (e.g. "server drained: editor process shutting down") |
-| `branch_started`          | yes   | —                                      |
-| `node_started`            | yes   | `kind`                                 |
-| `node_finished`           | yes   | `output`, `_tokens`, `_cost_usd`       |
-| `llm_request`             | yes   | provider-specific                      |
-| `llm_retry`               | yes   | `attempt`, `error`                     |
-| `node_recovery`           | yes   | `code`, `reason`, `attempt`, `delay_ms?`, `error?` |
-| `llm_step_finished`       | yes   | provider-specific                      |
-| `tool_called`             | yes   | `tool`, `args`                         |
-| `tool_error`              | yes   | `tool`, `error`                        |
-| `artifact_written`        | yes   | `publish`, `version`                   |
-| `human_input_requested`   | yes   | `interaction_id`, `questions`          |
-| `human_answers_recorded`  | yes   | `interaction_id`, `answers`            |
-| `join_ready`              | yes   | `strategy`, `required`, `failed_branches` |
-| `edge_selected`           | no    | `from`, `to`, `condition?`, `negated?`, `loop?`, `iteration?` |
-| `budget_warning`          | yes   | `dimension`, `used`, `limit`           |
-| `budget_exceeded`         | yes   | `dimension`, `used`, `limit`           |
+The authoritative list is `pkg/store/event.go` (`EventType` constants). Current persisted event types are:
+
+| Type | Node? | Data keys |
+|---|---|---|
+| `run_started` | no | — |
+| `branch_started` | yes | — |
+| `branch_finished` | yes | `error?`, `join_node?` |
+| `node_started` | yes | `kind` |
+| `llm_request` | yes | `model`, `message_count`, `tool_count`, `reasoning_effort?` |
+| `llm_prompt` | yes | `system_prompt`, `user_message` |
+| `llm_retry` | yes | `attempt`, `delay_ms`, `error?`, `status_code?` |
+| `node_recovery` | yes | `code`, `reason`, `attempt`, `delay_ms?`, `error?` |
+| `llm_step_finished` | yes | `step`, `input_tokens`, `output_tokens`, `finish_reason`, `tool_calls`, `cache_read_tokens?`, `cache_write_tokens?`, `response_text?`, `tool_call_details?` |
+| `llm_compacted` | yes | `before_messages`, `after_messages`, `removed_message_count` |
+| `tool_started` | yes | `tool`, `input_size`, `tool_use_id?`, `input?`, `input_preview?`, `input_ref?` |
+| `tool_called` | yes | `tool`, `input_size`, `duration_ms`, `tool_use_id?`, `input?`, `output?`, `output_preview?`, `output_size?`, `output_ref?` |
+| `tool_error` | yes | `tool`, `input_size`, `duration_ms`, `tool_use_id?`, `error`, `input?`, `output?`, `output_preview?`, `output_size?`, `output_ref?` |
+| `artifact_written` | yes | `publish`, `version` |
+| `human_input_requested` | yes | `interaction_id`, `questions` |
+| `run_paused` | yes | — |
+| `human_answers_recorded` | yes | `interaction_id`, `answers` |
+| `run_resumed` | no | `resumed_from?`, `restart_node?`, `from_entry?` |
+| `join_ready` | yes | `strategy`, `failed_branches?` |
+| `node_finished` | yes | `output`, `_tokens`, `_cost_usd` (router nodes may instead emit `selected_route`, `reasoning`) |
+| `edge_selected` | no | `from`, `to`, `condition?`, `negated?`, `loop?`, `iteration?`, `expression?` |
+| `budget_warning` | yes | `dimension`, `used`, `limit` |
+| `budget_exceeded` | yes | `dimension`, `used`, `limit`, `hard_limit?` |
+| `run_finished` | no | — |
+| `run_failed` | yes | `error`, `code`, `resumable?` |
+| `run_cancelled` | yes | `reason` |
+| `run_interrupted` | no | `reason` |
+| `delegate_started` | yes | `backend` |
+| `delegate_finished` | yes | `backend`, `duration_ms`, `tokens`, `exit_code`, `raw_output_len`, `parse_fallback`, `formatting_pass_used`, `stderr?` |
+| `delegate_error` | yes | `backend`, `duration_ms`, `tokens`, `exit_code`, `error?`, `stderr?` |
+| `delegate_retry` | yes | `backend`, `attempt`, `delay_ms`, `error?` |
+| `sandbox_skipped` | no | `driver`, `mode`, `source`, `reason` |
+| `sandbox_started` | no | `driver`, `mode`, `source`, `image`, `has_post_create` |
+| `sandbox_claw_routed_via_runner` | no | `reason`, `limitations_v1` |
+| `network_blocked` | no | `host`, `reason`, `run_id` |
+| `sandbox_build_started` | no | `driver`, `dockerfile`, `context` |
+| `sandbox_build_finished` | no | `driver`, `target`, `duration_ms` |
+| `sandbox_build_failed` | no | `driver`, `error` |
+| `preview_url_available` | yes | `url`, `kind?`, `scope?`, `source?` |
+| `browser_screenshot` | yes | `attachment_name`, `url?`, `source`, `mime?`, `tool_call_id?` |
+| `browser_session_started` | yes | `session_id`, `node_id` |
+| `browser_session_ended` | yes | `session_id` |
 
 ## artifacts/<node_id>/<version>.json
 

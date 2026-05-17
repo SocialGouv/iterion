@@ -14,7 +14,7 @@ events.
 |---|---|---|
 | `TestLive_Lite_DualModel_PlanImplementReview` | multi-model plan/implement/review pipeline | claude_code + claw |
 | `TestLive_Lite_SessionContinuity_ReviewFix` | session forks, review→fix loop, resume | claude_code |
-| `TestLive_Full_ExhaustiveDSLCoverage` | every DSL feature (router modes, joins, human, tools) | mixed |
+| `TestLive_Full_ExhaustiveDSLCoverage` | every DSL feature (router modes, await convergence, human, tools, compute) | mixed |
 | `TestLive_Lite_SessionInheritValidation` | session-inherit between claude_code agents | claude_code |
 | `TestLive_Lite_ClawComprehensive` | claw backend across providers, prompt cache obs, retry | claw |
 | `TestLive_Lite_ClawBuiltinTools` | read_file, write_file, bash, glob, grep, file_edit, web_fetch | claw |
@@ -54,7 +54,7 @@ coverage beyond what's already in place.
 |---|---|
 | OAuth broker | Requires a real OAuth provider; httptest in claw covers the protocol. iterion doesn't currently consume the broker (no MCP servers with OAuth in fixtures). |
 | Plugin marketplace | Requires a real catalog/tarball server; httptest covers it. iterion doesn't ship a marketplace integration. |
-| OTLP exporter | Requires a real collector; httptest covers it. iterion has no OTLP wiring. |
+| OTLP exporter | Requires a real collector for an end-to-end live test. iterion server/runner wire OTLP/HTTP through `pkg/cloud/tracing` when `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is set; `pkg/cloud/tracing` tests cover exporter setup, and claw-code-go httptest coverage exercises its exporter behavior. |
 | CLAUDE.md auto-load | Runs at the claw TUI boot, not in a workflow context. iterion uses its own command registry. |
 | Bedrock / Vertex / Foundry providers | Requires real cloud creds (AWS/GCP/Azure). Code paths are unit-tested with mocked SDK clients. |
 | Lifecycle hooks (PreToolUse/Post/Stop) | iterion doesn't currently install a `lifehooks.Runner` on its claw client. Adding one is a separate feature. |

@@ -96,7 +96,7 @@ Think of it as a DAG runner purpose-built for LLM workflows — with first-class
 
 ### Pick your install
 
-Same engine, six delivery modes — pick the one that fits your workflow:
+Same engine, seven delivery modes — pick the one that fits your workflow:
 
 | Mode | Best for | Install | Docs |
 |---|---|---|---|

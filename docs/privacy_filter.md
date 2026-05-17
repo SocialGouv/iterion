@@ -56,7 +56,7 @@ should either pre-process inputs or wait for the v2 release.
 | `mode` | `redact` \| `detect` | `redact` | redact replaces with placeholders; detect returns spans |
 | `categories` | string[] | all 5 | scope detection to a subset |
 | `min_score` | number | 0.5 | confidence floor (per rule) |
-| `placeholder_format` | string | `[PII_{token}]` | `{token}` is 8-hex stable per (run, value, category); `{category}` substitutes the upper-case category name |
+| `placeholder_format` | string | `{token}` | `{token}` is the full stable token (`PII_` + 8 hex) per (run, value, category); `{category}` substitutes the upper-case category name. Custom wrappers/delimiters are allowed, but anything outside the token remains after `privacy_unfilter` substitutes the token back. |
 
 **Output (redact):** `redacted` text + `placeholders[]` (each with
 `token`, `category`, `score`, `rule`) + `category_counts` +
@@ -161,7 +161,7 @@ workflow main:
   start -> sanitize -> classify -> done
 ```
 
-The LLM only ever sees `[PII_xxx]` tokens for emails and phone numbers.
+The LLM only ever sees `PII_xxx` tokens for emails and phone numbers by default.
 The triage output (category, severity, summary) typically contains no
 PII either, so the entire run trace is publishable / auditable as-is.
 
@@ -198,7 +198,7 @@ schema email_in:
   body: string
 
 prompt draft_reply_prompt:
-  Draft a reply. The text contains tokens like [PII_xxx] —
+  Draft a reply. The text contains tokens like PII_xxx —
   PRESERVE THEM VERBATIM. Do not rewrite, translate, or remove them.
 
 tool redact_email:
@@ -335,7 +335,8 @@ node types. The DSL stays minimal.
   ticket numbers, project codes) are not detected unless they match a
   built-in rule — add a regex pre-processor if needed.
 - **Placeholder preservation by LLMs.** Instruct prompts explicitly to
-  keep `[PII_xxx]` verbatim. Validate against your specific model.
+  keep `PII_xxx` verbatim (or your custom wrapper, if you set
+  `placeholder_format`). Validate against your specific model.
 - **Large inputs.** No hard limit, but very large texts (>10 MB) will
   be slow due to regex scanning. Pre-chunk if needed.
 - **Adversarial inputs.** Go's `regexp` package uses RE2 — no

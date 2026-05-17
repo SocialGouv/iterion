@@ -149,8 +149,8 @@ caller. We will revisit if a third privacy-sensitive tool surfaces.
 ## Deviations from the source plan
 
 The plan called for a default placeholder template of
-`[PII_{token}]` (with `{token}` substituting to the bare 8-hex
-suffix or the full `PII_xxxxxxxx` atom — the plan was internally
+`[PII_{token}]` (with `{token}` substituting either to an 8-hex
+suffix or to the full `PII_xxxxxxxx` atom — the plan was internally
 inconsistent). Implementing it surfaced a round-trip issue:
 
 - Token = `PII_a3f5b1c2`, template = `[PII_{token}]` produces

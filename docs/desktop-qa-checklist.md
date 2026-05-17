@@ -28,7 +28,7 @@ For every platform row, walk every scenario column. Mark `✓` (pass), `✗` (fa
 - [ ] First-launch with no pre-existing config shows the Welcome wizard.
 - [ ] Single-instance enforced (launching a second iterion-desktop focuses the existing window, doesn't spawn a duplicate).
 - [ ] Window position + size restored from previous session (multi-monitor: re-centred if previous origin is off-screen).
-- [ ] Tray / dock icon appears and is interactive (Show/Hide, Quit).
+- [ ] Normal dock/taskbar app presence works: the window can be focused/restored from the OS app icon and Quit exits cleanly. (No tray/menu-bar status-item requirement in v1.)
 - [ ] `Help → About` shows the correct version + commit SHA + release notes URL.
 
 ### 2. Multi-project

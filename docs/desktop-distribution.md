@@ -16,10 +16,8 @@ prefixed `iterion-desktop-*`.
 ## Artefacts produced per release
 
 ```
-iterion-desktop-darwin-arm64.zip          # Iterion.app/, ditto-compressed
-iterion-desktop-darwin-arm64.zip.sig
-iterion-desktop-darwin-amd64.zip
-iterion-desktop-darwin-amd64.zip.sig
+iterion-desktop-darwin-universal.zip       # Iterion.app/, universal amd64+arm64, ditto-compressed
+iterion-desktop-darwin-universal.zip.sig
 iterion-desktop-windows-amd64.exe         # portable
 iterion-desktop-windows-amd64.exe.sig
 iterion-desktop-windows-amd64-installer.exe
@@ -30,8 +28,16 @@ iterion-desktop-windows-arm64-installer.exe
 iterion-desktop-windows-arm64-installer.exe.sig
 iterion-desktop-linux-amd64.AppImage
 iterion-desktop-linux-amd64.AppImage.sig
+iterion-desktop-linux-amd64.tar.gz        # raw binary + desktop file/icon
+iterion-desktop-linux-amd64.tar.gz.sig
+iterion-desktop-linux-amd64.deb           # Debian/Ubuntu package with desktop + CLI
+iterion-desktop-linux-amd64.deb.sig
 iterion-desktop-linux-arm64.AppImage
 iterion-desktop-linux-arm64.AppImage.sig
+iterion-desktop-linux-arm64.tar.gz        # raw binary + desktop file/icon
+iterion-desktop-linux-arm64.tar.gz.sig
+iterion-desktop-linux-arm64.deb           # Debian/Ubuntu package with desktop + CLI
+iterion-desktop-linux-arm64.deb.sig
 iterion-desktop-manifest.json
 iterion-desktop-manifest.json.sig
 ```

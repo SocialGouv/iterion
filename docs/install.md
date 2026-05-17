@@ -2,7 +2,7 @@
 
 # Install
 
-Iterion ships in six delivery flavours. Pick the one that fits your workflow — the DSL, runtime, persistence and observability are identical across all of them.
+Iterion ships in seven delivery flavours. Pick the one that fits your workflow — the DSL, runtime, persistence and observability are identical across all of them.
 
 | Mode | Best for | Install |
 |---|---|---|
@@ -11,9 +11,10 @@ Iterion ships in six delivery flavours. Pick the one that fits your workflow —
 | 🪟 [**Desktop app**](desktop.md) | Native window with multi-project, OS keychain, auto-update | Download `iterion-desktop` from [Releases](https://github.com/SocialGouv/iterion/releases/latest) |
 | 🐳 [**Docker**](#docker) | Zero-install runs, reproducible CI, isolated environments | `docker run --rm ghcr.io/socialgouv/iterion:latest` |
 | ☁️ [**Cloud / server**](cloud.md) | Multi-tenant deployment, shared run store, REST/WS API | `helm install iterion oci://ghcr.io/socialgouv/charts/iterion` |
+| 🎼 [**Conductor**](conductor.md) | Autonomous loop — poll a tracker, dispatch a workflow per issue | Bundled with the CLI: `iterion conduct iterion.conductor.yaml` |
 | 📦 [**TypeScript SDK**](../sdks/typescript/) | Programmatic invocation from Node/Deno/Bun apps | `npm install @iterion/sdk` |
 
-All six invoke the same Go core. Pick CLI for automation, the web editor for daily editing, the desktop app if you want a one-click install with managed credentials, Docker when you want to run iterion without installing it on the host, cloud mode when teams need a shared always-on instance, or the SDK to embed iterion inside another Node/Deno/Bun application.
+All seven invoke the same Go core. Pick CLI for automation, the web editor for daily editing, the desktop app if you want a one-click install with managed credentials, Docker when you want to run iterion without installing it on the host, cloud mode when teams need a shared always-on instance, the conductor when you want an autonomous issue-dispatch loop, or the SDK to embed iterion inside another Node/Deno/Bun application.
 
 ---
 

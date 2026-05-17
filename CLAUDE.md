@@ -89,6 +89,8 @@ Other top-level directories: `editor/` (React/Vite frontend), `examples/` (.iter
   - `ir/` — Intermediate Representation compilation and validation
   - `unparse/` — IR back to .iter serialization
   - `types/` — Shared enums (transports, field types, session/router/await/interaction modes)
+  - `expr/` — Expression evaluator for `compute` nodes and `when` conditions
+  - `workflowfile/` — Workflow source-file loading + hash computation (used by `iterion resume` change detection)
 - `pkg/backend/` — Execution stack (LLM + tools)
   - `model/` — Executor registry (`ClawExecutor`), schema validation, event hooks
   - `delegate/` — Delegation backends (claude_code, codex subprocess; claw in-process)
@@ -97,6 +99,8 @@ Other top-level directories: `editor/` (React/Vite frontend), `examples/` (.iter
   - `recipe/` — Recipe handling for tool adapters and execution policies
   - `cost/` — Cost estimation and budgeting
   - `llmtypes/` — LLM SDK abstraction (`LLMTool`, `FatalToolError`, `ModelCapabilities`)
+  - `detect/` — Backend credential auto-detection (OAuth, API keys, AWS/GCP) consumed by `model/executor.go`'s resolver and the editor toolbar BackendStatusPill
+  - `tooldisplay/` — Human-readable rendering of tool calls for the run console / report
 - `pkg/runtime/` — Workflow execution engine (branch scheduling, events, budget, recovery dispatch)
 - `pkg/store/` — Run persistence (JSON-based, versioned artifacts, events.jsonl)
 - `pkg/server/` — HTTP server for editor backend (embedded static UI)
@@ -120,6 +124,8 @@ Other top-level directories: `editor/` (React/Vite frontend), `examples/` (.iter
 - `pkg/secrets/` — Secret resolution (env / file / KMS) shared across backends and sandbox
 - `pkg/internal/` — Internal utilities (not importable outside `pkg/`)
   - `appinfo/` — Build-time version/commit injection (LDFLAGS targets)
+  - `mongoutil/` — MongoDB helpers used by `pkg/cloud/` for the cloud-mode Mongo store
+  - `proc/` — Process/subprocess helpers (PID management, signal handling)
 
 ## Key Dependencies
 
@@ -355,11 +361,13 @@ filesystem.
 
 Current bundles and their skills:
 - [examples/whats-next/skills/](examples/whats-next/skills/) —
-  6 skills: `whats-next` (operating playbook), `iterion-bot-catalog`,
-  `iterion-dsl-quickref`, `repo-survey`, `roadmap-synthesis`,
-  `priority-elicitation`. The five iterion-domain ones were
-  produced by a dogfood run of claw + `openai/gpt-5.5` against
-  this repo — see
+  7 skills: `whats-next` (operating playbook), `iterion-bot-catalog`,
+  `iterion-dsl-quickref`, `iterion-board` (board capabilities
+  reference for the claude_code / claw `board.*` tools),
+  `repo-survey`, `roadmap-synthesis`, `priority-elicitation`. The
+  five original iterion-domain skills were produced by a dogfood
+  run of claw + `openai/gpt-5.5` against this repo; `iterion-board`
+  was added later by the board-capabilities work — see
   [scripts/adhoc/whats-next-skills-gen.iter](scripts/adhoc/whats-next-skills-gen.iter)
   for the generator (the seed for a future formalised
   `generate-skills.bot`).

@@ -14,7 +14,7 @@ iterion editor --no-browser        # Don't auto-open browser
 ## What you get
 
 - **Canvas** — Drag-and-drop node graph with auto-layout, zoom, search, and keyboard shortcuts
-- **Node library** — Drag pre-built node types (agent, judge, router, join, human, tool) onto the canvas
+- **Node library** — Drag pre-built node types (agent, judge, router, human, tool, compute) onto the canvas
 - **Property editor** — Edit node properties, schemas, prompts, and edge conditions in a side panel
 - **Source view** — Split-pane view showing the raw workflow source (`.iter` / `.bot`) alongside the visual graph
 - **Live diagnostics** — Real-time validation errors and warnings as you edit (codes C001–C072, sparse)
