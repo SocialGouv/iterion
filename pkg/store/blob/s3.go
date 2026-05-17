@@ -234,11 +234,35 @@ func (c *S3Client) DeleteRun(ctx context.Context, runID string) error {
 		if len(ids) == 0 {
 			continue
 		}
-		if _, err := c.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+		// DeleteObjects returns 200 with a per-object error list rather
+		// than a top-level error for cases like governance / legal
+		// hold, eventual consistency, or slow replicas. With Quiet=true
+		// the response only contains errors. Capturing them into
+		// `collected` so the retention sweeper actually reports
+		// orphans instead of silently leaving blobs behind.
+		out, err := c.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
 			Bucket: aws.String(c.bucket),
 			Delete: &types.Delete{Objects: ids, Quiet: aws.Bool(true)},
-		}); err != nil {
+		})
+		if err != nil {
 			collected = append(collected, fmt.Errorf("blob: delete page under %s: %w", prefix, err))
+		}
+		if out != nil {
+			for _, oerr := range out.Errors {
+				key := ""
+				if oerr.Key != nil {
+					key = *oerr.Key
+				}
+				code := ""
+				if oerr.Code != nil {
+					code = *oerr.Code
+				}
+				msg := ""
+				if oerr.Message != nil {
+					msg = *oerr.Message
+				}
+				collected = append(collected, fmt.Errorf("blob: delete %s: %s (%s)", key, msg, code))
+			}
 		}
 	}
 	if len(collected) > 0 {

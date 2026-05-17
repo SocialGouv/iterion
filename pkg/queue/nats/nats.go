@@ -309,6 +309,14 @@ func (c *Conn) NewConsumer(ctx context.Context) (*Consumer, error) {
 // Fetch pulls a single ready message, blocking up to wait. Returns
 // (nil, ErrNoMessage) when the wait elapses without a delivery.
 func (cons *Consumer) Fetch(ctx context.Context, wait time.Duration) (*Delivery, error) {
+	// Respect caller cancellation before either phase. FetchNoWait
+	// takes no context (SDK shape) and can stall on a partitioned
+	// NATS for the connection RTT even though loopCtx may already
+	// have been cancelled by Shutdown — that eroded the shutdown
+	// grace contract. Short-circuit cleanly here.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	batch, err := cons.cons.FetchNoWait(1)
 	if err != nil {
 		return nil, fmt.Errorf("queue/nats: fetch: %w", err)

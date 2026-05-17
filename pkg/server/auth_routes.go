@@ -932,9 +932,13 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid request: %v", err)
 		return
 	}
+	statusChangedToDisabled := false
 	if req.Status != nil {
 		switch identity.UserStatus(*req.Status) {
 		case identity.UserStatusActive, identity.UserStatusDisabled, identity.UserStatusPendingPasswordChange:
+			if u.Status != identity.UserStatusDisabled && identity.UserStatus(*req.Status) == identity.UserStatusDisabled {
+				statusChangedToDisabled = true
+			}
 			u.Status = identity.UserStatus(*req.Status)
 		default:
 			httpError(w, http.StatusBadRequest, "invalid status")
@@ -951,6 +955,18 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if err := s.authStore().UpdateUser(r.Context(), u); err != nil {
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
+	}
+	// On admin-disable, revoke every live refresh session so the user
+	// loses access at the next access-token expiry (≤15 min) instead
+	// of waiting for the existing refresh TTL (~30 days). Without this,
+	// Refresh re-fetches the user but a TOCTOU window between
+	// GetUser-Status check and the CAS-revoke (auth/service.go:282-293)
+	// allows a 15-min access token to be minted after the admin
+	// clicked "disable" — see F-CL-5 in docs/reviews/.
+	if statusChangedToDisabled {
+		if err := s.authSvc.RevokeUserSessions(r.Context(), u.ID); err != nil && s.logger != nil {
+			s.logger.Warn("auth: revoke sessions on user %s disable: %v", u.ID, err)
+		}
 	}
 	writeJSON(w, s.toUserView(u))
 }

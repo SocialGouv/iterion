@@ -309,6 +309,15 @@ func (s *Service) Refresh(ctx context.Context, presented, userAgent, ip string) 
 	return s.issueLogin(ctx, u, userAgent, ip)
 }
 
+// RevokeUserSessions invalidates every live refresh session for the
+// user. Used by the admin "disable user" flow so the user loses
+// access at the next access-token expiry (≤15 min) instead of waiting
+// for refresh TTL (~30 days). Best-effort: a store-write failure is
+// surfaced to the caller, which typically logs and continues.
+func (s *Service) RevokeUserSessions(ctx context.Context, userID string) error {
+	return s.sessions.RevokeUserSessions(ctx, userID, s.now().UTC())
+}
+
 // Logout revokes the presented refresh token only. Other devices
 // (other refresh tokens for the same user) keep their sessions.
 func (s *Service) Logout(ctx context.Context, presented string) error {
