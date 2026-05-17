@@ -86,6 +86,12 @@ func Init(ctx context.Context, serviceName string, logger *iterlog.Logger) (func
 	tp := tracesdk.NewTracerProvider(
 		tracesdk.WithBatcher(exp),
 		tracesdk.WithResource(res),
+		// Honour OTEL_TRACES_SAMPLER / OTEL_TRACES_SAMPLER_ARG so an
+		// operator can dial sampling per-environment without a
+		// rebuild. Default is parent-based always-on (matches the
+		// OTel SDK default); a busy production deployment can drop
+		// to e.g. traceidratio=0.05.
+		tracesdk.WithSampler(envSampler()),
 	)
 	otel.SetTracerProvider(tp)
 	otel.SetTextMapPropagator(propagation.TraceContext{})
@@ -103,4 +109,48 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// envSampler reads OTEL_TRACES_SAMPLER / OTEL_TRACES_SAMPLER_ARG and
+// returns the matching tracesdk.Sampler. Falls back to parent-based
+// always-on when the vars are unset or unrecognised. Recognised
+// samplers mirror the OTel SDK spec: always_on, always_off,
+// traceidratio (with float arg), parentbased_always_on,
+// parentbased_always_off, parentbased_traceidratio (with float arg).
+func envSampler() tracesdk.Sampler {
+	name := strings.ToLower(strings.TrimSpace(os.Getenv("OTEL_TRACES_SAMPLER")))
+	arg := strings.TrimSpace(os.Getenv("OTEL_TRACES_SAMPLER_ARG"))
+	switch name {
+	case "always_on":
+		return tracesdk.AlwaysSample()
+	case "always_off":
+		return tracesdk.NeverSample()
+	case "traceidratio":
+		return tracesdk.TraceIDRatioBased(parseRatio(arg, 1.0))
+	case "parentbased_always_off":
+		return tracesdk.ParentBased(tracesdk.NeverSample())
+	case "parentbased_traceidratio":
+		return tracesdk.ParentBased(tracesdk.TraceIDRatioBased(parseRatio(arg, 1.0)))
+	case "parentbased_always_on", "":
+		return tracesdk.ParentBased(tracesdk.AlwaysSample())
+	default:
+		return tracesdk.ParentBased(tracesdk.AlwaysSample())
+	}
+}
+
+func parseRatio(s string, fallback float64) float64 {
+	if s == "" {
+		return fallback
+	}
+	var f float64
+	if _, err := fmt.Sscanf(s, "%f", &f); err != nil {
+		return fallback
+	}
+	if f < 0 {
+		return 0
+	}
+	if f > 1 {
+		return 1
+	}
+	return f
 }

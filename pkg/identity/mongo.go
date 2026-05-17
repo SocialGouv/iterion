@@ -9,6 +9,8 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
 )
 
 // Collection names. Pinned constants so monitoring + migration
@@ -50,51 +52,35 @@ func (s *MongoStore) EnsureSchema(ctx context.Context) error {
 	if _, err := s.users.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "email", Value: 1}}, Options: options.Index().SetUnique(true).SetName("email_unique")},
 		{Keys: bson.D{{Key: "status", Value: 1}}, Options: options.Index().SetName("status")},
-	}); err != nil && !isIndexConflict(err) {
+	}); err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("identity: ensure users indexes: %w", err)
 	}
 	if _, err := s.teams.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "slug", Value: 1}}, Options: options.Index().SetUnique(true).SetName("slug_unique")},
 		{Keys: bson.D{{Key: "created_at", Value: -1}}, Options: options.Index().SetName("created_desc")},
-	}); err != nil && !isIndexConflict(err) {
+	}); err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("identity: ensure teams indexes: %w", err)
 	}
 	if _, err := s.memberships.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "team_id", Value: 1}}, Options: options.Index().SetUnique(true).SetName("user_team_unique")},
 		{Keys: bson.D{{Key: "team_id", Value: 1}, {Key: "role", Value: 1}}, Options: options.Index().SetName("team_role")},
-	}); err != nil && !isIndexConflict(err) {
+	}); err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("identity: ensure memberships indexes: %w", err)
 	}
 	if _, err := s.invitations.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "token_hash", Value: 1}}, Options: options.Index().SetUnique(true).SetName("token_hash_unique").SetPartialFilterExpression(bson.M{"token_hash": bson.M{"$exists": true}})},
 		{Keys: bson.D{{Key: "team_id", Value: 1}, {Key: "email", Value: 1}}, Options: options.Index().SetName("team_email")},
 		{Keys: bson.D{{Key: "expires_at", Value: 1}}, Options: options.Index().SetName("invitations_ttl").SetExpireAfterSeconds(0)},
-	}); err != nil && !isIndexConflict(err) {
+	}); err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("identity: ensure invitations indexes: %w", err)
 	}
 	if _, err := s.oidcLinks.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "provider", Value: 1}, {Key: "provider_user_id", Value: 1}}, Options: options.Index().SetUnique(true).SetName("provider_subject_unique")},
 		{Keys: bson.D{{Key: "user_id", Value: 1}}, Options: options.Index().SetName("user_id")},
-	}); err != nil && !isIndexConflict(err) {
+	}); err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("identity: ensure oidc_links indexes: %w", err)
 	}
 	return nil
-}
-
-// isIndexConflict treats benign re-creation collisions as no-ops so
-// EnsureSchema is idempotent across binary upgrades.
-func isIndexConflict(err error) bool {
-	if err == nil {
-		return false
-	}
-	var cmd mongo.CommandError
-	if errors.As(err, &cmd) {
-		switch cmd.Code {
-		case 85, 86: // IndexOptionsConflict / IndexKeySpecsConflict
-			return true
-		}
-	}
-	return false
 }
 
 func isDuplicateKey(err error) bool {

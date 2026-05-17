@@ -280,7 +280,11 @@ func (l *Logger) LogBlock(level Level, emoji string, header string, body string)
 	buf.WriteString(fmt.Sprintf("%s %s %s\n", ts, emoji, header))
 
 	if body != "" {
-		lines := strings.Split(body, "\n")
+		// TrimRight on trailing newlines so a body ending with "\n"
+		// doesn't emit a stray indented blank line — strings.Split
+		// returns an extra empty element for every trailing separator
+		// and the unconditional WriteByte below would otherwise echo it.
+		lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
 		for _, line := range lines {
 			buf.WriteString(blockIndent)
 			buf.WriteString(line)
@@ -293,17 +297,23 @@ func (l *Logger) LogBlock(level Level, emoji string, header string, body string)
 	_, _ = io.WriteString(l.w, buf.String())
 }
 
-// Truncate returns s truncated to max bytes with a suffix if it exceeds max.
+// Truncate returns s truncated to at most max bytes with a suffix if
+// it exceeds max. When the byte boundary falls inside a multi-byte
+// UTF-8 sequence (CJK characters, emoji, etc.) the truncation is
+// pulled back to the previous rune start so the returned string stays
+// valid UTF-8 — otherwise json.Marshal escapes the dangling bytes as
+// � and the persisted log field looks garbled downstream.
 // Useful for limiting field sizes in log output and events.
 func Truncate(s string, max int) string {
 	if len(s) <= max {
 		return s
 	}
-	return s[:max] + "...[truncated]"
+	return safeByteCut(s, max) + "...[truncated]"
 }
 
-// BlockPreview returns s truncated to max bytes, preserving newlines.
-// If truncated, a "...[truncated]" marker is appended on a new line.
+// BlockPreview returns s truncated to at most max bytes, preserving
+// newlines. The byte cut is rune-safe (see Truncate). If truncated,
+// a "...[truncated]" marker is appended on a new line.
 func BlockPreview(s string, max int) string {
 	if len(s) == 0 {
 		return ""
@@ -311,5 +321,24 @@ func BlockPreview(s string, max int) string {
 	if len(s) <= max {
 		return s
 	}
-	return s[:max] + "\n...[truncated]"
+	return safeByteCut(s, max) + "\n...[truncated]"
+}
+
+// safeByteCut returns s[:max] pulled back to the nearest preceding
+// rune boundary so the returned string is always valid UTF-8.
+// Continuation bytes have the bit pattern 10xxxxxx; we walk back
+// while we are on one. The worst case is three bytes (4-byte UTF-8
+// codepoint cut after its leading byte), bounded.
+func safeByteCut(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if max >= len(s) {
+		return s
+	}
+	cut := max
+	for cut > 0 && s[cut]&0xC0 == 0x80 {
+		cut--
+	}
+	return s[:cut]
 }

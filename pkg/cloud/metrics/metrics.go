@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -43,6 +44,16 @@ type Registry struct {
 	LLMCostUSDTotal        *prometheus.CounterVec // backend, model
 	RunnerHeartbeatErrors  prometheus.Counter
 }
+
+// Default returns a process-wide singleton Registry, lazily
+// initialised on first call. Production code paths (server + runner
+// boot) call this so a single /metrics endpoint exposes a consistent
+// view; New() is reserved for tests that need full isolation.
+func Default() *Registry {
+	return defaultRegistry()
+}
+
+var defaultRegistry = sync.OnceValue(New)
 
 // New registers the metrics on a fresh registry. Each call gives a
 // fully-isolated registry — convenient for tests, mandatory for

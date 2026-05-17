@@ -10,11 +10,18 @@ const (
 	RepoURL = "https://github.com/SocialGouv/iterion"
 )
 
-// Version is intended to be overridden at build time.
+// Version is intended to be overridden at build time. The Taskfile
+// already wires the correct path; the doc example below mirrors that
+// wiring exactly so anyone copying it from the source comment lands a
+// real injection. The pkg/ prefix matters: -X flags targeting an
+// absent symbol are silently ignored by `go build`, and the binary
+// would ship Version = "dev" — breaking release tracking,
+// SandboxImageTag (returns "edge"), `/server-info`, MCP clientInfo
+// and the `iterion_version` stamped on every run document.
 //
 // Example:
 //
-//	go build -ldflags "-X github.com/SocialGouv/iterion/internal/appinfo.Version=v0.1.0 -X github.com/SocialGouv/iterion/internal/appinfo.Commit=$(git rev-parse --short HEAD)"
+//	go build -ldflags "-X github.com/SocialGouv/iterion/pkg/internal/appinfo.Version=v0.1.0 -X github.com/SocialGouv/iterion/pkg/internal/appinfo.Commit=$(git rev-parse --short HEAD)"
 var Version = "dev"
 
 // Commit optionally carries a VCS revision (preferably short SHA).

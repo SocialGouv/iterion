@@ -71,6 +71,14 @@ func (m *MongoSource) Close() error { return nil }
 // usable as soon as Subscribe returns (Events() will receive backfill
 // items first).
 func (m *MongoSource) Subscribe(ctx context.Context, runID string, fromSeq int64) (Subscription, error) {
+	// Honour an already-cancelled ctx so callers don't get a
+	// subscription whose Events() channel closes immediately — the
+	// WS handler reads "channel closed" as "stream ended cleanly"
+	// and reconnects in a loop. Surfacing ctx.Err() lets the caller
+	// distinguish "cancelled before start" from "ended normally".
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	subCtx, cancel := context.WithCancel(ctx)
 
 	sub := &mongoSubscription{

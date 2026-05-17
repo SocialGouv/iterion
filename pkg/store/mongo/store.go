@@ -11,7 +11,6 @@ package mongo
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -20,6 +19,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
 
+	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/store/blob"
@@ -204,7 +204,7 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 			Options: options.Index().SetName("runner_id_partial").SetPartialFilterExpression(bson.M{"runner_id": bson.M{"$exists": true}}),
 		},
 	})
-	if err != nil && !isIndexConflict(err) {
+	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("store/mongo: ensure runs indexes: %w", err)
 	}
 
@@ -225,7 +225,7 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 		})
 	}
 	_, err = s.events.Indexes().CreateMany(ctx, eventIdx)
-	if err != nil && !isIndexConflict(err) {
+	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("store/mongo: ensure events indexes: %w", err)
 	}
 
@@ -235,30 +235,9 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 		Keys:    bson.D{{Key: "run_id", Value: 1}},
 		Options: options.Index().SetName("run_id"),
 	})
-	if err != nil && !isIndexConflict(err) {
+	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("store/mongo: ensure interactions index: %w", err)
 	}
 
 	return nil
-}
-
-// isIndexConflict matches the error MongoDB returns when an index with
-// the same name already exists with different options. We treat these
-// as benign on a hot upgrade path — operators recreate them by hand
-// when the geometry changes (plan §D.5 forward-only migration).
-func isIndexConflict(err error) bool {
-	if err == nil {
-		return false
-	}
-	// IndexOptionsConflict (85) and IndexKeySpecsConflict (86) are the
-	// usual culprits when re-running EnsureSchema with a different
-	// driver version.
-	var cmd mongo.CommandError
-	if errors.As(err, &cmd) {
-		switch cmd.Code {
-		case 85, 86:
-			return true
-		}
-	}
-	return false
 }
