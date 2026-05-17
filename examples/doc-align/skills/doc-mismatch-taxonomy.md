@@ -51,6 +51,24 @@ Independent of kind, blockers also carry a `severity` enum:
 - **Spec ambiguity** — when neither doc nor code is clearly
   correct. Escalate via `ask_user`.
 
+## Anchor classification (`anchor_kind` — new in v0.2.0)
+
+Every blocker also carries an `anchor_kind` enum that classifies
+the precision of the `code_anchor` citation. This makes the G3
+round-trip (next-iteration reviewer re-greps the cited anchor)
+mechanically auditable.
+
+| `anchor_kind` | When to use | `code_anchor` shape |
+|---|---|---|
+| `symbol` | The mismatch is about a named function / type / const / var. The anchor identifies the symbol the reviewer can grep for. | `"pkg/foo/bar.go:Handler"` or `"pkg/foo/bar.go:func Handler"` |
+| `line_range` | The mismatch is about a block of code without a clean symbol name (e.g. a config snippet, an inline expression). | `"pkg/foo/bar.go:42-58"` |
+| `removed` | The doc claims something exists but it no longer does. The anchor names the former location. | `"pkg/legacy/old.go (removed in commit X)"` or `"<no longer exists>"` |
+| `external` | The mismatch is about a non-code claim — e.g. a dead link to a doc file, a stale upstream URL, a wrong directory layout. The anchor is the filesystem/external path the doc references. | `"docs/old-thing.md"` or `"examples/preview_url_demo.iter"` |
+
+Hallucinating a kind outside the enum fails schema validation and
+triggers iterion's parse_fallback retry path — pick from the
+four values above.
+
 ## Output shape (reminder)
 
 Every blocker in `verdict_output.blockers[]` must include:
@@ -60,8 +78,8 @@ doc_path:        repo-relative path (must be in scan_docs.doc_files)
 doc_line_start:  int
 doc_line_end:    int
 doc_excerpt:     ≤300 chars, exact quote
-code_anchor:     "pkg/foo/bar.go:Func" or "func bar()" or
-                 "<no longer exists>"
+code_anchor:     string per anchor_kind table above
+anchor_kind:     symbol | line_range | removed | external
 code_state:      ≤300 chars, what the code actually does now
 mismatch_kind:   one of the 10 values above
 severity:        low | med | high

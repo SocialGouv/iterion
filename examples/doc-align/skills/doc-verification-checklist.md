@@ -75,20 +75,37 @@ If either is non-empty, raise an automatic blocker with:
   violation: fixer touched <files>. Revert those files; doc-align
   must never modify code."`
 
-## STEP 4 — Coverage gate on approval
+## STEP 4 — Coverage gate on approval (v0.2.0 mechanical)
 
 You may vote `approved=true` ONLY if:
 
-- `cumulative_audited_pairs ∪ audited_pairs` covers every entry
-  in `doc_files[]` at least once (each file appears as the
-  `doc_path` portion of at least one pair).
-- `len(blockers) == 0` after STEP 2's façade check.
-- All prior fix iterations have `code_files_touched == []`.
+- `len(blockers) == 0` after STEP 2's façade check
+- All prior fix iterations have `code_files_touched == []` (the
+  G4 gate from STEP 3)
+- Your `audited_docs[]` plus `input.previous_audited_docs[]`
+  cover the doc files you actually verified this iteration
 
-If coverage is incomplete, you must `approved=false` and your
-blockers should include the uncovered files as coverage gaps.
-This is NOT a stylistic blocker — it's the negative-space rule
-that defeats Goodhart.
+The cumulative file-level coverage is **mechanically enforced
+downstream**: the `streak_check` compute node calculates
+`coverage_pct = unique(prior + this iter's audited_docs) * 100 /
+doc_count` and blocks `stop=true` (workflow convergence) when
+`coverage_pct < coverage_target_pct` (default 80%).
+
+That means: if you vote `approved=true` on a partial audit (e.g.
+17 of 51 docs verified, coverage 33%), the workflow will NOT
+terminate — it alternates to the other family which is expected
+to extend coverage. v0.1.0 lacked this gate; reviewer_claude
+approved with ~13/51 audited and the streak nearly armed.
+
+Your job here: be honest about `audited_docs`. List exactly the
+doc files you verified this iteration. Don't pad the list; don't
+omit a file you actually opened. The mechanical gate trusts the
+union grow truthfully over iterations.
+
+`input.coverage_pct` tells you the cumulative percentage BEFORE
+your current iteration is folded in. Use it to plan: if coverage
+is at 60% and the target is 80%, you need to add ~10 files (of
+51) to `audited_docs` this iteration to meet the gate.
 
 ## STEP 5 — Self-critique
 
