@@ -5,6 +5,7 @@ import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { ChevronDownIcon, MixerHorizontalIcon } from "@radix-ui/react-icons";
 import { useShallow } from "zustand/react/shallow";
 
+import { apiURL } from "@/api/runs";
 import { IconButton, Input, Popover } from "@/components/ui";
 import { desktop, isDesktop } from "@/lib/desktopBridge";
 import { formatBytes } from "@/lib/format";
@@ -388,7 +389,7 @@ export default function LogLinesView({
                   useUIStore.getState().addToast("Log copied to clipboard", "success");
                   return;
                 }
-                const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/log`, {
+                const res = await fetch(apiURL(`/runs/${encodeURIComponent(runId)}/log`), {
                   credentials: "include",
                 });
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -416,7 +417,7 @@ export default function LogLinesView({
             onClick={() => {
               void (async () => {
                 try {
-                  const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/log`, {
+                  const res = await fetch(apiURL(`/runs/${encodeURIComponent(runId)}/log`), {
                     credentials: "include",
                   });
                   if (!res.ok) throw new Error(`HTTP ${res.status}`);
