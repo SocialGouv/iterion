@@ -1,8 +1,28 @@
-# doc-align (v0.2.0)
+# doc-align (v0.3.0)
 
 A dogfood-friendly iterion bot that detects mismatches between
 project documentation and actual code state, then fixes the
 **documentation** (never the code) and auto-commits on convergence.
+
+**v0.3.0 changes** (lessons from the v0.2.0 dogfood deadlock):
+- Streak gate now treats `blocker_count == 0` as effective
+  approval. The v0.2.0 streak required `approved=true` from both
+  reviewers consecutively; GPT settled into a stable "0 blockers
+  + confidence: low" state after substantive findings were
+  exhausted, which the v0.2.0 gate didn't accept. The bot
+  alternated forever without converging. New verdict field
+  `blocker_count: int` (explicit count emitted by the agent —
+  needed because iterion's `length()` on a json-typed field
+  returns the JSON-encoded char count, not the array size).
+- `coverage_pct` is clamped to ≤ 100 in `streak_check`.
+  Reviewers sometimes put paths into `audited_docs` outside the
+  original footprint (e.g. a `.md` outside `doc_globs` that
+  legitimately covers a code surface they were verifying); the
+  raw formula pushed the reported coverage to 101+%. Harmless
+  for the gate (`>= 80%` still fires) but confusing in reports.
+- Fix routing now guards on `blocker_count > 0` instead of
+  `length(blockers) > 0` — the latter was effectively a no-op
+  because the JSON string is always non-empty even for `[]`.
 
 **v0.2.0 changes** (lessons from the v0.1.0 dogfood):
 - G4 gate (fixer never touches code) is now actually wired —

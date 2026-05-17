@@ -242,6 +242,10 @@ prompt review_user_claude:
       doc_path, doc_line_start, doc_line_end, doc_excerpt,
       code_anchor, anchor_kind, code_state, mismatch_kind,
       severity, suggested_fix, is_code_bug)
+    - blocker_count: integer == len(blockers). Required and must
+      match the array you emit (v0.3.0 — feeds the streak gate
+      mechanically; iterion's expr length() can't reliably count
+      items in a json-typed field).
     - fix_plan: concrete instruction set for the fixer (short)
     - confidence: "low" / "medium" / "high"
     - audited_pairs: list of "doc_path::code_anchor" strings you
@@ -308,6 +312,9 @@ prompt review_user_gpt:
     - family: "gpt"
     - blockers: array of structured mismatch objects (see
       `doc-mismatch-taxonomy.md`)
+    - blocker_count: integer == len(blockers). Required and must
+      match the array you emit (v0.3.0 — feeds the streak gate
+      mechanically).
     - fix_plan: short concrete instruction set for the fixer
     - confidence: "low" / "medium" / "high"
     - audited_pairs: list of "doc_path::code_anchor" you verified
@@ -480,13 +487,26 @@ schema review_input:
 
 ## verdict_output: the blockers field stays JSON (DSL schema
 ## parser doesn't support nested object arrays). The per-blocker
-## fields incl. the new `anchor_kind` enum are documented in
+## fields incl. the `anchor_kind` enum are documented in
 ## skills/doc-mismatch-taxonomy.md and enforced at the prompt
 ## level.
+##
+## blocker_count (v0.3.0): the explicit count of items the agent
+## put into `blockers`. Necessary because iterion's expr
+## `length()` on a json field returns the JSON-encoded string's
+## char count, not the array's item count, so the streak gate
+## couldn't reliably distinguish "0 blockers" from "10 blockers".
+## With this explicit field the streak gate can fire when both
+## reviewers report blocker_count=0 even when one of them only
+## soft-rejected (confidence: low) — the v0.2.0 dogfood deadlocked
+## in exactly that state after GPT had exhausted productive
+## audit surfaces but kept voting `approved: false` with
+## `confidence: low`.
 schema verdict_output:
   approved: bool
   family: string [enum: "claude", "gpt"]
   blockers: json
+  blocker_count: int
   fix_plan: string
   confidence: string [enum: "low", "medium", "high"]
   audited_pairs: string[]
@@ -502,6 +522,7 @@ schema streak_state:
   approved: bool
   family: string
   blockers: json
+  blocker_count: int
   fix_plan: string
   cumulative_audited_pairs: string[]
   cumulative_audited_docs: string[]
@@ -636,17 +657,33 @@ judge reviewer_gpt:
 ## Soft-approval (low-confidence rejection) is passed through as
 ## approved for routing only — alternation continues without
 ## invoking the fixer, but stop still requires hard approvals.
+## v0.3.0 streak_check changes vs v0.2.0:
+##
+## - `stop` now treats `blocker_count == 0` as effective approval
+##   (regardless of `approved` / `confidence`). v0.2.0 deadlocked
+##   when GPT consistently returned 0 blockers + confidence: low
+##   after exhausting productive audit — `approved: false` blocked
+##   the streak indefinitely even though both families agreed
+##   nothing needed fixing.
+##
+## - `coverage_pct` is clamped to ≤ 100 via an inner `if()`.
+##   Reviewers sometimes put paths into `audited_docs` that are
+##   technically outside the original `doc_files` (e.g. a freshly
+##   discovered doc, or an off-by-one path). Without clamping
+##   that pushed coverage to 101+%, harmless for the gate
+##   (>= 80%) but confusing in reports.
 compute streak_check:
   output: streak_state
   expr:
-    stop: "input.approved && loop.review_loop.previous_output.approved && input.family != loop.review_loop.previous_output.family && if(outputs.scan_docs.doc_count > 0, length(unique(concat(outputs.streak_check.cumulative_audited_docs, input.audited_docs))) * 100 / outputs.scan_docs.doc_count, 0) >= vars.coverage_target_pct"
-    approved: "input.approved || input.confidence == 'low'"
+    stop: "(input.approved || input.blocker_count == 0) && (loop.review_loop.previous_output.approved || loop.review_loop.previous_output.blocker_count == 0) && input.family != loop.review_loop.previous_output.family && if(outputs.scan_docs.doc_count > 0, length(unique(concat(outputs.streak_check.cumulative_audited_docs, input.audited_docs))) * 100 / outputs.scan_docs.doc_count, 0) >= vars.coverage_target_pct"
+    approved: "input.approved || input.confidence == 'low' || input.blocker_count == 0"
     family: "input.family"
     blockers: "input.blockers"
+    blocker_count: "input.blocker_count"
     fix_plan: "input.fix_plan"
     cumulative_audited_pairs: "unique(concat(outputs.streak_check.cumulative_audited_pairs, input.audited_pairs))"
     cumulative_audited_docs: "unique(concat(outputs.streak_check.cumulative_audited_docs, input.audited_docs))"
-    coverage_pct: "if(outputs.scan_docs.doc_count > 0, length(unique(concat(outputs.streak_check.cumulative_audited_docs, input.audited_docs))) * 100 / outputs.scan_docs.doc_count, 0)"
+    coverage_pct: "if(outputs.scan_docs.doc_count > 0, if(length(unique(concat(outputs.streak_check.cumulative_audited_docs, input.audited_docs))) * 100 / outputs.scan_docs.doc_count > 100, 100, length(unique(concat(outputs.streak_check.cumulative_audited_docs, input.audited_docs))) * 100 / outputs.scan_docs.doc_count), 0)"
 
 agent fix_claude:
   backend: "claude_code"
@@ -754,6 +791,7 @@ workflow doc_align:
     approved: "{{outputs.reviewer_claude.approved}}",
     family: "{{outputs.reviewer_claude.family}}",
     blockers: "{{outputs.reviewer_claude.blockers}}",
+    blocker_count: "{{outputs.reviewer_claude.blocker_count}}",
     fix_plan: "{{outputs.reviewer_claude.fix_plan}}",
     confidence: "{{outputs.reviewer_claude.confidence}}",
     audited_pairs: "{{outputs.reviewer_claude.audited_pairs}}",
@@ -763,6 +801,7 @@ workflow doc_align:
     approved: "{{outputs.reviewer_gpt.approved}}",
     family: "{{outputs.reviewer_gpt.family}}",
     blockers: "{{outputs.reviewer_gpt.blockers}}",
+    blocker_count: "{{outputs.reviewer_gpt.blocker_count}}",
     fix_plan: "{{outputs.reviewer_gpt.fix_plan}}",
     confidence: "{{outputs.reviewer_gpt.confidence}}",
     audited_pairs: "{{outputs.reviewer_gpt.audited_pairs}}",
@@ -786,13 +825,16 @@ workflow doc_align:
 
   ## Medium/high-confidence rejection with concrete blockers:
   ## route to the SAME-family fixer (inherit reviewer's session
-  ## via _session_id).
-  streak_check -> fix_claude when "!approved && family == 'claude' && length(blockers) > 0" with {
+  ## via _session_id). v0.3.0: blocker_count > 0 replaces
+  ## length(blockers) > 0 — the latter measures the JSON-encoded
+  ## string length (always > 0 for any output, even "[]"),
+  ## so the previous guard was effectively no-op when approved=false.
+  streak_check -> fix_claude when "!approved && family == 'claude' && blocker_count > 0" with {
     blockers: "{{outputs.streak_check.blockers}}",
     fix_plan: "{{outputs.streak_check.fix_plan}}",
     _session_id: "{{outputs.reviewer_claude._session_id}}"
   }
-  streak_check -> fix_gpt when "!approved && family == 'gpt' && length(blockers) > 0" with {
+  streak_check -> fix_gpt when "!approved && family == 'gpt' && blocker_count > 0" with {
     blockers: "{{outputs.streak_check.blockers}}",
     fix_plan: "{{outputs.streak_check.fix_plan}}",
     _session_id: "{{outputs.reviewer_gpt._session_id}}"
