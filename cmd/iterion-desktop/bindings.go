@@ -6,10 +6,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
+	"strings"
 	"syscall"
 
 	cli "github.com/SocialGouv/iterion/pkg/cli"
@@ -188,8 +190,24 @@ func (a *App) SetWindowTitle(title string) {
 }
 
 // OpenExternal opens the given URL in the user's default browser.
-func (a *App) OpenExternal(url string) error {
-	wruntime.BrowserOpenURL(a.ctx, url)
+//
+// Restricted to http(s) URLs: a Wails binding is callable from any
+// JavaScript context inside the WebView, so without a scheme check
+// a future XSS or a malicious workflow output that finds its way
+// onto an attribute could trigger arbitrary URI handlers — file://,
+// javascript://, ms-msdt: on Windows, custom app schemes, etc.
+func (a *App) OpenExternal(rawURL string) error {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return fmt.Errorf("invalid url: %w", err)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+		// allowed
+	default:
+		return fmt.Errorf("unsupported url scheme %q (only http/https allowed)", u.Scheme)
+	}
+	wruntime.BrowserOpenURL(a.ctx, u.String())
 	return nil
 }
 
