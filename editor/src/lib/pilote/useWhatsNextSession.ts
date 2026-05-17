@@ -60,6 +60,10 @@ export interface UseWhatsNextSession {
   // The raw RunStatus from the latest snapshot, exposed for UIs
   // that want to surface details beyond the high-level status.
   runStatus: RunStatus | null;
+  // Total number of run events the store has consumed for this run.
+  // PreFlightPanel uses it to differentiate "no events yet" from
+  // "events arrived but didn't map to a known node".
+  rawEventCount: number;
   // Last error from launch/submit, if any.
   errorMessage: string | null;
   // Imperative actions.
@@ -96,7 +100,7 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
     let cancelled = false;
     setStatus("launching");
     getRun(remembered)
-      .then((snap) => {
+      .then(async (snap) => {
         if (cancelled) return;
         if (!LIVE_STATUSES.has(snap.run.status)) {
           forgetSessionRunId(bot.id, projectId);
@@ -105,6 +109,22 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
         }
         useRunStore.getState().reset();
         useRunStore.getState().applySnapshot(snap);
+        // setRunId on the store FIRST so loadEventHistoryIfMissing's
+        // post-await guard (`state.runId !== runId` → return) passes.
+        // Without this the fetched events would be silently dropped.
+        useRunStore.getState().setRunId(remembered);
+        // Pull the persisted event history so the transcript reflects
+        // everything that happened before this mount. RunView lazy-loads
+        // this only when the user opens the Events tab; for Pilote the
+        // transcript IS the rendering, so we always need the full log.
+        // Best-effort: failures fall through to the live-tail-only path.
+        try {
+          await useRunStore
+            .getState()
+            .loadEventHistoryIfMissing(remembered);
+        } catch {
+          // ignore — the live WS will eventually fill any gap.
+        }
         setRunId(remembered);
       })
       .catch(() => {
@@ -139,6 +159,21 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
   const requestWsReconnect = useRunStore((s) => s.requestWsReconnect);
   const applySnapshot = useRunStore((s) => s.applySnapshot);
   const reset = useRunStore((s) => s.reset);
+  const setStoreRunId = useRunStore((s) => s.setRunId);
+  const loadEventHistoryIfMissing = useRunStore(
+    (s) => s.loadEventHistoryIfMissing,
+  );
+
+  // Mirror our local runId onto the run store so its actions that gate
+  // on store.runId (loadEventHistoryIfMissing, setRunStatus, etc.)
+  // actually fire. Without this the store stays at runId=null and
+  // applyEventsBatch silently no-ops after the await fence.
+  useEffect(() => {
+    setStoreRunId(runId);
+    return () => {
+      setStoreRunId(null);
+    };
+  }, [runId, setStoreRunId]);
 
   // Promote the run status to our high-level status. The transitions:
   //   queued | running                  → active
@@ -162,7 +197,7 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
       // /pilote presents a fresh launcher. The transcript stays on
       // screen (it lives in component state) until the user navigates.
       forgetSessionRunId(bot.id, projectId);
-    } else if (status !== "launching") {
+    } else {
       setStatus("active");
     }
   }, [bot.id, projectId, runId, runStatus, status]);
@@ -211,14 +246,22 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
           file_path: bot.workflowPath,
           vars,
         });
-        setRunId(res.run_id);
         rememberSessionRunId(bot.id, projectId, res.run_id);
-        // Seed the store with the freshly-created run's snapshot so
-        // the first WS connect doesn't have to round-trip. Best-effort
-        // — the WS subscribe will catch up otherwise.
+        // Pin the store's runId early so loadEventHistoryIfMissing's
+        // `state.runId !== runId` guard doesn't drop the fetched batch
+        // after its await — same trick the auto-attach branch uses.
+        useRunStore.getState().setRunId(res.run_id);
+        setRunId(res.run_id);
+        // Seed the store with the freshly-created run's snapshot AND
+        // any events the runtime persisted between createRun and now.
+        // Without the second call, the WS subscribes at snap.last_seq+1
+        // and silently misses everything up to that point — typically
+        // run_started + the first node_started, which leaves the
+        // transcript blank until propose_roadmap fires.
         try {
           const snap = await getRun(res.run_id);
           applySnapshot(snap);
+          await loadEventHistoryIfMissing(res.run_id);
         } catch {
           // ignore; the WS will deliver the snapshot.
         }
@@ -227,7 +270,14 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
         setStatus("idle");
       }
     },
-    [bot.workflowPath, bot.id, projectId, reset, applySnapshot],
+    [
+      bot.workflowPath,
+      bot.id,
+      projectId,
+      reset,
+      applySnapshot,
+      loadEventHistoryIfMissing,
+    ],
   );
 
   const submitHumanAnswer = useCallback(
@@ -269,6 +319,7 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
     messages,
     busyMessageId,
     runStatus,
+    rawEventCount: events.length,
     errorMessage,
     launch,
     submitHumanAnswer,

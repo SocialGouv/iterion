@@ -8,6 +8,22 @@
 
 export type BannerStatus = "running" | "done" | "failed";
 
+// Live progress accumulated while a banner is "running". Drives the
+// "12 tools used · latest: bash" line under the spinner so an explore
+// or propose_roadmap pass doesn't look frozen during the 30–60s the
+// agent actually needs.
+export interface BannerProgress {
+  // Number of `tool_started` events seen on this node's active iter.
+  toolCount: number;
+  // Name of the most recent tool the node invoked (e.g. "bash",
+  // "read_file"). Used as a "doing X" hint.
+  latestTool?: string;
+  // Brief textual hint extracted from the latest tool's input — the
+  // first argument-ish field, when present. Surfaces "read_file: README.md"
+  // rather than just "read_file".
+  latestToolHint?: string;
+}
+
 export interface BannerMessage {
   kind: "banner";
   id: string; // stable: "<nodeId>:<iteration>" (iteration so revise loops don't collide)
@@ -18,6 +34,8 @@ export interface BannerMessage {
   // from the node output (per nodeMap.summaryField).
   summary?: string;
   errorMessage?: string;
+  // Live counters updated while status === "running".
+  progress?: BannerProgress;
 }
 
 export interface HumanQuestionMessage {

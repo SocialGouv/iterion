@@ -241,6 +241,59 @@ describe("messagesFromEvents", () => {
     }
   });
 
+  it("accumulates tool_started progress on the active banner", () => {
+    nextSeq = 1;
+    const out = messagesFromEvents({
+      bot: whatsNext,
+      events: [
+        evt("node_started", { node_id: "explore" }),
+        evt("tool_started", {
+          node_id: "explore",
+          data: { tool: "bash", input: { command: "ls -la" } },
+        }),
+        evt("tool_started", {
+          node_id: "explore",
+          data: { tool: "read_file", input: { file_path: "README.md" } },
+        }),
+        evt("tool_started", {
+          node_id: "explore",
+          data: { tool: "glob", input: { pattern: "**/*.go" } },
+        }),
+      ],
+      snapshot: null,
+    });
+    expect(out).toHaveLength(1);
+    const banner = out[0];
+    if (banner?.kind === "banner") {
+      expect(banner.progress?.toolCount).toBe(3);
+      expect(banner.progress?.latestTool).toBe("glob");
+      expect(banner.progress?.latestToolHint).toBe("**/*.go");
+    }
+  });
+
+  it("drops banner progress once the node finishes", () => {
+    nextSeq = 1;
+    const out = messagesFromEvents({
+      bot: whatsNext,
+      events: [
+        evt("node_started", { node_id: "explore" }),
+        evt("tool_started", {
+          node_id: "explore",
+          data: { tool: "bash", input: { command: "ls" } },
+        }),
+        evt("node_finished", { node_id: "explore" }),
+      ],
+      snapshot: snapshotWith({ explore: { summary: "Surveyed." } }),
+    });
+    expect(out).toHaveLength(1);
+    const banner = out[0];
+    if (banner?.kind === "banner") {
+      expect(banner.status).toBe("done");
+      expect(banner.progress).toBeUndefined();
+      expect(banner.summary).toBe("Surveyed.");
+    }
+  });
+
   it("renders run_finished / run_failed / run_cancelled as session-closed markers", () => {
     nextSeq = 1;
     const finished = messagesFromEvents({
