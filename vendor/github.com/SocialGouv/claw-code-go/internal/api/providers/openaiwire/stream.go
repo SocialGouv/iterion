@@ -75,14 +75,10 @@ func StreamEvents(ctx context.Context, resp *http.Response, ch chan<- api.Stream
 		if line == "" || strings.HasPrefix(line, "event:") {
 			continue
 		}
-		// SSE spec (W3C, WHATWG) makes the space after `data:`
-		// optional. Many OpenAI-compatible providers (Ollama, vLLM,
-		// some proxies) emit `data:{...}` without the space; the
-		// strict prefix used to silently drop those frames.
-		if !strings.HasPrefix(line, "data:") {
+		if !strings.HasPrefix(line, "data: ") {
 			continue
 		}
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
 			break
 		}

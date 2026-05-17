@@ -110,19 +110,7 @@ func (c *Client) StreamResponse(ctx context.Context, req CreateMessageRequest) (
 			httpReq.Header.Set("x-api-key", c.APIKey)
 		}
 		httpReq.Header.Set(anthropicVersionHeader, anthropicVersion)
-		// Only send the comma-joined anthropic-beta header on direct
-		// API-key sessions. OAuth-authenticated sessions (Claude Code
-		// subscription path) historically reject newer / unrecognised
-		// beta tokens with 400, and a single rejected token causes
-		// the whole header to fail — every request 400s instead of
-		// degrading gracefully to no caching. The features the betas
-		// gate (prompt-caching) are still available via the
-		// `cache_control` block on individual content items; turning
-		// off the global opt-in just disables the new caching scope
-		// the more-recent beta enables.
-		if c.Auth.Kind != AuthSourceBearer && c.OAuthToken == "" {
-			httpReq.Header.Set(anthropicBetaHeader, anthropicBetaValue)
-		}
+		httpReq.Header.Set(anthropicBetaHeader, anthropicBetaValue)
 		httpReq.Header.Set("content-type", "application/json")
 		httpReq.Header.Set("accept", "text/event-stream")
 
@@ -405,18 +393,8 @@ func parseSSEData(data string) (StreamEvent, error) {
 // marshalAnthropicRequest serializes a CreateMessageRequest for the Anthropic API.
 // When SystemBlocks is populated, it marshals the "system" field as an array of
 // content blocks (required for prompt caching) instead of a plain string.
-//
-// Strips Message.IsInjected from the wire payload — that field is the
-// internal-only marker used by CompactSession's turn counter; sending
-// it to Anthropic risks future strict-mode rejection of unknown fields
-// (F-CC-7). Persistence still keeps the field since on-disk Session
-// blobs are serialised separately by callers.
 func marshalAnthropicRequest(req CreateMessageRequest) ([]byte, error) {
-	wireMessages := stripInternalFields(req.Messages)
 	if len(req.SystemBlocks) == 0 {
-		// Re-shape to swap in the cleaned messages without
-		// mutating the caller's slice.
-		req.Messages = wireMessages
 		return json.Marshal(req)
 	}
 
@@ -447,7 +425,7 @@ func marshalAnthropicRequest(req CreateMessageRequest) ([]byte, error) {
 		Model:            req.Model,
 		MaxTokens:        req.MaxTokens,
 		System:           systemJSON,
-		Messages:         wireMessages,
+		Messages:         req.Messages,
 		Tools:            req.Tools,
 		ToolChoice:       req.ToolChoice,
 		Stream:           req.Stream,
@@ -465,23 +443,4 @@ func marshalAnthropicRequest(req CreateMessageRequest) ([]byte, error) {
 // transient error suitable for retry (408, 429, and 5xx).
 func isRetryableStatus(code int) bool {
 	return code == 408 || code == 429 || code >= 500
-}
-
-// stripInternalFields returns a shallow copy of in with internal-only
-// Message fields cleared so they don't leak onto the Anthropic wire
-// (F-CC-7). The original slice is not mutated, so callers retain the
-// persisted shape with IsInjected for their own bookkeeping.
-//
-// Returns nil for a nil input (preserving omitempty semantics on the
-// caller side).
-func stripInternalFields(in []Message) []Message {
-	if in == nil {
-		return nil
-	}
-	out := make([]Message, len(in))
-	for i, m := range in {
-		m.IsInjected = false
-		out[i] = m
-	}
-	return out
 }

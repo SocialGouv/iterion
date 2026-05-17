@@ -146,11 +146,11 @@ github.com/aws/aws-sdk-go-v2/internal/timeconv
 ## explicit; go 1.24
 github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream
 github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream/eventstreamapi
-# github.com/aws/aws-sdk-go-v2/config v1.32.16
+# github.com/aws/aws-sdk-go-v2/config v1.32.17
 ## explicit; go 1.24
 github.com/aws/aws-sdk-go-v2/config
 github.com/aws/aws-sdk-go-v2/config/internal/ini
-# github.com/aws/aws-sdk-go-v2/credentials v1.19.15
+# github.com/aws/aws-sdk-go-v2/credentials v1.19.16
 ## explicit; go 1.24
 github.com/aws/aws-sdk-go-v2/credentials
 github.com/aws/aws-sdk-go-v2/credentials/ec2rolecreds
@@ -160,7 +160,7 @@ github.com/aws/aws-sdk-go-v2/credentials/logincreds
 github.com/aws/aws-sdk-go-v2/credentials/processcreds
 github.com/aws/aws-sdk-go-v2/credentials/ssocreds
 github.com/aws/aws-sdk-go-v2/credentials/stscreds
-# github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.22
+# github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.23
 ## explicit; go 1.24
 github.com/aws/aws-sdk-go-v2/feature/ec2/imds
 github.com/aws/aws-sdk-go-v2/feature/ec2/imds/internal/config
@@ -196,29 +196,29 @@ github.com/aws/aws-sdk-go-v2/service/internal/presigned-url
 github.com/aws/aws-sdk-go-v2/service/internal/s3shared
 github.com/aws/aws-sdk-go-v2/service/internal/s3shared/arn
 github.com/aws/aws-sdk-go-v2/service/internal/s3shared/config
-# github.com/aws/aws-sdk-go-v2/service/s3 v1.100.1
+# github.com/aws/aws-sdk-go-v2/service/s3 v1.101.0
 ## explicit; go 1.24
 github.com/aws/aws-sdk-go-v2/service/s3
 github.com/aws/aws-sdk-go-v2/service/s3/internal/arn
 github.com/aws/aws-sdk-go-v2/service/s3/internal/customizations
 github.com/aws/aws-sdk-go-v2/service/s3/internal/endpoints
 github.com/aws/aws-sdk-go-v2/service/s3/types
-# github.com/aws/aws-sdk-go-v2/service/signin v1.0.10
+# github.com/aws/aws-sdk-go-v2/service/signin v1.0.11
 ## explicit; go 1.24
 github.com/aws/aws-sdk-go-v2/service/signin
 github.com/aws/aws-sdk-go-v2/service/signin/internal/endpoints
 github.com/aws/aws-sdk-go-v2/service/signin/types
-# github.com/aws/aws-sdk-go-v2/service/sso v1.30.16
+# github.com/aws/aws-sdk-go-v2/service/sso v1.30.17
 ## explicit; go 1.24
 github.com/aws/aws-sdk-go-v2/service/sso
 github.com/aws/aws-sdk-go-v2/service/sso/internal/endpoints
 github.com/aws/aws-sdk-go-v2/service/sso/types
-# github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.20
+# github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.21
 ## explicit; go 1.24
 github.com/aws/aws-sdk-go-v2/service/ssooidc
 github.com/aws/aws-sdk-go-v2/service/ssooidc/internal/endpoints
 github.com/aws/aws-sdk-go-v2/service/ssooidc/types
-# github.com/aws/aws-sdk-go-v2/service/sts v1.42.0
+# github.com/aws/aws-sdk-go-v2/service/sts v1.42.1
 ## explicit; go 1.24
 github.com/aws/aws-sdk-go-v2/service/sts
 github.com/aws/aws-sdk-go-v2/service/sts/internal/endpoints
@@ -304,8 +304,8 @@ github.com/ethpandaops/codex-agent-sdk-go/internal/session
 github.com/ethpandaops/codex-agent-sdk-go/internal/subprocess
 github.com/ethpandaops/codex-agent-sdk-go/internal/userinput
 github.com/ethpandaops/codex-agent-sdk-go/internal/version
-# github.com/fsnotify/fsnotify v1.9.0
-## explicit; go 1.17
+# github.com/fsnotify/fsnotify v1.10.1
+## explicit; go 1.23
 github.com/fsnotify/fsnotify
 github.com/fsnotify/fsnotify/internal
 # github.com/glebarez/go-sqlite v1.22.0
@@ -327,10 +327,10 @@ github.com/godbus/dbus/v5
 # github.com/gofrs/flock v0.13.0
 ## explicit; go 1.24.0
 github.com/gofrs/flock
-# github.com/golang-jwt/jwt/v5 v5.3.0
+# github.com/golang-jwt/jwt/v5 v5.3.1
 ## explicit; go 1.21
 github.com/golang-jwt/jwt/v5
-# github.com/google/jsonschema-go v0.4.2
+# github.com/google/jsonschema-go v0.4.3
 ## explicit; go 1.23.0
 github.com/google/jsonschema-go/jsonschema
 # github.com/google/uuid v1.6.0
@@ -399,7 +399,7 @@ github.com/mattn/go-colorable
 # github.com/mattn/go-isatty v0.0.20
 ## explicit; go 1.15
 github.com/mattn/go-isatty
-# github.com/modelcontextprotocol/go-sdk v1.4.1
+# github.com/modelcontextprotocol/go-sdk v1.6.0
 ## explicit; go 1.25.0
 github.com/modelcontextprotocol/go-sdk/auth
 github.com/modelcontextprotocol/go-sdk/internal/json
@@ -413,7 +413,7 @@ github.com/modelcontextprotocol/go-sdk/oauthex
 # github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822
 ## explicit
 github.com/munnerz/goautoneg
-# github.com/nats-io/nats.go v1.51.0
+# github.com/nats-io/nats.go v1.52.0
 ## explicit; go 1.25.0
 github.com/nats-io/nats.go
 github.com/nats-io/nats.go/encoders/builtin
@@ -729,7 +729,7 @@ go.opentelemetry.io/proto/otlp/trace/v1
 # go.yaml.in/yaml/v2 v2.4.4
 ## explicit; go 1.15
 go.yaml.in/yaml/v2
-# golang.org/x/crypto v0.50.0
+# golang.org/x/crypto v0.51.0
 ## explicit; go 1.25.0
 golang.org/x/crypto/acme
 golang.org/x/crypto/acme/autocert
@@ -775,13 +775,13 @@ golang.org/x/oauth2/jwt
 ## explicit; go 1.25.0
 golang.org/x/sync/errgroup
 golang.org/x/sync/singleflight
-# golang.org/x/sys v0.43.0
+# golang.org/x/sys v0.44.0
 ## explicit; go 1.25.0
 golang.org/x/sys/cpu
 golang.org/x/sys/unix
 golang.org/x/sys/windows
 golang.org/x/sys/windows/registry
-# golang.org/x/text v0.36.0
+# golang.org/x/text v0.37.0
 ## explicit; go 1.25.0
 golang.org/x/text/cases
 golang.org/x/text/internal

@@ -598,17 +598,7 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 		case "response.function_call_arguments.delta":
 			acc := fnByItem[ev.ItemID]
 			if acc == nil {
-				// Mirror the text-delta branch's defensive
-				// allocation. The spec says output_item.added always
-				// precedes argument deltas, but if an upstream variant
-				// emits deltas first we now buffer them rather than
-				// drop. MarkStarted will fire when the missing
-				// identity arrives (output_item.added OR the
-				// response.completed reconciliation above).
-				acc = sseutil.NewToolCallAccumulator(nextBlockIndex)
-				nextBlockIndex++
-				fnByItem[ev.ItemID] = acc
-				fnOpenOrder = append(fnOpenOrder, ev.ItemID)
+				continue
 			}
 			if !sendAll(acc.HandleDelta("", "", ev.Delta)) {
 				return
@@ -621,26 +611,6 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 		case "response.completed":
 			if ev.Response != nil && ev.Response.Usage != nil {
 				outputTokens = ev.Response.Usage.OutputTokens
-			}
-			// Reconcile any function_call accumulator that landed
-			// without call_id/name at output_item.added time (under-
-			// specified frame on some upstream variants): walk
-			// response.output for the final function_call shape and
-			// emit MarkStarted retroactively, otherwise the buffered
-			// argument fragments would silently drop in Finish().
-			if ev.Response != nil {
-				for _, item := range ev.Response.Output {
-					if item.Type != "function_call" || item.CallID == "" || item.Name == "" {
-						continue
-					}
-					acc, ok := fnByItem[item.ID]
-					if !ok || acc == nil {
-						continue
-					}
-					if !send(acc.MarkStarted(item.CallID, item.Name)) {
-						return
-					}
-				}
 			}
 			// stopReason is the source-of-truth set when each output_item
 			// was observed: "tool_use" the moment a function_call item
