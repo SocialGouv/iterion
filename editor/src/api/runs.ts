@@ -488,15 +488,17 @@ export async function downloadArtifactFile(
 async function blobToBase64(blob: Blob): Promise<string> {
   const buf = await blob.arrayBuffer();
   const bytes = new Uint8Array(buf);
-  // For large blobs this is the most memory-efficient approach short
-  // of streaming chunks; FileReader.readAsDataURL would force the same
-  // full encoding plus a string slice on top.
-  let binary = "";
+  // Build the binary-string in 32 KB pieces and join at the end:
+  // `binary += String.fromCharCode(...)` would be O(N²) on the total
+  // size (every += copies an ever-growing immutable string), freezing
+  // the UI thread for several seconds on multi-MB artifact downloads.
+  // Array#join allocates once over the concatenated length.
+  const parts: string[] = [];
   const chunk = 0x8000;
   for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    parts.push(String.fromCharCode(...bytes.subarray(i, i + chunk)));
   }
-  return btoa(binary);
+  return btoa(parts.join(""));
 }
 
 export interface CreateRunRequest {
