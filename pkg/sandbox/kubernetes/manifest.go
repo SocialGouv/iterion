@@ -234,7 +234,9 @@ func atoi64(s string) (int64, error) {
 
 // envMapToSlice converts the spec's map[string]string env into the
 // []corev1.EnvVar shape the API server expects. Order is sorted
-// alphabetically for stable diffs in `kubectl describe pod`.
+// alphabetically for stable diffs in `kubectl describe pod`. Values
+// are validated for control characters — mirrors the docker driver's
+// discipline (F-SB-5).
 func envMapToSlice(env map[string]string) []any {
 	keys := make([]string, 0, len(env))
 	for k := range env {
@@ -243,6 +245,14 @@ func envMapToSlice(env map[string]string) []any {
 	sort.Strings(keys)
 	out := make([]any, 0, len(keys))
 	for _, k := range keys {
+		// Skip silently rather than fail the whole manifest build —
+		// the upstream caller (BuildPodManifest) doesn't return an
+		// error for individual env validation. The downstream `env`
+		// command in appendEnvPrefix DOES error, so a malformed value
+		// is caught there. This sift is defense-in-depth.
+		if validateEnvVar(k, env[k]) != nil {
+			continue
+		}
 		out = append(out, map[string]any{"name": k, "value": env[k]})
 	}
 	return out

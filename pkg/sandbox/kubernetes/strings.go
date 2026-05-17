@@ -1,9 +1,27 @@
 package kubernetes
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 )
+
+// validateEnvVar mirrors the discipline applied on the docker driver
+// (pkg/sandbox/docker/driver.go:validateEnvVar): reject env names
+// containing '=' / newline / NUL and values containing newline / NUL.
+// Kubernetes is more forgiving than docker's argv parser — the manifest
+// is built as JSON, so embedded newlines survive — but operators reading
+// `kubectl describe` see corrupted output, and downstream consumers that
+// split on \n misbehave. Same posture across both drivers.
+func validateEnvVar(k, v string) error {
+	if strings.ContainsAny(k, "=\n\r\x00") {
+		return fmt.Errorf("kubernetes: invalid env var name (contains '=', newline, or NUL): %q", k)
+	}
+	if strings.ContainsAny(v, "\n\r\x00") {
+		return fmt.Errorf("kubernetes: env var %q value contains newline, CR, or NUL — refusing to inject", k)
+	}
+	return nil
+}
 
 // toLowerASCII returns a copy of s with ASCII upper-case letters
 // replaced by their lower-case equivalents. We avoid the stdlib
@@ -44,6 +62,14 @@ func appendEnvPrefix(args []string, env map[string]string) []string {
 	keys := sortedKeys(env)
 	args = append(args, "env")
 	for _, k := range keys {
+		// Defense-in-depth: validateEnvVar rejects newlines and NULs
+		// that would split the inner `env` tool's argv parsing or
+		// corrupt `kubectl describe` output. Silently skip rather
+		// than return — the parent callers don't return an error
+		// from this helper. validateEnvVar in strings.go.
+		if validateEnvVar(k, env[k]) != nil {
+			continue
+		}
 		args = append(args, k+"="+env[k])
 	}
 	return args
