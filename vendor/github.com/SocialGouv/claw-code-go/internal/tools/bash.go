@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"syscall"
 	"time"
 )
 
@@ -114,15 +113,11 @@ func ExecuteBashWithEnv(callerCtx context.Context, input map[string]any, mode pe
 	}
 	// Put bash and every descendant in a fresh process group so a single
 	// signal reaches the whole tree (default exec.CommandContext only
-	// signals the immediate child).
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process != nil {
-			// Negative PID = signal the group, not just the leader.
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
-		return os.ErrProcessDone
-	}
+	// signals the immediate child). Unix-only — Windows uses a stub
+	// (see bash_windows.go). The build-tagged bash_unix.go installs
+	// SysProcAttr.Setpgid + cmd.Cancel; cmd.WaitDelay below still
+	// applies on every OS as the pipe-close safety net.
+	applyBashProcessGroup(cmd)
 	// Safety net: if a descendant somehow survives the group kill and
 	// keeps stdout/stderr open, Go force-closes the pipes after
 	// WaitDelay so cmd.Wait — and the io.Copy goroutines feeding buf —
