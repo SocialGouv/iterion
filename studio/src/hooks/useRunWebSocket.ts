@@ -1,10 +1,8 @@
 import { useEffect, useRef } from "react";
 
 import { isSafeStoreParam, type RunEvent, type RunSnapshot } from "@/api/runs";
-import { getDesktopWsBase, isDesktop, isWailsHosted } from "@/lib/desktopBridge";
+import { buildWsUrl } from "@/lib/wsUrl";
 import { useRunStore } from "@/store/run";
-
-const BASE_URL = import.meta.env.VITE_API_URL ?? "/api";
 
 interface WsEnvelope {
   type: string;
@@ -39,28 +37,10 @@ function appendStoreParam(wsURL: string): string {
   return `${wsURL}${sep}store=${encodeURIComponent(override)}`;
 }
 
-// Desktop mode: SPA loads on the Wails AssetServer origin (wails:// or
-// http://wails.localhost), but Wails AssetServer rejects WS upgrades (501).
-// We dial the local server directly with the session token in the query.
 async function deriveWsUrl(runId: string): Promise<string> {
-  if (isDesktop()) {
-    const desktopUrl = await getDesktopWsBase(`/api/ws/runs/${encodeURIComponent(runId)}`);
-    if (desktopUrl) return appendStoreParam(desktopUrl);
-  }
-  // In a Wails-hosted page the AssetServer host (window.location.host ===
-  // "wails" / "wails.localhost") cannot accept WS upgrades and DNS won't
-  // resolve it anyway. If the desktop bindings or the embedded server URL
-  // aren't ready yet, surface a transient error so the caller's reconnect
-  // logic re-runs deriveWsUrl on the next tick — by then the bindings or
-  // the started server should have caught up.
-  if (isWailsHosted()) {
-    throw new Error("desktop bindings not ready");
-  }
-  if (BASE_URL.startsWith("http")) {
-    return appendStoreParam(BASE_URL.replace(/^http/, "ws") + `/ws/runs/${encodeURIComponent(runId)}`);
-  }
-  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return appendStoreParam(`${proto}//${window.location.host}${BASE_URL}/ws/runs/${encodeURIComponent(runId)}`);
+  return appendStoreParam(
+    await buildWsUrl(`/ws/runs/${encodeURIComponent(runId)}`),
+  );
 }
 
 interface LogChunkPayload {

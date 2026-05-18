@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui";
 
-import ApiKeysEditor from "@/views/Settings/ApiKeysEditor";
+import ApiKeysEditor from "@/components/Settings/ApiKeysEditor";
 
 interface Props {
   onNext: () => void;

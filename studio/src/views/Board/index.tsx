@@ -23,7 +23,7 @@ import {
   type NativeIssue,
 } from "@/api/native";
 import IssueModal from "./IssueModal";
-import SettingsDrawer from "@/views/Dispatcher/SettingsDrawer";
+import SettingsDrawer from "@/components/Dispatcher/SettingsDrawer";
 import TrackerErrorBanner from "@/components/shared/TrackerErrorBanner";
 import { useBoardKeyboard } from "@/hooks/useBoardKeyboard";
 

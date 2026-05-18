@@ -1,4 +1,4 @@
-import ApiKeysEditor from "./ApiKeysEditor";
+import ApiKeysEditor from "@/components/Settings/ApiKeysEditor";
 
 export default function ApiKeysTab() {
   return (

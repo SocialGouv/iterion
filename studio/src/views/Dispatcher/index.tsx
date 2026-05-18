@@ -14,7 +14,7 @@ import {
   type DispatcherSnapshot,
   type ManagerStatus,
 } from "@/api/dispatcher";
-import SettingsDrawer from "./SettingsDrawer";
+import SettingsDrawer from "@/components/Dispatcher/SettingsDrawer";
 import TrackerErrorBanner from "@/components/shared/TrackerErrorBanner";
 
 export default function DispatcherView() {

@@ -1,32 +1,11 @@
-import { getDesktopWsBase, isDesktop, isWailsHosted } from "@/lib/desktopBridge";
+import { buildWsUrl } from "@/lib/wsUrl";
 import type { ServerWsEvent } from "./types";
 
-const BASE_URL = import.meta.env.VITE_API_URL ?? "/api";
-
-// deriveWsUrl resolves the absolute WebSocket URL for the file-watcher
-// stream. In CLI / browser mode the SPA shares an origin with the API, so a
-// relative URL works. In desktop mode the SPA is hosted on Wails'
-// AssetServer (wails:// or http://wails.localhost), but Wails rejects WS
-// upgrades — so we dial the local server directly with the session token in
-// the query (the only auth channel that survives this cross-origin
-// boundary; HttpOnly cookies set on the loopback domain are not sent).
+// File-watcher and project-switch stream — see buildWsUrl for transport
+// notes (Wails AssetServer rejects WS upgrades, hence the indirection
+// through getDesktopWsBase in desktop mode).
 async function deriveWsUrl(): Promise<string> {
-  if (isDesktop()) {
-    const desktopUrl = await getDesktopWsBase("/api/ws");
-    if (desktopUrl) return desktopUrl;
-  }
-  // Wails-hosted page without ready bindings: surface a transient error so
-  // the caller's reconnect timer re-runs deriveWsUrl on the next tick. The
-  // alternative — falling through to ws://wails/api/ws — produces a DNS
-  // failure that never recovers because window.location.host doesn't change.
-  if (isWailsHosted()) {
-    throw new Error("desktop bindings not ready");
-  }
-  if (BASE_URL.startsWith("http")) {
-    return BASE_URL.replace(/^http/, "ws") + "/ws";
-  }
-  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${proto}//${window.location.host}${BASE_URL}/ws`;
+  return buildWsUrl("/ws");
 }
 
 // The /api/ws channel now carries both file-change events and the
