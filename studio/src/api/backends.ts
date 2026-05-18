@@ -1,6 +1,8 @@
 // Mirrors pkg/backend/detect.Report. Keep the field names in sync — the
 // Go handler returns json:"snake_case" and we deserialise verbatim.
 
+import { extractErrorMessage } from "./client";
+
 const BASE_URL = import.meta.env.VITE_API_URL ?? "/api";
 
 export interface BackendStatus {
@@ -49,7 +51,7 @@ export async function fetchBackendDetect(
     headers: opts.force ? { "Cache-Control": "no-cache" } : undefined,
   });
   if (!res.ok) {
-    throw new Error(`backends/detect: HTTP ${res.status}`);
+    throw new Error(`backends/detect: HTTP ${res.status}: ${await extractErrorMessage(res)}`);
   }
   return (await res.json()) as BackendDetectReport;
 }

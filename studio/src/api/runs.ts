@@ -1,7 +1,7 @@
 // Run-console HTTP client. Mirrors the Go service in pkg/runview/.
 
 import { desktop, isDesktop } from "@/lib/desktopBridge";
-import { apiRequest } from "./client";
+import { apiRequest, extractErrorMessage } from "./client";
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? "/api";
 
@@ -320,7 +320,7 @@ export async function fetchToolBlob(
   const url = `${BASE_URL}/runs/${encodeURIComponent(runId)}/tools/${encodeURIComponent(toolUseID)}/${kind}${suffix ? `?${suffix}` : ""}`;
   const res = await fetch(url, { credentials: "include" });
   if (!res.ok) {
-    throw new Error(`API error ${res.status}: ${await res.text()}`);
+    throw new Error(`API error ${res.status}: ${await extractErrorMessage(res)}`);
   }
   const data = await res.text();
   const totalHeader = res.headers.get("X-Tool-Total-Size") ?? "0";
@@ -431,7 +431,7 @@ export async function fetchArtifactFile(
   const url = artifactFileURL(runId, relPath) + (opts.download ? "?download=1" : "");
   const res = await fetch(url, { credentials: "include" });
   if (!res.ok) {
-    throw new Error(`API error ${res.status}: ${await res.text()}`);
+    throw new Error(`API error ${res.status}: ${await extractErrorMessage(res)}`);
   }
   return {
     blob: await res.blob(),

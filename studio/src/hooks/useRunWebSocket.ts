@@ -299,7 +299,14 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
 
     const scheduleReconnect = () => {
       if (!aliveRef.current) return;
+      // Defensive: clear any timer still armed from a previous failure path
+      // before scheduling a new one. Two stacked onclose handlers (e.g. when
+      // a reconnectToken bump races an in-flight close on the prior socket)
+      // can otherwise double-arm and accumulate backoff. Mirrors the same
+      // guard in api/ws.ts.
+      if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       reconnectTimer.current = setTimeout(() => {
+        reconnectTimer.current = null;
         reconnectDelay.current = Math.min(reconnectDelay.current * 2, 30_000);
         void connect();
       }, reconnectDelay.current);

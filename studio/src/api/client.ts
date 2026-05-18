@@ -44,8 +44,10 @@ export async function apiRequest<T>(fullPath: string, init?: RequestInit): Promi
 // extractErrorMessage prefers a structured envelope field (`error` or
 // `message`) over the raw body, so the toast shown to the user reads
 // "forbidden" rather than `{"error":"forbidden"}` for the common Go
-// `httpError` shape served by pkg/server.
-async function extractErrorMessage(res: Response): Promise<string> {
+// `httpError` shape served by pkg/server. Exported so other api/*.ts
+// modules that hit `fetch` directly (file blobs, backend detect, …)
+// share the same error-shape rendering.
+export async function extractErrorMessage(res: Response): Promise<string> {
   const text = await res.text();
   if (!text) return res.statusText || "";
   try {
