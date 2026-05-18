@@ -14,7 +14,7 @@
 # ---------------------------------------------------------------------
 # Stage 1 — Studio frontend
 # ---------------------------------------------------------------------
-FROM node:22-bookworm-slim AS studio-builder
+FROM node:26-bookworm-slim AS studio-builder
 WORKDIR /app
 # pnpm-workspace.yaml + pnpm-lock.yaml live at the repo root; the
 # studio/ directory is a workspace member that doesn't carry its own
@@ -52,7 +52,7 @@ RUN go build \
 # ---------------------------------------------------------------------
 # Stage 3 — Pinned LLM CLIs
 # ---------------------------------------------------------------------
-FROM node:22-bookworm-slim AS llm-clis
+FROM node:26-bookworm-slim AS llm-clis
 WORKDIR /llm
 COPY docker/llm-clis/package.json ./package.json
 # npm install (no lock yet) honours the exact pinned versions in
