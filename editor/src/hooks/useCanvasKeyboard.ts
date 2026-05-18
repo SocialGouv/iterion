@@ -38,6 +38,10 @@ interface CanvasKeyboardDeps {
   quickAddMenu: unknown;
   setQuickAddMenu: (v: null) => void;
   setContextMenu: (v: null) => void;
+  // Callback the Cmd+A handler invokes with the ids of every editable
+  // node. Passed in so the hook doesn't have to reach for xyflow
+  // selection internals.
+  onSelectAll?: (ids: string[]) => void;
 }
 
 export function useCanvasKeyboard(deps: CanvasKeyboardDeps): (e: KeyboardEvent) => void {
@@ -61,7 +65,7 @@ export function useCanvasKeyboard(deps: CanvasKeyboardDeps): (e: KeyboardEvent) 
   const setPendingFitNodeId = useUIStore((s) => s.setPendingFitNodeId);
   const dismissEscape = useEscapeStack();
 
-  const { search, quickAddMenu, setQuickAddMenu, setContextMenu } = deps;
+  const { search, quickAddMenu, setQuickAddMenu, setContextMenu, onSelectAll } = deps;
 
   return useCallback(
     (e: KeyboardEvent) => {
@@ -117,14 +121,13 @@ export function useCanvasKeyboard(deps: CanvasKeyboardDeps): (e: KeyboardEvent) 
       }
 
       // Select-all on the canvas. xyflow tracks multi-selection
-      // natively (selected: true on each node) and updates it via
-      // onNodesChange — flipping every editable node to selected:true
-      // is the cleanest way to engage that machinery without
-      // duplicating selection bookkeeping in our own store. Excludes
-      // __start__ / done / fail / auxiliary nodes since they're not
-      // user-editable anyway.
+      // natively via the `selected` flag on each node; the parent's
+      // onSelectAll callback is the bridge to its useCanvasLayout
+      // selectNodes action. Excludes terminal / auxiliary nodes since
+      // they're not user-editable anyway.
       if ((e.ctrlKey || e.metaKey) && (e.key === "a" || e.key === "A") && !isInput) {
         e.preventDefault();
+        if (!onSelectAll) return;
         const allEditable = (document?.agents ?? [])
           .map((a) => a.name)
           .concat((document?.judges ?? []).map((j) => j.name))
@@ -133,14 +136,7 @@ export function useCanvasKeyboard(deps: CanvasKeyboardDeps): (e: KeyboardEvent) 
           .concat((document?.tools ?? []).map((t) => t.name))
           .concat((document?.computes ?? []).map((c) => c.name));
         if (allEditable.length === 0) return;
-        // Push a custom event the Canvas listens to. We don't have a
-        // direct handle to xyflow from here; the Canvas's
-        // useCanvasLayout setNodes wired through xyflow Reactflow
-        // instance is the right authority — see Canvas.tsx
-        // "selectAllEditable" listener.
-        window.dispatchEvent(
-          new CustomEvent("iterion:select-all-editable", { detail: allEditable }),
-        );
+        onSelectAll(allEditable);
         addToast(`Selected ${allEditable.length} node${allEditable.length === 1 ? "" : "s"}`, "info");
         return;
       }
@@ -212,6 +208,6 @@ export function useCanvasKeyboard(deps: CanvasKeyboardDeps): (e: KeyboardEvent) 
         }
       }
     },
-    [selectedNodeId, selectedEdgeId, document, removeNode, removeEdge, clearSelection, search, quickAddMenu, copiedNodeId, duplicateNode, setCopiedNode, setSelectedNode, addToast, expanded, toggleExpanded, dismissEscape, toggleLayer, undo, redo, setQuickAddMenu, setContextMenu, setCanvasTool],
+    [selectedNodeId, selectedEdgeId, document, removeNode, removeEdge, clearSelection, search, quickAddMenu, copiedNodeId, duplicateNode, setCopiedNode, setSelectedNode, addToast, expanded, toggleExpanded, dismissEscape, toggleLayer, undo, redo, setQuickAddMenu, setContextMenu, setCanvasTool, onSelectAll, setPendingFitNodeId],
   );
 }

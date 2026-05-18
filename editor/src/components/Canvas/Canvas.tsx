@@ -125,18 +125,6 @@ export default function Canvas() {
   const layout = useCanvasLayout();
   const search = useCanvasSearch(layout.layoutNodes);
 
-  // Cmd+A select-all bridge. useCanvasKeyboard fires a window
-  // CustomEvent because it doesn't have a direct handle to the
-  // layout's selectNodes — the layout is owned by Canvas via
-  // useCanvasLayout(). Listen here and forward.
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const ids = (e as CustomEvent<string[]>).detail;
-      if (Array.isArray(ids)) layout.selectNodes(ids);
-    };
-    window.addEventListener("iterion:select-all-editable", handler);
-    return () => window.removeEventListener("iterion:select-all-editable", handler);
-  }, [layout]);
   const connections = useCanvasConnections();
   const { toggleFullscreen } = useFullscreen();
   const onKeyDown = useCanvasKeyboard({
@@ -144,6 +132,7 @@ export default function Canvas() {
     quickAddMenu: connections.quickAddMenu,
     setQuickAddMenu: (v) => connections.setQuickAddMenu(v),
     setContextMenu,
+    onSelectAll: layout.selectNodes,
   });
 
 

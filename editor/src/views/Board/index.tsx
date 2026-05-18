@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useSearch } from "wouter";
 
+import { formatRelative } from "@/lib/format";
+
 import PageShell from "@/components/shared/PageShell";
 import ConductorControlBar from "@/components/shared/ConductorControlBar";
 import { Button } from "@/components/ui/Button";
@@ -22,6 +24,7 @@ import {
 } from "@/api/native";
 import IssueModal from "./IssueModal";
 import SettingsDrawer from "@/views/Conductor/SettingsDrawer";
+import TrackerErrorBanner from "@/components/shared/TrackerErrorBanner";
 import { useBoardKeyboard } from "@/hooks/useBoardKeyboard";
 
 export default function BoardView() {
@@ -79,11 +82,21 @@ export default function BoardView() {
         for (const r of snap.retries ?? []) xmap.set(r.issue_id, r);
         setRunningByIssue(rmap);
         setRetryingByIssue(xmap);
-        setTrackerError(
-          snap.last_tracker_error
-            ? { tracker: snap.tracker, message: snap.last_tracker_error }
-            : null,
-        );
+        // Guard the tracker error update on value equality so a stable
+        // poll doesn't churn an identical object reference each tick
+        // and re-render the whole board.
+        setTrackerError((prev) => {
+          const message = snap.last_tracker_error ?? "";
+          if (!message) return prev === null ? prev : null;
+          if (
+            prev &&
+            prev.tracker === snap.tracker &&
+            prev.message === message
+          ) {
+            return prev;
+          }
+          return { tracker: snap.tracker, message };
+        });
         setConductorPaused(!!snap.paused);
         setLastSyncAt(Date.now());
       } catch {
@@ -200,27 +213,33 @@ export default function BoardView() {
     return m;
   }, [board, filteredIssues]);
 
-  // Surface eligible counts in the browser tab so operators with the
-  // board pinned in a background tab see new ready/in-progress work
-  // without having to focus the tab. Only kicks in when the board
-  // actually has eligible columns — for purely terminal layouts the
-  // existing useDocumentTitle string is more informative.
-  useEffect(() => {
-    if (!board) return;
+  // Eligible counts surfaced in the browser tab title so operators
+  // with the board pinned in a background tab see new ready/
+  // in-progress work without focusing it. Derived as a stable string
+  // first so the effect only runs when the rendered counts actually
+  // change — `byState` gets a fresh Map identity every render, which
+  // would otherwise rewrite document.title every 2s on every poll
+  // tick.
+  const tabBadge = useMemo(() => {
+    if (!board) return null;
     const eligible = board.states.filter((s) => s.eligible);
-    if (eligible.length === 0) return;
+    if (eligible.length === 0) return null;
     const parts: string[] = [];
     for (const s of eligible) {
       const count = (byState.get(s.name) ?? []).length;
       if (count > 0) parts.push(`${count} ${s.display ?? s.name}`);
     }
-    if (parts.length === 0) return;
+    return parts.length > 0 ? `(${parts.join(", ")})` : null;
+  }, [board, byState]);
+
+  useEffect(() => {
+    if (!tabBadge) return;
     const prev = document.title;
-    document.title = `(${parts.join(", ")}) ${prev}`;
+    document.title = `${tabBadge} ${prev}`;
     return () => {
       document.title = prev;
     };
-  }, [board, byState]);
+  }, [tabBadge]);
 
   const recordTransition = useCallback((id: string, from: string) => {
     const hist = transitionHistoryRef.current;
@@ -413,11 +432,10 @@ export default function BoardView() {
         </div>
       )}
       {trackerError && (
-        <div className="bg-amber-500/10 border-b border-amber-500/40 px-4 py-2 text-xs text-amber-200 flex items-start gap-2">
-          <span className="font-medium shrink-0">Tracker error:</span>
-          <span className="font-mono break-words flex-1">{trackerError.message}</span>
-          <span className="text-amber-200/60 shrink-0">({trackerError.tracker})</span>
-        </div>
+        <TrackerErrorBanner
+          tracker={trackerError.tracker}
+          message={trackerError.message}
+        />
       )}
       {conductorPaused && (
         <div className="bg-yellow-500/10 border-b border-yellow-500/40 px-4 py-2 text-xs text-yellow-200 flex items-center gap-2">
@@ -965,6 +983,7 @@ function IssueCard({
   }
   const hoverTitle = previewLines.length > 0 ? previewLines.join("\n\n") : undefined;
   const [dragging, setDragging] = useState(false);
+  const pinnedFields = iss.fields ? pickPinnedFields(iss.fields) : [];
   return (
     <div
       role="button"
@@ -1005,9 +1024,9 @@ function IssueCard({
           </span>
         ) : null}
       </div>
-      {iss.fields && pickPinnedFields(iss.fields).length > 0 && (
+      {pinnedFields.length > 0 && (
         <div className="mt-0.5 flex items-center gap-2 text-[10px] text-fg-subtle flex-wrap">
-          {pickPinnedFields(iss.fields).map(([k, v]) => (
+          {pinnedFields.map(([k, v]) => (
             <span key={k} className="flex items-center gap-1">
               <span className="font-mono opacity-70">{k}:</span>
               <span className="text-fg-default">{String(v)}</span>
@@ -1044,7 +1063,7 @@ function IssueCard({
         )}
         {iss.updated_at && (
           <span className="text-fg-subtle" title={iss.updated_at}>
-            · updated {boardRelTime(iss.updated_at)}
+            · updated {formatRelative(iss.updated_at)}
           </span>
         )}
       </div>
@@ -1146,19 +1165,6 @@ function pickPinnedFields(fields: Record<string, unknown>): Array<[string, unkno
   return picked;
 }
 
-// boardRelTime formats an ISO timestamp as "12s ago", "4m ago", etc.
-// Sized for the card footer so longer-form times (hours, days) collapse
-// to "1h", "2d" without trailing "ago" to save horizontal space.
-function boardRelTime(iso: string): string {
-  const t = Date.parse(iso);
-  if (!Number.isFinite(t)) return "";
-  const delta = Math.max(0, Math.floor((Date.now() - t) / 1000));
-  if (delta < 5) return "just now";
-  if (delta < 60) return `${delta}s ago`;
-  if (delta < 3600) return `${Math.round(delta / 60)}m ago`;
-  if (delta < 86400) return `${Math.round(delta / 3600)}h`;
-  return `${Math.round(delta / 86400)}d`;
-}
 
 function shortID(id: string) {
   const bare = id.replace(/^native:/, "").replace(/^github:[^#]+#/, "#");

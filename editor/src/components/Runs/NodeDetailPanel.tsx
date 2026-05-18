@@ -15,6 +15,7 @@ import { formatBytes } from "@/lib/format";
 import { CopyButton, IconButton, Input, StatusBadge, Tabs } from "@/components/ui";
 import { stepIteration } from "@/lib/eventIter";
 import { formatContextUsage, formatDurationBetween, formatMs } from "@/lib/format";
+import { readBooleanFlag, writeBooleanFlag } from "@/lib/localStorageFlag";
 import { readNodeOutputMeta } from "@/lib/delegateMeta";
 
 import ArtifactDiff from "./ArtifactDiff";
@@ -462,26 +463,14 @@ function DetailHeader({
     return { costUsd, tokens, model, contextWindow, contextUsed };
   }, [events]);
   const contextUsage = formatContextUsage(contextUsed, contextWindow);
-  // showAbsoluteTimes flips the duration cell to wall-clock anchors
-  // ("started 14:32:08 · finished 14:32:12") which is what users need
-  // when correlating run events with external logs (CI runs, dashboards,
-  // etc.). Persisted to localStorage so the preference survives reloads.
-  const [showAbsoluteTimes, setShowAbsoluteTimes] = useState<boolean>(() => {
-    try {
-      return window.localStorage.getItem("run-console.absolute-times") === "1";
-    } catch {
-      return false;
-    }
-  });
+  // Wall-clock vs relative durations. Persisted so the preference
+  // survives reloads — operators correlating runs with CI/dashboards
+  // need wall-clock anchors and shouldn't have to re-toggle each visit.
+  const [showAbsoluteTimes, setShowAbsoluteTimes] = useState<boolean>(() =>
+    readBooleanFlag("run-console.absolute-times"),
+  );
   useEffect(() => {
-    try {
-      window.localStorage.setItem(
-        "run-console.absolute-times",
-        showAbsoluteTimes ? "1" : "0",
-      );
-    } catch {
-      // localStorage unavailable — preference resets per session
-    }
+    writeBooleanFlag("run-console.absolute-times", showAbsoluteTimes);
   }, [showAbsoluteTimes]);
 
   return (

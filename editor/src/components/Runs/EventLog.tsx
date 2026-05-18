@@ -287,19 +287,45 @@ export default function EventLog({
     return n;
   }, [typeCounts, errorEventTypes]);
 
+  // Compute the filtered list and the indices of error events in one
+  // pass. Walking `filtered` again on every "next error" click would
+  // be O(N) on a 100k-event log; deriving alongside the filter keeps
+  // the click handler O(1).
+  const { filtered, errorIndices } = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    const out: AnnotatedEvent[] = [];
+    const errIdx: number[] = [];
+    for (const ann of annotated) {
+      const e = ann.event;
+      if (selectedExecutionId && ann.executionId !== selectedExecutionId) continue;
+      if (activeTypes.size > 0 && !activeTypes.has(e.type)) continue;
+      if (query) {
+        let matches = false;
+        if (e.type.toLowerCase().includes(query)) matches = true;
+        else if (e.node_id?.toLowerCase().includes(query)) matches = true;
+        else if (e.data && JSON.stringify(e.data).toLowerCase().includes(query))
+          matches = true;
+        if (!matches) continue;
+      }
+      const idx = out.length;
+      out.push(ann);
+      if (errorEventTypes.has(e.type)) errIdx.push(idx);
+    }
+    return { filtered: out, errorIndices: errIdx };
+    // `annotated` is mutated in place when the cache extends — depend
+    // on `events` so this memo invalidates on every batch flush even
+    // when the array reference is unchanged.
+  }, [annotated, events, selectedExecutionId, activeTypes, search, errorEventTypes]);
+
   // Cycle through error events on repeated clicks of the "n errors"
   // badge: scroll to the first one, then the next, etc. — wraps around
   // at the end. The cursor sits in a ref so the parent doesn't
   // re-render between clicks.
   const errorCursorRef = useRef<number>(-1);
   const jumpToNextError = () => {
-    const indices: number[] = [];
-    for (let i = 0; i < filtered.length; i++) {
-      if (errorEventTypes.has(filtered[i]!.event.type)) indices.push(i);
-    }
-    if (indices.length === 0) return;
-    errorCursorRef.current = (errorCursorRef.current + 1) % indices.length;
-    const target = indices[errorCursorRef.current]!;
+    if (errorIndices.length === 0) return;
+    errorCursorRef.current = (errorCursorRef.current + 1) % errorIndices.length;
+    const target = errorIndices[errorCursorRef.current]!;
     virtuosoRef.current?.scrollToIndex({
       index: target,
       align: "center",
@@ -309,29 +335,6 @@ export default function EventLog({
     // yank the user back to live.
     if (followTail) onToggleFollow(false);
   };
-
-  const filtered = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    return annotated.filter(({ event: e, executionId }) => {
-      // Execution selection filter (cross-highlight from the canvas).
-      // Match on the annotated executionId, which already accounts for
-      // iteration_path-keyed exec_ids and inherits the right exec for
-      // non-node_started events.
-      if (selectedExecutionId) {
-        if (executionId !== selectedExecutionId) return false;
-      }
-      if (activeTypes.size > 0 && !activeTypes.has(e.type)) return false;
-      if (!query) return true;
-      if (e.type.toLowerCase().includes(query)) return true;
-      if (e.node_id?.toLowerCase().includes(query)) return true;
-      if (e.data && JSON.stringify(e.data).toLowerCase().includes(query))
-        return true;
-      return false;
-    });
-    // `annotated` is mutated in place when the cache extends — depend
-    // on `events` so this memo invalidates on every batch flush even
-    // when the array reference is unchanged.
-  }, [annotated, events, selectedExecutionId, activeTypes, search]);
 
   // Virtuoso's `followOutput="auto"` only fires when it considers the
   // user "at bottom", which is unreliable on a live run where events
