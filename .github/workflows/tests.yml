@@ -418,7 +418,7 @@ jobs:
         # the Security tab via the upload step below.
         run: govulncheck -format sarif ./... > govulncheck.sarif || true
       - name: Upload SARIF
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: govulncheck.sarif
           category: govulncheck
