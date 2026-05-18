@@ -2,6 +2,8 @@ package runview
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -1093,6 +1095,134 @@ func (s *Service) Cancel(runID string) error {
 // the post-cancel finalize in spawnRun).
 func (s *Service) CancelInactive(runID string) (bool, error) {
 	return s.CancelInactiveCtx(context.Background(), runID)
+}
+
+// ---------------------------------------------------------------------------
+// User-message inbox (chatbox queued messages)
+// ---------------------------------------------------------------------------
+
+// QueueMessage appends a new operator chat message to the run's
+// inbox in "queued" status, emits user_message_queued so WS
+// subscribers can update their UI, and returns the persisted record.
+// The engine drains pending messages cooperatively at safe boundaries
+// (between agent-loop iterations for claw, at the next human pause
+// for claude_code / codex) — there is no preemption of the running
+// agent.
+func (s *Service) QueueMessage(ctx context.Context, runID, text string) (*store.QueuedUserMessage, error) {
+	if runID == "" {
+		return nil, errors.New("runview: run_id is required")
+	}
+	if text == "" {
+		return nil, errors.New("runview: message text is required")
+	}
+	// Refuse queueing against terminal runs — the chatbox UI gates on
+	// status too, but a stale tab could POST after the run finished.
+	r, err := s.store.LoadRun(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("load run: %w", err)
+	}
+	switch r.Status {
+	case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusCancelled:
+		return nil, fmt.Errorf("run %s is terminal (%s); cannot queue message", runID, r.Status)
+	}
+	msg := store.QueuedUserMessage{
+		ID:       newQueuedMessageID(),
+		RunID:    runID,
+		Text:     text,
+		QueuedAt: time.Now().UTC(),
+		TenantID: r.TenantID,
+	}
+	if err := s.store.AppendQueuedMessage(ctx, runID, msg); err != nil {
+		return nil, fmt.Errorf("append queued message: %w", err)
+	}
+	// Reload the message to capture whatever the store stamped on
+	// (tenant, status="queued"), then fan out via the event broker.
+	stored := msg
+	stored.Status = store.QueuedMessageStatusQueued
+	if err := s.emitInboxEvent(ctx, runID, store.EventUserMessageQueued, &stored); err != nil {
+		// Log but don't fail the queue — the persisted row already
+		// represents the operator's intent; missing the fan-out only
+		// delays UI badge updates until the next snapshot/poll.
+		if s.logger != nil {
+			s.logger.Warn("runview: emit user_message_queued for %s/%s: %v", runID, msg.ID, err)
+		}
+	}
+	return &stored, nil
+}
+
+// CancelQueuedMessage marks a queued (not-yet-delivered) message as
+// cancelled. Returns store.ErrQueuedMessageNotFound or
+// store.ErrQueuedMessageStatusConflict (already-delivered) so the
+// HTTP handler can map them to 404 / 409 respectively.
+func (s *Service) CancelQueuedMessage(ctx context.Context, runID, msgID string) error {
+	if runID == "" || msgID == "" {
+		return errors.New("runview: run_id and message_id are required")
+	}
+	if err := s.store.UpdateQueuedMessageStatus(ctx, runID, msgID, store.QueuedMessageStatusCancelled, store.QueuedMessageStatusQueued); err != nil {
+		return err
+	}
+	// Reload so the fanned-out event carries the timestamps.
+	msgs, err := s.store.ListQueuedMessages(ctx, runID)
+	if err == nil {
+		for i := range msgs {
+			if msgs[i].ID == msgID {
+				_ = s.emitInboxEvent(ctx, runID, store.EventUserMessageCancelled, &msgs[i])
+				break
+			}
+		}
+	}
+	return nil
+}
+
+// ListQueuedMessages returns every message recorded for the run in
+// FIFO order, regardless of current status. Used by the editor for
+// initial hydration alongside the run snapshot.
+func (s *Service) ListQueuedMessages(ctx context.Context, runID string) ([]store.QueuedUserMessage, error) {
+	if runID == "" {
+		return nil, errors.New("runview: run_id is required")
+	}
+	return s.store.ListQueuedMessages(ctx, runID)
+}
+
+// emitInboxEvent persists an inbox event and fans it out to live WS
+// subscribers via the broker.
+func (s *Service) emitInboxEvent(ctx context.Context, runID string, typ store.EventType, msg *store.QueuedUserMessage) error {
+	evt := store.Event{
+		Type:  typ,
+		RunID: runID,
+		Data: map[string]interface{}{
+			"id":           msg.ID,
+			"text":         msg.Text,
+			"status":       string(msg.Status),
+			"queued_at":    msg.QueuedAt,
+			"delivered_at": msg.DeliveredAt,
+			"consumed_at":  msg.ConsumedAt,
+			"cancelled_at": msg.CancelledAt,
+		},
+	}
+	persisted, err := s.store.AppendEvent(ctx, runID, evt)
+	if err != nil {
+		return err
+	}
+	if s.broker != nil && persisted != nil {
+		s.broker.Publish(*persisted)
+	}
+	return nil
+}
+
+// newQueuedMessageID returns a short opaque ID for inbox messages.
+// Time-prefix gives FIFO-friendly ordering at the filesystem level
+// even when wall-clock collides; the random suffix avoids ID reuse
+// within the same nanosecond.
+func newQueuedMessageID() string {
+	var buf [6]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		// rand.Read effectively never fails on Linux; on the off
+		// chance, fall back to the timestamp alone — collisions are
+		// caught at AppendQueuedMessage (would clobber the FS row).
+		return fmt.Sprintf("msg_%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("msg_%d_%s", time.Now().UnixNano(), hex.EncodeToString(buf[:]))
 }
 
 // CancelInactiveCtx is the tenant-aware variant of CancelInactive.

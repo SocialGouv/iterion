@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -59,6 +60,13 @@ const (
 	wsTypeAnswer         = "answer"
 	wsTypeSubscribeLogs  = "subscribe_logs"
 	wsTypeUnsubscribeLog = "unsubscribe_logs"
+	// wsTypeQueueMessage queues an operator chat message against a
+	// running agent. Payload is wsQueueMessageRequest. Reply is an
+	// ack envelope with the QueuedUserMessage record as payload.
+	wsTypeQueueMessage = "queue_message"
+	// wsTypeCancelQueuedMessage cancels a message that has not yet
+	// been delivered. Payload is wsCancelQueuedMessageRequest.
+	wsTypeCancelQueuedMessage = "cancel_queued_message"
 )
 
 type wsSubscribeRequest struct {
@@ -93,6 +101,14 @@ type wsAnswerRequest struct {
 	FilePath string                 `json:"file_path,omitempty"` // optional; falls back to run.FilePath
 	Source   string                 `json:"source,omitempty"`    // see resumeRunRequest.Source
 	Answers  map[string]interface{} `json:"answers"`
+}
+
+type wsQueueMessageRequest struct {
+	Text string `json:"text"`
+}
+
+type wsCancelQueuedMessageRequest struct {
+	MessageID string `json:"message_id"`
 }
 
 type wsErrorPayload struct {
@@ -295,6 +311,10 @@ func (c *runConn) dispatch(env runWSEnvelope) {
 		c.handleCancel(env)
 	case wsTypeAnswer:
 		c.handleAnswer(env)
+	case wsTypeQueueMessage:
+		c.handleQueueMessage(env)
+	case wsTypeCancelQueuedMessage:
+		c.handleCancelQueuedMessage(env)
 	default:
 		c.sendError("unknown_type", "unknown message type: "+env.Type, env.AckID)
 	}
@@ -843,6 +863,56 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 		Answers:  req.Answers,
 	}); err != nil {
 		c.sendError("resume_failed", err.Error(), env.AckID)
+		return
+	}
+	c.sendAck(env.AckID)
+}
+
+func (c *runConn) handleQueueMessage(env runWSEnvelope) {
+	if c.xStore != nil {
+		c.sendError("cross_store_readonly", "queue-message is not available for cross-store runs", env.AckID)
+		return
+	}
+	var req wsQueueMessageRequest
+	if err := json.Unmarshal(env.Payload, &req); err != nil {
+		c.sendError("bad_payload", err.Error(), env.AckID)
+		return
+	}
+	if strings.TrimSpace(req.Text) == "" {
+		c.sendError("empty_message", "text is required", env.AckID)
+		return
+	}
+	msg, err := c.server.runs.QueueMessage(c.authCtx(), c.runID, req.Text)
+	if err != nil {
+		c.sendError("queue_failed", err.Error(), env.AckID)
+		return
+	}
+	c.sendEnvelope(wsTypeAck, msg, env.AckID)
+}
+
+func (c *runConn) handleCancelQueuedMessage(env runWSEnvelope) {
+	if c.xStore != nil {
+		c.sendError("cross_store_readonly", "cancel-queued-message is not available for cross-store runs", env.AckID)
+		return
+	}
+	var req wsCancelQueuedMessageRequest
+	if err := json.Unmarshal(env.Payload, &req); err != nil {
+		c.sendError("bad_payload", err.Error(), env.AckID)
+		return
+	}
+	if req.MessageID == "" {
+		c.sendError("missing_message_id", "message_id is required", env.AckID)
+		return
+	}
+	if err := c.server.runs.CancelQueuedMessage(c.authCtx(), c.runID, req.MessageID); err != nil {
+		switch {
+		case errors.Is(err, store.ErrQueuedMessageNotFound):
+			c.sendError("not_found", err.Error(), env.AckID)
+		case errors.Is(err, store.ErrQueuedMessageStatusConflict):
+			c.sendError("status_conflict", err.Error(), env.AckID)
+		default:
+			c.sendError("cancel_failed", err.Error(), env.AckID)
+		}
 		return
 	}
 	c.sendAck(env.AckID)

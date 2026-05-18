@@ -149,6 +149,28 @@ const (
 	// closes the CDP WS and falls back to viewer mode. Data:
 	//   - session_id: matches the prior _started event
 	EventBrowserSessionEnded EventType = "browser_session_ended"
+	// EventUserMessageQueued is emitted when an operator enqueues a
+	// chat message against a running run via POST /api/runs/{id}/
+	// queue-message (or WS queue_message). The engine drains queued
+	// messages between agent-loop iterations (claw) or at the next
+	// human pause (claude_code / codex). Data carries the
+	// QueuedUserMessage record.
+	EventUserMessageQueued EventType = "user_message_queued"
+	// EventUserMessageDelivered fires when the engine extracts a
+	// queued message from the inbox and hands it to the agent. For
+	// claw this happens inline at the tool-iteration boundary; for
+	// claude_code / codex it happens at the next pauseAtHuman.
+	EventUserMessageDelivered EventType = "user_message_delivered"
+	// EventUserMessageConsumed fires when the LLM's next response
+	// observably incorporates the delivered message (used by the
+	// editor inbox to switch the badge from "delivered" to "consumed"
+	// and hide the message after a short delay). Heuristic: emitted
+	// at the next tool-iteration boundary after delivery.
+	EventUserMessageConsumed EventType = "user_message_consumed"
+	// EventUserMessageCancelled fires when the operator cancels a
+	// queued (not-yet-delivered) message via DELETE /api/runs/{id}/
+	// queue-message/{msgId}.
+	EventUserMessageCancelled EventType = "user_message_cancelled"
 )
 
 // Event is a single timestamped fact persisted in events.jsonl.

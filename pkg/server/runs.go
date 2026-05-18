@@ -60,6 +60,9 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("GET /api/runs/{id}/commits/{sha}", s.handleGetRunCommit)
 	s.mux.HandleFunc("GET /api/runs/{id}/commits/{sha}/diff", s.handleGetRunCommitFileDiff)
 	s.mux.HandleFunc("POST /api/runs/{id}/cancel", s.handleCancelRun)
+	s.mux.HandleFunc("GET /api/runs/{id}/queue-messages", s.handleListQueuedMessages)
+	s.mux.HandleFunc("POST /api/runs/{id}/queue-message", s.handleQueueMessage)
+	s.mux.HandleFunc("DELETE /api/runs/{id}/queue-message/{msgID}", s.handleCancelQueuedMessage)
 	s.mux.HandleFunc("POST /api/runs/{id}/resume", s.handleResumeRun)
 	s.mux.HandleFunc("POST /api/runs/{id}/merge", s.handleMergeRun)
 	s.mux.HandleFunc("GET /api/ws/runs/{id}", s.handleRunWebSocket)
@@ -666,6 +669,84 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusAccepted)
 	s.writeJSONFor(w, r, cancelRunResponse{RunID: id, Status: "cancelling"})
+}
+
+func (s *Server) handleListQueuedMessages(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
+		return
+	}
+	msgs, err := s.runs.ListQueuedMessages(r.Context(), id)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "list queued messages: %v", err)
+		return
+	}
+	if msgs == nil {
+		msgs = []store.QueuedUserMessage{}
+	}
+	s.writeJSONFor(w, r, map[string]interface{}{"messages": msgs})
+}
+
+type queueMessageRequest struct {
+	Text string `json:"text"`
+}
+
+func (s *Server) handleQueueMessage(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSafeOrigin(w, r) {
+		return
+	}
+	if s.rejectCrossStoreWrite(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
+		return
+	}
+	var req queueMessageRequest
+	if err := readJSON(r, &req); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid request: %v", err)
+		return
+	}
+	if strings.TrimSpace(req.Text) == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "text is required")
+		return
+	}
+	msg, err := s.runs.QueueMessage(r.Context(), id, req.Text)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "queue message: %v", err)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+	s.writeJSONFor(w, r, msg)
+}
+
+func (s *Server) handleCancelQueuedMessage(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSafeOrigin(w, r) {
+		return
+	}
+	if s.rejectCrossStoreWrite(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	msgID := r.PathValue("msgID")
+	if id == "" || msgID == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id or message id")
+		return
+	}
+	if err := s.runs.CancelQueuedMessage(r.Context(), id, msgID); err != nil {
+		switch {
+		case errors.Is(err, store.ErrQueuedMessageNotFound):
+			s.httpErrorFor(w, r, http.StatusNotFound, "queued message not found")
+		case errors.Is(err, store.ErrQueuedMessageStatusConflict):
+			s.httpErrorFor(w, r, http.StatusConflict, "queued message already delivered or cancelled")
+		default:
+			s.httpErrorFor(w, r, http.StatusInternalServerError, "cancel queued message: %v", err)
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
