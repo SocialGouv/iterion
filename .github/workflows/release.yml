@@ -50,6 +50,13 @@ jobs:
 
       - name: Build studio frontend
         working-directory: studio
+        env:
+          # macos-latest (M-series) only ships ~7 GB to a runner and
+          # Node 22's default 2 GB old-space cap is too tight for the
+          # vite production build (NodeIcon chunk pushes the heap past
+          # the limit and v8 SIGABRTs). 4096 MiB clears the build with
+          # headroom on every runner OS.
+          NODE_OPTIONS: --max-old-space-size=4096
         run: |
           corepack enable
           pnpm install --prefer-offline
@@ -169,10 +176,21 @@ jobs:
 
       - uses: azure/setup-helm@v4
 
-      - name: Login to GHCR
+      - name: Login to GHCR (helm)
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | \
             helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Login to GHCR (docker, for cosign)
+        # `helm registry login` stores creds in ~/.config/helm/registry
+        # which cosign does not read. cosign sign uploads the signature
+        # via the OCI distribution spec and looks up creds in
+        # ~/.docker/config.json — without this step it 401s on push.
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Compute lowercase repo owner
         # OCI references must be lowercase; github.repository_owner preserves

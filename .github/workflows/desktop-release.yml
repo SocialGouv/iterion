@@ -134,6 +134,12 @@ jobs:
       - name: Build studio frontend
         shell: bash
         working-directory: studio
+        env:
+          # macOS runners cap Node's old-space at 2 GB by default which
+          # is too tight for the production vite build (NodeIcon chunk
+          # pushes v8 to SIGABRT). 4096 MiB clears it with headroom on
+          # every runner OS.
+          NODE_OPTIONS: --max-old-space-size=4096
         run: |
           # Cross-platform inline of the studio:build Taskfile target.
           # On Windows runners go-task v3 falls back to mvdan/sh for POSIX
