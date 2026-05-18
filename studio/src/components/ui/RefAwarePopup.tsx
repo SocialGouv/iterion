@@ -154,7 +154,7 @@ export default function RefAwarePopup({
   return createPortal(
     <div
       role="listbox"
-      className="fixed z-50 max-h-[280px] w-[260px] overflow-y-auto rounded-md border border-border-default bg-surface-1 shadow-xl text-xs animate-fade-in"
+      className="fixed z-[var(--z-popover)] max-h-[280px] w-[260px] overflow-y-auto rounded-md border border-border-default bg-surface-1 shadow-xl text-xs animate-fade-in"
       style={{
         top: caretPos.top + caretPos.height + 4,
         left: caretPos.left,

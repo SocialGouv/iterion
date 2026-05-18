@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { RunEvent } from "@/api/runs";
+import { IconButton } from "@/components/ui/IconButton";
 import { LiveDot } from "@/components/ui/LiveDot";
 import { timelineMarks } from "@/lib/snapshotReducer";
 
@@ -80,8 +81,11 @@ export default function Scrubber({
 
   return (
     <div className="px-4 py-1.5 border-b border-border-default flex items-center gap-3 bg-surface-1">
-      <button
-        type="button"
+      <IconButton
+        size="sm"
+        variant="secondary"
+        label={playing ? "Pause replay" : "Play replay"}
+        tooltip={playing ? "Pause replay" : (scrubSeq === null ? "Play replay from the start" : "Play replay from current position")}
         onClick={() => {
           if (playing) {
             setPlaying(false);
@@ -92,12 +96,9 @@ export default function Scrubber({
           if (scrubSeq === null) onChange(0);
           setPlaying(true);
         }}
-        title={playing ? "Pause replay" : (scrubSeq === null ? "Play replay from the start" : "Play replay from current position")}
-        className="text-[10px] px-2 py-0.5 rounded bg-surface-2 hover:bg-surface-3 border border-border-default font-mono"
-        aria-label={playing ? "Pause replay" : "Play replay"}
       >
-        {playing ? "⏸" : "▶"}
-      </button>
+        <span className="font-mono">{playing ? "⏸" : "▶"}</span>
+      </IconButton>
       <select
         value={speedIdx}
         onChange={(e) => setSpeedIdx(Number(e.target.value))}

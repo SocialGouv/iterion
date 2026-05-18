@@ -115,6 +115,21 @@
   --motion-base: 180ms;
   --motion-slow: 280ms;
   --motion-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  /* Stacking ladder — pin every fixed/absolute floating surface to a
+   * semantic token so layering stays predictable when surfaces nest
+   * (a confirm above a modal, a popover inside a modal, a toast over
+   * everything). Consume via inline `style={{ zIndex: "var(--z-modal)" }}`
+   * or Tailwind arbitrary value `z-[var(--z-modal)]`. Canvas chrome
+   * (toolbars/overlays anchored inside a panel) stays on the lower
+   * `--z-canvas` rung so it doesn't compete with global modals. */
+  --z-canvas: 40;        /* floating chrome inside a canvas/panel */
+  --z-overlay: 40;       /* modal backdrops */
+  --z-modal: 50;         /* dialogs, full-screen drawers */
+  --z-confirm: 60;       /* confirm-on-top-of-modal, command palette */
+  --z-popover: 70;       /* floating popovers (above modals if nested) */
+  --z-tooltip: 80;       /* tooltips (always above popovers) */
+  --z-toast: 100;        /* toasts, focused skip-link */
 }
 
 /* Explicit dark theme override (== defaults; declared for parity with light) */

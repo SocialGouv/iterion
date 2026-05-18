@@ -427,7 +427,7 @@ export default function Canvas() {
 
       {/* Connection error feedback */}
       {connections.connectionError && (
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-50 bg-danger-soft text-danger-fg text-xs px-3 py-1.5 rounded-lg shadow-lg border border-danger">
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[var(--z-canvas)] bg-danger-soft text-danger-fg text-xs px-3 py-1.5 rounded-lg shadow-lg border border-danger">
           {connections.connectionError}
         </div>
       )}

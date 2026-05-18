@@ -29,7 +29,7 @@ export default function ToolPalette() {
   const setCanvasTool = useUIStore((s) => s.setCanvasTool);
 
   return (
-    <div className="absolute top-14 left-2 z-40 flex flex-col gap-1 bg-surface-0/90 border border-border-default rounded-lg p-1">
+    <div className="absolute top-14 left-2 z-[var(--z-canvas)] flex flex-col gap-1 bg-surface-0/90 border border-border-default rounded-lg p-1">
       {tools.map((tool) => (
         <button
           key={tool.id}

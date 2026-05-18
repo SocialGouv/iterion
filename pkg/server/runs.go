@@ -42,6 +42,7 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("GET /api/runs", s.handleListRuns)
 	s.mux.HandleFunc("GET /api/runs/global-active", s.handleListGlobalActiveRuns)
 	s.mux.HandleFunc("POST /api/runs", s.handleLaunchRun)
+	s.mux.HandleFunc("POST /api/runs/preview-cost", s.handlePreviewCost)
 	s.mux.HandleFunc("POST /api/runs/uploads", s.handleUploadAttachment)
 	s.mux.HandleFunc("GET /api/runs/{id}/attachments/{name}", s.handleServeAttachment)
 	s.mux.HandleFunc("GET /api/runs/{id}/attachments/{name}/url", s.handlePresignAttachment)

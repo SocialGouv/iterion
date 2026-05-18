@@ -8,12 +8,18 @@ interface Props {
   field: VarField;
   value: string;
   onChange: (next: string) => void;
+  required?: boolean;
+  invalid?: boolean;
 }
 
 /** Per-type renderer for a single workflow var input. The form layer
  *  collects everything as strings — `POST /api/runs` accepts vars as a
  *  string→string map and the engine resolves them to the declared type. */
-export default function VarFieldInput({ field, value, onChange }: Props) {
+export default function VarFieldInput({ field, value, onChange, required, invalid }: Props) {
+  const a11y = {
+    "aria-required": required || undefined,
+    "aria-invalid": invalid || undefined,
+  };
   switch (field.type) {
     case "bool":
       return (
@@ -23,6 +29,7 @@ export default function VarFieldInput({ field, value, onChange }: Props) {
             checked={value === "true"}
             onChange={(e) => onChange(e.target.checked ? "true" : "false")}
             className="accent-accent"
+            {...a11y}
           />
           <span className="text-xs text-fg-muted">{value === "true" ? "true" : "false"}</span>
         </label>
@@ -36,6 +43,7 @@ export default function VarFieldInput({ field, value, onChange }: Props) {
           value={value}
           onChange={(e) => onChange(e.target.value)}
           size="sm"
+          {...a11y}
         />
       );
     case "json":
@@ -46,6 +54,7 @@ export default function VarFieldInput({ field, value, onChange }: Props) {
           rows={4}
           spellCheck={false}
           className="font-mono text-[11px]"
+          {...a11y}
         />
       );
     case "string[]":
@@ -57,6 +66,7 @@ export default function VarFieldInput({ field, value, onChange }: Props) {
           onChange={(e) => onChange(e.target.value)}
           placeholder="comma,separated,values"
           size="sm"
+          {...a11y}
         />
       );
     case "string":
@@ -74,6 +84,7 @@ export default function VarFieldInput({ field, value, onChange }: Props) {
             spellCheck={false}
             className="font-mono text-[12px]"
             placeholder={`Enter ${field.name}…`}
+            {...a11y}
           />
         );
       }
@@ -82,6 +93,7 @@ export default function VarFieldInput({ field, value, onChange }: Props) {
           value={value}
           onChange={(e) => onChange(e.target.value)}
           size="sm"
+          {...a11y}
         />
       );
   }

@@ -560,6 +560,40 @@ export async function createRun(req: CreateRunRequest): Promise<CreateRunRespons
   });
 }
 
+// Inline cost-estimate shown next to the Launch button. Best-effort
+// hint — see pkg/backend/cost for pricing caveats. Empty `nodes` and
+// notes containing `no_llm_nodes` / `no_pricing_data` / `workflow_unparseable`
+// signal that the chip should be hidden rather than blocking the form.
+export interface PreviewCostNode {
+  node_id: string;
+  kind: "agent" | "judge";
+  model?: string;
+  effort?: string;
+  tokens_in: number;
+  tokens_out: number;
+  cost_min_usd: number;
+  cost_max_usd: number;
+}
+
+export interface PreviewCostResponse {
+  tokens_min: number;
+  tokens_max: number;
+  cost_min_usd: number;
+  cost_max_usd: number;
+  nodes: PreviewCostNode[];
+  notes?: string[];
+}
+
+export async function previewRunCost(req: {
+  file_path?: string;
+  source?: string;
+}): Promise<PreviewCostResponse> {
+  return request("/runs/preview-cost", {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
+}
+
 export async function cancelRun(
   runId: string,
 ): Promise<{ run_id: string; status: string }> {

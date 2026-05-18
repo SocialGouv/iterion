@@ -119,4 +119,42 @@ describe("a11y / primitives", () => {
     const root = mount(<Skeleton className="h-6 w-32" />);
     await expectNoViolations(root, "Skeleton");
   });
+
+  it("Button loading state still passes axe (no orphaned spinner label)", async () => {
+    const root = mount(
+      <div>
+        <Button variant="primary" loading>Launch</Button>
+        <Button variant="primary" size="sm" loading>Resume</Button>
+      </div>,
+    );
+    await expectNoViolations(root, "Button loading");
+  });
+
+  it("Stale-WS banner — role=status + reconnect Button", async () => {
+    // Mirrors RunHeader's WSDisconnectBanner composition shape so axe
+    // catches role + nested-button conflicts before the live SPA does.
+    const root = mount(
+      <main>
+        <div role="status" aria-live="polite" className="flex items-center gap-2">
+          <LiveDot tone="danger" size="sm" pulse={false} label="Disconnected" />
+          <span>Live updates disconnected — data may be stale.</span>
+          <Button variant="ghost" size="sm">Reconnect</Button>
+        </div>
+      </main>,
+    );
+    await expectNoViolations(root, "WS banner");
+  });
+
+  it("Toast region — status + alert roles per level", async () => {
+    const root = mount(
+      <main>
+        <div role="region" aria-label="Notifications">
+          <div role="status" aria-live="polite">Saved</div>
+          <div role="status" aria-live="polite">Reconnecting</div>
+          <div role="alert" aria-live="assertive">Save failed</div>
+        </div>
+      </main>,
+    );
+    await expectNoViolations(root, "Toast region");
+  });
 });

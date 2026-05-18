@@ -28,9 +28,9 @@ export function Dialog({
   return (
     <RD.Root open={open} onOpenChange={onOpenChange}>
       <RD.Portal>
-        <RD.Overlay className="fixed inset-0 z-40 bg-black/60 animate-fade-in" />
+        <RD.Overlay className="fixed inset-0 z-[var(--z-overlay)] bg-black/60 animate-fade-in" />
         <RD.Content
-          className={`fixed left-1/2 top-1/2 z-50 w-[calc(100vw-2rem)] ${widthClass} -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border-default bg-surface-1 text-fg-default shadow-2xl animate-fade-in`}
+          className={`fixed left-1/2 top-1/2 z-[var(--z-modal)] w-[calc(100vw-2rem)] ${widthClass} -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border-default bg-surface-1 text-fg-default shadow-2xl animate-fade-in`}
         >
           {(title || !hideClose) && (
             <div className="flex items-start justify-between border-b border-border-default px-4 py-3">

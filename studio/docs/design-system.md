@@ -19,6 +19,7 @@ Single source of truth: [`studio/src/app.css`](../src/app.css). Everything below
 | Library | `library-pattern` | "Pattern" library category (no node-kind equivalent) |
 | Radii | `radius-sm`/`md`/`lg`/`xl` | Component corner radius |
 | Motion | `motion-fast` (120ms) / `motion-base` (180ms) / `motion-slow` (280ms), `motion-ease` | Transitions, animations |
+| Stacking | `z-canvas` (40, panel chrome) / `z-overlay` (40, modal backdrops) / `z-modal` (50) / `z-confirm` (60, confirm-on-modal + cmd-K) / `z-popover` (70) / `z-tooltip` (80) / `z-toast` (100, also focused skip-link) | Use via `z-[var(--z-modal)]` (Tailwind arbitrary value) or `style={{ zIndex: "var(--z-modal)" }}` |
 
 ### TypeScript-side mirrors
 

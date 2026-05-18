@@ -621,7 +621,7 @@ export default function RunCanvasIR({
       )}
       <StatusLegend />
 
-      <div className="absolute top-2 right-2 z-40 flex items-center gap-1">
+      <div className="absolute top-2 right-2 z-[var(--z-canvas)] flex items-center gap-1">
         {filterChips
           .filter((c) => c.count > 0)
           .map((c) => {

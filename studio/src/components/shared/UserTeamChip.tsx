@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useLocation } from "wouter";
 
 import { useAuth } from "@/auth/AuthContext";
+import { Popover, PopoverClose } from "@/components/ui/Popover";
 
 // Hidden entirely in local dev mode (user id "dev"), where the desktop
 // app's native menus drive Settings / ProjectSwitcher instead.
@@ -13,84 +14,89 @@ export default function UserTeamChip() {
   const isLocal = user?.id === "dev";
   if (isLocal) return null;
 
+  // PopoverClose wraps each menu button so the popover dismisses on
+  // click — equivalent to the previous setOpen(false) lines but keyboard-
+  // accessible (Radix wires Escape + focus return for us).
+  const closeAfter = (fn: () => void) => () => {
+    fn();
+    setOpen(false);
+  };
+
   return (
-    <div className="relative inline-flex">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="bg-surface-1/95 border border-border-subtle rounded px-3 py-1 text-xs flex items-center gap-2 shadow max-w-[160px] sm:max-w-none"
-        title={`${activeTeam?.team_name ?? "No team"} · ${user?.email ?? ""}`}
-      >
-        <span className="font-medium truncate">{activeTeam?.team_name ?? "No team"}</span>
-        {/* Hide email on narrow viewports — team name is enough chrome. */}
-        <span className="hidden sm:inline text-fg-muted truncate">{user?.email}</span>
-        <span>▾</span>
-      </button>
-      {open && (
-        <div
-          className="absolute right-0 top-full mt-1 w-72 bg-surface-1 border border-border-subtle rounded shadow-lg p-2 text-sm z-50"
-          onMouseLeave={() => setOpen(false)}
+    <Popover
+      open={open}
+      onOpenChange={setOpen}
+      side="bottom"
+      align="end"
+      contentClassName="w-[min(18rem,calc(100vw-1rem))] p-2 text-sm"
+      trigger={
+        <button
+          className="bg-surface-1/95 border border-border-subtle rounded px-3 py-1 text-xs flex items-center gap-2 shadow max-w-[160px] sm:max-w-none"
+          title={`${activeTeam?.team_name ?? "No team"} · ${user?.email ?? ""}`}
         >
-          <div className="px-2 py-1 text-xs uppercase tracking-wider text-fg-muted">
-            Switch team
-          </div>
-          {teams.map((t) => (
-            <button
-              key={t.team_id}
-              onClick={() => {
-                void selectTeam(t.team_id);
-                setOpen(false);
-              }}
-              className={`w-full text-left px-2 py-1.5 rounded hover:bg-surface-2 ${
-                t.team_id === activeTeamID ? "bg-surface-2" : ""
-              }`}
-            >
-              <div className="font-medium">{t.team_name}</div>
-              <div className="text-xs text-fg-muted">
-                {t.role}
-                {t.personal && " · personal"}
-              </div>
-            </button>
-          ))}
-          <div className="my-1 border-t border-border-subtle" />
-          {activeTeam && (
-            <button
-              onClick={() => {
-                navigate(`/teams/${activeTeam.team_id}`);
-                setOpen(false);
-              }}
-              className="w-full text-left px-2 py-1.5 rounded hover:bg-surface-2"
-            >
-              Manage {activeTeam.team_name}
-            </button>
-          )}
+          <span className="font-medium truncate">{activeTeam?.team_name ?? "No team"}</span>
+          {/* Hide email on narrow viewports — team name is enough chrome. */}
+          <span className="hidden sm:inline text-fg-muted truncate">{user?.email}</span>
+          <span aria-hidden="true">▾</span>
+        </button>
+      }
+    >
+      <div className="px-2 py-1 text-xs uppercase tracking-wider text-fg-muted">
+        Switch team
+      </div>
+      {teams.map((t) => (
+        <PopoverClose asChild key={t.team_id}>
           <button
-            onClick={() => {
-              navigate("/account");
-              setOpen(false);
-            }}
+            onClick={closeAfter(() => void selectTeam(t.team_id))}
+            className={`w-full text-left px-2 py-1.5 rounded hover:bg-surface-2 ${
+              t.team_id === activeTeamID ? "bg-surface-2" : ""
+            }`}
+          >
+            <div className="font-medium">{t.team_name}</div>
+            <div className="text-xs text-fg-muted">
+              {t.role}
+              {t.personal && " · personal"}
+            </div>
+          </button>
+        </PopoverClose>
+      ))}
+      <div className="my-1 border-t border-border-subtle" />
+      {activeTeam && (
+        <PopoverClose asChild>
+          <button
+            onClick={closeAfter(() => navigate(`/teams/${activeTeam.team_id}`))}
             className="w-full text-left px-2 py-1.5 rounded hover:bg-surface-2"
           >
-            Account settings
+            Manage {activeTeam.team_name}
           </button>
-          {user?.is_super_admin && (
-            <button
-              onClick={() => {
-                navigate("/admin");
-                setOpen(false);
-              }}
-              className="w-full text-left px-2 py-1.5 rounded hover:bg-surface-2 text-fg-warn"
-            >
-              Platform admin
-            </button>
-          )}
-          <button
-            onClick={() => void signOut()}
-            className="w-full text-left px-2 py-1.5 rounded hover:bg-surface-2 text-fg-error"
-          >
-            Sign out
-          </button>
-        </div>
+        </PopoverClose>
       )}
-    </div>
+      <PopoverClose asChild>
+        <button
+          onClick={closeAfter(() => navigate("/account"))}
+          className="w-full text-left px-2 py-1.5 rounded hover:bg-surface-2"
+        >
+          Account settings
+        </button>
+      </PopoverClose>
+      {user?.is_super_admin && (
+        <PopoverClose asChild>
+          <button
+            onClick={closeAfter(() => navigate("/admin"))}
+            className="w-full text-left px-2 py-1.5 rounded hover:bg-surface-2 text-fg-warn"
+          >
+            Platform admin
+          </button>
+        </PopoverClose>
+      )}
+      <PopoverClose asChild>
+        <button
+          onClick={closeAfter(() => void signOut())}
+          className="w-full text-left px-2 py-1.5 rounded hover:bg-surface-2 text-fg-error"
+        >
+          Sign out
+        </button>
+      </PopoverClose>
+    </Popover>
   );
 }

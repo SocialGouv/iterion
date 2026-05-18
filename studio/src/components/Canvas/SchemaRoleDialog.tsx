@@ -21,7 +21,7 @@ export default function SchemaRoleDialog({ x, y, onSelect, onClose }: SchemaRole
   return (
     <div
       ref={ref}
-      className="fixed z-50 bg-surface-1 border border-border-strong rounded-lg shadow-xl p-1 flex flex-col gap-0.5"
+      className="fixed z-[var(--z-popover)] bg-surface-1 border border-border-strong rounded-lg shadow-xl p-1 flex flex-col gap-0.5"
       style={{ left: x, top: y }}
     >
       <span className="text-[9px] text-fg-subtle uppercase tracking-wider px-2 pt-1">Assign as</span>

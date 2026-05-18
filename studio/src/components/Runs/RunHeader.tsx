@@ -4,9 +4,10 @@ import { Pencil1Icon } from "@radix-ui/react-icons";
 
 import type { RunHeader as RunHeaderType } from "@/api/runs";
 import { cancelRun, getRun, loadEvents } from "@/api/runs";
-import { Button, CopyButton, IconButton, LiveDot, StatusBadge } from "@/components/ui";
+import { Button, CopyButton, IconButton, LiveDot, StatusBadge, Tooltip } from "@/components/ui";
 import AppHeader from "@/components/shared/AppHeader";
 import WSStatusDot from "@/components/shared/WSStatusDot";
+import { useRunStore } from "@/store/run";
 
 import ResumeDialog from "./ResumeDialog";
 
@@ -98,13 +99,17 @@ export default function RunHeader({ run, active, wsState }: Props) {
       <AppHeader active="runs" />
       <div className="shrink-0 border-b border-border-default px-4 py-2 flex items-center gap-3 text-sm">
         <div className="flex flex-col leading-tight min-w-0 max-w-md">
-          <div className="font-medium truncate">
-            {run.name || run.workflow_name}
-          </div>
-          {run.name && (
-            <div className="text-[10px] text-fg-subtle truncate">
-              {run.workflow_name}
+          <Tooltip content={run.name || run.workflow_name}>
+            <div className="font-medium truncate" tabIndex={0}>
+              {run.name || run.workflow_name}
             </div>
+          </Tooltip>
+          {run.name && (
+            <Tooltip content={run.workflow_name}>
+              <div className="text-[10px] text-fg-subtle truncate" tabIndex={0}>
+                {run.workflow_name}
+              </div>
+            </Tooltip>
           )}
         </div>
         {run.file_path && (
@@ -152,14 +157,14 @@ export default function RunHeader({ run, active, wsState }: Props) {
             copiedLabel="link copied"
             variant="share"
           />
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => void onExport()}
-            className="text-[10px] text-fg-subtle hover:text-fg-default px-1.5 py-0.5 rounded border border-border-default hover:bg-surface-2"
             title="Download a JSON archive containing the run snapshot + every event"
           >
             Export
-          </button>
+          </Button>
           <WSStatusDot state={wsState} />
           {/*
             Only render the Cancel button when the run is actually
@@ -192,6 +197,7 @@ export default function RunHeader({ run, active, wsState }: Props) {
           )}
         </div>
       </div>
+      <WSDisconnectBanner state={wsState} />
       {showFinalization && <FinalizationRow run={run} />}
       <ErrorHintRow run={run} onResume={() => setResumeOpen(true)} />
 
@@ -203,6 +209,43 @@ export default function RunHeader({ run, active, wsState }: Props) {
         />
       )}
     </>
+  );
+}
+
+// WSDisconnectBanner shows an inline warning row when the run-console
+// WebSocket has been closed for at least 2 seconds. Without this banner
+// the only signal that live updates have stopped is the small WSStatusDot
+// in the header — easy to miss while watching the event log. The 2-second
+// debounce avoids flicker during normal reconnect blips.
+function WSDisconnectBanner({ state }: { state: string }) {
+  const [showStale, setShowStale] = useState(false);
+  const requestReconnect = useRunStore((s) => s.requestWsReconnect);
+  useEffect(() => {
+    if (state !== "closed") {
+      setShowStale(false);
+      return;
+    }
+    const t = window.setTimeout(() => setShowStale(true), 2000);
+    return () => window.clearTimeout(t);
+  }, [state]);
+  if (!showStale) return null;
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="px-4 py-1.5 bg-warning-soft border-b border-warning/40 flex items-center gap-2 text-[11px] text-warning-fg"
+    >
+      <LiveDot tone="danger" size="sm" pulse={false} />
+      <span>Live updates disconnected — data may be stale.</span>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="ml-auto"
+        onClick={() => requestReconnect()}
+      >
+        Reconnect
+      </Button>
+    </div>
   );
 }
 

@@ -1,4 +1,4 @@
-import { RefreshCw } from "lucide-react";
+import { ReloadIcon } from "@radix-ui/react-icons";
 
 import { useBackendDetectStore } from "@/store/backendDetect";
 import { BackendBadge } from "@/components/icons/BackendBadge";
@@ -109,7 +109,7 @@ export default function BackendStatusPill() {
           onClick={() => void refresh(true)}
           disabled={loading}
         >
-          <RefreshCw size={10} className={loading ? "animate-spin" : ""} />
+          <ReloadIcon className={`w-2.5 h-2.5 ${loading ? "animate-spin" : ""}`} />
           Refresh
         </button>
         <a

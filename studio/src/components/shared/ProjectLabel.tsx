@@ -1,6 +1,27 @@
-import { FolderOpen } from "lucide-react";
-
 import { useProjectInfo } from "@/hooks/useProjectInfo";
+
+// Inline open-folder glyph. Radix has no folder icon and lucide carries
+// the rest of its catalog along the import — this 13×13 SVG keeps the
+// pill self-contained without bringing back a second icon library.
+function FolderOpenGlyph() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 15 15"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="shrink-0"
+      aria-hidden="true"
+    >
+      <path d="M1.5 4.5h4l1 1h7v6.5a.5.5 0 0 1-.5.5h-11a.5.5 0 0 1-.5-.5v-7.5z" />
+      <path d="M2 12l1.5-4.5h11l-1.5 4.5" />
+    </svg>
+  );
+}
 
 // ProjectLabel renders the currently-selected folder/project name so
 // the user always knows which workspace they're editing. Sourced via
@@ -27,7 +48,7 @@ export default function ProjectLabel() {
 
   const content = (
     <>
-      <FolderOpen size={13} className="shrink-0" />
+      <FolderOpenGlyph />
       <span className="truncate">{name}</span>
     </>
   );

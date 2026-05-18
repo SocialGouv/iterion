@@ -68,15 +68,17 @@ export default function PauseForm({ runId, questions, message, onSubmitted }: Pr
           variant="primary"
           size="sm"
           onClick={() => void onSubmit()}
-          disabled={busy}
+          loading={busy}
         >
-          {busy ? "Resuming…" : "Resume"}
+          Resume
         </Button>
-        {error && (
-          <p className="text-danger-fg text-[11px]" role="alert">
-            {error}
-          </p>
-        )}
+        <div role="status" aria-live="polite">
+          {error && (
+            <p className="text-danger-fg text-[11px]" role="alert">
+              {error}
+            </p>
+          )}
+        </div>
       </div>
     );
   }
@@ -116,8 +118,8 @@ export default function PauseForm({ runId, questions, message, onSubmitted }: Pr
         </p>
       )}
       <div className="flex gap-2">
-        <Button type="submit" variant="primary" size="sm" disabled={busy}>
-          {busy ? "Resuming…" : "Submit & Resume"}
+        <Button type="submit" variant="primary" size="sm" loading={busy}>
+          Submit &amp; Resume
         </Button>
       </div>
     </form>

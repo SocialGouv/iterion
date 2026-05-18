@@ -758,7 +758,7 @@ function BoardKeyboardHelp({ onClose }: { onClose: () => void }) {
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center"
+      className="fixed inset-0 z-[var(--z-modal)] bg-black/40 flex items-center justify-center"
       onClick={onClose}
     >
       <div

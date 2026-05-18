@@ -145,7 +145,7 @@ export default function HumanInteractionPanel({ runId }: Props) {
   };
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 z-40 border-t-2 border-warning shadow-2xl bg-surface-1 max-h-[60vh] overflow-y-auto">
+    <div className="fixed bottom-0 left-0 right-0 z-[var(--z-overlay)] border-t-2 border-warning shadow-2xl bg-surface-1 max-h-[60vh] overflow-y-auto">
       <div className="mx-auto max-w-3xl px-4 py-3 space-y-3">
         {pending.node_id && (
           <div className="flex items-center gap-2 text-[11px]">

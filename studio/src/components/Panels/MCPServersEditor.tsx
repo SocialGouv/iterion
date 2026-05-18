@@ -72,7 +72,7 @@ export default function MCPServersEditor() {
         </ul>
       )}
       {confirmDelete !== null && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+        <div className="fixed inset-0 z-[var(--z-confirm)] flex items-center justify-center bg-black/40">
           <div className="bg-surface-0 border border-border-default rounded p-3 max-w-sm">
             <p className="text-sm mb-3">
               Delete MCP server <code>{confirmDelete}</code>? Nodes referencing

@@ -64,7 +64,7 @@ export default function CanvasToolbar({
   return (
     <>
       {/* Layer toggle buttons */}
-      <div className="absolute top-2 left-2 z-40 flex gap-1">
+      <div className="absolute top-2 left-2 z-[var(--z-canvas)] flex gap-1">
         {LAYER_KINDS.map((kind, i) => (
           <button
             key={kind}
@@ -99,7 +99,7 @@ export default function CanvasToolbar({
       {/* Right-side toolbar — situational canvas actions only. Layout
           direction, Arrange and Fit-view live in the top Toolbar's View
           group so they're one click away regardless of canvas focus. */}
-      <div className="absolute top-2 right-2 z-40 flex gap-1">
+      <div className="absolute top-2 right-2 z-[var(--z-canvas)] flex gap-1">
         <Popover
           side="bottom"
           align="end"

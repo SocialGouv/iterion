@@ -12,6 +12,8 @@ import type {
   ServerInfo,
   VarField,
 } from "@/api/types";
+import { CheckCircledIcon, ExclamationTriangleIcon } from "@radix-ui/react-icons";
+
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
 import AppHeader from "@/components/shared/AppHeader";
@@ -21,6 +23,7 @@ import { useDocumentStore } from "@/store/document";
 import AttachmentFieldInput, {
   type AttachmentValue,
 } from "./AttachmentFieldInput";
+import CostPreviewChip from "./CostPreviewChip";
 import VarFieldInput, { defaultStringFor } from "./VarFieldInput";
 import { isPromptLikeVar } from "@/lib/promptVarHeuristics";
 import { formatBytes, totalSize } from "@/lib/attachmentValidation";
@@ -32,6 +35,25 @@ function pickVars(doc: IterDocument | null): VarField[] {
   const wf = doc.workflows?.[0];
   if (wf?.vars?.fields?.length) return wf.vars.fields;
   return doc.vars?.fields ?? [];
+}
+
+/** A var is required when the workflow declares no default. Bool fields
+ *  always have an effective default ("false"), so they're never missing. */
+function isVarRequired(field: VarField): boolean {
+  if (field.type === "bool") return false;
+  return !field.default;
+}
+
+function isVarMissing(field: VarField, value: string): boolean {
+  if (!isVarRequired(field)) return false;
+  return value.trim().length === 0;
+}
+
+/** Small reused affordance — the "required" pill next to a field label. */
+function RequiredPill() {
+  return (
+    <span className="text-[10px] text-warning-fg uppercase tracking-wide">required</span>
+  );
 }
 
 /** Read the workflow's presets (top-level only — they apply to the
@@ -96,10 +118,10 @@ function sandboxModeLabel(doc: IterDocument | null): string {
 function SandboxBadge({ mode }: { mode: string }) {
   const active = mode === "auto" || mode === "inline";
   const label = active
-    ? `Sandbox: ${mode} ✓`
+    ? `Sandbox: ${mode}`
     : mode === "none"
-    ? "Sandbox: none ⚠"
-    : "No sandbox ⚠";
+    ? "Sandbox: none"
+    : "No sandbox";
   const cls = active
     ? "bg-success-soft text-success-fg border-success/40"
     : "bg-danger-soft text-danger-fg border-danger/40";
@@ -108,9 +130,14 @@ function SandboxBadge({ mode }: { mode: string }) {
     : "Workflow has no active sandbox — tools run directly on the host. Add `sandbox: auto` for isolation.";
   return (
     <span
-      className={`inline-flex items-center text-[10px] px-1.5 py-0.5 rounded border ${cls}`}
+      className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border ${cls}`}
       title={title}
     >
+      {active ? (
+        <CheckCircledIcon className="w-3 h-3" aria-hidden="true" />
+      ) : (
+        <ExclamationTriangleIcon className="w-3 h-3" aria-hidden="true" />
+      )}
       {label}
     </span>
   );
@@ -220,9 +247,17 @@ export default function LaunchView() {
   };
 
   // Required attachments must have a successful upload (uploadId present).
-  const missingRequired = attachmentFields.some(
+  const missingAttachment = attachmentFields.some(
     (f) => f.required && !attachments[f.name]?.uploadId,
   );
+  // Required vars (no default declared) must have a non-blank value.
+  const missingVar = fields.some((f) => isVarMissing(f, values[f.name] ?? ""));
+  const missingRequired = missingAttachment || missingVar;
+  const missingTitle = missingAttachment
+    ? "Provide every required attachment first"
+    : missingVar
+      ? "Fill every required input first"
+      : undefined;
 
   // Auto-upload as soon as a file is selected. The upload runs in the
   // background and the launch button stays disabled until every entry
@@ -467,23 +502,25 @@ export default function LaunchView() {
                 <div className="space-y-4">
                   {fields.map((f) => {
                     const promptLike = isPromptLikeVar(f);
-                    const noDefault = !f.default;
+                    const required = isVarRequired(f);
+                    const value = values[f.name] ?? "";
+                    const invalid = required && value.trim().length === 0;
                     if (promptLike) {
                       return (
                         <div key={f.name} className="flex flex-col gap-1.5">
                           <label htmlFor={`var-${f.name}`} className="flex items-baseline gap-2">
                             <span className="text-xs font-medium font-mono text-fg-default">{f.name}</span>
                             <span className="text-[10px] text-fg-subtle">{f.type}</span>
-                            {noDefault && (
-                              <span className="text-[10px] text-warning-fg uppercase tracking-wide">required</span>
-                            )}
+                            {required && <RequiredPill />}
                           </label>
                           <VarFieldInput
                             field={f}
-                            value={values[f.name] ?? ""}
+                            value={value}
                             onChange={(v) =>
                               setValues((prev) => ({ ...prev, [f.name]: v }))
                             }
+                            required={required}
+                            invalid={invalid}
                           />
                         </div>
                       );
@@ -491,15 +528,20 @@ export default function LaunchView() {
                     return (
                       <div key={f.name} className="grid grid-cols-[160px_1fr] gap-3 items-start">
                         <label htmlFor={`var-${f.name}`} className="pt-1">
-                          <div className="text-xs font-medium font-mono">{f.name}</div>
+                          <div className="flex items-baseline gap-2">
+                            <span className="text-xs font-medium font-mono">{f.name}</span>
+                            {required && <RequiredPill />}
+                          </div>
                           <div className="text-[10px] text-fg-subtle">{f.type}</div>
                         </label>
                         <VarFieldInput
                           field={f}
-                          value={values[f.name] ?? ""}
+                          value={value}
                           onChange={(v) =>
                             setValues((prev) => ({ ...prev, [f.name]: v }))
                           }
+                          required={required}
+                          invalid={invalid}
                         />
                       </div>
                     );
@@ -625,12 +667,14 @@ export default function LaunchView() {
               <Button
                 variant="primary"
                 onClick={onSubmit}
-                disabled={submitting || !doc || missingRequired}
-                title={missingRequired ? "Provide every required attachment first" : undefined}
+                loading={submitting}
+                disabled={!doc || missingRequired}
+                title={missingTitle}
               >
-                {submitting ? "Launching…" : "Launch"}
+                Launch
               </Button>
               <SandboxBadge mode={sandboxModeLabel(doc)} />
+              <CostPreviewChip filePath={filePath} source={currentSource || undefined} />
               <span className="text-[10px] text-fg-subtle">
                 Run ID is generated automatically.
               </span>

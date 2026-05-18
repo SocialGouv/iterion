@@ -1,6 +1,8 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
+import { Button } from "@/components/ui/Button";
+
 interface SecondaryAction {
   label: string;
   onClick: () => void;
@@ -49,16 +51,6 @@ export default function ConfirmDialog({
 
   if (!open) return null;
 
-  const confirmClass =
-    confirmVariant === "danger"
-      ? "bg-danger hover:bg-danger text-fg-default"
-      : "bg-accent hover:bg-accent-hover text-fg-default";
-
-  const secondaryClass =
-    secondaryAction?.variant === "danger"
-      ? "bg-danger hover:bg-danger text-fg-default"
-      : "bg-surface-2 hover:bg-surface-3 text-fg-default";
-
   // Strings render inside a <p> for the historical layout; ReactNode
   // bodies (multi-paragraph, inline strong, etc) render inside a div
   // so callers can supply their own structure.
@@ -69,37 +61,39 @@ export default function ConfirmDialog({
       <div className="text-xs text-fg-muted mb-4 space-y-2">{message}</div>
     );
 
-  // Portal to document.body and pin z-[60] so the dialog always stacks
-  // above a parent modal that opened it. Inline rendering at z-50 lost
-  // the DOM-order tiebreaker against Radix's body-portaled Dialog (also
-  // z-50), making the confirm appear behind the ProjectSwitcher modal.
+  // Portal to document.body and pin z-[var(--z-confirm)] so the dialog
+  // always stacks above a parent modal that opened it. The semantic
+  // ladder lives in app.css @theme.
   const content = (
-    <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center">
+    <div className="fixed inset-0 z-[var(--z-confirm)] bg-black/50 flex items-center justify-center">
       <div className="bg-surface-1 border border-border-strong rounded-lg p-4 min-w-[300px] max-w-[440px]">
         <h3 className="text-sm font-bold text-fg-default mb-2">{title}</h3>
         {messageNode}
         <div className="flex justify-end gap-2">
-          <button
+          <Button
             ref={cancelRef}
-            className="bg-surface-2 hover:bg-surface-3 px-3 py-1.5 rounded text-xs text-fg-default"
+            variant="secondary"
+            size="sm"
             onClick={onCancel}
           >
             Cancel
-          </button>
+          </Button>
           {secondaryAction && (
-            <button
-              className={`px-3 py-1.5 rounded text-xs ${secondaryClass}`}
+            <Button
+              variant={secondaryAction.variant === "danger" ? "danger" : "secondary"}
+              size="sm"
               onClick={secondaryAction.onClick}
             >
               {secondaryAction.label}
-            </button>
+            </Button>
           )}
-          <button
-            className={`px-3 py-1.5 rounded text-xs ${confirmClass}`}
+          <Button
+            variant={confirmVariant === "danger" ? "danger" : "primary"}
+            size="sm"
             onClick={onConfirm}
           >
             {confirmLabel}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
