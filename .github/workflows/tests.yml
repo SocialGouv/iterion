@@ -85,8 +85,12 @@ jobs:
     # ./...` skips it; CI provides the URI explicitly so the contract
     # stays enforced. Without this job, every store/mongo + queue/nats
     # change ships untested.
+    #
+    # Runs in parallel with `test`: this job is self-contained (its own
+    # checkout + go build) and a compile error here surfaces the same
+    # failure the `test` job would. Sequential `needs: test` cost 3-4
+    # min of wall-clock without catching anything earlier.
     runs-on: ubuntu-latest
-    needs: test
     timeout-minutes: 15
     services:
       # Plain mongo here because GitHub-Actions service containers can't
@@ -158,10 +162,13 @@ jobs:
     # exercises the full chain (server → NATS → runner → Mongo →
     # /metrics). Catches regressions that helm lint cannot — wrong
     # ConfigMap key, broken probe path, RBAC drift, missing image,
-    # /readyz logic. Runs after unit/e2e because if those fail the
-    # binary is broken anyway.
+    # /readyz logic.
+    #
+    # Runs in parallel with `test`: this job builds its own iterion
+    # image and a Go compile error surfaces here too. The previous
+    # `needs: test` was purely defensive and cost 3-4 min of
+    # wall-clock per push.
     runs-on: ubuntu-latest
-    needs: test
     timeout-minutes: 25
     env:
       KIND_CLUSTER: iterion-e2e
@@ -177,24 +184,13 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 22
-
-      - name: Build studio frontend
-        working-directory: studio
-        run: |
-          corepack enable
-          pnpm install --prefer-offline
-          pnpm exec vite build
-          rm -rf ../pkg/server/static/assets ../pkg/server/static/index.html
-          cp -r dist/* ../pkg/server/static/
-
       - name: Build iterion image (local)
         # Build the local image only — no push. kind loads it directly
         # via `kind load docker-image` so the test is hermetic and
         # doesn't depend on image.yml succeeding first.
+        # The Dockerfile's `studio-builder` stage runs pnpm + vite
+        # build itself, so a separate host-side studio build step is
+        # redundant; saves ~30s and a Node 22 setup.
         run: |
           docker build -t "${IMG}" .
 
