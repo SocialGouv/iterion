@@ -70,7 +70,7 @@ type RunOptions struct {
 	MergeStrategy string
 	// AutoMerge toggles whether the engine performs the merge at end
 	// of run. CLI default is true (preserves prior behaviour); the
-	// editor sets false by default to defer merge to a UI action.
+	// studio sets false by default to defer merge to a UI action.
 	AutoMerge bool
 	// Sandbox is the run-level override for the sandbox activation
 	// mode ("", "none", "auto"). "" inherits the project default

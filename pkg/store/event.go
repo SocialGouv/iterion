@@ -163,7 +163,7 @@ const (
 	EventUserMessageDelivered EventType = "user_message_delivered"
 	// EventUserMessageConsumed fires when the LLM's next response
 	// observably incorporates the delivered message (used by the
-	// editor inbox to switch the badge from "delivered" to "consumed"
+	// studio inbox to switch the badge from "delivered" to "consumed"
 	// and hide the message after a short delay). Heuristic: emitted
 	// at the next tool-iteration boundary after delivery.
 	EventUserMessageConsumed EventType = "user_message_consumed"
@@ -196,7 +196,7 @@ type Event struct {
 	// moment this event was persisted. Stamped by the store from the
 	// per-run log buffer's running total (filesystem mode only;
 	// cloud-mode runs have no local log buffer so the field stays 0).
-	// Consumers (editor time-travel scrubber, replay) slice the live
+	// Consumers (studio time-travel scrubber, replay) slice the live
 	// log up to this offset to show "what was logged at the moment
 	// this event fired" without parsing log line timestamps.
 	LogOffset int64 `json:"log_offset,omitempty" bson:"log_offset,omitempty"`

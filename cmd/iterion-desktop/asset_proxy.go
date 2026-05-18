@@ -90,8 +90,8 @@ func (h *assetProxyHandler) proxyFor(serverURL string) (*httputil.ReverseProxy, 
 			// pkg/server/server.go requireSafeOrigin (and CORS reflection) would
 			// reject every state-changing API call because the SPA's true Origin
 			// is the AssetServer's wails:// origin, which is not in the
-			// loopback allowlist. Origin rewriting is the same trick editor's
-			// vite dev proxy uses (studio/vite.config.ts).
+			// loopback allowlist. Origin rewriting is the same trick the
+			// studio's vite dev proxy uses (studio/vite.config.ts).
 			if r.In.Header.Get("Origin") != "" {
 				r.Out.Header.Set("Origin", "http://"+targetHost)
 			}

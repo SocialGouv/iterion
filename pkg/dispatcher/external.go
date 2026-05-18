@@ -8,7 +8,7 @@ import (
 
 // External tracker factories. These translate the dispatcher.Config
 // shapes into the corresponding tracker package adapter options and
-// instantiate the adapter. Used by both the Manager (editor-driven
+// instantiate the adapter. Used by both the Manager (studio-driven
 // flow) and the standalone `iterion dispatch` CLI.
 
 func buildGitHubTrackerFromConfig(cfg *GitHubTrackerConfig) (tracker.Tracker, error) {

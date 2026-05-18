@@ -138,7 +138,7 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 		if mgrErr == nil {
 			cfg.Dispatcher = mgr
 		} else {
-			logger.Warn("editor: dispatcher manager init: %v", mgrErr)
+			logger.Warn("studio: dispatcher manager init: %v", mgrErr)
 		}
 	}
 
