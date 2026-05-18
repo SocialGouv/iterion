@@ -1,4 +1,4 @@
-import { forwardRef, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, memo, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type { ComponentPropsWithRef } from "react";
 import type { Components, ScrollerProps } from "react-virtuoso";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
@@ -635,7 +635,18 @@ const WrapScroller = forwardRef<HTMLDivElement, ScrollerProps>(
   },
 );
 
-function LogLineRow({ line, wrap }: { line: AnnotatedLine; wrap: boolean }) {
+// Memoised so a streaming run that appends new log items (which forces
+// the parent Virtuoso into a re-render) doesn't re-render every visible
+// LogLineRow whose props are reference-stable. The store builds the
+// items array incrementally, so identity is preserved for unchanged
+// lines.
+const LogLineRow = memo(function LogLineRow({
+  line,
+  wrap,
+}: {
+  line: AnnotatedLine;
+  wrap: boolean;
+}) {
   const cls = line.level
     ? LEVEL_GLYPHS.find((g) => g.key === line.level)?.cls ?? "text-fg-default"
     : "text-fg-default";
@@ -651,9 +662,9 @@ function LogLineRow({ line, wrap }: { line: AnnotatedLine; wrap: boolean }) {
       {line.text || " "}
     </div>
   );
-}
+});
 
-function LogBlockRow({
+const LogBlockRow = memo(function LogBlockRow({
   header,
   body,
   wrap,
@@ -701,7 +712,7 @@ function LogBlockRow({
         ))}
     </div>
   );
-}
+});
 
 function inferLevel(text: string): string | null {
   if (text.length < 10) return null;

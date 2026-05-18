@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { ChevronDownIcon } from "@radix-ui/react-icons";
 
@@ -500,14 +500,7 @@ export default function EventLog({
               }
             }}
             itemContent={(_, ann) => (
-              <EventRow
-                ann={ann}
-                onSelect={() => {
-                  if (ann.event.node_id && onSelectNodeIteration && ann.executionIndex >= 0) {
-                    onSelectNodeIteration(ann.event.node_id, ann.executionIndex);
-                  }
-                }}
-              />
+              <EventRow ann={ann} onSelectNodeIteration={onSelectNodeIteration} />
             )}
             computeItemKey={(_, ann) =>
               `${ann.event.run_id}:${ann.event.seq}`
@@ -541,20 +534,30 @@ function indentForType(t: string): number {
   }
 }
 
-function EventRow({
+// Memoised so Virtuoso can skip re-rendering the ~20 visible rows when
+// only ancillary parent state changes (followTail toggle, filter chip
+// hover, etc.). The annotated event cache upstream preserves identity
+// for unchanged events, and `onSelectNodeIteration` is useCallback'd by
+// RunView — so the memo actually hits on subsequent log chunks.
+const EventRow = memo(function EventRow({
   ann,
-  onSelect,
+  onSelectNodeIteration,
 }: {
   ann: AnnotatedEvent;
-  onSelect: () => void;
+  onSelectNodeIteration?: (nodeId: string, index: number) => void;
 }) {
   const e = ann.event;
   const badge = EVENT_BADGE[e.type] ?? "bg-surface-2 text-fg-muted";
   const indent = indentForType(e.type);
+  const handleClick = useCallback(() => {
+    if (e.node_id && onSelectNodeIteration && ann.executionIndex >= 0) {
+      onSelectNodeIteration(e.node_id, ann.executionIndex);
+    }
+  }, [e.node_id, ann.executionIndex, onSelectNodeIteration]);
   return (
     <button
       type="button"
-      onClick={onSelect}
+      onClick={handleClick}
       className="w-full grid grid-cols-[auto_auto_auto_1fr] gap-2 py-0.5 text-left font-mono text-[10px] hover:bg-surface-2 rounded px-1"
       title={
         e.node_id
@@ -578,7 +581,7 @@ function EventRow({
       <span className="text-fg-subtle truncate">{ann.preview}</span>
     </button>
   );
-}
+});
 
 function previewData(data: Record<string, unknown> | undefined): string {
   if (!data) return "";
