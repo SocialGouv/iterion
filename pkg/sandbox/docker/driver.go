@@ -262,8 +262,13 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 
 	if p.spec.PostCreate != "" {
 		if err := r.runPostCreate(ctx, p.spec.PostCreate); err != nil {
-			// Best-effort cleanup on PostCreate failure.
-			_ = r.Cleanup(ctx)
+			// Best-effort cleanup on PostCreate failure. PostCreate
+			// often fails *because* ctx is done (timeout, caller
+			// cancel) — passing the same ctx to Cleanup would leave it
+			// with no budget to actually remove the container we just
+			// created. Strip cancellation so Cleanup's internal 10s
+			// timeout governs.
+			_ = r.Cleanup(context.WithoutCancel(ctx))
 			return nil, fmt.Errorf("docker: postCreate failed: %w", err)
 		}
 	}
