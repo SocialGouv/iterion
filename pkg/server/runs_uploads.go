@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -110,9 +111,11 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Sanitise filename: strip any path component the browser tucked
-	// in, and refuse traversal attempts.
+	// in, refuse traversal attempts, control bytes (incl. NUL — Windows
+	// stream-name truncation, log smuggling), and invalid UTF-8 (which
+	// later JSON-marshals to the manifest unescaped).
 	filename := filepath.Base(hdr.Filename)
-	if filename == "" || filename == "." || filename == ".." || strings.ContainsAny(filename, `/\`) {
+	if !validUploadFilename(filename) {
 		os.RemoveAll(dir)
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid filename")
 		return
@@ -444,6 +447,44 @@ func splitMIME(m string) (string, string) {
 		return "", ""
 	}
 	return m[:i], m[i+1:]
+}
+
+// validUploadFilename returns true when filename is acceptable as the
+// on-disk component of a staged upload. The browser already submitted
+// it via multipart so filepath.Base has stripped any path prefix; the
+// remaining concerns are:
+//
+//   - reserved navigation names ("", ".", "..") — confuse downstream
+//     readers and the manifest layer
+//   - embedded separators (/ or \) that survived Base on cross-platform
+//     edge cases (Windows uploads with a Unix server)
+//   - control bytes including NUL — log-smuggling, manifest-JSON
+//     corruption, and on Windows alternate-stream truncation
+//   - invalid UTF-8 — the manifest is JSON, and unescaped bad bytes
+//     in a string field corrupt the file
+//
+// The size cap (255 bytes) matches what most filesystems will accept
+// as a single path component on disk.
+func validUploadFilename(filename string) bool {
+	if filename == "" || filename == "." || filename == ".." {
+		return false
+	}
+	if len(filename) > 255 {
+		return false
+	}
+	if strings.ContainsAny(filename, `/\`) {
+		return false
+	}
+	if !utf8.ValidString(filename) {
+		return false
+	}
+	for _, r := range filename {
+		// All C0 controls (incl. NUL) and DEL.
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // newUploadID generates a URL-safe upload identifier of the form

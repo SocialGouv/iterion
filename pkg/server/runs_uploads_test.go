@@ -169,6 +169,36 @@ func TestMimeAllowed(t *testing.T) {
 	}
 }
 
+func TestValidUploadFilename(t *testing.T) {
+	tests := []struct {
+		name     string
+		filename string
+		want     bool
+	}{
+		{"happy ascii", "report.pdf", true},
+		{"happy utf8", "résumé—final.txt", true},
+		{"empty", "", false},
+		{"dot", ".", false},
+		{"dotdot", "..", false},
+		{"forward slash", "a/b.txt", false},
+		{"backslash", `a\b.txt`, false},
+		{"nul byte", "ok\x00.exe", false},
+		{"tab", "a\tb.txt", false},
+		{"newline", "a\nb.txt", false},
+		{"del", "a\x7fb.txt", false},
+		{"invalid utf8", "a\xffb.txt", false},
+		{"too long", strings.Repeat("a", 256), false},
+		{"max len", strings.Repeat("a", 255), true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := validUploadFilename(tc.filename); got != tc.want {
+				t.Errorf("validUploadFilename(%q) = %v, want %v", tc.filename, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPromoteStaged(t *testing.T) {
 	srv := uploadTestServer(t)
 	srv.cfg.AllowedUploadMIMEs = []string{"text/*", "image/*", "application/octet-stream"}
