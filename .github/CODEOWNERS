@@ -27,8 +27,8 @@
 /docker-compose*.yml     @SocialGouv/iterion-maintainers
 /Dockerfile              @SocialGouv/iterion-maintainers
 
-# Editor SPA.
-/editor/                 @SocialGouv/iterion-maintainers
+# Studio SPA.
+/studio/                 @SocialGouv/iterion-maintainers
 
 # Desktop wrapper.
 /cmd/iterion-desktop/    @SocialGouv/iterion-maintainers

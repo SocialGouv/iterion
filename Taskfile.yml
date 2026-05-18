@@ -173,13 +173,6 @@ tasks:
     cmds:
       - go test -v -count=1 -run TestBundle_SecuredRenovacy_RepackMatchesShippedBotz -timeout 30s ./e2e/...
 
-  dogfood:studio:
-    desc: 'Run the studio UI feedback loop on a feature prompt (requires CLAUDE_CODE_USE_BEDROCK or claude-code login + npx playwright install chromium). Pass the prompt via FEATURE_PROMPT env var.'
-    deps: [build]
-    cmds:
-      - test -n "$FEATURE_PROMPT" || (echo 'set FEATURE_PROMPT=...' >&2 && exit 1)
-      - ./{{.BINARY}} run examples/dogfood_editor_ui_loop.iter --var feature_prompt="$FEATURE_PROMPT" --merge-into none
-
   fmt:
     desc: Format Go source files
     cmds:
@@ -262,13 +255,13 @@ tasks:
       - ../pkg/server/static/assets/**
 
   studio:dev:
-    desc: Start editor in dev mode (Vite HMR + Go backend with auto-restart)
+    desc: Start studio in dev mode (Vite HMR + Go backend with auto-restart)
     deps: [studio:dev:backend, studio:dev:frontend]
 
   studio:dev:backend:
     desc: Run Go studio backend with auto-restart on changes
     cmds:
-      - watchexec -r -e go -w cmd -w pkg -w vendor -- go run {{.CMD}} editor --no-browser --port 4891
+      - watchexec -r -e go -w cmd -w pkg -w vendor -- go run {{.CMD}} studio --no-browser --port 4891
     interactive: true
 
   studio:dev:frontend:
@@ -282,7 +275,7 @@ tasks:
     desc: Build and run the studio (production mode)
     deps: [build, studio:build]
     cmds:
-      - ./{{.BINARY}} editor {{.CLI_ARGS}}
+      - ./{{.BINARY}} studio {{.CLI_ARGS}}
 
   sdk:ts:install:
     desc: Install dependencies for the TypeScript SDK

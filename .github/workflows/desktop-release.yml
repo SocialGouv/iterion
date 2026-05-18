@@ -133,7 +133,7 @@ jobs:
 
       - name: Build studio frontend
         shell: bash
-        working-directory: editor
+        working-directory: studio
         run: |
           # Cross-platform inline of the studio:build Taskfile target.
           # On Windows runners go-task v3 falls back to mvdan/sh for POSIX

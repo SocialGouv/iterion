@@ -53,11 +53,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Compute lowercase image ref
+        # OCI references must be lowercase. github.repository_owner
+        # preserves case (e.g. SocialGouv) — feeding the raw value to
+        # `cosign sign` / `cosign attest` produces "could not parse
+        # reference". Lowercase once into REGISTRY_IMAGE and reuse.
+        run: |
+          echo "REGISTRY_IMAGE=$(echo '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
       - name: Compute tags
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY_IMAGE }}
           tags: |
             type=ref,event=branch
             type=ref,event=tag
@@ -98,7 +106,7 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: anchore/sbom-action@v0
         with:
-          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          image: ${{ env.REGISTRY_IMAGE }}@${{ steps.build.outputs.digest }}
           format: spdx-json
           output-file: iterion-image.spdx.json
           upload-artifact: false
@@ -107,7 +115,7 @@ jobs:
       - name: Sign image (cosign keyless OIDC)
         if: github.event_name != 'pull_request'
         run: |
-          cosign sign --yes "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+          cosign sign --yes "${REGISTRY_IMAGE}@${DIGEST}"
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
 
@@ -117,7 +125,7 @@ jobs:
           cosign attest --yes \
             --predicate iterion-image.spdx.json \
             --type spdx \
-            "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+            "${REGISTRY_IMAGE}@${DIGEST}"
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
 
@@ -146,11 +154,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Compute lowercase image ref
+        run: |
+          echo "SANDBOX_IMAGE_REF=$(echo '${{ env.REGISTRY }}/${{ env.SANDBOX_IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
       - name: Compute tags
         id: meta-slim
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY }}/${{ env.SANDBOX_IMAGE_NAME }}
+          images: ${{ env.SANDBOX_IMAGE_REF }}
           tags: |
             type=ref,event=branch
             type=ref,event=tag
@@ -179,7 +191,7 @@ jobs:
       - name: Sign sandbox-slim image
         if: github.event_name != 'pull_request'
         run: |
-          cosign sign --yes "${REGISTRY}/${SANDBOX_IMAGE_NAME}@${DIGEST}"
+          cosign sign --yes "${SANDBOX_IMAGE_REF}@${DIGEST}"
         env:
           DIGEST: ${{ steps.build-slim.outputs.digest }}
 
@@ -211,11 +223,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Compute lowercase image refs
+        run: |
+          echo "SANDBOX_IMAGE_REF=$(echo '${{ env.REGISTRY }}/${{ env.SANDBOX_IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+          echo "SANDBOX_SLIM_REF=$(echo '${{ env.REGISTRY }}/${{ env.SANDBOX_SLIM_NAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
       - name: Compute tags
         id: meta-full
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY }}/${{ env.SANDBOX_IMAGE_NAME }}
+          images: ${{ env.SANDBOX_IMAGE_REF }}
           tags: |
             type=ref,event=branch
             type=ref,event=tag
@@ -229,13 +246,12 @@ jobs:
           # Pick the slim tag that matches the current build context: a
           # release tag or the rolling `edge` tag on main; PRs build a
           # short-lived ephemeral image and reference it by short tag.
-          SLIM_LC="$(printf '%s/%s' "${REGISTRY}" "${SANDBOX_SLIM_NAME}" | tr '[:upper:]' '[:lower:]')"
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             BASE_TAG="${GITHUB_REF_NAME}"
           else
             BASE_TAG="edge"
           fi
-          echo "SANDBOX_FULL_BASE=${SLIM_LC}:${BASE_TAG}" >> "$GITHUB_ENV"
+          echo "SANDBOX_FULL_BASE=${SANDBOX_SLIM_REF}:${BASE_TAG}" >> "$GITHUB_ENV"
 
       - name: Build (and push when not a PR)
         id: build-full
@@ -260,7 +276,7 @@ jobs:
       - name: Sign sandbox-full image
         if: github.event_name != 'pull_request'
         run: |
-          cosign sign --yes "${REGISTRY}/${SANDBOX_IMAGE_NAME}@${DIGEST}"
+          cosign sign --yes "${SANDBOX_IMAGE_REF}@${DIGEST}"
         env:
           DIGEST: ${{ steps.build-full.outputs.digest }}
 

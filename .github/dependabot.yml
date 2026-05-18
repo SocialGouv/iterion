@@ -31,15 +31,15 @@ updates:
           - minor
           - patch
 
-  # Editor SPA dependencies (the big one).
+  # Studio SPA dependencies (the big one).
   - package-ecosystem: npm
-    directory: /editor
+    directory: /studio
     schedule:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
     groups:
-      editor-minor-patch:
+      studio-minor-patch:
         update-types:
           - minor
           - patch

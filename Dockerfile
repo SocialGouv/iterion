@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # Iterion container image. Multi-stage:
-#   1. editor-builder — vite build of the React editor → dist/
+#   1. studio-builder — vite build of the React studio → dist/
 #   2. go-builder     — go build (vendor mode, CGO disabled, ldflags
 #                        injected) producing the static iterion binary
 #   3. llm-clis       — npm install of @anthropic-ai/claude-code +
@@ -12,21 +12,21 @@
 # Cloud-ready plan §F (T-34, AD-12).
 
 # ---------------------------------------------------------------------
-# Stage 1 — Editor frontend
+# Stage 1 — Studio frontend
 # ---------------------------------------------------------------------
-FROM node:22-bookworm-slim AS editor-builder
+FROM node:22-bookworm-slim AS studio-builder
 WORKDIR /app
 # pnpm-workspace.yaml + pnpm-lock.yaml live at the repo root; the
-# editor/ directory is a workspace member that doesn't carry its own
+# studio/ directory is a workspace member that doesn't carry its own
 # lockfile. Copy the workspace anchor first so `pnpm install` can
-# resolve from the locked deps tree, then layer the editor sources.
+# resolve from the locked deps tree, then layer the studio sources.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY editor/package.json editor/.npmrc* ./editor/
+COPY studio/package.json studio/.npmrc* ./studio/
 RUN corepack enable && \
     corepack pnpm install --frozen-lockfile --prefer-offline \
-        --filter ./editor...
-COPY editor ./editor
-RUN corepack pnpm --filter ./editor exec vite build
+        --filter ./studio...
+COPY studio ./studio
+RUN corepack pnpm --filter ./studio exec vite build
 
 # ---------------------------------------------------------------------
 # Stage 2 — Go binary
@@ -41,8 +41,8 @@ COPY cmd ./cmd
 COPY pkg ./pkg
 COPY e2e ./e2e
 COPY examples ./examples
-# Embed the freshly-built editor assets the Go binary serves at GET /.
-COPY --from=editor-builder /app/editor/dist ./pkg/server/static
+# Embed the freshly-built studio assets the Go binary serves at GET /.
+COPY --from=studio-builder /app/studio/dist ./pkg/server/static
 ENV CGO_ENABLED=0 GOFLAGS="-mod=vendor -trimpath"
 RUN go build \
     -ldflags="-X github.com/SocialGouv/iterion/pkg/internal/appinfo.Version=v${VERSION} \

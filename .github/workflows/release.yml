@@ -49,7 +49,7 @@ jobs:
           node-version: "22"
 
       - name: Build studio frontend
-        working-directory: editor
+        working-directory: studio
         run: |
           corepack enable
           pnpm install --prefer-offline

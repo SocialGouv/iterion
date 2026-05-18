@@ -14,8 +14,8 @@ github.com/AzureAD/microsoft-authentication-extensions-for-go/cache v0.1.1 h1:WJ
 github.com/AzureAD/microsoft-authentication-extensions-for-go/cache v0.1.1/go.mod h1:tCcJZ0uHAmvjsVYzEFivsRTN00oz5BEsRgQHu5JZ9WE=
 github.com/AzureAD/microsoft-authentication-library-for-go v1.6.0 h1:XRzhVemXdgvJqCH0sFfrBUTnUJSBrBf7++ypk+twtRs=
 github.com/AzureAD/microsoft-authentication-library-for-go v1.6.0/go.mod h1:HKpQxkWaGLJ+D/5H8QRpyQXA1eKjxkFlOMwck5+33Jk=
-github.com/SocialGouv/claw-code-go v0.1.1-0.20260517183627-e1a6fe0c6d12 h1:9pNy87QgkifkpNdHDtwWzUe/4DRKt9C4Pj5N+25nOhM=
-github.com/SocialGouv/claw-code-go v0.1.1-0.20260517183627-e1a6fe0c6d12/go.mod h1:hquBysL8+24vrlr2eVE0rXO4mFg+8TnjYxO4g9MrzCg=
+github.com/SocialGouv/claw-code-go v0.1.1-0.20260518090351-6d5ae7a9def1 h1:r6Of+aDSChrfoR/xQ8U6rYLDtlqNX2DLsBS+KWMqRww=
+github.com/SocialGouv/claw-code-go v0.1.1-0.20260518090351-6d5ae7a9def1/go.mod h1:hquBysL8+24vrlr2eVE0rXO4mFg+8TnjYxO4g9MrzCg=
 github.com/aws/aws-sdk-go-v2 v1.41.7 h1:DWpAJt66FmnnaRIOT/8ASTucrvuDPZASqhhLey6tLY8=
 github.com/aws/aws-sdk-go-v2 v1.41.7/go.mod h1:4LAfZOPHNVNQEckOACQx60Y8pSRjIkNZQz1w92xpMJc=
 github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.10 h1:gx1AwW1Iyk9Z9dD9F4akX5gnN3QZwUB20GGKH/I+Rho=
