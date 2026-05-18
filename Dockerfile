@@ -62,7 +62,7 @@ RUN npm install --omit=dev --no-audit --no-fund
 # ---------------------------------------------------------------------
 # Stage 4 — Runtime
 # ---------------------------------------------------------------------
-FROM debian:12-slim AS runtime
+FROM debian:13-slim AS runtime
 
 ARG VERSION=0.0.0
 ARG COMMIT=unknown
