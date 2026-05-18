@@ -41,6 +41,12 @@ export interface ProvidersResponse {
   providers: Array<{ name: string; display: string }>;
 }
 
+interface ApiErrorBody {
+  error?: string;
+  message?: string;
+  [k: string]: unknown;
+}
+
 async function send<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     credentials: "include",
@@ -48,9 +54,9 @@ async function send<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!res.ok) {
-    let body: any = null;
+    let body: ApiErrorBody | null = null;
     try {
-      body = await res.json();
+      body = (await res.json()) as ApiErrorBody;
     } catch {
       // body wasn't JSON; fall back to text
     }
@@ -64,11 +70,11 @@ async function send<T>(path: string, init?: RequestInit): Promise<T> {
 
 export class ApiError extends Error {
   status: number;
-  body: any;
-  constructor(message: string, status: number, body?: any) {
+  body: ApiErrorBody | null;
+  constructor(message: string, status: number, body?: ApiErrorBody | null) {
     super(message);
     this.status = status;
-    this.body = body;
+    this.body = body ?? null;
   }
 }
 
