@@ -775,16 +775,23 @@ func (s *Service) markRemainingInterrupted(handles []HandleSnapshot) {
 // markInterrupted emits EventRunInterrupted and flips the run's status
 // to failed_resumable with reason "server drained". Errors are logged
 // at warn level — drain must not abort over a single run's bookkeeping.
+//
+// Drain is a system-level operation that writes housekeeping events
+// for runs the server itself owns at shutdown; the handle snapshot
+// does not carry per-run tenant_id, so we use WithoutTenantFilter to
+// bypass the mongo backend's fail-closed guard. Without this the
+// drain panics in cloud mode the moment any active run exists.
 func (s *Service) markInterrupted(runID string) {
 	const reason = "server drained: studio process shutting down"
-	if _, err := s.store.AppendEvent(context.Background(), runID, store.Event{
+	ctx := store.WithoutTenantFilter(context.Background())
+	if _, err := s.store.AppendEvent(ctx, runID, store.Event{
 		Type:  store.EventRunInterrupted,
 		RunID: runID,
 		Data:  map[string]interface{}{"reason": reason},
 	}); err != nil {
 		s.logger.Warn("runview: drain: append run_interrupted for %s: %v", runID, err)
 	}
-	if err := s.store.UpdateRunStatus(context.Background(), runID, store.RunStatusFailedResumable, reason); err != nil {
+	if err := s.store.UpdateRunStatus(ctx, runID, store.RunStatusFailedResumable, reason); err != nil {
 		s.logger.Warn("runview: drain: update status for %s: %v", runID, err)
 	}
 }
@@ -1542,7 +1549,10 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		return nil, errors.New("runview: file_path is required")
 	}
 
-	r, err := s.store.LoadRun(context.Background(), spec.RunID)
+	// Propagate parent so the mongo backend's tenant filter applies:
+	// a cross-tenant Resume must resolve to not-found, not panic on a
+	// missing tenant_id in ctx (which Background carries).
+	r, err := s.store.LoadRun(parent, spec.RunID)
 	if err != nil {
 		return nil, err
 	}
@@ -1792,8 +1802,13 @@ func (s *Service) spawnRun(
 		// scoped to worktree runs with no FinalBranch yet, so it's safe to
 		// call unconditionally.
 		if errors.Is(bodyErr, runtime.ErrRunCancelled) {
-			if r, loadErr := s.store.LoadRun(context.Background(), runID); loadErr == nil {
-				if recErr := runtime.RecoverFinalize(context.Background(), s.store, r, s.logger); recErr != nil {
+			// Post-cancel housekeeping: the run ctx is cancelled at
+			// this point, so use a fresh ctx with WithoutTenantFilter
+			// — the runID is already known, and this is a system-level
+			// recovery operation, not a tenant-discovery lookup.
+			fctx := store.WithoutTenantFilter(context.Background())
+			if r, loadErr := s.store.LoadRun(fctx, runID); loadErr == nil {
+				if recErr := runtime.RecoverFinalize(fctx, s.store, r, s.logger); recErr != nil {
 					s.logger.Warn("runview: post-cancel finalize for %s: %v", runID, recErr)
 				}
 			}
