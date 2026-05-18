@@ -59,7 +59,7 @@ export default function ToastContainer() {
             key={toast.id}
             role={role}
             aria-live={live}
-            className={`flex items-center gap-2 px-3 py-2 rounded-lg border shadow-lg text-sm animate-fade-in ${TYPE_STYLES[toast.type]}`}
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg border shadow-[var(--shadow-md)] text-sm animate-fade-in ${TYPE_STYLES[toast.type]}`}
           >
             <span className="font-bold" aria-hidden="true">{TYPE_ICONS[toast.type]}</span>
             <span>{toast.message}</span>

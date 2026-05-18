@@ -116,6 +116,26 @@
   --motion-slow: 280ms;
   --motion-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
 
+  /* Semantic type scale — wraps the Tailwind defaults under intent-
+   * named tokens so authors stop reaching for `text-[10px]` /
+   * `text-[11px]` / `text-[12px]` arbitrary values. Values are chosen
+   * to match existing usage exactly (10/11/12/13/14/16 px) so the
+   * sweep is a zero-pixel-shift rename, not a re-typography. */
+  --text-caption: 0.625rem;  /* 10px — chip/badge fine print */
+  --text-micro:   0.6875rem; /* 11px — table secondary, run-id */
+  --text-body:    0.75rem;   /* 12px — default body (Tailwind text-xs) */
+  --text-label:   0.8125rem; /* 13px — emphasised body */
+  --text-title:   0.875rem;  /* 14px — section heading (Tailwind text-sm) */
+  --text-display: 1rem;      /* 16px — top-level page heading */
+
+  /* Elevation tokens — replace ad-hoc shadow-lg/xl/2xl utilities so
+   * popovers, modals and toasts share a coherent depth language.
+   * Light-mode override below uses lower alphas for a softer feel. */
+  --shadow-sm:      0 1px 2px 0 rgb(0 0 0 / 0.10);
+  --shadow-md:      0 4px 8px -2px rgb(0 0 0 / 0.18);
+  --shadow-lg:      0 10px 24px -6px rgb(0 0 0 / 0.28);
+  --shadow-popover: 0 8px 20px -4px rgb(0 0 0 / 0.32);
+
   /* Stacking ladder — pin every fixed/absolute floating surface to a
    * semantic token so layering stays predictable when surfaces nest
    * (a confirm above a modal, a popover inside a modal, a toast over
@@ -229,6 +249,12 @@
   --color-board-review: #7e22ce;      /* purple-700 */
   --color-board-done: #64748b;        /* slate-500 */
   --color-board-blocked: #b91c1c;     /* red-700 */
+  /* Light-mode shadow alphas — lighter than dark so the depth still
+   * reads but doesn't bruise the canvas. */
+  --shadow-sm:      0 1px 2px 0 rgb(0 0 0 / 0.06);
+  --shadow-md:      0 4px 8px -2px rgb(0 0 0 / 0.10);
+  --shadow-lg:      0 10px 24px -6px rgb(0 0 0 / 0.16);
+  --shadow-popover: 0 8px 20px -4px rgb(0 0 0 / 0.18);
   color-scheme: light;
 }
 
@@ -272,7 +298,7 @@ select:focus:not(:focus-visible) {
 }
 
 .animate-fade-in {
-  animation: fade-in 0.2s ease-out;
+  animation: fade-in var(--motion-base) var(--motion-ease);
 }
 
 /* Opacity-only fade-in for panels that mount inside a fixed app-shell.
@@ -286,7 +312,7 @@ select:focus:not(:focus-visible) {
 }
 
 .animate-fade-in-opacity {
-  animation: fade-in-opacity 0.18s ease-out;
+  animation: fade-in-opacity var(--motion-base) var(--motion-ease);
 }
 
 /* Hide the persistent bounding box around selected nodes (shown after rectangle selection completes) */

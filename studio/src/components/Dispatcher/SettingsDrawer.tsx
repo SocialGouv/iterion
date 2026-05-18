@@ -59,7 +59,7 @@ export default function SettingsDrawer({ open, onClose, onSaved }: Props) {
         <RD.Overlay className="fixed inset-0 z-[var(--z-overlay)] bg-black/40 animate-fade-in" />
         <RD.Content
           aria-describedby={undefined}
-          className="fixed inset-y-0 right-0 z-[var(--z-modal)] flex w-full max-w-3xl flex-col bg-surface-0 text-fg-default shadow-2xl"
+          className="fixed inset-y-0 right-0 z-[var(--z-modal)] flex w-full max-w-3xl flex-col bg-surface-0 text-fg-default shadow-[var(--shadow-lg)]"
         >
           <header className="flex items-center gap-3 border-b border-border-default bg-surface-1 px-4 py-2.5">
             <RD.Title className="text-sm font-semibold">Dispatcher settings</RD.Title>

@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
 
+import { RocketIcon } from "@radix-ui/react-icons";
+
 import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LiveDot } from "@/components/ui/LiveDot";
 import type { RunStatus, RunSummary } from "@/api/runs";
@@ -91,7 +94,29 @@ export default function RunListView() {
         ) : error ? (
           <EmptyState message={<span className="text-danger">{error}</span>} />
         ) : runs.length === 0 ? (
-          <EmptyState message="No runs yet. Launch one from the studio." />
+          <EmptyState
+            title="No runs yet"
+            message="Launch a workflow from the editor to populate this list."
+            action={
+              <Button
+                variant="primary"
+                size="sm"
+                leadingIcon={<RocketIcon />}
+                onClick={() => setLocation("/editor")}
+              >
+                Open editor
+              </Button>
+            }
+            secondaryAction={
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setLocation("/")}
+              >
+                Home
+              </Button>
+            }
+          />
         ) : (
           <>
             {/* Desktop / tablet: standard 5-column table. */}

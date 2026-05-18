@@ -8,7 +8,7 @@ Single source of truth: [`studio/src/app.css`](../src/app.css). Everything below
 
 | Family | Tokens | When to use |
 |---|---|---|
-| Surfaces | `surface-0` (deepest bg) → `surface-3` (elevated/hover) | Backgrounds, panels, popovers |
+| Surfaces | `surface-0` / `surface-1` / `surface-2` / `surface-3` | See § Surface hierarchy below |
 | Foreground | `fg-default`, `fg-muted`, `fg-subtle`, `fg-onAccent` | Text contrast tiers |
 | Borders | `border-default`, `border-strong`, `border-subtle` | Dividers, card outlines |
 | Accent | `accent`, `accent-hover`, `accent-soft`, `accent-fg` | Primary interactive surfaces |
@@ -18,8 +18,37 @@ Single source of truth: [`studio/src/app.css`](../src/app.css). Everything below
 | Selection | `selected`, `sub-tool` | Selected highlights, sub-node tool kind |
 | Library | `library-pattern` | "Pattern" library category (no node-kind equivalent) |
 | Radii | `radius-sm`/`md`/`lg`/`xl` | Component corner radius |
+| Type | `text-caption` (10px) / `text-micro` (11px) / `text-body` (12px) / `text-label` (13px) / `text-title` (14px) / `text-display` (16px) | Use via `text-[length:var(--text-body)]` or directly as `font-size: var(--text-body)` |
+| Elevation | `shadow-sm` / `shadow-md` / `shadow-lg` / `shadow-popover` | Surface depth. Consume via `shadow-[var(--shadow-popover)]`. Light-mode alphas override automatically. |
 | Motion | `motion-fast` (120ms) / `motion-base` (180ms) / `motion-slow` (280ms), `motion-ease` | Transitions, animations |
 | Stacking | `z-canvas` (40, panel chrome) / `z-overlay` (40, modal backdrops) / `z-modal` (50) / `z-confirm` (60, confirm-on-modal + cmd-K) / `z-popover` (70) / `z-tooltip` (80) / `z-toast` (100, also focused skip-link) | Use via `z-[var(--z-modal)]` (Tailwind arbitrary value) or `style={{ zIndex: "var(--z-modal)" }}` |
+
+### Surface hierarchy
+
+Four tiers. Stick to the semantics; don't pick a surface by hue alone — pick by role.
+
+| Token | Role | Examples |
+|---|---|---|
+| `surface-0` | App background — the deepest plane | RunView main pane, Editor canvas backdrop, body of full-screen views |
+| `surface-1` | Panel / card body — the default container | Headers, side panels, popovers, dialogs, kanban columns |
+| `surface-2` | Input + secondary-button background; toolbar chrome | `<Input>`, Button `secondary` variant, filter pills (inactive), Tooltip bg |
+| `surface-3` | Hover state on `surface-2`; also "active filter pill" | Button `secondary:hover`, filter pills (active), context menu hover |
+
+If a new component doesn't fit cleanly: it probably needs a soft-tinted variant (`accent-soft`, `warning-soft`, …) on top of `surface-1`, not a new neutral.
+
+### Density scale
+
+Don't redefine spacing — Tailwind already exposes a coherent 4px scale. Commit to it semantically:
+
+| Tailwind class | Use for |
+|---|---|
+| `gap-1` / `p-1` (4px) | Inside a tight cluster (icon + label, chip internals) |
+| `gap-2` / `p-2` (8px) | Inter-row inside a form, dense list items |
+| `gap-3` / `p-3` (12px) | Section padding inside a panel |
+| `gap-4` / `p-4` (16px) | Panel / card padding |
+| `gap-6` / `p-6` (24px) | Between top-level sections on a page |
+
+If you reach for `px-3 py-1.5` or other half-step inline padding, ask if the cluster belongs inside `<Button size="sm">` or `<IconButton>` instead.
 
 ### TypeScript-side mirrors
 
@@ -257,6 +286,8 @@ Open items still requiring human / browser verification:
 | `disabled:opacity-50` alone on a button | a11y faux-positive (still looks clickable) | Add `disabled:cursor-not-allowed` |
 | `text-error`, `border-error` | These classes don't exist (no `--color-error` token) | `text-danger`, `border-danger` |
 | New CSS-in-JS hex outside `app.css` / `lib/constants.ts` | Bypasses palette, breaks future theme variants | Add a token to `app.css`, expose via constants |
+| Inventing a secondary accent for "in-flight / live" | One accent only — `info` already carries the running semantic, `accent-soft` covers "soft primary" needs | Reuse `info` (LiveDot tone) for live state; `accent-soft` for muted primary surfaces |
+| Adopting an external design library (shadcn/ui, Mantine, Park UI) | The studio already _is_ a Radix + Tailwind + token system; bringing another duplicates primitives and breaks the contract above. | Extend the existing primitives in `ui/`; if a use-case really wants a peer library, raise it at design review first |
 
 ## When to extend vs roll your own
 
@@ -297,3 +328,4 @@ It renders the children at `sm` and above, otherwise a centered notice with a "C
 - **Pulse semantics** — `animate-pulse` is used for several meanings beyond the `LiveDot` dot pattern (Skeleton shimmer, DiagnosticBadge urgency, ThinkingFooter glyph, NodeDetailPanel row in-flight). Documented in `LiveDot.tsx` but consider a follow-up audit if more callers appear.
 - **WCAG AA contrast audit on every theme** — the axe-core unit suite covers primitives; light-mode canvas variants on `softColor(color, 10)` backgrounds still need a manual browser sweep.
 - **Touch / mobile authoring** — explicitly out of scope until a use-case demands it.
+- **EventLog fresh-arrival pulse** — designed (rate-limited burst-aware pulse-flash on most recently arrived rows). Deferred — Virtuoso mount/unmount semantics need a per-seq "seen" registry to avoid re-pulsing on scroll. Pick up when the run-console restructure lands a node-focus breadcrumb (Phase 6).

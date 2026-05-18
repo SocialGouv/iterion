@@ -30,7 +30,7 @@ export function Tooltip({
             side={side}
             align={align}
             sideOffset={6}
-            className="z-[var(--z-tooltip)] max-w-xs rounded-md border border-border-default bg-surface-2 px-2 py-1 text-xs text-fg-default shadow-lg animate-fade-in"
+            className="z-[var(--z-tooltip)] max-w-xs rounded-md border border-border-default bg-surface-2 px-2 py-1 text-xs text-fg-default shadow-[var(--shadow-popover)] animate-fade-in"
           >
             {content}
             <RT.Arrow className="fill-[color:var(--color-surface-2)]" />

@@ -30,7 +30,7 @@ export function Popover({
           side={side}
           align={align}
           sideOffset={6}
-          className={`z-[var(--z-popover)] rounded-md border border-border-default bg-surface-1 text-fg-default shadow-xl animate-fade-in ${contentClassName}`.trim()}
+          className={`z-[var(--z-popover)] rounded-md border border-border-default bg-surface-1 text-fg-default shadow-[var(--shadow-popover)] animate-fade-in ${contentClassName}`.trim()}
         >
           {children}
         </RP.Content>

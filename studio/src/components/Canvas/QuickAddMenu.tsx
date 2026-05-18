@@ -42,7 +42,7 @@ export default function QuickAddMenu({ x, y, onAddNode, onConnectTerminal, onClo
   return (
     <div
       ref={ref}
-      className="fixed bg-surface-1 border border-border-strong rounded-lg shadow-xl z-[var(--z-popover)] py-1 min-w-[140px]"
+      className="fixed bg-surface-1 border border-border-strong rounded-lg shadow-[var(--shadow-popover)] z-[var(--z-popover)] py-1 min-w-[140px]"
       style={{
         left: Math.min(x, window.innerWidth - 160),
         top: Math.min(y, window.innerHeight - 340),
