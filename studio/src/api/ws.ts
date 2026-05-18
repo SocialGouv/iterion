@@ -142,6 +142,14 @@ class FileWatcherClient {
       return;
     }
 
+    // Defensive: clear any existing armed timer before scheduling a new
+    // one. The normal path (onclose → scheduleReconnect) only fires when
+    // no timer is armed, but a deriveWsUrl failure inside doConnect can
+    // re-enter scheduleReconnect while the previous timer is still in
+    // flight, double-scheduling and accumulating backoff.
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+    }
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       void this.doConnect();

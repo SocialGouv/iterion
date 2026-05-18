@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 
-import type { RunEvent, RunSnapshot } from "@/api/runs";
+import { isSafeStoreParam, type RunEvent, type RunSnapshot } from "@/api/runs";
 import { getDesktopWsBase, isDesktop, isWailsHosted } from "@/lib/desktopBridge";
 import { useRunStore } from "@/store/run";
 
@@ -25,12 +25,8 @@ function readStoreOverrideFromURL(): string {
     const v = new URLSearchParams(window.location.search).get("store");
     // Defence-in-depth: validate the shape before forwarding to the
     // daemon WS. Server still does its own check via resolveCrossStore,
-    // but a malformed value should be dropped client-side too. Mirrors
-    // api/runs.ts:isSafeStoreParam.
-    if (!v || v.length === 0 || v.length > 512) return "";
-    if (!/^[A-Za-z0-9_./-]+$/.test(v)) return "";
-    if (v.includes("..")) return "";
-    return v;
+    // but a malformed value should be dropped client-side too.
+    return isSafeStoreParam(v) ? (v as string) : "";
   } catch {
     return "";
   }

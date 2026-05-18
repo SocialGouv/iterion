@@ -238,16 +238,24 @@ export default function LaunchView() {
       ...prev,
       [field.name]: { ...next, progress: 0 },
     }));
+    // Throttle progress updates to once per percentage step. XHR can
+    // emit progress 100+ times per second on a fast pipe; coalescing
+    // here keeps the re-render budget bounded to ~100 per attachment.
+    let lastPct = -1;
     try {
       const staged = await uploadAttachment(next.file, {
         declaredMime: next.file.type || undefined,
         onProgress: (loaded, total) => {
+          const frac = total > 0 ? loaded / total : 0;
+          const pct = Math.floor(frac * 100);
+          if (pct === lastPct) return;
+          lastPct = pct;
           setAttachments((prev) => {
             const cur = prev[field.name];
             if (!cur || cur.file !== next.file) return prev;
             return {
               ...prev,
-              [field.name]: { ...cur, progress: total > 0 ? loaded / total : 0 },
+              [field.name]: { ...cur, progress: frac },
             };
           });
         },

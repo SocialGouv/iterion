@@ -33,12 +33,32 @@ export async function apiRequest<T>(fullPath: string, init?: RequestInit): Promi
     onUnauthorized();
   }
   if (!res.ok) {
-    throw new Error(`API error ${res.status}: ${await res.text()}`);
+    throw new Error(`API error ${res.status}: ${await extractErrorMessage(res)}`);
   }
   // 204 No Content (e.g. DELETE endpoints) has an empty body. Don't
   // try to parse it — return undefined and let the typed caller cast.
   if (res.status === 204) return undefined as unknown as T;
   return res.json() as Promise<T>;
+}
+
+// extractErrorMessage prefers a structured envelope field (`error` or
+// `message`) over the raw body, so the toast shown to the user reads
+// "forbidden" rather than `{"error":"forbidden"}` for the common Go
+// `httpError` shape served by pkg/server.
+async function extractErrorMessage(res: Response): Promise<string> {
+  const text = await res.text();
+  if (!text) return res.statusText || "";
+  try {
+    const body = JSON.parse(text) as unknown;
+    if (body && typeof body === "object") {
+      const env = body as { error?: unknown; message?: unknown };
+      if (typeof env.error === "string" && env.error) return env.error;
+      if (typeof env.message === "string" && env.message) return env.message;
+    }
+  } catch {
+    // Not JSON — fall through to the raw text.
+  }
+  return text;
 }
 
 /**

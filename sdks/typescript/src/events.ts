@@ -183,6 +183,11 @@ async function raceWithTimeout<T>(p: Promise<T>, timeoutMs: number): Promise<T |
     timeout = setTimeout(() => resolveTimer(null), timeoutMs);
     timeout.unref?.();
   });
+  // Even when the timer wins, `p` may reject later. Attach a noop catch
+  // to avoid unhandledRejection warnings — the caller (waitForChange)
+  // has already aborted the underlying watcher in its finally block, so
+  // any late rejection is just noise from a torn-down operation.
+  p.catch(() => undefined);
   try {
     return await Promise.race([p, timer]);
   } finally {
@@ -192,16 +197,20 @@ async function raceWithTimeout<T>(p: Promise<T>, timeoutMs: number): Promise<T |
 
 function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
   return new Promise((resolveSleep) => {
-    const timer = setTimeout(resolveSleep, ms);
+    let timer: NodeJS.Timeout | null = null;
+    const onAbort = () => {
+      if (timer) clearTimeout(timer);
+      resolveSleep();
+    };
+    timer = setTimeout(() => {
+      // Once timer fires, remove the abort listener so it doesn't
+      // accumulate on long-lived signals (the AbortSignal can be reused
+      // across many sleep() calls in tailEvents).
+      signal?.removeEventListener("abort", onAbort);
+      resolveSleep();
+    }, ms);
     timer.unref?.();
-    signal?.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        resolveSleep();
-      },
-      { once: true },
-    );
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 

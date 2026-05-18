@@ -1,5 +1,5 @@
 import { Handle } from "@xyflow/react";
-import type { NodeProps } from "@xyflow/react";
+import type { Node, NodeProps } from "@xyflow/react";
 import type { NodeKind, AgentDecl, ToolNodeDecl, HumanDecl, RouterDecl, ComputeDecl } from "@/api/types";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { useGroupedDiagnostics } from "@/hooks/useGroupedDiagnostics";
@@ -22,8 +22,10 @@ interface WorkflowNodeData extends Record<string, unknown> {
   decl: unknown;
 }
 
-export default function WorkflowNode({ data, selected }: NodeProps) {
-  const { label, kind, color, decl } = data as unknown as WorkflowNodeData;
+type WorkflowNodeType = Node<WorkflowNodeData, "workflow">;
+
+export default function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeType>) {
+  const { label, kind, color, decl } = data;
   const activeWorkflow = useActiveWorkflow();
   const grouped = useGroupedDiagnostics();
   const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);

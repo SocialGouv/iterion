@@ -41,12 +41,18 @@ async function send<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!res.ok) {
-    let body: any = null;
+    let msg: string | undefined;
     try {
-      body = await res.json();
-    } catch {}
-    const msg = body?.error ?? body?.message ?? res.statusText;
-    throw new Error(`${msg || `HTTP ${res.status}`}`);
+      const body = (await res.json()) as unknown;
+      if (body && typeof body === "object") {
+        const env = body as { error?: unknown; message?: unknown };
+        if (typeof env.error === "string") msg = env.error;
+        else if (typeof env.message === "string") msg = env.message;
+      }
+    } catch {
+      // Non-JSON body — fall back to statusText.
+    }
+    throw new Error(msg || res.statusText || `HTTP ${res.status}`);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;

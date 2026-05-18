@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { NodeProps } from "@xyflow/react";
+import type { Node, NodeProps } from "@xyflow/react";
 import { Handle, Position } from "@xyflow/react";
 
 import type { ExecutionState } from "@/api/runs";
@@ -61,7 +61,7 @@ export interface LLMMeta {
   contextUsed?: number;
 }
 
-interface IRNodeData {
+interface IRNodeData extends Record<string, unknown> {
   id: string;
   kind: string;
   // All executions of this IR node, ordered by start time. Empty list
@@ -80,9 +80,11 @@ interface IRNodeData {
   meta?: LLMMeta;
 }
 
-export default function IRNode({ data }: NodeProps) {
+type IRNodeType = Node<IRNodeData, "irnode">;
+
+export default function IRNode({ data }: NodeProps<IRNodeType>) {
   const { id, kind, executions, selectedIteration, isEntry, selected, onSelectIteration, meta } =
-    data as unknown as IRNodeData;
+    data;
   const hasMeta =
     !!meta && (!!meta.model || !!meta.backend || !!meta.reasoningEffort);
   const modelLabel = meta?.model

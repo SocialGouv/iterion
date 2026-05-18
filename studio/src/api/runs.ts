@@ -248,7 +248,8 @@ function readStoreOverrideFromURL(): string {
 // rejects unknown stores, but client-side filtering is defence-in-depth
 // against a hostile `?store=...` URL handed to a victim — keep the
 // charset tight and reject path-traversal segments.
-function isSafeStoreParam(v: string | null): boolean {
+// Exported so the WS hook can reuse the same predicate.
+export function isSafeStoreParam(v: string | null): boolean {
   if (!v || v.length === 0 || v.length > 512) return false;
   if (!/^[A-Za-z0-9_./-]+$/.test(v)) return false;
   if (v.includes("..")) return false;

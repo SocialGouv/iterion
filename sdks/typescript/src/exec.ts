@@ -44,8 +44,11 @@ export async function execIterion(
       stdio: ["pipe", "pipe", "pipe"],
     });
 
-    let stdout = "";
-    let stderr = "";
+    // Collect output as Buffer chunks to avoid O(n²) string concatenation
+    // on long-lived runs that stream MB of stdout (e.g. `iterion run`
+    // without --json on a chatty backend).
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
     let timedOut = false;
     let aborted = false;
     let settled = false;
@@ -55,14 +58,27 @@ export async function execIterion(
       : null;
 
     if (stderrLines && opts.onStderrLine) {
-      stderrLines.on("line", opts.onStderrLine);
+      const cb = opts.onStderrLine;
+      stderrLines.on("line", (line) => {
+        // Isolate the user callback: a throw here would otherwise bubble
+        // up to `uncaughtException` and crash the process.
+        try {
+          cb(line);
+        } catch {
+          // Best-effort log-line forwarder; never let user code abort us.
+        }
+      });
+      // readline itself can emit "error" if the underlying stream errors
+      // mid-read; surface to console for visibility without rejecting
+      // the parent promise (close handler does that).
+      stderrLines.on("error", () => undefined);
     }
 
     child.stdout.on("data", (chunk: Buffer | string) => {
-      stdout += chunk.toString();
+      stdoutChunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
     });
     child.stderr.on("data", (chunk: Buffer | string) => {
-      stderr += chunk.toString();
+      stderrChunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
     });
 
     const timer =
@@ -99,6 +115,8 @@ export async function execIterion(
       settled = true;
       if (timer) clearTimeout(timer);
       if (opts.signal) opts.signal.removeEventListener("abort", onAbort);
+      const stdout = Buffer.concat(stdoutChunks).toString("utf8");
+      const stderr = Buffer.concat(stderrChunks).toString("utf8");
       rejectPromise(
         new IterionInvocationError(
           `failed to spawn iterion: ${(err as Error).message}`,
@@ -118,6 +136,8 @@ export async function execIterion(
       if (timer) clearTimeout(timer);
       if (opts.signal) opts.signal.removeEventListener("abort", onAbort);
       stderrLines?.close();
+      const stdout = Buffer.concat(stdoutChunks).toString("utf8");
+      const stderr = Buffer.concat(stderrChunks).toString("utf8");
 
       if (timedOut) {
         rejectPromise(
@@ -274,7 +294,17 @@ function findBracketedEnd(s: string, open: "{" | "["): number {
     const ch = s[i];
     if (inString) {
       if (ch === "\\") {
-        i++; // skip escaped char
+        // Skip the escape sequence. `\uXXXX` covers six characters
+        // total; everything else (e.g. `\n`, `\"`, `\\`) covers two.
+        // Without the `\u` branch a `"""` literal would slip the
+        // state-machine into believing the surrogate prefix closed the
+        // string and corrupt the depth counter.
+        const next = s[i + 1];
+        if (next === "u") {
+          i += 5;
+        } else {
+          i += 1;
+        }
         continue;
       }
       if (ch === '"') inString = false;
