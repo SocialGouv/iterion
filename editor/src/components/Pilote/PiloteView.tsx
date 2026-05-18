@@ -9,6 +9,7 @@ import {
 } from "@/lib/pilote/firstClassBots";
 import { useWhatsNextSession } from "@/lib/pilote/useWhatsNextSession";
 
+import AgentChatbox from "@/components/shared/AgentChatbox";
 import ChatTranscript from "./ChatTranscript";
 import PreFlightPanel from "./PreFlightPanel";
 import SessionLauncher from "./SessionLauncher";
@@ -123,6 +124,12 @@ export default function PiloteView() {
                 {session.errorMessage}
               </div>
             )}
+            {session.runId &&
+              session.runStatus !== "finished" &&
+              session.runStatus !== "failed" &&
+              session.runStatus !== "cancelled" && (
+                <AgentChatbox runId={session.runId} />
+              )}
           </div>
         )}
       </main>

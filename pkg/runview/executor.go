@@ -41,6 +41,11 @@ type ExecutorSpec struct {
 	// the prometheus exporter's hooks here (cli does this); the HTTP
 	// service can pass nothing or a future broker-side hook chain.
 	ExtraHooks []model.EventHooks
+	// Inbox, when non-nil, wires the operator chatbox plumbing into
+	// the claw backend so queued messages are delivered between
+	// agent-loop iterations. Nil disables the inbox (CLI mode +
+	// runs that opted out).
+	Inbox model.InboxBinder
 }
 
 // BuildExecutor wires up the default ClawExecutor: registry, default
@@ -78,7 +83,11 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 
 	lifecycle := model.NewDefaultLifecycleHooks(hooks)
 
-	clawBackend := model.NewClawBackend(reg, hooks, model.RetryPolicy{}, model.WithBackendLifecycleHooks(lifecycle))
+	clawOpts := []model.ClawBackendOption{model.WithBackendLifecycleHooks(lifecycle)}
+	if spec.Inbox != nil {
+		clawOpts = append(clawOpts, model.WithInbox(spec.Inbox))
+	}
+	clawBackend := model.NewClawBackend(reg, hooks, model.RetryPolicy{}, clawOpts...)
 	backendReg.Register(delegate.BackendClaw, clawBackend)
 
 	toolReg := tool.NewRegistry()

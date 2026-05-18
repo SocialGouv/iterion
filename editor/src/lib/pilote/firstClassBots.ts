@@ -47,7 +47,7 @@ export interface PiloteNodeMapEntry {
   approvedField?: string;
   // For "human" entries: a rich form specification (radio / checkbox /
   // select / free_text, with optional "Other"). When set, the
-  // HumanChatTurn renders the form via QuestionForm and the form
+  // HumanChatTurn renders the form via WizardForm and the form
   // answers are submitted as-is (question.id IS the answer key). When
   // unset, the legacy single-textarea + optional approve/reject UI
   // kicks in.

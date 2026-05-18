@@ -2,6 +2,8 @@ package runview
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -531,6 +534,21 @@ func watchDetachedExit(s *Service, runID string, pid int, done chan struct{}) {
 // Broker exposes the event broker for transports that need to
 // subscribe directly (the WS handler).
 func (s *Service) Broker() *EventBroker { return s.broker }
+
+// inboxBinder returns the runtime's operator-chatbox plumbing
+// scoped to this service's store + broker. Built once per Build-
+// Executor call so the binder closures see a consistent store
+// handle even when a service is hot-swapped (project switch).
+func (s *Service) inboxBinder() model.InboxBinder {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	binder := &model.StoreInboxBinder{Store: s.store}
+	if s.broker != nil {
+		binder.Publish = s.broker.Publish
+	}
+	return binder
+}
 
 // StoreDir returns the on-disk store directory. Exposed so HTTP
 // handlers can fall back to persisted run.log when the in-memory
@@ -1095,6 +1113,98 @@ func (s *Service) CancelInactive(runID string) (bool, error) {
 	return s.CancelInactiveCtx(context.Background(), runID)
 }
 
+// ---------------------------------------------------------------------------
+// User-message inbox (chatbox queued messages)
+// ---------------------------------------------------------------------------
+
+// QueueMessage appends a new operator chat message to the run's
+// inbox in "queued" status, emits user_message_queued so WS
+// subscribers can update their UI, and returns the persisted record.
+// The engine drains pending messages cooperatively at safe boundaries
+// (between agent-loop iterations for claw, at the next human pause
+// for claude_code / codex) — there is no preemption of the running
+// agent.
+func (s *Service) QueueMessage(ctx context.Context, runID, text string) (*store.QueuedUserMessage, error) {
+	if runID == "" {
+		return nil, errors.New("runview: run_id is required")
+	}
+	if text == "" {
+		return nil, errors.New("runview: message text is required")
+	}
+	r, err := s.store.LoadRun(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("load run: %w", err)
+	}
+	switch r.Status {
+	case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusCancelled:
+		return nil, fmt.Errorf("run %s is terminal (%s); cannot queue message", runID, r.Status)
+	}
+	msg := store.QueuedUserMessage{
+		ID:       newQueuedMessageID(),
+		Text:     text,
+		TenantID: r.TenantID,
+	}
+	if err := s.store.AppendQueuedMessage(ctx, runID, msg); err != nil {
+		return nil, fmt.Errorf("append queued message: %w", err)
+	}
+	if err := store.NormalizeQueuedForAppend(&msg, runID); err != nil {
+		return nil, err
+	}
+	store.PublishInboxEvent(ctx, s.store, s.brokerPublish(), store.EventUserMessageQueued, runID, msg)
+	return &msg, nil
+}
+
+// CancelQueuedMessage marks a queued (not-yet-delivered) message as
+// cancelled. Returns store.ErrQueuedMessageNotFound or
+// store.ErrQueuedMessageStatusConflict (already-delivered) so the
+// HTTP handler can map them to 404 / 409 respectively.
+func (s *Service) CancelQueuedMessage(ctx context.Context, runID, msgID string) error {
+	if runID == "" || msgID == "" {
+		return errors.New("runview: run_id and message_id are required")
+	}
+	if err := s.store.UpdateQueuedMessageStatus(ctx, runID, msgID, store.QueuedMessageStatusCancelled, store.QueuedMessageStatusQueued); err != nil {
+		return err
+	}
+	msg := store.QueuedUserMessage{ID: msgID}
+	store.StampQueuedTransition(&msg, store.QueuedMessageStatusCancelled, time.Now().UTC())
+	store.PublishInboxEvent(ctx, s.store, s.brokerPublish(), store.EventUserMessageCancelled, runID, msg)
+	return nil
+}
+
+// ListQueuedMessages returns every message recorded for the run in
+// FIFO order, regardless of current status. Used by the editor for
+// initial hydration alongside the run snapshot.
+func (s *Service) ListQueuedMessages(ctx context.Context, runID string) ([]store.QueuedUserMessage, error) {
+	if runID == "" {
+		return nil, errors.New("runview: run_id is required")
+	}
+	return s.store.ListQueuedMessages(ctx, runID)
+}
+
+// brokerPublish returns broker.Publish as a free function, or nil
+// when no broker is wired. Shape matches store.PublishInboxEvent.
+func (s *Service) brokerPublish() func(store.Event) {
+	if s.broker == nil {
+		return nil
+	}
+	return s.broker.Publish
+}
+
+// newQueuedMessageID returns a short opaque ID for inbox messages.
+// Time-prefix gives FIFO-friendly ordering at the filesystem level
+// even when wall-clock collides; the random suffix avoids ID reuse
+// within the same nanosecond.
+func newQueuedMessageID() string {
+	var buf [6]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		// rand.Read effectively never fails on Linux; on the off
+		// chance, fall back to the timestamp alone — collisions are
+		// caught at AppendQueuedMessage (would clobber the FS row).
+		return fmt.Sprintf("msg_%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("msg_%d_%s", time.Now().UnixNano(), hex.EncodeToString(buf[:]))
+}
+
 // CancelInactiveCtx is the tenant-aware variant of CancelInactive.
 func (s *Service) CancelInactiveCtx(ctx context.Context, runID string) (bool, error) {
 	if runID == "" {
@@ -1365,6 +1475,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		RunID:    runID,
 		Logger:   runLogger,
 		StoreDir: s.storeDir,
+		Inbox:    s.inboxBinder(),
 	})
 	if err != nil {
 		s.dropRunLog(runID)
@@ -1483,6 +1594,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		RunID:    spec.RunID,
 		Logger:   runLogger,
 		StoreDir: s.storeDir,
+		Inbox:    s.inboxBinder(),
 	})
 	if err != nil {
 		s.dropRunLog(spec.RunID)

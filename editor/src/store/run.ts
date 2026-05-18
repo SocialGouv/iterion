@@ -49,6 +49,27 @@ export interface PendingHumanInput {
   raw?: RunEvent;
 }
 
+// QueuedUserMessage mirrors store.QueuedUserMessage on the Go side
+// (pkg/store/user_messages.go). It carries one operator chat message
+// queued against a running agent and is fanned out via the
+// user_message_* event family.
+export type QueuedMessageStatus =
+  | "queued"
+  | "delivered"
+  | "consumed"
+  | "cancelled";
+
+export interface QueuedUserMessage {
+  id: string;
+  run_id?: string;
+  text: string;
+  queued_at: string;
+  delivered_at?: string | null;
+  consumed_at?: string | null;
+  cancelled_at?: string | null;
+  status: QueuedMessageStatus;
+}
+
 // PreviewSource tracks where the current preview URL came from. The
 // distinction matters for the Browser pane UI: workflow-emitted URLs
 // auto-show the pane and refresh on every new event, while manual
@@ -222,6 +243,10 @@ interface RunStoreState {
   // side panel only shows live data.
   latestTodosByExec: Map<string, TodoListSnapshot>;
   pendingHumanInput: PendingHumanInput | null;
+  // Inbox of operator-queued chat messages for the run. Hydrated via
+  // the REST GET /api/runs/{id}/queue-messages endpoint and live-
+  // updated through the user_message_* event family.
+  queuedMessages: QueuedUserMessage[];
   wsState: WsState;
   followTail: boolean;
   log: RunLogState;
@@ -251,6 +276,11 @@ interface RunStoreState {
   // Optimistic header status flip — used after Resume/Cancel HTTP calls
   // so the UI doesn't wait for the corresponding event to arrive.
   setRunStatus: (status: RunHeader["status"]) => void;
+
+  // Replaces the inbox slice from a REST hydration; merges with any
+  // events that arrived in the meantime so live status overrides a
+  // stale REST snapshot.
+  setQueuedMessages: (messages: QueuedUserMessage[]) => void;
 
   setLogSubscribed: (subscribed: boolean) => void;
   applyLogChunk: (chunk: { offset: number; text: string; total?: number }) => void;
@@ -294,6 +324,7 @@ const initialState = {
   inFlightToolsByExec: new Map<string, InFlightTool[]>(),
   latestTodosByExec: new Map<string, TodoListSnapshot>(),
   pendingHumanInput: null as PendingHumanInput | null,
+  queuedMessages: [] as QueuedUserMessage[],
   wsState: "idle" as WsState,
   followTail: true,
   log: initialLogState,
@@ -464,6 +495,32 @@ export const useRunStore = create<RunStoreState>((set) => ({
     });
   },
 
+  setQueuedMessages: (messages) =>
+    set((state) => {
+      if (sameQueuedMessages(state.queuedMessages, messages)) {
+        return state;
+      }
+      // REST hydration races with WS events. Existing live records
+      // (already partly through the lifecycle) win on status fields
+      // so a slow round-trip can't regress an in-flight delivery.
+      if (state.queuedMessages.length === 0) {
+        return { queuedMessages: messages };
+      }
+      const liveById = new Map(state.queuedMessages.map((m) => [m.id, m]));
+      const merged: QueuedUserMessage[] = [];
+      const seen = new Set<string>();
+      for (const incoming of messages) {
+        const live = liveById.get(incoming.id);
+        merged.push(live ? mergeQueuedMessage(incoming, live) : incoming);
+        seen.add(incoming.id);
+      }
+      for (const m of state.queuedMessages) {
+        if (!seen.has(m.id)) merged.push(m);
+      }
+      merged.sort((a, b) => a.queued_at.localeCompare(b.queued_at));
+      return { queuedMessages: merged };
+    }),
+
   setManualPreviewUrl: (url) =>
     set((s) => ({
       browser: {
@@ -567,6 +624,93 @@ export function selectRunningExecution(
   return best;
 }
 
+// queuedMessageFromEvent unmarshals one user_message_* event's Data
+// block into a QueuedUserMessage. Returns null when the payload is
+// missing the mandatory id field.
+function queuedMessageFromEvent(evt: RunEvent): QueuedUserMessage | null {
+  const data = (evt.data ?? {}) as Record<string, unknown>;
+  const id = typeof data.id === "string" ? data.id : "";
+  if (!id) return null;
+  const text = typeof data.text === "string" ? data.text : "";
+  const statusRaw =
+    typeof data.status === "string" ? data.status : eventTypeToStatus(evt.type);
+  const status =
+    statusRaw === "queued" ||
+    statusRaw === "delivered" ||
+    statusRaw === "consumed" ||
+    statusRaw === "cancelled"
+      ? (statusRaw as QueuedMessageStatus)
+      : "queued";
+  const queuedAt =
+    typeof data.queued_at === "string" ? data.queued_at : evt.timestamp;
+  return {
+    id,
+    text,
+    queued_at: queuedAt,
+    delivered_at: stringOrNull(data.delivered_at),
+    consumed_at: stringOrNull(data.consumed_at),
+    cancelled_at: stringOrNull(data.cancelled_at),
+    status,
+  };
+}
+
+function eventTypeToStatus(t: string): QueuedMessageStatus {
+  switch (t) {
+    case "user_message_delivered":
+      return "delivered";
+    case "user_message_consumed":
+      return "consumed";
+    case "user_message_cancelled":
+      return "cancelled";
+    default:
+      return "queued";
+  }
+}
+
+function stringOrNull(v: unknown): string | null {
+  return typeof v === "string" ? v : null;
+}
+
+// sameQueuedMessages compares two inbox lists by (id, status, text).
+// Used by setQueuedMessages to skip allocating a new slice when REST
+// hydration produces the same view as what's already in the store —
+// avoids re-rendering every chatbox subscriber on a no-op refresh.
+function sameQueuedMessages(
+  a: QueuedUserMessage[],
+  b: QueuedUserMessage[],
+): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (x.id !== y.id || x.status !== y.status || x.text !== y.text) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// mergeQueuedMessage folds an incoming record into an existing one,
+// preferring non-null transition timestamps from EITHER side and the
+// incoming status (the backend is the source of truth: it rejects
+// cancel-after-deliver at the store layer, so a status moving
+// "backwards" can only happen as out-of-order delivery, never as a
+// real state regression).
+function mergeQueuedMessage(
+  existing: QueuedUserMessage,
+  incoming: QueuedUserMessage,
+): QueuedUserMessage {
+  return {
+    ...existing,
+    ...incoming,
+    text: incoming.text || existing.text,
+    queued_at: existing.queued_at || incoming.queued_at,
+    delivered_at: incoming.delivered_at ?? existing.delivered_at,
+    consumed_at: incoming.consumed_at ?? existing.consumed_at,
+    cancelled_at: incoming.cancelled_at ?? existing.cancelled_at,
+  };
+}
+
 // rehydratePendingHumanInput rebuilds the panel state from
 // RunHeader.checkpoint when the WS event stream isn't available
 // (page reload mid-pause). Mirror of pkg/store.Checkpoint subset.
@@ -610,6 +754,7 @@ type ReduceInput = Pick<
   | "latestTodosByExec"
   | "snapshot"
   | "pendingHumanInput"
+  | "queuedMessages"
   | "browser"
 >;
 
@@ -656,6 +801,14 @@ function reduceEvents(
   let latestTodosByExec = state.latestTodosByExec;
   let snapshot = state.snapshot;
   let pendingHumanInput = state.pendingHumanInput;
+  let queuedMessages = state.queuedMessages;
+  let queuedMutated = false;
+  const ensureQueuedCopy = () => {
+    if (!queuedMutated) {
+      queuedMessages = queuedMessages.slice();
+      queuedMutated = true;
+    }
+  };
   let browser = state.browser;
   // Clone the executions map only when the first mutation happens; if
   // the whole batch only contains pass-through event types we keep the
@@ -1113,6 +1266,27 @@ function reduceEvents(
         };
         break;
       }
+      case "user_message_queued":
+      case "user_message_delivered":
+      case "user_message_consumed":
+      case "user_message_cancelled": {
+        const incoming = queuedMessageFromEvent(evt);
+        if (!incoming) break;
+        ensureQueuedCopy();
+        const idx = queuedMessages.findIndex((m) => m.id === incoming.id);
+        if (idx === -1) {
+          queuedMessages.push(incoming);
+          queuedMessages.sort((a, b) =>
+            a.queued_at.localeCompare(b.queued_at),
+          );
+        } else {
+          queuedMessages[idx] = mergeQueuedMessage(
+            queuedMessages[idx],
+            incoming,
+          );
+        }
+        break;
+      }
       default:
         break;
     }
@@ -1172,6 +1346,9 @@ function reduceEvents(
 
   if (pendingHumanInput !== state.pendingHumanInput) {
     next.pendingHumanInput = pendingHumanInput;
+  }
+  if (queuedMutated) {
+    next.queuedMessages = queuedMessages;
   }
   if (browser !== state.browser) {
     next.browser = browser;

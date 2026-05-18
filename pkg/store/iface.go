@@ -77,6 +77,17 @@ type RunStore interface {
 	LoadInteraction(ctx context.Context, runID, interactionID string) (*Interaction, error)
 	ListInteractions(ctx context.Context, runID string) ([]string, error)
 
+	// User-message inbox — operator-typed chat messages queued
+	// against a running agent and drained cooperatively at safe
+	// boundaries (between agent-loop iterations for claw, at the
+	// next human pause for claude_code / codex). Persisted as a
+	// JSONL transition log; the live state of each message is the
+	// last status seen for its ID. See user_messages.go.
+	AppendQueuedMessage(ctx context.Context, runID string, msg QueuedUserMessage) error
+	UpdateQueuedMessageStatus(ctx context.Context, runID, msgID string, status QueuedMessageStatus, expectedFrom ...QueuedMessageStatus) error
+	LoadPendingQueuedMessages(ctx context.Context, runID string) ([]QueuedUserMessage, error)
+	ListQueuedMessages(ctx context.Context, runID string) ([]QueuedUserMessage, error)
+
 	// Attachments — binary inputs declared by `attachments:` in the
 	// workflow and uploaded at launch. Streaming I/O keeps large
 	// uploads off the heap. Implementations persist bytes in their

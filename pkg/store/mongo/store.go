@@ -38,6 +38,7 @@ const (
 	colEvents       = "events"
 	colRunSeq       = "run_seq"
 	colInteractions = "interactions"
+	colUserMessages = "user_messages"
 )
 
 // Config bundles the connection settings for a MongoRunStore.
@@ -88,6 +89,7 @@ type Store struct {
 	events             *mongo.Collection
 	runSeq             *mongo.Collection
 	interactions       *mongo.Collection
+	userMessages       *mongo.Collection
 	blob               blob.Client
 	logger             *iterlog.Logger
 	lockProv           LockProvider
@@ -133,6 +135,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		events:             db.Collection(colEvents),
 		runSeq:             db.Collection(colRunSeq),
 		interactions:       db.Collection(colInteractions),
+		userMessages:       db.Collection(colUserMessages),
 		blob:               cfg.Blob,
 		logger:             cfg.Logger,
 		lockProv:           cfg.LockProvider,
@@ -254,6 +257,16 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("store/mongo: ensure interactions index: %w", err)
+	}
+
+	// user_messages: query by (run_id, status, queued_at) for FIFO
+	// drain plus (run_id) for full enumeration.
+	_, err = s.userMessages.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "queued_at", Value: 1}}, Options: options.Index().SetName("run_queued")},
+		{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "status", Value: 1}, {Key: "queued_at", Value: 1}}, Options: options.Index().SetName("run_status_queued")},
+	})
+	if err != nil && !mongoutil.IsIndexConflict(err) {
+		return fmt.Errorf("store/mongo: ensure user_messages indexes: %w", err)
 	}
 
 	return nil

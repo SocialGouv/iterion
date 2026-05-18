@@ -16,6 +16,14 @@ export type { SelectProps } from "./Select";
 export { Tabs, TabsRoot, TabsList, TabsTrigger, TabsContent } from "./Tabs";
 export type { TabsProps, TabItem } from "./Tabs";
 
+export {
+  WizardForm,
+  isFormValid as isWizardFormValid,
+  isQuestionValid as isWizardQuestionValid,
+  isRequiredQuestion as isWizardQuestionRequired,
+} from "./WizardForm";
+export type { WizardFormProps, WizardMode } from "./WizardForm";
+
 export { Tooltip } from "./Tooltip";
 export type { TooltipProps } from "./Tooltip";
 

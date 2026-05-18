@@ -818,6 +818,18 @@ type pauseInfo struct {
 	BackendPendingToolUseID string
 }
 
+// drainOperatorMessagesForPause empties the run's operator-queued
+// chat-message inbox at pause time and returns the texts in FIFO
+// order. Used by the claude_code / codex pause path — those backends
+// can't accept mid-session stdin, so the operator's intent rides on
+// the resume system prompt. Each transition emits a
+// user_message_delivered event through the engine's event observer
+// so WS subscribers (the editor chatbox) update their badge.
+func (e *Engine) drainOperatorMessagesForPause(ctx context.Context, runID string) []string {
+	texts, _, _ := store.DrainPending(ctx, e.store, e.onEvent, runID)
+	return texts
+}
+
 // doPause is the unified implementation for pausing a run. It writes the
 // interaction record, emits pause events, and saves the checkpoint.
 func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]interface{}, eventExtra map[string]interface{}, info pauseInfo) error {
@@ -826,6 +838,19 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]inter
 	interactionID := fmt.Sprintf("%s_%s", rs.runID, nodeID)
 	if loopIter := e.currentLoopIteration(nodeID, rs.loopCounters); loopIter > 0 {
 		interactionID = fmt.Sprintf("%s_%s_%d", rs.runID, nodeID, loopIter)
+	}
+	// Drain operator-queued chatbox messages and stamp them onto the
+	// interaction questions under a reserved key. The resume path
+	// reads the same key and folds the messages into the system
+	// prompt so claude_code / codex (which can't accept mid-session
+	// stdin) still see the operator's intent. claw drains the same
+	// inbox between agent iterations (model.StoreInboxBinder), so on
+	// most runs the queue is already empty by the time we land here.
+	if queuedTexts := e.drainOperatorMessagesForPause(rs.ctx, rs.runID); len(queuedTexts) > 0 {
+		if questions == nil {
+			questions = map[string]interface{}{}
+		}
+		questions[delegate.QueuedOperatorMessagesKey] = queuedTexts
 	}
 	interaction := &store.Interaction{
 		ID:          interactionID,

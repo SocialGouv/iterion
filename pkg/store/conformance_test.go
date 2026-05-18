@@ -45,6 +45,7 @@ func conformanceSuiteWithOpts(t *testing.T, factory runStoreFactory, opts confor
 	t.Run("ArtifactVersionsMonotone", func(t *testing.T) { testArtifactVersions(t, factory(t)) })
 	t.Run("LockExclusivity", func(t *testing.T) { testLockExclusive(t, factory(t)) })
 	t.Run("CapabilitiesReported", func(t *testing.T) { testCapabilitiesReported(t, factory(t)) })
+	t.Run("UserMessagesInbox", func(t *testing.T) { testUserMessagesInbox(t, factory(t)) })
 }
 
 func testCreateLoad(t *testing.T, s RunStore, opts conformanceOpts) {
@@ -233,6 +234,74 @@ func testCapabilitiesReported(t *testing.T, s RunStore) {
 	// impl forgot to override the method.
 	if !caps.LiveStream && !caps.CrossProcessLock && !caps.PIDFile && !caps.GitWorktree {
 		t.Errorf("Capabilities all-false; backend must report at least one")
+	}
+}
+
+func testUserMessagesInbox(t *testing.T, s RunStore) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := s.CreateRun(ctx, "run_um", "demo", nil); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	msgs := []QueuedUserMessage{
+		{ID: "m1", Text: "first", QueuedAt: now.Add(0)},
+		{ID: "m2", Text: "second", QueuedAt: now.Add(10 * time.Millisecond)},
+		{ID: "m3", Text: "third", QueuedAt: now.Add(20 * time.Millisecond)},
+	}
+	for _, m := range msgs {
+		if err := s.AppendQueuedMessage(ctx, "run_um", m); err != nil {
+			t.Fatalf("AppendQueuedMessage(%s): %v", m.ID, err)
+		}
+	}
+	pending, err := s.LoadPendingQueuedMessages(ctx, "run_um")
+	if err != nil {
+		t.Fatalf("LoadPending: %v", err)
+	}
+	if len(pending) != 3 {
+		t.Fatalf("Pending count: got %d want 3", len(pending))
+	}
+	for i, want := range []string{"m1", "m2", "m3"} {
+		if pending[i].ID != want {
+			t.Errorf("FIFO[%d]: got %q want %q", i, pending[i].ID, want)
+		}
+		if pending[i].Status != QueuedMessageStatusQueued {
+			t.Errorf("Initial status[%s]: got %q want queued", pending[i].ID, pending[i].Status)
+		}
+	}
+	if err := s.UpdateQueuedMessageStatus(ctx, "run_um", "m1", QueuedMessageStatusDelivered); err != nil {
+		t.Fatalf("Deliver m1: %v", err)
+	}
+	if err := s.UpdateQueuedMessageStatus(ctx, "run_um", "m2", QueuedMessageStatusDelivered); err != nil {
+		t.Fatalf("Deliver m2: %v", err)
+	}
+	pending, err = s.LoadPendingQueuedMessages(ctx, "run_um")
+	if err != nil {
+		t.Fatalf("LoadPending after deliver: %v", err)
+	}
+	if len(pending) != 1 || pending[0].ID != "m3" {
+		t.Fatalf("Pending after deliver = %+v, want only m3", pending)
+	}
+	all, err := s.ListQueuedMessages(ctx, "run_um")
+	if err != nil {
+		t.Fatalf("ListQueuedMessages: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("List count: got %d want 3", len(all))
+	}
+	if all[0].Status != QueuedMessageStatusDelivered ||
+		all[1].Status != QueuedMessageStatusDelivered ||
+		all[2].Status != QueuedMessageStatusQueued {
+		t.Errorf("statuses: %v / %v / %v", all[0].Status, all[1].Status, all[2].Status)
+	}
+	if err := s.UpdateQueuedMessageStatus(ctx, "run_um", "m3", QueuedMessageStatusCancelled, QueuedMessageStatusQueued); err != nil {
+		t.Fatalf("Cancel m3: %v", err)
+	}
+	if err := s.UpdateQueuedMessageStatus(ctx, "run_um", "m1", QueuedMessageStatusCancelled, QueuedMessageStatusQueued); err == nil {
+		t.Fatalf("Cancel of delivered m1: expected error")
+	}
+	if err := s.UpdateQueuedMessageStatus(ctx, "run_um", "nonexistent", QueuedMessageStatusDelivered); err == nil {
+		t.Fatalf("Update nonexistent: expected error")
 	}
 }
 

@@ -1,15 +1,16 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { getRun, resumeRun } from "@/api/runs";
-import { Button } from "@/components/ui";
+import { Button, WizardForm } from "@/components/ui";
 import { useHumanNodeSchema } from "@/hooks/useHumanNodeSchema";
+import type { FormAnswer } from "@/lib/pilote/questionForm";
+import {
+  coerceFormAnswerToSchema,
+  formSpecFromSchema,
+} from "@/lib/forms/formSpecFromSchema";
 import { useDocumentStore } from "@/store/document";
 import { useRunStore } from "@/store/run";
 
-import HumanInteractionForm, {
-  buildInitialDrafts,
-  coerceDrafts,
-} from "./HumanInteractionForm";
 import PauseForm from "./PauseForm";
 
 interface Props {
@@ -47,15 +48,14 @@ export default function HumanInteractionPanel({ runId }: Props) {
     };
   }, []);
 
-  // drafts live up here so the quick-action buttons (Approve / Reject)
-  // can read the user's comments even though the form internally just
-  // reflects them.
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  // The latest form draft is captured here so the quick-action
+  // Approve/Reject buttons can submit the user's comments along with
+  // the boolean verdict. WizardForm emits FormAnswer atomically; we
+  // also expose an onChange via a controlled draft pattern.
+  const [latestAnswer, setLatestAnswer] = useState<FormAnswer>({});
   useEffect(() => {
-    if (fields) setDrafts(buildInitialDrafts(fields));
-  }, [fields, interactionId]);
-  const setDraft = (name: string, next: string) =>
-    setDrafts((prev) => ({ ...prev, [name]: next }));
+    setLatestAnswer({});
+  }, [interactionId]);
 
   const review = useMemo(() => extractReview(checkpoint), [checkpoint]);
 
@@ -103,26 +103,40 @@ export default function HumanInteractionPanel({ runId }: Props) {
     (f) => f.type === "bool" && f.name === "approved",
   );
   // When we have a typed approved bool, drive submission entirely from
-  // the Approve/Reject buttons and hide the redundant checkbox row.
+  // the Approve/Reject buttons and hide the redundant Yes/No row.
   const visibleFields = approveField
     ? (fields ?? []).filter((f) => f.name !== approveField.name)
     : fields ?? [];
 
+  const formSpec = useMemo(
+    () =>
+      visibleFields.length > 0
+        ? formSpecFromSchema(visibleFields, pending.questions ?? {}, {
+            submitLabel: "Submit & Resume",
+          })
+        : null,
+    [visibleFields, pending.questions],
+  );
+
   const submitWithApproved = (approved: boolean) => {
     if (!fields) return;
-    const { answers, errors } = coerceDrafts(visibleFields, drafts);
+    const { answers, errors } = coerceFormAnswerToSchema(
+      visibleFields,
+      latestAnswer,
+    );
     if (Object.keys(errors).length > 0) {
-      setError(
-        "Fix invalid fields: " + Object.keys(errors).join(", "),
-      );
+      setError("Fix invalid fields: " + Object.keys(errors).join(", "));
       return;
     }
     void submit({ ...answers, [approveField!.name]: approved });
   };
 
-  const submitForm = () => {
+  const submitFromWizard = (formAnswer: FormAnswer) => {
     if (!fields) return;
-    const { answers, errors } = coerceDrafts(fields, drafts);
+    const { answers, errors } = coerceFormAnswerToSchema(
+      visibleFields,
+      formAnswer,
+    );
     if (Object.keys(errors).length > 0) {
       setError("Fix invalid fields: " + Object.keys(errors).join(", "));
       return;
@@ -154,18 +168,19 @@ export default function HumanInteractionPanel({ runId }: Props) {
           />
         ) : (
           <>
-            {visibleFields.length > 0 && (
-              <HumanInteractionForm
-                fields={visibleFields}
-                questions={pending.questions ?? {}}
-                drafts={drafts}
-                onDraftChange={setDraft}
+            {formSpec && (
+              <WizardForm
+                spec={formSpec}
                 busy={busy}
-                errorMessage={error}
-                onSubmit={approveField ? undefined : submitForm}
+                hideSubmit={!!approveField}
+                onAnswerChange={setLatestAnswer}
+                onSubmit={(answer) => {
+                  setLatestAnswer(answer);
+                  if (!approveField) submitFromWizard(answer);
+                }}
               />
             )}
-            {error && !visibleFields.length && (
+            {error && (
               <p className="text-danger-fg text-[11px]" role="alert">
                 {error}
               </p>

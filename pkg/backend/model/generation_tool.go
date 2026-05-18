@@ -101,4 +101,14 @@ type GenerationOptions struct {
 	// successful Execute, PostToolUseFailure fires on error. Stop
 	// fires once when the generation loop exits (success or failure).
 	Hooks *hooks.Runner
+
+	// Inbox, when non-nil, plumbs the run's operator-message inbox
+	// into the tool loop. After each tool-results turn the engine
+	// calls Inbox.Consume (transitioning the previous round's
+	// delivered messages to "consumed") and then Inbox.Drain
+	// (returning new operator texts to append as a synthetic user
+	// turn). Delivery is cooperative — between iterations, never
+	// mid-stream — mirroring Claude Code CLI's queued-message
+	// semantics. Nil disables the inbox plumbing.
+	Inbox InboxHook
 }

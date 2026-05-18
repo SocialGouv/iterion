@@ -25,6 +25,7 @@ import { buildExecutionsAt } from "@/lib/snapshotReducer";
 import BrowserPane, { type BrowserDock } from "./BrowserPane";
 import EventLog from "./EventLog";
 import FileDiffDialog from "./FileDiffDialog";
+import AgentChatbox from "@/components/shared/AgentChatbox";
 import HumanInteractionPanel from "./HumanInteractionPanel";
 import LeftPanel from "./LeftPanel";
 import NodeDetailPanel from "./NodeDetailPanel";
@@ -619,6 +620,11 @@ export default function RunView() {
   // exposes a cancel button. The IR canvas stays mounted underneath so
   // the workflow shape is still visible. See cloud-ready plan §F (T-15).
   const isQueued = snapshot.run.status === "queued";
+  const isTerminal =
+    snapshot.run.status === "finished" ||
+    snapshot.run.status === "failed" ||
+    snapshot.run.status === "cancelled";
+  const showChatbox = !isQueued && !isTerminal;
 
   return (
     <ReactFlowProvider>
@@ -630,6 +636,7 @@ export default function RunView() {
           <>
             <RunMetrics active={active} onJumpToFailed={handleJumpToFailed} />
             <HumanInteractionPanel runId={runId} />
+            {showChatbox && <AgentChatbox runId={runId} disabled={false} />}
             <Scrubber
               events={events}
               liveSeq={liveSeq}

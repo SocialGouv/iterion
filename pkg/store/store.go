@@ -209,6 +209,11 @@ type FilesystemRunStore struct {
 	seqSeed    map[string]bool  // run_id → seq has been seeded from disk
 	signingKey []byte           // HMAC key for presigned attachment URLs (lazy)
 
+	// inboxVersion is incremented on every user-message write so a
+	// hot-path consumer (the agent-loop inbox drainer) can cheap-skip
+	// loading the JSONL when nothing changed. Read+write under `mu`.
+	inboxVersion map[string]uint64
+
 	// logPositionFn returns the current per-run log buffer byte total
 	// for stamping Event.LogOffset at AppendEvent time. nil disables
 	// stamping (LogOffset stays 0). Wired post-construction by the
@@ -256,9 +261,10 @@ func New(root string, opts ...StoreOption) (*FilesystemRunStore, error) {
 	// Failures (read-only FS, permission, etc.) are non-fatal.
 	_ = ensureGitignore(root)
 	s := &FilesystemRunStore{
-		root:    root,
-		seq:     make(map[string]int64),
-		seqSeed: make(map[string]bool),
+		root:         root,
+		seq:          make(map[string]int64),
+		seqSeed:      make(map[string]bool),
+		inboxVersion: make(map[string]uint64),
 	}
 	for _, opt := range opts {
 		opt(s)

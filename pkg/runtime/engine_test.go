@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
@@ -654,6 +655,101 @@ func TestHumanPause(t *testing.T) {
 		if events[i].Type != et {
 			t.Errorf("event[%d]: expected %s, got %s", i, et, events[i].Type)
 		}
+	}
+}
+
+func toStringSlice(v interface{}) []string {
+	switch s := v.(type) {
+	case []string:
+		return s
+	case []interface{}:
+		out := make([]string, 0, len(s))
+		for _, x := range s {
+			if str, ok := x.(string); ok {
+				out = append(out, str)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: operator-queued chatbox messages are drained at pauseAtHuman
+// ---------------------------------------------------------------------------
+
+func TestHumanPause_DrainsOperatorMessages(t *testing.T) {
+	wf := humanWorkflow()
+	exec := newStubExecutor()
+	exec.on("analyze", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"summary": "needs review"}, nil
+	})
+
+	s := tmpStore(t)
+	const runID = "run-human-inbox"
+	// Pre-queue an operator message BEFORE the run starts so the
+	// engine has something to drain at pauseAtHuman.
+	if _, err := s.CreateRun(context.Background(), runID, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := s.AppendQueuedMessage(context.Background(), runID, store.QueuedUserMessage{
+		ID:       "op-1",
+		Text:     "also note: production deploy postponed",
+		QueuedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("AppendQueuedMessage: %v", err)
+	}
+
+	eng := New(wf, s, exec)
+	if err := eng.Run(context.Background(), runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("expected ErrRunPaused, got: %v", err)
+	}
+
+	r, err := s.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	interaction, err := s.LoadInteraction(context.Background(), runID, r.Checkpoint.InteractionID)
+	if err != nil {
+		t.Fatalf("LoadInteraction: %v", err)
+	}
+	raw, ok := interaction.Questions[delegate.QueuedOperatorMessagesKey]
+	if !ok {
+		t.Fatalf("interaction.Questions missing %s", delegate.QueuedOperatorMessagesKey)
+	}
+	// Reload through the store round-trips Questions through JSON, so
+	// the typed []string becomes []interface{}. Accept either shape.
+	texts := toStringSlice(raw)
+	if len(texts) != 1 || texts[0] != "also note: production deploy postponed" {
+		t.Fatalf("queued texts = %v, want [<the message>]", texts)
+	}
+
+	// Status transitioned queued → delivered in-store; the original
+	// row should no longer appear in LoadPendingQueuedMessages.
+	pending, err := s.LoadPendingQueuedMessages(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("LoadPending: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("post-drain pending = %d, want 0", len(pending))
+	}
+
+	// A user_message_delivered event should appear in events.jsonl
+	// for WS subscribers (the chatbox UI).
+	events, err := s.LoadEvents(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("LoadEvents: %v", err)
+	}
+	found := false
+	for _, e := range events {
+		if e.Type == store.EventUserMessageDelivered {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("user_message_delivered event missing from run")
 	}
 }
 

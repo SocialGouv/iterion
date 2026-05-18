@@ -381,6 +381,15 @@ const (
 	ResumeAnswerKey           = "_resume_answer"
 )
 
+// QueuedOperatorMessagesKey is the reserved Interaction.Questions key
+// under which the runtime stores operator-queued chatbox messages
+// drained at pauseAtHuman time. The resume path reads it and folds
+// the messages into the system prompt (or appends to the user prompt
+// for prompt-only backends) so claude_code / codex — which cannot
+// accept mid-session stdin — still surface the operator's intent on
+// the post-resume LLM turn. Value shape: []string (FIFO).
+const QueuedOperatorMessagesKey = "_queued_operator_messages"
+
 // Result contains the output from a delegation backend.
 type Result struct {
 	// Output is the parsed structured output from the CLI agent.

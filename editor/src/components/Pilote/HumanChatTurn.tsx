@@ -2,13 +2,11 @@ import { useState } from "react";
 
 import type { HumanQuestionMessage } from "@/lib/pilote/messages";
 import type { FormAnswer, FormSpec } from "@/lib/pilote/questionForm";
-import { Button, Textarea } from "@/components/ui";
-
-import QuestionForm from "./QuestionForm";
+import { Button, Textarea, WizardForm } from "@/components/ui";
 
 interface Props {
   message: HumanQuestionMessage;
-  // Optional rich form. When present, the chat renders QuestionForm
+  // Optional rich form. When present, the chat renders WizardForm
   // and the resulting FormAnswer is forwarded verbatim to the parent
   // (question.id is the answer key). When absent the legacy
   // textarea + optional approve/reject UI is used.
@@ -62,7 +60,7 @@ export default function HumanChatTurn({
 
       {hasForm && (
         <div className="ml-6">
-          <QuestionForm spec={form!} onSubmit={submitForm} busy={busy} />
+          <WizardForm spec={form!} onSubmit={submitForm} busy={busy} />
         </div>
       )}
 
