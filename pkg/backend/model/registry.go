@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 
@@ -109,15 +110,36 @@ func (r *Registry) registerDefaults() {
 	}
 	r.providers["openai"] = func(modelID string) (api.APIClient, error) {
 		p := openaiprovider.New()
+		cfg := api.ProviderConfig{
+			Model:   modelID,
+			BaseURL: os.Getenv("OPENAI_BASE_URL"),
+		}
+		// Auto-detect ChatGPT-forfait OAuth via Codex CLI's auth.json
+		// (CODEX_HOME or ~/.codex). When present and Codex CLI is signed
+		// in via "ChatGPT login" (not API-key mode), reuse that token to
+		// route claw calls through chatgpt.com/backend-api/codex —
+		// trading API spend for the user's ChatGPT subscription.
+		//
+		// Opt-out: ITERION_OPENAI_USE_OAUTH=0 forces the legacy
+		// OPENAI_API_KEY path even when a chatgpt auth.json is present.
+		// OPENAI_BASE_URL override still wins (set explicitly → keep
+		// API-key path so OpenRouter/Ollama/vLLM don't get masqueraded
+		// requests).
+		oauthAllowed := os.Getenv("ITERION_OPENAI_USE_OAUTH") != "0" && cfg.BaseURL == ""
+		if oauthAllowed {
+			if view, err := secrets.LoadCodexCredentialsFromDisk(); err == nil && view.IsChatGPTMode() {
+				cfg.OAuthToken = view.Tokens.AccessToken
+				cfg.OpenAIChatGPTAccountID = view.Tokens.AccountID
+				cfg.OpenAIClientVersion = codexCLIVersion()
+				return p.NewClient(cfg)
+			}
+		}
 		// OPENAI_BASE_URL forwards for OpenRouter / Ollama / vLLM /
 		// any other OpenAI-shaped backend. Same shape as ANTHROPIC_BASE_URL
 		// above; not iterion-specific behaviour, just plumbing the env
 		// var through to the provider config.
-		return p.NewClient(api.ProviderConfig{
-			APIKey:  os.Getenv("OPENAI_API_KEY"),
-			Model:   modelID,
-			BaseURL: os.Getenv("OPENAI_BASE_URL"),
-		})
+		cfg.APIKey = os.Getenv("OPENAI_API_KEY")
+		return p.NewClient(cfg)
 	}
 	r.providersWithKey["openai"] = func(modelID, apiKey string) (api.APIClient, error) {
 		p := openaiprovider.New()
@@ -155,6 +177,38 @@ func (r *Registry) registerDefaults() {
 		p := foundryprovider.New()
 		return p.NewClient(api.ProviderConfig{APIKey: apiKey, Model: modelID})
 	}
+}
+
+// codexCLIVersion resolves the Codex CLI version string to send in the
+// `version:` HTTP header when claw operates in ChatGPT-OAuth mode. OpenAI's
+// backend gates model availability on this value (e.g. gpt-5.5 requires
+// codex-cli >= 0.130). Resolution precedence:
+//  1. ITERION_CODEX_VERSION env var (operator override; lets a fresh-but-
+//     binary-stale environment claim newer model access)
+//  2. `codex --version` parsed at most once per process (cached)
+//  3. "" — claw-code-go falls back to its baked-in version string
+var (
+	codexVersionOnce   sync.Once
+	codexVersionCached string
+)
+
+func codexCLIVersion() string {
+	if v := os.Getenv("ITERION_CODEX_VERSION"); v != "" {
+		return v
+	}
+	codexVersionOnce.Do(func() {
+		out, err := exec.Command("codex", "--version").Output()
+		if err != nil {
+			return
+		}
+		// Output format: "codex-cli 0.130.0\n"
+		fields := strings.Fields(strings.TrimSpace(string(out)))
+		if len(fields) == 0 {
+			return
+		}
+		codexVersionCached = fields[len(fields)-1]
+	})
+	return codexVersionCached
 }
 
 // Register adds a provider factory under the given name.

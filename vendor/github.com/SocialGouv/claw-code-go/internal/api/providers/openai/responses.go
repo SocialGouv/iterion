@@ -180,11 +180,11 @@ func (c *Client) streamResponses(ctx context.Context, req api.CreateMessageReque
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.BaseURL+"/v1/responses", bytes.NewReader(body))
+		c.responsesEndpoint(), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("openai: create responses request: %w", err)
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+	c.setAuthHeaders(httpReq)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 
@@ -229,9 +229,16 @@ func (c *Client) buildResponsesRequest(req api.CreateMessageRequest) (*oaiRespon
 		return nil, err
 	}
 
+	instructions := req.System
+	if instructions == "" && c.AuthMode == AuthModeChatGPTOAuth {
+		// The ChatGPT-Codex backend rejects empty `instructions` with HTTP 400
+		// "Instructions are required". Fall back to a neutral default so a
+		// system-message-less call doesn't fail at the wire layer.
+		instructions = "You are a helpful assistant."
+	}
 	r := &oaiResponsesRequest{
 		Model:        wireModel,
-		Instructions: req.System,
+		Instructions: instructions,
 		Input:        convertMessagesToResponsesInput(req.Messages),
 		Tools:        tools,
 		Stream:       true,

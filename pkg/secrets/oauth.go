@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -110,14 +112,28 @@ type AnthropicCredentialsView struct {
 
 // CodexCredentialsView is the analogous shape for the Codex CLI's
 // auth.json. Field names mirror the Codex SDK.
+//
+// AuthMode is "apikey" or "chatgpt" — Codex CLI sets it based on how the
+// user signed in. Tokens.AccountID is only populated in "chatgpt" mode and
+// is required by the ChatGPT-Codex backend (sent verbatim in the
+// `ChatGPT-Account-ID` request header).
 type CodexCredentialsView struct {
-	Tokens struct {
+	AuthMode string `json:"auth_mode,omitempty"`
+	Tokens   struct {
 		AccessToken  string `json:"access_token"`
 		RefreshToken string `json:"refresh_token"`
 		IDToken      string `json:"id_token,omitempty"`
 		ExpiresIn    int64  `json:"expires_in,omitempty"`
+		AccountID    string `json:"account_id,omitempty"`
 	} `json:"tokens"`
 	LastRefresh string `json:"last_refresh,omitempty"`
+}
+
+// IsChatGPTMode reports whether the auth blob authorises ChatGPT-Codex
+// backend access (forfait), with the access token + account id required
+// to actually issue requests.
+func (v CodexCredentialsView) IsChatGPTMode() bool {
+	return v.AuthMode == "chatgpt" && v.Tokens.AccessToken != "" && v.Tokens.AccountID != ""
 }
 
 // ParseAnthropicView extracts the lightweight metadata view from a
@@ -138,6 +154,42 @@ func ParseCodexView(payload []byte) (CodexCredentialsView, error) {
 		return v, fmt.Errorf("secrets: parse auth.json: %w", err)
 	}
 	return v, nil
+}
+
+// CodexAuthJSONPath returns the on-disk location of Codex CLI's auth.json,
+// honouring the `CODEX_HOME` env var (Codex's documented override) and
+// falling back to `~/.codex/auth.json`. Returns an empty string when no
+// home directory is resolvable, leaving callers to treat it as "no auth".
+func CodexAuthJSONPath() string {
+	if dir := os.Getenv("CODEX_HOME"); dir != "" {
+		return filepath.Join(dir, "auth.json")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".codex", "auth.json")
+}
+
+// LoadCodexCredentialsFromDisk reads and parses Codex CLI's auth.json from
+// its standard location. Returns the parsed view on success; on missing or
+// malformed file it returns the zero view plus a non-nil error. Callers
+// gating on availability should use `errors.Is(err, fs.ErrNotExist)` to
+// distinguish "no auth installed" from "auth file is corrupted".
+//
+// The reader does not validate token expiry — refresh is delegated to
+// Codex CLI's background process; iterion just reads whatever access_token
+// is currently materialised on disk.
+func LoadCodexCredentialsFromDisk() (CodexCredentialsView, error) {
+	path := CodexAuthJSONPath()
+	if path == "" {
+		return CodexCredentialsView{}, fmt.Errorf("secrets: no codex auth.json path resolvable (set CODEX_HOME or HOME)")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return CodexCredentialsView{}, fmt.Errorf("secrets: read %s: %w", path, err)
+	}
+	return ParseCodexView(data)
 }
 
 // MemoryOAuthStore — for tests.

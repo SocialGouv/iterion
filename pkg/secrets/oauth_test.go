@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -98,5 +100,84 @@ func TestParseAnthropicView(t *testing.T) {
 	}
 	if v.ClaudeAIOauth.ExpiresAt != 1_700_000_000_000 {
 		t.Fatalf("expiresAt mismatch: %d", v.ClaudeAIOauth.ExpiresAt)
+	}
+}
+
+func TestCodexCredentialsView_IsChatGPTMode(t *testing.T) {
+	cases := []struct {
+		name string
+		body map[string]any
+		want bool
+	}{
+		{
+			name: "chatgpt mode with full token + account id",
+			body: map[string]any{
+				"auth_mode": "chatgpt",
+				"tokens": map[string]any{
+					"access_token": "tok-1",
+					"account_id":   "acct-1",
+				},
+			},
+			want: true,
+		},
+		{
+			name: "chatgpt mode but missing account_id",
+			body: map[string]any{
+				"auth_mode": "chatgpt",
+				"tokens":    map[string]any{"access_token": "tok-1"},
+			},
+			want: false,
+		},
+		{
+			name: "apikey mode",
+			body: map[string]any{
+				"auth_mode":      "apikey",
+				"OPENAI_API_KEY": "sk-test",
+			},
+			want: false,
+		},
+		{
+			name: "no auth_mode at all",
+			body: map[string]any{
+				"tokens": map[string]any{"access_token": "tok-1", "account_id": "acct-1"},
+			},
+			want: false,
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			payload, _ := json.Marshal(tt.body)
+			v, err := ParseCodexView(payload)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if got := v.IsChatGPTMode(); got != tt.want {
+				t.Errorf("IsChatGPTMode() = %v, want %v (view=%+v)", got, tt.want, v)
+			}
+		})
+	}
+}
+
+func TestLoadCodexCredentialsFromDisk_HonoursCODEX_HOME(t *testing.T) {
+	dir := t.TempDir()
+	payload := []byte(`{"auth_mode":"chatgpt","tokens":{"access_token":"tok-a","refresh_token":"rt-a","account_id":"acct-a"}}`)
+	if err := os.WriteFile(filepath.Join(dir, "auth.json"), payload, 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	t.Setenv("CODEX_HOME", dir)
+
+	v, err := LoadCodexCredentialsFromDisk()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !v.IsChatGPTMode() || v.Tokens.AccessToken != "tok-a" || v.Tokens.AccountID != "acct-a" {
+		t.Fatalf("view mismatch: %+v", v)
+	}
+}
+
+func TestLoadCodexCredentialsFromDisk_MissingFile(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir()) // empty dir, no auth.json
+	if _, err := LoadCodexCredentialsFromDisk(); err == nil {
+		t.Fatal("expected error for missing file")
 	}
 }

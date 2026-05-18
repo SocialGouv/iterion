@@ -18,8 +18,22 @@ import (
 )
 
 const (
-	defaultBaseURL     = "https://api.openai.com"
-	DefaultOpenAIModel = "gpt-4o"
+	defaultBaseURL         = "https://api.openai.com"
+	chatgptCodexBaseURL    = "https://chatgpt.com/backend-api/codex"
+	chatgptOriginator      = "codex_cli_rs"
+	chatgptFallbackVersion = "0.130.0"
+	DefaultOpenAIModel     = "gpt-5.5"
+)
+
+// AuthMode discriminates between the two authentication flows the OpenAI
+// provider supports: a paid OpenAI API key against api.openai.com (default),
+// or a ChatGPT-forfait OAuth token sourced from Codex CLI's auth.json
+// against the ChatGPT-Codex backend.
+type AuthMode string
+
+const (
+	AuthModeAPIKey       AuthMode = "api_key"
+	AuthModeChatGPTOAuth AuthMode = "chatgpt_oauth"
 )
 
 // Provider implements api.Provider for OpenAI.
@@ -32,9 +46,19 @@ func (p *Provider) Name() string               { return "openai" }
 func (p *Provider) AuthMethod() api.AuthMethod { return api.AuthMethodAPIKey }
 
 // NewClient creates an OpenAI API client from the given config.
+//
+// Authentication selection: when cfg.OAuthToken and cfg.OpenAIChatGPTAccountID
+// are both non-empty, the client switches to ChatGPT-OAuth mode and targets
+// the ChatGPT-Codex backend with the masquerading headers (originator,
+// version, ChatGPT-Account-ID) that backend requires. Otherwise the legacy
+// API-key flow against api.openai.com (or cfg.BaseURL) is used.
 func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
-	if cfg.APIKey == "" {
-		return nil, fmt.Errorf("API key required for OpenAI-compatible provider (set the appropriate API key env var or run /login)")
+	authMode := AuthModeAPIKey
+	if cfg.OAuthToken != "" && cfg.OpenAIChatGPTAccountID != "" {
+		authMode = AuthModeChatGPTOAuth
+	}
+	if authMode == AuthModeAPIKey && cfg.APIKey == "" {
+		return nil, fmt.Errorf("OpenAI provider: provide either OPENAI_API_KEY or a (OAuthToken + OpenAIChatGPTAccountID) pair sourced from Codex CLI auth.json")
 	}
 	model := cfg.Model
 	// If the configured model is an Anthropic model name, use the default OpenAI model.
@@ -43,14 +67,26 @@ func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
 	}
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
-		baseURL = defaultBaseURL
+		if authMode == AuthModeChatGPTOAuth {
+			baseURL = chatgptCodexBaseURL
+		} else {
+			baseURL = defaultBaseURL
+		}
+	}
+	clientVersion := cfg.OpenAIClientVersion
+	if clientVersion == "" {
+		clientVersion = chatgptFallbackVersion
 	}
 	return &Client{
-		APIKey:     cfg.APIKey,
-		BaseURL:    baseURL,
-		Model:      model,
-		MaxTokens:  cfg.MaxTokens,
-		HTTPClient: api.NewStreamingHTTPClient(),
+		APIKey:           cfg.APIKey,
+		OAuthToken:       cfg.OAuthToken,
+		AuthMode:         authMode,
+		BaseURL:          baseURL,
+		Model:            model,
+		MaxTokens:        cfg.MaxTokens,
+		ChatGPTAccountID: cfg.OpenAIChatGPTAccountID,
+		ClientVersion:    clientVersion,
+		HTTPClient:       api.NewStreamingHTTPClient(),
 	}, nil
 }
 
@@ -59,9 +95,19 @@ func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
 // Client is the OpenAI HTTP API client.
 type Client struct {
 	APIKey     string
+	OAuthToken string
+	AuthMode   AuthMode
 	BaseURL    string
 	Model      string
 	MaxTokens  int
+
+	// ChatGPTAccountID and ClientVersion are only populated and only sent in
+	// AuthModeChatGPTOAuth. They identify the request as originating from the
+	// Codex CLI to OpenAI's ChatGPT-Codex backend, which gates access on these
+	// headers in addition to the Bearer token.
+	ChatGPTAccountID string
+	ClientVersion    string
+
 	HTTPClient *http.Client
 }
 
@@ -138,12 +184,15 @@ func (r oaiRequest) MarshalJSON() ([]byte, error) {
 // StreamResponse sends a streaming request to OpenAI and emits StreamEvents
 // that are compatible with the conversation loop's event processing.
 //
-// Dispatch: when reasoning_effort and tools are both present, we route to
-// /v1/responses because /v1/chat/completions rejects that combination on
-// gpt-5.5+. Every other request keeps using the well-tested chat
-// completions path.
+// Dispatch:
+//   - ChatGPT-OAuth mode always routes to /responses (the ChatGPT-Codex
+//     backend exposes no chat/completions endpoint).
+//   - For API-key mode, when reasoning_effort and tools are both present we
+//     route to /v1/responses because /v1/chat/completions rejects that
+//     combination on gpt-5.5+. Every other request keeps using the
+//     well-tested chat completions path.
 func (c *Client) StreamResponse(ctx context.Context, req api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
-	if shouldUseResponsesAPI(req) {
+	if c.AuthMode == AuthModeChatGPTOAuth || shouldUseResponsesAPI(req) {
 		return c.streamResponses(ctx, req)
 	}
 
@@ -162,7 +211,7 @@ func (c *Client) StreamResponse(ctx context.Context, req api.CreateMessageReques
 	if err != nil {
 		return nil, fmt.Errorf("openai: create request: %w", err)
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+	c.setAuthHeaders(httpReq)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 
@@ -242,6 +291,32 @@ func (c *Client) buildRequest(req api.CreateMessageRequest) (*oaiRequest, error)
 // which gates on provider_name == "OpenAI".
 func (c *Client) shouldRequestStreamUsage() bool {
 	return c.BaseURL == defaultBaseURL
+}
+
+// setAuthHeaders writes the Authorization header (and, in ChatGPT-OAuth mode,
+// the masquerading headers required by the ChatGPT-Codex backend) onto req.
+// Callers still set Content-Type, Accept, and any per-endpoint headers.
+func (c *Client) setAuthHeaders(req *http.Request) {
+	if c.AuthMode == AuthModeChatGPTOAuth {
+		req.Header.Set("Authorization", "Bearer "+c.OAuthToken)
+		req.Header.Set("ChatGPT-Account-ID", c.ChatGPTAccountID)
+		req.Header.Set("originator", chatgptOriginator)
+		req.Header.Set("version", c.ClientVersion)
+		req.Header.Set("User-Agent", chatgptOriginator+"/"+c.ClientVersion)
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+}
+
+// responsesEndpoint returns the full URL to POST to for the /responses
+// streaming call. The path differs between the two backends:
+//   - api.openai.com → /v1/responses
+//   - chatgpt.com/backend-api/codex → /responses
+func (c *Client) responsesEndpoint() string {
+	if c.AuthMode == AuthModeChatGPTOAuth {
+		return c.BaseURL + "/responses"
+	}
+	return c.BaseURL + "/v1/responses"
 }
 
 // isReasoningModel returns true for models known to reject tuning parameters
