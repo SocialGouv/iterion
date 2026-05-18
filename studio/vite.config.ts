@@ -41,9 +41,11 @@ export default defineConfig({
       "@": path.resolve(__dirname, "src"),
     },
   },
-  // Vitest runs pure-function tests under Node — no DOM needed for the
-  // FilePicker search helper. The `@/` alias above is reused by the
-  // test runner via the shared Vite config.
+  // Vitest config. Most tests are pure-function and run under Node;
+  // component a11y + DOM tests (`src/__tests__/a11y/*` and any
+  // `*.dom.test.tsx`) opt into jsdom via a per-file annotation:
+  //   // @vitest-environment jsdom
+  // Files without the annotation keep the fast Node environment.
   test: {
     environment: "node",
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],

@@ -227,9 +227,21 @@ What's already wired:
 - FormField inputs wire `aria-describedby` to their help icon and error message via the `FieldRow` wrapper. Set the `error` prop to render `<p role="alert">` and add `aria-invalid` on the input.
 - **Skip-link** from `AppHeader` (`<a href="#main-content">`) becomes visible on keyboard focus and jumps to the main work surface. Implemented on Home, Editor, RunList, RunView, Board, Dispatcher — pages without an `id="main-content"` anchor degrade gracefully.
 
-Open items (need human / axe-core verification):
-- WCAG AA contrast sweep with axe-core on `/`, `/editor`, `/runs/:id`, `/board`, `/dispatcher`, `/settings` — especially the light-mode canvas variants on `softColor(color, 10)` backgrounds.
-- `role="button"` divs in `LogLinesView`, `Canvas/DetailSubNode`, `Canvas/AuxiliaryNode`, `Canvas/SubNodePalette`, `Board/index.tsx` — verify each has a keyboard handler (Enter/Space) and an `aria-label`. The canvas variants got keyboard nav in commit `81e6195d` but the rest is unaudited.
+### Axe-core a11y tests
+
+A regression-trap for the shared primitives lives at [`src/__tests__/a11y/primitives.test.tsx`](../src/__tests__/a11y/primitives.test.tsx). It boots jsdom, renders Button / IconButton / EmptyState / Spinner / LiveDot / Badge / Skeleton in every variant, and asserts zero axe-core violations against `wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa` rule sets. Add a new test there when you ship a new primitive.
+
+```bash
+pnpm -F iterion-studio test
+```
+
+The jsdom environment is opt-in per file via `// @vitest-environment jsdom` so pure-function tests stay on the fast Node runner.
+
+Run a manual axe browser-extension sweep on `/`, `/editor`, `/runs/:id`, `/board`, `/dispatcher`, `/settings` before any large UI release — jsdom can't model the canvas, the WebSocket flows, or the full layout, so the unit suite is a floor not a ceiling.
+
+Open items still requiring human / browser verification:
+- Light-mode canvas variants on `softColor(color, 10)` backgrounds (contrast).
+- `role="button"` divs in `LogLinesView`, `Canvas/DetailSubNode`, `Canvas/AuxiliaryNode`, `Canvas/SubNodePalette`, `Board/index.tsx` — verify each has a keyboard handler (Enter/Space) and an `aria-label`. The canvas variants got keyboard nav in commit `81e6195d`.
 - Full keyboard reachability of the canvas — cycling between root nodes via `Tab` alone.
 
 ## Don'ts
