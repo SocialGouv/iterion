@@ -31,15 +31,19 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		if s.cfg.DisableAuth {
 			// Dev mode: synthesize a super-admin identity so handlers
 			// behave as if the request was authenticated. Never use
-			// in production. The store-level tenant ctx remains empty
-			// so DisableAuth=true reads/writes are not scoped — that
-			// matches the local-mode "single user, single tenant"
-			// expectation.
-			next.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), auth.Identity{
+			// in production. Stamp a stable "dev" tenant_id/user_id
+			// onto the store-level ctx so the mongo store's fail-
+			// closed tenant guard accepts writes (otherwise SaveRun
+			// panics on cross-tenant queries). Filesystem store
+			// ignores the tag; mongo scopes the dev-mode data under
+			// one synthetic tenant — fine for local + cloud-e2e use.
+			ctx := auth.WithIdentity(r.Context(), auth.Identity{
 				UserID:       "dev",
 				Email:        "dev@local",
 				IsSuperAdmin: true,
-			})))
+			})
+			ctx = store.WithIdentity(ctx, "dev", "dev")
+			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
 		token := extractBearer(r)
