@@ -1,7 +1,7 @@
 import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Badge, Button, EmptyState, Input } from "@/components/ui";
-import { useFetchResource } from "@/hooks/useFetchResource";
 
 import { desktop, type SecretStatus } from "@/lib/desktopBridge";
 
@@ -9,14 +9,16 @@ import { desktop, type SecretStatus } from "@/lib/desktopBridge";
 // shadowed-by-env status, plus an input for entering or replacing the
 // value. Used by both Settings → API keys and the Welcome wizard.
 export default function ApiKeysEditor() {
-  const {
-    data: statuses,
-    error: fetchError,
-    refresh,
-  } = useFetchResource<SecretStatus[]>(
-    () => desktop.getSecretStatuses(),
-    [],
-  );
+  const queryClient = useQueryClient();
+  const queryKey = ["secret-statuses"];
+  const { data: statuses, error: fetchErrorObj } = useQuery<SecretStatus[]>({
+    queryKey,
+    queryFn: () => desktop.getSecretStatuses(),
+  });
+  const fetchError = fetchErrorObj
+    ? (fetchErrorObj as Error).message
+    : null;
+  const refresh = () => queryClient.invalidateQueries({ queryKey });
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [mutationError, setMutationError] = useState<string | null>(null);
 

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { listRunFiles, type RunFiles, type RunFilesMode } from "@/api/runs";
 import { useRunStore } from "@/store/run";
@@ -35,49 +36,28 @@ export function useRunFiles(
   error: string | null;
   refresh: () => void;
 } {
-  const [data, setData] = useState<RunFiles | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // High-water mark on event seq so we only react to new events, not
-  // re-react on every store update.
+  const queryClient = useQueryClient();
+  const query = useQuery<RunFiles>({
+    queryKey: ["run-files", runId, mode],
+    queryFn: () => listRunFiles(runId!, { mode }),
+    enabled: !!runId,
+  });
+
+  const refresh = useCallback(() => {
+    if (!runId) return;
+    queryClient.invalidateQueries({ queryKey: ["run-files", runId, mode] });
+  }, [queryClient, runId, mode]);
+
+  // High-water mark on event seq so we only react to new events.
   const lastSeenSeqRef = useRef<number>(-1);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Race guard: a slow request whose runId is no longer active must
-  // not overwrite the state of the new run.
-  const genRef = useRef(0);
+
+  // Reset the seq tracker when the run id changes.
+  useEffect(() => {
+    lastSeenSeqRef.current = -1;
+  }, [runId]);
 
   const events = useRunStore((s) => s.events);
-
-  const fetchNow = useCallback(() => {
-    if (!runId) return;
-    const myGen = ++genRef.current;
-    setLoading(true);
-    listRunFiles(runId, { mode })
-      .then((res) => {
-        if (myGen !== genRef.current) return;
-        setData(res);
-        setError(null);
-      })
-      .catch((err: unknown) => {
-        if (myGen !== genRef.current) return;
-        setError(err instanceof Error ? err.message : "Failed to load files");
-      })
-      .finally(() => {
-        if (myGen !== genRef.current) return;
-        setLoading(false);
-      });
-  }, [runId, mode]);
-
-  useEffect(() => {
-    if (!runId) {
-      setData(null);
-      setError(null);
-      lastSeenSeqRef.current = -1;
-      return;
-    }
-    lastSeenSeqRef.current = -1;
-    fetchNow();
-  }, [runId, fetchNow]);
 
   useEffect(() => {
     if (!runId || events.length === 0) return;
@@ -95,7 +75,7 @@ export function useRunFiles(
     if (!triggered) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      fetchNow();
+      refresh();
     }, DEBOUNCE_MS);
     return () => {
       if (debounceRef.current) {
@@ -103,7 +83,12 @@ export function useRunFiles(
         debounceRef.current = null;
       }
     };
-  }, [events, runId, fetchNow]);
+  }, [events, runId, refresh]);
 
-  return { data, loading, error, refresh: fetchNow };
+  return {
+    data: query.data ?? null,
+    loading: query.isLoading,
+    error: query.error ? (query.error as Error).message : null,
+    refresh,
+  };
 }

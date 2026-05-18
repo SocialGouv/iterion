@@ -20,8 +20,7 @@ import { autoLayout } from "@/lib/autoLayout";
 import type { DelegateOutputMeta } from "@/lib/delegateMeta";
 import {
   effortBackendKey,
-  fetchAndCacheEffortCapabilities,
-  getCachedEffortCapabilities,
+  useEffortCapabilitiesClient,
 } from "@/hooks/useEffortCapabilities";
 import type { EffortCapabilities } from "@/api/client";
 
@@ -219,11 +218,13 @@ export default function RunCanvasIR({
     };
   }, [runId]);
 
+  const effortClient = useEffortCapabilitiesClient();
+
   // Prefetch effort capabilities for each unique (backend, model)
-  // pair on the IR. Shares the cache populated by AgentForm so the
-  // editor side panel and the run canvas don't double-fetch. Already-
-  // cached pairs are seeded synchronously so the bar normalises and
-  // the attenuated badge render on first paint; the rest update as
+  // pair on the IR. Shares the React Query cache populated by AgentForm
+  // so the editor side panel and the run canvas don't double-fetch.
+  // Already-cached pairs are seeded synchronously so the bar normalises
+  // and the attenuated badge render on first paint; the rest update as
   // fetches resolve.
   useEffect(() => {
     if (!wf) return;
@@ -241,7 +242,7 @@ export default function RunCanvasIR({
       const key = `${backend} ${n.model}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      const cached = getCachedEffortCapabilities(backend, n.model);
+      const cached = effortClient.getCached(backend, n.model);
       if (cached) seedEntries.push([key, cached]);
       else toFetch.push({ key, backend, model: n.model });
     }
@@ -261,7 +262,8 @@ export default function RunCanvasIR({
     for (const { key, backend, model } of toFetch) {
       // Capability lookup is best-effort; on failure the canvas
       // simply renders no badge for unset effort.
-      fetchAndCacheEffortCapabilities(backend, model)
+      effortClient
+        .fetch(backend, model)
         .then((caps) => {
           if (cancelled) return;
           setEffortCapsByPair((prev) => {
@@ -276,7 +278,7 @@ export default function RunCanvasIR({
     return () => {
       cancelled = true;
     };
-  }, [wf]);
+  }, [wf, effortClient]);
 
   // Group executions by IR node id once; both the layout and the
   // visual-patch effects below reuse this.

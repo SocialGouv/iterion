@@ -127,30 +127,34 @@ Tones disambiguate the meaning so the same shape can express different states wi
 
 ### Fetching data
 
-For **simple** resource hooks (single shot, optional refresh, no polling) use [`useFetchResource`](../src/hooks/useFetchResource.ts):
+Studio uses **[TanStack Query](https://tanstack.com/query)** (`@tanstack/react-query`) as the canonical fetch + cache layer. The provider is mounted in `main.tsx` with sensible defaults (`staleTime: 0`, `retry: 1`, `refetchOnWindowFocus: false` because the run console reacts to WebSocket events).
+
+For a fresh fetch site, reach for `useQuery` directly:
 
 ```tsx
-const { data, loading, error, refresh } = useFetchResource(
-  () => api.listMyThings(),
-  [],  // cache key — bump when inputs change (e.g. [runId])
-);
+import { useQuery } from "@tanstack/react-query";
 
-if (loading) return <Skeleton className="h-6" />;
-if (error) return <EmptyState message={<span className="text-danger">{error}</span>} />;
+const { data, isLoading, error } = useQuery<MyThing[]>({
+  queryKey: ["my-things", filter],
+  queryFn: () => api.listMyThings(filter),
+});
+
+if (isLoading) return <Skeleton className="h-6" />;
+if (error) return <EmptyState message={<span className="text-danger">{(error as Error).message}</span>} />;
 if (!data || data.length === 0) return <EmptyState message="No things yet" />;
 return <List items={data} />;
 ```
 
-It handles latest-wins race guards, a stable `refresh()` callback, and the `{ data, loading, error }` shape that `EmptyState` / `Skeleton` consume directly.
+The library handles latest-wins race guards, deduplication across consumers of the same key, and a stable cache so the `EmptyState` / `Skeleton` consumer code stays straight-line.
 
-**Don't reach for this hook when** the resource needs polling, event-triggered refetches, fingerprint deduplication across consumers, or a module-level shared cache. Those concerns are intentionally kept in their dedicated hooks:
+**Patterns the studio uses on top of `useQuery`:**
 
-- [`useRuns`](../src/hooks/useRuns.ts) — adaptive 3s/8s polling + visibility-aware backoff + fingerprint dedup.
-- [`useRunFiles`](../src/hooks/useRunFiles.ts) — event-triggered refetch debounced over a 300ms window.
-- [`useEffortCapabilities`](../src/hooks/useEffortCapabilities.ts) — module-level cache + in-flight promise dedup (capabilities never change during a session).
-- [`useRunWebSocket`](../src/hooks/useRunWebSocket.ts) — WebSocket with reconnect.
+- [`useRuns`](../src/hooks/useRuns.ts) — `refetchInterval` returns 3s vs 8s based on queue depth, `refetchIntervalInBackground: false` pauses polling when the tab is hidden.
+- [`useGlobalActiveRuns`](../src/hooks/useGlobalActiveRuns.ts) — fixed 8s poll for cross-store run discovery.
+- [`useRunFiles`](../src/hooks/useRunFiles.ts) / [`useRunCommits`](../src/hooks/useRunCommits.ts) — watch the in-memory event stream from `useRunStore` and call `queryClient.invalidateQueries()` on a 300ms debounce when a `node_finished` / `run_finished` / etc. event lands. No polling.
+- [`useEffortCapabilities`](../src/hooks/useEffortCapabilities.ts) / [`useResolvedEffort`](../src/hooks/useResolvedEffort.ts) — `staleTime: Infinity` because the values don't change during a session. Helpers (`getCachedEffortCapabilities`, `fetchAndCacheEffortCapabilities`) wrap `queryClient.getQueryData` / `queryClient.fetchQuery` for imperative seeds; `useEffortCapabilitiesClient` binds them to the active query client.
 
-When a new fetch site doesn't match any of those patterns, reach for `useFetchResource`. When the boilerplate doesn't fit, write a dedicated hook and document why — like the four above.
+**WebSocket lives outside the query cache.** [`useRunWebSocket`](../src/hooks/useRunWebSocket.ts) manages the connection + reconnect logic and pushes events into `useRunStore`. Components that need to react to those events watch the store directly; React Query only sees the consequent `queryClient.invalidateQueries()` calls.
 
 ### Tabs, Inputs, Selects, Badges
 

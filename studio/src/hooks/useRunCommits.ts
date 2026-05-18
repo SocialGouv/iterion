@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { listRunCommits, type RunCommits } from "@/api/runs";
 import { useRunStore } from "@/store/run";
@@ -23,45 +24,26 @@ export function useRunCommits(runId: string | null): {
   error: string | null;
   refresh: () => void;
 } {
-  const [data, setData] = useState<RunCommits | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const query = useQuery<RunCommits>({
+    queryKey: ["run-commits", runId],
+    queryFn: () => listRunCommits(runId!),
+    enabled: !!runId,
+  });
+
+  const refresh = useCallback(() => {
+    if (!runId) return;
+    queryClient.invalidateQueries({ queryKey: ["run-commits", runId] });
+  }, [queryClient, runId]);
+
   const lastSeenSeqRef = useRef<number>(-1);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const genRef = useRef(0);
-
-  const events = useRunStore((s) => s.events);
-
-  const fetchNow = useCallback(() => {
-    if (!runId) return;
-    const myGen = ++genRef.current;
-    setLoading(true);
-    listRunCommits(runId)
-      .then((res) => {
-        if (myGen !== genRef.current) return;
-        setData(res);
-        setError(null);
-      })
-      .catch((err: unknown) => {
-        if (myGen !== genRef.current) return;
-        setError(err instanceof Error ? err.message : "Failed to load commits");
-      })
-      .finally(() => {
-        if (myGen !== genRef.current) return;
-        setLoading(false);
-      });
-  }, [runId]);
 
   useEffect(() => {
-    if (!runId) {
-      setData(null);
-      setError(null);
-      lastSeenSeqRef.current = -1;
-      return;
-    }
     lastSeenSeqRef.current = -1;
-    fetchNow();
-  }, [runId, fetchNow]);
+  }, [runId]);
+
+  const events = useRunStore((s) => s.events);
 
   useEffect(() => {
     if (!runId || events.length === 0) return;
@@ -77,7 +59,7 @@ export function useRunCommits(runId: string | null): {
     if (!triggered) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      fetchNow();
+      refresh();
     }, DEBOUNCE_MS);
     return () => {
       if (debounceRef.current) {
@@ -85,7 +67,12 @@ export function useRunCommits(runId: string | null): {
         debounceRef.current = null;
       }
     };
-  }, [events, runId, fetchNow]);
+  }, [events, runId, refresh]);
 
-  return { data, loading, error, refresh: fetchNow };
+  return {
+    data: query.data ?? null,
+    loading: query.isLoading,
+    error: query.error ? (query.error as Error).message : null,
+    refresh,
+  };
 }
