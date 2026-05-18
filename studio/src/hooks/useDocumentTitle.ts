@@ -6,7 +6,7 @@ import { desktop, isDesktop } from "@/lib/desktopBridge";
 import { useDocumentStore } from "@/store/document";
 import { useRunStore } from "@/store/run";
 
-const APP = "iterion";
+const APP = "iterion studio";
 
 function basename(path: string): string {
   const parts = path.split(/[\\/]/);
