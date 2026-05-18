@@ -94,21 +94,15 @@ func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
 
 // Client is the OpenAI HTTP API client.
 type Client struct {
-	APIKey     string
-	OAuthToken string
-	AuthMode   AuthMode
-	BaseURL    string
-	Model      string
-	MaxTokens  int
-
-	// ChatGPTAccountID and ClientVersion are only populated and only sent in
-	// AuthModeChatGPTOAuth. They identify the request as originating from the
-	// Codex CLI to OpenAI's ChatGPT-Codex backend, which gates access on these
-	// headers in addition to the Bearer token.
-	ChatGPTAccountID string
-	ClientVersion    string
-
-	HTTPClient *http.Client
+	APIKey           string
+	OAuthToken       string
+	AuthMode         AuthMode
+	BaseURL          string
+	Model            string
+	MaxTokens        int
+	ChatGPTAccountID string // only used in AuthModeChatGPTOAuth
+	ClientVersion    string // only used in AuthModeChatGPTOAuth
+	HTTPClient       *http.Client
 }
 
 // ----- Request types ---------------------------------------------------------

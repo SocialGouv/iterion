@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	anthropicprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/anthropic"
@@ -110,23 +111,31 @@ func (r *Registry) registerDefaults() {
 	}
 	r.providers["openai"] = func(modelID string) (api.APIClient, error) {
 		p := openaiprovider.New()
+		// OPENAI_BASE_URL forwards for OpenRouter / Ollama / vLLM / any
+		// other OpenAI-shaped backend (same shape as ANTHROPIC_BASE_URL
+		// above). When set, it also disables the ChatGPT-OAuth path so
+		// we don't send masquerading codex_cli_rs headers to a third
+		// party.
 		cfg := api.ProviderConfig{
 			Model:   modelID,
 			BaseURL: os.Getenv("OPENAI_BASE_URL"),
 		}
-		// Auto-detect ChatGPT-forfait OAuth via Codex CLI's auth.json
-		// (CODEX_HOME or ~/.codex). When present and Codex CLI is signed
-		// in via "ChatGPT login" (not API-key mode), reuse that token to
-		// route claw calls through chatgpt.com/backend-api/codex —
-		// trading API spend for the user's ChatGPT subscription.
-		//
+		// Auto-detect ChatGPT-forfait OAuth via Codex CLI's auth.json.
 		// Opt-out: ITERION_OPENAI_USE_OAUTH=0 forces the legacy
 		// OPENAI_API_KEY path even when a chatgpt auth.json is present.
-		// OPENAI_BASE_URL override still wins (set explicitly → keep
-		// API-key path so OpenRouter/Ollama/vLLM don't get masqueraded
-		// requests).
-		oauthAllowed := os.Getenv("ITERION_OPENAI_USE_OAUTH") != "0" && cfg.BaseURL == ""
-		if oauthAllowed {
+		//
+		// Known limitations (track separately, not blocking v1):
+		//   - Stale token: the resolved client is cached for the life of
+		//     the process; long-running daemons (editor, conductor)
+		//     keep using the access_token captured at first resolve.
+		//     Codex CLI rotates tokens ~hourly; restart the daemon to
+		//     refresh, or set a tight max_duration on conductor jobs.
+		//   - Cloud mode: bypasses runner-materialised per-tenant
+		//     OAuth state in secrets.CredentialsFromContext. Cloud
+		//     deployments must use the API-key BYOK path until the
+		//     factory learns to consume creds.OAuthDir("codex").
+		shouldTryOAuth := os.Getenv("ITERION_OPENAI_USE_OAUTH") != "0" && cfg.BaseURL == ""
+		if shouldTryOAuth {
 			if view, err := secrets.LoadCodexCredentialsFromDisk(); err == nil && view.IsChatGPTMode() {
 				cfg.OAuthToken = view.Tokens.AccessToken
 				cfg.OpenAIChatGPTAccountID = view.Tokens.AccountID
@@ -134,10 +143,6 @@ func (r *Registry) registerDefaults() {
 				return p.NewClient(cfg)
 			}
 		}
-		// OPENAI_BASE_URL forwards for OpenRouter / Ollama / vLLM /
-		// any other OpenAI-shaped backend. Same shape as ANTHROPIC_BASE_URL
-		// above; not iterion-specific behaviour, just plumbing the env
-		// var through to the provider config.
 		cfg.APIKey = os.Getenv("OPENAI_API_KEY")
 		return p.NewClient(cfg)
 	}
@@ -197,7 +202,11 @@ func codexCLIVersion() string {
 		return v
 	}
 	codexVersionOnce.Do(func() {
-		out, err := exec.Command("codex", "--version").Output()
+		// Timeout guards against a wedged codex binary stalling every
+		// LLM call forever (sync.Once would cache the hang).
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "codex", "--version").Output()
 		if err != nil {
 			return
 		}
