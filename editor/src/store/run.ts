@@ -410,6 +410,7 @@ export const useRunStore = create<RunStoreState>((set) => ({
           snapshot: snap,
           pendingHumanInput: rehydrated,
           browser: state.browser,
+          queuedMessages: state.queuedMessages,
         },
         newerEvents,
       );
@@ -681,8 +682,8 @@ function sameQueuedMessages(
 ): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
-    const x = a[i];
-    const y = b[i];
+    const x = a[i]!;
+    const y = b[i]!;
     if (x.id !== y.id || x.status !== y.status || x.text !== y.text) {
       return false;
     }
@@ -1281,7 +1282,7 @@ function reduceEvents(
           );
         } else {
           queuedMessages[idx] = mergeQueuedMessage(
-            queuedMessages[idx],
+            queuedMessages[idx]!,
             incoming,
           );
         }

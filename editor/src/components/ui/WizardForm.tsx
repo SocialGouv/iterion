@@ -96,7 +96,12 @@ export function WizardForm({
   }
 
   // ── Wizard (multi-step) ──
+  // Guard against out-of-range step indices (e.g. if `total` changes
+  // after a question is removed from the spec mid-flow). When no
+  // current question exists we render nothing meaningful — return null
+  // so the rest of this branch can treat `current` as defined.
   const current = spec.questions[step];
+  if (!current) return null;
   const isLast = step === total - 1;
   const stepValid = isQuestionValid(current, answers[current.id]);
   const canSubmitAll = isFormValid(spec, answers);
@@ -141,7 +146,7 @@ export function WizardForm({
     }
   };
 
-  const tabItems: TabItem[] = spec.questions.map((q, i) => {
+  const tabItems: TabItem[] = spec.questions.map((_q, i) => {
     const reachable = visited.has(i) || i <= step;
     return {
       value: String(i),

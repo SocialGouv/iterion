@@ -150,7 +150,7 @@ export default function AgentChatbox({
                 </span>
                 {m.status === "queued" && !disabled && (
                   <IconButton
-                    aria-label="Cancel queued message"
+                    label="Cancel queued message"
                     size="sm"
                     onClick={() => void cancel(m.id)}
                   >

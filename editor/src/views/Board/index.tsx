@@ -125,28 +125,6 @@ export default function BoardView() {
     void refresh();
   }, [refresh]);
 
-  // Surface eligible counts in the browser tab so operators with the
-  // board pinned in a background tab see new ready/in-progress work
-  // without having to focus the tab. Only kicks in when the board
-  // actually has eligible columns — for purely terminal layouts the
-  // existing useDocumentTitle string is more informative.
-  useEffect(() => {
-    if (!board) return;
-    const eligible = board.states.filter((s) => s.eligible);
-    if (eligible.length === 0) return;
-    const parts: string[] = [];
-    for (const s of eligible) {
-      const count = (byState.get(s.name) ?? []).length;
-      if (count > 0) parts.push(`${count} ${s.display ?? s.name}`);
-    }
-    if (parts.length === 0) return;
-    const prev = document.title;
-    document.title = `(${parts.join(", ")}) ${prev}`;
-    return () => {
-      document.title = prev;
-    };
-  }, [board, byState]);
-
   // Apply the ?focus=<issueID> deep-link from the Conductor view's
   // retry-queue rows. Runs once after issues load so the auto-selected
   // card is actually present in state. Self-clears the param so a hard
@@ -221,6 +199,28 @@ export default function BoardView() {
     }
     return m;
   }, [board, filteredIssues]);
+
+  // Surface eligible counts in the browser tab so operators with the
+  // board pinned in a background tab see new ready/in-progress work
+  // without having to focus the tab. Only kicks in when the board
+  // actually has eligible columns — for purely terminal layouts the
+  // existing useDocumentTitle string is more informative.
+  useEffect(() => {
+    if (!board) return;
+    const eligible = board.states.filter((s) => s.eligible);
+    if (eligible.length === 0) return;
+    const parts: string[] = [];
+    for (const s of eligible) {
+      const count = (byState.get(s.name) ?? []).length;
+      if (count > 0) parts.push(`${count} ${s.display ?? s.name}`);
+    }
+    if (parts.length === 0) return;
+    const prev = document.title;
+    document.title = `(${parts.join(", ")}) ${prev}`;
+    return () => {
+      document.title = prev;
+    };
+  }, [board, byState]);
 
   const recordTransition = useCallback((id: string, from: string) => {
     const hist = transitionHistoryRef.current;
