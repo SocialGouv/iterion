@@ -172,6 +172,10 @@ export interface ConductorSnapshot {
   running: RunningView[] | null;
   retries: RetryView[] | null;
   slots: SlotsView;
+  // Stickied error from the last failed tracker.ListCandidates call.
+  // Empty / absent once the next poll succeeds.
+  last_tracker_error?: string;
+  last_tracker_error_at?: string;
 }
 
 export interface RunningView {

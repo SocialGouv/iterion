@@ -32,9 +32,15 @@ func (c *Conductor) tick(ctx context.Context) {
 	candidates, err := c.tracker.ListCandidates(ctx)
 	if err != nil {
 		c.logger.Warn("conductor: tracker ListCandidates: %v", err)
+		c.state.lastTrackerErr = err.Error()
+		c.state.lastTrackerErrAt = time.Now().UTC()
 		c.fireSnapshot()
 		return
 	}
+	// Clear the sticky tracker error once a poll succeeds so the
+	// dashboard banner drops as soon as the operator fixes the token.
+	c.state.lastTrackerErr = ""
+	c.state.lastTrackerErrAt = time.Time{}
 	sortCandidates(candidates)
 
 	for _, iss := range candidates {

@@ -273,6 +273,43 @@ export default function EventLog({
     [typeCounts],
   );
 
+  // Event types that the run console should surface as "errors" — the
+  // user wants these immediately visible without scrolling. budget_*
+  // sits next to the hard failures because exceeding budget is a
+  // workflow-level abort, not a soft warning.
+  const errorEventTypes = useMemo(
+    () => new Set<string>(["run_failed", "tool_error", "budget_exceeded"]),
+    [],
+  );
+  const errorCount = useMemo(() => {
+    let n = 0;
+    for (const t of errorEventTypes) n += typeCounts.get(t) ?? 0;
+    return n;
+  }, [typeCounts, errorEventTypes]);
+
+  // Cycle through error events on repeated clicks of the "n errors"
+  // badge: scroll to the first one, then the next, etc. — wraps around
+  // at the end. The cursor sits in a ref so the parent doesn't
+  // re-render between clicks.
+  const errorCursorRef = useRef<number>(-1);
+  const jumpToNextError = () => {
+    const indices: number[] = [];
+    for (let i = 0; i < filtered.length; i++) {
+      if (errorEventTypes.has(filtered[i]!.event.type)) indices.push(i);
+    }
+    if (indices.length === 0) return;
+    errorCursorRef.current = (errorCursorRef.current + 1) % indices.length;
+    const target = indices[errorCursorRef.current]!;
+    virtuosoRef.current?.scrollToIndex({
+      index: target,
+      align: "center",
+      behavior: "smooth",
+    });
+    // Disengage tail-follow so the auto-scroll doesn't immediately
+    // yank the user back to live.
+    if (followTail) onToggleFollow(false);
+  };
+
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
     return annotated.filter(({ event: e, executionId }) => {
@@ -345,6 +382,19 @@ export default function EventLog({
         <span className="text-fg-subtle">
           {filtered.length} / {events.length}
         </span>
+        {errorCount > 0 && (
+          <button
+            type="button"
+            onClick={jumpToNextError}
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-danger-soft text-danger-fg border border-danger/40 hover:bg-danger-soft/80 transition-colors"
+            title={`${errorCount} error event${errorCount === 1 ? "" : "s"} — click to jump to the next`}
+          >
+            <span aria-hidden="true">●</span>
+            <span>
+              {errorCount} error{errorCount === 1 ? "" : "s"}
+            </span>
+          </button>
+        )}
         {selectedExecutionId && (
           <button
             type="button"

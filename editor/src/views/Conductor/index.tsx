@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useLocation } from "wouter";
 
 import PageShell from "@/components/shared/PageShell";
 import ConductorControlBar from "@/components/shared/ConductorControlBar";
@@ -14,11 +15,16 @@ import {
 import SettingsDrawer from "./SettingsDrawer";
 
 export default function ConductorView() {
+  const [, setLocation] = useLocation();
   const [snap, setSnap] = useState<ConductorSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
+  const openRun = useCallback(
+    (runID: string) => setLocation(`/runs/${encodeURIComponent(runID)}`),
+    [setLocation],
+  );
 
   const reload = useCallback(async () => {
     setError(null);
@@ -169,13 +175,70 @@ export default function ConductorView() {
         </div>
       )}
 
+      <TrackerErrorBanner snap={snap} />
+
       <main className="flex-1 overflow-auto p-4 space-y-4 max-w-4xl">
         <SummaryCard snap={snap} />
-        <RunningTable rows={running} onCancel={doCancel} />
-        <RetriesTable rows={retries} />
+        <RunningTable
+          rows={running}
+          stallTimeoutS={snap.stall_timeout_seconds}
+          onCancel={doCancel}
+          onOpenRun={openRun}
+        />
+        <RetriesTable
+          rows={retries}
+          onFocusIssue={(id) =>
+            setLocation(`/board?focus=${encodeURIComponent(id)}`)
+          }
+        />
       </main>
     </PageShell>
   );
+}
+
+// TrackerErrorBanner surfaces a sticky banner when the conductor's last
+// tracker.ListCandidates call failed. The message is the raw error
+// string from the adapter; common cases (GitHub token expired, Forgejo
+// 401, host unreachable) are recognised by substring and rendered with
+// a more specific guidance line so operators don't have to grep logs.
+function TrackerErrorBanner({ snap }: { snap: ConductorSnapshot }) {
+  const err = snap.last_tracker_error;
+  if (!err) return null;
+  const guidance = trackerErrorGuidance(snap.tracker, err);
+  return (
+    <div className="bg-amber-500/10 border-b border-amber-500/40 px-4 py-2 text-xs text-amber-200 flex items-start gap-2">
+      <span className="font-medium shrink-0">Tracker error:</span>
+      <div className="flex-1 min-w-0">
+        <div className="font-mono break-words">{err}</div>
+        {guidance && <div className="mt-0.5 text-amber-200/80">{guidance}</div>}
+      </div>
+    </div>
+  );
+}
+
+function trackerErrorGuidance(tracker: string, err: string): string | null {
+  const e = err.toLowerCase();
+  if (e.includes("401") || e.includes("bad credentials") || e.includes("unauthorized")) {
+    if (tracker === "github") {
+      return "GitHub credentials rejected — the token in conductor.yaml is missing, expired, or lacks `issues:read` / `issues:write`. Regenerate and reload the conductor.";
+    }
+    if (tracker === "forgejo") {
+      return "Forgejo credentials rejected — the personal access token is missing, expired, or lacks the issue scope. Regenerate and reload.";
+    }
+    return "Authentication rejected by the tracker. Check the configured token.";
+  }
+  if (e.includes("403") || e.includes("forbidden") || e.includes("rate limit")) {
+    return "Tracker is rate-limiting or refusing the request. Wait a few minutes; if it persists, swap to a higher-scope token.";
+  }
+  if (
+    e.includes("no such host") ||
+    e.includes("connection refused") ||
+    e.includes("i/o timeout") ||
+    e.includes("dial tcp")
+  ) {
+    return "Cannot reach the tracker host. Check network connectivity and the configured base URL.";
+  }
+  return null;
 }
 
 function SummaryCard({ snap }: { snap: ConductorSnapshot }) {
@@ -202,12 +265,47 @@ function SummaryCard({ snap }: { snap: ConductorSnapshot }) {
   );
 }
 
+// stallStyle inspects how long a running entry has been silent relative
+// to the conductor's stallTimeout and returns a (className, hint) pair
+// for the row. The thresholds match what the operator can act on:
+//   ≥ 50% of the budget elapsed → amber  ("slow — keep an eye")
+//   ≥ 100% of the budget        → red    ("about to be cancelled")
+// Below 50%: no decoration, the row reads as normal.
+function stallStyle(
+  lastEventAt: string,
+  stallTimeoutS: number,
+): { rowClass: string; hint: string | null } {
+  if (!stallTimeoutS || stallTimeoutS <= 0) {
+    return { rowClass: "", hint: null };
+  }
+  const last = Date.parse(lastEventAt);
+  if (!Number.isFinite(last)) return { rowClass: "", hint: null };
+  const elapsedS = (Date.now() - last) / 1000;
+  if (elapsedS >= stallTimeoutS) {
+    return {
+      rowClass: "bg-red-500/10",
+      hint: `Silent for ${Math.round(elapsedS)}s ≥ stall timeout (${Math.round(stallTimeoutS)}s) — will be cancelled on the next reconciliation tick.`,
+    };
+  }
+  if (elapsedS >= stallTimeoutS / 2) {
+    return {
+      rowClass: "bg-amber-500/10",
+      hint: `Silent for ${Math.round(elapsedS)}s — half the stall budget (${Math.round(stallTimeoutS)}s) consumed.`,
+    };
+  }
+  return { rowClass: "", hint: null };
+}
+
 function RunningTable({
   rows,
+  stallTimeoutS,
   onCancel,
+  onOpenRun,
 }: {
   rows: ConductorSnapshot["running"];
+  stallTimeoutS: number;
   onCancel: (id: string) => void;
+  onOpenRun: (runID: string) => void;
 }) {
   return (
     <section className="rounded border border-border-default bg-surface-1">
@@ -229,15 +327,33 @@ function RunningTable({
             </tr>
           </thead>
           <tbody>
-            {rows!.map((r) => (
-              <tr key={r.issue_id} className="border-b border-border-default/60">
+            {rows!.map((r) => {
+              const stall = stallStyle(r.last_event_at, stallTimeoutS);
+              return (
+              <tr
+                key={r.issue_id}
+                className={`border-b border-border-default/60 ${stall.rowClass}`}
+                title={stall.hint ?? undefined}
+              >
                 <td className="py-1.5 px-3 font-mono">{r.identifier}</td>
-                <td className="py-1.5 px-3 font-mono truncate max-w-[14rem]">{r.run_id}</td>
+                <td className="py-1.5 px-3 font-mono truncate max-w-[14rem]">
+                  <button
+                    type="button"
+                    onClick={() => onOpenRun(r.run_id)}
+                    className="text-info hover:underline"
+                    title={`Open run ${r.run_id}`}
+                  >
+                    {r.run_id}
+                  </button>
+                </td>
                 <td className="py-1.5 px-3">{r.workflow_state}</td>
                 <td className="py-1.5 px-3 text-fg-muted">{relTime(r.started_at)}</td>
                 <td className="py-1.5 px-3 text-fg-muted">
                   {r.last_event_name ? r.last_event_name + " · " : ""}
                   {relTime(r.last_event_at)}
+                  {stall.hint && (
+                    <span className="ml-1 text-amber-300/90">⏱</span>
+                  )}
                 </td>
                 <td className="py-1.5 px-3 text-right">
                   <button
@@ -248,7 +364,8 @@ function RunningTable({
                   </button>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       )}
@@ -256,7 +373,13 @@ function RunningTable({
   );
 }
 
-function RetriesTable({ rows }: { rows: ConductorSnapshot["retries"] }) {
+function RetriesTable({
+  rows,
+  onFocusIssue,
+}: {
+  rows: ConductorSnapshot["retries"];
+  onFocusIssue: (issueID: string) => void;
+}) {
   return (
     <section className="rounded border border-border-default bg-surface-1">
       <header className="px-4 py-2 border-b border-border-default text-sm font-semibold">
@@ -276,7 +399,12 @@ function RetriesTable({ rows }: { rows: ConductorSnapshot["retries"] }) {
           </thead>
           <tbody>
             {rows!.map((r) => (
-              <tr key={r.issue_id} className="border-b border-border-default/60">
+              <tr
+                key={r.issue_id}
+                className="border-b border-border-default/60 hover:bg-surface-2/40 cursor-pointer"
+                onClick={() => onFocusIssue(r.issue_id)}
+                title="Open this issue on the board"
+              >
                 <td className="py-1.5 px-3 font-mono">{r.identifier || r.issue_id}</td>
                 <td className="py-1.5 px-3">{r.attempt}</td>
                 <td className="py-1.5 px-3 text-fg-muted">{r.due_at && relTime(r.due_at)}</td>

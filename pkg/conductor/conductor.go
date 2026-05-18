@@ -314,12 +314,14 @@ func (c *Conductor) fireSnapshot() {
 func (c *Conductor) buildSnapshot() Snapshot {
 	cfg := c.cfg.Load()
 	snap := Snapshot{
-		Name:             cfg.Name,
-		Tracker:          c.tracker.Name(),
-		GeneratedAt:      time.Now().UTC(),
-		PollingIntervalS: cfg.PollingInterval().Seconds(),
-		StallTimeoutS:    cfg.StallTimeout().Seconds(),
-		Paused:           c.paused.Load(),
+		Name:               cfg.Name,
+		Tracker:            c.tracker.Name(),
+		GeneratedAt:        time.Now().UTC(),
+		PollingIntervalS:   cfg.PollingInterval().Seconds(),
+		StallTimeoutS:      cfg.StallTimeout().Seconds(),
+		Paused:             c.paused.Load(),
+		LastTrackerError:   c.state.lastTrackerErr,
+		LastTrackerErrorAt: c.state.lastTrackerErrAt,
 		Slots: SlotsView{
 			GlobalMax:    cfg.Agent.MaxConcurrent,
 			GlobalUsed:   len(c.state.running),

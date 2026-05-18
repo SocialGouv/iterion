@@ -24,6 +24,13 @@ type state struct {
 	// sibling dispatch on the same workspace; cmdRunFinished removes
 	// the entry once the worker has actually exited.
 	tombstones map[string]struct{}
+	// lastTrackerErr is the most recent failure from tracker.ListCandidates,
+	// surfaced in the Snapshot so the dashboard can show "GitHub token
+	// expired" / "Forgejo unreachable" rather than going silent. Cleared
+	// after the next successful poll. The actor goroutine is the single
+	// writer so no mutex is needed.
+	lastTrackerErr   string
+	lastTrackerErrAt time.Time
 }
 
 func newState() *state {
@@ -113,6 +120,13 @@ type Snapshot struct {
 	Running []RunningView `json:"running"`
 	Retries []RetryView   `json:"retries"`
 	Slots   SlotsView     `json:"slots"`
+	// LastTrackerError reports the most recent failure from the
+	// tracker's ListCandidates call. Empty when the last poll
+	// succeeded. The dashboard surfaces this as a banner so auth
+	// failures (expired tokens, rotated credentials) don't silently
+	// stall the dispatcher.
+	LastTrackerError   string    `json:"last_tracker_error,omitempty"`
+	LastTrackerErrorAt time.Time `json:"last_tracker_error_at,omitempty"`
 }
 
 // RunningView is one row of the dashboard's "running" table.

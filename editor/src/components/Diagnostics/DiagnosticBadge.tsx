@@ -35,9 +35,12 @@ export default function DiagnosticBadge({
   const sev = dominantSeverity(diagnostics);
   if (!sev) return null;
 
+  // Errors get a subtle pulse to pull the eye on a busy canvas; warnings
+  // stay static — they're plenty visible without animation, and pulsing
+  // every warning makes the editor feel anxious.
   const colorClass =
     sev === "error"
-      ? "bg-danger text-fg-onAccent border-danger"
+      ? "bg-danger text-fg-onAccent border-danger animate-pulse"
       : "bg-warning text-fg-onAccent border-warning";
   const Icon = sev === "error" ? CrossCircledIcon : ExclamationTriangleIcon;
 

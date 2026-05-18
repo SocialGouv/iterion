@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useLocation, useSearch } from "wouter";
 
 import PageShell from "@/components/shared/PageShell";
 import ConductorControlBar from "@/components/shared/ConductorControlBar";
@@ -24,6 +25,11 @@ import SettingsDrawer from "@/views/Conductor/SettingsDrawer";
 import { useBoardKeyboard } from "@/hooks/useBoardKeyboard";
 
 export default function BoardView() {
+  const [, setLocation] = useLocation();
+  const search = useSearch();
+  const focusFromUrl = useMemo(() => {
+    return new URLSearchParams(search).get("focus");
+  }, [search]);
   const [board, setBoard] = useState<NativeBoard | null>(null);
   const [issues, setIssues] = useState<NativeIssue[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -33,6 +39,9 @@ export default function BoardView() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [runningByIssue, setRunningByIssue] = useState<Map<string, RunningView>>(new Map());
   const [retryingByIssue, setRetryingByIssue] = useState<Map<string, RetryView>>(new Map());
+  const [trackerError, setTrackerError] = useState<{ tracker: string; message: string } | null>(
+    null,
+  );
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
 
@@ -61,6 +70,11 @@ export default function BoardView() {
         for (const r of snap.retries ?? []) xmap.set(r.issue_id, r);
         setRunningByIssue(rmap);
         setRetryingByIssue(xmap);
+        setTrackerError(
+          snap.last_tracker_error
+            ? { tracker: snap.tracker, message: snap.last_tracker_error }
+            : null,
+        );
       } catch {
         // swallow: conductor may be unreachable / not wired
       } finally {
@@ -99,6 +113,20 @@ export default function BoardView() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Apply the ?focus=<issueID> deep-link from the Conductor view's
+  // retry-queue rows. Runs once after issues load so the auto-selected
+  // card is actually present in state. Self-clears the param so a hard
+  // reload doesn't re-focus on an issue the user has since moved on
+  // from.
+  useEffect(() => {
+    if (!focusFromUrl) return;
+    if (issues.length === 0) return;
+    const match = issues.find((i) => i.id === focusFromUrl);
+    if (!match) return;
+    setSelectedId(match.id);
+    setLocation("/board", { replace: true });
+  }, [focusFromUrl, issues, setLocation]);
 
   // Group issues by state for column rendering. Issues whose state
   // does not appear on the board land in an "unmapped" bucket so they
@@ -267,6 +295,13 @@ export default function BoardView() {
           {error}
         </div>
       )}
+      {trackerError && (
+        <div className="bg-amber-500/10 border-b border-amber-500/40 px-4 py-2 text-xs text-amber-200 flex items-start gap-2">
+          <span className="font-medium shrink-0">Tracker error:</span>
+          <span className="font-mono break-words flex-1">{trackerError.message}</span>
+          <span className="text-amber-200/60 shrink-0">({trackerError.tracker})</span>
+        </div>
+      )}
 
       <main className="flex-1 overflow-auto p-3">
         <div className="flex gap-3 min-w-fit">
@@ -286,6 +321,7 @@ export default function BoardView() {
               onSelectCard={setSelectedId}
               onClickCard={(iss) => setEditing(iss)}
               onCancelRun={onCancelRun}
+              onOpenRun={(runId) => setLocation(`/runs/${encodeURIComponent(runId)}`)}
             />
           ))}
           {(byState.get("__unmapped__")?.length ?? 0) > 0 && (
@@ -303,6 +339,7 @@ export default function BoardView() {
               onSelectCard={setSelectedId}
               onClickCard={(iss) => setEditing(iss)}
               onCancelRun={onCancelRun}
+              onOpenRun={(runId) => setLocation(`/runs/${encodeURIComponent(runId)}`)}
             />
           )}
         </div>
@@ -435,6 +472,7 @@ interface ColumnProps {
   onSelectCard: (id: string | null) => void;
   onClickCard: (iss: NativeIssue) => void;
   onCancelRun: (issueID: string) => void;
+  onOpenRun: (runId: string) => void;
 }
 
 function Column({
@@ -451,6 +489,7 @@ function Column({
   onSelectCard,
   onClickCard,
   onCancelRun,
+  onOpenRun,
 }: ColumnProps) {
   const [dragOver, setDragOver] = useState(false);
   return (
@@ -499,6 +538,8 @@ function Column({
             onSelect={() => onSelectCard(iss.id)}
             onClick={() => onClickCard(iss)}
             onCancelRun={() => onCancelRun(iss.id)}
+            onOpenRun={onOpenRun}
+            onShowRetryDetails={() => onClickCard(iss)}
           />
         ))}
         {issues.length === 0 && (
@@ -517,6 +558,8 @@ interface IssueCardProps {
   onSelect: () => void;
   onClick: () => void;
   onCancelRun: () => void;
+  onOpenRun: (runId: string) => void;
+  onShowRetryDetails: () => void;
 }
 
 function IssueCard({
@@ -527,6 +570,8 @@ function IssueCard({
   onSelect,
   onClick,
   onCancelRun,
+  onOpenRun,
+  onShowRetryDetails,
 }: IssueCardProps) {
   return (
     <div
@@ -582,12 +627,20 @@ function IssueCard({
       </div>
       {running && (
         <div className="mt-1 flex items-center justify-between gap-2 rounded bg-green-500/10 px-1.5 py-1 text-[10px] text-green-300">
-          <span>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenRun(running.run_id);
+            }}
+            className="text-left flex-1 hover:underline cursor-pointer"
+            title={`Open run ${running.run_id}`}
+          >
             ● running
             {running.last_event_name && (
               <span className="ml-1 text-green-200/70">— {running.last_event_name}</span>
             )}
-          </span>
+          </button>
           <button
             className="rounded border border-green-500/40 px-1.5 py-0.5 text-[10px] hover:bg-green-500/20"
             onClick={(e) => {
@@ -601,8 +654,18 @@ function IssueCard({
         </div>
       )}
       {!running && retrying && (
-        <div className="mt-1 rounded bg-amber-500/10 px-1.5 py-1 text-[10px] text-amber-300">
+        <div
+          className="mt-1 rounded bg-amber-500/10 px-1.5 py-1 text-[10px] text-amber-300 cursor-pointer hover:bg-amber-500/20"
+          onClick={(e) => {
+            e.stopPropagation();
+            onShowRetryDetails();
+          }}
+          title={retrying.error ? `Last error: ${retrying.error}` : undefined}
+        >
           ⏳ retrying (attempt {retrying.attempt})
+          {retrying.error && (
+            <span className="ml-1 text-amber-200/80 truncate">— {retrying.error}</span>
+          )}
         </div>
       )}
     </div>
