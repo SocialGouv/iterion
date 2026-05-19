@@ -39,22 +39,14 @@ func WithIdentity(parent context.Context, id Identity) context.Context {
 }
 
 // FromContext returns the Identity carried by ctx and a boolean
-// reporting whether one was set.
+// reporting whether one was set. Handlers that need authentication
+// should check the second return and surface a 401/500 to the caller
+// — never panic. Middleware (RequireAuth) is the right place to gate
+// admission, not a panic in the handler body.
 func FromContext(ctx context.Context) (Identity, bool) {
 	if ctx == nil {
 		return Identity{}, false
 	}
 	id, ok := ctx.Value(identityCtxKey{}).(Identity)
 	return id, ok
-}
-
-// MustFromContext is a convenience for handlers that require an
-// authenticated principal; it panics if none is present (which
-// indicates a routing mistake — RequireAuth must wrap the handler).
-func MustFromContext(ctx context.Context) Identity {
-	id, ok := FromContext(ctx)
-	if !ok {
-		panic("auth: no Identity in context (RequireAuth missing?)")
-	}
-	return id
 }
