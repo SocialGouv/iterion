@@ -32,6 +32,7 @@ Welcome to the Iterion docs. Pages are organised by audience and topic.
 | [delegation.md](delegation.md) | When to use `backend:` (claude_code, codex) vs `model:` (claw). |
 | [attachments.md](attachments.md) | Attaching files / images to prompts. |
 | [bundles.md](bundles.md) | Packaging a workflow + skills + prompts as a deterministic `.botz` archive. |
+| [security-bots.md](security-bots.md) | The `sec-audit-source` + `sec-audit-deps` bundles — universal security auditors (source-code SAST and supply-chain malware) with cross-run FP / package memory. |
 | [privacy_filter.md](privacy_filter.md) | Built-in PII redaction tools. |
 | [workflow_authoring_pitfalls.md](workflow_authoring_pitfalls.md) | **Required reading before authoring workflows that commit code.** Goodhart's law, façade patterns, prompt + judge anti-patterns. |
 | [references/dsl-grammar.md](references/dsl-grammar.md) | Readable grammar reference. |

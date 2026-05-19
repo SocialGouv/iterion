@@ -51,6 +51,8 @@ Walk top-to-bottom; first match wins.
 | "review this branch", "review the PR", "fix the diff against main" | `branch_improve_loop` |
 | "upgrade dependencies", "patch CVEs", "bump versions" | `secured-renovacy` |
 | "audit the docs", "find code↔doc drift", "doc/code alignment", "fix outdated README/CLAUDE.md" | `doc-align` |
+| "audit the source for vulns", "find injection / SSRF / IDOR / secrets", "security scan", "OWASP audit" | `sec-audit-source` |
+| "audit dependencies for malware", "supply-chain check", "scan installed packages", "post-`npm install` triage" | `sec-audit-deps` |
 | architectural choice, hiring, prioritisation meeting, alignment | `""` |
 | operator is vague or it's cross-cutting | `""` |
 | long-term theme (a quarter+ horizon) | usually `""` |
@@ -131,6 +133,58 @@ Example `args` payload for a roadmap_item:
 - **Use when**: dependency risk is the priority; CVE alerts;
   stale lockfiles.
 
+### `sec-audit-source`
+
+- **Path**: `examples/sec-audit-source/main.bot` (or packed
+  `examples/sec-audit-source.botz`).
+- **Vars**: `workspace_dir` (default `${PROJECT_DIR}`),
+  `severity_threshold: "low"|"medium"|"high"|"critical"` (skip
+  findings below this on the board), `scope_notes` (optional
+  free-text steering hint).
+- **Pipeline**: `detect_tech` (claw, readonly) → fan_out_all
+  scanners (gitleaks + trivy + semgrep auto always; semgrep+gosec
+  if Go; semgrep+bandit if Python; semgrep JS/TS profile if JS) →
+  `triage` agent normalises raw output against
+  `[[finding-taxonomy]]` and consults
+  `.iterion/security/fp-known.yaml` for curated FP suppression →
+  two-phase `revalidate` judge (anti-façade) → `report_card`
+  (claude_code, board.create + board.label) writes one kanban
+  issue per surviving finding plus a markdown summary at
+  `.iterion/security/findings.md`. Cross-run FP memory committed
+  in repo.
+- **Budget**: 4 branches, 2h, $25 (typical).
+- **Use when**: security audit of the source itself (SQL/cmd
+  injection, SSRF, IDOR, broken auth, hardcoded secrets, crypto
+  misuse, deserialisation, path traversal, misconfig);
+  pre-release hardening; PR-scope security review.
+
+### `sec-audit-deps`
+
+- **Path**: `examples/sec-audit-deps/main.bot` (or packed
+  `examples/sec-audit-deps.botz`).
+- **Vars**: `workspace_dir`, `severity_threshold` (default
+  `medium`), `cache_ttl_days` (default `30`).
+- **Pipeline**: `enumerate_deps` (claw, readonly) walks
+  `node_modules` / `.venv` / `vendor/` + lockfiles → fan_out_all
+  per-ecosystem heuristic tool nodes (`run_js_heuristics`,
+  `run_py_heuristics`, `run_go_heuristics`,
+  `run_generic_heuristics`) emit structured signals (install
+  hooks, eval-on-import, obfuscation, typosquat, vuln-db hits) →
+  `load_cache` + `filter_cached` skip packages already analysed
+  at acceptable scanner version within TTL — host-wide cache at
+  `~/.iterion/security-cache/packages.jsonl` shared across all
+  repos → `llm_review` (claude_code, board.create + board.label)
+  validates signals against package source, computes
+  `max(heuristic_score, llm_score)`, buckets LOW/MEDIUM/HIGH,
+  creates one kanban issue per MEDIUM+ finding and writes
+  `.iterion/security/deps-findings.md` → `update_cache` appends
+  fresh JSONL line per analysed package.
+- **Budget**: 4 branches, 2h, $25 (typical).
+- **Use when**: post-`npm install` / `pip install` / `go mod
+  download` triage; CVE supply-chain audit; suspicion of
+  install-time malware (preinstall hooks, eval on import,
+  typosquats); periodic baseline scan of vendored deps.
+
 ### `doc-align`
 
 - **Path**: `examples/doc-align/main.bot` (or packed
@@ -183,11 +237,12 @@ dispatched bot.
 Before creating each issue:
 
 1. If `assignee != ""`, look it up in the table above. If it's
-   not one of the five known bots (`vibe_feature_dev`,
+   not one of the seven known bots (`vibe_feature_dev`,
    `whole_improve_loop`, `branch_improve_loop`,
-   `secured-renovacy`, `doc-align`), AND it doesn't correspond
-   to a `.bot` file the explorer surfaced — strip to `""` and
-   add label `needs-manual-triage`. NEVER invent.
+   `secured-renovacy`, `sec-audit-source`, `sec-audit-deps`,
+   `doc-align`), AND it doesn't correspond to a `.bot` file the
+   explorer surfaced — strip to `""` and add label
+   `needs-manual-triage`. NEVER invent.
 2. Empty assignee is FINE. The issue lands without an assignee
    and the operator triages.
 
