@@ -719,11 +719,7 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 		// --- Terminal nodes ---
 		switch node.(type) {
 		case *ir.DoneNode:
-			terminalIter := map[string]interface{}{"iteration": e.currentLoopIteration(currentNodeID, rs.loopCounters)}
-			if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, currentNodeID, terminalIter); err != nil {
-				return err
-			}
-			if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, currentNodeID, nil); err != nil {
+			if err := e.emitTerminalNodeEvents(rs, currentNodeID); err != nil {
 				return err
 			}
 			// Best-effort status flip — the run logically succeeded the
@@ -738,11 +734,7 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 			}
 			return e.emit(rs.ctx, rs.runID, store.EventRunFinished, "", nil)
 		case *ir.FailNode:
-			terminalIter := map[string]interface{}{"iteration": e.currentLoopIteration(currentNodeID, rs.loopCounters)}
-			if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, currentNodeID, terminalIter); err != nil {
-				return err
-			}
-			if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, currentNodeID, nil); err != nil {
+			if err := e.emitTerminalNodeEvents(rs, currentNodeID); err != nil {
 				return err
 			}
 			return e.failRun(rs.ctx, rs.runID, currentNodeID, "workflow reached fail node")
@@ -1561,4 +1553,17 @@ func coerceVarValue(v interface{}, vt ir.VarType) (interface{}, error) {
 	default:
 		return s, nil
 	}
+}
+
+// emitTerminalNodeEvents emits the NodeStarted+NodeFinished pair for a
+// terminal node (DoneNode, FailNode). Both events fire so the run
+// console renders the terminal step like any other; the iteration tag
+// matches the loop-counter at the moment the node was reached. Bails
+// on the first emit error.
+func (e *Engine) emitTerminalNodeEvents(rs *runState, nodeID string) error {
+	iter := map[string]interface{}{"iteration": e.currentLoopIteration(nodeID, rs.loopCounters)}
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, nodeID, iter); err != nil {
+		return err
+	}
+	return e.emit(rs.ctx, rs.runID, store.EventNodeFinished, nodeID, nil)
 }
