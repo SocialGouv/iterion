@@ -10,11 +10,11 @@ import {
   parseDetailId,
 } from "./nodeDetailGraph";
 import type { IterDocument } from "@/api/types";
-import { useSelectionStore } from "@/store/selection";
+import { selectionStore } from "@/store/selection";
 import { useUIStore } from "@/store/ui";
 
 beforeEach(() => {
-  useSelectionStore.setState({
+  selectionStore.setState({
     selectedNodeId: null,
     selectedEdgeId: null,
     copiedNodeId: null,
@@ -39,16 +39,16 @@ describe("detail edge node click handling", () => {
     useUIStore.setState({ editingItem: { kind: "prompt", name: "previous_prompt" }, subNodeViewStack: ["streak_check"] });
 
     // DetailSubNode.handleClick runs first: select the real document edge and exit detail view.
-    useSelectionStore.getState().setSelectedEdge(makeEdgeId(workflowName, edgeIndex));
+    selectionStore.getState().setSelectedEdge(makeEdgeId(workflowName, edgeIndex));
     useUIStore.getState().clearSubNodeView();
 
     // Then ReactFlow invokes Canvas.onNodeClick. Recognized detail IDs return early and must not
     // overwrite the real edge selection with the synthetic detail node id.
     const detail = parseDetailId(syntheticNodeId);
-    if (!detail) useSelectionStore.getState().setSelectedNode(syntheticNodeId);
+    if (!detail) selectionStore.getState().setSelectedNode(syntheticNodeId);
 
-    expect(useSelectionStore.getState().selectedEdgeId).toBe(makeEdgeId(workflowName, edgeIndex));
-    expect(useSelectionStore.getState().selectedNodeId).toBeNull();
+    expect(selectionStore.getState().selectedEdgeId).toBe(makeEdgeId(workflowName, edgeIndex));
+    expect(selectionStore.getState().selectedNodeId).toBeNull();
     expect(useUIStore.getState().editingItem).toBeNull();
     expect(useUIStore.getState().subNodeViewStack).toEqual([]);
   });
