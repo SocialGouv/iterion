@@ -120,9 +120,18 @@ type EventHooks struct {
 	OnLLMResponse   func(nodeID string, info LLMResponseInfo)
 	OnLLMRetry      func(nodeID string, info RetryInfo)
 	OnLLMStepFinish func(nodeID string, step LLMStepInfo)
-	OnLLMCompacted  func(nodeID string, info LLMCompactInfo)
-	OnToolStarted   func(nodeID string, info LLMToolStartedInfo)
-	OnToolCall      func(nodeID string, info LLMToolCallInfo)
+	// OnLLMTurnCapture fires once per claw tool-loop iteration after
+	// the conversation has been augmented with this step's
+	// assistant + tool_results blocks. The runtime persists the
+	// snapshot as a store.TurnCheckpoint anchored at (run, node,
+	// loop_iter, turn) — the load-bearing primitive for the
+	// fork-from-here UX and the per-node timeline. Conversation is
+	// an opaque []byte (JSON-encoded []api.Message) so EventHooks
+	// stays neutral to the wire format.
+	OnLLMTurnCapture func(nodeID string, info LLMTurnCaptureInfo)
+	OnLLMCompacted   func(nodeID string, info LLMCompactInfo)
+	OnToolStarted    func(nodeID string, info LLMToolStartedInfo)
+	OnToolCall       func(nodeID string, info LLMToolCallInfo)
 	// OnToolNodeResult is called for direct tool nodes (not LLM tool loops)
 	// with full input/output content for detailed logging.
 	OnToolNodeResult func(nodeID string, toolName string, input []byte, output string, elapsed time.Duration, err error)
@@ -191,6 +200,18 @@ func ChainHooks(a, b EventHooks) EventHooks {
 				return a.OnLLMStepFinish
 			}
 			return func(n string, s LLMStepInfo) { a.OnLLMStepFinish(n, s); b.OnLLMStepFinish(n, s) }
+		}(),
+		OnLLMTurnCapture: func() func(string, LLMTurnCaptureInfo) {
+			if a.OnLLMTurnCapture == nil {
+				return b.OnLLMTurnCapture
+			}
+			if b.OnLLMTurnCapture == nil {
+				return a.OnLLMTurnCapture
+			}
+			return func(n string, i LLMTurnCaptureInfo) {
+				a.OnLLMTurnCapture(n, i)
+				b.OnLLMTurnCapture(n, i)
+			}
 		}(),
 		OnLLMCompacted: func() func(string, LLMCompactInfo) {
 			if a.OnLLMCompacted == nil {
@@ -620,6 +641,32 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string) delegate.TaskHooks {
 				info.Error = fmt.Errorf("tool error")
 			}
 			fn(nodeID, info)
+		}
+	}
+	// Wire claude_code's per-delegate-call OnTurnFinished hook into a
+	// LLMTurnCaptureInfo emission so the same store-backed event hook
+	// that writes TurnCheckpoints for claw also writes them for
+	// claude_code. The conversation payload is empty (the CLI owns its
+	// own session jsonl at ~/.claude/projects/...); SessionID carries
+	// the anchor the Fork API needs to launch `claude --resume <id>
+	// --fork-session`.
+	if e.hooks.OnLLMTurnCapture != nil {
+		fn := e.hooks.OnLLMTurnCapture
+		h.OnTurnFinished = func(info delegate.TurnFinishedInfo) {
+			// One TurnCheckpoint per delegate call; the CLI's session
+			// jsonl at ~/.claude/projects/<key>/<uuid>.jsonl is the
+			// source of truth for the conversation, and SessionID is
+			// the anchor the Fork API uses to relaunch claude with
+			// --resume + --fork-session.
+			fn(nodeID, LLMTurnCaptureInfo{
+				Step:         1,
+				Text:         info.Text,
+				FinishReason: info.FinishReason,
+				InputTokens:  info.InputTokens,
+				OutputTokens: info.OutputTokens,
+				SessionID:    info.SessionID,
+				Backend:      delegate.BackendClaudeCode,
+			})
 		}
 	}
 	return h

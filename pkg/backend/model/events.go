@@ -3,6 +3,8 @@ package model
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/SocialGouv/claw-code-go/pkg/api"
 )
 
 // ---------------------------------------------------------------------------
@@ -103,6 +105,61 @@ type LLMCompactInfo struct {
 	RemovedMessageCount int
 }
 
+// LLMTurnCaptureInfo describes one captured tool-loop turn, passed to
+// the OnLLMTurnCapture hook. Carries the per-step metadata
+// (finish_reason, tool calls, usage) plus the JSON-encoded
+// conversation snapshot the runtime persists as a
+// store.TurnCheckpoint.MessagesRef for the Fork API rehydration path.
+//
+// Conversation is the JSON-encoded []api.Message slice taken at the
+// natural end-of-iteration boundary — the very state the next LLM
+// call would observe if the loop continued. Treat as immutable.
+type LLMTurnCaptureInfo struct {
+	Step             int
+	Text             string
+	ToolCalls        []ToolCallEntry
+	FinishReason     string
+	InputTokens      int
+	OutputTokens     int
+	CacheReadTokens  int
+	CacheWriteTokens int
+	// Backend names the executor that produced this turn ("claw" or
+	// "claude_code"). Used by the store-backed hook to set the
+	// matching TurnCheckpoint.Backend field. Empty defaults to "claw"
+	// for back-compat with paths that don't fill it explicitly.
+	Backend string
+	// SessionID is the claude_code CLI session id captured at the end
+	// of a delegate call. Empty for claw (no session-id concept) and
+	// for claude_code paths that didn't surface one. The Fork API
+	// passes it to `claude --resume <id> --fork-session` for the
+	// claude_code rehydration path.
+	SessionID string
+	// conversation holds the unmarshalled message slice the runtime
+	// captures for the fork rehydration path. Kept unexported so
+	// observers must call MarshalConversation to materialise the JSON
+	// bytes — this defers the O(N) marshal cost to consumers that
+	// actually persist the snapshot (the store-backed hook), keeping
+	// observability-only consumers cheap. claude_code leaves it nil
+	// (the CLI owns its session jsonl).
+	conversation []api.Message
+}
+
+// MarshalConversation encodes the captured message slice as JSON, on
+// demand. Returns nil when the turn carried no conversation (the
+// claude_code path, or an SDK that didn't surface one). Errors are
+// folded into a nil return so the store-backed hook treats them as
+// "snapshot unavailable" rather than aborting the run.
+func (i LLMTurnCaptureInfo) MarshalConversation() json.RawMessage {
+	if len(i.conversation) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(i.conversation)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
 // ---------------------------------------------------------------------------
 // Conversion functions (local model types → iterion event types)
 // ---------------------------------------------------------------------------
@@ -178,6 +235,31 @@ func toLLMCompactInfo(info CompactInfo) LLMCompactInfo {
 	}
 }
 
+// toLLMTurnCaptureInfo converts the local TurnCaptureInfo into the
+// iterion-owned LLMTurnCaptureInfo. The conversation snapshot is
+// intentionally NOT marshalled here — the marshal is O(N) in
+// conversation length and only the runtime hook that writes to a
+// TurnStore actually needs the bytes. Callers that need them call
+// MarshalConversation on the info; callers that don't (cloud stores
+// without TurnStore, observability-only consumers) skip the cost.
+func toLLMTurnCaptureInfo(info TurnCaptureInfo) LLMTurnCaptureInfo {
+	calls := make([]ToolCallEntry, len(info.Result.ToolCalls))
+	for i, tc := range info.Result.ToolCalls {
+		calls[i] = ToolCallEntry{Name: tc.Name, Input: tc.Input}
+	}
+	return LLMTurnCaptureInfo{
+		Step:             info.Step,
+		Text:             info.Result.Text,
+		ToolCalls:        calls,
+		FinishReason:     string(info.Result.FinishReason),
+		InputTokens:      info.Result.Usage.InputTokens,
+		OutputTokens:     info.Result.Usage.OutputTokens,
+		CacheReadTokens:  info.Result.Usage.CacheReadTokens,
+		CacheWriteTokens: info.Result.Usage.CacheWriteTokens,
+		conversation:     info.Conversation,
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Hook wiring (shared between claw_backend.go and executor.go)
 // ---------------------------------------------------------------------------
@@ -203,6 +285,12 @@ func applyHooks(nodeID string, h EventHooks, opts *GenerationOptions) {
 		fn := h.OnLLMStepFinish
 		opts.OnStepFinish = func(step StepResult) {
 			fn(nodeID, toLLMStepInfo(step))
+		}
+	}
+	if h.OnLLMTurnCapture != nil {
+		fn := h.OnLLMTurnCapture
+		opts.OnTurnCapture = func(info TurnCaptureInfo) {
+			fn(nodeID, toLLMTurnCaptureInfo(info))
 		}
 	}
 	if h.OnToolStarted != nil {

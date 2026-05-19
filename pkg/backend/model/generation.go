@@ -645,6 +645,30 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 
 		// If no tool calls or stop reason is not tool_use, we're done.
 		if len(agg.toolUses) == 0 || finishReason != FinishToolCalls {
+			// Fire OnTurnCapture for the final step too. The live
+			// `messages` slice doesn't get this step's assistant
+			// response (the loop exits), so synthesize the final
+			// snapshot by appending an assistant text block. The fork
+			// UX would never anchor here (final = no follow-up to
+			// resume), but the timeline still wants to display the
+			// turn.
+			if opts.OnTurnCapture != nil {
+				snap := append([]api.Message(nil), messages...)
+				if agg.text != "" {
+					snap = append(snap, api.Message{
+						Role: "assistant",
+						Content: []api.ContentBlock{{
+							Type: "text",
+							Text: agg.text,
+						}},
+					})
+				}
+				opts.OnTurnCapture(TurnCaptureInfo{
+					Step:         step,
+					Result:       stepResult,
+					Conversation: snap,
+				})
+			}
 			break
 		}
 
@@ -675,6 +699,20 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 			Role:    "user",
 			Content: toolResults,
 		})
+
+		// Fire OnTurnCapture at the natural end-of-iteration boundary:
+		// the live `messages` slice now contains everything the NEXT
+		// LLM call would see — exactly the snapshot the Fork API needs
+		// to rehydrate a child claw conversation. Take a defensive
+		// copy because the loop reuses the slice after this point.
+		if opts.OnTurnCapture != nil {
+			snap := append([]api.Message(nil), messages...)
+			opts.OnTurnCapture(TurnCaptureInfo{
+				Step:         step,
+				Result:       stepResult,
+				Conversation: snap,
+			})
+		}
 
 		// Compact the running history before the next round if it's
 		// grown large. No-op for short transcripts; for long ones,

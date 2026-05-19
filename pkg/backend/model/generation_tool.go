@@ -82,6 +82,16 @@ type GenerationOptions struct {
 	// OnStepFinish is called after each tool-loop step completes.
 	OnStepFinish func(StepResult)
 
+	// OnTurnCapture is called once per loop iteration after the
+	// conversation has been augmented with the step's assistant message
+	// (and tool_results, when the step contained tool calls). The
+	// snapshot is a defensive copy the callback may persist or hand off
+	// to a goroutine. Used by the runtime to write per-turn
+	// TurnCheckpoint artifacts that anchor the fork-from-here UX
+	// without disturbing the live message slice. Nil disables turn
+	// capture.
+	OnTurnCapture func(turn TurnCaptureInfo)
+
 	// OnToolStarted is called immediately before each tool executes,
 	// once the PreToolUse lifecycle hook (if any) has allowed the call.
 	// Mirrors OnToolCall but carries no duration/error.
