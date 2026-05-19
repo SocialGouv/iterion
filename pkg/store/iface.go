@@ -229,3 +229,51 @@ func AsToolBlobStore(s RunStore) ToolBlobStore {
 	t, _ := s.(ToolBlobStore)
 	return t
 }
+
+// TurnStore is an optional interface implemented by stores that
+// persist per-LLM-turn checkpoints. The interactivity feature set
+// (operator pause, fork-from-here, per-node timeline) anchors on
+// these — without a TurnStore, a fork has no place to load its
+// session-id / messages snapshot from.
+//
+// FilesystemRunStore satisfies it (writes under
+// runs/<id>/turns/<node>/<iter>/<turn>.json plus a per-node
+// index.json for fast O(1) "latest turn" lookups). Cloud (Mongo)
+// stores currently do NOT — turn capture is local-only until cloud
+// runners gain a turn-replication path (cloud-ready plan §F). Callers
+// MUST nil-check via AsTurnStore.
+type TurnStore interface {
+	// WriteTurn persists a TurnCheckpoint under
+	// runs/<runID>/turns/<NodeID>/<LoopIter>/<TurnIndex>.json. The
+	// caller is responsible for setting WrittenAt; implementations
+	// are free to overwrite it for monotonic-clock safety.
+	WriteTurn(ctx context.Context, t *TurnCheckpoint) error
+	// LoadTurn returns the TurnCheckpoint at the exact
+	// (NodeID, LoopIter, TurnIndex) coordinates, or a typed
+	// not-found error.
+	LoadTurn(ctx context.Context, runID, nodeID string, loopIter, turn int) (*TurnCheckpoint, error)
+	// ListTurns enumerates all turns for one (NodeID, LoopIter)
+	// in ascending TurnIndex order. Returns an empty slice (no
+	// error) when no turns exist for that node yet.
+	ListTurns(ctx context.Context, runID, nodeID string, loopIter int) ([]*TurnCheckpoint, error)
+	// LatestTurn returns the highest-indexed turn for a node across
+	// all loop iterations, or a typed not-found error when none
+	// exists. Used by Fork to default `turn_index` to "the last
+	// completed turn".
+	LatestTurn(ctx context.Context, runID, nodeID string) (*TurnCheckpoint, error)
+	// LoadTurnMessages reads the sibling messages.json blob
+	// referenced by a claw TurnCheckpoint.MessagesRef. Returns a
+	// typed not-found error when the blob is missing (e.g. legacy
+	// turn or non-claw backend).
+	LoadTurnMessages(ctx context.Context, runID, nodeID string, loopIter, turn int) ([]byte, error)
+}
+
+// AsTurnStore returns s as TurnStore when the backend supports
+// per-LLM-turn checkpointing, or nil otherwise.
+func AsTurnStore(s RunStore) TurnStore {
+	if s == nil {
+		return nil
+	}
+	t, _ := s.(TurnStore)
+	return t
+}

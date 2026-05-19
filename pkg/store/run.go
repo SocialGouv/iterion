@@ -15,10 +15,15 @@ type RunStatus string
 const (
 	RunStatusRunning            RunStatus = "running"
 	RunStatusPausedWaitingHuman RunStatus = "paused_waiting_human"
-	RunStatusFinished           RunStatus = "finished"
-	RunStatusFailed             RunStatus = "failed"
-	RunStatusFailedResumable    RunStatus = "failed_resumable"
-	RunStatusCancelled          RunStatus = "cancelled"
+	// RunStatusPausedOperator is set when an operator requested a soft
+	// pause via the studio Pause button or POST /api/runs/{id}/pause.
+	// Distinct from paused_waiting_human (no pending Interaction record),
+	// resumes via the same checkpoint machinery as cancelled runs.
+	RunStatusPausedOperator  RunStatus = "paused_operator"
+	RunStatusFinished        RunStatus = "finished"
+	RunStatusFailed          RunStatus = "failed"
+	RunStatusFailedResumable RunStatus = "failed_resumable"
+	RunStatusCancelled       RunStatus = "cancelled"
 	// RunStatusQueued is set on cloud-mode runs that have been submitted
 	// to the NATS queue but not yet picked up by a runner pod. Local
 	// runs never observe this state — they transition straight to
@@ -235,6 +240,30 @@ type Run struct {
 	// 2026-05-10 run finish but the 2026-05-15 run fail" answerable
 	// without git-bisecting blindly. Empty for legacy runs.
 	IterionVersion string `json:"iterion_version,omitempty" bson:"iterion_version,omitempty"`
+
+	// ForkedFrom, when non-empty, identifies the parent run this run
+	// was forked from via POST /api/runs/{id}/fork. ForkAnchor records
+	// the (node_id, turn_index) snapshot the fork was anchored at.
+	// SourceHash is the parent's workflow hash at fork time; the
+	// current Run.WorkflowHash captures the *child's* workflow at
+	// fork, which may differ when the source .iter has changed (fork
+	// bypasses the strict-hash check by default — see plan Phase 3).
+	ForkedFrom string      `json:"forked_from,omitempty" bson:"forked_from,omitempty"`
+	ForkAnchor *ForkAnchor `json:"fork_anchor,omitempty" bson:"fork_anchor,omitempty"`
+	SourceHash string      `json:"source_hash,omitempty" bson:"source_hash,omitempty"`
+}
+
+// ForkAnchor identifies where a forked run resumes inside the parent's
+// execution graph. NodeID is the node whose turn we forked at; TurnIndex
+// is the monotonic per-(node,iteration) index (0-based, populated by the
+// OnStepFinish observer); LoopIter is the loop iteration count for that
+// node when the snapshot was taken. RewindCode is true when the fork
+// also reset the worktree to the snapshot's git ref (Phase 3+).
+type ForkAnchor struct {
+	NodeID     string `json:"node_id" bson:"node_id"`
+	LoopIter   int    `json:"loop_iter" bson:"loop_iter"`
+	TurnIndex  int    `json:"turn_index" bson:"turn_index"`
+	RewindCode bool   `json:"rewind_code,omitempty" bson:"rewind_code,omitempty"`
 }
 
 // MergeStrategy enumerates how the run's commits are landed on the
