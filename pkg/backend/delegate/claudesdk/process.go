@@ -8,11 +8,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/internal/clilocate"
 )
 
 // maxTurnsCeiling caps the per-call max-turns the claude CLI is asked
@@ -162,32 +163,20 @@ func resolveCLIPath(cfg *config) (string, error) {
 	return findCLI(cfg.cliPath)
 }
 
-// findCLI locates the claude binary. It checks:
-// 1. Explicit path (if provided)
-// 2. PATH lookup
-// 3. ~/.claude/local/claude
+// findCLI locates the claude binary by delegating to the shared
+// clilocate probe. Mirrors the policy at the detect package so the
+// two paths cannot drift: explicit-path takes precedence; otherwise
+// PATH then ~/.claude/local/claude.
 func findCLI(explicit string) (string, error) {
-	if explicit != "" {
-		if _, err := os.Stat(explicit); err == nil {
-			return explicit, nil
-		}
-		return "", &cliNotFoundError{searched: []string{explicit}}
-	}
-
-	// Check PATH
-	if path, err := exec.LookPath("claude"); err == nil {
+	if path, ok := clilocate.Locate(explicit, clilocate.Spec{
+		Name:      "claude",
+		Fallbacks: clilocate.ClaudeLocalFallback(),
+	}); ok {
 		return path, nil
 	}
-
-	// Check ~/.claude/local/
-	home, err := os.UserHomeDir()
-	if err == nil {
-		local := filepath.Join(home, ".claude", "local", "claude")
-		if _, err := os.Stat(local); err == nil {
-			return local, nil
-		}
+	if explicit != "" {
+		return "", &cliNotFoundError{searched: []string{explicit}}
 	}
-
 	return "", &cliNotFoundError{
 		searched: []string{"PATH", "~/.claude/local/claude"},
 	}

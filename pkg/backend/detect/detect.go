@@ -6,13 +6,12 @@ package detect
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/internal/clilocate"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -352,87 +351,36 @@ func codexHomeDir() string {
 	return filepath.Join(home, ".codex")
 }
 
-// findClaudeBinary duplicates pkg/backend/delegate/claudesdk/process.go:findCLI
-// (no-explicit-path branch) to avoid widening the claudesdk export surface
-// for a 5-line probe. Declared as a var so tests can stub host probing.
+// findClaudeBinary probes the host for the claude CLI via the shared
+// clilocate package. Declared as a var so tests can stub host probing.
 var findClaudeBinary = func() (string, bool) {
-	if path, err := exec.LookPath("claude"); err == nil {
-		return path, true
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		local := filepath.Join(home, ".claude", "local", "claude")
-		if isExecutable(local) {
-			return local, true
-		}
-	}
-	return "", false
+	return clilocate.Locate("", clilocate.Spec{
+		Name:      "claude",
+		Fallbacks: clilocate.ClaudeLocalFallback(),
+	})
 }
 
-// findCodexBinary duplicates codex-agent-sdk-go/internal/cli/discovery.go;
-// the upstream helper is unexported and the search list is small.
-// Declared as a var so tests can stub host probing.
-//
-// PATH lookup is tried first, then a set of well-known install locations
-// that the process PATH might miss (e.g. iterion launched from a desktop
-// launcher that doesn't source ~/.bashrc — Homebrew on Linux installs to
-// /home/linuxbrew/.linuxbrew/bin which only login shells pick up via
-// brew shellenv).
+// findCodexBinary probes the host for the codex CLI. PATH lookup wins;
+// then the well-known fallback locations that GUI launchers / nix
+// wrappers tend to miss. Declared as a var so tests can stub it.
 var findCodexBinary = func() (string, bool) {
-	if path, err := exec.LookPath("codex"); err == nil {
-		return path, true
-	}
-	for _, p := range CommonBinaryCandidates("codex") {
-		if isExecutable(p) {
-			return p, true
-		}
-	}
-	return "", false
+	return clilocate.Locate("", clilocate.Spec{
+		Name:      "codex",
+		Fallbacks: clilocate.CommonBinaryCandidates("codex"),
+	})
 }
 
-// CommonBinaryCandidates returns an OS-aware list of well-known install
-// locations for a CLI tool, in roughly-preferred order. Used as a
-// fallback when exec.LookPath fails (typically because the process was
-// launched from a context that didn't load the user's interactive
-// shell rc — Homebrew on Linux, devbox/nix wrappers, GUI launchers).
-//
-// Exported so iterion-desktop's CLI probe (cmd/iterion-desktop/external_cli.go)
-// can apply the same fallback list when its own LookPath misses a tool
-// installed under Homebrew on a host where the GUI launcher didn't load
-// `brew shellenv` into PATH.
+// CommonBinaryCandidates is a thin re-export of
+// clilocate.CommonBinaryCandidates so external callers (notably
+// iterion-desktop's CLI probe at cmd/iterion-desktop/external_cli.go,
+// which cannot reach pkg/internal/...) get the same fallback list.
 func CommonBinaryCandidates(name string) []string {
-	var out []string
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		out = append(out,
-			filepath.Join(home, ".volta", "bin", name),
-			filepath.Join(home, ".local", "bin", name),
-			filepath.Join(home, ".linuxbrew", "bin", name),
-		)
-	}
-	out = append(out,
-		"/usr/local/bin/"+name,
-		"/usr/bin/"+name,
-		// Homebrew on Linux (multi-user shared install)
-		"/home/linuxbrew/.linuxbrew/bin/"+name,
-		// Homebrew on macOS Apple Silicon
-		"/opt/homebrew/bin/"+name,
-	)
-	return out
+	return clilocate.CommonBinaryCandidates(name)
 }
 
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
-}
-
-func isExecutable(path string) bool {
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
-		return false
-	}
-	if runtime.GOOS == "windows" {
-		return true
-	}
-	return info.Mode()&0o111 != 0
 }
 
 // --- Cached detector ----------------------------------------------------
