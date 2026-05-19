@@ -5,6 +5,15 @@ import { disposeRunStore } from "@/store/run";
 import { disposeDocumentStore } from "@/store/document";
 import { disposeSelectionStore } from "@/store/selection";
 
+// disposeEditorTab releases every per-tab store an editor subtree
+// holds. Centralised so adding a new per-tab store later (e.g. a
+// per-tab UI slice) only requires touching one call site rather than
+// remembering to extend closeTab.
+function disposeEditorTab(tabId: string) {
+  disposeDocumentStore(tabId);
+  disposeSelectionStore(tabId);
+}
+
 export type TabKind =
   | "home"
   | "editor"
@@ -75,10 +84,12 @@ function defaultLabelFor(kind: TabKind, params: Record<string, string>): string 
   }
 }
 
-function paramsEqual(a: Record<string, string>, b: Record<string, string>): boolean {
+export function paramsEqual(
+  a: Record<string, string>,
+  b: Record<string, string>,
+): boolean {
   const aKeys = Object.keys(a);
-  const bKeys = Object.keys(b);
-  if (aKeys.length !== bKeys.length) return false;
+  if (aKeys.length !== Object.keys(b).length) return false;
   for (const k of aKeys) {
     if (a[k] !== b[k]) return false;
   }
@@ -162,8 +173,7 @@ export const useTabsStore = create<TabsState>()(
               disposeRunStore(closed.params.runId);
             }
           } else if (closed?.kind === "editor") {
-            disposeDocumentStore(closed.id);
-            disposeSelectionStore(closed.id);
+            disposeEditorTab(closed.id);
           }
           let activeTabId = s.activeTabId;
           if (activeTabId === id) {

@@ -3,6 +3,7 @@ import { useLocation } from "wouter";
 
 import {
   HOME_TAB_ID,
+  paramsEqual,
   useTabsStore,
   type Tab,
   type TabKind,
@@ -124,14 +125,7 @@ function urlForTab(tab: Tab): string {
 function matches(tab: Tab | null, intent: TabIntent | null): boolean {
   if (!tab || !intent) return false;
   if (tab.kind !== intent.kind) return false;
-  const a = tab.params;
-  const b = intent.params;
-  const aKeys = Object.keys(a);
-  if (aKeys.length !== Object.keys(b).length) return false;
-  for (const k of aKeys) {
-    if (a[k] !== b[k]) return false;
-  }
-  return true;
+  return paramsEqual(tab.params, intent.params);
 }
 
 export function useTabLocationSync(): void {
@@ -150,14 +144,20 @@ export function useTabLocationSync(): void {
   // this ref short-circuits that.
   const lastPushedUrl = useRef<string | null>(null);
 
-  // tab → URL
+  // tab → URL. Depend on activeTabId (a stable string) rather than
+  // the derived `activeTab` object — unrelated mutations to the tabs
+  // array (label edits, etc.) would otherwise produce a new activeTab
+  // identity and re-fire the effect needlessly. The body still reads
+  // the resolved activeTab to build the URL.
   useEffect(() => {
     if (!activeTab) return;
     const target = urlForTab(activeTab);
     if (target === location) return;
     lastPushedUrl.current = target;
     setLocation(target);
-  }, [activeTab, location, setLocation]);
+    // activeTab is read inside but intentionally not in deps — see above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTabId, location, setLocation]);
 
   // URL → tab
   useEffect(() => {
@@ -176,5 +176,6 @@ export function useTabLocationSync(): void {
       return;
     }
     openTab(intent.kind, intent.params);
-  }, [location, activeTab, tabs, openTab]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location, openTab]);
 }
