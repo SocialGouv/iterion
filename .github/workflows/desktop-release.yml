@@ -149,7 +149,7 @@ jobs:
           # download under that shim has been flaky on the windows-2025
           # image; running the steps directly under Git Bash sidesteps the
           # extra shell layer.
-          corepack pnpm install --prefer-offline
+          corepack pnpm install --frozen-lockfile --prefer-offline
           corepack pnpm exec vite build
           rm -rf ../pkg/server/static/assets ../pkg/server/static/index.html
           cp -r dist/* ../pkg/server/static/

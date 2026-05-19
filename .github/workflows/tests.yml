@@ -31,7 +31,7 @@ jobs:
         working-directory: studio
         run: |
           corepack enable
-          pnpm install --prefer-offline
+          pnpm install --frozen-lockfile --prefer-offline
           pnpm exec vite build
           rm -rf ../pkg/server/static/assets ../pkg/server/static/index.html
           cp -r dist/* ../pkg/server/static/
