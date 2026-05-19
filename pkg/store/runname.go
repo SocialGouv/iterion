@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 
 	"github.com/google/uuid"
 )
@@ -89,13 +90,16 @@ func GenerateRunName(seed string) string {
 
 // GenerateRunID returns a new UUIDv7 run identifier. Lexicographic
 // order matches creation order.
-func GenerateRunID() string {
+//
+// Returns an error when uuid.NewV7 fails (only happens under
+// crypto/rand starvation, e.g. very early at boot or after entropy
+// exhaustion). Callers are responsible for surfacing the failure to
+// the operator rather than retrying — the zero UUID must never be
+// substituted because concurrent callers would collide on it.
+func GenerateRunID() (string, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
-		// crypto/rand failure: the process is in an unrecoverable
-		// state and silently returning the zero UUID would let
-		// concurrent callers collide on the same id.
-		panic("iterion: failed to mint run id: " + err.Error())
+		return "", fmt.Errorf("store: mint run id: %w", err)
 	}
-	return id.String()
+	return id.String(), nil
 }

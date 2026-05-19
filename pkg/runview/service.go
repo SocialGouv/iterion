@@ -1487,7 +1487,11 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	}
 	runID := spec.RunID
 	if runID == "" {
-		runID = store.GenerateRunID()
+		generated, err := store.GenerateRunID()
+		if err != nil {
+			return nil, fmt.Errorf("mint run id: %w", err)
+		}
+		runID = generated
 	}
 
 	// Cloud-mode: hand off to the runner pool via the queue. The

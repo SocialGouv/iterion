@@ -99,7 +99,10 @@ func TestGenerateRunID_FormatAndUniqueness(t *testing.T) {
 	const n = 1000
 	seen := make(map[string]struct{}, n)
 	for i := 0; i < n; i++ {
-		id := GenerateRunID()
+		id, err := GenerateRunID()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 		if !uuidV7Format.MatchString(id) {
 			t.Fatalf("id %q does not match UUIDv7 format", id)
 		}

@@ -108,7 +108,11 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	// Resolve run ID.
 	runID := opts.RunID
 	if runID == "" {
-		runID = store.GenerateRunID()
+		var err error
+		runID, err = store.GenerateRunID()
+		if err != nil {
+			return fmt.Errorf("mint run id: %w", err)
+		}
 	}
 
 	// Optional Prometheus exporter (env-controlled, see docs/observability/).
