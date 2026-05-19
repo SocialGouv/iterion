@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 
+import { disposeRunStore } from "@/store/run";
+
 export type TabKind =
   | "home"
   | "editor"
@@ -143,7 +145,20 @@ export const useTabsStore = create<TabsState>()(
         set((s) => {
           const idx = s.tabs.findIndex((t) => t.id === id);
           if (idx === -1) return s;
+          const closed = s.tabs[idx];
           const tabs = s.tabs.filter((t) => t.id !== id);
+          // Dispose the per-runId Zustand store + WS connection now
+          // that no tab references this run. Done inside the set()
+          // callback so we hold the same authoritative tabs list when
+          // checking for other tabs that might still reference it.
+          if (closed?.kind === "run" && closed.params.runId) {
+            const stillReferenced = tabs.some(
+              (t) => t.kind === "run" && t.params.runId === closed.params.runId,
+            );
+            if (!stillReferenced) {
+              disposeRunStore(closed.params.runId);
+            }
+          }
           let activeTabId = s.activeTabId;
           if (activeTabId === id) {
             activeTabId = tabs[idx - 1]?.id ?? tabs[idx]?.id ?? HOME_TAB_ID;

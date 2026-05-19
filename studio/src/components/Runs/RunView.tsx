@@ -81,9 +81,16 @@ function writeBrowserDock(dock: BrowserDock): void {
   }
 }
 
-export default function RunView() {
+interface RunViewProps {
+  // Passed by RunTabHost when this view is hosted in a tab subtree.
+  // Falls back to wouter's :id param so legacy `/runs/:id` deep links
+  // still work when no host is in scope (e.g. the LaunchView preview).
+  runId?: string | null;
+}
+
+export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
   const params = useParams<{ id: string }>();
-  const runId = params.id ?? null;
+  const runId = runIdProp ?? params.id ?? null;
 
   const setRunId = useRunStore((s) => s.setRunId);
   const reset = useRunStore((s) => s.reset);

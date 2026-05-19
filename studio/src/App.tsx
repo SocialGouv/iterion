@@ -12,7 +12,6 @@ const HomeView = lazy(() => import("@/components/Home/HomeView"));
 const WhatsNextView = lazy(() => import("@/components/WhatsNext/WhatsNextView"));
 const LaunchView = lazy(() => import("@/components/Runs/LaunchView"));
 const RunListView = lazy(() => import("@/components/Runs/RunListView"));
-const RunView = lazy(() => import("@/components/Runs/RunView"));
 const BoardView = lazy(() => import("@/views/Board"));
 const DispatcherView = lazy(() => import("@/views/Dispatcher"));
 const Welcome = lazy(() => import("@/views/Welcome"));
@@ -160,13 +159,12 @@ function AuthedApp() {
               <LaunchView />
             </ErrorBoundary>
           </Route>
-          <Route path="/runs/:id">
-            {(params) => (
-              <ErrorBoundary area="Run view" resetKey={params.id ?? null}>
-                <RunView />
-              </ErrorBoundary>
-            )}
-          </Route>
+          {/* /runs/:id is rendered by TabRouter via RunTabHost so the
+              run can live in a tab with its own per-runId store + WS.
+              We leave the route present so wouter still resolves it
+              for deriveSection (sidebar nav highlight) but it renders
+              nothing — the visible UI comes from TabRouter. */}
+          <Route path="/runs/:id">{null}</Route>
           <Route path="/runs">
             <ErrorBoundary area="Runs list">
               <RunListView />

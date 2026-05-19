@@ -5,6 +5,7 @@ import Sidebar from "./Sidebar";
 import ContextualHeaderBar from "./ContextualHeaderBar";
 import MainSpinner from "./MainSpinner";
 import TabBar from "./TabBar";
+import TabRouter from "./TabRouter";
 import { useTabLocationSync } from "@/hooks/useTabLocationSync";
 import { useTabHotkeys } from "@/hooks/useTabHotkeys";
 import { useUIStore } from "@/store/ui";
@@ -31,10 +32,12 @@ export default function AppShell({ children }: AppShellProps) {
   useTabLocationSync();
   useTabHotkeys();
 
+  const fallback = <Suspense fallback={<MainSpinner />}>{children}</Suspense>;
+
   if (expanded) {
     return (
       <div className="h-screen w-screen bg-surface-0 text-fg-default">
-        <Suspense fallback={<MainSpinner />}>{children}</Suspense>
+        <TabRouter fallback={fallback} />
       </div>
     );
   }
@@ -52,7 +55,7 @@ export default function AppShell({ children }: AppShellProps) {
         <TabBar />
         <ContextualHeaderBar />
         <main id="main-content" className="flex-1 min-h-0 overflow-hidden">
-          <Suspense fallback={<MainSpinner />}>{children}</Suspense>
+          <TabRouter fallback={fallback} />
         </main>
       </div>
     </div>
