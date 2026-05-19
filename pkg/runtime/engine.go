@@ -726,8 +726,15 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 			if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, currentNodeID, nil); err != nil {
 				return err
 			}
-			if err := e.store.UpdateRunStatus(rs.ctx, rs.runID, store.RunStatusFinished, ""); err != nil {
-				return err
+			// Best-effort status flip — the run logically succeeded the
+			// moment we reached DoneNode, so a transient store-side
+			// failure on the final status write must not flip a
+			// successful run to "failed" (which would also skip
+			// worktree finalize and orphan any commits the run
+			// produced). Log and continue; run_finished still fires
+			// below so observers see the terminal event.
+			if err := e.store.UpdateRunStatus(rs.ctx, rs.runID, store.RunStatusFinished, ""); err != nil && e.logger != nil {
+				e.logger.Warn("runtime: failed to persist run %s as finished: %v (run reached DoneNode — treating as success)", rs.runID, err)
 			}
 			return e.emit(rs.ctx, rs.runID, store.EventRunFinished, "", nil)
 		case *ir.FailNode:
