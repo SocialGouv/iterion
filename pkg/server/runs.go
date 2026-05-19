@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -61,6 +62,9 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("GET /api/runs/{id}/commits/{sha}", s.handleGetRunCommit)
 	s.mux.HandleFunc("GET /api/runs/{id}/commits/{sha}/diff", s.handleGetRunCommitFileDiff)
 	s.mux.HandleFunc("POST /api/runs/{id}/cancel", s.handleCancelRun)
+	s.mux.HandleFunc("POST /api/runs/{id}/pause", s.handlePauseRun)
+	s.mux.HandleFunc("POST /api/runs/{id}/fork", s.handleForkRun)
+	s.mux.HandleFunc("GET /api/runs/{id}/skills", s.handleListRunSkills)
 	s.mux.HandleFunc("GET /api/runs/{id}/queue-messages", s.handleListQueuedMessages)
 	s.mux.HandleFunc("POST /api/runs/{id}/queue-message", s.handleQueueMessage)
 	s.mux.HandleFunc("DELETE /api/runs/{id}/queue-message/{msgID}", s.handleCancelQueuedMessage)
@@ -694,6 +698,113 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	s.writeJSONFor(w, r, cancelRunResponse{RunID: id, Status: "cancelling"})
 }
 
+// pauseRunResponse is the body of POST /api/runs/{id}/pause. Mirrors
+// cancelRunResponse — both expose a coarse client-friendly status
+// snapshot the studio uses to update the RunHeader optimistically
+// before the WS event arrives.
+type pauseRunResponse struct {
+	RunID  string `json:"run_id"`
+	Status string `json:"status"`
+}
+
+func (s *Server) handlePauseRun(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSafeOrigin(w, r) {
+		return
+	}
+	if s.rejectCrossStoreWrite(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
+		return
+	}
+	if s.logger != nil {
+		s.logger.Info("server: pause run %q via HTTP from %s", id, r.RemoteAddr)
+	}
+	if err := s.runs.Pause(id); err != nil {
+		if errors.Is(err, runview.ErrRunNotActive) {
+			// 409 is the right code for "operator pause is meaningless
+			// right now" — either the run is terminal or it's running
+			// in another process (cloud mode). The studio hides the
+			// Pause button in both cases; this is a defensive guard
+			// against double-clicks racing with status changes.
+			s.httpErrorFor(w, r, http.StatusConflict, "run is not active in this process")
+			return
+		}
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "pause: %v", err)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+	s.writeJSONFor(w, r, pauseRunResponse{RunID: id, Status: "pause_requested"})
+}
+
+// forkRunRequest is the body of POST /api/runs/{id}/fork. Mirrors
+// runview.ForkSpec but kept as a separate type so the HTTP wire shape
+// stays decoupled from the service struct (we can deprecate fields
+// without breaking ForkSpec consumers).
+type forkRunRequest struct {
+	NodeID     string                 `json:"node_id"`
+	TurnIndex  int                    `json:"turn_index,omitempty"`
+	RewindCode bool                   `json:"rewind_code,omitempty"`
+	ForkName   string                 `json:"fork_name,omitempty"`
+	NewInputs  map[string]interface{} `json:"new_inputs,omitempty"`
+}
+
+func (s *Server) handleForkRun(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSafeOrigin(w, r) {
+		return
+	}
+	if s.rejectCrossStoreWrite(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
+		return
+	}
+	var req forkRunRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "decode fork request: %v", err)
+		return
+	}
+	if req.NodeID == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "node_id is required")
+		return
+	}
+	if s.logger != nil {
+		s.logger.Info("server: fork run %q at node %q from %s", id, req.NodeID, r.RemoteAddr)
+	}
+	result, err := s.runs.Fork(r.Context(), runview.ForkSpec{
+		RunID:      id,
+		NodeID:     req.NodeID,
+		TurnIndex:  req.TurnIndex,
+		RewindCode: req.RewindCode,
+		ForkName:   req.ForkName,
+		NewInputs:  req.NewInputs,
+	})
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "fork: %v", err)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+	s.writeJSONFor(w, r, result)
+}
+
+func (s *Server) handleListRunSkills(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
+		return
+	}
+	skills, err := s.runs.ListRunBundleSkills(r.Context(), id)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "list skills: %v", err)
+		return
+	}
+	s.writeJSONFor(w, r, skills)
+}
+
 func (s *Server) handleListQueuedMessages(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -713,6 +824,12 @@ func (s *Server) handleListQueuedMessages(w http.ResponseWriter, r *http.Request
 
 type queueMessageRequest struct {
 	Text string `json:"text"`
+	// Skills is the optional list of bundle skill names the operator
+	// attached to this message. Each referenced SKILL.md is mirrored
+	// into the run's .claude/skills/ before the engine injects the
+	// message into the agent's conversation. Sticky — the skill stays
+	// loaded for the rest of the run.
+	Skills []string `json:"skills,omitempty"`
 }
 
 func (s *Server) handleQueueMessage(w http.ResponseWriter, r *http.Request) {
@@ -736,7 +853,11 @@ func (s *Server) handleQueueMessage(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "text is required")
 		return
 	}
-	msg, err := s.runs.QueueMessage(r.Context(), id, req.Text)
+	var qopts []runview.QueueMessageOption
+	if len(req.Skills) > 0 {
+		qopts = append(qopts, runview.WithMessageSkills(req.Skills))
+	}
+	msg, err := s.runs.QueueMessage(r.Context(), id, req.Text, qopts...)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "queue message: %v", err)
 		return

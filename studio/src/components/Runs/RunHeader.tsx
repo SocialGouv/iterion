@@ -3,12 +3,13 @@ import { useLocation } from "wouter";
 import { ClockIcon, FileTextIcon, OpenInNewWindowIcon, Pencil1Icon } from "@radix-ui/react-icons";
 
 import type { RunHeader as RunHeaderType } from "@/api/runs";
-import { cancelRun, getRun, loadEvents, renameRun } from "@/api/runs";
+import { cancelRun, getRun, loadEvents, pauseRun, renameRun } from "@/api/runs";
 import { Button, CopyButton, LiveDot, StatusBadge, Tooltip } from "@/components/ui";
 import WSStatusDot from "@/components/shared/WSStatusDot";
 import { formatRelative } from "@/lib/format";
 import { useRunStore, type WsState } from "@/store/run";
 
+import ForkDialog from "./ForkDialog";
 import ResumeDialog from "./ResumeDialog";
 
 interface Props {
@@ -23,6 +24,7 @@ export default function RunHeader({ run, active, wsState }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [resumeOpen, setResumeOpen] = useState(false);
+  const [forkOpen, setForkOpen] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [, setLocation] = useLocation();
 
@@ -46,19 +48,53 @@ export default function RunHeader({ run, active, wsState }: Props) {
   const canCancel =
     (run.status === "running" && active) ||
     run.status === "paused_waiting_human" ||
+    run.status === "paused_operator" ||
     run.status === "queued";
+  // Soft pause is only meaningful while the run is actually executing
+  // in this process — paused/queued/terminal states have nothing to
+  // interrupt. The "active" gate also keeps the button hidden for
+  // cloud-mode runs whose engine lives in another process (Phase 1
+  // doesn't ship cross-process pause; cancel falls back via NATS but
+  // pause has no NATS subject yet).
+  const canPause = run.status === "running" && active;
+  // Fork is offered for every run that has a checkpoint to anchor on
+  // — paused, finished, failed, cancelled. We don't gate by status
+  // because "fork from a finished run" is a perfectly valid use case
+  // (re-run the last LLM turn with different inputs).
+  const checkpointNode =
+    (run.checkpoint as { node_id?: string } | undefined)?.node_id ?? null;
+  const canFork = Boolean(checkpointNode);
   // Resume from header is a "best-effort" trigger — for paused_waiting_human
   // runs the user normally fills the Pause form in the detail panel
   // (Phase 5). The header button stays for failed_resumable / cancelled
-  // runs which don't need answers.
+  // / paused_operator runs.
   const canResume =
-    run.status === "failed_resumable" || run.status === "cancelled";
+    run.status === "failed_resumable" ||
+    run.status === "cancelled" ||
+    run.status === "paused_operator";
 
   const onCancel = async () => {
     setBusy(true);
     setError(null);
     try {
       await cancelRun(run.id);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // onPause posts to /api/runs/:id/pause. The engine flips the
+  // persisted status to paused_operator at the next safe boundary; the
+  // WS run_paused event then drives the UI update. We don't optimistically
+  // flip the local store — the boundary is cooperative and the server
+  // is authoritative.
+  const onPause = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await pauseRun(run.id);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -176,6 +212,17 @@ export default function RunHeader({ run, active, wsState }: Props) {
               Export
             </Button>
             <WSStatusDot state={wsState} />
+            {canPause && (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void onPause()}
+                disabled={busy}
+                title="Soft pause — interrupts at the next safe boundary, preserves a checkpoint, resumable from this header"
+              >
+                Pause
+              </Button>
+            )}
             {canCancel && (
               <Button
                 variant="danger"
@@ -196,6 +243,17 @@ export default function RunHeader({ run, active, wsState }: Props) {
                 title="Resume this run from its last checkpoint"
               >
                 Resume…
+              </Button>
+            )}
+            {canFork && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setForkOpen(true)}
+                disabled={busy}
+                title="Fork — create a new run resuming from a prior LLM turn (Shift+submit forks in background)"
+              >
+                ⑂ Fork…
               </Button>
             )}
           </div>
@@ -246,6 +304,7 @@ export default function RunHeader({ run, active, wsState }: Props) {
       </div>
       <WSDisconnectBanner state={wsState} onReconnect={requestWsReconnect} />
       {showFinalization && <FinalizationRow run={run} />}
+      {run.forked_from && <ForkedFromRow run={run} />}
       <ErrorHintRow run={run} onResume={() => setResumeOpen(true)} />
 
       {canResume && (
@@ -253,6 +312,14 @@ export default function RunHeader({ run, active, wsState }: Props) {
           run={run}
           open={resumeOpen}
           onOpenChange={setResumeOpen}
+        />
+      )}
+      {canFork && (
+        <ForkDialog
+          run={run}
+          anchor={checkpointNode ? { nodeId: checkpointNode, turnIndex: -1 } : null}
+          open={forkOpen}
+          onOpenChange={setForkOpen}
         />
       )}
     </>
@@ -437,6 +504,40 @@ function FinalizationRow({ run }: { run: RunHeaderType }) {
         mergedShort={mergedShort}
         branch={branch}
       />
+    </div>
+  );
+}
+
+// ForkedFromRow surfaces the parent-run breadcrumb on a forked run.
+// Renders a one-line "⑂ forked from <name> @ <node>/turn <N>" with
+// a click handler that focuses the parent tab (opening it if absent).
+// Only mounted when run.forked_from is set.
+function ForkedFromRow({ run }: { run: RunHeaderType }) {
+  const [, setLocation] = useLocation();
+  const parentID = run.forked_from!;
+  const anchor = run.fork_anchor;
+  const nodeLabel = anchor?.node_id ?? "?";
+  const turnLabel = anchor?.turn_index ?? -1;
+  const focusParent = () => setLocation(`/runs/${encodeURIComponent(parentID)}`);
+  return (
+    <div className="shrink-0 px-4 py-1.5 bg-info-soft/40 border-b border-info/30 flex items-center gap-2 text-[11px]">
+      <span className="text-fg-muted">⑂ Forked from</span>
+      <button
+        onClick={focusParent}
+        className="font-mono text-fg-default hover:text-info underline-offset-2 hover:underline"
+        title="Open the parent run"
+      >
+        {parentID.slice(0, 12)}
+      </button>
+      <span className="text-fg-subtle">at</span>
+      <span className="font-mono">{nodeLabel}</span>
+      <span className="text-fg-subtle">/ turn</span>
+      <span className="font-mono">{turnLabel}</span>
+      {anchor?.rewind_code && (
+        <span className="ml-1 rounded bg-warning-soft px-1 text-[10px] text-fg-default" title="Worktree was reset to the snapshot at this boundary">
+          rewound
+        </span>
+      )}
     </div>
   );
 }

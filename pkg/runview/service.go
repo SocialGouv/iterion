@@ -1166,6 +1166,28 @@ func (s *Service) CancelInactive(runID string) (bool, error) {
 	return s.CancelInactiveCtx(context.Background(), runID)
 }
 
+// Pause requests an in-process operator pause for runID — the engine
+// observes the closed pauseCh at the next safe boundary (top of
+// execLoop, between LLM turns inside an agent's loop), saves a
+// checkpoint, flips status to paused_operator, and returns
+// ErrRunPausedOperator. Idempotent.
+//
+// Returns ErrRunNotActive when no goroutine owns runID. Cloud-mode
+// cross-process pause is out of scope for Phase 1 — the publisher
+// path falls back to ErrRunNotActive (a NATS pause subject is the
+// follow-up).
+func (s *Service) Pause(runID string) error {
+	if s.publisher != nil {
+		// Cross-process pause via NATS is not implemented yet — for
+		// cloud-mode runs, surface ErrRunNotActive so the HTTP layer
+		// returns 409 and the studio can hide the Pause button when
+		// the run is not held in this process. Follow-up: add
+		// `iterion.pause.<run_id>` analogous to the cancel subject.
+		return ErrRunNotActive
+	}
+	return s.manager.RequestPause(runID)
+}
+
 // ---------------------------------------------------------------------------
 // User-message inbox (chatbox queued messages)
 // ---------------------------------------------------------------------------
@@ -1177,7 +1199,7 @@ func (s *Service) CancelInactive(runID string) (bool, error) {
 // (between agent-loop iterations for claw, at the next human pause
 // for claude_code / codex) — there is no preemption of the running
 // agent.
-func (s *Service) QueueMessage(ctx context.Context, runID, text string) (*store.QueuedUserMessage, error) {
+func (s *Service) QueueMessage(ctx context.Context, runID, text string, opts ...QueueMessageOption) (*store.QueuedUserMessage, error) {
 	if runID == "" {
 		return nil, errors.New("runview: run_id is required")
 	}
@@ -1192,10 +1214,15 @@ func (s *Service) QueueMessage(ctx context.Context, runID, text string) (*store.
 	case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusCancelled:
 		return nil, fmt.Errorf("run %s is terminal (%s); cannot queue message", runID, r.Status)
 	}
+	cfg := queueMessageConfig{}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	msg := store.QueuedUserMessage{
-		ID:       newQueuedMessageID(),
-		Text:     text,
-		TenantID: r.TenantID,
+		ID:        newQueuedMessageID(),
+		Text:      text,
+		TenantID:  r.TenantID,
+		SkillRefs: cfg.skillRefs,
 	}
 	if err := s.store.AppendQueuedMessage(ctx, runID, msg); err != nil {
 		return nil, fmt.Errorf("append queued message: %w", err)
@@ -1205,6 +1232,29 @@ func (s *Service) QueueMessage(ctx context.Context, runID, text string) (*store.
 	}
 	store.PublishInboxEvent(ctx, s.store, s.brokerPublish(), store.EventUserMessageQueued, runID, msg)
 	return &msg, nil
+}
+
+// queueMessageConfig accumulates the optional knobs callers can pass
+// to QueueMessage via the QueueMessageOption family. Kept as a
+// private struct so the public surface stays narrow (callers see
+// only the option-builder helpers below).
+type queueMessageConfig struct {
+	skillRefs []string
+}
+
+// QueueMessageOption is the functional-option form of QueueMessage's
+// extras. Today only WithMessageSkills exists; adding more knobs
+// (e.g. attachments, source attribution) won't break existing
+// callers.
+type QueueMessageOption func(*queueMessageConfig)
+
+// WithMessageSkills attaches bundle skill names to the queued
+// message. Before the engine injects the message into the agent's
+// conversation, each skill's SKILL.md is mirrored into the
+// workspace's .claude/skills/ directory. Sticky — the skill stays
+// loaded for the rest of the run. Empty/nil slice is a no-op.
+func WithMessageSkills(skills []string) QueueMessageOption {
+	return func(c *queueMessageConfig) { c.skillRefs = skills }
 }
 
 // CancelQueuedMessage marks a queued (not-yet-delivered) message as
@@ -1826,6 +1876,13 @@ func (s *Service) spawnRun(
 	}
 	if preset != "" {
 		opts = append(opts, runtime.WithPreset(preset))
+	}
+	// Wire the operator-pause channel so POST /api/runs/{id}/pause
+	// can interrupt this run at the next safe boundary. The Manager
+	// owns the channel (created in Register above); we hand a
+	// receive-only view to the engine via WithPauseSignal.
+	if pauseCh, perr := s.manager.PauseSignal(runID); perr == nil {
+		opts = append(opts, runtime.WithPauseSignal(pauseCh))
 	}
 	eng := runtime.New(wf, s.store, executor, opts...)
 

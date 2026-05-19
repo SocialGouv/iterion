@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -30,6 +31,118 @@ import (
 //     case — a v0.2.0 bot run after a v0.1.0 would otherwise see
 //     v0.1.0's skill files indefinitely).
 const bundleMirrorMarkerDir = ".iterion-managed"
+
+// skillReconcileOutcome enumerates the four collision-policy results
+// for a single file-skill mirror: what reconcileSkillFile observed
+// and acted upon. The caller logs aggregate counts.
+type skillReconcileOutcome int
+
+const (
+	skillOutcomeMirrored  skillReconcileOutcome = iota // new file copied + marker written
+	skillOutcomeUpToDate                               // dest matched source verbatim
+	skillOutcomeRefreshed                              // marker matched dest → safe overwrite
+	skillOutcomeShadowed                               // dest exists and diverged → leave alone
+)
+
+// reconcileSkillFile applies the 4-branch collision policy to one
+// file skill: copy / no-op / refresh / shadow. Shared by
+// MirrorSingleSkill (called per-skill on chatbox attach) and
+// mirrorBundleSkills (called once per skill at run start) so the
+// rules stay in lockstep. The caller has already prepared
+// markerDir/dest and resolved srcPath.
+func reconcileSkillFile(srcPath, destPath, markerPath string, logger *iterlog.Logger) (skillReconcileOutcome, error) {
+	srcHash, err := hashFile(srcPath)
+	if err != nil {
+		return skillOutcomeShadowed, err
+	}
+	destInfo, destErr := os.Stat(destPath)
+	switch {
+	case errors.Is(destErr, os.ErrNotExist):
+		if err := copyFile(srcPath, destPath); err != nil {
+			return skillOutcomeShadowed, err
+		}
+		if err := writeMarker(markerPath, srcHash); err != nil {
+			return skillOutcomeShadowed, err
+		}
+		return skillOutcomeMirrored, nil
+	case destErr != nil:
+		return skillOutcomeShadowed, fmt.Errorf("runtime/bundle: stat %s: %w", destPath, destErr)
+	}
+	destHash, err := hashFile(destPath)
+	if err != nil {
+		return skillOutcomeShadowed, err
+	}
+	if destHash == srcHash {
+		if err := writeMarker(markerPath, srcHash); err != nil {
+			return skillOutcomeShadowed, err
+		}
+		return skillOutcomeUpToDate, nil
+	}
+	if markerHash := readMarker(markerPath); markerHash != "" && markerHash == destHash {
+		_ = os.Chmod(destPath, destInfo.Mode().Perm())
+		if err := overwriteFile(srcPath, destPath); err != nil {
+			return skillOutcomeShadowed, err
+		}
+		if err := writeMarker(markerPath, srcHash); err != nil {
+			return skillOutcomeShadowed, err
+		}
+		return skillOutcomeRefreshed, nil
+	}
+	if logger != nil {
+		logger.Warn("bundle skill %q shadowed by existing workspace entry at %s (workspace differs from both source and previous-mirror marker)", filepath.Base(srcPath), destPath)
+	}
+	return skillOutcomeShadowed, nil
+}
+
+// MirrorSingleSkill mirrors one bundle skill by name into the run's
+// .claude/skills/ directory, applying the same collision policy as
+// mirrorBundleSkills. Used by the chatbox skill-attachment path: when
+// an operator queues a message with skill refs, the drain logic calls
+// this once per ref before injecting the message into the agent's
+// conversation.
+//
+// No-op when the bundle is nil, has no SkillsDir, or the skill name
+// doesn't resolve to a file/dir under SkillsDir. Returns an error
+// only when the copy/marker write itself fails — a missing skill
+// silently no-ops (the agent simply sees the text message without
+// the skill loaded; the studio surfaces the discrepancy via the
+// catalog endpoint).
+func MirrorSingleSkill(workDir string, b *bundle.Bundle, name string, logger *iterlog.Logger) error {
+	if b == nil || b.SkillsDir == "" || workDir == "" || name == "" {
+		return nil
+	}
+	if name == "." || name == ".." || strings.ContainsAny(name, "/\\") {
+		return fmt.Errorf("runtime/bundle: invalid skill name %q", name)
+	}
+	srcPath := filepath.Join(b.SkillsDir, name)
+	info, err := os.Stat(srcPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if logger != nil {
+				logger.Warn("queued-message skill %q not found in bundle — skipping", name)
+			}
+			return nil
+		}
+		return fmt.Errorf("runtime/bundle: stat skill %s: %w", srcPath, err)
+	}
+	dest := filepath.Join(workDir, ".claude", "skills")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		return fmt.Errorf("runtime/bundle: mkdir %s: %w", dest, err)
+	}
+	markerDir := filepath.Join(dest, bundleMirrorMarkerDir)
+	if err := os.MkdirAll(markerDir, 0o755); err != nil {
+		return fmt.Errorf("runtime/bundle: mkdir markers %s: %w", markerDir, err)
+	}
+	destPath := filepath.Join(dest, name)
+	if info.IsDir() {
+		if _, statErr := os.Stat(destPath); statErr == nil {
+			return nil
+		}
+		return copyDir(srcPath, destPath)
+	}
+	_, err = reconcileSkillFile(srcPath, destPath, filepath.Join(markerDir, name+".sha256"), logger)
+	return err
+}
 
 // mirrorBundleSkills copies every top-level entry from bundle.SkillsDir
 // into <workDir>/.claude/skills/.
@@ -89,61 +202,20 @@ func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger
 			mirrored++
 			continue
 		}
-		// File skill: use marker-aware reconciliation.
-		srcHash, err := hashFile(srcPath)
+		// File skill: shared reconciliation with MirrorSingleSkill.
+		outcome, err := reconcileSkillFile(srcPath, destPath, filepath.Join(markerDir, name+".sha256"), logger)
 		if err != nil {
 			return err
 		}
-		markerPath := filepath.Join(markerDir, name+".sha256")
-		destInfo, destErr := os.Stat(destPath)
-		switch {
-		case errors.Is(destErr, os.ErrNotExist):
-			// First time we mirror this skill: copy and record.
-			if err := copyFile(srcPath, destPath); err != nil {
-				return err
-			}
-			if err := writeMarker(markerPath, srcHash); err != nil {
-				return err
-			}
+		switch outcome {
+		case skillOutcomeMirrored:
 			mirrored++
-		case destErr != nil:
-			return fmt.Errorf("runtime/bundle: stat %s: %w", destPath, destErr)
-		default:
-			destHash, err := hashFile(destPath)
-			if err != nil {
-				return err
-			}
-			if destHash == srcHash {
-				// Already current; record marker for forward-compat.
-				if err := writeMarker(markerPath, srcHash); err != nil {
-					return err
-				}
-				uptodate++
-				continue
-			}
-			markerHash := readMarker(markerPath)
-			if markerHash != "" && markerHash == destHash {
-				// The workspace file matches what we wrote last; user
-				// hasn't customized → safe to refresh with the new
-				// bundle version.
-				if err := os.Chmod(destPath, destInfo.Mode().Perm()); err == nil {
-					// best-effort; we'll overwrite content below.
-				}
-				if err := overwriteFile(srcPath, destPath); err != nil {
-					return err
-				}
-				if err := writeMarker(markerPath, srcHash); err != nil {
-					return err
-				}
-				refreshed++
-				continue
-			}
-			// User-customized or different bundle owns the name; honour
-			// the "workspace wins" contract.
+		case skillOutcomeUpToDate:
+			uptodate++
+		case skillOutcomeRefreshed:
+			refreshed++
+		case skillOutcomeShadowed:
 			shadowed++
-			if logger != nil {
-				logger.Warn("bundle skill %q shadowed by existing workspace entry at %s (workspace differs from both source and previous-mirror marker)", name, destPath)
-			}
 		}
 	}
 	if logger != nil && (mirrored > 0 || refreshed > 0 || uptodate > 0) {

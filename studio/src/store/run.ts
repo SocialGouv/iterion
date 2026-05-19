@@ -69,6 +69,11 @@ export interface QueuedUserMessage {
   consumed_at?: string | null;
   cancelled_at?: string | null;
   status: QueuedMessageStatus;
+  // skill_refs is the list of bundle skill names attached to this
+  // queued message. Mirrors store.QueuedUserMessage.SkillRefs on the
+  // Go side. The AgentChatbox renders them as a chip suffix on the
+  // message row so the operator can audit which skills were loaded.
+  skill_refs?: string[];
 }
 
 // PreviewSource tracks where the current preview URL came from. The
@@ -1281,9 +1286,16 @@ function reduceEvents(
         runStatusOverride = "cancelled";
         break;
       }
-      case "run_paused":
-        runStatusOverride = "paused_waiting_human";
+      case "run_paused": {
+        // The engine emits the same event type for both pause flavours.
+        // Operator pause (POST /api/runs/:id/pause) tags reason=operator;
+        // human-input pause leaves reason empty (or "human"). Branch on
+        // the reason so the status badge maps to the right colour without
+        // a second event round-trip.
+        const reason = (evt.data?.reason as string) ?? "";
+        runStatusOverride = reason === "operator" ? "paused_operator" : "paused_waiting_human";
         break;
+      }
       case "browser_session_started": {
         const sessionId = (evt.data?.session_id as string) ?? "";
         if (!sessionId) break;

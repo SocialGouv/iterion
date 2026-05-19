@@ -395,6 +395,33 @@ func (e *Engine) wrapContextErr(ctxErr error) error {
 	return ctxErr
 }
 
+// handleOperatorPauseWithCheckpoint is the sibling of
+// handleContextDoneWithCheckpoint, called from execLoop when the
+// engine's WithPauseSignal channel fires. It saves a checkpoint
+// anchored at nodeID (the node about to execute), flips the run
+// status to paused_operator (distinct from paused_waiting_human so
+// the studio can render a banner and the resume dispatch routes
+// through the cancellation-style restore path, not the human-answers
+// path), and emits a run_paused event with reason="operator".
+func (e *Engine) handleOperatorPauseWithCheckpoint(rs *runState, nodeID string) error {
+	storeCtx, cancel := context.WithTimeout(context.WithoutCancel(rs.ctx), 5*time.Second)
+	defer cancel()
+
+	cp := buildCheckpoint(rs, nodeID)
+	if err := e.store.SaveCheckpoint(storeCtx, rs.runID, cp); err != nil {
+		e.logger.Error("failed to save checkpoint on operator pause: %v", err)
+	}
+	if err := e.store.UpdateRunStatus(storeCtx, rs.runID, store.RunStatusPausedOperator, ""); err != nil {
+		e.logger.Error("failed to persist operator pause status: %v", err)
+	}
+	if err := e.emit(storeCtx, rs.runID, store.EventRunPaused, nodeID, map[string]interface{}{
+		"reason": "operator",
+	}); err != nil {
+		e.logger.Warn("failed to emit run_paused event: %v", err)
+	}
+	return fmt.Errorf("%w: paused at node %s", ErrRunPausedOperator, nodeID)
+}
+
 // ---------------------------------------------------------------------------
 // Budget helpers
 // ---------------------------------------------------------------------------

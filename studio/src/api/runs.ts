@@ -26,6 +26,11 @@ export function apiURL(path: string): string {
 export type RunStatus =
   | "running"
   | "paused_waiting_human"
+  // Operator-initiated soft pause via POST /api/runs/:id/pause or the
+  // RunHeader Pause button. Distinct from paused_waiting_human (no
+  // pending Interaction record). Resumes via the same machinery as
+  // cancelled — see Engine.Resume's dispatch.
+  | "paused_operator"
   | "finished"
   | "failed"
   | "failed_resumable"
@@ -148,6 +153,16 @@ export interface RunHeader {
   // Computed server-side; the QueuedBanner uses it to render the
   // "3rd in queue" copy. See cloud-ready plan §F (T-03, T-15, T-31).
   queue_position?: number;
+  // forked_from + fork_anchor are set when this run was minted by
+  // POST /api/runs/:id/fork. The RunHeader surfaces them as a "forked
+  // from <parent>" breadcrumb; the InnerTabBar adds a ⑂ glyph on the
+  // run's tab. Both empty/undefined for runs launched normally.
+  forked_from?: string;
+  fork_anchor?: ForkAnchor;
+  // source_hash mirrors the parent's workflow hash at fork time.
+  // Different from workflow_hash (the child's own) when the .iter has
+  // been edited between parent run and fork.
+  source_hash?: string;
 }
 
 // Mirror of runview.RunSnapshot.
@@ -614,6 +629,64 @@ export async function cancelRun(
   runId: string,
 ): Promise<{ run_id: string; status: string }> {
   return request(`/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
+}
+
+// pauseRun requests a soft, operator-initiated pause. The engine
+// interrupts at the next safe boundary (top of execLoop, between LLM
+// turns inside an agent), saves a checkpoint, transitions to
+// paused_operator, and emits run_paused with reason=operator — the
+// run is resumable like a cancelled one. 409 means the run isn't held
+// in this process (terminal, or running in cloud) — RunHeader hides
+// the button in those cases but the API is defensive against double-
+// clicks racing with status changes.
+export async function pauseRun(
+  runId: string,
+): Promise<{ run_id: string; status: string }> {
+  return request(`/runs/${encodeURIComponent(runId)}/pause`, { method: "POST" });
+}
+
+// ForkAnchor identifies where a forked run resumes inside the parent's
+// execution graph. Mirrors the Go store.ForkAnchor on the wire.
+export interface ForkAnchor {
+  node_id: string;
+  loop_iter: number;
+  turn_index: number;
+  rewind_code?: boolean;
+}
+
+// ForkRunRequest is the body of POST /api/runs/:id/fork. node_id is
+// required; turn_index defaults to -1 (latest turn for the node).
+// rewind_code=false (default) inherits the parent's current files;
+// rewind_code=true resets the new worktree to the per-node snapshot
+// captured at the chosen boundary (Phase 2+).
+export interface ForkRunRequest {
+  node_id: string;
+  turn_index?: number;
+  rewind_code?: boolean;
+  fork_name?: string;
+  new_inputs?: Record<string, unknown>;
+}
+
+// ForkRunResponse is the JSON body returned by POST /runs/:id/fork.
+export interface ForkRunResponse {
+  new_run_id: string;
+  parent_run_id: string;
+  fork_anchor?: ForkAnchor;
+}
+
+// forkRun creates a new run that resumes from a prior turn of the
+// parent. The new run starts in cancelled status with a synthetic
+// checkpoint; the caller posts /resume on it to actually execute.
+// The studio's ForkDialog opens a new run tab on the returned id and
+// (by default) auto-navigates to it.
+export async function forkRun(
+  runId: string,
+  req: ForkRunRequest,
+): Promise<ForkRunResponse> {
+  return request(`/runs/${encodeURIComponent(runId)}/fork`, {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
 }
 
 export interface ResumeRunRequest {

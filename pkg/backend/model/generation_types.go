@@ -3,6 +3,8 @@ package model
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/SocialGouv/claw-code-go/pkg/api"
 )
 
 // RequestInfo is passed to the OnRequest hook before a generation call.
@@ -59,6 +61,31 @@ type StepResult struct {
 
 	// Usage for this step.
 	Usage Usage
+}
+
+// TurnCaptureInfo is the payload of the OnTurnCapture hook fired by
+// the generation loop after every step completes (and after its tool
+// results have been appended, when applicable). It carries everything
+// the runtime needs to write a per-turn store.TurnCheckpoint plus,
+// optionally, a sibling messages.json blob used as the rehydration
+// source for the Fork API.
+//
+// Conversation is a defensive copy of the messages slice at the
+// natural end-of-iteration boundary — the very state the next LLM
+// call would be made from if the loop continued. For the final step
+// (no follow-up tool calls), the slice is augmented in-snapshot with
+// a synthetic assistant text message so the snapshot is forkable too.
+type TurnCaptureInfo struct {
+	// Step is the 1-based step index, matching StepResult.Number.
+	Step int
+	// Result mirrors the StepResult passed to OnStepFinish.
+	Result StepResult
+	// Conversation is the snapshot the runtime persists. Treat as
+	// immutable — the generation loop reuses the underlying slice
+	// after the callback returns. Callbacks that hand the snapshot
+	// off to a goroutine MUST take their own copy first (the
+	// generation loop already does so before invoking the hook).
+	Conversation []api.Message
 }
 
 // CompactInfo is passed to the OnCompact hook when the running tool-loop

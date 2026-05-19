@@ -36,7 +36,10 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]in
 	switch r.Status {
 	case store.RunStatusPausedWaitingHuman:
 		return e.resumeFromPause(ctx, r, answers)
-	case store.RunStatusFailedResumable, store.RunStatusCancelled:
+	case store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator:
+		// paused_operator resumes via the same machinery as cancelled
+		// runs: checkpoint preserved, no pending interaction, restart
+		// from the node about to execute when the pause fired.
 		return e.resumeFromFailure(ctx, r)
 	default:
 		return fmt.Errorf("runtime: cannot resume run %q with status %q", runID, r.Status)
@@ -410,7 +413,20 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 		}
 		rs.nodeAttempts = restoreNodeAttempts(cp.NodeAttempts)
 		restoreLoopSnapshots(rs, cp)
+		// Fork rehydration: when the checkpoint carries a backend
+		// conversation (claw) or session id (claude_code), pin them to
+		// runState so the first execution of cp.NodeID injects them
+		// into the input map. Cleared after the first injection so
+		// downstream nodes don't accidentally rehydrate.
+		if len(cp.BackendConversation) > 0 || cp.BackendSessionID != "" {
+			rs.resumeBackend = resumeBackendState{
+				nodeID:       cp.NodeID,
+				conversation: cp.BackendConversation,
+				sessionID:    cp.BackendSessionID,
+			}
+		}
 	}
+	rs.isWorktree = r.Worktree
 	// When cp is nil, rs keeps the empty maps from newRunState — same
 	// state shape as a fresh launch, only the run_id is preserved so
 	// the studio's snapshot continuity stays intact.
@@ -838,8 +854,27 @@ type pauseInfo struct {
 // the resume system prompt. Each transition emits a
 // user_message_delivered event through the engine's event observer
 // so WS subscribers (the studio chatbox) update their badge.
+//
+// Side-effect: before returning, every SkillRef attached to a drained
+// message is mirrored into the run's .claude/skills/ directory via
+// MirrorSingleSkill. Sticky — the skill stays loaded for the rest of
+// the run. Mirror failures log at warn level but don't block the
+// drain (the agent will see the text without the skill in those
+// cases; the operator surfaces the gap via the catalog endpoint).
 func (e *Engine) drainOperatorMessagesForPause(ctx context.Context, runID string) []string {
-	texts, _, _ := store.DrainPending(ctx, e.store, e.onEvent, runID)
+	msgs, _, _ := store.DrainPendingMessages(ctx, e.store, e.onEvent, runID)
+	if len(msgs) == 0 {
+		return nil
+	}
+	texts := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		texts = append(texts, m.Text)
+		for _, ref := range m.SkillRefs {
+			if err := MirrorSingleSkill(e.workDir, e.bundle, ref, e.logger); err != nil && e.logger != nil {
+				e.logger.Warn("queued-message skill mirror failed: ref=%s err=%v", ref, err)
+			}
+		}
+	}
 	return texts
 }
 

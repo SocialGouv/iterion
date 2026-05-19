@@ -31,6 +31,17 @@ type runHandle struct {
 	done      chan struct{}
 	startedAt time.Time
 	pid       int // 0 for in-process; non-zero for a detached runner
+	// pauseCh is the operator-pause signal channel passed to the engine
+	// via WithPauseSignal. RequestPause closes it; the engine observes
+	// the close at the next safe boundary, saves a checkpoint, flips
+	// the status to paused_operator and returns ErrRunPausedOperator.
+	// Nil for detached runners (Phase 1 keeps cross-process pause out
+	// of scope — cloud-mode operator pause is a follow-up using NATS).
+	pauseCh chan struct{}
+	// pauseRequested guards against double-close on pauseCh when
+	// multiple RequestPause calls race (e.g. the user double-clicks
+	// the Pause button before the run has drained).
+	pauseRequested bool
 }
 
 // Manager owns the lifecycle of in-process workflow goroutines. A run
@@ -73,8 +84,53 @@ func (m *Manager) Register(parent context.Context, runID string) (context.Contex
 		cancel:    cancel,
 		done:      make(chan struct{}),
 		startedAt: time.Now().UTC(),
+		pauseCh:   make(chan struct{}),
 	}
 	return ctx, nil
+}
+
+// PauseSignal returns the engine-side receive-only pause channel for
+// runID, suitable to pass into runtime.WithPauseSignal. The caller is
+// expected to wire it into the Engine before the goroutine starts.
+// Returns nil + ErrRunNotActive when no handle exists. The channel is
+// fresh (not closed) at the time Register returns; RequestPause is the
+// only path that closes it.
+func (m *Manager) PauseSignal(runID string) (<-chan struct{}, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	h, ok := m.handles[runID]
+	if !ok {
+		return nil, ErrRunNotActive
+	}
+	if h.pauseCh == nil {
+		return nil, ErrRunNotActive
+	}
+	return h.pauseCh, nil
+}
+
+// RequestPause asks the engine goroutine for runID to interrupt at
+// the next safe boundary. Closing the pause channel is the signal
+// the engine watches via WithPauseSignal — the run then transitions
+// to paused_operator with a preserved checkpoint and can be resumed
+// like a cancelled run. Idempotent (double-call is a no-op);
+// ErrRunNotActive when no handle exists or the handle is a detached
+// runner (which doesn't carry a pause channel in Phase 1).
+func (m *Manager) RequestPause(runID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	h, ok := m.handles[runID]
+	if !ok {
+		return ErrRunNotActive
+	}
+	if h.pauseCh == nil {
+		return ErrRunNotActive
+	}
+	if h.pauseRequested {
+		return nil
+	}
+	h.pauseRequested = true
+	close(h.pauseCh)
+	return nil
 }
 
 // RegisterDetached installs a handle for a runner running as a

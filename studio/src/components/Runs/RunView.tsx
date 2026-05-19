@@ -31,6 +31,7 @@ import EventLog from "./EventLog";
 import FileDiffDialog from "./FileDiffDialog";
 import AgentChatbox from "@/components/shared/AgentChatbox";
 import HumanInteractionPanel from "./HumanInteractionPanel";
+import OperatorPauseBanner from "./OperatorPauseBanner";
 import LeftPanel from "./LeftPanel";
 import NodeDetailPanel from "./NodeDetailPanel";
 import QueuedBanner from "./QueuedBanner";
@@ -661,6 +662,9 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
         ) : (
           <>
             <RunMetrics active={active} onJumpToFailed={handleJumpToFailed} />
+            {snapshot.run.status === "paused_operator" && (
+              <OperatorPauseBanner run={snapshot.run} />
+            )}
             <HumanInteractionPanel runId={runId} />
             {showChatbox && <AgentChatbox runId={runId} disabled={false} />}
             <Scrubber

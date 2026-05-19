@@ -40,6 +40,15 @@ type QueuedUserMessage struct {
 	Status      QueuedMessageStatus `json:"status" bson:"status"`
 	// TenantID mirrors Run.TenantID for cross-tenant access checks.
 	TenantID string `json:"tenant_id,omitempty" bson:"tenant_id,omitempty"`
+	// SkillRefs is the list of bundle skill names attached to this
+	// queued message. Before the engine injects the message into the
+	// agent's conversation, each referenced SKILL.md is mirrored into
+	// the workspace's .claude/skills/ directory so the LLM can read
+	// it on the next turn. Sticky: skills stay mirrored for the rest
+	// of the run (the LLM may reference them on later turns); the
+	// operator removes a skill via a follow-up message with a
+	// different SkillRefs list. Empty for plain-text messages.
+	SkillRefs []string `json:"skill_refs,omitempty" bson:"skill_refs,omitempty"`
 }
 
 // ErrQueuedMessageNotFound is returned by UpdateQueuedMessageStatus
@@ -299,22 +308,46 @@ func PublishInboxEvent(ctx context.Context, s RunStore, publish func(Event), typ
 // errors are skipped silently — a concurrent cancellation winning
 // the race is acceptable, the row simply won't be delivered.
 func DrainPending(ctx context.Context, s RunStore, publish func(Event), runID string) (texts []string, ids []string, err error) {
-	msgs, err := s.LoadPendingQueuedMessages(ctx, runID)
+	msgs, _, err := DrainPendingMessages(ctx, s, publish, runID)
 	if err != nil || len(msgs) == 0 {
 		return nil, nil, err
 	}
 	texts = make([]string, 0, len(msgs))
 	ids = make([]string, 0, len(msgs))
 	for _, m := range msgs {
+		texts = append(texts, m.Text)
+		ids = append(ids, m.ID)
+	}
+	return texts, ids, nil
+}
+
+// DrainPendingMessages is the richer sibling of DrainPending that
+// returns the full QueuedUserMessage records — including the
+// SkillRefs slice — so the runtime can mirror attached skills before
+// injecting the message text into the agent's conversation. The
+// second return value is the (ordered) IDs in the same order as
+// the first slice; callers that don't need it can ignore it.
+//
+// All transitions to "delivered" are atomic per-row; concurrent
+// cancellation winning the race is silently skipped (the row simply
+// won't be delivered). FIFO by QueuedAt.
+func DrainPendingMessages(ctx context.Context, s RunStore, publish func(Event), runID string) ([]QueuedUserMessage, []string, error) {
+	pending, err := s.LoadPendingQueuedMessages(ctx, runID)
+	if err != nil || len(pending) == 0 {
+		return nil, nil, err
+	}
+	msgs := make([]QueuedUserMessage, 0, len(pending))
+	ids := make([]string, 0, len(pending))
+	for _, m := range pending {
 		if err := s.UpdateQueuedMessageStatus(ctx, runID, m.ID, QueuedMessageStatusDelivered, QueuedMessageStatusQueued); err != nil {
 			continue
 		}
 		StampQueuedTransition(&m, QueuedMessageStatusDelivered, time.Now().UTC())
-		texts = append(texts, m.Text)
+		msgs = append(msgs, m)
 		ids = append(ids, m.ID)
 		PublishInboxEvent(ctx, s, publish, EventUserMessageDelivered, runID, m)
 	}
-	return texts, ids, nil
+	return msgs, ids, nil
 }
 
 // MarkConsumed transitions every id in ids from "delivered" to

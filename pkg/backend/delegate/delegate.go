@@ -297,6 +297,41 @@ type TaskHooks struct {
 	// per-node Tools tab can render in+out side-by-side the way Claude
 	// Code does. May be empty for backends that cannot surface a result.
 	OnToolCalled func(toolName string, toolUseID string, isError bool, output string)
+
+	// OnTurnFinished fires once per successful delegate call boundary
+	// (claude_code: one Result; claw: not used — claw fires per-step
+	// hooks via GenerationOptions.OnTurnCapture instead). The runtime
+	// uses it to persist a store.TurnCheckpoint anchored at
+	// (run, node, iter, turn=0) carrying the CLI's SessionID, so the
+	// Fork API can later relaunch claude with --resume <id>
+	// --fork-session. All fields except SessionID are optional; the
+	// runtime tolerates an empty SessionID (logs a warning, skips the
+	// fork-readiness side of the turn).
+	OnTurnFinished func(info TurnFinishedInfo)
+}
+
+// TurnFinishedInfo is the payload of the TaskHooks.OnTurnFinished
+// callback. For claude_code, one of these fires per delegate-call
+// boundary — coarse compared to the per-step claw firing, but that's
+// the smallest unit the CLI exposes a session id at. The runtime
+// promotes it into a store.TurnCheckpoint that anchors the fork-from-
+// end-of-call UX. Phase 6 (intra-call SDK hooks) would refine the
+// granularity; until then we accept the asymmetry.
+type TurnFinishedInfo struct {
+	// SessionID is the claude CLI session id captured from the
+	// ResultMessage. Empty means the CLI didn't surface one (rare —
+	// usually a hard error path that doesn't fire OnTurnFinished).
+	SessionID string
+	// FinishReason mirrors Result.Subtype on success ("success",
+	// "max_turns", etc.). Empty when the SDK didn't surface one.
+	FinishReason string
+	// Text is the final assistant text block emitted by the CLI for
+	// this delegate call. Used for the TextDigest fingerprint.
+	Text string
+	// InputTokens / OutputTokens come from the CLI's Result.Usage and
+	// feed the per-turn store.TurnUsage.
+	InputTokens  int
+	OutputTokens int
 }
 
 // SystemPromptWithInteraction returns the task's SystemPrompt augmented
@@ -394,6 +429,11 @@ const (
 	ResumeConversationKey     = "_resume_conversation"
 	ResumePendingToolUseIDKey = "_resume_pending_tool_use_id"
 	ResumeAnswerKey           = "_resume_answer"
+	// SessionIDKey carries the CLI session id consumed by SessionInherit
+	// (and SessionFork) nodes through the input map. Set by the executor's
+	// session-continuity wiring and by the engine's fork rehydration path
+	// so a forked claude_code node picks up the parent's CLI session.
+	SessionIDKey = "_session_id"
 )
 
 // QueuedOperatorMessagesKey is the reserved Interaction.Questions key

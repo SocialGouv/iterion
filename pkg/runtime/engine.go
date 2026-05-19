@@ -21,6 +21,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/recipe"
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -43,6 +44,12 @@ var ErrRunPaused = errors.New("runtime: run paused waiting for human input")
 // cancellation (e.g. SIGINT). Distinguished from failures so callers
 // can handle cancellation gracefully.
 var ErrRunCancelled = errors.New("runtime: run cancelled")
+
+// ErrRunPausedOperator is returned when execution is suspended in
+// response to a POST /api/runs/{id}/pause request — the operator
+// asked for a soft pause (no cancellation) that resumes via the
+// same checkpoint machinery as cancelled runs.
+var ErrRunPausedOperator = errors.New("runtime: run paused by operator")
 
 // ErrServerDraining is returned by the runview Service when Launch or
 // Resume is called after the server has begun graceful shutdown. The
@@ -88,6 +95,7 @@ type Engine struct {
 	sandboxHostStateDefault  string                // global ITERION_SANDBOX_HOST_STATE snapshot; set via WithSandboxHostStateDefault
 	attachmentPromote        AttachmentPromoteFunc // optional: invoked after CreateRun to materialise attachments
 	bundle                   *bundle.Bundle        // optional: bundle backing this run; nil for plain .iter/.bot runs
+	pauseSignal              <-chan struct{}       // optional: closed by Service.Pause to request a soft pause at the next safe boundary; nil disables operator pause
 }
 
 // AttachmentPromoteFunc is invoked once at the start of a run, right
@@ -284,6 +292,24 @@ func WithOutputValidation(enabled bool) EngineOption {
 	return func(e *Engine) { e.validateOutputs = enabled }
 }
 
+// WithPauseSignal wires an external pause request channel into the
+// engine. When a caller closes the channel (or sends a non-blocking
+// send-and-don't-care signal), the engine pauses at the next safe
+// boundary (top of execLoop, between LLM turns inside an agent, etc.)
+// and returns ErrRunPausedOperator after saving a checkpoint.
+//
+// This is the engine-side hook the studio's "Pause now" button + the
+// POST /api/runs/{id}/pause endpoint depend on (Phase 1). Distinct
+// from ctx cancellation: a paused run is resumable like a
+// failed_resumable run; a cancelled run is terminal.
+//
+// Pass nil (the default) to opt out — engine pause is then disabled
+// and the only way to interrupt a run is ctx cancellation (i.e.
+// Cancel).
+func WithPauseSignal(ch <-chan struct{}) EngineOption {
+	return func(e *Engine) { e.pauseSignal = ch }
+}
+
 // New creates a new Engine for a raw workflow.
 func New(wf *ir.Workflow, s store.RunStore, exec NodeExecutor, opts ...EngineOption) *Engine {
 	e := &Engine{workflow: wf, store: s, executor: exec}
@@ -345,6 +371,29 @@ type runState struct {
 	// Populated once at run start from Run.Attachments and the
 	// store's PresignAttachment helper.
 	attachments map[string]model.AttachmentInfo
+
+	// resumeBackend carries the persisted backend rehydration payload
+	// from the checkpoint at resume time, injected into the input map
+	// of the FIRST execution of cp.NodeID so the backend picks up
+	// where the parent left off. Cleared after the first injection so
+	// downstream nodes do not see it.
+	resumeBackend resumeBackendState
+
+	// isWorktree mirrors Run.Worktree, set once at run start by
+	// setupWorktree / on resume restoration. Read by the per-node
+	// snapshot hook to avoid one LoadRun per node finish.
+	isWorktree bool
+}
+
+// resumeBackendState bundles the three fields the engine uses to
+// rehydrate a backend at the resume entry node: the persisted claw
+// conversation, the claude_code session id, and the anchor node these
+// payloads target. Bundling them keeps callers from partially
+// updating the group.
+type resumeBackendState struct {
+	nodeID       string
+	conversation []byte
+	sessionID    string
 }
 
 // markFailedBestEffort transitions the run to status=failed with a
@@ -581,6 +630,11 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 	rs.ctx = ctx
 	rs.vars = e.resolveVars(inputs)
 	rs.attachments = e.loadAttachmentInfos(ctx, runID)
+	// Cache the worktree flag once so per-node snapshot decisions
+	// don't re-read run.json N times.
+	if r, err := e.store.LoadRun(ctx, runID); err == nil && r != nil {
+		rs.isWorktree = r.Worktree
+	}
 
 	// Refresh executor vars: PROJECT_DIR-aware expansion may have changed
 	// values from what the CLI/server originally seeded.
@@ -708,6 +762,18 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 		case <-ctx.Done():
 			return e.handleContextDoneWithCheckpoint(rs, currentNodeID, ctx.Err())
 		default:
+		}
+		// Operator pause: when WithPauseSignal is wired and the channel
+		// is closed, save a checkpoint and return ErrRunPausedOperator.
+		// Checked AFTER ctx.Done() so cancel always wins over pause if
+		// both fire concurrently (cancel is the stronger signal — it
+		// also closes ctx).
+		if e.pauseSignal != nil {
+			select {
+			case <-e.pauseSignal:
+				return e.handleOperatorPauseWithCheckpoint(rs, currentNodeID)
+			default:
+			}
 		}
 
 		node, ok := e.workflow.Nodes[currentNodeID]
@@ -842,6 +908,24 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 		// --- Build node input from edge mappings ---
 		nodeInput := e.buildNodeInputRS(currentNodeID, rs.vars, rs.outputs, rs.runInputs, rs.artifacts, rs)
 
+		// Fork rehydration: when resumeFromFailure pinned a backend
+		// conversation / session id at currentNodeID, inject the
+		// matching keys into the input map for THIS first execution
+		// only. Cleared after injection so a loop iteration of the
+		// same node doesn't keep replaying the parent's conversation.
+		// session_id flows via the same key SessionInherit nodes
+		// consume, so an inherit-mode forked node picks it up
+		// transparently. independent-mode nodes ignore the key.
+		if rs.resumeBackend.nodeID == currentNodeID {
+			if len(rs.resumeBackend.conversation) > 0 {
+				nodeInput[delegate.ResumeConversationKey] = rs.resumeBackend.conversation
+			}
+			if rs.resumeBackend.sessionID != "" {
+				nodeInput[delegate.SessionIDKey] = rs.resumeBackend.sessionID
+			}
+			rs.resumeBackend = resumeBackendState{}
+		}
+
 		// --- Execute node ---
 		// Thread the run ID into ctx so the executor can locate
 		// per-node session state (used by Compactor implementations
@@ -947,6 +1031,13 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 			e.logger.Error("failed to save checkpoint after node %q: %v", currentNodeID, err)
 		}
 
+		// Phase 2: snapshot the worktree at this node boundary so the
+		// Fork API's rewind_code=true mode has an anchor to git reset
+		// back to. Best-effort — a failure logs at warn and continues
+		// (the rest of the run is unaffected, the only loss is the
+		// fork-rewind capability for THIS node).
+		e.snapshotAtNodeBoundary(rs, currentNodeID)
+
 		// --- Select outgoing edge ---
 		nextNodeID, err := e.selectEdgeRS(rs, currentNodeID, output)
 		if err != nil {
@@ -954,6 +1045,23 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 		}
 
 		currentNodeID = nextNodeID
+	}
+}
+
+// snapshotAtNodeBoundary records a per-node git snapshot when the run
+// is using a worktree. No-op outside worktree mode (the snapshot ref
+// machinery is only meaningful when there's a dedicated worktree to
+// reset later). The ref name is deterministic from
+// (runID, nodeID, loopIter) so the Fork API can locate it later
+// without consulting the engine.
+func (e *Engine) snapshotAtNodeBoundary(rs *runState, nodeID string) {
+	if e.workDir == "" || !rs.isWorktree {
+		return
+	}
+	loopIter := e.currentLoopIteration(nodeID, rs.loopCounters)
+	ref := nodeSnapshotRef(rs.runID, nodeID, loopIter)
+	if _, err := snapshotWorktree(e.workDir, ref); err != nil && e.logger != nil {
+		e.logger.Warn("snapshot: node %q iter %d: %v", nodeID, loopIter, err)
 	}
 }
 

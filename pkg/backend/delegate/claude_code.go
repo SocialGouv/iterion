@@ -57,12 +57,42 @@ type ClaudeCodeBackend struct {
 }
 
 // Execute runs the claude CLI with the given task using the Claude Agent SDK.
-func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, error) {
+func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Result, err error) {
 	if task.WorkDir != "" {
 		if err := validateWorkDir(task.WorkDir, task.BaseDir); err != nil {
 			return Result{}, err
 		}
 	}
+	// Fire OnTurnFinished once on the way out, when the runtime wired
+	// the hook and the delegate produced a SessionID. Wrapped in a
+	// defer so every successful return path (Pass 1, recovery, two-
+	// pass, ask_user escalation) flows through the same notification —
+	// avoiding the maintenance trap of remembering to call it before
+	// every `return result, ...`. Skipped on hard errors with no
+	// captured session (rm.SessionID empty).
+	defer func() {
+		if task.Hooks.OnTurnFinished == nil {
+			return
+		}
+		if result.SessionID == "" {
+			return
+		}
+		text := ""
+		if s := result.Output["_assistant_text"]; s != nil {
+			text, _ = s.(string)
+		}
+		task.Hooks.OnTurnFinished(TurnFinishedInfo{
+			SessionID:    result.SessionID,
+			FinishReason: "", // claude_code SDK doesn't surface a granular reason at Result level
+			Text:         text,
+			// Token totals come from Result.Tokens (in+out) but the
+			// claude_code path doesn't split them apart — the hooks
+			// layer logs the total under InputTokens for now; a future
+			// refinement would track input/output split through the
+			// stream parser.
+			InputTokens: result.Tokens,
+		})
+	}()
 
 	var opts []claudesdk.Option
 
@@ -361,7 +391,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (Result, err
 		return errResult, fmt.Errorf("delegate: claude-code failed: %w", streamErr)
 	}
 
-	result := Result{
+	result = Result{
 		Duration:           duration,
 		ExitCode:           0,
 		Stderr:             stderrBuf.String(),

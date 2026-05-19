@@ -2,17 +2,41 @@ package model
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/tooldisplay"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+// sha256Hex returns the hex-encoded SHA-256 of s, or "" when s is
+// empty. Used as the TurnCheckpoint.TextDigest fingerprint so the
+// studio's per-node timeline can detect identical-output retries
+// without loading the full text payload.
+func sha256Hex(s string) string {
+	if s == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
+// turnMessagesRef names the sibling JSON blob a TurnCheckpoint's
+// MessagesRef points at. Deterministic from (nodeID, loopIter, turn)
+// so the filesystem TurnStore can synthesise the path from the
+// checkpoint metadata alone.
+func turnMessagesRef(nodeID string, loopIter, turn int) string {
+	return nodeID + "/" + strconv.Itoa(loopIter) + "/" + strconv.Itoa(turn) + ".messages.json"
+}
 
 // maxFieldSize is the maximum byte length for a single content field in an event.
 // Fields exceeding this limit are truncated to stay within the 10 MB event line limit.
@@ -52,6 +76,17 @@ type AttachmentWriter interface {
 // layer falls back to inline truncation in that case.
 type ToolBlobWriter interface {
 	WriteToolBlob(ctx context.Context, runID, toolUseID, kind string, body []byte) (int64, error)
+}
+
+// TurnWriter is the optional capability filesystem stores satisfy for
+// the per-LLM-turn snapshot persistence path. Each tool-loop iteration
+// completing inside the claw backend (or a delegate-call boundary for
+// claude_code) is persisted as a store.TurnCheckpoint so the studio's
+// timeline + the Fork API have a stable anchor. Mongo (cloud) stores
+// don't satisfy it today; the hook layer skips the write when the
+// capability is missing rather than failing the LLM call.
+type TurnWriter interface {
+	WriteTurn(ctx context.Context, t *store.TurnCheckpoint) error
 }
 
 // persistToolPayload writes the given content into the event `data` map
@@ -106,6 +141,7 @@ func persistToolPayload(ctx context.Context, blobSink ToolBlobWriter, runID, too
 func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string, logger *iterlog.Logger) EventHooks {
 	attachmentSink, _ := emitter.(AttachmentWriter)
 	toolBlobSink, _ := emitter.(ToolBlobWriter)
+	turnSink, _ := emitter.(TurnWriter)
 	return EventHooks{
 		OnLLMPrompt: func(nodeID string, systemPrompt string, userMessage string) {
 			data := map[string]interface{}{
@@ -269,6 +305,56 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 			} else {
 				logger.Logf(iterlog.LevelInfo, "📊", "Step %d [%s]: %d in / %d out tokens",
 					step.Number, nodeID, step.InputTokens, step.OutputTokens)
+			}
+		},
+
+		OnLLMTurnCapture: func(nodeID string, info LLMTurnCaptureInfo) {
+			if turnSink == nil {
+				// Cloud stores don't satisfy TurnWriter yet; skip silently
+				// so the timeline + fork features simply don't light up
+				// for those runs (the rest of the LLM loop is unaffected).
+				return
+			}
+			iter := LoopIterationFromContext(ctx)
+			toolCalls := make([]store.TurnToolCall, len(info.ToolCalls))
+			for i, tc := range info.ToolCalls {
+				toolCalls[i] = store.TurnToolCall{
+					Name:         tc.Name,
+					InputPreview: iterlog.Truncate(string(tc.Input), toolInlineThreshold),
+				}
+			}
+			backend := info.Backend
+			if backend == "" {
+				backend = delegate.BackendClaw
+			}
+			turnIdx := info.Step - 1
+			if turnIdx < 0 {
+				turnIdx = 0
+			}
+			turn := &store.TurnCheckpoint{
+				RunID:        runID,
+				NodeID:       nodeID,
+				LoopIter:     iter,
+				TurnIndex:    turnIdx,
+				Backend:      backend,
+				FinishReason: info.FinishReason,
+				ToolCalls:    toolCalls,
+				TextDigest:   sha256Hex(info.Text),
+				Usage: store.TurnUsage{
+					InputTokens:  info.InputTokens,
+					OutputTokens: info.OutputTokens,
+				},
+				SessionID: info.SessionID,
+			}
+			// Materialise the conversation bytes only when we're
+			// about to persist them — the marshal is O(N) in
+			// transcript length, and the hook fires on every turn.
+			if conv := info.MarshalConversation(); len(conv) > 0 {
+				turn.MessagesRef = turnMessagesRef(nodeID, iter, turnIdx)
+				turn.Messages = conv
+			}
+			if err := turnSink.WriteTurn(ctx, turn); err != nil {
+				logger.Warn("turn capture [%s] step %d: %v", nodeID, info.Step, err)
 			}
 		},
 

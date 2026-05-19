@@ -55,7 +55,21 @@ const PAUSED: StatusClasses = {
   text: "text-fg-default",
   badgeVariant: "warning",
   glyph: "⏸",
-  label: "Paused",
+  label: "Paused (input)",
+};
+
+// PAUSED_OPERATOR sits between RUNNING and PAUSED visually: same
+// pause glyph, but an info (cyan) palette to flag that no human form
+// is required — the run is just frozen at an operator-initiated
+// checkpoint. Keeps the canvas legible when a user pauses a run mid-
+// flight to inspect or fork it.
+const PAUSED_OPERATOR: StatusClasses = {
+  bg: "bg-info-soft",
+  border: "border-info/60",
+  text: "text-fg-default",
+  badgeVariant: "info",
+  glyph: "⏸",
+  label: "Paused (operator)",
 };
 
 const CANCELLED: StatusClasses = {
@@ -105,6 +119,7 @@ const TABLE: Record<UnifiedStatus, StatusClasses> = {
   failed: FAILED,
   failed_resumable: FAILED_RESUMABLE,
   paused_waiting_human: PAUSED,
+  paused_operator: PAUSED_OPERATOR,
   cancelled: CANCELLED,
   skipped: SKIPPED,
   queued: QUEUED,

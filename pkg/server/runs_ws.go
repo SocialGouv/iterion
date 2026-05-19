@@ -57,6 +57,7 @@ const (
 	wsTypeSubscribe      = "subscribe"
 	wsTypeUnsubscribe    = "unsubscribe"
 	wsTypeCancel         = "cancel"
+	wsTypePause          = "pause"
 	wsTypeAnswer         = "answer"
 	wsTypeSubscribeLogs  = "subscribe_logs"
 	wsTypeUnsubscribeLog = "unsubscribe_logs"
@@ -104,7 +105,8 @@ type wsAnswerRequest struct {
 }
 
 type wsQueueMessageRequest struct {
-	Text string `json:"text"`
+	Text   string   `json:"text"`
+	Skills []string `json:"skills,omitempty"`
 }
 
 type wsCancelQueuedMessageRequest struct {
@@ -309,6 +311,8 @@ func (c *runConn) dispatch(env runWSEnvelope) {
 		c.handleUnsubscribeLogs(env)
 	case wsTypeCancel:
 		c.handleCancel(env)
+	case wsTypePause:
+		c.handlePause(env)
 	case wsTypeAnswer:
 		c.handleAnswer(env)
 	case wsTypeQueueMessage:
@@ -821,6 +825,32 @@ func (c *runConn) handleCancel(env runWSEnvelope) {
 	c.sendAck(env.AckID)
 }
 
+// handlePause is the WS counterpart of POST /api/runs/{id}/pause.
+// Soft-pause: signals the engine to interrupt at the next safe
+// boundary, save a checkpoint, and transition to paused_operator —
+// resumable like a cancelled run. Idempotent.
+func (c *runConn) handlePause(env runWSEnvelope) {
+	if c.xStore != nil {
+		c.sendError("cross_store_readonly", "pause is not available for cross-store runs — open the owning daemon to pause", env.AckID)
+		return
+	}
+	if c.server.logger != nil {
+		c.server.logger.Info("server: pause run %q via WS from %s", c.runID, c.conn.RemoteAddr())
+	}
+	if err := c.server.runs.Pause(c.runID); err != nil {
+		if errors.Is(err, runview.ErrRunNotActive) {
+			// The run isn't held in this process — either terminal or
+			// running cross-process (cloud). Studio hides the Pause
+			// button in those cases; this protects against races.
+			c.sendError("not_active", "run is not active in this process", env.AckID)
+			return
+		}
+		c.sendError("pause_failed", err.Error(), env.AckID)
+		return
+	}
+	c.sendAck(env.AckID)
+}
+
 func (c *runConn) handleAnswer(env runWSEnvelope) {
 	if c.xStore != nil {
 		c.sendError("cross_store_readonly", "answer is not available for cross-store runs — open the owning daemon to answer", env.AckID)
@@ -882,7 +912,11 @@ func (c *runConn) handleQueueMessage(env runWSEnvelope) {
 		c.sendError("empty_message", "text is required", env.AckID)
 		return
 	}
-	msg, err := c.server.runs.QueueMessage(c.authCtx(), c.runID, req.Text)
+	var qopts []runview.QueueMessageOption
+	if len(req.Skills) > 0 {
+		qopts = append(qopts, runview.WithMessageSkills(req.Skills))
+	}
+	msg, err := c.server.runs.QueueMessage(c.authCtx(), c.runID, req.Text, qopts...)
 	if err != nil {
 		c.sendError("queue_failed", err.Error(), env.AckID)
 		return
