@@ -1,5 +1,5 @@
 import { useCallback, type KeyboardEvent } from "react";
-import { useDocumentStore } from "@/store/document";
+import { useDocumentStore, useDocumentStoreInstance } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { useUIStore } from "@/store/ui";
 import { makeEdgeId, isAuxiliaryNodeId } from "@/lib/documentToGraph";
@@ -45,6 +45,7 @@ interface CanvasKeyboardDeps {
 }
 
 export function useCanvasKeyboard(deps: CanvasKeyboardDeps): (e: KeyboardEvent) => void {
+  const docStore = useDocumentStoreInstance();
   const document = useDocumentStore((s) => s.document);
   const removeNode = useDocumentStore((s) => s.removeNode);
   const removeEdge = useDocumentStore((s) => s.removeEdge);
@@ -101,7 +102,7 @@ export function useCanvasKeyboard(deps: CanvasKeyboardDeps): (e: KeyboardEvent) 
       // hammering Ctrl+Z to back out of a copy/paste.
       if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey && !isInput) {
         e.preventDefault();
-        if (useDocumentStore.getState().canUndo()) {
+        if (docStore.getState().canUndo()) {
           undo();
           addToast("Undid last change", "info");
         } else {
@@ -111,7 +112,7 @@ export function useCanvasKeyboard(deps: CanvasKeyboardDeps): (e: KeyboardEvent) 
       }
       if ((e.ctrlKey || e.metaKey) && (e.key === "y" || (e.key === "z" && e.shiftKey)) && !isInput) {
         e.preventDefault();
-        if (useDocumentStore.getState().canRedo()) {
+        if (docStore.getState().canRedo()) {
           redo();
           addToast("Redid last change", "info");
         } else {

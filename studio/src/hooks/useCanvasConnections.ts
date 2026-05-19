@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import type { Connection, Edge as FlowEdge } from "@xyflow/react";
-import { useDocumentStore } from "@/store/document";
+import { useDocumentStore, useDocumentStoreInstance } from "@/store/document";
 import { useUIStore } from "@/store/ui";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { findNodeDecl } from "@/lib/defaults";
@@ -82,6 +82,7 @@ function handleSubNodeConnect(
 }
 
 export function useCanvasConnections() {
+  const docStore = useDocumentStoreInstance();
   const document = useDocumentStore((s) => s.document);
   const addEdge = useDocumentStore((s) => s.addEdge);
   const applyBatch = useDocumentStore((s) => s.applyBatch);
@@ -177,7 +178,7 @@ export function useCanvasConnections() {
       if (!source || !document || !activeWorkflow) return;
 
       // Read fresh state to avoid stale closure after addEdge in onConnect
-      const freshDoc = useDocumentStore.getState().document;
+      const freshDoc = docStore.getState().document;
       const freshWorkflow = freshDoc?.workflows.find((w) => w.name === activeWorkflow.name);
       const currentEdgeCount = freshWorkflow?.edges?.length ?? 0;
       if (currentEdgeCount > edgeCountBeforeConnectRef.current) return;

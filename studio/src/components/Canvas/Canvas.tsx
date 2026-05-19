@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { ReactFlow, Background, Controls, MiniMap, useReactFlow } from "@xyflow/react";
 import type { NodeMouseHandler, EdgeMouseHandler, Node, Viewport } from "@xyflow/react";
-import { useDocumentStore } from "@/store/document";
+import { useDocumentStore, useDocumentStoreInstance } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { useUIStore } from "@/store/ui";
 import { useThemeStore } from "@/store/theme";
@@ -51,6 +51,7 @@ export default function Canvas() {
   const addFromLibrary = useAddFromLibrary();
   const addSubNode = useAddSubNode();
   const allLibraryItems = useLibraryStore(selectAllItems);
+  const docStore = useDocumentStoreInstance();
   const document = useDocumentStore((s) => s.document);
   const removeNode = useDocumentStore((s) => s.removeNode);
   const duplicateNode = useDocumentStore((s) => s.duplicateNode);
@@ -412,10 +413,10 @@ export default function Canvas() {
           selectedNodeId,
           fitView: () => fitView({ padding: 0.2 }),
           navigate: setLocation,
-          undo: () => useDocumentStore.getState().undo(),
-          redo: () => useDocumentStore.getState().redo(),
-          duplicate: (id) => useDocumentStore.getState().duplicateNode(id),
-          remove: (id) => useDocumentStore.getState().removeNode(id),
+          undo: () => docStore.getState().undo(),
+          redo: () => docStore.getState().redo(),
+          duplicate: (id) => docStore.getState().duplicateNode(id),
+          remove: (id) => docStore.getState().removeNode(id),
           toggleExpanded: () => useUIStore.getState().toggleExpanded(),
           toggleLayer: (layer) => useUIStore.getState().toggleLayer(layer),
           toggleLibrary: () => useUIStore.getState().toggleLibraryPanel(),

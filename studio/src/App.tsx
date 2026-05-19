@@ -32,8 +32,20 @@ import { onDesktopEvent } from "@/lib/desktopBridge";
 import { DesktopEvent } from "@/lib/desktopEvents";
 import { AuthProvider, useAuth } from "@/auth/AuthContext";
 import { setUnauthorizedHandler } from "@/api/client";
-import { useDocumentStore } from "@/store/document";
+import { getOrCreateDocumentStore } from "@/store/document";
+import { useTabsStore } from "@/store/tabs";
 import { useServerInfoStore } from "@/store/serverInfo";
+
+// activeEditorDocStore looks up the document store for the active
+// editor tab via the tabs+document registries. Returns null when the
+// active tab isn't an editor (Home, Runs, etc.) so menu shortcuts
+// silently no-op rather than mutating a stale global default.
+function activeEditorDocStore() {
+  const { tabs, activeTabId } = useTabsStore.getState();
+  const active = tabs.find((t) => t.id === activeTabId);
+  if (active?.kind !== "editor") return null;
+  return getOrCreateDocumentStore(active.id);
+}
 
 export default function App() {
   return (
@@ -102,8 +114,12 @@ function AuthedApp() {
         setSettingsTab("about");
         setSettingsOpen(true);
       }),
-      onDesktopEvent(DesktopEvent.MenuUndo, () => useDocumentStore.getState().undo()),
-      onDesktopEvent(DesktopEvent.MenuRedo, () => useDocumentStore.getState().redo()),
+      // Menu undo/redo route to the active editor tab's per-tab
+      // document store. With multi-tab editors, a global singleton
+      // would mutate the wrong document; the registry lookup keeps
+      // the action scoped to whatever the user is looking at.
+      onDesktopEvent(DesktopEvent.MenuUndo, () => activeEditorDocStore()?.getState().undo()),
+      onDesktopEvent(DesktopEvent.MenuRedo, () => activeEditorDocStore()?.getState().redo()),
     ];
     // Listen for the SPA-emitted open-switcher event from ProjectLabel
     // (clicking the project chip in the toolbar / run header).

@@ -1,4 +1,5 @@
-import { create } from "zustand";
+import { createContext, useContext, type ReactNode, createElement } from "react";
+import { create, useStore } from "zustand";
 import type {
   IterDocument,
   AgentDecl,
@@ -205,7 +206,14 @@ function renameNodeInGroups(comments: Comment[], oldName: string, newName: strin
   });
 }
 
-export const useDocumentStore = create<DocumentState>((set, get) => ({
+// createDocumentStore builds a fresh Zustand store with the existing
+// reducer/action surface. Each editor tab owns its own store so two
+// .iter files can be edited side-by-side with independent dirty
+// state, undo history, and diagnostics. The module-level
+// `documentStore` façade preserves the legacy singleton entry point
+// for App-level callers and imperative side-effects.
+export function createDocumentStore() {
+  return create<DocumentState>((set, get) => ({
   document: normalize(createEmptyDocument()),
   diagnostics: [],
   warnings: [],
@@ -637,4 +645,64 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       });
       return { document: { ...s.document, comments }, ...pushHistory(s) };
     }),
-}));
+  }));
+}
+
+export type DocumentStore = ReturnType<typeof createDocumentStore>;
+
+// Default store used by call sites that don't have a DocumentStoreProvider
+// in their React tree (App-level hooks, useFileWatcher in single-tab mode,
+// etc.). Per-editor-tab stores are created via EditorTabHost and override
+// this default for components rendered inside that subtree.
+const defaultDocumentStore = createDocumentStore();
+
+const DocumentStoreContext = createContext<DocumentStore | null>(null);
+
+interface DocumentStoreProviderProps {
+  store: DocumentStore;
+  children: ReactNode;
+}
+
+export function DocumentStoreProvider({ store, children }: DocumentStoreProviderProps) {
+  return createElement(DocumentStoreContext.Provider, { value: store }, children);
+}
+
+export function useDocumentStoreInstance(): DocumentStore {
+  return useContext(DocumentStoreContext) ?? defaultDocumentStore;
+}
+
+// useDocumentStore preserves the (s) => x selector API from the singleton
+// era so call sites don't change. Inside a Provider it reads from that
+// provider's store; outside, it falls back to the module-level default.
+export function useDocumentStore<T>(selector: (state: DocumentState) => T): T {
+  return useStore(useDocumentStoreInstance(), selector);
+}
+
+// Imperative façade for non-React callers. Pre-tab callers used
+// `useDocumentStore.getState()` — that pattern is preserved via this
+// helper wrapping the default store. Per-tab stores are reached via
+// useDocumentStoreInstance() from within an EditorTabHost subtree.
+export const documentStore = {
+  getState: () => defaultDocumentStore.getState(),
+  setState: defaultDocumentStore.setState,
+  subscribe: defaultDocumentStore.subscribe,
+};
+
+// Registry of stores keyed by tab id. EditorTabHost looks up its
+// store via getOrCreateDocumentStore(tabId) on mount; closeTab in
+// useTabsStore is responsible for calling disposeDocumentStore so
+// the store is reclaimed once the tab is gone.
+const REGISTRY = new Map<string, DocumentStore>();
+
+export function getOrCreateDocumentStore(tabId: string): DocumentStore {
+  let store = REGISTRY.get(tabId);
+  if (!store) {
+    store = createDocumentStore();
+    REGISTRY.set(tabId, store);
+  }
+  return store;
+}
+
+export function disposeDocumentStore(tabId: string): void {
+  REGISTRY.delete(tabId);
+}

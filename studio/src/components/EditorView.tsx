@@ -12,7 +12,7 @@ import SubNodePalette from "@/components/Canvas/SubNodePalette";
 import SourceView from "@/components/SourceView/SourceView";
 import { DesktopOnlyNotice, IconButton } from "@/components/ui";
 import { useUIStore } from "@/store/ui";
-import { useDocumentStore } from "@/store/document";
+import { useDocumentStoreInstance } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { useAutoValidation } from "@/hooks/useAutoValidation";
 import { useAutoOpenDiagnosticsOnError } from "@/hooks/useAutoOpenDiagnosticsOnError";
@@ -22,6 +22,10 @@ import { DISCARD_CHANGES_PROMPT } from "@/lib/copy";
 import * as api from "@/api/client";
 
 export default function EditorView() {
+  // The active per-tab document store (or the module default when this
+  // view is mounted outside an EditorTabHost — e.g. a deep-linked
+  // /editor route in the fallback Switch).
+  const docStoreInst = useDocumentStoreInstance();
   const sourceViewOpen = useUIStore((s) => s.sourceViewOpen);
   const diagnosticsPanelOpen = useUIStore((s) => s.diagnosticsPanelOpen);
   const expanded = useUIStore((s) => s.expanded);
@@ -65,7 +69,7 @@ export default function EditorView() {
     }
     handledSearch.current = search;
 
-    const docStore = useDocumentStore.getState();
+    const docStore = docStoreInst.getState();
     const alreadyOpen = file && docStore.currentFilePath === file;
 
     const applyNodeFocus = () => {
@@ -81,7 +85,7 @@ export default function EditorView() {
       }
       try {
         const result = await api.openFile(file!);
-        const ds = useDocumentStore.getState();
+        const ds = docStoreInst.getState();
         ds.setDocument(result.document);
         ds.setCurrentFilePath(result.path);
         ds.setCurrentSource(result.source);
@@ -113,7 +117,7 @@ export default function EditorView() {
 
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
-      if (useDocumentStore.getState().isDirty()) {
+      if (docStoreInst.getState().isDirty()) {
         e.preventDefault();
       }
     };

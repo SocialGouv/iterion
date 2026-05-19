@@ -1,6 +1,7 @@
 import type { Monaco } from "@monaco-editor/react";
 import type { editor, languages, Position } from "monaco-editor";
-import { useDocumentStore } from "@/store/document";
+import { getOrCreateDocumentStore } from "@/store/document";
+import { useTabsStore } from "@/store/tabs";
 import { useUIStore } from "@/store/ui";
 import { computeRefs, REF_GROUP_ORDER } from "@/lib/refCompletion";
 import { ITER_LANGUAGE_ID } from "@/lib/iterLanguage";
@@ -27,7 +28,15 @@ export function registerIterCompletionProvider(monaco: Monaco) {
   monaco.languages.registerCompletionItemProvider(ITER_LANGUAGE_ID, {
     triggerCharacters: ["{", "."],
     provideCompletionItems(model: editor.ITextModel, position: Position) {
-      const doc = useDocumentStore.getState().document;
+      // The completion provider is registered once globally but the
+      // "current" document depends on which editor tab is focused —
+      // each tab has its own document store. Resolve via the tabs
+      // store + registry on every invocation so multi-tab editing
+      // never feeds suggestions from a stale singleton.
+      const { tabs, activeTabId } = useTabsStore.getState();
+      const active = tabs.find((t) => t.id === activeTabId);
+      if (active?.kind !== "editor") return { suggestions: [] };
+      const doc = getOrCreateDocumentStore(active.id).getState().document;
       const activeWorkflowName = useUIStore.getState().activeWorkflowName ?? undefined;
       if (!doc) return { suggestions: [] };
 
