@@ -1753,3 +1753,142 @@ workflow test:
 	expectNoDiag(t, r, DiagRefFieldNotInSchema)
 	expectNoDiag(t, r, DiagRefNodeNoSchema)
 }
+
+// ---------------------------------------------------------------------------
+// C060 — Playwright MCP requires a browser-capable sandbox image
+// ---------------------------------------------------------------------------
+
+func TestValidatePlaywrightMCP_SandboxWithoutBrowserImage(t *testing.T) {
+	// A workflow that uses a sandbox image NOT marked as browser-capable
+	// must trigger C060 when an MCP server declares the Playwright
+	// package.
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+mcp_server pw:
+  command: "npx"
+  args: ["-y", "@playwright/mcp@latest"]
+
+agent a:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a
+  sandbox:
+    image: "ghcr.io/socialgouv/iterion-sandbox-slim:1.0.0"
+  a -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagPlaywrightNeedsBrowserImage)
+}
+
+func TestValidatePlaywrightMCP_BrowserImageSatisfiesRequirement(t *testing.T) {
+	// Same setup but the sandbox image name signals browser-capable —
+	// no diagnostic should fire.
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+mcp_server pw:
+  command: "npx"
+  args: ["-y", "@playwright/mcp@latest"]
+
+agent a:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a
+  sandbox:
+    image: "ghcr.io/socialgouv/iterion-sandbox-browser:1.0.0"
+  a -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagPlaywrightNeedsBrowserImage)
+}
+
+func TestValidatePlaywrightMCP_NoSandboxSkipsCheck(t *testing.T) {
+	// Host-mode workflow: operator is responsible for chromium install.
+	// C060 must NOT fire.
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+mcp_server pw:
+  command: "npx"
+  args: ["-y", "@playwright/mcp@latest"]
+
+agent a:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a
+  a -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagPlaywrightNeedsBrowserImage)
+}
+
+func TestValidatePlaywrightMCP_NonPlaywrightCommandNotFlagged(t *testing.T) {
+	// A non-Playwright MCP server with a sandbox must not be flagged
+	// (the matcher is intentionally narrow).
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+mcp_server other:
+  command: "npx"
+  args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+
+agent a:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+workflow test:
+  entry: a
+  sandbox:
+    image: "ghcr.io/socialgouv/iterion-sandbox-slim:1.0.0"
+  a -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagPlaywrightNeedsBrowserImage)
+}
