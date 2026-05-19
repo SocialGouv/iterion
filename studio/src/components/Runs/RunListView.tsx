@@ -11,7 +11,6 @@ import { Input } from "@/components/ui/Input";
 import { LiveDot } from "@/components/ui/LiveDot";
 import type { RunStatus, RunSummary } from "@/api/runs";
 import { formatRelative } from "@/lib/format";
-import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import { useDebounce } from "@/hooks/useDebounce";
 import { useRuns } from "@/hooks/useRuns";
 import { STATUS_VARIANT, labelForStatus } from "./runStatusMeta";
@@ -109,19 +108,6 @@ export default function RunListView() {
     setQueryInput("");
     setSince("all");
   }, []);
-
-  useHeaderSlot({
-    left: (
-      <span className="text-xs font-medium text-fg-default">Runs</span>
-    ),
-    right: (
-      <span className="text-xs text-fg-subtle">
-        {filtersActive
-          ? `${filteredRuns.length} of ${runs.length}`
-          : `${runs.length} total`}
-      </span>
-    ),
-  });
 
   return (
     <div className="h-full flex flex-col overflow-hidden bg-surface-1 text-fg-default">
