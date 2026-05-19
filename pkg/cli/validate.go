@@ -161,17 +161,3 @@ func RunValidate(path string, p *Printer) error {
 	}
 	return nil
 }
-
-// compileWorkflow is a shared helper that parses and compiles a .iter file.
-// Returns the compiled workflow or an error with diagnostics. Thin
-// alias over runview.CompileWorkflow.
-func compileWorkflow(path string) (*ir.Workflow, error) {
-	return runview.CompileWorkflow(path)
-}
-
-// compileWorkflowWithHash is like compileWorkflow but also returns a SHA-256
-// hash of the .iter source, used to detect workflow changes on resume.
-// Thin alias over runview.CompileWorkflowWithHash.
-func compileWorkflowWithHash(path string) (*ir.Workflow, string, error) {
-	return runview.CompileWorkflowWithHash(path)
-}

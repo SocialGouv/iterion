@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/runview"
 )
 
 // DiagramOptions holds options for the diagram command.
@@ -27,7 +28,7 @@ func RunDiagram(opts DiagramOptions, p *Printer) error {
 	}
 	opts.File = ResolveRecipePath(opts.File)
 
-	wf, err := compileWorkflow(opts.File)
+	wf, err := runview.CompileWorkflow(opts.File)
 	if err != nil {
 		return err
 	}
