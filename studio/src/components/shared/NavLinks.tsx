@@ -235,7 +235,39 @@ function SidebarTabRow({
   icon: React.ReactNode;
 }) {
   const closeTab = useTabsStore((s) => s.closeTab);
+  const [, setLocation] = useLocation();
   const isActive = matchesCurrent(tab, currentLocation);
+
+  const handleClose = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const wasViewing = matchesCurrent(tab, currentLocation);
+    closeTab(tab.id);
+    if (!wasViewing) return;
+    // The URL still points at the just-closed tab; reroute to the
+    // sibling tab the store fell back to (or the section's list view
+    // when no tabs of this kind remain).
+    const next = useTabsStore.getState();
+    if (tab.kind === "run") {
+      const fallback = next.tabs.find(
+        (t) => t.id === next.activeRunTabId && t.kind === "run",
+      );
+      const fallbackRunId = fallback?.params.runId;
+      setLocation(
+        fallbackRunId ? `/runs/${encodeURIComponent(fallbackRunId)}` : "/runs",
+        { replace: true },
+      );
+    } else if (tab.kind === "editor") {
+      const fallback = next.tabs.find(
+        (t) => t.id === next.activeEditorTabId && t.kind === "editor",
+      );
+      const fallbackFile = fallback?.params.file;
+      setLocation(
+        fallbackFile ? `/editor?file=${encodeURIComponent(fallbackFile)}` : "/editor",
+        { replace: true },
+      );
+    }
+  };
+
   return (
     <div
       className={`group inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] rounded ${
@@ -248,10 +280,7 @@ function SidebarTabRow({
       </Link>
       <button
         type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          closeTab(tab.id);
-        }}
+        onClick={handleClose}
         className="inline-flex items-center justify-center w-4 h-4 rounded text-fg-subtle hover:text-fg-default hover:bg-surface-3 opacity-0 group-hover:opacity-100 focus:opacity-100"
         title="Close tab"
         aria-label={`Close tab ${tab.label}`}
