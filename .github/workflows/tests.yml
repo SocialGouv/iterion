@@ -208,7 +208,7 @@ jobs:
           kind load docker-image "${IMG}" --name "${KIND_CLUSTER}"
 
       - name: Set up Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
 
       - name: Build chart dependencies
         # Sub-charts (mongodb, nats, minio) are declared in Chart.yaml but
@@ -386,7 +386,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
       - name: helm dependency update
         run: helm dependency update charts/iterion
       - name: helm lint (values-dev.yaml)
