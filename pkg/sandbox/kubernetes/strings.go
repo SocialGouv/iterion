@@ -43,8 +43,10 @@ func toLowerASCII(s string) string {
 	return string(out)
 }
 
-// replaceUnderscores swaps "_" → "-" so iterion-derived run IDs
-// (e.g. "run_1777989944581") fit DNS-1123 subdomain rules.
+// replaceUnderscores swaps "_" → "-" so legacy run IDs that predate
+// the UUIDv7 switch (e.g. "run_1777989944581") fit DNS-1123 subdomain
+// rules. UUIDv7 strings have no underscores so this is a no-op for
+// new runs.
 func replaceUnderscores(s string) string {
 	return strings.ReplaceAll(s, "_", "-")
 }

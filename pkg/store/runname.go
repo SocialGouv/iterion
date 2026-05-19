@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+
+	"github.com/google/uuid"
 )
 
 // runNameAdjectives is the curated, sober adjective pool used to derive
@@ -48,4 +50,17 @@ func GenerateRunName(seed string) string {
 	noun := runNameNouns[binary.BigEndian.Uint16(h[2:4])%uint16(len(runNameNouns))]
 	suffix := hex.EncodeToString(h[4:6])
 	return adj + "-" + noun + "-" + suffix
+}
+
+// GenerateRunID returns a new UUIDv7 run identifier. Lexicographic
+// order matches creation order.
+func GenerateRunID() string {
+	id, err := uuid.NewV7()
+	if err != nil {
+		// crypto/rand failure: the process is in an unrecoverable
+		// state and silently returning the zero UUID would let
+		// concurrent callers collide on the same id.
+		panic("iterion: failed to mint run id: " + err.Error())
+	}
+	return id.String()
 }

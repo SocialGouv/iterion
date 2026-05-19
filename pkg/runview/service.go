@@ -1480,7 +1480,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	}
 	runID := spec.RunID
 	if runID == "" {
-		runID = fmt.Sprintf("run_%d", time.Now().UnixMilli())
+		runID = store.GenerateRunID()
 	}
 
 	// Cloud-mode: hand off to the runner pool via the queue. The

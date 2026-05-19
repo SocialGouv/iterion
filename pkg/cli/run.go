@@ -109,7 +109,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	// Resolve run ID.
 	runID := opts.RunID
 	if runID == "" {
-		runID = fmt.Sprintf("run_%d", time.Now().UnixMilli())
+		runID = store.GenerateRunID()
 	}
 
 	// Optional Prometheus exporter (env-controlled, see docs/observability/).

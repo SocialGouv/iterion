@@ -63,7 +63,11 @@ function defaultLabelFor(kind: TabKind, params: Record<string, string>): string 
   if (kind === "editor") {
     return params.file ? (params.file.split(/[/\\]/).pop() ?? "Editor") : "Editor";
   }
-  return params.runId ? params.runId.slice(0, 8) : "Run";
+  // For UUIDv7 run IDs the leading chars encode the timestamp and
+  // are nearly identical between runs started close in time; the
+  // trailing chars are random and distinguishing. Legacy "run_<ms>"
+  // IDs also have their distinctive bits at the tail.
+  return params.runId ? params.runId.slice(-8) : "Run";
 }
 
 export function paramsEqual(

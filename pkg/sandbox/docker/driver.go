@@ -456,8 +456,9 @@ func (r *Run) runPostCreate(ctx context.Context, snippet string) error {
 // Stable across iterion server restarts so a `docker ps` listing keeps
 // the same identifiers visible to the operator.
 func containerNameFor(runID string) string {
-	// Run IDs are already filesystem-safe (e.g. "run_1777989944581").
-	// Length cap: docker truncates names beyond 64 chars.
+	// Run IDs are already filesystem-safe — UUIDv7 strings for new
+	// runs, "run_<ms>" for legacy ones. Length cap: docker truncates
+	// names beyond 64 chars.
 	name := "iterion-" + runID
 	if len(name) > 64 {
 		name = name[:64]

@@ -399,9 +399,10 @@ func (r *Run) runPostCreate(ctx context.Context, snippet string) error {
 // caps name length at 253 chars, but DNS-1123 subdomain rules cap
 // label segments at 63. We keep names well under that.
 func podNameFor(runID string) string {
-	// k8s names must be lowercase alphanumeric + dashes; runIDs
-	// from iterion are filesystem-safe ("run_1777..."). Replace
-	// underscores with dashes.
+	// k8s names must be lowercase alphanumeric + dashes. New run IDs
+	// are UUIDv7 strings (already DNS-1123 safe). Legacy IDs from
+	// before the UUID switch had the form "run_<ms>" — lowercase
+	// + underscore replacement covers both.
 	n := toLowerASCII("iterion-run-" + runID)
 	n = replaceUnderscores(n)
 	if len(n) > 63 {

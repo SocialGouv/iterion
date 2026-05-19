@@ -8,6 +8,11 @@ import (
 
 var runNameFormat = regexp.MustCompile(`^[a-z]+-[a-z]+-[0-9a-f]{4}$`)
 
+// uuidV7Format matches the canonical hyphenated form of UUIDv7. The
+// third group must start with `7` (version) and the fourth must start
+// with one of `8`, `9`, `a`, `b` (RFC 9562 variant bits).
+var uuidV7Format = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
 func TestGenerateRunName_Deterministic(t *testing.T) {
 	seeds := []string{
 		"",
@@ -83,6 +88,21 @@ func TestRunNameLists_Sized(t *testing.T) {
 	}
 	if len(runNameNouns) > 65535 {
 		t.Errorf("nouns must fit a uint16 mod (got %d)", len(runNameNouns))
+	}
+}
+
+func TestGenerateRunID_FormatAndUniqueness(t *testing.T) {
+	const n = 1000
+	seen := make(map[string]struct{}, n)
+	for i := 0; i < n; i++ {
+		id := GenerateRunID()
+		if !uuidV7Format.MatchString(id) {
+			t.Fatalf("id %q does not match UUIDv7 format", id)
+		}
+		if _, dup := seen[id]; dup {
+			t.Fatalf("collision: %q produced twice in %d calls", id, n)
+		}
+		seen[id] = struct{}{}
 	}
 }
 

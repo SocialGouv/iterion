@@ -41,7 +41,7 @@ reconciler on next server boot.
 ```jsonc
 {
   "format_version": 1,               // integer, current = 1
-  "id": "run_1234567890",
+  "id": "01938f4c-78b3-7d2e-bc44-5e6a7b8c9d0e",
   "workflow_name": "my_workflow",
   "status": "running",                // see Run Status below
   "inputs": { "key": "value" },       // workflow inputs (optional)
