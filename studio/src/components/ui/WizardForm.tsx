@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { Button, Tabs, type TabItem } from "@/components/ui";
+import { Button } from "@/components/ui/Button";
+import { Tabs, type TabItem } from "@/components/ui/Tabs";
 import QuestionInput from "@/components/WhatsNext/QuestionInput";
 import type {
   FormAnswer,

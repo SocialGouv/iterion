@@ -2,7 +2,9 @@ import { useState } from "react";
 
 import type { HumanQuestionMessage } from "@/lib/whats-next/messages";
 import type { FormAnswer, FormSpec } from "@/lib/whats-next/questionForm";
-import { Button, Textarea, WizardForm } from "@/components/ui";
+import { Button } from "@/components/ui/Button";
+import { Textarea } from "@/components/ui/Textarea";
+import { WizardForm } from "@/components/ui/WizardForm";
 
 interface Props {
   message: HumanQuestionMessage;

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { getRun, resumeRun } from "@/api/runs";
-import { Button, WizardForm } from "@/components/ui";
+import { Button } from "@/components/ui/Button";
+import { WizardForm } from "@/components/ui/WizardForm";
 import { useHumanNodeSchema } from "@/hooks/useHumanNodeSchema";
 import type { FormAnswer } from "@/lib/whats-next/questionForm";
 import {
