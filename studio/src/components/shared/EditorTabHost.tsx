@@ -5,12 +5,14 @@ import MainSpinner from "@/components/shared/MainSpinner";
 import {
   DocumentStoreProvider,
   getOrCreateDocumentStore,
+  useDocumentStore,
 } from "@/store/document";
 import {
   SelectionStoreProvider,
   getOrCreateSelectionStore,
 } from "@/store/selection";
 import * as api from "@/api/client";
+import { useTabsStore } from "@/store/tabs";
 import { useUIStore } from "@/store/ui";
 
 const EditorView = lazy(() => import("@/components/EditorView"));
@@ -70,6 +72,7 @@ export default function EditorTabHost({ tabId, file }: Props) {
   return (
     <DocumentStoreProvider store={docStore}>
       <SelectionStoreProvider store={selStore}>
+        <TabLabelSync tabId={tabId} />
         <ErrorBoundary area="Editor view" resetKey={tabId}>
           <Suspense fallback={<MainSpinner />}>
             <EditorView />
@@ -78,4 +81,25 @@ export default function EditorTabHost({ tabId, file }: Props) {
       </SelectionStoreProvider>
     </DocumentStoreProvider>
   );
+}
+
+function basename(path: string): string {
+  const parts = path.split(/[\\/]/);
+  return parts[parts.length - 1] || path;
+}
+
+// TabLabelSync mirrors the document's current file path onto the tab
+// label so opening a file (deep link, RecentFiles click, Save As)
+// retitles the tab. Hosted under DocumentStoreProvider so the selector
+// hits the per-tab store, not the module default.
+function TabLabelSync({ tabId }: { tabId: string }) {
+  const path = useDocumentStore((s) => s.currentFilePath);
+  useEffect(() => {
+    const next = path ? basename(path) : "untitled.bot";
+    const tabs = useTabsStore.getState().tabs;
+    const current = tabs.find((t) => t.id === tabId);
+    if (!current || current.label === next) return;
+    useTabsStore.getState().rename(tabId, next);
+  }, [path, tabId]);
+  return null;
 }

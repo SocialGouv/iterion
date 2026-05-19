@@ -1,4 +1,4 @@
-import { PlayIcon } from "@radix-ui/react-icons";
+import { ListBulletIcon, PlayIcon } from "@radix-ui/react-icons";
 import { useCallback, useEffect } from "react";
 import { useLocation, useParams } from "wouter";
 import { useShallow } from "zustand/react/shallow";
@@ -51,6 +51,12 @@ export default function RunsTabsView() {
     [setLocation],
   );
 
+  const pinnedRunsList = {
+    icon: <ListBulletIcon className="w-3.5 h-3.5 shrink-0" />,
+    label: "All runs",
+    onClick: () => setLocation("/runs"),
+  };
+
   if (tabs.length === 0) {
     return (
       <div className="h-full flex flex-col">
@@ -59,10 +65,11 @@ export default function RunsTabsView() {
           activeTabId={null}
           onSelect={() => {}}
           onClose={() => {}}
+          pinnedLead={pinnedRunsList}
           icon={() => <PlayIcon className="w-3.5 h-3.5 shrink-0" />}
           emptyState={
             <span>
-              No run open — pick a run from{" "}
+              No run open — pick one from{" "}
               <button
                 type="button"
                 className="underline hover:text-fg-default"
@@ -88,6 +95,7 @@ export default function RunsTabsView() {
         activeTabId={activeTabId}
         onSelect={handleSelect}
         onClose={handleClose}
+        pinnedLead={pinnedRunsList}
         icon={() => <PlayIcon className="w-3.5 h-3.5 shrink-0" />}
       />
       <div className="flex-1 min-h-0 relative">
@@ -100,7 +108,7 @@ export default function RunsTabsView() {
               className={`absolute inset-0 ${tab.id === activeTabId ? "block" : "hidden"}`}
               aria-hidden={tab.id === activeTabId ? undefined : true}
             >
-              <RunTabHost runId={runId} />
+              <RunTabHost runId={runId} tabId={tab.id} />
             </div>
           );
         })}

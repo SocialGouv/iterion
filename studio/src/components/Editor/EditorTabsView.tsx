@@ -40,11 +40,21 @@ export default function EditorTabsView() {
   }, [search]);
 
   // URL → tab: when `?file=X` is present, ensure the matching editor
-  // tab exists and is active. Idempotent on repeat because openTab
-  // focuses an existing tab with the same params.
+  // tab exists and is active. When the route is `/editor` with no
+  // file param and no editor tabs are open yet, auto-create a blank
+  // "untitled" tab so the user lands on an empty canvas instead of
+  // an empty state. Both branches are idempotent — openTab focuses
+  // any existing tab with the same params.
   useEffect(() => {
-    if (!fileParam) return;
-    useTabsStore.getState().openTab("editor", { file: fileParam });
+    const store = useTabsStore.getState();
+    if (fileParam) {
+      store.openTab("editor", { file: fileParam });
+      return;
+    }
+    const hasAny = store.tabs.some((t) => t.kind === "editor");
+    if (!hasAny) {
+      store.openTab("editor", {}, "untitled.bot");
+    }
   }, [fileParam]);
 
   // Tab → URL: synchronous on user action. Click → activate + push URL.
@@ -58,6 +68,14 @@ export default function EditorTabsView() {
     },
     [setLocation],
   );
+
+  // "+" button → create a fresh untitled tab (always new, never
+  // refocuses an existing untitled tab). Drops the file query param
+  // so the new tab isn't immediately hydrated from a stale URL.
+  const handleNewTab = useCallback(() => {
+    useTabsStore.getState().newEditorTab();
+    setLocation("/editor", { replace: true });
+  }, [setLocation]);
 
   // Close: dispose the tab + sync URL to the new active tab (or
   // /editor if none remain).
@@ -81,8 +99,8 @@ export default function EditorTabsView() {
           activeTabId={null}
           onSelect={() => {}}
           onClose={() => {}}
-          onNewTab={() => setCommandPaletteOpen(true)}
-          newTabLabel="Open a workflow"
+          onNewTab={handleNewTab}
+          newTabLabel="New editor tab"
           icon={() => <Pencil2Icon className="w-3.5 h-3.5 shrink-0" />}
           emptyState={
             <span>

@@ -3,6 +3,13 @@ import type { ReactNode } from "react";
 
 import type { Tab } from "@/store/tabs";
 
+interface PinnedItem {
+  icon: ReactNode;
+  label: string;
+  onClick: () => void;
+  active?: boolean;
+}
+
 interface Props {
   tabs: Tab[];
   activeTabId: string | null;
@@ -10,8 +17,29 @@ interface Props {
   onClose: (id: string) => void;
   onNewTab?: () => void;
   newTabLabel?: string;
+  // Optional pinned, non-closable item rendered before the regular
+  // tabs. Useful for "back to list" or similar navigation anchors
+  // that visually live in the tab strip without being a real tab.
+  pinnedLead?: PinnedItem;
   icon: (tab: Tab) => ReactNode;
   emptyState?: ReactNode;
+}
+
+function renderPinned(item: PinnedItem) {
+  const stateCls = item.active
+    ? "bg-surface-0 text-fg-default border-t-2 border-t-accent"
+    : "bg-surface-1 text-fg-muted hover:bg-surface-2 hover:text-fg-default border-t-2 border-t-transparent";
+  return (
+    <button
+      type="button"
+      onClick={item.onClick}
+      className={`shrink-0 inline-flex items-center gap-1.5 px-3 text-xs border-r border-border-default focus:outline-none ${stateCls}`}
+      title={item.label}
+    >
+      {item.icon}
+      <span className="truncate">{item.label}</span>
+    </button>
+  );
 }
 
 // InnerTabBar — horizontal strip rendered at the top of the editor /
@@ -26,13 +54,17 @@ export default function InnerTabBar({
   onClose,
   onNewTab,
   newTabLabel,
+  pinnedLead,
   icon,
   emptyState,
 }: Props) {
   if (tabs.length === 0 && emptyState) {
     return (
-      <div className="shrink-0 h-9 flex items-center gap-3 px-3 text-xs text-fg-subtle bg-surface-1 border-b border-border-default">
-        {emptyState}
+      <div className="shrink-0 flex items-stretch gap-px h-9 bg-surface-1 border-b border-border-default overflow-x-auto">
+        {pinnedLead && renderPinned(pinnedLead)}
+        <div className="flex items-center gap-3 px-3 text-xs text-fg-subtle">
+          {emptyState}
+        </div>
       </div>
     );
   }
@@ -41,6 +73,7 @@ export default function InnerTabBar({
       className="shrink-0 flex items-stretch gap-px h-9 bg-surface-1 border-b border-border-default overflow-x-auto"
       role="tablist"
     >
+      {pinnedLead && renderPinned(pinnedLead)}
       {tabs.map((tab) => {
         const active = tab.id === activeTabId;
         const stateCls = active

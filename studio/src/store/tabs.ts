@@ -41,6 +41,11 @@ interface TabsState {
   activeEditorTabId: string | null;
   activeRunTabId: string | null;
   openTab: (kind: TabKind, params: Record<string, string>, label?: string) => string;
+  // newEditorTab always creates a fresh untitled tab — used by the "+"
+  // button. openTab("editor", {}) by contrast focuses an existing
+  // untitled tab when one exists, which is the right behavior for
+  // URL-driven navigation but not for an explicit "new tab" click.
+  newEditorTab: (label?: string) => string;
   closeTab: (id: string) => void;
   setActive: (id: string) => void;
   reorder: (kind: TabKind, from: number, to: number) => void;
@@ -119,6 +124,18 @@ export const useTabsStore = create<TabsState>()(
           tabs: [...s.tabs, tab],
           [activeIdField(kind)]: id,
         }));
+        return id;
+      },
+      newEditorTab: (label) => {
+        const id = generateId();
+        const tab: Tab = {
+          id,
+          kind: "editor",
+          params: {},
+          label: label ?? "untitled.bot",
+          hydrated: true,
+        };
+        set((s) => ({ tabs: [...s.tabs, tab], activeEditorTabId: id }));
         return id;
       },
       closeTab: (id) => {
