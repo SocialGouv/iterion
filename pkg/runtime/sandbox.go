@@ -328,6 +328,18 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 						"spec_user": spec.User,
 						"host_uid":  hostUID,
 					})
+					if logger != nil {
+						logger.Warn("runtime: sandbox host_state active but container user %q (UID %d) != host UID %d — writes to ~/.iterion + ~/.claude will be owned by UID %d and may be unreadable to subsequent host invocations",
+							spec.User, specUID, hostUID, specUID)
+					}
+				} else if !ok && logger != nil {
+					// Non-numeric user (e.g. "node") — we can't verify UID
+					// alignment without inspecting the image. Surface so
+					// the operator at least knows host_state can corrupt
+					// home-dir permissions if the image's user doesn't
+					// resolve to the host UID at runtime.
+					logger.Warn("runtime: sandbox host_state active but container user %q has no parseable UID — cannot verify host UID alignment; ~/.iterion + ~/.claude writes may end up with unexpected ownership",
+						spec.User)
 				}
 			}
 		}
