@@ -43,7 +43,7 @@ export default function AppHeader({
           <img
             src="/favicon-96x96.png"
             alt="Iterion"
-            className="h-7 w-7"
+            className="h-7 w-7 dark:invert"
           />
         </Link>
         <NavLinks active={active} />

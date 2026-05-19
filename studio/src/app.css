@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+/* Wire Tailwind's `dark:` variant to our data-theme attribute (Tailwind v4
+ * defaults to prefers-color-scheme; the studio uses an explicit toggle). */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 /* =============================================================================
  * Design tokens
  * ----------------------------------------------------------------------------
