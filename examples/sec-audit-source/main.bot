@@ -53,6 +53,19 @@ vars:
   ## template. Override via --var matchers_dir=... to point at a
   ## different location.
   matchers_dir:        string = "${PROJECT_DIR}/.iterion/security/matchers"
+  ## Cap. 3 — distributed scans. When shard_size > 0, the parent
+  ## run does detect_tech + plans + dispatches; N child runs each
+  ## handle a slice of the file list via `iterion __scan-shards`.
+  ## When shard_size == 0 (default), the parent runs the full
+  ## pipeline single-process. See docs/security-bots-distributed.md.
+  shard_size:          int    = 0
+  shard_concurrency:   int    = 4
+  ## file_filter is a comma-separated list of relative paths.
+  ## Empty (the default) means "no filter — process every candidate".
+  ## Children spawned by dispatch_shards set this to scope their
+  ## LLM workload to their assigned slice. Tools (scanners) ignore
+  ## it; triage applies it post-scanner.
+  file_filter:         string = ""
 
 ## ─── Schemas ──────────────────────────────────────────────────────
 
@@ -89,6 +102,35 @@ schema triage_input:
   python_scan:    json
   custom_scan:    json
   fp_path:        string
+  ## Comma-separated list of relative paths the triage MUST restrict
+  ## itself to. Empty = no filter. Used when this run is a shard
+  ## dispatched by a parent (see Cap. 3).
+  file_filter:    string
+
+schema shard_plan_output:
+  enabled:        bool
+  shard_size:     int
+  files_path:     string
+  file_count:     int
+
+schema shard_dispatch_input:
+  workspace_dir:       string
+  scan_dir:            string
+  shard_size:          int
+  shard_concurrency:   int
+  severity_threshold:  string
+  fp_path:             string
+  records_dir:         string
+  matchers_dir:        string
+  files_path:          string
+
+schema shard_dispatch_output:
+  shards_planned:    int
+  shards_finished:   int
+  shards_failed:     int
+  duration_secs:     int
+  envelope_path:     string
+  summary:           string
 
 schema triage_output:
   candidates:    json
@@ -233,6 +275,10 @@ prompt triage_system:
     custom_scan is always present but may have `subscanners: []`
     when no programmatic matchers are dropped at
     `.iterion/security/matchers/`.
+  - file_filter: when non-empty, a comma-separated list of
+    relative file paths. Skip every candidate whose `file` is NOT
+    in the list. This is how shard child runs scope themselves to
+    their assigned slice. When empty (the default), no filtering.
   - fp_path: path to .iterion/security/fp-known.yaml. Read it
     via read_file. If the file does not exist, treat the FP set
     as empty.
@@ -275,6 +321,12 @@ prompt triage_system:
      each candidate, check against the 5 match rules in
      fp-memory.md. If matched, set status = "known_fp" and emit
      into `suppressed`, NOT `candidates`.
+  3.5. file_filter handling: if `input.file_filter` is non-empty,
+     split it on commas, build a set of allowed relative paths,
+     and DROP every candidate whose `file` is not in that set
+     before emitting `candidates`. The stats object records the
+     pre-filter count under `filtered_out`. (This is how Cap. 3
+     shards scope their LLM workload.)
   4. Deduplicate by (file, line_range, finding_type) — keep the
      most specific scanner.
   5. Apply the severity floor from the matching lang-*.md.
@@ -296,6 +348,8 @@ prompt triage_user:
   Go scan:      {{input.go_scan}}
   Python scan:  {{input.python_scan}}
   Custom scan:  {{input.custom_scan}}
+
+  File filter (empty = no filter): {{input.file_filter}}
 
   Path to fp-known.yaml: {{input.fp_path}}
 
@@ -475,6 +529,116 @@ agent detect_tech:
   tools: [bash, read_file, glob, grep]
   tool_max_steps: 25
   readonly: true
+
+## plan_shards (Cap. 3) walks the workspace and decides whether to
+## fan the run out to N child runs. When shard_size > 0, it lists
+## every source file the scanners would touch and emits a plan.
+## When shard_size == 0 (default), it emits enabled=false and the
+## conditional edge below routes the workflow to the single-process
+## path (scan_fanout). See docs/security-bots-distributed.md.
+##
+## File enumeration excludes the same paths the scanners do
+## (node_modules, vendor, .git, .iterion, build artefacts, …) so
+## the shard count tracks meaningful workload.
+tool plan_shards:
+  command: `mkdir -p {{vars.scan_dir}} && WS={{vars.workspace_dir}} SHARD_SIZE={{vars.shard_size}} OUT={{vars.scan_dir}}/shard-files.json python3 -c "
+import os, sys, json
+ws = os.environ['WS']
+shard_size = int(os.environ.get('SHARD_SIZE','0'))
+out_path = os.environ['OUT']
+EXCLUDED = {'.git','node_modules','.iterion','vendor','.venv','venv','env','dist','build','.next','out','__pycache__','.cache'}
+files = []
+if shard_size > 0:
+    for root, dirs, names in os.walk(ws):
+        dirs[:] = [d for d in dirs if d not in EXCLUDED]
+        for n in names:
+            full = os.path.join(root, n)
+            rel = os.path.relpath(full, ws)
+            if any(part in EXCLUDED for part in rel.split(os.sep)): continue
+            files.append(rel)
+files.sort()
+with open(out_path, 'w', encoding='utf-8') as f:
+    json.dump(files, f)
+print(json.dumps({
+    'enabled':    shard_size > 0,
+    'shard_size': shard_size,
+    'files_path': out_path,
+    'file_count': len(files),
+}))
+"`
+  output: shard_plan_output
+
+## dispatch_shards (Cap. 3) calls the hidden `iterion __scan-shards`
+## subcommand, which spawns N child `iterion run` invocations
+## sharing the same store and polls them to terminal status. The
+## envelope JSON is captured to {{vars.scan_dir}}/shards.json for
+## the audit trail; the tool returns a structured summary so the
+## parent's exit code reflects shard failures.
+tool dispatch_shards:
+  command: `mkdir -p {{input.scan_dir}} && WS={{input.workspace_dir}} SHARD_SIZE={{input.shard_size}} CONCURRENCY={{input.shard_concurrency}} SEVTHR={{input.severity_threshold}} FPP={{input.fp_path}} REC={{input.records_dir}} MAT={{input.matchers_dir}} FILES={{input.files_path}} ENV_PATH={{input.scan_dir}}/shards.json python3 -c "
+import os, sys, json, time, subprocess, shutil
+ws = os.environ['WS']
+shard_size = int(os.environ['SHARD_SIZE'])
+concurrency = int(os.environ['CONCURRENCY'])
+files_path = os.environ['FILES']
+
+# Locate the iterion binary: prefer the one on PATH; fall back to the
+# repo-local build that ships with bundled runs.
+iterion = shutil.which('iterion') or os.path.join(ws, 'iterion')
+
+base_vars = {
+    'workspace_dir':      ws,
+    'shard_size':         '0',
+    'severity_threshold': os.environ.get('SEVTHR', 'low'),
+    'fp_path':            os.environ.get('FPP', ''),
+    'records_dir':        os.environ.get('REC', ''),
+    'matchers_dir':       os.environ.get('MAT', ''),
+}
+
+# Use the same workflow that's running now. The child sees shard_size=0
+# (via base_vars override) so it falls through to the single-process
+# pipeline on its assigned slice (file_filter).
+cmd = [iterion, '__scan-shards',
+       '--workflow', sys.argv[0] if False else os.environ.get('ITERION_WORKFLOW_PATH', ''),
+       '--store-dir', os.path.expanduser('~/.iterion'),
+       '--shard-size', str(shard_size),
+       '--max-concurrency', str(concurrency),
+       '--shard-var', 'file_filter',
+       '--base-vars-json', json.dumps(base_vars),
+       '--files-json', files_path]
+# When ITERION_WORKFLOW_PATH isn't set by the harness (single-process
+# runs typically don't have it), fall back to assuming the bundle is
+# at examples/sec-audit-source/main.bot relative to workspace_dir.
+if not cmd[cmd.index('--workflow') + 1]:
+    cmd[cmd.index('--workflow') + 1] = os.path.join(ws, 'examples/sec-audit-source/main.bot')
+
+start = time.time()
+proc = subprocess.run(cmd, capture_output=True, timeout=7200)
+elapsed = int(time.time() - start)
+
+env_out = proc.stdout.decode('utf-8', errors='ignore') or '{}'
+try:
+    env = json.loads(env_out)
+except json.JSONDecodeError:
+    env = {'shard_count': 0, 'shards': [], 'errors': ['parse __scan-shards stdout: ' + env_out[:512]]}
+
+with open(os.environ['ENV_PATH'], 'w', encoding='utf-8') as f:
+    json.dump(env, f, indent=2)
+
+finished = sum(1 for s in env.get('shards', []) if s.get('status') == 'finished')
+failed = sum(1 for s in env.get('shards', []) if s.get('status') not in ('finished',))
+
+print(json.dumps({
+    'shards_planned':  env.get('shard_count', 0),
+    'shards_finished': finished,
+    'shards_failed':   failed,
+    'duration_secs':   elapsed,
+    'envelope_path':   os.environ['ENV_PATH'],
+    'summary':         'Dispatched %d shards (finished=%d failed=%d) in %ds' % (env.get('shard_count', 0), finished, failed, elapsed),
+}))
+"`
+  input: shard_dispatch_input
+  output: shard_dispatch_output
 
 ## scan_fanout dispatches all scanner branches in parallel.
 router scan_fanout:
@@ -826,7 +990,23 @@ workflow sec_audit_source:
     max_cost_usd: 25
     max_iterations: 200
 
-  detect_tech -> scan_fanout
+  detect_tech -> plan_shards
+
+  plan_shards -> dispatch_shards when enabled with {
+    workspace_dir:      "{{vars.workspace_dir}}",
+    scan_dir:           "{{vars.scan_dir}}",
+    shard_size:         "{{vars.shard_size}}",
+    shard_concurrency:  "{{vars.shard_concurrency}}",
+    severity_threshold: "{{vars.severity_threshold}}",
+    fp_path:            "{{vars.fp_path}}",
+    records_dir:        "{{vars.records_dir}}",
+    matchers_dir:       "{{vars.matchers_dir}}",
+    files_path:         "{{outputs.plan_shards.files_path}}"
+  }
+
+  dispatch_shards -> done
+
+  plan_shards -> scan_fanout when not enabled
 
   scan_fanout -> run_generic_scanners
 
@@ -852,7 +1032,8 @@ workflow sec_audit_source:
     go_scan:       "{{outputs.scan_join.go_scan}}",
     python_scan:   "{{outputs.scan_join.python_scan}}",
     custom_scan:   "{{outputs.scan_join.custom_scan}}",
-    fp_path:       "{{vars.fp_path}}"
+    fp_path:       "{{vars.fp_path}}",
+    file_filter:   "{{vars.file_filter}}"
   }
 
   triage -> filter_cached_files with {
