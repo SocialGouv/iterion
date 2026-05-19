@@ -619,17 +619,47 @@ func (s *FilesystemRunStore) AppendEvent(_ context.Context, runID string, evt Ev
 	}
 	defer f.Close()
 
-	if _, err := f.Write(line); err != nil {
-		return nil, fmt.Errorf("store: write event: %w", err)
+	// Capture the pre-write size so a short write (typically ENOSPC
+	// mid-line) can be rolled back. Without this, a partial JSON line
+	// is left in events.jsonl and the next append would silently
+	// concatenate a valid line onto the truncated one — every
+	// downstream scanner (LoadEvents, ScanEvents, replay) then trips
+	// on a corrupted record forever after.
+	info, statErr := f.Stat()
+	var preSize int64
+	if statErr == nil {
+		preSize = info.Size()
 	}
 
-	// Flush to disk before advancing the sequence counter to avoid
-	// losing events on crash while the in-memory counter has advanced.
-	if err := f.Sync(); err != nil {
-		return nil, fmt.Errorf("store: sync event: %w", err)
+	n, writeErr := f.Write(line)
+	if writeErr != nil || n != len(line) {
+		// Best-effort truncate to the captured pre-write size so the
+		// file stays JSONL-clean. We only have a captured size when
+		// Stat succeeded above; if it didn't, leaving the partial line
+		// in place is the lesser evil (truncating to a guessed offset
+		// could discard prior good lines).
+		if statErr == nil {
+			_ = f.Truncate(preSize)
+		}
+		if writeErr != nil {
+			return nil, fmt.Errorf("store: write event: %w", writeErr)
+		}
+		return nil, fmt.Errorf("store: short write on event (wrote %d of %d bytes)", n, len(line))
 	}
 
-	// Only increment after successful write — no sequence gaps on failure.
+	// Best-effort fsync. The bytes are already in the file as far as
+	// future appends are concerned (O_APPEND is atomic per syscall);
+	// fsync only adds the durability guarantee. Treating a transient
+	// fsync failure as fatal used to leave the in-memory seq counter
+	// pinned at evt.Seq, so the next AppendEvent would assign the same
+	// Seq to a different event and produce duplicate sequence numbers
+	// in the file. Log instead, and advance seq.
+	if err := f.Sync(); err != nil && s.logger != nil {
+		s.logger.Warn("store: fsync event for run %s seq %d: %v — line written but not durable", runID, evt.Seq, err)
+	}
+
+	// Always advance once the bytes are in the file. fsync confirms
+	// durability, not presence.
 	s.seq[runID] = evt.Seq + 1
 
 	return &evt, nil
