@@ -283,7 +283,6 @@ type Run struct {
 	networkPolicyApplied bool
 
 	mu      sync.Mutex
-	stopped bool
 	cleaned bool
 }
 
@@ -347,17 +346,6 @@ func (r *Run) Exec(ctx context.Context, cmd []string, opts sandbox.ExecOpts) (sa
 		return sandbox.ExecResult{}, fmt.Errorf("kubernetes.Exec: empty cmd")
 	}
 	return sandbox.ExecCmd(r.Command(ctx, cmd, opts), opts)
-}
-
-// Stop is a no-op for the kubernetes driver: pod lifecycle is
-// controlled via kubectl delete, which Cleanup() invokes. Implemented
-// to satisfy the interface and reserve the slot for V2 graceful
-// drains (e.g. SIGTERM-then-wait before the hard delete).
-func (r *Run) Stop(_ context.Context) error {
-	r.mu.Lock()
-	r.stopped = true
-	r.mu.Unlock()
-	return nil
 }
 
 // Cleanup deletes the sandbox pod. Idempotent — kubectl's

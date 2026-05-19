@@ -172,9 +172,6 @@ func (r *run) Exec(ctx context.Context, cmd []string, opts sandbox.ExecOpts) (sa
 	return res, err
 }
 
-// Stop is a nop for the noop driver.
-func (r *run) Stop(_ context.Context) error { return nil }
-
 // Cleanup is a nop for the noop driver.
 func (r *run) Cleanup(_ context.Context) error { return nil }
 

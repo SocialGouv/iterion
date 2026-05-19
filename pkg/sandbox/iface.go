@@ -99,14 +99,12 @@ type Run interface {
 	// finer control over the subprocess lifecycle.
 	Exec(ctx context.Context, cmd []string, opts ExecOpts) (ExecResult, error)
 
-	// Stop initiates graceful shutdown. Implementations should send a
-	// SIGTERM-equivalent and wait briefly for cleanup. [Run.Cleanup]
-	// is the hard-kill path.
-	Stop(ctx context.Context) error
-
 	// Cleanup releases all resources (containers, networks,
 	// volumes...). Safe to call multiple times. Always called by the
 	// engine via defer; implementations must be idempotent.
+	// Implementations are responsible for graceful shutdown semantics
+	// (the previous `Stop` slot was never invoked outside the docker
+	// driver's own Cleanup and has been folded in).
 	Cleanup(ctx context.Context) error
 }
 

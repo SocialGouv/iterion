@@ -376,10 +376,9 @@ func (r *Run) Exec(ctx context.Context, cmd []string, opts sandbox.ExecOpts) (sa
 	return sandbox.ExecCmd(r.Command(ctx, cmd, opts), opts)
 }
 
-// Stop sends SIGTERM via `docker stop` with a short grace period.
-// Idempotent — calling Stop on an already-stopped container is a
-// no-op.
-func (r *Run) Stop(ctx context.Context) error {
+// stop sends SIGTERM via `docker stop` with a short grace period.
+// Idempotent. Only invoked by Cleanup; no callers outside this file.
+func (r *Run) stop(ctx context.Context) error {
 	r.mu.Lock()
 	if r.stopped {
 		r.mu.Unlock()
@@ -416,7 +415,7 @@ func (r *Run) Cleanup(ctx context.Context) error {
 	r.mu.Unlock()
 
 	// Best-effort stop first to give --rm a chance to fire normally.
-	_ = r.Stop(ctx)
+	_ = r.stop(ctx)
 
 	// Then force-remove any lingering container with our run-id label,
 	// independent of the captured containerID (covers the case where
