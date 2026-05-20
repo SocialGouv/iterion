@@ -215,17 +215,30 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
     return () => {
       cancelled = true;
       controller.abort();
+      // Reset the gate so the strict-mode double-mount (and any
+      // legitimate re-mount triggered by deps changing) re-runs the
+      // discovery cleanly. Without this, mount #2's effect short-
+      // circuits, mount #1's aborted discovery never sets runId, and
+      // status stays "idle" → the launcher mistakenly shows even
+      // when a paused run is sitting on disk waiting to be resumed.
+      attachAttemptedRef.current = false;
     };
   }, [bot.id, projectId]);
 
-  // Reset to "idle" state when runId becomes null (Étape 5 will let
-  // the user start fresh after a session-closed message).
+  // Reset to "idle" state when runId becomes null (Étape 5 lets the
+  // user start fresh after a session-closed message via newSession()).
+  //
+  // Critically: don't override "launching" — the auto-attach effect
+  // sets that synchronously while its async discovery / hydration is
+  // in flight, and a too-eager "idle" flip here makes the launcher
+  // briefly flash (or stick, if the discovery aborts). Only reset
+  // when we're already in a terminal/active state that the null
+  // runId would be inconsistent with.
   useEffect(() => {
-    if (runId === null) {
-      setStatus("idle");
-      setBusyMessageId(null);
-      setErrorMessage(null);
-    }
+    if (runId !== null) return;
+    setStatus((s) => (s === "launching" ? s : "idle"));
+    setBusyMessageId(null);
+    setErrorMessage(null);
   }, [runId]);
 
   // Read the run store's events + snapshot via selectors. Both are
