@@ -57,6 +57,12 @@ type Board struct {
 }
 
 // DefaultBoard returns the recommended starter board.
+//
+// Includes the `bot_args` custom field that the dispatcher reads at
+// dispatch time (encoded `--var key=value` overrides per ticket).
+// Bots like whats-next set this on create_issue; without it in the
+// default schema, fresh local stores reject the field with
+// `unknown field "bot_args"` and the bot wastes turns retrying.
 func DefaultBoard() *Board {
 	return &Board{
 		States: []State{
@@ -66,6 +72,9 @@ func DefaultBoard() *Board {
 			{Name: StateReview, Display: "Review"},
 			{Name: StateDone, Display: "Done", Terminal: true},
 			{Name: StateBlocked, Display: "Blocked", Terminal: true},
+		},
+		Fields: []Field{
+			{Name: "bot_args", Display: "Bot args", Type: "text"},
 		},
 		UpdatedAt: time.Now().UTC(),
 	}
