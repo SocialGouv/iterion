@@ -155,6 +155,11 @@ export const FIRST_CLASS_BOTS: Readonly<Record<string, FirstClassBot>> = {
       // issues to dispatch, hand them off to assign_to_bots, then
       // loop on ask_continue / triage_board until the operator
       // picks action=done.
+      // The form for this node is built DYNAMICALLY from the previous
+      // IssuesSummaryMessage (one checkbox per freshly-created issue).
+      // WhatsNextView's footer renderer constructs it at message time;
+      // the static form below is a fallback for tests / cases where the
+      // upstream summary message is missing.
       ask_which_to_process: {
         kind: "human",
         prompt:
@@ -165,10 +170,10 @@ export const FIRST_CLASS_BOTS: Readonly<Record<string, FirstClassBot>> = {
             {
               id: "selected_issue_ids",
               kind: "free_text",
-              label: "Issue IDs to dispatch",
+              label: "Issue IDs to dispatch (fallback)",
               description:
-                'Comma- or newline-separated IDs (short prefixes ok), or "all", or leave empty to keep everything in backlog.',
-              placeholder: 'e.g. "abc12345, def67890" or "all"',
+                'JSON array of IDs, "all", or leave empty. Normally rendered as a checkbox list — this free-text shows only when the upstream summary message is missing.',
+              placeholder: '["abc12345","def67890"] or "all"',
               rows: 3,
               required: false,
             },

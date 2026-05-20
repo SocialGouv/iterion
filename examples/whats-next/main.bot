@@ -144,15 +144,20 @@ schema select_input:
   created_issues: json
   emit_summary:   string
 
+## selected_issue_ids accepts:
+##   - a JSON array of issue IDs (the studio's checkbox form submits
+##     this — the canonical shape)
+##   - the string "all" (operator escape hatch / CLI path)
+##   - empty array OR empty string (skip dispatch this round)
 schema select_output:
-  selected_issue_ids: string
+  selected_issue_ids: json
   note:               string
 
 ## assign_to_bots moves selected issues from `backlog` → `ready` and
 ## confirms assignees. Returns dispatched_ids (the ones actually
 ## moved) so the loop knows what to report back to the operator.
 schema assign_input:
-  selected_issue_ids: string
+  selected_issue_ids: json
   created_issues:     json
   workspace_dir:      string
 
@@ -626,19 +631,16 @@ prompt ask_which_to_process_instructions:
   stay in backlog for later (you can dispatch them in a later loop
   iteration, or from the /board view).
 
+  The studio renders a checkbox form built from the created_issues
+  list below. Tick the ones to dispatch, leave the rest unticked.
+  Empty selection skips dispatch this round and moves straight to
+  the triage loop.
+
   Created issues:
   {{input.created_issues}}
 
   Summary:
   {{input.emit_summary}}
-
-  Reply with:
-    - "all"                  — dispatch every freshly-created issue
-    - a list of IDs          — e.g. "abc12345, def67890" (commas
-                                or newlines both work; short
-                                unambiguous prefixes are fine)
-    - "" (empty)             — keep everything in backlog, move on
-                                to the triage loop without dispatching
 
   Optionally add a short note in the `note` field (e.g. "skip the
   long_term ones, dispatch only next_action").
@@ -654,18 +656,19 @@ prompt assign_to_bots_system:
   selected_issue_ids — nothing else.
 
   Steps:
-  1. Parse `selected_issue_ids`:
+  1. Parse `selected_issue_ids` (JSON value, may be any of):
+     - array of IDs            → use as-is (the canonical shape from
+                                  the studio's checkbox form).
      - "all" (case-insensitive) → every id in created_issues.
-     - empty / whitespace       → no-op; return dispatched_ids=[]
-                                    and summary "no issues
-                                    dispatched (operator kept all
-                                    in backlog)".
-     - otherwise                → split on commas + whitespace.
-                                    Match each token against
-                                    created_issues[].id (exact, then
-                                    unambiguous prefix). Skip
-                                    unknown tokens silently —
-                                    include them in the summary.
+     - empty array / empty string / null → no-op; return
+                                  dispatched_ids=[] and summary
+                                  "no issues dispatched (operator
+                                  kept all in backlog)".
+     - comma-separated string  → split on commas + whitespace
+                                  (legacy CLI path).
+     For each non-array form, match every token against
+     created_issues[].id (exact, then unambiguous prefix). Skip
+     unknown tokens silently — include them in the summary.
   2. For each matched id:
      a. `mcp__iterion_board__transition_issue` with id + to="ready".
      b. If the issue already has an assignee, leave it. If empty

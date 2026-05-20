@@ -7,6 +7,11 @@ import {
   getFirstClassBot,
 } from "@/lib/whats-next/firstClassBots";
 import { useWhatsNextSession } from "@/lib/whats-next/useWhatsNextSession";
+import type { FormSpec } from "@/lib/whats-next/questionForm";
+import type {
+  IssuesSummaryMessage,
+  WhatsNextMessage,
+} from "@/lib/whats-next/messages";
 
 import AgentChatbox from "@/components/shared/AgentChatbox";
 import ChatTranscript from "./ChatTranscript";
@@ -93,7 +98,7 @@ export default function WhatsNextView() {
       m.kind === "human-question" && m.status === "pending",
   );
   const pendingForm = pendingHumanQuestion
-    ? bot.nodeMap[pendingHumanQuestion.nodeId]?.form
+    ? resolveDynamicForm(pendingHumanQuestion, session.messages, bot.nodeMap)
     : undefined;
 
   return (
@@ -152,6 +157,70 @@ export default function WhatsNextView() {
         )}
     </div>
   );
+}
+
+// resolveDynamicForm overrides the static nodeMap.form for nodes
+// whose options depend on upstream output. Currently only
+// ask_which_to_process: builds a checkbox per issue from the most
+// recent IssuesSummaryMessage. Falls back to the static form when
+// the upstream summary message is missing (defensive — under normal
+// flow it always exists by the time the human pause hits).
+function resolveDynamicForm(
+  message: Extract<WhatsNextMessage, { kind: "human-question" }>,
+  messages: WhatsNextMessage[],
+  nodeMap: Record<string, { form?: FormSpec } | undefined>,
+): FormSpec | undefined {
+  const staticForm = nodeMap[message.nodeId]?.form;
+  if (message.nodeId !== "ask_which_to_process") return staticForm;
+  // Walk newest-to-oldest from the index of the pending message so a
+  // later iteration's IssuesSummaryMessage doesn't get matched against
+  // an earlier ask_which_to_process turn (the post-emit triage loop
+  // can in principle revisit emit_action via a future workflow change).
+  const pendingIdx = messages.findIndex((m) => m.id === message.id);
+  const summary = findLatestIssuesSummary(
+    pendingIdx < 0 ? messages : messages.slice(0, pendingIdx),
+  );
+  if (!summary || summary.createdIssues.length === 0) return staticForm;
+  return {
+    questions: [
+      {
+        id: "selected_issue_ids",
+        kind: "checkbox",
+        label: "Issues to dispatch now",
+        description:
+          "Tick the ones to push from backlog to ready. The dispatcher picks up ready tickets matching the configured assignee_workflows mapping.",
+        options: summary.createdIssues.map((iss) => ({
+          value: iss.id,
+          label: iss.title,
+          description: [iss.horizon, iss.assignee]
+            .filter(Boolean)
+            .join(" · "),
+        })),
+      },
+      {
+        id: "note",
+        kind: "free_text",
+        label: "Note (optional)",
+        description:
+          "Why this selection? Helps the bot reason about edge cases.",
+        placeholder:
+          "Optional — e.g. 'skip long_term, only ship next_action'",
+        rows: 2,
+        required: false,
+      },
+    ],
+    submitLabel: "Dispatch selected",
+  };
+}
+
+function findLatestIssuesSummary(
+  messages: WhatsNextMessage[],
+): IssuesSummaryMessage | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m && m.kind === "issues-summary") return m;
+  }
+  return null;
 }
 
 // PendingTurnFooter wraps HumanChatTurn in a Claude-Code-style fixed
