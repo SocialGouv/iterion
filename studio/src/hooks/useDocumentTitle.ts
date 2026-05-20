@@ -29,11 +29,18 @@ export function useDocumentTitle() {
   // Editor title is keyed off the active editor tab — not the default
   // document store, which can carry a stale currentFilePath from a
   // prior edit session and would falsely advertise "untitled.bot" when
-  // the user just navigated to /editor with no tabs open.
+  // the user just navigated to /editor with no tabs open. Read both
+  // the file param (workspace-backed files) and the label fallback
+  // (examples opened via newEditorTab(name) have no file param but a
+  // meaningful label).
   const activeEditorTabId = useTabsStore((s) => s.activeEditorTabId);
   const activeEditorTabFile = useTabsStore((s) => {
     const tab = s.tabs.find((t) => t.id === s.activeEditorTabId);
     return tab?.params.file ?? null;
+  });
+  const activeEditorTabLabel = useTabsStore((s) => {
+    const tab = s.tabs.find((t) => t.id === s.activeEditorTabId);
+    return tab?.label ?? null;
   });
 
   useEffect(() => {
@@ -57,8 +64,9 @@ export function useDocumentTitle() {
       } else if (activeEditorTabFile) {
         context = basename(activeEditorTabFile);
       } else {
-        // Active tab with no file param → genuine fresh document.
-        context = "untitled.bot";
+        // Tab without a file param: examples (label = example name) or
+        // blank scratchpads (label defaults to "untitled.bot").
+        context = activeEditorTabLabel || "untitled.bot";
       }
     } else {
       // Home and any unmatched route: no per-page context, just the
@@ -88,5 +96,12 @@ export function useDocumentTitle() {
         /* binding may not be ready yet — re-runs on next deps change */
       });
     }
-  }, [location, projectName, activeEditorTabId, activeEditorTabFile, runHeader]);
+  }, [
+    location,
+    projectName,
+    activeEditorTabId,
+    activeEditorTabFile,
+    activeEditorTabLabel,
+    runHeader,
+  ]);
 }
