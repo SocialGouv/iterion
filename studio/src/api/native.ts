@@ -23,6 +23,12 @@ export interface NativeIssue {
   assignee?: string;
   blockers?: string[];
   fields?: Record<string, unknown>;
+  /** Per-ticket bot name (overrides the dispatcher's per-assignee /
+   *  global workflow selection at launch time). */
+  bot?: string;
+  /** Per-ticket workflow var overrides. String-valued to match the
+   *  studio's Launch form wire format — engine handles coercion. */
+  bot_args?: Record<string, string>;
   claim?: string;
   created_at: string;
   updated_at: string;
@@ -62,6 +68,8 @@ export interface NativeIssueCreate {
   assignee?: string;
   blockers?: string[];
   fields?: Record<string, unknown>;
+  bot?: string;
+  bot_args?: Record<string, string>;
 }
 
 export interface NativeIssuePatch {
@@ -72,6 +80,8 @@ export interface NativeIssuePatch {
   assignee?: string;
   blockers?: string[];
   fields?: Record<string, unknown>;
+  bot?: string;
+  bot_args?: Record<string, string>;
 }
 
 // ---------------------------------------------------------------------------
