@@ -201,6 +201,8 @@ schema triage_input:
 
 schema triage_output:
   board_summary: string
+  dispatched_ids: json
+  needs_followup: bool
 
 ## ─── Prompts ──────────────────────────────────────────────────────
 
@@ -760,24 +762,36 @@ prompt triage_board_system:
       transition / close). One issue at a time, log each in
       board_summary.
   - action == "dispatch_more":
-      list_issues (state=backlog by default), then transition the
-      matching ones to `ready`. Filter by `detail`:
-        - empty OR "all" (case-insensitive) → ALL backlog issues
-          that already have an assignee (skip long-term themes
-          with no assignee — they're strategic, not dispatchable
-          yet). Default behaviour, no-prompt-needed.
-        - assignee name ("feature_dev", "doc-align") → only that
-          assignee's tickets.
-        - horizon label ("next-action", "short-term", "long-term")
-          → filter by that horizon.
+      First call `list_issues` (state=backlog) to see what's
+      available. Then branch on `detail`:
+        - empty → DO NOT transition anything. Return a
+          board_summary that lists the dispatchable backlog
+          grouped by assignee (and a short "unassigned themes"
+          line for the non-actionable strategic items). End
+          with: "Re-submit `dispatch_more` with detail = 'all',
+          an assignee, a horizon, or specific IDs."
+          Set `dispatched_ids: []` and `needs_followup: true`.
+        - "all" (case-insensitive) → transition ALL backlog
+          issues that already have an assignee.
+        - assignee name ("feature_dev", "doc-align") → only
+          that assignee's tickets.
+        - horizon label ("next-action", "short-term",
+          "long-term") → filter by that horizon label.
         - explicit IDs (comma-separated) → only those.
-      Always transition AT LEAST the assignee-bearing tickets on
-      empty detail — don't ask for clarification on the default
-      case; only ask back if a non-empty detail couldn't be
-      matched to any ticket.
+      Set `dispatched_ids` to the list of IDs you actually
+      transitioned, and `needs_followup: false` for any
+      branch that executed transitions. If a non-empty detail
+      couldn't be matched to any ticket, set
+      `needs_followup: true` and explain in board_summary.
 
-  Always return a one-line board_summary describing what changed
-  (or why nothing did).
+  Always return:
+  - `board_summary`: one short paragraph describing what
+    changed (or what's available, on the empty-detail branch).
+  - `dispatched_ids`: array of issue IDs you transitioned
+    (empty array if you didn't transition anything).
+  - `needs_followup`: true when you're waiting for the
+    operator to clarify (typically empty-detail dispatch_more
+    or an unmatched detail); false when you executed cleanly.
 
 prompt triage_board_user:
   Operator action:  {{input.action}}
@@ -1097,6 +1111,6 @@ workflow whats_next:
   } as triage_loop(20)
 
   triage_board -> ask_continue with {
-    dispatched_ids: "[]",
+    dispatched_ids: "{{outputs.triage_board.dispatched_ids}}",
     board_summary:  "{{outputs.triage_board.board_summary}}"
   }

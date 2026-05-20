@@ -227,7 +227,7 @@ export const FIRST_CLASS_BOTS: Readonly<Record<string, FirstClassBot>> = {
                   value: "dispatch_more",
                   label: "Dispatch more",
                   description:
-                    'Push more backlog tickets to ready (detail = "all", a list of IDs, or a filter like "feature_dev" / "short-term").',
+                    'Push more backlog tickets to ready. Detail = "all", a list of IDs, or a filter like "feature_dev" / "short-term". Leave empty to first see what\'s dispatchable.',
                 },
                 {
                   value: "done",
@@ -240,11 +240,11 @@ export const FIRST_CLASS_BOTS: Readonly<Record<string, FirstClassBot>> = {
             {
               id: "detail",
               kind: "free_text",
-              label: "Detail (optional for dispatch_more / done)",
+              label: "Detail (free-text, required for add_ticket / modify_ticket)",
               description:
-                'Tell triage_board what to do. Examples: "all short-term", "feature_dev only", "abc123, def456", "close ticket abc12345", "create a sandbox-doctor refactor ticket". Leaving it empty on dispatch_more = dispatch all assignee-bearing backlog tickets.',
+                'Tell triage_board what to do. Examples: "all short-term", "feature_dev only", "abc123, def456", "close ticket abc12345", "create a sandbox-doctor refactor ticket". On dispatch_more: leave empty to see what\'s available before picking, or specify "all" / assignee / horizon / IDs to dispatch immediately.',
               placeholder:
-                'empty = dispatch all (or describe: "feature_dev only", "abc123,def456", …)',
+                '"all", "feature_dev only", "abc123,def456" — or empty on dispatch_more to list first',
               rows: 3,
               required: false,
             },
