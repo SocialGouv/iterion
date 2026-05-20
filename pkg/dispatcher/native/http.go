@@ -45,14 +45,16 @@ func (s *Store) RegisterRoutesWithMiddleware(mux *http.ServeMux, prefix string, 
 // ---------------------------------------------------------------------------
 
 type issueCreateReq struct {
-	Title    string         `json:"title"`
-	Body     string         `json:"body,omitempty"`
-	State    string         `json:"state,omitempty"`
-	Labels   []string       `json:"labels,omitempty"`
-	Priority int            `json:"priority,omitempty"`
-	Assignee string         `json:"assignee,omitempty"`
-	Blockers []string       `json:"blockers,omitempty"`
-	Fields   map[string]any `json:"fields,omitempty"`
+	Title    string            `json:"title"`
+	Body     string            `json:"body,omitempty"`
+	State    string            `json:"state,omitempty"`
+	Labels   []string          `json:"labels,omitempty"`
+	Priority int               `json:"priority,omitempty"`
+	Assignee string            `json:"assignee,omitempty"`
+	Blockers []string          `json:"blockers,omitempty"`
+	Fields   map[string]any    `json:"fields,omitempty"`
+	Bot      string            `json:"bot,omitempty"`
+	BotArgs  map[string]string `json:"bot_args,omitempty"`
 }
 
 func (s *Store) handleListIssues(w http.ResponseWriter, r *http.Request) {
@@ -86,6 +88,8 @@ func (s *Store) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 		Assignee: in.Assignee,
 		Blockers: in.Blockers,
 		Fields:   in.Fields,
+		Bot:      in.Bot,
+		BotArgs:  in.BotArgs,
 	}
 	out, err := s.Create(iss)
 	if err != nil {
@@ -100,13 +104,15 @@ func (s *Store) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 type issuePatchReq struct {
-	Title    *string        `json:"title,omitempty"`
-	Body     *string        `json:"body,omitempty"`
-	Labels   *[]string      `json:"labels,omitempty"`
-	Priority *int           `json:"priority,omitempty"`
-	Assignee *string        `json:"assignee,omitempty"`
-	Blockers *[]string      `json:"blockers,omitempty"`
-	Fields   map[string]any `json:"fields,omitempty"`
+	Title    *string            `json:"title,omitempty"`
+	Body     *string            `json:"body,omitempty"`
+	Labels   *[]string          `json:"labels,omitempty"`
+	Priority *int               `json:"priority,omitempty"`
+	Assignee *string            `json:"assignee,omitempty"`
+	Blockers *[]string          `json:"blockers,omitempty"`
+	Fields   map[string]any     `json:"fields,omitempty"`
+	Bot      *string            `json:"bot,omitempty"`
+	BotArgs  *map[string]string `json:"bot_args,omitempty"`
 }
 
 type transitionReq struct {
@@ -165,6 +171,8 @@ func (s *Store) handlePatchIssue(w http.ResponseWriter, r *http.Request) {
 		Assignee: in.Assignee,
 		Blockers: in.Blockers,
 		Fields:   in.Fields,
+		Bot:      in.Bot,
+		BotArgs:  in.BotArgs,
 	})
 	if err != nil {
 		writeErr(w, statusForErr(err), err)

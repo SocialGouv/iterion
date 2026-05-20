@@ -297,6 +297,12 @@ func cloneIssue(in *Issue) *Issue {
 			c.Fields[k] = v
 		}
 	}
+	if in.BotArgs != nil {
+		c.BotArgs = make(map[string]string, len(in.BotArgs))
+		for k, v := range in.BotArgs {
+			c.BotArgs[k] = v
+		}
+	}
 	return &c
 }
 
@@ -332,6 +338,15 @@ type Patch struct {
 	Blockers *[]string
 	// Fields is merged into the issue's Fields. A nil value deletes the key.
 	Fields map[string]any
+	// Bot, when non-nil, sets the per-ticket bot override (empty string
+	// clears it). The dispatcher resolves it to a workflow at launch.
+	Bot *string
+	// BotArgs, when non-nil, replaces the issue's bot args wholesale
+	// (a nil map deletes; an empty map clears with no entries). This
+	// mirrors how Labels and Blockers are handled — the entire
+	// collection swaps. Per-key partial updates aren't useful because
+	// the studio always sends the full form state.
+	BotArgs *map[string]string
 }
 
 // Update applies the patch and emits an issue_updated event with the
@@ -387,6 +402,21 @@ func (s *Store) Update(id string, p Patch) (updated *Issue, err error) {
 		}
 		iss.Fields = merged
 		changed = append(changed, "fields")
+	}
+	if p.Bot != nil && *p.Bot != iss.Bot {
+		iss.Bot = *p.Bot
+		changed = append(changed, "bot")
+	}
+	if p.BotArgs != nil {
+		var next map[string]string
+		if len(*p.BotArgs) > 0 {
+			next = make(map[string]string, len(*p.BotArgs))
+			for k, v := range *p.BotArgs {
+				next[k] = v
+			}
+		}
+		iss.BotArgs = next
+		changed = append(changed, "bot_args")
 	}
 	if len(changed) == 0 {
 		return iss, nil

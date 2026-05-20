@@ -53,6 +53,18 @@ type Issue struct {
 	// tracker; external adapters leave it nil.
 	Fields map[string]any
 
+	// Bot, when non-empty, names the bot the operator picked on the
+	// ticket itself — the dispatcher uses it to override the per-
+	// assignee / global workflow selection. Only the native tracker
+	// populates this today; github/forgejo leave it empty.
+	Bot string
+
+	// BotArgs are per-ticket workflow var overrides merged on top of
+	// the dispatcher config's templated vars at launch time (key by
+	// key: BotArgs wins for declared keys). String-valued — the
+	// engine handles coercion via the workflow's declared types.
+	BotArgs map[string]string
+
 	// Metadata holds adapter-specific extras (e.g. github URL,
 	// milestone, html_url). Keep keys lowercase snake_case.
 	Metadata map[string]string
