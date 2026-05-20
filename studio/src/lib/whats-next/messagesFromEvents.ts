@@ -56,6 +56,22 @@ function checkpointOutput(
   return checkpoint?.outputs?.[nodeId] ?? null;
 }
 
+// Pulls the structured `output` map out of a node_finished event. The
+// runtime stamps the full node output verbatim onto data.output as
+// part of the event payload, so consumers don't have to wait for the
+// next snapshot refetch to learn what a node produced. Returns null
+// when the event predates this convention or the output is not an
+// object (defensive against arbitrary tool plugins).
+function extractEventOutput(
+  evt: RunEvent,
+): Record<string, unknown> | null {
+  const data = evt.data;
+  if (!data || typeof data !== "object") return null;
+  const out = (data as Record<string, unknown>).output;
+  if (!out || typeof out !== "object" || Array.isArray(out)) return null;
+  return out as Record<string, unknown>;
+}
+
 function getString(obj: Record<string, unknown> | null, key: string): string {
   const v = obj?.[key];
   return typeof v === "string" ? v : "";
@@ -298,8 +314,21 @@ function processEvent(
           const key = bannerId(nodeId, iter);
           const idx = bannerIdx.get(key);
           if (idx === undefined) break;
+          // node_finished embeds the node's output verbatim. Prefer
+          // that over checkpointOutput(snapshot, ...) because the
+          // snapshot may not have been refreshed yet under live tail
+          // — the WS pushes events as they happen, while a fresh
+          // snapshot only lands on the next periodic refetch. Reading
+          // from the event lets the follow-up survey/roadmap/issues
+          // cards materialise the moment the node completes instead
+          // of after a navigation away-and-back triggers a full
+          // refold against the now-current snapshot. Falls back to
+          // the snapshot path for any (legacy) event missing the
+          // embedded output.
+          const eventOutput = extractEventOutput(evt) ??
+            checkpointOutput(snapshot, nodeId);
           const summary = entry.summaryField
-            ? getString(checkpointOutput(snapshot, nodeId), entry.summaryField)
+            ? getString(eventOutput, entry.summaryField)
             : "";
           const updated: BannerMessage = {
             ...(out[idx] as BannerMessage),
@@ -314,7 +343,7 @@ function processEvent(
 
           // Post-banner follow-up cards (roadmap, issues-summary).
           if (entry.followCardKind === "roadmap") {
-            const roadmap = asRoadmapDoc(checkpointOutput(snapshot, nodeId));
+            const roadmap = asRoadmapDoc(eventOutput);
             if (roadmap) {
               out.push({
                 kind: "roadmap-card",
@@ -325,7 +354,7 @@ function processEvent(
               } satisfies RoadmapCardMessage);
             }
           } else if (entry.followCardKind === "issuesSummary") {
-            const emit = asEmitOutput(checkpointOutput(snapshot, nodeId));
+            const emit = asEmitOutput(eventOutput);
             if (emit) {
               out.push({
                 kind: "issues-summary",
@@ -338,7 +367,7 @@ function processEvent(
               } satisfies IssuesSummaryMessage);
             }
           } else if (entry.followCardKind === "survey") {
-            const survey = asSurveyOutput(checkpointOutput(snapshot, nodeId));
+            const survey = asSurveyOutput(eventOutput);
             if (survey) {
               out.push({
                 kind: "survey-card",
