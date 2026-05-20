@@ -1,9 +1,11 @@
+import { useCallback, useEffect, useState } from "react";
 import { Link } from "wouter";
 import { ExternalLinkIcon } from "@radix-ui/react-icons";
 
 import type { IssuesSummaryMessage } from "@/lib/whats-next/messages";
 import { Badge } from "@/components/ui";
 import { useServerInfoStore } from "@/store/serverInfo";
+import * as dispatcher from "@/api/dispatcher";
 
 interface Props {
   message: IssuesSummaryMessage;
@@ -14,6 +16,9 @@ export default function IssuesSummaryCard({ message }: Props) {
   const boardEnabled = serverInfo?.native_tracker_enabled ?? false;
   const dispatcherEnabled = serverInfo?.dispatcher_enabled ?? false;
   const { createdIssues, failedIssues, planPath, summary } = message;
+  const dispatcherStatus = useDispatcherStatusPoll({
+    enabled: dispatcherEnabled,
+  });
 
   return (
     <div className="rounded-lg border border-success/40 bg-success-soft p-3 space-y-3">
@@ -100,7 +105,125 @@ export default function IssuesSummaryCard({ message }: Props) {
             Open dispatcher
           </Link>
         )}
+        {dispatcherEnabled && <DispatcherChip status={dispatcherStatus} />}
       </div>
+    </div>
+  );
+}
+
+// useDispatcherStatusPoll polls /api/v1/dispatcher/status while the
+// IssuesSummaryCard is mounted. Returns null until the first response
+// lands (or never, if dispatcher is disabled / unreachable). Cheap —
+// the status payload is tiny and a 4s tick is well under any reasonable
+// dispatch interval.
+function useDispatcherStatusPoll({
+  enabled,
+  intervalMs = 4000,
+}: {
+  enabled: boolean;
+  intervalMs?: number;
+}) {
+  const [status, setStatus] = useState<dispatcher.ManagerStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    if (!enabled) return;
+    try {
+      const s = await dispatcher.getStatus();
+      setStatus(s);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [enabled]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    void refresh();
+    const t = setInterval(() => void refresh(), intervalMs);
+    return () => clearInterval(t);
+  }, [enabled, refresh, intervalMs]);
+
+  const startDispatcher = useCallback(async () => {
+    setBusy(true);
+    try {
+      const s = await dispatcher.start();
+      setStatus(s);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  return { status, busy, error, startDispatcher };
+}
+
+function DispatcherChip({
+  status,
+}: {
+  status: ReturnType<typeof useDispatcherStatusPoll>;
+}) {
+  const state = status.status?.state ?? "idle";
+  const hasConfig = status.status?.has_config ?? false;
+  const label =
+    state === "running"
+      ? "Dispatcher: running"
+      : state === "paused"
+        ? "Dispatcher: paused"
+        : state === "error"
+          ? "Dispatcher: error"
+          : hasConfig
+            ? "Dispatcher: idle"
+            : "Dispatcher: not configured";
+  const cls =
+    state === "running"
+      ? "bg-success-soft text-success-fg border-success/40"
+      : state === "error"
+        ? "bg-danger-soft text-danger-fg border-danger/40"
+        : "bg-surface-2 text-fg-muted border-border-subtle";
+  return (
+    <div className="ml-auto flex items-center gap-2">
+      {status.error && (
+        <span
+          className="text-[10px] text-danger-fg truncate max-w-[180px]"
+          title={status.error}
+        >
+          ⚠ {status.error}
+        </span>
+      )}
+      <span
+        className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${cls}`}
+        title={
+          status.status?.started_at
+            ? `since ${status.status.started_at}`
+            : undefined
+        }
+      >
+        {label}
+      </span>
+      {state === "idle" && hasConfig && (
+        <button
+          type="button"
+          disabled={status.busy}
+          onClick={() => void status.startDispatcher()}
+          className="rounded border border-border-default px-2 py-0.5 text-[11px] hover:bg-surface-2 disabled:opacity-50"
+          title="Start the dispatcher — it will pick up tickets in the `ready` state"
+        >
+          {status.busy ? "…" : "▶ Start"}
+        </button>
+      )}
+      {!hasConfig && (
+        <Link
+          href="/dispatcher"
+          className="rounded border border-border-default px-2 py-0.5 text-[11px] text-accent hover:bg-surface-2"
+          title="Configure the dispatcher (workflow + tracker)"
+        >
+          Configure
+        </Link>
+      )}
     </div>
   );
 }
