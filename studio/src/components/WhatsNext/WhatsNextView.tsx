@@ -10,6 +10,7 @@ import { useWhatsNextSession } from "@/lib/whats-next/useWhatsNextSession";
 
 import AgentChatbox from "@/components/shared/AgentChatbox";
 import ChatTranscript from "./ChatTranscript";
+import HumanChatTurn from "./HumanChatTurn";
 import PreFlightPanel from "./PreFlightPanel";
 import SessionLauncher from "./SessionLauncher";
 
@@ -83,6 +84,18 @@ export default function WhatsNextView() {
 
   const inSession = session.status !== "idle";
 
+  // When the engine is waiting on a human turn, render that turn at
+  // the bottom (in a fixed-footer wrapper) instead of the generic
+  // AgentChatbox. Avoids the inline + footer double-render by passing
+  // excludeMessageId to ChatTranscript.
+  const pendingHumanQuestion = session.messages.find(
+    (m): m is Extract<typeof m, { kind: "human-question" }> =>
+      m.kind === "human-question" && m.status === "pending",
+  );
+  const pendingForm = pendingHumanQuestion
+    ? bot.nodeMap[pendingHumanQuestion.nodeId]?.form
+    : undefined;
+
   return (
     <div className="h-full flex flex-col overflow-hidden">
         {!inSession ? (
@@ -110,6 +123,7 @@ export default function WhatsNextView() {
                 bot={bot}
                 onHumanSubmit={onHumanSubmit}
                 busyMessageId={session.busyMessageId}
+                excludeMessageId={pendingHumanQuestion?.id}
               />
             )}
             {session.errorMessage && (
@@ -117,14 +131,54 @@ export default function WhatsNextView() {
                 {session.errorMessage}
               </div>
             )}
-            {session.runId &&
+            {pendingHumanQuestion ? (
+              <PendingTurnFooter
+                message={pendingHumanQuestion}
+                form={pendingForm}
+                busy={session.busyMessageId === pendingHumanQuestion.id}
+                onSubmit={(outcome) =>
+                  onHumanSubmit(pendingHumanQuestion.id, outcome)
+                }
+              />
+            ) : (
+              session.runId &&
               session.runStatus !== "finished" &&
               session.runStatus !== "failed" &&
               session.runStatus !== "cancelled" && (
                 <AgentChatbox runId={session.runId} />
-              )}
+              )
+            )}
           </div>
         )}
+    </div>
+  );
+}
+
+// PendingTurnFooter wraps HumanChatTurn in a Claude-Code-style fixed
+// footer: top border, slightly stronger surface, comfortable padding.
+// The wrapped HumanChatTurn keeps all its existing rendering (form /
+// free-text / actions) — only the surround changes.
+function PendingTurnFooter({
+  message,
+  form,
+  busy,
+  onSubmit,
+}: {
+  message: Parameters<typeof HumanChatTurn>[0]["message"];
+  form: Parameters<typeof HumanChatTurn>[0]["form"];
+  busy: boolean;
+  onSubmit: Parameters<typeof HumanChatTurn>[0]["onSubmit"];
+}) {
+  return (
+    <div className="border-t border-border-default bg-surface-1">
+      <div className="mx-auto max-w-3xl px-4 py-3">
+        <HumanChatTurn
+          message={message}
+          form={form}
+          busy={busy}
+          onSubmit={onSubmit}
+        />
+      </div>
     </div>
   );
 }

@@ -14,6 +14,7 @@ import {
   useRunStore,
   type QueuedUserMessage,
 } from "@/store/run";
+import { useUIStore } from "@/store/ui";
 
 interface Props {
   runId: string;
@@ -41,6 +42,7 @@ export default function AgentChatbox({
 }: Props) {
   const messages = useRunStore((s) => s.queuedMessages);
   const setQueuedMessages = useRunStore((s) => s.setQueuedMessages);
+  const chatEnterSubmits = useUIStore((s) => s.chatEnterSubmits);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -144,7 +146,16 @@ export default function AgentChatbox({
   );
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+    if (e.key !== "Enter") return;
+    if (chatEnterSubmits) {
+      // Default: Enter submits, Shift+Enter inserts newline. Cmd/Ctrl+Enter
+      // also submits for muscle-memory parity with the legacy binding.
+      if (e.shiftKey) return;
+      e.preventDefault();
+      void submit();
+    } else {
+      // Legacy: Cmd/Ctrl+Enter submits, Enter inserts newline.
+      if (!(e.metaKey || e.ctrlKey)) return;
       e.preventDefault();
       void submit();
     }
@@ -191,7 +202,7 @@ export default function AgentChatbox({
                 ? "Run is not active"
                 : "Queue a message to the running agent…"
             }
-            rows={Math.max(2, Math.min(6, Math.ceil(draft.length / 60) + 1))}
+            rows={Math.max(2, Math.min(10, Math.ceil(draft.length / 60) + 1))}
             disabled={disabled || busy}
             className="flex-1 text-[12px]"
           />

@@ -5,6 +5,7 @@ import type { FormAnswer, FormSpec } from "@/lib/whats-next/questionForm";
 import { Button } from "@/components/ui/Button";
 import { Textarea } from "@/components/ui/Textarea";
 import { WizardForm } from "@/components/ui/WizardForm";
+import { useUIStore } from "@/store/ui";
 
 interface Props {
   message: HumanQuestionMessage;
@@ -31,6 +32,7 @@ export default function HumanChatTurn({
 }: Props) {
   const [draft, setDraft] = useState("");
   const [reviseOpen, setReviseOpen] = useState(false);
+  const chatEnterSubmits = useUIStore((s) => s.chatEnterSubmits);
 
   if (message.status === "answered") {
     return <AnsweredTurn message={message} />;
@@ -56,6 +58,24 @@ export default function HumanChatTurn({
     onSubmit({ text: "", formAnswer });
   };
 
+  // Shared keybinding for both Textareas (free-text + revise). Honors
+  // the global chatEnterSubmits preference. The `onEnter` callback
+  // decides what "submit" means in each context (free-text vs revise).
+  const makeKeyHandler =
+    (onEnter: () => void) =>
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (e.key !== "Enter") return;
+      if (chatEnterSubmits) {
+        if (e.shiftKey) return;
+        e.preventDefault();
+        onEnter();
+      } else {
+        if (!(e.metaKey || e.ctrlKey)) return;
+        e.preventDefault();
+        onEnter();
+      }
+    };
+
   return (
     <div className="space-y-2">
       <AssistantBubble text={message.prompt} />
@@ -71,8 +91,11 @@ export default function HumanChatTurn({
           <Textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={makeKeyHandler(() => {
+              if (draft.trim() !== "") submit();
+            })}
             placeholder="Type your answer…"
-            rows={Math.max(2, Math.min(8, Math.ceil(draft.length / 60) + 1))}
+            rows={Math.max(2, Math.min(10, Math.ceil(draft.length / 60) + 1))}
             disabled={busy}
             className="flex-1"
           />
@@ -114,6 +137,9 @@ export default function HumanChatTurn({
               <Textarea
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={makeKeyHandler(() => {
+                  if (draft.trim() !== "") submit(false);
+                })}
                 placeholder="What should be revised?"
                 rows={3}
                 disabled={busy}

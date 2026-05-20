@@ -32,6 +32,10 @@ interface Props {
   // True while a submit is in-flight; disables inputs on the pending
   // human-question turn.
   busyMessageId?: string | null;
+  // When set, skip this message id while mapping — used by
+  // WhatsNextView to lift the pending human turn out of the inline
+  // transcript and into a fixed-footer slot below.
+  excludeMessageId?: string;
 }
 
 export default function ChatTranscript({
@@ -39,6 +43,7 @@ export default function ChatTranscript({
   bot,
   onHumanSubmit,
   busyMessageId = null,
+  excludeMessageId,
 }: Props) {
   const endRef = useRef<HTMLDivElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -58,10 +63,35 @@ export default function ChatTranscript({
     atBottomRef.current = distanceFromBottom < 48;
   };
 
+  // Re-pin to the bottom when the message count grows OR when the
+  // footer toggles (excludeMessageId set ↔ unset). Without the second
+  // dep the bottom panel growing/shrinking — e.g. AgentChatbox →
+  // pending HumanChatTurn footer with a larger form — would shift the
+  // visible region without firing a scrollIntoView, and the most
+  // recent message slips below the fold.
   useEffect(() => {
     if (!atBottomRef.current) return;
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages.length]);
+  }, [messages.length, excludeMessageId]);
+
+  // ResizeObserver on the scroll container catches in-place height
+  // changes that the deps array misses: the textarea growing as the
+  // user types, the WizardForm expanding when "Other" is picked, etc.
+  // Only fires the re-pin when the user is already at the bottom.
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const obs = new ResizeObserver(() => {
+      if (!atBottomRef.current) return;
+      endRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
+    });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+
+  const renderedMessages = excludeMessageId
+    ? messages.filter((m) => m.id !== excludeMessageId)
+    : messages;
 
   return (
     <div
@@ -69,7 +99,7 @@ export default function ChatTranscript({
       onScroll={handleScroll}
       className="flex-1 overflow-y-auto px-4 py-3 space-y-4"
     >
-      {messages.map((m) => (
+      {renderedMessages.map((m) => (
         <MessageRow
           key={m.id}
           message={m}
@@ -78,7 +108,7 @@ export default function ChatTranscript({
           busy={m.kind === "human-question" && busyMessageId === m.id}
         />
       ))}
-      {messages.length === 0 && (
+      {renderedMessages.length === 0 && (
         <p className="text-[12px] text-fg-subtle italic">
           The session will start as soon as iterion finishes the first survey.
         </p>
