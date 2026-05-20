@@ -1228,15 +1228,29 @@ func builtinContains(args []interface{}) (interface{}, error) {
 // builtinIf is a ternary-style selector: if(cond, then, else) returns
 // then when cond is truthy, else otherwise. Both branches are evaluated
 // eagerly — function calls are not special forms — so the caller is
-// responsible for keeping side effects out of either branch (compute
-// nodes are side-effect-free by construction, so this is fine for the
-// recipe use case).
+// responsible for keeping arithmetic exceptions AND apparent side
+// effects out of either branch.
+//
+// CAVEAT — the "side-effect-free" framing in the prior docstring was
+// misleading. Arithmetic exceptions ARE side effects from the caller's
+// standpoint: `if(n > 0, total / n, 0)` does NOT guard against
+// division-by-zero when n == 0 — the `total / n` arm runs first and
+// surfaces "expr: integer division by zero" before builtinIf gets to
+// pick a branch. Surfaced during the 2026-05-20 dogfood when
+// doc-align's coverage_pct compute crashed on an empty workspace.
+//
+// Safe patterns when one arm has a guarded denominator:
+//   coverage = (total * 100) / (if(n > 0, n, 1))   # guard inside divisor
+//   coverage = if(n > 0, total * 100 / n, 0)       # UNSAFE — eager div
 //
 // Motivation: the DSL has no native ternary or if-expression, which
 // pushed any conditional value-selection downstream to a JS tool. For
 // simple choices like "effective_risk = if(has_breaking && length(
 // alignment_steps) >= 3, 'major', risk)" the JS overhead is wasteful;
 // a builtin closes that gap.
+//
+// Followups tracking a proper short-circuit form: see kanban
+// a3a9757b on the iterion native board.
 func builtinIf(args []interface{}) (interface{}, error) {
 	if len(args) != 3 {
 		return nil, fmt.Errorf("expr: if() takes 3 arguments (cond, then, else), got %d", len(args))

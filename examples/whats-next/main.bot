@@ -905,7 +905,7 @@ agent emit_action:
   ## from the bundled skills/ being mirrored into .claude/skills/.
   ## Models on the claw backend do not see those skills natively.
   backend: "claude_code"
-  model: "claude-opus-4-7"
+  model: "${ITERION_WHATS_NEXT_MODEL_CLAUDE:-claude-opus-4-7}"
   reasoning_effort: "${ITERION_WHATS_NEXT_EFFORT_CLAUDE:-high}"
   input: emit_input
   output: emit_output
@@ -980,7 +980,7 @@ agent triage_board:
   ## triage agent benefits from the exhaustive tool reference when
   ## operator phrasing is ambiguous.
   backend: "claude_code"
-  model: "claude-sonnet-4-6"
+  model: "${ITERION_WHATS_NEXT_MODEL_CLAUDE:-claude-sonnet-4-6}"
   reasoning_effort: "${ITERION_WHATS_NEXT_EFFORT_CLAUDE:-medium}"
   input: triage_input
   output: triage_output
