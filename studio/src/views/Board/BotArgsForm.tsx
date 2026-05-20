@@ -2,28 +2,40 @@ import { useMemo, useState } from "react";
 
 import type { BotEntryWithSchema } from "@/api/bots";
 import type { VarField } from "@/api/types";
+import { Input } from "@/components/ui/Input";
 import VarFieldInput, { defaultStringFor } from "@/components/shared/VarFieldInput";
 import { isVarMissing, isVarRequired, RequiredPill } from "@/lib/varValidation";
 
 interface Props {
-  /** Currently-selected bot's metadata + schema. Null when the form is
-   *  in dispatcher-default mode (no bot picked). */
+  /** Currently-selected bot's metadata + schema. Null when no bot is
+   *  picked — the form still lets the operator add raw key/value
+   *  entries (overrides flow to the dispatcher's templated vars). */
   bot: BotEntryWithSchema | null;
-  /** Args currently bound to the ticket. May contain orphan keys not
-   *  in the bot's vars schema (e.g. the bot was renamed since save). */
+  /** Args currently bound to the ticket. May contain extra keys not
+   *  in the bot's vars schema (the operator added them manually, or
+   *  the bot was renamed since save). */
   values: Record<string, string>;
   onChange: (next: Record<string, string>) => void;
 }
 
-/** BotArgsForm renders one VarFieldInput per declared workflow var.
+/** BotArgsForm has two parts:
  *
- *  Orphan keys — values present in the ticket that are not declared by
- *  the current bot — are surfaced in a collapsible "Unknown args"
- *  section. Never auto-stripped: a bot revert / rename should not
- *  silently lose data; the operator decides.
+ *  1. Schema-driven typed fields — one VarFieldInput per declared
+ *     workflow var of the picked bot. Surfaces required pills and
+ *     missing-value diagnostics.
+ *
+ *  2. Custom args — an editable list of arbitrary key/value entries.
+ *     Holds both the "extra" keys not declared by the bot's schema
+ *     (renamed bot, untyped overrides) and the operator's hand-added
+ *     entries. Always shown, with a "+ Add arg" button to append.
+ *     This is the path used when a bot has no vars yet (or no bot
+ *     is picked at all) but the operator still wants to set custom
+ *     overrides for the dispatcher's vars templates.
+ *
+ *  Custom args are never auto-stripped: a bot revert/rename should
+ *  not silently lose data. The operator decides what to remove.
  */
 export function BotArgsForm({ bot, values, onChange }: Props) {
-  const [showOrphans, setShowOrphans] = useState(false);
   const fields: VarField[] = useMemo(
     () => (bot?.vars?.fields ?? []) as VarField[],
     [bot],
@@ -32,33 +44,21 @@ export function BotArgsForm({ bot, values, onChange }: Props) {
     () => new Set(fields.map((f) => f.name)),
     [fields],
   );
-  const orphans = useMemo(() => {
-    return Object.entries(values).filter(([k]) => !fieldNames.has(k));
-  }, [values, fieldNames]);
+  // Custom args = every entry in `values` that is not in the schema.
+  // Sorted by key for stable order across re-renders.
+  const customEntries = useMemo(
+    () =>
+      Object.entries(values)
+        .filter(([k]) => !fieldNames.has(k))
+        .sort((a, b) => a[0].localeCompare(b[0])),
+    [values, fieldNames],
+  );
 
-  if (!bot) {
-    return (
-      <p className="text-[11px] text-fg-subtle italic">
-        Pick a bot to configure its arguments. With "(dispatcher
-        default)" the run uses the workflow + vars defined on the
-        dispatcher config.
-      </p>
-    );
-  }
-
-  if (bot.schema_error) {
-    return (
-      <div className="text-[11px] text-warning-fg space-y-1">
-        <div>
-          Could not parse the bot's workflow source — args form
-          unavailable.
-        </div>
-        <code className="block bg-surface-1 rounded px-1.5 py-1 break-all">
-          {bot.schema_error}
-        </code>
-      </div>
-    );
-  }
+  // Draft for the "Add arg" row. Committed to `values` only when the
+  // key is non-empty AND not already present. Keeps the form free of
+  // ghost-empty rows on every keystroke.
+  const [draftKey, setDraftKey] = useState("");
+  const [draftValue, setDraftValue] = useState("");
 
   const setOne = (name: string, v: string) => {
     onChange({ ...values, [name]: v });
@@ -68,15 +68,51 @@ export function BotArgsForm({ bot, values, onChange }: Props) {
     delete next[name];
     onChange(next);
   };
+  const renameCustom = (oldKey: string, newKey: string) => {
+    if (newKey === oldKey) return;
+    const trimmed = newKey.trim();
+    if (!trimmed) return;
+    if (trimmed in values && trimmed !== oldKey) return; // collision: ignore
+    const next: Record<string, string> = {};
+    for (const [k, v] of Object.entries(values)) {
+      if (k === oldKey) next[trimmed] = v;
+      else next[k] = v;
+    }
+    onChange(next);
+  };
+  const commitDraft = () => {
+    const k = draftKey.trim();
+    if (!k) return;
+    if (k in values) {
+      setDraftKey("");
+      setDraftValue("");
+      return;
+    }
+    onChange({ ...values, [k]: draftValue });
+    setDraftKey("");
+    setDraftValue("");
+  };
 
   return (
     <div className="space-y-3">
-      {fields.length === 0 ? (
-        <p className="text-[11px] text-fg-subtle italic">
-          This bot declares no input vars.
-        </p>
-      ) : (
+      {bot?.schema_error && (
+        <div className="text-[11px] text-warning-fg space-y-1">
+          <div>
+            Could not parse this bot's workflow source — schema unavailable.
+            Use the custom args section below to set overrides manually.
+          </div>
+          <code className="block bg-surface-1 rounded px-1.5 py-1 break-all">
+            {bot.schema_error}
+          </code>
+        </div>
+      )}
+
+      {/* Schema-driven fields */}
+      {bot && !bot.schema_error && fields.length > 0 && (
         <div className="space-y-3">
+          <div className="text-[10px] uppercase tracking-wide text-fg-subtle">
+            Declared vars
+          </div>
           {fields.map((f) => {
             const required = isVarRequired(f);
             const value = values[f.name] ?? defaultStringFor(f);
@@ -86,10 +122,7 @@ export function BotArgsForm({ bot, values, onChange }: Props) {
                 key={f.name}
                 className="grid grid-cols-[160px_1fr] gap-3 items-start"
               >
-                <label
-                  htmlFor={`bot-arg-${f.name}`}
-                  className="pt-1"
-                >
+                <label htmlFor={`bot-arg-${f.name}`} className="pt-1">
                   <div className="flex items-baseline gap-2">
                     <span className="text-xs font-medium font-mono">
                       {f.name}
@@ -111,43 +144,102 @@ export function BotArgsForm({ bot, values, onChange }: Props) {
         </div>
       )}
 
-      {orphans.length > 0 && (
-        <div className="border border-warning-border rounded-md">
-          <button
-            type="button"
-            onClick={() => setShowOrphans((s) => !s)}
-            className="w-full flex items-center justify-between px-2 py-1.5 text-[11px] text-warning-fg hover:bg-surface-1 rounded-md"
-          >
-            <span>
-              Unknown args ({orphans.length}) — not declared by this bot
+      {bot && !bot.schema_error && fields.length === 0 && (
+        <p className="text-[11px] text-fg-subtle italic">
+          This bot declares no input vars in its workflow. Use the
+          custom args section below to set overrides manually — they'll
+          flow to the dispatcher's vars templates at launch.
+        </p>
+      )}
+
+      {/* Custom args — always rendered. */}
+      <div className="space-y-2">
+        <div className="text-[10px] uppercase tracking-wide text-fg-subtle">
+          Custom args
+          {customEntries.length > 0 && bot && !bot.schema_error && fields.length > 0 && (
+            <span className="ml-1 normal-case text-warning-fg">
+              ({customEntries.length} not declared by this bot)
             </span>
-            <span className="text-[10px]">{showOrphans ? "▾" : "▸"}</span>
-          </button>
-          {showOrphans && (
-            <ul className="px-2 py-1 space-y-1">
-              {orphans.map(([k, v]) => (
-                <li
-                  key={k}
-                  className="grid grid-cols-[1fr_2fr_auto] gap-2 items-center text-[11px]"
-                >
-                  <span className="font-mono truncate">{k}</span>
-                  <code className="bg-surface-1 rounded px-1.5 py-0.5 truncate">
-                    {v}
-                  </code>
-                  <button
-                    type="button"
-                    onClick={() => deleteOne(k)}
-                    className="text-fg-subtle hover:text-danger"
-                    aria-label={`Remove ${k}`}
-                  >
-                    ×
-                  </button>
-                </li>
-              ))}
-            </ul>
           )}
         </div>
-      )}
+        {customEntries.length === 0 && (
+          <p className="text-[11px] text-fg-subtle italic">
+            No custom args. Use the form below to add arbitrary key/value
+            overrides.
+          </p>
+        )}
+        {customEntries.map(([k, v]) => (
+          <div
+            key={k}
+            className="grid grid-cols-[160px_1fr_auto] gap-2 items-center"
+          >
+            <Input
+              value={k}
+              onChange={(e) => renameCustom(k, e.target.value)}
+              size="sm"
+              className="font-mono"
+              aria-label={`Key for ${k}`}
+            />
+            <Input
+              value={v}
+              onChange={(e) => setOne(k, e.target.value)}
+              size="sm"
+              aria-label={`Value for ${k}`}
+            />
+            <button
+              type="button"
+              onClick={() => deleteOne(k)}
+              className="text-fg-subtle hover:text-danger px-1"
+              aria-label={`Remove ${k}`}
+            >
+              ×
+            </button>
+          </div>
+        ))}
+        {/* Add-row */}
+        <div className="grid grid-cols-[160px_1fr_auto] gap-2 items-center">
+          <Input
+            value={draftKey}
+            onChange={(e) => setDraftKey(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitDraft();
+              }
+            }}
+            placeholder="key"
+            size="sm"
+            className="font-mono"
+            aria-label="New arg key"
+          />
+          <Input
+            value={draftValue}
+            onChange={(e) => setDraftValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitDraft();
+              }
+            }}
+            placeholder="value"
+            size="sm"
+            aria-label="New arg value"
+          />
+          <button
+            type="button"
+            onClick={commitDraft}
+            disabled={!draftKey.trim() || draftKey.trim() in values}
+            className="text-xs px-2 py-1 rounded border border-border-default hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed"
+            title={
+              draftKey.trim() in values
+                ? "Key already set above"
+                : "Add this key/value entry"
+            }
+          >
+            + Add
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

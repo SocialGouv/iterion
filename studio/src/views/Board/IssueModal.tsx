@@ -193,10 +193,7 @@ export default function IssueModal({ board, initial, onSubmit, onClose, onDelete
                   bots={bots}
                   botsError={botsError}
                   bot={bot}
-                  setBot={(name) => {
-                    setBot(name);
-                    if (name === "") setBotArgs({});
-                  }}
+                  setBot={setBot}
                   botArgs={botArgs}
                   setBotArgs={setBotArgs}
                   selectedBot={selectedBot}
@@ -449,25 +446,13 @@ function BotTab({
         </p>
       </Field>
 
-      {bot && (
-        <Field label="Arguments">
-          <BotArgsForm
-            bot={selectedBot}
-            values={botArgs}
-            onChange={setBotArgs}
-          />
-        </Field>
-      )}
-
-      {!bot && Object.keys(botArgs).length > 0 && (
-        <Field label="Saved arguments (no bot selected)">
-          <BotArgsForm
-            bot={{ name: "", path: "", vars: { fields: [] } }}
-            values={botArgs}
-            onChange={setBotArgs}
-          />
-        </Field>
-      )}
+      <Field label="Arguments">
+        <BotArgsForm
+          bot={bot ? selectedBot : null}
+          values={botArgs}
+          onChange={setBotArgs}
+        />
+      </Field>
     </div>
   );
 }
