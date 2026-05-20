@@ -35,9 +35,9 @@ Built-in assignees ([source bots](../examples/)):
 
 | Assignee | Backing bot | What it does |
 |---|---|---|
-| `vibe-feature-dev` | `examples/bots/vibe_feature_dev.bot` | Autonomous feature dev: plan → act → simplify → alternating Claude/GPT review loop |
-| `whole-improve-loop` | `examples/bots/whole_improve_loop.bot` | Whole-codebase improvement loop with alternating cross-family verdicts |
-| `branch-improve-loop` | `examples/bots/branch_improve_loop.bot` | Branch-scoped improvement + auto-commit on convergence |
+| `feature-dev` | `examples/feature_dev/` | Autonomous feature dev: plan → act → simplify → alternating Claude/GPT review loop |
+| `whole-improve-loop` | `examples/whole_improve_loop/` | Whole-codebase improvement loop with alternating cross-family verdicts |
+| `branch-improve-loop` | `examples/branch_improve_loop/` | Branch-scoped improvement + auto-commit on convergence |
 | `whats-next` | `examples/whats-next/` | Repo survey → roadmap synthesis → kanban materialisation |
 | `doc-align` | `examples/doc-align/` | Detect & fix doc/code mismatches |
 | `sec-audit-source` | `examples/sec-audit-source/` | Source-code security audit (gitleaks/trivy/semgrep/gosec) |
@@ -274,9 +274,9 @@ tracker:
 workflow: workflows/triage.bot                  # default fallback
 
 assignee_workflows:
-  vibe_feature_dev:        examples/bots/vibe_feature_dev.bot
-  whole_improve_loop: examples/bots/whole_improve_loop.bot
-  secured-renovacy:        examples/secured-renovacy/main.bot
+  feature_dev:        examples/feature_dev/main.bot
+  whole_improve_loop: examples/whole_improve_loop/main.bot
+  secured-renovacy:   examples/secured-renovacy/main.bot
 ```
 
 Resolution rules at dispatch time:
@@ -300,14 +300,14 @@ file (same convention as `workflow:`). Missing files fail
 `iterion dispatch` startup with a precise error.
 
 This is what makes whats-next.bot's kanban output auto-pilot: the
-bot stamps each issue with `--assignee vibe_feature_dev` (or any
+bot stamps each issue with `--assignee feature_dev` (or any
 catalogued bot), and the dispatcher — with the mapping above —
 dispatches the matching workflow without any operator
 intervention.
 
 ### Per-assignee dispatch overrides
 
-Different bots expect different input vars: `vibe_feature_dev` wants
+Different bots expect different input vars: `feature_dev` wants
 `feature_prompt`, `whole_improve_loop` wants `improvement_prompt`,
 `secured-renovacy` wants `user_prompt`. The global `dispatch.vars:`
 binds a single template for *every* assignee, which doesn't fit a
@@ -320,12 +320,12 @@ entry here, its `vars:` (and `attachments:`) **replace** the global
 ```yaml
 workflow: workflows/triage.bot
 assignee_workflows:
-  vibe-feature-dev:   examples/bots/vibe_feature_dev.bot
-  whole-improve-loop: examples/bots/whole_improve_loop.bot
+  feature-dev:        examples/feature_dev/main.bot
+  whole-improve-loop: examples/whole_improve_loop/main.bot
   secured-renovacy:   examples/secured-renovacy/main.bot
 
 assignee_dispatch:
-  vibe-feature-dev:
+  feature-dev:
     vars:
       workspace_dir:  "{{ dispatcher.workspace_path }}"
       feature_prompt: "{{ issue.title }}\n\n{{ issue.body }}"

@@ -45,7 +45,7 @@ Walk top-to-bottom; first match wins.
 
 | If the work sounds like… | → `assignee` |
 |---|---|
-| "implement feature X", "add capability", "build the thing" | `vibe_feature_dev` |
+| "implement feature X", "add capability", "build the thing" | `feature_dev` |
 | "review the whole codebase", "audit production-readiness", "find bugs anywhere" | `whole_improve_loop` |
 | "focus on axis X" (security / observability / perf …) across the codebase | `whole_improve_loop` (with `--var improvement_prompt=…`) |
 | "review this branch", "review the PR", "fix the diff against main" | `branch_improve_loop` |
@@ -63,9 +63,9 @@ wastes a bot run.
 
 ## Bot reference
 
-### `vibe_feature_dev`
+### `feature_dev`
 
-- **Path**: `examples/bots/vibe_feature_dev.bot`
+- **Path**: `examples/feature_dev/main.bot`
 - **Required var**: `feature_prompt` (one feature + acceptance
   criteria).
 - **Pipeline**: plan → act → simplify → alternating Claude/GPT
@@ -82,7 +82,7 @@ Example `args` payload for a roadmap_item:
 
 ### `whole_improve_loop`
 
-- **Path**: `examples/bots/whole_improve_loop.bot` (formerly
+- **Path**: `examples/whole_improve_loop/main.bot` (formerly
   `vibe_review_alternating`).
 - **Vars**: `workspace_dir` (default), `scope_notes: string=""`
   — free-text steering ("focus on auth and persistence",
@@ -103,7 +103,7 @@ Example `args` payload for a roadmap_item:
 
 ### `branch_improve_loop`
 
-- **Path**: `examples/bots/branch_improve_loop.bot`.
+- **Path**: `examples/branch_improve_loop/main.bot`.
 - **Vars**: `workspace_dir` (default), `scope_notes: string=""`,
   `base_ref: string="main"` — branch comparison base. The
   bot reviews the diff `git diff base_ref...HEAD` only.
@@ -237,7 +237,7 @@ dispatched bot.
 Before creating each issue:
 
 1. If `assignee != ""`, look it up in the table above. If it's
-   not one of the seven known bots (`vibe_feature_dev`,
+   not one of the seven known bots (`feature_dev`,
    `whole_improve_loop`, `branch_improve_loop`,
    `secured-renovacy`, `sec-audit-source`, `sec-audit-deps`,
    `doc-align`), AND it doesn't correspond to a `.bot` file the

@@ -21,7 +21,7 @@ The bot does NOT shell out `iterion run …`. The dispatcher dispatches.
 
 `iterion dispatch` today binds **one workflow per dispatcher instance**
 — it does not yet route dispatch by `issue.assignee`. whats-next still
-records the assignee on every issue (e.g. `assignee=vibe_feature_dev`)
+records the assignee on every issue (e.g. `assignee=feature_dev`)
 so the data is there for the future routing feature. Until that ships,
 the operator either:
 

@@ -24,22 +24,16 @@ func TestFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Productized .bot files under bots/.
-	productizedBots, err := filepath.Glob("../../../examples/bots/*.bot")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Bundle workflows: examples/<name>/main.bot. Bundles graduated
-	// some recipes off the top-level (e.g. secured-renovacy →
-	// examples/secured-renovacy/main.bot), so the parser test needs
-	// to walk these too — otherwise dropping the standalone .iter
-	// silently removes the recipe from the parser regression suite.
+	// Bundle workflows: examples/<name>/main.bot. Every productised bot
+	// now lives in its own folder (feature_dev, whole_improve_loop,
+	// secured-renovacy, …) — the parser test walks these so dropping a
+	// standalone .iter into a bundle doesn't silently remove the recipe
+	// from the regression suite.
 	bundleMains, err := filepath.Glob("../../../examples/*/main.bot")
 	if err != nil {
 		t.Fatal(err)
 	}
 	fixtures := append(iterFixtures, botFixtures...)
-	fixtures = append(fixtures, productizedBots...)
 	fixtures = append(fixtures, bundleMains...)
 	if len(fixtures) == 0 {
 		t.Fatal("no workflow fixtures found in ../examples/")

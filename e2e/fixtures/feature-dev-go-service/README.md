@@ -1,7 +1,7 @@
 # userservice (iterion fixture)
 
 A tiny HTTP service used as a realistic starting point for
-`iterion`'s `vibe_feature_dev` live test. Not production code:
+`iterion`'s `feature_dev` live test. Not production code:
 the store is in-memory and resets on every restart.
 
 ## Layout

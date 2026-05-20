@@ -61,7 +61,7 @@ agent x:
 
 func TestBotsList_FallbackToFilenameAndLeadingComment(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "vibe_feature_dev.bot"), `## ─────────────────────────────────────────────────────────────
+	writeFile(t, filepath.Join(dir, "feature_dev.bot"), `## ─────────────────────────────────────────────────────────────
 ## Autonomous feature developer.
 ## Plans, implements, simplifies.
 ## ─────────────────────────────────────────────────────────────
@@ -78,7 +78,7 @@ agent x:
 	if len(entries) != 1 {
 		t.Fatalf("got %d entries", len(entries))
 	}
-	if entries[0].Name != "vibe_feature_dev" {
+	if entries[0].Name != "feature_dev" {
 		t.Fatalf("Name = %q", entries[0].Name)
 	}
 	if !strings.Contains(entries[0].Description, "Autonomous feature developer") {

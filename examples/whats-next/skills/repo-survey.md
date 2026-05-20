@@ -122,7 +122,7 @@ node will surface them. Examples of good open_questions:
 Examples of bad open_questions (don't emit these):
 - "What do you want to do?" (too broad — that's what
   ask_priorities already asks)
-- "Should I run vibe_feature_dev or whole_improve_loop?"
+- "Should I run feature_dev or whole_improve_loop?"
   (premature — the propose phase decides this, not you)
 
 Keep open_questions to 0–4 items. Empty is fine if the survey

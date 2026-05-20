@@ -1,5 +1,5 @@
 // Package main is a small in-memory user service used as a realistic
-// fixture for iterion's vibe_feature_dev bot live test. It is NOT
+// fixture for iterion's feature_dev bot live test. It is NOT
 // production code — the data store is in-memory and resets on every
 // process start.
 package main

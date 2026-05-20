@@ -17,7 +17,7 @@ import (
 // by the zero-config `iterion dispatch` mode. The tree is regenerated
 // from examples/ via `task templates:dispatch-bots`. Each top-level
 // directory is one assignee — the directory name becomes the assignee
-// label (`vibe-feature-dev`, `whole-improve-loop`, …) and the contents
+// label (`feature-dev`, `whole-improve-loop`, …) and the contents
 // form a bundle (main.bot + optional skills/, prompts/, attachments/).
 //
 //go:embed all:templates/dispatch_bots
@@ -59,7 +59,7 @@ const defaultDispatchMaxConcurrent = 2
 // `scope_notes` carries the issue text when the bot accepts it.
 func defaultAssigneeDispatch() map[string]dispatcher.DispatchConfig {
 	return map[string]dispatcher.DispatchConfig{
-		"vibe-feature-dev": {Vars: map[string]string{
+		"feature-dev": {Vars: map[string]string{
 			"workspace_dir":  "{{dispatcher.workspace_path}}",
 			"feature_prompt": defaultBotIssuePrompt,
 		}},
@@ -173,7 +173,7 @@ func BuildDefaultConfig(storeDir string) (*dispatcher.Config, error) {
 		Agent:    dispatcher.AgentConfig{MaxConcurrent: defaultDispatchMaxConcurrent},
 		Server:   dispatcher.ServerConfig{Port: defaultDispatchPort},
 		AssigneeWorkflows: map[string]string{
-			"vibe-feature-dev":    filepath.Join(botsDir, "vibe-feature-dev"),
+			"feature-dev":         filepath.Join(botsDir, "feature-dev"),
 			"whole-improve-loop":  filepath.Join(botsDir, "whole-improve-loop"),
 			"branch-improve-loop": filepath.Join(botsDir, "branch-improve-loop"),
 			"whats-next":          filepath.Join(botsDir, "whats-next"),

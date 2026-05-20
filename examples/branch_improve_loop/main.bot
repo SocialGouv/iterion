@@ -508,7 +508,7 @@ schema fix_output:
   pushback: string[]
   pushback_justification: string
 
-## Commit-phase schemas. Mirrors vibe_feature_dev: prepare_commit
+## Commit-phase schemas. Mirrors feature_dev: prepare_commit
 ## emits the structured intent (semantic message + file list),
 ## commit_changes deterministically applies it via `git add` +
 ## `git commit`.
@@ -686,9 +686,9 @@ workflow branch_improve_loop:
   ## linters, smoke-runs, etc. — all of which we'd rather not expose
   ## to the host. Inline mode (vs `mode: auto`) chosen so the
   ## post_create script that installs claude inside the container is
-  ## honoured — see vibe_feature_dev.bot for the full rationale.
+  ## honoured — see feature_dev/main.bot for the full rationale.
   sandbox:
-    ## See vibe_feature_dev.bot for the rationale on full vs slim.
+    ## See feature_dev/main.bot for the rationale on full vs slim.
     image: "ghcr.io/socialgouv/iterion-sandbox-full:edge"
     user: "devbox"
     workspace_folder: "/workspace"

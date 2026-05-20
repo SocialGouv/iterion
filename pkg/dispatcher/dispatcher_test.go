@@ -138,7 +138,7 @@ func TestDispatcherDispatchAndFinish(t *testing.T) {
 	ft.add(tracker.Issue{
 		ID: "fake:1", Identifier: "fake#1",
 		Title: "go", WorkflowState: "ready",
-		Assignee: "vibe_feature_dev",
+		Assignee: "feature_dev",
 	})
 
 	type capture struct {
@@ -162,8 +162,8 @@ func TestDispatcherDispatchAndFinish(t *testing.T) {
 		if got.runID == "" {
 			t.Fatal("empty run ID")
 		}
-		if got.assignee != "vibe_feature_dev" {
-			t.Fatalf("dispatch spec dropped issue.Assignee: got %q want %q", got.assignee, "vibe_feature_dev")
+		if got.assignee != "feature_dev" {
+			t.Fatalf("dispatch spec dropped issue.Assignee: got %q want %q", got.assignee, "feature_dev")
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for dispatch")

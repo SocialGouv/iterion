@@ -68,8 +68,8 @@ prompt gen_skills_system:
 
   2. iterion-bot-catalog.md — an index of the iterion bots that
      ship in examples/. Inspect these three files in particular:
-       - examples/bots/whole_improve_loop.bot
-       - examples/bots/vibe_feature_dev.bot
+       - examples/whole_improve_loop/main.bot
+       - examples/feature_dev/main.bot
        - examples/secured-renovacy/main.bot
      For each: one-line purpose, key inputs from the workflow vars
      block, the shape of its iterion run invocation, and a "use

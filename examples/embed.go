@@ -28,18 +28,20 @@ import (
 	"sort"
 )
 
-// embed glob covers ONLY `bots/*.bot` for now. The previous `*.iter`
-// pattern is dropped because no top-level .iter currently ships
-// (secured-renovacy graduated to a `.botz` bundle under
-// secured-renovacy/, which is not in this embed). Re-add `*.iter`
-// the moment a new top-level standalone recipe lands — Go's embed
-// fails the build when a pattern matches zero files.
+// The three productised bots (feature_dev, whole_improve_loop,
+// branch_improve_loop) each ship as a single-file bundle: only
+// `<name>/main.bot` is embedded — their manifest.yaml + README.md
+// are stripped to keep the binary slim. Larger bundles
+// (whats-next, doc-align, sec-audit-*, secured-renovacy) carry
+// skills/prompts/attachments alongside main.bot and are deliberately
+// NOT embedded; they have to be loaded by explicit path
+// (`iterion run examples/<name>/` or against the packed `.botz`).
 //
-//go:embed bots/*.bot
+//go:embed feature_dev/main.bot whole_improve_loop/main.bot branch_improve_loop/main.bot
 var Files embed.FS
 
 // Get returns the contents of the embedded example with the given
-// basename (e.g. "bots/vibe_feature_dev.bot" or "skill/human_gate.bot").
+// basename (e.g. "feature_dev/main.bot" or "skill/human_gate.bot").
 // Returns ok=false if no such embedded recipe exists.
 func Get(name string) ([]byte, bool) {
 	data, err := Files.ReadFile(name)

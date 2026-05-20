@@ -96,7 +96,7 @@ func TestRoundTrip_CreateTransitionGetList(t *testing.T) {
 	}
 
 	// Assign.
-	args, _ = json.Marshal(map[string]string{"id": created.ID, "assignee": "vibe_feature_dev"})
+	args, _ = json.Marshal(map[string]string{"id": created.ID, "assignee": "feature_dev"})
 	if _, err := Call(s, caps, "assign_issue", args); err != nil {
 		t.Fatalf("assign_issue: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestRoundTrip_CreateTransitionGetList(t *testing.T) {
 	if err := json.Unmarshal(res, &list); err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 1 || list[0].ID != created.ID || list[0].Assignee != "vibe_feature_dev" {
+	if len(list) != 1 || list[0].ID != created.ID || list[0].Assignee != "feature_dev" {
 		t.Fatalf("list result unexpected: %+v", list)
 	}
 

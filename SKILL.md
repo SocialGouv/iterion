@@ -258,7 +258,7 @@ workflow my_workflow:
 
 ### Worktree isolation
 
-`worktree: auto` runs the workflow inside a per-run git worktree at `<store-dir>/worktrees/<run-id>/` so the user's main working tree stays untouched and WIP edits stay invisible to the workflow. Clean exits automatically remove that worktree. Failed, cancelled, or error exits preserve it and log the path so the operator can inspect it and, when desired, clean it up manually with `git worktree remove --force <path>`. Omit the field (or set `none`) to run in place. See [examples/vibe_feature_dev.iter](examples/vibe_feature_dev.iter) for a workflow that opts in.
+`worktree: auto` runs the workflow inside a per-run git worktree at `<store-dir>/worktrees/<run-id>/` so the user's main working tree stays untouched and WIP edits stay invisible to the workflow. Clean exits automatically remove that worktree. Failed, cancelled, or error exits preserve it and log the path so the operator can inspect it and, when desired, clean it up manually with `git worktree remove --force <path>`. Omit the field (or set `none`) to run in place. See [examples/feature_dev/main.bot](examples/feature_dev/main.bot) for a workflow that opts in.
 
 ## Edge Syntax
 
@@ -424,5 +424,5 @@ iterion resume --run-id <id> --file f --answers-file a.json  # resume paused run
 - [references/dsl-grammar.md](references/dsl-grammar.md) — formal grammar specification
 - [references/patterns.md](references/patterns.md) — common workflow patterns with examples
 - [references/diagnostics.md](references/diagnostics.md) — all validation diagnostic codes
-- [examples/bots/](examples/bots/) — productized `.bot` bots (proven, runnable)
+- [examples/feature_dev/](examples/feature_dev/), [examples/whole_improve_loop/](examples/whole_improve_loop/), [examples/branch_improve_loop/](examples/branch_improve_loop/) — productized `.bot` bots (proven, runnable)
 - [.archive/examples/skill/](.archive/examples/skill/) — archived minimal self-contained `.iter` didactic primitives

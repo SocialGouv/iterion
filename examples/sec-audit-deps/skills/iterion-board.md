@@ -39,7 +39,7 @@ if called directly.
   "state": "ready",
   "labels": ["horizon:short-term", "source:whats-next"],
   "priority": 5,
-  "assignee": "vibe_feature_dev",
+  "assignee": "feature_dev",
   "blockers": ["native:abcd1234"],
   "fields": {"bot_args": "--var,feature_prompt=Add CSV export"}
 }
@@ -60,7 +60,7 @@ Fails with `unknown state` if `to` is not declared on the board.
 ### `assign_issue` (board.assign)
 
 ```json
-{"id": "native:abcd...", "assignee": "vibe_feature_dev"}
+{"id": "native:abcd...", "assignee": "feature_dev"}
 ```
 
 Empty string clears the assignee.
@@ -85,7 +85,7 @@ state. Rejects non-terminal targets.
 ### `list_issues` (board.read) + `get_issue` (board.read)
 
 ```json
-{"state": "ready", "label": "horizon:next-action", "assignee": "vibe_feature_dev"}
+{"state": "ready", "label": "horizon:next-action", "assignee": "feature_dev"}
 ```
 
 All filter fields are optional. `get_issue` takes `{"id": "..."}`.

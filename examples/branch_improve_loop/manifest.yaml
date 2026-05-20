@@ -1,0 +1,8 @@
+name: branch_improve_loop
+version: 0.1.0
+description: |
+  Branch-scoped variant of whole_improve_loop. Runs review-fix iterations
+  on the changes between a feature branch and its base, auto-commits each
+  fix, and stops on cross-family double-approval.
+author: SocialGouv (devthejo) — branch_improve_loop/main.bot
+schema_version: 1

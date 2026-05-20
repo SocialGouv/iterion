@@ -3023,7 +3023,7 @@ func liveRunResultAcceptable(err error) (bool, string) {
 // liveRunResultAcceptableReal is the stricter variant used by `_Real`
 // tests. It does NOT treat ExecutionFailed as acceptable — that mask
 // hid a real SIGKILL (post_create crash) as a green test in attempt 4
-// of the sandboxed vibe_feature_dev_real iteration. `_Real` tests
+// of the sandboxed feature_dev_real iteration. `_Real` tests
 // must catch genuine subprocess failures; `ExecutionFailed (context
 // deadline)` would still show as a hard failure here, which is the
 // correct signal for a "did the realistic bot actually work?" probe.
@@ -3088,13 +3088,13 @@ func requireWorkspaceCommitGrowth(t *testing.T, workspaceDir string, before int)
 }
 
 // ---------------------------------------------------------------------------
-// Live E2E — vibe_feature_dev.bot
+// Live E2E — feature_dev/main.bot
 // ---------------------------------------------------------------------------
 
-// TestLive_VibeFeatureDev runs the vibe_feature_dev bot against a real
-// LLM. The bot orchestrates plan → act → simplify → alternating
-// review/fix → commit, so success means: at least one new commit
-// landed in the workspace's git history beyond the seed commit.
+// TestLive_FeatureDev runs the feature_dev bot against a real LLM.
+// The bot orchestrates plan → act → simplify → alternating review/fix
+// → commit, so success means: at least one new commit landed in the
+// workspace's git history beyond the seed commit.
 //
 // Requires:
 //   - `claude` CLI installed (and OAuth-authenticated OR ZAI_API_KEY in env).
@@ -3103,7 +3103,7 @@ func requireWorkspaceCommitGrowth(t *testing.T, workspaceDir string, before int)
 // The workspace dir is NOT removed after the test so the user can
 // inspect the resulting code + report.md + metrics.json. The
 // workspace also gets symlinked into e2e/.workspaces/<test-name>/.
-func TestLive_VibeFeatureDev(t *testing.T) {
+func TestLive_FeatureDev(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live test in short mode")
 	}
@@ -3112,9 +3112,9 @@ func TestLive_VibeFeatureDev(t *testing.T) {
 	requireBinaryInPath(t, "docker")
 	requireEnv(t, "OPENAI_API_KEY")
 
-	wf := compileFixture(t, "bots/vibe_feature_dev.bot")
+	wf := compileFixture(t, "feature_dev/main.bot")
 
-	workspaceDir, err := os.MkdirTemp("", "iterion-vibe-feature-dev-*")
+	workspaceDir, err := os.MkdirTemp("", "iterion-feature-dev-*")
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
 	}
@@ -3126,7 +3126,7 @@ func TestLive_VibeFeatureDev(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	runID := "live-vibe-feature-dev"
+	runID := "live-feature-dev"
 
 	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
@@ -3146,7 +3146,7 @@ func TestLive_VibeFeatureDev(t *testing.T) {
 		"workspace_dir":  workspaceDir,
 	}
 
-	t.Log("Starting vibe_feature_dev live run…")
+	t.Log("Starting feature_dev live run…")
 	start := time.Now()
 	runErr := eng.Run(ctx, runID, inputs)
 	elapsed := time.Since(start)
@@ -3225,7 +3225,7 @@ func TestLive_VibeReviewAlternating(t *testing.T) {
 	requireBinaryInPath(t, "docker")
 	requireEnv(t, "OPENAI_API_KEY")
 
-	wf := compileFixture(t, "bots/whole_improve_loop.bot")
+	wf := compileFixture(t, "whole_improve_loop/main.bot")
 
 	workspaceDir, err := os.MkdirTemp("", "iterion-whole-improve-loop-*")
 	if err != nil {
@@ -3528,8 +3528,8 @@ func seedFromFixture(t *testing.T, fixtureName string) string {
 	return workspaceDir
 }
 
-// TestLive_VibeFeatureDev_Real runs vibe_feature_dev against a real-
-// world starting point: a small Go HTTP service under
+// TestLive_FeatureDev_Real runs feature_dev against a real-world
+// starting point: a small Go HTTP service under
 // e2e/fixtures/feature-dev-go-service. The feature prompt is non-
 // trivial — adds a new endpoint with validation, error handling, and
 // idempotency. Observes plan quality, implementation correctness,
@@ -3537,7 +3537,7 @@ func seedFromFixture(t *testing.T, fixtureName string) string {
 //
 // Requires: claude CLI + OPENAI_API_KEY.
 // Expected duration: 20-60 min, $5-15.
-func TestLive_VibeFeatureDev_Real(t *testing.T) {
+func TestLive_FeatureDev_Real(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live test in short mode")
 	}
@@ -3546,7 +3546,7 @@ func TestLive_VibeFeatureDev_Real(t *testing.T) {
 	requireBinaryInPath(t, "docker")
 	requireEnv(t, "OPENAI_API_KEY")
 
-	wf := compileFixture(t, "bots/vibe_feature_dev.bot")
+	wf := compileFixture(t, "feature_dev/main.bot")
 	workspaceDir := seedFromFixture(t, "feature-dev-go-service")
 
 	storeDir := resolveLiveStoreDir(t, workspaceDir)
@@ -3554,7 +3554,7 @@ func TestLive_VibeFeatureDev_Real(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	runID := uniqueRunID("live-vibe-feature-dev-real")
+	runID := uniqueRunID("live-feature-dev-real")
 
 	if err := mcp.PrepareWorkflow(wf, workspaceDir); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
@@ -3588,7 +3588,7 @@ func TestLive_VibeFeatureDev_Real(t *testing.T) {
 	}
 
 	commitsBefore := workspaceCommitCount(t, workspaceDir)
-	t.Log("Starting vibe_feature_dev (real fixture) live run…")
+	t.Log("Starting feature_dev (real fixture) live run…")
 	start := time.Now()
 	runErr := eng.Run(ctx, runID, inputs)
 	t.Logf("Run finished in %s", time.Since(start).Round(time.Second))
@@ -3630,7 +3630,7 @@ func TestLive_VibeReviewAlternating_Real(t *testing.T) {
 	requireBinaryInPath(t, "docker")
 	requireEnv(t, "OPENAI_API_KEY")
 
-	wf := compileFixture(t, "bots/whole_improve_loop.bot")
+	wf := compileFixture(t, "whole_improve_loop/main.bot")
 	workspaceDir := seedFromFixture(t, "review-pr-mix")
 
 	storeDir := resolveLiveStoreDir(t, workspaceDir)
@@ -3647,7 +3647,7 @@ func TestLive_VibeReviewAlternating_Real(t *testing.T) {
 	executor := newLiveExecutor(t, wf, s, runID, workspaceDir, withLiveLogger(teeLogger))
 	defer executor.Close()
 	// Don't override workspace_dir — same rationale as
-	// TestLive_VibeFeatureDev_Real. Let ${PROJECT_DIR} resolve to
+	// TestLive_FeatureDev_Real. Let ${PROJECT_DIR} resolve to
 	// /workspace inside the sandbox.
 	scopeNotes := "Review every Go file across queue/, worker/, auth/, storage/, config/, and main.go. Focus on production-blocking correctness, concurrency, and security issues. Skip stylistic nits."
 	executor.SetVars(map[string]interface{}{

@@ -142,7 +142,7 @@ function Form({ cfg, setCfg }: FormProps) {
             className="input"
             value={cfg.workflow}
             onChange={(e) => update("workflow", e.target.value)}
-            placeholder="./examples/bots/vibe_feature_dev.bot"
+            placeholder="./examples/feature_dev/main.bot"
           />
         </Field>
       </Section>

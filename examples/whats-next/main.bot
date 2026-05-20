@@ -161,7 +161,7 @@ prompt explore_system:
   4. Identify build / dependency files (Taskfile.yml, devbox.json,
      go.mod, package.json, Cargo.toml, pyproject.toml, etc.) so the
      downstream node knows the toolchain.
-  5. If the repo contains iterion bots (examples/bots/, .bot files,
+  5. If the repo contains iterion bots (examples/, .bot files,
      etc.) note their EXACT relative paths — the downstream node
      will recommend one of them as the next action and the path
      must actually exist.
@@ -255,7 +255,7 @@ prompt propose_system:
     * body     — markdown: rationale + acceptance criteria + any
                  context the bot will need. This is what shows
                  up in the issue body on the board.
-    * assignee — name of a bot in this repo (e.g. "vibe_feature_dev")
+    * assignee — name of a bot in this repo (e.g. "feature_dev")
                  or "" when no existing bot fits.
     * args     — object of `--var key=value` overrides for the
                  bot. Will be flattened into issue.fields.bot_args
@@ -334,7 +334,7 @@ prompt human_review_instructions:
   - feedback (string): free-text. If approving, you can leave this
     empty or add any final notes. If rejecting, be specific —
     "drop short_term item #2", "the next_action should be
-    secured-renovacy instead of vibe_feature_dev because …",
+    secured-renovacy instead of feature_dev because …",
     "rebalance horizon toward Q4", etc. The reviser gets your
     feedback verbatim.
 
@@ -665,7 +665,7 @@ agent emit_action:
   system: emit_action_system
   user: emit_action_user
   ## claude_code also uses snake_case tool names (see
-  ## examples/bots/vibe_feature_dev.bot:670).
+  ## examples/feature_dev/main.bot:670).
   tools: [bash, read_file, write_file, glob, grep]
   ## Board capabilities: the runtime registers an internal __mcp-board
   ## server that exposes capability-gated mcp__iterion_board__* tools

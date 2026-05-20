@@ -1,5 +1,5 @@
 ## ─────────────────────────────────────────────────────────────────
-## vibe_feature_dev
+## feature_dev
 ##
 ## Autonomous end-to-end feature development : input a feature
 ## prompt, the workflow plans, implements, simplifies, then runs
@@ -16,7 +16,7 @@
 ##                  Invokes the native /simplify skill on the code
 ##                  just produced.
 ##   4. alt → reviewer_claude / reviewer_gpt → streak_check → fixers
-##                  Verbatim copy of whole_improve_loop.iter:
+##                  Verbatim copy of whole_improve_loop/main.bot:
 ##                  alternating review/fix loop with cross-family
 ##                  double-approval stop condition and pushback
 ##                  protection against false positives.
@@ -26,7 +26,7 @@
 ##     in successive iterations of opposite families), OR
 ##   - max review_loop iterations reached.
 ##
-## Difference vs whole_improve_loop.iter:
+## Difference vs whole_improve_loop/main.bot:
 ##   - new `feature_prompt` required input var
 ##   - new prompts plan_system/plan_user/act_system/act_user/simplify_user
 ##     (English, imperative, mirroring Claude Code's plan-mode tone)
@@ -738,7 +738,7 @@ agent fix_gpt:
 
 ## ─── Workflow ───────────────────────────────────────────────────
 
-workflow vibe_feature_dev:
+workflow feature_dev:
   entry: plan
 
   ## Run in an isolated git worktree at .iterion/worktrees/<run-id>/.
@@ -820,7 +820,7 @@ workflow vibe_feature_dev:
   simplify -> alt
 
   ## ═══ Phase 2 : Alternating Review / Fix Loop ══════════════════
-  ## Verbatim from whole_improve_loop.iter (entry was alt).
+  ## Verbatim from whole_improve_loop/main.bot (entry was alt).
   ##
   ## Round-robin alternates: 1st pass → claude, 2nd → gpt, repeat.
   ## Each reviewer receives the OTHER family's most recent fixer

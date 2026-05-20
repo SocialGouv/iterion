@@ -271,7 +271,7 @@ The whats-next pipeline almost never needs to author DSL. If
 `emit_action` is genuinely about to recommend a new `.bot` file:
 
 1. Check that none of the five existing bots
-   (`vibe_feature_dev`, `whole_improve_loop`,
+   (`feature_dev`, `whole_improve_loop`,
    `branch_improve_loop`, `secured-renovacy`, `doc-align`)
    covers the use case. Usually one does.
 2. If a new bot really is needed, the `next_action` should be

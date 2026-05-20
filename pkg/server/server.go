@@ -887,7 +887,7 @@ func (s *Server) handleLoadExample(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sanitize: allow forward-slash relative paths (e.g. "bots/foo.bot")
+	// Sanitize: allow forward-slash relative paths (e.g. "feature_dev/main.bot")
 	// but reject backslashes, leading dots, parent traversal, and
 	// absolute paths. Must end in an accepted workflow extension.
 	if strings.Contains(name, "\\") || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "/") || !workflowfile.IsWorkflowFile(name) {

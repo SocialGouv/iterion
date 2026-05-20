@@ -12,13 +12,13 @@ proven, productized bots and one actively-developed workflow.
 > (see [`.iter` vs `.bot`](../README.md#iter-vs-bot)). The parser,
 > runtime, and editor treat them identically.
 
-## 🤖 Productized bots ([`examples/bots/`](../examples/bots/))
+## 🤖 Productized bots (folder-per-bot under [`examples/`](../examples/))
 
 | File | Description |
 |------|-------------|
-| [`bots/vibe_feature_dev.bot`](../examples/bots/vibe_feature_dev.bot) | Self-driven feature development bot: plan → implement → review → refine loop with judge gates |
-| [`bots/whole_improve_loop.bot`](../examples/bots/whole_improve_loop.bot) | Alternating Claude/GPT review-and-fix pattern with cross-family streak detection (whole-repo scope) |
-| [`bots/branch_improve_loop.bot`](../examples/bots/branch_improve_loop.bot) | Branch-scope variant of the alternating improve loop with auto-commit between iterations |
+| [`feature_dev/`](../examples/feature_dev/) | Self-driven feature development bot: plan → implement → review → refine loop with judge gates |
+| [`whole_improve_loop/`](../examples/whole_improve_loop/) | Alternating Claude/GPT review-and-fix pattern with cross-family streak detection (whole-repo scope) |
+| [`branch_improve_loop/`](../examples/branch_improve_loop/) | Branch-scope variant of the alternating improve loop with auto-commit between iterations |
 
 ## 🚧 In active development
 

@@ -41,7 +41,7 @@ Scan the text for these signal classes, in this order:
 | **Deadline / urgency** | "by Friday", "before the release", "demo tomorrow" | Bias toward smaller, faster next_action. Avoid multi-hour bot runs. |
 | **Subject area** | "the studio", "the runtime", "auth", "dispatcher", "deps" | Narrow the survey + propose to that subsystem. Use as `scope_notes` if the bot supports it. |
 | **Risk posture** | "be careful", "safe first", "don't break X" | Prefer read-only / review bots over mutating dev bots. Tighten `major_policy` if upgrading. |
-| **Acceptance signal** | "should ship", "done means…", "we'll know it works when…" | Capture as `feature_prompt` for `vibe_feature_dev`. |
+| **Acceptance signal** | "should ship", "done means…", "we'll know it works when…" | Capture as `feature_prompt` for `feature_dev`. |
 | **Mode preference** | "automate", "I'll do it", "just propose" | If "just propose" → `bot_to_run="none"`, manual step. |
 | **Confusion** | "I don't know", "what do you think?", "you decide" | Don't guess silently; surface 2-3 candidate priorities derived from the survey in the rationale and let the human_review feedback round resolve. |
 

@@ -8,14 +8,14 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// vibeFeatureDevStubInputs mirrors what the runtime would receive from a
+// featureDevStubInputs mirrors what the runtime would receive from a
 // real launch: the `feature_prompt` and `workspace_dir` mapped via
 // `vars:` defaults. The stub never reads them — the dev-phase stubs
 // return canned outputs — but supplying them keeps the run.json
 // inspect-able and reflects the live invocation path.
-var vibeFeatureDevStubInputs = map[string]interface{}{
+var featureDevStubInputs = map[string]interface{}{
 	"feature_prompt": "stub: add Answer() int returning 42 in answer.go",
-	"workspace_dir":  "/tmp/vibe-feature-dev-stub",
+	"workspace_dir":  "/tmp/feature-dev-stub",
 }
 
 // devPhaseStubs registers stubs for plan / act / simplify so the
@@ -112,7 +112,7 @@ func rejectVerdict(family string) map[string]interface{} {
 // Asserts: a single commit was produced, no fixers were called, and
 // the run reached `finished`.
 func TestVibeFeatureDev_HappyPath(t *testing.T) {
-	wf := compileFixtureStubSafe(t, "bots/vibe_feature_dev.bot")
+	wf := compileFixtureStubSafe(t, "feature_dev/main.bot")
 	exec := newScenarioExecutor()
 
 	devPhaseStubs(exec)
@@ -126,7 +126,7 @@ func TestVibeFeatureDev_HappyPath(t *testing.T) {
 
 	s := tmpStore(t)
 	eng := runtime.New(wf, s, exec)
-	if err := eng.Run(context.Background(), "run-vfd-happy", vibeFeatureDevStubInputs); err != nil {
+	if err := eng.Run(context.Background(), "run-vfd-happy", featureDevStubInputs); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -161,7 +161,7 @@ func TestVibeFeatureDev_HappyPath(t *testing.T) {
 //
 // Asserts: fix_claude ran exactly once, commit_changes once, run finished.
 func TestVibeFeatureDev_FixThenCommit(t *testing.T) {
-	wf := compileFixtureStubSafe(t, "bots/vibe_feature_dev.bot")
+	wf := compileFixtureStubSafe(t, "feature_dev/main.bot")
 	exec := newScenarioExecutor()
 
 	devPhaseStubs(exec)
@@ -191,7 +191,7 @@ func TestVibeFeatureDev_FixThenCommit(t *testing.T) {
 
 	s := tmpStore(t)
 	eng := runtime.New(wf, s, exec)
-	if err := eng.Run(context.Background(), "run-vfd-fix", vibeFeatureDevStubInputs); err != nil {
+	if err := eng.Run(context.Background(), "run-vfd-fix", featureDevStubInputs); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -217,7 +217,7 @@ func TestVibeFeatureDev_FixThenCommit(t *testing.T) {
 //
 // Asserts: commit_changes was NEVER called, run still finished gracefully.
 func TestVibeFeatureDev_LoopExhausted(t *testing.T) {
-	wf := compileFixtureStubSafe(t, "bots/vibe_feature_dev.bot")
+	wf := compileFixtureStubSafe(t, "feature_dev/main.bot")
 	exec := newScenarioExecutor()
 
 	devPhaseStubs(exec)
@@ -242,7 +242,7 @@ func TestVibeFeatureDev_LoopExhausted(t *testing.T) {
 
 	s := tmpStore(t)
 	eng := runtime.New(wf, s, exec)
-	if err := eng.Run(context.Background(), "run-vfd-exhausted", vibeFeatureDevStubInputs); err != nil {
+	if err := eng.Run(context.Background(), "run-vfd-exhausted", featureDevStubInputs); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -266,7 +266,7 @@ func TestVibeFeatureDev_LoopExhausted(t *testing.T) {
 // commit_changes stub captures its input and the test inspects what
 // the runtime templated in from prepare_commit.outputs and vars.
 func TestVibeFeatureDev_CommitInputRelay(t *testing.T) {
-	wf := compileFixtureStubSafe(t, "bots/vibe_feature_dev.bot")
+	wf := compileFixtureStubSafe(t, "feature_dev/main.bot")
 	exec := newScenarioExecutor()
 
 	devPhaseStubs(exec)
@@ -303,7 +303,7 @@ func TestVibeFeatureDev_CommitInputRelay(t *testing.T) {
 
 	s := tmpStore(t)
 	eng := runtime.New(wf, s, exec)
-	if err := eng.Run(context.Background(), "run-vfd-relay", vibeFeatureDevStubInputs); err != nil {
+	if err := eng.Run(context.Background(), "run-vfd-relay", featureDevStubInputs); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -313,8 +313,8 @@ func TestVibeFeatureDev_CommitInputRelay(t *testing.T) {
 	if got, _ := capturedInput["full_message"].(string); got != expectedMessage {
 		t.Errorf("full_message relay: got %q, want %q", got, expectedMessage)
 	}
-	if got, _ := capturedInput["workspace_dir"].(string); got != vibeFeatureDevStubInputs["workspace_dir"] {
-		t.Errorf("workspace_dir relay: got %q, want %q", got, vibeFeatureDevStubInputs["workspace_dir"])
+	if got, _ := capturedInput["workspace_dir"].(string); got != featureDevStubInputs["workspace_dir"] {
+		t.Errorf("workspace_dir relay: got %q, want %q", got, featureDevStubInputs["workspace_dir"])
 	}
 	gotFiles, _ := capturedInput["files"].([]interface{})
 	if len(gotFiles) != len(expectedFiles) {

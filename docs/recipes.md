@@ -9,7 +9,7 @@ Recipes let you run the same workflow with different configurations without edit
   "name": "fast_review",
   "workflow_ref": {
     "name": "branch_improve_loop",
-    "path": "examples/bots/branch_improve_loop.bot"
+    "path": "examples/branch_improve_loop/main.bot"
   },
   "preset_vars": {
     "review_rules": "Focus on security only"

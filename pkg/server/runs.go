@@ -1123,7 +1123,7 @@ func (s *Server) resolvedStoreDir() string {
 // its absolute path. The lookup key is filePath as given; the caller
 // passes whatever the API received, so a UI that lists recipes by
 // basename ("minimal_linear.iter", "skill/minimal_linear.iter", or
-// "bots/vibe_feature_dev.bot") all resolve correctly.
+// "feature_dev/main.bot") all resolve correctly.
 //
 // We materialise rather than reading from embed.FS at execution time
 // because the engine, parser, and several runtime helpers operate on

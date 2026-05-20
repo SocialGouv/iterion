@@ -41,7 +41,7 @@ prompt triage_user:
     2. Summary — two sentences restating the request in your own
        words.
     3. Recommended assignee — pick the iterion bot best suited to
-       this issue from: vibe-feature-dev, whole-improve-loop,
+       this issue from: feature-dev, whole-improve-loop,
        branch-improve-loop, doc-align, sec-audit-source,
        sec-audit-deps, secured-renovacy, whats-next. Pick "none"
        if the issue needs human triage first.

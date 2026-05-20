@@ -98,7 +98,7 @@ export default function CanvasEmpty() {
 
 // ExamplesPicker fetches the list once on open and renders it as a
 // scrollable card grid. The names returned by the backend are repo-
-// relative paths (e.g. "bots/vibe_feature_dev.bot") — we split on the
+// relative paths (e.g. "feature_dev/main.bot") — we split on the
 // last slash so the card header carries the bundle name and the
 // sub-line carries the directory.
 function ExamplesPicker({

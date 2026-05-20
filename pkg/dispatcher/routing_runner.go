@@ -21,9 +21,9 @@ import (
 //
 //	workflow: workflows/default.bot                    # fallback
 //	assignee_workflows:
-//	  vibe_feature_dev:        examples/bots/vibe_feature_dev.bot
-//	  whole_improve_loop: examples/bots/whole_improve_loop.bot
-//	  secured-renovacy:        examples/secured-renovacy/main.bot
+//	  feature_dev:        examples/feature_dev/main.bot
+//	  whole_improve_loop: examples/whole_improve_loop/main.bot
+//	  secured-renovacy:   examples/secured-renovacy/main.bot
 type RoutingRunner struct {
 	// Default is invoked when the issue's assignee is empty or not
 	// present in ByAssignee. MUST be non-nil.

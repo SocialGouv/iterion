@@ -38,12 +38,9 @@ tasks:
       - find pkg/cli/templates/dispatch_bots -mindepth 1 ! -name .gitkeep -exec rm -rf {} +
       - mkdir -p pkg/cli/templates/dispatch_bots/default
       - cp pkg/cli/templates/dispatch_bots_default.bot pkg/cli/templates/dispatch_bots/default/main.bot
-      - mkdir -p pkg/cli/templates/dispatch_bots/vibe-feature-dev
-      - cp examples/bots/vibe_feature_dev.bot pkg/cli/templates/dispatch_bots/vibe-feature-dev/main.bot
-      - mkdir -p pkg/cli/templates/dispatch_bots/whole-improve-loop
-      - cp examples/bots/whole_improve_loop.bot pkg/cli/templates/dispatch_bots/whole-improve-loop/main.bot
-      - mkdir -p pkg/cli/templates/dispatch_bots/branch-improve-loop
-      - cp examples/bots/branch_improve_loop.bot pkg/cli/templates/dispatch_bots/branch-improve-loop/main.bot
+      - cp -R examples/feature_dev pkg/cli/templates/dispatch_bots/feature-dev
+      - cp -R examples/whole_improve_loop pkg/cli/templates/dispatch_bots/whole-improve-loop
+      - cp -R examples/branch_improve_loop pkg/cli/templates/dispatch_bots/branch-improve-loop
       - cp -R examples/whats-next pkg/cli/templates/dispatch_bots/whats-next
       - cp -R examples/doc-align pkg/cli/templates/dispatch_bots/doc-align
       - cp -R examples/sec-audit-source pkg/cli/templates/dispatch_bots/sec-audit-source
@@ -51,7 +48,9 @@ tasks:
       - cp -R examples/secured-renovacy pkg/cli/templates/dispatch_bots/secured-renovacy
     sources:
       - pkg/cli/templates/dispatch_bots_default.bot
-      - examples/bots/*.bot
+      - examples/feature_dev/**
+      - examples/whole_improve_loop/**
+      - examples/branch_improve_loop/**
       - examples/whats-next/**
       - examples/doc-align/**
       - examples/sec-audit-source/**
@@ -149,10 +148,10 @@ tasks:
     cmds:
       - go test -v -tags live -count=1 -run TestLive_VisionAttachments -timeout 5m ./e2e/...
 
-  test:live:vibe-feature-dev:
-    desc: Live e2e for vibe_feature_dev bot (requires claude CLI + OPENAI_API_KEY)
+  test:live:feature-dev:
+    desc: Live e2e for feature_dev bot (requires claude CLI + OPENAI_API_KEY)
     cmds:
-      - go test -v -tags live -count=1 -run TestLive_VibeFeatureDev -timeout 90m ./e2e/...
+      - go test -v -tags live -count=1 -run TestLive_FeatureDev -timeout 90m ./e2e/...
 
   test:live:whole-improve-loop:
     desc: Live e2e for whole_improve_loop bot (requires claude CLI + OPENAI_API_KEY)
@@ -168,13 +167,13 @@ tasks:
     desc: Run all three example-bot live tests in sequence (slow + costly)
     cmds:
       - task: test:live:whole-improve-loop
-      - task: test:live:vibe-feature-dev
+      - task: test:live:feature-dev
       - task: test:live:secured-renovacy
 
-  test:live:vibe-feature-dev-real:
-    desc: Live e2e for vibe_feature_dev against a real Go HTTP service fixture (20-60min, $5-15)
+  test:live:feature-dev-real:
+    desc: Live e2e for feature_dev against a real Go HTTP service fixture (20-60min, $5-15)
     cmds:
-      - go test -v -tags live -count=1 -run "TestLive_VibeFeatureDev_Real$" -timeout 2h ./e2e/...
+      - go test -v -tags live -count=1 -run "TestLive_FeatureDev_Real$" -timeout 2h ./e2e/...
 
   test:live:whole-improve-loop-real:
     desc: Live e2e for whole_improve_loop against a curated bug-mix fixture (30-90min, $10-30)
@@ -195,7 +194,7 @@ tasks:
     desc: Run all three real-scenario bot live tests in sequence (very slow + very costly)
     cmds:
       - task: test:live:whole-improve-loop-real
-      - task: test:live:vibe-feature-dev-real
+      - task: test:live:feature-dev-real
       - task: test:live:secured-renovacy-real
 
   test:bundle:

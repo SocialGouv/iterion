@@ -1,0 +1,8 @@
+name: whole_improve_loop
+version: 0.1.0
+description: |
+  Whole-repository alternating Claude/GPT review-fix loop. Iterates
+  until two consecutive cross-family approvals, with pushback
+  protection against false positives.
+author: SocialGouv (devthejo) — whole_improve_loop/main.bot
+schema_version: 1

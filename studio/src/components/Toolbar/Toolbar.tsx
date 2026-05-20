@@ -668,7 +668,7 @@ function FileStatusBadge({
   // is in its empty state and the right-side group is just navigation.
   if (!hasDocument) return null;
   // Split the path into parent + basename so the breadcrumb can show
-  // "examples/bots › vibe_feature_dev.bot" with the parent slightly
+  // "examples/feature_dev › main.bot" with the parent slightly
   // muted. Parents longer than ~20 chars are truncated from the LEFT
   // so the trailing directory (most informative) stays visible.
   let parent = "";

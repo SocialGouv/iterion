@@ -27,13 +27,13 @@ func (r *recordingRunner) Close() error {
 
 func TestRoutingRunnerPicksByAssignee(t *testing.T) {
 	def := &recordingRunner{name: "default"}
-	vfd := &recordingRunner{name: "vibe_feature_dev"}
+	vfd := &recordingRunner{name: "feature_dev"}
 	rev := &recordingRunner{name: "whole_improve_loop"}
 
 	rr := &RoutingRunner{
 		Default: def,
 		ByAssignee: map[string]Runner{
-			"vibe_feature_dev":   vfd,
+			"feature_dev":        vfd,
 			"whole_improve_loop": rev,
 		},
 	}
@@ -42,11 +42,11 @@ func TestRoutingRunnerPicksByAssignee(t *testing.T) {
 		assignee string
 		want     *recordingRunner
 	}{
-		{"vibe_feature_dev", vfd},
+		{"feature_dev", vfd},
 		{"whole_improve_loop", rev},
-		{"", def},                 // empty → default
-		{"unknown-bot", def},      // miss → default
-		{"VIBE_FEATURE_DEV", def}, // case-sensitive miss → default
+		{"", def},            // empty → default
+		{"unknown-bot", def}, // miss → default
+		{"FEATURE_DEV", def}, // case-sensitive miss → default
 	}
 	for _, tc := range cases {
 		t.Run(tc.assignee, func(t *testing.T) {

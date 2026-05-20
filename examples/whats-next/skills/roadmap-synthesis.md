@@ -16,7 +16,7 @@ roadmap_item:
                      # becomes issue.body. This is what the
                      # eventual assigned bot will read.
   assignee: string   # name of a real bot in this repo
-                     # (e.g. "vibe_feature_dev"), OR "" when no
+                     # (e.g. "feature_dev"), OR "" when no
                      # existing bot fits.
   args:     json     # object of --var key=value overrides for
                      # the bot; flattened to issue.fields.bot_args.

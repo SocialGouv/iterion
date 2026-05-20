@@ -350,7 +350,7 @@ func renderBotsSkill(w io.Writer, entries []BotEntry) error {
 	fmt.Fprintln(w, "1. Read the issue's title and labels.")
 	fmt.Fprintln(w, "2. Match against the **Triggers** column above.")
 	fmt.Fprintln(w, "3. If multiple bots match, pick the one whose **Description** best fits the issue.")
-	fmt.Fprintln(w, "4. If nothing matches cleanly, assign to a generalist (e.g. `vibe_feature_dev`) and add a `needs-triage` label.")
+	fmt.Fprintln(w, "4. If nothing matches cleanly, assign to a generalist (e.g. `feature_dev`) and add a `needs-triage` label.")
 	return nil
 }
 

@@ -1,0 +1,9 @@
+name: feature_dev
+version: 0.1.0
+description: |
+  Autonomous end-to-end feature development. Takes a `feature_prompt`
+  input, plans (Claude Code, read-only), implements (session-inherit),
+  invokes /simplify, then runs the alternating Claude/GPT review-fix
+  loop until two consecutive cross-family approvals.
+author: SocialGouv (devthejo) — feature_dev/main.bot
+schema_version: 1

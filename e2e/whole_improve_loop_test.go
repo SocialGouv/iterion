@@ -15,7 +15,7 @@ import (
 //	iter1: claude approves   → streak_check.stop = false (no previous)
 //	iter2: gpt approves      → streak_check.stop = true  → done
 func TestWholeImproveLoop_HappyPath(t *testing.T) {
-	wf := compileFixtureStubSafe(t, "bots/whole_improve_loop.bot")
+	wf := compileFixtureStubSafe(t, "whole_improve_loop/main.bot")
 	exec := newScenarioExecutor()
 
 	exec.on("reviewer_claude", func(_ map[string]interface{}) (map[string]interface{}, error) {
@@ -77,7 +77,7 @@ func TestWholeImproveLoop_HappyPath(t *testing.T) {
 // claude→streak_check sees previous=gpt's approval, current=claude's
 // approval, families differ → stop.
 func TestWholeImproveLoop_FixThenApprove(t *testing.T) {
-	wf := compileFixtureStubSafe(t, "bots/whole_improve_loop.bot")
+	wf := compileFixtureStubSafe(t, "whole_improve_loop/main.bot")
 	exec := newScenarioExecutor()
 
 	claudeCalls := 0
@@ -140,7 +140,7 @@ func TestWholeImproveLoop_FixThenApprove(t *testing.T) {
 // run should fall through to the unconditional `streak_check -> done`
 // fallback.
 func TestWholeImproveLoop_LoopExhausted(t *testing.T) {
-	wf := compileFixtureStubSafe(t, "bots/whole_improve_loop.bot")
+	wf := compileFixtureStubSafe(t, "whole_improve_loop/main.bot")
 	exec := newScenarioExecutor()
 
 	exec.on("reviewer_claude", func(_ map[string]interface{}) (map[string]interface{}, error) {
@@ -183,7 +183,7 @@ func TestWholeImproveLoop_LoopExhausted(t *testing.T) {
 // This is the regression net for any future refactor of the engine's
 // event emission — a missing event type surfaces here first.
 func TestWholeImproveLoop_EventTrace(t *testing.T) {
-	wf := compileFixtureStubSafe(t, "bots/whole_improve_loop.bot")
+	wf := compileFixtureStubSafe(t, "whole_improve_loop/main.bot")
 	exec := newScenarioExecutor()
 	exec.on("reviewer_claude", func(_ map[string]interface{}) (map[string]interface{}, error) {
 		return map[string]interface{}{
@@ -242,7 +242,7 @@ func TestWholeImproveLoop_EventTrace(t *testing.T) {
 // terminate the cascade and fall through to the unconditional
 // fix_X → done edge. Asserts the total fixer count is close to the cap.
 func TestWholeImproveLoop_RecoveryLoopExhausted(t *testing.T) {
-	wf := compileFixtureStubSafe(t, "bots/whole_improve_loop.bot")
+	wf := compileFixtureStubSafe(t, "whole_improve_loop/main.bot")
 	exec := newScenarioExecutor()
 
 	// Both reviewers always reject with concrete blockers so each
@@ -303,7 +303,7 @@ func TestWholeImproveLoop_RecoveryLoopExhausted(t *testing.T) {
 // prompt-cache hits and reviewer-context continuity — the live runs
 // would still pass but cost more, so we pin it here.
 func TestWholeImproveLoop_SessionInheritStructural(t *testing.T) {
-	wf := compileFixtureStubSafe(t, "bots/whole_improve_loop.bot")
+	wf := compileFixtureStubSafe(t, "whole_improve_loop/main.bot")
 
 	for _, id := range []string{"fix_claude", "fix_gpt"} {
 		node, ok := wf.Nodes[id]

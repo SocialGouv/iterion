@@ -54,7 +54,7 @@ func TestBoardDispatcher_E2E_BotCreatesAndDispatches(t *testing.T) {
 		args, _ := json.Marshal(map[string]any{
 			"title":    title,
 			"state":    native.StateReady,
-			"assignee": "vibe_feature_dev",
+			"assignee": "feature_dev",
 			"labels":   []string{"horizon:short-term", "source:whats-next"},
 		})
 		if _, err := boardops.Call(ns, caps, "create_issue", args); err != nil {
