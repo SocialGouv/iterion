@@ -197,16 +197,18 @@ function PlanHandedOffRow({
 }: {
   message: Extract<WhatsNextMessage, { kind: "plan-handed-off" }>;
 }) {
+  // Copy intentionally does NOT mention ticket state — the actual
+  // initial state depends on the bot version (new DSL creates in
+  // backlog and lets the triage loop transition; older bots created
+  // straight in ready). The IssuesSummaryCard above shows the live
+  // list; the milestone just confirms emit_action landed.
   const issueLabel =
     message.createdCount === 1 ? "1 issue" : `${message.createdCount} issues`;
   return (
     <div className="border-t border-success/40 pt-3 text-center">
       <div className="inline-flex items-center gap-2 rounded-full border border-success/40 bg-success-soft px-3 py-1 text-[12px] text-success-fg">
         <span aria-hidden="true">✓</span>
-        <span>
-          Plan handed off — {issueLabel} created on the board (in
-          <code className="mx-1 px-1 rounded bg-bg-default/40">backlog</code>)
-        </span>
+        <span>Plan handed off — {issueLabel} created on the board</span>
       </div>
       {message.summary && (
         <div className="mt-1 text-[11px] italic text-fg-muted">
