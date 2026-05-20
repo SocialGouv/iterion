@@ -256,10 +256,10 @@ function AssistantBubble({ text }: { text: string }) {
   return (
     <div className="flex items-start gap-2">
       <span
-        className="mt-1 w-5 h-5 rounded-full bg-accent-soft text-accent-fg text-[10px] font-bold flex items-center justify-center shrink-0"
+        className="mt-1 px-2 py-0.5 rounded-full bg-accent-soft text-accent-fg text-[10px] font-bold flex items-center justify-center shrink-0"
         aria-hidden="true"
       >
-        AI
+        Niblet
       </span>
       <div className="flex-1 rounded-lg bg-surface-2 border border-border-subtle px-3 py-2 text-[13px] text-fg-default">
         {text}
@@ -274,7 +274,7 @@ function AnsweredTurn({ message }: { message: HumanQuestionMessage }) {
       <AssistantBubble text={message.prompt} />
       <div className="flex items-start gap-2 ml-6">
         <span
-          className="mt-1 w-5 h-5 rounded-full bg-surface-3 text-fg-default text-[10px] font-bold flex items-center justify-center shrink-0"
+          className="mt-1 px-2 py-0.5 rounded-full bg-surface-3 text-fg-default text-[10px] font-bold flex items-center justify-center shrink-0"
           aria-hidden="true"
         >
           You
