@@ -1,5 +1,7 @@
+import { useEffect, useMemo, useState } from "react";
 import { CheckCircledIcon, ReloadIcon, CrossCircledIcon } from "@radix-ui/react-icons";
 
+import { phrasesForNode } from "@/lib/whats-next/loadingPhrases";
 import type { BannerMessage } from "@/lib/whats-next/messages";
 
 interface Props {
@@ -16,9 +18,7 @@ export default function NodeBanner({ message }: Props) {
         <div className="flex items-baseline gap-2">
           <span className="text-fg-default">{label}</span>
           <span className="text-[10px] font-mono text-fg-subtle">{nodeId}</span>
-          {status === "running" && (
-            <span className="text-[10px] text-fg-subtle">…</span>
-          )}
+          {status === "running" && <LoadingPhrase nodeId={nodeId} />}
         </div>
         {progress && status === "running" && (
           <ProgressLine progress={progress} />
@@ -63,6 +63,28 @@ function ProgressLine({
         </>
       )}
     </p>
+  );
+}
+
+function LoadingPhrase({ nodeId }: { nodeId: string }) {
+  const phrases = useMemo(() => phrasesForNode(nodeId), [nodeId]);
+  // Random starting index so two adjacent banners (rare, but possible
+  // on parallel branches) don't lock-step through the same phrases.
+  const [index, setIndex] = useState(() =>
+    phrases.length > 0 ? Math.floor(Math.random() * phrases.length) : 0,
+  );
+  useEffect(() => {
+    if (phrases.length <= 1) return;
+    const id = setInterval(() => {
+      setIndex((i) => (i + 1) % phrases.length);
+    }, 2500);
+    return () => clearInterval(id);
+  }, [phrases.length]);
+  if (phrases.length === 0) return null;
+  return (
+    <span className="text-[10px] text-fg-subtle italic">
+      {phrases[index]}…
+    </span>
   );
 }
 
