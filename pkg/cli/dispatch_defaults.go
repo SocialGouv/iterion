@@ -65,38 +65,39 @@ const defaultDispatchMaxConcurrent = 2
 // kebab-case (matching the bot directory names). Supporting both makes
 // auto-config robust to either origin without forcing the operator or
 // the bot to pick one.
+// workspace_dir is INTENTIONALLY omitted from the per-bot dispatch
+// configs below — every shipped bot defaults it to "${PROJECT_DIR}",
+// which the runtime expands to the worktree path the workflow's
+// `worktree: auto` block produces (and remaps to the in-container
+// path when sandbox is active, per pkg/runtime/engine.go:90's
+// containerWorkspace logic). Overriding workspace_dir to
+// {{dispatcher.workspace_path}} (the prior default) defeated both
+// branches: the bot's prompt referenced an empty dir that wasn't
+// bind-mounted into the sandbox, while the runtime's actual worktree
+// got ignored — every Read tool call failed in cascade.
 func defaultAssigneeDispatch() map[string]dispatcher.DispatchConfig {
 	featureDev := dispatcher.DispatchConfig{Vars: map[string]string{
-		"workspace_dir":  "{{dispatcher.workspace_path}}",
 		"feature_prompt": defaultBotIssuePrompt,
 	}}
 	wholeImproveLoop := dispatcher.DispatchConfig{Vars: map[string]string{
-		"workspace_dir":      "{{dispatcher.workspace_path}}",
 		"improvement_prompt": defaultBotIssuePrompt,
 		"scope_notes":        "{{issue.body}}",
 	}}
 	branchImproveLoop := dispatcher.DispatchConfig{Vars: map[string]string{
-		"workspace_dir": "{{dispatcher.workspace_path}}",
-		"scope_notes":   defaultBotIssuePrompt,
+		"scope_notes": defaultBotIssuePrompt,
 	}}
 	whatsNext := dispatcher.DispatchConfig{Vars: map[string]string{
-		"workspace_dir": "{{dispatcher.workspace_path}}",
-		"scope_notes":   defaultBotIssuePrompt,
+		"scope_notes": defaultBotIssuePrompt,
 	}}
 	docAlign := dispatcher.DispatchConfig{Vars: map[string]string{
-		"workspace_dir": "{{dispatcher.workspace_path}}",
-		"scope_notes":   defaultBotIssuePrompt,
+		"scope_notes": defaultBotIssuePrompt,
 	}}
 	secAuditSource := dispatcher.DispatchConfig{Vars: map[string]string{
-		"workspace_dir": "{{dispatcher.workspace_path}}",
-		"scope_notes":   defaultBotIssuePrompt,
+		"scope_notes": defaultBotIssuePrompt,
 	}}
-	secAuditDeps := dispatcher.DispatchConfig{Vars: map[string]string{
-		"workspace_dir": "{{dispatcher.workspace_path}}",
-	}}
+	secAuditDeps := dispatcher.DispatchConfig{Vars: map[string]string{}}
 	securedRenovacy := dispatcher.DispatchConfig{Vars: map[string]string{
-		"workspace_dir": "{{dispatcher.workspace_path}}",
-		"user_prompt":   defaultBotIssuePrompt,
+		"user_prompt": defaultBotIssuePrompt,
 	}}
 	return map[string]dispatcher.DispatchConfig{
 		"feature-dev":         featureDev,
