@@ -142,7 +142,16 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 			Logger:           logger,
 			DefaultBotsPaths: opts.BotsPaths,
 			DefaultsFn: func() (*dispatcher.Config, error) {
-				return BuildDefaultConfig(resolvedStoreDir)
+				// Pass the studio's working directory as the
+				// project seed. The auto-config installs an
+				// after_create hook that `git worktree add`s
+				// from this path so per-issue workspaces are
+				// populated with the host checkout instead of
+				// landing on the bot as empty dirs (causing
+				// scan_docs to see doc_count=0 and the
+				// downstream agentic loop to operate against
+				// nothing).
+				return BuildDefaultConfig(resolvedStoreDir, dir)
 			},
 		})
 		if mgrErr == nil {

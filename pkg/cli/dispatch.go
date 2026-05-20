@@ -45,7 +45,12 @@ func RunDispatch(p *Printer, opts DispatchOptions) error {
 
 	var cfg *dispatcher.Config
 	if opts.ConfigPath == "" {
-		cfg, err = BuildDefaultConfig(storeDir)
+		// Seed per-issue workspaces from cwd (the user's project at
+		// `iterion dispatch` invocation time). The default builder
+		// installs an after_create hook that `git worktree add`s
+		// from this path so bots land on a populated checkout
+		// matching the host repo's HEAD.
+		cfg, err = BuildDefaultConfig(storeDir, cwd)
 	} else {
 		cfg, err = dispatcher.Load(opts.ConfigPath)
 	}

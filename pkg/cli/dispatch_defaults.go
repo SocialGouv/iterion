@@ -172,11 +172,21 @@ func extractDefaultBots(storeDir string) (string, int, error) {
 // the embedded bot catalogue extracted under <storeDir>/dispatcher/
 // bots, and the `default` fallback bot bound for unassigned issues.
 //
+// projectDir is the host git repository the dispatcher should seed
+// per-issue workspaces from. When non-empty, an `after_create` hook
+// is wired that runs `git worktree add` from projectDir into the
+// freshly-created issue workspace, so bots see a populated checkout
+// matching the host repo's HEAD instead of an empty directory. When
+// empty (out-of-tree CLI invocations), the hook is omitted and the
+// operator is expected to populate workspaces through a different
+// mechanism (a custom hook, a bind-mount, or a workflow-level
+// worktree: auto block).
+//
 // The returned Config has [Config.ApplyDefaults] already applied and
 // has passed Validate, so callers can hand it straight to a Manager.
 // SourcePath is left empty so downstream code (notably the
 // ConfigWatcher) can tell baked-in mode apart from YAML-on-disk mode.
-func BuildDefaultConfig(storeDir string) (*dispatcher.Config, error) {
+func BuildDefaultConfig(storeDir, projectDir string) (*dispatcher.Config, error) {
 	if storeDir == "" {
 		return nil, errors.New("dispatch defaults: storeDir is required")
 	}
@@ -187,6 +197,68 @@ func BuildDefaultConfig(storeDir string) (*dispatcher.Config, error) {
 	}
 	if assigneeDirs == 0 {
 		return nil, errors.New("dispatch defaults: embedded bot catalogue is empty — this binary was compiled before `task templates:dispatch-bots` populated pkg/cli/templates/dispatch_bots/. Rebuild via `task build` (which depends on it) or run the sync task directly")
+	}
+
+	var hooks dispatcher.Hooks
+	if projectDir != "" {
+		// Resolve the project dir to an absolute path so the hook
+		// is unaffected by the dispatcher daemon's cwd at the time
+		// it fires (workers cd into the freshly-created workspace
+		// before invoking the hook, so a relative path would be
+		// relative to the empty workspace — wrong source).
+		absProject, absErr := filepath.Abs(projectDir)
+		if absErr == nil {
+			projectDir = absProject
+		}
+		// after_create runs once per workspace, the first time the
+		// dispatcher claims an issue. The dispatcher passes
+		// ITERION_WORKSPACE in the env and sets cwd to it; the
+		// shell hook seeds it as a git worktree of projectDir@HEAD
+		// (or copies the tree when projectDir is not a git repo)
+		// so the bot's workspace_dir input lands on a real
+		// checkout matching the host state at dispatch time.
+		hooks.AfterCreate = &dispatcher.Hook{
+			Script: fmt.Sprintf(`set -e
+PROJECT_DIR=%q
+# If the workspace already has content (e.g. a previous failed
+# attempt populated it before crashing), don't re-seed — let the
+# operator clean up manually rather than silently overwrite.
+if [ "$(ls -A "$ITERION_WORKSPACE" 2>/dev/null | head -c1)" != "" ]; then
+  echo "workspace $ITERION_WORKSPACE non-empty — skipping seed"
+  exit 0
+fi
+# Prefer a git worktree (cheap, shares object store with the host
+# repo, isolates branches). Fall back to a recursive copy when
+# PROJECT_DIR is not a git repository so out-of-tree projects
+# still work.
+if git -C "$PROJECT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  # Use detached HEAD so two parallel issues don't fight over the
+  # same branch name. Bots that need a branch can create one with
+  # workflow-level worktree: auto on top.
+  git -C "$PROJECT_DIR" worktree add --detach "$ITERION_WORKSPACE" HEAD
+  echo "seeded git worktree from $PROJECT_DIR@HEAD"
+else
+  cp -a "$PROJECT_DIR/." "$ITERION_WORKSPACE/"
+  echo "seeded copy from $PROJECT_DIR"
+fi
+`, projectDir),
+			TimeoutMS: 120_000,
+		}
+		// before_remove: clean up the git worktree registration on
+		// the host repo before the workspace directory is deleted.
+		// Without this, `git -C $PROJECT_DIR worktree list` would
+		// accumulate stale entries pointing at gone directories
+		// (the dispatcher's Workspaces.Remove only deletes the
+		// directory, it doesn't talk to git).
+		hooks.BeforeRemove = &dispatcher.Hook{
+			Script: fmt.Sprintf(`set -e
+PROJECT_DIR=%q
+if git -C "$PROJECT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  git -C "$PROJECT_DIR" worktree remove --force "$ITERION_WORKSPACE" 2>/dev/null || true
+fi
+`, projectDir),
+			TimeoutMS: 30_000,
+		}
 	}
 
 	cfg := &dispatcher.Config{
@@ -231,6 +303,7 @@ func BuildDefaultConfig(storeDir string) (*dispatcher.Config, error) {
 				"issue_id":    "{{issue.identifier}}",
 			},
 		},
+		Hooks: hooks,
 	}
 	cfg.ApplyDefaults()
 	if err := cfg.Validate(); err != nil {

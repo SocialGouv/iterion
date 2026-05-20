@@ -31,7 +31,7 @@ func skipIfCatalogueEmpty(t *testing.T) {
 func TestBuildDefaultConfig_ValidatesAndExtractsCatalogue(t *testing.T) {
 	skipIfCatalogueEmpty(t)
 	storeDir := t.TempDir()
-	cfg, err := BuildDefaultConfig(storeDir)
+	cfg, err := BuildDefaultConfig(storeDir, "")
 	if err != nil {
 		t.Fatalf("BuildDefaultConfig: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestBuildDefaultConfig_PreservesUserEdits(t *testing.T) {
 	skipIfCatalogueEmpty(t)
 	storeDir := t.TempDir()
 	// First extraction populates the catalogue.
-	if _, err := BuildDefaultConfig(storeDir); err != nil {
+	if _, err := BuildDefaultConfig(storeDir, ""); err != nil {
 		t.Fatalf("first BuildDefaultConfig: %v", err)
 	}
 	// Hand-edit one bot.
@@ -74,7 +74,7 @@ func TestBuildDefaultConfig_PreservesUserEdits(t *testing.T) {
 		t.Fatalf("write user edit: %v", err)
 	}
 	// Re-extract: write-if-absent must keep the user edit.
-	if _, err := BuildDefaultConfig(storeDir); err != nil {
+	if _, err := BuildDefaultConfig(storeDir, ""); err != nil {
 		t.Fatalf("second BuildDefaultConfig: %v", err)
 	}
 	got, err := os.ReadFile(target)
@@ -101,7 +101,52 @@ func TestDefaultAssigneeNames_Sorted(t *testing.T) {
 }
 
 func TestBuildDefaultConfig_RejectsEmptyStoreDir(t *testing.T) {
-	if _, err := BuildDefaultConfig(""); err == nil {
+	if _, err := BuildDefaultConfig("", ""); err == nil {
 		t.Fatal("expected error on empty storeDir")
+	}
+}
+
+// When projectDir is non-empty, BuildDefaultConfig wires after_create
+// + before_remove hooks that seed/remove a git worktree of the host
+// repo into each per-issue workspace. The hook scripts embed the
+// resolved absolute projectDir so workers (cwd=workspace) don't
+// resolve PROJECT_DIR against the wrong root.
+func TestBuildDefaultConfig_SeedHookWhenProjectDirSet(t *testing.T) {
+	skipIfCatalogueEmpty(t)
+	storeDir := t.TempDir()
+	projectDir := t.TempDir()
+	cfg, err := BuildDefaultConfig(storeDir, projectDir)
+	if err != nil {
+		t.Fatalf("BuildDefaultConfig: %v", err)
+	}
+	if cfg.Hooks.AfterCreate == nil {
+		t.Fatal("expected after_create hook when projectDir is set")
+	}
+	if cfg.Hooks.BeforeRemove == nil {
+		t.Fatal("expected before_remove hook when projectDir is set")
+	}
+	if !strings.Contains(cfg.Hooks.AfterCreate.Script, projectDir) {
+		t.Fatalf("after_create hook should reference projectDir %q; got %q", projectDir, cfg.Hooks.AfterCreate.Script)
+	}
+	if !strings.Contains(cfg.Hooks.AfterCreate.Script, "worktree add") {
+		t.Fatal("after_create hook should run `git worktree add`")
+	}
+}
+
+// When projectDir is empty (out-of-tree CLI invocations), hooks must
+// stay nil — silently injecting a hook with no source would fail
+// every after_create invocation, blocking dispatch entirely.
+func TestBuildDefaultConfig_NoSeedHookWhenProjectDirEmpty(t *testing.T) {
+	skipIfCatalogueEmpty(t)
+	storeDir := t.TempDir()
+	cfg, err := BuildDefaultConfig(storeDir, "")
+	if err != nil {
+		t.Fatalf("BuildDefaultConfig: %v", err)
+	}
+	if cfg.Hooks.AfterCreate != nil {
+		t.Fatalf("expected no after_create hook when projectDir is empty, got %+v", cfg.Hooks.AfterCreate)
+	}
+	if cfg.Hooks.BeforeRemove != nil {
+		t.Fatalf("expected no before_remove hook when projectDir is empty, got %+v", cfg.Hooks.BeforeRemove)
 	}
 }
