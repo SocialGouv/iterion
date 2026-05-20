@@ -1,5 +1,13 @@
 version: "3"
 
+# Auto-load .env at the project root so credential overrides
+# (ZAI_API_KEY, ITERION_CLAUDE_CODE_MODEL, RESCUE_PROVIDER, …) are
+# visible to every task without the operator having to `source .env`
+# manually. .env stays gitignored — only the file at the repo root
+# is read. When the file is absent task silently skips it; no error
+# on fresh checkouts.
+dotenv: [".env"]
+
 vars:
   BINARY: iterion
   CMD: ./cmd/iterion
