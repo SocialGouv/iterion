@@ -163,6 +163,16 @@ export interface FolderState {
   bannerIdx: Map<string, number>;
   humanIdx: Map<string, number>;
   activeBannerByNode: Map<string, number>;
+  // Latest iteration seen for each node, primed from node_started
+  // events (which always carry iteration in their data). Used as a
+  // fallback for downstream events whose payload omits the iteration
+  // field — notably human_input_requested, which only carries the
+  // interaction_id + questions. Without this fallback the second
+  // human_review iteration in a revise loop collides with the first
+  // (both default to iter 0), the dedupe check drops the new pending
+  // turn, and the UI shows the answered first iteration without the
+  // approve / request-revision buttons.
+  nodeIteration: Map<string, number>;
   latestPendingHumanKey: string | null;
 }
 
@@ -172,6 +182,7 @@ export function newFolderState(): FolderState {
     bannerIdx: new Map(),
     humanIdx: new Map(),
     activeBannerByNode: new Map(),
+    nodeIteration: new Map(),
     latestPendingHumanKey: null,
   };
 }
@@ -267,6 +278,7 @@ function processEvent(
   const bannerIdx = state.bannerIdx;
   const humanIdx = state.humanIdx;
   const activeBannerByNode = state.activeBannerByNode;
+  const nodeIteration = state.nodeIteration;
   let latestPendingHumanKey = state.latestPendingHumanKey;
 
   if (!evt.type) return;
@@ -278,6 +290,10 @@ function processEvent(
         if (!entry) break;
 
         const iter = iterationOf(evt);
+        // Record the iteration so later events on this node (notably
+        // human_input_requested) can resolve it even when their own
+        // payload omits the iteration field — see FolderState comment.
+        nodeIteration.set(nodeId, iter);
         if (entry.kind === "banner") {
           const key = bannerId(nodeId, iter);
           if (bannerIdx.has(key)) break; // dedupe replay
@@ -412,7 +428,13 @@ function processEvent(
         const entry = bot.nodeMap[nodeId];
         if (!entry || entry.kind !== "human") break;
 
-        const iter = iterationOf(evt);
+        // The runtime omits `iteration` from human_input_requested
+        // event payloads today — only node_started carries it. Without
+        // the fallback, the second human_review turn of a revise loop
+        // shares the iter-0 key with the first, the dedupe check
+        // below drops it, and the user sees the answered iter-0
+        // bubble (no buttons) instead of the new pending iter-1 form.
+        const iter = nodeIteration.get(nodeId) ?? iterationOf(evt);
         const key = humanId(nodeId, iter);
         if (humanIdx.has(key)) break; // dedupe replay
         // Pull through the runtime-supplied questions payload (set when
@@ -457,7 +479,10 @@ function processEvent(
         let nodeId = evt.node_id;
         let key: string;
         if (nodeId) {
-          const iter = iterationOf(evt);
+          // Same iteration-fallback rationale as human_input_requested:
+          // the runtime omits `iteration` from this event payload, so
+          // we read it from the most recent node_started.
+          const iter = nodeIteration.get(nodeId) ?? iterationOf(evt);
           key = humanId(nodeId, iter);
         } else if (latestPendingHumanKey) {
           key = latestPendingHumanKey;
