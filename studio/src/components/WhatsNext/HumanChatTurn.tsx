@@ -1,11 +1,33 @@
 import { useState } from "react";
 
-import type { HumanQuestionMessage } from "@/lib/whats-next/messages";
+import type {
+  HumanQuestionMessage,
+  QuickActionKind,
+} from "@/lib/whats-next/messages";
 import type { FormAnswer, FormSpec } from "@/lib/whats-next/questionForm";
 import { Button } from "@/components/ui/Button";
 import { Textarea } from "@/components/ui/Textarea";
 import { WizardForm } from "@/components/ui/WizardForm";
 import { useUIStore } from "@/store/ui";
+
+// Default quick-actions surfaced on every free-text turn unless the
+// node overrides via message.quickActions. "later" is intentionally
+// omitted from the default — it's only useful inside loops that can
+// re-ask (the new triage_loop, eventually), and surfacing it
+// everywhere would confuse operators.
+const DEFAULT_QUICK_ACTIONS: ReadonlyArray<QuickActionKind> = ["skip", "idk"];
+
+const QUICK_ACTION_LABEL: Record<QuickActionKind, string> = {
+  skip: "Skip",
+  idk: "I don't know",
+  later: "Ask later",
+};
+
+const QUICK_ACTION_MARKER: Record<QuickActionKind, string> = {
+  skip: "[QA:skip]",
+  idk: "[QA:idk]",
+  later: "[QA:later]",
+};
 
 interface Props {
   message: HumanQuestionMessage;
@@ -87,27 +109,43 @@ export default function HumanChatTurn({
       )}
 
       {isFreeText && (
-        <div className="flex items-stretch gap-2 ml-6">
-          <Textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={makeKeyHandler(() => {
-              if (draft.trim() !== "") submit();
-            })}
-            placeholder="Type your answer…"
-            rows={Math.max(2, Math.min(10, Math.ceil(draft.length / 60) + 1))}
+        <div className="space-y-1 ml-6">
+          <div className="flex items-stretch gap-2">
+            <Textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={makeKeyHandler(() => {
+                if (draft.trim() !== "") submit();
+              })}
+              placeholder="Type your answer…"
+              rows={Math.max(2, Math.min(10, Math.ceil(draft.length / 60) + 1))}
+              disabled={busy}
+              className="flex-1"
+            />
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={busy || draft.trim() === ""}
+              onClick={() => submit()}
+              className="self-end"
+            >
+              {busy ? "…" : "Send"}
+            </Button>
+          </div>
+          <QuickActionStrip
+            actions={message.quickActions ?? DEFAULT_QUICK_ACTIONS}
             disabled={busy}
-            className="flex-1"
+            onPick={(kind) => {
+              if (!onSubmit) return;
+              // Emit the canonical marker directly — bypass `draft`
+              // so a half-typed answer doesn't get concatenated with
+              // the marker. The bot's prompt is responsible for
+              // recognising [QA:*] and reacting accordingly.
+              onSubmit({ text: QUICK_ACTION_MARKER[kind] });
+              setDraft("");
+              setReviseOpen(false);
+            }}
           />
-          <Button
-            variant="primary"
-            size="sm"
-            disabled={busy || draft.trim() === ""}
-            onClick={() => submit()}
-            className="self-end"
-          >
-            {busy ? "…" : "Send"}
-          </Button>
         </div>
       )}
 
@@ -158,6 +196,35 @@ export default function HumanChatTurn({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function QuickActionStrip({
+  actions,
+  disabled,
+  onPick,
+}: {
+  actions: ReadonlyArray<QuickActionKind>;
+  disabled: boolean;
+  onPick: (kind: QuickActionKind) => void;
+}) {
+  if (actions.length === 0) return null;
+  return (
+    <div className="flex items-center gap-1 text-[11px] text-fg-subtle">
+      <span className="mr-1">Quick:</span>
+      {actions.map((kind) => (
+        <button
+          key={kind}
+          type="button"
+          disabled={disabled}
+          onClick={() => onPick(kind)}
+          className="rounded border border-border-subtle bg-surface-1 px-2 py-0.5 hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed"
+          title={`Submit ${QUICK_ACTION_MARKER[kind]} — the bot decides what to do`}
+        >
+          {QUICK_ACTION_LABEL[kind]}
+        </button>
+      ))}
     </div>
   );
 }

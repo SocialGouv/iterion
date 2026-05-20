@@ -38,6 +38,14 @@ export interface BannerMessage {
   progress?: BannerProgress;
 }
 
+// Quick-action markers the operator can emit instead of typing a
+// reply. The bot's prompt is expected to recognise these tokens and
+// react accordingly ([QA:skip] proceed empty, [QA:idk] fall back to
+// best inference, [QA:later] defer if the flow has a re-ask point).
+// "later" is meaningful only inside the new triage loop where the
+// bot can re-ask; outside it's effectively a "skip".
+export type QuickActionKind = "skip" | "idk" | "later";
+
 export interface HumanQuestionMessage {
   kind: "human-question";
   id: string;
@@ -60,6 +68,13 @@ export interface HumanQuestionMessage {
   // The form renderer falls back to the bot's static `prompt` when
   // this is empty.
   questions?: Record<string, unknown>;
+  // Inline shortcuts the operator can pick instead of typing a
+  // reply. Only rendered on free-text turns (the form / action
+  // paths already give the operator structured choices). Default
+  // for free-text turns: ["skip", "idk"]. Pass an empty array to
+  // suppress. The runtime can override per-node via a future DSL
+  // `quick_actions:` block; for now the default is client-side.
+  quickActions?: ReadonlyArray<QuickActionKind>;
 }
 
 export interface RoadmapItem {
