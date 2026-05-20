@@ -432,12 +432,30 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
 
   const submitHumanAnswer = useCallback(
     async (messageId: string, answers: Record<string, unknown>) => {
-      if (!runId) return;
+      if (typeof console !== "undefined") {
+        console.debug("[whats-next] submitHumanAnswer enter", {
+          messageId,
+          answers,
+          runId,
+        });
+      }
+      if (!runId) {
+        if (typeof console !== "undefined") {
+          console.warn("[whats-next] submitHumanAnswer: no runId, aborting");
+        }
+        return;
+      }
       setErrorMessage(null);
       setBusyMessageId(messageId);
       setStatus("submitting");
       try {
+        if (typeof console !== "undefined") {
+          console.debug("[whats-next] submitHumanAnswer → resumeRun", { runId });
+        }
         await resumeRun(runId, { answers });
+        if (typeof console !== "undefined") {
+          console.debug("[whats-next] submitHumanAnswer ← resumeRun OK");
+        }
         setRunStatus("running");
         // Re-dial the WS so the resumed engine's events reach us.
         // Without this, the broker may have dropped subscribers when
@@ -468,6 +486,9 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
         }, 600);
         setStatus("active");
       } catch (e) {
+        if (typeof console !== "undefined") {
+          console.error("[whats-next] submitHumanAnswer error", e);
+        }
         setErrorMessage((e as Error).message);
         setStatus("active");
       } finally {
