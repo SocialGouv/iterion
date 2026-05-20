@@ -426,6 +426,16 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 	}
 	if filePath != "" {
 		opts = append(opts, runtime.WithFilePath(filePath))
+		// F-NEW-4: studio + cloud launches bypass pkg/cli/run.go's
+		// bundle-detect path. When the operator points at
+		// <bundle-dir>/main.bot directly, ResolveBundleFromFilePath
+		// climbs to the parent and opens it as a bundle so the engine
+		// can mirror skills/ + recipes/ + attachments/ into the
+		// workspace before any node runs. Nil bundle → engine no-ops
+		// (existing behaviour for inline / standalone .bot files).
+		if b := ResolveBundleFromFilePath(filePath); b != nil {
+			opts = append(opts, runtime.WithBundle(b))
+		}
 	}
 	if runName != "" {
 		opts = append(opts, runtime.WithRunName(runName))

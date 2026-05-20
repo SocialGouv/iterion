@@ -106,6 +106,48 @@ func compileForLaunch(path, source string) (*ir.Workflow, string, error) {
 	return CompileWorkflowWithHash(path)
 }
 
+// ResolveBundleFromFilePath inspects filePath and, when it looks like
+// the canonical entrypoint of a directory bundle (named main.bot or
+// main.iter, in a parent dir that carries `skills/` or
+// `manifest.yaml`), opens the parent as a bundle so the engine can
+// mirror skills/, recipes/, attachments/ into the workspace at run
+// time. Returns nil when filePath is empty, not the canonical name,
+// the parent has no bundle markers, or OpenDir fails (best-effort).
+//
+// Mirrors the auto-promotion the CLI does in pkg/cli/run.go (F-NEW-4).
+// Without this, studio launches of `iterion run examples/whats-next/main.bot`
+// silently produce empty `.claude/skills/` and prompts that reference
+// `repo-survey.md` fail with `no such file or directory`.
+func ResolveBundleFromFilePath(filePath string) *bundle.Bundle {
+	if filePath == "" {
+		return nil
+	}
+	abs, err := filepath.Abs(filePath)
+	if err != nil {
+		return nil
+	}
+	base := filepath.Base(abs)
+	if base != "main.bot" && base != "main.iter" {
+		return nil
+	}
+	parent := filepath.Dir(abs)
+	hasMarker := false
+	for _, marker := range []string{"skills", "manifest.yaml"} {
+		if _, err := os.Stat(filepath.Join(parent, marker)); err == nil {
+			hasMarker = true
+			break
+		}
+	}
+	if !hasMarker {
+		return nil
+	}
+	b, err := bundle.OpenDir(parent)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
 func compileWith(path, inline string, withHash bool, b *bundle.Bundle) (*ir.Workflow, string, error) {
 	var src []byte
 	if inline != "" {
