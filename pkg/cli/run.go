@@ -394,11 +394,60 @@ func resolveWorkflow(opts RunOptions) (wf *ir.Workflow, hash, filePath, displayN
 		}
 		return raw, h, opened.IterPath, display, opened, cleanup, nil
 	}
+	// F-NEW-4: when the operator points at a bare `.bot` / `.iter`
+	// file whose parent directory looks like a bundle (has skills/ or
+	// manifest.yaml), promote to KindBundleDir on the parent so the
+	// runtime mirrors the bundled skills/ into .claude/skills/ at run
+	// time. Without this promotion, prompts that read
+	// `.claude/skills/<name>.md` silently get nothing on bare-file
+	// launches — observed with examples/whats-next/main.bot where the
+	// explore prompt reads `.claude/skills/repo-survey.md`.
+	if parent := bundleParentOf(resolved); parent != "" {
+		opened, openErr := bundle.OpenDir(parent)
+		if openErr == nil {
+			raw, h, compileErr := runview.CompileBundleWorkflow(opened.IterPath, opened)
+			if compileErr != nil {
+				return nil, "", "", "", opened, cleanup, compileErr
+			}
+			display := raw.Name
+			if opened.Manifest != nil && opened.Manifest.Name != "" {
+				display = opened.Manifest.Name + " (" + raw.Name + ")"
+			}
+			return raw, h, opened.IterPath, display, opened, cleanup, nil
+		}
+		// On openErr, fall through to bare-file compile — better than
+		// failing outright; the parent merely "looked like" a bundle.
+	}
 	raw, h, compileErr := runview.CompileWorkflowWithHash(resolved)
 	if compileErr != nil {
 		return nil, "", "", "", nil, cleanup, compileErr
 	}
 	return raw, h, resolved, raw.Name, nil, cleanup, nil
+}
+
+// bundleParentOf returns the absolute path of `path`'s parent
+// directory when the parent looks like a bundle (has skills/ or
+// manifest.yaml) AND `path` is named main.bot / main.iter (the canonical
+// bundle entrypoint). Returns "" when no promotion is warranted.
+// Conservative on purpose — promoting an arbitrary `*.bot` inside a
+// folder with a sibling `skills/` could surprise operators who
+// intentionally split bundle vs. one-off bots.
+func bundleParentOf(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return ""
+	}
+	base := filepath.Base(abs)
+	if base != "main.bot" && base != "main.iter" {
+		return ""
+	}
+	parent := filepath.Dir(abs)
+	for _, marker := range []string{"skills", "manifest.yaml"} {
+		if _, err := os.Stat(filepath.Join(parent, marker)); err == nil {
+			return parent
+		}
+	}
+	return ""
 }
 
 // enrichPausedResult loads checkpoint and interaction details from the store

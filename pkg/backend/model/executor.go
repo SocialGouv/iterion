@@ -520,35 +520,81 @@ func (e *ClawExecutor) SetWorkDir(dir string) {
 //     on credentials present on the host)
 //  5. delegate.BackendClaw (hardcoded last-resort fallback)
 //
+// clawToolHint extracts a short human-readable hint from a tool's
+// raw JSON input for the per-tool-call log line. Defensive against
+// arbitrary tool schemas — returns "" when nothing fits.
+func clawToolHint(input json.RawMessage) string {
+	if len(input) == 0 {
+		return ""
+	}
+	var obj map[string]interface{}
+	if err := json.Unmarshal(input, &obj); err != nil {
+		return ""
+	}
+	for _, k := range []string{"command", "file_path", "path", "pattern", "query", "url", "title", "id"} {
+		if v, ok := obj[k].(string); ok && v != "" {
+			if len(v) > 60 {
+				v = v[:57] + "…"
+			}
+			return v
+		}
+	}
+	return ""
+}
+
 // delegateHooksFor builds the TaskHooks block passed to a delegate
 // backend. It bridges the executor's own EventHooks into the simpler
 // callback surface backends consume. Returns a zero-value TaskHooks
 // when neither hook is wired, which backends handle as "no observers".
-func (e *ClawExecutor) delegateHooksFor(nodeID string) delegate.TaskHooks {
+//
+// When backendName == claw, the tool hooks ALSO write a tagged line
+// to e.logger so per-tool-call activity surfaces in run.log (F-NEW-13).
+// claude_code + codex emit their own `[%s#%d/<backend>]` lines from
+// the subprocess stderr capture path, so we don't double-log them here.
+func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string) delegate.TaskHooks {
 	var h delegate.TaskHooks
-	if e.hooks.OnToolStarted != nil {
+	logForClaw := backendName == delegate.BackendClaw && e.logger != nil
+	if e.hooks.OnToolStarted != nil || logForClaw {
 		fn := e.hooks.OnToolStarted
 		h.OnToolStarted = func(toolName string, toolUseID string, input json.RawMessage) {
-			fn(nodeID, LLMToolStartedInfo{
-				ToolName:  toolName,
-				ToolUseID: toolUseID,
-				InputSize: len(input),
-				Input:     input,
-			})
+			if logForClaw {
+				// LoopIterationFromContext needs a context. The delegate
+				// callback signature doesn't carry one; use 0 — the iter
+				// only differs across loop bodies, which claw's text-tool
+				// hooks fire from the same goroutine as the dispatch.
+				e.logger.Info("[%s#%d/claw] 🔧 %s %s", nodeID, 0, toolName, clawToolHint(input))
+			}
+			if fn != nil {
+				fn(nodeID, LLMToolStartedInfo{
+					ToolName:  toolName,
+					ToolUseID: toolUseID,
+					InputSize: len(input),
+					Input:     input,
+				})
+			}
 		}
 	}
-	if e.hooks.OnToolCall != nil {
+	if e.hooks.OnToolCall != nil || logForClaw {
 		fn := e.hooks.OnToolCall
 		h.OnToolCalled = func(toolName string, toolUseID string, isError bool, output string) {
-			info := LLMToolCallInfo{
-				ToolName:  toolName,
-				ToolUseID: toolUseID,
-				Output:    output,
+			if logForClaw {
+				marker := "✓"
+				if isError {
+					marker = "✗"
+				}
+				e.logger.Info("[%s#%d/claw] %s %s (%d bytes)", nodeID, 0, marker, toolName, len(output))
 			}
-			if isError {
-				info.Error = fmt.Errorf("tool error")
+			if fn != nil {
+				info := LLMToolCallInfo{
+					ToolName:  toolName,
+					ToolUseID: toolUseID,
+					Output:    output,
+				}
+				if isError {
+					info.Error = fmt.Errorf("tool error")
+				}
+				fn(nodeID, info)
 			}
-			fn(nodeID, info)
 		}
 	}
 	// Wire claude_code's per-delegate-call OnTurnFinished hook into a
@@ -896,7 +942,7 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 		CompactPreserveRecent: compactPreserve,
 		Sandbox:               e.sandbox,
 		ProviderHint:          e.resolveProvider(node),
-		Hooks:                 e.delegateHooksFor(f.id),
+		Hooks:                 e.delegateHooksFor(f.id, backendName),
 	}
 	if m := f.memory; m != nil && m.Enabled {
 		task.Memory = &delegate.MemorySpec{

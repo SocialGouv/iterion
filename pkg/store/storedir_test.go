@@ -35,7 +35,10 @@ func TestResolveStoreDir_ProjectLocalOptInWins(t *testing.T) {
 	iterionHome := withIterionHome(t)
 	root := t.TempDir()
 	storeAt := filepath.Join(root, StoreDirName)
-	if err := os.Mkdir(storeAt, 0o700); err != nil {
+	// A managed project-local store has at least one of the
+	// well-known subdirs (runs/, dispatcher/) or the explicit sentinel
+	// (.iterion-store). Create runs/ to mark it.
+	if err := os.MkdirAll(filepath.Join(storeAt, "runs"), 0o700); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 
@@ -46,6 +49,51 @@ func TestResolveStoreDir_ProjectLocalOptInWins(t *testing.T) {
 	// Sanity: nothing leaked into the global root.
 	if _, err := os.Stat(filepath.Join(iterionHome, "projects")); err == nil {
 		t.Fatalf("global projects dir was created despite local opt-in")
+	}
+}
+
+// TestResolveStoreDir_StrayDotIterionDirIgnored guards F-NEW-10:
+// when a workspace tool (e.g. the whats-next bot's emit_action
+// writing .iterion/plans/whats-next-*.md) creates a bare .iterion/
+// without any of the iterion-managed subdirs, ResolveStoreDir must
+// NOT pick it up — falling back to the global per-project slot keeps
+// CLI/daemon calls consistent with where the actual runs live.
+func TestResolveStoreDir_StrayDotIterionDirIgnored(t *testing.T) {
+	iterionHome := withIterionHome(t)
+	root := t.TempDir()
+	stray := filepath.Join(root, StoreDirName, "plans")
+	if err := os.MkdirAll(stray, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	// No runs/ or dispatcher/ or .iterion-store marker → not managed.
+
+	got := ResolveStoreDir(root, "")
+
+	abs, _ := filepath.Abs(root)
+	want := filepath.Join(iterionHome, "projects", EncodeWorkDirKey(abs))
+	if got != want {
+		t.Fatalf("stray .iterion/plans must not hijack the resolver: expected global %q got %q", want, got)
+	}
+}
+
+// TestResolveStoreDir_SentinelFileMarker validates the .iterion-store
+// sentinel path — operators (or RunStore.Init) can drop an empty
+// .iterion-store file to opt-in without yet having runs/ or
+// dispatcher/ on disk.
+func TestResolveStoreDir_SentinelFileMarker(t *testing.T) {
+	withIterionHome(t)
+	root := t.TempDir()
+	storeAt := filepath.Join(root, StoreDirName)
+	if err := os.Mkdir(storeAt, 0o700); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(storeAt, ".iterion-store"), nil, 0o600); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	got := ResolveStoreDir(root, "")
+	if got != storeAt {
+		t.Fatalf("sentinel file should mark store as managed, expected %q got %q", storeAt, got)
 	}
 }
 

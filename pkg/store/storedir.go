@@ -56,14 +56,43 @@ func ResolveStoreDir(start, override string) string {
 		return filepath.Join(start, StoreDirName)
 	}
 
-	// Project-local opt-in.
+	// Project-local opt-in. To distinguish an iterion-managed store
+	// from a stray `.iterion/` that some workspace tool created (e.g.
+	// the whats-next bot's emit_action writing `.iterion/plans/*.md`),
+	// require a marker subdir / sentinel file that the RunStore itself
+	// would have written. Without this check, an LLM-created
+	// `.iterion/plans/` hijacks every subsequent CLI/daemon call and
+	// the operator sees an empty board / no runs. F-NEW-10.
 	candidate := filepath.Join(abs, StoreDirName)
 	if info, statErr := os.Stat(candidate); statErr == nil && info.IsDir() {
-		return candidate
+		if isManagedStore(candidate) {
+			return candidate
+		}
 	}
 
 	// Default: per-project slot under the global iterion data dir.
 	return globalProjectStoreDir(abs)
+}
+
+// isManagedStore reports whether candidate looks like an
+// iterion-managed run store, as opposed to a stray `.iterion/` left
+// behind by a workspace tool. Recognises:
+//   - <candidate>/runs/         (created by RunStore on first run)
+//   - <candidate>/dispatcher/   (created by NativeStore on first board op)
+//   - <candidate>/.iterion-store (sentinel file, write-on-init for forward
+//     compatibility — RunStore can touch this on init to opt-in even when
+//     no runs exist yet)
+//
+// Any of the three is enough; the OR semantics keep legacy stores
+// (which only have runs/) working alongside dispatcher-only stores
+// (which have dispatcher/ but no runs yet).
+func isManagedStore(candidate string) bool {
+	for _, marker := range []string{"runs", "dispatcher", ".iterion-store"} {
+		if _, err := os.Stat(filepath.Join(candidate, marker)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // globalProjectStoreDir returns the per-project subdir of the global

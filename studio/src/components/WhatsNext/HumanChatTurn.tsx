@@ -54,7 +54,28 @@ export default function HumanChatTurn({
 }: Props) {
   const [draft, setDraft] = useState("");
   const [reviseOpen, setReviseOpen] = useState(false);
+  // Local submitting flag that flips synchronously on click. The parent's
+  // `busy` prop only flips after React commits the request; in the gap
+  // between the first click and the busy=true commit, a double-click
+  // would fire two submits — the second hits the 400 "cannot be
+  // resumed (status: running)" race (F-NEW-6). We clear it as soon as
+  // the message status advances to "answered" (or the parent reports
+  // busy, whichever comes first).
+  const [localSubmitting, setLocalSubmitting] = useState(false);
   const chatEnterSubmits = useUIStore((s) => s.chatEnterSubmits);
+
+  // Clear local submitting once the message moves to "answered" — the
+  // turn will unmount or re-render in AnsweredTurn, but during the
+  // transition we want the button to stay disabled.
+  if (localSubmitting && message.status === "answered") {
+    // Reset on the next tick to avoid setState-during-render.
+    queueMicrotask(() => setLocalSubmitting(false));
+  }
+
+  // The disabled gate consults BOTH busy (parent-tracked async state)
+  // and localSubmitting (this-render click state) — either being true
+  // is enough to prevent re-entry.
+  const disabled = busy || localSubmitting;
 
   if (message.status === "answered") {
     return <AnsweredTurn message={message} />;
@@ -69,14 +90,16 @@ export default function HumanChatTurn({
   const isFreeText = !hasForm && !hasActions;
 
   const submit = (approved?: boolean) => {
-    if (!onSubmit || busy) return;
+    if (!onSubmit || disabled) return;
+    setLocalSubmitting(true);
     onSubmit({ text: draft, approved });
     setDraft("");
     setReviseOpen(false);
   };
 
   const submitForm = (formAnswer: FormAnswer) => {
-    if (!onSubmit || busy) return;
+    if (!onSubmit || disabled) return;
+    setLocalSubmitting(true);
     onSubmit({ text: "", formAnswer });
   };
 
@@ -104,7 +127,7 @@ export default function HumanChatTurn({
 
       {hasForm && (
         <div className="ml-6">
-          <WizardForm spec={form!} onSubmit={submitForm} busy={busy} />
+          <WizardForm spec={form!} onSubmit={submitForm} busy={disabled} />
         </div>
       )}
 
@@ -119,22 +142,22 @@ export default function HumanChatTurn({
               })}
               placeholder="Type your answer…"
               rows={Math.max(2, Math.min(10, Math.ceil(draft.length / 60) + 1))}
-              disabled={busy}
+              disabled={disabled}
               className="flex-1"
             />
             <Button
               variant="primary"
               size="sm"
-              disabled={busy || draft.trim() === ""}
+              disabled={disabled || draft.trim() === ""}
               onClick={() => submit()}
               className="self-end"
             >
-              {busy ? "…" : "Send"}
+              {disabled ? "…" : "Send"}
             </Button>
           </div>
           <QuickActionStrip
             actions={message.quickActions ?? DEFAULT_QUICK_ACTIONS}
-            disabled={busy}
+            disabled={disabled}
             onPick={(kind) => {
               if (!onSubmit) return;
               // Emit the canonical marker directly — bypass `draft`
@@ -155,15 +178,15 @@ export default function HumanChatTurn({
             <Button
               variant="primary"
               size="sm"
-              disabled={busy}
+              disabled={disabled}
               onClick={() => submit(true)}
             >
-              {busy ? "…" : "Approve"}
+              {disabled ? "…" : "Approve"}
             </Button>
             <Button
               variant="secondary"
               size="sm"
-              disabled={busy}
+              disabled={disabled}
               onClick={() => setReviseOpen((v) => !v)}
             >
               Request revision
@@ -180,17 +203,17 @@ export default function HumanChatTurn({
                 })}
                 placeholder="What should be revised?"
                 rows={3}
-                disabled={busy}
+                disabled={disabled}
                 className="flex-1"
               />
               <Button
                 variant="primary"
                 size="sm"
-                disabled={busy || draft.trim() === ""}
+                disabled={disabled || draft.trim() === ""}
                 onClick={() => submit(false)}
                 className="self-end"
               >
-                {busy ? "…" : "Send"}
+                {disabled ? "…" : "Send"}
               </Button>
             </div>
           )}

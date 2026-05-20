@@ -354,7 +354,20 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
       if (logSubscriberCountRef.current > 1) return;
       logsRequestedRef.current = true;
       const ws = wsRef.current;
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        // onopen re-fires subscribe_logs when logsRequestedRef is set,
+        // so the only path missed by the early return is the unusual
+        // case where ws closed between subscribeLogs() call and the
+        // socket actually being open. Logged so a future regression is
+        // visible in DevTools. F-NEW-3 instrumentation.
+        if (typeof console !== "undefined") {
+          console.debug(
+            "[useRunWebSocket] subscribe_logs deferred: ws not open",
+            { readyState: ws?.readyState ?? "no_ws" },
+          );
+        }
+        return;
+      }
       const offset =
         typeof fromOffset === "number"
           ? fromOffset
@@ -365,7 +378,13 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
       ws.send(
         JSON.stringify({
           type: "subscribe_logs",
-          payload: offset > 0 ? { from_offset: offset } : undefined,
+          // ALWAYS send from_offset (even when 0). The server's payload
+          // unmarshal short-circuits when payload is empty; the path
+          // worked fine for offset=0 because FromOffset's zero value is
+          // 0, but being explicit removes ambiguity and matches the
+          // shape of every other subscribe_logs message we send (the
+          // onopen reconnect path also sends explicit offsets > 0).
+          payload: { from_offset: offset },
         } satisfies WsEnvelope),
       );
       runStoreRef.current.getState().setLogSubscribed(true);

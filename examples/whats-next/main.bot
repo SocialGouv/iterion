@@ -15,7 +15,7 @@
 ##                        a complete roadmap taking the feedback into
 ##                        account. Loops back to human_review.
 ##   6. emit_action     — claude_code (opus 4.7). Writes the approved
-##                        plan to .iterion/plans/whats-next-<run>.md
+##                        plan to docs/plans/whats-next-<run>.md
 ##                        and the suggested follow-up `iterion run`
 ##                        command. Has native access to the bundled
 ##                        skills (.claude/skills/).
@@ -531,9 +531,13 @@ prompt emit_action_system:
      the assignee back to "" and add a label
      `needs-manual-triage`. Never invent.
 
-  2. Create `<workspace>/.iterion/plans/` if missing
-     (`mkdir -p`). Pre-allocate a timestamped plan path:
-     `whats-next-YYYYMMDD-HHMMSS.md`.
+  2. Create `<workspace>/docs/plans/` if missing (`mkdir -p`).
+     Pre-allocate a timestamped plan path:
+     `whats-next-YYYYMMDD-HHMMSS.md`. Don't write into
+     `<workspace>/.iterion/` — that path is reserved for iterion's
+     run-store + dispatcher state; placing an audit markdown there
+     used to hijack the CLI's store-dir resolver (fixed in F-NEW-10,
+     but the convention stays).
 
   3. For each `roadmap_item` (in this order: next_action, then
      each short_term, then each long_term):
@@ -582,7 +586,7 @@ prompt emit_action_system:
   ## Constraints
 
   - Use bash, write_file, and read_file. Do NOT modify any source
-    file outside `.iterion/plans/` and the kanban store. The bot
+    file outside `docs/plans/` and the kanban store. The bot
     is `readonly: false` here intentionally (it must mutate the
     board), but stay scoped.
   - If an `iterion issue create` invocation fails, capture the
