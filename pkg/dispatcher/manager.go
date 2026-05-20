@@ -39,6 +39,13 @@ type ManagerOptions struct {
 	StoreDir    string // the iterion store dir (e.g. ./.iterion)
 	NativeStore *native.Store
 	Logger      *iterlog.Logger
+	// DefaultBotsPaths seeds the dispatcher's bot registry when the
+	// persisted config (dispatcher.json) does not set its own. Used
+	// by the studio so the SPA's per-ticket bot picker and the
+	// dispatcher's per-ticket bot resolution share the same view of
+	// the host's bots without the operator having to configure them
+	// twice.
+	DefaultBotsPaths []string
 }
 
 // Manager owns the lifecycle of an in-process Dispatcher instance.
@@ -48,10 +55,11 @@ type ManagerOptions struct {
 //
 // One Manager per studio server. Safe for concurrent use.
 type Manager struct {
-	storeDir    string
-	configPath  string
-	nativeStore *native.Store
-	logger      *iterlog.Logger
+	storeDir         string
+	configPath       string
+	nativeStore      *native.Store
+	logger           *iterlog.Logger
+	defaultBotsPaths []string
 
 	mu        sync.Mutex
 	cfg       *Config
@@ -77,16 +85,20 @@ func NewManager(opts ManagerOptions) (*Manager, error) {
 		return nil, errors.New("manager: logger required")
 	}
 	m := &Manager{
-		storeDir:    opts.StoreDir,
-		configPath:  filepath.Join(opts.StoreDir, "dispatcher", "dispatcher.json"),
-		nativeStore: opts.NativeStore,
-		logger:      opts.Logger,
-		state:       ManagerStateIdle,
+		storeDir:         opts.StoreDir,
+		configPath:       filepath.Join(opts.StoreDir, "dispatcher", "dispatcher.json"),
+		nativeStore:      opts.NativeStore,
+		logger:           opts.Logger,
+		defaultBotsPaths: append([]string(nil), opts.DefaultBotsPaths...),
+		state:            ManagerStateIdle,
 	}
 	if cfg, err := loadConfigJSON(m.configPath); err == nil {
 		m.cfg = cfg
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		opts.Logger.Warn("manager: load persisted config (%s): %v", m.configPath, err)
+	}
+	if m.cfg != nil && len(m.cfg.Bots.Paths) == 0 {
+		m.cfg.Bots.Paths = append([]string(nil), m.defaultBotsPaths...)
 	}
 	return m, nil
 }
@@ -133,6 +145,9 @@ func (m *Manager) SaveConfig(cfg *Config) error {
 	cfg.SourcePath = m.configPath
 	cfg.applyEnvAndPaths()
 	cfg.applyDefaults()
+	if len(cfg.Bots.Paths) == 0 {
+		cfg.Bots.Paths = append([]string(nil), m.defaultBotsPaths...)
+	}
 	if err := cfg.Validate(); err != nil {
 		return err
 	}

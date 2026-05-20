@@ -7,15 +7,10 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 )
 
-// BotsConfig configures the bot registry exposed at /api/v1/bots.
-type BotsConfig struct {
-	// Paths are walked to discover bots. Each entry may be a directory
-	// (walked recursively for .bot/.iter files and bundle directories)
-	// or a single .bot/.iter file. Missing paths are skipped silently.
-	// When empty the resolver falls back to <WorkDir>/bots,
-	// <WorkDir>/examples, <WorkDir>/.botz — the conventional locations.
-	Paths []string
-}
+// BotsConfig configures the bot registry exposed at /api/v1/bots. It
+// is an alias of botregistry.Config so the server and dispatcher
+// share one type for "where to look for bots".
+type BotsConfig = botregistry.Config
 
 // effectivePaths returns the configured bot paths, falling back to the
 // project-relative conventions when none are configured.

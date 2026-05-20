@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 )
 
@@ -272,8 +273,30 @@ func (c *Dispatcher) buildSpec(cfg *Config, iss tracker.Issue, runID, wsPath str
 		}
 		attachments[k] = v
 	}
+	// Per-ticket bot + BotArgs overrides — set on the issue itself,
+	// resolved against cfg.Bots.Paths. Order:
+	//   1. Per-ticket Bot replaces the config workflow path entirely.
+	//      If we can't resolve, fall back to cfg.Workflow + log loudly:
+	//      a stale name on a ticket should not silently halt dispatch
+	//      (operators may have renamed/moved a bot mid-flight).
+	//   2. Per-ticket BotArgs merge over the rendered vars key-by-key,
+	//      with iss.BotArgs winning for declared keys. Keys not in the
+	//      workflow's vars schema get a warn log but are still passed
+	//      through (the engine will surface its own diagnostic).
+	workflowPath := cfg.Workflow
+	if iss.Bot != "" {
+		resolved, err := botregistry.ResolveBotPath(iss.Bot, cfg.Bots.Paths)
+		if err != nil {
+			c.logger.Warn("dispatcher: resolve bot %q for issue %s: %v — falling back to config.workflow", iss.Bot, iss.ID, err)
+		} else {
+			workflowPath = resolved
+		}
+	}
+	for k, v := range iss.BotArgs {
+		vars[k] = v
+	}
 	return DispatchSpec{
-		WorkflowPath:  cfg.Workflow,
+		WorkflowPath:  workflowPath,
 		RunID:         runID,
 		WorkspacePath: wsPath,
 		StoreDir:      c.storeDir,

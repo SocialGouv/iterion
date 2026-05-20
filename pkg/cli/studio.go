@@ -137,9 +137,10 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 		// from the Board / Dispatcher views; no separate `iterion
 		// dispatch` process required.
 		mgr, mgrErr := dispatcher.NewManager(dispatcher.ManagerOptions{
-			StoreDir:    resolvedStoreDir,
-			NativeStore: ns,
-			Logger:      logger,
+			StoreDir:         resolvedStoreDir,
+			NativeStore:      ns,
+			Logger:           logger,
+			DefaultBotsPaths: opts.BotsPaths,
 		})
 		if mgrErr == nil {
 			cfg.Dispatcher = mgr

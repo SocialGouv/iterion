@@ -63,6 +63,14 @@ type ListOptions struct {
 	Paths []string
 }
 
+// Config carries the discovery roots for the bot registry. Lives here
+// so both pkg/server (studio HTTP endpoint) and pkg/dispatcher
+// (per-ticket bot override resolution) can declare the same field
+// without one importing the other.
+type Config struct {
+	Paths []string `yaml:"paths,omitempty" json:"paths,omitempty"`
+}
+
 // List walks Opts.Paths and returns the discovered bots sorted by
 // name. A missing path is treated as empty (not an error) so callers
 // can pass optimistic defaults.

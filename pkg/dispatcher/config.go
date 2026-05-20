@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"go.yaml.in/yaml/v2"
+
+	"github.com/SocialGouv/iterion/pkg/botregistry"
 )
 
 // Config is the parsed dispatcher configuration. Sources:
@@ -36,6 +38,12 @@ type Config struct {
 	Hooks             Hooks                     `yaml:"hooks,omitempty" json:"hooks,omitempty"`
 	Stall             StallConfig               `yaml:"stall,omitempty" json:"stall,omitempty"`
 	Server            ServerConfig              `yaml:"server,omitempty" json:"server,omitempty"`
+	// Bots configures the registry the dispatcher consults when a
+	// ticket carries a per-ticket Bot override. Paths are walked
+	// using pkg/botregistry's discovery rules (single .bot files +
+	// .botz bundles). Empty Paths disables the override path — a
+	// ticket with iss.Bot set on it will fail to dispatch.
+	Bots botregistry.Config `yaml:"bots,omitempty" json:"bots,omitempty"`
 
 	SourcePath string `yaml:"-" json:"-"`
 }
