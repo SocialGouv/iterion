@@ -52,6 +52,13 @@ export interface WhatsNextNodeMapEntry {
   // unset, the legacy single-textarea + optional approve/reject UI
   // kicks in.
   form?: FormSpec;
+  // For "human" entries with multi-question forms (action + detail,
+  // radio + free_text, …): synthesise the AnsweredTurn label from the
+  // full answers map. Without this, the resolver picks only textField
+  // and a turn with action="dispatch_more" + detail="" renders as
+  // "(empty reply)" — visually erasing the operator's choice. Return
+  // an empty string to fall back to the textField/generic path.
+  formatAnswer?: (answers: Record<string, unknown>) => string;
 }
 
 export interface FirstClassBot {
@@ -165,6 +172,25 @@ export const FIRST_CLASS_BOTS: Readonly<Record<string, FirstClassBot>> = {
         prompt:
           "Pick which issues to push from backlog to ready (the dispatcher will pick them up).",
         textField: "selected_issue_ids",
+        // The dynamic checkbox form submits selected_issue_ids as a
+        // JSON array, not a string — without this formatter the
+        // generic textField extractor (which only honors strings)
+        // falls back to "(empty reply)" even when the operator
+        // ticked one or more boxes. We render the IDs as a comma-
+        // joined list; "all" / explicit string answers from the
+        // fallback free-text path pass through unchanged.
+        formatAnswer: (answers) => {
+          const raw = answers["selected_issue_ids"];
+          if (Array.isArray(raw)) {
+            const ids = raw
+              .filter((v): v is string => typeof v === "string")
+              .map((v) => v.replace(/^native:/, "").slice(0, 12));
+            if (ids.length === 0) return "";
+            if (ids.length === 1) return ids[0] ?? "";
+            return `${ids.length} issues: ${ids.join(", ")}`;
+          }
+          return typeof raw === "string" ? raw : "";
+        },
         form: {
           questions: [
             {
@@ -205,6 +231,19 @@ export const FIRST_CLASS_BOTS: Readonly<Record<string, FirstClassBot>> = {
         kind: "human",
         prompt: "What's next on the board?",
         textField: "detail",
+        // Synthesise the AnsweredTurn label from action + detail —
+        // textField alone (detail) leaves "(empty reply)" whenever
+        // the operator picks dispatch_more / done without typing,
+        // visually erasing the choice. Action is the primary signal;
+        // detail is appended after an em-dash when present.
+        formatAnswer: (answers) => {
+          const actionRaw = answers["action"];
+          const detailRaw = answers["detail"];
+          const action = typeof actionRaw === "string" ? actionRaw.trim() : "";
+          const detail = typeof detailRaw === "string" ? detailRaw.trim() : "";
+          if (!action) return detail; // ""=empty handled by caller
+          return detail ? `${action} — ${detail}` : action;
+        },
         form: {
           questions: [
             {

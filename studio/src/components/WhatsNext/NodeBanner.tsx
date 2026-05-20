@@ -33,20 +33,44 @@ export default function NodeBanner({ message }: Props) {
         {progress && status === "running" && (
           <BannerProgressLine progress={progress} />
         )}
-        {summary && status === "done" && (
-          <details className="mt-1 group">
-            <summary className="cursor-pointer text-[11px] text-fg-muted hover:text-fg-default select-none">
-              Summary
-            </summary>
-            <p className="mt-1 text-[12px] whitespace-pre-wrap break-words text-fg-default border-l-2 border-border-subtle pl-2">
-              {summary}
-            </p>
-          </details>
-        )}
+        {summary && status === "done" && <BannerSummary text={summary} />}
         {errorMessage && status === "failed" && (
           <p className="mt-1 text-[11px] text-danger-fg">{errorMessage}</p>
         )}
       </div>
+    </div>
+  );
+}
+
+// BannerSummary shows the first ~140 chars of the node's structured
+// summary inline (always visible), with a "Show more" toggle to expand
+// the rest. Differentiates repeated banners (5 successive triage_board
+// invocations in the same chat would otherwise all look identical with
+// just a "Summary" toggle each — operator has to click every one to
+// see what happened). Single-line summaries shorter than the cap render
+// without the toggle at all.
+function BannerSummary({ text }: { text: string }) {
+  const PEEK_CHARS = 140;
+  const [expanded, setExpanded] = useState(false);
+  const single = text.trim();
+  const needsToggle = single.length > PEEK_CHARS;
+  const peek = needsToggle
+    ? `${single.slice(0, PEEK_CHARS).trimEnd()}…`
+    : single;
+  return (
+    <div className="mt-1 text-[12px] text-fg-default border-l-2 border-border-subtle pl-2">
+      <p className="whitespace-pre-wrap break-words">
+        {expanded ? single : peek}
+      </p>
+      {needsToggle && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-1 text-[11px] text-fg-muted hover:text-fg-default underline-offset-2 hover:underline"
+        >
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      )}
     </div>
   );
 }

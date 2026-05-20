@@ -104,10 +104,23 @@ function makeResolver(bot: FirstClassBot): NodeKindResolver {
       if (!entry || entry.kind !== "human") return undefined;
       const textKey = entry.textField;
       const approvedKey = entry.approvedField;
-      const text =
-        textKey && answers && typeof answers[textKey] === "string"
-          ? (answers[textKey] as string)
-          : "";
+      // Per-node formatter takes precedence: it knows the form
+      // shape (ask_continue's action+detail, …) so it can produce
+      // a meaningful label when textField alone would render the
+      // turn as "(empty reply)" — e.g. an operator who picked
+      // dispatch_more without typing a filter still sees
+      // "dispatch_more" on their answered turn instead of an
+      // erasure.
+      let text = "";
+      if (entry.formatAnswer && answers) {
+        text = entry.formatAnswer(answers).trim();
+      }
+      if (!text) {
+        text =
+          textKey && answers && typeof answers[textKey] === "string"
+            ? (answers[textKey] as string)
+            : "";
+      }
       const approved =
         approvedKey && answers && typeof answers[approvedKey] === "boolean"
           ? (answers[approvedKey] as boolean)

@@ -575,6 +575,29 @@ function processEvent(
       });
       break;
 
+    case "run_resumed":
+      // A resume means the prior run_failed was transient — the
+      // engine recovered (operator clicked Resume, a transient
+      // node-level retry succeeded, etc.). Pop the session-closed
+      // marker we pushed for that failure so the chat doesn't
+      // accumulate "Session failed." badges for failures the
+      // runtime already moved past. Without this, a run with
+      // N failed-then-resumed cycles renders N permanent
+      // "Session failed." markers floating in the middle of the
+      // timeline — visually erasing all the work in-between and
+      // wrongly suggesting the run is dead.
+      //
+      // We pop at most one: the messages list is append-only by
+      // construction so the most-recent session-closed (if any)
+      // is the one paired with the run_failed this resume follows.
+      // Earlier session-closed markers (separated by other events)
+      // would belong to a different terminal cycle and shouldn't
+      // be touched.
+      if (out.length > 0 && out[out.length - 1]?.kind === "session-closed") {
+        out.pop();
+      }
+      break;
+
     default:
       break;
   }
