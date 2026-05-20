@@ -31,6 +31,7 @@ import {
   type BannerMessage,
   type BannerStatus,
   type HumanQuestionMessage,
+  type PlanHandedOffMessage,
   type RoadmapCardMessage,
   type IssuesSummaryMessage,
   type SurveyCardMessage,
@@ -388,6 +389,20 @@ function processEvent(
                 planPath: emit.planPath,
                 summary: emit.summary,
               } satisfies IssuesSummaryMessage);
+              // Emit the green "Plan handed off" milestone marker
+              // immediately after the issues-summary card. With the
+              // post-emit triage loop the run does NOT terminate at
+              // emit_action — so the old SessionClosed "finished"
+              // marker fires only when the operator picks action=done
+              // later. This standalone milestone gives the operator
+              // the same visual closure without ending the chat.
+              out.push({
+                kind: "plan-handed-off",
+                id: `${nodeId}:${iter}:plan-handed-off`,
+                planPath: emit.planPath,
+                createdCount: emit.createdIssues.length,
+                summary: emit.summary || undefined,
+              } satisfies PlanHandedOffMessage);
             }
           } else if (entry.followCardKind === "survey") {
             const survey = asSurveyOutput(eventOutput);

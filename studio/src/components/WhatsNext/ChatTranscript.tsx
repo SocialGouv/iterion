@@ -125,6 +125,8 @@ function MessageRow({
       return <SurveyCard message={message} />;
     case "session-closed":
       return <SessionClosedRow message={message} />;
+    case "plan-handed-off":
+      return <PlanHandedOffRow message={message} />;
   }
 }
 
@@ -133,9 +135,15 @@ function SessionClosedRow({
 }: {
   message: Extract<WhatsNextMessage, { kind: "session-closed" }>;
 }) {
+  // "finished" no longer means "plan handed off" — that's now the
+  // dedicated PlanHandedOffRow milestone fired when emit_action lands.
+  // A "finished" run reaches Done because the operator picked
+  // action=done in the triage loop (or a bot with no triage loop
+  // reached its terminal node). Either way: this is the actual
+  // end-of-session marker.
   const label =
     message.reason === "finished"
-      ? "Session closed — plan handed off."
+      ? "Session ended."
       : message.reason === "failed"
         ? "Session failed."
         : "Session cancelled.";
@@ -150,6 +158,31 @@ function SessionClosedRow({
       className={`text-[11px] text-center italic border-t border-border-subtle pt-3 ${cls}`}
     >
       {label}
+    </div>
+  );
+}
+
+function PlanHandedOffRow({
+  message,
+}: {
+  message: Extract<WhatsNextMessage, { kind: "plan-handed-off" }>;
+}) {
+  const issueLabel =
+    message.createdCount === 1 ? "1 issue" : `${message.createdCount} issues`;
+  return (
+    <div className="border-t border-success/40 pt-3 text-center">
+      <div className="inline-flex items-center gap-2 rounded-full border border-success/40 bg-success-soft px-3 py-1 text-[12px] text-success-fg">
+        <span aria-hidden="true">✓</span>
+        <span>
+          Plan handed off — {issueLabel} created on the board (in
+          <code className="mx-1 px-1 rounded bg-bg-default/40">backlog</code>)
+        </span>
+      </div>
+      {message.summary && (
+        <div className="mt-1 text-[11px] italic text-fg-muted">
+          {message.summary}
+        </div>
+      )}
     </div>
   );
 }

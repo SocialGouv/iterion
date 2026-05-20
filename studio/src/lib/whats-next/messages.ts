@@ -127,10 +127,31 @@ export interface SurveyCardMessage {
 export interface SessionClosedMessage {
   kind: "session-closed";
   id: string;
-  // "finished" — emit_action returned cleanly.
+  // "finished" — run reached Done (operator picked action=done in
+  //   the triage loop, or the bot has no triage loop and reached
+  //   its terminal node naturally).
   // "failed" — run hit Fail node or unrecoverable error.
   // "cancelled" — user/system cancellation.
   reason: "finished" | "failed" | "cancelled";
+}
+
+// PlanHandedOffMessage is a milestone marker pushed when emit_action
+// completes — independently of run termination. The original
+// whats-next flow ended at emit_action and used the SessionClosed
+// "finished" marker for "plan handed off". With the post-emit triage
+// loop, emit_action no longer ends the run; the operator continues
+// in the chat to dispatch / refine tickets. This message gives them
+// the same visual milestone (green check, count of issues created)
+// while the chat stays interactive.
+export interface PlanHandedOffMessage {
+  kind: "plan-handed-off";
+  id: string;
+  // Absolute path to the audit markdown emit_action wrote.
+  planPath: string;
+  // How many kanban issues emit_action created on this turn.
+  createdCount: number;
+  // Optional one-line summary verbatim from emit_action.summary.
+  summary?: string;
 }
 
 export type WhatsNextMessage =
@@ -139,7 +160,8 @@ export type WhatsNextMessage =
   | RoadmapCardMessage
   | IssuesSummaryMessage
   | SurveyCardMessage
-  | SessionClosedMessage;
+  | SessionClosedMessage
+  | PlanHandedOffMessage;
 
 // Helper for components: extract a roadmap doc from a raw node output
 // object. Returns null if the shape doesn't match. Used by the

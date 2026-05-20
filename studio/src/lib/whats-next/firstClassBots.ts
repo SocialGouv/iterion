@@ -151,6 +151,104 @@ export const FIRST_CLASS_BOTS: Readonly<Record<string, FirstClassBot>> = {
         label: "Creating kanban issues",
         followCardKind: "issuesSummary",
       },
+      // Post-emit triage loop: ask the operator which freshly-created
+      // issues to dispatch, hand them off to assign_to_bots, then
+      // loop on ask_continue / triage_board until the operator
+      // picks action=done.
+      ask_which_to_process: {
+        kind: "human",
+        prompt:
+          "Pick which issues to push from backlog to ready (the dispatcher will pick them up).",
+        textField: "selected_issue_ids",
+        form: {
+          questions: [
+            {
+              id: "selected_issue_ids",
+              kind: "free_text",
+              label: "Issue IDs to dispatch",
+              description:
+                'Comma- or newline-separated IDs (short prefixes ok), or "all", or leave empty to keep everything in backlog.',
+              placeholder: 'e.g. "abc12345, def67890" or "all"',
+              rows: 3,
+              required: false,
+            },
+            {
+              id: "note",
+              kind: "free_text",
+              label: "Note (optional)",
+              description:
+                "Why this selection? Helps the bot reason about edge cases.",
+              placeholder: "Optional — e.g. 'skip long_term, only ship next_action'",
+              rows: 2,
+              required: false,
+            },
+          ],
+          submitLabel: "Dispatch",
+        },
+      },
+      assign_to_bots: {
+        kind: "banner",
+        label: "Moving issues to ready",
+        summaryField: "summary",
+      },
+      ask_continue: {
+        kind: "human",
+        prompt: "What's next on the board?",
+        textField: "free_text",
+        form: {
+          questions: [
+            {
+              id: "action",
+              kind: "radio",
+              label: "Pick an action",
+              options: [
+                {
+                  value: "add_ticket",
+                  label: "Add a ticket",
+                  description: "Create a new ticket on the board.",
+                },
+                {
+                  value: "modify_ticket",
+                  label: "Modify a ticket",
+                  description:
+                    "Re-assign, re-label, move, or close existing tickets.",
+                },
+                {
+                  value: "dispatch_more",
+                  label: "Dispatch more",
+                  description:
+                    "Push more backlog tickets to ready so the dispatcher picks them up.",
+                },
+                {
+                  value: "done",
+                  label: "I'm done",
+                  description: "End this session.",
+                },
+              ],
+              required: true,
+            },
+            {
+              id: "free_text",
+              kind: "free_text",
+              label: "Describe what you want",
+              description:
+                'Optional for "I\'m done". Required for the other actions — be specific (which ticket, what change, what criteria).',
+              placeholder: "What should the triage agent do?",
+              rows: 3,
+              required: false,
+            },
+          ],
+          submitLabel: "Continue",
+        },
+      },
+      // Deterministic projection of ask_continue.action → is_done.
+      // Silent: the operator doesn't need to see it.
+      derive_continue: { kind: "silent" },
+      triage_board: {
+        kind: "banner",
+        label: "Updating the board",
+        summaryField: "board_summary",
+      },
     },
   },
 };
