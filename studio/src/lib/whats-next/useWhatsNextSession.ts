@@ -33,16 +33,6 @@ import {
   rememberSessionRunId,
 } from "./sessionStorage";
 
-// Run statuses considered "live" enough to auto-attach to. A
-// `finished` / `failed` / `cancelled` run is forgotten on the next
-// mount so the launcher comes back fresh.
-const LIVE_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>([
-  "queued",
-  "running",
-  "paused_waiting_human",
-  "failed_resumable",
-]);
-
 export type WhatsNextStatus =
   | "idle"
   | "launching"
@@ -75,6 +65,11 @@ export interface UseWhatsNextSession {
     messageId: string,
     answers: Record<string, unknown>,
   ) => Promise<void>;
+  // Clear the currently-attached session (forgetting its runId from
+  // localStorage) and return to the idle state so the SessionLauncher
+  // re-appears. The transcript of the prior session is dropped — use
+  // when the user explicitly wants to start a fresh exchange.
+  newSession: () => void;
 }
 
 export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
@@ -106,11 +101,16 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
     getRun(remembered, { signal: controller.signal })
       .then(async (snap) => {
         if (cancelled) return;
-        if (!LIVE_STATUSES.has(snap.run.status)) {
-          forgetSessionRunId(bot.id, projectId);
-          setStatus("idle");
-          return;
-        }
+        // Continuity is the central whats-next promise: when the user
+        // returns to /whats-next after a previous session ended, they
+        // expect to see the full transcript of that exchange, not a
+        // blank launcher offering them to start over. The previous
+        // implementation forgot the runId on any non-LIVE status,
+        // which made the rich roadmap card, approval verdict, and
+        // emit_action issue summary disappear the moment the user
+        // closed and reopened the app. We now always re-hydrate from
+        // the snapshot + event history; the LIVE_STATUSES check below
+        // only decides whether we *also* engage the live WS tail.
         runStore.getState().reset();
         runStore.getState().applySnapshot(snap);
         // setRunId on the store FIRST so loadEventHistoryIfMissing's
@@ -213,11 +213,12 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
       runStatus === "cancelled" ||
       runStatus === "failed_resumable"
     ) {
+      // Keep the runId in localStorage so the next visit re-hydrates
+      // the transcript — continuity is the central whats-next promise
+      // (full exchange visible across app restarts). The user starts
+      // a fresh session via the explicit "New session" button exposed
+      // through newSession() (which clears localStorage + state).
       setStatus("ended");
-      // Once a session ends, forget the run id so the next visit to
-      // /whats-next presents a fresh launcher. The transcript stays on
-      // screen (it lives in component state) until the user navigates.
-      forgetSessionRunId(bot.id, projectId);
     } else {
       setStatus("active");
     }
@@ -331,6 +332,21 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
     ],
   );
 
+  // Explicit "start a fresh session" action. WhatsNextView wires this
+  // to a header button visible when status === "ended". Without it the
+  // user has no way to clear an ended session and reach the launcher
+  // again (continuity by default keeps the previous run visible across
+  // app restarts).
+  const newSession = useCallback(() => {
+    forgetSessionRunId(bot.id, projectId);
+    runStore.getState().reset();
+    setRunId(null);
+    setBusyMessageId(null);
+    setErrorMessage(null);
+    // setStatus("idle") happens automatically via the runId-null effect
+    // (line that watches runId for null → resets to idle).
+  }, [bot.id, projectId]);
+
   const submitHumanAnswer = useCallback(
     async (messageId: string, answers: Record<string, unknown>) => {
       if (!runId) return;
@@ -388,5 +404,6 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
     errorMessage,
     launch,
     submitHumanAnswer,
+    newSession,
   };
 }

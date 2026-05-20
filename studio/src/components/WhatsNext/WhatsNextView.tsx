@@ -147,6 +147,15 @@ function SessionHeader({
         )}
       </h2>
       <div className="flex items-baseline gap-3">
+        {session.status === "ended" && (
+          <button
+            type="button"
+            onClick={session.newSession}
+            className="text-[11px] text-accent hover:underline cursor-pointer"
+          >
+            New session
+          </button>
+        )}
         {session.runId && (
           <Link
             href={`/runs/${encodeURIComponent(session.runId)}`}
