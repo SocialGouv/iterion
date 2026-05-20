@@ -60,6 +60,27 @@ export default function HumanInteractionPanel({ runId }: Props) {
 
   const review = useMemo(() => extractReview(checkpoint), [checkpoint]);
 
+  // Compute formSpec unconditionally — useMemo MUST be called before any
+  // early return so the hook order stays stable across renders. Prior
+  // arrangement put this hook after the `if (status !== "paused_waiting_human"
+  // || !pending || submitted) return null;` branch, which crashed the
+  // RunView with React error #310 ("Rendered more hooks than during the
+  // previous render") the moment the panel toggled between rendered and
+  // null on a status transition.
+  const formSpec = useMemo(() => {
+    if (!fields || fields.length === 0) return null;
+    const approve = fields.find(
+      (f) => f.type === "bool" && f.name === "approved",
+    );
+    const visible = approve
+      ? fields.filter((f) => f.name !== approve.name)
+      : fields;
+    if (visible.length === 0) return null;
+    return formSpecFromSchema(visible, pending?.questions ?? {}, {
+      submitLabel: "Submit & Resume",
+    });
+  }, [fields, pending?.questions]);
+
   if (status !== "paused_waiting_human" || !pending || submitted) {
     return null;
   }
@@ -108,16 +129,6 @@ export default function HumanInteractionPanel({ runId }: Props) {
   const visibleFields = approveField
     ? (fields ?? []).filter((f) => f.name !== approveField.name)
     : fields ?? [];
-
-  const formSpec = useMemo(
-    () =>
-      visibleFields.length > 0
-        ? formSpecFromSchema(visibleFields, pending.questions ?? {}, {
-            submitLabel: "Submit & Resume",
-          })
-        : null,
-    [visibleFields, pending.questions],
-  );
 
   const submitWithApproved = (approved: boolean) => {
     if (!fields) return;
