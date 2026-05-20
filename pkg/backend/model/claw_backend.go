@@ -782,12 +782,46 @@ func forwardableProviderEnv() map[string]string {
 	return env
 }
 
+// mcpDotToUnderscore returns the claude_code-style FQN alias for a
+// dot-delimited MCP tool name ("mcp.server.tool" → "mcp__server__tool")
+// or "" when the input is not an MCP tool. Used by the claw launcher
+// + Registry.Resolve so a prompt that names tools in either convention
+// resolves under either backend.
+func mcpDotToUnderscore(name string) string {
+	const prefix = "mcp."
+	if !strings.HasPrefix(name, prefix) {
+		return ""
+	}
+	body := name[len(prefix):]
+	// Find LAST dot so tool names with embedded dots (none today, but
+	// don't break on them) split server/tool the same way Resolve does.
+	idx := strings.LastIndex(body, ".")
+	if idx <= 0 {
+		return ""
+	}
+	server := body[:idx]
+	tool := body[idx+1:]
+	if server == "" || tool == "" {
+		return ""
+	}
+	return "mcp__" + server + "__" + tool
+}
+
 func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task) delegate.MultiplexerHandler {
 	// Index ToolDefs by name once so OnToolCall is O(1) instead of
-	// scanning the slice on each runner-initiated tool_call.
-	toolByName := make(map[string]delegate.ToolDef, len(task.ToolDefs))
+	// scanning the slice on each runner-initiated tool_call. MCP tools
+	// also get a claude_code-style FQN alias ("mcp__server__tool" →
+	// same ToolDef as "mcp.server.tool") so a bot prompt written for
+	// claude_code calls land here regardless of which backend is
+	// resolved. Without the alias, claw's strict ToolDefs check
+	// rejects the call before iterion's Registry.Resolve (which has
+	// the same normalisation) ever sees it.
+	toolByName := make(map[string]delegate.ToolDef, len(task.ToolDefs)*2)
 	for _, td := range task.ToolDefs {
 		toolByName[td.Name] = td
+		if alias := mcpDotToUnderscore(td.Name); alias != "" {
+			toolByName[alias] = td
+		}
 	}
 	hostRunID, hostStore := runtimeContextFrom(ctx)
 	return delegate.MultiplexerHandler{
