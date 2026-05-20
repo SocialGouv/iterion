@@ -4,26 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/fs"
-	"os"
-	"path/filepath"
-	"sort"
 	"strings"
 
-	"go.yaml.in/yaml/v2"
-
-	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/botregistry"
 )
 
-// BotEntry is one bot discovered by [BotsList]. Source carries the file
-// path the entry was derived from so the operator can grep back to it.
-type BotEntry struct {
-	Name         string   `json:"name" yaml:"name"`
-	Description  string   `json:"description" yaml:"description,omitempty"`
-	Path         string   `json:"path" yaml:"path"`
-	Triggers     []string `json:"triggers,omitempty" yaml:"triggers,omitempty"`
-	Capabilities []string `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
-}
+// BotEntry is an alias of botregistry.Entry so existing CLI callers and
+// tests keep working. Discovery + schema-augmented variants live in
+// pkg/botregistry (importable by pkg/server, which cannot import pkg/cli).
+type BotEntry = botregistry.Entry
 
 // BotsListOptions configures discovery for [BotsList].
 type BotsListOptions struct {
@@ -45,11 +34,10 @@ func BotsList(opts BotsListOptions, w io.Writer) error {
 	if opts.Format == "" {
 		opts.Format = "json"
 	}
-	entries, err := discoverBots(opts.Paths)
+	entries, err := botregistry.List(botregistry.ListOptions{Paths: opts.Paths})
 	if err != nil {
 		return err
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 
 	switch opts.Format {
 	case "json":
@@ -63,230 +51,6 @@ func BotsList(opts BotsListOptions, w io.Writer) error {
 	default:
 		return fmt.Errorf("bots: unknown format %q (json|markdown|skill)", opts.Format)
 	}
-}
-
-// discoverBots walks each root and produces one BotEntry per discovered
-// bot. Bundles (directories with manifest.yaml + main.bot) collapse into
-// one entry; individual .bot files become one entry each.
-func discoverBots(roots []string) ([]BotEntry, error) {
-	var entries []BotEntry
-	seen := map[string]bool{}
-
-	for _, root := range roots {
-		info, err := os.Stat(root)
-		if err != nil {
-			return nil, fmt.Errorf("bots: stat %s: %w", root, err)
-		}
-		if !info.IsDir() {
-			// Single-file path — must be a .bot.
-			e, err := parseBotFile(root)
-			if err != nil {
-				return nil, err
-			}
-			if e != nil && !seen[e.Path] {
-				entries = append(entries, *e)
-				seen[e.Path] = true
-			}
-			continue
-		}
-		err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			if d.IsDir() {
-				// Bundle directory? Has manifest.yaml + main.bot.
-				manifest := filepath.Join(path, "manifest.yaml")
-				mainBot := filepath.Join(path, "main.bot")
-				if fileExists(manifest) && fileExists(mainBot) {
-					e, err := parseBundle(path)
-					if err != nil {
-						return err
-					}
-					if e != nil && !seen[e.Path] {
-						entries = append(entries, *e)
-						seen[e.Path] = true
-					}
-					return filepath.SkipDir // don't descend into a bundle
-				}
-				return nil
-			}
-			name := d.Name()
-			if !strings.HasSuffix(name, ".bot") && !strings.HasSuffix(name, ".iter") {
-				return nil
-			}
-			// Skip a main.bot inside a directory that wasn't recognised as a
-			// bundle (no manifest) — treat it as a loose bot file under its
-			// own name based on the parent dir.
-			e, err := parseBotFile(path)
-			if err != nil {
-				return err
-			}
-			if e != nil && !seen[e.Path] {
-				entries = append(entries, *e)
-				seen[e.Path] = true
-			}
-			return nil
-		})
-		if err != nil {
-			return nil, err
-		}
-	}
-	return entries, nil
-}
-
-// parseBundle reads bundle/manifest.yaml + (optional) front-matter from
-// bundle/main.bot to produce a single entry whose Path points at the
-// bundle directory. Schema-version validation comes from
-// [bundle.LoadManifest] so the catalog rejects bundles built for a
-// future iterion.
-func parseBundle(dir string) (*BotEntry, error) {
-	m, err := bundle.LoadManifest(filepath.Join(dir, "manifest.yaml"))
-	if err != nil {
-		return nil, fmt.Errorf("bots: %w", err)
-	}
-	if m == nil {
-		m = &bundle.Manifest{}
-	}
-	if m.Name == "" {
-		m.Name = filepath.Base(dir)
-	}
-	// Fold frontmatter from main.bot if present (richer triggers/capabilities).
-	if fm := readFrontmatter(filepath.Join(dir, "main.bot")); fm != nil {
-		if len(fm.Triggers) > 0 {
-			m.Triggers = fm.Triggers
-		}
-		if len(fm.Capabilities) > 0 {
-			m.Capabilities = fm.Capabilities
-		}
-	}
-	return &BotEntry{
-		Name:         m.Name,
-		Description:  strings.TrimSpace(m.Description),
-		Path:         dir,
-		Triggers:     m.Triggers,
-		Capabilities: m.Capabilities,
-	}, nil
-}
-
-// parseBotFile reads a single .bot/.iter file and pulls frontmatter from
-// it. When no frontmatter is present, falls back to filename basename and
-// the leading `##` comment block as description (if any).
-func parseBotFile(path string) (*BotEntry, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("bots: read %s: %w", path, err)
-	}
-	fm := parseFrontmatterBody(raw)
-	e := &BotEntry{Path: path}
-	if fm != nil {
-		e.Name = fm.Name
-		e.Description = fm.Description
-		e.Triggers = fm.Triggers
-		e.Capabilities = fm.Capabilities
-	}
-	if e.Name == "" {
-		base := filepath.Base(path)
-		e.Name = strings.TrimSuffix(strings.TrimSuffix(base, ".bot"), ".iter")
-	}
-	if e.Description == "" {
-		e.Description = leadingCommentDescription(raw)
-	}
-	return e, nil
-}
-
-type frontmatter struct {
-	Name         string   `yaml:"name"`
-	Description  string   `yaml:"description"`
-	Triggers     []string `yaml:"triggers"`
-	Capabilities []string `yaml:"capabilities"`
-}
-
-// readFrontmatter wraps parseFrontmatterBody with a file read; returns
-// nil when the file is missing or has no frontmatter block.
-func readFrontmatter(path string) *frontmatter {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-	return parseFrontmatterBody(raw)
-}
-
-// parseFrontmatterBody pulls a `## ---` … `## ---` block (lines prefixed
-// with `## `) from the top of the file and YAML-decodes the inner
-// content. Returns nil when no block is present.
-//
-// The block is allowed only at the very top of the file, optionally
-// after a shebang or blank lines.
-func parseFrontmatterBody(raw []byte) *frontmatter {
-	lines := strings.Split(string(raw), "\n")
-	i := 0
-	for i < len(lines) && strings.TrimSpace(lines[i]) == "" {
-		i++
-	}
-	if i >= len(lines) || strings.TrimSpace(lines[i]) != "## ---" {
-		return nil
-	}
-	start := i + 1
-	end := -1
-	for j := start; j < len(lines); j++ {
-		if strings.TrimSpace(lines[j]) == "## ---" {
-			end = j
-			break
-		}
-	}
-	if end < 0 {
-		return nil
-	}
-	var yamlLines []string
-	for _, ln := range lines[start:end] {
-		stripped := strings.TrimPrefix(ln, "## ")
-		stripped = strings.TrimPrefix(stripped, "##")
-		yamlLines = append(yamlLines, stripped)
-	}
-	var fm frontmatter
-	if err := yaml.Unmarshal([]byte(strings.Join(yamlLines, "\n")), &fm); err != nil {
-		return nil
-	}
-	return &fm
-}
-
-// leadingCommentDescription returns the first paragraph of `## ` lines at
-// the top of the file (excluding any `## ---` framing). Stops at the
-// first blank line or non-comment line.
-func leadingCommentDescription(raw []byte) string {
-	lines := strings.Split(string(raw), "\n")
-	var out []string
-	skippingFM := false
-	for _, ln := range lines {
-		trim := strings.TrimSpace(ln)
-		if trim == "## ---" {
-			skippingFM = !skippingFM
-			continue
-		}
-		if skippingFM {
-			continue
-		}
-		if !strings.HasPrefix(trim, "##") {
-			if len(out) > 0 {
-				break
-			}
-			continue
-		}
-		body := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(trim, "##"), " "))
-		if body == "" {
-			if len(out) > 0 {
-				break
-			}
-			continue
-		}
-		out = append(out, body)
-	}
-	return strings.Join(out, " ")
-}
-
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
 }
 
 // ---------------------------------------------------------------------------

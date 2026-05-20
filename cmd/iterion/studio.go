@@ -16,6 +16,7 @@ var studioOpts struct {
 	maxTotalUploadSize int64
 	maxUploadsPerRun   int
 	allowUploadMime    []string
+	botsPaths          []string
 }
 
 var studioCmd = &cobra.Command{
@@ -34,6 +35,7 @@ var studioCmd = &cobra.Command{
 			MaxTotalUploadSize: studioOpts.maxTotalUploadSize,
 			MaxUploadsPerRun:   studioOpts.maxUploadsPerRun,
 			AllowUploadMime:    studioOpts.allowUploadMime,
+			BotsPaths:          studioOpts.botsPaths,
 		}, newPrinter())
 	},
 }
@@ -54,5 +56,6 @@ func init() {
 	f.Int64Var(&studioOpts.maxTotalUploadSize, "max-total-upload-size", 0, "Max cumulative bytes per run across attachments (0 = 5x max-upload-size)")
 	f.IntVar(&studioOpts.maxUploadsPerRun, "max-uploads-per-run", 0, "Max distinct attachments per run (0 = 20)")
 	f.StringSliceVar(&studioOpts.allowUploadMime, "allow-upload-mime", nil, "Allowed upload MIME patterns (default: image/*, application/pdf, text/*, ...)")
+	f.StringSliceVar(&studioOpts.botsPaths, "bots-path", nil, "Directories or files to scan for bots (default: <dir>/bots, <dir>/examples, <dir>/.botz)")
 	rootCmd.AddCommand(studioCmd)
 }

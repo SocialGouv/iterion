@@ -58,6 +58,11 @@ type StudioOptions struct {
 	// desktop host uses this to re-source ~/.iterion/env so dotenv
 	// edits (including key deletions) are picked up without a restart.
 	OnForceRefresh func()
+
+	// BotsPaths configures where the /api/v1/bots endpoint walks to
+	// discover bots for the Board ticket form's bot picker. Empty
+	// falls back to <Dir>/bots, <Dir>/examples, <Dir>/.botz.
+	BotsPaths []string
 }
 
 // RunStudio starts the studio HTTP server.
@@ -108,6 +113,7 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 		// via Origin allowlisting; cross-tenant isolation does not
 		// apply because there is exactly one local user.
 		DisableAuth: true,
+		Bots:        server.BotsConfig{Paths: opts.BotsPaths},
 	}
 	// Wire the in-memory BrowserRegistry unless the operator
 	// explicitly disabled the pane. The registry is process-local;

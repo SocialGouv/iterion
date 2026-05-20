@@ -199,6 +199,11 @@ type Config struct {
 	// the studio SPA can render the Board view.
 	NativeTrackerStore *native.Store
 
+	// Bots configures the /api/v1/bots endpoints used by the studio
+	// Board ticket form's bot picker. Empty Paths falls back to the
+	// project-relative conventions (see BotsConfig.Paths comment).
+	Bots BotsConfig
+
 	// Dispatcher, when non-nil, exposes the long-running dispatcher
 	// lifecycle + operational endpoints under /api/v1/dispatcher/*.
 	// The Manager owns the full surface (config GET/PUT, start/stop/
@@ -566,6 +571,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/effort-capabilities", s.handleEffortCapabilities)
 	s.mux.HandleFunc("GET /api/resolve-effort", s.handleResolveEffort)
 	s.mux.HandleFunc("GET /api/backends/detect", s.handleBackendsDetect)
+
+	// Bot registry — exposes the bots discoverable on the host (single
+	// .bot files, .botz bundles) with their declared workflow vars +
+	// presets so the studio's Board ticket form can render a typed
+	// args form per bot. Read-only, gated by the same auth middleware
+	// as the rest of /api/* (the wrapper at line ~427 wraps the mux).
+	s.mux.HandleFunc("GET /api/v1/bots", s.handleBotsList)
+	s.mux.HandleFunc("GET /api/v1/bots/{name}", s.handleBotsGet)
 
 	// Health endpoints — liveness (always 200 if the mux is alive)
 	// and readiness (cloud-mode dependency pings come via T-26 when
