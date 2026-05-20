@@ -163,6 +163,14 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
           const runs = await listRuns({ workflow, limit: 10 });
           matches.push(...runs);
         }
+        if (typeof console !== "undefined") {
+          console.debug("[whats-next] discoverAndAttach: scanned", {
+            botId: bot.id,
+            candidates,
+            matchCount: matches.length,
+            statuses: matches.map((r) => `${r.id.slice(0, 8)}:${r.status}`),
+          });
+        }
         // Pick the most recent non-terminal one. RunSummary lists are
         // already sorted newest-first by the server.
         const active = matches.find(
@@ -172,8 +180,19 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
             r.status === "paused_waiting_human",
         );
         if (!active) {
+          if (typeof console !== "undefined") {
+            console.debug(
+              "[whats-next] discoverAndAttach: no active run, idling",
+            );
+          }
           setStatus("idle");
           return;
+        }
+        if (typeof console !== "undefined") {
+          console.debug("[whats-next] discoverAndAttach: attaching to", {
+            id: active.id,
+            status: active.status,
+          });
         }
         await attachTo(active.id);
       } catch (err) {
@@ -182,6 +201,9 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
           (err as Error)?.name === "AbortError"
         ) {
           return;
+        }
+        if (typeof console !== "undefined") {
+          console.warn("[whats-next] discoverAndAttach failed", err);
         }
         // Discovery failed — fall back to launcher. Operator can
         // still start a fresh session manually.
