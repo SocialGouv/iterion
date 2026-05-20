@@ -30,7 +30,6 @@ import BrowserPane, { type BrowserDock } from "./BrowserPane";
 import EventLog from "./EventLog";
 import FileDiffDialog from "./FileDiffDialog";
 import AgentChatbox from "@/components/shared/AgentChatbox";
-import HumanInteractionPanel from "./HumanInteractionPanel";
 import OperatorPauseBanner from "./OperatorPauseBanner";
 import LeftPanel from "./LeftPanel";
 import NodeDetailPanel from "./NodeDetailPanel";
@@ -42,6 +41,7 @@ import RunMetrics from "./RunMetrics";
 import ArtifactFilesPanel from "./ArtifactFilesPanel";
 import ReportTab from "./ReportTab";
 import Scrubber from "./Scrubber";
+import RunConversationView from "./conversation/RunConversationView";
 
 import { readNodeOutputMeta, type DelegateOutputMeta } from "@/lib/delegateMeta";
 
@@ -56,6 +56,14 @@ const EVENTLOG_COLLAPSED_KEY = "run-console-v1.eventlog-collapsed";
 const BOTTOM_TAB_KEY = "run-console-v1.bottom-tab";
 const BOTTOM_TABS = ["events", "logs", "report", "browser", "artifacts"] as const;
 type BottomTab = (typeof BOTTOM_TABS)[number];
+const VIEW_MODE_KEY = "run-console-v1.view-mode";
+const VIEW_MODES = ["conversation", "canvas", "split"] as const;
+type ViewMode = (typeof VIEW_MODES)[number];
+const VIEW_MODE_LABELS: Record<ViewMode, string> = {
+  conversation: "Conversation",
+  canvas: "Canvas",
+  split: "Split",
+};
 const BOTTOM_TAB_LABELS: Record<BottomTab, string> = {
   events: "Events",
   logs: "Logs",
@@ -222,6 +230,13 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
   const [bottomTab, setBottomTab] = useState<BottomTab>(() =>
     readEnumFlag(BOTTOM_TAB_KEY, BOTTOM_TABS, "logs"),
   );
+  const [viewMode, setViewMode] = useState<ViewMode>(() =>
+    readEnumFlag(VIEW_MODE_KEY, VIEW_MODES, "conversation"),
+  );
+  const handleSetViewMode = useCallback((next: ViewMode) => {
+    setViewMode(next);
+    writeStringFlag(VIEW_MODE_KEY, next);
+  }, []);
   // Tracks whether the user has manually changed the bottom tab during
   // this run view, so we don't yank the tab back to "browser" on every
   // new preview_url event after they explicitly picked another panel.
@@ -665,7 +680,7 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
             {snapshot.run.status === "paused_operator" && (
               <OperatorPauseBanner run={snapshot.run} />
             )}
-            <HumanInteractionPanel runId={runId} />
+            <ViewModeToggle value={viewMode} onChange={handleSetViewMode} />
             {showChatbox && <AgentChatbox runId={runId} disabled={false} />}
             <Scrubber
               events={events}
@@ -717,18 +732,33 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
                   className="min-h-0"
                 >
                   <div className={scrubbing ? "h-full w-full saturate-50" : "h-full w-full"}>
-                    <RunCanvasIR
-                      runId={runId}
-                      executions={displayedExecutions}
-                      selectedNodeId={wfSelectedNodeId}
-                      onSelectNode={handleSelectNode}
-                      iterationByNode={iterationByNode}
-                      onSelectIteration={handleSelectIteration}
-                      runtimeOverrideByNode={runtimeOverrideByNode}
-                    />
+                    {(() => {
+                      const canvasPane = (
+                        <RunCanvasIR
+                          runId={runId}
+                          executions={displayedExecutions}
+                          selectedNodeId={wfSelectedNodeId}
+                          onSelectNode={handleSelectNode}
+                          iterationByNode={iterationByNode}
+                          onSelectIteration={handleSelectIteration}
+                          runtimeOverrideByNode={runtimeOverrideByNode}
+                        />
+                      );
+                      const conversationPane = <RunConversationView runId={runId} />;
+                      if (viewMode === "conversation") return conversationPane;
+                      if (viewMode === "split") {
+                        return (
+                          <div className="h-full w-full grid grid-cols-2 gap-px bg-border-default">
+                            <div className="bg-surface-0 min-h-0">{canvasPane}</div>
+                            <div className="bg-surface-0 min-h-0">{conversationPane}</div>
+                          </div>
+                        );
+                      }
+                      return canvasPane;
+                    })()}
                   </div>
                 </Panel>
-                {!detailCollapsed && (
+                {viewMode !== "conversation" && !detailCollapsed && (
                   <>
                     <ResizeSeparator orientation="horizontal" />
                     <Panel
@@ -843,7 +873,7 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
             />
           )}
         </div>
-        {detailCollapsed && (
+        {viewMode !== "conversation" && detailCollapsed && (
           <ExpandStrip
             orientation="right"
             label="Show details panel"
@@ -859,6 +889,47 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
         />
       </div>
     </ReactFlowProvider>
+  );
+}
+
+// Thin 3-way segmented control above the central panel. Picking a
+// mode persists the choice in localStorage (`run-console-v1.view-mode`)
+// so subsequent runs default to the same view. The Conversation default
+// makes the chat-style timeline the primary surface — the DAG canvas
+// stays one click away for users who want to see the workflow shape.
+function ViewModeToggle({
+  value,
+  onChange,
+}: {
+  value: ViewMode;
+  onChange: (next: ViewMode) => void;
+}) {
+  return (
+    <div
+      role="tablist"
+      aria-label="Run view mode"
+      className="shrink-0 border-b border-border-default px-3 py-1.5 flex items-center gap-1 bg-surface-0"
+    >
+      {VIEW_MODES.map((mode) => {
+        const active = mode === value;
+        return (
+          <button
+            key={mode}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(mode)}
+            className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
+              active
+                ? "bg-surface-2 text-fg-default"
+                : "text-fg-subtle hover:text-fg-default hover:bg-surface-1"
+            }`}
+          >
+            {VIEW_MODE_LABELS[mode]}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

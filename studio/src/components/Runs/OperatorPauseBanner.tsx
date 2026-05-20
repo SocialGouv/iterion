@@ -12,7 +12,7 @@ interface Props {
 }
 
 // OperatorPauseBanner is rendered between RunMetrics and the
-// HumanInteractionPanel when run.status === "paused_operator". Visually
+// conversation view when run.status === "paused_operator". Visually
 // distinct from the human-input pause (info/cyan instead of amber) and
 // offers a single-click Resume that bypasses the workflow-hash check
 // (the operator deliberately paused; no .iter edit between

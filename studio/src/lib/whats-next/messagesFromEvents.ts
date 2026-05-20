@@ -1,40 +1,43 @@
-// messagesFromEvents folds a chronologically-ordered RunEvent[] stream
-// into the WhatsNextMessage[] the chat transcript consumes.
+// Thin wrapper that adapts the whats-next bot's nodeMap to the
+// generic runChat folder (`@/lib/runChat/messagesFromEvents`).
 //
-// The mapping is driven by the bot's `nodeMap`: each known node id has
-// a `kind` ("banner" | "human" | "silent" | …) and optional rules
-// (summaryField, followCardKind, prompt, actions). Events for unknown
-// nodes are silently dropped — keeps the chat focused on the steps
-// the bot author chose to surface.
-//
-// Output ordering: messages are pushed in the order of the originating
-// events. Each agent node produces a banner; the banner closes when
-// the matching `node_finished` arrives and (for `followCardKind`) a
-// typed card is pushed right after. Human nodes produce a single
-// human-question message that flips from "pending" to "answered" when
-// the next `run_resumed` lands.
-//
-// Iteration: the runtime stamps `iteration` on `node_started.data`.
-// For nodes inside `approval_loop(10)` (revise_roadmap, human_review,
-// carry_roadmap), this lets us key one message per iteration so the
-// transcript shows the loop progression instead of mutating a single
-// entry.
+// The actual fold logic lives in runChat. Here we:
+//   1. Build a `whatsNextKindResolver(bot)` that maps the bot's
+//      nodeMap entries into the generic NodeKindResolver shape —
+//      including the optional `extension()` hook that turns
+//      `followCardKind: "roadmap"|"issuesSummary"|"survey"` into
+//      typed extension payloads.
+//   2. Re-export the result of the generic fold as
+//      `WhatsNextMessage[]`. The `postProcess` step on the resolver
+//      lifts each `ExtensionMessage` back into the bot's typed
+//      cards (RoadmapCardMessage, IssuesSummaryMessage,
+//      SurveyCardMessage, PlanHandedOffMessage) so the 8 WhatsNext
+//      components don't need to know about the generic seam.
 
 import type { RunEvent, RunSnapshot } from "@/api/runs";
-import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
+import type {
+  ExtensionPayload,
+  NodeKindResolver,
+} from "@/lib/runChat/nodeKindResolver";
+import {
+  messagesFromEventsCached as runChatMessagesFromEventsCached,
+  type MessagesFoldCache as RunChatMessagesFoldCache,
+} from "@/lib/runChat/messagesFromEvents";
+import type {
+  ExtensionMessage,
+  RunChatMessage,
+} from "@/lib/runChat/types";
 
+import type { FirstClassBot } from "./firstClassBots";
 import {
   asEmitOutput,
   asRoadmapDoc,
   asSurveyOutput,
-  type WhatsNextMessage,
-  type BannerMessage,
-  type BannerStatus,
-  type HumanQuestionMessage,
+  type IssuesSummaryMessage,
   type PlanHandedOffMessage,
   type RoadmapCardMessage,
-  type IssuesSummaryMessage,
   type SurveyCardMessage,
+  type WhatsNextMessage,
 } from "./messages";
 
 interface MapInputs {
@@ -43,576 +46,227 @@ interface MapInputs {
   snapshot: RunSnapshot | null;
 }
 
-// Generic accessor for snapshot.run.checkpoint.outputs[nodeId]. Used
-// to pull the structured agent output keyed by node id. The runtime
-// embeds the same outputs map in artifact_written events, but the
-// checkpoint is the source of truth and survives WS reconnects.
-function checkpointOutput(
-  snapshot: RunSnapshot | null,
-  nodeId: string,
-): Record<string, unknown> | null {
-  const checkpoint = (snapshot?.run.checkpoint ?? null) as
-    | { outputs?: Record<string, Record<string, unknown>> }
-    | null;
-  return checkpoint?.outputs?.[nodeId] ?? null;
+export interface MessagesFoldCache {
+  bot: FirstClassBot;
+  // The underlying runChat cache reuses the resolver identity for
+  // its incremental cache key. We keep the cache alive across calls
+  // by holding a stable resolver reference per bot — see
+  // `resolverForBot` below.
+  inner: RunChatMessagesFoldCache;
 }
 
-// Pulls the structured `output` map out of a node_finished event. The
-// runtime stamps the full node output verbatim onto data.output as
-// part of the event payload, so consumers don't have to wait for the
-// next snapshot refetch to learn what a node produced. Returns null
-// when the event predates this convention or the output is not an
-// object (defensive against arbitrary tool plugins).
-function extractEventOutput(
-  evt: RunEvent,
-): Record<string, unknown> | null {
-  const data = evt.data;
-  if (!data || typeof data !== "object") return null;
-  const out = (data as Record<string, unknown>).output;
-  if (!out || typeof out !== "object" || Array.isArray(out)) return null;
-  return out as Record<string, unknown>;
-}
-
-function getString(obj: Record<string, unknown> | null, key: string): string {
-  const v = obj?.[key];
-  return typeof v === "string" ? v : "";
-}
-
-// pickToolHint extracts a short human-readable hint from a tool_started
-// event's data. The runtime's tool data shape varies by tool; we try
-// a handful of well-known fields and fall back to undefined when none
-// fits. Defensive against arbitrary tool plugins — never throws.
-function pickToolHint(
-  data: Record<string, unknown>,
-  toolName: string | undefined,
-): string | undefined {
-  const input = (data.input ?? data.arguments ?? null) as
-    | Record<string, unknown>
-    | string
-    | null;
-  if (typeof input === "string") {
-    // Some tools serialise input as a JSON string; try to parse and
-    // recurse, otherwise treat the whole string as the hint.
-    try {
-      const parsed = JSON.parse(input) as Record<string, unknown>;
-      return pickToolHintFromObject(parsed, toolName);
-    } catch {
-      return truncateHint(input);
-    }
-  }
-  if (input && typeof input === "object") {
-    return pickToolHintFromObject(input as Record<string, unknown>, toolName);
-  }
-  return undefined;
-}
-
-function pickToolHintFromObject(
-  input: Record<string, unknown>,
-  toolName: string | undefined,
-): string | undefined {
-  // Common single-argument tools — most informative field first.
-  const priorityKeys = [
-    "command", // bash
-    "file_path", // read_file / write_file
-    "path",
-    "pattern", // glob / grep
-    "query",
-    "url",
-    "title", // create_issue
-    "id", // get_issue / transition_issue
-  ];
-  for (const key of priorityKeys) {
-    const v = input[key];
-    if (typeof v === "string" && v.length > 0) {
-      return truncateHint(v);
-    }
-  }
-  // Last resort: the first string field, if any.
-  for (const v of Object.values(input)) {
-    if (typeof v === "string" && v.length > 0) {
-      return truncateHint(v);
-    }
-  }
-  return toolName;
-}
-
-function truncateHint(s: string): string {
-  const flat = s.replace(/\s+/g, " ").trim();
-  if (flat.length <= 60) return flat;
-  return flat.slice(0, 57) + "…";
-}
-
-function iterationOf(evt: RunEvent): number {
-  const raw = evt.data?.iteration;
-  return typeof raw === "number" ? raw : 0;
-}
-
-function bannerId(nodeId: string, iter: number) {
-  return `${nodeId}:${iter}`;
-}
-
-function humanId(nodeId: string, iter: number) {
-  return `${nodeId}:${iter}:question`;
-}
-
-// FolderState carries the mutable bookkeeping the per-event handler
-// needs. Exported so callers (the WhatsNext hook) can persist it across
-// renders and resume folding from a cursor instead of replaying the
-// whole event stream every push.
-export interface FolderState {
-  out: WhatsNextMessage[];
-  bannerIdx: Map<string, number>;
-  humanIdx: Map<string, number>;
-  activeBannerByNode: Map<string, number>;
-  // Latest iteration seen for each node, primed from node_started
-  // events (which always carry iteration in their data). Used as a
-  // fallback for downstream events whose payload omits the iteration
-  // field — notably human_input_requested, which only carries the
-  // interaction_id + questions. Without this fallback the second
-  // human_review iteration in a revise loop collides with the first
-  // (both default to iter 0), the dedupe check drops the new pending
-  // turn, and the UI shows the answered first iteration without the
-  // approve / request-revision buttons.
-  nodeIteration: Map<string, number>;
-  latestPendingHumanKey: string | null;
-}
-
-export function newFolderState(): FolderState {
+// Build a NodeKindResolver from the bot's nodeMap. The resolver does
+// three jobs: (a) tell the folder which nodes are banner/human/silent;
+// (b) supply per-node labels, prompts, summaryField extraction, and
+// textField-aware answer extraction; (c) emit ExtensionPayloads for
+// nodes that ship typed cards (Roadmap/Issues/Survey/PlanHandedOff).
+// The postProcess() step then lifts those payloads into the
+// WhatsNextMessage shapes the bot's components expect.
+function makeResolver(bot: FirstClassBot): NodeKindResolver {
   return {
-    out: [],
-    bannerIdx: new Map(),
-    humanIdx: new Map(),
-    activeBannerByNode: new Map(),
-    nodeIteration: new Map(),
-    latestPendingHumanKey: null,
+    kind(nodeId) {
+      const entry = bot.nodeMap[nodeId];
+      if (!entry) return "silent"; // unmapped nodes never produce messages
+      switch (entry.kind) {
+        case "banner":
+          return "banner";
+        case "human":
+          return "human";
+        case "silent":
+        default:
+          return "silent";
+      }
+    },
+    label(nodeId) {
+      return bot.nodeMap[nodeId]?.label ?? nodeId;
+    },
+    // Whats-next routes outputs through typed cards via the extension
+    // seam; the generic NodeOutputMessage would double-render them.
+    emitsOutputCard() {
+      return false;
+    },
+    bannerSummary(nodeId, eventOutput) {
+      const entry = bot.nodeMap[nodeId];
+      if (!entry || !entry.summaryField || !eventOutput) return undefined;
+      const v = eventOutput[entry.summaryField];
+      return typeof v === "string" ? v : undefined;
+    },
+    humanRenderHints(nodeId) {
+      const entry = bot.nodeMap[nodeId];
+      if (!entry || entry.kind !== "human") return undefined;
+      return {
+        prompt: entry.prompt,
+        actions: entry.actions,
+      };
+    },
+    humanAnswerExtractor(nodeId, answers) {
+      const entry = bot.nodeMap[nodeId];
+      if (!entry || entry.kind !== "human") return undefined;
+      const textKey = entry.textField;
+      const approvedKey = entry.approvedField;
+      const text =
+        textKey && answers && typeof answers[textKey] === "string"
+          ? (answers[textKey] as string)
+          : "";
+      const approved =
+        approvedKey && answers && typeof answers[approvedKey] === "boolean"
+          ? (answers[approvedKey] as boolean)
+          : undefined;
+      return { text, approved };
+    },
+    extension(nodeId, iter, eventOutput) {
+      const entry = bot.nodeMap[nodeId];
+      if (!entry || !entry.followCardKind || !eventOutput) return null;
+      switch (entry.followCardKind) {
+        case "roadmap": {
+          const roadmap = asRoadmapDoc(eventOutput);
+          if (!roadmap) return null;
+          return { tag: "roadmap", payload: { nodeId, iteration: iter, roadmap } };
+        }
+        case "survey": {
+          const survey = asSurveyOutput(eventOutput);
+          if (!survey) return null;
+          return { tag: "survey", payload: { nodeId, ...survey } };
+        }
+        case "issuesSummary": {
+          const emit = asEmitOutput(eventOutput);
+          if (!emit) return null;
+          // emit_action lands two extension cards back-to-back:
+          // (1) the issues-summary card, (2) the "plan handed off"
+          // milestone marker. The post-emit triage loop keeps the
+          // run alive, so the run-level "finished" marker can't
+          // double for the milestone the way it used to.
+          const list: ExtensionPayload[] = [
+            { tag: "issues-summary", payload: { nodeId, ...emit } },
+            {
+              tag: "plan-handed-off",
+              payload: {
+                planPath: emit.planPath,
+                createdCount: emit.createdIssues.length,
+                summary: emit.summary || undefined,
+              },
+            },
+          ];
+          return list;
+        }
+      }
+      return null;
+    },
+    postProcess(messages) {
+      // Lift ExtensionMessage entries back into their typed
+      // WhatsNextMessage shapes. Anything else passes through
+      // unchanged (banner / human-question / session-closed are
+      // shared envelopes already).
+      const out: RunChatMessage[] = [];
+      for (const m of messages) {
+        if (m.kind !== "extension") {
+          out.push(m);
+          continue;
+        }
+        const ext = m as ExtensionMessage;
+        switch (ext.tag) {
+          case "roadmap": {
+            const p = ext.payload as {
+              nodeId: string;
+              iteration: number;
+              roadmap: NonNullable<ReturnType<typeof asRoadmapDoc>>;
+            };
+            out.push({
+              kind: "roadmap-card",
+              id: ext.id,
+              nodeId: p.nodeId,
+              iteration: p.iteration,
+              roadmap: p.roadmap,
+            } satisfies RoadmapCardMessage as unknown as RunChatMessage);
+            break;
+          }
+          case "survey": {
+            const p = ext.payload as {
+              nodeId: string;
+            } & NonNullable<ReturnType<typeof asSurveyOutput>>;
+            out.push({
+              kind: "survey-card",
+              id: ext.id,
+              nodeId: p.nodeId,
+              summary: p.summary,
+              openQuestions: p.openQuestions,
+              observations: p.observations,
+              toplevelDirs: p.toplevelDirs,
+              recentCommits: p.recentCommits,
+            } satisfies SurveyCardMessage as unknown as RunChatMessage);
+            break;
+          }
+          case "issues-summary": {
+            const p = ext.payload as {
+              nodeId: string;
+            } & NonNullable<ReturnType<typeof asEmitOutput>>;
+            out.push({
+              kind: "issues-summary",
+              id: ext.id,
+              nodeId: p.nodeId,
+              createdIssues: p.createdIssues,
+              failedIssues: p.failedIssues,
+              planPath: p.planPath,
+              summary: p.summary,
+            } satisfies IssuesSummaryMessage as unknown as RunChatMessage);
+            break;
+          }
+          case "plan-handed-off": {
+            const p = ext.payload as {
+              planPath: string;
+              createdCount: number;
+              summary?: string;
+            };
+            out.push({
+              kind: "plan-handed-off",
+              id: ext.id,
+              planPath: p.planPath,
+              createdCount: p.createdCount,
+              summary: p.summary,
+            } satisfies PlanHandedOffMessage as unknown as RunChatMessage);
+            break;
+          }
+        }
+      }
+      return out;
+    },
   };
 }
 
-// MessagesFoldCache snapshots the folder state plus enough event-stream
-// identity to recognise an append (same firstSeq, monotonic lastSeq) vs
-// a replay (firstSeq mismatched → must full-refold). Bot identity is
-// part of the key because nodeMap changes alter how events fold.
-export interface MessagesFoldCache {
-  bot: FirstClassBot;
-  firstSeq: number | null;
-  lastSeq: number;
-  state: FolderState;
+// Stable per-bot resolver so the runChat fold cache key (which uses
+// resolver identity) stays valid across renders. Without the cache,
+// every fold would replay the full event stream — fine for short
+// runs, observable lag for the post-emit triage loop's accumulating
+// chat. WeakMap so the resolver is GC'd with the bot definition.
+const resolverByBot = new WeakMap<FirstClassBot, NodeKindResolver>();
+function resolverForBot(bot: FirstClassBot): NodeKindResolver {
+  let r = resolverByBot.get(bot);
+  if (!r) {
+    r = makeResolver(bot);
+    resolverByBot.set(bot, r);
+  }
+  return r;
 }
 
 export function messagesFromEvents(inputs: MapInputs): WhatsNextMessage[] {
   return messagesFromEventsCached(inputs, null).messages;
 }
 
-// messagesFromEventsCached is the incremental variant. When `prev` is
-// compatible (same bot, same first-event seq), it resumes folding from
-// `prev.lastSeq + 1` and mutates `prev.state.out` in place. Otherwise
-// it folds from scratch.
-//
-// Snapshot identity is intentionally NOT part of the cache key: the
-// fold reads snapshot only at node_finished time to materialise the
-// banner summary; once that summary is baked into `out[idx]`, later
-// snapshot updates don't retroactively change it. So a stale-snapshot
-// resume produces the same output as a fresh refold would.
 export function messagesFromEventsCached(
   inputs: MapInputs,
   prev: MessagesFoldCache | null,
 ): { messages: WhatsNextMessage[]; cache: MessagesFoldCache } {
-  const { bot, events, snapshot } = inputs;
-  const firstSeq = events.length > 0 ? events[0]?.seq ?? null : null;
-
-  const canResume =
-    prev !== null &&
-    prev.bot === bot &&
-    prev.firstSeq !== null &&
-    prev.firstSeq === firstSeq;
-
-  let state: FolderState;
-  let lastSeq: number;
-  let toProcess: ReadonlyArray<RunEvent>;
-
-  if (canResume) {
-    state = prev!.state;
-    lastSeq = prev!.lastSeq;
-    toProcess = events;
-  } else {
-    state = newFolderState();
-    lastSeq = -1;
-    toProcess = events;
-  }
-
-  // Sort by monotonic seq before folding. The runtime emits events
-  // with strictly increasing seq, but the store's applyEventsBatch
-  // dedupes-by-seq without re-sorting, and replay + live tail can
-  // interleave their respective arrivals. A tool_started landing
-  // before its parent node_started would otherwise be silently
-  // dropped (no banner to attribute to). Stable sort: equal seq —
-  // shouldn't happen but tolerate — keeps the original order.
-  const sortedEvents = toProcess
-    .slice()
-    .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
-
-  for (const evt of sortedEvents) {
-    const seq = evt.seq ?? 0;
-    if (seq <= lastSeq) continue;
-    processEvent(evt, state, bot, snapshot);
-    if (seq > lastSeq) lastSeq = seq;
-  }
-
-  return {
-    messages: state.out,
-    cache: {
-      bot,
-      firstSeq,
-      lastSeq,
-      state,
+  const resolver = resolverForBot(inputs.bot);
+  const { messages, cache } = runChatMessagesFromEventsCached(
+    {
+      resolver,
+      events: inputs.events,
+      snapshot: inputs.snapshot,
     },
+    prev?.bot === inputs.bot ? prev.inner : null,
+  );
+  return {
+    messages: messages as WhatsNextMessage[],
+    cache: { bot: inputs.bot, inner: cache },
   };
-}
-
-function processEvent(
-  evt: RunEvent,
-  state: FolderState,
-  bot: FirstClassBot,
-  snapshot: RunSnapshot | null,
-): void {
-  const out = state.out;
-  const bannerIdx = state.bannerIdx;
-  const humanIdx = state.humanIdx;
-  const activeBannerByNode = state.activeBannerByNode;
-  const nodeIteration = state.nodeIteration;
-  let latestPendingHumanKey = state.latestPendingHumanKey;
-
-  if (!evt.type) return;
-  switch (evt.type) {
-      case "node_started": {
-        const nodeId = evt.node_id;
-        if (!nodeId) break;
-        const entry = bot.nodeMap[nodeId];
-        if (!entry) break;
-
-        const iter = iterationOf(evt);
-        // Record the iteration so later events on this node (notably
-        // human_input_requested) can resolve it even when their own
-        // payload omits the iteration field — see FolderState comment.
-        nodeIteration.set(nodeId, iter);
-        if (entry.kind === "banner") {
-          const key = bannerId(nodeId, iter);
-          if (bannerIdx.has(key)) break; // dedupe replay
-          const idx = out.length;
-          out.push({
-            kind: "banner",
-            id: key,
-            nodeId,
-            label: entry.label ?? nodeId,
-            status: "running",
-          } satisfies BannerMessage);
-          bannerIdx.set(key, idx);
-          activeBannerByNode.set(nodeId, idx);
-        } else if (entry.kind === "human") {
-          // We push a *pending* human question on the matching
-          // `human_input_requested`, not on node_started — the request
-          // event carries the resolved `questions` map. node_started
-          // alone is enough to know the human node is *about* to ask,
-          // but Step 3 needs the schema/questions to render the form
-          // correctly. So: nothing to do here for human entries.
-        }
-        // "silent" and other kinds: ignored.
-        break;
-      }
-
-      case "node_finished": {
-        const nodeId = evt.node_id;
-        if (!nodeId) break;
-        const entry = bot.nodeMap[nodeId];
-        if (!entry) break;
-
-        // node_finished events also omit `iteration` from the payload
-        // today — same fallback as human_input_requested. Without it,
-        // every node_finished for a re-entered node (revise_roadmap
-        // and human_review in the whats-next revise loop) updates the
-        // iter-0 banner and the iter-1+ banner stays stuck on
-        // "running" with its loading phrase still rotating even
-        // though the node has long completed.
-        const iter = nodeIteration.get(nodeId) ?? iterationOf(evt);
-        if (entry.kind === "banner") {
-          const key = bannerId(nodeId, iter);
-          const idx = bannerIdx.get(key);
-          if (idx === undefined) break;
-          // node_finished embeds the node's output verbatim. Prefer
-          // that over checkpointOutput(snapshot, ...) because the
-          // snapshot may not have been refreshed yet under live tail
-          // — the WS pushes events as they happen, while a fresh
-          // snapshot only lands on the next periodic refetch. Reading
-          // from the event lets the follow-up survey/roadmap/issues
-          // cards materialise the moment the node completes instead
-          // of after a navigation away-and-back triggers a full
-          // refold against the now-current snapshot. Falls back to
-          // the snapshot path for any (legacy) event missing the
-          // embedded output.
-          const eventOutput = extractEventOutput(evt) ??
-            checkpointOutput(snapshot, nodeId);
-          const summary = entry.summaryField
-            ? getString(eventOutput, entry.summaryField)
-            : "";
-          const updated: BannerMessage = {
-            ...(out[idx] as BannerMessage),
-            status: "done",
-            summary: summary || undefined,
-            // Drop the live progress once the banner is done — the
-            // summary takes its place.
-            progress: undefined,
-          };
-          out[idx] = updated;
-          activeBannerByNode.delete(nodeId);
-
-          // Post-banner follow-up cards (roadmap, issues-summary).
-          if (entry.followCardKind === "roadmap") {
-            const roadmap = asRoadmapDoc(eventOutput);
-            if (roadmap) {
-              out.push({
-                kind: "roadmap-card",
-                id: `${nodeId}:${iter}:roadmap`,
-                nodeId,
-                iteration: iter,
-                roadmap,
-              } satisfies RoadmapCardMessage);
-            }
-          } else if (entry.followCardKind === "issuesSummary") {
-            const emit = asEmitOutput(eventOutput);
-            if (emit) {
-              out.push({
-                kind: "issues-summary",
-                id: `${nodeId}:${iter}:issues`,
-                nodeId,
-                createdIssues: emit.createdIssues,
-                failedIssues: emit.failedIssues,
-                planPath: emit.planPath,
-                summary: emit.summary,
-              } satisfies IssuesSummaryMessage);
-              // Emit the green "Plan handed off" milestone marker
-              // immediately after the issues-summary card. With the
-              // post-emit triage loop the run does NOT terminate at
-              // emit_action — so the old SessionClosed "finished"
-              // marker fires only when the operator picks action=done
-              // later. This standalone milestone gives the operator
-              // the same visual closure without ending the chat.
-              out.push({
-                kind: "plan-handed-off",
-                id: `${nodeId}:${iter}:plan-handed-off`,
-                planPath: emit.planPath,
-                createdCount: emit.createdIssues.length,
-                summary: emit.summary || undefined,
-              } satisfies PlanHandedOffMessage);
-            }
-          } else if (entry.followCardKind === "survey") {
-            const survey = asSurveyOutput(eventOutput);
-            if (survey) {
-              out.push({
-                kind: "survey-card",
-                id: `${nodeId}:${iter}:survey`,
-                nodeId,
-                summary: survey.summary,
-                openQuestions: survey.openQuestions,
-                observations: survey.observations,
-                toplevelDirs: survey.toplevelDirs,
-                recentCommits: survey.recentCommits,
-              } satisfies SurveyCardMessage);
-            }
-          }
-        }
-        break;
-      }
-
-      case "tool_started": {
-        const nodeId = evt.node_id;
-        if (!nodeId) break;
-        const idx = activeBannerByNode.get(nodeId);
-        if (idx === undefined) break;
-        const banner = out[idx] as BannerMessage;
-        const data = evt.data ?? {};
-        const toolName =
-          typeof data.tool === "string" && data.tool ? data.tool : undefined;
-        const prev = banner.progress ?? { toolCount: 0 };
-        out[idx] = {
-          ...banner,
-          progress: {
-            toolCount: prev.toolCount + 1,
-            latestTool: toolName ?? prev.latestTool,
-            latestToolHint: pickToolHint(data, toolName) ?? prev.latestToolHint,
-          },
-        };
-        break;
-      }
-
-      case "human_input_requested": {
-        const nodeId = evt.node_id;
-        if (!nodeId) break;
-        const entry = bot.nodeMap[nodeId];
-        if (!entry || entry.kind !== "human") break;
-
-        // The runtime omits `iteration` from human_input_requested
-        // event payloads today — only node_started carries it. Without
-        // the fallback, the second human_review turn of a revise loop
-        // shares the iter-0 key with the first, the dedupe check
-        // below drops it, and the user sees the answered iter-0
-        // bubble (no buttons) instead of the new pending iter-1 form.
-        const iter = nodeIteration.get(nodeId) ?? iterationOf(evt);
-        const key = humanId(nodeId, iter);
-        if (humanIdx.has(key)) break; // dedupe replay
-        // Pull through the runtime-supplied questions payload (set when
-        // the engine resolved field definitions from the workflow's
-        // human node or from an LLM-fill step). The form renderer uses
-        // it to label inputs, hint at allowed values, etc. — without
-        // this the LLM-fill output was discarded and the form fell
-        // back to the bot's static prompt.
-        const questions =
-          evt.data?.questions && typeof evt.data.questions === "object"
-            ? (evt.data.questions as Record<string, unknown>)
-            : undefined;
-        const idx = out.length;
-        out.push({
-          kind: "human-question",
-          id: key,
-          nodeId,
-          prompt: entry.prompt ?? "Reply to continue.",
-          status: "pending",
-          actions: entry.actions,
-          questions,
-        } satisfies HumanQuestionMessage);
-        humanIdx.set(key, idx);
-        latestPendingHumanKey = key;
-        break;
-      }
-
-      case "human_answers_recorded": {
-        // The runtime stamps the user's answers on the human node.
-        // Match the answered turn by node_id (more reliable than
-        // following a "latestPending" cursor, which gets confused by
-        // the carry_roadmap silent loop). Pull the user-visible text
-        // out of the node's nodeMap entry — different human nodes use
-        // different schema field names (ask_priorities → context;
-        // human_review → feedback).
-        //
-        // Fallback: when an older event payload arrives without a
-        // node_id, use the most recent pending-human key as a last
-        // resort. The runtime always stamps node_id today; this kept
-        // the tolerance the previous TODO comment promised but never
-        // actually wired.
-        let nodeId = evt.node_id;
-        let key: string;
-        if (nodeId) {
-          // Same iteration-fallback rationale as human_input_requested:
-          // the runtime omits `iteration` from this event payload, so
-          // we read it from the most recent node_started.
-          const iter = nodeIteration.get(nodeId) ?? iterationOf(evt);
-          key = humanId(nodeId, iter);
-        } else if (latestPendingHumanKey) {
-          key = latestPendingHumanKey;
-          const fallbackEntry = humanIdx.get(key);
-          if (fallbackEntry === undefined) break;
-          // Recover the nodeId from the pending message so downstream
-          // logic that needs the nodeMap lookup still works.
-          const pending = out[fallbackEntry] as HumanQuestionMessage | undefined;
-          nodeId = pending?.nodeId;
-        } else {
-          break;
-        }
-        if (!nodeId) break;
-        const entry = bot.nodeMap[nodeId];
-        if (!entry || entry.kind !== "human") break;
-        const idx = humanIdx.get(key);
-        if (idx === undefined) break;
-        const current = out[idx] as HumanQuestionMessage;
-        const answers = (evt.data?.answers ?? null) as Record<string, unknown> | null;
-        const textKey = entry.textField;
-        const approvedKey = entry.approvedField;
-        const text =
-          (textKey && typeof answers?.[textKey] === "string"
-            ? (answers[textKey] as string)
-            : "") || "";
-        const approved =
-          approvedKey && typeof answers?.[approvedKey] === "boolean"
-            ? (answers[approvedKey] as boolean)
-            : undefined;
-        out[idx] = {
-          ...current,
-          status: "answered",
-          userReply: text || current.userReply,
-          outcome: approved !== undefined ? { approved } : current.outcome,
-        };
-        if (latestPendingHumanKey === key) latestPendingHumanKey = null;
-        break;
-      }
-
-      case "run_finished":
-        // No active banners expected here (every node should have
-        // fired node_finished first), but if one is still flagged
-        // running we coerce it to done — a perpetual spinner under a
-        // "session finished" footer looks broken.
-        finalizeActiveBanners(out, activeBannerByNode, "done");
-        out.push({
-          kind: "session-closed",
-          id: `closed:${evt.seq}`,
-          reason: "finished",
-        });
-        break;
-      case "run_failed":
-        // The runtime emits run_failed without a node_failed companion
-        // for the in-flight node (no node_failed event type exists),
-        // so any active banner stayed at status:"running" forever —
-        // appearing as a perpetual spinner alongside the "session
-        // failed" footer. Coerce them to failed and surface the run
-        // error message if the event carried one.
-        finalizeActiveBanners(out, activeBannerByNode, "failed", asString(evt.data?.error));
-        out.push({
-          kind: "session-closed",
-          id: `closed:${evt.seq}`,
-          reason: "failed",
-        });
-        break;
-      case "run_cancelled":
-        finalizeActiveBanners(out, activeBannerByNode, "failed");
-        out.push({
-          kind: "session-closed",
-          id: `closed:${evt.seq}`,
-          reason: "cancelled",
-        });
-        break;
-
-    default:
-      break;
-  }
-  state.latestPendingHumanKey = latestPendingHumanKey;
-}
-
-// finalizeActiveBanners coerces every banner still flagged as running
-// (i.e. its node never emitted node_finished) to a terminal status.
-// Used on run_finished / run_failed / run_cancelled so the chat
-// doesn't end with a spinning banner under the session-closed marker.
-// The runtime has no node_failed event type, so the only signal that
-// a node in flight is dead is the run-level termination event.
-function finalizeActiveBanners(
-  out: WhatsNextMessage[],
-  active: Map<string, number>,
-  status: BannerStatus,
-  errorMessage?: string,
-): void {
-  for (const idx of active.values()) {
-    const b = out[idx];
-    if (!b || b.kind !== "banner") continue;
-    const updated: BannerMessage = {
-      ...b,
-      status,
-      progress: undefined,
-    };
-    if (status === "failed" && errorMessage) {
-      updated.errorMessage = errorMessage;
-    }
-    out[idx] = updated;
-  }
-  active.clear();
-}
-
-function asString(v: unknown): string | undefined {
-  return typeof v === "string" && v !== "" ? v : undefined;
 }

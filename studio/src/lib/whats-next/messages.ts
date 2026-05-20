@@ -1,81 +1,29 @@
 // WhatsNextMessage describes one entry in the chat transcript. The
 // transcript is a flat ordered list; events from the run lifecycle
-// fold into messages via `messagesFromEvents` (added in Étape 2).
+// fold into messages via the generic runChat module
+// (`@/lib/runChat/messagesFromEvents`) parameterised by a whats-next
+// resolver in `messagesFromEvents.ts` (this directory).
 //
-// The discriminated union mirrors the node kinds in
-// `firstClassBots.ts` plus a few synthetic entries (user reply,
-// session-closed marker) that aren't directly tied to a node.
+// The bot-specific types below (RoadmapCardMessage, IssuesSummaryMessage,
+// SurveyCardMessage, PlanHandedOffMessage) are produced from generic
+// ExtensionMessage entries by the whats-next post-processor — see
+// `messagesFromEvents.ts`. The runChat folder itself never knows about
+// them.
+//
+// The shared envelope types (BannerMessage, HumanQuestionMessage,
+// SessionClosedMessage, BannerProgress, BannerStatus, QuickActionKind)
+// live in `@/lib/runChat/types` and are re-exported here for backward
+// compatibility with the WhatsNext components that import them under
+// these names.
 
-export type BannerStatus = "running" | "done" | "failed";
-
-// Live progress accumulated while a banner is "running". Drives the
-// "12 tools used · latest: bash" line under the spinner so an explore
-// or propose_roadmap pass doesn't look frozen during the 30–60s the
-// agent actually needs.
-export interface BannerProgress {
-  // Number of `tool_started` events seen on this node's active iter.
-  toolCount: number;
-  // Name of the most recent tool the node invoked (e.g. "bash",
-  // "read_file"). Used as a "doing X" hint.
-  latestTool?: string;
-  // Brief textual hint extracted from the latest tool's input — the
-  // first argument-ish field, when present. Surfaces "read_file: README.md"
-  // rather than just "read_file".
-  latestToolHint?: string;
-}
-
-export interface BannerMessage {
-  kind: "banner";
-  id: string; // stable: "<nodeId>:<iteration>" (iteration so revise loops don't collide)
-  nodeId: string;
-  label: string;
-  status: BannerStatus;
-  // When status === "done", the optional one-line summary plucked
-  // from the node output (per nodeMap.summaryField).
-  summary?: string;
-  errorMessage?: string;
-  // Live counters updated while status === "running".
-  progress?: BannerProgress;
-}
-
-// Quick-action markers the operator can emit instead of typing a
-// reply. The bot's prompt is expected to recognise these tokens and
-// react accordingly ([QA:skip] proceed empty, [QA:idk] fall back to
-// best inference, [QA:later] defer if the flow has a re-ask point).
-// "later" is meaningful only inside the new triage loop where the
-// bot can re-ask; outside it's effectively a "skip".
-export type QuickActionKind = "skip" | "idk" | "later";
-
-export interface HumanQuestionMessage {
-  kind: "human-question";
-  id: string;
-  nodeId: string;
-  prompt: string;
-  // Pending = awaiting user; answered = past tour in the loop.
-  status: "pending" | "answered";
-  // The verbatim text the user typed when status === "answered".
-  // For approve/reject actions (human_review), this is the inline
-  // feedback (may be empty when approved without comment).
-  userReply?: string;
-  // Optional structured outcome (e.g. { approved: true }).
-  outcome?: Record<string, unknown>;
-  // For human_review etc., which action buttons to render.
-  actions?: ReadonlyArray<"approve" | "request_revision">;
-  // Runtime-resolved questions payload (the same data the engine
-  // writes into checkpoint.InteractionQuestions). Carries field
-  // schema / labels / hints the bot or LLM produced — set when the
-  // `human_input_requested` event arrived with a `questions` map.
-  // The form renderer falls back to the bot's static `prompt` when
-  // this is empty.
-  questions?: Record<string, unknown>;
-  // Inline shortcuts the operator can pick instead of typing a
-  // reply. Only rendered on free-text turns (the form / action
-  // paths already give the operator structured choices). Default
-  // for free-text turns: ["skip", "idk"]. Pass an empty array to
-  // suppress. The runtime can override per-node via a future DSL
-  // `quick_actions:` block; for now the default is client-side.
-  quickActions?: ReadonlyArray<QuickActionKind>;
-}
+export type {
+  BannerStatus,
+  BannerProgress,
+  BannerMessage,
+  HumanQuestionMessage,
+  QuickActionKind,
+  SessionClosedMessage,
+} from "@/lib/runChat/types";
 
 export interface RoadmapItem {
   title: string;
@@ -123,9 +71,7 @@ export interface IssuesSummaryMessage {
 }
 
 // SurveyCardMessage carries the structured output of an agent that
-// surveyed the workspace (whats-next's `explore` node today). The
-// matching nodeMap entry sets `followCardKind: "survey"` so the
-// runtime mapper pushes one of these right after the banner closes.
+// surveyed the workspace (whats-next's `explore` node today).
 export interface SurveyCardMessage {
   kind: "survey-card";
   id: string;
@@ -139,24 +85,10 @@ export interface SurveyCardMessage {
   recentCommits: unknown;
 }
 
-export interface SessionClosedMessage {
-  kind: "session-closed";
-  id: string;
-  // "finished" — run reached Done (operator picked action=done in
-  //   the triage loop, or the bot has no triage loop and reached
-  //   its terminal node naturally).
-  // "failed" — run hit Fail node or unrecoverable error.
-  // "cancelled" — user/system cancellation.
-  reason: "finished" | "failed" | "cancelled";
-}
-
 // PlanHandedOffMessage is a milestone marker pushed when emit_action
-// completes — independently of run termination. The original
-// whats-next flow ended at emit_action and used the SessionClosed
-// "finished" marker for "plan handed off". With the post-emit triage
-// loop, emit_action no longer ends the run; the operator continues
-// in the chat to dispatch / refine tickets. This message gives them
-// the same visual milestone (green check, count of issues created)
+// completes — independently of run termination. The post-emit triage
+// loop keeps the run alive after emit_action; this marker gives the
+// operator the visual milestone (green check, count of issues created)
 // while the chat stays interactive.
 export interface PlanHandedOffMessage {
   kind: "plan-handed-off";
@@ -169,13 +101,19 @@ export interface PlanHandedOffMessage {
   summary?: string;
 }
 
+import type {
+  BannerMessage as _BannerMessage,
+  HumanQuestionMessage as _HumanQuestionMessage,
+  SessionClosedMessage as _SessionClosedMessage,
+} from "@/lib/runChat/types";
+
 export type WhatsNextMessage =
-  | BannerMessage
-  | HumanQuestionMessage
+  | _BannerMessage
+  | _HumanQuestionMessage
   | RoadmapCardMessage
   | IssuesSummaryMessage
   | SurveyCardMessage
-  | SessionClosedMessage
+  | _SessionClosedMessage
   | PlanHandedOffMessage;
 
 // Helper for components: extract a roadmap doc from a raw node output

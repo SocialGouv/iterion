@@ -23,8 +23,10 @@
     "lucide-react": "^1.14.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
     "react-resizable-panels": "^4.10.0",
     "react-virtuoso": "^4.18.6",
+    "remark-gfm": "^4.0.1",
     "wouter": "^3.5.0",
     "zustand": "^5.0.0"
   },

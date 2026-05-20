@@ -436,7 +436,7 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
         // Re-dial the WS so the resumed engine's events reach us.
         // Without this, the broker may have dropped subscribers when
         // the run went paused_waiting_human and the live tail stays
-        // silent. Same trick the HumanInteractionPanel uses.
+        // silent. Same trick the generic HumanPromptForm uses.
         requestWsReconnect();
         // Belt-and-braces: refresh the snapshot ~600ms later so a
         // short-lived run that finishes before the WS redial still
