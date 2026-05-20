@@ -127,13 +127,18 @@ var allTools = []Tool{
 		Name:        "list_issues",
 		Capability:  CapBoardRead,
 		Description: "List issues with optional filters.",
+		// `required: []` is intentional: OpenAI's strict function-call
+		// mode validates the schema and rejects "required" being absent
+		// with "None is not of type 'array'". An empty array means
+		// "no required fields" and is the correct shape.
 		InputSchema: json.RawMessage(`{
           "type":"object",
           "properties":{
             "state":{"type":"string"},
             "label":{"type":"string"},
             "assignee":{"type":"string"}
-          }
+          },
+          "required":[]
         }`),
 	},
 	{
