@@ -14,6 +14,7 @@ import type {
 } from "@/lib/whats-next/messages";
 
 import AgentChatbox from "@/components/shared/AgentChatbox";
+import { Button } from "@/components/ui/Button";
 import ChatTranscript from "./ChatTranscript";
 import HumanChatTurn from "./HumanChatTurn";
 import PreFlightPanel from "./PreFlightPanel";
@@ -145,11 +146,18 @@ export default function WhatsNextView() {
                   onHumanSubmit(pendingHumanQuestion.id, outcome)
                 }
               />
+            ) : session.runId &&
+              (session.runStatus === "failed_resumable" ||
+                session.runStatus === "cancelled") ? (
+              <ResumeFooter
+                runStatus={session.runStatus}
+                busy={session.status === "submitting"}
+                onResume={() => void session.resume()}
+              />
             ) : (
               session.runId &&
               session.runStatus !== "finished" &&
-              session.runStatus !== "failed" &&
-              session.runStatus !== "cancelled" && (
+              session.runStatus !== "failed" && (
                 <AgentChatbox runId={session.runId} />
               )
             )}
@@ -252,6 +260,40 @@ function PendingTurnFooter({
   );
 }
 
+// ResumeFooter is the bottom-of-chat call-to-action when the run is
+// in failed_resumable or cancelled state. Replaces the AgentChatbox
+// (which is hidden for terminal runs) so the operator's next action
+// is obvious: re-enter the run from its last checkpoint.
+function ResumeFooter({
+  runStatus,
+  busy,
+  onResume,
+}: {
+  runStatus: "failed_resumable" | "cancelled";
+  busy: boolean;
+  onResume: () => void;
+}) {
+  const explainer =
+    runStatus === "failed_resumable"
+      ? "A node failed but the run kept its checkpoint. Resume to re-enter from where it stopped."
+      : "Run was cancelled with the checkpoint preserved. Resume to pick up where it stopped.";
+  return (
+    <div className="border-t border-border-default bg-surface-1">
+      <div className="mx-auto max-w-3xl px-4 py-3 flex items-center gap-3">
+        <div className="flex-1 text-[12px] text-fg-muted">{explainer}</div>
+        <Button
+          variant="primary"
+          size="sm"
+          disabled={busy}
+          onClick={onResume}
+        >
+          {busy ? "…" : "Resume"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function SessionHeader({
   bot,
   session,
@@ -270,18 +312,6 @@ function SessionHeader({
         )}
       </h2>
       <div className="flex items-baseline gap-3">
-        {session.status === "ended" &&
-          (session.runStatus === "failed_resumable" ||
-            session.runStatus === "cancelled") && (
-            <button
-              type="button"
-              onClick={() => void session.resume()}
-              className="text-[11px] text-accent hover:underline cursor-pointer"
-              title={`Re-enter the run from its checkpoint (status: ${session.runStatus})`}
-            >
-              Resume
-            </button>
-          )}
         {session.status === "ended" && (
           <button
             type="button"

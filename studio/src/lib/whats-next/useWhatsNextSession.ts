@@ -484,12 +484,19 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
   // wants to bring back. The submit path lives on submitHumanAnswer
   // because most resumes carry user input — this one is the rarer
   // "I fixed the code, please retry" flow.
+  //
+  // `force: true` is intentional: the bare-resume entry point is
+  // typically triggered AFTER the operator edited the bot to fix the
+  // root cause of the failure, which changes the workflow hash. The
+  // operator's intent ("retry with my fix") is unambiguous — we'd
+  // bounce them to /runs/<id> to find the "Force resume" toggle
+  // otherwise, which defeats the point of an inline button.
   const resume = useCallback(async () => {
     if (!runId) return;
     setErrorMessage(null);
     setStatus("submitting");
     try {
-      await resumeRun(runId, { answers: {} });
+      await resumeRun(runId, { answers: {}, force: true });
       setRunStatus("running");
       requestWsReconnect();
       if (refreshTimerRef.current !== null) {
