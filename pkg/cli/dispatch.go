@@ -37,16 +37,21 @@ type DispatchOptions struct {
 func RunDispatch(p *Printer, opts DispatchOptions) error {
 	logger := iterlog.New(iterlog.LevelInfo, os.Stderr)
 
-	cfg, err := dispatcher.Load(opts.ConfigPath)
-	if err != nil {
-		return err
-	}
-
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
 	}
 	storeDir := store.ResolveStoreDir(cwd, opts.StoreDir)
+
+	var cfg *dispatcher.Config
+	if opts.ConfigPath == "" {
+		cfg, err = BuildDefaultConfig(storeDir)
+	} else {
+		cfg, err = dispatcher.Load(opts.ConfigPath)
+	}
+	if err != nil {
+		return err
+	}
 
 	nativeStore, err := native.NewStore(filepath.Join(storeDir, "dispatcher"))
 	if err != nil {
@@ -87,18 +92,24 @@ func RunDispatch(p *Printer, opts DispatchOptions) error {
 	}
 	defer mgr.Stop()
 
-	watcher, err := dispatcher.NewConfigWatcher(opts.ConfigPath, logger)
-	if err != nil {
-		return err
-	}
-	if err := watcher.Start(func(c *dispatcher.Config) {
-		if err := mgr.SaveConfig(c); err != nil {
-			logger.Warn("dispatcher: reload: %v", err)
+	// In zero-config mode there is no YAML on disk to watch — operators
+	// who want live reloads should write a config file and pass it as
+	// an argument. Skipping the watcher avoids a noisy startup warning
+	// from fsnotify against an empty path.
+	if opts.ConfigPath != "" {
+		watcher, err := dispatcher.NewConfigWatcher(opts.ConfigPath, logger)
+		if err != nil {
+			return err
 		}
-	}); err != nil {
-		return err
+		if err := watcher.Start(func(c *dispatcher.Config) {
+			if err := mgr.SaveConfig(c); err != nil {
+				logger.Warn("dispatcher: reload: %v", err)
+			}
+		}); err != nil {
+			return err
+		}
+		defer watcher.Stop()
 	}
-	defer watcher.Stop()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -142,6 +153,10 @@ func RunDispatch(p *Printer, opts DispatchOptions) error {
 	}
 
 	if p.Format == OutputHuman {
+		if opts.ConfigPath == "" {
+			p.Line("iterion dispatch: running with baked-in defaults (no YAML) — write iterion.dispatcher.yaml + pass it as argument to customise")
+			p.Line("iterion dispatch: assignee bots: %v", DefaultAssigneeNames())
+		}
 		p.Line("iterion dispatch: workflow %s", cfg.Workflow)
 		p.Line("iterion dispatch: tracker %s", cfg.Tracker.Kind)
 		p.Line("iterion dispatch: workspaces under %s", wsRoot)

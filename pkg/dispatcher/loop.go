@@ -234,8 +234,18 @@ func (c *Dispatcher) buildSpec(cfg *Config, iss tracker.Issue, runID, wsPath str
 			Attempt:       attempt,
 		},
 	}
+	// Per-assignee overrides win wholesale: when a bot has its own
+	// AssigneeDispatch entry, its var/attachment map replaces the global
+	// one rather than merging. This keeps each bot's input contract
+	// explicit — operators see exactly what they bind.
+	dc := cfg.Dispatch
+	if iss.Assignee != "" {
+		if ov, ok := cfg.AssigneeDispatch[iss.Assignee]; ok {
+			dc = ov
+		}
+	}
 	vars := map[string]any{}
-	for k, src := range cfg.Dispatch.Vars {
+	for k, src := range dc.Vars {
 		tpl, err := ParseTemplate(src)
 		if err != nil {
 			c.logger.Warn("dispatcher: dispatch.vars[%s]: %v", k, err)
@@ -249,7 +259,7 @@ func (c *Dispatcher) buildSpec(cfg *Config, iss tracker.Issue, runID, wsPath str
 		vars[k] = v
 	}
 	attachments := map[string]any{}
-	for k, src := range cfg.Dispatch.Attachments {
+	for k, src := range dc.Attachments {
 		tpl, err := ParseTemplate(src)
 		if err != nil {
 			c.logger.Warn("dispatcher: dispatch.attachments[%s]: %v", k, err)

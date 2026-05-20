@@ -8,17 +8,26 @@ import (
 var dispatchOpts cli.DispatchOptions
 
 var dispatchCmd = &cobra.Command{
-	Use:   "dispatch <config.yaml>",
+	Use:   "dispatch [config.yaml]",
 	Short: "Run the dispatcher daemon",
 	Long: `Run the dispatcher daemon: poll a tracker, dispatch eligible issues
 to a workflow, and expose a REST/WS surface for the studio.
 
-Example:
+Called without an argument, dispatch boots with baked-in defaults
+(native kanban tracker, HTTP on :4892, embedded bot catalogue) — the
+fastest path to a usable kanban + bot dispatcher without writing any
+YAML. Pass a config file to override.
+
+Examples:
+  iterion dispatch                                 # zero-config, native tracker, embedded bots
+  iterion dispatch iterion.dispatcher.yaml         # custom config
   iterion dispatch iterion.dispatcher.yaml --port 4892
 `,
-	Args: cobra.ExactArgs(1),
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		dispatchOpts.ConfigPath = args[0]
+		if len(args) == 1 {
+			dispatchOpts.ConfigPath = args[0]
+		}
 		return cli.RunDispatch(newPrinter(), dispatchOpts)
 	},
 }

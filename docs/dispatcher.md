@@ -11,7 +11,50 @@ If you only want a kanban board with no autonomous loop, you don't
 need the dispatcher — see [`docs/native-tracker.md`](native-tracker.md)
 for the standalone tracker.
 
-## TL;DR
+## Quick start (zero config)
+
+The fastest path is no YAML at all:
+
+```bash
+iterion dispatch
+```
+
+Called without an argument, the dispatcher boots with a built-in
+preset: the [native kanban](native-tracker.md) tracker, the studio HTTP
+surface on `http://localhost:4892`, polling every 30 s, and an
+**embedded bot catalogue** that exposes the workflows from `examples/`
+as assignees. Out of the box you can:
+
+1. Open `http://localhost:4892/board` and create a ticket.
+2. Set the ticket's **assignee** to one of the names below, drop it
+   into a state marked `eligible` (default: `ready` / `in_progress`),
+   and the dispatcher picks it up at the next poll.
+3. The studio's `/dispatcher` route shows the run in flight.
+
+Built-in assignees ([source bots](../examples/)):
+
+| Assignee | Backing bot | What it does |
+|---|---|---|
+| `vibe-feature-dev` | `examples/bots/vibe_feature_dev.bot` | Autonomous feature dev: plan → act → simplify → alternating Claude/GPT review loop |
+| `whole-improve-loop` | `examples/bots/whole_improve_loop.bot` | Whole-codebase improvement loop with alternating cross-family verdicts |
+| `branch-improve-loop` | `examples/bots/branch_improve_loop.bot` | Branch-scoped improvement + auto-commit on convergence |
+| `whats-next` | `examples/whats-next/` | Repo survey → roadmap synthesis → kanban materialisation |
+| `doc-align` | `examples/doc-align/` | Detect & fix doc/code mismatches |
+| `sec-audit-source` | `examples/sec-audit-source/` | Source-code security audit (gitleaks/trivy/semgrep/gosec) |
+| `sec-audit-deps` | `examples/sec-audit-deps/` | Supply-chain dep audit + LLM review |
+| `secured-renovacy` | `examples/secured-renovacy/` | Security-aware dependency upgrades with cumulative review |
+| _(unassigned)_ | `default/` (embedded) | Generic triage agent: classifies the issue and recommends a next step |
+
+Each assignee's input contract (`{{issue.title}} + {{issue.body}}` →
+the bot's main prompt var) is wired in
+[pkg/cli/dispatch_defaults.go](../pkg/cli/dispatch_defaults.go).
+Bots are extracted on first run under
+`<store-dir>/dispatcher/bots/<name>/` (write-if-absent so local edits
+survive subsequent starts). Override the port via `--port`, the store
+location via `--store-dir`, or write a full YAML when you outgrow the
+defaults.
+
+## TL;DR — explicit YAML
 
 ```bash
 # 1. Init the kanban + create a first issue.
@@ -261,6 +304,57 @@ bot stamps each issue with `--assignee vibe_feature_dev` (or any
 catalogued bot), and the dispatcher — with the mapping above —
 dispatches the matching workflow without any operator
 intervention.
+
+### Per-assignee dispatch overrides
+
+Different bots expect different input vars: `vibe_feature_dev` wants
+`feature_prompt`, `whole_improve_loop` wants `improvement_prompt`,
+`secured-renovacy` wants `user_prompt`. The global `dispatch.vars:`
+binds a single template for *every* assignee, which doesn't fit a
+heterogeneous bot catalogue.
+
+`assignee_dispatch:` solves that — when an issue's assignee has an
+entry here, its `vars:` (and `attachments:`) **replace** the global
+`dispatch.vars` wholesale for that dispatch:
+
+```yaml
+workflow: workflows/triage.bot
+assignee_workflows:
+  vibe-feature-dev:   examples/bots/vibe_feature_dev.bot
+  whole-improve-loop: examples/bots/whole_improve_loop.bot
+  secured-renovacy:   examples/secured-renovacy/main.bot
+
+assignee_dispatch:
+  vibe-feature-dev:
+    vars:
+      workspace_dir:  "{{ dispatcher.workspace_path }}"
+      feature_prompt: "{{ issue.title }}\n\n{{ issue.body }}"
+  whole-improve-loop:
+    vars:
+      workspace_dir:      "{{ dispatcher.workspace_path }}"
+      improvement_prompt: "{{ issue.title }}\n\n{{ issue.body }}"
+  secured-renovacy:
+    vars:
+      workspace_dir: "{{ dispatcher.workspace_path }}"
+      user_prompt:   "{{ issue.title }}\n\n{{ issue.body }}"
+
+dispatch:
+  # Fallback for issues with no assignee or an unmapped one.
+  vars:
+    issue_title: "{{ issue.title }}"
+    issue_body:  "{{ issue.body }}"
+```
+
+Validation rules:
+
+- Every `assignee_dispatch` key must have a matching `assignee_workflows`
+  entry — otherwise startup fails with a precise typo-catching error.
+- Templates are parsed at load time; an unknown `{{ issue.foo }}` /
+  `{{ dispatcher.bar }}` field fails fast.
+
+The zero-config mode (`iterion dispatch`) uses exactly this mechanism
+to wire each embedded bot to the issue title/body — see
+[pkg/cli/dispatch_defaults.go](../pkg/cli/dispatch_defaults.go).
 
 ## Hot-reload
 

@@ -201,3 +201,73 @@ workspace:
 		t.Fatalf("home not expanded: %s", cfg.Workspace.Root)
 	}
 }
+
+// writeConfigWithAssigneeWorkflow extends writeConfig by also creating
+// a sibling .iter for the named assignee so the validator's stat check
+// on assignee_workflows entries passes.
+func writeConfigWithAssigneeWorkflow(t *testing.T, body string) string {
+	t.Helper()
+	cfgPath := writeConfig(t, body)
+	dir := filepath.Dir(cfgPath)
+	if err := os.WriteFile(filepath.Join(dir, "bot.iter"), []byte("workflow x:\n  done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return cfgPath
+}
+
+func TestConfigAssigneeDispatch(t *testing.T) {
+	p := writeConfigWithAssigneeWorkflow(t, `workflow: {{WORKFLOW}}
+tracker:
+  kind: native
+assignee_workflows:
+  feature-bot: ./bot.iter
+assignee_dispatch:
+  feature-bot:
+    vars:
+      feature_prompt: "Issue {{ issue.identifier }}: {{ issue.title }}\n\n{{ issue.body }}"
+      workspace_dir: "{{ dispatcher.workspace_path }}"
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	entry, ok := cfg.AssigneeDispatch["feature-bot"]
+	if !ok {
+		t.Fatalf("assignee_dispatch[feature-bot] missing: %+v", cfg.AssigneeDispatch)
+	}
+	if entry.Vars["feature_prompt"] == "" || entry.Vars["workspace_dir"] == "" {
+		t.Fatalf("vars: %+v", entry.Vars)
+	}
+}
+
+func TestConfigAssigneeDispatchOrphan(t *testing.T) {
+	// assignee_dispatch[bot] without a matching assignee_workflows entry
+	// is rejected: the override would never fire and indicates a typo.
+	p := writeConfig(t, `workflow: {{WORKFLOW}}
+tracker:
+  kind: native
+assignee_dispatch:
+  ghost-bot:
+    vars:
+      x: "{{ issue.title }}"
+`)
+	if _, err := Load(p); err == nil || !strings.Contains(err.Error(), "ghost-bot") {
+		t.Fatalf("expected orphan error, got %v", err)
+	}
+}
+
+func TestConfigAssigneeDispatchBadTemplate(t *testing.T) {
+	p := writeConfigWithAssigneeWorkflow(t, `workflow: {{WORKFLOW}}
+tracker:
+  kind: native
+assignee_workflows:
+  feature-bot: ./bot.iter
+assignee_dispatch:
+  feature-bot:
+    vars:
+      feature_prompt: "{{ issue.notreal }}"
+`)
+	if _, err := Load(p); err == nil || !strings.Contains(err.Error(), "notreal") {
+		t.Fatalf("expected template field error, got %v", err)
+	}
+}

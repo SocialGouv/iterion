@@ -24,17 +24,18 @@ import (
 // SourcePath is the resolved absolute path of the file on disk and is
 // set by the loader (not parsed from the wire format).
 type Config struct {
-	Name              string            `yaml:"name,omitempty" json:"name,omitempty"`
-	Workflow          string            `yaml:"workflow" json:"workflow"`
-	AssigneeWorkflows map[string]string `yaml:"assignee_workflows,omitempty" json:"assignee_workflows,omitempty"`
-	Tracker           TrackerConfig     `yaml:"tracker" json:"tracker"`
-	Dispatch          DispatchConfig    `yaml:"dispatch,omitempty" json:"dispatch,omitempty"`
-	Polling           PollingConfig     `yaml:"polling,omitempty" json:"polling,omitempty"`
-	Agent             AgentConfig       `yaml:"agent,omitempty" json:"agent,omitempty"`
-	Workspace         WorkspaceConfig   `yaml:"workspace,omitempty" json:"workspace,omitempty"`
-	Hooks             Hooks             `yaml:"hooks,omitempty" json:"hooks,omitempty"`
-	Stall             StallConfig       `yaml:"stall,omitempty" json:"stall,omitempty"`
-	Server            ServerConfig      `yaml:"server,omitempty" json:"server,omitempty"`
+	Name              string                    `yaml:"name,omitempty" json:"name,omitempty"`
+	Workflow          string                    `yaml:"workflow" json:"workflow"`
+	AssigneeWorkflows map[string]string         `yaml:"assignee_workflows,omitempty" json:"assignee_workflows,omitempty"`
+	AssigneeDispatch  map[string]DispatchConfig `yaml:"assignee_dispatch,omitempty" json:"assignee_dispatch,omitempty"`
+	Tracker           TrackerConfig             `yaml:"tracker" json:"tracker"`
+	Dispatch          DispatchConfig            `yaml:"dispatch,omitempty" json:"dispatch,omitempty"`
+	Polling           PollingConfig             `yaml:"polling,omitempty" json:"polling,omitempty"`
+	Agent             AgentConfig               `yaml:"agent,omitempty" json:"agent,omitempty"`
+	Workspace         WorkspaceConfig           `yaml:"workspace,omitempty" json:"workspace,omitempty"`
+	Hooks             Hooks                     `yaml:"hooks,omitempty" json:"hooks,omitempty"`
+	Stall             StallConfig               `yaml:"stall,omitempty" json:"stall,omitempty"`
+	Server            ServerConfig              `yaml:"server,omitempty" json:"server,omitempty"`
 
 	SourcePath string `yaml:"-" json:"-"`
 }
@@ -323,8 +324,32 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("config: dispatch.attachments[%s]: %w", k, err)
 		}
 	}
+	for assignee, dc := range c.AssigneeDispatch {
+		if assignee == "" {
+			return errors.New("config: assignee_dispatch contains an empty key")
+		}
+		if _, ok := c.AssigneeWorkflows[assignee]; !ok {
+			return fmt.Errorf("config: assignee_dispatch[%q] has no matching assignee_workflows entry", assignee)
+		}
+		for k, v := range dc.Vars {
+			if _, err := ParseTemplate(v); err != nil {
+				return fmt.Errorf("config: assignee_dispatch[%q].vars[%s]: %w", assignee, k, err)
+			}
+		}
+		for k, v := range dc.Attachments {
+			if _, err := ParseTemplate(v); err != nil {
+				return fmt.Errorf("config: assignee_dispatch[%q].attachments[%s]: %w", assignee, k, err)
+			}
+		}
+	}
 	return nil
 }
+
+// ApplyDefaults exposes the package-private default application so
+// callers that build a Config in code (e.g. cli.BuildDefaultConfig for
+// the no-arg `iterion dispatch` mode) can normalise zero fields the
+// same way Load does on disk.
+func (c *Config) ApplyDefaults() { c.applyDefaults() }
 
 // PollingInterval returns the polling cadence as a time.Duration after
 // defaults are applied.

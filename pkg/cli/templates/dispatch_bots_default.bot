@@ -1,0 +1,75 @@
+## ─────────────────────────────────────────────────────────────────
+## default — generic dispatcher fallback bot
+##
+## Used by the zero-config `iterion dispatch` mode when an issue has
+## no assignee, or its assignee is not in the catalogue. It performs
+## a read-only analysis of the issue body, identifies the likely
+## category of work (feature, bug, security, docs, dependency...),
+## and surfaces a suggested next step in the run report. It does NOT
+## mutate the workspace — the operator triages from there.
+##
+## Inputs (bound by the dispatcher's global Dispatch.Vars):
+##   - issue_title : "{{issue.title}}"
+##   - issue_body  : "{{issue.body}}"
+##   - issue_id    : "{{issue.identifier}}"
+## ─────────────────────────────────────────────────────────────────
+
+vars:
+  issue_title: string
+  issue_body: string = ""
+  issue_id: string = ""
+
+prompt triage_system:
+  You are an issue triage assistant working from a kanban ticket.
+  Read the title and body, classify the request, and propose a
+  concrete next step. Do not invent details — when information is
+  missing, list the questions that must be answered before work
+  can proceed.
+
+  You MUST NOT call any tool that mutates state. Restrict yourself
+  to a textual response.
+
+prompt triage_user:
+  Issue {{vars.issue_id}}: {{vars.issue_title}}
+
+  Body:
+  {{vars.issue_body}}
+
+  Produce a triage report with these sections:
+    1. Category — one of: feature, bug, refactor, docs, security,
+       dependency, infra, question, other.
+    2. Summary — two sentences restating the request in your own
+       words.
+    3. Recommended assignee — pick the iterion bot best suited to
+       this issue from: vibe-feature-dev, whole-improve-loop,
+       branch-improve-loop, doc-align, sec-audit-source,
+       sec-audit-deps, secured-renovacy, whats-next. Pick "none"
+       if the issue needs human triage first.
+    4. Open questions — list any missing information that blocks
+       progress. Empty list if the request is unambiguous.
+    5. Next step — one concrete action the operator should take.
+
+schema triage_report:
+  category: string [enum: "feature", "bug", "refactor", "docs", "security", "dependency", "infra", "question", "other"]
+  summary: string
+  recommended_assignee: string
+  open_questions: string[]
+  next_step: string
+
+agent triage:
+  backend: "claude_code"
+  output: triage_report
+  publish: triage
+  system: triage_system
+  user: triage_user
+  session: fresh
+
+workflow dispatcher_default:
+  entry: triage
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "10m"
+    max_cost_usd: 1
+
+  triage -> done

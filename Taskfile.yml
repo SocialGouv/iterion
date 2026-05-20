@@ -17,7 +17,7 @@ tasks:
 
   build:
     desc: Build the iterion binary
-    deps: [studio:build]
+    deps: [studio:build, templates:dispatch-bots]
     env:
       CGO_ENABLED: "0"
     cmds:
@@ -26,26 +26,61 @@ tasks:
       - "**/*.go"
       - go.mod
       - pkg/server/static/**
+      - pkg/cli/templates/dispatch_bots/**
     generates:
       - "{{.BINARY}}"
 
+  templates:dispatch-bots:
+    desc: "Sync the embedded dispatcher bot catalogue (pkg/cli/templates/dispatch_bots/) from examples/ + the default fallback template. The output is gitignored: re-run after editing any bot in examples/ or pkg/cli/templates/dispatch_bots_default.bot. Required before `task build` / `task test` (declared as a dep)."
+    cmds:
+      # Wipe-and-resync — but preserve .gitkeep so the directory keeps
+      # tracking even when no bot has been copied yet.
+      - find pkg/cli/templates/dispatch_bots -mindepth 1 ! -name .gitkeep -exec rm -rf {} +
+      - mkdir -p pkg/cli/templates/dispatch_bots/default
+      - cp pkg/cli/templates/dispatch_bots_default.bot pkg/cli/templates/dispatch_bots/default/main.bot
+      - mkdir -p pkg/cli/templates/dispatch_bots/vibe-feature-dev
+      - cp examples/bots/vibe_feature_dev.bot pkg/cli/templates/dispatch_bots/vibe-feature-dev/main.bot
+      - mkdir -p pkg/cli/templates/dispatch_bots/whole-improve-loop
+      - cp examples/bots/whole_improve_loop.bot pkg/cli/templates/dispatch_bots/whole-improve-loop/main.bot
+      - mkdir -p pkg/cli/templates/dispatch_bots/branch-improve-loop
+      - cp examples/bots/branch_improve_loop.bot pkg/cli/templates/dispatch_bots/branch-improve-loop/main.bot
+      - cp -R examples/whats-next pkg/cli/templates/dispatch_bots/whats-next
+      - cp -R examples/doc-align pkg/cli/templates/dispatch_bots/doc-align
+      - cp -R examples/sec-audit-source pkg/cli/templates/dispatch_bots/sec-audit-source
+      - cp -R examples/sec-audit-deps pkg/cli/templates/dispatch_bots/sec-audit-deps
+      - cp -R examples/secured-renovacy pkg/cli/templates/dispatch_bots/secured-renovacy
+    sources:
+      - pkg/cli/templates/dispatch_bots_default.bot
+      - examples/bots/*.bot
+      - examples/whats-next/**
+      - examples/doc-align/**
+      - examples/sec-audit-source/**
+      - examples/sec-audit-deps/**
+      - examples/secured-renovacy/**
+    generates:
+      - pkg/cli/templates/dispatch_bots/**
+
   test:
     desc: Run all unit tests
+    deps: [templates:dispatch-bots]
     cmds:
       - go test ./...
 
   test:verbose:
     desc: Run all unit tests with verbose output
+    deps: [templates:dispatch-bots]
     cmds:
       - go test -v ./...
 
   test:race:
     desc: Run tests with race detector
+    deps: [templates:dispatch-bots]
     cmds:
       - go test -race ./...
 
   test:e2e:
     desc: Run end-to-end tests
+    deps: [templates:dispatch-bots]
     cmds:
       - go test -v -timeout 120s ./e2e/...
 
