@@ -38,31 +38,14 @@ const askUserMCPSubcommand = "__mcp-ask-user"
 // defaultClaudeCodeModel is the model iterion forces on the claude_code
 // backend when the workflow doesn't specify one. Mirrors the official
 // Claude Code CLI default — Opus 4.7 (1M context window). Workflows can
-// always override via the node's `model:` field.
+// always override via the node's `model:` field — including the
+// env-driven form `model: "${ITERION_CLAUDE_CODE_MODEL:-claude-opus-4-7}"`
+// which the IR expander in pkg/backend/model/executor.go resolves
+// before this backend ever sees the task. Operators who want to pin
+// every claude_code node to a single gateway-side alias (e.g. GLM 5.1
+// on z.ai) should put the env var in their .env and use the DSL form
+// above in the bots that opt in.
 const defaultClaudeCodeModel = "claude-opus-4-7"
-
-// claudeCodeModelOverrideEnv is the env var operators set to force a
-// specific model on every claude_code node, bypassing whatever the bot
-// pinned. Use case: routing claude_code through a third-party gateway
-// like z.ai (ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic) where
-// the bot-pinned "claude-opus-4-7" would be silently aliased to the
-// gateway's default (typically a mid-tier GLM model) — set this env
-// to "glm-5.1" / "glm-4.6" / etc. to pin the gateway-side model
-// explicitly. Empty value (or unset) preserves bot-pinned behavior.
-const claudeCodeModelOverrideEnv = "ITERION_CLAUDE_CODE_MODEL"
-
-// resolveClaudeCodeModel applies the env override on top of the
-// task-declared model + default fallback. Centralised so the streaming
-// + non-streaming paths share one resolution.
-func resolveClaudeCodeModel(taskModel string) string {
-	if override := strings.TrimSpace(os.Getenv(claudeCodeModelOverrideEnv)); override != "" {
-		return override
-	}
-	if taskModel != "" {
-		return taskModel
-	}
-	return defaultClaudeCodeModel
-}
 
 // defaultClaudeCodeEffort is the reasoning effort iterion forces on the
 // claude_code backend when the workflow doesn't specify one. Mirrors the
@@ -170,7 +153,10 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 		}
 	}))
 
-	model := resolveClaudeCodeModel(task.Model)
+	model := task.Model
+	if model == "" {
+		model = defaultClaudeCodeModel
+	}
 	opts = append(opts, claudesdk.WithModel(model))
 
 	if b.Command != "" {
@@ -571,7 +557,10 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		opts = append(opts, claudesdk.WithCLIPath("claude"))
 	}
 
-	model := resolveClaudeCodeModel(task.Model)
+	model := task.Model
+	if model == "" {
+		model = defaultClaudeCodeModel
+	}
 	opts = append(opts, claudesdk.WithModel(model))
 	if b.Command != "" {
 		opts = append(opts, claudesdk.WithCLIPath(b.Command))
