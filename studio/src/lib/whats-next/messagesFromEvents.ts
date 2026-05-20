@@ -325,7 +325,14 @@ function processEvent(
         const entry = bot.nodeMap[nodeId];
         if (!entry) break;
 
-        const iter = iterationOf(evt);
+        // node_finished events also omit `iteration` from the payload
+        // today — same fallback as human_input_requested. Without it,
+        // every node_finished for a re-entered node (revise_roadmap
+        // and human_review in the whats-next revise loop) updates the
+        // iter-0 banner and the iter-1+ banner stays stuck on
+        // "running" with its loading phrase still rotating even
+        // though the node has long completed.
+        const iter = nodeIteration.get(nodeId) ?? iterationOf(evt);
         if (entry.kind === "banner") {
           const key = bannerId(nodeId, iter);
           const idx = bannerIdx.get(key);
