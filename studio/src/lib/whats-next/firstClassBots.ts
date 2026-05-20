@@ -196,16 +196,15 @@ export const FIRST_CLASS_BOTS: Readonly<Record<string, FirstClassBot>> = {
         label: "Moving issues to ready",
         summaryField: "summary",
       },
-      // Radio-only: pick an action and submit in one click. The
-      // free-text detail you'd want to add lives on the chatbox that
-      // re-appears after the form clears (during triage_board's run,
-      // chat messages queue and land at the next ask_continue
-      // iteration) — no point duplicating that input here. "done"
-      // submits immediately and exits the loop via derive_continue.
+      // Two-field form rendered flat (both questions on one page):
+      // pick an action AND describe what you want, submit once.
+      // Triage_board reads action+detail together; without the
+      // detail the loop just kept asking "what do you want to
+      // dispatch?" with no operator way to answer.
       ask_continue: {
         kind: "human",
         prompt: "What's next on the board?",
-        textField: "action",
+        textField: "detail",
         form: {
           questions: [
             {
@@ -228,15 +227,25 @@ export const FIRST_CLASS_BOTS: Readonly<Record<string, FirstClassBot>> = {
                   value: "dispatch_more",
                   label: "Dispatch more",
                   description:
-                    "Push more backlog tickets to ready so the dispatcher picks them up.",
+                    'Push more backlog tickets to ready (detail = "all", a list of IDs, or a filter like "feature_dev" / "short-term").',
                 },
                 {
                   value: "done",
                   label: "I'm done",
-                  description: "End this session.",
+                  description: "End this session. Detail can stay empty.",
                 },
               ],
               required: true,
+            },
+            {
+              id: "detail",
+              kind: "free_text",
+              label: "Detail",
+              description:
+                'Required for the action-taking options. Tell triage_board what to do — e.g. "all short-term", "close ticket abc12345", "create a sandbox-doctor refactor ticket".',
+              placeholder: 'e.g. "all", "feature_dev only", "abc123, def456"',
+              rows: 3,
+              required: false,
             },
           ],
           submitLabel: "Continue",

@@ -211,6 +211,7 @@ function resolveDynamicForm(
   );
   if (!summary || summary.createdIssues.length === 0) return staticForm;
   return {
+    mode: "flat",
     questions: [
       {
         id: "selected_issue_ids",

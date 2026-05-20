@@ -61,6 +61,13 @@ export interface FormSpec {
   questions: FormQuestion[];
   // Optional override label for the submit button. Default: "Send".
   submitLabel?: string;
+  // Rendering mode for the form. "auto" (default) paginates to a
+  // wizard with Back/Next/Submit when there are 2+ questions; "flat"
+  // always renders every question on one page with a single Submit.
+  // Inline chat turns prefer "flat" to keep the operator's mental
+  // model "one form, one submit"; the wizard is better suited to
+  // /runs/<id>'s richer interaction panels.
+  mode?: "auto" | "flat";
 }
 
 // FormAnswer maps a question id to its raw value. Single-value

@@ -151,7 +151,12 @@ export default function HumanChatTurn({
 
       {hasForm && (
         <div className="ml-6">
-          <WizardForm spec={form!} onSubmit={submitForm} busy={disabled} />
+          <WizardForm
+            spec={form!}
+            onSubmit={submitForm}
+            busy={disabled}
+            mode={form!.mode ?? "flat"}
+          />
         </div>
       )}
 
