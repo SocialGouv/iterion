@@ -779,7 +779,6 @@ workflow feature_dev:
     ## with the workspace's devbox.json.
     image: "ghcr.io/socialgouv/iterion-sandbox-full:edge"
     user: "devbox"
-    workspace_folder: "/workspace"
     mounts: ["type=bind,source=${localEnv:HOME}/.claude,target=/home/devbox/.claude,consistency=cached"]
     env:
       CLAUDE_CONFIG_DIR: "/home/devbox/.claude"

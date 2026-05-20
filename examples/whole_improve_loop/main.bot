@@ -571,7 +571,6 @@ workflow whole_improve_loop:
     ## See feature_dev/main.bot for the rationale on full vs slim.
     image: "ghcr.io/socialgouv/iterion-sandbox-full:edge"
     user: "devbox"
-    workspace_folder: "/workspace"
     mounts: ["type=bind,source=${localEnv:HOME}/.claude,target=/home/devbox/.claude,consistency=cached"]
     env:
       CLAUDE_CONFIG_DIR: "/home/devbox/.claude"

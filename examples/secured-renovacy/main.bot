@@ -4246,7 +4246,6 @@ workflow secured_renovacy:
     ## toolchains via devbox/Nix at runtime in either case.
     image: "ghcr.io/socialgouv/iterion-sandbox-full:latest"
     user: "devbox"
-    workspace_folder: "/workspace"
     ## R&D phase: egress is fully open. Every domain the
     ## downstream agents actually hit (registries, OSV API,
     ## raw.githubusercontent.com, github.com/releases, deps.dev,

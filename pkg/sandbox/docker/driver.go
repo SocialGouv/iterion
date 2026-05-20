@@ -16,10 +16,23 @@ import (
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
 
-// DefaultWorkspace is the in-container path where the host worktree
-// is bind-mounted. Devcontainer convention. Workflows can override
-// via [sandbox.Spec.WorkspaceFolder].
-const DefaultWorkspace = "/workspace"
+// LegacyDefaultWorkspace is the historical devcontainer convention
+// path. Kept exported for callers (tests + docs) that want to opt
+// into the old "workspace lives at /workspace inside the container"
+// behavior by setting [sandbox.Spec.WorkspaceFolder] = LegacyDefaultWorkspace.
+//
+// The new default — when WorkspaceFolder is empty — is to bind the
+// host worktree at its own absolute path inside the container, so
+// paths baked into bot prompts (via {{vars.workspace_dir}}, which
+// resolves to the host workspace path) resolve identically in and
+// out of the sandbox. This matches CLAUDE.md's "the sandbox bind-
+// mounts the worktree at the host workspace's absolute path so
+// Claude Code project keys match in/out container" guidance and
+// fixes the 2026-05-20 dogfood bug where every dispatched bot
+// burned its budget on Read errors because /home/.../studio/...
+// (host) didn't exist inside the container — only /workspace did,
+// but the prompt didn't say /workspace.
+const LegacyDefaultWorkspace = "/workspace"
 
 // New returns a Docker driver bound to the given runtime, or an error
 // when neither docker nor podman are on PATH. The constructor itself
@@ -110,10 +123,12 @@ func (d *Driver) Prepare(ctx context.Context, spec sandbox.Spec) (sandbox.Prepar
 	if spec.Image == "" && spec.Build == nil {
 		return nil, fmt.Errorf("docker: sandbox.image is required when mode=inline (or declare a build: block); use mode=auto with a .devcontainer/devcontainer.json to read it from there")
 	}
+	// workspace == "" is the sentinel "use the host absolute path
+	// inside the container too" (the new default). Start() resolves
+	// it from info.WorkspacePath once that's known. Explicit values
+	// (e.g. "/workspace" for legacy compat, or "/repo" for custom
+	// devcontainer setups) are honored as-is.
 	workspace := spec.WorkspaceFolder
-	if workspace == "" {
-		workspace = DefaultWorkspace
-	}
 
 	// Pull is only meaningful when we have a pre-built image ref.
 	// Build-driven specs materialize the image at Build() time and
@@ -162,13 +177,23 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		return nil, fmt.Errorf("docker: resolve workspace path: %w", err)
 	}
 
+	// Default-empty WorkspaceFolder means "bind at host path inside
+	// container" — keeps workspace_dir baked into bot prompts (host
+	// path) resolving identically in/out of the container. Explicit
+	// overrides win (e.g. "/workspace" for legacy bots, "/repo" for
+	// custom devcontainer schemas).
+	inContainerWorkspace := p.workspace
+	if inContainerWorkspace == "" {
+		inContainerWorkspace = absWorkspace
+	}
+
 	containerName := containerNameFor(info.RunID)
 	args := []string{"run", "--detach", "--rm",
 		"--name", containerName,
 		"--label", "iterion.io/managed=true",
 		"--label", "iterion.io/run-id=" + info.RunID,
-		"--workdir", p.workspace,
-		"--mount", "type=bind,source=" + absWorkspace + ",target=" + p.workspace,
+		"--workdir", inContainerWorkspace,
+		"--mount", "type=bind,source=" + absWorkspace + ",target=" + inContainerWorkspace,
 	}
 	if info.FriendlyName != "" {
 		args = append(args, "--label", "iterion.io/run-name="+info.FriendlyName)
@@ -182,7 +207,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	if err := validatePlainArg("docker image", p.spec.Image); err != nil {
 		return nil, err
 	}
-	if err := validatePlainArg("docker --workdir", p.workspace); err != nil {
+	if err := validatePlainArg("docker --workdir", inContainerWorkspace); err != nil {
 		return nil, err
 	}
 	for _, m := range p.spec.Mounts {
@@ -253,11 +278,12 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	containerID := strings.TrimSpace(string(out))
 
 	r := &Run{
-		driver:        d,
-		containerID:   containerID,
-		containerName: containerName,
-		prepared:      p,
-		info:          info,
+		driver:               d,
+		containerID:          containerID,
+		containerName:        containerName,
+		prepared:             p,
+		info:                 info,
+		inContainerWorkspace: inContainerWorkspace,
 	}
 
 	if p.spec.PostCreate != "" {
@@ -273,7 +299,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		}
 	}
 
-	d.logger.Info("sandbox: container %s started (image=%s, workspace=%s)", containerShortID(containerID), p.spec.Image, p.workspace)
+	d.logger.Info("sandbox: container %s started (image=%s, workspace=%s)", containerShortID(containerID), p.spec.Image, inContainerWorkspace)
 	return r, nil
 }
 
@@ -302,6 +328,13 @@ type Run struct {
 	containerName string // human-readable label, also stable across runtime restarts
 	prepared      *Prepared
 	info          sandbox.RunInfo
+
+	// inContainerWorkspace is the workdir path inside the container —
+	// either spec.WorkspaceFolder (legacy explicit override) or
+	// info.WorkspacePath (the new "bind at host absolute path"
+	// default). Used as the default --workdir for `docker exec`
+	// when the caller doesn't override per-call.
+	inContainerWorkspace string
 
 	mu      sync.Mutex
 	stopped bool
@@ -337,7 +370,7 @@ func (r *Run) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) 
 	}
 	workDir := opts.WorkDir
 	if workDir == "" {
-		workDir = r.prepared.workspace
+		workDir = r.inContainerWorkspace
 	}
 	args = append(args, "--workdir", workDir)
 	for k, v := range opts.Env {
