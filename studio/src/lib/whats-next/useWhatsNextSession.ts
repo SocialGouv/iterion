@@ -452,7 +452,16 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
         if (typeof console !== "undefined") {
           console.debug("[whats-next] submitHumanAnswer → resumeRun", { runId });
         }
-        await resumeRun(runId, { answers });
+        // `force: true` is intentional. After any bot edit (the
+        // operator iterates on prompts mid-session) the workflow
+        // hash changes; the engine's checkWorkflowHash silently
+        // rejects the resume — but the HTTP layer returns 202
+        // before the goroutine validates, so the SPA sees a fake
+        // success while the engine sits idle. Resume from inside
+        // /whats-next is unambiguously "retry with my edits", so we
+        // pass force every time. The /runs/<id> console retains the
+        // explicit toggle for the rare hash-pinned case.
+        await resumeRun(runId, { answers, force: true });
         if (typeof console !== "undefined") {
           console.debug("[whats-next] submitHumanAnswer ← resumeRun OK");
         }
