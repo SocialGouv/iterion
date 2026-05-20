@@ -240,10 +240,11 @@ export const FIRST_CLASS_BOTS: Readonly<Record<string, FirstClassBot>> = {
             {
               id: "detail",
               kind: "free_text",
-              label: "Detail",
+              label: "Detail (optional for dispatch_more / done)",
               description:
-                'Required for the action-taking options. Tell triage_board what to do — e.g. "all short-term", "close ticket abc12345", "create a sandbox-doctor refactor ticket".',
-              placeholder: 'e.g. "all", "feature_dev only", "abc123, def456"',
+                'Tell triage_board what to do. Examples: "all short-term", "feature_dev only", "abc123, def456", "close ticket abc12345", "create a sandbox-doctor refactor ticket". Leaving it empty on dispatch_more = dispatch all assignee-bearing backlog tickets.',
+              placeholder:
+                'empty = dispatch all (or describe: "feature_dev only", "abc123,def456", …)',
               rows: 3,
               required: false,
             },

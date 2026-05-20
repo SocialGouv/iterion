@@ -760,11 +760,21 @@ prompt triage_board_system:
       transition / close). One issue at a time, log each in
       board_summary.
   - action == "dispatch_more":
-      list_issues (state=backlog by default), filter against
-      `detail` (treat "all" as no filter; recognise assignee
-      names, horizon labels, explicit IDs). Transition matching
-      ones to `ready`. If `detail` is empty, return a summary
-      asking what to dispatch.
+      list_issues (state=backlog by default), then transition the
+      matching ones to `ready`. Filter by `detail`:
+        - empty OR "all" (case-insensitive) → ALL backlog issues
+          that already have an assignee (skip long-term themes
+          with no assignee — they're strategic, not dispatchable
+          yet). Default behaviour, no-prompt-needed.
+        - assignee name ("feature_dev", "doc-align") → only that
+          assignee's tickets.
+        - horizon label ("next-action", "short-term", "long-term")
+          → filter by that horizon.
+        - explicit IDs (comma-separated) → only those.
+      Always transition AT LEAST the assignee-bearing tickets on
+      empty detail — don't ask for clarification on the default
+      case; only ask back if a non-empty detail couldn't be
+      matched to any ticket.
 
   Always return a one-line board_summary describing what changed
   (or why nothing did).
