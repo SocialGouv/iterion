@@ -113,6 +113,15 @@ export default function HumanChatTurn({
   };
 
   const submitForm = (formAnswer: FormAnswer) => {
+    if (typeof console !== "undefined") {
+      console.debug("[whats-next] HumanChatTurn submitForm", {
+        messageId: message.id,
+        nodeId: message.nodeId,
+        formAnswer,
+        hasOnSubmit: !!onSubmit,
+        disabled,
+      });
+    }
     if (!onSubmit || disabled) return;
     setLocalSubmitting(true);
     onSubmit({ text: "", formAnswer });

@@ -59,11 +59,25 @@ export default function WhatsNextView() {
         formAnswer?: Record<string, string | string[]>;
       },
     ) => {
-      if (!bot) return;
-      const m = session.messages.find((x) => x.id === messageId);
-      if (!m || m.kind !== "human-question") return;
-      const entry = bot.nodeMap[m.nodeId];
-      if (!entry) return;
+      const m = bot
+        ? session.messages.find((x) => x.id === messageId)
+        : undefined;
+      const entry = m && m.kind === "human-question" && bot
+        ? bot.nodeMap[m.nodeId]
+        : undefined;
+      if (typeof console !== "undefined") {
+        console.debug("[whats-next] onHumanSubmit", {
+          messageId,
+          outcome,
+          hasBot: !!bot,
+          hasMessage: !!m,
+          messageKind: m?.kind,
+          messageStatus: m?.kind === "human-question" ? m.status : undefined,
+          hasEntry: !!entry,
+          runId: session.runId,
+        });
+      }
+      if (!bot || !m || m.kind !== "human-question" || !entry) return;
       if (outcome.formAnswer) {
         void session.submitHumanAnswer(messageId, outcome.formAnswer);
         return;
