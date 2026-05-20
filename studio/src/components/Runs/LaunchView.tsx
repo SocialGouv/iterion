@@ -26,7 +26,8 @@ import AttachmentFieldInput, {
   type AttachmentValue,
 } from "./AttachmentFieldInput";
 import CostPreviewChip from "./CostPreviewChip";
-import VarFieldInput, { defaultStringFor } from "./VarFieldInput";
+import VarFieldInput, { defaultStringFor } from "@/components/shared/VarFieldInput";
+import { isVarRequired, isVarMissing, RequiredPill } from "@/lib/varValidation";
 import { isPromptLikeVar } from "@/lib/promptVarHeuristics";
 import { formatBytes, totalSize } from "@/lib/attachmentValidation";
 
@@ -37,25 +38,6 @@ function pickVars(doc: IterDocument | null): VarField[] {
   const wf = doc.workflows?.[0];
   if (wf?.vars?.fields?.length) return wf.vars.fields;
   return doc.vars?.fields ?? [];
-}
-
-/** A var is required when the workflow declares no default. Bool fields
- *  always have an effective default ("false"), so they're never missing. */
-function isVarRequired(field: VarField): boolean {
-  if (field.type === "bool") return false;
-  return !field.default;
-}
-
-function isVarMissing(field: VarField, value: string): boolean {
-  if (!isVarRequired(field)) return false;
-  return value.trim().length === 0;
-}
-
-/** Small reused affordance — the "required" pill next to a field label. */
-function RequiredPill() {
-  return (
-    <span className="text-[10px] text-warning-fg uppercase tracking-wide">required</span>
-  );
 }
 
 /** Read the workflow's presets (top-level only — they apply to the
