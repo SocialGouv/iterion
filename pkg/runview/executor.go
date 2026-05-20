@@ -17,6 +17,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy/detector"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -173,6 +175,36 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	}
 	if err := tool.RegisterClawAll(toolReg, clawDefaults); err != nil {
 		spec.Logger.Warn("runview: RegisterClawAll: %v", err)
+	}
+
+	// Register the native-board MCP tools so claw nodes that declare
+	// board capabilities can actually call mcp.iterion_board.* (and
+	// the claude_code-FQN alias mcp__iterion_board__*). Without this
+	// the registry is empty for board tools and Resolve correctly
+	// returns "unknown tool" for any board call. We pass all known
+	// board capabilities so every tool registers; per-node access is
+	// gated downstream by the workflow's checkNodeToolAccess (which
+	// reads the node's `capabilities:` list).
+	if dispatcherStoreDir != "" {
+		ns, err := native.NewStore(dispatcherStoreDir)
+		if err != nil {
+			spec.Logger.Warn("runview: open native board store at %s: %v — board MCP tools disabled", dispatcherStoreDir, err)
+		} else {
+			boardCfg := &tool.BoardConfig{
+				Store: ns,
+				Capabilities: []string{
+					boardops.CapBoardRead,
+					boardops.CapBoardCreate,
+					boardops.CapBoardMove,
+					boardops.CapBoardAssign,
+					boardops.CapBoardLabel,
+					boardops.CapBoardClose,
+				},
+			}
+			if err := tool.RegisterClawBoardTools(toolReg, boardCfg); err != nil {
+				spec.Logger.Warn("runview: RegisterClawBoardTools: %v", err)
+			}
+		}
 	}
 
 	executor := model.NewClawExecutor(reg, spec.Workflow, opts...)
