@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
 	"github.com/SocialGouv/iterion/pkg/backend/tooldisplay"
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 
@@ -271,7 +272,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// without the native tool. This mirrors the claw backend limitation
 	// announced via EventSandboxClawRoutedViaRunner.
 	if task.InteractionEnabled && task.Sandbox == nil {
-		if selfPath, err := os.Executable(); err == nil {
+		if selfPath := proc.LocateIterionBinary(); selfPath != "" {
 			opts = append(opts, claudesdk.WithMCPServer(askUserMCPServerName, &claudesdk.MCPStdioServer{
 				Command: selfPath,
 				Args:    []string{askUserMCPSubcommand},
@@ -302,7 +303,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 				},
 			}))
 		} else {
-			b.Logger.Warn("[%s#%d/claude-code] could not resolve iterion binary path; native ask_user MCP server disabled (falling back to JSON _needs_interaction protocol): %v", task.NodeID, task.Iteration, err)
+			b.Logger.Warn("[%s#%d/claude-code] could not resolve iterion CLI binary path; native ask_user MCP server disabled (falling back to JSON _needs_interaction protocol)", task.NodeID, task.Iteration)
 		}
 	}
 
@@ -311,7 +312,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// kanban from inside its reasoning loop. Same sandbox limitation as
 	// ask_user — Phase 2 (HTTP transport) addresses the sandboxed path.
 	if HasBoardCapability(task.Capabilities) && task.Sandbox == nil {
-		if selfPath, err := os.Executable(); err == nil {
+		if selfPath := proc.LocateIterionBinary(); selfPath != "" {
 			env := map[string]string{
 				"ITERION_BOARD_CAPS": strings.Join(task.Capabilities, ","),
 			}
@@ -329,7 +330,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 				opts = append(opts, claudesdk.WithAllowedTools(combined...))
 			}
 		} else {
-			b.Logger.Warn("[%s#%d/claude-code] could not resolve iterion binary path; board MCP server disabled: %v", task.NodeID, task.Iteration, err)
+			b.Logger.Warn("[%s#%d/claude-code] could not resolve iterion CLI binary path; board MCP server disabled", task.NodeID, task.Iteration)
 		}
 	} else if HasBoardCapability(task.Capabilities) && task.Sandbox != nil {
 		if task.BoardHTTPEndpoint != "" && task.BoardRunToken != "" {

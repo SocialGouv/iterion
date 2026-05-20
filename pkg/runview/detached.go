@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -43,15 +44,17 @@ const (
 	runnerCommandResume runnerCommand = "resume"
 )
 
-// runnerBinary returns the absolute path to the iterion executable
-// the server should spawn. We prefer os.Executable() (the running
-// server's own binary) so a single iterion build is used end-to-end —
-// any divergence between the studio and the runner would be a
-// debugging nightmare. Falls back to PATH lookup when os.Executable
-// is unavailable (rare).
+// runnerBinary returns the absolute path to the iterion CLI binary
+// the server should spawn for detached `run` / `resume` invocations.
+//
+// We delegate to proc.LocateIterionBinary so the desktop daemon
+// (running as iterion-desktop) resolves the iterion CLI sibling
+// instead of forking itself — re-entering the Wails wrapper with an
+// unknown subcommand falls through to wails.Run and pops a phantom
+// GUI window. PATH lookup is the last-resort fallback.
 func runnerBinary() (string, error) {
-	if exe, err := os.Executable(); err == nil && exe != "" {
-		return exe, nil
+	if p := proc.LocateIterionBinary(); p != "" {
+		return p, nil
 	}
 	return exec.LookPath("iterion")
 }
