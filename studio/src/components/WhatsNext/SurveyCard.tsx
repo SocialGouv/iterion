@@ -36,7 +36,7 @@ export default function SurveyCard({ message }: Props) {
           <div className="text-[10px] uppercase tracking-wide font-medium text-fg-muted">
             Summary
           </div>
-          <p className="text-[12px] text-fg-default whitespace-pre-wrap border-l-2 border-accent/40 pl-2">
+          <p className="text-[12px] text-fg-default whitespace-pre-wrap break-words border-l-2 border-accent/40 pl-2">
             {message.summary}
           </p>
         </div>
@@ -49,7 +49,7 @@ export default function SurveyCard({ message }: Props) {
           </div>
           <ul className="space-y-1 text-[12px] text-fg-default list-disc ml-5">
             {message.openQuestions.map((q, i) => (
-              <li key={i} className="whitespace-pre-wrap">
+              <li key={i} className="whitespace-pre-wrap break-words">
                 {q}
               </li>
             ))}
@@ -70,7 +70,7 @@ export default function SurveyCard({ message }: Props) {
             <div className="mt-2 space-y-3">
               {message.observations && (
                 <Section title="Observations">
-                  <p className="text-[12px] text-fg-default whitespace-pre-wrap">
+                  <p className="text-[12px] text-fg-default whitespace-pre-wrap break-words">
                     {message.observations}
                   </p>
                 </Section>
@@ -118,7 +118,7 @@ function ValueBlock({ value }: { value: unknown }) {
   // the agent produced for these `json` fields.
   if (typeof value === "string") {
     return (
-      <p className="text-[12px] text-fg-default whitespace-pre-wrap">
+      <p className="text-[12px] text-fg-default whitespace-pre-wrap break-words">
         {value}
       </p>
     );
@@ -127,7 +127,7 @@ function ValueBlock({ value }: { value: unknown }) {
     return (
       <ul className="space-y-0.5 text-[11px] text-fg-default list-disc ml-4">
         {value.map((v, i) => (
-          <li key={i} className="whitespace-pre-wrap">
+          <li key={i} className="whitespace-pre-wrap break-words">
             {typeof v === "string" ? v : JSON.stringify(v)}
           </li>
         ))}
@@ -135,7 +135,7 @@ function ValueBlock({ value }: { value: unknown }) {
     );
   }
   return (
-    <pre className="text-[11px] text-fg-default whitespace-pre-wrap font-mono">
+    <pre className="text-[11px] text-fg-default whitespace-pre-wrap break-words font-mono">
       {JSON.stringify(value, null, 2)}
     </pre>
   );

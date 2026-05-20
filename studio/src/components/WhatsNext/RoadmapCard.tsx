@@ -18,7 +18,7 @@ export default function RoadmapCard({ message }: Props) {
       </div>
 
       {roadmap.rationale && (
-        <p className="text-[12px] text-fg-muted whitespace-pre-wrap border-l-2 border-border-subtle pl-2">
+        <p className="text-[12px] text-fg-muted whitespace-pre-wrap break-words border-l-2 border-border-subtle pl-2">
           {roadmap.rationale}
         </p>
       )}
@@ -89,7 +89,7 @@ function ItemRow({ item }: { item: RoadmapItem }) {
         )}
       </div>
       {item.body && (
-        <p className="text-[11px] text-fg-muted whitespace-pre-wrap">
+        <p className="text-[11px] text-fg-muted whitespace-pre-wrap break-words">
           {item.body}
         </p>
       )}

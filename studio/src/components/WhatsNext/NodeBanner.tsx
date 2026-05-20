@@ -28,7 +28,7 @@ export default function NodeBanner({ message }: Props) {
             <summary className="cursor-pointer text-[11px] text-fg-muted hover:text-fg-default select-none">
               Summary
             </summary>
-            <p className="mt-1 text-[12px] whitespace-pre-wrap text-fg-default border-l-2 border-border-subtle pl-2">
+            <p className="mt-1 text-[12px] whitespace-pre-wrap break-words text-fg-default border-l-2 border-border-subtle pl-2">
               {summary}
             </p>
           </details>

@@ -24,7 +24,7 @@ export default function IssuesSummaryCard({ message }: Props) {
         <span className="text-[10px] text-fg-subtle font-mono">{message.nodeId}</span>
       </div>
 
-      <p className="text-[12px] text-fg-default whitespace-pre-wrap">{summary}</p>
+      <p className="text-[12px] text-fg-default whitespace-pre-wrap break-words">{summary}</p>
 
       {createdIssues.length > 0 && (
         <div className="space-y-1.5">
