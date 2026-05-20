@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import type {
   HumanQuestionMessage,
@@ -71,6 +71,21 @@ export default function HumanChatTurn({
     // Reset on the next tick to avoid setState-during-render.
     queueMicrotask(() => setLocalSubmitting(false));
   }
+
+  // Also clear localSubmitting when the parent's `busy` flips back to
+  // false — that signals "submission completed, success OR failure".
+  // Without this, a resumeRun that errored (hash mismatch, schema
+  // mismatch, run-terminal-state rejection) would leave the form's
+  // submit button permanently disabled: the parent cleared its
+  // busyMessageId on the catch + finally, but localSubmitting stayed
+  // true because the message.status path never reached "answered".
+  useEffect(() => {
+    if (!busy && localSubmitting) {
+      // Microtask defer keeps this consistent with the message-status
+      // clear above (both fire after the current render commits).
+      queueMicrotask(() => setLocalSubmitting(false));
+    }
+  }, [busy, localSubmitting]);
 
   // The disabled gate consults BOTH busy (parent-tracked async state)
   // and localSubmitting (this-render click state) — either being true

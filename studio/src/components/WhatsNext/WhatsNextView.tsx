@@ -137,7 +137,22 @@ export default function WhatsNextView() {
                 {session.errorMessage}
               </div>
             )}
-            {pendingHumanQuestion ? (
+            {session.runId &&
+            (session.runStatus === "failed_resumable" ||
+              session.runStatus === "cancelled") ? (
+              // Terminal-but-resumable wins over PendingTurnFooter:
+              // the form on a dead run is misleading — submitting goes
+              // through resumeRun which would force-resume the engine
+              // anyway, but the operator's mental model "the form is
+              // active" is wrong. Surface Resume explicitly first; the
+              // form's pending question gets re-shown by the new
+              // engine instance after Resume kicks the run forward.
+              <ResumeFooter
+                runStatus={session.runStatus}
+                busy={session.status === "submitting"}
+                onResume={() => void session.resume()}
+              />
+            ) : pendingHumanQuestion ? (
               <PendingTurnFooter
                 message={pendingHumanQuestion}
                 form={pendingForm}
@@ -145,14 +160,6 @@ export default function WhatsNextView() {
                 onSubmit={(outcome) =>
                   onHumanSubmit(pendingHumanQuestion.id, outcome)
                 }
-              />
-            ) : session.runId &&
-              (session.runStatus === "failed_resumable" ||
-                session.runStatus === "cancelled") ? (
-              <ResumeFooter
-                runStatus={session.runStatus}
-                busy={session.status === "submitting"}
-                onResume={() => void session.resume()}
               />
             ) : (
               session.runId &&
