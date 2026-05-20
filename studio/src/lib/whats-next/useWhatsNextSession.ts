@@ -14,8 +14,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createRun,
   getRun,
+  listRuns,
   resumeRun,
   type RunStatus,
+  type RunSummary,
 } from "@/api/runs";
 import { useRunWebSocket } from "@/hooks/useRunWebSocket";
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
@@ -87,67 +89,107 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
   // Auto-attach: on mount, if we remembered a runId for this bot+project,
   // try to fetch its snapshot and (if it's still live) attach. Otherwise
   // forget the stale id.
+  //
+  // Fallback path: when localStorage is empty (fresh tab on the dev
+  // origin, freshly-cleared storage, different origin from the run's
+  // launch context), query the backend for the most recent non-terminal
+  // run on this bot's workflow and auto-attach to it. This means an
+  // operator who closed their /whats-next tab while a run was in
+  // flight can navigate back and resume without having to dig the
+  // run id out of /runs.
   const projectId = useServerInfoStore((s) => s.info?.current_project_id ?? null);
   const attachAttemptedRef = useRef(false);
   useEffect(() => {
     if (attachAttemptedRef.current) return;
     if (!bot.id) return;
     attachAttemptedRef.current = true;
-    const remembered = recallSessionRunId(bot.id, projectId);
-    if (!remembered) return;
     const controller = new AbortController();
     let cancelled = false;
+
+    const attachTo = async (runIdToAttach: string) => {
+      const snap = await getRun(runIdToAttach, { signal: controller.signal });
+      if (cancelled) return;
+      // Continuity is the central whats-next promise: when the user
+      // returns to /whats-next after a previous session ended, they
+      // expect to see the full transcript of that exchange, not a
+      // blank launcher offering them to start over.
+      runStore.getState().reset();
+      runStore.getState().applySnapshot(snap);
+      // setRunId on the store FIRST so loadEventHistoryIfMissing's
+      // post-await guard (`state.runId !== runId` → return) passes.
+      runStore.getState().setRunId(runIdToAttach);
+      try {
+        await runStore.getState().loadEventHistoryIfMissing(runIdToAttach);
+      } catch {
+        // ignore — the live WS will eventually fill any gap.
+      }
+      // Remember now so subsequent mounts (within the same origin)
+      // skip the discovery query and re-attach via localStorage.
+      rememberSessionRunId(bot.id, projectId, runIdToAttach);
+      setRunId(runIdToAttach);
+    };
+
+    const remembered = recallSessionRunId(bot.id, projectId);
     setStatus("launching");
-    getRun(remembered, { signal: controller.signal })
-      .then(async (snap) => {
-        if (cancelled) return;
-        // Continuity is the central whats-next promise: when the user
-        // returns to /whats-next after a previous session ended, they
-        // expect to see the full transcript of that exchange, not a
-        // blank launcher offering them to start over. The previous
-        // implementation forgot the runId on any non-LIVE status,
-        // which made the rich roadmap card, approval verdict, and
-        // emit_action issue summary disappear the moment the user
-        // closed and reopened the app. We now always re-hydrate from
-        // the snapshot + event history; the LIVE_STATUSES check below
-        // only decides whether we *also* engage the live WS tail.
-        runStore.getState().reset();
-        runStore.getState().applySnapshot(snap);
-        // setRunId on the store FIRST so loadEventHistoryIfMissing's
-        // post-await guard (`state.runId !== runId` → return) passes.
-        // Without this the fetched events would be silently dropped.
-        runStore.getState().setRunId(remembered);
-        // Pull the persisted event history so the transcript reflects
-        // everything that happened before this mount. RunView lazy-loads
-        // this only when the user opens the Events tab; for WhatsNext the
-        // transcript IS the rendering, so we always need the full log.
-        // Best-effort: failures fall through to the live-tail-only path.
-        // No abort signal threaded here: the store coalesces concurrent
-        // callers and applies its own staleness guard post-await, so
-        // letting the fetch finish on remount is harmless (and a fresh
-        // mount would have to re-do the work anyway).
-        try {
-          await runStore
-            .getState()
-            .loadEventHistoryIfMissing(remembered);
-        } catch {
-          // ignore — the live WS will eventually fill any gap.
+    const startup = remembered
+      ? attachTo(remembered).catch((err) => {
+          if (
+            controller.signal.aborted ||
+            (err as Error)?.name === "AbortError"
+          ) {
+            return;
+          }
+          // Run no longer exists (rotated, store wiped). Drop the
+          // memory and fall through to server-side discovery so the
+          // operator doesn't get stuck on a stale localStorage entry.
+          forgetSessionRunId(bot.id, projectId);
+          return discoverAndAttach();
+        })
+      : discoverAndAttach();
+
+    async function discoverAndAttach() {
+      try {
+        // Look for the most recent non-terminal whats-next run.
+        // workflow_name comes from the DSL's `workflow whats_next:`
+        // declaration — by convention the FirstClassBot's id matches
+        // the workflow name with hyphens vs underscores (e.g.
+        // "whats-next" ↔ "whats_next"). We try both.
+        const candidates = [bot.id.replace(/-/g, "_"), bot.id];
+        const seen = new Set<string>();
+        const matches: RunSummary[] = [];
+        for (const workflow of candidates) {
+          if (seen.has(workflow)) continue;
+          seen.add(workflow);
+          const runs = await listRuns({ workflow, limit: 10 });
+          matches.push(...runs);
         }
-        setRunId(remembered);
-      })
-      .catch((err) => {
-        // Aborts on unmount are expected — don't treat them as
-        // "run no longer exists" or the next mount's auto-attach
-        // would forget a perfectly valid run id.
-        if (controller.signal.aborted || (err as Error)?.name === "AbortError") {
+        // Pick the most recent non-terminal one. RunSummary lists are
+        // already sorted newest-first by the server.
+        const active = matches.find(
+          (r) =>
+            r.status === "queued" ||
+            r.status === "running" ||
+            r.status === "paused_waiting_human",
+        );
+        if (!active) {
+          setStatus("idle");
           return;
         }
-        if (cancelled) return;
-        // Run no longer exists (rotated, store wiped). Drop the
-        // memory so we don't keep retrying.
-        forgetSessionRunId(bot.id, projectId);
+        await attachTo(active.id);
+      } catch (err) {
+        if (
+          controller.signal.aborted ||
+          (err as Error)?.name === "AbortError"
+        ) {
+          return;
+        }
+        // Discovery failed — fall back to launcher. Operator can
+        // still start a fresh session manually.
         setStatus("idle");
-      });
+      }
+    }
+
+    void startup;
     return () => {
       cancelled = true;
       controller.abort();
