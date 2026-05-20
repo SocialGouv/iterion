@@ -228,22 +228,11 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	return reportRunOutcome(p, s, runID, storeDir, opts.File, err, runResult)
 }
 
-// teeRunLog opens <runDir>/run.log and returns a new logger whose
-// output is multiplexed to both stderr and the file. On error the
-// original logger and a nil closer are returned so callers can keep
-// running — a CLI run with no writable store dir still works (logs go
-// to stderr only). The returned closer is nil when no tee was set up.
+// teeRunLog defers to store.TeeRunLog so the dispatcher and any
+// other in-process runner share the same per-run log-file convention.
+// Kept as a thin wrapper for the CLI's call sites; no behavior change.
 func teeRunLog(logger *iterlog.Logger, level iterlog.Level, runDir string) (*iterlog.Logger, io.Closer) {
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
-		logger.Warn("cli: mkdir run dir for log tee: %v", err)
-		return logger, nil
-	}
-	logFile, err := os.OpenFile(filepath.Join(runDir, "run.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		logger.Warn("cli: open run.log for tee: %v", err)
-		return logger, nil
-	}
-	return iterlog.New(level, io.MultiWriter(os.Stderr, logFile)), logFile
+	return store.TeeRunLog(logger, level, runDir)
 }
 
 // buildRunExecutor constructs the default ClawExecutor for the run

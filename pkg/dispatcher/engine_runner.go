@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -116,12 +117,33 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 		return fmt.Errorf("engine runner: open store: %w", err)
 	}
 
+	// Tee the dispatcher's main logger to a per-run run.log file
+	// alongside events.jsonl. Without this, the studio's run-log
+	// viewer renders "No log captured" on every dispatcher-spawned
+	// run because the file simply doesn't exist (the in-process
+	// runner has nobody writing it — vs the CLI runner which calls
+	// the same helper). The executor + engine below both pick up
+	// this wrapped logger so claude_code's per-turn lines, tool
+	// hints, and budget warnings all land in the file the SPA
+	// tails.
+	runLogger, logCloser := store.TeeRunLog(
+		r.logger, r.logger.Level(),
+		filepath.Join(spec.StoreDir, "runs", spec.RunID),
+	)
+	if logCloser != nil {
+		defer func() {
+			if cerr := logCloser.Close(); cerr != nil {
+				r.logger.Warn("engine runner: close run.log: %v", cerr)
+			}
+		}()
+	}
+
 	exec, err := runview.BuildExecutor(runview.ExecutorSpec{
 		Ctx:      ctx,
 		Workflow: r.workflow,
 		Store:    s,
 		RunID:    spec.RunID,
-		Logger:   r.logger,
+		Logger:   runLogger,
 		StoreDir: spec.StoreDir,
 	})
 	if err != nil {
@@ -136,7 +158,7 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	}
 
 	opts := []runtime.EngineOption{
-		runtime.WithLogger(r.logger),
+		runtime.WithLogger(runLogger),
 		runtime.WithWorkflowHash(r.workflowHash),
 		runtime.WithFilePath(r.workflowPath),
 		runtime.WithRunName(spec.RunID),

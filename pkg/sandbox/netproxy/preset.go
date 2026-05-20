@@ -41,6 +41,17 @@ func iterionDefaultRules() []string {
 		"**.googleapis.com",
 		"**.openai.azure.com",
 		"api.mistral.ai",
+		// z.ai exposes an Anthropic-compatible facade (GLM-4.5/4.6/5.1
+		// behind api.z.ai) that iterion's claude_code backend auto-
+		// routes to when ZAI_API_KEY is in the env. Without this
+		// allowlist entry the sandbox CONNECT proxy blocks the upstream
+		// request and the agent never gets an LLM response — the
+		// structured-output validator then surfaces the failure as
+		// "missing required field" on the empty payload. Surfaced
+		// during the 2026-05-20 dogfood: every reviewer_claude on a
+		// sandboxed run failed with the same shape until z.ai landed
+		// here.
+		"api.z.ai",
 
 		// --- npm --------------------------------------------------
 		"registry.npmjs.org",
