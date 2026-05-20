@@ -324,6 +324,8 @@ export default function BoardView() {
           priority: input.priority,
           assignee: input.assignee,
           fields: input.fields,
+          bot: input.bot,
+          bot_args: input.bot_args,
         });
         setCreating(false);
         await refresh();
@@ -345,6 +347,11 @@ export default function BoardView() {
           priority: input.priority,
           assignee: input.assignee,
           fields: input.fields,
+          // bot defaults to "" when cleared — send the empty string so
+          // the Patch.Bot pointer is set, allowing the server to clear
+          // a previously-set bot. Same for bot_args (empty map clears).
+          bot: input.bot ?? "",
+          bot_args: input.bot_args ?? {},
         });
         setEditing(null);
         await refresh();
@@ -1004,6 +1011,14 @@ function IssueCard({
       )}
       <div className="mt-1 flex items-center gap-2 text-[10px] text-fg-muted flex-wrap">
         <code className="opacity-70">{shortID(iss.id)}</code>
+        {iss.bot && (
+          <span
+            className="font-mono bg-accent/15 text-accent rounded px-1 py-0.5"
+            title={`Will dispatch via ${iss.bot} (overrides dispatcher config)`}
+          >
+            🤖 {iss.bot}
+          </span>
+        )}
         {iss.assignee && <span>@{iss.assignee}</span>}
         {iss.claim && (
           <span
