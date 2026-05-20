@@ -270,6 +270,18 @@ function SessionHeader({
         )}
       </h2>
       <div className="flex items-baseline gap-3">
+        {session.status === "ended" &&
+          (session.runStatus === "failed_resumable" ||
+            session.runStatus === "cancelled") && (
+            <button
+              type="button"
+              onClick={() => void session.resume()}
+              className="text-[11px] text-accent hover:underline cursor-pointer"
+              title={`Re-enter the run from its checkpoint (status: ${session.runStatus})`}
+            >
+              Resume
+            </button>
+          )}
         {session.status === "ended" && (
           <button
             type="button"

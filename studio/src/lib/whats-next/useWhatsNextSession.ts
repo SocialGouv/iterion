@@ -72,6 +72,12 @@ export interface UseWhatsNextSession {
   // re-appears. The transcript of the prior session is dropped — use
   // when the user explicitly wants to start a fresh exchange.
   newSession: () => void;
+  // Re-enter a failed_resumable / cancelled run from its checkpoint
+  // without supplying new human answers. Used by the SessionHeader's
+  // Resume button so the operator doesn't have to flip to /runs/<id>
+  // to recover from a transient backend error (the rest of the
+  // submit machinery already lives on submitHumanAnswer).
+  resume: () => Promise<void>;
 }
 
 export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
@@ -471,6 +477,41 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
     [runId, setRunStatus, requestWsReconnect, applySnapshot],
   );
 
+  // Bare-resume entry point: re-enter the run from its checkpoint
+  // without supplying new human answers. Used for failed_resumable
+  // (transient backend errors, missing tools, schema mismatches the
+  // operator fixed in source) and for cancelled runs the operator
+  // wants to bring back. The submit path lives on submitHumanAnswer
+  // because most resumes carry user input — this one is the rarer
+  // "I fixed the code, please retry" flow.
+  const resume = useCallback(async () => {
+    if (!runId) return;
+    setErrorMessage(null);
+    setStatus("submitting");
+    try {
+      await resumeRun(runId, { answers: {} });
+      setRunStatus("running");
+      requestWsReconnect();
+      if (refreshTimerRef.current !== null) {
+        window.clearTimeout(refreshTimerRef.current);
+      }
+      const targetRunId = runId;
+      refreshTimerRef.current = window.setTimeout(() => {
+        refreshTimerRef.current = null;
+        if (runStore.getState().runId !== targetRunId) return;
+        getRun(targetRunId)
+          .then(applySnapshot)
+          .catch((e) => {
+            console.warn("whats-next snapshot refresh failed", e);
+          });
+      }, 600);
+      setStatus("active");
+    } catch (e) {
+      setErrorMessage((e as Error).message);
+      setStatus("ended");
+    }
+  }, [runId, setRunStatus, requestWsReconnect, applySnapshot]);
+
   return {
     status,
     runId,
@@ -482,5 +523,6 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
     launch,
     submitHumanAnswer,
     newSession,
+    resume,
   };
 }
