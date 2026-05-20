@@ -141,6 +141,9 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 			NativeStore:      ns,
 			Logger:           logger,
 			DefaultBotsPaths: opts.BotsPaths,
+			DefaultsFn: func() (*dispatcher.Config, error) {
+				return BuildDefaultConfig(resolvedStoreDir)
+			},
 		})
 		if mgrErr == nil {
 			cfg.Dispatcher = mgr

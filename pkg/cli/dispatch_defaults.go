@@ -57,40 +57,64 @@ const defaultDispatchMaxConcurrent = 2
 // block. When a bot has no obvious prompt-shaped input (sec-audit-deps,
 // branch-improve-loop's diff focus), only `workspace_dir` is bound and
 // `scope_notes` carries the issue text when the bot accepts it.
+//
+// Both kebab-case (`feature-dev`) and snake_case (`feature_dev`)
+// assignee labels are mapped to the same workflow. The whats-next bot
+// emits snake_case (matching the Go package convention used inside the
+// examples/ tree); hand-written or git-versioned configs typically use
+// kebab-case (matching the bot directory names). Supporting both makes
+// auto-config robust to either origin without forcing the operator or
+// the bot to pick one.
 func defaultAssigneeDispatch() map[string]dispatcher.DispatchConfig {
+	featureDev := dispatcher.DispatchConfig{Vars: map[string]string{
+		"workspace_dir":  "{{dispatcher.workspace_path}}",
+		"feature_prompt": defaultBotIssuePrompt,
+	}}
+	wholeImproveLoop := dispatcher.DispatchConfig{Vars: map[string]string{
+		"workspace_dir":      "{{dispatcher.workspace_path}}",
+		"improvement_prompt": defaultBotIssuePrompt,
+		"scope_notes":        "{{issue.body}}",
+	}}
+	branchImproveLoop := dispatcher.DispatchConfig{Vars: map[string]string{
+		"workspace_dir": "{{dispatcher.workspace_path}}",
+		"scope_notes":   defaultBotIssuePrompt,
+	}}
+	whatsNext := dispatcher.DispatchConfig{Vars: map[string]string{
+		"workspace_dir": "{{dispatcher.workspace_path}}",
+		"scope_notes":   defaultBotIssuePrompt,
+	}}
+	docAlign := dispatcher.DispatchConfig{Vars: map[string]string{
+		"workspace_dir": "{{dispatcher.workspace_path}}",
+		"scope_notes":   defaultBotIssuePrompt,
+	}}
+	secAuditSource := dispatcher.DispatchConfig{Vars: map[string]string{
+		"workspace_dir": "{{dispatcher.workspace_path}}",
+		"scope_notes":   defaultBotIssuePrompt,
+	}}
+	secAuditDeps := dispatcher.DispatchConfig{Vars: map[string]string{
+		"workspace_dir": "{{dispatcher.workspace_path}}",
+	}}
+	securedRenovacy := dispatcher.DispatchConfig{Vars: map[string]string{
+		"workspace_dir": "{{dispatcher.workspace_path}}",
+		"user_prompt":   defaultBotIssuePrompt,
+	}}
 	return map[string]dispatcher.DispatchConfig{
-		"feature-dev": {Vars: map[string]string{
-			"workspace_dir":  "{{dispatcher.workspace_path}}",
-			"feature_prompt": defaultBotIssuePrompt,
-		}},
-		"whole-improve-loop": {Vars: map[string]string{
-			"workspace_dir":      "{{dispatcher.workspace_path}}",
-			"improvement_prompt": defaultBotIssuePrompt,
-			"scope_notes":        "{{issue.body}}",
-		}},
-		"branch-improve-loop": {Vars: map[string]string{
-			"workspace_dir": "{{dispatcher.workspace_path}}",
-			"scope_notes":   defaultBotIssuePrompt,
-		}},
-		"whats-next": {Vars: map[string]string{
-			"workspace_dir": "{{dispatcher.workspace_path}}",
-			"scope_notes":   defaultBotIssuePrompt,
-		}},
-		"doc-align": {Vars: map[string]string{
-			"workspace_dir": "{{dispatcher.workspace_path}}",
-			"scope_notes":   defaultBotIssuePrompt,
-		}},
-		"sec-audit-source": {Vars: map[string]string{
-			"workspace_dir": "{{dispatcher.workspace_path}}",
-			"scope_notes":   defaultBotIssuePrompt,
-		}},
-		"sec-audit-deps": {Vars: map[string]string{
-			"workspace_dir": "{{dispatcher.workspace_path}}",
-		}},
-		"secured-renovacy": {Vars: map[string]string{
-			"workspace_dir": "{{dispatcher.workspace_path}}",
-			"user_prompt":   defaultBotIssuePrompt,
-		}},
+		"feature-dev":         featureDev,
+		"feature_dev":         featureDev,
+		"whole-improve-loop":  wholeImproveLoop,
+		"whole_improve_loop":  wholeImproveLoop,
+		"branch-improve-loop": branchImproveLoop,
+		"branch_improve_loop": branchImproveLoop,
+		"whats-next":          whatsNext,
+		"whats_next":          whatsNext,
+		"doc-align":           docAlign,
+		"doc_align":           docAlign,
+		"sec-audit-source":    secAuditSource,
+		"sec_audit_source":    secAuditSource,
+		"sec-audit-deps":      secAuditDeps,
+		"sec_audit_deps":      secAuditDeps,
+		"secured-renovacy":    securedRenovacy,
+		"secured_renovacy":    securedRenovacy,
 	}
 }
 
@@ -173,6 +197,9 @@ func BuildDefaultConfig(storeDir string) (*dispatcher.Config, error) {
 		Agent:    dispatcher.AgentConfig{MaxConcurrent: defaultDispatchMaxConcurrent},
 		Server:   dispatcher.ServerConfig{Port: defaultDispatchPort},
 		AssigneeWorkflows: map[string]string{
+			// kebab-case canonical (matches the bot directory names
+			// + the names a hand-written iterion.dispatcher.yaml
+			// typically uses).
 			"feature-dev":         filepath.Join(botsDir, "feature-dev"),
 			"whole-improve-loop":  filepath.Join(botsDir, "whole-improve-loop"),
 			"branch-improve-loop": filepath.Join(botsDir, "branch-improve-loop"),
@@ -181,6 +208,20 @@ func BuildDefaultConfig(storeDir string) (*dispatcher.Config, error) {
 			"sec-audit-source":    filepath.Join(botsDir, "sec-audit-source"),
 			"sec-audit-deps":      filepath.Join(botsDir, "sec-audit-deps"),
 			"secured-renovacy":    filepath.Join(botsDir, "secured-renovacy"),
+			// snake_case aliases — what whats-next' assign_to_bots
+			// emits (matching the Go pkg naming convention used in
+			// examples/feature_dev/, examples/whole_improve_loop/).
+			// Pre-aliased here so the dispatcher routes existing
+			// snake_case assignees without the operator needing to
+			// rename tickets or edit the config.
+			"feature_dev":         filepath.Join(botsDir, "feature-dev"),
+			"whole_improve_loop":  filepath.Join(botsDir, "whole-improve-loop"),
+			"branch_improve_loop": filepath.Join(botsDir, "branch-improve-loop"),
+			"whats_next":          filepath.Join(botsDir, "whats-next"),
+			"doc_align":           filepath.Join(botsDir, "doc-align"),
+			"sec_audit_source":    filepath.Join(botsDir, "sec-audit-source"),
+			"sec_audit_deps":      filepath.Join(botsDir, "sec-audit-deps"),
+			"secured_renovacy":    filepath.Join(botsDir, "secured-renovacy"),
 		},
 		AssigneeDispatch: defaultAssigneeDispatch(),
 		Dispatch: dispatcher.DispatchConfig{
@@ -198,13 +239,25 @@ func BuildDefaultConfig(storeDir string) (*dispatcher.Config, error) {
 	return cfg, nil
 }
 
-// DefaultAssigneeNames returns the assignee labels currently shipped
-// in the embedded catalogue, sorted by name (deterministic output for
-// the CLI banner). Exposed so the CLI can print the list at startup.
+// DefaultAssigneeNames returns the canonical (kebab-case) assignee
+// labels shipped in the embedded catalogue, sorted by name
+// (deterministic output for the CLI banner). Snake_case aliases are
+// folded out so the human-readable list stays one entry per bot.
+// Exposed so the CLI can print the list at startup.
 func DefaultAssigneeNames() []string {
 	dispatch := defaultAssigneeDispatch()
-	names := make([]string, 0, len(dispatch))
+	seen := make(map[string]struct{}, len(dispatch))
+	names := make([]string, 0, len(dispatch)/2)
 	for k := range dispatch {
+		// Skip snake_case aliases — they share the same DispatchConfig
+		// value as the kebab-case canonical entry.
+		if strings.ContainsRune(k, '_') {
+			continue
+		}
+		if _, dup := seen[k]; dup {
+			continue
+		}
+		seen[k] = struct{}{}
 		names = append(names, k)
 	}
 	sort.Strings(names)

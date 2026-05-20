@@ -158,7 +158,20 @@ function useDispatcherStatusPoll({
     }
   }, []);
 
-  return { status, busy, error, startDispatcher };
+  const autoConfigureAndStart = useCallback(async () => {
+    setBusy(true);
+    try {
+      const s = await dispatcher.applyDefaults();
+      setStatus(s);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  return { status, busy, error, startDispatcher, autoConfigureAndStart };
 }
 
 function DispatcherChip({
@@ -216,13 +229,24 @@ function DispatcherChip({
         </button>
       )}
       {!hasConfig && (
-        <Link
-          href="/dispatcher"
-          className="rounded border border-border-default px-2 py-0.5 text-[11px] text-accent hover:bg-surface-2"
-          title="Configure the dispatcher (workflow + tracker)"
-        >
-          Configure
-        </Link>
+        <>
+          <button
+            type="button"
+            disabled={status.busy}
+            onClick={() => void status.autoConfigureAndStart()}
+            className="rounded border border-accent/40 bg-accent-soft px-2 py-0.5 text-[11px] text-accent hover:bg-accent-soft/80 disabled:opacity-50"
+            title="Auto-configure with the embedded bot catalogue (feature_dev, doc-align, …) and start the dispatcher"
+          >
+            {status.busy ? "…" : "⚡ Auto-configure & start"}
+          </button>
+          <Link
+            href="/dispatcher"
+            className="rounded border border-border-default px-2 py-0.5 text-[11px] text-fg-muted hover:bg-surface-2"
+            title="Open the dispatcher view to configure manually"
+          >
+            Configure
+          </Link>
+        </>
       )}
     </div>
   );

@@ -46,6 +46,16 @@ type ManagerOptions struct {
 	// the host's bots without the operator having to configure them
 	// twice.
 	DefaultBotsPaths []string
+	// DefaultsFn builds a zero-config dispatcher Config from the
+	// host environment (typically by extracting the embedded bot
+	// catalogue under <storeDir>/dispatcher/bots/). When set, the
+	// Manager exposes POST /defaults/apply which saves the returned
+	// config and starts the dispatcher in one call. nil = the
+	// endpoint returns 501 Not Implemented.
+	//
+	// Injected from pkg/cli (where the embed.FS lives) so the
+	// pkg/dispatcher package stays free of the templates dep.
+	DefaultsFn func() (*Config, error)
 }
 
 // Manager owns the lifecycle of an in-process Dispatcher instance.
@@ -60,6 +70,7 @@ type Manager struct {
 	nativeStore      *native.Store
 	logger           *iterlog.Logger
 	defaultBotsPaths []string
+	defaultsFn       func() (*Config, error)
 
 	mu        sync.Mutex
 	cfg       *Config
@@ -90,6 +101,7 @@ func NewManager(opts ManagerOptions) (*Manager, error) {
 		nativeStore:      opts.NativeStore,
 		logger:           opts.Logger,
 		defaultBotsPaths: append([]string(nil), opts.DefaultBotsPaths...),
+		defaultsFn:       opts.DefaultsFn,
 		state:            ManagerStateIdle,
 	}
 	if cfg, err := loadConfigJSON(m.configPath); err == nil {
@@ -425,6 +437,7 @@ func (m *Manager) RegisterRoutesWithMiddleware(mux *http.ServeMux, prefix string
 	mux.Handle("POST "+p+"/stop", wrap(http.HandlerFunc(m.handleStop)))
 	mux.Handle("POST "+p+"/pause", wrap(http.HandlerFunc(m.handlePause)))
 	mux.Handle("POST "+p+"/resume", wrap(http.HandlerFunc(m.handleResume)))
+	mux.Handle("POST "+p+"/defaults/apply", wrap(http.HandlerFunc(m.handleApplyDefaults)))
 
 	mux.Handle("GET "+p+"/state", wrap(http.HandlerFunc(m.handleSnapshot)))
 	mux.Handle("POST "+p+"/refresh", wrap(http.HandlerFunc(m.handleRefresh)))
@@ -485,6 +498,43 @@ func (m *Manager) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *Manager) handleStart(w http.ResponseWriter, _ *http.Request) {
+	if err := m.Start(); err != nil {
+		WriteErr(w, http.StatusBadRequest, err)
+		return
+	}
+	WriteJSON(w, http.StatusAccepted, m.Status())
+}
+
+// handleApplyDefaults builds the host's default Config via the
+// injected DefaultsFn, persists it, and starts the dispatcher. The
+// endpoint is the studio's "auto-configure & start" one-click path;
+// the bot also calls it (via the future dispatcher.control capability)
+// after moving tickets to `ready` when no config exists yet.
+//
+// Returns 501 if no DefaultsFn was injected (out-of-process or test
+// builds), 409 if a config already exists (callers should DELETE or
+// PUT to overwrite — applying defaults over an existing config would
+// silently clobber operator edits), 400 if the defaults builder fails
+// (typically a binary built before the templates were embedded),
+// 202 + ManagerStatus on success.
+func (m *Manager) handleApplyDefaults(w http.ResponseWriter, _ *http.Request) {
+	if m.defaultsFn == nil {
+		WriteErr(w, http.StatusNotImplemented, errors.New("dispatcher defaults: not wired in this build"))
+		return
+	}
+	if m.Config() != nil {
+		WriteErr(w, http.StatusConflict, errors.New("dispatcher defaults: a config already exists; PUT /config to overwrite or DELETE first"))
+		return
+	}
+	cfg, err := m.defaultsFn()
+	if err != nil {
+		WriteErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := m.SaveConfig(cfg); err != nil {
+		WriteErr(w, http.StatusBadRequest, err)
+		return
+	}
 	if err := m.Start(); err != nil {
 		WriteErr(w, http.StatusBadRequest, err)
 		return

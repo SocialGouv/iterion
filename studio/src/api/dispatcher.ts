@@ -46,6 +46,16 @@ export function resume(): Promise<ManagerStatus> {
   return request("/resume", { method: "POST" });
 }
 
+// applyDefaults asks the server to build a zero-config dispatcher
+// Config from the embedded bot catalogue, persist it, and start the
+// dispatcher in one call. Returns 409 if a config already exists
+// (caller should DELETE or PUT to overwrite first), 501 if the
+// running binary was built without the defaults closure wired (out-
+// of-process dispatch mode), 400 if the embedded catalogue is empty.
+export function applyDefaults(): Promise<ManagerStatus> {
+  return request("/defaults/apply", { method: "POST" });
+}
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
