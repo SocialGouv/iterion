@@ -183,6 +183,40 @@ func TestResolveMCPExact(t *testing.T) {
 	}
 }
 
+// TestResolveMCPClaudeCodeFQN guards the cross-backend bridge:
+// the claw runtime registers MCP tools as "mcp.server.tool" but
+// claude_code surfaces them as "mcp__server__tool". A bot prompt
+// written for one backend MUST resolve when the LLM is talking to
+// the other, or every prompt becomes backend-specific.
+func TestResolveMCPClaudeCodeFQN(t *testing.T) {
+	r := NewRegistry()
+	_ = r.RegisterMCP("iterion_board", "assign_issue", "Assign", nil, noop)
+
+	for _, ref := range []string{
+		"mcp.iterion_board.assign_issue",         // claw native
+		"mcp__iterion_board__assign_issue",       // claude_code FQN
+	} {
+		td, err := r.Resolve(ref)
+		if err != nil {
+			t.Fatalf("Resolve(%q): %v", ref, err)
+		}
+		if td.QualifiedName != "mcp.iterion_board.assign_issue" {
+			t.Errorf("Resolve(%q) = %q, want canonical dot form", ref, td.QualifiedName)
+		}
+	}
+
+	// Malformed underscore refs still error rather than half-match.
+	for _, ref := range []string{
+		"mcp__",                       // no body
+		"mcp__server_only",            // no separator
+		"mcp__server__nonexistent",    // not registered
+	} {
+		if _, err := r.Resolve(ref); err == nil {
+			t.Errorf("Resolve(%q) should have failed", ref)
+		}
+	}
+}
+
 func TestResolveMCPShorthand(t *testing.T) {
 	r := NewRegistry()
 	_ = r.RegisterMCP("github", "create_issue", "Create issue", nil, noop)

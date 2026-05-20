@@ -178,10 +178,16 @@ func (r *Registry) UnregisterServer(server string) {
 // ---------------------------------------------------------------------------
 
 // Resolve looks up a tool by its reference name. Resolution rules:
-//  1. Exact match on qualified name.
-//  2. If ref has no dots and there is exactly one MCP tool whose bare name
-//     matches, return it (convenience shorthand). If multiple MCP tools
-//     share the same bare name, return an ambiguity error.
+//  1. Exact match on qualified name (dot-delimited: "mcp.server.tool").
+//  2. claude_code-style FQN match: "mcp__server__tool" is rewritten to
+//     "mcp.server.tool" and re-resolved. Lets a prompt written for the
+//     claude_code backend (which surfaces MCP tools under the
+//     double-underscore FQN) run unchanged on the claw backend (which
+//     registers them under the dot form).
+//  3. If ref has no dots / double-underscores and there is exactly one
+//     MCP tool whose bare name matches, return it (convenience
+//     shorthand). If multiple MCP tools share the same bare name,
+//     return an ambiguity error.
 //
 // Returns an error if the tool is not found or is ambiguous.
 func (r *Registry) Resolve(ref string) (*ToolDef, error) {
@@ -193,8 +199,28 @@ func (r *Registry) Resolve(ref string) (*ToolDef, error) {
 		return td, nil
 	}
 
+	// claude_code FQN compatibility: "mcp__server__tool" → "mcp.server.tool".
+	if strings.HasPrefix(ref, "mcp__") {
+		// Strip the leading "mcp__" then split the rest into
+		// server/tool segments on "__". A well-formed FQN has
+		// exactly one inner "__" (server / tool); accept more by
+		// taking everything before the LAST "__" as the server.
+		// This keeps tool names with embedded underscores intact.
+		body := ref[len("mcp__"):]
+		idx := strings.LastIndex(body, "__")
+		if idx > 0 {
+			server := body[:idx]
+			tool := body[idx+2:]
+			if server != "" && tool != "" {
+				if td, ok := r.tools["mcp."+server+"."+tool]; ok {
+					return td, nil
+				}
+			}
+		}
+	}
+
 	// Shorthand resolution: bare name → scan MCP tools.
-	if !strings.Contains(ref, ".") {
+	if !strings.Contains(ref, ".") && !strings.Contains(ref, "__") {
 		var matches []*ToolDef
 		suffix := "." + ref
 		for qn, td := range r.tools {

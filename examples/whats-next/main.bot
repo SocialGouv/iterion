@@ -903,7 +903,13 @@ human ask_which_to_process:
   interaction: human
 
 agent assign_to_bots:
-  ## Cheap routing step — no need for opus or high reasoning.
+  ## Cheap routing step. claw exposes the board MCP tools as
+  ## mcp.iterion_board.* (dot syntax); the prompt names them in
+  ## claude_code-style mcp__iterion_board__* for readability and
+  ## parity with emit_action's prompt. The runtime's tool registry
+  ## bridges both naming conventions (pkg/backend/tool/registry.go
+  ## Resolve), so the LLM's tool calls land regardless of which
+  ## form it picks up from the prompt vs. the function list.
   backend: "claw"
   model: "openai/gpt-5.5"
   reasoning_effort: "${ITERION_WHATS_NEXT_EFFORT_GPT:-low}"
