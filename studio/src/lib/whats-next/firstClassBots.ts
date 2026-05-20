@@ -196,10 +196,16 @@ export const FIRST_CLASS_BOTS: Readonly<Record<string, FirstClassBot>> = {
         label: "Moving issues to ready",
         summaryField: "summary",
       },
+      // Radio-only: pick an action and submit in one click. The
+      // free-text detail you'd want to add lives on the chatbox that
+      // re-appears after the form clears (during triage_board's run,
+      // chat messages queue and land at the next ask_continue
+      // iteration) — no point duplicating that input here. "done"
+      // submits immediately and exits the loop via derive_continue.
       ask_continue: {
         kind: "human",
         prompt: "What's next on the board?",
-        textField: "free_text",
+        textField: "action",
         form: {
           questions: [
             {
@@ -231,16 +237,6 @@ export const FIRST_CLASS_BOTS: Readonly<Record<string, FirstClassBot>> = {
                 },
               ],
               required: true,
-            },
-            {
-              id: "free_text",
-              kind: "free_text",
-              label: "Describe what you want",
-              description:
-                'Optional for "I\'m done". Required for the other actions — be specific (which ticket, what change, what criteria).',
-              placeholder: "What should the triage agent do?",
-              rows: 3,
-              required: false,
             },
           ],
           submitLabel: "Continue",
