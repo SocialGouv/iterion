@@ -37,6 +37,15 @@ type ToolCallAccumulator struct {
 	startEmitted bool
 	stopEmitted  bool
 
+	// argsReceived is set the first time HandleDelta sees a non-empty
+	// arguments fragment, regardless of whether the start event has been
+	// emitted yet (i.e. fragment buffered) or emitted directly. HandleDone
+	// uses this to decide whether to fall back to the consolidated
+	// arguments string carried by response.function_call_arguments.done
+	// frames. Upstream variants (notably the ChatGPT-Codex backend) emit
+	// args only in the .done frame, without prior .delta chunks.
+	argsReceived bool
+
 	// argBuffer holds argument fragments that arrived before the start event
 	// could be emitted (i.e. before both id and name were known). Once the
 	// start event lands, the buffered fragments are flushed in arrival order
@@ -108,6 +117,7 @@ func (a *ToolCallAccumulator) HandleDelta(id, name, arguments string) []api.Stre
 	}
 
 	if arguments != "" {
+		a.argsReceived = true
 		if a.startEmitted {
 			events = append(events, api.StreamEvent{
 				Type:  api.EventContentBlockDelta,
@@ -121,6 +131,27 @@ func (a *ToolCallAccumulator) HandleDelta(id, name, arguments string) []api.Stre
 	}
 
 	return events
+}
+
+// HandleDone consumes the consolidated arguments string that some
+// upstream variants carry on response.function_call_arguments.done /
+// equivalent terminal frames. It is a no-op when prior .delta fragments
+// have already populated the accumulator, so callers can invoke it
+// unconditionally on the .done event without risk of double-feeding.
+//
+// Defensive only: the OpenAI Responses API and the ChatGPT-Codex
+// backend both stream args incrementally as input_json_delta chunks
+// AND echo the consolidated payload in the .done event, so under
+// normal conditions HandleDone short-circuits via argsReceived. If a
+// future variant ships args only on .done — or a delta chunk is lost
+// in transit — this method ensures the accumulator still produces
+// usable args instead of an empty PartialJSON that would surface as a
+// "malformed tool input" tool_error downstream.
+func (a *ToolCallAccumulator) HandleDone(arguments string) []api.StreamEvent {
+	if a.argsReceived || arguments == "" {
+		return nil
+	}
+	return a.HandleDelta("", "", arguments)
 }
 
 // MarkStarted forces the accumulator into the "started" state without going

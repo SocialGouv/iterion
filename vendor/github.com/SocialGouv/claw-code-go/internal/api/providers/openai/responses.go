@@ -638,8 +638,27 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 			}
 
 		case "response.function_call_arguments.done":
-			// Final arguments are also delivered as deltas; nothing extra
-			// to emit. The block is closed in the post-loop sweep.
+			// On api.openai.com the arguments are streamed incrementally
+			// via .delta frames and the .done payload merely echoes the
+			// consolidated string — nothing to forward. The ChatGPT-Codex
+			// backend (chatgpt.com/backend-api/codex), however, ships
+			// shorter args ONLY in the .done frame and emits no .delta
+			// chunks. HandleDone is a no-op when prior .delta frames have
+			// already populated the accumulator, so wiring it
+			// unconditionally is safe for both upstream variants.
+			if ev.Arguments != "" {
+				acc := fnByItem[ev.ItemID]
+				if acc == nil {
+					// Mirror the .delta branch's defensive allocation.
+					acc = sseutil.NewToolCallAccumulator(nextBlockIndex)
+					nextBlockIndex++
+					fnByItem[ev.ItemID] = acc
+					fnOpenOrder = append(fnOpenOrder, ev.ItemID)
+				}
+				if !sendAll(acc.HandleDone(ev.Arguments)) {
+					return
+				}
+			}
 
 		case "response.completed":
 			if ev.Response != nil && ev.Response.Usage != nil {
@@ -651,6 +670,17 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 			// response.output for the final function_call shape and
 			// emit MarkStarted retroactively, otherwise the buffered
 			// argument fragments would silently drop in Finish().
+			//
+			// The acc.Started() gate is essential: when output_item.added
+			// already carried CallID+Name (the common api.openai.com /
+			// ChatGPT-Codex shape), MarkStarted has fired at step 3 and
+			// the accumulator has been collecting input_json_delta
+			// fragments at its block index. Calling MarkStarted again
+			// from here emits a SECOND ContentBlockStart on the same
+			// index, which the downstream aggregator (iterion's
+			// generation.aggregateStream) treats as a brand-new block
+			// state — overwriting the in-flight PartialJSON with an
+			// empty one and producing a tool_use with empty input.
 			if ev.Response != nil {
 				for _, item := range ev.Response.Output {
 					if item.Type != "function_call" || item.CallID == "" || item.Name == "" {
@@ -658,6 +688,9 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 					}
 					acc, ok := fnByItem[item.ID]
 					if !ok || acc == nil {
+						continue
+					}
+					if acc.Started() {
 						continue
 					}
 					if !send(acc.MarkStarted(item.CallID, item.Name)) {
