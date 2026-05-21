@@ -137,7 +137,32 @@ export default function FilesPanel({ runId, onSelectFile }: FilesPanelProps) {
         ) : !data.available ? (
           <EmptyState message={reasonLabel(data.reason)} />
         ) : tree.length === 0 ? (
-          <EmptyState message={emptyMessage(mode)} />
+          mode === "branch" && data.live ? (
+            // Branch view is empty but the worktree is live — the bot
+            // may still be editing without having committed yet. Prompt
+            // the user toward the Uncommitted tab instead of leaving
+            // them on a blank "No committed changes yet" message
+            // (2026-05-21 dogfood: doc-align fix_claude edits show up
+            // here under Uncommitted long before commit_changes runs at
+            // the end of the workflow).
+            <EmptyState
+              message={
+                <>
+                  No commits in this run yet. Live edits are in the{" "}
+                  <button
+                    type="button"
+                    className="underline text-info-fg hover:text-info-hover"
+                    onClick={() => setMode("uncommitted")}
+                  >
+                    Uncommitted
+                  </button>{" "}
+                  tab — the workflow commits on convergence.
+                </>
+              }
+            />
+          ) : (
+            <EmptyState message={emptyMessage(mode)} />
+          )
         ) : (
           <div className="py-1 text-xs">
             {tree.map((node) => (
