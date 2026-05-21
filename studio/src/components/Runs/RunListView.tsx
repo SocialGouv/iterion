@@ -282,10 +282,10 @@ const RunRow = memo(function RunRow({
       onClick={() => onOpen(run.id)}
     >
       <td className="px-4 py-2">
-        <div className="font-medium">{run.name || run.workflow_name}</div>
-        {(run.name || run.file_path) && (
+        <div className="font-medium">{friendlyLabel(run)}</div>
+        {(hasFriendlyName(run) || run.file_path) && (
           <div className="text-fg-subtle text-[10px] truncate max-w-md">
-            {[run.name && run.workflow_name, run.file_path]
+            {[hasFriendlyName(run) ? run.workflow_name : null, run.file_path]
               .filter(Boolean)
               .join(" · ")}
           </div>
@@ -336,7 +336,7 @@ const RunCard = memo(function RunCard({
           <LiveDot tone="live" size="sm" label="Active in this process" />
         )}
         <span className="font-medium truncate">
-          {run.name || run.workflow_name}
+          {friendlyLabel(run)}
         </span>
       </div>
       <div className="text-[11px] text-fg-muted flex flex-wrap gap-x-2">
@@ -350,6 +350,18 @@ const RunCard = memo(function RunCard({
     </button>
   );
 });
+
+// hasFriendlyName returns true when run.name is set AND differs from
+// run.id. Dispatcher-spawned runs default name to the same string as
+// id (e.g. `dispatcher-native_<uuid>-0-<ts>`), which then dups the
+// "Run ID" column and crowds out the actually-useful workflow_name.
+function hasFriendlyName(run: RunSummary): boolean {
+  return Boolean(run.name) && run.name !== run.id;
+}
+
+function friendlyLabel(run: RunSummary): string {
+  return hasFriendlyName(run) ? run.name! : run.workflow_name;
+}
 
 function formatDuration(startISO: string, endISO?: string): string {
   const start = Date.parse(startISO);
