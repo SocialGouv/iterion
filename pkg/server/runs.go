@@ -667,6 +667,10 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	if err := s.runs.Cancel(id); err != nil {
 		// If the run is not currently active in this process, the
 		// operator's "cancel" intent depends on the persisted status:
+		//   - dispatcher-spawned + running: the runview Manager only
+		//     tracks manual studio launches, so cancel falls through
+		//     here. The dispatcher owns its own cancel funcs keyed by
+		//     runID — try that path before giving up.
 		//   - already terminal (finished / failed / cancelled / merged):
 		//     idempotent — return current state, no-op.
 		//   - paused_waiting_human / failed_resumable: the operator
@@ -675,6 +679,11 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 		//     worktree so the studio's merge UI can act on whatever
 		//     commits the run produced before it stalled.
 		if errors.Is(err, runview.ErrRunNotActive) {
+			if s.cfg.Dispatcher != nil && s.cfg.Dispatcher.CancelRun(id) {
+				w.WriteHeader(http.StatusAccepted)
+				s.writeJSONFor(w, r, cancelRunResponse{RunID: id, Status: "cancelling"})
+				return
+			}
 			r2, loadErr := s.runs.LoadRunCtx(r.Context(), id)
 			if loadErr != nil {
 				s.httpErrorFor(w, r, http.StatusNotFound, "run not active and not on disk: %v", loadErr)

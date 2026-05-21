@@ -6,6 +6,7 @@ import (
 	"io"
 	"path/filepath"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -146,10 +147,17 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 		}()
 	}
 
+	// Wire the operator-chatbox inbox so chatbox messages queued during
+	// a dispatcher run are drained mid-iteration by both claw (via
+	// opts.Inbox in the generation loop) and claude_code (via the
+	// PostToolUse hook on the delegate). Without this the operator's
+	// message stays `queued` for the entire run because nothing binds a
+	// hook to the per-run queue.
 	exec, err := runview.BuildExecutor(runview.ExecutorSpec{
 		Ctx:      ctx,
 		Workflow: r.workflow,
 		Store:    s,
+		Inbox:    &model.StoreInboxBinder{Store: s},
 		RunID:    spec.RunID,
 		Logger:   runLogger,
 		StoreDir: spec.StoreDir,

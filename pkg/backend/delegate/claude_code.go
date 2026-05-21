@@ -356,6 +356,54 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 		}
 	}
 
+	// Operator-chatbox mid-session inbox delivery (parity with the claw
+	// backend's per-iteration drain). PostToolUse fires after every tool
+	// call; Stop fires when the LLM tries to end the turn. Both consult
+	// the same drain closure and surface queued operator messages so the
+	// LLM sees the operator's input on its next turn without having to
+	// wait for the run to finish or pause at a human boundary.
+	if task.InboxDrain != nil {
+		drainAndFormat := func() string {
+			texts := task.InboxDrain()
+			if len(texts) == 0 {
+				return ""
+			}
+			var sb strings.Builder
+			sb.WriteString("Operator queued message")
+			if len(texts) > 1 {
+				sb.WriteString("s")
+			}
+			sb.WriteString(":\n\n")
+			for i, t := range texts {
+				if i > 0 {
+					sb.WriteString("\n---\n")
+				}
+				sb.WriteString(t)
+			}
+			return sb.String()
+		}
+		opts = append(opts, claudesdk.WithHook(claudesdk.HookPostToolUse, claudesdk.HookMatcher{
+			Handler: func(_ context.Context, _ claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
+				msg := drainAndFormat()
+				if msg == "" {
+					return claudesdk.HookOutput{}, nil
+				}
+				b.Logger.Info("[%s#%d/claude-code] 📥 delivered queued operator message via PostToolUse", task.NodeID, task.Iteration)
+				return claudesdk.HookOutput{AdditionalContext: msg, SystemMessage: msg}, nil
+			},
+		}))
+		opts = append(opts, claudesdk.WithHook(claudesdk.HookStop, claudesdk.HookMatcher{
+			Handler: func(_ context.Context, _ claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
+				msg := drainAndFormat()
+				if msg == "" {
+					return claudesdk.HookOutput{}, nil
+				}
+				b.Logger.Info("[%s#%d/claude-code] 📥 delivered queued operator message via Stop (blocking stop)", task.NodeID, task.Iteration)
+				return claudesdk.HookOutput{BlockStop: true, Reason: msg, SystemMessage: msg}, nil
+			},
+		}))
+	}
+
 	startTime := time.Now()
 	rm, sessMeta, streamErr := b.runSession(streamCtx, prompt, task, opts)
 	duration := time.Since(startTime)

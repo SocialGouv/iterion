@@ -194,3 +194,27 @@ func (m cmdCancel) apply(c *Dispatcher, _ context.Context) {
 	}
 	c.logger.Info("dispatcher: %s cancel requested", r.Identifier)
 }
+
+// cmdCancelByRunID cancels an in-flight run identified by its RunID
+// (rather than issueID). Used by the run console's HTTP cancel handler,
+// which doesn't know which issue produced the run. Returns true on the
+// reply channel iff a matching entry was found and signalled.
+type cmdCancelByRunID struct {
+	runID string
+	reply chan bool
+}
+
+func (m cmdCancelByRunID) apply(c *Dispatcher, _ context.Context) {
+	for _, r := range c.state.running {
+		if r.RunID != m.runID {
+			continue
+		}
+		if r.Cancel != nil {
+			r.Cancel()
+		}
+		c.logger.Info("dispatcher: %s cancel requested (run %s)", r.Identifier, m.runID)
+		m.reply <- true
+		return
+	}
+	m.reply <- false
+}

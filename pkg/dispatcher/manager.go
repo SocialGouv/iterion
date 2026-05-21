@@ -311,6 +311,19 @@ func (m *Manager) Current() *Dispatcher {
 	return m.cur
 }
 
+// CancelRun signals the active Dispatcher to cancel a run by its RunID.
+// Returns true when a matching in-flight run was found. Falsey when the
+// dispatcher is idle or the runID is unknown to it — typical when the
+// runID belongs to a manual studio launch (handled by the runview
+// Manager) or is already terminal.
+func (m *Manager) CancelRun(runID string) bool {
+	cur := m.Current()
+	if cur == nil {
+		return false
+	}
+	return cur.CancelByRunID(runID)
+}
+
 func (m *Manager) setError(err error) {
 	m.mu.Lock()
 	m.state = ManagerStateError

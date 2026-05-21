@@ -807,12 +807,14 @@ func (c *runConn) handleCancel(env runWSEnvelope) {
 	}
 	err := c.server.runs.Cancel(c.runID)
 	if err != nil && errors.Is(err, runview.ErrRunNotActive) {
-		// Match the HTTP handler's behaviour: when no goroutine owns
-		// the run, the operator likely wants to abandon a paused or
-		// failed_resumable run. CancelInactive flips status to
-		// cancelled + runs RecoverFinalize so the studio's merge UI
-		// surfaces whatever commits the run produced. Already-terminal
-		// statuses are a silent no-op.
+		// Match the HTTP handler's behaviour: dispatcher-spawned runs
+		// aren't tracked by the runview Manager — try the dispatcher's
+		// own cancel-by-runID path first, then fall through to flipping
+		// a paused / failed_resumable run to cancelled.
+		if c.server.cfg.Dispatcher != nil && c.server.cfg.Dispatcher.CancelRun(c.runID) {
+			c.sendAck(env.AckID)
+			return
+		}
 		if _, ciErr := c.server.runs.CancelInactiveCtx(c.authCtx(), c.runID); ciErr != nil && c.server.logger != nil {
 			c.server.logger.Warn("server: ws cancel of inactive run %s: %v", c.runID, ciErr)
 		}

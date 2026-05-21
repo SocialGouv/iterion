@@ -278,6 +278,16 @@ type Task struct {
 	// between the LLM "thinking" loader and an in-flight tool spinner.
 	// All callbacks are optional.
 	Hooks TaskHooks
+
+	// InboxDrain is the operator-chatbox drain closure for this task.
+	// Backends that can call hooks at tool-call / session-end boundaries
+	// (currently claude_code via PostToolUse + Stop) invoke it to inject
+	// any queued operator messages into the agent's next turn — claw
+	// does the same via its own internal opts.Inbox plumbing, so this
+	// field is the parity surface for CLI-based backends. The runtime's
+	// executor populates it from its bound InboxBinder; nil means the
+	// run opted out of the inbox (CLI manual runs, …).
+	InboxDrain func() []string
 }
 
 // TaskHooks are optional callbacks a backend can fire during execution

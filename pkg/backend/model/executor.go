@@ -285,6 +285,13 @@ type ClawExecutor struct {
 	// codex OAuth, ANTHROPIC_API_KEY, …) so resolveBackendName can
 	// auto-select a backend when neither node nor workflow specifies one.
 	detector *detect.CachedDetector
+
+	// inbox is the operator-chatbox binder. When set, every Task built
+	// by this executor gets an InboxDrain closure so CLI-based backends
+	// (claude_code) can drain queued operator messages from inside their
+	// PostToolUse hook. The claw backend reads its own copy via the
+	// backend-level WithInbox option (set in runview/executor.go).
+	inbox InboxBinder
 }
 
 // SetSandbox installs the live sandbox handle on the executor. The
@@ -368,11 +375,43 @@ func WithLifecycleHooks(r *hooks.Runner) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.lifecycleHooks = r }
 }
 
+// WithExecutorInbox installs the operator-chatbox binder on the
+// executor. Every Task built by executeBackend / executeLLMRouterUnified
+// then carries an InboxDrain closure so CLI-based backends
+// (claude_code) can drain queued messages from inside their
+// PostToolUse / Stop hooks. The claw backend's own copy is wired
+// separately via WithInbox on the backend (set together in
+// runview/executor.go); both share the same StoreInboxBinder so the
+// run's queue is the single source of truth.
+func WithExecutorInbox(b InboxBinder) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.inbox = b }
+}
+
 // LifecycleHooks returns the runner installed via WithLifecycleHooks
 // (nil if none). It is intended for backends that need to forward the
 // runner into their own generation paths.
 func (e *ClawExecutor) LifecycleHooks() *hooks.Runner {
 	return e.lifecycleHooks
+}
+
+// bindInboxDrain resolves the per-task inbox drain closure. Returns nil
+// when the executor has no binder, the run ID isn't on the context, or
+// the binder returns no hook for this run. Backends that can fire
+// hooks at tool / session boundaries (claude_code) consume this; claw
+// uses its own opts.Inbox wiring instead.
+func (e *ClawExecutor) bindInboxDrain(ctx context.Context) func() []string {
+	if e.inbox == nil {
+		return nil
+	}
+	runID := RunIDFromContext(ctx)
+	if runID == "" {
+		return nil
+	}
+	hook := e.inbox.Bind(ctx, runID)
+	if hook == nil {
+		return nil
+	}
+	return func() []string { return hook.Drain(ctx) }
 }
 
 // EvictRun drops every per-node session belonging to the given run.
@@ -948,6 +987,7 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 		Sandbox:               e.sandbox,
 		ProviderHint:          e.resolveProvider(node),
 		Hooks:                 e.delegateHooksFor(f.id, backendName),
+		InboxDrain:            e.bindInboxDrain(ctx),
 	}
 	if m := f.memory; m != nil && m.Enabled {
 		task.Memory = &delegate.MemorySpec{
@@ -1575,6 +1615,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 		ReasoningEffort: resolveReasoningEffort(node.ReasoningEffort, input),
 		Sandbox:         e.sandbox,
 		ProviderHint:    e.resolveProvider(node),
+		InboxDrain:      e.bindInboxDrain(ctx),
 	}
 
 	// Emit backend started event.

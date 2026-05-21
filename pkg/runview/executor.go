@@ -130,6 +130,9 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		model.WithLifecycleHooks(lifecycle),
 		model.WithStoreDir(dispatcherStoreDir),
 	}
+	if spec.Inbox != nil {
+		opts = append(opts, model.WithExecutorInbox(spec.Inbox))
+	}
 	if spec.Backend != "" {
 		opts = append(opts, model.WithDefaultBackend(spec.Backend))
 	}

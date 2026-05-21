@@ -230,6 +230,28 @@ func (c *Dispatcher) Cancel(issueID string) {
 	}
 }
 
+// CancelByRunID asks the dispatcher to cancel an in-flight run by its
+// RunID. The run console's HTTP cancel handler uses this — manual
+// studio launches register their cancel funcs with the runview Manager,
+// but dispatcher-spawned runs only live in the dispatcher's state, so
+// without this hook the cancel button silently no-ops. Returns true
+// when a matching running entry was found and signalled. Returns false
+// (and is non-blocking) after Stop.
+func (c *Dispatcher) CancelByRunID(runID string) bool {
+	reply := make(chan bool, 1)
+	select {
+	case c.cmds <- cmdCancelByRunID{runID: runID, reply: reply}:
+	case <-c.stop:
+		return false
+	}
+	select {
+	case got := <-reply:
+		return got
+	case <-c.stop:
+		return false
+	}
+}
+
 // Reload swaps in a fresh config. Typically wired to ConfigWatcher.
 // No-op after Stop.
 func (c *Dispatcher) Reload(cfg *Config) {
