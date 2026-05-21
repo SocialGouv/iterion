@@ -15,8 +15,11 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
@@ -121,8 +124,76 @@ func New(opts Options) (*Dispatcher, error) {
 // immediately; use Stop to shut down.
 func (c *Dispatcher) Start(ctx context.Context) {
 	c.startOnce.Do(func() {
+		c.sweepStaleLocalClaims()
 		go c.actorLoop(ctx)
 	})
+}
+
+// sweepStaleLocalClaims releases any claim left over from a previous
+// dispatcher PID on this host whose process has since died (a daemon
+// restart from watchexec, a crash, an operator Ctrl+C). Without this
+// sweep, the new daemon's tick() would skip the stale-claimed issues
+// forever (ListCandidates filters out claimed=true), and the operator
+// would need to edit issue JSONs by hand — see ticket 7221c7be.
+//
+// Only marker matching "<thishost>-<pid>" is touched. Claims from
+// another host stay untouched (legitimately held by a peer dispatcher).
+// Markers from a different shape (older or user-set) also stay so we
+// don't reset state we don't understand.
+func (c *Dispatcher) sweepStaleLocalClaims() {
+	sweeper, ok := c.tracker.(interface {
+		SweepStaleClaims(func(marker string) bool) ([]string, error)
+	})
+	if !ok {
+		// External adapters (github/forgejo) carry claims as labels;
+		// they handle stale claims with their own GC. The interface
+		// type-assert keeps the dispatcher loosely coupled.
+		return
+	}
+	host, _ := osHostname()
+	if host == "" {
+		host = "dispatcher"
+	}
+	cleared, err := sweeper.SweepStaleClaims(func(marker string) bool {
+		return isStaleLocalMarker(marker, host)
+	})
+	if err != nil {
+		c.logger.Warn("dispatcher: stale-claim sweep failed: %v", err)
+		return
+	}
+	if len(cleared) > 0 {
+		c.logger.Info("dispatcher: released %d stale claim(s) from dead local PIDs: %v", len(cleared), cleared)
+	}
+}
+
+// isStaleLocalMarker returns true iff marker is shaped "<host>-<pid>",
+// host matches the current daemon's host, AND pid is not a live process.
+// Returns false for any other shape so we never touch a marker we can't
+// confidently interpret.
+func isStaleLocalMarker(marker, host string) bool {
+	// markers look like "rog-3158843". Allow underscores in hostname.
+	dash := strings.LastIndexByte(marker, '-')
+	if dash <= 0 || dash == len(marker)-1 {
+		return false
+	}
+	if marker[:dash] != host {
+		return false
+	}
+	pid, err := strconv.Atoi(marker[dash+1:])
+	if err != nil || pid <= 1 {
+		return false
+	}
+	// syscall.Kill(pid, 0) returns nil if the process exists and we
+	// have permission to signal it, ESRCH if the PID is gone, EPERM
+	// if the process exists under a different user. EPERM = alive.
+	err = syscall.Kill(pid, 0)
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.EPERM) {
+		return false
+	}
+	return errors.Is(err, syscall.ESRCH)
 }
 
 // Stop signals the actor to exit and waits for it. Safe to call more
@@ -290,10 +361,25 @@ func (c *Dispatcher) actorLoop(ctx context.Context) {
 }
 
 func (c *Dispatcher) shutdown() {
+	// Cancel + release: workers are about to drain and the actor
+	// goroutine is exiting, so cmdRunFinished can no longer be
+	// processed. If we left in-flight claims on disk our own PID
+	// would still own them post-shutdown, and ListCandidates'
+	// "Claimed=false" filter would hide those issues from the next
+	// Start until the operator manually clears them. Release each
+	// claim eagerly here (best-effort, detached ctx with a short
+	// budget — same pattern as finishRun's release path).
 	for _, r := range c.state.running {
 		if r.Cancel != nil {
 			r.Cancel()
 		}
+		relCtx, relCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := c.tracker.Release(relCtx, r.IssueID, c.hostMarker); err != nil &&
+			!errors.Is(err, tracker.ErrNotFound) &&
+			!errors.Is(err, tracker.ErrClaimConflict) {
+			c.logger.Warn("dispatcher: shutdown release %s: %v", r.Identifier, err)
+		}
+		relCancel()
 	}
 	for _, e := range c.state.retries {
 		if e.Timer != nil {

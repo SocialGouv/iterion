@@ -524,6 +524,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.runs != nil {
 		s.runs.Drain(ctx)
 	}
+	// Stop the dispatcher before the HTTP server tears down so its
+	// shutdown() path can release in-flight claims to a clean state.
+	// Without this the daemon's SIGTERM (watchexec restart, operator
+	// Ctrl+C) would orphan claimed-by-self tickets on disk and the
+	// next dispatcher start would skip them (ListCandidates filters
+	// Claimed=true) until the operator manually edited the JSON.
+	// See ticket 012cb3a2 / 7221c7be.
+	if s.cfg.Dispatcher != nil {
+		s.cfg.Dispatcher.Stop()
+	}
 	if s.watcher != nil {
 		s.watcher.Stop()
 	}

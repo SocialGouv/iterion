@@ -116,6 +116,37 @@ func (a *Adapter) Release(ctx context.Context, id, marker string) error {
 	return a.store.Release(id, marker)
 }
 
+// SweepStaleClaims walks every claimed issue and releases the claim
+// when isStale reports true for its marker. Returns the issue IDs whose
+// claim was cleared. Caller-supplied predicate keeps PID/host knowledge
+// out of the native store — typically the dispatcher passes a callback
+// that recognises its own "<hostname>-<pid>" markers and probes the
+// local kernel for a live process.
+func (a *Adapter) SweepStaleClaims(isStale func(marker string) bool) ([]string, error) {
+	if isStale == nil {
+		return nil, nil
+	}
+	claimed := true
+	issues, err := a.store.List(ListFilter{Claimed: &claimed})
+	if err != nil {
+		return nil, err
+	}
+	var cleared []string
+	for _, iss := range issues {
+		if iss.Claim == "" {
+			continue
+		}
+		if !isStale(iss.Claim) {
+			continue
+		}
+		if err := a.store.Release(iss.ID, iss.Claim); err != nil {
+			return cleared, fmt.Errorf("release stale claim on %s (%s): %w", iss.ID, iss.Claim, err)
+		}
+		cleared = append(cleared, iss.ID)
+	}
+	return cleared, nil
+}
+
 func toTrackerIssue(iss *Issue) tracker.Issue {
 	return tracker.Issue{
 		ID:            iss.ID,
