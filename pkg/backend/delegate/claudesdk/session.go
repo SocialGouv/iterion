@@ -92,20 +92,36 @@ func (s *Session) Stream(ctx context.Context) iter.Seq2[Message, error] {
 		}
 		s.mu.Unlock()
 
-		for {
+		// bufio.Scanner has no ctx-aware Scan(); if the CLI stops emitting
+		// bytes mid-stream readLine() blocks indefinitely and the per-loop
+		// ctx.Done() check below never gets a turn. Spawn a watcher that
+		// force-closes the subprocess (SIGTERM → SIGKILL via close()'s own
+		// ladder) when ctx fires — the pipe close unblocks Scan() and we
+		// surface ctx.Err() rather than the resulting broken-pipe error.
+		watchDone := make(chan struct{})
+		go func() {
 			select {
 			case <-ctx.Done():
-				yield(nil, ctx.Err())
-				return
-			default:
+				_ = s.proc.close()
+			case <-watchDone:
 			}
+		}()
+		defer close(watchDone)
 
+		for {
 			line, err := s.proc.readLine()
 			if err == io.EOF {
+				if ctx.Err() != nil {
+					yield(nil, ctx.Err())
+				}
 				return
 			}
 			if err != nil {
-				yield(nil, err)
+				if ctx.Err() != nil {
+					yield(nil, ctx.Err())
+				} else {
+					yield(nil, err)
+				}
 				return
 			}
 			if len(line) == 0 {
