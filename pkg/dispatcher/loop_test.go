@@ -51,7 +51,7 @@ func TestBuildSpec_AssigneeDispatchOverridesGlobalVars(t *testing.T) {
 		Body:       "Toggle in settings panel.",
 		Assignee:   "feature-bot",
 	}
-	spec := d.buildSpec(cfg, iss, "run-1", "/tmp/ws/i-1", 0)
+	spec := d.buildSpec(cfg, iss, "run-1", "/tmp/ws/i-1", 0, nil)
 	want := map[string]any{
 		"feature_prompt": "Add dark mode\n\nToggle in settings panel.",
 		"workspace_dir":  "/tmp/ws/i-1",
@@ -79,7 +79,7 @@ func TestBuildSpec_FallsBackToGlobalDispatchWhenNoOverride(t *testing.T) {
 		},
 	}
 	iss := tracker.Issue{ID: "i-2", Title: "Question", Assignee: "anon-bot"}
-	spec := d.buildSpec(cfg, iss, "run-2", "/tmp/ws/i-2", 0)
+	spec := d.buildSpec(cfg, iss, "run-2", "/tmp/ws/i-2", 0, nil)
 	if spec.Vars["issue_title"] != "Question" {
 		t.Fatalf("expected fallback global var to render, got %v", spec.Vars)
 	}
@@ -97,7 +97,7 @@ func TestBuildSpec_NoAssigneeUsesGlobalDispatch(t *testing.T) {
 		},
 	}
 	iss := tracker.Issue{ID: "i-3", Body: "no one assigned"}
-	spec := d.buildSpec(cfg, iss, "run-3", "/tmp/ws/i-3", 0)
+	spec := d.buildSpec(cfg, iss, "run-3", "/tmp/ws/i-3", 0, nil)
 	if spec.Vars["issue_body"] != "no one assigned" {
 		t.Fatalf("expected global fallback when Assignee empty: %v", spec.Vars)
 	}

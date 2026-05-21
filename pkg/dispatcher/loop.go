@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -26,6 +27,19 @@ func (c *Dispatcher) tick(ctx context.Context) {
 	c.refreshRunningStates(ctx)
 
 	if c.paused.Load() {
+		c.fireSnapshot()
+		return
+	}
+
+	// Skip the tracker call when we're already at the global cap —
+	// any candidate we'd see is unactionable, and ListCandidates is
+	// the slowest synchronous step inside the actor goroutine
+	// (external HTTP for github/forgejo; in-memory but still locked
+	// for native). Keeping the actor responsive for cmdRunFinished /
+	// cmdEvent matters more than discovering candidates we can't
+	// dispatch. Once an in-flight run finishes the next tick will
+	// pick up the work.
+	if len(c.state.running) >= cfg.Agent.MaxConcurrent {
 		c.fireSnapshot()
 		return
 	}
@@ -74,33 +88,77 @@ func sortCandidates(in []tracker.Issue) {
 	})
 }
 
+// defaultStallReapGrace is how long reconcileStalled waits after
+// issuing ctx cancellation before force-reaping the slot. A
+// well-behaved backend exits within seconds of Cancel(); this grace
+// covers the SIGTERM → SIGKILL ladder in the claudesdk close() path
+// plus a small buffer for finalization. After the grace expires we
+// plant a tombstone + finishRun (mirroring the refreshRunningStates
+// path for tracker-disappeared issues) so a backend that swallows
+// ctx can't pin a slot forever and starve max_concurrent.
+//
+// Override via ITERION_DISPATCHER_STALL_REAP_GRACE (Go duration).
+const defaultStallReapGrace = 60 * time.Second
+
+func resolveStallReapGrace() time.Duration {
+	if v := os.Getenv("ITERION_DISPATCHER_STALL_REAP_GRACE"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultStallReapGrace
+}
+
 // reconcileStalled cancels any run whose LastEventAt is older than the
 // configured stall timeout. The dispatch goroutine will eventually post
 // cmdRunFinished with context.Canceled, which schedules the retry.
-func (c *Dispatcher) reconcileStalled(_ context.Context, cfg *Config) {
+// If the worker still hasn't returned stallReapGrace after the initial
+// cancel, we force-reap the slot to keep dispatcher concurrency healthy
+// — see refreshRunningStates for the same pattern in the
+// tracker-disappeared case.
+func (c *Dispatcher) reconcileStalled(ctx context.Context, cfg *Config) {
 	timeout := cfg.StallTimeout()
 	if timeout <= 0 {
 		return
 	}
 	now := time.Now()
+	// Snapshot ids so finishRun's delete(c.state.running, id) doesn't
+	// invalidate the range we're walking.
+	type stalledRow struct {
+		id string
+		r  *runningEntry
+	}
+	var rows []stalledRow
 	for id, r := range c.state.running {
-		if now.Sub(r.LastEventAt) <= timeout {
+		// lastEventTime() returns the freshest of the actor-applied
+		// LastEventAt and the synchronously-updated atomic heartbeat.
+		// The atomic prevents false stall when cmdEvents are queued
+		// in c.cmds behind a slow tick (was a 2026-05-21 dogfood bug).
+		if now.Sub(r.lastEventTime()) <= timeout {
 			continue
 		}
-		if !r.CancelIssuedAt.IsZero() {
-			// Already cancelled on a previous tick; the worker is
-			// draining. Log at debug so operators still see the
-			// progress trace without filling the warn channel with
-			// "stalled" entries every poll cadence.
+		rows = append(rows, stalledRow{id, r})
+	}
+	for _, row := range rows {
+		id, r := row.id, row.r
+		if r.CancelIssuedAt.IsZero() {
+			c.logger.Warn("dispatcher: %s stalled (no event for %s) — cancelling", r.Identifier, now.Sub(r.LastEventAt))
+			if r.Cancel != nil {
+				r.Cancel()
+			}
+			r.CancelIssuedAt = now
+			continue
+		}
+		if now.Sub(r.CancelIssuedAt) <= resolveStallReapGrace() {
 			c.logger.Debug("dispatcher: %s still draining (cancel issued %s ago)", r.Identifier, now.Sub(r.CancelIssuedAt))
 			continue
 		}
-		c.logger.Warn("dispatcher: %s stalled (no event for %s) — cancelling", r.Identifier, now.Sub(r.LastEventAt))
+		c.logger.Warn("dispatcher: %s worker not exiting %s after cancel — force-reaping slot", r.Identifier, now.Sub(r.CancelIssuedAt))
 		if r.Cancel != nil {
 			r.Cancel()
 		}
-		r.CancelIssuedAt = now
-		_ = id // keep entry; cmdRunFinished will remove it
+		c.state.tombstones[id] = struct{}{}
+		c.finishRun(ctx, id, context.Canceled)
 	}
 }
 
@@ -211,10 +269,11 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 		Cancel:        cancel,
 		issueSnapshot: iss,
 	}
+	entry.touchEvent(time.Now())
 	c.state.running[iss.ID] = entry
 	c.state.slotsByState[iss.WorkflowState]++
 
-	spec := c.buildSpec(cfg, iss, runID, wsPath, attempt)
+	spec := c.buildSpec(cfg, iss, runID, wsPath, attempt, entry)
 
 	c.logger.Info("dispatcher: dispatching %s → run=%s (attempt=%d, workspace=%s)", iss.Identifier, runID, attempt, wsPath)
 
@@ -225,7 +284,7 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 	}()
 }
 
-func (c *Dispatcher) buildSpec(cfg *Config, iss tracker.Issue, runID, wsPath string, attempt int) DispatchSpec {
+func (c *Dispatcher) buildSpec(cfg *Config, iss tracker.Issue, runID, wsPath string, attempt int, entry *runningEntry) DispatchSpec {
 	tplCtx := TemplateContext{
 		Issue: iss,
 		Dispatcher: DispatcherVars{
@@ -304,9 +363,23 @@ func (c *Dispatcher) buildSpec(cfg *Config, iss tracker.Issue, runID, wsPath str
 		Attachments:   attachments,
 		Assignee:      iss.Assignee,
 		OnEvent: func(name string) {
+			// Synchronous, lock-free heartbeat: read by reconcileStalled
+			// without needing the actor to drain c.cmds first. This is
+			// the load-bearing fix for the false-positive stall observed
+			// in the 2026-05-21 dogfood, where tick() ran reconcileStalled
+			// before applying queued cmdEvent updates and cancelled a
+			// healthy actively-progressing run at the 10min mark.
+			if entry != nil {
+				entry.touchEvent(time.Now())
+			}
+			// cmdEvent still posts so the actor's LastEventName /
+			// snapshot rendering stay accurate. Non-blocking now: if
+			// the channel is full we drop the observability message;
+			// the atomic heartbeat above already protects stall safety.
 			select {
 			case c.cmds <- cmdEvent{issueID: iss.ID, eventName: name}:
 			case <-c.stop:
+			default:
 			}
 		},
 	}

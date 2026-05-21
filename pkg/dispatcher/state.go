@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
@@ -81,10 +82,44 @@ type runningEntry struct {
 	// single writer so no mutex is needed.
 	CancelIssuedAt time.Time
 
+	// lastEventAtomicNano is updated synchronously by the OnEvent
+	// callback (which runs in the runtime engine's goroutine). It
+	// exists so reconcileStalled doesn't depend on the actor having
+	// drained queued cmdEvent messages — the 2026-05-21 dogfood showed
+	// runs being false-positive-stalled at the exact 10min mark when
+	// tool events were still firing every few seconds. The actor-owned
+	// LastEventAt above is still maintained via cmdEvent.apply for
+	// observability (LastEventName, snapshot rendering), but stall
+	// detection now reads this atomic.
+	lastEventAtomicNano atomic.Int64
+
 	// issueSnapshot is the tracker.Issue snapshot used to render
 	// dispatch.vars. Kept so the dispatcher can render a fresh prompt
 	// on retry without re-fetching from the tracker.
 	issueSnapshot tracker.Issue
+}
+
+// touchEvent records that an event was observed for this entry. Safe
+// to call from any goroutine — backs the atomic heartbeat used by
+// reconcileStalled.
+func (r *runningEntry) touchEvent(t time.Time) {
+	r.lastEventAtomicNano.Store(t.UnixNano())
+}
+
+// lastEventTime returns the freshest heartbeat seen by any goroutine
+// (synchronously-updated atomic OR the actor's actor-applied
+// LastEventAt). Returns the max of both to avoid a race where the
+// atomic was set after the actor read but before reconcileStalled.
+func (r *runningEntry) lastEventTime() time.Time {
+	atomicNano := r.lastEventAtomicNano.Load()
+	if atomicNano == 0 {
+		return r.LastEventAt
+	}
+	atomicT := time.Unix(0, atomicNano)
+	if atomicT.After(r.LastEventAt) {
+		return atomicT
+	}
+	return r.LastEventAt
 }
 
 // retryEntry tracks one pending retry. Used both for the timer

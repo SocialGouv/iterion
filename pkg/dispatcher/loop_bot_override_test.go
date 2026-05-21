@@ -50,7 +50,7 @@ func TestBuildSpec_PerTicketBotResolvesWorkflowPath(t *testing.T) {
 		Bots:     botregistry.Config{Paths: []string{dir}},
 	}
 	iss := tracker.Issue{ID: "i-1", Title: "x", Bot: "feature_dev"}
-	spec := d.buildSpec(cfg, iss, "run-1", "/tmp/ws", 0)
+	spec := d.buildSpec(cfg, iss, "run-1", "/tmp/ws", 0, nil)
 	if spec.WorkflowPath != botPath {
 		t.Fatalf("WorkflowPath = %q, want %q", spec.WorkflowPath, botPath)
 	}
@@ -67,7 +67,7 @@ func TestBuildSpec_UnknownBotFallsBackToConfigWorkflow(t *testing.T) {
 		Bots:     botregistry.Config{Paths: []string{t.TempDir()}},
 	}
 	iss := tracker.Issue{ID: "i-2", Title: "x", Bot: "ghost"}
-	spec := d.buildSpec(cfg, iss, "run-2", "/tmp/ws", 0)
+	spec := d.buildSpec(cfg, iss, "run-2", "/tmp/ws", 0, nil)
 	if spec.WorkflowPath != "/tmp/default.bot" {
 		t.Fatalf("expected fallback to default, got %q", spec.WorkflowPath)
 	}
@@ -99,7 +99,7 @@ func TestBuildSpec_BotArgsMergeOverConfigVars(t *testing.T) {
 			"extra_orphan": "passthru", // not in config vars
 		},
 	}
-	spec := d.buildSpec(cfg, iss, "run-3", "/tmp/ws/i-3", 0)
+	spec := d.buildSpec(cfg, iss, "run-3", "/tmp/ws/i-3", 0, nil)
 	if spec.Vars["workspace_dir"] != "/tmp/ws/i-3" {
 		t.Errorf("workspace_dir = %v (config template should still apply)", spec.Vars["workspace_dir"])
 	}
@@ -118,7 +118,7 @@ func TestBuildSpec_EmptyBotKeepsConfigWorkflow(t *testing.T) {
 	d := newMinimalDispatcher(t)
 	cfg := &Config{Workflow: "/tmp/default.bot"}
 	iss := tracker.Issue{ID: "i-4", Title: "x"}
-	spec := d.buildSpec(cfg, iss, "run-4", "/tmp/ws", 0)
+	spec := d.buildSpec(cfg, iss, "run-4", "/tmp/ws", 0, nil)
 	if spec.WorkflowPath != "/tmp/default.bot" {
 		t.Fatalf("WorkflowPath = %q", spec.WorkflowPath)
 	}
