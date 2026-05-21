@@ -10,18 +10,24 @@ interface Props {
   active: boolean;
   // Optional: jump-to-failed handler wired from the parent.
   onJumpToFailed?: (nodeId: string) => void;
+  // When true, strip the outer border + bg so the caller can fuse
+  // RunMetrics with another panel (e.g. inline with the Scrubber).
+  bare?: boolean;
 }
 
 // RunMetrics renders the second line of the run header: live duration,
 // cost, tokens, branch counts, jump-to-failed shortcut. Stays compact
 // in a horizontal strip; collapses to "+N more" via flex-wrap on
 // narrow viewports.
-export default function RunMetrics({ active, onJumpToFailed }: Props) {
+export default function RunMetrics({ active, onJumpToFailed, bare = false }: Props) {
   const nowMs = useNow(active ? 1000 : null);
   const m = useRunMetrics(nowMs);
 
+  const outerClass = bare
+    ? "h-full px-4 py-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]"
+    : "px-4 py-1.5 border-b border-border-default flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] bg-surface-1";
   return (
-    <div className="px-4 py-1.5 border-b border-border-default flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] bg-surface-1">
+    <div className={outerClass}>
       <Metric label="duration" value={formatMs(m.durationMs)} live={active} />
       {m.llmStepCount > 0 && (
         <Metric

@@ -15,6 +15,9 @@ interface Props {
   // Tells the scrubber to hide itself when there's nothing to scrub.
   // Keeps the run header tidy on freshly-launched runs.
   visible: boolean;
+  // When true, strip the outer border + bg so the caller can fuse
+  // the Scrubber with the RunMetrics row.
+  bare?: boolean;
 }
 
 // Replay speeds: how many seqs to advance per tick, paired with the
@@ -44,6 +47,7 @@ export default function Scrubber({
   scrubSeq,
   onChange,
   visible,
+  bare = false,
 }: Props) {
   const marks = useMemo(() => timelineMarks(events), [events]);
   const isLive = scrubSeq === null;
@@ -79,8 +83,11 @@ export default function Scrubber({
 
   if (!visible || liveSeq <= 0) return null;
 
+  const outerClass = bare
+    ? "h-full px-4 py-1.5 flex items-center gap-3"
+    : "px-4 py-1.5 border-b border-border-default flex items-center gap-3 bg-surface-1";
   return (
-    <div className="px-4 py-1.5 border-b border-border-default flex items-center gap-3 bg-surface-1">
+    <div className={outerClass}>
       <IconButton
         size="sm"
         variant="secondary"

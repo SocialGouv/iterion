@@ -170,6 +170,12 @@ export default function RunCanvasIR({
   const [error, setError] = useState<string | null>(null);
   const [nodes, setNodes] = useState<FlowNode[]>([]);
   const [edges, setEdges] = useState<FlowEdge[]>([]);
+  // Bumped each time ELK layout settles so the centering effect below
+  // can re-fire once `nodes` actually exists — the existing
+  // [selectedNodeId] dep alone misses the entry race where selectedNodeId
+  // is set before the IR fetch + autoLayout complete (nodes=[] → silent
+  // exit, and the next dep change is too late).
+  const [layoutEpoch, setLayoutEpoch] = useState(0);
   const [activeFilters, setActiveFilters] = useState<Set<StatusFilter>>(
     () => new Set(),
   );
@@ -425,25 +431,13 @@ export default function RunCanvasIR({
         });
         setNodes(finalNodes);
         setEdges(baseEdges);
+        // Default initial view is fit-all; the [selectedNodeId,
+        // layoutEpoch] effect below overrides with setCenter when a
+        // node is already selected by the time layout settles.
         requestAnimationFrame(() => {
-          // If a node was already selected when the layout settled
-          // (typical entry path: follow-live on a running run picks
-          // the running node before ELK finishes), centre on it so
-          // the user lands on the action instead of a fit-all view.
-          // Falls back to fitView when no selection or the selected
-          // node isn't part of the laid-out graph.
-          const sel = selectedNodeIdRef.current;
-          const selNode = sel ? finalNodes.find((n) => n.id === sel) : null;
-          if (selNode) {
-            reactFlow.setCenter(
-              selNode.position.x + 100,
-              selNode.position.y + 40,
-              { zoom: 1, duration: 250 },
-            );
-          } else {
-            reactFlow.fitView({ padding: 0.2, duration: 250 });
-          }
+          reactFlow.fitView({ padding: 0.2, duration: 250 });
         });
+        setLayoutEpoch((v) => v + 1);
       })
       .catch(() => {
         if (cancelled) return;
@@ -514,17 +508,13 @@ export default function RunCanvasIR({
     effortCapsByPair,
   ]);
 
-  // When the user invokes "jump to failed" (or any other external
-  // navigation), centre the canvas on the selected node. Only triggers
-  // when the selection actually exists in the layout — otherwise the
-  // initial fitView (run open) is what handles it.
-  //
-  // The effect re-runs only on selectedNodeId changes (not on every
-  // events tick that produces a fresh `nodes` array) so the canvas
-  // doesn't fire a fresh 350ms setCenter animation per event during
-  // long live runs. nodes is referenced inside but intentionally NOT
-  // in the deps — setCenter is meant to fire on jump-to events, not
-  // on every node-layout patch.
+  // Centre on the selected node when selection changes (jump-to-failed,
+  // running node advances) AND when the layout itself settles (initial
+  // mount: parent's snapshot can populate selectedNodeId BEFORE the IR
+  // fetch + ELK layout produce `nodes`, so depending on selectedNodeId
+  // alone leaves us silently exited with nodes=[]). `layoutEpoch` bumps
+  // exactly once per autoLayout completion, so per-event nodes patches
+  // (executions advancing, iteration changes) don't re-fire setCenter.
   useEffect(() => {
     if (!selectedNodeId) return;
     const node = nodes.find((n) => n.id === selectedNodeId);
@@ -561,7 +551,7 @@ export default function RunCanvasIR({
     }, 600);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedNodeId]);
+  }, [selectedNodeId, layoutEpoch]);
 
   const filterCounts = useMemo(() => {
     let running = 0,

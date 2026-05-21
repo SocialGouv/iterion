@@ -41,7 +41,6 @@ import RunCanvasIR, { defaultIterationFor } from "./RunCanvasIR";
 import RunHeader from "./RunHeader";
 import RunLogPanel from "./RunLogPanel";
 import RunMetrics from "./RunMetrics";
-import RunToolbar from "./RunToolbar";
 import ArtifactFilesPanel from "./ArtifactFilesPanel";
 import ReportTab from "./ReportTab";
 import Scrubber from "./Scrubber";
@@ -746,23 +745,30 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
           <QueuedBanner run={snapshot.run} />
         ) : (
           <>
-            <RunMetrics active={active} onJumpToFailed={handleJumpToFailed} />
+            <div className="border-b border-border-default bg-surface-1 flex items-stretch">
+              <div className="flex-shrink-0">
+                <RunMetrics
+                  active={active}
+                  onJumpToFailed={handleJumpToFailed}
+                  bare
+                />
+              </div>
+              {liveSeq > 0 && (
+                <div className="flex-1 min-w-0 border-l border-border-default">
+                  <Scrubber
+                    events={events}
+                    liveSeq={liveSeq}
+                    scrubSeq={scrubSeq}
+                    onChange={setScrubSeq}
+                    visible
+                    bare
+                  />
+                </div>
+              )}
+            </div>
             {snapshot.run.status === "paused_operator" && (
               <OperatorPauseBanner run={snapshot.run} />
             )}
-            <RunToolbar
-              detailCollapsed={detailCollapsed}
-              onToggleDetail={toggleDetailCollapsed}
-              eventlogCollapsed={eventlogCollapsed}
-              onToggleEventlog={toggleEventlogCollapsed}
-            />
-            <Scrubber
-              events={events}
-              liveSeq={liveSeq}
-              scrubSeq={scrubSeq}
-              onChange={setScrubSeq}
-              visible={liveSeq > 0}
-            />
           </>
         )}
       <div className="flex-1 min-h-0 flex">
