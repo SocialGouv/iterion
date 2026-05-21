@@ -734,6 +734,15 @@ schema streak_state:
   ## the SOLE scope-honesty signal. Empty until any path has been
   ## reverted 3+ times.
   cumulative_chronic_paths: string[]
+  ## v0.14.0: deduplicated union of every per-iter `declared_paths`
+  ## fed into enforce_fix_scope across the run. Wired back into
+  ## enforce_fix_scope as `cumulative_so_far_declared` so prior
+  ## iters' kept files survive subsequent iters whose declared set
+  ## understandably narrows to the new fix blockers. Without this,
+  ## iter 2's git-diff baseline includes iter 1's keepers and they
+  ## all get reverted as "undeclared" — observed during the
+  ## 2026-05-21 dogfood (issue e79d91c7).
+  cumulative_declared_paths: string[]
 
 schema fix_input:
   blockers: json
@@ -796,6 +805,12 @@ schema enforce_fix_scope_input:
   ## `chronic_paths` itself — keeps the threshold logic in
   ## deterministic-tool land rather than in expression DSL.
   cumulative_so_far: string[]
+  ## v0.14.0: deduplicated union of every prior iter's declared
+  ## paths. The tool keeps any file in this set even when the
+  ## current iter doesn't redeclare it, so iter N can declare just
+  ## the new blockers it fixed without sacrificing iter N-1's
+  ## kept work to the baseline-relative `git diff --name-only`.
+  cumulative_so_far_declared: string[]
 
 schema enforce_fix_scope_output:
   reverted_paths: string[]
@@ -808,6 +823,10 @@ schema enforce_fix_scope_output:
   ## threshold. Routed through streak_check.cumulative_chronic_paths
   ## to the next reviewer's input.
   chronic_paths: string[]
+  ## v0.14.0: echo of the CURRENT iter's declared_paths. Routed
+  ## through streak_check.cumulative_declared_paths so the next
+  ## iter's enforce_fix_scope can union it into the keep-set.
+  declared_iter: string[]
 
 
 ## ─── Nodes ──────────────────────────────────────────────────────
@@ -1055,6 +1074,13 @@ compute streak_check:
     ## path lands here it stays — the reviewer keeps surfacing
     ## the blocker until convergence.
     cumulative_chronic_paths: "unique(concat(outputs.streak_check.cumulative_chronic_paths, input.enforce_chronic_paths))"
+    ## v0.14.0: deduplicated union of every prior iter's
+    ## declared_paths. Fed back into enforce_fix_scope so the
+    ## keep-set widens across iterations instead of resetting to
+    ## the new iter's narrow declaration. Without this, baseline-
+    ## relative `git diff --name-only` flagged iter N-1's keepers
+    ## as "undeclared" in iter N and reverted real work.
+    cumulative_declared_paths: "unique(concat(outputs.streak_check.cumulative_declared_paths, input.enforce_declared_iter))"
 
 agent fix_claude:
   backend: "claude_code"
@@ -1123,7 +1149,10 @@ tool enforce_fix_scope:
   ## string[] inputs into space-separated quoted tokens
   ## (`'a.md' 'b.md'`) so they land as separate argv entries —
   ## env-var passing collided (first token wins, rest become argv).
-  ## Layout: <workspace_dir> <declared...> -- <cumulative_so_far...>
+  ## v0.14.0: extended with a second sentinel `---` for the
+  ## prior-iters' cumulative_so_far_declared union (so iter N-1's
+  ## keepers don't get reverted in iter N's narrower scope).
+  ## Layout: <ws> <declared...> -- <cumul_reverted...> --- <cumul_declared...>
   command: `python3 -c "
 import os, json, subprocess, sys
 from collections import Counter
@@ -1133,17 +1162,26 @@ rest = args[1:]
 try:
     i = rest.index('--')
     declared = set(rest[:i])
-    cumulative_so_far = rest[i+1:]
+    after = rest[i+1:]
+    try:
+        j = after.index('---')
+        cumulative_so_far = after[:j]
+        cumulative_declared = set(after[j+1:])
+    except ValueError:
+        cumulative_so_far = after
+        cumulative_declared = set()
 except ValueError:
     declared = set(rest)
     cumulative_so_far = []
+    cumulative_declared = set()
+effective_declared = declared | cumulative_declared
 os.chdir(ws)
 try:
     proc = subprocess.run(['git', 'diff', '--name-only'], capture_output=True, text=True, check=True)
     changed = set(l for l in proc.stdout.splitlines() if l)
 except Exception:
     changed = set()
-out_of_scope = sorted(changed - declared)
+out_of_scope = sorted(changed - effective_declared)
 reverted = []
 for path in out_of_scope:
     try:
@@ -1159,8 +1197,9 @@ print(json.dumps({
     'declared_count': len(declared),
     'changed_count': len(changed),
     'chronic_paths': chronic,
+    'declared_iter': sorted(declared),
 }))
-" {{input.workspace_dir}} {{input.declared_paths}} -- {{input.cumulative_so_far}}`
+" {{input.workspace_dir}} {{input.declared_paths}} -- {{input.cumulative_so_far}} --- {{input.cumulative_so_far_declared}}`
   input: enforce_fix_scope_input
   output: enforce_fix_scope_output
 
@@ -1317,8 +1356,12 @@ workflow doc_align:
     ## v0.12.0+v0.13.0: carry the last enforce_fix_scope reverts
     ## (raw history, kept for telemetry) AND its chronic_paths
     ## (thresholded, fed forward to next reviewer).
+    ## v0.14.0: also carry the per-iter declared echo so streak_check
+    ## can union it into cumulative_declared_paths and keep iter N's
+    ## newly-declared files alive across the next iter's revert pass.
     enforce_reverted_paths: "{{outputs.enforce_fix_scope.reverted_paths}}",
-    enforce_chronic_paths: "{{outputs.enforce_fix_scope.chronic_paths}}"
+    enforce_chronic_paths: "{{outputs.enforce_fix_scope.chronic_paths}}",
+    enforce_declared_iter: "{{outputs.enforce_fix_scope.declared_iter}}"
   }
   reviewer_gpt -> streak_check as review_loop(15) with {
     approved: "{{outputs.reviewer_gpt.approved}}",
@@ -1330,7 +1373,8 @@ workflow doc_align:
     audited_pairs: "{{outputs.reviewer_gpt.audited_pairs}}",
     audited_docs: "{{outputs.reviewer_gpt.audited_docs}}",
     enforce_reverted_paths: "{{outputs.enforce_fix_scope.reverted_paths}}",
-    enforce_chronic_paths: "{{outputs.enforce_fix_scope.chronic_paths}}"
+    enforce_chronic_paths: "{{outputs.enforce_fix_scope.chronic_paths}}",
+    enforce_declared_iter: "{{outputs.enforce_fix_scope.declared_iter}}"
   }
 
   ## Stop on (cross-family double approval) AND (coverage gate met).
@@ -1384,12 +1428,14 @@ workflow doc_align:
   fix_claude -> enforce_fix_scope as recovery_loop(20) with {
     workspace_dir: "{{vars.workspace_dir}}",
     declared_paths: "{{outputs.fix_claude.modified_doc_files}}",
-    cumulative_so_far: "{{outputs.streak_check.cumulative_reverted_paths}}"
+    cumulative_so_far: "{{outputs.streak_check.cumulative_reverted_paths}}",
+    cumulative_so_far_declared: "{{outputs.streak_check.cumulative_declared_paths}}"
   }
   fix_gpt -> enforce_fix_scope as recovery_loop(20) with {
     workspace_dir: "{{vars.workspace_dir}}",
     declared_paths: "{{outputs.fix_gpt.modified_doc_files}}",
-    cumulative_so_far: "{{outputs.streak_check.cumulative_reverted_paths}}"
+    cumulative_so_far: "{{outputs.streak_check.cumulative_reverted_paths}}",
+    cumulative_so_far_declared: "{{outputs.streak_check.cumulative_declared_paths}}"
   }
   enforce_fix_scope -> alt
 
