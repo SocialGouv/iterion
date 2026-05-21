@@ -977,16 +977,23 @@ judge reviewer_gpt:
   ## on iter 1 fix_gpt hasn't run, the template resolves to "",
   ## and the original v0.2.0 reading of the symptom blamed claw's
   ## OpenAI provider (it turned out to be insufficient_quota
-  ## confounded with empty session_id). `inherit_if_available`
-  ## logs the fallback and behaves as `fresh` when no session is
-  ## wired, so iter 1 works and iter 2+ rides fix_gpt's prompt
-  ## cache. The wire-up uses `_session_id:
-  ## "{{outputs.fix_gpt._session_id}}"` on the alt -> reviewer_gpt
-  ## edge — see below.
-  session: inherit_if_available
+  ## v0.13.0: REVERTED to `session: fresh` after the 2026-05-21
+  ## dogfood hit `context_length_exceeded` on iter 1's reviewer_gpt
+  ## — the inherited session carries fix_gpt's full conversation
+  ## (~all-docs read + audited pairs + verdict round trips) and
+  ## GPT-5.5's 400K window fills before the reviewer can finish.
+  ## Trading prompt-cache reuse for hard context bounds; a future
+  ## refactor should switch the reviewer to a manifest-driven shape
+  ## (consume scan_docs/scan_code_surface outputs instead of grepping
+  ## live) so each iter starts from a fixed-size compact input.
+  session: fresh
   ## claw builtin tools — read-only set, the reviewer NEVER writes.
+  ## tool_max_steps dropped from 40 → 20: cap the per-review tool
+  ## exploration so an inherited-context regression can't blow the
+  ## window again. 20 steps comfortably covers 8-12 file reads + a
+  ## handful of greps + the structured output.
   tools: [bash, read_file, glob, grep]
-  tool_max_steps: 40
+  tool_max_steps: 20
   interaction: human
 
 ## Deterministic streak detector + coverage gate.
