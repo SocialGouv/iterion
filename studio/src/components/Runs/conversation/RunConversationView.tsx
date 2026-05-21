@@ -4,6 +4,7 @@ import { useScrollPin } from "@/lib/runChat/useScrollPin";
 import type { RunChatMessage } from "@/lib/runChat/types";
 
 import BannerCard from "./BannerCard";
+import ConversationEmptyState from "./ConversationEmptyState";
 import HumanQuestionCard from "./HumanQuestionCard";
 import NodeOutputCard from "./NodeOutputCard";
 import SessionClosedCard from "./SessionClosedCard";
@@ -20,11 +21,27 @@ export default function RunConversationView({ runId }: Props) {
   const messages = useRunChatMessages(runId);
   const pending = useRunStore((s) => s.pendingHumanInput);
   const runStatus = useRunStore((s) => s.snapshot?.run.status);
+  const currentRunStart = useRunStore(
+    (s) => s.snapshot?.run.current_run_start,
+  );
+  const requestOpenEventLog = useRunStore((s) => s.requestOpenEventLog);
 
   const { scrollRef, endRef, onScroll } = useScrollPin([messages.length]);
 
   const activeHumanNodeId =
     runStatus === "paused_waiting_human" ? pending?.node_id ?? null : null;
+
+  if (messages.length === 0) {
+    return (
+      <div className="h-full w-full overflow-y-auto bg-surface-0">
+        <ConversationEmptyState
+          status={runStatus}
+          currentRunStart={currentRunStart}
+          onShowEventLog={requestOpenEventLog}
+        />
+      </div>
+    );
+  }
 
   return (
     <div
@@ -32,20 +49,14 @@ export default function RunConversationView({ runId }: Props) {
       onScroll={onScroll}
       className="h-full w-full overflow-y-auto px-4 py-3 space-y-4 bg-surface-0"
     >
-      {messages.length === 0 ? (
-        <p className="text-[12px] text-fg-subtle italic">
-          Waiting for the run to start…
-        </p>
-      ) : (
-        messages.map((m) => (
-          <MessageRow
-            key={m.id}
-            runId={runId}
-            message={m}
-            activeHumanNodeId={activeHumanNodeId}
-          />
-        ))
-      )}
+      {messages.map((m) => (
+        <MessageRow
+          key={m.id}
+          runId={runId}
+          message={m}
+          activeHumanNodeId={activeHumanNodeId}
+        />
+      ))}
       <div ref={endRef} />
     </div>
   );

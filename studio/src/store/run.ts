@@ -264,10 +264,22 @@ interface RunStoreState {
   // a new subscription against the now-active run.
   wsReconnectToken: number;
 
+  // UI-event bus: child components that need to ask the RunView shell
+  // to expand a collapsed panel post a request here, RunView watches
+  // the token and reacts. Token-based (not a boolean) so consecutive
+  // requests refire even if the bottom drawer is already open and the
+  // user re-collapsed it manually between requests.
+  uiOpenEventLogToken: number;
+
   setRunId: (id: string | null) => void;
   setWsState: (state: WsState) => void;
   setFollowTail: (follow: boolean) => void;
   requestWsReconnect: () => void;
+  // Fired by ConversationEmptyState's "Show event log" link when the
+  // run has been running > 30s without producing chat-renderable
+  // output. Increments uiOpenEventLogToken so RunView can expand the
+  // bottom drawer and switch its tab to "events".
+  requestOpenEventLog: () => void;
 
   applySnapshot: (snap: RunSnapshot) => void;
   applyEvent: (evt: RunEvent) => void;
@@ -342,6 +354,7 @@ function freshInitial() {
     log: initialLogState,
     browser: initialBrowserState,
     wsReconnectToken: 0,
+    uiOpenEventLogToken: 0,
   };
 }
 
@@ -360,6 +373,8 @@ export function createRunStore() {
   setFollowTail: (follow) => set({ followTail: follow }),
   requestWsReconnect: () =>
     set((s) => ({ wsReconnectToken: s.wsReconnectToken + 1 })),
+  requestOpenEventLog: () =>
+    set((s) => ({ uiOpenEventLogToken: s.uiOpenEventLogToken + 1 })),
 
   applySnapshot: (snap) => {
     set((state) => {

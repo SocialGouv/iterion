@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { useLocation, useParams } from "wouter";
 import { Group, Panel, Separator } from "react-resizable-panels";
@@ -29,7 +29,10 @@ import { buildExecutionsAt } from "@/lib/snapshotReducer";
 import BrowserPane, { type BrowserDock } from "./BrowserPane";
 import EventLog from "./EventLog";
 import FileDiffDialog from "./FileDiffDialog";
-import AgentChatbox from "@/components/shared/AgentChatbox";
+import FloatingChatPanel, {
+  ChatPanelContent,
+  type ChatDock,
+} from "./FloatingChatPanel";
 import OperatorPauseBanner from "./OperatorPauseBanner";
 import LeftPanel from "./LeftPanel";
 import NodeDetailPanel from "./NodeDetailPanel";
@@ -38,10 +41,10 @@ import RunCanvasIR, { defaultIterationFor } from "./RunCanvasIR";
 import RunHeader from "./RunHeader";
 import RunLogPanel from "./RunLogPanel";
 import RunMetrics from "./RunMetrics";
+import RunToolbar from "./RunToolbar";
 import ArtifactFilesPanel from "./ArtifactFilesPanel";
 import ReportTab from "./ReportTab";
 import Scrubber from "./Scrubber";
-import RunConversationView from "./conversation/RunConversationView";
 
 import { readNodeOutputMeta, type DelegateOutputMeta } from "@/lib/delegateMeta";
 
@@ -51,19 +54,17 @@ import { readNodeOutputMeta, type DelegateOutputMeta } from "@/lib/delegateMeta"
 // obvious at call sites.
 type RuntimeLLMOverride = DelegateOutputMeta;
 
-const DETAIL_COLLAPSED_KEY = "run-console-v1.detail-collapsed";
-const EVENTLOG_COLLAPSED_KEY = "run-console-v1.eventlog-collapsed";
-const BOTTOM_TAB_KEY = "run-console-v1.bottom-tab";
+// Layout/panel preferences are namespaced under `run-console-v2.*`.
+// Never reuse `run-console-v1.*` keys — the layout shape changed
+// (no global view mode, chat is a separate panel) and mixing them
+// produces inconsistent restored state.
+const DETAIL_COLLAPSED_KEY = "run-console-v2.detail-collapsed";
+const EVENTLOG_COLLAPSED_KEY = "run-console-v2.eventlog-collapsed";
+const BOTTOM_TAB_KEY = "run-console-v2.bottom-tab";
 const BOTTOM_TABS = ["events", "logs", "report", "browser", "artifacts"] as const;
 type BottomTab = (typeof BOTTOM_TABS)[number];
-const VIEW_MODE_KEY = "run-console-v1.view-mode";
-const VIEW_MODES = ["conversation", "canvas", "split"] as const;
-type ViewMode = (typeof VIEW_MODES)[number];
-const VIEW_MODE_LABELS: Record<ViewMode, string> = {
-  conversation: "Conversation",
-  canvas: "Canvas",
-  split: "Split",
-};
+const CHAT_DOCK_KEY = "run-console-v2.chat-dock";
+const CHAT_DOCKS = ["closed", "floating", "docked-right"] as const;
 const BOTTOM_TAB_LABELS: Record<BottomTab, string> = {
   events: "Events",
   logs: "Logs",
@@ -71,7 +72,7 @@ const BOTTOM_TAB_LABELS: Record<BottomTab, string> = {
   browser: "Browser",
   artifacts: "Artifacts",
 };
-const BROWSER_DOCK_KEY = "run-console-v1.browser-dock";
+const BROWSER_DOCK_KEY = "run-console-v2.browser-dock";
 
 function readBrowserDock(): BrowserDock {
   try {
@@ -197,20 +198,32 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
     [],
   );
 
-  const verticalLayout = useLayoutPersistence("run-console-v1.vertical", {
+  const verticalLayout = useLayoutPersistence("run-console-v2.vertical", {
     top: 70,
     eventlog: 30,
   });
   const horizontalLayout = useLayoutPersistence(
-    "run-console-v1.horizontal",
+    "run-console-v2.horizontal",
     { canvas: 70, detail: 30 },
   );
   // Separate layout key so the right-dock split (canvas / detail /
   // browser) doesn't collide with the canvas/detail-only layout when
   // the user toggles the dock.
   const horizontalLayoutWithBrowser = useLayoutPersistence(
-    "run-console-v1.horizontal-with-browser",
+    "run-console-v2.horizontal-with-browser",
     { canvas: 50, detail: 25, browserRight: 25 },
+  );
+  // Layout key for when the chat panel is docked to the right (3rd
+  // resizable column). Includes the chat slot at the end.
+  const horizontalLayoutWithChat = useLayoutPersistence(
+    "run-console-v2.horizontal-with-chat",
+    { canvas: 50, detail: 20, chat: 30 },
+  );
+  // Layout key for the rare case where both browser AND chat dock to
+  // the right at the same time (4 horizontal columns).
+  const horizontalLayoutWithBrowserAndChat = useLayoutPersistence(
+    "run-console-v2.horizontal-full-right",
+    { canvas: 40, detail: 20, browserRight: 20, chat: 20 },
   );
 
   const [browserDock, setBrowserDockState] = useState<BrowserDock>(() =>
@@ -221,21 +234,25 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
     writeBrowserDock(next);
   }, []);
 
+  // Canvas-first defaults: detail + eventlog start collapsed so the
+  // workflow canvas claims the entire central column on first render.
+  // Users who prefer the panels expanded toggle them via RunToolbar
+  // and the choice persists.
   const [detailCollapsed, setDetailCollapsed] = useState<boolean>(() =>
-    readBooleanFlag(DETAIL_COLLAPSED_KEY),
+    readBooleanFlag(DETAIL_COLLAPSED_KEY, true),
   );
   const [eventlogCollapsed, setEventlogCollapsed] = useState<boolean>(() =>
-    readBooleanFlag(EVENTLOG_COLLAPSED_KEY),
+    readBooleanFlag(EVENTLOG_COLLAPSED_KEY, true),
   );
   const [bottomTab, setBottomTab] = useState<BottomTab>(() =>
     readEnumFlag(BOTTOM_TAB_KEY, BOTTOM_TABS, "logs"),
   );
-  const [viewMode, setViewMode] = useState<ViewMode>(() =>
-    readEnumFlag(VIEW_MODE_KEY, VIEW_MODES, "conversation"),
+  const [chatDock, setChatDockState] = useState<ChatDock>(() =>
+    readEnumFlag(CHAT_DOCK_KEY, CHAT_DOCKS, "closed") as ChatDock,
   );
-  const handleSetViewMode = useCallback((next: ViewMode) => {
-    setViewMode(next);
-    writeStringFlag(VIEW_MODE_KEY, next);
+  const setChatDock = useCallback((next: ChatDock) => {
+    setChatDockState(next);
+    writeStringFlag(CHAT_DOCK_KEY, next);
   }, []);
   // Tracks whether the user has manually changed the bottom tab during
   // this run view, so we don't yank the tab back to "browser" on every
@@ -267,6 +284,31 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
       return next;
     });
   }, []);
+
+  // ConversationEmptyState's "Show event log" link bumps a token on
+  // the run store; we expand the bottom drawer + flip to "events"
+  // when the token changes. The token is a global per-store counter
+  // (not reset by reset()), so we baseline against the value the
+  // current run-view instance last saw — re-baselined on runId change
+  // so navigating between run tabs doesn't replay a stale bump.
+  const uiOpenEventLogToken = useRunStore((s) => s.uiOpenEventLogToken);
+  const eventLogTokenBaselineRef = useRef(uiOpenEventLogToken);
+  useEffect(() => {
+    eventLogTokenBaselineRef.current = uiOpenEventLogToken;
+    // Only re-baseline on runId change; ignore live token bumps here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runId]);
+  useEffect(() => {
+    if (uiOpenEventLogToken === eventLogTokenBaselineRef.current) return;
+    setBottomTab("events");
+    writeStringFlag(BOTTOM_TAB_KEY, "events");
+    setBottomTabPinned(true);
+    setEventlogCollapsed((prev) => {
+      if (!prev) return prev;
+      writeBooleanFlag(EVENTLOG_COLLAPSED_KEY, false);
+      return false;
+    });
+  }, [uiOpenEventLogToken]);
 
   // Auto-reveal the Browser tab the first time a preview URL becomes
   // available, but only if the user hasn't already pinned a different
@@ -666,7 +708,31 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
     snapshot.run.status === "finished" ||
     snapshot.run.status === "failed" ||
     snapshot.run.status === "cancelled";
-  const showChatbox = !isQueued && !isTerminal;
+  // The chat input is hidden when the run reached a terminal status,
+  // but the transcript stays readable in the floating / docked panel.
+  const chatInputDisabled = isQueued || isTerminal;
+  const chatDockedRight = chatDock === "docked-right";
+
+  // Pick the layout persistence handle once, indexed by the active
+  // column set so we don't repeat the same 4-way ternary at every
+  // {defaultLayout, onLayoutChanged, defaultSize}. Stays in render
+  // — the four sources don't share an identity and useMemo would
+  // capture stale onChange callbacks.
+  const horizPersistence = browserRightDocked && chatDockedRight
+    ? horizontalLayoutWithBrowserAndChat
+    : browserRightDocked
+    ? horizontalLayoutWithBrowser
+    : chatDockedRight
+    ? horizontalLayoutWithChat
+    : horizontalLayout;
+  const canvasSize = browserRightDocked && chatDockedRight
+    ? 40
+    : browserRightDocked || chatDockedRight
+    ? 50
+    : 70;
+  const detailSize = browserRightDocked || chatDockedRight ? 22 : 30;
+  const browserRightSize = chatDockedRight ? 18 : 25;
+  const chatPanelSize = browserRightDocked ? 20 : 30;
 
   return (
     <ReactFlowProvider>
@@ -680,8 +746,12 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
             {snapshot.run.status === "paused_operator" && (
               <OperatorPauseBanner run={snapshot.run} />
             )}
-            <ViewModeToggle value={viewMode} onChange={handleSetViewMode} />
-            {showChatbox && <AgentChatbox runId={runId} disabled={false} />}
+            <RunToolbar
+              detailCollapsed={detailCollapsed}
+              onToggleDetail={toggleDetailCollapsed}
+              eventlogCollapsed={eventlogCollapsed}
+              onToggleEventlog={toggleEventlogCollapsed}
+            />
             <Scrubber
               events={events}
               liveSeq={liveSeq}
@@ -709,61 +779,37 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
               <Group
                 orientation="horizontal"
                 className="h-full w-full"
-                // The Group's panel set changes when the browser docks
-                // right, so use a different layout key (and React key)
-                // for that mode — react-resizable-panels otherwise keeps
-                // the previous flexGrow distribution and flips badly.
-                key={browserRightDocked ? "with-browser" : "no-browser"}
-                defaultLayout={
-                  browserRightDocked
-                    ? horizontalLayoutWithBrowser.layout
-                    : horizontalLayout.layout
-                }
-                onLayoutChanged={
-                  browserRightDocked
-                    ? horizontalLayoutWithBrowser.onChange
-                    : horizontalLayout.onChange
-                }
+                // Key on the active column set so react-resizable-panels
+                // redistributes flexGrow cleanly on toggle instead of
+                // carrying over the previous mode's sizing.
+                key={`h-${browserRightDocked ? "b" : "_"}-${chatDockedRight ? "c" : "_"}`}
+                defaultLayout={horizPersistence.layout}
+                onLayoutChanged={horizPersistence.onChange}
               >
                 <Panel
                   id="canvas"
-                  defaultSize={browserRightDocked ? 50 : 70}
-                  minSize={30}
+                  defaultSize={canvasSize}
+                  minSize={25}
                   className="min-h-0"
                 >
                   <div className={scrubbing ? "h-full w-full saturate-50" : "h-full w-full"}>
-                    {(() => {
-                      const canvasPane = (
-                        <RunCanvasIR
-                          runId={runId}
-                          executions={displayedExecutions}
-                          selectedNodeId={wfSelectedNodeId}
-                          onSelectNode={handleSelectNode}
-                          iterationByNode={iterationByNode}
-                          onSelectIteration={handleSelectIteration}
-                          runtimeOverrideByNode={runtimeOverrideByNode}
-                        />
-                      );
-                      const conversationPane = <RunConversationView runId={runId} />;
-                      if (viewMode === "conversation") return conversationPane;
-                      if (viewMode === "split") {
-                        return (
-                          <div className="h-full w-full grid grid-cols-2 gap-px bg-border-default">
-                            <div className="bg-surface-0 min-h-0">{canvasPane}</div>
-                            <div className="bg-surface-0 min-h-0">{conversationPane}</div>
-                          </div>
-                        );
-                      }
-                      return canvasPane;
-                    })()}
+                    <RunCanvasIR
+                      runId={runId}
+                      executions={displayedExecutions}
+                      selectedNodeId={wfSelectedNodeId}
+                      onSelectNode={handleSelectNode}
+                      iterationByNode={iterationByNode}
+                      onSelectIteration={handleSelectIteration}
+                      runtimeOverrideByNode={runtimeOverrideByNode}
+                    />
                   </div>
                 </Panel>
-                {viewMode !== "conversation" && !detailCollapsed && (
+                {!detailCollapsed && (
                   <>
                     <ResizeSeparator orientation="horizontal" />
                     <Panel
                       id="detail"
-                      defaultSize={browserRightDocked ? 25 : 30}
+                      defaultSize={detailSize}
                       minSize={18}
                       className="min-h-0"
                     >
@@ -791,8 +837,8 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
                     <ResizeSeparator orientation="horizontal" />
                     <Panel
                       id="browserRight"
-                      defaultSize={25}
-                      minSize={20}
+                      defaultSize={browserRightSize}
+                      minSize={18}
                       className="min-h-0"
                     >
                       <div className="h-full border-l border-border-default min-h-0 overflow-hidden animate-fade-in-opacity">
@@ -803,6 +849,24 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
                           onDockChange={setBrowserDock}
                         />
                       </div>
+                    </Panel>
+                  </>
+                )}
+                {chatDockedRight && (
+                  <>
+                    <ResizeSeparator orientation="horizontal" />
+                    <Panel
+                      id="chat"
+                      defaultSize={chatPanelSize}
+                      minSize={20}
+                      className="min-h-0"
+                    >
+                      <ChatPanelContent
+                        runId={runId}
+                        inputDisabled={chatInputDisabled}
+                        onUndock={() => setChatDock("floating")}
+                        onClose={() => setChatDock("closed")}
+                      />
                     </Panel>
                   </>
                 )}
@@ -873,7 +937,7 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
             />
           )}
         </div>
-        {viewMode !== "conversation" && detailCollapsed && (
+        {detailCollapsed && (
           <ExpandStrip
             orientation="right"
             label="Show details panel"
@@ -887,49 +951,14 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
           mode={diffMode}
           onClose={() => setDiffFile(null)}
         />
+        <FloatingChatPanel
+          runId={runId}
+          dock={chatDock}
+          onDockChange={setChatDock}
+          inputDisabled={chatInputDisabled}
+        />
       </div>
     </ReactFlowProvider>
-  );
-}
-
-// Thin 3-way segmented control above the central panel. Picking a
-// mode persists the choice in localStorage (`run-console-v1.view-mode`)
-// so subsequent runs default to the same view. The Conversation default
-// makes the chat-style timeline the primary surface — the DAG canvas
-// stays one click away for users who want to see the workflow shape.
-function ViewModeToggle({
-  value,
-  onChange,
-}: {
-  value: ViewMode;
-  onChange: (next: ViewMode) => void;
-}) {
-  return (
-    <div
-      role="tablist"
-      aria-label="Run view mode"
-      className="shrink-0 border-b border-border-default px-3 py-1.5 flex items-center gap-1 bg-surface-0"
-    >
-      {VIEW_MODES.map((mode) => {
-        const active = mode === value;
-        return (
-          <button
-            key={mode}
-            type="button"
-            role="tab"
-            aria-selected={active}
-            onClick={() => onChange(mode)}
-            className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
-              active
-                ? "bg-surface-2 text-fg-default"
-                : "text-fg-subtle hover:text-fg-default hover:bg-surface-1"
-            }`}
-          >
-            {VIEW_MODE_LABELS[mode]}
-          </button>
-        );
-      })}
-    </div>
   );
 }
 
