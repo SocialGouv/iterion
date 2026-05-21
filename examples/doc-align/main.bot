@@ -131,13 +131,17 @@ vars:
   diagnostic_surface_globs: string = "pkg/dsl/ir/*.go,pkg/dsl/parser/*.go"
 
   ## v0.15.0: cap on the reviewer's per-iteration working set —
-  ## build_manifest sorts candidates by severity then takes the
-  ## top N. With 89 docs × ~5 anchors avg = ~450 anchors and
-  ## maybe ~80 drifts, 150 keeps the reviewer's prompt bounded
-  ## while still catching the highest-signal drifts each iter.
-  ## Raise this if iteration count creeps up; lower if reviewer
-  ## context still pressures.
-  max_drift_candidates: int = 150
+  ## build_manifest sorts candidates by severity (drifted CLI
+  ## surface > diagnostic > file_ref > symbol_ref > unverifiable)
+  ## then takes the top N. Tuning history:
+  ##   - 150 (initial): reviewer hit error_max_turns at iter 0 —
+  ##     thorough spot-checks across 13 turns blew the budget.
+  ##   - 40 (v0.15.1): smaller per-iter slice, reviewer fits in
+  ##     tool_max_steps:15 with room for structured output. The
+  ##     bot ITERATES — iter 1 fixes ~30, iter 2 sees ~30 more
+  ##     (or coverage rises if the iter 1 fix dropped drifts
+  ##     across families). Convergence over fewer-larger iters.
+  max_drift_candidates: int = 40
 
   ## Inter-run audit cache (v0.5.0). Path to the JSON cache file
   ## that stores `{doc_path: {sha, refs: [{path, sha}]}}` from the
@@ -348,11 +352,16 @@ prompt review_user_claude:
                   error. Raise a blocker with `is_code_bug:true`;
                   the fixer will escalate via ask_user.
 
-  Spot-check budget: you have `tool_max_steps: 10`. Use it on
-  the highest-stakes candidates (drifted CLI surface, drifted
-  diagnostic codes) — read the cited doc line + grep the live
-  code to confirm before voting `dismiss`. Trust the manifest
-  for the bulk of decisions.
+  Spot-check budget: you have `tool_max_steps: 25`. **Trust the
+  manifest by default.** The deterministic verifier already ran
+  every anchor against the live code; its `status` field is
+  authoritative for ~95% of candidates. Spend tool calls ONLY on
+  the top 2-3 highest-severity drifts when you suspect the
+  verifier missed semantic context (e.g. a "drifted" cli_command
+  that's actually a stdlib name). Aim for ≤10 tool calls per
+  iter so you have headroom to emit structured output. Bulk-
+  `confirm` the rest based on the manifest's evidence alone —
+  that's the whole point of the manifest pattern.
 
   Output schema (verdict_output):
    - approved: bool — true ONLY when blockers == [] AND
@@ -444,10 +453,12 @@ prompt review_user_gpt:
     C. code_bug — doc correct, code wrong/removed in error;
                   raise blocker with `is_code_bug:true`
 
-  Spot-check budget: `tool_max_steps: 10`. Use it on the
-  highest-stakes candidates (drifted CLI surface, drifted
-  diagnostic codes). Trust the manifest for the bulk; spot-
-  check the edges.
+  Spot-check budget: `tool_max_steps: 25`. **Trust the manifest
+  by default.** The deterministic verifier already ran every
+  anchor against the live code. Spend tool calls ONLY on the
+  top 2-3 highest-severity drifts you suspect the verifier
+  missed semantically. Aim for ≤10 tool calls; bulk-confirm
+  the rest.
 
   Output schema (verdict_output):
     - approved: bool
@@ -1002,8 +1013,22 @@ if not cli_globs and not diag_globs:
     raise SystemExit(0)
 cli_files = sorted({f for g in cli_globs for f in glob.glob(g, recursive=True) if os.path.isfile(f)})
 diag_files = sorted({f for g in diag_globs for f in glob.glob(g, recursive=True) if os.path.isfile(f)})
-cmd_re = re.compile(r'Use:\s*\"([a-zA-Z0-9_\-]+)\"')
-flag_re = re.compile(r'(?:StringVar|BoolVar|IntVar|DurationVar|Int64Var|Float64Var|StringSliceVar|StringArrayVar)\(\s*&[a-zA-Z0-9_.]+\s*,\s*\"([a-zA-Z0-9_\-]+)\"')
+## v0.15.3: Use: pattern allows optional [args] / <args> suffixes inside
+## the quoted string (cobra convention for declaring positional args).
+## Previously the regex required \" immediately after the captured name,
+## so 'Use: \"dispatch [config.yaml]\"' didn't match and 'dispatch' was
+## reported as a drifted CLI command on every iter.
+cmd_re = re.compile(r'Use:\s*\"([a-zA-Z0-9_\-]+)(?:[\s<\[\{].*?)?\"')
+## v0.15.3: two flag patterns:
+##   - Var family: BoolVar(&ptr, \"name\", ...) — takes a pointer first
+##   - Non-Var: cobra's Flags().String(\"name\", ...) without backing var
+## Both with optional P suffix (StringP, BoolP) for shorthand variants.
+## Previously the Non-Var family was unscanned, so 'paths' and 'format'
+## (declared via Flags().StringSlice / Flags().String in cmd/iterion/
+## bots.go) were reported as drifted on every iter. The negative
+## lookahead (?!Get) excludes the read variants Flags().GetString etc.
+flag_var_re = re.compile(r'(?:String|Bool|Int|Duration|Float64|Int64|StringSlice|StringArray)Var\(\s*&[a-zA-Z0-9_.]+\s*,\s*\"([a-zA-Z][a-zA-Z0-9-]*)\"')
+flag_nonvar_re = re.compile(r'Flags\(\)\.(?!Get)(?:String|Bool|Int|Duration|Float64|Int64)(?:Slice|Array)?P?\(\s*\"([a-zA-Z][a-zA-Z0-9-]*)\"')
 diag_const_re = re.compile(r'\"(C[0-9]{3})\"')
 cli_commands = set()
 cli_flags = set()
@@ -1012,7 +1037,8 @@ for path in cli_files:
         with open(path) as fh: src = fh.read()
     except: continue
     for m in cmd_re.finditer(src): cli_commands.add(m.group(1))
-    for m in flag_re.finditer(src): cli_flags.add(m.group(1))
+    for m in flag_var_re.finditer(src): cli_flags.add(m.group(1))
+    for m in flag_nonvar_re.finditer(src): cli_flags.add(m.group(1))
 diagnostic_codes = set()
 for path in diag_files:
     try:
@@ -1312,7 +1338,7 @@ judge reviewer_claude:
   ## v0.15.0: tool_max_steps cap aligns reviewer_claude with the
   ## manifest pattern — the bounded drift_candidates list is in
   ## the prompt; spot-checks only.
-  tool_max_steps: 10
+  tool_max_steps: 25
   interaction: human
 
 judge reviewer_gpt:
@@ -1342,7 +1368,7 @@ judge reviewer_gpt:
   ## CLI counts each tool call as a turn and exhausted the budget
   ## before claude could emit JSON (error_max_turns observed).
   tools: [bash, read_file, glob, grep]
-  tool_max_steps: 10
+  tool_max_steps: 25
   interaction: human
 
 ## Deterministic streak detector + coverage gate.

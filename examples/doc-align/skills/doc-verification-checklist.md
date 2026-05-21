@@ -53,7 +53,7 @@ randomises 3 entries from your `audited_pairs` and re-greps them.
 
 ## STEP 2 — Spot-check the top drifts
 
-Your `tool_max_steps` budget is 10 (v0.15.0). Spend it on the
+Your `tool_max_steps` budget is 25 (v0.15.0). Spend it on the
 candidates with the highest stakes:
 
 1. **Drifted `cli_command` / `cli_flag` / `diagnostic`** — the
