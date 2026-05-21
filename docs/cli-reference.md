@@ -89,6 +89,28 @@ iterion resume --run-id <id> --file workflow.iter --answers-file answers.json
 
 See [resume.md](resume.md) for the full failure / resume matrix.
 
+## `iterion fork`
+
+Create a new run that resumes from a prior LLM turn of an existing run:
+
+```bash
+iterion fork --run-id <parent-id> --node <node-id>                 # latest turn at that node
+iterion fork --run-id <parent-id> --node <node-id> --turn 0        # explicit turn
+iterion fork --run-id <parent-id> --node <node-id> --rewind-code   # also reset the worktree
+```
+
+The forked run is created in `cancelled` status with a synthetic checkpoint anchored at the chosen `(node, turn)`. Use `iterion resume --run-id <new-id>` (or the studio Resume button) to actually execute it.
+
+| Flag | Description |
+|---|---|
+| `--run-id <id>` | Parent run to fork from (required) |
+| `--node <id>` | Anchor node ID the fork re-executes from (required) |
+| `--turn <n>` | Turn index within the node; `-1` = latest (default) |
+| `--rewind-code` | Reset the new worktree to the snapshot captured at this node boundary (requires per-node snapshots; Phase 2+) |
+| `--name <text>` | Friendly name for the forked run (default: auto-generated) |
+| `--new-inputs <file.json>` | JSON file with input overrides merged onto the parent's inputs |
+| `--store-dir <dir>` | Store directory (default: `.iterion`) |
+
 ## `iterion diagram`
 
 Generate a Mermaid diagram from a workflow:
@@ -118,6 +140,22 @@ iterion bundle pack my-bot -o out.botz  # Choose the output archive
 | `-o, --output <file>` | Output `.botz` path (default: `<dir>.botz` next to the source) |
 | `--force` | Overwrite the output file if it already exists |
 
+## `iterion bots`
+
+Discover `.bot` files and `.botz` bundles on disk and emit a structured catalogue. Used by orchestrator bots (e.g. `whats-next`) to pick the right bot for an issue, and by custom/future dispatcher runners to resolve a per-ticket `Bot` value to a workflow path (see [dispatcher.md](dispatcher.md)).
+
+```bash
+iterion bots list                                # defaults: scan ./examples, emit JSON
+iterion bots list --paths ./examples --paths ./bots
+iterion bots list --format markdown
+iterion bots list --format skill > skills/iterion-bot-catalog.md
+```
+
+| Flag | Description |
+|---|---|
+| `--paths <dir-or-file>` | Directories or `.bot` files to scan; repeatable (default: `examples`) |
+| `--format <json\|markdown\|skill>` | Output format. `skill` emits a SKILL.md ready to drop into a bundle's `skills/` directory — the canonical way to refresh `examples/whats-next/skills/iterion-bot-catalog.md` after adding or renaming a bot. |
+
 ## `iterion report`
 
 Generate a chronological report for a completed run:
@@ -141,6 +179,7 @@ iterion studio                     # Default port 4891
 iterion studio --port 8080         # Custom port
 iterion studio --dir ./workflows   # Custom directory
 iterion studio --bind 0.0.0.0      # Expose on the LAN
+iterion studio --bots-path ./bots  # Add a bot discovery path
 iterion studio --no-browser        # Don't auto-open browser
 ```
 
@@ -149,6 +188,12 @@ Networking flags:
 | Flag | Description |
 |---|---|
 | `--bind <addr>` | Bind address for the studio HTTP listener. Defaults to `127.0.0.1` (loopback only). Use `0.0.0.0` or an interface IP only when you intentionally want LAN exposure; the studio exposes unauthenticated file read/write endpoints, so do not bind it to untrusted networks. |
+
+Bot discovery flags:
+
+| Flag | Description |
+|---|---|
+| `--bots-path <dir-or-file>` | Add a directory or file for Studio to scan for bots. Repeat the flag (or pass a comma-separated StringSlice value) to provide multiple paths. These paths feed the Studio bot picker and dispatcher defaults. When omitted, Studio scans `<dir>/bots`, `<dir>/examples`, and `<dir>/.botz`. |
 
 See [visual-editor.md](visual-editor.md) for features.
 

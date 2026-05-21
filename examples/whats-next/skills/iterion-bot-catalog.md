@@ -1,6 +1,6 @@
 ---
 name: iterion-bot-catalog
-description: Catalog of iterion example bots — pick a bot name for each roadmap_item.assignee. The dispatcher will (eventually) route by assignee.
+description: Catalog of iterion example bots — pick a bot name for each roadmap_item.assignee. The stock dispatcher routes by assignee through assignee_workflows.
 ---
 
 # Iterion Bot Catalog — for whats-next.bot's `propose_roadmap`, `revise_roadmap`, and `emit_action`
@@ -27,17 +27,32 @@ every roadmap item becomes a kanban issue on the native board at
 `<workspace>/.iterion/dispatcher/`, and a **dispatcher** dispatches
 them. The dispatcher is wired via `iterion dispatch <config.yaml>`.
 
-**Important feature gap (today)**: the dispatcher dispatches a
-SINGLE workflow for all eligible issues — it does NOT yet route
-by `issue.assignee`. Until that ships, the operator has two
-choices:
-1. Run multiple dispatchers, one per assignee, each filtering by
-   state or label.
-2. Wait for the routing feature (which whats-next may have
-   proposed as its `next_action` on this run).
+**How the stock dispatcher picks a workflow per issue today**:
+workflow routing is done by the runner built at `iterion dispatch`
+startup, not by switching workflows inside a running `EngineRunner`:
 
-In either case, whats-next records the assignee on the issue so
-the future routing has the data it needs.
+1. **`assignee_workflows:` map** — when the issue's `assignee`
+   has an entry in the dispatcher YAML's `assignee_workflows:`
+   map, `RoutingRunner` selects the precompiled runner for that
+   workflow. See
+   [docs/dispatcher.md §Routing by issue assignee](../../../docs/dispatcher.md).
+2. **`workflow:` default** — the precompiled global fallback when
+   the assignee is empty or unmapped.
+
+Native issues also have typed `Bot` / `BotArgs` fields. `BotArgs`
+merges over rendered dispatch vars and is usable today. `Bot` is
+resolved into `DispatchSpec.WorkflowPath` for custom runners/future
+routing, but the stock `EngineRunner` ignores that field and runs
+the workflow it was constructed with. Do not rely on per-ticket
+`Bot` for stock workflow routing; use `assignee_workflows:`.
+
+`assignee_dispatch:` (when present) replaces `dispatch.vars`
+wholesale per assignee; per-ticket `BotArgs` then merges on top
+key-by-key (see the issue-creation section below).
+
+whats-next records the assignee on every issue so operators can drive
+routing by setting `--assignee` and mapping it through
+`assignee_workflows:`.
 
 ## Decision tree — pick `assignee` per roadmap item
 
@@ -213,24 +228,59 @@ Example `args` payload for a roadmap_item:
 
 ## Issue-creation mapping (consumed by `emit_action`)
 
-Each `roadmap_item` → one `iterion issue create` invocation:
+Each `roadmap_item` lands on the native kanban board as one
+issue. The data model on the wire is:
+
+| `roadmap_item` field | Native tracker field | CLI flag (today) |
+|---|---|---|
+| `title`              | `title`              | `--title`        |
+| `body`               | `body`               | `--body`         |
+| `assignee`           | `assignee`           | `--assignee`     |
+| _(bot name, e.g. `feature_dev`)_ | `bot` (string)       | _no CLI flag — REST only_ |
+| `args` (object)      | `bot_args` (`map[string]string`) | _no CLI flag — REST only_ |
+
+`bot` and `bot_args` are dedicated typed fields on
+[`native.Issue`](../../../pkg/dispatcher/native/issue.go) (JSON
+keys `bot`, `bot_args`); they are NOT stored under the freeform
+`Fields` map. The `iterion issue create/update` CLI does not yet
+expose `--bot` / `--bot-arg` flags — until they ship, set those
+fields through the REST API (POST/PATCH `/api/v1/native/issues`
+with `{ "bot": "...", "bot_args": { ... } }`) or via direct
+`store.Create/Update` calls. `bot_args` is usable today: the
+dispatcher merges it on top of the rendered `dispatch.vars`
+key-by-key, with `bot_args` winning on shared keys (see
+[pkg/dispatcher/loop.go](../../../pkg/dispatcher/loop.go) `buildSpec`,
+lines 276-296). `bot` is persisted and resolved into the dispatch
+request, but the stock `EngineRunner` does not consume it for
+workflow switching; use `assignee_workflows:` for real stock bot
+routing.
+
+Concrete `bot_args` example — for an issue assigned to
+`feature_dev` with `args = {"feature_prompt": "Add CSV export"}`:
+
+```json
+{
+  "title": "Add CSV export",
+  "assignee": "feature_dev",
+  "bot": "feature_dev",
+  "bot_args": { "feature_prompt": "Add CSV export" },
+  "labels": ["horizon:next-action", "source:whats-next"]
+}
+```
+
+Horizon labels:
 
 ```
-roadmap_item.title    → --title
-roadmap_item.body     → --body
-roadmap_item.assignee → --assignee
-roadmap_item.args     → --field bot_args=<flat string list>
-
-horizon=next_action  → --labels horizon:next-action,source:whats-next
-horizon=short_term   → --labels horizon:short-term,source:whats-next
-horizon=long_term    → --labels horizon:long-term,source:whats-next
+horizon=next_action  → --label horizon:next-action --label source:whats-next
+horizon=short_term   → --label horizon:short-term --label source:whats-next
+horizon=long_term    → --label horizon:long-term --label source:whats-next
 ```
 
-`bot_args` is a comma-joined flat string list. For
-`args={"feature_prompt":"Add CSV export"}`, the field value is
-`--var,feature_prompt=Add CSV export`. The eventual dispatcher
-router will split on `,` and emit `--var` flags to the
-dispatched bot.
+Operators driving routing only through the CLI today should set
+`--assignee <bot_name>` and rely on `assignee_workflows:` /
+`assignee_dispatch:` in the dispatcher YAML to map that assignee
+to a workflow + var template — see
+[docs/dispatcher.md §Routing by issue assignee](../../../docs/dispatcher.md).
 
 ## Verification ritual (emit_action)
 

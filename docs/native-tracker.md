@@ -126,6 +126,25 @@ machine-readable output:
 iterion issue list --state ready --json | jq '.[].id'
 ```
 
+### Open CLI gap: per-ticket `bot` / `bot_args`
+
+The underlying `native.Issue` record carries dedicated typed
+fields `Bot` (string) and `BotArgs` (`map[string]string`) — see
+the REST surface below — but `iterion issue create` and
+`iterion issue update` do **not** yet expose `--bot` or
+`--bot-arg` flags. `--field key=value` lands in the freeform
+`Fields` map, NOT in `BotArgs`.
+
+Until the CLI ships those flags, set the two routing fields via
+one of:
+
+- the REST API (`POST` / `PATCH` `/api/v1/native/issues` with
+  `{ "bot": "feature_dev", "bot_args": { "feature_prompt": "…" } }`),
+- a direct `native.Store.Create` / `Update` call from Go,
+- or rely on the dispatcher-side `assignee_workflows:` /
+  `assignee_dispatch:` mappings keyed on `--assignee` (see
+  [docs/dispatcher.md](dispatcher.md)).
+
 ## REST surface
 
 When iterion runs an HTTP server (`iterion studio` or `iterion
@@ -137,15 +156,27 @@ same JWT middleware as `/api/runs/*`.
 | Endpoint                                     | Method | Body                                |
 |----------------------------------------------|--------|-------------------------------------|
 | `/api/v1/native/issues`                      | GET    | (query: `state`, `label`, `assignee`)|
-| `/api/v1/native/issues`                      | POST   | `{title, body?, state?, labels?, priority?, assignee?, blockers?, fields?}` |
+| `/api/v1/native/issues`                      | POST   | `{title, body?, state?, labels?, priority?, assignee?, blockers?, fields?, bot?, bot_args?}` |
 | `/api/v1/native/issues/{id}`                 | GET    | —                                   |
-| `/api/v1/native/issues/{id}`                 | PATCH  | partial `{title?, body?, labels?, priority?, assignee?, blockers?, fields?}` |
+| `/api/v1/native/issues/{id}`                 | PATCH  | partial `{title?, body?, labels?, priority?, assignee?, blockers?, fields?, bot?, bot_args?}` |
 | `/api/v1/native/issues/{id}`                 | DELETE | —                                   |
 | `/api/v1/native/issues/{id}/transition`      | POST   | `{to: <state>}`                     |
 | `/api/v1/native/board`                       | GET    | —                                   |
 | `/api/v1/native/board`                       | PUT    | full `Board`                        |
 
 `{id}` accepts the same prefix resolution as the CLI.
+
+`bot` (string) and `bot_args` (`map[string,string]`) are
+dedicated typed columns on the native `Issue` record; they are not
+part of the freeform `fields` map. `bot_args` is merged on top of
+the dispatcher's rendered `dispatch.vars` key-by-key at launch time,
+with `bot_args` winning on shared keys. `bot` is resolved into the
+dispatch request for custom runners/future routing, but the current
+stock `EngineRunner` is precompiled for one workflow and does not use
+the per-ticket `bot` field to override workflow selection. Use
+`assignee_workflows:` in the dispatcher config for current stock
+workflow routing. See [docs/dispatcher.md §Per-ticket bot + args
+fields](dispatcher.md) for the current handoff.
 
 The SPA's Board view (`/board` in the studio) consumes exactly these
 endpoints — it's a thin React shell on top of the REST surface.

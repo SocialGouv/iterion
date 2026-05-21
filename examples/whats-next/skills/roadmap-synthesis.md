@@ -18,8 +18,10 @@ roadmap_item:
   assignee: string   # name of a real bot in this repo
                      # (e.g. "feature_dev"), OR "" when no
                      # existing bot fits.
-  args:     json     # object of --var key=value overrides for
-                     # the bot; flattened to issue.fields.bot_args.
+  args:     json     # object of typed bot_args var overrides.
+                     # CLI/board MCP cannot set typed bot_args
+                     # directly today; preserve them in the body or
+                     # set them through REST/PATCH/direct store APIs.
 
 roadmap:
   long_term:    [roadmap_item]    # 2-4 items
@@ -139,8 +141,11 @@ When the operator rejects:
 `emit_action` takes your roadmap and creates one kanban issue
 per item via `iterion issue create`. Labels distinguish horizons:
 `horizon:next-action`, `horizon:short-term`, `horizon:long-term`.
-The `args` object becomes `issue.fields.bot_args` (a flat
-string[]).
+The CLI and board MCP can only store roadmap `args` as
+human-readable text/trailers or custom freeform fields today; those
+freeform fields are not dispatcher-consumed typed `bot_args`. If the
+args must affect dispatch vars, set typed `bot_args` through the
+native REST PATCH/POST API or direct store APIs after issue creation.
 
 You DON'T create issues — that's the post-approval step. You
 just emit the structured roadmap; the operator approves it; the

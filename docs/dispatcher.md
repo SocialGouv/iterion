@@ -305,6 +305,46 @@ catalogued bot), and the dispatcher — with the mapping above —
 dispatches the matching workflow without any operator
 intervention.
 
+### Per-ticket bot + args fields
+
+In addition to the assignee-based mapping above, every native
+tracker issue carries two dedicated typed fields that are copied into
+the dispatch request:
+
+| Field | Type | Current stock effect |
+|---|---|---|
+| `Bot`     | `string` (JSON `bot`) | Resolved through the bot registry into `DispatchSpec.WorkflowPath` when non-empty. This is plumbing for custom runners/future workflow switching, but the stock `EngineRunner` is precompiled for one workflow and does **not** switch workflows from `DispatchSpec.WorkflowPath` at dispatch time. Use `assignee_workflows:` for production workflow routing today. |
+| `BotArgs` | `map[string]string` (JSON `bot_args`) | Merged over the rendered `dispatch.vars` key-by-key at launch time. `BotArgs` wins on shared keys; keys absent from the workflow's `vars:` schema are passed through with a warn log (the engine surfaces its own diagnostic). |
+
+Current stock workflow selection is performed by the runner built at
+`iterion dispatch` startup:
+
+1. `assignee_workflows[issue.assignee]` → a precompiled
+   per-assignee `EngineRunner` selected by `RoutingRunner`.
+2. `cfg.workflow` → the precompiled default `EngineRunner`.
+
+`buildSpec` still resolves a per-ticket `Bot` into
+`DispatchSpec.WorkflowPath`, but the stock `EngineRunner` runs the
+workflow it was constructed with. Treat per-ticket `Bot` as
+custom-runner/future plumbing unless you have supplied a runner that
+actually consumes `DispatchSpec.WorkflowPath`.
+
+Vars: `assignee_dispatch[issue.assignee].vars` (or `dispatch.vars`
+as fallback) are rendered first, then `BotArgs` is merged on top.
+See [pkg/dispatcher/loop.go](../pkg/dispatcher/loop.go)
+(`buildSpec`, lines 276-296) for the merge, and
+[pkg/dispatcher/routing_runner.go](../pkg/dispatcher/routing_runner.go)
+for the stock assignee workflow selection.
+
+**How to set `bot` / `bot_args` today**: REST API only —
+`POST /api/v1/native/issues` or `PATCH /api/v1/native/issues/{id}`
+with `{ "bot": "feature_dev", "bot_args": { "feature_prompt": "…" } }`.
+The `iterion issue create/update` CLI does **not** yet expose
+`--bot` / `--bot-arg` flags; `--field key=value` lands in the
+freeform `Fields` map, not in `BotArgs`, and is not merged into
+dispatch vars. Operators driving routing purely through the CLI
+should rely on `assignee_workflows:` + `assignee_dispatch:` instead.
+
 ### Per-assignee dispatch overrides
 
 Different bots expect different input vars: `feature_dev` wants

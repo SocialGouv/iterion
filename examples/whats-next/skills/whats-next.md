@@ -72,10 +72,11 @@ NOT shell out `iterion run …` itself; the **dispatcher** is the
 dispatcher.
 
 1. For each item: `iterion issue create --title … --body …
-   --assignee <bot_name> --labels horizon:<level>,source:whats-next
-   --field bot_args=<flat string list>`. The dispatcher will pick it up
-   once iterion learns to route by `issue.assignee` — see the "Iterion
-   feature gap" note below.
+   --assignee <bot_name> --label horizon:<level> --label source:whats-next`.
+   If you preserve roadmap args via `--field bot_args=...`, treat that
+   only as a human-readable/custom field; it is not the typed
+   dispatcher-consumed `bot_args`. Typed `bot_args` must be set via the
+   native REST API or direct store APIs.
 2. Record an audit markdown at
    `<workspace>/.iterion/plans/whats-next-<timestamp>.md` with the
    roadmap, the operator's priorities, the list of created issue IDs,
@@ -84,16 +85,28 @@ dispatcher.
    gate. Once approved, issues land on the board and the operator can
    edit / reorder / delete them in the board UI.
 
-### Iterion feature gap (today)
+### How issues get dispatched (today)
 
-The dispatcher (`iterion dispatch <config.yaml>`) dispatches a single
-workflow for all eligible issues. It does NOT yet route by
-`issue.assignee`. Until that ships, the operator either runs multiple
-dispatchers (one per assignee, filtering by state) or waits for the
-routing feature. whats-next records the assignee on every issue
-regardless so the future mechanism has the data it needs — and may
-propose "ship the assignee-routing feature" as the very `next_action`
-on a whats-next run against the iterion source repo.
+`iterion dispatch <config.yaml>` resolves a workflow per issue
+through the stock runner built at startup:
+
+1. **`assignee_workflows:`** — maps `issue.assignee` strings to
+   precompiled workflow runners in the dispatcher YAML; paired
+   with `assignee_dispatch:` for per-bot var templates.
+2. **`workflow:`** — the global precompiled default for issues
+   whose assignee is empty or unmapped.
+
+Native issues also have typed `bot` and `bot_args` fields.
+`bot_args` (a typed `map[string]string`) merges over rendered config
+vars key-by-key and must be set via REST/direct store APIs if it
+should affect dispatch. `bot` is persisted/resolved for custom
+runners/future routing, but the stock `EngineRunner` does not use it
+to switch workflows. whats-next records the assignee on every issue
+so an operator can drive routing through `assignee_workflows:`
+without touching the REST API. See
+[`iterion-bot-catalog`](iterion-bot-catalog.md#issue-creation-mapping-consumed-by-emit_action)
+for the exact wire shape and the open CLI gap (no
+`--bot`/`--bot-arg` on `iterion issue create`).
 
 ## Operating principles
 
