@@ -59,3 +59,6 @@ export type { LiveDotProps, LiveDotTone, LiveDotSize } from "./LiveDot";
 
 export { CopyButton } from "./CopyButton";
 export type { CopyButtonProps } from "./CopyButton";
+
+export { ThinkingIndicator } from "./ThinkingIndicator";
+export type { ThinkingIndicatorProps } from "./ThinkingIndicator";

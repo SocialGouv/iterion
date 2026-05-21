@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 import {
   BannerProgressLine,
   BannerStatusIcon,
 } from "@/components/Runs/conversation/BannerCard";
+import { ThinkingIndicator } from "@/components/ui/ThinkingIndicator";
 import { phrasesForNode } from "@/lib/whats-next/loadingPhrases";
 import type { BannerMessage } from "@/lib/runChat/types";
 
@@ -13,11 +14,14 @@ interface Props {
 
 // NodeBanner is the whats-next-flavoured banner row: same shape as
 // the generic BannerCard but with two whats-next-specific affordances
-// — a per-node LoadingPhrase rotator (whimsy) and a Summary <details>
-// block (whats-next renders no NodeOutputCard, so the summary doubles
-// as the at-a-glance result).
+// — a per-node ThinkingIndicator (typing animation + ✻ glyph, shared
+// with the Runs/logs ThinkingFooter) and a Summary <details> block
+// (whats-next renders no NodeOutputCard, so the summary doubles as the
+// at-a-glance result).
 export default function NodeBanner({ message }: Props) {
   const { label, status, summary, errorMessage, nodeId, progress } = message;
+  // Cache the per-node phrase list so it's stable across re-renders.
+  const phrases = useMemo(() => phrasesForNode(nodeId), [nodeId]);
 
   return (
     <div className="flex items-start gap-2 text-[12px]">
@@ -28,7 +32,9 @@ export default function NodeBanner({ message }: Props) {
         <div className="flex items-baseline gap-2">
           <span className="text-fg-default">{label}</span>
           <span className="text-[10px] font-mono text-fg-subtle">{nodeId}</span>
-          {status === "running" && <LoadingPhrase nodeId={nodeId} />}
+          {status === "running" && (
+            <ThinkingIndicator words={phrases} active className="font-mono text-[10px] text-info-fg italic" />
+          )}
         </div>
         {progress && status === "running" && (
           <BannerProgressLine progress={progress} />
@@ -72,27 +78,5 @@ function BannerSummary({ text }: { text: string }) {
         </button>
       )}
     </div>
-  );
-}
-
-function LoadingPhrase({ nodeId }: { nodeId: string }) {
-  const phrases = useMemo(() => phrasesForNode(nodeId), [nodeId]);
-  // Random starting index so two adjacent banners (rare, but possible
-  // on parallel branches) don't lock-step through the same phrases.
-  const [index, setIndex] = useState(() =>
-    phrases.length > 0 ? Math.floor(Math.random() * phrases.length) : 0,
-  );
-  useEffect(() => {
-    if (phrases.length <= 1) return;
-    const id = setInterval(() => {
-      setIndex((i) => (i + 1) % phrases.length);
-    }, 2500);
-    return () => clearInterval(id);
-  }, [phrases.length]);
-  if (phrases.length === 0) return null;
-  return (
-    <span className="text-[10px] text-fg-subtle italic">
-      {phrases[index]}…
-    </span>
   );
 }
