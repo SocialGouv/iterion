@@ -593,6 +593,50 @@ func TestExpr_FuncCall_If(t *testing.T) {
 	}
 }
 
+// TestExpr_If_ShortCircuits covers ticket a3a9757b: the un-taken
+// branch must not be evaluated, so an arithmetic trap (divide-by-zero,
+// out-of-range index) hidden inside it can't crash the compute node.
+// The 2026-05-20 doc-align dogfood hit this with
+// `if(doc_count > 0, total*100/doc_count, 0)` on an empty workspace.
+func TestExpr_If_ShortCircuits(t *testing.T) {
+	ctx := makeCtx(
+		map[string]interface{}{
+			"zero":  int64(0),
+			"total": int64(100),
+		},
+		nil, nil, nil,
+	)
+	cases := []struct {
+		name   string
+		src    string
+		expect interface{}
+	}{
+		{
+			"div-by-zero hidden in then arm, false cond",
+			`if(vars.zero > 0, vars.total / vars.zero, 0)`,
+			int64(0),
+		},
+		{
+			"div-by-zero hidden in else arm, true cond",
+			`if(vars.total > 0, 100, vars.total / vars.zero)`,
+			int64(100),
+		},
+	}
+	for _, c := range cases {
+		ast, err := Parse(c.src)
+		if err != nil {
+			t.Fatalf("%s: Parse(%q) error: %v", c.name, c.src, err)
+		}
+		got, err := ast.Eval(ctx)
+		if err != nil {
+			t.Fatalf("%s: Eval(%q) returned error (un-taken branch was evaluated): %v", c.name, c.src, err)
+		}
+		if got != c.expect {
+			t.Errorf("%s: Eval(%q) = %v, want %v", c.name, c.src, got, c.expect)
+		}
+	}
+}
+
 func TestExpr_FuncCall_Nested(t *testing.T) {
 	// Mirrors the iterion review-workflow accumulator:
 	// unique(concat(loop.l.previous_output.cumulative, input.scanned_areas))
