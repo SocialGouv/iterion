@@ -36,6 +36,10 @@ type Workflow struct {
 	Interaction    *InteractionMode       // workflow-level default interaction mode (nil = not set)
 	Worktree       string                 // "auto" runs in a per-run git worktree; "" or "none" runs in-place
 	Sandbox        *SandboxSpec           // workflow-level sandbox spec (nil = inherit global / no sandbox)
+	// Cursors map of cursor name → resolved definition. Populated from
+	// top-level `cursor NAME:` declarations. Agent/judge `cursors:`
+	// invocations are resolved against this map at runtime.
+	Cursors map[string]*CursorDef
 	// MCPServers contains the explicit top-level declarations from the .iter file.
 	MCPServers map[string]*MCPServer
 	// ActiveMCPServers and ResolvedMCPServers are populated after project config
@@ -151,6 +155,7 @@ type AgentNode struct {
 	Compaction       *Compaction  // per-node compaction overrides (nil = inherit workflow)
 	Memory           *Memory      // per-node workspace memory opt-in (nil = disabled)
 	Sandbox          *SandboxSpec // node-level sandbox override (nil = inherit workflow)
+	Cursors          *CursorInvocation
 }
 
 // NodeKind implements Node.
@@ -174,6 +179,7 @@ type JudgeNode struct {
 	Compaction       *Compaction  // per-node compaction overrides (nil = inherit workflow)
 	Memory           *Memory      // per-node workspace memory opt-in (nil = disabled)
 	Sandbox          *SandboxSpec // node-level sandbox override (nil = inherit workflow)
+	Cursors          *CursorInvocation
 }
 
 // NodeKind implements Node.
@@ -854,4 +860,49 @@ type Memory struct {
 	Read             bool
 	Write            bool
 	PreCompactInject bool
+}
+
+// ---------------------------------------------------------------------------
+// Cursors — prompt-engineering dials (IR side)
+// ---------------------------------------------------------------------------
+
+// CursorDef is the normalized IR form of a `cursor NAME:` declaration.
+// Exactly one of Values / Bands is non-nil (validated by C085).
+type CursorDef struct {
+	Name        string
+	Description string
+	Values      []CursorValue // enum form: ordered, numeric invocations snap to position
+	Bands       []CursorBandSpec
+}
+
+// CursorValue is one ordered entry of an enum cursor.
+type CursorValue struct {
+	Name   string
+	Prompt string
+}
+
+// CursorBandSpec is one resolved entry of a numeric cursor: Lo..Hi
+// (inclusive on both ends) → Prompt. Parsed from the AST band Range
+// string ("0.0..0.33").
+type CursorBandSpec struct {
+	Lo     float64
+	Hi     float64
+	Prompt string
+}
+
+// CursorInvocation is the IR form of an agent/judge `cursors:` block.
+// Settings preserves declaration order; resolution sorts by cursor
+// name alphabetically before composing the prompt suffix so identical
+// activations produce identical prompts (prompt-cache friendly).
+type CursorInvocation struct {
+	Enabled  bool
+	Settings []CursorSetting
+}
+
+// CursorSetting is one `name: value` pair inside a `cursors:` block.
+// Value is stored raw (may contain ${VAR}); resolution happens at
+// runtime against the workflow's Cursors map.
+type CursorSetting struct {
+	Key   string
+	Value string
 }

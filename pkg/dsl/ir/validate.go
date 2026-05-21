@@ -86,6 +86,7 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateMemory(w)
 	c.validatePlaywrightMCP(w)
 	c.validateCapabilities(w)
+	c.validateCursorInvocations(w)
 }
 
 // validateMemory enforces shape on the per-node `memory:` block and

@@ -145,6 +145,11 @@ const (
 	TokenWorktree
 	// Sandbox (Phase 0: simple "sandbox: ident" form for none|auto)
 	TokenSandbox
+	// Cursor declaration + activation block
+	TokenCursor
+	TokenCursors
+	TokenValues
+	TokenBands
 	// Terminal node names (reserved identifiers)
 	TokenDone
 	TokenFail
@@ -273,6 +278,10 @@ var tokenNames = map[TokenType]string{
 	TokenPreCompactInject: "pre_compact_inject",
 	TokenWorktree:         "worktree",
 	TokenSandbox:          "sandbox",
+	TokenCursor:           "cursor",
+	TokenCursors:          "cursors",
+	TokenValues:           "values",
+	TokenBands:            "bands",
 
 	TokenDone: "done",
 	TokenFail: "fail",
@@ -382,6 +391,10 @@ var keywords = map[string]TokenType{
 	"pre_compact_inject":    TokenPreCompactInject,
 	"worktree":              TokenWorktree,
 	"sandbox":               TokenSandbox,
+	"cursor":                TokenCursor,
+	"cursors":               TokenCursors,
+	"values":                TokenValues,
+	"bands":                 TokenBands,
 	"done":                  TokenDone,
 	"fail":                  TokenFail,
 }

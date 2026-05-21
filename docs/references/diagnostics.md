@@ -68,6 +68,10 @@ All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`
 | **C080** | warning | Unknown capability | A `capabilities:` entry isn't in the built-in registry (currently: `board.read`, `board.create`, `board.move`, `board.assign`, `board.label`, `board.close`) | Either fix the typo or accept the warning — unknown caps still propagate to the executor (the registry is open for extension) |
 | **C081** | error | Malformed capability | A `capabilities:` entry doesn't match the shape `domain` or `domain.action` (lowercase letters/digits/underscores) | Use the lowercase `domain.action` form, e.g. `board.create` |
 | **C082** | warning | Board capability inside sandbox | A node grants a `board.*` capability while running under a sandbox — the stdio `__mcp-board` transport is unavailable, the runtime falls back to the HTTP transport on the iterion server | No action required if the iterion HTTP server is reachable from the sandbox; otherwise drop the capability or disable the sandbox for that node |
+| **C083** | warning | Unknown cursor reference | An agent/judge `cursors:` setting references a cursor name not declared at workflow scope | Declare it with `cursor <name>:` or drop the setting — see [docs/cursors.md](../cursors.md) |
+| **C084** | error | Invalid cursor value | A cursor invocation value is not in the enum, falls outside `[0, 1]`, or doesn't match any band. `${VAR}` values defer to runtime | Use a declared enum value or a numeric in range; for env-driven values, ensure the substituted result is valid |
+| **C085** | error | Malformed cursor declaration | A `cursor <name>:` block declares neither `values:` nor `bands:`, declares both, has overlapping bands, or has a range outside `[0, 1]` | Pick exactly one form (enum or numeric); ensure bands cover disjoint sub-ranges of `[0, 1]` |
+| **C086** | error | Duplicate cursor name | The same `cursor <name>:` declaration appears twice in one source | Rename one of them, or merge their `values:` / `bands:` entries |
 
 > **Historical code-reuse note:** earlier releases reused `C030` for
 > two cases. `C029` was introduced for the validator-side

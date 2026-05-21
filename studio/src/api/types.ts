@@ -9,6 +9,7 @@ export interface IterDocument {
   mcp_servers?: MCPServerDecl[];
   prompts: PromptDecl[];
   schemas: SchemaDecl[];
+  cursors?: CursorDecl[];
   agents: AgentDecl[];
   judges: JudgeDecl[];
   routers: RouterDecl[];
@@ -235,6 +236,7 @@ export interface AgentDecl {
   interaction_model?: string;
   await?: AwaitMode;
   compaction?: CompactionBlock;
+  cursors?: CursorBlock;
 }
 
 export interface JudgeDecl {
@@ -259,6 +261,38 @@ export interface JudgeDecl {
   interaction_model?: string;
   await?: AwaitMode;
   compaction?: CompactionBlock;
+  cursors?: CursorBlock;
+}
+
+// ---------------------------------------------------------------------------
+// Cursors (prompt-engineering dials, see docs/cursors.md)
+// ---------------------------------------------------------------------------
+
+export interface CursorDecl {
+  name: string;
+  description?: string;
+  values?: CursorEnumValue[];
+  bands?: CursorBand[];
+}
+
+export interface CursorEnumValue {
+  name: string;
+  prompt: string;
+}
+
+export interface CursorBand {
+  range: string; // "lo..hi", lo & hi in [0,1]
+  prompt: string;
+}
+
+export interface CursorBlock {
+  enabled: boolean;
+  settings?: CursorSetting[];
+}
+
+export interface CursorSetting {
+  key: string;
+  value: string;
 }
 
 export type WorktreeMode = "auto" | "none";

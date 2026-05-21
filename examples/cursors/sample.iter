@@ -1,0 +1,42 @@
+## Minimal workflow demonstrating cursor activation.
+## Run with: iterion run examples/cursors/sample.iter
+
+cursor ambition:
+  description: "How aggressively to expand scope beyond the stated request."
+  values:
+    cautious: "Stick strictly to the stated request; do not propose extensions."
+    balanced: "Address the request; surface one obvious adjacent improvement as a suggestion."
+    ambitious: "Proactively identify 2-3 adjacent improvements; rank them by leverage."
+
+cursor depth:
+  description: "Investigation thoroughness."
+  bands:
+    "0.0..0.33": "Skim the surface; cite primary sources only."
+    "0.34..0.66": "Examine main code paths and one layer of dependencies."
+    "0.67..1.0": "Trace all call sites and edge cases."
+
+schema verdict:
+  rationale: string
+  recommendation: string
+
+prompt review_system:
+  You are a code reviewer. Produce a verdict with a one-paragraph rationale and
+  a concrete recommendation. Operate within the calibration appended below.
+
+prompt review_user:
+  Review the current change set. Surface the most important issue you find and
+  recommend the next action.
+
+agent reviewer:
+  model: "anthropic/claude-sonnet-4-6"
+  system: review_system
+  user: review_user
+  output: verdict
+  cursors:
+    enabled: true
+    ambition: ambitious
+    depth: 0.7
+
+workflow main:
+  entry: reviewer
+  reviewer -> done

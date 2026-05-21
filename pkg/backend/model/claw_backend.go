@@ -225,7 +225,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 
 	// System prompt (optionally augmented with the interaction protocol)
 	// with ephemeral cache_control marker.
-	systemText := task.SystemPromptWithInteraction()
+	systemText := task.BuildSystemPrompt()
 	if systemText != "" {
 		opts.SystemBlocks = []api.ContentBlock{{
 			Type:         "text",

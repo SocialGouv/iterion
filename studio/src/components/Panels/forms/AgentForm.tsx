@@ -23,6 +23,7 @@ import { TextField, CommittedTextField, NumberField, CheckboxField, SelectField,
 import { ProviderIcon, ProviderLabel } from "@/components/icons/ProviderIcon";
 import { detectProvider } from "@/components/icons/providerDetect";
 import CompactionFields from "./CompactionFields";
+import CursorsFields from "./CursorsFields";
 import MCPConfigFields from "./MCPConfigFields";
 
 interface Props {
@@ -284,6 +285,10 @@ export default function AgentForm({ decl, kind }: Props) {
       <CompactionFields
         value={decl.compaction}
         onChange={(c) => update({ compaction: c })}
+      />
+      <CursorsFields
+        value={decl.cursors}
+        onChange={(c) => update({ cursors: c })}
       />
       <MCPConfigFields
         scope="node"

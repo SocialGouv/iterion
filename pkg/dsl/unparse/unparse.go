@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -112,6 +113,12 @@ func Unparse(f *ast.File) string {
 		}
 	}
 
+	// --- Cursors (top-level declarations) ---
+	for _, c := range f.Cursors {
+		blankLine()
+		writeCursorDecl(&b, c)
+	}
+
 	// --- Agents ---
 	for _, a := range f.Agents {
 		blankLine()
@@ -129,6 +136,9 @@ func Unparse(f *ast.File) string {
 			writeMemory(&b, a.Memory, "  ", false)
 		}
 		writeSandboxBlock(&b, a.Sandbox, "  ")
+		if a.Cursors != nil {
+			writeCursorsBlock(&b, a.Cursors, "  ")
+		}
 	}
 
 	// --- Judges ---
@@ -148,6 +158,9 @@ func Unparse(f *ast.File) string {
 			writeMemory(&b, j.Memory, "  ", false)
 		}
 		writeSandboxBlock(&b, j.Sandbox, "  ")
+		if j.Cursors != nil {
+			writeCursorsBlock(&b, j.Cursors, "  ")
+		}
 	}
 
 	// --- Routers ---
@@ -747,6 +760,65 @@ func writeMemory(b *strings.Builder, m *ast.MemoryBlock, indent string, leadingB
 	if m.PreCompactInject != nil {
 		fmt.Fprintf(b, "%s  pre_compact_inject: %t\n", indent, *m.PreCompactInject)
 	}
+}
+
+// writeCursorDecl renders a top-level `cursor NAME:` declaration.
+// Values and Bands are serialized in declaration order so that
+// parse → unparse → parse stays stable; the IR compiler is the place
+// where reorderings happen.
+func writeCursorDecl(b *strings.Builder, c *ast.CursorDecl) {
+	fmt.Fprintf(b, "cursor %s:\n", c.Name)
+	if c.Description != "" {
+		fmt.Fprintf(b, "  description: %q\n", c.Description)
+	}
+	if len(c.Values) > 0 {
+		b.WriteString("  values:\n")
+		for _, v := range c.Values {
+			fmt.Fprintf(b, "    %s: %q\n", v.Name, v.Prompt)
+		}
+	}
+	if len(c.Bands) > 0 {
+		b.WriteString("  bands:\n")
+		for _, band := range c.Bands {
+			fmt.Fprintf(b, "    %q: %q\n", band.Range, band.Prompt)
+		}
+	}
+}
+
+// writeCursorsBlock renders an agent/judge `cursors:` activation
+// block. Settings preserve declaration order; only the explicit
+// `enabled: false` form needs emission — the default true is the
+// implicit shape the parser assumes.
+func writeCursorsBlock(b *strings.Builder, cb *ast.CursorBlock, indent string) {
+	fmt.Fprintf(b, "%scursors:\n", indent)
+	if !cb.Enabled {
+		fmt.Fprintf(b, "%s  enabled: false\n", indent)
+	}
+	for _, s := range cb.Settings {
+		if isCursorValueBareIdent(s.Value) {
+			fmt.Fprintf(b, "%s  %s: %s\n", indent, s.Key, s.Value)
+		} else {
+			fmt.Fprintf(b, "%s  %s: %q\n", indent, s.Key, s.Value)
+		}
+	}
+}
+
+// isCursorValueBareIdent decides whether a setting value is safe to
+// emit unquoted. Bare identifiers (enum names) and numeric forms
+// (0.7, 1, .25) qualify; anything containing `${`, whitespace, or
+// other punctuation goes through quoting.
+func isCursorValueBareIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	if strings.ContainsAny(s, " \t\"${},[]:") {
+		return false
+	}
+	// numeric forms always lex back to a number → safe unquoted
+	if _, err := strconv.ParseFloat(s, 64); err == nil {
+		return true
+	}
+	return isBareIdent(s)
 }
 
 func writeBudget(b *strings.Builder, budget *ast.BudgetBlock) {

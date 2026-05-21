@@ -193,8 +193,8 @@ func TestResolveMCPClaudeCodeFQN(t *testing.T) {
 	_ = r.RegisterMCP("iterion_board", "assign_issue", "Assign", nil, noop)
 
 	for _, ref := range []string{
-		"mcp.iterion_board.assign_issue",         // claw native
-		"mcp__iterion_board__assign_issue",       // claude_code FQN
+		"mcp.iterion_board.assign_issue",   // claw native
+		"mcp__iterion_board__assign_issue", // claude_code FQN
 	} {
 		td, err := r.Resolve(ref)
 		if err != nil {
@@ -207,9 +207,9 @@ func TestResolveMCPClaudeCodeFQN(t *testing.T) {
 
 	// Malformed underscore refs still error rather than half-match.
 	for _, ref := range []string{
-		"mcp__",                       // no body
-		"mcp__server_only",            // no separator
-		"mcp__server__nonexistent",    // not registered
+		"mcp__",                    // no body
+		"mcp__server_only",         // no separator
+		"mcp__server__nonexistent", // not registered
 	} {
 		if _, err := r.Resolve(ref); err == nil {
 			t.Errorf("Resolve(%q) should have failed", ref)

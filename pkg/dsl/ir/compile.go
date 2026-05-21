@@ -395,6 +395,7 @@ func (c *compiler) compile() *Workflow {
 	c.compileMCPServers()
 	c.compileSchemas()
 	c.compilePrompts()
+	cursors := c.compileCursors()
 
 	// Cross-kind node-name validation, run BEFORE the per-kind compile
 	// passes that populate c.nodes. The parser already rejects reserved
@@ -485,6 +486,7 @@ func (c *compiler) compile() *Workflow {
 		Compaction:     compaction,
 		MCP:            convertMCPConfig(wf.MCP),
 		MCPServers:     c.mcp,
+		Cursors:        cursors,
 		Interaction:    interaction,
 		Worktree:       wf.Worktree,
 		Sandbox:        c.compileSandboxBlock(wf.Sandbox, "workflow", wf.Name),
@@ -733,6 +735,7 @@ func (c *compiler) compileAgents() {
 			Compaction:   compileCompaction(a.Compaction),
 			Memory:       compileMemory(a.Memory),
 			Sandbox:      c.compileSandboxBlock(a.Sandbox, "agent", a.Name),
+			Cursors:      compileCursorInvocation(a.Cursors),
 		}
 	}
 }
@@ -797,6 +800,7 @@ func (c *compiler) compileJudges() {
 			Compaction:   compileCompaction(j.Compaction),
 			Memory:       compileMemory(j.Memory),
 			Sandbox:      c.compileSandboxBlock(j.Sandbox, "judge", j.Name),
+			Cursors:      compileCursorInvocation(j.Cursors),
 		}
 	}
 }

@@ -89,7 +89,7 @@ func (p *parser) skipToNextTopLevel() {
 		case TokenEOF:
 			return
 		case TokenVars, TokenPresets, TokenAttachments,
-			TokenMCPServer, TokenPrompt, TokenSchema,
+			TokenMCPServer, TokenPrompt, TokenSchema, TokenCursor,
 			TokenAgent, TokenJudge, TokenRouter, TokenHuman,
 			TokenTool, TokenCompute, TokenWorkflow:
 			return
@@ -209,6 +209,16 @@ func (p *parser) parseFile() *ast.File {
 					p.addError(DiagReservedName, t, "cannot use reserved name '"+sd.Name+"' as schema name")
 				} else {
 					f.Schemas = append(f.Schemas, sd)
+				}
+			}
+
+		case TokenCursor:
+			cd := p.parseCursorDecl()
+			if cd != nil {
+				if ast.ReservedTargets[cd.Name] {
+					p.addError(DiagReservedName, t, "cannot use reserved name '"+cd.Name+"' as cursor name")
+				} else {
+					f.Cursors = append(f.Cursors, cd)
 				}
 			}
 
@@ -754,6 +764,213 @@ func (p *parser) parseEnumConstraint() []string {
 	return vals
 }
 
+// ---- cursor ----
+
+// parseCursorDecl parses a top-level `cursor <name>:` declaration.
+// A cursor declares either an enum (`values:`) or a numeric band map
+// (`bands:`) — IR validation rejects malformed combinations (C085).
+// `description:` is an optional free-text annotation.
+func (p *parser) parseCursorDecl() *ast.CursorDecl {
+	start := p.next() // consume "cursor"
+	nameT := p.next()
+	name := tokenAsIdent(nameT)
+	if name == "" {
+		p.addError(DiagExpectedToken, nameT, "expected cursor name")
+		p.skipToNextTopLevel()
+		return nil
+	}
+	p.expect(TokenColon)
+	p.skipNewlines()
+	if _, ok := p.expect(TokenIndent); !ok {
+		return nil
+	}
+
+	cd := &ast.CursorDecl{
+		Name: name,
+		Span: ast.Span{Start: p.pos(start), End: p.pos(start)},
+	}
+
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		propName := tokenAsIdent(t)
+		if propName == "" {
+			p.addError(DiagUnexpectedToken, t, "unexpected token in cursor block: "+t.Value)
+			p.next()
+			p.skipToNewline()
+			continue
+		}
+		p.next() // consume property keyword
+		switch propName {
+		case "description":
+			p.expect(TokenColon)
+			cd.Description = p.expectString()
+			p.skipNewlines()
+		case "values":
+			cd.Values = p.parseCursorEnumValues()
+		case "bands":
+			cd.Bands = p.parseCursorBands()
+		default:
+			p.addError(DiagUnknownProperty, t, "unknown cursor property '"+propName+"'")
+			p.skipToNewline()
+		}
+	}
+	return cd
+}
+
+// parseCursorEnumValues parses a `values:` sub-block. Each line is
+// `<ident>: "prompt fragment"`. Order is preserved so numeric
+// invocations can snap to a position when the cursor is enum-only.
+func (p *parser) parseCursorEnumValues() []*ast.CursorEnumValue {
+	p.expect(TokenColon)
+	p.skipNewlines()
+	if _, ok := p.expect(TokenIndent); !ok {
+		return nil
+	}
+	var out []*ast.CursorEnumValue
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		nameT := p.next()
+		name := tokenAsIdent(nameT)
+		if name == "" {
+			p.addError(DiagExpectedToken, nameT, "expected cursor value name, got "+nameT.Type.String())
+			p.skipToNewline()
+			continue
+		}
+		p.expect(TokenColon)
+		prompt := p.expectString()
+		p.skipNewlines()
+		out = append(out, &ast.CursorEnumValue{
+			Name:   name,
+			Prompt: prompt,
+			Span:   ast.Span{Start: p.pos(nameT), End: p.pos(nameT)},
+		})
+	}
+	return out
+}
+
+// parseCursorBands parses a `bands:` sub-block. Each line is
+// `"<lo>..<hi>": "prompt"`. The range key is stored verbatim and
+// parsed by the IR compiler (so a malformed range surfaces a
+// pin-pointed diagnostic at compile, not parse).
+func (p *parser) parseCursorBands() []*ast.CursorBand {
+	p.expect(TokenColon)
+	p.skipNewlines()
+	if _, ok := p.expect(TokenIndent); !ok {
+		return nil
+	}
+	var out []*ast.CursorBand
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		keyT := p.next()
+		if keyT.Type != TokenString {
+			p.addError(DiagExpectedToken, keyT, "expected quoted band range \"lo..hi\", got "+keyT.Type.String())
+			p.skipToNewline()
+			continue
+		}
+		p.expect(TokenColon)
+		prompt := p.expectString()
+		p.skipNewlines()
+		out = append(out, &ast.CursorBand{
+			Range:  keyT.Value,
+			Prompt: prompt,
+			Span:   ast.Span{Start: p.pos(keyT), End: p.pos(keyT)},
+		})
+	}
+	return out
+}
+
+// parseCursorsBlock parses a `cursors:` block on an agent or judge.
+// Reserved keys: `enabled:` (bool toggle). Other keys are cursor
+// activation settings; their values are stored verbatim (ident,
+// integer, float, or quoted string for `${VAR}` substitution) and
+// resolved by the runtime.
+func (p *parser) parseCursorsBlock() *ast.CursorBlock {
+	start := p.next() // consume "cursors"
+	p.expect(TokenColon)
+	p.skipNewlines()
+	if _, ok := p.expect(TokenIndent); !ok {
+		return nil
+	}
+
+	cb := &ast.CursorBlock{
+		Enabled: true, // default: an explicit block opts in
+		Span:    ast.Span{Start: p.pos(start), End: p.pos(start)},
+	}
+
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		keyT := p.next()
+		key := tokenAsIdent(keyT)
+		if key == "" {
+			p.addError(DiagExpectedToken, keyT, "expected cursor name or 'enabled', got "+keyT.Type.String())
+			p.skipToNewline()
+			continue
+		}
+		p.expect(TokenColon)
+		if key == "enabled" {
+			if v := p.parseBool(); v != nil {
+				cb.Enabled = *v
+			}
+			p.skipNewlines()
+			continue
+		}
+		val := p.parseCursorSettingValue()
+		p.skipNewlines()
+		cb.Settings = append(cb.Settings, &ast.CursorSetting{
+			Key:   key,
+			Value: val,
+			Span:  ast.Span{Start: p.pos(keyT), End: p.pos(keyT)},
+		})
+	}
+	return cb
+}
+
+// parseCursorSettingValue accepts the four invocation value shapes:
+// identifier (enum name), int/float (numeric), or quoted string
+// (free-form, lets `${VAR}` env-substitution survive into the IR).
+func (p *parser) parseCursorSettingValue() string {
+	t := p.next()
+	switch t.Type {
+	case TokenString:
+		return t.Value
+	case TokenInt, TokenFloat:
+		return t.Value
+	}
+	if id := tokenAsIdent(t); id != "" {
+		return id
+	}
+	p.addError(DiagExpectedToken, t, "expected cursor value (identifier, number, or quoted string), got "+t.Type.String())
+	return t.Value
+}
+
 // ---- agent ----
 
 func (p *parser) parseAgentDecl() *ast.AgentDecl {
@@ -866,6 +1083,9 @@ func (p *parser) parseAgentProp(ad *ast.AgentDecl, propTok Token) {
 	case TokenSandbox:
 		p.backup()
 		ad.Sandbox = p.parseSandboxBlock()
+	case TokenCursors:
+		p.backup()
+		ad.Cursors = p.parseCursorsBlock()
 	default:
 		p.addError(DiagUnknownProperty, propTok, "unknown agent property '"+propTok.Value+"'")
 		p.skipToNewline()
@@ -985,6 +1205,9 @@ func (p *parser) parseJudgeProp(jd *ast.JudgeDecl, propTok Token) {
 	case TokenSandbox:
 		p.backup()
 		jd.Sandbox = p.parseSandboxBlock()
+	case TokenCursors:
+		p.backup()
+		jd.Cursors = p.parseCursorsBlock()
 	default:
 		p.addError(DiagUnknownProperty, propTok, "unknown judge property '"+propTok.Value+"'")
 		p.skipToNewline()
@@ -2056,6 +2279,7 @@ func isKeywordToken(tt TokenType) bool {
 		TokenMemory, TokenEnabled, TokenScope, TokenAutoload, TokenRead, TokenWrite, TokenPreCompactInject,
 		TokenWorktree,
 		TokenSandbox,
+		TokenCursor, TokenCursors, TokenValues, TokenBands,
 		TokenAttachments, TokenTypeFile, TokenTypeImage,
 		TokenDone, TokenFail:
 		return true

@@ -252,6 +252,7 @@ type ClawExecutor struct {
 	toolPolicy      tool.ToolChecker   // allowlist policy for tool execution (nil = open)
 	prompts         map[string]*ir.Prompt
 	schemas         map[string]*ir.Schema
+	cursors         map[string]*ir.CursorDef
 	imageAttachs    map[string]bool // names of image-typed attachments declared in the workflow
 	vars            map[string]interface{}
 	hooks           EventHooks
@@ -447,6 +448,7 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 		registry:       registry,
 		prompts:        wf.Prompts,
 		schemas:        wf.Schemas,
+		cursors:        wf.Cursors,
 		imageAttachs:   imageAttachs,
 		defaultBackend: wf.DefaultBackend,
 		wfCompaction:   wf.Compaction,
@@ -772,6 +774,7 @@ type backendFields struct {
 	compaction       *ir.Compaction
 	memory           *ir.Memory
 	capabilities     []string
+	cursors          *ir.CursorInvocation
 }
 
 // extractBackendFields normalises the LLM-relevant fields shared by
@@ -795,6 +798,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			compaction:       n.Compaction,
 			memory:           n.Memory,
 			capabilities:     n.Capabilities,
+			cursors:          n.Cursors,
 		}, nil
 	case *ir.JudgeNode:
 		return backendFields{
@@ -809,6 +813,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			compaction:       n.Compaction,
 			memory:           n.Memory,
 			capabilities:     n.Capabilities,
+			cursors:          n.Cursors,
 		}, nil
 	default:
 		return backendFields{}, fmt.Errorf("model: extractBackendFields called with unsupported node type %T", node)
@@ -953,6 +958,7 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 			PreCompactInject: m.PreCompactInject,
 		}
 	}
+	task.CursorFragments = resolveCursorFragments(f.cursors, e.cursors)
 
 	// When interaction is enabled, ensure `ask_user` is in the node's
 	// tool list so the LLM can natively escalate. We don't require the

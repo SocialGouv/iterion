@@ -11,6 +11,7 @@ import type {
   WorkflowDecl,
   SchemaDecl,
   PromptDecl,
+  CursorDecl,
   VarsBlock,
   BudgetBlock,
   CompactionBlock,
@@ -30,6 +31,7 @@ function normalize(doc: IterDocument): IterDocument {
     mcp_servers: doc.mcp_servers ?? [],
     prompts: doc.prompts ?? [],
     schemas: doc.schemas ?? [],
+    cursors: doc.cursors ?? [],
     agents: doc.agents ?? [],
     judges: doc.judges ?? [],
     routers: doc.routers ?? [],
@@ -114,6 +116,11 @@ interface DocumentState {
   removeSchema: (name: string) => void;
   updateSchema: (name: string, updates: Partial<SchemaDecl>) => void;
   renameSchema: (oldName: string, newName: string) => void;
+
+  // Cursor mutations (top-level `cursor <name>:` declarations)
+  addCursorDecl: (decl: CursorDecl) => void;
+  removeCursorDecl: (name: string) => void;
+  updateCursorDecl: (name: string, updates: Partial<CursorDecl>) => void;
 
   // Prompt mutations
   addPrompt: (decl: PromptDecl) => void;
@@ -495,6 +502,38 @@ export function createDocumentStore() {
         ...pushHistory(s),
       };
     }),
+
+  // Cursor mutations
+  addCursorDecl: (decl) =>
+    set((s) =>
+      s.document
+        ? {
+            document: { ...s.document, cursors: [...(s.document.cursors ?? []), decl] },
+            ...pushHistory(s),
+          }
+        : s,
+    ),
+  removeCursorDecl: (name) =>
+    set((s) =>
+      s.document
+        ? {
+            document: { ...s.document, cursors: (s.document.cursors ?? []).filter((c) => c.name !== name) },
+            ...pushHistory(s),
+          }
+        : s,
+    ),
+  updateCursorDecl: (name, updates) =>
+    set((s) =>
+      s.document
+        ? {
+            document: {
+              ...s.document,
+              cursors: (s.document.cursors ?? []).map((c) => (c.name === name ? { ...c, ...updates } : c)),
+            },
+            ...pushHistory(s),
+          }
+        : s,
+    ),
 
   // Prompt mutations
   addPrompt: (decl) =>

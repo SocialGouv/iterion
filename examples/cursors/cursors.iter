@@ -1,0 +1,39 @@
+## Reference catalogue of prompt-engineering cursors.
+##
+## This file is a copy-paste-ready snippet, not a runnable workflow.
+## Drop the `cursor ...:` blocks you want into your own .iter / .bot
+## source, then activate them per node with `cursors: { ambition: ... }`.
+##
+## Important: cursors are framing dials, NOT gates. See docs/cursors.md
+## for the full contract — band fragments stay qualitative; mechanical
+## gates (coverage %, scanner thresholds, judge architecture) keep
+## doing the load-bearing work of resisting façades.
+
+cursor ambition:
+  description: "How aggressively to expand scope beyond the stated request."
+  values:
+    cautious: "Stick strictly to the stated request; do not propose extensions or adjacent improvements."
+    balanced: "Address the stated request; if you notice an obvious adjacent improvement, surface it as a suggestion (don't act on it)."
+    ambitious: "Address the request and proactively identify 2-3 adjacent improvements that materially strengthen the outcome. Surface them as suggestions, ranked by leverage. Don't expand the scope of changes — only the scope of suggestions."
+
+cursor depth:
+  description: "Investigation thoroughness: skim vs. exhaustive call-graph traversal."
+  bands:
+    "0.0..0.33": "Skim the surface. Cite the primary source(s) for each claim, but do not chase upstream/downstream callers."
+    "0.34..0.66": "Examine the main code paths and one layer of direct dependencies. Identify the load-bearing assumptions but don't audit every alternative."
+    "0.67..1.0": "Trace all call sites and edge cases. Build a mental model of the full dependency graph. Note disconfirming evidence as actively as confirming evidence."
+
+cursor rigor:
+  description: "How rigorously to verify load-bearing claims before committing to them."
+  bands:
+    "0.0..0.4": "Accept reasonable assumptions. Flag the largest assumption you're making and move on."
+    "0.4..0.7": "Verify each load-bearing assumption (the ones that, if wrong, invalidate the conclusion) before concluding."
+    "0.7..1.0": "Verify every concrete claim against its source. Cite file paths and line numbers. Treat any unverified claim as a known unknown."
+
+cursor autonomy:
+  description: "Threshold for escalating to a human via ask_user vs. proceeding on best judgment."
+  values:
+    gated: "Escalate via ask_user on any decision where you have less than high confidence, or any decision that crosses a workflow-architecture boundary (renames, deletions, schema changes)."
+    cautious: "Escalate on ambiguity in the stated request or on low confidence. Proceed autonomously on routine decisions that are reversible by a single commit."
+    standard: "Escalate only on genuine blocker ambiguity (the request cannot be sensibly interpreted) or on irreversible decisions. Proceed on everything else."
+    autonomous: "Resolve every ambiguity by making the best reading of the request, documenting your interpretation, and proceeding. Reserve ask_user for situations where proceeding would write code that almost certainly will be reverted."

@@ -9,6 +9,7 @@ package delegate
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -179,6 +180,17 @@ type Task struct {
 	// Valid values: "low", "medium", "high", "xhigh", "max".
 	ReasoningEffort string
 
+	// CursorFragments are resolved prompt-engineering cursor fragments
+	// to append to the system prompt under a "## Calibration" section.
+	// Each entry is one cursor activation, pre-formatted as
+	// "**<CursorName>:** <fragment>". The runtime resolves enum/numeric
+	// invocations against the workflow's cursor declarations and feeds
+	// the sorted, ready-to-render list here. Empty slice means "no
+	// cursors active" (either none declared, none invoked, or
+	// `enabled: false` on the cursors block) — backends should skip
+	// the calibration section entirely. See docs/cursors.md.
+	CursorFragments []string
+
 	// CompactThresholdRatio is the resolved compaction trigger as a
 	// fraction of the model's context window (0 = use backend default).
 	// Backends that maintain their own session history (claw) honor this;
@@ -334,15 +346,39 @@ type TurnFinishedInfo struct {
 	OutputTokens int
 }
 
-// SystemPromptWithInteraction returns the task's SystemPrompt augmented
-// with the interaction protocol instructions when InteractionEnabled is
-// true. Backends should call this instead of reading SystemPrompt
-// directly so the LLM consistently learns how to escalate to a human.
-func (t Task) SystemPromptWithInteraction() string {
+// BuildSystemPrompt returns the task's SystemPrompt augmented with
+// optional sub-sections: the interaction protocol (when
+// InteractionEnabled), and a "## Calibration" section listing any
+// resolved CursorFragments. Backends should call this instead of
+// reading SystemPrompt directly so every consumer sees identical
+// augmentations.
+//
+// Ordering is stable: base prompt, then interaction protocol, then
+// calibration. CursorFragments are emitted verbatim in the order the
+// caller provides them; the caller is responsible for sorting (the
+// runtime sorts alphabetically by cursor name for prompt-cache
+// stability).
+func (t Task) BuildSystemPrompt() string {
+	var b strings.Builder
+	// Pre-grow to dodge 2-3 reallocations in the common path: base
+	// prompt (~500B) + optional interaction instruction (~300B) +
+	// calibration section (~80B per fragment).
+	b.Grow(len(t.SystemPrompt) + 512)
+	b.WriteString(t.SystemPrompt)
 	if t.InteractionEnabled {
-		return t.SystemPrompt + interactionSystemInstruction
+		b.WriteString(interactionSystemInstruction)
 	}
-	return t.SystemPrompt
+	if len(t.CursorFragments) > 0 {
+		b.WriteString("\n\n## Calibration\n\n")
+		for i, frag := range t.CursorFragments {
+			if i > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(frag)
+		}
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 // ErrAskUser is returned by the iterion-wired `ask_user` tool's handler

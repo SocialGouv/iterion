@@ -37,6 +37,11 @@ prompt my_system:
   Imperative-voice instructions. Reference {{vars.feature_prompt}}
   or {{input.field}} or {{outputs.upstream_node.field}}.
 
+cursor ambition:                  # optional prompt-engineering dial (see docs/cursors.md)
+  values:
+    cautious: "Stick to the stated request."
+    ambitious: "Surface 2-3 adjacent improvements."
+
 agent worker:
   backend: "claw"
   model:   "openai/gpt-5.5"
@@ -86,6 +91,10 @@ agent w:
   mcp:                          # node-scoped MCP servers
     inherit: true               # inherit workflow-level servers
     servers: []                 # plus these
+  cursors:                      # prompt-engineering calibration (see docs/cursors.md)
+    enabled: true
+    ambition: ambitious         # enum value declared in `cursor ambition:` above
+    depth: 0.7                  # numeric → matched against `bands:` declarations
 ```
 
 Backend rules:

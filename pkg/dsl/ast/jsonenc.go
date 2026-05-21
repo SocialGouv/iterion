@@ -113,6 +113,7 @@ type jsonFile struct {
 	MCPServers  []*jsonMCPServerDecl  `json:"mcp_servers,omitempty"`
 	Prompts     []*jsonPromptDecl     `json:"prompts,omitempty"`
 	Schemas     []*jsonSchemaDecl     `json:"schemas,omitempty"`
+	Cursors     []*jsonCursorDecl     `json:"cursors,omitempty"`
 	Agents      []*jsonAgentDecl      `json:"agents,omitempty"`
 	Judges      []*jsonJudgeDecl      `json:"judges,omitempty"`
 	Routers     []*jsonRouterDecl     `json:"routers,omitempty"`
@@ -216,6 +217,33 @@ type jsonPromptDecl struct {
 	Body string `json:"body,omitempty"`
 }
 
+type jsonCursorDecl struct {
+	Name        string                 `json:"name,omitempty"`
+	Description string                 `json:"description,omitempty"`
+	Values      []*jsonCursorEnumValue `json:"values,omitempty"`
+	Bands       []*jsonCursorBand      `json:"bands,omitempty"`
+}
+
+type jsonCursorEnumValue struct {
+	Name   string `json:"name,omitempty"`
+	Prompt string `json:"prompt,omitempty"`
+}
+
+type jsonCursorBand struct {
+	Range  string `json:"range,omitempty"`
+	Prompt string `json:"prompt,omitempty"`
+}
+
+type jsonCursorBlock struct {
+	Enabled  bool                 `json:"enabled"`
+	Settings []*jsonCursorSetting `json:"settings,omitempty"`
+}
+
+type jsonCursorSetting struct {
+	Key   string `json:"key,omitempty"`
+	Value string `json:"value,omitempty"`
+}
+
 type jsonSchemaDecl struct {
 	Name   string             `json:"name,omitempty"`
 	Fields []*jsonSchemaField `json:"fields,omitempty"`
@@ -253,6 +281,7 @@ type jsonAgentDecl struct {
 	Compaction        *jsonCompactionBlock `json:"compaction,omitempty"`
 	Memory            *jsonMemoryBlock     `json:"memory,omitempty"`
 	Sandbox           *jsonSandboxBlock    `json:"sandbox,omitempty"`
+	Cursors           *jsonCursorBlock     `json:"cursors,omitempty"`
 }
 
 type jsonJudgeDecl struct {
@@ -281,6 +310,7 @@ type jsonJudgeDecl struct {
 	Compaction        *jsonCompactionBlock `json:"compaction,omitempty"`
 	Memory            *jsonMemoryBlock     `json:"memory,omitempty"`
 	Sandbox           *jsonSandboxBlock    `json:"sandbox,omitempty"`
+	Cursors           *jsonCursorBlock     `json:"cursors,omitempty"`
 }
 
 type jsonRouterDecl struct {
@@ -532,6 +562,9 @@ func toJSON(f *File) *jsonFile {
 	for _, s := range f.Schemas {
 		jf.Schemas = append(jf.Schemas, schemaToJSON(s))
 	}
+	for _, c := range f.Cursors {
+		jf.Cursors = append(jf.Cursors, cursorDeclToJSON(c))
+	}
 	for _, a := range f.Agents {
 		jf.Agents = append(jf.Agents, agentToJSON(a))
 	}
@@ -626,6 +659,53 @@ func compactionToJSON(c *CompactionBlock) *jsonCompactionBlock {
 		return nil
 	}
 	return &jsonCompactionBlock{Threshold: c.Threshold, PreserveRecent: c.PreserveRecent}
+}
+
+func cursorDeclToJSON(c *CursorDecl) *jsonCursorDecl {
+	jc := &jsonCursorDecl{Name: c.Name, Description: c.Description}
+	for _, v := range c.Values {
+		jc.Values = append(jc.Values, &jsonCursorEnumValue{Name: v.Name, Prompt: v.Prompt})
+	}
+	for _, b := range c.Bands {
+		jc.Bands = append(jc.Bands, &jsonCursorBand{Range: b.Range, Prompt: b.Prompt})
+	}
+	return jc
+}
+
+func cursorDeclFromJSON(jc *jsonCursorDecl) *CursorDecl {
+	if jc == nil {
+		return nil
+	}
+	c := &CursorDecl{Name: jc.Name, Description: jc.Description}
+	for _, v := range jc.Values {
+		c.Values = append(c.Values, &CursorEnumValue{Name: v.Name, Prompt: v.Prompt})
+	}
+	for _, b := range jc.Bands {
+		c.Bands = append(c.Bands, &CursorBand{Range: b.Range, Prompt: b.Prompt})
+	}
+	return c
+}
+
+func cursorBlockToJSON(b *CursorBlock) *jsonCursorBlock {
+	if b == nil {
+		return nil
+	}
+	jb := &jsonCursorBlock{Enabled: b.Enabled}
+	for _, s := range b.Settings {
+		jb.Settings = append(jb.Settings, &jsonCursorSetting{Key: s.Key, Value: s.Value})
+	}
+	return jb
+}
+
+func cursorBlockFromJSON(jb *jsonCursorBlock) *CursorBlock {
+	if jb == nil {
+		return nil
+	}
+	b := &CursorBlock{Enabled: jb.Enabled}
+	for _, js := range jb.Settings {
+		b.Settings = append(b.Settings, &CursorSetting{Key: js.Key, Value: js.Value})
+	}
+	return b
 }
 
 func memoryToJSON(m *MemoryBlock) *jsonMemoryBlock {
@@ -793,6 +873,7 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		Compaction:        compactionToJSON(a.Compaction),
 		Memory:            memoryToJSON(a.Memory),
 		Sandbox:           sandboxBlockToJSON(a.Sandbox),
+		Cursors:           cursorBlockToJSON(a.Cursors),
 	}
 }
 
@@ -823,6 +904,7 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		Compaction:        compactionToJSON(j.Compaction),
 		Memory:            memoryToJSON(j.Memory),
 		Sandbox:           sandboxBlockToJSON(j.Sandbox),
+		Cursors:           cursorBlockToJSON(j.Cursors),
 	}
 }
 
@@ -963,6 +1045,12 @@ func fromJSON(jf *jsonFile) (*File, error) {
 			return nil, err
 		}
 		f.Schemas = append(f.Schemas, s)
+	}
+
+	for _, jc := range jf.Cursors {
+		if c := cursorDeclFromJSON(jc); c != nil {
+			f.Cursors = append(f.Cursors, c)
+		}
 	}
 
 	for _, ja := range jf.Agents {
@@ -1204,6 +1292,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 		Compaction:        compactionFromJSON(ja.Compaction),
 		Memory:            memoryFromJSON(ja.Memory),
 		Sandbox:           sandboxBlockFromJSON(ja.Sandbox),
+		Cursors:           cursorBlockFromJSON(ja.Cursors),
 	}, nil
 }
 
@@ -1246,6 +1335,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 		Compaction:        compactionFromJSON(jj.Compaction),
 		Memory:            memoryFromJSON(jj.Memory),
 		Sandbox:           sandboxBlockFromJSON(jj.Sandbox),
+		Cursors:           cursorBlockFromJSON(jj.Cursors),
 	}, nil
 }
 

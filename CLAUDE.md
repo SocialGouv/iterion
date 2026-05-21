@@ -160,7 +160,7 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.iter
 
 ### DSL Quick Reference
 
-**Top-level blocks:** `vars:`, `attachments:`, `prompt <name>:`, `schema <name>:`, node declarations (`agent`, `judge`, `router`, `human`, `tool`, `compute`), `workflow <name>:`
+**Top-level blocks:** `vars:`, `attachments:`, `prompt <name>:`, `schema <name>:`, `cursor <name>:`, node declarations (`agent`, `judge`, `router`, `human`, `tool`, `compute`), `workflow <name>:`
 
 **Edge syntax:**
 ```
@@ -332,6 +332,27 @@ package, so validation and event semantics are identical. Capability
 diagnostics are `C080` (unknown cap, warning) and `C081` (malformed,
 error). The bot catalog used by `whats-next` is regenerated via
 `iterion bots list --format=skill --paths examples/`.
+
+### Cursors (prompt-engineering dials)
+
+`cursor <name>:` is a top-level declaration alongside `prompt:` /
+`schema:`. Each cursor defines either an enum (`values:`) or a
+numeric band map (`bands:`) over `[0.0, 1.0]`, with each entry
+carrying a prompt fragment. Agent/judge nodes activate cursors via
+a `cursors:` block (`enabled` toggle + per-cursor settings), and
+the runtime appends the resolved fragments under a `## Calibration`
+section in the system prompt. Diagnostics: `C083` (unknown cursor
+reference, warning), `C084` (invalid value, error), `C085`
+(malformed declaration, error), `C086` (duplicate name, error).
+Resolution honours `${VAR}` substitution; the assembled prompt is
+sorted alphabetically by cursor name for prompt-cache stability.
+
+Cursors are framing dials, **not gates**. See
+[docs/cursors.md](docs/cursors.md) for the full contract — Goodhart
+resistance still lives in judges, scanners, and deterministic
+coverage gates. Reference catalogue:
+[examples/cursors/cursors.iter](examples/cursors/cursors.iter)
+ships `ambition` / `depth` / `rigor` / `autonomy`.
 
 ## Building the desktop app
 

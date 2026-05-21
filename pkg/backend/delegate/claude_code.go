@@ -103,7 +103,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 
 	var opts []claudesdk.Option
 
-	systemPrompt := task.SystemPromptWithInteraction()
+	systemPrompt := task.BuildSystemPrompt()
 	if systemPrompt != "" {
 		opts = append(opts, claudesdk.WithSystemPrompt(systemPrompt))
 	}

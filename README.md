@@ -210,6 +210,7 @@ The full documentation lives under [`docs/`](docs/) — start with the [document
 - [docs/routers.md](docs/routers.md) — routing modes deep dive
 - [docs/recipes.md](docs/recipes.md) — preset-driven runs (benchmarking, prompt comparison)
 - [docs/delegation.md](docs/delegation.md) — `model:` vs `backend:` (claude_code, codex)
+- [docs/cursors.md](docs/cursors.md) — prompt-engineering cursors (ambition / depth / rigor / autonomy dials)
 - [docs/attachments.md](docs/attachments.md) — file/image attachments in prompts
 - [docs/privacy_filter.md](docs/privacy_filter.md) — built-in PII redaction tools
 - [docs/workflow_authoring_pitfalls.md](docs/workflow_authoring_pitfalls.md) — required reading before authoring workflows that commit code
@@ -229,7 +230,7 @@ The full documentation lives under [`docs/`](docs/) — start with the [document
 
 **References**
 - [docs/references/dsl-grammar.md](docs/references/dsl-grammar.md) — readable grammar
-- [docs/references/diagnostics.md](docs/references/diagnostics.md) — all C001–C082 codes (sparse)
+- [docs/references/diagnostics.md](docs/references/diagnostics.md) — all C001–C086 codes (sparse)
 - [docs/references/patterns.md](docs/references/patterns.md) — 10 reusable workflow patterns
 - [docs/grammar/iterion_v1.ebnf](docs/grammar/iterion_v1.ebnf) — formal EBNF grammar
 

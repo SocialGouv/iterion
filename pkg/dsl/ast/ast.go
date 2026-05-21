@@ -14,6 +14,7 @@ type File struct {
 	MCPServers  []*MCPServerDecl  // top-level reusable MCP server declarations
 	Prompts     []*PromptDecl     // prompt declarations
 	Schemas     []*SchemaDecl     // schema declarations
+	Cursors     []*CursorDecl     // cursor declarations (prompt-engineering dials)
 	Agents      []*AgentDecl      // agent node declarations
 	Judges      []*JudgeDecl      // judge node declarations
 	Routers     []*RouterDecl     // router node declarations
@@ -220,6 +221,61 @@ const (
 )
 
 // ---------------------------------------------------------------------------
+// Cursors — prompt-engineering dials on agent/judge nodes
+// ---------------------------------------------------------------------------
+
+// CursorDecl is a top-level `cursor <name>:` declaration. Each cursor
+// defines either a closed set of enum values (`values:`) or a numeric
+// 0..1 band map (`bands:`) — not both. The runtime resolves an agent's
+// `cursors:` invocation against the matching CursorDecl, picks the
+// prompt fragment, and appends it to the system prompt under a
+// `## Calibration` section.
+type CursorDecl struct {
+	Name        string
+	Description string
+	Values      []*CursorEnumValue // enum form (ordered for numeric→position fallback)
+	Bands       []*CursorBand      // numeric form
+	Span        Span
+}
+
+// CursorEnumValue is one entry of a `values:` block on a cursor decl:
+// `name: "prompt fragment"`. Order is preserved so a numeric invocation
+// (e.g. depth: 0.7) can snap to a position when the cursor declares
+// values rather than bands.
+type CursorEnumValue struct {
+	Name   string
+	Prompt string
+	Span   Span
+}
+
+// CursorBand is one entry of a `bands:` block: `"lo..hi": "prompt"`.
+// Lo/Hi are parsed lazily by the IR compiler from Range so the AST
+// stays a verbatim mirror of the source text.
+type CursorBand struct {
+	Range  string // raw "lo..hi" key as written
+	Prompt string
+	Span   Span
+}
+
+// CursorBlock is an agent/judge `cursors:` activation block. Enabled
+// gates the whole block: when false, nothing is appended to the
+// system prompt regardless of Settings (cache-friendly toggle).
+type CursorBlock struct {
+	Enabled  bool
+	Settings []*CursorSetting // declaration order preserved for round-trip
+	Span     Span
+}
+
+// CursorSetting binds a cursor name to a raw value (ident, number, or
+// quoted string containing ${VAR}). Type detection — enum lookup vs
+// numeric band — is deferred to IR resolution.
+type CursorSetting struct {
+	Key   string
+	Value string
+	Span  Span
+}
+
+// ---------------------------------------------------------------------------
 // Nodes — Agent
 // ---------------------------------------------------------------------------
 
@@ -261,6 +317,7 @@ type AgentDecl struct {
 	Compaction        *CompactionBlock // per-node compaction overrides (nil = inherit workflow)
 	Memory            *MemoryBlock     // per-node workspace memory opt-in (nil = disabled)
 	Sandbox           *SandboxBlock    // node-level sandbox override; nil inherits from workflow (see pkg/sandbox)
+	Cursors           *CursorBlock     // prompt-engineering cursor activations (nil = none)
 	Span              Span
 }
 
@@ -297,6 +354,7 @@ type JudgeDecl struct {
 	Compaction        *CompactionBlock // per-node compaction overrides (nil = inherit workflow)
 	Memory            *MemoryBlock     // per-node workspace memory opt-in (nil = disabled)
 	Sandbox           *SandboxBlock    // node-level sandbox override; nil inherits from workflow (see pkg/sandbox)
+	Cursors           *CursorBlock     // prompt-engineering cursor activations (nil = none)
 	Span              Span
 }
 
