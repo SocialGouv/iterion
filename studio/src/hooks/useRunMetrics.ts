@@ -26,6 +26,13 @@ export interface EventDrivenMetrics {
   // True once a budget_exceeded event has been seen — the run will
   // fail (or has failed) hitting a hard cap.
   budgetExceeded: boolean;
+  // Wall-clock ms of the most recent event the backend persisted (any
+  // type). When the backend stops emitting — host loses network,
+  // subprocess hangs — the gap to now() grows past expected cadence
+  // and the UI can surface a "stalled" badge instead of the silent
+  // freeze the 2026-05-21 internet outage produced. Null when no
+  // events have arrived yet.
+  lastEventAtMs: number | null;
 }
 
 export interface BudgetWarning {
@@ -59,9 +66,16 @@ export function useEventDrivenMetrics(): EventDrivenMetrics {
       firstFailedNodeId: null,
       budgetWarning: null,
       budgetExceeded: false,
+      lastEventAtMs: null,
     };
 
     for (const e of events) {
+      if (e.timestamp) {
+        const t = Date.parse(e.timestamp);
+        if (Number.isFinite(t) && (m.lastEventAtMs === null || t > m.lastEventAtMs)) {
+          m.lastEventAtMs = t;
+        }
+      }
       if (e.type === "llm_step_finished" && e.data) {
         m.llmStepCount += 1;
         const inT = e.data["input_tokens"];

@@ -23,12 +23,37 @@ export default function RunMetrics({ active, onJumpToFailed, bare = false }: Pro
   const nowMs = useNow(active ? 1000 : null);
   const m = useRunMetrics(nowMs);
 
+  // Staleness — surface the silent-stuck case the 2026-05-21 internet
+  // outage exposed. When a run is `running` but the backend has stopped
+  // emitting events (lost connection, subprocess hung), nothing on the
+  // page changes; the operator only learns about it when stall
+  // reconciliation kicks in 10min later. This badge ticks every second
+  // alongside the duration value, so even a 30s gap is visible.
+  const staleSeconds =
+    active && m.lastEventAtMs != null && nowMs > m.lastEventAtMs
+      ? Math.floor((nowMs - m.lastEventAtMs) / 1000)
+      : 0;
+  const stalenessTone =
+    staleSeconds >= 60 ? "danger" : staleSeconds >= 20 ? "warning" : undefined;
+
   const outerClass = bare
     ? "h-full px-4 py-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]"
     : "px-4 py-1.5 border-b border-border-default flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] bg-surface-1";
   return (
     <div className={outerClass}>
       <Metric label="duration" value={formatMs(m.durationMs)} live={active} />
+      {stalenessTone && (
+        <span
+          className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] border ${
+            stalenessTone === "danger"
+              ? "bg-danger-soft text-danger-fg border-danger/40"
+              : "bg-warning-soft text-warning-fg border-warning/40"
+          }`}
+          title={`No backend event in ${staleSeconds}s. The run might be waiting on a slow LLM response, the network may be down, or the subprocess may be hung. Stall reconciliation fires at 10 min.`}
+        >
+          stalled {staleSeconds}s
+        </span>
+      )}
       {m.llmStepCount > 0 && (
         <Metric
           label="cost"
