@@ -169,7 +169,16 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 		runtime.WithLogger(runLogger),
 		runtime.WithWorkflowHash(r.workflowHash),
 		runtime.WithFilePath(r.workflowPath),
-		runtime.WithRunName(spec.RunID),
+		runtime.WithRunName(store.GenerateRunName(r.workflowPath + ":" + spec.RunID)),
+		// Per-issue workspace becomes the runtime workDir so ${PROJECT_DIR}
+		// in bot var defaults expands to the dispatcher's isolated
+		// worktree path, not the daemon's cwd (= host repo). Without
+		// this, doc-align's `workspace_dir: "${PROJECT_DIR}"` resolved
+		// to the host repo and fix_claude Edit calls landed directly
+		// on the operator's working tree (2026-05-21 dogfood). The
+		// after_create hook in dispatch_defaults.go seeds the path
+		// via `git worktree add --detach`.
+		runtime.WithWorkDir(spec.WorkspacePath),
 		runtime.WithEventObserver(func(evt store.Event) {
 			if spec.OnEvent != nil {
 				spec.OnEvent(string(evt.Type))
