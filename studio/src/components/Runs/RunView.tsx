@@ -342,16 +342,17 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
     return () => reset();
   }, [runId, setRunId, reset]);
 
-  // Lazy hydration of the persisted event log. WS subscribe now runs
-  // in lazy mode (snapshot + live tail only), so we pay the history
-  // cost only when something on screen actually needs it: the
-  // EventLog tab or the time-travel Scrubber. Canvas + status pill
-  // run off the snapshot alone, so users who never open the bottom
-  // panel never wait for thousands of events to stream in. The
-  // action dedupes per run, so toggling tabs is cheap.
+  // Hydrate the persisted event log eagerly on run open. RunMetrics
+  // (always-visible header strip) folds cost + llm_step counts from
+  // the events array, and ReportTab does the same for the cost
+  // breakdowns — both render the empty state when no events are
+  // loaded. Earlier lazy-load (gated on bottomTab === "events" ||
+  // scrubSeq !== null) saved history-fetch time but hid those
+  // header-level metrics until the user opened the Events tab. The
+  // action dedupes per run via historyFetchedForRun, so this stays
+  // cheap on re-renders and tab toggles.
   useEffect(() => {
     if (!runId) return;
-    if (bottomTab !== "events" && scrubSeq === null) return;
     loadEventHistoryIfMissing(runId).catch((err) => {
       // The store rolls back its historyFetchedForRun marker, but the
       // user-visible Events tab / scrubber would otherwise render
@@ -365,7 +366,7 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
         "error",
       );
     });
-  }, [runId, bottomTab, scrubSeq, loadEventHistoryIfMissing]);
+  }, [runId, loadEventHistoryIfMissing]);
 
   // Initial snapshot via REST so the page renders immediately even if
   // the WS is still connecting; the hook's `applySnapshot` on connect
