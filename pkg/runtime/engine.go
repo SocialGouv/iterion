@@ -26,6 +26,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/recipe"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -631,6 +632,22 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 		if worktreeActive {
 			run.RepoRoot = wtCtx.repoRoot
 			run.BaseCommit = wtCtx.originalTip
+		} else if repoRoot := gitlib.FindRepoRoot(e.workDir); repoRoot != "" {
+			// workDir is a git working tree that the runtime didn't set
+			// up itself (e.g. the dispatcher seeded a per-issue worktree
+			// via its after_create hook). Record the baseline anyway so
+			// the studio's FilesPanel can render the branch diff —
+			// without this, dispatcher-spawned runs always hit
+			// "no_baseline" and the diff sidebar is empty even though
+			// the bot is making real commits. The dispatcher path is
+			// the only producer of this shape today; CLI runs without
+			// `worktree: auto` run inside the operator's repo and we
+			// intentionally avoid stamping their state.
+			if head, herr := gitlib.RevParseHead(e.workDir); herr == nil && head != "" {
+				run.RepoRoot = repoRoot
+				run.BaseCommit = head
+				run.Worktree = true
+			}
 		}
 		if err := e.store.SaveRun(ctx, run); err != nil {
 			e.markFailedBestEffort(ctx, runID, "save work dir", err)
