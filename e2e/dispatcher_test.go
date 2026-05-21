@@ -19,6 +19,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/google/uuid"
 )
 
 // newDispatcherFixture wires a native tracker + workspaces + StubRunner
@@ -103,8 +104,12 @@ func TestDispatcherE2E_DispatchAndRelease(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("dispatch never fired")
 	}
-	if !strings.HasPrefix(got.RunID, "dispatcher-") {
-		t.Fatalf("runID prefix: %s", got.RunID)
+	parsed, err := uuid.Parse(got.RunID)
+	if err != nil {
+		t.Fatalf("runID is not a valid UUID: %s (%v)", got.RunID, err)
+	}
+	if parsed.Version() != 7 {
+		t.Fatalf("runID is not UUIDv7: %s (version=%d)", got.RunID, parsed.Version())
 	}
 	if got.WorkspacePath == "" {
 		t.Fatal("workspace path missing")

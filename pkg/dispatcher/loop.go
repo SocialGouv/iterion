@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"os"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // tick is the dispatcher's heartbeat. Runs entirely on the actor
@@ -265,7 +265,12 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 		}
 		delete(c.state.retries, iss.ID)
 	}
-	runID := newRunID(iss.ID, attempt)
+	runID, err := store.GenerateRunID()
+	if err != nil {
+		c.logger.Warn("dispatcher: mint run id for %s: %v", iss.Identifier, err)
+		_ = c.tracker.Release(ctx, iss.ID, c.hostMarker)
+		return
+	}
 	runCtx, cancel := context.WithCancel(ctx)
 
 	entry := &runningEntry{
@@ -452,19 +457,4 @@ func (c *Dispatcher) dispatchEnv(entry *runningEntry, spec DispatchSpec) []strin
 		env = append(env, "ITERION_STORE_DIR="+spec.StoreDir)
 	}
 	return env
-}
-
-// newRunID produces a deterministic-ish, sortable run ID for dispatch.
-func newRunID(issueID string, attempt int) string {
-	clean := strings.Map(func(r rune) rune {
-		switch {
-		case r >= 'a' && r <= 'z',
-			r >= 'A' && r <= 'Z',
-			r >= '0' && r <= '9',
-			r == '-', r == '_':
-			return r
-		}
-		return '_'
-	}, issueID)
-	return fmt.Sprintf("dispatcher-%s-%d-%d", clean, attempt, time.Now().UnixMilli())
 }
