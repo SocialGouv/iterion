@@ -100,7 +100,13 @@ type Run struct {
 	// or directory bundle captured at launch. Used by resume to
 	// re-extract the archive when the cache has been GC'd between
 	// runs. Empty for plain .iter/.bot runs.
-	BundlePath    string                 `json:"bundle_path,omitempty" bson:"bundle_path,omitempty"`
+	BundlePath string `json:"bundle_path,omitempty" bson:"bundle_path,omitempty"`
+	// BundleName is the bundle's `manifest.yaml` `name` field captured at
+	// launch (e.g. "doc-align"). Display-only — surfaces it in run lists
+	// so dispatcher-spawned bot runs are visually grouped. Empty for
+	// plain .iter/.bot runs and for bundles whose manifest had no name;
+	// consumers fall back to basename(BundlePath) stripped of `.botz`.
+	BundleName    string                 `json:"bundle_name,omitempty" bson:"bundle_name,omitempty"`
 	Status        RunStatus              `json:"status" bson:"status"`
 	Inputs        map[string]interface{} `json:"inputs,omitempty" bson:"inputs,omitempty"`
 	CreatedAt     time.Time              `json:"created_at" bson:"created_at"`

@@ -99,14 +99,19 @@ type RunSummary struct {
 	ID string `json:"id"`
 	// Name is the deterministic, human-friendly label for the run.
 	// Empty for legacy runs persisted before this field existed.
-	Name         string          `json:"name,omitempty"`
-	WorkflowName string          `json:"workflow_name"`
-	Status       store.RunStatus `json:"status"`
-	FilePath     string          `json:"file_path,omitempty"`
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
-	FinishedAt   *time.Time      `json:"finished_at,omitempty"`
-	Error        string          `json:"error,omitempty"`
+	Name         string `json:"name,omitempty"`
+	WorkflowName string `json:"workflow_name"`
+	// BundleName is the bot/bundle label (e.g. "doc-align"). Sourced
+	// from the persisted Run.BundleName; falls back server-side to
+	// basename(BundlePath) (stripped of `.botz`) for legacy runs.
+	// Empty for plain .iter/.bot runs with no bundle.
+	BundleName string          `json:"bundle_name,omitempty"`
+	Status     store.RunStatus `json:"status"`
+	FilePath   string          `json:"file_path,omitempty"`
+	CreatedAt  time.Time       `json:"created_at"`
+	UpdatedAt  time.Time       `json:"updated_at"`
+	FinishedAt *time.Time      `json:"finished_at,omitempty"`
+	Error      string          `json:"error,omitempty"`
 	// Active reports whether the run is currently held by this
 	// process's manager. A run with status "running" but Active=false
 	// belongs to another process or to a previous boot — Cancel won't

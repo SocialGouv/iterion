@@ -46,6 +46,7 @@ function matchesQuery(run: RunSummary, needle: string): boolean {
   const haystack = [
     run.name,
     run.workflow_name,
+    run.bundle_name,
     run.file_path,
     run.id,
   ]

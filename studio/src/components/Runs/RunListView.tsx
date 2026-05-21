@@ -207,10 +207,11 @@ export default function RunListView() {
           />
         ) : (
           <>
-            {/* Desktop / tablet: standard 5-column table. */}
+            {/* Desktop / tablet: standard 6-column table. */}
             <table className="w-full text-xs hidden sm:table">
               <thead className="text-fg-subtle">
                 <tr className="border-b border-border-default">
+                  <th className="text-left px-4 py-2 font-medium">Run</th>
                   <th className="text-left px-4 py-2 font-medium">Workflow</th>
                   <th className="text-left px-4 py-2 font-medium">Status</th>
                   <th className="text-left px-4 py-2 font-medium">Started</th>
@@ -283,11 +284,14 @@ const RunRow = memo(function RunRow({
     >
       <td className="px-4 py-2">
         <div className="font-medium">{friendlyLabel(run)}</div>
-        {(hasFriendlyName(run) || run.file_path) && (
+      </td>
+      <td className="px-4 py-2">
+        <div className="text-fg-default">
+          {run.bundle_name || run.workflow_name}
+        </div>
+        {run.file_path && (
           <div className="text-fg-subtle text-[10px] truncate max-w-md">
-            {[hasFriendlyName(run) ? run.workflow_name : null, run.file_path]
-              .filter(Boolean)
-              .join(" · ")}
+            {run.file_path}
           </div>
         )}
       </td>
@@ -339,6 +343,9 @@ const RunCard = memo(function RunCard({
           {friendlyLabel(run)}
         </span>
       </div>
+      <div className="text-[11px] text-fg-default truncate">
+        {run.bundle_name || run.workflow_name}
+      </div>
       <div className="text-[11px] text-fg-muted flex flex-wrap gap-x-2">
         <span>{formatRelative(run.created_at)}</span>
         <span>·</span>
@@ -352,13 +359,16 @@ const RunCard = memo(function RunCard({
 });
 
 // hasFriendlyName returns true when run.name is set AND differs from
-// run.id. Dispatcher-spawned runs default name to the same string as
-// id (e.g. `dispatcher-native_<uuid>-0-<ts>`), which then dups the
-// "Run ID" column and crowds out the actually-useful workflow_name.
+// run.id. Defensive guard against historical bugs where dispatcher-
+// spawned runs aliased Name to the composite RunID (now fixed — see
+// pkg/dispatcher/loop.go); legacy stores may still contain such rows.
 function hasFriendlyName(run: RunSummary): boolean {
   return Boolean(run.name) && run.name !== run.id;
 }
 
+// friendlyLabel returns the per-run instance label for the "Run"
+// column. Falls back to workflow_name for legacy runs (persisted
+// before the friendly-name feature shipped).
 function friendlyLabel(run: RunSummary): string {
   return hasFriendlyName(run) ? run.name! : run.workflow_name;
 }

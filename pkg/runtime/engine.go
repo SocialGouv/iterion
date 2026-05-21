@@ -587,6 +587,9 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		if e.bundle != nil {
 			run.BundleHash = e.bundle.Hash
 			run.BundlePath = e.bundle.SourcePath
+			if e.bundle.Manifest != nil {
+				run.BundleName = e.bundle.Manifest.Name
+			}
 		}
 		if err := e.store.SaveRun(ctx, run); err != nil {
 			return nil, fmt.Errorf("runtime: save run metadata: %w", err)

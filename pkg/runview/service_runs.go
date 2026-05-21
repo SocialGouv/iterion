@@ -2,10 +2,28 @@ package runview
 
 import (
 	"context"
+	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+// resolveBundleName returns the bot/bundle label for display in the
+// run list. Prefers the persisted manifest name; falls back to
+// basename(bundlePath) stripped of `.botz` so legacy runs (persisted
+// before BundleName existed) still surface a readable label. Returns
+// "" for plain .iter/.bot runs with no bundle at all.
+func resolveBundleName(bundleName, bundlePath string) string {
+	if bundleName != "" {
+		return bundleName
+	}
+	if bundlePath == "" {
+		return ""
+	}
+	base := filepath.Base(strings.TrimRight(bundlePath, "/"))
+	return strings.TrimSuffix(base, ".botz")
+}
 
 // LoadRun returns the persisted Run metadata for runID.
 //
@@ -87,6 +105,7 @@ func (s *Service) ListCtx(ctx context.Context, f ListFilter) ([]RunSummary, erro
 			ID:               r.ID,
 			Name:             r.Name,
 			WorkflowName:     r.WorkflowName,
+			BundleName:       resolveBundleName(r.BundleName, r.BundlePath),
 			Status:           r.Status,
 			FilePath:         r.FilePath,
 			CreatedAt:        r.CreatedAt,
