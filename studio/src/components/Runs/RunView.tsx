@@ -153,7 +153,11 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
 
   const handleSelectNode = useCallback((nodeId: string | null) => {
     setManualSelectedNodeId(nodeId);
-    if (nodeId !== null) setFollowLiveNode(false);
+    // Click on a real node pins it (and disables follow-live).
+    // Click on empty pane / toggle-off does the opposite: re-engage
+    // auto-follow so the user has an obvious "go back to live" path
+    // without hunting for the FollowLivePill inside the detail panel.
+    setFollowLiveNode(nodeId === null);
   }, []);
 
   const handleJumpToFailed = useCallback((nodeId: string) => {
@@ -234,15 +238,15 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
     writeBrowserDock(next);
   }, []);
 
-  // Canvas-first defaults: detail + eventlog start collapsed so the
-  // workflow canvas claims the entire central column on first render.
-  // Users who prefer the panels expanded toggle them via RunToolbar
-  // and the choice persists.
+  // Canvas-first defaults: node-detail starts collapsed so the canvas
+  // claims the full width on first render; the bottom events/logs
+  // drawer stays open because it carries actionable signal at every
+  // run state (queued progress, live tool output, post-mortem report).
   const [detailCollapsed, setDetailCollapsed] = useState<boolean>(() =>
     readBooleanFlag(DETAIL_COLLAPSED_KEY, true),
   );
   const [eventlogCollapsed, setEventlogCollapsed] = useState<boolean>(() =>
-    readBooleanFlag(EVENTLOG_COLLAPSED_KEY, true),
+    readBooleanFlag(EVENTLOG_COLLAPSED_KEY, false),
   );
   const [bottomTab, setBottomTab] = useState<BottomTab>(() =>
     readEnumFlag(BOTTOM_TAB_KEY, BOTTOM_TABS, "logs"),
@@ -801,6 +805,8 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
                       iterationByNode={iterationByNode}
                       onSelectIteration={handleSelectIteration}
                       runtimeOverrideByNode={runtimeOverrideByNode}
+                      followLive={followLiveNode}
+                      onToggleFollowLive={handleToggleFollowLive}
                     />
                   </div>
                 </Panel>

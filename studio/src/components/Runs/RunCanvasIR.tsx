@@ -49,6 +49,11 @@ interface Props {
   // Populated by RunView's fold (see DelegateOutputMeta for the shape
   // and which event sources feed which field).
   runtimeOverrideByNode: Map<string, DelegateOutputMeta>;
+  // Follow-live state surfaced in the canvas toolbar so the user
+  // can see whether selection auto-tracks the running node and
+  // toggle it without opening the (often-collapsed) detail panel.
+  followLive: boolean;
+  onToggleFollowLive: () => void;
 }
 
 function buildLLMMeta(
@@ -158,6 +163,8 @@ export default function RunCanvasIR({
   iterationByNode,
   onSelectIteration,
   runtimeOverrideByNode,
+  followLive,
+  onToggleFollowLive,
 }: Props) {
   const [wf, setWf] = useState<WireWorkflow | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -664,6 +671,8 @@ export default function RunCanvasIR({
           }}
           runningCount={runningNodeIds.size}
           onToggleLayoutDirection={toggleLayoutDirection}
+          followLive={followLive}
+          onToggleFollowLive={onToggleFollowLive}
         />
       </div>
       <ReactFlow
