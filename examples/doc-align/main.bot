@@ -130,6 +130,15 @@ vars:
   cli_surface_globs: string = "cmd/iterion/*.go,cmd/iterion/*/*.go"
   diagnostic_surface_globs: string = "pkg/dsl/ir/*.go,pkg/dsl/parser/*.go"
 
+  ## v0.15.0: cap on the reviewer's per-iteration working set —
+  ## build_manifest sorts candidates by severity then takes the
+  ## top N. With 89 docs × ~5 anchors avg = ~450 anchors and
+  ## maybe ~80 drifts, 150 keeps the reviewer's prompt bounded
+  ## while still catching the highest-signal drifts each iter.
+  ## Raise this if iteration count creeps up; lower if reviewer
+  ## context still pressures.
+  max_drift_candidates: int = 150
+
   ## Inter-run audit cache (v0.5.0). Path to the JSON cache file
   ## that stores `{doc_path: {sha, refs: [{path, sha}]}}` from the
   ## previous successful run. scan_docs reads this and emits
@@ -260,218 +269,204 @@ prompt review_system:
    decide yourself and lower `confidence` if uncertain.
 
 prompt review_user_claude:
-  Audit the documentation in {{vars.workspace_dir}} against the
-  actual code state.
+  Adjudicate the drift candidates in {{vars.workspace_dir}}'s
+  documentation. The deterministic `build_manifest` tool has
+  already enumerated every doc anchor (file refs, CLI commands,
+  CLI flags, diagnostic codes, exported symbols) and verified
+  each against the live code state. Your job is the SEMANTIC
+  pass over the candidates it could not auto-resolve.
 
-  Doc footprint (immutable — the complete audit set):
-  {{input.doc_files}}
-
-  Doc count: {{input.doc_count}}
-  Footprint hash: {{input.footprint_hash}}
-  Scope globs: {{input.scope_globs}}
-
-  Cumulative coverage so far: {{input.coverage_pct}}%
-  Coverage threshold for convergence: {{input.coverage_target_pct}}%
-
-  Code scope for verification (read-only consult):
-  {{vars.code_scope_globs}}
-
-  Go comment scope (empty = skip Go comments):
-  {{vars.go_comment_globs}}
-
-  Recently changed code files (diff_since={{vars.diff_since}}, hint
-  for prioritisation — full footprint still required):
-  {{input.recently_changed_code_files}}
-
-  Pre-verified docs from inter-run cache (v0.5.0). These were
-  audited in a previous run and BOTH their content AND every
-  referenced code file's content are unchanged since — so they
-  are already counted toward the cumulative coverage gate. You
-  may skip deep auditing them this iteration; prefer focusing
-  on `input.doc_files - input.pre_verified_docs`. If you DO
-  re-audit one and find drift the cache missed, raise it as a
-  blocker — that's a real bug and the cache will be invalidated
-  next run:
-  {{input.pre_verified_docs}}
-
-  Code surface (v0.6.0) — counter-omission audit set. These
-  identifiers were extracted from cmd/iterion/ and pkg/dsl/ir/
-  by the deterministic `scan_code_surface` tool. For each one,
-  verify that at least one doc in `input.doc_files` mentions it.
-  If a CLI command, flag, or diagnostic code exists in the code
-  but no doc lists it, raise an `undocumented_capability`
-  blocker pointing at the most relevant doc (typically
-  `docs/cli-reference.md` for commands/flags or
-  `docs/references/diagnostics.md` for codes). This is the
-  inverse audit direction — the rest of your review covers
-  doc→code drift; this covers code→doc omission.
-
-  CLI commands:           {{input.cli_commands}}
-  CLI flags:              {{input.cli_flags}}
-  Diagnostic codes:       {{input.diagnostic_codes}}
-
+  Iteration: {{loop.review_loop.iteration}}/{{loop.review_loop.max}}
+  Family: claude
+  Workspace: {{vars.workspace_dir}}
   Scope notes (operator's attention pin):
   {{vars.scope_notes}}
 
-  Iteration: {{loop.review_loop.iteration}}/{{loop.review_loop.max}}
+  ## Manifest summary (deterministic, v0.15.0)
+  Total docs scanned:       {{input.total_docs}}
+  Total anchors enumerated: {{input.total_anchors}}
+  Verified:                 {{input.verified_anchors}}
+  Drifted:                  {{input.drifted_anchors}}
+  Unverifiable:             {{input.unverifiable_anchors}}
+  Mechanical coverage:      {{input.manifest_coverage_pct}}%
+  Coverage threshold:       {{input.coverage_target_pct}}%
 
-  Previous reviewer's verdict (other family, immediately prior
-  iteration — empty on first iteration):
+  ## Drift candidates (the working set — bounded to top
+  ## {{vars.max_drift_candidates}} by severity)
+  Each candidate carries `{doc, line, kind, value, status,
+  evidence, excerpt}`. `status` is one of:
+   - drifted     — anchor extracted from the doc, NOT found in
+                   the live code (file missing, CLI flag absent
+                   from scan_code_surface, diagnostic code not
+                   in the parser, …). Highest signal.
+   - unverifiable — symbol_ref the heuristic couldn't resolve.
+                   Often prose words that look like CamelCase,
+                   archived examples, or external refs. Treat
+                   with care; downgrade to false-positive when
+                   the doc context makes it clear.
+
+  Candidates:
+  {{input.drift_candidates}}
+
+  ## Cross-family context
+
+  Previous reviewer's verdict (other family, last iteration —
+  empty on iter 0):
   {{loop.review_loop.previous_output}}
 
-  Cumulative audited pairs across all prior iterations:
-  {{input.previous_audited_pairs}}
-
-  Cumulative audited docs (file-level coverage so far):
-  {{input.previous_audited_docs}}
-
-  Items already pushed back by the fixer:
+  Items the fixer pushed back as is_code_bug / false-positive:
   {{input.prior_pushback}}
-
-  Pushback justification:
+  Justification:
   {{input.prior_pushback_justification}}
 
-  G4 CHECK — previous fix iteration's code_files_touched
-  (MUST be empty; non-empty = automatic contract-violation
-  blocker):
+  ## Gates
+
+  G4 — fixers must NEVER touch code. Both fields below MUST be
+  empty arrays; non-empty = automatic contract-violation blocker
+  with severity:high:
    - claude fixer: {{input.prior_code_files_touched_claude}}
    - gpt fixer:    {{input.prior_code_files_touched_gpt}}
 
-  SCOPE-HONESTY CHECK (v0.13.0) — `cumulative_chronic_paths` is
-  the deduplicated list of paths the fixer has tried to silently
-  edit ≥3 times. If non-empty: raise one structured
-  scope-honesty blocker per element per review_system rule 6a.
-  If empty: stay silent on the topic per rule 6b.
+  SCOPE-HONESTY (v0.13.0) — `cumulative_chronic_paths` lists
+  paths the fixer has tried to silently edit ≥3 times. If
+  non-empty, raise one scope-honesty blocker per element per
+  review_system rule 6a. If empty: stay silent on the topic
+  per rule 6b.
+   - chronic paths: {{input.cumulative_chronic_paths}}
 
-  Chronic scope-violation paths so far (gate trigger):
-  {{input.cumulative_chronic_paths}}
+  ## Your verdict — emit ONLY structured output
 
-  Now run STEP 0 through STEP 6 of `doc-verification-checklist.md`
-  and emit a verdict with these fields:
-    - approved: bool (true only when coverage threshold met AND
-      no blockers)
-    - family: "claude"
-    - blockers: array of structured mismatch objects (see
-      `doc-mismatch-taxonomy.md` for the 11 mismatch_kind enum
-      values, the `anchor_kind` enum, and the required fields:
-      doc_path, doc_line_start, doc_line_end, doc_excerpt,
-      code_anchor, anchor_kind, code_state, mismatch_kind,
-      severity, suggested_fix, is_code_bug)
-    - blocker_count: integer == len(blockers). Required and must
-      match the array you emit (v0.3.0 — feeds the streak gate
-      mechanically; iterion's expr length() can't reliably count
-      items in a json-typed field).
-    - fix_plan: concrete instruction set for the fixer (short)
-    - confidence: "low" / "medium" / "high"
-    - audited_pairs: list of "doc_path::code_anchor" strings you
-      ACTUALLY verified this iteration
-    - audited_docs: list of distinct doc_path values you covered
-      this iteration (subset of input.doc_files; this feeds the
-      mechanical coverage gate)
-    - escalate_to_human: true if ANY blocker has is_code_bug=true
+  For each candidate in `input.drift_candidates`, decide:
+    A. confirm  — real drift, raise as a blocker pointed at the
+                  doc::value pair, suggested_fix explains the
+                  doc edit (NOT a code edit)
+    B. dismiss  — false positive (prose, archived example,
+                  external reference, etc.). Do NOT raise a
+                  blocker; the manifest will keep listing it
+                  but the bot won't act.
+    C. code_bug — doc is correct, code is wrong / removed in
+                  error. Raise a blocker with `is_code_bug:true`;
+                  the fixer will escalate via ask_user.
+
+  Spot-check budget: you have `tool_max_steps: 5`. Use it on
+  the highest-stakes candidates (drifted CLI surface, drifted
+  diagnostic codes) — read the cited doc line + grep the live
+  code to confirm before voting `dismiss`. Trust the manifest
+  for the bulk of decisions.
+
+  Output schema (verdict_output):
+   - approved: bool — true ONLY when blockers == [] AND
+     manifest_coverage_pct >= coverage_target_pct
+   - family: "claude"
+   - blockers: structured mismatch objects (see
+     `doc-mismatch-taxonomy.md`)
+   - blocker_count: int == len(blockers)
+   - fix_plan: concrete instruction set for the fixer (short)
+   - confidence: "low" / "medium" / "high"
+   - audited_pairs: list of "doc_path::value" strings — one per
+     candidate you reviewed (whether you confirmed, dismissed,
+     or flagged code_bug). Lets the cross-family reviewer
+     spot-check your work.
+   - audited_docs: distinct doc_path values you touched
+     (subset of input.all_audited_docs; manifest already
+     covers all docs mechanically — this list is for the
+     spot-check audit trail)
+   - escalate_to_human: true if ANY blocker has is_code_bug=true
 
 prompt review_user_gpt:
-  Audit the documentation in {{vars.workspace_dir}} against the
-  actual code state.
+  Adjudicate the drift candidates in {{vars.workspace_dir}}'s
+  documentation. The deterministic `build_manifest` tool has
+  already enumerated every doc anchor and verified each against
+  the live code state. Your job is the SEMANTIC pass over the
+  candidates it could not auto-resolve.
 
-  Doc footprint (immutable — the complete audit set):
-  {{input.doc_files}}
-
-  Doc count: {{input.doc_count}}
-  Footprint hash: {{input.footprint_hash}}
-  Scope globs: {{input.scope_globs}}
-
-  Cumulative coverage so far: {{input.coverage_pct}}%
-  Coverage threshold for convergence: {{input.coverage_target_pct}}%
-
-  Code scope for verification (read-only consult):
-  {{vars.code_scope_globs}}
-
-  Go comment scope (empty = skip Go comments):
-  {{vars.go_comment_globs}}
-
-  Recently changed code files (diff_since={{vars.diff_since}}, hint
-  for prioritisation — full footprint still required):
-  {{input.recently_changed_code_files}}
-
-  Pre-verified docs from inter-run cache (v0.5.0). These were
-  audited in a previous run and BOTH their content AND every
-  referenced code file's content are unchanged since — so they
-  are already counted toward the cumulative coverage gate. You
-  may skip deep auditing them this iteration; prefer focusing
-  on `input.doc_files - input.pre_verified_docs`. If you DO
-  re-audit one and find drift the cache missed, raise it as a
-  blocker — that's a real bug and the cache will be invalidated
-  next run:
-  {{input.pre_verified_docs}}
-
-  Code surface (v0.6.0) — counter-omission audit set. These
-  identifiers were extracted from cmd/iterion/ and pkg/dsl/ir/
-  by the deterministic `scan_code_surface` tool. For each one,
-  verify that at least one doc in `input.doc_files` mentions it.
-  If a CLI command, flag, or diagnostic code exists in the code
-  but no doc lists it, raise an `undocumented_capability`
-  blocker pointing at the most relevant doc (typically
-  `docs/cli-reference.md` for commands/flags or
-  `docs/references/diagnostics.md` for codes). This is the
-  inverse audit direction — the rest of your review covers
-  doc→code drift; this covers code→doc omission.
-
-  CLI commands:           {{input.cli_commands}}
-  CLI flags:              {{input.cli_flags}}
-  Diagnostic codes:       {{input.diagnostic_codes}}
-
+  Iteration: {{loop.review_loop.iteration}}/{{loop.review_loop.max}}
+  Family: gpt
+  Workspace: {{vars.workspace_dir}}
   Scope notes (operator's attention pin):
   {{vars.scope_notes}}
 
-  Iteration: {{loop.review_loop.iteration}}/{{loop.review_loop.max}}
+  ## Manifest summary (deterministic, v0.15.0)
+  Total docs scanned:       {{input.total_docs}}
+  Total anchors enumerated: {{input.total_anchors}}
+  Verified:                 {{input.verified_anchors}}
+  Drifted:                  {{input.drifted_anchors}}
+  Unverifiable:             {{input.unverifiable_anchors}}
+  Mechanical coverage:      {{input.manifest_coverage_pct}}%
+  Coverage threshold:       {{input.coverage_target_pct}}%
 
-  Previous reviewer's verdict (other family, immediately prior
-  iteration — empty on first iteration):
+  ## Drift candidates (top {{vars.max_drift_candidates}} by severity)
+  Each candidate carries `{doc, line, kind, value, status,
+  evidence, excerpt}`. `status` is one of:
+   - drifted     — anchor extracted from the doc, NOT found in
+                   the live code (file missing, CLI flag absent
+                   from scan_code_surface, diagnostic code not
+                   in the parser, …). Highest signal.
+   - unverifiable — symbol_ref the heuristic couldn't resolve.
+                   Often prose words that look like CamelCase,
+                   archived examples, or external refs.
+
+  Candidates:
+  {{input.drift_candidates}}
+
+  ## Cross-family context
+
+  Previous reviewer's verdict (other family, last iteration —
+  empty on iter 0):
   {{loop.review_loop.previous_output}}
 
-  Cumulative audited pairs across all prior iterations:
-  {{input.previous_audited_pairs}}
-
-  Cumulative audited docs (file-level coverage so far):
-  {{input.previous_audited_docs}}
-
-  Items already pushed back by the fixer:
+  Items the fixer pushed back as is_code_bug / false-positive:
   {{input.prior_pushback}}
-
-  Pushback justification:
+  Justification:
   {{input.prior_pushback_justification}}
 
-  G4 CHECK — previous fix iteration's code_files_touched
-  (MUST be empty; non-empty = automatic contract-violation
-  blocker):
+  ## Gates
+
+  G4 — fixers must NEVER touch code. Both fields below MUST be
+  empty arrays; non-empty = automatic contract-violation blocker
+  with severity:high:
    - claude fixer: {{input.prior_code_files_touched_claude}}
    - gpt fixer:    {{input.prior_code_files_touched_gpt}}
 
-  SCOPE-HONESTY CHECK (v0.13.0) — `cumulative_chronic_paths` is
-  the deduplicated list of paths the fixer has tried to silently
-  edit ≥3 times. If non-empty: raise one structured
-  scope-honesty blocker per element per review_system rule 6a.
-  If empty: stay silent on the topic per rule 6b.
+  SCOPE-HONESTY (v0.13.0) — `cumulative_chronic_paths` lists
+  paths the fixer has tried to silently edit ≥3 times. If
+  non-empty, raise one scope-honesty blocker per element per
+  review_system rule 6a. If empty: stay silent on the topic
+  per rule 6b.
+   - chronic paths: {{input.cumulative_chronic_paths}}
 
-  Chronic scope-violation paths so far (gate trigger):
-  {{input.cumulative_chronic_paths}}
+  ## Your verdict — emit ONLY structured output
 
-  Now run STEP 0 through STEP 6 of `doc-verification-checklist.md`
-  and emit a verdict with these fields:
+  For each candidate in `input.drift_candidates`, decide:
+    A. confirm  — real drift; raise a blocker pointed at the
+                  doc::value pair with suggested_fix on the doc
+    B. dismiss  — false positive (prose, archived, external)
+    C. code_bug — doc correct, code wrong/removed in error;
+                  raise blocker with `is_code_bug:true`
+
+  Spot-check budget: `tool_max_steps: 5`. Use it on the
+  highest-stakes candidates (drifted CLI surface, drifted
+  diagnostic codes). Trust the manifest for the bulk; spot-
+  check the edges.
+
+  Output schema (verdict_output):
     - approved: bool
     - family: "gpt"
     - blockers: array of structured mismatch objects (see
-      `doc-mismatch-taxonomy.md`)
-    - blocker_count: integer == len(blockers). Required and must
-      match the array you emit (v0.3.0 — feeds the streak gate
-      mechanically).
-    - fix_plan: short concrete instruction set for the fixer
-    - confidence: "low" / "medium" / "high"
-    - audited_pairs: list of "doc_path::code_anchor" you verified
-    - audited_docs: list of distinct doc_path values you covered
-      this iteration
-    - escalate_to_human: true if any blocker has is_code_bug=true
+   - approved: bool — true ONLY when blockers == [] AND
+     manifest_coverage_pct >= coverage_target_pct
+   - family: "gpt"
+   - blockers: structured mismatch objects (see
+     `doc-mismatch-taxonomy.md`)
+   - blocker_count: int == len(blockers)
+   - fix_plan: concrete instruction set for the fixer (short)
+   - confidence: "low" / "medium" / "high"
+   - audited_pairs: list of "doc_path::value" strings — one per
+     candidate you reviewed (whether confirmed, dismissed, or
+     flagged code_bug)
+   - audited_docs: distinct doc_path values you touched
+     (subset of input.all_audited_docs)
+   - escalate_to_human: true if ANY blocker has is_code_bug=true
 
 prompt fix_system:
   You are the fixer for the `doc-align` workflow. You apply
@@ -642,29 +637,39 @@ schema scan_output:
   cache_hits: int
   cache_misses: int
 
-## review_input v0.2.0: the v0.1.0 fields plus the four new
-## fields that route fix-iteration metadata + coverage signal
-## from the streak_check compute node through edge `with {}`
-## (which iterion DOES substitute; the prompt-only
-## `{{outputs.X.Y}}` was a no-op).
+## review_input v0.15.0: manifest-driven shape. Replaces the
+## v0.2.0 doc_files / pre_verified_docs / cli_commands / ... bulk
+## with the bounded drift_candidates set from build_manifest plus
+## the summary stats the gates need. Cross-family pushback +
+## chronic-path signals carry through unchanged.
 schema review_input:
-  doc_files: string[]
-  doc_count: int
-  footprint_hash: string
-  scope_globs: string[]
-  recently_changed_code_files: string[]
-  pre_verified_docs: string[]
-  cli_commands: string[]
-  cli_flags: string[]
-  diagnostic_codes: string[]
+  ## Deterministic manifest summary (build_manifest outputs)
+  total_docs: int
+  total_anchors: int
+  verified_anchors: int
+  drifted_anchors: int
+  unverifiable_anchors: int
+  manifest_coverage_pct: int
+  ## Working set for this iteration (bounded by vars.max_drift_candidates).
+  ## Each entry: {doc, line, kind, value, status, evidence, excerpt}.
+  drift_candidates: json
+  ## Full per-doc breakdown — telemetry / reports surface (NOT
+  ## sized-bounded; ~doc_count entries with 3 ints each).
+  per_doc_anchor_counts: json
+  ## Mechanical coverage trail: every doc the manifest scanned.
+  ## Supersedes the v0.14.0 previous_audited_docs[] pattern — the
+  ## manifest IS coverage; reviewers no longer claim it.
+  all_audited_docs: string[]
+
+  ## Convergence threshold (vars.coverage_target_pct passthrough)
+  coverage_target_pct: int
+
+  ## Cross-family iteration context
   prior_pushback: string[]
   prior_pushback_justification: string
   prior_code_files_touched_claude: string[]
   prior_code_files_touched_gpt: string[]
-  previous_audited_pairs: string[]
-  previous_audited_docs: string[]
-  coverage_pct: int
-  coverage_target_pct: int
+
   ## v0.13.0 scope-honesty gate input.
   ## cumulative_chronic_paths: the deduplicated list of paths the
   ## enforce_fix_scope tool has had to revert ≥3 times across the
@@ -674,10 +679,7 @@ schema review_input:
   ## threshold. The raw revert history is INTENTIONALLY hidden
   ## from the reviewer: v0.12 exposed it and the reviewer over-
   ## reacted at threshold=1-2 via inline hints, defeating the
-  ## strict-threshold design. Goodhart-proof by construction:
-  ## the reviewer cannot raise scope-honesty blockers on a
-  ## sub-threshold path because the data for that decision is
-  ## no longer in its inputs.
+  ## strict-threshold design.
   cumulative_chronic_paths: string[]
 
 ## verdict_output: the blockers field stays JSON (DSL schema
@@ -811,6 +813,69 @@ schema enforce_fix_scope_input:
   ## the new blockers it fixed without sacrificing iter N-1's
   ## kept work to the baseline-relative `git diff --name-only`.
   cumulative_so_far_declared: string[]
+
+## build_manifest I/O (v0.15.0 — manifest-driven reviewers).
+##
+## Replaces the ad-hoc "reviewer greps everything" pattern with a
+## deterministic anchor extraction + verification pass. For each
+## doc in the footprint, scans for code references (file paths,
+## symbols, CLI commands, CLI flags, diagnostic codes, markdown
+## link targets), then checks each anchor against the live code
+## state (scan_code_surface outputs + filesystem). The reviewer
+## then audits ONLY the drift candidates — a bounded set with
+## pre-fetched evidence — instead of grepping the workspace itself.
+##
+## The before/after on the 2026-05-21 dogfood: reviewer_gpt's iter
+## 1 burned through 4 LLM steps and ~400K input tokens enumerating
+## anchors via grep before hitting context_length_exceeded. Under
+## the manifest pattern, the same iter receives ~150 pre-resolved
+## candidates with file:line evidence — bounded context, ~5 tool
+## steps to spot-check the high-severity ones, structured verdict.
+schema build_manifest_input:
+  workspace_dir: string
+  doc_files: string[]
+  cli_commands: string[]
+  cli_flags: string[]
+  diagnostic_codes: string[]
+  code_scope_globs: string
+  ## max_drift_candidates caps the drift_candidates[] slice so the
+  ## reviewer's prompt stays bounded regardless of how degraded the
+  ## docs are. The full counts are still reported in the summary
+  ## fields for the streak gate.
+  max_drift_candidates: int
+
+schema build_manifest_output:
+  ## total_docs / total_anchors are the cardinality of the
+  ## deterministic enumeration. Per-doc breakdown lives in
+  ## per_doc_anchor_counts (bounded by doc count, not anchor count).
+  total_docs: int
+  total_anchors: int
+  ## verified_anchors counts anchors whose existence/presence the
+  ## tool confirmed mechanically (file exists, CLI command in
+  ## scan_code_surface output, diagnostic code present, etc.).
+  ## drifted_anchors = total - verified - unverifiable.
+  verified_anchors: int
+  drifted_anchors: int
+  unverifiable_anchors: int
+  coverage_pct: int
+  ## drift_candidates is the reviewer's working set. Each entry
+  ## carries the doc::anchor pair plus pre-fetched evidence so the
+  ## reviewer can judge "real drift vs false positive" without
+  ## running its own grep loop. Capped at input.max_drift_candidates;
+  ## when more candidates exist, the entries are prioritised by
+  ## severity (removed/drifted CLI surface > drifted file_ref >
+  ## unverifiable symbol).
+  drift_candidates: json
+  ## per_doc_anchor_counts is the deterministic coverage signal —
+  ## each entry says "doc X had Y anchors total, Z of them verified".
+  ## streak_check picks coverage_pct from the summary; this list
+  ## exists for telemetry / reports.
+  per_doc_anchor_counts: json
+  ## all_audited_docs lists every doc the manifest scanned. The
+  ## reviewer no longer claims coverage via its own audited_docs[]
+  ## — the manifest pass IS the audit. streak_check pulls this
+  ## list into its cumulative_audited_docs.
+  all_audited_docs: string[]
 
 schema enforce_fix_scope_output:
   reverted_paths: string[]
@@ -963,6 +1028,271 @@ print(json.dumps({
 "`
   output: code_surface
 
+## build_manifest (v0.15.0): deterministic anchor extraction +
+## verification + evidence collection. Replaces the
+## reviewer-side "grep everything" pattern.
+##
+## For each doc in input.doc_files, scans the markdown and
+## extracts code anchors via regex:
+##   - file_ref      — paths like `pkg/foo/bar.go`, `docs/dsl.md`,
+##                     `cmd/iterion/run.go:42` (with optional line
+##                     suffix)
+##   - cli_command   — backtick-quoted `iterion <subcmd>` invocations
+##                     matching scan_code_surface.cli_commands
+##   - cli_flag      — `--flag-name` mentions in inline code spans
+##   - diagnostic    — `CNNN` codes referenced in prose
+##   - symbol_ref    — backtick-quoted Go-style identifiers
+##                     (`PackageName.TypeName` or `FunctionName`)
+##                     that look like exported symbols
+##
+## Each anchor is then verified:
+##   - file_ref     → does the file exist on disk?
+##   - cli_command  → is it in input.cli_commands?
+##   - cli_flag     → is it in input.cli_flags?
+##   - diagnostic   → is it in input.diagnostic_codes?
+##   - symbol_ref   → does `git grep -l` find it in code_scope_globs?
+##
+## Drift candidates = anchors whose verification failed. Each
+## carries pre-fetched evidence (the doc line excerpt + the
+## verifier's miss reason) so the reviewer can judge semantics
+## without running its own grep loop. Output is bounded:
+## input.max_drift_candidates caps the candidate slice; the full
+## counts ride along in the summary fields for the streak gate.
+##
+## All inputs flow via env vars (JSON-encoded for arrays); the
+## tool's argv is empty.
+tool build_manifest:
+  command: `WS={{input.workspace_dir}} DOC_FILES='{{!input.doc_files}}' CLI_COMMANDS='{{!input.cli_commands}}' CLI_FLAGS='{{!input.cli_flags}}' DIAG_CODES='{{!input.diagnostic_codes}}' CODE_GLOBS={{input.code_scope_globs}} MAX_CANDIDATES={{input.max_drift_candidates}} python3 -c "
+import os, json, re, glob, subprocess
+ws = os.environ['WS']
+os.chdir(ws)
+def jload(name, default):
+    raw = os.environ.get(name, '')
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return default
+doc_files = jload('DOC_FILES', [])
+cli_commands = set(jload('CLI_COMMANDS', []))
+cli_flags = set(jload('CLI_FLAGS', []))
+diag_codes = set(jload('DIAG_CODES', []))
+code_globs = [g.strip() for g in os.environ.get('CODE_GLOBS', '').split(',') if g.strip()]
+try:
+    max_candidates = int(os.environ.get('MAX_CANDIDATES', '150'))
+except ValueError:
+    max_candidates = 150
+
+## Regexes targeting markdown-typical patterns.
+## file_ref: paths like pkg/foo/bar.go, docs/dsl.md, with optional :NN line.
+## We restrict to known code/doc roots to avoid false hits on prose.
+FILE_RE = re.compile(r'\b((?:pkg|cmd|internal|examples|docs|scripts|studio|.github|sdks)/[A-Za-z0-9_./-]+\.(?:go|md|ts|tsx|py|sh|yaml|yml|json|bot|iter))(?::([0-9]+(?:-[0-9]+)?))?')
+## chr(96) = backtick. The iterion DSL uses backticks as the raw-string
+## delimiter for tool commands, so any literal backtick inside the
+## command body (e.g. an inline-code regex) terminates the string and
+## breaks the parser. Building the pattern at runtime via chr() dodges
+## the conflict without forcing a different command-string syntax.
+BT = chr(96)
+## cli_command: backtick-quoted 'iterion <subcmd>' (subcmd is 1st word after iterion)
+CLI_CMD_RE = re.compile(BT + r'iterion\s+([a-zA-Z0-9_-]+)')
+## cli_flag: --kebab-flag tokens (allow leading backtick, allow trailing =)
+CLI_FLAG_RE = re.compile(r'(?:\\s|^|' + BT + r'|\\()--([a-zA-Z][a-zA-Z0-9-]*[a-zA-Z0-9])\b')
+## diag_code: literal CNNN with a 3-digit suffix.
+DIAG_RE = re.compile(r'\b(C[0-9]{3})\b')
+## symbol_ref: backtick-quoted CamelCase or pkg.Symbol identifiers.
+## Strict pattern to avoid catching random capitalized words in prose.
+SYM_RE = re.compile(BT + r'((?:[a-z][a-zA-Z0-9_]*\.)?[A-Z][A-Za-z0-9_]+(?:\.[A-Z][A-Za-z0-9_]+)?)' + BT)
+
+def excerpt(line_text, limit=140):
+    s = line_text.strip()
+    return s if len(s) <= limit else s[:limit] + '…'
+
+anchors = []
+per_doc_counts = {}
+for doc in doc_files:
+    try:
+        with open(doc, encoding='utf-8', errors='replace') as fh:
+            lines = fh.readlines()
+    except (FileNotFoundError, IsADirectoryError, PermissionError):
+        per_doc_counts[doc] = {'total': 0, 'verified': 0}
+        continue
+    seen_in_doc = set()
+    doc_anchors = []
+    for lineno, line in enumerate(lines, start=1):
+        for m in FILE_RE.finditer(line):
+            value = m.group(1)
+            key = ('file_ref', value)
+            if key in seen_in_doc:
+                continue
+            seen_in_doc.add(key)
+            doc_anchors.append({'doc': doc, 'line': lineno, 'kind': 'file_ref', 'value': value, 'excerpt': excerpt(line)})
+        for m in CLI_CMD_RE.finditer(line):
+            value = m.group(1)
+            key = ('cli_command', value)
+            if key in seen_in_doc:
+                continue
+            seen_in_doc.add(key)
+            doc_anchors.append({'doc': doc, 'line': lineno, 'kind': 'cli_command', 'value': value, 'excerpt': excerpt(line)})
+        for m in CLI_FLAG_RE.finditer(line):
+            value = m.group(1)
+            key = ('cli_flag', value)
+            if key in seen_in_doc:
+                continue
+            seen_in_doc.add(key)
+            doc_anchors.append({'doc': doc, 'line': lineno, 'kind': 'cli_flag', 'value': value, 'excerpt': excerpt(line)})
+        for m in DIAG_RE.finditer(line):
+            value = m.group(1)
+            key = ('diagnostic', value)
+            if key in seen_in_doc:
+                continue
+            seen_in_doc.add(key)
+            doc_anchors.append({'doc': doc, 'line': lineno, 'kind': 'diagnostic', 'value': value, 'excerpt': excerpt(line)})
+        for m in SYM_RE.finditer(line):
+            value = m.group(1)
+            ## Skip obvious markdown headings / English words. A heuristic:
+            ## must contain at least one of [A-Z][a-z]+[A-Z] (CamelCase),
+            ## OR a dot (pkg.Symbol).
+            if not (re.search(r'[A-Z][a-z]+[A-Z]', value) or '.' in value):
+                continue
+            key = ('symbol_ref', value)
+            if key in seen_in_doc:
+                continue
+            seen_in_doc.add(key)
+            doc_anchors.append({'doc': doc, 'line': lineno, 'kind': 'symbol_ref', 'value': value, 'excerpt': excerpt(line)})
+    anchors.extend(doc_anchors)
+    per_doc_counts[doc] = {'total': len(doc_anchors), 'verified': 0}
+
+## Verification pass.
+## Symbol lookups are deferred to a single git grep batch — cheaper
+## than O(N) shell calls. Build the union of distinct symbols first.
+symbols_to_check = sorted({a['value'] for a in anchors if a['kind'] == 'symbol_ref'})
+present_symbols = set()
+if symbols_to_check and code_globs:
+    ## git grep -l with alternation; chunk to avoid argv overflow.
+    chunk_size = 100
+    for i in range(0, len(symbols_to_check), chunk_size):
+        chunk = symbols_to_check[i:i+chunk_size]
+        pat = r'\b(' + '|'.join(re.escape(s.split('.')[-1]) for s in chunk) + r')\b'
+        try:
+            r = subprocess.run(['git', 'grep', '-lE', pat, '--'] + code_globs, capture_output=True, text=True, check=False)
+            if r.returncode in (0, 1):
+                ## We can only confirm at-least-one-match for the chunk
+                ## as a whole; for per-symbol granularity we'd need
+                ## N grep calls. Instead, do a content check: for each
+                ## symbol in the chunk, regrep its leaf identifier in
+                ## the union of matched files.
+                matched_files = [l for l in r.stdout.splitlines() if l]
+                if matched_files:
+                    for sym in chunk:
+                        leaf = sym.split('.')[-1]
+                        try:
+                            rr = subprocess.run(['git', 'grep', '-lE', r'\b' + re.escape(leaf) + r'\b', '--'] + matched_files, capture_output=True, text=True, check=False)
+                            if rr.returncode == 0 and rr.stdout.strip():
+                                present_symbols.add(sym)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+verified = []
+drifted = []
+unverifiable = []
+for a in anchors:
+    k = a['kind']
+    v = a['value']
+    if k == 'file_ref':
+        if os.path.exists(v):
+            a['status'] = 'verified'
+            a['evidence'] = 'file exists'
+            verified.append(a)
+        else:
+            a['status'] = 'drifted'
+            a['evidence'] = 'file not found on disk'
+            drifted.append(a)
+    elif k == 'cli_command':
+        if v in cli_commands:
+            a['status'] = 'verified'
+            a['evidence'] = 'present in scan_code_surface.cli_commands'
+            verified.append(a)
+        else:
+            a['status'] = 'drifted'
+            a['evidence'] = 'not in scan_code_surface.cli_commands'
+            drifted.append(a)
+    elif k == 'cli_flag':
+        if v in cli_flags:
+            a['status'] = 'verified'
+            a['evidence'] = 'present in scan_code_surface.cli_flags'
+            verified.append(a)
+        else:
+            a['status'] = 'drifted'
+            a['evidence'] = 'not in scan_code_surface.cli_flags'
+            drifted.append(a)
+    elif k == 'diagnostic':
+        if v in diag_codes:
+            a['status'] = 'verified'
+            a['evidence'] = 'present in scan_code_surface.diagnostic_codes'
+            verified.append(a)
+        else:
+            a['status'] = 'drifted'
+            a['evidence'] = 'not in scan_code_surface.diagnostic_codes'
+            drifted.append(a)
+    elif k == 'symbol_ref':
+        if v in present_symbols:
+            a['status'] = 'verified'
+            a['evidence'] = 'matched in code_scope_globs'
+            verified.append(a)
+        else:
+            ## Symbol heuristic is brittle (CamelCase prose, archived
+            ## examples, …); treat misses as unverifiable rather than
+            ## drifted to avoid Goodhart-trap blockers.
+            a['status'] = 'unverifiable'
+            a['evidence'] = 'no match in code_scope_globs (may be prose or external ref)'
+            unverifiable.append(a)
+    per_doc_counts[a['doc']]['verified'] += 1 if a['status'] == 'verified' else 0
+
+## Prioritise candidates: drifted CLI surface first (highest signal),
+## then drifted file_ref, then drifted diagnostic, then drifted symbol,
+## then unverifiable symbols at the tail.
+priority = {
+    ('drifted', 'cli_command'): 0,
+    ('drifted', 'cli_flag'): 0,
+    ('drifted', 'diagnostic'): 1,
+    ('drifted', 'file_ref'): 2,
+    ('drifted', 'symbol_ref'): 3,
+    ('unverifiable', 'symbol_ref'): 4,
+}
+candidates = drifted + unverifiable
+candidates.sort(key=lambda a: (priority.get((a['status'], a['kind']), 9), a['doc'], a['line']))
+if max_candidates > 0:
+    candidates = candidates[:max_candidates]
+
+total_anchors = len(anchors)
+verified_anchors = len(verified)
+drifted_anchors = len(drifted)
+unverifiable_anchors = len(unverifiable)
+coverage_pct = (verified_anchors * 100 // total_anchors) if total_anchors > 0 else 0
+
+per_doc_list = sorted(
+    [{'doc': d, 'total': c['total'], 'verified': c['verified']} for d, c in per_doc_counts.items()],
+    key=lambda r: r['doc'],
+)
+
+print(json.dumps({
+    'total_docs': len(doc_files),
+    'total_anchors': total_anchors,
+    'verified_anchors': verified_anchors,
+    'drifted_anchors': drifted_anchors,
+    'unverifiable_anchors': unverifiable_anchors,
+    'coverage_pct': coverage_pct,
+    'drift_candidates': candidates,
+    'per_doc_anchor_counts': per_doc_list,
+    'all_audited_docs': sorted(doc_files),
+}))
+"`
+  input: build_manifest_input
+  output: build_manifest_output
+
 router alt:
   mode: round_robin
 
@@ -979,6 +1309,10 @@ judge reviewer_claude:
   ## session inheritance, and a fresh session keeps each review
   ## an independent look (mirrors branch_improve_loop).
   session: fresh
+  ## v0.15.0: tool_max_steps cap aligns reviewer_claude with the
+  ## manifest pattern — the bounded drift_candidates list is in
+  ## the prompt; spot-checks only.
+  tool_max_steps: 5
   interaction: human
 
 judge reviewer_gpt:
@@ -996,23 +1330,17 @@ judge reviewer_gpt:
   ## on iter 1 fix_gpt hasn't run, the template resolves to "",
   ## and the original v0.2.0 reading of the symptom blamed claw's
   ## OpenAI provider (it turned out to be insufficient_quota
-  ## v0.13.0: REVERTED to `session: fresh` after the 2026-05-21
-  ## dogfood hit `context_length_exceeded` on iter 1's reviewer_gpt
-  ## — the inherited session carries fix_gpt's full conversation
-  ## (~all-docs read + audited pairs + verdict round trips) and
-  ## GPT-5.5's 400K window fills before the reviewer can finish.
-  ## Trading prompt-cache reuse for hard context bounds; a future
-  ## refactor should switch the reviewer to a manifest-driven shape
-  ## (consume scan_docs/scan_code_surface outputs instead of grepping
-  ## live) so each iter starts from a fixed-size compact input.
+  ## v0.15.0: with the manifest pattern, reviewer_gpt no longer
+  ## enumerates anchors via tool calls — the bounded
+  ## drift_candidates list is in the prompt. Spot-checks only.
   session: fresh
   ## claw builtin tools — read-only set, the reviewer NEVER writes.
-  ## tool_max_steps dropped from 40 → 20: cap the per-review tool
-  ## exploration so an inherited-context regression can't blow the
-  ## window again. 20 steps comfortably covers 8-12 file reads + a
-  ## handful of greps + the structured output.
+  ## tool_max_steps dropped 20 → 5 (v0.15.0). Enumeration moved to
+  ## the manifest tool; reviewer uses the budget for verifying
+  ## the highest-stakes drifted CLI surface / diagnostic codes
+  ## before voting dismiss.
   tools: [bash, read_file, glob, grep]
-  tool_max_steps: 20
+  tool_max_steps: 5
   interaction: human
 
 ## Deterministic streak detector + coverage gate.
@@ -1045,22 +1373,24 @@ judge reviewer_gpt:
 compute streak_check:
   output: streak_state
   expr:
-    stop: "(input.approved || input.blocker_count == 0) && (loop.review_loop.previous_output.approved || loop.review_loop.previous_output.blocker_count == 0) && input.family != loop.review_loop.previous_output.family && if(outputs.scan_docs.doc_count > 0, length(unique(concat(outputs.scan_docs.pre_verified_docs, outputs.streak_check.cumulative_audited_docs, input.audited_docs))) * 100 / outputs.scan_docs.doc_count, 0) >= vars.coverage_target_pct"
+    ## v0.15.0: coverage is now ANCHOR-level (manifest's
+    ## verified/total ratio), not file-level (reviewer-claimed
+    ## audited_docs union). The manifest scans every doc every
+    ## iter, so coverage moves only when the fixer actually
+    ## resolves drifts. No more reviewer-claimed coverage padding.
+    stop: "(input.approved || input.blocker_count == 0) && (loop.review_loop.previous_output.approved || loop.review_loop.previous_output.blocker_count == 0) && input.family != loop.review_loop.previous_output.family && outputs.build_manifest.coverage_pct >= vars.coverage_target_pct"
     approved: "input.approved || input.confidence == 'low' || input.blocker_count == 0"
     family: "input.family"
     blockers: "input.blockers"
     blocker_count: "input.blocker_count"
     fix_plan: "input.fix_plan"
     cumulative_audited_pairs: "unique(concat(outputs.streak_check.cumulative_audited_pairs, input.audited_pairs))"
-    ## v0.5.0: pre_verified_docs (from the inter-run cache via
-    ## scan_docs) is folded into cumulative_audited_docs from the
-    ## first compute call. This is what gives the cache its
-    ## speedup: docs unchanged since the previous run are counted
-    ## as covered immediately, so coverage_pct >= target can fire
-    ## on the first reviewer's audit_docs without re-reading the
-    ## unchanged majority.
-    cumulative_audited_docs: "unique(concat(outputs.scan_docs.pre_verified_docs, outputs.streak_check.cumulative_audited_docs, input.audited_docs))"
-    coverage_pct: "if(outputs.scan_docs.doc_count > 0, if(length(unique(concat(outputs.scan_docs.pre_verified_docs, outputs.streak_check.cumulative_audited_docs, input.audited_docs))) * 100 / outputs.scan_docs.doc_count > 100, 100, length(unique(concat(outputs.scan_docs.pre_verified_docs, outputs.streak_check.cumulative_audited_docs, input.audited_docs))) * 100 / outputs.scan_docs.doc_count), 0)"
+    ## v0.15.0: file-level coverage is now the manifest's static
+    ## all_audited_docs (every doc is mechanically scanned every
+    ## iter). Kept on the schema for backward-compat in reports;
+    ## the gate uses coverage_pct below instead.
+    cumulative_audited_docs: "outputs.build_manifest.all_audited_docs"
+    coverage_pct: "outputs.build_manifest.coverage_pct"
     ## v0.12.0: accumulate every enforce_fix_scope revert across
     ## the run, WITH duplicates. Kept for telemetry / events,
     ## and re-fed to enforce_fix_scope each iter so it can
@@ -1278,70 +1608,67 @@ workflow doc_align:
     preserve_recent: 8
 
   scan_docs -> scan_code_surface
-  scan_code_surface -> alt
 
-  ## Round-robin alternates: 1st pass → claude, 2nd → gpt, repeat.
-  ## Each reviewer receives via edge `with {}` (which iterion DOES
-  ## substitute — fix 1 root cause):
-  ##   - immutable scanner footprint (doc_files / doc_count /
-  ##     footprint_hash / scope_globs / recently_changed_code_files)
-  ##   - the OTHER family's most recent fixer pushback
-  ##   - prior_code_files_touched_{claude,gpt} from BOTH fixers
-  ##     (so the G4 gate can fire regardless of which family
-  ##     fixed last)
-  ##   - cumulative coverage state (audited_pairs + audited_docs +
-  ##     coverage_pct) from streak_check
-  ##   - coverage_target_pct from vars
-  alt -> reviewer_claude with {
+  ## v0.15.0: build_manifest runs after scan_code_surface (initial)
+  ## AND after every enforce_fix_scope (loop re-entry), so the
+  ## drift_candidates set the reviewers see always reflects the
+  ## live worktree state. Both inbound edges supply identical
+  ## with{} fields — the tool's input shape is the same regardless
+  ## of which stage triggered it.
+  scan_code_surface -> build_manifest with {
+    workspace_dir: "{{vars.workspace_dir}}",
     doc_files: "{{outputs.scan_docs.doc_files}}",
-    doc_count: "{{outputs.scan_docs.doc_count}}",
-    footprint_hash: "{{outputs.scan_docs.footprint_hash}}",
-    scope_globs: "{{outputs.scan_docs.scope_globs}}",
-    recently_changed_code_files: "{{outputs.scan_docs.recently_changed_code_files}}",
-    pre_verified_docs: "{{outputs.scan_docs.pre_verified_docs}}",
     cli_commands: "{{outputs.scan_code_surface.cli_commands}}",
     cli_flags: "{{outputs.scan_code_surface.cli_flags}}",
     diagnostic_codes: "{{outputs.scan_code_surface.diagnostic_codes}}",
+    code_scope_globs: "{{vars.code_scope_globs}}",
+    max_drift_candidates: "{{vars.max_drift_candidates}}"
+  }
+  build_manifest -> alt
+
+  ## Round-robin alternates: 1st pass → claude, 2nd → gpt, repeat.
+  ## v0.15.0: reviewers consume the BOUNDED manifest output
+  ## (drift_candidates + summary stats) instead of the v0.14.0
+  ## bulk shape (doc_files / pre_verified_docs / cli_commands / …
+  ## that grew with the doc footprint). Cross-family pushback +
+  ## chronic-path signals carry through unchanged.
+  alt -> reviewer_claude with {
+    total_docs: "{{outputs.build_manifest.total_docs}}",
+    total_anchors: "{{outputs.build_manifest.total_anchors}}",
+    verified_anchors: "{{outputs.build_manifest.verified_anchors}}",
+    drifted_anchors: "{{outputs.build_manifest.drifted_anchors}}",
+    unverifiable_anchors: "{{outputs.build_manifest.unverifiable_anchors}}",
+    manifest_coverage_pct: "{{outputs.build_manifest.coverage_pct}}",
+    drift_candidates: "{{outputs.build_manifest.drift_candidates}}",
+    per_doc_anchor_counts: "{{outputs.build_manifest.per_doc_anchor_counts}}",
+    all_audited_docs: "{{outputs.build_manifest.all_audited_docs}}",
+    coverage_target_pct: "{{vars.coverage_target_pct}}",
     prior_pushback: "{{outputs.fix_gpt.pushback}}",
     prior_pushback_justification: "{{outputs.fix_gpt.pushback_justification}}",
     prior_code_files_touched_claude: "{{outputs.fix_claude.code_files_touched}}",
     prior_code_files_touched_gpt: "{{outputs.fix_gpt.code_files_touched}}",
-    previous_audited_pairs: "{{outputs.streak_check.cumulative_audited_pairs}}",
-    previous_audited_docs: "{{outputs.streak_check.cumulative_audited_docs}}",
-    coverage_pct: "{{outputs.streak_check.coverage_pct}}",
-    coverage_target_pct: "{{vars.coverage_target_pct}}",
-    ## v0.13.0 scope-honesty feed — ONLY the thresholded list.
-    ## The raw + last-iter signals were exposed in v0.12 and the
-    ## reviewer over-reacted at threshold=1-2, hint-leaking the
-    ## scope info inline. v0.13 fixes the gate by construction:
-    ## without the sub-threshold data the reviewer can't talk
-    ## about scope until a path has crossed ≥3 reverts.
     cumulative_chronic_paths: "{{outputs.streak_check.cumulative_chronic_paths}}"
   }
   alt -> reviewer_gpt with {
-    doc_files: "{{outputs.scan_docs.doc_files}}",
-    doc_count: "{{outputs.scan_docs.doc_count}}",
-    footprint_hash: "{{outputs.scan_docs.footprint_hash}}",
-    scope_globs: "{{outputs.scan_docs.scope_globs}}",
-    recently_changed_code_files: "{{outputs.scan_docs.recently_changed_code_files}}",
-    pre_verified_docs: "{{outputs.scan_docs.pre_verified_docs}}",
-    cli_commands: "{{outputs.scan_code_surface.cli_commands}}",
-    cli_flags: "{{outputs.scan_code_surface.cli_flags}}",
-    diagnostic_codes: "{{outputs.scan_code_surface.diagnostic_codes}}",
+    total_docs: "{{outputs.build_manifest.total_docs}}",
+    total_anchors: "{{outputs.build_manifest.total_anchors}}",
+    verified_anchors: "{{outputs.build_manifest.verified_anchors}}",
+    drifted_anchors: "{{outputs.build_manifest.drifted_anchors}}",
+    unverifiable_anchors: "{{outputs.build_manifest.unverifiable_anchors}}",
+    manifest_coverage_pct: "{{outputs.build_manifest.coverage_pct}}",
+    drift_candidates: "{{outputs.build_manifest.drift_candidates}}",
+    per_doc_anchor_counts: "{{outputs.build_manifest.per_doc_anchor_counts}}",
+    all_audited_docs: "{{outputs.build_manifest.all_audited_docs}}",
+    coverage_target_pct: "{{vars.coverage_target_pct}}",
     prior_pushback: "{{outputs.fix_claude.pushback}}",
     prior_pushback_justification: "{{outputs.fix_claude.pushback_justification}}",
     prior_code_files_touched_claude: "{{outputs.fix_claude.code_files_touched}}",
     prior_code_files_touched_gpt: "{{outputs.fix_gpt.code_files_touched}}",
-    previous_audited_pairs: "{{outputs.streak_check.cumulative_audited_pairs}}",
-    previous_audited_docs: "{{outputs.streak_check.cumulative_audited_docs}}",
-    coverage_pct: "{{outputs.streak_check.coverage_pct}}",
-    coverage_target_pct: "{{vars.coverage_target_pct}}",
-    ## v0.13.0 scope-honesty feed — thresholded list only.
     cumulative_chronic_paths: "{{outputs.streak_check.cumulative_chronic_paths}}",
-    ## v0.7.0: inherit fix_gpt's session on iter 2+ to ride its
-    ## prompt cache. Empty on iter 1 (fix_gpt hasn't run);
-    ## inherit_if_available tolerates that with a fresh fallback.
-    _session_id: "{{outputs.fix_gpt._session_id}}"
+    ## v0.7.0 cost optimisation moot under the manifest shape —
+    ## input is now bounded, no more cumulative context bloat to
+    ## fight. Keeping session: fresh on reviewer_gpt for the
+    ## fixed-size guarantee. (_session_id intentionally absent.)
   }
 
   reviewer_claude -> streak_check as review_loop(15) with {
@@ -1437,7 +1764,19 @@ workflow doc_align:
     cumulative_so_far: "{{outputs.streak_check.cumulative_reverted_paths}}",
     cumulative_so_far_declared: "{{outputs.streak_check.cumulative_declared_paths}}"
   }
-  enforce_fix_scope -> alt
+  ## v0.15.0: re-run build_manifest after each fix iter so the
+  ## reviewer's drift_candidates set reflects the fresh worktree
+  ## state. The with{} mirrors the initial-flow edge — same
+  ## input shape, same target node.
+  enforce_fix_scope -> build_manifest with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    doc_files: "{{outputs.scan_docs.doc_files}}",
+    cli_commands: "{{outputs.scan_code_surface.cli_commands}}",
+    cli_flags: "{{outputs.scan_code_surface.cli_flags}}",
+    diagnostic_codes: "{{outputs.scan_code_surface.diagnostic_codes}}",
+    code_scope_globs: "{{vars.code_scope_globs}}",
+    max_drift_candidates: "{{vars.max_drift_candidates}}"
+  }
 
   ## Loop-exhaustion fallthroughs (update_audit_cache has its
   ## unconditional `→ done` declared in the main commit path).
