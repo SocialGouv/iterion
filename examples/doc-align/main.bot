@@ -143,6 +143,15 @@ vars:
   ##     across families). Convergence over fewer-larger iters.
   max_drift_candidates: int = 40
 
+  ## v0.15.4: identifier of the tracker issue this run was dispatched
+  ## from. Used by mark_issue_for_review at the end of the workflow
+  ## to transition the issue out of `ready` so the dispatcher doesn't
+  ## re-pick it on the next poll. Filled by the dispatcher via
+  ## `vars.issue_id: "{{issue.identifier}}"` in dispatch_defaults.
+  ## Empty string when run outside the dispatcher (manual CLI run);
+  ## mark_issue_for_review is then a no-op.
+  issue_id: string = ""
+
   ## Inter-run audit cache (v0.5.0). Path to the JSON cache file
   ## that stores `{doc_path: {sha, refs: [{path, sha}]}}` from the
   ## previous successful run. scan_docs reads this and emits
@@ -786,6 +795,14 @@ schema commit_tool_input:
 schema commit_result:
   success: bool
   output: string
+
+## v0.15.4: schema for mark_issue_for_review's free-form output.
+## The tool returns JSON-as-string on success ({"id":...,"state":...})
+## or {"skipped":"no issue_id"} on the manual-CLI no-op path. We
+## don't consume the value downstream — the schema exists to make
+## the tool node DSL-valid.
+schema mark_issue_output:
+  text: string
 
 ## update_audit_cache I/O (v0.5.0). The `audited_pairs: string[]`
 ## field is shell-tokenised by iterion's template substitution
@@ -1482,6 +1499,29 @@ tool commit_changes:
   input: commit_tool_input
   output: commit_result
 
+## mark_issue_for_review (v0.15.4): after the run reaches a clean
+## terminal state, transition the tracker issue out of `ready` so
+## the dispatcher's polling loop doesn't re-dispatch it on the next
+## tick (observed during run 019e4c2e: a no-op convergence walked
+## the full workflow again on top of the previous commit, costing
+## ~$1.50 per re-run for zero added signal).
+##
+## Skipped (no-op exit 0) when vars.issue_id is empty — manual CLI
+## runs don't have a dispatcher-attached issue to transition.
+##
+## The store-dir is resolved relative to the worktree: the dispatcher
+## puts the worktree at <host>/.iterion/dispatcher/workspaces/native_<id>/
+## so three levels up lands on <host>/.iterion/ which is what
+## `iterion issue move --store-dir` expects (the root that contains
+## the `dispatcher/` subtree).
+##
+## `|| true` keeps the workflow on the happy path even if the
+## tracker transition fails — the commit has already landed; we
+## don't want a state-machine hiccup to mark the run failed.
+tool mark_issue_for_review:
+  command: `if [ -n "{{vars.issue_id}}" ]; then STORE=$(cd "{{vars.workspace_dir}}/../../.." && pwd) && iterion issue move "{{vars.issue_id}}" --to review --store-dir "$STORE" --json || true; else echo '{"skipped":"no issue_id"}'; fi`
+  output: mark_issue_output
+
 ## enforce_fix_scope (v0.11.0): mechanical revert of any fix-stage
 ## edit outside the fixer's declared `modified_doc_files` set.
 ##
@@ -1745,7 +1785,8 @@ workflow doc_align:
   ## so a failed commit doesn't poison the cache with un-shipped
   ## audit state. update_audit_cache is a deterministic tool
   ## (no LLM cost) so this adds ~ms to the run.
-  commit_changes -> update_audit_cache with {
+  commit_changes -> mark_issue_for_review
+  mark_issue_for_review -> update_audit_cache with {
     workspace_dir: "{{vars.workspace_dir}}",
     cache_path: "{{vars.audit_cache_path}}",
     audited_pairs: "{{outputs.streak_check.cumulative_audited_pairs}}"

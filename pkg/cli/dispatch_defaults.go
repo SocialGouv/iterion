@@ -91,6 +91,11 @@ func defaultAssigneeDispatch() map[string]dispatcher.DispatchConfig {
 	}}
 	docAlign := dispatcher.DispatchConfig{Vars: map[string]string{
 		"scope_notes": defaultBotIssuePrompt,
+		// v0.15.4: the bot transitions the issue out of `ready` once
+		// the run reaches a clean terminal state, so the dispatcher
+		// doesn't re-pick it on the next poll. Requires the issue's
+		// short identifier; `iterion issue move` accepts the prefix.
+		"issue_id": "{{issue.identifier}}",
 	}}
 	secAuditSource := dispatcher.DispatchConfig{Vars: map[string]string{
 		"scope_notes": defaultBotIssuePrompt,
