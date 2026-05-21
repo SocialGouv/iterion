@@ -426,7 +426,23 @@ export default function RunCanvasIR({
         setNodes(finalNodes);
         setEdges(baseEdges);
         requestAnimationFrame(() => {
-          reactFlow.fitView({ padding: 0.2, duration: 250 });
+          // If a node was already selected when the layout settled
+          // (typical entry path: follow-live on a running run picks
+          // the running node before ELK finishes), centre on it so
+          // the user lands on the action instead of a fit-all view.
+          // Falls back to fitView when no selection or the selected
+          // node isn't part of the laid-out graph.
+          const sel = selectedNodeIdRef.current;
+          const selNode = sel ? finalNodes.find((n) => n.id === sel) : null;
+          if (selNode) {
+            reactFlow.setCenter(
+              selNode.position.x + 100,
+              selNode.position.y + 40,
+              { zoom: 1, duration: 250 },
+            );
+          } else {
+            reactFlow.fitView({ padding: 0.2, duration: 250 });
+          }
         });
       })
       .catch(() => {
