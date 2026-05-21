@@ -141,7 +141,7 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.iter
 ```
 .iter source → Lexer (indent-sensitive tokens) → Parser (recursive-descent) → AST
   → ir.Compile() → IR Workflow (nodes + edges + schemas + prompts + budget)
-  → Diagnostics from ir.Compile() / ir.Validate() (sparse codes C001–C082: compile errors, reachability, routing, cycles, attachments, presets, capability checks (C080–C082), etc.)
+  → Diagnostics from ir.Compile() / ir.Validate() (sparse codes C001–C086: compile errors, reachability, routing, cycles, attachments, presets, capability checks (C080–C082), cursor declarations (C083–C086), etc.)
   → runtime.Engine.Run() → execution with events, budget, and persistence
 ```
 
@@ -208,7 +208,7 @@ V2-6 wires `sandbox.build:` via `docker buildx build` on the local docker driver
 
 - **RuntimeError** (`pkg/runtime/errors.go`) — structured error with `ErrorCode`, `Message`, `NodeID`, `Hint`, `Cause`
   - Codes: `NODE_NOT_FOUND`, `NO_OUTGOING_EDGE`, `LOOP_EXHAUSTED`, `BUDGET_EXCEEDED`, `EXECUTION_FAILED`, `WORKSPACE_SAFETY`, `TIMEOUT`, `CANCELLED`, `JOIN_FAILED`, `RESUME_INVALID`
-- **Diagnostics** (`pkg/dsl/ir/compile.go`, `pkg/dsl/ir/validate.go`) — compile-time warnings/errors with sparse codes C001–C082 (unknown refs, routing issues, unreachable nodes, undeclared cycles, attachments, presets, capability checks (C080–C082), etc.)
+- **Diagnostics** (`pkg/dsl/ir/compile.go`, `pkg/dsl/ir/validate.go`) — compile-time warnings/errors with sparse codes C001–C086 (unknown refs, routing issues, unreachable nodes, undeclared cycles, attachments, presets, capability checks (C080–C082), cursor declarations (C083–C086), etc.)
 - **Sentinel errors**: `ErrRunPaused` (resumable), `ErrRunCancelled` (resumable with checkpoint), `ErrBudgetExceeded`
 - **Resumable failures**: Most runtime failures produce `failed_resumable` status with a checkpoint. See `docs/resume.md` for the exhaustive matrix.
 
@@ -379,20 +379,29 @@ default mental model won't surface:
 
 Claude Code-style skills ship inside the `.botz` bundle they
 support, not at a repo-global location. Iterion's runtime mirrors
-`<bundle>/skills/*.md` into `<workspace>/.claude/skills/` for the
-duration of a run on `backend: claude_code`, so each bundle gets
-exactly the skills it ships — no implicit dependency on the host
-filesystem.
+`<bundle>/skills/*.md` into `<workspace>/.claude/skills/` at run
+start (and on each resume), regardless of backend — both
+`claude_code`'s native skill lookup and the `claw` `skill` tool
+(registered by [pkg/backend/tool/claw_builtins.go:RegisterClawSkill](pkg/backend/tool/claw_builtins.go))
+read the same directory. Each bundle therefore gets exactly the
+skills it ships, with no implicit dependency on the host
+filesystem. The collision policy (workspace wins, with marker-aware
+refresh for upgrade cases) is documented in
+[docs/bundles.md](docs/bundles.md#resource-resolution-at-run-time).
 
 Current bundles and their skills:
 - [examples/whats-next/skills/](examples/whats-next/skills/) —
-  7 skills: `whats-next` (operating playbook), `iterion-bot-catalog`,
+  8 skills: `whats-next` (operating playbook), `iterion-bot-catalog`,
   `iterion-dsl-quickref`, `iterion-board` (board capabilities
   reference for the claude_code / claw `board.*` tools),
-  `repo-survey`, `roadmap-synthesis`, `priority-elicitation`. The
-  five original iterion-domain skills were produced by a dogfood
-  run of claw + `openai/gpt-5.5` against this repo; `iterion-board`
-  was added later by the board-capabilities work — see
+  `repo-survey`, `roadmap-synthesis`, `priority-elicitation`, and
+  `session-continuity` (iterion workspace memory — `memory_read` /
+  `memory_write` / `memory_list` for the cross-run knowledge tree
+  under `~/.iterion/projects/<key>/memory/<scope>/`). Six of the
+  eight were produced by a dogfood run of claw +
+  `openai/gpt-5.5` against this repo; `iterion-board` was added by
+  the board-capabilities work and `session-continuity` by the
+  workspace-memory work — see
   [scripts/adhoc/whats-next-skills-gen.iter](scripts/adhoc/whats-next-skills-gen.iter)
   for the generator (the seed for a future formalised
   `generate-skills.bot`).
@@ -437,11 +446,13 @@ iterion validate <file.iter>            # Parse and validate workflow
 iterion run <file.iter> [flags]         # Execute workflow (--var, --recipe, --timeout, --store-dir, --merge-into, --branch-name)
 iterion inspect [--run-id] [--events]   # View run state and events
 iterion resume --run-id --file [--answers-file] [--force]  # Resume paused/failed/cancelled run
+iterion fork --run-id <parent> --node <id> [--turn N] [--rewind-code]  # Fork a run at a prior LLM turn (resume with `iterion resume`)
 iterion diagram <file.iter> [--view]    # Generate Mermaid diagram (compact|detailed|full)
-iterion studio [--port] [--dir]         # Launch visual workflow editor
+iterion studio [--port] [--dir] [--bind] [--bots-path] [--no-browser-pane]  # Launch visual workflow editor (+ kanban /board, /dispatcher dashboard, Browser pane, Launch modal)
 iterion report --run-id <id> [--store-dir] [--output]  # Generate chronological run report
 iterion dispatch <config.yaml> [--port]  # Long-running dispatcher (tracker → workflow per issue)
 iterion issue create|list|show|move|update|close|board  # Native kanban tracker
+iterion bots list [--paths <dir>] [--format json|markdown|skill]  # Discover .bot/.botz bundles (used by whats-next + dispatcher zero-config)
 iterion bench asymptote [flags]         # Asymptote benchmark (see docs/asymptote-bench.md)
 iterion bundle init|pack                # Scaffold or pack a .botz bundle (see docs/bundles.md)
 iterion sandbox doctor                  # Diagnose host sandbox prerequisites (see docs/sandbox.md)

@@ -48,20 +48,26 @@ iterion/
 │   └── iterion-desktop/ # Wails v2 desktop wrapper (proxy AssetServer over pkg/server)
 ├── pkg/
 │   ├── dsl/             # DSL pipeline
-│   │   ├── parser/      # Lexer, recursive-descent parser, diagnostics
-│   │   ├── ast/         # AST definitions and JSON marshaling
-│   │   ├── ir/          # IR compilation and validation (~40 diagnostic codes, C001–C082 sparse)
-│   │   ├── unparse/     # IR → .iter serialization
-│   │   └── types/       # Shared enums (transports, session/router modes…)
+│   │   ├── parser/         # Lexer, recursive-descent parser, diagnostics
+│   │   ├── ast/            # AST definitions and JSON marshaling
+│   │   ├── ir/             # IR compilation and validation (~60 diagnostic codes, C001–C086 sparse — incl. cursors C083–C086)
+│   │   ├── unparse/        # IR → .iter serialization
+│   │   ├── expr/           # Expression evaluator for compute nodes and quoted `when` clauses
+│   │   ├── workflowfile/   # Workflow source loading + SHA-256 hashing (drives `iterion resume` change detection)
+│   │   └── types/          # Shared enums (transports, session/router modes…)
 │   ├── backend/         # Execution stack (LLM + tools)
-│   │   ├── model/       # Executor registry, schema validation, event hooks
-│   │   ├── delegate/    # Delegation backends (claude_code, codex, claw)
-│   │   ├── tool/        # Tool registry, policies, adapters (incl. privacy_filter / privacy_unfilter)
-│   │   ├── mcp/         # MCP server lifecycle, configuration, health checks
-│   │   ├── recipe/      # Recipe handling for tool adapters and policies
-│   │   ├── cost/        # Cost estimation and budgeting
-│   │   └── llmtypes/    # LLM SDK abstraction
+│   │   ├── model/          # Executor registry, schema validation, event hooks
+│   │   ├── delegate/       # Delegation backends (claude_code, codex, claw)
+│   │   ├── tool/           # Tool registry, policies, adapters (incl. privacy_filter / privacy_unfilter)
+│   │   ├── mcp/            # MCP server lifecycle, configuration, health checks
+│   │   ├── recipe/         # Recipe handling for tool adapters and policies
+│   │   ├── cost/           # Cost estimation and budgeting
+│   │   ├── llmtypes/       # LLM SDK abstraction
+│   │   ├── detect/         # Credential auto-detection (OAuth, API keys, AWS/GCP) — feeds the studio BackendStatusPill
+│   │   └── tooldisplay/    # Human-readable rendering of tool calls for the run console / report
 │   ├── runtime/         # Workflow execution engine (scheduling, budget, recovery, worktree finalization)
+│   ├── dispatcher/      # Long-running dispatcher: actor + tracker adapters (native/github/forgejo) + native kanban store
+│   ├── bundle/          # `.botz` bundle loader (workflow + skills + recipes + prompts + attachments)
 │   ├── sandbox/         # Per-run container isolation (Docker/Podman/Kubernetes drivers + CONNECT proxy)
 │   ├── store/           # File-backed persistence (runs, events, artifacts) + Mongo/S3 in cloud mode
 │   ├── server/          # HTTP server: studio + run console + cloud REST/WS API
@@ -71,10 +77,13 @@ iterion/
 │   ├── runview/         # Editor backend: WS event broker for live run streaming
 │   ├── git/             # Editor backend: status / diff / log for the modified-files panel
 │   ├── config/          # Runtime config (env vars + YAML, Mongo/NATS/S3/Sandbox/Runner sections)
+│   ├── auth/            # Operator authentication primitives (SSO, session cookies) for cloud-mode endpoints
+│   ├── identity/        # Operator identity types shared between auth, cloud, and dispatcher
+│   ├── secrets/         # Secret resolution (env / file / KMS) shared across backends and sandbox
 │   ├── cli/             # CLI command implementations
 │   ├── benchmark/       # Metrics collection and reporting
 │   ├── log/             # Leveled logger
-│   └── internal/        # Internal utilities (e.g. appinfo)
+│   └── internal/        # Internal utilities (appinfo, mongoutil for cloud-mode Mongo store, proc helpers)
 ├── studio/              # Web UI (React/Vite/TypeScript + XYFlow)
 ├── examples/            # Reference .iter workflows + companion docs
 ├── sdks/typescript/     # @iterion/sdk — typed CLI wrapper for Node/Deno/Bun

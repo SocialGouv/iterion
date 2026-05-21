@@ -20,7 +20,7 @@
 
 1. **Parse** (`pkg/dsl/parser/`) — Indent-sensitive lexer + recursive-descent parser produces an AST
 2. **Compile** (`pkg/dsl/ir/compile.go`) — Transforms AST to IR, resolves template references, binds schemas and prompts
-3. **Validate** (`pkg/dsl/ir/validate.go`) — Static analysis with diagnostic codes spanning C001–C082 (sparse, ~40 codes today): reachability, routing correctness, cycle detection, schema validation, capability checks, and more. See [references/diagnostics.md](references/diagnostics.md) for the full table.
+3. **Validate** (`pkg/dsl/ir/validate.go`) — Static analysis with diagnostic codes spanning C001–C086 (sparse, ~60 codes today): reachability, routing correctness, cycle detection, schema validation, capability checks, cursor declarations, and more. See [references/diagnostics.md](references/diagnostics.md) for the full table.
 
 ## Runtime Engine
 

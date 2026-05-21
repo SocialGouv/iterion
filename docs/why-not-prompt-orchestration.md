@@ -31,7 +31,7 @@ The moment you want any of the properties below, prompt-orchestration starts hit
 
 ### 1. Deterministic DAG
 
-The same `.iter` file produces the same graph of nodes and edges every time. The compiler ([pkg/dsl/ir/compile.go](../pkg/dsl/ir/compile.go)) takes the AST to an IR; the validator ([pkg/dsl/ir/validate.go](../pkg/dsl/ir/validate.go)) emits diagnostic codes C001–C082 for structural problems *before* you spend a token.
+The same `.iter` file produces the same graph of nodes and edges every time. The compiler ([pkg/dsl/ir/compile.go](../pkg/dsl/ir/compile.go)) takes the AST to an IR; the validator ([pkg/dsl/ir/validate.go](../pkg/dsl/ir/validate.go)) emits diagnostic codes C001–C086 for structural problems *before* you spend a token.
 
 With a prompt orchestrator, the topology is re-decided on every run. That's a feature for exploration and a bug for reproducibility — you can't diff "what changed between run 7 and run 8" if both runs invented their own plan.
 

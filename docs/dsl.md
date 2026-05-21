@@ -318,7 +318,7 @@ workflow safe_pr_fix:
 
 - [`grammar/iterion_v1.ebnf`](grammar/iterion_v1.ebnf) — formal EBNF grammar
 - [`references/dsl-grammar.md`](references/dsl-grammar.md) — readable grammar reference
-- [`references/diagnostics.md`](references/diagnostics.md) — all validation diagnostic codes (C001–C082, sparse)
+- [`references/diagnostics.md`](references/diagnostics.md) — all validation diagnostic codes (C001–C086, sparse)
 - [`references/patterns.md`](references/patterns.md) — 10 reusable workflow patterns
 - [`attachments.md`](attachments.md) — attachment handling
 - [`workflow_authoring_pitfalls.md`](workflow_authoring_pitfalls.md) — required reading before authoring workflows that commit code

@@ -18,7 +18,7 @@ npx skills add https://github.com/SocialGouv/iterion --skill iterion-dsl
 | [`SKILL-run-and-refine.md`](../SKILL-run-and-refine.md) | Practice guide for running, debugging and iteratively refining `.iter` workflows against real data |
 | [`references/dsl-grammar.md`](references/dsl-grammar.md) | Formal grammar specification (EBNF) |
 | [`references/patterns.md`](references/patterns.md) | 10 reusable workflow patterns with annotated snippets |
-| [`references/diagnostics.md`](references/diagnostics.md) | All validation diagnostic codes (C001–C082, sparse) with causes and fixes |
+| [`references/diagnostics.md`](references/diagnostics.md) | All validation diagnostic codes (C001–C086, sparse) with causes and fixes |
 | [`.archive/examples/skill/`](../.archive/examples/skill/) | 4 minimal, self-contained workflow examples (`.iter`) — archived didactic primitives |
 
 ## Usage

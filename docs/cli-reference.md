@@ -23,7 +23,7 @@ Parse, compile, and validate a workflow without running it:
 iterion validate workflow.iter
 ```
 
-Reports errors and warnings with diagnostic codes (C001–C082, sparse — see [references/diagnostics.md](references/diagnostics.md) for the authoritative list), file positions, and descriptions.
+Reports errors and warnings with diagnostic codes (C001–C086, sparse — see [references/diagnostics.md](references/diagnostics.md) for the authoritative list), file positions, and descriptions.
 
 ## `iterion run`
 

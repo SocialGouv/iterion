@@ -37,7 +37,7 @@ Welcome to the Iterion docs. Pages are organised by audience and topic.
 | [workflow_authoring_pitfalls.md](workflow_authoring_pitfalls.md) | **Required reading before authoring workflows that commit code.** Goodhart's law, façade patterns, prompt + judge anti-patterns. |
 | [references/dsl-grammar.md](references/dsl-grammar.md) | Readable grammar reference. |
 | [references/patterns.md](references/patterns.md) | 10 reusable workflow patterns with annotated snippets. |
-| [references/diagnostics.md](references/diagnostics.md) | All validation diagnostic codes (C001–C082, sparse). |
+| [references/diagnostics.md](references/diagnostics.md) | All validation diagnostic codes (C001–C086, sparse). |
 | [grammar/iterion_v1.ebnf](grammar/iterion_v1.ebnf) | Formal EBNF grammar. |
 
 ## Running and operating
