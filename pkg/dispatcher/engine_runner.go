@@ -112,10 +112,18 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	if spec.StoreDir == "" {
 		return fmt.Errorf("engine runner: spec.StoreDir is required")
 	}
-	s, err := store.New(spec.StoreDir, store.WithLogger(r.logger))
+	baseStore, err := store.New(spec.StoreDir, store.WithLogger(r.logger))
 	if err != nil {
 		return fmt.Errorf("engine runner: open store: %w", err)
 	}
+	// Wrap so spec.OnEvent fires on EVERY AppendEvent — high-frequency
+	// tool_started/tool_called events emitted by the backend hooks
+	// (pkg/backend/model/hooks.go) write straight to the store and
+	// would otherwise skip the runtime engine's WithEventObserver hook.
+	// The dispatcher's stall heartbeat depends on these events; the
+	// 2026-05-21 dogfood saw runs cancelled at the 10min mark because
+	// only ~5 engine-level events ever made it to OnEvent.
+	s := newHeartbeatStore(baseStore, spec.OnEvent)
 
 	// Tee the dispatcher's main logger to a per-run run.log file
 	// alongside events.jsonl. Without this, the studio's run-log

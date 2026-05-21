@@ -142,7 +142,18 @@ func (c *Dispatcher) reconcileStalled(ctx context.Context, cfg *Config) {
 	for _, row := range rows {
 		id, r := row.id, row.r
 		if r.CancelIssuedAt.IsZero() {
-			c.logger.Warn("dispatcher: %s stalled (no event for %s) — cancelling", r.Identifier, now.Sub(r.LastEventAt))
+			atomicLag := now.Sub(r.lastEventTime())
+			actorLag := now.Sub(r.LastEventAt)
+			c.logger.Warn("dispatcher: %s stalled (atomic_lag=%s actor_lag=%s timeout=%s) — cancelling", r.Identifier, atomicLag, actorLag, timeout)
+			// Diagnostic: append to /tmp so 2026-05-21 hangs can be
+			// post-mortem'd from outside the studio tty. Remove once
+			// the heartbeat fix is confirmed working.
+			if f, ferr := os.OpenFile("/tmp/iterion-stall-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); ferr == nil {
+				fmt.Fprintf(f, "%s identifier=%s atomic_lag=%s actor_lag=%s timeout=%s last_event_atomic_nano=%d last_event_at=%s now=%s\n",
+					now.Format(time.RFC3339Nano), r.Identifier, atomicLag, actorLag, timeout,
+					r.lastEventAtomicNano.Load(), r.LastEventAt.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+				_ = f.Close()
+			}
 			if r.Cancel != nil {
 				r.Cancel()
 			}
