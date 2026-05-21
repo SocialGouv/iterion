@@ -395,9 +395,15 @@ func (s *Session) handleHookCallback(ctx context.Context, req controlRequest) {
 		return
 	}
 
-	// Build hook-specific output.
+	// Build hook-specific output. We only emit hookSpecificOutput when
+	// at least one variant-discriminating field is populated — claude-code
+	// CLI Zod-validates the inner object against a discriminated union
+	// keyed on hookEventName, and a bare {hookEventName: X} (no other
+	// fields) matches no variant and produces an "Invalid input" stderr
+	// spam on every tool call from no-op hooks (e.g. our PostToolUse
+	// inbox drainer that returns HookOutput{} when no operator messages
+	// are queued).
 	hookSpecific := make(map[string]any)
-	hookSpecific["hookEventName"] = input.HookEventName
 	if output.Decision != "" {
 		hookSpecific["permissionDecision"] = output.Decision
 	}
@@ -411,8 +417,10 @@ func (s *Session) handleHookCallback(ctx context.Context, req controlRequest) {
 		hookSpecific["additionalContext"] = output.AdditionalContext
 	}
 
-	resp := map[string]any{
-		"hookSpecificOutput": hookSpecific,
+	resp := map[string]any{}
+	if len(hookSpecific) > 0 {
+		hookSpecific["hookEventName"] = input.HookEventName
+		resp["hookSpecificOutput"] = hookSpecific
 	}
 	if output.SystemMessage != "" {
 		resp["systemMessage"] = output.SystemMessage
