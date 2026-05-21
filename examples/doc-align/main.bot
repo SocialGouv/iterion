@@ -348,7 +348,7 @@ prompt review_user_claude:
                   error. Raise a blocker with `is_code_bug:true`;
                   the fixer will escalate via ask_user.
 
-  Spot-check budget: you have `tool_max_steps: 5`. Use it on
+  Spot-check budget: you have `tool_max_steps: 10`. Use it on
   the highest-stakes candidates (drifted CLI surface, drifted
   diagnostic codes) — read the cited doc line + grep the live
   code to confirm before voting `dismiss`. Trust the manifest
@@ -444,7 +444,7 @@ prompt review_user_gpt:
     C. code_bug — doc correct, code wrong/removed in error;
                   raise blocker with `is_code_bug:true`
 
-  Spot-check budget: `tool_max_steps: 5`. Use it on the
+  Spot-check budget: `tool_max_steps: 10`. Use it on the
   highest-stakes candidates (drifted CLI surface, drifted
   diagnostic codes). Trust the manifest for the bulk; spot-
   check the edges.
@@ -1312,7 +1312,7 @@ judge reviewer_claude:
   ## v0.15.0: tool_max_steps cap aligns reviewer_claude with the
   ## manifest pattern — the bounded drift_candidates list is in
   ## the prompt; spot-checks only.
-  tool_max_steps: 5
+  tool_max_steps: 10
   interaction: human
 
 judge reviewer_gpt:
@@ -1335,12 +1335,14 @@ judge reviewer_gpt:
   ## drift_candidates list is in the prompt. Spot-checks only.
   session: fresh
   ## claw builtin tools — read-only set, the reviewer NEVER writes.
-  ## tool_max_steps dropped 20 → 5 (v0.15.0). Enumeration moved to
-  ## the manifest tool; reviewer uses the budget for verifying
-  ## the highest-stakes drifted CLI surface / diagnostic codes
-  ## before voting dismiss.
+  ## tool_max_steps dropped 20 → 10 (v0.15.0). Enumeration moved
+  ## to the manifest tool; the budget covers spot-checks of the
+  ## highest-stakes drifted CLI surface / diagnostic codes plus
+  ## the final structured-output turn. 5 was too tight — the
+  ## CLI counts each tool call as a turn and exhausted the budget
+  ## before claude could emit JSON (error_max_turns observed).
   tools: [bash, read_file, glob, grep]
-  tool_max_steps: 5
+  tool_max_steps: 10
   interaction: human
 
 ## Deterministic streak detector + coverage gate.
