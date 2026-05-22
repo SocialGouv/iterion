@@ -112,7 +112,36 @@ func NewManager(opts ManagerOptions) (*Manager, error) {
 	if m.cfg != nil && len(m.cfg.Bots.Paths) == 0 {
 		m.cfg.Bots.Paths = append([]string(nil), m.defaultBotsPaths...)
 	}
+	// Sweep stale claims left over from a dead local PID at server
+	// boot, before any operator has clicked Start on the dispatcher.
+	// Without this, /board would show "claimed by rog-<dead-pid>"
+	// labels for the entire window between backend restart and the
+	// operator manually starting the dispatcher (ticket 7221c7be).
+	m.sweepStaleLocalClaimsAtBoot()
 	return m, nil
+}
+
+// sweepStaleLocalClaimsAtBoot runs Adapter.SweepStaleClaims directly
+// against the native store so the board is clean from the first
+// /api/native/issues request, regardless of whether the dispatcher
+// has been started yet. Best-effort: any error is logged at warn.
+// Same isStale predicate as the dispatcher's start-time sweep.
+func (m *Manager) sweepStaleLocalClaimsAtBoot() {
+	adapter := native.NewAdapter(m.nativeStore)
+	host, _ := osHostname()
+	if host == "" {
+		host = "dispatcher"
+	}
+	cleared, err := adapter.SweepStaleClaims(func(marker string) bool {
+		return isStaleLocalMarker(marker, host)
+	})
+	if err != nil {
+		m.logger.Warn("manager: boot-time stale-claim sweep failed: %v", err)
+		return
+	}
+	if len(cleared) > 0 {
+		m.logger.Info("manager: released %d stale claim(s) at boot from dead local PIDs: %v", len(cleared), cleared)
+	}
 }
 
 // ManagerStatus is the snapshot the SPA reads via GET /status.
