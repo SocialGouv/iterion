@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
@@ -276,12 +277,7 @@ func (s *Service) PerformMergeCtx(ctx context.Context, runID string, req MergeRe
 	if r.MergeStatus == store.MergeStatusMerged {
 		return nil, fmt.Errorf("run %q is already merged into %q at %s", runID, r.MergedInto, r.MergedCommit)
 	}
-	repoRoot := r.RepoRoot
-	if repoRoot == "" {
-		// Mid-vintage runs may lack RepoRoot; fall back through the
-		// same chain runs_files.go uses.
-		repoRoot = gitlib.FindRepoRoot(r.WorkDir)
-	}
+	repoRoot := mergeRepoRoot(r)
 	if repoRoot == "" {
 		return nil, fmt.Errorf("run %q has no resolvable repo root", runID)
 	}
@@ -444,11 +440,11 @@ func (s *Service) ResolveMergeConflictFile(ctx context.Context, runID, path, con
 	if repoRoot == "" {
 		return fmt.Errorf("run %q has no resolvable repo root", runID)
 	}
-	det, err := runtime.ParseConflicts(repoRoot)
+	paths, err := runtime.UnmergedPaths(repoRoot)
 	if err != nil {
-		return fmt.Errorf("parse conflicts: %w", err)
+		return fmt.Errorf("list unmerged: %w", err)
 	}
-	if !pathInConflictSet(path, det.Files) {
+	if !slices.Contains(paths, path) {
 		return fmt.Errorf("path %q is not in the conflict set", path)
 	}
 	return runtime.StageResolvedFile(repoRoot, path, content)
@@ -473,16 +469,12 @@ func (s *Service) FinalizeMergeAfterConflict(ctx context.Context, runID, message
 	if repoRoot == "" {
 		return nil, fmt.Errorf("run %q has no resolvable repo root", runID)
 	}
-	det, err := runtime.ParseConflicts(repoRoot)
+	remaining, err := runtime.UnmergedPaths(repoRoot)
 	if err != nil {
-		return nil, fmt.Errorf("parse conflicts: %w", err)
+		return nil, fmt.Errorf("list unmerged: %w", err)
 	}
-	if len(det.Files) > 0 {
-		paths := make([]string, len(det.Files))
-		for i, f := range det.Files {
-			paths[i] = f.Path
-		}
-		return nil, fmt.Errorf("still unresolved: %v", paths)
+	if len(remaining) > 0 {
+		return nil, fmt.Errorf("still unresolved: %v", remaining)
 	}
 	message := messageOverride
 	if message == "" {
@@ -556,18 +548,6 @@ func mergeRepoRoot(r *store.Run) string {
 		return r.RepoRoot
 	}
 	return gitlib.FindRepoRoot(r.WorkDir)
-}
-
-// pathInConflictSet returns true when path matches one of the
-// conflicted files. Exact match — paths are normalized by git so we
-// don't need case-folding.
-func pathInConflictSet(path string, files []runtime.ConflictFile) bool {
-	for _, f := range files {
-		if f.Path == path {
-			return true
-		}
-	}
-	return false
 }
 
 // ResolveAllConflictsWithAgent invokes the merge-conflict resolver

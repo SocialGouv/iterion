@@ -96,6 +96,38 @@ func (e *MergeConflictError) Error() string {
 	return fmt.Sprintf("merge conflict in %d files", len(e.Files))
 }
 
+// conflictMarkerPrefixes is the canonical set of git-emitted conflict
+// marker prefixes the parser AND every caller scanning content for
+// "is this still conflicted" must agree on. Exported via
+// HasConflictMarkers so the agent-resolver pre-flight, the parser,
+// and any future caller stay in lock-step if a fifth style is ever
+// introduced.
+var conflictMarkerPrefixes = [...]string{"<<<<<<<", "=======", ">>>>>>>", "|||||||"}
+
+// HasConflictMarkers returns true when content still contains a
+// `<<<<<<<` / `=======` / `>>>>>>>` / `|||||||` marker. Shares the
+// prefix list with the parser so the two never drift.
+func HasConflictMarkers(content string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		for _, p := range conflictMarkerPrefixes {
+			if strings.HasPrefix(line, p) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// UnmergedPaths returns the repo-root-relative paths git considers
+// unmerged. Cheaper than ParseConflicts when callers only need
+// membership testing — no per-file content reads, no marker parsing.
+func UnmergedPaths(repoRoot string) ([]string, error) {
+	if repoRoot == "" {
+		return nil, fmt.Errorf("repo root required")
+	}
+	return unmergedPaths(repoRoot)
+}
+
 // unmergedPaths returns the repo-root-relative paths git considers
 // unmerged (any stage 1/2/3 entry from `git ls-files -u`). Returns nil
 // + nil when the merge cleanly completed (no conflicts). Returns nil +
@@ -257,9 +289,9 @@ func splitLinesPreserve(content string) []string {
 
 // StageResolvedFile writes content to <repoRoot>/<path> (overwriting
 // the conflicted version) and runs `git add` to mark it resolved in
-// the merge index. The path is resolved through filepath.Join so it
-// must NOT contain `..` components — caller is expected to have
-// validated that path equals one of ParseConflicts' returned Files.
+// the merge index. Rejects `..` traversal defensively — this is the
+// lowest layer that touches the filesystem, so the guard belongs
+// here even if every current caller already validates upstream.
 func StageResolvedFile(repoRoot, path, content string) error {
 	if repoRoot == "" {
 		return fmt.Errorf("repo root required")
@@ -267,10 +299,6 @@ func StageResolvedFile(repoRoot, path, content string) error {
 	if path == "" {
 		return fmt.Errorf("path required")
 	}
-	// Reject path traversal defensively — the HTTP layer already
-	// gates on the path coming from a ParseConflicts result, but a
-	// double check here keeps this function safe to call from any
-	// future code path.
 	if strings.Contains(path, "..") {
 		return fmt.Errorf("path traversal in %q", path)
 	}

@@ -3,7 +3,6 @@ package server
 import (
 	"net/http"
 
-	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -78,16 +77,6 @@ func (s *Server) handleMergeRun(w http.ResponseWriter, r *http.Request) {
 // Conflict-resolution endpoints
 // ---------------------------------------------------------------------------
 
-// mergeConflictsResponse is the wire shape returned by GET
-// /api/runs/{id}/merge/conflicts. It mirrors
-// runview.MergeConflictsResponse but is duplicated here so the API
-// version is stable when we evolve the service-internal type.
-type mergeConflictsResponse struct {
-	Files            []runtime.ConflictFile `json:"files"`
-	PendingMessage   string                 `json:"pending_message,omitempty"`
-	PendingMergeInto string                 `json:"pending_merge_into,omitempty"`
-}
-
 // handleGetMergeConflicts returns the structured conflict state for a
 // run whose squash merge hit content conflicts. 404 when the run
 // isn't conflicted (the studio shouldn't be calling here unless
@@ -106,11 +95,7 @@ func (s *Server) handleGetMergeConflicts(w http.ResponseWriter, r *http.Request)
 		s.httpErrorFor(w, r, http.StatusNotFound, "conflicts: %v", err)
 		return
 	}
-	s.writeJSONFor(w, r, mergeConflictsResponse{
-		Files:            res.Files,
-		PendingMessage:   res.PendingMessage,
-		PendingMergeInto: res.PendingMergeInto,
-	})
+	s.writeJSONFor(w, r, res)
 }
 
 // resolveMergeConflictRequest carries one file's resolved content. The
@@ -158,11 +143,7 @@ func (s *Server) handleResolveMergeConflict(w http.ResponseWriter, r *http.Reque
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "refresh: %v", err)
 		return
 	}
-	s.writeJSONFor(w, r, mergeConflictsResponse{
-		Files:            res.Files,
-		PendingMessage:   res.PendingMessage,
-		PendingMergeInto: res.PendingMergeInto,
-	})
+	s.writeJSONFor(w, r, res)
 }
 
 // resolveConflictWithAgentRequest is the body of the "resolve all
@@ -174,10 +155,10 @@ type resolveConflictWithAgentRequest struct {
 	Model string `json:"model,omitempty"`
 }
 
-// handleResolveConflictWithAgent is the LLM-driven shortcut. The
-// initial implementation returns 501 — the bot is wired in a
-// follow-up. Surfacing the endpoint now lets the studio render the
-// button and route to a meaningful error rather than a 404.
+// handleResolveConflictWithAgent runs the LLM resolver against every
+// conflicted file and returns the refreshed snapshot. 500 when no
+// LLM credential is reachable — the studio surfaces the error
+// verbatim so the operator knows to sign in.
 func (s *Server) handleResolveConflictWithAgent(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSafeOrigin(w, r) {
 		return
@@ -197,11 +178,7 @@ func (s *Server) handleResolveConflictWithAgent(w http.ResponseWriter, r *http.R
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "agent resolve: %v", err)
 		return
 	}
-	s.writeJSONFor(w, r, mergeConflictsResponse{
-		Files:            res.Files,
-		PendingMessage:   res.PendingMessage,
-		PendingMergeInto: res.PendingMergeInto,
-	})
+	s.writeJSONFor(w, r, res)
 }
 
 // finalizeMergeConflictRequest accepts an optional message override

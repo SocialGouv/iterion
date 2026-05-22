@@ -24,9 +24,6 @@ import (
 //  4. ResolveMergeConflictFile rejects an out-of-set path and
 //     accepts the real one.
 //  5. FinalizeMergeAfterConflict commits, flips status to merged.
-//
-// This is the regression test for the whole feature — if anything
-// breaks in the parsing, persistence, or commit chain, this fails.
 func TestPerformMerge_ConflictPath(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")

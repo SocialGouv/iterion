@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
@@ -137,12 +138,16 @@ func (s *Service) resolveAllConflictsWithAgent(ctx context.Context, runID, model
 	// conflict set (skip them silently) but require at least one
 	// staged file — otherwise the operator clicked the button and
 	// nothing happened, which is worse than a clear error.
+	conflictPaths := make([]string, len(det.Files))
+	for i, f := range det.Files {
+		conflictPaths[i] = f.Path
+	}
 	staged := 0
 	for _, f := range res.Object.Files {
-		if !pathInConflictSet(f.Path, det.Files) {
+		if !slices.Contains(conflictPaths, f.Path) {
 			continue
 		}
-		if hasUnresolvedMarkers(f.Content) {
+		if runtime.HasConflictMarkers(f.Content) {
 			// Agent missed a marker — refuse rather than stage a
 			// file that still won't compile.
 			return nil, fmt.Errorf("agent left conflict markers in %q; resolve manually", f.Path)
@@ -168,13 +173,6 @@ func (s *Service) resolveAllConflictsWithAgent(ctx context.Context, runID, model
 	}, nil
 }
 
-// init wires the production implementation into the service-control
-// stub. service_control.go declares the dispatchable variable so the
-// runtime can pick which implementation to use; this file overrides
-// it with the real one on package init.
-//
-// Tests that want to keep the stub behaviour can re-assign
-// resolveAllConflictsWithAgentImpl back to nil before running.
 func init() {
 	resolveAllConflictsWithAgentImpl = func(ctx context.Context, s *Service, runID, modelSpec string) (*MergeConflictsResponse, error) {
 		return s.resolveAllConflictsWithAgent(ctx, runID, modelSpec)
@@ -212,22 +210,6 @@ func providerlessModel(spec string) string {
 		return spec[i+1:]
 	}
 	return spec
-}
-
-// hasUnresolvedMarkers is the parser-agnostic check the runview side
-// runs before staging — same intent as the studio's hasConflictMarkers
-// but kept Go-side so the validation is enforced even when the LLM
-// has been called via the API.
-func hasUnresolvedMarkers(content string) bool {
-	for _, line := range strings.Split(content, "\n") {
-		if strings.HasPrefix(line, "<<<<<<<") ||
-			strings.HasPrefix(line, "=======") ||
-			strings.HasPrefix(line, ">>>>>>>") ||
-			strings.HasPrefix(line, "|||||||") {
-			return true
-		}
-	}
-	return false
 }
 
 // buildResolverPrompt assembles the user-message body for the

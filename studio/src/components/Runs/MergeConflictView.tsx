@@ -36,23 +36,20 @@ export default function MergeConflictView({
   onMergeComplete,
 }: MergeConflictViewProps) {
   const [snapshot, setSnapshot] = useState<MergeConflictsResponse | null>(null);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Per-file local content the operator is editing. Keys are file
   // paths; values are the working text the next "Resolve" submission
-  // will send. Reset on refresh to whatever the server returns.
+  // will send. Preserved across background refreshes so a 50-line
+  // edit isn't blown away when another file resolves elsewhere.
   const [working, setWorking] = useState<Record<string, string>>({});
-  // Per-file collapsed flag — by default all expand so the operator
-  // sees the full scope.
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [busyFile, setBusyFile] = useState<string | null>(null);
   const [busyGlobal, setBusyGlobal] = useState<null | "agent" | "finalize" | "abort">(
     null,
   );
-  const [overrideMessage, setOverrideMessage] = useState<string | null>(null);
+  const [finalizeMessage, setFinalizeMessage] = useState("");
 
   const refresh = useCallback(async () => {
-    setLoading(true);
     setError(null);
     try {
       const next = await getMergeConflicts(runId);
@@ -60,29 +57,24 @@ export default function MergeConflictView({
       setWorking((prev) => {
         const merged: Record<string, string> = {};
         for (const f of next.files) {
-          // Preserve in-flight edits when the server still lists the
-          // file; otherwise reset to fresh content. The user might
-          // have typed 50 lines into a textarea — a background
-          // refresh shouldn't blow that away.
           merged[f.path] = prev[f.path] ?? f.content;
         }
         return merged;
       });
+      setFinalizeMessage((current) =>
+        current || next.pending_message || defaultMessage || "",
+      );
     } catch (e) {
       setError((e as Error).message);
-    } finally {
-      setLoading(false);
     }
-  }, [runId]);
+  }, [runId, defaultMessage]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
   const remaining = snapshot?.files ?? [];
-  const allResolved = !loading && remaining.length === 0;
-  const finalizeMessage =
-    overrideMessage ?? snapshot?.pending_message ?? defaultMessage ?? "";
+  const allResolved = snapshot !== null && remaining.length === 0;
 
   const onResolveFile = async (path: string) => {
     const content = working[path];
@@ -161,7 +153,7 @@ export default function MergeConflictView({
     }
   };
 
-  if (loading && !snapshot) {
+  if (snapshot === null && error === null) {
     return (
       <div className="shrink-0 border-t border-border-default px-3 py-3 text-[11px] text-fg-subtle bg-warning-soft">
         <Spinner /> Loading conflicts…
@@ -257,7 +249,7 @@ export default function MergeConflictView({
           <Textarea
             rows={3}
             value={finalizeMessage}
-            onChange={(e) => setOverrideMessage(e.target.value)}
+            onChange={(e) => setFinalizeMessage(e.target.value)}
             disabled={busyGlobal !== null}
             className="text-[11px] font-mono"
           />
@@ -365,7 +357,7 @@ function ConflictFileCard({
             />
           ))}
           <Textarea
-            rows={Math.min(20, Math.max(6, content.split("\n").length))}
+            rows={textareaRows(content)}
             value={content}
             onChange={(e) => onContentChange(e.target.value)}
             className="font-mono text-[11px]"
@@ -391,9 +383,6 @@ interface HunkPanelProps {
   onPickBoth: () => void;
 }
 
-// HunkPanel is the side-by-side ours/theirs preview with the quick
-// action strip. Base lines (diff3 mode) are shown collapsed by
-// default beneath the ours pane.
 function HunkPanel({
   index,
   hunk,
@@ -401,6 +390,8 @@ function HunkPanel({
   onPickTheirs,
   onPickBoth,
 }: HunkPanelProps) {
+  const oursLabel = `Ours (${hunk.ours_label || "HEAD"})`;
+  const theirsLabel = `Incoming (${hunk.theirs_label || "branch"})`;
   return (
     <div className="rounded border border-border-default bg-surface-0">
       <div className="flex items-center gap-1 border-b border-border-default px-2 py-1">
@@ -420,11 +411,8 @@ function HunkPanel({
         </div>
       </div>
       <div className="grid grid-cols-2 gap-px bg-border-default text-[10px]">
-        <HunkPane label={`Ours (${hunk.ours_label || "HEAD"})`} lines={hunk.ours_lines} />
-        <HunkPane
-          label={`Incoming (${hunk.theirs_label || "branch"})`}
-          lines={hunk.theirs_lines}
-        />
+        <HunkPane label={oursLabel} lines={hunk.ours_lines} />
+        <HunkPane label={theirsLabel} lines={hunk.theirs_lines} />
       </div>
       {hunk.base_lines && hunk.base_lines.length > 0 && (
         <div className="border-t border-border-default text-[10px]">
@@ -461,6 +449,21 @@ function HunkPane({
 // so the operator can't stage a file that obviously isn't done.
 function hasConflictMarkers(content: string): boolean {
   return /^(<{7}|={7}|>{7}|\|{7})/m.test(content);
+}
+
+// textareaRows returns a row count between 6 and 20, derived from
+// the newline count in content. Early-exits at 20 so it stays cheap
+// on large files (`content.split("\n")` would allocate the full
+// array on every render).
+function textareaRows(content: string): number {
+  let n = 1;
+  for (let i = 0; i < content.length; i++) {
+    if (content.charCodeAt(i) === 10) {
+      n++;
+      if (n >= 20) return 20;
+    }
+  }
+  return n < 6 ? 6 : n;
 }
 
 // applyHunk produces a new content string with the named hunk

@@ -11,15 +11,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // TestMergeConflict_FullChain drives the entire conflict-resolver
 // HTTP surface against the real server: trigger conflict → fetch
-// conflict snapshot → resolve a file → finalize. End-to-end coverage
-// for the four new endpoints plus the upgrade of the existing /merge
-// endpoint to persist MergeStatusConflicted.
+// conflict snapshot → resolve a file → finalize.
 func TestMergeConflict_FullChain(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
@@ -52,7 +50,7 @@ func TestMergeConflict_FullChain(t *testing.T) {
 	if getResp.StatusCode != 200 {
 		t.Fatalf("GET /merge/conflicts status=%d", getResp.StatusCode)
 	}
-	var conflicts mergeConflictsResponse
+	var conflicts runview.MergeConflictsResponse
 	decodeJSON(t, getResp, &conflicts)
 	if len(conflicts.Files) != 1 {
 		t.Fatalf("conflicts.files=%d, want 1", len(conflicts.Files))
@@ -81,7 +79,7 @@ func TestMergeConflict_FullChain(t *testing.T) {
 	if okResp.StatusCode != 200 {
 		t.Fatalf("resolve status=%d", okResp.StatusCode)
 	}
-	var afterResolve mergeConflictsResponse
+	var afterResolve runview.MergeConflictsResponse
 	decodeJSON(t, okResp, &afterResolve)
 	if len(afterResolve.Files) != 0 {
 		t.Errorf("post-resolve files=%d, want 0", len(afterResolve.Files))
@@ -316,7 +314,3 @@ func readBody(t *testing.T, resp *http.Response) string {
 	}
 	return b.String()
 }
-
-// Suppress unused-import warning when the runtime package is only
-// referenced by the helpers in the *_test.go file above.
-var _ = runtime.ParseConflicts
