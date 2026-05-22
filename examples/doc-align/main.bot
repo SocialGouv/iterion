@@ -1515,11 +1515,34 @@ tool commit_changes:
 ## `iterion issue move --store-dir` expects (the root that contains
 ## the `dispatcher/` subtree).
 ##
-## `|| true` keeps the workflow on the happy path even if the
-## tracker transition fails — the commit has already landed; we
-## don't want a state-machine hiccup to mark the run failed.
+## v0.15.7: route through the dispatcher's HTTP API instead of
+## the iterion CLI subprocess. The native store's in-memory index
+## (pkg/dispatcher/native/store.go:s.index) is NOT invalidated
+## when an external process writes the issue file — the dispatcher
+## daemon's cached state survives the CLI's disk update and gets
+## flushed back on the next Claim/Release, clobbering the move.
+## Observed on the 2026-05-22 v0.15.6 dogfood (run 019e4e55):
+## bot moved issue ready→review at 06:23:15, dispatcher's next
+## Claim at 06:23:27 overwrote it back to ready without emitting
+## an issue_state_changed event. The HTTP API path goes through
+## the daemon's own Store instance, so the cache stays coherent.
+##
+## Port hardcoded to 4891 (the iterion studio default). If the
+## studio is bound to a different port, override
+## ITERION_DISPATCHER_PORT in the dispatcher's environment and
+## tweak this command. Future iterion fix: expose dispatcher.port
+## or dispatcher.url as a template var so this isn't hardcoded.
+##
+## ITERION_ISSUE_IDENTIFIER env var (set by the dispatcher per
+## pkg/dispatcher/loop.go:450) carries the short issue id without
+## the "native:" scheme prefix, which is exactly what the HTTP
+## path needs: /api/v1/native/issues/{short-id}/transition.
+##
+## `|| true` keeps the workflow on the happy path if curl fails
+## (network blip, daemon restart, etc.) — the commit has already
+## landed.
 tool mark_issue_for_review:
-  command: `if [ -n "{{vars.issue_id}}" ]; then STORE=$(cd "{{vars.workspace_dir}}/../../.." && pwd) && iterion issue move "{{vars.issue_id}}" --to review --store-dir "$STORE" --json || true; else echo '{"skipped":"no issue_id"}'; fi`
+  command: `if [ -n {{vars.issue_id}} ]; then ID={{vars.issue_id}}; ID_SHORT=${ID#native:}; PORT=${ITERION_DISPATCHER_PORT:-4891}; curl -sS -X POST -H "Content-Type: application/json" -d '{"to":"review"}' "http://localhost:${PORT}/api/v1/native/issues/${ID_SHORT}/transition" 2>&1 | head -c 1000 || true; else echo '{"skipped":"no issue_id"}'; fi`
   output: mark_issue_output
 
 ## enforce_fix_scope (v0.11.0): mechanical revert of any fix-stage
