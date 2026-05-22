@@ -391,6 +391,7 @@ func (c *Dispatcher) shutdown() {
 	// Start until the operator manually clears them. Release each
 	// claim eagerly here (best-effort, detached ctx with a short
 	// budget — same pattern as finishRun's release path).
+	currentTarget := c.cfg.Load().Agent.RunningState
 	for _, r := range c.state.running {
 		if r.Cancel != nil {
 			r.Cancel()
@@ -401,6 +402,12 @@ func (c *Dispatcher) shutdown() {
 			!errors.Is(err, tracker.ErrClaimConflict) {
 			c.logger.Warn("dispatcher: shutdown release %s: %v", r.Identifier, err)
 		}
+		// Revert the in-progress transition (best-effort) so tickets
+		// snap back to their source state for the next daemon start.
+		// Without this, an operator-triggered Ctrl+C would leave every
+		// in-flight ticket in `in_progress`, hidden from the next
+		// daemon's eligible candidate list until manually dragged back.
+		c.revertTransition(relCtx, r.IssueID, r.Identifier, r.TransitionedFromState, currentTarget)
 		relCancel()
 	}
 	for _, e := range c.state.retries {

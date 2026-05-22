@@ -132,6 +132,47 @@ per-state** (`agent.max_concurrent_by_state`). A workflow state in
 the per-state map cannot exceed its individual cap even when the
 global cap has room.
 
+### In-progress transition (`agent.running_state`)
+
+After `tracker.Claim` succeeds, the dispatcher transitions the issue
+to `agent.running_state` (default `in_progress`) so the kanban shows
+which tickets are being worked on right now. Behaviour:
+
+| Event                                  | Action                                              |
+|----------------------------------------|-----------------------------------------------------|
+| Claim succeeds, source ≠ target        | `UpdateState(id, running_state)`, record source     |
+| Claim succeeds, source == target       | No-op (idempotent)                                  |
+| Claim succeeds, transition rejected    | Log warn, continue (the claim is already taken)     |
+| `running_state: none` (or YAML empty)  | Transition disabled — issues stay in their source   |
+| Workspace create / runID mint fails    | Revert state, release claim                         |
+| Run cancelled (`context.Canceled`)     | Revert state, release claim, keep workspace         |
+| Run failed (non-cancel)                | Revert state, release claim, schedule retry         |
+| Run finished cleanly (`err == nil`)    | **No revert.** The workflow has either moved the   |
+|                                        | state itself (e.g. doc-align → `review`) or the     |
+|                                        | operator wants to inspect it in `running_state`.    |
+| Daemon shutdown (Ctrl+C, SIGTERM)      | Revert each in-flight ticket's transition           |
+
+Every revert is **best-effort** and protected by a `RefreshStates`
+safety check: the dispatcher only flips the state back when the issue
+is still in `running_state`. If the workflow already moved it forward
+(e.g. doc-align → `review`) or the operator dragged the card on the
+kanban mid-run, the revert is skipped so the operator's action isn't
+clobbered.
+
+To disable the transition (e.g. boards without an `in_progress`
+column), set `agent.running_state: none`:
+
+```yaml
+agent:
+  max_concurrent: 2
+  running_state: none   # keep claimed issues in their source state
+```
+
+External trackers (GitHub, Forgejo) map the abstract state to labels;
+if the YAML's `state_mapping` doesn't declare `in_progress`,
+`UpdateState` returns `ErrTransitionRejected` and the dispatcher
+logs + continues without aborting the dispatch.
+
 ## Polling tick
 
 Each tick (`polling.interval_ms`, default 30s):
@@ -405,6 +446,7 @@ The dispatcher watches `iterion.dispatcher.yaml` via fsnotify with a
 |------------------------------------------------|--------------------------------------|
 | `polling.interval_ms`                          | new tick cadence next loop           |
 | `agent.max_concurrent[_by_state]`              | applied next dispatch decision       |
+| `agent.running_state`                          | applied next dispatch + revert       |
 | `agent.max_retry_backoff_ms`                   | applied next retry calc              |
 | `hooks.*`                                      | applied next dispatch                |
 | `dispatch.vars`, `dispatch.attachments`        | applied next dispatch                |

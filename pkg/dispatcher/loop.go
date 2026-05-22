@@ -247,9 +247,30 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 		return
 	}
 
+	// In-progress transition: best-effort move out of the issue's
+	// source state (typically "ready") into cfg.Agent.RunningState
+	// (typically "in_progress") so the kanban surfaces in-flight work.
+	// Skipped when running_state is disabled or the issue is already in
+	// the target state. Failures don't abort dispatch — the claim is
+	// already taken and a stuck UpdateState shouldn't strand the work.
+	// transitionedFrom records the source state IFF the move
+	// succeeded; the rollback paths and finishRun read it to revert.
+	var transitionedFrom string
+	if target := cfg.Agent.RunningState; target != "" && iss.WorkflowState != target {
+		if err := c.tracker.UpdateState(ctx, iss.ID, target); err != nil {
+			if !errors.Is(err, tracker.ErrTransitionRejected) && !errors.Is(err, tracker.ErrNotSupported) {
+				c.logger.Warn("dispatcher: in-progress transition %s: %v", iss.Identifier, err)
+			}
+			// continue regardless — claim is already taken.
+		} else {
+			transitionedFrom = iss.WorkflowState
+		}
+	}
+
 	wsPath, created, err := c.workspaces.Create(iss.ID)
 	if err != nil {
 		c.logger.Warn("dispatcher: workspace create %s: %v", iss.Identifier, err)
+		c.revertTransition(ctx, iss.ID, iss.Identifier, transitionedFrom, cfg.Agent.RunningState)
 		_ = c.tracker.Release(ctx, iss.ID, c.hostMarker)
 		return
 	}
@@ -268,22 +289,24 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 	runID, err := store.GenerateRunID()
 	if err != nil {
 		c.logger.Warn("dispatcher: mint run id for %s: %v", iss.Identifier, err)
+		c.revertTransition(ctx, iss.ID, iss.Identifier, transitionedFrom, cfg.Agent.RunningState)
 		_ = c.tracker.Release(ctx, iss.ID, c.hostMarker)
 		return
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 
 	entry := &runningEntry{
-		IssueID:       iss.ID,
-		Identifier:    iss.Identifier,
-		RunID:         runID,
-		WorkflowState: iss.WorkflowState,
-		WorkspacePath: wsPath,
-		StartedAt:     time.Now().UTC(),
-		LastEventAt:   time.Now().UTC(),
-		Attempt:       attempt,
-		Cancel:        cancel,
-		issueSnapshot: iss,
+		IssueID:               iss.ID,
+		Identifier:            iss.Identifier,
+		RunID:                 runID,
+		WorkflowState:         iss.WorkflowState,
+		WorkspacePath:         wsPath,
+		StartedAt:             time.Now().UTC(),
+		LastEventAt:           time.Now().UTC(),
+		Attempt:               attempt,
+		Cancel:                cancel,
+		issueSnapshot:         iss,
+		TransitionedFromState: transitionedFrom,
 	}
 	entry.touchEvent(time.Now())
 	c.state.running[iss.ID] = entry
@@ -442,6 +465,61 @@ func (c *Dispatcher) postFinished(issueID string, err error) {
 	select {
 	case c.cmds <- cmdRunFinished{issueID: issueID, err: err}:
 	case <-c.stop:
+	}
+}
+
+// revertTransition undoes the in-progress UpdateState performed at
+// Claim time, moving the issue back to its original source state.
+// Best-effort by design — failures are logged but don't propagate:
+//
+//   - sourceState == "" means we never transitioned in the first place,
+//     so there's nothing to revert.
+//   - The safety check (RefreshStates) compares the issue's current
+//     tracker state against currentTarget (cfg.Agent.RunningState at
+//     the time of dispatch). If the workflow has already moved the
+//     issue forward (e.g. doc-align → "review") or the operator has
+//     dragged it manually, we leave it alone — clobbering operator
+//     actions would surprise the human in the loop.
+//
+// Used by dispatch's rollback paths (workspace-create-fail,
+// runID-mint-fail), finishRun's cancel branch, and shutdown.
+//
+// The ctx passed in is used for the safety check + UpdateState; for
+// detached call sites (finishRun, shutdown) callers should pass a
+// short-budget context.Background()-derived ctx so an actor-shutdown
+// doesn't short-circuit the revert.
+func (c *Dispatcher) revertTransition(ctx context.Context, issueID, identifier, sourceState, currentTarget string) {
+	if sourceState == "" {
+		return
+	}
+	// Safety check: only revert if the issue is STILL in the target
+	// running state. If the workflow already moved it (typical clean
+	// finish path; the doc-align bot does this explicitly) or the
+	// operator dragged it on the kanban, leave the new state alone.
+	// RefreshStates is the cheapest read on the Tracker interface.
+	if currentTarget != "" {
+		if states, err := c.tracker.RefreshStates(ctx, []string{issueID}); err == nil {
+			cur, present := states[issueID]
+			switch {
+			case !present:
+				// Issue disappeared from the tracker — nothing to do.
+				return
+			case cur != currentTarget:
+				c.logger.Debug("dispatcher: %s already moved %s → %s, skipping revert to %s", identifier, currentTarget, cur, sourceState)
+				return
+			}
+		} else {
+			// Couldn't verify — log and skip the revert. Leaving the
+			// issue in the running state is safer than clobbering an
+			// unknown state.
+			c.logger.Warn("dispatcher: refresh state for revert %s: %v", identifier, err)
+			return
+		}
+	}
+	if err := c.tracker.UpdateState(ctx, issueID, sourceState); err != nil {
+		if !errors.Is(err, tracker.ErrTransitionRejected) && !errors.Is(err, tracker.ErrNotSupported) {
+			c.logger.Warn("dispatcher: revert state %s → %s: %v", identifier, sourceState, err)
+		}
 	}
 }
 

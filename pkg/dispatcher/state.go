@@ -82,6 +82,15 @@ type runningEntry struct {
 	// single writer so no mutex is needed.
 	CancelIssuedAt time.Time
 
+	// TransitionedFromState is the issue's tracker state at Claim time
+	// IFF the dispatcher then successfully moved it to
+	// cfg.Agent.RunningState. Empty when no transition occurred
+	// (running_state disabled, transition rejected, or the issue was
+	// already in RunningState at Claim time). The cancel and shutdown
+	// paths read this to revert the transition; the clean-finish path
+	// intentionally leaves the issue in RunningState.
+	TransitionedFromState string
+
 	// lastEventAtomicNano is updated synchronously by the OnEvent
 	// callback (which runs in the runtime engine's goroutine). It
 	// exists so reconcileStalled doesn't depend on the actor having

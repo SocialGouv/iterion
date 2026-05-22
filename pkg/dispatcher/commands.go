@@ -119,14 +119,18 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 		!errors.Is(relErr, tracker.ErrClaimConflict) {
 		c.logger.Warn("dispatcher: release %s: %v", r.Identifier, relErr)
 	}
-	relCancel()
+
+	currentTarget := c.cfg.Load().Agent.RunningState
 	_ = ctx // caller ctx not used for the release; kept in signature for future audit hooks
 
 	switch {
 	case err == nil:
 		c.logger.Info("dispatcher: %s finished cleanly (run=%s)", r.Identifier, r.RunID)
 		// Successful dispatches clear any prior retry bookkeeping and
-		// honor the workspace-persist policy.
+		// honor the workspace-persist policy. We intentionally do NOT
+		// revert the in-progress transition — the workflow has either
+		// moved the state itself (e.g. doc-align → "review") or the
+		// operator wants to see the terminal state on the kanban.
 		if cur, ok := c.state.retries[issueID]; ok {
 			if cur.Timer != nil {
 				cur.Timer.Stop()
@@ -137,11 +141,23 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 	case errors.Is(err, context.Canceled):
 		// Cancellation is a soft stop. Keep the workspace and any
 		// pending retry entry so the next tick can re-pick the issue.
+		// Revert the in-progress transition so the next dispatch sees
+		// the issue back in its source state (typically "ready"). The
+		// safety check inside revertTransition skips when the workflow
+		// or operator already moved the state elsewhere.
 		c.logger.Info("dispatcher: %s cancelled (run=%s)", r.Identifier, r.RunID)
+		c.revertTransition(relCtx, issueID, r.Identifier, r.TransitionedFromState, currentTarget)
 	default:
+		// Non-cancellation failure → schedule a retry. Revert the
+		// in-progress transition so the next retry tick sees the issue
+		// eligible again from its source state. Without the revert,
+		// the issue would sit in `in_progress` (no longer in the
+		// eligible "ready" set) until the operator dragged it back.
 		c.logger.Warn("dispatcher: %s failed (run=%s): %v", r.Identifier, r.RunID, err)
+		c.revertTransition(relCtx, issueID, r.Identifier, r.TransitionedFromState, currentTarget)
 		c.scheduleRetry(issueID, r, err)
 	}
+	relCancel()
 	c.fireSnapshot()
 }
 

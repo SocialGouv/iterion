@@ -121,6 +121,14 @@ type AgentConfig struct {
 	MaxConcurrentByState map[string]int `yaml:"max_concurrent_by_state,omitempty" json:"max_concurrent_by_state,omitempty"`
 	MaxTurns             int            `yaml:"max_turns,omitempty" json:"max_turns,omitempty"`
 	MaxRetryBackoffMS    int            `yaml:"max_retry_backoff_ms,omitempty" json:"max_retry_backoff_ms,omitempty"`
+
+	// RunningState, when non-empty, is the kanban state the dispatcher
+	// transitions a claimed issue to after a successful Claim. Empty
+	// disables the transition (escape hatch for boards without an
+	// in-flight column). On cancel or pre-run failure the dispatcher
+	// reverts to the issue's original state. On normal finish the
+	// workflow itself sets the next state (review/done/etc).
+	RunningState string `yaml:"running_state,omitempty" json:"running_state,omitempty"`
 }
 
 // WorkspaceConfig controls where per-issue workspaces live.
@@ -177,6 +185,11 @@ const (
 	DefaultStallTimeoutMS      = 600_000
 	DefaultGitHubClaimedLabel  = "iterion-claimed"
 	DefaultForgejoClaimedLabel = "iterion-claimed"
+	// DefaultRunningState mirrors native.StateInProgress; duplicated here
+	// as a string literal to keep pkg/dispatcher/config.go free of the
+	// native package import (config.go is loaded before the native store
+	// is constructed).
+	DefaultRunningState = "in_progress"
 )
 
 // Load reads and parses a dispatcher config from path. Relative paths
@@ -221,6 +234,17 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Agent.MaxRetryBackoffMS == 0 {
 		c.Agent.MaxRetryBackoffMS = DefaultMaxRetryBackoffMS
+	}
+	// RunningState: absent in YAML/JSON → default to in_progress so
+	// the kanban moves claimed issues out of the ready column without
+	// any explicit operator config. To disable the transition (escape
+	// hatch for boards without an in-flight column), set
+	// `running_state: none` — Validate maps "none" back to "" so the
+	// rest of the dispatcher reads the disable as the zero value.
+	if c.Agent.RunningState == "" {
+		c.Agent.RunningState = DefaultRunningState
+	} else if c.Agent.RunningState == "none" {
+		c.Agent.RunningState = ""
 	}
 	if c.Stall.TimeoutMS == 0 {
 		c.Stall.TimeoutMS = DefaultStallTimeoutMS

@@ -272,8 +272,17 @@ fi
 		Workflow: filepath.Join(botsDir, "default"),
 		Tracker:  dispatcher.TrackerConfig{Kind: dispatcher.TrackerKindNative},
 		Polling:  dispatcher.PollingConfig{IntervalMS: 30_000},
-		Agent:    dispatcher.AgentConfig{MaxConcurrent: defaultDispatchMaxConcurrent},
-		Server:   dispatcher.ServerConfig{Port: defaultDispatchPort},
+		Agent: dispatcher.AgentConfig{
+			MaxConcurrent: defaultDispatchMaxConcurrent,
+			// Move claimed issues to `in_progress` so the kanban
+			// surfaces in-flight work. Matches native.StateInProgress;
+			// duplicated as a literal to avoid importing native here
+			// (Config.ApplyDefaults would also fill this in, but
+			// stating it explicitly keeps the zero-config contract
+			// obvious at the call site).
+			RunningState: dispatcher.DefaultRunningState,
+		},
+		Server: dispatcher.ServerConfig{Port: defaultDispatchPort},
 		AssigneeWorkflows: map[string]string{
 			// kebab-case canonical (matches the bot directory names
 			// + the names a hand-written iterion.dispatcher.yaml
