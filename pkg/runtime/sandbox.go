@@ -1,4 +1,4 @@
-// Package runtime — sandbox lifecycle (Phase 1 wiring).
+// Package runtime — sandbox lifecycle (Phase 1 wiring; nested-worktree-aware).
 //
 // At run start the engine resolves the workflow's sandbox spec, picks
 // a driver via the global factory, prepares the spec (which may pull

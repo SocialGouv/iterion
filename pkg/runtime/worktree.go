@@ -155,7 +155,11 @@ func resolveWorktreeGitDir(repoRoot, wtPath string) string {
 	if repoRoot == "" || wtPath == "" {
 		return ""
 	}
-	if pointer, err := os.ReadFile(filepath.Join(wtPath, ".git")); err == nil {
+	// Read the worktree's `.git` pointer file (one-line `gitdir: <abs>`).
+	// This is the only reliable way to find the real gitdir when worktrees
+	// are nested (dispatcher pre-creates a worktree, engine adds another).
+	pointerPath := filepath.Join(wtPath, ".git")
+	if pointer, err := os.ReadFile(pointerPath); err == nil {
 		line := strings.TrimSpace(string(pointer))
 		if rest, ok := strings.CutPrefix(line, "gitdir:"); ok {
 			if abs, absErr := filepath.Abs(strings.TrimSpace(rest)); absErr == nil {
