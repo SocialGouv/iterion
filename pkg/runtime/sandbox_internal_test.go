@@ -322,18 +322,20 @@ func TestAddWorktreeGitMount(t *testing.T) {
 		}
 	})
 
-	t.Run("present gitDir appends a same-path read-write bind", func(t *testing.T) {
+	t.Run("present gitDir mounts the whole .git at the same host path", func(t *testing.T) {
 		spec := &sandbox.Spec{}
 		addWorktreeGitMount(spec, gitDir, nil)
 		if len(spec.Mounts) != 1 {
 			t.Fatalf("Mounts = %v, want exactly one entry", spec.Mounts)
 		}
 		entry := spec.Mounts[0]
-		// Must mount at the SAME absolute host path so the worktree's
-		// `.git` pointer file (which embeds the host path) resolves
-		// from inside the container.
-		wantSrc := "source=" + gitDir
-		wantTgt := "target=" + gitDir
+		// Must mount the parent .git tree so git can resolve the worktree
+		// pointer file AND walk to shared objects/refs/HEAD/config —
+		// mounting only the per-run subtree leaves git unable to find
+		// anything via commondir.
+		dotGit := filepath.Join(tmp, ".git")
+		wantSrc := "source=" + dotGit
+		wantTgt := "target=" + dotGit
 		if !strings.Contains(entry, wantSrc) {
 			t.Errorf("Mounts[0] = %q, want substring %q", entry, wantSrc)
 		}
@@ -347,27 +349,6 @@ func TestAddWorktreeGitMount(t *testing.T) {
 		// HEAD, refs, packed-refs, index when committing.
 		if strings.Contains(entry, "readonly") {
 			t.Errorf("Mounts[0] = %q must be read-write (no readonly token)", entry)
-		}
-	})
-
-	t.Run("only the per-run gitdir is mounted, not the whole .git", func(t *testing.T) {
-		// Regression guard: the previous implementation mounted the
-		// entire <repoRoot>/.git tree, exposing every other concurrent
-		// run's worktree state. Verify the new behaviour stays scoped.
-		spec := &sandbox.Spec{}
-		addWorktreeGitMount(spec, gitDir, nil)
-		if len(spec.Mounts) != 1 {
-			t.Fatalf("Mounts = %v, want one entry", spec.Mounts)
-		}
-		// The bind target must contain the run-id segment, not bare ".git".
-		if !strings.Contains(spec.Mounts[0], "/worktrees/run-abc") {
-			t.Errorf("Mounts[0] = %q should be scoped to the per-run gitdir, not the whole .git", spec.Mounts[0])
-		}
-		// Must NOT contain a bare bind on the parent .git (would expose
-		// other runs).
-		bareGit := "source=" + filepath.Join(tmp, ".git") + ","
-		if strings.Contains(spec.Mounts[0], bareGit) {
-			t.Errorf("Mounts[0] = %q must not bind the whole .git", spec.Mounts[0])
 		}
 	})
 }

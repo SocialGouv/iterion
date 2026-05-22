@@ -205,18 +205,32 @@ func addClawBinaryMount(spec *sandbox.Spec, wf *ir.Workflow) {
 	)
 }
 
-// addWorktreeGitMount bind-mounts the per-run worktree's git-private
-// directory (`<repoRoot>/.git/worktrees/<run-id>`) into the container
-// at the SAME host path. Without this mount the worktree's `.git`
-// pointer file — a one-line `gitdir: <this-path>` — cannot be resolved
-// by in-sandbox git commands and every tool node touching git fails
-// with `fatal: not a git repository`.
+// addWorktreeGitMount bind-mounts the source repo's `.git` directory
+// into the container at the SAME host path when a worktree is active,
+// so the worktree's `.git` pointer file — a one-line
+// `gitdir: <repoRoot>/.git/worktrees/<run-id>` — resolves correctly
+// inside the sandbox and every nested reference it walks (objects,
+// refs, HEAD, packed-refs, config) is also reachable.
 //
-// We deliberately mount only the per-run gitdir (not the whole
-// `<repoRoot>/.git`) so concurrent sandboxed runs cannot read each
-// other's worktree state. The bind is read-write because git writes
-// HEAD, refs, packed-refs, index, ORIG_HEAD, …, into this directory
-// during normal `git commit` / `git checkout` flows.
+// gitDir is the per-run worktree gitdir (`<repoRoot>/.git/worktrees/<run-id>`)
+// computed by [resolveWorktreeGitDir]. We derive the parent `.git`
+// directory and mount that whole tree because git resolves the
+// worktree's pointer file by:
+//  1. reading `<repoRoot>/.git/worktrees/<run-id>/commondir` → `..`
+//  2. resolving the relative path → `<repoRoot>/.git/` (shared objects
+//     + refs + config).
+//
+// Mounting only the per-run subtree leaves git unable to find shared
+// objects, refs/, HEAD, packed-refs — and every command fails with
+// `fatal: not a git repository`. The TODO below tracks a tighter
+// per-run isolation design (whole `.git` read-only + per-run subtree
+// read-write overlay), which docker bind layering technically allows
+// but is risky to ship without a test matrix proving the override
+// semantics on every supported driver. For now: simple + correct.
+//
+// Read-write because git writes HEAD, refs, packed-refs, index, etc.
+// into the gitdir during normal `git commit` / `git checkout` flows,
+// and the worktree's gitdir is part of the broader `.git` tree.
 //
 // Silently skips when:
 //   - gitDir is empty (non-worktree run, or cloud runner that never
@@ -236,10 +250,12 @@ func addWorktreeGitMount(spec *sandbox.Spec, gitDir string, logger *iterlog.Logg
 	if gitDir == "" {
 		return
 	}
-	info, statErr := os.Stat(gitDir)
+	// Walk up two levels: <repoRoot>/.git/worktrees/<run-id> → <repoRoot>/.git
+	dotGit := filepath.Dir(filepath.Dir(gitDir))
+	info, statErr := os.Stat(dotGit)
 	if statErr != nil {
 		if !errors.Is(statErr, fs.ErrNotExist) && logger != nil {
-			logger.Warn("runtime: sandbox worktree gitdir %s: %v — skipping mount", gitDir, statErr)
+			logger.Warn("runtime: sandbox repo .git %s: %v — skipping mount", dotGit, statErr)
 		}
 		return
 	}
@@ -247,6 +263,6 @@ func addWorktreeGitMount(spec *sandbox.Spec, gitDir string, logger *iterlog.Logg
 		return
 	}
 	spec.Mounts = append(spec.Mounts,
-		fmt.Sprintf("source=%s,target=%s,type=bind", gitDir, gitDir),
+		fmt.Sprintf("source=%s,target=%s,type=bind", dotGit, dotGit),
 	)
 }
