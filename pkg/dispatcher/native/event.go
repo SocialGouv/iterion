@@ -12,6 +12,7 @@ const (
 	EvtIssueDeleted  EventType = "issue_deleted"
 	EvtIssueClaimed  EventType = "issue_claimed"
 	EvtIssueReleased EventType = "issue_released"
+	EvtIssueLastRun  EventType = "issue_last_run_updated"
 	EvtBoardUpdated  EventType = "board_updated"
 )
 

@@ -513,6 +513,40 @@ func (s *Store) Claim(id, marker string) (err error) {
 	})
 }
 
+// SetLastRun stamps the most recent dispatcher-spawned run that
+// processed the issue onto its record. Idempotent — passing the same
+// runID + workdir as the current values is a no-op (no write, no
+// event). Empty strings are written as-is so the operator can clear
+// the stamp if needed.
+//
+// The dispatcher calls this on every finishRun (success or failure)
+// so the studio's IssueModal can always link back to the most recent
+// run that touched the issue.
+func (s *Store) SetLastRun(id, runID, workdir string) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("SetLastRun", &err)
+	iss, err := s.readIssueLocked(id)
+	if err != nil {
+		return err
+	}
+	if iss.LastRunID == runID && iss.LastWorkdir == workdir {
+		return nil
+	}
+	iss.LastRunID = runID
+	iss.LastWorkdir = workdir
+	iss.UpdatedAt = time.Now().UTC()
+	if err := s.writeIssueLocked(iss); err != nil {
+		return err
+	}
+	s.index[iss.ID] = cloneIssue(iss)
+	return s.emitPostCommitEvent(Event{
+		Type:    EvtIssueLastRun,
+		IssueID: id,
+		Payload: map[string]any{"run_id": runID, "workdir": workdir},
+	})
+}
+
 // Release clears the claim if it matches the given marker. Releasing an
 // already-unclaimed issue is a no-op.
 func (s *Store) Release(id, marker string) (err error) {

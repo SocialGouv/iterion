@@ -30,6 +30,15 @@ export interface NativeIssue {
    *  studio's Launch form wire format — engine handles coercion. */
   bot_args?: Record<string, string>;
   claim?: string;
+  /** ID of the most recent dispatcher-spawned run that processed this
+   *  issue. Stamped by the dispatcher on every finish (success or
+   *  failure). Empty for issues never picked up by a dispatcher. */
+  last_run_id?: string;
+  /** Absolute filesystem path the last run executed in — typically the
+   *  worktree directory when `worktree: auto` was used, otherwise the
+   *  per-issue dispatcher workspace. Surfaced in the IssueModal as a
+   *  copy/vscode link so operators can inspect the diff manually. */
+  last_workdir?: string;
   created_at: string;
   updated_at: string;
 }

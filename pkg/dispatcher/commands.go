@@ -2,7 +2,10 @@ package dispatcher
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
@@ -123,6 +126,12 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 	currentTarget := c.cfg.Load().Agent.RunningState
 	_ = ctx // caller ctx not used for the release; kept in signature for future audit hooks
 
+	// Stamp the run + workdir back onto the tracker issue so the studio
+	// can pivot from the kanban card to the run console / diff inspector.
+	// Best-effort: only native trackers implement this, and a transient
+	// disk failure shouldn't block the cleanup path.
+	c.stampLastRun(issueID, r)
+
 	switch {
 	case err == nil:
 		c.logger.Info("dispatcher: %s finished cleanly (run=%s)", r.Identifier, r.RunID)
@@ -159,6 +168,56 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 	}
 	relCancel()
 	c.fireSnapshot()
+}
+
+// stampLastRun records the (run_id, workdir) pair on the tracker
+// issue so the studio's IssueModal can link back to the most recent
+// run that processed it. Only native trackers implement the
+// SetLastRun shape — external trackers (github, forgejo) silently
+// skip via the failed type-assertion. Best-effort: a write failure
+// is logged at warn and does not derail cleanup.
+//
+// The workdir is read from <storeDir>/runs/<runID>/run.json when
+// available (canonical: this reflects worktree:auto's swap to the
+// per-run worktree path). On read failure we fall back to the
+// dispatcher's pre-run WorkspacePath so the operator still gets a
+// useful path to inspect.
+func (c *Dispatcher) stampLastRun(issueID string, r *runningEntry) {
+	setter, ok := c.tracker.(interface {
+		SetLastRun(id, runID, workdir string) error
+	})
+	if !ok {
+		return
+	}
+	workdir := c.resolveRunWorkdir(r.RunID)
+	if workdir == "" {
+		workdir = r.WorkspacePath
+	}
+	if err := setter.SetLastRun(issueID, r.RunID, workdir); err != nil {
+		c.logger.Warn("dispatcher: stamp last-run on %s: %v", r.Identifier, err)
+	}
+}
+
+// resolveRunWorkdir reads the run's persisted WorkDir from
+// <storeDir>/runs/<runID>/run.json. Returns "" when storeDir is
+// unset, the file is missing, or the JSON can't be decoded — every
+// call site treats "" as "fall back to the dispatcher workspace".
+func (c *Dispatcher) resolveRunWorkdir(runID string) string {
+	if c.storeDir == "" || runID == "" {
+		return ""
+	}
+	path := filepath.Join(c.storeDir, "runs", runID, "run.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var probe struct {
+		WorkDir string `json:"work_dir"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return ""
+	}
+	return probe.WorkDir
 }
 
 // cleanupWorkspace removes the per-issue workspace directory when the

@@ -251,6 +251,79 @@ func TestClaimRelease(t *testing.T) {
 	}
 }
 
+func TestSetLastRunWritesAndIsIdempotent(t *testing.T) {
+	s := newTestStore(t)
+	iss, _ := s.Create(Issue{Title: "x", State: "ready"})
+
+	// First write stamps the values and emits one issue_last_run_updated event.
+	if err := s.SetLastRun(iss.ID, "run-42", "/tmp/iterion/worktrees/run-42"); err != nil {
+		t.Fatalf("SetLastRun: %v", err)
+	}
+	got, err := s.Get(iss.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.LastRunID != "run-42" || got.LastWorkdir != "/tmp/iterion/worktrees/run-42" {
+		t.Fatalf("stamp not persisted: %+v", got)
+	}
+
+	// Idempotency: same values must not emit a second event.
+	var lastRunEvents int
+	countEvents := func() int {
+		n := 0
+		_ = s.ScanEvents(func(e *Event) bool {
+			if e.Type == EvtIssueLastRun && e.IssueID == iss.ID {
+				n++
+			}
+			return true
+		})
+		return n
+	}
+	lastRunEvents = countEvents()
+	if lastRunEvents != 1 {
+		t.Fatalf("first SetLastRun should emit one event, got %d", lastRunEvents)
+	}
+	if err := s.SetLastRun(iss.ID, "run-42", "/tmp/iterion/worktrees/run-42"); err != nil {
+		t.Fatalf("idempotent SetLastRun: %v", err)
+	}
+	if got := countEvents(); got != 1 {
+		t.Fatalf("idempotent call should not emit a new event, got %d", got)
+	}
+
+	// Different values overwrite and emit a fresh event.
+	if err := s.SetLastRun(iss.ID, "run-43", "/tmp/iterion/worktrees/run-43"); err != nil {
+		t.Fatalf("second SetLastRun: %v", err)
+	}
+	got2, _ := s.Get(iss.ID)
+	if got2.LastRunID != "run-43" || got2.LastWorkdir != "/tmp/iterion/worktrees/run-43" {
+		t.Fatalf("second stamp not persisted: %+v", got2)
+	}
+	if got := countEvents(); got != 2 {
+		t.Fatalf("second SetLastRun should add one event, got %d", got)
+	}
+
+	// Round-trips through reopen — confirms the fields are tagged.
+	dir := s.root
+	s2, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	got3, err := s2.Get(iss.ID)
+	if err != nil {
+		t.Fatalf("Get after reopen: %v", err)
+	}
+	if got3.LastRunID != "run-43" || got3.LastWorkdir != "/tmp/iterion/worktrees/run-43" {
+		t.Fatalf("reopen lost last-run stamp: %+v", got3)
+	}
+}
+
+func TestSetLastRunUnknownIssue(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.SetLastRun("native:nope", "run-x", "/tmp/x"); !errors.Is(err, tracker.ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+}
+
 func TestEventSequenceMonotonic(t *testing.T) {
 	s := newTestStore(t)
 	iss, _ := s.Create(Issue{Title: "x", State: "ready"})

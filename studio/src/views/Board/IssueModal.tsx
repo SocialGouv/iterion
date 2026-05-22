@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "wouter";
 
 import { listBots, type BotEntryWithSchema } from "@/api/bots";
 import type { NativeBoard, NativeIssue } from "@/api/native";
+import { CopyButton } from "@/components/ui/CopyButton";
 import { Dialog } from "@/components/ui/Dialog";
 import { Input } from "@/components/ui/Input";
 import { MarkdownPreview } from "@/components/ui/MarkdownPreview";
@@ -346,6 +348,13 @@ function TicketTab({
         </Field>
       </div>
 
+      {initial && (initial.last_run_id || initial.last_workdir) && (
+        <LastRunSection
+          runID={initial.last_run_id}
+          workdir={initial.last_workdir}
+        />
+      )}
+
       {(board.fields ?? []).map((f) => (
         <Field key={f.name} label={(f.display ?? f.name) + ` (${f.type})`}>
           {f.type === "enum" ? (
@@ -474,6 +483,66 @@ function Field({
       </span>
       {children}
     </label>
+  );
+}
+
+// LastRunSection renders a compact "Last run" panel inside the
+// Ticket tab when the dispatcher has stamped a run on the issue.
+// Surfaces:
+//   - A wouter Link to the run console at /runs/<id>.
+//   - The worktree path with copy-to-clipboard and vscode:// links
+//     so the operator can pivot from the kanban card into a diff
+//     inspector without leaving the studio.
+//
+// Renders nothing when neither runID nor workdir is set; callers
+// gate the mount on that condition too.
+function LastRunSection({
+  runID,
+  workdir,
+}: {
+  runID?: string;
+  workdir?: string;
+}) {
+  if (!runID && !workdir) return null;
+  const runLabel = runID ? runID.slice(0, 12) : "";
+  return (
+    <div className="rounded border border-border-default bg-surface-1 p-2 space-y-1.5">
+      <div className="text-[11px] uppercase tracking-wide text-fg-subtle">
+        Last run
+      </div>
+      {runID && (
+        <div className="flex items-center gap-1.5 text-xs">
+          <span className="text-fg-muted">Run:</span>
+          <Link
+            href={`/runs/${encodeURIComponent(runID)}`}
+            className="font-mono text-accent hover:underline"
+            title={`Open run ${runID}`}
+          >
+            {runLabel}
+          </Link>
+          <CopyButton value={runID} variant="icon" label="Copy run id" />
+        </div>
+      )}
+      {workdir && (
+        <div className="flex items-center gap-1.5 text-xs">
+          <span className="text-fg-muted">Worktree:</span>
+          <code
+            className="flex-1 min-w-0 truncate bg-surface-2 px-1 py-0.5 rounded text-[11px]"
+            title={workdir}
+          >
+            {workdir}
+          </code>
+          <CopyButton value={workdir} variant="icon" label="Copy worktree path" />
+          <a
+            href={`vscode://file/${workdir}`}
+            className="text-[11px] px-1.5 py-0.5 rounded border border-border-default hover:bg-surface-2 text-fg-default"
+            title="Open the worktree in VS Code (vscode:// URL handler)"
+          >
+            VS Code
+          </a>
+        </div>
+      )}
+    </div>
   );
 }
 
