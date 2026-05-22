@@ -105,8 +105,11 @@ export default function RecentFilesPanel({ variant = "card" }: Props) {
         // Examples live behind a dedicated endpoint and aren't files
         // the user can save back to. Load the content first, spawn a
         // fresh untitled tab via newEditorTab, then push the loaded
-        // document into the tab's store directly. The tab stays
-        // "dirty/unsaved" so the user knows they need to Save As.
+        // document into the tab's store directly. Mark the freshly-
+        // loaded state as the saved baseline — without this, isDirty()
+        // is true from the first paint and navigating away triggers
+        // the unsaved-changes confirm dialog even when the user just
+        // browsed the example without typing.
         const result = await api.loadExample(name);
         const tabId = useTabsStore.getState().newEditorTab(name);
         const docStore = getOrCreateDocumentStore(tabId);
@@ -114,6 +117,7 @@ export default function RecentFilesPanel({ variant = "card" }: Props) {
         s.setDocument(result.document);
         s.setDiagnostics(result.diagnostics);
         s.setCurrentSource(result.source);
+        s.markSaved();
         // No setCurrentFilePath — the example isn't on disk under
         // this name in the user's workspace.
         setLocation("/editor");
