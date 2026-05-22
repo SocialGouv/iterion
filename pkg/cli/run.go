@@ -156,7 +156,16 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		return fmt.Errorf("cannot create store: %w", err)
 	}
 
-	executor, err := buildRunExecutor(opts, wf, s, runID, storeDir, logger, telemetry.prometheus)
+	// Wrap the concrete pointer in the interface only when non-nil so
+	// the typed-nil gotcha doesn't fire inside buildRunExecutor —
+	// passing a nil *PrometheusExporter directly yields a non-nil
+	// interface value whose method dispatch panics on the first
+	// callback.
+	var exporterHooks exporterEventHooks
+	if telemetry.prometheus != nil {
+		exporterHooks = telemetry.prometheus
+	}
+	executor, err := buildRunExecutor(opts, wf, s, runID, storeDir, logger, exporterHooks)
 	if err != nil {
 		return err
 	}
