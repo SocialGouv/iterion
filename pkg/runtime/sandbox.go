@@ -692,12 +692,32 @@ func defaultDriverRegistry() map[string]sandbox.DriverConstructor {
 	return registry.Default()
 }
 
+// isVolatileBuildPath reports whether p looks like a Go-toolchain
+// temporary build artifact (`go run`, `go test`, watchexec-driven
+// hot rebuilds). Such paths get unlinked and recreated under load,
+// so bind-mounting them into a sandbox container resolves the inode
+// at mount time but later exec()'s inside the container hit
+// "no such file or directory" once watchexec rotates the build dir.
+// Observed under `task studio:dev`: the daemon ran from
+// /tmp/go-build*/b001/exe/iterion, the sandbox bound that path at
+// /usr/local/bin/iterion inside the container, claw-runner exec'd
+// it, and got ENOENT because the host file had been recycled.
+//
+// Resolver callers skip the sibling-of-Executable check when this
+// returns true and fall through to the stable install paths
+// (/usr/local/bin/iterion, /usr/bin/iterion, …) instead.
+func isVolatileBuildPath(p string) bool {
+	return strings.Contains(p, "/go-build") || strings.Contains(p, "/T/go-build")
+}
+
 // locateHostIterionBinary finds an `iterion` executable on the host
 // suitable for bind-mounting into a sandbox container. Search order:
 //
 //  1. Sibling of the running executable (covers `dpkg -i` installs
 //     where iterion-desktop and iterion live in the same /usr/bin
-//     and the operator launches iterion-desktop directly).
+//     and the operator launches iterion-desktop directly). Skipped
+//     when the executable lives under a Go-toolchain temp build dir
+//     (see [isVolatileBuildPath]).
 //  2. ITERION_BIN env var override (escape hatch for unusual installs).
 //  3. /usr/local/bin/iterion → /usr/bin/iterion → ~/.local/bin/iterion
 //     (standard Linux install paths).
@@ -705,7 +725,7 @@ func defaultDriverRegistry() map[string]sandbox.DriverConstructor {
 // Returns "" when no binary can be located — the caller falls back to
 // expecting the sandbox image to ship its own copy on PATH.
 func locateHostIterionBinary() string {
-	if exe, err := os.Executable(); err == nil {
+	if exe, err := os.Executable(); err == nil && !isVolatileBuildPath(exe) {
 		candidate := filepath.Join(filepath.Dir(exe), "iterion")
 		if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() && info.Mode().Perm()&0o111 != 0 {
 			return candidate

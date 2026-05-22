@@ -32,7 +32,7 @@ import (
 // sandbox's bind-mount semantics into this generic helper. Edits to
 // the lookup contract should land in both places.
 func LocateIterionBinary() string {
-	if exe, err := os.Executable(); err == nil {
+	if exe, err := os.Executable(); err == nil && !isVolatileBuildPath(exe) {
 		candidate := filepath.Join(filepath.Dir(exe), "iterion")
 		if isExecutableFile(candidate) {
 			return candidate
@@ -53,6 +53,20 @@ func LocateIterionBinary() string {
 		}
 	}
 	return ""
+}
+
+// isVolatileBuildPath reports whether p looks like a Go-toolchain
+// temporary build artifact (`go run`, `go test`, watchexec-driven
+// hot rebuilds). Such paths get unlinked and recreated under load,
+// so callers that hand the path to a subprocess (sandbox bind-mount,
+// MCP stdio server spawned out-of-process) hit ENOENT once the
+// build dir rotates. The resolver skips the sibling-of-Executable
+// shortcut for these paths and falls through to stable install
+// locations instead.
+//
+// Matches both Linux `/tmp/go-build*` and macOS `/var/folders/.../T/go-build*`.
+func isVolatileBuildPath(p string) bool {
+	return strings.Contains(p, "/go-build") || strings.Contains(p, "/T/go-build")
 }
 
 func isExecutableFile(p string) bool {
