@@ -133,18 +133,35 @@ func setupWorktree(storeRoot, runID, repoHint string, logger *iterlog.Logger) (w
 }
 
 // resolveWorktreeGitDir returns the absolute host path of the worktree's
-// git-private directory, i.e. `<repoRoot>/.git/worktrees/<name>`, where
-// <name> is the basename of wtPath (matching how `git worktree add`
-// registers it). The worktree's top-level `.git` pointer file contains
-// the literal `gitdir: <this-path>` — bind-mounting it at the same host
-// path inside a sandbox container is what lets in-container git commands
-// resolve the pointer correctly.
+// git-private directory by reading the worktree's `.git` pointer file
+// (a one-line `gitdir: <abs-path>`). Falls back to the conventional
+// `<repoRoot>/.git/worktrees/<basename>` layout when the pointer file
+// is missing or unreadable so behaviour stays stable for callers that
+// pre-compute the path before the worktree exists.
+//
+// Reading the pointer is necessary because the conventional fallback
+// is wrong when worktrees are nested: the dispatcher pre-creates a
+// worktree under `.iterion/dispatcher/workspaces/<issue>/`, then the
+// engine runs `git worktree add` from there to create a second
+// worktree at `<storeRoot>/worktrees/<runID>/`. The conventional
+// fallback would point at the dispatcher worktree's local `.git`
+// (a file, not a directory), and the sandbox mount wiring would
+// silently skip — leaving in-container git unable to resolve the
+// pointer. The pointer file always names the real repo's gitdir.
 //
 // Returns "" when either input is empty so the caller (sandbox mount
 // wiring) silently skips the bind on non-worktree runs.
 func resolveWorktreeGitDir(repoRoot, wtPath string) string {
 	if repoRoot == "" || wtPath == "" {
 		return ""
+	}
+	if pointer, err := os.ReadFile(filepath.Join(wtPath, ".git")); err == nil {
+		line := strings.TrimSpace(string(pointer))
+		if rest, ok := strings.CutPrefix(line, "gitdir:"); ok {
+			if abs, absErr := filepath.Abs(strings.TrimSpace(rest)); absErr == nil {
+				return abs
+			}
+		}
 	}
 	return filepath.Join(repoRoot, ".git", "worktrees", filepath.Base(wtPath))
 }
