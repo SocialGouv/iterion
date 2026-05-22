@@ -273,10 +273,11 @@ function renderForwardButton({
       <Button
         variant="primary"
         size="sm"
+        loading={busy}
         disabled={!canSubmitAll || busy}
         onClick={onSubmit}
       >
-        {busy ? "…" : submitLabel}
+        {busy ? "Submitting…" : submitLabel}
       </Button>
     );
   }
@@ -360,10 +361,11 @@ function FlatForm({
           <Button
             variant="primary"
             size="sm"
+            loading={busy}
             disabled={!valid || busy}
             onClick={onSubmit}
           >
-            {busy ? "…" : submitLabel}
+            {busy ? "Submitting…" : submitLabel}
           </Button>
         </div>
       )}

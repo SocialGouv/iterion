@@ -178,11 +178,12 @@ export default function HumanChatTurn({
             <Button
               variant="primary"
               size="sm"
+              loading={disabled}
               disabled={disabled || draft.trim() === ""}
               onClick={() => submit()}
               className="self-end"
             >
-              {disabled ? "…" : "Send"}
+              {disabled ? "Sending…" : "Send"}
             </Button>
           </div>
           <QuickActionStrip
@@ -208,10 +209,11 @@ export default function HumanChatTurn({
             <Button
               variant="primary"
               size="sm"
+              loading={disabled}
               disabled={disabled}
               onClick={() => submit(true)}
             >
-              {disabled ? "…" : "Approve"}
+              {disabled ? "Sending…" : "Approve"}
             </Button>
             <Button
               variant="secondary"
@@ -239,11 +241,12 @@ export default function HumanChatTurn({
               <Button
                 variant="primary"
                 size="sm"
+                loading={disabled}
                 disabled={disabled || draft.trim() === ""}
                 onClick={() => submit(false)}
                 className="self-end"
               >
-                {disabled ? "…" : "Send"}
+                {disabled ? "Sending…" : "Send"}
               </Button>
             </div>
           )}
