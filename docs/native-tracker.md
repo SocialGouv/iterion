@@ -28,7 +28,15 @@ Writes are serialized through a single mutex. Each mutation appends
 one record to `events.jsonl`. The event types are:
 
 `issue_created`, `issue_updated`, `issue_state_changed`,
-`issue_deleted`, `issue_claimed`, `issue_released`, `board_updated`.
+`issue_deleted`, `issue_claimed`, `issue_released`,
+`issue_last_run_updated`, `board_updated`.
+
+The dispatcher stamps every issue it processes with `last_run_id`
+(the run that handled it) + `last_workdir` (the worktree path on
+the host) when the run finishes — success, failure, or cancel.
+The studio's Board view surfaces these as a "Last run" panel on the
+issue modal with a link back to `/runs/<id>` and a
+`vscode://file/<path>` shortcut to open the worktree.
 
 ## Board
 
