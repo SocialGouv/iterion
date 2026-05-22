@@ -313,9 +313,9 @@ const RunRow = memo(function RunRow({
         <div className="font-medium">{friendlyLabel(run)}</div>
       </td>
       <td className="px-4 py-2">
-        <div className="text-fg-default">
-          {run.bundle_name || run.workflow_name}
-        </div>
+        {workflowDisplay(run) && (
+          <div className="text-fg-default">{workflowDisplay(run)}</div>
+        )}
         {run.file_path && (
           <div className="text-fg-subtle text-[10px] truncate max-w-md">
             {run.file_path}
@@ -339,8 +339,8 @@ const RunRow = memo(function RunRow({
       <td className="px-4 py-2 text-fg-muted">
         {formatDuration(run.created_at, run.finished_at)}
       </td>
-      <td className="px-4 py-2 font-mono text-[10px] text-fg-subtle">
-        {run.id}
+      <td className="px-4 py-2 font-mono text-[10px] text-fg-subtle" title={run.id}>
+        {shortRunID(run.id)}
       </td>
     </tr>
   );
@@ -370,16 +370,21 @@ const RunCard = memo(function RunCard({
           {friendlyLabel(run)}
         </span>
       </div>
-      <div className="text-[11px] text-fg-default truncate">
-        {run.bundle_name || run.workflow_name}
-      </div>
+      {workflowDisplay(run) && (
+        <div className="text-[11px] text-fg-default truncate">
+          {workflowDisplay(run)}
+        </div>
+      )}
       <div className="text-[11px] text-fg-muted flex flex-wrap gap-x-2">
         <span>{formatRelative(run.created_at)}</span>
         <span>·</span>
         <span>{formatDuration(run.created_at, run.finished_at)}</span>
       </div>
-      <div className="text-[10px] text-fg-subtle font-mono truncate">
-        {run.id}
+      <div
+        className="text-[10px] text-fg-subtle font-mono truncate"
+        title={run.id}
+      >
+        {shortRunID(run.id)}
       </div>
     </button>
   );
@@ -398,6 +403,32 @@ function hasFriendlyName(run: RunSummary): boolean {
 // before the friendly-name feature shipped).
 function friendlyLabel(run: RunSummary): string {
   return hasFriendlyName(run) ? run.name! : run.workflow_name;
+}
+
+// workflowDisplay returns the label for the "Workflow" column. Returns
+// "" when the value would duplicate the run id (dispatcher-spawned
+// runs in some legacy paths aliased workflow_name to the composite
+// run id; suppress to keep the row from showing the id twice).
+function workflowDisplay(run: RunSummary): string {
+  const name = run.bundle_name || run.workflow_name;
+  if (!name || name === run.id) return "";
+  return name;
+}
+
+// shortRunID collapses a long run id to a glanceable prefix. Keeps
+// the tooltip-attached full id within reach via `title=`. For the
+// dispatcher's composite ids (e.g. `dispatcher-native_<uuid>-<seq>-<ts>`),
+// we surface the prefix + the first UUID segment so two siblings
+// from the same dispatcher slot are still visually distinct.
+function shortRunID(id: string): string {
+  if (!id) return "";
+  const dispPrefix = "dispatcher-native_";
+  if (id.startsWith(dispPrefix)) {
+    const tail = id.slice(dispPrefix.length);
+    const dash = tail.indexOf("-");
+    return `disp:${dash > 0 ? tail.slice(0, dash) : tail.slice(0, 8)}`;
+  }
+  return id.length > 14 ? id.slice(0, 14) + "…" : id;
 }
 
 // statusFilterLabel returns a lower-case fragment suited for the
