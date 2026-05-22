@@ -99,12 +99,23 @@ func applyHostStateMounts(
 
 	homeDir := resolveHostHomeDir()
 	iterionHomeDir := store.GlobalIterionDataDir()
-	var claudeDir string
+	var claudeDir, codexDir string
 	if homeDir != "" {
 		claudeDir = filepath.Join(homeDir, ".claude")
+		// `~/.codex/auth.json` is where Codex CLI persists the
+		// "Sign in with ChatGPT" OAuth token + account_id. claw's
+		// OpenAI provider reads it when no OPENAI_API_KEY is set —
+		// the only credential path for users on the ChatGPT-forfait
+		// (no metered API keys). Without this mount, sandboxed
+		// claw nodes that route to an openai/* model fail with
+		// "provide either OPENAI_API_KEY or a (OAuthToken +
+		// OpenAIChatGPTAccountID) pair sourced from Codex CLI
+		// auth.json" — surfaced on the 2026-05-22 dogfood when
+		// reviewer_gpt hit it on every feature_dev run.
+		codexDir = filepath.Join(homeDir, ".codex")
 	}
 
-	mounts := collectHostStateMounts(absWorkspace, iterionHomeDir, claudeDir)
+	mounts := collectHostStateMounts(absWorkspace, iterionHomeDir, claudeDir, codexDir)
 	mountPairs := make([]string, 0, len(mounts))
 	for _, m := range mounts {
 		entry := fmt.Sprintf("source=%s,target=%s,type=bind", m.HostPath, m.ContainerPath)

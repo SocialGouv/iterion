@@ -520,16 +520,14 @@ type hostStateMount struct {
 // already contains a candidate (e.g. project-local <repo>/.iterion is
 // nested inside the workspace bind-mount), the candidate is skipped to
 // avoid two competing binds. Missing host dirs are skipped silently —
-// the user hasn't used iterion or Claude Code on this host yet, so
-// there's nothing persistent to preserve.
-//
-// iterionHomeDir is the resolved root of the iterion data dir
-// (`$ITERION_HOME` or `~/.iterion`). claudeDir is `<userHome>/.claude`.
-// Both may be empty when the host cannot resolve the home directory
-// (CI without HOME); the caller treats that as "skip silently".
-func collectHostStateMounts(workspacePath, iterionHomeDir, claudeDir string) []hostStateMount {
-	out := make([]hostStateMount, 0, 2)
-	for _, candidate := range []string{iterionHomeDir, claudeDir} {
+// the user hasn't used the corresponding tool on this host yet, so
+// there's nothing persistent to preserve. Each candidate must be an
+// absolute path (or empty, which is silently skipped). Variadic so
+// callers can pass any subset of the supported state dirs (iterion,
+// claude, codex, …) without contortions.
+func collectHostStateMounts(workspacePath string, candidates ...string) []hostStateMount {
+	out := make([]hostStateMount, 0, len(candidates))
+	for _, candidate := range candidates {
 		if candidate == "" {
 			continue
 		}
