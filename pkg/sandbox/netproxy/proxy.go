@@ -291,6 +291,12 @@ var defaultSilentDenyHosts = []string{
 	"http-intake.logs.eu.datadoghq.com",
 	"http-intake.logs.datadoghq.com",
 	"api.datadoghq.com",
+	// claude-code → GitHub Copilot CDN (bug-report telemetry path)
+	"api.githubcopilot.com",
+	// Sentry SDKs ship to ingest.<region>.sentry.io / *.ingest.sentry.io
+	"ingest.sentry.io",
+	"ingest.de.sentry.io",
+	"ingest.us.sentry.io",
 }
 
 // isSilentDenyHost reports whether the given (canonicalised) host is
