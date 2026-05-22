@@ -116,17 +116,34 @@ container workspace path, and every mount that landed.
 
 ### Network policy
 
-When a sandbox is active, an iterion-managed HTTP CONNECT proxy runs
-on the host (127.0.0.1, ephemeral port). The container receives the
-proxy URL via standard `HTTPS_PROXY` / `HTTP_PROXY` env vars and
-reaches it via the `host.docker.internal` alias.
+When a sandbox is active **with a non-open network policy**, an
+iterion-managed HTTP CONNECT proxy runs on the host (127.0.0.1,
+ephemeral port). The container receives the proxy URL via standard
+`HTTPS_PROXY` / `HTTP_PROXY` env vars and reaches it via the
+`host.docker.internal` alias.
 
-The proxy enforces a rule list compiled from the workflow's
-`network:` block (when present) prefixed by a named preset. The
-default preset is **`iterion-default`** which allows the LLM
-endpoints (anthropic, openai, openrouter, bedrock, googleapis,
-azure, mistral) plus package registries (npm, PyPI, golang proxy)
-plus code hosts (github, gitlab, bitbucket) plus apt mirrors.
+**Default mode is `open`** — no proxy, full egress. Workflows that
+need the stricter security-first posture opt in by declaring an
+explicit `network:` block:
+
+```yaml
+sandbox:
+  image: "ghcr.io/socialgouv/iterion-sandbox-full:edge"
+  network:
+    mode: allowlist
+    preset: iterion-default
+    rules:
+      - "internal.acme.dev"
+```
+
+The shipped **`iterion-default`** preset is the recommended
+starting point for allowlist mode: it covers the LLM endpoints
+(anthropic, openai, openrouter, bedrock, googleapis, azure,
+mistral) plus package registries (npm, PyPI, golang proxy) plus
+code hosts (github, gitlab, bitbucket) plus apt mirrors. It is
+**not** applied implicitly — operators name it explicitly so the
+default-open posture and the curated-allowlist posture are
+unambiguous from the YAML.
 
 The proxy does NOT MITM TLS — only the SNI / Host header is
 inspected. The Anthropic SDK's cert pinning continues to work
@@ -148,9 +165,9 @@ Modes:
 
 | Mode        | Behaviour for unmatched hosts             |
 | ----------- | ----------------------------------------- |
-| `allowlist` | deny (the default)                        |
+| `allowlist` | deny                                      |
 | `denylist`  | allow                                     |
-| `open`      | accept everything (skips the proxy entirely) |
+| `open`      | accept everything (skips the proxy entirely; **the default**) |
 
 **IP literals are refused by default in allowlist mode** even when
 their hostname is allowed, which closes the cloud-metadata exfiltration
@@ -603,10 +620,20 @@ the container PATH.
 
 ### `network_blocked` events you don't expect
 
-Either the default `iterion-default` preset is too restrictive for
-your workflow (declare a `network:` block to extend), or the agent
-is genuinely talking to a domain you didn't intend to allow. Check
-`events.jsonl` for the host pattern that fired.
+This only happens when the workflow opted in to an `allowlist`
+(or `denylist`) `network:` block — `mode: open` is the default and
+skips the proxy entirely. Either the rule set you picked is too
+restrictive for your workflow (extend `network.rules` or drop back
+to `mode: open`), or the agent is genuinely talking to a domain
+you didn't intend to allow. Check `events.jsonl` for the host
+pattern that fired.
+
+A few claude-code endpoints (telemetry / MCP probes) are
+**silent-denied** by default — the connection is still refused, but
+no `network_blocked` event is emitted, so the run console stays
+focused on signal. See
+[`pkg/sandbox/netproxy/proxy.go::defaultSilentDenyHosts`](../pkg/sandbox/netproxy/proxy.go)
+for the list.
 
 ### Performance
 
