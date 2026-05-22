@@ -293,6 +293,10 @@ var defaultSilentDenyHosts = []string{
 	"api.datadoghq.com",
 	// claude-code → GitHub Copilot CDN (bug-report telemetry path)
 	"api.githubcopilot.com",
+	// claude-code's MCP proxy probe at startup (3× per run when no
+	// remote MCP server is configured — noise on every allowlist
+	// workflow that doesn't opt in to Anthropic's MCP feature)
+	"mcp-proxy.anthropic.com",
 	// Sentry SDKs ship to ingest.<region>.sentry.io / *.ingest.sentry.io
 	"ingest.sentry.io",
 	"ingest.de.sentry.io",
