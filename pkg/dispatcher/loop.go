@@ -180,6 +180,7 @@ func (c *Dispatcher) refreshRunningStates(ctx context.Context) {
 	if len(c.state.running) == 0 {
 		return
 	}
+	cfg := c.cfg.Load()
 	ids := make([]string, 0, len(c.state.running))
 	for id := range c.state.running {
 		ids = append(ids, id)
@@ -213,8 +214,21 @@ func (c *Dispatcher) refreshRunningStates(ctx context.Context) {
 			c.finishRun(ctx, id, context.Canceled)
 			continue
 		}
-		if newState != r.WorkflowState {
-			c.logger.Info("dispatcher: %s moved %s → %s externally — cancelling", r.Identifier, r.WorkflowState, newState)
+		// The dispatcher's own in-progress transition (see dispatch
+		// and Agent.RunningState) moves the tracker state from
+		// r.WorkflowState (the snapshot at claim time) to
+		// cfg.Agent.RunningState. That move is OURS — not an
+		// external operator action — so it must not trigger a cancel
+		// here. r.TransitionedFromState is the source state we
+		// transitioned from; when it is non-empty, the expected
+		// in-flight state is the running_state, not the original
+		// WorkflowState snapshot.
+		expected := r.WorkflowState
+		if r.TransitionedFromState != "" {
+			expected = cfg.Agent.RunningState
+		}
+		if newState != expected {
+			c.logger.Info("dispatcher: %s moved %s → %s externally — cancelling", r.Identifier, expected, newState)
 			if r.Cancel != nil {
 				r.Cancel()
 			}
