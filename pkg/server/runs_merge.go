@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -71,4 +72,194 @@ func (s *Server) handleMergeRun(w http.ResponseWriter, r *http.Request) {
 		MergeStrategy: res.MergeStrategy,
 		MergeStatus:   res.MergeStatus,
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Conflict-resolution endpoints
+// ---------------------------------------------------------------------------
+
+// mergeConflictsResponse is the wire shape returned by GET
+// /api/runs/{id}/merge/conflicts. It mirrors
+// runview.MergeConflictsResponse but is duplicated here so the API
+// version is stable when we evolve the service-internal type.
+type mergeConflictsResponse struct {
+	Files            []runtime.ConflictFile `json:"files"`
+	PendingMessage   string                 `json:"pending_message,omitempty"`
+	PendingMergeInto string                 `json:"pending_merge_into,omitempty"`
+}
+
+// handleGetMergeConflicts returns the structured conflict state for a
+// run whose squash merge hit content conflicts. 404 when the run
+// isn't conflicted (the studio shouldn't be calling here unless
+// merge_status === "conflicted").
+func (s *Server) handleGetMergeConflicts(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSafeOrigin(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
+		return
+	}
+	res, err := s.runs.GetMergeConflicts(r.Context(), id)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "conflicts: %v", err)
+		return
+	}
+	s.writeJSONFor(w, r, mergeConflictsResponse{
+		Files:            res.Files,
+		PendingMessage:   res.PendingMessage,
+		PendingMergeInto: res.PendingMergeInto,
+	})
+}
+
+// resolveMergeConflictRequest carries one file's resolved content. The
+// path identifies which conflicted file to resolve; the service-side
+// validation rejects paths outside the current conflict set so this
+// endpoint cannot be used to overwrite arbitrary files.
+type resolveMergeConflictRequest struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+// handleResolveMergeConflict accepts a resolved file payload and
+// stages it via `git add`. 200 with a fresh conflict snapshot on
+// success so the studio can update its accordion without a separate
+// GET.
+func (s *Server) handleResolveMergeConflict(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSafeOrigin(w, r) {
+		return
+	}
+	if s.rejectCrossStoreWrite(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
+		return
+	}
+	var req resolveMergeConflictRequest
+	if err := readJSON(r, &req); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid request: %v", err)
+		return
+	}
+	if req.Path == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "path required")
+		return
+	}
+	if err := s.runs.ResolveMergeConflictFile(r.Context(), id, req.Path, req.Content); err != nil {
+		s.httpErrorFor(w, r, http.StatusConflict, "resolve: %v", err)
+		return
+	}
+	// Return the fresh state so the UI can reflect the now-staged file
+	// without polling.
+	res, err := s.runs.GetMergeConflicts(r.Context(), id)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "refresh: %v", err)
+		return
+	}
+	s.writeJSONFor(w, r, mergeConflictsResponse{
+		Files:            res.Files,
+		PendingMessage:   res.PendingMessage,
+		PendingMergeInto: res.PendingMergeInto,
+	})
+}
+
+// resolveConflictWithAgentRequest is the body of the "resolve all
+// with agent" endpoint. Empty body invokes the default resolver bot;
+// callers can pin a specific model for the resolution.
+type resolveConflictWithAgentRequest struct {
+	// Model overrides the resolver bot's default. Empty uses the
+	// bot's pinned model. Format: "<provider>/<model>" (claw spec).
+	Model string `json:"model,omitempty"`
+}
+
+// handleResolveConflictWithAgent is the LLM-driven shortcut. The
+// initial implementation returns 501 — the bot is wired in a
+// follow-up. Surfacing the endpoint now lets the studio render the
+// button and route to a meaningful error rather than a 404.
+func (s *Server) handleResolveConflictWithAgent(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSafeOrigin(w, r) {
+		return
+	}
+	if s.rejectCrossStoreWrite(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
+		return
+	}
+	var req resolveConflictWithAgentRequest
+	_ = readJSON(r, &req) // body is optional
+	res, err := s.runs.ResolveAllConflictsWithAgent(r.Context(), id, req.Model)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "agent resolve: %v", err)
+		return
+	}
+	s.writeJSONFor(w, r, mergeConflictsResponse{
+		Files:            res.Files,
+		PendingMessage:   res.PendingMessage,
+		PendingMergeInto: res.PendingMergeInto,
+	})
+}
+
+// finalizeMergeConflictRequest accepts an optional message override
+// that, when empty, falls back to the message captured on the run at
+// conflict-time.
+type finalizeMergeConflictRequest struct {
+	Message string `json:"message,omitempty"`
+}
+
+// handleFinalizeMergeConflict commits the resolved squash merge.
+// Returns the same shape as the conflict-free /merge endpoint so the
+// studio can reuse its post-merge update path.
+func (s *Server) handleFinalizeMergeConflict(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSafeOrigin(w, r) {
+		return
+	}
+	if s.rejectCrossStoreWrite(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
+		return
+	}
+	var req finalizeMergeConflictRequest
+	_ = readJSON(r, &req)
+	res, err := s.runs.FinalizeMergeAfterConflict(r.Context(), id, req.Message)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusConflict, "finalize: %v", err)
+		return
+	}
+	s.writeJSONFor(w, r, mergeRunResponse{
+		RunID:         id,
+		MergedCommit:  res.MergedCommit,
+		MergedInto:    res.MergedInto,
+		MergeStrategy: res.MergeStrategy,
+		MergeStatus:   res.MergeStatus,
+	})
+}
+
+// handleAbortMergeConflict resets the worktree, clearing the
+// conflict state. The run's merge_status flips back to "failed" so
+// the operator can retry via the normal merge flow.
+func (s *Server) handleAbortMergeConflict(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSafeOrigin(w, r) {
+		return
+	}
+	if s.rejectCrossStoreWrite(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
+		return
+	}
+	if err := s.runs.AbortMergeConflict(r.Context(), id); err != nil {
+		s.httpErrorFor(w, r, http.StatusConflict, "abort: %v", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

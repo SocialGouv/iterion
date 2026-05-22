@@ -305,6 +305,25 @@ func (s *Service) PerformMergeCtx(ctx context.Context, runID string, req MergeRe
 		Message:       message,
 	}, s.logger)
 	if mergeErr != nil {
+		// Content conflicts produce a typed error and leave the
+		// worktree in the conflicted state. Persist
+		// MergeStatusConflicted (not "failed") so the studio drops
+		// into the conflict resolver instead of the retry path.
+		// Also stash the squash message in MergedInto's sibling
+		// fields so FinalizeMergeAfterConflict can recover it
+		// without recomputing — strategy is already known to be
+		// squash at this point (conflict can't arise from FF).
+		var conflictErr *runtime.MergeConflictError
+		if errors.As(mergeErr, &conflictErr) {
+			r.MergeStatus = store.MergeStatusConflicted
+			r.MergeStrategy = store.MergeStrategySquash
+			r.PendingMergeMessage = message
+			r.PendingMergeInto = resolveMergeTargetForPersistence(req.MergeInto, repoRoot)
+			if saveErr := s.store.SaveRun(ctx, r); saveErr != nil && s.logger != nil {
+				s.logger.Warn("runview: persist merge conflict for %s: %v", runID, saveErr)
+			}
+			return nil, mergeErr
+		}
 		// Persist the failure so the studio can show "Retry merge".
 		r.MergeStatus = store.MergeStatusFailed
 		if saveErr := s.store.SaveRun(ctx, r); saveErr != nil && s.logger != nil {
@@ -318,6 +337,8 @@ func (s *Service) PerformMergeCtx(ctx context.Context, runID string, req MergeRe
 	r.MergedInto = res.MergedInto
 	r.MergeStrategy = store.MergeStrategy(res.Strategy)
 	r.MergeStatus = store.MergeStatusMerged
+	r.PendingMergeMessage = ""
+	r.PendingMergeInto = ""
 	if err := s.store.SaveRun(ctx, r); err != nil {
 		return nil, fmt.Errorf("runview: persist merge result: %w", err)
 	}
@@ -329,3 +350,254 @@ func (s *Service) PerformMergeCtx(ctx context.Context, runID string, req MergeRe
 		MergeStatus:   r.MergeStatus,
 	}, nil
 }
+
+// resolveMergeTargetForPersistence resolves the merge target into a
+// branch name so PendingMergeInto can be recorded for the finalize
+// path. "" / "current" → currently-checked-out branch; anything else
+// passes through. Returns "" if the resolution fails; callers should
+// fall back to current-branch lookup at finalize time.
+func resolveMergeTargetForPersistence(target, repoRoot string) string {
+	if target != "" && target != "current" {
+		return target
+	}
+	out, err := runtime.GitSymbolicRef(repoRoot)
+	if err != nil {
+		return ""
+	}
+	return out
+}
+
+// ---------------------------------------------------------------------------
+// Merge conflict resolution
+// ---------------------------------------------------------------------------
+
+// MergeConflictsResponse is the payload returned by GetMergeConflicts.
+// Files lists each conflicted path with its current worktree content
+// + parsed hunks; Merging signals whether `MERGE_HEAD` / `SQUASH_MSG`
+// indicates an in-progress merge (vs. a stale conflicted file the
+// operator partially resolved before crashing).
+type MergeConflictsResponse struct {
+	Files []runtime.ConflictFile `json:"files"`
+	// PendingMessage is the squash commit message that was passed to
+	// the original merge attempt — preserved so the finalize path can
+	// reuse it without recomputing (the user can still override).
+	PendingMessage string `json:"pending_message,omitempty"`
+	// PendingMergeInto is the target branch the original merge
+	// targeted; finalize must run with the same target.
+	PendingMergeInto string `json:"pending_merge_into,omitempty"`
+}
+
+// GetMergeConflicts inspects the worktree associated with runID and
+// returns the current conflict state. Returns (nil, nil) when the
+// run's merge_status is not "conflicted" — callers should treat that
+// as "no conflicts pending".
+func (s *Service) GetMergeConflicts(ctx context.Context, runID string) (*MergeConflictsResponse, error) {
+	if runID == "" {
+		return nil, errors.New("runview: run_id is required")
+	}
+	r, err := s.store.LoadRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	repoRoot := mergeRepoRoot(r)
+	if repoRoot == "" {
+		return nil, fmt.Errorf("run %q has no resolvable repo root", runID)
+	}
+	det, err := runtime.ParseConflicts(repoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("parse conflicts: %w", err)
+	}
+	// When the persisted status disagrees with the live worktree
+	// (e.g. the operator resolved manually via the CLI), refresh
+	// run.json so the UI sees the right state on the next refresh.
+	if r.MergeStatus == store.MergeStatusConflicted && len(det.Files) == 0 {
+		// All conflicts resolved out-of-band. Don't auto-finalize:
+		// the operator may not have run `git commit` yet. Surface
+		// the empty list and let the UI drive the finalize.
+	}
+	return &MergeConflictsResponse{
+		Files:            det.Files,
+		PendingMessage:   r.PendingMergeMessage,
+		PendingMergeInto: r.PendingMergeInto,
+	}, nil
+}
+
+// ResolveMergeConflictFile writes resolved content for one conflicted
+// file and stages it via `git add`. Validates that path is currently
+// in the unmerged set (no arbitrary writes), but tolerates the file
+// being already-staged (idempotent re-resolve).
+func (s *Service) ResolveMergeConflictFile(ctx context.Context, runID, path, content string) error {
+	if runID == "" {
+		return errors.New("runview: run_id is required")
+	}
+	if path == "" {
+		return errors.New("runview: path is required")
+	}
+	r, err := s.store.LoadRun(ctx, runID)
+	if err != nil {
+		return err
+	}
+	if r.MergeStatus != store.MergeStatusConflicted {
+		return fmt.Errorf("run %q has no pending conflict (merge_status=%q)", runID, r.MergeStatus)
+	}
+	repoRoot := mergeRepoRoot(r)
+	if repoRoot == "" {
+		return fmt.Errorf("run %q has no resolvable repo root", runID)
+	}
+	det, err := runtime.ParseConflicts(repoRoot)
+	if err != nil {
+		return fmt.Errorf("parse conflicts: %w", err)
+	}
+	if !pathInConflictSet(path, det.Files) {
+		return fmt.Errorf("path %q is not in the conflict set", path)
+	}
+	return runtime.StageResolvedFile(repoRoot, path, content)
+}
+
+// FinalizeMergeAfterConflict commits the squash merge once every
+// conflicted file has been staged. Reuses the pending message stored
+// on the run unless the caller supplies an override. On success the
+// run.json is updated the same way the conflict-free path would.
+func (s *Service) FinalizeMergeAfterConflict(ctx context.Context, runID, messageOverride string) (*MergeResponse, error) {
+	if runID == "" {
+		return nil, errors.New("runview: run_id is required")
+	}
+	r, err := s.store.LoadRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if r.MergeStatus != store.MergeStatusConflicted {
+		return nil, fmt.Errorf("run %q has no pending conflict (merge_status=%q)", runID, r.MergeStatus)
+	}
+	repoRoot := mergeRepoRoot(r)
+	if repoRoot == "" {
+		return nil, fmt.Errorf("run %q has no resolvable repo root", runID)
+	}
+	det, err := runtime.ParseConflicts(repoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("parse conflicts: %w", err)
+	}
+	if len(det.Files) > 0 {
+		paths := make([]string, len(det.Files))
+		for i, f := range det.Files {
+			paths[i] = f.Path
+		}
+		return nil, fmt.Errorf("still unresolved: %v", paths)
+	}
+	message := messageOverride
+	if message == "" {
+		message = r.PendingMergeMessage
+	}
+	if message == "" {
+		message = runtime.BuildSquashMessage(repoRoot, r.BaseCommit, r.FinalCommit, runtime.RunDisplayName(r))
+	}
+
+	sha, commitErr := runtime.FinalizeConflictMerge(repoRoot, message)
+	if commitErr != nil {
+		return nil, commitErr
+	}
+	target := r.PendingMergeInto
+	if target == "" {
+		target = resolveMergeTargetForPersistence("current", repoRoot)
+	}
+	r.MergedCommit = sha
+	r.MergedInto = target
+	r.MergeStrategy = store.MergeStrategySquash
+	r.MergeStatus = store.MergeStatusMerged
+	r.PendingMergeMessage = ""
+	r.PendingMergeInto = ""
+	if err := s.store.SaveRun(ctx, r); err != nil {
+		return nil, fmt.Errorf("runview: persist merge result: %w", err)
+	}
+	return &MergeResponse{
+		MergedCommit:  r.MergedCommit,
+		MergedInto:    r.MergedInto,
+		MergeStrategy: r.MergeStrategy,
+		MergeStatus:   r.MergeStatus,
+	}, nil
+}
+
+// AbortMergeConflict discards the in-progress squash merge: runs
+// `git reset --merge` on the repo root and flips merge_status back to
+// "failed" so the operator can decide what to do next.
+func (s *Service) AbortMergeConflict(ctx context.Context, runID string) error {
+	if runID == "" {
+		return errors.New("runview: run_id is required")
+	}
+	r, err := s.store.LoadRun(ctx, runID)
+	if err != nil {
+		return err
+	}
+	if r.MergeStatus != store.MergeStatusConflicted {
+		return fmt.Errorf("run %q has no pending conflict (merge_status=%q)", runID, r.MergeStatus)
+	}
+	repoRoot := mergeRepoRoot(r)
+	if repoRoot == "" {
+		return fmt.Errorf("run %q has no resolvable repo root", runID)
+	}
+	if err := runtime.AbortConflictMerge(repoRoot); err != nil {
+		return err
+	}
+	r.MergeStatus = store.MergeStatusFailed
+	r.PendingMergeMessage = ""
+	r.PendingMergeInto = ""
+	if err := s.store.SaveRun(ctx, r); err != nil {
+		return fmt.Errorf("runview: persist abort: %w", err)
+	}
+	return nil
+}
+
+// mergeRepoRoot picks the right repo root for merge operations: the
+// persisted RepoRoot when set, otherwise the legacy resolution chain
+// the /commits handler uses. Centralised so future moves to a
+// dedicated MergeRepoRoot field are a one-line change.
+func mergeRepoRoot(r *store.Run) string {
+	if r.RepoRoot != "" {
+		return r.RepoRoot
+	}
+	return gitlib.FindRepoRoot(r.WorkDir)
+}
+
+// pathInConflictSet returns true when path matches one of the
+// conflicted files. Exact match — paths are normalized by git so we
+// don't need case-folding.
+func pathInConflictSet(path string, files []runtime.ConflictFile) bool {
+	for _, f := range files {
+		if f.Path == path {
+			return true
+		}
+	}
+	return false
+}
+
+// ResolveAllConflictsWithAgent invokes the merge-conflict resolver
+// to produce resolved content for every conflicted file at once via
+// a direct claw LLM call. The model parameter, when non-empty,
+// overrides the detector's pick; format follows claw's
+// "<provider>/<model>" spec.
+//
+// The actual LLM call lives in conflict_agent.go (separate file so
+// service_control.go doesn't drag in pkg/backend/model). This stub
+// dispatches through resolveAllConflictsWithAgentImpl, which the
+// agent file installs on package init.
+func (s *Service) ResolveAllConflictsWithAgent(ctx context.Context, runID, model string) (*MergeConflictsResponse, error) {
+	if runID == "" {
+		return nil, errors.New("runview: run_id is required")
+	}
+	if resolveAllConflictsWithAgentImpl == nil {
+		return nil, ErrAgentResolverNotWired
+	}
+	return resolveAllConflictsWithAgentImpl(ctx, s, runID, model)
+}
+
+// resolveAllConflictsWithAgentImpl is the dispatchable hook. nil
+// means the implementation hasn't been installed (e.g. in tests that
+// strip out the agent file's init); the stub returns
+// ErrAgentResolverNotWired in that case.
+var resolveAllConflictsWithAgentImpl func(ctx context.Context, s *Service, runID, model string) (*MergeConflictsResponse, error)
+
+// ErrAgentResolverNotWired signals that no provider credential is
+// reachable for the resolver. Detect with errors.Is so future
+// generations of this code surface a stable "no creds" signal even
+// if the message changes.
+var ErrAgentResolverNotWired = errors.New("agent resolver unavailable: no LLM credential detected (sign in via `claude` or `codex` and retry)")

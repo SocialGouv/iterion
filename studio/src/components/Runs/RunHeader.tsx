@@ -689,6 +689,16 @@ function MergeStatusBadge({
       </span>
     );
   }
+  if (status === "conflicted") {
+    return (
+      <span
+        className="ml-2 px-1.5 py-0.5 rounded bg-warning-soft text-warning-fg"
+        title="Open the Commits tab to resolve the conflict."
+      >
+        merge conflict — resolve in Commits tab
+      </span>
+    );
+  }
   if (status === "skipped") {
     return (
       <span className="ml-2 text-fg-subtle">

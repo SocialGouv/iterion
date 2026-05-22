@@ -88,7 +88,16 @@ export interface RunSummary {
 }
 
 export type MergeStrategy = "squash" | "merge";
-export type MergeStatus = "pending" | "merged" | "skipped" | "failed";
+export type MergeStatus =
+  | "pending"
+  | "merged"
+  | "skipped"
+  | "failed"
+  // `git merge --squash` produced content conflicts; the worktree is
+  // currently in the conflicted state (markers on disk, UU paths in
+  // the index). The studio renders MergeConflictView until the
+  // operator resolves every file + finalizes or aborts.
+  | "conflicted";
 
 // Mirror of runview.ExecutionState.
 export interface ExecutionState {
@@ -908,6 +917,102 @@ export async function mergeRun(
   return request(`/runs/${encodeURIComponent(runId)}/merge`, {
     method: "POST",
     body: JSON.stringify(req),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Merge conflict resolution
+// ---------------------------------------------------------------------------
+
+// One `<<<<<<< … ======= … >>>>>>>` region inside a conflicted file.
+// Line numbers are 1-indexed and refer to the current on-disk content.
+export interface MergeConflictHunk {
+  start_line: number;
+  end_line: number;
+  ours_label?: string;
+  theirs_label?: string;
+  ours_lines: string[];
+  // Only populated when the conflict was rendered with
+  // merge.conflictStyle=diff3.
+  base_lines?: string[];
+  theirs_lines: string[];
+  context_before?: string[];
+  context_after?: string[];
+}
+
+export interface MergeConflictFile {
+  path: string;
+  content: string;
+  hunks: MergeConflictHunk[];
+  // Surfaced when the file couldn't be read (e.g. deleted on one
+  // side). The UI still renders the row so the operator knows it
+  // needs attention.
+  read_err?: string;
+}
+
+export interface MergeConflictsResponse {
+  files: MergeConflictFile[];
+  // Squash commit message captured at conflict-time. The finalize
+  // form pre-fills with this so the operator can land the merge
+  // without retyping a message.
+  pending_message?: string;
+  pending_merge_into?: string;
+}
+
+export async function getMergeConflicts(
+  runId: string,
+): Promise<MergeConflictsResponse> {
+  return request(`/runs/${encodeURIComponent(runId)}/merge/conflicts`);
+}
+
+export interface ResolveMergeConflictRequest {
+  path: string;
+  content: string;
+}
+
+export async function resolveMergeConflict(
+  runId: string,
+  req: ResolveMergeConflictRequest,
+): Promise<MergeConflictsResponse> {
+  return request(
+    `/runs/${encodeURIComponent(runId)}/merge/conflicts/resolve`,
+    { method: "POST", body: JSON.stringify(req) },
+  );
+}
+
+export interface ResolveWithAgentRequest {
+  // claw model spec like "anthropic/claude-opus-4-7" or
+  // "openai/gpt-5.5"; empty uses the bot's pinned default.
+  model?: string;
+}
+
+export async function resolveMergeConflictWithAgent(
+  runId: string,
+  req: ResolveWithAgentRequest = {},
+): Promise<MergeConflictsResponse> {
+  return request(
+    `/runs/${encodeURIComponent(runId)}/merge/conflicts/resolve-with-agent`,
+    { method: "POST", body: JSON.stringify(req) },
+  );
+}
+
+export interface FinalizeMergeConflictRequest {
+  message?: string;
+}
+
+export async function finalizeMergeConflict(
+  runId: string,
+  req: FinalizeMergeConflictRequest = {},
+): Promise<MergeRunResponse> {
+  return request(
+    `/runs/${encodeURIComponent(runId)}/merge/conflicts/finalize`,
+    { method: "POST", body: JSON.stringify(req) },
+  );
+}
+
+export async function abortMergeConflict(runId: string): Promise<void> {
+  await request(`/runs/${encodeURIComponent(runId)}/merge/conflicts/abort`, {
+    method: "POST",
   });
 }
 

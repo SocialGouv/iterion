@@ -174,6 +174,18 @@ type Run struct {
 	// Equal to FinalCommit for "merge" (FF) strategy; a fresh squash
 	// commit SHA for "squash". Empty when not yet merged.
 	MergedCommit string `json:"merged_commit,omitempty" bson:"merged_commit,omitempty"`
+	// PendingMergeMessage is the squash commit message captured when
+	// the deferred merge hit content conflicts. Preserved so the
+	// conflict-resolver UI can finalize with the same message the
+	// original attempt was going to use, without recomputing (the
+	// upstream `git log` walk that BuildSquashMessage runs is
+	// non-trivial). Cleared on merge success or abort.
+	PendingMergeMessage string `json:"pending_merge_message,omitempty" bson:"pending_merge_message,omitempty"`
+	// PendingMergeInto is the target branch the original merge attempt
+	// was aimed at. Recorded alongside PendingMergeMessage so the
+	// finalize call doesn't second-guess the target if the user
+	// switched branches between conflict-time and resolution-time.
+	PendingMergeInto string `json:"pending_merge_into,omitempty" bson:"pending_merge_into,omitempty"`
 
 	// --- Cloud-only fields (plan §D.1) -------------------------------
 	// These mirror the BSON layout for cloud runs but are zero-valued
@@ -291,6 +303,13 @@ const (
 	MergeStatusMerged  MergeStatus = "merged"
 	MergeStatusSkipped MergeStatus = "skipped"
 	MergeStatusFailed  MergeStatus = "failed"
+	// MergeStatusConflicted means `git merge --squash` produced
+	// content conflicts and the worktree is currently in the
+	// conflicted state (UU paths, markers on disk). The operator
+	// resolves via the in-studio editor or aborts; once every file
+	// is staged, the finalize endpoint commits the squash and the
+	// status flips to "merged".
+	MergeStatusConflicted MergeStatus = "conflicted"
 )
 
 // Checkpoint captures the runtime state at a pause point (human node or

@@ -20,6 +20,7 @@ import {
 import { formatRelative } from "@/lib/format";
 
 import CommitDetailDialog from "./CommitDetailDialog";
+import MergeConflictView from "./MergeConflictView";
 
 interface CommitsPanelProps {
   runId: string;
@@ -175,6 +176,7 @@ function MergeFooter({
   // a second merge action that would conflict on the storage branch.
   const merged =
     run.merge_status === "merged" || (!run.merge_status && Boolean(run.merged_into));
+  const conflicted = run.merge_status === "conflicted";
   const failed = run.merge_status === "failed";
   // `skipped` status is also set by RecoverFinalize when it auto-runs on
   // a cancelled run (mergeInto:"none"). The "skipped at launch" notice
@@ -193,6 +195,19 @@ function MergeFooter({
   const [editingMessage, setEditingMessage] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // Conflict in progress → hand off to the dedicated resolver. The
+  // resolver owns its own footer chrome (Resolve / Abort / Finalize
+  // buttons + per-file editor), so we render it edge-to-edge.
+  if (conflicted) {
+    return (
+      <MergeConflictView
+        runId={runId}
+        defaultMessage={defaultSquashMessage}
+        onMergeComplete={onMergeComplete}
+      />
+    );
+  }
 
   // Already merged → show the merged badge regardless of how we got
   // here (deferred UI action OR auto-merge at end of run).

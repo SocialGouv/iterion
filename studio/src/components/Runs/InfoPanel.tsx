@@ -251,6 +251,8 @@ function mergeStatusLabel(s: RunHeader["merge_status"] | undefined): string {
       return "Merge failed";
     case "skipped":
       return "Skipped";
+    case "conflicted":
+      return "Merge conflict — resolve in Commits tab";
     default:
       return s || "—";
   }

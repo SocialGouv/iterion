@@ -471,6 +471,12 @@ func guardMergeTarget(repoRoot, target, originalBranch, opName string) error {
 // Guards mirror tryFastForward — see guardMergeTarget. Squash is
 // allowed even when target is not an ancestor of the source branch
 // (that's the whole point), so the FF-ancestry check is omitted.
+//
+// Conflict handling: when `git merge --squash` fails because of
+// content conflicts (`UU` paths in the index), the worktree is left
+// in the conflicted state and a *MergeConflictError is returned so
+// callers can drive the in-studio resolver UI. Other failures clean
+// up via `git reset --merge` as before.
 func trySquashMerge(repoRoot, target, branchToMerge, originalBranch, message string, logger *iterlog.Logger) (string, error) {
 	if err := guardMergeTarget(repoRoot, target, originalBranch, "squash"); err != nil {
 		return "", err
@@ -487,10 +493,14 @@ func trySquashMerge(repoRoot, target, branchToMerge, originalBranch, message str
 	// updates the index + working tree to match branchToMerge but does
 	// NOT create a commit on its own; we follow up with `git commit`.
 	if out, err := gitCmd("-C", repoRoot, "merge", "--squash", branchToMerge).CombinedOutput(); err != nil {
-		// Best-effort cleanup so we don't leave a half-merged index
-		// behind. `git merge --abort` works on a half-applied non-FF
-		// merge; for `--squash` we use `git reset --merge` which
-		// restores index + working tree in the same shape.
+		// Distinguish "merge conflict" (UU paths in index) from any
+		// other failure mode. Conflicts must NOT be rolled back —
+		// the operator (or the conflict-resolver UI) needs the
+		// markers in the worktree to drive resolution. Genuine
+		// errors (corrupt index, bad ref, etc) still get the reset.
+		if conflicts, lsErr := unmergedPaths(repoRoot); lsErr == nil && len(conflicts) > 0 {
+			return "", &MergeConflictError{Files: conflicts, Output: string(out)}
+		}
 		_ = gitCmd("-C", repoRoot, "reset", "--merge").Run()
 		return "", fmt.Errorf("git merge --squash failed: %v\noutput: %s", err, string(out))
 	}
