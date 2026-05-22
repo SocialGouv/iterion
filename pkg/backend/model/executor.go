@@ -1089,6 +1089,21 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 		e.hooks.OnDelegateStarted(f.id, backendName)
 	}
 
+	// For claw backends emit a tagged log line so the studio's per-node
+	// Logs tab (which greps `[<nodeID>#<iter>/...]`) surfaces the call.
+	// claude_code/codex subprocesses already produce equivalent tagged
+	// lines from their stderr capture path. Iter is hardcoded to 0 —
+	// same limitation as the per-tool tagging above; per-iter filtering
+	// requires plumbing LoopIteration through the hook chain.
+	if backendName == delegate.BackendClaw && e.logger != nil {
+		toolSuffix := ""
+		if n := len(task.AllowedTools); n > 0 {
+			toolSuffix = fmt.Sprintf(", %d tools", n)
+		}
+		e.logger.Info("[%s#%d/claw] 🤖 LLM call: %s%s",
+			f.id, 0, task.Model, toolSuffix)
+	}
+
 	result, err := e.retryDelegateLoop(ctx, f.id, backendName, func() (delegate.Result, error) {
 		return backend.Execute(ctx, task)
 	})
