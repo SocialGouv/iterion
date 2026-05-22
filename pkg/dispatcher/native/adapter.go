@@ -116,6 +116,33 @@ func (a *Adapter) Release(ctx context.Context, id, marker string) error {
 	return a.store.Release(id, marker)
 }
 
+// SetLastRun stamps the (runID, workdir) pair on the issue so the
+// dispatcher can pivot from a kanban card back to the run that
+// processed it (studio's IssueModal, the resume fallback in
+// loop.go). Phase 3 (commit 9835ae29) added Store.SetLastRun but
+// forgot the Adapter pass-through — without this method the
+// dispatcher's type assertion in stampLastRun fell through silently
+// and no issue ever got its LastRunID populated. Adapter exposes
+// the method so c.tracker.(SetLastRun-interface) resolves.
+func (a *Adapter) SetLastRun(id, runID, workdir string) error {
+	return a.store.SetLastRun(id, runID, workdir)
+}
+
+// LastRunForIssue returns the runID of the most recent dispatch on
+// this issue. Empty when the issue has never been dispatched (or the
+// issue does not exist). Used by the dispatcher's resume path as a
+// cross-daemon-restart fallback: in-memory retry entries vanish when
+// the daemon restarts, but the issue record on disk preserves
+// LastRunID so the next dispatch can still find the prior run and
+// resume from its checkpoint.
+func (a *Adapter) LastRunForIssue(id string) (string, error) {
+	iss, err := a.store.Get(id)
+	if err != nil {
+		return "", err
+	}
+	return iss.LastRunID, nil
+}
+
 // SweepStaleClaims walks every claimed issue and releases the claim
 // when isStale reports true for its marker. Returns the issue IDs whose
 // claim was cleared. Caller-supplied predicate keeps PID/host knowledge

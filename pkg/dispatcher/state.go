@@ -147,6 +147,16 @@ type retryEntry struct {
 	// old code deleted on fire and re-derived attempt as 0 on the
 	// next tick.
 	Fired bool
+	// PrevRunID is the runID of the previous attempt that produced
+	// this retry. When the prior run terminated in a resumable state
+	// (`failed_resumable`, `cancelled`, `paused_operator`), the
+	// dispatcher resumes from that run's checkpoint instead of
+	// minting a fresh runID — the engine's resume machinery picks
+	// up at the failing node rather than re-executing every upstream
+	// node. Empty when the retry is intentionally a clean restart
+	// (e.g. the prior run was `failed` without a checkpoint, or the
+	// retry policy explicitly disabled resume).
+	PrevRunID string
 }
 
 // Snapshot is the read-only view the dashboard consumes. Built on

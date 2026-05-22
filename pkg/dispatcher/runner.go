@@ -16,6 +16,16 @@ type DispatchSpec struct {
 	Vars          map[string]any
 	Attachments   map[string]any
 
+	// ResumeFromRunID, when non-empty, signals the runner to resume
+	// the named prior run (via runtime.Engine.Resume) instead of
+	// minting a fresh execution. The dispatcher sets this on retry
+	// when the prior run terminated in a resumable status — the
+	// engine then picks up at the failing node, reuses the same
+	// worktree, and inherits the prior checkpoint. RunID should be
+	// equal to ResumeFromRunID when this is set (the resume reuses
+	// the same on-disk run record).
+	ResumeFromRunID string
+
 	// Assignee is the issue's assignee at dispatch time. Empty when
 	// the issue has no assignee (or the tracker doesn't carry one).
 	// A RoutingRunner inspects this to pick a per-assignee workflow.

@@ -290,8 +290,16 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 	}
 
 	attempt := 0
+	resumeFromRunID := ""
 	if cur, ok := c.state.retries[iss.ID]; ok {
 		attempt = cur.Attempt
+		// PrevRunID is set on the retry entry iff the prior run's
+		// status was resumable (failed_resumable / cancelled /
+		// paused_operator) — see scheduleRetry. We pass it through so
+		// the engine resumes from checkpoint instead of re-executing
+		// every upstream node. A clean retry (PrevRunID empty) falls
+		// through to GenerateRunID below.
+		resumeFromRunID = cur.PrevRunID
 		// The retry entry has done its job — surrender it now so the
 		// new runningEntry is the sole bookkeeping. (cmdRetryDue
 		// already stopped the timer when it fired.)
@@ -300,12 +308,33 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 		}
 		delete(c.state.retries, iss.ID)
 	}
-	runID, err := store.GenerateRunID()
-	if err != nil {
-		c.logger.Warn("dispatcher: mint run id for %s: %v", iss.Identifier, err)
-		c.revertTransition(ctx, iss.ID, iss.Identifier, transitionedFrom, cfg.Agent.RunningState)
-		_ = c.tracker.Release(ctx, iss.ID, c.hostMarker)
-		return
+	// Cross-restart fallback: when no in-memory retry entry exists
+	// (daemon was restarted, or the dispatcher is picking up an
+	// orphaned ticket), consult the tracker's persisted "last run"
+	// pointer. Only the native tracker exposes this lookup today;
+	// other adapters silently fall through to a fresh runID.
+	if resumeFromRunID == "" {
+		type lastRunLookup interface {
+			LastRunForIssue(id string) (string, error)
+		}
+		if look, ok := c.tracker.(lastRunLookup); ok {
+			if prev, err := look.LastRunForIssue(iss.ID); err == nil {
+				resumeFromRunID = c.resumableRunID(prev)
+			}
+		}
+	}
+	var runID string
+	if resumeFromRunID != "" {
+		runID = resumeFromRunID
+	} else {
+		var err error
+		runID, err = store.GenerateRunID()
+		if err != nil {
+			c.logger.Warn("dispatcher: mint run id for %s: %v", iss.Identifier, err)
+			c.revertTransition(ctx, iss.ID, iss.Identifier, transitionedFrom, cfg.Agent.RunningState)
+			_ = c.tracker.Release(ctx, iss.ID, c.hostMarker)
+			return
+		}
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 
@@ -327,8 +356,13 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 	c.state.slotsByState[iss.WorkflowState]++
 
 	spec := c.buildSpec(cfg, iss, runID, wsPath, attempt, entry)
+	spec.ResumeFromRunID = resumeFromRunID
 
-	c.logger.Info("dispatcher: dispatching %s → run=%s (attempt=%d, workspace=%s)", iss.Identifier, runID, attempt, wsPath)
+	if resumeFromRunID != "" {
+		c.logger.Info("dispatcher: resuming %s → run=%s (attempt=%d, workspace=%s)", iss.Identifier, runID, attempt, wsPath)
+	} else {
+		c.logger.Info("dispatcher: dispatching %s → run=%s (attempt=%d, workspace=%s)", iss.Identifier, runID, attempt, wsPath)
+	}
 
 	c.workersWG.Add(1)
 	go func() {
