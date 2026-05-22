@@ -151,6 +151,26 @@ func applyHostStateMounts(
 		}
 	}
 
+	// Disable git commit signing inside the container. The mounted
+	// ~/.gitconfig gives bots the operator's user.name/email so
+	// `git commit` knows who is committing, but the host's
+	// commit.gpgsign=true would also force signing — and the host's
+	// gpg-agent socket can't cross the container boundary, so
+	// signing fails with "gpg: can't create directory" /
+	// "no secret key". Set git's CONFIG_KEY env override (git ≥
+	// 2.31) to layer a `commit.gpgsign=false` on top of the mounted
+	// gitconfig, scoped to this run. Operators who want signed bot
+	// commits can amend post-finalize. spec.Env only gets these
+	// when the slot is free so workflow authors can override.
+	if spec.Env == nil {
+		spec.Env = map[string]string{}
+	}
+	if _, set := spec.Env["GIT_CONFIG_COUNT"]; !set {
+		spec.Env["GIT_CONFIG_COUNT"] = "1"
+		spec.Env["GIT_CONFIG_KEY_0"] = "commit.gpgsign"
+		spec.Env["GIT_CONFIG_VALUE_0"] = "false"
+	}
+
 	applyHostUIDRemap(spec, emitEvent, logger)
 
 	_ = emitEvent(store.EventSandboxHostStateMounted, map[string]interface{}{
