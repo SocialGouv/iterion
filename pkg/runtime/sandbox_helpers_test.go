@@ -197,14 +197,17 @@ func TestFromIRSpec_NilSubBlocks(t *testing.T) {
 	}
 }
 
-func TestResolveNetworkPolicy_NilSpecYieldsDefaultAllowlist(t *testing.T) {
+func TestResolveNetworkPolicy_NilSpecYieldsOpen(t *testing.T) {
 	mode, rules := resolveNetworkPolicy(nil)
-	if mode != netproxy.ModeAllowlist {
-		t.Errorf("mode = %q, want allowlist", mode)
+	if mode != netproxy.ModeOpen {
+		t.Errorf("mode = %q, want open (default since 2026-05-22)", mode)
 	}
-	// iterion-default preset is applied → rules must be non-empty.
-	if len(rules) == 0 {
-		t.Errorf("expected non-empty default preset rules, got %v", rules)
+	// No implicit preset is applied in open mode — the proxy isn't
+	// even started, so rules are irrelevant. Verify nothing was
+	// silently prefixed (would surface as misleading docs/logs if the
+	// caller later flipped to allowlist).
+	if len(rules) != 0 {
+		t.Errorf("expected no implicit rules in open default, got %v", rules)
 	}
 }
 
@@ -219,8 +222,9 @@ func TestResolveNetworkPolicy_ExplicitDenylist(t *testing.T) {
 	if mode != netproxy.ModeDenylist {
 		t.Errorf("mode = %q, want denylist", mode)
 	}
-	// Network.Preset empty + iterion-default preset applied by default.
-	// User rules append after the preset.
+	// Network.Preset is empty here → no implicit prefix; only the
+	// user-supplied rule is in play. (Operators who want the curated
+	// list can name it via Network.Preset: "iterion-default".)
 	hasEvil := false
 	for _, r := range rules {
 		if r == "*.evil.site" {

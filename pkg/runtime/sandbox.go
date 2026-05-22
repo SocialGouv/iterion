@@ -341,12 +341,25 @@ func proxyAddressesForDriver(d sandbox.Driver) (bind, advertise string, err erro
 //  2. spec.Network.Preset, when set, prefixes the rule list.
 //  3. spec.Network.Rules append after the preset.
 //
-// Default when spec.Network is nil: allowlist + iterion-default preset.
-// This makes "user enabled sandbox without thinking about network" land
-// on the security-first posture rather than open egress.
+// Default when spec.Network is nil: open (no proxy, full egress). Bots
+// routinely shell out to package managers, build tooling, and
+// integration endpoints that no static allowlist can predict — landing
+// on a deny-by-default posture made every fresh workflow author fight
+// the proxy before getting useful work done. Operators who want the
+// stricter security-first posture opt in via:
+//
+//	sandbox:
+//	  network:
+//	    mode: allowlist
+//	    preset: iterion-default   # or a custom rule list
+//
+// The iterion-default preset is still shipped — it's the recommended
+// starting point for the allowlist mode — but is no longer applied
+// implicitly. ModeAllowlist with an empty rule list is unchanged: it
+// blocks everything, surfacing as `network_blocked` events.
 func resolveNetworkPolicy(spec *sandbox.Spec) (netproxy.Mode, []string) {
-	mode := netproxy.ModeAllowlist
-	preset := netproxy.PresetIterionDefault
+	mode := netproxy.ModeOpen
+	preset := ""
 	var extra []string
 
 	if spec != nil && spec.Network != nil {
