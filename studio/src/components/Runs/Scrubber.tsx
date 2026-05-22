@@ -91,8 +91,20 @@ export default function Scrubber({
       <IconButton
         size="sm"
         variant="secondary"
-        label={playing ? "Pause replay" : "Play replay"}
-        tooltip={playing ? "Pause replay" : (scrubSeq === null ? "Play replay from the start" : "Play replay from current position")}
+        label={
+          playing
+            ? "Pause replay"
+            : scrubSeq === null
+              ? "Play replay from the start"
+              : "Play replay from current position"
+        }
+        tooltip={
+          playing
+            ? "Pause replay"
+            : scrubSeq === null
+              ? "Play replay from the start"
+              : "Play replay from current position"
+        }
         onClick={() => {
           if (playing) {
             setPlaying(false);
@@ -165,7 +177,7 @@ export default function Scrubber({
           type="button"
           onClick={() => onChange(null)}
           className="text-[10px] px-2 py-0.5 rounded bg-success-soft text-success-fg border border-success/40 hover:bg-success-soft/80"
-          title="Resume live updates"
+          title="Stop replay and follow live events again."
         >
           ● Live
         </button>

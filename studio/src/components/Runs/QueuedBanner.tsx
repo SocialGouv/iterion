@@ -57,9 +57,7 @@ export default function QueuedBanner({ run }: Props) {
         <span className="uppercase tracking-wide">Queued</span>
       </span>
       <span className="text-fg-default font-medium">{positionCopy}</span>
-      <span className="text-fg-subtle">
-        Waiting for an iterion runner to pick this run up.
-      </span>
+      <span className="text-fg-subtle">A runner pod will start it shortly.</span>
       {error && (
         <span className="text-[10px] text-danger truncate max-w-xs">
           {error}
@@ -71,6 +69,7 @@ export default function QueuedBanner({ run }: Props) {
           size="sm"
           onClick={() => void onCancel()}
           disabled={busy}
+          title="Drop from queue before any runner picks it up."
         >
           Cancel
         </Button>

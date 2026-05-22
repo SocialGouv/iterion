@@ -78,7 +78,11 @@ export default function InfoPanel({ run }: InfoPanelProps) {
 
         <Section title="Worktree">
           <Row label="Mode">
-            <span>{run.worktree ? "auto" : "inherited cwd"}</span>
+            <span>
+              {run.worktree
+                ? "auto"
+                : "Off (uses the project's working directory)"}
+            </span>
           </Row>
           {run.work_dir && (
             <Row label="Path">
@@ -101,10 +105,13 @@ export default function InfoPanel({ run }: InfoPanelProps) {
           )}
           {run.final_branch_error && (
             <Row label="Storage branch">
-              <span className="text-danger-fg" title={run.final_branch_error}>
-                creation failed — recover with{" "}
-                <Mono>{`git branch <name> ${run.final_commit?.slice(0, 7) ?? ""}`}</Mono>
-              </span>
+              <details className="text-danger-fg" title={run.final_branch_error}>
+                <summary className="cursor-pointer">creation failed</summary>
+                <div className="mt-1">
+                  Recover with{" "}
+                  <Mono>{`git branch <name> ${run.final_commit?.slice(0, 7) ?? ""}`}</Mono>
+                </div>
+              </details>
             </Row>
           )}
         </Section>
@@ -118,7 +125,7 @@ export default function InfoPanel({ run }: InfoPanelProps) {
               <span>{run.auto_merge ? "on" : "off"}</span>
             </Row>
             <Row label="Status">
-              <span>{run.merge_status || "—"}</span>
+              <span>{mergeStatusLabel(run.merge_status)}</span>
             </Row>
             {run.merged_into && (
               <Row label="Merged into">
@@ -229,4 +236,22 @@ function Mono({ children, copyable, title }: MonoProps) {
 
 function truncate(s: string, n: number): string {
   return s.length <= n ? s : s.slice(0, n - 1) + "…";
+}
+
+// mergeStatusLabel humanises the raw RunHeader.merge_status string for
+// the Merge section. The engine uses short identifiers ("merged",
+// "pending", "failed", "skipped"); operators read full English here.
+function mergeStatusLabel(s: RunHeader["merge_status"] | undefined): string {
+  switch (s) {
+    case "merged":
+      return "Merged";
+    case "pending":
+      return "Awaiting merge";
+    case "failed":
+      return "Merge failed";
+    case "skipped":
+      return "Skipped";
+    default:
+      return s || "—";
+  }
 }

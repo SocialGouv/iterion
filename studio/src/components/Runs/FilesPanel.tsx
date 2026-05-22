@@ -425,14 +425,16 @@ function reasonLabel(reason: string | undefined): string {
     case "no_baseline":
       return "This run has no base commit — branch diff unavailable";
     case "worktree_gone":
-      return "Worktree was cleaned up — switch to Branch view";
+      return "Worktree was cleaned up after the run finished. Showing branch view.";
     default:
       return reason ?? "Files unavailable";
   }
 }
 
 function emptyMessage(mode: ViewMode): string {
-  return mode === "branch" ? "No committed changes yet" : "No changes";
+  return mode === "branch"
+    ? "No committed changes yet"
+    : "No uncommitted changes — the agent hasn't touched any tracked file yet.";
 }
 
 // isLive defaults to true when the field is absent so pre-feature

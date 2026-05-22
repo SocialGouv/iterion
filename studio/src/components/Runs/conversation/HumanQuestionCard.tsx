@@ -26,14 +26,19 @@ export default function HumanQuestionCard({ runId, message, isActive }: Props) {
   if (!isActive) {
     return (
       <div className="ml-5 mt-1 text-[11px] italic text-fg-subtle">
-        Waiting for run to pause at {message.nodeId}…
+        Waiting for the run to pause at this step…{" "}
+        <code className="not-italic text-[10px] font-mono text-fg-muted">
+          {message.nodeId}
+        </code>
       </div>
     );
   }
   return (
     <div className="mt-1 rounded-md border-2 border-warning bg-warning-soft/20 px-3 py-2 space-y-2">
       <div className="flex items-center gap-2 text-[11px]">
-        <span className="font-medium text-warning-fg">Paused — needs your input</span>
+        <span className="font-medium text-warning-fg">
+          Your input unblocks this step
+        </span>
         <code className="px-1.5 py-0.5 rounded bg-warning-soft/40 font-mono text-fg-default">
           {message.nodeId}
         </code>

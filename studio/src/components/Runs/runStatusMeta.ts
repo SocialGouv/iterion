@@ -20,11 +20,11 @@ export const STATUS_VARIANT: Record<RunStatus, BadgeVariant> = {
 export function labelForStatus(s: RunStatus): string {
   switch (s) {
     case "paused_waiting_human":
-      return "Paused (input)";
+      return "Paused — input needed";
     case "paused_operator":
-      return "Paused (operator)";
+      return "Paused — operator";
     case "failed_resumable":
-      return "Failed (resumable)";
+      return "Failed — resumable";
     case "queued":
       return "Queued";
     default:

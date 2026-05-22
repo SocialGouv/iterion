@@ -218,7 +218,7 @@ export default function RunHeader({ run, active, wsState }: Props) {
                 size="sm"
                 onClick={() => void onPause()}
                 disabled={busy}
-                title="Soft pause — interrupts at the next safe boundary, preserves a checkpoint, resumable from this header"
+                title="Pause at the next safe boundary. A checkpoint is saved; resume from this header."
               >
                 Pause
               </Button>
@@ -229,7 +229,7 @@ export default function RunHeader({ run, active, wsState }: Props) {
                 size="sm"
                 onClick={() => void onCancel()}
                 disabled={busy}
-                title="Cancel this run"
+                title={cancelTooltip(run.status)}
               >
                 Cancel
               </Button>
@@ -240,7 +240,7 @@ export default function RunHeader({ run, active, wsState }: Props) {
                 size="sm"
                 onClick={() => setResumeOpen(true)}
                 disabled={busy}
-                title="Resume this run from its last checkpoint"
+                title="Resume from the last checkpoint."
               >
                 Resume…
               </Button>
@@ -251,7 +251,7 @@ export default function RunHeader({ run, active, wsState }: Props) {
                 size="sm"
                 onClick={() => setForkOpen(true)}
                 disabled={busy}
-                title="Fork — create a new run resuming from a prior LLM turn (Shift+submit forks in background)"
+                title="Fork: start a new run from a prior LLM turn (Shift+click forks in background)."
               >
                 ⑂ Fork…
               </Button>
@@ -329,6 +329,25 @@ export default function RunHeader({ run, active, wsState }: Props) {
 function basename(path: string): string {
   const parts = path.split(/[\\/]/);
   return parts[parts.length - 1] || path;
+}
+
+// cancelTooltip tailors the Cancel button's hover text to the run's
+// status so operators understand the difference between aborting an
+// in-flight run, giving up on a human gate, and dropping a queued run
+// before any runner sees it.
+// Exported for the unit test that locks the per-status wording.
+export function cancelTooltip(status: RunHeaderType["status"]): string {
+  switch (status) {
+    case "queued":
+      return "Drop from the queue before any runner picks this up.";
+    case "paused_waiting_human":
+    case "paused_operator":
+      return "Cancel without answering — the run terminates.";
+    case "running":
+      return "Stop the run as soon as the engine reaches a safe boundary.";
+    default:
+      return "Cancel this run.";
+  }
 }
 
 // RunNameEditor is the inline edit affordance for the run name. Mounted
@@ -426,6 +445,7 @@ function WSDisconnectBanner({
     <div
       role="status"
       aria-live="polite"
+      aria-atomic="true"
       className="px-4 py-1.5 bg-warning-soft border-b border-warning/40 flex items-center gap-2 text-[11px] text-warning-fg"
     >
       <LiveDot tone="danger" size="sm" pulse={false} />
@@ -595,29 +615,33 @@ function parseErrorCode(err: string): string {
 function errorHint(code: string, run: RunHeaderType): string | null {
   switch (code) {
     case "BUDGET_EXCEEDED":
-      return `Budget exhausted. Raise the workflow's \`budget:\` block (max_cost_usd, max_tokens, max_iterations, or max_duration) then \`iterion resume --run-id ${run.id}${
+      return `Raise the workflow's \`budget:\` block (max_cost_usd, max_tokens, max_iterations, or max_duration), then \`iterion resume --run-id ${run.id}${
         run.file_path ? ` --file ${run.file_path}` : ""
       } --force\` to continue past the original budget.`;
     case "RATE_LIMITED":
-      return "Upstream provider rate-limited the request. Wait a few minutes then resume — the engine will retry from the failed node.";
+      return "Wait a few minutes for the provider rate limit to clear, then resume — the engine retries from the failed node.";
     case "LOOP_EXHAUSTED":
-      return "A loop hit its iteration cap. Either raise the loop's `(N)` count in the workflow, or accept the partial output and let the run finish.";
+      return "Raise the loop's `(N)` count in the workflow, or accept the partial output and let the run finish.";
     case "CONTEXT_LENGTH_EXCEEDED":
-      return "Conversation context overflowed the model's window. Lower the per-node compaction `ratio:` (or enable compaction) and resume.";
+      return "Lower the per-node compaction `ratio:` (or enable compaction) and resume — the conversation overflowed the model's window.";
     case "WORKSPACE_SAFETY":
-      return "Multiple mutating branches tried to touch the workspace concurrently. Re-author the workflow so at most one branch holds a worktree-touching tool.";
+      return "Re-author the workflow so at most one branch holds a worktree-touching tool — multiple mutating branches collided.";
     case "TIMEOUT":
-      return "A node exceeded its time budget. Increase `max_duration` in the workflow's `budget:` block or set a per-node timeout, then resume.";
+      return "Increase `max_duration` in the workflow's `budget:` block (or set a per-node timeout), then resume.";
     case "TOOL_FAILED_PERMANENT":
-      return "A tool returned a non-retryable error. Inspect the failing tool call in the Tools tab, fix the input or the tool itself, then resume.";
+      return "Inspect the failing tool call in the Tools tab, fix the input or the tool itself, then resume.";
     case "SCHEMA_VALIDATION":
-      return "An agent's structured output didn't match its schema. Tighten the prompt or relax the schema, then `iterion resume --force` (workflow source changed).";
+      return "Tighten the agent's prompt or relax the schema, then `iterion resume --force` (the workflow source has changed).";
     case "RESUME_INVALID":
-      return "Resume rejected: the workflow source changed since the run started. Add `--force` to the resume command to override the hash check.";
+      return "Add `--force` to the resume command to override the hash check — the workflow source changed since launch.";
     case "NETWORK_TRANSIENT":
-      return "Network blip while reaching the LLM API. Resume — the engine will retry with backoff.";
+      return "Resume to retry the LLM API call — a transient network blip interrupted the request.";
     default:
-      return null;
+      // Suppress the hint for raw panics / stacktraces; otherwise point
+      // the operator at the Events tab so they at least know where to
+      // look next.
+      if (run.error?.startsWith("panic:")) return null;
+      return "Open the Events tab for the failing step's logs, then resume after addressing the root cause.";
   }
 }
 
@@ -657,7 +681,10 @@ function MergeStatusBadge({
   }
   if (status === "failed") {
     return (
-      <span className="ml-2 px-1.5 py-0.5 rounded bg-danger-soft text-danger-fg">
+      <span
+        className="ml-2 px-1.5 py-0.5 rounded bg-danger-soft text-danger-fg"
+        title="Open the left-panel Commits tab to retry."
+      >
         merge failed — retry from Commits tab
       </span>
     );

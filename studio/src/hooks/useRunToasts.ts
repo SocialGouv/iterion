@@ -34,7 +34,7 @@ export function useRunToasts(
   }, [events, snapshotLastSeq, addToast]);
 }
 
-function toastForEvent(
+export function toastForEvent(
   e: RunEvent,
 ): { message: string; type: "success" | "error" | "info" | "warning" } | null {
   switch (e.type) {
@@ -44,15 +44,24 @@ function toastForEvent(
       const err = (e.data?.["error"] as string | undefined) ?? "see logs";
       return { message: `Run failed: ${err}`, type: "error" };
     }
-    case "run_paused":
+    case "run_paused": {
+      // Operator-initiated pauses are non-urgent — they happen because
+      // the operator clicked Pause, so a warning toast over-dramatizes
+      // the event. Engine-side input-requested pauses keep the
+      // warning tone so they read as action-required.
+      const reason = e.data?.["reason"] as string | undefined;
+      if (reason === "operator") {
+        return { message: "Run paused by operator", type: "info" };
+      }
       return { message: "Run paused — input requested", type: "warning" };
+    }
     case "run_resumed":
       return { message: "Run resumed", type: "info" };
     case "run_cancelled":
       return { message: "Run cancelled", type: "info" };
     case "budget_exceeded": {
       const dim = (e.data?.["dimension"] as string | undefined) ?? "budget";
-      return { message: `Budget exceeded: ${dim}`, type: "error" };
+      return { message: `Budget exhausted: ${dim} hit hard cap.`, type: "error" };
     }
     default:
       return null;

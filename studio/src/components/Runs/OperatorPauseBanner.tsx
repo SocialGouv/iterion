@@ -43,10 +43,19 @@ export default function OperatorPauseBanner({ run }: Props) {
   const checkpointNode = (run.checkpoint as { node_id?: string } | undefined)?.node_id;
 
   return (
-    <div className="shrink-0 px-4 py-2 bg-info-soft/40 border-b border-info/30 flex items-center gap-3 text-[12px]">
+    <div
+      className="shrink-0 px-4 py-2 bg-info-soft/40 border-b border-info/30 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px]"
+      role="status"
+      aria-live="polite"
+    >
       <span className="font-mono text-info">⏸ Paused (operator)</span>
       <span className="text-fg-muted">
-        {checkpointNode ? `Agent halted before ${checkpointNode}.` : "Agent halted at the next safe boundary."}
+        {checkpointNode
+          ? `Agent halted before ${checkpointNode}.`
+          : "Agent halted at the next safe boundary."}
+      </span>
+      <span className="text-fg-subtle">
+        The run will not progress until you click Resume.
       </span>
       <div className="ml-auto flex items-center gap-2">
         {error && <span className="text-[11px] text-danger">{error}</span>}

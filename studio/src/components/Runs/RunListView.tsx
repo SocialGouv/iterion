@@ -1,7 +1,12 @@
 import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation, useSearch } from "wouter";
 
-import { Cross2Icon, MagnifyingGlassIcon, RocketIcon } from "@radix-ui/react-icons";
+import {
+  Cross2Icon,
+  MagnifyingGlassIcon,
+  ReloadIcon,
+  RocketIcon,
+} from "@radix-ui/react-icons";
 
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -168,7 +173,10 @@ export default function RunListView() {
 
       <div className="flex-1 overflow-auto">
         {loading && runs.length === 0 ? (
-          <EmptyState message="Loading…" />
+          <EmptyState
+            message="Loading runs…"
+            icon={<ReloadIcon className="animate-spin" />}
+          />
         ) : error ? (
           <EmptyState message={<span className="text-danger">{error}</span>} />
         ) : runs.length === 0 ? (
@@ -196,15 +204,34 @@ export default function RunListView() {
             }
           />
         ) : filteredRuns.length === 0 ? (
-          <EmptyState
-            title="No matching runs"
-            message="Try a different search term or widen the date range."
-            action={
-              <Button variant="secondary" size="sm" onClick={clearFilters}>
-                Clear filters
-              </Button>
-            }
-          />
+          status !== "" ? (
+            <EmptyState
+              title={`No ${statusFilterLabel(status)} runs`}
+              message="Pick a different status, or clear the filters to see everything."
+              action={
+                <Button variant="secondary" size="sm" onClick={() => setStatus("")}>
+                  Show all statuses
+                </Button>
+              }
+              secondaryAction={
+                filtersActive ? (
+                  <Button variant="ghost" size="sm" onClick={clearFilters}>
+                    Clear search / date
+                  </Button>
+                ) : undefined
+              }
+            />
+          ) : (
+            <EmptyState
+              title="No matching runs"
+              message="Try a different search term or widen the date range."
+              action={
+                <Button variant="secondary" size="sm" onClick={clearFilters}>
+                  Clear filters
+                </Button>
+              }
+            />
+          )
         ) : (
           <>
             {/* Desktop / tablet: standard 6-column table. */}
@@ -371,6 +398,17 @@ function hasFriendlyName(run: RunSummary): boolean {
 // before the friendly-name feature shipped).
 function friendlyLabel(run: RunSummary): string {
   return hasFriendlyName(run) ? run.name! : run.workflow_name;
+}
+
+// statusFilterLabel returns a lower-case fragment suited for the
+// "No <status> runs" empty headline (matches the chip label so the
+// phrasing stays consistent between the chip and the empty state).
+// Exported for the corresponding unit test; not consumed elsewhere.
+export function statusFilterLabel(status: RunStatus | ""): string {
+  if (status === "") return "matching";
+  const entry = STATUS_FILTERS.find((f) => f.value === status);
+  const label = entry?.label ?? labelForStatus(status);
+  return label.toLowerCase();
 }
 
 function formatDuration(startISO: string, endISO?: string): string {

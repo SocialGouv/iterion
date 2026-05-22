@@ -6,6 +6,7 @@ import type { RunStatus } from "@/api/runs";
 import { Badge } from "@/components/ui";
 import { ThinkingIndicator } from "@/components/ui/ThinkingIndicator";
 import { phrasesForPreflight } from "@/lib/whats-next/loadingPhrases";
+import { labelForStatus } from "@/components/Runs/runStatusMeta";
 
 interface Props {
   // Set once the launch round-trip returns a run_id.
@@ -69,54 +70,91 @@ export default function PreFlightPanel({
   );
 }
 
+export function pickCopy(
+  status: Props["status"],
+  runStatus: RunStatus | null,
+  rawEventCount: number,
+): { title: string; body: string } {
+  if (status === "launching" || runStatus === null) {
+    return {
+      title: "Starting the run…",
+      body: "Loading the backend, tools, and any sandbox declared by the bot. The first survey step follows.",
+    };
+  }
+  if (runStatus === "queued") {
+    return {
+      title: "Queued",
+      body: "A runner will pick this up shortly.",
+    };
+  }
+  if (runStatus === "running" && rawEventCount === 0) {
+    return {
+      title: "Run dispatched",
+      body: "The engine is up; waiting for the first event to reach the studio.",
+    };
+  }
+  if (runStatus === "running") {
+    return {
+      title: "Preparing the first step",
+      body: "Iterion is warming up (models, MCP servers, attachments). The chat begins when the first whats-next node fires.",
+    };
+  }
+  if (runStatus === "paused_waiting_human") {
+    return {
+      title: "Waiting for your input",
+      body: "A human gate is paused but the chat bubble hasn't materialised yet. Refresh in a moment, or open the run console for raw events.",
+    };
+  }
+  return {
+    title: "Waiting…",
+    body: "The run is in an intermediate state. Use the run console for the full picture.",
+  };
+}
+
 function RunStatusPill({ status }: { status: RunStatus }) {
+  const label = labelForStatus(status);
   switch (status) {
     case "queued":
       return (
         <Badge variant="info" size="sm">
-          queued
+          {label}
         </Badge>
       );
     case "running":
       return (
         <Badge variant="accent" size="sm">
-          running
+          {label}
         </Badge>
       );
     case "paused_waiting_human":
-      return (
-        <Badge variant="warning" size="sm">
-          waiting
-        </Badge>
-      );
     case "failed_resumable":
       return (
         <Badge variant="warning" size="sm">
-          retryable
+          {label}
         </Badge>
       );
     case "failed":
       return (
         <Badge variant="danger" size="sm">
-          failed
+          {label}
         </Badge>
       );
     case "cancelled":
       return (
         <Badge variant="neutral" size="sm">
-          cancelled
+          {label}
         </Badge>
       );
     case "finished":
       return (
         <Badge variant="success" size="sm">
-          finished
+          {label}
         </Badge>
       );
     default:
       return (
         <Badge variant="neutral" size="sm">
-          {status}
+          {label}
         </Badge>
       );
   }

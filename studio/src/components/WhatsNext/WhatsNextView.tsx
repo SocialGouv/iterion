@@ -15,6 +15,7 @@ import type {
 
 import AgentChatbox from "@/components/shared/AgentChatbox";
 import { Button } from "@/components/ui/Button";
+import { labelForStatus } from "@/components/Runs/runStatusMeta";
 import ChatTranscript from "./ChatTranscript";
 import HumanChatTurn from "./HumanChatTurn";
 import PreFlightPanel from "./PreFlightPanel";
@@ -269,7 +270,11 @@ function PendingTurnFooter({
   onSubmit: Parameters<typeof HumanChatTurn>[0]["onSubmit"];
 }) {
   return (
-    <div className="border-t border-border-default bg-surface-1">
+    <div
+      className="border-t border-border-default bg-surface-1"
+      role="status"
+      aria-live="polite"
+    >
       <div className="mx-auto max-w-3xl px-4 py-3">
         <HumanChatTurn
           message={message}
@@ -297,8 +302,8 @@ function ResumeFooter({
 }) {
   const explainer =
     runStatus === "failed_resumable"
-      ? "A node failed but the run kept its checkpoint. Resume to re-enter from where it stopped."
-      : "Run was cancelled with the checkpoint preserved. Resume to pick up where it stopped.";
+      ? "A step failed. The run kept its checkpoint — Resume retries from that point."
+      : "Run was cancelled. Resume picks up from the last checkpoint.";
   return (
     <div className="border-t border-border-default bg-surface-1">
       <div className="mx-auto max-w-3xl px-4 py-3 flex items-center gap-3">
@@ -334,15 +339,6 @@ function SessionHeader({
         )}
       </h2>
       <div className="flex items-baseline gap-3">
-        {session.status === "ended" && (
-          <button
-            type="button"
-            onClick={session.newSession}
-            className="text-[11px] text-accent hover:underline cursor-pointer"
-          >
-            New session
-          </button>
-        )}
         {session.runId && (
           <Link
             href={`/runs/${encodeURIComponent(session.runId)}`}
@@ -355,18 +351,31 @@ function SessionHeader({
         <div className="text-[10px] uppercase tracking-wide text-fg-subtle">
           {humanStatus(session.status, session.runStatus)}
         </div>
+        {session.status === "ended" && (
+          <button
+            type="button"
+            onClick={session.newSession}
+            className="text-[11px] text-accent hover:underline cursor-pointer"
+            title="Start fresh — the current run stays in the run list."
+          >
+            New session
+          </button>
+        )}
       </div>
     </div>
   );
 }
 
-function humanStatus(
+export function humanStatus(
   hi: ReturnType<typeof useWhatsNextSession>["status"],
   raw: ReturnType<typeof useWhatsNextSession>["runStatus"],
 ): string {
-  if (hi === "launching") return "launching…";
-  if (hi === "submitting") return "submitting…";
-  if (hi === "ended") return `ended (${raw ?? "unknown"})`;
-  if (raw === "paused_waiting_human") return "waiting for you";
-  return "running";
+  if (hi === "launching") return "Launching…";
+  if (hi === "submitting") return "Submitting…";
+  if (hi === "ended") {
+    const label = raw ? labelForStatus(raw) : "unknown";
+    return `Ended · ${label}`;
+  }
+  if (raw === "paused_waiting_human") return "Waiting for your reply";
+  return "Active";
 }

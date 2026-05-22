@@ -79,9 +79,7 @@ export default function RunMetrics({ active, onJumpToFailed, bare = false }: Pro
               ? "bg-danger-soft text-danger-fg border-danger/40"
               : "bg-warning-soft text-warning-fg border-warning/40"
           }`}
-          title={`The runtime hit ${Math.round(m.budgetWarning.ratio * 100)}% of the ${m.budgetWarning.dimension} budget (${m.budgetWarning.used} / ${m.budgetWarning.limit}). ${
-            m.budgetExceeded ? "Hard cap reached." : "Soft threshold; the run will be cancelled once the hard cap is hit."
-          }`}
+          title={budgetPillTooltip(m.budgetWarning, m.budgetExceeded)}
         >
           budget {m.budgetWarning.dimension} {Math.round(m.budgetWarning.ratio * 100)}%
         </span>
@@ -122,7 +120,7 @@ export default function RunMetrics({ active, onJumpToFailed, bare = false }: Pro
           title={
             m.firstFailedNodeId
               ? `Jump to first failed node: ${m.firstFailedNodeId}`
-              : "Failed executions"
+              : "All failed branches converged; nothing to jump to."
           }
         >
           <span className="text-fg-subtle">failed</span>
@@ -158,7 +156,11 @@ function Metric({
       ? "text-danger-fg"
       : "text-fg-default";
   return (
-    <span className="inline-flex items-center gap-1" title={tooltip}>
+    <span
+      className="inline-flex items-center gap-1"
+      title={tooltip}
+      aria-label={`${label}: ${value}`}
+    >
       <span className="text-fg-subtle">{label}</span>
       <span className={`font-mono font-semibold ${valueColor}`}>
         {value}
@@ -166,6 +168,23 @@ function Metric({
       </span>
     </span>
   );
+}
+
+// budgetPillTooltip composes the two-sentence hover hint for the budget
+// warning chip. Sentence 1 names the dimension and pressure; sentence 2
+// explains the consequence (hard cap reached vs. soft threshold).
+// Exported for the corresponding unit test; not consumed by other
+// modules.
+export function budgetPillTooltip(
+  warning: { dimension: string; ratio: number; used: number; limit: number },
+  exceeded: boolean,
+): string {
+  const pct = Math.round(warning.ratio * 100);
+  const head = `${warning.dimension} at ${pct}% (${warning.used} / ${warning.limit}).`;
+  const tail = exceeded
+    ? "Hard cap reached."
+    : "Run will stop when the hard cap is hit.";
+  return `${head} ${tail}`;
 }
 
 function useNow(intervalMs: number | null): number {

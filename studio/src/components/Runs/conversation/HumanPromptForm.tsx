@@ -193,11 +193,12 @@ export default function HumanPromptForm({
     <div className="space-y-2">
       {staleHash && (
         <div className="text-[10px] text-warning-fg" role="status">
-          workflow source changed since launch — submitting may fail
+          The workflow source changed since this run started. Submit will still
+          try — pass <code>--force</code> later if it rejects.
         </div>
       )}
       {loading ? (
-        <p className="text-[11px] text-fg-subtle">Loading schema…</p>
+        <p className="text-[11px] text-fg-subtle">Loading question form…</p>
       ) : useFallback ? (
         <PauseForm
           runId={runId}
@@ -248,7 +249,7 @@ export default function HumanPromptForm({
           )}
           {showQuickActions && (
             <div className="flex items-center gap-2 pt-1">
-              <span className="text-[10px] text-fg-subtle">Quick reply:</span>
+              <span className="text-[10px] text-fg-subtle">Quick reply</span>
               {quickActions.map((qa) => (
                 <button
                   key={qa}
@@ -256,6 +257,7 @@ export default function HumanPromptForm({
                   disabled={busy}
                   onClick={() => submitQuickAction(qa)}
                   className="px-2 py-0.5 rounded-full border border-border-subtle text-[11px] text-fg-muted hover:text-fg-default hover:border-border-strong disabled:opacity-50"
+                  title={quickActionTitle(qa)}
                 >
                   {labelFor(qa)}
                 </button>
@@ -272,4 +274,18 @@ function labelFor(qa: "skip" | "idk" | "later"): string {
   if (qa === "skip") return "Skip";
   if (qa === "idk") return "I don't know";
   return "Later";
+}
+
+// quickActionTitle returns the hover hint for the quick-reply chips —
+// plain English instead of the raw `[QA:*]` marker the bot consumes
+// downstream.
+function quickActionTitle(qa: "skip" | "idk" | "later"): string {
+  switch (qa) {
+    case "skip":
+      return "Submit a skip token; the bot will route accordingly.";
+    case "idk":
+      return "Tell the bot you don't know; it can decide how to proceed.";
+    case "later":
+      return "Ask the bot to come back to this question later.";
+  }
 }

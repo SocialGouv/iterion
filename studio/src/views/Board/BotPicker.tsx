@@ -50,7 +50,7 @@ export function BotPicker({
       options={options}
       onChange={(v) => onChange(v)}
       emptyLabel="(dispatcher default)"
-      emptyDescription="Use the workflow configured on the dispatcher."
+      emptyDescription="Falls back to the workflow configured under Dispatcher settings."
       placeholder="Search bots…"
       disabled={disabled}
     />

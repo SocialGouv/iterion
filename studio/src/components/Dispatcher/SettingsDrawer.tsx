@@ -136,7 +136,7 @@ function Form({ cfg, setCfg }: FormProps) {
         </Field>
         <Field
           label="Workflow path"
-          hint=".iter, .bot, .botz archive, or unpacked bundle dir (relative to the project)"
+          hint=".iter, .bot, .botz, or unpacked-bundle dir. Path is resolved relative to the project root."
         >
           <input
             className="input"
@@ -188,7 +188,10 @@ function Form({ cfg, setCfg }: FormProps) {
       </Section>
 
       <Section title="Polling">
-        <Field label="Interval (ms)" hint="Default 30000 (30s)">
+        <Field
+          label="Interval (ms)"
+          hint="How often the dispatcher checks the tracker. Default 30 000 ms (30 s)."
+        >
           <input
             className="input"
             type="number"
@@ -257,6 +260,8 @@ function Form({ cfg, setCfg }: FormProps) {
       <Section title="Hooks">
         <p className="text-xs text-fg-muted">
           Inline shell snippets that run with cwd = workspace. Leave blank to skip.
+          Use them to clone the issue&apos;s source, seed credentials, or run a
+          teardown.
         </p>
         <HookFields
           label="after_create"
@@ -283,7 +288,7 @@ function Form({ cfg, setCfg }: FormProps) {
       <Section title="Stall detection">
         <Field
           label="Timeout (ms)"
-          hint="Cancel + retry a run with no events for this long. 0 disables."
+          hint="If a run is silent for this long, the dispatcher cancels and retries it. 0 disables stall detection."
         >
           <input
             className="input"

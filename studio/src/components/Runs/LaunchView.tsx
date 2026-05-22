@@ -14,6 +14,7 @@ import type {
 } from "@/api/types";
 import { CheckCircledIcon, ExclamationTriangleIcon } from "@radix-ui/react-icons";
 
+import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { DesktopOnlyNotice } from "@/components/ui/DesktopOnlyNotice";
 import { Select } from "@/components/ui/Select";
@@ -111,7 +112,7 @@ function SandboxBadge({ mode }: { mode: string }) {
     : "bg-danger-soft text-danger-fg border-danger/40";
   const title = active
     ? "Workflow declares a sandbox block — tools run inside the container."
-    : "Workflow has no active sandbox — tools run directly on the host. Add `sandbox: auto` for isolation.";
+    : "Tools and shell commands will run on this host. Add `sandbox: auto` to the workflow file to opt into container isolation.";
   return (
     <span
       className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border ${cls}`}
@@ -147,7 +148,7 @@ function WorktreeTargetSummary({
       <code className="font-mono text-fg-default">{branch}</code>
       <span className="text-fg-subtle"> · </span>
       {skipMerge ? (
-        <span className="text-fg-default">no FF (branch only)</span>
+        <span className="text-fg-default">Branch only — no fast-forward</span>
       ) : (
         <>
           <span className="text-fg-subtle">FF→ </span>
@@ -516,9 +517,15 @@ export default function LaunchView() {
             )}
             {fields.length === 0 ? (
               attachmentFields.length === 0 && (
-                <p className="text-xs text-fg-subtle">
-                  This workflow declares no input vars. You can launch it as-is.
-                </p>
+                <div className="space-y-1">
+                  <p className="text-xs text-fg-subtle">
+                    This workflow declares no input vars. You can launch it as-is.
+                  </p>
+                  <p className="text-[10px] text-fg-subtle">
+                    The workflow&apos;s prompts will read directly from{" "}
+                    <code>vars:</code> defaults.
+                  </p>
+                </div>
               )
             ) : (
               <form
@@ -610,8 +617,8 @@ export default function LaunchView() {
                     ))}
                   </Select>
                   <div className="mt-1 text-[10px] text-fg-subtle">
-                    Replaces the workflow's <code>default_backend:</code>.
-                    Node-level explicit <code>backend:</code> still wins.
+                    Overrides the workflow&apos;s default. Nodes that pin a specific{" "}
+                    <code>backend:</code> keep their pin.
                   </div>
                 </div>
               </div>
@@ -621,13 +628,18 @@ export default function LaunchView() {
                 type="button"
                 className="text-xs text-fg-muted hover:text-fg-default flex items-center gap-1"
                 onClick={() => setShowAdvanced((v) => !v)}
+                title={
+                  worktreeOn
+                    ? "Configure where the run's commits land."
+                    : "This workflow doesn't declare `worktree: auto`; the fields below have no effect."
+                }
               >
                 <span>{showAdvanced ? "▼" : "▶"}</span>
                 <span>Worktree finalization (squash / merge)</span>
                 {!worktreeOn && (
-                  <span className="text-[10px] text-fg-subtle">
-                    — workflow has no `worktree: auto`, fields are ignored
-                  </span>
+                  <Badge variant="neutral" size="sm">
+                    disabled
+                  </Badge>
                 )}
               </button>
               {showAdvanced && (
@@ -654,12 +666,20 @@ export default function LaunchView() {
                         value={mergeInto}
                         onChange={(e) => setMergeInto(e.target.value)}
                       />
-                      <div className="mt-1 text-[10px] text-fg-subtle">
-                        Empty/<code>current</code>: fast-forward your current branch.
-                        <code> none</code>: keep commits on the storage branch only.
-                        Named branch: only honoured if it matches your checked-out
-                        branch.
-                      </div>
+                      <ul className="mt-1 space-y-0.5 text-[10px] text-fg-subtle list-disc list-inside">
+                        <li>
+                          Empty / <code>current</code> — fast-forward your current
+                          branch.
+                        </li>
+                        <li>
+                          <code>none</code> — keep commits on the storage branch
+                          only.
+                        </li>
+                        <li>
+                          Named branch — honoured only if it matches your
+                          checked-out branch.
+                        </li>
+                      </ul>
                     </div>
                   </div>
                   <div className="grid grid-cols-[160px_1fr] gap-3 items-start">
@@ -725,10 +745,9 @@ export default function LaunchView() {
                         <span>Auto-merge when run finishes</span>
                       </label>
                       <div className="mt-1 text-[10px] text-fg-subtle">
-                        Off (default): commits land on the storage branch only;
-                        pick the strategy later from the run's Commits tab —
-                        GitHub-PR style. On: the engine applies merge_strategy
-                        synchronously at end of run.
+                        Off by default. Commits land on the storage branch; merge
+                        them from the Commits tab when ready. When on, the engine
+                        applies <code>merge_strategy</code> at end of run.
                       </div>
                     </div>
                   </div>
@@ -748,6 +767,11 @@ export default function LaunchView() {
               </Button>
               <SandboxBadge mode={sandboxModeLabel(doc)} />
               <CostPreviewChip filePath={filePath} source={currentSource || undefined} />
+              {missingRequired && (
+                <span className="text-[10px] text-warning-fg" role="status">
+                  {missingTitle}
+                </span>
+              )}
               <span className="text-[10px] text-fg-subtle">
                 Run ID is generated automatically.
               </span>

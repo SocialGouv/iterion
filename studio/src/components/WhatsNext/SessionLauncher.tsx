@@ -79,6 +79,11 @@ export default function SessionLauncher({
                 }
                 disabled={busy}
               />
+              {v.defaultFrom === "work_dir" && (
+                <p className="text-[10px] text-fg-subtle">
+                  Absolute path. Defaults to the studio&apos;s working directory.
+                </p>
+              )}
             </div>
           ))}
         </div>
@@ -96,7 +101,7 @@ export default function SessionLauncher({
             disabled={!canLaunch}
             onClick={launch}
           >
-            {busy ? "Starting…" : "Start session"}
+            {busy ? "Starting…" : "Start"}
           </Button>
         </div>
       </div>

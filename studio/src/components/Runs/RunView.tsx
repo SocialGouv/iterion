@@ -10,7 +10,7 @@ import {
   type RunFile,
   type RunFilesMode,
 } from "@/api/runs";
-import { IconButton, Skeleton, Tabs } from "@/components/ui";
+import { Button, IconButton, Skeleton, Tabs } from "@/components/ui";
 import { selectRunningExecution, useRunStore } from "@/store/run";
 import { useUIStore } from "@/store/ui";
 import { useRunWebSocket } from "@/hooks/useRunWebSocket";
@@ -682,7 +682,15 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
   }, [selectedNodeExecutions, selectedNodeIteration]);
 
   if (!runId) {
-    return <div className="p-4 text-xs text-fg-subtle">Missing run id.</div>;
+    return (
+      <div className="h-full w-full flex flex-col items-center justify-center gap-3 p-8 text-center">
+        <h2 className="text-base font-semibold text-fg-default">No run selected</h2>
+        <p className="text-xs text-fg-muted max-w-sm">
+          Pick a run from the list, or launch a workflow from the editor to create
+          one.
+        </p>
+      </div>
+    );
   }
   if (!snapshot) {
     if (loadFailed) {
@@ -1047,27 +1055,38 @@ function RunViewLoadError({
         </h2>
         <p className="text-xs text-fg-muted font-mono break-all">{runId}</p>
         {isNotFound ? (
-          <p className="text-xs text-fg-muted">
-            This daemon&apos;s store doesn&apos;t have this run. It may live in a
-            different iterion store (e.g. the global <code>~/.iterion/runs/</code> slot
-            served by a different daemon, or a per-project store you haven&apos;t opened).
-          </p>
+          <>
+            <p className="text-xs text-fg-muted">
+              Open the project this run belongs to, or pick a different run from the
+              list.
+            </p>
+            <details className="text-[10px] text-fg-subtle">
+              <summary className="cursor-pointer">Why might this happen?</summary>
+              <p className="mt-1 text-left">
+                The run may live in a different iterion store — for example, the
+                global <code>~/.iterion/runs/</code> slot served by another daemon,
+                or a per-project store this studio instance hasn&apos;t opened.
+              </p>
+            </details>
+          </>
         ) : (
           <p className="text-xs text-fg-muted">{message}</p>
         )}
         <div className="flex justify-center gap-2 pt-2">
-          <button
-            className="bg-surface-2 hover:bg-surface-3 px-3 py-1.5 rounded text-xs text-fg-default"
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => setLocation("/runs")}
           >
             Back to runs
-          </button>
-          <button
-            className="bg-surface-2 hover:bg-surface-3 px-3 py-1.5 rounded text-xs text-fg-default"
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
             onClick={() => window.location.reload()}
           >
             Retry
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -1076,7 +1095,13 @@ function RunViewLoadError({
 
 function RunViewSkeleton() {
   return (
-    <div className="h-screen w-screen flex flex-col bg-surface-0">
+    <div
+      className="h-screen w-screen flex flex-col bg-surface-0"
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+    >
+      <span className="sr-only">Loading run console…</span>
       <div className="border-b border-border-default px-4 py-2 flex items-center gap-3">
         <Skeleton className="h-6 w-16" />
         <Skeleton className="h-5 w-48" />
