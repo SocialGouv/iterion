@@ -99,7 +99,7 @@ func applyHostStateMounts(
 
 	homeDir := resolveHostHomeDir()
 	iterionHomeDir := store.GlobalIterionDataDir()
-	var claudeDir, codexDir string
+	var claudeDir, codexDir, gitConfigPath string
 	if homeDir != "" {
 		claudeDir = filepath.Join(homeDir, ".claude")
 		// `~/.codex/auth.json` is where Codex CLI persists the
@@ -113,9 +113,21 @@ func applyHostStateMounts(
 		// auth.json" — surfaced on the 2026-05-22 dogfood when
 		// reviewer_gpt hit it on every feature_dev run.
 		codexDir = filepath.Join(homeDir, ".codex")
+		// `~/.gitconfig` carries the operator's git user.name +
+		// user.email (and the rest of their global git config:
+		// aliases, signing keys, etc.). Without this, in-container
+		// `git commit` fails with "Author identity unknown" — the
+		// classic blocker for any commit-producing bot
+		// (feature_dev's commit_changes tool, doc-align's
+		// post-fix commits, branch-improve-loop, …). Mount as a
+		// file (collectHostStateMounts treats both files and dirs
+		// the same; the bind is at the same host path so git
+		// resolves `$HOME/.gitconfig` identically in/out of the
+		// container).
+		gitConfigPath = filepath.Join(homeDir, ".gitconfig")
 	}
 
-	mounts := collectHostStateMounts(absWorkspace, iterionHomeDir, claudeDir, codexDir)
+	mounts := collectHostStateMounts(absWorkspace, iterionHomeDir, claudeDir, codexDir, gitConfigPath)
 	mountPairs := make([]string, 0, len(mounts))
 	for _, m := range mounts {
 		entry := fmt.Sprintf("source=%s,target=%s,type=bind", m.HostPath, m.ContainerPath)

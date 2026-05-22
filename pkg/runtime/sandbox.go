@@ -531,8 +531,12 @@ func collectHostStateMounts(workspacePath string, candidates ...string) []hostSt
 		if candidate == "" {
 			continue
 		}
-		info, err := os.Stat(candidate)
-		if err != nil || !info.IsDir() {
+		if _, err := os.Stat(candidate); err != nil {
+			// Missing host candidate (operator hasn't used the
+			// corresponding tool, or the file simply isn't there) →
+			// silent skip. Permission errors fall into the same
+			// bucket; surfacing them would spam the run console for
+			// candidates the workflow never actually needs.
 			continue
 		}
 		if pathContains(workspacePath, candidate) || pathContains(candidate, workspacePath) {
@@ -542,6 +546,11 @@ func collectHostStateMounts(workspacePath string, candidates ...string) []hostSt
 			// graph unambiguous.
 			continue
 		}
+		// Both directories (~/.iterion, ~/.claude, ~/.codex) and
+		// single files (~/.gitconfig) are supported: docker's bind
+		// machinery treats them uniformly as long as the target
+		// path exists on the host. Files in particular are how
+		// global git identity reaches in-container `git commit`.
 		out = append(out, hostStateMount{
 			HostPath:      candidate,
 			ContainerPath: candidate,
