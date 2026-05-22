@@ -96,6 +96,100 @@ func TestProxyConnectAllowedTunnels(t *testing.T) {
 	}
 }
 
+func TestProxySilentDenyDoesNotEmit(t *testing.T) {
+	// Two blocked hosts: one in the silent-deny list (Datadog), one
+	// not (a fresh evil.test). Both must be denied at TCP level, but
+	// only the non-silent host must trigger OnBlocked. Suppresses the
+	// 68-events-in-14-min noise observed in the live feature_dev run.
+	dialCalls := 0
+	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dialCalls++
+		t.Errorf("dial should not be called for blocked hosts (was: %q)", addr)
+		return nil, net.ErrClosed
+	}
+	emitted := make([]string, 0, 2)
+	p, err := Compile(ModeAllowlist, []string{"good.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prx, err := New(Options{
+		Policy: p,
+		Dial:   dial,
+		OnBlocked: func(host, _ string) {
+			emitted = append(emitted, host)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prx.Start("127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = prx.Shutdown(context.Background()) })
+
+	connectAndExpect403 := func(t *testing.T, host string) {
+		t.Helper()
+		conn, err := net.Dial("tcp", prx.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		_, _ = conn.Write([]byte("CONNECT " + host + ":443 HTTP/1.1\r\nHost: " + host + ":443\r\n\r\n"))
+		buf := make([]byte, 512)
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, _ := conn.Read(buf)
+		if !strings.Contains(string(buf[:n]), "403") {
+			t.Errorf("host %q: expected 403, got %q", host, string(buf[:n]))
+		}
+	}
+
+	// 1. A silent-deny host (claude-code's Datadog telemetry).
+	connectAndExpect403(t, "http-intake.logs.us5.datadoghq.com")
+	// 2. A subdomain of a silent-deny host (defence in depth).
+	connectAndExpect403(t, "ingest.api.datadoghq.com")
+	// 3. A non-listed evil host — MUST still trigger OnBlocked.
+	connectAndExpect403(t, "evil.test")
+
+	// Give OnBlocked a moment to fire (synchronous, but the proxy's
+	// HTTP server may dispatch on a different goroutine).
+	time.Sleep(50 * time.Millisecond)
+
+	if dialCalls != 0 {
+		t.Errorf("dial called %d times for blocked hosts", dialCalls)
+	}
+	if len(emitted) != 1 || emitted[0] != "evil.test" {
+		t.Errorf("emitted = %v, want exactly [evil.test] (silent-deny hosts must NOT fire OnBlocked)", emitted)
+	}
+}
+
+func TestIsSilentDenyHost(t *testing.T) {
+	cases := []struct {
+		host string
+		want bool
+	}{
+		// Exact match (Datadog primary + regional intakes).
+		{"http-intake.logs.us5.datadoghq.com", true},
+		{"http-intake.logs.us.datadoghq.com", true},
+		{"http-intake.logs.eu.datadoghq.com", true},
+		{"api.datadoghq.com", true},
+		// Subdomain of a listed entry.
+		{"ingest.api.datadoghq.com", true},
+		// Unrelated hosts must not match (no overly-broad ".com" match etc).
+		{"datadoghq.com", false},         // shorter than entries; not a suffix match
+		{"api.datadoghq.example", false}, // different TLD
+		{"evil.test", false},
+		{"", false},
+		// Confounders: substring but not a suffix match.
+		{"fake-api.datadoghq.com.evil.test", false},
+	}
+	for _, c := range cases {
+		got := isSilentDenyHost(c.host)
+		if got != c.want {
+			t.Errorf("isSilentDenyHost(%q) = %v, want %v", c.host, got, c.want)
+		}
+	}
+}
+
 func TestProxyConnectBlockedReturns403(t *testing.T) {
 	called := 0
 	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {

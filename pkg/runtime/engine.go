@@ -504,7 +504,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 	if repoRoot == "" {
 		repoRoot = engineRepoRoot(e.workDir)
 	}
-	sandboxCleanup, sbErr := e.startSandbox(ctx, runID, repoRoot)
+	sandboxCleanup, sbErr := e.startSandbox(ctx, runID, repoRoot, wtCtx.gitDir)
 	if sbErr != nil {
 		e.markFailedBestEffort(ctx, runID, "sandbox start", sbErr)
 		return fmt.Errorf("runtime: sandbox: %w", sbErr)
@@ -775,6 +775,7 @@ func (e *Engine) reconstructWorktreeContext(r *store.Run) *worktreeContext {
 	return &worktreeContext{
 		repoRoot:       r.RepoRoot,
 		wtPath:         r.WorkDir,
+		gitDir:         resolveWorktreeGitDir(r.RepoRoot, r.WorkDir),
 		originalBranch: originalBranch,
 		originalTip:    r.BaseCommit,
 	}

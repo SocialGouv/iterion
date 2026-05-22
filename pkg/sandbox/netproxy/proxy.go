@@ -267,8 +267,61 @@ func constantTimeEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
-// notifyBlocked fires the OnBlocked hook safely.
+// defaultSilentDenyHosts is the seed list of hostnames the proxy
+// still denies but never emits a `network_blocked` event for. Each
+// entry is matched as either an exact host or any subdomain (i.e. a
+// host like `http-intake.logs.datadoghq.com` covers itself AND
+// `*.http-intake.logs.datadoghq.com`).
+//
+// Seeded with the Datadog telemetry endpoints claude-code ships its
+// diagnostics to. The CONNECT proxy correctly denies them (Datadog
+// isn't in any default allowlist), but in a 14-minute live run those
+// denials drove 68 `network_blocked` events — drowning out actual
+// security signal. The deny still happens; only the noisy event is
+// suppressed.
+//
+// Extending this list is a deliberate, code-level decision so it
+// stays auditable. If a new telemetry host crops up, add it here and
+// land it in a regular commit.
+var defaultSilentDenyHosts = []string{
+	// claude-code → Datadog SaaS regions
+	"http-intake.logs.us5.datadoghq.com",
+	"http-intake.logs.us3.datadoghq.com",
+	"http-intake.logs.us.datadoghq.com",
+	"http-intake.logs.eu.datadoghq.com",
+	"http-intake.logs.datadoghq.com",
+	"api.datadoghq.com",
+}
+
+// isSilentDenyHost reports whether the given (canonicalised) host is
+// covered by the silent-deny list — either as an exact match or as a
+// subdomain of a listed host. Matching against the canonical form
+// (lowercase, no port, no trailing dot) keeps the logic robust to the
+// usual variants in CONNECT request lines.
+func isSilentDenyHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	for _, entry := range defaultSilentDenyHosts {
+		if host == entry {
+			return true
+		}
+		if strings.HasSuffix(host, "."+entry) {
+			return true
+		}
+	}
+	return false
+}
+
+// notifyBlocked fires the OnBlocked hook safely, unless the host
+// matches the silent-deny list — in which case the denial still
+// happens at handle() (the 403 response was already sent before this
+// call) but the event is suppressed to keep events.jsonl free of
+// telemetry noise.
 func (p *Proxy) notifyBlocked(host string) {
+	if isSilentDenyHost(host) {
+		return
+	}
 	if p.onBlocked != nil {
 		defer func() { _ = recover() }()
 		p.onBlocked(host, "policy denial")

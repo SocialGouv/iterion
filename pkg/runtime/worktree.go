@@ -51,6 +51,7 @@ func gitCmd(args ...string) *exec.Cmd {
 type worktreeContext struct {
 	repoRoot       string // absolute path to the main repo (where .git lives)
 	wtPath         string // absolute path to the per-run worktree
+	gitDir         string // absolute host path of the worktree's git-private dir (<repoRoot>/.git/worktrees/<basename(wtPath)>); the worktree's `.git` pointer file points here
 	originalBranch string // current branch on the main worktree at run start ("" if detached)
 	originalTip    string // SHA of HEAD at run start (worktree initial state)
 }
@@ -125,9 +126,27 @@ func setupWorktree(storeRoot, runID, repoHint string, logger *iterlog.Logger) (w
 	return worktreeContext{
 		repoRoot:       repoRoot,
 		wtPath:         wtPath,
+		gitDir:         resolveWorktreeGitDir(repoRoot, wtPath),
 		originalBranch: originalBranch,
 		originalTip:    originalTip,
 	}, cleanup, nil
+}
+
+// resolveWorktreeGitDir returns the absolute host path of the worktree's
+// git-private directory, i.e. `<repoRoot>/.git/worktrees/<name>`, where
+// <name> is the basename of wtPath (matching how `git worktree add`
+// registers it). The worktree's top-level `.git` pointer file contains
+// the literal `gitdir: <this-path>` — bind-mounting it at the same host
+// path inside a sandbox container is what lets in-container git commands
+// resolve the pointer correctly.
+//
+// Returns "" when either input is empty so the caller (sandbox mount
+// wiring) silently skips the bind on non-worktree runs.
+func resolveWorktreeGitDir(repoRoot, wtPath string) string {
+	if repoRoot == "" || wtPath == "" {
+		return ""
+	}
+	return filepath.Join(repoRoot, ".git", "worktrees", filepath.Base(wtPath))
 }
 
 // finalizeOptions controls the post-run worktree promotion. All fields
@@ -773,6 +792,7 @@ func RecoverFinalize(ctx context.Context, st store.RunStore, r *store.Run, logge
 	wc := worktreeContext{
 		repoRoot:    r.RepoRoot,
 		wtPath:      r.WorkDir,
+		gitDir:      resolveWorktreeGitDir(r.RepoRoot, r.WorkDir),
 		originalTip: r.BaseCommit,
 		// originalBranch left empty — recovery has no source for the
 		// branch name the user was on at launch. finalizeWorktree's

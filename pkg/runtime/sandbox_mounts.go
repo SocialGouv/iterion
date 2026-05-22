@@ -205,25 +205,45 @@ func addClawBinaryMount(spec *sandbox.Spec, wf *ir.Workflow) {
 	)
 }
 
-// addWorktreeGitMount bind-mounts the source repo's .git into the
-// container at the SAME host path when a worktree is active and the
-// repo's .git lives outside the bind-mounted workspace. Without this,
-// the worktree's `.git` pointer file (containing
-// `gitdir: <repoRoot>/.git/worktrees/<runID>`) can't be resolved by
-// in-sandbox git commands — every tool node doing
-// capture_start_sha / discover_outdated / commit_changes fails with
-// "fatal: not a git repository".
+// addWorktreeGitMount bind-mounts the per-run worktree's git-private
+// directory (`<repoRoot>/.git/worktrees/<run-id>`) into the container
+// at the SAME host path. Without this mount the worktree's `.git`
+// pointer file — a one-line `gitdir: <this-path>` — cannot be resolved
+// by in-sandbox git commands and every tool node touching git fails
+// with `fatal: not a git repository`.
 //
-// Mounted read-write because writes through `git -C /workspace` need
-// rw access to the worktree's gitdir under .git/worktrees/<id>, which
-// is part of the parent .git tree we mount.
-func addWorktreeGitMount(spec *sandbox.Spec, repoRoot, workspacePath string) {
-	if repoRoot == "" || repoRoot == workspacePath {
+// We deliberately mount only the per-run gitdir (not the whole
+// `<repoRoot>/.git`) so concurrent sandboxed runs cannot read each
+// other's worktree state. The bind is read-write because git writes
+// HEAD, refs, packed-refs, index, ORIG_HEAD, …, into this directory
+// during normal `git commit` / `git checkout` flows.
+//
+// Silently skips when:
+//   - gitDir is empty (non-worktree run, or cloud runner that never
+//     populated the worktreeContext);
+//   - the path doesn't exist on disk (e.g. an inconsistent on-resume
+//     state where the worktree was manually removed but the run
+//     record still claims worktree=true).
+//
+// The kubernetes driver hard-errors on `type=bind` at manifest render
+// time (see pkg/sandbox/kubernetes/mounts.go) — that surfaces as a
+// clear "type=bind not supported in cloud" diagnostic at run start,
+// which is the right behaviour for cloud runners that lack a host
+// filesystem to bind. Cloud workflows that need worktree-aware git
+// access will need a different mechanism (init container + PVC) —
+// out of scope here.
+func addWorktreeGitMount(spec *sandbox.Spec, gitDir string, logger *iterlog.Logger) {
+	if gitDir == "" {
 		return
 	}
-	gitDir := filepath.Join(repoRoot, ".git")
 	info, statErr := os.Stat(gitDir)
-	if statErr != nil || !info.IsDir() {
+	if statErr != nil {
+		if !errors.Is(statErr, fs.ErrNotExist) && logger != nil {
+			logger.Warn("runtime: sandbox worktree gitdir %s: %v — skipping mount", gitDir, statErr)
+		}
+		return
+	}
+	if !info.IsDir() {
 		return
 	}
 	spec.Mounts = append(spec.Mounts,

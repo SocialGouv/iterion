@@ -116,6 +116,20 @@ type SandboxParams struct {
 	// the cache lives outside the workspace bind-mount.
 	BundleHostDir       string
 	BundleContainerPath string
+
+	// WorktreeGitDir, when non-empty, is the absolute host path of the
+	// per-run worktree's git-private directory (e.g.
+	// `<repoRoot>/.git/worktrees/<run-id>`). The sandbox bind-mounts it
+	// READ-WRITE at the same absolute path inside the container so the
+	// worktree's `.git` pointer file (`gitdir: <this-path>`) resolves
+	// from in-sandbox git commands. Without this every git command
+	// inside the sandbox fails with `fatal: not a git repository`.
+	//
+	// We deliberately bind only this single per-run directory rather
+	// than the whole repo `.git/` so concurrent runs cannot read each
+	// other's worktree state. Empty disables the mount (non-worktree
+	// runs, cloud runners with no host filesystem).
+	WorktreeGitDir string
 }
 
 // resolveAndStartSandbox produces an [activeSandbox] for the workflow's
@@ -178,7 +192,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	addOptionalBindMount(spec, p.BundleHostDir, p.BundleContainerPath, "/run/iterion/bundle", "bundle", true, logger)
 	applyHostStateMounts(spec, p.Workflow, p, emitEvent, logger)
 	addClawBinaryMount(spec, p.Workflow)
-	addWorktreeGitMount(spec, p.RepoRoot, p.WorkspacePath)
+	addWorktreeGitMount(spec, p.WorktreeGitDir, logger)
 
 	// Phase 4 V1: claw nodes are forwarded to the iterion-claw-runner
 	// sub-process inside the container so their tool calls (Bash, file
@@ -793,10 +807,17 @@ type sandboxSetter interface {
 // runs). Pass engineRepoRoot(e.workDir) on resume when no
 // worktreeContext is available.
 //
+// worktreeGitDir, when non-empty, is the absolute host path of the
+// per-run worktree's git-private dir (`<repoRoot>/.git/worktrees/<run-id>`).
+// Wiring it through lets the sandbox bind-mount it at the same absolute
+// path inside the container so the worktree's `.git` pointer file
+// resolves from in-container git commands. Empty disables the bind
+// (non-worktree runs).
+//
 // A non-nil error means the sandbox was requested but couldn't start.
 // The caller is responsible for failing the run; the returned cleanup
 // is a noop in that case but safe to defer.
-func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string) (func(), error) {
+func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string, worktreeGitDir string) (func(), error) {
 	noopCleanup := func() {}
 	emitForSandbox := func(t store.EventType, data map[string]interface{}) error {
 		return e.emit(ctx, runID, t, "", data)
@@ -846,6 +867,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		RunFilesContainerPath:    "/iterion/artifact-files",
 		BundleHostDir:            bundleHost,
 		BundleContainerPath:      "/run/iterion/bundle",
+		WorktreeGitDir:           worktreeGitDir,
 	})
 	if sbErr != nil {
 		return noopCleanup, sbErr
