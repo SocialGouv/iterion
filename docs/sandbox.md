@@ -294,10 +294,10 @@ When `sandbox: auto` is in effect but no `.devcontainer/devcontainer.json`
 is found in the workspace, iterion falls back to a published image
 pinned to the running iterion version:
 
-| Variant | Image                                                       | Contents                                       |
-| ------- | ----------------------------------------------------------- | ---------------------------------------------- |
-| **slim** (default) | `ghcr.io/socialgouv/iterion-sandbox-slim:<version>` | git, curl, jq, Node 22, devbox + Nix          |
-| **full** (opt-in)  | `ghcr.io/socialgouv/iterion-sandbox-full:<version>` | slim + Go, Python 3, pnpm                     |
+| Variant | Image                                                       | Contents                                                                                            |
+| ------- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| **slim** (default) | `ghcr.io/socialgouv/iterion-sandbox-slim:<version>` | git, curl, jq, Node 22, devbox + Nix                                                                |
+| **full** (opt-in)  | `ghcr.io/socialgouv/iterion-sandbox-full:<version>` | slim + Go (+ `g`), Python 3, pnpm, fnm, direnv, gh, yq (mikefarah), kubectl, helm, k9s              |
 
 Tags track iterion releases (`v1.2.3`) plus a rolling `edge` for main.
 Snapshot/dev binaries pull the `:edge` tag.
@@ -306,7 +306,8 @@ Snapshot/dev binaries pull the `:edge` tag.
 demand and supports the common workflow (the agent calls `devbox install`
 against the workspace `devbox.json` to materialise its toolchain). The
 full image trades extra MB at first pull for not having to install
-common toolchains via Nix every run.
+common operator + language toolchains (Go, Node, Python, Kubernetes
+CLIs, GitHub CLI, …) on every run.
 
 **Selecting the full variant per-run:**
 
