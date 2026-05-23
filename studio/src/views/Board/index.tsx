@@ -1043,9 +1043,16 @@ function IssueCard({
               onOpenRun(running.run_id);
             }}
             className="text-left flex-1 hover:underline cursor-pointer"
-            title={`Open run ${running.run_id}`}
+            title={
+              running.attempt && running.attempt > 0
+                ? `Open run ${running.run_id} (resume of a prior failed_resumable run — attempt ${running.attempt + 1})`
+                : `Open run ${running.run_id}`
+            }
           >
-            ● running
+            ● {running.attempt && running.attempt > 0 ? "resuming" : "running"}
+            {running.attempt && running.attempt > 0 ? (
+              <span className="ml-1 text-amber-300/90">#{running.attempt + 1}</span>
+            ) : null}
             {running.last_event_name && (
               <span className="ml-1 text-green-200/70">— {running.last_event_name}</span>
             )}

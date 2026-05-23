@@ -641,6 +641,14 @@ function errorHint(code: string, run: RunHeaderType): string | null {
       // the operator at the Events tab so they at least know where to
       // look next.
       if (run.error?.startsWith("panic:")) return null;
+      // Sandbox start failures (docker postCreate, image pull races,
+      // missing binaries inside the container) are recoverable from the
+      // operator's side once the underlying infra issue is resolved.
+      // Point at the dispatcher state docs so the operator can verify
+      // docker is up, the image is reachable, and credentials mounted.
+      if (run.error?.includes("sandbox: start") || run.error?.includes("postCreate")) {
+        return "Sandbox start failed — verify `docker info` works, the image is reachable, and (for sandboxed claw) the `iterion` binary is on PATH inside the container. Resume retries the same sandbox bootstrap.";
+      }
       return "Open the Events tab for the failing step's logs, then resume after addressing the root cause.";
   }
 }

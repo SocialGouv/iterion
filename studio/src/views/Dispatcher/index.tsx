@@ -214,6 +214,16 @@ export default function DispatcherView() {
         />
       )}
 
+      {snap.paused && (
+        <div className="bg-yellow-500/10 border-b border-yellow-500/40 px-4 py-2 text-xs text-yellow-200 flex items-center gap-2">
+          <span className="font-medium">Dispatcher paused</span>
+          <span className="text-yellow-200/80">
+            New dispatches are suspended. The retry queue won't fire, and new ready
+            issues won't be picked up. In-flight runs continue. Resume from the toolbar above.
+          </span>
+        </div>
+      )}
+
       <div className="flex-1 overflow-auto p-4 space-y-4 max-w-4xl">
         <SummaryCard snap={snap} />
         <RunningTable
@@ -237,7 +247,24 @@ export default function DispatcherView() {
 function SummaryCard({ snap }: { snap: DispatcherSnapshot }) {
   return (
     <section className="rounded border border-border-default bg-surface-1 p-4">
-      <h2 className="text-sm font-semibold mb-2">{snap.name || "Dispatcher"}</h2>
+      <div className="flex items-center justify-between mb-2 gap-3">
+        <h2 className="text-sm font-semibold">{snap.name || "Dispatcher"}</h2>
+        {snap.paused ? (
+          <span
+            className="text-[10px] font-mono rounded bg-yellow-500/15 text-yellow-300 px-1.5 py-0.5"
+            title="New dispatches are suspended. In-flight runs continue. Resume from the toolbar to start picking up ready issues again."
+          >
+            paused
+          </span>
+        ) : (
+          <span
+            className="text-[10px] font-mono rounded bg-emerald-500/15 text-emerald-300 px-1.5 py-0.5"
+            title="The dispatcher is actively polling the tracker and picking up ready issues."
+          >
+            active
+          </span>
+        )}
+      </div>
       <dl className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-1 text-xs">
         <KV k="Tracker" v={snap.tracker} />
         <KV k="Polling" v={`${snap.polling_interval_seconds}s`} />
@@ -314,6 +341,7 @@ function RunningTable({
               <th className="text-left py-1.5 px-3 font-normal">Identifier</th>
               <th className="text-left py-1.5 px-3 font-normal">Run</th>
               <th className="text-left py-1.5 px-3 font-normal">State</th>
+              <th className="text-left py-1.5 px-3 font-normal">Workspace</th>
               <th className="text-left py-1.5 px-3 font-normal">Started</th>
               <th className="text-left py-1.5 px-3 font-normal">Last event</th>
               <th className="text-right py-1.5 px-3 font-normal">Actions</th>
@@ -338,8 +366,22 @@ function RunningTable({
                   >
                     {r.run_id}
                   </button>
+                  {r.attempt && r.attempt > 0 ? (
+                    <span
+                      className="ml-1.5 inline-flex items-center rounded bg-amber-500/15 text-amber-300 px-1.5 py-0.5 text-[10px] font-mono align-middle"
+                      title={`Resume of a prior failed_resumable run — attempt ${r.attempt + 1}. The dispatcher continues from the failing node's checkpoint instead of starting fresh.`}
+                    >
+                      resume #{r.attempt + 1}
+                    </span>
+                  ) : null}
                 </td>
                 <td className="py-1.5 px-3">{r.workflow_state}</td>
+                <td
+                  className="py-1.5 px-3 font-mono text-fg-muted truncate max-w-[18rem]"
+                  title={r.workspace_path ?? "no workspace path captured (legacy or in-process run)"}
+                >
+                  {r.workspace_path ? compactWorkspace(r.workspace_path) : <span className="text-fg-subtle">—</span>}
+                </td>
                 <td className="py-1.5 px-3 text-fg-muted">{relTime(r.started_at)}</td>
                 <td className="py-1.5 px-3 text-fg-muted">
                   {r.last_event_name ? r.last_event_name + " · " : ""}
@@ -479,6 +521,21 @@ function KV({ k, v }: { k: string; v: string }) {
       <dd>{v}</dd>
     </>
   );
+}
+
+// compactWorkspace trims the noisy `<store-root>/dispatcher/workspaces/`
+// prefix common to all dispatcher-driven worktrees so the column reads
+// as the issue's identifier suffix at a glance. Leaves arbitrary host
+// paths intact (cloud runner pods, manually-launched runs) so the
+// column never lies about what's on disk.
+function compactWorkspace(path: string): string {
+  const m = path.match(/dispatcher\/workspaces\/(.+)$/);
+  if (m && m[1]) return m[1];
+  // Worktrees laid out by runtime.WithWorktree (not dispatcher) live
+  // under `<store-root>/worktrees/<run-id>`; show only the run-id.
+  const w = path.match(/\/worktrees\/(.+)$/);
+  if (w && w[1]) return w[1];
+  return path;
 }
 
 function relTime(iso: string): string {
