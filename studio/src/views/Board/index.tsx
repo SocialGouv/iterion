@@ -770,6 +770,14 @@ function ShortcutRow({ keys, desc }: { keys: string; desc: string }) {
 // get a neutral slate. Custom boards can always override per-state via
 // the `color:` field — this helper only fires when `State.Color` is
 // empty.
+// TERMINAL_BOARD_STATES lists the native-tracker state names treated as
+// "no more work" for UI purposes. The runtime contract is that any
+// state with `terminal: true` in the board config qualifies — but the
+// card doesn't carry the board's flag here, so we hard-code the
+// canonical names. Keep in sync with the defaults in
+// pkg/dispatcher/native/board.go's NewStore (done + blocked + cancelled).
+const TERMINAL_BOARD_STATES = new Set(["done", "blocked", "cancelled"]);
+
 function defaultStateColor(name: string, eligible: boolean, terminal: boolean): string {
   switch (name) {
     case "backlog":
@@ -1028,6 +1036,19 @@ function IssueCard({
             claimed by {iss.claim}
           </span>
         )}
+        {!running && iss.last_run_id && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenRun(iss.last_run_id!);
+            }}
+            className="font-mono text-info hover:underline opacity-80"
+            title={`Open the last run on this issue (run ${iss.last_run_id})`}
+          >
+            ↪ last run
+          </button>
+        )}
         {iss.updated_at && (
           <span className="text-fg-subtle" title={iss.updated_at}>
             · updated {formatRelative(iss.updated_at)}
@@ -1069,7 +1090,7 @@ function IssueCard({
           </button>
         </div>
       )}
-      {!running && retrying && (
+      {!running && retrying && !TERMINAL_BOARD_STATES.has(iss.state) && (
         <div
           className="mt-1 rounded bg-amber-500/10 px-1.5 py-1 text-[10px] text-amber-300 cursor-pointer hover:bg-amber-500/20"
           onClick={(e) => {
@@ -1082,6 +1103,14 @@ function IssueCard({
           {retrying.error && (
             <span className="ml-1 text-amber-200/80 truncate">— {retrying.error}</span>
           )}
+        </div>
+      )}
+      {!running && retrying && TERMINAL_BOARD_STATES.has(iss.state) && (
+        <div
+          className="mt-1 rounded bg-fg-muted/10 px-1.5 py-1 text-[10px] text-fg-subtle"
+          title={`The dispatcher still has a retry entry for this issue, but it's in a terminal state (${iss.state}) — the retry will be skipped on the next tick.`}
+        >
+          stale retry queued — will be skipped (issue in {iss.state})
         </div>
       )}
     </div>
