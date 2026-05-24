@@ -1,11 +1,11 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 import {
   BannerProgressLine,
   BannerStatusIcon,
 } from "@/components/Runs/conversation/BannerCard";
 import { ThinkingIndicator } from "@/components/ui/ThinkingIndicator";
-import { phrasesForNode } from "@/lib/whats-next/loadingPhrases";
+import { GENERIC_THINKING_WORDS } from "@/lib/thinkingWords";
 import type { BannerMessage } from "@/lib/runChat/types";
 
 interface Props {
@@ -14,14 +14,12 @@ interface Props {
 
 // NodeBanner is the whats-next-flavoured banner row: same shape as
 // the generic BannerCard but with two whats-next-specific affordances
-// — a per-node ThinkingIndicator (typing animation + ✻ glyph, shared
-// with the Runs/logs ThinkingFooter) and a Summary <details> block
-// (whats-next renders no NodeOutputCard, so the summary doubles as the
-// at-a-glance result).
+// — a ThinkingIndicator (typing animation + ✻ glyph, shared with the
+// Runs/logs ThinkingFooter and PreFlightPanel) and a Summary <details>
+// block (whats-next renders no NodeOutputCard, so the summary doubles
+// as the at-a-glance result).
 export default function NodeBanner({ message }: Props) {
   const { label, status, summary, errorMessage, nodeId, progress } = message;
-  // Cache the per-node phrase list so it's stable across re-renders.
-  const phrases = useMemo(() => phrasesForNode(nodeId), [nodeId]);
 
   return (
     <div className="flex items-start gap-2 text-[12px]">
@@ -33,7 +31,7 @@ export default function NodeBanner({ message }: Props) {
           <span className="text-fg-default">{label}</span>
           <span className="text-[10px] font-mono text-fg-subtle">{nodeId}</span>
           {status === "running" && (
-            <ThinkingIndicator words={phrases} active className="font-mono text-[10px] text-info-fg italic" />
+            <ThinkingIndicator words={GENERIC_THINKING_WORDS} active className="font-mono text-[10px] text-info-fg italic" />
           )}
         </div>
         {progress && status === "running" && (

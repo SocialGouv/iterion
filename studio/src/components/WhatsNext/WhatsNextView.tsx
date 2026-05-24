@@ -133,9 +133,7 @@ export default function WhatsNextView() {
               <div className="flex-1 overflow-y-auto">
                 <PreFlightPanel
                   runId={session.runId}
-                  status={session.status}
                   runStatus={session.runStatus}
-                  rawEventCount={session.rawEventCount}
                 />
               </div>
             ) : (

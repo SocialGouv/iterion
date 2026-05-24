@@ -55,10 +55,6 @@ export interface UseWhatsNextSession {
   // The raw RunStatus from the latest snapshot, exposed for UIs
   // that want to surface details beyond the high-level status.
   runStatus: RunStatus | null;
-  // Total number of run events the store has consumed for this run.
-  // PreFlightPanel uses it to differentiate "no events yet" from
-  // "events arrived but didn't map to a known node".
-  rawEventCount: number;
   // Last error from launch/submit, if any.
   errorMessage: string | null;
   // Imperative actions.
@@ -555,7 +551,6 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
     messages,
     busyMessageId,
     runStatus,
-    rawEventCount: events.length,
     errorMessage,
     launch,
     submitHumanAnswer,
