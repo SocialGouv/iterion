@@ -133,70 +133,43 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
 
     const remembered = recallSessionRunId(bot.id, projectId);
     setStatus("launching");
-    const startup = remembered
-      ? attachTo(remembered).catch((err) => {
-          if (
-            controller.signal.aborted ||
-            (err as Error)?.name === "AbortError"
-          ) {
-            return;
-          }
-          // Run no longer exists (rotated, store wiped). Drop the
-          // memory and fall through to server-side discovery so the
-          // operator doesn't get stuck on a stale localStorage entry.
-          forgetSessionRunId(bot.id, projectId);
-          return discoverAndAttach();
-        })
-      : discoverAndAttach();
-
-    async function discoverAndAttach() {
+    // Discovery decides between three signals, in order:
+    //   1. A live (non-terminal) run for this bot — even if localStorage
+    //      remembers an older terminal session, the operator landing on
+    //      /whats-next while a paused/running session exists ALMOST
+    //      ALWAYS wants the live one (they relaunched from /runs, the
+    //      CLI, or another tab). Continuity is good; surfacing a stale
+    //      "Ended · cancelled" session while a live one waits at a
+    //      human gate is much worse.
+    //   2. The remembered run, terminal or not, for continuity ("show
+    //      me what I just did").
+    //   3. Idle, so the launcher renders.
+    const startup = (async () => {
       try {
-        // Look for the most recent non-terminal whats-next run.
-        // workflow_name comes from the DSL's `workflow whats_next:`
-        // declaration — by convention the FirstClassBot's id matches
-        // the workflow name with hyphens vs underscores (e.g.
-        // "whats-next" ↔ "whats_next"). We try both.
-        const candidates = [bot.id.replace(/-/g, "_"), bot.id];
-        const seen = new Set<string>();
-        const matches: RunSummary[] = [];
-        for (const workflow of candidates) {
-          if (seen.has(workflow)) continue;
-          seen.add(workflow);
-          const runs = await listRuns({ workflow, limit: 10 });
-          matches.push(...runs);
-        }
-        if (typeof console !== "undefined") {
-          console.debug("[whats-next] discoverAndAttach: scanned", {
-            botId: bot.id,
-            candidates,
-            matchCount: matches.length,
-            statuses: matches.map((r) => `${r.id.slice(0, 8)}:${r.status}`),
-          });
-        }
-        // Pick the most recent non-terminal one. RunSummary lists are
-        // already sorted newest-first by the server.
-        const active = matches.find(
-          (r) =>
-            r.status === "queued" ||
-            r.status === "running" ||
-            r.status === "paused_waiting_human",
-        );
-        if (!active) {
-          if (typeof console !== "undefined") {
-            console.debug(
-              "[whats-next] discoverAndAttach: no active run, idling",
-            );
-          }
-          setStatus("idle");
+        const live = await findLiveRunForBot();
+        if (cancelled) return;
+        if (live) {
+          await attachTo(live);
           return;
         }
-        if (typeof console !== "undefined") {
-          console.debug("[whats-next] discoverAndAttach: attaching to", {
-            id: active.id,
-            status: active.status,
-          });
+        if (remembered) {
+          try {
+            await attachTo(remembered);
+            return;
+          } catch (err) {
+            if (
+              controller.signal.aborted ||
+              (err as Error)?.name === "AbortError"
+            ) {
+              return;
+            }
+            // Remembered run no longer exists (rotated, store wiped).
+            // Drop the memory; we have no live run either, so fall
+            // through to idle.
+            forgetSessionRunId(bot.id, projectId);
+          }
         }
-        await attachTo(active.id);
+        setStatus("idle");
       } catch (err) {
         if (
           controller.signal.aborted ||
@@ -205,12 +178,41 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
           return;
         }
         if (typeof console !== "undefined") {
-          console.warn("[whats-next] discoverAndAttach failed", err);
+          console.warn("[whats-next] startup discovery failed", err);
         }
-        // Discovery failed — fall back to launcher. Operator can
-        // still start a fresh session manually.
         setStatus("idle");
       }
+    })();
+
+    // findLiveRunForBot returns the id of the most recent non-terminal
+    // run for this bot's workflow, or null when nothing live exists.
+    // Mirrors the workflow-name probe formerly inline in
+    // discoverAndAttach (kept here as a helper so both the live-first
+    // discovery and the legacy fallback share the same logic).
+    async function findLiveRunForBot(): Promise<string | null> {
+      const candidates = [bot.id.replace(/-/g, "_"), bot.id];
+      const seen = new Set<string>();
+      const matches: RunSummary[] = [];
+      for (const workflow of candidates) {
+        if (seen.has(workflow)) continue;
+        seen.add(workflow);
+        const runs = await listRuns({ workflow, limit: 10 });
+        matches.push(...runs);
+      }
+      const active = matches.find(
+        (r) =>
+          r.status === "queued" ||
+          r.status === "running" ||
+          r.status === "paused_waiting_human",
+      );
+      if (typeof console !== "undefined") {
+        console.debug("[whats-next] findLiveRunForBot", {
+          botId: bot.id,
+          matchCount: matches.length,
+          live: active?.id ?? null,
+        });
+      }
+      return active?.id ?? null;
     }
 
     void startup;
