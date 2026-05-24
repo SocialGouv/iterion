@@ -549,7 +549,14 @@ type MemoryBlock struct {
 	Read             *bool
 	Write            *bool
 	PreCompactInject *bool
-	Span             Span
+	// ProjectRoot re-roots the scope under the project's repo
+	// instead of the per-run workDir. Used to share a scope across
+	// dispatcher-spawned bot runs (each running in its own worktree)
+	// and whats-next runs that live at the repo root — e.g. the
+	// shared `findings/` channel where bots drop adjacent-work
+	// observations for Nexie to triage.
+	ProjectRoot *bool
+	Span        Span
 }
 
 // SandboxBlock is the AST representation of a `sandbox:` block. Two

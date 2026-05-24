@@ -85,6 +85,13 @@ type MemorySpec struct {
 	Read             bool
 	Write            bool
 	PreCompactInject bool
+	// ProjectRoot, when true, re-roots the scope under the run's
+	// `RepoRoot` (passed alongside via Task.RepoRoot) instead of the
+	// per-run workDir. Enables cross-worktree shared scopes such as
+	// the dispatcher's `findings/` channel where bot runs from
+	// `<repo>/.iterion/dispatcher/workspaces/<id>` worktrees write
+	// to the same tree a whats-next run at the repo root reads.
+	ProjectRoot bool
 }
 
 // Task describes the work to execute on a backend.
@@ -175,6 +182,17 @@ type Task struct {
 	// BaseDir is the allowed base directory for WorkDir validation.
 	// If set, WorkDir must resolve to a path within BaseDir.
 	BaseDir string
+
+	// RepoRoot is the source-of-truth repository root for this run
+	// (the directory persisted on the run record). When the runtime
+	// uses a worktree (`worktree: auto`) or the dispatcher runs the
+	// bot in a per-issue workspace, WorkDir points at the worktree
+	// while RepoRoot still points at the operator's main checkout.
+	// Memory specs that set `project_root: true` resolve their scope
+	// under RepoRoot's encoded key so the resulting tree is shared
+	// across all runs of the same project regardless of which
+	// worktree they execute in.
+	RepoRoot string
 
 	// ReasoningEffort is the reasoning effort level.
 	// Valid values: "low", "medium", "high", "xhigh", "max".

@@ -349,7 +349,15 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 	}
 
 	if m := task.Memory; m != nil {
-		if err := installWorkspaceMemory(&opts, task.WorkDir, m); err != nil {
+		// Resolve the memory base path: project_root re-roots the scope
+		// under the run's RepoRoot so dispatcher worktrees + Nexie share
+		// the same tree; falls back to WorkDir when RepoRoot is empty
+		// (legacy / non-worktree runs).
+		memBase := task.WorkDir
+		if m.ProjectRoot && task.RepoRoot != "" {
+			memBase = task.RepoRoot
+		}
+		if err := installWorkspaceMemory(&opts, memBase, m); err != nil {
 			return delegate.Result{}, fmt.Errorf("claw backend: memory: %w", err)
 		}
 	}

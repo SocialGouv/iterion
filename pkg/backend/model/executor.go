@@ -259,6 +259,7 @@ type ClawExecutor struct {
 	retry           RetryPolicy
 	logger          *iterlog.Logger
 	workDir         string // working directory for backend subprocesses
+	repoRoot        string // source-of-truth repo path (project-rooted memory uses this)
 	defaultBackend  string // workflow-level default backend (empty = use "claw")
 	wfCompaction    *ir.Compaction
 	wfCapabilities  []string // workflow-level default host capabilities (nil = none)
@@ -546,6 +547,16 @@ func (e *ClawExecutor) SetVars(vars map[string]interface{}) {
 // Execute; not safe to call concurrently with an in-flight Execute.
 func (e *ClawExecutor) SetWorkDir(dir string) {
 	e.workDir = dir
+}
+
+// SetRepoRoot updates the source-of-truth repository root. The engine
+// calls this once per run, alongside SetWorkDir, so memory specs that
+// opt into `project_root: true` resolve their scope under the operator's
+// main repo even when the run executes from a worktree or dispatcher
+// workspace. Empty string means "no project root captured" — memory
+// specs that require it will fall back to WorkDir's encoded key.
+func (e *ClawExecutor) SetRepoRoot(dir string) {
+	e.repoRoot = dir
 }
 
 // resolveBackendName returns the effective backend name for a node.
@@ -996,7 +1007,9 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 			Read:             m.Read,
 			Write:            m.Write,
 			PreCompactInject: m.PreCompactInject,
+			ProjectRoot:      m.ProjectRoot,
 		}
+		task.RepoRoot = e.repoRoot
 	}
 	task.CursorFragments = resolveCursorFragments(f.cursors, e.cursors)
 

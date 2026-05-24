@@ -210,6 +210,7 @@ type jsonMemoryBlock struct {
 	Read             *bool    `json:"read,omitempty"`
 	Write            *bool    `json:"write,omitempty"`
 	PreCompactInject *bool    `json:"pre_compact_inject,omitempty"`
+	ProjectRoot      *bool    `json:"project_root,omitempty"`
 }
 
 type jsonPromptDecl struct {
@@ -719,6 +720,7 @@ func memoryToJSON(m *MemoryBlock) *jsonMemoryBlock {
 		Read:             m.Read,
 		Write:            m.Write,
 		PreCompactInject: m.PreCompactInject,
+		ProjectRoot:      m.ProjectRoot,
 	}
 }
 
@@ -1199,6 +1201,7 @@ func memoryFromJSON(jm *jsonMemoryBlock) *MemoryBlock {
 		Read:             jm.Read,
 		Write:            jm.Write,
 		PreCompactInject: jm.PreCompactInject,
+		ProjectRoot:      jm.ProjectRoot,
 	}
 }
 

@@ -102,6 +102,49 @@ workflow flow:
 	}
 }
 
+// TestMemory_ProjectRootRoundtrip locks the new `project_root: true`
+// flag's full pipeline: parse → AST → unparse → re-parse → AST. Without
+// this, a future rename in the parser or unparser would silently drop
+// the flag and break the shared-findings handoff between dispatcher
+// bots and Nexie.
+func TestMemory_ProjectRootRoundtrip(t *testing.T) {
+	src := `agent finder:
+  backend: "claw"
+  model: "openai/gpt-5.5"
+  memory:
+    enabled: true
+    scope: "findings"
+    write: true
+    project_root: true
+
+workflow flow:
+  entry: finder
+
+  finder -> done
+`
+	pr := parser.Parse("test.bot", src)
+	if hasErrors(pr.Diagnostics) {
+		t.Fatalf("parse: %v", pr.Diagnostics)
+	}
+	mb := pr.File.Agents[0].Memory
+	if mb == nil || mb.ProjectRoot == nil || !*mb.ProjectRoot {
+		t.Fatalf("project_root not parsed: %+v", mb)
+	}
+	round := Unparse(pr.File)
+	if !strings.Contains(round, "project_root: true") {
+		t.Fatalf("unparse dropped project_root:\n%s", round)
+	}
+	pr2 := parser.Parse("test.bot", round)
+	if hasErrors(pr2.Diagnostics) {
+		t.Fatalf("second parse: %v\n%s", pr2.Diagnostics, round)
+	}
+	mb2 := pr2.File.Agents[0].Memory
+	if mb2.ProjectRoot == nil || *mb2.ProjectRoot != *mb.ProjectRoot {
+		t.Fatalf("roundtrip lost project_root: before=%+v after=%+v",
+			mb.ProjectRoot, mb2.ProjectRoot)
+	}
+}
+
 func TestMemory_UnknownPropertyDiagnostic(t *testing.T) {
 	src := `agent reviser:
   backend: "claw"

@@ -1407,6 +1407,9 @@ func compileMemory(b *ast.MemoryBlock) *Memory {
 	if b.PreCompactInject != nil {
 		out.PreCompactInject = *b.PreCompactInject
 	}
+	if b.ProjectRoot != nil {
+		out.ProjectRoot = *b.ProjectRoot
+	}
 	return out
 }
 

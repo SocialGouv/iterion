@@ -760,6 +760,9 @@ func writeMemory(b *strings.Builder, m *ast.MemoryBlock, indent string, leadingB
 	if m.PreCompactInject != nil {
 		fmt.Fprintf(b, "%s  pre_compact_inject: %t\n", indent, *m.PreCompactInject)
 	}
+	if m.ProjectRoot != nil {
+		fmt.Fprintf(b, "%s  project_root: %t\n", indent, *m.ProjectRoot)
+	}
 }
 
 // writeCursorDecl renders a top-level `cursor NAME:` declaration.

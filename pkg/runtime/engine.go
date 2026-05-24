@@ -661,6 +661,13 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	if s, ok := e.executor.(workDirSetter); ok {
 		s.SetWorkDir(e.workDir)
 	}
+	// Push repoRoot (when known) so memory specs with `project_root: true`
+	// resolve against the operator's main checkout instead of the per-run
+	// workspace. Same minimal-interface pattern as SetWorkDir.
+	type repoRootSetter interface{ SetRepoRoot(string) }
+	if s, ok := e.executor.(repoRootSetter); ok {
+		s.SetRepoRoot(run.RepoRoot)
+	}
 	// Bundle skill mirroring: when a .botz backs this run, copy the
 	// bundle's skills/ entries into <workDir>/.claude/skills/ so both
 	// claude_code's native skill lookup and the claw `skill` tool

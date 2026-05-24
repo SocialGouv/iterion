@@ -468,6 +468,10 @@ func (e *Engine) restoreRunEnv(r *store.Run) {
 	if s, ok := e.executor.(workDirSetter); ok {
 		s.SetWorkDir(e.workDir)
 	}
+	type repoRootSetter interface{ SetRepoRoot(string) }
+	if s, ok := e.executor.(repoRootSetter); ok {
+		s.SetRepoRoot(r.RepoRoot)
+	}
 }
 
 // pushExecutorVars refreshes the executor's vars map. Used after every

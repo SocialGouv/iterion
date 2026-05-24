@@ -1859,6 +1859,11 @@ func (p *parser) parseMemoryProp(mb *ast.MemoryBlock, propTok Token) {
 		if v := p.parseBool(); v != nil {
 			mb.PreCompactInject = v
 		}
+	case TokenProjectRoot:
+		p.expect(TokenColon)
+		if v := p.parseBool(); v != nil {
+			mb.ProjectRoot = v
+		}
 	default:
 		p.addError(DiagUnknownProperty, propTok, "unknown memory property '"+propTok.Value+"'")
 		p.skipToNewline()

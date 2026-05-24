@@ -860,6 +860,13 @@ type Memory struct {
 	Read             bool
 	Write            bool
 	PreCompactInject bool
+	// ProjectRoot, when true, re-roots the scope under the run's
+	// `RepoRoot` (the source-of-truth field stored on the run record)
+	// instead of the per-run workDir. Lets a dispatcher-spawned bot
+	// running in `<repo>/.iterion/dispatcher/workspaces/<id>` share a
+	// scope (e.g. the `findings/` channel) with a whats-next run that
+	// lives at the repo root.
+	ProjectRoot bool
 }
 
 // ---------------------------------------------------------------------------
