@@ -25,6 +25,27 @@ The mechanical coverage is `verified_anchors * 100 / total_anchors`
 won't fire even if you vote `approved=true`. Push the fixer toward
 resolving drifts.
 
+### Chunk awareness (v0.16.0)
+
+Three further fields tell you whether this iter is seeing the
+entire drift set or a chunk of it:
+
+- `input.docs_with_drift_count` — how many distinct docs still
+  carry at least one drift candidate (before chunking).
+- `input.chunk_doc_count` — how many distinct docs landed in
+  this iter's slice.
+- `input.chunked` — `true` when the chunk excluded some docs
+  (i.e. `chunk_doc_count < docs_with_drift_count`).
+- `input.max_review_chunk_docs` — the active cap (default 30).
+
+When `chunked=true`, the candidates you see are the highest-
+severity slice; the deferred docs roll into the next iter as the
+fixer clears this chunk. This is not a coverage gap to flag —
+the workflow expects multi-iter convergence on large doc
+footprints. Your job is unchanged: adjudicate the chunk you have.
+The STEP 6 coverage gate uses `manifest_coverage_pct` which spans
+ALL docs, so chunking cannot terminate the workflow early.
+
 ## STEP 1 — Walk `input.drift_candidates`
 
 Each entry is `{doc, line, kind, value, status, evidence, excerpt}`.

@@ -150,6 +150,34 @@ vars:
   ##     across families). Convergence over fewer-larger iters.
   max_drift_candidates: int = 40
 
+  ## v0.16.0 (doc-count chunking): cap on the number of DISTINCT
+  ## docs whose candidates may land in any single reviewer iteration.
+  ## Applied AFTER the severity-priority sort and BEFORE the
+  ## max_drift_candidates cap, so the slice keeps the most severe
+  ## candidates AND fits inside the per-iter doc budget.
+  ##
+  ## Why this exists: with the v0.15.0 manifest pattern the candidate
+  ## count was already bounded (40), but the reviewer still spot-
+  ## checks high-severity drifts via read_file / grep. On large doc
+  ## footprints (89 docs / 175+ drifts on this repo) the spot-check
+  ## tool calls accumulate in the conversation and blow the gpt-5.5
+  ## ChatGPT-forfait context window after 4-5 turns
+  ## (context_length_exceeded; finding
+  ## `2026-05-24-doc-align-reviewer-gpt-context-exhaustion.md`).
+  ## Bounding the chunk by DOC count caps the file surface area the
+  ## reviewer is tempted to spot-check, even when the candidate
+  ## count is well under max_drift_candidates.
+  ##
+  ## Convergence is unchanged: streak_check still gates on the
+  ## anchor-level coverage_pct (verified / total across ALL docs).
+  ## The chunk only narrows what the reviewer SEES per iter; as the
+  ## fixer resolves drifts in chunk N, chunk N+1 surfaces the next
+  ## tier of severity (which naturally covers different docs).
+  ##
+  ## Default 30 matches the issue acceptance criterion. Setting to
+  ## 0 disables doc-chunking (legacy candidate-count bound only).
+  max_review_chunk_docs: int = 30
+
   ## v0.15.4: identifier of the tracker issue this run was dispatched
   ## from. Used by mark_issue_for_review at the end of the workflow
   ## to transition the issue out of `ready` so the dispatcher doesn't
@@ -278,6 +306,18 @@ prompt review_system:
    `input.doc_files[]` footprint is still your audit ceiling;
    recently-changed is a HINT, not a scope reduction.
 
+  HOW TO USE THE CHUNK FIELDS (v0.16.0):
+   `input.chunked`, `input.chunk_doc_count`, and
+   `input.docs_with_drift_count` describe this iter's slice of
+   the global drift set. When `chunked=true`, you are seeing
+   candidates from at most `max_review_chunk_docs` distinct docs;
+   the remainder are deferred to subsequent iters as the fixer
+   clears earlier severity tiers. This is deterministic, not a
+   coverage gap — your job is unchanged: adjudicate the
+   candidates you DO see. The streak gate uses
+   `manifest_coverage_pct` (anchor-level, across ALL docs), so a
+   chunked iter cannot terminate the workflow prematurely.
+
   PATH-OF-LEAST-RESISTANCE WARNING:
    You will be tempted to focus on docs colocated with code that
    has been recently changed. Resist. Audit every file in
@@ -311,8 +351,18 @@ prompt review_user_claude:
   Mechanical coverage:      {{input.manifest_coverage_pct}}%
   Coverage threshold:       {{input.coverage_target_pct}}%
 
+  ## This iteration's chunk (v0.16.0 doc-count chunking)
+  Docs with remaining drift: {{input.docs_with_drift_count}}
+  Docs in this chunk:        {{input.chunk_doc_count}} (cap: {{input.max_review_chunk_docs}})
+  Chunked this iter:         {{input.chunked}}
+  When `Chunked this iter: true`, drifts in the deferred docs will
+  surface in a later iter as the fixer clears this chunk. Do NOT
+  vote `approved=true` based on the chunk alone — the streak gate
+  uses anchor-level mechanical coverage across ALL docs.
+
   ## Drift candidates (the working set — bounded to top
-  ## {{vars.max_drift_candidates}} by severity)
+  ## {{vars.max_drift_candidates}} by severity, then to candidates
+  ## from at most {{vars.max_review_chunk_docs}} distinct docs)
   Each candidate carries `{doc, line, kind, value, status,
   evidence, excerpt}`. `status` is one of:
    - drifted     — anchor extracted from the doc, NOT found in
@@ -420,7 +470,18 @@ prompt review_user_gpt:
   Mechanical coverage:      {{input.manifest_coverage_pct}}%
   Coverage threshold:       {{input.coverage_target_pct}}%
 
-  ## Drift candidates (top {{vars.max_drift_candidates}} by severity)
+  ## This iteration's chunk (v0.16.0 doc-count chunking)
+  Docs with remaining drift: {{input.docs_with_drift_count}}
+  Docs in this chunk:        {{input.chunk_doc_count}} (cap: {{input.max_review_chunk_docs}})
+  Chunked this iter:         {{input.chunked}}
+  When `Chunked this iter: true`, drifts in the deferred docs will
+  surface in a later iter as the fixer clears this chunk. Do NOT
+  vote `approved=true` based on the chunk alone — the streak gate
+  uses anchor-level mechanical coverage across ALL docs.
+
+  ## Drift candidates (bounded by severity to top
+  ## {{vars.max_drift_candidates}}, then to candidates from at most
+  ## {{vars.max_review_chunk_docs}} distinct docs)
   Each candidate carries `{doc, line, kind, value, status,
   evidence, excerpt}`. `status` is one of:
    - drifted     — anchor extracted from the doc, NOT found in
@@ -729,6 +790,16 @@ schema review_input:
   ## manifest IS coverage; reviewers no longer claim it.
   all_audited_docs: string[]
 
+  ## v0.16.0 chunking visibility. Reviewers see the chunk dimension
+  ## so they understand why some drifts may not be in this slice —
+  ## they will surface in a later iter as the fixer clears earlier
+  ## chunks. Coverage gate is still anchor-level across ALL docs,
+  ## so chunking does not let the workflow terminate early.
+  docs_with_drift_count: int
+  chunked: bool
+  chunk_doc_count: int
+  max_review_chunk_docs: int
+
   ## Convergence threshold (vars.coverage_target_pct passthrough)
   coverage_target_pct: int
 
@@ -919,6 +990,10 @@ schema build_manifest_input:
   ## docs are. The full counts are still reported in the summary
   ## fields for the streak gate.
   max_drift_candidates: int
+  ## v0.16.0: max distinct docs whose candidates may appear in a
+  ## single chunk. Applied after the severity sort, before the
+  ## max_drift_candidates cap. 0 disables doc-chunking.
+  max_review_chunk_docs: int
 
 schema build_manifest_output:
   ## total_docs / total_anchors are the cardinality of the
@@ -952,6 +1027,18 @@ schema build_manifest_output:
   ## — the manifest pass IS the audit. streak_check pulls this
   ## list into its cumulative_audited_docs.
   all_audited_docs: string[]
+  ## v0.16.0 doc-count chunking telemetry. `docs_with_drift_count`
+  ## is the universe of docs that still have at least one drift
+  ## candidate this iter (before chunking). `chunk_doc_count` is
+  ## the count of distinct docs whose candidates landed in this
+  ## iter's slice. `chunked=true` when chunk_doc_count <
+  ## docs_with_drift_count (some docs deferred to a later iter).
+  ## `max_review_chunk_docs` echoes the var so the reviewer prompt
+  ## can show the operator the active cap.
+  docs_with_drift_count: int
+  chunked: bool
+  chunk_doc_count: int
+  max_review_chunk_docs: int
 
 schema enforce_fix_scope_output:
   reverted_paths: string[]
@@ -1153,7 +1240,7 @@ print(json.dumps({
 ## All inputs flow via env vars (JSON-encoded for arrays); the
 ## tool's argv is empty.
 tool build_manifest:
-  command: `WS={{input.workspace_dir}} DOC_FILES='{{!input.doc_files}}' CLI_COMMANDS='{{!input.cli_commands}}' CLI_FLAGS='{{!input.cli_flags}}' DIAG_CODES='{{!input.diagnostic_codes}}' CODE_GLOBS={{input.code_scope_globs}} MAX_CANDIDATES={{input.max_drift_candidates}} python3 -c "
+  command: `WS={{input.workspace_dir}} DOC_FILES='{{!input.doc_files}}' CLI_COMMANDS='{{!input.cli_commands}}' CLI_FLAGS='{{!input.cli_flags}}' DIAG_CODES='{{!input.diagnostic_codes}}' CODE_GLOBS={{input.code_scope_globs}} MAX_CANDIDATES={{input.max_drift_candidates}} MAX_CHUNK_DOCS={{input.max_review_chunk_docs}} python3 -c "
 import os, json, re, glob, subprocess
 ws = os.environ['WS']
 os.chdir(ws)
@@ -1174,6 +1261,10 @@ try:
     max_candidates = int(os.environ.get('MAX_CANDIDATES', '150'))
 except ValueError:
     max_candidates = 150
+try:
+    max_chunk_docs = int(os.environ.get('MAX_CHUNK_DOCS', '0'))
+except ValueError:
+    max_chunk_docs = 0
 
 ## Regexes targeting markdown-typical patterns.
 ## file_ref: paths like pkg/foo/bar.go, docs/dsl.md, with optional :NN line.
@@ -1355,8 +1446,33 @@ priority = {
 }
 candidates = drifted + unverifiable
 candidates.sort(key=lambda a: (priority.get((a['status'], a['kind']), 9), a['doc'], a['line']))
+
+## v0.16.0: doc-count chunking. After the severity sort, walk the
+## ordered list and admit candidates from at most max_chunk_docs
+## distinct docs. Once the doc budget is full, candidates from new
+## docs are deferred (they surface in a later iter once the fixer
+## clears earlier drifts). max_chunk_docs=0 disables chunking
+## (preserves legacy candidate-cap-only behaviour).
+docs_with_drift = sorted({a['doc'] for a in candidates})
+if max_chunk_docs > 0 and len(docs_with_drift) > max_chunk_docs:
+    chunk_docs = []
+    chunked_candidates = []
+    chunk_doc_set = set()
+    for a in candidates:
+        if a['doc'] in chunk_doc_set:
+            chunked_candidates.append(a)
+        elif len(chunk_doc_set) < max_chunk_docs:
+            chunk_doc_set.add(a['doc'])
+            chunk_docs.append(a['doc'])
+            chunked_candidates.append(a)
+    candidates = chunked_candidates
+    chunked = True
+else:
+    chunked = False
+
 if max_candidates > 0:
     candidates = candidates[:max_candidates]
+chunk_doc_count = len({a['doc'] for a in candidates})
 
 total_anchors = len(anchors)
 verified_anchors = len(verified)
@@ -1379,6 +1495,10 @@ print(json.dumps({
     'drift_candidates': candidates,
     'per_doc_anchor_counts': per_doc_list,
     'all_audited_docs': sorted(doc_files),
+    'docs_with_drift_count': len(docs_with_drift),
+    'chunked': chunked,
+    'chunk_doc_count': chunk_doc_count,
+    'max_review_chunk_docs': max_chunk_docs,
 }))
 "`
   input: build_manifest_input
@@ -1770,7 +1890,8 @@ workflow doc_align:
     cli_flags: "{{outputs.scan_code_surface.cli_flags}}",
     diagnostic_codes: "{{outputs.scan_code_surface.diagnostic_codes}}",
     code_scope_globs: "{{vars.code_scope_globs}}",
-    max_drift_candidates: "{{vars.max_drift_candidates}}"
+    max_drift_candidates: "{{vars.max_drift_candidates}}",
+    max_review_chunk_docs: "{{vars.max_review_chunk_docs}}"
   }
   build_manifest -> alt
 
@@ -1790,6 +1911,10 @@ workflow doc_align:
     drift_candidates: "{{outputs.build_manifest.drift_candidates}}",
     per_doc_anchor_counts: "{{outputs.build_manifest.per_doc_anchor_counts}}",
     all_audited_docs: "{{outputs.build_manifest.all_audited_docs}}",
+    docs_with_drift_count: "{{outputs.build_manifest.docs_with_drift_count}}",
+    chunked: "{{outputs.build_manifest.chunked}}",
+    chunk_doc_count: "{{outputs.build_manifest.chunk_doc_count}}",
+    max_review_chunk_docs: "{{outputs.build_manifest.max_review_chunk_docs}}",
     coverage_target_pct: "{{vars.coverage_target_pct}}",
     prior_pushback: "{{outputs.fix_gpt.pushback}}",
     prior_pushback_justification: "{{outputs.fix_gpt.pushback_justification}}",
@@ -1807,6 +1932,10 @@ workflow doc_align:
     drift_candidates: "{{outputs.build_manifest.drift_candidates}}",
     per_doc_anchor_counts: "{{outputs.build_manifest.per_doc_anchor_counts}}",
     all_audited_docs: "{{outputs.build_manifest.all_audited_docs}}",
+    docs_with_drift_count: "{{outputs.build_manifest.docs_with_drift_count}}",
+    chunked: "{{outputs.build_manifest.chunked}}",
+    chunk_doc_count: "{{outputs.build_manifest.chunk_doc_count}}",
+    max_review_chunk_docs: "{{outputs.build_manifest.max_review_chunk_docs}}",
     coverage_target_pct: "{{vars.coverage_target_pct}}",
     prior_pushback: "{{outputs.fix_claude.pushback}}",
     prior_pushback_justification: "{{outputs.fix_claude.pushback_justification}}",
@@ -1924,7 +2053,8 @@ workflow doc_align:
     cli_flags: "{{outputs.scan_code_surface.cli_flags}}",
     diagnostic_codes: "{{outputs.scan_code_surface.diagnostic_codes}}",
     code_scope_globs: "{{vars.code_scope_globs}}",
-    max_drift_candidates: "{{vars.max_drift_candidates}}"
+    max_drift_candidates: "{{vars.max_drift_candidates}}",
+    max_review_chunk_docs: "{{vars.max_review_chunk_docs}}"
   }
 
   ## Loop-exhaustion fallthroughs (update_audit_cache has its

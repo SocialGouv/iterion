@@ -59,6 +59,30 @@ Fixers: see `anti-facade-fix-rules.md`. A fix that paraphrases a
 doc without consulting the code at the cited `code_anchor` is a
 façade and will be rejected by the next reviewer.
 
+## Iteration discipline (v0.16.0 doc-count chunking)
+
+On a large doc footprint (≥30 docs with active drift) the bot
+chunks: each reviewer iteration sees candidates from at most
+`vars.max_review_chunk_docs` distinct docs (default 30). The
+deferred docs roll into the next iter as the fixer clears this
+chunk.
+
+What this means for the agents:
+
+- **Reviewers**: do not flag missing docs as a coverage gap. The
+  `chunked=true` field in `input` tells you a slice was applied;
+  treat the candidates you see as the working set for this iter.
+  The streak gate uses `manifest_coverage_pct` across ALL docs,
+  so chunking cannot terminate convergence prematurely.
+- **Fixers**: when the chunk shows fewer blockers than usual,
+  that's by design — early chunks have the most severe drifts,
+  later chunks have the long tail. Apply the blockers you're
+  given; the next iter will surface the next chunk.
+
+Setting `vars.max_review_chunk_docs: 0` disables chunking (legacy
+candidate-cap-only behaviour). Use sparingly — large footprints
+will blow forfait context windows on `reviewer_gpt`.
+
 ## How to escalate
 
 Use `ask_user` when:
