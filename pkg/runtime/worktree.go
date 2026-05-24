@@ -857,7 +857,14 @@ func RecoverFinalize(ctx context.Context, st store.RunStore, r *store.Run, logge
 }
 
 // findGitRoot walks up parent directories from `dir` until it finds a `.git`
-// entry (file or directory). Falls back to os.Getwd() when `dir` is empty.
+// entry, then resolves linked-worktree pointer files back to the main repo
+// so a per-run worktree set up on top of an outer worktree (e.g. the
+// dispatcher's pre-seeded workspace at
+// `<repo>/.iterion/dispatcher/workspaces/<id>`) records the OPERATOR's
+// main checkout as the run's repo root — not the intermediate worktree.
+//
+// Falls back to os.Getwd() when `dir` is empty. Returns an error only
+// when no `.git` entry is found anywhere in the parent chain.
 func findGitRoot(dir string) (string, error) {
 	if dir == "" {
 		var err error
@@ -866,18 +873,9 @@ func findGitRoot(dir string) (string, error) {
 			return "", fmt.Errorf("getwd: %w", err)
 		}
 	}
-	current, err := filepath.Abs(dir)
-	if err != nil {
-		return "", fmt.Errorf("abs path: %w", err)
+	main := gitlib.FindMainRepoRoot(dir)
+	if main == "" {
+		return "", fmt.Errorf("not a git repository (or any parent up to /): %s", dir)
 	}
-	for {
-		if _, statErr := os.Stat(filepath.Join(current, ".git")); statErr == nil {
-			return current, nil
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return "", fmt.Errorf("not a git repository (or any parent up to /): %s", dir)
-		}
-		current = parent
-	}
+	return main, nil
 }

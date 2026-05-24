@@ -1410,7 +1410,16 @@ judge reviewer_gpt:
   ## Explicit backend pin: openai/gpt-5.5 only runs on claw.
   backend: "claw"
   model: "${ITERION_DOC_ALIGN_MODEL_GPT:-openai/gpt-5.5}"
-  reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_GPT:-high}"
+  ## Dropped from "high" to "medium" 2026-05-24: with the v0.15.0
+  ## manifest pattern + the 80%-coverage doc set (89 docs / 175
+  ## drift candidates), the gpt-5.5 reviewer running via the
+  ## ChatGPT-forfait codex endpoint started hitting
+  ## context_length_exceeded — the high-effort reasoning budget
+  ## reserved enough tokens to blow the forfait's per-call cap
+  ## (under the cap on the raw OpenAI API). Medium keeps the
+  ## verdict quality while leaving headroom. Override with the
+  ## env var when the input is small (e.g. branch-scoped audits).
+  reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_GPT:-medium}"
   input: review_input
   output: verdict_output
   system: review_system
