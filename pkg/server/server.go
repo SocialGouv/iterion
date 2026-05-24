@@ -661,6 +661,10 @@ func (s *Server) routes() {
 	if s.cfg.Dispatcher != nil {
 		s.cfg.Dispatcher.RegisterRoutesWithMiddleware(s.mux, "/api/v1/dispatcher", s.requireAuth)
 	}
+	// Findings inbox surface: ${PROJECT_MEMORY_DIR}/findings as a
+	// browsable + archivable list. No-op when WorkDir is empty (e.g.
+	// the cloud control plane has no operator workspace).
+	s.registerFindingsRoutes()
 
 	// Serve static frontend files with SPA fallback so client-side routes
 	// (e.g. /runs/abc) render index.html instead of 404.

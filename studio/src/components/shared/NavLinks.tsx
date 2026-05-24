@@ -11,6 +11,7 @@ import {
   ChevronRightIcon,
   Cross2Icon,
   PlayIcon,
+  EnvelopeOpenIcon,
 } from "@radix-ui/react-icons";
 import { useShallow } from "zustand/react/shallow";
 
@@ -29,6 +30,7 @@ export type Section =
   | "editor"
   | "runs"
   | "board"
+  | "findings"
   | "dispatcher";
 
 interface Props {
@@ -57,6 +59,7 @@ const SEGMENT_TO_SECTION: Record<string, Section> = {
   editor: "editor",
   runs: "runs",
   board: "board",
+  findings: "findings",
   dispatcher: "dispatcher",
 };
 
@@ -81,6 +84,12 @@ export default function NavLinks({ collapsed }: Props) {
   if (info?.native_tracker_enabled) {
     links.push({ section: "board", href: "/board", label: "Board", icon: ViewGridIcon });
   }
+  links.push({
+    section: "findings",
+    href: "/findings",
+    label: "Findings",
+    icon: EnvelopeOpenIcon,
+  });
   if (info?.dispatcher_enabled) {
     links.push({ section: "dispatcher", href: "/dispatcher", label: "Dispatcher", icon: RocketIcon });
   }
