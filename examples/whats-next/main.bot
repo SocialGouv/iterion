@@ -259,18 +259,21 @@ prompt explore_system:
   the downstream propose_roadmap node can choose to triage them.
 
   Steps:
-    1. Run `mkdir -p {{vars.findings_dir}}` then
-       `ls {{vars.findings_dir}}` — empty dir is a fine outcome
-       (skip the rest of this section then).
+    1. Run `ls {{vars.findings_dir}} 2>/dev/null` — if the dir
+       doesn't exist yet, `ls` reports nothing and you simply
+       skip the rest of this section (no findings to surface).
+       Do NOT run `mkdir` here; the Constraints below forbid it
+       and the directory will be created when the first bot
+       actually writes a finding.
     2. For each .md file found, call read_file to see its
        frontmatter (title, description, kind, source_bot, tags)
        plus the first ~40 lines of body. Don't burn context on
        full bodies unless one looks high-priority.
     3. Fold the catalogue into your `explore_output.observations`
        field as a short bullet list (one line per finding,
-       prefixed by `[finding:<source_bot>:<kind>]`). The exact
-       file paths matter — propose_roadmap and emit_action need
-       them to flip lifecycle.
+       prefixed by `[finding:<source_bot>:<kind>]` and the
+       finding's file basename). The exact file path matters —
+       emit_action will need it to delete after ingestion.
 
   Do NOT delete or modify finding files in this node — that
   belongs to emit_action after a kanban issue gets created. Just
@@ -286,6 +289,9 @@ prompt explore_system:
     rm/mv/touch/mkdir/git add/git commit/git checkout/git clean.
     If you find yourself needing a mutating command, stop and
     return your findings without it.
+  - EXCEPTION: `ls {{vars.findings_dir}} 2>/dev/null` (with the
+    `2>/dev/null` to suppress the missing-dir error) is allowed
+    and required for the Findings inbox step above. No mkdir.
   - Be efficient. Aim for a complete survey in under ~25 tool calls.
   - When you have enough material, return the structured
     explore_output. Keep "summary" tight (5-10 lines). Put the
