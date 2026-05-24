@@ -107,6 +107,11 @@ func DiffBetween(repoRoot, baseRef, finalRef, relPath string) (DiffPayload, erro
 // work_dir (`<repo>/.iterion/worktrees/<id>`) past `.iterion` to the repo
 // itself. Falls back gracefully on legacy or migrated runs whose work_dir
 // no longer resolves locally (returns "" so callers can try the server CWD).
+//
+// On a linked worktree (`.git` is a file containing `gitdir: <main>/.git/
+// worktrees/<name>`), this returns the WORKTREE path — not the main repo.
+// Callers that need the main checkout's path (e.g. project-rooted memory
+// keying) should use [FindMainRepoRoot] instead.
 func FindRepoRoot(startDir string) string {
 	if startDir == "" {
 		return ""
@@ -125,6 +130,85 @@ func FindRepoRoot(startDir string) string {
 		}
 		current = parent
 	}
+}
+
+// FindMainRepoRoot is like [FindRepoRoot] but resolves a worktree's `.git`
+// pointer file back to the main repo path. Used by the runtime to key
+// shared, project-rooted state (memory, findings) on the operator's main
+// checkout — dispatcher worktrees at `<repo>/.iterion/dispatcher/workspaces/
+// <id>` would otherwise be treated as their own repo and produce a per-
+// workspace findings tree invisible to a whats-next session running at
+// the actual repo root.
+//
+// Algorithm:
+//
+//  1. Walk up from startDir looking for `.git`.
+//  2. If `.git` is a regular directory → that's the main repo, return it.
+//  3. If `.git` is a file (linked worktree pointer), parse its single
+//     "gitdir: <path>" line. The pointed-to path is typically
+//     `<main-repo>/.git/worktrees/<name>`; the main repo is therefore
+//     three `filepath.Dir` jumps up (drop the worktree name, then
+//     `worktrees/`, then `.git/`). Resolve to absolute and return it.
+//  4. On any parse or stat failure on the pointer file, fall back to
+//     returning the worktree path itself — callers get the same legacy
+//     behaviour they did before this helper existed.
+//
+// Returns "" only when no `.git` entry is found in the parent chain.
+func FindMainRepoRoot(startDir string) string {
+	wt := FindRepoRoot(startDir)
+	if wt == "" {
+		return ""
+	}
+	dotGit := filepath.Join(wt, ".git")
+	info, err := os.Stat(dotGit)
+	if err != nil {
+		return wt
+	}
+	if info.IsDir() {
+		// Main checkout — `.git` is the real gitdir.
+		return wt
+	}
+	// Linked worktree: read the pointer file and follow it.
+	raw, readErr := os.ReadFile(dotGit)
+	if readErr != nil {
+		return wt
+	}
+	gitdir := parseGitfilePointer(string(raw))
+	if gitdir == "" {
+		return wt
+	}
+	if !filepath.IsAbs(gitdir) {
+		// `gitdir:` paths in linked worktrees are typically absolute, but
+		// git accepts a relative path resolved against the worktree's own
+		// directory. Honor that.
+		abs, absErr := filepath.Abs(filepath.Join(wt, gitdir))
+		if absErr != nil {
+			return wt
+		}
+		gitdir = abs
+	}
+	// gitdir = `<main>/.git/worktrees/<name>`. Walk up three Dirs to get
+	// the main repo root. Tolerate alternate layouts (e.g. bare repos)
+	// by sanity-checking: the result must have a `.git` entry of its own.
+	main := filepath.Dir(filepath.Dir(filepath.Dir(gitdir)))
+	if _, statErr := os.Stat(filepath.Join(main, ".git")); statErr == nil {
+		return main
+	}
+	return wt
+}
+
+// parseGitfilePointer extracts the path from a worktree's `.git` file
+// content (`gitdir: <path>\n`). Returns "" when the content doesn't match
+// the expected single-line format.
+func parseGitfilePointer(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		const prefix = "gitdir:"
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(line[len(prefix):])
+		}
+	}
+	return ""
 }
 
 // MergeBase returns the merge base of refA and refB in repoRoot, or "" + nil

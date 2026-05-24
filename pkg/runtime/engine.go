@@ -639,7 +639,7 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 		if worktreeActive {
 			run.RepoRoot = wtCtx.repoRoot
 			run.BaseCommit = wtCtx.originalTip
-		} else if repoRoot := gitlib.FindRepoRoot(e.workDir); repoRoot != "" {
+		} else if repoRoot := gitlib.FindMainRepoRoot(e.workDir); repoRoot != "" {
 			// workDir is a git working tree that the runtime didn't set
 			// up itself (e.g. the dispatcher seeded a per-issue worktree
 			// via its after_create hook). Record the baseline anyway so

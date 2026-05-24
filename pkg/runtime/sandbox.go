@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/sandbox/devcontainer"
@@ -782,18 +783,34 @@ func locateHostIterionBinary() string {
 	return ""
 }
 
-// engineRepoRoot returns the path the sandbox should treat as the repo
-// root for devcontainer.json lookup. When the engine is running on a
-// per-run worktree, we still want to read the source repo's
-// .devcontainer/ — that's the user-authored config, and the worktree
-// is just a checkout of the same tree. The worktree path itself works
-// because git worktree copies the .devcontainer/ files in.
+// engineRepoRoot returns the path the engine should treat as the
+// source-of-truth repository root for this run — the operator's main
+// checkout, NOT the per-run worktree.
+//
+// Three layers, first non-empty wins:
+//
+//  1. [gitlib.FindMainRepoRoot] walks up from workDir to the nearest
+//     `.git`. If `.git` is a directory → that's the main repo. If `.git`
+//     is a file (linked worktree pointer like
+//     `gitdir: <main>/.git/worktrees/<name>`), it follows the pointer
+//     back to the main repo. This case matters for dispatcher-spawned
+//     bots running at `<repo>/.iterion/dispatcher/workspaces/<id>` —
+//     without the pointer-resolution step, the project-rooted memory
+//     scope (`${PROJECT_MEMORY_DIR}/findings`) silently keys off the
+//     worktree's encoded path and a whats-next session at the repo
+//     root reads a different (empty) findings tree.
+//  2. The absolute path of workDir (legacy behaviour for non-git
+//     workspaces).
+//  3. `os.Getwd()` when workDir itself is empty.
 func engineRepoRoot(workDir string) string {
 	if workDir == "" {
 		if cwd, err := os.Getwd(); err == nil {
 			return cwd
 		}
 		return ""
+	}
+	if main := gitlib.FindMainRepoRoot(workDir); main != "" {
+		return main
 	}
 	abs, err := filepath.Abs(workDir)
 	if err != nil {

@@ -134,3 +134,65 @@ func TestDiffOfCommitNotGitRepo(t *testing.T) {
 		t.Fatalf("want ErrNotGitRepo, got %v", err)
 	}
 }
+
+// TestFindMainRepoRoot_LinkedWorktree locks the fix that lets
+// dispatcher-spawned bot runs (which execute in a linked worktree at
+// `<repo>/.iterion/dispatcher/workspaces/<id>`) resolve back to the
+// operator's main checkout for project-rooted memory keying. Without
+// this, `${PROJECT_MEMORY_DIR}/findings` keyed off the encoded worktree
+// path and the shared findings/ channel between bots and Nexie broke
+// silently — the 2026-05-24 doc-align dogfood landed findings at
+// `/home/jo/.iterion/projects/-home-jo-lab-ai-iterion-.iterion-dispatcher-workspaces-native_<id>/memory/findings/`
+// rather than the project-rooted dir Nexie reads.
+func TestFindMainRepoRoot_LinkedWorktree(t *testing.T) {
+	main := gitRepo(t)
+	// Create a linked worktree under the main repo. We use the same
+	// `<repo>/.iterion/dispatcher/workspaces/<name>` layout the dispatcher
+	// uses so the test mirrors the production path shape.
+	wt := filepath.Join(main, ".iterion", "dispatcher", "workspaces", "native_test")
+	if err := os.MkdirAll(filepath.Dir(wt), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, main, "worktree", "add", "--detach", wt, "HEAD")
+
+	// FindRepoRoot (legacy) sees `.git` (pointer file) in the worktree
+	// and returns the worktree itself — that's the pre-fix behaviour
+	// we're documenting + asserting hasn't regressed.
+	if got := FindRepoRoot(wt); got != wt {
+		// Resolve symlinks for the comparison (TempDir on macOS goes
+		// through /var → /private/var).
+		gotAbs, _ := filepath.EvalSymlinks(got)
+		wtAbs, _ := filepath.EvalSymlinks(wt)
+		if gotAbs != wtAbs {
+			t.Fatalf("FindRepoRoot on worktree: got %q, want worktree path %q", got, wt)
+		}
+	}
+
+	// FindMainRepoRoot follows the worktree's `.git` pointer file back
+	// to the main checkout.
+	got := FindMainRepoRoot(wt)
+	gotAbs, _ := filepath.EvalSymlinks(got)
+	mainAbs, _ := filepath.EvalSymlinks(main)
+	if gotAbs != mainAbs {
+		t.Fatalf("FindMainRepoRoot on worktree: got %q, want main %q", got, main)
+	}
+
+	// FindMainRepoRoot from the main repo itself stays at the main repo.
+	got = FindMainRepoRoot(main)
+	gotAbs, _ = filepath.EvalSymlinks(got)
+	if gotAbs != mainAbs {
+		t.Fatalf("FindMainRepoRoot on main: got %q, want %q", got, main)
+	}
+
+	// FindMainRepoRoot starting from a subdir of the worktree also
+	// resolves to main (walks up to .git pointer first, then follows).
+	sub := filepath.Join(wt, "subdir")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got = FindMainRepoRoot(sub)
+	gotAbs, _ = filepath.EvalSymlinks(got)
+	if gotAbs != mainAbs {
+		t.Fatalf("FindMainRepoRoot on worktree subdir: got %q, want %q", got, main)
+	}
+}
