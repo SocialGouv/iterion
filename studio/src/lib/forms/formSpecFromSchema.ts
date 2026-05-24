@@ -28,11 +28,12 @@ import type {
 export function formSpecFromSchema(
   fields: WireSchemaField[],
   questions: Record<string, unknown>,
-  opts: { submitLabel?: string } = {},
+  opts: { submitLabel?: string; mode?: FormSpec["mode"] } = {},
 ): FormSpec {
   return {
     questions: fields.map((f) => buildQuestion(f, questions[f.name], questions)),
     submitLabel: opts.submitLabel,
+    mode: opts.mode,
   };
 }
 
@@ -97,6 +98,14 @@ function buildQuestion(
           required: false,
           kind: "checkbox",
           options: items,
+          // Pre-tick every option so the form opens in
+          // "create / dispatch everything" state. The operator
+          // unticks items they want to drop instead of having to
+          // hand-pick the ones they want — matches the way the
+          // ask_which_to_process / human_review form is most often
+          // used (the bot's proposal is mostly good, the operator
+          // adjusts at the margin).
+          defaultValues: items.map((o) => o.value),
         };
       }
       return {
@@ -133,57 +142,124 @@ function isLikelySelectionField(name: string): boolean {
   return n.endsWith("_ids") || n.endsWith("_keys") || n.startsWith("selected_");
 }
 
-// findSelectableItems scans the questions context for a sibling
-// array of objects that look like selectable items (each carries an
-// `id` string). Returns option entries built from the first such
-// array, or null when no usable collection is in scope. The item's
-// `title` (or `name`) becomes the option label; `id` is always the
-// option value because that's what the downstream agent expects.
+// findSelectableItems scans the questions context for a collection
+// of selectable items. Returns option entries built from the first
+// usable array discovered, or null when nothing is in scope.
+//
+// Search order:
+//   1. Direct sibling arrays at the questions root (e.g. the
+//      `created_issues` array next to `selected_issue_ids` on the
+//      whats-next ask_which_to_process node).
+//   2. Arrays nested ONE LEVEL inside sibling objects, including a
+//      singular "next_action"-shaped object treated as an array of
+//      one. This covers the whats-next human_review case where the
+//      review_input is `{roadmap: {long_term: [...], short_term: [...],
+//      next_action: {...}, rationale: "..."}}` and selected_titles
+//      needs to expand into a checkbox column across every horizon.
+//
+// Items qualify as selectable when they carry either an `id` string
+// OR a `title` string — `id` wins as the option value (matches the
+// downstream agent's expectations) and `title` is the fallback for
+// LLM-produced items that don't have a board-issued id yet.
 function findSelectableItems(
   questions: Record<string, unknown>,
   selfName: string,
 ): QuestionOption[] | null {
+  // Pass 1: direct sibling arrays.
   for (const [k, v] of Object.entries(questions)) {
     if (k === selfName) continue;
     if (!Array.isArray(v) || v.length === 0) continue;
     if (!v.every(looksLikeSelectable)) continue;
-    return (v as Array<Record<string, unknown>>).map((it) => {
-      const id = String(it.id);
-      const titleSrc =
-        typeof it.title === "string"
-          ? it.title
-          : typeof it.name === "string"
-            ? it.name
-            : "";
-      // Optional secondary lines that pack useful context into the
-      // option without making the label noisy.
-      const meta: string[] = [];
-      if (typeof it.assignee === "string" && it.assignee.length > 0) {
-        meta.push(it.assignee);
+    return (v as Array<Record<string, unknown>>).map(toOption);
+  }
+  // Pass 2: descend into sibling objects. Collect arrays of card-
+  // shaped items across all eligible nested fields and concatenate
+  // them so a single checkbox column covers multiple horizons (e.g.
+  // long_term + short_term + next_action under `roadmap`). The
+  // accumulator is across nested fields of one sibling only — we
+  // don't merge items from two different siblings because that risks
+  // mixing semantically different domains.
+  for (const [k, v] of Object.entries(questions)) {
+    if (k === selfName) continue;
+    if (!isPlainObject(v)) continue;
+    const collected: Array<Record<string, unknown>> = [];
+    let usable = true;
+    for (const inner of Object.values(v as Record<string, unknown>)) {
+      if (Array.isArray(inner)) {
+        if (inner.length === 0) continue;
+        if (!inner.every(looksLikeSelectable)) {
+          usable = false;
+          break;
+        }
+        collected.push(...(inner as Array<Record<string, unknown>>));
+        continue;
       }
-      if (typeof it.horizon === "string" && it.horizon.length > 0) {
-        meta.push(it.horizon);
+      // Singular "next_action"-shaped sub-object: treat as a length-1
+      // array iff it independently looks selectable.
+      if (looksLikeSelectable(inner)) {
+        collected.push(inner as Record<string, unknown>);
       }
-      const shortId = id.replace(/^native:/, "").slice(0, 8);
-      const label = titleSrc ? `${titleSrc} · ${shortId}` : id;
-      return {
-        value: id,
-        label,
-        description: meta.length > 0 ? meta.join(" · ") : undefined,
-      };
-    });
+      // Anything else (strings, numbers, foreign objects) is just
+      // ignored — these are typically explanatory siblings like
+      // `rationale: string`.
+    }
+    if (!usable || collected.length === 0) continue;
+    return collected.map(toOption);
   }
   return null;
 }
 
-function looksLikeSelectable(v: unknown): boolean {
+function isPlainObject(v: unknown): v is Record<string, unknown> {
   return (
     typeof v === "object" &&
     v !== null &&
     !Array.isArray(v) &&
-    typeof (v as Record<string, unknown>).id === "string" &&
-    ((v as Record<string, unknown>).id as string).length > 0
+    Object.getPrototypeOf(v) === Object.prototype
   );
+}
+
+function looksLikeSelectable(v: unknown): boolean {
+  if (!isPlainObject(v)) return false;
+  const idOk =
+    typeof v.id === "string" && (v.id as string).length > 0;
+  const titleOk =
+    typeof v.title === "string" && (v.title as string).length > 0;
+  return idOk || titleOk;
+}
+
+function toOption(it: Record<string, unknown>): QuestionOption {
+  // Prefer `id` as the option value when present (canonical for
+  // board issues) — falls back to `title` when items only carry
+  // human-readable identifiers, e.g. LLM-emitted roadmap_items
+  // before emit_action assigns board ids.
+  const value =
+    typeof it.id === "string" && (it.id as string).length > 0
+      ? (it.id as string)
+      : (it.title as string);
+  const titleSrc =
+    typeof it.title === "string"
+      ? it.title
+      : typeof it.name === "string"
+        ? it.name
+        : "";
+  const meta: string[] = [];
+  if (typeof it.assignee === "string" && it.assignee.length > 0) {
+    meta.push(it.assignee);
+  }
+  if (typeof it.horizon === "string" && it.horizon.length > 0) {
+    meta.push(it.horizon);
+  }
+  const shortId =
+    typeof it.id === "string"
+      ? (it.id as string).replace(/^native:/, "").slice(0, 8)
+      : "";
+  let label = titleSrc || value;
+  if (shortId) label += ` · ${shortId}`;
+  return {
+    value,
+    label,
+    description: meta.length > 0 ? meta.join(" · ") : undefined,
+  };
 }
 
 // coerceFormAnswerToSchema takes a wizard answer map (string |

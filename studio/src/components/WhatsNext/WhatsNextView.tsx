@@ -10,6 +10,7 @@ import { useWhatsNextSession } from "@/lib/whats-next/useWhatsNextSession";
 import type { FormSpec } from "@/lib/whats-next/questionForm";
 import type {
   IssuesSummaryMessage,
+  RoadmapDoc,
   WhatsNextMessage,
 } from "@/lib/whats-next/messages";
 
@@ -79,12 +80,17 @@ export default function WhatsNextView() {
         });
       }
       if (!bot || !m || m.kind !== "human-question" || !entry) return;
-      if (outcome.formAnswer) {
-        void session.submitHumanAnswer(messageId, outcome.formAnswer);
-        return;
-      }
-      const answers: Record<string, unknown> = {};
-      if (entry.textField) {
+      // When the chat turn supplies BOTH a formAnswer (from the
+      // checkbox column, e.g. human_review's selected_titles) AND
+      // approved/text (from the Approve / Request-revision buttons),
+      // merge the two: the form covers the structured fields the
+      // bot declared in its output schema, the action covers the
+      // verdict + feedback. Either alone (form-only turn, or pure
+      // actions turn) keeps the existing behaviour.
+      const answers: Record<string, unknown> = outcome.formAnswer
+        ? { ...outcome.formAnswer }
+        : {};
+      if (entry.textField && outcome.text !== "") {
         answers[entry.textField] = outcome.text;
       }
       if (entry.approvedField && outcome.approved !== undefined) {
@@ -188,58 +194,133 @@ export default function WhatsNextView() {
 }
 
 // resolveDynamicForm overrides the static nodeMap.form for nodes
-// whose options depend on upstream output. Currently only
-// ask_which_to_process: builds a checkbox per issue from the most
-// recent IssuesSummaryMessage. Falls back to the static form when
-// the upstream summary message is missing (defensive — under normal
-// flow it always exists by the time the human pause hits).
+// whose options depend on upstream output:
+//   - ask_which_to_process: a checkbox per freshly-created issue
+//     (from the IssuesSummaryMessage emit_action just pushed).
+//   - human_review: a checkbox per proposed roadmap_item (from the
+//     latest RoadmapCardMessage). Lets the operator drop individual
+//     items before emit_action materialises them as kanban issues,
+//     instead of having to create everything then close the ones they
+//     didn't want.
+// Falls back to the static nodeMap.form when the upstream message
+// isn't available — under normal flow it always is by the time the
+// human pause hits.
 function resolveDynamicForm(
   message: Extract<WhatsNextMessage, { kind: "human-question" }>,
   messages: WhatsNextMessage[],
   nodeMap: Record<string, { form?: FormSpec } | undefined>,
 ): FormSpec | undefined {
   const staticForm = nodeMap[message.nodeId]?.form;
-  if (message.nodeId !== "ask_which_to_process") return staticForm;
-  // Walk newest-to-oldest from the index of the pending message so a
-  // later iteration's IssuesSummaryMessage doesn't get matched against
-  // an earlier ask_which_to_process turn (the post-emit triage loop
-  // can in principle revisit emit_action via a future workflow change).
   const pendingIdx = messages.findIndex((m) => m.id === message.id);
-  const summary = findLatestIssuesSummary(
-    pendingIdx < 0 ? messages : messages.slice(0, pendingIdx),
-  );
-  if (!summary || summary.createdIssues.length === 0) return staticForm;
-  return {
-    mode: "flat",
-    questions: [
-      {
-        id: "selected_issue_ids",
-        kind: "checkbox",
-        label: "Issues to dispatch now",
-        description:
-          "Tick the ones to push from backlog to ready. The dispatcher picks up ready tickets matching the configured assignee_workflows mapping.",
-        options: summary.createdIssues.map((iss) => ({
-          value: iss.id,
-          label: iss.title,
-          description: [iss.horizon, iss.assignee]
-            .filter(Boolean)
-            .join(" · "),
-        })),
-      },
-      {
-        id: "note",
-        kind: "free_text",
-        label: "Note (optional)",
-        description:
-          "Why this selection? Helps the bot reason about edge cases.",
-        placeholder:
-          "Optional — e.g. 'skip long_term, only ship next_action'",
-        rows: 2,
-        required: false,
-      },
-    ],
-    submitLabel: "Dispatch selected",
-  };
+  const upstream = pendingIdx < 0 ? messages : messages.slice(0, pendingIdx);
+
+  if (message.nodeId === "ask_which_to_process") {
+    const summary = findLatestIssuesSummary(upstream);
+    if (!summary || summary.createdIssues.length === 0) return staticForm;
+    return {
+      mode: "flat",
+      questions: [
+        {
+          id: "selected_issue_ids",
+          kind: "checkbox",
+          label: "Issues to dispatch now",
+          description:
+            "Tick the ones to push from backlog to ready. The dispatcher picks up ready tickets matching the configured assignee_workflows mapping.",
+          options: summary.createdIssues.map((iss) => ({
+            value: iss.id,
+            label: iss.title,
+            description: [iss.horizon, iss.assignee]
+              .filter(Boolean)
+              .join(" · "),
+          })),
+          defaultValues: summary.createdIssues.map((iss) => iss.id),
+        },
+        {
+          id: "note",
+          kind: "free_text",
+          label: "Note (optional)",
+          description:
+            "Why this selection? Helps the bot reason about edge cases.",
+          placeholder:
+            "Optional — e.g. 'skip long_term, only ship next_action'",
+          rows: 2,
+          required: false,
+        },
+      ],
+      submitLabel: "Dispatch selected",
+    };
+  }
+
+  if (message.nodeId === "human_review") {
+    const roadmap = findLatestRoadmap(upstream);
+    if (!roadmap) return staticForm;
+    const items = flattenRoadmapItems(roadmap);
+    if (items.length === 0) return staticForm;
+    return {
+      mode: "flat",
+      questions: [
+        {
+          id: "selected_titles",
+          kind: "checkbox",
+          label: "Items to actually create as kanban issues",
+          description:
+            "Pre-ticked = approve all. Untick any you don't want emit_action to materialise on the board right now; rationale + acceptance criteria still survive in the audit markdown.",
+          options: items.map((it) => ({
+            value: it.title,
+            label: it.title,
+            description: [it.horizon, it.assignee]
+              .filter(Boolean)
+              .join(" · "),
+          })),
+          defaultValues: items.map((it) => it.title),
+          required: false,
+        },
+      ],
+    };
+  }
+
+  return staticForm;
+}
+
+// flattenRoadmapItems concatenates the three horizons into a single
+// list while tagging each item with its horizon — the operator's
+// checkbox column should treat next_action and long_term items
+// uniformly; the horizon survives as option meta so the badge is
+// still visible.
+function flattenRoadmapItems(
+  roadmap: RoadmapDoc,
+): Array<{ title: string; assignee: string; horizon: string }> {
+  const out: Array<{ title: string; assignee: string; horizon: string }> = [];
+  for (const it of roadmap.long_term) {
+    if (it && typeof it.title === "string" && it.title.length > 0) {
+      out.push({ title: it.title, assignee: it.assignee ?? "", horizon: "long_term" });
+    }
+  }
+  for (const it of roadmap.short_term) {
+    if (it && typeof it.title === "string" && it.title.length > 0) {
+      out.push({ title: it.title, assignee: it.assignee ?? "", horizon: "short_term" });
+    }
+  }
+  if (
+    roadmap.next_action &&
+    typeof roadmap.next_action.title === "string" &&
+    roadmap.next_action.title.length > 0
+  ) {
+    out.push({
+      title: roadmap.next_action.title,
+      assignee: roadmap.next_action.assignee ?? "",
+      horizon: "next_action",
+    });
+  }
+  return out;
+}
+
+function findLatestRoadmap(messages: WhatsNextMessage[]): RoadmapDoc | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m && m.kind === "roadmap-card") return m.roadmap;
+  }
+  return null;
 }
 
 function findLatestIssuesSummary(

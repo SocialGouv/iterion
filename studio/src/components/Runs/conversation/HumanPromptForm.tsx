@@ -90,8 +90,16 @@ export default function HumanPromptForm({
       ? fields.filter((f) => f.name !== approve.name)
       : fields;
     if (visible.length === 0) return null;
+    // Approve/Reject buttons live OUTSIDE the wizard at this layout
+    // level. Paginating the remaining questions would force the
+    // operator to step through a wizard to reach the approve action;
+    // collapsing them onto one page keeps every input (feedback +
+    // any per-item selector like whats-next's `selected_titles`)
+    // visible alongside the verdict buttons.
+    const mode = approve ? "flat" : undefined;
     return formSpecFromSchema(visible, questions, {
       submitLabel: "Submit & Resume",
+      mode,
     });
   }, [fields, questions]);
 

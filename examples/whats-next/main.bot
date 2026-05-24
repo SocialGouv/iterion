@@ -108,9 +108,18 @@ schema roadmap:
 schema review_input:
   roadmap: json
 
+## selected_titles lets the operator drop individual roadmap items at
+## review time. Default: empty/absent → emit_action creates EVERY item
+## (backward compatible with the original approve-all semantic). When
+## non-empty, emit_action filters the roadmap so only items whose
+## `title` is in the list become kanban issues — useful when the
+## roadmap is mostly good but one or two items aren't worth dispatching
+## right now. The studio renders this as a checkbox list (pre-ticked)
+## next to the Approve / Request revision controls.
 schema review_output:
-  approved: bool
-  feedback: string
+  approved:        bool
+  feedback:        string
+  selected_titles: json
 
 ## Passthrough schema for the carry_roadmap compute node. The
 ## compute node stamps "the roadmap currently being reviewed" so
@@ -133,6 +142,13 @@ schema emit_input:
   roadmap:         json
   user_priorities: string
   workspace_dir:   string
+  ## selected_titles, when non-empty, restricts emit_action to creating
+  ## issues only for roadmap items whose `title` is in this list. Empty
+  ## or absent → create EVERY item (default approve-all behaviour). The
+  ## operator picks the subset via the checkbox column on the
+  ## human_review form; emit_action does not second-guess unticked
+  ## items even when they look high-value.
+  selected_titles: json
 
 ## emit_output records the result of materialising the roadmap as
 ## kanban issues on the native board. created_issues is the audit
@@ -440,7 +456,7 @@ prompt human_review_instructions:
 
   {{input.roadmap}}
 
-  Please review it. Two fields to fill in:
+  Please review it. Three fields to fill in:
 
   - approved (bool): true if you're happy and want to record this
     plan. false if you want the bot to revise.
@@ -451,6 +467,15 @@ prompt human_review_instructions:
     secured-renovacy instead of feature_dev because …",
     "rebalance horizon toward Q4", etc. The reviser gets your
     feedback verbatim.
+
+  - selected_titles (JSON array of strings): the subset of roadmap
+    items to actually materialise as kanban issues on approval.
+    The studio renders this as a checkbox list with one box per
+    proposed item, pre-ticked. Untick items you don't want issued
+    right now and they will be dropped from `emit_action`. Leave
+    the list empty (or unchanged from the default all-ticked state)
+    to create every item. Only used when `approved=true`; ignored
+    on rejection.
 
 prompt revise_system:
   You are revising the roadmap based on the operator's feedback.
@@ -580,6 +605,20 @@ prompt emit_action_system:
   capability mapping, and error-handling patterns.
 
   ## Your steps
+
+  0. Apply the operator's per-item selection FIRST. `input.selected_titles`
+     is either:
+       - empty / absent / `null` / `"all"` (case-insensitive) → create
+         every roadmap_item (default approve-all behaviour).
+       - a JSON array of titles → create only the items whose `title`
+         exactly matches an entry in the array. Drop everything else
+         silently — do NOT log the unticked items as failures, the
+         operator's choice is authoritative.
+     After filtering, work only with the surviving items in the
+     remaining steps. If the filter leaves zero items, return an
+     `emit_output` with empty `created_issues`, no plan markdown, and a
+     `summary` of "operator unticked every proposed item — nothing
+     created".
 
   1. Validate each item's `assignee` against the bots the
      explorer surfaced. For any unrecognised assignee, drop
@@ -1116,7 +1155,8 @@ workflow whats_next:
   human_review -> emit_action when approved with {
     roadmap:         "{{outputs.carry_roadmap.roadmap}}",
     user_priorities: "{{outputs.ask_priorities.context}}",
-    workspace_dir:   "{{vars.workspace_dir}}"
+    workspace_dir:   "{{vars.workspace_dir}}",
+    selected_titles: "{{outputs.human_review.selected_titles}}"
   }
 
   ## Rejection branch: route to the reviser with the human's

@@ -43,6 +43,13 @@ export type FormQuestion = {
       kind: "checkbox";
       options: QuestionOption[];
       allow_other?: boolean;
+      // defaultValues pre-fills the checkbox group when the form
+      // first mounts. Used for "validate by exception" UX — render
+      // every option pre-ticked so Approve = "create all" and the
+      // operator only interacts with items they want to drop. When
+      // unset, the initial answer is the empty array (every option
+      // unticked).
+      defaultValues?: string[];
     }
   | {
       kind: "select";

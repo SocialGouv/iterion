@@ -98,17 +98,33 @@ export default function HumanChatTurn({
   }
 
   const hasActions = (message.actions?.length ?? 0) > 0;
-  // The rich form takes precedence over both the legacy free-text
-  // and the approve/reject UI. When a form is present we ignore
-  // textField/approvedField: the form's question.id is the answer
-  // key directly.
   const hasForm = !!form && form.questions.length > 0;
+  // Hybrid layout: when BOTH a rich form AND Approve/Reject actions
+  // are present (e.g. whats-next's human_review with the
+  // selected_titles checkbox column), the form's draft must travel
+  // alongside the approved/rejected verdict — otherwise the
+  // operator's per-item selection is dropped on the Approve click.
+  // We track the latest WizardForm answer in formDraft and hand it
+  // off to onSubmit from the action handlers below.
+  const [formDraft, setFormDraft] =
+    useState<FormAnswer | null>(null);
   const isFreeText = !hasForm && !hasActions;
+  const formAndActions = hasForm && hasActions;
 
   const submit = (approved?: boolean) => {
     if (!onSubmit || disabled) return;
     setLocalSubmitting(true);
-    onSubmit({ text: draft, approved });
+    onSubmit({
+      text: draft,
+      approved,
+      // formAndActions: ride along whatever's currently in the
+      // WizardForm so a click on Approve carries the checkbox state.
+      // Pure-actions turns (no form) pass undefined → the
+      // textField/approvedField fallback path in WhatsNextView's
+      // onHumanSubmit still wires the answer.
+      formAnswer:
+        formAndActions && formDraft ? formDraft : undefined,
+    });
     setDraft("");
     setReviseOpen(false);
   };
@@ -155,8 +171,18 @@ export default function HumanChatTurn({
           <WizardForm
             spec={form!}
             onSubmit={submitForm}
+            // Capture the form draft so the Approve/Reject buttons
+            // below can ride along with whatever's currently ticked.
+            // Form-only turns (no actions) still call submitForm
+            // directly — onAnswerChange is just an observer.
+            onAnswerChange={formAndActions ? setFormDraft : undefined}
             busy={disabled}
             mode={form!.mode ?? "flat"}
+            // Don't render the form's own Submit when the
+            // Approve/Reject buttons own the final verdict — the
+            // operator would otherwise see two competing "Send"
+            // controls on the same turn.
+            hideSubmit={formAndActions}
           />
         </div>
       )}

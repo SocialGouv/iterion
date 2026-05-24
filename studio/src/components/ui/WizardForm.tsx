@@ -378,7 +378,11 @@ function FlatForm({
 function initialAnswers(spec: FormSpec): FormAnswer {
   const out: FormAnswer = {};
   for (const q of spec.questions) {
-    out[q.id] = q.kind === "checkbox" ? [] : "";
+    if (q.kind === "checkbox") {
+      out[q.id] = q.defaultValues ? [...q.defaultValues] : [];
+    } else {
+      out[q.id] = "";
+    }
   }
   return out;
 }
