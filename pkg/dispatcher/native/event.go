@@ -14,6 +14,12 @@ const (
 	EvtIssueReleased EventType = "issue_released"
 	EvtIssueLastRun  EventType = "issue_last_run_updated"
 	EvtBoardUpdated  EventType = "board_updated"
+	// Label-vocabulary management events, emitted once per touched
+	// issue. The payload carries `{from, to}` for rename/merge and
+	// `{label}` for delete.
+	EvtLabelRename EventType = "label_rename"
+	EvtLabelMerge  EventType = "label_merge"
+	EvtLabelDelete EventType = "label_delete"
 )
 
 // Event is the audit-log record persisted to events.jsonl. Seq is a

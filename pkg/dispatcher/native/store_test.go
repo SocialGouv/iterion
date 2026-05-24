@@ -389,6 +389,112 @@ func TestSetBoardValidation(t *testing.T) {
 	}
 }
 
+// TestLabelVocabularyOps: rename / merge / delete touch the right
+// issues, emit the right events, and are idempotent. Also covers the
+// edge cases (empty input, from == to, label already present on the
+// target during a rename).
+func TestLabelVocabularyOps(t *testing.T) {
+	s := newTestStore(t)
+	mk := func(title string, labels []string) string {
+		iss, err := s.Create(Issue{Title: title, State: "backlog", Labels: labels})
+		if err != nil {
+			t.Fatalf("Create %q: %v", title, err)
+		}
+		return iss.ID
+	}
+	mk("a", []string{"old", "keep"})
+	mk("b", []string{"old"})
+	idC := mk("c", []string{"keep", "new"}) // already has the rename target
+	mk("d", []string{"keep"})
+
+	// Rename old → new: 3 issues touched (a + b adopt new; c drops a
+	// stale 'old' if it had one — it doesn't, but the rewrite path is
+	// idempotent so verifying it touches only a, b is enough). c also
+	// has 'new' already, so when a + b adopt it the set stays unique.
+	n, err := s.RenameLabel("old", "new")
+	if err != nil {
+		t.Fatalf("RenameLabel: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("rename touched %d, want 2", n)
+	}
+	got := s.AggregateLabels()
+	want := map[string]int{"new": 3, "keep": 3}
+	for _, u := range got {
+		if exp, ok := want[u.Label]; ok && u.Count != exp {
+			t.Errorf("after rename: %q count = %d, want %d", u.Label, u.Count, exp)
+		}
+	}
+	if _, present := labelMap(got)["old"]; present {
+		t.Errorf("rename did not remove 'old' from the board")
+	}
+
+	// Idempotent: re-running rename is a no-op now that nothing
+	// carries 'old' anymore.
+	if n, err := s.RenameLabel("old", "new"); err != nil || n != 0 {
+		t.Errorf("rename idempotent: n=%d err=%v, want 0/nil", n, err)
+	}
+
+	// Merge new → keep: every issue carrying 'new' ends up with
+	// 'keep' (deduped) and no longer 'new'.
+	if _, err := s.MergeLabels("new", "keep"); err != nil {
+		t.Fatalf("MergeLabels: %v", err)
+	}
+	got = s.AggregateLabels()
+	if _, present := labelMap(got)["new"]; present {
+		t.Errorf("merge did not remove 'new' from the board")
+	}
+	keepRow := labelMap(got)["keep"]
+	if keepRow.Count != 4 {
+		t.Errorf("after merge: 'keep' count = %d, want 4", keepRow.Count)
+	}
+
+	// Delete 'keep' (now the only label): board becomes empty of labels.
+	if _, err := s.DeleteLabel("keep"); err != nil {
+		t.Fatalf("DeleteLabel: %v", err)
+	}
+	if len(s.AggregateLabels()) != 0 {
+		t.Errorf("delete did not clear: %+v", s.AggregateLabels())
+	}
+
+	// Edge cases.
+	if _, err := s.RenameLabel("", "x"); err != ErrLabelEmpty {
+		t.Errorf("rename empty from: err = %v, want ErrLabelEmpty", err)
+	}
+	if _, err := s.RenameLabel("x", ""); err != ErrLabelEmpty {
+		t.Errorf("rename empty to: err = %v, want ErrLabelEmpty", err)
+	}
+	if n, err := s.RenameLabel("same", "same"); err != nil || n != 0 {
+		t.Errorf("rename same→same: n=%d err=%v, want 0/nil", n, err)
+	}
+	if _, err := s.DeleteLabel(""); err != ErrLabelEmpty {
+		t.Errorf("delete empty: err = %v, want ErrLabelEmpty", err)
+	}
+
+	// Audit-trail events for the rename op should land for each touched
+	// issue. Read directly from disk; the in-memory store doesn't expose
+	// an event tail.
+	var renameEvents int
+	_ = s.ScanEvents(func(e *Event) bool {
+		if e.Type == EvtLabelRename {
+			renameEvents++
+		}
+		return true
+	})
+	if renameEvents != 2 {
+		t.Errorf("EvtLabelRename emitted %d times, want 2 (one per touched issue)", renameEvents)
+	}
+	_ = idC // silence unused — kept for readability of the table-style fixture
+}
+
+func labelMap(usage []LabelUsage) map[string]LabelUsage {
+	m := make(map[string]LabelUsage, len(usage))
+	for _, u := range usage {
+		m[u.Label] = u
+	}
+	return m
+}
+
 // TestAggregateLabels: counts and orders the distinct labels across
 // the store. Issues with empty Labels contribute nothing; the order is
 // (count desc, label asc); duplicates within one issue's label slice

@@ -402,6 +402,14 @@ export default function BoardView() {
     left: <span className="text-xs font-medium text-fg-default">Board</span>,
     right: board ? (
       <>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => setLocation("/board/labels")}
+          title="Manage the board's label vocabulary"
+        >
+          Labels
+        </Button>
         <Button variant="secondary" size="sm" onClick={() => void refresh()}>
           Refresh
         </Button>

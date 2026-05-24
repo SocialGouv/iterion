@@ -37,6 +37,9 @@ func (s *Store) RegisterRoutesWithMiddleware(mux *http.ServeMux, prefix string, 
 	mux.Handle("DELETE "+p+"/issues/{id}", wrap(http.HandlerFunc(s.handleDeleteIssue)))
 	mux.Handle("POST "+p+"/issues/{id}/transition", wrap(http.HandlerFunc(s.handleTransitionIssue)))
 	mux.Handle("GET "+p+"/labels", wrap(http.HandlerFunc(s.handleListLabels)))
+	mux.Handle("POST "+p+"/labels/rename", wrap(http.HandlerFunc(s.handleRenameLabel)))
+	mux.Handle("POST "+p+"/labels/merge", wrap(http.HandlerFunc(s.handleMergeLabels)))
+	mux.Handle("DELETE "+p+"/labels/{label}", wrap(http.HandlerFunc(s.handleDeleteLabel)))
 	mux.Handle("GET "+p+"/board", wrap(http.HandlerFunc(s.handleGetBoard)))
 	mux.Handle("PUT "+p+"/board", wrap(http.HandlerFunc(s.handlePutBoard)))
 }
@@ -63,6 +66,62 @@ type issueCreateReq struct {
 // Read-only; no auth check beyond the wrap-middleware applied at mount.
 func (s *Store) handleListLabels(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.AggregateLabels())
+}
+
+type labelRenameReq struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+type labelOpResp struct {
+	Touched int `json:"touched"`
+}
+
+// handleRenameLabel POST /labels/rename {from, to}: rewrites every
+// occurrence of `from` to `to` across the board. Returns the number
+// of issues whose label set actually changed.
+func (s *Store) handleRenameLabel(w http.ResponseWriter, r *http.Request) {
+	var in labelRenameReq
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	n, err := s.RenameLabel(in.From, in.To)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, labelOpResp{Touched: n})
+}
+
+// handleMergeLabels POST /labels/merge {from, to}: every issue
+// carrying `from` ends up carrying `to` (de-duped) and no longer
+// `from`. Audit-trail twin of rename.
+func (s *Store) handleMergeLabels(w http.ResponseWriter, r *http.Request) {
+	var in labelRenameReq
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	n, err := s.MergeLabels(in.From, in.To)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, labelOpResp{Touched: n})
+}
+
+// handleDeleteLabel DELETE /labels/{label}: strips the label from every
+// issue. The label name is URL-path-encoded by the client; the
+// router unescapes it via PathValue.
+func (s *Store) handleDeleteLabel(w http.ResponseWriter, r *http.Request) {
+	label := r.PathValue("label")
+	n, err := s.DeleteLabel(label)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, labelOpResp{Touched: n})
 }
 
 func (s *Store) handleListIssues(w http.ResponseWriter, r *http.Request) {

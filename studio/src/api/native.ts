@@ -145,3 +145,39 @@ export function getBoard(): Promise<NativeBoard> {
 export function putBoard(board: Partial<NativeBoard>): Promise<NativeBoard> {
   return request("/board", { method: "PUT", body: JSON.stringify(board) });
 }
+
+// ---------------------------------------------------------------------------
+// Label vocabulary management. Mirrors the native /labels REST surface.
+// ---------------------------------------------------------------------------
+
+export interface LabelUsage {
+  label: string;
+  count: number;
+  last_used_at?: string;
+}
+
+export interface LabelOpResult {
+  touched: number;
+}
+
+export function listLabels(): Promise<LabelUsage[]> {
+  return request("/labels");
+}
+
+export function renameLabel(from: string, to: string): Promise<LabelOpResult> {
+  return request("/labels/rename", {
+    method: "POST",
+    body: JSON.stringify({ from, to }),
+  });
+}
+
+export function mergeLabels(from: string, to: string): Promise<LabelOpResult> {
+  return request("/labels/merge", {
+    method: "POST",
+    body: JSON.stringify({ from, to }),
+  });
+}
+
+export function deleteLabel(label: string): Promise<LabelOpResult> {
+  return request(`/labels/${encodeURIComponent(label)}`, { method: "DELETE" });
+}
