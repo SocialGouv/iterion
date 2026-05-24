@@ -48,6 +48,13 @@ type Store struct {
 	// doesn't pay N file reads per query.
 	index map[string]*Issue
 
+	// watcher mirrors out-of-process writes (e.g. the `iterion
+	// __mcp-board` stdio MCP subprocess) into the index. nil when
+	// fsnotify isn't available on the host — the Store still works,
+	// it just can't see writes by other processes, which is the
+	// pre-watcher status quo.
+	watcher *indexWatcher
+
 	// pendingEvents buffers events whose appendEventLocked call
 	// returned an error (transient fsync failure, NFS hiccup). Every
 	// subsequent successful event flush drains the buffer first so a
@@ -91,7 +98,28 @@ func NewStore(root string) (*Store, error) {
 	if err := s.populateIndex(); err != nil {
 		return nil, err
 	}
+
+	// Start the fsnotify watcher AFTER the initial index population
+	// so the watcher can never overwrite a fresh load with a stale
+	// disk snapshot. A failure here is non-fatal — the Store keeps
+	// working, just blind to out-of-process writes (the historical
+	// behaviour). We don't log because the package carries no logger
+	// today; the missing-watcher symptom (stale board reads) is
+	// already documented as a known mode in the cache-desync finding.
+	if w, err := startIndexWatcher(s); err == nil {
+		s.watcher = w
+	}
 	return s, nil
+}
+
+// Close releases store-owned resources (currently the fsnotify
+// watcher goroutine). Safe to call multiple times; safe on a Store
+// whose watcher never started.
+func (s *Store) Close() error {
+	if s == nil || s.watcher == nil {
+		return nil
+	}
+	return s.watcher.Close()
 }
 
 func (s *Store) populateIndex() error {
