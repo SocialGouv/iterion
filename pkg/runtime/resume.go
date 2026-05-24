@@ -464,6 +464,12 @@ func (e *Engine) restoreRunEnv(r *store.Run) {
 			e.workDir = cwd
 		}
 	}
+	// Mirror the run's repo root onto the engine so resolveVars's
+	// `${PROJECT_MEMORY_DIR}` expansion finds the same path it did
+	// on the original launch — without this, a resumed run on a
+	// dispatcher worktree falls back to e.workDir's encoded key
+	// and the memory tree silently moves.
+	e.repoRoot = r.RepoRoot
 	type workDirSetter interface{ SetWorkDir(string) }
 	if s, ok := e.executor.(workDirSetter); ok {
 		s.SetWorkDir(e.workDir)

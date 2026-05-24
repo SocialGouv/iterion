@@ -63,6 +63,13 @@
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
 
+  ## findings_dir: shared cross-bot memory channel — see
+  ## "Findings handoff" in prepare_commit_system below.
+  ## ${PROJECT_MEMORY_DIR} keys on the run's repo_root so
+  ## bots in dispatcher worktrees and Nexie at the repo root
+  ## see the same files.
+  findings_dir: string = "${PROJECT_MEMORY_DIR}/findings"
+
   ## Doc footprint scope (comma-separated globs). The scan_docs
   ## tool node enumerates files matching these globs once, at run
   ## start. Hidden / vendored / runtime dirs (.iterion, .works,
@@ -611,6 +618,47 @@ prompt prepare_commit_system:
        - files: exact list of repo-relative paths to stage
        - committed: false (the tool will set this on its own
          output)
+
+  ─── Findings handoff ─────────────────────────────────────
+
+  After the structured commit output, you have ONE more job:
+  capture anything you noticed during this run that is OUT OF
+  SCOPE for doc alignment but worth surfacing to the next
+  Nexie session.
+
+  Examples to capture:
+    - A code-level bug spotted while reading source for a
+      doc-vs-code reconciliation.
+    - An undocumented feature that needs its own ticket.
+    - An infrastructure / sandbox issue you ran into.
+    - A bot-prompt or workflow design improvement opportunity.
+
+  What NOT to capture:
+    - Doc drifts you just fixed (your commit covers them).
+    - Style nits without an actionable next step.
+    - Findings already in {{vars.findings_dir}} — list that
+      directory first to avoid duplicates.
+
+  How:
+    1. `mkdir -p {{vars.findings_dir}}` (idempotent).
+    2. `ls {{vars.findings_dir}}` to dedupe.
+    3. For each NEW finding, use Write to create
+       `{{vars.findings_dir}}/<YYYY-MM-DD>-<kebab-slug>.md`
+       with this frontmatter + body shape:
+
+           ---
+           title: "One-line operator-facing summary"
+           description: "Same one-line, shown in the index"
+           kind: "bug" | "drift" | "improvement" | "question"
+           source_bot: "doc_align"
+           tags: ["area:<subsystem>", "severity:<low|medium|high>"]
+           ---
+
+           # Body
+
+           Full context (file paths + suggested next step). 5-30 lines.
+
+  Be conservative. Zero findings is fine.
 
 prompt prepare_commit_user:
   Pick the files and produce the semantic commit name for the

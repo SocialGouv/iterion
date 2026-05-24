@@ -28,6 +28,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/memory"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -88,6 +89,7 @@ type Engine struct {
 	validateOutputs          bool                  // when true, validate node outputs against declared schemas
 	forceResume              bool                  // when true, skip workflow hash check on resume
 	workDir                  string                // working directory for subprocesses + PROJECT_DIR expansion; defaults to os.Getwd() at Run() time
+	repoRoot                 string                // source-of-truth repo root (project_root memory + ${PROJECT_MEMORY_DIR} expansion); empty until runRun resolves it
 	containerWorkspace       string                // when sandbox is active, the in-container path the host workDir is bind-mounted to (e.g. "/workspace"); used to remap ${PROJECT_DIR} so prompts and tool nodes see paths the in-container processes can actually open
 	sandboxOverride          string                // CLI/Launch-level sandbox mode override; "" means "no override" (workflow + global default win); set via WithSandboxOverride
 	sandboxDefault           string                // global ITERION_SANDBOX_DEFAULT value snapshot; set via WithSandboxDefault
@@ -504,6 +506,11 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 	if repoRoot == "" {
 		repoRoot = engineRepoRoot(e.workDir)
 	}
+	// Persist on the engine so resolveVars's `${PROJECT_MEMORY_DIR}`
+	// expansion (and any other repo-rooted lookup) doesn't have to
+	// re-derive it. runPersistWorkspace already wrote `run.RepoRoot`
+	// to the store; this is the in-memory mirror for the live run.
+	e.repoRoot = repoRoot
 	sandboxCleanup, sbErr := e.startSandbox(ctx, runID, repoRoot, wtCtx.gitDir)
 	if sbErr != nil {
 		e.markFailedBestEffort(ctx, runID, "sandbox start", sbErr)
@@ -1640,6 +1647,21 @@ func (e *Engine) resolveVars(inputs map[string]interface{}) map[string]interface
 				return e.containerWorkspace
 			}
 			return e.workDir
+		}
+		if key == "PROJECT_MEMORY_DIR" {
+			// Project-rooted memory directory, keyed off the run's
+			// repo_root (not the per-run workDir). Resolves to
+			// ~/.iterion/projects/<encoded-repo-root>/memory/ so
+			// dispatcher-spawned bots running in worktrees still share
+			// a memory tree with a whats-next session at the repo root.
+			// The same host path is bind-mounted inside the sandbox
+			// (~/.iterion is auto-mounted by docs/sandbox.md's host_state
+			// contract), so it works in both modes without remapping.
+			base := e.repoRoot
+			if base == "" {
+				base = e.workDir
+			}
+			return memory.WorkspaceMemoryDir(base)
 		}
 		return os.Getenv(key)
 	}

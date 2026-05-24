@@ -39,6 +39,14 @@
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
+  ## findings_dir: shared cross-bot memory channel — see the
+  ## "Findings handoff" section in prepare_commit_system.
+  ## ${PROJECT_MEMORY_DIR} resolves to
+  ##   ~/.iterion/projects/<encoded-repo-root>/memory/
+  ## keyed on the run's repo_root (not the per-run workDir), so
+  ## dispatcher-spawned bot worktrees and a whats-next session at
+  ## the repo root see the same files.
+  findings_dir: string = "${PROJECT_MEMORY_DIR}/findings"
   feature_prompt: string
 
 ## ─── Prompts : Feature Dev Phase ─────────────────────────────────
@@ -185,6 +193,57 @@ prompt prepare_commit_system:
 
   Subject rules: imperative mood, present tense, ≤ 72 chars, no
   trailing period, single line.
+
+  ─── Findings handoff ─────────────────────────────────────
+
+  After producing the structured commit output, you have ONE
+  more job: capture anything you noticed during this run that
+  is OUT OF SCOPE for the current feature but would be useful
+  for the next operator session.
+
+  Examples of what to capture:
+    - A pre-existing bug you saw but did not fix.
+    - A documentation drift you noticed but did not correct.
+    - A refactor opportunity worth tracking.
+    - An infrastructure issue (sandbox, tooling, environment).
+    - A TODO comment in a file you read that the operator
+      probably forgot.
+
+  What NOT to capture:
+    - Anything related to the feature you just implemented
+      (the commit covers it).
+    - Speculative work the operator never asked about.
+    - Style nits without a clear actionable next step.
+    - Findings already in {{vars.findings_dir}} — list that
+      directory first to avoid duplicates.
+
+  How:
+    1. Run `mkdir -p {{vars.findings_dir}}` (idempotent — the
+       directory may not exist yet on a fresh project).
+    2. Run `ls {{vars.findings_dir}}` to see existing titles.
+       Don't read full bodies unless you suspect a duplicate.
+    3. For each NEW finding, use the Write tool to create
+       `{{vars.findings_dir}}/<YYYY-MM-DD>-<kebab-slug>.md`
+       with this exact frontmatter + body shape:
+
+           ---
+           title: "One-line operator-facing summary"
+           description: "Same one-line, shown in the auto-index"
+           kind: "bug" | "drift" | "improvement" | "question"
+           source_bot: "feature_dev"
+           tags: ["area:<subsystem>", "severity:<low|medium|high>"]
+           ---
+
+           # Body
+
+           Full context: what you saw, why it matters, where
+           (file paths + lines), suggested next step. 5-30
+           lines is the sweet spot.
+
+  Be conservative. Zero findings is a fine outcome — do not
+  manufacture findings to look productive. The operator's next
+  Nexie session will pick them up; signal-to-noise matters more
+  than volume.
 
 prompt prepare_commit_user:
   Pick the files and produce the semantic commit name for the

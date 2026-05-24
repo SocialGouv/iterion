@@ -42,6 +42,17 @@
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
   scope_notes:   string = ""
+  ## findings_dir: shared cross-bot memory channel where dispatcher
+  ## bots drop adjacent-work observations they noticed but didn't
+  ## treat. The explore agent reads + summarises them so the roadmap
+  ## proposal accounts for them; the emit_action agent deletes the
+  ## ones that became kanban issues (transient queue lifecycle).
+  ##
+  ## ${PROJECT_MEMORY_DIR} resolves to
+  ##   ~/.iterion/projects/<encoded-repo-root>/memory/
+  ## keyed on the run's repo_root — so dispatcher worktrees and this
+  ## whats-next run at the repo root see the same files.
+  findings_dir: string = "${PROJECT_MEMORY_DIR}/findings"
 
 ## ─── Schemas ──────────────────────────────────────────────────────
 
@@ -238,6 +249,32 @@ prompt explore_system:
      must actually exist.
 
   Optional steering hints from the operator: {{vars.scope_notes}}
+
+  ─── Findings inbox (dispatcher bot handoff) ──────────────
+
+  Other dispatcher-spawned bots may have dropped findings into
+  {{vars.findings_dir}} during their runs — items they noticed
+  but did not treat (out-of-scope bugs, doc drift, refactor
+  opportunities, infra issues). YOUR JOB is to surface them so
+  the downstream propose_roadmap node can choose to triage them.
+
+  Steps:
+    1. Run `mkdir -p {{vars.findings_dir}}` then
+       `ls {{vars.findings_dir}}` — empty dir is a fine outcome
+       (skip the rest of this section then).
+    2. For each .md file found, call read_file to see its
+       frontmatter (title, description, kind, source_bot, tags)
+       plus the first ~40 lines of body. Don't burn context on
+       full bodies unless one looks high-priority.
+    3. Fold the catalogue into your `explore_output.observations`
+       field as a short bullet list (one line per finding,
+       prefixed by `[finding:<source_bot>:<kind>]`). The exact
+       file paths matter — propose_roadmap and emit_action need
+       them to flip lifecycle.
+
+  Do NOT delete or modify finding files in this node — that
+  belongs to emit_action after a kanban issue gets created. Just
+  read + report.
 
   Constraints:
   - Read-only. Do NOT write to or modify any file.
@@ -594,6 +631,31 @@ prompt emit_action_system:
        - created_issues: array of {id, title, horizon, assignee}.
        - failed_issues:  array of {title, horizon, error}.
        - summary: one sentence describing what got created.
+
+  ─── Findings inbox cleanup (transient queue lifecycle) ───
+
+  The explore agent surfaced findings from {{vars.findings_dir}}
+  in its observations bullet list (one line per file prefixed by
+  `[finding:<source_bot>:<kind>]` then a file basename or hint).
+  Each finding that became a kanban issue in step 3 should now
+  be deleted — the queue is transient.
+
+  Steps:
+    7. For each finding that the approved roadmap ingested
+       (i.e. you created an issue whose title or body materialises
+       that finding's actionable next step), delete its source
+       file: `rm "{{vars.findings_dir}}/<filename>.md"` via Bash.
+    8. Findings the operator deliberately dropped during human
+       review (no matching roadmap_item) STAY in
+       {{vars.findings_dir}} — the next whats-next session will
+       see them again. Do not auto-archive or rename.
+    9. If you cannot confidently map a finding to one of your
+       created_issues (ambiguous title, multiple matches), DO NOT
+       delete. Better to re-surface than to lose the trail.
+
+  Match conservatively. A finding's `title:` should appear (or be
+  paraphrased) in one of your created_issues.title to qualify for
+  deletion. When in doubt, leave the file.
 
   ## Constraints
 

@@ -57,6 +57,12 @@
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
 
+  ## findings_dir: shared cross-bot memory channel — see
+  ## "Findings handoff" in prepare_commit_system. ${PROJECT_MEMORY_DIR}
+  ## keys on repo_root so dispatcher worktrees + a whats-next session
+  ## at the repo root share the same files.
+  findings_dir: string = "${PROJECT_MEMORY_DIR}/findings"
+
   ## Free-form context the operator can pass at run time. Empty
   ## by default — when empty, the prompt blocks render an empty
   ## "Project context" section.
@@ -1364,6 +1370,40 @@ prompt prepare_commit_system:
                        handled, etc.) when relevant.
          files: exact list of repo-relative paths to stage.
          committed: false (the downstream tool commits).
+
+  ─── Findings handoff ─────────────────────────────────────
+
+  After the structured commit output, capture anything you
+  noticed during this dependency-upgrade run that is OUT OF
+  SCOPE for the upgrade but worth surfacing to the next
+  Nexie session.
+
+  Examples: a pre-existing vulnerability in another package not
+  in this upgrade; an outdated transitive dep worth a separate
+  bump; a missing CI hook the operator may want; a TODO or
+  deprecation warning encountered while validating the upgrade.
+
+  Skip: anything covered by the current upgrade; speculative
+  rewrites; duplicates already in {{vars.findings_dir}}.
+
+  How:
+    1. `mkdir -p {{vars.findings_dir}}`
+    2. `ls {{vars.findings_dir}}` to dedupe.
+    3. For each NEW finding, Write
+       `{{vars.findings_dir}}/<YYYY-MM-DD>-<kebab-slug>.md`:
+
+           ---
+           title: "One-line operator-facing summary"
+           description: "Same one-line, shown in the index"
+           kind: "bug" | "drift" | "improvement" | "question"
+           source_bot: "secured_renovacy"
+           tags: ["area:<subsystem>", "severity:<low|medium|high>"]
+           ---
+
+           # Body
+           Full context (paths + suggested next step). 5-30 lines.
+
+  Be conservative. Zero findings is fine.
 
 prompt prepare_commit_user:
   Workspace: {{vars.workspace_dir}}

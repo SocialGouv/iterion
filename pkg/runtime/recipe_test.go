@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/recipe"
@@ -261,6 +262,53 @@ func TestResolveVarsExpandsProjectDirInOverrides(t *testing.T) {
 	got3 := eng.resolveVars(map[string]interface{}{"workspace_dir": "/some/other/path"})
 	if got3["workspace_dir"] != "/some/other/path" {
 		t.Errorf("explicit path passthrough: got %q, want %q", got3["workspace_dir"], "/some/other/path")
+	}
+}
+
+// TestResolveVarsExpandsProjectMemoryDir locks the `${PROJECT_MEMORY_DIR}`
+// expansion added for the findings-handoff design (2026-05-24): bots in
+// dispatcher worktrees declare `vars.findings_dir: "${PROJECT_MEMORY_DIR}/findings"`,
+// and the runtime must resolve that against the run's RepoRoot (not the
+// per-run workDir) so dispatcher-spawned bot runs and a whats-next session
+// at the repo root see the same memory tree. Falls back to workDir's
+// encoded key when RepoRoot is empty (legacy runs).
+func TestResolveVarsExpandsProjectMemoryDir(t *testing.T) {
+	t.Setenv("ITERION_HOME", t.TempDir())
+	wf := &ir.Workflow{
+		Name:    "wf",
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars: map[string]*ir.Var{
+			"findings_dir": {
+				Name:       "findings_dir",
+				Type:       ir.VarString,
+				HasDefault: true,
+				Default:    "${PROJECT_MEMORY_DIR}/findings",
+			},
+		},
+		Loops: map[string]*ir.Loop{},
+	}
+	exec := newStubExecutor()
+	s := tmpStore(t)
+	eng := New(wf, s, exec, WithWorkDir("/tmp/worktrees/run-xyz"))
+	eng.repoRoot = "/tmp/repo"
+
+	got := eng.resolveVars(nil)["findings_dir"].(string)
+	if !strings.HasSuffix(got, "/memory/findings") {
+		t.Errorf("expansion: got %q, want suffix /memory/findings", got)
+	}
+	if !strings.Contains(got, "tmp-repo") && !strings.Contains(got, "-tmp-repo") {
+		t.Errorf("expansion did not key off repoRoot (/tmp/repo): %q", got)
+	}
+	if strings.Contains(got, "worktrees") || strings.Contains(got, "run-xyz") {
+		t.Errorf("expansion leaked workDir into key: %q", got)
+	}
+
+	// Fallback: empty repoRoot → workDir's encoded key.
+	eng2 := New(wf, s, exec, WithWorkDir("/tmp/fallback"))
+	got2 := eng2.resolveVars(nil)["findings_dir"].(string)
+	if !strings.Contains(got2, "tmp-fallback") && !strings.Contains(got2, "-tmp-fallback") {
+		t.Errorf("fallback to workDir: got %q", got2)
 	}
 }
 
