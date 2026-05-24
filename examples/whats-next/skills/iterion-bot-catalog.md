@@ -61,13 +61,14 @@ Walk top-to-bottom; first match wins.
 | If the work sounds like… | → `assignee` |
 |---|---|
 | "implement feature X", "add capability", "build the thing" | `feature_dev` |
+| "build a new bot for Y" / "create a workflow that does Y" — the catalogue lacks a fit and we need to author one | `feature_dev` (with `feature_prompt` pointing at the new `.bot` file to create) |
 | "review the whole codebase", "audit production-readiness", "find bugs anywhere" | `whole_improve_loop` |
-| "focus on axis X" (security / observability / perf …) across the codebase | `whole_improve_loop` (with `--var improvement_prompt=…`) |
+| "focus on axis X" (observability / perf / DX / refactoring) ACROSS the codebase — improvement loop, not detection | `whole_improve_loop` (with `--var improvement_prompt=…`) |
 | "review this branch", "review the PR", "fix the diff against main" | `branch_improve_loop` |
-| "upgrade dependencies", "patch CVEs", "bump versions" | `secured-renovacy` |
+| "upgrade dependencies", "patch CVEs", "bump versions", "renovate" — MUTATING (writes package.json / go.mod / lockfiles) | `secured-renovacy` |
 | "audit the docs", "find code↔doc drift", "doc/code alignment", "fix outdated README/CLAUDE.md" | `doc-align` |
-| "audit the source for vulns", "find injection / SSRF / IDOR / secrets", "security scan", "OWASP audit" | `sec-audit-source` |
-| "audit dependencies for malware", "supply-chain check", "scan installed packages", "post-`npm install` triage" | `sec-audit-deps` |
+| "audit the source for vulns", "find injection / SSRF / IDOR / secrets", "OWASP source scan" — DETECTION (writes findings, not fixes) | `sec-audit-source` |
+| "audit dependencies for malware / typosquats / install hooks", "supply-chain check", "post-`npm install` triage" — DETECTION across installed deps | `sec-audit-deps` |
 | architectural choice, hiring, prioritisation meeting, alignment | `""` |
 | operator is vague or it's cross-cutting | `""` |
 | long-term theme (a quarter+ horizon) | usually `""` |
@@ -75,6 +76,97 @@ Walk top-to-bottom; first match wins.
 When in doubt, prefer `""` and let the operator triage manually
 in the board UI. An empty assignee is honest; a wrong one
 wastes a bot run.
+
+## Distinguishers — the three pairs that ALWAYS need a tie-break
+
+These overlaps come up often; commit each distinguisher to memory
+before you walk the table on a new roadmap item.
+
+### `feature_dev` vs `whole_improve_loop`
+
+- `feature_dev` ships a NEW capability. There is a "done" state
+  visible from the outside (a new endpoint, a new UI affordance,
+  a new CLI flag). Body reads as a feature spec.
+- `whole_improve_loop` improves EXISTING code along an axis
+  (reliability, perf, observability, DX). There is no new
+  capability — just better/cleaner code. Body reads as a quality
+  bar to reach.
+- Tie-break: "could a user notice the difference without reading
+  the diff?" Yes → `feature_dev`. No → `whole_improve_loop`.
+
+### `sec-audit-*` (DETECTION) vs `whole_improve_loop` (FIX-loop on a security axis) vs `secured-renovacy` (MUTATION on deps)
+
+- `sec-audit-source` / `sec-audit-deps` ARE READ-ONLY. They emit
+  findings as kanban issues; they don't fix anything. Use when
+  the operator wants a security baseline / list of issues / a
+  triage pass — NOT when they want fixes applied.
+- `whole_improve_loop` with `improvement_prompt: "security focus"`
+  is FIX-mode: alternating review/fix loop until cross-family
+  approval. Edits land in the working tree. Use when the operator
+  wants security holes closed in place.
+- `secured-renovacy` is MUTATION on dependency manifests
+  (package.json / go.mod / Cargo.toml / requirements.txt /
+  lockfiles). Use when the operator wants CVE patches landed by
+  bumping versions, NOT when they want code rewritten to be
+  safer.
+- Tie-break ladder: "do they want a list?" → sec-audit-*. "do
+  they want code rewritten?" → whole_improve_loop. "do they want
+  versions bumped?" → secured-renovacy.
+
+### `whole_improve_loop` vs `branch_improve_loop`
+
+- `whole_improve_loop` scans the entire workspace.
+- `branch_improve_loop` scans `git diff base_ref...HEAD` only —
+  scoped to what the current PR/branch touched, then commits a
+  semantic message covering its fixes.
+- Tie-break: "is there an open PR / unmerged branch they want
+  reviewed?" → `branch_improve_loop`. "is the work
+  workspace-wide / no specific branch?" → `whole_improve_loop`.
+
+## When no row matches confidently — three escape hatches
+
+1. **Propose the closest match in rationale, leave `assignee=""`**
+   on the item. The body should explicitly say "closest match:
+   `<bot>` — operator should confirm before dispatch." This is
+   the most common case for cross-cutting or partially-fitting
+   work; the operator decides at human_review.
+2. **Surface the ambiguity in `rationale`** as a question the
+   operator can answer. Example: "Item #3 ('Refactor auth') sits
+   between `feature_dev` (new SAML provider as capability) and
+   `whole_improve_loop` (reliability/observability on existing
+   auth). Pick by replying with the assignee you want, or accept
+   the default `""`." The studio renders the rationale verbatim
+   so the operator sees the question.
+3. **Propose creating a NEW bot** when the catalogue genuinely
+   doesn't have a fit and the work will recur. Emit a
+   `feature_dev` item whose `feature_prompt` describes the bot
+   you'd build (target `.bot` filename, expected vars, pipeline
+   sketch). Example: "Build a new bot `flake-hunter` at
+   `examples/flake-hunter/main.bot` that runs the test suite N
+   times and groups failures by stack trace — needs `vars: {
+   suite: string, repeats: int=20 }`."
+
+Bot creation always routes through `feature_dev`; there's no
+"bot_factory" assignee. The new bot ships in the same PR as the
+item that called for it.
+
+## What ambiguity looks like in practice — examples
+
+- "Improve our auth reliability" → likely `whole_improve_loop`
+  with `improvement_prompt: "auth + session handling
+  reliability"`, BUT if the operator's priorities mention
+  "add OAuth" the same item is `feature_dev`. Surface the
+  question if both fits look plausible.
+- "Make the docs match the new dispatcher API" → `doc-align`
+  (clear). No ambiguity.
+- "Fix the failing CI on the rust port" → `branch_improve_loop`
+  IF there's an open branch, `feature_dev` IF the CI fix is
+  itself a new capability (e.g. a new test runner). Surface
+  the question.
+- "Reduce vendor dependency footprint" → ambiguous.
+  `secured-renovacy` could prune by bumping; `whole_improve_loop`
+  could refactor to drop dependencies; `feature_dev` could build
+  an in-house replacement. Surface as a three-way question.
 
 ## Bot reference
 

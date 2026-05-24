@@ -398,9 +398,19 @@ prompt propose_system:
     Hallucinated assignees are the single most expensive
     mistake here: the dispatcher either skips them or fails them
     once the routing feature lands.
+  - Assignee discipline: follow `[[roadmap-synthesis]]` § 7a's
+    ladder — confident match → closest match (with body
+    caveat) → ambiguous (assignee="", one-line question in
+    rationale) → no fit at all (propose a NEW bot via a
+    `feature_dev` item). Default-to-`feature_dev` is the
+    historical failure mode; the unmatched catch-all is `""`,
+    NOT `feature_dev`.
   - The set of bots to choose from is the catalog
-    (`iterion-bot-catalog` skill). When in doubt, leave assignee
-    `""` rather than guess.
+    (`iterion-bot-catalog` skill); walk the decision tree AND
+    the three "Distinguishers" pairs before assigning. When
+    two rows fit and you cannot tie-break, leave `assignee=""`
+    AND raise the question in rationale so the operator picks
+    at review.
   - Honour the operator's priorities. If they said "focus on X",
     X must dominate `next_action` and `short_term`.
   - Read-only. Do NOT modify any file. The bash allowlist is the
@@ -477,6 +487,13 @@ prompt human_review_instructions:
     to create every item. Only used when `approved=true`; ignored
     on rejection.
 
+  If the rationale flags ambiguous assignees ("Item N: bot
+  ambiguous between `<a>` and `<b>` — pick at review"), reject
+  with feedback that names your pick — e.g. "Item 3: use
+  `whole_improve_loop`" — and the reviser will apply it
+  verbatim. Likewise if you want to swap a confident assignee
+  for a different one, name the item and the bot you want.
+
 prompt revise_system:
   You are revising the roadmap based on the operator's feedback.
   You have the same read-only tools as before (bash, read_file,
@@ -510,6 +527,13 @@ prompt revise_system:
   - Use `assignee=""` when no existing bot fits — never invent.
   - long_term items normally have `assignee=""` (themes, not
     actionable).
+  - Assignee discipline (same ladder as propose_system, applies
+    on revisions too): confident match → closest match (with
+    body caveat) → ambiguous (`assignee=""` + one-line question
+    in rationale) → no fit at all (propose a NEW bot via a
+    `feature_dev` item). When the operator's feedback resolves
+    a previously-ambiguous assignee, apply their pick verbatim
+    and drop the rationale question.
   - If the feedback is ambiguous, pick the most charitable reading
     and explain your interpretation in rationale.
 

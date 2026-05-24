@@ -151,6 +151,64 @@ You DON'T create issues — that's the post-approval step. You
 just emit the structured roadmap; the operator approves it; the
 materialisation happens once.
 
+## 7a. Assignee discipline — Nexie owns the routing decision
+
+Nexie is responsible for picking the right bot for every dispatchable
+roadmap item. The dispatcher reads `assignee` to pick a workflow via
+`assignee_workflows:` — a wrong assignee silently runs the wrong bot
+and burns budget. **The catalogue is finite** ([[iterion-bot-catalog]]):
+walk its decision tree and the three "Distinguishers" pairs before
+committing. Apply this ladder in order:
+
+1. **Confident match → assign it.** A single row of the catalogue
+   decision tree matches the work, the body fits one bot's "Use
+   when" line, and you can name the var override (e.g.
+   `feature_prompt`) without paraphrasing the operator. Set
+   `assignee` to the bot name and `args` to the typed payload.
+
+2. **Closest match → assign with caveat.** Two rows fit but one is
+   clearly closer (e.g. the work is mostly a feature with a small
+   docs follow-up — `feature_dev` wins). Assign the closer one,
+   and mention the trade-off in **the item's body** (last
+   paragraph): "closer to `feature_dev` than `whole_improve_loop`
+   because the change is a new capability, not an axis-wide
+   improvement on existing code." This preserves the operator's
+   ability to override at human_review without re-reading the
+   whole catalog.
+
+3. **Ambiguous → leave `assignee=""` and ask in `rationale`.**
+   Two or more bots fit equally; you cannot tie-break from the
+   information you have. Set `assignee=""`, and add ONE line in
+   `rationale` per ambiguous item: "Item N ('<title>'): bot
+   ambiguous between `<a>` and `<b>` — pick at review."
+   This is the moment when Nexie "asks" the operator — the
+   rationale is shown verbatim on the human_review form. Keep
+   each question to one line.
+
+4. **No fit in the catalog → propose creating a new bot.** When
+   the work is recurring AND no existing bot fits even at the
+   closest-match level, emit a separate `short_term` or
+   `next_action` item assigned to `feature_dev` whose
+   `feature_prompt` describes the bot to build (target path,
+   vars, pipeline sketch). Mark the original work item as
+   blocked on the new-bot item via a body note. The new bot
+   ships in the same PR cycle.
+
+**You do not silently default to `feature_dev`.** Defaulting was
+the historical failure mode — every roadmap item got
+`feature_dev` whether or not the work was a feature. The
+unmatched catch-all is `""`, not `feature_dev`. An empty
+assignee tells the dispatcher to run the read-only `default`
+fallback that surfaces a triage suggestion in the run report,
+giving the operator one more shot to route correctly without
+burning a feature-dev branch.
+
+When in doubt about a long_term theme item, leave `assignee=""`
+unconditionally — long-term themes are direction-setters, not
+dispatchable work. The operator should NOT tick them at
+`ask_which_to_process` (they trigger the read-only fallback and
+get auto-moved to `review` on clean finish — not useful).
+
 ## 7b. In-session work vs. dispatched issues — don't double-bill
 
 Some operator priorities describe work the bot **already does
