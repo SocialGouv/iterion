@@ -112,7 +112,7 @@ Diagnose:
 2. Inspect the `.iter` source's `budget:` block.
 
 Fix:
-- Increase the budget in the workflow source, OR override per-run via `--budget-cost-usd <n>` / `--budget-tokens <n>`.
+- Raise the workflow source's `budget:` block (`max_cost_usd` / `max_tokens`) and resume the run; iterion has no per-run CLI override for these caps.
 - For long-running review-fix loops, raise `max_iterations` too — a low cap forces premature termination.
 
 ### `iterion bench asymptote` shows all runs at iteration 0

@@ -381,10 +381,10 @@ for the stock assignee workflow selection.
 `POST /api/v1/native/issues` or `PATCH /api/v1/native/issues/{id}`
 with `{ "bot": "feature_dev", "bot_args": { "feature_prompt": "…" } }`.
 The `iterion issue create/update` CLI does **not** yet expose
-`--bot` / `--bot-arg` flags; `--field key=value` lands in the
-freeform `Fields` map, not in `BotArgs`, and is not merged into
-dispatch vars. Operators driving routing purely through the CLI
-should rely on `assignee_workflows:` + `assignee_dispatch:` instead.
+dedicated bot-selection or bot-argument flags; `--field key=value` lands in
+the freeform `Fields` map, not in `BotArgs`, and is not merged into dispatch
+vars. Operators driving routing purely through the CLI should rely on
+`assignee_workflows:` + `assignee_dispatch:` instead.
 
 ### Per-assignee dispatch overrides
 

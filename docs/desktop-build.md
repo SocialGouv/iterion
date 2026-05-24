@@ -37,12 +37,14 @@ We pass two Wails flags that aren't part of the default scaffold:
 - `-skipbindings`: the studio consumes bindings via the `window.go.main.App.*`
   globals injected by the Wails runtime, not via the static JS shims Wails
   generates. Skipping bindings generation removes a redundant codegen step.
-- `-s` (`--skip-frontend`): there is no frontend to build under
-  `cmd/iterion-desktop/`. The SPA is built by `task studio:build` and
-  embedded into `pkg/server/static`. The handler in
-  [asset_proxy.go](../cmd/iterion-desktop/asset_proxy.go) serves the index
-  and static chunks directly from that GUI embed, while `/api/*` is the only
-  traffic reverse-proxied to the selected loopback server.
+- `-s`: skip Wails' scaffold frontend build. There is no frontend to
+  build under `cmd/iterion-desktop/`; the supported repo entry points are the
+  `task desktop:*` targets, which run `task studio:build` first and then pass
+  Wails' short `-s` flag. The SPA is embedded into `pkg/server/static`, and
+  the handler in [asset_proxy.go](../cmd/iterion-desktop/asset_proxy.go)
+  serves the index and static chunks directly from that GUI embed, while
+  `/api/*` is the only traffic reverse-proxied to the selected loopback
+  server.
 
 `-tags desktop,webkit2_41` is required on Linux to opt into the modern WebKit2
 GTK 4.1 ABI. Without `webkit2_41` Wails would target webkit2gtk-4.0, which
