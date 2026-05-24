@@ -713,6 +713,55 @@ func (s *Store) writeIssueLocked(iss *Issue) error {
 	return nil
 }
 
+// LabelUsage is one row of the AggregateLabels result.
+type LabelUsage struct {
+	Label      string `json:"label"`
+	Count      int    `json:"count"`
+	LastUsedAt string `json:"last_used_at,omitempty"` // RFC3339; empty when no timestamp survived the scan.
+}
+
+// AggregateLabels walks the in-memory index and reduces (label →
+// count, max(updated_at)). Sorted by count desc, label asc for
+// deterministic output. Used by the REST /labels endpoint, the
+// boardops list_labels MCP tool, and the studio's label-picker.
+func (s *Store) AggregateLabels() []LabelUsage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	type acc struct {
+		count int
+		last  string
+	}
+	agg := map[string]*acc{}
+	for _, iss := range s.index {
+		stamp := iss.UpdatedAt.UTC().Format(time.RFC3339)
+		for _, lbl := range iss.Labels {
+			if lbl == "" {
+				continue
+			}
+			cur, ok := agg[lbl]
+			if !ok {
+				agg[lbl] = &acc{count: 1, last: stamp}
+				continue
+			}
+			cur.count++
+			if stamp > cur.last {
+				cur.last = stamp
+			}
+		}
+	}
+	out := make([]LabelUsage, 0, len(agg))
+	for lbl, a := range agg {
+		out = append(out, LabelUsage{Label: lbl, Count: a.count, LastUsedAt: a.last})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].Label < out[j].Label
+	})
+	return out
+}
+
 // readIssueLocked returns a defensive copy of the indexed issue.
 // Reads after init always hit the in-memory cache; the on-disk files
 // stay authoritative for crash recovery via populateIndex at NewStore.

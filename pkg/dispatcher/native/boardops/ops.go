@@ -142,6 +142,21 @@ var allTools = []Tool{
         }`),
 	},
 	{
+		Name:       "list_labels",
+		Capability: CapBoardRead,
+		Description: "List every distinct label currently on the board with usage count and last-used timestamp. " +
+			"Sorted by count descending. Use this BEFORE assigning labels to new issues so " +
+			"you reuse the operator-established vocabulary instead of inventing parallel names " +
+			"(e.g. discovering an `epic:battle-tested` already exists instead of inventing " +
+			"`source:battle-tested-plan-2026-05-24`). See the iterion-label-vocabulary skill for " +
+			"the canonical namespace conventions.",
+		InputSchema: json.RawMessage(`{
+          "type":"object",
+          "properties":{},
+          "required":[]
+        }`),
+	},
+	{
 		Name:        "set_labels",
 		Capability:  CapBoardLabel,
 		Description: "Replace the label list on an issue.",
@@ -187,6 +202,7 @@ var dispatchByName = map[string]func(*native.Store, json.RawMessage) (json.RawMe
 	"set_labels":       doSetLabels,
 	"close_issue":      doClose,
 	"list_issues":      doList,
+	"list_labels":      doListLabels,
 	"get_issue":        doGet,
 }
 
@@ -396,6 +412,10 @@ func doList(store *native.Store, raw json.RawMessage) (json.RawMessage, error) {
 		return nil, err
 	}
 	return json.Marshal(issues)
+}
+
+func doListLabels(store *native.Store, _ json.RawMessage) (json.RawMessage, error) {
+	return json.Marshal(store.AggregateLabels())
 }
 
 func doGet(store *native.Store, raw json.RawMessage) (json.RawMessage, error) {

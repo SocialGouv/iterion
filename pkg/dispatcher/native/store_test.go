@@ -388,3 +388,49 @@ func TestSetBoardValidation(t *testing.T) {
 		t.Fatal("expected validation error")
 	}
 }
+
+// TestAggregateLabels: counts and orders the distinct labels across
+// the store. Issues with empty Labels contribute nothing; the order is
+// (count desc, label asc); duplicates within one issue's label slice
+// count once per issue.
+func TestAggregateLabels(t *testing.T) {
+	s := newTestStore(t)
+	mk := func(title string, labels []string) {
+		if _, err := s.Create(Issue{Title: title, State: "backlog", Labels: labels}); err != nil {
+			t.Fatalf("Create %q: %v", title, err)
+		}
+	}
+	mk("a", []string{"source:whats-next", "horizon:short-term"})
+	mk("b", []string{"source:whats-next", "horizon:next-action", "epic:battle-tested"})
+	mk("c", []string{"epic:battle-tested"})
+	mk("d", nil)                  // no labels
+	mk("e", []string{""})         // empty label string ignored
+	mk("f", []string{"source:whats-next"})
+
+	got := s.AggregateLabels()
+	if len(got) != 4 {
+		t.Fatalf("got %d distinct labels, want 4: %+v", len(got), got)
+	}
+	// Order: source:whats-next (3) > epic:battle-tested (2) >
+	// horizon:next-action (1, "h" alphabetically before "horizon:short-term") >
+	// horizon:short-term (1).
+	wantOrder := []string{
+		"source:whats-next",
+		"epic:battle-tested",
+		"horizon:next-action",
+		"horizon:short-term",
+	}
+	for i, w := range wantOrder {
+		if got[i].Label != w {
+			t.Errorf("position %d: got %q, want %q", i, got[i].Label, w)
+		}
+	}
+	if got[0].Count != 3 || got[1].Count != 2 || got[2].Count != 1 || got[3].Count != 1 {
+		t.Errorf("counts: %+v", got)
+	}
+	for i, u := range got {
+		if u.LastUsedAt == "" {
+			t.Errorf("row %d (%s) missing last_used_at", i, u.Label)
+		}
+	}
+}

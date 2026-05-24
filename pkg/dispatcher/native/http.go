@@ -36,6 +36,7 @@ func (s *Store) RegisterRoutesWithMiddleware(mux *http.ServeMux, prefix string, 
 	mux.Handle("PATCH "+p+"/issues/{id}", wrap(http.HandlerFunc(s.handlePatchIssue)))
 	mux.Handle("DELETE "+p+"/issues/{id}", wrap(http.HandlerFunc(s.handleDeleteIssue)))
 	mux.Handle("POST "+p+"/issues/{id}/transition", wrap(http.HandlerFunc(s.handleTransitionIssue)))
+	mux.Handle("GET "+p+"/labels", wrap(http.HandlerFunc(s.handleListLabels)))
 	mux.Handle("GET "+p+"/board", wrap(http.HandlerFunc(s.handleGetBoard)))
 	mux.Handle("PUT "+p+"/board", wrap(http.HandlerFunc(s.handlePutBoard)))
 }
@@ -55,6 +56,13 @@ type issueCreateReq struct {
 	Fields   map[string]any    `json:"fields,omitempty"`
 	Bot      string            `json:"bot,omitempty"`
 	BotArgs  map[string]string `json:"bot_args,omitempty"`
+}
+
+// handleListLabels returns every label currently in use on the board
+// with usage count + last-used timestamp. Sorted by count desc.
+// Read-only; no auth check beyond the wrap-middleware applied at mount.
+func (s *Store) handleListLabels(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.AggregateLabels())
 }
 
 func (s *Store) handleListIssues(w http.ResponseWriter, r *http.Request) {

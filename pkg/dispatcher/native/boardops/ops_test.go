@@ -37,7 +37,7 @@ func TestToolsFor_FiltersByCap(t *testing.T) {
 	for _, t := range got {
 		names = append(names, t.Name)
 	}
-	want := "create_issue,get_issue,list_issues"
+	want := "create_issue,get_issue,list_issues,list_labels"
 	if strings.Join(names, ",") != want {
 		t.Fatalf("ToolsFor = %v, want %s", names, want)
 	}
