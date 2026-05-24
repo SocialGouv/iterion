@@ -57,10 +57,18 @@ export default function ConversationEmptyState({
       secondary = "No conversational messages were produced.";
       break;
     case "failed":
+      icon = "⚠";
+      primary = "Run failed";
+      secondary =
+        "No conversational messages were produced. Check the Events tab for error details and tool logs.";
+      showEventLogLink = true;
+      break;
     case "failed_resumable":
       icon = "⚠";
       primary = "Run failed";
-      secondary = "No conversational messages were produced.";
+      secondary =
+        "No conversational messages were produced. Check the Events tab for error details, address the issue, then use Resume when ready.";
+      showEventLogLink = true;
       break;
     case "cancelled":
       icon = "⊘";

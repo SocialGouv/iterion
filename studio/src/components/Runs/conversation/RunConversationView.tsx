@@ -1,4 +1,3 @@
-import type { RunStatus } from "@/api/runs";
 import { useRunStore } from "@/store/run";
 import { useRunChatMessages } from "@/lib/runChat/useRunChatMessages";
 import { useScrollPin } from "@/lib/runChat/useScrollPin";
@@ -50,49 +49,17 @@ export default function RunConversationView({ runId }: Props) {
       onScroll={onScroll}
       className="h-full w-full overflow-y-auto px-4 py-3 space-y-4 bg-surface-0"
     >
-      {messages.length === 0 ? (
-        <p className="text-[12px] text-fg-subtle italic" role="status">
-          {emptyCopy(runStatus ?? null)}
-        </p>
-      ) : (
-        messages.map((m) => (
-          <MessageRow
-            key={m.id}
-            runId={runId}
-            message={m}
-            activeHumanNodeId={activeHumanNodeId}
-          />
-        ))
-      )}
+      {messages.map((m) => (
+        <MessageRow
+          key={m.id}
+          runId={runId}
+          message={m}
+          activeHumanNodeId={activeHumanNodeId}
+        />
+      ))}
       <div ref={endRef} />
     </div>
   );
-}
-
-// emptyCopy returns the right placeholder for the conversation pane
-// when no messages have rendered yet, leaning on the run's lifecycle
-// status so the operator knows whether the silence is "queued",
-// "still warming up", or "finished without any chat output".
-export function emptyCopy(runStatus: RunStatus | null): string {
-  switch (runStatus) {
-    case "queued":
-      return "Waiting for a runner to pick up this queued run.";
-    case "running":
-      return "Run is active — waiting for the first node event.";
-    case "finished":
-      return "Run finished without producing any chat-visible output.";
-    case "failed":
-    case "failed_resumable":
-      return "Run failed before producing any chat-visible output. Check the Events tab.";
-    case "cancelled":
-      return "Run was cancelled before producing any chat-visible output.";
-    case "paused_waiting_human":
-      return "Paused — waiting for your input on the form below.";
-    case "paused_operator":
-      return "Paused by an operator — Resume from the header to continue.";
-    default:
-      return "Waiting for the run to start…";
-  }
 }
 
 function MessageRow({

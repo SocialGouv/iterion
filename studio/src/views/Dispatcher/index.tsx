@@ -16,6 +16,7 @@ import {
 } from "@/api/dispatcher";
 import SettingsDrawer from "@/components/Dispatcher/SettingsDrawer";
 import TrackerErrorBanner from "@/components/shared/TrackerErrorBanner";
+import { dispatcherActionState } from "./dispatcherActionState";
 
 export default function DispatcherView() {
   const [, setLocation] = useLocation();
@@ -126,7 +127,7 @@ export default function DispatcherView() {
     };
   }, []);
 
-  const canOperate = status?.state === "running" || status?.state === "paused";
+  const actions = dispatcherActionState(status?.state, snap?.paused ?? false);
 
   const doRefresh = useCallback(async () => {
     try {
@@ -143,7 +144,12 @@ export default function DispatcherView() {
     }
   }, []);
   const doCancel = useCallback(async (issueID: string) => {
-    if (!confirm(`Cancel run for ${issueID}?`)) return;
+    if (
+      !confirm(
+        `Cancel the in-flight run for ${issueID}? The issue stays on the board and can be re-dispatched.`,
+      )
+    )
+      return;
     try {
       await cancelIssue(issueID);
     } catch (e) {
@@ -158,17 +164,17 @@ export default function DispatcherView() {
         <Button
           variant="secondary"
           size="sm"
-          disabled={!canOperate}
-          title={canOperate ? undefined : "Start the dispatcher first"}
+          disabled={!actions.canPollDispatches}
+          title={actions.pollTitle}
           onClick={() => void doRefresh()}
         >
-          Force tick
+          Poll now
         </Button>
         <Button
           variant="secondary"
           size="sm"
-          disabled={!canOperate}
-          title={canOperate ? undefined : "Start the dispatcher first"}
+          disabled={!actions.canReloadConfig}
+          title={actions.reloadTitle}
           onClick={() => void doReload()}
         >
           Reload config
@@ -234,6 +240,8 @@ export default function DispatcherView() {
         />
         <RetriesTable
           rows={retries}
+          canPollDispatches={actions.canPollDispatches}
+          pollTitle={actions.pollTitle}
           onFocusIssue={(id) =>
             setLocation(`/board?focus=${encodeURIComponent(id)}`)
           }
@@ -439,10 +447,14 @@ function formatRetryDue(dueIso: string, nowMs: number): string {
 
 function RetriesTable({
   rows,
+  canPollDispatches,
+  pollTitle,
   onFocusIssue,
   onRefreshNow,
 }: {
   rows: DispatcherSnapshot["retries"];
+  canPollDispatches: boolean;
+  pollTitle: string;
   onFocusIssue: (issueID: string) => void;
   onRefreshNow: () => void;
 }) {
@@ -462,8 +474,9 @@ function RetriesTable({
           <button
             type="button"
             onClick={onRefreshNow}
-            className="text-[11px] px-2 py-0.5 rounded border border-border-default hover:bg-surface-2 text-fg-muted hover:text-fg-default"
-            title="Trigger an immediate tracker poll; due retries will fire on the next tick."
+            disabled={!canPollDispatches}
+            className="text-[11px] px-2 py-0.5 rounded border border-border-default hover:bg-surface-2 text-fg-muted hover:text-fg-default disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-fg-muted"
+            title={pollTitle}
           >
             Poll now
           </button>

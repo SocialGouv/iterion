@@ -364,7 +364,12 @@ export default function BoardView() {
 
   const onDelete = useCallback(
     async (id: string) => {
-      if (!confirm("Delete this issue?")) return;
+      if (
+        !confirm(
+          "Delete this issue? This removes it from the board and cannot be undone.",
+        )
+      )
+        return;
       try {
         await deleteIssue(id);
         setEditing(null);

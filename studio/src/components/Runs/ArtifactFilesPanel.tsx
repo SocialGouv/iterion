@@ -222,9 +222,9 @@ export default function ArtifactFilesPanel({ runId }: Props) {
             contentType: outcome.contentType,
             localPath: outcome.localPath,
           });
-          addToast(`Téléchargé : ${basename}`, "success", {
+          addToast(`Downloaded ${basename}`, "success", {
             action: {
-              label: "Afficher",
+              label: "Open",
               onClick: () => openPreview(target),
             },
           });
@@ -300,7 +300,9 @@ export default function ArtifactFilesPanel({ runId }: Props) {
     <>
       <div className="h-full flex flex-col text-xs">
         <div className="flex items-center justify-between border-b border-border-subtle px-3 py-1.5 text-fg-subtle">
-          <span>{(files ?? []).length} fichier(s)</span>
+          <span>
+            {(files ?? []).length} file{(files ?? []).length === 1 ? "" : "s"}
+          </span>
           {downloadsButton}
         </div>
         {!files || files.length === 0 ? (
@@ -360,14 +362,14 @@ export default function ArtifactFilesPanel({ runId }: Props) {
                         className="text-fg-link hover:underline mr-3"
                         onClick={() => triggerDownload(f)}
                       >
-                        download
+                        Download
                       </button>
                       <button
                         type="button"
                         className="text-fg-link hover:underline"
                         onClick={() => openPreview(f)}
                       >
-                        open
+                        Open
                       </button>
                     </td>
                   </tr>
@@ -444,9 +446,9 @@ function DownloadsButton({
         <button
           type="button"
           className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-border-subtle hover:bg-surface-2 text-fg-default"
-          title="Téléchargements"
+          title="Downloads"
         >
-          <span>Téléchargements</span>
+          <span>Downloads</span>
           <span className="ml-1 inline-flex items-center justify-center min-w-[1.25rem] h-4 px-1 rounded bg-surface-2 text-fg-subtle text-[10px] font-mono">
             {count}
           </span>
@@ -454,19 +456,19 @@ function DownloadsButton({
       }
     >
       <div className="flex items-center justify-between px-3 py-2 border-b border-border-subtle">
-        <span className="text-xs font-semibold">Téléchargements de ce run</span>
+        <span className="text-xs font-semibold">Downloads from this run</span>
         <button
           type="button"
           disabled={entries.length === 0}
           onClick={onClearAll}
           className="text-[11px] text-fg-link hover:underline disabled:text-fg-subtle disabled:no-underline"
         >
-          Tout effacer
+          Clear all
         </button>
       </div>
       {entries.length === 0 ? (
         <div className="px-3 py-6 text-center text-xs text-fg-subtle">
-          Aucun téléchargement pour ce run.
+          No downloads from this run yet.
         </div>
       ) : (
         <div className="flex-1 overflow-auto">
@@ -495,14 +497,14 @@ function DownloadsButton({
                     onClick={() => onShow(e)}
                     className="text-fg-link hover:underline"
                   >
-                    Afficher
+                    Open
                   </button>
                   <button
                     type="button"
                     onClick={() => onRedownload(e)}
                     className="text-fg-link hover:underline"
                   >
-                    Re-télécharger
+                    Re-download
                   </button>
                   {desktopMode && e.localPath && (
                     <button
@@ -510,7 +512,7 @@ function DownloadsButton({
                       onClick={() => onReveal(e)}
                       className="text-fg-link hover:underline"
                     >
-                      Ouvrir le dossier
+                      Reveal in folder
                     </button>
                   )}
                   <button
@@ -518,7 +520,7 @@ function DownloadsButton({
                     onClick={() => onRemove(e)}
                     className="text-fg-subtle hover:underline ml-auto"
                   >
-                    Retirer
+                    Remove
                   </button>
                 </div>
               </li>

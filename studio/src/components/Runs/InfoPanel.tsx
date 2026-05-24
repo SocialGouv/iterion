@@ -80,7 +80,7 @@ export default function InfoPanel({ run }: InfoPanelProps) {
           <Row label="Mode">
             <span>
               {run.worktree
-                ? "auto"
+                ? "Auto (fresh git worktree per run)"
                 : "Off (uses the project's working directory)"}
             </span>
           </Row>

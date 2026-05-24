@@ -694,7 +694,7 @@ const LogBlockRow = memo(function LogBlockRow({
             toggle();
           }
         }}
-        title={open ? "Replier le corps" : "Déplier le corps"}
+        title={open ? "Collapse body" : "Expand body"}
         className="flex items-baseline gap-2 pr-3 rounded cursor-pointer hover:bg-surface-2"
       >
         <div className={`flex-1 min-w-0 ${bodyWidthCls}`}>

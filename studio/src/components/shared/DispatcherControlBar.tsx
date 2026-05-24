@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 
 import * as dispatcher from "@/api/dispatcher";
+import {
+  dispatcherPillMeta,
+  type DispatcherPillState,
+} from "@/components/shared/dispatcherPillMeta";
 
 interface Props {
   /** Called when the operator clicks the "Settings" button. */
@@ -121,19 +125,22 @@ export default function DispatcherControlBar({ onOpenSettings, pollIntervalMs = 
 }
 
 function renderPill(status: dispatcher.ManagerStatus | null, fetchError: string | null) {
-  if (fetchError && !status) {
-    return <span className="rounded bg-red-500/20 px-2 py-0.5 text-red-200">unreachable</span>;
-  }
-  const state = status?.state ?? "idle";
-  const cls = {
-    idle: "bg-fg-muted/20 text-fg-muted",
-    running: "bg-green-500/20 text-green-300",
-    paused: "bg-amber-500/20 text-amber-300",
-    error: "bg-red-500/20 text-red-300",
-  }[state] ?? "bg-fg-muted/20 text-fg-muted";
+  const pillState: DispatcherPillState =
+    fetchError && !status ? "unreachable" : status?.state ?? "idle";
+  const meta = dispatcherPillMeta(pillState);
+  // Append the uptime anchor whenever the daemon reports a start time —
+  // the server keeps started_at set across pause/error, not just while
+  // running, so this matches the pre-refactor pill which showed
+  // "since …" in every state that had one.
+  const title = status?.started_at
+    ? `${meta.title} · since ${status.started_at}`
+    : meta.title;
   return (
-    <span className={`rounded px-2 py-0.5 font-medium ${cls}`} title={status?.started_at ? `since ${status.started_at}` : undefined}>
-      dispatcher: {state}
+    <span
+      className={`rounded px-2 py-0.5 font-medium ${meta.className}`}
+      title={title}
+    >
+      {meta.label}
     </span>
   );
 }
