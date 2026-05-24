@@ -129,6 +129,23 @@ type AgentConfig struct {
 	// reverts to the issue's original state. On normal finish the
 	// workflow itself sets the next state (review/done/etc).
 	RunningState string `yaml:"running_state,omitempty" json:"running_state,omitempty"`
+
+	// CompletedState is the kanban state the dispatcher moves a
+	// cleanly-finished issue into when the workflow itself didn't move
+	// it out of RunningState. Without this auto-transition, a workflow
+	// that lacks board.move capability (the catch-all dispatcher_default
+	// fallback when an issue has no assignee, for example) finishes,
+	// the dispatcher releases the claim, and the issue stays in
+	// RunningState. With RunningState marked eligible:true on the
+	// board (the default, needed for crash-recovery re-dispatch), the
+	// next poll picks the same issue back up and the workflow runs in
+	// a tight loop — burning model spend.
+	//
+	// Default: "review" — matches the default board's review column.
+	// Set to "none" (or any state name the board doesn't define) to
+	// disable; on an unknown state the dispatcher logs a warning and
+	// leaves the issue in RunningState (back to pre-fix behaviour).
+	CompletedState string `yaml:"completed_state,omitempty" json:"completed_state,omitempty"`
 }
 
 // WorkspaceConfig controls where per-issue workspaces live.
@@ -190,6 +207,14 @@ const (
 	// native package import (config.go is loaded before the native store
 	// is constructed).
 	DefaultRunningState = "in_progress"
+	// DefaultCompletedState matches the default board's review column.
+	// The auto-transition only fires when the workflow finished cleanly
+	// without moving the issue out of RunningState (typically because
+	// the workflow lacks board.move capability — the catch-all
+	// dispatcher_default fallback is the prime culprit) and an
+	// unrecognised target is treated as "leave the issue alone" so
+	// operators with custom boards aren't forced to opt out explicitly.
+	DefaultCompletedState = "review"
 )
 
 // Load reads and parses a dispatcher config from path. Relative paths
@@ -245,6 +270,14 @@ func (c *Config) applyDefaults() {
 		c.Agent.RunningState = DefaultRunningState
 	} else if c.Agent.RunningState == "none" {
 		c.Agent.RunningState = ""
+	}
+	// CompletedState mirrors the RunningState convention: empty in
+	// YAML means "use the default ("review")"; "none" is the explicit
+	// opt-out that disables the post-success auto-transition.
+	if c.Agent.CompletedState == "" {
+		c.Agent.CompletedState = DefaultCompletedState
+	} else if c.Agent.CompletedState == "none" {
+		c.Agent.CompletedState = ""
 	}
 	if c.Stall.TimeoutMS == 0 {
 		c.Stall.TimeoutMS = DefaultStallTimeoutMS

@@ -450,6 +450,124 @@ func TestFinishRun_DoesNotRevertOnCleanFinish(t *testing.T) {
 	}
 }
 
+// TestFinishRun_AutoTransitionsToCompletedState is the regression
+// guard for the dispatch-loop bug: a workflow that finishes cleanly
+// without moving the issue state (typically because it lacks
+// board.move capability — dispatcher_default is the prime offender)
+// used to leave the issue in `in_progress`; with `in_progress`
+// marked eligible:true on the default board (needed for crash
+// recovery), the next poll re-dispatched the SAME issue, again, and
+// again — burning model spend in a tight loop. The fix moves the
+// issue from RunningState into CompletedState ("review" by default)
+// on clean finish when the workflow itself didn't change the state.
+func TestFinishRun_AutoTransitionsToCompletedState(t *testing.T) {
+	ft := newStateAwareTracker()
+	ft.add(tracker.Issue{
+		ID: "fake:auto1", Identifier: "fake#auto1",
+		Title: "no board.move workflow", WorkflowState: "ready",
+	})
+
+	finished := make(chan struct{}, 1)
+	runner := &StubRunner{Handler: func(ctx context.Context, _ DispatchSpec) error {
+		finished <- struct{}{}
+		return nil
+	}}
+
+	c, _ := newStateTestDispatcherWithCompleted(t, runner, ft, 50*time.Millisecond, "in_progress", "review")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.Start(ctx)
+	defer c.Stop()
+
+	select {
+	case <-finished:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dispatch never finished")
+	}
+
+	// Wait for cmdRunFinished + the auto-transition's RefreshStates +
+	// UpdateState to drain through the actor.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if ft.issueState("fake:auto1") == "review" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if got := ft.issueState("fake:auto1"); got != "review" {
+		t.Fatalf("issue state = %q after clean finish, want review (auto-transition)", got)
+	}
+	// Two forward moves: ready → in_progress (dispatch) then
+	// in_progress → review (clean-finish auto-transition).
+	calls := ft.calls()
+	if len(calls) != 2 || calls[0].newState != "in_progress" || calls[1].newState != "review" {
+		t.Fatalf("UpdateState calls = %+v, want [in_progress, review]", calls)
+	}
+}
+
+// TestFinishRun_SkipsAutoTransitionWhenWorkflowMovedState verifies
+// the safety check: a workflow that already moved the issue out of
+// RunningState (e.g. doc-align → "review", or a board-aware bot
+// picking "done") keeps its terminal state — we don't second-guess
+// it by re-applying the default CompletedState.
+func TestFinishRun_SkipsAutoTransitionWhenWorkflowMovedState(t *testing.T) {
+	ft := newStateAwareTracker()
+	ft.add(tracker.Issue{
+		ID: "fake:auto2", Identifier: "fake#auto2",
+		Title: "board-aware workflow", WorkflowState: "ready",
+	})
+
+	finished := make(chan struct{}, 1)
+	runner := &StubRunner{Handler: func(ctx context.Context, _ DispatchSpec) error {
+		// Simulate a board-aware workflow that moved the issue to
+		// "done" mid-run, before signalling clean exit.
+		_ = ft.fakeTracker.UpdateState(ctx, "fake:auto2", "done")
+		finished <- struct{}{}
+		return nil
+	}}
+
+	c, _ := newStateTestDispatcherWithCompleted(t, runner, ft, 50*time.Millisecond, "in_progress", "review")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.Start(ctx)
+	defer c.Stop()
+
+	select {
+	case <-finished:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dispatch never finished")
+	}
+
+	// Give the actor a moment to process cmdRunFinished. The
+	// auto-transition's RefreshStates probe should see "done" and
+	// leave the issue alone.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		snap := c.Snapshot()
+		if len(snap.Running) == 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if got := ft.issueState("fake:auto2"); got != "done" {
+		t.Fatalf("issue state = %q, want done (workflow's choice preserved)", got)
+	}
+}
+
+// newStateTestDispatcherWithCompleted is newStateTestDispatcher with
+// an explicit CompletedState override — kept as a separate helper so
+// the existing tests don't grow another positional argument.
+func newStateTestDispatcherWithCompleted(t *testing.T, runner Runner, ft *stateAwareTracker, polling time.Duration, runningState, completedState string) (*Dispatcher, string) {
+	t.Helper()
+	c, wsDir := newStateTestDispatcher(t, runner, ft, polling, runningState)
+	cfg := c.cfg.Load()
+	cfg.Agent.CompletedState = completedState
+	c.cfg.Store(cfg)
+	return c, wsDir
+}
+
 // TestRevertTransition_SkipsWhenStateMovedExternally asserts the
 // safety check: if the workflow or operator moved the issue out of
 // the running state mid-run, the revert leaves the new state alone.

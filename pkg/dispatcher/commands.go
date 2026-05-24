@@ -136,16 +136,27 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 	case err == nil:
 		c.logger.Info("dispatcher: %s finished cleanly (run=%s)", r.Identifier, r.RunID)
 		// Successful dispatches clear any prior retry bookkeeping and
-		// honor the workspace-persist policy. We intentionally do NOT
-		// revert the in-progress transition — the workflow has either
-		// moved the state itself (e.g. doc-align → "review") or the
-		// operator wants to see the terminal state on the kanban.
+		// honor the workspace-persist policy. We don't revert the
+		// in-progress transition — the workflow may have moved the
+		// state itself (e.g. doc-align → "review"). When the workflow
+		// did NOT move the state (most often because it lacks
+		// board.move capability — dispatcher_default is the
+		// archetypal case), an explicit move to CompletedState here
+		// prevents the next tick from re-picking the same issue:
+		// RunningState is marked eligible:true on the board (needed
+		// for crash-recovery), so without this transition a
+		// no-board-move workflow would loop indefinitely and burn
+		// model spend on every poll interval. Disabled when
+		// CompletedState is empty (Validate maps "none" to "") or
+		// when CompletedState == RunningState (the transition would
+		// be a no-op anyway).
 		if cur, ok := c.state.retries[issueID]; ok {
 			if cur.Timer != nil {
 				cur.Timer.Stop()
 			}
 			delete(c.state.retries, issueID)
 		}
+		c.maybeTransitionToCompleted(relCtx, issueID, r.Identifier, currentTarget)
 		c.cleanupWorkspace(r)
 	case errors.Is(err, context.Canceled):
 		// Cancellation is a soft stop. Keep the workspace and any
@@ -196,6 +207,55 @@ func (c *Dispatcher) stampLastRun(issueID string, r *runningEntry) {
 	if err := setter.SetLastRun(issueID, r.RunID, workdir); err != nil {
 		c.logger.Warn("dispatcher: stamp last-run on %s: %v", r.Identifier, err)
 	}
+}
+
+// maybeTransitionToCompleted moves a cleanly-finished issue from
+// RunningState into CompletedState when the workflow itself didn't
+// move it elsewhere. No-op when:
+//   - CompletedState is empty (operator opted out via `none`).
+//   - CompletedState equals RunningState (the transition would be
+//     a no-op anyway, and trackers may reject same-state moves).
+//   - The current tracker state differs from RunningState — that's
+//     the "workflow already moved it" case (doc-align → review,
+//     a board-aware bot picking "done", etc.); leave it alone.
+//   - Tracker rejects the transition (state not defined on the
+//     board, blocking guard, etc.) — log + leave in RunningState.
+//     Operators with custom boards aren't forced to opt out.
+//
+// The motivation lives in the cfg.Agent.CompletedState comment in
+// config.go; this helper is just the application path. Detached
+// ctx is the caller's relCtx so a winding-down dispatcher still
+// completes the move (parallels the Release path).
+func (c *Dispatcher) maybeTransitionToCompleted(ctx context.Context, issueID, identifier, runningTarget string) {
+	cfg := c.cfg.Load()
+	completed := cfg.Agent.CompletedState
+	if completed == "" || completed == runningTarget {
+		return
+	}
+	states, err := c.tracker.RefreshStates(ctx, []string{issueID})
+	if err != nil {
+		c.logger.Debug("dispatcher: completed-state probe %s: %v", identifier, err)
+		return
+	}
+	cur, ok := states[issueID]
+	if !ok {
+		// Issue disappeared from the tracker — refreshRunningStates'
+		// tombstone path already handled its cleanup; nothing to do.
+		return
+	}
+	if cur != runningTarget {
+		// Workflow (or operator) already moved the state. Honor it.
+		return
+	}
+	if err := c.tracker.UpdateState(ctx, issueID, completed); err != nil {
+		if errors.Is(err, tracker.ErrTransitionRejected) || errors.Is(err, tracker.ErrNotSupported) {
+			c.logger.Info("dispatcher: %s stayed in %s (tracker rejected move to %q): %v", identifier, runningTarget, completed, err)
+			return
+		}
+		c.logger.Warn("dispatcher: completed-state move %s → %s: %v", identifier, completed, err)
+		return
+	}
+	c.logger.Info("dispatcher: %s moved %s → %s (workflow didn't change state, default auto-transition)", identifier, runningTarget, completed)
 }
 
 // resolveRunWorkdir reads the run's persisted WorkDir from
