@@ -665,6 +665,9 @@ func (s *Server) routes() {
 	// browsable + archivable list. No-op when WorkDir is empty (e.g.
 	// the cloud control plane has no operator workspace).
 	s.registerFindingsRoutes()
+	// Cross-run stats aggregation backing /insights. No-op when the
+	// server runs without a run-store handle (cloud control plane).
+	s.registerRunsStatsRoutes()
 
 	// Serve static frontend files with SPA fallback so client-side routes
 	// (e.g. /runs/abc) render index.html instead of 404.

@@ -402,6 +402,19 @@ func (s *Service) StoreRoot() string {
 	return s.store.Root()
 }
 
+// RunStore exposes the underlying store handle for callers that need
+// to drive read-only iteration patterns (ScanEvents over many runs,
+// for instance the /runs/stats aggregator). Mutators are intentionally
+// gated behind Service methods so the broker / manager bookkeeping
+// stays coherent — call those instead of reaching into the store for
+// writes.
+func (s *Service) RunStore() store.RunStore {
+	if s == nil {
+		return nil
+	}
+	return s.store
+}
+
 // HasEventSource reports whether an alternative event source has
 // been wired (i.e. cloud mode). The WS handler keys its branch
 // selection on this. Returns false for the default broker path.
