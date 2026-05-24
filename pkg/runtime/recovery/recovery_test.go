@@ -149,9 +149,43 @@ func TestClassify_ContextLengthFromMessage(t *testing.T) {
 }
 
 func TestClassify_GenericAPIError(t *testing.T) {
-	apiErr := &api.APIError{StatusCode: 500, Message: "internal error"}
+	// 4xx (non-429, non-context-length) stays EXECUTION_FAILED — these
+	// are usually deterministic request issues (auth, validation) that
+	// won't fix themselves on retry.
+	apiErr := &api.APIError{StatusCode: 400, Message: "bad request"}
 	if got := Classify(apiErr); got != runtime.ErrCodeExecutionFailed {
 		t.Errorf("expected EXECUTION_FAILED, got %v", got)
+	}
+}
+
+func TestClassify_APIError5xx_NetworkTransient(t *testing.T) {
+	// Live observation: ChatGPT-codex backend returns 503 mid-stream
+	// ("upstream connect error or disconnect/reset before headers")
+	// during incidents; OpenAI / Anthropic return 502/504 on internal
+	// rolling deploys. All of these are textbook transient — route to
+	// NETWORK_TRANSIENT so the 6-retry exponential-backoff recipe
+	// absorbs them instead of the catch-all 1-shot ExecutionFailedRecipe.
+	cases := []int{500, 502, 503, 504, 408}
+	for _, code := range cases {
+		t.Run(fmt.Sprintf("%d", code), func(t *testing.T) {
+			apiErr := &api.APIError{
+				StatusCode: code,
+				Message:    "upstream connect error or disconnect/reset before headers. reset reason: connection termination",
+			}
+			if got := Classify(apiErr); got != runtime.ErrCodeNetworkTransient {
+				t.Errorf("expected NETWORK_TRANSIENT for status %d, got %v", code, got)
+			}
+		})
+	}
+}
+
+func TestClassify_APIError409_StaysExecutionFailed(t *testing.T) {
+	// 409 Conflict is usually a logical conflict (write-after-write,
+	// concurrent edit) rather than a transient outage; retrying it
+	// blindly wastes time. Keep it on the generic ExecutionFailed path.
+	apiErr := &api.APIError{StatusCode: 409, Message: "conflict"}
+	if got := Classify(apiErr); got != runtime.ErrCodeExecutionFailed {
+		t.Errorf("expected EXECUTION_FAILED for 409, got %v", got)
 	}
 }
 
@@ -179,6 +213,18 @@ func TestClassify_NetworkTransient(t *testing.T) {
 		`network is unreachable`,
 		`no route to host`,
 		`unexpected EOF`,
+		// http/2 transport timeouts surface as untyped errors when no
+		// HTTP response was received — golang.org/x/net/http2 prefixes
+		// them with "http2:". Live observation: ChatGPT-codex backend
+		// for openai/gpt-5.5 reasoning=high regularly hits this when the
+		// queue is saturated.
+		`Post "https://chatgpt.com/backend-api/codex/responses": http2: timeout awaiting response headers`,
+		`http2: server sent GOAWAY and closed the connection`,
+		// envoy-style upstream errors surface in body text on 5xx; the
+		// 5xx already routes via the APIError branch, but the raw string
+		// can also appear when the connection drops before headers, so
+		// keep a fallback needle.
+		`Post "https://api.example.com/v1/x": upstream connect error or disconnect/reset before headers`,
 	}
 	for _, msg := range cases {
 		t.Run(msg, func(t *testing.T) {

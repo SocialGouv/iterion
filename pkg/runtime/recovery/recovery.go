@@ -325,6 +325,17 @@ func Classify(err error) runtime.ErrorCode {
 		if strings.Contains(body, "context_length_exceeded") || strings.Contains(body, "context length") {
 			return runtime.ErrCodeContextLengthExceeded
 		}
+		// 5xx and 408 (Request Timeout) from the upstream API are
+		// textbook transient failures: gateway timeouts, upstream
+		// connection resets, service overload, deploys mid-rollout.
+		// Route them to NETWORK_TRANSIENT so the longer exponential
+		// backoff recipe (~10 min) absorbs the outage instead of the
+		// catch-all 1-shot ExecutionFailed retry. 409 is intentionally
+		// excluded — it's usually a logical conflict, not a transient
+		// network issue.
+		if apiErr.StatusCode == 408 || (apiErr.StatusCode >= 500 && apiErr.StatusCode <= 599) {
+			return runtime.ErrCodeNetworkTransient
+		}
 		return runtime.ErrCodeExecutionFailed
 	}
 	// String-pattern fallback for unstructured errors that bubble up
@@ -368,4 +379,8 @@ var networkTransientNeedles = []string{
 	"tls handshake timeout",     // tls negotiation hung (proxy / mitm flap)
 	"unexpected eof",            // SSE / streaming response cut short by peer
 	"http: eof",                 // net/http verbatim: server hung up mid-stream
+	"http2: timeout",            // golang.org/x/net/http2: "http2: timeout awaiting response headers"
+	"http2: server sent goaway", // http/2 graceful shutdown signal from upstream mid-request
+	"upstream connect error",    // envoy / cloudfront gateway: e.g. "upstream connect error or disconnect/reset before headers"
+	"server closed idle connection",
 }
