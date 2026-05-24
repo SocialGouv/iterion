@@ -128,6 +128,54 @@ Examples of bad open_questions (don't emit these):
 Keep open_questions to 0–4 items. Empty is fine if the survey
 makes the priorities obvious.
 
+## 7b. Findings inbox → `observations` (dispatcher bot handoff)
+
+Other dispatcher-spawned bots write **findings** — observations
+they noticed during their own runs but did not treat — into the
+project-rooted memory directory:
+
+```
+~/.iterion/projects/<encoded-repo-root>/memory/findings/
+```
+
+The system prompt's `vars.findings_dir` already resolves to the
+correct absolute path for this run. The directory may not exist
+yet (fresh project / no bot has written one yet):
+
+```bash
+ls "$FINDINGS_DIR" 2>/dev/null
+```
+
+`2>/dev/null` silences the missing-dir error and is explicitly
+allowed by the system prompt's Constraints exception. Do NOT run
+`mkdir` — the directory is created when a bot first writes a
+finding via its native Write tool.
+
+For each `.md` file listed, call `read_file` to see its
+frontmatter (`title`, `description`, `kind`, `source_bot`,
+`tags`) plus the first ~40 lines of body. Don't burn context on
+full bodies unless one looks high-priority or you suspect a
+duplicate is queued.
+
+Fold the catalogue into `observations` as bullet lines of the
+form:
+
+```
+[finding:<source_bot>:<kind>] <file_basename> — <title>
+```
+
+…where `<file_basename>` is the `.md` filename only (no path
+prefix). The exact basename matters: `emit_action` needs it to
+`rm` the file after a kanban issue ingests the finding (transient
+queue lifecycle — bots that wrote unmatched findings re-surface
+them next session).
+
+Empty `findings/` directory → no bullets. Do NOT manufacture
+findings.
+
+Do NOT delete or modify finding files in this node. Read + report
+only; the lifecycle flip happens in `emit_action`.
+
 ## 8. Don't drown in TODO/FIXME
 
 Scan first-party only:
