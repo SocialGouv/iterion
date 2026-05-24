@@ -55,6 +55,18 @@ export default function BoardView() {
   const [searchQuery, setSearchQuery] = useState("");
   const [labelFilter, setLabelFilter] = useState<Set<string>>(() => new Set());
   const [assigneeFilter, setAssigneeFilter] = useState("");
+  // Single source of truth for label filter toggling — used both by
+  // the top filter strip and by clicking a chip on any card. Lifted
+  // here so card-level chips toggle the same Set the filter strip
+  // shows.
+  const onLabelToggle = useCallback((l: string) => {
+    setLabelFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(l)) next.delete(l);
+      else next.add(l);
+      return next;
+    });
+  }, []);
 
   // Poll the dispatcher snapshot every 2s so each card can show a
   // running/retrying badge + cancel button. We ignore failures: when
@@ -466,14 +478,7 @@ export default function BoardView() {
         total={issues.length}
         filtered={filteredIssues.length}
         onSearchChange={setSearchQuery}
-        onLabelToggle={(l) =>
-          setLabelFilter((prev) => {
-            const next = new Set(prev);
-            if (next.has(l)) next.delete(l);
-            else next.add(l);
-            return next;
-          })
-        }
+        onLabelToggle={onLabelToggle}
         onAssigneeChange={setAssigneeFilter}
         onReset={() => {
           setSearchQuery("");
@@ -502,6 +507,8 @@ export default function BoardView() {
               onDrop={onDrop}
               onSelectCard={setSelectedId}
               onClickCard={(iss) => setEditing(iss)}
+              onLabelClick={onLabelToggle}
+              activeLabels={labelFilter}
               onCancelRun={onCancelRun}
               onOpenRun={(runId) => setLocation(`/runs/${encodeURIComponent(runId)}`)}
               dimmed={dispatcherPaused}
@@ -521,6 +528,8 @@ export default function BoardView() {
               onDrop={onDrop}
               onSelectCard={setSelectedId}
               onClickCard={(iss) => setEditing(iss)}
+              onLabelClick={onLabelToggle}
+              activeLabels={labelFilter}
               onCancelRun={onCancelRun}
               onOpenRun={(runId) => setLocation(`/runs/${encodeURIComponent(runId)}`)}
               dimmed={dispatcherPaused}
@@ -828,6 +837,8 @@ interface ColumnProps {
   onDrop: (issueID: string, toState: string) => void;
   onSelectCard: (id: string | null) => void;
   onClickCard: (iss: NativeIssue) => void;
+  onLabelClick: (label: string) => void;
+  activeLabels: Set<string>;
   onCancelRun: (issueID: string) => void;
   onOpenRun: (runId: string) => void;
   // dimmed: tells the column to render at reduced opacity. Used when the
@@ -850,6 +861,8 @@ function Column({
   onDrop,
   onSelectCard,
   onClickCard,
+  onLabelClick,
+  activeLabels,
   onCancelRun,
   onOpenRun,
   dimmed,
@@ -904,8 +917,10 @@ function Column({
             selected={iss.id === selectedId}
             running={runningByIssue.get(iss.id)}
             retrying={retryingByIssue.get(iss.id)}
+            activeLabels={activeLabels}
             onSelect={() => onSelectCard(iss.id)}
             onClick={() => onClickCard(iss)}
+            onLabelClick={onLabelClick}
             onCancelRun={() => onCancelRun(iss.id)}
             onOpenRun={onOpenRun}
             onShowRetryDetails={() => onClickCard(iss)}
@@ -924,8 +939,13 @@ interface IssueCardProps {
   selected: boolean;
   running?: RunningView;
   retrying?: RetryView;
+  // activeLabels: the set of labels currently in the board-level
+  // filter, so each card's label chip can show its active state and
+  // operators can see which chips already filter the view.
+  activeLabels: Set<string>;
   onSelect: () => void;
   onClick: () => void;
+  onLabelClick: (label: string) => void;
   onCancelRun: () => void;
   onOpenRun: (runId: string) => void;
   onShowRetryDetails: () => void;
@@ -936,8 +956,10 @@ function IssueCard({
   selected,
   running,
   retrying,
+  activeLabels,
   onSelect,
   onClick,
+  onLabelClick,
   onCancelRun,
   onOpenRun,
   onShowRetryDetails,
@@ -976,18 +998,16 @@ function IssueCard({
         onSelect();
       }}
       onDragEnd={() => setDragging(false)}
-      onClick={(e) => {
-        // Single click selects (so keyboard nav has an anchor); a second
-        // click on the already-selected card opens the modal — mirroring
-        // file-manager double-click idioms but with a much shorter delay.
-        if (selected) {
-          onClick();
-        } else {
-          e.preventDefault();
-          onSelect();
-        }
+      onClick={() => {
+        // Single click opens the modal directly — file-manager
+        // double-click idioms confused operators ("I clicked it,
+        // nothing happened") because there's no in-card affordance
+        // distinguishing select from open. Selection still happens
+        // as a side-effect so keyboard nav has an anchor when the
+        // modal closes.
+        onSelect();
+        onClick();
       }}
-      onDoubleClick={onClick}
       className={`bg-surface-0 border rounded p-2 text-sm cursor-grab active:cursor-grabbing transition-transform ${
         dragging ? "scale-[1.02] shadow-lg" : ""
       } ${
@@ -1018,14 +1038,31 @@ function IssueCard({
         <div className="mt-1 flex flex-wrap gap-1">
           {iss.labels!.map((l) => {
             const palette = labelPalette(l);
+            const active = activeLabels.has(l);
             return (
-              <span
+              <button
                 key={l}
-                className="text-[10px] px-1.5 py-0.5 rounded"
+                type="button"
+                // Stop propagation so a chip click only toggles the
+                // board's label filter — without this the card's
+                // onClick would also open the issue modal, which is
+                // not what the operator asked for.
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onLabelClick(l);
+                }}
+                className={`text-[10px] px-1.5 py-0.5 rounded hover:ring-1 hover:ring-accent transition ${
+                  active ? "ring-1 ring-accent" : ""
+                }`}
                 style={palette}
+                title={
+                  active
+                    ? `Click to remove ${l} from the board filter`
+                    : `Click to filter board by ${l}`
+                }
               >
                 {l}
-              </span>
+              </button>
             );
           })}
         </div>
