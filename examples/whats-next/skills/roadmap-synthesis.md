@@ -151,6 +151,42 @@ You DON'T create issues — that's the post-approval step. You
 just emit the structured roadmap; the operator approves it; the
 materialisation happens once.
 
+## 7b. In-session work vs. dispatched issues — don't double-bill
+
+Some operator priorities describe work the bot **already does
+interactively in this session** after the roadmap is approved.
+The clearest example is **board triage / cleanup / "what's still
+relevant?"**: that's exactly what the downstream `triage_board`
+agent does on the `ask_continue` loop. Emitting a separate
+`short_term` item like "Triage the current native board (no
+assignee)" duplicates the work and forces the operator to act on
+the same board twice (once here, once via the dispatched issue).
+
+Heuristic — when the operator says any of:
+
+- "clean the board", "tidy the board", "triage the issues"
+- "drop / close stale / superseded / done issues"
+- "decide which existing issues are still relevant"
+- "dispatch the ones I want to run" / "promote X to ready"
+- "rename / re-label / re-assign existing tickets"
+
+…do **NOT** emit a roadmap item for it. Instead:
+
+1. Mention in `rationale` that this priority is handled by the
+   in-session triage step (`triage_board`) after `human_review`
+   approves the roadmap — the operator can `add_ticket`,
+   `modify_ticket`, `dispatch_more`, or `done` from there.
+2. Let `next_action` and `short_term` cover the NEW work the
+   operator implied — bug fixes, new features, hardening — that
+   only a separately-dispatched bot run can do.
+
+The split rule: **board state ops belong in-session; code/file/
+network mutations belong as dispatched issues.** When in doubt,
+ask: "Could the operator do this from a one-line `add_ticket` /
+`modify_ticket` instruction in the next chat turn?" If yes,
+it's in-session; if no (because it needs a long-running bot
+working a branch), it's a roadmap item.
+
 ## 8. What you do NOT do
 
 - You do NOT add scope the operator didn't ask for.
