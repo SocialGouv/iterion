@@ -50,7 +50,22 @@ export default function BoardView() {
   // one. Bounded at 10 entries — the board's drag-undo intent is the
   // immediate "oops, wrong column", not full session replay.
   const transitionHistoryRef = useRef<Array<{ id: string; from: string }>>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Multi-selection state. `selectedIds` is the full set; `anchorId`
+  // is the pivot for shift-range extension and the focal point for
+  // keyboard navigation. A plain click collapses both to {id}; ctrl/
+  // meta-click toggles membership; shift-click extends a range from
+  // the anchor to the clicked card without opening the modal.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [anchorId, setAnchorId] = useState<string | null>(null);
+  const setSingleSelection = useCallback((id: string | null) => {
+    if (id === null) {
+      setSelectedIds(new Set());
+      setAnchorId(null);
+    } else {
+      setSelectedIds(new Set([id]));
+      setAnchorId(id);
+    }
+  }, []);
   const [helpOpen, setHelpOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [labelFilter, setLabelFilter] = useState<Set<string>>(() => new Set());
@@ -158,9 +173,9 @@ export default function BoardView() {
     if (issues.length === 0) return;
     const match = issues.find((i) => i.id === focusFromUrl);
     if (!match) return;
-    setSelectedId(match.id);
+    setSingleSelection(match.id);
     setLocation("/board", { replace: true });
-  }, [focusFromUrl, issues, setLocation]);
+  }, [focusFromUrl, issues, setLocation, setSingleSelection]);
 
   // Distinct values exposed in the filter dropdowns. Derived from the
   // current issues list so the dropdowns track what the user actually
@@ -222,6 +237,20 @@ export default function BoardView() {
     }
     return m;
   }, [board, filteredIssues]);
+
+  // Flat issue-id sequence in column-then-row order. Used as the
+  // 1-D coordinate space for shift-click range extension across
+  // columns: anchor and clicked card are indexed here, everything
+  // between them is added to the selection.
+  const flatIssueIds = useMemo(() => {
+    const flat: string[] = [];
+    if (!board) return flat;
+    for (const s of board.states) {
+      for (const iss of byState.get(s.name) ?? []) flat.push(iss.id);
+    }
+    for (const iss of byState.get("__unmapped__") ?? []) flat.push(iss.id);
+    return flat;
+  }, [board, byState]);
 
   // Eligible counts surfaced in the browser tab title so operators
   // with the board pinned in a background tab see new ready/
@@ -325,6 +354,79 @@ export default function BoardView() {
     return () => window.removeEventListener("keydown", handler);
   }, [creating, editing, helpOpen, settingsOpen, undoLastTransition]);
 
+  const onCardClick = useCallback(
+    (iss: NativeIssue, e: React.MouseEvent) => {
+      const meta = e.ctrlKey || e.metaKey;
+      const shift = e.shiftKey;
+
+      if (meta) {
+        const wasSelected = selectedIds.has(iss.id);
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          if (next.has(iss.id)) next.delete(iss.id);
+          else next.add(iss.id);
+          return next;
+        });
+        // Anchor follows additions so a follow-up shift-click
+        // extends from here. On deselect, keep the prior anchor —
+        // unless it was this same card, which is no longer there.
+        setAnchorId((prev) =>
+          wasSelected ? (prev === iss.id ? null : prev) : iss.id,
+        );
+        return;
+      }
+
+      if (shift && anchorId && anchorId !== iss.id) {
+        const startIdx = flatIssueIds.indexOf(anchorId);
+        const endIdx = flatIssueIds.indexOf(iss.id);
+        if (startIdx >= 0 && endIdx >= 0) {
+          const [lo, hi] = startIdx <= endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
+          const range = flatIssueIds.slice(lo, hi + 1);
+          setSelectedIds((prev) => {
+            const next = new Set(prev);
+            for (const id of range) next.add(id);
+            return next;
+          });
+        }
+        return;
+      }
+
+      // Selection is updated so the keyboard hook has an anchor
+      // when the modal closes.
+      setSingleSelection(iss.id);
+      setEditing(iss);
+    },
+    [anchorId, flatIssueIds, selectedIds, setSingleSelection],
+  );
+
+  const onCardDragStart = useCallback(
+    (iss: NativeIssue, e: React.DragEvent) => {
+      // Dragging an unselected card collapses the selection to
+      // that card — the operator's intent is "move this one",
+      // not "move the four I forgot were still selected".
+      let ids: string[];
+      if (selectedIds.has(iss.id) && selectedIds.size > 1) {
+        ids = Array.from(selectedIds);
+      } else {
+        ids = [iss.id];
+        setSingleSelection(iss.id);
+      }
+      e.dataTransfer.setData(DRAG_MIME_ISSUE_IDS, JSON.stringify(ids));
+      // text/plain fallback so a drag-out into another app yields
+      // the originating issue id rather than a JSON blob.
+      e.dataTransfer.setData("text/plain", iss.id);
+      e.dataTransfer.effectAllowed = "move";
+    },
+    [selectedIds, setSingleSelection],
+  );
+
+  const onColumnDrop = useCallback(
+    (ids: string[], toState: string) => {
+      for (const id of ids) void onDrop(id, toState);
+    },
+    [onDrop],
+  );
+
   const onCreate = useCallback(
     async (input: Partial<NativeIssue>) => {
       try {
@@ -385,7 +487,13 @@ export default function BoardView() {
       try {
         await deleteIssue(id);
         setEditing(null);
-        setSelectedId((cur) => (cur === id ? null : cur));
+        setSelectedIds((cur) => {
+          if (!cur.has(id)) return cur;
+          const next = new Set(cur);
+          next.delete(id);
+          return next;
+        });
+        setAnchorId((cur) => (cur === id ? null : cur));
         await refresh();
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
@@ -397,9 +505,9 @@ export default function BoardView() {
   useBoardKeyboard({
     board,
     byState,
-    selectedId,
+    selectedId: anchorId,
     modalOpen: creating || editing !== null || helpOpen || settingsOpen,
-    onSelect: setSelectedId,
+    onSelect: setSingleSelection,
     onCreate: () => setCreating(true),
     onEdit: (id) => {
       const iss = issues.find((i) => i.id === id);
@@ -490,6 +598,20 @@ export default function BoardView() {
       {issues.length === 0 && (
         <EmptyBoardBanner onCreate={() => setCreating(true)} />
       )}
+      {selectedIds.size > 1 && (
+        <div className="shrink-0 px-3 py-1.5 border-b border-border-default bg-accent-soft/20 flex items-center gap-3 text-xs text-fg-default">
+          <span>
+            <strong>{selectedIds.size}</strong> cards selected — drag any one to move them all
+          </span>
+          <button
+            type="button"
+            onClick={() => setSingleSelection(null)}
+            className="ml-auto text-fg-subtle hover:text-fg-default underline"
+          >
+            clear
+          </button>
+        </div>
+      )}
       <div className="flex-1 overflow-auto p-3">
         <div className="flex gap-3 min-w-fit">
           {board.states.map((s) => (
@@ -501,12 +623,13 @@ export default function BoardView() {
               eligible={!!s.eligible}
               color={s.color ?? defaultStateColor(s.name, !!s.eligible, !!s.terminal)}
               issues={byState.get(s.name) ?? []}
-              selectedId={selectedId}
+              selectedIds={selectedIds}
               runningByIssue={runningByIssue}
               retryingByIssue={retryingByIssue}
-              onDrop={onDrop}
-              onSelectCard={setSelectedId}
-              onClickCard={(iss) => setEditing(iss)}
+              onDrop={onColumnDrop}
+              onClickCard={onCardClick}
+              onDragStartCard={onCardDragStart}
+              onOpenCard={(iss) => setEditing(iss)}
               onLabelClick={onLabelToggle}
               activeLabels={labelFilter}
               onCancelRun={onCancelRun}
@@ -522,12 +645,13 @@ export default function BoardView() {
               eligible={false}
               color="var(--color-board-backlog)"
               issues={byState.get("__unmapped__") ?? []}
-              selectedId={selectedId}
+              selectedIds={selectedIds}
               runningByIssue={runningByIssue}
               retryingByIssue={retryingByIssue}
-              onDrop={onDrop}
-              onSelectCard={setSelectedId}
-              onClickCard={(iss) => setEditing(iss)}
+              onDrop={onColumnDrop}
+              onClickCard={onCardClick}
+              onDragStartCard={onCardDragStart}
+              onOpenCard={(iss) => setEditing(iss)}
               onLabelClick={onLabelToggle}
               activeLabels={labelFilter}
               onCancelRun={onCancelRun}
@@ -751,6 +875,10 @@ function BoardKeyboardHelp({ onClose }: { onClose: () => void }) {
         </div>
         <ul className="space-y-1.5 text-fg-default">
           <ShortcutRow keys="c / n" desc="New issue" />
+          <ShortcutRow keys="click" desc="Open issue (and select it)" />
+          <ShortcutRow keys="Ctrl/⌘+click" desc="Toggle card in selection" />
+          <ShortcutRow keys="Shift+click" desc="Extend selection range" />
+          <ShortcutRow keys="drag selection" desc="Move all selected cards" />
           <ShortcutRow keys="↑ ↓" desc="Navigate cards in column" />
           <ShortcutRow keys="← →" desc="Move card to previous/next column" />
           <ShortcutRow keys="Enter / e" desc="Open selected issue" />
@@ -792,6 +920,12 @@ function ShortcutRow({ keys, desc }: { keys: string; desc: string }) {
 // get a neutral slate. Custom boards can always override per-state via
 // the `color:` field — this helper only fires when `State.Color` is
 // empty.
+// Custom MIME for drag payloads carrying one or more issue ids
+// (JSON-encoded `string[]`). Matches the studio's existing
+// `application/iterion-*` convention so external drops can't
+// accidentally be interpreted as text/plain.
+const DRAG_MIME_ISSUE_IDS = "application/iterion-issue-ids";
+
 // TERMINAL_BOARD_STATES lists the native-tracker state names treated as
 // "no more work" for UI purposes. The runtime contract is that any
 // state with `terminal: true` in the board config qualifies — but the
@@ -831,12 +965,23 @@ interface ColumnProps {
   // (board config) or from `defaultStateColor()` (semantic fallback).
   color: string;
   issues: NativeIssue[];
-  selectedId: string | null;
+  selectedIds: Set<string>;
   runningByIssue: Map<string, RunningView>;
   retryingByIssue: Map<string, RetryView>;
-  onDrop: (issueID: string, toState: string) => void;
-  onSelectCard: (id: string | null) => void;
-  onClickCard: (iss: NativeIssue) => void;
+  // onDrop receives the dropped issue ids (one or more, parsed
+  // from the dataTransfer payload) and the destination state name.
+  onDrop: (ids: string[], toState: string) => void;
+  // onClickCard receives the mouse event so the parent can inspect
+  // Shift / Ctrl / Meta modifiers to drive multi-select.
+  onClickCard: (iss: NativeIssue, e: React.MouseEvent) => void;
+  // onDragStartCard lets the parent decide whether to drag just this
+  // card or the full multi-selection, and write the appropriate
+  // payload into dataTransfer.
+  onDragStartCard: (iss: NativeIssue, e: React.DragEvent) => void;
+  // onOpenCard opens the modal directly (used by in-card buttons
+  // like "retry details" that should always open regardless of any
+  // active selection modifier).
+  onOpenCard: (iss: NativeIssue) => void;
   onLabelClick: (label: string) => void;
   activeLabels: Set<string>;
   onCancelRun: (issueID: string) => void;
@@ -855,12 +1000,13 @@ function Column({
   eligible,
   color,
   issues,
-  selectedId,
+  selectedIds,
   runningByIssue,
   retryingByIssue,
   onDrop,
-  onSelectCard,
   onClickCard,
+  onDragStartCard,
+  onOpenCard,
   onLabelClick,
   activeLabels,
   onCancelRun,
@@ -888,8 +1034,21 @@ function Column({
       onDrop={(e) => {
         e.preventDefault();
         setDragOver(false);
-        const id = e.dataTransfer.getData("text/plain");
-        if (id && name !== "__unmapped__") onDrop(id, name);
+        if (name === "__unmapped__") return;
+        const json = e.dataTransfer.getData(DRAG_MIME_ISSUE_IDS);
+        if (json) {
+          try {
+            const ids = JSON.parse(json) as unknown;
+            if (Array.isArray(ids) && ids.every((x) => typeof x === "string") && ids.length > 0) {
+              onDrop(ids as string[], name);
+              return;
+            }
+          } catch {
+            // malformed payload — fall through to text/plain
+          }
+        }
+        const single = e.dataTransfer.getData("text/plain");
+        if (single) onDrop([single], name);
       }}
     >
       <div className="px-3 py-2 border-b border-border-default flex items-center justify-between text-xs">
@@ -914,16 +1073,16 @@ function Column({
           <IssueCard
             key={iss.id}
             iss={iss}
-            selected={iss.id === selectedId}
+            selected={selectedIds.has(iss.id)}
             running={runningByIssue.get(iss.id)}
             retrying={retryingByIssue.get(iss.id)}
             activeLabels={activeLabels}
-            onSelect={() => onSelectCard(iss.id)}
-            onClick={() => onClickCard(iss)}
+            onClick={(e) => onClickCard(iss, e)}
+            onDragStart={(e) => onDragStartCard(iss, e)}
             onLabelClick={onLabelClick}
             onCancelRun={() => onCancelRun(iss.id)}
             onOpenRun={onOpenRun}
-            onShowRetryDetails={() => onClickCard(iss)}
+            onShowRetryDetails={() => onOpenCard(iss)}
           />
         ))}
         {issues.length === 0 && (
@@ -943,8 +1102,14 @@ interface IssueCardProps {
   // filter, so each card's label chip can show its active state and
   // operators can see which chips already filter the view.
   activeLabels: Set<string>;
-  onSelect: () => void;
-  onClick: () => void;
+  // onClick receives the mouse event so the parent can decide
+  // whether to open the modal (plain click) or update multi-select
+  // (Shift / Ctrl / Meta).
+  onClick: (e: React.MouseEvent) => void;
+  // onDragStart receives the drag event so the parent can decide
+  // whether to drag this card alone or the whole multi-selection
+  // and write the right payload into dataTransfer.
+  onDragStart: (e: React.DragEvent) => void;
   onLabelClick: (label: string) => void;
   onCancelRun: () => void;
   onOpenRun: (runId: string) => void;
@@ -957,8 +1122,8 @@ function IssueCard({
   running,
   retrying,
   activeLabels,
-  onSelect,
   onClick,
+  onDragStart,
   onLabelClick,
   onCancelRun,
   onOpenRun,
@@ -992,22 +1157,11 @@ function IssueCard({
       draggable
       title={hoverTitle}
       onDragStart={(e) => {
-        e.dataTransfer.setData("text/plain", iss.id);
-        e.dataTransfer.effectAllowed = "move";
+        onDragStart(e);
         setDragging(true);
-        onSelect();
       }}
       onDragEnd={() => setDragging(false)}
-      onClick={() => {
-        // Single click opens the modal directly — file-manager
-        // double-click idioms confused operators ("I clicked it,
-        // nothing happened") because there's no in-card affordance
-        // distinguishing select from open. Selection still happens
-        // as a side-effect so keyboard nav has an anchor when the
-        // modal closes.
-        onSelect();
-        onClick();
-      }}
+      onClick={onClick}
       className={`bg-surface-0 border rounded p-2 text-sm cursor-grab active:cursor-grabbing transition-transform ${
         dragging ? "scale-[1.02] shadow-lg" : ""
       } ${
