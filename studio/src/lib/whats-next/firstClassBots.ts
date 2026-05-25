@@ -115,9 +115,10 @@ const askPrioritiesForm: FormSpec = {
           description: "I want iterion to propose, not me.",
         },
         {
-          value: "Polish UX / docs",
-          label: "Polish UX / docs",
-          description: "Smooth the rough edges, ship docs.",
+          value: "Polish & refinement",
+          label: "Polish & refinement",
+          description:
+            "Smooth the rough edges in what's already shipped — docs, ergonomics, edge cases, perf.",
         },
       ],
       allow_other: true,
