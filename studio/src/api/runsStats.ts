@@ -1,9 +1,11 @@
-// Cross-run stats client — backs the /insights view.
+// Cross-run stats client — backs the Runs analytics dashboard
+// (reached from the Runs list toolbar; route still served at
+// /insights to preserve operator bookmarks).
 //
 // Mirrors pkg/server/runs_stats.go's StatsResponse shape. The
 // backend walks events.jsonl per run to sum per-node `_cost_usd`,
-// so a Refresh on /insights costs ~sub-second on hundreds of runs;
-// we don't poll automatically (the dashboard is a manual surface).
+// so a Refresh costs ~sub-second on hundreds of runs; we don't poll
+// automatically (the dashboard is a manual surface).
 
 import { apiRequest } from "./client";
 

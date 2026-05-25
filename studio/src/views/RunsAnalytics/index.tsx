@@ -1,4 +1,5 @@
-// Insights view — first cross-run dashboard.
+// Runs analytics view — cross-run dashboard reached from the Runs
+// list toolbar.
 //
 // Three panels that an operator wants to see at a glance every
 // morning:
@@ -19,7 +20,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { getRunsStats, type StatsResponse } from "@/api/insights";
+import { getRunsStats, type StatsResponse } from "@/api/runsStats";
 import { Button } from "@/components/ui/Button";
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
 import { formatCost, formatMs } from "@/lib/format";
@@ -27,15 +28,15 @@ import { formatCost, formatMs } from "@/lib/format";
 const WINDOWS = [7, 14, 30, 90] as const;
 type Window = (typeof WINDOWS)[number];
 
-export default function InsightsView() {
+export default function RunsAnalyticsView() {
   return (
-    <ErrorBoundary area="Insights view">
-      <InsightsViewInner />
+    <ErrorBoundary area="Runs analytics view">
+      <RunsAnalyticsViewInner />
     </ErrorBoundary>
   );
 }
 
-function InsightsViewInner() {
+function RunsAnalyticsViewInner() {
   const [sinceDays, setSinceDays] = useState<Window>(30);
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -66,7 +67,7 @@ function InsightsViewInner() {
   return (
     <div className="h-full overflow-auto p-4 space-y-4 text-[13px]">
       <header className="flex items-baseline gap-3">
-        <h1 className="text-lg font-semibold text-fg-default">Insights</h1>
+        <h1 className="text-lg font-semibold text-fg-default">Runs analytics</h1>
         <span className="text-fg-muted text-[11px]">
           {stats
             ? `${stats.total_runs} run${stats.total_runs === 1 ? "" : "s"} · ${formatCost(stats.total_cost_usd)} spent · last ${stats.since_days} days`

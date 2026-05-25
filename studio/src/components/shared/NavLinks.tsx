@@ -11,8 +11,6 @@ import {
   ChevronRightIcon,
   Cross2Icon,
   PlayIcon,
-  EnvelopeOpenIcon,
-  BarChartIcon,
 } from "@radix-ui/react-icons";
 import { useShallow } from "zustand/react/shallow";
 
@@ -30,9 +28,7 @@ export type Section =
   | "whatsNext"
   | "editor"
   | "runs"
-  | "insights"
   | "board"
-  | "findings"
   | "dispatcher";
 
 interface Props {
@@ -60,9 +56,12 @@ const SEGMENT_TO_SECTION: Record<string, Section> = {
   "whats-next": "whatsNext",
   editor: "editor",
   runs: "runs",
-  insights: "insights",
+  // /insights and /findings are reached from the Runs list toolbar;
+  // highlight Runs in the side nav so the operator's place stays
+  // legible even though they're no longer top-level entries.
+  insights: "runs",
   board: "board",
-  findings: "findings",
+  findings: "runs",
   dispatcher: "dispatcher",
 };
 
@@ -84,21 +83,9 @@ export default function NavLinks({ collapsed }: Props) {
   const active = deriveSection(location);
 
   const links: LinkDef[] = [...BASE_LINKS];
-  links.push({
-    section: "insights",
-    href: "/insights",
-    label: "Insights",
-    icon: BarChartIcon,
-  });
   if (info?.native_tracker_enabled) {
     links.push({ section: "board", href: "/board", label: "Board", icon: ViewGridIcon });
   }
-  links.push({
-    section: "findings",
-    href: "/findings",
-    label: "Findings",
-    icon: EnvelopeOpenIcon,
-  });
   if (info?.dispatcher_enabled) {
     links.push({ section: "dispatcher", href: "/dispatcher", label: "Dispatcher", icon: RocketIcon });
   }
