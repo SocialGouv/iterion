@@ -13,6 +13,16 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
+// forceStaleStaleAfter is the minimum time since the last events.jsonl
+// flush before `--force-stale` will promote a status=running run.
+// Mirrors `runview.reconcileOrphans`' implicit policy (which relies on
+// flock as the liveness probe instead of mtime) — kept conservative
+// enough to avoid stepping on a live engine in a brief silent stretch
+// (LLM reasoning turns can run 30-60s without an event), short enough
+// to recover immediately after a watchexec restart instead of waiting
+// the 15min the runs LIST filter uses for staleness display.
+const forceStaleStaleAfter = 60 * time.Second
+
 // ResumeOptions holds the configuration for the resume command.
 type ResumeOptions struct {
 	RunID       string
@@ -22,7 +32,7 @@ type ResumeOptions struct {
 	LogLevel    string            // log level (default: "info", env: ITERION_LOG_LEVEL)
 	Force       bool              // allow resume despite workflow hash change
 	// ForceStale auto-promotes a status=running run to failed_resumable
-	// IFF its events.jsonl mtime is older than store.OrphanStaleAfter.
+	// IFF its events.jsonl mtime is older than forceStaleStaleAfter.
 	// The server-boot sweep (pkg/store.PromoteStaleOrphans) covers the
 	// common case automatically; this flag is the operator's escape
 	// hatch when they spot an orphan in a long-running session, or want
@@ -109,8 +119,8 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		}
 		evPath := filepath.Join(storeDir, "runs", opts.RunID, "events.jsonl")
 		if st, statErr := os.Stat(evPath); statErr == nil {
-			if age := time.Since(st.ModTime()); age < store.OrphanStaleAfter {
-				return fmt.Errorf("run %q has events.jsonl flushed %s ago (< %s) — engine may still be alive; refusing to force-stale resume. Wait, or use `iterion inspect` to confirm the engine is gone", opts.RunID, age.Truncate(time.Second), store.OrphanStaleAfter)
+			if age := time.Since(st.ModTime()); age < forceStaleStaleAfter {
+				return fmt.Errorf("run %q has events.jsonl flushed %s ago (< %s) — engine may still be alive; refusing to force-stale resume. Wait, or use `iterion inspect` to confirm the engine is gone", opts.RunID, age.Truncate(time.Second), forceStaleStaleAfter)
 			}
 		}
 		if changed, casErr := s.UpdateRunStatusIf(ctx, opts.RunID, store.RunStatusFailedResumable, "engine subprocess died abnormally; status auto-promoted via `iterion resume --force-stale`", []store.RunStatus{store.RunStatusRunning}); casErr != nil {
