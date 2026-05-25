@@ -35,10 +35,14 @@ const CHAT_ENTER_SUBMITS_KEY = "iterion.chatEnterSubmits";
 
 function readInspectorWidth(): number {
   if (typeof window === "undefined") return INSPECTOR_WIDTH_DEFAULT;
-  const raw = window.localStorage.getItem(INSPECTOR_WIDTH_KEY);
-  const parsed = raw ? parseInt(raw, 10) : NaN;
-  if (!Number.isFinite(parsed)) return INSPECTOR_WIDTH_DEFAULT;
-  return Math.min(INSPECTOR_WIDTH_MAX, Math.max(INSPECTOR_WIDTH_MIN, parsed));
+  try {
+    const raw = window.localStorage.getItem(INSPECTOR_WIDTH_KEY);
+    const parsed = raw ? parseInt(raw, 10) : NaN;
+    if (!Number.isFinite(parsed)) return INSPECTOR_WIDTH_DEFAULT;
+    return Math.min(INSPECTOR_WIDTH_MAX, Math.max(INSPECTOR_WIDTH_MIN, parsed));
+  } catch {
+    return INSPECTOR_WIDTH_DEFAULT;
+  }
 }
 
 interface UIState {
@@ -239,7 +243,11 @@ export const useUIStore = create<UIState>((set) => ({
   setInspectorWidth: (px) => {
     const clamped = Math.min(INSPECTOR_WIDTH_MAX, Math.max(INSPECTOR_WIDTH_MIN, Math.round(px)));
     if (typeof window !== "undefined") {
-      window.localStorage.setItem(INSPECTOR_WIDTH_KEY, String(clamped));
+      try {
+        window.localStorage.setItem(INSPECTOR_WIDTH_KEY, String(clamped));
+      } catch {
+        // Storage may be unavailable; keep the in-memory width.
+      }
     }
     set({ inspectorWidth: clamped });
   },

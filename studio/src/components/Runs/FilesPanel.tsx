@@ -27,14 +27,22 @@ const MODE_STORAGE_KEY = "run-console-v1.files-mode";
 // across runs we want the same view.
 function readPersistedMode(): ViewMode {
   if (typeof window === "undefined") return "uncommitted";
-  const raw = window.localStorage.getItem(MODE_STORAGE_KEY);
-  if (raw === "branch") return "branch";
+  try {
+    const raw = window.localStorage.getItem(MODE_STORAGE_KEY);
+    if (raw === "branch") return "branch";
+  } catch {
+    // Storage may be unavailable; fall through to the default mode.
+  }
   return "uncommitted";
 }
 
 function writePersistedMode(mode: ViewMode) {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(MODE_STORAGE_KEY, mode);
+  try {
+    window.localStorage.setItem(MODE_STORAGE_KEY, mode);
+  } catch {
+    // Storage may be unavailable; keep the in-memory mode.
+  }
 }
 
 interface FilesPanelProps {
@@ -487,4 +495,3 @@ function footerTooltip(
   }
   return data.work_dir ?? "";
 }
-

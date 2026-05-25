@@ -8,13 +8,21 @@ const VALID_MODES: ThemeMode[] = ["system", "light", "dark"];
 
 function readStoredMode(): ThemeMode {
   if (typeof window === "undefined") return "system";
-  const raw = window.localStorage.getItem(STORAGE_KEY);
-  return VALID_MODES.includes(raw as ThemeMode) ? (raw as ThemeMode) : "system";
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    return VALID_MODES.includes(raw as ThemeMode) ? (raw as ThemeMode) : "system";
+  } catch {
+    return "system";
+  }
 }
 
 function systemPrefersDark(): boolean {
   if (typeof window === "undefined") return true;
-  return window.matchMedia("(prefers-color-scheme: dark)").matches;
+  try {
+    return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? true;
+  } catch {
+    return true;
+  }
 }
 
 function resolveMode(mode: ThemeMode): ResolvedTheme {
@@ -39,7 +47,11 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
   resolved: "dark",
   setMode: (mode) => {
     if (typeof window !== "undefined") {
-      window.localStorage.setItem(STORAGE_KEY, mode);
+      try {
+        window.localStorage.setItem(STORAGE_KEY, mode);
+      } catch {
+        // Storage may be unavailable; still apply the in-memory theme.
+      }
     }
     const resolved = resolveMode(mode);
     applyTheme(resolved);
@@ -65,6 +77,7 @@ export function initializeTheme() {
   useThemeStore.setState({ mode, resolved });
 
   if (typeof window !== "undefined") {
+    if (!window.matchMedia) return;
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     const handler = () => {
       const current = useThemeStore.getState().mode;

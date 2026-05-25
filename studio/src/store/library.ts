@@ -3,18 +3,54 @@ import type { LibraryItem, LibraryCategory } from "@/lib/library/types";
 import { PRESET_ITEMS } from "@/lib/library/presets";
 
 const STORAGE_KEY = "iterion:library-custom";
+const VALID_CATEGORIES = new Set<LibraryCategory>([
+  "agent",
+  "judge",
+  "router",
+  "human",
+  "tool",
+  "compute",
+  "schema",
+  "prompt",
+  "var",
+  "pattern",
+]);
+
+function isLibraryItem(value: unknown): value is LibraryItem {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Partial<LibraryItem>;
+  return (
+    typeof item.id === "string" &&
+    typeof item.name === "string" &&
+    typeof item.description === "string" &&
+    typeof item.category === "string" &&
+    VALID_CATEGORIES.has(item.category as LibraryCategory) &&
+    typeof item.builtin === "boolean" &&
+    !!item.template &&
+    typeof item.template === "object"
+  );
+}
 
 function loadCustomItems(): LibraryItem[] {
+  if (typeof window === "undefined") return [];
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isLibraryItem);
   } catch {
     return [];
   }
 }
 
 function saveCustomItems(items: LibraryItem[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+  } catch {
+    // Storage may be unavailable or full; keep the in-memory edit.
+  }
 }
 
 interface LibraryState {
