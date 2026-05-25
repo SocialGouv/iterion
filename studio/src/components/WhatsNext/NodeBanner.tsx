@@ -29,7 +29,9 @@ export default function NodeBanner({ message }: Props) {
       <div className="flex-1 min-w-0">
         <div className="flex items-baseline gap-2">
           <span className="text-fg-default">{label}</span>
-          <span className="text-[10px] font-mono text-fg-subtle">{nodeId}</span>
+          {nodeId && nodeId !== label && (
+            <span className="text-[10px] font-mono text-fg-subtle">{nodeId}</span>
+          )}
           {status === "running" && (
             <ThinkingIndicator words={GENERIC_THINKING_WORDS} active className="font-mono text-[10px] text-info-fg italic" />
           )}
@@ -69,6 +71,7 @@ function BannerSummary({ text }: { text: string }) {
       {needsToggle && (
         <button
           type="button"
+          aria-expanded={expanded}
           onClick={() => setExpanded((v) => !v)}
           className="mt-1 text-[11px] text-fg-muted hover:text-fg-default underline-offset-2 hover:underline"
         >

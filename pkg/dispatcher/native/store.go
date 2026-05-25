@@ -217,6 +217,11 @@ func (s *Store) Create(in Issue) (created *Issue, err error) {
 
 	if in.ID == "" {
 		in.ID = "native:" + uuid.NewString()
+	} else if err := validateIssueID(in.ID); err != nil {
+		return nil, err
+	}
+	if _, exists := s.index[in.ID]; exists {
+		return nil, fmt.Errorf("issue: id %q already exists", in.ID)
 	}
 	now := time.Now().UTC()
 	in.CreatedAt = now
@@ -709,6 +714,9 @@ func (s *Store) writeBoardLocked() error {
 }
 
 func (s *Store) writeIssueLocked(iss *Issue) error {
+	if err := validateIssueID(iss.ID); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Join(s.root, issuesDir), dirPerm); err != nil {
 		return err
 	}
@@ -936,6 +944,18 @@ func (s *Store) readIssueLocked(id string) (*Issue, error) {
 
 func (s *Store) issuePath(id string) string {
 	return filepath.Join(s.root, issuesDir, encodeID(id)+".json")
+}
+
+func validateIssueID(id string) error {
+	raw, ok := strings.CutPrefix(id, "native:")
+	if !ok || raw == "" {
+		return fmt.Errorf("native store: invalid issue id %q", id)
+	}
+	parsed, err := uuid.Parse(raw)
+	if err != nil || parsed.String() != raw {
+		return fmt.Errorf("native store: invalid issue id %q", id)
+	}
+	return nil
 }
 
 // writeEventLineLocked formats an event and appends a single line to

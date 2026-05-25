@@ -132,6 +132,31 @@ func TestCreateRequiresTitle(t *testing.T) {
 	}
 }
 
+func TestCreateRejectsInvalidID(t *testing.T) {
+	s := newTestStore(t)
+	escape := filepath.Join(filepath.Dir(s.root), "escape.json")
+	if _, err := s.Create(Issue{ID: "../../escape", Title: "x", State: "ready"}); err == nil {
+		t.Fatal("expected error for invalid id")
+	}
+	if _, err := os.Stat(escape); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("path traversal wrote %q: %v", escape, err)
+	}
+	if _, err := s.Create(Issue{ID: "native:not-a-uuid", Title: "x", State: "ready"}); err == nil {
+		t.Fatal("expected error for non-uuid native id")
+	}
+}
+
+func TestCreateRejectsDuplicateID(t *testing.T) {
+	s := newTestStore(t)
+	id := "native:11111111-1111-1111-1111-111111111111"
+	if _, err := s.Create(Issue{ID: id, Title: "first", State: "ready"}); err != nil {
+		t.Fatalf("Create first: %v", err)
+	}
+	if _, err := s.Create(Issue{ID: id, Title: "second", State: "ready"}); err == nil {
+		t.Fatal("expected duplicate id error")
+	}
+}
+
 func TestGetNotFound(t *testing.T) {
 	s := newTestStore(t)
 	_, err := s.Get("native:does-not-exist")

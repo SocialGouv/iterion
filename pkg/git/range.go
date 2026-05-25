@@ -98,9 +98,9 @@ func DiffBetween(repoRoot, baseRef, finalRef, relPath string) (DiffPayload, erro
 	return payload, nil
 }
 
-// FindRepoRoot walks parent directories from startDir until it finds a `.git`
-// entry (regular .git directory or a worktree's gitfile pointer), returning
-// "" when no parent in the chain qualifies.
+// FindRepoRoot walks parent directories from startDir until it finds a valid
+// Git worktree root (regular .git directory or a worktree's gitfile pointer),
+// returning "" when no parent in the chain qualifies.
 //
 // Used by the studio server to recover a run's main repo root when the run
 // record predates the persisted RepoRoot field — we walk up from the run's
@@ -121,7 +121,7 @@ func FindRepoRoot(startDir string) string {
 		return ""
 	}
 	for {
-		if _, statErr := os.Stat(filepath.Join(current, ".git")); statErr == nil {
+		if isGitWorkTreeRoot(current) {
 			return current
 		}
 		parent := filepath.Dir(current)
@@ -130,6 +130,17 @@ func FindRepoRoot(startDir string) string {
 		}
 		current = parent
 	}
+}
+
+func isGitWorkTreeRoot(dir string) bool {
+	if !isGitDir(dir) {
+		return false
+	}
+	out, err := run(dir, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) != ""
 }
 
 // FindMainRepoRoot is like [FindRepoRoot] but resolves a worktree's `.git`
@@ -189,9 +200,9 @@ func FindMainRepoRoot(startDir string) string {
 	}
 	// gitdir = `<main>/.git/worktrees/<name>`. Walk up three Dirs to get
 	// the main repo root. Tolerate alternate layouts (e.g. bare repos)
-	// by sanity-checking: the result must have a `.git` entry of its own.
+	// by sanity-checking: the result must be a valid worktree root.
 	main := filepath.Dir(filepath.Dir(filepath.Dir(gitdir)))
-	if _, statErr := os.Stat(filepath.Join(main, ".git")); statErr == nil {
+	if isGitWorkTreeRoot(main) {
 		return main
 	}
 	return wt

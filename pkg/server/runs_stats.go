@@ -111,9 +111,8 @@ func aggregateRunStats(
 	runs []runview.RunSummary,
 	sinceDays int,
 ) StatsResponse {
-	// Pass 1: index runs by day + workflow, accumulate counts, derive
-	// duration / cost per run from events.jsonl (one ScanEvents call
-	// per run).
+	// Pass 1: accumulate workflow counts/durations and bucket cost by
+	// each node_finished event's day (one ScanEvents call per run).
 	type wfAcc struct {
 		runs         int
 		fail         int
@@ -146,11 +145,9 @@ func aggregateRunStats(
 			acc.durations = append(acc.durations, dur)
 		}
 
-		cost := sumRunCost(ctx, svc, r.ID)
-		acc.totalCostUSD += cost
-		totalCost += cost
-		if cost > 0 {
-			day := r.CreatedAt.UTC().Format("2006-01-02")
+		for day, cost := range sumRunCostByDay(ctx, svc, r.ID, r.CreatedAt) {
+			acc.totalCostUSD += cost
+			totalCost += cost
 			if _, ok := days[day]; !ok {
 				days[day] = map[string]float64{}
 			}
@@ -240,17 +237,17 @@ func finishedDuration(r *runview.RunSummary) float64 {
 	return 0
 }
 
-// sumRunCost walks the run's events.jsonl via ScanEvents and totals
-// every node_finished event's `_cost_usd` payload field. Returns 0
-// when the file is missing or the events stream errors — the
-// dashboard treats missing-cost as "free", which is the truthful
+// sumRunCostByDay walks the run's events.jsonl via ScanEvents and buckets
+// every node_finished event's `_cost_usd` payload field by the event's UTC
+// day. Returns an empty map when the file is missing or the events stream
+// errors — the dashboard treats missing-cost as "free", which is the truthful
 // reading (no LLM calls = no cost).
-func sumRunCost(ctx context.Context, svc *runview.Service, runID string) float64 {
+func sumRunCostByDay(ctx context.Context, svc *runview.Service, runID string, fallback time.Time) map[string]float64 {
+	byDay := map[string]float64{}
 	rs := svc.RunStore()
 	if rs == nil {
-		return 0
+		return byDay
 	}
-	total := 0.0
 	_ = rs.ScanEvents(ctx, runID, func(e *store.Event) bool {
 		if e.Type != store.EventNodeFinished {
 			return true
@@ -260,12 +257,17 @@ func sumRunCost(ctx context.Context, svc *runview.Service, runID string) float64
 		}
 		if v, ok := e.Data["_cost_usd"]; ok {
 			if f, ok := v.(float64); ok && f > 0 {
-				total += f
+				ts := e.Timestamp
+				if ts.IsZero() {
+					ts = fallback
+				}
+				day := ts.UTC().Format("2006-01-02")
+				byDay[day] += f
 			}
 		}
 		return true
 	})
-	return total
+	return byDay
 }
 
 // percentiles returns the P50 and P95 of the given sample (in seconds

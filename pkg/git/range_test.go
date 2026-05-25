@@ -135,6 +135,23 @@ func TestDiffOfCommitNotGitRepo(t *testing.T) {
 	}
 }
 
+func TestFindRepoRootIgnoresInvalidDotGit(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(dir, "nested", "child")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := FindRepoRoot(sub); got != "" {
+		t.Fatalf("FindRepoRoot with invalid .git: got %q, want empty", got)
+	}
+	if got := FindMainRepoRoot(sub); got != "" {
+		t.Fatalf("FindMainRepoRoot with invalid .git: got %q, want empty", got)
+	}
+}
+
 // TestFindMainRepoRoot_LinkedWorktree locks the fix that lets
 // dispatcher-spawned bot runs (which execute in a linked worktree at
 // `<repo>/.iterion/dispatcher/workspaces/<id>`) resolve back to the

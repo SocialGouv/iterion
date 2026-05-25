@@ -95,7 +95,7 @@ func RateLimitRecipe(maxRetries int) Recipe {
 	})
 }
 
-// ContextLengthRecipe: compact-and-retry once, then fail terminal
+// ContextLengthRecipe: compact-and-retry twice, then fail terminal
 // (the conversation can't be made smaller).
 func ContextLengthRecipe() Recipe {
 	return RecipeFunc(func(_ context.Context, err *runtime.RuntimeError, attempts int) Action {

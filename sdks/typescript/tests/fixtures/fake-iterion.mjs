@@ -44,6 +44,7 @@
  * closing it).
  */
 
+import { writeSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 
 const argv = process.argv.slice(2);
@@ -72,8 +73,8 @@ if (process.env.FAKE_ITERION_STDOUT !== undefined) stdout = process.env.FAKE_ITE
 if (process.env.FAKE_ITERION_STDERR !== undefined) stderr = process.env.FAKE_ITERION_STDERR;
 if (process.env.FAKE_ITERION_EXIT !== undefined) exit = Number(process.env.FAKE_ITERION_EXIT);
 
-if (stdout) process.stdout.write(stdout);
-if (stderr) process.stderr.write(stderr);
+if (stdout) writeSync(1, stdout);
+if (stderr) writeSync(2, stderr);
 process.exit(Number.isFinite(exit) ? exit : 0);
 
 // ---- helpers --------------------------------------------------------------
