@@ -309,8 +309,32 @@ func (m *Manager) Start() error {
 	return nil
 }
 
-// Stop tears down the active Dispatcher. No-op when idle.
+// Stop tears down the active Dispatcher AND records `desired=stopped`
+// on disk so a future cold boot stays idle. Use from the HTTP
+// /dispatcher/stop handler — it captures operator intent. No-op when
+// idle.
 func (m *Manager) Stop() {
+	m.teardown()
+	m.persistDesired(DesiredStopped)
+}
+
+// Shutdown tears down the active Dispatcher WITHOUT mutating the
+// persisted desired state. Use from the studio server's graceful-
+// shutdown path so a SIGTERM / Ctrl-C doesn't overwrite the operator's
+// previous "running" or "paused" intent — the next boot replays what
+// was on disk before shutdown. No-op when idle.
+//
+// Without this split a `task studio:dev` watchexec rebuild would
+// silently flip the operator's session back to idle on every Go-file
+// edit (Stop fires in the shutdown path, persistDesired wins over the
+// running-or-paused state the operator last asked for).
+func (m *Manager) Shutdown() {
+	m.teardown()
+}
+
+// teardown is the shared body of Stop/Shutdown. Stops the actor,
+// cancels its context, closes the runner. Idempotent.
+func (m *Manager) teardown() {
 	m.mu.Lock()
 	cur, runner, cancel := m.cur, m.runner, m.cancel
 	m.cur, m.runner, m.cancel = nil, nil, nil
@@ -328,7 +352,6 @@ func (m *Manager) Stop() {
 			m.logger.Warn("manager: runner close: %v", err)
 		}
 	}
-	m.persistDesired(DesiredStopped)
 }
 
 // Pause suspends new dispatches on the active Dispatcher. Runs in flight

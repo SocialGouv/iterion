@@ -532,7 +532,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// Claimed=true) until the operator manually edited the JSON.
 	// See ticket 012cb3a2 / 7221c7be.
 	if s.cfg.Dispatcher != nil {
-		s.cfg.Dispatcher.Stop()
+		// Shutdown (not Stop) so a server SIGTERM / Ctrl-C / watchexec
+		// rebuild preserves the operator's last-known intent in
+		// runtime.json. Stop persists `desired=stopped` — that's
+		// operator-driven only.
+		s.cfg.Dispatcher.Shutdown()
 	}
 	if s.watcher != nil {
 		s.watcher.Stop()

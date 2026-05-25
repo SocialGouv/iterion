@@ -132,6 +132,49 @@ func TestNewManager_RestoresPersistedPausedState(t *testing.T) {
 	}
 }
 
+// TestManager_ShutdownPreservesDesiredState guards against the
+// `task studio:dev` watchexec rebuild flipping the operator's
+// runtime.json back to "stopped" on every Go-file edit. Stop is
+// operator-intent — Shutdown is process-shutdown and must NOT mutate
+// the persisted intent.
+func TestManager_ShutdownPreservesDesiredState(t *testing.T) {
+	t.Setenv("ITERION_DISPATCHER_AUTOSTART", "0")
+	dir := seedManagerFixture(t)
+	m, err := NewManager(ManagerOptions{
+		StoreDir:    dir,
+		NativeStore: newTestNativeStore(t, dir),
+		Logger:      newTestLogger(),
+	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	runtimePath := runtimeStatePath(dir)
+
+	// Operator brings the dispatcher up and pauses it — the recorded
+	// intent is "paused" and must survive any subsequent shutdown.
+	if err := m.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := m.Pause(); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if got, _ := loadDesiredState(runtimePath); got != DesiredPaused {
+		t.Fatalf("pre-shutdown desired = %q, want paused", got)
+	}
+
+	// Shutdown (the process-termination path) must leave runtime.json
+	// alone. The operator's "paused" intent stays so the next cold
+	// boot replays it.
+	m.Shutdown()
+	if got, _ := loadDesiredState(runtimePath); got != DesiredPaused {
+		t.Errorf("post-Shutdown desired = %q, want paused (Shutdown must not overwrite operator intent)", got)
+	}
+	// Manager is now idle — Shutdown still tore down the actor.
+	if state := m.Status().State; state != ManagerStateIdle {
+		t.Errorf("post-Shutdown state = %q, want idle", state)
+	}
+}
+
 // TestManager_PersistsDesiredOnLifecycleTransitions verifies that every
 // operator-driven state change writes the corresponding DesiredState so
 // a crash mid-session (or a routine restart) replays the right intent.

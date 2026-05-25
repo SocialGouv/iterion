@@ -95,7 +95,10 @@ func RunDispatch(p *Printer, opts DispatchOptions) error {
 	if err := mgr.Start(); err != nil {
 		return err
 	}
-	defer mgr.Stop()
+	// Shutdown preserves the operator's last-known intent in
+	// runtime.json across SIGTERM / Ctrl-C. Stop is reserved for
+	// operator-driven shutdown via the HTTP API.
+	defer mgr.Shutdown()
 
 	// In zero-config mode there is no YAML on disk to watch — operators
 	// who want live reloads should write a config file and pass it as

@@ -1,15 +1,85 @@
 package dispatcher
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
+
+// cancelGracePeriod is how long we wait after firing the engine-level
+// context cancel before force-removing the sandbox container as a
+// belt-and-braces guarantee. Short enough that the operator sees the
+// run end within a single attention span, long enough to let the
+// engine's defer chain (sandbox.Cleanup) tear down cleanly on the
+// happy path (in which case our docker rm just hits "No such
+// container" and no-ops).
+const cancelGracePeriod = 3 * time.Second
+
+// forceRemoveSandboxContainer is the belt-and-braces cleanup for the
+// /cancel API path. Without it, `claude --print` running inside a long-
+// lived sandbox container often survives the engine context-cancel
+// chain (docker exec dies on host, but dockerd doesn't always propagate
+// SIGKILL into the container's PID namespace in time) — operators see
+// the UI report "cancel requested" and the bot keeps streaming events
+// for up to a minute. Finding
+// `2026-05-25-dispatcher-cancel-doesnt-stop-claude-subprocess.md`
+// captures the user-facing surface.
+//
+// Naming convention: the docker driver names every per-run container
+// `iterion-<RunID>` (see `pkg/sandbox/docker/driver.go`); this helper
+// targets that pattern via `docker rm --force`. Best-effort: a missing
+// docker binary, a no-such-container error, or any other docker-side
+// failure is logged at debug and never propagates — the engine's own
+// cleanup may have already done the job, in which case this hammer is
+// a no-op.
+func forceRemoveSandboxContainer(logger *iterlog.Logger, runID string) {
+	if runID == "" {
+		return
+	}
+	containerName := "iterion-" + runID
+	// Split stdout (printed container ID on a real removal) from stderr
+	// (where docker writes "Error response from daemon: No such
+	// container" on a missing target). Modern docker (29.x) exits 0 in
+	// both cases, so the only reliable discriminator is which stream
+	// got the output. Combined output would lump the two and break the
+	// "happy path on missing container" detection.
+	cmd := exec.Command("docker", "rm", "--force", containerName)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	stdoutTrim := strings.TrimSpace(stdout.String())
+	stderrTrim := strings.TrimSpace(stderr.String())
+	if strings.Contains(stderrTrim, "No such container") || strings.Contains(stderrTrim, "no such container") {
+		// Happy path: engine's defer sandbox.Cleanup beat us to it.
+		// Docker silently exits 0 in this case on 29.x, errors on
+		// older releases — both end up here.
+		return
+	}
+	if err != nil {
+		if logger != nil {
+			logger.Debug("dispatcher: force-remove %s after cancel: %v (stderr: %s)", containerName, err, stderrTrim)
+		}
+		return
+	}
+	if stdoutTrim == "" {
+		// Edge: clean exit, no output, no "no such container" stderr.
+		// Treat as no-op rather than claiming a removal we can't prove.
+		return
+	}
+	if logger != nil {
+		logger.Info("dispatcher: force-removed sandbox container %s after cancel", containerName)
+	}
+}
 
 // cmd is the typed command interface processed by the actor goroutine.
 // Each implementation is a small struct so command intent is visible
@@ -328,6 +398,18 @@ func (m cmdCancel) apply(c *Dispatcher, _ context.Context) {
 		r.Cancel()
 	}
 	c.logger.Info("dispatcher: %s cancel requested", r.Identifier)
+	// Belt-and-braces: after a short grace period for the engine's
+	// defer chain to clean up, force-remove any lingering sandbox
+	// container. Without this, `claude --print` inside the container
+	// often outlives the host-side docker exec SIGKILL and keeps
+	// streaming events for tens of seconds — operators perceive cancel
+	// as broken.
+	runID := r.RunID
+	logger := c.logger
+	go func() {
+		time.Sleep(cancelGracePeriod)
+		forceRemoveSandboxContainer(logger, runID)
+	}()
 }
 
 // cmdCancelByRunID cancels an in-flight run identified by its RunID
@@ -348,6 +430,12 @@ func (m cmdCancelByRunID) apply(c *Dispatcher, _ context.Context) {
 			r.Cancel()
 		}
 		c.logger.Info("dispatcher: %s cancel requested (run %s)", r.Identifier, m.runID)
+		runID := r.RunID
+		logger := c.logger
+		go func() {
+			time.Sleep(cancelGracePeriod)
+			forceRemoveSandboxContainer(logger, runID)
+		}()
 		m.reply <- true
 		return
 	}
