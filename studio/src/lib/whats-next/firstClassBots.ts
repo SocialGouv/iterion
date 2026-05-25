@@ -73,8 +73,58 @@ export interface FirstClassBot {
     label: string;
     defaultFrom?: "work_dir";
   }>;
+  // Optional upfront form rendered by SessionLauncher instead of the
+  // bare Start button. When set, its answer is stashed and auto-
+  // submitted into the chat's first matching human turn (see
+  // `launcherFormTarget` for the wire-up). Operators land on a
+  // pickable question instead of a button they have to "Start" first.
+  launcherForm?: FormSpec;
+  // Node id whose first pending human-question receives the launcher
+  // form's answer. Required when launcherForm is set.
+  launcherFormTarget?: string;
   nodeMap: Readonly<Record<string, WhatsNextNodeMapEntry>>;
 }
+
+// askPrioritiesForm is the priorities radio + free-text question.
+// Defined once and referenced from both the SessionLauncher (where it
+// captures the operator's intent upfront) and the ask_priorities
+// nodeMap entry (the bot's matching human turn, auto-submitted with
+// the launcher's answer when present).
+const askPrioritiesForm: FormSpec = {
+  questions: [
+    {
+      id: "context",
+      kind: "radio",
+      label: "What matters right now?",
+      description:
+        "Pick a focus or type your own. Iterion will draft a roadmap based on this.",
+      options: [
+        {
+          value: "Ship a specific feature",
+          label: "Ship a specific feature",
+          description: "There's a feature I want delivered next.",
+        },
+        {
+          value: "Fix bugs / pay down tech debt",
+          label: "Fix bugs / pay down tech debt",
+          description: "Stabilise before adding more.",
+        },
+        {
+          value: "Explore — surface what's important",
+          label: "Explore — surface what's important",
+          description: "I want iterion to propose, not me.",
+        },
+        {
+          value: "Polish UX / docs",
+          label: "Polish UX / docs",
+          description: "Smooth the rough edges, ship docs.",
+        },
+      ],
+      allow_other: true,
+    },
+  ],
+  submitLabel: "Start",
+};
 
 export const FIRST_CLASS_BOTS: Readonly<Record<string, FirstClassBot>> = {
   "whats-next": {
@@ -85,8 +135,10 @@ export const FIRST_CLASS_BOTS: Readonly<Record<string, FirstClassBot>> = {
     workflowPath: "examples/whats-next/main.bot",
     // Studio launches scope to the server's current work_dir, so the
     // bot's `workspace_dir` var resolves to the same path via its
-    // `${PROJECT_DIR}` default. No launcher fields needed for v0.
+    // `${PROJECT_DIR}` default. No launcher vars needed.
     launcherVars: [],
+    launcherForm: askPrioritiesForm,
+    launcherFormTarget: "ask_priorities",
     nodeMap: {
       explore: {
         kind: "banner",
@@ -101,40 +153,9 @@ export const FIRST_CLASS_BOTS: Readonly<Record<string, FirstClassBot>> = {
         // free-text fallback. The chosen value lands in `context`
         // either as one of the option strings or as the typed text —
         // both satisfy the priorities_output schema (context: string).
-        form: {
-          questions: [
-            {
-              id: "context",
-              kind: "radio",
-              label: "What matters right now?",
-              description:
-                "Pick a focus or type your own. Iterion will draft a roadmap based on this.",
-              options: [
-                {
-                  value: "Ship a specific feature",
-                  label: "Ship a specific feature",
-                  description: "There's a feature I want delivered next.",
-                },
-                {
-                  value: "Fix bugs / pay down tech debt",
-                  label: "Fix bugs / pay down tech debt",
-                  description: "Stabilise before adding more.",
-                },
-                {
-                  value: "Explore — surface what's important",
-                  label: "Explore — surface what's important",
-                  description: "I want iterion to propose, not me.",
-                },
-                {
-                  value: "Polish UX / docs",
-                  label: "Polish UX / docs",
-                  description: "Smooth the rough edges, ship docs.",
-                },
-              ],
-              allow_other: true,
-            },
-          ],
-        },
+        // Shared with the SessionLauncher's launcherForm, which
+        // captures the answer upfront and auto-submits this turn.
+        form: askPrioritiesForm,
       },
       propose_roadmap: {
         kind: "banner",

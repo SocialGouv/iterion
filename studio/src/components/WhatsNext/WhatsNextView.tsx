@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { Link } from "wouter";
 import { ExternalLinkIcon } from "@radix-ui/react-icons";
 
@@ -7,7 +7,7 @@ import {
   getFirstClassBot,
 } from "@/lib/whats-next/firstClassBots";
 import { useWhatsNextSession } from "@/lib/whats-next/useWhatsNextSession";
-import type { FormSpec } from "@/lib/whats-next/questionForm";
+import type { FormAnswer, FormSpec } from "@/lib/whats-next/questionForm";
 import type {
   IssuesSummaryMessage,
   RoadmapDoc,
@@ -42,6 +42,14 @@ export default function WhatsNextView() {
       nodeMap: {},
     },
   );
+
+  // Stashed launcher form answer awaiting auto-submission into the
+  // first matching pending human turn. Lives in a ref so the
+  // auto-submit effect can read + clear it without re-rendering when
+  // unrelated state changes. Operators who refresh the page mid-run
+  // before the bot reaches the target turn lose the stash and answer
+  // the form once it appears in the chat — acceptable degradation.
+  const pendingLauncherAnswer = useRef<FormAnswer | null>(null);
 
   // submit is shaped to match HumanChatTurn's contract:
   //   outcome = { text, approved?, formAnswer? }
@@ -123,12 +131,30 @@ export default function WhatsNextView() {
     ? resolveDynamicForm(pendingHumanQuestion, session.messages, bot.nodeMap)
     : undefined;
 
+  // Auto-submit the stashed launcher form answer into the first
+  // pending human-question whose node id matches launcherFormTarget.
+  // The operator picked their priority before the bot ran; once
+  // explore finishes and ask_priorities surfaces, we resolve it
+  // silently rather than asking again.
+  useEffect(() => {
+    if (!pendingHumanQuestion) return;
+    if (!bot.launcherFormTarget) return;
+    if (pendingHumanQuestion.nodeId !== bot.launcherFormTarget) return;
+    const stash = pendingLauncherAnswer.current;
+    if (!stash) return;
+    pendingLauncherAnswer.current = null;
+    void session.submitHumanAnswer(pendingHumanQuestion.id, stash);
+  }, [pendingHumanQuestion, bot.launcherFormTarget, session]);
+
   return (
     <div className="h-full flex flex-col overflow-hidden">
         {!inSession ? (
           <SessionLauncher
             bot={bot}
-            onLaunch={(vars) => void session.launch(vars)}
+            onLaunch={({ vars, formAnswer }) => {
+              if (formAnswer) pendingLauncherAnswer.current = formAnswer;
+              void session.launch(vars);
+            }}
             busy={session.status === "launching"}
             errorMessage={session.errorMessage}
           />

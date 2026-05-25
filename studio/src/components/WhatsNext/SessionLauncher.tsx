@@ -1,14 +1,21 @@
 import { useEffect, useState } from "react";
 
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
+import type { FormAnswer } from "@/lib/whats-next/questionForm";
 import { Button, Input } from "@/components/ui";
+import { WizardForm } from "@/components/ui/WizardForm";
 import { useServerInfoStore } from "@/store/serverInfo";
 
 interface Props {
   bot: FirstClassBot;
-  // Called when the user clicks "Start" with the form vars. Wired in
-  // Étape 2 — for Étape 1, the WhatsNextView swaps to mock mode locally.
-  onLaunch?: (vars: Record<string, string>) => void;
+  // Called when the user submits the launcher (form or bare Start) with
+  // the launcher var map and the optional form answer. The parent
+  // (WhatsNextView) launches the bot with the vars and stashes the
+  // form answer to auto-submit into the matching human turn.
+  onLaunch?: (params: {
+    vars: Record<string, string>;
+    formAnswer?: FormAnswer;
+  }) => void;
   busy?: boolean;
   errorMessage?: string | null;
 }
@@ -46,13 +53,12 @@ export default function SessionLauncher({
     });
   }, [bot.launcherVars, workDir]);
 
-  const canLaunch =
-    !busy &&
-    bot.launcherVars.every((v) => (vars[v.name] ?? "").trim() !== "");
-
-  const launch = () => {
-    if (!onLaunch || !canLaunch) return;
-    onLaunch(vars);
+  const varsReady = bot.launcherVars.every(
+    (v) => (vars[v.name] ?? "").trim() !== "",
+  );
+  const launch = (formAnswer?: FormAnswer) => {
+    if (!onLaunch || busy || !varsReady) return;
+    onLaunch({ vars, formAnswer });
   };
 
   return (
@@ -63,30 +69,32 @@ export default function SessionLauncher({
           <p className="mt-1 text-[13px] text-fg-muted">{bot.description}</p>
         </div>
 
-        <div className="space-y-3">
-          {bot.launcherVars.map((v) => (
-            <div key={v.name} className="space-y-1">
-              <label className="text-[11px] uppercase tracking-wide text-fg-subtle">
-                {v.label}
-              </label>
-              <Input
-                value={vars[v.name] ?? ""}
-                onChange={(e) =>
-                  setVars((prev) => ({ ...prev, [v.name]: e.target.value }))
-                }
-                placeholder={
-                  v.defaultFrom === "work_dir" ? "Workspace directory" : ""
-                }
-                disabled={busy}
-              />
-              {v.defaultFrom === "work_dir" && (
-                <p className="text-[10px] text-fg-subtle">
-                  Absolute path. Defaults to the studio&apos;s working directory.
-                </p>
-              )}
-            </div>
-          ))}
-        </div>
+        {bot.launcherVars.length > 0 && (
+          <div className="space-y-3">
+            {bot.launcherVars.map((v) => (
+              <div key={v.name} className="space-y-1">
+                <label className="text-[11px] uppercase tracking-wide text-fg-subtle">
+                  {v.label}
+                </label>
+                <Input
+                  value={vars[v.name] ?? ""}
+                  onChange={(e) =>
+                    setVars((prev) => ({ ...prev, [v.name]: e.target.value }))
+                  }
+                  placeholder={
+                    v.defaultFrom === "work_dir" ? "Workspace directory" : ""
+                  }
+                  disabled={busy}
+                />
+                {v.defaultFrom === "work_dir" && (
+                  <p className="text-[10px] text-fg-subtle">
+                    Absolute path. Defaults to the studio&apos;s working directory.
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
 
         {errorMessage && (
           <p className="text-[12px] text-danger-fg" role="alert">
@@ -94,16 +102,24 @@ export default function SessionLauncher({
           </p>
         )}
 
-        <div className="flex items-center justify-end gap-2 pt-2 border-t border-border-subtle">
-          <Button
-            variant="primary"
-            size="md"
-            disabled={!canLaunch}
-            onClick={launch}
-          >
-            {busy ? "Starting…" : "Start"}
-          </Button>
-        </div>
+        {bot.launcherForm ? (
+          <WizardForm
+            spec={bot.launcherForm}
+            busy={busy || !varsReady}
+            onSubmit={(answer) => launch(answer)}
+          />
+        ) : (
+          <div className="flex items-center justify-end gap-2 pt-2 border-t border-border-subtle">
+            <Button
+              variant="primary"
+              size="md"
+              disabled={busy || !varsReady}
+              onClick={() => launch()}
+            >
+              {busy ? "Starting…" : "Start"}
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   );
