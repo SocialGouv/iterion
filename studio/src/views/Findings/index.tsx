@@ -16,6 +16,8 @@
 // false-positive / superseded path that automation can't infer.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "wouter";
+import { ArrowLeftIcon } from "@radix-ui/react-icons";
 
 import { deleteFinding, listFindings, type Finding } from "@/api/findings";
 import { Button } from "@/components/ui/Button";
@@ -111,6 +113,13 @@ function FindingsViewInner() {
   return (
     <div className="h-full overflow-auto p-4 space-y-3 text-[13px]">
       <header className="flex items-baseline gap-3">
+        <Link
+          href="/runs"
+          className="text-fg-muted hover:text-fg-default text-[11px] inline-flex items-center gap-1 shrink-0"
+        >
+          <ArrowLeftIcon className="w-3 h-3" />
+          Runs
+        </Link>
         <h1 className="text-lg font-semibold text-fg-default">
           Findings inbox
         </h1>

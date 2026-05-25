@@ -19,6 +19,8 @@
 // Refresh when they want a fresh number.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "wouter";
+import { ArrowLeftIcon } from "@radix-ui/react-icons";
 
 import { getRunsStats, type StatsResponse } from "@/api/runsStats";
 import { Button } from "@/components/ui/Button";
@@ -67,6 +69,13 @@ function RunsAnalyticsViewInner() {
   return (
     <div className="h-full overflow-auto p-4 space-y-4 text-[13px]">
       <header className="flex items-baseline gap-3">
+        <Link
+          href="/runs"
+          className="text-fg-muted hover:text-fg-default text-[11px] inline-flex items-center gap-1 shrink-0"
+        >
+          <ArrowLeftIcon className="w-3 h-3" />
+          Runs
+        </Link>
         <h1 className="text-lg font-semibold text-fg-default">Runs analytics</h1>
         <span className="text-fg-muted text-[11px]">
           {stats
