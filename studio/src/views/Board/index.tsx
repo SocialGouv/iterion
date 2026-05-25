@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useSearch } from "wouter";
 
 import { formatRelative } from "@/lib/format";
+import { readBooleanFlag, writeBooleanFlag } from "@/lib/localStorageFlag";
 
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import DispatcherControlBar from "@/components/shared/DispatcherControlBar";
@@ -716,19 +717,13 @@ const EMPTY_BANNER_DISMISSED_KEY = "iterion.board.empty-banner-dismissed";
 // persists across reloads via localStorage so the chrome only nags on
 // first encounter; the columns themselves stay visible regardless.
 function EmptyBoardBanner({ onCreate }: { onCreate: () => void }) {
-  const [dismissed, setDismissed] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return window.localStorage.getItem(EMPTY_BANNER_DISMISSED_KEY) === "1";
-  });
+  const [dismissed, setDismissed] = useState(() =>
+    readBooleanFlag(EMPTY_BANNER_DISMISSED_KEY),
+  );
   if (dismissed) return null;
   const dismiss = () => {
     setDismissed(true);
-    try {
-      window.localStorage.setItem(EMPTY_BANNER_DISMISSED_KEY, "1");
-    } catch {
-      // localStorage may be unavailable (private mode, quota); the
-      // in-memory state still hides the banner for this session.
-    }
+    writeBooleanFlag(EMPTY_BANNER_DISMISSED_KEY, true);
   };
   return (
     <div className="shrink-0 mx-3 mt-3 rounded border border-border-default bg-surface-1 p-3 text-sm text-fg-default flex items-start gap-3">

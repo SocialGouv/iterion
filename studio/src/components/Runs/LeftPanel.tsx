@@ -7,7 +7,12 @@ import {
 } from "@radix-ui/react-icons";
 
 import { IconButton, Tabs, Tooltip } from "@/components/ui";
-import { readBooleanFlag, writeBooleanFlag } from "@/lib/localStorageFlag";
+import {
+  readBooleanFlag,
+  readEnumFlag,
+  writeBooleanFlag,
+  writeStringFlag,
+} from "@/lib/localStorageFlag";
 import type { RunFile, RunFilesMode, RunHeader } from "@/api/runs";
 
 import FilesPanel from "./FilesPanel";
@@ -22,14 +27,11 @@ const EXPANDED_PX = 320;
 const COLLAPSED_KEY = "run-console-v1.left-collapsed";
 const ACTIVE_TAB_KEY = "run-console-v1.left-tab";
 
-type LeftTab = "files" | "commits" | "info";
+const LEFT_TABS = ["files", "commits", "info"] as const;
+type LeftTab = (typeof LEFT_TABS)[number];
 
 function readActiveTab(): LeftTab {
-  if (typeof window === "undefined") return "files";
-  const raw = window.localStorage.getItem(ACTIVE_TAB_KEY);
-  if (raw === "commits") return "commits";
-  if (raw === "info") return "info";
-  return "files";
+  return readEnumFlag(ACTIVE_TAB_KEY, LEFT_TABS, "files");
 }
 
 interface LeftPanelProps {
@@ -67,9 +69,7 @@ export default function LeftPanel({
     const v: LeftTab =
       next === "commits" ? "commits" : next === "info" ? "info" : "files";
     setActiveTab(v);
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(ACTIVE_TAB_KEY, v);
-    }
+    writeStringFlag(ACTIVE_TAB_KEY, v);
   }, []);
 
   if (collapsed) {
