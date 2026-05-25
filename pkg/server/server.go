@@ -418,6 +418,21 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 			logger.Warn("run console disabled: %v", svcErr)
 		} else {
 			s.runs = svc
+			// Promote any orphan runs (status=running with stale
+			// events.jsonl) to failed_resumable so `iterion resume`
+			// can pick them up. Closes the gap left by abnormal engine
+			// exits — watchexec rebuilds during dev, OS kills, OOMs,
+			// studio crashes — which previously left runs frozen at
+			// status=running forever (the CLI resume gate rejects
+			// status=running). See `pkg/store/orphans.go` for the
+			// heuristic and `docs/resume.md` for the policy.
+			if fs, ok := svc.RunStore().(*store.FilesystemRunStore); ok {
+				if promoted, perr := fs.PromoteStaleOrphans(context.Background(), logger); perr != nil {
+					logger.Warn("orphan sweep at boot: %v", perr)
+				} else if len(promoted) > 0 {
+					logger.Info("orphan sweep at boot: promoted %d run(s) running → failed_resumable", len(promoted))
+				}
+			}
 		}
 	}
 	// Wire the same Origin allowlist used for HTTP CORS into the WebSocket

@@ -13,6 +13,7 @@ var resumeOpts struct {
 	answerFlags []string
 	logLevel    string
 	force       bool
+	forceStale  bool
 	background  bool
 }
 
@@ -27,6 +28,7 @@ var resumeCmd = &cobra.Command{
 			AnswersFile: resumeOpts.answersFile,
 			LogLevel:    resumeOpts.logLevel,
 			Force:       resumeOpts.force,
+			ForceStale:  resumeOpts.forceStale,
 			Background:  resumeOpts.background,
 		}
 		if len(resumeOpts.answerFlags) > 0 {
@@ -49,6 +51,7 @@ func init() {
 	f.StringArrayVar(&resumeOpts.answerFlags, "answer", nil, "Set answer (key=value, repeatable)")
 	f.StringVar(&resumeOpts.logLevel, "log-level", "", "Log verbosity: error, warn, info, debug, trace")
 	f.BoolVar(&resumeOpts.force, "force", false, "Resume even if workflow source has changed")
+	f.BoolVar(&resumeOpts.forceStale, "force-stale", false, "Resume a status=running run whose engine has died (requires events.jsonl mtime ≥ 60s — server boot does this automatically)")
 	f.BoolVar(&resumeOpts.background, "background", false, "Internal: managed-runner mode for the studio server (writes .pid, suppresses interactive prompts)")
 	_ = f.MarkHidden("background")
 	mustMarkRequired(resumeCmd, "run-id")
