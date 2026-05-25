@@ -83,9 +83,10 @@ export const FIRST_CLASS_BOTS: Readonly<Record<string, FirstClassBot>> = {
     description:
       "Decide what to push on the board next. Iterion surveys the repo, drafts a roadmap, you approve, and it materialises as kanban issues the dispatcher can dispatch.",
     workflowPath: "examples/whats-next/main.bot",
-    launcherVars: [
-      { name: "workspace_dir", label: "Workspace", defaultFrom: "work_dir" },
-    ],
+    // Studio launches scope to the server's current work_dir, so the
+    // bot's `workspace_dir` var resolves to the same path via its
+    // `${PROJECT_DIR}` default. No launcher fields needed for v0.
+    launcherVars: [],
     nodeMap: {
       explore: {
         kind: "banner",
