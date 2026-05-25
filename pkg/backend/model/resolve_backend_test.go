@@ -22,6 +22,7 @@ func resetEnvForResolve(t *testing.T) {
 		"AWS_REGION", "AWS_DEFAULT_REGION",
 		"GOOGLE_CLOUD_PROJECT",
 		"CLAUDE_CONFIG_DIR", "CODEX_HOME",
+		"RESCUE_PROVIDER",
 	} {
 		t.Setenv(k, "")
 	}

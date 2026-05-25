@@ -509,8 +509,8 @@ func TestAggregateLabels(t *testing.T) {
 	mk("a", []string{"source:whats-next", "horizon:short-term"})
 	mk("b", []string{"source:whats-next", "horizon:next-action", "epic:battle-tested"})
 	mk("c", []string{"epic:battle-tested"})
-	mk("d", nil)                  // no labels
-	mk("e", []string{""})         // empty label string ignored
+	mk("d", nil)          // no labels
+	mk("e", []string{""}) // empty label string ignored
 	mk("f", []string{"source:whats-next"})
 
 	got := s.AggregateLabels()

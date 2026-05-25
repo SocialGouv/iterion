@@ -66,20 +66,26 @@ func TestMCPBoard_ToolsList_EmptyCapsReturnsEmpty(t *testing.T) {
 
 func TestMCPBoard_ToolsList_FilteredByCaps(t *testing.T) {
 	s, _ := native.NewStore(t.TempDir())
-	resps := drive(t, s, boardops.NewCapabilities("board.create,board.read"), []string{
+	caps := boardops.NewCapabilities("board.create,board.read")
+	resps := drive(t, s, caps, []string{
 		`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
 	})
 	tools := resps[0]["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 3 {
-		t.Fatalf("expected 3 tools (create, list, get), got %d", len(tools))
+
+	expected := boardops.ToolsFor(caps)
+	if len(tools) != len(expected) {
+		t.Fatalf("expected %d tools (per boardops registry), got %d", len(expected), len(tools))
 	}
-	names := []string{
-		tools[0].(map[string]any)["name"].(string),
-		tools[1].(map[string]any)["name"].(string),
-		tools[2].(map[string]any)["name"].(string),
+	gotNames := make([]string, len(tools))
+	for i, tool := range tools {
+		gotNames[i] = tool.(map[string]any)["name"].(string)
 	}
-	if strings.Join(names, ",") != "create_issue,get_issue,list_issues" {
-		t.Fatalf("unexpected tool order: %v", names)
+	wantNames := make([]string, len(expected))
+	for i, tool := range expected {
+		wantNames[i] = tool.Name
+	}
+	if strings.Join(gotNames, ",") != strings.Join(wantNames, ",") {
+		t.Fatalf("unexpected tool order: got %v, want %v", gotNames, wantNames)
 	}
 }
 

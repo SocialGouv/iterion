@@ -49,10 +49,10 @@ type CostBucket struct {
 // WorkflowStats is the per-workflow row consumed by the duration +
 // fail-rate panels.
 type WorkflowStats struct {
-	Workflow   string `json:"workflow"`
-	RunCount   int    `json:"run_count"`
-	FailCount  int    `json:"fail_count"`
-	FailRate   float64 `json:"fail_rate"`     // failed / runCount, 0..1
+	Workflow       string  `json:"workflow"`
+	RunCount       int     `json:"run_count"`
+	FailCount      int     `json:"fail_count"`
+	FailRate       float64 `json:"fail_rate"`        // failed / runCount, 0..1
 	DurationP50Sec float64 `json:"duration_p50_sec"` // 0 when no finished runs
 	DurationP95Sec float64 `json:"duration_p95_sec"`
 	TotalCostUSD   float64 `json:"total_cost_usd"`
@@ -65,10 +65,10 @@ type WorkflowStats struct {
 type StatsResponse struct {
 	// SinceDays mirrors the request window so the studio can label
 	// the dashboard ("last 30 days").
-	SinceDays    int           `json:"since_days"`
-	TotalRuns    int           `json:"total_runs"`
-	TotalCostUSD float64       `json:"total_cost_usd"`
-	CostByDay    []CostBucket  `json:"cost_by_day"`
+	SinceDays    int             `json:"since_days"`
+	TotalRuns    int             `json:"total_runs"`
+	TotalCostUSD float64         `json:"total_cost_usd"`
+	CostByDay    []CostBucket    `json:"cost_by_day"`
 	Workflows    []WorkflowStats `json:"workflows"`
 }
 
@@ -115,11 +115,11 @@ func aggregateRunStats(
 	// duration / cost per run from events.jsonl (one ScanEvents call
 	// per run).
 	type wfAcc struct {
-		runs           int
-		fail           int
-		statusCounts   map[string]int
-		durations      []float64 // seconds, for finished/failed/cancelled
-		totalCostUSD   float64
+		runs         int
+		fail         int
+		statusCounts map[string]int
+		durations    []float64 // seconds, for finished/failed/cancelled
+		totalCostUSD float64
 	}
 	wfs := map[string]*wfAcc{}
 	days := map[string]map[string]float64{} // day → workflow → cost

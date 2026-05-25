@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
 )
 
 func newMCPBoardTestServer(t *testing.T) (*httptest.Server, *BoardMCPTokenRegistry, *native.Store) {
@@ -72,8 +73,20 @@ func TestBoardMCP_HTTP_ToolsListFiltersByCaps(t *testing.T) {
 		} `json:"result"`
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&r)
-	if len(r.Result.Tools) != 2 {
-		t.Fatalf("expected 2 board.read tools, got %d", len(r.Result.Tools))
+
+	expected := boardops.ToolsFor(boardops.NewCapabilities("board.read"))
+	if len(r.Result.Tools) != len(expected) {
+		t.Fatalf("expected %d board.read tools (per boardops registry), got %d", len(expected), len(r.Result.Tools))
+	}
+	want := make(map[string]bool, len(expected))
+	for _, tool := range expected {
+		want[tool.Name] = true
+	}
+	for _, tool := range r.Result.Tools {
+		name, _ := tool["name"].(string)
+		if !want[name] {
+			t.Fatalf("MCP returned tool %q that the boardops registry does not classify as board.read", name)
+		}
 	}
 }
 
