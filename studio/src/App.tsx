@@ -14,7 +14,6 @@ const LaunchView = lazy(() => import("@/components/Runs/LaunchView"));
 const RunsTabsView = lazy(() => import("@/components/Runs/RunsTabsView"));
 const BoardView = lazy(() => import("@/views/Board"));
 const LabelsView = lazy(() => import("@/views/Board/Labels"));
-const FindingsView = lazy(() => import("@/views/Findings"));
 const RunsAnalyticsView = lazy(() => import("@/views/RunsAnalytics"));
 const DispatcherView = lazy(() => import("@/views/Dispatcher"));
 const Welcome = lazy(() => import("@/views/Welcome"));
@@ -207,11 +206,6 @@ function AuthedApp() {
               </ErrorBoundary>
             </Route>
           )}
-          <Route path="/findings">
-            <ErrorBoundary area="Findings view">
-              <FindingsView />
-            </ErrorBoundary>
-          </Route>
           <Route path="/insights">
             <ErrorBoundary area="Runs analytics view">
               <RunsAnalyticsView />

@@ -81,7 +81,7 @@ func (s *Server) registerRunsStatsRoutes() {
 
 func (s *Server) handleRunsStats(w http.ResponseWriter, r *http.Request) {
 	if s.runs == nil {
-		writeJSONErr(w, http.StatusServiceUnavailable, errNoRunStore)
+		httpError(w, http.StatusServiceUnavailable, "no run store configured on this server")
 		return
 	}
 	sinceDays := 30
@@ -94,12 +94,12 @@ func (s *Server) handleRunsStats(w http.ResponseWriter, r *http.Request) {
 
 	runs, err := s.runs.ListCtx(r.Context(), runview.ListFilter{Since: since})
 	if err != nil {
-		writeJSONErr(w, http.StatusInternalServerError, err)
+		httpError(w, http.StatusInternalServerError, "%v", err)
 		return
 	}
 
 	out := aggregateRunStats(r.Context(), s.runs, runs, sinceDays)
-	writeJSONResp(w, http.StatusOK, out)
+	writeJSON(w, out)
 }
 
 // aggregateRunStats turns a slice of run summaries into the
@@ -295,11 +295,3 @@ func percentiles(samples []float64) (p50, p95 float64) {
 	return pick(0.50), pick(0.95)
 }
 
-// errNoRunStore is the sentinel returned to clients when the server
-// was started without a run store (cloud control plane, dispatcher-
-// only mode).
-var errNoRunStore = statsErrString("no run store configured on this server")
-
-type statsErrString string
-
-func (e statsErrString) Error() string { return string(e) }

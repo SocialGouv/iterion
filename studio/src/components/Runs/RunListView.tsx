@@ -4,7 +4,6 @@ import { useLocation, useSearch } from "wouter";
 import {
   BarChartIcon,
   Cross2Icon,
-  EnvelopeOpenIcon,
   MagnifyingGlassIcon,
   ReloadIcon,
   RocketIcon,
@@ -152,26 +151,16 @@ export default function RunListView() {
               <Cross2Icon />
             </IconButton>
           )}
-          <div className="ml-auto flex items-center gap-1">
-            <Button
-              variant="ghost"
-              size="sm"
-              leadingIcon={<BarChartIcon />}
-              onClick={() => setLocation("/insights")}
-              title="Cross-run cost, fail rate, and duration over a configurable window"
-            >
-              Analytics
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              leadingIcon={<EnvelopeOpenIcon />}
-              onClick={() => setLocation("/findings")}
-              title="Inbox of short notes bots have left during their runs"
-            >
-              Findings
-            </Button>
-          </div>
+          <Button
+            className="ml-auto"
+            variant="ghost"
+            size="sm"
+            leadingIcon={<BarChartIcon />}
+            onClick={() => setLocation("/insights")}
+            title="Cross-run cost, fail rate, and duration over a configurable window"
+          >
+            Analytics
+          </Button>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           {STATUS_FILTERS.map((f) => {

@@ -46,6 +46,7 @@ fields the operator can attach to issues. Defaults:
 ```jsonc
 {
   "states": [
+    { "name": "inbox",       "display": "Inbox" },
     { "name": "backlog",     "display": "Backlog" },
     { "name": "ready",       "display": "Ready",       "eligible": true },
     { "name": "in_progress", "display": "In progress", "eligible": true },
@@ -56,6 +57,11 @@ fields the operator can attach to issues. Defaults:
   "fields": []
 }
 ```
+
+`inbox` is the leftmost state. Bots with `board.create` capability
+post their out-of-scope observations there (labeled `findings`) so
+operators can triage on /board without a separate inbox surface —
+drag inbox → backlog to promote, delete the card to dismiss.
 
 | Property            | Meaning                                                            |
 |---------------------|--------------------------------------------------------------------|

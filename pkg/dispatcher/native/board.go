@@ -11,6 +11,7 @@ import (
 // the shipped defaults should use the constants so renames stay
 // compile-checked.
 const (
+	StateInbox      = "inbox"
 	StateBacklog    = "backlog"
 	StateReady      = "ready"
 	StateInProgress = "in_progress"
@@ -58,6 +59,12 @@ type Board struct {
 
 // DefaultBoard returns the recommended starter board.
 //
+// `inbox` is the leftmost state and receives bot-emitted findings —
+// short observations that aren't worth dispatching alone (a doc drift,
+// a security smell, a bug surfaced during a feature run). Operators
+// triage by dragging inbox → backlog (promote) or deleting the card
+// (dismiss). Not eligible: the dispatcher never auto-picks inbox.
+//
 // Includes the `bot_args` custom field that the dispatcher reads at
 // dispatch time (encoded `--var key=value` overrides per ticket).
 // Bots like whats-next set this on create_issue; without it in the
@@ -66,6 +73,7 @@ type Board struct {
 func DefaultBoard() *Board {
 	return &Board{
 		States: []State{
+			{Name: StateInbox, Display: "Inbox"},
 			{Name: StateBacklog, Display: "Backlog"},
 			{Name: StateReady, Display: "Ready", Eligible: true},
 			{Name: StateInProgress, Display: "In progress", Eligible: true},

@@ -39,14 +39,6 @@
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
-  ## findings_dir: shared cross-bot memory channel — see the
-  ## "Findings handoff" section in prepare_commit_system.
-  ## ${PROJECT_MEMORY_DIR} resolves to
-  ##   ~/.iterion/projects/<encoded-repo-root>/memory/
-  ## keyed on the run's repo_root (not the per-run workDir), so
-  ## dispatcher-spawned bot worktrees and a whats-next session at
-  ## the repo root see the same files.
-  findings_dir: string = "${PROJECT_MEMORY_DIR}/findings"
   feature_prompt: string
 
 ## ─── Prompts : Feature Dev Phase ─────────────────────────────────
@@ -214,31 +206,34 @@ prompt prepare_commit_system:
       (the commit covers it).
     - Speculative work the operator never asked about.
     - Style nits without a clear actionable next step.
-    - Findings already in {{vars.findings_dir}} — list that
-      directory first to avoid duplicates.
+    - Findings already on the board's `inbox` state — list
+      them first (see step 1 below) to avoid duplicates.
 
   How:
-    1. Run `mkdir -p {{vars.findings_dir}}` (idempotent — the
-       directory may not exist yet on a fresh project).
-    2. Run `ls {{vars.findings_dir}}` to see existing titles.
-       Don't read full bodies unless you suspect a duplicate.
-    3. For each NEW finding, use the Write tool to create
-       `{{vars.findings_dir}}/<YYYY-MM-DD>-<kebab-slug>.md`
-       with this exact frontmatter + body shape:
+    1. Call `mcp__iterion_board__list_issues` with
+       `{ "state": "inbox" }` to see what's already pending.
+       Skim titles only — don't fetch bodies unless a duplicate
+       is suspected.
+    2. For each NEW finding, call
+       `mcp__iterion_board__create_issue` with this shape:
 
-           ---
-           title: "One-line operator-facing summary"
-           description: "Same one-line, shown in the auto-index"
-           kind: "bug" | "drift" | "improvement" | "question"
-           source_bot: "feature_dev"
-           tags: ["area:<subsystem>", "severity:<low|medium|high>"]
-           ---
+           {
+             "title": "One-line operator-facing summary",
+             "body":  "Full context: what you saw, why it matters,\nwhere (file paths + lines), suggested next step.\n5-30 lines is the sweet spot.",
+             "state": "inbox",
+             "labels": [
+               "findings",
+               "kind:bug",            // or drift | improvement | question
+               "source:feature_dev",
+               "area:<subsystem>",
+               "severity:<low|medium|high>"
+             ]
+           }
 
-           # Body
-
-           Full context: what you saw, why it matters, where
-           (file paths + lines), suggested next step. 5-30
-           lines is the sweet spot.
+       The `findings` label is the sentinel that distinguishes
+       bot-emitted observations from operator-curated work.
+       Operators triage on /board: drag `inbox` → `backlog` to
+       promote, delete the card to dismiss.
 
   Be conservative. Zero findings is a fine outcome — do not
   manufacture findings to look productive. The operator's next
@@ -671,6 +666,7 @@ agent prepare_commit:
   user: prepare_commit_user
   session: fork
   readonly: true
+  capabilities: [board.read, board.create]
 
 ## commit_changes is a deterministic shell tool — no LLM. It
 ## stages exactly the file list produced by prepare_commit (via

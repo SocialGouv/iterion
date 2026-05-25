@@ -63,13 +63,6 @@
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
 
-  ## findings_dir: shared cross-bot memory channel — see
-  ## "Findings handoff" in prepare_commit_system below.
-  ## ${PROJECT_MEMORY_DIR} keys on the run's repo_root so
-  ## bots in dispatcher worktrees and Nexie at the repo root
-  ## see the same files.
-  findings_dir: string = "${PROJECT_MEMORY_DIR}/findings"
-
   ## Doc footprint scope (comma-separated globs). The scan_docs
   ## tool node enumerates files matching these globs once, at run
   ## start. Hidden / vendored / runtime dirs (.iterion, .works,
@@ -697,27 +690,30 @@ prompt prepare_commit_system:
   What NOT to capture:
     - Doc drifts you just fixed (your commit covers them).
     - Style nits without an actionable next step.
-    - Findings already in {{vars.findings_dir}} — list that
-      directory first to avoid duplicates.
+    - Findings already on the board's `inbox` state — list
+      them first (see step 1 below) to avoid duplicates.
 
   How:
-    1. `mkdir -p {{vars.findings_dir}}` (idempotent).
-    2. `ls {{vars.findings_dir}}` to dedupe.
-    3. For each NEW finding, use Write to create
-       `{{vars.findings_dir}}/<YYYY-MM-DD>-<kebab-slug>.md`
-       with this frontmatter + body shape:
+    1. Call `mcp__iterion_board__list_issues` with
+       `{ "state": "inbox" }` to see pending findings.
+    2. For each NEW finding, call
+       `mcp__iterion_board__create_issue` with:
 
-           ---
-           title: "One-line operator-facing summary"
-           description: "Same one-line, shown in the index"
-           kind: "bug" | "drift" | "improvement" | "question"
-           source_bot: "doc_align"
-           tags: ["area:<subsystem>", "severity:<low|medium|high>"]
-           ---
+           {
+             "title": "One-line operator-facing summary",
+             "body":  "Full context (file paths + suggested next step). 5-30 lines.",
+             "state": "inbox",
+             "labels": [
+               "findings",
+               "kind:bug",            // or drift | improvement | question
+               "source:doc_align",
+               "area:<subsystem>",
+               "severity:<low|medium|high>"
+             ]
+           }
 
-           # Body
-
-           Full context (file paths + suggested next step). 5-30 lines.
+       Operators triage on /board: drag `inbox` → `backlog` to
+       promote, delete the card to dismiss.
 
   Be conservative. Zero findings is fine.
 
@@ -1670,6 +1666,7 @@ agent prepare_commit:
   user: prepare_commit_user
   session: fresh
   readonly: true
+  capabilities: [board.read, board.create]
 
 tool commit_changes:
   command: "git -C {{input.workspace_dir}} add -- {{input.files}} && (git -C {{input.workspace_dir}} diff --cached --quiet || git -C {{input.workspace_dir}} commit -m {{input.full_message}})"

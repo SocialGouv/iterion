@@ -1,11 +1,13 @@
 package native
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 )
@@ -35,6 +37,51 @@ func TestNewStoreInitializesBoard(t *testing.T) {
 	b := s.Board()
 	if len(b.States) == 0 {
 		t.Fatal("board has no states")
+	}
+}
+
+func TestNewStorePrependsInboxToLegacyBoard(t *testing.T) {
+	// Simulate an existing operator's board.json that predates the
+	// `inbox` state — the upgrade path must prepend inbox so bots
+	// emitting findings (state=inbox) keep working.
+	dir := t.TempDir()
+	legacy := Board{
+		States: []State{
+			{Name: StateBacklog, Display: "Backlog"},
+			{Name: StateReady, Display: "Ready", Eligible: true},
+			{Name: StateDone, Display: "Done", Terminal: true},
+		},
+		UpdatedAt: time.Now().UTC(),
+	}
+	data, err := json.MarshalIndent(&legacy, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal legacy board: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "board.json"), data, 0o644); err != nil {
+		t.Fatalf("write legacy board: %v", err)
+	}
+
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	got := s.Board().States
+	if len(got) != 4 {
+		t.Fatalf("want 4 states after inbox prepend, got %d: %+v", len(got), got)
+	}
+	if got[0].Name != StateInbox {
+		t.Fatalf("want inbox as first state, got %q", got[0].Name)
+	}
+
+	// Re-load to confirm the upgrade was persisted (idempotent: a
+	// second NewStore must not prepend twice).
+	s2, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore (second pass): %v", err)
+	}
+	if len(s2.Board().States) != 4 {
+		t.Fatalf("inbox prepended twice: %+v", s2.Board().States)
 	}
 }
 

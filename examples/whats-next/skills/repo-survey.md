@@ -130,51 +130,40 @@ makes the priorities obvious.
 
 ## 7b. Findings inbox → `observations` (dispatcher bot handoff)
 
-Other dispatcher-spawned bots write **findings** — observations
-they noticed during their own runs but did not treat — into the
-project-rooted memory directory:
+Other dispatcher-spawned bots post **findings** — observations
+they noticed during their own runs but did not treat — as issues
+on the board's `inbox` state (sentinel label `findings`). List
+them with the board MCP tool:
 
-```
-~/.iterion/projects/<encoded-repo-root>/memory/findings/
-```
-
-The system prompt's `vars.findings_dir` already resolves to the
-correct absolute path for this run. The directory may not exist
-yet (fresh project / no bot has written one yet):
-
-```bash
-ls "$FINDINGS_DIR" 2>/dev/null
+```json
+mcp__iterion_board__list_issues  { "state": "inbox" }
 ```
 
-`2>/dev/null` silences the missing-dir error and is explicitly
-allowed by the system prompt's Constraints exception. Do NOT run
-`mkdir` — the directory is created when a bot first writes a
-finding via its native Write tool.
+Empty response ⇒ no findings to surface; skip the rest. No board
+mutation is allowed from this node (capability `board.read` only).
 
-For each `.md` file listed, call `read_file` to see its
-frontmatter (`title`, `description`, `kind`, `source_bot`,
-`tags`) plus the first ~40 lines of body. Don't burn context on
-full bodies unless one looks high-priority or you suspect a
-duplicate is queued.
+For each inbox issue, the response already includes title, labels
+(`findings`, `kind:bug` / `kind:drift` / …, `source:<bot>`,
+`area:<…>`, `severity:<…>`) and a truncated body. Call
+`mcp__iterion_board__get_issue` only when the truncated body looks
+high-priority and you need the full text.
 
 Fold the catalogue into `observations` as bullet lines of the
 form:
 
 ```
-[finding:<source_bot>:<kind>] <file_basename> — <title>
+[finding:<source_label>:<kind_label>] <issue_id> — <title>
 ```
 
-…where `<file_basename>` is the `.md` filename only (no path
-prefix). The exact basename matters: `emit_action` needs it to
-`rm` the file after a kanban issue ingests the finding (transient
-queue lifecycle — bots that wrote unmatched findings re-surface
-them next session).
+…where `<issue_id>` is the value returned by `list_issues` (full
+id, no truncation). The exact id matters: `emit_action` needs it
+to `transition_issue` the inbox card to `backlog` when the
+operator's approved roadmap ingests this finding.
 
-Empty `findings/` directory → no bullets. Do NOT manufacture
-findings.
+Empty inbox → no bullets. Do NOT manufacture findings.
 
-Do NOT delete or modify finding files in this node. Read + report
-only; the lifecycle flip happens in `emit_action`.
+Do NOT mutate inbox issues in this node. Read + report only; the
+promote-or-leave decision happens in `emit_action`.
 
 ## 8. Don't drown in TODO/FIXME
 

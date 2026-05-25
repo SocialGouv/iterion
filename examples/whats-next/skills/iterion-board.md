@@ -101,12 +101,19 @@ The default board ships these states:
 
 | Name | Terminal | Eligible | Notes |
 |---|---|---|---|
+| `inbox` | no | no | Bot-emitted findings land here. Operator triages → backlog (promote) or deletes (dismiss). |
 | `backlog` | no | no | Initial state — drafts not yet ready. |
 | `ready` | no | **yes** | The dispatcher polls this and dispatches. |
 | `in_progress` | no | yes | Dispatcher flips an issue here on claim. |
 | `review` | no | no | Bot done, waiting on human review. |
 | `done` | **yes** | no | Successful terminal state. |
 | `blocked` | **yes** | no | Failure terminal state. |
+
+When a bot has board.create capability and wants to surface an
+out-of-scope observation (instead of acting on it), `create_issue`
+with `state: "inbox"` plus a `findings` label is the canonical
+shape. The operator decides whether to promote the issue to
+backlog or dismiss it.
 
 A workflow can customise the board (different names/colors) via
 `iterion issue board init`; the labels above are conventions, not

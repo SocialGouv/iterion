@@ -682,6 +682,16 @@ func (s *Store) loadOrInitBoard() error {
 		return fmt.Errorf("native store: invalid board: %w", err)
 	}
 	s.board = &b
+	// Pre-upgrade stores predate the `inbox` state. Prepend it once so
+	// bots emitting findings (which target inbox) work after upgrade
+	// without manual board.json edits. Idempotent: skipped when inbox
+	// is already present (operator-customised boards keep their order).
+	if s.board.StateByName(StateInbox) == nil {
+		s.board.States = append([]State{{Name: StateInbox, Display: "Inbox"}}, s.board.States...)
+		if err := s.writeBoardLocked(); err != nil {
+			return fmt.Errorf("native store: persist inbox upgrade: %w", err)
+		}
+	}
 	return nil
 }
 

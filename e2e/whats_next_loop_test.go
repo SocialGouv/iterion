@@ -1,6 +1,6 @@
 // E2E smoke loop for the operator's whats-next → board → dispatcher →
-// bot → memory cycle. No LLM calls; the runtime side is exercised via
-// stubs (StubRunner + a static IR check on the emit_action prompt), the
+// bot cycle. No LLM calls; the runtime side is exercised via stubs
+// (StubRunner + a static IR check on the emit_action prompt), the
 // board + dispatcher are the real native store + actor.
 //
 // Regression guards bundled into the two tests:
@@ -9,9 +9,6 @@
 //   - commit 45eafe28 — dispatcher MUST auto-transition in_progress →
 //     review on a clean run finish (otherwise the issue stays eligible
 //     and gets re-dispatched on the next tick).
-//   - commit 567ef0c3 — findings written under
-//     ${PROJECT_MEMORY_DIR}/findings/ MUST survive across a run's
-//     lifecycle (the inbox is the shared cross-bot memory channel).
 
 package e2e
 
@@ -19,8 +16,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -30,7 +25,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
-	"github.com/SocialGouv/iterion/pkg/memory"
 )
 
 // TestWhatsNext_EmitAction_UserPromptReferencesSelectedTitles guards
@@ -108,17 +102,14 @@ func newSmokeDispatcherFixture(t *testing.T, polling time.Duration) (
 // TestWhatsNext_Loop_DispatchAutoTransitionsNoReloop drives the
 // production board → dispatcher loop end-to-end with stubs:
 //
-//  1. Pin ITERION_HOME to a tempdir and seed a finding under
-//     ${PROJECT_MEMORY_DIR}/findings/. Asserts later that the file
-//     survives the loop (guard 567ef0c3).
-//  2. Boot a dispatcher with ApplyDefaults() so CompletedState=review
+//  1. Boot a dispatcher with ApplyDefaults() so CompletedState=review
 //     mirrors production.
-//  3. Create two ready issues via boardops (matches the production
+//  2. Create two ready issues via boardops (matches the production
 //     path emit_action takes — boardops.Call create_issue per surviving
 //     roadmap item).
-//  4. StubRunner clean-finishes each dispatch; the actor must
+//  3. StubRunner clean-finishes each dispatch; the actor must
 //     auto-transition the issue in_progress → review (guard 45eafe28).
-//  5. Wait several polling intervals and assert the dispatch counter
+//  4. Wait several polling intervals and assert the dispatch counter
 //     stays at 2 — without 45eafe28 the issues would remain in
 //     in_progress + eligible and the actor would re-dispatch them.
 //
@@ -126,34 +117,6 @@ func newSmokeDispatcherFixture(t *testing.T, polling time.Duration) (
 // finish → transition), then 5× polling for the no-reloop watch.
 // At 50ms polling that's ~400ms; the deadline is 3s for slow CI.
 func TestWhatsNext_Loop_DispatchAutoTransitionsNoReloop(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("ITERION_HOME", home)
-
-	workDir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	findingsDir := filepath.Join(memory.WorkspaceMemoryDir(workDir), "findings")
-	if err := os.MkdirAll(findingsDir, 0o755); err != nil {
-		t.Fatalf("mkdir findings: %v", err)
-	}
-	findingPath := filepath.Join(findingsDir, "2026-05-25-smoke-loop-seed.md")
-	const findingBody = `---
-title: "smoke loop seed"
-description: "seeded by e2e — must survive the dispatch loop"
-kind: "improvement"
-source_bot: "e2e-test"
-tags: ["area:test"]
----
-
-# body
-
-Sentinel content for the findings-inbox guard.
-`
-	if err := os.WriteFile(findingPath, []byte(findingBody), 0o644); err != nil {
-		t.Fatalf("write finding: %v", err)
-	}
-
 	const polling = 50 * time.Millisecond
 	c, ns, runner, cleanup := newSmokeDispatcherFixture(t, polling)
 	defer cleanup()
@@ -209,16 +172,6 @@ Sentinel content for the findings-inbox guard.
 	}
 	if running := len(c.Snapshot().Running); running != 0 {
 		t.Fatalf("running set not drained after clean finish: %d still running", running)
-	}
-
-	// Findings inbox guard (567ef0c3): the seeded file must still be
-	// readable AND content-intact after the loop ran to completion.
-	body, err := os.ReadFile(findingPath)
-	if err != nil {
-		t.Fatalf("seeded finding missing after loop: %v", err)
-	}
-	if !strings.Contains(string(body), "smoke loop seed") {
-		t.Fatalf("seeded finding content corrupted: %q", string(body))
 	}
 }
 

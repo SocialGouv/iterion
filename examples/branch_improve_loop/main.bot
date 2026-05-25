@@ -52,12 +52,6 @@
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
-  ## findings_dir: shared cross-bot memory channel — see
-  ## "Findings handoff" in prepare_commit_system below.
-  ## ${PROJECT_MEMORY_DIR} keys on repo_root so dispatcher
-  ## worktrees + a whats-next session at the repo root share
-  ## the same files.
-  findings_dir: string = "${PROJECT_MEMORY_DIR}/findings"
   scope_notes: string = ""
   ## Branch comparison base. The reviewers and fixers operate on the
   ## diff `git diff {{vars.base_ref}}...HEAD` — meaning the changes
@@ -446,24 +440,29 @@ prompt prepare_commit_system:
   TODO comment worth tracking.
 
   Skip: anything you just fixed; speculative work; style nits;
-  duplicates of files already in {{vars.findings_dir}}.
+  duplicates of issues already on the board's `inbox` state.
 
   How:
-    1. `mkdir -p {{vars.findings_dir}}`
-    2. `ls {{vars.findings_dir}}` to dedupe.
-    3. For each NEW finding, Write
-       `{{vars.findings_dir}}/<YYYY-MM-DD>-<kebab-slug>.md`:
+    1. Call `mcp__iterion_board__list_issues` with
+       `{ "state": "inbox" }` to dedupe.
+    2. For each NEW finding, call
+       `mcp__iterion_board__create_issue`:
 
-           ---
-           title: "One-line operator-facing summary"
-           description: "Same one-line, shown in the index"
-           kind: "bug" | "drift" | "improvement" | "question"
-           source_bot: "branch_improve_loop"
-           tags: ["area:<subsystem>", "severity:<low|medium|high>"]
-           ---
+           {
+             "title": "One-line operator-facing summary",
+             "body":  "Full context (paths + suggested next step). 5-30 lines.",
+             "state": "inbox",
+             "labels": [
+               "findings",
+               "kind:bug",            // or drift | improvement | question
+               "source:branch_improve_loop",
+               "area:<subsystem>",
+               "severity:<low|medium|high>"
+             ]
+           }
 
-           # Body
-           Full context (paths + suggested next step). 5-30 lines.
+       Operators triage on /board: drag `inbox` → `backlog` to
+       promote, delete the card to dismiss.
 
   Be conservative. Zero findings is fine.
 
@@ -697,6 +696,7 @@ agent prepare_commit:
   user: prepare_commit_user
   session: fresh
   readonly: true
+  capabilities: [board.read, board.create]
 
 ## commit_changes is a deterministic shell tool — no LLM. It
 ## stages exactly the file list produced by prepare_commit and

@@ -661,10 +661,6 @@ func (s *Server) routes() {
 	if s.cfg.Dispatcher != nil {
 		s.cfg.Dispatcher.RegisterRoutesWithMiddleware(s.mux, "/api/v1/dispatcher", s.requireAuth)
 	}
-	// Findings inbox surface: ${PROJECT_MEMORY_DIR}/findings as a
-	// browsable + archivable list. No-op when WorkDir is empty (e.g.
-	// the cloud control plane has no operator workspace).
-	s.registerFindingsRoutes()
 	// Cross-run stats aggregation backing /insights. No-op when the
 	// server runs without a run-store handle (cloud control plane).
 	s.registerRunsStatsRoutes()

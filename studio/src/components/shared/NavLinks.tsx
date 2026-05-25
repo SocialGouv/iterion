@@ -56,12 +56,11 @@ const SEGMENT_TO_SECTION: Record<string, Section> = {
   "whats-next": "whatsNext",
   editor: "editor",
   runs: "runs",
-  // /insights and /findings are reached from the Runs list toolbar;
-  // highlight Runs in the side nav so the operator's place stays
-  // legible even though they're no longer top-level entries.
+  // /insights is reached from the Runs list toolbar; highlight Runs
+  // in the side nav so the operator's place stays legible even
+  // though it's no longer a top-level entry.
   insights: "runs",
   board: "board",
-  findings: "runs",
   dispatcher: "dispatcher",
 };
 
