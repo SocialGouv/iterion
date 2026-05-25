@@ -97,6 +97,9 @@ func TestNewManager_StartsIdle(t *testing.T) {
 }
 
 func TestNewManager_LoadsPersistedConfig(t *testing.T) {
+	// This test exercises config-load semantics in isolation; the
+	// auto-start path is covered separately (see manager_autostart_test.go).
+	t.Setenv("ITERION_DISPATCHER_AUTOSTART", "0")
 	dir := newTestStoreDir(t)
 	// Create the workflow file Validate() will stat.
 	wfPath := filepath.Join(dir, "flow.iter")

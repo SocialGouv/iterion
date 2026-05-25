@@ -17,6 +17,7 @@ import {
 import SettingsDrawer from "@/components/Dispatcher/SettingsDrawer";
 import TrackerErrorBanner from "@/components/shared/TrackerErrorBanner";
 import { dispatcherActionState } from "./dispatcherActionState";
+import { dispatcherPillMeta } from "@/components/shared/dispatcherPillMeta";
 
 export default function DispatcherView() {
   const [, setLocation] = useLocation();
@@ -231,7 +232,7 @@ export default function DispatcherView() {
       )}
 
       <div className="flex-1 overflow-auto p-4 space-y-4 max-w-4xl">
-        <SummaryCard snap={snap} />
+        <SummaryCard snap={snap} status={status} />
         <RunningTable
           rows={running}
           stallTimeoutS={snap.stall_timeout_seconds}
@@ -252,26 +253,31 @@ export default function DispatcherView() {
   );
 }
 
-function SummaryCard({ snap }: { snap: DispatcherSnapshot }) {
+function SummaryCard({
+  snap,
+  status,
+}: {
+  snap: DispatcherSnapshot;
+  status: ManagerStatus | null;
+}) {
+  // Chip reflects manager LIFECYCLE state (idle/running/paused/error),
+  // not just the actor's runtime `paused` flag. Previously the chip
+  // read `snap.paused` only, so it showed "active" whenever the actor
+  // existed but wasn't operator-paused — including transient windows
+  // where the manager was idle/error/initialising. Reuse the same pill
+  // metadata as the DispatcherControlBar so both chips stay in sync.
+  const pillState = status ? status.state : "unreachable";
+  const meta = dispatcherPillMeta(pillState);
   return (
     <section className="rounded border border-border-default bg-surface-1 p-4">
       <div className="flex items-center justify-between mb-2 gap-3">
         <h2 className="text-sm font-semibold">{snap.name || "Dispatcher"}</h2>
-        {snap.paused ? (
-          <span
-            className="text-[10px] font-mono rounded bg-yellow-500/15 text-yellow-300 px-1.5 py-0.5"
-            title="New dispatches are suspended. In-flight runs continue. Resume from the toolbar to start picking up ready issues again."
-          >
-            paused
-          </span>
-        ) : (
-          <span
-            className="text-[10px] font-mono rounded bg-emerald-500/15 text-emerald-300 px-1.5 py-0.5"
-            title="The dispatcher is actively polling the tracker and picking up ready issues."
-          >
-            active
-          </span>
-        )}
+        <span
+          className={`text-[10px] font-mono rounded px-1.5 py-0.5 ${meta.className}`}
+          title={meta.title}
+        >
+          {pillState}
+        </span>
       </div>
       <dl className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-1 text-xs">
         <KV k="Tracker" v={snap.tracker} />

@@ -67,6 +67,7 @@ type ManagerOptions struct {
 type Manager struct {
 	storeDir         string
 	configPath       string
+	runtimePath      string
 	nativeStore      *native.Store
 	logger           *iterlog.Logger
 	defaultBotsPaths []string
@@ -98,6 +99,7 @@ func NewManager(opts ManagerOptions) (*Manager, error) {
 	m := &Manager{
 		storeDir:         opts.StoreDir,
 		configPath:       filepath.Join(opts.StoreDir, "dispatcher", "dispatcher.json"),
+		runtimePath:      runtimeStatePath(opts.StoreDir),
 		nativeStore:      opts.NativeStore,
 		logger:           opts.Logger,
 		defaultBotsPaths: append([]string(nil), opts.DefaultBotsPaths...),
@@ -118,6 +120,30 @@ func NewManager(opts ManagerOptions) (*Manager, error) {
 	// labels for the entire window between backend restart and the
 	// operator manually starting the dispatcher (ticket 7221c7be).
 	m.sweepStaleLocalClaimsAtBoot()
+
+	// Restore the operator's last-known intent. On first boot (no
+	// runtime.json), default to Running when a config exists so the
+	// SPA's "dispatcher: active" chip matches reality without the
+	// operator having to click Start every session. Honour
+	// ITERION_DISPATCHER_AUTOSTART=0 for CI environments that need to
+	// start idle.
+	persisted, err := loadDesiredState(m.runtimePath)
+	if err != nil {
+		opts.Logger.Warn("manager: load runtime state (%s): %v", m.runtimePath, err)
+	}
+	intent := resolveBootIntent(persisted, m.cfg != nil)
+	switch intent {
+	case DesiredRunning, DesiredPaused:
+		if startErr := m.Start(); startErr != nil {
+			opts.Logger.Warn("manager: auto-start declined: %v", startErr)
+			break
+		}
+		if intent == DesiredPaused {
+			if pauseErr := m.Pause(); pauseErr != nil {
+				opts.Logger.Warn("manager: restore pause after auto-start: %v", pauseErr)
+			}
+		}
+	}
 	return m, nil
 }
 
@@ -278,6 +304,7 @@ func (m *Manager) Start() error {
 	m.lastErr = nil
 	m.startedAt = time.Now().UTC()
 	m.mu.Unlock()
+	m.persistDesired(DesiredRunning)
 	m.logger.Info("manager: dispatcher started (workflow=%s, tracker=%s)", cfg.Workflow, trk.Name())
 	return nil
 }
@@ -301,6 +328,7 @@ func (m *Manager) Stop() {
 			m.logger.Warn("manager: runner close: %v", err)
 		}
 	}
+	m.persistDesired(DesiredStopped)
 }
 
 // Pause suspends new dispatches on the active Dispatcher. Runs in flight
@@ -315,6 +343,7 @@ func (m *Manager) Pause() error {
 	m.state = ManagerStatePaused
 	m.mu.Unlock()
 	cur.Pause()
+	m.persistDesired(DesiredPaused)
 	return nil
 }
 
@@ -329,7 +358,22 @@ func (m *Manager) Resume() error {
 	m.state = ManagerStateRunning
 	m.mu.Unlock()
 	cur.Resume()
+	m.persistDesired(DesiredRunning)
 	return nil
+}
+
+// persistDesired writes the operator's last lifecycle intent so the
+// next cold boot of the studio replays it. Failures are logged but do
+// not abort the lifecycle transition — a missing/unwritable runtime
+// state file degrades back to the pre-fix behaviour (the operator
+// clicks Start once after every restart), not to a broken dispatcher.
+func (m *Manager) persistDesired(d DesiredState) {
+	if m.runtimePath == "" {
+		return
+	}
+	if err := saveDesiredState(m.runtimePath, d); err != nil {
+		m.logger.Warn("manager: persist runtime state (%s, desired=%s): %v", m.runtimePath, d, err)
+	}
 }
 
 // Current returns the active Dispatcher (or nil when idle). Callers
