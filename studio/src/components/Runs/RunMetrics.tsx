@@ -15,6 +15,18 @@ interface Props {
   bare?: boolean;
 }
 
+// Staleness thresholds for the "stalled Ns" badge. Originally 20s
+// warning / 60s danger — aggressive, given that opus / gpt-5.5 reasoning
+// turns easily exceed 60s without anything being wrong. Relaxed to
+// 120s / 300s in 2026-05 (finding
+// `2026-05-25-runmetrics-stalled-badge-too-alarmist.md`) so the badge
+// stops yelling red at 60s during normal LLM turns, while still firing
+// well before the dispatcher's 10-min stall reconciliation. Exported as
+// named constants for unit-testability; consumers should NOT override
+// without a comparable adjustment to the tooltip copy below.
+export const STALL_WARN_SECONDS = 120;
+export const STALL_DANGER_SECONDS = 300;
+
 // RunMetrics renders the second line of the run header: live duration,
 // cost, tokens, branch counts, jump-to-failed shortcut. Stays compact
 // in a horizontal strip; collapses to "+N more" via flex-wrap on
@@ -28,13 +40,17 @@ export default function RunMetrics({ active, onJumpToFailed, bare = false }: Pro
   // emitting events (lost connection, subprocess hung), nothing on the
   // page changes; the operator only learns about it when stall
   // reconciliation kicks in 10min later. This badge ticks every second
-  // alongside the duration value, so even a 30s gap is visible.
+  // alongside the duration value so even a multi-minute gap is visible.
   const staleSeconds =
     active && m.lastEventAtMs != null && nowMs > m.lastEventAtMs
       ? Math.floor((nowMs - m.lastEventAtMs) / 1000)
       : 0;
   const stalenessTone =
-    staleSeconds >= 60 ? "danger" : staleSeconds >= 20 ? "warning" : undefined;
+    staleSeconds >= STALL_DANGER_SECONDS
+      ? "danger"
+      : staleSeconds >= STALL_WARN_SECONDS
+        ? "warning"
+        : undefined;
 
   const outerClass = bare
     ? "h-full px-4 py-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]"
@@ -49,7 +65,7 @@ export default function RunMetrics({ active, onJumpToFailed, bare = false }: Pro
               ? "bg-danger-soft text-danger-fg border-danger/40"
               : "bg-warning-soft text-warning-fg border-warning/40"
           }`}
-          title={`No backend event in ${staleSeconds}s. The run might be waiting on a slow LLM response, the network may be down, or the subprocess may be hung. Stall reconciliation fires at 10 min.`}
+          title={`No backend event in ${staleSeconds}s. Long LLM reasoning turns can take 1-3 min normally — this badge fires after ${STALL_WARN_SECONDS}s (warn) / ${STALL_DANGER_SECONDS}s (danger), well before the dispatcher's stall reconciliation kicks in (default 10 min).`}
         >
           stalled {staleSeconds}s
         </span>
