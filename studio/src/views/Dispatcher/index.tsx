@@ -343,15 +343,18 @@ function RunningTable({
       {!rows || rows.length === 0 ? (
         <div className="p-4 text-xs text-fg-muted">No runs in flight.</div>
       ) : (
-        <table className="w-full text-xs">
+        // overflow-x-auto so the 7-column row stays fully reachable
+        // when the page is capped by max-w-4xl on small viewports.
+        <div className="overflow-x-auto">
+        <table className="min-w-full text-xs">
           <thead className="text-fg-muted border-b border-border-default">
             <tr>
-              <th className="text-left py-1.5 px-3 font-normal">Identifier</th>
+              <th className="text-left py-1.5 px-3 font-normal whitespace-nowrap">Identifier</th>
               <th className="text-left py-1.5 px-3 font-normal">Run</th>
               <th className="text-left py-1.5 px-3 font-normal">State</th>
               <th className="text-left py-1.5 px-3 font-normal">Workspace</th>
-              <th className="text-left py-1.5 px-3 font-normal">Started</th>
-              <th className="text-left py-1.5 px-3 font-normal">Last event</th>
+              <th className="text-left py-1.5 px-3 font-normal whitespace-nowrap">Started</th>
+              <th className="text-left py-1.5 px-3 font-normal whitespace-nowrap">Last event</th>
               <th className="text-right py-1.5 px-3 font-normal">Actions</th>
             </tr>
           </thead>
@@ -364,7 +367,7 @@ function RunningTable({
                 className={`border-b border-border-default/60 ${stall.rowClass}`}
                 title={stall.hint ?? undefined}
               >
-                <td className="py-1.5 px-3 font-mono">{r.identifier}</td>
+                <td className="py-1.5 px-3 font-mono whitespace-nowrap">{r.identifier}</td>
                 <td className="py-1.5 px-3 font-mono truncate max-w-[14rem]">
                   <button
                     type="button"
@@ -390,8 +393,8 @@ function RunningTable({
                 >
                   {r.workspace_path ? compactWorkspace(r.workspace_path) : <span className="text-fg-subtle">—</span>}
                 </td>
-                <td className="py-1.5 px-3 text-fg-muted">{relTime(r.started_at)}</td>
-                <td className="py-1.5 px-3 text-fg-muted">
+                <td className="py-1.5 px-3 text-fg-muted whitespace-nowrap">{relTime(r.started_at)}</td>
+                <td className="py-1.5 px-3 text-fg-muted whitespace-nowrap">
                   {r.last_event_name ? r.last_event_name + " · " : ""}
                   {relTime(r.last_event_at)}
                   {stall.hint && (
@@ -411,6 +414,7 @@ function RunningTable({
             })}
           </tbody>
         </table>
+        </div>
       )}
     </section>
   );
@@ -485,12 +489,13 @@ function RetriesTable({
       {!rows || rows.length === 0 ? (
         <div className="p-4 text-xs text-fg-muted">No retries pending.</div>
       ) : (
-        <table className="w-full text-xs">
+        <div className="overflow-x-auto">
+        <table className="min-w-full text-xs">
           <thead className="text-fg-muted border-b border-border-default">
             <tr>
-              <th className="text-left py-1.5 px-3 font-normal">Issue</th>
+              <th className="text-left py-1.5 px-3 font-normal whitespace-nowrap">Issue</th>
               <th className="text-left py-1.5 px-3 font-normal">Attempt</th>
-              <th className="text-left py-1.5 px-3 font-normal">Due</th>
+              <th className="text-left py-1.5 px-3 font-normal whitespace-nowrap">Due</th>
               <th className="text-left py-1.5 px-3 font-normal">Last error</th>
             </tr>
           </thead>
@@ -507,9 +512,9 @@ function RetriesTable({
                 onClick={() => onFocusIssue(r.issue_id)}
                 title="Open this issue on the board"
               >
-                <td className="py-1.5 px-3 font-mono">{r.identifier || r.issue_id}</td>
+                <td className="py-1.5 px-3 font-mono whitespace-nowrap">{r.identifier || r.issue_id}</td>
                 <td className="py-1.5 px-3">{r.attempt}</td>
-                <td className="py-1.5 px-3">
+                <td className="py-1.5 px-3 whitespace-nowrap">
                   <span className={isDue ? "text-amber-300" : "text-fg-muted"}>
                     {dueLabel || relTime(r.due_at)}
                   </span>
@@ -522,6 +527,7 @@ function RetriesTable({
             })}
           </tbody>
         </table>
+        </div>
       )}
     </section>
   );
