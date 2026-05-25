@@ -139,10 +139,11 @@ func TestDiffOfCommitNotGitRepo(t *testing.T) {
 // dispatcher-spawned bot runs (which execute in a linked worktree at
 // `<repo>/.iterion/dispatcher/workspaces/<id>`) resolve back to the
 // operator's main checkout for project-rooted memory keying. Without
-// this, `${PROJECT_MEMORY_DIR}/findings` keyed off the encoded worktree
-// path and the shared findings/ channel between bots and Nexie broke
-// silently — the 2026-05-24 doc-align dogfood landed findings at
-// `/home/jo/.iterion/projects/-home-jo-lab-ai-iterion-.iterion-dispatcher-workspaces-native_<id>/memory/findings/`
+// this, `${PROJECT_MEMORY_DIR}/<scope>` keyed off the encoded worktree
+// path and shared project-rooted scopes (session-continuity memory,
+// historically the findings inbox before it moved to the board) broke
+// silently — bot runs landed memory at
+// `/home/jo/.iterion/projects/-home-jo-lab-ai-iterion-.iterion-dispatcher-workspaces-native_<id>/memory/<scope>/`
 // rather than the project-rooted dir Nexie reads.
 func TestFindMainRepoRoot_LinkedWorktree(t *testing.T) {
 	main := gitRepo(t)

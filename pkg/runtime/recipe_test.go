@@ -266,8 +266,8 @@ func TestResolveVarsExpandsProjectDirInOverrides(t *testing.T) {
 }
 
 // TestResolveVarsExpandsProjectMemoryDir locks the `${PROJECT_MEMORY_DIR}`
-// expansion added for the findings-handoff design (2026-05-24): bots in
-// dispatcher worktrees declare `vars.findings_dir: "${PROJECT_MEMORY_DIR}/findings"`,
+// expansion: bots in dispatcher worktrees declare project-rooted memory
+// paths (e.g. `vars.memory_dir: "${PROJECT_MEMORY_DIR}/session-continuity"`),
 // and the runtime must resolve that against the run's RepoRoot (not the
 // per-run workDir) so dispatcher-spawned bot runs and a whats-next session
 // at the repo root see the same memory tree. Falls back to workDir's
@@ -279,11 +279,11 @@ func TestResolveVarsExpandsProjectMemoryDir(t *testing.T) {
 		Schemas: map[string]*ir.Schema{},
 		Prompts: map[string]*ir.Prompt{},
 		Vars: map[string]*ir.Var{
-			"findings_dir": {
-				Name:       "findings_dir",
+			"memory_dir": {
+				Name:       "memory_dir",
 				Type:       ir.VarString,
 				HasDefault: true,
-				Default:    "${PROJECT_MEMORY_DIR}/findings",
+				Default:    "${PROJECT_MEMORY_DIR}/session-continuity",
 			},
 		},
 		Loops: map[string]*ir.Loop{},
@@ -293,9 +293,9 @@ func TestResolveVarsExpandsProjectMemoryDir(t *testing.T) {
 	eng := New(wf, s, exec, WithWorkDir("/tmp/worktrees/run-xyz"))
 	eng.repoRoot = "/tmp/repo"
 
-	got := eng.resolveVars(nil)["findings_dir"].(string)
-	if !strings.HasSuffix(got, "/memory/findings") {
-		t.Errorf("expansion: got %q, want suffix /memory/findings", got)
+	got := eng.resolveVars(nil)["memory_dir"].(string)
+	if !strings.HasSuffix(got, "/memory/session-continuity") {
+		t.Errorf("expansion: got %q, want suffix /memory/session-continuity", got)
 	}
 	if !strings.Contains(got, "tmp-repo") && !strings.Contains(got, "-tmp-repo") {
 		t.Errorf("expansion did not key off repoRoot (/tmp/repo): %q", got)
@@ -306,7 +306,7 @@ func TestResolveVarsExpandsProjectMemoryDir(t *testing.T) {
 
 	// Fallback: empty repoRoot → workDir's encoded key.
 	eng2 := New(wf, s, exec, WithWorkDir("/tmp/fallback"))
-	got2 := eng2.resolveVars(nil)["findings_dir"].(string)
+	got2 := eng2.resolveVars(nil)["memory_dir"].(string)
 	if !strings.Contains(got2, "tmp-fallback") && !strings.Contains(got2, "-tmp-fallback") {
 		t.Errorf("fallback to workDir: got %q", got2)
 	}

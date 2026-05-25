@@ -87,10 +87,11 @@ type MemorySpec struct {
 	PreCompactInject bool
 	// ProjectRoot, when true, re-roots the scope under the run's
 	// `RepoRoot` (passed alongside via Task.RepoRoot) instead of the
-	// per-run workDir. Enables cross-worktree shared scopes such as
-	// the dispatcher's `findings/` channel where bot runs from
-	// `<repo>/.iterion/dispatcher/workspaces/<id>` worktrees write
-	// to the same tree a whats-next run at the repo root reads.
+	// per-run workDir. Enables cross-worktree shared scopes (e.g.
+	// session-continuity memory) where bot runs from
+	// `<repo>/.iterion/dispatcher/workspaces/<id>` worktrees read
+	// and write the same tree a whats-next run at the repo root
+	// sees.
 	ProjectRoot bool
 }
 

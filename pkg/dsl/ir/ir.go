@@ -864,8 +864,8 @@ type Memory struct {
 	// `RepoRoot` (the source-of-truth field stored on the run record)
 	// instead of the per-run workDir. Lets a dispatcher-spawned bot
 	// running in `<repo>/.iterion/dispatcher/workspaces/<id>` share a
-	// scope (e.g. the `findings/` channel) with a whats-next run that
-	// lives at the repo root.
+	// scope (e.g. session-continuity memory) with a whats-next run
+	// that lives at the repo root.
 	ProjectRoot bool
 }
 

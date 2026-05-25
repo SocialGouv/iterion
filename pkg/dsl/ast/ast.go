@@ -552,9 +552,8 @@ type MemoryBlock struct {
 	// ProjectRoot re-roots the scope under the project's repo
 	// instead of the per-run workDir. Used to share a scope across
 	// dispatcher-spawned bot runs (each running in its own worktree)
-	// and whats-next runs that live at the repo root — e.g. the
-	// shared `findings/` channel where bots drop adjacent-work
-	// observations for Nexie to triage.
+	// and whats-next runs that live at the repo root — e.g.
+	// session-continuity memory shared between bots and Nexie.
 	ProjectRoot *bool
 	Span        Span
 }

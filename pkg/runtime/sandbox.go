@@ -795,10 +795,10 @@ func locateHostIterionBinary() string {
 //     `gitdir: <main>/.git/worktrees/<name>`), it follows the pointer
 //     back to the main repo. This case matters for dispatcher-spawned
 //     bots running at `<repo>/.iterion/dispatcher/workspaces/<id>` —
-//     without the pointer-resolution step, the project-rooted memory
-//     scope (`${PROJECT_MEMORY_DIR}/findings`) silently keys off the
+//     without the pointer-resolution step, project-rooted memory
+//     scopes under `${PROJECT_MEMORY_DIR}/` silently key off the
 //     worktree's encoded path and a whats-next session at the repo
-//     root reads a different (empty) findings tree.
+//     root reads a different (empty) memory tree.
 //  2. The absolute path of workDir (legacy behaviour for non-git
 //     workspaces).
 //  3. `os.Getwd()` when workDir itself is empty.
