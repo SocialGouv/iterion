@@ -231,8 +231,20 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 		// docker hiccup, image pull race). Marking failed_resumable
 		// preserves the captured human answers + checkpoint so a
 		// follow-up /resume can complete once docker is unblocked.
-		stubCp := &store.Checkpoint{NodeID: humanNodeID}
-		if err := e.store.FailRunResumable(ctx, runID, stubCp, sbErr.Error()); err != nil {
+		//
+		// PRESERVE the rich checkpoint (outputs, loop counters, artifact
+		// versions) — a NodeID-only stub would wipe everything the bot
+		// accumulated and force the next resume to restart from entry,
+		// defeating the failed_resumable contract. Observed 2026-05-25
+		// during the issue #5 dogfood (finding `resume-orphan-gap.md`):
+		// repeated sandbox-failure resumes silently nil'd Outputs across
+		// 4 attempts before a watchexec restart re-fired the entire bot
+		// from `plan`, wasting 1.5h of prior work.
+		preservedCp := r.Checkpoint
+		if preservedCp == nil {
+			preservedCp = &store.Checkpoint{NodeID: humanNodeID}
+		}
+		if err := e.store.FailRunResumable(ctx, runID, preservedCp, sbErr.Error()); err != nil {
 			// FailRunResumable failed too — fall back to a hard
 			// "failed" status flip so the run doesn't appear stuck.
 			// If even that fails, log loudly: the store is in a bad
@@ -374,12 +386,19 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 		// a second /resume after the operator addresses the underlying
 		// cause — the alternative (status=failed) is terminal and forces
 		// a fresh launch that loses all committed per-package work.
-		restartNode := restartNodeID
-		if cp == nil {
-			restartNode = e.workflow.Entry
+		// PRESERVE the rich checkpoint — same rationale as the sister
+		// branch in resumeFromPause: a NodeID-only stub here would wipe
+		// Outputs/LoopCounters/etc and force the next resume to restart
+		// from entry. Issue #5's 2026-05-25 dogfood showed this in
+		// practice: 4 sandbox-related sub-failures across the run
+		// silently degraded the checkpoint until a final watchexec
+		// restart re-ran the bot from `plan`, throwing away 1.5h of
+		// fix_claude iterations.
+		preservedCp := cp
+		if preservedCp == nil {
+			preservedCp = &store.Checkpoint{NodeID: e.workflow.Entry}
 		}
-		stubCp := &store.Checkpoint{NodeID: restartNode}
-		if err := e.store.FailRunResumable(ctx, runID, stubCp, sbErr.Error()); err != nil {
+		if err := e.store.FailRunResumable(ctx, runID, preservedCp, sbErr.Error()); err != nil {
 			_ = e.store.UpdateRunStatus(ctx, runID, store.RunStatusFailed, sbErr.Error())
 		}
 		return fmt.Errorf("runtime: sandbox: %w", sbErr)

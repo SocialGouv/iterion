@@ -294,4 +294,3 @@ func percentiles(samples []float64) (p50, p95 float64) {
 	}
 	return pick(0.50), pick(0.95)
 }
-
