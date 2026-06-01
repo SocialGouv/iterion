@@ -31,10 +31,15 @@ type runState struct {
 	lastProgressAt time.Time
 	terminal       bool
 	terminalAt     time.Time
-	stallAlerted   bool
-	budgetAlerted  map[string]bool // axis -> warning already fired
-	exceeded       bool
-	failed         bool
+	// paused is set while the run is intentionally waiting (human form
+	// input or an operator pause) and cleared when it resumes or executes
+	// a node. Stall detection is suppressed while paused: a run waiting on
+	// a human is NOT stalled, and firing "stalled" for it is a false alarm.
+	paused        bool
+	stallAlerted  bool
+	budgetAlerted map[string]bool // axis -> warning already fired
+	exceeded      bool
+	failed        bool
 }
 
 // Manager observes the run event stream and drives alert fan-out.
@@ -129,9 +134,17 @@ func (m *Manager) Observe(evt store.Event) {
 	var fired []Alert
 	switch evt.Type {
 	case store.EventNodeStarted:
+		// A node is executing ⇒ the run is active again, not paused.
+		rs.paused = false
 		if evt.NodeID != "" {
 			rs.currentNode = evt.NodeID
 		}
+	case store.EventRunPaused, store.EventHumanInputRequested:
+		// Intentional wait (human form / operator pause), not a stall —
+		// suppress stall detection until the run resumes (see checkStalls).
+		rs.paused = true
+	case store.EventRunResumed:
+		rs.paused = false
 	case store.EventBudgetWarning:
 		axis := strData(evt.Data, "dimension")
 		if !rs.budgetAlerted[axis] {
@@ -220,6 +233,11 @@ func (m *Manager) checkStalls(now time.Time) []Alert {
 			continue
 		}
 		if m.stallTimeout <= 0 {
+			continue
+		}
+		// A run waiting on a human form (or an operator pause) is not
+		// stalled — it's intentionally idle. Don't fire a false alarm.
+		if rs.paused {
 			continue
 		}
 		if rs.lastProgressAt.IsZero() || rs.stallAlerted {
@@ -354,4 +372,3 @@ func floatData(d map[string]interface{}, key string) float64 {
 	}
 	return 0
 }
-

@@ -41,8 +41,13 @@ export default function RunMetrics({ active, onJumpToFailed, bare = false }: Pro
   // page changes; the operator only learns about it when stall
   // reconciliation kicks in 10min later. This badge ticks every second
   // alongside the duration value so even a multi-minute gap is visible.
+  // Gate on isRunning (status === "running"), NOT the looser `active`:
+  // a run parked at paused_waiting_human / paused_operator is idle on
+  // purpose (waiting for a form submit or operator), not stalled. Showing
+  // "stalled Ns" for it is a false alarm — the same class as the stall
+  // toast suppressed in pkg/alert.
   const staleSeconds =
-    active && m.lastEventAtMs != null && nowMs > m.lastEventAtMs
+    m.isRunning && m.lastEventAtMs != null && nowMs > m.lastEventAtMs
       ? Math.floor((nowMs - m.lastEventAtMs) / 1000)
       : 0;
   const stalenessTone =

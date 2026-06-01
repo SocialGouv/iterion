@@ -175,6 +175,44 @@ func TestStallFiresOnceAndReArms(t *testing.T) {
 	}
 }
 
+func TestNoStallWhilePausedForHuman(t *testing.T) {
+	sink := &captureSink{}
+	base := time.Now()
+	clock := base
+	m := NewManager(WithStallTimeout(5*time.Minute), WithSinks(sink))
+	m.now = func() time.Time { return clock }
+
+	// Run starts, a human node requests input, the run pauses.
+	m.Observe(store.Event{RunID: "r1", Type: store.EventNodeStarted, NodeID: "ask", Timestamp: base})
+	m.Observe(store.Event{RunID: "r1", Type: store.EventHumanInputRequested, NodeID: "ask", Timestamp: base.Add(time.Second)})
+	m.Observe(store.Event{RunID: "r1", Type: store.EventRunPaused, NodeID: "ask", Timestamp: base.Add(2 * time.Second)})
+
+	// 30 minutes waiting for the human — a paused run is NOT stalled.
+	clock = base.Add(30 * time.Minute)
+	if fired := m.checkStalls(clock); len(fired) != 0 {
+		t.Fatalf("paused-for-human run flagged as stalled: %+v", fired)
+	}
+
+	// Human submits and the run resumes; stall detection re-arms from the
+	// resume moment (not the stale pause timestamp), so it doesn't fire
+	// immediately.
+	resumeAt := base.Add(30 * time.Minute)
+	m.Observe(store.Event{RunID: "r1", Type: store.EventHumanAnswersRecorded, NodeID: "ask", Timestamp: resumeAt})
+	m.Observe(store.Event{RunID: "r1", Type: store.EventRunResumed, NodeID: "ask", Timestamp: resumeAt})
+	clock = resumeAt.Add(3 * time.Minute)
+	if fired := m.checkStalls(clock); len(fired) != 0 {
+		t.Fatalf("stall fired too soon after resume: %+v", fired)
+	}
+
+	// If the resumed run then genuinely goes silent past the timeout, a
+	// real stall DOES fire — the suppression was scoped to the pause.
+	clock = resumeAt.Add(6 * time.Minute)
+	fired := m.checkStalls(clock)
+	if len(fired) != 1 || fired[0].Kind != KindStall {
+		t.Fatalf("post-resume genuine stall did not fire: %+v", fired)
+	}
+}
+
 func TestNoStallWhileToolEventsFlow(t *testing.T) {
 	sink := &captureSink{}
 	base := time.Now()
