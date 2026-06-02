@@ -134,6 +134,27 @@ func applyHostStateMounts(
 		mountPairs = append(mountPairs, m.HostPath+":"+m.ContainerPath)
 	}
 
+	// Warm the Go build + module caches across runs. Each fresh worktree
+	// otherwise starts with an empty $HOME/.cache/go-build + $HOME/go/pkg/mod
+	// (the host_state HOME tmpfs is per-run), so the first `go build` is a
+	// full cold compile — AND it re-downloads the go1.26 toolchain, which
+	// lives at $HOME/go/pkg/mod/golang.org/toolchain@…. Observed stalling
+	// dispatched feature_dev/improve-loop runs for minutes in `act`. Bind
+	// the host's caches read-write (Go's build + module caches are
+	// concurrency-safe, so parallel runs sharing them is fine) at the same
+	// absolute path; they nest on the tmpfs HOME like the .iterion/.claude
+	// binds. Gated under host_state (off for host_state=none / cloud), and
+	// best-effort — a missing cache dir is simply skipped (cold, as before).
+	if homeDir != "" {
+		for _, rel := range []string{".cache/go-build", "go/pkg/mod"} {
+			p := filepath.Join(homeDir, rel)
+			if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+				spec.Mounts = append(spec.Mounts, fmt.Sprintf("source=%s,target=%s,type=bind", p, p))
+				mountPairs = append(mountPairs, p+":"+p)
+			}
+		}
+	}
+
 	// Force HOME inside the container to the host home path so
 	// processes that resolve `~` (Claude Code, git, anything reading
 	// $HOME) land in the mounted tree rather than a stock image's /root

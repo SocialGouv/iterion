@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"os"
+	"path/filepath"
 	goruntime "runtime"
 	"strings"
 	"testing"
@@ -59,5 +60,41 @@ func TestApplyHostStateMounts_HomeTmpfsIsExec(t *testing.T) {
 	}
 	if !hasExec {
 		t.Errorf("HOME tmpfs %q lacks the `exec` option; docker defaults --tmpfs to noexec, which breaks the go toolchain auto-download in $HOME", homeEntry)
+	}
+}
+
+// TestApplyHostStateMounts_WarmGoCaches guards that the host's Go build +
+// module caches are bind-mounted into the sandbox when present, so fresh
+// worktrees reuse the warm cache (and the auto-downloaded toolchain under
+// $HOME/go/pkg/mod) instead of a cold full compile every run.
+func TestApplyHostStateMounts_WarmGoCaches(t *testing.T) {
+	if goruntime.GOOS != "linux" {
+		t.Skip("host_state mounts are Linux + docker only")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// Create the caches under the fake HOME so the mount fires.
+	for _, rel := range []string{".cache/go-build", "go/pkg/mod"} {
+		if err := os.MkdirAll(filepath.Join(home, rel), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	spec := &sandbox.Spec{}
+	applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()},
+		func(store.EventType, map[string]interface{}) error { return nil }, iterlog.Nop())
+
+	for _, rel := range []string{".cache/go-build", "go/pkg/mod"} {
+		want := filepath.Join(home, rel)
+		found := false
+		for _, m := range spec.Mounts {
+			if strings.Contains(m, "source="+want+",") && strings.Contains(m, "target="+want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected a bind mount for the go cache %q; spec.Mounts=%v", want, spec.Mounts)
+		}
 	}
 }
