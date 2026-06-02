@@ -179,13 +179,18 @@ function MergeFooter({
     run.merge_status === "merged" || (!run.merge_status && Boolean(run.merged_into));
   const conflicted = run.merge_status === "conflicted";
   const failed = run.merge_status === "failed";
-  // `skipped` status is also set by RecoverFinalize when it auto-runs on
-  // a cancelled run (mergeInto:"none"). The "skipped at launch" notice
-  // below is only the right framing for FINISHED runs (where the user
-  // explicitly set merge_into=none); for cancelled runs we want to expose
-  // the merge form because the operator's intent is to merge the partial
-  // commits, not opt out.
-  const skipped = run.merge_status === "skipped" && run.status === "finished";
+  // `skipped` is set when finalizeWorktree found no FF target: an explicit
+  // merge_into=none at launch, OR a detached-HEAD worktree start — which is
+  // EVERY dispatcher run (the dispatcher seeds workspaces via `git worktree
+  // add --detach`). So a finished bot run that committed real work lands
+  // `skipped` with a storage branch, and the operator still wants to merge
+  // it. Only show the dead-end "skipped" notice when there's NO branch
+  // (nothing to merge); when a branch with commits exists, fall through to
+  // the merge form so the work is one-click-mergeable (the old notice even
+  // told users to `git merge` from the CLI — this just makes it a button).
+  // Cancelled runs already fall through (mergeable below), same intent.
+  const skipped =
+    run.merge_status === "skipped" && run.status === "finished" && !hasBranch;
 
   const initialStrategy: MergeStrategy =
     (run.merge_strategy as MergeStrategy) ?? "squash";
@@ -255,20 +260,14 @@ function MergeFooter({
     );
   }
 
-  // Skipped (e.g. merge_into=none at launch). Storage branch is
-  // preserved; user can `git merge` from the CLI if they change their
-  // mind, but the UI exposes no action.
+  // Skipped AND no storage branch → the run produced no commits, so there
+  // is genuinely nothing to merge. (Skipped runs that DID commit have a
+  // branch and fall through to the merge form above — see the `skipped`
+  // definition.)
   if (skipped) {
     return (
       <NoticeFooter tone="muted">
-        Merge skipped at launch (merge_into=none). Storage branch
-        {run.final_branch && (
-          <>
-            {" "}
-            <code className="text-fg-default">{run.final_branch}</code>
-          </>
-        )}{" "}
-        preserved.
+        Merge skipped — the run produced no commits to merge.
       </NoticeFooter>
     );
   }
