@@ -565,6 +565,23 @@ agent fix_gpt:
   tool_max_steps: 30
   interaction: human
 
+## ─── Commit (close the no-commit gap) ──────────────────────────
+## whole_improve_loop historically converged (streak `stop`) straight to
+## `done` with NO commit step, so its validated work stayed uncommitted in
+## the worktree — HEAD never advanced past base, finalizeWorktree recorded
+## nothing (final_commit=None), and the diff was stranded. Commit ALL
+## changes on convergence so the engine records a final_commit + GC-guard
+## branch like feature_dev / doc-align. `git add -A` because the loop
+## touches the whole workspace, not a known file list; no-op-safe — a clean
+## tree skips the commit via `diff --cached --quiet`.
+schema commit_result:
+  success: bool
+  output: string
+
+tool commit_changes:
+  command: `git -C {{vars.workspace_dir}} add -A && (git -C {{vars.workspace_dir}} diff --cached --quiet || git -C {{vars.workspace_dir}} commit -m "chore(improve): production-readiness pass (whole_improve_loop)")`
+  output: commit_result
+
 ## ─── Workflow ───────────────────────────────────────────────────
 
 workflow whole_improve_loop:
@@ -633,8 +650,11 @@ workflow whole_improve_loop:
     scanned_areas: "{{outputs.reviewer_gpt.scanned_areas}}"
   }
 
-  ## Stop when streak detected (cross-family double approval).
-  streak_check -> done when stop
+  ## Stop when streak detected (cross-family double approval) → commit
+  ## the converged work, THEN finish (was `-> done` directly, which left
+  ## the validated diff uncommitted).
+  streak_check -> commit_changes when stop
+  commit_changes -> done
 
   ## Otherwise approved (no streak yet, OR low-confidence rejection
   ## treated as soft-approved, OR rejection without concrete blockers
