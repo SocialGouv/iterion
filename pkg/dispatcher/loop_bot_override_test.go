@@ -122,3 +122,33 @@ func TestBuildSpec_EmptyBotEmptyRouteKey(t *testing.T) {
 		t.Fatalf("Vars should be empty: %v", spec.Vars)
 	}
 }
+
+// TestBuildSpec_FeatureDevPromptFallback pins the fix for the dispatched
+// feature_dev garbage-run bug: a ticket routed to feature_dev (incl. the
+// "feature-dev" hyphen alias) without bot_args.feature_prompt gets the
+// required var defaulted from the issue's own title+body, so the prompt
+// never renders the literal "{{vars.feature_prompt}}". An explicit
+// bot_args value still wins, and non-feature_dev bots are untouched.
+func TestBuildSpec_FeatureDevPromptFallback(t *testing.T) {
+	d := newMinimalDispatcher(t)
+	cfg := &Config{Workflow: "/tmp/default.bot"}
+
+	// no bot_args → fallback from title+body (note the hyphen alias)
+	iss := tracker.Issue{ID: "i-fp", Title: "Add X", Body: "Do the thing.", Bot: "feature-dev"}
+	if got := d.buildSpec(cfg, iss, "r-fp", "/tmp/ws", 0, nil).Vars["feature_prompt"]; got != "Add X\n\nDo the thing." {
+		t.Fatalf("feature_prompt fallback = %q, want title+body", got)
+	}
+
+	// explicit bot_args.feature_prompt wins (not overwritten)
+	iss2 := tracker.Issue{ID: "i-fp2", Title: "T", Body: "B", Bot: "feature_dev",
+		BotArgs: map[string]string{"feature_prompt": "EXPLICIT"}}
+	if got := d.buildSpec(cfg, iss2, "r-fp2", "/tmp/ws", 0, nil).Vars["feature_prompt"]; got != "EXPLICIT" {
+		t.Fatalf("explicit feature_prompt overwritten: got %q", got)
+	}
+
+	// non-feature_dev bot → no feature_prompt injected
+	iss3 := tracker.Issue{ID: "i-fp3", Title: "T", Body: "B", Bot: "doc-align"}
+	if _, ok := d.buildSpec(cfg, iss3, "r-fp3", "/tmp/ws", 0, nil).Vars["feature_prompt"]; ok {
+		t.Fatalf("feature_prompt must not be set for non-feature_dev bots")
+	}
+}
