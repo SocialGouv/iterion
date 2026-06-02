@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
@@ -551,6 +552,17 @@ func (c *Dispatcher) buildSpec(cfg *Config, iss tracker.Issue, runID, wsPath str
 	routeAssignee := iss.Assignee
 	if iss.Bot != "" {
 		routeAssignee = iss.Bot
+	}
+	// feature_dev declares a required `feature_prompt` (no default) and reads
+	// it in every prompt. A board ticket dispatched without
+	// bot_args.feature_prompt would otherwise render the literal
+	// "{{vars.feature_prompt}}" and produce a garbage run. Fall back to the
+	// issue's own text so a plain ticket dispatched from the board / Nexie
+	// Just Works. (Normalises the "feature-dev" hyphenated alias.)
+	if b := strings.ToLower(strings.ReplaceAll(routeAssignee, "-", "_")); b == "feature_dev" {
+		if s, _ := vars["feature_prompt"].(string); strings.TrimSpace(s) == "" {
+			vars["feature_prompt"] = strings.TrimSpace(iss.Title + "\n\n" + iss.Body)
+		}
 	}
 	return DispatchSpec{
 		RunID:         runID,
