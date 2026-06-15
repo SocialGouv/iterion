@@ -58,51 +58,28 @@ type ContentBlock struct {
 // tool_use blocks through a dedicated struct that drops omitempty
 // from Input.
 func (b ContentBlock) MarshalJSON() ([]byte, error) {
-	switch b.Type {
-	case "tool_use":
-		type toolUseEcho struct {
-			Type         string              `json:"type"`
-			ID           string              `json:"id,omitempty"`
-			Name         string              `json:"name,omitempty"`
-			Input        map[string]any      `json:"input"`
-			CacheControl *CacheControlMarker `json:"cache_control,omitempty"`
-		}
-		input := b.Input
-		if input == nil {
-			input = map[string]any{}
-		}
-		return json.Marshal(toolUseEcho{
-			Type:         b.Type,
-			ID:           b.ID,
-			Name:         b.Name,
-			Input:        input,
-			CacheControl: b.CacheControl,
-		})
-	case "text":
-		// Anthropic requires a present `text` field on every text block.
-		// An empty payload — most commonly a tool that produced no output
-		// (a `grep` with no matches, a silent `git add`), whose result is
-		// spliced into a tool_result as a nested {type:"text", text:""}
-		// block — would otherwise serialise via the `omitempty` rule to a
-		// text block with no `text` key. The API then rejects the next
-		// turn with `messages.N.content.M.tool_result.content.0.text.text:
-		// Field required` (HTTP 400), aborting the conversation. Force the
-		// field present (empty string is accepted; only omission is not),
-		// mirroring the tool_use.input fix above.
-		type textEcho struct {
-			Type         string              `json:"type"`
-			Text         string              `json:"text"`
-			CacheControl *CacheControlMarker `json:"cache_control,omitempty"`
-		}
-		return json.Marshal(textEcho{
-			Type:         b.Type,
-			Text:         b.Text,
-			CacheControl: b.CacheControl,
-		})
-	default:
+	if b.Type != "tool_use" {
 		type alias ContentBlock
 		return json.Marshal(alias(b))
 	}
+	type toolUseEcho struct {
+		Type         string              `json:"type"`
+		ID           string              `json:"id,omitempty"`
+		Name         string              `json:"name,omitempty"`
+		Input        map[string]any      `json:"input"`
+		CacheControl *CacheControlMarker `json:"cache_control,omitempty"`
+	}
+	input := b.Input
+	if input == nil {
+		input = map[string]any{}
+	}
+	return json.Marshal(toolUseEcho{
+		Type:         b.Type,
+		ID:           b.ID,
+		Name:         b.Name,
+		Input:        input,
+		CacheControl: b.CacheControl,
+	})
 }
 
 // ImageSource represents the "source" object on an Anthropic image content
