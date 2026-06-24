@@ -5,6 +5,7 @@ package detect
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"os/exec"
@@ -81,11 +82,14 @@ type ProviderStatus struct {
 // codex is intentionally absent — explicit opt-in only.
 var DefaultPreferenceOrder = []string{BackendClaudeCode, BackendClaw}
 
-// Detect runs the probes synchronously. ctx is honored for timed probes
-// (currently none — all probes are local stat / env reads).
+// Detect runs the probes synchronously. ctx is honored for timed probes:
+// most are local stat / env reads, but the claude_code fallback may shell
+// out to `claude auth status --json` (3 s timeout) when no credentials file
+// is present. Results are cached by CachedDetector, so the subprocess runs
+// at most once per TTL window.
 func Detect(ctx context.Context) Report {
 	prov := detectProviders()
-	backends := detectBackends(prov)
+	backends := detectBackends(ctx, prov)
 	pref := PreferenceFromEnv()
 	return Report{
 		PreferenceOrder: pref,
@@ -113,20 +117,9 @@ func PreferenceFromEnv() []string {
 	return out
 }
 
-func detectBackends(prov []ProviderStatus) []BackendStatus {
+func detectBackends(ctx context.Context, prov []ProviderStatus) []BackendStatus {
 	return []BackendStatus{
-		detectOAuthCLI(
-			BackendClaudeCode, findClaudeBinary, claudeConfigDir,
-			// Linux/WSL ships Claude Code OAuth as `.credentials.json`
-			// (hidden); older docs/macOS keychain export use the
-			// non-hidden form. Probe both.
-			[]string{".credentials.json", "credentials.json"},
-			// Modern Claude Code (2.x) on macOS stores OAuth in the
-			// Keychain instead of a file — see claudeKeychainOAuthSource.
-			claudeKeychainOAuthSource,
-			"claude CLI",
-			"~/.claude/.credentials.json (Claude Code OAuth)",
-		),
+		detectClaudeCode(ctx),
 		detectClaw(prov),
 		detectOAuthCLI(
 			BackendCodex, findCodexBinary, codexHomeDir,
@@ -136,6 +129,88 @@ func detectBackends(prov []ProviderStatus) []BackendStatus {
 			"$CODEX_HOME/auth.json (Codex OAuth)",
 		),
 	}
+}
+
+// detectClaudeCode probes for the claude_code backend in three escalating
+// steps, each cheaper than the next is general:
+//  1. credentials file (.credentials.json / credentials.json in ~/.claude) —
+//     the Linux/WSL hidden form and legacy macOS export;
+//  2. macOS Keychain (darwin only, ~10ms existence check) — where Claude
+//     Code 2.x stores OAuth with no file written (see claudeKeychainOAuthSource);
+//  3. `claude auth status --json` — the cross-platform fallback that asks the
+//     CLI itself, covering any other store / future platform where the first
+//     two find nothing but the user is in fact logged in (loggedIn=true).
+func detectClaudeCode(ctx context.Context) BackendStatus {
+	// Steps 1-2: credentials file, then the macOS Keychain fast-path. Both
+	// are handled inside detectOAuthCLI via the keychain extraOAuth probe.
+	st := detectOAuthCLI(
+		BackendClaudeCode, findClaudeBinary, claudeConfigDir,
+		[]string{".credentials.json", "credentials.json"},
+		// Modern Claude Code (2.x) on macOS stores OAuth in the Keychain
+		// instead of a file — darwin-only, never reads the token.
+		claudeKeychainOAuthSource,
+		"claude CLI",
+		"~/.claude/.credentials.json (Claude Code OAuth)",
+	)
+	if st.Available {
+		return st
+	}
+
+	// Binary not found — nothing more to try.
+	binPath, hasBin := findClaudeBinary()
+	if !hasBin {
+		return st
+	}
+
+	// Step 3: `claude auth status --json`. Cross-platform truth from the CLI;
+	// covers claude.ai web-auth on hosts where no file/keychain entry surfaced.
+	if claudeAuthStatusFn(ctx, binPath) {
+		return BackendStatus{
+			Name:      BackendClaudeCode,
+			Available: true,
+			Auth:      AuthOAuth,
+			Sources:   []string{"claude auth status (claude.ai OAuth)", "PATH:" + binPath},
+		}
+	}
+	return st
+}
+
+// claudeAuthStatusFn invokes `claude auth status --json` and reports whether
+// the user is logged in via claude.ai OAuth (the "forfait" web-auth).
+//
+// It deliberately requires authMethod == "claude.ai" and does NOT accept
+// authMethod == "api_key": an ANTHROPIC_API_KEY makes `claude auth status`
+// report loggedIn=true, but the API-key path is intentionally not
+// OAuth-eligible for auto-resolution — claw uses the same key in-process and
+// is preferred (see detectOAuthCLI). Without this guard, any host with
+// ANTHROPIC_API_KEY set would wrongly resolve to claude_code.
+//
+// Declared as a var so tests can stub it without requiring a real claude
+// binary.
+var claudeAuthStatusFn = func(ctx context.Context, binPath string) bool {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, binPath, "auth", "status", "--json").Output()
+	if err != nil {
+		return false
+	}
+	return claudeAuthStatusIsForfait(out)
+}
+
+// claudeAuthStatusIsForfait parses `claude auth status --json` output and
+// reports whether it represents a claude.ai OAuth ("forfait") login. Split out
+// as a pure function so the api_key-exclusion logic is unit-testable without a
+// real claude binary (claudeAuthStatusFn itself is stubbed in tests).
+func claudeAuthStatusIsForfait(out []byte) bool {
+	var result struct {
+		LoggedIn   bool   `json:"loggedIn"`
+		AuthMethod string `json:"authMethod"`
+	}
+	if json.Unmarshal(out, &result) != nil {
+		return false
+	}
+	// Forfait OAuth only — exclude api_key / none.
+	return result.LoggedIn && result.AuthMethod == "claude.ai"
 }
 
 // detectOAuthCLI reports Available=true only when both a binary and an

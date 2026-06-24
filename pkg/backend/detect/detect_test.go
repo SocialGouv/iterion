@@ -44,6 +44,9 @@ func isolateEnv(t *testing.T) {
 	// "absent" so detection is deterministic on every host. Tests that
 	// exercise the keychain path re-stub it with a source label.
 	stubSource(t, &claudeKeychainOAuthSource, "")
+	// Likewise prevent real `claude auth status` subprocess calls; tests that
+	// need web-auth detection stub this explicitly.
+	stubClaudeAuthStatus(t, false)
 }
 
 // stubBinary swaps a binary-probe var for the duration of the test.
@@ -67,6 +70,14 @@ func stubSource(t *testing.T, target *func() string, label string) {
 	prev := *target
 	*target = func() string { return label }
 	t.Cleanup(func() { *target = prev })
+}
+
+// stubClaudeAuthStatus swaps claudeAuthStatusFn for the duration of the test.
+func stubClaudeAuthStatus(t *testing.T, loggedIn bool) {
+	t.Helper()
+	prev := claudeAuthStatusFn
+	claudeAuthStatusFn = func(_ context.Context, _ string) bool { return loggedIn }
+	t.Cleanup(func() { claudeAuthStatusFn = prev })
 }
 
 func writeFile(t *testing.T, path, body string) {
@@ -344,6 +355,71 @@ func TestCachedDetector_HonorsTTL(t *testing.T) {
 	r3 := cache.Get(context.Background())
 	if r3.ResolvedDefault != BackendClaw {
 		t.Fatalf("after invalidate, ResolvedDefault = %q, want claw", r3.ResolvedDefault)
+	}
+}
+
+func TestDetect_ClaudeCodeWebAuth(t *testing.T) {
+	// Binary present, no credentials file, but `claude auth status` reports
+	// loggedIn=true. Covers the newer claude.ai OAuth (Max/Pro) that stores
+	// tokens in the OS keychain rather than ~/.claude/.credentials.json.
+	isolateEnv(t)
+	stubBinary(t, &findClaudeBinary, "/fake/claude")
+	stubClaudeAuthStatus(t, true)
+
+	r := Detect(context.Background())
+
+	st := findBackend(t, r, BackendClaudeCode)
+	if !st.Available {
+		t.Fatalf("claude_code should be available via auth status fallback")
+	}
+	if st.Auth != AuthOAuth {
+		t.Fatalf("claude_code auth = %q, want %q", st.Auth, AuthOAuth)
+	}
+	if r.ResolvedDefault != BackendClaudeCode {
+		t.Fatalf("ResolvedDefault = %q, want claude_code", r.ResolvedDefault)
+	}
+}
+
+func TestDetect_ClaudeCodeWebAuth_NotLoggedIn(t *testing.T) {
+	// Binary present, no credentials file, auth status says not logged in.
+	// claude_code must remain unavailable.
+	isolateEnv(t)
+	stubBinary(t, &findClaudeBinary, "/fake/claude")
+	stubClaudeAuthStatus(t, false)
+
+	r := Detect(context.Background())
+
+	st := findBackend(t, r, BackendClaudeCode)
+	if st.Available {
+		t.Fatalf("claude_code should NOT be available when not logged in")
+	}
+	if len(st.Hints) == 0 {
+		t.Fatalf("expected hints when claude_code unavailable, got none")
+	}
+}
+
+// `claude auth status` reports loggedIn=true even when the only credential is
+// an ANTHROPIC_API_KEY (authMethod=api_key). That path must NOT count as OAuth
+// forfait, or any API-key host would wrongly auto-resolve to claude_code over
+// claw. Only authMethod=claude.ai qualifies.
+func TestClaudeAuthStatusIsForfait(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+		want bool
+	}{
+		{"forfait claude.ai", `{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max"}`, true},
+		{"api key not forfait", `{"loggedIn":true,"authMethod":"api_key","apiKeySource":"ANTHROPIC_API_KEY"}`, false},
+		{"logged out", `{"loggedIn":false,"authMethod":"none"}`, false},
+		{"empty authMethod", `{"loggedIn":true}`, false},
+		{"garbage", `not json`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := claudeAuthStatusIsForfait([]byte(tc.out)); got != tc.want {
+				t.Fatalf("claudeAuthStatusIsForfait(%s) = %v, want %v", tc.out, got, tc.want)
+			}
+		})
 	}
 }
 
