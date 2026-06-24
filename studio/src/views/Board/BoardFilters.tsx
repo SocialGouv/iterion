@@ -4,7 +4,12 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 
-import { SORT_OPTIONS, type SortMode } from "./boardShared";
+import {
+  BASE_GROUP_OPTIONS,
+  SORT_OPTIONS,
+  type GroupMode,
+  type SortMode,
+} from "./boardShared";
 
 export function BoardFilters({
   searchQuery,
@@ -20,6 +25,9 @@ export function BoardFilters({
   onAssigneeChange,
   sortMode,
   onSortChange,
+  groupMode,
+  onGroupChange,
+  fieldNames,
   onReset,
 }: {
   searchQuery: string;
@@ -35,6 +43,9 @@ export function BoardFilters({
   onAssigneeChange: (v: string) => void;
   sortMode: SortMode;
   onSortChange: (m: SortMode) => void;
+  groupMode: GroupMode;
+  onGroupChange: (m: GroupMode) => void;
+  fieldNames: string[];
   onReset: () => void;
 }) {
   const filtersActive =
@@ -85,6 +96,26 @@ export function BoardFilters({
           {SORT_OPTIONS.map((o) => (
             <option key={o.value} value={o.value}>
               {o.label}
+            </option>
+          ))}
+        </Select>
+      </label>
+      <label htmlFor="board-group-select" className="flex items-center gap-1 text-fg-muted">
+        Group
+        <Select
+          id="board-group-select"
+          value={groupMode}
+          onChange={(e) => onGroupChange(e.target.value)}
+          title="Split the board into horizontal swimlanes"
+        >
+          {BASE_GROUP_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+          {fieldNames.map((n) => (
+            <option key={`field:${n}`} value={`field:${n}`}>
+              Field: {n}
             </option>
           ))}
         </Select>

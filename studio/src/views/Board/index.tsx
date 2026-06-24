@@ -12,6 +12,7 @@ import {
   deleteIssue,
   patchIssue,
   type NativeIssue,
+  type NativeState,
 } from "@/api/native";
 import IssueModal from "./IssueModal";
 import { BoardFilters } from "./BoardFilters";
@@ -31,6 +32,7 @@ import { useToggleSet } from "@/hooks/useToggleSet";
 import { useUIStore } from "@/store/ui";
 import {
   defaultStateColor,
+  type GroupMode,
   type SortMode,
 } from "./boardShared";
 import { EmptyBoard } from "./board/EmptyBoard";
@@ -39,6 +41,7 @@ import { isDispatchable } from "./board/boardSort";
 import { useBoardData } from "./board/useBoardData";
 import { useDispatcherPoll } from "./board/useDispatcherPoll";
 import { useBoardColumns } from "./board/useBoardColumns";
+import { useSwimlanes } from "./board/useSwimlanes";
 import { useColumnManagement } from "./board/useColumnManagement";
 import { useBoardSelection } from "./board/useBoardSelection";
 import { useBoardDragDrop } from "./board/useBoardDragDrop";
@@ -71,6 +74,7 @@ export default function BoardView() {
   } = useToggleSet<string>();
   const [assigneeFilter, setAssigneeFilter] = useState("");
   const [sortMode, setSortMode] = useState<SortMode>("priority");
+  const [groupMode, setGroupMode] = useState<GroupMode>("none");
   // `onLabelToggle` (from useToggleSet) is the single source of truth
   // for label filter toggling — used both by the top filter strip and
   // by clicking a chip on any card, so card-level chips toggle the
@@ -113,6 +117,11 @@ export default function BoardView() {
       assigneeFilter,
       sortMode,
     });
+
+  // Swimlanes: null when grouping is off (flat board), else the per-lane
+  // grouping of the same filtered issues. Column management is offered only
+  // in the flat view, so swimlane columns render without header menus.
+  const swimlanes = useSwimlanes({ board, filteredIssues, groupMode, sortMode });
 
   // Column (state) management: header menu + reorder drag + add/edit/
   // delete dialogs. Mutations refresh the board+issues afterward.
@@ -404,6 +413,72 @@ export default function BoardView() {
     );
   }
 
+  // renderStateColumn builds a <Column> for a board state from a byState
+  // map. Used by both the flat board and each swimlane; column-management
+  // affordances (menu, reorder handle) are offered only in the flat view
+  // (manage=true), so swimlane columns stay clean.
+  const renderStateColumn = (
+    s: NativeState,
+    map: Map<string, NativeIssue[]>,
+    manage: boolean,
+    keyPrefix = "",
+  ) => (
+    <Column
+      key={keyPrefix + s.name}
+      name={s.name}
+      display={s.display ?? s.name}
+      terminal={!!s.terminal}
+      eligible={!!s.eligible}
+      color={s.color ?? defaultStateColor(s.name, !!s.eligible, !!s.terminal)}
+      issues={map.get(s.name) ?? []}
+      selectedIds={selectedIds}
+      runningByIssue={runningByIssue}
+      retryingByIssue={retryingByIssue}
+      skipByIssue={skipByIssue}
+      onDrop={onColumnDrop}
+      onClickCard={onCardClick}
+      onDragStartCard={onCardDragStart}
+      onOpenCard={(iss) => setEditing(iss)}
+      onSelectColumn={selectColumn}
+      onLabelClick={onLabelToggle}
+      activeLabels={labelFilter}
+      onCancelRun={onCancelRun}
+      onOpenRun={(runId) => setLocation(`/runs/${encodeURIComponent(runId)}`)}
+      dimmed={dispatcherPaused}
+      onEditColumn={manage ? columns.onEditColumn : undefined}
+      onDeleteColumn={manage ? columns.onDeleteColumn : undefined}
+      onMoveColumn={manage ? columns.onMoveColumn : undefined}
+      onReorderColumn={manage ? columns.onReorderColumn : undefined}
+    />
+  );
+
+  const renderUnmapped = (map: Map<string, NativeIssue[]>, keyPrefix = "") =>
+    (map.get("__unmapped__")?.length ?? 0) > 0 ? (
+      <Column
+        key={keyPrefix + "__unmapped__"}
+        name="__unmapped__"
+        display="Unmapped"
+        terminal={false}
+        eligible={false}
+        color="var(--color-board-backlog)"
+        issues={map.get("__unmapped__") ?? []}
+        selectedIds={selectedIds}
+        runningByIssue={runningByIssue}
+        retryingByIssue={retryingByIssue}
+        skipByIssue={skipByIssue}
+        onDrop={onColumnDrop}
+        onClickCard={onCardClick}
+        onDragStartCard={onCardDragStart}
+        onOpenCard={(iss) => setEditing(iss)}
+        onSelectColumn={selectColumn}
+        onLabelClick={onLabelToggle}
+        activeLabels={labelFilter}
+        onCancelRun={onCancelRun}
+        onOpenRun={(runId) => setLocation(`/runs/${encodeURIComponent(runId)}`)}
+        dimmed={dispatcherPaused}
+      />
+    ) : null;
+
   return (
     <div className="h-full flex flex-col overflow-hidden">
       <DispatcherControlBar onOpenSettings={() => setSettingsOpen(true)} />
@@ -441,10 +516,14 @@ export default function BoardView() {
         onAssigneeChange={setAssigneeFilter}
         sortMode={sortMode}
         onSortChange={setSortMode}
+        groupMode={groupMode}
+        onGroupChange={setGroupMode}
+        fieldNames={(board.fields ?? []).map((f) => f.name)}
         onReset={() => {
           setSearchQuery("");
           clearLabelFilter();
           setAssigneeFilter("");
+          setGroupMode("none");
         }}
       />
 
@@ -479,61 +558,34 @@ export default function BoardView() {
           if (selectedIds.size > 0) setSingleSelection(null);
         }}
       >
-        <div className="flex gap-3 min-w-fit">
-          {board.states.map((s) => (
-            <Column
-              key={s.name}
-              name={s.name}
-              display={s.display ?? s.name}
-              terminal={!!s.terminal}
-              eligible={!!s.eligible}
-              color={s.color ?? defaultStateColor(s.name, !!s.eligible, !!s.terminal)}
-              issues={byState.get(s.name) ?? []}
-              selectedIds={selectedIds}
-              runningByIssue={runningByIssue}
-              retryingByIssue={retryingByIssue}
-              skipByIssue={skipByIssue}
-              onDrop={onColumnDrop}
-              onClickCard={onCardClick}
-              onDragStartCard={onCardDragStart}
-              onOpenCard={(iss) => setEditing(iss)}
-              onSelectColumn={selectColumn}
-              onLabelClick={onLabelToggle}
-              activeLabels={labelFilter}
-              onCancelRun={onCancelRun}
-              onOpenRun={(runId) => setLocation(`/runs/${encodeURIComponent(runId)}`)}
-              dimmed={dispatcherPaused}
-              onEditColumn={columns.onEditColumn}
-              onDeleteColumn={columns.onDeleteColumn}
-              onMoveColumn={columns.onMoveColumn}
-              onReorderColumn={columns.onReorderColumn}
-            />
-          ))}
-          {(byState.get("__unmapped__")?.length ?? 0) > 0 && (
-            <Column
-              name="__unmapped__"
-              display="Unmapped"
-              terminal={false}
-              eligible={false}
-              color="var(--color-board-backlog)"
-              issues={byState.get("__unmapped__") ?? []}
-              selectedIds={selectedIds}
-              runningByIssue={runningByIssue}
-              retryingByIssue={retryingByIssue}
-              skipByIssue={skipByIssue}
-              onDrop={onColumnDrop}
-              onClickCard={onCardClick}
-              onDragStartCard={onCardDragStart}
-              onOpenCard={(iss) => setEditing(iss)}
-              onSelectColumn={selectColumn}
-              onLabelClick={onLabelToggle}
-              activeLabels={labelFilter}
-              onCancelRun={onCancelRun}
-              onOpenRun={(runId) => setLocation(`/runs/${encodeURIComponent(runId)}`)}
-              dimmed={dispatcherPaused}
-            />
-          )}
-        </div>
+        {swimlanes ? (
+          <div className="flex flex-col gap-4 min-w-fit">
+            {swimlanes.length === 0 && (
+              <div className="text-fg-muted text-xs p-4">
+                No issues to group by this dimension.
+              </div>
+            )}
+            {swimlanes.map((lane) => (
+              <section key={lane.key} className="space-y-2">
+                <h2 className="text-xs font-semibold text-fg-default flex items-center gap-2 sticky left-0">
+                  <span className="uppercase tracking-wide">{lane.label}</span>
+                  <span className="text-fg-muted font-normal">{lane.count}</span>
+                </h2>
+                <div className="flex gap-3 min-w-fit">
+                  {board.states.map((s) =>
+                    renderStateColumn(s, lane.byState, false, lane.key + "::"),
+                  )}
+                  {renderUnmapped(lane.byState, lane.key + "::")}
+                </div>
+              </section>
+            ))}
+          </div>
+        ) : (
+          <div className="flex gap-3 min-w-fit">
+            {board.states.map((s) => renderStateColumn(s, byState, true))}
+            {renderUnmapped(byState)}
+          </div>
+        )}
       </div>
 
       {creating && (

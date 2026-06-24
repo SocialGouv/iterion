@@ -33,6 +33,23 @@ export const PRIORITY_PRESETS = [0, 1, 2, 3, 5, 10, 20, 30];
 // Intra-column ordering modes offered by the board's Sort selector.
 export type SortMode = "priority" | "updated" | "created" | "title";
 
+// Swimlane grouping. "none" renders the flat board; the others split the
+// board into horizontal lanes (rows) keyed by the chosen dimension, with
+// the columns repeated inside each lane. A "field:<name>" value groups by
+// a custom field, so the type stays an open string.
+export type GroupMode = string;
+
+export const BASE_GROUP_OPTIONS: { value: GroupMode; label: string }[] = [
+  { value: "none", label: "No grouping" },
+  { value: "assignee", label: "Assignee" },
+  { value: "label", label: "Label" },
+  { value: "priority", label: "Priority" },
+];
+
+// Sentinel lane key for issues with no value for the grouping dimension
+// (no assignee, no labels, empty field). Always sorted last.
+export const LANE_NONE = "__none__";
+
 export const SORT_OPTIONS: { value: SortMode; label: string }[] = [
   { value: "priority", label: "Priority" },
   { value: "updated", label: "Recently updated" },
