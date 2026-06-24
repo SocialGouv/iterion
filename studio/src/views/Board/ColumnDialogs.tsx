@@ -17,46 +17,13 @@
 import { useState } from "react";
 
 import type { NativeState } from "@/api/native";
-import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Dialog } from "@/components/ui/Dialog";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 
 import { BOARD_PALETTE, defaultStateColor } from "./boardShared";
-
-function ModalActions({
-  onCancel,
-  primaryLabel,
-  primaryVariant,
-  onPrimary,
-  busy,
-  disabled,
-}: {
-  onCancel: () => void;
-  primaryLabel: string;
-  primaryVariant: "primary" | "danger";
-  onPrimary: () => void;
-  busy: boolean;
-  disabled?: boolean;
-}) {
-  return (
-    <>
-      <Button variant="secondary" size="sm" onClick={onCancel} disabled={busy}>
-        Cancel
-      </Button>
-      <Button
-        variant={primaryVariant}
-        size="sm"
-        onClick={onPrimary}
-        loading={busy}
-        disabled={busy || disabled}
-      >
-        {busy ? "…" : primaryLabel}
-      </Button>
-    </>
-  );
-}
+import { ModalActions } from "./ModalActions";
 
 // Shared swatch grid + flags editor used by Add and Edit.
 function ColumnAppearance({

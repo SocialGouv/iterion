@@ -50,6 +50,39 @@ export const BASE_GROUP_OPTIONS: { value: GroupMode; label: string }[] = [
 // (no assignee, no labels, empty field). Always sorted last.
 export const LANE_NONE = "__none__";
 
+// A GroupMode of `field:<name>` groups by a custom field. The prefix
+// encoding lives here so the producer (BoardFilters' option list) and the
+// consumer (useSwimlanes' decode) share one source of truth.
+const FIELD_GROUP_PREFIX = "field:";
+
+export function groupModeForField(name: string): GroupMode {
+  return `${FIELD_GROUP_PREFIX}${name}`;
+}
+
+// moveInArray returns a new copy of `items` with `name` shifted by `delta`
+// (-1 = earlier, +1 = later), or null when the move is out of bounds /
+// the item is absent. Shared by the column (left/right) and field (up/down)
+// one-step reorder controls.
+export function moveInArray(items: string[], name: string, delta: -1 | 1): string[] | null {
+  const i = items.indexOf(name);
+  const j = i + delta;
+  const a = items[i];
+  const b = items[j];
+  if (a === undefined || b === undefined) return null;
+  const out = items.slice();
+  out[i] = b;
+  out[j] = a;
+  return out;
+}
+
+// fieldNameFromGroupMode returns the custom-field name a GroupMode targets,
+// or null when it's a built-in dimension (none/assignee/label/priority).
+export function fieldNameFromGroupMode(mode: GroupMode): string | null {
+  return mode.startsWith(FIELD_GROUP_PREFIX)
+    ? mode.slice(FIELD_GROUP_PREFIX.length)
+    : null;
+}
+
 export const SORT_OPTIONS: { value: SortMode; label: string }[] = [
   { value: "priority", label: "Priority" },
   { value: "updated", label: "Recently updated" },

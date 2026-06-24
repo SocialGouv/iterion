@@ -2,7 +2,12 @@ import { useMemo } from "react";
 
 import type { NativeBoard, NativeIssue } from "@/api/native";
 
-import { LANE_NONE, type GroupMode, type SortMode } from "../boardShared";
+import {
+  fieldNameFromGroupMode,
+  LANE_NONE,
+  type GroupMode,
+  type SortMode,
+} from "../boardShared";
 
 import { sortComparator } from "./boardSort";
 
@@ -30,9 +35,9 @@ function laneKeysFor(iss: NativeIssue, groupMode: GroupMode): string[] {
     const labels = iss.labels ?? [];
     return labels.length > 0 ? labels : [LANE_NONE];
   }
-  if (groupMode.startsWith("field:")) {
-    const name = groupMode.slice("field:".length);
-    const v = iss.fields?.[name];
+  const fieldName = fieldNameFromGroupMode(groupMode);
+  if (fieldName) {
+    const v = iss.fields?.[fieldName];
     if (v === undefined || v === null || v === "") return [LANE_NONE];
     return [String(v)];
   }

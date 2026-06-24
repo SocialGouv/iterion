@@ -123,6 +123,17 @@ func (b *Board) stateIndex(name string) int {
 	return -1
 }
 
+// fieldIndex returns the position of the field matching name, or -1.
+// Symmetric to stateIndex; the field mutators need the slice index.
+func (b *Board) fieldIndex(name string) int {
+	for i := range b.Fields {
+		if b.Fields[i].Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
 // FieldByName returns the field matching name, or nil.
 func (b *Board) FieldByName(name string) *Field {
 	for i := range b.Fields {

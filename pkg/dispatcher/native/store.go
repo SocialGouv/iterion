@@ -530,13 +530,7 @@ func (s *Store) UpdateField(name string, p FieldPatch) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	defer s.recoverMutator("UpdateField", &err)
-	idx := -1
-	for i := range s.board.Fields {
-		if s.board.Fields[i].Name == name {
-			idx = i
-			break
-		}
-	}
+	idx := s.board.fieldIndex(name)
 	if idx < 0 {
 		return fmt.Errorf("native store: unknown field %q", name)
 	}
@@ -575,13 +569,7 @@ func (s *Store) RenameField(from, to string) (touched int, err error) {
 	if from == to {
 		return 0, nil
 	}
-	idx := -1
-	for i := range s.board.Fields {
-		if s.board.Fields[i].Name == from {
-			idx = i
-			break
-		}
-	}
+	idx := s.board.fieldIndex(from)
 	if idx < 0 {
 		return 0, fmt.Errorf("native store: unknown field %q", from)
 	}
@@ -623,13 +611,7 @@ func (s *Store) DeleteField(name string) (touched int, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	defer s.recoverMutator("DeleteField", &err)
-	idx := -1
-	for i := range s.board.Fields {
-		if s.board.Fields[i].Name == name {
-			idx = i
-			break
-		}
-	}
+	idx := s.board.fieldIndex(name)
 	if idx < 0 {
 		return 0, fmt.Errorf("native store: unknown field %q", name)
 	}
@@ -659,27 +641,43 @@ func (s *Store) DeleteField(name string) (touched int, err error) {
 	})
 }
 
+// reorderByName validates that `order` is a permutation of the names of
+// `items` (per the name accessor) and returns a new slice in that order.
+// `kind` labels errors ("state"/"field"). Shared by ReorderStates and
+// ReorderFields, whose only difference is the element type.
+func reorderByName[T any](items []T, order []string, name func(T) string, kind string) ([]T, error) {
+	if len(order) != len(items) {
+		return nil, fmt.Errorf("native store: reorder expects %d %ss, got %d", len(items), kind, len(order))
+	}
+	pos := make(map[string]int, len(items))
+	for i, it := range items {
+		pos[name(it)] = i
+	}
+	seen := map[string]bool{}
+	out := make([]T, 0, len(order))
+	for _, n := range order {
+		if seen[n] {
+			return nil, fmt.Errorf("native store: duplicate %s %q in reorder", kind, n)
+		}
+		i, ok := pos[n]
+		if !ok {
+			return nil, fmt.Errorf("native store: unknown %s %q in reorder", kind, n)
+		}
+		seen[n] = true
+		out = append(out, items[i])
+	}
+	return out, nil
+}
+
 // ReorderFields rewrites the field order. `order` must be a permutation
 // of the current field names. Never touches issues.
 func (s *Store) ReorderFields(order []string) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	defer s.recoverMutator("ReorderFields", &err)
-	if len(order) != len(s.board.Fields) {
-		return fmt.Errorf("native store: reorder expects %d fields, got %d", len(s.board.Fields), len(order))
-	}
-	seen := map[string]bool{}
-	reordered := make([]Field, 0, len(order))
-	for _, name := range order {
-		if seen[name] {
-			return fmt.Errorf("native store: duplicate field %q in reorder", name)
-		}
-		f := s.board.FieldByName(name)
-		if f == nil {
-			return fmt.Errorf("native store: unknown field %q in reorder", name)
-		}
-		seen[name] = true
-		reordered = append(reordered, *f)
+	reordered, err := reorderByName(s.board.Fields, order, func(f Field) string { return f.Name }, "field")
+	if err != nil {
+		return err
 	}
 	next := cloneBoard(s.board)
 	next.Fields = reordered
@@ -760,21 +758,9 @@ func (s *Store) ReorderStates(order []string) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	defer s.recoverMutator("ReorderStates", &err)
-	if len(order) != len(s.board.States) {
-		return fmt.Errorf("native store: reorder expects %d states, got %d", len(s.board.States), len(order))
-	}
-	seen := map[string]bool{}
-	reordered := make([]State, 0, len(order))
-	for _, name := range order {
-		if seen[name] {
-			return fmt.Errorf("native store: duplicate state %q in reorder", name)
-		}
-		st := s.board.StateByName(name)
-		if st == nil {
-			return fmt.Errorf("native store: unknown state %q in reorder", name)
-		}
-		seen[name] = true
-		reordered = append(reordered, *st)
+	reordered, err := reorderByName(s.board.States, order, func(st State) string { return st.Name }, "state")
+	if err != nil {
+		return err
 	}
 	next := cloneBoard(s.board)
 	next.States = reordered

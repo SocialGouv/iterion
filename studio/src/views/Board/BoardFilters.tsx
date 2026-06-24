@@ -6,6 +6,7 @@ import { Select } from "@/components/ui/Select";
 
 import {
   BASE_GROUP_OPTIONS,
+  groupModeForField,
   SORT_OPTIONS,
   type GroupMode,
   type SortMode,
@@ -114,7 +115,7 @@ export function BoardFilters({
             </option>
           ))}
           {fieldNames.map((n) => (
-            <option key={`field:${n}`} value={`field:${n}`}>
+            <option key={groupModeForField(n)} value={groupModeForField(n)}>
               Field: {n}
             </option>
           ))}

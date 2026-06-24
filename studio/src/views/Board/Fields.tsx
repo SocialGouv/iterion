@@ -37,6 +37,9 @@ import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { useConfirm } from "@/hooks/useConfirm";
 import { errorMessage } from "@/lib/errorHints";
 
+import { moveInArray } from "./boardShared";
+import { ModalActions } from "./ModalActions";
+
 const FIELD_TYPES: NativeFieldType[] = ["text", "number", "enum", "date", "bool"];
 
 type DialogState =
@@ -106,16 +109,14 @@ function FieldsViewInner() {
 
   const onMove = useCallback(
     (name: string, dir: "up" | "down") => {
-      const names = fields.map((f) => f.name);
-      const i = names.indexOf(name);
-      const j = dir === "up" ? i - 1 : i + 1;
-      const a = names[i];
-      const b = names[j];
-      if (a === undefined || b === undefined) return;
-      names[i] = b;
-      names[j] = a;
+      const next = moveInArray(
+        fields.map((f) => f.name),
+        name,
+        dir === "up" ? -1 : 1,
+      );
+      if (!next) return;
       void action.run(async () => {
-        await reorderFields(names);
+        await reorderFields(next);
         await refresh();
         return true;
       });
@@ -300,28 +301,21 @@ function FieldDialog({
       title={mode === "add" ? "Add field" : `Edit “${field?.display ?? field?.name}”`}
       widthClass="max-w-md"
       footer={
-        <>
-          <Button variant="secondary" size="sm" onClick={onCancel} disabled={busy}>
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            size="sm"
-            loading={busy}
-            disabled={busy || invalid}
-            onClick={() =>
-              onSubmit({
-                name: trimmed,
-                display: display.trim() || undefined,
-                type,
-                required: required || undefined,
-                enum_values: type === "enum" ? enumValues : undefined,
-              })
-            }
-          >
-            {busy ? "…" : mode === "add" ? "Add field" : "Save"}
-          </Button>
-        </>
+        <ModalActions
+          onCancel={onCancel}
+          primaryLabel={mode === "add" ? "Add field" : "Save"}
+          busy={busy}
+          disabled={invalid}
+          onPrimary={() =>
+            onSubmit({
+              name: trimmed,
+              display: display.trim() || undefined,
+              type,
+              required: required || undefined,
+              enum_values: type === "enum" ? enumValues : undefined,
+            })
+          }
+        />
       }
     >
       <div className="space-y-3">

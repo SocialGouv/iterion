@@ -11,6 +11,8 @@ import { Dialog } from "@/components/ui/Dialog";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 
+import { ModalActions } from "./ModalActions";
+
 export function ViewBar({
   views,
   activeView,
@@ -139,20 +141,13 @@ function SaveDialog({
       description="Captures the current search, label/assignee filters, sort, and grouping under a name. Saving over an existing name updates it."
       widthClass="max-w-md"
       footer={
-        <>
-          <Button variant="secondary" size="sm" onClick={onCancel} disabled={busy}>
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            size="sm"
-            loading={busy}
-            disabled={busy || trimmed === ""}
-            onClick={onSubmit}
-          >
-            {overwrite ? "Update" : "Save"}
-          </Button>
-        </>
+        <ModalActions
+          onCancel={onCancel}
+          primaryLabel={overwrite ? "Update" : "Save"}
+          busy={busy}
+          disabled={trimmed === ""}
+          onPrimary={onSubmit}
+        />
       }
     >
       <label className="block space-y-1">

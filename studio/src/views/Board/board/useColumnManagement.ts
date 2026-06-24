@@ -18,6 +18,8 @@ import {
 } from "@/api/native";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 
+import { moveInArray } from "../boardShared";
+
 type ColumnDialog =
   | { kind: "none" }
   | { kind: "add" }
@@ -121,14 +123,8 @@ export function useColumnManagement({
     (name: string, dir: "left" | "right") => {
       if (!board) return;
       const names = board.states.map((s) => s.name);
-      const i = names.indexOf(name);
-      const j = dir === "left" ? i - 1 : i + 1;
-      const a = names[i];
-      const b = names[j];
-      if (a === undefined || b === undefined) return;
-      names[i] = b;
-      names[j] = a;
-      void reorder(names);
+      const next = moveInArray(names, name, dir === "left" ? -1 : 1);
+      if (next) void reorder(next);
     },
     [board, reorder],
   );
