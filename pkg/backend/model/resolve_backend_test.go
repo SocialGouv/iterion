@@ -27,6 +27,27 @@ func resetEnvForResolve(t *testing.T) {
 		t.Setenv(k, "")
 	}
 	t.Setenv("HOME", t.TempDir())
+	// Point PATH at an empty dir so the detector can't discover the host's
+	// real `claude`/`codex` binaries. Without this, the claude_code probe's
+	// `claude auth status` fallback would spawn the real CLI during these
+	// unit tests — non-deterministic across hosts and, worse, the CLI writes
+	// `.claude.json.backup` files into the test cwd. Tests that need a binary
+	// present install a fake one on PATH explicitly (see fakeExecOnPath).
+	t.Setenv("PATH", t.TempDir())
+}
+
+// fakeExecOnPath drops a no-op executable named `name` into a fresh dir and
+// prepends that dir to PATH, so the detector's binary probe (exec.LookPath)
+// finds it without invoking the host's real CLI. PATH is restored on cleanup
+// via t.Setenv.
+func fakeExecOnPath(t *testing.T, name string) {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, name)
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 // newExecutorForResolveTest returns a minimal executor wired to a fresh
@@ -102,21 +123,10 @@ func TestResolveBackend_DetectClaudeOAuth(t *testing.T) {
 	if err := os.WriteFile(credPath, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Also need a `claude` binary discoverable. We can't easily mock PATH
-	// here without breaking other tests, so verify the detect report
-	// agrees that claude_code is unavailable on this machine if the
-	// binary is absent — and skip if so. CI / dev boxes usually have
-	// `claude` installed; if not, we just confirm the fallback.
-	report := detect.Detect(t.Context())
-	var claudeAvail bool
-	for _, b := range report.Backends {
-		if b.Name == detect.BackendClaudeCode {
-			claudeAvail = b.Available
-		}
-	}
-	if !claudeAvail {
-		t.Skip("claude binary not discoverable on this host; skipping OAuth-resolution check")
-	}
+	// claude_code requires a discoverable `claude` binary AND an OAuth
+	// credential. The creds file above supplies the credential; install a
+	// fake binary so the file probe wins without spawning the real CLI.
+	fakeExecOnPath(t, "claude")
 	e := newExecutorForResolveTest("")
 	got := e.resolveBackendName(&ir.AgentNode{})
 	if got != detect.BackendClaudeCode {
