@@ -211,6 +211,12 @@ func (s *Store) Board() *Board {
 // both the live store and on-disk state consistent on the old board
 // — the previous order (swap → write) silently diverged in-memory
 // from disk on EIO / quota / permission errors (F-CD-9).
+//
+// SetBoard does NOT migrate issues: replacing the state list here leaves
+// issues pointing at states that may no longer exist (they fall into the
+// studio's "__unmapped__" bucket). Use it only for whole-board seeds and
+// no-migration edits. Column renames/deletes that must move issues go
+// through RenameState/DeleteState, which cascade across the issue files.
 func (s *Store) SetBoard(b *Board) (err error) {
 	if err := b.Validate(); err != nil {
 		return err
@@ -226,6 +232,253 @@ func (s *Store) SetBoard(b *Board) (err error) {
 		return err
 	}
 	return s.emitPostCommitEvent(Event{Type: EvtBoardUpdated})
+}
+
+// ErrStateNotEmpty is returned by DeleteState when the target column
+// still holds issues and no migration target was supplied. The HTTP
+// layer maps it to 409 so the UI can prompt for a destination column.
+var ErrStateNotEmpty = errors.New("native store: state has issues; migration target required")
+
+// setBoardLocked validates a candidate board, swaps it in, and persists
+// it, rolling back to the previous board on a write failure (mirrors
+// SetBoard's commit discipline). The caller already holds s.mu. It does
+// NOT emit an event — column mutators emit a precise EvtBoardUpdated with
+// an op discriminator after any per-issue cascade completes.
+func (s *Store) setBoardLocked(next *Board) error {
+	if err := next.Validate(); err != nil {
+		return err
+	}
+	prev := s.board
+	s.board = next
+	if err := s.writeBoardLocked(); err != nil {
+		s.board = prev
+		return err
+	}
+	return nil
+}
+
+// migrateStateLocked rewrites every indexed issue in state `from` to
+// state `to`, emitting one EvtIssueState per touched issue with the
+// given reason. The caller already holds s.mu and has validated both
+// states. Returns the number of issues moved. A mid-loop write failure
+// leaves earlier issues migrated and later ones untouched — acceptable
+// and self-consistent (those issues simply stay in `from` until retried,
+// or surface in the "__unmapped__" bucket if the column is already gone);
+// recoverMutator rebuilds the index from disk on panic. Mirrors the
+// partial-progress contract of applyLabelRewriteLocked.
+func (s *Store) migrateStateLocked(from, to, reason string) (int, error) {
+	touched := 0
+	for id, iss := range s.index {
+		if iss.State != from {
+			continue
+		}
+		// Clone before mutating: index entries are shared with reader
+		// goroutines holding earlier defensive copies.
+		next := cloneIssue(iss)
+		next.State = to
+		next.UpdatedAt = time.Now().UTC()
+		if err := s.writeIssueLocked(next); err != nil {
+			return touched, fmt.Errorf("native store: write %s during state migration: %w", id, err)
+		}
+		s.index[id] = next
+		if err := s.emitPostCommitEvent(Event{
+			Type:    EvtIssueState,
+			IssueID: id,
+			Payload: map[string]any{"from": from, "to": to, "reason": reason},
+		}); err != nil {
+			return touched, err
+		}
+		touched++
+	}
+	return touched, nil
+}
+
+// AddState appends a new column to the board. The column lands last; the
+// operator reorders afterward via ReorderStates. Rejects an empty or
+// duplicate name. No issue migration.
+func (s *Store) AddState(st State) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("AddState", &err)
+	if st.Name == "" {
+		return errors.New("native store: state name cannot be empty")
+	}
+	if s.board.StateByName(st.Name) != nil {
+		return fmt.Errorf("native store: state %q already exists", st.Name)
+	}
+	next := cloneBoard(s.board)
+	next.States = append(next.States, st)
+	if err := s.setBoardLocked(next); err != nil {
+		return err
+	}
+	return s.emitPostCommitEvent(Event{
+		Type:    EvtBoardUpdated,
+		Payload: map[string]any{"op": "state_add", "state": st.Name},
+	})
+}
+
+// RenameState renames a column and cascades the change to every issue in
+// it. Renaming onto an existing column is refused (it would silently
+// merge two columns' semantics — delete-with-migrate is the explicit path
+// for that). Renaming to itself is a no-op. Returns the number of issues
+// touched. The board is renamed first, then issues are migrated, so a
+// mid-cascade failure leaves a renamed column with some issues still
+// carrying the old name (they land in "__unmapped__" until retried).
+func (s *Store) RenameState(from, to string) (touched int, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("RenameState", &err)
+	if from == "" || to == "" {
+		return 0, errors.New("native store: state name cannot be empty")
+	}
+	if from == to {
+		return 0, nil
+	}
+	idx := s.board.stateIndex(from)
+	if idx < 0 {
+		return 0, fmt.Errorf("native store: unknown state %q", from)
+	}
+	if s.board.StateByName(to) != nil {
+		return 0, fmt.Errorf("native store: target state %q already exists; delete-with-migrate to merge columns", to)
+	}
+	next := cloneBoard(s.board)
+	next.States[idx].Name = to
+	if err := s.setBoardLocked(next); err != nil {
+		return 0, err
+	}
+	touched, err = s.migrateStateLocked(from, to, "state_rename")
+	if err != nil {
+		return touched, err
+	}
+	return touched, s.emitPostCommitEvent(Event{
+		Type:    EvtBoardUpdated,
+		Payload: map[string]any{"op": "state_rename", "from": from, "to": to},
+	})
+}
+
+// DeleteState removes a column. If it still holds issues, migrateTo must
+// name another existing column to receive them (else ErrStateNotEmpty).
+// Refuses to delete the last remaining column. Issues are migrated first,
+// then the column is dropped, so no issue is ever left in a column that
+// no longer exists. Returns the number of issues migrated.
+func (s *Store) DeleteState(name, migrateTo string) (touched int, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("DeleteState", &err)
+	if s.board.stateIndex(name) < 0 {
+		return 0, fmt.Errorf("native store: unknown state %q", name)
+	}
+	if len(s.board.States) <= 1 {
+		return 0, errors.New("native store: cannot delete the last column")
+	}
+	count := 0
+	for _, iss := range s.index {
+		if iss.State == name {
+			count++
+		}
+	}
+	if count > 0 {
+		if migrateTo == "" {
+			return 0, ErrStateNotEmpty
+		}
+		if migrateTo == name {
+			return 0, errors.New("native store: migration target must differ from the deleted state")
+		}
+		if s.board.StateByName(migrateTo) == nil {
+			return 0, fmt.Errorf("native store: unknown migration target %q", migrateTo)
+		}
+		touched, err = s.migrateStateLocked(name, migrateTo, "state_delete")
+		if err != nil {
+			return touched, err
+		}
+	}
+	next := cloneBoard(s.board)
+	idx := next.stateIndex(name)
+	next.States = append(next.States[:idx], next.States[idx+1:]...)
+	if err := s.setBoardLocked(next); err != nil {
+		return touched, err
+	}
+	return touched, s.emitPostCommitEvent(Event{
+		Type:    EvtBoardUpdated,
+		Payload: map[string]any{"op": "state_delete", "state": name, "migrate_to": migrateTo},
+	})
+}
+
+// StatePatch carries the editable per-column fields for UpdateState.
+// Nil pointers leave the corresponding field untouched.
+type StatePatch struct {
+	Display  *string `json:"display,omitempty"`
+	Color    *string `json:"color,omitempty"`
+	Eligible *bool   `json:"eligible,omitempty"`
+	Terminal *bool   `json:"terminal,omitempty"`
+}
+
+// UpdateState edits a column's display name, color, and eligible/terminal
+// flags. It never renames (that cascades — use RenameState) and never
+// migrates issues.
+func (s *Store) UpdateState(name string, p StatePatch) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("UpdateState", &err)
+	idx := s.board.stateIndex(name)
+	if idx < 0 {
+		return fmt.Errorf("native store: unknown state %q", name)
+	}
+	next := cloneBoard(s.board)
+	st := &next.States[idx]
+	if p.Display != nil {
+		st.Display = *p.Display
+	}
+	if p.Color != nil {
+		st.Color = *p.Color
+	}
+	if p.Eligible != nil {
+		st.Eligible = *p.Eligible
+	}
+	if p.Terminal != nil {
+		st.Terminal = *p.Terminal
+	}
+	if err := s.setBoardLocked(next); err != nil {
+		return err
+	}
+	return s.emitPostCommitEvent(Event{
+		Type:    EvtBoardUpdated,
+		Payload: map[string]any{"op": "state_update", "state": name},
+	})
+}
+
+// ReorderStates rewrites the column order. `order` must be a permutation
+// of the current state names (same set, no missing/extra/duplicate
+// entries). Never migrates issues.
+func (s *Store) ReorderStates(order []string) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("ReorderStates", &err)
+	if len(order) != len(s.board.States) {
+		return fmt.Errorf("native store: reorder expects %d states, got %d", len(s.board.States), len(order))
+	}
+	seen := map[string]bool{}
+	reordered := make([]State, 0, len(order))
+	for _, name := range order {
+		if seen[name] {
+			return fmt.Errorf("native store: duplicate state %q in reorder", name)
+		}
+		st := s.board.StateByName(name)
+		if st == nil {
+			return fmt.Errorf("native store: unknown state %q in reorder", name)
+		}
+		seen[name] = true
+		reordered = append(reordered, *st)
+	}
+	next := cloneBoard(s.board)
+	next.States = reordered
+	if err := s.setBoardLocked(next); err != nil {
+		return err
+	}
+	return s.emitPostCommitEvent(Event{
+		Type:    EvtBoardUpdated,
+		Payload: map[string]any{"op": "state_reorder"},
+	})
 }
 
 // Create persists a new issue. The State must be one of the configured

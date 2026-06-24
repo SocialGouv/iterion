@@ -98,6 +98,17 @@ func (b *Board) StateByName(name string) *State {
 	return nil
 }
 
+// stateIndex returns the position of the state matching name, or -1.
+// Reorder/delete need the slice index; StateByName only yields a pointer.
+func (b *Board) stateIndex(name string) int {
+	for i := range b.States {
+		if b.States[i].Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
 // FieldByName returns the field matching name, or nil.
 func (b *Board) FieldByName(name string) *Field {
 	for i := range b.Fields {

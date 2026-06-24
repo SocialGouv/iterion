@@ -147,6 +147,44 @@ export function putBoard(board: Partial<NativeBoard>): Promise<NativeBoard> {
 }
 
 // ---------------------------------------------------------------------------
+// Column (state) management. Mirrors the native /board/states REST surface.
+// Each call returns the refreshed board so callers refresh without a
+// second getBoard(). Rename/delete cascade across issues server-side.
+// ---------------------------------------------------------------------------
+
+// Editable per-column fields. `name` triggers a cascading rename when it
+// differs from the path segment.
+export type NativeStatePatch = Partial<
+  Pick<NativeState, "name" | "display" | "color" | "eligible" | "terminal">
+>;
+
+export function addState(state: NativeState): Promise<NativeBoard> {
+  return request("/board/states", { method: "POST", body: JSON.stringify(state) });
+}
+
+export function updateState(name: string, patch: NativeStatePatch): Promise<NativeBoard> {
+  return request(`/board/states/${encodeURIComponent(name)}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
+// deleteState removes a column. When the column is non-empty and no
+// migrateTo is given, the server returns 409 (ApiError) so the caller can
+// prompt for a destination column.
+export function deleteState(name: string, migrateTo?: string): Promise<NativeBoard> {
+  const q = migrateTo ? `?migrate_to=${encodeURIComponent(migrateTo)}` : "";
+  return request(`/board/states/${encodeURIComponent(name)}${q}`, { method: "DELETE" });
+}
+
+export function reorderStates(order: string[]): Promise<NativeBoard> {
+  return request("/board/states/reorder", {
+    method: "POST",
+    body: JSON.stringify({ order }),
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Label vocabulary management. Mirrors the native /labels REST surface.
 // ---------------------------------------------------------------------------
 

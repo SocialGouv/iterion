@@ -177,6 +177,104 @@ func TestHTTPBoardGetPut(t *testing.T) {
 	}
 }
 
+func TestHTTPStateManagement(t *testing.T) {
+	srv, s := newServerWithStore(t)
+	defer srv.Close()
+	do := func(method, path string, body string) *http.Response {
+		var rdr *bytes.Buffer
+		if body != "" {
+			rdr = bytes.NewBufferString(body)
+		} else {
+			rdr = bytes.NewBuffer(nil)
+		}
+		req, _ := http.NewRequest(method, srv.URL+path, rdr)
+		req.Header.Set("Content-Type", "application/json")
+		r, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		return r
+	}
+
+	// Add a column.
+	if r := do(http.MethodPost, "/board/states", `{"name":"triage","display":"Triage"}`); r.StatusCode != 200 {
+		t.Fatalf("add state: %d", r.StatusCode)
+	} else {
+		r.Body.Close()
+	}
+	if s.Board().StateByName("triage") == nil {
+		t.Fatal("triage not added")
+	}
+
+	// Rename via PATCH (cascades) — put an issue in backlog first.
+	iss, _ := s.Create(native.Issue{Title: "x", State: "backlog"})
+	if r := do(http.MethodPatch, "/board/states/backlog", `{"name":"todo"}`); r.StatusCode != 200 {
+		t.Fatalf("rename state: %d", r.StatusCode)
+	} else {
+		r.Body.Close()
+	}
+	if got, _ := s.Get(iss.ID); got.State != "todo" {
+		t.Fatalf("issue not migrated on rename: %q", got.State)
+	}
+
+	// Edit color/flags via PATCH (no rename).
+	if r := do(http.MethodPatch, "/board/states/todo", `{"color":"var(--color-board-ready)","eligible":true}`); r.StatusCode != 200 {
+		t.Fatalf("update state: %d", r.StatusCode)
+	} else {
+		r.Body.Close()
+	}
+	if st := s.Board().StateByName("todo"); st == nil || !st.Eligible {
+		t.Fatalf("flags not updated: %+v", st)
+	}
+
+	// Delete non-empty without target → 409 + count.
+	r := do(http.MethodDelete, "/board/states/todo", "")
+	if r.StatusCode != http.StatusConflict {
+		t.Fatalf("delete non-empty: want 409, got %d", r.StatusCode)
+	}
+	var conflict struct {
+		Error string `json:"error"`
+		Count int    `json:"count"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&conflict)
+	r.Body.Close()
+	if conflict.Count != 1 {
+		t.Fatalf("conflict count = %d, want 1", conflict.Count)
+	}
+
+	// Delete with migration target.
+	if r := do(http.MethodDelete, "/board/states/todo?migrate_to=ready", ""); r.StatusCode != 200 {
+		t.Fatalf("delete with target: %d", r.StatusCode)
+	} else {
+		r.Body.Close()
+	}
+	if s.Board().StateByName("todo") != nil {
+		t.Fatal("todo not deleted")
+	}
+	if got, _ := s.Get(iss.ID); got.State != "ready" {
+		t.Fatalf("issue not migrated on delete: %q", got.State)
+	}
+
+	// Reorder.
+	names := make([]string, 0)
+	for _, st := range s.Board().States {
+		names = append(names, st.Name)
+	}
+	rev := make([]string, len(names))
+	for i := range names {
+		rev[i] = names[len(names)-1-i]
+	}
+	order, _ := json.Marshal(map[string][]string{"order": rev})
+	if r := do(http.MethodPost, "/board/states/reorder", string(order)); r.StatusCode != 200 {
+		t.Fatalf("reorder: %d", r.StatusCode)
+	} else {
+		r.Body.Close()
+	}
+	if s.Board().States[0].Name != rev[0] {
+		t.Fatal("reorder not applied")
+	}
+}
+
 func TestHTTPIDPrefix(t *testing.T) {
 	srv, s := newServerWithStore(t)
 	defer srv.Close()

@@ -17,6 +17,11 @@ import IssueModal from "./IssueModal";
 import { BoardFilters } from "./BoardFilters";
 import { BoardKeyboardHelp } from "./BoardKeyboardHelp";
 import { Column } from "./Column";
+import {
+  AddColumnDialog,
+  DeleteColumnDialog,
+  EditColumnDialog,
+} from "./ColumnDialogs";
 import { SelectionToolbar } from "./SelectionToolbar";
 import SettingsDrawer from "@/components/Dispatcher/SettingsDrawer";
 import TrackerErrorBanner from "@/components/shared/TrackerErrorBanner";
@@ -34,6 +39,7 @@ import { isDispatchable } from "./board/boardSort";
 import { useBoardData } from "./board/useBoardData";
 import { useDispatcherPoll } from "./board/useDispatcherPoll";
 import { useBoardColumns } from "./board/useBoardColumns";
+import { useColumnManagement } from "./board/useColumnManagement";
 import { useBoardSelection } from "./board/useBoardSelection";
 import { useBoardDragDrop } from "./board/useBoardDragDrop";
 import {
@@ -107,6 +113,10 @@ export default function BoardView() {
       assigneeFilter,
       sortMode,
     });
+
+  // Column (state) management: header menu + reorder drag + add/edit/
+  // delete dialogs. Mutations refresh the board+issues afterward.
+  const columns = useColumnManagement({ board, issues, refresh });
 
   // Multi-selection state + click/drag-start selection logic.
   const {
@@ -302,6 +312,14 @@ export default function BoardView() {
         >
           Labels
         </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={columns.openAddColumn}
+          title="Add a new column (board state)"
+        >
+          + Add column
+        </Button>
         <Button variant="secondary" size="sm" onClick={() => void refresh()}>
           Refresh
         </Button>
@@ -333,6 +351,49 @@ export default function BoardView() {
   }
   if (!board) {
     return <EmptyBoard kind="missing" />;
+  }
+
+  // Build the active column dialog at statement level so the discriminated
+  // union narrows cleanly (it wouldn't inside JSX .map/.filter callbacks).
+  const colDialog = columns.dialog;
+  let columnDialogNode: React.ReactNode = null;
+  if (colDialog.kind === "add") {
+    columnDialogNode = (
+      <AddColumnDialog
+        existingNames={board.states.map((s) => s.name)}
+        busy={columns.busy}
+        error={columns.error}
+        onCancel={columns.closeDialog}
+        onSubmit={columns.submitAdd}
+      />
+    );
+  } else if (colDialog.kind === "edit") {
+    const st = colDialog.state;
+    columnDialogNode = (
+      <EditColumnDialog
+        state={st}
+        issueCount={columns.issueCount(st.name)}
+        existingNames={board.states.map((s) => s.name).filter((n) => n !== st.name)}
+        busy={columns.busy}
+        error={columns.error}
+        onCancel={columns.closeDialog}
+        onSubmit={columns.submitEdit}
+      />
+    );
+  } else if (colDialog.kind === "delete") {
+    const st = colDialog.state;
+    columnDialogNode = (
+      <DeleteColumnDialog
+        state={st}
+        issueCount={columns.issueCount(st.name)}
+        otherStates={board.states.filter((s) => s.name !== st.name)}
+        isLast={board.states.length <= 1}
+        busy={columns.busy}
+        error={columns.error}
+        onCancel={columns.closeDialog}
+        onSubmit={columns.submitDelete}
+      />
+    );
   }
 
   return (
@@ -434,6 +495,10 @@ export default function BoardView() {
               onCancelRun={onCancelRun}
               onOpenRun={(runId) => setLocation(`/runs/${encodeURIComponent(runId)}`)}
               dimmed={dispatcherPaused}
+              onEditColumn={columns.onEditColumn}
+              onDeleteColumn={columns.onDeleteColumn}
+              onMoveColumn={columns.onMoveColumn}
+              onReorderColumn={columns.onReorderColumn}
             />
           ))}
           {(byState.get("__unmapped__")?.length ?? 0) > 0 && (
@@ -492,6 +557,7 @@ export default function BoardView() {
           }
         />
       )}
+      {columnDialogNode}
       {confirmDialog}
       {helpOpen && <BoardKeyboardHelp onClose={() => setHelpOpen(false)} />}
     </div>

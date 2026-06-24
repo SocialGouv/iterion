@@ -43,6 +43,10 @@ func (s *Store) RegisterRoutesWithMiddleware(mux *http.ServeMux, prefix string, 
 	mux.Handle("DELETE "+p+"/labels/{label}", wrap(http.HandlerFunc(s.handleDeleteLabel)))
 	mux.Handle("GET "+p+"/board", wrap(http.HandlerFunc(s.handleGetBoard)))
 	mux.Handle("PUT "+p+"/board", wrap(http.HandlerFunc(s.handlePutBoard)))
+	mux.Handle("POST "+p+"/board/states", wrap(http.HandlerFunc(s.handleAddState)))
+	mux.Handle("POST "+p+"/board/states/reorder", wrap(http.HandlerFunc(s.handleReorderStates)))
+	mux.Handle("PATCH "+p+"/board/states/{name}", wrap(http.HandlerFunc(s.handleUpdateState)))
+	mux.Handle("DELETE "+p+"/board/states/{name}", wrap(http.HandlerFunc(s.handleDeleteState)))
 }
 
 // ---------------------------------------------------------------------------
@@ -384,6 +388,125 @@ func (s *Store) handlePutBoard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.Board())
+}
+
+// stateUpdateReq is the PATCH /board/states/{name} body. A non-nil Name
+// that differs from the path segment triggers a cascading rename (issues
+// in the column follow); the remaining fields are applied afterward.
+type stateUpdateReq struct {
+	Name     *string `json:"name,omitempty"`
+	Display  *string `json:"display,omitempty"`
+	Color    *string `json:"color,omitempty"`
+	Eligible *bool   `json:"eligible,omitempty"`
+	Terminal *bool   `json:"terminal,omitempty"`
+}
+
+type reorderStatesReq struct {
+	Order []string `json:"order"`
+}
+
+// stateDeleteConflictResp is the 409 body returned when a non-empty
+// column is deleted without a migration target. `count` lets the UI
+// prompt "move N issues to…".
+type stateDeleteConflictResp struct {
+	Error string `json:"error"`
+	Count int    `json:"count"`
+}
+
+// handleAddState POST /board/states: appends a new column. Body is a
+// State. Returns the refreshed board.
+func (s *Store) handleAddState(w http.ResponseWriter, r *http.Request) {
+	var st State
+	if err := json.NewDecoder(r.Body).Decode(&st); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.AddState(st); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.Board())
+}
+
+// handleUpdateState PATCH /board/states/{name}: edits a column's
+// display/color/flags and, when the body carries a different `name`,
+// renames it first (cascading to issues). Returns the refreshed board.
+func (s *Store) handleUpdateState(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var in stateUpdateReq
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	target := name
+	if in.Name != nil && *in.Name != name {
+		if _, err := s.RenameState(name, *in.Name); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		target = *in.Name
+	}
+	if in.Display != nil || in.Color != nil || in.Eligible != nil || in.Terminal != nil {
+		if err := s.UpdateState(target, StatePatch{
+			Display:  in.Display,
+			Color:    in.Color,
+			Eligible: in.Eligible,
+			Terminal: in.Terminal,
+		}); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, s.Board())
+}
+
+// handleDeleteState DELETE /board/states/{name}?migrate_to=X: removes a
+// column. A non-empty column without a migration target returns 409 with
+// the issue count so the UI can prompt for a destination.
+func (s *Store) handleDeleteState(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	migrateTo := r.URL.Query().Get("migrate_to")
+	_, err := s.DeleteState(name, migrateTo)
+	if err != nil {
+		if errors.Is(err, ErrStateNotEmpty) {
+			count := 0
+			for _, iss := range mustList(s) {
+				if iss.State == name {
+					count++
+				}
+			}
+			writeJSON(w, http.StatusConflict, stateDeleteConflictResp{Error: err.Error(), Count: count})
+			return
+		}
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.Board())
+}
+
+// handleReorderStates POST /board/states/reorder {order:[...]}: rewrites
+// the column order. Returns the refreshed board.
+func (s *Store) handleReorderStates(w http.ResponseWriter, r *http.Request) {
+	var in reorderStatesReq
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.ReorderStates(in.Order); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.Board())
+}
+
+// mustList returns the current issues for the 409 count; on error it
+// returns nil (count falls back to 0, still a valid conflict response).
+func mustList(s *Store) []*Issue {
+	issues, err := s.List(ListFilter{})
+	if err != nil {
+		return nil
+	}
+	return issues
 }
 
 // ---------------------------------------------------------------------------

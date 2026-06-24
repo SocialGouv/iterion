@@ -9,6 +9,23 @@
 // accidentally be interpreted as text/plain.
 export const DRAG_MIME_ISSUE_IDS = "application/iterion-issue-ids";
 
+// Custom MIME for column-reorder drag payloads carrying the dragged
+// state name. A column's onDrop checks this FIRST so a header drag
+// reorders columns instead of being mistaken for a card drop.
+export const DRAG_MIME_STATE = "application/iterion-state-name";
+
+// BOARD_PALETTE is the set of column colors offered by the column-edit
+// dialog's swatch picker. Values are CSS vars so they track the active
+// theme (light/dark) — the same vars defaultStateColor() returns.
+export const BOARD_PALETTE: { label: string; value: string }[] = [
+  { label: "Backlog", value: "var(--color-board-backlog)" },
+  { label: "Ready", value: "var(--color-board-ready)" },
+  { label: "In progress", value: "var(--color-board-in-progress)" },
+  { label: "Review", value: "var(--color-board-review)" },
+  { label: "Done", value: "var(--color-board-done)" },
+  { label: "Blocked", value: "var(--color-board-blocked)" },
+];
+
 // Priority presets offered by the bulk "Priority" picker (the magnitudes
 // the roadmap uses). Columns sort by priority descending by default.
 export const PRIORITY_PRESETS = [0, 1, 2, 3, 5, 10, 20, 30];

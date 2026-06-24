@@ -1,13 +1,16 @@
 import { useState } from "react";
+import { GripVertical, MoreVertical } from "lucide-react";
 
 import { Checkbox } from "@/components/ui/Checkbox";
+import { IconButton } from "@/components/ui/IconButton";
+import { Popover, PopoverClose } from "@/components/ui/Popover";
 import { formatRelative } from "@/lib/format";
 import { clickableRowProps } from "@/lib/a11y";
 import { softColor } from "@/lib/constants";
 import type { DispatchSkipView, RetryView, RunningView } from "@/api/dispatcher";
 import type { NativeIssue } from "@/api/native";
 
-import { DRAG_MIME_ISSUE_IDS } from "./boardShared";
+import { DRAG_MIME_ISSUE_IDS, DRAG_MIME_STATE } from "./boardShared";
 
 // Max label chips shown on a card before collapsing the rest into "+N".
 const MAX_CARD_LABELS = 3;
@@ -60,6 +63,15 @@ interface ColumnProps {
   // are still draggable, but the user gets a clear "nothing will pick
   // these up" signal.
   dimmed?: boolean;
+  // Column-management callbacks (operator-only). Absent for the synthetic
+  // "__unmapped__" column, which renders no header menu / drag handle.
+  onEditColumn?: (name: string) => void;
+  onDeleteColumn?: (name: string) => void;
+  // onMoveColumn nudges a column one slot left/right (keyboard-free reorder).
+  onMoveColumn?: (name: string, dir: "left" | "right") => void;
+  // onReorderColumn fires when another column header is dropped onto this
+  // one: move `dragged` to this column's position.
+  onReorderColumn?: (dragged: string, target: string) => void;
 }
 
 export function Column({
@@ -83,8 +95,13 @@ export function Column({
   onCancelRun,
   onOpenRun,
   dimmed,
+  onEditColumn,
+  onDeleteColumn,
+  onMoveColumn,
+  onReorderColumn,
 }: ColumnProps) {
   const [dragOver, setDragOver] = useState(false);
+  const manageable = name !== "__unmapped__";
   const selCount = issues.reduce((n, i) => n + (selectedIds.has(i.id) ? 1 : 0), 0);
   const allSelected = issues.length > 0 && selCount === issues.length;
   // Dim only the eligible columns when the dispatcher is paused — the
@@ -108,6 +125,13 @@ export function Column({
         e.preventDefault();
         setDragOver(false);
         if (name === "__unmapped__") return;
+        // Column reorder takes precedence: a header drag carries the
+        // dragged state name, which must not be mistaken for a card drop.
+        const draggedState = e.dataTransfer.getData(DRAG_MIME_STATE);
+        if (draggedState) {
+          if (draggedState !== name) onReorderColumn?.(draggedState, name);
+          return;
+        }
         const json = e.dataTransfer.getData(DRAG_MIME_ISSUE_IDS);
         if (json) {
           try {
@@ -124,9 +148,25 @@ export function Column({
         if (single) onDrop([single], name);
       }}
     >
-      <div className="px-3 py-2 border-b border-border-default flex items-center justify-between text-xs">
+      <div
+        className="px-3 py-2 border-b border-border-default flex items-center justify-between text-xs"
+        // The header is the drag handle for column reorder. Made
+        // draggable only for manageable columns; the grip icon signals it.
+        draggable={manageable && !!onReorderColumn}
+        onDragStart={(e) => {
+          if (!manageable || !onReorderColumn) return;
+          e.dataTransfer.setData(DRAG_MIME_STATE, name);
+          e.dataTransfer.effectAllowed = "move";
+        }}
+      >
         <span className="flex items-center gap-2 min-w-0">
-          {name !== "__unmapped__" && issues.length > 0 && (
+          {manageable && onReorderColumn && (
+            <GripVertical
+              className="h-3.5 w-3.5 shrink-0 text-fg-subtle cursor-grab"
+              aria-hidden="true"
+            />
+          )}
+          {manageable && issues.length > 0 && (
             <Checkbox
               checked={allSelected}
               ref={(el) => {
@@ -154,6 +194,73 @@ export function Column({
           {issues.length}
           {eligible && <span className="ml-1 text-success">●</span>}
           {terminal && <span className="ml-1 text-fg-muted">✓</span>}
+          {manageable && (onEditColumn || onDeleteColumn || onMoveColumn) && (
+            <Popover
+              align="end"
+              trigger={
+                <IconButton
+                  size="sm"
+                  variant="ghost"
+                  aria-label={`Manage ${display} column`}
+                  title="Column options"
+                  className="ml-1"
+                  // Don't let the header's dragstart hijack a menu click.
+                  draggable={false}
+                  onDragStart={(e) => e.preventDefault()}
+                >
+                  <MoreVertical className="h-4 w-4" />
+                </IconButton>
+              }
+              contentClassName="p-1 min-w-40 text-xs"
+            >
+              <div className="flex flex-col">
+                {onEditColumn && (
+                  <PopoverClose asChild>
+                    <button
+                      type="button"
+                      className="text-left px-2 py-1.5 rounded hover:bg-surface-2 text-fg-default"
+                      onClick={() => onEditColumn(name)}
+                    >
+                      Edit column…
+                    </button>
+                  </PopoverClose>
+                )}
+                {onMoveColumn && (
+                  <>
+                    <PopoverClose asChild>
+                      <button
+                        type="button"
+                        className="text-left px-2 py-1.5 rounded hover:bg-surface-2 text-fg-default"
+                        onClick={() => onMoveColumn(name, "left")}
+                      >
+                        Move left
+                      </button>
+                    </PopoverClose>
+                    <PopoverClose asChild>
+                      <button
+                        type="button"
+                        className="text-left px-2 py-1.5 rounded hover:bg-surface-2 text-fg-default"
+                        onClick={() => onMoveColumn(name, "right")}
+                      >
+                        Move right
+                      </button>
+                    </PopoverClose>
+                  </>
+                )}
+                {onDeleteColumn && (
+                  <PopoverClose asChild>
+                    <button
+                      type="button"
+                      className="text-left px-2 py-1.5 rounded hover:bg-surface-2 text-danger-fg"
+                      onClick={() => onDeleteColumn(name)}
+                    >
+                      Delete column…
+                    </button>
+                  </PopoverClose>
+                )}
+              </div>
+            </Popover>
+          )}
         </span>
       </div>
       <div className="p-2 flex-1 flex flex-col gap-2 overflow-auto">
