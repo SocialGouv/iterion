@@ -7,7 +7,7 @@ func TestPullPolicyForImage(t *testing.T) {
 		// mutable tags must re-pull so a fresh CI bake isn't shadowed by a cache
 		"ghcr.io/socialgouv/iterion-sandbox-full:edge":   "Always",
 		"ghcr.io/socialgouv/iterion-sandbox-full:v1.2.3": "Always",
-		"alpine":                                         "Always",
+		"alpine": "Always",
 		// a pinned digest is immutable → no needless re-pull
 		"ghcr.io/x/y@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef": "IfNotPresent",
 	}
