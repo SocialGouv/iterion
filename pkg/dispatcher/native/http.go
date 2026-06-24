@@ -51,6 +51,8 @@ func (s *Store) RegisterRoutesWithMiddleware(mux *http.ServeMux, prefix string, 
 	mux.Handle("POST "+p+"/board/fields/reorder", wrap(http.HandlerFunc(s.handleReorderFields)))
 	mux.Handle("PATCH "+p+"/board/fields/{name}", wrap(http.HandlerFunc(s.handleUpdateField)))
 	mux.Handle("DELETE "+p+"/board/fields/{name}", wrap(http.HandlerFunc(s.handleDeleteField)))
+	mux.Handle("POST "+p+"/board/views", wrap(http.HandlerFunc(s.handleSaveView)))
+	mux.Handle("DELETE "+p+"/board/views/{name}", wrap(http.HandlerFunc(s.handleDeleteView)))
 }
 
 // ---------------------------------------------------------------------------
@@ -588,6 +590,30 @@ func (s *Store) handleReorderFields(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.ReorderFields(in.Order); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.Board())
+}
+
+// handleSaveView POST /board/views: upserts a named filter/sort/group
+// preset (body = View). Returns the refreshed board.
+func (s *Store) handleSaveView(w http.ResponseWriter, r *http.Request) {
+	var v View
+	if err := json.NewDecoder(r.Body).Decode(&v); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.SaveView(v); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.Board())
+}
+
+// handleDeleteView DELETE /board/views/{name}: removes a saved view.
+func (s *Store) handleDeleteView(w http.ResponseWriter, r *http.Request) {
+	if err := s.DeleteView(r.PathValue("name")); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}

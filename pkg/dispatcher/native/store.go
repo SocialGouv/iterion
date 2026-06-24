@@ -692,6 +692,67 @@ func (s *Store) ReorderFields(order []string) (err error) {
 	})
 }
 
+// ---------------------------------------------------------------------------
+// Saved views (board.Views): named filter/sort/group presets, persisted in
+// board.json so they're shared across operators. No issue migration.
+// ---------------------------------------------------------------------------
+
+// SaveView upserts a named view (replaces by name if it exists, else
+// appends). Rejects an empty name.
+func (s *Store) SaveView(v View) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("SaveView", &err)
+	if v.Name == "" {
+		return errors.New("native store: view name cannot be empty")
+	}
+	next := cloneBoard(s.board)
+	replaced := false
+	for i := range next.Views {
+		if next.Views[i].Name == v.Name {
+			next.Views[i] = v
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		next.Views = append(next.Views, v)
+	}
+	if err := s.setBoardLocked(next); err != nil {
+		return err
+	}
+	return s.emitPostCommitEvent(Event{
+		Type:    EvtBoardUpdated,
+		Payload: map[string]any{"op": "view_save", "view": v.Name},
+	})
+}
+
+// DeleteView removes a named view. Unknown names error.
+func (s *Store) DeleteView(name string) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("DeleteView", &err)
+	idx := -1
+	for i := range s.board.Views {
+		if s.board.Views[i].Name == name {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("native store: unknown view %q", name)
+	}
+	next := cloneBoard(s.board)
+	next.Views = append(next.Views[:idx], next.Views[idx+1:]...)
+	if err := s.setBoardLocked(next); err != nil {
+		return err
+	}
+	return s.emitPostCommitEvent(Event{
+		Type:    EvtBoardUpdated,
+		Payload: map[string]any{"op": "view_delete", "view": name},
+	})
+}
+
 // ReorderStates rewrites the column order. `order` must be a permutation
 // of the current state names (same set, no missing/extra/duplicate
 // entries). Never migrates issues.
@@ -1657,5 +1718,6 @@ func cloneBoard(b *Board) *Board {
 	c := *b
 	c.States = append([]State(nil), b.States...)
 	c.Fields = append([]Field(nil), b.Fields...)
+	c.Views = append([]View(nil), b.Views...)
 	return &c
 }

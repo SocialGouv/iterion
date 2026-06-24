@@ -50,10 +50,24 @@ type Field struct {
 	Default    any       `json:"default,omitempty"`
 }
 
-// Board is the kanban configuration: ordered states + custom field schema.
+// View is a saved board filter/sort/group preset. Shared across operators
+// via board.json; the studio's view picker loads one to restore the
+// search query, label/assignee filters, card sort, and swimlane grouping.
+type View struct {
+	Name     string   `json:"name"`
+	Search   string   `json:"search,omitempty"`
+	Labels   []string `json:"labels,omitempty"`
+	Assignee string   `json:"assignee,omitempty"`
+	Sort     string   `json:"sort,omitempty"`
+	GroupBy  string   `json:"group_by,omitempty"`
+}
+
+// Board is the kanban configuration: ordered states + custom field schema
+// + saved views.
 type Board struct {
 	States    []State   `json:"states"`
 	Fields    []Field   `json:"fields,omitempty"`
+	Views     []View    `json:"views,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -152,6 +166,16 @@ func (b *Board) Validate() error {
 			return fmt.Errorf("board: field %q has unknown type %q", f.Name, f.Type)
 		}
 		fseen[f.Name] = true
+	}
+	vseen := map[string]bool{}
+	for _, v := range b.Views {
+		if v.Name == "" {
+			return errors.New("board: view name must be non-empty")
+		}
+		if vseen[v.Name] {
+			return fmt.Errorf("board: duplicate view name %q", v.Name)
+		}
+		vseen[v.Name] = true
 	}
 	return nil
 }

@@ -46,7 +46,19 @@ export interface NativeIssue {
 export interface NativeBoard {
   states: NativeState[];
   fields?: NativeField[];
+  views?: NativeView[];
   updated_at: string;
+}
+
+// NativeView mirrors pkg/dispatcher/native.View — a saved filter/sort/group
+// preset persisted in board.json and shared across operators.
+export interface NativeView {
+  name: string;
+  search?: string;
+  labels?: string[];
+  assignee?: string;
+  sort?: string;
+  group_by?: string;
 }
 
 export interface NativeState {
@@ -213,6 +225,19 @@ export function reorderFields(order: string[]): Promise<NativeBoard> {
     method: "POST",
     body: JSON.stringify({ order }),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Saved views. Mirrors the native /board/views REST surface. saveView
+// upserts by name; both return the refreshed board.
+// ---------------------------------------------------------------------------
+
+export function saveView(view: NativeView): Promise<NativeBoard> {
+  return request("/board/views", { method: "POST", body: JSON.stringify(view) });
+}
+
+export function deleteView(name: string): Promise<NativeBoard> {
+  return request(`/board/views/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
 
 // ---------------------------------------------------------------------------

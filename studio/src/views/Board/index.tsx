@@ -11,13 +11,17 @@ import {
   createIssue,
   deleteIssue,
   patchIssue,
+  saveView,
+  deleteView,
   type NativeIssue,
   type NativeState,
+  type NativeView,
 } from "@/api/native";
 import IssueModal from "./IssueModal";
 import { BoardFilters } from "./BoardFilters";
 import { BoardKeyboardHelp } from "./BoardKeyboardHelp";
 import { Column } from "./Column";
+import { ViewBar } from "./ViewBar";
 import {
   AddColumnDialog,
   DeleteColumnDialog,
@@ -26,6 +30,7 @@ import {
 import { SelectionToolbar } from "./SelectionToolbar";
 import SettingsDrawer from "@/components/Dispatcher/SettingsDrawer";
 import TrackerErrorBanner from "@/components/shared/TrackerErrorBanner";
+import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { useBoardKeyboard } from "@/hooks/useBoardKeyboard";
 import { useConfirm } from "@/hooks/useConfirm";
 import { useToggleSet } from "@/hooks/useToggleSet";
@@ -71,10 +76,15 @@ export default function BoardView() {
     set: labelFilter,
     toggle: onLabelToggle,
     clear: clearLabelFilter,
+    replace: replaceLabels,
   } = useToggleSet<string>();
   const [assigneeFilter, setAssigneeFilter] = useState("");
   const [sortMode, setSortMode] = useState<SortMode>("priority");
   const [groupMode, setGroupMode] = useState<GroupMode>("none");
+  // Saved views: activeView is the currently-applied preset's name ("" =
+  // custom/unsaved). viewAction tracks the save/delete REST call.
+  const [activeView, setActiveView] = useState("");
+  const viewAction = useAsyncAction();
   // `onLabelToggle` (from useToggleSet) is the single source of truth
   // for label filter toggling — used both by the top filter strip and
   // by clicking a chip on any card, so card-level chips toggle the
@@ -126,6 +136,52 @@ export default function BoardView() {
   // Column (state) management: header menu + reorder drag + add/edit/
   // delete dialogs. Mutations refresh the board+issues afterward.
   const columns = useColumnManagement({ board, issues, refresh });
+
+  // Saved-view handlers. applyView restores a preset's filter/sort/group;
+  // onSaveView snapshots the current combo; onDeleteView drops one.
+  const applyView = useCallback(
+    (v: NativeView | null) => {
+      if (!v) {
+        setActiveView("");
+        return;
+      }
+      setSearchQuery(v.search ?? "");
+      replaceLabels(v.labels ?? []);
+      setAssigneeFilter(v.assignee ?? "");
+      setSortMode((v.sort as SortMode) || "priority");
+      setGroupMode(v.group_by || "none");
+      setActiveView(v.name);
+    },
+    [replaceLabels],
+  );
+  const onSaveView = useCallback(
+    (name: string) => {
+      if (!name) return;
+      void viewAction.run(async () => {
+        await saveView({
+          name,
+          search: searchQuery || undefined,
+          labels: labelFilter.size > 0 ? [...labelFilter] : undefined,
+          assignee: assigneeFilter || undefined,
+          sort: sortMode,
+          group_by: groupMode,
+        });
+        await refresh();
+        setActiveView(name);
+      });
+    },
+    [viewAction, searchQuery, labelFilter, assigneeFilter, sortMode, groupMode, refresh],
+  );
+  const onDeleteView = useCallback(
+    (name: string) => {
+      void viewAction.run(async () => {
+        await deleteView(name);
+        await refresh();
+        setActiveView((cur) => (cur === name ? "" : cur));
+      });
+    },
+    [viewAction, refresh],
+  );
 
   // Multi-selection state + click/drag-start selection logic.
   const {
@@ -524,7 +580,18 @@ export default function BoardView() {
           clearLabelFilter();
           setAssigneeFilter("");
           setGroupMode("none");
+          setActiveView("");
         }}
+      />
+
+      <ViewBar
+        views={board.views ?? []}
+        activeView={activeView}
+        onApply={applyView}
+        onSave={onSaveView}
+        onDelete={onDeleteView}
+        busy={viewAction.busy}
+        error={viewAction.error}
       />
 
       {issues.length === 0 && (
