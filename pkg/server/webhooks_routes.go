@@ -47,6 +47,7 @@ type webhookConfigReq struct {
 	DefaultBotID       *string           `json:"default_bot_id,omitempty"`
 	ProjectAllowlist   []string          `json:"project_allowlist,omitempty"`
 	EventAllowlist     []string          `json:"event_allowlist,omitempty"`
+	AuthorAllowlist    []string          `json:"author_allowlist,omitempty"`
 	RateLimit          *webhooks.Rate    `json:"rate_limit,omitempty"`
 	MonthlyCallLimit   *int              `json:"monthly_call_limit,omitempty"`
 	LaunchVars         map[string]string `json:"launch_vars,omitempty"`
@@ -239,6 +240,7 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		WildcardBots:       wildcard,
 		ProjectAllowlist:   req.ProjectAllowlist,
 		EventAllowlist:     req.EventAllowlist,
+		AuthorAllowlist:    req.AuthorAllowlist,
 		RateLimit:          rate,
 		LaunchVars:         req.LaunchVars,
 		KeyOverrides:       req.KeyOverrides,
@@ -395,6 +397,9 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.EventAllowlist != nil {
 		cfg.EventAllowlist = req.EventAllowlist
+	}
+	if req.AuthorAllowlist != nil {
+		cfg.AuthorAllowlist = req.AuthorAllowlist
 	}
 	if req.RateLimit != nil {
 		cfg.RateLimit = *req.RateLimit

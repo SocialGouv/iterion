@@ -163,9 +163,9 @@ security-critical knob — a malicious caller cannot escalate by renaming
 a key the org-admin has pinned (`handleGenericWebhook` in
 [pkg/server/webhooks_generic.go](../pkg/server/webhooks_generic.go)).
 
-## Matching: project + event allowlists, bot scope
+## Matching: project + event + author allowlists, bot scope
 
-Every webhook carries three filters
+Every webhook carries four filters
 ([pkg/webhooks/types.go:Config](../pkg/webhooks/types.go)):
 
 - **`event_allowlist`** — provider-event names allowed; empty defaults
@@ -173,6 +173,16 @@ Every webhook carries three filters
   the others use `{pull_request}`). A bare `*` matches everything.
 - **`project_allowlist`** — `owner/repo` patterns. Empty = every project
   the forge fires for. Supports `*` (any), `owner/*`, or exact paths.
+- **`author_allowlist`** — PR/MR author logins allowed to trigger a
+  launch. Empty = any author. Case-insensitive; entries may be bot
+  logins like `dependabot[bot]` / `renovate[bot]`, so a webhook can
+  react ONLY to a dependency bot's PRs and ignore human PRs on the same
+  repo. A bare `*` opts back into allow-all. The matched author login is
+  also stamped onto every review run as the `pr_author` var. (Applies to
+  the PR/MR *open* path; comment/`/revi` triggers use `min_replier_role`
+  / `authorized_repliers` instead.) When auto-provisioning, a bot sets
+  this from its manifest `forge.webhook.author_allowlist`; co-enabling a
+  bot that reviews all authors re-opens the shared webhook.
 - **`bot_ids` + `wildcard_bots`** — the only bots a delivery may
   launch. A wildcard (`["*"]` with `wildcard_bots=true`) must be
   declared **explicitly** so the studio + audit can flag it; the create
@@ -251,7 +261,7 @@ statuses ([pkg/webhooks/types.go status constants](../pkg/webhooks/types.go)):
 | `accepted` | Auth/quota passed, awaiting launch result (intermediate state) |
 | `launched` | Run published to the queue; `run_id` set, `launched_at` stamped |
 | `duplicate` | Same idempotency key replayed — `run_id` of the original launch is returned |
-| `filtered` | The event didn't match `event_allowlist` / `project_allowlist` / `IsReviewable` |
+| `filtered` | The event didn't match `event_allowlist` / `project_allowlist` / `author_allowlist` / `IsReviewable` |
 | `invalid` | Bad payload, missing token, bot not permitted by scope |
 | `rate_limited` | Per-webhook bucket empty |
 | `quota_exceeded` | Per-org or per-webhook monthly call quota exhausted |
