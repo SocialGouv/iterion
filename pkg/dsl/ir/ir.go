@@ -205,8 +205,17 @@ func (n *JudgeNode) NodeKind() NodeKind { return NodeJudge }
 type RouterNode struct {
 	BaseNode
 	LLMFields              // only populated for RouterLLM mode
-	RouterMode  RouterMode // fan_out_all, condition, round_robin, or llm
+	RouterMode  RouterMode // fan_out_all, condition, round_robin, llm, or fan_out_each
 	RouterMulti bool       // LLM router: select multiple targets (default: one)
+
+	// Data-driven fan-out (RouterFanOutEach only). At runtime the engine
+	// resolves Over to an array and re-executes the single outgoing
+	// template subgraph once per element, binding the element (and its
+	// index) onto this router's per-branch output under ItemBinding /
+	// "item" / "index" / "count".
+	Over        string // raw array-source template, e.g. "{{outputs.decompose.tickets}}"
+	OverRefs    []*Ref // parsed refs from Over (resolved at runtime)
+	ItemBinding string // per-item binding name (default "item")
 }
 
 // NodeKind implements Node.
@@ -587,6 +596,7 @@ const (
 	RouterCondition  = types.RouterCondition
 	RouterRoundRobin = types.RouterRoundRobin
 	RouterLLM        = types.RouterLLM
+	RouterFanOutEach = types.RouterFanOutEach
 )
 
 // AwaitMode determines how a convergence point handles multiple incoming branches.

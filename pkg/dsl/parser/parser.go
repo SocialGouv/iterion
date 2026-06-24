@@ -1344,6 +1344,14 @@ func (p *parser) parseRouterDecl() *ast.RouterDecl {
 			} else if bt.Type != TokenFalse {
 				p.addError(DiagInvalidValue, bt, "expected true or false for 'multi'")
 			}
+		case TokenOver:
+			p.next()
+			p.expect(TokenColon)
+			rd.Over = p.expectString()
+		case TokenAs:
+			p.next()
+			p.expect(TokenColon)
+			rd.As = p.expectIdent()
 		case TokenReasoningEffort:
 			p.next()
 			rd.ReasoningEffort = p.parseReasoningEffort()
@@ -1362,6 +1370,8 @@ func (p *parser) parseRouterMode() ast.RouterMode {
 	switch t.Type {
 	case TokenFanOutAll:
 		return ast.RouterFanOutAll
+	case TokenFanOutEach:
+		return ast.RouterFanOutEach
 	case TokenCondition:
 		return ast.RouterCondition
 	case TokenRoundRobin:
@@ -1369,7 +1379,7 @@ func (p *parser) parseRouterMode() ast.RouterMode {
 	case TokenLLM:
 		return ast.RouterLLM
 	default:
-		p.addError(DiagInvalidValue, t, "expected router mode (fan_out_all, condition, round_robin, llm), got '"+t.Value+"'")
+		p.addError(DiagInvalidValue, t, "expected router mode (fan_out_all, fan_out_each, condition, round_robin, llm), got '"+t.Value+"'")
 		return ast.RouterFanOutAll
 	}
 }

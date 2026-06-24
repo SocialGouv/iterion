@@ -419,6 +419,7 @@ const (
 	RouterCondition  = types.RouterCondition
 	RouterRoundRobin = types.RouterRoundRobin
 	RouterLLM        = types.RouterLLM
+	RouterFanOutEach = types.RouterFanOutEach
 )
 
 // RouterDecl represents a `router <name>:` node declaration.
@@ -434,6 +435,8 @@ type RouterDecl struct {
 	User            string // prompt ref, only for mode: llm
 	Multi           bool   // multi-route selection, only for mode: llm
 	ReasoningEffort string // reasoning effort level: "low", "medium", "high", "xhigh", "max" (only for mode: llm)
+	Over            string // array source template, only for mode: fan_out_each (e.g. "{{outputs.decompose.tickets}}")
+	As              string // per-item binding name, only for mode: fan_out_each (default: "item")
 	Span            Span
 }
 

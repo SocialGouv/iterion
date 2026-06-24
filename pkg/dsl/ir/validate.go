@@ -30,6 +30,9 @@ const (
 	DiagLLMRouterTooFewEdges     DiagCode = "C021" // llm router with fewer than 2 outgoing edges
 	DiagLLMRouterConditionEdge   DiagCode = "C022" // llm router edge has a 'when' condition
 	DiagRouterLLMOnlyProperty    DiagCode = "C023" // LLM-only property on non-llm router
+	DiagFanOutEachMissingOver    DiagCode = "C102" // fan_out_each router without an 'over:' array source
+	DiagFanOutEachOnlyProperty   DiagCode = "C103" // 'over'/'as' property on a non-fan_out_each router
+	DiagFanOutEachEdges          DiagCode = "C104" // fan_out_each router must have exactly one outgoing template edge
 	DiagInvalidReasoningEffort   DiagCode = "C027" // invalid reasoning_effort value (was C024, clashed with DiagDuplicateMCPServer)
 	DiagUltracodeModelGate       DiagCode = "C089" // reasoning_effort: ultracode on a model that isn't claude-opus-4-8 (warning)
 	DiagInvalidLoopIterations    DiagCode = "C026" // loop max_iterations must be >= 1
@@ -116,6 +119,7 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateEdgeRouting(w)
 	c.validateRoundRobinEdges(w)
 	c.validateLLMRouterEdges(w)
+	c.validateFanOutEachEdges(w)
 	c.validateConditionFields(w)
 	c.validateExprTypes(w)
 	c.validateDuplicateWithKeys(w)
@@ -647,6 +651,8 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 		}
 
 		// Router fan_out_all, round_robin, and llm are allowed multiple unconditional edges.
+		// fan_out_each is excluded here so its dedicated "exactly one template
+		// edge" rule (validateFanOutEachEdges) owns the error message.
 		if r, ok := node.(*RouterNode); ok && (r.RouterMode == RouterFanOutAll || r.RouterMode == RouterRoundRobin || r.RouterMode == RouterLLM) {
 			continue
 		}
@@ -730,6 +736,40 @@ func (c *compiler) validateLLMRouterEdges(w *Workflow) {
 		if count < 2 {
 			c.errorf(DiagLLMRouterTooFewEdges,
 				"llm router %q has %d outgoing edge(s); at least 2 are needed",
+				r.ID, count)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// C104 — fan_out_each router must have exactly one outgoing (template) edge
+// ---------------------------------------------------------------------------
+//
+// A fan_out_each router re-executes ONE statically-declared template subgraph
+// once per element of the runtime array `over`. The single outgoing edge is
+// the head of that template; the branch then runs the existing static graph
+// until it reaches a convergence point. Multiple outgoing edges are ambiguous
+// (which template?) and zero means nothing to iterate.
+func (c *compiler) validateFanOutEachEdges(w *Workflow) {
+	for _, node := range w.Nodes {
+		r, ok := node.(*RouterNode)
+		if !ok || r.RouterMode != RouterFanOutEach {
+			continue
+		}
+		count := 0
+		for _, e := range w.Edges {
+			if e.From == r.ID {
+				count++
+				if e.IsConditional() {
+					c.errorf(DiagFanOutEachEdges,
+						"fan_out_each router %q edge to %q has a 'when' condition; the single template edge must be unconditional",
+						r.ID, e.To)
+				}
+			}
+		}
+		if count != 1 {
+			c.errorf(DiagFanOutEachEdges,
+				"fan_out_each router %q has %d outgoing edge(s); exactly one (the per-item template head) is required",
 				r.ID, count)
 		}
 	}

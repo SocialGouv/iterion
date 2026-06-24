@@ -1144,6 +1144,12 @@ func (e *Engine) execLoopDispatchSpecial(ctx context.Context, rs *runState, curr
 				return true, true, "", e.failRunErrWithCheckpoint(rs, currentNodeID, fErr)
 			}
 			return true, false, nextNodeID, nil
+		case ir.RouterFanOutEach:
+			nextNodeID, fErr := e.execFanOutEach(ctx, rs, currentNodeID)
+			if fErr != nil {
+				return true, true, "", e.failRunErrWithCheckpoint(rs, currentNodeID, fErr)
+			}
+			return true, false, nextNodeID, nil
 		case ir.RouterRoundRobin:
 			nextNodeID, rrErr := e.execRoundRobin(ctx, rs, currentNodeID)
 			if rrErr != nil {
@@ -1771,7 +1777,14 @@ func (e *Engine) resolveRef(ref *ir.Ref, sc resolveScope) interface{} {
 		if len(ref.Path) == 1 {
 			return nodeOut
 		}
-		return nodeOut[ref.Path[1]]
+		if len(ref.Path) == 2 {
+			return nodeOut[ref.Path[1]]
+		}
+		// Deep path {{outputs.node.field.sub…}} — drill into nested maps
+		// (e.g. a per-item object surfaced by fan_out_each:
+		// {{outputs.dispatch.item.is_code}}). Previously this truncated to
+		// the level-2 value, silently dropping the remaining keys.
+		return drillPath(nodeOut[ref.Path[1]], ref.Path[2:])
 	case ir.RefArtifacts:
 		if len(ref.Path) > 0 {
 			return sc.artifacts[ref.Path[0]]

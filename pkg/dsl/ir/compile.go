@@ -891,6 +891,31 @@ func (c *compiler) compileRouters() {
 			node.RouterMulti = r.Multi
 			node.ReasoningEffort = r.ReasoningEffort
 		}
+		// Data-driven fan-out config (RouterFanOutEach only).
+		if mode == RouterFanOutEach {
+			if r.Over == "" {
+				c.errorf(DiagFanOutEachMissingOver,
+					"router %q with mode fan_out_each requires an 'over:' array source (e.g. over: \"{{outputs.decompose.tickets}}\")", r.Name)
+			} else {
+				refs, err := ParseRefs(r.Over)
+				if err != nil {
+					c.errorf(DiagFanOutEachMissingOver, "router %q 'over' is not a valid template: %v", r.Name, err)
+				}
+				node.Over = r.Over
+				node.OverRefs = refs
+			}
+			node.ItemBinding = r.As
+			if node.ItemBinding == "" {
+				node.ItemBinding = "item"
+			}
+		} else {
+			if r.Over != "" {
+				c.errorf(DiagFanOutEachOnlyProperty, "router %q property 'over' is only valid with mode: fan_out_each", r.Name)
+			}
+			if r.As != "" {
+				c.errorf(DiagFanOutEachOnlyProperty, "router %q property 'as' is only valid with mode: fan_out_each", r.Name)
+			}
+		}
 		c.nodes[r.Name] = node
 	}
 }

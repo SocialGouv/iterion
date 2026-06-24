@@ -104,11 +104,13 @@ const (
 	TokenFork
 	// Router modes
 	TokenFanOutAll
+	TokenFanOutEach
 	TokenCondition
 	TokenRoundRobin
 	TokenLLM
 	// Router properties
 	TokenMulti
+	TokenOver
 	// Join strategies
 	TokenWaitAll
 	TokenBestEffort
@@ -260,10 +262,12 @@ var tokenNames = map[TokenType]string{
 	TokenArtifactsOnly:      "artifacts_only",
 	TokenFork:               "fork",
 	TokenFanOutAll:          "fan_out_all",
+	TokenFanOutEach:         "fan_out_each",
 	TokenCondition:          "condition",
 	TokenRoundRobin:         "round_robin",
 	TokenLLM:                "llm",
 	TokenMulti:              "multi",
+	TokenOver:               "over",
 	TokenWaitAll:            "wait_all",
 	TokenBestEffort:         "best_effort",
 	TokenTrue:               "true",
@@ -386,10 +390,12 @@ var keywords = map[string]TokenType{
 	"artifacts_only":        TokenArtifactsOnly,
 	"fork":                  TokenFork,
 	"fan_out_all":           TokenFanOutAll,
+	"fan_out_each":          TokenFanOutEach,
 	"condition":             TokenCondition,
 	"round_robin":           TokenRoundRobin,
 	"llm":                   TokenLLM,
 	"multi":                 TokenMulti,
+	"over":                  TokenOver,
 	"wait_all":              TokenWaitAll,
 	"best_effort":           TokenBestEffort,
 	"true":                  TokenTrue,
