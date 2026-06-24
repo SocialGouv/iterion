@@ -48,3 +48,30 @@ func TestMatchProject(t *testing.T) {
 		t.Fatal("bare wildcard")
 	}
 }
+
+func TestMatchAuthor(t *testing.T) {
+	if !MatchAuthor(nil, "alice") || !MatchAuthor(nil, "") {
+		t.Fatal("empty allowlist allows any author (including unknown)")
+	}
+	// Bot-login allowlist: the dependency-PR use case.
+	deps := []string{"dependabot[bot]", "renovate[bot]"}
+	if !MatchAuthor(deps, "dependabot[bot]") || !MatchAuthor(deps, "renovate[bot]") {
+		t.Fatal("listed bot logins must match")
+	}
+	if MatchAuthor(deps, "alice") {
+		t.Fatal("human author must be filtered out")
+	}
+	// Case-insensitive + space-tolerant (GitHub/GitLab casing drift).
+	if !MatchAuthor([]string{"Dependabot[bot]"}, "dependabot[bot]") ||
+		!MatchAuthor([]string{" renovate[bot] "}, "renovate[bot]") {
+		t.Fatal("matching must be case-insensitive and trim space")
+	}
+	// An empty/unknown author never matches a non-empty allowlist.
+	if MatchAuthor(deps, "") {
+		t.Fatal("unknown author must not match a non-empty allowlist")
+	}
+	// Explicit wildcard opts back into allow-all.
+	if !MatchAuthor([]string{"*"}, "alice") {
+		t.Fatal("wildcard author must match")
+	}
+}

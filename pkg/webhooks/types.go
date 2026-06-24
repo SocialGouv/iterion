@@ -98,6 +98,11 @@ type Config struct {
 	// Source allowlists (empty = allow-all within the tenant).
 	ProjectAllowlist []string `bson:"project_allowlist,omitempty" json:"project_allowlist,omitempty"`
 	EventAllowlist   []string `bson:"event_allowlist,omitempty" json:"event_allowlist,omitempty"`
+	// AuthorAllowlist restricts which PR/MR author logins trigger a launch
+	// (empty = any author). Case-insensitive; entries may be bot logins like
+	// "dependabot[bot]" / "renovate[bot]". Lets a webhook react ONLY to a
+	// dependency-bot's PRs while ignoring human PRs on the same repo.
+	AuthorAllowlist []string `bson:"author_allowlist,omitempty" json:"author_allowlist,omitempty"`
 
 	// ForgeBaseURL, when set, pins the forge instance this webhook's bot
 	// token may call back to (e.g. "https://gitlab.example.com"). The

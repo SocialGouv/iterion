@@ -186,6 +186,9 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	secretOverrides := map[string]string{}
 	launchVars := map[string]string{}
 	minRole := ""
+	authorSet := map[string]string{} // lower-key → canonical entry (dedup, order-stable below)
+	var authorAllowlist []string
+	authorOpen := false // a forge-webhook bot left AuthorAllowlist empty → allow all
 	for _, b := range desiredBots {
 		fr := frByBot[b]
 		// A command-only bot (no forge: block) still binds the connection's
@@ -201,9 +204,29 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 				if fr.Webhook.MinReplierRole != "" && webhookRoleRank(fr.Webhook.MinReplierRole) > webhookRoleRank(minRole) {
 					minRole = fr.Webhook.MinReplierRole
 				}
+				// Union the per-bot author allowlists (dedup case-insensitively,
+				// first-seen order). Restricting authors is a per-bot opt-in:
+				// if ANY co-enabled forge-webhook bot leaves it empty, the
+				// shared webhook must stay open to all authors (else that bot's
+				// human PRs would be silently dropped) — see authorOpen below.
+				if len(fr.Webhook.AuthorAllowlist) == 0 {
+					authorOpen = true
+				}
+				for _, a := range fr.Webhook.AuthorAllowlist {
+					if key := strings.ToLower(strings.TrimSpace(a)); key != "" {
+						if _, seen := authorSet[key]; !seen {
+							authorSet[key] = a
+							authorAllowlist = append(authorAllowlist, a)
+						}
+					}
+				}
 			}
 		}
 		secretOverrides[secretName] = managedSecretID
+	}
+
+	if authorOpen {
+		authorAllowlist = nil // a co-enabled bot reviews all authors → don't filter
 	}
 
 	// Build the command→bot route index from the co-enabled bots' command
@@ -242,6 +265,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		DefaultBotID:     singleBotDefault(desiredBots),
 		ProjectAllowlist: []string{req.RepoFullName},
 		EventAllowlist:   nativeEvents,
+		AuthorAllowlist:  authorAllowlist,
 		ForgeBaseURL:     conn.BaseURL(),
 		RateLimit:        webhooks.Rate{Rate: 1, Burst: 10},
 		LaunchVars:       nilIfEmpty(launchVars),

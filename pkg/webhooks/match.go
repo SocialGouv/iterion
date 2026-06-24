@@ -47,6 +47,30 @@ func MatchProject(allowlist []string, projectPath string) bool {
 	return false
 }
 
+// MatchAuthor is the canonical PR/MR author-login allowlist matcher used
+// by every provider call site (github/gitlab/forgejo). An empty allowlist
+// allows any author. Matching is case-insensitive and trims surrounding
+// space, so a webhook scoped to ["dependabot[bot]", "renovate[bot]"] reacts
+// to a dependency bot's PRs while ignoring human PRs on the same repo. A
+// "*" entry matches all (explicit allow-all). An empty login never matches a
+// non-empty allowlist (an author we couldn't identify is not on the list).
+func MatchAuthor(allowlist []string, login string) bool {
+	if len(allowlist) == 0 {
+		return true
+	}
+	login = strings.TrimSpace(login)
+	for _, pat := range allowlist {
+		pat = strings.TrimSpace(pat)
+		if pat == "*" {
+			return true
+		}
+		if login != "" && strings.EqualFold(pat, login) {
+			return true
+		}
+	}
+	return false
+}
+
 func matchProjectPattern(pat, path string) bool {
 	pat = strings.TrimSpace(pat)
 	if pat == "" {

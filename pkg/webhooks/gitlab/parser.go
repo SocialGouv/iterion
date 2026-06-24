@@ -8,20 +8,21 @@ import (
 
 // Parsed is the normalized merge-request view the handler consumes.
 type Parsed struct {
-	ProjectID     int64
-	ProjectPath   string // group/sub/repo
-	ProjectWebURL string
-	CloneURL      string
-	MRIID         int64
-	Action        string // open|reopen|update|...
-	SourceBranch  string
-	TargetBranch  string
-	Title         string
-	Description   string
-	MRURL         string
-	HeadSHA       string
-	OldRev        string
-	Labels        []string
+	ProjectID      int64
+	ProjectPath    string // group/sub/repo
+	ProjectWebURL  string
+	CloneURL       string
+	MRIID          int64
+	Action         string // open|reopen|update|...
+	SourceBranch   string
+	TargetBranch   string
+	Title          string
+	Description    string
+	MRURL          string
+	HeadSHA        string
+	OldRev         string
+	Labels         []string
+	SenderUsername string // the actor that opened/reopened the MR (e.g. "renovate")
 }
 
 // ParseMergeRequest decodes a GitLab merge_request webhook body.
@@ -41,20 +42,21 @@ func ParseMergeRequest(body []byte) (Parsed, error) {
 		}
 	}
 	return Parsed{
-		ProjectID:     e.Project.ID,
-		ProjectPath:   e.Project.PathWithNamespace,
-		ProjectWebURL: e.Project.WebURL,
-		CloneURL:      e.Project.GitHTTPURL,
-		MRIID:         oa.IID,
-		Action:        oa.Action,
-		SourceBranch:  oa.SourceBranch,
-		TargetBranch:  oa.TargetBranch,
-		Title:         oa.Title,
-		Description:   oa.Description,
-		MRURL:         oa.URL,
-		HeadSHA:       oa.LastCommit.ID,
-		OldRev:        oa.OldRev,
-		Labels:        labels,
+		ProjectID:      e.Project.ID,
+		ProjectPath:    e.Project.PathWithNamespace,
+		ProjectWebURL:  e.Project.WebURL,
+		CloneURL:       e.Project.GitHTTPURL,
+		MRIID:          oa.IID,
+		Action:         oa.Action,
+		SourceBranch:   oa.SourceBranch,
+		TargetBranch:   oa.TargetBranch,
+		Title:          oa.Title,
+		Description:    oa.Description,
+		MRURL:          oa.URL,
+		HeadSHA:        oa.LastCommit.ID,
+		OldRev:         oa.OldRev,
+		Labels:         labels,
+		SenderUsername: e.User.Username,
 	}, nil
 }
 

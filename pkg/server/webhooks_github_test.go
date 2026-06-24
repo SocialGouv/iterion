@@ -184,6 +184,54 @@ func TestGitHubWebhook_ProjectAllowlistMismatch(t *testing.T) {
 	}
 }
 
+// A webhook scoped to dependency bots must ignore a human PR.
+func TestGitHubWebhook_AuthorAllowlistFiltersHuman(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		t.Fatal("human-authored PR must not launch when author-allowlisted to bots")
+		return "", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.AuthorAllowlist = []string{"dependabot[bot]", "renovate[bot]"}
+	w := httptest.NewRecorder()
+	// ghOpenPR's sender is "alice" (a human) → filtered.
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghOpenPR, prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusOK {
+		t.Fatalf("filtered author: code=%d", w.Code)
+	}
+	var resp map[string]string
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != webhooks.StatusFiltered {
+		t.Fatalf("human author should be filtered: %v", resp)
+	}
+}
+
+// The same webhook launches on a Dependabot PR and stamps pr_author.
+func TestGitHubWebhook_AuthorAllowlistLaunchesBot(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var gotVars map[string]string
+	var calls int
+	s.webhookLaunchBot = func(_ context.Context, _ string, vars map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		gotVars = vars
+		return "run-dep", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.AuthorAllowlist = []string{"dependabot[bot]"}
+	depPR := strings.Replace(ghOpenPR, `"sender": {"login": "alice"}`, `"sender": {"login": "dependabot[bot]"}`, 1)
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), depPR, prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("dependabot PR should launch: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("expected one launch, got %d", calls)
+	}
+	if gotVars["pr_author"] != "dependabot[bot]" {
+		t.Fatalf("pr_author not stamped: %v", gotVars)
+	}
+}
+
 func TestGitHubWebhook_IdempotentReplay(t *testing.T) {
 	s := newWebhookTestServer(t)
 	var calls int

@@ -216,6 +216,12 @@ type ForgeWebhookHints struct {
 	// minimum forge role a commenter must have to trigger the bot via a
 	// note. Empty inherits the webhook default.
 	MinReplierRole string `yaml:"min_replier_role,omitempty"`
+
+	// AuthorAllowlist mirrors webhooks.Config.AuthorAllowlist — restrict the
+	// auto-created webhook to PRs/MRs opened by these author logins (empty =
+	// any author). A dependency-PR bot sets ["dependabot[bot]",
+	// "renovate[bot]"] so it reacts only to the dependency bots, not humans.
+	AuthorAllowlist []string `yaml:"author_allowlist,omitempty"`
 }
 
 // SecretName returns the workflow-secret name this bot binds its forge

@@ -89,6 +89,15 @@ func testBotLookup(botID string) (*bundle.ForgeRequirements, error) {
 			Secret:      "forge_token",
 			Webhook:     &bundle.ForgeWebhookHints{MinReplierRole: "developer"},
 		}, nil
+	case "dep-guard":
+		return &bundle.ForgeRequirements{
+			Events:      []string{bundle.ForgeEventPullRequest, bundle.ForgeEventPullRequestComment},
+			TokenScopes: map[string]string{"pull_requests": "write", "repository": "write"},
+			Secret:      "forge_token",
+			Webhook: &bundle.ForgeWebhookHints{
+				AuthorAllowlist: []string{"dependabot[bot]", "renovate[bot]"},
+			},
+		}, nil
 	case "no-forge-bot":
 		return nil, nil
 	default:
@@ -254,6 +263,46 @@ func TestProvision_SingleBot(t *testing.T) {
 	}
 	if ri.WebhookID != res.WebhookID || ri.HookID != h.ID || ri.ManagedSecretID != conn.ManagedSecretID {
 		t.Errorf("integration links wrong: %+v", ri)
+	}
+}
+
+// A dependency-guard bot's author_allowlist propagates to the webhook
+// Config, scoping the auto-created hook to the dependency bots.
+func TestProvision_AuthorAllowlist(t *testing.T) {
+	o, _, sealer := newTestOrch(t)
+	seedConn(t, o, sealer)
+	ctx := context.Background()
+
+	res, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api",
+		BotIDs: []string{"dep-guard"}, ActorID: "u1",
+	})
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	cfg, err := o.Webhooks.Get(ctx, res.WebhookID)
+	if err != nil {
+		t.Fatalf("get webhook config: %v", err)
+	}
+	if !sameSet(cfg.AuthorAllowlist, []string{"dependabot[bot]", "renovate[bot]"}) {
+		t.Errorf("author allowlist = %v, want the dep bots", cfg.AuthorAllowlist)
+	}
+
+	// Co-enabling a bot that reviews all authors (review-pr, empty allowlist)
+	// must re-open the shared webhook so its human PRs aren't silently dropped.
+	res2, err := o.Provision(ctx, ProvisionRequest{
+		TenantID: "t1", ConnectionID: "conn-1", RepoFullName: "group/api",
+		BotIDs: []string{"dep-guard", "review-pr"}, ActorID: "u1",
+	})
+	if err != nil {
+		t.Fatalf("provision (add review-pr): %v", err)
+	}
+	cfg2, err := o.Webhooks.Get(ctx, res2.WebhookID)
+	if err != nil {
+		t.Fatalf("get webhook config 2: %v", err)
+	}
+	if len(cfg2.AuthorAllowlist) != 0 {
+		t.Errorf("author allowlist = %v, want empty (open) when a review-all bot is co-enabled", cfg2.AuthorAllowlist)
 	}
 }
 

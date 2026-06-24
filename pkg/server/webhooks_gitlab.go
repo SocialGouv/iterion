@@ -81,7 +81,8 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	// the webhook after repeated metadata-only edits).
 	if !p.IsReviewable() ||
 		!webhooks.MatchEvent(cfg.EventAllowlist, "merge_request", "merge_request", "note") ||
-		!webhooks.MatchProject(cfg.ProjectAllowlist, p.ProjectPath) {
+		!webhooks.MatchProject(cfg.ProjectAllowlist, p.ProjectPath) ||
+		!webhooks.MatchAuthor(cfg.AuthorAllowlist, p.SenderUsername) {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "")
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 		return
@@ -97,7 +98,7 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	// ("note|") so a /revi on the same MR can't collide with the open.
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("mr|%s|%s|%d|%d|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.MRIID, p.HeadSHA)))
 
-	vars := reviewPRVars(p.MRURL, p.TargetBranch, strings.TrimSpace(p.Title+"\n\n"+p.Description), cfg.LaunchVars, nil)
+	vars := reviewPRVars(p.MRURL, p.TargetBranch, strings.TrimSpace(p.Title+"\n\n"+p.Description), cfg.LaunchVars, map[string]string{"pr_author": p.SenderUsername})
 
 	s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, idemKey, botID, vars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
 }
@@ -613,11 +614,12 @@ func gitlabMRMeta(p gitlab.Parsed) webhookEventMeta {
 		subject = p.SubjectID()
 	}
 	return webhookEventMeta{
-		Kind:        "merge_request",
-		Action:      p.Action,
-		ProjectPath: p.ProjectPath,
-		SubjectID:   subject,
-		SubjectSHA:  p.HeadSHA,
+		Kind:         "merge_request",
+		Action:       p.Action,
+		ProjectPath:  p.ProjectPath,
+		SubjectID:    subject,
+		SubjectSHA:   p.HeadSHA,
+		SenderHandle: p.SenderUsername,
 	}
 }
 

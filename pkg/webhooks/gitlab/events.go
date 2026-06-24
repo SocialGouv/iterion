@@ -13,6 +13,7 @@ const EventHeaderMergeRequest = "Merge Request Hook"
 type MergeRequestEvent struct {
 	ObjectKind       string           `json:"object_kind"`
 	EventType        string           `json:"event_type"`
+	User             User             `json:"user"` // the actor that opened/reopened the MR
 	Project          Project          `json:"project"`
 	ObjectAttributes ObjectAttributes `json:"object_attributes"`
 	Labels           []Label          `json:"labels"`
