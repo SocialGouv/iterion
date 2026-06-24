@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -17,9 +18,15 @@ func isolateEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
 		"ITERION_BACKEND_PREFERENCE",
-		"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-		"OPENAI_API_KEY",
-		"AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT",
+		"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+		"OPENAI_API_KEY", "OPENAI_BASE_URL",
+		// z.ai routes Anthropic through ANTHROPIC_BASE_URL + a ZAI_API_KEY /
+		// ANTHROPIC_AUTH_TOKEN; without scrubbing these, a z.ai-configured
+		// dev machine (a first-class supported provider) flips the anthropic
+		// provider off and turns detection tests red.
+		"ZAI_API_KEY",
+		// OpenAI ChatGPT-forfait preference overrides are detection inputs.
+		"ITERION_OPENAI_USE_OAUTH",
 		"AWS_REGION", "AWS_DEFAULT_REGION",
 		"GOOGLE_CLOUD_PROJECT",
 		"CLAUDE_CONFIG_DIR", "CODEX_HOME",
@@ -32,6 +39,11 @@ func isolateEnv(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	stubBinary(t, &findClaudeBinary, "")
 	stubBinary(t, &findCodexBinary, "")
+	// The macOS Keychain probe shells out to /usr/bin/security and would
+	// read the dev machine's real Claude Code login on darwin — stub it to
+	// "absent" so detection is deterministic on every host. Tests that
+	// exercise the keychain path re-stub it with a source label.
+	stubSource(t, &claudeKeychainOAuthSource, "")
 }
 
 // stubBinary swaps a binary-probe var for the duration of the test.
@@ -45,6 +57,15 @@ func stubBinary(t *testing.T, target *func() (string, bool), path string) {
 		}
 		return path, true
 	}
+	t.Cleanup(func() { *target = prev })
+}
+
+// stubSource swaps an OAuth-source-probe var (label == "" means "absent")
+// for the duration of the test. Restored on test cleanup.
+func stubSource(t *testing.T, target *func() string, label string) {
+	t.Helper()
+	prev := *target
+	*target = func() string { return label }
 	t.Cleanup(func() { *target = prev })
 }
 
@@ -152,6 +173,60 @@ func TestDetect_ClaudeCodeOAuth(t *testing.T) {
 	}
 	if r.ResolvedDefault != BackendClaudeCode {
 		t.Fatalf("ResolvedDefault = %q, want claude_code", r.ResolvedDefault)
+	}
+}
+
+// Modern Claude Code (2.x) on macOS stores OAuth in the Keychain, not in a
+// ~/.claude/.credentials.json file — so the file probe finds nothing even on
+// a fully logged-in machine. The Keychain probe must flip claude_code to
+// available so the resolver picks it and the studio enables Run.
+func TestDetect_ClaudeCodeKeychainOAuth(t *testing.T) {
+	isolateEnv(t)
+	stubBinary(t, &findClaudeBinary, "/fake/claude")
+	// No credentials.json on disk; OAuth lives in the macOS Keychain.
+	stubSource(t, &claudeKeychainOAuthSource, "macOS Keychain: Claude Code-credentials")
+
+	r := Detect(context.Background())
+
+	st := findBackend(t, r, BackendClaudeCode)
+	if !st.Available {
+		t.Fatalf("claude_code should be available via macOS Keychain OAuth")
+	}
+	if st.Auth != AuthOAuth {
+		t.Fatalf("claude_code auth = %q, want oauth", st.Auth)
+	}
+	// The source must surface the Keychain origin (not a phantom file path).
+	foundKeychain := false
+	for _, s := range st.Sources {
+		if strings.Contains(s, "Keychain") {
+			foundKeychain = true
+			break
+		}
+	}
+	if !foundKeychain {
+		t.Fatalf("claude_code sources = %v, want a Keychain source", st.Sources)
+	}
+	if r.ResolvedDefault != BackendClaudeCode {
+		t.Fatalf("ResolvedDefault = %q, want claude_code (preferred over claw)", r.ResolvedDefault)
+	}
+}
+
+// Regression guard for Linux/Windows: when neither a credentials file nor an
+// OS-credential-store token is present, claude_code must stay unavailable and
+// the resolver must not pick it. (isolateEnv stubs the Keychain probe to "".)
+func TestDetect_ClaudeCodeNoOAuthAnywhere(t *testing.T) {
+	isolateEnv(t)
+	stubBinary(t, &findClaudeBinary, "/fake/claude")
+	// No credentials file, no Keychain token.
+
+	r := Detect(context.Background())
+
+	st := findBackend(t, r, BackendClaudeCode)
+	if st.Available {
+		t.Fatalf("claude_code should be unavailable with no OAuth source")
+	}
+	if r.ResolvedDefault != "" {
+		t.Fatalf("ResolvedDefault = %q, want empty", r.ResolvedDefault)
 	}
 }
 

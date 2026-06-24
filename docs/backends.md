@@ -16,7 +16,8 @@ to override the auto-selection.
 
 If you have **at least one** of:
 
-- a `~/.claude/.credentials.json` (Claude Code OAuth — "forfait")
+- Claude Code signed in (OAuth in the macOS Keychain on Mac, or
+  `~/.claude/.credentials.json` on Linux/WSL — "forfait")
 - `ANTHROPIC_API_KEY` set in your environment
 - `OPENAI_API_KEY` set in your environment
 - `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT`
@@ -218,11 +219,14 @@ actually make calls.
 
 | Credential | Source |
 |---|---|
-| OAuth (forfait) | `$CLAUDE_CONFIG_DIR/.credentials.json` (default `~/.claude/.credentials.json`; non-hidden `credentials.json` also accepted) |
+| OAuth (forfait) | **macOS:** the `Claude Code-credentials` item in the Keychain (where Claude Code 2.x stores it by default — no file is written). **Linux/WSL:** `$CLAUDE_CONFIG_DIR/.credentials.json` (default `~/.claude/.credentials.json`; non-hidden `credentials.json` also accepted) |
 | Binary | `claude` in `$PATH`, or `~/.claude/local/claude` |
 
-For auto-resolution, **OAuth is required**. If you only have
-`ANTHROPIC_API_KEY` and the binary, `claw` is preferred (same auth,
+On macOS the Keychain is probed for *existence only* (via
+`/usr/bin/security find-generic-password` — the token is never read), so a
+machine logged into Claude Code is detected even though it has no
+`.credentials.json` file. For auto-resolution, **OAuth is required**. If you
+only have `ANTHROPIC_API_KEY` and the binary, `claw` is preferred (same auth,
 no subprocess fork). To use `claude_code` with API-key auth, set
 `backend: claude_code` explicitly on the node.
 

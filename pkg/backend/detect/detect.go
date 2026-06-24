@@ -5,8 +5,11 @@ package detect
 
 import (
 	"context"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -118,6 +121,9 @@ func detectBackends(prov []ProviderStatus) []BackendStatus {
 			// (hidden); older docs/macOS keychain export use the
 			// non-hidden form. Probe both.
 			[]string{".credentials.json", "credentials.json"},
+			// Modern Claude Code (2.x) on macOS stores OAuth in the
+			// Keychain instead of a file — see claudeKeychainOAuthSource.
+			claudeKeychainOAuthSource,
 			"claude CLI",
 			"~/.claude/.credentials.json (Claude Code OAuth)",
 		),
@@ -125,6 +131,7 @@ func detectBackends(prov []ProviderStatus) []BackendStatus {
 		detectOAuthCLI(
 			BackendCodex, findCodexBinary, codexHomeDir,
 			[]string{"auth.json"},
+			nil, // codex OAuth lives only in auth.json (no OS-credential-store path)
 			"codex CLI",
 			"$CODEX_HOME/auth.json (Codex OAuth)",
 		),
@@ -132,15 +139,19 @@ func detectBackends(prov []ProviderStatus) []BackendStatus {
 }
 
 // detectOAuthCLI reports Available=true only when both a binary and an
-// OAuth credentials file are present. The API-key-only path (e.g.
-// ANTHROPIC_API_KEY + claude binary, no OAuth) is intentionally NOT
-// auto-eligible: claw uses the same key in-process and is faster, so
-// users wanting the CLI in that case must set `backend:` explicitly.
+// OAuth credential are present. The credential may live in a file under
+// configDir (Linux/WSL `.credentials.json`, exported keychain) or — for
+// backends whose CLI stores OAuth in the OS credential store — be surfaced
+// via extraOAuth (macOS Keychain for Claude Code). The API-key-only path
+// (e.g. ANTHROPIC_API_KEY + claude binary, no OAuth) is intentionally NOT
+// auto-eligible: claw uses the same key in-process and is faster, so users
+// wanting the CLI in that case must set `backend:` explicitly.
 func detectOAuthCLI(
 	name string,
 	findBin func() (string, bool),
 	configDir func() string,
 	credFiles []string,
+	extraOAuth func() string,
 	binDesc, oauthDesc string,
 ) BackendStatus {
 	st := BackendStatus{Name: name, Auth: AuthNone}
@@ -158,6 +169,17 @@ func detectOAuthCLI(
 				st.Sources = []string{credPath, "PATH:" + binPath}
 				return st
 			}
+		}
+	}
+	// OS credential store (macOS Keychain for Claude Code — the default
+	// store on darwin, where no .credentials.json file is written). Same
+	// OAuth semantics as the file form.
+	if extraOAuth != nil {
+		if label := extraOAuth(); label != "" {
+			st.Available = true
+			st.Auth = AuthOAuth
+			st.Sources = []string{label, "PATH:" + binPath}
+			return st
 		}
 	}
 	st.Hints = []string{
@@ -358,6 +380,46 @@ var findClaudeBinary = func() (string, bool) {
 		Name:      "claude",
 		Fallbacks: clilocate.ClaudeLocalFallback(),
 	})
+}
+
+// claudeCodeKeychainService is the macOS Keychain service name Claude Code
+// stores its OAuth token under (verified against Claude Code 2.x).
+const claudeCodeKeychainService = "Claude Code-credentials"
+
+// claudeKeychainOAuthSource returns a human-readable source label when
+// Claude Code OAuth credentials are present in the macOS Keychain — the
+// default credential store for Claude Code on darwin, where no
+// `.credentials.json` file is written. Returns "" on other platforms or
+// when the entry is absent, so the file-based probe stays authoritative
+// there. Declared as a var so tests can stub it deterministically (the real
+// implementation shells out to /usr/bin/security and must not run during
+// unit tests).
+//
+// Existence check only: `security find-generic-password` without `-w`/`-g`
+// never reads the token. Claude Code's own keychain ACL lets the owning
+// user's processes find the item with no authorization prompt (the CLI
+// reads it on every invocation), so this is non-intrusive even on the
+// studio's 30s detection poll.
+var claudeKeychainOAuthSource = func() string {
+	if runtime.GOOS != "darwin" {
+		return ""
+	}
+	if keychainHasItem(claudeCodeKeychainService) {
+		return "macOS Keychain: " + claudeCodeKeychainService
+	}
+	return ""
+}
+
+// keychainHasItem reports whether a generic-password item with the given
+// service exists in the user's keychain. Existence only — it never reads or
+// prints the secret.
+func keychainHasItem(service string) bool {
+	// Absolute path: a GUI-launched iterion may have a minimal PATH that
+	// omits /usr/bin, but /usr/bin/security is always present on macOS.
+	cmd := exec.Command("/usr/bin/security", "find-generic-password", "-s", service)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	return cmd.Run() == nil
 }
 
 // findCodexBinary probes the host for the codex CLI. PATH lookup wins;
