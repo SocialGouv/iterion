@@ -510,8 +510,19 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 		}
 	}
 
-	c.launchFinish(plan)
+	// Publish the freed-slot snapshot BEFORE handing the Release HTTP to the
+	// off-actor worker. launchFinish spawns the worker, which enters
+	// tracker.Release as soon as the runtime schedules it; if fireSnapshot ran
+	// after launchFinish that scheduling could let the worker enter Release
+	// (and, in tests, fire releaseEntered) while the published snapshot still
+	// showed the slot in use (GlobalUsed=1). That window is a flake under CI's
+	// scheduling and — per ADR-028 Step 3 — a real violation of "slot
+	// accounting is observable before the release HTTP completes": the studio
+	// could read the slot as used while Release is in flight. The paused
+	// branch above already publishes before returning; the worker reads only
+	// the immutable plan, so publishing first is safe.
 	c.fireSnapshot()
+	c.launchFinish(plan)
 }
 
 // exhausted reports whether a failing issue has reached the configured
