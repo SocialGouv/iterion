@@ -1,0 +1,68 @@
+name: dep-update-guard
+display_name: Vetty
+version: 0.1.0
+description: |
+  Reactive security + alignment guard for automated dependency-update
+  PRs (Dependabot / Renovate). Triggered per PR, on the bot's own
+  branch, Vetty: (1) audits the bump for supply-chain risk — known
+  malware, typosquats, compromised-maintainer signals, and CVEs
+  introduced vs resolved; (2) checks reliability by building and
+  running the repo's tests; (3) aligns the consuming code to any
+  breaking change (a JS/TS lib API, Helm chart values, a Go module,
+  …), committing the alignment back onto the PR branch; (4) posts a
+  complete review comment with the verdict and evidence; and (5)
+  escalates to a human when a structuring architectural decision is
+  required. It never merges — the merge stays a human call.
+
+  Stack-agnostic by construction: the per-ecosystem scanner and
+  build/test knowledge lives in the skills (package-managers,
+  dependency-pr-guard), and one adaptive agent reads them and adapts
+  to whatever repo the PR targets; deterministic gates verify the
+  audit ran and the build is green before anything is committed.
+when_to_use: |
+  Use to guard a repository's automated dependency-update PRs. Enable
+  it on a repo via the studio Integrations flow with author filtering
+  to the dependency bots — it then reacts to each Dependabot/Renovate
+  PR, posts a security + alignment verdict, and commits any code
+  alignment onto the PR branch. Not for human PRs (use Revi /
+  review-pr), and not for proactively opening update PRs (that is
+  Renovacy / secured-renovacy).
+author: SocialGouv (devthejo) — bots/dep-update-guard/main.bot
+schema_version: 1
+
+dispatch_vars:
+  scope_notes: |-
+    {{issue.title}}
+
+    {{issue.body}}
+
+# Forge-access requirements for the studio Integrations auto-provisioner.
+# Advisory + discovery-time — the runtime does not read this; pkg/forge
+# reads it to compute the webhook events, request the token scopes, and
+# build the matching webhooks.Config (incl. the author allowlist).
+forge:
+  events: [pull_request, pull_request_comment]  # PR open → guard ; /vetty note → re-run
+  token_scopes:
+    pull_requests: write     # post the review comment
+    repository: write        # push the code alignment onto the PR branch
+  secret: forge_token
+  webhook:
+    # React ONLY to the dependency bots, never human PRs. Maps to
+    # webhooks.Config.AuthorAllowlist via the orchestrator.
+    author_allowlist: ["dependabot[bot]", "renovate[bot]"]
+    launch_vars:
+      pr_review_mode: summary
+      post_to_board: "false"
+  rationale: |
+    Vetty reads the PR's dependency bump, audits it for supply-chain
+    risk, aligns consuming code, commits the alignment onto the PR
+    branch, and posts a verdict comment. /vetty in a note re-runs it.
+
+# Invocations: how Vetty can be triggered (typed routing contract).
+invocations:
+  - kind: forge
+    mode: direct
+    forge: { event: pull_request, actions: [opened, reopened] }
+  - kind: command
+    mode: direct
+    command: { name: vetty, scope: pr, disambiguator: when_args_empty }

@@ -1,0 +1,720 @@
+## ─────────────────────────────────────────────────────────────────
+## dep_update_guard — "Vetty", a reactive security + alignment guard
+## for automated dependency-update PRs (Dependabot / Renovate).
+##
+## Vetty runs PER PR, on the dependency bot's OWN branch (the runner
+## checks it out — so there is NO `worktree: auto`; a fresh worktree
+## would discard the PR branch). It:
+##
+##   prepare        (tool)     compute the bump diff vs base; list the
+##                             changed dependency manifests/lockfiles.
+##   security_audit (agent)    supply-chain audit of the bump: malware,
+##                             typosquats, compromised-maintainer
+##                             signals, CVEs introduced vs resolved.
+##   align          (agent)    align consuming code to breaking changes
+##                             (JS lib API, Helm values, Go module, …)
+##                             AND get the build/tests green. Flags a
+##                             structuring architectural choice for a
+##                             human instead of guessing.
+##   validate       (agent)    independently re-run the build/tests to
+##                             VERIFY green before anything is committed.
+##   commit         (agent)    commit the alignment onto the PR branch
+##                             and push it back via forge_token.
+##   post_feedback  (agent)    post ONE complete review comment on the
+##                             PR: verdict + evidence + what to watch.
+##   escalate       (human)    llm_or_human — auto-answers a trivial
+##                             question, pauses for a real architectural
+##                             decision.
+##
+## Vetty NEVER merges — the merge stays a human call. The deterministic
+## gates (audit_gate / validate_gate) are the truth oracles: code is
+## committed ONLY when the audit verdict is `safe` AND an independent
+## validate pass is green. A not-safe bump or an unstable build short-
+## circuits to a HOLD comment, never a commit.
+##
+## Stack-agnostic (universal-bots doctrine): no ecosystem/ package
+## manager is enumerated in this DSL. The per-stack knowledge lives in
+## skills/dependency-pr-guard.md + skills/package-managers.md; the
+## adaptive agents read them and adapt to whatever repo the PR targets.
+## ─────────────────────────────────────────────────────────────────
+
+secrets:
+  ## Forge API token, mounted read-only as a FILE (path/env only, never
+  ## read into a prompt). Used to (a) push the alignment commit onto the
+  ## PR branch and (b) post the review comment via the forge REST API —
+  ## no host `gh`/`glab` needed, so it works inside the sandbox. An org
+  ## binds its forge credential to this name via a bot-secret binding.
+  ## optional: true so a local dogfood relying on host git auth still runs.
+  forge_token:
+    as: file
+    optional: true
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+  ## The PR's target (base) branch — the bump is `base_ref..HEAD`. The
+  ## webhook stamps the real base; default "main" covers the common case.
+  base_ref: string = "main"
+
+  ## The pull/merge-request URL (webhook-stamped). Empty on a bare local
+  ## run → the feedback step skips posting (it still audits + aligns).
+  pr_url: string = ""
+
+  ## The PR author login (webhook-stamped, e.g. "dependabot[bot]").
+  ## Informational — surfaced in the comment; the author FILTER lives in
+  ## the webhook config, not here.
+  pr_author: string = ""
+
+  ## PR title + body (webhook-stamped) — extra context for the audit.
+  scope_notes: string = ""
+
+  ## Comment style: "summary" (default — one rolled-up review comment).
+  pr_review_mode: string = "summary"
+
+  ## Soft budget hint passed into align/validate prompts (number of
+  ## self-fix attempts the align agent should spend before flagging
+  ## unstable). Not a hard loop bound — convergence is by construction.
+  max_fix_iterations: int = 2
+
+  ## When true, also mirror the verdict to the native board. Off by
+  ## default — Vetty's primary sink is the PR comment.
+  post_to_board: bool = false
+
+## ─── Prompts ────────────────────────────────────────────────────
+
+prompt security_audit_system:
+  You are a supply-chain security auditor. A dependency bot (Dependabot
+  or Renovate) opened a PR that bumps one or more dependencies. Your job
+  is to decide whether applying this bump is SAFE — not malicious, not a
+  supply-chain compromise, and not introducing an unresolved critical
+  vulnerability.
+
+  READ THE SKILLS FIRST: `.claude/skills/dependency-pr-guard.md` (the
+  operating playbook — how to read the bump, which signals matter) and
+  `.claude/skills/package-managers.md` (per-ecosystem auditor commands
+  and lockfile detection). They are the catalogue; follow them and do
+  not improvise an auditor you have not confirmed there.
+
+  PROCEDURE (read-only — you NEVER edit files here):
+    1. From `input.bump_summary` + `input.dep_files`, enumerate exactly
+       which packages changed and their old → new versions (parse the
+       lockfile / manifest diff). A bump may touch several packages
+       (grouped update) — audit each changed (name, old, new) triple.
+    2. SUPPLY-CHAIN / MALWARE signals (the priority — this is the novel
+       value over a plain CVE check):
+         - known-malicious / yanked / typosquat advisories on the NEW
+           version (osv-scanner, the native auditor, OSV API);
+         - install-time hooks newly added by the bump (postinstall,
+           preinstall, lifecycle scripts), obfuscated blobs,
+           fetch-then-exec, base64 payloads in the new package;
+         - a compromised-maintainer / unexpected-author signal where the
+           ecosystem exposes it.
+       Treat the CURRENT pin too: if the OLD version is flagged
+       malicious, surface it (an auto-bump out of a compromised pin can
+       mask an incident) but it does not by itself block the new version.
+    3. CVEs: list advisories the bump RESOLVES and any it INTRODUCES.
+       Most bumps resolve more than they introduce — do not block a
+       routine bump just because the tree has unrelated advisories.
+    4. VERDICT (`verdict`):
+         - "malicious"  — a credible malware / compromise signal on the
+                          new version. Hard stop, no alignment.
+         - "suspicious" — an unresolved HIGH/CRITICAL CVE on the new
+                          version with no fix, OR a weaker but real
+                          supply-chain signal you cannot clear. Hold for
+                          a human; no alignment.
+         - "safe"       — no malware signal and no unresolved
+                          HIGH/CRITICAL introduced by the bump.
+       When unsure between safe and suspicious, choose "suspicious" —
+       blocking a clean bump for review is cheap; aligning + committing
+       on top of a compromised one is not.
+
+  ANTI-FAÇADE: every `verdict` must cite the auditors you actually ran
+  in `auditors_consulted` (mark unavailable ones "<name>:not_available"
+  so the operator can wire them). A "safe" with no auditor evidence is a
+  façade. If the sandbox lacks the scanners, say so in `summary` and
+  default to "suspicious" rather than a hollow "safe".
+
+  Emit `audit_output`: verdict, cves (resolved + introduced, prefixed),
+  malware_signals, blockers (concrete reasons when not safe), summary,
+  auditors_consulted.
+
+  ### PR context (operator)
+  {{vars.scope_notes}}
+
+prompt security_audit_user:
+  Audit this dependency bump (read-only).
+
+  Workspace:     {{vars.workspace_dir}}
+  Base branch:   {{vars.base_ref}}
+  Changed dep files:
+  {{input.dep_files}}
+
+  Bump diff (manifest/lockfile changes):
+  {{input.bump_summary}}
+
+  Run the auditors per the skills, then emit `audit_output`.
+
+prompt align_system:
+  You align the consuming repository's code to a dependency bump that a
+  bot already applied on THIS branch. The dependency manifest + lockfile
+  are already updated — your job is to make the REST of the code
+  compatible with the new version(s), and to leave the build + tests
+  GREEN.
+
+  READ `.claude/skills/dependency-pr-guard.md` FIRST — it covers how to
+  find the breaking changes (release notes / changelog / the diff of the
+  bumped package), the per-stack alignment surfaces (a JS/TS lib's
+  renamed/changed API; a Helm chart's changed `values` schema; a Go
+  module's changed signatures; a GitHub Action's changed inputs), the
+  build/test commands per ecosystem, and the tool discipline.
+
+  PROCEDURE:
+    1. Identify the breaking changes between old and new for each bumped
+       package (changelog + the package's own diff). If a bump is
+       patch/minor with no breaking change, there is likely NOTHING to
+       align — set `applied: false` and stop; do not invent edits.
+    2. For each real breaking change, apply the MINIMAL correct edit to
+       the consuming code with the structured file-editing tools (never
+       `sed`/`cat >` for code). Run a focused syntax check after each
+       edited file (per the skill's per-language probes).
+    3. Build + run the repo's tests (the skill says how to detect the
+       commands). Fix what the bump broke — and ONLY what the bump broke;
+       no drive-by refactors, no pre-existing-debt cleanup. Spend about
+       {{vars.max_fix_iterations}} focused fix attempts; if the build is
+       still red after that and it is the bump's fault, stop and report
+       it (validate will confirm).
+    4. ESCALATION — set `needs_human: true` with a precise
+       `human_question` ONLY when a STRUCTURING ARCHITECTURAL decision is
+       required that you must not make unilaterally: a major bump removes
+       an API with several equally-valid migration paths, two bumped
+       packages have mutually incompatible constraints, or the migration
+       changes a public contract of THIS repo. Do NOT escalate for
+       routine type errors / broken imports / renamed symbols — fix those
+       yourself.
+    5. Do NOT commit and do NOT push — `commit` does that downstream.
+       Do NOT merge anything.
+
+  Emit `align_output`: applied, files_changed, breaking_summary (what
+  broke and how you aligned it, per package), needs_human, human_question
+  (empty unless needs_human), summary.
+
+  ### PR context (operator)
+  {{vars.scope_notes}}
+
+prompt align_user:
+  Align the consuming code to this bump in {{vars.workspace_dir}}.
+
+  Base branch:  {{vars.base_ref}}
+  Bump diff:
+  {{input.bump_summary}}
+
+  Apply the minimal alignment, keep the build green, and emit
+  `align_output`. If nothing needs aligning, say so with applied=false.
+
+prompt validate_system:
+  You INDEPENDENTLY verify that the repository — with the dependency bump
+  AND any code alignment applied — builds and passes its tests. You are
+  the deterministic truth oracle before anything is committed: do not
+  trust the previous step's self-report, run the checks yourself.
+
+  Read `.claude/skills/dependency-pr-guard.md` for how to detect the
+  build + test commands for this stack. Budget discipline: a fast smoke
+  first (typecheck / compile / build), then the test subset that touches
+  the bumped surface, then — only if those pass — a fuller test run.
+  Capture EXACT commands + exit codes.
+
+  Emit `validate_output`:
+    stable        — true IFF the checks you ran passed (a known-flaky,
+                    bump-unrelated failure may be excused — say so).
+    blockers       — concrete failures with file paths + error tails.
+    fix_plan       — short ordered plan a follow-up could apply. Empty
+                    when stable.
+    commands_run   — the EXACT shell commands you executed (evidence).
+    confidence     — low/medium/high vs how much of the bumped surface
+                    your checks actually exercised.
+    summary        — one paragraph: what you ran and the outcome.
+
+  ANTI-FAÇADE: `stable: true` MUST be backed by real commands in
+  `commands_run` with passing exit codes. If you could not run a
+  meaningful check, set stable=false and explain — never a hollow pass.
+
+prompt validate_user:
+  Verify the build + tests in {{vars.workspace_dir}} after the bump +
+  alignment.
+
+  Alignment summary: {{input.breaking_summary}}
+
+  Run your checks and emit `validate_output`.
+
+prompt commit_system:
+  You commit the code ALIGNMENT produced for this dependency bump onto
+  the PR's OWN branch and push it back, so the dependency bot's PR now
+  carries both its bump and the matching code changes.
+
+  Read `.claude/skills/dependency-pr-guard.md` ("Committing & pushing
+  back") for the exact, forge-agnostic git incantation using the
+  `forge_token` file (set the authenticated push URL from the token; do
+  NOT print the token).
+
+  PROCEDURE:
+    1. `git status --porcelain` — enumerate the dirty files. If there is
+       NOTHING to commit (alignment applied no changes), set
+       committed=false, pushed=false, summary "no alignment needed", and
+       stop. (The bump itself is already committed by the bot — you only
+       add alignment.)
+    2. Stage ONLY the alignment files (the ones `align` changed). Do not
+       stage scratch/build output.
+    3. Match the repo's commit convention (read `git log --oneline -20`).
+       Prefer `chore(deps): align code for <pkg> <old> → <new>` or a
+       `fix:` when the alignment fixes a break.
+    4. Commit, then push to the CURRENT branch
+       (`git rev-parse --abbrev-ref HEAD`) on `origin` using the token
+       auth from the skill. Confirm the push succeeded (check the exit
+       code / re-query the remote ref).
+    5. Never force-push. Never push to the base branch. Never merge.
+
+  Emit `commit_output`: committed, pushed, sha (empty if nothing
+  committed), message, summary (incl. the push result — branch + whether
+  the remote accepted it).
+
+prompt commit_user:
+  Commit + push the alignment in {{vars.workspace_dir}} onto the PR
+  branch.
+
+  Files aligned: {{input.files_changed}}
+  Alignment summary: {{input.breaking_summary}}
+
+  Follow the skill's token-auth push recipe and emit `commit_output`.
+
+prompt feedback_system:
+  You post ONE complete review comment onto the dependency-update PR
+  summarising what Vetty found and did. You post a comment — you NEVER
+  approve, request-changes, or merge.
+
+  Read `.claude/skills/dependency-pr-guard.md` ("Posting the comment")
+  for the forge-agnostic REST call (detect the forge from the PR URL
+  host; authenticate with the `forge_token` file; post a PR/MR comment).
+  No host `gh`/`glab` is assumed — use the REST API with the token.
+
+  If `input.pr_url` is empty (a local run), publish NOTHING: return
+  posted=false with skipped_reason "no pr_url". Never pretend to post.
+
+  COMMENT CONTENT (markdown — be complete but tight). Open with a one-line
+  verdict badge keyed off `input.verdict`:
+    - hold_security  → "🛑 HOLD — supply-chain risk; not aligned/merged"
+    - needs_decision → "🧭 Needs a human decision (architectural)"
+    - hold_unstable  → "⚠️ HOLD — build/tests not green after alignment"
+    - committed      → "✅ Aligned — code updated on this branch; review & merge"
+    - clean          → "✅ Safe bump — no code alignment needed"
+  Then sections, including only the ones that apply:
+    ## Security & supply-chain   — {{input.audit_summary}}; list CVEs
+       resolved/introduced and any malware signals.
+    ## Code alignment            — {{input.align_summary}}; the files
+       changed and what broke (when committed).
+    ## Reliability               — {{input.validate_summary}}; the
+       commands run and their outcome.
+    ## Decision needed           — {{input.escalation}} (only for
+       needs_decision) — the precise question for the human.
+    ## What Vetty did            — one line: committed alignment to this
+       branch / held / nothing to align. ALWAYS state Vetty did NOT merge.
+  Note any coverage caveat honestly (e.g. a scanner was unavailable).
+
+  VERIFY (anti-façade): after posting, re-fetch the comment (the skill
+  gives the read call) and put its URL in `comment_url`. `posted` MUST
+  reflect the re-fetch, not an optimistic self-estimate.
+
+  Emit `feedback_output`: posted, comment_url, skipped_reason, summary.
+
+prompt feedback_user:
+  Post the review comment for this dependency PR.
+
+  PR URL:        {{input.pr_url}}
+  Verdict:       {{input.verdict}}
+
+  Security:      {{input.audit_summary}}
+  CVEs:          {{input.cves}}
+  Malware:       {{input.malware_signals}}
+  Alignment:     {{input.align_summary}}
+  Reliability:   {{input.validate_summary}}
+  Commit:        {{input.commit_summary}}
+  Escalation:    {{input.escalation}}
+
+  Compose the comment per your system prompt, post it via the forge REST
+  API using the forge_token, re-fetch to verify, and emit
+  `feedback_output`. Your FINAL action MUST be the structured
+  `feedback_output` with all fields set — never finish with prose.
+
+prompt escalate_instructions:
+  A dependency bump needs a STRUCTURING ARCHITECTURAL decision before the
+  code can be aligned. If the question is in fact routine (a clear,
+  low-risk migration), answer it yourself with a concrete `decision` +
+  `guidance`. Escalate to a human ONLY when the choice genuinely changes
+  this repository's architecture or a public contract and has several
+  defensible answers.
+
+  Question from the alignment step:
+  {{input.human_question}}
+
+  Breaking-change context:
+  {{input.breaking_summary}}
+
+  Provide `decision` (the chosen direction, or "defer" if a human must
+  decide) and `guidance` (one short paragraph the operator or a follow-up
+  run can act on).
+
+## ─── Schemas ────────────────────────────────────────────────────
+
+schema prepare_output:
+  ## is_empty: no diff vs base (defensive — nothing to do).
+  is_empty: bool
+  ## dep_files: changed dependency manifests/lockfiles (the audit scope).
+  dep_files: string[]
+  changed_files: int
+  ## bump_summary: the manifest/lockfile diff text (sized for a prompt).
+  bump_summary: string
+  ## has_non_dep_changes: the PR also touches non-dependency files.
+  has_non_dep_changes: bool
+
+schema audit_input:
+  bump_summary: string
+  dep_files: string[]
+
+schema audit_output:
+  verdict: string [enum: "safe", "suspicious", "malicious"]
+  cves: string[]
+  malware_signals: string[]
+  blockers: string[]
+  auditors_consulted: string[]
+  summary: string
+
+schema audit_gate_input:
+  verdict: string
+
+schema audit_gate_output:
+  safe: bool
+  verdict: string
+
+schema align_input:
+  bump_summary: string
+
+schema align_output:
+  applied: bool
+  files_changed: string[]
+  breaking_summary: string
+  needs_human: bool
+  human_question: string
+  summary: string
+
+schema align_gate_input:
+  needs_human: bool
+
+schema align_gate_output:
+  needs_human: bool
+
+schema escalate_input:
+  human_question: string
+  breaking_summary: string
+
+schema escalate_output:
+  decision: string
+  guidance: string
+
+schema validate_input:
+  breaking_summary: string
+
+schema validate_output:
+  stable: bool
+  blockers: string[]
+  fix_plan: string
+  commands_run: string[]
+  confidence: string
+  summary: string
+
+schema validate_gate_input:
+  stable: bool
+
+schema validate_gate_output:
+  stable: bool
+
+schema commit_input:
+  files_changed: string[]
+  breaking_summary: string
+
+schema commit_output:
+  committed: bool
+  pushed: bool
+  sha: string
+  message: string
+  summary: string
+
+## The feedback step assembles its comment from whichever upstream nodes
+## ran on the taken path; each edge into post_feedback fills the fields
+## it has, the rest default empty.
+schema feedback_input:
+  pr_url: string
+  verdict: string
+  audit_summary: string
+  cves: string
+  malware_signals: string
+  align_summary: string
+  validate_summary: string
+  commit_summary: string
+  escalation: string
+
+schema feedback_output:
+  posted: bool
+  comment_url: string
+  skipped_reason: string
+  summary: string
+
+schema feedback_health_input:
+  posted: bool
+  comment_url: string
+  skipped_reason: string
+  pr_url: string
+
+schema feedback_health_output:
+  degraded: bool
+  banner: string
+
+## ─── Nodes ──────────────────────────────────────────────────────
+
+## Deterministic bump detector (no LLM): diff the PR branch against the
+## merge-base of base_ref + HEAD, list the changed files, and classify
+## which are dependency manifests/lockfiles. Output drives the audit
+## scope. On any ambiguity (base_ref absent) it reports is_empty=false so
+## the audit still runs — never wrongly skips.
+tool prepare:
+  command: `WS={{vars.workspace_dir}} BASE={{vars.base_ref}} python3 -c "
+import os, subprocess, json, re
+os.chdir(os.environ['WS'])
+base = os.environ.get('BASE', 'main') or 'main'
+mb = subprocess.run(['git','merge-base',base,'HEAD'], capture_output=True, text=True).stdout.strip()
+ref = mb if mb else base
+names = subprocess.run(['git','diff','--name-only',ref], capture_output=True, text=True).stdout
+files = [f for f in names.splitlines() if f.strip()]
+# Dependency manifest / lockfile signatures across ecosystems.
+pats = [r'(^|/)package\.json$', r'(^|/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml)$',
+        r'(^|/)go\.(mod|sum)$', r'(^|/)(requirements[^/]*\.txt|Pipfile(\.lock)?|poetry\.lock|pyproject\.toml|uv\.lock)$',
+        r'(^|/)(Gemfile(\.lock)?)$', r'(^|/)(composer\.(json|lock))$', r'(^|/)Cargo\.(toml|lock)$',
+        r'(^|/)(pom\.xml|build\.gradle(\.kts)?|gradle\.lockfile)$', r'(^|/)mix\.(exs|lock)$',
+        r'(^|/)Chart\.(yaml|lock)$', r'(^|/)(values[^/]*\.ya?ml)$', r'(^|/)\.github/workflows/.+\.ya?ml$']
+rx = [re.compile(p) for p in pats]
+dep = [f for f in files if any(r.search(f) for r in rx)]
+non = [f for f in files if f not in dep]
+# Bump diff text, capped so it fits a prompt.
+summary = ''
+if dep:
+    d = subprocess.run(['git','diff',ref,'--']+dep, capture_output=True, text=True).stdout
+    summary = d[:18000] + ('\n…(truncated)…' if len(d) > 18000 else '')
+print(json.dumps({'is_empty': len(files)==0, 'dep_files': dep, 'changed_files': len(files),
+                  'bump_summary': summary, 'has_non_dep_changes': len(non)>0}))
+"`
+  output: prepare_output
+
+## Supply-chain audit (read-only). claude_code so it has a real shell +
+## the sec scanners from the sandbox image; reads the skills and adapts.
+agent security_audit:
+  backend: "claude_code"
+  model: "${VETTY_MODEL_AUDIT:-claude-opus-4-8}"
+  reasoning_effort: "${VETTY_EFFORT_AUDIT:-high}"
+  input: audit_input
+  output: audit_output
+  system: security_audit_system
+  user: security_audit_user
+  session: fresh
+  readonly: true
+  tool_max_steps: 40
+
+## Deterministic gate: only `safe` proceeds to alignment; suspicious /
+## malicious short-circuit to a HOLD comment (no code change).
+compute audit_gate:
+  input: audit_gate_input
+  output: audit_gate_output
+  expr:
+    safe: "input.verdict == 'safe'"
+    verdict: "input.verdict"
+
+## Align consuming code to the bump AND keep the build green (mutating).
+agent align:
+  backend: "claude_code"
+  model: "${VETTY_MODEL_ALIGN:-claude-opus-4-8}"
+  reasoning_effort: "${VETTY_EFFORT_ALIGN:-high}"
+  input: align_input
+  output: align_output
+  system: align_system
+  user: align_user
+  session: fresh
+  tool_max_steps: 80
+
+## Deterministic gate on the escalation flag.
+compute align_gate:
+  input: align_gate_input
+  output: align_gate_output
+  expr:
+    needs_human: "input.needs_human"
+
+## llm_or_human: auto-answers a routine question, pauses for a real
+## architectural decision.
+human escalate:
+  input: escalate_input
+  output: escalate_output
+  instructions: escalate_instructions
+  interaction: llm_or_human
+  ## The LLM half (auto-answers a routine question); a genuine
+  ## architectural choice still pauses for a human.
+  model: "${VETTY_MODEL_ESCALATE:-claude-opus-4-8}"
+
+## Independent build/test verification — the truth oracle before commit.
+agent validate:
+  backend: "claude_code"
+  model: "${VETTY_MODEL_VALIDATE:-claude-opus-4-8}"
+  reasoning_effort: "${VETTY_EFFORT_VALIDATE:-high}"
+  input: validate_input
+  output: validate_output
+  system: validate_system
+  user: validate_user
+  session: fresh
+  tool_max_steps: 50
+
+## Deterministic gate: a green validate is the ONLY path to commit.
+compute validate_gate:
+  input: validate_gate_input
+  output: validate_gate_output
+  expr:
+    stable: "input.stable"
+
+## Commit the alignment onto the PR branch + push it back (token auth).
+agent commit:
+  backend: "claude_code"
+  model: "${VETTY_MODEL_COMMIT:-claude-opus-4-8}"
+  reasoning_effort: "${VETTY_EFFORT_COMMIT:-medium}"
+  input: commit_input
+  output: commit_output
+  system: commit_system
+  user: commit_user
+  session: fresh
+  tool_max_steps: 25
+
+## Post the complete review comment on the PR (forge REST + token).
+agent post_feedback:
+  backend: "claude_code"
+  model: "${VETTY_MODEL_FEEDBACK:-claude-opus-4-8}"
+  reasoning_effort: "${VETTY_EFFORT_FEEDBACK:-medium}"
+  input: feedback_input
+  output: feedback_output
+  system: feedback_system
+  user: feedback_user
+  session: fresh
+  tool_max_steps: 30
+
+## Deterministic anti-façade gate: a PR target was given but nothing
+## posted → loud banner (informational; the audit/align already ran).
+tool feedback_health:
+  command: `POSTED={{input.posted}} URL={{input.comment_url}} SKIPPED={{input.skipped_reason}} PR={{input.pr_url}} python3 -c "
+import os, json, sys
+posted = os.environ.get('POSTED','false') == 'true'
+pr = os.environ.get('PR','')
+skipped = os.environ.get('SKIPPED','')
+degraded = (pr != '') and (not posted)
+if degraded:
+    banner = chr(9888) + ' FEEDBACK NOT POSTED: a PR url was given but no comment landed (reason: ' + (skipped or 'none') + '). Check forge_token + the PR url.'
+else:
+    banner = 'feedback OK: ' + (os.environ.get('URL','') or ('skipped — ' + (skipped or 'no pr_url')))
+sys.stderr.write(banner + chr(10))
+print(json.dumps({'degraded': degraded, 'banner': banner}))
+"`
+  input: feedback_health_input
+  output: feedback_health_output
+
+## ─── Workflow ───────────────────────────────────────────────────
+
+workflow dep_update_guard:
+  entry: prepare
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "40m"
+    max_cost_usd: 15
+
+  ## Scanners + build toolchain live in the sec sandbox image. One
+  ## sandbox for the whole run; network open by default so the auditors
+  ## reach OSV/advisory DBs and the commit/feedback steps reach the forge.
+  sandbox:
+    image: "ghcr.io/socialgouv/iterion-sandbox-sec:edge"
+
+  ## Nothing changed vs base → done (defensive). Otherwise audit.
+  prepare -> done when is_empty
+  prepare -> security_audit when not is_empty with {
+    bump_summary: "{{outputs.prepare.bump_summary}}",
+    dep_files: "{{outputs.prepare.dep_files}}"
+  }
+
+  ## Deterministic verdict gate.
+  security_audit -> audit_gate with { verdict: "{{outputs.security_audit.verdict}}" }
+
+  ## Not safe → HOLD comment, no alignment, no commit.
+  audit_gate -> post_feedback when not safe with {
+    pr_url: "{{vars.pr_url}}",
+    verdict: "hold_security",
+    audit_summary: "{{outputs.security_audit.summary}}",
+    cves: "{{outputs.security_audit.cves}}",
+    malware_signals: "{{outputs.security_audit.malware_signals}}"
+  }
+  ## Safe → align the consuming code.
+  audit_gate -> align when safe with { bump_summary: "{{outputs.prepare.bump_summary}}" }
+
+  align -> align_gate with { needs_human: "{{outputs.align.needs_human}}" }
+
+  ## Architectural decision needed → escalate; else verify the build.
+  align_gate -> escalate when needs_human with {
+    human_question: "{{outputs.align.human_question}}",
+    breaking_summary: "{{outputs.align.breaking_summary}}"
+  }
+  align_gate -> validate when not needs_human with {
+    breaking_summary: "{{outputs.align.breaking_summary}}"
+  }
+
+  ## Escalation → comment with the open decision (no commit).
+  escalate -> post_feedback with {
+    pr_url: "{{vars.pr_url}}",
+    verdict: "needs_decision",
+    audit_summary: "{{outputs.security_audit.summary}}",
+    align_summary: "{{outputs.align.breaking_summary}}",
+    escalation: "{{outputs.escalate.guidance}}"
+  }
+
+  validate -> validate_gate with { stable: "{{outputs.validate.stable}}" }
+
+  ## Green → commit the alignment onto the PR branch.
+  validate_gate -> commit when stable with {
+    files_changed: "{{outputs.align.files_changed}}",
+    breaking_summary: "{{outputs.align.breaking_summary}}"
+  }
+  ## Red → HOLD comment, no commit.
+  validate_gate -> post_feedback when not stable with {
+    pr_url: "{{vars.pr_url}}",
+    verdict: "hold_unstable",
+    audit_summary: "{{outputs.security_audit.summary}}",
+    align_summary: "{{outputs.align.breaking_summary}}",
+    validate_summary: "{{outputs.validate.summary}}"
+  }
+
+  ## Committed → final comment with the full verdict.
+  commit -> post_feedback with {
+    pr_url: "{{vars.pr_url}}",
+    verdict: "committed",
+    audit_summary: "{{outputs.security_audit.summary}}",
+    align_summary: "{{outputs.align.breaking_summary}}",
+    validate_summary: "{{outputs.validate.summary}}",
+    commit_summary: "{{outputs.commit.summary}}"
+  }
+
+  ## Deterministic anti-façade gate on the comment, then done.
+  post_feedback -> feedback_health with {
+    posted: "{{outputs.post_feedback.posted}}",
+    comment_url: "{{outputs.post_feedback.comment_url}}",
+    skipped_reason: "{{outputs.post_feedback.skipped_reason}}",
+    pr_url: "{{vars.pr_url}}"
+  }
+  feedback_health -> done
