@@ -15,6 +15,7 @@ const LaunchView = lazy(() => import("@/components/Runs/LaunchView"));
 const RunsTabsView = lazy(() => import("@/components/Runs/RunsTabsView"));
 const BoardView = lazy(() => import("@/views/Board"));
 const LabelsView = lazy(() => import("@/views/Board/Labels"));
+const FieldsView = lazy(() => import("@/views/Board/Fields"));
 const RunsAnalyticsView = lazy(() => import("@/views/RunsAnalytics"));
 const DispatcherView = lazy(() => import("@/views/Dispatcher"));
 const MarketplaceView = lazy(() => import("@/views/Marketplace"));
@@ -258,6 +259,13 @@ function AuthedApp() {
             <Route path="/board/labels">
               <ErrorBoundary area="Board labels view">
                 <LabelsView />
+              </ErrorBoundary>
+            </Route>
+          )}
+          {serverInfo?.native_tracker_enabled && (
+            <Route path="/board/fields">
+              <ErrorBoundary area="Board fields view">
+                <FieldsView />
               </ErrorBoundary>
             </Route>
           )}

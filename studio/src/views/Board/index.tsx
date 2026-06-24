@@ -315,6 +315,14 @@ export default function BoardView() {
         <Button
           variant="secondary"
           size="sm"
+          onClick={() => setLocation("/board/fields")}
+          title="Manage the board's custom-field schema"
+        >
+          Fields
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
           onClick={columns.openAddColumn}
           title="Add a new column (board state)"
         >

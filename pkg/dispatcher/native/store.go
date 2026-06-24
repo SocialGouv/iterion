@@ -447,6 +447,251 @@ func (s *Store) UpdateState(name string, p StatePatch) (err error) {
 	})
 }
 
+// ---------------------------------------------------------------------------
+// Custom field schema management (board.Fields). Mirrors the state
+// mutators: granular ops, atomic under s.mu, with a key cascade across
+// issue.Fields maps on rename/delete so no issue is left referencing a
+// field the schema no longer knows (which Update's ValidateFieldValues
+// would otherwise reject).
+// ---------------------------------------------------------------------------
+
+// applyFieldRewriteLocked rewrites each indexed issue's Fields map via
+// transform, persisting + reindexing + emitting EvtIssueUpdated per
+// changed issue. The caller already holds s.mu. Returns issues touched.
+// Mirrors applyLabelRewriteLocked's partial-progress contract.
+func (s *Store) applyFieldRewriteLocked(
+	transform func(fields map[string]any) (map[string]any, bool),
+	reason string,
+) (int, error) {
+	touched := 0
+	for id, iss := range s.index {
+		if len(iss.Fields) == 0 {
+			continue
+		}
+		nextFields, changed := transform(iss.Fields)
+		if !changed {
+			continue
+		}
+		next := cloneIssue(iss)
+		next.Fields = nextFields
+		next.UpdatedAt = time.Now().UTC()
+		if err := s.writeIssueLocked(next); err != nil {
+			return touched, fmt.Errorf("native store: write %s during %s: %w", id, reason, err)
+		}
+		s.index[id] = next
+		if err := s.emitPostCommitEvent(Event{
+			Type:    EvtIssueUpdated,
+			IssueID: id,
+			Payload: map[string]any{"changed": []string{"fields"}, "reason": reason},
+		}); err != nil {
+			return touched, err
+		}
+		touched++
+	}
+	return touched, nil
+}
+
+// AddField appends a new custom-field definition. Rejects empty/duplicate
+// names; the candidate board is validated (enum needs values, known type).
+func (s *Store) AddField(f Field) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("AddField", &err)
+	if f.Name == "" {
+		return errors.New("native store: field name cannot be empty")
+	}
+	if s.board.FieldByName(f.Name) != nil {
+		return fmt.Errorf("native store: field %q already exists", f.Name)
+	}
+	next := cloneBoard(s.board)
+	next.Fields = append(next.Fields, f)
+	if err := s.setBoardLocked(next); err != nil {
+		return err
+	}
+	return s.emitPostCommitEvent(Event{
+		Type:    EvtBoardUpdated,
+		Payload: map[string]any{"op": "field_add", "field": f.Name},
+	})
+}
+
+// FieldPatch carries the editable definition fields for UpdateField. A
+// nil pointer leaves the corresponding attribute untouched. Renames go
+// through RenameField (they cascade), never here.
+type FieldPatch struct {
+	Display    *string    `json:"display,omitempty"`
+	Type       *FieldType `json:"type,omitempty"`
+	Required   *bool      `json:"required,omitempty"`
+	EnumValues *[]string  `json:"enum_values,omitempty"`
+}
+
+// UpdateField edits a field definition in place (no rename, no value
+// migration). The amended board is validated before commit.
+func (s *Store) UpdateField(name string, p FieldPatch) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("UpdateField", &err)
+	idx := -1
+	for i := range s.board.Fields {
+		if s.board.Fields[i].Name == name {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("native store: unknown field %q", name)
+	}
+	next := cloneBoard(s.board)
+	f := &next.Fields[idx]
+	if p.Display != nil {
+		f.Display = *p.Display
+	}
+	if p.Type != nil {
+		f.Type = *p.Type
+	}
+	if p.Required != nil {
+		f.Required = *p.Required
+	}
+	if p.EnumValues != nil {
+		f.EnumValues = *p.EnumValues
+	}
+	if err := s.setBoardLocked(next); err != nil {
+		return err
+	}
+	return s.emitPostCommitEvent(Event{
+		Type:    EvtBoardUpdated,
+		Payload: map[string]any{"op": "field_update", "field": name},
+	})
+}
+
+// RenameField renames a field definition and cascades the key across
+// every issue's Fields map. Refuses renaming onto an existing field.
+func (s *Store) RenameField(from, to string) (touched int, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("RenameField", &err)
+	if from == "" || to == "" {
+		return 0, errors.New("native store: field name cannot be empty")
+	}
+	if from == to {
+		return 0, nil
+	}
+	idx := -1
+	for i := range s.board.Fields {
+		if s.board.Fields[i].Name == from {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return 0, fmt.Errorf("native store: unknown field %q", from)
+	}
+	if s.board.FieldByName(to) != nil {
+		return 0, fmt.Errorf("native store: target field %q already exists", to)
+	}
+	next := cloneBoard(s.board)
+	next.Fields[idx].Name = to
+	if err := s.setBoardLocked(next); err != nil {
+		return 0, err
+	}
+	touched, err = s.applyFieldRewriteLocked(func(fields map[string]any) (map[string]any, bool) {
+		v, ok := fields[from]
+		if !ok {
+			return fields, false
+		}
+		out := make(map[string]any, len(fields))
+		for k, val := range fields {
+			if k == from {
+				continue
+			}
+			out[k] = val
+		}
+		out[to] = v
+		return out, true
+	}, "field_rename")
+	if err != nil {
+		return touched, err
+	}
+	return touched, s.emitPostCommitEvent(Event{
+		Type:    EvtBoardUpdated,
+		Payload: map[string]any{"op": "field_rename", "from": from, "to": to},
+	})
+}
+
+// DeleteField removes a field definition and strips its key from every
+// issue (so no issue keeps a value the schema no longer validates).
+func (s *Store) DeleteField(name string) (touched int, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("DeleteField", &err)
+	idx := -1
+	for i := range s.board.Fields {
+		if s.board.Fields[i].Name == name {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return 0, fmt.Errorf("native store: unknown field %q", name)
+	}
+	touched, err = s.applyFieldRewriteLocked(func(fields map[string]any) (map[string]any, bool) {
+		if _, ok := fields[name]; !ok {
+			return fields, false
+		}
+		out := make(map[string]any, len(fields))
+		for k, val := range fields {
+			if k != name {
+				out[k] = val
+			}
+		}
+		return out, true
+	}, "field_delete")
+	if err != nil {
+		return touched, err
+	}
+	next := cloneBoard(s.board)
+	next.Fields = append(next.Fields[:idx], next.Fields[idx+1:]...)
+	if err := s.setBoardLocked(next); err != nil {
+		return touched, err
+	}
+	return touched, s.emitPostCommitEvent(Event{
+		Type:    EvtBoardUpdated,
+		Payload: map[string]any{"op": "field_delete", "field": name},
+	})
+}
+
+// ReorderFields rewrites the field order. `order` must be a permutation
+// of the current field names. Never touches issues.
+func (s *Store) ReorderFields(order []string) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("ReorderFields", &err)
+	if len(order) != len(s.board.Fields) {
+		return fmt.Errorf("native store: reorder expects %d fields, got %d", len(s.board.Fields), len(order))
+	}
+	seen := map[string]bool{}
+	reordered := make([]Field, 0, len(order))
+	for _, name := range order {
+		if seen[name] {
+			return fmt.Errorf("native store: duplicate field %q in reorder", name)
+		}
+		f := s.board.FieldByName(name)
+		if f == nil {
+			return fmt.Errorf("native store: unknown field %q in reorder", name)
+		}
+		seen[name] = true
+		reordered = append(reordered, *f)
+	}
+	next := cloneBoard(s.board)
+	next.Fields = reordered
+	if err := s.setBoardLocked(next); err != nil {
+		return err
+	}
+	return s.emitPostCommitEvent(Event{
+		Type:    EvtBoardUpdated,
+		Payload: map[string]any{"op": "field_reorder"},
+	})
+}
+
 // ReorderStates rewrites the column order. `order` must be a permutation
 // of the current state names (same set, no missing/extra/duplicate
 // entries). Never migrates issues.

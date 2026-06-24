@@ -47,6 +47,10 @@ func (s *Store) RegisterRoutesWithMiddleware(mux *http.ServeMux, prefix string, 
 	mux.Handle("POST "+p+"/board/states/reorder", wrap(http.HandlerFunc(s.handleReorderStates)))
 	mux.Handle("PATCH "+p+"/board/states/{name}", wrap(http.HandlerFunc(s.handleUpdateState)))
 	mux.Handle("DELETE "+p+"/board/states/{name}", wrap(http.HandlerFunc(s.handleDeleteState)))
+	mux.Handle("POST "+p+"/board/fields", wrap(http.HandlerFunc(s.handleAddField)))
+	mux.Handle("POST "+p+"/board/fields/reorder", wrap(http.HandlerFunc(s.handleReorderFields)))
+	mux.Handle("PATCH "+p+"/board/fields/{name}", wrap(http.HandlerFunc(s.handleUpdateField)))
+	mux.Handle("DELETE "+p+"/board/fields/{name}", wrap(http.HandlerFunc(s.handleDeleteField)))
 }
 
 // ---------------------------------------------------------------------------
@@ -507,6 +511,87 @@ func mustList(s *Store) []*Issue {
 		return nil
 	}
 	return issues
+}
+
+// fieldUpdateReq is the PATCH /board/fields/{name} body. A non-nil Name
+// that differs from the path triggers a cascading rename across issues;
+// remaining attributes are applied afterward.
+type fieldUpdateReq struct {
+	Name       *string    `json:"name,omitempty"`
+	Display    *string    `json:"display,omitempty"`
+	Type       *FieldType `json:"type,omitempty"`
+	Required   *bool      `json:"required,omitempty"`
+	EnumValues *[]string  `json:"enum_values,omitempty"`
+}
+
+// handleAddField POST /board/fields: appends a custom-field definition.
+func (s *Store) handleAddField(w http.ResponseWriter, r *http.Request) {
+	var f Field
+	if err := json.NewDecoder(r.Body).Decode(&f); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.AddField(f); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.Board())
+}
+
+// handleUpdateField PATCH /board/fields/{name}: edits a field definition
+// and, when the body carries a different `name`, renames it first
+// (cascading across issue.Fields maps).
+func (s *Store) handleUpdateField(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var in fieldUpdateReq
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	target := name
+	if in.Name != nil && *in.Name != name {
+		if _, err := s.RenameField(name, *in.Name); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		target = *in.Name
+	}
+	if in.Display != nil || in.Type != nil || in.Required != nil || in.EnumValues != nil {
+		if err := s.UpdateField(target, FieldPatch{
+			Display:    in.Display,
+			Type:       in.Type,
+			Required:   in.Required,
+			EnumValues: in.EnumValues,
+		}); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, s.Board())
+}
+
+// handleDeleteField DELETE /board/fields/{name}: removes a field
+// definition and strips its key from every issue.
+func (s *Store) handleDeleteField(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.DeleteField(r.PathValue("name")); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.Board())
+}
+
+// handleReorderFields POST /board/fields/reorder {order:[...]}.
+func (s *Store) handleReorderFields(w http.ResponseWriter, r *http.Request) {
+	var in reorderStatesReq
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.ReorderFields(in.Order); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.Board())
 }
 
 // ---------------------------------------------------------------------------

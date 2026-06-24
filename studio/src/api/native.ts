@@ -185,6 +185,37 @@ export function reorderStates(order: string[]): Promise<NativeBoard> {
 }
 
 // ---------------------------------------------------------------------------
+// Custom field schema management. Mirrors the native /board/fields REST
+// surface. Rename cascades the key across issue.Fields; delete strips it.
+// ---------------------------------------------------------------------------
+
+export type NativeFieldPatch = Partial<
+  Pick<NativeField, "name" | "display" | "type" | "required" | "enum_values">
+>;
+
+export function addField(field: NativeField): Promise<NativeBoard> {
+  return request("/board/fields", { method: "POST", body: JSON.stringify(field) });
+}
+
+export function updateField(name: string, patch: NativeFieldPatch): Promise<NativeBoard> {
+  return request(`/board/fields/${encodeURIComponent(name)}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
+export function deleteField(name: string): Promise<NativeBoard> {
+  return request(`/board/fields/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
+export function reorderFields(order: string[]): Promise<NativeBoard> {
+  return request("/board/fields/reorder", {
+    method: "POST",
+    body: JSON.stringify({ order }),
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Label vocabulary management. Mirrors the native /labels REST surface.
 // ---------------------------------------------------------------------------
 

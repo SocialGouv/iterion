@@ -123,8 +123,11 @@ export function useColumnManagement({
       const names = board.states.map((s) => s.name);
       const i = names.indexOf(name);
       const j = dir === "left" ? i - 1 : i + 1;
-      if (i < 0 || j < 0 || j >= names.length) return;
-      [names[i], names[j]] = [names[j], names[i]];
+      const a = names[i];
+      const b = names[j];
+      if (a === undefined || b === undefined) return;
+      names[i] = b;
+      names[j] = a;
       void reorder(names);
     },
     [board, reorder],

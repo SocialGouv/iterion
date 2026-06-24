@@ -201,8 +201,8 @@ export function Column({
                 <IconButton
                   size="sm"
                   variant="ghost"
-                  aria-label={`Manage ${display} column`}
-                  title="Column options"
+                  label={`Manage ${display} column`}
+                  tooltip="Column options"
                   className="ml-1"
                   // Don't let the header's dragstart hijack a menu click.
                   draggable={false}
