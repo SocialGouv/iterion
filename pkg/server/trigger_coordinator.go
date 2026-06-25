@@ -20,6 +20,7 @@ import (
 type TriggerCoordinator struct {
 	bus       *eventbus.InProcBus
 	source    *trigger.BoardSource
+	scheduler *trigger.Scheduler
 	cancelSub func()
 	logger    *iterlog.Logger
 }
@@ -52,7 +53,15 @@ func StartTriggerCoordinator(ns *native.Store, subs trigger.SubscriptionStore, n
 		cancelSub()
 		return nil
 	}
-	return &TriggerCoordinator{bus: bus, source: src, cancelSub: cancelSub, logger: logger}
+	tc := &TriggerCoordinator{bus: bus, source: src, cancelSub: cancelSub, logger: logger}
+	// Schedule source: fire schedule-kind subscriptions on their cron. Only
+	// useful when a launcher is wired (something to launch); scoped to the
+	// local tenant "" so it's a no-op in cloud mode (cloudsched owns that).
+	if launcher != nil {
+		tc.scheduler = trigger.NewScheduler(subs, launcher, trigger.WithSchedulerLogger(logger))
+		tc.scheduler.Start()
+	}
+	return tc
 }
 
 // Bus returns the coordinator's event bus so other producers (the run
@@ -69,6 +78,9 @@ func (t *TriggerCoordinator) Bus() *eventbus.InProcBus {
 func (t *TriggerCoordinator) Close() {
 	if t == nil {
 		return
+	}
+	if t.scheduler != nil {
+		t.scheduler.Stop()
 	}
 	if t.source != nil {
 		t.source.Stop()

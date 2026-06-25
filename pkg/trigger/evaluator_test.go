@@ -105,6 +105,34 @@ func TestEvaluatorRunCompletionChaining(t *testing.T) {
 	}
 }
 
+func TestEvaluatorMergesEventVarsUnderSubscriptionVars(t *testing.T) {
+	// A forge/custom source stamps dynamic vars under payload["vars"]; the
+	// subscription's static Vars override on key collision (operator pins win).
+	st := seed(t, Subscription{
+		ID: "s", BotID: "review-pr", Mode: "direct", Enabled: true,
+		Match: Matcher{Sources: []Source{SourceCustom}},
+		Vars:  map[string]string{"reviewer": "strict"}, // operator pin
+	})
+	fl := &fakeLauncher{}
+	ev := NewEvaluator(st, WithLauncher(fl))
+
+	_ = ev.Handle(context.Background(), Event{
+		Source: SourceCustom, Kind: "ci.done",
+		Payload: map[string]any{"vars": map[string]any{"pr_url": "http://x/1", "reviewer": "lax"}},
+		Subject: Subject{Type: "custom", ID: "c1"},
+	})
+	if len(fl.plans) != 1 {
+		t.Fatalf("plans = %d, want 1", len(fl.plans))
+	}
+	got := fl.plans[0].Vars
+	if got["pr_url"] != "http://x/1" {
+		t.Fatalf("dynamic event var dropped: %+v", got)
+	}
+	if got["reviewer"] != "strict" {
+		t.Fatalf("subscription var should win on collision; got reviewer=%q", got["reviewer"])
+	}
+}
+
 func TestEvaluatorSkipsWhenEffectMissing(t *testing.T) {
 	st := seed(t, Subscription{ID: "b", BotID: "x", Mode: "board", Enabled: true, Match: Matcher{}})
 	ev := NewEvaluator(st) // no board effect wired

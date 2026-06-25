@@ -83,6 +83,12 @@ func (e *Evaluator) Handle(ctx context.Context, ev Event) error {
 // under ArgsVar (matching the dispatch_vars / webhook ArgsVar convention).
 func (e *Evaluator) buildPlan(sub Subscription, ev Event) LaunchPlan {
 	vars := make(map[string]string, len(sub.Vars)+1)
+	// Per-event dynamic vars first (a forge/custom source stamps these under
+	// payload["vars"]), then the subscription's static operator-pinned Vars on
+	// top — operator pins win, mirroring the webhook LaunchVars precedence.
+	for k, v := range eventVars(ev) {
+		vars[k] = v
+	}
 	for k, v := range sub.Vars {
 		vars[k] = v
 	}
@@ -103,6 +109,30 @@ func (e *Evaluator) buildPlan(sub Subscription, ev Event) LaunchPlan {
 		RepoRef:         ev.Subject.Ref,
 		Event:           ev,
 	}
+}
+
+// eventVars extracts per-event dynamic launch vars a source may stamp under
+// payload["vars"] (a map[string]string or map[string]any with string values).
+// Used by forge/custom sources to pass PR url / commit / arbitrary fields to
+// the run; board/run/schedule sources typically carry none.
+func eventVars(ev Event) map[string]string {
+	raw, ok := ev.Payload["vars"]
+	if !ok {
+		return nil
+	}
+	switch m := raw.(type) {
+	case map[string]string:
+		return m
+	case map[string]any:
+		out := make(map[string]string, len(m))
+		for k, v := range m {
+			if s, ok := v.(string); ok {
+				out[k] = s
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // argsPayload derives the free-text payload an event injects under a

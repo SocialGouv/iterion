@@ -165,6 +165,41 @@ func FromBoardInvocation(id, tenantID, repo, botID, origin string, inv bundle.In
 	return sub, true
 }
 
+// FromScheduleInvocation derives a schedule-trigger Subscription from a bot's
+// kind=schedule invocation that carries a suggested_cron. The cron is advisory
+// (the operator may retune it via the Triggers REST), but seeding it enabled
+// makes the bot's recurring run work out of the box. Returns ok=false for any
+// other invocation or a missing cron.
+func FromScheduleInvocation(id, tenantID, repo, botID, origin string, inv bundle.Invocation, now time.Time) (Subscription, bool) {
+	if inv.Kind != bundle.InvocationKindSchedule || inv.Schedule == nil {
+		return Subscription{}, false
+	}
+	cronExpr := strings.TrimSpace(inv.Schedule.SuggestedCron)
+	if cronExpr == "" {
+		return Subscription{}, false
+	}
+	vars := copyStrMap(inv.Schedule.DefaultVars)
+	if vars == nil {
+		vars = copyStrMap(inv.ContextVars)
+	}
+	return Subscription{
+		ID:         id,
+		TenantID:   tenantID,
+		Repo:       repo,
+		BotID:      botID,
+		Invocation: bundle.InvocationKindSchedule,
+		Mode:       bundle.ExecutionDirect,
+		Match:      Matcher{Sources: []Source{SourceSchedule}},
+		Cron:       cronExpr,
+		Vars:       vars,
+		ArgsVar:    inv.ArgsVar,
+		Origin:     origin,
+		Enabled:    true,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}, true
+}
+
 func copyStrMap(m map[string]string) map[string]string {
 	if len(m) == 0 {
 		return nil

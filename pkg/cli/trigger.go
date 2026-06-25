@@ -37,12 +37,17 @@ func buildLocalTriggerStore(botsPaths []string, logger *iterlog.Logger) trigger.
 	n := 0
 	for _, e := range entries {
 		for _, inv := range e.Invocations {
-			sub, ok := trigger.FromBoardInvocation(uuid.NewString(), "", "", e.Name, "manifest:"+e.Name, inv, now)
-			if !ok {
+			origin := "manifest:" + e.Name
+			if sub, ok := trigger.FromBoardInvocation(uuid.NewString(), "", "", e.Name, origin, inv, now); ok {
+				if err := st.Create(context.Background(), sub); err == nil {
+					n++
+				}
 				continue
 			}
-			if err := st.Create(context.Background(), sub); err == nil {
-				n++
+			if sub, ok := trigger.FromScheduleInvocation(uuid.NewString(), "", "", e.Name, origin, inv, now); ok {
+				if err := st.Create(context.Background(), sub); err == nil {
+					n++
+				}
 			}
 		}
 	}
