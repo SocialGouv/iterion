@@ -326,42 +326,53 @@ func iterionSHA() string {
 // structured output.
 func liveJudgeInvoker(reg *model.Registry, workDir string) quality.JudgeInvoker {
 	claw := quality.ClawInvoker(reg)
+	logger := iterlog.New(iterlog.LevelInfo, os.Stderr)
 	var cc delegate.Backend
 	// Opt-in only: the claude_code OAuth judge is experimental (see
 	// availableJudgeModels). Default off so an OAuth-only env runs a clean
 	// single OpenAI judge instead of paying for a judge that gets dropped.
 	if os.Getenv("ANTHROPIC_API_KEY") == "" && truthyEnv("ITERION_LIVE_JUDGE_CLAUDE_CODE") {
-		if be, err := delegate.DefaultRegistry(iterlog.New(iterlog.LevelError, os.Stderr)).Resolve(delegate.BackendClaudeCode); err == nil {
+		if be, err := delegate.DefaultRegistry(logger).Resolve(delegate.BackendClaudeCode); err == nil {
 			cc = be
 		}
 	}
 	return func(ctx context.Context, spec, system, userMsg string, schema json.RawMessage) (map[string]interface{}, error) {
 		if cc != nil && strings.HasPrefix(spec, "anthropic/") {
+			// claude_code's NATIVE StructuredOutput tool path (OutputSchema +
+			// tools) returns wrapped prose for this one-shot judge (verified
+			// across 4 live runs, with both nested and flat schemas). Drive
+			// the text-JSON path instead: a pure judge — NO tools, NO
+			// OutputSchema — told to emit ONLY a JSON object, which
+			// parseSDKOutput parses directly from the final message.
 			res, err := cc.Execute(ctx, delegate.Task{
 				NodeID:       "quality_judge",
-				SystemPrompt: system,
+				SystemPrompt: system + claudeCodeJSONInstruction,
 				UserPrompt:   userMsg,
-				OutputSchema: schema,
 				Model:        spec,
 				WorkDir:      workDir,
-				// A non-empty (read-only) tool set engages claude_code's
-				// two-pass structured-output extraction (needsTwoPass), the
-				// reliable path the bots' claude_code judges use. The judge
-				// won't need the tools, but it guarantees the forced
-				// structured output is recovered even if pass-1 returns prose.
-				AllowedTools: []string{"Read", "Grep", "Glob"},
 			})
 			if err != nil {
 				return nil, err
 			}
+			// Diagnostic breadcrumb: the claude_code judge keeps returning
+			// non-conforming output across approaches (5 live runs). Log what
+			// it actually produced so a future `-v` run pinpoints the shape
+			// (e.g. {"text":…} wrapping) without another blind iteration.
+			logger.Info("[quality] claude_code judge raw output (truncated): %.400q", fmt.Sprintf("%v", res.Output))
 			if len(res.Output) == 0 {
-				return nil, fmt.Errorf("claude_code judge returned no structured output")
+				return nil, fmt.Errorf("claude_code judge returned no output")
 			}
 			return res.Output, nil
 		}
 		return claw(ctx, spec, system, userMsg, schema)
 	}
 }
+
+// claudeCodeJSONInstruction drives the claude_code judge's text-JSON output
+// (the field list mirrors the flat judgeRaw schema).
+const claudeCodeJSONInstruction = "\n\nRespond with ONLY a single JSON object — no prose, no markdown code fences, nothing before or after it — containing EXACTLY these keys: " +
+	"efficacy, completeness, output_quality, restraint, reliability, value_for_money, overall (each a number from 0.0 to 1.0), " +
+	"narrative (string), relative_overall (one of \"better\", \"same\", \"worse\", \"n/a\"), relative_narrative (string), confidence (number from 0.0 to 1.0)."
 
 // availableJudgeModels filters the configured judge panel down to models
 // whose provider can actually authenticate via claw's direct-generation
