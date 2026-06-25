@@ -313,6 +313,7 @@ type Invocation struct {
 	Forge    *InvocationForge    `yaml:"forge,omitempty" json:"forge,omitempty"`
 	Command  *InvocationCommand  `yaml:"command,omitempty" json:"command,omitempty"`
 	Schedule *InvocationSchedule `yaml:"schedule,omitempty" json:"schedule,omitempty"`
+	Board    *InvocationBoard    `yaml:"board,omitempty" json:"board,omitempty"`
 }
 
 // EffectiveMode returns the execution mode, defaulting an empty value to
@@ -374,6 +375,43 @@ type InvocationSchedule struct {
 	SuggestedCron string `yaml:"suggested_cron,omitempty" json:"suggested_cron,omitempty"`
 	// DefaultVars are vars stamped on each scheduled run.
 	DefaultVars map[string]string `yaml:"default_vars,omitempty" json:"default_vars,omitempty"`
+}
+
+// Board card-event kinds a kind=board invocation may filter on. These mirror
+// the trigger package's Kind* constants; bundle can't import trigger (trigger
+// imports bundle), so they are duplicated here and kept in sync — the closed
+// set is enforced at parse time so a typo fails fast.
+const (
+	BoardKindCardCreated = "card.created"
+	BoardKindCardMoved   = "card.moved"
+	BoardKindCardLabeled = "card.labeled"
+	BoardKindCardUpdated = "card.updated"
+)
+
+var knownBoardKinds = map[string]bool{
+	BoardKindCardCreated: true,
+	BoardKindCardMoved:   true,
+	BoardKindCardLabeled: true,
+	BoardKindCardUpdated: true,
+}
+
+// InvocationBoard is the optional payload of a kind=board invocation. It
+// declares which native-board transitions fire this bot: the card-event
+// kinds (On), the board states the card must have entered (ToStates), and the
+// labels the card must ALL carry (AllLabels). An empty block keeps the legacy
+// behaviour — the bot is a plain dispatcher target picked up when an issue's
+// Bot == this bot. With a block, the orchestrator/operator derives a
+// trigger.Subscription whose Matcher fires the bot the moment a matching card
+// transition lands, instead of waiting for the dispatcher poll.
+type InvocationBoard struct {
+	// On filters by card-event kind (subset of knownBoardKinds). Empty = any.
+	On []string `yaml:"on,omitempty" json:"on,omitempty"`
+	// ToStates fires only when the card enters one of these board states.
+	// Empty = any state.
+	ToStates []string `yaml:"to_states,omitempty" json:"to_states,omitempty"`
+	// AllLabels requires the card to carry every listed label (AND). Empty =
+	// no label constraint.
+	AllLabels []string `yaml:"all_labels,omitempty" json:"all_labels,omitempty"`
 }
 
 var (
@@ -444,7 +482,14 @@ func validateInvocations(invs []Invocation) error {
 			}
 		case InvocationKindBoard:
 			if inv.Forge != nil || inv.Command != nil || inv.Schedule != nil {
-				return fmt.Errorf("invocations[%d]: kind=board takes no payload", idx)
+				return fmt.Errorf("invocations[%d]: kind=board takes only an optional board: block (not forge:/command:/schedule:)", idx)
+			}
+			if inv.Board != nil {
+				for _, k := range inv.Board.On {
+					if !knownBoardKinds[k] {
+						return fmt.Errorf("invocations[%d].board: unknown on %q (known: %s, %s, %s, %s)", idx, k, BoardKindCardCreated, BoardKindCardMoved, BoardKindCardLabeled, BoardKindCardUpdated)
+					}
+				}
 			}
 		}
 	}

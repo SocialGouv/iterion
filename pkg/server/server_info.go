@@ -56,6 +56,10 @@ type serverInfoResponse struct {
 	// wired (Config.Marketplace). The SPA conditionally exposes the
 	// Marketplace view + nav entry.
 	MarketplaceEnabled bool `json:"marketplace_enabled"`
+	// TriggersEnabled is true when the event-driven trigger store is wired
+	// (Config.TriggerStore). The SPA conditionally exposes the Triggers /
+	// Automations view that manages board (and future) subscriptions.
+	TriggersEnabled bool `json:"triggers_enabled"`
 }
 
 type serverLimitsBlock struct {
@@ -93,6 +97,7 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 		DispatcherEnabled:    s.cfg.Dispatcher != nil,
 		EmailEnabled:         s.authSvc != nil && s.authSvc.EmailEnabled(),
 		MarketplaceEnabled:   s.marketplace != nil,
+		TriggersEnabled:      s.cfg.TriggerStore != nil,
 	}
 	// Surface whether the daily spend cap is active so the SPA knows to
 	// poll for live status. DailyCap() is nil when disabled.

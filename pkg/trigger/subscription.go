@@ -1,0 +1,177 @@
+package trigger
+
+import (
+	"strings"
+	"time"
+
+	"github.com/SocialGouv/iterion/pkg/bundle"
+)
+
+// Matcher is the declarative filter on an Event. It is the union of the four
+// existing trigger families' allowlists (webhooks.Config.{Event,Project,
+// Author,Label}Allowlist, the dispatcher's label/state selectors, the forge
+// invocation Actions) so every legacy config maps onto it without losing
+// fidelity. An empty slice means "match any" for that dimension; a non-empty
+// slice requires at least one match (OR within a dimension, AND across
+// dimensions). Labels is the exception — it requires ALL listed labels to be
+// present (the board "all_labels" gate), which is what implementer triggers
+// like {state: ready, labels: [feature]} need.
+type Matcher struct {
+	Sources       []Source `json:"sources,omitempty" bson:"sources,omitempty"`
+	Kinds         []string `json:"kinds,omitempty" bson:"kinds,omitempty"`
+	Actions       []string `json:"actions,omitempty" bson:"actions,omitempty"`
+	Repos         []string `json:"repos,omitempty" bson:"repos,omitempty"`
+	Authors       []string `json:"authors,omitempty" bson:"authors,omitempty"`
+	Labels        []string `json:"labels,omitempty" bson:"labels,omitempty"`
+	SubjectStates []string `json:"subject_states,omitempty" bson:"subject_states,omitempty"`
+}
+
+// Match reports whether ev satisfies every dimension of m. It is pure and
+// total (no I/O, no panics) so it is cheap to call on the hot path and trivial
+// to unit-test against each family's allowlist shape. All string comparisons
+// are case-insensitive except Kind/Source/State, which are machine-generated
+// enums compared exactly.
+func (m Matcher) Match(ev Event) bool {
+	if len(m.Sources) > 0 && !containsExact(m.Sources, ev.Source) {
+		return false
+	}
+	if len(m.Kinds) > 0 && !containsStr(m.Kinds, ev.Kind, false) {
+		return false
+	}
+	if len(m.Actions) > 0 && !containsStr(m.Actions, ev.Action, true) {
+		return false
+	}
+	if len(m.Repos) > 0 && !containsStr(m.Repos, ev.Repo, true) {
+		return false
+	}
+	if len(m.Authors) > 0 && !containsStr(m.Authors, ev.Actor, true) {
+		return false
+	}
+	if len(m.SubjectStates) > 0 && !containsStr(m.SubjectStates, ev.Subject.State, false) {
+		return false
+	}
+	// Labels: every required label must be present on the event (AND).
+	for _, want := range m.Labels {
+		if !containsStr(ev.Labels, want, true) {
+			return false
+		}
+	}
+	return true
+}
+
+func containsExact(set []Source, v Source) bool {
+	for _, s := range set {
+		if s == v {
+			return true
+		}
+	}
+	return false
+}
+
+// containsStr reports whether v is in set. When fold is true the comparison is
+// case-insensitive (logins, repo slugs, free-form labels); when false it is
+// exact (machine enums like board kinds and states).
+func containsStr(set []string, v string, fold bool) bool {
+	for _, s := range set {
+		if s == v || (fold && strings.EqualFold(s, v)) {
+			return true
+		}
+	}
+	return false
+}
+
+// Subscription binds an event filter to a bot launch into a target. One row
+// per (tenant, repo, bot, invocation-kind). This is the unit the "by repo /
+// by bot" studio surfaces and the Evaluator's hot-path query hit, and the
+// projection the forge orchestrator generates from a bot's Invocations.
+type Subscription struct {
+	ID       string `json:"id" bson:"_id"`
+	TenantID string `json:"tenant_id,omitempty" bson:"tenant_id,omitempty"`
+	// Repo scopes the subscription to one repo ("group/project"); "" makes it
+	// tenant-wide (e.g. a board-wide trigger on the local single-host board).
+	Repo  string `json:"repo,omitempty" bson:"repo,omitempty"`
+	BotID string `json:"bot_id" bson:"bot_id"`
+	// Invocation names which bot capability this subscription activates, so a
+	// deprovision/regeneration can rebuild exactly the rows derived from a
+	// given invocation kind.
+	Invocation bundle.InvocationKind `json:"invocation" bson:"invocation"`
+	// Mode is direct (launch now) vs board (materialise a card the dispatcher
+	// claims). Empty inherits the invocation's EffectiveMode at evaluation.
+	Mode  bundle.ExecutionMode `json:"mode,omitempty" bson:"mode,omitempty"`
+	Match Matcher              `json:"match" bson:"match"`
+	// Vars are launch-var overrides stamped on the run (ContextVars +
+	// operator LaunchVars merged at provision time; operator wins).
+	Vars map[string]string `json:"vars,omitempty" bson:"vars,omitempty"`
+	// ArgsVar names the workflow input var that receives the event's free-text
+	// payload (issue title+body, comment args). Empty injects no payload.
+	ArgsVar string `json:"args_var,omitempty" bson:"args_var,omitempty"`
+	// Cron is set only for Invocation == schedule (the timer source matches it).
+	Cron            string            `json:"cron,omitempty" bson:"cron,omitempty"`
+	KeyOverrides    map[string]string `json:"key_overrides,omitempty" bson:"key_overrides,omitempty"`
+	SecretOverrides map[string]string `json:"secret_overrides,omitempty" bson:"secret_overrides,omitempty"`
+	// Origin records where this subscription came from so dedup and cleanup
+	// are possible: "forge:<repo_integration_id>" (orchestrator-generated,
+	// deleted by Origin on deprovision), "operator" (studio), "schedule.yaml"
+	// / "dispatcher.yaml" (local config load).
+	Origin    string    `json:"origin,omitempty" bson:"origin,omitempty"`
+	Enabled   bool      `json:"enabled" bson:"enabled"`
+	CreatedBy string    `json:"created_by,omitempty" bson:"created_by,omitempty"`
+	CreatedAt time.Time `json:"created_at" bson:"created_at"`
+	UpdatedAt time.Time `json:"updated_at" bson:"updated_at"`
+}
+
+// EffectiveMode returns the subscription's execution mode, defaulting an empty
+// value to ExecutionDirect (mirrors bundle.Invocation.EffectiveMode).
+func (s Subscription) EffectiveMode() bundle.ExecutionMode {
+	if s.Mode == bundle.ExecutionBoard {
+		return bundle.ExecutionBoard
+	}
+	return bundle.ExecutionDirect
+}
+
+// FromBoardInvocation derives a board-trigger Subscription from a bot's
+// kind=board invocation that carries a board: block. A plain kind=board
+// invocation with no board: block stays poll-only (the legacy dispatcher
+// target) and yields no subscription — opting into a board: block is what
+// activates event-driven promotion. Returns ok=false for any other invocation.
+//
+// The caller supplies id (a uuid), tenant, and repo scope; the board block's
+// On/ToStates/AllLabels become the Matcher. The mode is board (promote the
+// card so the dispatcher claims it).
+func FromBoardInvocation(id, tenantID, repo, botID, origin string, inv bundle.Invocation, now time.Time) (Subscription, bool) {
+	if inv.Kind != bundle.InvocationKindBoard || inv.Board == nil {
+		return Subscription{}, false
+	}
+	sub := Subscription{
+		ID:         id,
+		TenantID:   tenantID,
+		Repo:       repo,
+		BotID:      botID,
+		Invocation: bundle.InvocationKindBoard,
+		Mode:       bundle.ExecutionBoard,
+		Match: Matcher{
+			Sources:       []Source{SourceBoard},
+			Kinds:         append([]string(nil), inv.Board.On...),
+			SubjectStates: append([]string(nil), inv.Board.ToStates...),
+			Labels:        append([]string(nil), inv.Board.AllLabels...),
+		},
+		ArgsVar:   inv.ArgsVar,
+		Vars:      copyStrMap(inv.ContextVars),
+		Origin:    origin,
+		Enabled:   true,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	return sub, true
+}
+
+func copyStrMap(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}

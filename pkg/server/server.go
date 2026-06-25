@@ -52,6 +52,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/trigger"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/gitlab"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
@@ -303,6 +304,14 @@ type Config struct {
 	// the studio SPA can render the Board view.
 	NativeTrackerStore *native.Store
 
+	// TriggerStore, when non-nil alongside NativeTrackerStore, activates the
+	// event-driven trigger spine: Serve starts a trigger coordinator that
+	// tails native-board transitions, matches them against the stored
+	// trigger.Subscriptions, and promotes matching cards (stamping their bot)
+	// so the dispatcher picks them up immediately instead of at the next poll.
+	// It also backs the /api/v1/triggers subscription CRUD. nil = spine off.
+	TriggerStore trigger.SubscriptionStore
+
 	// CloudBoardFor returns a tenant-scoped board store for cloud mode (a
 	// boardmongo.Store). When set, a board-mode slash-command materialises a
 	// tracked kanban card on that tenant's board (in addition to launching the
@@ -396,8 +405,9 @@ type Server struct {
 	server           *http.Server
 	hub              *Hub
 	watcher          *Watcher
-	runs             *runview.Service  // run console service; nil disables /api/runs endpoints
-	watchCoord       *watchCoordinator // MVP3b issue-state fan-out; nil when no native tracker or events tail unavailable
+	runs             *runview.Service    // run console service; nil disables /api/runs endpoints
+	watchCoord       *watchCoordinator   // MVP3b issue-state fan-out; nil when no native tracker or events tail unavailable
+	triggerCoord     *TriggerCoordinator // event-driven trigger spine; nil when no TriggerStore/native tracker
 	// statsCache memoizes the per-run events.jsonl cost scan behind
 	// /api/v1/runs/stats (terminal runs only — see runs_stats_cache.go).
 	// Cleared on project switch. Non-nil after New.
@@ -753,6 +763,17 @@ func (s *Server) ListenAndServe() error {
 	if s.runs != nil && s.cfg.NativeTrackerStore != nil {
 		s.watchCoord = startWatchCoordinator(s.runs, s.cfg.NativeTrackerStore, s.logger)
 	}
+	// Event-driven trigger spine: tail board transitions → match stored
+	// subscriptions → promote matching cards (the dispatcher then claims
+	// them). No-op when no TriggerStore is wired. The dispatcher Manager
+	// doubles as the nudger so a promoted card dispatches now, not at poll.
+	if s.cfg.NativeTrackerStore != nil && s.cfg.TriggerStore != nil {
+		var nudger trigger.Nudger
+		if s.cfg.Dispatcher != nil {
+			nudger = s.cfg.Dispatcher
+		}
+		s.triggerCoord = StartTriggerCoordinator(s.cfg.NativeTrackerStore, s.cfg.TriggerStore, nudger, nil, s.logger)
+	}
 	// Sweep abandoned OIDC PendingAuth entries — a user who clicks
 	// "Sign in with Google" then closes the tab never returns to
 	// trigger the lazy eviction inside Take, so without this the
@@ -930,6 +951,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	if s.watchCoord != nil {
 		s.watchCoord.Close()
+	}
+	if s.triggerCoord != nil {
+		s.triggerCoord.Close()
 	}
 	if s.watcher != nil {
 		s.watcher.Stop()
@@ -1152,6 +1176,11 @@ func (s *Server) routes() {
 	}
 	if s.cfg.Dispatcher != nil {
 		s.cfg.Dispatcher.RegisterRoutesWithMiddleware(s.mux, "/api/v1/dispatcher", s.requireAuth)
+	}
+	// Event-driven trigger subscription CRUD backing the Triggers /
+	// Automations view. No-op without a TriggerStore.
+	if s.cfg.TriggerStore != nil {
+		s.registerTriggerRoutes()
 	}
 	// Cross-run stats aggregation backing /insights. No-op when the
 	// server runs without a run-store handle (cloud control plane).

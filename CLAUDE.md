@@ -388,6 +388,35 @@ all sit in front of the launch. Key files:
 admission→idempotency→launch tail). Reference: [docs/webhooks.md](docs/webhooks.md);
 platform overview: [docs/baas-overview.md](docs/baas-overview.md).
 
+### Event-driven trigger spine (`pkg/trigger` + `pkg/eventbus`)
+
+The unifying layer the four trigger families above (schedule, dispatcher
+poll, forge webhooks, `invocations:` DSL) are converging onto: one
+canonical `trigger.Event` envelope, an internal `eventbus.Bus`
+(`InProcBus` local, `NATSBus` on the **separate** `ITERION_EVENTS`
+stream for cloud), and a `trigger.Subscription` registry binding
+`(event filter) → (bot launch into a repo/workspace)` — queryable
+**by repo / by bot** (`ListByRepo` / `ListByBot`), stored in-memory
+(local) or Mongo (cloud) like `forge.RepoIntegrationStore`. The per-bot
+`bundle.Invocation` stays the *capability* ("what can fire me");
+`Subscription` is the *binding* (where/which repo), generated from
+invocations — repo/tenant/cron never enter a manifest. **Phase 1 ships
+iterion board events end-to-end**: a `kind: board` invocation with a
+`board:` block (`on`/`to_states`/`all_labels`) makes a native-board
+card transition fire a bot. The board source tails the existing
+`native.Store.Subscribe` events.jsonl seam and **promotes the card**
+(stamps its bot) so the dispatcher's `Claim` — the **sole launch
+authority** — picks it up now (via `Manager.Refresh()`) instead of at
+the 30s poll; the poll stays as the reconciliation net, so the
+fast-path and poll **cannot double-launch**. Wired in
+[pkg/server/trigger_coordinator.go](pkg/server/trigger_coordinator.go)
+(both `iterion studio` and `iterion dispatch`); REST CRUD at
+`/api/v1/triggers` (gated by `server_info.triggers_enabled`). Launch-path
+convergence, run-completion chaining, scheduled/cloudsched, the git-forge
+refactor, custom ingress, and the studio Automations view are staged
+follow-ons on the same spine. Reference:
+[docs/adr/046-event-driven-runs-trigger-spine.md](docs/adr/046-event-driven-runs-trigger-spine.md).
+
 ### Bot board access (capabilities)
 
 Agent and judge nodes can write to the native board by declaring a

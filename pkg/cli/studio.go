@@ -242,6 +242,11 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 		} else {
 			logger.Warn("studio: dispatcher manager init: %v", mgrErr)
 		}
+		// Activate the event-driven trigger spine when any discovered bot
+		// declares a board: invocation. The server then promotes matching
+		// cards the moment they transition (the dispatcher claims them now,
+		// not at the next poll). nil = no board triggers → spine stays off.
+		cfg.TriggerStore = buildLocalTriggerStore(botsPaths, logger)
 	} else {
 		// Without the native store, cfg.NativeTrackerStore AND cfg.Dispatcher
 		// both stay nil, so the server silently mounts neither the /board nor

@@ -41,6 +41,15 @@ const (
 	SubjectHeartFmt  = "iterion.heartbeat.%s"
 	KVRunLocks       = "iterion-run-locks"
 	ConsumerRunners  = "iterion-runners"
+
+	// Trigger event bus (pkg/eventbus NATSBus). A fan-out NOTIFICATION
+	// stream, kept deliberately separate from the run WORK queue above:
+	// events are at-least-once + lossy under back-pressure, runs are
+	// exactly-once + KV-locked. SubjectEventsFmt is "%s = source, %s =
+	// tenant" so a consumer can filter by either with a subject wildcard.
+	StreamEvents     = "ITERION_EVENTS"
+	SubjectEventsAll = "iterion.events.>"
+	SubjectEventsFmt = "iterion.events.%s.%s" // source, tenant
 )
 
 // Default retention values from plan §C.2.

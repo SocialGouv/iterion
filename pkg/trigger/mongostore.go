@@ -1,0 +1,118 @@
+package trigger
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
+)
+
+// SubscriptionsCollectionName is the Mongo collection backing the cloud-mode
+// SubscriptionStore.
+const SubscriptionsCollectionName = "trigger_subscriptions"
+
+// MongoSubscriptionStore is the cloud-mode SubscriptionStore. Its index shape
+// mirrors forge.MongoRepoIntegrationStore: a {tenant_id, repo} index for the
+// candidate/by-repo queries and a {tenant_id, bot_id} index for by-bot.
+type MongoSubscriptionStore struct {
+	coll *mongo.Collection
+}
+
+func NewMongoSubscriptionStore(db *mongo.Database) *MongoSubscriptionStore {
+	return &MongoSubscriptionStore{coll: db.Collection(SubscriptionsCollectionName)}
+}
+
+func (s *MongoSubscriptionStore) EnsureSchema(ctx context.Context) error {
+	_, err := s.coll.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "repo", Value: 1}}, Options: options.Index().SetName("tenant_repo")},
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "bot_id", Value: 1}}, Options: options.Index().SetName("tenant_bot")},
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "origin", Value: 1}}, Options: options.Index().SetName("tenant_origin")},
+	})
+	if err != nil && !mongoutil.IsIndexConflict(err) {
+		return fmt.Errorf("trigger: ensure subscriptions indexes: %w", err)
+	}
+	return nil
+}
+
+func (s *MongoSubscriptionStore) Create(ctx context.Context, sub Subscription) error {
+	if _, err := s.coll.InsertOne(ctx, sub); err != nil {
+		return fmt.Errorf("trigger: insert subscription: %w", err)
+	}
+	return nil
+}
+
+func (s *MongoSubscriptionStore) Get(ctx context.Context, id string) (Subscription, error) {
+	var sub Subscription
+	err := s.coll.FindOne(ctx, bson.M{"_id": id}).Decode(&sub)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return Subscription{}, ErrSubscriptionNotFound
+	}
+	if err != nil {
+		return Subscription{}, fmt.Errorf("trigger: get subscription: %w", err)
+	}
+	return sub, nil
+}
+
+func (s *MongoSubscriptionStore) Update(ctx context.Context, sub Subscription) error {
+	res, err := s.coll.ReplaceOne(ctx, bson.M{"_id": sub.ID}, sub)
+	if err != nil {
+		return fmt.Errorf("trigger: update subscription: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrSubscriptionNotFound
+	}
+	return nil
+}
+
+func (s *MongoSubscriptionStore) Delete(ctx context.Context, id string) error {
+	res, err := s.coll.DeleteOne(ctx, bson.M{"_id": id})
+	if err != nil {
+		return fmt.Errorf("trigger: delete subscription: %w", err)
+	}
+	if res.DeletedCount == 0 {
+		return ErrSubscriptionNotFound
+	}
+	return nil
+}
+
+func (s *MongoSubscriptionStore) ListByTenant(ctx context.Context, tenantID string) ([]Subscription, error) {
+	return s.find(ctx, bson.M{"tenant_id": tenantID})
+}
+
+func (s *MongoSubscriptionStore) ListByRepo(ctx context.Context, tenantID, repo string) ([]Subscription, error) {
+	return s.find(ctx, bson.M{"tenant_id": tenantID, "repo": bson.M{"$in": bson.A{repo, ""}}})
+}
+
+func (s *MongoSubscriptionStore) ListByBot(ctx context.Context, tenantID, botID string) ([]Subscription, error) {
+	return s.find(ctx, bson.M{"tenant_id": tenantID, "bot_id": botID})
+}
+
+func (s *MongoSubscriptionStore) ListByOrigin(ctx context.Context, tenantID, origin string) ([]Subscription, error) {
+	return s.find(ctx, bson.M{"tenant_id": tenantID, "origin": origin})
+}
+
+func (s *MongoSubscriptionStore) ListCandidates(ctx context.Context, ev Event) ([]Subscription, error) {
+	return s.find(ctx, bson.M{
+		"tenant_id": ev.TenantID,
+		"enabled":   true,
+		"repo":      bson.M{"$in": bson.A{ev.Repo, ""}},
+	})
+}
+
+func (s *MongoSubscriptionStore) find(ctx context.Context, filter bson.M) ([]Subscription, error) {
+	cur, err := s.coll.Find(ctx, filter, options.Find().SetSort(bson.M{"created_at": 1}))
+	if err != nil {
+		return nil, fmt.Errorf("trigger: list subscriptions: %w", err)
+	}
+	defer cur.Close(ctx)
+	var out []Subscription
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, fmt.Errorf("trigger: decode subscriptions: %w", err)
+	}
+	return out, nil
+}

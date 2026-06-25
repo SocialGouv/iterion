@@ -134,9 +134,14 @@ func TestLoadManifest_RejectsInvocationErrors(t *testing.T) {
 			want: "must be a 5-field cron expression",
 		},
 		{
-			name: "board with payload",
+			name: "board with disallowed payload",
 			body: "name: b\nschema_version: 1\ninvocations:\n  - kind: board\n    command:\n      name: x\n",
-			want: "kind=board takes no payload",
+			want: "kind=board takes only an optional board: block",
+		},
+		{
+			name: "board unknown on kind",
+			body: "name: b\nschema_version: 1\ninvocations:\n  - kind: board\n    board:\n      on: [card.exploded]\n",
+			want: "unknown on \"card.exploded\"",
 		},
 	}
 	for _, tc := range cases {

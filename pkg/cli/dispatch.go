@@ -122,6 +122,16 @@ func RunDispatch(p *Printer, opts DispatchOptions) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// Event-driven trigger spine: when any discovered bot declares a board:
+	// invocation, promote matching cards the moment they transition so the
+	// dispatcher claims them now instead of at the next poll. nil store =
+	// spine off (poll-only). The Manager doubles as the nudger.
+	if ts := buildLocalTriggerStore(cfg.Bots.Paths, logger); ts != nil {
+		if tc := server.StartTriggerCoordinator(nativeStore, ts, mgr, nil, logger); tc != nil {
+			defer tc.Close()
+		}
+	}
+
 	port := pickPort(cfg, opts)
 	var httpSrv *http.Server
 	// Buffered so the HTTP goroutine's error send never blocks even when

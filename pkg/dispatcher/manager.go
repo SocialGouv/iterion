@@ -407,6 +407,17 @@ func (m *Manager) Current() *Dispatcher {
 	return m.cur
 }
 
+// Refresh asks the active dispatcher to run a poll tick immediately. No-op
+// when the dispatcher is stopped. It satisfies trigger.Nudger so a board
+// trigger can promote a card (stamp its bot) and have the dispatcher pick it
+// up now instead of at the next 30s poll — the Claim stays the sole launch
+// authority, so this only collapses latency, it never races the poll.
+func (m *Manager) Refresh() {
+	if cur := m.Current(); cur != nil {
+		cur.Refresh()
+	}
+}
+
 // CancelRun signals the active Dispatcher to cancel a run by its RunID.
 // Returns true when a matching in-flight run was found. Falsey when the
 // dispatcher is idle or the runID is unknown to it — typical when the
