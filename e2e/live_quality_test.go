@@ -328,10 +328,12 @@ func liveJudgeInvoker(reg *model.Registry, workDir string) quality.JudgeInvoker 
 	claw := quality.ClawInvoker(reg)
 	logger := iterlog.New(iterlog.LevelInfo, os.Stderr)
 	var cc delegate.Backend
-	// Opt-in only: the claude_code OAuth judge is experimental (see
-	// availableJudgeModels). Default off so an OAuth-only env runs a clean
-	// single OpenAI judge instead of paying for a judge that gets dropped.
-	if os.Getenv("ANTHROPIC_API_KEY") == "" && truthyEnv("ITERION_LIVE_JUDGE_CLAUDE_CODE") {
+	// Default on: when there's no ANTHROPIC_API_KEY, route the Anthropic judge
+	// through the claude_code OAuth delegate so the panel is genuinely
+	// cross-family with NO API key (validated live: bare model id + a ```json
+	// fence yields a real verdict). Set ITERION_LIVE_JUDGE_CLAUDE_CODE=off to
+	// disable.
+	if os.Getenv("ANTHROPIC_API_KEY") == "" && !strings.EqualFold(os.Getenv("ITERION_LIVE_JUDGE_CLAUDE_CODE"), "off") {
 		if be, err := delegate.DefaultRegistry(logger).Resolve(delegate.BackendClaudeCode); err == nil {
 			cc = be
 		}
@@ -348,16 +350,20 @@ func liveJudgeInvoker(reg *model.Registry, workDir string) quality.JudgeInvoker 
 				NodeID:       "quality_judge",
 				SystemPrompt: system + claudeCodeJSONInstruction,
 				UserPrompt:   userMsg,
-				Model:        spec,
-				WorkDir:      workDir,
+				// The claude_code CLI rejects a "provider/" prefix on --model
+				// ("model may not exist or you may not have access") — THIS was
+				// the real cause of the empty verdict across 5 prior runs (the
+				// diagnostic below showed res.Output carrying that error text),
+				// not the schema. Pass the bare model id, as the executor's
+				// claude_code nodes do.
+				Model:   strings.TrimPrefix(spec, "anthropic/"),
+				WorkDir: workDir,
 			})
 			if err != nil {
 				return nil, err
 			}
-			// Diagnostic breadcrumb: the claude_code judge keeps returning
-			// non-conforming output across approaches (5 live runs). Log what
-			// it actually produced so a future `-v` run pinpoints the shape
-			// (e.g. {"text":…} wrapping) without another blind iteration.
+			// Diagnostic breadcrumb: log what the judge actually produced so a
+			// `-v` run can pinpoint any future non-conforming shape.
 			logger.Info("[quality] claude_code judge raw output (truncated): %.400q", fmt.Sprintf("%v", res.Output))
 			if len(res.Output) == 0 {
 				return nil, fmt.Errorf("claude_code judge returned no output")
@@ -368,9 +374,11 @@ func liveJudgeInvoker(reg *model.Registry, workDir string) quality.JudgeInvoker 
 	}
 }
 
-// claudeCodeJSONInstruction drives the claude_code judge's text-JSON output
-// (the field list mirrors the flat judgeRaw schema).
-const claudeCodeJSONInstruction = "\n\nRespond with ONLY a single JSON object — no prose, no markdown code fences, nothing before or after it — containing EXACTLY these keys: " +
+// claudeCodeJSONInstruction drives the claude_code judge's text-JSON output.
+// It asks for a fenced ```json block — which parseSDKOutput's
+// extractJSONFromMarkdown extracts even when Claude Code adds preamble — so
+// the field list mirrors the flat judgeRaw schema.
+const claudeCodeJSONInstruction = "\n\nEnd your response with your assessment as a single fenced ```json code block (and nothing after it) containing a JSON object with EXACTLY these keys: " +
 	"efficacy, completeness, output_quality, restraint, reliability, value_for_money, overall (each a number from 0.0 to 1.0), " +
 	"narrative (string), relative_overall (one of \"better\", \"same\", \"worse\", \"n/a\"), relative_narrative (string), confidence (number from 0.0 to 1.0)."
 
@@ -392,14 +400,13 @@ func availableJudgeModels() []string {
 			openaiOK = true
 		}
 	}
-	// Anthropic judge via claw needs ANTHROPIC_API_KEY (the proven path).
-	// The claude_code OAuth judge (no key) is OPT-IN + experimental
-	// (ITERION_LIVE_JUDGE_CLAUDE_CODE=1) because its structured-output
-	// extraction is currently unreliable for the rich rubric schema and
-	// gets dropped — attempting it by default would just waste a model call
-	// every run. See liveJudgeInvoker.
+	// Anthropic judge is usable via claw (ANTHROPIC_API_KEY) OR — when no key
+	// — via the claude_code OAuth delegate (claude CLI present), which
+	// liveJudgeInvoker routes to. Keep the anthropic judge in the panel in
+	// either case so the default is genuinely cross-family with no API key.
+	// ITERION_LIVE_JUDGE_CLAUDE_CODE=off opts out.
 	anthropicOK := os.Getenv("ANTHROPIC_API_KEY") != ""
-	if !anthropicOK && truthyEnv("ITERION_LIVE_JUDGE_CLAUDE_CODE") {
+	if !anthropicOK && !strings.EqualFold(os.Getenv("ITERION_LIVE_JUDGE_CLAUDE_CODE"), "off") {
 		if _, err := exec.LookPath("claude"); err == nil {
 			anthropicOK = true
 		}

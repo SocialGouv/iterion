@@ -48,28 +48,18 @@ secured-renovacy). Each test `t.Skip`s when its prerequisites are missing.
   different from the assessed bot's primary family; a same-family judge is
   flagged. Each scores the stable rubric and, when a prior snapshot
   exists, a relative (better/same/worse) verdict.
-  - **Credential gotcha (cross-family), validated live:** the OpenAI judge
-    runs through claw's direct-generation path and needs an API key /
-    ChatGPT-OAuth (proven working). Claw's Anthropic provider needs
-    `ANTHROPIC_API_KEY` — **Claude Code OAuth is not usable by claw**. The
-    panel selection is credential-aware: with no `ANTHROPIC_API_KEY` the
-    `anthropic/*` judge is dropped and the panel runs **OpenAI-only** (clean
-    + honest; for an Anthropic-primary bot the OpenAI judge is itself the
-    cross-family check). For a guaranteed **2-judge cross-family** panel,
-    set `ANTHROPIC_API_KEY` (judge cost is tiny) or override
-    `ITERION_LIVE_JUDGE_MODELS`.
-  - **Experimental — Anthropic judge over Claude Code OAuth (no key):**
-    `ITERION_LIVE_JUDGE_CLAUDE_CODE=1` routes the Anthropic judge through
-    the claude_code delegate (OAuth). It **authenticates** (no 401), but its
-    structured output comes back as wrapped prose and is cleanly dropped, so
-    it is **off by default**. Flattening the judge schema to a top-level
-    shape (matching the shape iterion's own claude_code judges use) did NOT
-    resolve it across 4 live runs — the cause is deeper than schema shape
-    (likely how the delegate's structured-output path behaves for a
-    manually-built one-shot Task with a tool set, vs the executor's node
-    path). Keyless cross-family is therefore a focused follow-up requiring
-    delegate-level debugging + live iteration. **For guaranteed cross-family
-    today, set `ANTHROPIC_API_KEY`** (the proven claw path).
+  - **Backends, validated live:** the OpenAI judge runs through claw
+    (API key / ChatGPT-OAuth). The Anthropic judge runs through claw when
+    `ANTHROPIC_API_KEY` is set, otherwise through the **claude_code OAuth
+    delegate** — so the panel is genuinely **cross-family with NO API key**
+    (validated: two real verdicts, gpt-5.5 + claude-sonnet, disagreement
+    surfaced). Two gotchas were the whole battle, both fixed: pass the
+    **bare** model id to claude_code (it rejects a `provider/` prefix), and
+    ask the judge for a fenced ```json block (parseSDKOutput extracts it
+    even amid Claude Code preamble). Set `ITERION_LIVE_JUDGE_CLAUDE_CODE=off`
+    to force OpenAI-only; override the pair with `ITERION_LIVE_JUDGE_MODELS`.
+    A judge that still returns non-conforming output is dropped (note) so
+    the panel stays clean.
 - **Rubric** (0.0–1.0, multi-dimensional so no single number is gameable):
   `efficacy`, `completeness`, `output_quality`, `restraint`,
   `reliability`, `value_for_money`, `overall` (holistic, not an average).
