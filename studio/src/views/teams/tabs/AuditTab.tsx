@@ -33,11 +33,14 @@ export default function AuditTab({ teamID, canManage }: Props) {
     setErr(null);
     try {
       const r = await listTeamAudit(teamID, { ...q, limit: PAGE });
-      setEvents(append ? [...events, ...r.events] : r.events);
-      // When the server returns a full page assume there may be more.
-      // The Go handler always echoes offset + len(events), so we treat
+      // The Go handler marshals an empty audit log as `events: null` (a nil
+      // slice), so coalesce to [] — otherwise `events.length` in the render
+      // (and below) throws "can't access property length, … is null".
+      const page = r.events ?? [];
+      setEvents(append ? [...events, ...page] : page);
+      // When the server returns a full page assume there may be more. We treat
       // anything < requested page size as exhausted.
-      setNextOffset(r.events.length < PAGE ? null : r.next_offset);
+      setNextOffset(page.length < PAGE ? null : r.next_offset);
     } catch (e) {
       if (e instanceof FeatureUnavailableError) setUnavailable(true);
       else setErr(errorMessage(e));
