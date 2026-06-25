@@ -192,9 +192,11 @@ export function RegisterOAuthAppForm({
         <Input
           size="md"
           id="oauth-app-base-url"
+          name="oauth-app-base-url"
           placeholder="Forge base URL (optional — for self-hosted, e.g. https://gitlab.example.com)"
           value={baseURL}
           onChange={(e) => setBaseURL(e.target.value)}
+          autoComplete="off"
         />
       </div>
 
@@ -208,10 +210,11 @@ export function RegisterOAuthAppForm({
               size="md"
               type="password"
               id="oauth-admin-token"
+              name="oauth-admin-token"
               placeholder="Admin token (GitLab: instance-admin PAT with api scope)"
               value={adminToken}
               onChange={(e) => setAdminToken(e.target.value)}
-              autoComplete="off"
+              autoComplete="new-password"
             />
           </div>
           <p className="text-caption text-fg-muted">
@@ -272,10 +275,11 @@ export function RegisterOAuthAppForm({
               size="md"
               type="password"
               id="oauth-client-secret"
+              name="oauth-client-secret"
               placeholder="Client secret"
               value={clientSecret}
               onChange={(e) => setClientSecret(e.target.value)}
-              autoComplete="off"
+              autoComplete="new-password"
             />
           </div>
           <p className="text-caption text-fg-muted">

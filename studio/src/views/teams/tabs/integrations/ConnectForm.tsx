@@ -128,9 +128,11 @@ export function ConnectForm({
         <Input
           size="md"
           id="forge-base-url"
+          name="forge-base-url"
           placeholder="Forge base URL (optional — for self-hosted, e.g. https://gitlab.example.com)"
           value={baseURL}
           onChange={(e) => setBaseURL(e.target.value)}
+          autoComplete="off"
         />
       </div>
 
@@ -174,10 +176,13 @@ export function ConnectForm({
             size="md"
             type="password"
             id="forge-pat"
+            name="forge-pat"
             placeholder="Personal access token (api / repo + hook-admin scope)"
             value={pat}
             onChange={(e) => setPat(e.target.value)}
-            autoComplete="off"
+            // "new-password" reliably suppresses saved-login autofill that
+            // browsers force into password fields even with autoComplete="off".
+            autoComplete="new-password"
           />
         </div>
       )}
