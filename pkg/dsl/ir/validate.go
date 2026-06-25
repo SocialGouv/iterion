@@ -30,9 +30,9 @@ const (
 	DiagLLMRouterTooFewEdges     DiagCode = "C021" // llm router with fewer than 2 outgoing edges
 	DiagLLMRouterConditionEdge   DiagCode = "C022" // llm router edge has a 'when' condition
 	DiagRouterLLMOnlyProperty    DiagCode = "C023" // LLM-only property on non-llm router
-	DiagFanOutEachMissingOver    DiagCode = "C102" // fan_out_each router without an 'over:' array source
-	DiagFanOutEachOnlyProperty   DiagCode = "C103" // 'over'/'as' property on a non-fan_out_each router
-	DiagFanOutEachEdges          DiagCode = "C104" // fan_out_each router must have exactly one outgoing template edge
+	DiagFanOutEachMissingOver    DiagCode = "C113" // fan_out_each router without an 'over:' array source (was C102, clashed with DiagInvalidRTK on main)
+	DiagFanOutEachOnlyProperty   DiagCode = "C114" // 'over'/'as'/'key'/'depends_on' property on a non-fan_out_each router (was C103)
+	DiagFanOutEachEdges          DiagCode = "C115" // fan_out_each router must have exactly one outgoing template edge (was C104)
 	DiagInvalidReasoningEffort   DiagCode = "C027" // invalid reasoning_effort value (was C024, clashed with DiagDuplicateMCPServer)
 	DiagUltracodeModelGate       DiagCode = "C089" // reasoning_effort: ultracode on a model that isn't claude-opus-4-8 (warning)
 	DiagInvalidLoopIterations    DiagCode = "C026" // loop max_iterations must be >= 1
