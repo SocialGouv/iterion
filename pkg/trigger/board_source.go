@@ -174,12 +174,11 @@ func (b *BoardSource) normalize(evt native.Event) (Event, bool) {
 }
 
 // NativeBoardEffect is the BoardEffect for the native board: it promotes a
-// card by stamping the subscription's bot + bot-args (and, when the
-// subscription names one via vars["promote_state"], an eligible state) so the
-// dispatcher's existing Claim picks it up. After a real change it nudges an
-// optional Nudger (the dispatcher's Refresh) to dispatch now instead of at the
-// next poll. Stamping is idempotent — a card already pinned to the same bot is
-// left untouched, so a board event storm converges.
+// card by stamping the subscription's bot + bot-args so the dispatcher's
+// existing Claim picks it up. After a real change it nudges an optional Nudger
+// (the dispatcher's Refresh) to dispatch now instead of at the next poll.
+// Stamping is idempotent — a card already pinned to the same bot is left
+// untouched, so a board event storm converges.
 type NativeBoardEffect struct {
 	store  *native.Store
 	nudger Nudger
@@ -192,11 +191,12 @@ func NewNativeBoardEffect(store *native.Store, nudger Nudger, logger *iterlog.Lo
 	return &NativeBoardEffect{store: store, nudger: nudger, logger: logger}
 }
 
-// PromoteStateVar is the reserved subscription var that, when set, tells the
-// promote effect to also move the card into that (eligible) state. Absent =
-// leave the state as-is and only pin the bot.
-const PromoteStateVar = "promote_state"
-
+// Promote stamps the matched card's bot + bot-args so the dispatcher's Claim
+// picks it up, then nudges it to dispatch now. A board trigger fires when a
+// card ENTERS an eligible state (the matcher's subject_states gate), so the
+// card is already dispatchable — promoting only needs to pin which bot runs.
+// Idempotent: a card already pinned to this bot is left untouched, so a board
+// event storm converges.
 func (n *NativeBoardEffect) Promote(_ context.Context, plan LaunchPlan) (string, error) {
 	if n.store == nil {
 		return "", fmt.Errorf("trigger: native board effect has no store")
@@ -209,46 +209,18 @@ func (n *NativeBoardEffect) Promote(_ context.Context, plan LaunchPlan) (string,
 	if err != nil {
 		return "", fmt.Errorf("trigger: get card %s: %w", id, err)
 	}
-	// Idempotent: a card already pinned to this bot needs no churn.
-	promoteState := plan.Vars[PromoteStateVar]
-	alreadyBot := iss.Bot == plan.BotID
-	alreadyState := promoteState == "" || iss.State == promoteState
-	if alreadyBot && alreadyState {
-		return id, nil
+	if iss.Bot == plan.BotID {
+		return id, nil // already pinned — no churn
 	}
-
-	changed := false
-	if !alreadyBot {
-		bot := plan.BotID
-		args := botArgsFromVars(plan.Vars)
-		if _, err := n.store.Update(id, native.Patch{Bot: &bot, BotArgs: &args}); err != nil {
-			return "", fmt.Errorf("trigger: stamp bot on card %s: %w", id, err)
-		}
-		changed = true
+	bot := plan.BotID
+	args := plan.Vars
+	if _, err := n.store.Update(id, native.Patch{Bot: &bot, BotArgs: &args}); err != nil {
+		return "", fmt.Errorf("trigger: stamp bot on card %s: %w", id, err)
 	}
-	if !alreadyState {
-		if _, err := n.store.SetState(id, promoteState); err != nil {
-			return "", fmt.Errorf("trigger: promote card %s to %s: %w", id, promoteState, err)
-		}
-		changed = true
-	}
-	if changed && n.nudger != nil {
+	if n.nudger != nil {
 		n.nudger.Refresh()
 	}
 	return id, nil
-}
-
-// botArgsFromVars strips the reserved promote_state key from the resolved vars
-// before they are stamped as the card's BotArgs.
-func botArgsFromVars(vars map[string]string) map[string]string {
-	out := make(map[string]string, len(vars))
-	for k, v := range vars {
-		if k == PromoteStateVar {
-			continue
-		}
-		out[k] = v
-	}
-	return out
 }
 
 var _ BoardEffect = (*NativeBoardEffect)(nil)

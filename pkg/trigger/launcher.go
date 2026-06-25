@@ -37,8 +37,8 @@ type Launcher interface {
 }
 
 // BoardEffect realises an ExecutionBoard plan by promoting a native board
-// card (stamping Bot/BotArgs and, if needed, an eligible state) so the
-// dispatcher's existing Claim picks it up. It never launches directly — the
+// card (stamping Bot/BotArgs) so the dispatcher's existing Claim picks it up.
+// It never launches directly — the
 // dispatcher stays the sole launch authority, which is what makes the
 // event fast-path and the poll safety-net structurally unable to double-launch.
 type BoardEffect interface {

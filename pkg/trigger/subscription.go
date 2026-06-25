@@ -142,26 +142,16 @@ func FromBoardInvocation(id, tenantID, repo, botID, origin string, inv bundle.In
 	if inv.Kind != bundle.InvocationKindBoard || inv.Board == nil {
 		return Subscription{}, false
 	}
-	sub := Subscription{
-		ID:         id,
-		TenantID:   tenantID,
-		Repo:       repo,
-		BotID:      botID,
-		Invocation: bundle.InvocationKindBoard,
-		Mode:       bundle.ExecutionBoard,
-		Match: Matcher{
-			Sources:       []Source{SourceBoard},
-			Kinds:         append([]string(nil), inv.Board.On...),
-			SubjectStates: append([]string(nil), inv.Board.ToStates...),
-			Labels:        append([]string(nil), inv.Board.AllLabels...),
-		},
-		ArgsVar:   inv.ArgsVar,
-		Vars:      copyStrMap(inv.ContextVars),
-		Origin:    origin,
-		Enabled:   true,
-		CreatedAt: now,
-		UpdatedAt: now,
+	sub := baseSubscription(id, tenantID, repo, botID, origin, inv.Kind, now)
+	sub.Mode = bundle.ExecutionBoard
+	sub.Match = Matcher{
+		Sources:       []Source{SourceBoard},
+		Kinds:         append([]string(nil), inv.Board.On...),
+		SubjectStates: append([]string(nil), inv.Board.ToStates...),
+		Labels:        append([]string(nil), inv.Board.AllLabels...),
 	}
+	sub.ArgsVar = inv.ArgsVar
+	sub.Vars = copyStrMap(inv.ContextVars)
 	return sub, true
 }
 
@@ -182,22 +172,30 @@ func FromScheduleInvocation(id, tenantID, repo, botID, origin string, inv bundle
 	if vars == nil {
 		vars = copyStrMap(inv.ContextVars)
 	}
+	sub := baseSubscription(id, tenantID, repo, botID, origin, inv.Kind, now)
+	sub.Mode = bundle.ExecutionDirect
+	sub.Match = Matcher{Sources: []Source{SourceSchedule}}
+	sub.Cron = cronExpr
+	sub.Vars = vars
+	sub.ArgsVar = inv.ArgsVar
+	return sub, true
+}
+
+// baseSubscription fills the fields every manifest-derived subscription shares
+// (identity, scope, lifecycle); each From* constructor sets the source-specific
+// Mode/Match/Vars on top.
+func baseSubscription(id, tenantID, repo, botID, origin string, kind bundle.InvocationKind, now time.Time) Subscription {
 	return Subscription{
 		ID:         id,
 		TenantID:   tenantID,
 		Repo:       repo,
 		BotID:      botID,
-		Invocation: bundle.InvocationKindSchedule,
-		Mode:       bundle.ExecutionDirect,
-		Match:      Matcher{Sources: []Source{SourceSchedule}},
-		Cron:       cronExpr,
-		Vars:       vars,
-		ArgsVar:    inv.ArgsVar,
+		Invocation: kind,
 		Origin:     origin,
 		Enabled:    true,
 		CreatedAt:  now,
 		UpdatedAt:  now,
-	}, true
+	}
 }
 
 func copyStrMap(m map[string]string) map[string]string {
