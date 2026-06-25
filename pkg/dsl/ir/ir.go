@@ -216,6 +216,16 @@ type RouterNode struct {
 	Over        string // raw array-source template, e.g. "{{outputs.decompose.tickets}}"
 	OverRefs    []*Ref // parsed refs from Over (resolved at runtime)
 	ItemBinding string // per-item binding name (default "item")
+
+	// Optional DAG scheduling (RouterFanOutEach only). When KeyField is set,
+	// each item is identified by item[KeyField] and depends on the ids listed
+	// in item[DepsField]; the engine schedules branches in topological order,
+	// running independent items in parallel (bounded by max_parallel_branches)
+	// and holding a dependent until all its deps have finished. Empty deps =>
+	// fully parallel (identical to plain fan_out_each); a linear chain => fully
+	// sequential. Empty KeyField => no DAG, plain fan-out.
+	KeyField  string // item field holding its unique id
+	DepsField string // item field holding the array of ids it depends on
 }
 
 // NodeKind implements Node.

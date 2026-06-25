@@ -1352,6 +1352,14 @@ func (p *parser) parseRouterDecl() *ast.RouterDecl {
 			p.next()
 			p.expect(TokenColon)
 			rd.As = p.expectIdent()
+		case TokenKey:
+			p.next()
+			p.expect(TokenColon)
+			rd.Key = p.expectIdent()
+		case TokenDependsOn:
+			p.next()
+			p.expect(TokenColon)
+			rd.DependsOn = p.expectIdent()
 		case TokenReasoningEffort:
 			p.next()
 			rd.ReasoningEffort = p.parseReasoningEffort()

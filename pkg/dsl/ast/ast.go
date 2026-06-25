@@ -437,6 +437,8 @@ type RouterDecl struct {
 	ReasoningEffort string // reasoning effort level: "low", "medium", "high", "xhigh", "max" (only for mode: llm)
 	Over            string // array source template, only for mode: fan_out_each (e.g. "{{outputs.decompose.tickets}}")
 	As              string // per-item binding name, only for mode: fan_out_each (default: "item")
+	Key             string // item field holding its unique id, only for mode: fan_out_each (enables DAG scheduling)
+	DependsOn       string // item field holding the array of ids it depends on, only for mode: fan_out_each
 	Span            Span
 }
 

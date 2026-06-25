@@ -908,12 +908,21 @@ func (c *compiler) compileRouters() {
 			if node.ItemBinding == "" {
 				node.ItemBinding = "item"
 			}
+			node.KeyField = r.Key
+			node.DepsField = r.DependsOn
+			// depends_on without key is ambiguous (no id to resolve deps against).
+			if r.DependsOn != "" && r.Key == "" {
+				c.errorf(DiagFanOutEachMissingOver, "router %q has 'depends_on' but no 'key'; a 'key' field is required to identify items for DAG scheduling", r.Name)
+			}
 		} else {
 			if r.Over != "" {
 				c.errorf(DiagFanOutEachOnlyProperty, "router %q property 'over' is only valid with mode: fan_out_each", r.Name)
 			}
 			if r.As != "" {
 				c.errorf(DiagFanOutEachOnlyProperty, "router %q property 'as' is only valid with mode: fan_out_each", r.Name)
+			}
+			if r.Key != "" || r.DependsOn != "" {
+				c.errorf(DiagFanOutEachOnlyProperty, "router %q properties 'key'/'depends_on' are only valid with mode: fan_out_each", r.Name)
 			}
 		}
 		c.nodes[r.Name] = node

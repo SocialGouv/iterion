@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -14,23 +16,31 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Data-driven fan-out (fan_out_each)
+// Data-driven fan-out (fan_out_each) — with optional dependency DAG scheduling
 // ---------------------------------------------------------------------------
 //
 // A fan_out_each router resolves its `over:` template to a runtime array and
-// re-executes the SINGLE outgoing template subgraph once per element. Unlike
-// fan_out_all (one branch per statically-declared edge), the branch count is
-// known only at runtime. Each branch carries its element bound onto the
-// router's per-branch output (under the router's `as:` name, plus the
-// canonical "item" / "index" / "count" keys), so the template subgraph can
-// read {{outputs.<router>.item}} and a downstream condition router can pick a
-// per-item agent type from boolean discriminators on the element.
+// re-executes the SINGLE outgoing template subgraph once per element. The
+// branch count is known only at runtime. Each branch binds its element onto
+// the router's per-branch output (under the router's `as:` name, plus the
+// canonical "item" / "index" / "count" keys).
 //
-// The template subgraph itself is statically declared and reachable — only
-// its number of RUNTIME executions varies. This keeps the compile-time graph
-// static (no synthetic nodes), so reachability/cycle validation is unchanged;
-// it is the parallel sibling of the existing bounded loop, which already
-// re-executes a static node N times.
+// PARALLELISATION + DEPENDENCIES in one primitive:
+//   - Without `key:`/`depends_on:` every branch is independent → all run in
+//     parallel (bounded by max_parallel_branches). This is plain fan-out.
+//   - With `key:` (the item's id field) and `depends_on:` (the item's array
+//     of ids it depends on), the engine schedules branches as a DAG: an item
+//     runs only after all the items it depends on have finished; independent
+//     items still run concurrently up to the cap. Empty deps ⇒ fully parallel;
+//     a linear chain ⇒ fully sequential; anything between ⇒ topological with
+//     maximal parallelism. Cycles are rejected up-front (Kahn). A failed item
+//     skips its dependents (they cannot run) — surfaced as failed branches at
+//     the convergence join.
+//
+// The template subgraph stays statically declared and reachable — only its
+// number/ordering of RUNTIME executions varies — so reachability/cycle
+// validation of the bot graph is unchanged. It reuses the existing parallel
+// branch executor (execBranch / processConvergence / findConvergencePoint).
 
 // execFanOutEach handles a fan_out_each router node. It returns the next node
 // ID to continue from (after the join), mirroring execFanOut.
@@ -44,10 +54,16 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 		return "", fmt.Errorf("node %q is not a fan_out_each router", routerNodeID)
 	}
 
+	dag := rn.KeyField != ""
+	mode := "fan_out_each"
+	if dag {
+		mode = "fan_out_each_dag"
+	}
+
 	// Emit router node_started.
 	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, routerNodeID, map[string]interface{}{
 		"kind":      "router",
-		"mode":      "fan_out_each",
+		"mode":      mode,
 		"iteration": e.currentLoopIteration(routerNodeID, rs.loopCounters),
 	}); err != nil {
 		return "", err
@@ -63,9 +79,20 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 		return "", err
 	}
 
+	// For DAG mode, build + validate the dependency graph (cycle / unknown
+	// id / duplicate key are hard errors discovered before any branch runs).
+	var depsIdx [][]int
+	if dag {
+		depsIdx, err = buildFanOutDAG(items, rn.KeyField, rn.DepsField)
+		if err != nil {
+			return "", fmt.Errorf("fan_out_each router %q: %w", routerNodeID, err)
+		}
+	}
+
 	// Emit router node_finished with the resolved cardinality.
 	if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, routerNodeID, map[string]interface{}{
 		"count": len(items),
+		"dag":   dag,
 	}); err != nil {
 		return "", err
 	}
@@ -82,9 +109,7 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 		return "", fmt.Errorf("fan_out_each router %q has no outgoing template edge", routerNodeID)
 	}
 
-	// Where the parallel branches reconverge (a node marked await: wait_all,
-	// or one with multiple incoming sources). Pre-computed so each branch
-	// knows where to stop.
+	// Where the parallel branches reconverge.
 	convergence := e.findConvergencePoint(routerNodeID, []*ir.Edge{tmplEdge})
 
 	// Empty array: nothing to fan out. Continue straight to the convergence
@@ -92,11 +117,6 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 	if len(items) == 0 {
 		rs.outputs[routerNodeID]["count"] = 0
 		if convergence == "" {
-			// No join downstream: the template head is the only continuation,
-			// but with zero items there is nothing to run. Hand the template
-			// head back so the main loop proceeds (it will run once with no
-			// bound item); callers that need strict empty-skip should add a
-			// wait_all join.
 			return tmplEdge.To, nil
 		}
 		if e.logger != nil {
@@ -130,12 +150,11 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 	sem := make(chan struct{}, maxParallel)
 	resultsCh := make(chan *branchResult, len(items))
 
-	for i, item := range items {
+	// runBranch executes one item's template subgraph (acquiring a concurrency
+	// slot first). It does NOT send to resultsCh — the caller owns lifecycle.
+	runBranch := func(i int) *branchResult {
+		item := items[i]
 		branchID := fmt.Sprintf("branch_%s_%d", routerNodeID, i)
-
-		// Per-branch parent outputs: deep-copy the shared state, then overlay
-		// the bound element onto THIS router's output so the template subgraph
-		// resolves {{outputs.<router>.<binding>}} / .item / .index / .count.
 		perBranchOutputs := copyOutputs(rs.outputs)
 		if perBranchOutputs[routerNodeID] == nil {
 			perBranchOutputs[routerNodeID] = make(map[string]interface{})
@@ -145,36 +164,100 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 		perBranchOutputs[routerNodeID]["index"] = i
 		perBranchOutputs[routerNodeID]["count"] = len(items)
 
-		go func(i int, branchID string, parentOutputs map[string]map[string]interface{}) {
-			defer func() {
-				if r := recover(); r != nil {
-					resultsCh <- &branchResult{
-						branchID: branchID,
-						outputs:  make(map[string]map[string]interface{}),
-						err:      fmt.Errorf("panic in branch %s: %v", branchID, r),
+		select {
+		case sem <- struct{}{}:
+			defer func() { <-sem }()
+		case <-branchCtx.Done():
+			return &branchResult{
+				branchID: branchID,
+				outputs:  make(map[string]map[string]interface{}),
+				err:      e.wrapContextErr(branchCtx.Err()),
+			}
+		}
+		return e.execBranch(branchCtx, rs, branchID, tmplEdge, perBranchOutputs, parentArtifacts, convergence)
+	}
+
+	// finishBranch applies the shared post-branch cancellation policy.
+	finishBranch := func(result *branchResult) {
+		if result != nil && result.err != nil {
+			if errors.Is(result.err, ErrBudgetExceeded) || cancelOnFirstFailure {
+				cancelBranches()
+			}
+		}
+		resultsCh <- result
+	}
+
+	if !dag {
+		// Plain fan-out: every item independent, all launched at once.
+		for i := range items {
+			go func(i int) {
+				branchID := fmt.Sprintf("branch_%s_%d", routerNodeID, i)
+				defer func() {
+					if r := recover(); r != nil {
+						resultsCh <- &branchResult{branchID: branchID, outputs: make(map[string]map[string]interface{}), err: fmt.Errorf("panic in branch %s: %v", branchID, r)}
+					}
+				}()
+				finishBranch(runBranch(i))
+			}(i)
+		}
+	} else {
+		// DAG: a goroutine per item that waits for its deps' `done` channels
+		// before acquiring a slot. The semaphore bounds only RUNNING branches
+		// (deps-waiting branches hold no slot), so independent items run up to
+		// the cap while dependents stay parked until their deps finish.
+		done := make([]chan struct{}, len(items))
+		for i := range items {
+			done[i] = make(chan struct{})
+		}
+		failed := make([]int32, len(items)) // atomic flags, 1 == failed/skipped
+
+		for i := range items {
+			go func(i int) {
+				branchID := fmt.Sprintf("branch_%s_%d", routerNodeID, i)
+				var once sync.Once
+				closeDone := func() { once.Do(func() { close(done[i]) }) }
+				defer func() {
+					if r := recover(); r != nil {
+						atomic.StoreInt32(&failed[i], 1)
+						closeDone()
+						resultsCh <- &branchResult{branchID: branchID, outputs: make(map[string]map[string]interface{}), err: fmt.Errorf("panic in branch %s: %v", branchID, r)}
+					}
+				}()
+
+				// Wait for every dependency to finish (or for cancellation).
+				for _, d := range depsIdx[i] {
+					select {
+					case <-done[d]:
+					case <-branchCtx.Done():
 					}
 				}
-			}()
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-branchCtx.Done():
-				resultsCh <- &branchResult{
-					branchID: branchID,
-					outputs:  make(map[string]map[string]interface{}),
-					err:      e.wrapContextErr(branchCtx.Err()),
-				}
-				return
-			}
 
-			result := e.execBranch(branchCtx, rs, branchID, tmplEdge, parentOutputs, parentArtifacts, convergence)
-			if result != nil && result.err != nil {
-				if errors.Is(result.err, ErrBudgetExceeded) || cancelOnFirstFailure {
-					cancelBranches()
+				// Cancelled while waiting → emit a cancel result, unblock dependents.
+				if branchCtx.Err() != nil {
+					atomic.StoreInt32(&failed[i], 1)
+					closeDone()
+					finishBranch(&branchResult{branchID: branchID, outputs: make(map[string]map[string]interface{}), err: e.wrapContextErr(branchCtx.Err())})
+					return
 				}
-			}
-			resultsCh <- result
-		}(i, branchID, perBranchOutputs)
+
+				// A failed/skipped dependency means this item cannot run.
+				for _, d := range depsIdx[i] {
+					if atomic.LoadInt32(&failed[d]) == 1 {
+						atomic.StoreInt32(&failed[i], 1)
+						closeDone()
+						finishBranch(&branchResult{branchID: branchID, outputs: make(map[string]map[string]interface{}), err: fmt.Errorf("branch %s skipped: a dependency failed", branchID)})
+						return
+					}
+				}
+
+				result := runBranch(i)
+				if result != nil && result.err != nil {
+					atomic.StoreInt32(&failed[i], 1)
+				}
+				closeDone() // release dependents BEFORE the (possibly blocking) send
+				finishBranch(result)
+			}(i)
+		}
 	}
 
 	// Collect results (ctx-aware drain, mirrors execFanOut).
@@ -241,6 +324,93 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 	}
 
 	return e.processConvergence(rs, convergenceNodeID, results)
+}
+
+// buildFanOutDAG resolves the per-item dependency graph for DAG scheduling.
+// It returns, for each item index, the indices of the items it depends on.
+// keyField identifies each item; depsField holds the array of ids it depends
+// on. Errors out on a non-object item, missing/empty/duplicate key, an
+// unknown or self dependency, or a dependency cycle (Kahn's algorithm).
+func buildFanOutDAG(items []interface{}, keyField, depsField string) ([][]int, error) {
+	idToIdx := make(map[string]int, len(items))
+	ids := make([]string, len(items))
+	for i, it := range items {
+		m, ok := it.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("DAG: item %d is not an object, cannot read key %q", i, keyField)
+		}
+		idv, ok := m[keyField]
+		if !ok || idv == nil {
+			return nil, fmt.Errorf("DAG: item %d is missing key field %q", i, keyField)
+		}
+		id := fmt.Sprintf("%v", idv)
+		if id == "" {
+			return nil, fmt.Errorf("DAG: item %d has an empty key %q", i, keyField)
+		}
+		if _, dup := idToIdx[id]; dup {
+			return nil, fmt.Errorf("DAG: duplicate key %q (item ids must be unique)", id)
+		}
+		idToIdx[id] = i
+		ids[i] = id
+	}
+
+	depsIdx := make([][]int, len(items))
+	for i, it := range items {
+		m := it.(map[string]interface{})
+		raw, ok := m[depsField]
+		if !ok || raw == nil {
+			continue // no dependencies
+		}
+		arr, ok := raw.([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("DAG: item %q field %q must be an array of ids, got %T", ids[i], depsField, raw)
+		}
+		for _, dv := range arr {
+			did := fmt.Sprintf("%v", dv)
+			j, ok := idToIdx[did]
+			if !ok {
+				return nil, fmt.Errorf("DAG: item %q depends on unknown id %q", ids[i], did)
+			}
+			if j == i {
+				return nil, fmt.Errorf("DAG: item %q depends on itself", ids[i])
+			}
+			depsIdx[i] = append(depsIdx[i], j)
+		}
+	}
+
+	// Cycle detection — Kahn's algorithm. If a topological order can't consume
+	// every node, a cycle exists.
+	indeg := make([]int, len(items))
+	dependents := make([][]int, len(items))
+	for i := range items {
+		indeg[i] = len(depsIdx[i])
+		for _, d := range depsIdx[i] {
+			dependents[d] = append(dependents[d], i)
+		}
+	}
+	queue := make([]int, 0, len(items))
+	for i := range items {
+		if indeg[i] == 0 {
+			queue = append(queue, i)
+		}
+	}
+	processed := 0
+	for len(queue) > 0 {
+		n := queue[0]
+		queue = queue[1:]
+		processed++
+		for _, m := range dependents[n] {
+			indeg[m]--
+			if indeg[m] == 0 {
+				queue = append(queue, m)
+			}
+		}
+	}
+	if processed < len(items) {
+		return nil, fmt.Errorf("DAG: dependency cycle detected (%d of %d items are in a cycle)", len(items)-processed, len(items))
+	}
+
+	return depsIdx, nil
 }
 
 // resolveFanOutArray resolves a fan_out_each router's `over` template to a

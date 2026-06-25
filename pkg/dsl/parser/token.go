@@ -111,6 +111,8 @@ const (
 	// Router properties
 	TokenMulti
 	TokenOver
+	TokenKey
+	TokenDependsOn
 	// Join strategies
 	TokenWaitAll
 	TokenBestEffort
@@ -268,6 +270,8 @@ var tokenNames = map[TokenType]string{
 	TokenLLM:                "llm",
 	TokenMulti:              "multi",
 	TokenOver:               "over",
+	TokenKey:                "key",
+	TokenDependsOn:          "depends_on",
 	TokenWaitAll:            "wait_all",
 	TokenBestEffort:         "best_effort",
 	TokenTrue:               "true",
@@ -396,6 +400,8 @@ var keywords = map[string]TokenType{
 	"llm":                   TokenLLM,
 	"multi":                 TokenMulti,
 	"over":                  TokenOver,
+	"key":                   TokenKey,
+	"depends_on":            TokenDependsOn,
 	"wait_all":              TokenWaitAll,
 	"best_effort":           TokenBestEffort,
 	"true":                  TokenTrue,
