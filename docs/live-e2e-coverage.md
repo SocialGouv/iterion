@@ -48,6 +48,15 @@ secured-renovacy). Each test `t.Skip`s when its prerequisites are missing.
   different from the assessed bot's primary family; a same-family judge is
   flagged. Each scores the stable rubric and, when a prior snapshot
   exists, a relative (better/same/worse) verdict.
+  - **Credential gotcha (cross-family):** the judges run through claw's
+    direct-generation path, so each needs an **API key** for its provider.
+    Claw's Anthropic provider needs `ANTHROPIC_API_KEY` — **Claude Code
+    OAuth is not usable by claw** — so in an OAuth-only Anthropic
+    environment the `anthropic/*` judge is dropped (the panel selection is
+    credential-aware) and the panel runs OpenAI-only. For true cross-family
+    Goodhart resistance there, set `ANTHROPIC_API_KEY` (judge cost is tiny)
+    or override `ITERION_LIVE_JUDGE_MODELS`. (Future: route the Anthropic
+    judge through the claude_code OAuth delegate so no key is needed.)
 - **Rubric** (0.0–1.0, multi-dimensional so no single number is gameable):
   `efficacy`, `completeness`, `output_quality`, `restraint`,
   `reliability`, `value_for_money`, `overall` (holistic, not an average).

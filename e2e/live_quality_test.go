@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/benchmark"
 	"github.com/SocialGouv/iterion/pkg/benchmark/quality"
@@ -96,7 +97,8 @@ func assessQuality(t *testing.T, res liveResult, qi qualityInput) {
 	}
 
 	reg := model.NewRegistry()
-	models := quality.DefaultJudgeModels()
+	models := availableJudgeModels()
+	t.Logf("[quality] judge panel: %v", models)
 	agg, err := quality.RunPanel(ctx, reg, models, ev, prev)
 	if err != nil {
 		t.Logf("[quality] panel unavailable (%v) — no snapshot written", err)
@@ -309,6 +311,46 @@ func iterionSHA() string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// availableJudgeModels filters the configured judge panel down to models
+// whose provider can actually authenticate via claw's direct-generation
+// path. The key gotcha (caught by the first live run): claw's anthropic
+// provider needs an ANTHROPIC_API_KEY — Claude Code OAuth is NOT usable by
+// claw (Consumer Terms scope it to Claude Code) — so an `anthropic/*` judge
+// 401s in an OAuth-only environment. Dropping it keeps the panel clean
+// (no dead judge, no noise) and honest (the snapshot note records the
+// degradation). For TRUE cross-family Goodhart resistance in an OAuth-only
+// Anthropic environment, set ANTHROPIC_API_KEY (judge cost is tiny) or
+// override ITERION_LIVE_JUDGE_MODELS.
+func availableJudgeModels() []string {
+	all := quality.DefaultJudgeModels()
+	openaiOK := os.Getenv("OPENAI_API_KEY") != ""
+	for _, p := range detect.Detect(context.Background()).Providers {
+		if p.Name == "openai" && p.Available {
+			openaiOK = true
+		}
+	}
+	anthropicOK := os.Getenv("ANTHROPIC_API_KEY") != ""
+	var out []string
+	for _, m := range all {
+		switch {
+		case strings.HasPrefix(m, "anthropic/"):
+			if anthropicOK {
+				out = append(out, m)
+			}
+		case strings.HasPrefix(m, "openai/"):
+			if openaiOK {
+				out = append(out, m)
+			}
+		default:
+			out = append(out, m) // unknown family: let RunPanel try (it skips on failure)
+		}
+	}
+	if len(out) == 0 {
+		return all // nothing matched a known-creds family: fall back, RunPanel notes any failures
+	}
+	return out
 }
 
 // qualitySnapshotRoot resolves the committed snapshot history root. Default
