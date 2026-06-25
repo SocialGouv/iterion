@@ -1960,9 +1960,19 @@ print(json.dumps({'listing': listing}))
 "`
   output: inventory_output
 
+## detect_tech is a cheap classification step and keeps its OWN backend/model
+## env vars (ITERION_SEC_AUDIT_DETECT_*), independent of the spine
+## ITERION_SEC_AUDIT_BACKEND/MODEL that flips triage/voters. They previously
+## shared those vars with DIFFERENT defaults (detect_tech: claw/gpt-5.5 vs
+## triage: claude_code/opus), so a user setting ITERION_SEC_AUDIT_BACKEND=claude_code
+## to make triage "opus-first" (which is ALREADY the default) silently dragged
+## detect_tech onto claude_code+openai/gpt-5.5 — a model the Claude Code CLI
+## cannot run — killing the run at the first node. Decoupled here so the spine
+## override is safe. To force opus-first triage/voters, set NOTHING (it's the
+## default); only override the spine var to move OFF claude_code.
 agent detect_tech:
-  backend: "${ITERION_SEC_AUDIT_BACKEND:-claw}"
-  model: "${ITERION_SEC_AUDIT_MODEL:-openai/gpt-5.5}"
+  backend: "${ITERION_SEC_AUDIT_DETECT_BACKEND:-claw}"
+  model: "${ITERION_SEC_AUDIT_DETECT_MODEL:-openai/gpt-5.5}"
   reasoning_effort: "${ITERION_SEC_AUDIT_EFFORT_DETECT:-medium}"
   output: tech_output
   system: detect_tech_system
@@ -2869,11 +2879,18 @@ print(json.dumps({
 ## the runtime collapses the chain to its head there, so a `claw`
 ## override stays single-provider but still benefits from the bigger
 ## default model. Env overrides:
-##   ITERION_SEC_AUDIT_BACKEND        — flip the whole node (claude_code
-##                                       | claw | codex). Default
-##                                       claude_code so triage stops
-##                                       stalling on the heavy input out
-##                                       of the box.
+##   ITERION_SEC_AUDIT_BACKEND        — flip the spine nodes triage/voters/
+##                                       report (claude_code | claw | codex).
+##                                       Default claude_code so triage stops
+##                                       stalling on the heavy input out of
+##                                       the box (i.e. opus-first IS the
+##                                       default — set nothing to get it).
+##                                       Does NOT affect detect_tech, which
+##                                       has its own ITERION_SEC_AUDIT_DETECT_
+##                                       BACKEND/MODEL (default claw/gpt-5.5)
+##                                       so flipping this var can't drag the
+##                                       cheap classifier onto an incompatible
+##                                       model.
 ##   ITERION_SEC_AUDIT_MODEL          — pin the baseline model (the
 ##                                       fallback element inherits it
 ##                                       when its `provider:model` slot
