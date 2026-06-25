@@ -384,6 +384,16 @@ tasks:
     cmds:
       - go test -v -tags live -count=1 -run 'TestLive_Feat_Schedule$' -timeout 8m ./e2e/...
 
+  test:live:feat:sandbox-net:
+    desc: 'Live e2e for sandbox network allowlist egress policy (docker + iterion-sandbox-full).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_Sandbox_Network$' -timeout 12m ./e2e/...
+
+  test:live:feat:fork:
+    desc: 'Live e2e for run forking (parent run → fork at a turn → child run).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_Fork$' -timeout 8m ./e2e/...
+
   test:live:bots:new:
     desc: 'Run ALL 16 new per-bot live e2e tests sequentially (very slow + very costly).'
     cmds:

@@ -166,12 +166,12 @@ Status legend: ✅ implemented · 🚧 planned.
 | Board capabilities | `TestLive_Feat_BoardCaps` | ✅ |
 | rtk compression | `TestLive_Feat_Rtk` (rtk binary) | ✅ |
 | Verified Action recovery | `TestLive_Feat_VerifiedAction` | ✅ |
-| Budget enforcement + resume (fork pending) | `TestLive_Feat_Budget`, `_BudgetResume` | ✅ |
+| Budget + resume + fork | `TestLive_Feat_Budget`, `_BudgetResume`, `_Fork` | ✅ |
 | Worktree finalization | `TestLive_Feat_Worktree` | ✅ |
 | Human llm modes | `TestLive_Feat_HumanLLM` | 🚧 |
 | Skills mirroring | `TestLive_Feat_Skills` | ✅ |
 | Backend auto-detect | `TestLive_Feat_BackendAutodetect` | ✅ |
-| Sandbox auto/network/host_state/build | `TestLive_Feat_Sandbox_*` (docker; follow-up) | 🚧 |
+| Sandbox network allowlist (host_state/build: follow-up) | `TestLive_Feat_Sandbox_Network` (docker) | ✅ |
 | Dispatcher | `e2e/dispatcher_test.go`, `board_dispatcher_test.go` (deterministic) | ✅ |
 | Webhooks | `pkg/webhooks/*_test.go` (parsers) + server stubs (deterministic) | ✅ |
 | Schedule (trigger → run) | `TestLive_Feat_Schedule` | ✅ |

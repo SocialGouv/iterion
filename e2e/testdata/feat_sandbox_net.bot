@@ -1,0 +1,16 @@
+## Feature fixture: sandbox network allowlist (CONNECT-proxy egress policy).
+## A tool-only workflow (no LLM) runs inside iterion-sandbox-full with an
+## allowlist network policy: github (a git host in the preset) is reachable,
+## example.com (not in the preset) must be BLOCKED by the host CONNECT proxy.
+
+tool net_probe:
+  command: "curl -sS -m 20 -o /dev/null https://github.com/ && echo GITHUB_OK || echo GITHUB_BLOCKED; curl -sS -m 20 -o /dev/null https://example.com/ && echo EXAMPLE_OK || echo EXAMPLE_BLOCKED"
+
+workflow main:
+  sandbox:
+    image: "ghcr.io/socialgouv/iterion-sandbox-full:edge"
+    network:
+      mode: allowlist
+      preset: "iterion-default"
+  entry: net_probe
+  net_probe -> done
