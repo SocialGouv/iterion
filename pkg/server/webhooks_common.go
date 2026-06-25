@@ -242,6 +242,11 @@ func (s *Server) insertAndLaunchWebhook(
 	s.updateWebhookDelivery(ctx, delivery)
 	s.markWebhookOutcome(cfg.Provider, webhooks.StatusLaunched)
 
+	// Mirror the launch onto the trigger spine (observational; carries
+	// launched_run_id so the evaluator never re-launches). Unifies forge with
+	// board/run/schedule sources; no-op without the spine wired.
+	s.emitForgeTriggerEvent(ctx, cfg, meta, botID, vars, repoURL, repoRef, runID)
+
 	if s.logger != nil {
 		s.logger.Info("webhooks: %s/%s %s launched %s run=%s", cfg.Provider, meta.ProjectPath, meta.SubjectID, botID, runID)
 	}

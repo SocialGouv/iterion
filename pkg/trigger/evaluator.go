@@ -47,6 +47,14 @@ func NewEvaluator(subs SubscriptionStore, opts ...EvaluatorOption) *Evaluator {
 // trigger must not silence the others). The signature matches
 // eventbus.Handler.
 func (e *Evaluator) Handle(ctx context.Context, ev Event) error {
+	// An event already launched by an authoritative path (today: the inline
+	// forge webhook, which keeps its own admission/idempotency/quota gates)
+	// is OBSERVATIONAL only — never re-launch or re-promote it, so emitting it
+	// onto the bus cannot double-launch. The forge cutover (spine becomes the
+	// launcher) is the step that stops setting this marker.
+	if v, ok := ev.Payload[PayloadLaunchedRunID]; ok && v != nil {
+		return nil
+	}
 	cands, err := e.subs.ListCandidates(ctx, ev)
 	if err != nil {
 		return err
@@ -116,7 +124,7 @@ func (e *Evaluator) buildPlan(sub Subscription, ev Event) LaunchPlan {
 // Used by forge/custom sources to pass PR url / commit / arbitrary fields to
 // the run; board/run/schedule sources typically carry none.
 func eventVars(ev Event) map[string]string {
-	raw, ok := ev.Payload["vars"]
+	raw, ok := ev.Payload[PayloadVars]
 	if !ok {
 		return nil
 	}

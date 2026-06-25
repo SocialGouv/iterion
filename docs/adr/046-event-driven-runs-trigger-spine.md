@@ -1,13 +1,16 @@
 # ADR-046 — Event-driven runs: a unified trigger spine (board events first)
 
-Status: **accepted (phases 1–2)** (2026-06-25) — the spine (`pkg/trigger` +
-`pkg/eventbus`), the first source (**iterion board events**, board-mode
-promote), a **direct-mode launcher** over `runview.Service`, and the second
-source (**run-completion chaining**, `run.finished`/`failed`/`cancelled`)
-ship end-to-end, local + cloud-ready. The studio Automations view,
-forge-derived provisioning, dispatcher `EngineRunner` convergence, and the
-remaining sources (scheduled/cloudsched, git-forge refactor, custom ingress)
-are designed here and staged as follow-ons.
+Status: **accepted (phases 1–4)** (2026-06-25) — shipped end-to-end, local +
+cloud-ready: the spine (`pkg/trigger` + `pkg/eventbus`); **board events**
+(board-mode promote); a **direct-mode launcher** over `runview.Service`;
+**run-completion chaining** (`run.finished`/`failed`/`cancelled`);
+**scheduled** (in-process `Scheduler` over schedule-kind subscriptions, the
+local twin of cloudsched); and **git-forge events on the bus** (the shared
+webhook launch tail emits a `SourceForge` event, observational via the
+`launched_run_id` marker so it can't double-launch). Staged follow-ons: the
+forge *cutover* (spine becomes the forge launcher, inline path retired behind
+a parity flag), custom ingress, the studio Automations view, forge-derived
+subscription provisioning, and dispatcher `EngineRunner` convergence.
 
 ## Context
 
@@ -122,11 +125,20 @@ effect choice (promote-card vs direct launch)":
   (wired via `SetEventPublisher(coord.Bus())`); a direct-mode subscription
   matching `Source: run` fires the downstream bot. The `Actor` carries the
   upstream bot id so a chain can key on "after feature-dev finishes".
-- **Scheduled** — wire `cloudsched`/host-crontab as a timer source emitting
-  `SourceSchedule`; fold `ScheduledBot` into `Subscription{Invocation: schedule}`.
-- **Git-forge** — refactor `webhooks_*.go` to publish `SourceForge` after
-  auth/HMAC; parity-gate via the `webhooks.Delivery` audit, then retire the
-  inline launch.
+- **Scheduled** — DONE: `trigger.Scheduler` ticks schedule-kind subscriptions
+  on their `Cron` and fires them via the launcher, scoped to the local tenant
+  "" (no-op in cloud, where cloudsched's CAS ticker stays authoritative for
+  real tenants). `FromScheduleInvocation` seeds a schedule subscription from a
+  bot's `suggested_cron`. STAGED: folding `cloudsched.ScheduledBot` into
+  `Subscription{Invocation: schedule}` so cloud + local share one table.
+- **Git-forge** — DONE (on the bus): the shared launch tail
+  (`insertAndLaunchWebhook`) emits a `SourceForge` event with the
+  `launched_run_id` marker, so forge is a unified, observable source and the
+  evaluator never re-launches it. STAGED (the cutover): when a forge
+  *subscription* matches, skip the inline launch and let the spine launch
+  (stop setting the marker); parity-gate via the `webhooks.Delivery` audit,
+  then retire the inline path. The per-event `payload["vars"]` carrier the
+  evaluator now merges is the vehicle for forge's dynamic launch vars.
 - **Custom ingress** — a signed `POST /api/.../triggers/emit`.
 - **Studio Automations view** + cloud team-scoped REST + a file-backed local
   subscription store (the memory store is rebuilt from manifests each start).

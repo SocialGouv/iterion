@@ -133,6 +133,39 @@ func TestEvaluatorMergesEventVarsUnderSubscriptionVars(t *testing.T) {
 	}
 }
 
+func TestEvaluatorSkipsAlreadyLaunchedEvent(t *testing.T) {
+	// A forge event the inline webhook already launched (carries
+	// launched_run_id) must never be re-launched, even if a forge
+	// subscription matches it — guarantees the observational emit can't
+	// double-launch.
+	st := seed(t, Subscription{
+		ID: "forge", BotID: "review-pr", Mode: "direct", Enabled: true,
+		Match: Matcher{Sources: []Source{SourceForge}},
+	})
+	fl := &fakeLauncher{}
+	ev := NewEvaluator(st, WithLauncher(fl))
+
+	_ = ev.Handle(context.Background(), Event{
+		Source:  SourceForge,
+		Kind:    "pull_request",
+		Action:  "opened",
+		Payload: map[string]any{PayloadLaunchedRunID: "run-existing"},
+		Subject: Subject{Type: "pull_request", ID: "pr:7"},
+	})
+	if len(fl.plans) != 0 {
+		t.Fatalf("already-launched forge event re-launched: %+v", fl.plans)
+	}
+
+	// The same event WITHOUT the marker (the future cutover) does launch.
+	_ = ev.Handle(context.Background(), Event{
+		Source: SourceForge, Kind: "pull_request", Action: "opened",
+		Subject: Subject{Type: "pull_request", ID: "pr:7"},
+	})
+	if len(fl.plans) != 1 || fl.plans[0].BotID != "review-pr" {
+		t.Fatalf("unmarked forge event should launch: %+v", fl.plans)
+	}
+}
+
 func TestEvaluatorSkipsWhenEffectMissing(t *testing.T) {
 	st := seed(t, Subscription{ID: "b", BotID: "x", Mode: "board", Enabled: true, Match: Matcher{}})
 	ev := NewEvaluator(st) // no board effect wired

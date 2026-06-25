@@ -56,6 +56,18 @@ const (
 	KindRunCancelled = "run.cancelled"
 )
 
+// Reserved Payload keys.
+const (
+	// PayloadVars carries per-event dynamic launch vars (a map the evaluator
+	// merges under the subscription's static Vars).
+	PayloadVars = "vars"
+	// PayloadLaunchedRunID, when present, marks an event that an authoritative
+	// path already turned into a run (today: the inline forge webhook). The
+	// evaluator treats such events as observational and never re-launches them,
+	// so publishing them onto the bus cannot double-launch.
+	PayloadLaunchedRunID = "launched_run_id"
+)
+
 // Subject is the thing an event is about (a PR, an issue/card, a run, a repo).
 // Fields are best-effort per source; templating reads from here and Payload.
 type Subject struct {
