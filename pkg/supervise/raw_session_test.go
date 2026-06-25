@@ -172,3 +172,20 @@ func settingsContains(root map[string]any, substr string) bool {
 	data, _ := json.Marshal(root)
 	return strings.Contains(string(data), substr)
 }
+
+// ClaudeProjectKey must match Claude Code's ~/.claude/projects/<key>/
+// naming (every non-alphanumeric char → '-'), which differs from
+// store.EncodeWorkDirKey for any path containing a dot.
+func TestClaudeProjectKey(t *testing.T) {
+	cases := map[string]string{
+		"/tmp/claude-rawsess.W9PWCo": "-tmp-claude-rawsess-W9PWCo",
+		"/home/jo/.iterion":          "-home-jo--iterion",
+		"/home/jo/lab/ai/iterion":    "-home-jo-lab-ai-iterion",
+		"/a/b+c_d":                   "-a-b-c-d",
+	}
+	for in, want := range cases {
+		if got := ClaudeProjectKey(in); got != want {
+			t.Errorf("ClaudeProjectKey(%q) = %q; want %q", in, got, want)
+		}
+	}
+}

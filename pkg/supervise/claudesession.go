@@ -21,6 +21,28 @@ type ClaudeSession struct {
 	TranscriptPath string // resolved <key>/<sessionId>.jsonl
 }
 
+// ClaudeProjectKey encodes an absolute working directory the way Claude
+// Code names its ~/.claude/projects/<key>/ transcript directory: every
+// character that is not [A-Za-z0-9] becomes '-' (so '/', '.', '_', '+',
+// ':' all map to '-'; case is preserved; no run-collapsing). This is
+// NOT the same as store.EncodeWorkDirKey, which only maps '/', ':', '\'
+// and preserves '.' — a mismatch that left the supervisor looking in the
+// wrong project dir for any path containing a dot (e.g. a tmp dir, or any
+// `/.claude/` segment). Verified against real project dirs, e.g.
+// "/tmp/x.Y" -> "-tmp-x-Y" and "/home/jo/.iterion" -> "-home-jo--iterion".
+func ClaudeProjectKey(absPath string) string {
+	var b strings.Builder
+	b.Grow(len(absPath))
+	for _, r := range absPath {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('-')
+		}
+	}
+	return b.String()
+}
+
 // claudeProjectsDir returns ~/.claude/projects (honouring $CLAUDE_HOME /
 // $HOME), the root Claude Code writes session transcripts under.
 func claudeProjectsDir() string {
@@ -66,7 +88,7 @@ func ResolveClaudeSession(arg, cwd string) (*ClaudeSession, error) {
 	if err != nil {
 		return nil, fmt.Errorf("supervise: resolve cwd %q: %w", dir, err)
 	}
-	key := store.EncodeWorkDirKey(abs)
+	key := ClaudeProjectKey(abs)
 	sess := &ClaudeSession{Cwd: abs, ProjectKey: key}
 	if id, path, ok := newestTranscript(filepath.Join(claudeProjectsDir(), key)); ok {
 		sess.SessionID = id

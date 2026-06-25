@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 
-	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/supervise"
 	"github.com/spf13/cobra"
 )
@@ -39,7 +38,7 @@ var claudeHookDrainCmd = &cobra.Command{
 		if in.Cwd == "" {
 			return nil // can't resolve the inbox without a cwd — no-op
 		}
-		projectKey := store.EncodeWorkDirKey(in.Cwd)
+		projectKey := supervise.ClaudeProjectKey(in.Cwd)
 
 		ctx := context.Background()
 		var texts []string
