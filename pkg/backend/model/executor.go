@@ -1460,6 +1460,12 @@ func (e *ClawExecutor) resolveSystemPrompt(promptName string, input map[string]i
 	}
 	p, ok := e.prompts[promptName]
 	if !ok {
+		// The IR compiler validates system-prompt references, so this is
+		// a can't-happen defensive branch — surface it instead of
+		// silently running the node with no system guidance.
+		if e.logger != nil {
+			e.logger.Warn("system prompt %q referenced but not registered — IR compiler should have rejected this; node runs with no system prompt", promptName)
+		}
 		return ""
 	}
 	return e.resolveTemplate(p.Body, input, td)
