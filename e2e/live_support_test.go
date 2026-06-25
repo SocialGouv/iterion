@@ -4,9 +4,11 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,6 +50,13 @@ type liveSpec struct {
 	// sandbox-backed and worktree:auto bots so the engine mounts/operates
 	// on the seeded fixture instead of the iterion repo root.
 	withWorkDir bool
+	// autoResume drives interactive bots headlessly: when a `human` node
+	// pauses the run, the harness synthesizes an answer from that node's
+	// output schema (bool→true, enum→a termination-favoring value, …) and
+	// resumes, up to maxResumes times. Lets a test reach an emit/terminal
+	// node past human gates without a real operator.
+	autoResume bool
+	maxResumes int // default 12 when autoResume is set
 }
 
 // liveResult is the loaded outcome of a runBotLive call.
@@ -77,7 +86,7 @@ func runBotLive(t *testing.T, spec liveSpec) liveResult {
 		spec.timeout = 30 * time.Minute
 	}
 
-	wf := compileLiveWorkflow(t, spec)
+	wf, bnd := compileLiveWorkflow(t, spec)
 
 	storeDir := resolveLiveStoreDir(t, spec.workspaceDir)
 	s, err := store.New(storeDir)
@@ -100,6 +109,11 @@ func runBotLive(t *testing.T, spec liveSpec) liveResult {
 	if spec.withWorkDir {
 		engOpts = append(engOpts, runtime.WithWorkDir(spec.workspaceDir))
 	}
+	if bnd != nil {
+		// Mirror the bundle's skills into <workspace>/.claude/skills so the
+		// bot's agents read them exactly as `iterion run <bundle>` would.
+		engOpts = append(engOpts, runtime.WithBundle(bnd))
+	}
 	eng := runtime.New(wf, s, executor, engOpts...)
 
 	ctx, cancel := context.WithTimeout(context.Background(), spec.timeout)
@@ -108,6 +122,9 @@ func runBotLive(t *testing.T, spec liveSpec) liveResult {
 	t.Logf("[live] starting %s (run %s, timeout %s)…", spec.runIDBase, runID, spec.timeout)
 	start := time.Now()
 	runErr := eng.Run(ctx, runID, spec.inputs)
+	if spec.autoResume {
+		runErr = driveAutoResume(t, ctx, eng, s, wf, runID, runErr, spec.maxResumes)
+	}
 	elapsed := time.Since(start)
 	executor.Close()
 	t.Logf("[live] %s finished in %s", spec.runIDBase, elapsed.Round(time.Second))
@@ -144,7 +161,9 @@ func runBotLive(t *testing.T, spec liveSpec) liveResult {
 }
 
 // compileLiveWorkflow compiles either a plain .bot fixture or a bundle dir.
-func compileLiveWorkflow(t *testing.T, spec liveSpec) *ir.Workflow {
+// For a bundle it also returns the *bundle.Bundle so the engine can mirror
+// its skills (runtime.WithBundle); the fixture path returns a nil bundle.
+func compileLiveWorkflow(t *testing.T, spec liveSpec) (*ir.Workflow, *bundle.Bundle) {
 	t.Helper()
 	if spec.bundleDir != "" {
 		bDir, err := filepath.Abs(spec.bundleDir)
@@ -159,12 +178,12 @@ func compileLiveWorkflow(t *testing.T, spec liveSpec) *ir.Workflow {
 		if err != nil {
 			t.Fatalf("CompileBundleWorkflow %q: %v", bDir, err)
 		}
-		return wf
+		return wf, b
 	}
 	if spec.botFile == "" {
 		t.Fatalf("runBotLive: one of botFile or bundleDir must be set")
 	}
-	return compileFixture(t, spec.botFile)
+	return compileFixture(t, spec.botFile), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -236,6 +255,22 @@ func assertSchemaValid(t *testing.T, wf *ir.Workflow, events []*store.Event, nod
 	f := &botreplay.Fixture{Node: nodeID, Output: out}
 	if err := botreplay.VerifySchema(f, wf); err != nil {
 		t.Errorf("node %q output fails its schema: %v", nodeID, err)
+	}
+}
+
+// assertOutputFieldsNonEmpty asserts each named field of a node's recorded
+// output is present AND non-empty (reusing botreplay's semantic-presence
+// check) — e.g. created_issues / findings must not be an empty array.
+func assertOutputFieldsNonEmpty(t *testing.T, events []*store.Event, nodeID string, fields ...string) {
+	t.Helper()
+	out, ok := lastNodeOutput(events, nodeID)
+	if !ok {
+		t.Errorf("assertOutputFieldsNonEmpty: node %q produced no output", nodeID)
+		return
+	}
+	f := &botreplay.Fixture{Node: nodeID, Output: out}
+	if err := botreplay.VerifyRequiredNonEmpty(f, fields); err != nil {
+		t.Errorf("node %q: %v", nodeID, err)
 	}
 }
 
@@ -341,4 +376,96 @@ func requireOpus48(t *testing.T) {
 		return
 	}
 	t.Skip("no Anthropic credential (ANTHROPIC_API_KEY or claude CLI) — skipping claude-opus-4-8 test")
+}
+
+// ---------------------------------------------------------------------------
+// Auto-resume driver for interactive (human-gated) bots
+// ---------------------------------------------------------------------------
+
+// liveAutoAnswerText is the free-text every synthesized string answer
+// carries — neutral guidance so an auto-answered gate keeps the run moving.
+const liveAutoAnswerText = "Auto-answer (live e2e, no operator). Prioritise correctness and developer tooling; use your best judgment and proceed."
+
+// driveAutoResume loops while the run is paused at a `human` node: it
+// synthesizes an answer from that node's output schema and resumes, up to
+// maxResumes times. Returns the final run error (nil / acceptable / the
+// last resume error). Non-pause errors short-circuit immediately.
+func driveAutoResume(t *testing.T, ctx context.Context, eng *runtime.Engine, s store.RunStore, wf *ir.Workflow, runID string, runErr error, maxResumes int) error {
+	t.Helper()
+	if maxResumes <= 0 {
+		maxResumes = 12
+	}
+	for i := 0; errors.Is(runErr, runtime.ErrRunPaused) && i < maxResumes; i++ {
+		run, err := s.LoadRun(ctx, runID)
+		if err != nil || run.Checkpoint == nil {
+			t.Logf("[live] auto-resume: cannot load checkpoint (%v) — stopping", err)
+			break
+		}
+		nodeID := run.Checkpoint.NodeID
+		answers := synthesizeHumanAnswers(wf, nodeID)
+		t.Logf("[live] auto-resume #%d: answering human node %q with %v", i+1, nodeID, answers)
+		runErr = eng.Resume(ctx, runID, answers)
+	}
+	if errors.Is(runErr, runtime.ErrRunPaused) {
+		t.Logf("[live] auto-resume: still paused after %d resumes (treating pause as terminal)", maxResumes)
+	}
+	return runErr
+}
+
+// synthesizeHumanAnswers builds an answer map for a paused human node from
+// its declared output schema. Falls back to a permissive catch-all when the
+// node has no schema.
+func synthesizeHumanAnswers(wf *ir.Workflow, nodeID string) map[string]interface{} {
+	node, ok := wf.Nodes[nodeID]
+	if !ok {
+		return map[string]interface{}{"approved": true, "action": "close", "response": liveAutoAnswerText}
+	}
+	schemaName := ir.NodeOutputSchema(node)
+	sch, ok := wf.Schemas[schemaName]
+	if schemaName == "" || !ok || len(sch.Fields) == 0 {
+		return map[string]interface{}{"approved": true, "action": "close", "response": liveAutoAnswerText}
+	}
+	ans := make(map[string]interface{}, len(sch.Fields))
+	for _, f := range sch.Fields {
+		ans[f.Name] = defaultForField(f)
+	}
+	return ans
+}
+
+// defaultForField picks a sensible auto-answer value for one schema field.
+// Booleans approve, enums prefer a termination/approval value, strings get
+// the neutral guidance text, lists are empty (select nothing).
+func defaultForField(f *ir.SchemaField) interface{} {
+	switch f.Type {
+	case ir.FieldTypeBool:
+		return true
+	case ir.FieldTypeInt:
+		return 1
+	case ir.FieldTypeFloat:
+		return 1.0
+	case ir.FieldTypeStringArray:
+		return []string{}
+	case ir.FieldTypeJSON:
+		return map[string]interface{}{}
+	default: // FieldTypeString
+		if len(f.EnumValues) > 0 {
+			return pickTerminatingEnum(f.EnumValues)
+		}
+		return liveAutoAnswerText
+	}
+}
+
+// pickTerminatingEnum prefers an enum value that advances a gate toward a
+// terminal/approved state (so e.g. a "what next?" loop chooses "close"),
+// falling back to the first declared value.
+func pickTerminatingEnum(vals []string) string {
+	pref := []string{"close", "done", "approve", "approved", "accept", "yes", "continue", "proceed", "finish", "standby"}
+	for _, p := range pref {
+		for _, v := range vals {
+			if strings.EqualFold(strings.TrimSpace(v), p) {
+				return v
+			}
+		}
+	}
+	return vals[0]
 }
