@@ -374,6 +374,11 @@ tasks:
     cmds:
       - go test -v -tags live -count=1 -run 'TestLive_Feat_Rtk$' -timeout 3m ./e2e/...
 
+  test:live:feat:budget-resume:
+    desc: 'Live e2e for budget exceeded → raise cap → resume recovery (real cost).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_BudgetResume$' -timeout 10m ./e2e/...
+
   test:live:bots:new:
     desc: 'Run ALL 16 new per-bot live e2e tests sequentially (very slow + very costly).'
     cmds:

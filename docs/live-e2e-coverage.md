@@ -163,7 +163,7 @@ Status legend: ✅ implemented · 🚧 planned.
 | Board capabilities | `TestLive_Feat_BoardCaps` | ✅ |
 | rtk compression | `TestLive_Feat_Rtk` (rtk binary) | ✅ |
 | Verified Action recovery | `TestLive_Feat_VerifiedAction` | ✅ |
-| Budget enforcement (resume/fork pending) | `TestLive_Feat_Budget` | ✅ |
+| Budget enforcement + resume (fork pending) | `TestLive_Feat_Budget`, `_BudgetResume` | ✅ |
 | Worktree finalization | `TestLive_Feat_Worktree` | ✅ |
 | Human llm modes | `TestLive_Feat_HumanLLM` | 🚧 |
 | Skills mirroring | `TestLive_Feat_Skills` | ✅ |

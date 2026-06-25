@@ -21,7 +21,7 @@ func TestLive_Feat_Budget(t *testing.T) {
 		t.Skip("skipping live test in short mode")
 	}
 	loadDotEnv(t)
-	requireEnv(t, "ANTHROPIC_API_KEY")
+	requireOpenAI(t)
 
 	workspaceDir, err := os.MkdirTemp("", "iterion-feat-budget-*")
 	if err != nil {
