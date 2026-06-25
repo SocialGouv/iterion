@@ -48,15 +48,25 @@ secured-renovacy). Each test `t.Skip`s when its prerequisites are missing.
   different from the assessed bot's primary family; a same-family judge is
   flagged. Each scores the stable rubric and, when a prior snapshot
   exists, a relative (better/same/worse) verdict.
-  - **Credential gotcha (cross-family):** the judges run through claw's
-    direct-generation path, so each needs an **API key** for its provider.
-    Claw's Anthropic provider needs `ANTHROPIC_API_KEY` — **Claude Code
-    OAuth is not usable by claw** — so in an OAuth-only Anthropic
-    environment the `anthropic/*` judge is dropped (the panel selection is
-    credential-aware) and the panel runs OpenAI-only. For true cross-family
-    Goodhart resistance there, set `ANTHROPIC_API_KEY` (judge cost is tiny)
-    or override `ITERION_LIVE_JUDGE_MODELS`. (Future: route the Anthropic
-    judge through the claude_code OAuth delegate so no key is needed.)
+  - **Credential gotcha (cross-family), validated live:** the OpenAI judge
+    runs through claw's direct-generation path and needs an API key /
+    ChatGPT-OAuth (proven working). Claw's Anthropic provider needs
+    `ANTHROPIC_API_KEY` — **Claude Code OAuth is not usable by claw**. The
+    panel selection is credential-aware: with no `ANTHROPIC_API_KEY` the
+    `anthropic/*` judge is dropped and the panel runs **OpenAI-only** (clean
+    + honest; for an Anthropic-primary bot the OpenAI judge is itself the
+    cross-family check). For a guaranteed **2-judge cross-family** panel,
+    set `ANTHROPIC_API_KEY` (judge cost is tiny) or override
+    `ITERION_LIVE_JUDGE_MODELS`.
+  - **Experimental — Anthropic judge over Claude Code OAuth (no key):**
+    `ITERION_LIVE_JUDGE_CLAUDE_CODE=1` routes the Anthropic judge through
+    the claude_code delegate (OAuth). Wired + authenticates, but its
+    structured-output extraction is currently unreliable for the rich
+    7-field rubric schema (the verdict often comes back as wrapped prose and
+    is then cleanly dropped with a note), so it is **off by default** to
+    avoid paying for a judge that gets dropped. Hardening the claude_code
+    structured-output path for nested schemas is the follow-up that makes
+    keyless cross-family reliable.
 - **Rubric** (0.0–1.0, multi-dimensional so no single number is gameable):
   `efficacy`, `completeness`, `output_quality`, `restraint`,
   `reliability`, `value_for_money`, `overall` (holistic, not an average).

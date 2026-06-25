@@ -327,7 +327,10 @@ func iterionSHA() string {
 func liveJudgeInvoker(reg *model.Registry, workDir string) quality.JudgeInvoker {
 	claw := quality.ClawInvoker(reg)
 	var cc delegate.Backend
-	if os.Getenv("ANTHROPIC_API_KEY") == "" {
+	// Opt-in only: the claude_code OAuth judge is experimental (see
+	// availableJudgeModels). Default off so an OAuth-only env runs a clean
+	// single OpenAI judge instead of paying for a judge that gets dropped.
+	if os.Getenv("ANTHROPIC_API_KEY") == "" && truthyEnv("ITERION_LIVE_JUDGE_CLAUDE_CODE") {
 		if be, err := delegate.DefaultRegistry(iterlog.New(iterlog.LevelError, os.Stderr)).Resolve(delegate.BackendClaudeCode); err == nil {
 			cc = be
 		}
@@ -378,11 +381,14 @@ func availableJudgeModels() []string {
 			openaiOK = true
 		}
 	}
-	// Anthropic judge is usable either via claw (ANTHROPIC_API_KEY) or via
-	// the claude_code OAuth delegate (claude CLI present) — see
-	// liveJudgeInvoker, which routes anthropic/* to claude_code when no key.
+	// Anthropic judge via claw needs ANTHROPIC_API_KEY (the proven path).
+	// The claude_code OAuth judge (no key) is OPT-IN + experimental
+	// (ITERION_LIVE_JUDGE_CLAUDE_CODE=1) because its structured-output
+	// extraction is currently unreliable for the rich rubric schema and
+	// gets dropped — attempting it by default would just waste a model call
+	// every run. See liveJudgeInvoker.
 	anthropicOK := os.Getenv("ANTHROPIC_API_KEY") != ""
-	if !anthropicOK {
+	if !anthropicOK && truthyEnv("ITERION_LIVE_JUDGE_CLAUDE_CODE") {
 		if _, err := exec.LookPath("claude"); err == nil {
 			anthropicOK = true
 		}
