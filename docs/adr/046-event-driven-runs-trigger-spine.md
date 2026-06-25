@@ -5,11 +5,13 @@ cloud-ready: the spine (`pkg/trigger` + `pkg/eventbus`); **board events**
 (board-mode promote); a **direct-mode launcher** over `runview.Service`;
 **run-completion chaining** (`run.finished`/`failed`/`cancelled`);
 **scheduled** (in-process `Scheduler` over schedule-kind subscriptions, the
-local twin of cloudsched); and **git-forge events on the bus** (the shared
+local twin of cloudsched); **git-forge events on the bus** (the shared
 webhook launch tail emits a `SourceForge` event, observational via the
-`launched_run_id` marker so it can't double-launch). Staged follow-ons: the
-forge *cutover* (spine becomes the forge launcher, inline path retired behind
-a parity flag), custom ingress, the studio Automations view, forge-derived
+`launched_run_id` marker so it can't double-launch); and **custom ingress**
+(`POST /api/v1/triggers/emit` injects a `SourceCustom` event onto the spine —
+the first-class extensibility point for arbitrary external systems). Staged
+follow-ons: the forge *cutover* (spine becomes the forge launcher, inline path
+retired behind a parity flag), the studio Automations view, forge-derived
 subscription provisioning, and dispatcher `EngineRunner` convergence.
 
 ## Context
@@ -139,7 +141,10 @@ effect choice (promote-card vs direct launch)":
   (stop setting the marker); parity-gate via the `webhooks.Delivery` audit,
   then retire the inline path. The per-event `payload["vars"]` carrier the
   evaluator now merges is the vehicle for forge's dynamic launch vars.
-- **Custom ingress** — a signed `POST /api/.../triggers/emit`.
+- **Custom ingress** — DONE: `POST /api/v1/triggers/emit` (requireAuth) forces
+  `Source: custom` (cannot spoof a board/forge event) and publishes onto the
+  bus; matching custom subscriptions fire asynchronously. STAGED: a cloud
+  signed-token variant alongside the local auth gate.
 - **Studio Automations view** + cloud team-scoped REST + a file-backed local
   subscription store (the memory store is rebuilt from manifests each start).
 

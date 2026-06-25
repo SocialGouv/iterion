@@ -23,6 +23,77 @@ func (s *Server) registerTriggerRoutes() {
 	s.mux.Handle("GET /api/v1/triggers/{id}", s.requireAuth(http.HandlerFunc(s.handleGetTrigger)))
 	s.mux.Handle("PUT /api/v1/triggers/{id}", s.requireAuth(http.HandlerFunc(s.handleUpdateTrigger)))
 	s.mux.Handle("DELETE /api/v1/triggers/{id}", s.requireAuth(http.HandlerFunc(s.handleDeleteTrigger)))
+	s.mux.Handle("POST /api/v1/triggers/emit", s.requireAuth(http.HandlerFunc(s.handleEmitTrigger)))
+}
+
+// emitTriggerReq is the custom-integration ingress payload: an arbitrary
+// external system injects an event onto the spine, and matching custom
+// subscriptions fire. Source is always forced to "custom" — the endpoint
+// cannot spoof a board/forge/run event.
+type emitTriggerReq struct {
+	Kind    string            `json:"kind"`
+	Action  string            `json:"action,omitempty"`
+	Repo    string            `json:"repo,omitempty"`
+	Actor   string            `json:"actor,omitempty"`
+	Labels  []string          `json:"labels,omitempty"`
+	Vars    map[string]string `json:"vars,omitempty"`
+	Subject struct {
+		Type  string `json:"type,omitempty"`
+		ID    string `json:"id,omitempty"`
+		URL   string `json:"url,omitempty"`
+		Ref   string `json:"ref,omitempty"`
+		Title string `json:"title,omitempty"`
+		Body  string `json:"body,omitempty"`
+		State string `json:"state,omitempty"`
+	} `json:"subject,omitempty"`
+}
+
+// handleEmitTrigger is the custom-integration ingress. It publishes a
+// SourceCustom event onto the trigger bus; matching custom subscriptions fire
+// asynchronously (the same fire-and-observe model as board events). Returns
+// 202 — the launch, if any, happens via the evaluator, so no run_id is
+// returned synchronously (use a direct webhook for a synchronous launch).
+func (s *Server) handleEmitTrigger(w http.ResponseWriter, r *http.Request) {
+	if s.triggerCoord == nil || s.triggerCoord.Bus() == nil {
+		dispatcher.WriteErr(w, http.StatusServiceUnavailable, errors.New("trigger spine not enabled"))
+		return
+	}
+	var req emitTriggerReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.Kind == "" {
+		dispatcher.WriteErr(w, http.StatusBadRequest, errors.New("kind is required"))
+		return
+	}
+	payload := map[string]any{}
+	if len(req.Vars) > 0 {
+		vm := make(map[string]any, len(req.Vars))
+		for k, v := range req.Vars {
+			vm[k] = v
+		}
+		payload[trigger.PayloadVars] = vm
+	}
+	ev := trigger.Event{
+		ID:     "custom:" + req.Kind + ":" + req.Subject.ID,
+		Source: trigger.SourceCustom,
+		Kind:   req.Kind,
+		Action: req.Action,
+		Repo:   req.Repo,
+		Actor:  req.Actor,
+		Labels: req.Labels,
+		Subject: trigger.Subject{
+			Type: req.Subject.Type, ID: req.Subject.ID, URL: req.Subject.URL,
+			Ref: req.Subject.Ref, Title: req.Subject.Title, Body: req.Subject.Body, State: req.Subject.State,
+		},
+		Payload:    payload,
+		OccurredAt: time.Now().UTC(),
+	}
+	if err := s.triggerCoord.Bus().Publish(r.Context(), ev); err != nil {
+		dispatcher.WriteErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	dispatcher.WriteJSON(w, http.StatusAccepted, map[string]any{"status": "accepted", "event_id": ev.ID})
 }
 
 // triggerSubscriptionReq is the create/update payload. It mirrors

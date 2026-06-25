@@ -2,11 +2,15 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
@@ -78,4 +82,59 @@ func TestTriggers_CreateRequiresBot(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("create without bot_id status = %d; want 400", rec.Code)
 	}
+}
+
+type recordingLauncher struct{ n atomic.Int64 }
+
+func (r *recordingLauncher) Launch(_ context.Context, _ trigger.LaunchPlan) (string, error) {
+	r.n.Add(1)
+	return "run-x", nil
+}
+
+func TestEmitTrigger_UnavailableWithoutSpine(t *testing.T) {
+	srv := New(Config{DisableAuth: true}, iterlog.New(iterlog.LevelError, nil))
+	rec := httptest.NewRecorder()
+	srv.handleEmitTrigger(rec, httptest.NewRequest(http.MethodPost, "/api/v1/triggers/emit", bytes.NewBufferString(`{"kind":"ci.done"}`)))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("emit without spine = %d; want 503", rec.Code)
+	}
+}
+
+func TestEmitTrigger_PublishesAndFires(t *testing.T) {
+	ns, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("native store: %v", err)
+	}
+	t.Cleanup(func() { _ = ns.Close() })
+
+	subs := trigger.NewMemorySubscriptionStore()
+	_ = subs.Create(context.Background(), trigger.Subscription{
+		ID: "custom", BotID: "review-pr", Mode: "direct", Enabled: true,
+		Match: trigger.Matcher{Sources: []trigger.Source{trigger.SourceCustom}, Kinds: []string{"ci.done"}},
+	})
+	rl := &recordingLauncher{}
+	coord := StartTriggerCoordinator(ns, subs, nil, rl, iterlog.New(iterlog.LevelError, nil))
+	if coord == nil {
+		t.Skip("trigger coordinator unavailable (fsnotify)")
+	}
+	t.Cleanup(coord.Close)
+
+	srv := New(Config{DisableAuth: true, NativeTrackerStore: ns, TriggerStore: subs}, iterlog.New(iterlog.LevelError, nil))
+	srv.triggerCoord = coord
+
+	rec := httptest.NewRecorder()
+	srv.handleEmitTrigger(rec, httptest.NewRequest(http.MethodPost, "/api/v1/triggers/emit",
+		bytes.NewBufferString(`{"kind":"ci.done","subject":{"id":"build-42"}}`)))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("emit status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if rl.n.Load() == 1 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("custom event did not fire the matching subscription (launches=%d)", rl.n.Load())
 }
