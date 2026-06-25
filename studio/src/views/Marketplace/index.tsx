@@ -17,6 +17,8 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { useUIStore } from "@/store/ui";
 import { toastError } from "@/lib/errorHints";
+import { useAuth } from "@/auth/AuthContext";
+import { useLocation } from "wouter";
 
 import { MarketplaceCard } from "./MarketplaceCard";
 import { MarketplaceDetail } from "./MarketplaceDetail";
@@ -35,6 +37,12 @@ import {
  *  so it only mounts when the server has the registry store wired. */
 export default function MarketplaceView() {
   const addToast = useUIStore((s) => s.addToast);
+  // Anonymous visitors (the public landing → /marketplace path) can browse +
+  // download but not install/submit/moderate. Those calls hit auth-gated
+  // endpoints, so we skip them entirely rather than swallow 401s.
+  const { status } = useAuth();
+  const anonymous = status === "anonymous";
+  const [, navigate] = useLocation();
   const [entries, setEntries] = useState<MarketplaceEntry[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState("");
@@ -56,31 +64,45 @@ export default function MarketplaceView() {
   // endpoint 403s / 404s otherwise, leaving the section hidden). Used by
   // the mutation handlers to refetch after an approve/reject/submit.
   const refreshPending = useCallback(async () => {
+    if (anonymous) {
+      setPending([]);
+      return;
+    }
     try {
       setPending(await listModerationQueue());
     } catch {
       setPending([]);
     }
-  }, []);
+  }, [anonymous]);
 
   // Initial load via a promise chain (no synchronous setState in the
-  // effect body) so the queue shows on first paint for admins.
+  // effect body) so the queue shows on first paint for admins. Skipped for
+  // anonymous viewers (the endpoint is auth-only).
   useEffect(() => {
+    // Anonymous viewers never load the (auth-only) moderation queue; the
+    // initial empty state already hides the section.
+    if (anonymous) return;
     listModerationQueue()
       .then(setPending)
       .catch(() => setPending([]));
-  }, []);
+  }, [anonymous]);
 
   // Best-effort: reconcile the registry against the bots already in the
   // workspace so cards can show Installed / Update. A failure (e.g. cloud
   // mode where install is disabled anyway) just leaves the map empty.
   const refreshInstalled = useCallback(async () => {
+    // listBots is auth-gated; an anonymous viewer has no workspace to
+    // reconcile against, so the install state is simply empty.
+    if (anonymous) {
+      setInstalled(new Map());
+      return;
+    }
     try {
       setInstalled(buildInstalledVersions(await listBots()));
     } catch {
       setInstalled(new Map());
     }
-  }, []);
+  }, [anonymous]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -227,13 +249,25 @@ export default function MarketplaceView() {
           </div>
         </section>
 
-        <MarketplaceSubmit
-          onSubmit={onSubmit}
-          onUploaded={() => void refresh()}
-          scopes={config?.scopes}
-          defaultScope={config?.default_scope}
-          moderated={config?.moderated}
-        />
+        {anonymous ? (
+          <section className="flex flex-wrap items-center justify-between gap-3 rounded border border-border-default bg-surface-2 p-4">
+            <span className="text-xs text-fg-muted">
+              Want to publish a bot? Sign in with GitHub to submit a repository —
+              submissions are reviewed before they appear here.
+            </span>
+            <Button variant="primary" size="sm" onClick={() => navigate("/")}>
+              Sign in to propose a bot
+            </Button>
+          </section>
+        ) : (
+          <MarketplaceSubmit
+            onSubmit={onSubmit}
+            onUploaded={() => void refresh()}
+            scopes={config?.scopes}
+            defaultScope={config?.default_scope}
+            moderated={config?.moderated}
+          />
+        )}
 
         {pending.length > 0 && (
           <ModerationQueue entries={pending} onApprove={onApprove} onReject={onReject} />
@@ -254,9 +288,19 @@ export default function MarketplaceView() {
           </div>
           {entries === null ? null : entries.length === 0 ? (
             <div className="rounded border border-border-default bg-surface-2 p-4 text-xs text-fg-muted">
-              Use the form above to submit a repository. Submission validates the
-              bundle and indexes its metadata; nothing is installed until you
-              click <span className="text-fg-default">Install</span> on its card.
+              {anonymous ? (
+                <>
+                  No bots published yet. Sign in to submit a repository — once
+                  reviewed, it appears here for anyone to download.
+                </>
+              ) : (
+                <>
+                  Use the form above to submit a repository. Submission validates
+                  the bundle and indexes its metadata; nothing is installed until
+                  you click <span className="text-fg-default">Install</span> on its
+                  card.
+                </>
+              )}
             </div>
           ) : (
             <ul className="grid grid-cols-1 gap-2 md:grid-cols-2">
@@ -270,6 +314,7 @@ export default function MarketplaceView() {
                   onUpdate={() => void onInstall(e, true)}
                   onUninstall={() => void onUninstall(e)}
                   onOpen={() => setActiveSlug(e.slug)}
+                  anonymous={anonymous}
                 />
               ))}
             </ul>
@@ -286,6 +331,7 @@ export default function MarketplaceView() {
           onUpdate={() => void onInstall(active, true)}
           onUninstall={() => void onUninstall(active)}
           onClose={() => setActiveSlug(null)}
+          anonymous={anonymous}
         />
       )}
     </div>

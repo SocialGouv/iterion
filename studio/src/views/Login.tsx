@@ -61,7 +61,10 @@ function ssoErrorNotice(
   }
 }
 
-export default function Login() {
+// SignInCard is the email/password + SSO sign-in panel, extracted from
+// Login so it can be composed both as a standalone full-screen page
+// (Login, below) and beneath the cloud marketing hero (CloudLanding).
+export function SignInCard() {
   const { signIn, status } = useAuth();
   const [, navigate] = useLocation();
   const serverInfo = useServerInfoStore((s) => s.info);
@@ -198,8 +201,7 @@ export default function Login() {
   const showRegister = providers?.signup_mode === "open" || invitation !== "";
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-surface-0 text-fg-default px-4">
-      <div className="w-full max-w-md bg-surface-1 border border-border-subtle rounded-lg p-8 shadow-[var(--shadow-md)]">
+    <div className="w-full max-w-md bg-surface-1 border border-border-subtle rounded-lg p-8 shadow-[var(--shadow-md)]">
         <h1 className="text-2xl font-semibold mb-2">
           {mode === "login" ? "Sign in to iterion" : "Create your account"}
         </h1>
@@ -410,6 +412,17 @@ export default function Login() {
           )}
         </div>
       </div>
+  );
+}
+
+// Login is the standalone full-screen sign-in page (non-cloud, and the
+// cloud fallback while server-info is still loading). In cloud mode the
+// AuthGate routes anonymous visitors to CloudLanding, which renders the
+// marketing hero above this same SignInCard.
+export default function Login() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-surface-0 text-fg-default px-4">
+      <SignInCard />
     </div>
   );
 }

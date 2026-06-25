@@ -235,6 +235,19 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// Seed the hosted marketplace from the image's bot catalog (bots/, or
+	// ITERION_MARKETPLACE_SEED_PATHS) so the public Marketplace view lists
+	// iterion's first-class bots out of the box. Best-effort + idempotent;
+	// user-submitted (git/upload) entries are never clobbered. No-op when
+	// the registry is disabled or the catalog isn't shipped in the image.
+	if stores.marketplace != nil {
+		if n, sErr := cli.SeedMarketplaceDefault(rootCtx, stores.marketplace, serverOpts.dir); sErr != nil {
+			logger.Warn("cloud: marketplace seed failed: %v", sErr)
+		} else if n > 0 {
+			logger.Info("cloud: seeded %d built-in bot(s) into the marketplace", n)
+		}
+	}
+
 	pub, err := cloudpublisher.New(cloudpublisher.Config{
 		NATS:           natsConn,
 		Store:          st,

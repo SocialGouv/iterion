@@ -200,6 +200,36 @@ func isPublicPath(path string) bool {
 	return false
 }
 
+// isPublicMarketplaceRead reports whether (method, path) is a marketplace
+// endpoint readable WITHOUT authentication: browse, detail, config, and
+// .botz download — all GET. The mutating + privileged endpoints
+// (POST /submit, POST|DELETE …/install, GET …/moderation) stay behind
+// auth. Detail (`…/bots/{slug}`) and download (`…/bots/{slug}/download`)
+// share the `/bots/` prefix; install is GET-excluded already but we keep
+// the suffix check explicit so the intent survives future edits.
+//
+// Kept separate from isPublicPath because that one is method-agnostic:
+// folding a method-aware rule into it would risk opening a POST by the
+// same path. The caller (authMiddleware) only bypasses auth for an
+// anonymous caller, so a signed-in viewer still gets org-scoped
+// visibility via requireAuth.
+func isPublicMarketplaceRead(method, path string) bool {
+	if method != http.MethodGet {
+		return false
+	}
+	switch path {
+	case "/api/v1/marketplace/bots", "/api/v1/marketplace/config":
+		return true
+	}
+	if strings.HasPrefix(path, "/api/v1/marketplace/bots/") {
+		if strings.HasSuffix(path, "/install") {
+			return false
+		}
+		return true
+	}
+	return false
+}
+
 // authMiddleware is the umbrella middleware applied to every
 // request. It bypasses auth for public paths, otherwise dispatches
 // to a pre-built authenticated handler so the per-request hot path
@@ -208,6 +238,17 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	authed := s.requireAuth(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if isPublicPath(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// Marketplace reads are public for anonymous callers (landing-page
+		// browse / .botz download). A request that carries a credential
+		// still goes through requireAuth so a signed-in viewer keeps
+		// org-scoped visibility; only the no-credential case bypasses.
+		// Dev mode (DisableAuth) keeps going through requireAuth so its
+		// synthesized super-admin identity is injected.
+		if !s.cfg.DisableAuth && extractBearer(r) == "" &&
+			isPublicMarketplaceRead(r.Method, r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}

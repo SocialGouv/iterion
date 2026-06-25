@@ -38,7 +38,7 @@ import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
 import GlobalCommandPalette from "@/components/shared/GlobalCommandPalette";
 import ToastContainer from "@/components/shared/Toast";
 import MissingCLIBanner from "@/components/MissingCLIBanner";
-import Login from "@/views/Login";
+import CloudLanding, { PublicTopBar } from "@/views/CloudLanding";
 import { useDesktop } from "@/hooks/useDesktop";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { useProjectSwitchListener } from "@/hooks/useProjectSwitchListener";
@@ -82,6 +82,7 @@ export default function App() {
 function AuthGate() {
   const { status, signOut } = useAuth();
   const [location] = useLocation();
+  const serverInfo = useServerInfoStore((s) => s.info);
 
   useEffect(() => {
     setUnauthorizedHandler(() => {
@@ -111,7 +112,22 @@ function AuthGate() {
           <Route path="/auth/forgot-password" component={ForgotPassword} />
           <Route path="/auth/reset" component={ResetPassword} />
           <Route path="/invitations/accept" component={AcceptInvitation} />
-          <Route component={Login} />
+          {/* Public marketplace — browsable + downloadable without an
+              account (submit/install gate behind sign-in). Outside the
+              AppShell, so it carries its own slim top bar. */}
+          {serverInfo?.marketplace_enabled && (
+            <Route path="/marketplace">
+              <div className="min-h-screen bg-surface-0 text-fg-default">
+                <PublicTopBar />
+                <ErrorBoundary area="Marketplace view">
+                  <MarketplaceView />
+                </ErrorBoundary>
+              </div>
+            </Route>
+          )}
+          {/* Catch-all: the cloud marketing landing (hero + sign-in card),
+              degrading to the plain sign-in page in non-cloud modes. */}
+          <Route component={CloudLanding} />
         </Switch>
       </Suspense>
     );

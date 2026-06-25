@@ -4,6 +4,7 @@ import { Cross2Icon } from "@radix-ui/react-icons";
 import type { MarketplaceEntry } from "@/api/marketplace";
 import type { InstalledState } from "./installState";
 import { InstallControls } from "./InstallControls";
+import { DownloadBotz } from "./DownloadBotz";
 
 interface Props {
   entry: MarketplaceEntry;
@@ -13,6 +14,8 @@ interface Props {
   onUpdate: () => void;
   onUninstall: () => void;
   onClose: () => void;
+  /** Anonymous viewers download the `.botz` instead of installing. */
+  anonymous?: boolean;
 }
 
 /** MarketplaceDetail is the right-side drawer that opens when the
@@ -30,6 +33,7 @@ export function MarketplaceDetail({
   onUpdate,
   onUninstall,
   onClose,
+  anonymous = false,
 }: Props) {
   const label = entry.display_name?.trim() || entry.name;
   const titleId = useId();
@@ -169,15 +173,27 @@ export function MarketplaceDetail({
 
         <footer className="flex items-center justify-between gap-2 border-t border-border-default px-4 py-3">
           <span className="text-caption text-fg-subtle">
-            Installs into <code className="text-fg-default">.botz/</code> — never run automatically.
+            {anonymous ? (
+              <>
+                Download the <code className="text-fg-default">.botz</code> bundle, or sign in to install.
+              </>
+            ) : (
+              <>
+                Installs into <code className="text-fg-default">.botz/</code> — never run automatically.
+              </>
+            )}
           </span>
-          <InstallControls
-            state={state}
-            installing={installing}
-            onInstall={onInstall}
-            onUpdate={onUpdate}
-            onUninstall={onUninstall}
-          />
+          {anonymous ? (
+            <DownloadBotz slug={entry.slug} />
+          ) : (
+            <InstallControls
+              state={state}
+              installing={installing}
+              onInstall={onInstall}
+              onUpdate={onUpdate}
+              onUninstall={onUninstall}
+            />
+          )}
         </footer>
       </aside>
     </div>

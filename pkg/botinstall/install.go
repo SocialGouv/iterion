@@ -221,6 +221,39 @@ func Remove(_ context.Context, opts Options) error {
 	return nil
 }
 
+// Fetch resolves opts.Source (a git URL or local path) to a validated bundle
+// directory and returns its path plus a cleanup func. Unlike Install it is
+// READ-ONLY: it never copies into a workspace, never regenerates a catalog,
+// and never mutates the caller's tree. It is the materialization step behind
+// the marketplace `.botz` download endpoint — the caller packs the returned
+// directory with bundle.PackDir, then invokes cleanup() to drop the temp
+// clone. For a local-path Source (e.g. a builtin entry's RepoURL) cleanup is
+// a no-op and the returned path is the source dir itself, so callers MUST NOT
+// mutate it.
+func Fetch(ctx context.Context, opts Options) (dir string, cleanup func(), err error) {
+	if strings.TrimSpace(opts.Source) == "" {
+		return "", func() {}, fmt.Errorf("a git URL or local path is required")
+	}
+	url, ref := splitSourceRef(opts.Source)
+	if opts.Ref != "" {
+		ref = opts.Ref
+	}
+	repoRoot, rcleanup, err := resolveRepoRoot(ctx, url, ref)
+	if err != nil {
+		return "", func() {}, err
+	}
+	botDir, err := selectBundleDir(repoRoot, opts.Path)
+	if err != nil {
+		rcleanup()
+		return "", func() {}, err
+	}
+	if _, err := bundle.OpenDir(botDir); err != nil {
+		rcleanup()
+		return "", func() {}, fmt.Errorf("not a valid bot bundle at %s: %w", botDir, err)
+	}
+	return botDir, rcleanup, nil
+}
+
 // splitSourceRef splits "url#ref" into (url, ref). A '#' whose prefix is an
 // existing local directory is treated as part of the path, not a ref marker.
 func splitSourceRef(src string) (url, ref string) {

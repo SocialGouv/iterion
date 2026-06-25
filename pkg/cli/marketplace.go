@@ -165,6 +165,21 @@ func marketplaceSeedPaths() []string {
 	return out
 }
 
+// SeedMarketplaceDefault seeds store from the default catalog roots
+// (ITERION_MARKETPLACE_SEED_PATHS, comma-separated, workspace-relative;
+// defaults to "bots") resolved under workdir. It is the cloud-server
+// counterpart to the inline seeding the studio command does, exported so
+// cmd/iterion can call it without duplicating the path resolution. A
+// "none"/"-" override (or an empty result) skips seeding and returns
+// (0, nil). Best-effort + idempotent — see SeedMarketplace.
+func SeedMarketplaceDefault(ctx context.Context, store marketplace.Store, workdir string) (int, error) {
+	paths := marketplaceSeedPaths()
+	if len(paths) == 0 {
+		return 0, nil
+	}
+	return SeedMarketplace(ctx, store, SeedOptions{Paths: paths, Workdir: workdir})
+}
+
 // SeedOptions configures SeedMarketplace.
 type SeedOptions struct {
 	// Paths are bundle source roots to index (e.g. ["bots"]). Resolved

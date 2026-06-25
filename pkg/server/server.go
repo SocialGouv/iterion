@@ -999,6 +999,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/marketplace/submit", s.handleMarketplaceSubmit)
 	s.mux.HandleFunc("GET /api/v1/marketplace/config", s.handleMarketplaceConfig)
 	s.mux.HandleFunc("GET /api/v1/marketplace/bots/{slug}", s.handleMarketplaceGet)
+	// Public .botz download (see isPublicMarketplaceRead) — packs the
+	// bundle on demand from its source coordinates.
+	s.mux.HandleFunc("GET /api/v1/marketplace/bots/{slug}/download", s.handleMarketplaceDownload)
 	s.mux.HandleFunc("POST /api/v1/marketplace/bots/{slug}/install", s.handleMarketplaceInstall)
 	s.mux.HandleFunc("DELETE /api/v1/marketplace/bots/{slug}/install", s.handleMarketplaceUninstall)
 	// Moderation (cloud-only; handlers 404 in local mode).

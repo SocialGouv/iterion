@@ -1,6 +1,7 @@
 import type { MarketplaceEntry } from "@/api/marketplace";
 import type { InstalledState } from "./installState";
 import { InstallControls } from "./InstallControls";
+import { DownloadBotz } from "./DownloadBotz";
 
 interface Props {
   entry: MarketplaceEntry;
@@ -10,6 +11,9 @@ interface Props {
   onUpdate: () => void;
   onUninstall: () => void;
   onOpen: () => void;
+  /** Anonymous (not signed-in) viewers can't install into a workspace —
+   *  they get a public `.botz` download instead. */
+  anonymous?: boolean;
 }
 
 /** MarketplaceCard renders one entry as a compact tile. The card is
@@ -24,6 +28,7 @@ export function MarketplaceCard({
   onUpdate,
   onUninstall,
   onOpen,
+  anonymous = false,
 }: Props) {
   const label = entry.display_name?.trim() || entry.name;
   return (
@@ -71,13 +76,17 @@ export function MarketplaceCard({
           {entry.repo_url}
           {entry.ref ? `#${entry.ref}` : ""}
         </span>
-        <InstallControls
-          state={state}
-          installing={installing}
-          onInstall={onInstall}
-          onUpdate={onUpdate}
-          onUninstall={onUninstall}
-        />
+        {anonymous ? (
+          <DownloadBotz slug={entry.slug} />
+        ) : (
+          <InstallControls
+            state={state}
+            installing={installing}
+            onInstall={onInstall}
+            onUpdate={onUpdate}
+            onUninstall={onUninstall}
+          />
+        )}
       </div>
     </li>
   );

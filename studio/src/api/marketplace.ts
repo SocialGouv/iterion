@@ -145,6 +145,14 @@ export function uninstallMarketplaceBot(slug: string): Promise<MarketplaceEntry>
   );
 }
 
+/** marketplaceDownloadUrl is the direct URL of a bot's packed `.botz`
+ *  bundle. The endpoint is public (no auth — see isPublicMarketplaceRead),
+ *  so this is meant to be used as an `<a href download>` target rather than
+ *  fetched via apiRequest (the response is an archive, not JSON). */
+export function marketplaceDownloadUrl(slug: string): string {
+  return `${BASE}/bots/${encodeURIComponent(slug)}/download`;
+}
+
 /** getMarketplaceConfig returns the registry's submit configuration
  *  (allowed scopes, default, whether moderated). */
 export function getMarketplaceConfig(): Promise<MarketplaceConfig> {
