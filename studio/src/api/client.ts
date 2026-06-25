@@ -3,12 +3,35 @@ import type { IterDocument, FileEntry, ListFilesResponse, SaveFileResponse } fro
 const BASE_URL = import.meta.env.VITE_API_URL ?? "/api";
 
 // onUnauthorized fires when the studio server returns 401 on any
-// /api/* call. The AuthProvider registers a handler that flips its
-// state to `anonymous` so the App swaps in the Login view.
+// /api/* call AND a token refresh couldn't recover the session. The
+// AuthProvider registers a handler that flips its state to `anonymous`
+// so the App swaps in the Login view.
 let onUnauthorized: (() => void) | null = null;
 
 export function setUnauthorizedHandler(fn: (() => void) | null) {
   onUnauthorized = fn;
+}
+
+// refreshInFlight dedupes concurrent refresh attempts: when several calls
+// 401 at once (the access JWT just expired), they all await the same single
+// POST /auth/refresh instead of racing — refresh rotates the refresh token,
+// so concurrent rotations would invalidate each other and bounce the user to
+// login. Resolves true when the session was renewed.
+let refreshInFlight: Promise<boolean> | null = null;
+
+function tryRefreshSession(): Promise<boolean> {
+  if (!refreshInFlight) {
+    refreshInFlight = fetch(`${BASE_URL}/auth/refresh`, {
+      method: "POST",
+      credentials: "include",
+    })
+      .then((r) => r.ok)
+      .catch(() => false)
+      .finally(() => {
+        refreshInFlight = null;
+      });
+  }
+  return refreshInFlight;
 }
 
 // ApiError is the typed error thrown by request/apiRequest when the
@@ -67,13 +90,28 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 // don't sit under the BASE_URL /api root. 204 No Content returns
 // `undefined as T` so DELETE-style endpoints don't trip over an empty
 // body.
-export async function apiRequest<T>(fullPath: string, init?: RequestInit): Promise<T> {
+export async function apiRequest<T>(
+  fullPath: string,
+  init?: RequestInit,
+  isRetry = false,
+): Promise<T> {
   const res = await fetch(fullPath, {
     credentials: "include",
     headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
     ...init,
   });
-  if (res.status === 401 && onUnauthorized) {
+  // 401 → the access JWT likely just expired. Try ONE silent refresh
+  // (POST /auth/refresh, rotating the long-lived refresh token) and replay
+  // the request; only sign out if the refresh itself fails. Without this the
+  // first call after the 15-minute access-token TTL bounces the user to
+  // login even though their refresh token is valid for weeks. Skip the retry
+  // for the refresh endpoint itself (avoid a loop) and when already retried.
+  if (res.status === 401 && !isRetry && !fullPath.endsWith("/auth/refresh")) {
+    if (await tryRefreshSession()) {
+      return apiRequest<T>(fullPath, init, true);
+    }
+    if (onUnauthorized) onUnauthorized();
+  } else if (res.status === 401 && onUnauthorized) {
     onUnauthorized();
   }
   if (!res.ok) {
