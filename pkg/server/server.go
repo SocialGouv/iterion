@@ -772,7 +772,16 @@ func (s *Server) ListenAndServe() error {
 		if s.cfg.Dispatcher != nil {
 			nudger = s.cfg.Dispatcher
 		}
-		s.triggerCoord = StartTriggerCoordinator(s.cfg.NativeTrackerStore, s.cfg.TriggerStore, nudger, nil, s.logger)
+		var launcher trigger.Launcher
+		if s.runs != nil {
+			launcher = newServiceLauncher(s.runs, s.effectivePaths(), s.logger)
+		}
+		s.triggerCoord = StartTriggerCoordinator(s.cfg.NativeTrackerStore, s.cfg.TriggerStore, nudger, launcher, s.logger)
+		// Wire the run-completion source onto the same bus so a finished /
+		// failed run can fire downstream trigger subscriptions.
+		if s.triggerCoord != nil && s.runs != nil {
+			s.runs.SetEventPublisher(s.triggerCoord.Bus())
+		}
 	}
 	// Sweep abandoned OIDC PendingAuth entries — a user who clicks
 	// "Sign in with Google" then closes the tab never returns to

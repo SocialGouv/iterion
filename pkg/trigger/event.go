@@ -48,6 +48,14 @@ const (
 	KindCardUpdated = "card.updated"
 )
 
+// Run lifecycle kinds (the Kind field when Source == SourceRun) — the
+// "runned by iterion" chaining source.
+const (
+	KindRunFinished  = "run.finished"
+	KindRunFailed    = "run.failed"
+	KindRunCancelled = "run.cancelled"
+)
+
 // Subject is the thing an event is about (a PR, an issue/card, a run, a repo).
 // Fields are best-effort per source; templating reads from here and Payload.
 type Subject struct {

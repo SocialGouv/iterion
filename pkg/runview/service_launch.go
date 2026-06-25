@@ -404,6 +404,10 @@ func (s *Service) spawnRun(
 			nctx := store.WithoutTenantFilter(context.Background())
 			s.completionNotifier.FireForRun(nctx, s.store, runID)
 		}
+		// Emit the run-completion trigger event ("runned by iterion"): a
+		// finished/failed/cancelled run can fire downstream runs (pipelines,
+		// on-failure escalation). No-op unless an event publisher is wired.
+		s.emitRunCompletion(runID, bodyErr)
 		// On cancel, the engine flipped run.Status to cancelled but didn't
 		// run finalizeWorktree (that's the success path only). If the run
 		// produced commits, RecoverFinalize promotes the worktree HEAD to

@@ -69,6 +69,42 @@ func TestEvaluatorRoutesByMode(t *testing.T) {
 	}
 }
 
+func TestEvaluatorRunCompletionChaining(t *testing.T) {
+	// "runned by iterion": when feature-dev finishes, fire review-pr.
+	st := seed(t, Subscription{
+		ID: "chain", BotID: "review-pr", Mode: "direct", Enabled: true,
+		Match: Matcher{
+			Sources: []Source{SourceRun},
+			Kinds:   []string{KindRunFinished},
+			Authors: []string{"feature-dev"}, // Actor carries the upstream bot id
+		},
+	})
+	fl, fb := &fakeLauncher{}, &fakeBoard{}
+	ev := NewEvaluator(st, WithLauncher(fl), WithBoardEffect(fb))
+
+	// A finished feature-dev run fires the chain.
+	_ = ev.Handle(context.Background(), Event{
+		Source: SourceRun, Kind: KindRunFinished, Actor: "feature-dev",
+		Subject: Subject{Type: "run", ID: "run-123", State: "finished"},
+	})
+	if len(fl.plans) != 1 || fl.plans[0].BotID != "review-pr" {
+		t.Fatalf("run-completion chain plans = %+v, want one review-pr", fl.plans)
+	}
+	if len(fb.plans) != 0 {
+		t.Fatalf("board effect should not fire on a run event: %+v", fb.plans)
+	}
+
+	// A FAILED run of the same bot must not fire this (finished-only) chain.
+	fl.plans = nil
+	_ = ev.Handle(context.Background(), Event{
+		Source: SourceRun, Kind: KindRunFailed, Actor: "feature-dev",
+		Subject: Subject{Type: "run", ID: "run-124", State: "failed"},
+	})
+	if len(fl.plans) != 0 {
+		t.Fatalf("failed run should not fire a finished-only chain: %+v", fl.plans)
+	}
+}
+
 func TestEvaluatorSkipsWhenEffectMissing(t *testing.T) {
 	st := seed(t, Subscription{ID: "b", BotID: "x", Mode: "board", Enabled: true, Match: Matcher{}})
 	ev := NewEvaluator(st) // no board effect wired

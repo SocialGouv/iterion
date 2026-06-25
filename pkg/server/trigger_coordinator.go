@@ -55,6 +55,16 @@ func StartTriggerCoordinator(ns *native.Store, subs trigger.SubscriptionStore, n
 	return &TriggerCoordinator{bus: bus, source: src, cancelSub: cancelSub, logger: logger}
 }
 
+// Bus returns the coordinator's event bus so other producers (the run
+// service's run-completion source) publish onto the same bus the evaluator
+// consumes. Returns nil for a nil coordinator.
+func (t *TriggerCoordinator) Bus() *eventbus.InProcBus {
+	if t == nil {
+		return nil
+	}
+	return t.bus
+}
+
 // Close tears down the board source and unsubscribes the evaluator.
 func (t *TriggerCoordinator) Close() {
 	if t == nil {

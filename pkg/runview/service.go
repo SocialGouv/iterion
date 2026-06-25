@@ -19,6 +19,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
 // LaunchSpec describes a workflow invocation. Mirrors the inputs of
@@ -300,6 +301,14 @@ type Service struct {
 	// in-process run carrying a callback URL reaches a terminal state.
 	// Default-constructed in NewService; never nil for in-process runs.
 	completionNotifier *notify.Notifier
+
+	// eventPublisher, when set, receives a trigger.Event on every run
+	// terminal state (run.finished / run.failed / run.cancelled) — the
+	// "runned by iterion" run-completion source feeding the trigger spine.
+	// nil disables emission (the default). Wired post-construction via
+	// SetEventPublisher by the server so it shares the trigger
+	// coordinator's event bus.
+	eventPublisher trigger.Publisher
 
 	// injectedStore captures the WithStore option so NewService can
 	// honour a caller-supplied store. nil → fall back to the
@@ -628,6 +637,13 @@ func (s *Service) Broker() *EventBroker { return s.broker }
 // daily cap is disabled. The HTTP layer uses it to read status and apply
 // per-day overrides.
 func (s *Service) DailyCap() *runtime.DailyCapGuard { return s.dailyCap }
+
+// SetEventPublisher wires the run-completion event source: every terminal run
+// emits a trigger.Event onto p. Called once by the server after the trigger
+// coordinator is up so runs publish onto the same bus the evaluator consumes.
+// Passing nil disables emission. Safe to call before Serve; not safe to call
+// concurrently with active runs (set it once at wiring time).
+func (s *Service) SetEventPublisher(p trigger.Publisher) { s.eventPublisher = p }
 
 // envDailyCostCap parses ITERION_MAX_COST_PER_DAY_USD as a float dollar
 // amount, returning 0 (disabled) when unset or unparseable.

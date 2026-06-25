@@ -1,10 +1,12 @@
 # ADR-046 — Event-driven runs: a unified trigger spine (board events first)
 
-Status: **accepted (phase 1)** (2026-06-25) — the spine (`pkg/trigger` +
-`pkg/eventbus`) and the first source (**iterion board events**) ship
-end-to-end, local + cloud-ready. Launch-path convergence, the studio
-Automations view, forge-derived provisioning, and the remaining sources
-(run-completion, scheduled/cloudsched, git-forge refactor, custom ingress)
+Status: **accepted (phases 1–2)** (2026-06-25) — the spine (`pkg/trigger` +
+`pkg/eventbus`), the first source (**iterion board events**, board-mode
+promote), a **direct-mode launcher** over `runview.Service`, and the second
+source (**run-completion chaining**, `run.finished`/`failed`/`cancelled`)
+ship end-to-end, local + cloud-ready. The studio Automations view,
+forge-derived provisioning, dispatcher `EngineRunner` convergence, and the
+remaining sources (scheduled/cloudsched, git-forge refactor, custom ingress)
 are designed here and staged as follow-ons.
 
 ## Context
@@ -108,12 +110,18 @@ adding a `board:` block — zero engine/CLI edit). REST CRUD at
 Each later source = "a source adapter that publishes a `trigger.Event` + an
 effect choice (promote-card vs direct launch)":
 
-- **Launch-path convergence** — `serviceLauncher` over `runview.Service` + four
-  per-launch `LaunchSpec` fields (`WorkDir`, `ExtraObservers`, `DailyCap`,
-  `SourceRef`) to preserve the dispatcher's workspace/stall/cap/retry
-  invariants; converge only the *execution step* of `EngineRunner.Dispatch`.
-- **Run-completion chaining** — emit `run.finished`/`run.failed` beside
-  `completionNotifier.FireForRun`; direct-launch effect.
+- **Launch-path convergence** — DONE for the direct path: `serviceLauncher`
+  (`pkg/server/trigger_launcher.go`) wraps `runview.Service.Launch`, resolving
+  the bot via `botregistry.ResolveBotPath`. STAGED: routing `RunRun` and the
+  dispatcher's `EngineRunner.Dispatch` *execution step* through it too, which
+  needs four per-launch `LaunchSpec` additions (`WorkDir`, `ExtraObservers`,
+  `DailyCap`, `SourceRef`) to preserve the dispatcher's workspace/stall/cap/
+  retry invariants.
+- **Run-completion chaining** — DONE: `runview.Service.emitRunCompletion`
+  publishes `run.finished`/`run.failed`/`run.cancelled` onto the shared bus
+  (wired via `SetEventPublisher(coord.Bus())`); a direct-mode subscription
+  matching `Source: run` fires the downstream bot. The `Actor` carries the
+  upstream bot id so a chain can key on "after feature-dev finishes".
 - **Scheduled** — wire `cloudsched`/host-crontab as a timer source emitting
   `SourceSchedule`; fold `ScheduledBot` into `Subscription{Invocation: schedule}`.
 - **Git-forge** — refactor `webhooks_*.go` to publish `SourceForge` after
