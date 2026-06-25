@@ -320,6 +320,10 @@ func oneLine(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// sprintAny renders any decoded-JSON value for inclusion in a work-product
+// blob handed to the quality judges.
+func sprintAny(v interface{}) string { return fmt.Sprintf("%v", v) }
+
 func truthyEnv(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
 	case "1", "true", "yes", "on":
