@@ -37,14 +37,21 @@ func peekJSONField(r *http.Request, field string) string {
 	return v
 }
 
+// authRateLimiterBackend is the token-bucket rate limiter. The in-memory impl
+// (authRateLimiter) is per-pod (with replicas the effective limit is N× — an
+// acceptable soft defense); the Valkey impl (valkey_stores.go) makes it exact
+// across replicas via an atomic Lua token-bucket.
+type authRateLimiterBackend interface {
+	allow(key string, cfg authBucketCfg) (bool, time.Duration)
+}
+
 // authRateLimiter enforces a per-key token-bucket rate limit on the
 // `/api/auth/*` endpoints. Buckets are keyed by client IP (login,
 // register, refresh) and additionally by email for login (defence
 // against distributed brute-force against one account).
 //
-// In-process by design: the local-mode studio doesn't have Redis,
-// the cloud-mode runner pods stay cheap and the LRU cap bounds
-// memory under any abuse pattern. (F-C1)
+// In-process impl: the local-mode studio doesn't have Redis; the LRU cap
+// bounds memory under any abuse pattern. (F-C1)
 type authRateLimiter struct {
 	mu        sync.Mutex
 	buckets   map[string]*authBucket

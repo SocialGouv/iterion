@@ -28,6 +28,15 @@ func loadEnv(cfg *Config) error {
 		return err
 	}
 
+	// Redis/Valkey — distributed ephemeral state (Sentinel HA or single node).
+	lookupString("ITERION_REDIS_URL", &cfg.Redis.URL)
+	if v, ok := lookup("ITERION_REDIS_SENTINEL_ADDRS"); ok {
+		cfg.Redis.SentinelAddrs = splitCSV(v)
+	}
+	lookupString("ITERION_REDIS_MASTER_NAME", &cfg.Redis.MasterName)
+	lookupString("ITERION_REDIS_PASSWORD", &cfg.Redis.Password)
+	lookupString("ITERION_REDIS_SENTINEL_PASSWORD", &cfg.Redis.SentinelPassword)
+
 	lookupString("ITERION_S3_ENDPOINT", &cfg.S3.Endpoint)
 	lookupString("ITERION_S3_REGION", &cfg.S3.Region)
 	lookupString("ITERION_S3_BUCKET", &cfg.S3.Bucket)

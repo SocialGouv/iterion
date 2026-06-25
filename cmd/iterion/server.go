@@ -41,6 +41,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/server"
 	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
+	"github.com/SocialGouv/iterion/pkg/valkey"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
@@ -310,6 +311,30 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		examplesDir = botsPaths[0]
 	}
 
+	// Valkey/Redis for distributed ephemeral state (forge CSRF, board-MCP
+	// tokens, auth rate-limit). Required when running >1 replica; nil → the
+	// in-memory stores. A configured-but-unreachable Valkey fails startup.
+	var redisClient *valkey.Client
+	if cfg.Redis.Enabled() {
+		redisClient, err = valkey.New(valkey.Options{
+			URL:              cfg.Redis.URL,
+			SentinelAddrs:    cfg.Redis.SentinelAddrs,
+			MasterName:       cfg.Redis.MasterName,
+			Password:         cfg.Redis.Password,
+			SentinelPassword: cfg.Redis.SentinelPassword,
+		})
+		if err != nil {
+			return fmt.Errorf("server: valkey: %w", err)
+		}
+		pingCtx, cancelPing := context.WithTimeout(rootCtx, 5*time.Second)
+		if err := redisClient.Ping(pingCtx); err != nil {
+			cancelPing()
+			return fmt.Errorf("server: valkey unreachable: %w", err)
+		}
+		cancelPing()
+		logger.Info("valkey: connected (distributed state enabled)")
+	}
+
 	srv := server.New(server.Config{
 		Port:                   serverOpts.port,
 		Bind:                   serverOpts.bind,
@@ -344,6 +369,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		OrgDefaults:            orgLimitDefaultsFromEnv(),
 		Audit:                  stores.audit,
 		Marketplace:            stores.marketplace,
+		Redis:                  redisClient,
 		PATs:                   stores.pat,
 		PATMaxTTL:              patMaxTTLFromEnv(logger),
 		Queue:                  natsConn,
@@ -369,6 +395,12 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			"mongo": st.Ping,
 			"nats":  natsConn.Ping,
 			"s3":    bc.Ping,
+			"valkey": func(ctx context.Context) error {
+				if redisClient == nil {
+					return nil // not configured → not a dependency
+				}
+				return redisClient.Ping(ctx)
+			},
 		},
 	}, logger)
 

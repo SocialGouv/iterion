@@ -62,9 +62,17 @@ type forgePending struct {
 	IssuedAt     time.Time
 }
 
-// forgeStateStore is a small TTL-bounded in-memory store for forgePending,
-// mirroring oidc.MemoryStateStore. Single-replica today; a Mongo-backed
-// store can replace it for HA without touching the handlers.
+// forgeStateBackend stores forgePending CSRF state keyed by State, with a
+// one-time `take`. The in-memory impl is single-replica; the Valkey impl
+// (forge_state_valkey.go) shares it across replicas so the OAuth/manifest
+// /start and /callback can land on different pods.
+type forgeStateBackend interface {
+	put(p forgePending)
+	take(state string) (forgePending, bool)
+}
+
+// forgeStateStore is the TTL-bounded in-memory backend, mirroring
+// oidc.MemoryStateStore. Used in local/desktop and single-replica deployments.
 type forgeStateStore struct {
 	mu  sync.Mutex
 	m   map[string]forgePending

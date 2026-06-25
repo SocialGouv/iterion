@@ -41,6 +41,18 @@ type boardMCPGrant struct {
 	ExpiresAt    time.Time
 }
 
+// BoardMCPTokenStore is the per-run board-MCP token registry. The in-memory
+// *BoardMCPTokenRegistry is single-replica; the Valkey impl
+// (valkey_stores.go) shares tokens across replicas, since the sandboxed bot's
+// HTTP call to /api/v1/mcp/board is load-balanced to any server pod while the
+// token was registered by the runtime elsewhere. Register/Revoke are called
+// by the runtime; lookup by the HTTP handler.
+type BoardMCPTokenStore interface {
+	Register(token string, caps []string)
+	Revoke(token string)
+	lookup(token string) (boardMCPGrant, bool)
+}
+
 // NewBoardMCPTokenRegistry returns an empty registry.
 func NewBoardMCPTokenRegistry() *BoardMCPTokenRegistry {
 	return &BoardMCPTokenRegistry{
@@ -129,7 +141,7 @@ func (r *BoardMCPTokenRegistry) sweepLocked() {
 // runtime at run-start), gates each tool by the granted capability set,
 // and dispatches into boardops. The endpoint speaks line-delimited JSON-RPC
 // over POST — one request per body, one response.
-func RegisterBoardMCPRoutes(mux *http.ServeMux, prefix string, store *native.Store, reg *BoardMCPTokenRegistry) {
+func RegisterBoardMCPRoutes(mux *http.ServeMux, prefix string, store *native.Store, reg BoardMCPTokenStore) {
 	h := &boardMCPHandler{store: store, registry: reg}
 	p := strings.TrimRight(prefix, "/")
 	mux.HandleFunc("POST "+p, h.serve)
@@ -154,7 +166,7 @@ func boardMCPMethodNotAllowed(w http.ResponseWriter, _ *http.Request) {
 
 type boardMCPHandler struct {
 	store    *native.Store
-	registry *BoardMCPTokenRegistry
+	registry BoardMCPTokenStore
 }
 
 type mcpReq struct {

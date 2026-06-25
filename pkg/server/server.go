@@ -53,6 +53,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
+	"github.com/SocialGouv/iterion/pkg/valkey"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/gitlab"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
@@ -378,6 +379,12 @@ type Config struct {
 	// JSON-file store (marketplace.NewJSONStore); cloud mode passes the
 	// Mongo store (marketplace.NewMongoStore).
 	Marketplace marketplace.Store
+
+	// Redis is the Valkey/Redis client for distributing ephemeral state
+	// (forge CSRF state, board-MCP run tokens, auth rate-limit) across
+	// replicas. Nil → the in-memory stores are used (local/desktop /
+	// single-replica).
+	Redis *valkey.Client
 }
 
 // ReadinessCheck is the contract /readyz invokes on each external
@@ -414,7 +421,7 @@ type Server struct {
 	statsCache *runStatsCache
 
 	authSvc           *auth.Service
-	authLimiter       *authRateLimiter
+	authLimiter       authRateLimiterBackend
 	signer            *auth.JWTSigner
 	oidcRegistry      *oidc.Registry
 	oidcStates        oidc.StateStore
@@ -436,7 +443,7 @@ type Server struct {
 	forgeConnections  forge.ConnectionStore
 	forgeIntegrations forge.RepoIntegrationStore
 	forgeOrchestrator *forge.Orchestrator
-	forgeStates       *forgeStateStore
+	forgeStates       forgeStateBackend
 	forgeOAuthApps    forge.OAuthAppStore
 	forgeGitHubApp    ForgeGitHubAppConfig
 	orgSSO            orgsso.Store
@@ -500,19 +507,23 @@ type Server struct {
 	// and calls Register/Revoke around each run. Non-nil iff
 	// cfg.NativeTrackerStore is non-nil (handler is only mounted when
 	// the board exists).
-	boardMCPTokens *BoardMCPTokenRegistry
+	boardMCPTokens BoardMCPTokenStore
 
 	// marketplace is the hosted bot registry store. Mirrors
 	// Config.Marketplace; nil disables every /api/v1/marketplace/*
 	// endpoint (and the studio's Marketplace view via
 	// MarketplaceEnabled).
 	marketplace marketplace.Store
+
+	// redis is the optional Valkey client backing the distributed state
+	// stores (see Config.Redis).
+	redis *valkey.Client
 }
 
 // BoardMCPTokens returns the per-run token registry the runtime uses
 // to authorize sandboxed bots talking to the board MCP HTTP endpoint.
 // Returns nil when the server was built without a NativeTrackerStore.
-func (s *Server) BoardMCPTokens() *BoardMCPTokenRegistry {
+func (s *Server) BoardMCPTokens() BoardMCPTokenStore {
 	return s.boardMCPTokens
 }
 
@@ -608,16 +619,35 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		browserSessions:   cfg.BrowserRegistry,
 		statsCache:        newRunStatsCache(),
 		marketplace:       cfg.Marketplace,
+		redis:             cfg.Redis,
 	}
 	if cfg.NativeTrackerStore != nil {
-		s.boardMCPTokens = NewBoardMCPTokenRegistry()
+		// Valkey-backed token registry when a distributed backend is wired,
+		// else the in-memory one (replaced transparently — same interface).
+		if s.redis != nil {
+			s.boardMCPTokens = newValkeyBoardMCPTokenStore(s.redis.Redis())
+		} else {
+			s.boardMCPTokens = NewBoardMCPTokenRegistry()
+		}
+	}
+	// Auth rate limiter — eagerly built so the lazy `if s.authLimiter == nil`
+	// init sites become no-ops. Valkey-backed (exact across replicas) when a
+	// distributed backend is wired, else per-pod in-memory.
+	if s.redis != nil {
+		s.authLimiter = newValkeyAuthRateLimiter(s.redis.Redis())
+	} else {
+		s.authLimiter = newAuthRateLimiter()
 	}
 	// Outbound forge integrations: build the orchestrator + OAuth state
 	// store when the full dependency set is present. The orchestrator reuses
 	// the existing webhook config + generic secret stores (the managed
 	// forge_token rides the unchanged binding/run path).
 	if s.forgeConnections != nil && s.forgeIntegrations != nil && s.webhookConfigs != nil && s.genericSecrets != nil && s.sealer != nil {
-		s.forgeStates = newForgeStateStore(10 * time.Minute)
+		if s.redis != nil {
+			s.forgeStates = newValkeyForgeStateStore(s.redis.Redis(), 10*time.Minute)
+		} else {
+			s.forgeStates = newForgeStateStore(10 * time.Minute)
+		}
 		s.forgeOrchestrator = &forge.Orchestrator{
 			Connections:  s.forgeConnections,
 			Integrations: s.forgeIntegrations,

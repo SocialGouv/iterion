@@ -8,6 +8,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -42,6 +43,7 @@ type Config struct {
 
 	NATS    NATSConfig    `yaml:"nats"`
 	Mongo   MongoConfig   `yaml:"mongo"`
+	Redis   RedisConfig   `yaml:"redis"`
 	S3      S3Config      `yaml:"s3"`
 	Runner  RunnerConfig  `yaml:"runner"`
 	Server  ServerConfig  `yaml:"server"`
@@ -50,6 +52,35 @@ type Config struct {
 	Sandbox SandboxConfig `yaml:"sandbox"`
 	Auth    AuthConfig    `yaml:"auth"`
 	Alerts  AlertsConfig  `yaml:"alerts"`
+}
+
+// RedisConfig points the server at a Valkey/Redis used to share ephemeral
+// state across replicas (forge OAuth/CSRF state, board-MCP run tokens, auth
+// rate-limit buckets). Two connection modes:
+//   - Sentinel HA: SentinelAddrs + MasterName (the cloud/prod posture).
+//   - Single node: URL (redis://host:port), for dev/local.
+//
+// When NEITHER SentinelAddrs nor URL is set, the server falls back to the
+// in-process in-memory stores (single-replica / `iterion studio`).
+type RedisConfig struct {
+	// URL is a single-node connection string (redis://[:pass@]host:port[/db]).
+	URL string `yaml:"url"`
+	// SentinelAddrs is a comma-joined list of host:port sentinel endpoints;
+	// when set (with MasterName) the client runs in HA failover mode.
+	SentinelAddrs []string `yaml:"sentinel_addrs"`
+	// MasterName is the Sentinel monitored master name (required with
+	// SentinelAddrs).
+	MasterName string `yaml:"master_name"`
+	// Password authenticates to the Valkey data nodes.
+	Password string `yaml:"password"`
+	// SentinelPassword authenticates to the sentinels (optional; defaults to
+	// Password when empty).
+	SentinelPassword string `yaml:"sentinel_password"`
+}
+
+// Enabled reports whether a distributed Redis/Valkey backend is configured.
+func (r RedisConfig) Enabled() bool {
+	return len(r.SentinelAddrs) > 0 || strings.TrimSpace(r.URL) != ""
 }
 
 // AlertsConfig configures run-health alerting (stall, budget, failure).
