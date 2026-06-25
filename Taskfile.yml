@@ -227,6 +227,113 @@ tasks:
       - task: test:live:feature-dev-real
       - task: test:live:secured-renovacy-real
 
+  # ---- Per-bot / per-feature live e2e targets (real LLM cost; see docs/live-e2e-coverage.md) ----
+
+  test:live:bot:review-pr:
+    desc: 'Live e2e for review-pr — read-only diff review (real cost). See docs/live-e2e-coverage.md.'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Bot_ReviewPR$' -timeout 45m ./e2e/...
+
+  test:live:bot:whats-next:
+    desc: 'Live e2e for whats-next — roadmap + board issues (auto-resumed, isolated store) (real cost). See docs/live-e2e-coverage.md.'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Bot_WhatsNext$' -timeout 55m ./e2e/...
+
+  test:live:bot:docs-refresh:
+    desc: 'Live e2e for docs-refresh — doc/code drift fix loop (real cost). See docs/live-e2e-coverage.md.'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Bot_DocsRefresh$' -timeout 60m ./e2e/...
+
+  test:live:bot:adr-cartograph:
+    desc: 'Live e2e for adr-cartograph — author ADRs (isolated store) (real cost). See docs/live-e2e-coverage.md.'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Bot_AdrCartograph$' -timeout 60m ./e2e/...
+
+  test:live:bot:evolve:
+    desc: 'Live e2e for evolve — vision + backlog (auto-resumed, isolated store) (real cost). See docs/live-e2e-coverage.md.'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Bot_Evolve$' -timeout 60m ./e2e/...
+
+  test:live:bot:revi-converse:
+    desc: 'Live e2e for revi-converse — answer a question on a diff (no forge) (real cost). See docs/live-e2e-coverage.md.'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Bot_ReviConverse$' -timeout 30m ./e2e/...
+
+  test:live:bot:rgaa-audit:
+    desc: 'Live e2e for rgaa-audit — RGAA a11y audit (board disabled) (real cost). See docs/live-e2e-coverage.md.'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Bot_RgaaAudit$' -timeout 45m ./e2e/...
+
+  test:live:bot:branch-improve-loop:
+    desc: 'Live e2e for branch-improve-loop — fix a branch diff; docker+sandbox-full (real cost). See docs/live-e2e-coverage.md.'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Bot_BranchImproveLoop$' -timeout 100m ./e2e/...
+
+  test:live:bot:feature-gap-fill:
+    desc: 'Live e2e for feature-gap-fill — close a gap_spec; docker+sandbox-full (real cost). See docs/live-e2e-coverage.md.'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Bot_FeatureGapFill$' -timeout 100m ./e2e/...
+
+  test:live:bot:test-coverage:
+    desc: 'Live e2e for test-coverage — add tests; docker+sandbox-full (real cost). See docs/live-e2e-coverage.md.'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Bot_TestCoverage$' -timeout 100m ./e2e/...
+
+  test:live:bot:bmady:
+    desc: 'Live e2e for bmady — BMAD pipeline (auto-resumed gates) (real cost). See docs/live-e2e-coverage.md.'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Bot_Bmady$' -timeout 75m ./e2e/...
+
+  test:live:bot:devbox-setup:
+    desc: 'Live e2e for devbox-setup — author devbox.json; docker+sandbox-sec (real cost). See docs/live-e2e-coverage.md.'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Bot_DevboxSetup$' -timeout 70m ./e2e/...
+
+  test:live:bot:adr-rechallenge:
+    desc: 'Live e2e for adr-rechallenge — re-challenge an ADR (auto-resumed) (real cost). See docs/live-e2e-coverage.md.'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Bot_AdrRechallenge$' -timeout 45m ./e2e/...
+
+  test:live:bot:dep-update-guard:
+    desc: 'Live e2e for dep-update-guard — vet a Dependabot bump; docker+sandbox-sec (real cost). See docs/live-e2e-coverage.md.'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Bot_DepUpdateGuard$' -timeout 70m ./e2e/...
+
+  test:live:bot:sec-audit-source:
+    desc: 'Live e2e for sec-audit-source — SAST; docker+sandbox-sec (real cost). See docs/live-e2e-coverage.md.'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Bot_SecAuditSource$' -timeout 75m ./e2e/...
+
+  test:live:bot:sec-audit-deps:
+    desc: 'Live e2e for sec-audit-deps — SCA; docker+sandbox-sec (real cost). See docs/live-e2e-coverage.md.'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Bot_SecAuditDeps$' -timeout 70m ./e2e/...
+
+  test:live:feat:cursors:
+    desc: 'Live e2e for the cursor calibration dials feature (real cost).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_Cursors$' -timeout 15m ./e2e/...
+
+  test:live:feat:ultracode:
+    desc: 'Live e2e for the reasoning_effort: ultracode on opus-4-8 feature (real cost).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_Ultracode$' -timeout 30m ./e2e/...
+
+  test:live:feat:supervisor:
+    desc: 'Live e2e for the concurrent watchdog supervisor feature (real cost).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_Supervisor$' -timeout 30m ./e2e/...
+
+  test:live:bots:new:
+    desc: 'Run ALL 16 new per-bot live e2e tests sequentially (very slow + very costly).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Bot_' -timeout 8h ./e2e/...
+
+  test:live:feats:all:
+    desc: 'Run all TestLive_Feat_* feature live e2e tests (real cost).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_' -timeout 2h ./e2e/...
+
   test:bundle:
     desc: Bundle pack/open/compile integration tests (no live)
     cmds:

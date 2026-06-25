@@ -137,9 +137,9 @@ Status legend: ✅ implemented · 🚧 planned.
 | Node types / routers / await / session modes | `TestLive_Full_ExhaustiveDSLCoverage` | ✅ |
 | claw backend + tools + MCP + vision + long-context | `TestLive_Lite_Claw*`, `TestLive_ClawToolCoverage` | ✅ |
 | Permission gate (ask/deny/off) | `TestLive_Feat_Permission_*` | 🚧 |
-| Ultracode | `TestLive_Feat_Ultracode` | 🚧 |
-| Supervisors | `TestLive_Feat_Supervisor` | 🚧 |
-| Cursors | `TestLive_Feat_Cursors` | 🚧 |
+| Ultracode | `TestLive_Feat_Ultracode` | ✅ |
+| Supervisors | `TestLive_Feat_Supervisor` | ✅ |
+| Cursors | `TestLive_Feat_Cursors` | ✅ |
 | Board capabilities | `TestLive_Feat_BoardCaps` | 🚧 |
 | rtk savings | `TestLive_Feat_Rtk` | 🚧 |
 | Verified Action recovery | `TestLive_Feat_VerifiedAction` | 🚧 |
