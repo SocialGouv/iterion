@@ -22,6 +22,13 @@ spec:
       labels:
         {{- include "iterion.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: runner
+      annotations:
+        # Roll the runner when the rendered config changes, mirroring the
+        # server deployment (the runner shares the same configmap envFrom).
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.runner.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
       serviceAccountName: {{ include "iterion.serviceAccountName" . }}
       securityContext:

@@ -43,6 +43,10 @@ data:
   ITERION_ACCESS_TTL: {{ .Values.config.auth.accessTtl | quote }}
   ITERION_REFRESH_TTL: {{ .Values.config.auth.refreshTtl | quote }}
   ITERION_SIGNUP_MODE: {{ .Values.config.auth.signupMode | quote }}
+  {{- if .Values.config.marketplace.enabled }}
+  # --- Hosted bot marketplace (public browse/download + submit) ----
+  ITERION_CLOUD_MARKETPLACE: "true"
+  {{- end }}
   {{- with .Values.config.smtp.host }}
   # --- SMTP (transactional email) ---------------------------------
   ITERION_SMTP_HOST: {{ . | quote }}

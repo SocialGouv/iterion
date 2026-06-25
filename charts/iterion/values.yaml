@@ -146,6 +146,12 @@ config:
     concurrency: 1
     heartbeat: 20s
     lockTtl: 60s
+  # --- Hosted bot marketplace (cloud) ------------------------------
+  # Enables the hosted bot registry: public browse + .botz download +
+  # authenticated submit/moderation, and seeds the image's bots/ catalog
+  # as built-in entries at startup. Maps to ITERION_CLOUD_MARKETPLACE.
+  marketplace:
+    enabled: false
   # --- Auth disable (DEV / smoke tests ONLY) -----------------------
   # When true, the server synthesizes a super-admin identity for
   # every request and skips JWT verification — no login flow needed.
