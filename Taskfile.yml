@@ -103,6 +103,16 @@ tasks:
     cmds:
       - go test -tags goldens_record -count=1 -run 'TestRecordGoldens' -timeout 30m ./pkg/botreplay/...
 
+  test:live:quality:unit:
+    desc: Run the live-e2e quality snapshot-engine unit tests (deterministic, no API keys, no cost). See docs/live-e2e-coverage.md.
+    cmds:
+      - go test -count=1 ./pkg/benchmark/quality/...
+
+  test:live:compile:
+    desc: Compile the live e2e test binary without running anything (build-gate the -tags live suite for free).
+    cmds:
+      - go test -tags live -count=1 -run '^$' ./e2e/...
+
   test:live:
     desc: Run all live e2e tests (requires claude CLI + ANTHROPIC_API_KEY + OPENAI_API_KEY)
     cmds:

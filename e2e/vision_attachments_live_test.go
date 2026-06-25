@@ -88,7 +88,7 @@ func TestLive_VisionAttachments(t *testing.T) {
 
 	reg := model.NewRegistry()
 	logger := iterlog.New(iterlog.LevelDebug, os.Stderr)
-	hooks := model.NewStoreEventHooks(context.Background(), s, runID, logger)
+	hooks := model.NewStoreEventHooks(context.Background(), s, runID, logger, nil)
 	backendReg := delegate.DefaultRegistry(logger)
 	backendReg.Register(delegate.BackendClaw, model.NewClawBackend(reg, hooks, model.RetryPolicy{}))
 	executor := model.NewClawExecutor(reg, wf,
