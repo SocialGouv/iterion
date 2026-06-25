@@ -235,6 +235,19 @@
   --color-persona-rose: #fb7185;
   --color-persona-orange: #fb923c;
   --color-persona-lime: #a3e635;
+  /* Syntax-highlighting palette (highlight.js token classes, applied via
+   * the `.prose-iterion .hljs-*` block below). GitHub-dark-ish hues, tuned
+   * to read on the surface-2 code-block background. The light theme
+   * re-assigns these in its own block. */
+  --hljs-comment: #8b949e;
+  --hljs-keyword: #ff7b72;
+  --hljs-string: #a5d6ff;
+  --hljs-number: #79c0ff;
+  --hljs-title: #d2a8ff;
+  --hljs-type: #ffa657;
+  --hljs-variable: #79c0ff;
+  --hljs-tag: #7ee787;
+  --hljs-meta: #8b949e;
   color-scheme: dark;
 }
 
@@ -327,6 +340,17 @@
   --color-scrim-modal: rgb(0 0 0 / 0.45);
   --color-scrim-popover: rgb(0 0 0 / 0.32);
   --color-scrim-soft: rgb(0 0 0 / 0.16);
+  /* Syntax-highlighting palette in light mode (GitHub-light hues, AA on
+   * the surface-2 code-block background). */
+  --hljs-comment: #6e7781;
+  --hljs-keyword: #cf222e;
+  --hljs-string: #0a3069;
+  --hljs-number: #0550ae;
+  --hljs-title: #8250df;
+  --hljs-type: #953800;
+  --hljs-variable: #0550ae;
+  --hljs-tag: #116329;
+  --hljs-meta: #6e7781;
   color-scheme: light;
 }
 
@@ -356,6 +380,70 @@ select:focus:not(:focus-visible) {
 .ir-node-selected {
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
+}
+
+/* =============================================================================
+ * Markdown code syntax highlighting (rehype-highlight / highlight.js)
+ * Token colours come from the `--hljs-*` custom properties defined per
+ * [data-theme] above, so highlighting follows the light/dark toggle.
+ * Scoped to `.prose-iterion` (the MarkdownText wrapper) so it never leaks
+ * into other monospace UI. The `<pre>`/`<code>` box styling itself lives
+ * in MarkdownText's component map — this block only colours the tokens.
+ * ========================================================================== */
+.prose-iterion .hljs-comment,
+.prose-iterion .hljs-quote {
+  color: var(--hljs-comment);
+  font-style: italic;
+}
+.prose-iterion .hljs-keyword,
+.prose-iterion .hljs-selector-tag,
+.prose-iterion .hljs-literal,
+.prose-iterion .hljs-section,
+.prose-iterion .hljs-doctag {
+  color: var(--hljs-keyword);
+}
+.prose-iterion .hljs-string,
+.prose-iterion .hljs-regexp,
+.prose-iterion .hljs-addition {
+  color: var(--hljs-string);
+}
+.prose-iterion .hljs-number,
+.prose-iterion .hljs-symbol,
+.prose-iterion .hljs-bullet,
+.prose-iterion .hljs-link {
+  color: var(--hljs-number);
+}
+.prose-iterion .hljs-title,
+.prose-iterion .hljs-name,
+.prose-iterion .hljs-selector-id,
+.prose-iterion .hljs-selector-class,
+.prose-iterion .hljs-function .hljs-title {
+  color: var(--hljs-title);
+}
+.prose-iterion .hljs-built_in,
+.prose-iterion .hljs-type,
+.prose-iterion .hljs-class .hljs-title,
+.prose-iterion .hljs-params {
+  color: var(--hljs-type);
+}
+.prose-iterion .hljs-attr,
+.prose-iterion .hljs-attribute,
+.prose-iterion .hljs-variable,
+.prose-iterion .hljs-template-variable {
+  color: var(--hljs-variable);
+}
+.prose-iterion .hljs-tag,
+.prose-iterion .hljs-deletion {
+  color: var(--hljs-tag);
+}
+.prose-iterion .hljs-meta {
+  color: var(--hljs-meta);
+}
+.prose-iterion .hljs-emphasis {
+  font-style: italic;
+}
+.prose-iterion .hljs-strong {
+  font-weight: 600;
 }
 
 /* =============================================================================

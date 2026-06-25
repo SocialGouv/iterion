@@ -8,6 +8,7 @@ import type { FormAnswer, FormSpec } from "@/lib/whats-next/questionForm";
 import { Button } from "@/components/ui/Button";
 import { Textarea } from "@/components/ui/Textarea";
 import { WizardForm } from "@/components/ui/WizardForm";
+import MarkdownText from "@/components/Runs/conversation/MarkdownText";
 import { useUIStore } from "@/store/ui";
 
 // Default quick-actions surfaced on every free-text turn unless the
@@ -316,7 +317,7 @@ function AssistantBubble({ text }: { text: string }) {
         Nexie
       </span>
       <div className="flex-1 rounded-lg bg-surface-2 border border-border-subtle px-3 py-2 text-label text-fg-default">
-        {text}
+        <MarkdownText value={text} size="sm" />
       </div>
     </div>
   );
@@ -333,8 +334,10 @@ function AnsweredTurn({ message }: { message: HumanQuestionMessage }) {
         >
           You
         </span>
-        <div className="flex-1 rounded-lg bg-surface-1 border border-border-subtle px-3 py-2 text-label text-fg-default whitespace-pre-wrap">
-          {message.userReply || (
+        <div className="flex-1 rounded-lg bg-surface-1 border border-border-subtle px-3 py-2 text-label text-fg-default">
+          {message.userReply ? (
+            <MarkdownText value={message.userReply} size="sm" />
+          ) : (
             <span className="italic text-fg-subtle">
               {message.outcome && "approved" in message.outcome
                 ? message.outcome.approved

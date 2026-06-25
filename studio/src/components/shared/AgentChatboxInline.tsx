@@ -4,6 +4,7 @@ import { Cross1Icon, PlusIcon, TrashIcon } from "@radix-ui/react-icons";
 
 import { Badge, Button, IconButton, Input, Textarea } from "@/components/ui";
 import type { BadgeVariant } from "@/components/ui";
+import MarkdownText from "@/components/Runs/conversation/MarkdownText";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import {
   cancelQueuedMessage,
@@ -301,14 +302,14 @@ export default function AgentChatboxInline({
               className="flex items-start gap-2 rounded border border-border-subtle bg-surface-0 px-2 py-1.5"
             >
               <StatusBadge status={m.status} />
-              <span className="flex-1 text-body whitespace-pre-wrap break-words text-fg-default">
-                {m.text}
+              <div className="flex-1 text-body text-fg-default">
+                <MarkdownText value={m.text} size="sm" />
                 {m.skill_refs && m.skill_refs.length > 0 && (
-                  <span className="ml-1 font-mono text-caption text-fg-subtle">
+                  <span className="font-mono text-caption text-fg-subtle">
                     [skill: {m.skill_refs.join(", ")}]
                   </span>
                 )}
-              </span>
+              </div>
               {m.status === "queued" && !disabled && (
                 <IconButton
                   label="Cancel queued message"

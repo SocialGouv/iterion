@@ -4,6 +4,8 @@ import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
 import type { WhatsNextMessage } from "@/lib/whats-next/messages";
 import type { FormAnswer } from "@/lib/whats-next/questionForm";
 
+import MarkdownText from "@/components/Runs/conversation/MarkdownText";
+
 import HumanChatTurn from "./HumanChatTurn";
 import IssuesSummaryCard from "./IssuesSummaryCard";
 import NodeBanner from "./NodeBanner";
@@ -205,8 +207,8 @@ function UserMessageRow({
   return (
     <div className="flex justify-end">
       <div className="max-w-[85%] rounded-lg border border-info/30 bg-info-soft/50 px-3 py-2">
-        <div className="text-body whitespace-pre-wrap break-words text-fg-default">
-          {message.text}
+        <div className="text-body text-fg-default">
+          <MarkdownText value={message.text} size="sm" />
         </div>
         <div className="mt-1 flex items-center justify-end gap-1.5">
           <span

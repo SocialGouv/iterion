@@ -71,7 +71,7 @@ function AnsweredBubble({ message }: { message: HumanQuestionMessage }) {
       : undefined;
   return (
     <div className="flex justify-end">
-      <div className="max-w-[80%] rounded-md bg-accent-soft/60 px-3 py-2 text-body text-fg-default whitespace-pre-wrap break-words">
+      <div className="max-w-[80%] rounded-md bg-accent-soft/60 px-3 py-2 text-body text-fg-default">
         {approved !== undefined && (
           <div
             className={`mb-1 text-micro font-medium ${
@@ -81,7 +81,9 @@ function AnsweredBubble({ message }: { message: HumanQuestionMessage }) {
             {approved ? "✓ Approved" : "✗ Rejected"}
           </div>
         )}
-        {reply || (
+        {reply ? (
+          <MarkdownText value={reply} size="sm" />
+        ) : (
           <span className="italic text-fg-muted">(no comment)</span>
         )}
       </div>

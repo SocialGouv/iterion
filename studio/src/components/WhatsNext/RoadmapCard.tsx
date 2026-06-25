@@ -1,5 +1,6 @@
 import type { RoadmapCardMessage, RoadmapItem } from "@/lib/whats-next/messages";
 import { Badge } from "@/components/ui";
+import MarkdownText from "@/components/Runs/conversation/MarkdownText";
 
 interface Props {
   message: RoadmapCardMessage;
@@ -18,9 +19,9 @@ export default function RoadmapCard({ message }: Props) {
       </div>
 
       {roadmap.rationale && (
-        <p className="text-body text-fg-muted whitespace-pre-wrap break-words border-l-2 border-border-subtle pl-2">
-          {roadmap.rationale}
-        </p>
+        <div className="text-fg-muted border-l-2 border-border-subtle pl-2">
+          <MarkdownText value={roadmap.rationale} size="sm" />
+        </div>
       )}
 
       {roadmap.next_action && (
@@ -89,9 +90,9 @@ function ItemRow({ item }: { item: RoadmapItem }) {
         )}
       </div>
       {item.body && (
-        <p className="text-micro text-fg-muted whitespace-pre-wrap break-words">
-          {item.body}
-        </p>
+        <div className="text-fg-muted">
+          <MarkdownText value={item.body} size="sm" />
+        </div>
       )}
     </div>
   );

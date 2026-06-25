@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import type { SurveyCardMessage } from "@/lib/whats-next/messages";
+import MarkdownText from "@/components/Runs/conversation/MarkdownText";
 
 interface Props {
   message: SurveyCardMessage;
@@ -36,9 +37,9 @@ export default function SurveyCard({ message }: Props) {
           <div className="text-caption uppercase tracking-wide font-medium text-fg-muted">
             Summary
           </div>
-          <p className="text-body text-fg-default whitespace-pre-wrap break-words border-l-2 border-accent/40 pl-2">
-            {message.summary}
-          </p>
+          <div className="text-fg-default border-l-2 border-accent/40 pl-2">
+            <MarkdownText value={message.summary} size="sm" />
+          </div>
         </div>
       )}
 
@@ -49,8 +50,8 @@ export default function SurveyCard({ message }: Props) {
           </div>
           <ul className="space-y-1 text-body text-fg-default list-disc ml-5">
             {message.openQuestions.map((q, i) => (
-              <li key={i} className="whitespace-pre-wrap break-words">
-                {q}
+              <li key={i} className="marker:text-fg-subtle">
+                <MarkdownText value={q} size="sm" />
               </li>
             ))}
           </ul>
@@ -70,9 +71,9 @@ export default function SurveyCard({ message }: Props) {
             <div className="mt-2 space-y-3">
               {message.observations && (
                 <Section title="Observations">
-                  <p className="text-body text-fg-default whitespace-pre-wrap break-words">
-                    {message.observations}
-                  </p>
+                  <div className="text-fg-default">
+                    <MarkdownText value={message.observations} size="sm" />
+                  </div>
                 </Section>
               )}
               {message.toplevelDirs !== undefined && (
@@ -118,9 +119,9 @@ function ValueBlock({ value }: { value: unknown }) {
   // the agent produced for these `json` fields.
   if (typeof value === "string") {
     return (
-      <p className="text-body text-fg-default whitespace-pre-wrap break-words">
-        {value}
-      </p>
+      <div className="text-fg-default">
+        <MarkdownText value={value} size="sm" />
+      </div>
     );
   }
   if (Array.isArray(value)) {

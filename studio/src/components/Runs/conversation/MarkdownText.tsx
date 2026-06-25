@@ -1,6 +1,7 @@
 import { memo } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
+import ReactMarkdown, { type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
 
 interface Props {
   value: string;
@@ -43,7 +44,12 @@ const COMPONENTS: Components = {
     <li className="leading-snug" {...props} />
   ),
   code: ({ node: _node, className, children, ...props }) => {
-    const isInline = !className?.startsWith("language-");
+    // rehype-highlight tags every fenced (block) code element with the
+    // base `hljs` class (plus `language-xxx` when known); inline code is
+    // left untouched. So the presence of `hljs` is the reliable
+    // block-vs-inline signal — checking `language-` alone would misclassify
+    // auto-detected blocks (no fence language) as inline.
+    const isInline = !className?.split(/\s+/).includes("hljs");
     if (isInline) {
       return (
         <code
@@ -101,6 +107,15 @@ const COMPONENTS: Components = {
 };
 
 const REMARK_PLUGINS = [remarkGfm];
+// rehype-highlight (highlight.js, synchronous) tags fenced code blocks
+// with `hljs language-xxx` + `hljs-*` token spans. The colours are
+// theme-mapped in app.css (`.prose-iterion .hljs-*` → `--hljs-*` tokens
+// defined per [data-theme]). `detect: true` lets blocks without a fence
+// language still get auto-highlighted; `ignoreMissing: true` keeps an
+// unknown language from throwing — it just renders uncoloured.
+const REHYPE_PLUGINS: Options["rehypePlugins"] = [
+  [rehypeHighlight, { detect: true, ignoreMissing: true }],
+];
 
 // MarkdownText renders a markdown string with GFM extensions (tables,
 // strikethrough, task lists, autolinks). The studio's `ui/MarkdownPreview`
@@ -115,7 +130,11 @@ function MarkdownText({ value, size = "md" }: Props) {
   const base = size === "sm" ? "text-micro" : "text-body";
   return (
     <div className={`prose-iterion ${base} text-fg-default leading-snug`}>
-      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={COMPONENTS}>
+      <ReactMarkdown
+        remarkPlugins={REMARK_PLUGINS}
+        rehypePlugins={REHYPE_PLUGINS}
+        components={COMPONENTS}
+      >
         {value}
       </ReactMarkdown>
     </div>

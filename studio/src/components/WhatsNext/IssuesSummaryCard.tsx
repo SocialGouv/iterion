@@ -5,6 +5,7 @@ import { ExternalLinkIcon } from "@radix-ui/react-icons";
 
 import type { IssuesSummaryMessage } from "@/lib/whats-next/messages";
 import { Badge } from "@/components/ui";
+import MarkdownText from "@/components/Runs/conversation/MarkdownText";
 import { useServerInfoStore } from "@/store/serverInfo";
 import * as dispatcher from "@/api/dispatcher";
 
@@ -30,7 +31,9 @@ export default function IssuesSummaryCard({ message }: Props) {
         <span className="text-caption text-fg-subtle font-mono">{message.nodeId}</span>
       </div>
 
-      <p className="text-body text-fg-default whitespace-pre-wrap break-words">{summary}</p>
+      <div className="text-fg-default">
+        <MarkdownText value={summary} size="sm" />
+      </div>
 
       {createdIssues.length > 0 && (
         <div className="space-y-1.5">
