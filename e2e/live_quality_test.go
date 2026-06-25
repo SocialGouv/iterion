@@ -281,6 +281,19 @@ func gitArtifactEvidence(t *testing.T, workspaceDir string) string {
 	return b.String()
 }
 
+// worktreeArtifactEvidence captures the work product of a worktree:auto bot,
+// whose commits land on a storage branch (not workspaceDir's HEAD). It reads
+// the commit graph + recent patches across ALL refs.
+func worktreeArtifactEvidence(t *testing.T, ws string) string {
+	t.Helper()
+	var b strings.Builder
+	b.WriteString("## commits (all refs)\n")
+	b.WriteString(gitOut(ws, "--no-pager", "log", "--all", "--oneline", "-25"))
+	b.WriteString("\n## recent commit patches (all refs)\n")
+	b.WriteString(gitOut(ws, "--no-pager", "log", "--all", "-p", "-3"))
+	return b.String()
+}
+
 // gitOut runs a git command in dir and returns combined output (best-effort).
 func gitOut(dir string, args ...string) string {
 	full := append([]string{"-C", dir}, args...)
