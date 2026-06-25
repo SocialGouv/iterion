@@ -116,19 +116,19 @@ Status legend: ✅ implemented · 🚧 planned.
 | review-pr | Revi | `TestLive_Bot_ReviewPR` | ✅ |
 | whats-next | Nexie | `TestLive_Bot_WhatsNext` | ✅ |
 | docs-refresh | Doki | `TestLive_Bot_DocsRefresh` | ✅ |
-| adr-cartograph | Adry | `TestLive_Bot_AdrCartograph` | 🚧 |
-| evolve | Evoly | `TestLive_Bot_Evolve` | 🚧 |
-| revi-converse | Revi | `TestLive_Bot_ReviConverse` | 🚧 |
-| rgaa-audit | Acci | `TestLive_Bot_RgaaAudit` | 🚧 |
-| branch-improve-loop | Billy | `TestLive_Bot_BranchImproveLoop` | 🚧 |
-| feature-gap-fill | Fini | `TestLive_Bot_FeatureGapFill` | 🚧 |
-| test-coverage | Testy | `TestLive_Bot_TestCoverage` | 🚧 |
-| bmady | Bmady | `TestLive_Bot_Bmady` | 🚧 |
-| devbox-setup | Devy | `TestLive_Bot_DevboxSetup` | 🚧 |
-| adr-rechallenge | ReArchi | `TestLive_Bot_AdrRechallenge` | 🚧 |
-| dep-update-guard | Vetty | `TestLive_Bot_DepUpdateGuard` | 🚧 |
-| sec-audit-source | Seki | `TestLive_Bot_SecAuditSource` | 🚧 |
-| sec-audit-deps | Depsy | `TestLive_Bot_SecAuditDeps` | 🚧 |
+| adr-cartograph | Adry | `TestLive_Bot_AdrCartograph` | ✅ |
+| evolve | Evoly | `TestLive_Bot_Evolve` | ✅ |
+| revi-converse | Revi | `TestLive_Bot_ReviConverse` | ✅ |
+| rgaa-audit | Acci | `TestLive_Bot_RgaaAudit` | ✅ |
+| branch-improve-loop | Billy | `TestLive_Bot_BranchImproveLoop` | ✅ |
+| feature-gap-fill | Fini | `TestLive_Bot_FeatureGapFill` | ✅ |
+| test-coverage | Testy | `TestLive_Bot_TestCoverage` | ✅ |
+| bmady | Bmady | `TestLive_Bot_Bmady` | ✅ |
+| devbox-setup | Devy | `TestLive_Bot_DevboxSetup` | ✅ |
+| adr-rechallenge | ReArchi | `TestLive_Bot_AdrRechallenge` | ✅ |
+| dep-update-guard | Vetty | `TestLive_Bot_DepUpdateGuard` | ✅ |
+| sec-audit-source | Seki | `TestLive_Bot_SecAuditSource` | ✅ |
+| sec-audit-deps | Depsy | `TestLive_Bot_SecAuditDeps` | ✅ |
 
 ### Features
 
