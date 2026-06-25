@@ -73,6 +73,35 @@ secured-renovacy). Each test `t.Skip`s when its prerequisites are missing.
 | `ITERION_LIVE_QUALITY_DIR` | Override the snapshot history root (default `e2e/testdata/live/quality`). |
 | `ITERION_TEST_STORE_DIR` | Run store: default `~/.iterion` (visible in studio); `workspace` to isolate per-test. |
 
+## Authoring a new bot/feature test
+
+The shared harness lives in `e2e/live_support_test.go` + `e2e/live_quality_test.go`.
+A new test is one file `e2e/live_bot_<name>_test.go` (or `live_feat_<name>_test.go`):
+
+1. Skip-guard the prerequisites: `requireCLI(t, "claude")`, `requireOpenAI(t)`,
+   `requireDockerImage(t, ref)` (sec/sandbox bots), `requireOpus48(t)` (ultracode).
+2. Seed a realistic fixture in an `os.MkdirTemp` dir — `seedGoModuleFixture`,
+   `seedBranchDiffFixture`, or write files + `gitCommitAll`. **Never** mutate
+   the real repo.
+3. Call `runBotLive(t, liveSpec{...})`:
+   - `botFile: "<bot>/main.bot"` for a plain bot, or `bundleDir: "../bots/<bot>"`
+     to also mirror the bot's skills.
+   - `vars`/`inputs`: the bot's required vars; disable side-effects
+     (`post_to_board=false`, `open_mr=false`) where a toggle exists.
+   - `autoResume: true` for bots with `human` nodes (drives gates to a
+     terminal node by synthesizing schema-shaped answers).
+   - For board-writing bots without a disable toggle, `t.Setenv(
+     "ITERION_TEST_STORE_DIR", "workspace")` to isolate the board.
+   - `withWorkDir: true` for sandbox / `worktree: auto` bots.
+4. Assert reliability invariants on the returned `liveResult`:
+   `assertNodesFinished`, `assertSchemaValid`, `assertOutputFieldsNonEmpty`,
+   `assertNoHallucinatedAssignees`, `assertCommitsBeyond`, `countFinished`
+   (loop/convergence).
+5. Grade quality: `assessQuality(t, res, qualityInput{kind, name, persona,
+   primaryFamily, task, workProduct})`. Gather `workProduct` with
+   `gitArtifactEvidence(t, ws)` (code bots) or render the emitted
+   issues/findings (board/audit bots).
+
 ## Coverage matrix
 
 Status legend: ✅ implemented · 🚧 planned.
@@ -84,9 +113,9 @@ Status legend: ✅ implemented · 🚧 planned.
 | feature-dev | Featurly | `TestLive_FeatureDev[_Real]` | ✅ |
 | whole-improve-loop | Willy | `TestLive_VibeReviewAlternating[_Real]` | ✅ |
 | secured-renovacy | Renovacy | `TestLive_SecuredRenovacy[_Real/_Protestware]` | ✅ |
-| review-pr | Revi | `TestLive_Bot_ReviewPR` | 🚧 |
-| whats-next | Nexie | `TestLive_Bot_WhatsNext` | 🚧 |
-| docs-refresh | Doki | `TestLive_Bot_DocsRefresh` | 🚧 |
+| review-pr | Revi | `TestLive_Bot_ReviewPR` | ✅ |
+| whats-next | Nexie | `TestLive_Bot_WhatsNext` | ✅ |
+| docs-refresh | Doki | `TestLive_Bot_DocsRefresh` | ✅ |
 | adr-cartograph | Adry | `TestLive_Bot_AdrCartograph` | 🚧 |
 | evolve | Evoly | `TestLive_Bot_Evolve` | 🚧 |
 | revi-converse | Revi | `TestLive_Bot_ReviConverse` | 🚧 |
