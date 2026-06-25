@@ -1,0 +1,27 @@
+## Feature fixture: board capabilities.
+## A claw agent granted board.* capabilities creates one native-board
+## issue; the test asserts the board tool was actually invoked.
+
+schema board_result:
+  created: bool
+  note: string
+
+prompt board_sys:
+  You can manage a kanban board via the board tools. Create exactly ONE
+  board issue titled "live-e2e board-caps probe" with a one-line body, then
+  report created=true and a short note. Do not create more than one issue.
+
+prompt board_user:
+  Create the probe issue now.
+
+agent board_agent:
+  backend: "claw"
+  model: "anthropic/claude-sonnet-4-6"
+  capabilities: [board.create, board.read]
+  system: board_sys
+  user: board_user
+  output: board_result
+
+workflow main:
+  entry: board_agent
+  board_agent -> done

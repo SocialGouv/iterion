@@ -1,0 +1,11 @@
+## Feature fixture: worktree:auto finalization.
+## A tool-only workflow (no LLM) that commits inside the auto-created
+## worktree, so finalizeWorktree must produce a persistent FinalBranch.
+
+tool make_commit:
+  command: "cd \"${PROJECT_DIR}\" && printf 'hi\n' > created.txt && git add created.txt && git commit -m 'feat: add created.txt'"
+
+workflow main:
+  worktree: auto
+  entry: make_commit
+  make_commit -> done

@@ -1,0 +1,21 @@
+## Feature fixture: backend auto-detection.
+## The agent declares NEITHER backend NOR model, so the runtime resolver
+## must probe host credentials, pick a backend, and substitute a model.
+
+schema greet:
+  greeting: string
+
+prompt greet_sys:
+  Reply with a single friendly word.
+
+prompt greet_user:
+  Greet me.
+
+agent greeter:
+  system: greet_sys
+  user: greet_user
+  output: greet
+
+workflow main:
+  entry: greeter
+  greeter -> done

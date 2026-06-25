@@ -324,6 +324,41 @@ tasks:
     cmds:
       - go test -v -tags live -count=1 -run 'TestLive_Feat_Supervisor$' -timeout 30m ./e2e/...
 
+  test:live:feat:worktree:
+    desc: 'Live e2e for the worktree:auto finalization (tool-only, no creds) feature (real cost).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_Worktree$' -timeout 5m ./e2e/...
+
+  test:live:feat:board-caps:
+    desc: 'Live e2e for the agent board.* capabilities feature (real cost).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_BoardCaps$' -timeout 12m ./e2e/...
+
+  test:live:feat:backend-autodetect:
+    desc: 'Live e2e for the backend auto-detection feature (real cost).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_BackendAutodetect$' -timeout 8m ./e2e/...
+
+  test:live:feat:budget:
+    desc: 'Live e2e for the budget enforcement (tiny cap) feature (real cost).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_Budget$' -timeout 8m ./e2e/...
+
+  test:live:feat:permission:
+    desc: 'Live e2e for the permission gate deny mode feature (real cost).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_Permission_Deny$' -timeout 8m ./e2e/...
+
+  test:live:feat:verified-action:
+    desc: 'Live e2e for the Verified Action recovery ladder feature (real cost).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_VerifiedAction$' -timeout 12m ./e2e/...
+
+  test:live:feat:router-llm:
+    desc: 'Live e2e for the LLM router dispatch feature (real cost).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_RouterLLM$' -timeout 12m ./e2e/...
+
   test:live:bots:new:
     desc: 'Run ALL 16 new per-bot live e2e tests sequentially (very slow + very costly).'
     cmds:

@@ -1,0 +1,29 @@
+## Feature fixture: permission gate (deny mode).
+## The workflow denies all Bash; a claw agent asked to run a shell command
+## must have its bash tool-call refused by the gate (the anti-prompt-
+## injection boundary), then adapt and report ran_bash=false.
+
+schema out:
+  ran_bash: bool
+  note: string
+
+prompt run_sys:
+  You have a bash tool. Run the shell command `echo hello` with it, then
+  report whether it actually executed (ran_bash) and explain in note.
+
+prompt run_user:
+  Try to run `echo hello` now.
+
+agent runner:
+  backend: "claw"
+  model: "anthropic/claude-sonnet-4-6"
+  tools: [bash]
+  system: run_sys
+  user: run_user
+  output: out
+
+workflow main:
+  permission: deny
+  deny: ["Bash"]
+  entry: runner
+  runner -> done

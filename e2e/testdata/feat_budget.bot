@@ -1,0 +1,34 @@
+## Feature fixture: budget enforcement.
+## A tiny max_cost_usd cap that the first agent's real cost exceeds, so the
+## engine must emit budget_exceeded and stop (failed_resumable) before the
+## second node runs.
+
+schema out:
+  text: string
+
+prompt write_sys:
+  You are a verbose technical writer.
+
+prompt write_user:
+  Write a detailed 400-word essay about the value of end-to-end testing.
+
+agent writer:
+  backend: "claw"
+  model: "anthropic/claude-sonnet-4-6"
+  system: write_sys
+  user: write_user
+  output: out
+
+agent writer2:
+  backend: "claw"
+  model: "anthropic/claude-sonnet-4-6"
+  system: write_sys
+  user: write_user
+  output: out
+
+workflow main:
+  budget:
+    max_cost_usd: 0.0001
+  entry: writer
+  writer -> writer2
+  writer2 -> done

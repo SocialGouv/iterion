@@ -1,0 +1,18 @@
+## Feature fixture: Verified Action adaptive recovery (ADR-044).
+## The recipe (`command: true`) does NOT satisfy the postcondition (done.txt
+## present), so the node must escalate down the recovery ladder to the agent
+## rung, which creates done.txt to satisfy the deterministic postcondition.
+
+tool create_done:
+  goal: "Create a file named done.txt in the workspace root."
+  postcondition: "cd \"${PROJECT_DIR}\" && test -f done.txt && printf '{\"ok\":true}'"
+  policy: recover
+  recovery:
+    max_repair_attempts: 0
+    max_agent_attempts: 1
+    model: "anthropic/claude-sonnet-4-6"
+  command: "true"
+
+workflow main:
+  entry: create_done
+  create_done -> done

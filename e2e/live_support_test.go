@@ -217,6 +217,57 @@ func countFinished(events []*store.Event, nodeID string) int {
 	return n
 }
 
+// hasEventType reports whether any event has the given type.
+func hasEventType(events []*store.Event, typ store.EventType) bool {
+	for _, e := range events {
+		if e.Type == typ {
+			return true
+		}
+	}
+	return false
+}
+
+// eventDataMentions reports whether any event (optionally restricted to the
+// given types) carries a string value, at any depth in Data, containing
+// substr (case-insensitive). Used to assert e.g. a board tool was called or
+// a tool was refused by the permission gate, without binding to exact keys.
+func eventDataMentions(events []*store.Event, substr string, types ...store.EventType) bool {
+	want := map[store.EventType]bool{}
+	for _, ty := range types {
+		want[ty] = true
+	}
+	low := strings.ToLower(substr)
+	for _, e := range events {
+		if len(types) > 0 && !want[e.Type] {
+			continue
+		}
+		if valueContainsFold(e.Data, low) {
+			return true
+		}
+	}
+	return false
+}
+
+func valueContainsFold(v interface{}, low string) bool {
+	switch t := v.(type) {
+	case string:
+		return strings.Contains(strings.ToLower(t), low)
+	case map[string]interface{}:
+		for _, c := range t {
+			if valueContainsFold(c, low) {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, c := range t {
+			if valueContainsFold(c, low) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // assertNodesFinished fails the test if any of the named nodes never
 // emitted an EventNodeFinished (i.e. the run aborted before reaching them).
 func assertNodesFinished(t *testing.T, events []*store.Event, ids ...string) {
