@@ -43,6 +43,9 @@ const (
 	denyMonthlyCostCap    = "monthly_cost_cap_exceeded"
 	denyConcurrencyCap    = "concurrency_cap_exceeded"
 	denyLaunchRateLimited = "launch_rate_limited"
+	// denyNoWorkspace refuses a signed-in user who belongs to no team (the
+	// GitHub "submitter" tier): they have no workspace to launch into.
+	denyNoWorkspace = "no_workspace"
 )
 
 // activeRunCounter is the optional store capability the concurrency
@@ -76,8 +79,20 @@ func orValue[T int | float64](team, def T) T {
 func (s *Server) gateLaunch(ctx context.Context) *launchDenial {
 	id, _ := auth.FromContext(ctx)
 	st := s.authStore()
-	if st == nil || id.IsSuperAdmin || id.TeamID == "" {
+	// st == nil is local/filesystem mode (no auth, single operator); a
+	// super-admin bypasses the gate entirely.
+	if st == nil || id.IsSuperAdmin {
 		return nil
+	}
+	if id.TeamID == "" {
+		// A signed-in cloud user with no team (the GitHub submitter tier) has
+		// no workspace to launch into. Deny rather than fail-open, so the
+		// teamless tier can't run unmetered work under the empty tenant.
+		return &launchDenial{
+			status: http.StatusForbidden,
+			reason: denyNoWorkspace,
+			detail: "you are not a member of any workspace — ask an admin to add you to a team",
+		}
 	}
 	// Reuse a Team the webhook middleware already loaded for its
 	// suspend check (same document, same request) — one Mongo round

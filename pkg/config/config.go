@@ -169,6 +169,11 @@ type OIDCConfig struct {
 	Google  OIDCProviderConfig `yaml:"google"`
 	GitHub  OIDCProviderConfig `yaml:"github"`
 	Generic OIDCProviderConfig `yaml:"generic"`
+	// GitHubUngrantedPolicy controls a GitHub login that matches no
+	// allow-listed team while team-gating is active: "refuse" (default,
+	// reject) or "submitter" (admit teamless → marketplace-submit only).
+	// Maps to ITERION_OIDC_GITHUB_UNGRANTED_POLICY.
+	GitHubUngrantedPolicy string `yaml:"github_ungranted_policy"`
 }
 
 // OIDCProviderConfig is the per-provider config block. For Google the

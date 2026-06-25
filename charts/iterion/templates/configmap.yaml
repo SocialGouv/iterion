@@ -76,6 +76,11 @@ data:
   {{- if .Values.secrets.auth.oidc.github.enabled }}
   ITERION_OIDC_GITHUB_ENABLED: "true"
   ITERION_OIDC_GITHUB_CLIENT_ID: {{ .Values.config.auth.oidc.github.clientId | quote }}
+  {{- with .Values.config.auth.oidc.github.ungrantedPolicy }}
+  # "refuse" (default) | "submitter" — admit a GitHub login matching no
+  # allow-listed team as a teamless marketplace-submitter instead of rejecting.
+  ITERION_OIDC_GITHUB_UNGRANTED_POLICY: {{ . | quote }}
+  {{- end }}
   {{- end }}
   {{- if .Values.secrets.auth.oidc.generic.enabled }}
   ITERION_OIDC_GENERIC_ENABLED: "true"

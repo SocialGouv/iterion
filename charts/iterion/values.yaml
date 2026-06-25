@@ -185,6 +185,10 @@ config:
         clientId: ""           # secret lives in secrets.auth.oidc.google
       github:
         clientId: ""
+        # "" (chart omits it → server default "refuse") | "refuse" | "submitter".
+        # "submitter" admits a GitHub login matching no allow-listed team as a
+        # teamless marketplace-submitter instead of rejecting it.
+        ungrantedPolicy: ""
       generic:
         issuerUrl: ""          # https://idp.example/realms/iterion
         clientId: ""

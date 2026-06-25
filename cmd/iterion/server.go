@@ -555,6 +555,7 @@ func buildAuthStack(ctx context.Context, cfg iterconfig.Config, st *mongostore.S
 		Sessions:                 a.sessions,
 		Signer:                   signer,
 		SignupMode:               iterauth.SignupMode(cfg.Auth.SignupMode),
+		GitHubUngrantedPolicy:    iterauth.GitHubUngrantedPolicy(cfg.Auth.OIDC.GitHubUngrantedPolicy),
 		RefreshTTL:               cfg.Auth.RefreshTTL,
 		Logger:                   logger,
 		Resets:                   a.resetStore,

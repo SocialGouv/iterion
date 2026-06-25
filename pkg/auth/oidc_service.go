@@ -111,9 +111,13 @@ func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 	// New user via SSO. When GitHub team-gating is active, a new GitHub user is
 	// admitted ONLY if their teams matched an allow-list — and then bypasses
 	// SignupMode (the org admin allow-listed them). A non-matching new GitHub
-	// user is refused BEFORE any account is created (no orphan accounts).
+	// user is, by policy, either refused (default) or admitted as a teamless
+	// submitter (marketplace-submit only) — see GitHubUngrantedPolicy.
 	gated := gh.provider && gh.active
 	if gated && len(gh.rows) == 0 {
+		if s.githubUngrantedPolicy == GitHubUngrantedSubmitter {
+			return s.provisionSubmitter(ctx, ext, email, now, userAgent, ip)
+		}
 		return LoginResult{}, ErrSSORestricted
 	}
 	if !gated && s.signupMode != SignupOpen {
@@ -162,6 +166,42 @@ func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 		return LoginResult{}, err
 	}
 	return s.issueLoginInTeam(ctx, u, preferredTeam, userAgent, ip)
+}
+
+// provisionSubmitter creates a teamless account for a GitHub login that is
+// admitted but matched no allow-listed team (GitHubUngrantedPolicy=submitter).
+// Unlike the normal new-user path it does NOT create a personal team, so the
+// account can authenticate + submit to the marketplace (auth-only) but has no
+// team-scoped rights. If the user is later added to an allow-listed team, the
+// returning-user grant re-evaluation in LoginWithExternal upgrades them.
+func (s *Service) provisionSubmitter(ctx context.Context, ext oidc.ExternalUser, email string, now time.Time, userAgent, ip string) (LoginResult, error) {
+	u := identity.User{
+		ID:        uuid.NewString(),
+		Email:     email,
+		Name:      ext.Name,
+		Status:    identity.UserStatusActive,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	u, err := s.store.CreateUser(ctx, u)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	if err := s.store.UpsertOIDCLink(ctx, identity.OIDCLink{
+		Provider:       ext.Provider,
+		ProviderUserID: ext.Subject,
+		UserID:         u.ID,
+		Email:          email,
+		CreatedAt:      now,
+	}); err != nil {
+		return LoginResult{}, err
+	}
+	u.LastLoginAt = &now
+	if err := s.store.UpdateUser(ctx, u); err != nil {
+		return LoginResult{}, err
+	}
+	// No team: issueLogin issues a session with an empty active team.
+	return s.issueLogin(ctx, u, userAgent, ip)
 }
 
 // LoginWithExternalForOrg completes a per-org OIDC flow (a tenant's own

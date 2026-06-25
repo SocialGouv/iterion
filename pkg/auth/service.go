@@ -54,6 +54,23 @@ const (
 	SignupInviteOnly SignupMode = "invite_only"
 )
 
+// GitHubUngrantedPolicy controls what happens to a GitHub SSO login that
+// reaches the deployment while team-gating is active but matches no
+// allow-listed team (orgsso.GitHubTeamGrant). It decouples GitHub admission
+// from the global SignupMode.
+type GitHubUngrantedPolicy string
+
+const (
+	// GitHubUngrantedRefuse rejects the login (ErrSSORestricted). Default —
+	// preserves the historical behaviour.
+	GitHubUngrantedRefuse GitHubUngrantedPolicy = "refuse"
+	// GitHubUngrantedSubmitter admits the user as a teamless account (no
+	// personal team), so they can authenticate + submit to the marketplace
+	// but have no other rights until an admin adds them to an allow-listed
+	// team. This is the public "sign up with GitHub to submit a bot" tier.
+	GitHubUngrantedSubmitter GitHubUngrantedPolicy = "submitter"
+)
+
 // MinPasswordLen is the floor enforced at registration. Set
 // intentionally low to avoid frustrating users with a password
 // manager; argon2id covers the brute-force surface.
@@ -73,8 +90,12 @@ type Service struct {
 	sessions   SessionStore
 	signer     *JWTSigner
 	signupMode SignupMode
-	now        func() time.Time
-	refreshTTL time.Duration
+	// githubUngrantedPolicy decides whether a GitHub login matching no
+	// allow-listed team is refused or admitted teamless (see B2 in
+	// LoginWithExternal). Defaults to GitHubUngrantedRefuse.
+	githubUngrantedPolicy GitHubUngrantedPolicy
+	now                   func() time.Time
+	refreshTTL            time.Duration
 	// trustedAutoLinkProviders names the OIDC providers whose verified
 	// email may be used to link a fresh external identity onto an
 	// existing password-account user without an explicit "link this
@@ -109,7 +130,10 @@ type Config struct {
 	Sessions   SessionStore
 	Signer     *JWTSigner
 	SignupMode SignupMode
-	RefreshTTL time.Duration
+	// GitHubUngrantedPolicy controls a gated GitHub login that matches no
+	// allow-listed team: "refuse" (default) or "submitter" (teamless admit).
+	GitHubUngrantedPolicy GitHubUngrantedPolicy
+	RefreshTTL            time.Duration
 	// TrustedAutoLinkProviders is the operator-configured allowlist of
 	// OIDC providers whose verified email is safe to auto-link onto a
 	// pre-existing password-account user. Empty = no auto-link; a fresh
@@ -153,6 +177,14 @@ func NewService(cfg Config) (*Service, error) {
 	default:
 		return nil, fmt.Errorf("auth: invalid signup mode %q", cfg.SignupMode)
 	}
+	if cfg.GitHubUngrantedPolicy == "" {
+		cfg.GitHubUngrantedPolicy = GitHubUngrantedRefuse
+	}
+	switch cfg.GitHubUngrantedPolicy {
+	case GitHubUngrantedRefuse, GitHubUngrantedSubmitter:
+	default:
+		return nil, fmt.Errorf("auth: invalid github ungranted policy %q", cfg.GitHubUngrantedPolicy)
+	}
 	trusted := make(map[string]struct{}, len(cfg.TrustedAutoLinkProviders))
 	for _, p := range cfg.TrustedAutoLinkProviders {
 		if p != "" {
@@ -164,6 +196,7 @@ func NewService(cfg Config) (*Service, error) {
 		sessions:                 cfg.Sessions,
 		signer:                   cfg.Signer,
 		signupMode:               cfg.SignupMode,
+		githubUngrantedPolicy:    cfg.GitHubUngrantedPolicy,
 		refreshTTL:               cfg.RefreshTTL,
 		now:                      time.Now,
 		trustedAutoLinkProviders: trusted,

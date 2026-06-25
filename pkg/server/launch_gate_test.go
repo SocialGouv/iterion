@@ -53,6 +53,26 @@ func seedGateTeam(t *testing.T, s *Server, team identity.Team) context.Context {
 	return auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", TeamID: team.ID})
 }
 
+func TestGateLaunch_TeamlessDenied(t *testing.T) {
+	// A signed-in cloud user with no team (the GitHub submitter tier) is
+	// denied — they have no workspace to launch into.
+	s := newOrgTestServer(t)
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "submitter", TeamID: ""})
+	d := s.gateLaunch(ctx)
+	if d == nil || d.status != 403 || d.reason != denyNoWorkspace {
+		t.Fatalf("denial = %+v, want 403 %s", d, denyNoWorkspace)
+	}
+}
+
+func TestGateLaunch_SuperAdminTeamlessBypasses(t *testing.T) {
+	// A super-admin (also teamless) bypasses the gate entirely.
+	s := newOrgTestServer(t)
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "root", IsSuperAdmin: true})
+	if d := s.gateLaunch(ctx); d != nil {
+		t.Fatalf("super-admin denied: %+v", d)
+	}
+}
+
 func TestGateLaunch_Suspend(t *testing.T) {
 	s := newOrgTestServer(t)
 	ctx := seedGateTeam(t, s, identity.Team{ID: "t1", Status: identity.TeamStatusSuspended})
@@ -179,11 +199,9 @@ func TestGateLaunch_Bypasses(t *testing.T) {
 	if d := s.gateLaunch(super); d != nil {
 		t.Fatalf("super-admin denied: %+v", d)
 	}
-	// No active team (local mode flows) bypasses.
-	anon := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1"})
-	if d := s.gateLaunch(anon); d != nil {
-		t.Fatalf("teamless identity denied: %+v", d)
-	}
+	// A teamless non-admin is now DENIED (no workspace) — see
+	// TestGateLaunch_TeamlessDenied. Local mode (no auth store) still bypasses
+	// via the st == nil branch.
 	// Missing team fails open.
 	ghost := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", TeamID: "ghost"})
 	if d := s.gateLaunch(ghost); d != nil {

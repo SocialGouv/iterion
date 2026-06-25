@@ -34,6 +34,12 @@ interface AuthCtx extends AuthState {
   // activeTeamID, or undefined when no team is active. Derived in
   // the provider so consumers don't re-search the teams array.
   activeTeam: MembershipView | undefined;
+  // isRestricted is the "submitter" tier: a signed-in user who belongs to no
+  // team and isn't a super-admin (the public GitHub SSO sign-up that matched
+  // no authorized team). They get a marketplace-only shell — no workspace,
+  // no runs/editor/board. In local/desktop the synthetic identity is a
+  // super-admin, so this is always false there.
+  isRestricted: boolean;
   signIn: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
   selectTeam: (teamID: string) => Promise<void>;
@@ -164,6 +170,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const value = useMemo<AuthCtx>(() => ({
     ...state,
     activeTeam: state.teams.find((t) => t.team_id === state.activeTeamID),
+    isRestricted:
+      state.status === "authenticated" &&
+      !state.user?.is_super_admin &&
+      state.teams.length === 0,
     signIn,
     signOut,
     selectTeam,

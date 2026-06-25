@@ -40,6 +40,7 @@ import GlobalCommandPalette from "@/components/shared/GlobalCommandPalette";
 import ToastContainer from "@/components/shared/Toast";
 import MissingCLIBanner from "@/components/MissingCLIBanner";
 import CloudLanding, { PublicTopBar } from "@/views/CloudLanding";
+const RestrictedShell = lazy(() => import("@/views/RestrictedShell"));
 import { useDesktop } from "@/hooks/useDesktop";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { useProjectSwitchListener } from "@/hooks/useProjectSwitchListener";
@@ -81,7 +82,7 @@ export default function App() {
 // session so the AuthGate consults the URL when it sees the
 // "anonymous" state and dispatches to the matching public view.
 function AuthGate() {
-  const { status, signOut } = useAuth();
+  const { status, signOut, isRestricted } = useAuth();
   const [location] = useLocation();
   const serverInfo = useServerInfoStore((s) => s.info);
 
@@ -134,11 +135,21 @@ function AuthGate() {
     );
   }
   // Authenticated paths that don't belong in the AppShell go here (the
-  // invitation accept needs the AuthContext but not the full shell).
+  // invitation accept needs the AuthContext but not the full shell). Kept
+  // reachable for restricted users so they can accept a team invitation.
   if (location.startsWith("/invitations/accept")) {
     return (
       <Suspense fallback={<BootLoading />}>
         <AcceptInvitation />
+      </Suspense>
+    );
+  }
+  // The "submitter" tier (signed in, no team, not super-admin) gets a
+  // marketplace-only shell instead of the full studio.
+  if (isRestricted) {
+    return (
+      <Suspense fallback={<BootLoading />}>
+        <RestrictedShell />
       </Suspense>
     );
   }

@@ -40,8 +40,12 @@ export default function MarketplaceView() {
   // Anonymous visitors (the public landing → /marketplace path) can browse +
   // download but not install/submit/moderate. Those calls hit auth-gated
   // endpoints, so we skip them entirely rather than swallow 401s.
-  const { status } = useAuth();
+  const { status, isRestricted } = useAuth();
   const anonymous = status === "anonymous";
+  // A user with no workspace (anonymous OR the restricted submitter tier)
+  // can't install into a workspace — they get a `.botz` download instead.
+  // Restricted users ARE authenticated, so they still get the submit form.
+  const noWorkspace = anonymous || isRestricted;
   const [, navigate] = useLocation();
   const [entries, setEntries] = useState<MarketplaceEntry[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -314,7 +318,7 @@ export default function MarketplaceView() {
                   onUpdate={() => void onInstall(e, true)}
                   onUninstall={() => void onUninstall(e)}
                   onOpen={() => setActiveSlug(e.slug)}
-                  anonymous={anonymous}
+                  anonymous={noWorkspace}
                 />
               ))}
             </ul>

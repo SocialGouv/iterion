@@ -78,9 +78,10 @@ type yamlAuthConfig struct {
 }
 
 type yamlOIDCConfig struct {
-	Google  *yamlOIDCProviderConfig `yaml:"google"`
-	GitHub  *yamlOIDCProviderConfig `yaml:"github"`
-	Generic *yamlOIDCProviderConfig `yaml:"generic"`
+	Google                *yamlOIDCProviderConfig `yaml:"google"`
+	GitHub                *yamlOIDCProviderConfig `yaml:"github"`
+	Generic               *yamlOIDCProviderConfig `yaml:"generic"`
+	GitHubUngrantedPolicy *string                 `yaml:"github_ungranted_policy"`
 }
 
 type yamlOIDCProviderConfig struct {
@@ -222,6 +223,7 @@ func (y *yamlConfig) applyTo(cfg *Config) error {
 			applyOIDCProvider(y.Auth.OIDC.Google, &cfg.Auth.OIDC.Google)
 			applyOIDCProvider(y.Auth.OIDC.GitHub, &cfg.Auth.OIDC.GitHub)
 			applyOIDCProvider(y.Auth.OIDC.Generic, &cfg.Auth.OIDC.Generic)
+			applyString(y.Auth.OIDC.GitHubUngrantedPolicy, &cfg.Auth.OIDC.GitHubUngrantedPolicy)
 		}
 		if y.Auth.OAuthForfait != nil {
 			applyString(y.Auth.OAuthForfait.AnthropicClientID, &cfg.Auth.OAuthForfait.AnthropicClientID)

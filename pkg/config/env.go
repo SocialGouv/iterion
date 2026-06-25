@@ -105,6 +105,7 @@ func loadEnv(cfg *Config) error {
 	}
 	lookupString("ITERION_OIDC_GITHUB_CLIENT_ID", &cfg.Auth.OIDC.GitHub.ClientID)
 	lookupString("ITERION_OIDC_GITHUB_CLIENT_SECRET", &cfg.Auth.OIDC.GitHub.ClientSecret)
+	lookupString("ITERION_OIDC_GITHUB_UNGRANTED_POLICY", &cfg.Auth.OIDC.GitHubUngrantedPolicy)
 
 	if err := lookupBool("ITERION_OIDC_GENERIC_ENABLED", &cfg.Auth.OIDC.Generic.Enabled); err != nil {
 		return err

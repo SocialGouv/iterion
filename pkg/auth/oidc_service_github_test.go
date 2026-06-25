@@ -62,6 +62,56 @@ func TestLoginGitHub_NewUserNoMatchRestrictedNoOrphan(t *testing.T) {
 	}
 }
 
+func TestLoginGitHub_NewUserNoMatchSubmitterTeamless(t *testing.T) {
+	// With GitHubUngrantedPolicy=submitter, a gated GitHub login that matches
+	// no allow-listed team is ADMITTED as a teamless account (no personal
+	// team) instead of refused — the public "submit a bot" tier.
+	svc, _ := githubFixture(t, identity.RoleMember)
+	svc.githubUngrantedPolicy = GitHubUngrantedSubmitter
+	ctx := context.Background()
+	res, err := svc.LoginWithExternal(ctx, githubExt("submitter", "other/*"), "ua", "ip")
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	if res.ActiveTeamID != "" {
+		t.Errorf("submitter should be teamless, got active team %q", res.ActiveTeamID)
+	}
+	u, err := svc.store.GetUserByEmail(ctx, "submitter@x.example")
+	if err != nil {
+		t.Fatalf("submitter account not created: %v", err)
+	}
+	if u.DefaultTeamID != "" {
+		t.Errorf("submitter must have no personal team, got %q", u.DefaultTeamID)
+	}
+	// The OIDC link is persisted, so a returning login finds the same user.
+	res2, err := svc.LoginWithExternal(ctx, githubExt("submitter", "other/*"), "ua", "ip")
+	if err != nil {
+		t.Fatalf("relogin: %v", err)
+	}
+	if res2.User.ID != u.ID {
+		t.Errorf("relogin created a different user: %q vs %q", res2.User.ID, u.ID)
+	}
+}
+
+func TestLoginGitHub_SubmitterUpgradesWhenAddedToTeam(t *testing.T) {
+	// A teamless submitter who later joins an allow-listed GitHub team is
+	// upgraded to full org membership on their next login.
+	svc, teamID := githubFixture(t, identity.RoleMember)
+	svc.githubUngrantedPolicy = GitHubUngrantedSubmitter
+	ctx := context.Background()
+	if _, err := svc.LoginWithExternal(ctx, githubExt("grow", "other/*"), "ua", "ip"); err != nil {
+		t.Fatalf("first (teamless) login: %v", err)
+	}
+	// The user now belongs to acme/eng.
+	res, err := svc.LoginWithExternal(ctx, githubExt("grow", "acme/*", "acme/eng"), "ua", "ip")
+	if err != nil {
+		t.Fatalf("upgrade login: %v", err)
+	}
+	if _, err := svc.store.GetMembership(ctx, res.User.ID, teamID); err != nil {
+		t.Errorf("teamless submitter not upgraded into team on join: %v", err)
+	}
+}
+
 func TestLoginGitHub_NoGatingFallsThrough(t *testing.T) {
 	// Invite-only service, NO github rows → a github login behaves as before
 	// (ErrSignupClosed for a brand-new user), not ErrSSORestricted.
