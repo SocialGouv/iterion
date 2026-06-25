@@ -26,6 +26,12 @@ func (s *Server) registerTriggerRoutes() {
 	s.mux.Handle("POST /api/v1/triggers/emit", s.requireAuth(http.HandlerFunc(s.handleEmitTrigger)))
 }
 
+// maxEmitVarsBytes caps the cumulative size of the custom-emit Vars map.
+// The endpoint is authenticated, but a buggy/abusive integration could
+// otherwise POST gigabytes of var data that fan out onto the bus and
+// into every launched run — a 400 is cheaper than the memory pressure.
+const maxEmitVarsBytes = 1 << 20 // 1 MiB
+
 // emitTriggerReq is the custom-integration ingress payload: an arbitrary
 // external system injects an event onto the spine, and matching custom
 // subscriptions fire. Source is always forced to "custom" — the endpoint
@@ -66,16 +72,40 @@ func (s *Server) handleEmitTrigger(w http.ResponseWriter, r *http.Request) {
 		dispatcher.WriteErr(w, http.StatusBadRequest, errors.New("kind is required"))
 		return
 	}
+	// Run-launch admission. A custom emit can fan out to N matching
+	// subscriptions, each a launch — gate it exactly like the inbound
+	// webhook path so an authenticated integration can't bypass the
+	// per-org quota / cost cap / rate limit. Fail-open (nil) in local
+	// single-host scope, so this is a no-op there.
+	if d := s.gateLaunch(r.Context()); d != nil {
+		s.writeLaunchDenial(w, r, d)
+		return
+	}
 	payload := map[string]any{}
 	if len(req.Vars) > 0 {
+		total := 0
 		vm := make(map[string]any, len(req.Vars))
 		for k, v := range req.Vars {
+			total += len(k) + len(v)
+			if total > maxEmitVarsBytes {
+				dispatcher.WriteErr(w, http.StatusBadRequest, errors.New("vars payload too large"))
+				return
+			}
 			vm[k] = v
 		}
 		payload[trigger.PayloadVars] = vm
 	}
+	// Idempotency id. When the caller omits Subject.ID the natural key
+	// "custom:<kind>:" collides across every event of that kind — fall
+	// back to a unique id so distinct events stay distinct (the forge
+	// source's launched_run_id marker relies on a stable, per-event id).
+	subjectID := req.Subject.ID
+	eventID := "custom:" + req.Kind + ":" + subjectID
+	if subjectID == "" {
+		eventID = "custom:" + req.Kind + ":" + uuid.NewString()
+	}
 	ev := trigger.Event{
-		ID:     "custom:" + req.Kind + ":" + req.Subject.ID,
+		ID:     eventID,
 		Source: trigger.SourceCustom,
 		Kind:   req.Kind,
 		Action: req.Action,

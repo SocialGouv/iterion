@@ -33,6 +33,8 @@ type inprocSub struct {
 	ch     chan trigger.Event
 	stop   chan struct{}
 	done   chan struct{}
+	ctx    context.Context    // cancelled by the subscriber's cancel func
+	cancel context.CancelFunc // unblocks an in-flight handler on teardown
 	drops  atomic.Int64
 }
 
@@ -66,6 +68,7 @@ func (b *InProcBus) Publish(_ context.Context, ev trigger.Event) error {
 // worker goroutine. The returned cancel stops the worker and unregisters
 // the subscriber (idempotent).
 func (b *InProcBus) Subscribe(name string, filter trigger.Matcher, h Handler) (func(), error) {
+	ctx, cancelCtx := context.WithCancel(context.Background())
 	s := &inprocSub{
 		name:   name,
 		filter: filter,
@@ -73,6 +76,8 @@ func (b *InProcBus) Subscribe(name string, filter trigger.Matcher, h Handler) (f
 		ch:     make(chan trigger.Event, subscriberBufferSize),
 		stop:   make(chan struct{}),
 		done:   make(chan struct{}),
+		ctx:    ctx,
+		cancel: cancelCtx,
 	}
 	b.mu.Lock()
 	b.subs = append(b.subs, s)
@@ -83,6 +88,10 @@ func (b *InProcBus) Subscribe(name string, filter trigger.Matcher, h Handler) (f
 	var once sync.Once
 	cancel := func() {
 		once.Do(func() {
+			// Cancel the handler context first so an in-flight handler
+			// (a launch blocked on store/LLM I/O) observes the teardown,
+			// then signal the worker to exit and wait for it.
+			s.cancel()
 			close(s.stop)
 			<-s.done
 			b.mu.Lock()
@@ -100,13 +109,12 @@ func (b *InProcBus) Subscribe(name string, filter trigger.Matcher, h Handler) (f
 
 func (b *InProcBus) worker(s *inprocSub) {
 	defer close(s.done)
-	ctx := context.Background()
 	for {
 		select {
 		case <-s.stop:
 			return
 		case ev := <-s.ch:
-			if err := s.h(ctx, ev); err != nil && b.logger != nil {
+			if err := s.h(s.ctx, ev); err != nil && b.logger != nil {
 				b.logger.Warn("eventbus: subscriber %q handler error on %s/%s: %v", s.name, ev.Source, ev.Kind, err)
 			}
 		}

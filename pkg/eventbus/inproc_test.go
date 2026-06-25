@@ -72,6 +72,32 @@ func TestInProcBusDropsOnFullBuffer(t *testing.T) {
 	close(release)
 }
 
+// cancel() must unblock an in-flight handler by cancelling its context, then
+// return — otherwise a handler stuck on store/LLM I/O would hang shutdown.
+func TestInProcBusCancelUnblocksInFlightHandler(t *testing.T) {
+	bus := NewInProcBus(nil)
+	entered := make(chan struct{})
+	cancel, _ := bus.Subscribe("blocker", trigger.Matcher{}, func(ctx context.Context, _ trigger.Event) error {
+		close(entered)
+		<-ctx.Done() // blocks until the subscriber's context is cancelled
+		return ctx.Err()
+	})
+	_ = bus.Publish(context.Background(), trigger.Event{Source: trigger.SourceBoard})
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler never started")
+	}
+
+	returned := make(chan struct{})
+	go func() { cancel(); close(returned) }()
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancel() hung — in-flight handler was not unblocked by context cancellation")
+	}
+}
+
 func waitN(t *testing.T, done <-chan struct{}, n int) {
 	t.Helper()
 	for i := 0; i < n; i++ {

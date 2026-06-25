@@ -32,9 +32,11 @@ type BoardSource struct {
 	repo      string
 	boardName string
 
-	events chan native.Event
-	cancel func()
-	done   chan struct{}
+	events       chan native.Event
+	cancel       func()
+	workerCtx    context.Context
+	workerCancel context.CancelFunc
+	done         chan struct{}
 }
 
 // BoardSourceOption configures a BoardSource.
@@ -61,12 +63,15 @@ func StartBoardSource(store *native.Store, bus Publisher, logger *iterlog.Logger
 	if store == nil || bus == nil {
 		return nil
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	bs := &BoardSource{
-		store:  store,
-		bus:    bus,
-		logger: logger,
-		events: make(chan native.Event, 128),
-		done:   make(chan struct{}),
+		store:        store,
+		bus:          bus,
+		logger:       logger,
+		events:       make(chan native.Event, 128),
+		workerCtx:    ctx,
+		workerCancel: cancel,
+		done:         make(chan struct{}),
 	}
 	for _, o := range opts {
 		o(bs)
@@ -88,6 +93,11 @@ func StartBoardSource(store *native.Store, bus Publisher, logger *iterlog.Logger
 func (b *BoardSource) Stop() {
 	if b.cancel != nil {
 		b.cancel()
+	}
+	// Cancel the worker context first so an in-flight Publish observes the
+	// teardown, then close the event channel to end the worker's range.
+	if b.workerCancel != nil {
+		b.workerCancel()
 	}
 	close(b.events)
 	<-b.done
@@ -116,13 +126,16 @@ func (b *BoardSource) enqueue(evt native.Event) {
 
 func (b *BoardSource) worker() {
 	defer close(b.done)
-	ctx := context.Background()
 	for evt := range b.events {
 		te, ok := b.normalize(evt)
 		if !ok {
 			continue
 		}
-		if err := b.bus.Publish(ctx, te); err != nil && b.logger != nil {
+		// b.workerCtx is cancelled on Stop so a context-aware Publish
+		// unwinds promptly. (The store.Get inside normalize is still
+		// synchronous and context-free — a hung store read would not be
+		// interrupted here; that would require a context-aware Store.Get.)
+		if err := b.bus.Publish(b.workerCtx, te); err != nil && b.logger != nil {
 			b.logger.Warn("trigger: publish board event for issue %s failed: %v", evt.IssueID, err)
 		}
 	}

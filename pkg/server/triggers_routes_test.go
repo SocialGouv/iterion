@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,6 +15,27 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
+
+// newEmitTestServer wires a server with a live trigger coordinator (so the
+// emit endpoint is past its spine-enabled guard). Skips when the coordinator
+// can't start (no fsnotify on the host).
+func newEmitTestServer(t *testing.T) *Server {
+	t.Helper()
+	ns, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("native store: %v", err)
+	}
+	t.Cleanup(func() { _ = ns.Close() })
+	subs := trigger.NewMemorySubscriptionStore()
+	coord := StartTriggerCoordinator(ns, subs, nil, &recordingLauncher{}, iterlog.New(iterlog.LevelError, nil))
+	if coord == nil {
+		t.Skip("trigger coordinator unavailable (fsnotify)")
+	}
+	t.Cleanup(coord.Close)
+	srv := New(Config{DisableAuth: true, NativeTrackerStore: ns, TriggerStore: subs}, iterlog.New(iterlog.LevelError, nil))
+	srv.triggerCoord = coord
+	return srv
+}
 
 func newTriggerTestServer(t *testing.T) *Server {
 	t.Helper()
@@ -137,4 +159,47 @@ func TestEmitTrigger_PublishesAndFires(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("custom event did not fire the matching subscription (launches=%d)", rl.n.Load())
+}
+
+// A subject-less emit must still get a unique event id so two distinct events
+// don't collapse onto the same "custom:<kind>:" key (the forge source's
+// launched_run_id marker depends on a per-event id).
+func TestEmitTrigger_DefaultsEventIDWhenSubjectMissing(t *testing.T) {
+	srv := newEmitTestServer(t)
+	emit := func() string {
+		rec := httptest.NewRecorder()
+		srv.handleEmitTrigger(rec, httptest.NewRequest(http.MethodPost, "/api/v1/triggers/emit",
+			bytes.NewBufferString(`{"kind":"ci.done"}`)))
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("emit status = %d; body=%s", rec.Code, rec.Body.String())
+		}
+		var resp struct {
+			EventID string `json:"event_id"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		return resp.EventID
+	}
+	id1, id2 := emit(), emit()
+	if !strings.HasPrefix(id1, "custom:ci.done:") || len(id1) <= len("custom:ci.done:") {
+		t.Fatalf("event_id = %q; want custom:ci.done:<unique>", id1)
+	}
+	if id1 == id2 {
+		t.Fatalf("two subject-less emits shared event_id %q; want distinct ids", id1)
+	}
+}
+
+// Oversized vars must be rejected before the event is published so an
+// authenticated integration can't flood the bus / launched runs with
+// gigabyte-sized var blobs.
+func TestEmitTrigger_RejectsOversizedVars(t *testing.T) {
+	srv := newEmitTestServer(t)
+	body := `{"kind":"ci.done","vars":{"blob":"` + strings.Repeat("x", maxEmitVarsBytes+1) + `"}}`
+	rec := httptest.NewRecorder()
+	srv.handleEmitTrigger(rec, httptest.NewRequest(http.MethodPost, "/api/v1/triggers/emit",
+		bytes.NewBufferString(body)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("oversized vars status = %d; want 400", rec.Code)
+	}
 }

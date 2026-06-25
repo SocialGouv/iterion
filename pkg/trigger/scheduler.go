@@ -87,10 +87,19 @@ func (s *Scheduler) Stop() {
 
 func (s *Scheduler) loop() {
 	defer close(s.done)
+	// Cancel the tick context when Stop fires so a tick blocked in the
+	// store list or a launch (both context-aware) unwinds instead of
+	// pinning the loop — otherwise Stop's <-s.done would hang on it.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		<-s.stop
+		cancel()
+	}()
 	tk := time.NewTicker(s.interval)
 	defer tk.Stop()
 	for {
-		s.tick(context.Background(), s.now())
+		s.tick(ctx, s.now())
 		select {
 		case <-s.stop:
 			return
