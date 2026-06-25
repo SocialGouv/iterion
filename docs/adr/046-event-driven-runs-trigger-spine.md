@@ -9,10 +9,12 @@ local twin of cloudsched); **git-forge events on the bus** (the shared
 webhook launch tail emits a `SourceForge` event, observational via the
 `launched_run_id` marker so it can't double-launch); and **custom ingress**
 (`POST /api/v1/triggers/emit` injects a `SourceCustom` event onto the spine —
-the first-class extensibility point for arbitrary external systems). Staged
-follow-ons: the forge *cutover* (spine becomes the forge launcher, inline path
-retired behind a parity flag), the studio Automations view, forge-derived
-subscription provisioning, and dispatcher `EngineRunner` convergence.
+the first-class extensibility point for arbitrary external systems). The
+**studio Automations view** (`/triggers`, gated on `triggers_enabled`) lists
+and manages every subscription by repo/by bot with a create form per source.
+Staged follow-ons: the forge *cutover* (spine becomes the forge launcher,
+inline path retired behind a parity flag), forge-derived subscription
+provisioning, and dispatcher `EngineRunner` convergence.
 
 ## Context
 

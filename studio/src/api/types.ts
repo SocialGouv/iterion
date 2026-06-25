@@ -142,6 +142,9 @@ export interface ServerInfo {
   // marketplace_enabled is true when the hosted bot registry is wired.
   // The SPA exposes the Marketplace view + nav entry conditionally.
   marketplace_enabled?: boolean;
+  // triggers_enabled is true when the event-driven trigger store is wired.
+  // The SPA exposes the Automations (Triggers) view + nav entry conditionally.
+  triggers_enabled?: boolean;
 }
 
 // CostCapStatus mirrors runtime.CapStatus (GET /api/v1/limits/cost).

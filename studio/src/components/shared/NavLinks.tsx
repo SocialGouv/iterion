@@ -6,6 +6,7 @@ import {
   ListBulletIcon,
   ViewGridIcon,
   RocketIcon,
+  LightningBoltIcon,
   PaperPlaneIcon,
   ArchiveIcon,
   ChevronDownIcon,
@@ -36,6 +37,7 @@ export type Section =
   | "runs"
   | "board"
   | "dispatcher"
+  | "triggers"
   | "marketplace"
   | "team"
   | "integrations"
@@ -72,6 +74,7 @@ const SEGMENT_TO_SECTION: Record<string, Section> = {
   insights: "runs",
   board: "board",
   dispatcher: "dispatcher",
+  triggers: "triggers",
   marketplace: "marketplace",
   teams: "team",
   admin: "admin",
@@ -110,6 +113,9 @@ export default function NavLinks({ collapsed }: Props) {
   }
   if (info?.dispatcher_enabled) {
     links.push({ section: "dispatcher", href: "/dispatcher", label: "Dispatcher", icon: RocketIcon });
+  }
+  if (info?.triggers_enabled) {
+    links.push({ section: "triggers", href: "/triggers", label: "Automations", icon: LightningBoltIcon });
   }
   if (info?.marketplace_enabled) {
     links.push({ section: "marketplace", href: "/marketplace", label: "Marketplace", icon: ArchiveIcon });

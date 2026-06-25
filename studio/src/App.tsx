@@ -18,6 +18,7 @@ const LabelsView = lazy(() => import("@/views/Board/Labels"));
 const FieldsView = lazy(() => import("@/views/Board/Fields"));
 const RunsAnalyticsView = lazy(() => import("@/views/RunsAnalytics"));
 const DispatcherView = lazy(() => import("@/views/Dispatcher"));
+const TriggersView = lazy(() => import("@/views/Triggers"));
 const MarketplaceView = lazy(() => import("@/views/Marketplace"));
 const OrgsAdminPage = lazy(() => import("@/views/admin/OrgsAdminPage"));
 const UsersAdminPage = lazy(() => import("@/views/admin/UsersAdminPage"));
@@ -301,6 +302,13 @@ function AuthedApp() {
             <Route path="/dispatcher">
               <ErrorBoundary area="Dispatcher view">
                 <DispatcherView />
+              </ErrorBoundary>
+            </Route>
+          )}
+          {serverInfo?.triggers_enabled && (
+            <Route path="/triggers">
+              <ErrorBoundary area="Automations view">
+                <TriggersView />
               </ErrorBoundary>
             </Route>
           )}
