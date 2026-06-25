@@ -117,15 +117,24 @@ type Aggregate struct {
 	Note         string                `json:"note,omitempty"`         // e.g. judges skipped, family overlap
 }
 
-// judgeRaw mirrors the forced-tool JSON the judge returns. Kept separate
-// from JudgeVerdict so the wire shape and the in-memory shape can evolve
-// independently; relative_vs_prev uses plain strings on the wire.
+// judgeRaw mirrors the forced-tool JSON the judge returns. The shape is
+// deliberately FLAT (every score a top-level field, no nested objects, no
+// min/max constraints) — this matches the schema shape iterion's own
+// claude_code judges use (ir.SchemaToJSON) and which the claude_code CLI's
+// structured-output extraction handles reliably; a nested `scores` object
+// made the CLI fall back to wrapped prose (the first cross-family live run).
 type judgeRaw struct {
-	Scores            map[string]float64 `json:"scores"`
-	Narrative         string             `json:"narrative"`
-	RelativeVsPrev    map[string]string  `json:"relative_vs_prev"`
-	RelativeNarrative string             `json:"relative_narrative"`
-	Confidence        float64            `json:"confidence"`
+	Efficacy          float64 `json:"efficacy"`
+	Completeness      float64 `json:"completeness"`
+	OutputQuality     float64 `json:"output_quality"`
+	Restraint         float64 `json:"restraint"`
+	Reliability       float64 `json:"reliability"`
+	ValueForMoney     float64 `json:"value_for_money"`
+	Overall           float64 `json:"overall"`
+	Narrative         string  `json:"narrative"`
+	RelativeOverall   string  `json:"relative_overall"`
+	RelativeNarrative string  `json:"relative_narrative"`
+	Confidence        float64 `json:"confidence"`
 }
 
 // DefaultJudgeModels returns the cross-family judge panel. Override with
@@ -221,11 +230,13 @@ func RunPanelWith(ctx context.Context, models []string, invoke JudgeInvoker, ev 
 			continue
 		}
 		v := toVerdict(spec, ev.PrimaryFamily, raw)
-		if len(v.Scores) == 0 {
-			// A judge that produced no usable scores (e.g. a backend that
-			// returned non-conforming structured output) must not pollute
-			// the panel with an empty 0-confidence entry — drop it + note it.
-			notes = append(notes, fmt.Sprintf("judge %s returned no usable scores (dropped)", spec))
+		if strings.TrimSpace(v.Narrative) == "" {
+			// A real verdict always carries a narrative (a required field).
+			// An empty narrative means the backend returned non-conforming
+			// output (e.g. claude_code wrapping prose into {"text":…} when
+			// its structured-output extraction failed) → drop it + note it,
+			// rather than pollute the panel with an all-zero verdict.
+			notes = append(notes, fmt.Sprintf("judge %s returned no usable verdict (dropped)", spec))
 			continue
 		}
 		agg.Verdicts = append(agg.Verdicts, v)
@@ -260,26 +271,24 @@ func mapToJudgeRaw(obj map[string]interface{}) (judgeRaw, error) {
 // scores to [0,1] and mapping the relative strings.
 func toVerdict(spec, botFamily string, raw judgeRaw) JudgeVerdict {
 	v := JudgeVerdict{
-		Model:             spec,
-		Family:            family(spec),
-		SameFamilyAsBot:   botFamily != "" && family(spec) == botFamily,
-		Scores:            make(map[Dimension]float64, len(Dimensions)),
+		Model:           spec,
+		Family:          family(spec),
+		SameFamilyAsBot: botFamily != "" && family(spec) == botFamily,
+		Scores: map[Dimension]float64{
+			DimEfficacy:      clamp01(raw.Efficacy),
+			DimCompleteness:  clamp01(raw.Completeness),
+			DimOutputQuality: clamp01(raw.OutputQuality),
+			DimRestraint:     clamp01(raw.Restraint),
+			DimReliability:   clamp01(raw.Reliability),
+			DimValueForMoney: clamp01(raw.ValueForMoney),
+			DimOverall:       clamp01(raw.Overall),
+		},
 		Narrative:         raw.Narrative,
 		RelativeNarrative: raw.RelativeNarrative,
 		Confidence:        clamp01(raw.Confidence),
 	}
-	for _, d := range Dimensions {
-		if s, ok := raw.Scores[string(d)]; ok {
-			v.Scores[d] = clamp01(s)
-		}
-	}
-	if len(raw.RelativeVsPrev) > 0 {
-		v.RelativeVsPrev = make(map[Dimension]Relative, len(raw.RelativeVsPrev))
-		for _, d := range Dimensions {
-			if r, ok := raw.RelativeVsPrev[string(d)]; ok {
-				v.RelativeVsPrev[d] = normRelative(r)
-			}
-		}
+	if r := normRelative(raw.RelativeOverall); r != RelNA {
+		v.RelativeVsPrev = map[Dimension]Relative{DimOverall: r}
 	}
 	return v
 }
@@ -356,9 +365,9 @@ Anti-gaming rules (critical):
 - If the artifact contradicts the claimed outcome, trust the artifact.
 - Judge substance, not style.
 
-If a PREVIOUS assessment is provided, also produce relative_vs_prev (better/same/worse per dimension) and a relative_narrative. When comparing: reward GENUINE improvement in the real result; treat stylistic-only or cosmetic differences as "same"; do not penalise a run merely for being different. Be conservative — only say "better"/"worse" when the evidence clearly supports it.
+If a PREVIOUS assessment is provided, also set relative_overall (better/same/worse) and a relative_narrative. When comparing: reward GENUINE improvement in the real result; treat stylistic-only or cosmetic differences as "same"; do not penalise a run merely for being different. Be conservative — only say "better"/"worse" when the evidence clearly supports it. With no previous assessment, set relative_overall to "n/a".
 
-Provide your assessment as the required structured output — EVERY field must be present (all seven scores, a narrative, and confidence). narrative: 3-8 sentences grounding every score in specific evidence. confidence: 0.0–1.0 in your own assessment.`)
+Provide your assessment as the required structured output — EVERY field must be present: the seven scores (efficacy, completeness, output_quality, restraint, reliability, value_for_money, overall) each as a top-level number 0.0–1.0, a narrative, and confidence. narrative: 3-8 sentences grounding every score in specific evidence. confidence: 0.0–1.0 in your own assessment.`)
 	return b.String()
 }
 
@@ -412,46 +421,29 @@ func prevNarrative(prev *Snapshot) string {
 	return ""
 }
 
-// judgeSchemaJSON is the forced-tool JSON Schema for a judge verdict. Kept
-// in sync with judgeRaw.
+// judgeSchemaJSON is the forced-tool JSON Schema for a judge verdict. It is
+// FLAT (every score a top-level number field) on purpose — see judgeRaw —
+// so both claw and the claude_code CLI's structured-output extraction
+// populate it reliably. Scores are clamped to [0,1] in toVerdict rather
+// than via min/max constraints (which the CLI handled less reliably).
 func judgeSchemaJSON() json.RawMessage {
-	dimProps := map[string]any{}
+	props := map[string]any{}
+	required := make([]string, 0, len(Dimensions)+2)
 	for _, d := range Dimensions {
-		dimProps[string(d)] = map[string]any{"type": "number", "minimum": 0, "maximum": 1}
+		props[string(d)] = map[string]any{"type": "number"}
+		required = append(required, string(d))
 	}
-	relProps := map[string]any{}
-	for _, d := range Dimensions {
-		relProps[string(d)] = map[string]any{"type": "string", "enum": []string{"better", "same", "worse", "n/a"}}
-	}
+	props["narrative"] = map[string]any{"type": "string"}
+	props["relative_overall"] = map[string]any{"type": "string", "enum": []string{"better", "same", "worse", "n/a"}}
+	props["relative_narrative"] = map[string]any{"type": "string"}
+	props["confidence"] = map[string]any{"type": "number"}
+	required = append(required, "narrative", "confidence")
 	schema := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"scores": map[string]any{
-				"type":                 "object",
-				"properties":           dimProps,
-				"required":             dimStrings(),
-				"additionalProperties": false,
-			},
-			"narrative": map[string]any{"type": "string"},
-			"relative_vs_prev": map[string]any{
-				"type":                 "object",
-				"properties":           relProps,
-				"additionalProperties": false,
-			},
-			"relative_narrative": map[string]any{"type": "string"},
-			"confidence":         map[string]any{"type": "number", "minimum": 0, "maximum": 1},
-		},
-		"required":             []string{"scores", "narrative", "confidence"},
+		"type":                 "object",
+		"properties":           props,
+		"required":             required,
 		"additionalProperties": false,
 	}
 	b, _ := json.Marshal(schema)
 	return b
-}
-
-func dimStrings() []string {
-	out := make([]string, len(Dimensions))
-	for i, d := range Dimensions {
-		out[i] = string(d)
-	}
-	return out
 }

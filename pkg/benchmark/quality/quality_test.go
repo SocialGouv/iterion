@@ -184,10 +184,12 @@ func TestAggregateScores_MeanAndDisagreement(t *testing.T) {
 
 func TestToVerdict_ClampAndFamilyFlag(t *testing.T) {
 	raw := judgeRaw{
-		Scores:         map[string]float64{"overall": 1.5, "efficacy": -0.3, "value_for_money": 0.5},
-		Narrative:      "ok",
-		RelativeVsPrev: map[string]string{"overall": "BETTER", "efficacy": "bogus"},
-		Confidence:     2.0,
+		Overall:         1.5,  // clamps to 1.0
+		Efficacy:        -0.3, // clamps to 0.0
+		ValueForMoney:   0.5,
+		Narrative:       "ok",
+		RelativeOverall: "BETTER", // normalises to better
+		Confidence:      2.0,      // clamps to 1.0
 	}
 	v := toVerdict("anthropic/claude-sonnet-4-6", "anthropic", raw)
 	if v.Scores[DimOverall] != 1.0 {
@@ -205,9 +207,6 @@ func TestToVerdict_ClampAndFamilyFlag(t *testing.T) {
 	if v.RelativeVsPrev[DimOverall] != RelBetter {
 		t.Errorf("relative overall should normalise BETTER→better")
 	}
-	if v.RelativeVsPrev[DimEfficacy] != RelNA {
-		t.Errorf("unknown relative should normalise to n/a")
-	}
 }
 
 func TestJudgeSchemaJSON_Valid(t *testing.T) {
@@ -220,8 +219,11 @@ func TestJudgeSchemaJSON_Valid(t *testing.T) {
 	if !ok {
 		t.Fatal("schema missing properties")
 	}
-	if _, ok := props["scores"]; !ok {
-		t.Errorf("schema missing scores property")
+	// Flat schema: every score is a top-level property (no nested "scores").
+	for _, want := range []string{"efficacy", "overall", "value_for_money", "narrative", "confidence"} {
+		if _, ok := props[want]; !ok {
+			t.Errorf("schema missing top-level property %q", want)
+		}
 	}
 	req, ok := m["required"].([]any)
 	if !ok || len(req) == 0 {
