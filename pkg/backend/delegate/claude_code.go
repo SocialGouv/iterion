@@ -511,6 +511,25 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 		return result, &ErrTransient{Provider: BackendClaudeCode, Reason: "api_error_result", Detail: detail}
 	}
 
+	// Model-unavailable guard. An invalid/unauthorized `--model` does NOT fail
+	// the stream (subtype=success, IsError=false): the claude CLI renders its
+	// model-error sentence AS the result text (e.g. "There's an issue with the
+	// selected model (openai/gpt-5.5). It may not exist or you may not have
+	// access to it."). Left untouched that prose flows into the formatting
+	// passes and finally surfaces as an opaque "missing required field" schema
+	// error, masking the real cause. Fail fast with a legible error naming the
+	// offending model. Non-transient (unlike the API-error guard above) — a
+	// retry can't fix a bad/unauthorized model; the usual cause is a
+	// claude_code node pinned to a non-Anthropic model (e.g. the shared
+	// ITERION_SEC_AUDIT_BACKEND/MODEL override dragging detect_tech onto
+	// openai/gpt-5.5).
+	if rm.Result != nil && isModelUnavailableResult(*rm.Result) {
+		detail := strings.TrimSpace(*rm.Result)
+		b.Logger.Error("[%s#%d/claude-code] model %q unavailable to the CLI — failing fast: %.160s",
+			task.NodeID, task.Iteration, task.Model, detail)
+		return result, fmt.Errorf("claude-code: model %q is unavailable or unauthorized (check the node's backend/model — a claude_code node cannot run a non-Anthropic model): %s", task.Model, detail)
+	}
+
 	if needsTwoPass && rm.SessionID != "" {
 		if handled, twoPassResult, twoPassErr := b.runTwoPassFormatting(ctx, task, rm, result, &totalIn, &totalOut); handled {
 			return twoPassResult, twoPassErr
@@ -1324,6 +1343,26 @@ func isTransientAPIErrorResult(s string) bool {
 	// No parseable status code (e.g. "API Error: Connection error.") → fall
 	// back to the shared connectivity-marker classifier.
 	return MatchesNetworkSignature(low)
+}
+
+// isModelUnavailableResult detects the claude CLI's "bad/unauthorized model"
+// completion. An invalid or inaccessible `--model` does NOT fail the stream
+// (subtype=success, IsError=false); the CLI renders its model-error sentence AS
+// the result text, e.g. "There's an issue with the selected model
+// (openai/gpt-5.5). It may not exist or you may not have access to it. Run
+// --model to pick a different model." Untyped, that prose flows into the
+// formatting passes and finally surfaces as an opaque schema "missing required
+// field" error, hiding the real cause. Detecting it lets the node fail fast and
+// legibly. Bounded length + two distinctive markers keep this from matching a
+// model's own prose that happens to discuss "selected model".
+func isModelUnavailableResult(s string) bool {
+	t := strings.TrimSpace(s)
+	if t == "" || len(t) >= 400 {
+		return false
+	}
+	low := strings.ToLower(t)
+	return strings.Contains(low, "selected model") &&
+		(strings.Contains(low, "may not exist") || strings.Contains(low, "access to it"))
 }
 
 // retypeNetworkError re-classifies an opaque claude_code failure as an
