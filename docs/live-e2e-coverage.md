@@ -60,13 +60,16 @@ secured-renovacy). Each test `t.Skip`s when its prerequisites are missing.
     `ITERION_LIVE_JUDGE_MODELS`.
   - **Experimental — Anthropic judge over Claude Code OAuth (no key):**
     `ITERION_LIVE_JUDGE_CLAUDE_CODE=1` routes the Anthropic judge through
-    the claude_code delegate (OAuth). Wired + authenticates, but its
-    structured-output extraction is currently unreliable for the rich
-    7-field rubric schema (the verdict often comes back as wrapped prose and
-    is then cleanly dropped with a note), so it is **off by default** to
-    avoid paying for a judge that gets dropped. Hardening the claude_code
-    structured-output path for nested schemas is the follow-up that makes
-    keyless cross-family reliable.
+    the claude_code delegate (OAuth). It **authenticates** (no 401), but its
+    structured output comes back as wrapped prose and is cleanly dropped, so
+    it is **off by default**. Flattening the judge schema to a top-level
+    shape (matching the shape iterion's own claude_code judges use) did NOT
+    resolve it across 4 live runs — the cause is deeper than schema shape
+    (likely how the delegate's structured-output path behaves for a
+    manually-built one-shot Task with a tool set, vs the executor's node
+    path). Keyless cross-family is therefore a focused follow-up requiring
+    delegate-level debugging + live iteration. **For guaranteed cross-family
+    today, set `ANTHROPIC_API_KEY`** (the proven claw path).
 - **Rubric** (0.0–1.0, multi-dimensional so no single number is gameable):
   `efficacy`, `completeness`, `output_quality`, `restraint`,
   `reliability`, `value_for_money`, `overall` (holistic, not an average).
