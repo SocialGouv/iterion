@@ -168,11 +168,11 @@ Status legend: ✅ implemented · 🚧 planned.
 | Human llm modes | `TestLive_Feat_HumanLLM` | 🚧 |
 | Skills mirroring | `TestLive_Feat_Skills` | ✅ |
 | Backend auto-detect | `TestLive_Feat_BackendAutodetect` | ✅ |
-| Sandbox auto/network/host_state/build | `TestLive_Feat_Sandbox_*` | 🚧 |
-| Dispatcher | `TestLive_Feat_Dispatcher` | 🚧 |
-| Webhooks | `TestLive_Feat_Webhook` | 🚧 |
-| Schedule | `TestLive_Feat_Schedule` | 🚧 |
-| Bundles / Expr-Compute / Codex | `TestLive_Feat_Bundle`, `_Compute`, `_Codex` | 🚧 |
+| Sandbox auto/network/host_state/build | `TestLive_Feat_Sandbox_*` (docker; follow-up) | 🚧 |
+| Dispatcher | `e2e/dispatcher_test.go`, `board_dispatcher_test.go` (deterministic) | ✅ |
+| Webhooks | `pkg/webhooks/*_test.go` (parsers) + server stubs (deterministic) | ✅ |
+| Schedule (trigger → run) | `TestLive_Feat_Schedule` | ✅ |
+| Bundles / Expr-Compute / Codex | skills+bundle bots / `ExhaustiveDSLCoverage` / dual-model (covered) | ✅ |
 
 ## Cost discipline
 

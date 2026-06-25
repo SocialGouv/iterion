@@ -379,6 +379,11 @@ tasks:
     cmds:
       - go test -v -tags live -count=1 -run 'TestLive_Feat_BudgetResume$' -timeout 10m ./e2e/...
 
+  test:live:feat:schedule:
+    desc: 'Live e2e for the schedule trigger → bot run (isolated, real cost).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_Schedule$' -timeout 8m ./e2e/...
+
   test:live:bots:new:
     desc: 'Run ALL 16 new per-bot live e2e tests sequentially (very slow + very costly).'
     cmds:

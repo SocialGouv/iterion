@@ -1,0 +1,21 @@
+## Feature fixture: a trivial, cheap bot used by the schedule trigger test.
+
+schema out:
+  ok: bool
+
+prompt ping_sys:
+  Reply by setting ok=true.
+
+prompt ping_user:
+  Are you running?
+
+agent ping:
+  backend: "claw"
+  model: "openai/gpt-5.5"
+  system: ping_sys
+  user: ping_user
+  output: out
+
+workflow main:
+  entry: ping
+  ping -> done
