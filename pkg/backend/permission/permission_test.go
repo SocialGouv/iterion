@@ -150,6 +150,8 @@ func TestIsInfrastructureTool_AllBackendSpellings(t *testing.T) {
 	exempt := []string{
 		// interaction (claw bare name + claude_code MCP FQN)
 		"ask_user", "mcp__iterion__ask_user", "send_user_message",
+		// structured-output emission tool (claude_code + claw spellings)
+		"StructuredOutput", "structured_output",
 		// board (claude_code double-underscore, claw single-underscore, dotted)
 		"mcp__iterion_board__board.create", "mcp_iterion_board_create",
 		"mcp.iterion_board.create",

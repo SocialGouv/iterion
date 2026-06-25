@@ -445,6 +445,12 @@ func IsInfrastructureTool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "ask_user", "askuser", "send_user_message":
 		return true
+	case "structuredoutput", "structured_output":
+		// The synthetic tool iterion injects to collect a node's `output:`
+		// schema (claude_code: StructuredOutput, claw: structured_output).
+		// It is how the agent RETURNS its result, not an action against the
+		// environment — gating it would break every schema'd node.
+		return true
 	}
 	// Match iterion's reserved MCP namespace regardless of the separator
 	// spelling a backend uses for the FQN — claude_code double-underscore

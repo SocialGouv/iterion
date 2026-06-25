@@ -959,6 +959,13 @@ func (e *Engine) handleNeedsInteraction(ctx context.Context, rs *runState, nodeI
 			"node %q exceeded interaction recursion depth (%d > %d) — backend kept escalating without converging",
 			nodeID, depth, maxInteractionDepth))
 	}
+	// A tool-permission `ask` pause is inherently a human approval request:
+	// pause regardless of the node's interaction: mode (the gate is its own
+	// reason to pause — an agent/judge need not opt into interaction: to be
+	// gated). Detected by the structured marker the gate stashes.
+	if _, isPermission := ni.Questions[permission.InteractionMarkerKey]; isPermission {
+		return e.pauseForBackendInteraction(rs, nodeID, ni)
+	}
 	switch nodeInteraction(node) {
 	case ir.InteractionHuman:
 		return e.pauseForBackendInteraction(rs, nodeID, ni)
