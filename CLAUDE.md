@@ -400,21 +400,35 @@ stream for cloud), and a `trigger.Subscription` registry binding
 (local) or Mongo (cloud) like `forge.RepoIntegrationStore`. The per-bot
 `bundle.Invocation` stays the *capability* ("what can fire me");
 `Subscription` is the *binding* (where/which repo), generated from
-invocations — repo/tenant/cron never enter a manifest. **Phase 1 ships
-iterion board events end-to-end**: a `kind: board` invocation with a
-`board:` block (`on`/`to_states`/`all_labels`) makes a native-board
-card transition fire a bot. The board source tails the existing
-`native.Store.Subscribe` events.jsonl seam and **promotes the card**
-(stamps its bot) so the dispatcher's `Claim` — the **sole launch
-authority** — picks it up now (via `Manager.Refresh()`) instead of at
-the 30s poll; the poll stays as the reconciliation net, so the
-fast-path and poll **cannot double-launch**. Wired in
-[pkg/server/trigger_coordinator.go](pkg/server/trigger_coordinator.go)
+invocations — repo/tenant/cron never enter a manifest. **Four sources
+ship on the spine** (each = a source adapter publishing a
+`trigger.Event` + an effect: promote-card vs direct launch):
+- **board events** — a `kind: board` invocation with a `board:` block
+  (`on`/`to_states`/`all_labels`) fires a bot on a native-card
+  transition. The board source tails the existing
+  `native.Store.Subscribe` seam and **promotes the card** (stamps its
+  bot) so the dispatcher's `Claim` — the **sole launch authority** —
+  picks it up now (`Manager.Refresh()`) instead of at the 30s poll; the
+  poll stays the reconciliation net, so fast-path + poll **cannot
+  double-launch**.
+- **run-completion** ("runned by iterion") — `runview.Service` emits
+  `run.finished`/`failed`/`cancelled`; a direct-mode subscription chains
+  the next bot (`Actor` = upstream bot id).
+- **scheduled** — `trigger.Scheduler` ticks schedule-kind subscriptions
+  on their `Cron` (local tenant ""; cloud keeps cloudsched's CAS
+  ticker).
+- **git-forge** — the inbound-webhook launch tail emits a `SourceForge`
+  event with a `launched_run_id` marker (observational; the evaluator
+  never re-launches it, so the mature HMAC/idempotency/quota webhook path
+  stays the sole authority).
+
+Direct launches go through `serviceLauncher` over `runview.Service.Launch`.
+Wired in [pkg/server/trigger_coordinator.go](pkg/server/trigger_coordinator.go)
 (both `iterion studio` and `iterion dispatch`); REST CRUD at
-`/api/v1/triggers` (gated by `server_info.triggers_enabled`). Launch-path
-convergence, run-completion chaining, scheduled/cloudsched, the git-forge
-refactor, custom ingress, and the studio Automations view are staged
-follow-ons on the same spine. Reference:
+`/api/v1/triggers` (gated by `server_info.triggers_enabled`). The forge
+*cutover* (spine becomes the forge launcher, inline retired), custom
+ingress, the studio Automations view, forge-derived provisioning, and
+dispatcher `EngineRunner` convergence are staged follow-ons. Reference:
 [docs/adr/046-event-driven-runs-trigger-spine.md](docs/adr/046-event-driven-runs-trigger-spine.md).
 
 ### Bot board access (capabilities)
