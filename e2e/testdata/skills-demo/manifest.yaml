@@ -1,0 +1,5 @@
+name: skills-demo
+display_name: Skills Demo
+version: 0.1.0
+description: Minimal bundle for the skills-mirroring e2e feature test.
+schema_version: 1

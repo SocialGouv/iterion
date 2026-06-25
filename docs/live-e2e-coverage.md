@@ -156,17 +156,17 @@ Status legend: ✅ implemented · 🚧 planned.
 | Node types / routers / await / session modes | `TestLive_Full_ExhaustiveDSLCoverage` | ✅ |
 | claw backend + tools + MCP + vision + long-context | `TestLive_Lite_Claw*`, `TestLive_ClawToolCoverage` | ✅ |
 | Router (llm mode) | `TestLive_Feat_RouterLLM` | ✅ |
-| Permission gate (deny; ask/off pending) | `TestLive_Feat_Permission_Deny` | ✅ |
+| Permission gate (deny + ask) | `TestLive_Feat_Permission_Deny`, `_Ask` | ✅ |
 | Ultracode | `TestLive_Feat_Ultracode` | ✅ |
 | Supervisors | `TestLive_Feat_Supervisor` | ✅ |
 | Cursors | `TestLive_Feat_Cursors` | ✅ |
 | Board capabilities | `TestLive_Feat_BoardCaps` | ✅ |
-| rtk savings | `TestLive_Feat_Rtk` | 🚧 |
+| rtk compression | `TestLive_Feat_Rtk` (rtk binary) | ✅ |
 | Verified Action recovery | `TestLive_Feat_VerifiedAction` | ✅ |
 | Budget enforcement (resume/fork pending) | `TestLive_Feat_Budget` | ✅ |
 | Worktree finalization | `TestLive_Feat_Worktree` | ✅ |
 | Human llm modes | `TestLive_Feat_HumanLLM` | 🚧 |
-| Skills mirroring | `TestLive_Feat_Skills` | 🚧 |
+| Skills mirroring | `TestLive_Feat_Skills` | ✅ |
 | Backend auto-detect | `TestLive_Feat_BackendAutodetect` | ✅ |
 | Sandbox auto/network/host_state/build | `TestLive_Feat_Sandbox_*` | 🚧 |
 | Dispatcher | `TestLive_Feat_Dispatcher` | 🚧 |

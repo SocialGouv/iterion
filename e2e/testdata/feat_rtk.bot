@@ -1,0 +1,12 @@
+## Feature fixture: rtk command-output compression (node-level opt-in).
+## The tool node opts into rtk; the runtime rewrites `git status` to its
+## rtk-compressed equivalent before running it. The test asserts the node
+## runs cleanly with rtk on (skipped when the rtk binary is absent).
+
+tool rtk_probe:
+  rtk: on
+  command: "cd \"${PROJECT_DIR}\" && git status"
+
+workflow main:
+  entry: rtk_probe
+  rtk_probe -> done

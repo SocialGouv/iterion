@@ -57,6 +57,11 @@ type liveSpec struct {
 	// node past human gates without a real operator.
 	autoResume bool
 	maxResumes int // default 12 when autoResume is set
+	// acceptPause treats a final ErrRunPaused as an acceptable terminal
+	// state (instead of fatal) — for feature tests that EXPECT a pause,
+	// e.g. the permission ask-mode gate. The caller then asserts on
+	// res.run.Status == paused_waiting_human.
+	acceptPause bool
 }
 
 // liveResult is the loaded outcome of a runBotLive call.
@@ -130,6 +135,9 @@ func runBotLive(t *testing.T, spec liveSpec) liveResult {
 	t.Logf("[live] %s finished in %s", spec.runIDBase, elapsed.Round(time.Second))
 
 	acceptable, reason := liveRunResultAcceptable(runErr)
+	if spec.acceptPause && errors.Is(runErr, runtime.ErrRunPaused) {
+		acceptable, reason = true, "run paused (expected by acceptPause)"
+	}
 	if !acceptable {
 		t.Fatalf("unacceptable run error: %v", runErr)
 	}

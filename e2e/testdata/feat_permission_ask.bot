@@ -1,0 +1,29 @@
+## Feature fixture: permission gate (ask mode).
+## The workflow allow-lists only Read; a claw agent asked to run Bash hits a
+## non-allow-listed call, so the gate PAUSES the run for approval (the
+## permission marker pauses without needing interaction: set). The test
+## asserts the run reaches paused_waiting_human.
+
+schema out:
+  done: bool
+
+prompt run_sys:
+  You have a bash tool. Run the shell command `echo hello` with it, then
+  report done=true.
+
+prompt run_user:
+  Run `echo hello` now.
+
+agent runner:
+  backend: "claw"
+  model: "openai/gpt-5.5"
+  tools: [bash]
+  system: run_sys
+  user: run_user
+  output: out
+
+workflow main:
+  permission: ask
+  allow: ["Read(**)"]
+  entry: runner
+  runner -> done

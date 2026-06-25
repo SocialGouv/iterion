@@ -359,6 +359,21 @@ tasks:
     cmds:
       - go test -v -tags live -count=1 -run 'TestLive_Feat_RouterLLM$' -timeout 12m ./e2e/...
 
+  test:live:feat:skills:
+    desc: 'Live e2e for the bundle skill mirroring feature (real cost).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_Skills$' -timeout 8m ./e2e/...
+
+  test:live:feat:permission-ask:
+    desc: 'Live e2e for the permission gate ask mode (pauses) feature (real cost).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_Permission_Ask$' -timeout 6m ./e2e/...
+
+  test:live:feat:rtk:
+    desc: 'Live e2e for the rtk command-output compression (needs rtk binary) feature (real cost).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_Rtk$' -timeout 3m ./e2e/...
+
   test:live:bots:new:
     desc: 'Run ALL 16 new per-bot live e2e tests sequentially (very slow + very costly).'
     cmds:

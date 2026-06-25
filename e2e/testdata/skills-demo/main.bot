@@ -1,0 +1,27 @@
+## Feature fixture: bundle skill mirroring.
+## The bundle ships skills/demo-token.md; the runtime mirrors it into
+## <workspace>/.claude/skills/ at run start. The agent reads it and reports
+## the secret token, proving the skill was both mirrored AND usable.
+
+schema out:
+  token: string
+
+prompt read_sys:
+  A skill file was installed at .claude/skills/demo-token.md in the current
+  workspace. Read that file and report the SECRET token it contains, verbatim,
+  in the `token` field.
+
+prompt read_user:
+  Read the demo-token skill and report its secret token.
+
+agent reader:
+  backend: "claw"
+  model: "openai/gpt-5.5"
+  tools: [read_file, glob, bash]
+  system: read_sys
+  user: read_user
+  output: out
+
+workflow main:
+  entry: reader
+  reader -> done
