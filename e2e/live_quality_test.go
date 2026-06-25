@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,10 +13,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/benchmark"
 	"github.com/SocialGouv/iterion/pkg/benchmark/quality"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -99,7 +102,7 @@ func assessQuality(t *testing.T, res liveResult, qi qualityInput) {
 	reg := model.NewRegistry()
 	models := availableJudgeModels()
 	t.Logf("[quality] judge panel: %v", models)
-	agg, err := quality.RunPanel(ctx, reg, models, ev, prev)
+	agg, err := quality.RunPanelWith(ctx, models, liveJudgeInvoker(reg, res.workspaceDir), ev, prev)
 	if err != nil {
 		t.Logf("[quality] panel unavailable (%v) — no snapshot written", err)
 		return
@@ -313,6 +316,44 @@ func iterionSHA() string {
 	return strings.TrimSpace(string(out))
 }
 
+// liveJudgeInvoker composes the cross-family judge panel's backends:
+// OpenAI judges run via claw (API key / ChatGPT-OAuth); an Anthropic judge
+// runs via claw when ANTHROPIC_API_KEY is set, otherwise via the
+// claude_code OAuth delegate — so a TRUE cross-family panel works in an
+// OAuth-only Anthropic environment with no API key (the gap the first live
+// run exposed). The claude_code path reuses the same delegate the bots use,
+// so it authenticates via Claude Code OAuth and produces the same forced
+// structured output.
+func liveJudgeInvoker(reg *model.Registry, workDir string) quality.JudgeInvoker {
+	claw := quality.ClawInvoker(reg)
+	var cc delegate.Backend
+	if os.Getenv("ANTHROPIC_API_KEY") == "" {
+		if be, err := delegate.DefaultRegistry(iterlog.New(iterlog.LevelError, os.Stderr)).Resolve(delegate.BackendClaudeCode); err == nil {
+			cc = be
+		}
+	}
+	return func(ctx context.Context, spec, system, userMsg string, schema json.RawMessage) (map[string]interface{}, error) {
+		if cc != nil && strings.HasPrefix(spec, "anthropic/") {
+			res, err := cc.Execute(ctx, delegate.Task{
+				NodeID:       "quality_judge",
+				SystemPrompt: system,
+				UserPrompt:   userMsg,
+				OutputSchema: schema,
+				Model:        spec,
+				WorkDir:      workDir,
+			})
+			if err != nil {
+				return nil, err
+			}
+			if len(res.Output) == 0 {
+				return nil, fmt.Errorf("claude_code judge returned no structured output")
+			}
+			return res.Output, nil
+		}
+		return claw(ctx, spec, system, userMsg, schema)
+	}
+}
+
 // availableJudgeModels filters the configured judge panel down to models
 // whose provider can actually authenticate via claw's direct-generation
 // path. The key gotcha (caught by the first live run): claw's anthropic
@@ -331,7 +372,15 @@ func availableJudgeModels() []string {
 			openaiOK = true
 		}
 	}
+	// Anthropic judge is usable either via claw (ANTHROPIC_API_KEY) or via
+	// the claude_code OAuth delegate (claude CLI present) — see
+	// liveJudgeInvoker, which routes anthropic/* to claude_code when no key.
 	anthropicOK := os.Getenv("ANTHROPIC_API_KEY") != ""
+	if !anthropicOK {
+		if _, err := exec.LookPath("claude"); err == nil {
+			anthropicOK = true
+		}
+	}
 	var out []string
 	for _, m := range all {
 		switch {

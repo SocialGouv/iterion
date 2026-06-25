@@ -156,12 +156,50 @@ func family(spec string) string {
 	return spec
 }
 
-// RunPanel runs every judge model over the evidence and aggregates their
-// verdicts. A judge that cannot be resolved (no credential for its family)
-// or that errors is skipped with a note rather than failing the panel, so
-// a single available family still yields an assessment. An error is
-// returned only when NO judge produced a verdict.
+// JudgeInvoker runs ONE judge: given a model spec, the rubric system
+// prompt, the rendered evidence user message, and the forced-tool JSON
+// schema, it returns the judge's structured verdict object. Abstracting the
+// call lets callers route different judges through different backends — e.g.
+// an OpenAI judge via claw's direct-generation path and an Anthropic judge
+// via the claude_code OAuth delegate (so a true cross-family panel works
+// without an ANTHROPIC_API_KEY). See ClawInvoker for the default.
+type JudgeInvoker func(ctx context.Context, modelSpec, system, userMsg string, schema json.RawMessage) (map[string]interface{}, error)
+
+// ClawInvoker is the default judge invoker: it resolves the model spec to a
+// claw client and forces the structured-output tool. Requires an API key
+// for the model's provider (claw cannot use Claude Code OAuth).
+func ClawInvoker(reg *model.Registry) JudgeInvoker {
+	return func(ctx context.Context, spec, system, userMsg string, schema json.RawMessage) (map[string]interface{}, error) {
+		client, err := reg.Resolve(spec)
+		if err != nil {
+			return nil, err
+		}
+		res, err := model.GenerateObjectDirect[map[string]interface{}](ctx, client, model.GenerationOptions{
+			Model:          spec,
+			System:         system,
+			ExplicitSchema: schema,
+			SchemaName:     "quality_assessment",
+			MaxTokens:      4096,
+			Messages:       []api.Message{{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: userMsg}}}},
+		})
+		if err != nil {
+			return nil, err
+		}
+		return res.Object, nil
+	}
+}
+
+// RunPanel runs the judge panel through claw (the default invoker). See
+// RunPanelWith to inject a backend-routing invoker.
 func RunPanel(ctx context.Context, reg *model.Registry, models []string, ev Evidence, prev *Snapshot) (Aggregate, error) {
+	return RunPanelWith(ctx, models, ClawInvoker(reg), ev, prev)
+}
+
+// RunPanelWith runs every judge model over the evidence via invoke and
+// aggregates their verdicts. A judge that errors is skipped with a note
+// rather than failing the panel, so a single available family still yields
+// an assessment. An error is returned only when NO judge produced a verdict.
+func RunPanelWith(ctx context.Context, models []string, invoke JudgeInvoker, ev Evidence, prev *Snapshot) (Aggregate, error) {
 	if len(models) == 0 {
 		models = DefaultJudgeModels()
 	}
@@ -172,27 +210,17 @@ func RunPanel(ctx context.Context, reg *model.Registry, models []string, ev Evid
 	var agg Aggregate
 	var notes []string
 	for _, spec := range models {
-		client, err := reg.Resolve(spec)
-		if err != nil {
-			notes = append(notes, fmt.Sprintf("judge %s skipped: %v", spec, err))
-			continue
-		}
-		genOpts := model.GenerationOptions{
-			Model:          spec,
-			System:         sys,
-			ExplicitSchema: schema,
-			SchemaName:     "quality_assessment",
-			MaxTokens:      4096,
-			Messages: []api.Message{
-				{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: user}}},
-			},
-		}
-		res, err := model.GenerateObjectDirect[judgeRaw](ctx, client, genOpts)
+		obj, err := invoke(ctx, spec, sys, user, schema)
 		if err != nil {
 			notes = append(notes, fmt.Sprintf("judge %s errored: %v", spec, err))
 			continue
 		}
-		agg.Verdicts = append(agg.Verdicts, toVerdict(spec, ev.PrimaryFamily, res.Object))
+		raw, err := mapToJudgeRaw(obj)
+		if err != nil {
+			notes = append(notes, fmt.Sprintf("judge %s parse: %v", spec, err))
+			continue
+		}
+		agg.Verdicts = append(agg.Verdicts, toVerdict(spec, ev.PrimaryFamily, raw))
 	}
 
 	if len(agg.Verdicts) == 0 {
@@ -200,10 +228,24 @@ func RunPanel(ctx context.Context, reg *model.Registry, models []string, ev Evid
 	}
 	agg.MeanScores, agg.Disagreement = aggregateScores(agg.Verdicts)
 	if len(notes) > 0 {
-		notes = append([]string{agg.Note}, notes...)
+		agg.Note = strings.TrimSpace(strings.Join(notes, "; "))
 	}
-	agg.Note = strings.TrimSpace(strings.TrimPrefix(strings.Join(notes, "; "), "; "))
 	return agg, nil
+}
+
+// mapToJudgeRaw converts a decoded structured-output object into the typed
+// judgeRaw via a JSON round-trip (the invoker returns a generic map so it
+// can come from any backend).
+func mapToJudgeRaw(obj map[string]interface{}) (judgeRaw, error) {
+	b, err := json.Marshal(obj)
+	if err != nil {
+		return judgeRaw{}, err
+	}
+	var raw judgeRaw
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return judgeRaw{}, err
+	}
+	return raw, nil
 }
 
 // toVerdict normalises a raw judge payload into a JudgeVerdict, clamping
