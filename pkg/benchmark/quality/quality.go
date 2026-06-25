@@ -220,7 +220,15 @@ func RunPanelWith(ctx context.Context, models []string, invoke JudgeInvoker, ev 
 			notes = append(notes, fmt.Sprintf("judge %s parse: %v", spec, err))
 			continue
 		}
-		agg.Verdicts = append(agg.Verdicts, toVerdict(spec, ev.PrimaryFamily, raw))
+		v := toVerdict(spec, ev.PrimaryFamily, raw)
+		if len(v.Scores) == 0 {
+			// A judge that produced no usable scores (e.g. a backend that
+			// returned non-conforming structured output) must not pollute
+			// the panel with an empty 0-confidence entry — drop it + note it.
+			notes = append(notes, fmt.Sprintf("judge %s returned no usable scores (dropped)", spec))
+			continue
+		}
+		agg.Verdicts = append(agg.Verdicts, v)
 	}
 
 	if len(agg.Verdicts) == 0 {
@@ -350,7 +358,7 @@ Anti-gaming rules (critical):
 
 If a PREVIOUS assessment is provided, also produce relative_vs_prev (better/same/worse per dimension) and a relative_narrative. When comparing: reward GENUINE improvement in the real result; treat stylistic-only or cosmetic differences as "same"; do not penalise a run merely for being different. Be conservative — only say "better"/"worse" when the evidence clearly supports it.
 
-Return your assessment via the quality_assessment tool. narrative: 3-8 sentences grounding every score in specific evidence. confidence: 0.0–1.0 in your own assessment.`)
+Provide your assessment as the required structured output — EVERY field must be present (all seven scores, a narrative, and confidence). narrative: 3-8 sentences grounding every score in specific evidence. confidence: 0.0–1.0 in your own assessment.`)
 	return b.String()
 }
 

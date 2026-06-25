@@ -341,6 +341,12 @@ func liveJudgeInvoker(reg *model.Registry, workDir string) quality.JudgeInvoker 
 				OutputSchema: schema,
 				Model:        spec,
 				WorkDir:      workDir,
+				// A non-empty (read-only) tool set engages claude_code's
+				// two-pass structured-output extraction (needsTwoPass), the
+				// reliable path the bots' claude_code judges use. The judge
+				// won't need the tools, but it guarantees the forced
+				// structured output is recovered even if pass-1 returns prose.
+				AllowedTools: []string{"Read", "Grep", "Glob"},
 			})
 			if err != nil {
 				return nil, err
