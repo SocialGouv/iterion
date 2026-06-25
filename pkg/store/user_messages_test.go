@@ -85,6 +85,40 @@ func contains(ss []string, want string) bool {
 	return false
 }
 
+// The inbox doorbell must advance for appends made through a DIFFERENT
+// store handle on the same directory — the cross-process case a
+// supervisor steering a run from a separate process relies on. Without
+// the file-size term, handle B's version would never move and its drain
+// would fast-skip A's message forever.
+func TestQueuedInboxVersionSeesCrossHandleAppend(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	const runID = "run-xhandle"
+
+	a, err := New(dir)
+	if err != nil {
+		t.Fatalf("New a: %v", err)
+	}
+	b, err := New(dir)
+	if err != nil {
+		t.Fatalf("New b: %v", err)
+	}
+
+	before := b.QueuedInboxVersion(runID)
+	if err := a.AppendQueuedMessage(ctx, runID, QueuedUserMessage{ID: "m1", Text: "from another process"}); err != nil {
+		t.Fatalf("append via a: %v", err)
+	}
+	after := b.QueuedInboxVersion(runID)
+	if after <= before {
+		t.Fatalf("handle B version did not advance after cross-handle append: before=%d after=%d", before, after)
+	}
+	// And B can actually drain the message A wrote.
+	pending, err := b.LoadPendingQueuedMessages(ctx, runID)
+	if err != nil || len(pending) != 1 || pending[0].ID != "m1" {
+		t.Fatalf("handle B pending=%+v err=%v; want m1", pending, err)
+	}
+}
+
 // A torn line (crash/OOM/ENOSPC mid-append) must not brick the inbox:
 // the valid records still load. Before the fix, loadLatestQueuedMessages
 // returned an error on the first bad line, so ListQueuedMessages /

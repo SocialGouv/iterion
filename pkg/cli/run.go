@@ -23,6 +23,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/supervise"
 )
 
 // RunOptions holds the configuration for the run command.
@@ -174,6 +175,15 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	}
 	applyBudgetOverrides(wf, opts.Budget)
 
+	// DSL-declared supervisors (`supervisor NAME:`): wire an in-process
+	// event hub onto the engine so each coordinator can observe this run
+	// live. Injection (store-direct) is set up after the store exists.
+	var superviseHub *supervise.EventHub
+	if len(wf.Supervisors) > 0 {
+		superviseHub = supervise.NewEventHub()
+		engineOpts = append(engineOpts, runtime.WithEventObserver(superviseHub.Publish))
+	}
+
 	runName := store.GenerateRunName(iterFile + ":" + runID)
 	storeDir := store.ResolveStoreDir(filepath.Dir(iterFile), opts.StoreDir)
 
@@ -290,6 +300,11 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		}
 	}
 
+	if superviseHub != nil {
+		stop := startCLISupervisors(ctx, superviseHub, s, runID, wf, logger)
+		defer stop()
+	}
+
 	err = eng.Run(ctx, runID, inputs)
 	err = runInteractiveResumeLoop(ctx, eng, s, runID, opts.NoInteractive, err)
 
@@ -299,6 +314,43 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		"store":    storeDir,
 	}
 	return reportRunOutcome(p, s, runID, storeDir, opts.File, err, runResult)
+}
+
+// startCLISupervisors spawns a supervise.Coordinator for every
+// `supervisor NAME:` block on the workflow, observing this run through
+// the in-process hub and steering via a store-direct injector (same
+// store handle as the engine, so the inbox doorbell stays in lockstep).
+// Returns a stop func to drain them when the run ends.
+func startCLISupervisors(ctx context.Context, hub *supervise.EventHub, s store.RunStore, runID string, wf *ir.Workflow, logger *iterlog.Logger) func() {
+	inj := &supervise.StoreInjector{Store: s}
+	var coords []*supervise.Coordinator
+	for _, sup := range wf.Supervisors {
+		system := ""
+		if sup.System != "" {
+			if p, ok := wf.Prompts[sup.System]; ok && p != nil {
+				system = p.Body
+			}
+		}
+		spec := supervise.Spec{
+			Name:     sup.Name,
+			Model:    sup.Model,
+			System:   system,
+			Watches:  sup.Watches,
+			Cooldown: sup.Cooldown,
+			MaxEvals: sup.MaxEvals,
+		}
+		coord := supervise.New(hub, inj, runID, spec, nil, logger)
+		if coord == nil {
+			continue
+		}
+		coord.Start(ctx)
+		coords = append(coords, coord)
+	}
+	return func() {
+		for _, c := range coords {
+			c.Close()
+		}
+	}
 }
 
 // teeRunLog defers to store.TeeRunLog so the dispatcher and any
@@ -335,6 +387,12 @@ func buildRunExecutor(
 		PermissionAllow: opts.PermissionAllow,
 		PermissionAsk:   opts.PermissionAsk,
 		PermissionDeny:  opts.PermissionDeny,
+		// Wire the operator-message inbox so queued messages (a CLI
+		// `iterion supervise` attach, a DSL-declared supervisor, or a
+		// future CLI chatbox) are drained at the agent's turn boundaries.
+		// Studio/server wire this via service_launch; the CLI did not,
+		// so supervisor steering silently never reached the agent.
+		Inbox: &model.StoreInboxBinder{Store: s},
 	}
 	if exporter != nil {
 		execSpec.ExtraHooks = append(execSpec.ExtraHooks, exporter.EventHooks())

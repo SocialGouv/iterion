@@ -418,15 +418,28 @@ func MarkConsumed(ctx context.Context, s RunStore, publish func(Event), runID st
 	}
 }
 
-// QueuedInboxVersion returns the run's inbox revision counter. The
-// counter advances whenever a queued-message row is appended (the
-// caller serialises writes under s.mu, so the increment is safe).
-// Returning 0 for an unseen run is correct: any future write will
-// increment past 0.
+// QueuedInboxVersion returns the run's inbox revision counter. It
+// advances whenever a queued-message row is appended — by THIS process
+// (the in-memory counter) OR by another process (the append-only file's
+// size, picked up via a cheap stat). The cross-process component is
+// essential: a supervisor steering a run from a separate process (see
+// pkg/supervise) appends to user_messages.jsonl through its own store
+// handle, which can't bump this handle's in-memory counter — without the
+// file-size term the engine's inbox drainer would fast-skip and never
+// deliver the message. The file is append-only (rows are only added,
+// status transitions append too), so its size is monotonic and a safe
+// doorbell. Returning 0 for an unseen run is correct: any future write
+// advances it.
 func (s *FilesystemRunStore) QueuedInboxVersion(runID string) uint64 {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.inboxVersion[runID]
+	v := s.inboxVersion[runID]
+	s.mu.Unlock()
+	if path, err := s.userMessagesPath(runID); err == nil {
+		if info, statErr := os.Stat(path); statErr == nil {
+			v += uint64(info.Size())
+		}
+	}
+	return v
 }
 
 // bumpInboxVersion is called by the write paths while holding s.mu.
