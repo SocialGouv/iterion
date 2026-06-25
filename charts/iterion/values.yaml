@@ -146,6 +146,16 @@ config:
     concurrency: 1
     heartbeat: 20s
     lockTtl: 60s
+  # --- Valkey/Redis (distributed ephemeral state) ------------------
+  # Required for multi-replica servers: shares forge OAuth/CSRF state,
+  # board-MCP run tokens and auth rate-limit across pods. Empty (the
+  # default) → in-memory stores (single replica). Provide EITHER a
+  # single-node url OR sentinelAddrs+masterName (HA). The password rides
+  # the auth secret (ITERION_REDIS_PASSWORD / ITERION_REDIS_SENTINEL_PASSWORD).
+  redis:
+    url: ""           # redis://host:6379 (dev/single node)
+    sentinelAddrs: "" # comma-separated host:port sentinels (HA)
+    masterName: ""    # Sentinel master name (with sentinelAddrs)
   # --- Hosted bot marketplace (cloud) ------------------------------
   # Enables the hosted bot registry: public browse + .botz download +
   # authenticated submit/moderation, and seeds the image's bots/ catalog

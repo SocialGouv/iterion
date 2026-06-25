@@ -20,6 +20,20 @@ data:
   ITERION_S3_REGION: {{ .Values.config.s3.region | quote }}
   ITERION_S3_BUCKET: {{ .Values.config.s3.bucket | quote }}
   ITERION_S3_USE_PATH_STYLE: {{ .Values.config.s3.usePathStyle | quote }}
+  {{- with .Values.config.redis }}
+  # --- Valkey/Redis (distributed ephemeral state; HA via Sentinel) ----
+  # Non-secret connection coordinates; the password rides the auth secret
+  # (ITERION_REDIS_PASSWORD / ITERION_REDIS_SENTINEL_PASSWORD).
+  {{- with .url }}
+  ITERION_REDIS_URL: {{ . | quote }}
+  {{- end }}
+  {{- with .sentinelAddrs }}
+  ITERION_REDIS_SENTINEL_ADDRS: {{ . | quote }}
+  {{- end }}
+  {{- with .masterName }}
+  ITERION_REDIS_MASTER_NAME: {{ . | quote }}
+  {{- end }}
+  {{- end }}
   {{- end }}
   ITERION_RUNNER_WORKDIR: {{ .Values.config.runner.workdir | quote }}
   ITERION_RUNNER_CONCURRENCY: {{ .Values.config.runner.concurrency | quote }}
