@@ -42,6 +42,7 @@ const (
 	DiagRefNodeNoSchema          DiagCode = "C032" // outputs ref field on node without output schema
 	DiagUndeclaredVar            DiagCode = "C033" // vars ref to undeclared variable
 	DiagInputFieldNotInSchema    DiagCode = "C034" // input ref field not in input schema
+	DiagUnknownResourceInNeeds   DiagCode = "C195" // needs: references a resource not declared in resources:
 	DiagUnknownArtifact          DiagCode = "C035" // artifacts ref to unpublished artifact
 	DiagRefNodeNotReachable      DiagCode = "C036" // outputs ref to node not reachable before consumer
 	DiagNodeMaxTokensVsBudget    DiagCode = "C037" // node-level max_tokens exceeds workflow.budget.max_tokens
@@ -140,6 +141,7 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateCursorInvocations(w)
 	c.validateReviewGates(w)
 	c.validateCompress(w)
+	c.validateResources(w)
 	c.validatePermission(w)
 	c.validateVerifiedActions(w)
 	c.validateArtifactLabels(w)
@@ -771,6 +773,22 @@ func (c *compiler) validateFanOutEachEdges(w *Workflow) {
 			c.errorf(DiagFanOutEachEdges,
 				"fan_out_each router %q has %d outgoing edge(s); exactly one (the per-item template head) is required",
 				r.ID, count)
+		}
+	}
+}
+
+// validateResources flags any node whose `needs:` references a resource the
+// workflow doesn't declare in its `resources:` block. Without this the acquire
+// is a silent no-op and the intended bound (e.g. on Godot sessions) never
+// applies — exactly the failure mode the feature exists to prevent.
+func (c *compiler) validateResources(w *Workflow) {
+	for _, node := range w.Nodes {
+		for _, r := range NodeNeeds(node) {
+			if _, ok := w.Resources[r]; !ok {
+				c.errorf(DiagUnknownResourceInNeeds,
+					"node %q needs resource %q, which is not declared in the workflow's resources: block",
+					node.NodeID(), r)
+			}
 		}
 	}
 }

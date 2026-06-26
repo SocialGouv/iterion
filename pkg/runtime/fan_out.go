@@ -532,6 +532,18 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 		rs:        rs,
 	})
 
+	// Acquire this node's declared resources (`needs:`) before running. This
+	// is the spot that bounds resource-heavy work INSIDE a fan-out: N branches
+	// whose agent `needs: godot` are capped at the resource's capacity even
+	// when max_parallel_branches is higher or unset. Released on return
+	// (defer) so a failed branch node still frees its slot.
+	releaseResources, aerr := e.acquireResources(ctx, rs, ir.NodeNeeds(node))
+	if aerr != nil {
+		result.err = fmt.Errorf("node %q in branch %s: %w", currentNodeID, branchID, aerr)
+		return nil, true
+	}
+	defer releaseResources()
+
 	execCtx := model.WithLoopIteration(ctx, iter)
 	output, err := e.executor.Execute(execCtx, node, nodeInput)
 	if err != nil {

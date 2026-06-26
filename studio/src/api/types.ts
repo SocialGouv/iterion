@@ -287,6 +287,8 @@ export interface AgentDecl {
   await?: AwaitMode;
   compaction?: CompactionBlock;
   cursors?: CursorBlock;
+  // Resource names this node acquires before running (workflow.resources).
+  needs?: string[];
 }
 
 export interface JudgeDecl {
@@ -312,6 +314,8 @@ export interface JudgeDecl {
   await?: AwaitMode;
   compaction?: CompactionBlock;
   cursors?: CursorBlock;
+  // Resource names this node acquires before running (workflow.resources).
+  needs?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -347,7 +351,12 @@ export interface CursorSetting {
 
 export type WorktreeMode = "auto" | "none";
 
-export type RouterMode = "fan_out_all" | "condition" | "round_robin" | "llm";
+export type RouterMode =
+  | "fan_out_all"
+  | "fan_out_each"
+  | "condition"
+  | "round_robin"
+  | "llm";
 
 export interface RouterDecl {
   name: string;
@@ -358,6 +367,15 @@ export interface RouterDecl {
   user?: string;
   multi?: boolean;
   reasoning_effort?: ReasoningEffort;
+  // fan_out_each: data-driven fan-out. `over` resolves to a runtime array;
+  // the single outgoing template subgraph is re-executed once per element,
+  // scheduled as a DAG when `key`/`depends_on` are set.
+  over?: string;
+  as?: string;
+  key?: string;
+  depends_on?: string;
+  // Resource names this node acquires before running (workflow.resources).
+  needs?: string[];
 }
 
 export interface HumanDecl {
@@ -389,6 +407,8 @@ export interface ToolNodeDecl {
   // referenceable downstream via `{{artifacts.name}}`.
   publish?: string;
   await?: AwaitMode;
+  // Resource names this node acquires before running (workflow.resources).
+  needs?: string[];
 }
 
 // ComputeDecl is a deterministic node: evaluates a list of expressions
@@ -427,6 +447,11 @@ export interface WorkflowDecl {
   tool_policy?: string[];
   mcp?: MCPConfigDecl;
   budget?: BudgetBlock;
+  // Named counting semaphores (resource name → capacity). A node that
+  // declares `needs: <name>` acquires a slot before running and releases
+  // it after — bounds concurrent use of a scarce shared resource (e.g.
+  // Godot/Blender sessions) without a global parallelism cap.
+  resources?: Record<string, number>;
   compaction?: CompactionBlock;
   interaction?: InteractionMode;
   // Worktree isolation mode. Omit or set to "none" to run in place;

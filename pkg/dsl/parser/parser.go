@@ -1227,6 +1227,9 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 	case TokenPermission:
 		p.expect(TokenColon)
 		d.Permission = p.expectIdent()
+	case TokenNeeds:
+		p.expect(TokenColon)
+		d.Needs = p.parseNeedsList()
 	case TokenProvider:
 		p.expect(TokenColon)
 		d.Provider = p.expectString()
@@ -1360,6 +1363,10 @@ func (p *parser) parseRouterDecl() *ast.RouterDecl {
 			p.next()
 			p.expect(TokenColon)
 			rd.DependsOn = p.expectIdent()
+		case TokenNeeds:
+			p.next()
+			p.expect(TokenColon)
+			rd.Needs = p.parseNeedsList()
 		case TokenReasoningEffort:
 			p.next()
 			rd.ReasoningEffort = p.parseReasoningEffort()
@@ -1583,6 +1590,9 @@ func (p *parser) parseToolNodeProp(td *ast.ToolNodeDecl, propTok Token) {
 	case TokenPermission:
 		p.expect(TokenColon)
 		td.Permission = p.expectIdent()
+	case TokenNeeds:
+		p.expect(TokenColon)
+		td.Needs = p.parseNeedsList()
 	case TokenIdent:
 		// Verified Action quad (ADR-044). These property names are not
 		// reserved keywords, so they arrive as plain identifiers (the
@@ -1814,6 +1824,9 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 		case TokenBudget:
 			wd.Budget = p.parseBudgetBlock()
 
+		case TokenResources:
+			wd.Resources = p.parseResourcesBlock()
+
 		case TokenCompaction:
 			wd.Compaction = p.parseCompactionBlock()
 
@@ -1947,6 +1960,48 @@ func (p *parser) parseBudgetProp(bb *ast.BudgetBlock, propTok Token) {
 		p.addError(DiagUnknownProperty, propTok, "unknown budget property '"+propTok.Value+"'")
 		p.skipToNewline()
 	}
+	p.skipNewlines()
+}
+
+// parseResourcesBlock parses `resources:\n  <name>: <capacity>` pairs. Each
+// name is an arbitrary identifier (the resource), each value its slot count.
+func (p *parser) parseResourcesBlock() *ast.ResourcesBlock {
+	start := p.next() // consume "resources"
+	p.expect(TokenColon)
+	p.skipNewlines()
+	if _, ok := p.expect(TokenIndent); !ok {
+		return nil
+	}
+
+	rb := &ast.ResourcesBlock{
+		Capacities: make(map[string]int),
+		Span:       ast.Span{Start: p.pos(start)},
+	}
+
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		p.parseResourceProp(rb, t)
+	}
+	return rb
+}
+
+func (p *parser) parseResourceProp(rb *ast.ResourcesBlock, propTok Token) {
+	name := tokenAsIdent(p.next())
+	if name == "" {
+		p.addError(DiagInvalidValue, propTok, "expected a resource name")
+		p.skipToNewline()
+		p.skipNewlines()
+		return
+	}
+	p.expect(TokenColon)
+	rb.Capacities[name] = p.expectInt()
 	p.skipNewlines()
 }
 
@@ -2296,6 +2351,19 @@ func (p *parser) parseSessionMode() ast.SessionMode {
 		p.addError(DiagInvalidValue, t, "expected session mode (fresh, inherit, inherit_if_available, fork, artifacts_only), got '"+t.Value+"'")
 		return ast.SessionFresh
 	}
+}
+
+// parseNeedsList parses a node's `needs:` value — either a single resource
+// name (`needs: godot`) or a bracketed list (`needs: [godot, blender]`).
+func (p *parser) parseNeedsList() []string {
+	if p.peek().Type == TokenLBrack {
+		return p.parseIdentList()
+	}
+	id := p.expectIdent()
+	if id == "" {
+		return nil
+	}
+	return []string{id}
 }
 
 func (p *parser) parseIdentList() []string {

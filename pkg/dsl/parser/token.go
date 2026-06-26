@@ -56,6 +56,7 @@ const (
 	TokenEntry
 	TokenMCP
 	TokenBudget
+	TokenResources
 	TokenTransport
 	TokenServers
 	TokenDisable
@@ -85,6 +86,7 @@ const (
 	TokenAuth
 	TokenReadonly
 	TokenBackend
+	TokenNeeds
 	TokenDefaultBackend
 	TokenProvider
 	TokenInteraction
@@ -219,6 +221,7 @@ var tokenNames = map[TokenType]string{
 	TokenEntry:              "entry",
 	TokenMCP:                "mcp",
 	TokenBudget:             "budget",
+	TokenResources:          "resources",
 	TokenTransport:          "transport",
 	TokenServers:            "servers",
 	TokenDisable:            "disable",
@@ -247,6 +250,7 @@ var tokenNames = map[TokenType]string{
 	TokenURL:                "url",
 	TokenReadonly:           "readonly",
 	TokenBackend:            "backend",
+	TokenNeeds:              "needs",
 	TokenDefaultBackend:     "default_backend",
 	TokenProvider:           "provider",
 	TokenInteraction:        "interaction",
@@ -348,6 +352,7 @@ var keywords = map[string]TokenType{
 	"entry":                 TokenEntry,
 	"mcp":                   TokenMCP,
 	"budget":                TokenBudget,
+	"resources":             TokenResources,
 	"transport":             TokenTransport,
 	"servers":               TokenServers,
 	"disable":               TokenDisable,
@@ -377,6 +382,7 @@ var keywords = map[string]TokenType{
 	"auth":                  TokenAuth,
 	"readonly":              TokenReadonly,
 	"backend":               TokenBackend,
+	"needs":                 TokenNeeds,
 	"default_backend":       TokenDefaultBackend,
 	"provider":              TokenProvider,
 	"interaction":           TokenInteraction,

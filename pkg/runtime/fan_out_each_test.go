@@ -265,6 +265,63 @@ func TestFanOutEach_EmptyArray(t *testing.T) {
 	}
 }
 
+// TestResourceSemaphore_BoundsConcurrency: a fan_out_each over N items whose
+// branch node declares `needs: slot` never runs more than the resource's
+// capacity at once — even with NO max_parallel_branches (all N branches are
+// eligible immediately). The capacity==N control proves the semaphore (not
+// something else) is the lever: peak rises to N.
+func TestResourceSemaphore_BoundsConcurrency(t *testing.T) {
+	runPeak := func(runID string, capacity, nItems int) int32 {
+		wf := fanOutEachWorkflow(false, ir.AwaitWaitAll, 0) // 0 = no max_parallel cap
+		wf.Resources = map[string]int{"slot": capacity}
+		wf.Nodes["handle"].(*ir.AgentNode).Needs = []string{"slot"}
+
+		items := make([]interface{}, nItems)
+		for i := range items {
+			items[i] = item(string(rune('A' + i)))
+		}
+
+		var active, peak int32
+		exec := newStubExecutor()
+		exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
+			return map[string]interface{}{"items": items}, nil
+		})
+		exec.on("handle", func(_ map[string]interface{}) (map[string]interface{}, error) {
+			n := atomic.AddInt32(&active, 1)
+			for { // lock-free max
+				p := atomic.LoadInt32(&peak)
+				if n <= p || atomic.CompareAndSwapInt32(&peak, p, n) {
+					break
+				}
+			}
+			time.Sleep(15 * time.Millisecond) // hold the slot so contention is observable
+			atomic.AddInt32(&active, -1)
+			return map[string]interface{}{"ok": true}, nil
+		})
+		exec.on("collect", func(_ map[string]interface{}) (map[string]interface{}, error) {
+			return map[string]interface{}{}, nil
+		})
+
+		s := tmpStore(t)
+		eng := New(wf, s, exec)
+		if err := eng.Run(context.Background(), runID, nil); err != nil {
+			t.Fatalf("run error: %v", err)
+		}
+		r, _ := s.LoadRun(context.Background(), runID)
+		if r.Status != store.RunStatusFinished {
+			t.Fatalf("expected finished, got %s", r.Status)
+		}
+		return atomic.LoadInt32(&peak)
+	}
+
+	if got := runPeak("run-res-cap2", 2, 6); got != 2 {
+		t.Errorf("slot capacity 2: peak concurrency = %d, want 2 (semaphore did not bound)", got)
+	}
+	if got := runPeak("run-res-cap6", 6, 6); got != 6 {
+		t.Errorf("slot capacity 6 control: peak concurrency = %d, want 6 (capacity is not the lever)", got)
+	}
+}
+
 // TestFanOutEach_DAG_DiamondOrderingAndParallelism: A -> {B,C} -> D.
 // Asserts (1) dependency: A finishes before B/C start, and B/C finish before
 // D starts; (2) parallelism: B and C overlap (proven by a 2-way barrier — a

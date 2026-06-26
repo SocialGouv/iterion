@@ -385,6 +385,7 @@ type LLMDecl struct {
 	Cursors           *CursorBlock     // prompt-engineering cursor activations (nil = none)
 	Compress          string           // compress output-compression mode: on|ultra|off ("" = inherit)
 	Permission        string           // permission gate mode override: off|ask|deny ("" = inherit workflow)
+	Needs             []string         // resource names acquired before running (workflow.resources)
 }
 
 // AgentDecl represents an `agent <name>:` node declaration.
@@ -439,6 +440,7 @@ type RouterDecl struct {
 	As              string // per-item binding name, only for mode: fan_out_each (default: "item")
 	Key             string // item field holding its unique id, only for mode: fan_out_each (enables DAG scheduling)
 	DependsOn       string // item field holding the array of ids it depends on, only for mode: fan_out_each
+	Needs           []string // resource names acquired before running (workflow.resources)
 	Span            Span
 }
 
@@ -527,6 +529,7 @@ type ToolNodeDecl struct {
 	Sandbox        *SandboxBlock // node-level sandbox override; nil inherits from workflow
 	Compress       string        // compress output-compression mode: on|ultra|off ("" = inherit)
 	Permission     string        // permission gate mode override: off|ask|deny ("" = inherit workflow)
+	Needs          []string      // resource names acquired before running (workflow.resources)
 
 	// Verified Action quad (ADR-044) — all optional; a tool node without
 	// these behaves exactly as before (recipe only, exit-code = success).
@@ -597,6 +600,7 @@ type WorkflowDecl struct {
 	Capabilities   []string          // workflow-level default host capabilities (nil = inherit none)
 	MCP            *MCPConfigDecl    // workflow-level MCP activation/filtering
 	Budget         *BudgetBlock      // execution limits (optional)
+	Resources      *ResourcesBlock   // named counting semaphores (optional)
 	Compaction     *CompactionBlock  // session compaction defaults for all nodes (optional)
 	Interaction    *InteractionMode  // workflow-level default interaction mode (nil = not set)
 	Worktree       string            // "auto" creates a per-run git worktree; "" or "none" runs in-place
@@ -618,6 +622,16 @@ type BudgetBlock struct {
 	MaxTokens           int     // 0 = not set
 	MaxIterations       int     // 0 = not set
 	Span                Span
+}
+
+// ResourcesBlock declares named counting semaphores at the workflow level.
+// Each entry is `<name>: <capacity>`. A node that declares `needs: <name>`
+// acquires one slot before running and releases it after — bounding
+// concurrent use of a scarce shared resource (e.g. Godot/Blender sessions)
+// without a global parallelism cap.
+type ResourcesBlock struct {
+	Capacities map[string]int // resource name → capacity
+	Span       Span
 }
 
 // CompactionBlock configures session compaction. Both fields use a "0/nil

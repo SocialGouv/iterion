@@ -40,6 +40,7 @@ const (
 	DiagInvalidSandboxMode    DiagCode = "C044" // sandbox mode value is not one of "", none, auto
 	DiagSandboxAutoNoConfig   DiagCode = "C045" // sandbox: auto requested but no .devcontainer/devcontainer.json found
 	DiagBudgetCostInvalid     DiagCode = "C046" // budget.max_cost_usd negative, NaN or Inf
+	DiagResourceCapInvalid    DiagCode = "C194" // resources.<name> capacity ≤ 0
 )
 
 // codexBackendName is the literal value of the discouraged backend.
@@ -462,6 +463,9 @@ func (c *compiler) compile() *Workflow {
 		budget = c.compileBudget(wf.Budget)
 	}
 
+	// Compile resources (named counting semaphores).
+	resources := c.compileResources(wf.Resources)
+
 	// Compile workflow-level compaction overrides.
 	compaction := compileCompaction(wf.Compaction)
 
@@ -488,6 +492,7 @@ func (c *compiler) compile() *Workflow {
 		Attachments:     attachments,
 		Loops:           loops,
 		Budget:          budget,
+		Resources:       resources,
 		Compaction:      compaction,
 		MCP:             convertMCPConfig(wf.MCP),
 		MCPServers:      c.mcp,
@@ -797,6 +802,7 @@ func (c *compiler) compileAgents() {
 			Cursors:           compileCursorInvocation(a.Cursors),
 			Compress:          a.Compress,
 			Permission:        a.Permission,
+			Needs:             a.Needs,
 		}
 	}
 }
@@ -830,6 +836,7 @@ func (c *compiler) compileJudges() {
 			Cursors:           compileCursorInvocation(j.Cursors),
 			Compress:          j.Compress,
 			Permission:        j.Permission,
+			Needs:             j.Needs,
 		}
 	}
 }
@@ -850,6 +857,7 @@ func (c *compiler) compileRouters() {
 		node := &RouterNode{
 			BaseNode:   BaseNode{ID: r.Name},
 			RouterMode: mode,
+			Needs:      r.Needs,
 		}
 		if mode != RouterLLM {
 			if r.Model != "" {
@@ -1141,6 +1149,7 @@ func (c *compiler) compileTools() {
 			Sandbox:       c.compileSandboxBlock(t.Sandbox, "tool", t.Name),
 			Compress:      t.Compress,
 			Permission:    t.Permission,
+			Needs:         t.Needs,
 			Goal:          t.Goal,
 			Postcondition: t.Postcondition,
 			PostcondRefs:  postcondRefs,
@@ -1558,6 +1567,28 @@ func (c *compiler) compileBudget(b *ast.BudgetBlock) *Budget {
 		MaxTokens:           b.MaxTokens,
 		MaxIterations:       b.MaxIterations,
 	}
+}
+
+// compileResources converts the AST resources block to the IR map
+// (name → capacity). Capacities ≤ 0 are dropped with a diagnostic — a
+// zero/negative semaphore would block its `needs:` nodes forever.
+func (c *compiler) compileResources(rb *ast.ResourcesBlock) map[string]int {
+	if rb == nil || len(rb.Capacities) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(rb.Capacities))
+	for name, capacity := range rb.Capacities {
+		if capacity <= 0 {
+			c.errorf(DiagResourceCapInvalid,
+				"workflow.resources.%s capacity %d must be > 0", name, capacity)
+			continue
+		}
+		out[name] = capacity
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // compileCompaction converts an AST CompactionBlock to its IR form. Returns

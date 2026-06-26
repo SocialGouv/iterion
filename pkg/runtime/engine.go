@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -440,6 +441,14 @@ type runState struct {
 	artifactVersions   map[string]int
 	budget             *SharedBudget // shared across branches, nil if no budget
 
+	// resourceSemaphores holds one buffered channel per declared workflow
+	// resource (name → capacity slots), built once at run start and shared
+	// by reference across all branches so contention is global. A node that
+	// declares `needs: <resource>` acquires a slot before running and
+	// releases it after (even on failure) — bounding e.g. concurrent Godot
+	// sessions WITHOUT a global parallelism cap. nil when no resources declared.
+	resourceSemaphores map[string]chan struct{}
+
 	// costUSDTotal is the run's cumulative LLM spend (sum of per-node
 	// _cost_usd), tracked independently of `budget` so the daily spend
 	// cap works even when the workflow declares no per-run budget. Read
@@ -512,7 +521,70 @@ func (e *Engine) newRunState(runID string, inputs map[string]interface{}) *runSt
 		artifactVersions:   make(map[string]int),
 		nodeAttempts:       make(map[string]map[ErrorCode]int),
 		budget:             newSharedBudget(e.workflow.Budget, e.logger),
+		resourceSemaphores: buildResourceSemaphores(e.workflow.Resources),
 	}
+}
+
+// buildResourceSemaphores creates one buffered channel per declared resource,
+// sized to its capacity. The channel's buffer IS the semaphore: a send
+// acquires a slot (blocks when full), a receive releases one. Returns nil when
+// the workflow declares no resources, so acquireResources is a no-op.
+func buildResourceSemaphores(resources map[string]int) map[string]chan struct{} {
+	if len(resources) == 0 {
+		return nil
+	}
+	sem := make(map[string]chan struct{}, len(resources))
+	for name, capacity := range resources {
+		if capacity <= 0 {
+			continue // defensive; validate rejects ≤ 0
+		}
+		sem[name] = make(chan struct{}, capacity)
+	}
+	return sem
+}
+
+// acquireResources blocks until a slot of every resource in `needs` is free,
+// then returns a release func that frees them. Resources are acquired in a
+// stable (sorted, de-duplicated) order so two nodes that need the same pair
+// can never deadlock via inconsistent lock ordering. A cancelled ctx aborts
+// the wait, releasing any slots already taken and returning ctx.Err(). The
+// caller must `defer release()` so the slots free even when the node fails.
+func (e *Engine) acquireResources(ctx context.Context, rs *runState, needs []string) (func(), error) {
+	if len(needs) == 0 || rs.resourceSemaphores == nil {
+		return func() {}, nil
+	}
+	// De-duplicate + sort for a consistent global acquisition order.
+	seen := make(map[string]bool, len(needs))
+	ordered := make([]string, 0, len(needs))
+	for _, r := range needs {
+		if r == "" || seen[r] {
+			continue
+		}
+		seen[r] = true
+		ordered = append(ordered, r)
+	}
+	sort.Strings(ordered)
+
+	acquired := make([]string, 0, len(ordered))
+	release := func() {
+		for _, r := range acquired {
+			<-rs.resourceSemaphores[r]
+		}
+	}
+	for _, r := range ordered {
+		ch := rs.resourceSemaphores[r]
+		if ch == nil {
+			continue // undeclared resource (validate flags it); skip defensively
+		}
+		select {
+		case ch <- struct{}{}:
+			acquired = append(acquired, r)
+		case <-ctx.Done():
+			release()
+			return nil, ctx.Err()
+		}
+	}
+	return release, nil
 }
 
 // Run executes the workflow. It creates a run, walks the graph from the
@@ -1211,6 +1283,16 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 	}
 
 	nodeInput := e.buildNodeInputRS(currentNodeID, rs.scope())
+
+	// Acquire any resources this node declares (`needs:`) — blocks until a
+	// slot is free. Placed before the per-node wall-clock deadline below so
+	// waiting on a busy resource doesn't eat the node's execution budget.
+	// Released on return (defer) so a failed node still frees its slot.
+	releaseResources, aerr := e.acquireResources(ctx, rs, ir.NodeNeeds(node))
+	if aerr != nil {
+		return nil, false, aerr
+	}
+	defer releaseResources()
 
 	// Fork rehydration: when resumeFromFailure pinned a backend
 	// conversation / session id at currentNodeID, inject the matching

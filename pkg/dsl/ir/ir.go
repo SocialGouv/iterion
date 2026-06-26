@@ -29,6 +29,7 @@ type Workflow struct {
 	Attachments     map[string]*Attachment // attachment name → resolved attachment
 	Loops           map[string]*Loop       // loop name → loop definition
 	Budget          *Budget                // workflow budget (nil if not set)
+	Resources       map[string]int         // named counting semaphores (resource name → capacity); nil = none
 	Compaction      *Compaction            // workflow-level compaction overrides (nil = no override)
 	MCP             *MCPConfig             // workflow-level MCP activation/filtering
 	DefaultBackend  string                 // workflow-level default backend (empty = not set)
@@ -106,6 +107,24 @@ type Node interface {
 	NodeKind() NodeKind
 }
 
+// NodeNeeds returns the resource names a node acquires before running (the
+// `needs:` property). Nodes without a `needs:` declaration — and node kinds
+// that don't support it (human/compute/done/fail) — return nil.
+func NodeNeeds(n Node) []string {
+	switch x := n.(type) {
+	case *AgentNode:
+		return x.Needs
+	case *JudgeNode:
+		return x.Needs
+	case *RouterNode:
+		return x.Needs
+	case *ToolNode:
+		return x.Needs
+	default:
+		return nil
+	}
+}
+
 // BaseNode provides the common ID field embedded in every concrete node.
 type BaseNode struct {
 	ID string // unique identifier (= DSL name)
@@ -169,6 +188,7 @@ type AgentNode struct {
 	Cursors          *CursorInvocation
 	Compress         string // compress output-compression mode: on|ultra|off ("" = inherit)
 	Permission       string // permission gate mode override: off|ask|deny ("" = inherit workflow)
+	Needs            []string // resource names this node acquires before running (counting semaphores)
 }
 
 // NodeKind implements Node.
@@ -195,6 +215,7 @@ type JudgeNode struct {
 	Cursors          *CursorInvocation
 	Compress         string // compress output-compression mode: on|ultra|off ("" = inherit)
 	Permission       string // permission gate mode override: off|ask|deny ("" = inherit workflow)
+	Needs            []string // resource names this node acquires before running (counting semaphores)
 }
 
 // NodeKind implements Node.
@@ -226,6 +247,8 @@ type RouterNode struct {
 	// sequential. Empty KeyField => no DAG, plain fan-out.
 	KeyField  string // item field holding its unique id
 	DepsField string // item field holding the array of ids it depends on
+
+	Needs []string // resource names this node acquires before running (counting semaphores)
 }
 
 // NodeKind implements Node.
@@ -287,6 +310,8 @@ type ToolNode struct {
 	PostcondRefs  []*Ref        // parsed template refs in Postcondition (resolved at runtime)
 	Policy        string        // "required" | "recover" | "best_effort" (defaulted at compile time)
 	Recovery      *RecoverySpec // bounded recovery rung config (nil = no rungs)
+
+	Needs []string // resource names this node acquires before running (counting semaphores)
 }
 
 // Verified Action policy values (ADR-044).

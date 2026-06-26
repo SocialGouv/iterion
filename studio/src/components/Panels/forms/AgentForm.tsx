@@ -247,6 +247,12 @@ export default function AgentForm({ decl, kind }: Props) {
         onChange={(v) => update({ tool_policy: v.length > 0 ? v : undefined })}
         placeholder="Add allow/deny pattern..."
       />
+      <TagListField
+        label="Needs (resources)"
+        values={decl.needs ?? []}
+        onChange={(v) => update({ needs: v.length > 0 ? v : undefined })}
+        placeholder="Add resource name (e.g. godot)..."
+      />
       <CheckboxField
         label="Readonly"
         checked={!!decl.readonly}

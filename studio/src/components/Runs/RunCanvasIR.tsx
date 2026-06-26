@@ -18,6 +18,7 @@ import { useUIStore } from "@/store/ui";
 import { useThemeStore } from "@/store/theme";
 
 import IRNode, { iterationColor } from "./IRNode";
+import FanoutFrame from "./FanoutFrame";
 import RunCanvasToolbar from "./RunCanvasToolbar";
 import { FilterChips, buildFilterChips } from "./runCanvasIR/FilterChips";
 import { StatusLegend } from "./runCanvasIR/StatusLegend";
@@ -37,7 +38,104 @@ import { useWorkflowLoad } from "./runCanvasIR/useWorkflowLoad";
 // resolving without churn.
 export { defaultIterationFor };
 
-const nodeTypes = { ir: IRNode };
+const nodeTypes = { ir: IRNode, fanoutFrame: FanoutFrame };
+
+// Padding (px) added around the bounding box of a fan-out region when
+// drawing its frame, plus headroom at the top for the floating label.
+const FANOUT_FRAME_PAD = 26;
+const FANOUT_FRAME_HEADER = 16;
+// Real rendered IRNode footprint. ELK lays out with NODE_WIDTH/NODE_HEIGHT
+// (160×80), but the actual card is `w-[200px]` and taller once the
+// status/iteration-pip rows render — so the bbox must use these larger
+// values or wide/tall nodes poke out of the frame's right/bottom edge.
+const FANOUT_NODE_W = 200;
+const FANOUT_NODE_H = 120;
+
+// Derive fan_out_each replicated regions purely from run executions.
+// branch_id is `branch_<routerNodeID>_<itemIdx>` (see runtime
+// fan_out_each.go). For each node we count the distinct items that
+// executed it (→ the multi-instance badge) and group nodes by their
+// router (→ the region frame). Nodes that only ever ran on "main"
+// (start/router/join/done) are absent here and stay un-framed.
+function computeFanout(executions: ExecutionState[]) {
+  const re = /^branch_(.+)_(\d+)$/;
+  const routerItems = new Map<string, Set<string>>();
+  const nodeRouterIdx = new Map<string, Map<string, Set<string>>>();
+  for (const ex of executions) {
+    const m = re.exec(ex.branch_id || "");
+    if (!m) continue;
+    const router = m[1]!;
+    const idx = m[2]!;
+    let ri = routerItems.get(router);
+    if (!ri) routerItems.set(router, (ri = new Set()));
+    ri.add(idx);
+    let nr = nodeRouterIdx.get(ex.ir_node_id);
+    if (!nr) nodeRouterIdx.set(ex.ir_node_id, (nr = new Map()));
+    let s = nr.get(router);
+    if (!s) nr.set(router, (s = new Set()));
+    s.add(idx);
+  }
+  const replicationByNode = new Map<
+    string,
+    { count: number; total: number; router: string }
+  >();
+  const regionNodesByRouter = new Map<string, Set<string>>();
+  for (const [nodeId, nr] of nodeRouterIdx) {
+    let best: { router: string; count: number } | null = null;
+    for (const [router, idxs] of nr) {
+      if (!best || idxs.size > best.count) best = { router, count: idxs.size };
+    }
+    if (!best) continue;
+    const total = routerItems.get(best.router)?.size ?? best.count;
+    replicationByNode.set(nodeId, { count: best.count, total, router: best.router });
+    let rn = regionNodesByRouter.get(best.router);
+    if (!rn) regionNodesByRouter.set(best.router, (rn = new Set()));
+    rn.add(nodeId);
+  }
+  return { replicationByNode, regionNodesByRouter, routerItems };
+}
+
+// Build the synthetic frame nodes for each fan-out region from laid-out
+// positions (ELK uses fixed NODE_WIDTH×NODE_HEIGHT). Drawn behind the real
+// nodes (prepended + zIndex −1, pointer-events none).
+function buildFanoutFrames(
+  laid: FlowNode[],
+  regionNodesByRouter: Map<string, Set<string>>,
+  routerItems: Map<string, Set<string>>,
+): FlowNode[] {
+  const posById = new Map(laid.map((n) => [n.id, n.position]));
+  const frames: FlowNode[] = [];
+  for (const [router, regionNodes] of regionNodesByRouter) {
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity;
+    for (const id of regionNodes) {
+      const p = posById.get(id);
+      if (!p) continue;
+      minX = Math.min(minX, p.x);
+      minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x + FANOUT_NODE_W);
+      maxY = Math.max(maxY, p.y + FANOUT_NODE_H);
+    }
+    if (!isFinite(minX)) continue;
+    frames.push({
+      id: `__fanout__${router}`,
+      type: "fanoutFrame",
+      position: { x: minX - FANOUT_FRAME_PAD, y: minY - FANOUT_FRAME_PAD - FANOUT_FRAME_HEADER },
+      draggable: false,
+      selectable: false,
+      zIndex: -1,
+      data: {
+        width: maxX - minX + FANOUT_FRAME_PAD * 2,
+        height: maxY - minY + FANOUT_FRAME_PAD * 2 + FANOUT_FRAME_HEADER,
+        label: `fan_out_each · ${router}`,
+        total: routerItems.get(router)?.size ?? 0,
+      },
+    } as FlowNode);
+  }
+  return frames;
+}
 
 const ARROW = { type: MarkerType.ArrowClosed, width: 18, height: 18 } as const;
 
@@ -139,6 +237,9 @@ export default function RunCanvasIR({
     }
     return m;
   }, [executions]);
+
+  // Fan-out regions + per-node replication, derived from branch_ids.
+  const fanout = useMemo(() => computeFanout(executions), [executions]);
   // Keep the .then() refs in sync with the latest derived/incoming
   // values.
   useEffect(() => {
@@ -193,6 +294,7 @@ export default function RunCanvasIR({
           selected: n.id === selectedNodeId,
           onSelectIteration: handleSelectIteration,
           meta,
+          replication: fanout.replicationByNode.get(n.id) ?? null,
         },
       };
     });
@@ -261,10 +363,18 @@ export default function RunCanvasIR({
               selectedIteration,
               selected: fn.id === selectedNodeIdRef.current,
               meta,
+              replication: fanout.replicationByNode.get(fn.id) ?? null,
             },
           };
         });
-        setNodes(finalNodes);
+        // Frame the fan-out replicated region(s) behind the real nodes so
+        // it reads as "everything in here runs once per item".
+        const frames = buildFanoutFrames(
+          laid,
+          fanout.regionNodesByRouter,
+          fanout.routerItems,
+        );
+        setNodes([...frames, ...finalNodes]);
         setEdges(baseEdges);
         // Viewport positioning is owned by the effects below — the
         // initial-focus effect frames the running node(s) on entry
@@ -318,6 +428,7 @@ export default function RunCanvasIR({
             selected: n.id === selectedNodeId,
             onSelectIteration: handleSelectIteration,
             meta,
+            replication: fanout.replicationByNode.get(n.id) ?? null,
           },
           style: dimmed ? { opacity: 0.25 } : undefined,
         };
@@ -326,6 +437,7 @@ export default function RunCanvasIR({
   }, [
     wf,
     execsByNode,
+    fanout,
     iterationByNode,
     selectedNodeId,
     handleSelectIteration,

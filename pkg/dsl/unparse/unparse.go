@@ -206,7 +206,7 @@ func (w *fileWriter) writeAgents(agents []*ast.AgentDecl) {
 			ToolMaxSteps: a.ToolMaxSteps, MaxTokens: a.MaxTokens, ReasoningEffort: a.ReasoningEffort,
 			Readonly: a.Readonly, Interaction: a.Interaction, InteractionPrompt: a.InteractionPrompt,
 			InteractionModel: a.InteractionModel, Await: a.Await,
-			Compress: a.Compress, Permission: a.Permission,
+			Compress: a.Compress, Permission: a.Permission, Needs: a.Needs,
 		})
 		if a.Compaction != nil {
 			writeCompaction(&w.b, a.Compaction, "  ", false)
@@ -236,7 +236,7 @@ func (w *fileWriter) writeJudges(judges []*ast.JudgeDecl) {
 			ToolMaxSteps: j.ToolMaxSteps, MaxTokens: j.MaxTokens, ReasoningEffort: j.ReasoningEffort,
 			Readonly: j.Readonly, Interaction: j.Interaction, InteractionPrompt: j.InteractionPrompt,
 			InteractionModel: j.InteractionModel, Await: j.Await,
-			Compress: j.Compress, Permission: j.Permission,
+			Compress: j.Compress, Permission: j.Permission, Needs: j.Needs,
 		})
 		if j.Compaction != nil {
 			writeCompaction(&w.b, j.Compaction, "  ", false)
@@ -278,6 +278,23 @@ func (w *fileWriter) writeRouters(routers []*ast.RouterDecl) {
 			if r.ReasoningEffort != "" {
 				writeReasoningEffortProp(&w.b, r.ReasoningEffort)
 			}
+		}
+		if r.Mode == ast.RouterFanOutEach {
+			if r.Over != "" {
+				writeQuotedProp(&w.b, "over", r.Over)
+			}
+			if r.As != "" {
+				writeIdentProp(&w.b, "as", r.As)
+			}
+			if r.Key != "" {
+				writeIdentProp(&w.b, "key", r.Key)
+			}
+			if r.DependsOn != "" {
+				writeIdentProp(&w.b, "depends_on", r.DependsOn)
+			}
+		}
+		if len(r.Needs) > 0 {
+			fmt.Fprintf(&w.b, "  needs: [%s]\n", strings.Join(r.Needs, ", "))
 		}
 	}
 }
@@ -372,6 +389,9 @@ func (w *fileWriter) writeTools(tools []*ast.ToolNodeDecl) {
 		}
 		if t.Permission != "" {
 			writeProp(&w.b, "permission", t.Permission)
+		}
+		if len(t.Needs) > 0 {
+			fmt.Fprintf(&w.b, "  needs: [%s]\n", strings.Join(t.Needs, ", "))
 		}
 		// Verified Action quad (ADR-044).
 		if t.Goal != "" {
@@ -497,6 +517,10 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 
 		if wf.Budget != nil {
 			writeBudget(&w.b, wf.Budget)
+		}
+
+		if wf.Resources != nil {
+			writeResources(&w.b, wf.Resources)
 		}
 
 		if wf.Compaction != nil {
@@ -756,6 +780,7 @@ type llmFields struct {
 	Await                               ast.AwaitMode
 	Compress                            string
 	Permission                          string
+	Needs                               []string
 }
 
 func writeAgentFields(b *strings.Builder, f llmFields) {
@@ -829,6 +854,9 @@ func writeAgentFields(b *strings.Builder, f llmFields) {
 	}
 	if f.Permission != "" {
 		writeProp(b, "permission", f.Permission)
+	}
+	if len(f.Needs) > 0 {
+		fmt.Fprintf(b, "  needs: [%s]\n", strings.Join(f.Needs, ", "))
 	}
 }
 
@@ -1079,6 +1107,23 @@ func writeBudget(b *strings.Builder, budget *ast.BudgetBlock) {
 	}
 	if budget.MaxIterations > 0 {
 		fmt.Fprintf(b, "    max_iterations: %d\n", budget.MaxIterations)
+	}
+}
+
+// writeResources serializes the workflow `resources:` block. Names are
+// emitted in sorted order for deterministic, round-trip-stable output.
+func writeResources(b *strings.Builder, res *ast.ResourcesBlock) {
+	if res == nil || len(res.Capacities) == 0 {
+		return
+	}
+	b.WriteString("\n  resources:\n")
+	names := make([]string, 0, len(res.Capacities))
+	for name := range res.Capacities {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		fmt.Fprintf(b, "    %s: %d\n", name, res.Capacities[name])
 	}
 }
 
