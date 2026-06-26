@@ -1,5 +1,33 @@
 # Seki + deepsec — validation
 
+## 2026-06-26 — convergence campaign: Seki-aligned security pass (runs 019f02e7 → 019f039e)
+Goal (operator): iterate Seki → fix every bot bug blocking completion + every real
+security issue → re-run, until **2 consecutive complete runs with no new real issues**,
+proving Seki reliable and iterion security-clean. This entry is the campaign record.
+
+### Reliability fixes that got Seki to a complete, full-coverage run
+Each was a real bug that broke or degraded a run (all committed, `task check` green):
+- **detect_tech env footgun** (`036522d4f`) — shared `ITERION_SEC_AUDIT_BACKEND` dragged detect_tech onto an incompatible model; gave it its own `_DETECT_` vars.
+- **claude_code model-unavailable** (`d36d2054d`) — invalid `--model` was swallowed as output then failed opaquely; fail-fast guard + test.
+- **silent scanner-output gaps** (`aa1bf9ea9`) — `run_lang_scanners` trusted a declared json_path + only checked exit code (`|| true` masks gosec's non-zero-on-findings); now verifies the file exists + surfaces stderr.
+- **zero-language-scanner** (`5688378b1` + revert `aa2811d9d`) — detect_tech returned a nested `langs` object → dict-keys became "langs" → ZERO lang scanners, silently healthy. Hardened `_norm_langs` to walk any shape; reverted a `string[]` schema attempt that made iterion render langs as a space-separated Go slice → `LANGS=[Go TypeScript …]` → shell exit 127.
+- **scan_health lang-void guard** (`662917554`) — flags a skill-backed language with zero scanner output (was healthy-with-zero-coverage).
+- **STALE sec image** — the big one: gosec/govulncheck silently scanned **zero packages** because the cached `iterion-sandbox-sec:edge` shipped Go 1.24 < repo's go.mod 1.26, triggering a toolchain auto-download that can't verify through the sandbox egress proxy. Already fixed in source (`af07835f`, Go 1.26.4); **re-pulled the CI image** → gosec works (validated: gosec.json produced).
+- **trivy timeout** (`34605fec3`) — trivy fs walked `node_modules` and exceeded its 5m default → silent generic-floor gap; skip `**/node_modules` + `--timeout 15m`.
+
+### Real security findings Seki surfaced → fixed
+- **GHA script-injection** `version.yml`/`image.yml` (`d2300059f`) — workflow_dispatch input / tag name into `run:` shell.
+- **Studio CSRF** project switch/add/remove (`488a0e88d`) — missing `requireSafeOrigin`; `text/plain` simple-request CSRF re-points the workspace. + regression test.
+- **Secret-value shell RCE** (`43161df25`, HIGH) — `Materialize` substituted the RAW secret inside the template's single-quotes; a `'`-bearing value (set by a different cloud principal than the bot author) broke out → RCE. Added `MaterializeShell` (single-quote-inner-escape) at all shell-exec sites + test.
+- **Runner SSRF TOCTOU** (`28a8690e8`, HIGH) — resolve-then-git-reconnect (DNS-rebinding / 302-to-internal). IP-pin via /etc/hosts (best-effort) + `http.followRedirects=false`; pod NetworkPolicy stays authoritative. **FLAG: needs cloud e2e** (runner /etc/hosts writability + clone still works through the egress proxy).
+- **CI supply-chain** (`a79e27822`) — pinned all 18 actions→SHAs (precise-semver comments) + 5 external base images→digests + added `renovate.json` (pinDigests + helpers:pinGitHubActionDigests + docker:pinDigests) to keep them current.
+
+### Architectural residual — ACCEPTED with design recommendation
+- **forge_token persisted in `.git/config`** (HIGH, cloud cred-theft): `injectGitToken` embeds the token in the clone URL; git persists it in `<workspace>/.git/config`, which is bind-mounted into the sandbox where **untrusted PR build scripts run**. Traced fully: **no `git push` exists in iterion's Go code — commit-producing bots (Featurly, validated e2e) push from INSIDE the sandbox using that token.** So the credential cannot be hidden from untrusted in-sandbox code while keeping in-sandbox push working — stripping breaks Featurly; an external helper is unreachable for the push. **Irreducible without a trust-model decision**: separate trust-level sandboxes (untrusted-PR-review gets a token-less clone), or push-outside-sandbox, or short-lived scoped tokens to bound blast radius. Recommended next step, not a blind code patch.
+
+### Convergence framing
+"No real issues" is **asymptotic** (matches iterion's review-loop doctrine). Fixed code vulns + the now-pinned CI refs do not return; deepsec is non-deterministic; the forge_token residual is documented-accepted. gosec/semgrep surfaced **no new confirmed code vuln** on the full-coverage run (019f034b) — the Go SAST baseline is clean. Run 019f039e is the convergence candidate (all fixes + fresh image); a second consecutive stable run confirms it. [run 019f039e result + the 2nd consecutive run: to append on completion.]
+
 ## 2026-06-26 — diagnostic re-run uncovers silent zero-language-scanner bug (run 019f02b8)
 - Status: **diagnostic** (cancelled after the scanner phase, deepsec off, to capture gosec's stderr cheaply — no triage/$). Surfaced a bug more severe than the gosec gap.
 - Finding: `run_lang_scanners` ran with **`subscanners:[]` — ZERO language scanners** (gosec/semgrep-go/js/py/bandit never invoked; the node took 1s), yet scan_health reported **`degraded:false` / healthy**. Root cause: `detect_tech` (claw/gpt-5.5) returned `langs` as a **nested bucket object** `{primary:[{name:Go}],secondary:[...],fixture_or_test_only:[...]}` instead of the documented flat array, and `_norm_langs` took the dict **keys** (`primary`/`secondary`/`fixture_or_test_only`) → none match a `lang-<id>.md` skill → no scanners. **Non-deterministic**: run 019f0119 parsed langs fine and ran the lang scanners; 019f02b8 didn't. A total silent loss of language-specific SAST masquerading as a healthy run.
