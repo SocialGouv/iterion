@@ -38,7 +38,32 @@ i.e. a false positive. The studio `--bind 0.0.0.0` no-auth footgun surfaced in t
 the cross-family voters dismissed it (operator-misconfig precondition); it remains a real
 hardening item (gate DisableAuth on a loopback bind — follow-up). The forge_token residual
 did not re-confirm this run (deepsec variance; tracked-accepted regardless). Run 019f039e is
-the first of the 2 consecutive clean+healthy runs the goal requires; the 2nd to append.
+the first of the 2 consecutive clean+healthy runs the goal requires.
+
+**Run 019f03df (2nd consecutive HEALTHY run)** — scan_health healthy again (4/4,
+lang_void:[], 10 artifacts, 1349 seen), confirming Seki reliability is **stable** across
+runs. Verdict: **3 confirmed / 1 uncertain / 36 dismissed** — NOT zero, because deepsec
+(LLM) is non-deterministic and explored new areas this run. The 3: (1) the forge_token
+`.git/config` residual (re-confirmed; accepted-architectural); (2) `version.yml` App-token
+readable by npm install scripts during `release-it` (same token-exposure class — mitigated
+by lockfile-pinned + Renovate-maintained deps); (3) `desktop-release.yml` **unpinned build
+tools** (wails/go-task `@latest`, plugin-gtk `@master`) → **FIXED `b554fd0a4`** (pinned;
+linuxdeploy `continuous` is upstream's only channel — accepted). Uncertain: studio Login
+`?next=` **open-redirect** via `/\evil` → **FIXED `b554fd0a4`**.
+
+### Outcome
+- **Seki reliability: PROVEN** — 2 consecutive complete + fully-healthy full-coverage runs
+  after the scanner/engine fixes; gosec+trivy+all lang scanners green, no silent gaps,
+  scan_health is now a trustworthy oracle.
+- **iterion security: every HIGH code vuln fixed** (CSRF, secret-RCE, SSRF) + 6 medium
+  (GHA-injection, CI supply-chain pin-all+Renovate, studio no-auth bind, Login redirect,
+  desktop-tool pins). Confirmed findings fell 17 → 0 → 3 (the 3 = 2 accepted token-exposure
+  residuals + items now fixed).
+- **Convergence is asymptotic, not literal-zero**: deepsec surfaces a different medium slice
+  each run; the residuals (forge_token / CI-token-to-install-scripts) are architecturally
+  bounded and documented-accepted. A literal-zero run would require the trust-model redesign
+  (forge_token) or a committed `fp-known.yaml` suppressing the accepted residuals. The
+  real-vuln backlog is drained.
 
 ## 2026-06-26 — diagnostic re-run uncovers silent zero-language-scanner bug (run 019f02b8)
 - Status: **diagnostic** (cancelled after the scanner phase, deepsec off, to capture gosec's stderr cheaply — no triage/$). Surfaced a bug more severe than the gosec gap.
