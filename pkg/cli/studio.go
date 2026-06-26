@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"net"
+	"strings"
 	"context"
 	"fmt"
 	"os"
@@ -132,6 +134,20 @@ func desktopAlertsEnabled() bool {
 //     is delivered via opts.OnReady. Used by the desktop host so multiple
 //     instances/projects never fight for 4891.
 //   - opts.Port > 0   : use that exact port.
+// isLoopbackBindHost reports whether bind addresses only the loopback
+// interface, so the no-auth local studio is reachable only from this host. An
+// unparseable hostname is treated as non-loopback (fail safe).
+func isLoopbackBindHost(bind string) bool {
+	b := strings.TrimSpace(bind)
+	if b == "" || strings.EqualFold(b, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(b); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
 func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 	switch {
 	case opts.Port == 0:
@@ -141,6 +157,22 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 	}
 	if opts.Bind == "" {
 		opts.Bind = "127.0.0.1"
+	}
+
+	// Local mode trusts the TTY user over loopback. Binding to a non-loopback
+	// address (e.g. --bind 0.0.0.0) exposes the no-auth surface to the network:
+	// any reachable host can curl /api/* with no Origin header — which the CSRF
+	// gate intentionally lets through (non-browser caller) — and gets a
+	// synthesized super-admin, so launching a bot/tool node is host-shell RCE.
+	// Refuse unless the operator explicitly accepts the risk (e.g. auth added by
+	// a fronting reverse proxy / VPN), mirroring the SSRF/SSO non-loopback
+	// strictness elsewhere in the server.
+	disableAuth := true
+	if opts.Mode != "cloud" && !isLoopbackBindHost(opts.Bind) {
+		if os.Getenv("ITERION_STUDIO_INSECURE_NONLOOPBACK") != "1" {
+			return fmt.Errorf("refusing to start an unauthenticated studio on non-loopback bind %q: any reachable host gets unauthenticated super-admin (launching a bot/tool node = host RCE). Bind 127.0.0.1 (default), or front it with auth and set ITERION_STUDIO_INSECURE_NONLOOPBACK=1 to accept the risk", opts.Bind)
+		}
+		p.Line("⚠️  studio: bound to non-loopback %q with auth disabled — unauthenticated network access is possible (ITERION_STUDIO_INSECURE_NONLOOPBACK=1)", opts.Bind)
 	}
 
 	dir := opts.Dir
@@ -188,7 +220,7 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 		// its TTY user. CSRF protection still gates write endpoints
 		// via Origin allowlisting; cross-tenant isolation does not
 		// apply because there is exactly one local user.
-		DisableAuth: true,
+		DisableAuth: disableAuth,
 		Bots:        server.BotsConfig{Paths: botsPaths},
 		Alerts:      alertSettingsFromEnv(opts.Bind, opts.Port),
 	}
