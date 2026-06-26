@@ -2729,6 +2729,12 @@ def _norm_langs(_raw):
 _langs = _norm_langs(os.environ.get('LANGS', '[]') or '[]')
 _skills_dir = os.environ.get('SKILLS_DIR', '')
 LANG = []
+# _lang_outputs maps each SKILL-BACKED detected language (one we ship a
+# lang-<id>.md for, i.e. one we CLAIM to SAST-scan) to its declared output
+# files. Used below to flag a language detected-but-uncovered — the
+# run-019f02b8 façade, where the lang dispatcher silently ran zero scanners
+# yet scan_health read 'healthy'.
+_lang_outputs = {}
 for _lang in _langs:
     _sp = os.path.join(_skills_dir, 'lang-%s.md' % _lang)
     if not os.path.isfile(_sp):
@@ -2741,6 +2747,7 @@ for _lang in _langs:
             _o = _s.get('output')
             if _o:
                 LANG.append(_o)
+                _lang_outputs.setdefault(_lang, []).append(_o)
     except Exception:
         pass
 CUSTOM  = ['custom.json']
@@ -2777,15 +2784,31 @@ for group, files in (('generic', GENERIC), ('lang', LANG), ('custom', CUSTOM)):
         else:
             missing.append({'file': fn, 'status': status, 'group': group})
 
+# Anti-facade: a skill-backed language (one we ship a lang-<id>.md for, so we
+# CLAIM to SAST-scan it) that produced NONE of its declared outputs is a
+# coverage void, not a clean repo — the run-019f02b8 class where the lang
+# dispatcher silently ran zero scanners and the run still read 'healthy'. The
+# per-file missing[] check already flags each absent file, but surface the
+# language-level void explicitly so partial-vs-total coverage is unambiguous
+# and a future langs/dispatch regression can't pass as healthy.
+present_set = set(present)
+lang_void = sorted(
+    _lang for _lang, _outs in _lang_outputs.items()
+    if _outs and not any(_o in present_set for _o in _outs)
+)
+
 health = {
     'generic_expected':    len(GENERIC),
     'generic_present':     generic_present,
     'min_generic':         min_generic,
+    'langs_detected':      _langs,
+    'langs_covered':       sorted(_lang_outputs.keys()),
+    'lang_void':           lang_void,
     'present':             present,
     'missing':             missing,
     'total_findings_seen': findings,
-    'healthy':             generic_present >= min_generic and not missing,
-    'degraded':            bool(missing),
+    'healthy':             generic_present >= min_generic and not missing and not lang_void,
+    'degraded':            bool(missing) or bool(lang_void),
 }
 print(json.dumps(health))
 
