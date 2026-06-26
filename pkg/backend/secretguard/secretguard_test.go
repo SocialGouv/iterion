@@ -110,6 +110,38 @@ func TestMaterialize_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestMaterializeShell_SingleQuoteInjection guards the fix for the deepsec
+// finding (run 019f02f4): the tool-node template wraps a secret placeholder in
+// single quotes, and plain Materialize substituted the RAW value, so a secret
+// value containing a single quote broke out of the quoting -> shell injection.
+// MaterializeShell escapes the value for inside-single-quote use so the
+// surrounding quotes stay balanced and the value is inert shell text.
+func TestMaterializeShell_SingleQuoteInjection(t *testing.T) {
+	// A hostile secret value that, raw, would close the quote and run `id`.
+	const evil = `x'; id #`
+	g := newTestGuard(t, Secret{Name: "tok", Value: evil})
+	ph := defaultPlaceholder("tok")
+	// The template layer emits the placeholder inside single quotes.
+	cmd := `deploy --token '` + ph + `'`
+
+	raw := g.Materialize(cmd)
+	if !strings.Contains(raw, `'; id #`) {
+		t.Fatalf("precondition: raw Materialize should embed the unescaped value: %q", raw)
+	}
+
+	got := g.MaterializeShell(cmd)
+	// Every single quote in the VALUE must be the escaped form ('\''), so no
+	// bare `'` from the value can terminate the surrounding quote. `sh -c got`
+	// then passes the literal value `x'; id #` as one arg — `id` never runs.
+	want := `deploy --token 'x'\''; id #'`
+	if got != want {
+		t.Errorf("MaterializeShell = %q; want %q", got, want)
+	}
+	if strings.Contains(got, ph) {
+		t.Errorf("placeholder survived MaterializeShell: %q", got)
+	}
+}
+
 func TestContainsSecret_DeterministicGate(t *testing.T) {
 	g := newTestGuard(t, Secret{Name: "k", Value: fakeKey})
 	if !g.ContainsSecret("payload=" + fakeKey) {

@@ -357,7 +357,7 @@ func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input
 			// Materialise secret placeholders ONLY into the command actually
 			// executed — `resolved` (placeholder form) is what the hooks/logs
 			// persist, so the real value never hits the store.
-			return e.toolNodeCommand(ctx, e.secretGuard.Materialize(resolved)), nil, nil
+			return e.toolNodeCommand(ctx, e.secretGuard.MaterializeShell(resolved)), nil, nil
 		}
 }
 
@@ -493,7 +493,7 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			// Materialise secret placeholders into the executed script body
 			// only. `resolved` (placeholder form) stays the value passed to
 			// hooks/logs, so the real secret never reaches the event stream.
-			if _, werr := tmpFile.WriteString(e.secretGuard.Materialize(resolved)); werr != nil {
+			if _, werr := tmpFile.WriteString(e.secretGuard.MaterializeShell(resolved)); werr != nil {
 				_ = tmpFile.Close()
 				cleanup()
 				return nil, nil, fmt.Errorf("model: tool node %q: write temp script: %w", node.ID, werr)

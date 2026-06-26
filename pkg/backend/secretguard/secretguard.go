@@ -395,6 +395,26 @@ func (g *Guard) Materialize(s string) string {
 	return s
 }
 
+// MaterializeShell is Materialize for a POSIX single-quoted shell context. The
+// template layer shell-escapes every secret REF by wrapping its placeholder in
+// single quotes ('__ITERION_SECRET_X__'), so substituting the RAW value (plain
+// Materialize) lets a value containing a single quote break OUT of that quoting
+// — shell injection / RCE on the runner, reachable in multi-tenant cloud where
+// the principal that SETS a secret-binding value differs from the bot author.
+// Escape each value for inside-single-quote use (' -> '\'') so the surrounding
+// quotes stay balanced and the value can never be interpreted as shell syntax.
+// Use this at every shell/tool-node exec site; the (raw) Materialize is for
+// non-shell materialization (e.g. the egress proxy).
+func (g *Guard) MaterializeShell(s string) string {
+	if g == nil || s == "" || len(g.placeholderValue) == 0 {
+		return s
+	}
+	for ph, val := range g.placeholderValue {
+		s = strings.ReplaceAll(s, ph, strings.ReplaceAll(val, "'", `'\''`))
+	}
+	return s
+}
+
 // ResolveSecretRef renders a {{secrets.NAME}} reference. With
 // placeholders enabled (default) it returns the opaque placeholder —
 // the agent never sees the real value, which Materialize swaps in at

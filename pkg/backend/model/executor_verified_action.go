@@ -179,7 +179,7 @@ func (e *ClawExecutor) runPostcondition(ctx context.Context, node *ir.ToolNode, 
 		return resolveCommandTemplate(expanded, node.PostcondRefs, input, e.vars, e.secretGuard)
 	}
 	buildCmd := func(resolved string) (*exec.Cmd, func(), error) {
-		return e.toolNodeCommand(ctx, e.secretGuard.Materialize(resolved)), nil, nil
+		return e.toolNodeCommand(ctx, e.secretGuard.MaterializeShell(resolved)), nil, nil
 	}
 	res, setupErr := e.runToolNodeCore(ctx, node, postcondToolName(node), resolve, buildCmd)
 	if setupErr != nil {
@@ -238,7 +238,7 @@ Return only the corrected command (one shell invocation, may use && / pipes). Do
 	// resolved (placeholder-form) command is what hooks/events persist.
 	resolve := func() string { return corrected }
 	buildCmd := func(resolved string) (*exec.Cmd, func(), error) {
-		return e.toolNodeCommand(ctx, e.secretGuard.Materialize(resolved)), nil, nil
+		return e.toolNodeCommand(ctx, e.secretGuard.MaterializeShell(resolved)), nil, nil
 	}
 	res, setupErr := e.runToolNodeCore(ctx, node, "self_repair:"+node.ID, resolve, buildCmd)
 	if setupErr != nil {
