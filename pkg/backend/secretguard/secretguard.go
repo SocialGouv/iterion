@@ -401,8 +401,9 @@ func (g *Guard) Materialize(s string) string {
 // Materialize) lets a value containing a single quote break OUT of that quoting
 // — shell injection / RCE on the runner, reachable in multi-tenant cloud where
 // the principal that SETS a secret-binding value differs from the bot author.
-// Escape each value for inside-single-quote use (' -> '\'') so the surrounding
-// quotes stay balanced and the value can never be interpreted as shell syntax.
+// Escape each value for inside-single-quote use (each single quote becomes
+// close-quote + backslash-quote + reopen-quote) so the surrounding quotes stay
+// balanced and the value can never be interpreted as shell syntax.
 // Use this at every shell/tool-node exec site; the (raw) Materialize is for
 // non-shell materialization (e.g. the egress proxy).
 func (g *Guard) MaterializeShell(s string) string {
