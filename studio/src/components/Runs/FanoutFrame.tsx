@@ -16,8 +16,10 @@ export interface FanoutFrameData extends Record<string, unknown> {
   height: number;
   // e.g. "fan_out_each · dispatch"
   label: string;
-  // number of items the router fanned out over (e.g. 38)
-  total: number;
+  // Number of items the router fanned out over (e.g. 38). Known only in the
+  // run canvas; undefined in the editor (no runtime), where the header omits
+  // the count.
+  total?: number;
 }
 
 type FanoutFrameType = Node<FanoutFrameData, "fanoutFrame">;
@@ -37,9 +39,14 @@ export default function FanoutFrame({ data }: NodeProps<FanoutFrameType>) {
       <div
         className="absolute -top-2.5 left-3 px-2 py-0.5 rounded bg-info-soft text-info-fg text-[10px] font-medium border border-info/50 whitespace-nowrap shadow-sm"
         style={{ pointerEvents: "none" }}
-        title={`Replicated region: every node inside runs once per item (${total} items). ‖ = multi-instance.`}
+        title={
+          total != null
+            ? `Replicated region: every node inside runs once per item (${total} items). ‖ = multi-instance.`
+            : `Replicated region: every node inside runs once per item of the fan_out_each array. ‖ = multi-instance.`
+        }
       >
-        ⛓ {label} · ×{total} per item · ‖ multi-instance
+        ⛓ {label}
+        {total != null ? ` · ×${total} per item` : " · per item"} · ‖ multi-instance
       </div>
     </div>
   );
