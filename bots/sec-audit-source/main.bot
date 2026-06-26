@@ -2347,17 +2347,31 @@ for lang in langs:
         errs.append('lang %s: bad scanners block: %s' % (lang, e)); continue
     for s in specs:
         sid = s.get('id', lang); cmd = s.get('cmd', ''); out = s.get('output', '')
-        if out:
-            paths[sid] = '%s/%s' % (scan_dir, out)
+        op = '%s/%s' % (scan_dir, out) if out else ''
+        if op:
+            paths[sid] = op
         if not cmd:
             continue
         sub.append(sid)
+        stderr_tail = ''
         try:
             p = subprocess.run(cmd, shell=True, cwd=ws, env=env, capture_output=True, timeout=900)
             if p.returncode != 0:
                 errs.append('%s exited %d' % (sid, p.returncode))
+            if p.stderr:
+                stderr_tail = p.stderr.decode('utf-8', 'replace').strip()[-300:]
         except Exception as e:
             errs.append('%s: %s' % (sid, e))
+        # Anti-facade: a scanner whose declared output file is missing/empty
+        # after it ran is a SILENT coverage gap. Many scanner cmds end in
+        # '|| true' (gosec/semgrep exit non-zero merely on FINDING issues), so
+        # returncode is an unreliable failure signal — gosec was observed to
+        # fail package-load and write no gosec.json while the wrapper reported
+        # errors:[]. Verify the artifact, surface any stderr tail, and drop the
+        # phantom path so triage/scan_health don't read 'scanned, nothing found'.
+        if op and (not os.path.isfile(op) or os.path.getsize(op) == 0):
+            errs.append('%s produced no output file %s%s' % (sid, out, (' :: ' + stderr_tail) if stderr_tail else ''))
+            paths.pop(sid, None)
 print(json.dumps({'scanner': 'lang', 'subscanners': sub, 'json_paths': paths, 'finding_count': 0, 'errors': errs}))
 "`
   input: lang_input
