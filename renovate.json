@@ -1,0 +1,43 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests",
+    "docker:pinDigests",
+    ":pinDevDependencies"
+  ],
+  "pinDigests": true,
+  "timezone": "Etc/UTC",
+  "schedule": ["before 6am on monday"],
+  "labels": ["dependencies"],
+  "prHourlyLimit": 4,
+  "packageRules": [
+    {
+      "description": "Keep the GitHub Actions SHA pins current, with the precise semver in the trailing comment.",
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions",
+      "pinDigests": true
+    },
+    {
+      "description": "Maintain container base-image digest pins (Dockerfiles).",
+      "matchManagers": ["dockerfile"],
+      "groupName": "docker base images",
+      "pinDigests": true
+    },
+    {
+      "description": "Group non-major npm updates in the pnpm workspace.",
+      "matchManagers": ["npm"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "npm (non-major)"
+    },
+    {
+      "description": "Group Go module updates.",
+      "matchManagers": ["gomod"],
+      "groupName": "go modules"
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "labels": ["security"],
+    "schedule": ["at any time"]
+  }
+}

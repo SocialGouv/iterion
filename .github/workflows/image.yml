@@ -38,16 +38,16 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
       - name: Login to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -63,7 +63,7 @@ jobs:
 
       - name: Compute tags
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
         with:
           images: ${{ env.REGISTRY_IMAGE }}
           tags: |
@@ -75,7 +75,7 @@ jobs:
 
       - name: Build (and push when not a PR)
         id: build
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: .
           file: Dockerfile
@@ -100,11 +100,11 @@ jobs:
       # under the same tag claim the signature.
       - name: Install cosign
         if: github.event_name != 'pull_request'
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
 
       - name: Generate SBOM (syft)
         if: github.event_name != 'pull_request'
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
           image: ${{ env.REGISTRY_IMAGE }}@${{ steps.build.outputs.digest }}
           format: spdx-json
@@ -154,16 +154,16 @@ jobs:
     env:
       SANDBOX_IMAGE_NAME: ${{ github.repository_owner }}/iterion-sandbox-slim
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
       - name: Login to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -184,7 +184,7 @@ jobs:
 
       - name: Compute tags
         id: meta-slim
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
         with:
           images: ${{ env.SANDBOX_IMAGE_REF }}
           tags: |
@@ -196,7 +196,7 @@ jobs:
 
       - name: Build (and push when not a PR)
         id: build-slim
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: sandbox/slim
           file: sandbox/slim/Dockerfile
@@ -212,7 +212,7 @@ jobs:
 
       - name: Install cosign (slim)
         if: github.event_name != 'pull_request'
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
 
       - name: Sign sandbox-slim image
         if: github.event_name != 'pull_request'
@@ -238,16 +238,16 @@ jobs:
       SANDBOX_IMAGE_NAME: ${{ github.repository_owner }}/iterion-sandbox-full
       SANDBOX_SLIM_NAME: ${{ github.repository_owner }}/iterion-sandbox-slim
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
       - name: Login to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -260,7 +260,7 @@ jobs:
 
       - name: Compute tags
         id: meta-full
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
         with:
           images: ${{ env.SANDBOX_IMAGE_REF }}
           tags: |
@@ -287,7 +287,7 @@ jobs:
 
       - name: Build (and push when not a PR)
         id: build-full
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: sandbox/full
           file: sandbox/full/Dockerfile
@@ -303,7 +303,7 @@ jobs:
 
       - name: Install cosign (full)
         if: github.event_name != 'pull_request'
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
 
       - name: Sign sandbox-full image
         if: github.event_name != 'pull_request'
@@ -331,16 +331,16 @@ jobs:
       SANDBOX_IMAGE_NAME: ${{ github.repository_owner }}/iterion-sandbox-sec
       SANDBOX_FULL_NAME: ${{ github.repository_owner }}/iterion-sandbox-full
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
       - name: Login to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -353,7 +353,7 @@ jobs:
 
       - name: Compute tags
         id: meta-sec
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
         with:
           images: ${{ env.SANDBOX_IMAGE_REF }}
           tags: |
@@ -380,7 +380,7 @@ jobs:
 
       - name: Build (and push when not a PR)
         id: build-sec
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: sandbox/sec
           file: sandbox/sec/Dockerfile
@@ -396,7 +396,7 @@ jobs:
 
       - name: Install cosign (sec)
         if: github.event_name != 'pull_request'
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
 
       - name: Sign sandbox-sec image
         if: github.event_name != 'pull_request'

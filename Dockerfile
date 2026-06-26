@@ -14,7 +14,7 @@
 # ---------------------------------------------------------------------
 # Stage 1 — Studio frontend
 # ---------------------------------------------------------------------
-FROM node:22-bookworm-slim AS studio-builder
+FROM node:22-bookworm-slim@sha256:813a7480f28fdadac1f7f5c824bcdad435b5bc1322a5968bbbdef8d058f9dff4 AS studio-builder
 WORKDIR /app
 # pnpm-workspace.yaml + pnpm-lock.yaml live at the repo root; the
 # studio/ directory is a workspace member that doesn't carry its own
@@ -31,7 +31,7 @@ RUN corepack pnpm --filter ./studio exec vite build
 # ---------------------------------------------------------------------
 # Stage 2 — Go binary
 # ---------------------------------------------------------------------
-FROM golang:1.26-bookworm AS go-builder
+FROM golang:1.26-bookworm@sha256:b305420a68d0f229d91eb3b3ed9e519fcf2cf5461da4bef997bf927e8c0bfd2b AS go-builder
 WORKDIR /src
 ARG VERSION=0.0.0
 ARG COMMIT=unknown
@@ -58,7 +58,7 @@ RUN go build \
 # ---------------------------------------------------------------------
 # Stage 3 — Pinned LLM CLIs
 # ---------------------------------------------------------------------
-FROM node:22-bookworm-slim AS llm-clis
+FROM node:22-bookworm-slim@sha256:813a7480f28fdadac1f7f5c824bcdad435b5bc1322a5968bbbdef8d058f9dff4 AS llm-clis
 WORKDIR /llm
 COPY docker/llm-clis/package.json ./package.json
 # npm install (no lock yet) honours the exact pinned versions in
@@ -68,7 +68,7 @@ RUN npm install --omit=dev --no-audit --no-fund
 # ---------------------------------------------------------------------
 # Stage 4 — Runtime
 # ---------------------------------------------------------------------
-FROM debian:12-slim AS runtime
+FROM debian:12-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df AS runtime
 
 ARG VERSION=0.0.0
 ARG COMMIT=unknown

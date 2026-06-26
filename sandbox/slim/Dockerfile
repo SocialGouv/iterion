@@ -25,7 +25,7 @@
 ARG ITERION_IMAGE=ghcr.io/socialgouv/iterion:edge
 FROM ${ITERION_IMAGE} AS iterion-bin
 
-FROM jetpackio/devbox:latest
+FROM jetpackio/devbox:latest@sha256:04562895294750bab6fcf75533a35566a854d272256933fa9c416e7f9859186f
 
 USER root
 
