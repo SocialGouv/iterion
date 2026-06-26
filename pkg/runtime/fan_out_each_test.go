@@ -322,6 +322,95 @@ func TestResourceSemaphore_BoundsConcurrency(t *testing.T) {
 	}
 }
 
+// TestResourceLease_DistinctInstances proves the lease form of a named resource
+// (`godot: [godot-s1, godot-s2, godot-s3]`) hands every concurrently-running
+// node a DISTINCT instance id (surfaced under input["_lease"]), never sharing an
+// id across overlapping holders, never exceeding the pool size, and only ever
+// leasing ids from the declared pool. This is what makes a counting bound become
+// a real pool of distinct Godot editors.
+func TestResourceLease_DistinctInstances(t *testing.T) {
+	pool := []string{"godot-s1", "godot-s2", "godot-s3"}
+
+	wf := fanOutEachWorkflow(false, ir.AwaitWaitAll, 0) // 0 = no max_parallel cap
+	wf.Resources = map[string]int{"godot": len(pool)}
+	wf.ResourceMembers = map[string][]string{"godot": pool}
+	wf.Nodes["handle"].(*ir.AgentNode).Needs = []string{"godot"}
+
+	const nItems = 8
+	items := make([]interface{}, nItems)
+	for i := range items {
+		items[i] = item(string(rune('A' + i)))
+	}
+
+	var mu sync.Mutex
+	held := map[string]bool{} // currently-leased ids
+	seen := map[string]bool{} // every id ever leased
+	maxConcurrent := 0
+	var violations []string
+
+	exec := newStubExecutor()
+	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"items": items}, nil
+	})
+	exec.on("handle", func(in map[string]interface{}) (map[string]interface{}, error) {
+		lease, _ := in[leaseInputKey].(map[string]string)
+		id := lease["godot"]
+
+		mu.Lock()
+		switch {
+		case id == "":
+			violations = append(violations, "handle ran with no godot lease")
+		case held[id]:
+			violations = append(violations, "id "+id+" leased to two concurrent holders")
+		default:
+			held[id] = true
+			seen[id] = true
+			if len(held) > maxConcurrent {
+				maxConcurrent = len(held)
+			}
+		}
+		mu.Unlock()
+
+		time.Sleep(15 * time.Millisecond) // hold the lease so contention is observable
+
+		mu.Lock()
+		delete(held, id)
+		mu.Unlock()
+		return map[string]interface{}{"ok": true}, nil
+	})
+	exec.on("collect", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+	if err := eng.Run(context.Background(), "run-lease", nil); err != nil {
+		t.Fatalf("run error: %v", err)
+	}
+	r, _ := s.LoadRun(context.Background(), "run-lease")
+	if r.Status != store.RunStatusFinished {
+		t.Fatalf("expected finished, got %s", r.Status)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, v := range violations {
+		t.Errorf("lease violation: %s", v)
+	}
+	if maxConcurrent != len(pool) {
+		t.Errorf("max concurrent leases = %d, want %d (pool not saturated, or over-leased)", maxConcurrent, len(pool))
+	}
+	inPool := map[string]bool{}
+	for _, p := range pool {
+		inPool[p] = true
+	}
+	for id := range seen {
+		if !inPool[id] {
+			t.Errorf("leased id %q is not a declared pool member %v", id, pool)
+		}
+	}
+}
+
 // TestFanOutEach_DAG_DiamondOrderingAndParallelism: A -> {B,C} -> D.
 // Asserts (1) dependency: A finishes before B/C start, and B/C finish before
 // D starts; (2) parallelism: B and C overlap (proven by a 2-way barrier — a

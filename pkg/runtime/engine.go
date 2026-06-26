@@ -442,12 +442,15 @@ type runState struct {
 	budget             *SharedBudget // shared across branches, nil if no budget
 
 	// resourceSemaphores holds one buffered channel per declared workflow
-	// resource (name → capacity slots), built once at run start and shared
-	// by reference across all branches so contention is global. A node that
-	// declares `needs: <resource>` acquires a slot before running and
-	// releases it after (even on failure) — bounding e.g. concurrent Godot
-	// sessions WITHOUT a global parallelism cap. nil when no resources declared.
-	resourceSemaphores map[string]chan struct{}
+	// resource, pre-seeded with its tokens and shared by reference across all
+	// branches so contention is global. A node that declares `needs: <resource>`
+	// pops a token before running and pushes it back after (even on failure) —
+	// bounding e.g. concurrent Godot sessions WITHOUT a global parallelism cap.
+	// Token values: the empty string for the counting form (`godot: 5` → 5
+	// anonymous tokens), or the member ids for the lease form (`godot: [s1,s2]`
+	// → each acquire leases one distinct id, surfaced to the node as `_lease`).
+	// nil when no resources declared.
+	resourceSemaphores map[string]chan string
 
 	// costUSDTotal is the run's cumulative LLM spend (sum of per-node
 	// _cost_usd), tracked independently of `budget` so the daily spend
@@ -521,37 +524,61 @@ func (e *Engine) newRunState(runID string, inputs map[string]interface{}) *runSt
 		artifactVersions:   make(map[string]int),
 		nodeAttempts:       make(map[string]map[ErrorCode]int),
 		budget:             newSharedBudget(e.workflow.Budget, e.logger),
-		resourceSemaphores: buildResourceSemaphores(e.workflow.Resources),
+		resourceSemaphores: buildResourceSemaphores(e.workflow.Resources, e.workflow.ResourceMembers),
 	}
 }
 
+// leaseInputKey is the node-input key under which a node's acquired
+// instance leases are surfaced (resource name → leased member id), e.g.
+// input["_lease"]["godot"] == "godot-s3". Only present for lease-form
+// resources; consumed by bots to bind the leased instance (cwd/MCP).
+const leaseInputKey = "_lease"
+
 // buildResourceSemaphores creates one buffered channel per declared resource,
-// sized to its capacity. The channel's buffer IS the semaphore: a send
-// acquires a slot (blocks when full), a receive releases one. Returns nil when
-// the workflow declares no resources, so acquireResources is a no-op.
-func buildResourceSemaphores(resources map[string]int) map[string]chan struct{} {
+// PRE-SEEDED with its tokens: the buffer holds the available slots, so a
+// receive acquires (blocks when empty) and a send returns the token. For the
+// counting form the tokens are empty strings (capacity anonymous slots); for
+// the lease form they are the distinct member ids, so an acquire pops a
+// specific instance to lease. Returns nil when the workflow declares no
+// resources, so acquireResources is a no-op.
+func buildResourceSemaphores(resources map[string]int, members map[string][]string) map[string]chan string {
 	if len(resources) == 0 {
 		return nil
 	}
-	sem := make(map[string]chan struct{}, len(resources))
+	sem := make(map[string]chan string, len(resources))
 	for name, capacity := range resources {
 		if capacity <= 0 {
 			continue // defensive; validate rejects ≤ 0
 		}
-		sem[name] = make(chan struct{}, capacity)
+		ch := make(chan string, capacity)
+		if pool := members[name]; len(pool) > 0 {
+			// Lease form: seed with the distinct instance ids.
+			for _, id := range pool {
+				ch <- id
+			}
+		} else {
+			// Counting form: seed with `capacity` anonymous tokens.
+			for i := 0; i < capacity; i++ {
+				ch <- ""
+			}
+		}
+		sem[name] = ch
 	}
 	return sem
 }
 
-// acquireResources blocks until a slot of every resource in `needs` is free,
-// then returns a release func that frees them. Resources are acquired in a
-// stable (sorted, de-duplicated) order so two nodes that need the same pair
-// can never deadlock via inconsistent lock ordering. A cancelled ctx aborts
-// the wait, releasing any slots already taken and returning ctx.Err(). The
-// caller must `defer release()` so the slots free even when the node fails.
-func (e *Engine) acquireResources(ctx context.Context, rs *runState, needs []string) (func(), error) {
+// acquireResources blocks until a token of every resource in `needs` is free,
+// then returns a release func that frees them and the leases it took. Resources
+// are acquired in a stable (sorted, de-duplicated) order so two nodes that need
+// the same pair can never deadlock via inconsistent lock ordering. A cancelled
+// ctx aborts the wait, releasing any tokens already taken and returning
+// ctx.Err(). The caller must `defer release()` so the tokens free even when the
+// node fails. `leases` maps a resource name to the distinct instance id it
+// acquired, but ONLY for lease-form resources (counting-form tokens are empty
+// and omitted); nil when nothing was leased.
+func (e *Engine) acquireResources(ctx context.Context, rs *runState, needs []string) (func(), map[string]string, error) {
 	if len(needs) == 0 || rs.resourceSemaphores == nil {
-		return func() {}, nil
+		return func() {}, nil, nil
 	}
 	// De-duplicate + sort for a consistent global acquisition order.
 	seen := make(map[string]bool, len(needs))
@@ -565,26 +592,34 @@ func (e *Engine) acquireResources(ctx context.Context, rs *runState, needs []str
 	}
 	sort.Strings(ordered)
 
-	acquired := make([]string, 0, len(ordered))
+	type held struct{ name, tok string }
+	acquired := make([]held, 0, len(ordered))
 	release := func() {
-		for _, r := range acquired {
-			<-rs.resourceSemaphores[r]
+		for _, h := range acquired {
+			rs.resourceSemaphores[h.name] <- h.tok // return the exact token/id
 		}
 	}
+	var leases map[string]string
 	for _, r := range ordered {
 		ch := rs.resourceSemaphores[r]
 		if ch == nil {
 			continue // undeclared resource (validate flags it); skip defensively
 		}
 		select {
-		case ch <- struct{}{}:
-			acquired = append(acquired, r)
+		case tok := <-ch:
+			acquired = append(acquired, held{r, tok})
+			if tok != "" { // lease form → record the leased instance id
+				if leases == nil {
+					leases = make(map[string]string, len(ordered))
+				}
+				leases[r] = tok
+			}
 		case <-ctx.Done():
 			release()
-			return nil, ctx.Err()
+			return nil, nil, ctx.Err()
 		}
 	}
-	return release, nil
+	return release, leases, nil
 }
 
 // Run executes the workflow. It creates a run, walks the graph from the
@@ -1288,11 +1323,14 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 	// slot is free. Placed before the per-node wall-clock deadline below so
 	// waiting on a busy resource doesn't eat the node's execution budget.
 	// Released on return (defer) so a failed node still frees its slot.
-	releaseResources, aerr := e.acquireResources(ctx, rs, ir.NodeNeeds(node))
+	releaseResources, leases, aerr := e.acquireResources(ctx, rs, ir.NodeNeeds(node))
 	if aerr != nil {
 		return nil, false, aerr
 	}
 	defer releaseResources()
+	if len(leases) > 0 {
+		nodeInput[leaseInputKey] = leases // surface leased instance ids to the node
+	}
 
 	// Fork rehydration: when resumeFromFailure pinned a backend
 	// conversation / session id at currentNodeID, inject the matching

@@ -631,7 +631,12 @@ type BudgetBlock struct {
 // without a global parallelism cap.
 type ResourcesBlock struct {
 	Capacities map[string]int // resource name → capacity
-	Span       Span
+	// Members holds the named-instance pool for a resource declared as a
+	// bracketed ident-list (e.g. `godot: [godot-s1, godot-s2]`) — each acquire
+	// leases one distinct member id. nil/absent for the counting-only form
+	// (`godot: 5`), where capacity is just a count with no instance identity.
+	Members map[string][]string
+	Span    Span
 }
 
 // CompactionBlock configures session compaction. Both fields use a "0/nil

@@ -463,8 +463,8 @@ func (c *compiler) compile() *Workflow {
 		budget = c.compileBudget(wf.Budget)
 	}
 
-	// Compile resources (named counting semaphores).
-	resources := c.compileResources(wf.Resources)
+	// Compile resources (named counting semaphores + optional lease pools).
+	resources, resourceMembers := c.compileResources(wf.Resources)
 
 	// Compile workflow-level compaction overrides.
 	compaction := compileCompaction(wf.Compaction)
@@ -493,6 +493,7 @@ func (c *compiler) compile() *Workflow {
 		Loops:           loops,
 		Budget:          budget,
 		Resources:       resources,
+		ResourceMembers: resourceMembers,
 		Compaction:      compaction,
 		MCP:             convertMCPConfig(wf.MCP),
 		MCPServers:      c.mcp,
@@ -1572,11 +1573,12 @@ func (c *compiler) compileBudget(b *ast.BudgetBlock) *Budget {
 // compileResources converts the AST resources block to the IR map
 // (name → capacity). Capacities ≤ 0 are dropped with a diagnostic — a
 // zero/negative semaphore would block its `needs:` nodes forever.
-func (c *compiler) compileResources(rb *ast.ResourcesBlock) map[string]int {
+func (c *compiler) compileResources(rb *ast.ResourcesBlock) (map[string]int, map[string][]string) {
 	if rb == nil || len(rb.Capacities) == 0 {
-		return nil
+		return nil, nil
 	}
 	out := make(map[string]int, len(rb.Capacities))
+	var members map[string][]string
 	for name, capacity := range rb.Capacities {
 		if capacity <= 0 {
 			c.errorf(DiagResourceCapInvalid,
@@ -1584,11 +1586,19 @@ func (c *compiler) compileResources(rb *ast.ResourcesBlock) map[string]int {
 			continue
 		}
 		out[name] = capacity
+		// Lease form: a resource declared as an ident-list carries its member
+		// ids; each acquire leases one distinct id (capacity = len(members)).
+		if m := rb.Members[name]; len(m) > 0 {
+			if members == nil {
+				members = make(map[string][]string, len(rb.Capacities))
+			}
+			members[name] = m
+		}
 	}
 	if len(out) == 0 {
-		return nil
+		return nil, nil
 	}
-	return out
+	return out, members
 }
 
 // compileCompaction converts an AST CompactionBlock to its IR form. Returns

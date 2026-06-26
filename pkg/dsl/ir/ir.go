@@ -30,6 +30,7 @@ type Workflow struct {
 	Loops           map[string]*Loop       // loop name → loop definition
 	Budget          *Budget                // workflow budget (nil if not set)
 	Resources       map[string]int         // named counting semaphores (resource name → capacity); nil = none
+	ResourceMembers map[string][]string    // resource name → named-instance lease pool (capacity = len); nil = counting-only
 	Compaction      *Compaction            // workflow-level compaction overrides (nil = no override)
 	MCP             *MCPConfig             // workflow-level MCP activation/filtering
 	DefaultBackend  string                 // workflow-level default backend (empty = not set)

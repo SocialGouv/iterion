@@ -1123,7 +1123,17 @@ func writeResources(b *strings.Builder, res *ast.ResourcesBlock) {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		fmt.Fprintf(b, "    %s: %d\n", name, res.Capacities[name])
+		// Lease form round-trips as the quoted string-list it was declared
+		// with; counting form as the bare capacity.
+		if members := res.Members[name]; len(members) > 0 {
+			quoted := make([]string, len(members))
+			for i, m := range members {
+				quoted[i] = strconv.Quote(m)
+			}
+			fmt.Fprintf(b, "    %s: [%s]\n", name, strings.Join(quoted, ", "))
+		} else {
+			fmt.Fprintf(b, "    %s: %d\n", name, res.Capacities[name])
+		}
 	}
 }
 
