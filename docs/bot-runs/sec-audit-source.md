@@ -26,7 +26,19 @@ Each was a real bug that broke or degraded a run (all committed, `task check` gr
 - **forge_token persisted in `.git/config`** (HIGH, cloud cred-theft): `injectGitToken` embeds the token in the clone URL; git persists it in `<workspace>/.git/config`, which is bind-mounted into the sandbox where **untrusted PR build scripts run**. Traced fully: **no `git push` exists in iterion's Go code — commit-producing bots (Featurly, validated e2e) push from INSIDE the sandbox using that token.** So the credential cannot be hidden from untrusted in-sandbox code while keeping in-sandbox push working — stripping breaks Featurly; an external helper is unreachable for the push. **Irreducible without a trust-model decision**: separate trust-level sandboxes (untrusted-PR-review gets a token-less clone), or push-outside-sandbox, or short-lived scoped tokens to bound blast radius. Recommended next step, not a blind code patch.
 
 ### Convergence framing
-"No real issues" is **asymptotic** (matches iterion's review-loop doctrine). Fixed code vulns + the now-pinned CI refs do not return; deepsec is non-deterministic; the forge_token residual is documented-accepted. gosec/semgrep surfaced **no new confirmed code vuln** on the full-coverage run (019f034b) — the Go SAST baseline is clean. Run 019f039e is the convergence candidate (all fixes + fresh image); a second consecutive stable run confirms it. [run 019f039e result + the 2nd consecutive run: to append on completion.]
+"No real issues" is **asymptotic** (matches iterion's review-loop doctrine). Fixed code vulns + the now-pinned CI refs do not return; deepsec is non-deterministic; the forge_token residual is documented-accepted. gosec/semgrep surfaced **no new confirmed code vuln** on the full-coverage run (019f034b) — the Go SAST baseline is clean.
+
+**Run 019f039e (all fixes + fresh image) — FIRST CLEAN + HEALTHY RUN.** scan_health
+`healthy:true` for the first time: generic floor 4/4 (gitleaks/trivy/semgrep-auto/
+deepsec), `lang_void:[]`, **10 scanner artifacts** (gosec now 301 raw Issues → cap-50;
+trivy now completes). Verdict: **0 confirmed / 1 uncertain / 100 dismissed** — down from
+17→11→0 as the fixes landed. The single uncertain (`charts/iterion/values-dev.yaml:61`
+jwtSecret) is a **documented deterministic dev placeholder** ("…please-rotate-in-prod"),
+i.e. a false positive. The studio `--bind 0.0.0.0` no-auth footgun surfaced in triage but
+the cross-family voters dismissed it (operator-misconfig precondition); it remains a real
+hardening item (gate DisableAuth on a loopback bind — follow-up). The forge_token residual
+did not re-confirm this run (deepsec variance; tracked-accepted regardless). Run 019f039e is
+the first of the 2 consecutive clean+healthy runs the goal requires; the 2nd to append.
 
 ## 2026-06-26 — diagnostic re-run uncovers silent zero-language-scanner bug (run 019f02b8)
 - Status: **diagnostic** (cancelled after the scanner phase, deepsec off, to capture gosec's stderr cheaply — no triage/$). Surfaced a bug more severe than the gosec gap.
