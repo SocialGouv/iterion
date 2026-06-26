@@ -1,5 +1,12 @@
 # Seki + deepsec — validation
 
+## 2026-06-26 — diagnostic re-run uncovers silent zero-language-scanner bug (run 019f02b8)
+- Status: **diagnostic** (cancelled after the scanner phase, deepsec off, to capture gosec's stderr cheaply — no triage/$). Surfaced a bug more severe than the gosec gap.
+- Finding: `run_lang_scanners` ran with **`subscanners:[]` — ZERO language scanners** (gosec/semgrep-go/js/py/bandit never invoked; the node took 1s), yet scan_health reported **`degraded:false` / healthy**. Root cause: `detect_tech` (claw/gpt-5.5) returned `langs` as a **nested bucket object** `{primary:[{name:Go}],secondary:[...],fixture_or_test_only:[...]}` instead of the documented flat array, and `_norm_langs` took the dict **keys** (`primary`/`secondary`/`fixture_or_test_only`) → none match a `lang-<id>.md` skill → no scanners. **Non-deterministic**: run 019f0119 parsed langs fine and ran the lang scanners; 019f02b8 didn't. A total silent loss of language-specific SAST masquerading as a healthy run.
+- FIXED `5688378b1`: (1) type `tech_output.langs` as `string[]` (was `json`) so the model is forced to the flat shape; (2) harden `_norm_langs` to recursively walk any shape (flat array / descriptor array / nested bucket), preferring a descriptor's name/id. Unit-checked: the exact run-019f02b8 nested object now yields `['go','js','python','rust',…]`.
+- Also confirmed (run 4): the `gosec` silent-gap fix (`aa1bf9ea9`) and version.yml fix hold; the gosec failure itself is now moot when langs parse correctly (gosec runs) and surfaced when it doesn't.
+- Misses / follow-ups: **scan_health is the real anti-façade weak point** — it reported healthy with zero language scanners. It should assert that each detected primary language produced ≥1 lang-scanner artifact (hard-fail/degrade otherwise), independent of the langs-parsing fix. Triage also flailed Read-ing oversized scanner JSONs (trivy 1MB > the 256KB Read cap) — triage should grep/offset, not whole-file Read. Both noted for a future round.
+
 ## 2026-06-26 — re-run: version.yml fix re-scan-validated + gosec silent-gap fixed (run 019f0119)
 - Status: **validated** — converged to `done` on a fresh static binary at the then-HEAD (post valkey/audit/v0.22.0 merges), opus-first default, ~55min, read-only. Second tour requested right after 019f00bf.
 - Result: **0 confirmed / 1 uncertain / 69 dismissed**, 1050 raw findings, deepsec 16. scan_health **degraded** (see gosec finding).
