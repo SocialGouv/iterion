@@ -88,7 +88,10 @@ jobs:
 
       - name: Install Wails CLI
         shell: bash
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+        # Pinned (was @latest): an unpinned build tool in a signing/release
+        # job is an RCE-before-signature supply-chain vector. Matches go.mod's
+        # wails version; Renovate's gomod manager keeps both current.
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
 
       - name: Linux deps
         if: startsWith(matrix.platform, 'linux/')
@@ -108,17 +111,25 @@ jobs:
             linux/arm64) tool_arch="aarch64" ;;
             *) echo "Unsupported AppImage platform: ${{ matrix.platform }}" >&2; exit 1 ;;
           esac
+          # linuxdeploy publishes ONLY a rolling `continuous` tag (no semver,
+          # and the AppImage digest changes every upstream rebuild) so it can't
+          # be version- or digest-pinned. ACCEPTED RESIDUAL: this is the sole
+          # upstream channel; the compensating control is that it runs in the
+          # AppImage-build job, before signing, on release tags only. The
+          # plugin-gtk script below IS commit-pinned.
           sudo wget -qO /usr/local/bin/linuxdeploy \
             "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-${tool_arch}.AppImage"
           sudo chmod +x /usr/local/bin/linuxdeploy
+          # plugin-gtk pinned to a commit (was master) — a moving raw.github
+          # script in a release job is RCE-before-signature.
           sudo wget -qO /usr/local/bin/linuxdeploy-plugin-gtk \
-            https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh
+            https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/3b67a1d1c1b0c8268f57f2bce40fe2d33d409cea/linuxdeploy-plugin-gtk.sh
           sudo chmod +x /usr/local/bin/linuxdeploy-plugin-gtk
 
       - name: Install go-task
         shell: bash
         run: |
-          go install github.com/go-task/task/v3/cmd/task@latest
+          go install github.com/go-task/task/v3/cmd/task@v3.51.1 # pinned (was @latest)
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Enable corepack

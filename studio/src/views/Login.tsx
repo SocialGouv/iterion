@@ -152,12 +152,18 @@ export function SignInCard() {
   const returnTo = (): string => {
     const u = new URL(window.location.href);
     const next = u.searchParams.get("next");
-    if (next && next.startsWith("/") && !next.startsWith("//")) {
+    // Reject `//evil` AND `/\evil` (and encoded `/%2f` / `/%5c`): a leading
+    // slash followed by a slash OR backslash is normalized by browsers to a
+    // protocol-relative URL → off-site open redirect. Only `/` + a normal path
+    // char is a safe same-origin target.
+    const isSafeLocalPath = (p: string) =>
+      p.startsWith("/") && !/^\/[/\\]/.test(p) && !/^\/(%2f|%5c)/i.test(p);
+    if (next && isSafeLocalPath(next)) {
       return next;
     }
     const here = window.location.pathname + window.location.search + window.location.hash;
     if (!here || here.startsWith("/login") || here.startsWith("/auth/")) return "/";
-    if (!here.startsWith("/") || here.startsWith("//")) return "/";
+    if (!isSafeLocalPath(here)) return "/";
     return here;
   };
 
