@@ -1,0 +1,62 @@
+# Self-hosted Renovate runner.
+#
+# Drives dependency updates from this repo's renovate.json without relying
+# on the hosted Mend Renovate App. The repository config (renovate.json at
+# the repo root) is picked up automatically as the per-repo config.
+#
+# REQUIRED SECRET: `RENOVATE_TOKEN` — a Personal Access Token (classic:
+# `repo` scope, or fine-grained: Contents + Pull requests: read & write)
+# for the account Renovate should open PRs as. The default GITHUB_TOKEN is
+# intentionally not used: PRs it opens do not trigger other workflows
+# (tests.yml would not run on Renovate PRs).
+#
+# Action versions are SHA-pinned (repo convention); Renovate's own
+# github-actions manager keeps these pins current.
+name: renovate
+
+on:
+  schedule:
+    # Mondays 04:00 UTC — within the config's "before 6am on monday" window.
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      logLevel:
+        description: "Renovate log level"
+        required: false
+        default: "info"
+        type: choice
+        options:
+          - debug
+          - info
+  push:
+    branches:
+      - main
+    paths:
+      # Re-run on config changes so they are validated/applied promptly.
+      - "renovate.json"
+      - ".github/workflows/renovate.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: renovate
+  cancel-in-progress: false
+
+jobs:
+  renovate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Run Renovate
+        uses: renovatebot/github-action@6d859fc95779be83a0335ca704879b47e5d79641 # v46.1.16
+        with:
+          token: ${{ secrets.RENOVATE_TOKEN }}
+        env:
+          LOG_LEVEL: ${{ inputs.logLevel || 'info' }}
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
+          # Honour the per-repo renovate.json checked out above.
+          RENOVATE_ONBOARDING: "false"
+          RENOVATE_REQUIRE_CONFIG: "required"

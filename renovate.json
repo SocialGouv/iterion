@@ -11,6 +11,22 @@
   "schedule": ["before 6am on monday"],
   "labels": ["dependencies"],
   "prHourlyLimit": 4,
+  "ignorePaths": [
+    "e2e/fixtures/**",
+    "vendor/**"
+  ],
+  "postUpdateOptions": ["gomodTidy", "pnpmDedupe"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "devbox: track version-pinned Nix packages (only numeric pins like go@1.26; @latest entries are floating and have nothing to bump). To track another pinned tool, add a matchStrings line with its datasource.",
+      "managerFilePatterns": ["/(^|/)devbox\\.json$/"],
+      "matchStrings": ["\"go@(?<currentValue>\\d+\\.\\d+(?:\\.\\d+)?)\""],
+      "depNameTemplate": "go",
+      "datasourceTemplate": "golang-version",
+      "versioningTemplate": "go"
+    }
+  ],
   "packageRules": [
     {
       "description": "Keep the GitHub Actions SHA pins current, with the precise semver in the trailing comment.",
@@ -25,15 +41,41 @@
       "pinDigests": true
     },
     {
+      "description": "Maintain docker-compose image pins.",
+      "matchManagers": ["docker-compose"],
+      "groupName": "docker-compose"
+    },
+    {
       "description": "Group non-major npm updates in the pnpm workspace.",
       "matchManagers": ["npm"],
       "matchUpdateTypes": ["minor", "patch"],
       "groupName": "npm (non-major)"
     },
     {
+      "description": "LLM CLIs baked into the container image (docker/llm-clis/package.json). task docker:pin-llm-clis regenerates the same file from `claude --version`/`codex --version`; both writers target only these two keys, so they coexist.",
+      "matchFileNames": ["docker/llm-clis/package.json"],
+      "matchPackageNames": ["@anthropic-ai/claude-code", "@openai/codex"],
+      "groupName": "llm-clis"
+    },
+    {
       "description": "Group Go module updates.",
       "matchManagers": ["gomod"],
       "groupName": "go modules"
+    },
+    {
+      "description": "Group Helm chart dependency updates (charts/iterion/Chart.yaml).",
+      "matchManagers": ["helmv3"],
+      "groupName": "helm charts"
+    },
+    {
+      "description": "Group devcontainer feature/image updates.",
+      "matchManagers": ["devcontainer"],
+      "groupName": "devcontainer"
+    },
+    {
+      "description": "Group devbox (Nix) version-pinned package updates from the custom manager.",
+      "matchManagers": ["custom.regex"],
+      "groupName": "devbox"
     }
   ],
   "vulnerabilityAlerts": {
