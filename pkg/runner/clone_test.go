@@ -57,7 +57,7 @@ func TestValidateRepoTarget(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			err := validateRepoTarget(ctx, c.repoURL, c.repoSHA)
+			_, err := validateRepoTarget(ctx, c.repoURL, c.repoSHA)
 			if c.wantErr && err == nil {
 				t.Fatalf("validateRepoTarget(%q, %q) = nil; want error", c.repoURL, c.repoSHA)
 			}
@@ -108,7 +108,7 @@ func TestValidateRepoTargetHostGuard(t *testing.T) {
 			} else {
 				t.Setenv("ITERION_RUNNER_CLONE_ALLOW_PRIVATE", "")
 			}
-			err := validateRepoTarget(ctx, c.repoURL, "main")
+			_, err := validateRepoTarget(ctx, c.repoURL, "main")
 			switch {
 			case c.wantErr && err == nil:
 				t.Fatalf("validateRepoTarget(%q, allowPrivate=%v) = nil; want error", c.repoURL, c.allowPrivate)

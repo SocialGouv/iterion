@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -1131,8 +1132,26 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 	// or a flag-shaped ref (`--upload-pack=…`) can never reach the
 	// subprocess. This is the runner's flag/transport-injection boundary,
 	// mirroring the bot-install path.
-	if err := validateRepoTarget(ctx, msg.RepoURL, msg.RepoSHA); err != nil {
+	pinnedIP, err := validateRepoTarget(ctx, msg.RepoURL, msg.RepoSHA)
+	if err != nil {
 		return "", err
+	}
+	// SSRF connect-time hardening for the two TOCTOU vectors validateRepoTarget
+	// alone can't close (it resolves but git re-resolves at connect time):
+	//   (a) DNS rebinding — pin the validated public IP for the host in
+	//       /etc/hosts so git resolves to the SAME address we just checked.
+	//       Best-effort: needs a writable /etc/hosts (warn + proceed otherwise).
+	//   (b) HTTP 302 → internal — disabled per git invocation below
+	//       (http.followRedirects=false); the clone URL is already canonical https.
+	// The pod-level egress NetworkPolicy (block RFC1918/metadata) remains the
+	// authoritative control — VALIDATE THIS PATH IN CLOUD E2E (runner /etc/hosts
+	// writability + clone still succeeds). See loop.go validateRepoTarget note.
+	if host, herr := extractRepoHost(msg.RepoURL); herr == nil && pinnedIP != nil {
+		if restore, perr := pinHostInHostsFile(runnerHostsFile, host, pinnedIP); perr == nil {
+			defer restore()
+		} else {
+			r.cfg.Logger.Warn("runner: SSRF IP-pin skipped for %s→%s (%v); relying on pre-check + pod egress policy", host, pinnedIP, perr)
+		}
 	}
 	dir := filepath.Join(r.cfg.WorkDir, "repos", msg.RunID)
 	if err := os.RemoveAll(dir); err != nil {
@@ -1150,11 +1169,14 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 		}
 	}
 
-	if err := r.runGit(ctx, "", tok, "clone", "--no-tags", "--quiet", cloneURL, dir); err != nil {
+	// -c http.followRedirects=false closes SSRF vector (b): a 302 from the
+	// validated canonical https host to an internal address must not be
+	// auto-followed by git.
+	if err := r.runGit(ctx, "", tok, "-c", "http.followRedirects=false", "clone", "--no-tags", "--quiet", cloneURL, dir); err != nil {
 		return "", err
 	}
 	if ref := strings.TrimSpace(msg.RepoSHA); ref != "" {
-		if err := r.runGit(ctx, dir, tok, "fetch", "--no-tags", "--quiet", "origin", ref); err != nil {
+		if err := r.runGit(ctx, dir, tok, "-c", "http.followRedirects=false", "fetch", "--no-tags", "--quiet", "origin", ref); err != nil {
 			return "", err
 		}
 		if err := r.runGit(ctx, dir, tok, "checkout", "--quiet", "-B", ref, "FETCH_HEAD"); err != nil {
@@ -1221,18 +1243,18 @@ func seedRunScratchIgnore(dir string) {
 // probe the cloud network. Mirrors the completion-webhook guard in pkg/notify.
 // On-prem deployments with internal forges set
 // ITERION_RUNNER_CLONE_ALLOW_PRIVATE=1 to relax the strict mode.
-func validateRepoTarget(ctx context.Context, repoURL, repoSHA string) error {
+func validateRepoTarget(ctx context.Context, repoURL, repoSHA string) (net.IP, error) {
 	if err := gitlib.ValidateCloneSource(repoURL); err != nil {
-		return fmt.Errorf("runner: reject repo url: %w", err)
+		return nil, fmt.Errorf("runner: reject repo url: %w", err)
 	}
 	if ref := strings.TrimSpace(repoSHA); ref != "" {
 		if err := gitlib.ValidateBranchName(ref); err != nil {
-			return fmt.Errorf("runner: reject repo ref: %w", err)
+			return nil, fmt.Errorf("runner: reject repo ref: %w", err)
 		}
 	}
 	host, err := extractRepoHost(repoURL)
 	if err != nil {
-		return fmt.Errorf("runner: reject repo url: %w", err)
+		return nil, fmt.Errorf("runner: reject repo url: %w", err)
 	}
 	allowPrivate := os.Getenv("ITERION_RUNNER_CLONE_ALLOW_PRIVATE") == "1"
 	// DEFENCE-IN-DEPTH, NOT COMPLETE: this resolves the host to confirm it is a
@@ -1245,10 +1267,11 @@ func validateRepoTarget(ctx context.Context, repoURL, repoSHA string) error {
 	// pinning; tracked on the board (SSRF DNS-rebinding TOCTOU in
 	// validateRepoTarget, source:sec-audit-self). Keep this pre-check as the
 	// first line, but do not treat it as full SSRF protection.
-	if _, err := httpdial.ResolvePublicHost(ctx, host, !allowPrivate); err != nil {
-		return fmt.Errorf("runner: repo host %q is not a public address (set ITERION_RUNNER_CLONE_ALLOW_PRIVATE=1 to allow internal forges): %w", host, err)
+	ip, err := httpdial.ResolvePublicHost(ctx, host, !allowPrivate)
+	if err != nil {
+		return nil, fmt.Errorf("runner: repo host %q is not a public address (set ITERION_RUNNER_CLONE_ALLOW_PRIVATE=1 to allow internal forges): %w", host, err)
 	}
-	return nil
+	return ip, nil
 }
 
 // extractRepoHost pulls the host out of a clone URL in the shapes
