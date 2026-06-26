@@ -247,14 +247,17 @@ vars:
 ## ─── Schemas ──────────────────────────────────────────────────────
 
 schema tech_output:
-  ## langs MUST be a flat array of lowercase ids (["go","js","python"]) — it
-  ## selects lang-<id>.md skills + drives which scanners run. Typed string[]
-  ## (not json) so the model is forced to the flat shape: claw/gpt-5.5 was
-  ## observed returning a nested {primary:[{name:Go}],secondary:…} object,
-  ## whose dict KEYS then became the "langs" → no skill matched → ZERO
-  ## language scanners ran, silently (scan_health stayed healthy). _norm_langs
-  ## is also hardened below as a backstop.
-  langs:            string[]
+  ## langs feeds the lang-<id>.md skill dispatcher + scanner selection. It is
+  ## typed `json` (NOT string[]) deliberately: a string[] field is substituted
+  ## into tool-node shell commands as an unquoted space-separated Go slice
+  ## ([Go TypeScript ...]), which word-splits the `LANGS=...` assignment and
+  ## fails the shell (exit 127, "TypeScript: command not found") — a json field
+  ## substitutes shell-safe (compact, like every other LLM-JSON field here).
+  ## The model may return langs as a flat array OR a nested
+  ## {primary:[{name:Go}],secondary:…} object; _norm_langs (below + in
+  ## scan_health) normalizes ANY shape to flat lowercase ids, so a nested
+  ## object no longer silently yields zero language scanners.
+  langs:            json
   frameworks:       json
   package_managers: json
   build_systems:    json
