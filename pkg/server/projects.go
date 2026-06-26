@@ -134,6 +134,14 @@ type switchProjectRequest struct {
 }
 
 func (s *Server) handleSwitchProject(w http.ResponseWriter, r *http.Request) {
+	// CSRF: this POST swaps the studio's active workspace (filesystem reach).
+	// A `text/plain` body is a CORS "simple request" (no preflight), so a page
+	// the operator visits could POST here cross-origin; requireSafeOrigin
+	// rejects a cross-origin browser Origin while passing same-origin SPA and
+	// no-Origin CLI callers.
+	if !s.requireSafeOrigin(w, r) {
+		return
+	}
 	if !s.projectsEnabled() {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "projects switching is not available in cloud mode")
 		return
@@ -180,6 +188,11 @@ type addProjectRequest struct {
 }
 
 func (s *Server) handleAddProject(w http.ResponseWriter, r *http.Request) {
+	// CSRF guard (registers + switches to an operator-supplied directory) —
+	// see handleSwitchProject.
+	if !s.requireSafeOrigin(w, r) {
+		return
+	}
 	if !s.projectsEnabled() {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "projects are not available in cloud mode")
 		return
@@ -222,6 +235,10 @@ func (s *Server) handleAddProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRemoveProject(w http.ResponseWriter, r *http.Request) {
+	// CSRF guard (mutates the project registry) — see handleSwitchProject.
+	if !s.requireSafeOrigin(w, r) {
+		return
+	}
 	if !s.projectsEnabled() {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "projects are not available in cloud mode")
 		return

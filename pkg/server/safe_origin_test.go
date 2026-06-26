@@ -78,3 +78,37 @@ func TestRequireSafeOrigin(t *testing.T) {
 		}
 	})
 }
+
+// TestProjectMutationsRejectCrossOrigin verifies the project-mutating handlers
+// (switch / add / remove) are gated by requireSafeOrigin: a cross-site browser
+// POST (Content-Type text/plain is a CORS "simple request", so no preflight)
+// is rejected with 403 BEFORE any registry/filesystem mutation. Surfaced by a
+// Seki self-audit: these endpoints previously ran without the guard, so a page
+// the operator visited could re-point the studio workspace.
+func TestProjectMutationsRejectCrossOrigin(t *testing.T) {
+	s := &Server{cfg: Config{Port: 4891}}
+	handlers := []struct {
+		name   string
+		method string
+		path   string
+		fn     func(http.ResponseWriter, *http.Request)
+	}{
+		{"switch", http.MethodPost, "/api/projects/switch", s.handleSwitchProject},
+		{"add", http.MethodPost, "/api/projects", s.handleAddProject},
+		{"remove", http.MethodDelete, "/api/projects/x", s.handleRemoveProject},
+	}
+	for _, h := range handlers {
+		t.Run(h.name, func(t *testing.T) {
+			r := httptest.NewRequest(h.method, h.path, nil)
+			r.Host = "iterion.example.com"
+			r.Header.Set("Origin", "https://evil.example")
+			r.Header.Set("Content-Type", "text/plain")
+			w := httptest.NewRecorder()
+			h.fn(w, r)
+			if w.Code != http.StatusForbidden {
+				t.Errorf("%s: cross-origin status = %d; want %d (requireSafeOrigin guard missing?)",
+					h.name, w.Code, http.StatusForbidden)
+			}
+		})
+	}
+}
