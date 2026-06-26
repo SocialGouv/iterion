@@ -247,7 +247,14 @@ vars:
 ## ─── Schemas ──────────────────────────────────────────────────────
 
 schema tech_output:
-  langs:            json
+  ## langs MUST be a flat array of lowercase ids (["go","js","python"]) — it
+  ## selects lang-<id>.md skills + drives which scanners run. Typed string[]
+  ## (not json) so the model is forced to the flat shape: claw/gpt-5.5 was
+  ## observed returning a nested {primary:[{name:Go}],secondary:…} object,
+  ## whose dict KEYS then became the "langs" → no skill matched → ZERO
+  ## language scanners ran, silently (scan_health stayed healthy). _norm_langs
+  ## is also hardened below as a backstop.
+  langs:            string[]
   frameworks:       json
   package_managers: json
   build_systems:    json
@@ -2308,19 +2315,31 @@ def _norm_langs(_raw):
         _p = json.loads(_raw)
     except Exception:
         _p = _raw
+    # Collect candidate language tokens from ANY shape detect_tech might emit:
+    # a flat array ['go','js'], an array of descriptors [{'name':'Go'}], OR a
+    # nested bucket object {'primary':[{'name':'Go'}],'secondary':[...]}. The
+    # old code took dict KEYS verbatim, so a bucket object yielded
+    # ['primary','secondary',...] — matching no lang-*.md skill, so ZERO
+    # language scanners ran silently. Walk recursively, preferring a
+    # descriptor's name/id over its nested evidence.
     _items = []
-    if isinstance(_p, dict):
-        _items = list(_p.keys())
-    elif isinstance(_p, list):
-        for _x in _p:
-            if isinstance(_x, str):
-                _items.append(_x)
-            elif isinstance(_x, dict):
-                for _k in ('id', 'lang', 'name', 'language'):
-                    if isinstance(_x.get(_k), str):
-                        _items.append(_x[_k]); break
-    elif isinstance(_p, str):
+    def _walk(_x):
+        if isinstance(_x, str):
+            _items.append(_x)
+        elif isinstance(_x, list):
+            for _e in _x:
+                _walk(_e)
+        elif isinstance(_x, dict):
+            for _k in ('id', 'lang', 'language', 'name'):
+                if isinstance(_x.get(_k), str):
+                    _items.append(_x[_k]); break
+            else:
+                for _k, _v in _x.items():
+                    _items.append(_k); _walk(_v)
+    if isinstance(_p, str):
         _items = re.findall(r'[A-Za-z0-9_+.-]+', _p)
+    else:
+        _walk(_p)
     _out = []
     for _l in _items:
         if not isinstance(_l, str):
@@ -2673,19 +2692,31 @@ def _norm_langs(_raw):
         _p = json.loads(_raw)
     except Exception:
         _p = _raw
+    # Collect candidate language tokens from ANY shape detect_tech might emit:
+    # a flat array ['go','js'], an array of descriptors [{'name':'Go'}], OR a
+    # nested bucket object {'primary':[{'name':'Go'}],'secondary':[...]}. The
+    # old code took dict KEYS verbatim, so a bucket object yielded
+    # ['primary','secondary',...] — matching no lang-*.md skill, so ZERO
+    # language scanners ran silently. Walk recursively, preferring a
+    # descriptor's name/id over its nested evidence.
     _items = []
-    if isinstance(_p, dict):
-        _items = list(_p.keys())
-    elif isinstance(_p, list):
-        for _x in _p:
-            if isinstance(_x, str):
-                _items.append(_x)
-            elif isinstance(_x, dict):
-                for _k in ('id', 'lang', 'name', 'language'):
-                    if isinstance(_x.get(_k), str):
-                        _items.append(_x[_k]); break
-    elif isinstance(_p, str):
+    def _walk(_x):
+        if isinstance(_x, str):
+            _items.append(_x)
+        elif isinstance(_x, list):
+            for _e in _x:
+                _walk(_e)
+        elif isinstance(_x, dict):
+            for _k in ('id', 'lang', 'language', 'name'):
+                if isinstance(_x.get(_k), str):
+                    _items.append(_x[_k]); break
+            else:
+                for _k, _v in _x.items():
+                    _items.append(_k); _walk(_v)
+    if isinstance(_p, str):
         _items = re.findall(r'[A-Za-z0-9_+.-]+', _p)
+    else:
+        _walk(_p)
     _out = []
     for _l in _items:
         if not isinstance(_l, str):
