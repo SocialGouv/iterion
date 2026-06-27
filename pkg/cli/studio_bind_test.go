@@ -10,17 +10,17 @@ func TestIsLoopbackBindHost(t *testing.T) {
 		bind string
 		want bool
 	}{
-		{"", true},               // defaults to 127.0.0.1 upstream
+		{"", true}, // defaults to 127.0.0.1 upstream
 		{"127.0.0.1", true},
-		{"127.0.0.5", true},      // whole 127/8 loopback
+		{"127.0.0.5", true}, // whole 127/8 loopback
 		{"::1", true},
 		{"localhost", true},
-		{"LocalHost", true},      // case-insensitive
-		{"0.0.0.0", false},       // all interfaces → network-exposed
+		{"LocalHost", true}, // case-insensitive
+		{"0.0.0.0", false},  // all interfaces → network-exposed
 		{"::", false},
-		{"192.168.1.10", false},  // LAN
+		{"192.168.1.10", false}, // LAN
 		{"10.0.0.3", false},
-		{"example.com", false},   // unparseable host → fail safe (non-loopback)
+		{"example.com", false}, // unparseable host → fail safe (non-loopback)
 	}
 	for _, c := range cases {
 		if got := isLoopbackBindHost(c.bind); got != c.want {
