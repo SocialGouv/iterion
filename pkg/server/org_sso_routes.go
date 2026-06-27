@@ -22,11 +22,11 @@ import (
 // allow-list), mirroring the forge OAuth-app routes: tenant-scoped, sealed
 // secrets, admin-gated, audited.
 func (s *Server) registerOrgSSORoutes() {
-	s.mux.Handle("GET /api/teams/{id}/sso/providers", s.requireAuth(http.HandlerFunc(s.handleListOrgSSOProviders)))
-	s.mux.Handle("POST /api/teams/{id}/sso/providers", s.requireAuth(http.HandlerFunc(s.handleCreateOrgSSOProvider)))
-	s.mux.Handle("PATCH /api/teams/{id}/sso/providers/{provider_id}", s.requireAuth(http.HandlerFunc(s.handleUpdateOrgSSOProvider)))
-	s.mux.Handle("DELETE /api/teams/{id}/sso/providers/{provider_id}", s.requireAuth(http.HandlerFunc(s.handleDeleteOrgSSOProvider)))
-	s.mux.Handle("POST /api/teams/{id}/sso/providers/{provider_id}/test", s.requireAuth(http.HandlerFunc(s.handleTestOrgSSOProvider)))
+	s.mux.Handle("GET /api/orgs/{id}/sso/providers", s.requireAuth(http.HandlerFunc(s.handleListOrgSSOProviders)))
+	s.mux.Handle("POST /api/orgs/{id}/sso/providers", s.requireAuth(http.HandlerFunc(s.handleCreateOrgSSOProvider)))
+	s.mux.Handle("PATCH /api/orgs/{id}/sso/providers/{provider_id}", s.requireAuth(http.HandlerFunc(s.handleUpdateOrgSSOProvider)))
+	s.mux.Handle("DELETE /api/orgs/{id}/sso/providers/{provider_id}", s.requireAuth(http.HandlerFunc(s.handleDeleteOrgSSOProvider)))
+	s.mux.Handle("POST /api/orgs/{id}/sso/providers/{provider_id}/test", s.requireAuth(http.HandlerFunc(s.handleTestOrgSSOProvider)))
 }
 
 // orgSSOProviderReq is the create/update body. client_secret is write-only; an
@@ -64,9 +64,14 @@ func (s *Server) viewOrgSSOProvider(p orgsso.OrgSSOProvider) orgSSOProviderView 
 
 func (s *Server) handleListOrgSSOProviders(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
-	teamID := r.PathValue("id")
-	if !s.canViewTeam(r.Context(), id, teamID) {
+	orgID := r.PathValue("id")
+	if !s.canViewOrg(r.Context(), id, orgID) {
 		httpError(w, http.StatusForbidden, "not a member")
+		return
+	}
+	teamID := s.firstTeamInOrg(r.Context(), orgID)
+	if teamID == "" {
+		httpError(w, http.StatusNotFound, "org has no team")
 		return
 	}
 	rows, err := s.orgSSO.ListByTenant(store.WithTenant(r.Context(), teamID), teamID)
@@ -83,9 +88,14 @@ func (s *Server) handleListOrgSSOProviders(w http.ResponseWriter, r *http.Reques
 
 func (s *Server) handleCreateOrgSSOProvider(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
-	teamID := r.PathValue("id")
-	if !s.canManageTeam(r.Context(), id, teamID) {
+	orgID := r.PathValue("id")
+	if !s.canManageOrg(r.Context(), id, orgID) {
 		httpError(w, http.StatusForbidden, "admin or owner required")
+		return
+	}
+	teamID := s.firstTeamInOrg(r.Context(), orgID)
+	if teamID == "" {
+		httpError(w, http.StatusNotFound, "org has no team")
 		return
 	}
 	var req orgSSOProviderReq
@@ -110,7 +120,7 @@ func (s *Server) handleCreateOrgSSOProvider(w http.ResponseWriter, r *http.Reque
 		s.writeOrgSSOError(w, err)
 		return
 	}
-	s.auditTenant(r, teamID, "org_sso.created", "org_sso_provider", row.ID, map[string]any{
+	s.auditOrg(r, orgID, "org_sso.created", "org_sso_provider", row.ID, map[string]any{
 		"kind": string(row.Kind), "enabled": row.Enabled,
 	})
 	writeJSON(w, s.viewOrgSSOProvider(row))
@@ -118,9 +128,14 @@ func (s *Server) handleCreateOrgSSOProvider(w http.ResponseWriter, r *http.Reque
 
 func (s *Server) handleUpdateOrgSSOProvider(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
-	teamID := r.PathValue("id")
-	if !s.canManageTeam(r.Context(), id, teamID) {
+	orgID := r.PathValue("id")
+	if !s.canManageOrg(r.Context(), id, orgID) {
 		httpError(w, http.StatusForbidden, "admin or owner required")
+		return
+	}
+	teamID := s.firstTeamInOrg(r.Context(), orgID)
+	if teamID == "" {
+		httpError(w, http.StatusNotFound, "org has no team")
 		return
 	}
 	providerID := r.PathValue("provider_id")
@@ -145,7 +160,7 @@ func (s *Server) handleUpdateOrgSSOProvider(w http.ResponseWriter, r *http.Reque
 		s.writeOrgSSOError(w, err)
 		return
 	}
-	s.auditTenant(r, teamID, "org_sso.updated", "org_sso_provider", row.ID, map[string]any{
+	s.auditOrg(r, orgID, "org_sso.updated", "org_sso_provider", row.ID, map[string]any{
 		"kind": string(row.Kind), "enabled": row.Enabled,
 	})
 	writeJSON(w, s.viewOrgSSOProvider(row))
@@ -153,9 +168,14 @@ func (s *Server) handleUpdateOrgSSOProvider(w http.ResponseWriter, r *http.Reque
 
 func (s *Server) handleDeleteOrgSSOProvider(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
-	teamID := r.PathValue("id")
-	if !s.canManageTeam(r.Context(), id, teamID) {
+	orgID := r.PathValue("id")
+	if !s.canManageOrg(r.Context(), id, orgID) {
 		httpError(w, http.StatusForbidden, "admin or owner required")
+		return
+	}
+	teamID := s.firstTeamInOrg(r.Context(), orgID)
+	if teamID == "" {
+		httpError(w, http.StatusNotFound, "org has no team")
 		return
 	}
 	providerID := r.PathValue("provider_id")
@@ -168,7 +188,7 @@ func (s *Server) handleDeleteOrgSSOProvider(w http.ResponseWriter, r *http.Reque
 		httpError(w, http.StatusInternalServerError, "delete provider: %v", err)
 		return
 	}
-	s.auditTenant(r, teamID, "org_sso.deleted", "org_sso_provider", providerID, map[string]any{"kind": string(row.Kind)})
+	s.auditOrg(r, orgID, "org_sso.deleted", "org_sso_provider", providerID, map[string]any{"kind": string(row.Kind)})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -177,9 +197,14 @@ func (s *Server) handleDeleteOrgSSOProvider(w http.ResponseWriter, r *http.Reque
 // enabling it. Never returns the client secret or the upstream body.
 func (s *Server) handleTestOrgSSOProvider(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
-	teamID := r.PathValue("id")
-	if !s.canManageTeam(r.Context(), id, teamID) {
+	orgID := r.PathValue("id")
+	if !s.canManageOrg(r.Context(), id, orgID) {
 		httpError(w, http.StatusForbidden, "admin or owner required")
+		return
+	}
+	teamID := s.firstTeamInOrg(r.Context(), orgID)
+	if teamID == "" {
+		httpError(w, http.StatusNotFound, "org has no team")
 		return
 	}
 	providerID := r.PathValue("provider_id")

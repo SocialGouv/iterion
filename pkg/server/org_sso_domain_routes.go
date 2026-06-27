@@ -16,10 +16,10 @@ import (
 // gates per-org SSO auto-link (a tenant proves it controls an email domain via
 // a DNS TXT challenge before its IdP may auto-link addresses at that domain).
 func (s *Server) registerOrgSSODomainRoutes() {
-	s.mux.Handle("GET /api/teams/{id}/sso/domains", s.requireAuth(http.HandlerFunc(s.handleListOrgSSODomains)))
-	s.mux.Handle("POST /api/teams/{id}/sso/domains", s.requireAuth(http.HandlerFunc(s.handleCreateOrgSSODomain)))
-	s.mux.Handle("POST /api/teams/{id}/sso/domains/{domain_id}/verify", s.requireAuth(http.HandlerFunc(s.handleVerifyOrgSSODomain)))
-	s.mux.Handle("DELETE /api/teams/{id}/sso/domains/{domain_id}", s.requireAuth(http.HandlerFunc(s.handleDeleteOrgSSODomain)))
+	s.mux.Handle("GET /api/orgs/{id}/sso/domains", s.requireAuth(http.HandlerFunc(s.handleListOrgSSODomains)))
+	s.mux.Handle("POST /api/orgs/{id}/sso/domains", s.requireAuth(http.HandlerFunc(s.handleCreateOrgSSODomain)))
+	s.mux.Handle("POST /api/orgs/{id}/sso/domains/{domain_id}/verify", s.requireAuth(http.HandlerFunc(s.handleVerifyOrgSSODomain)))
+	s.mux.Handle("DELETE /api/orgs/{id}/sso/domains/{domain_id}", s.requireAuth(http.HandlerFunc(s.handleDeleteOrgSSODomain)))
 }
 
 // orgDomainView is the response shape: the row plus the DNS TXT record the
@@ -36,9 +36,14 @@ func domainView(d orgsso.VerifiedDomain) orgDomainView {
 
 func (s *Server) handleListOrgSSODomains(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
-	teamID := r.PathValue("id")
-	if !s.canViewTeam(r.Context(), id, teamID) {
+	orgID := r.PathValue("id")
+	if !s.canViewOrg(r.Context(), id, orgID) {
 		httpError(w, http.StatusForbidden, "not a member")
+		return
+	}
+	teamID := s.firstTeamInOrg(r.Context(), orgID)
+	if teamID == "" {
+		httpError(w, http.StatusNotFound, "org has no team")
 		return
 	}
 	rows, err := s.orgDomains.ListByTenant(store.WithTenant(r.Context(), teamID), teamID)
@@ -55,9 +60,14 @@ func (s *Server) handleListOrgSSODomains(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handleCreateOrgSSODomain(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
-	teamID := r.PathValue("id")
-	if !s.canManageTeam(r.Context(), id, teamID) {
+	orgID := r.PathValue("id")
+	if !s.canManageOrg(r.Context(), id, orgID) {
 		httpError(w, http.StatusForbidden, "admin or owner required")
+		return
+	}
+	teamID := s.firstTeamInOrg(r.Context(), orgID)
+	if teamID == "" {
+		httpError(w, http.StatusNotFound, "org has no team")
 		return
 	}
 	var req struct {
@@ -88,15 +98,20 @@ func (s *Server) handleCreateOrgSSODomain(w http.ResponseWriter, r *http.Request
 		httpError(w, http.StatusInternalServerError, "create domain: %v", err)
 		return
 	}
-	s.auditTenant(r, teamID, "org_sso.domain_added", "org_verified_domain", d.ID, map[string]any{"domain": domain})
+	s.auditOrg(r, orgID, "org_sso.domain_added", "org_verified_domain", d.ID, map[string]any{"domain": domain})
 	writeJSON(w, domainView(d))
 }
 
 func (s *Server) handleVerifyOrgSSODomain(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
-	teamID := r.PathValue("id")
-	if !s.canManageTeam(r.Context(), id, teamID) {
+	orgID := r.PathValue("id")
+	if !s.canManageOrg(r.Context(), id, orgID) {
 		httpError(w, http.StatusForbidden, "admin or owner required")
+		return
+	}
+	teamID := s.firstTeamInOrg(r.Context(), orgID)
+	if teamID == "" {
+		httpError(w, http.StatusNotFound, "org has no team")
 		return
 	}
 	ctx := store.WithTenant(r.Context(), teamID)
@@ -120,15 +135,20 @@ func (s *Server) handleVerifyOrgSSODomain(w http.ResponseWriter, r *http.Request
 		httpError(w, http.StatusInternalServerError, "persist verification: %v", err)
 		return
 	}
-	s.auditTenant(r, teamID, "org_sso.domain_verified", "org_verified_domain", d.ID, map[string]any{"domain": d.Domain})
+	s.auditOrg(r, orgID, "org_sso.domain_verified", "org_verified_domain", d.ID, map[string]any{"domain": d.Domain})
 	writeJSON(w, map[string]any{"verified": true, "domain": domainView(d)})
 }
 
 func (s *Server) handleDeleteOrgSSODomain(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
-	teamID := r.PathValue("id")
-	if !s.canManageTeam(r.Context(), id, teamID) {
+	orgID := r.PathValue("id")
+	if !s.canManageOrg(r.Context(), id, orgID) {
 		httpError(w, http.StatusForbidden, "admin or owner required")
+		return
+	}
+	teamID := s.firstTeamInOrg(r.Context(), orgID)
+	if teamID == "" {
+		httpError(w, http.StatusNotFound, "org has no team")
 		return
 	}
 	ctx := store.WithTenant(r.Context(), teamID)
@@ -142,6 +162,6 @@ func (s *Server) handleDeleteOrgSSODomain(w http.ResponseWriter, r *http.Request
 		httpError(w, http.StatusInternalServerError, "delete domain: %v", err)
 		return
 	}
-	s.auditTenant(r, teamID, "org_sso.domain_removed", "org_verified_domain", domainID, map[string]any{"domain": d.Domain})
+	s.auditOrg(r, orgID, "org_sso.domain_removed", "org_verified_domain", domainID, map[string]any{"domain": d.Domain})
 	w.WriteHeader(http.StatusNoContent)
 }

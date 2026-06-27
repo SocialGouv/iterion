@@ -29,8 +29,18 @@ func newOrgSSOTestServer(t *testing.T) *Server {
 		t.Fatal(err)
 	}
 	s.sealer = sealer
-	if _, err := s.authStore().CreateTeam(context.Background(), identity.Team{ID: "t1", Name: "Acme", Slug: "acme"}); err != nil {
-		t.Fatal(err)
+	// SSO is org-level; storage is keyed on the org's primary team. Seed
+	// two orgs each with a team so the org path id resolves a tenant.
+	for _, o := range []struct{ org, slug, team string }{
+		{"t1", "acme", "t1team"},
+		{"t2", "acme2", "t2team"},
+	} {
+		if _, err := s.authStore().CreateOrg(context.Background(), identity.Org{ID: o.org, Name: o.org, Slug: o.slug}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.authStore().CreateTeam(context.Background(), identity.Team{ID: o.team, OrgID: o.org, Name: o.org, Slug: o.slug + "-team"}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return s
 }
@@ -147,10 +157,10 @@ func TestOrgSSO_GitHubCreate(t *testing.T) {
 func TestOrgSSO_NonAdminForbidden(t *testing.T) {
 	s := newOrgSSOTestServer(t)
 	ctx := context.Background()
-	if err := s.authStore().UpsertMembership(ctx, identity.Membership{UserID: "m", TeamID: "t1", Role: identity.RoleMember}); err != nil {
+	if err := s.authStore().UpsertOrgMembership(ctx, identity.OrgMembership{UserID: "m", OrgID: "t1", Role: identity.OrgRoleMember}); err != nil {
 		t.Fatal(err)
 	}
-	member := auth.WithIdentity(ctx, auth.Identity{UserID: "m", TeamID: "t1", Role: identity.RoleMember})
+	member := auth.WithIdentity(ctx, auth.Identity{UserID: "m", OrgID: "t1", OrgRole: identity.OrgRoleMember})
 	body := `{"kind":"oidc","enabled":true,"issuer_url":"https://sso.x/realms/m","client_id":"c","client_secret":"s"}`
 	w := httptest.NewRecorder()
 	s.handleCreateOrgSSOProvider(w, ssoReq(member, "POST", "/api/teams/t1/sso/providers", body, "t1", ""))
@@ -184,9 +194,9 @@ func TestOrgSSO_CrossTenantNotFound(t *testing.T) {
 
 func TestListProviders_ByOrgSlug(t *testing.T) {
 	s := newOrgSSOTestServer(t)
-	// Seed an enabled OIDC row for team acme.
+	// Seed an enabled OIDC row for org acme's primary team (the storage tenant).
 	if err := s.orgSSO.Create(context.Background(), orgsso.OrgSSOProvider{
-		ID: "p1", TenantID: "t1", Kind: orgsso.KindOIDC, Enabled: true,
+		ID: "p1", TenantID: "t1team", Kind: orgsso.KindOIDC, Enabled: true,
 		DisplayName: "Acme KC", IssuerURL: "https://sso.acme/realms/m", ClientID: "c",
 	}); err != nil {
 		t.Fatal(err)

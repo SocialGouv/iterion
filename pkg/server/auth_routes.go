@@ -686,8 +686,10 @@ func (s *Server) resolveOrgTenants(r *http.Request) []string {
 		}
 	}
 	if org := strings.TrimSpace(r.URL.Query().Get("org")); org != "" {
-		if team, err := s.authStore().GetTeamBySlug(r.Context(), org); err == nil {
-			push(team.ID)
+		// SSO is org-level, but stored under the org's primary team
+		// (the storage tenant) — resolve the public org slug to that team.
+		if o, err := s.authStore().GetOrgBySlug(r.Context(), org); err == nil {
+			push(s.firstTeamInOrg(r.Context(), o.ID))
 		}
 	}
 	domain := strings.TrimSpace(r.URL.Query().Get("domain"))
