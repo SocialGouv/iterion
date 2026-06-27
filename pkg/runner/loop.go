@@ -1437,6 +1437,10 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 		OAuthCredentialFiles: map[string]string{},
 	}
 	tmpDirs := make([]string, 0, len(bundle.OAuthCredentials))
+	// cancelRefresh stops the per-run OAuth-forfait token refreshers (set
+	// below once the files are materialised). cleanup calls it so the
+	// goroutines exit before their temp dirs are removed.
+	cancelRefresh := func() {}
 	// cleanup performs LOCAL process hygiene only — wiping the decrypted
 	// API keys from memory and removing the materialised OAuth temp dirs.
 	// It runs on EVERY executeRun return (including Nak-for-redelivery
@@ -1446,6 +1450,7 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 	// deleteRunSecrets) so a redelivered run can re-fetch the same
 	// SecretsRef instead of silently running credential-less.
 	cleanup := func() {
+		cancelRefresh()
 		for k := range bundle.APIKeys {
 			bundle.APIKeys[k] = ""
 		}
@@ -1456,6 +1461,10 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 			_ = os.RemoveAll(dir)
 		}
 	}
+	// refreshFiles maps oauth kind → the materialised credential file path,
+	// fed to the per-run forfait token refresher so a long run never hits an
+	// expired token mid-workflow (see oauth_refresh.go).
+	refreshFiles := make(map[string]string, len(bundle.OAuthCredentials))
 	for kind, payload := range bundle.OAuthCredentials {
 		dir, fname, err := materializeOAuthCredentials(kind, payload)
 		if err != nil {
@@ -1464,7 +1473,14 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 		}
 		tmpDirs = append(tmpDirs, dir)
 		creds.OAuthCredentialFiles[kind] = dir
+		refreshFiles[kind] = filepath.Join(dir, fname)
 		r.cfg.Logger.Info("runner: oauth-forfait active run=%s tenant=%s kind=%s file=%s/%s", msg.RunID, msg.TenantID, kind, dir, fname)
+	}
+	if len(refreshFiles) > 0 {
+		stopRefresh := make(chan struct{})
+		var once sync.Once
+		cancelRefresh = func() { once.Do(func() { close(stopRefresh) }) }
+		r.startOAuthRefreshers(stopRefresh, msg.RunID, refreshFiles)
 	}
 	return secrets.WithCredentials(ctx, creds), cleanup, nil
 }
