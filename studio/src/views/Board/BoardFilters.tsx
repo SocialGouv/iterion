@@ -6,6 +6,7 @@ import { Select } from "@/components/ui/Select";
 
 import {
   BASE_GROUP_OPTIONS,
+  GROUP_MODE_REPO,
   groupModeForField,
   SORT_OPTIONS,
   type GroupMode,
@@ -29,6 +30,7 @@ export function BoardFilters({
   groupMode,
   onGroupChange,
   fieldNames,
+  hasRepoLinks,
   onReset,
 }: {
   searchQuery: string;
@@ -47,6 +49,9 @@ export function BoardFilters({
   groupMode: GroupMode;
   onGroupChange: (m: GroupMode) => void;
   fieldNames: string[];
+  // hasRepoLinks: true when at least one card is forge-linked, so the
+  // "Repository" swimlane grouping is worth offering.
+  hasRepoLinks: boolean;
   onReset: () => void;
 }) {
   const filtersActive =
@@ -114,6 +119,9 @@ export function BoardFilters({
               {o.label}
             </option>
           ))}
+          {hasRepoLinks && (
+            <option value={GROUP_MODE_REPO}>Repository</option>
+          )}
           {fieldNames.map((n) => (
             <option key={groupModeForField(n)} value={groupModeForField(n)}>
               Field: {n}

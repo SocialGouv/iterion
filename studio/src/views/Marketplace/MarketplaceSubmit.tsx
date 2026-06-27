@@ -4,6 +4,7 @@ import { uploadBotBundle } from "@/api/bots";
 import type { MarketplaceScope } from "@/api/marketplace";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { Select } from "@/components/ui/Select";
 import { useUIStore } from "@/store/ui";
 import { toastError } from "@/lib/errorHints";
 
@@ -194,18 +195,17 @@ export function MarketplaceSubmit({
               >
                 Visibility
               </label>
-              <select
+              <Select
                 id={scopeId}
                 value={scope ?? ""}
                 onChange={(e) => setScope(e.target.value as MarketplaceScope)}
-                className="rounded border border-border-default bg-surface-1 px-2 py-1.5 text-xs text-fg-default focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
               >
                 {scopes?.map((sc) => (
                   <option key={sc} value={sc}>
                     {SCOPE_LABELS[sc] ?? sc}
                   </option>
                 ))}
-              </select>
+              </Select>
             </div>
           )}
           <div className="flex items-center justify-between gap-3">

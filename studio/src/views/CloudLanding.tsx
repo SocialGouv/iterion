@@ -142,7 +142,7 @@ function BotShowcase() {
             <div className="flex items-baseline gap-2">
               <span className="truncate font-semibold text-fg-default">{b.name}</span>
               {typeof b.installs === "number" && b.installs > 0 && (
-                <span className="shrink-0 font-mono text-[10px] text-fg-subtle">
+                <span className="shrink-0 font-mono text-micro text-fg-subtle">
                   {b.installs}↓
                 </span>
               )}

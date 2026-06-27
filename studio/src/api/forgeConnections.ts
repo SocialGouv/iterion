@@ -45,7 +45,18 @@ export interface ForgeIntegration {
   hook_id: string;
   hook_url?: string;
   managed_secret_id?: string;
+  /** When true, the forge's issues are mirrored onto the team's native
+   *  board (one-way forge→board sync). Toggled per-integration from the
+   *  Integrations tab; absent on servers that predate the feature. */
+  sync_issues_enabled?: boolean;
   created_at: string;
+}
+
+/** Counts returned by a manual issue-sync run (POST …/sync). */
+export interface ForgeSyncResult {
+  synced: number;
+  created: number;
+  updated: number;
 }
 
 export interface ForgeEnablePreview {
@@ -196,6 +207,31 @@ export async function disableForgeIntegration(
   integrationID: string,
 ): Promise<void> {
   await request<void>(`/teams/${teamID}/forge/repo-bots/${integrationID}`, { method: "DELETE" });
+}
+
+// updateForgeIntegration patches a connected repo's integration — today
+// just the issue-sync toggle. Returns the refreshed ForgeIntegration so the
+// caller reflects the new `sync_issues_enabled` without a re-list.
+export async function updateForgeIntegration(
+  teamID: string,
+  integrationID: string,
+  patch: { sync_issues_enabled?: boolean },
+): Promise<ForgeIntegration> {
+  return request(`/teams/${teamID}/forge/integrations/${integrationID}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
+// syncForgeIntegration triggers a one-shot forge→board issue sync and
+// returns the counts (synced / created / updated) for the operator's toast.
+export async function syncForgeIntegration(
+  teamID: string,
+  integrationID: string,
+): Promise<ForgeSyncResult> {
+  return request(`/teams/${teamID}/forge/integrations/${integrationID}/sync`, {
+    method: "POST",
+  });
 }
 
 export async function listForgeOAuthApps(teamID: string): Promise<ForgeOAuthApp[]> {

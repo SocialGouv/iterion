@@ -105,7 +105,7 @@ type PullListOptions struct {
 // Forgejo Actions run / commit-status) normalized to a common shape.
 type CIRun struct {
 	Name       string    `json:"name"`
-	Status     string    `json:"status"`     // "queued" | "running" | "success" | "failed" | "cancelled" | "skipped"
+	Status     string    `json:"status"` // "queued" | "running" | "success" | "failed" | "cancelled" | "skipped"
 	Conclusion string    `json:"conclusion,omitempty"`
 	URL        string    `json:"url,omitempty"`
 	SHA        string    `json:"sha,omitempty"`
