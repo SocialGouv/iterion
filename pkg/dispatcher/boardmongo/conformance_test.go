@@ -154,6 +154,279 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	}
 }
 
+// runBoardAdminSuite exercises the native.BoardAdmin config-mutation surface
+// (columns, fields, views, label vocabulary) plus the cascades to issues. It
+// runs against both the filesystem native.Store and the Mongo store so the
+// two implementations are held to an identical bar — same validation, same
+// sentinel errors, same touched counts. `store` and `admin` are the SAME
+// backing store viewed through both interfaces.
+func runBoardAdminSuite(t *testing.T, store native.BoardStore, admin native.BoardAdmin) {
+	t.Helper()
+
+	// --- states (columns) ---
+
+	if err := admin.AddState(native.State{Name: "triage", Display: "Triage"}); err != nil {
+		t.Fatalf("AddState: %v", err)
+	}
+	if store.Board().StateByName("triage") == nil {
+		t.Fatal("AddState: triage not persisted")
+	}
+	if err := admin.AddState(native.State{Name: "triage"}); err == nil {
+		t.Error("AddState duplicate should fail")
+	}
+	if err := admin.AddState(native.State{Name: ""}); err == nil {
+		t.Error("AddState empty name should fail")
+	}
+
+	// UpdateState: flip eligible + set display; never renames.
+	yes := true
+	if err := admin.UpdateState("triage", native.StatePatch{Eligible: &yes, Display: ptr("Triage!")}); err != nil {
+		t.Fatalf("UpdateState: %v", err)
+	}
+	if st := store.Board().StateByName("triage"); st == nil || !st.Eligible || st.Display != "Triage!" {
+		t.Errorf("UpdateState not applied: %+v", st)
+	}
+	if err := admin.UpdateState("nope", native.StatePatch{Display: ptr("x")}); err == nil {
+		t.Error("UpdateState unknown should fail")
+	}
+
+	// Park an issue in triage so RenameState/DeleteState cascade.
+	parked, err := store.Create(native.Issue{Title: "parked", State: "triage"})
+	if err != nil {
+		t.Fatalf("Create parked: %v", err)
+	}
+	// RenameState cascades the card.
+	n, err := admin.RenameState("triage", "triaging")
+	if err != nil || n != 1 {
+		t.Errorf("RenameState: touched=%d err=%v (want 1, nil)", n, err)
+	}
+	if got, _ := store.Get(parked.ID); got.State != "triaging" {
+		t.Errorf("RenameState cascade: parked state=%q want triaging", got.State)
+	}
+	if store.Board().StateByName("triage") != nil {
+		t.Error("RenameState: old column still present")
+	}
+	if _, err := admin.RenameState("triaging", native.StateInbox); err == nil {
+		t.Error("RenameState onto existing column should fail")
+	}
+	if n, err := admin.RenameState("triaging", "triaging"); err != nil || n != 0 {
+		t.Errorf("RenameState self no-op: touched=%d err=%v", n, err)
+	}
+
+	// DeleteState: non-empty without migrate target → ErrStateNotEmpty.
+	if _, err := admin.DeleteState("triaging", ""); !errors.Is(err, native.ErrStateNotEmpty) {
+		t.Errorf("DeleteState non-empty: want ErrStateNotEmpty, got %v", err)
+	}
+	// DeleteState with migrate target moves the card and drops the column.
+	n, err = admin.DeleteState("triaging", native.StateBacklog)
+	if err != nil || n != 1 {
+		t.Errorf("DeleteState migrate: touched=%d err=%v (want 1, nil)", n, err)
+	}
+	if got, _ := store.Get(parked.ID); got.State != native.StateBacklog {
+		t.Errorf("DeleteState migrate: parked state=%q want backlog", got.State)
+	}
+	if store.Board().StateByName("triaging") != nil {
+		t.Error("DeleteState: column still present")
+	}
+	if _, err := admin.DeleteState("ghost", ""); err == nil {
+		t.Error("DeleteState unknown should fail")
+	}
+
+	// ReorderStates: permutation only.
+	cur := store.Board()
+	names := make([]string, len(cur.States))
+	for i, st := range cur.States {
+		names[i] = st.Name
+	}
+	if len(names) >= 2 {
+		swapped := append([]string(nil), names...)
+		swapped[0], swapped[1] = swapped[1], swapped[0]
+		if err := admin.ReorderStates(swapped); err != nil {
+			t.Errorf("ReorderStates: %v", err)
+		}
+		if store.Board().States[0].Name != swapped[0] {
+			t.Errorf("ReorderStates not applied: %+v", store.Board().States)
+		}
+	}
+	if err := admin.ReorderStates([]string{"only-one"}); err == nil {
+		t.Error("ReorderStates non-permutation should fail")
+	}
+
+	// --- fields ---
+
+	if err := admin.AddField(native.Field{Name: "severity", Type: native.FieldText}); err != nil {
+		t.Fatalf("AddField: %v", err)
+	}
+	if store.Board().FieldByName("severity") == nil {
+		t.Fatal("AddField: severity not persisted")
+	}
+	if err := admin.AddField(native.Field{Name: "severity", Type: native.FieldText}); err == nil {
+		t.Error("AddField duplicate should fail")
+	}
+	if err := admin.AddField(native.Field{Name: "bad", Type: native.FieldEnum}); err == nil {
+		t.Error("AddField enum without values should fail board validation")
+	}
+
+	// UpdateField: change display/required in place.
+	if err := admin.UpdateField("severity", native.FieldPatch{Display: ptr("Severity")}); err != nil {
+		t.Errorf("UpdateField: %v", err)
+	}
+	if f := store.Board().FieldByName("severity"); f == nil || f.Display != "Severity" {
+		t.Errorf("UpdateField not applied: %+v", f)
+	}
+	if err := admin.UpdateField("nope", native.FieldPatch{Display: ptr("x")}); err == nil {
+		t.Error("UpdateField unknown should fail")
+	}
+
+	// Put a value on an issue so RenameField/DeleteField cascade.
+	withField, err := store.Create(native.Issue{Title: "has-field", Fields: map[string]any{"severity": "high"}})
+	if err != nil {
+		t.Fatalf("Create withField: %v", err)
+	}
+	// RenameField cascades the key.
+	n, err = admin.RenameField("severity", "sev")
+	if err != nil || n != 1 {
+		t.Errorf("RenameField: touched=%d err=%v (want 1, nil)", n, err)
+	}
+	if got, _ := store.Get(withField.ID); got.Fields["sev"] != "high" || got.Fields["severity"] != nil {
+		t.Errorf("RenameField cascade: fields=%+v", got.Fields)
+	}
+	if store.Board().FieldByName("severity") != nil {
+		t.Error("RenameField: old field def still present")
+	}
+	if _, err := admin.RenameField("sev", "bot_args"); err == nil {
+		t.Error("RenameField onto existing field should fail")
+	}
+	// DeleteField strips the key.
+	n, err = admin.DeleteField("sev")
+	if err != nil || n != 1 {
+		t.Errorf("DeleteField: touched=%d err=%v (want 1, nil)", n, err)
+	}
+	if got, _ := store.Get(withField.ID); got.Fields["sev"] != nil {
+		t.Errorf("DeleteField cascade: key not stripped: %+v", got.Fields)
+	}
+	if store.Board().FieldByName("sev") != nil {
+		t.Error("DeleteField: field def still present")
+	}
+	if _, err := admin.DeleteField("ghost"); err == nil {
+		t.Error("DeleteField unknown should fail")
+	}
+
+	// ReorderFields: add a second field, then permute.
+	if err := admin.AddField(native.Field{Name: "owner", Type: native.FieldText}); err != nil {
+		t.Fatalf("AddField owner: %v", err)
+	}
+	fcur := store.Board()
+	fnames := make([]string, len(fcur.Fields))
+	for i, f := range fcur.Fields {
+		fnames[i] = f.Name
+	}
+	if len(fnames) >= 2 {
+		rev := make([]string, len(fnames))
+		for i := range fnames {
+			rev[i] = fnames[len(fnames)-1-i]
+		}
+		if err := admin.ReorderFields(rev); err != nil {
+			t.Errorf("ReorderFields: %v", err)
+		}
+		if store.Board().Fields[0].Name != rev[0] {
+			t.Errorf("ReorderFields not applied: %+v", store.Board().Fields)
+		}
+	}
+	if err := admin.ReorderFields([]string{"x"}); err == nil {
+		t.Error("ReorderFields non-permutation should fail")
+	}
+
+	// --- views ---
+
+	if err := admin.SaveView(native.View{Name: "mine", Assignee: "me"}); err != nil {
+		t.Fatalf("SaveView: %v", err)
+	}
+	if err := admin.SaveView(native.View{Name: "mine", Assignee: "you"}); err != nil {
+		t.Fatalf("SaveView upsert: %v", err)
+	}
+	if vs := store.Board().Views; len(vs) != 1 || vs[0].Assignee != "you" {
+		t.Errorf("SaveView upsert by name: %+v", vs)
+	}
+	if err := admin.SaveView(native.View{Name: ""}); err == nil {
+		t.Error("SaveView empty name should fail")
+	}
+	if err := admin.DeleteView("mine"); err != nil {
+		t.Errorf("DeleteView: %v", err)
+	}
+	if len(store.Board().Views) != 0 {
+		t.Errorf("DeleteView: view still present: %+v", store.Board().Views)
+	}
+	if err := admin.DeleteView("ghost"); err == nil {
+		t.Error("DeleteView unknown should fail")
+	}
+
+	// --- labels ---
+
+	a, err := store.Create(native.Issue{Title: "la", Labels: []string{"bug", "p1"}})
+	if err != nil {
+		t.Fatalf("Create la: %v", err)
+	}
+	b, err := store.Create(native.Issue{Title: "lb", Labels: []string{"bug"}})
+	if err != nil {
+		t.Fatalf("Create lb: %v", err)
+	}
+	// RenameLabel cascades to both bug-carrying issues.
+	n, err = admin.RenameLabel("bug", "defect")
+	if err != nil || n != 2 {
+		t.Errorf("RenameLabel: touched=%d err=%v (want 2, nil)", n, err)
+	}
+	if got, _ := store.Get(a.ID); !contains(got.Labels, "defect") || contains(got.Labels, "bug") {
+		t.Errorf("RenameLabel cascade a: %+v", got.Labels)
+	}
+	if _, err := admin.RenameLabel("", "x"); !errors.Is(err, native.ErrLabelEmpty) {
+		t.Errorf("RenameLabel empty: want ErrLabelEmpty, got %v", err)
+	}
+	if n, err := admin.RenameLabel("defect", "defect"); err != nil || n != 0 {
+		t.Errorf("RenameLabel self no-op: touched=%d err=%v", n, err)
+	}
+	// MergeLabels: merge p1 into defect on issue a (dedupe — a already has defect).
+	n, err = admin.MergeLabels("p1", "defect")
+	if err != nil || n != 1 {
+		t.Errorf("MergeLabels: touched=%d err=%v (want 1, nil)", n, err)
+	}
+	if got, _ := store.Get(a.ID); contains(got.Labels, "p1") || labelCount(got.Labels, "defect") != 1 {
+		t.Errorf("MergeLabels dedupe a: %+v", got.Labels)
+	}
+	// DeleteLabel strips defect from both.
+	n, err = admin.DeleteLabel("defect")
+	if err != nil || n != 2 {
+		t.Errorf("DeleteLabel: touched=%d err=%v (want 2, nil)", n, err)
+	}
+	if got, _ := store.Get(b.ID); contains(got.Labels, "defect") {
+		t.Errorf("DeleteLabel cascade b: %+v", got.Labels)
+	}
+	if _, err := admin.DeleteLabel(""); !errors.Is(err, native.ErrLabelEmpty) {
+		t.Errorf("DeleteLabel empty: want ErrLabelEmpty, got %v", err)
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
+func contains(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+func labelCount(ss []string, want string) int {
+	c := 0
+	for _, s := range ss {
+		if s == want {
+			c++
+		}
+	}
+	return c
+}
+
 // TestNativeStore_Conformance proves the suite against the reference
 // filesystem implementation (always runs).
 func TestNativeStore_Conformance(t *testing.T) {
@@ -162,6 +435,12 @@ func TestNativeStore_Conformance(t *testing.T) {
 		t.Fatalf("native.NewStore: %v", err)
 	}
 	runBoardStoreSuite(t, store)
+
+	admin, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("native.NewStore (admin): %v", err)
+	}
+	runBoardAdminSuite(t, admin, admin)
 }
 
 // TestMongoStore_Conformance runs the same suite against the Mongo store.
@@ -193,6 +472,12 @@ func TestMongoStore_Conformance(t *testing.T) {
 		t.Fatalf("EnsureSchema (second): %v", err)
 	}
 	runBoardStoreSuite(t, boardmongo.New(db, "tenant-1"))
+
+	// The same Mongo store must satisfy native.BoardAdmin identically to the
+	// filesystem store (its own tenant so the cascades don't collide with the
+	// BoardStore suite's tenant-1 issues).
+	adminStore := boardmongo.New(db, "admin-tenant")
+	runBoardAdminSuite(t, adminStore, adminStore)
 
 	// The Mongo store must also drive the dispatcher as a tracker.Tracker via
 	// the shared native.Adapter (eligible + unclaimed + blocker-free filtering).
