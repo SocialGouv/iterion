@@ -4,6 +4,7 @@ import type { NativeBoard, NativeIssue } from "@/api/native";
 
 import {
   fieldNameFromGroupMode,
+  GROUP_MODE_REPO,
   LANE_NONE,
   type GroupMode,
   type SortMode,
@@ -35,6 +36,9 @@ function laneKeysFor(iss: NativeIssue, groupMode: GroupMode): string[] {
     const labels = iss.labels ?? [];
     return labels.length > 0 ? labels : [LANE_NONE];
   }
+  if (groupMode === GROUP_MODE_REPO) {
+    return [iss.external?.repo || LANE_NONE];
+  }
   const fieldName = fieldNameFromGroupMode(groupMode);
   if (fieldName) {
     const v = iss.fields?.[fieldName];
@@ -49,6 +53,7 @@ function laneLabel(key: string, groupMode: GroupMode): string {
   if (key === LANE_NONE) {
     if (groupMode === "assignee") return "Unassigned";
     if (groupMode === "label") return "No label";
+    if (groupMode === GROUP_MODE_REPO) return "No repository";
     return "—";
   }
   if (groupMode === "assignee") return `@${key}`;
