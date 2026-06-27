@@ -1,0 +1,295 @@
+package gitlab
+
+import (
+	"context"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/SocialGouv/iterion/pkg/forge"
+)
+
+// gitlabMR is the GitLab merge-request shape (read). Like issues, an MR is
+// addressed by its per-project `iid`; `state` is "opened"/"merged"/"closed",
+// `sha` is the head commit, `work_in_progress`/`draft` flag a draft.
+type gitlabMR struct {
+	IID            int        `json:"iid"`
+	Title          string     `json:"title"`
+	Description    string     `json:"description"`
+	State          string     `json:"state"`
+	WebURL         string     `json:"web_url"`
+	SourceBranch   string     `json:"source_branch"`
+	TargetBranch   string     `json:"target_branch"`
+	SHA            string     `json:"sha"`
+	Draft          bool       `json:"draft"`
+	WorkInProgress bool       `json:"work_in_progress"`
+	Author         gitlabUser `json:"author"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+}
+
+// issueRefRe matches "#<n>" issue references in an MR title/description so
+// LinkedIssues can be parsed best-effort (GitLab has no first-class field for
+// arbitrary linkage in the MR payload).
+var issueRefRe = regexp.MustCompile(`#(\d+)`)
+
+// toRef normalizes a GitLab MR onto forge.PullRef. state "opened"→"open",
+// "merged"/"closed" pass through; draft is the OR of the two GitLab flags.
+func (mr gitlabMR) toRef() forge.PullRef {
+	return forge.PullRef{
+		Number:       mr.IID,
+		Title:        mr.Title,
+		State:        normMRState(mr.State),
+		URL:          mr.WebURL,
+		SourceBranch: mr.SourceBranch,
+		TargetBranch: mr.TargetBranch,
+		HeadSHA:      mr.SHA,
+		Author:       mr.Author.Username,
+		Draft:        mr.Draft || mr.WorkInProgress,
+		CreatedAt:    mr.CreatedAt,
+		UpdatedAt:    mr.UpdatedAt,
+		LinkedIssues: parseLinkedIssues(mr.Title + " " + mr.Description),
+	}
+}
+
+// normMRState maps GitLab's MR state onto the forge vocabulary:
+// "opened"→"open"; "merged"/"closed" are already canonical.
+func normMRState(s string) string {
+	if s == "opened" {
+		return "open"
+	}
+	return s
+}
+
+// mrStateQuery maps a forge PullListOptions.State onto GitLab's MR `state`
+// query value; "all"/empty → no filter.
+func mrStateQuery(state string) string {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "open", "opened":
+		return "opened"
+	case "merged":
+		return "merged"
+	case "closed":
+		return "closed"
+	default:
+		return ""
+	}
+}
+
+// parseLinkedIssues extracts distinct "#<n>" issue numbers from free text,
+// preserving first-seen order.
+func parseLinkedIssues(text string) []int {
+	matches := issueRefRe.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := map[int]bool{}
+	var out []int
+	for _, m := range matches {
+		n, err := strconv.Atoi(m[1])
+		if err != nil || seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	return out
+}
+
+// ListPullRequests lists a project's merge requests, normalized to forge.PullRef.
+func (c *AdminClient) ListPullRequests(ctx context.Context, repo string, opts forge.PullListOptions) ([]forge.PullRef, error) {
+	vals := url.Values{}
+	if st := mrStateQuery(opts.State); st != "" {
+		vals.Set("state", st)
+	}
+	if !opts.Since.IsZero() {
+		vals.Set("updated_after", opts.Since.UTC().Format(time.RFC3339))
+	}
+	page := opts.Page
+	if page <= 0 {
+		page = 1
+	}
+	vals.Set("page", strconv.Itoa(page))
+	if opts.PerPage > 0 {
+		vals.Set("per_page", strconv.Itoa(opts.PerPage))
+	}
+
+	var mrs []gitlabMR
+	code, err := c.do(ctx, http.MethodGet, "/projects/"+projectID(repo)+"/merge_requests?"+vals.Encode(), nil, &mrs)
+	if err != nil {
+		return nil, err
+	}
+	if code != http.StatusOK {
+		return nil, statusErr("list merge requests", code)
+	}
+	out := make([]forge.PullRef, 0, len(mrs))
+	for _, mr := range mrs {
+		out = append(out, mr.toRef())
+	}
+	return out, nil
+}
+
+// GetPullRequest fetches one merge request by its per-project iid.
+func (c *AdminClient) GetPullRequest(ctx context.Context, repo string, number int) (forge.PullRef, error) {
+	var mr gitlabMR
+	code, err := c.do(ctx, http.MethodGet, "/projects/"+projectID(repo)+"/merge_requests/"+strconv.Itoa(number), nil, &mr)
+	if err != nil {
+		return forge.PullRef{}, err
+	}
+	if code != http.StatusOK {
+		return forge.PullRef{}, statusErr("get merge request", code)
+	}
+	return mr.toRef(), nil
+}
+
+// gitlabCommitStatus is one per-job commit status (the GitLab
+// /repository/commits/:sha/statuses entry).
+type gitlabCommitStatus struct {
+	Name       string    `json:"name"`
+	Status     string    `json:"status"`
+	SHA        string    `json:"sha"`
+	TargetURL  string    `json:"target_url"`
+	StartedAt  time.Time `json:"started_at"`
+	FinishedAt time.Time `json:"finished_at"`
+}
+
+// normCIStatus maps a GitLab job/pipeline status onto the forge CI* vocabulary.
+// GitLab's "canceled" (one L) and the queue states (created/preparing/…) are
+// folded onto the canonical set; unknown values → CIUnknown.
+func normCIStatus(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "success":
+		return forge.CISuccess
+	case "failed":
+		return forge.CIFailed
+	case "running":
+		return forge.CIRunning
+	case "canceled", "cancelled", "canceling":
+		return forge.CICancelled
+	case "skipped", "manual":
+		return forge.CISkipped
+	case "pending", "created", "preparing", "scheduled", "waiting_for_resource":
+		return forge.CIPending
+	default:
+		return forge.CIUnknown
+	}
+}
+
+// aggregateCIState folds a set of normalized run states into a single
+// aggregate: any failure → failed; any in-flight (running/pending) → that
+// state; all success → success; otherwise unknown. Mirrors the
+// "worst-wins, then in-flight, then success" convention.
+func aggregateCIState(runs []forge.CIRun) string {
+	if len(runs) == 0 {
+		return forge.CIUnknown
+	}
+	var anyRunning, anyPending, anySuccess bool
+	for _, r := range runs {
+		switch r.Status {
+		case forge.CIFailed:
+			return forge.CIFailed
+		case forge.CIRunning:
+			anyRunning = true
+		case forge.CIPending:
+			anyPending = true
+		case forge.CISuccess:
+			anySuccess = true
+		}
+	}
+	switch {
+	case anyRunning:
+		return forge.CIRunning
+	case anyPending:
+		return forge.CIPending
+	case anySuccess:
+		return forge.CISuccess
+	default:
+		// Only cancelled/skipped runs — no meaningful aggregate signal.
+		return forge.CIUnknown
+	}
+}
+
+// GetCIStatus returns the current aggregate CI state + per-job runs for a ref
+// (a commit SHA or branch name). It reads GitLab's commit-statuses endpoint,
+// which exposes one entry per CI job.
+func (c *AdminClient) GetCIStatus(ctx context.Context, repo, ref string) (forge.CIStatus, error) {
+	var statuses []gitlabCommitStatus
+	code, err := c.do(ctx, http.MethodGet,
+		"/projects/"+projectID(repo)+"/repository/commits/"+url.PathEscape(ref)+"/statuses", nil, &statuses)
+	if err != nil {
+		return forge.CIStatus{}, err
+	}
+	if code != http.StatusOK {
+		return forge.CIStatus{}, statusErr("get ci status", code)
+	}
+	runs := make([]forge.CIRun, 0, len(statuses))
+	sha := ref
+	for _, s := range statuses {
+		if s.SHA != "" {
+			sha = s.SHA
+		}
+		runs = append(runs, forge.CIRun{
+			Name:       s.Name,
+			Status:     normCIStatus(s.Status),
+			URL:        s.TargetURL,
+			SHA:        s.SHA,
+			StartedAt:  s.StartedAt,
+			FinishedAt: s.FinishedAt,
+		})
+	}
+	return forge.CIStatus{
+		SHA:   sha,
+		State: aggregateCIState(runs),
+		Runs:  runs,
+	}, nil
+}
+
+// gitlabPipeline is one pipeline entry (the GitLab /pipelines list shape).
+type gitlabPipeline struct {
+	ID        int       `json:"id"`
+	Status    string    `json:"status"`
+	Ref       string    `json:"ref"`
+	SHA       string    `json:"sha"`
+	WebURL    string    `json:"web_url"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ListCIHistory returns recent pipelines for a ref/branch, newest first, one
+// CIRun per pipeline (Name="pipeline #<id>"). limit ≤ 0 → GitLab default page.
+func (c *AdminClient) ListCIHistory(ctx context.Context, repo, ref string, limit int) ([]forge.CIRun, error) {
+	vals := url.Values{}
+	if ref != "" {
+		vals.Set("ref", ref)
+	}
+	vals.Set("order_by", "id")
+	vals.Set("sort", "desc")
+	if limit > 0 {
+		vals.Set("per_page", strconv.Itoa(limit))
+	}
+	var pipelines []gitlabPipeline
+	code, err := c.do(ctx, http.MethodGet, "/projects/"+projectID(repo)+"/pipelines?"+vals.Encode(), nil, &pipelines)
+	if err != nil {
+		return nil, err
+	}
+	if code != http.StatusOK {
+		return nil, statusErr("list ci history", code)
+	}
+	out := make([]forge.CIRun, 0, len(pipelines))
+	for _, p := range pipelines {
+		out = append(out, forge.CIRun{
+			Name:       "pipeline #" + strconv.Itoa(p.ID),
+			Status:     normCIStatus(p.Status),
+			URL:        p.WebURL,
+			SHA:        p.SHA,
+			StartedAt:  p.CreatedAt,
+			FinishedAt: p.UpdatedAt,
+		})
+	}
+	return out, nil
+}
+
+var _ forge.PullClient = (*AdminClient)(nil)
