@@ -269,6 +269,18 @@ func (m *MemoryStore) UpdateOrg(_ context.Context, o Org) error {
 	return nil
 }
 
+func (m *MemoryStore) DeleteOrg(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	o, ok := m.orgs[id]
+	if !ok {
+		return ErrNotFound
+	}
+	delete(m.orgs, id)
+	delete(m.orgSlugs, o.Slug)
+	return nil
+}
+
 func (m *MemoryStore) ListOrgs(_ context.Context, page Page) ([]Org, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

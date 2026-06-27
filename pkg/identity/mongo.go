@@ -327,6 +327,17 @@ func (s *MongoStore) UpdateOrg(ctx context.Context, o Org) error {
 	return nil
 }
 
+func (s *MongoStore) DeleteOrg(ctx context.Context, id string) error {
+	res, err := s.orgs.DeleteOne(ctx, bson.M{"_id": id})
+	if err != nil {
+		return fmt.Errorf("identity: delete org: %w", err)
+	}
+	if res.DeletedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *MongoStore) ListOrgs(ctx context.Context, page Page) ([]Org, error) {
 	limit := int64(page.Limit)
 	if limit <= 0 {

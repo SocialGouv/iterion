@@ -14,6 +14,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/cli"
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -91,7 +92,105 @@ func init() {
 	migrateRunPathsCmd.Flags().BoolVar(&migrateRunPathsOpts.dryRun, "dry-run", false, "Print the rewrites without modifying any run.json")
 	migrateCmd.AddCommand(migrateRunPathsCmd)
 
+	migrateOrgsCmd.Flags().StringVar(&migrateOrgsOpts.configPath, "config", "", "Path to YAML config (env vars take precedence)")
+	migrateOrgsCmd.Flags().BoolVar(&migrateOrgsOpts.dryRun, "dry-run", false, "Print what would change; write nothing")
+	migrateOrgsCmd.Flags().BoolVar(&migrateOrgsOpts.reverse, "reverse", false, "Undo a prior backfill (delete migrated orgs, unlink teams)")
+	migrateCmd.AddCommand(migrateOrgsCmd)
+
 	rootCmd.AddCommand(migrateCmd)
+}
+
+var migrateOrgsOpts struct {
+	configPath string
+	dryRun     bool
+	reverse    bool
+}
+
+// `iterion migrate orgs` is the ADR-048 teams→orgs backfill: it creates
+// one Org per legacy Team, links the team to it, and mirrors team
+// memberships up to org memberships. Idempotent + reversible; hidden,
+// operator-only. Runs against the cloud Mongo identity store.
+var migrateOrgsCmd = &cobra.Command{
+	Use:   "orgs",
+	Short: "Backfill an Org per legacy Team (ADR-048 two-level tenancy)",
+	Long: `Create one Organization per existing Team (a new id, marked with the
+source team for idempotency + reversal), link the team to it, and mirror
+each team membership up to an org membership (team owner/admin -> org
+admin, else org member).
+
+Idempotent: a team that already has a parent org is skipped, so re-running
+is a no-op. --reverse undoes a backfill (deletes the migrated orgs and
+unlinks their teams). --dry-run prints the plan without writing.
+
+Note: the monthly run/cost/memory quota moved from Team to Org in this
+release; legacy custom per-team caps are NOT carried over — a migrated org
+starts on the platform defaults, so re-apply any custom cap via the admin
+console after migrating.
+
+ITERION_MONGO_URI must be set (or pass --config).`,
+	Args: cobra.NoArgs,
+	RunE: runMigrateOrgs,
+}
+
+func runMigrateOrgs(cmd *cobra.Command, _ []string) error {
+	cfg, err := iterconfig.Load(iterconfig.LoadOptions{
+		YAMLPath:         migrateOrgsOpts.configPath,
+		DefaultLogFormat: iterconfig.LogFormatHuman,
+	})
+	if err != nil {
+		return fmt.Errorf("migrate orgs: load config: %w", err)
+	}
+	if cfg.Mongo.URI == "" {
+		return errors.New("migrate orgs: ITERION_MONGO_URI is required")
+	}
+	logger := iterlog.NewWithFormat(parseLevel(cfg.Log.Level), cmd.ErrOrStderr(), parseLogFormat(cfg.Log.Format))
+
+	ctx, cancel := context.WithCancel(cmd.Context())
+	defer cancel()
+
+	bc, err := newCloudBlob(ctx, cfg.S3)
+	if err != nil {
+		return fmt.Errorf("migrate orgs: build blob: %w", err)
+	}
+	defer func() { _ = bc.Close() }()
+	ms, err := newCloudMongoStore(ctx, cfg.Mongo, bc, logger, nil)
+	if err != nil {
+		return fmt.Errorf("migrate orgs: build mongo: %w", err)
+	}
+	defer func() {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer closeCancel()
+		_ = ms.Close(closeCtx)
+	}()
+
+	idStore := identity.NewMongoStore(ms.DB())
+	if err := idStore.EnsureSchema(ctx); err != nil {
+		return fmt.Errorf("migrate orgs: ensure schema: %w", err)
+	}
+
+	var res cli.MigrateOrgsResult
+	if migrateOrgsOpts.reverse {
+		res, err = cli.ReverseTeamsToOrgs(ctx, idStore, logger, migrateOrgsOpts.dryRun)
+	} else {
+		res, err = cli.MigrateTeamsToOrgs(ctx, idStore, logger, migrateOrgsOpts.dryRun)
+	}
+	if err != nil {
+		return err
+	}
+	for _, c := range res.Changes {
+		fmt.Printf("  %s\n", c)
+	}
+	verb := "applied"
+	if migrateOrgsOpts.dryRun {
+		verb = "would apply"
+	}
+	if migrateOrgsOpts.reverse {
+		fmt.Printf("migrate orgs --reverse: %s — deleted %d orgs (of %d scanned teams)\n", verb, res.OrgsDeleted, res.ScannedTeams)
+	} else {
+		fmt.Printf("migrate orgs: %s — %d orgs created, %d teams linked, %d org memberships (of %d scanned teams)\n",
+			verb, res.OrgsCreated, res.TeamsLinked, res.OrgMembersCreated, res.ScannedTeams)
+	}
+	return nil
 }
 
 func runMigrateRunPaths(_ *cobra.Command, _ []string) error {

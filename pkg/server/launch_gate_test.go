@@ -249,6 +249,35 @@ func TestGateLaunch_FailOpenOnCounterError(t *testing.T) {
 	}
 }
 
+// TestGateLaunch_OrgBudgetSumsAcrossTeams is the core ADR-048 claim: the
+// monthly run quota is org-level, so two teams in the same org draw down
+// one shared budget. With org quota = 1, team A's launch succeeds and
+// team B's (same org) is denied.
+func TestGateLaunch_OrgBudgetSumsAcrossTeams(t *testing.T) {
+	s := newOrgTestServer(t)
+	s.orgUsage = orgusage.NewMemoryCounter()
+	ctx := context.Background()
+	if _, err := s.authStore().CreateOrg(ctx, identity.Org{ID: "o1", Name: "o1", Slug: "o1", MonthlyRunQuota: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tid := range []string{"ta", "tb"} {
+		if _, err := s.authStore().CreateTeam(ctx, identity.Team{ID: tid, OrgID: "o1", Name: tid, Slug: tid}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctxA := auth.WithIdentity(ctx, auth.Identity{UserID: "u1", TeamID: "ta", OrgID: "o1"})
+	ctxB := auth.WithIdentity(ctx, auth.Identity{UserID: "u2", TeamID: "tb", OrgID: "o1"})
+
+	if d := s.gateLaunch(ctxA); d != nil {
+		t.Fatalf("team A first launch denied: %+v", d)
+	}
+	// Team B shares the org budget → denied.
+	d := s.gateLaunch(ctxB)
+	if d == nil || d.reason != denyMonthlyRunQuota {
+		t.Fatalf("team B should hit the shared org quota, got %+v", d)
+	}
+}
+
 func TestWriteLaunchDenial_Shape(t *testing.T) {
 	s := newOrgTestServer(t)
 	w := httptest.NewRecorder()

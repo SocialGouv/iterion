@@ -22,6 +22,9 @@ type Store interface {
 	GetOrg(ctx context.Context, id string) (Org, error)
 	GetOrgBySlug(ctx context.Context, slug string) (Org, error)
 	UpdateOrg(ctx context.Context, o Org) error
+	// DeleteOrg removes an org. Orgs are never deleted in normal
+	// operation; this exists for the teams→orgs backfill's --reverse path.
+	DeleteOrg(ctx context.Context, id string) error
 	// ListOrgs returns all orgs (super-admin console), oldest first,
 	// offset/limit paginated.
 	ListOrgs(ctx context.Context, page Page) ([]Org, error)
