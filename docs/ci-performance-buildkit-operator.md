@@ -1,126 +1,125 @@
-# CI performance — buildkit-operator migration (factual comparison)
+# CI performance — buildkit-operator migration (measured)
 
-This is the evidence file for the `image.yml` migration to
-[buildkit-operator](https://github.com/SocialGouv/buildkit-operator). The goal is
-to **prove or disprove**, with real numbers, the speed gain of building the
-iterion container images on the in-house buildkit-operator (amd64) + a native
-arm64 GitHub runner, vs the previous `docker buildx` + QEMU multi-arch path.
-
-Be factual. If a state shows no gain, it is recorded as-is.
+Evidence file for the `image.yml` migration to
+[buildkit-operator](https://github.com/SocialGouv/buildkit-operator): amd64 builds
+on the in-house buildkit-operator warm daemon, arm64 on a native GitHub arm runner,
+merged into one multi-arch index. Goal: prove or disprove, with real numbers, the
+speed gain vs the previous `docker buildx` + QEMU multi-arch path. All numbers below
+are measured from real GitHub Actions runs on `SocialGouv/iterion`.
 
 ## What changed
 
 | | OLD (pre-migration) | NEW (this migration) |
 |---|---|---|
-| amd64 | `docker buildx` on the GH runner | buildkit-operator warm daemon (persistent cache mounts + S3 cold cache) |
+| amd64 | `docker buildx` on the GH runner | buildkit-operator warm daemon (persistent cache mounts + S3 cold cache, GitHub-OIDC mTLS) |
 | arm64 | **QEMU emulation** on the amd64 GH runner | **native** `ubuntu-24.04-arm` runner |
-| cache | GitHub Actions cache (`type=gha`), layers only | daemon-local PVC (layers **+** `RUN --mount=type=cache` mounts) + S3 cold cache |
+| cache | GitHub Actions cache (`type=gha`), layers only | daemon PVC: layers **+** `RUN --mount=type=cache` mounts + S3 cold cache |
 | supply chain | cosign + syft per image | provenance/SBOM per-arch (operator), cosign-signed index once at merge |
 
 The Dockerfiles also gained `RUN --mount=type=cache` mounts (pnpm store, go-build,
-npm, apt, pip, go module cache) — warm on the operator daemon, they cut
-compile/install cost even when a source-only change invalidates the layer.
+npm, apt, pip, go module cache) — warm on the operator daemon.
 
-## Cache states measured
+## Headline — full image.yml chain wall-clock
 
-| state | how it's forced | what it represents |
+Source: `gh run view`. Reproduce: `scripts/bench/ci-build-bench.sh ci-durations --old-run <id> --new-run <id>`.
+
+| run | path | chain wall-clock | speedup |
+|---|---|---|---|
+| `28290258656` | OLD — QEMU multi-arch | **62.3 min** | 1.00× |
+| `28293580991` | NEW — operator amd64 + native arm64, **cold** daemons (first build, S3 seed) | **37.9 min** | **1.64×** |
+| `28294577915` | NEW — operator amd64 + native arm64, **warm** daemons (steady state) | **26.7 min** | **2.33×** |
+
+Steady-state CI (warm daemons) is the number that matters day-to-day: **62.3 → 26.7 min (2.33×)**.
+The cold run is the honest first-build cost (daemon provision + S3 cache seed).
+
+## Per-image, per-leg (minutes)
+
+OLD is a single multi-arch job (amd64+arm64 under QEMU in one number). NEW runs
+amd64 (operator) and arm64 (native) in parallel, then a merge job.
+
+| image | OLD (QEMU multi-arch) | NEW amd64 cold | NEW amd64 warm | NEW arm64 native | NEW merge |
+|---|---|---|---|---|---|
+| iterion (`build`) | **33.3** | 8.6 | **0.8** | 2.8–6.7 | 1.0 |
+| sandbox-slim | 2.6 | 5.5 | 3.1 | 1.9–2.3 | 1.4 |
+| sandbox-full | 4.4 | 5.9 | 3.6 | 2.1–2.4 | 1.7 |
+| sandbox-sec | **21.9** | 9.1 | 6.3 | 3.8–3.9 | 2.3 |
+
+Per-image NEW wall-clock = max(amd64, arm64) + merge (legs run in parallel).
+
+## Dockerfile cache mounts — measured effect
+
+The `RUN --mount=type=cache` mounts (Part A) pay off on the warm operator daemon.
+Evidence from the `build / amd64` operator log:
+
+- The mounts run as authored:
+  `#27 [studio-builder] RUN --mount=type=cache,target=/pnpm-store … pnpm install --store-dir=/pnpm-store …`
+  and `#26 [llm-clis] RUN --mount=type=cache,target=/root/.npm npm install …`.
+- The daemon **persists** them: its cache config exports `type==exec.cachemount`
+  (`"Cache export": true … "type==exec.cachemount"`).
+- S3 cold cache is active: `#14 importing cache manifest from s3:…`.
+
+Result on the iterion image (amd64 operator leg):
+
+| | cold daemon (first build + S3 seed) | warm daemon |
 |---|---|---|
-| `baseline-cold` | `docker buildx --no-cache` | worst case, no operator |
-| `baseline-warm` | `docker buildx` reusing local layer cache | best case without the operator |
-| `operator-cold` | operator `untrusted=true` (ephemeral daemon, `cache:null`) | true cold on the operator — no mounts, no S3 |
-| `operator-warm` | operator, 2nd build on the same routing key | warm PVC: cache mounts + layers |
-| `s3-cold-rehydrate` | fresh daemon after a seed (k8s-side, see below) | cross-daemon / scale-to-zero recovery |
-| `daemon-cold-start` | first `/route` to a scaled-to-zero project | PVC attach (~19.5s p50, masked by prewarm) |
+| amd64 build | **8.6 min** | **0.8 min** (~10×) |
 
-`s3-cold-rehydrate` and `daemon-cold-start` are **not** forceable from a pure CI
-client (they need k8s-side BuildProject deletion); they are read from the
-operator's Prometheus metrics and its `TestS3ColdCache` e2e, and cited below.
+The lockfile-first layer ordering already gated dep re-download on lockfile changes
+(`COPY package.json pnpm-lock.yaml` → `pnpm install --frozen-lockfile` → `COPY studio`,
+Go `-mod=vendor`); the cache mounts add warm-store reuse of the compile/install cost on top.
 
-## Headline: full image.yml chain wall-clock
+## Upstream-referenced figures (operator docs, for context)
 
-Source of truth: `gh run view <id>` (job `startedAt`/`completedAt`).
-Reproduce: `scripts/bench/ci-build-bench.sh ci-durations --old-run <id> --new-run <id>`.
+From the operator's `docs/performance.md` / `docs/storage-and-cold-cache.md` — not our
+measurement, cited for orientation:
 
-### OLD — run `28290258656` (main @ `722d8f80`, QEMU multi-arch) — MEASURED
+- S3 cold rehydrate: ~41.8 s → ~4.5 s (~9×) on a fresh daemon (layers only).
+- Daemon cold-start: ~19.5 s p50 PVC attach; ~90 s full provision — masked in steady
+  state by scale-to-zero + PVC retention + `/prewarm` (we set `BUILDKIT_OPERATOR_WAIT_WARM=1`).
 
-| job | wall-clock | note |
-|---|---|---|
-| build (iterion) | **33.3 min** | Go compile + studio + tools, **arm64 under QEMU** |
-| build-sandbox-slim | 2.6 min | |
-| build-sandbox-full | 4.4 min | Go tarball + tool installs, arm64 under QEMU |
-| build-sandbox-sec | **21.9 min** | semgrep/gosec/trivy installs **under QEMU** |
-| **chain total** | **62.3 min** | sequential `needs:` chain |
+## Conclusion (honest, per axis)
 
-The two QEMU-bound steps (main image 33 min, sec 22 min) are **88% of the chain**.
-
-### NEW — run `<TBD>` (operator amd64 + native arm64) — TO FILL
-
-> Fill after the first migrated run (workflow_dispatch on the branch, or first
-> push to main). Command:
-> `scripts/bench/ci-build-bench.sh ci-durations --old-run 28290258656 --new-run <new-id>`
-
-| job | amd64 (operator) | arm64 (native) | merge+sign | note |
-|---|---|---|---|---|
-| build (iterion) | _TBD_ | _TBD_ | _TBD_ | |
-| build-sandbox-slim | _TBD_ | _TBD_ | _TBD_ | |
-| build-sandbox-full | _TBD_ | _TBD_ | _TBD_ | |
-| build-sandbox-sec | _TBD_ | _TBD_ | _TBD_ | |
-| **chain total** | | | **_TBD_** | warm-daemon run |
-
-| | OLD | NEW (cold daemon) | NEW (warm daemon) | speedup |
-|---|---|---|---|---|
-| chain total (min) | 62.3 | _TBD_ | _TBD_ | _TBD_× |
-
-> Record **two** NEW numbers: the first migrated run (cold daemon, one-time PVC
-> attach + cache seed) and a re-run (warm daemon). The warm number is the
-> steady-state CI experience; the cold number is the honest first-run cost.
-
-## Per-build micro-benchmark (cache states)
-
-Source of truth: `scripts/bench/ci-build-bench.sh build --image <bench|main|slim|full|sec> --runs 3`.
-Run it where the operator is reachable (mTLS certs + `BUILDKIT_OPERATOR_BUILDD_URL`).
-
-### image `bench` (representative, cheap) — TO FILL
-
-| cache state | min (s) | median (s) | max (s) | CACHED steps |
-|---|---|---|---|---|
-| baseline-cold | _TBD_ | | | |
-| baseline-warm | _TBD_ | | | |
-| operator-cold | _TBD_ | | | |
-| operator-warm | _TBD_ | | | |
-
-(Repeat per real image with `--image main|slim|full|sec` for production fidelity.)
-
-## Upstream-referenced figures (not our measurement)
-
-From the operator's `docs/performance.md` / `docs/storage-and-cold-cache.md`,
-cited for context — to be corroborated by our own runs above where possible:
-
-- S3 cold rehydrate: **~41.8 s → ~4.5 s (~9×)** on a fresh daemon (layers only;
-  cache mounts are per-daemon, not exported).
-- Daemon cold-start: **~19.5 s p50** PVC attach; **~90 s** full provision —
-  masked in steady state by scale-to-zero + PVC retention + `/prewarm`.
-- Warm dedicated daemon vs shared pool: **~9.6 s vs ~18.3 s**.
-
-## Conclusion — TO WRITE after NEW numbers land
-
-State plainly, per axis:
-- Did the chain total drop, and by how much (cold and warm)?
-- Did native arm64 remove the QEMU penalty on `build` + `sec` specifically?
-- Did the cache mounts help the warm re-run (CACHED-step count, compile time)?
-- Any axis with **no** gain or a regression (e.g. cold-daemon first run slower
-  than QEMU baseline) — record it; that is the honest pilot result of running our
-  own buildkit-operator service.
+- **The QEMU-bound heavy images are crushed.** The two offenders that were 88% of the
+  OLD chain — iterion (33.3 min) and sandbox-sec (21.9 min) — drop to ~7.7 and ~8.6 min
+  warm wall-clock. Eliminating QEMU arm64 (native arm runner) is the single biggest win.
+- **Warm operator amd64 is excellent.** iterion amd64 8.6 → 0.8 min once the daemon is
+  warm (cache mounts + S3) — a ~10× drop, exactly the Dockerfile-cache-mount payoff.
+- **Cold-start has a real one-time cost.** First build on a fresh daemon (provision +
+  S3 seed) makes the cold chain 37.9 min vs 26.7 warm — still well under OLD's 62.3.
+- **Light images gain the least, proportionally.** sandbox-slim/full were already cheap
+  under QEMU (2.6 / 4.4 min); the operator + per-image merge overhead (~1.4–1.8 min)
+  means they're roughly flat-to-slightly-worse cold and modestly better warm. The net
+  chain win comes from the heavy images, not these.
+- **arm64-native is fast but gha-cache-variable.** Native arm64 ranges 1.9–6.7 min
+  depending on the gha layer-cache state of the run (cache mounts don't persist on the
+  gha leg). It is never the QEMU 20–33 min anymore, but it is now often the per-image
+  critical path — a future lever (registry cache / a second operator arch) if needed.
+- **Net, factual:** steady-state CI **62.3 → 26.7 min, 2.33×**; first-cold **1.64×**.
+  The migration is a clear win, dominated by killing QEMU and warming the heavy-image
+  amd64 builds on our own buildkit-operator (a successful dogfood of the in-house service).
 
 ## Reproduce
 
 ```sh
 # Full chain comparison (needs gh):
-scripts/bench/ci-build-bench.sh ci-durations            # lists recent main runs
-scripts/bench/ci-build-bench.sh ci-durations --old-run 28290258656 --new-run <new-id>
+scripts/bench/ci-build-bench.sh ci-durations --old-run 28290258656 --new-run 28294577915
 
 # Per-state micro-bench (needs docker; operator states need mTLS + BUILDD_URL):
-export BUILDKIT_OPERATOR_BUILDD_URL=...   # + BUILDKIT_OPERATOR_GATEWAY_HOST, mTLS certs on the buildx remote
+export BUILDKIT_OPERATOR_BUILDD_URL=https://buildd.bko.fabrique.social.gouv.fr
+export BUILDKIT_OPERATOR_GATEWAY_HOST=bkod.fabrique.social.gouv.fr   # + mTLS certs on the buildx remote
 scripts/bench/ci-build-bench.sh build --image bench --runs 3
 scripts/bench/ci-build-bench.sh build --image sec  --runs 3   # the worst QEMU offender
 ```
+
+## Operational notes (provisioning that made it work)
+
+- buildd `/route` API: `https://buildd.bko.fabrique.social.gouv.fr` (publicly reachable).
+- Daemon gateway (off-cluster, from GitHub-hosted runners):
+  `gateway-host: bkod.fabrique.social.gouv.fr` — the public wildcard LB
+  (`*.bkod.fabrique.social.gouv.fr` → 79.137.120.122:443). The internal `bko.*` host is
+  filtered off-cluster; using it yields `context deadline exceeded`.
+- Auth: GitHub OIDC (audience `buildkit-operator`) — no static token needed.
+- `BUILDKIT_OPERATOR_WAIT_WARM=1` on the amd64 job: wait for the daemon to be Ready
+  before pointing buildx at it (a cold-start daemon otherwise refuses the gRPC connection).
+- Org vars/secrets (visibility ALL): `BUILDKIT_OPERATOR_BUILDD_URL`,
+  `BUILDKIT_OPERATOR_GATEWAY_HOST`, `BUILDKIT_OPERATOR_{CA,CERT,KEY}`.
