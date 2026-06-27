@@ -121,7 +121,7 @@ jobs:
         # Pin moved forward on each operator release. This SHA must be pushed to
         # github.com/SocialGouv/buildkit-operator (branch feat/build-args-passthrough)
         # for `uses:` to resolve it — it carries the --build-arg passthrough.
-        uses: socialgouv/buildkit-operator@20ed87560a925cc4aa3ef453e59aa10dce58975c
+        uses: socialgouv/buildkit-operator@8707e7f9d2a3baeeb5154bfbd0ae114bccfa4e58
         with:
           buildd-url: ${{ vars.BUILDKIT_OPERATOR_BUILDD_URL }}
           gateway-host: ${{ vars.BUILDKIT_OPERATOR_GATEWAY_HOST || 'bkod.fabrique.social.gouv.fr' }}

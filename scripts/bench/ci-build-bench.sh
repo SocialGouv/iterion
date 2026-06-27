@@ -26,7 +26,7 @@
 set -eu
 
 IMAGE="bench"; RUNS=3; OUT="${TMPDIR:-/tmp}/iterion-ci-bench"
-BKO_REF="${BKO_REF:-20ed87560a925cc4aa3ef453e59aa10dce58975c}"
+BKO_REF="${BKO_REF:-8707e7f9d2a3baeeb5154bfbd0ae114bccfa4e58}"
 GATEWAY_HOST="${BUILDKIT_OPERATOR_GATEWAY_HOST:-bkod.fabrique.social.gouv.fr}"
 OLD_RUN=""; NEW_RUN=""
 
