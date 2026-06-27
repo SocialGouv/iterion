@@ -631,6 +631,11 @@ func applyPatch(iss *native.Issue, p native.Patch, board *native.Board) patchRes
 		iss.BotArgs = next
 		changed = append(changed, "bot_args")
 	}
+	if p.External != nil {
+		ext := *p.External
+		iss.External = &ext
+		changed = append(changed, "external")
+	}
 	return patchResult{fields: changed}
 }
 

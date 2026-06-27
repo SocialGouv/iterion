@@ -39,8 +39,24 @@ export interface NativeIssue {
    *  per-issue dispatcher workspace. Surfaced in the IssueModal as a
    *  copy/vscode link so operators can inspect the diff manually. */
   last_workdir?: string;
+  /** Typed forge linkage (mirrors Go's `external`). Present once a card is
+   *  pushed to / synced from a forge. This is the canonical source of truth
+   *  for the card's PR/CI panel + push semantics (replaces the legacy
+   *  fields["forge:*"] shape). */
+  external?: ExternalLink;
   created_at: string;
   updated_at: string;
+}
+
+// ExternalLink is a card's typed link to a forge issue/PR. `url` and `state`
+// are populated by the server once the linked issue exists.
+export interface ExternalLink {
+  provider: string;
+  connection_id: string;
+  repo: string;
+  number: number;
+  url?: string;
+  state?: string;
 }
 
 export interface NativeBoard {
@@ -106,6 +122,58 @@ export interface NativeIssuePatch {
 }
 
 // ---------------------------------------------------------------------------
+// Forge linkage — push a card to a forge, and read the forge's linked PRs +
+// CI status back. Cloud-mode only; mirror pkg/server's native forge routes.
+// ---------------------------------------------------------------------------
+
+// PushIssueBody is omitted for a card already linked to a forge (its
+// fields["forge:url"] is set — the server updates the linked issue). For an
+// UNLINKED card both connection_id and repo ("owner/repo") are required.
+export interface PushIssueBody {
+  connection_id?: string;
+  repo?: string;
+}
+
+export interface PushIssueResult {
+  url: string;
+  number: number;
+  provider: string;
+}
+
+// PullRef mirrors a forge pull/merge request linked to the issue.
+export interface PullRef {
+  number: number;
+  title: string;
+  state: string;
+  url: string;
+  source_branch: string;
+  target_branch: string;
+  head_sha: string;
+  draft: boolean;
+  author: string;
+  linked_issues: string[];
+}
+
+// CIRun is a single check/pipeline run on a PR's head commit.
+export interface CIRun {
+  name: string;
+  status: string;
+  conclusion: string;
+  url: string;
+  sha: string;
+  started_at: string;
+  finished_at: string;
+}
+
+// CIStatus is the aggregate CI state for a PR's head commit plus the current
+// runs; `history` (returned alongside it) carries recent prior runs.
+export interface CIStatus {
+  sha: string;
+  state: string;
+  runs: CIRun[];
+}
+
+// ---------------------------------------------------------------------------
 // REST surface
 // ---------------------------------------------------------------------------
 
@@ -148,6 +216,32 @@ export function transitionIssue(id: string, to: string): Promise<NativeIssue> {
     method: "POST",
     body: JSON.stringify({ to }),
   });
+}
+
+// pushIssueToForge mirrors a card to its forge. Omit `body` for a card
+// already linked to a forge (server updates the linked issue); pass
+// {connection_id, repo} to create-and-link an unlinked card.
+export function pushIssueToForge(id: string, body?: PushIssueBody): Promise<PushIssueResult> {
+  return request(`/issues/${encodeURIComponent(id)}/push`, {
+    method: "POST",
+    body: JSON.stringify(body ?? {}),
+  });
+}
+
+// listIssuePulls returns the forge pull/merge requests linked to a card.
+export function listIssuePulls(id: string): Promise<PullRef[]> {
+  return request<{ pulls: PullRef[] }>(`/issues/${encodeURIComponent(id)}/pulls`).then(
+    (r) => r.pulls ?? [],
+  );
+}
+
+// getIssuePullCI returns the aggregate CI status + recent run history for a
+// linked PR's head commit.
+export function getIssuePullCI(
+  id: string,
+  number: number,
+): Promise<{ status: CIStatus; history: CIRun[] }> {
+  return request(`/issues/${encodeURIComponent(id)}/pulls/${number}/ci`);
 }
 
 export function getBoard(): Promise<NativeBoard> {

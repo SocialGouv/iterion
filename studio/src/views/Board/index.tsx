@@ -324,6 +324,12 @@ export default function BoardView() {
     () => issues.filter((i) => selectedIds.has(i.id)),
     [issues, selectedIds],
   );
+  // Offer the "Repository" swimlane grouping only when some card is
+  // forge-linked (carries external.repo).
+  const hasRepoLinks = useMemo(
+    () => issues.some((i) => !!i.external?.repo),
+    [issues],
+  );
   const allSelectedDispatchable =
     selectedIssues.length > 0 && selectedIssues.every((i) => isDispatchable(i.state));
 
@@ -575,6 +581,7 @@ export default function BoardView() {
         groupMode={groupMode}
         onGroupChange={setGroupMode}
         fieldNames={(board.fields ?? []).map((f) => f.name)}
+        hasRepoLinks={hasRepoLinks}
         onReset={() => {
           setSearchQuery("");
           clearLabelFilter();

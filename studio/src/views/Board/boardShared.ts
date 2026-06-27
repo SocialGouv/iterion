@@ -50,6 +50,11 @@ export const BASE_GROUP_OPTIONS: { value: GroupMode; label: string }[] = [
 // (no assignee, no labels, empty field). Always sorted last.
 export const LANE_NONE = "__none__";
 
+// GROUP_MODE_REPO groups the board into one swimlane per forge repository
+// (issue.external.repo). Offered only when at least one card is forge-linked;
+// unlinked cards fall into the LANE_NONE ("—") lane.
+export const GROUP_MODE_REPO = "repo";
+
 // A GroupMode of `field:<name>` groups by a custom field. The prefix
 // encoding lives here so the producer (BoardFilters' option list) and the
 // consumer (useSwimlanes' decode) share one source of truth.

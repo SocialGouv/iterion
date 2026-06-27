@@ -5,11 +5,16 @@ import type { BotEntryWithSchema } from "@/api/bots";
 import {
   type ForgeConnection,
   type ForgeIntegration,
+  type ForgeSyncResult,
   deleteForgeConnection,
   disableForgeIntegration,
+  syncForgeIntegration,
+  updateForgeIntegration,
 } from "@/api/forgeConnections";
 import { Button } from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { InlineBanner } from "@/components/ui/InlineBanner";
+import { useAsyncAction } from "@/hooks/useAsyncAction";
 
 import { type ConfirmFn, statusTone } from "./forgeShared";
 import { EnableRepoPanel } from "./EnableRepoPanel";
@@ -103,24 +108,15 @@ export function ConnectionCard({
         ) : (
           <ul className="space-y-1">
             {integrations.map((i) => (
-              <li
+              <RepoRow
                 key={i.id}
-                className="flex items-center justify-between gap-2 text-sm border-t border-border-subtle pt-1"
-              >
-                <span>
-                  <span className="font-mono">{i.repo_full_name}</span>{" "}
-                  <span className="text-fg-muted">· {i.bot_ids.join(", ")}</span>
-                </span>
-                {canManage && (
-                  <Button
-                    variant="danger"
-                    size="sm"
-                    onClick={() => disable(i)}
-                  >
-                    Disable
-                  </Button>
-                )}
-              </li>
+                teamID={teamID}
+                integration={i}
+                canManage={canManage}
+                onChanged={onChanged}
+                onDisable={() => disable(i)}
+                onError={onError}
+              />
             ))}
           </ul>
         )}
@@ -150,5 +146,97 @@ export function ConnectionCard({
           </Button>
         ))}
     </section>
+  );
+}
+
+// RepoRow renders one enabled repo with its issue-sync toggle ("Sync issues
+// to board", forge→board mirroring) and a "Sync now" ghost button that fires
+// a one-shot sync and surfaces the returned counts inline. Local optimistic
+// state on the toggle keeps the checkbox responsive across the PATCH.
+function RepoRow({
+  teamID,
+  integration,
+  canManage,
+  onChanged,
+  onDisable,
+  onError,
+}: {
+  teamID: string;
+  integration: ForgeIntegration;
+  canManage: boolean;
+  onChanged: () => void;
+  onDisable: () => void;
+  onError: (m: string) => void;
+}) {
+  const [syncEnabled, setSyncEnabled] = useState(!!integration.sync_issues_enabled);
+  const [lastSync, setLastSync] = useState<ForgeSyncResult | null>(null);
+  const toggleAction = useAsyncAction();
+  const syncAction = useAsyncAction();
+
+  const onToggle = async (next: boolean) => {
+    // Optimistic: flip immediately, revert on error so the checkbox never
+    // strands in a state the server didn't accept.
+    setSyncEnabled(next);
+    const updated = await toggleAction.run(() =>
+      updateForgeIntegration(teamID, integration.id, { sync_issues_enabled: next }),
+    );
+    if (updated) {
+      setSyncEnabled(!!updated.sync_issues_enabled);
+      onChanged();
+    } else {
+      setSyncEnabled(!next);
+      onError(toggleAction.error ?? "Failed to update sync setting");
+    }
+  };
+
+  const onSyncNow = async () => {
+    const res = await syncAction.run(() => syncForgeIntegration(teamID, integration.id));
+    if (res) {
+      setLastSync(res);
+    } else if (syncAction.error) {
+      onError(syncAction.error);
+    }
+  };
+
+  return (
+    <li className="border-t border-border-subtle pt-1 space-y-1">
+      <div className="flex items-center justify-between gap-2 text-sm">
+        <span>
+          <span className="font-mono">{integration.repo_full_name}</span>{" "}
+          <span className="text-fg-muted">· {integration.bot_ids.join(", ")}</span>
+        </span>
+        {canManage && (
+          <Button variant="danger" size="sm" onClick={onDisable}>
+            Disable
+          </Button>
+        )}
+      </div>
+      {canManage && (
+        <div className="flex items-center justify-between gap-2">
+          <Checkbox
+            label="Sync issues to board"
+            checked={syncEnabled}
+            disabled={toggleAction.busy}
+            onChange={(e) => void onToggle(e.target.checked)}
+          />
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => void onSyncNow()}
+            loading={syncAction.busy}
+            disabled={syncAction.busy}
+            title="Pull the forge's issues onto the board now"
+          >
+            Sync now
+          </Button>
+        </div>
+      )}
+      {lastSync && (
+        <InlineBanner tone="success" layout="inline">
+          Synced {lastSync.synced} issue{lastSync.synced === 1 ? "" : "s"} ·{" "}
+          {lastSync.created} created · {lastSync.updated} updated
+        </InlineBanner>
+      )}
+    </li>
   );
 }

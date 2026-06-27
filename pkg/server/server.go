@@ -899,6 +899,20 @@ func (s *Server) ListenAndServe() error {
 			}
 		}()
 	}
+	// Forge → board issue sync (cloud only): periodically mirror every
+	// sync-enabled repo's forge issues onto its team board. Off unless a
+	// cloud board + the integration store are wired. See board_forge.go.
+	if s.cfg.CloudBoardFor != nil && s.forgeIntegrations != nil {
+		go func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() {
+				<-s.shutdown
+				cancel()
+			}()
+			s.runBoardSyncWorker(ctx, 5*time.Minute)
+		}()
+	}
 	// Orphan-run sweeper (cloud only): flips queued/running rows whose
 	// runner died without a terminal write to failed_resumable. Needs
 	// both the Mongo store (stale scan capability) and the queue (KV
@@ -1153,6 +1167,10 @@ func (s *Server) routes() {
 		if s.forgeOAuthApps != nil {
 			s.registerForgeOAuthAppRoutes()
 		}
+		// Cloud board ↔ forge: per-repo issue sync toggle + manual sync, and
+		// per-card push-to-forge + linked-PR/CI views (no-op without a cloud
+		// board). See board_forge.go.
+		s.registerBoardForgeRoutes()
 	}
 
 	// Per-tenant SSO providers (a tenant's own Keycloak + GitHub team-gating).
@@ -1201,6 +1219,11 @@ func (s *Server) routes() {
 	// RegisterRoutesWithMiddleware variants preserve method-specific
 	// patterns so they don't conflict with the server's OPTIONS /api/
 	// catch-all.
+	if s.cfg.NativeTrackerStore == nil && s.cfg.CloudBoardFor != nil {
+		// Cloud mode: per-active-team board at the same /api/v1/native prefix
+		// the studio board client already uses (see board_cloud_routes.go).
+		s.registerCloudBoardRoutes()
+	}
 	if s.cfg.NativeTrackerStore != nil {
 		s.cfg.NativeTrackerStore.RegisterRoutesWithMiddleware(s.mux, "/api/v1/native", s.requireAuth)
 		// The Board MCP HTTP endpoint authenticates via its own
