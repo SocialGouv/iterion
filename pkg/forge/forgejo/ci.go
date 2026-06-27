@@ -1,0 +1,246 @@
+package forgejo
+
+import (
+	"context"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strconv"
+	"time"
+
+	"github.com/SocialGouv/iterion/pkg/forge"
+)
+
+// PullClient: Forgejo/Gitea pull-request + CI capability surfacing linked PRs
+// and commit-status CI state (current + history) on board cards.
+//
+// CI on Forgejo/Gitea is exposed as commit statuses (and, on newer Forgejo,
+// Actions). We use the commit-status surface — combined status for the
+// aggregate (GetCIStatus) and per-context statuses for history
+// (ListCIHistory) — which is portable across Gitea and every Forgejo version.
+var _ forge.PullClient = (*AdminClient)(nil)
+
+// issueRefPattern extracts "#<n>" issue references from a PR title/body for
+// best-effort LinkedIssues parsing.
+var issueRefPattern = regexp.MustCompile(`#(\d+)`)
+
+type forgejoBranchInfo struct {
+	Ref string `json:"ref"`
+	Sha string `json:"sha"`
+}
+
+// forgejoPull mirrors the Gitea API PullRequest shape (subset we normalize).
+type forgejoPull struct {
+	Number  int64              `json:"number"`
+	Title   string             `json:"title"`
+	Body    string             `json:"body"`
+	State   string             `json:"state"` // "open" | "closed"
+	HTMLURL string             `json:"html_url"`
+	Draft   bool               `json:"draft"`
+	Merged  bool               `json:"merged"`
+	Poster  *forgejoUser       `json:"user"`
+	Head    *forgejoBranchInfo `json:"head"`
+	Base    *forgejoBranchInfo `json:"base"`
+	Created *time.Time         `json:"created_at"`
+	Updated *time.Time         `json:"updated_at"`
+}
+
+func (p forgejoPull) toRef() forge.PullRef {
+	state := p.State
+	if p.Merged {
+		state = "merged"
+	}
+	ref := forge.PullRef{
+		Number: int(p.Number),
+		Title:  p.Title,
+		State:  state,
+		URL:    p.HTMLURL,
+		Draft:  p.Draft,
+	}
+	if p.Poster != nil {
+		ref.Author = p.Poster.Login
+	}
+	if p.Head != nil {
+		ref.SourceBranch = p.Head.Ref
+		ref.HeadSHA = p.Head.Sha
+	}
+	if p.Base != nil {
+		ref.TargetBranch = p.Base.Ref
+	}
+	if p.Created != nil {
+		ref.CreatedAt = *p.Created
+	}
+	if p.Updated != nil {
+		ref.UpdatedAt = *p.Updated
+	}
+	ref.LinkedIssues = parseLinkedIssues(p.Title, p.Body)
+	return ref
+}
+
+// parseLinkedIssues extracts unique "#<n>" references from a PR's title+body.
+func parseLinkedIssues(title, body string) []int {
+	seen := map[int]bool{}
+	var out []int
+	for _, text := range []string{title, body} {
+		for _, m := range issueRefPattern.FindAllStringSubmatch(text, -1) {
+			n, err := strconv.Atoi(m[1])
+			if err != nil || n <= 0 || seen[n] {
+				continue
+			}
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// ListPullRequests lists PRs for a repo. state defaults to "open".
+func (c *AdminClient) ListPullRequests(ctx context.Context, repo string, opts forge.PullListOptions) ([]forge.PullRef, error) {
+	vals := url.Values{}
+	state := opts.State
+	if state == "" {
+		state = "open"
+	}
+	vals.Set("state", state)
+	page := opts.Page
+	if page <= 0 {
+		page = 1
+	}
+	vals.Set("page", strconv.Itoa(page))
+	perPage := opts.PerPage
+	if perPage <= 0 {
+		perPage = 50
+	}
+	vals.Set("limit", strconv.Itoa(perPage))
+
+	var pulls []forgejoPull
+	code, err := c.do(ctx, http.MethodGet, "/repos/"+repo+"/pulls?"+vals.Encode(), nil, &pulls)
+	if err != nil {
+		return nil, err
+	}
+	if code != http.StatusOK {
+		return nil, statusErr("GET pulls", code)
+	}
+	out := make([]forge.PullRef, 0, len(pulls))
+	for _, p := range pulls {
+		out = append(out, p.toRef())
+	}
+	return out, nil
+}
+
+// GetPullRequest fetches one PR by index.
+func (c *AdminClient) GetPullRequest(ctx context.Context, repo string, number int) (forge.PullRef, error) {
+	var p forgejoPull
+	code, err := c.do(ctx, http.MethodGet, "/repos/"+repo+"/pulls/"+strconv.Itoa(number), nil, &p)
+	if err != nil {
+		return forge.PullRef{}, err
+	}
+	if code != http.StatusOK {
+		return forge.PullRef{}, statusErr("GET pull", code)
+	}
+	return p.toRef(), nil
+}
+
+// forgejoCommitStatus is one per-context commit status. Note the JSON quirk:
+// in the COMBINED status payload the per-context state is `status`, while the
+// aggregate top-level state is `state`.
+type forgejoCommitStatus struct {
+	State       string    `json:"status"`
+	Context     string    `json:"context"`
+	Description string    `json:"description"`
+	TargetURL   string    `json:"target_url"`
+	URL         string    `json:"url"`
+	Created     time.Time `json:"created_at"`
+	Updated     time.Time `json:"updated_at"`
+}
+
+// forgejoCombinedStatus is GET /commits/{ref}/status.
+type forgejoCombinedStatus struct {
+	State    string                `json:"state"`
+	SHA      string                `json:"sha"`
+	Statuses []forgejoCommitStatus `json:"statuses"`
+}
+
+// mapCIState normalizes a Gitea commit-status state to a forge.CI* constant.
+// failure/error → failed; warning → pending (advisory, non-terminal).
+func mapCIState(s string) string {
+	switch s {
+	case "success":
+		return forge.CISuccess
+	case "pending":
+		return forge.CIPending
+	case "failure", "error":
+		return forge.CIFailed
+	case "warning":
+		return forge.CIPending
+	case "skipped":
+		return forge.CISkipped
+	default:
+		return forge.CIUnknown
+	}
+}
+
+func (s forgejoCommitStatus) toRun(sha string) forge.CIRun {
+	return forge.CIRun{
+		Name:       s.Context,
+		Status:     mapCIState(s.State),
+		Conclusion: s.State,
+		URL:        s.TargetURL,
+		SHA:        sha,
+		StartedAt:  s.Created,
+		FinishedAt: s.Updated,
+	}
+}
+
+// GetCIStatus returns the current aggregate CI state + runs for a ref (commit
+// SHA or branch HEAD) via the combined commit-status endpoint.
+func (c *AdminClient) GetCIStatus(ctx context.Context, repo, ref string) (forge.CIStatus, error) {
+	var cs forgejoCombinedStatus
+	code, err := c.do(ctx, http.MethodGet, "/repos/"+repo+"/commits/"+url.PathEscape(ref)+"/status", nil, &cs)
+	if err != nil {
+		return forge.CIStatus{}, err
+	}
+	if code != http.StatusOK {
+		return forge.CIStatus{}, statusErr("GET commit status", code)
+	}
+	sha := cs.SHA
+	if sha == "" {
+		sha = ref
+	}
+	out := forge.CIStatus{
+		SHA:   sha,
+		State: mapCIState(cs.State),
+	}
+	for _, s := range cs.Statuses {
+		out.Runs = append(out.Runs, s.toRun(sha))
+	}
+	return out, nil
+}
+
+// ListCIHistory returns recent CI runs for a ref/branch HEAD via the
+// per-context statuses endpoint, newest first, up to limit (0 → 50).
+//
+// Best-effort: this is the commit-status surface, not Forgejo Actions tasks;
+// statuses-based history is the portable contract across Gitea/Forgejo.
+func (c *AdminClient) ListCIHistory(ctx context.Context, repo, ref string, limit int) ([]forge.CIRun, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	vals := url.Values{}
+	vals.Set("limit", strconv.Itoa(limit))
+	vals.Set("sort", "recentupdate")
+
+	var statuses []forgejoCommitStatus
+	code, err := c.do(ctx, http.MethodGet, "/repos/"+repo+"/commits/"+url.PathEscape(ref)+"/statuses?"+vals.Encode(), nil, &statuses)
+	if err != nil {
+		return nil, err
+	}
+	if code != http.StatusOK {
+		return nil, statusErr("GET commit statuses", code)
+	}
+	out := make([]forge.CIRun, 0, len(statuses))
+	for _, s := range statuses {
+		out = append(out, s.toRun(ref))
+	}
+	return out, nil
+}
