@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1
 # Iterion container image. Multi-stage:
 #   1. studio-builder — vite build of the React studio → dist/
 #   2. go-builder     — go build (vendor mode, CGO disabled, ldflags
@@ -14,7 +14,9 @@
 # ---------------------------------------------------------------------
 # Stage 1 — Studio frontend
 # ---------------------------------------------------------------------
-FROM node:22-bookworm-slim@sha256:813a7480f28fdadac1f7f5c824bcdad435b5bc1322a5968bbbdef8d058f9dff4 AS studio-builder
+# --platform=$BUILDPLATFORM: the studio bundle is JS (arch-independent), so build
+# it once on the builder's native arch — never under emulation for an arm64 target.
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim@sha256:813a7480f28fdadac1f7f5c824bcdad435b5bc1322a5968bbbdef8d058f9dff4 AS studio-builder
 WORKDIR /app
 # pnpm-workspace.yaml + pnpm-lock.yaml live at the repo root; the
 # studio/ directory is a workspace member that doesn't carry its own
@@ -32,26 +34,33 @@ RUN --mount=type=cache,target=/pnpm-store \
         --store-dir=/pnpm-store \
         --filter ./studio...
 COPY studio ./studio
-RUN corepack pnpm --filter ./studio exec vite build
+# vite cache mount: incremental studio rebuilds reuse the transform/dep cache.
+RUN --mount=type=cache,target=/app/studio/node_modules/.vite \
+    corepack pnpm --filter ./studio exec vite build
 
 # ---------------------------------------------------------------------
 # Stage 2 — Go binary
 # ---------------------------------------------------------------------
-FROM golang:1.26-bookworm@sha256:b305420a68d0f229d91eb3b3ed9e519fcf2cf5461da4bef997bf927e8c0bfd2b AS go-builder
+# --platform=$BUILDPLATFORM: run the Go toolchain on the builder's native arch and
+# CROSS-compile to the target (CGO is off, so this is free) — never emulate the Go
+# compile for an arm64 target. TARGETOS/TARGETARCH are injected by buildx.
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm@sha256:b305420a68d0f229d91eb3b3ed9e519fcf2cf5461da4bef997bf927e8c0bfd2b AS go-builder
 WORKDIR /src
 ARG VERSION=0.0.0
 ARG COMMIT=unknown
+ARG TARGETOS
+ARG TARGETARCH
 COPY go.mod go.sum ./
 COPY vendor ./vendor
-COPY cmd ./cmd
-COPY pkg ./pkg
-COPY e2e ./e2e
-COPY examples ./examples
-# bots/ holds the 9 productised bot bundles (relocated from examples/ in
-# 969d55b4). pkg/cli/embedded_recipes.go embeds them via the
-# github.com/SocialGouv/iterion/bots package, so the source tree must be
-# present for `go build` under -mod=vendor — without this COPY the build
-# fails: "cannot find module providing package .../bots".
+# --exclude test files: a *_test.go edit no longer changes the copied content, so
+# the go build layer stays CACHED (the binary never compiles test files anyway).
+COPY --exclude=**/*_test.go cmd ./cmd
+COPY --exclude=**/*_test.go pkg ./pkg
+# bots/ holds the productised bot bundles. pkg/cli embeds them via the
+# github.com/SocialGouv/iterion/bots package, so the source tree must be present
+# for `go build` under -mod=vendor. (e2e/ and examples/ are NOT imported or
+# embedded by ./cmd/iterion, so they are deliberately not copied — keeps the build
+# layer from invalidating on test/example edits.)
 COPY bots ./bots
 # Embed the freshly-built studio assets the Go binary serves at GET /.
 COPY --from=studio-builder /app/studio/dist ./pkg/server/static
@@ -59,10 +68,12 @@ ENV CGO_ENABLED=0 GOFLAGS="-mod=vendor -trimpath"
 # Cache mount for the Go build cache (compiled package objects). Deps are
 # vendored (no module download), so this only caches compilation — kept warm
 # on the operator daemon it turns a full recompile into an incremental one
-# when a source change invalidates this layer.
+# when a source change invalidates this layer. -s -w strips the binary (smaller
+# final image, faster link). GOOS/GOARCH come from buildx for cross-compilation.
 RUN --mount=type=cache,target=/root/.cache/go-build \
-    go build \
-    -ldflags="-X github.com/SocialGouv/iterion/pkg/internal/appinfo.Version=v${VERSION} \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+    -ldflags="-s -w \
+              -X github.com/SocialGouv/iterion/pkg/internal/appinfo.Version=v${VERSION} \
               -X github.com/SocialGouv/iterion/pkg/internal/appinfo.Commit=${COMMIT}" \
     -o /out/iterion ./cmd/iterion
 
