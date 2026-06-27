@@ -118,7 +118,7 @@ jobs:
         uses: socialgouv/buildkit-operator@20ed87560a925cc4aa3ef453e59aa10dce58975c
         with:
           buildd-url: ${{ vars.BUILDKIT_OPERATOR_BUILDD_URL }}
-          gateway-host: ${{ vars.BUILDKIT_OPERATOR_GATEWAY_HOST || 'bkod.fabrique.social.gouv.fr' }}
+          gateway-host: ${{ vars.BUILDKIT_OPERATOR_GATEWAY_HOST || 'bko.fabrique.social.gouv.fr' }}
           ca: ${{ secrets.BUILDKIT_OPERATOR_CA }}
           cert: ${{ secrets.BUILDKIT_OPERATOR_CERT }}
           key: ${{ secrets.BUILDKIT_OPERATOR_KEY }}
