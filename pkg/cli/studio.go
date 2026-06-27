@@ -1,15 +1,15 @@
 package cli
 
 import (
-	"net"
-	"strings"
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/alert"
@@ -134,6 +134,7 @@ func desktopAlertsEnabled() bool {
 //     is delivered via opts.OnReady. Used by the desktop host so multiple
 //     instances/projects never fight for 4891.
 //   - opts.Port > 0   : use that exact port.
+//
 // isLoopbackBindHost reports whether bind addresses only the loopback
 // interface, so the no-auth local studio is reachable only from this host. An
 // unparseable hostname is treated as non-loopback (fail safe).
