@@ -31,7 +31,12 @@ USER root
 # system install needs --break-system-packages; the console scripts land
 # on /usr/local/bin which is already on PATH. semgrep is the heavy one.
 # ---------------------------------------------------------------------
-RUN pip3 install --no-cache-dir --break-system-packages \
+# pip cache mount (~/.cache/pip): warm on the operator daemon, the wheels for
+# semgrep (the heavy one) + bandit + pip-audit are reused instead of refetched.
+# The mount isn't part of the image layer, so dropping --no-cache-dir keeps the
+# final image just as small while making rebuilds fast.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip3 install --break-system-packages \
         semgrep \
         bandit \
         pip-audit
@@ -43,11 +48,16 @@ RUN pip3 install --no-cache-dir --break-system-packages \
 # ---------------------------------------------------------------------
 ARG GOSEC_VERSION=latest
 ARG GOVULNCHECK_VERSION=latest
-RUN GOBIN=/usr/local/bin GOFLAGS=-mod=mod \
+# Cache mounts for the Go module cache (/root/go/pkg/mod) + build cache: the
+# gosec/govulncheck source + compiled objects stay warm on the operator daemon,
+# so re-installs skip the module download + recompile. Both are mounts (not
+# image layers), so they replace the old `rm -rf` cleanup for free.
+RUN --mount=type=cache,target=/root/go \
+    --mount=type=cache,target=/root/.cache/go-build \
+    GOBIN=/usr/local/bin GOFLAGS=-mod=mod \
         go install "github.com/securego/gosec/v2/cmd/gosec@${GOSEC_VERSION}" \
  && GOBIN=/usr/local/bin GOFLAGS=-mod=mod \
-        go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" \
- && rm -rf /root/go/pkg /root/.cache/go-build
+        go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
 
 # ---------------------------------------------------------------------
 # Layer 3 — single-binary scanners. Arch-derived like the full image so
@@ -87,9 +97,12 @@ RUN case "$(uname -m)" in \
 # whether deepsec is actually callable.
 # ---------------------------------------------------------------------
 ARG DEEPSEC_VERSION=latest
-RUN { curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    --mount=type=cache,target=/root/.npm \
+    { rm -f /etc/apt/apt.conf.d/docker-clean \
+        && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
         && apt-get install -y --no-install-recommends nodejs \
-        && rm -rf /var/lib/apt/lists/* \
         && npm install -g "deepsec@${DEEPSEC_VERSION}" ; } \
     || echo "deepsec Layer 4 setup did not complete — run_deepsec_scanner will degrade gracefully (enable_deepsec=true users should rebuild with a Node 22+ base or pre-install deepsec)."
 

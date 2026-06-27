@@ -41,7 +41,10 @@ USER root
 #   curl             — already present via slim, but reaffirmed for
 #                      the apt-repo setups below.
 # ---------------------------------------------------------------------
-RUN apt-get update \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+ && apt-get update \
  && apt-get install -y --no-install-recommends \
         python3 \
         python3-pip \
@@ -51,8 +54,7 @@ RUN apt-get update \
         ca-certificates \
         curl \
         gnupg \
- && corepack enable pnpm \
- && rm -rf /var/lib/apt/lists/*
+ && corepack enable pnpm
 
 # ---------------------------------------------------------------------
 # Layer 1b — Go toolchain, pinned to match devbox.json's go@1.26 (the
@@ -76,14 +78,15 @@ ENV PATH="/usr/local/go/bin:${PATH}"
 # Layer 2 — gh (GitHub CLI) via official deb repo. Pinned to the apt
 # stable line so updates roll with the rest of the image rebuild.
 # ---------------------------------------------------------------------
-RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
         | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
  && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         > /etc/apt/sources.list.d/github-cli.list \
  && apt-get update \
- && apt-get install -y --no-install-recommends gh \
- && rm -rf /var/lib/apt/lists/*
+ && apt-get install -y --no-install-recommends gh
 
 # ---------------------------------------------------------------------
 # Layer 2b — glab (GitLab CLI), sibling to gh. Revi publishes code

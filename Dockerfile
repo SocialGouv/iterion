@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1
 # Iterion container image. Multi-stage:
 #   1. studio-builder — vite build of the React studio → dist/
 #   2. go-builder     — go build (vendor mode, CGO disabled, ldflags
@@ -14,7 +14,9 @@
 # ---------------------------------------------------------------------
 # Stage 1 — Studio frontend
 # ---------------------------------------------------------------------
-FROM node:22-bookworm-slim@sha256:813a7480f28fdadac1f7f5c824bcdad435b5bc1322a5968bbbdef8d058f9dff4 AS studio-builder
+# --platform=$BUILDPLATFORM: the studio bundle is JS (arch-independent), so build
+# it once on the builder's native arch — never under emulation for an arm64 target.
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim@sha256:813a7480f28fdadac1f7f5c824bcdad435b5bc1322a5968bbbdef8d058f9dff4 AS studio-builder
 WORKDIR /app
 # pnpm-workspace.yaml + pnpm-lock.yaml live at the repo root; the
 # studio/ directory is a workspace member that doesn't carry its own
@@ -22,36 +24,56 @@ WORKDIR /app
 # resolve from the locked deps tree, then layer the studio sources.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY studio/package.json studio/.npmrc* ./studio/
-RUN corepack enable && \
+# Cache mount for the pnpm content-addressable store: on buildkit-operator's
+# warm daemon it persists across builds, so a source-only change (which
+# invalidates this layer) still resolves every dep from the warm store instead
+# of re-fetching from the registry. --store-dir pins it onto the mount.
+RUN --mount=type=cache,target=/pnpm-store \
+    corepack enable && \
     corepack pnpm install --frozen-lockfile --prefer-offline \
+        --store-dir=/pnpm-store \
         --filter ./studio...
 COPY studio ./studio
-RUN corepack pnpm --filter ./studio exec vite build
+# vite cache mount: incremental studio rebuilds reuse the transform/dep cache.
+RUN --mount=type=cache,target=/app/studio/node_modules/.vite \
+    corepack pnpm --filter ./studio exec vite build
 
 # ---------------------------------------------------------------------
 # Stage 2 — Go binary
 # ---------------------------------------------------------------------
-FROM golang:1.26-bookworm@sha256:b305420a68d0f229d91eb3b3ed9e519fcf2cf5461da4bef997bf927e8c0bfd2b AS go-builder
+# --platform=$BUILDPLATFORM: run the Go toolchain on the builder's native arch and
+# CROSS-compile to the target (CGO is off, so this is free) — never emulate the Go
+# compile for an arm64 target. TARGETOS/TARGETARCH are injected by buildx.
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm@sha256:b305420a68d0f229d91eb3b3ed9e519fcf2cf5461da4bef997bf927e8c0bfd2b AS go-builder
 WORKDIR /src
 ARG VERSION=0.0.0
 ARG COMMIT=unknown
+ARG TARGETOS
+ARG TARGETARCH
 COPY go.mod go.sum ./
 COPY vendor ./vendor
-COPY cmd ./cmd
-COPY pkg ./pkg
-COPY e2e ./e2e
-COPY examples ./examples
-# bots/ holds the 9 productised bot bundles (relocated from examples/ in
-# 969d55b4). pkg/cli/embedded_recipes.go embeds them via the
-# github.com/SocialGouv/iterion/bots package, so the source tree must be
-# present for `go build` under -mod=vendor — without this COPY the build
-# fails: "cannot find module providing package .../bots".
+# --exclude test files: a *_test.go edit no longer changes the copied content, so
+# the go build layer stays CACHED (the binary never compiles test files anyway).
+COPY --exclude=**/*_test.go cmd ./cmd
+COPY --exclude=**/*_test.go pkg ./pkg
+# bots/ holds the productised bot bundles. pkg/cli embeds them via the
+# github.com/SocialGouv/iterion/bots package, so the source tree must be present
+# for `go build` under -mod=vendor. (e2e/ and examples/ are NOT imported or
+# embedded by ./cmd/iterion, so they are deliberately not copied — keeps the build
+# layer from invalidating on test/example edits.)
 COPY bots ./bots
 # Embed the freshly-built studio assets the Go binary serves at GET /.
 COPY --from=studio-builder /app/studio/dist ./pkg/server/static
 ENV CGO_ENABLED=0 GOFLAGS="-mod=vendor -trimpath"
-RUN go build \
-    -ldflags="-X github.com/SocialGouv/iterion/pkg/internal/appinfo.Version=v${VERSION} \
+# Cache mount for the Go build cache (compiled package objects). Deps are
+# vendored (no module download), so this only caches compilation — kept warm
+# on the operator daemon it turns a full recompile into an incremental one
+# when a source change invalidates this layer. -s -w strips the binary (smaller
+# final image, faster link). GOOS/GOARCH come from buildx for cross-compilation.
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+    -ldflags="-s -w \
+              -X github.com/SocialGouv/iterion/pkg/internal/appinfo.Version=v${VERSION} \
               -X github.com/SocialGouv/iterion/pkg/internal/appinfo.Commit=${COMMIT}" \
     -o /out/iterion ./cmd/iterion
 
@@ -63,7 +85,10 @@ WORKDIR /llm
 COPY docker/llm-clis/package.json ./package.json
 # npm install (no lock yet) honours the exact pinned versions in
 # package.json. `task docker:pin-llm-clis` (T-39) regenerates these.
-RUN npm install --omit=dev --no-audit --no-fund
+# Cache mount for npm's package cache (~/.npm): warm on the operator daemon,
+# the pinned tarballs are reused instead of re-downloaded on every build.
+RUN --mount=type=cache,target=/root/.npm \
+    npm install --omit=dev --no-audit --no-fund
 
 # ---------------------------------------------------------------------
 # Stage 4 — Runtime
@@ -95,7 +120,14 @@ ENV ITERION_VERSION=${VERSION} \
 #               build JSON note payloads with `jq -nc --arg`; without it
 #               every cloud converse/review run burned an LLM round-trip
 #               on exit-127 before falling back to python3.
-RUN apt-get update \
+# apt cache mounts keep the downloaded .deb archives + package lists warm on
+# the operator daemon (dropping docker-clean so apt doesn't purge them). Both
+# dirs are cache mounts, so they never land in the final image layer — no need
+# for the old `rm -rf /var/lib/apt/lists` cleanup.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+ && apt-get update \
  && apt-get install -y --no-install-recommends \
         git \
         ca-certificates \
@@ -104,8 +136,7 @@ RUN apt-get update \
         curl \
         passwd \
         python3 \
-        jq \
- && rm -rf /var/lib/apt/lists/*
+        jq
 
 # glab (GitLab CLI) — review-pr (Revi) runs WITHOUT a sandbox, so in
 # cloud it executes inside the runner pod and posts code reviews onto
