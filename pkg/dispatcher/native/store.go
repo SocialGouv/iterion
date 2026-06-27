@@ -897,6 +897,10 @@ func (s *Store) List(filter ListFilter) ([]*Issue, error) {
 // own mutable instance and cannot mutate the in-memory cache.
 func cloneIssue(in *Issue) *Issue {
 	c := *in
+	if in.External != nil {
+		ext := *in.External
+		c.External = &ext
+	}
 	if in.Labels != nil {
 		c.Labels = append([]string(nil), in.Labels...)
 	}
@@ -962,6 +966,10 @@ type Patch struct {
 	// collection swaps. Per-key partial updates aren't useful because
 	// the studio always sends the full form state.
 	BotArgs *map[string]string
+	// External, when non-nil, sets the card's forge linkage (the
+	// forge→board sync worker refreshes url/state; push-to-forge stamps a
+	// previously-unlinked card). A nil pointer leaves the existing link.
+	External *ExternalRef
 }
 
 // Update applies the patch and emits an issue_updated event with the
@@ -1017,6 +1025,10 @@ func (s *Store) Update(id string, p Patch) (updated *Issue, err error) {
 		}
 		iss.Fields = merged
 		changed = append(changed, "fields")
+	}
+	if p.External != nil {
+		ext := *p.External
+		iss.External = &ext
 	}
 	if p.Bot != nil && *p.Bot != iss.Bot {
 		iss.Bot = *p.Bot

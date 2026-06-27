@@ -39,11 +39,28 @@ type Issue struct {
 	LastWorkdir string    `json:"last_workdir,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+	// External links this card to an issue on an external forge — set when
+	// the card is mirrored FROM a forge (one-way forge→board sync) or pushed
+	// TO one (push-to-forge). It is metadata: the card's column stays
+	// operator-owned. Repo doubles as the board swimlane key (repo-per-lane).
+	External *ExternalRef `json:"external,omitempty"`
 	// Comments is the append-only discussion thread on the issue. Used
 	// by hooks / the dispatcher to leave a dispatch trail, by the studio
 	// IssueModal, and — once the comment-trigger wiring lands — to carry
 	// operator `/command` requests and the resulting MR/PR back-links.
 	Comments []Comment `json:"comments,omitempty"`
+}
+
+// ExternalRef links a board card to an issue on an external forge. Set by
+// the forge→board sync worker and the push-to-forge action; read by the card
+// PR/CI panel and push handler. Provider is "github"|"gitlab"|"forgejo".
+type ExternalRef struct {
+	Provider     string `json:"provider"`
+	ConnectionID string `json:"connection_id"`
+	Repo         string `json:"repo"`
+	Number       int    `json:"number"`
+	URL          string `json:"url,omitempty"`
+	State        string `json:"state,omitempty"`
 }
 
 // Comment is a single append-only note on a native issue. Author is a
