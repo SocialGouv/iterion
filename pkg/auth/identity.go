@@ -10,8 +10,14 @@ import (
 // JWT. Middleware injects it into the request ctx; handlers retrieve
 // it via FromContext.
 type Identity struct {
-	UserID       string
-	Email        string
+	UserID string
+	Email  string
+	// OrgID / OrgRole are the active organization and the principal's
+	// role within it. A token minted before the org rollout carries an
+	// empty OrgID; gates that need an org derive it from the active
+	// team's OrgID and the session self-heals on the next refresh.
+	OrgID        string
+	OrgRole      identity.OrgRole
 	TeamID       string
 	Role         identity.Role
 	IsSuperAdmin bool
@@ -28,6 +34,15 @@ func (i Identity) HasRole(want identity.Role) bool {
 		return true
 	}
 	return i.Role.AtLeast(want)
+}
+
+// HasOrgRole reports whether the principal has at least the requested
+// role *in their active org*. Super-admins always pass.
+func (i Identity) HasOrgRole(want identity.OrgRole) bool {
+	if i.IsSuperAdmin {
+		return true
+	}
+	return i.OrgRole.AtLeast(want)
 }
 
 type identityCtxKey struct{}

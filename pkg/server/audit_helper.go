@@ -22,6 +22,14 @@ func (s *Server) auditTenant(r *http.Request, tenantID, action, target, targetID
 	s.auditWrite(r, audit.ScopeTenant, tenantID, action, target, targetID, meta)
 }
 
+// auditOrg records an org-scoped control-plane mutation (members, SSO,
+// settings — visible to the org's admins via /api/orgs/{id}/audit). It
+// is a tenant-scoped row keyed by the org id; team-scoped rows key by
+// team id, so the two are naturally partitioned by the id used.
+func (s *Server) auditOrg(r *http.Request, orgID, action, target, targetID string, meta map[string]any) {
+	s.auditWrite(r, audit.ScopeTenant, orgID, action, target, targetID, meta)
+}
+
 // auditPlatform records a platform-scoped (super-admin) action,
 // readable only via /api/admin/audit. TenantID still records which
 // org was acted on, for filtering.
@@ -73,6 +81,7 @@ func (s *Server) registerAuditRoutes() {
 		return
 	}
 	s.mux.Handle("GET /api/teams/{id}/audit", s.requireAuth(http.HandlerFunc(s.handleTeamAudit)))
+	s.mux.Handle("GET /api/orgs/{id}/audit", s.requireAuth(http.HandlerFunc(s.handleOrgAudit)))
 	s.mux.Handle("GET /api/admin/audit", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminAudit)))
 }
 
@@ -114,6 +123,23 @@ func (s *Server) handleTeamAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	p := auditPageFromQuery(r)
 	events, err := s.auditStore.ListByTenant(r.Context(), teamID, p)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "list audit: %v", err)
+		return
+	}
+	writeJSON(w, auditListResponse{Events: events, NextOffset: p.Offset + len(events)})
+}
+
+func (s *Server) handleOrgAudit(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	orgID := r.PathValue("id")
+	// Admin-gated: audit rows expose actor emails/IPs across the org.
+	if !s.canManageOrg(r.Context(), id, orgID) {
+		httpError(w, http.StatusForbidden, "requires org admin")
+		return
+	}
+	p := auditPageFromQuery(r)
+	events, err := s.auditStore.ListByTenant(r.Context(), orgID, p)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "list audit: %v", err)
 		return

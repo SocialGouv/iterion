@@ -105,7 +105,17 @@ func (s *Server) gateLaunch(ctx context.Context) *launchDenial {
 			return nil // fail-open (see doc comment)
 		}
 	}
+	// The team's parent org owns the monthly budget + the top-level
+	// suspend. Either level being suspended blocks the launch.
+	org := s.orgForTeam(ctx, st, id, t)
 	if !t.CanLaunch() {
+		return &launchDenial{
+			status: http.StatusForbidden,
+			reason: denyOrgSuspended,
+			detail: "team cannot launch runs (suspended or read-only)",
+		}
+	}
+	if org.ID != "" && !org.CanLaunch() {
 		return &launchDenial{
 			status: http.StatusForbidden,
 			reason: denyOrgSuspended,
@@ -119,7 +129,27 @@ func (s *Server) gateLaunch(ctx context.Context) *launchDenial {
 	if d := s.gateLaunchRate(t); d != nil {
 		return d
 	}
-	return s.gateMonthlyCaps(ctx, t, now)
+	return s.gateMonthlyCaps(ctx, org, t, now)
+}
+
+// orgForTeam resolves the parent org for the launch gate: the JWT's
+// active OrgID when present (the common REST path — no extra read), else
+// the team's OrgID. Returns the zero Org (ID=="") on any miss; the gate
+// then falls back to team-keyed metering so a pre-backfill row still
+// launches and meters.
+func (s *Server) orgForTeam(ctx context.Context, st identity.Store, id auth.Identity, t identity.Team) identity.Org {
+	orgID := id.OrgID
+	if orgID == "" {
+		orgID = t.OrgID
+	}
+	if orgID == "" {
+		return identity.Org{}
+	}
+	o, err := st.GetOrg(ctx, orgID)
+	if err != nil {
+		return identity.Org{}
+	}
+	return o
 }
 
 func (s *Server) gateConcurrency(ctx context.Context, t identity.Team) *launchDenial {
@@ -170,16 +200,27 @@ func (s *Server) gateLaunchRate(t identity.Team) *launchDenial {
 // monthly caps (run quota + LLM cost cap) off the counter's single
 // CAS round trip — the increment IS the metering, so this runs even
 // with no caps configured.
-func (s *Server) gateMonthlyCaps(ctx context.Context, t identity.Team, now time.Time) *launchDenial {
+//
+// The budget is ORG-level: the counter is keyed by org.ID, so every
+// team in the org charges the same monthly document and the caps sum
+// across them automatically. The cap *values* come off the Org. When
+// the org couldn't be resolved (pre-backfill row) we fall back to the
+// team id as the metering key + platform defaults, so launches still
+// meter.
+func (s *Server) gateMonthlyCaps(ctx context.Context, org identity.Org, t identity.Team, now time.Time) *launchDenial {
 	if s.orgUsage == nil {
 		return nil
 	}
-	maxRuns := orValue(t.MonthlyRunQuota, s.orgDefaults.MonthlyRunQuota)
-	capUSD := orValue(t.MonthlyCostCapUSD, s.orgDefaults.MonthlyCostCapUSD)
-	deny, err := s.orgUsage.AllowRun(ctx, t.ID, now, maxRuns, orgusage.CostToMillis(capUSD))
+	usageKey := org.ID
+	if usageKey == "" {
+		usageKey = t.ID
+	}
+	maxRuns := orValue(org.MonthlyRunQuota, s.orgDefaults.MonthlyRunQuota)
+	capUSD := orValue(org.MonthlyCostCapUSD, s.orgDefaults.MonthlyCostCapUSD)
+	deny, err := s.orgUsage.AllowRun(ctx, usageKey, now, maxRuns, orgusage.CostToMillis(capUSD))
 	if err != nil {
 		if s.logger != nil {
-			s.logger.Warn("launch gate: run metering for %s: %v (fail-open, launch unmetered)", t.ID, err)
+			s.logger.Warn("launch gate: run metering for %s: %v (fail-open, launch unmetered)", usageKey, err)
 		}
 		return nil
 	}

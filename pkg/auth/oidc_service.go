@@ -154,11 +154,15 @@ func (s *Service) LoginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 	if len(granted) > 0 {
 		preferredTeam = granted[0]
 		u.DefaultTeamID = granted[0]
+		if orgID, derr := s.resolveOrgIDForTeam(ctx, granted[0]); derr == nil && orgID != "" {
+			u.DefaultOrgID = orgID
+		}
 	} else {
-		teamID, terr := s.createPersonalTeam(ctx, u)
+		orgID, teamID, terr := s.createPersonalTeam(ctx, u)
 		if terr != nil {
 			return LoginResult{}, terr
 		}
+		u.DefaultOrgID = orgID
 		u.DefaultTeamID = teamID
 	}
 	u.LastLoginAt = &now
@@ -382,6 +386,11 @@ func (s *Service) UnlinkExternal(ctx context.Context, userID, provider, provider
 // existing membership at an equal-or-higher role is left untouched (never
 // downgrade a manually-promoted user); a lower one is upgraded.
 func (s *Service) grantMembership(ctx context.Context, userID, teamID string, role identity.Role, source string, now time.Time) error {
+	// Mirror the team grant up to an org membership so an SSO-granted user
+	// is a first-class member of the team's parent org.
+	if _, err := s.grantOrgMembershipForTeam(ctx, userID, teamID, role, now); err != nil {
+		return err
+	}
 	existing, err := s.store.GetMembership(ctx, userID, teamID)
 	if errors.Is(err, identity.ErrNotFound) {
 		return s.store.UpsertMembership(ctx, identity.Membership{UserID: userID, TeamID: teamID, Role: role, Source: source, JoinedAt: now})
@@ -397,6 +406,16 @@ func (s *Service) grantMembership(ctx context.Context, userID, teamID string, ro
 	// SSO grant later matched it.
 	existing.Role = role
 	return s.store.UpsertMembership(ctx, existing)
+}
+
+// resolveOrgIDForTeam returns the parent org id of a team (empty if the
+// team is missing or has no parent org yet).
+func (s *Service) resolveOrgIDForTeam(ctx context.Context, teamID string) (string, error) {
+	t, err := s.store.GetTeam(ctx, teamID)
+	if err != nil {
+		return "", err
+	}
+	return t.OrgID, nil
 }
 
 // reconcileGitHubGrants revokes the user's github_sso-sourced memberships in

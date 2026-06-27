@@ -38,19 +38,50 @@ func (erroringCounter) Usage(context.Context, string, time.Time) (orgusage.Month
 	return orgusage.MonthlyUsage{}, context.DeadlineExceeded
 }
 
-func seedGateTeam(t *testing.T, s *Server, team identity.Team) context.Context {
+// gateSpec describes one org+team to seed for a launch-gate test. The
+// monthly run/cost budget + org suspend live on the Org; concurrency,
+// launch-rate and the team suspend live on the Team. For test
+// simplicity the org id equals the team id (distinct collections, no
+// clash) so the org-keyed usage assertions can reference the same id.
+type gateSpec struct {
+	id                string
+	orgRunQuota       int
+	orgCostCapUSD     float64
+	orgStatus         identity.TeamStatus
+	teamStatus        identity.TeamStatus
+	maxConcurrentRuns int
+	launchRatePerMin  int
+}
+
+func seedGate(t *testing.T, s *Server, spec gateSpec) context.Context {
 	t.Helper()
-	if team.Name == "" {
-		team.Name = team.ID
+	now := time.Now()
+	org := identity.Org{
+		ID:                spec.id,
+		Name:              spec.id,
+		Slug:              spec.id,
+		Status:            spec.orgStatus,
+		MonthlyRunQuota:   spec.orgRunQuota,
+		MonthlyCostCapUSD: spec.orgCostCapUSD,
+		CreatedAt:         now,
 	}
-	if team.Slug == "" {
-		team.Slug = team.ID
+	if _, err := s.authStore().CreateOrg(context.Background(), org); err != nil {
+		t.Fatalf("seed org: %v", err)
 	}
-	team.CreatedAt = time.Now()
+	team := identity.Team{
+		ID:                spec.id,
+		OrgID:             org.ID,
+		Name:              spec.id,
+		Slug:              spec.id,
+		Status:            spec.teamStatus,
+		MaxConcurrentRuns: spec.maxConcurrentRuns,
+		LaunchRatePerMin:  spec.launchRatePerMin,
+		CreatedAt:         now,
+	}
 	if _, err := s.authStore().CreateTeam(context.Background(), team); err != nil {
 		t.Fatalf("seed team: %v", err)
 	}
-	return auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", TeamID: team.ID})
+	return auth.WithIdentity(context.Background(), auth.Identity{UserID: "u1", TeamID: team.ID, OrgID: org.ID})
 }
 
 func TestGateLaunch_TeamlessDenied(t *testing.T) {
@@ -75,7 +106,7 @@ func TestGateLaunch_SuperAdminTeamlessBypasses(t *testing.T) {
 
 func TestGateLaunch_Suspend(t *testing.T) {
 	s := newOrgTestServer(t)
-	ctx := seedGateTeam(t, s, identity.Team{ID: "t1", Status: identity.TeamStatusSuspended})
+	ctx := seedGate(t, s, gateSpec{id: "t1", teamStatus: identity.TeamStatusSuspended})
 	d := s.gateLaunch(ctx)
 	if d == nil || d.status != 403 || d.reason != denyOrgSuspended {
 		t.Fatalf("denial = %+v, want 403 %s", d, denyOrgSuspended)
@@ -85,7 +116,7 @@ func TestGateLaunch_Suspend(t *testing.T) {
 func TestGateLaunch_MonthlyRunQuota(t *testing.T) {
 	s := newOrgTestServer(t)
 	s.orgUsage = orgusage.NewMemoryCounter()
-	ctx := seedGateTeam(t, s, identity.Team{ID: "t1", MonthlyRunQuota: 2})
+	ctx := seedGate(t, s, gateSpec{id: "t1", orgRunQuota: 2})
 	for i := 0; i < 2; i++ {
 		if d := s.gateLaunch(ctx); d != nil {
 			t.Fatalf("launch #%d denied: %+v", i, d)
@@ -104,7 +135,7 @@ func TestGateLaunch_MetersWithoutQuota(t *testing.T) {
 	s := newOrgTestServer(t)
 	counter := orgusage.NewMemoryCounter()
 	s.orgUsage = counter
-	ctx := seedGateTeam(t, s, identity.Team{ID: "t1"})
+	ctx := seedGate(t, s, gateSpec{id: "t1"})
 	if d := s.gateLaunch(ctx); d != nil {
 		t.Fatalf("unlimited launch denied: %+v", d)
 	}
@@ -118,7 +149,7 @@ func TestGateLaunch_CostCap(t *testing.T) {
 	s := newOrgTestServer(t)
 	counter := orgusage.NewMemoryCounter()
 	s.orgUsage = counter
-	ctx := seedGateTeam(t, s, identity.Team{ID: "t1", MonthlyCostCapUSD: 5})
+	ctx := seedGate(t, s, gateSpec{id: "t1", orgCostCapUSD: 5})
 	if d := s.gateLaunch(ctx); d != nil {
 		t.Fatalf("under-cap launch denied: %+v", d)
 	}
@@ -134,7 +165,7 @@ func TestGateLaunch_CostCap(t *testing.T) {
 func TestGateLaunch_ConcurrencyCap(t *testing.T) {
 	s := newOrgTestServer(t)
 	s.cfg.Store = fakeActiveStore{active: 3}
-	ctx := seedGateTeam(t, s, identity.Team{ID: "t1", MaxConcurrentRuns: 3})
+	ctx := seedGate(t, s, gateSpec{id: "t1", maxConcurrentRuns: 3})
 	d := s.gateLaunch(ctx)
 	if d == nil || d.status != 429 || d.reason != denyConcurrencyCap {
 		t.Fatalf("denial = %+v, want 429 %s", d, denyConcurrencyCap)
@@ -152,7 +183,7 @@ func TestGateLaunch_ConcurrencyCap(t *testing.T) {
 func TestGateLaunch_RateLimit(t *testing.T) {
 	s := newOrgTestServer(t)
 	s.authLimiter = newAuthRateLimiter()
-	ctx := seedGateTeam(t, s, identity.Team{ID: "t1", LaunchRatePerMin: 1})
+	ctx := seedGate(t, s, gateSpec{id: "t1", launchRatePerMin: 1})
 	if d := s.gateLaunch(ctx); d != nil {
 		t.Fatalf("first launch denied: %+v", d)
 	}
@@ -166,7 +197,7 @@ func TestGateLaunch_PlatformDefaults(t *testing.T) {
 	s := newOrgTestServer(t)
 	s.orgUsage = orgusage.NewMemoryCounter()
 	s.orgDefaults = OrgLimitDefaults{MonthlyRunQuota: 1}
-	ctx := seedGateTeam(t, s, identity.Team{ID: "t1"}) // no per-org override
+	ctx := seedGate(t, s, gateSpec{id: "t1"}) // no per-org override
 	if d := s.gateLaunch(ctx); d != nil {
 		t.Fatalf("first launch denied: %+v", d)
 	}
@@ -178,7 +209,7 @@ func TestGateLaunch_PlatformDefaults(t *testing.T) {
 	s2 := newOrgTestServer(t)
 	s2.orgUsage = orgusage.NewMemoryCounter()
 	s2.orgDefaults = OrgLimitDefaults{MonthlyRunQuota: 1}
-	ctx2 := seedGateTeam(t, s2, identity.Team{ID: "t2", MonthlyRunQuota: 3})
+	ctx2 := seedGate(t, s2, gateSpec{id: "t2", orgRunQuota: 3})
 	for i := 0; i < 3; i++ {
 		if d := s2.gateLaunch(ctx2); d != nil {
 			t.Fatalf("override launch #%d denied: %+v", i, d)
@@ -192,7 +223,7 @@ func TestGateLaunch_PlatformDefaults(t *testing.T) {
 func TestGateLaunch_Bypasses(t *testing.T) {
 	s := newOrgTestServer(t)
 	s.orgUsage = orgusage.NewMemoryCounter()
-	seedGateTeam(t, s, identity.Team{ID: "t1", Status: identity.TeamStatusSuspended, MonthlyRunQuota: 0})
+	seedGate(t, s, gateSpec{id: "t1", orgStatus: identity.TeamStatusSuspended})
 
 	// Super-admin bypasses everything.
 	super := auth.WithIdentity(context.Background(), auth.Identity{UserID: "root", TeamID: "t1", IsSuperAdmin: true})
@@ -212,7 +243,7 @@ func TestGateLaunch_Bypasses(t *testing.T) {
 func TestGateLaunch_FailOpenOnCounterError(t *testing.T) {
 	s := newOrgTestServer(t)
 	s.orgUsage = erroringCounter{}
-	ctx := seedGateTeam(t, s, identity.Team{ID: "t1", MonthlyRunQuota: 1, MonthlyCostCapUSD: 1})
+	ctx := seedGate(t, s, gateSpec{id: "t1", orgRunQuota: 1, orgCostCapUSD: 1})
 	if d := s.gateLaunch(ctx); d != nil {
 		t.Fatalf("counter error must fail open, got %+v", d)
 	}

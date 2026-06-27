@@ -68,6 +68,15 @@ func seedTeam(t *testing.T, s *Server, id, slug string) {
 	}
 }
 
+func seedOrg(t *testing.T, s *Server, id, slug string) {
+	t.Helper()
+	if _, err := s.authStore().CreateOrg(context.Background(), identity.Org{
+		ID: id, Name: id, Slug: slug, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed org: %v", err)
+	}
+}
+
 func TestOrgCanLaunch(t *testing.T) {
 	st := identity.NewMemoryStore()
 	ctx := context.Background()
@@ -214,7 +223,7 @@ func TestRunsWS_HandleAnswer_SuspendGate(t *testing.T) {
 func TestHandleAdminSetOrgStatus(t *testing.T) {
 	s := newOrgTestServer(t)
 	ctx := superAdminCtx()
-	seedTeam(t, s, "t1", "acme")
+	seedOrg(t, s, "t1", "acme")
 
 	// invalid status → 400
 	w := httptest.NewRecorder()
@@ -223,18 +232,15 @@ func TestHandleAdminSetOrgStatus(t *testing.T) {
 		t.Fatalf("invalid status: code=%d body=%s", w.Code, w.Body.String())
 	}
 
-	// suspend → 200, persisted, gate now denies a member
+	// suspend → 200, persisted on the org
 	w = httptest.NewRecorder()
 	s.handleAdminSetOrgStatus(w, orgReq(ctx, "POST", "/api/admin/orgs/t1/status", `{"status":"suspended","reason":"abuse"}`, "t1"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("suspend: code=%d body=%s", w.Code, w.Body.String())
 	}
-	tm, _ := s.authStore().GetTeam(ctx, "t1")
-	if !tm.Suspended() || tm.SuspendReason != "abuse" || tm.SuspendedBy != "admin" {
-		t.Fatalf("suspend not persisted: %+v", tm)
-	}
-	if orgCanLaunch(ctx, s.authStore(), auth.Identity{TeamID: "t1"}) {
-		t.Fatal("suspended team should be denied launch")
+	o, _ := s.authStore().GetOrg(ctx, "t1")
+	if !o.Suspended() || o.SuspendReason != "abuse" || o.SuspendedBy != "admin" {
+		t.Fatalf("suspend not persisted: %+v", o)
 	}
 
 	// restore → active, suspend metadata cleared
@@ -243,16 +249,16 @@ func TestHandleAdminSetOrgStatus(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("restore: code=%d", w.Code)
 	}
-	tm, _ = s.authStore().GetTeam(ctx, "t1")
-	if tm.Suspended() || tm.SuspendedAt != nil || tm.SuspendReason != "" {
-		t.Fatalf("restore did not clear suspend metadata: %+v", tm)
+	o, _ = s.authStore().GetOrg(ctx, "t1")
+	if o.Suspended() || o.SuspendedAt != nil || o.SuspendReason != "" {
+		t.Fatalf("restore did not clear suspend metadata: %+v", o)
 	}
 }
 
 func TestHandleAdminUpdateOrg_QuotaValidation(t *testing.T) {
 	s := newOrgTestServer(t)
 	ctx := superAdminCtx()
-	seedTeam(t, s, "t1", "acme")
+	seedOrg(t, s, "t1", "acme")
 
 	// negative quota → 400
 	w := httptest.NewRecorder()
@@ -261,23 +267,23 @@ func TestHandleAdminUpdateOrg_QuotaValidation(t *testing.T) {
 		t.Fatalf("negative quota: code=%d", w.Code)
 	}
 
-	// valid quotas → 200, persisted
+	// valid quotas → 200, persisted on the org
 	w = httptest.NewRecorder()
 	s.handleAdminUpdateOrg(w, orgReq(ctx, "PATCH", "/api/admin/orgs/t1", `{"memory_quota_bytes":1048576,"monthly_run_quota":100}`, "t1"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("update: code=%d body=%s", w.Code, w.Body.String())
 	}
-	tm, _ := s.authStore().GetTeam(ctx, "t1")
-	if tm.MemoryQuotaBytes != 1048576 || tm.MonthlyRunQuota != 100 {
-		t.Fatalf("quotas not persisted: %+v", tm)
+	o, _ := s.authStore().GetOrg(ctx, "t1")
+	if o.MemoryQuotaBytes != 1048576 || o.MonthlyRunQuota != 100 {
+		t.Fatalf("quotas not persisted: %+v", o)
 	}
 }
 
 func TestHandleAdminListOrgs(t *testing.T) {
 	s := newOrgTestServer(t)
 	ctx := superAdminCtx()
-	seedTeam(t, s, "t1", "a")
-	seedTeam(t, s, "t2", "b")
+	seedOrg(t, s, "t1", "a")
+	seedOrg(t, s, "t2", "b")
 
 	w := httptest.NewRecorder()
 	s.handleAdminListOrgs(w, orgReq(ctx, "GET", "/api/admin/orgs", "", ""))

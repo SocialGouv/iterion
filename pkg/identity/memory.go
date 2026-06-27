@@ -13,6 +13,9 @@ type MemoryStore struct {
 	mu          sync.RWMutex
 	users       map[string]User            // id → user
 	emails      map[string]string          // normalized email → user id
+	orgs        map[string]Org             // id → org
+	orgSlugs    map[string]string          // slug → org id
+	orgMem      map[string]OrgMembership   // user_id|org_id → org membership
 	teams       map[string]Team            // id → team
 	teamSlugs   map[string]string          // slug → team id
 	memberships map[string]Membership      // user_id|team_id → membership
@@ -27,6 +30,9 @@ func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
 		users:       make(map[string]User),
 		emails:      make(map[string]string),
+		orgs:        make(map[string]Org),
+		orgSlugs:    make(map[string]string),
+		orgMem:      make(map[string]OrgMembership),
 		teams:       make(map[string]Team),
 		teamSlugs:   make(map[string]string),
 		memberships: make(map[string]Membership),
@@ -37,8 +43,9 @@ func NewMemoryStore() *MemoryStore {
 	}
 }
 
-func memberKey(userID, teamID string) string { return userID + "|" + teamID }
-func oidcKey(provider, sub string) string    { return provider + "|" + sub }
+func memberKey(userID, teamID string) string   { return userID + "|" + teamID }
+func orgMemberKey(userID, orgID string) string { return userID + "|" + orgID }
+func oidcKey(provider, sub string) string      { return provider + "|" + sub }
 
 func (m *MemoryStore) CreateUser(_ context.Context, u User) (User, error) {
 	m.mu.Lock()
@@ -198,6 +205,147 @@ func (m *MemoryStore) ListTeams(_ context.Context, page Page) ([]Team, error) {
 		end = len(teams)
 	}
 	return teams[offset:end], nil
+}
+
+func (m *MemoryStore) ListTeamsByOrg(_ context.Context, orgID string) ([]Team, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []Team
+	for _, t := range m.teams {
+		if t.OrgID == orgID {
+			out = append(out, t)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (m *MemoryStore) CreateOrg(_ context.Context, o Org) (Org, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.orgSlugs[o.Slug]; ok {
+		return Org{}, ErrOrgSlugAlreadyTaken
+	}
+	m.orgs[o.ID] = o
+	m.orgSlugs[o.Slug] = o.ID
+	return o, nil
+}
+
+func (m *MemoryStore) GetOrg(_ context.Context, id string) (Org, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	o, ok := m.orgs[id]
+	if !ok {
+		return Org{}, ErrNotFound
+	}
+	return o, nil
+}
+
+func (m *MemoryStore) GetOrgBySlug(_ context.Context, slug string) (Org, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	id, ok := m.orgSlugs[slug]
+	if !ok {
+		return Org{}, ErrNotFound
+	}
+	return m.orgs[id], nil
+}
+
+func (m *MemoryStore) UpdateOrg(_ context.Context, o Org) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.orgs[o.ID]
+	if !ok {
+		return ErrNotFound
+	}
+	if cur.Slug != o.Slug {
+		if _, taken := m.orgSlugs[o.Slug]; taken {
+			return ErrOrgSlugAlreadyTaken
+		}
+		delete(m.orgSlugs, cur.Slug)
+		m.orgSlugs[o.Slug] = o.ID
+	}
+	m.orgs[o.ID] = o
+	return nil
+}
+
+func (m *MemoryStore) ListOrgs(_ context.Context, page Page) ([]Org, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	orgs := make([]Org, 0, len(m.orgs))
+	for _, o := range m.orgs {
+		orgs = append(orgs, o)
+	}
+	sort.Slice(orgs, func(i, j int) bool { return orgs[i].CreatedAt.Before(orgs[j].CreatedAt) })
+	limit := page.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	offset := page.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(orgs) {
+		return nil, nil
+	}
+	end := offset + limit
+	if end < offset || end > len(orgs) {
+		end = len(orgs)
+	}
+	return orgs[offset:end], nil
+}
+
+func (m *MemoryStore) UpsertOrgMembership(_ context.Context, om OrgMembership) error {
+	if !om.Role.Valid() {
+		return ErrInvalidRole
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.orgMem[orgMemberKey(om.UserID, om.OrgID)] = om
+	return nil
+}
+
+func (m *MemoryStore) GetOrgMembership(_ context.Context, userID, orgID string) (OrgMembership, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	om, ok := m.orgMem[orgMemberKey(userID, orgID)]
+	if !ok {
+		return OrgMembership{}, ErrNotFound
+	}
+	return om, nil
+}
+
+func (m *MemoryStore) DeleteOrgMembership(_ context.Context, userID, orgID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.orgMem, orgMemberKey(userID, orgID))
+	return nil
+}
+
+func (m *MemoryStore) ListOrgMembershipsByUser(_ context.Context, userID string) ([]OrgMembership, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []OrgMembership
+	for _, om := range m.orgMem {
+		if om.UserID == userID {
+			out = append(out, om)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].JoinedAt.Before(out[j].JoinedAt) })
+	return out, nil
+}
+
+func (m *MemoryStore) ListOrgMembershipsByOrg(_ context.Context, orgID string) ([]OrgMembership, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []OrgMembership
+	for _, om := range m.orgMem {
+		if om.OrgID == orgID {
+			out = append(out, om)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].JoinedAt.Before(out[j].JoinedAt) })
+	return out, nil
 }
 
 func (m *MemoryStore) UpsertMembership(_ context.Context, mb Membership) error {

@@ -61,6 +61,54 @@ func (r Role) AtLeast(want Role) bool {
 // Valid reports whether r is one of the four known roles.
 func (r Role) Valid() bool { return r.rank() > 0 }
 
+// OrgRole is the org-level RBAC level — coarser than the per-team
+// Role: an org member is granted access to 0..N teams within the org,
+// each with its own Role. Order matters for comparison.
+type OrgRole string
+
+const (
+	OrgRoleMember OrgRole = "member"
+	OrgRoleAdmin  OrgRole = "admin"
+	OrgRoleOwner  OrgRole = "owner"
+)
+
+// rank gives a totally-ordered weight (mirrors Role.rank).
+func (r OrgRole) rank() int {
+	switch r {
+	case OrgRoleMember:
+		return 1
+	case OrgRoleAdmin:
+		return 2
+	case OrgRoleOwner:
+		return 3
+	}
+	return 0
+}
+
+// AtLeast reports whether r confers all permissions of want.
+func (r OrgRole) AtLeast(want OrgRole) bool {
+	haveRank := r.rank()
+	wantRank := want.rank()
+	if haveRank == 0 || wantRank == 0 {
+		return false
+	}
+	return haveRank >= wantRank
+}
+
+// Valid reports whether r is one of the three known org roles.
+func (r OrgRole) Valid() bool { return r.rank() > 0 }
+
+// OrgRoleForTeamRole maps a team Role to the org role it implies when
+// a team membership is mirrored up to the org (used on signup, invite,
+// and the teams→orgs backfill): team owners/admins become org admins,
+// everyone else an org member.
+func OrgRoleForTeamRole(r Role) OrgRole {
+	if r.AtLeast(RoleAdmin) {
+		return OrgRoleAdmin
+	}
+	return OrgRoleMember
+}
+
 // UserStatus tracks whether the user can log in. Disabled users
 // retain their data but every login attempt is rejected.
 type UserStatus string
@@ -88,6 +136,8 @@ type User struct {
 	FailedLogins  int        `bson:"failed_logins,omitempty" json:"-"`
 	LockedUntil   *time.Time `bson:"locked_until,omitempty" json:"-"`
 	DefaultTeamID string     `bson:"default_team_id,omitempty" json:"default_team_id,omitempty"`
+	// DefaultOrgID is the user's preferred active org for new sessions.
+	DefaultOrgID string `bson:"default_org_id,omitempty" json:"default_org_id,omitempty"`
 }
 
 // TeamStatus controls whether a team (org) can run work. An empty
@@ -110,10 +160,15 @@ func ValidTeamStatus(s TeamStatus) bool {
 	return false
 }
 
-// Team is a tenant (an "org" in the public API). Every business object
-// (run, key, event) is partitioned by Team.ID.
+// Team is a working sub-unit within an Org and the resource tenant:
+// every business object (run, key, event, board, forge connection,
+// secret) is partitioned by Team.ID. Members, SSO, billing and the
+// monthly budget live one level up on the parent Org (see Org).
 type Team struct {
-	ID        string    `bson:"_id" json:"id"`
+	ID string `bson:"_id" json:"id"`
+	// OrgID is the parent organization. Every team belongs to exactly
+	// one Org; the teams→orgs backfill sets this on legacy rows.
+	OrgID     string    `bson:"org_id,omitempty" json:"org_id,omitempty"`
 	Name      string    `bson:"name" json:"name"`
 	Slug      string    `bson:"slug" json:"slug"`
 	CreatedBy string    `bson:"created_by,omitempty" json:"created_by,omitempty"`
@@ -124,21 +179,19 @@ type Team struct {
 	// inviting other users into someone's personal space.
 	Personal bool `bson:"personal,omitempty" json:"personal,omitempty"`
 
-	// Lifecycle (super-admin managed). Empty Status == active.
+	// Lifecycle (super-admin managed). Empty Status == active. A team
+	// can be suspended independently of its org; the org's status gates
+	// all of its teams.
 	Status        TeamStatus `bson:"status,omitempty" json:"status,omitempty"`
 	SuspendedAt   *time.Time `bson:"suspended_at,omitempty" json:"suspended_at,omitempty"`
 	SuspendedBy   string     `bson:"suspended_by,omitempty" json:"suspended_by,omitempty"`
 	SuspendReason string     `bson:"suspend_reason,omitempty" json:"suspend_reason,omitempty"`
 
-	// Per-org caps. Zero means "inherit the platform default".
-	MonthlyRunQuota  int   `bson:"monthly_run_quota,omitempty" json:"monthly_run_quota,omitempty"`
-	MemoryQuotaBytes int64 `bson:"memory_quota_bytes,omitempty" json:"memory_quota_bytes,omitempty"`
-	// MonthlyCostCapUSD caps the month's metered LLM spend in USD.
-	// Enforced pre-launch against the orgusage counter (a soft cap:
-	// in-flight runs finish; new launches are denied once crossed).
-	MonthlyCostCapUSD float64 `bson:"monthly_cost_cap_usd,omitempty" json:"monthly_cost_cap_usd,omitempty"`
+	// Per-team executor caps. Zero means "inherit the platform default".
+	// These stay team-level (they protect each workspace's executor);
+	// the monthly run/cost budget is org-level (see Org).
 	// MaxConcurrentRuns caps simultaneously active (queued + running)
-	// runs for the org.
+	// runs for the team.
 	MaxConcurrentRuns int `bson:"max_concurrent_runs,omitempty" json:"max_concurrent_runs,omitempty"`
 	// LaunchRatePerMin caps run-launch requests per minute (token
 	// bucket, burst = the same value).
@@ -165,6 +218,79 @@ func (t Team) CanLaunch() bool {
 	default:
 		return true
 	}
+}
+
+// Org is the top-level tenant grouping: the billing/identity boundary
+// that owns SSO, the member roster, the plan + monthly budget, and
+// control-plane audit. Resources stay partitioned by Team.ID; an Org
+// groups one or more Teams (see Team.OrgID).
+type Org struct {
+	ID        string    `bson:"_id" json:"id"`
+	Name      string    `bson:"name" json:"name"`
+	Slug      string    `bson:"slug" json:"slug"`
+	CreatedBy string    `bson:"created_by,omitempty" json:"created_by,omitempty"`
+	CreatedAt time.Time `bson:"created_at" json:"created_at"`
+	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
+	// Personal is true for the org auto-created on a password signup
+	// (one personal org wrapping one personal team) — preserves the
+	// single-user UX. Personal orgs reject member invitations.
+	Personal bool `bson:"personal,omitempty" json:"personal,omitempty"`
+	// MigratedFromTeamID records the source team when this org was
+	// created by the teams→orgs backfill. It is the idempotency key
+	// (re-running the backfill finds the existing org) and the handle
+	// the --reverse path uses to undo the migration.
+	MigratedFromTeamID string `bson:"migrated_from_team_id,omitempty" json:"migrated_from_team_id,omitempty"`
+
+	// Lifecycle (super-admin managed). Empty Status == active. An org's
+	// status gates every team within it.
+	Status        TeamStatus `bson:"status,omitempty" json:"status,omitempty"`
+	SuspendedAt   *time.Time `bson:"suspended_at,omitempty" json:"suspended_at,omitempty"`
+	SuspendedBy   string     `bson:"suspended_by,omitempty" json:"suspended_by,omitempty"`
+	SuspendReason string     `bson:"suspend_reason,omitempty" json:"suspend_reason,omitempty"`
+
+	// Monthly budget (super-admin managed). Zero means "inherit the
+	// platform default". Enforced pre-launch against the org-keyed
+	// usage counter, which sums every team in the org.
+	MonthlyRunQuota  int   `bson:"monthly_run_quota,omitempty" json:"monthly_run_quota,omitempty"`
+	MemoryQuotaBytes int64 `bson:"memory_quota_bytes,omitempty" json:"memory_quota_bytes,omitempty"`
+	// MonthlyCostCapUSD caps the month's metered LLM spend in USD
+	// across the whole org (a soft cap: in-flight runs finish; new
+	// launches are denied once crossed).
+	MonthlyCostCapUSD float64 `bson:"monthly_cost_cap_usd,omitempty" json:"monthly_cost_cap_usd,omitempty"`
+}
+
+// EffectiveStatus treats an empty status (legacy rows) as active.
+func (o Org) EffectiveStatus() TeamStatus {
+	if o.Status == "" {
+		return TeamStatusActive
+	}
+	return o.Status
+}
+
+// Suspended reports whether the org is suspended (no run launches).
+func (o Org) Suspended() bool { return o.EffectiveStatus() == TeamStatusSuspended }
+
+// CanLaunch reports whether the org may launch new runs — false when
+// suspended or read-only.
+func (o Org) CanLaunch() bool {
+	switch o.EffectiveStatus() {
+	case TeamStatusSuspended, TeamStatusReadOnly:
+		return false
+	default:
+		return true
+	}
+}
+
+// OrgMembership glues a user to an org with an org-level role. It is
+// the billing/SSO identity: you must be an org member to be granted a
+// team within it (see Membership). A user can be an org member with
+// zero team grants.
+type OrgMembership struct {
+	UserID   string    `bson:"user_id" json:"user_id"`
+	OrgID    string    `bson:"org_id" json:"org_id"`
+	Role     OrgRole   `bson:"role" json:"role"`
+	Source   string    `bson:"source,omitempty" json:"source,omitempty"`
+	JoinedAt time.Time `bson:"joined_at" json:"joined_at"`
 }
 
 // Membership glues a user to a team with a role.
@@ -216,12 +342,13 @@ type OIDCLink struct {
 // translate these to HTTP status codes (Not Found → 404, Conflict
 // → 409, etc.) without leaking internals.
 var (
-	ErrNotFound          = errors.New("identity: not found")
-	ErrEmailAlreadyTaken = errors.New("identity: email already taken")
-	ErrSlugAlreadyTaken  = errors.New("identity: team slug already taken")
-	ErrInvalidRole       = errors.New("identity: invalid role")
-	ErrInvitationUsed    = errors.New("identity: invitation already accepted")
-	ErrInvitationExpired = errors.New("identity: invitation expired")
+	ErrNotFound            = errors.New("identity: not found")
+	ErrEmailAlreadyTaken   = errors.New("identity: email already taken")
+	ErrSlugAlreadyTaken    = errors.New("identity: team slug already taken")
+	ErrOrgSlugAlreadyTaken = errors.New("identity: org slug already taken")
+	ErrInvalidRole         = errors.New("identity: invalid role")
+	ErrInvitationUsed      = errors.New("identity: invitation already accepted")
+	ErrInvitationExpired   = errors.New("identity: invitation expired")
 )
 
 // NormalizeEmail lower-cases and trims whitespace from an email.

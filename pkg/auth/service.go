@@ -30,6 +30,9 @@ var (
 	ErrInvitationMismatch     = errors.New("auth: invitation does not match user")
 	ErrTeamNotFound           = errors.New("auth: team not found")
 	ErrNotAMember             = errors.New("auth: user is not a member of the team")
+	ErrOrgNotFound            = errors.New("auth: org not found")
+	ErrNotAnOrgMember         = errors.New("auth: user is not a member of the org")
+	ErrNoTeamInOrg            = errors.New("auth: user has no team in the org")
 )
 
 // LockoutThreshold is the number of consecutive failed password
@@ -225,6 +228,8 @@ func (s *Service) PublicURL() string { return s.publicURL }
 // cookies / JSON.
 type LoginResult struct {
 	User           identity.User
+	ActiveOrgID    string
+	ActiveOrgRole  identity.OrgRole
 	ActiveTeamID   string
 	ActiveRole     identity.Role
 	AccessToken    string
@@ -232,6 +237,7 @@ type LoginResult struct {
 	RefreshToken   string
 	RefreshExpires time.Time
 	Memberships    []identity.Membership
+	OrgMemberships []identity.OrgMembership
 }
 
 // Login authenticates with email + password. On success, issues an
@@ -382,9 +388,16 @@ func (s *Service) issueLoginInTeam(ctx context.Context, u identity.User, preferr
 			}
 		}
 	}
+	orgID, orgRole := s.resolveOrgForTeam(ctx, u, teamID)
+	orgMems, err := s.store.ListOrgMembershipsByUser(ctx, u.ID)
+	if err != nil {
+		return LoginResult{}, err
+	}
 	id := Identity{
 		UserID:       u.ID,
 		Email:        u.Email,
+		OrgID:        orgID,
+		OrgRole:      orgRole,
 		TeamID:       teamID,
 		Role:         role,
 		IsSuperAdmin: u.IsSuperAdmin,
@@ -399,6 +412,8 @@ func (s *Service) issueLoginInTeam(ctx context.Context, u identity.User, preferr
 	}
 	return LoginResult{
 		User:           u,
+		ActiveOrgID:    orgID,
+		ActiveOrgRole:  orgRole,
 		ActiveTeamID:   teamID,
 		ActiveRole:     role,
 		AccessToken:    access,
@@ -406,7 +421,31 @@ func (s *Service) issueLoginInTeam(ctx context.Context, u identity.User, preferr
 		RefreshToken:   refresh,
 		RefreshExpires: sess.ExpiresAt,
 		Memberships:    memberships,
+		OrgMemberships: orgMems,
 	}, nil
+}
+
+// resolveOrgForTeam derives the active org context for a chosen team:
+// the team's parent OrgID and the user's role in that org. A super-admin
+// with no org-membership row is treated as an org admin (mirrors the
+// team-level super-admin step-in). Returns empty strings when teamID is
+// empty or the team has no parent org yet (pre-backfill row).
+func (s *Service) resolveOrgForTeam(ctx context.Context, u identity.User, teamID string) (orgID string, orgRole identity.OrgRole) {
+	if teamID == "" {
+		return "", ""
+	}
+	t, err := s.store.GetTeam(ctx, teamID)
+	if err != nil || t.OrgID == "" {
+		return "", ""
+	}
+	om, err := s.store.GetOrgMembership(ctx, u.ID, t.OrgID)
+	if err == nil {
+		return t.OrgID, om.Role
+	}
+	if u.IsSuperAdmin {
+		return t.OrgID, identity.OrgRoleAdmin
+	}
+	return t.OrgID, ""
 }
 
 // pickActiveTeam picks the JWT-stamped team based on (1) the user's
@@ -504,8 +543,10 @@ func (s *Service) Logout(ctx context.Context, presented string) error {
 	return s.sessions.RevokeSession(ctx, sess.ID, s.now().UTC())
 }
 
-// SwitchTeam re-issues the access JWT bound to teamID. Validates
-// that the current user is a member.
+// SwitchTeam re-issues the access JWT bound to teamID. Validates that
+// the current user is a member of the team — and, transitively, of its
+// parent org (you cannot hold a team grant without an org membership,
+// so the team check is sufficient; super-admins step into either).
 func (s *Service) SwitchTeam(ctx context.Context, userID, teamID string) (Identity, string, time.Time, error) {
 	u, err := s.store.GetUser(ctx, userID)
 	if err != nil {
@@ -527,9 +568,12 @@ func (s *Service) SwitchTeam(ctx context.Context, userID, teamID string) (Identi
 			return Identity{}, "", time.Time{}, err
 		}
 	}
+	orgID, orgRole := s.resolveOrgForTeam(ctx, u, mb.TeamID)
 	id := Identity{
 		UserID:       u.ID,
 		Email:        u.Email,
+		OrgID:        orgID,
+		OrgRole:      orgRole,
 		TeamID:       mb.TeamID,
 		Role:         mb.Role,
 		IsSuperAdmin: u.IsSuperAdmin,
@@ -538,15 +582,106 @@ func (s *Service) SwitchTeam(ctx context.Context, userID, teamID string) (Identi
 	if err != nil {
 		return Identity{}, "", time.Time{}, err
 	}
-	// Persist the choice as the user's new default. The JWT is already
-	// issued and carries the chosen team — a persistence failure here
-	// means the next session won't auto-resume to this team, but the
+	// Persist the choice as the user's new default (team + org). The JWT
+	// is already issued and carries the chosen context — a persistence
+	// failure here means the next session won't auto-resume, but the
 	// current login is still good. Log so an operator can investigate.
 	u.DefaultTeamID = teamID
+	if orgID != "" {
+		u.DefaultOrgID = orgID
+	}
 	if uerr := s.store.UpdateUser(ctx, u); uerr != nil && s.logger != nil {
 		s.logger.Warn("auth: persist default team for user %s failed: %v", u.ID, uerr)
 	}
 	return id, tok, exp, nil
+}
+
+// SwitchOrg re-issues the access JWT bound to a different org. It picks
+// an active team within that org (the user's default team if it belongs
+// to the org, else the first team they're granted there) so the session
+// always lands on a concrete workspace. A user with no team in the org
+// still switches — they land org-scoped with an empty active team (the
+// UI offers to create one). Validates org membership (super-admins step
+// into any org).
+func (s *Service) SwitchOrg(ctx context.Context, userID, orgID string) (Identity, string, time.Time, error) {
+	u, err := s.store.GetUser(ctx, userID)
+	if err != nil {
+		return Identity{}, "", time.Time{}, err
+	}
+	om, err := s.store.GetOrgMembership(ctx, userID, orgID)
+	orgRole := om.Role
+	if err != nil {
+		if errors.Is(err, identity.ErrNotFound) {
+			if !u.IsSuperAdmin {
+				return Identity{}, "", time.Time{}, ErrNotAnOrgMember
+			}
+			if _, oerr := s.store.GetOrg(ctx, orgID); oerr != nil {
+				return Identity{}, "", time.Time{}, ErrOrgNotFound
+			}
+			orgRole = identity.OrgRoleAdmin
+		} else {
+			return Identity{}, "", time.Time{}, err
+		}
+	}
+	// Pick a team in the org the user is granted (or any team for a
+	// super-admin), preferring their stored default.
+	teamID, teamRole := s.pickActiveTeamInOrg(ctx, u, orgID)
+	id := Identity{
+		UserID:       u.ID,
+		Email:        u.Email,
+		OrgID:        orgID,
+		OrgRole:      orgRole,
+		TeamID:       teamID,
+		Role:         teamRole,
+		IsSuperAdmin: u.IsSuperAdmin,
+	}
+	tok, exp, err := s.signer.IssueAccess(id)
+	if err != nil {
+		return Identity{}, "", time.Time{}, err
+	}
+	u.DefaultOrgID = orgID
+	if teamID != "" {
+		u.DefaultTeamID = teamID
+	}
+	if uerr := s.store.UpdateUser(ctx, u); uerr != nil && s.logger != nil {
+		s.logger.Warn("auth: persist default org for user %s failed: %v", u.ID, uerr)
+	}
+	return id, tok, exp, nil
+}
+
+// pickActiveTeamInOrg selects a team for the user within one org: their
+// stored DefaultTeamID if it belongs to the org and they're a member,
+// else the first team they're granted in the org. Returns ("","") when
+// the user holds no team in the org (super-admins fall back to the org's
+// first team so they always land somewhere).
+func (s *Service) pickActiveTeamInOrg(ctx context.Context, u identity.User, orgID string) (string, identity.Role) {
+	memberships, err := s.store.ListMembershipsByUser(ctx, u.ID)
+	if err != nil {
+		return "", ""
+	}
+	var first *identity.Membership
+	for i := range memberships {
+		t, terr := s.store.GetTeam(ctx, memberships[i].TeamID)
+		if terr != nil || t.OrgID != orgID {
+			continue
+		}
+		if memberships[i].TeamID == u.DefaultTeamID {
+			return memberships[i].TeamID, memberships[i].Role
+		}
+		if first == nil {
+			first = &memberships[i]
+		}
+	}
+	if first != nil {
+		return first.TeamID, first.Role
+	}
+	if u.IsSuperAdmin {
+		teams, terr := s.store.ListTeamsByOrg(ctx, orgID)
+		if terr == nil && len(teams) > 0 {
+			return teams[0].ID, identity.RoleAdmin
+		}
+	}
+	return "", ""
 }
 
 // Register creates a new user. When SignupMode is invite_only, an
@@ -589,11 +724,12 @@ func (s *Service) registerOpen(ctx context.Context, email, password, name, userA
 	if u, err = s.store.CreateUser(ctx, u); err != nil {
 		return LoginResult{}, err
 	}
-	// Auto-create a personal team so the user has somewhere to land.
-	teamID, err := s.createPersonalTeam(ctx, u)
+	// Auto-create a personal org + team so the user has somewhere to land.
+	orgID, teamID, err := s.createPersonalTeam(ctx, u)
 	if err != nil {
 		return LoginResult{}, err
 	}
+	u.DefaultOrgID = orgID
 	u.DefaultTeamID = teamID
 	if err := s.store.UpdateUser(ctx, u); err != nil {
 		return LoginResult{}, err
@@ -644,7 +780,16 @@ func (s *Service) registerWithInvitation(ctx context.Context, email, password, n
 	}); err != nil {
 		return LoginResult{}, err
 	}
+	// Mirror the team grant up to an org membership so the user is a
+	// first-class member of the team's parent org.
+	orgID, err := s.grantOrgMembershipForTeam(ctx, u.ID, inv.TeamID, inv.Role, now)
+	if err != nil {
+		return LoginResult{}, err
+	}
 	u.DefaultTeamID = inv.TeamID
+	if orgID != "" {
+		u.DefaultOrgID = orgID
+	}
 	if err := s.store.UpdateUser(ctx, u); err != nil {
 		return LoginResult{}, err
 	}
@@ -655,6 +800,34 @@ func (s *Service) registerWithInvitation(ctx context.Context, email, password, n
 		return LoginResult{}, err
 	}
 	return s.issueLogin(ctx, u, userAgent, ip)
+}
+
+// grantOrgMembershipForTeam ensures the user holds an org membership in
+// the parent org of teamID, with at least the org-role implied by their
+// team role (never downgrades an existing higher org-role). Returns the
+// resolved orgID (empty if the team has no parent org yet).
+func (s *Service) grantOrgMembershipForTeam(ctx context.Context, userID, teamID string, teamRole identity.Role, now time.Time) (string, error) {
+	t, err := s.store.GetTeam(ctx, teamID)
+	if err != nil {
+		return "", err
+	}
+	if t.OrgID == "" {
+		return "", nil
+	}
+	want := identity.OrgRoleForTeamRole(teamRole)
+	// Never downgrade an existing higher org-role.
+	if existing, gerr := s.store.GetOrgMembership(ctx, userID, t.OrgID); gerr == nil && existing.Role.AtLeast(want) {
+		return t.OrgID, nil
+	}
+	if err := s.store.UpsertOrgMembership(ctx, identity.OrgMembership{
+		UserID:   userID,
+		OrgID:    t.OrgID,
+		Role:     want,
+		JoinedAt: now,
+	}); err != nil {
+		return "", err
+	}
+	return t.OrgID, nil
 }
 
 // AcceptInvitationForExistingUser is the path used when an invited
@@ -692,6 +865,9 @@ func (s *Service) AcceptInvitationForExistingUser(ctx context.Context, userID, t
 	if err := s.store.UpsertMembership(ctx, mb); err != nil {
 		return identity.Membership{}, err
 	}
+	if _, err := s.grantOrgMembershipForTeam(ctx, u.ID, inv.TeamID, inv.Role, now); err != nil {
+		return identity.Membership{}, err
+	}
 	acceptedAt := now
 	inv.AcceptedAt = &acceptedAt
 	inv.AcceptedBy = u.ID
@@ -707,16 +883,32 @@ func (s *Service) AcceptInvitationForExistingUser(ctx context.Context, userID, t
 // through the Service.
 func (s *Service) Store() identity.Store { return s.store }
 
-// CreateTeamFor provisions a non-personal team owned by user
-// `userID`. Returns the new team. If slug is empty it is derived
-// from name and uniquified with a numeric suffix on collision.
-func (s *Service) CreateTeamFor(ctx context.Context, userID, name, slug string) (identity.Team, error) {
+// CreateTeamFor provisions a non-personal team inside org `orgID`,
+// owned by user `userID`. The user must be a member of the org (super-
+// admins may create in any org). Returns the new team. If slug is empty
+// it is derived from name and uniquified with a numeric suffix on
+// collision.
+func (s *Service) CreateTeamFor(ctx context.Context, userID, orgID, name, slug string) (identity.Team, error) {
 	if name == "" {
 		return identity.Team{}, fmt.Errorf("auth: team name required")
+	}
+	if orgID == "" {
+		return identity.Team{}, fmt.Errorf("auth: org id required")
 	}
 	u, err := s.store.GetUser(ctx, userID)
 	if err != nil {
 		return identity.Team{}, err
+	}
+	if _, err := s.store.GetOrg(ctx, orgID); err != nil {
+		return identity.Team{}, ErrOrgNotFound
+	}
+	if _, err := s.store.GetOrgMembership(ctx, userID, orgID); err != nil {
+		if errors.Is(err, identity.ErrNotFound) && !u.IsSuperAdmin {
+			return identity.Team{}, ErrNotAnOrgMember
+		}
+		if !errors.Is(err, identity.ErrNotFound) {
+			return identity.Team{}, err
+		}
 	}
 	base := slug
 	if base == "" {
@@ -733,6 +925,7 @@ func (s *Service) CreateTeamFor(ctx context.Context, userID, name, slug string) 
 		}
 		t := identity.Team{
 			ID:        uuid.NewString(),
+			OrgID:     orgID,
 			Name:      name,
 			Slug:      try,
 			CreatedBy: u.ID,
@@ -760,6 +953,67 @@ func (s *Service) CreateTeamFor(ctx context.Context, userID, name, slug string) 
 		return t, nil
 	}
 	return identity.Team{}, errors.New("auth: could not allocate slug for team")
+}
+
+// CreateOrgFor provisions a new (non-personal) org owned by user
+// `userID`, with an owner org-membership and a default team inside it.
+// Returns the new org. Used by the super-admin org console and org
+// self-service "create organization" flows. If slug is empty it is
+// derived from name and uniquified with a numeric suffix on collision.
+func (s *Service) CreateOrgFor(ctx context.Context, userID, name, slug string) (identity.Org, error) {
+	if name == "" {
+		return identity.Org{}, fmt.Errorf("auth: org name required")
+	}
+	u, err := s.store.GetUser(ctx, userID)
+	if err != nil {
+		return identity.Org{}, err
+	}
+	base := slug
+	if base == "" {
+		base = identity.SlugifyTeamName(name)
+		if base == "" {
+			base = "org"
+		}
+	}
+	now := s.now().UTC()
+	for attempt := 0; attempt < 10; attempt++ {
+		try := base
+		if attempt > 0 {
+			try = fmt.Sprintf("%s-%d", base, attempt+1)
+		}
+		o := identity.Org{
+			ID:        uuid.NewString(),
+			Name:      name,
+			Slug:      try,
+			CreatedBy: u.ID,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		_, err := s.store.CreateOrg(ctx, o)
+		if errors.Is(err, identity.ErrOrgSlugAlreadyTaken) {
+			if slug != "" {
+				return identity.Org{}, identity.ErrOrgSlugAlreadyTaken
+			}
+			continue
+		}
+		if err != nil {
+			return identity.Org{}, err
+		}
+		if err := s.store.UpsertOrgMembership(ctx, identity.OrgMembership{
+			UserID:   u.ID,
+			OrgID:    o.ID,
+			Role:     identity.OrgRoleOwner,
+			JoinedAt: now,
+		}); err != nil {
+			return identity.Org{}, err
+		}
+		// Seed a default team so the org is immediately usable.
+		if _, err := s.CreateTeamFor(ctx, u.ID, o.ID, name, ""); err != nil {
+			return identity.Org{}, err
+		}
+		return o, nil
+	}
+	return identity.Org{}, errors.New("auth: could not allocate slug for org")
 }
 
 // CreateInvitation issues a fresh invitation. The plaintext token is
@@ -830,10 +1084,11 @@ func (s *Service) CreateUserAndPersonalTeam(ctx context.Context, email, name, pa
 	if err != nil {
 		return identity.User{}, identity.Team{}, err
 	}
-	teamID, err := s.createPersonalTeam(ctx, u)
+	orgID, teamID, err := s.createPersonalTeam(ctx, u)
 	if err != nil {
 		return identity.User{}, identity.Team{}, err
 	}
+	u.DefaultOrgID = orgID
 	u.DefaultTeamID = teamID
 	if err := s.store.UpdateUser(ctx, u); err != nil {
 		return identity.User{}, identity.Team{}, err
@@ -842,16 +1097,22 @@ func (s *Service) CreateUserAndPersonalTeam(ctx context.Context, email, name, pa
 	return u, t, nil
 }
 
-// createPersonalTeam provisions a Team with Personal=true for the
-// given user, adds an Owner membership, and returns the team id.
-// Slug is derived from the email local-part with a numeric suffix
-// on collision.
-func (s *Service) createPersonalTeam(ctx context.Context, u identity.User) (string, error) {
+// createPersonalTeam provisions a personal Org wrapping a personal Team
+// for the given user, adds owner memberships at both levels, and returns
+// the new (orgID, teamID). The personal org preserves the single-user
+// UX: one org, one team, the user owns both. Slugs derive from the email
+// local-part with a numeric suffix on collision (org and team share the
+// base; the team slug is suffixed "-team" to keep the namespaces clean).
+func (s *Service) createPersonalTeam(ctx context.Context, u identity.User) (orgID, teamID string, err error) {
+	now := s.now().UTC()
+	org, err := s.createPersonalOrg(ctx, u, now)
+	if err != nil {
+		return "", "", err
+	}
 	base := identity.SlugifyTeamName(u.Email)
 	if base == "" {
 		base = "team"
 	}
-	now := s.now().UTC()
 	for attempt := 0; attempt < 10; attempt++ {
 		slug := base
 		if attempt > 0 {
@@ -859,6 +1120,7 @@ func (s *Service) createPersonalTeam(ctx context.Context, u identity.User) (stri
 		}
 		t := identity.Team{
 			ID:        uuid.NewString(),
+			OrgID:     org.ID,
 			Name:      defaultPersonalTeamName(u),
 			Slug:      slug,
 			CreatedBy: u.ID,
@@ -871,7 +1133,7 @@ func (s *Service) createPersonalTeam(ctx context.Context, u identity.User) (stri
 			continue
 		}
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		if err := s.store.UpsertMembership(ctx, identity.Membership{
 			UserID:   u.ID,
@@ -879,11 +1141,53 @@ func (s *Service) createPersonalTeam(ctx context.Context, u identity.User) (stri
 			Role:     identity.RoleOwner,
 			JoinedAt: now,
 		}); err != nil {
-			return "", err
+			return "", "", err
 		}
-		return t.ID, nil
+		return org.ID, t.ID, nil
 	}
-	return "", errors.New("auth: could not allocate slug for personal team")
+	return "", "", errors.New("auth: could not allocate slug for personal team")
+}
+
+// createPersonalOrg provisions an Org with Personal=true and an owner
+// org-membership. Slug derives from the email local-part with a numeric
+// suffix on collision.
+func (s *Service) createPersonalOrg(ctx context.Context, u identity.User, now time.Time) (identity.Org, error) {
+	base := identity.SlugifyTeamName(u.Email)
+	if base == "" {
+		base = "org"
+	}
+	for attempt := 0; attempt < 10; attempt++ {
+		slug := base
+		if attempt > 0 {
+			slug = fmt.Sprintf("%s-%d", base, attempt+1)
+		}
+		o := identity.Org{
+			ID:        uuid.NewString(),
+			Name:      defaultPersonalTeamName(u),
+			Slug:      slug,
+			CreatedBy: u.ID,
+			CreatedAt: now,
+			UpdatedAt: now,
+			Personal:  true,
+		}
+		_, err := s.store.CreateOrg(ctx, o)
+		if errors.Is(err, identity.ErrOrgSlugAlreadyTaken) {
+			continue
+		}
+		if err != nil {
+			return identity.Org{}, err
+		}
+		if err := s.store.UpsertOrgMembership(ctx, identity.OrgMembership{
+			UserID:   u.ID,
+			OrgID:    o.ID,
+			Role:     identity.OrgRoleOwner,
+			JoinedAt: now,
+		}); err != nil {
+			return identity.Org{}, err
+		}
+		return o, nil
+	}
+	return identity.Org{}, errors.New("auth: could not allocate slug for personal org")
 }
 
 func defaultPersonalTeamName(u identity.User) string {

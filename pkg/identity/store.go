@@ -17,6 +17,15 @@ type Store interface {
 	ListUsers(ctx context.Context, page Page) ([]User, error)
 	UserCount(ctx context.Context) (int64, error)
 
+	// Orgs
+	CreateOrg(ctx context.Context, o Org) (Org, error)
+	GetOrg(ctx context.Context, id string) (Org, error)
+	GetOrgBySlug(ctx context.Context, slug string) (Org, error)
+	UpdateOrg(ctx context.Context, o Org) error
+	// ListOrgs returns all orgs (super-admin console), oldest first,
+	// offset/limit paginated.
+	ListOrgs(ctx context.Context, page Page) ([]Org, error)
+
 	// Teams
 	CreateTeam(ctx context.Context, t Team) (Team, error)
 	GetTeam(ctx context.Context, id string) (Team, error)
@@ -25,6 +34,15 @@ type Store interface {
 	// ListTeams returns all teams (super-admin org console), oldest
 	// first, offset/limit paginated.
 	ListTeams(ctx context.Context, page Page) ([]Team, error)
+	// ListTeamsByOrg returns every team belonging to one org.
+	ListTeamsByOrg(ctx context.Context, orgID string) ([]Team, error)
+
+	// Org memberships
+	UpsertOrgMembership(ctx context.Context, m OrgMembership) error
+	GetOrgMembership(ctx context.Context, userID, orgID string) (OrgMembership, error)
+	DeleteOrgMembership(ctx context.Context, userID, orgID string) error
+	ListOrgMembershipsByUser(ctx context.Context, userID string) ([]OrgMembership, error)
+	ListOrgMembershipsByOrg(ctx context.Context, orgID string) ([]OrgMembership, error)
 
 	// Memberships
 	UpsertMembership(ctx context.Context, m Membership) error

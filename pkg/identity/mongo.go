@@ -16,33 +16,39 @@ import (
 // Collection names. Pinned constants so monitoring + migration
 // tooling have a stable target.
 const (
-	colUsers       = "users"
-	colTeams       = "teams"
-	colMemberships = "memberships"
-	colInvitations = "invitations"
-	colOIDCLinks   = "oidc_links"
+	colUsers          = "users"
+	colOrgs           = "orgs"
+	colOrgMemberships = "org_memberships"
+	colTeams          = "teams"
+	colMemberships    = "memberships"
+	colInvitations    = "invitations"
+	colOIDCLinks      = "oidc_links"
 )
 
 // MongoStore implements Store on top of MongoDB.
 type MongoStore struct {
-	db          *mongo.Database
-	users       *mongo.Collection
-	teams       *mongo.Collection
-	memberships *mongo.Collection
-	invitations *mongo.Collection
-	oidcLinks   *mongo.Collection
+	db             *mongo.Database
+	users          *mongo.Collection
+	orgs           *mongo.Collection
+	orgMemberships *mongo.Collection
+	teams          *mongo.Collection
+	memberships    *mongo.Collection
+	invitations    *mongo.Collection
+	oidcLinks      *mongo.Collection
 }
 
 // NewMongoStore returns a MongoStore wired to the given database.
 // EnsureSchema must be called once before serving traffic.
 func NewMongoStore(db *mongo.Database) *MongoStore {
 	return &MongoStore{
-		db:          db,
-		users:       db.Collection(colUsers),
-		teams:       db.Collection(colTeams),
-		memberships: db.Collection(colMemberships),
-		invitations: db.Collection(colInvitations),
-		oidcLinks:   db.Collection(colOIDCLinks),
+		db:             db,
+		users:          db.Collection(colUsers),
+		orgs:           db.Collection(colOrgs),
+		orgMemberships: db.Collection(colOrgMemberships),
+		teams:          db.Collection(colTeams),
+		memberships:    db.Collection(colMemberships),
+		invitations:    db.Collection(colInvitations),
+		oidcLinks:      db.Collection(colOIDCLinks),
 	}
 }
 
@@ -55,10 +61,25 @@ func (s *MongoStore) EnsureSchema(ctx context.Context) error {
 	}); err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("identity: ensure users indexes: %w", err)
 	}
+	if _, err := s.orgs.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "slug", Value: 1}}, Options: options.Index().SetUnique(true).SetName("slug_unique")},
+		{Keys: bson.D{{Key: "created_at", Value: -1}}, Options: options.Index().SetName("created_desc")},
+		{Keys: bson.D{{Key: "status", Value: 1}}, Options: options.Index().SetName("status")},
+		{Keys: bson.D{{Key: "migrated_from_team_id", Value: 1}}, Options: options.Index().SetUnique(true).SetName("migrated_from_team_unique").SetPartialFilterExpression(bson.M{"migrated_from_team_id": bson.M{"$exists": true}})},
+	}); err != nil && !mongoutil.IsIndexConflict(err) {
+		return fmt.Errorf("identity: ensure orgs indexes: %w", err)
+	}
+	if _, err := s.orgMemberships.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "org_id", Value: 1}}, Options: options.Index().SetUnique(true).SetName("user_org_unique")},
+		{Keys: bson.D{{Key: "org_id", Value: 1}, {Key: "role", Value: 1}}, Options: options.Index().SetName("org_role")},
+	}); err != nil && !mongoutil.IsIndexConflict(err) {
+		return fmt.Errorf("identity: ensure org_memberships indexes: %w", err)
+	}
 	if _, err := s.teams.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "slug", Value: 1}}, Options: options.Index().SetUnique(true).SetName("slug_unique")},
 		{Keys: bson.D{{Key: "created_at", Value: -1}}, Options: options.Index().SetName("created_desc")},
 		{Keys: bson.D{{Key: "status", Value: 1}}, Options: options.Index().SetName("status")},
+		{Keys: bson.D{{Key: "org_id", Value: 1}}, Options: options.Index().SetName("org_id")},
 	}); err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("identity: ensure teams indexes: %w", err)
 	}
@@ -239,6 +260,154 @@ func (s *MongoStore) ListTeams(ctx context.Context, page Page) ([]Team, error) {
 	var out []Team
 	if err := cur.All(ctx, &out); err != nil {
 		return nil, fmt.Errorf("identity: decode teams: %w", err)
+	}
+	return out, nil
+}
+
+func (s *MongoStore) ListTeamsByOrg(ctx context.Context, orgID string) ([]Team, error) {
+	cur, err := s.teams.Find(ctx, bson.M{"org_id": orgID}, options.Find().SetSort(bson.M{"created_at": 1}))
+	if err != nil {
+		return nil, fmt.Errorf("identity: list teams by org: %w", err)
+	}
+	defer cur.Close(ctx)
+	var out []Team
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, fmt.Errorf("identity: decode teams: %w", err)
+	}
+	return out, nil
+}
+
+// ----- Orgs -----
+
+func (s *MongoStore) CreateOrg(ctx context.Context, o Org) (Org, error) {
+	if _, err := s.orgs.InsertOne(ctx, o); err != nil {
+		if mongoutil.IsDuplicateKey(err) {
+			return Org{}, ErrOrgSlugAlreadyTaken
+		}
+		return Org{}, fmt.Errorf("identity: insert org: %w", err)
+	}
+	return o, nil
+}
+
+func (s *MongoStore) GetOrg(ctx context.Context, id string) (Org, error) {
+	var o Org
+	err := s.orgs.FindOne(ctx, bson.M{"_id": id}).Decode(&o)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return Org{}, ErrNotFound
+	}
+	if err != nil {
+		return Org{}, fmt.Errorf("identity: get org: %w", err)
+	}
+	return o, nil
+}
+
+func (s *MongoStore) GetOrgBySlug(ctx context.Context, slug string) (Org, error) {
+	var o Org
+	err := s.orgs.FindOne(ctx, bson.M{"slug": slug}).Decode(&o)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return Org{}, ErrNotFound
+	}
+	if err != nil {
+		return Org{}, fmt.Errorf("identity: get org by slug: %w", err)
+	}
+	return o, nil
+}
+
+func (s *MongoStore) UpdateOrg(ctx context.Context, o Org) error {
+	res, err := s.orgs.ReplaceOne(ctx, bson.M{"_id": o.ID}, o)
+	if err != nil {
+		if mongoutil.IsDuplicateKey(err) {
+			return ErrOrgSlugAlreadyTaken
+		}
+		return fmt.Errorf("identity: update org: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *MongoStore) ListOrgs(ctx context.Context, page Page) ([]Org, error) {
+	limit := int64(page.Limit)
+	if limit <= 0 {
+		limit = 50
+	}
+	offset := int64(page.Offset)
+	if offset < 0 {
+		offset = 0
+	}
+	cur, err := s.orgs.Find(ctx, bson.M{}, options.Find().
+		SetSort(bson.M{"created_at": 1}).
+		SetSkip(offset).
+		SetLimit(limit))
+	if err != nil {
+		return nil, fmt.Errorf("identity: list orgs: %w", err)
+	}
+	defer cur.Close(ctx)
+	var out []Org
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, fmt.Errorf("identity: decode orgs: %w", err)
+	}
+	return out, nil
+}
+
+// ----- Org memberships -----
+
+func (s *MongoStore) UpsertOrgMembership(ctx context.Context, m OrgMembership) error {
+	if !m.Role.Valid() {
+		return ErrInvalidRole
+	}
+	filter := bson.M{"user_id": m.UserID, "org_id": m.OrgID}
+	update := bson.M{"$set": m}
+	_, err := s.orgMemberships.UpdateOne(ctx, filter, update, options.UpdateOne().SetUpsert(true))
+	if err != nil {
+		return fmt.Errorf("identity: upsert org membership: %w", err)
+	}
+	return nil
+}
+
+func (s *MongoStore) GetOrgMembership(ctx context.Context, userID, orgID string) (OrgMembership, error) {
+	var m OrgMembership
+	err := s.orgMemberships.FindOne(ctx, bson.M{"user_id": userID, "org_id": orgID}).Decode(&m)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return OrgMembership{}, ErrNotFound
+	}
+	if err != nil {
+		return OrgMembership{}, fmt.Errorf("identity: get org membership: %w", err)
+	}
+	return m, nil
+}
+
+func (s *MongoStore) DeleteOrgMembership(ctx context.Context, userID, orgID string) error {
+	_, err := s.orgMemberships.DeleteOne(ctx, bson.M{"user_id": userID, "org_id": orgID})
+	if err != nil {
+		return fmt.Errorf("identity: delete org membership: %w", err)
+	}
+	return nil
+}
+
+func (s *MongoStore) ListOrgMembershipsByUser(ctx context.Context, userID string) ([]OrgMembership, error) {
+	cur, err := s.orgMemberships.Find(ctx, bson.M{"user_id": userID}, options.Find().SetSort(bson.M{"joined_at": 1}))
+	if err != nil {
+		return nil, fmt.Errorf("identity: list org memberships by user: %w", err)
+	}
+	defer cur.Close(ctx)
+	var out []OrgMembership
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, fmt.Errorf("identity: decode org memberships: %w", err)
+	}
+	return out, nil
+}
+
+func (s *MongoStore) ListOrgMembershipsByOrg(ctx context.Context, orgID string) ([]OrgMembership, error) {
+	cur, err := s.orgMemberships.Find(ctx, bson.M{"org_id": orgID}, options.Find().SetSort(bson.M{"joined_at": 1}))
+	if err != nil {
+		return nil, fmt.Errorf("identity: list org memberships by org: %w", err)
+	}
+	defer cur.Close(ctx)
+	var out []OrgMembership
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, fmt.Errorf("identity: decode org memberships: %w", err)
 	}
 	return out, nil
 }

@@ -137,6 +137,7 @@ func (s *Server) registerAuthRoutes() {
 	// Authenticated routes.
 	s.mux.Handle("GET /api/auth/me", s.requireAuth(http.HandlerFunc(s.handleMe)))
 	s.mux.Handle("POST /api/auth/me/team/{team_id}", s.requireAuth(http.HandlerFunc(s.handleSwitchTeam)))
+	s.mux.Handle("POST /api/auth/me/org/{org_id}", s.requireAuth(http.HandlerFunc(s.handleSwitchOrg)))
 	s.mux.Handle("POST /api/me/password", s.requireAuth(http.HandlerFunc(s.handleChangeMyPassword)))
 	s.mux.Handle("POST /api/me/sessions/revoke-all", s.requireAuth(http.HandlerFunc(s.handleRevokeAllSessions)))
 	// Connected SSO identities (self-service): list, connect a new one (the exit
@@ -155,6 +156,10 @@ func (s *Server) registerAuthRoutes() {
 	s.mux.Handle("PATCH /api/teams/{id}/members/{user_id}", s.requireAuth(http.HandlerFunc(s.handleUpdateMember)))
 	s.mux.Handle("DELETE /api/teams/{id}/members/{user_id}", s.requireAuth(http.HandlerFunc(s.handleRemoveMember)))
 
+	// Org self-service (members / invitations / usage / teams). SSO and
+	// audit org routes are registered by their own files.
+	s.registerOrgRoutes()
+
 	// Super-admin only.
 	s.mux.Handle("GET /api/admin/users", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminListUsers)))
 	s.mux.Handle("PATCH /api/admin/users/{id}", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminUpdateUser)))
@@ -164,12 +169,26 @@ func (s *Server) registerAuthRoutes() {
 // ---- Request / response shapes ----
 
 type authResponse struct {
-	User        userView         `json:"user"`
-	Teams       []membershipView `json:"teams"`
-	ActiveTeam  string           `json:"active_team_id,omitempty"`
-	ActiveRole  string           `json:"active_role,omitempty"`
-	AccessToken string           `json:"access_token,omitempty"`
-	ExpiresAt   string           `json:"expires_at,omitempty"`
+	User          userView      `json:"user"`
+	Orgs          []orgTreeView `json:"orgs"`
+	ActiveOrg     string        `json:"active_org_id,omitempty"`
+	ActiveOrgRole string        `json:"active_org_role,omitempty"`
+	ActiveTeam    string        `json:"active_team_id,omitempty"`
+	ActiveRole    string        `json:"active_role,omitempty"`
+	AccessToken   string        `json:"access_token,omitempty"`
+	ExpiresAt     string        `json:"expires_at,omitempty"`
+}
+
+// orgTreeView is one organization the user belongs to, with the teams
+// inside it they can access. It is the shape /api/auth/me returns so
+// the SPA can render an Org picker → Team picker without extra calls.
+type orgTreeView struct {
+	OrgID    string           `json:"org_id"`
+	OrgName  string           `json:"org_name"`
+	OrgSlug  string           `json:"org_slug"`
+	OrgRole  string           `json:"org_role"`
+	Personal bool             `json:"personal,omitempty"`
+	Teams    []membershipView `json:"teams"`
 }
 
 type userView struct {
@@ -208,8 +227,9 @@ type registerReq struct {
 }
 
 type createTeamReq struct {
-	Name string `json:"name"`
-	Slug string `json:"slug,omitempty"`
+	Name  string `json:"name"`
+	Slug  string `json:"slug,omitempty"`
+	OrgID string `json:"org_id,omitempty"`
 }
 
 type createInvitationReq struct {
@@ -263,30 +283,119 @@ func isBrowserClient(r *http.Request) bool {
 }
 
 func (s *Server) renderAuthResponse(w http.ResponseWriter, r *http.Request, res auth.LoginResult) {
-	teams := make([]membershipView, 0, len(res.Memberships))
-	for _, m := range res.Memberships {
-		t, err := s.authStore().GetTeam(r.Context(), m.TeamID)
-		if err != nil {
-			continue
-		}
-		teams = append(teams, membershipView{
-			TeamID:   t.ID,
-			TeamName: t.Name,
-			TeamSlug: t.Slug,
-			Role:     string(m.Role),
-			Personal: t.Personal,
-		})
-	}
+	orgs, _ := s.buildOrgTree(r.Context(), res.User.ID)
 	s.setAuthCookies(w, res.AccessToken, res.AccessExpires, res.RefreshToken, res.RefreshExpires)
 	resp := authResponse{
-		User:       s.toUserView(res.User),
-		Teams:      teams,
-		ActiveTeam: res.ActiveTeamID,
-		ActiveRole: string(res.ActiveRole),
-		ExpiresAt:  res.AccessExpires.Format(time.RFC3339),
+		User:          s.toUserView(res.User),
+		Orgs:          orgs,
+		ActiveOrg:     res.ActiveOrgID,
+		ActiveOrgRole: string(res.ActiveOrgRole),
+		ActiveTeam:    res.ActiveTeamID,
+		ActiveRole:    string(res.ActiveRole),
+		ExpiresAt:     res.AccessExpires.Format(time.RFC3339),
 	}
 	if !isBrowserClient(r) {
 		resp.AccessToken = res.AccessToken
+	}
+	writeJSON(w, resp)
+}
+
+// buildOrgTree assembles the org→teams view for a user: every org they
+// belong to (via OrgMembership, plus any org reachable through a team
+// grant), each carrying the teams in it they can access. Org admins see
+// every team in their org; plain members see only their granted teams.
+func (s *Server) buildOrgTree(ctx context.Context, userID string) ([]orgTreeView, error) {
+	st := s.authStore()
+	if st == nil {
+		return nil, nil
+	}
+	orgMems, _ := st.ListOrgMembershipsByUser(ctx, userID)
+	teamMems, _ := st.ListMembershipsByUser(ctx, userID)
+	teamRole := make(map[string]identity.Role, len(teamMems))
+	for _, m := range teamMems {
+		teamRole[m.TeamID] = m.Role
+	}
+	// Collect org ids the user can see: every org-membership, plus the
+	// parent org of any team grant (robustness for partially-migrated rows).
+	orgRoleByID := make(map[string]identity.OrgRole)
+	order := make([]string, 0)
+	addOrg := func(orgID string, role identity.OrgRole) {
+		if orgID == "" {
+			return
+		}
+		if _, seen := orgRoleByID[orgID]; !seen {
+			order = append(order, orgID)
+		}
+		if role.AtLeast(orgRoleByID[orgID]) {
+			orgRoleByID[orgID] = role
+		}
+	}
+	for _, om := range orgMems {
+		addOrg(om.OrgID, om.Role)
+	}
+	for _, tm := range teamMems {
+		if t, err := st.GetTeam(ctx, tm.TeamID); err == nil {
+			addOrg(t.OrgID, identity.OrgRoleMember)
+		}
+	}
+	out := make([]orgTreeView, 0, len(order))
+	for _, orgID := range order {
+		org, err := st.GetOrg(ctx, orgID)
+		if err != nil {
+			continue
+		}
+		orgRole := orgRoleByID[orgID]
+		teams, _ := st.ListTeamsByOrg(ctx, orgID)
+		tv := make([]membershipView, 0, len(teams))
+		for _, t := range teams {
+			role, granted := teamRole[t.ID]
+			if !granted {
+				// Org admins can see/manage every team in their org.
+				if !orgRole.AtLeast(identity.OrgRoleAdmin) {
+					continue
+				}
+				role = identity.RoleAdmin
+			}
+			tv = append(tv, membershipView{
+				TeamID:   t.ID,
+				TeamName: t.Name,
+				TeamSlug: t.Slug,
+				Role:     string(role),
+				Personal: t.Personal,
+			})
+		}
+		out = append(out, orgTreeView{
+			OrgID:    org.ID,
+			OrgName:  org.Name,
+			OrgSlug:  org.Slug,
+			OrgRole:  string(orgRole),
+			Personal: org.Personal,
+			Teams:    tv,
+		})
+	}
+	return out, nil
+}
+
+// writeIdentityResponse renders the full auth response (user + org tree
+// + active context) after a team/org switch, where we have a fresh
+// Identity and access token but not a full LoginResult.
+func (s *Server) writeIdentityResponse(w http.ResponseWriter, r *http.Request, id auth.Identity, access string, exp time.Time) {
+	u, err := s.authStore().GetUser(r.Context(), id.UserID)
+	if err != nil {
+		u = identity.User{ID: id.UserID, Email: id.Email}
+	}
+	orgs, _ := s.buildOrgTree(r.Context(), id.UserID)
+	resp := authResponse{
+		User:          s.toUserView(u),
+		Orgs:          orgs,
+		ActiveOrg:     id.OrgID,
+		ActiveOrgRole: string(id.OrgRole),
+		ActiveTeam:    id.TeamID,
+		ActiveRole:    string(id.Role),
+		ExpiresAt:     exp.Format(time.RFC3339),
+	}
+	if access != "" && !isBrowserClient(r) {
+		resp.AccessToken = access
 	}
 	writeJSON(w, resp)
 }
@@ -901,26 +1010,14 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		httpError(w, mapAuthErrorStatus(err), "load user: %v", err)
 		return
 	}
-	memberships, _ := s.authStore().ListMembershipsByUser(r.Context(), u.ID)
-	views := make([]membershipView, 0, len(memberships))
-	for _, m := range memberships {
-		t, err := s.authStore().GetTeam(r.Context(), m.TeamID)
-		if err != nil {
-			continue
-		}
-		views = append(views, membershipView{
-			TeamID:   t.ID,
-			TeamName: t.Name,
-			TeamSlug: t.Slug,
-			Role:     string(m.Role),
-			Personal: t.Personal,
-		})
-	}
+	orgs, _ := s.buildOrgTree(r.Context(), u.ID)
 	writeJSON(w, authResponse{
-		User:       s.toUserView(u),
-		Teams:      views,
-		ActiveTeam: id.TeamID,
-		ActiveRole: string(id.Role),
+		User:          s.toUserView(u),
+		Orgs:          orgs,
+		ActiveOrg:     id.OrgID,
+		ActiveOrgRole: string(id.OrgRole),
+		ActiveTeam:    id.TeamID,
+		ActiveRole:    string(id.Role),
 	})
 }
 
@@ -937,16 +1034,23 @@ func (s *Server) handleSwitchTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.setAuthCookies(w, access, exp, "", time.Time{})
-	resp := authResponse{
-		User:       s.toUserView(identity.User{ID: newID.UserID, Email: newID.Email}),
-		ActiveTeam: newID.TeamID,
-		ActiveRole: string(newID.Role),
-		ExpiresAt:  exp.Format(time.RFC3339),
+	s.writeIdentityResponse(w, r, newID, access, exp)
+}
+
+func (s *Server) handleSwitchOrg(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	orgID := r.PathValue("org_id")
+	if orgID == "" {
+		httpError(w, http.StatusBadRequest, "org_id required")
+		return
 	}
-	if !isBrowserClient(r) {
-		resp.AccessToken = access
+	newID, access, exp, err := s.authSvc.SwitchOrg(r.Context(), id.UserID, orgID)
+	if err != nil {
+		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		return
 	}
-	writeJSON(w, resp)
+	s.setAuthCookies(w, access, exp, "", time.Time{})
+	s.writeIdentityResponse(w, r, newID, access, exp)
 }
 
 // ---- Team management ----
@@ -987,7 +1091,22 @@ func (s *Server) handleCreateTeam(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "name required")
 		return
 	}
-	t, err := s.authSvc.CreateTeamFor(r.Context(), id.UserID, req.Name, req.Slug)
+	// A team is created inside the caller's active org; org admins (or
+	// super-admins) may add teams. The request may override the target
+	// org explicitly (org console flows).
+	orgID := req.OrgID
+	if orgID == "" {
+		orgID = id.OrgID
+	}
+	if orgID == "" {
+		httpError(w, http.StatusBadRequest, "no active organization")
+		return
+	}
+	if !s.canManageOrg(r.Context(), id, orgID) {
+		httpError(w, http.StatusForbidden, "org admin or owner required")
+		return
+	}
+	t, err := s.authSvc.CreateTeamFor(r.Context(), id.UserID, orgID, req.Name, req.Slug)
 	if err != nil {
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
@@ -1342,25 +1461,64 @@ func (s *Server) canViewTeam(ctx context.Context, id auth.Identity, teamID strin
 	if id.IsSuperAdmin {
 		return true
 	}
-	if id.TeamID == teamID {
-		return id.Role.Valid()
+	if id.TeamID == teamID && id.Role.Valid() {
+		return true
 	}
-	mb, err := s.authStore().GetMembership(ctx, id.UserID, teamID)
-	if err != nil {
-		return false
+	if mb, err := s.authStore().GetMembership(ctx, id.UserID, teamID); err == nil && mb.Role.Valid() {
+		return true
 	}
-	return mb.Role.Valid()
+	// An org admin/owner can view every team in their org.
+	return s.orgAdminOfTeam(ctx, id, teamID)
 }
 
 func (s *Server) canManageTeam(ctx context.Context, id auth.Identity, teamID string) bool {
 	if id.IsSuperAdmin {
 		return true
 	}
-	mb, err := s.authStore().GetMembership(ctx, id.UserID, teamID)
+	if mb, err := s.authStore().GetMembership(ctx, id.UserID, teamID); err == nil && mb.Role.AtLeast(identity.RoleAdmin) {
+		return true
+	}
+	// An org admin/owner can manage every team in their org.
+	return s.orgAdminOfTeam(ctx, id, teamID)
+}
+
+// orgAdminOfTeam reports whether the principal is an admin/owner of the
+// team's parent org (so org admins implicitly manage every team in it).
+func (s *Server) orgAdminOfTeam(ctx context.Context, id auth.Identity, teamID string) bool {
+	t, err := s.authStore().GetTeam(ctx, teamID)
+	if err != nil || t.OrgID == "" {
+		return false
+	}
+	return s.canManageOrg(ctx, id, t.OrgID)
+}
+
+// canViewOrg reports whether the principal may read an org's settings /
+// roster / usage. Super-admins and any org member pass.
+func (s *Server) canViewOrg(ctx context.Context, id auth.Identity, orgID string) bool {
+	if id.IsSuperAdmin {
+		return true
+	}
+	if id.OrgID == orgID && id.OrgRole.Valid() {
+		return true
+	}
+	om, err := s.authStore().GetOrgMembership(ctx, id.UserID, orgID)
 	if err != nil {
 		return false
 	}
-	return mb.Role.AtLeast(identity.RoleAdmin)
+	return om.Role.Valid()
+}
+
+// canManageOrg reports whether the principal may mutate an org (members,
+// SSO, settings, teams). Super-admins and org admins/owners pass.
+func (s *Server) canManageOrg(ctx context.Context, id auth.Identity, orgID string) bool {
+	if id.IsSuperAdmin {
+		return true
+	}
+	om, err := s.authStore().GetOrgMembership(ctx, id.UserID, orgID)
+	if err != nil {
+		return false
+	}
+	return om.Role.AtLeast(identity.OrgRoleAdmin)
 }
 
 // clientIP picks the audit IP for an inbound request. The default

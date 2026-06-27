@@ -27,6 +27,8 @@ const jwtAudience = "iterion-api"
 // so iat/exp/jti/iss/aud/sub round-trip via golang-jwt.
 type AccessClaims struct {
 	Email        string `json:"email,omitempty"`
+	OrgID        string `json:"org_id,omitempty"`
+	OrgRole      string `json:"org_role,omitempty"`
 	TeamID       string `json:"team_id,omitempty"`
 	Role         string `json:"role,omitempty"`
 	IsSuperAdmin bool   `json:"is_super_admin,omitempty"`
@@ -157,6 +159,8 @@ func (s *JWTSigner) IssueAccess(id Identity) (token string, exp time.Time, err e
 	jti := uuid.NewString()
 	claims := AccessClaims{
 		Email:        id.Email,
+		OrgID:        id.OrgID,
+		OrgRole:      string(id.OrgRole),
 		TeamID:       id.TeamID,
 		Role:         string(id.Role),
 		IsSuperAdmin: id.IsSuperAdmin,
@@ -232,6 +236,8 @@ func (s *JWTSigner) Verify(raw string) (Identity, error) {
 	return Identity{
 		UserID:       c.Subject,
 		Email:        c.Email,
+		OrgID:        c.OrgID,
+		OrgRole:      identity.OrgRole(c.OrgRole),
 		TeamID:       c.TeamID,
 		Role:         identity.Role(c.Role),
 		IsSuperAdmin: c.IsSuperAdmin,
