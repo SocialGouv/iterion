@@ -76,6 +76,24 @@ export default function IntegrationsTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [teamID]);
 
+  // Re-fetch when the tab/window regains focus. The GitHub App-Manifest flow
+  // (and any OAuth-app registration done in another tab) navigates away and
+  // returns here WITHOUT a teamID change, so the [teamID] effect above never
+  // re-runs — without this the Connect form keeps showing a stale
+  // "OAuth (no app)" for an app that was just registered, until a hard reload.
+  useEffect(() => {
+    const refetch = () => {
+      if (document.visibilityState === "visible") void reload();
+    };
+    window.addEventListener("focus", refetch);
+    document.addEventListener("visibilitychange", refetch);
+    return () => {
+      window.removeEventListener("focus", refetch);
+      document.removeEventListener("visibilitychange", refetch);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [teamID]);
+
   if (unavailable) {
     return (
       <InlineBanner tone="info" layout="inline">

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -77,13 +78,20 @@ func (s *MongoStore) List(ctx context.Context, q Query) ([]Entry, error) {
 		and = append(and, bson.M{"tags": t})
 	}
 	if text := q.Text; text != "" {
-		// $text uses the text index above; falls back to a regex
-		// scan over slug+name when callers query a substring the
-		// stemmed text index would miss.
+		// Case-insensitive SUBSTRING match across the searchable fields,
+		// mirroring the JSON store's behaviour. We deliberately avoid Mongo's
+		// $text operator: $text inside an $or cannot be co-planned with the
+		// viewer scope/status $and/$or clauses (Mongo returns
+		// NoQueryExecutionPlans), and a stemmed word index also misses the
+		// partial-token matches users expect while typing. QuoteMeta keeps the
+		// query literal (no regex injection / ReDoS).
+		rx := bson.M{"$regex": regexp.QuoteMeta(text), "$options": "i"}
 		and = append(and, bson.M{"$or": bson.A{
-			bson.M{"$text": bson.M{"$search": text}},
-			bson.M{"_id": bson.M{"$regex": text, "$options": "i"}},
-			bson.M{"name": bson.M{"$regex": text, "$options": "i"}},
+			bson.M{"_id": rx},
+			bson.M{"name": rx},
+			bson.M{"display_name": rx},
+			bson.M{"description": rx},
+			bson.M{"tags": rx},
 		}})
 	}
 	if vf := viewerFilter(q.Viewer); vf != nil {
