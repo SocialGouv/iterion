@@ -35,6 +35,15 @@ type RepoIntegration struct {
 	HookURL         string `bson:"hook_url,omitempty" json:"hook_url,omitempty"` // the inbound URL we registered
 	ManagedSecretID string `bson:"managed_secret_id,omitempty" json:"managed_secret_id,omitempty"`
 
+	// SyncIssuesEnabled, when true, makes the forge→board sync worker mirror
+	// this repo's forge issues into the team's kanban board (one-way: forge is
+	// the source; a card's column is operator-owned once created). Toggled per
+	// repo from the studio Integrations tab. Off by default.
+	SyncIssuesEnabled bool `bson:"sync_issues_enabled,omitempty" json:"sync_issues_enabled,omitempty"`
+	// LastSyncedAt is the high-water mark of the last successful issue sync,
+	// passed as the `since` filter on the next sweep for incremental sync.
+	LastSyncedAt time.Time `bson:"last_synced_at,omitempty" json:"last_synced_at,omitempty"`
+
 	CreatedBy string    `bson:"created_by" json:"created_by"`
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
@@ -52,6 +61,9 @@ type RepoIntegrationStore interface {
 	ListByTenant(ctx context.Context, tenantID string) ([]RepoIntegration, error)
 	ListByConnection(ctx context.Context, tenantID, connID string) ([]RepoIntegration, error)
 	ListByWebhook(ctx context.Context, tenantID, webhookID string) ([]RepoIntegration, error)
+	// ListSyncEnabled returns every integration (across all tenants) with
+	// SyncIssuesEnabled set, for the periodic forge→board sync worker.
+	ListSyncEnabled(ctx context.Context) ([]RepoIntegration, error)
 }
 
 // ---- in-memory store (tests / local) ----
@@ -126,6 +138,10 @@ func (m *MemoryRepoIntegrationStore) ListByConnection(_ context.Context, tenantI
 	return m.filter(func(ri RepoIntegration) bool {
 		return ri.TenantID == tenantID && ri.ConnectionID == connID
 	}), nil
+}
+
+func (m *MemoryRepoIntegrationStore) ListSyncEnabled(_ context.Context) ([]RepoIntegration, error) {
+	return m.filter(func(ri RepoIntegration) bool { return ri.SyncIssuesEnabled }), nil
 }
 
 func (m *MemoryRepoIntegrationStore) ListByWebhook(_ context.Context, tenantID, webhookID string) ([]RepoIntegration, error) {
@@ -233,6 +249,10 @@ func (s *MongoRepoIntegrationStore) ListByConnection(ctx context.Context, tenant
 
 func (s *MongoRepoIntegrationStore) ListByWebhook(ctx context.Context, tenantID, webhookID string) ([]RepoIntegration, error) {
 	return s.find(ctx, bson.M{"tenant_id": tenantID, "webhook_id": webhookID})
+}
+
+func (s *MongoRepoIntegrationStore) ListSyncEnabled(ctx context.Context) ([]RepoIntegration, error) {
+	return s.find(ctx, bson.M{"sync_issues_enabled": true})
 }
 
 func (s *MongoRepoIntegrationStore) find(ctx context.Context, filter bson.M) ([]RepoIntegration, error) {
