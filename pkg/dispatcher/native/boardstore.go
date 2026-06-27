@@ -39,3 +39,9 @@ type BoardStore interface {
 
 // Compile-time assertion that the filesystem store satisfies the contract.
 var _ BoardStore = (*Store)(nil)
+
+// Compile-time guarantees: the filesystem store is a full board backend.
+var (
+	_ BoardStore = (*Store)(nil)
+	_ BoardAdmin = (*Store)(nil)
+)

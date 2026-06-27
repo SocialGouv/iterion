@@ -99,7 +99,10 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 				AllowedMIME:    s.cfg.AllowedUploadMIMEs,
 			},
 		},
-		NativeTrackerEnabled:     s.cfg.NativeTrackerStore != nil,
+		// True for the self-hosted filesystem board AND the cloud per-team
+		// Mongo board — both expose the same /api/v1/native surface, so the
+		// studio Board view is gated identically.
+		NativeTrackerEnabled:     s.cfg.NativeTrackerStore != nil || s.cfg.CloudBoardFor != nil,
 		DispatcherEnabled:        s.cfg.Dispatcher != nil,
 		EmailEnabled:             s.authSvc != nil && s.authSvc.EmailEnabled(),
 		MarketplaceEnabled:       s.marketplace != nil,
