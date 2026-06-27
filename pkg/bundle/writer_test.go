@@ -1,6 +1,7 @@
 package bundle
 
 import (
+	"archive/zip"
 	"bytes"
 	"os"
 	"path/filepath"
@@ -45,6 +46,30 @@ func TestPackDir_RoundTripWithLoader(t *testing.T) {
 	}
 	if res.Hash == "" {
 		t.Errorf("hash empty")
+	}
+
+	// The output must be a real ZIP archive: leading PK\x03\x04 magic,
+	// and archive/zip must be able to list it (the whole point — a
+	// downloaded .botz now extracts with unzip / double-click).
+	raw, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(raw, []byte{0x50, 0x4b, 0x03, 0x04}) {
+		t.Fatalf("output is not a ZIP (missing PK\\x03\\x04 magic): % x", raw[:4])
+	}
+	zr, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		t.Fatalf("archive/zip cannot read the .botz: %v", err)
+	}
+	var sawBot bool
+	for _, f := range zr.File {
+		if f.Name == "main.bot" {
+			sawBot = true
+		}
+	}
+	if !sawBot {
+		t.Errorf("zip listing missing main.bot")
 	}
 
 	// Open via the consumer loader — verifies the archive is well-formed
@@ -95,6 +120,94 @@ func TestPackDir_Deterministic(t *testing.T) {
 	}
 	if !bytes.Equal(aBytes, bBytes) {
 		t.Errorf("compressed output differs: %d vs %d bytes", len(aBytes), len(bBytes))
+	}
+}
+
+// TestOpen_ReadsLegacyTarGz proves backward compat: a `.botz` built with
+// the OLD gzip+tar path (via buildBotz, the legacy format) still loads
+// through Open after the migration to ZIP.
+func TestOpen_ReadsLegacyTarGz(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "legacy.botz")
+	buildBotz(t, dest, []tarEntry{
+		{Name: "main.bot", Body: []byte(minimalBotIter)},
+		{Name: "manifest.yaml", Body: []byte("name: legacy-bundle\nversion: 0.1.0\nschema_version: 1\n")},
+		{Name: "skills/", Typeflag: 0},
+		{Name: "skills/probe.md", Body: []byte("# probe\n")},
+	})
+
+	b, cleanup, err := Open(dest, t.TempDir())
+	if err != nil {
+		t.Fatalf("open legacy tar.gz bundle: %v", err)
+	}
+	defer cleanup()
+	if b.IterPath == "" {
+		t.Errorf("legacy bundle: main.bot not resolved")
+	}
+	if b.SkillsDir == "" {
+		t.Errorf("legacy bundle: SkillsDir empty")
+	}
+	if b.Manifest == nil || b.Manifest.Name != "legacy-bundle" {
+		t.Errorf("legacy bundle: manifest not preserved: %+v", b.Manifest)
+	}
+	if b.Hash == "" {
+		t.Errorf("legacy bundle: hash empty")
+	}
+}
+
+// TestContentHash_StableAcrossFormats proves the content hash is
+// format-independent: the SAME files produce the SAME hash whether packed
+// as a ZIP (PackDir) or read back from a legacy tar.gz (buildBotz). This
+// is what keeps cache keys and persisted run hashes stable across the
+// format migration.
+func TestContentHash_StableAcrossFormats(t *testing.T) {
+	bot := []byte(minimalBotIter)
+	manifest := []byte("name: x\nversion: 0.1.0\nschema_version: 1\n")
+	skill := []byte("# probe\n")
+
+	// ZIP: pack a source dir holding exactly these files.
+	src := t.TempDir()
+	for rel, body := range map[string][]byte{
+		"main.bot":        bot,
+		"manifest.yaml":   manifest,
+		"skills/probe.md": skill,
+	} {
+		full := filepath.Join(src, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	zipOut := filepath.Join(t.TempDir(), "zip.botz")
+	zipRes, err := PackDir(src, zipOut)
+	if err != nil {
+		t.Fatalf("pack zip: %v", err)
+	}
+	zipBundle, zc, err := Open(zipOut, t.TempDir())
+	if err != nil {
+		t.Fatalf("open zip: %v", err)
+	}
+	defer zc()
+
+	// tar.gz: the SAME files via the legacy path.
+	tgz := filepath.Join(t.TempDir(), "legacy.botz")
+	buildBotz(t, tgz, []tarEntry{
+		{Name: "main.bot", Body: bot},
+		{Name: "manifest.yaml", Body: manifest},
+		{Name: "skills/probe.md", Body: skill},
+	})
+	tgzBundle, tc, err := Open(tgz, t.TempDir())
+	if err != nil {
+		t.Fatalf("open tar.gz: %v", err)
+	}
+	defer tc()
+
+	if zipRes.Hash != zipBundle.Hash {
+		t.Errorf("writer/loader hash drift on zip: %s vs %s", zipRes.Hash, zipBundle.Hash)
+	}
+	if zipBundle.Hash != tgzBundle.Hash {
+		t.Errorf("content hash differs across formats: zip=%s tar.gz=%s (same files must hash identically)", zipBundle.Hash, tgzBundle.Hash)
 	}
 }
 

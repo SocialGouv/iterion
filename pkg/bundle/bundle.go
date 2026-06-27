@@ -1,10 +1,18 @@
-// Package bundle implements the `.botz` archive format: a tar.gz that
-// packages an iterion workflow (`main.bot`) with adjacent resources
-// (skills, prompts, presets, default attachments, manifest). A bundle is loaded
-// once per run, extracted into a content-addressed cache directory, and
-// then exposed to the engine as a *Bundle so skills/prompts become
-// visible to claude_code and the claw tool registry without authoring
-// changes.
+// Package bundle implements the `.botz` archive format: a ZIP archive
+// that packages an iterion workflow (`main.bot`) with adjacent resources
+// (skills, prompts, presets, default attachments, manifest). A downloaded
+// `.botz` therefore extracts with `unzip` / double-click. Older bundles
+// were gzipped tarballs (tar.gz) — those are still read transparently
+// (the loader auto-detects the container format via magic bytes), so the
+// migration is backward-compatible. A bundle is loaded once per run,
+// extracted into a content-addressed cache directory, and then exposed to
+// the engine as a *Bundle so skills/prompts become visible to claude_code
+// and the claw tool registry without authoring changes.
+//
+// The bundle content hash (Bundle.Hash / PackResult.Hash) is computed
+// over the LOGICAL content — the sorted sequence of (relative-path,
+// file-bytes) — independent of the container format, so the same files
+// hash identically whether packed as ZIP or read from a legacy tar.gz.
 package bundle
 
 // Kind discriminates how a workflow path was supplied.
@@ -13,7 +21,7 @@ type Kind int
 const (
 	// KindBot is a plain `.bot` source file.
 	KindBot Kind = iota
-	// KindBundle is a `.botz` tar.gz archive.
+	// KindBundle is a `.botz` archive (ZIP; older bundles: tar.gz).
 	KindBundle
 	// KindBundleDir is a directory whose root already contains a
 	// recognised bundle layout (`main.bot` at the top).
@@ -67,9 +75,12 @@ type Bundle struct {
 	// the engine at run start.
 	PresetsDir string
 
-	// Hash is the SHA-256 of the uncompressed tar stream, used as
-	// the cache key. Empty for KindBundleDir bundles (no archive
-	// to hash; callers handle directory bundles per-run).
+	// Hash is the SHA-256 of the bundle's logical content (the sorted
+	// (relative-path, file-bytes) sequence), used as the cache key. It is
+	// independent of the container format, so a ZIP bundle and a legacy
+	// tar.gz bundle with identical files share the same hash. Empty for
+	// KindBundleDir bundles (no archive to hash; callers handle directory
+	// bundles per-run).
 	Hash string
 
 	// SourcePath is the original `.botz` filesystem path for KindBundle,

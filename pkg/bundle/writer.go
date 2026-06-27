@@ -1,9 +1,7 @@
 package bundle
 
 import (
-	"archive/tar"
-	"compress/gzip"
-	"crypto/sha256"
+	"archive/zip"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -14,11 +12,19 @@ import (
 	"time"
 )
 
-// epochZero is the canonical timestamp written into every tar/gzip
+// epochZero is the canonical timestamp written into every archive
 // header so the output is reproducible. We use the IEEE 1003.1-1988
-// "no timestamp" sentinel (Unix epoch 0); gzip special-cases it as
-// "no timestamp available" and tar writes it as all-zero octal.
+// "no timestamp" sentinel (Unix epoch 0). For ZIP, archive/zip stores
+// the local date/time in MS-DOS format with a 1980 epoch floor, so we
+// normalise to a fixed 1980-01-01 timestamp on every entry instead (see
+// writeZipEntry) — the goal is determinism, not a meaningful mtime.
 var epochZero = time.Unix(0, 0).UTC()
+
+// zipEpoch is the fixed modification time stamped on every ZIP entry so
+// the archive bytes are reproducible across machines and runs. The ZIP
+// MS-DOS time field cannot represent dates before 1980-01-01, so that is
+// the floor we pin to.
+var zipEpoch = time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // skipPatterns matches paths the packer never includes in a .botz.
 // Kept conservative: ignore iterion store, prior builds, OS metadata,
@@ -40,22 +46,33 @@ var skipSuffixes = []string{
 // PackResult summarises a successful PackDir invocation.
 type PackResult struct {
 	OutputPath string // absolute path of the .botz file
-	Hash       string // SHA-256 of the uncompressed tar stream — matches Bundle.Hash on Open
-	Entries    int    // number of tar entries written (files + directories)
+	Hash       string // SHA-256 of the logical bundle content — matches Bundle.Hash on Open
+	Entries    int    // number of archive entries written (files + directories)
 	BytesIn    int64  // sum of uncompressed file bytes
 	BytesOut   int64  // size of the .botz on disk
 }
 
-// PackDir creates a .botz tar.gz archive at outPath from the contents
-// of srcDir. The bundle layout is the same as accepted by [Open] /
+// PackDir creates a .botz ZIP archive at outPath from the contents of
+// srcDir. The bundle layout is the same as accepted by [Open] /
 // [OpenDir]: main.bot at the root, plus optional manifest.yaml,
 // skills/, prompts/, presets/, attachments/.
 //
+// The output is a standard ZIP archive (PK\x03\x04) so a downloaded
+// `.botz` extracts with `unzip` / double-click. Older bundles were
+// gzipped tarballs; [Open] / [ExtractArchive] still read those for
+// backward compatibility (format auto-detect via magic bytes).
+//
 // The archive is deterministic — entries are sorted alphabetically,
-// timestamps zeroed, ownership stripped, modes uniformly set — so two
+// timestamps pinned, ownership stripped, modes uniformly set — so two
 // PackDir invocations on the same directory tree produce byte-identical
-// output. This is essential for cache-key stability: the hash of the
-// uncompressed tar matches between producer and consumer machines.
+// output.
+//
+// The content hash is computed over the LOGICAL bundle content (the
+// sorted sequence of (relative-path, file-bytes)), NOT over the
+// container bytes. It is therefore independent of the archive format:
+// the same files yield the same hash whether packed as ZIP or read back
+// from a legacy tar.gz bundle. This keeps cache keys and persisted run
+// hashes stable across the format migration.
 //
 // Returns an error when:
 //   - srcDir is not a directory
@@ -108,37 +125,23 @@ func PackDir(srcDir, outPath string) (*PackResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bundle/pack: create %s: %w", absOut, err)
 	}
-	gz := gzip.NewWriter(out)
-	// Strip non-deterministic gzip header fields so the compressed
-	// bytes are stable across machines (date, OS, filename).
-	gz.ModTime = epochZero
-	gz.Name = ""
-	gz.Comment = ""
-	gz.OS = 255 // "unknown" — most-portable sentinel
+	zw := zip.NewWriter(out)
 
-	hasher := sha256.New()
-	tw := tar.NewWriter(io.MultiWriter(gz, hasher))
+	hasher := newContentHasher()
 
 	for _, e := range entries {
-		if err := writeTarEntry(tw, absSrc, e); err != nil {
-			_ = tw.Close()
-			_ = gz.Close()
+		if err := writeZipEntry(zw, hasher, e); err != nil {
+			_ = zw.Close()
 			_ = out.Close()
 			_ = os.Remove(absOut)
 			return nil, err
 		}
 	}
 
-	if err := tw.Close(); err != nil {
-		_ = gz.Close()
+	if err := zw.Close(); err != nil {
 		_ = out.Close()
 		_ = os.Remove(absOut)
-		return nil, fmt.Errorf("bundle/pack: close tar: %w", err)
-	}
-	if err := gz.Close(); err != nil {
-		_ = out.Close()
-		_ = os.Remove(absOut)
-		return nil, fmt.Errorf("bundle/pack: close gzip: %w", err)
+		return nil, fmt.Errorf("bundle/pack: close zip: %w", err)
 	}
 	if err := out.Close(); err != nil {
 		_ = os.Remove(absOut)
@@ -158,7 +161,7 @@ func PackDir(srcDir, outPath string) (*PackResult, error) {
 	}, nil
 }
 
-// packEntry is one walker result, normalised to a tar-relative path.
+// packEntry is one walker result, normalised to an archive-relative path.
 type packEntry struct {
 	rel     string // slash-separated relative path, no leading slash
 	isDir   bool
@@ -174,7 +177,7 @@ func collectEntries(srcDir string) ([]packEntry, int64, error) {
 			return err
 		}
 		if path == srcDir {
-			return nil // skip root, tar entries are children
+			return nil // skip root, archive entries are children
 		}
 		rel, relErr := filepath.Rel(srcDir, path)
 		if relErr != nil {
@@ -219,25 +222,31 @@ func collectEntries(srcDir string) ([]packEntry, int64, error) {
 	return entries, totalBytes, nil
 }
 
-func writeTarEntry(tw *tar.Writer, srcDir string, e packEntry) error {
-	hdr := &tar.Header{
-		Name:    e.rel,
-		ModTime: epochZero,
-		Format:  tar.FormatUSTAR,
-	}
+// writeZipEntry writes one packEntry into the ZIP and feeds its file
+// content into the logical content hasher. Directory entries get a
+// trailing slash (the ZIP convention) and 0755 mode; regular files get
+// 0644. Every entry is stamped with the fixed zipEpoch so the archive
+// bytes are reproducible.
+func writeZipEntry(zw *zip.Writer, hasher *contentHasher, e packEntry) error {
 	if e.isDir {
-		hdr.Typeflag = tar.TypeDir
-		hdr.Mode = 0o755
-		hdr.Name = e.rel + "/"
-		if err := tw.WriteHeader(hdr); err != nil {
+		hdr := &zip.FileHeader{
+			Name:     e.rel + "/",
+			Modified: zipEpoch,
+		}
+		hdr.SetMode(0o755 | os.ModeDir)
+		if _, err := zw.CreateHeader(hdr); err != nil {
 			return fmt.Errorf("bundle/pack: write header %s: %w", e.rel, err)
 		}
 		return nil
 	}
-	hdr.Typeflag = tar.TypeReg
-	hdr.Mode = 0o644
-	hdr.Size = e.size
-	if err := tw.WriteHeader(hdr); err != nil {
+	hdr := &zip.FileHeader{
+		Name:     e.rel,
+		Method:   zip.Deflate,
+		Modified: zipEpoch,
+	}
+	hdr.SetMode(0o644)
+	w, err := zw.CreateHeader(hdr)
+	if err != nil {
 		return fmt.Errorf("bundle/pack: write header %s: %w", e.rel, err)
 	}
 	f, err := os.Open(e.absPath)
@@ -245,7 +254,10 @@ func writeTarEntry(tw *tar.Writer, srcDir string, e packEntry) error {
 		return fmt.Errorf("bundle/pack: open %s: %w", e.absPath, err)
 	}
 	defer f.Close()
-	n, copyErr := io.Copy(tw, f)
+	// Fold this file into the logical content hash (path then bytes),
+	// then copy the bytes into the ZIP entry.
+	hasher.AddFile(e.rel)
+	n, copyErr := io.Copy(io.MultiWriter(w, hasher), f)
 	if copyErr != nil {
 		return fmt.Errorf("bundle/pack: write body %s: %w", e.rel, copyErr)
 	}

@@ -96,8 +96,10 @@ type Run struct {
 	// studio RunHeader so a gated run reads at a glance. See
 	// docs/permissions.md.
 	PermissionMode string `json:"permission_mode,omitempty" bson:"permission_mode,omitempty"`
-	// BundleHash is the SHA-256 of the uncompressed tar stream of the
-	// `.botz` archive backing this run. Used by resume to re-locate
+	// BundleHash is the SHA-256 of the logical content (sorted
+	// (relative-path, file-bytes) sequence) of the `.botz` archive
+	// backing this run. Format-independent, so it is stable whether the
+	// archive is a ZIP or a legacy tar.gz. Used by resume to re-locate
 	// the same cache slot (and detect when the archive has changed
 	// out from under the run). Empty when the run was launched from a
 	// plain .bot file or a directory bundle (no archive).

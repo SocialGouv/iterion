@@ -1,6 +1,8 @@
 package bundle
 
 import (
+	"archive/zip"
+	"bytes"
 	"compress/gzip"
 	"fmt"
 	"io"
@@ -12,6 +14,18 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 )
+
+// Archive magic bytes used to auto-detect the bundle container format.
+// New bundles are ZIP (PK\x03\x04); legacy bundles are gzip (\x1f\x8b)
+// wrapping a tar stream. Both are read transparently.
+var (
+	zipMagic  = []byte{0x50, 0x4b, 0x03, 0x04} // "PK\x03\x04"
+	gzipMagic = []byte{0x1f, 0x8b}
+)
+
+func hasPrefix(b, prefix []byte) bool {
+	return len(b) >= len(prefix) && bytes.Equal(b[:len(prefix)], prefix)
+}
 
 // botFileNames is the set of accepted workflow source file names at the
 // bundle root. The canonical name is `main.bot` (familiar `main.go` /
@@ -67,36 +81,28 @@ func Open(path, cacheRoot string) (*Bundle, func() error, error) {
 		return nil, nil, fmt.Errorf("bundle: mkdir cache %s: %w", cacheRoot, err)
 	}
 
-	// Stream the archive once: gunzip → hash + extract. We extract
-	// into a temporary directory keyed by the source path mtime so
-	// concurrent calls can't race; on success we move it into the
-	// cache slot under the content hash, or skip the move when an
-	// equivalent slot already exists.
+	// Extract the archive into a temporary directory so concurrent calls
+	// can't race; on success we move it into the cache slot under the
+	// content hash, or skip the move when an equivalent slot already
+	// exists. The container format (ZIP or legacy tar.gz) is auto-detected
+	// from the leading magic bytes. The content hash is computed AFTER
+	// extraction by walking the extracted tree, so it covers the logical
+	// content and is identical across container formats.
 	tmpDir, err := os.MkdirTemp(cacheRoot, "extract-")
 	if err != nil {
 		return nil, nil, fmt.Errorf("bundle: mkdir tmp: %w", err)
 	}
 	cleanupTmp := func() { _ = os.RemoveAll(tmpDir) }
 
-	f, err := os.Open(abs)
-	if err != nil {
-		cleanupTmp()
-		return nil, nil, fmt.Errorf("bundle: open %s: %w", abs, err)
-	}
-	defer f.Close()
-	gz, err := gzip.NewReader(f)
-	if err != nil {
-		cleanupTmp()
-		return nil, nil, fmt.Errorf("bundle: gzip %s: %w", abs, err)
-	}
-	defer gz.Close()
-
-	hr := newHashingReader(gz)
-	if _, err := extractTarGz(hr, tmpDir); err != nil {
+	if err := extractArchiveFile(abs, tmpDir); err != nil {
 		cleanupTmp()
 		return nil, nil, err
 	}
-	hash := hr.Sum()
+	hash, err := collectContentHash(tmpDir)
+	if err != nil {
+		cleanupTmp()
+		return nil, nil, err
+	}
 
 	// Use the full hash on non-Windows hosts to make collision
 	// astronomically rare even against an adversary who controls
@@ -163,22 +169,88 @@ func Open(path, cacheRoot string) (*Bundle, func() error, error) {
 	return b, func() error { return nil }, nil
 }
 
-// ExtractArchive gunzips and untars a `.botz` stream from r into dest,
-// applying the same path-traversal / size / symlink guards as Open.
-// dest must be a directory the caller exclusively owns (it is created if
-// missing). Returns the number of regular files written.
+// ExtractArchive extracts a `.botz` stream from r into dest, applying the
+// same path-traversal / size / symlink guards as Open. The container
+// format (ZIP or legacy tar.gz) is auto-detected from the leading magic
+// bytes. dest must be a directory the caller exclusively owns (it is
+// created if missing). Returns the number of regular files written.
+//
+// archive/zip needs a ReaderAt + size and cannot stream a pipe, so the
+// stream is read fully into memory first. Bundles are small (capped at
+// ITERION_BUNDLE_MAX_BYTES uncompressed; the compressed upload is smaller
+// still), so this is acceptable for the .botz-upload path this serves.
 //
 // Unlike Open it does NOT cache, content-hash, or validate the bundle
 // structure — callers that need a validated Bundle follow with
 // OpenDir(dest). This is the in-memory entry point behind .botz uploads,
 // where the bytes arrive over HTTP rather than from a file on disk.
 func ExtractArchive(r io.Reader, dest string) (int, error) {
-	gz, err := gzip.NewReader(r)
+	data, err := io.ReadAll(r)
 	if err != nil {
-		return 0, fmt.Errorf("bundle: gzip: %w", err)
+		return 0, fmt.Errorf("bundle: read archive: %w", err)
 	}
-	defer gz.Close()
-	return extractTarGz(gz, dest)
+	return extractArchiveBytes(data, dest)
+}
+
+// extractArchiveFile auto-detects the container format of the bundle at
+// path and extracts it into dest. ZIP uses zip.OpenReader (a ReaderAt
+// straight off the file); tar.gz streams through gzip → tar.
+func extractArchiveFile(path, dest string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("bundle: open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	var magic [4]byte
+	n, _ := io.ReadFull(f, magic[:])
+	head := magic[:n]
+
+	switch {
+	case hasPrefix(head, zipMagic):
+		zr, err := zip.OpenReader(path)
+		if err != nil {
+			return fmt.Errorf("bundle: open zip %s: %w", path, err)
+		}
+		defer zr.Close()
+		_, err = extractZip(&zr.Reader, dest)
+		return err
+	case hasPrefix(head, gzipMagic):
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("bundle: seek %s: %w", path, err)
+		}
+		gz, err := gzip.NewReader(f)
+		if err != nil {
+			return fmt.Errorf("bundle: gzip %s: %w", path, err)
+		}
+		defer gz.Close()
+		_, err = extractTarGz(gz, dest)
+		return err
+	default:
+		return fmt.Errorf("bundle: unrecognised archive format for %s (expected zip or gzip)", path)
+	}
+}
+
+// extractArchiveBytes auto-detects the container format of the in-memory
+// bundle bytes and extracts them into dest.
+func extractArchiveBytes(data []byte, dest string) (int, error) {
+	switch {
+	case hasPrefix(data, zipMagic):
+		zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+		if err != nil {
+			return 0, fmt.Errorf("bundle: open zip: %w", err)
+		}
+		return extractZip(zr, dest)
+	case hasPrefix(data, gzipMagic):
+		gz, err := gzip.NewReader(bytes.NewReader(data))
+		if err != nil {
+			return 0, fmt.Errorf("bundle: gzip: %w", err)
+		}
+		defer gz.Close()
+		return extractTarGz(gz, dest)
+	default:
+		return 0, fmt.Errorf("bundle: unrecognised archive format (expected zip or gzip)")
+	}
 }
 
 // OpenDir resolves an already-extracted bundle directory. Used by dev
