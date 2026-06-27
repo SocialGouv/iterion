@@ -68,6 +68,9 @@ jobs:
         VERSION=${{ github.ref_name }}
         COMMIT=${{ github.sha }}
       is-pr: ${{ github.event_name == 'pull_request' }}
+      # Full multi-arch (+ sign + SBOM) only on main and release tags; feature
+      # branches build amd64-only on the operator for a fast iteration loop.
+      multiarch: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
 
   # iterion-sandbox-slim — bakes in the iterion binary via COPY --from, so it
   # needs the iterion image (and its :edge / :vX.Y.Z tag) published first.
@@ -82,6 +85,9 @@ jobs:
       file: sandbox/slim/Dockerfile
       build-args: ITERION_IMAGE=ghcr.io/${{ needs.prep.outputs.owner_lc }}/iterion:${{ needs.prep.outputs.base_tag }}
       is-pr: ${{ github.event_name == 'pull_request' }}
+      # Full multi-arch (+ sign + SBOM) only on main and release tags; feature
+      # branches build amd64-only on the operator for a fast iteration loop.
+      multiarch: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
 
   # iterion-sandbox-full — FROM the freshly-built slim image.
   build-sandbox-full:
@@ -95,6 +101,9 @@ jobs:
       file: sandbox/full/Dockerfile
       build-args: BASE=ghcr.io/${{ needs.prep.outputs.owner_lc }}/iterion-sandbox-slim:${{ needs.prep.outputs.base_tag }}
       is-pr: ${{ github.event_name == 'pull_request' }}
+      # Full multi-arch (+ sign + SBOM) only on main and release tags; feature
+      # branches build amd64-only on the operator for a fast iteration loop.
+      multiarch: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
 
   # iterion-sandbox-sec — FROM the freshly-built full image. Required by
   # sec-audit-source / sec-audit-deps (pinned via sandbox.image).
@@ -109,3 +118,6 @@ jobs:
       file: sandbox/sec/Dockerfile
       build-args: BASE=ghcr.io/${{ needs.prep.outputs.owner_lc }}/iterion-sandbox-full:${{ needs.prep.outputs.base_tag }}
       is-pr: ${{ github.event_name == 'pull_request' }}
+      # Full multi-arch (+ sign + SBOM) only on main and release tags; feature
+      # branches build amd64-only on the operator for a fast iteration loop.
+      multiarch: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}

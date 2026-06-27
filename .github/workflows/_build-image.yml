@@ -41,6 +41,11 @@ on:
         description: "True on pull_request events (validate-only: local amd64 build, no operator, no push)."
         required: true
         type: boolean
+      multiarch:
+        description: "Build arm64 + sign + SBOM (true on main/tags). False on feature-branch pushes = amd64-only fast path."
+        required: false
+        type: boolean
+        default: false
 
 env:
   REGISTRY: ghcr.io
@@ -146,7 +151,8 @@ jobs:
   # staging tag. gha layer cache keyed per image+arch.
   # --------------------------------------------------------------------------
   arm64:
-    if: ${{ !inputs.is-pr }}
+    # Only on main/tags (multiarch). Feature-branch pushes stay amd64-only (fast).
+    if: ${{ !inputs.is-pr && inputs.multiarch }}
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
@@ -185,15 +191,25 @@ jobs:
           build-args: ${{ inputs.build-args }}
           provenance: mode=max
           sbom: true
-          cache-from: type=gha,scope=${{ inputs.image-name }}-arm64
-          cache-to: type=gha,mode=max,scope=${{ inputs.image-name }}-arm64
+          # Registry cache persists layers across runs more durably than gha (no
+          # 10 GB eviction); gha kept as a fast secondary. The arm64 leg has no
+          # warm operator daemon, so cross-run layer cache is its main lever.
+          cache-from: |
+            type=registry,ref=${{ env.IMAGE_REF }}:buildcache-arm64
+            type=gha,scope=${{ inputs.image-name }}-arm64
+          cache-to: |
+            type=registry,ref=${{ env.IMAGE_REF }}:buildcache-arm64,mode=max
+            type=gha,mode=max,scope=${{ inputs.image-name }}-arm64
 
   # --------------------------------------------------------------------------
   # merge — stitch the two per-arch staging manifests into the published
   # multi-arch index (final tags), then cosign-sign + SBOM-attest the index.
   # --------------------------------------------------------------------------
   merge:
-    if: ${{ !inputs.is-pr }}
+    # Runs once amd64 succeeded, whether arm64 ran (multiarch) or was skipped
+    # (feature branch). always() prevents auto-skip on the skipped arm64 need; the
+    # explicit guards then require amd64 success and a non-failing arm64.
+    if: ${{ always() && !inputs.is-pr && needs.amd64.result == 'success' && needs.arm64.result != 'failure' }}
     needs: [amd64, arm64]
     runs-on: ubuntu-latest
     permissions:
@@ -231,24 +247,30 @@ jobs:
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
           SHA: ${{ github.sha }}
+          MULTIARCH: ${{ inputs.multiarch }}
         run: |
           set -eux
           tflags=""
           for t in $TAGS; do tflags="$tflags -t $t"; done
+          # amd64 always; arm64 only when this is a multiarch (main/tag) build.
+          sources="${IMAGE_REF}:${SHA}-amd64"
+          [ "$MULTIARCH" = "true" ] && sources="$sources ${IMAGE_REF}:${SHA}-arm64"
           # shellcheck disable=SC2086
-          docker buildx imagetools create $tflags \
-            "${IMAGE_REF}:${SHA}-amd64" \
-            "${IMAGE_REF}:${SHA}-arm64"
+          docker buildx imagetools create $tflags $sources
           # The index digest is the authoritative address we sign + attest (the
           # per-arch staging tags stay — the index references their manifests).
           first_tag="$(printf '%s\n' $TAGS | head -n1)"
           digest="$(docker buildx imagetools inspect "$first_tag" --format '{{.Manifest.Digest}}')"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
+      # Sign + SBOM only for published multi-arch (main/tags) images. Feature-branch
+      # builds skip them for speed — they're ephemeral branch tags, not releases.
       - name: Install cosign
+        if: ${{ inputs.multiarch }}
         uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
 
       - name: Generate SBOM (syft) for the index
+        if: ${{ inputs.multiarch }}
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
           image: ${{ env.IMAGE_REF }}@${{ steps.index.outputs.digest }}
@@ -258,6 +280,7 @@ jobs:
           upload-release-assets: false
 
       - name: Sign index + attest SBOM (cosign keyless OIDC)
+        if: ${{ inputs.multiarch }}
         env:
           DIGEST: ${{ steps.index.outputs.digest }}
         run: |

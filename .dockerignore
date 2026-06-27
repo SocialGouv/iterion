@@ -1,39 +1,72 @@
-# Build artefacts
+# .dockerignore for the ROOT build context (main Dockerfile only — sandbox/*
+# images use their own context dir, unaffected by this file). Keep the context
+# tiny: only what the Dockerfile COPYs needs to be sent to the daemon.
+# The Dockerfile COPYs: package.json, pnpm-lock.yaml, pnpm-workspace.yaml,
+# studio/, go.mod, go.sum, vendor/, cmd/, pkg/, bots/, docker/llm-clis/. Keep
+# those; ignore everything else below.
+
+# --- Dependencies / build output (rebuilt fresh in-image; huge if shipped) ---
+**/node_modules/
+studio/dist/
+studio/.vite/
+editor/dist/
+editor/node_modules/
+pkg/server/static/
+dist/
+
+# --- Build artefacts ---
 iterion
 iterion-desktop
 build/
 cmd/iterion-desktop/build/
+*.exe
 
-# IDE / editors
-.vscode/
-.idea/
+# --- Source dirs NOT needed by the main image (not COPYed / not imported) ---
+e2e/
+examples/
+charts/
+scripts/
+tooling/
+docs/
+.devcontainer/
+sandbox/
 
-# Local state — never bake into the image
-.iterion/
-.devbox/
-.works/
-.plans/
-
-# Editor build output (we rebuild fresh in the image)
-editor/dist/
-editor/node_modules/
-pkg/server/static/
-
-# Test caches
+# --- Test files + caches (the binary never compiles them) ---
+**/*_test.go
+**/testdata/
 *.coverprofile
 *.test
-testdata/
+cover.out
+coverage/
 
-# Git
-.git/
-.gitignore
-.github/
+# --- Local dev state — never bake into the image ---
+.iterion/
+.devbox/
+.direnv/
+.envrc
+.works/
+.plans/
+.claude/
+.repos/
 
-# OS
+# --- Tooling configs not used at build time ---
+Taskfile.yml
+devbox.json
+devbox.lock
+.golangci*
+renovate.json
+
+# --- IDE / editors / OS ---
+.vscode/
+.idea/
 .DS_Store
 *.swp
 
-# Docs that don't change image behaviour
-docs/
-README.md
-CHANGELOG.md
+# --- Git / CI / docs metadata ---
+.git/
+.gitignore
+.dockerignore
+.github/
+*.md
+LICENSE
+*.log
